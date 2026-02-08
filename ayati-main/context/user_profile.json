@@ -1,0 +1,24 @@
+{
+  "name": null,
+  "nickname": null,
+  "occupation": null,
+  "location": null,
+  "languages": [],
+  "interests": [],
+  "facts": [],
+  "people": [],
+  "projects": [],
+  "communication": {
+    "formality": "balanced",
+    "verbosity": "balanced",
+    "humor_receptiveness": "medium",
+    "emoji_usage": "rare"
+  },
+  "emotional_patterns": {
+    "mood_baseline": "unknown",
+    "stress_triggers": [],
+    "joy_triggers": []
+  },
+  "active_hours": null,
+  "last_updated": "2026-02-06T07:18:48.732Z"
+}

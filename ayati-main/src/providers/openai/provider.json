@@ -1,0 +1,5 @@
+{
+  "name": "openai",
+  "version": "1.0.0",
+  "description": "OpenAI LLM provider using the chat completions API"
+}
