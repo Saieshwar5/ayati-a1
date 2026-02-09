@@ -77,7 +77,7 @@ describe("Anthropic provider", () => {
     const mockCreate = vi.fn().mockResolvedValue({
       content: [
         { type: "text", text: "Running tool" },
-        { type: "tool_use", id: "toolu_1", name: "shell.exec", input: { cmd: "pwd" } },
+        { type: "tool_use", id: "toolu_1", name: "shell", input: { cmd: "pwd" } },
       ],
     });
 
@@ -88,7 +88,7 @@ describe("Anthropic provider", () => {
       messages: [{ role: "user", content: "where am i" }],
       tools: [
         {
-          name: "shell.exec",
+          name: "shell",
           description: "Run shell",
           inputSchema: { type: "object", properties: { cmd: { type: "string" } } },
         },
@@ -97,7 +97,7 @@ describe("Anthropic provider", () => {
 
     expect(out).toEqual({
       type: "tool_calls",
-      calls: [{ id: "toolu_1", name: "shell.exec", input: { cmd: "pwd" } }],
+      calls: [{ id: "toolu_1", name: "shell", input: { cmd: "pwd" } }],
       assistantContent: "Running tool",
     });
   });

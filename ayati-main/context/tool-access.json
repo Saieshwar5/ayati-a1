@@ -1,0 +1,17 @@
+{
+  "global": {
+    "enabled": true,
+    "mode": "full",
+    "allowedTools": []
+  },
+  "tools": {
+    "shell": {
+      "enabled": true,
+      "mode": "full",
+      "allowedPrefixes": [],
+      "timeoutMs": 15000,
+      "maxOutputChars": 20000,
+      "allowAnyCwd": true
+    }
+  }
+}

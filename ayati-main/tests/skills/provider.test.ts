@@ -15,7 +15,7 @@ describe("builtInSkillsProvider", () => {
     expect(skills).toHaveLength(1);
     expect(skills[0]?.id).toBe("shell");
     expect(blocks[0]?.id).toBe("shell");
-    expect(tools.some((t) => t.name === "shell.exec")).toBe(true);
+    expect(tools.some((t) => t.name === "shell")).toBe(true);
   });
 
   it("ignores unknown skills", async () => {

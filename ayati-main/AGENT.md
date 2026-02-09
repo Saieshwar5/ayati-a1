@@ -130,9 +130,9 @@ Model-agnostic adapter layer is required because providers differ in tool-call A
 
 ### Phase 5: First Skill - `shell`
 
-Implement `shell` skill with one tool: `shell.exec`.
+Implement `shell` skill with one tool: `shell`.
 
-#### `shell.exec` behavior
+#### `shell` behavior
 
 Input:
 

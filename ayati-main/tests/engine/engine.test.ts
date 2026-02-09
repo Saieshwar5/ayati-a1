@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from "vitest";
 import { AgentEngine } from "../../src/engine/index.js";
 import type { LlmProvider } from "../../src/core/contracts/provider.js";
 import type { LlmTurnOutput } from "../../src/core/contracts/llm-protocol.js";
+import type { SessionMemory } from "../../src/memory/types.js";
 import type { ToolExecutor } from "../../src/skills/tool-executor.js";
 
 function createMockProvider(overrides?: Partial<LlmProvider>): LlmProvider {
@@ -63,24 +64,6 @@ describe("AgentEngine", () => {
     });
   });
 
-  it("should pass context as system message", async () => {
-    const provider = createMockProvider();
-    const onReply = vi.fn();
-    const engine = new AgentEngine({ onReply, provider, context: "System context" });
-
-    await engine.start();
-    engine.handleMessage("c1", { type: "chat", content: "hello" });
-
-    await vi.waitFor(() => {
-      expect(provider.generateTurn).toHaveBeenCalledWith({
-        messages: [
-          { role: "system", content: "System context" },
-          { role: "user", content: "hello" },
-        ],
-      });
-    });
-  });
-
   it("should ignore non-chat messages", () => {
     const onReply = vi.fn();
     const engine = new AgentEngine({ onReply });
@@ -95,18 +78,18 @@ describe("AgentEngine", () => {
   it("should execute a tool message when tool executor is configured", async () => {
     const onReply = vi.fn();
     const toolExecutor: ToolExecutor = {
-      list: () => ["shell.exec"],
+      list: () => ["shell"],
       definitions: () => [],
       execute: vi.fn().mockResolvedValue({ ok: true, output: "done" }),
     };
     const engine = new AgentEngine({ onReply, toolExecutor });
 
-    engine.handleMessage("c1", { type: "tool", name: "shell.exec", input: { cmd: "echo ok" } });
+    engine.handleMessage("c1", { type: "tool", name: "shell", input: { cmd: "echo ok" } });
 
     await vi.waitFor(() => {
       expect(onReply).toHaveBeenCalledWith("c1", {
         type: "tool_result",
-        name: "shell.exec",
+        name: "shell",
         result: { ok: true, output: "done" },
       });
     });
@@ -119,7 +102,7 @@ describe("AgentEngine", () => {
         .fn<() => Promise<LlmTurnOutput>>()
         .mockResolvedValueOnce({
           type: "tool_calls",
-          calls: [{ id: "t1", name: "shell.exec", input: { cmd: "echo hello" } }],
+          calls: [{ id: "t1", name: "shell", input: { cmd: "echo hello" } }],
         })
         .mockResolvedValueOnce({
           type: "assistant",
@@ -127,10 +110,10 @@ describe("AgentEngine", () => {
         }),
     });
     const toolExecutor: ToolExecutor = {
-      list: () => ["shell.exec"],
+      list: () => ["shell"],
       definitions: () => [
         {
-          name: "shell.exec",
+          name: "shell",
           description: "Run shell",
           inputSchema: { type: "object", properties: { cmd: { type: "string" } } },
           execute: vi.fn().mockResolvedValue({ ok: true, output: "hello" }),
@@ -139,13 +122,13 @@ describe("AgentEngine", () => {
       execute: vi.fn().mockResolvedValue({ ok: true, output: "hello" }),
     };
 
-    const engine = new AgentEngine({ onReply, provider, toolExecutor, context: "ctx" });
+    const engine = new AgentEngine({ onReply, provider, toolExecutor });
     await engine.start();
     engine.handleMessage("c1", { type: "chat", content: "say hello" });
 
     await vi.waitFor(() => {
       expect(toolExecutor.execute).toHaveBeenCalledWith(
-        "shell.exec",
+        "shell",
         { cmd: "echo hello" },
         { clientId: "c1" },
       );
@@ -156,16 +139,80 @@ describe("AgentEngine", () => {
     });
   });
 
+  it("records run and tool events to session memory", async () => {
+    const onReply = vi.fn();
+    const provider = createMockProvider({
+      generateTurn: vi
+        .fn<() => Promise<LlmTurnOutput>>()
+        .mockResolvedValueOnce({
+          type: "tool_calls",
+          calls: [{ id: "t1", name: "shell", input: { cmd: "echo hello" } }],
+        })
+        .mockResolvedValueOnce({
+          type: "assistant",
+          content: "done",
+        }),
+    });
+    const toolExecutor: ToolExecutor = {
+      list: () => ["shell"],
+      definitions: () => [
+        {
+          name: "shell",
+          description: "Run shell",
+          inputSchema: { type: "object", properties: { cmd: { type: "string" } } },
+          execute: vi.fn().mockResolvedValue({ ok: true, output: "hello" }),
+        },
+      ],
+      execute: vi.fn().mockResolvedValue({ ok: true, output: "hello" }),
+    };
+    const sessionMemory: SessionMemory = {
+      initialize: vi.fn(),
+      shutdown: vi.fn(),
+      beginRun: vi.fn().mockReturnValue({ sessionId: "s1", runId: "r1" }),
+      recordToolCall: vi.fn(),
+      recordToolResult: vi.fn(),
+      recordAssistantFinal: vi.fn(),
+      recordRunFailure: vi.fn(),
+      getPromptMemoryContext: vi.fn().mockReturnValue({
+        conversationTurns: [],
+        previousSessionSummary: "",
+        toolEvents: [],
+      }),
+    };
+
+    const engine = new AgentEngine({
+      onReply,
+      provider,
+      toolExecutor,
+      sessionMemory,
+    });
+
+    await engine.start();
+    engine.handleMessage("c1", { type: "chat", content: "do tool" });
+
+    await vi.waitFor(() => {
+      expect(sessionMemory.beginRun).toHaveBeenCalledWith("c1", "do tool");
+      expect(sessionMemory.recordToolCall).toHaveBeenCalledTimes(1);
+      expect(sessionMemory.recordToolResult).toHaveBeenCalledTimes(1);
+      expect(sessionMemory.recordAssistantFinal).toHaveBeenCalledWith(
+        "c1",
+        "r1",
+        "s1",
+        "done",
+      );
+    });
+  });
+
   it("should return tool_result error when tool executor is missing", async () => {
     const onReply = vi.fn();
     const engine = new AgentEngine({ onReply });
 
-    engine.handleMessage("c1", { type: "tool", name: "shell.exec", input: { cmd: "echo ok" } });
+    engine.handleMessage("c1", { type: "tool", name: "shell", input: { cmd: "echo ok" } });
 
     await vi.waitFor(() => {
       expect(onReply).toHaveBeenCalledWith("c1", {
         type: "tool_result",
-        name: "shell.exec",
+        name: "shell",
         result: {
           ok: false,
           error: "Tool execution is not configured.",

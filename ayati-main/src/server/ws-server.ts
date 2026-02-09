@@ -42,7 +42,7 @@ export class WsServer {
       });
 
       this.wss.on("connection", (ws) => {
-        const clientId = crypto.randomUUID();
+        const clientId = "local";
         this.clients.set(clientId, ws);
         devLog(`Client connected: ${clientId}`);
 

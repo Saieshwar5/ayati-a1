@@ -1,42 +1,15 @@
 import { exec } from "node:child_process";
 import { promisify } from "node:util";
 import type { SkillDefinition, ToolDefinition, ToolResult } from "../../types.js";
+import { getShellPolicy } from "../../tool-access-config.js";
 
 const execAsync = promisify(exec);
-
-type ShellMode = "off" | "allowlist" | "full";
 
 interface ShellExecInput {
   cmd: string;
   cwd?: string;
   timeoutMs?: number;
   maxOutputChars?: number;
-}
-
-function parseMode(raw: string | undefined): ShellMode {
-  if (raw === "off" || raw === "allowlist" || raw === "full") {
-    return raw;
-  }
-  return "full";
-}
-
-function parseBool(raw: string | undefined, fallback: boolean): boolean {
-  if (raw === undefined) return fallback;
-  return raw === "1" || raw.toLowerCase() === "true";
-}
-
-function parseNumber(raw: string | undefined, fallback: number): number {
-  if (!raw) return fallback;
-  const n = Number(raw);
-  return Number.isFinite(n) && n > 0 ? n : fallback;
-}
-
-function parsePrefixes(raw: string | undefined): string[] {
-  if (!raw || raw.trim().length === 0) return [];
-  return raw
-    .split(",")
-    .map((s) => s.trim())
-    .filter((s) => s.length > 0);
 }
 
 function commandPrefix(cmd: string): string {
@@ -77,7 +50,7 @@ function validateInput(input: unknown): ShellExecInput | ToolResult {
 }
 
 export const shellExecTool: ToolDefinition = {
-  name: "shell.exec",
+  name: "shell",
   description: "Execute a shell command with runtime-configurable access controls.",
   inputSchema: {
     type: "object",
@@ -95,40 +68,34 @@ export const shellExecTool: ToolDefinition = {
       return parsed;
     }
 
-    const enabled = parseBool(process.env["SHELL_TOOL_ENABLED"], true);
-    if (!enabled) {
-      return { ok: false, error: "shell.exec is disabled by SHELL_TOOL_ENABLED." };
+    const policy = getShellPolicy();
+
+    if (!policy.enabled) {
+      return { ok: false, error: "shell is disabled (enabled=false)." };
     }
 
-    const mode = parseMode(process.env["SHELL_TOOL_MODE"]);
-    if (mode === "off") {
-      return { ok: false, error: "shell.exec is disabled by SHELL_TOOL_MODE=off." };
+    if (policy.mode === "off") {
+      return { ok: false, error: "shell is disabled (mode=off)." };
     }
 
     const prefix = commandPrefix(parsed.cmd);
-    const allowedPrefixes = parsePrefixes(process.env["SHELL_TOOL_ALLOWED_PREFIXES"]);
-    if (mode === "allowlist" && !allowedPrefixes.includes(prefix)) {
+    if (policy.mode === "allowlist" && !policy.allowedPrefixes.includes(prefix)) {
       return {
         ok: false,
         error: `Command prefix not allowed in allowlist mode: ${prefix || "<empty>"}`,
       };
     }
 
-    const timeoutMs = Math.min(parseNumber(process.env["SHELL_TOOL_TIMEOUT_MS"], 15_000), 120_000);
-    const maxOutputChars = Math.min(
-      parseNumber(process.env["SHELL_TOOL_MAX_OUTPUT_CHARS"], 20_000),
-      200_000,
-    );
-
-    const allowAnyCwd = parseBool(process.env["SHELL_TOOL_ALLOW_ANY_CWD"], true);
     const cwd = parsed.cwd;
-    if (!allowAnyCwd && cwd && !cwd.startsWith(process.cwd())) {
+    if (!policy.allowAnyCwd && cwd && !cwd.startsWith(process.cwd())) {
       return {
         ok: false,
-        error: "cwd is outside the workspace and SHELL_TOOL_ALLOW_ANY_CWD is false.",
+        error: "cwd is outside the workspace and allowAnyCwd is false.",
       };
     }
 
+    const timeoutMs = policy.timeoutMs;
+    const maxOutputChars = policy.maxOutputChars;
     const start = Date.now();
 
     try {
@@ -152,7 +119,7 @@ export const shellExecTool: ToolDefinition = {
         meta: {
           durationMs: Date.now() - start,
           truncated,
-          mode,
+          mode: policy.mode,
           commandPrefix: prefix,
         },
       };
@@ -163,7 +130,7 @@ export const shellExecTool: ToolDefinition = {
         error: message,
         meta: {
           durationMs: Date.now() - start,
-          mode,
+          mode: policy.mode,
           commandPrefix: prefix,
         },
       };
@@ -173,7 +140,7 @@ export const shellExecTool: ToolDefinition = {
 
 const SHELL_PROMPT_BLOCK = [
   "Shell Skill is available.",
-  "Use shell.exec when terminal execution is needed.",
+  "Use shell when terminal execution is needed.",
   "Prefer concise, safe commands and summarize results clearly.",
   "If command output is large, return a concise summary.",
 ].join("\n");
@@ -181,7 +148,7 @@ const SHELL_PROMPT_BLOCK = [
 const shellSkill: SkillDefinition = {
   id: "shell",
   version: "1.0.0",
-  description: "Run shell commands via shell.exec.",
+  description: "Run shell commands via shell.",
   promptBlock: SHELL_PROMPT_BLOCK,
   tools: [shellExecTool],
 };

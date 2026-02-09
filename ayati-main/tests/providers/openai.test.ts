@@ -105,7 +105,7 @@ describe("OpenAI provider", () => {
       messages: [{ role: "user", content: "where am i" }],
       tools: [
         {
-          name: "shell.exec",
+          name: "shell",
           description: "Run shell",
           inputSchema: { type: "object", properties: { cmd: { type: "string" } } },
         },
@@ -118,7 +118,7 @@ describe("OpenAI provider", () => {
 
     expect(out).toEqual({
       type: "tool_calls",
-      calls: [{ id: "call_1", name: "shell.exec", input: { cmd: "pwd" } }],
+      calls: [{ id: "call_1", name: "shell", input: { cmd: "pwd" } }],
     });
   });
 
