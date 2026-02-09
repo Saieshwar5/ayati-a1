@@ -57,7 +57,7 @@ Final prompt is assembled in fixed order:
 2. Soul (`context/soul.json`)
 3. User Profile (`context/user_profile.json`)
 4. Previous Conversation (future memory provider)
-5. Skills (whitelisted skill blocks)
+5. Skills (enabled skill blocks)
 
 ## Skills vs Tools
 
@@ -102,11 +102,11 @@ Add registries:
 - `SkillRegistry`: register/unregister/get skills.
 - `ToolRegistry`: flattened lookup of tools exposed by enabled skills.
 
-### Phase 2: Skill Loading and Whitelisting
+### Phase 2: Skill Loading and Access Control
 
-- Keep `context/skills_whitelist.json` as source of enabled skill IDs.
-- Add loader to discover built-in skills and include only whitelisted IDs.
-- Missing/invalid skill IDs should warn and be ignored.
+- All built-in skills are always loaded — no whitelist filtering.
+- `context/tool-access.json` is the single source of truth for enabling/disabling any tool.
+- Per-tool `enabled` flag in `tool-access.json` is enforced by `canUseTool()` in `access-policy.ts`.
 
 ### Phase 3: Prompt Integration
 
@@ -130,9 +130,9 @@ Model-agnostic adapter layer is required because providers differ in tool-call A
 
 ### Phase 5: First Skill - `shell`
 
-Implement `shell` skill with one tool: `shell.exec`.
+Implement `shell` skill with one tool: `shell`.
 
-#### `shell.exec` behavior
+#### `shell` behavior
 
 Input:
 
@@ -175,7 +175,7 @@ Add env/config knobs:
 Must-have tests:
 
 - Registry behavior (enable/disable skills).
-- Whitelist filtering and deterministic skill ordering.
+- Per-tool enabled/disabled via `tool-access.json`.
 - Prompt builder includes selected skill blocks only.
 - Shell tool:
   - executes allowed command

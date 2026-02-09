@@ -1,84 +1,59 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
+import { assemblePromptInput } from "../../src/context/load-system-prompt-input.js";
+import { emptySoulContext, emptyUserProfileContext } from "../../src/context/types.js";
+import type { StaticContext } from "../../src/context/static-context-cache.js";
+import type { PromptMemoryContext } from "../../src/memory/types.js";
 
-vi.mock("node:fs/promises", () => ({
-  readFile: vi.fn(),
-}));
+describe("assemblePromptInput", () => {
+  it("maps static context and memory context to PromptBuildInput", () => {
+    const staticContext: StaticContext = {
+      basePrompt: "Base prompt",
+      soul: emptySoulContext(),
+      userProfile: emptyUserProfileContext(),
+      skillBlocks: [{ id: "skill-a", content: "Use A" }],
+    };
 
-vi.mock("../../src/shared/index.js", () => ({
-  devWarn: vi.fn(),
-}));
+    const memoryContext: PromptMemoryContext = {
+      conversationTurns: [{ role: "user", content: "hi", timestamp: "t1" }],
+      previousSessionSummary: "summary",
+      toolEvents: [
+        {
+          timestamp: "t2",
+          toolName: "shell",
+          status: "success",
+          argsPreview: "{\"cmd\":\"pwd\"}",
+          outputPreview: "/tmp",
+        },
+      ],
+    };
 
-import { readFile } from "node:fs/promises";
-
-async function getLoader() {
-  const mod = await import("../../src/context/load-system-prompt-input.js");
-  return mod.loadSystemPromptInput;
-}
-
-describe("loadSystemPromptInput", () => {
-  const mockReadFile = vi.mocked(readFile);
-
-  beforeEach(() => {
-    vi.clearAllMocks();
-  });
-
-  it("loads base/soul/profile and resolves whitelisted skill blocks", async () => {
-    mockReadFile.mockImplementation(async (filePath) => {
-      const path = String(filePath);
-      if (path.endsWith("system_prompt.md")) return "Base prompt";
-      if (path.endsWith("skills_whitelist.json")) return '["skill-a"]';
-      if (path.endsWith("soul.json")) {
-        return JSON.stringify({
-          version: 2,
-          soul: { name: "CustomName", identity: "Identity", personality: [], values: [] },
-          voice: { tone: [], style: [], quirks: [], never_do: [] },
-        });
-      }
-      if (path.endsWith("user_profile.json")) {
-        return JSON.stringify({
-          name: null,
-          nickname: null,
-          occupation: null,
-          location: null,
-          languages: [],
-          interests: [],
-          facts: [],
-          people: [],
-          projects: [],
-          communication: {
-            formality: "balanced",
-            verbosity: "balanced",
-            humor_receptiveness: "medium",
-            emoji_usage: "rare",
-          },
-          emotional_patterns: {
-            mood_baseline: "unknown",
-            stress_triggers: [],
-            joy_triggers: [],
-          },
-          active_hours: null,
-          last_updated: "2026-02-08T00:00:00.000Z",
-        });
-      }
-      throw new Error("Unexpected file");
-    });
-
-    const loadSystemPromptInput = await getLoader();
-    const result = await loadSystemPromptInput({
-      memoryProvider: {
-        getRecentTurns: vi.fn().mockResolvedValue([{ role: "user", content: "hi", timestamp: "t1" }]),
-      },
-      skillsProvider: {
-        getEnabledSkills: vi.fn().mockResolvedValue([]),
-        getEnabledSkillBlocks: vi
-          .fn()
-          .mockResolvedValue([{ id: "skill-a", content: "Use A" }]),
-        getEnabledTools: vi.fn().mockResolvedValue([]),
-      },
-    });
+    const result = assemblePromptInput(staticContext, memoryContext);
 
     expect(result.basePrompt).toBe("Base prompt");
     expect(result.conversationTurns).toHaveLength(1);
+    expect(result.previousSessionSummary).toBe("summary");
+    expect(result.toolEvents).toHaveLength(1);
     expect(result.skillBlocks).toEqual([{ id: "skill-a", content: "Use A" }]);
+  });
+
+  it("handles empty memory context", () => {
+    const staticContext: StaticContext = {
+      basePrompt: "Base",
+      soul: emptySoulContext(),
+      userProfile: emptyUserProfileContext(),
+      skillBlocks: [],
+    };
+
+    const memoryContext: PromptMemoryContext = {
+      conversationTurns: [],
+      previousSessionSummary: "",
+      toolEvents: [],
+    };
+
+    const result = assemblePromptInput(staticContext, memoryContext);
+
+    expect(result.conversationTurns).toEqual([]);
+    expect(result.previousSessionSummary).toBe("");
+    expect(result.toolEvents).toEqual([]);
   });
 });
