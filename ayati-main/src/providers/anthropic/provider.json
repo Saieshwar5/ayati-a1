@@ -1,0 +1,5 @@
+{
+  "name": "anthropic",
+  "version": "1.0.0",
+  "description": "Anthropic LLM provider using the messages API"
+}

@@ -1,14 +1,30 @@
 import { AgentEngine } from "../engine/index.js";
 import { WsServer } from "../server/index.js";
 import pluginFactories from "../config/plugins.js";
-import { PluginRegistry, loadPlugins } from "../core/index.js";
+import providerFactory from "../config/provider.js";
+import { PluginRegistry, loadPlugins, loadProvider } from "../core/index.js";
+import { loadSkillsWhitelist } from "../context/loaders/skills-whitelist-loader.js";
+import { loadSystemPromptInput } from "../context/load-system-prompt-input.js";
+import { buildSystemPrompt } from "../prompt/builder.js";
+import { builtInSkillsProvider } from "../skills/provider.js";
+import { createToolExecutor } from "../skills/tool-executor.js";
 
 export async function main(): Promise<void> {
+  const provider = await loadProvider(providerFactory);
+  const promptInput = await loadSystemPromptInput();
+  const { systemPrompt } = buildSystemPrompt(promptInput);
+  const enabledSkillIds = await loadSkillsWhitelist();
+  const enabledTools = await builtInSkillsProvider.getEnabledTools(enabledSkillIds);
+  const toolExecutor = createToolExecutor(enabledTools);
+
   const wsServer = new WsServer({
     onMessage: (clientId, data) => engine.handleMessage(clientId, data),
   });
   const engine = new AgentEngine({
     onReply: wsServer.send.bind(wsServer),
+    provider,
+    context: systemPrompt,
+    toolExecutor,
   });
   const registry = new PluginRegistry();
 
