@@ -7,6 +7,7 @@ import type {
   ToolCallRecordInput,
   ToolCallResultRecordInput,
   PromptMemoryContext,
+  ConversationTurn,
 } from "./types.js";
 import type {
   SessionEvent,
@@ -29,14 +30,24 @@ import {
 import { generateSummary } from "./summary.js";
 
 const ROLLING_SUMMARY_EVERY_USER_TURNS = 12;
+const MIN_TURNS_FOR_CALLBACK = 2;
+
+export interface SessionCloseData {
+  sessionId: string;
+  clientId: string;
+  turns: ConversationTurn[];
+  reason: string;
+}
 
 export interface SessionManagerOptions extends SessionPersistenceOptions {
   now?: () => Date;
+  onSessionClose?: (data: SessionCloseData) => void;
 }
 
 export class SessionManager implements SessionMemory {
   private readonly persistence: SessionPersistence;
   private readonly nowProvider: () => Date;
+  private readonly onSessionCloseCallback?: (data: SessionCloseData) => void;
   private currentSession: InMemorySession | null = null;
   private previousSessionSummary = "";
 
@@ -46,6 +57,7 @@ export class SessionManager implements SessionMemory {
       dataDir: options?.dataDir,
     });
     this.nowProvider = options?.now ?? (() => new Date());
+    this.onSessionCloseCallback = options?.onSessionClose;
   }
 
   initialize(clientId: string): void {
@@ -302,6 +314,18 @@ export class SessionManager implements SessionMemory {
 
     this.previousSessionSummary = summaryText;
     devLog(`Closed session ${session.id} (reason: ${reason})`);
+
+    if (this.onSessionCloseCallback) {
+      const turns = session.getConversationTurns();
+      if (turns.length >= MIN_TURNS_FOR_CALLBACK) {
+        this.onSessionCloseCallback({
+          sessionId: session.id,
+          clientId: session.clientId,
+          turns,
+          reason,
+        });
+      }
+    }
   }
 
   private refreshCurrentTier(nowIso: string): void {

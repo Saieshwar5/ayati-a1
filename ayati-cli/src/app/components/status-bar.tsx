@@ -16,8 +16,8 @@ export function StatusBar({ isLoading, connected }: Props): React.JSX.Element {
         </Text>
       ) : (
         <Text dimColor>
-          {connected === false ? "[disconnected] " : ""}Press Enter to send |
-          Ctrl+C to exit
+          {connected === false ? "[disconnected] " : ""}
+          Enter: send | Up/Down/PgUp/PgDn: scroll | Ctrl+C: exit
         </Text>
       )}
     </Box>

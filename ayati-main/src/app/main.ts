@@ -1,14 +1,21 @@
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { AgentEngine } from "../engine/index.js";
 import { WsServer } from "../server/index.js";
 import pluginFactories from "../config/plugins.js";
 import providerFactory from "../config/provider.js";
 import { PluginRegistry, loadPlugins, loadProvider } from "../core/index.js";
 import { loadStaticContext } from "../context/static-context-cache.js";
+import { ContextEvolver } from "../context/context-evolver.js";
 import { SessionManager } from "../memory/session-manager.js";
 import { createToolExecutor } from "../skills/tool-executor.js";
 import { loadSkillsWhitelist } from "../context/loaders/skills-whitelist-loader.js";
 import { builtInSkillsProvider } from "../skills/provider.js";
 import { loadToolAccessConfig, startConfigWatcher, stopConfigWatcher } from "../skills/tool-access-config.js";
+import { createIdentitySkill } from "../skills/builtins/identity/index.js";
+
+const thisDir = dirname(fileURLToPath(import.meta.url));
+const projectRoot = resolve(thisDir, "..", "..");
 
 const CLIENT_ID = "local";
 
@@ -18,10 +25,31 @@ export async function main(): Promise<void> {
   startConfigWatcher();
   const enabledSkillIds = await loadSkillsWhitelist();
   const enabledTools = await builtInSkillsProvider.getEnabledTools(enabledSkillIds);
-  const toolExecutor = createToolExecutor(enabledTools);
 
   const staticContext = await loadStaticContext();
-  const sessionMemory = new SessionManager();
+
+  const identitySkill = createIdentitySkill({
+    onSoulUpdated: (updatedSoul) => { staticContext.soul = updatedSoul; },
+  });
+  staticContext.skillBlocks.push({ id: identitySkill.id, content: identitySkill.promptBlock });
+
+  const toolExecutor = createToolExecutor([...enabledTools, ...identitySkill.tools]);
+
+  const contextEvolver = new ContextEvolver({
+    provider,
+    contextDir: resolve(projectRoot, "context"),
+    historyDir: resolve(projectRoot, "data", "context-history"),
+    currentProfile: staticContext.userProfile,
+    onContextUpdated: (updated) => {
+      staticContext.userProfile = updated.userProfile;
+    },
+  });
+
+  const sessionMemory = new SessionManager({
+    onSessionClose: (data) => {
+      void contextEvolver.evolveFromSession(data.turns);
+    },
+  });
   sessionMemory.initialize(CLIENT_ID);
 
   const wsServer = new WsServer({

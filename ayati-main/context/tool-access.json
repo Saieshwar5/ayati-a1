@@ -1,4 +1,26 @@
 {
+  "_help": {
+    "overview": "Controls which tools the agent can use at runtime.",
+    "global": {
+      "enabled": "Master switch — set false to disable ALL tools.",
+      "mode": "'off' = disabled, 'allowlist' = only tools listed in allowedTools, 'full' = unrestricted.",
+      "allowedTools": "Tool names (or prefixes) permitted when mode is 'allowlist'. Ignored in 'full' mode."
+    },
+    "tools": {
+      "description": "Per-tool overrides. Each key is a tool name with its own policy.",
+      "shell": {
+        "enabled": "Enable/disable this specific tool.",
+        "mode": "'off' | 'allowlist' | 'full' — same semantics as global.mode.",
+        "allowedPrefixes": "Command prefixes allowed when mode is 'allowlist' (e.g. ['echo', 'git']).",
+        "timeoutMs": "Max execution time in ms (capped at 120000).",
+        "maxOutputChars": "Truncate output beyond this limit (capped at 200000).",
+        "allowAnyCwd": "If false, cwd must be within the project workspace."
+      }
+    },
+    "env_fallbacks": "If this file is missing, config is built from env vars: TOOLS_ENABLED, TOOLS_MODE, TOOLS_ALLOWED, SHELL_TOOL_ENABLED, SHELL_TOOL_MODE, etc.",
+    "granting_access": "To grant a new tool access in allowlist mode, add its name to global.allowedTools.",
+    "revoking_access": "Set the tool's 'enabled' to false, or set global mode to 'off' to disable everything."
+  },
   "global": {
     "enabled": true,
     "mode": "full",
