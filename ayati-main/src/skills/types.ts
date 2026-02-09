@@ -30,7 +30,7 @@ export interface SkillDefinition {
 }
 
 export interface SkillsProvider {
-  getEnabledSkills(skillIds: string[]): Promise<SkillDefinition[]>;
-  getEnabledSkillBlocks(skillIds: string[]): Promise<SkillPromptBlock[]>;
-  getEnabledTools(skillIds: string[]): Promise<ToolDefinition[]>;
+  getAllSkills(): Promise<SkillDefinition[]>;
+  getAllSkillBlocks(): Promise<SkillPromptBlock[]>;
+  getAllTools(): Promise<ToolDefinition[]>;
 }

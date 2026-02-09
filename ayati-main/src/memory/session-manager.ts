@@ -1,6 +1,22 @@
 import { randomUUID } from "node:crypto";
 import { resolve } from "node:path";
 import { devLog, devWarn } from "../shared/index.js";
+import {
+  logInitStart,
+  logInitDone,
+  logShutdownStart,
+  logShutdownDone,
+  logSessionOpen,
+  logSessionClose,
+  logSessionRestore,
+  logSessionExpiredOnRecovery,
+  logSessionExpiryCheck,
+  logEvent,
+  logTierScore,
+  logTierChange,
+  logRollingSummary,
+  logFinalSummary,
+} from "./memory-logger.js";
 import type {
   SessionMemory,
   MemoryRunHandle,
@@ -61,6 +77,7 @@ export class SessionManager implements SessionMemory {
   }
 
   initialize(clientId: string): void {
+    logInitStart(clientId);
     this.persistence.start();
     this.previousSessionSummary = this.persistence.loadPreviousSessionSummary(clientId);
 
@@ -82,21 +99,27 @@ export class SessionManager implements SessionMemory {
             nowIso,
           )
         ) {
+          logSessionExpiredOnRecovery(restored.id);
           this.closeSessionInternal(restored, nowIso, "expired_on_recovery");
         } else {
           this.currentSession = restored;
+          logSessionRestore(restored.id, restored.timeline.length);
           devLog(`Restored session ${restored.id} with ${restored.timeline.length} events`);
         }
       }
     }
+
+    logInitDone(clientId, this.currentSession !== null);
   }
 
   shutdown(): void {
+    logShutdownStart();
     if (this.currentSession) {
       this.closeSessionInternal(this.currentSession, this.nowIso(), "shutdown");
       this.currentSession = null;
     }
     this.persistence.stop();
+    logShutdownDone();
   }
 
   beginRun(clientId: string, userMessage: string): MemoryRunHandle {
@@ -117,6 +140,7 @@ export class SessionManager implements SessionMemory {
 
     session.addEntry(event);
     this.persistence.appendEvent(event);
+    logEvent("user_message", session.id, { runId, contentLen: userMessage.length });
     this.refreshCurrentTier(nowIso);
 
     return { sessionId: session.id, runId };
@@ -140,6 +164,7 @@ export class SessionManager implements SessionMemory {
 
     this.currentSession.addEntry(event);
     this.persistence.appendEvent(event);
+    logEvent("tool_call", input.sessionId, { toolName: input.toolName, toolCallId: input.toolCallId.slice(0, 8) });
     this.refreshCurrentTier(nowIso);
   }
 
@@ -174,6 +199,12 @@ export class SessionManager implements SessionMemory {
 
     this.currentSession.addEntry(event);
     this.persistence.appendEvent(event);
+    logEvent("tool_result", input.sessionId, {
+      toolName: input.toolName,
+      status: input.status,
+      outputLen: output.length,
+      durationMs: input.durationMs,
+    });
 
     const toolContextEntry: ToolContextEntry = {
       v: 1,
@@ -207,6 +238,7 @@ export class SessionManager implements SessionMemory {
 
     this.currentSession.addEntry(event);
     this.persistence.appendEvent(event);
+    logEvent("assistant_message", sessionId, { runId, contentLen: content.length });
     this.refreshCurrentTier(nowIso);
     this.maybeCreateRollingSummary(nowIso);
   }
@@ -226,6 +258,7 @@ export class SessionManager implements SessionMemory {
 
     this.currentSession.addEntry(event);
     this.persistence.appendEvent(event);
+    logEvent("run_failure", sessionId, { runId, message: message.slice(0, 80) });
   }
 
   getPromptMemoryContext(): PromptMemoryContext {
@@ -246,17 +279,23 @@ export class SessionManager implements SessionMemory {
 
   private ensureOpenSession(clientId: string, nowIso: string): void {
     if (this.currentSession) {
-      if (
-        shouldCloseSession(
-          {
-            startedAt: this.currentSession.startedAt,
-            lastActivityAt: this.currentSession.lastActivityAt,
-            hardCapMinutes: this.currentSession.tierState.hardCapMinutes,
-            idleTimeoutMinutes: this.currentSession.tierState.idleTimeoutMinutes,
-          },
-          nowIso,
-        )
-      ) {
+      const expired = shouldCloseSession(
+        {
+          startedAt: this.currentSession.startedAt,
+          lastActivityAt: this.currentSession.lastActivityAt,
+          hardCapMinutes: this.currentSession.tierState.hardCapMinutes,
+          idleTimeoutMinutes: this.currentSession.tierState.idleTimeoutMinutes,
+        },
+        nowIso,
+      );
+      logSessionExpiryCheck(
+        this.currentSession.id,
+        expired,
+        this.currentSession.tierState.idleTimeoutMinutes,
+        this.currentSession.tierState.hardCapMinutes,
+        this.currentSession.lastActivityAt,
+      );
+      if (expired) {
         this.closeSessionInternal(this.currentSession, nowIso, "expired");
       } else {
         return;
@@ -284,11 +323,13 @@ export class SessionManager implements SessionMemory {
 
     this.persistence.appendEvent(openEvent);
     this.persistence.writeActiveSessionMarker(sessionId);
+    logSessionOpen(sessionId, clientId, "rare");
     devLog(`Created new session ${sessionId}`);
   }
 
   private closeSessionInternal(session: InMemorySession, nowIso: string, reason: string): void {
     const summaryText = generateSummary(session, "final");
+    logFinalSummary(session.id, summaryText.length);
 
     const closeEvent: SessionEvent = {
       v: 1,
@@ -313,6 +354,7 @@ export class SessionManager implements SessionMemory {
     );
 
     this.previousSessionSummary = summaryText;
+    logSessionClose(session.id, reason, session.getConversationTurns().length);
     devLog(`Closed session ${session.id} (reason: ${reason})`);
 
     if (this.onSessionCloseCallback) {
@@ -334,9 +376,11 @@ export class SessionManager implements SessionMemory {
     const timeline = this.currentSession.getTimelineForScoring();
     const score = computeActivityScoreFromTimeline(timeline, nowIso);
     const result = refreshTier(this.currentSession.tierState, score);
+    logTierScore(this.currentSession.id, score, this.currentSession.tierState.tier);
 
     if (result.changed) {
       const fromTier = this.currentSession.tierState.tier;
+      logTierChange(this.currentSession.id, fromTier, result.newState.tier, score);
       this.currentSession.tierState = result.newState;
 
       const event: SessionTierChangeEvent = {
@@ -364,6 +408,7 @@ export class SessionManager implements SessionMemory {
     const userTurns = this.currentSession.userTurnCount;
     if (userTurns === 0 || userTurns % ROLLING_SUMMARY_EVERY_USER_TURNS !== 0) return;
 
+    logRollingSummary(this.currentSession.id, userTurns);
     const summaryText = generateSummary(this.currentSession, "rolling");
     const keywords = this.extractKeywords(this.currentSession);
 

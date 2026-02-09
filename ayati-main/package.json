@@ -23,6 +23,7 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.74.0",
+    "decimal.js": "^10.6.0",
     "openai": "^6.18.0",
     "ws": "^8.19.0"
   }

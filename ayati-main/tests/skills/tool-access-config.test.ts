@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   getGlobalPolicy,
   getShellPolicy,
+  isToolEnabled,
   _setConfigForTesting,
   _resetConfigToDefault,
 } from "../../src/skills/tool-access-config.js";
@@ -140,6 +141,33 @@ describe("tool-access-config", () => {
     expect(shell.enabled).toBe(true);
     expect(shell.mode).toBe("full");
     expect(shell.timeoutMs).toBe(15_000);
+  });
+
+  it("isToolEnabled returns true when tool has no entry", () => {
+    _setConfigForTesting({
+      global: { enabled: true, mode: "full", allowedTools: [] },
+      tools: {},
+    });
+
+    expect(isToolEnabled("nonexistent")).toBe(true);
+  });
+
+  it("isToolEnabled returns true when enabled is true", () => {
+    _setConfigForTesting({
+      global: { enabled: true, mode: "full", allowedTools: [] },
+      tools: { rename_agent: { enabled: true } },
+    });
+
+    expect(isToolEnabled("rename_agent")).toBe(true);
+  });
+
+  it("isToolEnabled returns false when enabled is false", () => {
+    _setConfigForTesting({
+      global: { enabled: true, mode: "full", allowedTools: [] },
+      tools: { rename_agent: { enabled: false } },
+    });
+
+    expect(isToolEnabled("rename_agent")).toBe(false);
   });
 
   it("loads config from JSON file", async () => {

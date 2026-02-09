@@ -1,4 +1,4 @@
-import { getGlobalPolicy } from "./tool-access-config.js";
+import { getGlobalPolicy, isToolEnabled } from "./tool-access-config.js";
 import type { GlobalToolPolicy } from "./tool-access-config.js";
 
 export type ToolAccessPolicy = GlobalToolPolicy;
@@ -20,6 +20,10 @@ export function canUseTool(
       allowed: false,
       reason: `Tool is not in allowlist: ${toolName}`,
     };
+  }
+
+  if (!isToolEnabled(toolName)) {
+    return { allowed: false, reason: `Tool disabled in config: ${toolName}` };
   }
 
   return { allowed: true };

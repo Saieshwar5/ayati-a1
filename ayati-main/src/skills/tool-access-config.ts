@@ -148,6 +148,13 @@ export function getShellPolicy(): ShellToolPolicy {
   };
 }
 
+export function isToolEnabled(toolName: string): boolean {
+  const raw = currentConfig.tools[toolName];
+  if (!raw || typeof raw !== "object") return true;
+  const t = raw as Record<string, unknown>;
+  return t["enabled"] !== false;
+}
+
 // ── Loader ─────────────────────────────────────────────────────────
 
 export async function loadToolAccessConfig(): Promise<void> {

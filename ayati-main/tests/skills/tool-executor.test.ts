@@ -29,6 +29,27 @@ describe("createToolExecutor", () => {
     expect(result.error).toContain("Unknown tool");
   });
 
+  it("blocks tool when per-tool enabled is false", async () => {
+    _setConfigForTesting({
+      global: { enabled: true, mode: "full", allowedTools: [] },
+      tools: { "my.tool": { enabled: false } },
+    });
+
+    const executor = createToolExecutor([
+      {
+        name: "my.tool",
+        description: "x",
+        async execute() {
+          return { ok: true, output: "should not run" };
+        },
+      },
+    ]);
+
+    const result = await executor.execute("my.tool", {});
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain("disabled");
+  });
+
   it("applies global tools allowlist policy", async () => {
     _setConfigForTesting({
       global: { enabled: true, mode: "allowlist", allowedTools: ["allowed.tool"] },

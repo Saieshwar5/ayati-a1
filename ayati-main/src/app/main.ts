@@ -9,7 +9,6 @@ import { loadStaticContext } from "../context/static-context-cache.js";
 import { ContextEvolver } from "../context/context-evolver.js";
 import { SessionManager } from "../memory/session-manager.js";
 import { createToolExecutor } from "../skills/tool-executor.js";
-import { loadSkillsWhitelist } from "../context/loaders/skills-whitelist-loader.js";
 import { builtInSkillsProvider } from "../skills/provider.js";
 import { loadToolAccessConfig, startConfigWatcher, stopConfigWatcher } from "../skills/tool-access-config.js";
 import { createIdentitySkill } from "../skills/builtins/identity/index.js";
@@ -23,8 +22,7 @@ export async function main(): Promise<void> {
   const provider = await loadProvider(providerFactory);
   await loadToolAccessConfig();
   startConfigWatcher();
-  const enabledSkillIds = await loadSkillsWhitelist();
-  const enabledTools = await builtInSkillsProvider.getEnabledTools(enabledSkillIds);
+  const enabledTools = await builtInSkillsProvider.getAllTools();
 
   const staticContext = await loadStaticContext();
 

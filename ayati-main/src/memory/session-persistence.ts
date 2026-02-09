@@ -3,6 +3,15 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { DatabaseSync } from "node:sqlite";
 import { devWarn } from "../shared/index.js";
+import {
+  logDbStart,
+  logDbStop,
+  logDbSummaryWrite,
+  logDbSummaryLoad,
+  logDiskAppendEvent,
+  logDiskLargeOutput,
+  logDiskToolContext,
+} from "./memory-logger.js";
 import type { SessionEvent, ToolContextEntry } from "./session-events.js";
 import { serializeEvent, deserializeEvent } from "./session-events.js";
 import { InMemorySession } from "./session.js";
@@ -43,6 +52,7 @@ export class SessionPersistence {
 
     this.db = new DatabaseSync(this.dbPath);
     this.db.exec("PRAGMA journal_mode = WAL;");
+    logDbStart(this.dbPath);
 
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS session_summaries (
@@ -73,12 +83,14 @@ export class SessionPersistence {
     if (!this.db) return;
     this.db.close();
     this.db = null;
+    logDbStop();
   }
 
   appendEvent(event: SessionEvent): void {
     const filePath = resolve(this.sessionsDir, `${event.sessionId}.jsonl`);
     const line = serializeEvent(event);
     appendFileSync(filePath, `${line}\n`, "utf8");
+    logDiskAppendEvent(event.type, event.sessionId, filePath);
   }
 
   getActiveSessionId(): string | null {
@@ -176,7 +188,9 @@ export class SessionPersistence {
       )
       .get(clientId) as { summary_text: string } | undefined;
 
-    return row?.summary_text ?? "";
+    const text = row?.summary_text ?? "";
+    logDbSummaryLoad(clientId, !!row, text.length);
+    return text;
   }
 
   saveSessionSummary(
@@ -206,6 +220,8 @@ export class SessionPersistence {
          VALUES ('summary', ?, ?, ?, ?, ?)`,
       )
       .run(summaryId, sessionId, clientId, `${summaryText}\n${keywords.join(" ")}`, nowIso);
+
+    logDbSummaryWrite(sessionId, summaryType, summaryText.length, keywords);
   }
 
   persistLargeToolOutput(sessionId: string, toolCallId: string, toolName: string, output: string): string | null {
@@ -217,6 +233,7 @@ export class SessionPersistence {
     const filePath = resolve(this.toolOutputDir, fileName);
 
     writeFileSync(filePath, output, "utf8");
+    logDiskLargeOutput(toolName, output.length, filePath);
     return filePath;
   }
 
@@ -224,5 +241,6 @@ export class SessionPersistence {
     const sanitized = toolName.replace(/[^a-zA-Z0-9_-]/g, "_");
     const filePath = resolve(this.toolContextDir, `${sanitized}.jsonl`);
     appendFileSync(filePath, `${JSON.stringify(entry)}\n`, "utf8");
+    logDiskToolContext(toolName, entry.status);
   }
 }

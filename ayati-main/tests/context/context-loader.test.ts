@@ -70,7 +70,6 @@ describe("loadContext compatibility wrapper", () => {
       if (path.endsWith("system_prompt.md")) return systemPromptMd;
       if (path.endsWith("soul.json")) return soulJson;
       if (path.endsWith("user_profile.json")) return userProfileJson;
-      if (path.endsWith("skills_whitelist.json")) return "[]";
       throw new Error("Unexpected file");
     });
 
