@@ -59,8 +59,8 @@ describe("SessionManager", () => {
     manager.shutdown();
   });
 
-  it("starts a new session after idle timeout", () => {
-    let now = new Date("2026-02-08T08:00:00.000Z");
+  it("keeps the same session across time changes", () => {
+    let now = new Date(2026, 1, 8, 3, 50, 0, 0);
     const baseDir = mkdtempSync(join(tmpdir(), "ayati-memory-"));
 
     const manager = new SessionManager({
@@ -74,36 +74,44 @@ describe("SessionManager", () => {
     const first = manager.beginRun("c2", "hello");
     manager.recordAssistantFinal("c2", first.runId, first.sessionId, "hey");
 
-    now = new Date("2026-02-08T11:05:00.000Z");
+    now = new Date(2026, 1, 9, 12, 0, 0, 0);
     const second = manager.beginRun("c2", "new request");
 
-    expect(second.sessionId).not.toBe(first.sessionId);
+    expect(second.sessionId).toBe(first.sessionId);
 
     manager.shutdown();
   });
 
-  it("persists previous session summary across session boundaries", () => {
-    let now = new Date("2026-02-08T08:00:00.000Z");
+  it("loads previous session summary cache from sqlite on restart", () => {
+    let now = new Date(2026, 1, 8, 3, 50, 0, 0);
     const baseDir = mkdtempSync(join(tmpdir(), "ayati-memory-"));
 
-    const manager = new SessionManager({
+    const manager1 = new SessionManager({
       dbPath: join(baseDir, "memory.sqlite"),
       dataDir: baseDir,
       now: () => new Date(now),
     });
 
-    manager.initialize("c3");
+    manager1.initialize("c3");
 
-    const first = manager.beginRun("c3", "what is 2+2");
-    manager.recordAssistantFinal("c3", first.runId, first.sessionId, "4");
+    const first = manager1.beginRun("c3", "what is 2+2");
+    manager1.recordAssistantFinal("c3", first.runId, first.sessionId, "4");
+    manager1.shutdown();
 
-    now = new Date("2026-02-08T11:05:00.000Z");
-    manager.beginRun("c3", "new request");
+    now = new Date(2026, 1, 8, 6, 0, 0, 0);
+    const manager2 = new SessionManager({
+      dbPath: join(baseDir, "memory.sqlite"),
+      dataDir: baseDir,
+      now: () => new Date(now),
+    });
+    manager2.initialize("c3");
 
-    const prompt = manager.getPromptMemoryContext();
+    const prompt = manager2.getPromptMemoryContext();
+    expect(prompt.conversationTurns).toHaveLength(0);
     expect(prompt.previousSessionSummary.length).toBeGreaterThan(0);
+    expect(prompt.previousSessionSummary.toLowerCase()).toContain("2+2");
 
-    manager.shutdown();
+    manager2.shutdown();
   });
 
   it("recovers incomplete session on restart via marker file", () => {
@@ -140,6 +148,40 @@ describe("SessionManager", () => {
 
     const prompt = manager2.getPromptMemoryContext();
     expect(prompt.conversationTurns.length).toBeGreaterThanOrEqual(1);
+
+    manager2.shutdown();
+  });
+
+  it("restores active session via marker and continues with same session id", () => {
+    let now = new Date(2026, 1, 8, 3, 50, 0, 0);
+    const baseDir = mkdtempSync(join(tmpdir(), "ayati-memory-"));
+
+    const manager1 = new SessionManager({
+      dbPath: join(baseDir, "memory.sqlite"),
+      dataDir: baseDir,
+      now: () => new Date(now),
+    });
+
+    manager1.initialize("c10");
+
+    const run = manager1.beginRun("c10", "hello");
+    manager1.recordAssistantFinal("c10", run.runId, run.sessionId, "hey there");
+
+    // Simulate crash — no shutdown() call
+    now = new Date(2026, 1, 8, 16, 10, 0, 0);
+    const manager2 = new SessionManager({
+      dbPath: join(baseDir, "memory.sqlite"),
+      dataDir: baseDir,
+      now: () => new Date(now),
+    });
+
+    manager2.initialize("c10");
+
+    const next = manager2.beginRun("c10", "next");
+    expect(next.sessionId).toBe(run.sessionId);
+    const prompt = manager2.getPromptMemoryContext();
+    expect(prompt.conversationTurns.length).toBeGreaterThanOrEqual(1);
+    expect(prompt.previousSessionSummary).toBe("");
 
     manager2.shutdown();
   });

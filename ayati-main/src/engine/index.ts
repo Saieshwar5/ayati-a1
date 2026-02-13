@@ -3,6 +3,7 @@ import type {
   LlmMessage,
   LlmToolCall,
   LlmToolSchema,
+  LlmTurnInput,
 } from "../core/contracts/llm-protocol.js";
 import { noopSessionMemory } from "../memory/provider.js";
 import type {
@@ -12,11 +13,49 @@ import type {
 import type { StaticContext } from "../context/static-context-cache.js";
 import { assemblePromptInput } from "../context/load-system-prompt-input.js";
 import { buildSystemPrompt } from "../prompt/builder.js";
+import { renderConversationSection } from "../prompt/sections/conversation.js";
+import { renderMemorySection } from "../prompt/sections/memory.js";
+import {
+  ContextRecallService,
+  type ContextRecallOptions,
+} from "./context-recall-service.js";
+import {
+  estimateTextTokens,
+  estimateTurnInputTokens,
+} from "../prompt/token-estimator.js";
 import type { ToolExecutor } from "../skills/tool-executor.js";
 import type { ToolResult } from "../skills/types.js";
 import { devLog, devWarn, devError } from "../shared/index.js";
 
 const MAX_TOOL_STEPS = 6;
+const CONTEXT_RECALL_TOOL_NAME = "context_recall_agent";
+
+interface SystemContextBuildResult {
+  systemContext: string;
+  dynamicSystemTokens: number;
+}
+
+const CONTEXT_RECALL_TOOL_SCHEMA: LlmToolSchema = {
+  name: CONTEXT_RECALL_TOOL_NAME,
+  description:
+    "Search prior sessions when you need historical context. Call only when active context is insufficient.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      query: {
+        type: "string",
+        description:
+          "What historical context to retrieve from past sessions.",
+      },
+      searchQuery: {
+        type: "string",
+        description:
+          "Optional compact keyword query to filter candidate sessions in SQLite.",
+      },
+    },
+    required: ["query"],
+  },
+};
 
 function formatToolResult(toolName: string, result: ToolResult): string {
   return JSON.stringify(
@@ -33,15 +72,22 @@ function formatToolResult(toolName: string, result: ToolResult): string {
 }
 
 function toToolSchemas(executor: ToolExecutor | undefined): LlmToolSchema[] {
-  if (!executor) return [];
-  return executor
-    .definitions()
-    .filter((tool) => !!tool.inputSchema)
-    .map((tool) => ({
-      name: tool.name,
-      description: tool.description,
-      inputSchema: tool.inputSchema ?? { type: "object", properties: {} },
-    }));
+  const external = executor
+    ? executor
+        .definitions()
+        .filter((tool) => !!tool.inputSchema)
+        .map((tool) => ({
+          name: tool.name,
+          description: tool.description,
+          inputSchema: tool.inputSchema ?? { type: "object", properties: {} },
+        }))
+    : [];
+
+  if (external.some((tool) => tool.name === CONTEXT_RECALL_TOOL_NAME)) {
+    return external;
+  }
+
+  return [...external, CONTEXT_RECALL_TOOL_SCHEMA];
 }
 
 export interface AgentEngineOptions {
@@ -50,6 +96,8 @@ export interface AgentEngineOptions {
   staticContext?: StaticContext;
   sessionMemory?: SessionMemory;
   toolExecutor?: ToolExecutor;
+  contextRecall?: ContextRecallOptions;
+  contextRecallService?: ContextRecallService;
 }
 
 export class AgentEngine {
@@ -58,6 +106,9 @@ export class AgentEngine {
   private readonly staticContext?: StaticContext;
   private readonly toolExecutor?: ToolExecutor;
   private readonly sessionMemory: SessionMemory;
+  private readonly contextRecallService: ContextRecallService;
+  private staticSystemTokens = 0;
+  private staticTokensReady = false;
 
   constructor(options?: AgentEngineOptions) {
     this.onReply = options?.onReply;
@@ -65,6 +116,13 @@ export class AgentEngine {
     this.staticContext = options?.staticContext;
     this.toolExecutor = options?.toolExecutor;
     this.sessionMemory = options?.sessionMemory ?? noopSessionMemory;
+    this.contextRecallService =
+      options?.contextRecallService ??
+      new ContextRecallService(
+        this.sessionMemory,
+        this.provider,
+        options?.contextRecall,
+      );
   }
 
   async start(): Promise<void> {
@@ -74,6 +132,8 @@ export class AgentEngine {
     } else {
       devWarn("No LLM provider configured — running in echo mode");
     }
+
+    this.ensureStaticTokenCache();
     devLog("AgentEngine started");
   }
 
@@ -83,6 +143,10 @@ export class AgentEngine {
       devLog(`Provider "${this.provider.name}" stopped`);
     }
     devLog("AgentEngine stopped");
+  }
+
+  invalidateStaticTokenCache(): void {
+    this.staticTokensReady = false;
   }
 
   handleMessage(clientId: string, data: unknown): void {
@@ -108,10 +172,16 @@ export class AgentEngine {
     let runHandle: MemoryRunHandle | null = null;
     try {
       runHandle = this.sessionMemory.beginRun(clientId, content);
-      const systemContext = this.buildSystemContext();
+      const system = await this.buildSystemContext();
 
       if (this.provider) {
-        const reply = await this.runAutonomousLoop(clientId, content, systemContext, runHandle);
+        const reply = await this.runAutonomousLoop(
+          clientId,
+          content,
+          system.systemContext,
+          system.dynamicSystemTokens,
+          runHandle,
+        );
         this.sessionMemory.recordAssistantFinal(
           clientId,
           runHandle.runId,
@@ -150,18 +220,44 @@ export class AgentEngine {
     }
   }
 
-  private buildSystemContext(): string {
-    if (!this.staticContext) return "";
+  private async buildSystemContext(): Promise<SystemContextBuildResult> {
+    if (!this.staticContext) {
+      return {
+        systemContext: "",
+        dynamicSystemTokens: 0,
+      };
+    }
+
+    this.ensureStaticTokenCache();
 
     const memoryContext = this.sessionMemory.getPromptMemoryContext();
     const promptInput = assemblePromptInput(this.staticContext, memoryContext);
-    return buildSystemPrompt(promptInput).systemPrompt;
+    const systemContext = buildSystemPrompt(promptInput).systemPrompt;
+
+    const dynamicContext = [
+      renderConversationSection(memoryContext.conversationTurns ?? []),
+      renderMemorySection(
+        memoryContext.previousSessionSummary ?? "",
+        memoryContext.toolEvents ?? [],
+        memoryContext.recalledEvidence ?? [],
+        memoryContext.contextRecallStatus,
+      ),
+    ]
+      .filter((block) => block.trim().length > 0)
+      .join("\n\n")
+      .trim();
+
+    return {
+      systemContext,
+      dynamicSystemTokens: estimateTextTokens(dynamicContext),
+    };
   }
 
   private async runAutonomousLoop(
     clientId: string,
     userContent: string,
     systemContext: string,
+    dynamicSystemTokens: number,
     runHandle: MemoryRunHandle,
   ): Promise<string> {
     if (!this.provider) return `Received: "${userContent}"`;
@@ -175,17 +271,16 @@ export class AgentEngine {
     const hasTools = tools.length > 0;
 
     for (let step = 1; step <= MAX_TOOL_STEPS; step++) {
-      const turn = await this.provider.generateTurn({
+      const turnInput: LlmTurnInput = {
         messages,
         ...(hasTools ? { tools } : {}),
-      });
+      };
+
+      this.logContextSizeBeforeRequest(clientId, turnInput, step, dynamicSystemTokens);
+      const turn = await this.provider.generateTurn(turnInput);
 
       if (turn.type === "assistant") {
         return turn.content;
-      }
-
-      if (!this.toolExecutor) {
-        return "I cannot execute tools in the current runtime configuration.";
       }
 
       const calls = turn.calls;
@@ -200,7 +295,12 @@ export class AgentEngine {
       });
 
       for (const call of calls) {
-        const result = await this.executeSingleToolCall(clientId, step, call, runHandle);
+        const result = await this.executeSingleToolCall(
+          clientId,
+          step,
+          call,
+          runHandle,
+        );
         messages.push({
           role: "tool",
           toolCallId: call.id,
@@ -211,6 +311,37 @@ export class AgentEngine {
     }
 
     return "I couldn't complete the task within the current tool-execution limit.";
+  }
+
+  private logContextSizeBeforeRequest(
+    clientId: string,
+    input: LlmTurnInput,
+    step: number,
+    dynamicSystemTokens: number,
+  ): void {
+    const estimate = estimateTurnInputTokens(input);
+    const runtimeDynamicTokens = Math.max(0, estimate.totalTokens - this.staticSystemTokens);
+    const providerName = this.provider?.name ?? "none";
+    const model = this.resolveActiveModelName(providerName);
+
+    this.onReply?.(clientId, {
+      type: "context_size",
+      mode: "local_estimate",
+      step,
+      provider: providerName,
+      model,
+      inputTokens: estimate.totalTokens,
+      messageTokens: estimate.messageTokens,
+      toolSchemaTokens: estimate.toolSchemaTokens,
+      staticSystemTokens: this.staticSystemTokens,
+      dynamicSystemTokens,
+      runtimeDynamicTokens,
+    });
+
+    devLog(
+      `Context tokens before model call (step ${step}): ${estimate.totalTokens} ` +
+        `[provider=${providerName} model=${model} mode=local_estimate static=${this.staticSystemTokens} dynamic=${runtimeDynamicTokens}]`,
+    );
   }
 
   private async executeSingleToolCall(
@@ -231,13 +362,19 @@ export class AgentEngine {
     const start = Date.now();
 
     let result: ToolResult;
-    try {
-      result = await this.toolExecutor!.execute(call.name, call.input, { clientId });
-    } catch (err) {
-      result = {
-        ok: false,
-        error: err instanceof Error ? err.message : "Unknown tool execution error",
-      };
+    if (call.name === CONTEXT_RECALL_TOOL_NAME) {
+      result = await this.executeContextRecallTool(call.input, runHandle.sessionId);
+    } else if (this.toolExecutor) {
+      try {
+        result = await this.toolExecutor.execute(call.name, call.input, { clientId });
+      } catch (err) {
+        result = {
+          ok: false,
+          error: err instanceof Error ? err.message : "Unknown tool execution error",
+        };
+      }
+    } else {
+      result = { ok: false, error: `Tool execution unavailable for: ${call.name}` };
     }
 
     this.sessionMemory.recordToolResult(clientId, {
@@ -259,20 +396,16 @@ export class AgentEngine {
   }
 
   private async processToolCall(clientId: string, toolName: string, input: unknown): Promise<void> {
-    if (!this.toolExecutor) {
-      this.onReply?.(clientId, {
-        type: "tool_result",
-        name: toolName,
-        result: {
-          ok: false,
-          error: "Tool execution is not configured.",
-        },
-      });
-      return;
-    }
-
     try {
-      const result = await this.toolExecutor.execute(toolName, input, { clientId });
+      const result =
+        toolName === CONTEXT_RECALL_TOOL_NAME
+          ? await this.executeContextRecallTool(input)
+          : this.toolExecutor
+              ? await this.toolExecutor.execute(toolName, input, { clientId })
+              : {
+                  ok: false,
+                  error: "Tool execution is not configured.",
+                };
       this.onReply?.(clientId, {
         type: "tool_result",
         name: toolName,
@@ -289,5 +422,100 @@ export class AgentEngine {
         },
       });
     }
+  }
+
+  private async executeContextRecallTool(
+    input: unknown,
+    activeSessionId?: string,
+  ): Promise<ToolResult> {
+    const payload = input && typeof input === "object" ? input as Record<string, unknown> : {};
+    const query = typeof payload["query"] === "string" ? payload["query"].trim() : "";
+    if (query.length === 0) {
+      return {
+        ok: false,
+        error: "context_recall_agent requires a non-empty `query` string",
+      };
+    }
+
+    const searchQuery =
+      typeof payload["searchQuery"] === "string" && payload["searchQuery"].trim().length > 0
+        ? payload["searchQuery"].trim()
+        : undefined;
+
+    const memoryContext = this.sessionMemory.getPromptMemoryContext();
+    const recall = await this.contextRecallService.recall(
+      query,
+      memoryContext,
+      activeSessionId,
+      {
+        invocationMode: "explicit",
+        ...(searchQuery ? { searchQuery } : {}),
+      },
+    );
+
+    const output = {
+      status: recall.status,
+      reason: recall.reason,
+      query,
+      searchQuery: searchQuery ?? query,
+      searchedSessionIds: recall.searchedSessionIds,
+      evidence: recall.evidence,
+      evidenceCount: recall.evidence.length,
+      modelCalls: recall.modelCalls,
+      elapsedMs: recall.elapsedMs,
+      foundUsefulData: recall.status === "found" || recall.status === "partial",
+    };
+
+    return {
+      ok: true,
+      output: JSON.stringify(output, null, 2),
+      meta: {
+        status: recall.status,
+        evidenceCount: recall.evidence.length,
+        modelCalls: recall.modelCalls,
+      },
+    };
+  }
+
+  private ensureStaticTokenCache(): void {
+    if (this.staticTokensReady) return;
+    if (!this.staticContext) {
+      this.staticSystemTokens = 0;
+      this.staticTokensReady = true;
+      this.sessionMemory.setStaticTokenBudget(0);
+      return;
+    }
+
+    const staticOnlyPrompt = buildSystemPrompt({
+      basePrompt: this.staticContext.basePrompt,
+      soul: this.staticContext.soul,
+      userProfile: this.staticContext.userProfile,
+      conversationTurns: [],
+      previousSessionSummary: "",
+      toolEvents: [],
+      recalledEvidence: [],
+      skillBlocks: this.staticContext.skillBlocks,
+    }).systemPrompt;
+
+    const promptTokens = estimateTextTokens(staticOnlyPrompt);
+    const toolSchemaTokens = toToolSchemas(this.toolExecutor).reduce(
+      (sum, tool) => sum + estimateTextTokens(tool.name) + estimateTextTokens(tool.description) + estimateTextTokens(JSON.stringify(tool.inputSchema)),
+      0,
+    );
+
+    this.staticSystemTokens = promptTokens + toolSchemaTokens;
+    this.staticTokensReady = true;
+    this.sessionMemory.setStaticTokenBudget(this.staticSystemTokens);
+    devLog(`Static context tokens cached: ${this.staticSystemTokens} (prompt=${promptTokens}, toolSchemas=${toolSchemaTokens})`);
+  }
+
+  private resolveActiveModelName(providerName: string): string {
+    if (providerName === "openai") {
+      return process.env["OPENAI_MODEL"] ?? "gpt-4o-mini";
+    }
+    if (providerName === "anthropic") {
+      return process.env["ANTHROPIC_MODEL"] ?? "claude-sonnet-4-5-20250929";
+    }
+    return "unknown";
   }
 }

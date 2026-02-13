@@ -29,6 +29,23 @@ describe("buildSystemPrompt", () => {
           outputPreview: "/tmp",
         },
       ],
+      recalledEvidence: [
+        {
+          sessionId: "s-old",
+          turnRef: "turn-8",
+          timestamp: "t0",
+          snippet: "We selected staged deployment.",
+          whyRelevant: "Matched terms: deployment",
+          confidence: 0.91,
+        },
+      ],
+      contextRecallStatus: {
+        status: "found",
+        reason: "Relevant evidence found",
+        searchedSessions: 1,
+        modelCalls: 3,
+        triggerReason: "history-reference",
+      },
       skillBlocks: [{ id: "skill-1", content: "Do X" }],
     });
 
@@ -47,6 +64,10 @@ describe("buildSystemPrompt", () => {
     expect(output.systemPrompt).toContain("[t1] user: A");
     expect(output.systemPrompt).toContain("[t2] assistant: B");
     expect(output.systemPrompt).toContain("Name: CustomName");
+    expect(output.systemPrompt).toContain("## Recalled Context Evidence");
+    expect(output.systemPrompt).toContain("session=s-old");
+    expect(output.systemPrompt).toContain("## Context Recall Agent");
+    expect(output.systemPrompt).toContain("status=found");
 
     expect(output.sections.map((s) => s.id)).toEqual([
       "base",

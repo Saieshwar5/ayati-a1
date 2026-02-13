@@ -14,8 +14,12 @@ async function getProvider(): Promise<LlmProvider> {
 }
 
 function mockOpenAIConstructor(mockCreate: ReturnType<typeof vi.fn>): void {
+  const mockCount = vi.fn().mockResolvedValue({ input_tokens: 0 });
   vi.mocked(OpenAI).mockImplementation(function (this: unknown) {
-    return { chat: { completions: { create: mockCreate } } } as unknown as OpenAI;
+    return {
+      chat: { completions: { create: mockCreate } },
+      responses: { inputTokens: { count: mockCount } },
+    } as unknown as OpenAI;
   } as never);
 }
 
@@ -70,6 +74,43 @@ describe("OpenAI provider", () => {
       ],
     });
     expect(out).toEqual({ type: "assistant", content: "Hello from AI" });
+  });
+
+  it("should count input tokens for the outgoing context", async () => {
+    process.env["OPENAI_API_KEY"] = "sk-test-key";
+    process.env["OPENAI_MODEL"] = "gpt-4o";
+
+    const mockCreate = vi.fn();
+    const mockCount = vi.fn().mockResolvedValue({ input_tokens: 321 });
+
+    vi.mocked(OpenAI).mockImplementation(function (this: unknown) {
+      return {
+        chat: { completions: { create: mockCreate } },
+        responses: { inputTokens: { count: mockCount } },
+      } as unknown as OpenAI;
+    } as never);
+
+    provider.start();
+    const count = await provider.countInputTokens!({
+      messages: [
+        { role: "system", content: "System" },
+        { role: "user", content: "Hi" },
+      ],
+    });
+
+    expect(mockCount).toHaveBeenCalledWith({
+      model: "gpt-4o",
+      input: [
+        { type: "message", role: "system", content: "System" },
+        { type: "message", role: "user", content: "Hi" },
+      ],
+    });
+    expect(count).toEqual({
+      provider: "openai",
+      model: "gpt-4o",
+      inputTokens: 321,
+      exact: false,
+    });
   });
 
   it("should return tool calls when OpenAI responds with tool_calls", async () => {
@@ -140,6 +181,12 @@ describe("OpenAI provider", () => {
   it("should throw when calling generateTurn before start", async () => {
     await expect(
       provider.generateTurn({ messages: [{ role: "user", content: "Hi" }] }),
+    ).rejects.toThrow("OpenAI provider not started.");
+  });
+
+  it("should throw when calling countInputTokens before start", async () => {
+    await expect(
+      provider.countInputTokens!({ messages: [{ role: "user", content: "Hi" }] }),
     ).rejects.toThrow("OpenAI provider not started.");
   });
 

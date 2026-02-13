@@ -10,9 +10,6 @@ describe("session-events", () => {
       type: "session_open",
       sessionId: "s1",
       clientId: "local",
-      tier: "rare",
-      hardCapMinutes: 1440,
-      idleTimeoutMinutes: 180,
       previousSessionSummary: "",
     };
 

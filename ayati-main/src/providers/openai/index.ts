@@ -3,6 +3,7 @@ import type { LlmProvider } from "../../core/contracts/provider.js";
 import type {
   LlmMessage,
   LlmToolCall,
+  LlmInputTokenCount,
   LlmToolSchema,
   LlmTurnInput,
   LlmTurnOutput,
@@ -94,6 +95,69 @@ function toOpenAiMessages(
   return out;
 }
 
+function toOpenAiCountInputItems(
+  messages: LlmMessage[],
+  maps: ToolNameMaps,
+): Array<Record<string, unknown>> {
+  const out: Array<Record<string, unknown>> = [];
+
+  for (const msg of messages) {
+    switch (msg.role) {
+      case "system":
+      case "user":
+      case "assistant":
+        out.push({
+          type: "message",
+          role: msg.role,
+          content: msg.content,
+        });
+        break;
+      case "assistant_tool_calls":
+        if (msg.content && msg.content.trim().length > 0) {
+          out.push({
+            type: "message",
+            role: "assistant",
+            content: msg.content,
+          });
+        }
+        for (const call of msg.calls) {
+          out.push({
+            type: "function_call",
+            call_id: call.id,
+            name: toOpenAiToolName(call.name, maps),
+            arguments: JSON.stringify(call.input ?? {}),
+          });
+        }
+        break;
+      case "tool":
+        out.push({
+          type: "function_call_output",
+          call_id: msg.toolCallId,
+          output: msg.content,
+        });
+        break;
+      default:
+        break;
+    }
+  }
+
+  return out;
+}
+
+function toOpenAiResponseTools(
+  tools: LlmToolSchema[] | undefined,
+  maps: ToolNameMaps,
+): Array<Record<string, unknown>> | undefined {
+  if (!tools || tools.length === 0) return undefined;
+
+  return tools.map((tool) => ({
+    type: "function",
+    name: toOpenAiToolName(tool.name, maps),
+    description: tool.description,
+    parameters: tool.inputSchema,
+  }));
+}
+
 function parseToolArguments(raw: string): unknown {
   try {
     return JSON.parse(raw);
@@ -121,6 +185,30 @@ const provider: LlmProvider = {
     client = null;
   },
 
+  async countInputTokens(input: LlmTurnInput): Promise<LlmInputTokenCount> {
+    if (!client) {
+      throw new Error("OpenAI provider not started.");
+    }
+
+    const model = process.env["OPENAI_MODEL"] ?? "gpt-4o-mini";
+    const nameMaps = buildToolNameMaps(input.tools);
+    const inputItems = toOpenAiCountInputItems(input.messages, nameMaps);
+    const tools = toOpenAiResponseTools(input.tools, nameMaps);
+
+    const count = await client.responses.inputTokens.count({
+      model,
+      input: inputItems as any,
+      ...(tools ? { tools: tools as any } : {}),
+    });
+
+    return {
+      provider: "openai",
+      model,
+      inputTokens: count.input_tokens,
+      exact: false,
+    };
+  },
+
   async generateTurn(input: LlmTurnInput): Promise<LlmTurnOutput> {
     if (!client) {
       throw new Error("OpenAI provider not started.");
@@ -129,18 +217,19 @@ const provider: LlmProvider = {
     const model = process.env["OPENAI_MODEL"] ?? "gpt-4o-mini";
     const nameMaps = buildToolNameMaps(input.tools);
     const messages = toOpenAiMessages(input.messages, nameMaps);
+    const responseTools = toOpenAiResponseTools(input.tools, nameMaps);
 
     const response = await client.chat.completions.create({
       model,
       messages,
-      ...(input.tools && input.tools.length > 0
+      ...(responseTools
         ? {
-            tools: input.tools.map((tool) => ({
+            tools: responseTools.map((tool) => ({
               type: "function",
               function: {
-                name: toOpenAiToolName(tool.name, nameMaps),
-                description: tool.description,
-                parameters: tool.inputSchema,
+                name: tool["name"] as string,
+                description: (tool["description"] as string | undefined) ?? undefined,
+                parameters: (tool["parameters"] as Record<string, unknown>) ?? {},
               },
             })),
             tool_choice: "auto",

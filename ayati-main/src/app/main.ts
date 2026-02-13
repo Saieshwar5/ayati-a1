@@ -18,16 +18,64 @@ const projectRoot = resolve(thisDir, "..", "..");
 
 const CLIENT_ID = "local";
 
+function readPositiveIntEnv(name: string): number | undefined {
+  const raw = process.env[name];
+  if (!raw) return undefined;
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) return undefined;
+  return parsed;
+}
+
+function buildContextRecallConfig(): {
+  enabled?: boolean;
+  limits?: {
+    maxMatchedSessions?: number;
+    recursionDepth?: number;
+    maxTurnsPerSession?: number;
+    evidenceTokenBudget?: number;
+    totalRecallMs?: number;
+    maxEvidenceItems?: number;
+    maxModelCalls?: number;
+    maxChunkSelections?: number;
+    maxChunkBranches?: number;
+    maxLeafTurns?: number;
+    maxEvidencePerLeaf?: number;
+    decisionContextTurns?: number;
+  };
+} {
+  return {
+    enabled: process.env["AUTO_CONTEXT_RECALL_ENABLED"] !== "0",
+    limits: {
+      maxMatchedSessions: readPositiveIntEnv("AUTO_CONTEXT_RECALL_MAX_MATCHED_SESSIONS"),
+      recursionDepth: readPositiveIntEnv("AUTO_CONTEXT_RECALL_RECURSION_DEPTH"),
+      maxTurnsPerSession: readPositiveIntEnv("AUTO_CONTEXT_RECALL_MAX_TURNS_PER_SESSION"),
+      evidenceTokenBudget: readPositiveIntEnv("AUTO_CONTEXT_RECALL_EVIDENCE_TOKEN_BUDGET"),
+      totalRecallMs: readPositiveIntEnv("AUTO_CONTEXT_RECALL_TOTAL_MS"),
+      maxEvidenceItems: readPositiveIntEnv("AUTO_CONTEXT_RECALL_MAX_EVIDENCE_ITEMS"),
+      maxModelCalls: readPositiveIntEnv("AUTO_CONTEXT_RECALL_MAX_MODEL_CALLS"),
+      maxChunkSelections: readPositiveIntEnv("AUTO_CONTEXT_RECALL_MAX_CHUNK_SELECTIONS"),
+      maxChunkBranches: readPositiveIntEnv("AUTO_CONTEXT_RECALL_MAX_CHUNK_BRANCHES"),
+      maxLeafTurns: readPositiveIntEnv("AUTO_CONTEXT_RECALL_MAX_LEAF_TURNS"),
+      maxEvidencePerLeaf: readPositiveIntEnv("AUTO_CONTEXT_RECALL_MAX_EVIDENCE_PER_LEAF"),
+      decisionContextTurns: readPositiveIntEnv("AUTO_CONTEXT_RECALL_DECISION_CONTEXT_TURNS"),
+    },
+  };
+}
+
 export async function main(): Promise<void> {
   const provider = await loadProvider(providerFactory);
   await loadToolAccessConfig();
   startConfigWatcher();
   const enabledTools = await builtInSkillsProvider.getAllTools();
+  let engine: AgentEngine | null = null;
 
   const staticContext = await loadStaticContext();
 
   const identitySkill = createIdentitySkill({
-    onSoulUpdated: (updatedSoul) => { staticContext.soul = updatedSoul; },
+    onSoulUpdated: (updatedSoul) => {
+      staticContext.soul = updatedSoul;
+      engine?.invalidateStaticTokenCache();
+    },
   });
   staticContext.skillBlocks.push({ id: identitySkill.id, content: identitySkill.promptBlock });
 
@@ -40,10 +88,12 @@ export async function main(): Promise<void> {
     currentProfile: staticContext.userProfile,
     onContextUpdated: (updated) => {
       staticContext.userProfile = updated.userProfile;
+      engine?.invalidateStaticTokenCache();
     },
   });
 
   const sessionMemory = new SessionManager({
+    provider,
     onSessionClose: (data) => {
       void contextEvolver.evolveFromSession(data.turns);
     },
@@ -51,14 +101,15 @@ export async function main(): Promise<void> {
   sessionMemory.initialize(CLIENT_ID);
 
   const wsServer = new WsServer({
-    onMessage: (clientId, data) => engine.handleMessage(clientId, data),
+    onMessage: (clientId, data) => engine?.handleMessage(clientId, data),
   });
-  const engine = new AgentEngine({
+  engine = new AgentEngine({
     onReply: wsServer.send.bind(wsServer),
     provider,
     staticContext,
     toolExecutor,
     sessionMemory,
+    contextRecall: buildContextRecallConfig(),
   });
   const registry = new PluginRegistry();
 
@@ -78,8 +129,7 @@ export async function main(): Promise<void> {
     await registry.stopAll();
     await wsServer.stop();
     await engine.stop();
-    sessionMemory.shutdown();
-    process.exit(0);
+    await sessionMemory.shutdown();
   };
 
   process.on("SIGINT", () => void shutdown());

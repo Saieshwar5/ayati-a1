@@ -25,6 +25,23 @@ describe("assemblePromptInput", () => {
           outputPreview: "/tmp",
         },
       ],
+      recalledEvidence: [
+        {
+          sessionId: "s-1",
+          turnRef: "turn-4",
+          timestamp: "t0",
+          snippet: "Earlier we picked option A",
+          whyRelevant: "Matched terms: option, A",
+          confidence: 0.8,
+        },
+      ],
+      contextRecallStatus: {
+        status: "found",
+        reason: "Relevant evidence found",
+        searchedSessions: 1,
+        modelCalls: 3,
+        triggerReason: "history-reference",
+      },
     };
 
     const result = assemblePromptInput(staticContext, memoryContext);
@@ -33,6 +50,8 @@ describe("assemblePromptInput", () => {
     expect(result.conversationTurns).toHaveLength(1);
     expect(result.previousSessionSummary).toBe("summary");
     expect(result.toolEvents).toHaveLength(1);
+    expect(result.recalledEvidence).toHaveLength(1);
+    expect(result.contextRecallStatus?.status).toBe("found");
     expect(result.skillBlocks).toEqual([{ id: "skill-a", content: "Use A" }]);
   });
 
@@ -55,5 +74,7 @@ describe("assemblePromptInput", () => {
     expect(result.conversationTurns).toEqual([]);
     expect(result.previousSessionSummary).toBe("");
     expect(result.toolEvents).toEqual([]);
+    expect(result.recalledEvidence).toEqual([]);
+    expect(result.contextRecallStatus).toBeUndefined();
   });
 });

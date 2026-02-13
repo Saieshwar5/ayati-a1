@@ -13,6 +13,8 @@ export function assemblePromptInput(
     conversationTurns: memoryContext.conversationTurns,
     previousSessionSummary: memoryContext.previousSessionSummary,
     toolEvents: memoryContext.toolEvents,
+    recalledEvidence: memoryContext.recalledEvidence ?? [],
+    contextRecallStatus: memoryContext.contextRecallStatus,
     skillBlocks: staticContext.skillBlocks,
   };
 }
