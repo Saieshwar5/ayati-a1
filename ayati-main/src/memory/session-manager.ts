@@ -9,6 +9,7 @@ import type {
   MemoryRunHandle,
   ToolCallRecordInput,
   ToolCallResultRecordInput,
+  AgentStepRecordInput,
   PromptMemoryContext,
   ConversationTurn,
   SessionProfile,
@@ -21,6 +22,8 @@ import type {
   ToolCallEvent,
   ToolResultEvent,
   RunFailureEvent,
+  AgentStepEvent,
+  AssistantFeedbackEvent,
   ToolContextEntry,
 } from "./session-events.js";
 import { InMemorySession } from "./session.js";
@@ -271,6 +274,45 @@ export class SessionManager implements SessionMemory {
       v: 1,
       ts: nowIso,
       type: "run_failure",
+      sessionId,
+      runId,
+      message,
+    };
+
+    this.currentSession.addEntry(event);
+    this.persistence.appendEvent(event);
+  }
+
+  recordAgentStep(_clientId: string, input: AgentStepRecordInput): void {
+    if (!this.currentSession || this.currentSession.id !== input.sessionId) return;
+
+    const nowIso = this.nowIso();
+    const event: AgentStepEvent = {
+      v: 1,
+      ts: nowIso,
+      type: "agent_step",
+      sessionId: input.sessionId,
+      runId: input.runId,
+      step: input.step,
+      phase: input.phase,
+      summary: input.summary,
+      approachesTried: input.approachesTried,
+      actionToolName: input.actionToolName,
+      endStatus: input.endStatus,
+    };
+
+    this.currentSession.addEntry(event);
+    this.persistence.appendEvent(event);
+  }
+
+  recordAssistantFeedback(_clientId: string, runId: string, sessionId: string, message: string): void {
+    if (!this.currentSession || this.currentSession.id !== sessionId) return;
+
+    const nowIso = this.nowIso();
+    const event: AssistantFeedbackEvent = {
+      v: 1,
+      ts: nowIso,
+      type: "assistant_feedback",
       sessionId,
       runId,
       message,

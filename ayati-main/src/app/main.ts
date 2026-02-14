@@ -1,6 +1,6 @@
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { AgentEngine } from "../engine/index.js";
+import { IVecEngine } from "../ivec/index.js";
 import { WsServer } from "../server/index.js";
 import pluginFactories from "../config/plugins.js";
 import providerFactory from "../config/provider.js";
@@ -67,7 +67,7 @@ export async function main(): Promise<void> {
   await loadToolAccessConfig();
   startConfigWatcher();
   const enabledTools = await builtInSkillsProvider.getAllTools();
-  let engine: AgentEngine | null = null;
+  let engine: IVecEngine | null = null;
 
   const staticContext = await loadStaticContext();
 
@@ -103,7 +103,7 @@ export async function main(): Promise<void> {
   const wsServer = new WsServer({
     onMessage: (clientId, data) => engine?.handleMessage(clientId, data),
   });
-  engine = new AgentEngine({
+  engine = new IVecEngine({
     onReply: wsServer.send.bind(wsServer),
     provider,
     staticContext,
@@ -122,7 +122,7 @@ export async function main(): Promise<void> {
   await wsServer.start();
   await registry.startAll();
 
-  console.log(`Ayati ready — plugins: [${registry.list().join(", ")}]`);
+  console.log(`Ayati i-vec ready — plugins: [${registry.list().join(", ")}]`);
 
   const shutdown = async (): Promise<void> => {
     stopConfigWatcher();

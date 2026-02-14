@@ -7,7 +7,9 @@ export type SessionEventType =
   | "assistant_message"
   | "tool_call"
   | "tool_result"
-  | "run_failure";
+  | "run_failure"
+  | "agent_step"
+  | "assistant_feedback";
 
 interface BaseEvent {
   v: 1;
@@ -74,6 +76,23 @@ export interface RunFailureEvent extends BaseEvent {
   message: string;
 }
 
+export interface AgentStepEvent extends BaseEvent {
+  type: "agent_step";
+  runId: string;
+  step: number;
+  phase: string;
+  summary: string;
+  approachesTried: string[];
+  actionToolName?: string;
+  endStatus?: string;
+}
+
+export interface AssistantFeedbackEvent extends BaseEvent {
+  type: "assistant_feedback";
+  runId: string;
+  message: string;
+}
+
 export interface ToolContextEntry {
   v: 1;
   ts: string;
@@ -94,7 +113,9 @@ export type SessionEvent =
   | AssistantMessageEvent
   | ToolCallEvent
   | ToolResultEvent
-  | RunFailureEvent;
+  | RunFailureEvent
+  | AgentStepEvent
+  | AssistantFeedbackEvent;
 
 export function serializeEvent(event: SessionEvent): string {
   return JSON.stringify(event);

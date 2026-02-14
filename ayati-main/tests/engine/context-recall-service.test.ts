@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { ContextRecallService } from "../../src/engine/context-recall-service.js";
+import { ContextRecallService } from "../../src/ivec/context-recall-service.js";
 import type { LlmProvider } from "../../src/core/contracts/provider.js";
 import type { LlmTurnInput, LlmTurnOutput } from "../../src/core/contracts/llm-protocol.js";
 import type { PromptMemoryContext, SessionMemory } from "../../src/memory/types.js";

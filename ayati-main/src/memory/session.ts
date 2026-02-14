@@ -4,6 +4,8 @@ import type {
   ToolCallEvent,
   ToolResultEvent,
   RunFailureEvent,
+  AgentStepEvent,
+  AssistantFeedbackEvent,
 } from "./session-events.js";
 import { estimateTextTokens } from "../prompt/token-estimator.js";
 import type { ConversationTurn, ToolMemoryEvent } from "./types.js";
@@ -13,7 +15,9 @@ export type SessionTimelineEntry =
   | AssistantMessageEvent
   | ToolCallEvent
   | ToolResultEvent
-  | RunFailureEvent;
+  | RunFailureEvent
+  | AgentStepEvent
+  | AssistantFeedbackEvent;
 
 const MAX_ARGS_PREVIEW_CHARS = 200;
 const MAX_OUTPUT_PREVIEW_CHARS = 700;

@@ -138,7 +138,7 @@ const provider: LlmProvider = {
 
     const response = await client.messages.create({
       model,
-      max_tokens: 1024,
+      max_tokens: 4096,
       ...(payload.system ? { system: payload.system } : {}),
       messages: payload.messages as any,
       ...(tools ? { tools: tools as any } : {}),

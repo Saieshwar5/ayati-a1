@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { AgentEngine } from "../../src/engine/index.js";
+import { IVecEngine } from "../../src/ivec/index.js";
 import type { LlmProvider } from "../../src/core/contracts/provider.js";
 import type { LlmTurnInput, LlmTurnOutput } from "../../src/core/contracts/llm-protocol.js";
 import type { SessionMemory } from "../../src/memory/types.js";
@@ -21,7 +21,7 @@ function createMockProvider(overrides?: Partial<LlmProvider>): LlmProvider {
   };
 }
 
-describe("AgentEngine", () => {
+describe("IVecEngine", () => {
   const staticContext: StaticContext = {
     basePrompt: "Base prompt",
     soul: emptySoulContext(),
@@ -30,19 +30,19 @@ describe("AgentEngine", () => {
   };
 
   it("should be constructible without options", () => {
-    const engine = new AgentEngine();
-    expect(engine).toBeInstanceOf(AgentEngine);
+    const engine = new IVecEngine();
+    expect(engine).toBeInstanceOf(IVecEngine);
   });
 
   it("should start and stop without error when no provider is given", async () => {
-    const engine = new AgentEngine();
+    const engine = new IVecEngine();
     await engine.start();
     await engine.stop();
   });
 
   it("should echo when no provider is given", async () => {
     const onReply = vi.fn();
-    const engine = new AgentEngine({ onReply });
+    const engine = new IVecEngine({ onReply });
 
     engine.handleMessage("c1", { type: "chat", content: "hello" });
 
@@ -57,7 +57,7 @@ describe("AgentEngine", () => {
   it("should call provider.generateTurn when provider is given", async () => {
     const provider = createMockProvider();
     const onReply = vi.fn();
-    const engine = new AgentEngine({ onReply, provider });
+    const engine = new IVecEngine({ onReply, provider });
 
     await engine.start();
     engine.handleMessage("c1", { type: "chat", content: "hello" });
@@ -81,7 +81,7 @@ describe("AgentEngine", () => {
   it("emits local context token estimate before sending the model request", async () => {
     const provider = createMockProvider();
     const onReply = vi.fn();
-    const engine = new AgentEngine({ onReply, provider });
+    const engine = new IVecEngine({ onReply, provider });
 
     await engine.start();
     engine.handleMessage("c1", { type: "chat", content: "hello" });
@@ -103,7 +103,7 @@ describe("AgentEngine", () => {
 
   it("should ignore non-chat messages", () => {
     const onReply = vi.fn();
-    const engine = new AgentEngine({ onReply });
+    const engine = new IVecEngine({ onReply });
 
     engine.handleMessage("c1", { type: "ping" });
     engine.handleMessage("c1", { foo: "bar" });
@@ -119,7 +119,7 @@ describe("AgentEngine", () => {
       definitions: () => [],
       execute: vi.fn().mockResolvedValue({ ok: true, output: "done" }),
     };
-    const engine = new AgentEngine({ onReply, toolExecutor });
+    const engine = new IVecEngine({ onReply, toolExecutor });
 
     engine.handleMessage("c1", { type: "tool", name: "shell", input: { cmd: "echo ok" } });
 
@@ -159,7 +159,7 @@ describe("AgentEngine", () => {
       execute: vi.fn().mockResolvedValue({ ok: true, output: "hello" }),
     };
 
-    const engine = new AgentEngine({ onReply, provider, toolExecutor });
+    const engine = new IVecEngine({ onReply, provider, toolExecutor });
     await engine.start();
     engine.handleMessage("c1", { type: "chat", content: "say hello" });
 
@@ -220,7 +220,7 @@ describe("AgentEngine", () => {
       loadSessionTurns: vi.fn().mockReturnValue([]),
     };
 
-    const engine = new AgentEngine({
+    const engine = new IVecEngine({
       onReply,
       provider,
       toolExecutor,
@@ -263,7 +263,7 @@ describe("AgentEngine", () => {
       loadSessionTurns: vi.fn().mockReturnValue([]),
     };
 
-    const engine = new AgentEngine({ provider, sessionMemory });
+    const engine = new IVecEngine({ provider, sessionMemory });
     await engine.start();
 
     expect(sessionMemory.setStaticTokenBudget).toHaveBeenCalledWith(expect.any(Number));
@@ -275,7 +275,7 @@ describe("AgentEngine", () => {
 
   it("should return tool_result error when tool executor is missing", async () => {
     const onReply = vi.fn();
-    const engine = new AgentEngine({ onReply });
+    const engine = new IVecEngine({ onReply });
 
     engine.handleMessage("c1", { type: "tool", name: "shell", input: { cmd: "echo ok" } });
 
@@ -296,7 +296,7 @@ describe("AgentEngine", () => {
       generateTurn: vi.fn().mockRejectedValue(new Error("API down")),
     });
     const onReply = vi.fn();
-    const engine = new AgentEngine({ onReply, provider });
+    const engine = new IVecEngine({ onReply, provider });
 
     await engine.start();
     engine.handleMessage("c1", { type: "chat", content: "hello" });
@@ -393,7 +393,7 @@ describe("AgentEngine", () => {
       ]),
     };
 
-    const engine = new AgentEngine({
+    const engine = new IVecEngine({
       onReply,
       provider,
       sessionMemory,
@@ -449,7 +449,7 @@ describe("AgentEngine", () => {
       loadSessionTurns: vi.fn().mockReturnValue([]),
     };
 
-    const engine = new AgentEngine({
+    const engine = new IVecEngine({
       onReply,
       provider,
       sessionMemory,
@@ -513,7 +513,7 @@ describe("AgentEngine", () => {
       loadSessionTurns: vi.fn().mockReturnValue([]),
     };
 
-    const engine = new AgentEngine({
+    const engine = new IVecEngine({
       onReply,
       provider,
       sessionMemory,

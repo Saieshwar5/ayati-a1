@@ -109,6 +109,17 @@ export interface ToolCallResultRecordInput {
   durationMs?: number;
 }
 
+export interface AgentStepRecordInput {
+  runId: string;
+  sessionId: string;
+  step: number;
+  phase: string;
+  summary: string;
+  approachesTried: string[];
+  actionToolName?: string;
+  endStatus?: string;
+}
+
 export interface SessionMemory {
   initialize(clientId: string): void;
   shutdown(): void | Promise<void>;
@@ -117,6 +128,8 @@ export interface SessionMemory {
   recordToolResult(clientId: string, input: ToolCallResultRecordInput): void;
   recordAssistantFinal(clientId: string, runId: string, sessionId: string, content: string): void;
   recordRunFailure(clientId: string, runId: string, sessionId: string, message: string): void;
+  recordAgentStep(clientId: string, input: AgentStepRecordInput): void;
+  recordAssistantFeedback(clientId: string, runId: string, sessionId: string, message: string): void;
   getPromptMemoryContext(): PromptMemoryContext;
   setStaticTokenBudget(tokens: number): void;
   searchSessionSummaries(query: string, limit?: number): SessionSummarySearchHit[];
