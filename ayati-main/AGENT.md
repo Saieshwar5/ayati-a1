@@ -7,7 +7,7 @@ This file defines Ayati's architecture blueprint and implementation direction.
 Ayati is a scalable agent system designed like a modular car:
 
 - Engine (`LlmProvider`): the model backend (OpenAI, Anthropic, future models).
-- Chassis (`AgentEngine`): stable coordinator that routes input/output and orchestrates behavior.
+- Chassis (`IVecEngine` — Intelligence Variable Execution Core (i-vec)): stable coordinator that routes input/output and orchestrates behavior.
 - Accessories (`plugins`): optional lifecycle modules that can be attached/removed.
 - Fuel (`system prompt context`): layered instructions and memory-fed context that powers model behavior.
 
@@ -26,7 +26,7 @@ Ayati should be:
 
 - Entrypoint: `src/index.ts`
 - Bootstrap: `src/app/main.ts`
-- Engine coordinator: `src/engine/index.ts`
+- Engine coordinator: `src/ivec/index.ts` (`IVecEngine` / Intelligence Variable Execution Core (i-vec); legacy compatibility shim: `src/engine/index.ts`)
 - Provider loading: `src/config/provider.ts`, `src/core/runtime/provider-loader.ts`
 - Plugin lifecycle: `src/config/plugins.ts`, `src/core/runtime/plugin-registry.ts`
 - Prompt input loading: `src/context/load-system-prompt-input.ts`

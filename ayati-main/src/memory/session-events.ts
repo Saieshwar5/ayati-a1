@@ -3,14 +3,13 @@ import type { ToolEventStatus } from "./types.js";
 export type SessionEventType =
   | "session_open"
   | "session_close"
-  | "session_tier_change"
   | "user_message"
   | "assistant_message"
   | "tool_call"
   | "tool_result"
-  | "run_failure";
-
-export type SessionTier = "high" | "medium" | "low" | "rare";
+  | "run_failure"
+  | "agent_step"
+  | "assistant_feedback";
 
 interface BaseEvent {
   v: 1;
@@ -22,9 +21,6 @@ interface BaseEvent {
 export interface SessionOpenEvent extends BaseEvent {
   type: "session_open";
   clientId: string;
-  tier: SessionTier;
-  hardCapMinutes: number;
-  idleTimeoutMinutes: number;
   previousSessionSummary: string;
 }
 
@@ -32,15 +28,12 @@ export interface SessionCloseEvent extends BaseEvent {
   type: "session_close";
   reason: string;
   summaryText: string;
-}
-
-export interface SessionTierChangeEvent extends BaseEvent {
-  type: "session_tier_change";
-  fromTier: SessionTier;
-  toTier: SessionTier;
-  score: number;
-  hardCapMinutes: number;
-  idleTimeoutMinutes: number;
+  summaryId?: number;
+  summaryKeywords?: string[];
+  tokenAtClose?: number;
+  driftScore?: number;
+  infiniteTaskRef?: string;
+  infiniteResumeFromRef?: string;
 }
 
 export interface UserMessageEvent extends BaseEvent {
@@ -83,6 +76,23 @@ export interface RunFailureEvent extends BaseEvent {
   message: string;
 }
 
+export interface AgentStepEvent extends BaseEvent {
+  type: "agent_step";
+  runId: string;
+  step: number;
+  phase: string;
+  summary: string;
+  approachesTried: string[];
+  actionToolName?: string;
+  endStatus?: string;
+}
+
+export interface AssistantFeedbackEvent extends BaseEvent {
+  type: "assistant_feedback";
+  runId: string;
+  message: string;
+}
+
 export interface ToolContextEntry {
   v: 1;
   ts: string;
@@ -99,12 +109,13 @@ export interface ToolContextEntry {
 export type SessionEvent =
   | SessionOpenEvent
   | SessionCloseEvent
-  | SessionTierChangeEvent
   | UserMessageEvent
   | AssistantMessageEvent
   | ToolCallEvent
   | ToolResultEvent
-  | RunFailureEvent;
+  | RunFailureEvent
+  | AgentStepEvent
+  | AssistantFeedbackEvent;
 
 export function serializeEvent(event: SessionEvent): string {
   return JSON.stringify(event);

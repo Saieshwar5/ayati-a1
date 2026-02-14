@@ -3,6 +3,8 @@ import type { LlmProvider } from "../../core/contracts/provider.js";
 import type {
   LlmMessage,
   LlmToolCall,
+  LlmToolSchema,
+  LlmInputTokenCount,
   LlmTurnInput,
   LlmTurnOutput,
 } from "../../core/contracts/llm-protocol.js";
@@ -73,6 +75,15 @@ function toAnthropicPayload(messages: LlmMessage[]): AnthropicMessageBuild {
   return out;
 }
 
+function toAnthropicTools(tools?: LlmToolSchema[]): Array<Record<string, unknown>> | undefined {
+  if (!tools || tools.length === 0) return undefined;
+  return tools.map((tool) => ({
+    name: tool.name,
+    description: tool.description,
+    input_schema: tool.inputSchema,
+  }));
+}
+
 const provider: LlmProvider = {
   name: "anthropic",
   version: "1.0.0",
@@ -92,6 +103,30 @@ const provider: LlmProvider = {
     client = null;
   },
 
+  async countInputTokens(input: LlmTurnInput): Promise<LlmInputTokenCount> {
+    if (!client) {
+      throw new Error("Anthropic provider not started.");
+    }
+
+    const model = process.env["ANTHROPIC_MODEL"] ?? "claude-sonnet-4-5-20250929";
+    const payload = toAnthropicPayload(input.messages);
+    const tools = toAnthropicTools(input.tools);
+
+    const count = await client.messages.countTokens({
+      model,
+      ...(payload.system ? { system: payload.system } : {}),
+      messages: payload.messages as any,
+      ...(tools ? { tools: tools as any } : {}),
+    } as any);
+
+    return {
+      provider: "anthropic",
+      model,
+      inputTokens: count.input_tokens,
+      exact: true,
+    };
+  },
+
   async generateTurn(input: LlmTurnInput): Promise<LlmTurnOutput> {
     if (!client) {
       throw new Error("Anthropic provider not started.");
@@ -99,21 +134,14 @@ const provider: LlmProvider = {
 
     const model = process.env["ANTHROPIC_MODEL"] ?? "claude-sonnet-4-5-20250929";
     const payload = toAnthropicPayload(input.messages);
+    const tools = toAnthropicTools(input.tools);
 
     const response = await client.messages.create({
       model,
-      max_tokens: 1024,
+      max_tokens: 4096,
       ...(payload.system ? { system: payload.system } : {}),
       messages: payload.messages as any,
-      ...(input.tools && input.tools.length > 0
-        ? {
-            tools: input.tools.map((tool) => ({
-              name: tool.name,
-              description: tool.description,
-              input_schema: tool.inputSchema,
-            })),
-          }
-        : {}),
+      ...(tools ? { tools: tools as any } : {}),
     } as any);
 
     const calls: LlmToolCall[] = [];

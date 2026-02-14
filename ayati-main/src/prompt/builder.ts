@@ -33,7 +33,12 @@ export function buildSystemPrompt(input: PromptBuildInput): PromptBuildOutput {
   const soul = renderSoulSection(input.soul);
   const profile = renderUserProfileSection(input.userProfile);
   const conversation = renderConversationSection(input.conversationTurns ?? []);
-  const memory = renderMemorySection(input.previousSessionSummary ?? "", input.toolEvents ?? []);
+  const memory = renderMemorySection(
+    input.previousSessionSummary ?? "",
+    input.toolEvents ?? [],
+    input.recalledEvidence ?? [],
+    input.contextRecallStatus,
+  );
   const skills = renderSkillsSection(input.skillBlocks ?? []);
 
   const sections = [

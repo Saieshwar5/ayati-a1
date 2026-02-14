@@ -1,4 +1,5 @@
 import type {
+  LlmInputTokenCount,
   LlmProviderCapabilities,
   LlmTurnInput,
   LlmTurnOutput,
@@ -10,5 +11,6 @@ export interface LlmProvider {
   start(): void | Promise<void>;
   stop(): void | Promise<void>;
   capabilities: LlmProviderCapabilities;
+  countInputTokens?(input: LlmTurnInput): Promise<LlmInputTokenCount>;
   generateTurn(input: LlmTurnInput): Promise<LlmTurnOutput>;
 }

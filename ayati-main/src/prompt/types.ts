@@ -1,6 +1,8 @@
 import type { SoulContext, UserProfileContext } from "../context/types.js";
 import type {
+  ContextRecallStatus,
   ConversationTurn,
+  RecalledContextEvidence,
   ToolMemoryEvent,
 } from "../memory/types.js";
 import type { SkillPromptBlock } from "../skills/types.js";
@@ -20,6 +22,8 @@ export interface PromptBuildInput {
   conversationTurns?: ConversationTurn[];
   previousSessionSummary?: string;
   toolEvents?: ToolMemoryEvent[];
+  recalledEvidence?: RecalledContextEvidence[];
+  contextRecallStatus?: ContextRecallStatus;
   skillBlocks?: SkillPromptBlock[];
 }
 

@@ -1,43 +1,30 @@
-import { appendFileSync, mkdirSync, writeFileSync, readFileSync, unlinkSync, existsSync } from "node:fs";
+import { appendFileSync, mkdirSync, writeFileSync, readFileSync, unlinkSync, readdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { DatabaseSync } from "node:sqlite";
-import { devWarn } from "../shared/index.js";
-import {
-  logDbStart,
-  logDbStop,
-  logDbSummaryWrite,
-  logDbSummaryLoad,
-  logDiskAppendEvent,
-  logDiskLargeOutput,
-  logDiskToolContext,
-} from "./memory-logger.js";
 import type { SessionEvent, ToolContextEntry } from "./session-events.js";
 import { serializeEvent, deserializeEvent } from "./session-events.js";
 import { InMemorySession } from "./session.js";
+import type { ConversationTurn } from "./types.js";
 
 const thisDir = dirname(fileURLToPath(import.meta.url));
 const projectRoot = resolve(thisDir, "..", "..");
 const DEFAULT_DATA_DIR = resolve(projectRoot, "data", "memory");
-const DEFAULT_DB_PATH = resolve(DEFAULT_DATA_DIR, "memory.sqlite");
 
 const LARGE_OUTPUT_THRESHOLD = 2000;
 
 export interface SessionPersistenceOptions {
+  // Kept for backward compatibility with existing call sites; filesystem-only persistence ignores it.
   dbPath?: string;
   dataDir?: string;
 }
 
 export class SessionPersistence {
-  private readonly dbPath: string;
   private readonly dataDir: string;
   readonly sessionsDir: string;
   private readonly toolOutputDir: string;
   private readonly toolContextDir: string;
-  private db: DatabaseSync | null = null;
 
   constructor(options?: SessionPersistenceOptions) {
-    this.dbPath = options?.dbPath ?? DEFAULT_DB_PATH;
     this.dataDir = options?.dataDir ?? DEFAULT_DATA_DIR;
     this.sessionsDir = resolve(this.dataDir, "sessions");
     this.toolOutputDir = resolve(this.dataDir, "tool-output");
@@ -48,49 +35,20 @@ export class SessionPersistence {
     mkdirSync(this.sessionsDir, { recursive: true });
     mkdirSync(this.toolOutputDir, { recursive: true });
     mkdirSync(this.toolContextDir, { recursive: true });
-    mkdirSync(dirname(this.dbPath), { recursive: true });
-
-    this.db = new DatabaseSync(this.dbPath);
-    this.db.exec("PRAGMA journal_mode = WAL;");
-    logDbStart(this.dbPath);
-
-    this.db.exec(`
-      CREATE TABLE IF NOT EXISTS session_summaries (
-        id TEXT PRIMARY KEY,
-        session_id TEXT NOT NULL,
-        client_id TEXT NOT NULL,
-        summary_type TEXT NOT NULL,
-        summary_text TEXT NOT NULL,
-        keywords_json TEXT NOT NULL,
-        created_at TEXT NOT NULL
-      );
-
-      CREATE INDEX IF NOT EXISTS idx_session_summaries_client_time
-        ON session_summaries (client_id, created_at DESC);
-
-      CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(
-        doc_type,
-        ref_id UNINDEXED,
-        session_id UNINDEXED,
-        client_id UNINDEXED,
-        content,
-        created_at UNINDEXED
-      );
-    `);
   }
 
   stop(): void {
-    if (!this.db) return;
-    this.db.close();
-    this.db = null;
-    logDbStop();
+    // no-op for filesystem-only persistence
   }
 
   appendEvent(event: SessionEvent): void {
-    const filePath = resolve(this.sessionsDir, `${event.sessionId}.jsonl`);
+    const filePath = this.getSessionFilePath(event.sessionId);
     const line = serializeEvent(event);
     appendFileSync(filePath, `${line}\n`, "utf8");
-    logDiskAppendEvent(event.type, event.sessionId, filePath);
+  }
+
+  getSessionFilePath(sessionId: string): string {
+    return resolve(this.sessionsDir, `${sessionId}.jsonl`);
   }
 
   getActiveSessionId(): string | null {
@@ -136,7 +94,6 @@ export class SessionPersistence {
       try {
         event = deserializeEvent(line);
       } catch {
-        devWarn(`Skipping malformed event line in ${filePath}`);
         continue;
       }
 
@@ -145,23 +102,13 @@ export class SessionPersistence {
           event.sessionId,
           event.clientId,
           event.ts,
-          event.tier,
         );
         continue;
       }
 
       if (!session) continue;
 
-      if (event.type === "session_tier_change") {
-        session.tierState = {
-          tier: event.toTier,
-          hardCapMinutes: event.hardCapMinutes,
-          idleTimeoutMinutes: event.idleTimeoutMinutes,
-          candidateTier: null,
-          candidateHits: 0,
-        };
-        session.addEntry(event);
-      } else if (
+      if (
         event.type === "user_message" ||
         event.type === "assistant_message" ||
         event.type === "tool_call" ||
@@ -175,53 +122,79 @@ export class SessionPersistence {
     return session;
   }
 
-  loadPreviousSessionSummary(clientId: string): string {
-    if (!this.db) return "";
+  loadSessionTurns(sessionId: string): ConversationTurn[] {
+    const filePath = this.getSessionFilePath(sessionId);
+    let content = "";
+    try {
+      content = readFileSync(filePath, "utf8");
+    } catch {
+      return [];
+    }
 
-    const row = this.db
-      .prepare(
-        `SELECT summary_text
-         FROM session_summaries
-         WHERE client_id = ?
-         ORDER BY created_at DESC
-         LIMIT 1`,
-      )
-      .get(clientId) as { summary_text: string } | undefined;
+    const turns: ConversationTurn[] = [];
+    for (const line of content.split("\n")) {
+      const trimmed = line.trim();
+      if (trimmed.length === 0) continue;
 
-    const text = row?.summary_text ?? "";
-    logDbSummaryLoad(clientId, !!row, text.length);
-    return text;
+      let event: SessionEvent;
+      try {
+        event = deserializeEvent(trimmed);
+      } catch {
+        continue;
+      }
+
+      if (event.type === "user_message") {
+        turns.push({ role: "user", content: event.content, timestamp: event.ts });
+      } else if (event.type === "assistant_message") {
+        turns.push({ role: "assistant", content: event.content, timestamp: event.ts });
+      }
+    }
+
+    return turns;
   }
 
-  saveSessionSummary(
-    sessionId: string,
-    clientId: string,
-    summaryType: "rolling" | "final",
-    summaryText: string,
-    keywords: string[],
-    nowIso: string,
-  ): void {
-    if (!this.db) return;
+  loadConversationTurns(clientId: string): ConversationTurn[] {
+    const files = readdirSync(this.sessionsDir).filter((name) => name.endsWith(".jsonl"));
+    const turns: ConversationTurn[] = [];
 
-    const summaryId = crypto.randomUUID();
+    for (const fileName of files) {
+      const filePath = resolve(this.sessionsDir, fileName);
+      let content: string;
+      try {
+        content = readFileSync(filePath, "utf8");
+      } catch {
+        continue;
+      }
 
-    this.db
-      .prepare(
-        `INSERT INTO session_summaries (
-          id, session_id, client_id, summary_type, summary_text, keywords_json, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-      )
-      .run(summaryId, sessionId, clientId, summaryType, summaryText, JSON.stringify(keywords), nowIso);
+      let matchesClient = false;
+      for (const line of content.split("\n")) {
+        const trimmed = line.trim();
+        if (trimmed.length === 0) continue;
 
-    this.db.prepare("DELETE FROM memory_fts WHERE doc_type = 'summary' AND ref_id = ?").run(summaryId);
-    this.db
-      .prepare(
-        `INSERT INTO memory_fts (doc_type, ref_id, session_id, client_id, content, created_at)
-         VALUES ('summary', ?, ?, ?, ?, ?)`,
-      )
-      .run(summaryId, sessionId, clientId, `${summaryText}\n${keywords.join(" ")}`, nowIso);
+        let event: SessionEvent;
+        try {
+          event = deserializeEvent(trimmed);
+        } catch {
+          continue;
+        }
 
-    logDbSummaryWrite(sessionId, summaryType, summaryText.length, keywords);
+        if (event.type === "session_open") {
+          matchesClient = event.clientId === clientId;
+          continue;
+        }
+
+        if (!matchesClient) continue;
+
+        if (event.type === "user_message") {
+          turns.push({ role: "user", content: event.content, timestamp: event.ts });
+        } else if (event.type === "assistant_message") {
+          turns.push({ role: "assistant", content: event.content, timestamp: event.ts });
+        }
+      }
+    }
+
+    turns.sort((a, b) => a.timestamp.localeCompare(b.timestamp));
+    return turns;
   }
 
   persistLargeToolOutput(sessionId: string, toolCallId: string, toolName: string, output: string): string | null {
@@ -233,7 +206,6 @@ export class SessionPersistence {
     const filePath = resolve(this.toolOutputDir, fileName);
 
     writeFileSync(filePath, output, "utf8");
-    logDiskLargeOutput(toolName, output.length, filePath);
     return filePath;
   }
 
@@ -241,6 +213,5 @@ export class SessionPersistence {
     const sanitized = toolName.replace(/[^a-zA-Z0-9_-]/g, "_");
     const filePath = resolve(this.toolContextDir, `${sanitized}.jsonl`);
     appendFileSync(filePath, `${JSON.stringify(entry)}\n`, "utf8");
-    logDiskToolContext(toolName, entry.status);
   }
 }

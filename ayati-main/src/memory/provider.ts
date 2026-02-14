@@ -1,8 +1,11 @@
 import type {
+  ConversationTurn,
+  SessionSummarySearchHit,
   SessionMemory,
   MemoryRunHandle,
   ToolCallRecordInput,
   ToolCallResultRecordInput,
+  AgentStepRecordInput,
   PromptMemoryContext,
 } from "./types.js";
 
@@ -33,11 +36,26 @@ export const noopSessionMemory: SessionMemory = {
   recordRunFailure(): void {
     return;
   },
+  recordAgentStep(_clientId: string, _input: AgentStepRecordInput): void {
+    return;
+  },
+  recordAssistantFeedback(): void {
+    return;
+  },
   getPromptMemoryContext(): PromptMemoryContext {
     return {
       conversationTurns: [],
       previousSessionSummary: "",
       toolEvents: [],
     };
+  },
+  setStaticTokenBudget(): void {
+    return;
+  },
+  searchSessionSummaries(_query: string, _limit?: number): SessionSummarySearchHit[] {
+    return [];
+  },
+  loadSessionTurns(_sessionId: string): ConversationTurn[] {
+    return [];
   },
 };

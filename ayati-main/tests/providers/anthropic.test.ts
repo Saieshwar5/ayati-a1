@@ -13,9 +13,13 @@ async function getProvider(): Promise<LlmProvider> {
   return mod.default;
 }
 
-function mockAnthropicConstructor(mockCreate: ReturnType<typeof vi.fn>): void {
+function mockAnthropicConstructor(
+  mockCreate: ReturnType<typeof vi.fn>,
+  mockCountTokens?: ReturnType<typeof vi.fn>,
+): void {
+  const countTokens = mockCountTokens ?? vi.fn().mockResolvedValue({ input_tokens: 0 });
   vi.mocked(Anthropic).mockImplementation(function (this: unknown) {
-    return { messages: { create: mockCreate } } as unknown as Anthropic;
+    return { messages: { create: mockCreate, countTokens } } as unknown as Anthropic;
   } as never);
 }
 
@@ -64,11 +68,41 @@ describe("Anthropic provider", () => {
 
     expect(mockCreate).toHaveBeenCalledWith({
       model: "claude-sonnet-4-5-20250929",
-      max_tokens: 1024,
+      max_tokens: 4096,
       system: "System",
       messages: [{ role: "user", content: "Hi" }],
     });
     expect(out).toEqual({ type: "assistant", content: "Hello from Claude" });
+  });
+
+  it("should count input tokens for the outgoing context", async () => {
+    process.env["ANTHROPIC_API_KEY"] = "sk-ant-test-key";
+    process.env["ANTHROPIC_MODEL"] = "claude-sonnet-4-5-20250929";
+
+    const mockCreate = vi.fn();
+    const mockCount = vi.fn().mockResolvedValue({ input_tokens: 222 });
+
+    mockAnthropicConstructor(mockCreate, mockCount);
+
+    provider.start();
+    const count = await provider.countInputTokens!({
+      messages: [
+        { role: "system", content: "System" },
+        { role: "user", content: "Hi" },
+      ],
+    });
+
+    expect(mockCount).toHaveBeenCalledWith({
+      model: "claude-sonnet-4-5-20250929",
+      system: "System",
+      messages: [{ role: "user", content: "Hi" }],
+    });
+    expect(count).toEqual({
+      provider: "anthropic",
+      model: "claude-sonnet-4-5-20250929",
+      inputTokens: 222,
+      exact: true,
+    });
   });
 
   it("should return tool calls when Anthropic responds with tool_use blocks", async () => {
@@ -120,6 +154,12 @@ describe("Anthropic provider", () => {
   it("should throw when calling generateTurn before start", async () => {
     await expect(
       provider.generateTurn({ messages: [{ role: "user", content: "Hi" }] }),
+    ).rejects.toThrow("Anthropic provider not started.");
+  });
+
+  it("should throw when calling countInputTokens before start", async () => {
+    await expect(
+      provider.countInputTokens!({ messages: [{ role: "user", content: "Hi" }] }),
     ).rejects.toThrow("Anthropic provider not started.");
   });
 

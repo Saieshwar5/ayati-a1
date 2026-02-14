@@ -4,7 +4,7 @@ import type { UserMessageEvent, AssistantMessageEvent, ToolCallEvent, ToolResult
 
 describe("InMemorySession", () => {
   it("tracks conversation turns", () => {
-    const session = new InMemorySession("s1", "c1", "2026-02-08T00:00:00.000Z", "rare");
+    const session = new InMemorySession("s1", "c1", "2026-02-08T00:00:00.000Z");
 
     const userEvent: UserMessageEvent = {
       v: 1,
@@ -36,7 +36,7 @@ describe("InMemorySession", () => {
   });
 
   it("tracks user turn count", () => {
-    const session = new InMemorySession("s1", "c1", "2026-02-08T00:00:00.000Z", "rare");
+    const session = new InMemorySession("s1", "c1", "2026-02-08T00:00:00.000Z");
 
     session.addEntry({
       v: 1,
@@ -60,7 +60,7 @@ describe("InMemorySession", () => {
   });
 
   it("returns tool events from tool_result entries", () => {
-    const session = new InMemorySession("s1", "c1", "2026-02-08T00:00:00.000Z", "rare");
+    const session = new InMemorySession("s1", "c1", "2026-02-08T00:00:00.000Z");
 
     const callEvent: ToolCallEvent = {
       v: 1,
@@ -98,8 +98,49 @@ describe("InMemorySession", () => {
     expect(toolEvents[0]?.argsPreview).toContain("pwd");
   });
 
+  it("estimates tool event tokens from args and output previews", () => {
+    const session = new InMemorySession("s1", "c1", "2026-02-08T00:00:00.000Z");
+
+    const callEvent: ToolCallEvent = {
+      v: 1,
+      ts: "2026-02-08T00:01:00.000Z",
+      type: "tool_call",
+      sessionId: "s1",
+      runId: "r1",
+      stepId: 1,
+      toolCallId: "t1",
+      toolName: "shell",
+      args: { cmd: "echo hello world" },
+    };
+
+    const resultEvent: ToolResultEvent = {
+      v: 1,
+      ts: "2026-02-08T00:01:01.000Z",
+      type: "tool_result",
+      sessionId: "s1",
+      runId: "r1",
+      stepId: 1,
+      toolCallId: "t1",
+      toolName: "shell",
+      status: "success",
+      output: "hello world",
+      durationMs: 15,
+    };
+
+    session.addEntry(callEvent);
+    session.addEntry(resultEvent);
+
+    const tokens = session.estimateToolEventTokens();
+    expect(tokens).toBeGreaterThan(0);
+  });
+
+  it("returns zero tool event tokens when no tool results exist", () => {
+    const session = new InMemorySession("s1", "c1", "2026-02-08T00:00:00.000Z");
+    expect(session.estimateToolEventTokens()).toBe(0);
+  });
+
   it("updates lastActivityAt on addEntry", () => {
-    const session = new InMemorySession("s1", "c1", "2026-02-08T00:00:00.000Z", "rare");
+    const session = new InMemorySession("s1", "c1", "2026-02-08T00:00:00.000Z");
     expect(session.lastActivityAt).toBe("2026-02-08T00:00:00.000Z");
 
     session.addEntry({
@@ -114,21 +155,4 @@ describe("InMemorySession", () => {
     expect(session.lastActivityAt).toBe("2026-02-08T01:00:00.000Z");
   });
 
-  it("provides timeline entries for scoring", () => {
-    const session = new InMemorySession("s1", "c1", "2026-02-08T00:00:00.000Z", "rare");
-
-    session.addEntry({
-      v: 1,
-      ts: "2026-02-08T00:01:00.000Z",
-      type: "user_message",
-      sessionId: "s1",
-      runId: "r1",
-      content: "hello world",
-    });
-
-    const timeline = session.getTimelineForScoring();
-    expect(timeline).toHaveLength(1);
-    expect(timeline[0]?.type).toBe("user_message");
-    expect(timeline[0]?.tokenEstimate).toBeGreaterThan(0);
-  });
 });

@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What is Ayati
 
-Ayati is an AI agent server built on a plugin-based architecture. It uses an `AgentEngine` as the core runtime and a dynamic plugin system where plugins are loaded, registered, started, and stopped through a lifecycle-managed registry.
+Ayati is an AI agent server built on a plugin-based architecture. It uses an `IVecEngine` (i-vec: Intelligence Variable Execution Core) as the core runtime and a dynamic plugin system where plugins are loaded, registered, started, and stopped through a lifecycle-managed registry.
 
 ## Commands
 
@@ -22,9 +22,10 @@ The project is a TypeScript ESM (`"type": "module"`) Node.js application. All in
 ### Layers
 
 - **`src/index.ts`** — Entrypoint. Calls `main()` from app layer.
-- **`src/app/main.ts`** — Bootstrap. Creates `AgentEngine`, `WsServer`, and `PluginRegistry`. Start order: engine → server → plugins. Stop order: plugins → server → engine. Handles graceful shutdown (SIGINT/SIGTERM).
-- **`src/server/`** — `WsServer` class. WebSocket daemon server that accepts client connections and forwards messages to the engine. Auto-restarts with exponential backoff (1s initial, 30s max, 10 retries) on failure. Data flow: `Client → WsServer → AgentEngine`.
-- **`src/engine/`** — `AgentEngine` class. The core agent runtime (currently a stub). Receives messages via `handleMessage(clientId, data)`.
+- **`src/app/main.ts`** — Bootstrap. Creates `IVecEngine`, `WsServer`, and `PluginRegistry`. Start order: engine → server → plugins. Stop order: plugins → server → engine. Handles graceful shutdown (SIGINT/SIGTERM).
+- **`src/server/`** — `WsServer` class. WebSocket daemon server that accepts client connections and forwards messages to the engine. Auto-restarts with exponential backoff (1s initial, 30s max, 10 retries) on failure. Data flow: `Client → WsServer → IVecEngine`.
+- **`src/ivec/`** — `IVecEngine` class. The core agent runtime.
+- **`src/engine/`** — Deprecated compatibility shim that re-exports from `src/ivec/`.
 - **`src/core/`** — Plugin system. Exports: `AyatiPlugin` (interface), `PluginRegistry` (class), `loadPlugins` (function), `PluginFactory` (type).
 - **`src/config/plugins.ts`** — Central plugin registration. Add `PluginFactory` entries (dynamic `import()` calls) to the array to enable plugins.
 - **`src/plugins/`** — Plugin implementations. Each plugin is a directory with an `index.ts` (default-exporting an `AyatiPlugin`) and a `plugin.json` metadata file. See `_template/` for the pattern.

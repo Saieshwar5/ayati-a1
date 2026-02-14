@@ -24,7 +24,7 @@ describe("SessionManager onSessionClose callback", () => {
     rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  it("fires callback on shutdown with enough turns", () => {
+  it("fires callback on shutdown with enough turns", async () => {
     const callback = vi.fn();
     let time = new Date("2025-01-01T00:00:00Z");
 
@@ -43,7 +43,7 @@ describe("SessionManager onSessionClose callback", () => {
     const run2 = sm.beginRun("client1", "How are you?");
     sm.recordAssistantFinal("client1", run2.runId, run2.sessionId, "I'm good!");
 
-    sm.shutdown();
+    await sm.shutdown();
 
     expect(callback).toHaveBeenCalledTimes(1);
     const data: SessionCloseData = callback.mock.calls[0]![0]!;
@@ -52,7 +52,7 @@ describe("SessionManager onSessionClose callback", () => {
     expect(data.turns.length).toBe(4);
   });
 
-  it("fires callback on idle-timeout close (session expiry)", () => {
+  it("does not auto-close on time changes and only fires callback on shutdown", async () => {
     const callback = vi.fn();
     let time = new Date("2025-01-01T00:00:00Z");
 
@@ -71,19 +71,20 @@ describe("SessionManager onSessionClose callback", () => {
     const run = sm.beginRun("client1", "More");
     sm.recordAssistantFinal("client1", run.runId, run.sessionId, "Reply");
 
-    // Jump forward past idle timeout (rare tier = 180 min)
-    time = new Date("2025-01-02T00:00:00Z");
-    sm.beginRun("client1", "New session after idle");
+    // Jump forward significantly: session should remain open until shutdown.
+    time = new Date("2025-01-02T05:00:00Z");
+    sm.beginRun("client1", "Still same session");
 
+    expect(callback).toHaveBeenCalledTimes(0);
+
+    await sm.shutdown();
     expect(callback).toHaveBeenCalledTimes(1);
     const data: SessionCloseData = callback.mock.calls[0]![0]!;
-    expect(data.reason).toBe("expired");
+    expect(data.reason).toBe("shutdown");
     expect(data.turns.length).toBeGreaterThanOrEqual(2);
-
-    sm.shutdown();
   });
 
-  it("does not fire callback when fewer than 2 turns", () => {
+  it("does not fire callback when fewer than 2 turns", async () => {
     const callback = vi.fn();
     let time = new Date("2025-01-01T00:00:00Z");
 
@@ -99,8 +100,35 @@ describe("SessionManager onSessionClose callback", () => {
     // Only 1 user message, no assistant reply → 1 turn total
     sm.beginRun("client1", "Hello");
 
-    sm.shutdown();
+    await sm.shutdown();
 
     expect(callback).not.toHaveBeenCalled();
+  });
+
+  it("awaits async onSessionClose callback before shutdown resolves", async () => {
+    const order: string[] = [];
+
+    const sm = new SessionManager({
+      dataDir,
+      dbPath,
+      now: () => new Date("2025-01-01T00:00:00Z"),
+      onSessionClose: async () => {
+        await new Promise((r) => setTimeout(r, 50));
+        order.push("callback-done");
+      },
+    });
+
+    sm.initialize("client1");
+
+    const run1 = sm.beginRun("client1", "Hello");
+    sm.recordAssistantFinal("client1", run1.runId, run1.sessionId, "Hi!");
+
+    const run2 = sm.beginRun("client1", "More");
+    sm.recordAssistantFinal("client1", run2.runId, run2.sessionId, "Sure!");
+
+    await sm.shutdown();
+    order.push("shutdown-done");
+
+    expect(order).toEqual(["callback-done", "shutdown-done"]);
   });
 });

@@ -32,6 +32,13 @@ export interface LlmTurnInput {
   tools?: LlmToolSchema[];
 }
 
+export interface LlmInputTokenCount {
+  provider: string;
+  model: string;
+  inputTokens: number;
+  exact: boolean;
+}
+
 export type LlmTurnOutput =
   | {
       type: "assistant";
