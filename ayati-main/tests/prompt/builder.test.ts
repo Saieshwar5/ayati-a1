@@ -76,8 +76,12 @@ describe("buildSystemPrompt", () => {
       "conversation",
       "memory",
       "skills",
+      "tools",
     ]);
-    expect(output.sections.every((s) => s.included)).toBe(true);
+    const includedSections = output.sections.filter((s) => s.id !== "tools");
+    expect(includedSections.every((s) => s.included)).toBe(true);
+    const toolsSection = output.sections.find((s) => s.id === "tools");
+    expect(toolsSection?.included).toBe(false);
   });
 
   it("marks empty layers as not included", () => {

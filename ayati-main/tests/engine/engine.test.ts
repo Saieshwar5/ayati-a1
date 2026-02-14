@@ -6,6 +6,7 @@ import type { SessionMemory } from "../../src/memory/types.js";
 import type { StaticContext } from "../../src/context/static-context-cache.js";
 import { emptySoulContext, emptyUserProfileContext } from "../../src/context/types.js";
 import type { ToolExecutor } from "../../src/skills/tool-executor.js";
+import { AGENT_STEP_TOOL_NAME } from "../../src/ivec/agent-step-tool.js";
 
 function createMockProvider(overrides?: Partial<LlmProvider>): LlmProvider {
   return {
@@ -27,6 +28,7 @@ describe("IVecEngine", () => {
     soul: emptySoulContext(),
     userProfile: emptyUserProfileContext(),
     skillBlocks: [],
+    toolDirectory: "",
   };
 
   it("should be constructible without options", () => {
@@ -67,7 +69,7 @@ describe("IVecEngine", () => {
         expect.objectContaining({
           messages: [{ role: "user", content: "hello" }],
           tools: expect.arrayContaining([
-            expect.objectContaining({ name: "context_recall_agent" }),
+            expect.objectContaining({ name: AGENT_STEP_TOOL_NAME }),
           ]),
         }),
       );
@@ -75,6 +77,37 @@ describe("IVecEngine", () => {
         type: "reply",
         content: "mock reply",
       });
+    });
+  });
+
+  it("sends agent_step and native tool schemas in tools array", async () => {
+    const provider = createMockProvider();
+    const onReply = vi.fn();
+    const toolExecutor: ToolExecutor = {
+      list: () => ["shell"],
+      definitions: () => [
+        {
+          name: "shell",
+          description: "Run shell",
+          inputSchema: { type: "object", properties: { cmd: { type: "string" } } },
+          execute: vi.fn().mockResolvedValue({ ok: true, output: "hello" }),
+        },
+      ],
+      execute: vi.fn().mockResolvedValue({ ok: true, output: "hello" }),
+      validate: vi.fn().mockReturnValue({ valid: true }),
+    };
+
+    const engine = new IVecEngine({ onReply, provider, toolExecutor });
+    await engine.start();
+    engine.handleMessage("c1", { type: "chat", content: "hello" });
+
+    await vi.waitFor(() => {
+      expect(provider.generateTurn).toHaveBeenCalled();
+      const call = (provider.generateTurn as ReturnType<typeof vi.fn>).mock.calls[0]![0] as LlmTurnInput;
+      expect(call.tools?.[0]!.name).toBe(AGENT_STEP_TOOL_NAME);
+      const names = (call.tools ?? []).map((tool) => tool.name);
+      expect(names).toContain("shell");
+      expect(names).toContain("context_recall_agent");
     });
   });
 
@@ -118,6 +151,7 @@ describe("IVecEngine", () => {
       list: () => ["shell"],
       definitions: () => [],
       execute: vi.fn().mockResolvedValue({ ok: true, output: "done" }),
+      validate: vi.fn().mockReturnValue({ valid: true }),
     };
     const engine = new IVecEngine({ onReply, toolExecutor });
 
@@ -132,19 +166,36 @@ describe("IVecEngine", () => {
     });
   });
 
-  it("should autonomously execute native tool calls during chat flow", async () => {
+  it("should execute tools via agent_step act phase", async () => {
+    let callCount = 0;
     const onReply = vi.fn();
     const provider = createMockProvider({
-      generateTurn: vi
-        .fn<(input: LlmTurnInput) => Promise<LlmTurnOutput>>()
-        .mockResolvedValueOnce({
+      generateTurn: vi.fn().mockImplementation(async () => {
+        callCount++;
+        if (callCount === 1) {
+          return {
+            type: "tool_calls",
+            calls: [{
+              id: "s1",
+              name: AGENT_STEP_TOOL_NAME,
+              input: {
+                phase: "act",
+                thinking: "Running shell",
+                summary: "Execute",
+                action: { tool_name: "shell", tool_input: { cmd: "echo hello" } },
+              },
+            }],
+          };
+        }
+        return {
           type: "tool_calls",
-          calls: [{ id: "t1", name: "shell", input: { cmd: "echo hello" } }],
-        })
-        .mockResolvedValueOnce({
-          type: "assistant",
-          content: "Final verified answer",
-        }),
+          calls: [{
+            id: "s2",
+            name: AGENT_STEP_TOOL_NAME,
+            input: { phase: "end", thinking: "Done", summary: "Complete", end_status: "solved", end_message: "Final verified answer" },
+          }],
+        };
+      }),
     });
     const toolExecutor: ToolExecutor = {
       list: () => ["shell"],
@@ -157,6 +208,7 @@ describe("IVecEngine", () => {
         },
       ],
       execute: vi.fn().mockResolvedValue({ ok: true, output: "hello" }),
+      validate: vi.fn().mockReturnValue({ valid: true }),
     };
 
     const engine = new IVecEngine({ onReply, provider, toolExecutor });
@@ -177,18 +229,35 @@ describe("IVecEngine", () => {
   });
 
   it("records run and tool events to session memory", async () => {
+    let callCount = 0;
     const onReply = vi.fn();
     const provider = createMockProvider({
-      generateTurn: vi
-        .fn<(input: LlmTurnInput) => Promise<LlmTurnOutput>>()
-        .mockResolvedValueOnce({
+      generateTurn: vi.fn().mockImplementation(async () => {
+        callCount++;
+        if (callCount === 1) {
+          return {
+            type: "tool_calls",
+            calls: [{
+              id: "s1",
+              name: AGENT_STEP_TOOL_NAME,
+              input: {
+                phase: "act",
+                thinking: "t",
+                summary: "Execute",
+                action: { tool_name: "shell", tool_input: { cmd: "echo hello" } },
+              },
+            }],
+          };
+        }
+        return {
           type: "tool_calls",
-          calls: [{ id: "t1", name: "shell", input: { cmd: "echo hello" } }],
-        })
-        .mockResolvedValueOnce({
-          type: "assistant",
-          content: "done",
-        }),
+          calls: [{
+            id: "s2",
+            name: AGENT_STEP_TOOL_NAME,
+            input: { phase: "end", thinking: "Done", summary: "Done", end_status: "solved", end_message: "done" },
+          }],
+        };
+      }),
     });
     const toolExecutor: ToolExecutor = {
       list: () => ["shell"],
@@ -201,6 +270,7 @@ describe("IVecEngine", () => {
         },
       ],
       execute: vi.fn().mockResolvedValue({ ok: true, output: "hello" }),
+      validate: vi.fn().mockReturnValue({ valid: true }),
     };
     const sessionMemory: SessionMemory = {
       initialize: vi.fn(),
@@ -210,6 +280,8 @@ describe("IVecEngine", () => {
       recordToolResult: vi.fn(),
       recordAssistantFinal: vi.fn(),
       recordRunFailure: vi.fn(),
+      recordAgentStep: vi.fn(),
+      recordAssistantFeedback: vi.fn(),
       getPromptMemoryContext: vi.fn().mockReturnValue({
         conversationTurns: [],
         previousSessionSummary: "",
@@ -309,7 +381,8 @@ describe("IVecEngine", () => {
     });
   });
 
-  it("invokes context_recall_agent only when the model explicitly tool-calls it", async () => {
+  it("invokes context_recall_agent via agent_step act phase", async () => {
+    let callCount = 0;
     const provider = createMockProvider({
       generateTurn: vi
         .fn<(input: LlmTurnInput) => Promise<LlmTurnOutput>>()
@@ -332,31 +405,36 @@ describe("IVecEngine", () => {
             };
           }
 
-          const hasToolResult = input.messages.some((msg) => msg.role === "tool");
-          if (hasToolResult) {
-            return { type: "assistant", content: "mock reply" };
-          }
-
-          const hasRecallTool = (input.tools ?? []).some(
-            (tool) => tool.name === "context_recall_agent",
-          );
-          if (hasRecallTool) {
+          callCount++;
+          if (callCount === 1) {
             return {
               type: "tool_calls",
-              calls: [
-                {
-                  id: "recall-1",
-                  name: "context_recall_agent",
-                  input: {
-                    query: "what did we discuss about deployment?",
-                    searchQuery: "deployment staging",
+              calls: [{
+                id: "s1",
+                name: AGENT_STEP_TOOL_NAME,
+                input: {
+                  phase: "act",
+                  thinking: "Need to recall",
+                  summary: "Recall context",
+                  action: {
+                    tool_name: "context_recall_agent",
+                    tool_input: {
+                      query: "what did we discuss about deployment?",
+                      searchQuery: "deployment staging",
+                    },
                   },
                 },
-              ],
+              }],
             };
           }
-
-          return { type: "assistant", content: "mock reply" };
+          return {
+            type: "tool_calls",
+            calls: [{
+              id: "s2",
+              name: AGENT_STEP_TOOL_NAME,
+              input: { phase: "end", thinking: "Done", summary: "Done", end_status: "solved", end_message: "mock reply" },
+            }],
+          };
         }),
     });
     const onReply = vi.fn();
@@ -368,6 +446,8 @@ describe("IVecEngine", () => {
       recordToolResult: vi.fn(),
       recordAssistantFinal: vi.fn(),
       recordRunFailure: vi.fn(),
+      recordAgentStep: vi.fn(),
+      recordAssistantFeedback: vi.fn(),
       getPromptMemoryContext: vi.fn().mockReturnValue({
         conversationTurns: [],
         previousSessionSummary: "",
@@ -413,14 +493,6 @@ describe("IVecEngine", () => {
       });
     });
 
-    const calls = (provider.generateTurn as ReturnType<typeof vi.fn>).mock.calls;
-    const mainCallWithTools = calls
-      .map((entry) => entry[0] as { messages?: Array<{ role?: string; content?: string }> })
-      .find((input) => {
-        const candidate = input as { tools?: Array<{ name?: string }> };
-        return (candidate.tools ?? []).some((tool) => tool.name === "context_recall_agent");
-      });
-    expect(mainCallWithTools).toBeDefined();
     expect(sessionMemory.searchSessionSummaries).toHaveBeenCalledWith(
       "deployment staging",
       expect.any(Number),
@@ -468,29 +540,40 @@ describe("IVecEngine", () => {
   });
 
   it("returns not_found payload through context_recall_agent tool output", async () => {
+    let callCount = 0;
     const provider = createMockProvider({
       generateTurn: vi
         .fn<(input: LlmTurnInput) => Promise<LlmTurnOutput>>()
-        .mockImplementation(async (input) => {
-          const hasToolResult = input.messages.some((msg) => msg.role === "tool");
-          if (hasToolResult) {
+        .mockImplementation(async () => {
+          callCount++;
+          if (callCount === 1) {
             return {
-              type: "assistant",
-              content: "done",
+              type: "tool_calls",
+              calls: [{
+                id: "s1",
+                name: AGENT_STEP_TOOL_NAME,
+                input: {
+                  phase: "act",
+                  thinking: "Need recall",
+                  summary: "Recall",
+                  action: {
+                    tool_name: "context_recall_agent",
+                    tool_input: {
+                      query: "what did we decide in our last session?",
+                      searchQuery: "old release decision",
+                    },
+                  },
+                },
+              }],
             };
           }
           return {
             type: "tool_calls",
-            calls: [
-              {
-                id: "recall-2",
-                name: "context_recall_agent",
-                input: {
-                  query: "what did we decide in our last session?",
-                  searchQuery: "old release decision",
-                },
-              },
-            ],
+            calls: [{
+              id: "s2",
+              name: AGENT_STEP_TOOL_NAME,
+              input: { phase: "end", thinking: "Done", summary: "Done", end_status: "solved", end_message: "done" },
+            }],
           };
         }),
     });
@@ -503,6 +586,8 @@ describe("IVecEngine", () => {
       recordToolResult: vi.fn(),
       recordAssistantFinal: vi.fn(),
       recordRunFailure: vi.fn(),
+      recordAgentStep: vi.fn(),
+      recordAssistantFeedback: vi.fn(),
       getPromptMemoryContext: vi.fn().mockReturnValue({
         conversationTurns: [],
         previousSessionSummary: "",

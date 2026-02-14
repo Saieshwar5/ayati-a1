@@ -14,7 +14,7 @@ import { estimateTextTokens } from "../prompt/token-estimator.js";
 import type { ToolExecutor } from "../skills/tool-executor.js";
 import { devLog, devWarn, devError } from "../shared/index.js";
 import { AgentLoop } from "./agent-loop.js";
-import { CONTEXT_RECALL_TOOL_NAME, toToolSchemas } from "./tool-helpers.js";
+import { CONTEXT_RECALL_TOOL_NAME } from "./tool-helpers.js";
 import type { AgentLoopConfig } from "./agent-loop-types.js";
 
 interface SystemContextBuildResult {
@@ -110,6 +110,7 @@ export class IVecEngine {
       const system = await this.buildSystemContext();
 
       if (this.provider) {
+        const toolDefs = this.toolExecutor?.definitions() ?? [];
         const loop = new AgentLoop(
           this.provider,
           this.toolExecutor,
@@ -117,6 +118,7 @@ export class IVecEngine {
           this.contextRecallService,
           this.onReply,
           this.loopConfig,
+          toolDefs,
         );
         const result = await loop.run(
           clientId,
@@ -176,7 +178,10 @@ export class IVecEngine {
 
     const memoryContext = this.sessionMemory.getPromptMemoryContext();
     const promptInput = assemblePromptInput(this.staticContext, memoryContext);
-    const systemContext = buildSystemPrompt(promptInput).systemPrompt;
+    const systemContext = buildSystemPrompt({
+      ...promptInput,
+      includeToolDirectory: this.shouldIncludeToolDirectoryInPrompt(),
+    }).systemPrompt;
 
     const dynamicContext = [
       renderConversationSection(memoryContext.conversationTurns ?? []),
@@ -272,18 +277,17 @@ export class IVecEngine {
       toolEvents: [],
       recalledEvidence: [],
       skillBlocks: this.staticContext.skillBlocks,
+      toolDirectory: this.staticContext.toolDirectory,
+      includeToolDirectory: this.shouldIncludeToolDirectoryInPrompt(),
     }).systemPrompt;
 
     const promptTokens = estimateTextTokens(staticOnlyPrompt);
-    const toolSchemaTokens = toToolSchemas(this.toolExecutor).reduce(
-      (sum, tool) => sum + estimateTextTokens(tool.name) + estimateTextTokens(tool.description) + estimateTextTokens(JSON.stringify(tool.inputSchema)),
-      0,
-    );
 
-    this.staticSystemTokens = promptTokens + toolSchemaTokens;
+    // Tool schemas are now selected dynamically per step and should be counted at runtime.
+    this.staticSystemTokens = promptTokens;
     this.staticTokensReady = true;
     this.sessionMemory.setStaticTokenBudget(this.staticSystemTokens);
-    devLog(`Static context tokens cached: ${this.staticSystemTokens} (prompt=${promptTokens}, toolSchemas=${toolSchemaTokens})`);
+    devLog(`Static context tokens cached: ${this.staticSystemTokens} (prompt=${promptTokens})`);
   }
 
   private resolveActiveModelName(providerName: string): string {
@@ -294,6 +298,10 @@ export class IVecEngine {
       return process.env["ANTHROPIC_MODEL"] ?? "claude-sonnet-4-5-20250929";
     }
     return "unknown";
+  }
+
+  private shouldIncludeToolDirectoryInPrompt(): boolean {
+    return process.env["PROMPT_INCLUDE_TOOL_DIRECTORY"] === "1";
   }
 }
 

@@ -69,17 +69,18 @@ export async function main(): Promise<void> {
   const enabledTools = await builtInSkillsProvider.getAllTools();
   let engine: IVecEngine | null = null;
 
-  const staticContext = await loadStaticContext();
-
   const identitySkill = createIdentitySkill({
     onSoulUpdated: (updatedSoul) => {
       staticContext.soul = updatedSoul;
       engine?.invalidateStaticTokenCache();
     },
   });
-  staticContext.skillBlocks.push({ id: identitySkill.id, content: identitySkill.promptBlock });
 
-  const toolExecutor = createToolExecutor([...enabledTools, ...identitySkill.tools]);
+  const allToolDefs = [...enabledTools, ...identitySkill.tools];
+  const toolExecutor = createToolExecutor(allToolDefs);
+
+  const staticContext = await loadStaticContext({ toolDefinitions: allToolDefs });
+  staticContext.skillBlocks.push({ id: identitySkill.id, content: identitySkill.promptBlock });
 
   const contextEvolver = new ContextEvolver({
     provider,

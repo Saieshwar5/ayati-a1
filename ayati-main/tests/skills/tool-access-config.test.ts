@@ -5,6 +5,9 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   getGlobalPolicy,
   getShellPolicy,
+  getFilesystemGuardrailsPolicy,
+  getShellGuardrailsPolicy,
+  getConfirmationGuardrailsPolicy,
   isToolEnabled,
   _setConfigForTesting,
   _resetConfigToDefault,
@@ -29,11 +32,21 @@ describe("tool-access-config", () => {
 
     const shell = getShellPolicy();
     expect(shell.enabled).toBe(true);
-    expect(shell.mode).toBe("full");
+    expect(shell.mode).toBe("allowlist");
     expect(shell.timeoutMs).toBe(15_000);
     expect(shell.maxOutputChars).toBe(20_000);
-    expect(shell.allowAnyCwd).toBe(true);
-    expect(shell.allowedPrefixes).toEqual([]);
+    expect(shell.allowAnyCwd).toBe(false);
+    expect(shell.allowedPrefixes.length).toBeGreaterThan(0);
+
+    const fsGuardrails = getFilesystemGuardrailsPolicy();
+    expect(fsGuardrails.allowedReadRoots).toContain("/");
+    expect(fsGuardrails.allowedWriteRoots).toContain("/tmp");
+
+    const shellGuardrails = getShellGuardrailsPolicy();
+    expect(shellGuardrails.denyPrefixes).toContain("rm");
+
+    const confirm = getConfirmationGuardrailsPolicy();
+    expect(confirm.tokenPrefix).toBe("CONFIRM:");
   });
 
   it("_setConfigForTesting overrides config", () => {
@@ -89,10 +102,10 @@ describe("tool-access-config", () => {
 
     const shell = getShellPolicy();
     expect(shell.enabled).toBe(false);
-    expect(shell.mode).toBe("full");
+    expect(shell.mode).toBe("allowlist");
     expect(shell.timeoutMs).toBe(15_000);
     expect(shell.maxOutputChars).toBe(20_000);
-    expect(shell.allowAnyCwd).toBe(true);
+    expect(shell.allowAnyCwd).toBe(false);
   });
 
   it("enforces hard cap on timeoutMs", () => {
@@ -139,7 +152,7 @@ describe("tool-access-config", () => {
 
     const shell = getShellPolicy();
     expect(shell.enabled).toBe(true);
-    expect(shell.mode).toBe("full");
+    expect(shell.mode).toBe("allowlist");
     expect(shell.timeoutMs).toBe(15_000);
   });
 
@@ -202,5 +215,31 @@ describe("tool-access-config", () => {
     const shell = getShellPolicy();
     expect(shell.allowedPrefixes).toEqual(["echo", "ls"]);
     expect(shell.timeoutMs).toBe(10_000);
+  });
+
+  it("merges custom guardrails with defaults", () => {
+    _setConfigForTesting({
+      global: { enabled: true, mode: "full", allowedTools: [] },
+      tools: {},
+      guardrails: {
+        filesystem: {
+          allowedWriteRoots: ["/tmp"],
+          requireConfirmationFor: ["delete"],
+        },
+        confirmation: {
+          tokenPrefix: "CONFIRM:",
+          ttlMs: 60_000,
+        },
+      },
+    });
+
+    const fs = getFilesystemGuardrailsPolicy();
+    expect(fs.allowedWriteRoots).toEqual(["/tmp"]);
+    expect(fs.requireConfirmationFor).toContain("delete");
+    expect(fs.allowedReadRoots).toContain("/");
+
+    const confirmation = getConfirmationGuardrailsPolicy();
+    expect(confirmation.tokenPrefix).toBe("CONFIRM:");
+    expect(confirmation.ttlMs).toBe(60_000);
   });
 });

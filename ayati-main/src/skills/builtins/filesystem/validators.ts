@@ -7,6 +7,8 @@ import type {
   ListDirectoryInput,
   CreateDirectoryInput,
   MoveInput,
+  FindFilesInput,
+  SearchInFilesInput,
 } from "./types.js";
 
 function fail(msg: string): ToolResult {
@@ -23,6 +25,12 @@ function isNonEmptyString(val: unknown): val is string {
 
 function isPositiveInt(val: unknown): val is number {
   return typeof val === "number" && Number.isFinite(val) && val > 0 && Number.isInteger(val);
+}
+
+function validateConfirmationToken(token: unknown): ToolResult | null {
+  if (token === undefined) return null;
+  if (typeof token !== "string") return fail("confirmationToken must be a string.");
+  return null;
 }
 
 export function validateReadFileInput(input: unknown): ReadFileInput | ToolResult {
@@ -46,7 +54,9 @@ export function validateWriteFileInput(input: unknown): WriteFileInput | ToolRes
   if (v.createDirs !== undefined && typeof v.createDirs !== "boolean") {
     return fail("createDirs must be a boolean.");
   }
-  return { path: v.path, content: v.content, createDirs: v.createDirs };
+  const tokenErr = validateConfirmationToken(v.confirmationToken);
+  if (tokenErr) return tokenErr;
+  return { path: v.path, content: v.content, createDirs: v.createDirs, confirmationToken: v.confirmationToken };
 }
 
 export function validateEditFileInput(input: unknown): EditFileInput | ToolResult {
@@ -60,7 +70,15 @@ export function validateEditFileInput(input: unknown): EditFileInput | ToolResul
   if (v.replaceAll !== undefined && typeof v.replaceAll !== "boolean") {
     return fail("replaceAll must be a boolean.");
   }
-  return { path: v.path, oldString: v.oldString, newString: v.newString, replaceAll: v.replaceAll };
+  const tokenErr = validateConfirmationToken(v.confirmationToken);
+  if (tokenErr) return tokenErr;
+  return {
+    path: v.path,
+    oldString: v.oldString,
+    newString: v.newString,
+    replaceAll: v.replaceAll,
+    confirmationToken: v.confirmationToken,
+  };
 }
 
 export function validateDeleteInput(input: unknown): DeleteInput | ToolResult {
@@ -70,7 +88,9 @@ export function validateDeleteInput(input: unknown): DeleteInput | ToolResult {
   if (v.recursive !== undefined && typeof v.recursive !== "boolean") {
     return fail("recursive must be a boolean.");
   }
-  return { path: v.path, recursive: v.recursive };
+  const tokenErr = validateConfirmationToken(v.confirmationToken);
+  if (tokenErr) return tokenErr;
+  return { path: v.path, recursive: v.recursive, confirmationToken: v.confirmationToken };
 }
 
 export function validateListDirectoryInput(input: unknown): ListDirectoryInput | ToolResult {
@@ -93,7 +113,9 @@ export function validateCreateDirectoryInput(input: unknown): CreateDirectoryInp
   if (v.recursive !== undefined && typeof v.recursive !== "boolean") {
     return fail("recursive must be a boolean.");
   }
-  return { path: v.path, recursive: v.recursive ?? true };
+  const tokenErr = validateConfirmationToken(v.confirmationToken);
+  if (tokenErr) return tokenErr;
+  return { path: v.path, recursive: v.recursive ?? true, confirmationToken: v.confirmationToken };
 }
 
 export function validateMoveInput(input: unknown): MoveInput | ToolResult {
@@ -104,5 +126,63 @@ export function validateMoveInput(input: unknown): MoveInput | ToolResult {
   if (v.overwrite !== undefined && typeof v.overwrite !== "boolean") {
     return fail("overwrite must be a boolean.");
   }
-  return { source: v.source, destination: v.destination, overwrite: v.overwrite };
+  const tokenErr = validateConfirmationToken(v.confirmationToken);
+  if (tokenErr) return tokenErr;
+  return {
+    source: v.source,
+    destination: v.destination,
+    overwrite: v.overwrite,
+    confirmationToken: v.confirmationToken,
+  };
+}
+
+function validateSearchCommon(
+  input: unknown,
+): {
+  query: string;
+  roots?: string[];
+  maxDepth?: number;
+  maxResults?: number;
+  includeHidden?: boolean;
+} | ToolResult {
+  if (!isObject(input)) return fail("expected object.");
+  const v = input as Partial<FindFilesInput>;
+  if (!isNonEmptyString(v.query)) return fail("query must be a non-empty string.");
+  if (v.roots !== undefined) {
+    if (!Array.isArray(v.roots) || !v.roots.every((root) => isNonEmptyString(root))) {
+      return fail("roots must be an array of non-empty strings.");
+    }
+  }
+  if (v.maxDepth !== undefined && !isPositiveInt(v.maxDepth)) {
+    return fail("maxDepth must be a positive integer.");
+  }
+  if (v.maxResults !== undefined && !isPositiveInt(v.maxResults)) {
+    return fail("maxResults must be a positive integer.");
+  }
+  if (v.includeHidden !== undefined && typeof v.includeHidden !== "boolean") {
+    return fail("includeHidden must be a boolean.");
+  }
+  return {
+    query: v.query,
+    roots: v.roots,
+    maxDepth: v.maxDepth,
+    maxResults: v.maxResults,
+    includeHidden: v.includeHidden,
+  };
+}
+
+export function validateFindFilesInput(input: unknown): FindFilesInput | ToolResult {
+  return validateSearchCommon(input);
+}
+
+export function validateSearchInFilesInput(input: unknown): SearchInFilesInput | ToolResult {
+  const base = validateSearchCommon(input);
+  if ("ok" in base) return base;
+
+  const v = input as Partial<SearchInFilesInput>;
+  if (v.caseSensitive !== undefined && typeof v.caseSensitive !== "boolean") {
+    return fail("caseSensitive must be a boolean.");
+  }
+
+  return { ...base, caseSensitive: v.caseSensitive };
 }

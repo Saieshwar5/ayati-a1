@@ -13,7 +13,8 @@ export type PromptLayerId =
   | "user_profile"
   | "conversation"
   | "memory"
-  | "skills";
+  | "skills"
+  | "tools";
 
 export interface PromptBuildInput {
   basePrompt: string;
@@ -25,6 +26,8 @@ export interface PromptBuildInput {
   recalledEvidence?: RecalledContextEvidence[];
   contextRecallStatus?: ContextRecallStatus;
   skillBlocks?: SkillPromptBlock[];
+  toolDirectory?: string;
+  includeToolDirectory?: boolean;
 }
 
 export interface PromptSectionMetadata {

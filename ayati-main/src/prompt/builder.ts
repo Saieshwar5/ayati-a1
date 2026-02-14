@@ -28,6 +28,12 @@ function makeSection(id: PromptLayerId, content: string, missingReason: string):
   };
 }
 
+function renderToolDirectorySection(toolDirectory: string | undefined, includeToolDirectory: boolean): string {
+  if (!includeToolDirectory) return "";
+  if (!toolDirectory || toolDirectory.trim().length === 0) return "";
+  return `# Available Tools\n\n${toolDirectory}`;
+}
+
 export function buildSystemPrompt(input: PromptBuildInput): PromptBuildOutput {
   const base = renderBasePromptSection(input.basePrompt);
   const soul = renderSoulSection(input.soul);
@@ -40,6 +46,7 @@ export function buildSystemPrompt(input: PromptBuildInput): PromptBuildOutput {
     input.contextRecallStatus,
   );
   const skills = renderSkillsSection(input.skillBlocks ?? []);
+  const tools = renderToolDirectorySection(input.toolDirectory, input.includeToolDirectory === true);
 
   const sections = [
     makeSection("base", base, "Base prompt is empty"),
@@ -48,9 +55,10 @@ export function buildSystemPrompt(input: PromptBuildInput): PromptBuildOutput {
     makeSection("conversation", conversation, "No previous conversation available"),
     makeSection("memory", memory, "No session summary or relevant tool history available"),
     makeSection("skills", skills, "No skills selected or available"),
+    makeSection("tools", tools, "No tool directory available"),
   ];
 
-  const systemPrompt = [base, soul, profile, conversation, memory, skills]
+  const systemPrompt = [base, soul, profile, conversation, memory, skills, tools]
     .filter((block) => block.trim().length > 0)
     .join("\n\n")
     .trim();

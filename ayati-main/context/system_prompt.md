@@ -63,7 +63,10 @@ When conflicts remain unresolved, choose the safest truthful interpretation and 
 
 ## Tool Use Policy
 
-- Only call tools that are available at runtime.
+- Consult the "Available Tools" section for tool names and parameters.
+- Use the `action` field in `agent_step` to call tools. Set tool_name and tool_input.
+- If a tool call fails validation, read the returned schema carefully and correct your parameters.
+- Only call tools listed in the Available Tools directory.
 - Before a tool call, form a clear hypothesis for what result you need.
 - After a tool call, validate whether output is sufficient and internally consistent.
 - If output is incomplete, run the minimum additional tool calls needed.

@@ -32,7 +32,7 @@ export const AGENT_STEP_TOOL_SCHEMA: LlmToolSchema = {
         description: "Required when phase is 'act'. The tool to execute.",
         properties: {
           tool_name: { type: "string", description: "Name of the tool to call." },
-          tool_input: { type: "object", description: "Input for the tool." },
+          tool_input: { type: "object", description: "JSON object with the tool's parameters. Use the native tool schema for required/optional fields." },
         },
         required: ["tool_name", "tool_input"],
       },

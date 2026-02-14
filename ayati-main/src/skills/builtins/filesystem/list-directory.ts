@@ -2,8 +2,7 @@ import { readdir } from "node:fs/promises";
 import { resolve, join } from "node:path";
 import type { ToolDefinition, ToolResult } from "../../types.js";
 import { validateListDirectoryInput } from "./validators.js";
-
-const MAX_ENTRIES = 1000;
+import { enforceFilesystemGuard, getFilesystemListLimits } from "../../guardrails/index.js";
 
 interface EntryInfo {
   name: string;
@@ -14,6 +13,9 @@ async function listEntries(
   dirPath: string,
   recursive: boolean,
   showHidden: boolean,
+  maxEntries: number,
+  maxDepth: number,
+  depth: number,
   prefix: string,
 ): Promise<EntryInfo[]> {
   const entries: EntryInfo[] = [];
@@ -21,21 +23,24 @@ async function listEntries(
 
   for (const dirent of dirents) {
     if (!showHidden && dirent.name.startsWith(".")) continue;
-    if (entries.length >= MAX_ENTRIES) break;
+    if (entries.length >= maxEntries) break;
 
     const relName = prefix ? join(prefix, dirent.name) : dirent.name;
     const type = dirent.isDirectory() ? "dir" : dirent.isFile() ? "file" : "other";
     entries.push({ name: relName, type });
 
-    if (recursive && dirent.isDirectory() && entries.length < MAX_ENTRIES) {
+    if (recursive && dirent.isDirectory() && entries.length < maxEntries && depth < maxDepth) {
       const subEntries = await listEntries(
         join(dirPath, dirent.name),
         true,
         showHidden,
+        maxEntries,
+        maxDepth,
+        depth + 1,
         relName,
       );
       for (const sub of subEntries) {
-        if (entries.length >= MAX_ENTRIES) break;
+        if (entries.length >= maxEntries) break;
         entries.push(sub);
       }
     }
@@ -56,25 +61,38 @@ export const listDirectoryTool: ToolDefinition = {
       showHidden: { type: "boolean", description: "Show hidden files/directories (default: false)." },
     },
   },
+  selectionHints: {
+    tags: ["filesystem", "directory", "list", "browse"],
+    aliases: ["ls_tree", "dir_list"],
+    examples: ["list folder contents", "show files in this directory"],
+    domain: "filesystem",
+    priority: 2,
+  },
   async execute(input): Promise<ToolResult> {
     const parsed = validateListDirectoryInput(input);
     if ("ok" in parsed) return parsed;
 
     const dirPath = resolve(parsed.path);
+    const guard = await enforceFilesystemGuard({ action: "list", path: dirPath });
+    if (!guard.ok) return guard.result;
+    const limits = getFilesystemListLimits();
     const start = Date.now();
 
     try {
       const entries = await listEntries(
-        dirPath,
+        guard.resolvedPath,
         parsed.recursive ?? false,
         parsed.showHidden ?? false,
+        limits.maxEntries,
+        limits.maxDepth,
+        0,
         "",
       );
 
-      const capped = entries.length >= MAX_ENTRIES;
+      const capped = entries.length >= limits.maxEntries;
       const lines = entries.map((e) => `[${e.type}] ${e.name}`);
       const output = capped
-        ? lines.join("\n") + `\n...[capped at ${MAX_ENTRIES} entries]`
+        ? lines.join("\n") + `\n...[capped at ${limits.maxEntries} entries]`
         : lines.join("\n");
 
       return {
@@ -82,9 +100,10 @@ export const listDirectoryTool: ToolDefinition = {
         output: output || "(empty directory)",
         meta: {
           durationMs: Date.now() - start,
-          dirPath,
+          dirPath: guard.resolvedPath,
           entryCount: entries.length,
           capped,
+          maxDepth: limits.maxDepth,
         },
       };
     } catch (err) {

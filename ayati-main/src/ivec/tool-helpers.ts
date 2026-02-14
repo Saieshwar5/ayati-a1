@@ -1,28 +1,23 @@
-import type { LlmToolSchema } from "../core/contracts/llm-protocol.js";
-import type { ToolExecutor } from "../skills/tool-executor.js";
 import type { ToolResult } from "../skills/types.js";
+import type { LlmToolSchema } from "../core/contracts/llm-protocol.js";
 
 export const CONTEXT_RECALL_TOOL_NAME = "context_recall_agent";
-
 export const CONTEXT_RECALL_TOOL_SCHEMA: LlmToolSchema = {
   name: CONTEXT_RECALL_TOOL_NAME,
-  description:
-    "Search prior sessions when you need historical context. Call only when active context is insufficient.",
+  description: "Search prior sessions when historical context is needed.",
   inputSchema: {
     type: "object",
+    required: ["query"],
     properties: {
       query: {
         type: "string",
-        description:
-          "What historical context to retrieve from past sessions.",
+        description: "Question to search in prior sessions.",
       },
       searchQuery: {
         type: "string",
-        description:
-          "Optional compact keyword query to filter candidate sessions in SQLite.",
+        description: "Optional keyword-focused query used for retrieval.",
       },
     },
-    required: ["query"],
   },
 };
 
@@ -40,21 +35,30 @@ export function formatToolResult(toolName: string, result: ToolResult): string {
   );
 }
 
-export function toToolSchemas(executor: ToolExecutor | undefined): LlmToolSchema[] {
-  const external = executor
-    ? executor
-        .definitions()
-        .filter((tool) => !!tool.inputSchema)
-        .map((tool) => ({
-          name: tool.name,
-          description: tool.description,
-          inputSchema: tool.inputSchema ?? { type: "object", properties: {} },
-        }))
-    : [];
+export function formatValidationError(
+  toolName: string,
+  validationError: string,
+  schema?: Record<string, unknown>,
+): string {
+  const lines: string[] = [
+    `Tool '${toolName}' input validation failed: ${validationError}`,
+  ];
 
-  if (external.some((tool) => tool.name === CONTEXT_RECALL_TOOL_NAME)) {
-    return external;
+  if (schema) {
+    const properties = schema["properties"] as Record<string, unknown> | undefined;
+    const required = schema["required"] as string[] | undefined;
+
+    if (properties) {
+      lines.push("");
+      lines.push(`Required schema for '${toolName}':`);
+      lines.push(JSON.stringify(properties, null, 2));
+    }
+
+    if (required && required.length > 0) {
+      lines.push("");
+      lines.push(`Required fields: ${required.join(", ")}`);
+    }
   }
 
-  return [...external, CONTEXT_RECALL_TOOL_SCHEMA];
+  return lines.join("\n");
 }

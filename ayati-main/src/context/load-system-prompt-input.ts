@@ -16,5 +16,6 @@ export function assemblePromptInput(
     recalledEvidence: memoryContext.recalledEvidence ?? [],
     contextRecallStatus: memoryContext.contextRecallStatus,
     skillBlocks: staticContext.skillBlocks,
+    toolDirectory: staticContext.toolDirectory,
   };
 }

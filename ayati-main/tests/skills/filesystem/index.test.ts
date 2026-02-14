@@ -12,8 +12,8 @@ describe("filesystemSkill", () => {
     expect(filesystemSkill.promptBlock).toContain("Filesystem Skill");
   });
 
-  it("exports all 7 tools", () => {
-    expect(filesystemSkill.tools).toHaveLength(7);
+  it("exports all 9 tools", () => {
+    expect(filesystemSkill.tools).toHaveLength(9);
 
     const names = filesystemSkill.tools.map((t) => t.name);
     expect(names).toContain("read_file");
@@ -23,6 +23,8 @@ describe("filesystemSkill", () => {
     expect(names).toContain("list_directory");
     expect(names).toContain("create_directory");
     expect(names).toContain("move");
+    expect(names).toContain("find_files");
+    expect(names).toContain("search_in_files");
   });
 
   it("all tools have input schemas", () => {

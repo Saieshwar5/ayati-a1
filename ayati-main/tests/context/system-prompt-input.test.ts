@@ -11,6 +11,7 @@ describe("assemblePromptInput", () => {
       soul: emptySoulContext(),
       userProfile: emptyUserProfileContext(),
       skillBlocks: [{ id: "skill-a", content: "Use A" }],
+      toolDirectory: "",
     };
 
     const memoryContext: PromptMemoryContext = {
@@ -61,6 +62,7 @@ describe("assemblePromptInput", () => {
       soul: emptySoulContext(),
       userProfile: emptyUserProfileContext(),
       skillBlocks: [],
+      toolDirectory: "",
     };
 
     const memoryContext: PromptMemoryContext = {

@@ -32,6 +32,16 @@ export interface RunState {
   approachesTried: Set<string>;
   toolCallsMade: number;
   consecutiveNonActSteps: number;
+  forceExpandedSelectionNextStep: boolean;
+  lastActionSignature?: string;
+  consecutiveRepeatedActions: number;
+}
+
+export interface ToolSelectionConfig {
+  enabled: boolean;
+  topK: number;
+  retryTopK: number;
+  alwaysInclude: string[];
 }
 
 export interface AgentLoopConfig {
@@ -39,6 +49,8 @@ export interface AgentLoopConfig {
   maxStepLimit: number;
   stepLimitPerTool: number;
   noProgressLimit: number;
+  repeatedActionLimit: number;
+  toolSelection: ToolSelectionConfig;
 }
 
 export type AgentLoopResultType = "reply" | "feedback";
@@ -56,4 +68,11 @@ export const DEFAULT_LOOP_CONFIG: AgentLoopConfig = {
   maxStepLimit: 20,
   stepLimitPerTool: 2,
   noProgressLimit: 4,
+  repeatedActionLimit: 3,
+  toolSelection: {
+    enabled: true,
+    topK: 10,
+    retryTopK: 20,
+    alwaysInclude: [],
+  },
 };
