@@ -11,6 +11,8 @@ import type { SessionMemory, MemoryRunHandle } from "../memory/types.js";
 import type { ContextRecallService } from "./context-recall-service.js";
 import type {
   AgentLoopConfig,
+  AgentLoopConfigInput,
+  AgentLoopEscalationDetails,
   AgentLoopResult,
   AgentStepInput,
   RunState,
@@ -57,7 +59,7 @@ export class AgentLoop {
     sessionMemory: SessionMemory,
     contextRecallService: ContextRecallService,
     onReply?: (clientId: string, data: unknown) => void,
-    config?: Partial<AgentLoopConfig>,
+    config?: AgentLoopConfigInput,
     toolDefinitions?: ToolDefinition[],
   ) {
     this.provider = provider;
@@ -71,6 +73,10 @@ export class AgentLoop {
       toolSelection: {
         ...DEFAULT_LOOP_CONFIG.toolSelection,
         ...(config?.toolSelection ?? {}),
+      },
+      escalation: {
+        ...DEFAULT_LOOP_CONFIG.escalation,
+        ...(config?.escalation ?? {}),
       },
     };
     this.toolDefinitions = toolDefinitions ?? [];
@@ -94,6 +100,9 @@ export class AgentLoop {
       scratchpad: [],
       approachesTried: new Set(),
       toolCallsMade: 0,
+      toolNamesUsed: new Set(),
+      failedToolCalls: 0,
+      reflectCycles: 0,
       consecutiveNonActSteps: 0,
       forceExpandedSelectionNextStep: false,
       consecutiveRepeatedActions: 0,
@@ -164,6 +173,27 @@ export class AgentLoop {
       if (!agentStepCall && directCalls.length === 0) {
         return { type: "reply", content: "Empty tool call response.", endStatus: "stuck", totalSteps: state.step, toolCallsMade: state.toolCallsMade };
       }
+
+      const escalation = this.evaluateEscalation(state);
+      if (escalation) {
+        this.sessionMemory.recordAgentStep(clientId, {
+          runId: runHandle.runId,
+          sessionId: runHandle.sessionId,
+          step: state.step,
+          phase: "escalate",
+          summary: escalation.summary,
+          approachesTried: [...state.approachesTried],
+          endStatus: "partial",
+        });
+        return {
+          type: "escalate",
+          content: escalation.summary,
+          endStatus: "partial",
+          totalSteps: state.step,
+          toolCallsMade: state.toolCallsMade,
+          escalation,
+        };
+      }
     }
 
     return {
@@ -218,6 +248,7 @@ export class AgentLoop {
             state.approachesTried.add(approach);
           }
         }
+        state.reflectCycles++;
         state.scratchpad.push({ step: state.step, phase: "reflect", thinking: parsed.thinking, summary: parsed.summary });
         messages.push({ role: "tool", toolCallId: call.id, name: AGENT_STEP_TOOL_NAME, content: JSON.stringify({ acknowledged: true, approaches_recorded: state.approachesTried.size }) });
         state.consecutiveNonActSteps++;
@@ -273,6 +304,7 @@ export class AgentLoop {
       name: toolName,
       input: toolInput,
     };
+    state.toolNamesUsed.add(toolName);
 
     this.sessionMemory.recordToolCall(clientId, {
       runId: runHandle.runId,
@@ -340,6 +372,9 @@ export class AgentLoop {
     if (this.isSelectionMiss(result)) {
       state.forceExpandedSelectionNextStep = true;
     }
+    if (!result.ok) {
+      state.failedToolCalls++;
+    }
 
     this.sessionMemory.recordToolResult(clientId, {
       runId: runHandle.runId,
@@ -406,6 +441,34 @@ export class AgentLoop {
       actionToolName: parsed.action?.tool_name,
       endStatus: parsed.end_status,
     });
+  }
+
+  private evaluateEscalation(state: RunState): AgentLoopEscalationDetails | null {
+    if (!this.config.escalation.enabled) return null;
+
+    const distinctTools = state.toolNamesUsed.size;
+    const minCallsReached = state.toolCallsMade > this.config.escalation.minToolCalls;
+    const toolDiversityReached = distinctTools >= this.config.escalation.minDistinctTools;
+
+    const weakConvergence =
+      state.failedToolCalls >= this.config.escalation.minFailedToolCalls ||
+      state.reflectCycles >= this.config.escalation.minReflectCycles;
+
+    if (!minCallsReached || !toolDiversityReached || !weakConvergence) {
+      return null;
+    }
+
+    const toolNames = [...state.toolNamesUsed].sort((a, b) => a.localeCompare(b));
+    return {
+      reason: "tool_volume_and_diversity_with_low_progress",
+      summary:
+        "Escalating to maximum mode: " +
+        `${state.toolCallsMade} tool call(s), ${toolNames.length} tool type(s), ` +
+        `${state.failedToolCalls} failed call(s), ${state.reflectCycles} reflect cycle(s).`,
+      toolNamesUsed: toolNames,
+      failedToolCalls: state.failedToolCalls,
+      reflectCycles: state.reflectCycles,
+    };
   }
 
   private effectiveLimit(state: RunState): number {

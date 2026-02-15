@@ -103,9 +103,12 @@ describe("IVecEngine", () => {
 
     await vi.waitFor(() => {
       expect(provider.generateTurn).toHaveBeenCalled();
-      const call = (provider.generateTurn as ReturnType<typeof vi.fn>).mock.calls[0]![0] as LlmTurnInput;
-      expect(call.tools?.[0]!.name).toBe(AGENT_STEP_TOOL_NAME);
-      const names = (call.tools ?? []).map((tool) => tool.name);
+      const calls = (provider.generateTurn as ReturnType<typeof vi.fn>).mock.calls
+        .map((args) => args[0] as LlmTurnInput);
+      const loopInput = calls.find((input) =>
+        (input.tools ?? []).some((tool) => tool.name === AGENT_STEP_TOOL_NAME));
+      expect(loopInput).toBeDefined();
+      const names = (loopInput!.tools ?? []).map((tool) => tool.name);
       expect(names).toContain("shell");
       expect(names).toContain("context_recall_agent");
     });
@@ -532,7 +535,7 @@ describe("IVecEngine", () => {
     engine.handleMessage("c1", { type: "chat", content: "hello" });
 
     await vi.waitFor(() => {
-      expect(provider.generateTurn).toHaveBeenCalledTimes(1);
+      expect(provider.generateTurn).toHaveBeenCalled();
     });
 
     expect(sessionMemory.searchSessionSummaries).not.toHaveBeenCalled();

@@ -31,6 +31,9 @@ export interface RunState {
   scratchpad: ScratchpadEntry[];
   approachesTried: Set<string>;
   toolCallsMade: number;
+  toolNamesUsed: Set<string>;
+  failedToolCalls: number;
+  reflectCycles: number;
   consecutiveNonActSteps: number;
   forceExpandedSelectionNextStep: boolean;
   lastActionSignature?: string;
@@ -44,6 +47,14 @@ export interface ToolSelectionConfig {
   alwaysInclude: string[];
 }
 
+export interface EscalationConfig {
+  enabled: boolean;
+  minToolCalls: number;
+  minDistinctTools: number;
+  minFailedToolCalls: number;
+  minReflectCycles: number;
+}
+
 export interface AgentLoopConfig {
   baseStepLimit: number;
   maxStepLimit: number;
@@ -51,9 +62,23 @@ export interface AgentLoopConfig {
   noProgressLimit: number;
   repeatedActionLimit: number;
   toolSelection: ToolSelectionConfig;
+  escalation: EscalationConfig;
 }
 
-export type AgentLoopResultType = "reply" | "feedback";
+export interface AgentLoopConfigInput extends Partial<AgentLoopConfig> {
+  toolSelection?: Partial<ToolSelectionConfig>;
+  escalation?: Partial<EscalationConfig>;
+}
+
+export interface AgentLoopEscalationDetails {
+  reason: string;
+  summary: string;
+  toolNamesUsed: string[];
+  failedToolCalls: number;
+  reflectCycles: number;
+}
+
+export type AgentLoopResultType = "reply" | "feedback" | "escalate";
 
 export interface AgentLoopResult {
   type: AgentLoopResultType;
@@ -61,6 +86,7 @@ export interface AgentLoopResult {
   endStatus?: EndStatus;
   totalSteps: number;
   toolCallsMade: number;
+  escalation?: AgentLoopEscalationDetails;
 }
 
 export const DEFAULT_LOOP_CONFIG: AgentLoopConfig = {
@@ -74,5 +100,12 @@ export const DEFAULT_LOOP_CONFIG: AgentLoopConfig = {
     topK: 10,
     retryTopK: 20,
     alwaysInclude: [],
+  },
+  escalation: {
+    enabled: true,
+    minToolCalls: 10,
+    minDistinctTools: 2,
+    minFailedToolCalls: 2,
+    minReflectCycles: 2,
   },
 };

@@ -425,4 +425,70 @@ describe("AgentLoop", () => {
     expect(result.endStatus).toBe("solved");
     expect(toolExecutor.execute).toHaveBeenCalledTimes(3);
   });
+
+  it("escalates to maximum mode when tool usage is broad and progress is weak", async () => {
+    let callCount = 0;
+    const toolExecutor = createMockToolExecutor({
+      execute: vi.fn().mockResolvedValue({ ok: false, error: "permission denied" }),
+    });
+    const provider = createMockProvider({
+      generateTurn: vi.fn().mockImplementation(async () => {
+        callCount++;
+        if (callCount === 1) {
+          return {
+            type: "tool_calls",
+            calls: [{
+              id: "s1",
+              name: AGENT_STEP_TOOL_NAME,
+              input: {
+                phase: "act",
+                thinking: "Try shell",
+                summary: "act1",
+                action: { tool_name: "shell", tool_input: { cmd: "echo hi" } },
+              },
+            }],
+          };
+        }
+        return {
+          type: "tool_calls",
+          calls: [{
+            id: "s2",
+            name: AGENT_STEP_TOOL_NAME,
+            input: {
+              phase: "act",
+              thinking: "Try context recall",
+              summary: "act2",
+              action: {
+                tool_name: CONTEXT_RECALL_TOOL_NAME,
+                tool_input: { query: "previous discussion" },
+              },
+            },
+          }],
+        };
+      }),
+    });
+
+    const loop = new AgentLoop(
+      provider,
+      toolExecutor,
+      createMockSessionMemory(),
+      createMockContextRecall(),
+      undefined,
+      {
+        escalation: {
+          minToolCalls: 1,
+          minDistinctTools: 2,
+          minFailedToolCalls: 1,
+          minReflectCycles: 0,
+        },
+      },
+    );
+
+    const result = await loop.run("c1", "solve complex thing", "", 0, runHandle, 0, resolveModel);
+
+    expect(result.type).toBe("escalate");
+    expect(result.endStatus).toBe("partial");
+    expect(result.toolCallsMade).toBe(2);
+    expect(result.escalation?.reason).toBe("tool_volume_and_diversity_with_low_progress");
+  });
 });

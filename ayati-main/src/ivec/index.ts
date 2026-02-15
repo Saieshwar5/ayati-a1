@@ -15,7 +15,11 @@ import type { ToolExecutor } from "../skills/tool-executor.js";
 import { devLog, devWarn, devError } from "../shared/index.js";
 import { AgentLoop } from "./agent-loop.js";
 import { CONTEXT_RECALL_TOOL_NAME } from "./tool-helpers.js";
-import type { AgentLoopConfig } from "./agent-loop-types.js";
+import type { AgentLoopConfigInput } from "./agent-loop-types.js";
+import {
+  MaxModeSubsessionOrchestrator,
+  buildMaxModeConfigFromEnv,
+} from "./max-mode/index.js";
 
 interface SystemContextBuildResult {
   systemContext: string;
@@ -30,7 +34,7 @@ export interface IVecEngineOptions {
   toolExecutor?: ToolExecutor;
   contextRecall?: ContextRecallOptions;
   contextRecallService?: ContextRecallService;
-  loopConfig?: Partial<AgentLoopConfig>;
+  loopConfig?: AgentLoopConfigInput;
 }
 
 export class IVecEngine {
@@ -40,7 +44,7 @@ export class IVecEngine {
   private readonly toolExecutor?: ToolExecutor;
   private readonly sessionMemory: SessionMemory;
   private readonly contextRecallService: ContextRecallService;
-  private readonly loopConfig?: Partial<AgentLoopConfig>;
+  private readonly loopConfig?: AgentLoopConfigInput;
   private staticSystemTokens = 0;
   private staticTokensReady = false;
 
@@ -140,6 +144,53 @@ export class IVecEngine {
           this.onReply?.(clientId, { type: "reply", content: result.content });
         } else if (result.type === "feedback") {
           this.onReply?.(clientId, { type: "feedback_request", content: result.content });
+        } else if (result.type === "escalate") {
+          if (!this.isMaxModeEnabled()) {
+            const disabledReply =
+              `${result.content}\n` +
+              "Maximum mode is currently disabled (IVEC_MAX_MODE_ENABLED=0).";
+            this.sessionMemory.recordAssistantFinal(
+              clientId,
+              runHandle.runId,
+              runHandle.sessionId,
+              disabledReply,
+            );
+            this.onReply?.(clientId, { type: "reply", content: disabledReply });
+            return;
+          }
+
+          this.onReply?.(clientId, {
+            type: "mode_decision",
+            mode: "maximum",
+            reason: result.escalation?.reason ?? "normal_loop_requested_maximum",
+          });
+
+          const escalationContext = result.escalation
+            ? [
+                content,
+                "",
+                "Normal-mode escalation context:",
+                result.escalation.summary,
+                `Tools used: ${result.escalation.toolNamesUsed.join(", ") || "(none)"}`,
+                `Failed tool calls: ${result.escalation.failedToolCalls}`,
+                `Reflect cycles: ${result.escalation.reflectCycles}`,
+              ].join("\n")
+            : content;
+
+          const maxResult = await this.runMaximumMode(
+            clientId,
+            escalationContext,
+            system.systemContext,
+            runHandle,
+          );
+
+          this.sessionMemory.recordAssistantFinal(
+            clientId,
+            runHandle.runId,
+            runHandle.sessionId,
+            maxResult.content,
+          );
+          this.onReply?.(clientId, { type: "reply", content: maxResult.content });
         }
       } else {
         const reply = `Received: "${content}"`;
@@ -167,6 +218,37 @@ export class IVecEngine {
         content: "Failed to generate a response.",
       });
     }
+  }
+
+  private async runMaximumMode(
+    clientId: string,
+    userContent: string,
+    systemContext: string,
+    runHandle: MemoryRunHandle,
+  ): Promise<{ content: string; endStatus: "solved" | "partial" | "stuck" }> {
+    const provider = this.provider;
+    if (!provider) {
+      throw new Error("Maximum mode requires a configured provider.");
+    }
+
+    const orchestrator = new MaxModeSubsessionOrchestrator({
+      provider,
+      toolExecutor: this.toolExecutor,
+      sessionMemory: this.sessionMemory,
+      onReply: this.onReply,
+      loopConfig: this.loopConfig,
+      maxModeConfig: buildMaxModeConfigFromEnv(),
+    });
+
+    return orchestrator.run({
+      clientId,
+      userContent,
+      systemContext,
+      mainSessionId: runHandle.sessionId,
+      mainRunId: runHandle.runId,
+      staticSystemTokens: this.staticSystemTokens,
+      resolveModelName: (providerName) => this.resolveActiveModelName(providerName),
+    });
   }
 
   private async buildSystemContext(): Promise<SystemContextBuildResult> {
@@ -302,6 +384,12 @@ export class IVecEngine {
 
   private shouldIncludeToolDirectoryInPrompt(): boolean {
     return process.env["PROMPT_INCLUDE_TOOL_DIRECTORY"] === "1";
+  }
+
+  private isMaxModeEnabled(): boolean {
+    const raw = process.env["IVEC_MAX_MODE_ENABLED"];
+    if (raw === undefined) return true;
+    return raw === "1" || raw.toLowerCase() === "true";
   }
 }
 
