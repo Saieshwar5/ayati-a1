@@ -1,5 +1,6 @@
 import type { LlmProvider } from "../core/contracts/provider.js";
 import { noopSessionMemory } from "../memory/provider.js";
+import { IncognitoSessionMemory } from "../memory/incognito-session-memory.js";
 import type { SessionMemory, MemoryRunHandle } from "../memory/types.js";
 import type { StaticContext } from "../context/static-context-cache.js";
 import { assemblePromptInput } from "../context/load-system-prompt-input.js";
@@ -42,11 +43,15 @@ export class IVecEngine {
   private readonly provider?: LlmProvider;
   private readonly staticContext?: StaticContext;
   private readonly toolExecutor?: ToolExecutor;
-  private readonly sessionMemory: SessionMemory;
-  private readonly contextRecallService: ContextRecallService;
+  private sessionMemory: SessionMemory;
+  private contextRecallService: ContextRecallService;
   private readonly loopConfig?: AgentLoopConfigInput;
+  private readonly contextRecallOptions?: ContextRecallOptions;
   private staticSystemTokens = 0;
   private staticTokensReady = false;
+  private incognito = false;
+  private normalSessionMemory: SessionMemory | null = null;
+  private normalContextRecallService: ContextRecallService | null = null;
 
   constructor(options?: IVecEngineOptions) {
     this.onReply = options?.onReply;
@@ -55,12 +60,13 @@ export class IVecEngine {
     this.toolExecutor = options?.toolExecutor;
     this.sessionMemory = options?.sessionMemory ?? noopSessionMemory;
     this.loopConfig = options?.loopConfig;
+    this.contextRecallOptions = options?.contextRecall;
     this.contextRecallService =
       options?.contextRecallService ??
       new ContextRecallService(
         this.sessionMemory,
         this.provider,
-        options?.contextRecall,
+        this.contextRecallOptions,
       );
   }
 
@@ -97,6 +103,11 @@ export class IVecEngine {
       name?: string;
       input?: unknown;
     };
+    if (msg.type === "incognito_task" && typeof msg.content === "string") {
+      void this.runIncognitoTask(clientId, msg.content);
+      return;
+    }
+
     if (msg.type === "chat" && typeof msg.content === "string") {
       void this.processChat(clientId, msg.content);
       return;
@@ -386,7 +397,37 @@ export class IVecEngine {
     return process.env["PROMPT_INCLUDE_TOOL_DIRECTORY"] === "1";
   }
 
+  async runIncognitoTask(clientId: string, taskContent: string): Promise<void> {
+    this.incognito = true;
+    this.normalSessionMemory = this.sessionMemory;
+    this.normalContextRecallService = this.contextRecallService;
+
+    const incognitoMemory = new IncognitoSessionMemory();
+    this.sessionMemory = incognitoMemory;
+    this.contextRecallService = new ContextRecallService(
+      incognitoMemory,
+      this.provider,
+      this.contextRecallOptions,
+    );
+    this.staticTokensReady = false;
+    this.ensureStaticTokenCache();
+
+    try {
+      await this.processChat(clientId, taskContent);
+    } finally {
+      incognitoMemory.shutdown();
+      this.sessionMemory = this.normalSessionMemory!;
+      this.contextRecallService = this.normalContextRecallService!;
+      this.normalSessionMemory = null;
+      this.normalContextRecallService = null;
+      this.incognito = false;
+      this.staticTokensReady = false;
+      this.ensureStaticTokenCache();
+    }
+  }
+
   private isMaxModeEnabled(): boolean {
+    if (this.incognito) return false;
     const raw = process.env["IVEC_MAX_MODE_ENABLED"];
     if (raw === undefined) return true;
     return raw === "1" || raw.toLowerCase() === "true";

@@ -1,0 +1,44 @@
+{
+  "schemaVersion": "ayati-prerequisites/v1",
+  "skillId": "playwright-cli",
+  "lastUpdated": "2026-02-15",
+  "mode": "declarative",
+  "items": [
+    {
+      "id": "playwright-cli-binary",
+      "type": "binary",
+      "required": true,
+      "description": "playwright-cli binary should be available globally.",
+      "howToCheck": {
+        "kind": "command",
+        "command": "playwright-cli --help"
+      },
+      "expected": "Command returns help text successfully.",
+      "howToFix": "Install playwright-cli globally and ensure PATH contains it."
+    },
+    {
+      "id": "node-npx-fallback",
+      "type": "node_package",
+      "required": false,
+      "description": "npx fallback path is available.",
+      "howToCheck": {
+        "kind": "command",
+        "command": "npx --yes playwright-cli --help"
+      },
+      "expected": "Fallback command returns help text successfully.",
+      "howToFix": "Install Node.js and npm to use npx fallback."
+    },
+    {
+      "id": "artifact-write-access",
+      "type": "filesystem",
+      "required": false,
+      "description": "Writable path for snapshots/screenshots.",
+      "howToCheck": {
+        "kind": "manual",
+        "instructions": "Confirm target output directory is writable."
+      },
+      "expected": "Snapshot/screenshot artifacts can be written.",
+      "howToFix": "Use /tmp or adjust filesystem permissions."
+    }
+  ]
+}

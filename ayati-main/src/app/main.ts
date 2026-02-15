@@ -12,6 +12,8 @@ import { createToolExecutor } from "../skills/tool-executor.js";
 import { builtInSkillsProvider } from "../skills/provider.js";
 import { loadToolAccessConfig, startConfigWatcher, stopConfigWatcher } from "../skills/tool-access-config.js";
 import { createIdentitySkill } from "../skills/builtins/identity/index.js";
+import { startStoreWatcher } from "../ayati-store/watcher.js";
+import { devLog } from "../shared/index.js";
 
 const thisDir = dirname(fileURLToPath(import.meta.url));
 const projectRoot = resolve(thisDir, "..", "..");
@@ -66,6 +68,9 @@ export async function main(): Promise<void> {
   const provider = await loadProvider(providerFactory);
   await loadToolAccessConfig();
   startConfigWatcher();
+  const storeWatcher = await startStoreWatcher(resolve(projectRoot, "src", "ayati-store"));
+  storeWatcher.on("skill-added", (meta) => devLog(`Skill detected: ${meta.id} v${meta.version}`));
+  storeWatcher.on("skill-removed", (meta) => devLog(`Skill removed: ${meta.id}`));
   const enabledTools = await builtInSkillsProvider.getAllTools();
   let engine: IVecEngine | null = null;
 
@@ -126,6 +131,7 @@ export async function main(): Promise<void> {
   console.log(`Ayati i-vec ready — plugins: [${registry.list().join(", ")}]`);
 
   const shutdown = async (): Promise<void> => {
+    storeWatcher.stop();
     stopConfigWatcher();
     await registry.stopAll();
     await wsServer.stop();

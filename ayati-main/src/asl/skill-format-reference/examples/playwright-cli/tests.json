@@ -1,0 +1,73 @@
+{
+  "schemaVersion": "ayati-tests/v1",
+  "skillId": "playwright-cli",
+  "suiteName": "playwright-cli-development-smoke",
+  "executionMode": "declarative",
+  "scenarios": [
+    {
+      "id": "smoke-open-goto-close",
+      "title": "Open, navigate, snapshot, close",
+      "goal": "Confirm basic browser workflow command coverage.",
+      "type": "manual",
+      "preconditions": [
+        "playwright-cli-binary"
+      ],
+      "steps": [
+        "Run `playwright-cli open`.",
+        "Run `playwright-cli goto https://example.com`.",
+        "Run `playwright-cli snapshot`.",
+        "Run `playwright-cli close`."
+      ],
+      "expected": [
+        "Each command exits successfully.",
+        "Snapshot output is generated.",
+        "Session closes cleanly."
+      ],
+      "passCriteria": "All steps complete without errors."
+    },
+    {
+      "id": "fallback-npx-help",
+      "title": "npx fallback path",
+      "goal": "Confirm fallback invocation path remains valid.",
+      "type": "command",
+      "preconditions": [
+        "node-npx-fallback"
+      ],
+      "steps": [
+        "Execute fallback command to fetch help output."
+      ],
+      "commands": [
+        {
+          "program": "npx",
+          "args": [
+            "--yes",
+            "playwright-cli",
+            "--help"
+          ],
+          "allowFailure": false
+        }
+      ],
+      "expected": [
+        "Command exits with code 0.",
+        "Output includes playwright-cli usage text."
+      ],
+      "passCriteria": "Fallback help command succeeds."
+    },
+    {
+      "id": "guardrail-policy-review",
+      "title": "Guardrail safety review",
+      "goal": "Verify shell policy remains restrictive.",
+      "type": "manual",
+      "preconditions": [],
+      "steps": [
+        "Review denyPrefixes and denyOperators in guardrails.json.",
+        "Review toolAccessPlan operations for additive behavior only."
+      ],
+      "expected": [
+        "Dangerous prefixes remain blocked.",
+        "No operation weakens base safety policy."
+      ],
+      "passCriteria": "Reviewer confirms restrictive policy is intact."
+    }
+  ]
+}

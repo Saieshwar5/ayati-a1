@@ -1,0 +1,102 @@
+{
+  "schemaVersion": "ayati-tools/v1",
+  "skillId": "playwright-cli",
+  "tools": [
+    {
+      "name": "playwright-cli.exec",
+      "description": "Execute a safe playwright-cli subcommand for browser-use workflows.",
+      "requiresCredentials": [
+        "PLAYWRIGHT_CLI_SESSION"
+      ],
+      "selectionHints": {
+        "tags": [
+          "browser",
+          "playwright",
+          "automation"
+        ],
+        "aliases": [
+          "browser_use",
+          "playwright_run"
+        ],
+        "examples": [
+          "open browser and go to a url",
+          "take a page snapshot",
+          "fill and submit a form"
+        ],
+        "domain": "execution",
+        "priority": 30
+      },
+      "inputSchema": {
+        "type": "object",
+        "required": [
+          "action"
+        ],
+        "properties": {
+          "action": {
+            "type": "string",
+            "description": "Playwright CLI action."
+          },
+          "args": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Arguments for action."
+          },
+          "session": {
+            "type": "string",
+            "description": "Optional browser session name.",
+            "minLength": 1,
+            "maxLength": 64
+          }
+        }
+      },
+      "executor": {
+        "type": "shell_command",
+        "command": "playwright-cli",
+        "commandFallbacks": [
+          {
+            "command": "npx",
+            "fixedArgs": [
+              "playwright-cli"
+            ]
+          }
+        ],
+        "argsTemplate": [
+          "{{#if session}}-s={{session}}{{/if}}",
+          "{{action}}",
+          "{{...args}}"
+        ],
+        "timeoutMs": 45000,
+        "maxOutputChars": 80000,
+        "allowedActions": [
+          "open",
+          "goto",
+          "click",
+          "dblclick",
+          "fill",
+          "type",
+          "press",
+          "drag",
+          "hover",
+          "select",
+          "upload",
+          "check",
+          "uncheck",
+          "snapshot",
+          "screenshot",
+          "tab-list",
+          "tab-new",
+          "tab-close",
+          "tab-select",
+          "go-back",
+          "go-forward",
+          "reload",
+          "close",
+          "close-all",
+          "list"
+        ]
+      }
+    }
+  ]
+}

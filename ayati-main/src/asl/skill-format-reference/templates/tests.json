@@ -1,0 +1,51 @@
+{
+  "schemaVersion": "ayati-tests/v1",
+  "skillId": "your-skill-id",
+  "suiteName": "your-skill-id-smoke",
+  "executionMode": "declarative",
+  "scenarios": [
+    {
+      "id": "smoke-command",
+      "title": "Primary command path",
+      "goal": "Verify the main tool command runs with a safe action.",
+      "type": "command",
+      "preconditions": [
+        "cli-binary"
+      ],
+      "steps": [
+        "Invoke the tool with a safe action from allowedActions.",
+        "Capture stdout/stderr and exit code."
+      ],
+      "commands": [
+        {
+          "program": "your-cli",
+          "args": [
+            "status"
+          ],
+          "allowFailure": false
+        }
+      ],
+      "expected": [
+        "Command exits with code 0.",
+        "Output contains status response."
+      ],
+      "passCriteria": "All expected conditions are met."
+    },
+    {
+      "id": "manual-safety-review",
+      "title": "Guardrail policy review",
+      "goal": "Confirm dangerous prefixes/operators remain blocked.",
+      "type": "manual",
+      "preconditions": [],
+      "steps": [
+        "Review guardrails deny prefixes and deny operators.",
+        "Review toolAccessPlan operations for idempotency."
+      ],
+      "expected": [
+        "Guardrails include denial for destructive shell patterns.",
+        "toolAccessPlan contains only additive/restrictive changes."
+      ],
+      "passCriteria": "Reviewer confirms policy coverage and no weakening changes."
+    }
+  ]
+}
