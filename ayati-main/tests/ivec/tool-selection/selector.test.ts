@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { selectTools } from "../../src/tools/selector.js";
-import type { SelectableTool } from "../../src/tools/selector-types.js";
+import { selectTools } from "../../../src/ivec/tool-selection/selector.js";
+import type { SelectableTool } from "../../../src/ivec/tool-selection/selector-types.js";
 
 function makeTool(
   name: string,

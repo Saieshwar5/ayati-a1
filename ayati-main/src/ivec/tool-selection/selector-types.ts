@@ -1,5 +1,5 @@
-import type { LlmToolSchema } from "../core/contracts/llm-protocol.js";
-import type { ToolSelectionHints } from "../skills/types.js";
+import type { LlmToolSchema } from "../../core/contracts/llm-protocol.js";
+import type { ToolSelectionHints } from "../../skills/types.js";
 
 export interface SelectableTool {
   schema: LlmToolSchema;

@@ -36,8 +36,8 @@ import {
 } from "../prompt/token-estimator.js";
 import { devLog } from "../shared/index.js";
 import { canUseTool } from "../skills/access-policy.js";
-import { selectTools } from "../tools/selector.js";
-import type { SelectableTool } from "../tools/selector-types.js";
+import { selectTools } from "./tool-selection/selector.js";
+import type { SelectableTool } from "./tool-selection/selector-types.js";
 
 interface TurnToolSelection {
   tools: LlmToolSchema[];
