@@ -1,7 +1,6 @@
 import { readdir, readFile, stat } from "node:fs/promises";
 import { resolve, join } from "node:path";
 import type { ToolDefinition, ToolResult } from "../../types.js";
-import { enforceFilesystemGuard, getFilesystemSearchLimits } from "../../guardrails/index.js";
 import { validateSearchInFilesInput } from "./validators.js";
 
 interface SearchState {
@@ -63,9 +62,10 @@ export const searchInFilesTool: ToolDefinition = {
     const parsed = validateSearchInFilesInput(input);
     if ("ok" in parsed) return parsed;
 
-    const limits = getFilesystemSearchLimits();
-    const maxDepth = Math.min(parsed.maxDepth ?? limits.maxDepth, limits.maxDepth);
-    const maxResults = Math.min(parsed.maxResults ?? limits.maxResults, limits.maxResults);
+    const defaultMaxDepth = 10;
+    const defaultMaxResults = 500;
+    const maxDepth = parsed.maxDepth ?? defaultMaxDepth;
+    const maxResults = parsed.maxResults ?? defaultMaxResults;
     const includeHidden = parsed.includeHidden ?? false;
     const caseSensitive = parsed.caseSensitive ?? false;
     const roots = (parsed.roots && parsed.roots.length > 0) ? parsed.roots : [process.cwd()];
@@ -78,11 +78,8 @@ export const searchInFilesTool: ToolDefinition = {
     try {
       for (const root of roots) {
         const rootPath = resolve(root);
-        const guard = await enforceFilesystemGuard({ action: "list", path: rootPath });
-        if (!guard.ok) continue;
-
-        searchedRoots.push(guard.resolvedPath);
-        const queue: SearchState[] = [{ path: guard.resolvedPath, depth: 0 }];
+        searchedRoots.push(rootPath);
+        const queue: SearchState[] = [{ path: rootPath, depth: 0 }];
 
         while (queue.length > 0 && matchedFiles < maxResults) {
           const current = queue.shift();

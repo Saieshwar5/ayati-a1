@@ -1,6 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { parseAgentStep, buildScratchpadBlock } from "../../src/ivec/agent-step-tool.js";
-import type { ScratchpadEntry } from "../../src/ivec/agent-loop-types.js";
+import { parseAgentStep } from "../../src/ivec/agent-step-tool.js";
 
 describe("parseAgentStep", () => {
   it("parses a valid REASON input", () => {
@@ -14,6 +13,34 @@ describe("parseAgentStep", () => {
       thinking: "I need to analyze the user request",
       summary: "Analyzing request",
     });
+  });
+
+  it("parses a valid PLAN input", () => {
+    const result = parseAgentStep({
+      phase: "plan",
+      thinking: "This is a complex task with multiple steps",
+      summary: "Creating migration plan",
+      plan: {
+        goal: "Migrate auth to JWT",
+        sub_tasks: [
+          { id: 1, title: "Audit current code" },
+          { id: 2, title: "Create JWT utils", depends_on: [1] },
+        ],
+      },
+    });
+    expect(result?.phase).toBe("plan");
+    expect(result?.plan?.goal).toBe("Migrate auth to JWT");
+    expect(result?.plan?.sub_tasks).toHaveLength(2);
+    expect(result?.plan?.sub_tasks[1]?.depends_on).toEqual([1]);
+  });
+
+  it("returns null for PLAN without plan object", () => {
+    const result = parseAgentStep({
+      phase: "plan",
+      thinking: "I need a plan",
+      summary: "Planning",
+    });
+    expect(result).toBeNull();
   });
 
   it("parses a valid ACT input with action", () => {
@@ -40,7 +67,20 @@ describe("parseAgentStep", () => {
     expect(result).toBeNull();
   });
 
-  it("parses a valid VERIFY input", () => {
+  it("parses a valid VERIFY input with key_facts and sub_task_outcome", () => {
+    const result = parseAgentStep({
+      phase: "verify",
+      thinking: "Checking output",
+      summary: "Verify result",
+      key_facts: ["Port is 3000", "DB is postgres"],
+      sub_task_outcome: "done",
+    });
+    expect(result?.phase).toBe("verify");
+    expect(result?.key_facts).toEqual(["Port is 3000", "DB is postgres"]);
+    expect(result?.sub_task_outcome).toBe("done");
+  });
+
+  it("parses a valid VERIFY input with no optional fields", () => {
     const result = parseAgentStep({
       phase: "verify",
       thinking: "Checking output",
@@ -53,18 +93,16 @@ describe("parseAgentStep", () => {
     });
   });
 
-  it("parses a valid REFLECT input with approaches_tried", () => {
+  it("parses a valid REFLECT input (no approaches_tried needed)", () => {
     const result = parseAgentStep({
       phase: "reflect",
-      thinking: "That didn't work",
-      summary: "Reflecting on failure",
-      approaches_tried: ["direct grep", "find command"],
+      thinking: "That didn't work — wrong path. I should try /b instead.",
+      summary: "Rethinking approach",
     });
     expect(result).toEqual({
       phase: "reflect",
-      thinking: "That didn't work",
-      summary: "Reflecting on failure",
-      approaches_tried: ["direct grep", "find command"],
+      thinking: "That didn't work — wrong path. I should try /b instead.",
+      summary: "Rethinking approach",
     });
   });
 
@@ -147,54 +185,5 @@ describe("parseAgentStep", () => {
 
   it("returns null for non-object input", () => {
     expect(parseAgentStep("string")).toBeNull();
-  });
-});
-
-describe("buildScratchpadBlock", () => {
-  it("returns minimal block for empty entries", () => {
-    const result = buildScratchpadBlock([], new Set());
-    expect(result).toBe("[Scratchpad: empty]");
-  });
-
-  it("renders entries in order", () => {
-    const entries: ScratchpadEntry[] = [
-      { step: 1, phase: "reason", thinking: "t1", summary: "Analyzed request" },
-      { step: 2, phase: "act", thinking: "t2", summary: "Ran command", toolResult: '{"ok":true}' },
-    ];
-    const result = buildScratchpadBlock(entries, new Set());
-    expect(result).toContain("[Step 1] REASON: Analyzed request");
-    expect(result).toContain("[Step 2] ACT: Ran command");
-    expect(result).toContain('Result: {"ok":true}');
-  });
-
-  it("includes approaches", () => {
-    const result = buildScratchpadBlock([], new Set(["grep approach", "find approach"]));
-    expect(result).toContain("Approaches tried: grep approach, find approach");
-  });
-
-  it("truncates when entries exceed threshold", () => {
-    const entries: ScratchpadEntry[] = Array.from({ length: 10 }, (_, i) => ({
-      step: i + 1,
-      phase: "reason" as const,
-      thinking: `thinking ${i + 1}`,
-      summary: `Summary ${i + 1}`,
-    }));
-    const result = buildScratchpadBlock(entries, new Set());
-    expect(result).toContain("[Step 1] REASON: Summary 1");
-    expect(result).toContain("[Step 2] REASON: Summary 2");
-    expect(result).toContain("[Step 8] REASON: Summary 8");
-    expect(result).toContain("[Step 9] REASON: Summary 9");
-    expect(result).toContain("[Step 10] REASON: Summary 10");
-    expect(result).toContain("5 intermediate steps omitted");
-    expect(result).not.toContain("[Step 5] REASON: Summary 5");
-  });
-
-  it("truncates long tool results", () => {
-    const longResult = "x".repeat(500);
-    const entries: ScratchpadEntry[] = [
-      { step: 1, phase: "act", thinking: "t", summary: "s", toolResult: longResult },
-    ];
-    const result = buildScratchpadBlock(entries, new Set());
-    expect(result).toContain("...[truncated]");
   });
 });

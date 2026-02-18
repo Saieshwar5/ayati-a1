@@ -1,6 +1,6 @@
 # Task Prompts
 
-Instruction prompts for self-build tasks run via `runIncognitoTask()`.
+Instruction prompts for self-build tasks.
 
 ## Available Tasks
 

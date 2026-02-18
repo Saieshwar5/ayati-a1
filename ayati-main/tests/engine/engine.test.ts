@@ -7,6 +7,7 @@ import type { StaticContext } from "../../src/context/static-context-cache.js";
 import { emptySoulContext, emptyUserProfileContext } from "../../src/context/types.js";
 import type { ToolExecutor } from "../../src/skills/tool-executor.js";
 import { AGENT_STEP_TOOL_NAME } from "../../src/ivec/agent-step-tool.js";
+import { CREATE_SESSION_TOOL_NAME } from "../../src/ivec/tool-helpers.js";
 
 function createMockProvider(overrides?: Partial<LlmProvider>): LlmProvider {
   return {
@@ -22,6 +23,26 @@ function createMockProvider(overrides?: Partial<LlmProvider>): LlmProvider {
   };
 }
 
+function createSessionMemory(): SessionMemory {
+  return {
+    initialize: vi.fn(),
+    shutdown: vi.fn(),
+    beginRun: vi.fn().mockReturnValue({ sessionId: "s1", runId: "r1" }),
+    recordToolCall: vi.fn(),
+    recordToolResult: vi.fn(),
+    recordAssistantFinal: vi.fn(),
+    recordRunFailure: vi.fn(),
+    recordAgentStep: vi.fn(),
+    recordAssistantFeedback: vi.fn(),
+    getPromptMemoryContext: vi.fn().mockReturnValue({
+      conversationTurns: [],
+      previousSessionSummary: "",
+      toolEvents: [],
+    }),
+    setStaticTokenBudget: vi.fn(),
+  };
+}
+
 describe("IVecEngine", () => {
   const staticContext: StaticContext = {
     basePrompt: "Base prompt",
@@ -31,18 +52,18 @@ describe("IVecEngine", () => {
     toolDirectory: "",
   };
 
-  it("should be constructible without options", () => {
+  it("is constructible without options", () => {
     const engine = new IVecEngine();
     expect(engine).toBeInstanceOf(IVecEngine);
   });
 
-  it("should start and stop without error when no provider is given", async () => {
+  it("starts and stops without provider", async () => {
     const engine = new IVecEngine();
     await engine.start();
     await engine.stop();
   });
 
-  it("should echo when no provider is given", async () => {
+  it("echoes chat without provider", async () => {
     const onReply = vi.fn();
     const engine = new IVecEngine({ onReply });
 
@@ -56,7 +77,7 @@ describe("IVecEngine", () => {
     });
   });
 
-  it("should call provider.generateTurn when provider is given", async () => {
+  it("calls provider.generateTurn when provider exists", async () => {
     const provider = createMockProvider();
     const onReply = vi.fn();
     const engine = new IVecEngine({ onReply, provider });
@@ -80,7 +101,7 @@ describe("IVecEngine", () => {
     });
   });
 
-  it("sends agent_step and native tool schemas in tools array", async () => {
+  it("includes create_session in tool schemas", async () => {
     const provider = createMockProvider();
     const onReply = vi.fn();
     const toolExecutor: ToolExecutor = {
@@ -110,11 +131,11 @@ describe("IVecEngine", () => {
       expect(loopInput).toBeDefined();
       const names = (loopInput!.tools ?? []).map((tool) => tool.name);
       expect(names).toContain("shell");
-      expect(names).toContain("context_recall_agent");
+      expect(names).toContain(CREATE_SESSION_TOOL_NAME);
     });
   });
 
-  it("emits local context token estimate before sending the model request", async () => {
+  it("emits local context-size estimate before model call", async () => {
     const provider = createMockProvider();
     const onReply = vi.fn();
     const engine = new IVecEngine({ onReply, provider });
@@ -137,7 +158,7 @@ describe("IVecEngine", () => {
     });
   });
 
-  it("should ignore non-chat messages", () => {
+  it("ignores non-chat messages", () => {
     const onReply = vi.fn();
     const engine = new IVecEngine({ onReply });
 
@@ -148,7 +169,7 @@ describe("IVecEngine", () => {
     expect(onReply).not.toHaveBeenCalled();
   });
 
-  it("should execute a tool message when tool executor is configured", async () => {
+  it("executes tool message when tool executor is configured", async () => {
     const onReply = vi.fn();
     const toolExecutor: ToolExecutor = {
       list: () => ["shell"],
@@ -169,7 +190,7 @@ describe("IVecEngine", () => {
     });
   });
 
-  it("should execute tools via agent_step act phase", async () => {
+  it("executes tools via agent_step act phase", async () => {
     let callCount = 0;
     const onReply = vi.fn();
     const provider = createMockProvider({
@@ -275,25 +296,7 @@ describe("IVecEngine", () => {
       execute: vi.fn().mockResolvedValue({ ok: true, output: "hello" }),
       validate: vi.fn().mockReturnValue({ valid: true }),
     };
-    const sessionMemory: SessionMemory = {
-      initialize: vi.fn(),
-      shutdown: vi.fn(),
-      beginRun: vi.fn().mockReturnValue({ sessionId: "s1", runId: "r1" }),
-      recordToolCall: vi.fn(),
-      recordToolResult: vi.fn(),
-      recordAssistantFinal: vi.fn(),
-      recordRunFailure: vi.fn(),
-      recordAgentStep: vi.fn(),
-      recordAssistantFeedback: vi.fn(),
-      getPromptMemoryContext: vi.fn().mockReturnValue({
-        conversationTurns: [],
-        previousSessionSummary: "",
-        toolEvents: [],
-      }),
-      setStaticTokenBudget: vi.fn(),
-      searchSessionSummaries: vi.fn().mockReturnValue([]),
-      loadSessionTurns: vi.fn().mockReturnValue([]),
-    };
+    const sessionMemory = createSessionMemory();
 
     const engine = new IVecEngine({
       onReply,
@@ -320,23 +323,7 @@ describe("IVecEngine", () => {
 
   it("passes static token budget to session memory on start", async () => {
     const provider = createMockProvider();
-    const sessionMemory: SessionMemory = {
-      initialize: vi.fn(),
-      shutdown: vi.fn(),
-      beginRun: vi.fn().mockReturnValue({ sessionId: "s1", runId: "r1" }),
-      recordToolCall: vi.fn(),
-      recordToolResult: vi.fn(),
-      recordAssistantFinal: vi.fn(),
-      recordRunFailure: vi.fn(),
-      getPromptMemoryContext: vi.fn().mockReturnValue({
-        conversationTurns: [],
-        previousSessionSummary: "",
-        toolEvents: [],
-      }),
-      setStaticTokenBudget: vi.fn(),
-      searchSessionSummaries: vi.fn().mockReturnValue([]),
-      loadSessionTurns: vi.fn().mockReturnValue([]),
-    };
+    const sessionMemory = createSessionMemory();
 
     const engine = new IVecEngine({ provider, sessionMemory });
     await engine.start();
@@ -348,7 +335,7 @@ describe("IVecEngine", () => {
     await engine.stop();
   });
 
-  it("should return tool_result error when tool executor is missing", async () => {
+  it("returns tool_result error when tool executor is missing", async () => {
     const onReply = vi.fn();
     const engine = new IVecEngine({ onReply });
 
@@ -366,7 +353,7 @@ describe("IVecEngine", () => {
     });
   });
 
-  it("should send error reply when provider throws", async () => {
+  it("sends error reply when provider throws", async () => {
     const provider = createMockProvider({
       generateTurn: vi.fn().mockRejectedValue(new Error("API down")),
     });
@@ -384,251 +371,4 @@ describe("IVecEngine", () => {
     });
   });
 
-  it("invokes context_recall_agent via agent_step act phase", async () => {
-    let callCount = 0;
-    const provider = createMockProvider({
-      generateTurn: vi
-        .fn<(input: LlmTurnInput) => Promise<LlmTurnOutput>>()
-        .mockImplementation(async (input) => {
-          const first = input.messages[0] as { role?: string; content?: string } | undefined;
-          const systemText = first?.role === "system" ? first.content ?? "" : "";
-          if (systemText.includes("MODE=EXTRACT_EVIDENCE")) {
-            return {
-              type: "assistant",
-              content: JSON.stringify({
-                evidence: [
-                  {
-                    turn_ref: "turn-1",
-                    snippet: "We deployed the API to staging with a blue-green switch.",
-                    why_relevant: "Contains prior deployment decision",
-                    confidence: 0.92,
-                  },
-                ],
-              }),
-            };
-          }
-
-          callCount++;
-          if (callCount === 1) {
-            return {
-              type: "tool_calls",
-              calls: [{
-                id: "s1",
-                name: AGENT_STEP_TOOL_NAME,
-                input: {
-                  phase: "act",
-                  thinking: "Need to recall",
-                  summary: "Recall context",
-                  action: {
-                    tool_name: "context_recall_agent",
-                    tool_input: {
-                      query: "what did we discuss about deployment?",
-                      searchQuery: "deployment staging",
-                    },
-                  },
-                },
-              }],
-            };
-          }
-          return {
-            type: "tool_calls",
-            calls: [{
-              id: "s2",
-              name: AGENT_STEP_TOOL_NAME,
-              input: { phase: "end", thinking: "Done", summary: "Done", end_status: "solved", end_message: "mock reply" },
-            }],
-          };
-        }),
-    });
-    const onReply = vi.fn();
-    const sessionMemory: SessionMemory = {
-      initialize: vi.fn(),
-      shutdown: vi.fn(),
-      beginRun: vi.fn().mockReturnValue({ sessionId: "active-session", runId: "r1" }),
-      recordToolCall: vi.fn(),
-      recordToolResult: vi.fn(),
-      recordAssistantFinal: vi.fn(),
-      recordRunFailure: vi.fn(),
-      recordAgentStep: vi.fn(),
-      recordAssistantFeedback: vi.fn(),
-      getPromptMemoryContext: vi.fn().mockReturnValue({
-        conversationTurns: [],
-        previousSessionSummary: "",
-        toolEvents: [],
-      }),
-      setStaticTokenBudget: vi.fn(),
-      searchSessionSummaries: vi.fn().mockReturnValue([
-        {
-          sessionId: "s-old",
-          summaryText: "Deployment and staging rollout discussion",
-          keywords: ["deployment", "staging"],
-          closedAt: "2026-02-01T09:00:00.000Z",
-          closeReason: "token_limit",
-          score: 3,
-        },
-      ]),
-      loadSessionTurns: vi.fn().mockReturnValue([
-        {
-          role: "assistant",
-          content: "We deployed the API to staging with a blue-green switch.",
-          timestamp: "2026-02-01T09:10:00.000Z",
-        },
-      ]),
-    };
-
-    const engine = new IVecEngine({
-      onReply,
-      provider,
-      sessionMemory,
-      staticContext,
-    });
-
-    await engine.start();
-    engine.handleMessage("c1", {
-      type: "chat",
-      content: "what did we discuss last time about deployment?",
-    });
-
-    await vi.waitFor(() => {
-      expect(onReply).toHaveBeenCalledWith("c1", {
-        type: "reply",
-        content: "mock reply",
-      });
-    });
-
-    expect(sessionMemory.searchSessionSummaries).toHaveBeenCalledWith(
-      "deployment staging",
-      expect.any(Number),
-    );
-    expect(sessionMemory.loadSessionTurns).toHaveBeenCalledWith("s-old");
-  });
-
-  it("does not run context recall when the model does not call context_recall_agent", async () => {
-    const provider = createMockProvider();
-    const onReply = vi.fn();
-    const sessionMemory: SessionMemory = {
-      initialize: vi.fn(),
-      shutdown: vi.fn(),
-      beginRun: vi.fn().mockReturnValue({ sessionId: "active-session", runId: "r1" }),
-      recordToolCall: vi.fn(),
-      recordToolResult: vi.fn(),
-      recordAssistantFinal: vi.fn(),
-      recordRunFailure: vi.fn(),
-      getPromptMemoryContext: vi.fn().mockReturnValue({
-        conversationTurns: [],
-        previousSessionSummary: "",
-        toolEvents: [],
-      }),
-      setStaticTokenBudget: vi.fn(),
-      searchSessionSummaries: vi.fn().mockReturnValue([]),
-      loadSessionTurns: vi.fn().mockReturnValue([]),
-    };
-
-    const engine = new IVecEngine({
-      onReply,
-      provider,
-      sessionMemory,
-      staticContext,
-    });
-
-    await engine.start();
-    engine.handleMessage("c1", { type: "chat", content: "hello" });
-
-    await vi.waitFor(() => {
-      expect(provider.generateTurn).toHaveBeenCalled();
-    });
-
-    expect(sessionMemory.searchSessionSummaries).not.toHaveBeenCalled();
-    expect(sessionMemory.loadSessionTurns).not.toHaveBeenCalled();
-  });
-
-  it("returns not_found payload through context_recall_agent tool output", async () => {
-    let callCount = 0;
-    const provider = createMockProvider({
-      generateTurn: vi
-        .fn<(input: LlmTurnInput) => Promise<LlmTurnOutput>>()
-        .mockImplementation(async () => {
-          callCount++;
-          if (callCount === 1) {
-            return {
-              type: "tool_calls",
-              calls: [{
-                id: "s1",
-                name: AGENT_STEP_TOOL_NAME,
-                input: {
-                  phase: "act",
-                  thinking: "Need recall",
-                  summary: "Recall",
-                  action: {
-                    tool_name: "context_recall_agent",
-                    tool_input: {
-                      query: "what did we decide in our last session?",
-                      searchQuery: "old release decision",
-                    },
-                  },
-                },
-              }],
-            };
-          }
-          return {
-            type: "tool_calls",
-            calls: [{
-              id: "s2",
-              name: AGENT_STEP_TOOL_NAME,
-              input: { phase: "end", thinking: "Done", summary: "Done", end_status: "solved", end_message: "done" },
-            }],
-          };
-        }),
-    });
-    const onReply = vi.fn();
-    const sessionMemory: SessionMemory = {
-      initialize: vi.fn(),
-      shutdown: vi.fn(),
-      beginRun: vi.fn().mockReturnValue({ sessionId: "active-session", runId: "r1" }),
-      recordToolCall: vi.fn(),
-      recordToolResult: vi.fn(),
-      recordAssistantFinal: vi.fn(),
-      recordRunFailure: vi.fn(),
-      recordAgentStep: vi.fn(),
-      recordAssistantFeedback: vi.fn(),
-      getPromptMemoryContext: vi.fn().mockReturnValue({
-        conversationTurns: [],
-        previousSessionSummary: "",
-        toolEvents: [],
-      }),
-      setStaticTokenBudget: vi.fn(),
-      searchSessionSummaries: vi.fn().mockReturnValue([]),
-      loadSessionTurns: vi.fn().mockReturnValue([]),
-    };
-
-    const engine = new IVecEngine({
-      onReply,
-      provider,
-      sessionMemory,
-      staticContext,
-    });
-
-    await engine.start();
-    engine.handleMessage("c1", {
-      type: "chat",
-      content: "what did we decide in our last session?",
-    });
-
-    await vi.waitFor(() => {
-      expect(onReply).toHaveBeenCalledWith("c1", {
-        type: "reply",
-        content: "done",
-      });
-    });
-
-    expect(sessionMemory.searchSessionSummaries).toHaveBeenCalledWith(
-      "old release decision",
-      expect.any(Number),
-    );
-    const toolResultCall = (sessionMemory.recordToolResult as ReturnType<typeof vi.fn>).mock.calls
-      .find((entry) => (entry?.[1] as { toolName?: string })?.toolName === "context_recall_agent");
-    const toolOutput = (toolResultCall?.[1] as { output?: string } | undefined)?.output ?? "";
-    expect(toolOutput).toContain("\"status\": \"not_found\"");
-    expect(toolOutput).toContain("\"foundUsefulData\": false");
-  });
 });

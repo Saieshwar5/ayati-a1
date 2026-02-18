@@ -1,5 +1,4 @@
 import { devWarn } from "../shared/index.js";
-import { canUseTool } from "./access-policy.js";
 import type { ToolDefinition, ToolExecutionContext, ToolResult } from "./types.js";
 
 export type ValidationResult =
@@ -87,10 +86,6 @@ export function createToolExecutor(tools: ToolDefinition[]): ToolExecutor {
       const tool = index.get(toolName);
       if (!tool) {
         return { ok: false, error: `Unknown tool: ${toolName}` };
-      }
-      const access = canUseTool(toolName);
-      if (!access.allowed) {
-        return { ok: false, error: access.reason ?? `Tool access denied: ${toolName}` };
       }
       return tool.execute(input, context);
     },

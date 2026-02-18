@@ -1,0 +1,1 @@
+All necessary directories for the project have been successfully created: /css, /js, /images.

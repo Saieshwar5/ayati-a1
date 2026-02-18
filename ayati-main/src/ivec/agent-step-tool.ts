@@ -1,9 +1,9 @@
 import type { LlmToolSchema } from "../core/contracts/llm-protocol.js";
-import type { AgentStepInput, ScratchpadEntry } from "./agent-loop-types.js";
+import type { AgentStepInput } from "./agent-loop-types.js";
 
 export const AGENT_STEP_TOOL_NAME = "agent_step";
 
-const VALID_PHASES = new Set(["reason", "act", "verify", "reflect", "feedback", "end"]);
+const VALID_PHASES = new Set(["reason", "plan", "act", "verify", "reflect", "feedback", "end"]);
 const VALID_END_STATUSES = new Set(["solved", "partial", "stuck"]);
 
 export const AGENT_STEP_TOOL_SCHEMA: LlmToolSchema = {
@@ -16,7 +16,7 @@ export const AGENT_STEP_TOOL_SCHEMA: LlmToolSchema = {
     properties: {
       phase: {
         type: "string",
-        enum: ["reason", "act", "verify", "reflect", "feedback", "end"],
+        enum: ["reason", "plan", "act", "verify", "reflect", "feedback", "end"],
         description: "Current phase of the agent loop.",
       },
       thinking: {
@@ -27,14 +27,55 @@ export const AGENT_STEP_TOOL_SCHEMA: LlmToolSchema = {
         type: "string",
         description: "A short public summary of what this step does.",
       },
+      plan: {
+        type: "object",
+        description: "Required when phase is 'plan'. Structured plan for this task.",
+        properties: {
+          goal: { type: "string", description: "The overall goal of this task." },
+          sub_tasks: {
+            type: "array",
+            description: "Ordered list of sub-tasks to accomplish the goal.",
+            items: {
+              type: "object",
+              properties: {
+                id: { type: "number", description: "Unique sub-task id." },
+                title: { type: "string", description: "Short title for this sub-task." },
+                depends_on: {
+                  type: "array",
+                  items: { type: "number" },
+                  description: "Ids of sub-tasks that must be done before this one.",
+                },
+              },
+              required: ["id", "title"],
+            },
+          },
+        },
+        required: ["goal", "sub_tasks"],
+      },
       action: {
         type: "object",
         description: "Required when phase is 'act'. The tool to execute.",
         properties: {
           tool_name: { type: "string", description: "Name of the tool to call." },
-          tool_input: { type: "object", description: "JSON object with the tool's parameters. Use the native tool schema for required/optional fields." },
+          tool_input: {
+            type: "object",
+            description: "JSON object with the tool's parameters.",
+          },
         },
         required: ["tool_name", "tool_input"],
+      },
+      key_facts: {
+        type: "array",
+        items: { type: "string" },
+        description:
+          "Optional. Use during 'verify' phase. Facts learned from the last action " +
+          "that should be remembered for future steps.",
+      },
+      sub_task_outcome: {
+        type: "string",
+        enum: ["done", "failed"],
+        description:
+          "Optional. Use during 'verify' phase. Mark the current plan sub-task as done or failed.",
       },
       feedback_message: {
         type: "string",
@@ -48,11 +89,6 @@ export const AGENT_STEP_TOOL_SCHEMA: LlmToolSchema = {
       end_message: {
         type: "string",
         description: "Required when phase is 'end'. Final message to the user.",
-      },
-      approaches_tried: {
-        type: "array",
-        items: { type: "string" },
-        description: "Approaches tried so far (used in reflect phase).",
       },
     },
     required: ["phase", "thinking", "summary"],
@@ -78,6 +114,32 @@ export function parseAgentStep(input: unknown): AgentStepInput | null {
     summary,
   };
 
+  if (phase === "plan") {
+    const planRaw = raw["plan"];
+    if (!planRaw || typeof planRaw !== "object") return null;
+    const p = planRaw as Record<string, unknown>;
+    if (typeof p["goal"] !== "string") return null;
+    if (!Array.isArray(p["sub_tasks"])) return null;
+    result.plan = {
+      goal: p["goal"],
+      sub_tasks: (p["sub_tasks"] as unknown[]).flatMap((item) => {
+        if (!item || typeof item !== "object") return [];
+        const t = item as Record<string, unknown>;
+        if (typeof t["id"] !== "number" || typeof t["title"] !== "string") return [];
+        const subTask: { id: number; title: string; depends_on?: number[] } = {
+          id: t["id"],
+          title: t["title"],
+        };
+        if (Array.isArray(t["depends_on"])) {
+          subTask.depends_on = (t["depends_on"] as unknown[]).filter(
+            (d): d is number => typeof d === "number",
+          );
+        }
+        return [subTask];
+      }),
+    };
+  }
+
   if (phase === "act") {
     const action = raw["action"];
     if (!action || typeof action !== "object") return null;
@@ -87,6 +149,18 @@ export function parseAgentStep(input: unknown): AgentStepInput | null {
       tool_name: act["tool_name"],
       tool_input: act["tool_input"] ?? {},
     };
+  }
+
+  if (phase === "verify") {
+    if (Array.isArray(raw["key_facts"])) {
+      result.key_facts = (raw["key_facts"] as unknown[]).filter(
+        (item): item is string => typeof item === "string",
+      );
+    }
+    const outcome = raw["sub_task_outcome"];
+    if (outcome === "done" || outcome === "failed") {
+      result.sub_task_outcome = outcome;
+    }
   }
 
   if (phase === "feedback") {
@@ -105,53 +179,5 @@ export function parseAgentStep(input: unknown): AgentStepInput | null {
     }
   }
 
-  if (Array.isArray(raw["approaches_tried"])) {
-    result.approaches_tried = (raw["approaches_tried"] as unknown[])
-      .filter((item): item is string => typeof item === "string");
-  }
-
   return result;
-}
-
-const SCRATCHPAD_KEEP_FIRST = 2;
-const SCRATCHPAD_KEEP_LAST = 3;
-const SCRATCHPAD_TRUNCATE_THRESHOLD = 8;
-
-export function buildScratchpadBlock(
-  entries: ScratchpadEntry[],
-  approaches: Set<string>,
-): string {
-  if (entries.length === 0 && approaches.size === 0) {
-    return "[Scratchpad: empty]";
-  }
-
-  const lines: string[] = ["--- Scratchpad ---"];
-
-  if (approaches.size > 0) {
-    lines.push(`Approaches tried: ${[...approaches].join(", ")}`);
-  }
-
-  let visible: ScratchpadEntry[];
-  if (entries.length > SCRATCHPAD_TRUNCATE_THRESHOLD) {
-    const first = entries.slice(0, SCRATCHPAD_KEEP_FIRST);
-    const last = entries.slice(-SCRATCHPAD_KEEP_LAST);
-    const omitted = entries.length - SCRATCHPAD_KEEP_FIRST - SCRATCHPAD_KEEP_LAST;
-    visible = [...first, ...last];
-    lines.push(`(${omitted} intermediate steps omitted)`);
-  } else {
-    visible = entries;
-  }
-
-  for (const entry of visible) {
-    lines.push(`[Step ${entry.step}] ${entry.phase.toUpperCase()}: ${entry.summary}`);
-    if (entry.toolResult) {
-      const preview = entry.toolResult.length > 300
-        ? entry.toolResult.slice(0, 300) + "...[truncated]"
-        : entry.toolResult;
-      lines.push(`  Result: ${preview}`);
-    }
-  }
-
-  lines.push("--- End Scratchpad ---");
-  return lines.join("\n");
 }

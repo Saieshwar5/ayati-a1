@@ -1,5 +1,7 @@
 import type { ToolDefinition } from "../skills/types.js";
-import { CONTEXT_RECALL_TOOL_NAME } from "./tool-helpers.js";
+import {
+  CREATE_SESSION_TOOL_NAME,
+} from "./tool-helpers.js";
 
 interface SchemaProperties {
   [key: string]: { type?: string; description?: string };
@@ -19,21 +21,21 @@ function buildParamSummary(schema: Record<string, unknown> | undefined): string 
   return entries.map(([name, prop]) => formatParam(name, prop, required.has(name))).join(", ");
 }
 
-const CONTEXT_RECALL_PARAMS = "query* (string), searchQuery (string)";
+const CREATE_SESSION_PARAMS = "reason* (string), confidence (number), handoff_summary (string)";
 
 export function buildToolDirectory(tools: ToolDefinition[]): string {
   const rows: string[] = [];
 
-  const hasContextRecall = tools.some((t) => t.name === CONTEXT_RECALL_TOOL_NAME);
+  const hasCreateSession = tools.some((t) => t.name === CREATE_SESSION_TOOL_NAME);
 
   for (const tool of tools) {
     const params = buildParamSummary(tool.inputSchema);
     rows.push(`| ${tool.name} | ${tool.description} | ${params} |`);
   }
 
-  if (!hasContextRecall) {
+  if (!hasCreateSession) {
     rows.push(
-      `| ${CONTEXT_RECALL_TOOL_NAME} | Search prior sessions when you need historical context | ${CONTEXT_RECALL_PARAMS} |`,
+      `| ${CREATE_SESSION_TOOL_NAME} | Close current active session and open a new one atomically when user switches to a different goal. | ${CREATE_SESSION_PARAMS} |`,
     );
   }
 

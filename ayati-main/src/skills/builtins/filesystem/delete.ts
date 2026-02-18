@@ -2,7 +2,6 @@ import { rm, stat } from "node:fs/promises";
 import { resolve } from "node:path";
 import type { ToolDefinition, ToolResult } from "../../types.js";
 import { validateDeleteInput } from "./validators.js";
-import { enforceFilesystemGuard } from "../../guardrails/index.js";
 
 export const deleteTool: ToolDefinition = {
   name: "delete",
@@ -15,10 +14,6 @@ export const deleteTool: ToolDefinition = {
       recursive: {
         type: "boolean",
         description: "Delete directories and their contents recursively (default: false).",
-      },
-      confirmationToken: {
-        type: "string",
-        description: "Required confirmation token in format CONFIRM:<operation_id> when requested by guardrails.",
       },
     },
   },
@@ -47,21 +42,13 @@ export const deleteTool: ToolDefinition = {
         };
       }
 
-      const guard = await enforceFilesystemGuard({
-        action: "delete",
-        path: targetPath,
-        recursive: parsed.recursive,
-        confirmationToken: parsed.confirmationToken,
-      });
-      if (!guard.ok) return guard.result;
-
-      await rm(guard.resolvedPath, { recursive: parsed.recursive ?? false, force: false });
+      await rm(targetPath, { recursive: parsed.recursive ?? false, force: false });
 
       const kind = info.isDirectory() ? "directory" : "file";
       return {
         ok: true,
-        output: `Deleted ${kind}: ${guard.resolvedPath}`,
-        meta: { durationMs: Date.now() - start, targetPath: guard.resolvedPath, kind },
+        output: `Deleted ${kind}: ${targetPath}`,
+        meta: { durationMs: Date.now() - start, targetPath, kind },
       };
     } catch (err) {
       const message = err instanceof Error ? err.message : "Unknown filesystem error";

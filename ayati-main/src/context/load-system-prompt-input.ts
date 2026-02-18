@@ -12,9 +12,6 @@ export function assemblePromptInput(
     userProfile: staticContext.userProfile,
     conversationTurns: memoryContext.conversationTurns,
     previousSessionSummary: memoryContext.previousSessionSummary,
-    toolEvents: memoryContext.toolEvents,
-    recalledEvidence: memoryContext.recalledEvidence ?? [],
-    contextRecallStatus: memoryContext.contextRecallStatus,
     skillBlocks: staticContext.skillBlocks,
     toolDirectory: staticContext.toolDirectory,
   };

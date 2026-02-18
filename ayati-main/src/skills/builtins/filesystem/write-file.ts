@@ -2,7 +2,6 @@ import { writeFile, mkdir } from "node:fs/promises";
 import { resolve, dirname } from "node:path";
 import type { ToolDefinition, ToolResult } from "../../types.js";
 import { validateWriteFileInput } from "./validators.js";
-import { enforceFilesystemGuard } from "../../guardrails/index.js";
 
 export const writeFileTool: ToolDefinition = {
   name: "write_file",
@@ -16,10 +15,6 @@ export const writeFileTool: ToolDefinition = {
       createDirs: {
         type: "boolean",
         description: "Create parent directories if they don't exist (default: false).",
-      },
-      confirmationToken: {
-        type: "string",
-        description: "Required when guardrails request confirmation for this write operation.",
       },
     },
   },
@@ -35,27 +30,21 @@ export const writeFileTool: ToolDefinition = {
     if ("ok" in parsed) return parsed;
 
     const filePath = resolve(parsed.path);
-    const guard = await enforceFilesystemGuard({
-      action: "write",
-      path: filePath,
-      confirmationToken: parsed.confirmationToken,
-    });
-    if (!guard.ok) return guard.result;
     const start = Date.now();
 
     try {
       if (parsed.createDirs) {
-        await mkdir(dirname(guard.resolvedPath), { recursive: true });
+        await mkdir(dirname(filePath), { recursive: true });
       }
 
-      await writeFile(guard.resolvedPath, parsed.content, "utf-8");
+      await writeFile(filePath, parsed.content, "utf-8");
 
       return {
         ok: true,
-        output: `Written ${parsed.content.length} characters to ${guard.resolvedPath}`,
+        output: `Written ${parsed.content.length} characters to ${filePath}`,
         meta: {
           durationMs: Date.now() - start,
-          filePath: guard.resolvedPath,
+          filePath,
           bytesWritten: Buffer.byteLength(parsed.content, "utf-8"),
         },
       };

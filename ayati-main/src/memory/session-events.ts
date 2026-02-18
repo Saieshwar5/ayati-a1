@@ -5,6 +5,7 @@ export type SessionEventType =
   | "session_close"
   | "user_message"
   | "assistant_message"
+  | "turn_status"
   | "tool_call"
   | "tool_result"
   | "run_failure"
@@ -12,45 +13,48 @@ export type SessionEventType =
   | "assistant_feedback";
 
 interface BaseEvent {
-  v: 1;
+  v: 2;
   ts: string;
   type: SessionEventType;
   sessionId: string;
+  sessionPath: string;
 }
 
 export interface SessionOpenEvent extends BaseEvent {
   type: "session_open";
   clientId: string;
-  previousSessionSummary: string;
+  parentSessionId?: string;
+  handoffSummary?: string;
 }
 
 export interface SessionCloseEvent extends BaseEvent {
   type: "session_close";
   reason: string;
-  summaryText: string;
-  summaryId?: number;
-  summaryKeywords?: string[];
-  tokenAtClose?: number;
-  driftScore?: number;
-  infiniteTaskRef?: string;
-  infiniteResumeFromRef?: string;
+  tokenAtClose: number;
+  eventCount: number;
+  handoffSummary?: string;
+  nextSessionId?: string;
+  nextSessionPath?: string;
 }
 
 export interface UserMessageEvent extends BaseEvent {
   type: "user_message";
-  runId: string;
   content: string;
 }
 
 export interface AssistantMessageEvent extends BaseEvent {
   type: "assistant_message";
-  runId: string;
   content: string;
+}
+
+export interface TurnStatusEvent extends BaseEvent {
+  type: "turn_status";
+  status: "processing_started" | "response_started" | "response_completed" | "response_failed" | "session_switched" | "activity_switched";
+  note?: string;
 }
 
 export interface ToolCallEvent extends BaseEvent {
   type: "tool_call";
-  runId: string;
   stepId: number;
   toolCallId: string;
   toolName: string;
@@ -59,7 +63,6 @@ export interface ToolCallEvent extends BaseEvent {
 
 export interface ToolResultEvent extends BaseEvent {
   type: "tool_result";
-  runId: string;
   stepId: number;
   toolCallId: string;
   toolName: string;
@@ -72,13 +75,11 @@ export interface ToolResultEvent extends BaseEvent {
 
 export interface RunFailureEvent extends BaseEvent {
   type: "run_failure";
-  runId: string;
   message: string;
 }
 
 export interface AgentStepEvent extends BaseEvent {
   type: "agent_step";
-  runId: string;
   step: number;
   phase: string;
   summary: string;
@@ -89,21 +90,7 @@ export interface AgentStepEvent extends BaseEvent {
 
 export interface AssistantFeedbackEvent extends BaseEvent {
   type: "assistant_feedback";
-  runId: string;
   message: string;
-}
-
-export interface ToolContextEntry {
-  v: 1;
-  ts: string;
-  sessionId: string;
-  toolCallId: string;
-  args: unknown;
-  status: ToolEventStatus;
-  output: string;
-  errorMessage?: string;
-  errorCode?: string;
-  durationMs?: number;
 }
 
 export type SessionEvent =
@@ -111,20 +98,59 @@ export type SessionEvent =
   | SessionCloseEvent
   | UserMessageEvent
   | AssistantMessageEvent
+  | TurnStatusEvent
   | ToolCallEvent
   | ToolResultEvent
   | RunFailureEvent
   | AgentStepEvent
   | AssistantFeedbackEvent;
 
+export type CountableSessionEvent =
+  | UserMessageEvent
+  | AssistantMessageEvent;
+
+export type ToolSessionEvent =
+  | ToolCallEvent
+  | ToolResultEvent;
+
+const COUNTABLE_EVENT_TYPES = new Set<SessionEventType>([
+  "user_message",
+  "assistant_message",
+]);
+
+export function isCountableSessionEvent(event: SessionEvent): event is CountableSessionEvent {
+  return COUNTABLE_EVENT_TYPES.has(event.type);
+}
+
+export function isAgentStepEvent(event: SessionEvent): event is AgentStepEvent {
+  return event.type === "agent_step";
+}
+
 export function serializeEvent(event: SessionEvent): string {
   return JSON.stringify(event);
 }
 
 export function deserializeEvent(line: string): SessionEvent {
-  const parsed = JSON.parse(line) as SessionEvent;
-  if (parsed.v !== 1) {
+  const parsed = JSON.parse(line) as {
+    v?: number;
+    sessionPath?: string;
+    sessionId?: string;
+    [key: string]: unknown;
+  };
+  if (parsed.v !== 1 && parsed.v !== 2) {
     throw new Error(`Unsupported event version: ${String(parsed.v)}`);
   }
-  return parsed;
+
+  if (parsed.v === 1) {
+    const fallbackPath = parsed.sessionPath && parsed.sessionPath.length > 0
+      ? parsed.sessionPath
+      : `sessions/legacy/${parsed.sessionId}.md`;
+    return {
+      ...(parsed as Record<string, unknown>),
+      v: 2,
+      sessionPath: fallbackPath,
+    } as SessionEvent;
+  }
+
+  return parsed as unknown as SessionEvent;
 }

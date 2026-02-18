@@ -10,7 +10,6 @@ export async function loadContext(): Promise<string> {
   const input = assemblePromptInput(staticCtx, {
     conversationTurns: [],
     previousSessionSummary: "",
-    toolEvents: [],
   });
   return buildSystemPrompt(input).systemPrompt;
 }

@@ -1,21 +1,26 @@
 import type { ToolResult } from "../skills/types.js";
 import type { LlmToolSchema } from "../core/contracts/llm-protocol.js";
 
-export const CONTEXT_RECALL_TOOL_NAME = "context_recall_agent";
-export const CONTEXT_RECALL_TOOL_SCHEMA: LlmToolSchema = {
-  name: CONTEXT_RECALL_TOOL_NAME,
-  description: "Search prior sessions when historical context is needed.",
+export const CREATE_SESSION_TOOL_NAME = "create_session";
+
+export const CREATE_SESSION_TOOL_SCHEMA: LlmToolSchema = {
+  name: CREATE_SESSION_TOOL_NAME,
+  description: "Create a new session when the user request is unrelated to the current active session.",
   inputSchema: {
     type: "object",
-    required: ["query"],
+    required: ["reason"],
     properties: {
-      query: {
+      reason: {
         type: "string",
-        description: "Question to search in prior sessions.",
+        description: "Short reason describing why this request should start a new session.",
       },
-      searchQuery: {
+      confidence: {
+        type: "number",
+        description: "Optional confidence from 0.0 to 1.0 for the session switch decision.",
+      },
+      handoff_summary: {
         type: "string",
-        description: "Optional keyword-focused query used for retrieval.",
+        description: "Optional carry-forward summary from the previous session to the new session.",
       },
     },
   },

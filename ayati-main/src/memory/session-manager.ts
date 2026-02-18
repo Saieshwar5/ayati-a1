@@ -1,128 +1,111 @@
 import { randomUUID } from "node:crypto";
-import { rmSync } from "node:fs";
+import { existsSync, rmSync } from "node:fs";
 import { resolve } from "node:path";
-import type { LlmProvider } from "../core/contracts/provider.js";
 import { estimateTextTokens } from "../prompt/token-estimator.js";
 import { devWarn } from "../shared/index.js";
 import type {
   SessionMemory,
   MemoryRunHandle,
+  TurnStatusRecordInput,
+  CreateSessionInput,
+  CreateSessionResult,
   ToolCallRecordInput,
   ToolCallResultRecordInput,
   AgentStepRecordInput,
   PromptMemoryContext,
   ConversationTurn,
-  SessionProfile,
-  SessionSummarySearchHit,
 } from "./types.js";
 import type {
   SessionEvent,
+  CountableSessionEvent,
+  ToolSessionEvent,
   UserMessageEvent,
   AssistantMessageEvent,
+  TurnStatusEvent,
   ToolCallEvent,
   ToolResultEvent,
   RunFailureEvent,
   AgentStepEvent,
   AssistantFeedbackEvent,
-  ToolContextEntry,
 } from "./session-events.js";
 import { InMemorySession } from "./session.js";
 import { SessionPersistence } from "./session-persistence.js";
-import type { SessionPersistenceOptions } from "./session-persistence.js";
-import { SqliteMemoryIndex } from "./sqlite-memory-index.js";
-import { SessionSummaryService } from "./session-summary-service.js";
-import { SessionDriftService } from "./session-drift-service.js";
+import type { ActiveSessionInfo, SessionPersistenceOptions } from "./session-persistence.js";
 
 const MIN_TURNS_FOR_CALLBACK = 2;
 const DEFAULT_CONTEXT_TOKEN_LIMIT = 100_000;
-const DEFAULT_CHECKPOINT_EXCHANGES = 6;
-const DEFAULT_DRIFT_CONFIDENCE_THRESHOLD = 0.65;
+const PROMPT_EVENT_WINDOW = 20;
+const PROMPT_AGENT_STEP_WINDOW = 10;
 
 export interface SessionCloseData {
   sessionId: string;
   clientId: string;
   turns: ConversationTurn[];
   reason: string;
-  profile?: SessionProfile | null;
 }
 
-export interface SessionManagerOptions extends SessionPersistenceOptions {
+export interface MemoryManagerOptions extends SessionPersistenceOptions {
   now?: () => Date;
-  provider?: LlmProvider;
   onSessionClose?: (data: SessionCloseData) => void | Promise<void>;
   contextTokenLimit?: number;
-  checkpointExchanges?: number;
-  driftConfidenceThreshold?: number;
 }
 
-export class SessionManager implements SessionMemory {
+type TimelineEvent =
+  | UserMessageEvent
+  | AssistantMessageEvent
+  | TurnStatusEvent
+  | ToolCallEvent
+  | ToolResultEvent
+  | RunFailureEvent
+  | AgentStepEvent
+  | AssistantFeedbackEvent;
+
+export class MemoryManager implements SessionMemory {
   private readonly persistence: SessionPersistence;
-  private readonly memoryIndex: SqliteMemoryIndex;
-  private readonly summaryService: SessionSummaryService;
-  private readonly driftService: SessionDriftService;
   private readonly nowProvider: () => Date;
   private readonly onSessionCloseCallback?: (data: SessionCloseData) => void | Promise<void>;
   private readonly contextTokenLimit: number;
-  private readonly checkpointExchanges: number;
-  private readonly driftConfidenceThreshold: number;
 
   private currentSession: InMemorySession | null = null;
-  private currentSessionProfile: SessionProfile | null = null;
-  private previousSessionSummary = "";
+  private promptWindowEvents: CountableSessionEvent[] = [];
+  private promptWindowToolEvents: ToolSessionEvent[] = [];
+  private promptWindowAgentStepEvents: AgentStepEvent[] = [];
   private staticTokenBudget = 0;
-  private completedExchangesInSession = 0;
-  private lastCheckpointExchange = 0;
   private activeClientId = "";
   private backgroundQueue: Promise<void> = Promise.resolve();
 
-  constructor(options?: SessionManagerOptions) {
+  constructor(options?: MemoryManagerOptions) {
     this.persistence = new SessionPersistence({
-      dataDir: options?.dataDir,
-    });
-    this.memoryIndex = new SqliteMemoryIndex({
-      dataDir: options?.dataDir,
       dbPath: options?.dbPath,
-    });
-    this.summaryService = new SessionSummaryService({
-      provider: options?.provider,
-    });
-    this.driftService = new SessionDriftService({
-      provider: options?.provider,
+      dataDir: options?.dataDir,
     });
     this.nowProvider = options?.now ?? (() => new Date());
     this.onSessionCloseCallback = options?.onSessionClose;
     this.contextTokenLimit = options?.contextTokenLimit ?? DEFAULT_CONTEXT_TOKEN_LIMIT;
-    this.checkpointExchanges = Math.max(1, options?.checkpointExchanges ?? DEFAULT_CHECKPOINT_EXCHANGES);
-    this.driftConfidenceThreshold =
-      options?.driftConfidenceThreshold ?? DEFAULT_DRIFT_CONFIDENCE_THRESHOLD;
   }
 
   initialize(clientId: string): void {
     this.activeClientId = clientId;
     this.persistence.start();
-    this.memoryIndex.start();
     this.removeLegacyInfiniteContextStorage();
+    this.restoreActiveSession(clientId);
 
-    const latest = this.memoryIndex.getLatestSummary(clientId);
-    this.previousSessionSummary = latest?.summaryText ?? "";
-
-    const activeId = this.persistence.getActiveSessionId();
-    if (activeId) {
-      const filePath = resolve(this.persistence.sessionsDir, `${activeId}.jsonl`);
-      const restored = this.persistence.replaySessionFile(filePath);
-      if (restored && restored.clientId === clientId) {
-        this.currentSession = restored;
-        this.currentSessionProfile = this.memoryIndex.getSessionMetadata(restored.id);
-        this.completedExchangesInSession = restored.getExchangeCount();
-      }
+    if (this.currentSession) {
+      // If we resumed an active session, hydrate conversation window from that session timeline.
+      this.promptWindowEvents = this.currentSession.getCountableEvents(PROMPT_EVENT_WINDOW);
+      return;
     }
+
+    this.promptWindowEvents = this.persistence.loadRecentCountableEvents(clientId, PROMPT_EVENT_WINDOW);
   }
 
   async shutdown(): Promise<void> {
     if (this.currentSession) {
-      this.closeSessionInternal(this.currentSession, this.nowIso(), "shutdown");
-      this.currentSession = null;
-      this.currentSessionProfile = null;
+      // Keep the current session active across graceful restart.
+      this.persistence.writeActiveSessionMarker(
+        this.currentSession.id,
+        this.currentSession.sessionPath,
+      );
     }
 
     try {
@@ -132,211 +115,237 @@ export class SessionManager implements SessionMemory {
     }
 
     this.persistence.stop();
-    this.memoryIndex.stop();
+    this.currentSession = null;
   }
 
   beginRun(clientId: string, userMessage: string): MemoryRunHandle {
     const nowIso = this.nowIso();
     this.ensureOpenSession(clientId, nowIso);
 
-    if (
-      this.currentSession &&
-      this.staticTokenBudget + this.estimateDynamicTokens(this.currentSession) >= this.contextTokenLimit
-    ) {
-      this.rotateSession(clientId, nowIso, "token_limit");
-    }
-
-    this.ensureOpenSession(clientId, nowIso);
     const session = this.currentSession!;
     const runId = randomUUID();
 
     const event: UserMessageEvent = {
-      v: 1,
+      v: 2,
       ts: nowIso,
       type: "user_message",
       sessionId: session.id,
-      runId,
+      sessionPath: session.sessionPath,
       content: userMessage,
     };
 
-    session.addEntry(event);
-    this.persistence.appendEvent(event);
+    this.appendTimelineEvent(event, true);
 
     return { sessionId: session.id, runId };
   }
 
-  recordToolCall(_clientId: string, input: ToolCallRecordInput): void {
-    if (!this.currentSession || this.currentSession.id !== input.sessionId) return;
-
+  recordTurnStatus(clientId: string, input: TurnStatusRecordInput): void {
     const nowIso = this.nowIso();
+    const session = this.ensureWritableSession(clientId, nowIso);
+
+    const event: TurnStatusEvent = {
+      v: 2,
+      ts: nowIso,
+      type: "turn_status",
+      sessionId: session.id,
+      sessionPath: session.sessionPath,
+      status: input.status,
+      note: input.note,
+    };
+
+    this.appendTimelineEvent(event, false);
+  }
+
+  createSession(clientId: string, input: CreateSessionInput): CreateSessionResult {
+    const nowIso = this.nowIso();
+    this.ensureOpenSession(clientId, nowIso);
+
+    const previousSession = this.currentSession!;
+    const previousSessionId = previousSession.id;
+    const reason = input.reason.trim().length > 0 ? input.reason.trim() : "agent_requested";
+    const source = input.source ?? "agent";
+    const confidence = input.confidence;
+    const handoffSummary = input.handoffSummary?.trim();
+    const nextSessionId = randomUUID();
+    const nextSessionPath = this.persistence.buildSessionPath(nowIso, nextSessionId);
+
+    this.closeSessionInternal(previousSession, nowIso, `session_switch:${reason}`, {
+      handoffSummary,
+      nextSessionId,
+      nextSessionPath,
+    });
+    this.currentSession = null;
+    this.createNewSession(clientId, nowIso, {
+      sessionId: nextSessionId,
+      sessionPath: nextSessionPath,
+      parentSessionId: previousSessionId,
+      handoffSummary,
+    });
+    const active = this.currentSession!;
+
+    if (handoffSummary) {
+      const handoffEvent: TurnStatusEvent = {
+        v: 2,
+        ts: nowIso,
+        type: "turn_status",
+        sessionId: active.id,
+        sessionPath: active.sessionPath,
+        status: "session_switched",
+        note: `handoff_from=${previousSessionId}; handoff_summary=${handoffSummary}`,
+      };
+      this.appendTimelineEvent(handoffEvent, false);
+    }
+
+    const event: TurnStatusEvent = {
+      v: 2,
+      ts: nowIso,
+      type: "turn_status",
+      sessionId: active.id,
+      sessionPath: active.sessionPath,
+      status: "session_switched",
+      note: `source=${source}; reason=${reason}${typeof confidence === "number" ? `; confidence=${confidence}` : ""}`,
+    };
+    this.appendTimelineEvent(event, false);
+
+    return {
+      previousSessionId,
+      sessionId: active.id,
+      sessionPath: active.sessionPath,
+    };
+  }
+
+  recordToolCall(clientId: string, input: ToolCallRecordInput): void {
+    const nowIso = this.nowIso();
+    const session = this.ensureWritableSession(clientId, nowIso);
+
     const event: ToolCallEvent = {
-      v: 1,
+      v: 2,
       ts: nowIso,
       type: "tool_call",
-      sessionId: input.sessionId,
-      runId: input.runId,
+      sessionId: session.id,
+      sessionPath: session.sessionPath,
       stepId: input.stepId,
       toolCallId: input.toolCallId,
       toolName: input.toolName,
       args: input.args,
     };
 
-    this.currentSession.addEntry(event);
-    this.persistence.appendEvent(event);
+    this.appendTimelineEvent(event, false);
   }
 
-  recordToolResult(_clientId: string, input: ToolCallResultRecordInput): void {
-    if (!this.currentSession || this.currentSession.id !== input.sessionId) return;
-
+  recordToolResult(clientId: string, input: ToolCallResultRecordInput): void {
     const nowIso = this.nowIso();
-    const output = input.output ?? "";
-
-    this.persistence.persistLargeToolOutput(
-      input.sessionId,
-      input.toolCallId,
-      input.toolName,
-      output,
-    );
+    const session = this.ensureWritableSession(clientId, nowIso);
 
     const event: ToolResultEvent = {
-      v: 1,
+      v: 2,
       ts: nowIso,
       type: "tool_result",
-      sessionId: input.sessionId,
-      runId: input.runId,
+      sessionId: session.id,
+      sessionPath: session.sessionPath,
       stepId: input.stepId,
       toolCallId: input.toolCallId,
       toolName: input.toolName,
       status: input.status,
-      output,
+      output: input.output ?? "",
       errorMessage: input.errorMessage,
       errorCode: input.errorCode,
       durationMs: input.durationMs,
     };
 
-    this.currentSession.addEntry(event);
-    this.persistence.appendEvent(event);
-
-    const toolContextEntry: ToolContextEntry = {
-      v: 1,
-      ts: nowIso,
-      sessionId: input.sessionId,
-      toolCallId: input.toolCallId,
-      args: this.currentSession.findToolCallRawArgs(input.toolCallId),
-      status: input.status,
-      output,
-      errorMessage: input.errorMessage,
-      errorCode: input.errorCode,
-      durationMs: input.durationMs,
-    };
-    this.persistence.appendToolContextEntry(input.toolName, toolContextEntry);
+    this.appendTimelineEvent(event, false);
   }
 
-  recordAssistantFinal(_clientId: string, runId: string, sessionId: string, content: string): void {
-    if (!this.currentSession || this.currentSession.id !== sessionId) return;
-
+  recordAssistantFinal(clientId: string, runId: string, _sessionId: string, content: string): void {
     const nowIso = this.nowIso();
+    const session = this.ensureWritableSession(clientId, nowIso);
+
     const event: AssistantMessageEvent = {
-      v: 1,
+      v: 2,
       ts: nowIso,
       type: "assistant_message",
-      sessionId,
-      runId,
+      sessionId: session.id,
+      sessionPath: session.sessionPath,
       content,
     };
 
-    this.currentSession.addEntry(event);
-    this.persistence.appendEvent(event);
-
-    this.completedExchangesInSession = this.currentSession.getExchangeCount();
-
-    const totalEstimate = this.staticTokenBudget + this.estimateDynamicTokens(this.currentSession);
-    if (totalEstimate >= this.contextTokenLimit) {
-      this.rotateSession(this.currentSession.clientId, nowIso, "token_limit");
-      return;
-    }
-
-    const currentSessionId = this.currentSession.id;
-    if (this.shouldRunCheckpoint()) {
-      const scheduledAtExchange = this.completedExchangesInSession;
-      this.lastCheckpointExchange = scheduledAtExchange;
-      this.enqueueBackgroundTask(async () => {
-        await this.runCheckpointEvaluation(currentSessionId, scheduledAtExchange);
-      });
-    }
+    this.appendTimelineEvent(event, true);
   }
 
-  recordRunFailure(_clientId: string, runId: string, sessionId: string, message: string): void {
-    if (!this.currentSession || this.currentSession.id !== sessionId) return;
-
+  recordRunFailure(clientId: string, runId: string, _sessionId: string, message: string): void {
     const nowIso = this.nowIso();
+    const session = this.ensureWritableSession(clientId, nowIso);
+
     const event: RunFailureEvent = {
-      v: 1,
+      v: 2,
       ts: nowIso,
       type: "run_failure",
-      sessionId,
-      runId,
+      sessionId: session.id,
+      sessionPath: session.sessionPath,
       message,
     };
 
-    this.currentSession.addEntry(event);
-    this.persistence.appendEvent(event);
+    this.appendTimelineEvent(event, false);
   }
 
-  recordAgentStep(_clientId: string, input: AgentStepRecordInput): void {
-    if (!this.currentSession || this.currentSession.id !== input.sessionId) return;
-
+  recordAgentStep(clientId: string, input: AgentStepRecordInput): void {
     const nowIso = this.nowIso();
+    const session = this.ensureWritableSession(clientId, nowIso);
+
     const event: AgentStepEvent = {
-      v: 1,
+      v: 2,
       ts: nowIso,
       type: "agent_step",
-      sessionId: input.sessionId,
-      runId: input.runId,
+      sessionId: session.id,
+      sessionPath: session.sessionPath,
       step: input.step,
       phase: input.phase,
       summary: input.summary,
-      approachesTried: input.approachesTried,
+      approachesTried: [],
       actionToolName: input.actionToolName,
       endStatus: input.endStatus,
     };
 
-    this.currentSession.addEntry(event);
-    this.persistence.appendEvent(event);
+    this.appendTimelineEvent(event, false);
   }
 
-  recordAssistantFeedback(_clientId: string, runId: string, sessionId: string, message: string): void {
-    if (!this.currentSession || this.currentSession.id !== sessionId) return;
-
+  recordAssistantFeedback(clientId: string, runId: string, _sessionId: string, message: string): void {
     const nowIso = this.nowIso();
+    const session = this.ensureWritableSession(clientId, nowIso);
+
     const event: AssistantFeedbackEvent = {
-      v: 1,
+      v: 2,
       ts: nowIso,
       type: "assistant_feedback",
-      sessionId,
-      runId,
+      sessionId: session.id,
+      sessionPath: session.sessionPath,
       message,
     };
 
-    this.currentSession.addEntry(event);
-    this.persistence.appendEvent(event);
+    this.appendTimelineEvent(event, false);
   }
 
   getPromptMemoryContext(): PromptMemoryContext {
-    if (!this.currentSession) {
+    if (this.promptWindowEvents.length === 0) {
       return {
         conversationTurns: [],
-        previousSessionSummary: this.previousSessionSummary,
-        toolEvents: [],
-        activeTopicLabel: undefined,
+        previousSessionSummary: "",
       };
     }
 
+    const promptSession = new InMemorySession(
+      this.currentSession?.id ?? "prompt-window",
+      this.activeClientId,
+      this.nowIso(),
+      this.currentSession?.sessionPath ?? "sessions/ephemeral/prompt-window.md",
+    );
+    for (const event of this.promptWindowEvents) {
+      promptSession.addEntry(event);
+    }
+
     return {
-      conversationTurns: this.currentSession.getConversationTurns(),
-      previousSessionSummary: this.previousSessionSummary,
-      toolEvents: this.currentSession.getToolEvents(),
-      activeTopicLabel: this.currentSessionProfile?.title,
+      conversationTurns: promptSession.getConversationTurns(PROMPT_EVENT_WINDOW),
+      previousSessionSummary: "",
     };
   }
 
@@ -344,59 +353,13 @@ export class SessionManager implements SessionMemory {
     this.staticTokenBudget = tokens;
   }
 
-  searchSessionSummaries(query: string, limit = 5): SessionSummarySearchHit[] {
-    if (this.activeClientId.trim().length === 0) return [];
-    return this.memoryIndex.searchSummaries(this.activeClientId, query, limit);
-  }
-
-  loadSessionTurns(sessionId: string): ConversationTurn[] {
-    return this.persistence.loadSessionTurns(sessionId);
-  }
-
   flushBackgroundTasks(): Promise<void> {
     return this.backgroundQueue;
   }
 
-  private shouldRunCheckpoint(): boolean {
-    if (!this.currentSession) return false;
-    if (this.completedExchangesInSession < this.checkpointExchanges) return false;
-    if (this.completedExchangesInSession === this.lastCheckpointExchange) return false;
-    return this.completedExchangesInSession % this.checkpointExchanges === 0;
-  }
-
-  private async runCheckpointEvaluation(sessionId: string, scheduledExchangeCount: number): Promise<void> {
-    const session = this.currentSession;
-    if (!session || session.id !== sessionId) return;
-    if (this.completedExchangesInSession < scheduledExchangeCount) return;
-
-    const turns = session
-      .getConversationTurns()
-      .slice(-Math.max(6, this.checkpointExchanges * 2));
-    if (turns.length < this.checkpointExchanges * 2) return;
-
-    const nowIso = this.nowIso();
-
-    if (!this.currentSessionProfile) {
-      const bootstrap = await this.driftService.buildSessionProfile(turns, nowIso);
-      if (!bootstrap) return;
-      if (!this.currentSession || this.currentSession.id !== sessionId) return;
-      this.currentSessionProfile = bootstrap;
-      this.memoryIndex.upsertSessionMetadata(sessionId, bootstrap);
-      return;
-    }
-
-    const result = await this.driftService.evaluateCheckpoint(this.currentSessionProfile, turns, nowIso);
-    if (!this.currentSession || this.currentSession.id !== sessionId) return;
-
-    if (result.decision.isDrift && result.decision.confidence >= this.driftConfidenceThreshold) {
-      this.rotateSession(this.currentSession.clientId, this.nowIso(), "topic_drift", result.decision.confidence);
-      return;
-    }
-
-    if (result.updatedProfile) {
-      this.currentSessionProfile = result.updatedProfile;
-      this.memoryIndex.upsertSessionMetadata(sessionId, result.updatedProfile);
-    }
+  private ensureWritableSession(clientId: string, nowIso: string): InMemorySession {
+    this.ensureOpenSession(clientId, nowIso);
+    return this.currentSession!;
   }
 
   private ensureOpenSession(clientId: string, nowIso: string): void {
@@ -404,81 +367,124 @@ export class SessionManager implements SessionMemory {
     this.createNewSession(clientId, nowIso);
   }
 
-  private createNewSession(clientId: string, nowIso: string): void {
-    const sessionId = randomUUID();
-    this.currentSession = new InMemorySession(sessionId, clientId, nowIso);
-    this.currentSessionProfile = null;
-    this.completedExchangesInSession = 0;
-    this.lastCheckpointExchange = 0;
+  private restoreActiveSession(clientId: string): void {
+    const nowIso = this.nowIso();
+    const attempted = new Set<string>();
+
+    const tryRestore = (
+      candidate: ActiveSessionInfo | null,
+      source: "active_row" | "marker" | "recovery_candidate",
+    ): InMemorySession | null => {
+      if (!candidate) return null;
+      const key = `${candidate.sessionId}:${candidate.sessionPath}`;
+      if (attempted.has(key)) return null;
+      attempted.add(key);
+
+      const restoredFromCandidate = this.persistence.replaySessionFile(
+        this.persistence.resolveSessionAbsolutePath(candidate.sessionPath),
+      );
+      if (restoredFromCandidate && restoredFromCandidate.clientId === clientId) {
+        return restoredFromCandidate;
+      }
+
+      if (candidate.sessionPath.endsWith(".jsonl")) {
+        const markdownPath = `${candidate.sessionPath.slice(0, -".jsonl".length)}.md`;
+        const markdownKey = `${candidate.sessionId}:${markdownPath}`;
+        if (!attempted.has(markdownKey)) {
+          attempted.add(markdownKey);
+          const restoredFromMarkdown = this.persistence.replaySessionFile(
+            this.persistence.resolveSessionAbsolutePath(markdownPath),
+          );
+          if (restoredFromMarkdown && restoredFromMarkdown.clientId === clientId) {
+            return restoredFromMarkdown;
+          }
+        }
+      }
+
+      if (restoredFromCandidate?.clientId !== clientId) {
+        this.persistence.markSessionCrashed(candidate.sessionId, nowIso, `${source}_restore_failed`);
+      }
+      return null;
+    };
+
+    const fromActive = tryRestore(this.persistence.getActiveSessionInfo(clientId), "active_row");
+    const fromMarker = fromActive ?? tryRestore(this.persistence.getActiveSessionInfo(), "marker");
+
+    let restored = fromMarker;
+    if (!restored) {
+      const candidates = this.persistence.listRecoveryCandidates(clientId, 24);
+      for (const candidate of candidates) {
+        restored = tryRestore(candidate, "recovery_candidate");
+        if (restored) break;
+      }
+    }
+
+    if (!restored) return;
+
+    restored = this.migrateLegacyJsonlSessionIfNeeded(restored);
+    this.currentSession = restored;
+    this.persistence.resumeSession(restored.id, clientId, restored.sessionPath, nowIso);
+    this.persistence.writeActiveSessionMarker(restored.id, restored.sessionPath);
+  }
+
+  private createNewSession(
+    clientId: string,
+    nowIso: string,
+    options?: {
+      sessionId?: string;
+      sessionPath?: string;
+      parentSessionId?: string;
+      handoffSummary?: string;
+    },
+  ): void {
+    const sessionId = options?.sessionId ?? randomUUID();
+    const sessionPath = options?.sessionPath ?? this.persistence.buildSessionPath(nowIso, sessionId);
+    this.currentSession = new InMemorySession(sessionId, clientId, nowIso, sessionPath);
 
     const openEvent: SessionEvent = {
-      v: 1,
+      v: 2,
       ts: nowIso,
       type: "session_open",
       sessionId,
+      sessionPath,
       clientId,
-      previousSessionSummary: this.previousSessionSummary,
+      parentSessionId: options?.parentSessionId,
+      handoffSummary: options?.handoffSummary,
     };
 
     this.persistence.appendEvent(openEvent);
-    this.persistence.writeActiveSessionMarker(sessionId);
-  }
-
-  private rotateSession(clientId: string, nowIso: string, reason: string, driftScore?: number): void {
-    if (!this.currentSession) {
-      this.createNewSession(clientId, nowIso);
-      return;
-    }
-
-    const closing = this.currentSession;
-    const profile = this.currentSessionProfile;
-    this.closeSessionInternal(closing, nowIso, reason, profile, driftScore);
-    this.currentSession = null;
-    this.currentSessionProfile = null;
-    this.createNewSession(clientId, nowIso);
+    this.persistence.writeActiveSessionMarker(sessionId, sessionPath);
   }
 
   private closeSessionInternal(
     session: InMemorySession,
     nowIso: string,
     reason: string,
-    profile: SessionProfile | null = null,
-    driftScore?: number,
+    options?: {
+      handoffSummary?: string;
+      nextSessionId?: string;
+      nextSessionPath?: string;
+    },
   ): void {
     const turns = session.getConversationTurns();
     const tokenAtClose = this.estimateDynamicTokens(session);
 
-    const baselineSummary = this.summaryService.summarizeSessionSync(turns);
-    this.persistSessionSummary({
-      sessionId: session.id,
-      clientId: session.clientId,
-      createdAt: session.startedAt,
-      closedAt: nowIso,
-      closeReason: reason,
-      tokenCount: tokenAtClose,
-      sourcePath: this.persistence.getSessionFilePath(session.id),
-      record: baselineSummary,
-    });
-    this.previousSessionSummary = baselineSummary.summaryText;
-
     const closeEvent: SessionEvent = {
-      v: 1,
+      v: 2,
       ts: nowIso,
       type: "session_close",
       sessionId: session.id,
+      sessionPath: session.sessionPath,
       reason,
-      summaryText: baselineSummary.summaryText,
-      summaryKeywords: baselineSummary.keywords,
       tokenAtClose,
-      driftScore,
+      eventCount: session.getCountableEventCount(),
+      handoffSummary: options?.handoffSummary,
+      nextSessionId: options?.nextSessionId,
+      nextSessionPath: options?.nextSessionPath,
     };
 
     this.persistence.appendEvent(closeEvent);
     this.persistence.clearActiveSessionMarker();
-
-    if (profile) {
-      this.memoryIndex.upsertSessionMetadata(session.id, profile);
-    }
 
     if (this.onSessionCloseCallback && turns.length >= MIN_TURNS_FOR_CALLBACK) {
       const cb = this.onSessionCloseCallback;
@@ -487,82 +493,55 @@ export class SessionManager implements SessionMemory {
         clientId: session.clientId,
         turns,
         reason,
-        profile,
       };
       this.enqueueBackgroundTask(async () => {
         await cb(cbData);
       });
     }
-
-    if (this.summaryService.hasLlmSupport() && turns.length > 0) {
-      this.enqueueBackgroundTask(async () => {
-        const refined = await this.summaryService.summarizeSession(turns, reason, profile);
-        this.persistSessionSummary({
-          sessionId: session.id,
-          clientId: session.clientId,
-          createdAt: session.startedAt,
-          closedAt: nowIso,
-          closeReason: reason,
-          tokenCount: tokenAtClose,
-          sourcePath: this.persistence.getSessionFilePath(session.id),
-          record: refined,
-        });
-        this.previousSessionSummary = refined.summaryText;
-      });
-    }
   }
 
-  private persistSessionSummary(input: {
-    sessionId: string;
-    clientId: string;
-    createdAt: string;
-    closedAt: string;
-    closeReason: string;
-    tokenCount: number;
-    sourcePath: string;
-    record: {
-      summaryText: string;
-      keywords: string[];
-      confidence: number;
-      redactionFlags: string[];
-    };
-  }): void {
-    try {
-      this.memoryIndex.upsertSessionSummary({
-        sessionId: input.sessionId,
-        clientId: input.clientId,
-        createdAt: input.createdAt,
-        closedAt: input.closedAt,
-        closeReason: input.closeReason,
-        tokenCount: input.tokenCount,
-        sourcePath: input.sourcePath,
-        record: input.record,
-      });
-    } catch (err) {
-      devWarn("Failed to persist session summary:", err instanceof Error ? err.message : String(err));
+  private appendTimelineEvent(event: TimelineEvent, countable: boolean): void {
+    if (!this.currentSession) return;
+
+    this.currentSession.addEntry(event);
+    this.persistence.appendEvent(event);
+
+    if (event.type === "tool_call" || event.type === "tool_result") {
+      this.pushPromptToolWindowEvent(event);
+    }
+
+    if (event.type === "agent_step") {
+      this.pushPromptAgentStepWindowEvent(event);
+    }
+
+    if (countable) {
+      this.pushPromptWindowEvent(event as CountableSessionEvent);
     }
   }
 
   private estimateDynamicTokens(session: InMemorySession): number {
-    const turns = session.getConversationTurns();
+    const turns = session.getConversationTurns(PROMPT_EVENT_WINDOW);
     const conversationText = turns
-      .map((turn) => turn.content)
+      .map((turn) => `${turn.role}: ${turn.content}`)
       .join("\n");
-    const profileText = this.currentSessionProfile
-      ? [
-          this.currentSessionProfile.title,
-          this.currentSessionProfile.scope,
-          this.currentSessionProfile.keywords.join(" "),
-          this.currentSessionProfile.anchors.join(" "),
-        ].join("\n")
-      : "";
 
-    return (
-      estimateTextTokens(this.previousSessionSummary) +
+    const toolText = session
+      .getToolEvents(PROMPT_EVENT_WINDOW)
+      .map((event) => {
+        const status = event.status ? ` status=${event.status}` : "";
+        const error = event.errorMessage ? ` error=${event.errorMessage}` : "";
+        return `${event.eventType} ${event.toolName}${status} args=${event.args} output=${event.output}${error}`;
+      })
+      .join("\n");
+
+    const estimate =
+      this.staticTokenBudget +
       estimateTextTokens(conversationText) +
-      estimateTextTokens(profileText) +
-      session.estimateToolEventTokens()
-    );
+      estimateTextTokens(toolText) +
+      session.estimateToolEventTokens(PROMPT_EVENT_WINDOW);
+
+    // Calculated for observability only; not used for forced session rotation.
+    return Math.min(estimate, this.contextTokenLimit * 10);
   }
 
   private enqueueBackgroundTask(task: () => Promise<void>): void {
@@ -573,6 +552,24 @@ export class SessionManager implements SessionMemory {
 
   private nowIso(): string {
     return this.nowProvider().toISOString();
+  }
+
+  private pushPromptWindowEvent(event: CountableSessionEvent): void {
+    this.promptWindowEvents.push(event);
+    if (this.promptWindowEvents.length <= PROMPT_EVENT_WINDOW) return;
+    this.promptWindowEvents = this.promptWindowEvents.slice(-PROMPT_EVENT_WINDOW);
+  }
+
+  private pushPromptToolWindowEvent(event: ToolSessionEvent): void {
+    this.promptWindowToolEvents.push(event);
+    if (this.promptWindowToolEvents.length <= PROMPT_EVENT_WINDOW) return;
+    this.promptWindowToolEvents = this.promptWindowToolEvents.slice(-PROMPT_EVENT_WINDOW);
+  }
+
+  private pushPromptAgentStepWindowEvent(event: AgentStepEvent): void {
+    this.promptWindowAgentStepEvents.push(event);
+    if (this.promptWindowAgentStepEvents.length <= PROMPT_AGENT_STEP_WINDOW) return;
+    this.promptWindowAgentStepEvents = this.promptWindowAgentStepEvents.slice(-PROMPT_AGENT_STEP_WINDOW);
   }
 
   private removeLegacyInfiniteContextStorage(): void {
@@ -586,4 +583,58 @@ export class SessionManager implements SessionMemory {
       );
     }
   }
+
+  private migrateLegacyJsonlSessionIfNeeded(session: InMemorySession): InMemorySession {
+    if (!session.sessionPath.endsWith(".jsonl")) {
+      return session;
+    }
+
+    const markdownSessionPath = `${session.sessionPath.slice(0, -".jsonl".length)}.md`;
+    const markdownAbsolutePath = this.persistence.resolveSessionAbsolutePath(markdownSessionPath);
+
+    // Idempotent restore path: if markdown already exists and is readable, prefer it.
+    if (existsSync(markdownAbsolutePath)) {
+      const replayed = this.persistence.replaySessionFile(markdownAbsolutePath);
+      if (replayed && replayed.clientId === session.clientId) {
+        return replayed;
+      }
+    }
+
+    const migrated = new InMemorySession(
+      session.id,
+      session.clientId,
+      session.startedAt,
+      markdownSessionPath,
+    );
+
+    this.persistence.appendEvent({
+      v: 2,
+      ts: session.startedAt,
+      type: "session_open",
+      sessionId: session.id,
+      sessionPath: markdownSessionPath,
+      clientId: session.clientId,
+    });
+
+    for (const entry of session.timeline) {
+      const migratedEntry: TimelineEvent = {
+        ...entry,
+        sessionPath: markdownSessionPath,
+      };
+      this.persistence.appendEvent(migratedEntry);
+      migrated.addEntry(migratedEntry);
+    }
+
+    const legacyPath = this.persistence.resolveSessionAbsolutePath(session.sessionPath);
+    try {
+      rmSync(legacyPath, { force: true });
+    } catch (err) {
+      devWarn("Failed to remove legacy session jsonl file:", err instanceof Error ? err.message : String(err));
+    }
+
+    return migrated;
+  }
 }
+
+export type SessionManagerOptions = MemoryManagerOptions;
+export { MemoryManager as SessionManager };

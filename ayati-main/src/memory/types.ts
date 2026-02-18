@@ -2,89 +2,70 @@ export interface ConversationTurn {
   role: "user" | "assistant";
   content: string;
   timestamp: string;
-}
-
-export interface SessionProfileMetadata {
-  subtopics: string[];
-  activeGoals: string[];
-  constraints: string[];
-  stableEntities: string[];
-  decisionLog: string[];
-  openLoops: string[];
-}
-
-export interface SessionProfile extends SessionProfileMetadata {
-  title: string;
-  scope: string;
-  keywords: string[];
-  anchors: string[];
-  topicConfidence: number;
-  updatedAt: string;
-  version: number;
-}
-
-export interface TopicDriftDecision {
-  isDrift: boolean;
-  confidence: number;
-  reason: string;
-}
-
-export interface SessionSummaryRecord {
-  summaryText: string;
-  keywords: string[];
-  confidence: number;
-  redactionFlags: string[];
-}
-
-export interface SessionSummarySearchHit {
-  sessionId: string;
-  summaryText: string;
-  keywords: string[];
-  closedAt: string;
-  closeReason: string;
-  score: number;
+  sessionPath: string;
 }
 
 export type ToolEventStatus = "success" | "failed";
 
 export interface ToolMemoryEvent {
   timestamp: string;
+  sessionPath: string;
   toolName: string;
-  status: ToolEventStatus;
-  argsPreview: string;
-  outputPreview: string;
+  eventType: "tool_call" | "tool_result";
+  args: string;
+  status?: ToolEventStatus;
+  output: string;
   errorMessage?: string;
 }
 
-export interface RecalledContextEvidence {
-  sessionId: string;
-  turnRef: string;
+export interface AgentStepMemoryEvent {
   timestamp: string;
-  snippet: string;
-  whyRelevant: string;
-  confidence: number;
-}
-
-export interface ContextRecallStatus {
-  status: "skipped" | "not_found" | "found" | "partial";
-  reason: string;
-  searchedSessions: number;
-  modelCalls: number;
-  triggerReason?: string;
+  sessionPath: string;
+  step: number;
+  phase: string;
+  summary: string;
+  actionToolName?: string;
+  endStatus?: string;
 }
 
 export interface PromptMemoryContext {
   conversationTurns: ConversationTurn[];
   previousSessionSummary: string;
-  toolEvents: ToolMemoryEvent[];
-  recalledEvidence?: RecalledContextEvidence[];
-  contextRecallStatus?: ContextRecallStatus;
   activeTopicLabel?: string;
 }
 
 export interface MemoryRunHandle {
   sessionId: string;
   runId: string;
+}
+
+export type TurnStatusType =
+  | "processing_started"
+  | "response_started"
+  | "response_completed"
+  | "response_failed"
+  | "session_switched"
+  | "activity_switched";
+
+export interface TurnStatusRecordInput {
+  runId: string;
+  sessionId: string;
+  status: TurnStatusType;
+  note?: string;
+}
+
+export interface CreateSessionInput {
+  runId: string;
+  reason: string;
+  source?: "agent" | "external" | "system";
+  confidence?: number;
+  handoffSummary?: string;
+}
+
+export interface CreateSessionResult {
+  previousSessionId: string | null;
+  sessionId: string;
+  sessionPath: string;
 }
 
 export interface ToolCallRecordInput {
@@ -115,7 +96,6 @@ export interface AgentStepRecordInput {
   step: number;
   phase: string;
   summary: string;
-  approachesTried: string[];
   actionToolName?: string;
   endStatus?: string;
 }
@@ -124,6 +104,8 @@ export interface SessionMemory {
   initialize(clientId: string): void;
   shutdown(): void | Promise<void>;
   beginRun(clientId: string, userMessage: string): MemoryRunHandle;
+  recordTurnStatus?(clientId: string, input: TurnStatusRecordInput): void;
+  createSession?(clientId: string, input: CreateSessionInput): CreateSessionResult;
   recordToolCall(clientId: string, input: ToolCallRecordInput): void;
   recordToolResult(clientId: string, input: ToolCallResultRecordInput): void;
   recordAssistantFinal(clientId: string, runId: string, sessionId: string, content: string): void;
@@ -132,6 +114,4 @@ export interface SessionMemory {
   recordAssistantFeedback(clientId: string, runId: string, sessionId: string, message: string): void;
   getPromptMemoryContext(): PromptMemoryContext;
   setStaticTokenBudget(tokens: number): void;
-  searchSessionSummaries(query: string, limit?: number): SessionSummarySearchHit[];
-  loadSessionTurns(sessionId: string): ConversationTurn[];
 }

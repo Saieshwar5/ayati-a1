@@ -2,7 +2,6 @@ import { readFile, stat } from "node:fs/promises";
 import { resolve } from "node:path";
 import type { ToolDefinition, ToolResult } from "../../types.js";
 import { validateReadFileInput } from "./validators.js";
-import { enforceFilesystemGuard } from "../../guardrails/index.js";
 
 const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10 MB
 const MAX_OUTPUT_CHARS = 100_000;
@@ -31,14 +30,12 @@ export const readFileTool: ToolDefinition = {
     if ("ok" in parsed) return parsed;
 
     const filePath = resolve(parsed.path);
-    const guard = await enforceFilesystemGuard({ action: "read", path: filePath });
-    if (!guard.ok) return guard.result;
     const start = Date.now();
 
     try {
-      const info = await stat(guard.resolvedPath);
+      const info = await stat(filePath);
       if (!info.isFile()) {
-        return { ok: false, error: `Not a file: ${guard.resolvedPath}`, meta: { durationMs: Date.now() - start } };
+        return { ok: false, error: `Not a file: ${filePath}`, meta: { durationMs: Date.now() - start } };
       }
       if (info.size > MAX_FILE_SIZE) {
         return {
@@ -48,7 +45,7 @@ export const readFileTool: ToolDefinition = {
         };
       }
 
-      const raw = await readFile(guard.resolvedPath, "utf-8");
+      const raw = await readFile(filePath, "utf-8");
       let lines = raw.split("\n");
 
       if (parsed.offset !== undefined) {
@@ -71,7 +68,7 @@ export const readFileTool: ToolDefinition = {
         output,
         meta: {
           durationMs: Date.now() - start,
-          filePath: guard.resolvedPath,
+          filePath,
           lineCount: lines.length,
           truncated,
         },

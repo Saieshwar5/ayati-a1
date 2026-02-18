@@ -2,7 +2,6 @@ import { rename, copyFile, cp, stat, rm, access } from "node:fs/promises";
 import { resolve } from "node:path";
 import type { ToolDefinition, ToolResult } from "../../types.js";
 import { validateMoveInput } from "./validators.js";
-import { enforceFilesystemGuard } from "../../guardrails/index.js";
 
 async function exists(p: string): Promise<boolean> {
   try {
@@ -26,10 +25,6 @@ export const moveTool: ToolDefinition = {
         type: "boolean",
         description: "Overwrite destination if it exists (default: false).",
       },
-      confirmationToken: {
-        type: "string",
-        description: "Required confirmation token in format CONFIRM:<operation_id> for guarded moves.",
-      },
     },
   },
   selectionHints: {
@@ -45,46 +40,36 @@ export const moveTool: ToolDefinition = {
 
     const src = resolve(parsed.source);
     const dest = resolve(parsed.destination);
-    const guard = await enforceFilesystemGuard({
-      action: "move",
-      path: dest,
-      sourcePath: src,
-      overwrite: parsed.overwrite,
-      confirmationToken: parsed.confirmationToken,
-    });
-    if (!guard.ok) return guard.result;
-    const guardedSrc = guard.resolvedSourcePath ?? src;
-    const guardedDest = guard.resolvedPath;
     const start = Date.now();
 
     try {
-      if (!parsed.overwrite && (await exists(guardedDest))) {
+      if (!parsed.overwrite && (await exists(dest))) {
         return {
           ok: false,
           error: "Destination already exists. Set overwrite=true to replace.",
-          meta: { durationMs: Date.now() - start, source: guardedSrc, destination: guardedDest },
+          meta: { durationMs: Date.now() - start, source: src, destination: dest },
         };
       }
 
       try {
-        await rename(guardedSrc, guardedDest);
+        await rename(src, dest);
       } catch (err) {
         const code = (err as NodeJS.ErrnoException).code;
         if (code !== "EXDEV") throw err;
 
-        const info = await stat(guardedSrc);
+        const info = await stat(src);
         if (info.isDirectory()) {
-          await cp(guardedSrc, guardedDest, { recursive: true, force: parsed.overwrite ?? false });
+          await cp(src, dest, { recursive: true, force: parsed.overwrite ?? false });
         } else {
-          await copyFile(guardedSrc, guardedDest);
+          await copyFile(src, dest);
         }
-        await rm(guardedSrc, { recursive: true, force: true });
+        await rm(src, { recursive: true, force: true });
       }
 
       return {
         ok: true,
-        output: `Moved ${guardedSrc} → ${guardedDest}`,
-        meta: { durationMs: Date.now() - start, source: guardedSrc, destination: guardedDest },
+        output: `Moved ${src} → ${dest}`,
+        meta: { durationMs: Date.now() - start, source: src, destination: dest },
       };
     } catch (err) {
       const message = err instanceof Error ? err.message : "Unknown filesystem error";

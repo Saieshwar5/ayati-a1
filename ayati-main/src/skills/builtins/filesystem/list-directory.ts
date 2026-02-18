@@ -2,7 +2,6 @@ import { readdir } from "node:fs/promises";
 import { resolve, join } from "node:path";
 import type { ToolDefinition, ToolResult } from "../../types.js";
 import { validateListDirectoryInput } from "./validators.js";
-import { enforceFilesystemGuard, getFilesystemListLimits } from "../../guardrails/index.js";
 
 interface EntryInfo {
   name: string;
@@ -73,26 +72,25 @@ export const listDirectoryTool: ToolDefinition = {
     if ("ok" in parsed) return parsed;
 
     const dirPath = resolve(parsed.path);
-    const guard = await enforceFilesystemGuard({ action: "list", path: dirPath });
-    if (!guard.ok) return guard.result;
-    const limits = getFilesystemListLimits();
+    const maxEntries = 1000;
+    const maxDepth = 8;
     const start = Date.now();
 
     try {
       const entries = await listEntries(
-        guard.resolvedPath,
+        dirPath,
         parsed.recursive ?? false,
         parsed.showHidden ?? false,
-        limits.maxEntries,
-        limits.maxDepth,
+        maxEntries,
+        maxDepth,
         0,
         "",
       );
 
-      const capped = entries.length >= limits.maxEntries;
+      const capped = entries.length >= maxEntries;
       const lines = entries.map((e) => `[${e.type}] ${e.name}`);
       const output = capped
-        ? lines.join("\n") + `\n...[capped at ${limits.maxEntries} entries]`
+        ? lines.join("\n") + `\n...[capped at ${maxEntries} entries]`
         : lines.join("\n");
 
       return {
@@ -100,10 +98,10 @@ export const listDirectoryTool: ToolDefinition = {
         output: output || "(empty directory)",
         meta: {
           durationMs: Date.now() - start,
-          dirPath: guard.resolvedPath,
+          dirPath,
           entryCount: entries.length,
           capped,
-          maxDepth: limits.maxDepth,
+          maxDepth,
         },
       };
     } catch (err) {

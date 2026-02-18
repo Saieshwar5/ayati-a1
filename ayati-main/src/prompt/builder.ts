@@ -39,12 +39,7 @@ export function buildSystemPrompt(input: PromptBuildInput): PromptBuildOutput {
   const soul = renderSoulSection(input.soul);
   const profile = renderUserProfileSection(input.userProfile);
   const conversation = renderConversationSection(input.conversationTurns ?? []);
-  const memory = renderMemorySection(
-    input.previousSessionSummary ?? "",
-    input.toolEvents ?? [],
-    input.recalledEvidence ?? [],
-    input.contextRecallStatus,
-  );
+  const memory = renderMemorySection(input.previousSessionSummary ?? "");
   const skills = renderSkillsSection(input.skillBlocks ?? []);
   const tools = renderToolDirectorySection(input.toolDirectory, input.includeToolDirectory === true);
 
@@ -53,7 +48,7 @@ export function buildSystemPrompt(input: PromptBuildInput): PromptBuildOutput {
     makeSection("soul", soul, "Soul context is empty"),
     makeSection("user_profile", profile, "User profile is empty"),
     makeSection("conversation", conversation, "No previous conversation available"),
-    makeSection("memory", memory, "No session summary or relevant tool history available"),
+    makeSection("memory", memory, "No previous session summary available"),
     makeSection("skills", skills, "No skills selected or available"),
     makeSection("tools", tools, "No tool directory available"),
   ];

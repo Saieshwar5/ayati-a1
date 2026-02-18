@@ -8,26 +8,24 @@ import type {
 import type { ToolExecutor } from "../skills/tool-executor.js";
 import type { ToolDefinition, ToolResult } from "../skills/types.js";
 import type { SessionMemory, MemoryRunHandle } from "../memory/types.js";
-import type { ContextRecallService } from "./context-recall-service.js";
 import type {
   AgentLoopConfig,
   AgentLoopConfigInput,
-  AgentLoopEscalationDetails,
   AgentLoopResult,
   AgentStepInput,
   RunState,
-  ScratchpadEntry,
 } from "./agent-loop-types.js";
 import { DEFAULT_LOOP_CONFIG } from "./agent-loop-types.js";
+import type { AgentPlan } from "../memory/agent-working-memory.js";
+import { AgentWorkingMemory } from "../memory/agent-working-memory.js";
 import {
   AGENT_STEP_TOOL_NAME,
   AGENT_STEP_TOOL_SCHEMA,
   parseAgentStep,
-  buildScratchpadBlock,
 } from "./agent-step-tool.js";
 import {
-  CONTEXT_RECALL_TOOL_NAME,
-  CONTEXT_RECALL_TOOL_SCHEMA,
+  CREATE_SESSION_TOOL_NAME,
+  CREATE_SESSION_TOOL_SCHEMA,
   formatToolResult,
   formatValidationError,
 } from "./tool-helpers.js";
@@ -35,20 +33,12 @@ import {
   estimateTurnInputTokens,
 } from "../prompt/token-estimator.js";
 import { devLog } from "../shared/index.js";
-import { canUseTool } from "../skills/access-policy.js";
-import { selectTools } from "./tool-selection/selector.js";
-import type { SelectableTool } from "./tool-selection/selector-types.js";
-
-interface TurnToolSelection {
-  tools: LlmToolSchema[];
-  allowedToolNames: Set<string>;
-}
 
 export class AgentLoop {
   private readonly provider: LlmProvider;
   private readonly toolExecutor?: ToolExecutor;
   private readonly sessionMemory: SessionMemory;
-  private readonly contextRecallService: ContextRecallService;
+  private readonly workingMemory: AgentWorkingMemory;
   private readonly onReply?: (clientId: string, data: unknown) => void;
   private readonly toolDefinitions: ToolDefinition[];
   private readonly config: AgentLoopConfig;
@@ -57,7 +47,7 @@ export class AgentLoop {
     provider: LlmProvider,
     toolExecutor: ToolExecutor | undefined,
     sessionMemory: SessionMemory,
-    contextRecallService: ContextRecallService,
+    workingMemory: AgentWorkingMemory,
     onReply?: (clientId: string, data: unknown) => void,
     config?: AgentLoopConfigInput,
     toolDefinitions?: ToolDefinition[],
@@ -65,19 +55,11 @@ export class AgentLoop {
     this.provider = provider;
     this.toolExecutor = toolExecutor;
     this.sessionMemory = sessionMemory;
-    this.contextRecallService = contextRecallService;
+    this.workingMemory = workingMemory;
     this.onReply = onReply;
     this.config = {
       ...DEFAULT_LOOP_CONFIG,
       ...config,
-      toolSelection: {
-        ...DEFAULT_LOOP_CONFIG.toolSelection,
-        ...(config?.toolSelection ?? {}),
-      },
-      escalation: {
-        ...DEFAULT_LOOP_CONFIG.escalation,
-        ...(config?.escalation ?? {}),
-      },
     };
     this.toolDefinitions = toolDefinitions ?? [];
   }
@@ -97,15 +79,15 @@ export class AgentLoop {
 
     const state: RunState = {
       step: 0,
-      scratchpad: [],
-      approachesTried: new Set(),
+      phaseHistory: [],
       toolCallsMade: 0,
       toolNamesUsed: new Set(),
       failedToolCalls: 0,
-      reflectCycles: 0,
       consecutiveNonActSteps: 0,
-      forceExpandedSelectionNextStep: false,
       consecutiveRepeatedActions: 0,
+      errorsByCategory: new Map(),
+      hasPlan: false,
+      currentSubTaskId: null,
     };
 
     const messages: LlmMessage[] = [];
@@ -117,10 +99,11 @@ export class AgentLoop {
     while (state.step < this.effectiveLimit(state) && state.consecutiveNonActSteps < this.config.noProgressLimit) {
       state.step++;
 
-      this.rebuildSystemMessage(messages, state);
+      const signals = this.generateStateSignals(state);
+      this.rebuildSystemMessage(messages, signals);
 
-      const selection = this.selectTurnTools(userContent, state);
-      const allTools: LlmToolSchema[] = [AGENT_STEP_TOOL_SCHEMA, ...selection.tools];
+      const toolSchemas = this.buildToolSchemas();
+      const allTools: LlmToolSchema[] = [AGENT_STEP_TOOL_SCHEMA, ...toolSchemas];
 
       const turnInput: LlmTurnInput = { messages, tools: allTools };
       this.emitContextSize(clientId, turnInput, state.step, dynamicSystemTokens, staticSystemTokens, resolveModelName);
@@ -154,7 +137,6 @@ export class AgentLoop {
           agentStepCall,
           messages,
           runHandle,
-          selection.allowedToolNames,
         );
         if (phaseResult) return phaseResult;
       }
@@ -166,33 +148,11 @@ export class AgentLoop {
           directCalls,
           messages,
           runHandle,
-          selection.allowedToolNames,
         );
       }
 
       if (!agentStepCall && directCalls.length === 0) {
         return { type: "reply", content: "Empty tool call response.", endStatus: "stuck", totalSteps: state.step, toolCallsMade: state.toolCallsMade };
-      }
-
-      const escalation = this.evaluateEscalation(state);
-      if (escalation) {
-        this.sessionMemory.recordAgentStep(clientId, {
-          runId: runHandle.runId,
-          sessionId: runHandle.sessionId,
-          step: state.step,
-          phase: "escalate",
-          summary: escalation.summary,
-          approachesTried: [...state.approachesTried],
-          endStatus: "partial",
-        });
-        return {
-          type: "escalate",
-          content: escalation.summary,
-          endStatus: "partial",
-          totalSteps: state.step,
-          toolCallsMade: state.toolCallsMade,
-          escalation,
-        };
       }
     }
 
@@ -212,46 +172,138 @@ export class AgentLoop {
     call: LlmToolCall,
     messages: LlmMessage[],
     runHandle: MemoryRunHandle,
-    allowedToolNames: Set<string>,
   ): Promise<AgentLoopResult | null> {
     messages.push({ role: "assistant_tool_calls", calls: [call] });
 
     switch (parsed.phase) {
       case "reason": {
-        state.scratchpad.push({ step: state.step, phase: "reason", thinking: parsed.thinking, summary: parsed.summary });
+        this.workingMemory.addStep({
+          step: state.step,
+          phase: "reason",
+          thinking: parsed.thinking,
+          summary: parsed.summary,
+        });
         messages.push({ role: "tool", toolCallId: call.id, name: AGENT_STEP_TOOL_NAME, content: JSON.stringify({ acknowledged: true, step: state.step }) });
         state.consecutiveNonActSteps++;
+        state.phaseHistory.push("reason");
+        return null;
+      }
+
+      case "plan": {
+        if (!parsed.plan) {
+          messages.push({ role: "tool", toolCallId: call.id, name: AGENT_STEP_TOOL_NAME, content: JSON.stringify({ error: "plan phase requires a plan object" }) });
+          state.consecutiveNonActSteps++;
+          state.phaseHistory.push("plan");
+          return null;
+        }
+        const agentPlan: AgentPlan = {
+          goal: parsed.plan.goal,
+          sub_tasks: parsed.plan.sub_tasks.map((st) => ({
+            ...st,
+            status: "pending" as const,
+          })),
+          current_sub_task: parsed.plan.sub_tasks[0]?.id ?? 1,
+          plan_version: (this.workingMemory.plan?.plan_version ?? 0) + 1,
+        };
+        this.workingMemory.setPlan(agentPlan);
+        this.workingMemory.addStep({
+          step: state.step,
+          phase: "plan",
+          thinking: parsed.thinking,
+          summary: parsed.summary,
+        });
+        state.hasPlan = true;
+        state.currentSubTaskId = agentPlan.current_sub_task;
+        messages.push({ role: "tool", toolCallId: call.id, name: AGENT_STEP_TOOL_NAME, content: JSON.stringify({ acknowledged: true, plan_version: agentPlan.plan_version, sub_tasks: agentPlan.sub_tasks.length }) });
+        state.consecutiveNonActSteps++;
+        state.phaseHistory.push("plan");
         return null;
       }
 
       case "act": {
         const action = parsed.action!;
-        const toolResult = await this.executeAction(clientId, state, action.tool_name, action.tool_input, runHandle, allowedToolNames);
+        const toolResult = await this.executeAction(
+          clientId,
+          state,
+          action.tool_name,
+          action.tool_input,
+          runHandle,
+        );
         const resultStr = formatToolResult(action.tool_name, toolResult);
-        state.scratchpad.push({ step: state.step, phase: "act", thinking: parsed.thinking, summary: parsed.summary, toolResult: resultStr });
+
+        this.workingMemory.addStep({
+          step: state.step,
+          phase: "act",
+          thinking: parsed.thinking,
+          summary: parsed.summary,
+          toolName: action.tool_name,
+          toolInput: action.tool_input,
+          toolOutput: resultStr,
+          toolStatus: toolResult.ok ? "success" : "failed",
+        });
+
+        if (!toolResult.ok) {
+          this.workingMemory.addError({
+            step: state.step,
+            toolName: action.tool_name,
+            errorMessage: toolResult.error ?? "unknown error",
+            resolved: false,
+          });
+          const category = this.categorizeToolError(toolResult.error ?? "");
+          state.errorsByCategory.set(category, (state.errorsByCategory.get(category) ?? 0) + 1);
+        }
+
         messages.push({ role: "tool", toolCallId: call.id, name: AGENT_STEP_TOOL_NAME, content: resultStr });
         state.toolCallsMade++;
         state.consecutiveNonActSteps = 0;
+        state.phaseHistory.push("act");
         return null;
       }
 
       case "verify": {
-        state.scratchpad.push({ step: state.step, phase: "verify", thinking: parsed.thinking, summary: parsed.summary });
-        messages.push({ role: "tool", toolCallId: call.id, name: AGENT_STEP_TOOL_NAME, content: JSON.stringify({ acknowledged: true }) });
+        if (parsed.key_facts && parsed.key_facts.length > 0) {
+          const lastActStep = [...this.workingMemory.steps].reverse().find((s) => s.phase === "act");
+          this.workingMemory.addKeyFacts(
+            parsed.key_facts.map((fact) => ({
+              fact,
+              sourceStep: state.step,
+              sourceToolName: lastActStep?.toolName,
+            })),
+          );
+        }
+        if (parsed.sub_task_outcome && state.currentSubTaskId !== null) {
+          this.workingMemory.updateSubTaskStatus(state.currentSubTaskId, parsed.sub_task_outcome);
+          if (parsed.sub_task_outcome === "done") {
+            const nextId = this.workingMemory.advanceToNextSubTask();
+            state.currentSubTaskId = nextId;
+          }
+        }
+        this.workingMemory.addStep({
+          step: state.step,
+          phase: "verify",
+          thinking: parsed.thinking,
+          summary: parsed.summary,
+        });
+        messages.push({ role: "tool", toolCallId: call.id, name: AGENT_STEP_TOOL_NAME, content: JSON.stringify({ acknowledged: true, facts_recorded: parsed.key_facts?.length ?? 0, sub_task_outcome: parsed.sub_task_outcome ?? null }) });
         state.consecutiveNonActSteps++;
+        state.phaseHistory.push("verify");
         return null;
       }
 
       case "reflect": {
-        if (parsed.approaches_tried) {
-          for (const approach of parsed.approaches_tried) {
-            state.approachesTried.add(approach);
-          }
+        const lastUnresolved = [...this.workingMemory.errorRegister].reverse().find((e) => !e.resolved);
+        if (lastUnresolved) {
+          this.workingMemory.resolveError(lastUnresolved.step, parsed.summary);
         }
-        state.reflectCycles++;
-        state.scratchpad.push({ step: state.step, phase: "reflect", thinking: parsed.thinking, summary: parsed.summary });
-        messages.push({ role: "tool", toolCallId: call.id, name: AGENT_STEP_TOOL_NAME, content: JSON.stringify({ acknowledged: true, approaches_recorded: state.approachesTried.size }) });
+        this.workingMemory.addStep({
+          step: state.step,
+          phase: "reflect",
+          thinking: parsed.thinking,
+          summary: parsed.summary,
+        });
+        messages.push({ role: "tool", toolCallId: call.id, name: AGENT_STEP_TOOL_NAME, content: JSON.stringify({ acknowledged: true }) });
         state.consecutiveNonActSteps++;
+        state.phaseHistory.push("reflect");
         return null;
       }
 
@@ -262,6 +314,12 @@ export class AgentLoop {
       }
 
       case "end": {
+        this.workingMemory.addStep({
+          step: state.step,
+          phase: "end",
+          thinking: parsed.thinking,
+          summary: parsed.end_message ?? "",
+        });
         this.recordAgentStepEvent(clientId, state, parsed, runHandle);
         return { type: "reply", content: parsed.end_message!, endStatus: parsed.end_status, totalSteps: state.step, toolCallsMade: state.toolCallsMade };
       }
@@ -277,14 +335,41 @@ export class AgentLoop {
     calls: LlmToolCall[],
     messages: LlmMessage[],
     runHandle: MemoryRunHandle,
-    allowedToolNames: Set<string>,
   ): Promise<void> {
     messages.push({ role: "assistant_tool_calls", calls });
 
     for (const call of calls) {
-      const toolResult = await this.executeAction(clientId, state, call.name, call.input, runHandle, allowedToolNames);
+      const toolResult = await this.executeAction(
+        clientId,
+        state,
+        call.name,
+        call.input,
+        runHandle,
+      );
       const resultStr = formatToolResult(call.name, toolResult);
-      state.scratchpad.push({ step: state.step, phase: "act", thinking: `Direct tool call: ${call.name}`, summary: `Execute ${call.name}`, toolResult: resultStr });
+
+      this.workingMemory.addStep({
+        step: state.step,
+        phase: "act",
+        thinking: `Direct tool call: ${call.name}`,
+        summary: `Execute ${call.name}`,
+        toolName: call.name,
+        toolInput: call.input,
+        toolOutput: resultStr,
+        toolStatus: toolResult.ok ? "success" : "failed",
+      });
+
+      if (!toolResult.ok) {
+        this.workingMemory.addError({
+          step: state.step,
+          toolName: call.name,
+          errorMessage: toolResult.error ?? "unknown error",
+          resolved: false,
+        });
+        const category = this.categorizeToolError(toolResult.error ?? "");
+        state.errorsByCategory.set(category, (state.errorsByCategory.get(category) ?? 0) + 1);
+      }
+
       messages.push({ role: "tool", toolCallId: call.id, name: call.name, content: resultStr });
       state.toolCallsMade++;
       state.consecutiveNonActSteps = 0;
@@ -297,7 +382,6 @@ export class AgentLoop {
     toolName: string,
     toolInput: unknown,
     runHandle: MemoryRunHandle,
-    allowedToolNames: Set<string>,
   ): Promise<ToolResult> {
     const syntheticCall: LlmToolCall = {
       id: `agent-act-${state.step}-${Date.now()}`,
@@ -305,15 +389,6 @@ export class AgentLoop {
       input: toolInput,
     };
     state.toolNamesUsed.add(toolName);
-
-    this.sessionMemory.recordToolCall(clientId, {
-      runId: runHandle.runId,
-      sessionId: runHandle.sessionId,
-      stepId: state.step,
-      toolCallId: syntheticCall.id,
-      toolName,
-      args: toolInput,
-    });
 
     const start = Date.now();
     let result: ToolResult;
@@ -326,6 +401,19 @@ export class AgentLoop {
       state.consecutiveRepeatedActions = 1;
     }
 
+    const isSessionSwitchTool = toolName === CREATE_SESSION_TOOL_NAME;
+    const deferToolCallRecord = isSessionSwitchTool;
+    if (!deferToolCallRecord) {
+      this.sessionMemory.recordToolCall(clientId, {
+        runId: runHandle.runId,
+        sessionId: runHandle.sessionId,
+        stepId: state.step,
+        toolCallId: syntheticCall.id,
+        toolName,
+        args: toolInput,
+      });
+    }
+
     if (state.consecutiveRepeatedActions > this.config.repeatedActionLimit) {
       result = {
         ok: false,
@@ -336,17 +424,8 @@ export class AgentLoop {
           repeatedActionLimit: this.config.repeatedActionLimit,
         },
       };
-    } else if (!allowedToolNames.has(toolName)) {
-      result = {
-        ok: false,
-        error: this.formatSelectionError(toolName, allowedToolNames),
-        meta: {
-          selectionMiss: true,
-          availableTools: [...allowedToolNames].filter((name) => name !== AGENT_STEP_TOOL_NAME),
-        },
-      };
-    } else if (toolName === CONTEXT_RECALL_TOOL_NAME) {
-      result = await this.executeContextRecall(toolInput, runHandle.sessionId);
+    } else if (isSessionSwitchTool) {
+      result = this.executeCreateSession(clientId, toolInput, runHandle);
     } else if (this.toolExecutor) {
       const validation = this.toolExecutor.validate(toolName, toolInput);
       if (!validation.valid) {
@@ -369,11 +448,19 @@ export class AgentLoop {
       result = { ok: false, error: `Tool execution unavailable for: ${toolName}` };
     }
 
-    if (this.isSelectionMiss(result)) {
-      state.forceExpandedSelectionNextStep = true;
-    }
     if (!result.ok) {
       state.failedToolCalls++;
+    }
+
+    if (deferToolCallRecord) {
+      this.sessionMemory.recordToolCall(clientId, {
+        runId: runHandle.runId,
+        sessionId: runHandle.sessionId,
+        stepId: state.step,
+        toolCallId: syntheticCall.id,
+        toolName,
+        args: toolInput,
+      });
     }
 
     this.sessionMemory.recordToolResult(clientId, {
@@ -392,83 +479,74 @@ export class AgentLoop {
     return result;
   }
 
-  private async executeContextRecall(input: unknown, activeSessionId?: string): Promise<ToolResult> {
+  private executeCreateSession(
+    clientId: string,
+    input: unknown,
+    runHandle: MemoryRunHandle,
+  ): ToolResult {
     const payload = input && typeof input === "object" ? input as Record<string, unknown> : {};
-    const query = typeof payload["query"] === "string" ? payload["query"].trim() : "";
-    if (query.length === 0) {
-      return { ok: false, error: "context_recall_agent requires a non-empty `query` string" };
+    const reason = typeof payload["reason"] === "string" ? payload["reason"].trim() : "";
+    const confidence = typeof payload["confidence"] === "number" && Number.isFinite(payload["confidence"])
+      ? payload["confidence"]
+      : undefined;
+    const handoffSummary = typeof payload["handoff_summary"] === "string" && payload["handoff_summary"].trim().length > 0
+      ? payload["handoff_summary"].trim()
+      : undefined;
+    if (reason.length === 0) {
+      return { ok: false, error: "create_session requires a non-empty `reason` string" };
     }
 
-    const searchQuery =
-      typeof payload["searchQuery"] === "string" && payload["searchQuery"].trim().length > 0
-        ? payload["searchQuery"].trim()
-        : undefined;
+    const createSession = this.sessionMemory.createSession;
+    if (!createSession) {
+      return { ok: false, error: "create_session is unavailable in the active session memory implementation" };
+    }
 
-    const memoryContext = this.sessionMemory.getPromptMemoryContext();
-    const recall = await this.contextRecallService.recall(
-      query, memoryContext, activeSessionId,
-      { invocationMode: "explicit", ...(searchQuery ? { searchQuery } : {}) },
-    );
-
-    const output = {
-      status: recall.status,
-      reason: recall.reason,
-      query,
-      searchQuery: searchQuery ?? query,
-      searchedSessionIds: recall.searchedSessionIds,
-      evidence: recall.evidence,
-      evidenceCount: recall.evidence.length,
-      modelCalls: recall.modelCalls,
-      elapsedMs: recall.elapsedMs,
-      foundUsefulData: recall.status === "found" || recall.status === "partial",
-    };
+    const created = createSession.call(this.sessionMemory, clientId, {
+      runId: runHandle.runId,
+      reason,
+      source: "agent",
+      confidence,
+      handoffSummary,
+    });
 
     return {
       ok: true,
-      output: JSON.stringify(output, null, 2),
-      meta: { status: recall.status, evidenceCount: recall.evidence.length, modelCalls: recall.modelCalls },
+      output: JSON.stringify(
+        {
+          status: "session_created",
+          reason,
+          confidence,
+          handoffSummary: handoffSummary ?? "",
+          previousSessionId: created.previousSessionId,
+          sessionId: created.sessionId,
+          sessionPath: created.sessionPath,
+        },
+        null,
+        2,
+      ),
+      meta: {
+        sessionCreated: true,
+        previousSessionId: created.previousSessionId,
+        sessionId: created.sessionId,
+      },
     };
   }
 
-  private recordAgentStepEvent(clientId: string, state: RunState, parsed: AgentStepInput, runHandle: MemoryRunHandle): void {
+  private recordAgentStepEvent(
+    clientId: string,
+    state: RunState,
+    parsed: AgentStepInput,
+    runHandle: MemoryRunHandle,
+  ): void {
     this.sessionMemory.recordAgentStep(clientId, {
       runId: runHandle.runId,
       sessionId: runHandle.sessionId,
       step: state.step,
       phase: parsed.phase,
       summary: parsed.summary,
-      approachesTried: [...state.approachesTried],
       actionToolName: parsed.action?.tool_name,
       endStatus: parsed.end_status,
     });
-  }
-
-  private evaluateEscalation(state: RunState): AgentLoopEscalationDetails | null {
-    if (!this.config.escalation.enabled) return null;
-
-    const distinctTools = state.toolNamesUsed.size;
-    const minCallsReached = state.toolCallsMade > this.config.escalation.minToolCalls;
-    const toolDiversityReached = distinctTools >= this.config.escalation.minDistinctTools;
-
-    const weakConvergence =
-      state.failedToolCalls >= this.config.escalation.minFailedToolCalls ||
-      state.reflectCycles >= this.config.escalation.minReflectCycles;
-
-    if (!minCallsReached || !toolDiversityReached || !weakConvergence) {
-      return null;
-    }
-
-    const toolNames = [...state.toolNamesUsed].sort((a, b) => a.localeCompare(b));
-    return {
-      reason: "tool_volume_and_diversity_with_low_progress",
-      summary:
-        "Escalating to maximum mode: " +
-        `${state.toolCallsMade} tool call(s), ${toolNames.length} tool type(s), ` +
-        `${state.failedToolCalls} failed call(s), ${state.reflectCycles} reflect cycle(s).`,
-      toolNamesUsed: toolNames,
-      failedToolCalls: state.failedToolCalls,
-      reflectCycles: state.reflectCycles,
-    };
   }
 
   private effectiveLimit(state: RunState): number {
@@ -478,15 +556,43 @@ export class AgentLoop {
     );
   }
 
-  private rebuildSystemMessage(messages: LlmMessage[], state: RunState): void {
-    if (state.scratchpad.length === 0) return;
+  private rebuildSystemMessage(messages: LlmMessage[], signals: string): void {
+    if (this.workingMemory.steps.length === 0 && this.workingMemory.plan === null) return;
 
-    const scratchpadText = buildScratchpadBlock(state.scratchpad, state.approachesTried);
+    const view = this.workingMemory.renderView(signals);
     const firstMsg = messages[0];
     if (firstMsg && firstMsg.role === "system") {
-      const baseSystem = firstMsg.content.split("\n--- Scratchpad ---")[0]!.trimEnd();
-      firstMsg.content = `${baseSystem}\n\n${scratchpadText}`;
+      const base = firstMsg.content.split("\n--- Agent Working Memory ---")[0]!.trimEnd();
+      firstMsg.content = `${base}\n\n${view}`;
     }
+  }
+
+  private generateStateSignals(state: RunState): string {
+    const signals: string[] = [];
+    const budget = this.effectiveLimit(state);
+    signals.push(`ℹ ${state.step} of ${budget} steps used`);
+
+    if (state.failedToolCalls >= 2 && state.consecutiveRepeatedActions >= 2) {
+      signals.push("⚠ Same action failed twice. Use reflect before acting again.");
+    }
+    if (state.consecutiveNonActSteps >= 3) {
+      signals.push("⚠ 3 steps without action. Act, reflect, or ask the user.");
+    }
+    const permErrors = state.errorsByCategory.get("permission") ?? 0;
+    if (permErrors >= 2) {
+      signals.push("⚠ Multiple permission errors. Try a different approach.");
+    }
+
+    return signals.join("\n");
+  }
+
+  private categorizeToolError(errorMessage: string): string {
+    const msg = errorMessage.toLowerCase();
+    if (msg.includes("not found") || msg.includes("no such")) return "not_found";
+    if (msg.includes("permission") || msg.includes("denied")) return "permission";
+    if (msg.includes("timeout") || msg.includes("timed out")) return "timeout";
+    if (msg.includes("invalid") || msg.includes("validation")) return "invalid_input";
+    return "runtime";
   }
 
   private emitContextSize(
@@ -521,97 +627,22 @@ export class AgentLoop {
     );
   }
 
-  private selectTurnTools(userContent: string, state: RunState): TurnToolSelection {
-    const available = this.buildSelectableTools();
-    if (available.length === 0) {
-      return { tools: [], allowedToolNames: new Set() };
-    }
-
-    if (!this.config.toolSelection.enabled) {
-      const schemas = available.map((tool) => tool.schema);
-      return {
-        tools: schemas,
-        allowedToolNames: new Set(schemas.map((tool) => tool.name)),
-      };
-    }
-
-    const query = this.buildSelectionQuery(userContent, state);
-    const topK = state.forceExpandedSelectionNextStep
-      ? this.config.toolSelection.retryTopK
-      : this.config.toolSelection.topK;
-
-    const selection = selectTools({
-      query,
-      tools: available,
-      topK,
-      alwaysInclude: [
-        ...this.config.toolSelection.alwaysInclude,
-        CONTEXT_RECALL_TOOL_NAME,
-      ],
-    });
-
-    state.forceExpandedSelectionNextStep = false;
-
-    const selected = selection.selected.length > 0
-      ? selection.selected
-      : available;
-
-    const schemas = selected.map((tool) => tool.schema);
-    return {
-      tools: schemas,
-      allowedToolNames: new Set(schemas.map((tool) => tool.name)),
-    };
-  }
-
-  private buildSelectableTools(): SelectableTool[] {
-    const selectable: SelectableTool[] = [];
+  private buildToolSchemas(): LlmToolSchema[] {
     const toolDefs = this.toolDefinitions.length > 0
       ? this.toolDefinitions
       : (this.toolExecutor?.definitions() ?? []);
 
+    const schemas: LlmToolSchema[] = [];
     for (const tool of toolDefs) {
-      if (!canUseTool(tool.name).allowed) continue;
-      selectable.push({
-        schema: {
-          name: tool.name,
-          description: tool.description,
-          inputSchema: tool.inputSchema ?? { type: "object" },
-        },
-        hints: tool.selectionHints,
+      schemas.push({
+        name: tool.name,
+        description: tool.description,
+        inputSchema: tool.inputSchema ?? { type: "object" },
       });
     }
 
-    if (canUseTool(CONTEXT_RECALL_TOOL_NAME).allowed) {
-      selectable.push({
-        schema: CONTEXT_RECALL_TOOL_SCHEMA,
-        hints: {
-          tags: ["memory", "history", "context", "recall"],
-          aliases: ["search_history", "previous_sessions"],
-          examples: ["what did we discuss before"],
-          domain: "memory",
-          priority: 1,
-        },
-      });
-    }
-
-    return selectable;
-  }
-
-  private buildSelectionQuery(userContent: string, state: RunState): string {
-    const scratchpadSummary = state.scratchpad
-      .slice(-4)
-      .map((entry) => `${entry.phase} ${entry.summary}`)
-      .join(" ");
-
-    return [userContent, scratchpadSummary]
-      .filter((chunk) => chunk.trim().length > 0)
-      .join("\n")
-      .trim();
-  }
-
-  private isSelectionMiss(result: ToolResult): boolean {
-    if (!result.meta || typeof result.meta !== "object") return false;
-    return result.meta["selectionMiss"] === true || result.meta["repeatedActionBlocked"] === true;
+    schemas.push(CREATE_SESSION_TOOL_SCHEMA);
+    return schemas;
   }
 
   private stableStringify(value: unknown): string {
@@ -626,22 +657,5 @@ export class AgentLoop {
 
   private buildActionSignature(toolName: string, toolInput: unknown): string {
     return `${toolName}::${this.stableStringify(toolInput)}`;
-  }
-
-  private formatSelectionError(toolName: string, allowedToolNames: Set<string>): string {
-    const availableTools = [...allowedToolNames]
-      .filter((name) => name !== AGENT_STEP_TOOL_NAME)
-      .sort((a, b) => a.localeCompare(b));
-
-    const prefix = `Tool '${toolName}' is not available in this step's selected tool set.`;
-    if (availableTools.length === 0) {
-      return `${prefix} No executable tools are currently exposed.`;
-    }
-
-    const shown = availableTools.slice(0, 20);
-    const suffix = availableTools.length > shown.length
-      ? ` (showing ${shown.length}/${availableTools.length})`
-      : "";
-    return `${prefix} Available tools${suffix}: ${shown.join(", ")}`;
   }
 }

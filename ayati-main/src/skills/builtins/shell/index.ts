@@ -1,24 +1,21 @@
 import { exec, spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { stat } from "node:fs/promises";
-import { extname, resolve as resolvePath } from "node:path";
+import { resolve as resolvePath } from "node:path";
 import { promisify } from "node:util";
 import type { SkillDefinition, ToolDefinition, ToolResult } from "../../types.js";
-import { getShellPolicy } from "../../tool-access-config.js";
-import {
-  enforceShellGuard,
-  enforceShellScriptPath,
-  getShellCapabilities,
-  enforceShellScriptConfirmation,
-} from "../../guardrails/index.js";
 
 const execAsync = promisify(exec);
+
+const DEFAULT_TIMEOUT_MS = 15_000;
+const DEFAULT_MAX_OUTPUT_CHARS = 100_000;
+const DEFAULT_MAX_SESSION_OUTPUT_CHARS = 100_000;
+const DEFAULT_SESSION_IDLE_TIMEOUT_MS = 600_000; // 10 min
 
 interface ShellExecInput {
   cmd: string;
   cwd?: string;
   timeoutMs?: number;
   maxOutputChars?: number;
-  confirmationToken?: string;
 }
 
 interface ShellRunScriptInput {
@@ -27,7 +24,6 @@ interface ShellRunScriptInput {
   cwd?: string;
   timeoutMs?: number;
   maxOutputChars?: number;
-  confirmationToken?: string;
 }
 
 interface ShellSessionStartInput {
@@ -35,7 +31,6 @@ interface ShellSessionStartInput {
   cwd?: string;
   waitMs?: number;
   maxOutputChars?: number;
-  confirmationToken?: string;
 }
 
 interface ShellSessionWriteInput {
@@ -69,13 +64,6 @@ interface ShellSessionState {
 const shellSessions = new Map<string, ShellSessionState>();
 let nextSessionCounter = 1;
 
-function commandPrefix(cmd: string): string {
-  const trimmed = cmd.trim();
-  if (trimmed.length === 0) return "";
-  const [first] = trimmed.split(/\s+/);
-  return first ?? "";
-}
-
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => {
     setTimeout(resolve, ms);
@@ -93,24 +81,16 @@ function toOutput(stdout: string, stderr: string): string {
   return [stdout, stderr].filter((v) => v.length > 0).join("\n").trim();
 }
 
-function capToPolicy(inputCap: number | undefined, policyCap: number): number {
-  if (inputCap === undefined) return policyCap;
-  if (!Number.isFinite(inputCap) || inputCap <= 0) return policyCap;
-  return Math.min(Math.trunc(inputCap), policyCap);
+function capWithDefault(inputCap: number | undefined, defaultCap: number): number {
+  if (inputCap === undefined) return defaultCap;
+  if (!Number.isFinite(inputCap) || inputCap <= 0) return defaultCap;
+  return Math.min(Math.trunc(inputCap), defaultCap);
 }
 
 function waitToPolicy(inputWaitMs: number | undefined, fallback: number): number {
   if (inputWaitMs === undefined) return fallback;
   if (!Number.isFinite(inputWaitMs) || inputWaitMs < 0) return fallback;
   return Math.min(Math.trunc(inputWaitMs), 3000);
-}
-
-function activeSessionCount(): number {
-  let count = 0;
-  for (const session of shellSessions.values()) {
-    if (!session.exited) count += 1;
-  }
-  return count;
 }
 
 function nextSessionId(): string {
@@ -126,10 +106,9 @@ function consumePendingOutput(session: ShellSessionState): string {
 }
 
 function ensureSessionNotIdle(session: ShellSessionState): ToolResult | null {
-  const caps = getShellCapabilities();
   if (session.exited) return null;
   const idleMs = Date.now() - session.lastActiveAt;
-  if (idleMs <= caps.sessionIdleTimeoutMs) return null;
+  if (idleMs <= DEFAULT_SESSION_IDLE_TIMEOUT_MS) return null;
   session.process.kill("SIGTERM");
   session.exited = true;
   return { ok: false, error: "Session expired due to inactivity. Start a new session." };
@@ -156,15 +135,11 @@ function validateShellExecInput(input: unknown): ShellExecInput | ToolResult {
   if (v.maxOutputChars !== undefined && (!Number.isFinite(v.maxOutputChars) || v.maxOutputChars <= 0)) {
     return { ok: false, error: "Invalid input: maxOutputChars must be a positive number." };
   }
-  if (v.confirmationToken !== undefined && typeof v.confirmationToken !== "string") {
-    return { ok: false, error: "Invalid input: confirmationToken must be a string when provided." };
-  }
   return {
     cmd: v.cmd,
     cwd: v.cwd,
     timeoutMs: v.timeoutMs,
     maxOutputChars: v.maxOutputChars,
-    confirmationToken: v.confirmationToken,
   };
 }
 
@@ -188,16 +163,12 @@ function validateRunScriptInput(input: unknown): ShellRunScriptInput | ToolResul
   if (v.maxOutputChars !== undefined && (!Number.isFinite(v.maxOutputChars) || v.maxOutputChars <= 0)) {
     return { ok: false, error: "Invalid input: maxOutputChars must be a positive number." };
   }
-  if (v.confirmationToken !== undefined && typeof v.confirmationToken !== "string") {
-    return { ok: false, error: "Invalid input: confirmationToken must be a string when provided." };
-  }
   return {
     scriptPath: v.scriptPath,
     args: v.args,
     cwd: v.cwd,
     timeoutMs: v.timeoutMs,
     maxOutputChars: v.maxOutputChars,
-    confirmationToken: v.confirmationToken,
   };
 }
 
@@ -218,15 +189,11 @@ function validateSessionStartInput(input: unknown): ShellSessionStartInput | Too
   if (v.maxOutputChars !== undefined && (!Number.isFinite(v.maxOutputChars) || v.maxOutputChars <= 0)) {
     return { ok: false, error: "Invalid input: maxOutputChars must be a positive number." };
   }
-  if (v.confirmationToken !== undefined && typeof v.confirmationToken !== "string") {
-    return { ok: false, error: "Invalid input: confirmationToken must be a string when provided." };
-  }
   return {
     cmd: v.cmd,
     cwd: v.cwd,
     waitMs: v.waitMs,
     maxOutputChars: v.maxOutputChars,
-    confirmationToken: v.confirmationToken,
   };
 }
 
@@ -388,46 +355,16 @@ async function runProcessCommand(
   });
 }
 
-async function preflightShellCommand(
-  cmd: string,
+function preflightShellCommand(
   cwd: string | undefined,
-  confirmationToken: string | undefined,
-): Promise<{ ok: true; resolvedCwd?: string } | { ok: false; result: ToolResult }> {
-  const policy = getShellPolicy();
-  if (!policy.enabled) {
-    return { ok: false, result: { ok: false, error: "shell is disabled (enabled=false)." } };
-  }
-  if (policy.mode === "off") {
-    return { ok: false, result: { ok: false, error: "shell is disabled (mode=off)." } };
-  }
-
-  const prefix = commandPrefix(cmd);
-  if (policy.mode === "allowlist" && !policy.allowedPrefixes.includes(prefix)) {
-    return {
-      ok: false,
-      result: { ok: false, error: `Command prefix not allowed in allowlist mode: ${prefix || "<empty>"}` },
-    };
-  }
-
-  if (!policy.allowAnyCwd && cwd && !resolvePath(cwd).startsWith(process.cwd())) {
-    return {
-      ok: false,
-      result: { ok: false, error: "cwd is outside the workspace and allowAnyCwd is false." },
-    };
-  }
-
-  const guard = await enforceShellGuard({
-    cmd,
-    cwd,
-    confirmationToken,
-  });
-  if (!guard.ok) return { ok: false, result: guard.result };
-  return { ok: true, resolvedCwd: guard.resolvedCwd };
+): { ok: true; resolvedCwd?: string } {
+  const resolvedCwd = cwd ? resolvePath(cwd) : undefined;
+  return { ok: true, resolvedCwd };
 }
 
 export const shellExecTool: ToolDefinition = {
   name: "shell",
-  description: "Execute a shell command with runtime-configurable access controls.",
+  description: "Execute a shell command.",
   inputSchema: {
     type: "object",
     required: ["cmd"],
@@ -436,7 +373,6 @@ export const shellExecTool: ToolDefinition = {
       cwd: { type: "string" },
       timeoutMs: { type: "number" },
       maxOutputChars: { type: "number" },
-      confirmationToken: { type: "string" },
     },
   },
   selectionHints: {
@@ -448,27 +384,18 @@ export const shellExecTool: ToolDefinition = {
   },
   async execute(input): Promise<ToolResult> {
     const parsed = validateShellExecInput(input);
-    if ("ok" in parsed) {
-      return parsed;
-    }
-    const policy = getShellPolicy();
-    const preflight = await preflightShellCommand(parsed.cmd, parsed.cwd, parsed.confirmationToken);
-    if (!preflight.ok) return preflight.result;
+    if ("ok" in parsed) return parsed;
 
-    const timeoutMs = capToPolicy(parsed.timeoutMs, policy.timeoutMs);
-    const maxOutputChars = capToPolicy(parsed.maxOutputChars, policy.maxOutputChars);
-    const result = await runExecCommand(parsed.cmd, preflight.resolvedCwd ?? parsed.cwd, timeoutMs, maxOutputChars);
-
-    if (!result.meta) result.meta = {};
-    result.meta["mode"] = policy.mode;
-    result.meta["commandPrefix"] = commandPrefix(parsed.cmd);
-    return result;
+    const preflight = preflightShellCommand(parsed.cwd);
+    const timeoutMs = capWithDefault(parsed.timeoutMs, DEFAULT_TIMEOUT_MS);
+    const maxOutputChars = capWithDefault(parsed.maxOutputChars, DEFAULT_MAX_OUTPUT_CHARS);
+    return await runExecCommand(parsed.cmd, preflight.resolvedCwd ?? parsed.cwd, timeoutMs, maxOutputChars);
   },
 };
 
 export const shellRunScriptTool: ToolDefinition = {
   name: "shell_run_script",
-  description: "Run a bash script from allowed roots with guardrails and confirmation support.",
+  description: "Run a bash script file.",
   inputSchema: {
     type: "object",
     required: ["scriptPath"],
@@ -478,7 +405,6 @@ export const shellRunScriptTool: ToolDefinition = {
       cwd: { type: "string" },
       timeoutMs: { type: "number" },
       maxOutputChars: { type: "number" },
-      confirmationToken: { type: "string" },
     },
   },
   selectionHints: {
@@ -492,45 +418,18 @@ export const shellRunScriptTool: ToolDefinition = {
     const parsed = validateRunScriptInput(input);
     if ("ok" in parsed) return parsed;
 
-    const policy = getShellPolicy();
-    const capabilities = getShellCapabilities();
-    const scriptPathInput = parsed.cwd ? resolvePath(parsed.cwd, parsed.scriptPath) : parsed.scriptPath;
-    const scriptGuard = await enforceShellScriptPath(scriptPathInput);
-    if (!scriptGuard.ok) return scriptGuard.result;
-
-    const extension = extname(scriptGuard.resolvedPath).toLowerCase();
-    if (!capabilities.allowedScriptExtensions.includes(extension)) {
-      return {
-        ok: false,
-        error: `Script extension is not allowed: ${extension || "<none>"}`,
-      };
-    }
-
-    const fileStats = await stat(scriptGuard.resolvedPath);
+    const scriptPath = parsed.cwd ? resolvePath(parsed.cwd, parsed.scriptPath) : resolvePath(parsed.scriptPath);
+    const fileStats = await stat(scriptPath);
     if (!fileStats.isFile()) {
       return { ok: false, error: "scriptPath must point to a regular file." };
     }
-    if (fileStats.size > capabilities.maxScriptBytes) {
-      return { ok: false, error: `Script exceeds max size (${capabilities.maxScriptBytes} bytes).` };
-    }
 
-    const guardCmd = `bash ${scriptGuard.resolvedPath}`;
-    const preflight = await preflightShellCommand(guardCmd, parsed.cwd, parsed.confirmationToken);
-    if (!preflight.ok) return preflight.result;
-
-    const scriptConfirm = enforceShellScriptConfirmation({
-      scriptPath: scriptGuard.resolvedPath,
-      args: parsed.args ?? [],
-      cwd: preflight.resolvedCwd ?? parsed.cwd,
-      confirmationToken: parsed.confirmationToken,
-    });
-    if (!scriptConfirm.ok) return scriptConfirm.result;
-
-    const timeoutMs = capToPolicy(parsed.timeoutMs, policy.timeoutMs);
-    const maxOutputChars = capToPolicy(parsed.maxOutputChars, policy.maxOutputChars);
+    const preflight = preflightShellCommand(parsed.cwd);
+    const timeoutMs = capWithDefault(parsed.timeoutMs, DEFAULT_TIMEOUT_MS);
+    const maxOutputChars = capWithDefault(parsed.maxOutputChars, DEFAULT_MAX_OUTPUT_CHARS);
     return await runProcessCommand(
       "bash",
-      [scriptGuard.resolvedPath, ...(parsed.args ?? [])],
+      [scriptPath, ...(parsed.args ?? [])],
       preflight.resolvedCwd ?? parsed.cwd,
       timeoutMs,
       maxOutputChars,
@@ -549,7 +448,6 @@ export const shellSessionStartTool: ToolDefinition = {
       cwd: { type: "string" },
       waitMs: { type: "number" },
       maxOutputChars: { type: "number" },
-      confirmationToken: { type: "string" },
     },
   },
   selectionHints: {
@@ -563,18 +461,8 @@ export const shellSessionStartTool: ToolDefinition = {
     const parsed = validateSessionStartInput(input);
     if ("ok" in parsed) return parsed;
 
-    const capabilities = getShellCapabilities();
-    if (activeSessionCount() >= capabilities.maxConcurrentSessions) {
-      return {
-        ok: false,
-        error: `Concurrent shell session limit reached (${capabilities.maxConcurrentSessions}).`,
-      };
-    }
-
-    const preflight = await preflightShellCommand(parsed.cmd, parsed.cwd, parsed.confirmationToken);
-    if (!preflight.ok) return preflight.result;
-
-    const outputCap = capToPolicy(parsed.maxOutputChars, capabilities.maxSessionOutputChars);
+    const preflight = preflightShellCommand(parsed.cwd);
+    const outputCap = capWithDefault(parsed.maxOutputChars, DEFAULT_MAX_SESSION_OUTPUT_CHARS);
     const process = spawn("/bin/bash", ["-lc", parsed.cmd], {
       cwd: preflight.resolvedCwd ?? parsed.cwd,
       stdio: ["pipe", "pipe", "pipe"],
@@ -746,62 +634,19 @@ export const shellSessionCloseTool: ToolDefinition = {
   },
 };
 
-export const shellCapabilitiesTool: ToolDefinition = {
-  name: "shell_list_capabilities",
-  description: "List active shell capabilities, profile, limits, and guardrail decisions.",
-  inputSchema: {
-    type: "object",
-    properties: {},
-  },
-  selectionHints: {
-    tags: ["shell", "capabilities", "policy", "guardrails"],
-    aliases: ["shell_capabilities", "shell_policy"],
-    examples: ["what shell commands are allowed", "show shell guardrails"],
-    domain: "execution",
-    priority: 10,
-  },
-  async execute(): Promise<ToolResult> {
-    const policy = getShellPolicy();
-    const caps = getShellCapabilities();
-    const lines = [
-      `mode=${policy.mode}`,
-      `profile=${caps.profile}`,
-      `effective_allowed_prefixes=${caps.effectiveAllowedPrefixes.join(",")}`,
-      `deny_prefixes=${caps.denyPrefixes.join(",")}`,
-      `deny_operators=${caps.denyOperators.join(",")}`,
-      `allowed_script_extensions=${caps.allowedScriptExtensions.join(",")}`,
-      `max_script_bytes=${caps.maxScriptBytes}`,
-      `max_concurrent_sessions=${caps.maxConcurrentSessions}`,
-      `session_idle_timeout_ms=${caps.sessionIdleTimeoutMs}`,
-      `active_sessions=${activeSessionCount()}`,
-    ];
-    return {
-      ok: true,
-      output: lines.join("\n"),
-      meta: {
-        mode: policy.mode,
-        profile: caps.profile,
-        allowedPrefixes: caps.effectiveAllowedPrefixes,
-        denyPrefixes: caps.denyPrefixes,
-      },
-    };
-  },
-};
-
 const SHELL_PROMPT_BLOCK = [
   "Shell Skill is available.",
   "Use shell for terminal execution, developer workflows, and orchestrating system tools.",
-  "Use shell_run_script to execute project scripts safely.",
+  "Use shell_run_script to execute project scripts.",
   "Use shell_session_start/shell_session_write/shell_session_close for interactive commands.",
-  "Use shell_list_capabilities to inspect current guardrails and allowed commands.",
-  "Prefer concise, safe commands and summarize results clearly.",
+  "Prefer concise commands and summarize results clearly.",
   "If command output is large, return a concise summary.",
 ].join("\n");
 
 const shellSkill: SkillDefinition = {
   id: "shell",
-  version: "1.1.0",
-  description: "Run shell commands, scripts, and interactive terminal sessions with guardrails.",
+  version: "2.0.0",
+  description: "Run shell commands, scripts, and interactive terminal sessions.",
   promptBlock: SHELL_PROMPT_BLOCK,
   tools: [
     shellExecTool,
@@ -809,7 +654,6 @@ const shellSkill: SkillDefinition = {
     shellSessionStartTool,
     shellSessionWriteTool,
     shellSessionCloseTool,
-    shellCapabilitiesTool,
   ],
 };
 

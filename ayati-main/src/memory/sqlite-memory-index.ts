@@ -2,89 +2,45 @@ import { mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { DatabaseSync } from "node:sqlite";
-import type {
-  SessionProfile,
-  SessionSummaryRecord,
-  SessionSummarySearchHit,
-} from "./types.js";
 import { devWarn } from "../shared/index.js";
 
 const thisDir = dirname(fileURLToPath(import.meta.url));
 const projectRoot = resolve(thisDir, "..", "..");
 const DEFAULT_DATA_DIR = resolve(projectRoot, "data", "memory");
 
-function parseJsonArray(value: unknown): string[] {
-  if (typeof value !== "string" || value.trim().length === 0) return [];
-  try {
-    const parsed = JSON.parse(value) as unknown;
-    if (!Array.isArray(parsed)) return [];
-    return parsed.filter((item): item is string => typeof item === "string");
-  } catch {
-    return [];
-  }
-}
+export type SessionMetaStatus = "active" | "closed" | "crashed";
 
-function normalizeKeyword(value: string): string {
-  return value
-    .toLowerCase()
-    .trim()
-    .replace(/[^a-z0-9._/-\s]/g, "")
-    .replace(/\s+/g, " ");
-}
-
-function tokenizeQuery(query: string): string[] {
-  const stopwords = new Set([
-    "a",
-    "an",
-    "and",
-    "are",
-    "as",
-    "at",
-    "be",
-    "for",
-    "from",
-    "has",
-    "have",
-    "i",
-    "in",
-    "is",
-    "it",
-    "of",
-    "on",
-    "or",
-    "that",
-    "the",
-    "to",
-    "was",
-    "were",
-    "with",
-  ]);
-
-  const unique = new Set<string>();
-  for (const raw of query.split(/\s+/)) {
-    const cleaned = normalizeKeyword(raw);
-    if (cleaned.length < 2) continue;
-    if (stopwords.has(cleaned)) continue;
-    unique.add(cleaned);
-  }
-
-  return [...unique].slice(0, 12);
-}
-
-export interface PersistedSessionSummaryInput {
+export interface SessionMetaRecord {
   sessionId: string;
   clientId: string;
-  createdAt: string;
-  closedAt: string;
-  closeReason: string;
-  tokenCount: number;
-  sourcePath: string;
-  record: SessionSummaryRecord;
+  status: SessionMetaStatus;
+  sessionPath: string;
+  openedAt: string;
+  closedAt: string | null;
+  closeReason: string | null;
+  parentSessionId: string | null;
+  handoffSummary: string | null;
+  lastEventAt: string;
+  updatedAt: string;
+}
+
+export interface OpenSessionInput {
+  sessionId: string;
+  clientId: string;
+  sessionPath: string;
+  openedAt: string;
+  parentSessionId?: string;
+  handoffSummary?: string;
 }
 
 export interface SqliteMemoryIndexOptions {
   dataDir?: string;
   dbPath?: string;
+}
+
+function clampLimit(limit: number, fallback: number): number {
+  if (!Number.isFinite(limit) || limit <= 0) return fallback;
+  return Math.floor(limit);
 }
 
 export class SqliteMemoryIndex {
@@ -109,267 +65,260 @@ export class SqliteMemoryIndex {
     this.db = null;
   }
 
-  getLatestSummary(clientId: string): SessionSummaryRecord | null {
+  openSession(input: OpenSessionInput): void {
     const db = this.requireDb();
-    const row = db
-      .prepare(`
-        SELECT summary_text, keyword_csv, confidence, redaction_flags
-        FROM session_summaries
-        WHERE client_id = ?
-        ORDER BY closed_at DESC
-        LIMIT 1
-      `)
-      .get(clientId) as
-      | {
-          summary_text: string;
-          keyword_csv: string;
-          confidence: number;
-          redaction_flags: string;
-        }
-      | undefined;
 
-    if (!row) return null;
-    return {
-      summaryText: row.summary_text,
-      keywords: row.keyword_csv
-        .split(",")
-        .map((item) => item.trim())
-        .filter((item) => item.length > 0),
-      confidence: Number(row.confidence) || 0,
-      redactionFlags: parseJsonArray(row.redaction_flags),
-    };
-  }
-
-  upsertSessionSummary(input: PersistedSessionSummaryInput): void {
-    const db = this.requireDb();
-    const record = input.record;
-    const keywordCsv = record.keywords.join(",");
-    const redactionFlags = JSON.stringify(record.redactionFlags);
-    const before = db
-      .prepare("SELECT id, summary_text FROM session_summaries WHERE session_id = ?")
-      .get(input.sessionId) as { id: number; summary_text: string } | undefined;
-
-    if (before) {
-      db.prepare(`
-        UPDATE session_summaries
-        SET client_id = ?, created_at = ?, closed_at = ?, close_reason = ?, summary_text = ?, confidence = ?, keyword_csv = ?, token_count = ?, redaction_flags = ?, source_path = ?
-        WHERE session_id = ?
-      `).run(
-        input.clientId,
-        input.createdAt,
-        input.closedAt,
-        input.closeReason,
-        record.summaryText,
-        record.confidence,
-        keywordCsv,
-        input.tokenCount,
-        redactionFlags,
-        input.sourcePath,
-        input.sessionId,
-      );
-    } else {
-      db.prepare(`
-        INSERT INTO session_summaries
-          (session_id, client_id, created_at, closed_at, close_reason, summary_text, confidence, keyword_csv, token_count, redaction_flags, source_path)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `).run(
-        input.sessionId,
-        input.clientId,
-        input.createdAt,
-        input.closedAt,
-        input.closeReason,
-        record.summaryText,
-        record.confidence,
-        keywordCsv,
-        input.tokenCount,
-        redactionFlags,
-        input.sourcePath,
-      );
-    }
-
-    db.prepare("DELETE FROM summary_keywords WHERE session_id = ?").run(input.sessionId);
-    const insertKeyword = db.prepare(`
-      INSERT INTO summary_keywords (session_id, keyword, weight)
-      VALUES (?, ?, ?)
-      ON CONFLICT(session_id, keyword) DO UPDATE SET weight = excluded.weight
-    `);
-    for (const keyword of record.keywords) {
-      insertKeyword.run(input.sessionId, keyword, 1);
-    }
-
-    const mutationType = before ? "update_summary" : "create_summary";
-    const beforeHash = before ? this.hashString(before.summary_text) : null;
-    const afterHash = this.hashString(record.summaryText);
     db.prepare(`
-      INSERT INTO memory_mutations
-        (session_id, mutation_type, before_hash, after_hash, trigger, model_confidence, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
+      UPDATE sessions_meta
+      SET
+        status = 'crashed',
+        closed_at = COALESCE(closed_at, ?),
+        close_reason = COALESCE(close_reason, 'superseded_by_new_session'),
+        last_event_at = ?,
+        updated_at = ?
+      WHERE client_id = ?
+        AND status = 'active'
+        AND session_id <> ?
+    `).run(
+      input.openedAt,
+      input.openedAt,
+      input.openedAt,
+      input.clientId,
+      input.sessionId,
+    );
+
+    db.prepare(`
+      INSERT INTO sessions_meta (
+        session_id,
+        client_id,
+        status,
+        session_path,
+        opened_at,
+        closed_at,
+        close_reason,
+        parent_session_id,
+        handoff_summary,
+        last_event_at,
+        updated_at
+      ) VALUES (?, ?, 'active', ?, ?, NULL, NULL, ?, ?, ?, ?)
+      ON CONFLICT(session_id) DO UPDATE SET
+        client_id = excluded.client_id,
+        status = 'active',
+        session_path = excluded.session_path,
+        opened_at = excluded.opened_at,
+        closed_at = NULL,
+        close_reason = NULL,
+        parent_session_id = excluded.parent_session_id,
+        handoff_summary = excluded.handoff_summary,
+        last_event_at = excluded.last_event_at,
+        updated_at = excluded.updated_at
     `).run(
       input.sessionId,
-      mutationType,
-      beforeHash,
-      afterHash,
-      input.closeReason,
-      record.confidence,
-      input.closedAt,
+      input.clientId,
+      input.sessionPath,
+      input.openedAt,
+      input.parentSessionId ?? null,
+      input.handoffSummary ?? null,
+      input.openedAt,
+      input.openedAt,
     );
   }
 
-  upsertSessionMetadata(sessionId: string, profile: SessionProfile): void {
+  resumeSession(
+    sessionId: string,
+    clientId: string,
+    sessionPath: string,
+    resumedAt: string,
+    options?: { parentSessionId?: string; handoffSummary?: string },
+  ): void {
     const db = this.requireDb();
+
     db.prepare(`
-      INSERT INTO session_metadata
-        (session_id, version, title, scope, keywords_json, anchors_json, subtopics_json, active_goals_json, constraints_json, stable_entities_json, decision_log_json, open_loops_json, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      UPDATE sessions_meta
+      SET
+        status = 'crashed',
+        closed_at = COALESCE(closed_at, ?),
+        close_reason = COALESCE(close_reason, 'superseded_by_restored_session'),
+        last_event_at = ?,
+        updated_at = ?
+      WHERE client_id = ?
+        AND status = 'active'
+        AND session_id <> ?
+    `).run(
+      resumedAt,
+      resumedAt,
+      resumedAt,
+      clientId,
+      sessionId,
+    );
+
+    db.prepare(`
+      INSERT INTO sessions_meta (
+        session_id,
+        client_id,
+        status,
+        session_path,
+        opened_at,
+        closed_at,
+        close_reason,
+        parent_session_id,
+        handoff_summary,
+        last_event_at,
+        updated_at
+      ) VALUES (?, ?, 'active', ?, ?, NULL, NULL, ?, ?, ?, ?)
       ON CONFLICT(session_id) DO UPDATE SET
-        version = excluded.version,
-        title = excluded.title,
-        scope = excluded.scope,
-        keywords_json = excluded.keywords_json,
-        anchors_json = excluded.anchors_json,
-        subtopics_json = excluded.subtopics_json,
-        active_goals_json = excluded.active_goals_json,
-        constraints_json = excluded.constraints_json,
-        stable_entities_json = excluded.stable_entities_json,
-        decision_log_json = excluded.decision_log_json,
-        open_loops_json = excluded.open_loops_json,
+        client_id = excluded.client_id,
+        status = 'active',
+        session_path = excluded.session_path,
+        closed_at = NULL,
+        close_reason = NULL,
+        parent_session_id = COALESCE(excluded.parent_session_id, sessions_meta.parent_session_id),
+        handoff_summary = COALESCE(excluded.handoff_summary, sessions_meta.handoff_summary),
+        last_event_at = CASE
+          WHEN sessions_meta.last_event_at > excluded.last_event_at THEN sessions_meta.last_event_at
+          ELSE excluded.last_event_at
+        END,
         updated_at = excluded.updated_at
     `).run(
       sessionId,
-      profile.version,
-      profile.title,
-      profile.scope,
-      JSON.stringify(profile.keywords),
-      JSON.stringify(profile.anchors),
-      JSON.stringify(profile.subtopics),
-      JSON.stringify(profile.activeGoals),
-      JSON.stringify(profile.constraints),
-      JSON.stringify(profile.stableEntities),
-      JSON.stringify(profile.decisionLog),
-      JSON.stringify(profile.openLoops),
-      profile.updatedAt,
+      clientId,
+      sessionPath,
+      resumedAt,
+      options?.parentSessionId ?? null,
+      options?.handoffSummary ?? null,
+      resumedAt,
+      resumedAt,
     );
   }
 
-  getSessionMetadata(sessionId: string): SessionProfile | null {
+  recordEvent(sessionId: string, eventTs: string): void {
     const db = this.requireDb();
-    const row = db
-      .prepare(`
-        SELECT
-          version, title, scope, keywords_json, anchors_json, subtopics_json, active_goals_json,
-          constraints_json, stable_entities_json, decision_log_json, open_loops_json, updated_at
-        FROM session_metadata
-        WHERE session_id = ?
-      `)
-      .get(sessionId) as
-      | {
-          version: number;
-          title: string;
-          scope: string;
-          keywords_json: string;
-          anchors_json: string;
-          subtopics_json: string;
-          active_goals_json: string;
-          constraints_json: string;
-          stable_entities_json: string;
-          decision_log_json: string;
-          open_loops_json: string;
-          updated_at: string;
-        }
-      | undefined;
-
-    if (!row) return null;
-    return {
-      title: row.title,
-      scope: row.scope,
-      keywords: parseJsonArray(row.keywords_json),
-      anchors: parseJsonArray(row.anchors_json),
-      subtopics: parseJsonArray(row.subtopics_json),
-      activeGoals: parseJsonArray(row.active_goals_json),
-      constraints: parseJsonArray(row.constraints_json),
-      stableEntities: parseJsonArray(row.stable_entities_json),
-      decisionLog: parseJsonArray(row.decision_log_json),
-      openLoops: parseJsonArray(row.open_loops_json),
-      topicConfidence: 1,
-      updatedAt: row.updated_at,
-      version: Number(row.version) || 1,
-    };
+    db.prepare(`
+      UPDATE sessions_meta
+      SET
+        last_event_at = ?,
+        updated_at = ?
+      WHERE session_id = ?
+    `).run(
+      eventTs,
+      eventTs,
+      sessionId,
+    );
   }
 
-  searchSummaries(clientId: string, query: string, limit = 5): SessionSummarySearchHit[] {
+  updateSessionPath(sessionId: string, sessionPath: string, updatedAt: string): void {
     const db = this.requireDb();
-    const keywords = tokenizeQuery(query);
-    const cappedLimit = Math.max(1, Math.min(20, limit));
+    db.prepare(`
+      UPDATE sessions_meta
+      SET
+        session_path = ?,
+        updated_at = ?
+      WHERE session_id = ?
+    `).run(
+      sessionPath,
+      updatedAt,
+      sessionId,
+    );
+  }
 
-    if (keywords.length === 0) {
-      const rows = db
-        .prepare(`
-          SELECT session_id, summary_text, keyword_csv, closed_at, close_reason
-          FROM session_summaries
-          WHERE client_id = ?
-          ORDER BY closed_at DESC
-          LIMIT ?
-        `)
-        .all(clientId, cappedLimit) as Array<{
-          session_id: string;
-          summary_text: string;
-          keyword_csv: string;
-          closed_at: string;
-          close_reason: string;
-        }>;
+  closeSession(
+    sessionId: string,
+    closedAt: string,
+    reason: string,
+    handoffSummary?: string,
+  ): void {
+    const db = this.requireDb();
+    db.prepare(`
+      UPDATE sessions_meta
+      SET
+        status = 'closed',
+        closed_at = ?,
+        close_reason = ?,
+        handoff_summary = COALESCE(?, handoff_summary),
+        last_event_at = ?,
+        updated_at = ?
+      WHERE session_id = ?
+    `).run(
+      closedAt,
+      reason,
+      handoffSummary ?? null,
+      closedAt,
+      closedAt,
+      sessionId,
+    );
+  }
 
-      return rows.map((row, index) => ({
-        sessionId: row.session_id,
-        summaryText: row.summary_text,
-        keywords: row.keyword_csv.split(",").map((item) => item.trim()).filter(Boolean),
-        closedAt: row.closed_at,
-        closeReason: row.close_reason,
-        score: Math.max(0.01, 1 - index * 0.1),
-      }));
-    }
+  markSessionCrashed(sessionId: string, crashedAt: string, reason: string): void {
+    const db = this.requireDb();
+    db.prepare(`
+      UPDATE sessions_meta
+      SET
+        status = 'crashed',
+        closed_at = COALESCE(closed_at, ?),
+        close_reason = ?,
+        last_event_at = ?,
+        updated_at = ?
+      WHERE session_id = ?
+    `).run(
+      crashedAt,
+      reason,
+      crashedAt,
+      crashedAt,
+      sessionId,
+    );
+  }
 
-    const placeholders = keywords.map(() => "?").join(", ");
-    const sql = `
+  getActiveSession(clientId: string): SessionMetaRecord | null {
+    const db = this.requireDb();
+    const row = db.prepare(`
       SELECT
-        s.session_id,
-        s.summary_text,
-        s.keyword_csv,
-        s.closed_at,
-        s.close_reason,
-        COUNT(sk.keyword) AS match_count
-      FROM session_summaries s
-      LEFT JOIN summary_keywords sk
-        ON sk.session_id = s.session_id
-       AND sk.keyword IN (${placeholders})
-      WHERE s.client_id = ?
-      GROUP BY s.session_id, s.summary_text, s.keyword_csv, s.closed_at, s.close_reason
-      HAVING match_count > 0 OR LOWER(s.summary_text) LIKE ?
-      ORDER BY match_count DESC, s.closed_at DESC
+        session_id,
+        client_id,
+        status,
+        session_path,
+        opened_at,
+        closed_at,
+        close_reason,
+        parent_session_id,
+        handoff_summary,
+        last_event_at,
+        updated_at
+      FROM sessions_meta
+      WHERE client_id = ? AND status = 'active'
+      ORDER BY updated_at DESC
+      LIMIT 1
+    `).get(clientId) as SqliteSessionMetaRow | undefined;
+
+    if (!row) return null;
+    return this.mapRow(row);
+  }
+
+  listRecentSessions(clientId: string, limit = 32): SessionMetaRecord[] {
+    const db = this.requireDb();
+    const capped = Math.max(1, Math.min(500, clampLimit(limit, 32)));
+    const rows = db.prepare(`
+      SELECT
+        session_id,
+        client_id,
+        status,
+        session_path,
+        opened_at,
+        closed_at,
+        close_reason,
+        parent_session_id,
+        handoff_summary,
+        last_event_at,
+        updated_at
+      FROM sessions_meta
+      WHERE client_id = ?
+      ORDER BY
+        CASE WHEN status = 'active' THEN 0 ELSE 1 END,
+        updated_at DESC,
+        rowid DESC
       LIMIT ?
-    `;
+    `).all(clientId, capped) as unknown as SqliteSessionMetaRow[];
 
-    const rows = db.prepare(sql).all(
-      ...keywords,
-      clientId,
-      `%${query.toLowerCase()}%`,
-      cappedLimit,
-    ) as Array<{
-      session_id: string;
-      summary_text: string;
-      keyword_csv: string;
-      closed_at: string;
-      close_reason: string;
-      match_count: number;
-    }>;
-
-    return rows.map((row) => ({
-      sessionId: row.session_id,
-      summaryText: row.summary_text,
-      keywords: row.keyword_csv.split(",").map((item) => item.trim()).filter(Boolean),
-      closedAt: row.closed_at,
-      closeReason: row.close_reason,
-      score: Number(row.match_count) || 0.01,
-    }));
+    return rows.map((row) => this.mapRow(row));
   }
 
   private requireDb(): DatabaseSync {
@@ -379,79 +328,109 @@ export class SqliteMemoryIndex {
     return this.db;
   }
 
+  private mapRow(row: SqliteSessionMetaRow): SessionMetaRecord {
+    return {
+      sessionId: row.session_id,
+      clientId: row.client_id,
+      status: row.status,
+      sessionPath: row.session_path,
+      openedAt: row.opened_at,
+      closedAt: row.closed_at,
+      closeReason: row.close_reason,
+      parentSessionId: row.parent_session_id,
+      handoffSummary: row.handoff_summary,
+      lastEventAt: row.last_event_at,
+      updatedAt: row.updated_at,
+    };
+  }
+
   private createSchema(): void {
     const db = this.requireDb();
     try {
       db.exec(`
-        DROP TABLE IF EXISTS icm_links;
+        DROP TABLE IF EXISTS session_metadata;
+        DROP TABLE IF EXISTS session_summaries;
+        DROP TABLE IF EXISTS summary_keywords;
+        DROP TABLE IF EXISTS memory_mutations;
         DROP TABLE IF EXISTS icm_tasks;
+        DROP TABLE IF EXISTS icm_links;
+      `);
 
-        CREATE TABLE IF NOT EXISTS session_summaries (
-          id INTEGER PRIMARY KEY AUTOINCREMENT,
-          session_id TEXT NOT NULL UNIQUE,
-          client_id TEXT NOT NULL,
-          created_at TEXT NOT NULL,
-          closed_at TEXT NOT NULL,
-          close_reason TEXT NOT NULL,
-          summary_text TEXT NOT NULL,
-          confidence REAL NOT NULL,
-          keyword_csv TEXT NOT NULL,
-          token_count INTEGER NOT NULL,
-          redaction_flags TEXT NOT NULL,
-          source_path TEXT NOT NULL
-        );
+      if (!this.hasCompatibleSessionsMetaSchema(db)) {
+        db.exec("DROP TABLE IF EXISTS sessions_meta;");
+      }
 
-        CREATE TABLE IF NOT EXISTS summary_keywords (
-          id INTEGER PRIMARY KEY AUTOINCREMENT,
-          session_id TEXT NOT NULL,
-          keyword TEXT NOT NULL,
-          weight REAL NOT NULL DEFAULT 1,
-          UNIQUE(session_id, keyword)
-        );
-        CREATE INDEX IF NOT EXISTS idx_summary_keywords_keyword
-          ON summary_keywords(keyword);
-
-        CREATE TABLE IF NOT EXISTS session_metadata (
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS sessions_meta (
           session_id TEXT PRIMARY KEY,
-          version INTEGER NOT NULL,
-          title TEXT NOT NULL,
-          scope TEXT NOT NULL,
-          keywords_json TEXT NOT NULL,
-          anchors_json TEXT NOT NULL,
-          subtopics_json TEXT NOT NULL,
-          active_goals_json TEXT NOT NULL,
-          constraints_json TEXT NOT NULL,
-          stable_entities_json TEXT NOT NULL,
-          decision_log_json TEXT NOT NULL,
-          open_loops_json TEXT NOT NULL,
+          client_id TEXT NOT NULL,
+          status TEXT NOT NULL CHECK (status IN ('active', 'closed', 'crashed')),
+          session_path TEXT NOT NULL,
+          opened_at TEXT NOT NULL,
+          closed_at TEXT,
+          close_reason TEXT,
+          parent_session_id TEXT,
+          handoff_summary TEXT,
+          last_event_at TEXT NOT NULL,
           updated_at TEXT NOT NULL
         );
 
-        CREATE TABLE IF NOT EXISTS memory_mutations (
-          id INTEGER PRIMARY KEY AUTOINCREMENT,
-          session_id TEXT NOT NULL,
-          mutation_type TEXT NOT NULL,
-          before_hash TEXT,
-          after_hash TEXT NOT NULL,
-          trigger TEXT NOT NULL,
-          model_confidence REAL NOT NULL,
-          created_at TEXT NOT NULL
-        );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_sessions_meta_one_active_per_client
+          ON sessions_meta(client_id)
+          WHERE status = 'active';
+
+        CREATE INDEX IF NOT EXISTS idx_sessions_meta_client_recent
+          ON sessions_meta(client_id, updated_at DESC);
+
+        CREATE INDEX IF NOT EXISTS idx_sessions_meta_status_recent
+          ON sessions_meta(status, updated_at DESC);
       `);
     } catch (err) {
       devWarn(
-        "SQLite memory schema initialization failed:",
+        "SQLite sessions_meta schema initialization failed:",
         err instanceof Error ? err.message : String(err),
       );
       throw err;
     }
   }
 
-  private hashString(value: string): string {
-    let hash = 5381;
-    for (let i = 0; i < value.length; i++) {
-      hash = ((hash << 5) + hash) ^ value.charCodeAt(i);
-    }
-    return `${hash >>> 0}`;
+  private hasCompatibleSessionsMetaSchema(db: DatabaseSync): boolean {
+    const rows = db
+      .prepare("PRAGMA table_info(sessions_meta)")
+      .all() as Array<{ name: string }>;
+    if (rows.length === 0) return false;
+
+    const existing = new Set(rows.map((row) => row.name));
+    if (existing.has("keywords_json")) return false;
+
+    const required = [
+      "session_id",
+      "client_id",
+      "status",
+      "session_path",
+      "opened_at",
+      "closed_at",
+      "close_reason",
+      "parent_session_id",
+      "handoff_summary",
+      "last_event_at",
+      "updated_at",
+    ];
+
+    return required.every((name) => existing.has(name));
   }
+}
+
+interface SqliteSessionMetaRow {
+  session_id: string;
+  client_id: string;
+  status: SessionMetaStatus;
+  session_path: string;
+  opened_at: string;
+  closed_at: string | null;
+  close_reason: string | null;
+  parent_session_id: string | null;
+  handoff_summary: string | null;
+  last_event_at: string;
+  updated_at: string;
 }

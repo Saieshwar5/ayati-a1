@@ -4,7 +4,7 @@
 - `src/` contains runtime code.
 - Core areas:
   - `src/app` bootstrap/startup wiring.
-  - `src/ivec` agent loop, max-mode orchestration, tool selection.
+  - `src/ivec` agent loop and tool selection.
   - `src/memory` session persistence, summaries, drift/context services.
   - `src/skills` built-in and external tools/guardrails.
   - `src/providers` LLM provider adapters (`openai`, `anthropic`).
@@ -34,7 +34,7 @@
 - Before opening a PR, run: `npm run build && npm test`.
 
 ## Commit & Pull Request Guidelines
-- Existing history uses short, lowercase, imperative summaries (example: `added max-mode`).
+- Existing history uses short, lowercase, imperative summaries (example: `added tool-selection`).
 - Keep commit subjects concise and scoped to one logical change.
 - PRs should include:
   - what changed and why,

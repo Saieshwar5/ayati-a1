@@ -3,7 +3,6 @@ import { mkdtemp, writeFile, readFile, mkdir, rm, access } from "node:fs/promise
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { moveTool } from "../../../src/skills/builtins/filesystem/move.js";
-import { clearPendingConfirmationsForTests } from "../../../src/skills/guardrails/confirmation-store.js";
 
 async function exists(p: string): Promise<boolean> {
   try {
@@ -22,7 +21,6 @@ describe("moveTool", () => {
   });
 
   afterEach(async () => {
-    clearPendingConfirmationsForTests();
     await rm(tmp, { recursive: true, force: true });
   });
 
@@ -66,17 +64,7 @@ describe("moveTool", () => {
     await writeFile(src, "new", "utf-8");
     await writeFile(dest, "old", "utf-8");
 
-    const first = await moveTool.execute({ source: src, destination: dest, overwrite: true });
-    expect(first.ok).toBe(false);
-    expect(first.error).toContain("confirmation required");
-    const operationId = String((first.meta as Record<string, unknown>)["operationId"]);
-
-    const result = await moveTool.execute({
-      source: src,
-      destination: dest,
-      overwrite: true,
-      confirmationToken: `CONFIRM:${operationId}`,
-    });
+    const result = await moveTool.execute({ source: src, destination: dest, overwrite: true });
     expect(result.ok).toBe(true);
     expect(await readFile(dest, "utf-8")).toBe("new");
   });

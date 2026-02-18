@@ -1,12 +1,36 @@
-import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { describe, expect, it } from "vitest";
 import { SessionManager } from "../../src/memory/session-manager.js";
-import type { ToolContextEntry } from "../../src/memory/session-events.js";
 
-describe("SessionManager", () => {
+function listSessionFiles(dir: string): string[] {
+  if (!existsSync(dir)) return [];
+  const entries = readdirSync(dir, { withFileTypes: true });
+  const files: string[] = [];
+  for (const entry of entries) {
+    const full = resolve(dir, entry.name);
+    if (entry.isDirectory()) {
+      files.push(...listSessionFiles(full));
+    } else if (entry.isFile() && entry.name.endsWith(".md")) {
+      files.push(full);
+    }
+  }
+  return files;
+}
+
+function findSessionFile(baseDir: string, sessionId: string): string {
+  const files = listSessionFiles(join(baseDir, "sessions"));
+  const match = files.find((file) => file.endsWith(`${sessionId}.md`));
+  if (!match) {
+    throw new Error(`Session file not found for ${sessionId}`);
+  }
+  return match;
+}
+
+describe("MemoryManager markdown persistence", () => {
   it("stores run + tool events and returns prompt context", () => {
     const now = new Date("2026-02-08T00:00:00.000Z");
     const baseDir = mkdtempSync(join(tmpdir(), "ayati-memory-"));
@@ -45,22 +69,21 @@ describe("SessionManager", () => {
     const prompt = manager.getPromptMemoryContext();
 
     expect(prompt.conversationTurns.length).toBeGreaterThanOrEqual(1);
-    expect(prompt.toolEvents.some((event) => event.toolName === "shell")).toBe(true);
+    // Tool events are recorded to JSONL audit log but not returned in prompt context
+    expect(prompt).not.toHaveProperty("toolEvents");
 
-    const sessionsDir = join(baseDir, "sessions");
-    const sessionFiles = readdirSync(sessionsDir).filter((f) => f.endsWith(".jsonl"));
-    expect(sessionFiles.length).toBe(1);
-
-    const sessionFile = join(sessionsDir, sessionFiles[0]!);
+    const sessionFile = findSessionFile(baseDir, run.sessionId);
     const content = readFileSync(sessionFile, "utf8");
-    expect(content).toContain("tool_result");
-    expect(content).toContain("session_open");
+    expect(content).toContain("\"tool_result\"");
+    expect(content).toContain("\"session_open\"");
+    expect(content).toContain("\"sessionPath\"");
+    expect(content).not.toContain("\"runId\"");
 
     manager.shutdown();
   });
 
-  it("keeps the same session across time changes", () => {
-    let now = new Date(2026, 1, 8, 3, 50, 0, 0);
+  it("writes session files directly under sessions directory", () => {
+    const now = new Date("2026-02-08T12:30:00.000Z");
     const baseDir = mkdtempSync(join(tmpdir(), "ayati-memory-"));
 
     const manager = new SessionManager({
@@ -69,52 +92,112 @@ describe("SessionManager", () => {
       now: () => new Date(now),
     });
 
-    manager.initialize("c2");
+    manager.initialize("c-date");
+    const run = manager.beginRun("c-date", "hello");
+    manager.recordAssistantFinal("c-date", run.runId, run.sessionId, "hey");
 
-    const first = manager.beginRun("c2", "hello");
-    manager.recordAssistantFinal("c2", first.runId, first.sessionId, "hey");
-
-    now = new Date(2026, 1, 9, 12, 0, 0, 0);
-    const second = manager.beginRun("c2", "new request");
-
-    expect(second.sessionId).toBe(first.sessionId);
+    const sessionFile = findSessionFile(baseDir, run.sessionId);
+    const normalized = sessionFile.replace(/\\/g, "/");
+    expect(normalized).toMatch(/\/sessions\/[^/]+\.md$/);
 
     manager.shutdown();
   });
 
-  it("loads previous session summary cache from sqlite on restart", () => {
-    let now = new Date(2026, 1, 8, 3, 50, 0, 0);
+  it("keeps active-session.json on shutdown so session can resume", () => {
+    const now = new Date("2026-02-08T00:00:00.000Z");
     const baseDir = mkdtempSync(join(tmpdir(), "ayati-memory-"));
+    const markerPath = join(baseDir, "sessions", "active-session.json");
 
-    const manager1 = new SessionManager({
+    const manager = new SessionManager({
       dbPath: join(baseDir, "memory.sqlite"),
       dataDir: baseDir,
       now: () => new Date(now),
     });
 
-    manager1.initialize("c3");
+    manager.initialize("c-marker");
+    expect(existsSync(markerPath)).toBe(false);
 
-    const first = manager1.beginRun("c3", "what is 2+2");
-    manager1.recordAssistantFinal("c3", first.runId, first.sessionId, "4");
-    manager1.shutdown();
+    const run = manager.beginRun("c-marker", "ping");
+    expect(existsSync(markerPath)).toBe(true);
+    const marker = JSON.parse(readFileSync(markerPath, "utf8")) as {
+      sessionId: string;
+      sessionPath: string;
+    };
+    expect(marker.sessionId).toBe(run.sessionId);
+    expect(marker.sessionPath).toMatch(/^sessions\/[^/]+\.md$/);
 
-    now = new Date(2026, 1, 8, 6, 0, 0, 0);
+    manager.shutdown();
+    expect(existsSync(markerPath)).toBe(true);
+
     const manager2 = new SessionManager({
       dbPath: join(baseDir, "memory.sqlite"),
       dataDir: baseDir,
       now: () => new Date(now),
     });
-    manager2.initialize("c3");
-
-    const prompt = manager2.getPromptMemoryContext();
-    expect(prompt.conversationTurns).toHaveLength(0);
-    expect(prompt.previousSessionSummary.length).toBeGreaterThan(0);
-    expect(prompt.previousSessionSummary.toLowerCase()).toContain("2+2");
-
+    manager2.initialize("c-marker");
+    const resumed = manager2.beginRun("c-marker", "resume");
+    expect(resumed.sessionId).toBe(run.sessionId);
     manager2.shutdown();
   });
 
-  it("recovers incomplete session on restart via marker file", () => {
+  it("tracks sessions in sqlite sessions_meta with metadata-only schema", () => {
+    const now = new Date("2026-02-08T00:00:00.000Z");
+    const baseDir = mkdtempSync(join(tmpdir(), "ayati-memory-"));
+    const dbPath = join(baseDir, "memory.sqlite");
+
+    const manager = new SessionManager({
+      dbPath,
+      dataDir: baseDir,
+      now: () => new Date(now),
+    });
+
+    manager.initialize("c-sqlite");
+    const run = manager.beginRun("c-sqlite", "hello");
+    manager.recordAssistantFinal("c-sqlite", run.runId, run.sessionId, "world");
+    manager.shutdown();
+
+    const db = new DatabaseSync(dbPath);
+    const tables = db
+      .prepare("SELECT name FROM sqlite_master WHERE type = 'table'")
+      .all() as Array<{ name: string }>;
+    const tableNames = new Set(tables.map((row) => row.name));
+
+    expect(tableNames.has("sessions_meta")).toBe(true);
+    expect(tableNames.has("session_metadata")).toBe(false);
+
+    const columns = db
+      .prepare("PRAGMA table_info(sessions_meta)")
+      .all() as Array<{ name: string }>;
+    const columnNames = new Set(columns.map((row) => row.name));
+
+    expect(columnNames.has("keywords_json")).toBe(false);
+    expect(columnNames.has("session_path")).toBe(true);
+    expect(columnNames.has("parent_session_id")).toBe(true);
+    expect(columnNames.has("handoff_summary")).toBe(true);
+    expect(columnNames.has("countable_event_count")).toBe(false);
+
+    const row = db
+      .prepare(`
+        SELECT status, session_path, parent_session_id, handoff_summary
+        FROM sessions_meta
+        WHERE session_id = ?
+      `)
+      .get(run.sessionId) as {
+        status: string;
+        session_path: string;
+        parent_session_id: string | null;
+        handoff_summary: string | null;
+      };
+
+    expect(row.status).toBe("active");
+    expect(row.session_path).toMatch(/^sessions\/[^/]+\.md$/);
+    expect(row.parent_session_id).toBeNull();
+    expect(row.handoff_summary).toBeNull();
+
+    db.close();
+  });
+
+  it("restores active session via marker after restart", () => {
     let now = new Date("2026-02-08T08:00:00.000Z");
     const baseDir = mkdtempSync(join(tmpdir(), "ayati-memory-"));
 
@@ -124,19 +207,11 @@ describe("SessionManager", () => {
       now: () => new Date(now),
     });
 
-    manager1.initialize("c4");
+    manager1.initialize("c-restart");
+    const run = manager1.beginRun("c-restart", "hello");
+    manager1.recordAssistantFinal("c-restart", run.runId, run.sessionId, "hey there");
 
-    const run = manager1.beginRun("c4", "hello");
-    manager1.recordAssistantFinal("c4", run.runId, run.sessionId, "hey there");
-
-    // Marker file should exist (session not closed)
-    const markerPath = join(baseDir, "sessions", "active-session.txt");
-    expect(existsSync(markerPath)).toBe(true);
-    const markerId = readFileSync(markerPath, "utf8").trim();
-    expect(markerId).toBe(run.sessionId);
-
-    // Simulate crash — no shutdown() call
-
+    // Simulate crash (no shutdown)
     now = new Date("2026-02-08T08:05:00.000Z");
     const manager2 = new SessionManager({
       dbPath: join(baseDir, "memory.sqlite"),
@@ -144,16 +219,120 @@ describe("SessionManager", () => {
       now: () => new Date(now),
     });
 
-    manager2.initialize("c4");
+    manager2.initialize("c-restart");
+    const next = manager2.beginRun("c-restart", "next");
+    expect(next.sessionId).toBe(run.sessionId);
 
     const prompt = manager2.getPromptMemoryContext();
-    expect(prompt.conversationTurns.length).toBeGreaterThanOrEqual(1);
+    expect(prompt.conversationTurns.length).toBeGreaterThanOrEqual(3);
+    expect(prompt.conversationTurns.every((turn) => turn.sessionPath.includes("sessions/"))).toBe(true);
 
     manager2.shutdown();
   });
 
-  it("restores active session via marker and continues with same session id", () => {
-    let now = new Date(2026, 1, 8, 3, 50, 0, 0);
+  it("migrates legacy active .jsonl session to .md on restore", () => {
+    const now = new Date("2026-02-16T13:50:00.000Z");
+    const baseDir = mkdtempSync(join(tmpdir(), "ayati-memory-"));
+    const dbPath = join(baseDir, "memory.sqlite");
+    const sessionId = "legacy-active-session";
+    const legacyPath = `sessions/2026/02/16/${sessionId}.jsonl`;
+    const markdownPath = `sessions/${sessionId}.md`;
+    const legacyAbsolutePath = join(baseDir, legacyPath);
+    const markerPath = join(baseDir, "sessions", "active-session.json");
+
+    mkdirSync(join(baseDir, "sessions", "2026", "02", "16"), { recursive: true });
+    writeFileSync(legacyAbsolutePath, [
+      JSON.stringify({
+        v: 2,
+        ts: "2026-02-16T13:46:51.871Z",
+        type: "session_open",
+        sessionId,
+        sessionPath: legacyPath,
+        clientId: "local",
+      }),
+      JSON.stringify({
+        v: 2,
+        ts: "2026-02-16T13:46:51.872Z",
+        type: "user_message",
+        sessionId,
+        sessionPath: legacyPath,
+        content: "hii",
+      }),
+      JSON.stringify({
+        v: 2,
+        ts: "2026-02-16T13:46:53.776Z",
+        type: "assistant_message",
+        sessionId,
+        sessionPath: legacyPath,
+        content: "Hey there!",
+      }),
+    ].join("\n"), "utf8");
+    writeFileSync(markerPath, JSON.stringify({ sessionId, sessionPath: legacyPath }), "utf8");
+
+    const db = new DatabaseSync(dbPath);
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS sessions_meta (
+        session_id TEXT PRIMARY KEY,
+        client_id TEXT NOT NULL,
+        status TEXT NOT NULL CHECK (status IN ('active', 'closed', 'crashed')),
+        session_path TEXT NOT NULL,
+        opened_at TEXT NOT NULL,
+        closed_at TEXT,
+        close_reason TEXT,
+        parent_session_id TEXT,
+        handoff_summary TEXT,
+        last_event_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+    `);
+    db.prepare(`
+      INSERT INTO sessions_meta (
+        session_id,
+        client_id,
+        status,
+        session_path,
+        opened_at,
+        closed_at,
+        close_reason,
+        parent_session_id,
+        handoff_summary,
+        last_event_at,
+        updated_at
+      ) VALUES (?, ?, 'active', ?, ?, NULL, NULL, NULL, NULL, ?, ?)
+    `).run(
+      sessionId,
+      "local",
+      legacyPath,
+      "2026-02-16T13:46:51.871Z",
+      "2026-02-16T13:46:53.776Z",
+      "2026-02-16T13:46:53.776Z",
+    );
+    db.close();
+
+    const manager = new SessionManager({
+      dbPath,
+      dataDir: baseDir,
+      now: () => new Date(now),
+    });
+
+    manager.initialize("local");
+    const resumed = manager.beginRun("local", "continue");
+    expect(resumed.sessionId).toBe(sessionId);
+
+    const updatedMarker = JSON.parse(readFileSync(markerPath, "utf8")) as { sessionPath: string };
+    expect(updatedMarker.sessionPath).toBe(markdownPath);
+    expect(existsSync(join(baseDir, markdownPath))).toBe(true);
+    expect(existsSync(legacyAbsolutePath)).toBe(false);
+
+    const migratedContent = readFileSync(join(baseDir, markdownPath), "utf8");
+    expect(migratedContent).toContain("\"type\":\"session_open\"");
+    expect(migratedContent).toContain("\"type\":\"assistant_message\"");
+
+    manager.shutdown();
+  });
+
+  it("restores tool activity when active session is reloaded", () => {
+    let now = new Date("2026-02-08T10:00:00.000Z");
     const baseDir = mkdtempSync(join(tmpdir(), "ayati-memory-"));
 
     const manager1 = new SessionManager({
@@ -162,93 +341,191 @@ describe("SessionManager", () => {
       now: () => new Date(now),
     });
 
-    manager1.initialize("c10");
+    manager1.initialize("c-restart-tools");
+    const run = manager1.beginRun("c-restart-tools", "check tool state");
+    manager1.recordToolCall("c-restart-tools", {
+      runId: run.runId,
+      sessionId: run.sessionId,
+      stepId: 1,
+      toolCallId: "tc-restart-1",
+      toolName: "shell",
+      args: { cmd: "pwd" },
+    });
+    manager1.recordToolResult("c-restart-tools", {
+      runId: run.runId,
+      sessionId: run.sessionId,
+      stepId: 1,
+      toolCallId: "tc-restart-1",
+      toolName: "shell",
+      status: "success",
+      output: "/workspace",
+    });
+    manager1.recordAssistantFinal("c-restart-tools", run.runId, run.sessionId, "done");
 
-    const run = manager1.beginRun("c10", "hello");
-    manager1.recordAssistantFinal("c10", run.runId, run.sessionId, "hey there");
-
-    // Simulate crash — no shutdown() call
-    now = new Date(2026, 1, 8, 16, 10, 0, 0);
+    // Simulate crash (no shutdown)
+    now = new Date("2026-02-08T10:05:00.000Z");
     const manager2 = new SessionManager({
       dbPath: join(baseDir, "memory.sqlite"),
       dataDir: baseDir,
       now: () => new Date(now),
     });
 
-    manager2.initialize("c10");
-
-    const next = manager2.beginRun("c10", "next");
-    expect(next.sessionId).toBe(run.sessionId);
+    manager2.initialize("c-restart-tools");
     const prompt = manager2.getPromptMemoryContext();
+    // Tool events are written to JSONL for audit, not fed into prompt context
+    expect(prompt).not.toHaveProperty("toolEvents");
     expect(prompt.conversationTurns.length).toBeGreaterThanOrEqual(1);
-    expect(prompt.previousSessionSummary).toBe("");
+
+    const resumed = manager2.beginRun("c-restart-tools", "continue");
+    expect(resumed.sessionId).toBe(run.sessionId);
 
     manager2.shutdown();
   });
 
-  it("creates active-session.txt on session open and removes it on shutdown", () => {
-    const now = new Date("2026-02-08T00:00:00.000Z");
+  it("falls back to marker restore when sqlite active row has stale path", () => {
+    const now = new Date("2026-02-08T09:00:00.000Z");
     const baseDir = mkdtempSync(join(tmpdir(), "ayati-memory-"));
-    const markerPath = join(baseDir, "sessions", "active-session.txt");
+    const dbPath = join(baseDir, "memory.sqlite");
+    const markerPath = join(baseDir, "sessions", "active-session.json");
 
-    const manager = new SessionManager({
-      dbPath: join(baseDir, "memory.sqlite"),
+    const manager1 = new SessionManager({
+      dbPath,
       dataDir: baseDir,
       now: () => new Date(now),
     });
+    manager1.initialize("c-stale-active");
+    const run = manager1.beginRun("c-stale-active", "hello");
+    manager1.recordAssistantFinal("c-stale-active", run.runId, run.sessionId, "world");
+    manager1.shutdown();
 
-    manager.initialize("c6");
+    const marker = JSON.parse(readFileSync(markerPath, "utf8")) as {
+      sessionId: string;
+      sessionPath: string;
+    };
+    expect(marker.sessionId).toBe(run.sessionId);
 
-    // No marker before any run
-    expect(existsSync(markerPath)).toBe(false);
+    const db = new DatabaseSync(dbPath);
+    db.prepare(`
+      UPDATE sessions_meta
+      SET
+        session_path = 'sessions/invalid/missing.md',
+        status = 'active',
+        closed_at = NULL,
+        close_reason = NULL
+      WHERE session_id = ?
+    `).run(run.sessionId);
+    db.close();
 
-    const run = manager.beginRun("c6", "ping");
+    const manager2 = new SessionManager({
+      dbPath,
+      dataDir: baseDir,
+      now: () => new Date(now),
+    });
+    manager2.initialize("c-stale-active");
+    const resumed = manager2.beginRun("c-stale-active", "resume");
+    expect(resumed.sessionId).toBe(run.sessionId);
 
-    // Marker should exist with the session ID
-    expect(existsSync(markerPath)).toBe(true);
-    expect(readFileSync(markerPath, "utf8").trim()).toBe(run.sessionId);
+    const db2 = new DatabaseSync(dbPath);
+    const row = db2.prepare(`
+      SELECT status, session_path
+      FROM sessions_meta
+      WHERE session_id = ?
+    `).get(run.sessionId) as { status: string; session_path: string };
+    expect(row.status).toBe("active");
+    expect(row.session_path).toBe(marker.sessionPath);
+    db2.close();
 
-    manager.shutdown();
-
-    // Marker should be gone after shutdown
-    expect(existsSync(markerPath)).toBe(false);
+    manager2.shutdown();
   });
 
-  it("writes JSONL events to sessions directory", () => {
-    const now = new Date("2026-02-08T00:00:00.000Z");
+  it("recovers last crashed session when marker is missing", () => {
+    const now = new Date("2026-02-08T09:30:00.000Z");
     const baseDir = mkdtempSync(join(tmpdir(), "ayati-memory-"));
+    const dbPath = join(baseDir, "memory.sqlite");
+    const markerPath = join(baseDir, "sessions", "active-session.json");
 
-    const manager = new SessionManager({
-      dbPath: join(baseDir, "memory.sqlite"),
+    const manager1 = new SessionManager({
+      dbPath,
       dataDir: baseDir,
       now: () => new Date(now),
     });
+    manager1.initialize("c-recover-crashed");
+    const run = manager1.beginRun("c-recover-crashed", "start");
+    manager1.recordAssistantFinal("c-recover-crashed", run.runId, run.sessionId, "ok");
+    manager1.shutdown();
 
-    manager.initialize("c5");
+    try {
+      unlinkSync(markerPath);
+    } catch {
+      // ignore
+    }
 
-    const run = manager.beginRun("c5", "test message");
-    manager.recordAssistantFinal("c5", run.runId, run.sessionId, "reply");
-    manager.shutdown();
+    const db = new DatabaseSync(dbPath);
+    db.prepare(`
+      UPDATE sessions_meta
+      SET
+        status = 'crashed',
+        close_reason = 'restore_failed',
+        closed_at = ?,
+        updated_at = ?
+      WHERE session_id = ?
+    `).run(now.toISOString(), now.toISOString(), run.sessionId);
+    db.close();
 
-    const sessionsDir = join(baseDir, "sessions");
-    expect(existsSync(sessionsDir)).toBe(true);
+    const manager2 = new SessionManager({
+      dbPath,
+      dataDir: baseDir,
+      now: () => new Date(now),
+    });
+    manager2.initialize("c-recover-crashed");
+    const resumed = manager2.beginRun("c-recover-crashed", "continue");
+    expect(resumed.sessionId).toBe(run.sessionId);
 
-    const files = readdirSync(sessionsDir);
-    expect(files.length).toBeGreaterThan(0);
+    const db2 = new DatabaseSync(dbPath);
+    const row = db2.prepare(`
+      SELECT status
+      FROM sessions_meta
+      WHERE session_id = ?
+    `).get(run.sessionId) as { status: string };
+    expect(row.status).toBe("active");
+    db2.close();
 
-    const content = readFileSync(join(sessionsDir, files[0]!), "utf8");
-    const lines = content.trim().split("\n");
-
-    expect(lines.length).toBeGreaterThanOrEqual(4);
-
-    const firstEvent = JSON.parse(lines[0]!) as { type: string };
-    expect(firstEvent.type).toBe("session_open");
-
-    const lastEvent = JSON.parse(lines[lines.length - 1]!) as { type: string };
-    expect(lastEvent.type).toBe("session_close");
+    manager2.shutdown();
   });
 
-  it("writes per-tool context JSONL on tool result", () => {
+  it("hydrates active session window after restart", () => {
+    const now = new Date("2026-02-08T00:00:00.000Z");
+    const baseDir = mkdtempSync(join(tmpdir(), "ayati-memory-"));
+
+    const manager1 = new SessionManager({
+      dbPath: join(baseDir, "memory.sqlite"),
+      dataDir: baseDir,
+      now: () => new Date(now),
+    });
+
+    manager1.initialize("c-hydrate");
+    for (let i = 0; i < 12; i++) {
+      const run = manager1.beginRun("c-hydrate", `user ${i}`);
+      manager1.recordAssistantFinal("c-hydrate", run.runId, run.sessionId, `assistant ${i}`);
+    }
+    manager1.shutdown();
+
+    const manager2 = new SessionManager({
+      dbPath: join(baseDir, "memory.sqlite"),
+      dataDir: baseDir,
+      now: () => new Date(now),
+    });
+    manager2.initialize("c-hydrate");
+
+    const prompt = manager2.getPromptMemoryContext();
+    expect(prompt.conversationTurns).toHaveLength(20);
+    expect(prompt.conversationTurns[0]?.content).toBe("user 2");
+    expect(prompt.conversationTurns[19]?.content).toBe("assistant 11");
+
+    manager2.shutdown();
+  });
+
+  it("does not rotate session when 20 countable events are reached", () => {
     const now = new Date("2026-02-08T00:00:00.000Z");
     const baseDir = mkdtempSync(join(tmpdir(), "ayati-memory-"));
 
@@ -258,10 +535,94 @@ describe("SessionManager", () => {
       now: () => new Date(now),
     });
 
-    manager.initialize("c7");
+    manager.initialize("c-rotate");
 
-    const run = manager.beginRun("c7", "list files");
-    manager.recordToolCall("c7", {
+    let firstSessionId = "";
+    for (let i = 0; i < 10; i++) {
+      const run = manager.beginRun("c-rotate", `user ${i}`);
+      manager.recordAssistantFinal("c-rotate", run.runId, run.sessionId, `assistant ${i}`);
+      if (!firstSessionId) firstSessionId = run.sessionId;
+      expect(run.sessionId).toBe(firstSessionId);
+    }
+
+    const next = manager.beginRun("c-rotate", "after limit");
+    expect(next.sessionId).toBe(firstSessionId);
+
+    manager.shutdown();
+  });
+
+  it("create_session atomically closes current session and opens new active session with handoff", () => {
+    const now = new Date("2026-02-08T00:00:00.000Z");
+    const baseDir = mkdtempSync(join(tmpdir(), "ayati-memory-"));
+    const dbPath = join(baseDir, "memory.sqlite");
+
+    const manager = new SessionManager({
+      dbPath,
+      dataDir: baseDir,
+      now: () => new Date(now),
+    });
+
+    manager.initialize("c-switch");
+    const run = manager.beginRun("c-switch", "start task");
+    manager.recordAssistantFinal("c-switch", run.runId, run.sessionId, "done");
+
+    const switched = manager.createSession("c-switch", {
+      runId: run.runId,
+      reason: "new unrelated task",
+      source: "agent",
+      handoffSummary: "task 1 completed with shell output",
+    });
+
+    expect(switched.previousSessionId).toBe(run.sessionId);
+    expect(switched.sessionId).not.toBe(run.sessionId);
+    expect(switched.sessionPath.endsWith(".md")).toBe(true);
+
+    const oldContent = readFileSync(findSessionFile(baseDir, run.sessionId), "utf8");
+    expect(oldContent).toContain("\"type\":\"session_close\"");
+    expect(oldContent).toContain("\"handoffSummary\":\"task 1 completed with shell output\"");
+
+    const newContent = readFileSync(findSessionFile(baseDir, switched.sessionId), "utf8");
+    expect(newContent).toContain("\"type\":\"session_open\"");
+    expect(newContent).toContain("\"handoffSummary\":\"task 1 completed with shell output\"");
+    expect(newContent).toContain("\"status\":\"session_switched\"");
+
+    const db = new DatabaseSync(dbPath);
+    const oldRow = db.prepare(`
+      SELECT status, close_reason, handoff_summary
+      FROM sessions_meta
+      WHERE session_id = ?
+    `).get(run.sessionId) as { status: string; close_reason: string; handoff_summary: string | null };
+    const newRow = db.prepare(`
+      SELECT status, parent_session_id, handoff_summary
+      FROM sessions_meta
+      WHERE session_id = ?
+    `).get(switched.sessionId) as { status: string; parent_session_id: string | null; handoff_summary: string | null };
+
+    expect(oldRow.status).toBe("closed");
+    expect(oldRow.close_reason).toContain("session_switch:");
+    expect(oldRow.handoff_summary).toBe("task 1 completed with shell output");
+    expect(newRow.status).toBe("active");
+    expect(newRow.parent_session_id).toBe(run.sessionId);
+    expect(newRow.handoff_summary).toBe("task 1 completed with shell output");
+    db.close();
+
+    manager.shutdown();
+  });
+
+  it("does not persist tool-context or tool-output side stores", () => {
+    const now = new Date("2026-02-08T00:00:00.000Z");
+    const baseDir = mkdtempSync(join(tmpdir(), "ayati-memory-"));
+
+    const manager = new SessionManager({
+      dbPath: join(baseDir, "memory.sqlite"),
+      dataDir: baseDir,
+      now: () => new Date(now),
+    });
+
+    manager.initialize("c-tool");
+
+    const run = manager.beginRun("c-tool", "list files");
+    manager.recordToolCall("c-tool", {
       runId: run.runId,
       sessionId: run.sessionId,
       stepId: 1,
@@ -270,7 +631,7 @@ describe("SessionManager", () => {
       args: { cmd: "ls -la" },
     });
 
-    manager.recordToolResult("c7", {
+    manager.recordToolResult("c-tool", {
       runId: run.runId,
       sessionId: run.sessionId,
       stepId: 1,
@@ -281,24 +642,13 @@ describe("SessionManager", () => {
       durationMs: 15,
     });
 
-    const contextFile = join(baseDir, "tool-context", "shell.jsonl");
-    expect(existsSync(contextFile)).toBe(true);
-
-    const content = readFileSync(contextFile, "utf8").trim();
-    const entry = JSON.parse(content) as ToolContextEntry;
-
-    expect(entry.v).toBe(1);
-    expect(entry.sessionId).toBe(run.sessionId);
-    expect(entry.toolCallId).toBe("tc1");
-    expect(entry.args).toEqual({ cmd: "ls -la" });
-    expect(entry.status).toBe("success");
-    expect(entry.output).toBe("file1.txt\nfile2.txt");
-    expect(entry.durationMs).toBe(15);
+    expect(existsSync(join(baseDir, "tool-context"))).toBe(false);
+    expect(existsSync(join(baseDir, "tool-output"))).toBe(false);
 
     manager.shutdown();
   });
 
-  it("appends multiple invocations to the same tool context file", () => {
+  it("stores full tool output text inside session markdown document", () => {
     const now = new Date("2026-02-08T00:00:00.000Z");
     const baseDir = mkdtempSync(join(tmpdir(), "ayati-memory-"));
 
@@ -308,131 +658,31 @@ describe("SessionManager", () => {
       now: () => new Date(now),
     });
 
-    manager.initialize("c8");
+    manager.initialize("c-full-output");
 
-    const run = manager.beginRun("c8", "do stuff");
-
-    manager.recordToolCall("c8", {
-      runId: run.runId,
-      sessionId: run.sessionId,
-      stepId: 1,
-      toolCallId: "tc1",
-      toolName: "file.read",
-      args: { path: "/a.txt" },
-    });
-    manager.recordToolResult("c8", {
-      runId: run.runId,
-      sessionId: run.sessionId,
-      stepId: 1,
-      toolCallId: "tc1",
-      toolName: "file.read",
-      status: "success",
-      output: "contents of a",
-    });
-
-    manager.recordToolCall("c8", {
-      runId: run.runId,
-      sessionId: run.sessionId,
-      stepId: 2,
-      toolCallId: "tc2",
-      toolName: "file.read",
-      args: { path: "/b.txt" },
-    });
-    manager.recordToolResult("c8", {
-      runId: run.runId,
-      sessionId: run.sessionId,
-      stepId: 2,
-      toolCallId: "tc2",
-      toolName: "file.read",
-      status: "failed",
-      output: "",
-      errorMessage: "Permission denied",
-      errorCode: "EPERM",
-      durationMs: 5,
-    });
-
-    const contextFile = join(baseDir, "tool-context", "file_read.jsonl");
-    const lines = readFileSync(contextFile, "utf8").trim().split("\n");
-    expect(lines.length).toBe(2);
-
-    const first = JSON.parse(lines[0]!) as ToolContextEntry;
-    expect(first.toolCallId).toBe("tc1");
-    expect(first.args).toEqual({ path: "/a.txt" });
-    expect(first.status).toBe("success");
-
-    const second = JSON.parse(lines[1]!) as ToolContextEntry;
-    expect(second.toolCallId).toBe("tc2");
-    expect(second.status).toBe("failed");
-    expect(second.errorMessage).toBe("Permission denied");
-    expect(second.errorCode).toBe("EPERM");
-
-    manager.shutdown();
-  });
-
-  it("writes different tools to separate context files", () => {
-    const now = new Date("2026-02-08T00:00:00.000Z");
-    const baseDir = mkdtempSync(join(tmpdir(), "ayati-memory-"));
-
-    const manager = new SessionManager({
-      dbPath: join(baseDir, "memory.sqlite"),
-      dataDir: baseDir,
-      now: () => new Date(now),
-    });
-
-    manager.initialize("c9");
-
-    const run = manager.beginRun("c9", "multi tool");
-
-    manager.recordToolCall("c9", {
+    const run = manager.beginRun("c-full-output", "run command");
+    const fullOutput = `${"x".repeat(2500)}__tail__`;
+    manager.recordToolCall("c-full-output", {
       runId: run.runId,
       sessionId: run.sessionId,
       stepId: 1,
       toolCallId: "tc1",
       toolName: "shell",
-      args: { cmd: "echo hi" },
+      args: { cmd: "cat huge.log" },
     });
-    manager.recordToolResult("c9", {
+    manager.recordToolResult("c-full-output", {
       runId: run.runId,
       sessionId: run.sessionId,
       stepId: 1,
       toolCallId: "tc1",
       toolName: "shell",
       status: "success",
-      output: "hi",
+      output: fullOutput,
     });
 
-    manager.recordToolCall("c9", {
-      runId: run.runId,
-      sessionId: run.sessionId,
-      stepId: 2,
-      toolCallId: "tc2",
-      toolName: "file.read",
-      args: { path: "/x.txt" },
-    });
-    manager.recordToolResult("c9", {
-      runId: run.runId,
-      sessionId: run.sessionId,
-      stepId: 2,
-      toolCallId: "tc2",
-      toolName: "file.read",
-      status: "success",
-      output: "x contents",
-    });
-
-    const shellFile = join(baseDir, "tool-context", "shell.jsonl");
-    const fileReadFile = join(baseDir, "tool-context", "file_read.jsonl");
-
-    expect(existsSync(shellFile)).toBe(true);
-    expect(existsSync(fileReadFile)).toBe(true);
-
-    const shellLines = readFileSync(shellFile, "utf8").trim().split("\n");
-    const fileLines = readFileSync(fileReadFile, "utf8").trim().split("\n");
-
-    expect(shellLines.length).toBe(1);
-    expect(fileLines.length).toBe(1);
-
-    expect((JSON.parse(shellLines[0]!) as ToolContextEntry).toolCallId).toBe("tc1");
-    expect((JSON.parse(fileLines[0]!) as ToolContextEntry).toolCallId).toBe("tc2");
+    const sessionFile = findSessionFile(baseDir, run.sessionId);
+    const content = readFileSync(sessionFile, "utf8");
+    expect(content).toContain(fullOutput);
 
     manager.shutdown();
   });

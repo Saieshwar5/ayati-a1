@@ -1,26 +1,17 @@
 import type { LlmProvider } from "../core/contracts/provider.js";
 import { noopSessionMemory } from "../memory/provider.js";
-import { IncognitoSessionMemory } from "../memory/incognito-session-memory.js";
+import { AgentWorkingMemory } from "../memory/agent-working-memory.js";
 import type { SessionMemory, MemoryRunHandle } from "../memory/types.js";
 import type { StaticContext } from "../context/static-context-cache.js";
 import { assemblePromptInput } from "../context/load-system-prompt-input.js";
 import { buildSystemPrompt } from "../prompt/builder.js";
 import { renderConversationSection } from "../prompt/sections/conversation.js";
 import { renderMemorySection } from "../prompt/sections/memory.js";
-import {
-  ContextRecallService,
-  type ContextRecallOptions,
-} from "./context-recall-service.js";
 import { estimateTextTokens } from "../prompt/token-estimator.js";
 import type { ToolExecutor } from "../skills/tool-executor.js";
 import { devLog, devWarn, devError } from "../shared/index.js";
 import { AgentLoop } from "./agent-loop.js";
-import { CONTEXT_RECALL_TOOL_NAME } from "./tool-helpers.js";
 import type { AgentLoopConfigInput } from "./agent-loop-types.js";
-import {
-  MaxModeSubsessionOrchestrator,
-  buildMaxModeConfigFromEnv,
-} from "./max-mode/index.js";
 
 interface SystemContextBuildResult {
   systemContext: string;
@@ -33,8 +24,6 @@ export interface IVecEngineOptions {
   staticContext?: StaticContext;
   sessionMemory?: SessionMemory;
   toolExecutor?: ToolExecutor;
-  contextRecall?: ContextRecallOptions;
-  contextRecallService?: ContextRecallService;
   loopConfig?: AgentLoopConfigInput;
 }
 
@@ -44,14 +33,9 @@ export class IVecEngine {
   private readonly staticContext?: StaticContext;
   private readonly toolExecutor?: ToolExecutor;
   private sessionMemory: SessionMemory;
-  private contextRecallService: ContextRecallService;
   private readonly loopConfig?: AgentLoopConfigInput;
-  private readonly contextRecallOptions?: ContextRecallOptions;
   private staticSystemTokens = 0;
   private staticTokensReady = false;
-  private incognito = false;
-  private normalSessionMemory: SessionMemory | null = null;
-  private normalContextRecallService: ContextRecallService | null = null;
 
   constructor(options?: IVecEngineOptions) {
     this.onReply = options?.onReply;
@@ -60,14 +44,6 @@ export class IVecEngine {
     this.toolExecutor = options?.toolExecutor;
     this.sessionMemory = options?.sessionMemory ?? noopSessionMemory;
     this.loopConfig = options?.loopConfig;
-    this.contextRecallOptions = options?.contextRecall;
-    this.contextRecallService =
-      options?.contextRecallService ??
-      new ContextRecallService(
-        this.sessionMemory,
-        this.provider,
-        this.contextRecallOptions,
-      );
   }
 
   async start(): Promise<void> {
@@ -103,11 +79,6 @@ export class IVecEngine {
       name?: string;
       input?: unknown;
     };
-    if (msg.type === "incognito_task" && typeof msg.content === "string") {
-      void this.runIncognitoTask(clientId, msg.content);
-      return;
-    }
-
     if (msg.type === "chat" && typeof msg.content === "string") {
       void this.processChat(clientId, msg.content);
       return;
@@ -122,15 +93,17 @@ export class IVecEngine {
     let runHandle: MemoryRunHandle | null = null;
     try {
       runHandle = this.sessionMemory.beginRun(clientId, content);
+      this.recordTurnStatus(clientId, runHandle, "processing_started");
       const system = await this.buildSystemContext();
 
       if (this.provider) {
         const toolDefs = this.toolExecutor?.definitions() ?? [];
+        const workingMemory = new AgentWorkingMemory(runHandle.runId);
         const loop = new AgentLoop(
           this.provider,
           this.toolExecutor,
           this.sessionMemory,
-          this.contextRecallService,
+          workingMemory,
           this.onReply,
           this.loopConfig,
           toolDefs,
@@ -146,72 +119,15 @@ export class IVecEngine {
         );
 
         if (result.type === "reply") {
-          this.sessionMemory.recordAssistantFinal(
-            clientId,
-            runHandle.runId,
-            runHandle.sessionId,
-            result.content,
-          );
-          this.onReply?.(clientId, { type: "reply", content: result.content });
+          this.sendAssistantReply(clientId, runHandle, result.content);
         } else if (result.type === "feedback") {
+          this.recordTurnStatus(clientId, runHandle, "response_started");
+          this.recordTurnStatus(clientId, runHandle, "response_completed");
           this.onReply?.(clientId, { type: "feedback_request", content: result.content });
-        } else if (result.type === "escalate") {
-          if (!this.isMaxModeEnabled()) {
-            const disabledReply =
-              `${result.content}\n` +
-              "Maximum mode is currently disabled (IVEC_MAX_MODE_ENABLED=0).";
-            this.sessionMemory.recordAssistantFinal(
-              clientId,
-              runHandle.runId,
-              runHandle.sessionId,
-              disabledReply,
-            );
-            this.onReply?.(clientId, { type: "reply", content: disabledReply });
-            return;
-          }
-
-          this.onReply?.(clientId, {
-            type: "mode_decision",
-            mode: "maximum",
-            reason: result.escalation?.reason ?? "normal_loop_requested_maximum",
-          });
-
-          const escalationContext = result.escalation
-            ? [
-                content,
-                "",
-                "Normal-mode escalation context:",
-                result.escalation.summary,
-                `Tools used: ${result.escalation.toolNamesUsed.join(", ") || "(none)"}`,
-                `Failed tool calls: ${result.escalation.failedToolCalls}`,
-                `Reflect cycles: ${result.escalation.reflectCycles}`,
-              ].join("\n")
-            : content;
-
-          const maxResult = await this.runMaximumMode(
-            clientId,
-            escalationContext,
-            system.systemContext,
-            runHandle,
-          );
-
-          this.sessionMemory.recordAssistantFinal(
-            clientId,
-            runHandle.runId,
-            runHandle.sessionId,
-            maxResult.content,
-          );
-          this.onReply?.(clientId, { type: "reply", content: maxResult.content });
         }
       } else {
         const reply = `Received: "${content}"`;
-        this.sessionMemory.recordAssistantFinal(
-          clientId,
-          runHandle.runId,
-          runHandle.sessionId,
-          reply,
-        );
-        this.onReply?.(clientId, { type: "reply", content: reply });
+        this.sendAssistantReply(clientId, runHandle, reply);
       }
     } catch (err) {
       devError("Provider error:", err);
@@ -223,43 +139,13 @@ export class IVecEngine {
           runHandle.sessionId,
           message,
         );
+        this.recordTurnStatus(clientId, runHandle, "response_failed", message);
       }
       this.onReply?.(clientId, {
         type: "error",
         content: "Failed to generate a response.",
       });
     }
-  }
-
-  private async runMaximumMode(
-    clientId: string,
-    userContent: string,
-    systemContext: string,
-    runHandle: MemoryRunHandle,
-  ): Promise<{ content: string; endStatus: "solved" | "partial" | "stuck" }> {
-    const provider = this.provider;
-    if (!provider) {
-      throw new Error("Maximum mode requires a configured provider.");
-    }
-
-    const orchestrator = new MaxModeSubsessionOrchestrator({
-      provider,
-      toolExecutor: this.toolExecutor,
-      sessionMemory: this.sessionMemory,
-      onReply: this.onReply,
-      loopConfig: this.loopConfig,
-      maxModeConfig: buildMaxModeConfigFromEnv(),
-    });
-
-    return orchestrator.run({
-      clientId,
-      userContent,
-      systemContext,
-      mainSessionId: runHandle.sessionId,
-      mainRunId: runHandle.runId,
-      staticSystemTokens: this.staticSystemTokens,
-      resolveModelName: (providerName) => this.resolveActiveModelName(providerName),
-    });
   }
 
   private async buildSystemContext(): Promise<SystemContextBuildResult> {
@@ -278,12 +164,7 @@ export class IVecEngine {
 
     const dynamicContext = [
       renderConversationSection(memoryContext.conversationTurns ?? []),
-      renderMemorySection(
-        memoryContext.previousSessionSummary ?? "",
-        memoryContext.toolEvents ?? [],
-        memoryContext.recalledEvidence ?? [],
-        memoryContext.contextRecallStatus,
-      ),
+      renderMemorySection(memoryContext.previousSessionSummary ?? ""),
     ]
       .filter((block) => block.trim().length > 0)
       .join("\n\n")
@@ -297,12 +178,9 @@ export class IVecEngine {
 
   private async processToolCall(clientId: string, toolName: string, input: unknown): Promise<void> {
     try {
-      const result =
-        toolName === CONTEXT_RECALL_TOOL_NAME
-          ? await this.executeContextRecallTool(input)
-          : this.toolExecutor
-              ? await this.toolExecutor.execute(toolName, input, { clientId })
-              : { ok: false, error: "Tool execution is not configured." };
+      const result = this.toolExecutor
+        ? await this.toolExecutor.execute(toolName, input, { clientId })
+        : { ok: false, error: "Tool execution is not configured." };
       this.onReply?.(clientId, { type: "tool_result", name: toolName, result });
     } catch (err) {
       devError("Tool execution error:", err);
@@ -312,44 +190,6 @@ export class IVecEngine {
         result: { ok: false, error: "Tool execution failed unexpectedly." },
       });
     }
-  }
-
-  private async executeContextRecallTool(input: unknown, activeSessionId?: string): Promise<import("../skills/types.js").ToolResult> {
-    const payload = input && typeof input === "object" ? input as Record<string, unknown> : {};
-    const query = typeof payload["query"] === "string" ? payload["query"].trim() : "";
-    if (query.length === 0) {
-      return { ok: false, error: "context_recall_agent requires a non-empty `query` string" };
-    }
-
-    const searchQuery =
-      typeof payload["searchQuery"] === "string" && payload["searchQuery"].trim().length > 0
-        ? payload["searchQuery"].trim()
-        : undefined;
-
-    const memoryContext = this.sessionMemory.getPromptMemoryContext();
-    const recall = await this.contextRecallService.recall(
-      query, memoryContext, activeSessionId,
-      { invocationMode: "explicit", ...(searchQuery ? { searchQuery } : {}) },
-    );
-
-    const output = {
-      status: recall.status,
-      reason: recall.reason,
-      query,
-      searchQuery: searchQuery ?? query,
-      searchedSessionIds: recall.searchedSessionIds,
-      evidence: recall.evidence,
-      evidenceCount: recall.evidence.length,
-      modelCalls: recall.modelCalls,
-      elapsedMs: recall.elapsedMs,
-      foundUsefulData: recall.status === "found" || recall.status === "partial",
-    };
-
-    return {
-      ok: true,
-      output: JSON.stringify(output, null, 2),
-      meta: { status: recall.status, evidenceCount: recall.evidence.length, modelCalls: recall.modelCalls },
-    };
   }
 
   private ensureStaticTokenCache(): void {
@@ -367,8 +207,6 @@ export class IVecEngine {
       userProfile: this.staticContext.userProfile,
       conversationTurns: [],
       previousSessionSummary: "",
-      toolEvents: [],
-      recalledEvidence: [],
       skillBlocks: this.staticContext.skillBlocks,
       toolDirectory: this.staticContext.toolDirectory,
       includeToolDirectory: this.shouldIncludeToolDirectoryInPrompt(),
@@ -397,40 +235,30 @@ export class IVecEngine {
     return process.env["PROMPT_INCLUDE_TOOL_DIRECTORY"] === "1";
   }
 
-  async runIncognitoTask(clientId: string, taskContent: string): Promise<void> {
-    this.incognito = true;
-    this.normalSessionMemory = this.sessionMemory;
-    this.normalContextRecallService = this.contextRecallService;
-
-    const incognitoMemory = new IncognitoSessionMemory();
-    this.sessionMemory = incognitoMemory;
-    this.contextRecallService = new ContextRecallService(
-      incognitoMemory,
-      this.provider,
-      this.contextRecallOptions,
+  private sendAssistantReply(clientId: string, runHandle: MemoryRunHandle, content: string): void {
+    this.recordTurnStatus(clientId, runHandle, "response_started");
+    this.sessionMemory.recordAssistantFinal(
+      clientId,
+      runHandle.runId,
+      runHandle.sessionId,
+      content,
     );
-    this.staticTokensReady = false;
-    this.ensureStaticTokenCache();
-
-    try {
-      await this.processChat(clientId, taskContent);
-    } finally {
-      incognitoMemory.shutdown();
-      this.sessionMemory = this.normalSessionMemory!;
-      this.contextRecallService = this.normalContextRecallService!;
-      this.normalSessionMemory = null;
-      this.normalContextRecallService = null;
-      this.incognito = false;
-      this.staticTokensReady = false;
-      this.ensureStaticTokenCache();
-    }
+    this.recordTurnStatus(clientId, runHandle, "response_completed");
+    this.onReply?.(clientId, { type: "reply", content });
   }
 
-  private isMaxModeEnabled(): boolean {
-    if (this.incognito) return false;
-    const raw = process.env["IVEC_MAX_MODE_ENABLED"];
-    if (raw === undefined) return true;
-    return raw === "1" || raw.toLowerCase() === "true";
+  private recordTurnStatus(
+    clientId: string,
+    runHandle: MemoryRunHandle,
+    status: "processing_started" | "response_started" | "response_completed" | "response_failed",
+    note?: string,
+  ): void {
+    this.sessionMemory.recordTurnStatus?.(clientId, {
+      runId: runHandle.runId,
+      sessionId: runHandle.sessionId,
+      status,
+      note,
+    });
   }
 }
 

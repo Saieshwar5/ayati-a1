@@ -16,36 +16,10 @@ describe("buildSystemPrompt", () => {
       soul,
       userProfile: profile,
       conversationTurns: [
-        { role: "user", content: "A", timestamp: "t1" },
-        { role: "assistant", content: "B", timestamp: "t2" },
+        { role: "user", content: "A", timestamp: "t1", sessionPath: "s/p" },
+        { role: "assistant", content: "B", timestamp: "t2", sessionPath: "s/p" },
       ],
       previousSessionSummary: "Session summary",
-      toolEvents: [
-        {
-          timestamp: "t3",
-          toolName: "shell",
-          status: "success",
-          argsPreview: "{\"cmd\":\"pwd\"}",
-          outputPreview: "/tmp",
-        },
-      ],
-      recalledEvidence: [
-        {
-          sessionId: "s-old",
-          turnRef: "turn-8",
-          timestamp: "t0",
-          snippet: "We selected staged deployment.",
-          whyRelevant: "Matched terms: deployment",
-          confidence: 0.91,
-        },
-      ],
-      contextRecallStatus: {
-        status: "found",
-        reason: "Relevant evidence found",
-        searchedSessions: 1,
-        modelCalls: 3,
-        triggerReason: "history-reference",
-      },
       skillBlocks: [{ id: "skill-1", content: "Do X" }],
     });
 
@@ -61,13 +35,10 @@ describe("buildSystemPrompt", () => {
     expect(conversationPos).toBeGreaterThan(profilePos);
     expect(memoryPos).toBeGreaterThan(conversationPos);
     expect(skillsPos).toBeGreaterThan(memoryPos);
-    expect(output.systemPrompt).toContain("[t1] user: A");
-    expect(output.systemPrompt).toContain("[t2] assistant: B");
+    expect(output.systemPrompt).toContain("[t1]");
+    expect(output.systemPrompt).toContain("[t2]");
     expect(output.systemPrompt).toContain("Name: CustomName");
-    expect(output.systemPrompt).toContain("## Recalled Context Evidence");
-    expect(output.systemPrompt).toContain("session=s-old");
-    expect(output.systemPrompt).toContain("## Context Recall Agent");
-    expect(output.systemPrompt).toContain("status=found");
+    expect(output.systemPrompt).toContain("Session summary");
 
     expect(output.sections.map((s) => s.id)).toEqual([
       "base",
@@ -84,6 +55,21 @@ describe("buildSystemPrompt", () => {
     expect(toolsSection?.included).toBe(false);
   });
 
+  it("memory section renders previous session summary only", () => {
+    const output = buildSystemPrompt({
+      basePrompt: "Base rules",
+      soul: emptySoulContext(),
+      userProfile: emptyUserProfileContext(),
+      previousSessionSummary: "Last session: completed auth migration.",
+    });
+
+    expect(output.systemPrompt).toContain("## Previous Session Summary");
+    expect(output.systemPrompt).toContain("Last session: completed auth migration.");
+    expect(output.systemPrompt).not.toContain("## Reasoning History");
+    expect(output.systemPrompt).not.toContain("## Tool History");
+    expect(output.systemPrompt).not.toContain("## Recalled Context Evidence");
+  });
+
   it("marks empty layers as not included", () => {
     const output = buildSystemPrompt({
       basePrompt: "Base rules",
@@ -91,7 +77,6 @@ describe("buildSystemPrompt", () => {
       userProfile: emptyUserProfileContext(),
       conversationTurns: [],
       previousSessionSummary: "",
-      toolEvents: [],
       skillBlocks: [],
     });
 

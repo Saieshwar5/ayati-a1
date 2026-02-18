@@ -1,6 +1,4 @@
 import type {
-  ConversationTurn,
-  SessionSummarySearchHit,
   SessionMemory,
   MemoryRunHandle,
   ToolCallRecordInput,
@@ -46,16 +44,9 @@ export const noopSessionMemory: SessionMemory = {
     return {
       conversationTurns: [],
       previousSessionSummary: "",
-      toolEvents: [],
     };
   },
   setStaticTokenBudget(): void {
     return;
-  },
-  searchSessionSummaries(_query: string, _limit?: number): SessionSummarySearchHit[] {
-    return [];
-  },
-  loadSessionTurns(_sessionId: string): ConversationTurn[] {
-    return [];
   },
 };

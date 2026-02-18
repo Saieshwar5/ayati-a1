@@ -69,36 +69,8 @@ describe("buildToolDirectory", () => {
 
   it("returns empty string for empty tools array", () => {
     const result = buildToolDirectory([]);
-    expect(result).toContain("context_recall_agent");
+    expect(result).toContain("create_session");
     expect(result).toContain("| Tool |");
-  });
-
-  it("includes context_recall_agent when not in tools list", () => {
-    const tools: ToolDefinition[] = [
-      makeTool("shell", "Run command", {
-        type: "object",
-        properties: { cmd: { type: "string" } },
-        required: ["cmd"],
-      }),
-    ];
-
-    const result = buildToolDirectory(tools);
-    expect(result).toContain("context_recall_agent");
-    expect(result).toContain("query* (string)");
-  });
-
-  it("does not duplicate context_recall_agent when already in tools", () => {
-    const tools: ToolDefinition[] = [
-      makeTool("context_recall_agent", "Search prior sessions", {
-        type: "object",
-        properties: { query: { type: "string" } },
-        required: ["query"],
-      }),
-    ];
-
-    const result = buildToolDirectory(tools);
-    const matches = result.match(/context_recall_agent/g);
-    expect(matches).toHaveLength(1);
   });
 
   it("handles tools without inputSchema", () => {
