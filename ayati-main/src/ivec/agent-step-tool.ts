@@ -59,7 +59,7 @@ export const AGENT_STEP_TOOL_SCHEMA: LlmToolSchema = {
           tool_name: { type: "string", description: "Name of the tool to call." },
           tool_input: {
             type: "object",
-            description: "JSON object with the tool's parameters.",
+            description: "REQUIRED. Must contain ALL required fields for the named tool. Check the tool's own parameter list carefully — do not send an empty object.",
           },
         },
         required: ["tool_name", "tool_input"],
@@ -145,9 +145,10 @@ export function parseAgentStep(input: unknown): AgentStepInput | null {
     if (!action || typeof action !== "object") return null;
     const act = action as Record<string, unknown>;
     if (typeof act["tool_name"] !== "string") return null;
+    if (!act["tool_input"] || typeof act["tool_input"] !== "object" || Array.isArray(act["tool_input"])) return null;
     result.action = {
       tool_name: act["tool_name"],
-      tool_input: act["tool_input"] ?? {},
+      tool_input: act["tool_input"],
     };
   }
 

@@ -39,6 +39,7 @@ export interface RunState {
   errorsByCategory: Map<string, number>;
   hasPlan: boolean;
   currentSubTaskId: number | null;
+  autoRotated: boolean;
 }
 
 export interface AgentLoopConfig {
@@ -47,6 +48,8 @@ export interface AgentLoopConfig {
   stepLimitPerTool: number;
   noProgressLimit: number;
   repeatedActionLimit: number;
+  contextTokenLimit: number;
+  autoRotateThreshold: number;
 }
 
 export type AgentLoopConfigInput = Partial<AgentLoopConfig>;
@@ -67,4 +70,6 @@ export const DEFAULT_LOOP_CONFIG: AgentLoopConfig = {
   stepLimitPerTool: 2,
   noProgressLimit: 4,
   repeatedActionLimit: 3,
+  contextTokenLimit: 100_000,
+  autoRotateThreshold: 90,
 };

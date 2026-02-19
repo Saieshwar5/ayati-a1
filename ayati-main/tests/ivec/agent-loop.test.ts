@@ -360,7 +360,7 @@ describe("AgentLoop", () => {
       reason: "new topic",
       source: "agent",
       confidence: undefined,
-      handoffSummary: "prior context",
+      handoffSummary: expect.stringContaining("prior context"),
     });
     expect(memory.recordToolCall).toHaveBeenCalledWith("c1", expect.objectContaining({
       runId: "r1",
@@ -546,7 +546,7 @@ describe("AgentLoop", () => {
     expect(toolExecutor.execute).toHaveBeenCalledTimes(1);
   });
 
-  it("includes native tool schemas alongside agent_step in tools array", async () => {
+  it("injects tool catalog into agent_step description instead of sending as separate native tools", async () => {
     let capturedTools: unknown[] = [];
     const provider = createMockProvider({
       generateTurn: vi.fn().mockImplementation(async (input: LlmTurnInput) => {
@@ -560,10 +560,155 @@ describe("AgentLoop", () => {
     const loop = new AgentLoop(provider, toolExecutor, createMockSessionMemory(), createWorkingMemory(), undefined, undefined, toolDefs);
     await loop.run("c1", "test", "", 0, runHandle, 0, resolveModel);
 
+    // agent_step must be first
     expect((capturedTools[0] as { name: string }).name).toBe(AGENT_STEP_TOOL_NAME);
     const names = (capturedTools as Array<{ name: string }>).map((tool) => tool.name);
-    expect(names).toContain("shell");
+    // real tools are no longer sent as separate native tools — they live in the agent_step description
+    expect(names).not.toContain("shell");
     expect(names).toContain(CREATE_SESSION_TOOL_NAME);
+    // shell tool must appear in the enriched agent_step description
+    const agentStepDesc = (capturedTools[0] as { description: string }).description;
+    expect(agentStepDesc).toContain("shell");
+  });
+
+  it("context signal appears in system message when contextTokenLimit is tiny", async () => {
+    let capturedSystemContent = "";
+    const provider = createMockProvider({
+      generateTurn: vi.fn().mockImplementation(async (input: LlmTurnInput) => {
+        const sys = input.messages.find((m) => m.role === "system");
+        capturedSystemContent = sys && "content" in sys ? sys.content : "";
+        return { type: "assistant", content: "reply" };
+      }),
+    });
+
+    // Set contextTokenLimit to 1 so contextPct is always very high
+    const loop = new AgentLoop(
+      provider,
+      undefined,
+      createMockSessionMemory(),
+      createWorkingMemory(),
+      undefined,
+      { contextTokenLimit: 1, autoRotateThreshold: 999 },
+    );
+    await loop.run("c1", "test", "System prompt", 0, runHandle, 0, resolveModel);
+
+    // Should contain a context signal (pct will be >= 90 with limit=1)
+    expect(capturedSystemContent).toMatch(/CONTEXT:.*%/);
+  });
+
+  it("working memory is auto-attached to handoff when agent calls create_session", async () => {
+    let callCount = 0;
+    const memory = createMockSessionMemory();
+    memory.createSession = vi.fn().mockReturnValue({
+      previousSessionId: "s1",
+      sessionId: "s2",
+      sessionPath: "sessions/s2.md",
+    });
+
+    const wm = createWorkingMemory();
+    const provider = createMockProvider({
+      generateTurn: vi.fn().mockImplementation(async () => {
+        callCount++;
+        if (callCount === 1) {
+          return {
+            type: "tool_calls",
+            calls: [{
+              id: "a1",
+              name: AGENT_STEP_TOOL_NAME,
+              input: {
+                phase: "act",
+                thinking: "Switch session",
+                summary: "Switching",
+                action: {
+                  tool_name: CREATE_SESSION_TOOL_NAME,
+                  tool_input: { reason: "new topic", handoff_summary: "Task done" },
+                },
+              },
+            }],
+          };
+        }
+        return {
+          type: "tool_calls",
+          calls: [{ id: "a2", name: AGENT_STEP_TOOL_NAME, input: { phase: "end", thinking: "done", summary: "done", end_status: "solved", end_message: "switched" } }],
+        };
+      }),
+    });
+
+    const loop = new AgentLoop(provider, undefined, memory, wm);
+    await loop.run("c1", "start new task", "", 0, runHandle, 0, resolveModel);
+
+    expect(memory.createSession).toHaveBeenCalled();
+    const callArgs = (memory.createSession as ReturnType<typeof vi.fn>).mock.calls[0];
+    const createInput = callArgs[1] as { handoffSummary?: string };
+    // Handoff should include the agent's text AND working memory marker
+    expect(createInput.handoffSummary).toContain("Task done");
+    expect(createInput.handoffSummary).toContain("[Working Memory at session switch]");
+  });
+
+  it("auto-rotation fires when contextTokenLimit is tiny and threshold is low", async () => {
+    const memory = createMockSessionMemory();
+    memory.createSession = vi.fn().mockReturnValue({
+      previousSessionId: "s1",
+      sessionId: "s2",
+      sessionPath: "sessions/s2.md",
+    });
+
+    const provider = createMockProvider({
+      generateTurn: vi.fn().mockResolvedValue({ type: "assistant", content: "reply" }),
+    });
+
+    // contextTokenLimit=1 means contextPct is always ~100%, autoRotateThreshold=50 fires immediately
+    const loop = new AgentLoop(
+      provider,
+      undefined,
+      memory,
+      createWorkingMemory(),
+      undefined,
+      { contextTokenLimit: 1, autoRotateThreshold: 50 },
+    );
+    await loop.run("c1", "test", "", 0, runHandle, 0, resolveModel);
+
+    // Auto-rotation should have called createSession
+    expect(memory.createSession).toHaveBeenCalled();
+    const callArgs = (memory.createSession as ReturnType<typeof vi.fn>).mock.calls[0];
+    const createInput = callArgs[1] as { reason?: string };
+    expect(createInput.reason).toMatch(/auto_context_rotation/);
+  });
+
+  it("auto-rotation fires at most once per run", async () => {
+    const memory = createMockSessionMemory();
+    memory.createSession = vi.fn().mockReturnValue({
+      previousSessionId: "s1",
+      sessionId: "s2",
+      sessionPath: "sessions/s2.md",
+    });
+
+    let callCount = 0;
+    const provider = createMockProvider({
+      generateTurn: vi.fn().mockImplementation(async () => {
+        callCount++;
+        if (callCount < 4) {
+          return {
+            type: "tool_calls",
+            calls: [{ id: `s${callCount}`, name: AGENT_STEP_TOOL_NAME, input: { phase: "reason", thinking: "t", summary: "s" } }],
+          };
+        }
+        return { type: "assistant", content: "reply" };
+      }),
+    });
+
+    const loop = new AgentLoop(
+      provider,
+      undefined,
+      memory,
+      createWorkingMemory(),
+      undefined,
+      { contextTokenLimit: 1, autoRotateThreshold: 50 },
+    );
+    await loop.run("c1", "test", "", 0, runHandle, 0, resolveModel);
+
+    // createSession called exactly once despite multiple steps
+    expect(memory.createSession).toHaveBeenCalledTimes(1);
   });
 
   it("blocks repeated identical tool calls after threshold", async () => {

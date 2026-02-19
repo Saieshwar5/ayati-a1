@@ -289,4 +289,17 @@ describe("InMemorySession", () => {
     expect(session.lastActivityAt).toBe("2026-02-08T01:00:00.000Z");
   });
 
+  it("handoffSummary is null by default and can be set", () => {
+    const session = new InMemorySession(
+      "s1",
+      "c1",
+      "2026-02-08T00:00:00.000Z",
+      "sessions/s1.md",
+    );
+    expect(session.handoffSummary).toBeNull();
+
+    session.handoffSummary = "Completed task A, pending task B";
+    expect(session.handoffSummary).toBe("Completed task A, pending task B");
+  });
+
 });

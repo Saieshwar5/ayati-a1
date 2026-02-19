@@ -17,8 +17,6 @@ import type {
 } from "./types.js";
 import type {
   SessionEvent,
-  CountableSessionEvent,
-  ToolSessionEvent,
   UserMessageEvent,
   AssistantMessageEvent,
   TurnStatusEvent,
@@ -34,8 +32,6 @@ import type { ActiveSessionInfo, SessionPersistenceOptions } from "./session-per
 
 const MIN_TURNS_FOR_CALLBACK = 2;
 const DEFAULT_CONTEXT_TOKEN_LIMIT = 100_000;
-const PROMPT_EVENT_WINDOW = 20;
-const PROMPT_AGENT_STEP_WINDOW = 10;
 
 export interface SessionCloseData {
   sessionId: string;
@@ -67,9 +63,6 @@ export class MemoryManager implements SessionMemory {
   private readonly contextTokenLimit: number;
 
   private currentSession: InMemorySession | null = null;
-  private promptWindowEvents: CountableSessionEvent[] = [];
-  private promptWindowToolEvents: ToolSessionEvent[] = [];
-  private promptWindowAgentStepEvents: AgentStepEvent[] = [];
   private staticTokenBudget = 0;
   private activeClientId = "";
   private backgroundQueue: Promise<void> = Promise.resolve();
@@ -89,14 +82,6 @@ export class MemoryManager implements SessionMemory {
     this.persistence.start();
     this.removeLegacyInfiniteContextStorage();
     this.restoreActiveSession(clientId);
-
-    if (this.currentSession) {
-      // If we resumed an active session, hydrate conversation window from that session timeline.
-      this.promptWindowEvents = this.currentSession.getCountableEvents(PROMPT_EVENT_WINDOW);
-      return;
-    }
-
-    this.promptWindowEvents = this.persistence.loadRecentCountableEvents(clientId, PROMPT_EVENT_WINDOW);
   }
 
   async shutdown(): Promise<void> {
@@ -134,7 +119,7 @@ export class MemoryManager implements SessionMemory {
       content: userMessage,
     };
 
-    this.appendTimelineEvent(event, true);
+    this.appendTimelineEvent(event);
 
     return { sessionId: session.id, runId };
   }
@@ -153,7 +138,7 @@ export class MemoryManager implements SessionMemory {
       note: input.note,
     };
 
-    this.appendTimelineEvent(event, false);
+    this.appendTimelineEvent(event);
   }
 
   createSession(clientId: string, input: CreateSessionInput): CreateSessionResult {
@@ -193,7 +178,7 @@ export class MemoryManager implements SessionMemory {
         status: "session_switched",
         note: `handoff_from=${previousSessionId}; handoff_summary=${handoffSummary}`,
       };
-      this.appendTimelineEvent(handoffEvent, false);
+      this.appendTimelineEvent(handoffEvent);
     }
 
     const event: TurnStatusEvent = {
@@ -205,7 +190,7 @@ export class MemoryManager implements SessionMemory {
       status: "session_switched",
       note: `source=${source}; reason=${reason}${typeof confidence === "number" ? `; confidence=${confidence}` : ""}`,
     };
-    this.appendTimelineEvent(event, false);
+    this.appendTimelineEvent(event);
 
     return {
       previousSessionId,
@@ -230,7 +215,7 @@ export class MemoryManager implements SessionMemory {
       args: input.args,
     };
 
-    this.appendTimelineEvent(event, false);
+    this.appendTimelineEvent(event);
   }
 
   recordToolResult(clientId: string, input: ToolCallResultRecordInput): void {
@@ -253,7 +238,7 @@ export class MemoryManager implements SessionMemory {
       durationMs: input.durationMs,
     };
 
-    this.appendTimelineEvent(event, false);
+    this.appendTimelineEvent(event);
   }
 
   recordAssistantFinal(clientId: string, runId: string, _sessionId: string, content: string): void {
@@ -269,7 +254,7 @@ export class MemoryManager implements SessionMemory {
       content,
     };
 
-    this.appendTimelineEvent(event, true);
+    this.appendTimelineEvent(event);
   }
 
   recordRunFailure(clientId: string, runId: string, _sessionId: string, message: string): void {
@@ -285,7 +270,7 @@ export class MemoryManager implements SessionMemory {
       message,
     };
 
-    this.appendTimelineEvent(event, false);
+    this.appendTimelineEvent(event);
   }
 
   recordAgentStep(clientId: string, input: AgentStepRecordInput): void {
@@ -306,7 +291,7 @@ export class MemoryManager implements SessionMemory {
       endStatus: input.endStatus,
     };
 
-    this.appendTimelineEvent(event, false);
+    this.appendTimelineEvent(event);
   }
 
   recordAssistantFeedback(clientId: string, runId: string, _sessionId: string, message: string): void {
@@ -322,30 +307,13 @@ export class MemoryManager implements SessionMemory {
       message,
     };
 
-    this.appendTimelineEvent(event, false);
+    this.appendTimelineEvent(event);
   }
 
   getPromptMemoryContext(): PromptMemoryContext {
-    if (this.promptWindowEvents.length === 0) {
-      return {
-        conversationTurns: [],
-        previousSessionSummary: "",
-      };
-    }
-
-    const promptSession = new InMemorySession(
-      this.currentSession?.id ?? "prompt-window",
-      this.activeClientId,
-      this.nowIso(),
-      this.currentSession?.sessionPath ?? "sessions/ephemeral/prompt-window.md",
-    );
-    for (const event of this.promptWindowEvents) {
-      promptSession.addEntry(event);
-    }
-
     return {
-      conversationTurns: promptSession.getConversationTurns(PROMPT_EVENT_WINDOW),
-      previousSessionSummary: "",
+      conversationTurns: this.currentSession?.getConversationTurns() ?? [],
+      previousSessionSummary: this.currentSession?.handoffSummary ?? "",
     };
   }
 
@@ -440,6 +408,7 @@ export class MemoryManager implements SessionMemory {
     const sessionId = options?.sessionId ?? randomUUID();
     const sessionPath = options?.sessionPath ?? this.persistence.buildSessionPath(nowIso, sessionId);
     this.currentSession = new InMemorySession(sessionId, clientId, nowIso, sessionPath);
+    this.currentSession.handoffSummary = options?.handoffSummary ?? null;
 
     const openEvent: SessionEvent = {
       v: 2,
@@ -500,33 +469,21 @@ export class MemoryManager implements SessionMemory {
     }
   }
 
-  private appendTimelineEvent(event: TimelineEvent, countable: boolean): void {
+  private appendTimelineEvent(event: TimelineEvent): void {
     if (!this.currentSession) return;
 
     this.currentSession.addEntry(event);
     this.persistence.appendEvent(event);
-
-    if (event.type === "tool_call" || event.type === "tool_result") {
-      this.pushPromptToolWindowEvent(event);
-    }
-
-    if (event.type === "agent_step") {
-      this.pushPromptAgentStepWindowEvent(event);
-    }
-
-    if (countable) {
-      this.pushPromptWindowEvent(event as CountableSessionEvent);
-    }
   }
 
   private estimateDynamicTokens(session: InMemorySession): number {
-    const turns = session.getConversationTurns(PROMPT_EVENT_WINDOW);
+    const turns = session.getConversationTurns();
     const conversationText = turns
       .map((turn) => `${turn.role}: ${turn.content}`)
       .join("\n");
 
     const toolText = session
-      .getToolEvents(PROMPT_EVENT_WINDOW)
+      .getToolEvents()
       .map((event) => {
         const status = event.status ? ` status=${event.status}` : "";
         const error = event.errorMessage ? ` error=${event.errorMessage}` : "";
@@ -538,7 +495,7 @@ export class MemoryManager implements SessionMemory {
       this.staticTokenBudget +
       estimateTextTokens(conversationText) +
       estimateTextTokens(toolText) +
-      session.estimateToolEventTokens(PROMPT_EVENT_WINDOW);
+      session.estimateToolEventTokens();
 
     // Calculated for observability only; not used for forced session rotation.
     return Math.min(estimate, this.contextTokenLimit * 10);
@@ -552,24 +509,6 @@ export class MemoryManager implements SessionMemory {
 
   private nowIso(): string {
     return this.nowProvider().toISOString();
-  }
-
-  private pushPromptWindowEvent(event: CountableSessionEvent): void {
-    this.promptWindowEvents.push(event);
-    if (this.promptWindowEvents.length <= PROMPT_EVENT_WINDOW) return;
-    this.promptWindowEvents = this.promptWindowEvents.slice(-PROMPT_EVENT_WINDOW);
-  }
-
-  private pushPromptToolWindowEvent(event: ToolSessionEvent): void {
-    this.promptWindowToolEvents.push(event);
-    if (this.promptWindowToolEvents.length <= PROMPT_EVENT_WINDOW) return;
-    this.promptWindowToolEvents = this.promptWindowToolEvents.slice(-PROMPT_EVENT_WINDOW);
-  }
-
-  private pushPromptAgentStepWindowEvent(event: AgentStepEvent): void {
-    this.promptWindowAgentStepEvents.push(event);
-    if (this.promptWindowAgentStepEvents.length <= PROMPT_AGENT_STEP_WINDOW) return;
-    this.promptWindowAgentStepEvents = this.promptWindowAgentStepEvents.slice(-PROMPT_AGENT_STEP_WINDOW);
   }
 
   private removeLegacyInfiniteContextStorage(): void {

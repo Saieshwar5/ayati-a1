@@ -99,13 +99,14 @@ export class IVecEngine {
       if (this.provider) {
         const toolDefs = this.toolExecutor?.definitions() ?? [];
         const workingMemory = new AgentWorkingMemory(runHandle.runId);
+        const contextTokenLimit = parseInt(process.env["CONTEXT_TOKEN_LIMIT"] ?? "", 10) || 100_000;
         const loop = new AgentLoop(
           this.provider,
           this.toolExecutor,
           this.sessionMemory,
           workingMemory,
           this.onReply,
-          this.loopConfig,
+          { ...this.loopConfig, contextTokenLimit },
           toolDefs,
         );
         const result = await loop.run(

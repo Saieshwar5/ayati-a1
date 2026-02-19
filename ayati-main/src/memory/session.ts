@@ -37,6 +37,7 @@ export class InMemorySession {
   timeline: SessionTimelineEntry[];
   userTurnCount: number;
   assistantTurnCount: number;
+  handoffSummary: string | null = null;
 
   constructor(id: string, clientId: string, startedAt: string, sessionPath: string) {
     this.id = id;

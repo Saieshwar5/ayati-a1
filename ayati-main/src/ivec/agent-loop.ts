@@ -31,6 +31,7 @@ import {
 } from "./tool-helpers.js";
 import {
   estimateTurnInputTokens,
+  type LocalInputTokenEstimate,
 } from "../prompt/token-estimator.js";
 import { devLog } from "../shared/index.js";
 
@@ -88,6 +89,7 @@ export class AgentLoop {
       errorsByCategory: new Map(),
       hasPlan: false,
       currentSubTaskId: null,
+      autoRotated: false,
     };
 
     const messages: LlmMessage[] = [];
@@ -99,14 +101,22 @@ export class AgentLoop {
     while (state.step < this.effectiveLimit(state) && state.consecutiveNonActSteps < this.config.noProgressLimit) {
       state.step++;
 
-      const signals = this.generateStateSignals(state);
+      const allTools: LlmToolSchema[] = this.buildToolSchemas();
+      const turnInput: LlmTurnInput = { messages, tools: allTools };
+
+      const estimate = estimateTurnInputTokens(turnInput);
+      const runtimeDynamicTokens = Math.max(0, estimate.totalTokens - staticSystemTokens);
+      const dynamicBudget = this.config.contextTokenLimit - staticSystemTokens;
+      const contextPct = dynamicBudget > 0
+        ? Math.round((runtimeDynamicTokens / dynamicBudget) * 100)
+        : 100;
+
+      this.autoRotateSessionIfNeeded(clientId, runHandle, contextPct, messages, state);
+
+      const signals = this.generateStateSignals(state, contextPct);
       this.rebuildSystemMessage(messages, signals);
 
-      const toolSchemas = this.buildToolSchemas();
-      const allTools: LlmToolSchema[] = [AGENT_STEP_TOOL_SCHEMA, ...toolSchemas];
-
-      const turnInput: LlmTurnInput = { messages, tools: allTools };
-      this.emitContextSize(clientId, turnInput, state.step, dynamicSystemTokens, staticSystemTokens, resolveModelName);
+      this.emitContextSize(clientId, estimate, state.step, dynamicSystemTokens, staticSystemTokens, resolveModelName);
 
       const turn = await this.provider.generateTurn(turnInput);
 
@@ -489,7 +499,7 @@ export class AgentLoop {
     const confidence = typeof payload["confidence"] === "number" && Number.isFinite(payload["confidence"])
       ? payload["confidence"]
       : undefined;
-    const handoffSummary = typeof payload["handoff_summary"] === "string" && payload["handoff_summary"].trim().length > 0
+    const agentHandoff = typeof payload["handoff_summary"] === "string" && payload["handoff_summary"].trim().length > 0
       ? payload["handoff_summary"].trim()
       : undefined;
     if (reason.length === 0) {
@@ -500,6 +510,12 @@ export class AgentLoop {
     if (!createSession) {
       return { ok: false, error: "create_session is unavailable in the active session memory implementation" };
     }
+
+    // Auto-attach working memory state to the handoff.
+    const workingMemoryState = this.workingMemory.renderView();
+    const handoffSummary = agentHandoff
+      ? `${agentHandoff}\n\n---\n[Working Memory at session switch]\n${workingMemoryState}`
+      : `[Working Memory at session switch]\n${workingMemoryState}`;
 
     const created = createSession.call(this.sessionMemory, clientId, {
       runId: runHandle.runId,
@@ -516,7 +532,7 @@ export class AgentLoop {
           status: "session_created",
           reason,
           confidence,
-          handoffSummary: handoffSummary ?? "",
+          handoffSummary,
           previousSessionId: created.previousSessionId,
           sessionId: created.sessionId,
           sessionPath: created.sessionPath,
@@ -557,7 +573,9 @@ export class AgentLoop {
   }
 
   private rebuildSystemMessage(messages: LlmMessage[], signals: string): void {
-    if (this.workingMemory.steps.length === 0 && this.workingMemory.plan === null) return;
+    const hasWorkingMemory = this.workingMemory.steps.length > 0 || this.workingMemory.plan !== null;
+    const hasSignals = signals.trim().length > 0;
+    if (!hasWorkingMemory && !hasSignals) return;
 
     const view = this.workingMemory.renderView(signals);
     const firstMsg = messages[0];
@@ -567,13 +585,24 @@ export class AgentLoop {
     }
   }
 
-  private generateStateSignals(state: RunState): string {
+  private generateStateSignals(state: RunState, contextPct: number): string {
     const signals: string[] = [];
     const budget = this.effectiveLimit(state);
     signals.push(`ℹ ${state.step} of ${budget} steps used`);
 
+    if (contextPct >= 90) {
+      signals.push(`⚠ CONTEXT: ${contextPct}% — switch session now or auto-rotation will trigger`);
+    } else if (contextPct >= 70) {
+      signals.push(`⚠ Context: ${contextPct}% — consider create_session at a natural stopping point`);
+    } else if (contextPct >= 50) {
+      signals.push(`ℹ Context: ${contextPct}% dynamic budget used`);
+    }
+
+    if (state.failedToolCalls >= 1) {
+      signals.push("⚠ Last tool call failed. You MUST use phase='reflect' to diagnose the cause before acting again. Do not repeat the same tool_input.");
+    }
     if (state.failedToolCalls >= 2 && state.consecutiveRepeatedActions >= 2) {
-      signals.push("⚠ Same action failed twice. Use reflect before acting again.");
+      signals.push("⚠ CRITICAL: Same action failed multiple times. Reflect now — do NOT act until you have a genuinely different approach.");
     }
     if (state.consecutiveNonActSteps >= 3) {
       signals.push("⚠ 3 steps without action. Act, reflect, or ask the user.");
@@ -597,13 +626,12 @@ export class AgentLoop {
 
   private emitContextSize(
     clientId: string,
-    input: LlmTurnInput,
+    estimate: LocalInputTokenEstimate,
     step: number,
     dynamicSystemTokens: number,
     staticSystemTokens: number,
     resolveModelName: (providerName: string) => string,
   ): void {
-    const estimate = estimateTurnInputTokens(input);
     const runtimeDynamicTokens = Math.max(0, estimate.totalTokens - staticSystemTokens);
     const model = resolveModelName(this.provider.name);
 
@@ -627,22 +655,63 @@ export class AgentLoop {
     );
   }
 
+  private autoRotateSessionIfNeeded(
+    clientId: string,
+    runHandle: MemoryRunHandle,
+    contextPct: number,
+    messages: LlmMessage[],
+    state: RunState,
+  ): void {
+    if (state.autoRotated) return;
+    if (contextPct < this.config.autoRotateThreshold) return;
+
+    const result = this.executeCreateSession(clientId, {
+      reason: `auto_context_rotation_${contextPct}pct`,
+      handoff_summary: `[AUTO-ROTATED at ${contextPct}% context]`,
+    }, runHandle);
+
+    state.autoRotated = true;
+
+    if (result.ok) {
+      messages.push({
+        role: "tool",
+        toolCallId: `auto-rotate-${Date.now()}`,
+        name: "system",
+        content: `Session auto-rotated at ${contextPct}% context. ` +
+                 `Previous plan and key facts preserved in session summary. Continue your work.`,
+      });
+    }
+  }
+
   private buildToolSchemas(): LlmToolSchema[] {
     const toolDefs = this.toolDefinitions.length > 0
       ? this.toolDefinitions
       : (this.toolExecutor?.definitions() ?? []);
 
-    const schemas: LlmToolSchema[] = [];
-    for (const tool of toolDefs) {
-      schemas.push({
-        name: tool.name,
-        description: tool.description,
-        inputSchema: tool.inputSchema ?? { type: "object" },
-      });
-    }
+    const catalog = toolDefs.map((tool) => {
+      const schema = tool.inputSchema;
+      const props = schema?.["properties"] as Record<string, { type?: string }> | undefined;
+      const required = (schema?.["required"] as string[] | undefined) ?? [];
 
-    schemas.push(CREATE_SESSION_TOOL_SCHEMA);
-    return schemas;
+      const fields = props
+        ? Object.entries(props)
+            .map(([key, val]) => `${key}: ${val.type ?? "any"}${required.includes(key) ? " (required)" : " (optional)"}`)
+            .join(", ")
+        : "no parameters";
+
+      return `  - ${tool.name}: { ${fields} }`;
+    }).join("\n");
+
+    const enrichedAgentStep: LlmToolSchema = {
+      ...AGENT_STEP_TOOL_SCHEMA,
+      description:
+        AGENT_STEP_TOOL_SCHEMA.description +
+        (catalog.length > 0
+          ? `\n\nWhen phase is 'act', set action.tool_name to one of the tools below and action.tool_input with ALL required fields. Never send an empty tool_input object.\n\nAvailable tools:\n${catalog}`
+          : ""),
+    };
+
+    return [enrichedAgentStep, CREATE_SESSION_TOOL_SCHEMA];
   }
 
   private stableStringify(value: unknown): string {

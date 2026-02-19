@@ -518,9 +518,10 @@ describe("MemoryManager markdown persistence", () => {
     manager2.initialize("c-hydrate");
 
     const prompt = manager2.getPromptMemoryContext();
-    expect(prompt.conversationTurns).toHaveLength(20);
-    expect(prompt.conversationTurns[0]?.content).toBe("user 2");
-    expect(prompt.conversationTurns[19]?.content).toBe("assistant 11");
+    // All 24 turns are returned — no sliding window cap
+    expect(prompt.conversationTurns).toHaveLength(24);
+    expect(prompt.conversationTurns[0]?.content).toBe("user 0");
+    expect(prompt.conversationTurns[23]?.content).toBe("assistant 11");
 
     manager2.shutdown();
   });

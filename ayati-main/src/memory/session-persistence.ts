@@ -351,6 +351,9 @@ export class SessionPersistence {
           event.ts,
           inferredPath,
         );
+        if (event.handoffSummary) {
+          session.handoffSummary = event.handoffSummary;
+        }
         continue;
       }
 

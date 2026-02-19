@@ -45,7 +45,8 @@ describe("MemoryManager event-window flow", () => {
 
     const prompt = sm.getPromptMemoryContext();
     expect(prompt.previousSessionSummary).toBe("");
-    expect(prompt.conversationTurns.length).toBeLessThanOrEqual(20);
+    // All turns are returned — no sliding window cap
+    expect(prompt.conversationTurns.length).toBeGreaterThanOrEqual(21);
     sm.shutdown();
   });
 

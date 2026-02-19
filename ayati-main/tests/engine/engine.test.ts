@@ -130,8 +130,12 @@ describe("IVecEngine", () => {
         (input.tools ?? []).some((tool) => tool.name === AGENT_STEP_TOOL_NAME));
       expect(loopInput).toBeDefined();
       const names = (loopInput!.tools ?? []).map((tool) => tool.name);
-      expect(names).toContain("shell");
+      // real tools are not sent as separate native tools — they are embedded in agent_step description
+      expect(names).not.toContain("shell");
       expect(names).toContain(CREATE_SESSION_TOOL_NAME);
+      // shell must appear inside the enriched agent_step description
+      const agentStep = (loopInput!.tools ?? []).find((t) => t.name === AGENT_STEP_TOOL_NAME);
+      expect(agentStep?.description).toContain("shell");
     });
   });
 

@@ -5,7 +5,7 @@ export const CREATE_SESSION_TOOL_NAME = "create_session";
 
 export const CREATE_SESSION_TOOL_SCHEMA: LlmToolSchema = {
   name: CREATE_SESSION_TOOL_NAME,
-  description: "Create a new session when the user request is unrelated to the current active session.",
+  description: "Create a new session when the user's goal has shifted or context % is high and you are at a natural stopping point. Working memory state (plan, key facts, steps) is auto-attached — do not duplicate it.",
   inputSchema: {
     type: "object",
     required: ["reason"],
@@ -20,7 +20,7 @@ export const CREATE_SESSION_TOOL_SCHEMA: LlmToolSchema = {
       },
       handoff_summary: {
         type: "string",
-        description: "Optional carry-forward summary from the previous session to the new session.",
+        description: "Describe what was accomplished, what is still pending, and any important decisions. Be concrete. Working memory is auto-attached so focus on intent and context, not technical state.",
       },
     },
   },
