@@ -80,7 +80,6 @@ export class MemoryManager implements SessionMemory {
   initialize(clientId: string): void {
     this.activeClientId = clientId;
     this.persistence.start();
-    this.removeLegacyInfiniteContextStorage();
     this.restoreActiveSession(clientId);
   }
 
@@ -511,18 +510,7 @@ export class MemoryManager implements SessionMemory {
     return this.nowProvider().toISOString();
   }
 
-  private removeLegacyInfiniteContextStorage(): void {
-    const legacyDir = resolve(this.persistence.sessionsDir, "..", "infinite-context");
-    try {
-      rmSync(legacyDir, { recursive: true, force: true });
-    } catch (err) {
-      devWarn(
-        "Failed to remove legacy infinite-context storage:",
-        err instanceof Error ? err.message : String(err),
-      );
-    }
-  }
-
+ 
   private migrateLegacyJsonlSessionIfNeeded(session: InMemorySession): InMemorySession {
     if (!session.sessionPath.endsWith(".jsonl")) {
       return session;

@@ -62,6 +62,8 @@ export interface AgentLoopResult {
   endStatus?: EndStatus;
   totalSteps: number;
   toolCallsMade: number;
+  workingMemoryPath?: string;
+  runDigest?: import("../memory/run-working-memory.js").RunDigest;
 }
 
 export const DEFAULT_LOOP_CONFIG: AgentLoopConfig = {

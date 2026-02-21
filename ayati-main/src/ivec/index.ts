@@ -1,12 +1,17 @@
 import type { LlmProvider } from "../core/contracts/provider.js";
 import { noopSessionMemory } from "../memory/provider.js";
 import { AgentWorkingMemory } from "../memory/agent-working-memory.js";
+import { RunWorkingMemoryWriter } from "../memory/run-working-memory.js";
+import type { RunDigest } from "../memory/run-working-memory.js";
+import { TaskStateManager } from "../memory/task-state-manager.js";
 import type { SessionMemory, MemoryRunHandle } from "../memory/types.js";
 import type { StaticContext } from "../context/static-context-cache.js";
 import { assemblePromptInput } from "../context/load-system-prompt-input.js";
 import { buildSystemPrompt } from "../prompt/builder.js";
 import { renderConversationSection } from "../prompt/sections/conversation.js";
 import { renderMemorySection } from "../prompt/sections/memory.js";
+import { renderLastRunSection } from "../prompt/sections/last-run.js";
+import { renderTaskContextSection } from "../prompt/sections/task-context.js";
 import { estimateTextTokens } from "../prompt/token-estimator.js";
 import type { ToolExecutor } from "../skills/tool-executor.js";
 import { devLog, devWarn, devError } from "../shared/index.js";
@@ -25,6 +30,7 @@ export interface IVecEngineOptions {
   sessionMemory?: SessionMemory;
   toolExecutor?: ToolExecutor;
   loopConfig?: AgentLoopConfigInput;
+  dataDir?: string;
 }
 
 export class IVecEngine {
@@ -34,6 +40,9 @@ export class IVecEngine {
   private readonly toolExecutor?: ToolExecutor;
   private sessionMemory: SessionMemory;
   private readonly loopConfig?: AgentLoopConfigInput;
+  private readonly dataDir?: string;
+  private readonly taskStateManager?: TaskStateManager;
+  private readonly lastRunDigests = new Map<string, RunDigest>();
   private staticSystemTokens = 0;
   private staticTokensReady = false;
 
@@ -44,6 +53,10 @@ export class IVecEngine {
     this.toolExecutor = options?.toolExecutor;
     this.sessionMemory = options?.sessionMemory ?? noopSessionMemory;
     this.loopConfig = options?.loopConfig;
+    this.dataDir = options?.dataDir;
+    if (options?.dataDir) {
+      this.taskStateManager = new TaskStateManager(options.dataDir);
+    }
   }
 
   async start(): Promise<void> {
@@ -52,6 +65,11 @@ export class IVecEngine {
       devLog(`Provider "${this.provider.name}" started`);
     } else {
       devWarn("No LLM provider configured — running in echo mode");
+    }
+
+    if (this.taskStateManager) {
+      await this.taskStateManager.initialize();
+      devLog("TaskStateManager initialized");
     }
 
     this.ensureStaticTokenCache();
@@ -94,11 +112,13 @@ export class IVecEngine {
     try {
       runHandle = this.sessionMemory.beginRun(clientId, content);
       this.recordTurnStatus(clientId, runHandle, "processing_started");
-      const system = await this.buildSystemContext();
+      const lastDigest = this.lastRunDigests.get(clientId);
+      const system = await this.buildSystemContext(clientId, lastDigest);
 
       if (this.provider) {
         const toolDefs = this.toolExecutor?.definitions() ?? [];
         const workingMemory = new AgentWorkingMemory(runHandle.runId);
+        const runWriter = this.createRunWriter(runHandle.runId, runHandle.sessionId, content);
         const contextTokenLimit = parseInt(process.env["CONTEXT_TOKEN_LIMIT"] ?? "", 10) || 100_000;
         const loop = new AgentLoop(
           this.provider,
@@ -108,6 +128,8 @@ export class IVecEngine {
           this.onReply,
           { ...this.loopConfig, contextTokenLimit },
           toolDefs,
+          runWriter,
+          this.taskStateManager,
         );
         const result = await loop.run(
           clientId,
@@ -119,7 +141,22 @@ export class IVecEngine {
           (providerName) => this.resolveActiveModelName(providerName),
         );
 
+        if (result.runDigest) {
+          this.lastRunDigests.set(clientId, result.runDigest);
+        }
+
         if (result.type === "reply") {
+          // Check for active Tier 3 task — if subtasks remain, auto-continue silently
+          const activeTask = this.taskStateManager?.getActiveTask(clientId);
+          if (activeTask && activeTask.stage === "executing") {
+            const nextSub = activeTask.subTasks.find((s) => s.status === "pending" || s.status === "in_progress");
+            if (nextSub) {
+              const continueMsg = `[Task: ${activeTask.taskId}] Continue task "${activeTask.goal}". Now working on subtask ${nextSub.id}: ${nextSub.title}. State: data/tasks/${activeTask.taskId}/state.json`;
+              void this.processChat(clientId, continueMsg);
+              return;
+            }
+          }
+    
           this.sendAssistantReply(clientId, runHandle, result.content);
         } else if (result.type === "feedback") {
           this.recordTurnStatus(clientId, runHandle, "response_started");
@@ -149,7 +186,7 @@ export class IVecEngine {
     }
   }
 
-  private async buildSystemContext(): Promise<SystemContextBuildResult> {
+  private async buildSystemContext(clientId: string, lastRunDigest?: RunDigest): Promise<SystemContextBuildResult> {
     if (!this.staticContext) {
       return { systemContext: "", dynamicSystemTokens: 0 };
     }
@@ -158,10 +195,19 @@ export class IVecEngine {
 
     const memoryContext = this.sessionMemory.getPromptMemoryContext();
     const promptInput = assemblePromptInput(this.staticContext, memoryContext);
-    const systemContext = buildSystemPrompt({
+    let systemContext = buildSystemPrompt({
       ...promptInput,
       includeToolDirectory: this.shouldIncludeToolDirectoryInPrompt(),
     }).systemPrompt;
+
+    if (lastRunDigest) {
+      systemContext += `\n\n${renderLastRunSection(lastRunDigest)}`;
+    }
+
+    const activeTask = this.taskStateManager?.getActiveTask(clientId);
+    if (activeTask) {
+      systemContext += `\n\n${renderTaskContextSection(activeTask)}`;
+    }
 
     const dynamicContext = [
       renderConversationSection(memoryContext.conversationTurns ?? []),
@@ -220,6 +266,20 @@ export class IVecEngine {
     this.staticTokensReady = true;
     this.sessionMemory.setStaticTokenBudget(this.staticSystemTokens);
     devLog(`Static context tokens cached: ${this.staticSystemTokens} (prompt=${promptTokens})`);
+  }
+
+  private createRunWriter(
+    runId: string,
+    sessionId: string,
+    userQuery: string,
+  ): RunWorkingMemoryWriter | undefined {
+    if (!this.dataDir) return undefined;
+    try {
+      return new RunWorkingMemoryWriter(runId, sessionId, userQuery, this.dataDir);
+    } catch (err) {
+      devWarn("Failed to create run working memory writer:", err instanceof Error ? err.message : String(err));
+      return undefined;
+    }
   }
 
   private resolveActiveModelName(providerName: string): string {

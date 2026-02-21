@@ -6,7 +6,6 @@ import {
   unlinkSync,
   readdirSync,
   existsSync,
-  renameSync,
 } from "node:fs";
 import { dirname, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -74,7 +73,6 @@ export class SessionPersistence {
   start(): void {
     mkdirSync(this.sessionsDir, { recursive: true });
     this.metaIndex.start();
-    this.migrateLegacyDatePartitionLayout();
   }
 
   stop(): void {
@@ -712,83 +710,4 @@ export class SessionPersistence {
     };
   }
 
-  private migrateLegacyDatePartitionLayout(): void {
-    const files = this.listSessionFiles(this.sessionsDir);
-    if (files.length === 0) {
-      this.rewriteMarkerPathToFlat();
-      return;
-    }
-
-    const updatedAt = new Date().toISOString();
-    const movedPathMap = new Map<string, string>();
-
-    for (const filePath of files) {
-      const oldRelPath = this.toRelativeSessionPath(filePath);
-      const flatPath = this.toFlatSessionPath(oldRelPath);
-      if (!flatPath || flatPath === oldRelPath) continue;
-
-      const oldAbsPath = this.resolveSessionAbsolutePath(oldRelPath);
-      const newAbsPath = this.resolveSessionAbsolutePath(flatPath);
-      mkdirSync(dirname(newAbsPath), { recursive: true });
-
-      try {
-        if (!existsSync(newAbsPath)) {
-          renameSync(oldAbsPath, newAbsPath);
-        }
-      } catch {
-        continue;
-      }
-
-      movedPathMap.set(oldRelPath, flatPath);
-      const sessionId = this.extractSessionIdFromPath(flatPath);
-      if (!sessionId) continue;
-      this.metaIndex.updateSessionPath(sessionId, flatPath, updatedAt);
-    }
-
-    this.rewriteMarkerPathToFlat(movedPathMap);
-  }
-
-  private toFlatSessionPath(sessionPath: string): string | null {
-    const normalized = normalizePath(sessionPath);
-    // Match date-partitioned layouts: sessions/YYYY/MM/DD/file or sessions/YYYY-MM-DD/file
-    const deepMatch = normalized.match(/^sessions\/\d{4}\/\d{2}\/\d{2}\/(.+)$/);
-    if (deepMatch && deepMatch[1]) return `sessions/${deepMatch[1]}`;
-
-    const flatDateMatch = normalized.match(/^sessions\/\d{4}-\d{2}-\d{2}\/(.+)$/);
-    if (flatDateMatch && flatDateMatch[1]) return `sessions/${flatDateMatch[1]}`;
-
-    return null;
-  }
-
-  private extractSessionIdFromPath(sessionPath: string): string | null {
-    const normalized = normalizePath(sessionPath);
-    const name = normalized.split("/").pop();
-    if (!name || name.length === 0) return null;
-    const withoutExt = name.replace(/\.(md|jsonl)$/i, "");
-    return withoutExt.length > 0 ? withoutExt : null;
-  }
-
-  private rewriteMarkerPathToFlat(movedPathMap?: Map<string, string>): void {
-    const markerPath = resolve(this.sessionsDir, "active-session.json");
-    if (!existsSync(markerPath)) return;
-
-    let parsed: ActiveSessionInfo | null = null;
-    try {
-      parsed = JSON.parse(readFileSync(markerPath, "utf8")) as ActiveSessionInfo;
-    } catch {
-      parsed = null;
-    }
-    if (!parsed || typeof parsed.sessionPath !== "string") return;
-
-    const normalized = normalizePath(parsed.sessionPath);
-    const mapped = movedPathMap?.get(normalized);
-    const converted = mapped ?? this.toFlatSessionPath(normalized);
-    if (!converted || converted === normalized) return;
-
-    writeFileSync(
-      markerPath,
-      JSON.stringify({ sessionId: parsed.sessionId, sessionPath: converted }),
-      "utf8",
-    );
-  }
 }

@@ -18,6 +18,8 @@ import type {
 import { DEFAULT_LOOP_CONFIG } from "./agent-loop-types.js";
 import type { AgentPlan } from "../memory/agent-working-memory.js";
 import { AgentWorkingMemory } from "../memory/agent-working-memory.js";
+import type { RunWorkingMemoryWriter } from "../memory/run-working-memory.js";
+import type { TaskStateManager } from "../memory/task-state-manager.js";
 import {
   AGENT_STEP_TOOL_NAME,
   AGENT_STEP_TOOL_SCHEMA,
@@ -26,6 +28,8 @@ import {
 import {
   CREATE_SESSION_TOOL_NAME,
   CREATE_SESSION_TOOL_SCHEMA,
+  TASK_CONTROL_TOOL_NAME,
+  TASK_CONTROL_TOOL_SCHEMA,
   formatToolResult,
   formatValidationError,
 } from "./tool-helpers.js";
@@ -43,6 +47,8 @@ export class AgentLoop {
   private readonly onReply?: (clientId: string, data: unknown) => void;
   private readonly toolDefinitions: ToolDefinition[];
   private readonly config: AgentLoopConfig;
+  private readonly runWriter?: RunWorkingMemoryWriter;
+  private readonly taskStateManager?: TaskStateManager;
 
   constructor(
     provider: LlmProvider,
@@ -52,6 +58,8 @@ export class AgentLoop {
     onReply?: (clientId: string, data: unknown) => void,
     config?: AgentLoopConfigInput,
     toolDefinitions?: ToolDefinition[],
+    runWriter?: RunWorkingMemoryWriter,
+    taskStateManager?: TaskStateManager,
   ) {
     this.provider = provider;
     this.toolExecutor = toolExecutor;
@@ -63,6 +71,8 @@ export class AgentLoop {
       ...config,
     };
     this.toolDefinitions = toolDefinitions ?? [];
+    this.runWriter = runWriter;
+    this.taskStateManager = taskStateManager;
   }
 
   async run(
@@ -121,12 +131,12 @@ export class AgentLoop {
       const turn = await this.provider.generateTurn(turnInput);
 
       if (turn.type === "assistant") {
-        return { type: "reply", content: turn.content, endStatus: "solved", totalSteps: state.step, toolCallsMade: state.toolCallsMade };
+        return this.finalizeRun({ type: "reply", content: turn.content, endStatus: "solved", totalSteps: state.step, toolCallsMade: state.toolCallsMade }, state);
       }
 
       const calls = turn.calls;
       if (calls.length === 0) {
-        return { type: "reply", content: "Empty tool call response.", endStatus: "stuck", totalSteps: state.step, toolCallsMade: state.toolCallsMade };
+        return this.finalizeRun({ type: "reply", content: "Empty tool call response.", endStatus: "stuck", totalSteps: state.step, toolCallsMade: state.toolCallsMade }, state);
       }
 
       const agentStepCall = calls.find((c) => c.name === AGENT_STEP_TOOL_NAME);
@@ -148,7 +158,7 @@ export class AgentLoop {
           messages,
           runHandle,
         );
-        if (phaseResult) return phaseResult;
+        if (phaseResult) return this.finalizeRun(phaseResult, state);
       }
 
       if (directCalls.length > 0) {
@@ -162,17 +172,17 @@ export class AgentLoop {
       }
 
       if (!agentStepCall && directCalls.length === 0) {
-        return { type: "reply", content: "Empty tool call response.", endStatus: "stuck", totalSteps: state.step, toolCallsMade: state.toolCallsMade };
+        return this.finalizeRun({ type: "reply", content: "Empty tool call response.", endStatus: "stuck", totalSteps: state.step, toolCallsMade: state.toolCallsMade }, state);
       }
     }
 
-    return {
+    return this.finalizeRun({
       type: "reply",
       content: "I've exhausted my reasoning steps. Here's what I found so far based on my analysis.",
       endStatus: "stuck",
       totalSteps: state.step,
       toolCallsMade: state.toolCallsMade,
-    };
+    }, state);
   }
 
   private async routePhase(
@@ -187,12 +197,9 @@ export class AgentLoop {
 
     switch (parsed.phase) {
       case "reason": {
-        this.workingMemory.addStep({
-          step: state.step,
-          phase: "reason",
-          thinking: parsed.thinking,
-          summary: parsed.summary,
-        });
+        const reasonStep = { step: state.step, phase: "reason", thinking: parsed.thinking, summary: parsed.summary };
+        this.workingMemory.addStep(reasonStep);
+        this.runWriter?.writeStep(reasonStep);
         messages.push({ role: "tool", toolCallId: call.id, name: AGENT_STEP_TOOL_NAME, content: JSON.stringify({ acknowledged: true, step: state.step }) });
         state.consecutiveNonActSteps++;
         state.phaseHistory.push("reason");
@@ -216,12 +223,10 @@ export class AgentLoop {
           plan_version: (this.workingMemory.plan?.plan_version ?? 0) + 1,
         };
         this.workingMemory.setPlan(agentPlan);
-        this.workingMemory.addStep({
-          step: state.step,
-          phase: "plan",
-          thinking: parsed.thinking,
-          summary: parsed.summary,
-        });
+        this.runWriter?.writePlan(agentPlan);
+        const planStep = { step: state.step, phase: "plan", thinking: parsed.thinking, summary: parsed.summary };
+        this.workingMemory.addStep(planStep);
+        this.runWriter?.writeStep(planStep);
         state.hasPlan = true;
         state.currentSubTaskId = agentPlan.current_sub_task;
         messages.push({ role: "tool", toolCallId: call.id, name: AGENT_STEP_TOOL_NAME, content: JSON.stringify({ acknowledged: true, plan_version: agentPlan.plan_version, sub_tasks: agentPlan.sub_tasks.length }) });
@@ -241,7 +246,7 @@ export class AgentLoop {
         );
         const resultStr = formatToolResult(action.tool_name, toolResult);
 
-        this.workingMemory.addStep({
+        const actStep = {
           step: state.step,
           phase: "act",
           thinking: parsed.thinking,
@@ -249,8 +254,10 @@ export class AgentLoop {
           toolName: action.tool_name,
           toolInput: action.tool_input,
           toolOutput: resultStr,
-          toolStatus: toolResult.ok ? "success" : "failed",
-        });
+          toolStatus: toolResult.ok ? "success" : "failed" as "success" | "failed",
+        };
+        this.workingMemory.addStep(actStep);
+        this.runWriter?.writeStep(actStep);
 
         if (!toolResult.ok) {
           this.workingMemory.addError({
@@ -273,27 +280,27 @@ export class AgentLoop {
       case "verify": {
         if (parsed.key_facts && parsed.key_facts.length > 0) {
           const lastActStep = [...this.workingMemory.steps].reverse().find((s) => s.phase === "act");
-          this.workingMemory.addKeyFacts(
-            parsed.key_facts.map((fact) => ({
-              fact,
-              sourceStep: state.step,
-              sourceToolName: lastActStep?.toolName,
-            })),
-          );
+          const newFacts = parsed.key_facts.map((fact) => ({
+            fact,
+            sourceStep: state.step,
+            sourceToolName: lastActStep?.toolName,
+          }));
+          this.workingMemory.addKeyFacts(newFacts);
+          for (const f of newFacts) {
+            this.runWriter?.writeKeyFact(f);
+          }
         }
         if (parsed.sub_task_outcome && state.currentSubTaskId !== null) {
           this.workingMemory.updateSubTaskStatus(state.currentSubTaskId, parsed.sub_task_outcome);
+          this.runWriter?.updateSubTaskStatus(state.currentSubTaskId, parsed.sub_task_outcome);
           if (parsed.sub_task_outcome === "done") {
             const nextId = this.workingMemory.advanceToNextSubTask();
             state.currentSubTaskId = nextId;
           }
         }
-        this.workingMemory.addStep({
-          step: state.step,
-          phase: "verify",
-          thinking: parsed.thinking,
-          summary: parsed.summary,
-        });
+        const verifyStep = { step: state.step, phase: "verify", thinking: parsed.thinking, summary: parsed.summary };
+        this.workingMemory.addStep(verifyStep);
+        this.runWriter?.writeStep(verifyStep);
         messages.push({ role: "tool", toolCallId: call.id, name: AGENT_STEP_TOOL_NAME, content: JSON.stringify({ acknowledged: true, facts_recorded: parsed.key_facts?.length ?? 0, sub_task_outcome: parsed.sub_task_outcome ?? null }) });
         state.consecutiveNonActSteps++;
         state.phaseHistory.push("verify");
@@ -304,13 +311,11 @@ export class AgentLoop {
         const lastUnresolved = [...this.workingMemory.errorRegister].reverse().find((e) => !e.resolved);
         if (lastUnresolved) {
           this.workingMemory.resolveError(lastUnresolved.step, parsed.summary);
+          this.runWriter?.writeErrorResolved(lastUnresolved.step, parsed.summary);
         }
-        this.workingMemory.addStep({
-          step: state.step,
-          phase: "reflect",
-          thinking: parsed.thinking,
-          summary: parsed.summary,
-        });
+        const reflectStep = { step: state.step, phase: "reflect", thinking: parsed.thinking, summary: parsed.summary };
+        this.workingMemory.addStep(reflectStep);
+        this.runWriter?.writeStep(reflectStep);
         messages.push({ role: "tool", toolCallId: call.id, name: AGENT_STEP_TOOL_NAME, content: JSON.stringify({ acknowledged: true }) });
         state.consecutiveNonActSteps++;
         state.phaseHistory.push("reflect");
@@ -318,18 +323,16 @@ export class AgentLoop {
       }
 
       case "feedback": {
+        this.runWriter?.writeStep({ step: state.step, phase: "feedback", thinking: parsed.thinking, summary: parsed.feedback_message ?? "" });
         this.sessionMemory.recordAssistantFeedback(clientId, runHandle.runId, runHandle.sessionId, parsed.feedback_message!);
         this.recordAgentStepEvent(clientId, state, parsed, runHandle);
         return { type: "feedback", content: parsed.feedback_message!, totalSteps: state.step, toolCallsMade: state.toolCallsMade };
       }
 
       case "end": {
-        this.workingMemory.addStep({
-          step: state.step,
-          phase: "end",
-          thinking: parsed.thinking,
-          summary: parsed.end_message ?? "",
-        });
+        const endStep = { step: state.step, phase: "end", thinking: parsed.thinking, summary: parsed.end_message ?? "" };
+        this.workingMemory.addStep(endStep);
+        this.runWriter?.writeStep(endStep);
         this.recordAgentStepEvent(clientId, state, parsed, runHandle);
         return { type: "reply", content: parsed.end_message!, endStatus: parsed.end_status, totalSteps: state.step, toolCallsMade: state.toolCallsMade };
       }
@@ -412,7 +415,8 @@ export class AgentLoop {
     }
 
     const isSessionSwitchTool = toolName === CREATE_SESSION_TOOL_NAME;
-    const deferToolCallRecord = isSessionSwitchTool;
+    const isTaskControlTool = toolName === TASK_CONTROL_TOOL_NAME;
+    const deferToolCallRecord = isSessionSwitchTool || isTaskControlTool;
     if (!deferToolCallRecord) {
       this.sessionMemory.recordToolCall(clientId, {
         runId: runHandle.runId,
@@ -434,6 +438,8 @@ export class AgentLoop {
           repeatedActionLimit: this.config.repeatedActionLimit,
         },
       };
+    } else if (isTaskControlTool) {
+      result = this.executeTaskControl(clientId, toolInput, runHandle);
     } else if (isSessionSwitchTool) {
       result = this.executeCreateSession(clientId, toolInput, runHandle);
     } else if (this.toolExecutor) {
@@ -548,6 +554,63 @@ export class AgentLoop {
     };
   }
 
+  private executeTaskControl(
+    clientId: string,
+    input: unknown,
+    runHandle: MemoryRunHandle,
+  ): ToolResult {
+    if (!this.taskStateManager) {
+      return { ok: false, error: "Task management is not configured." };
+    }
+    const payload = input && typeof input === "object" ? (input as Record<string, unknown>) : {};
+    const action = typeof payload["action"] === "string" ? payload["action"] : "";
+
+    if (action === "start") {
+      const goal = typeof payload["goal"] === "string" ? payload["goal"].trim() : "";
+      const rawSubTasks = Array.isArray(payload["subtasks"]) ? payload["subtasks"] : [];
+      if (!goal) return { ok: false, error: "task_control start requires 'goal'" };
+      if (rawSubTasks.length === 0) return { ok: false, error: "task_control start requires at least one subtask" };
+      const subTasks = (rawSubTasks as Array<Record<string, unknown>>).map((st) => ({
+        id: typeof st["id"] === "number" ? st["id"] : 0,
+        title: typeof st["title"] === "string" ? st["title"] : "Unnamed",
+        depends_on: Array.isArray(st["depends_on"]) ? (st["depends_on"] as number[]) : undefined,
+      }));
+      const state = this.taskStateManager.createTask(clientId, goal, subTasks);
+      return {
+        ok: true,
+        output: JSON.stringify({ task_id: state.taskId, status: "task_created", total_subtasks: state.subTasks.length, first_subtask: state.subTasks[0]?.title }),
+        meta: { taskCreated: true, taskId: state.taskId },
+      };
+    }
+
+    if (action === "complete_subtask") {
+      const taskId = typeof payload["task_id"] === "string" ? payload["task_id"] : "";
+      const subtaskId = typeof payload["subtask_id"] === "number" ? payload["subtask_id"] : -1;
+      const handoff = typeof payload["handoff"] === "string" ? payload["handoff"].trim() : "";
+      if (!taskId) return { ok: false, error: "task_control complete_subtask requires 'task_id'" };
+      if (subtaskId < 0) return { ok: false, error: "task_control complete_subtask requires 'subtask_id'" };
+      if (!handoff) return { ok: false, error: "task_control complete_subtask requires 'handoff' (2-3 sentences)" };
+      // Rotate session for GC
+      this.executeCreateSession(clientId, { reason: `subtask_${subtaskId}_complete`, handoff_summary: handoff }, runHandle);
+      const notesPath = this.taskStateManager.getSubTaskNotesPath(taskId, subtaskId);
+      const next = this.taskStateManager.completeSubTask(clientId, taskId, subtaskId, notesPath);
+      return {
+        ok: true,
+        output: JSON.stringify({ completed_subtask: subtaskId, next_subtask: next.nextSubTaskId, next_title: next.nextSubTaskTitle }),
+        meta: { subtaskCompleted: subtaskId, nextSubTaskId: next.nextSubTaskId },
+      };
+    }
+
+    if (action === "finish") {
+      const taskId = typeof payload["task_id"] === "string" ? payload["task_id"] : "";
+      if (!taskId) return { ok: false, error: "task_control finish requires 'task_id'" };
+      this.taskStateManager.finishTask(clientId, taskId);
+      return { ok: true, output: JSON.stringify({ status: "task_complete", task_id: taskId }) };
+    }
+
+    return { ok: false, error: `Unknown task_control action: '${action}'. Use 'start', 'complete_subtask', or 'finish'.` };
+  }
+
   private recordAgentStepEvent(
     clientId: string,
     state: RunState,
@@ -563,6 +626,18 @@ export class AgentLoop {
       actionToolName: parsed.action?.tool_name,
       endStatus: parsed.end_status,
     });
+  }
+
+  private finalizeRun(result: AgentLoopResult, state: RunState): AgentLoopResult {
+    if (!this.runWriter) return result;
+    const digest = this.runWriter.finalize(
+      result.endStatus ?? "stuck",
+      state.step,
+      state.toolCallsMade,
+      result.content,
+      this.workingMemory,
+    );
+    return { ...result, workingMemoryPath: digest.filePath, runDigest: digest };
   }
 
   private effectiveLimit(state: RunState): number {
@@ -711,7 +786,9 @@ export class AgentLoop {
           : ""),
     };
 
-    return [enrichedAgentStep, CREATE_SESSION_TOOL_SCHEMA];
+    const tools: LlmToolSchema[] = [enrichedAgentStep, CREATE_SESSION_TOOL_SCHEMA];
+    if (this.taskStateManager) tools.push(TASK_CONTROL_TOOL_SCHEMA);
+    return tools;
   }
 
   private stableStringify(value: unknown): string {

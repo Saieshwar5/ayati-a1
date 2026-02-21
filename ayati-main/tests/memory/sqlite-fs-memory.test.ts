@@ -236,7 +236,7 @@ describe("MemoryManager markdown persistence", () => {
     const dbPath = join(baseDir, "memory.sqlite");
     const sessionId = "legacy-active-session";
     const legacyPath = `sessions/2026/02/16/${sessionId}.jsonl`;
-    const markdownPath = `sessions/${sessionId}.md`;
+    const markdownPath = `sessions/2026/02/16/${sessionId}.md`;
     const legacyAbsolutePath = join(baseDir, legacyPath);
     const markerPath = join(baseDir, "sessions", "active-session.json");
 

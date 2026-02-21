@@ -51,6 +51,7 @@ export async function main(): Promise<void> {
     staticContext,
     toolExecutor,
     sessionMemory,
+    dataDir: resolve(projectRoot, "data"),
   });
   const registry = new PluginRegistry();
 

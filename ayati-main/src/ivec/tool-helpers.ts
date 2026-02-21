@@ -2,6 +2,59 @@ import type { ToolResult } from "../skills/types.js";
 import type { LlmToolSchema } from "../core/contracts/llm-protocol.js";
 
 export const CREATE_SESSION_TOOL_NAME = "create_session";
+export const TASK_CONTROL_TOOL_NAME = "task_control";
+
+export const TASK_CONTROL_TOOL_SCHEMA: LlmToolSchema = {
+  name: TASK_CONTROL_TOOL_NAME,
+  description:
+    "Manage long-running Tier 3 tasks that span multiple sessions. " +
+    "Use action='start' to begin a multi-session task (declare goal + subtasks). " +
+    "Use action='complete_subtask' after finishing a subtask — write notes to data/tasks/{taskId}/subtasks/{id}-notes.md FIRST. " +
+    "Use action='finish' when all subtasks are done and you have the final answer.",
+  inputSchema: {
+    type: "object",
+    required: ["action"],
+    properties: {
+      action: {
+        type: "string",
+        description: "One of: 'start' | 'complete_subtask' | 'finish'",
+      },
+      goal: {
+        type: "string",
+        description: "Required for action='start'. Single sentence describing the full task goal.",
+      },
+      subtasks: {
+        type: "array",
+        description: "Required for action='start'. Array of subtask objects.",
+        items: {
+          type: "object",
+          required: ["id", "title"],
+          properties: {
+            id: { type: "number", description: "Unique subtask ID starting from 1." },
+            title: { type: "string", description: "Short description of what this subtask does." },
+            depends_on: { type: "array", items: { type: "number" }, description: "IDs of subtasks that must complete first." },
+          },
+        },
+      },
+      task_id: {
+        type: "string",
+        description: "Required for action='complete_subtask' and 'finish'. The task ID from start.",
+      },
+      subtask_id: {
+        type: "number",
+        description: "Required for action='complete_subtask'. The subtask ID just completed.",
+      },
+      handoff: {
+        type: "string",
+        description: "Required for action='complete_subtask'. 2-3 sentences: what was done, key finding, what comes next.",
+      },
+      summary: {
+        type: "string",
+        description: "Required for action='finish'. The complete final answer for the user.",
+      },
+    },
+  },
+};
 
 export const CREATE_SESSION_TOOL_SCHEMA: LlmToolSchema = {
   name: CREATE_SESSION_TOOL_NAME,
