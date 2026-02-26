@@ -28,6 +28,12 @@ export interface AgentStepMemoryEvent {
   endStatus?: string;
 }
 
+export interface SessionStatus {
+  contextPercent: number;
+  turns: number;
+  sessionAgeMinutes: number;
+}
+
 export interface PromptMemoryContext {
   conversationTurns: ConversationTurn[];
   previousSessionSummary: string;
@@ -113,5 +119,6 @@ export interface SessionMemory {
   recordAgentStep(clientId: string, input: AgentStepRecordInput): void;
   recordAssistantFeedback(clientId: string, runId: string, sessionId: string, message: string): void;
   getPromptMemoryContext(): PromptMemoryContext;
+  getSessionStatus?(): SessionStatus | null;
   setStaticTokenBudget(tokens: number): void;
 }

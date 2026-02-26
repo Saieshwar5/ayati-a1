@@ -1,5 +1,5 @@
 import type { SoulContext, UserProfileContext } from "../context/types.js";
-import type { ConversationTurn } from "../memory/types.js";
+import type { ConversationTurn, SessionStatus } from "../memory/types.js";
 import type { SkillPromptBlock } from "../skills/types.js";
 
 export type PromptLayerId =
@@ -9,7 +9,8 @@ export type PromptLayerId =
   | "conversation"
   | "memory"
   | "skills"
-  | "tools";
+  | "tools"
+  | "session_status";
 
 export interface PromptBuildInput {
   basePrompt: string;
@@ -20,6 +21,7 @@ export interface PromptBuildInput {
   skillBlocks?: SkillPromptBlock[];
   toolDirectory?: string;
   includeToolDirectory?: boolean;
+  sessionStatus?: SessionStatus | null;
 }
 
 export interface PromptSectionMetadata {

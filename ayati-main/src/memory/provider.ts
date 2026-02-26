@@ -1,5 +1,6 @@
 import type {
   SessionMemory,
+  SessionStatus,
   MemoryRunHandle,
   ToolCallRecordInput,
   ToolCallResultRecordInput,
@@ -39,6 +40,9 @@ export const noopSessionMemory: SessionMemory = {
   },
   recordAssistantFeedback(): void {
     return;
+  },
+  getSessionStatus(): null {
+    return null;
   },
   getPromptMemoryContext(): PromptMemoryContext {
     return {

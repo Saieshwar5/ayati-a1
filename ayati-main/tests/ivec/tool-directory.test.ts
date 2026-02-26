@@ -69,8 +69,7 @@ describe("buildToolDirectory", () => {
 
   it("returns empty string for empty tools array", () => {
     const result = buildToolDirectory([]);
-    expect(result).toContain("create_session");
-    expect(result).toContain("| Tool |");
+    expect(result).toBe("");
   });
 
   it("handles tools without inputSchema", () => {

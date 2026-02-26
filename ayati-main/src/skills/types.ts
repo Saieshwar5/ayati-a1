@@ -13,6 +13,8 @@ export interface ToolSelectionHints {
 
 export interface ToolExecutionContext {
   clientId?: string;
+  runId?: string;
+  sessionId?: string;
 }
 
 export interface ToolResult {

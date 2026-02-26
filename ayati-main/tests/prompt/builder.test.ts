@@ -48,11 +48,15 @@ describe("buildSystemPrompt", () => {
       "memory",
       "skills",
       "tools",
+      "session_status",
     ]);
-    const includedSections = output.sections.filter((s) => s.id !== "tools");
+    const emptyOptionalIds = new Set(["tools", "session_status"]);
+    const includedSections = output.sections.filter((s) => !emptyOptionalIds.has(s.id));
     expect(includedSections.every((s) => s.included)).toBe(true);
     const toolsSection = output.sections.find((s) => s.id === "tools");
     expect(toolsSection?.included).toBe(false);
+    const statusSection = output.sections.find((s) => s.id === "session_status");
+    expect(statusSection?.included).toBe(false);
   });
 
   it("memory section renders previous session summary only", () => {

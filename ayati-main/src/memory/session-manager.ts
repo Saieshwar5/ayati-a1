@@ -5,6 +5,7 @@ import { estimateTextTokens } from "../prompt/token-estimator.js";
 import { devWarn } from "../shared/index.js";
 import type {
   SessionMemory,
+  SessionStatus,
   MemoryRunHandle,
   TurnStatusRecordInput,
   CreateSessionInput,
@@ -318,6 +319,22 @@ export class MemoryManager implements SessionMemory {
 
   setStaticTokenBudget(tokens: number): void {
     this.staticTokenBudget = tokens;
+  }
+
+  getSessionStatus(): SessionStatus | null {
+    if (!this.currentSession) return null;
+
+    const dynamicTokens = this.estimateDynamicTokens(this.currentSession);
+    const available = Math.max(1, this.contextTokenLimit - this.staticTokenBudget);
+    const contextPercent = Math.min(100, (dynamicTokens / available) * 100);
+
+    const turns = this.currentSession.userTurnCount + this.currentSession.assistantTurnCount;
+
+    const startMs = new Date(this.currentSession.startedAt).getTime();
+    const nowMs = this.nowProvider().getTime();
+    const sessionAgeMinutes = Math.max(0, Math.floor((nowMs - startMs) / 60_000));
+
+    return { contextPercent, turns, sessionAgeMinutes };
   }
 
   flushBackgroundTasks(): Promise<void> {
