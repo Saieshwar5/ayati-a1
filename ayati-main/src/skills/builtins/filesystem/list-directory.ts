@@ -1,4 +1,5 @@
 import { readdir } from "node:fs/promises";
+import { homedir } from "node:os";
 import { resolve, join } from "node:path";
 import type { ToolDefinition, ToolResult } from "../../types.js";
 import { validateListDirectoryInput } from "./validators.js";
@@ -6,6 +7,13 @@ import { validateListDirectoryInput } from "./validators.js";
 interface EntryInfo {
   name: string;
   type: string;
+}
+
+function normalizeDirectoryPath(pathValue: string): string {
+  const trimmed = pathValue.trim();
+  if (trimmed === "~") return homedir();
+  if (trimmed.startsWith("~/")) return join(homedir(), trimmed.slice(2));
+  return resolve(trimmed);
 }
 
 async function listEntries(
@@ -71,7 +79,7 @@ export const listDirectoryTool: ToolDefinition = {
     const parsed = validateListDirectoryInput(input);
     if ("ok" in parsed) return parsed;
 
-    const dirPath = resolve(parsed.path);
+    const dirPath = normalizeDirectoryPath(parsed.path);
     const maxEntries = 1000;
     const maxDepth = 8;
     const start = Date.now();

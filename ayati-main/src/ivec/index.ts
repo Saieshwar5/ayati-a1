@@ -118,6 +118,21 @@ export class IVecEngine {
             });
           },
         });
+        this.sessionMemory.recordRunLedger?.(clientId, {
+          runId: runHandle.runId,
+          sessionId: runHandle.sessionId,
+          runPath: result.runPath,
+          state: "completed",
+          status: result.status,
+          summary: result.content,
+        });
+        this.sessionMemory.recordTaskSummary?.(clientId, {
+          runId: runHandle.runId,
+          sessionId: runHandle.sessionId,
+          runPath: result.runPath,
+          status: result.status,
+          summary: result.content,
+        });
         this.sendAssistantReply(clientId, runHandle, result.content);
       } else {
         const reply = `Received: "${content}"`;

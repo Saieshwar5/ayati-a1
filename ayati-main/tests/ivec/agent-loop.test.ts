@@ -17,6 +17,8 @@ function createMockSessionMemory(): SessionMemory {
     recordAssistantFinal: vi.fn(),
     recordRunFailure: vi.fn(),
     recordAgentStep: vi.fn(),
+    recordRunLedger: vi.fn(),
+    recordTaskSummary: vi.fn(),
     recordAssistantFeedback: vi.fn(),
     getPromptMemoryContext: vi.fn().mockReturnValue({
       conversationTurns: [{ role: "user", content: "hello", timestamp: "", sessionPath: "" }],
@@ -59,10 +61,11 @@ describe("agentLoop", () => {
           }),
       };
 
+      const sessionMemory = createMockSessionMemory();
       const result = await agentLoop({
         provider,
         toolDefinitions: [],
-        sessionMemory: createMockSessionMemory(),
+        sessionMemory,
         runHandle: { sessionId: "s1", runId: "r1" },
         clientId: "c1",
         dataDir,
@@ -72,6 +75,10 @@ describe("agentLoop", () => {
       expect(result.content).toBe("Hello! How can I help?");
       expect(result.status).toBe("completed");
       expect(result.totalIterations).toBe(1);
+      expect(sessionMemory.recordRunLedger as ReturnType<typeof vi.fn>).toHaveBeenCalledWith("c1", expect.objectContaining({
+        runId: "r1",
+        state: "started",
+      }));
     } finally {
       cleanup();
     }
@@ -89,13 +96,13 @@ describe("agentLoop", () => {
         stop: vi.fn(),
         generateTurn: vi.fn().mockImplementation(async () => {
           callCount++;
-          // Calls alternate: controller, reason, act, verify, controller, ...
           // Call 1: controller → step directive
           if (callCount === 1) {
             return {
               type: "assistant",
               content: JSON.stringify({
                 done: false,
+                approach: "analyze then conclude",
                 intent: "analyze request",
                 type: "reasoning",
                 tools_hint: [],
@@ -104,22 +111,11 @@ describe("agentLoop", () => {
               }),
             };
           }
-          // Call 2: reason
+          // Call 2: act (no tools, just text) — gate 2 catches no-tools+text as pass
           if (callCount === 2) {
-            return {
-              type: "assistant",
-              content: JSON.stringify({
-                thinking: "thinking",
-                approach: "approach",
-                potential_issues: [],
-              }),
-            };
-          }
-          // Call 3: act (no tools, just text)
-          if (callCount === 3) {
             return { type: "assistant", content: "Analysis done" };
           }
-          // Call 4: controller → done
+          // Call 3: controller → done
           return {
             type: "assistant",
             content: JSON.stringify({
@@ -159,24 +155,19 @@ describe("agentLoop", () => {
         stop: vi.fn(),
         generateTurn: vi.fn().mockImplementation(async () => {
           callCount++;
-          // Alternate controller (step) / reason / act — never done
-          if (callCount % 3 === 1) {
+          // Alternate controller (step) / act — never done
+          if (callCount % 2 === 1) {
             return {
               type: "assistant",
               content: JSON.stringify({
                 done: false,
+                approach: "keep trying",
                 intent: "try again",
                 type: "reasoning",
                 tools_hint: [],
                 success_criteria: "succeed",
                 context: "",
               }),
-            };
-          }
-          if (callCount % 3 === 2) {
-            return {
-              type: "assistant",
-              content: '{"thinking":"t","approach":"a","potential_issues":[]}',
             };
           }
           return { type: "assistant", content: "still trying" };
@@ -252,6 +243,7 @@ describe("agentLoop", () => {
               type: "assistant",
               content: JSON.stringify({
                 done: false,
+                approach: "direct response",
                 intent: "step 1",
                 type: "reasoning",
                 tools_hint: [],
@@ -261,9 +253,6 @@ describe("agentLoop", () => {
             };
           }
           if (callCount === 2) {
-            return { type: "assistant", content: '{"thinking":"t","approach":"a","potential_issues":[]}' };
-          }
-          if (callCount === 3) {
             return { type: "assistant", content: "text response" };
           }
           return {
@@ -289,6 +278,74 @@ describe("agentLoop", () => {
         expect.stringContaining("Step 1"),
         expect.any(String),
       );
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("handles inspect re-query without consuming extra iteration", async () => {
+    const dataDir = makeTmpDir();
+    try {
+      let callCount = 0;
+      const provider: LlmProvider = {
+        name: "mock",
+        version: "1.0.0",
+        capabilities: { nativeToolCalling: true },
+        start: vi.fn(),
+        stop: vi.fn(),
+        generateTurn: vi.fn().mockImplementation(async () => {
+          callCount++;
+          if (callCount === 1) {
+            return {
+              type: "assistant",
+              content: JSON.stringify({
+                done: false,
+                goal_update: "Understand user greeting and respond naturally",
+                approach_update: "Respond directly and verify tone",
+                approach: "respond directly",
+                intent: "draft response",
+                type: "reasoning",
+                tools_hint: [],
+                success_criteria: "response drafted",
+                context: "",
+              }),
+            };
+          }
+          if (callCount === 2) {
+            return { type: "assistant", content: "Drafted response" };
+          }
+          if (callCount === 3) {
+            return {
+              type: "assistant",
+              content: JSON.stringify({
+                done: false,
+                inspect_steps: [1],
+                inspect_reason: "Need to confirm step details",
+              }),
+            };
+          }
+          return {
+            type: "assistant",
+            content: JSON.stringify({
+              done: true,
+              summary: "Completed with inspection",
+              status: "completed",
+            }),
+          };
+        }),
+      };
+
+      const result = await agentLoop({
+        provider,
+        toolDefinitions: [],
+        sessionMemory: createMockSessionMemory(),
+        runHandle: { sessionId: "s1", runId: "r1" },
+        clientId: "c1",
+        dataDir,
+      });
+
+      expect(result.status).toBe("completed");
+      expect(result.totalIterations).toBe(2);
     } finally {
       cleanup();
     }

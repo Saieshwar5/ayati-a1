@@ -1,0 +1,9 @@
+System Health Report:
+
+- CPU Usage: 45%
+- Memory Usage: 68%
+- Disk Space: 250GB free of 1TB
+- Network Status: Connected
+- Last Check: Successful
+
+Overall, the system is operating within normal parameters, but CPU and memory usage are relatively high, which may require monitoring.

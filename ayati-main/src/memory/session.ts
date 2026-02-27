@@ -8,6 +8,8 @@ import type {
   ToolResultEvent,
   RunFailureEvent,
   AgentStepEvent,
+  RunLedgerEvent,
+  TaskSummaryEvent,
   AssistantFeedbackEvent,
 } from "./session-events.js";
 import { estimateTextTokens } from "../prompt/token-estimator.js";
@@ -21,6 +23,8 @@ export type SessionTimelineEntry =
   | ToolResultEvent
   | RunFailureEvent
   | AgentStepEvent
+  | RunLedgerEvent
+  | TaskSummaryEvent
   | AssistantFeedbackEvent;
 
 const COUNTABLE_EVENT_TYPES = new Set([

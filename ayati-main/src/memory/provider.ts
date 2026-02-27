@@ -5,6 +5,8 @@ import type {
   ToolCallRecordInput,
   ToolCallResultRecordInput,
   AgentStepRecordInput,
+  RunLedgerRecordInput,
+  TaskSummaryRecordInput,
   PromptMemoryContext,
 } from "./types.js";
 
@@ -36,6 +38,12 @@ export const noopSessionMemory: SessionMemory = {
     return;
   },
   recordAgentStep(_clientId: string, _input: AgentStepRecordInput): void {
+    return;
+  },
+  recordRunLedger(_clientId: string, _input: RunLedgerRecordInput): void {
+    return;
+  },
+  recordTaskSummary(_clientId: string, _input: TaskSummaryRecordInput): void {
     return;
   },
   recordAssistantFeedback(): void {

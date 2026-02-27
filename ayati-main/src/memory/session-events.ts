@@ -10,6 +10,8 @@ export type SessionEventType =
   | "tool_result"
   | "run_failure"
   | "agent_step"
+  | "run_ledger"
+  | "task_summary"
   | "assistant_feedback";
 
 interface BaseEvent {
@@ -88,6 +90,23 @@ export interface AgentStepEvent extends BaseEvent {
   endStatus?: string;
 }
 
+export interface RunLedgerEvent extends BaseEvent {
+  type: "run_ledger";
+  runId: string;
+  runPath: string;
+  state: "started" | "completed";
+  status?: "completed" | "failed" | "stuck";
+  summary?: string;
+}
+
+export interface TaskSummaryEvent extends BaseEvent {
+  type: "task_summary";
+  runId: string;
+  runPath: string;
+  status: "completed" | "failed" | "stuck";
+  summary: string;
+}
+
 export interface AssistantFeedbackEvent extends BaseEvent {
   type: "assistant_feedback";
   message: string;
@@ -103,6 +122,8 @@ export type SessionEvent =
   | ToolResultEvent
   | RunFailureEvent
   | AgentStepEvent
+  | RunLedgerEvent
+  | TaskSummaryEvent
   | AssistantFeedbackEvent;
 
 export type CountableSessionEvent =

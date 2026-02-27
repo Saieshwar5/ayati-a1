@@ -31,7 +31,7 @@ function findSessionFile(baseDir: string, sessionId: string): string {
 }
 
 describe("MemoryManager markdown persistence", () => {
-  it("stores run + tool events and returns prompt context", () => {
+  it("stores compact run memory and returns prompt context", () => {
     const now = new Date("2026-02-08T00:00:00.000Z");
     const baseDir = mkdtempSync(join(tmpdir(), "ayati-memory-"));
 
@@ -74,7 +74,7 @@ describe("MemoryManager markdown persistence", () => {
 
     const sessionFile = findSessionFile(baseDir, run.sessionId);
     const content = readFileSync(sessionFile, "utf8");
-    expect(content).toContain("\"tool_result\"");
+    expect(content).not.toContain("\"tool_result\"");
     expect(content).toContain("\"session_open\"");
     expect(content).toContain("\"sessionPath\"");
     expect(content).not.toContain("\"runId\"");
@@ -649,7 +649,7 @@ describe("MemoryManager markdown persistence", () => {
     manager.shutdown();
   });
 
-  it("stores full tool output text inside session markdown document", () => {
+  it("stores full tool output text inside session markdown document in debug mode", () => {
     const now = new Date("2026-02-08T00:00:00.000Z");
     const baseDir = mkdtempSync(join(tmpdir(), "ayati-memory-"));
 
@@ -657,6 +657,7 @@ describe("MemoryManager markdown persistence", () => {
       dbPath: join(baseDir, "memory.sqlite"),
       dataDir: baseDir,
       now: () => new Date(now),
+      memoryDetailMode: "debug",
     });
 
     manager.initialize("c-full-output");
@@ -684,6 +685,110 @@ describe("MemoryManager markdown persistence", () => {
     const sessionFile = findSessionFile(baseDir, run.sessionId);
     const content = readFileSync(sessionFile, "utf8");
     expect(content).toContain(fullOutput);
+
+    manager.shutdown();
+  });
+
+  it("stores run ledger and task summary pointers", () => {
+    const now = new Date("2026-02-08T00:00:00.000Z");
+    const baseDir = mkdtempSync(join(tmpdir(), "ayati-memory-"));
+
+    const manager = new SessionManager({
+      dbPath: join(baseDir, "memory.sqlite"),
+      dataDir: baseDir,
+      now: () => new Date(now),
+    });
+
+    manager.initialize("c-ledger");
+
+    const run = manager.beginRun("c-ledger", "summarize run pointers");
+    manager.recordRunLedger?.("c-ledger", {
+      runId: run.runId,
+      sessionId: run.sessionId,
+      runPath: "data/runs/r-ledger-1",
+      state: "started",
+    });
+    manager.recordRunLedger?.("c-ledger", {
+      runId: run.runId,
+      sessionId: run.sessionId,
+      runPath: "data/runs/r-ledger-1",
+      state: "completed",
+      status: "completed",
+      summary: "Completed run",
+    });
+    manager.recordTaskSummary?.("c-ledger", {
+      runId: run.runId,
+      sessionId: run.sessionId,
+      runPath: "data/runs/r-ledger-1",
+      status: "completed",
+      summary: "Completed run",
+    });
+    manager.recordAssistantFinal("c-ledger", run.runId, run.sessionId, "done");
+
+    const sessionFile = findSessionFile(baseDir, run.sessionId);
+    const content = readFileSync(sessionFile, "utf8");
+    expect(content).toContain("\"type\":\"run_ledger\"");
+    expect(content).toContain("\"type\":\"task_summary\"");
+    expect(content).toContain("\"runPath\":\"data/runs/r-ledger-1\"");
+
+    manager.shutdown();
+  });
+
+  it("does not store agent_step events in compact mode", () => {
+    const now = new Date("2026-02-08T00:00:00.000Z");
+    const baseDir = mkdtempSync(join(tmpdir(), "ayati-memory-"));
+
+    const manager = new SessionManager({
+      dbPath: join(baseDir, "memory.sqlite"),
+      dataDir: baseDir,
+      now: () => new Date(now),
+    });
+
+    manager.initialize("c-agent-step-compact");
+
+    const run = manager.beginRun("c-agent-step-compact", "test compact agent step");
+    manager.recordAgentStep("c-agent-step-compact", {
+      runId: run.runId,
+      sessionId: run.sessionId,
+      step: 1,
+      phase: "progress",
+      summary: "Step 1 progress",
+    });
+    manager.recordAssistantFinal("c-agent-step-compact", run.runId, run.sessionId, "done");
+
+    const sessionFile = findSessionFile(baseDir, run.sessionId);
+    const content = readFileSync(sessionFile, "utf8");
+    expect(content).not.toContain("\"type\":\"agent_step\"");
+
+    manager.shutdown();
+  });
+
+  it("stores agent_step events in debug mode", () => {
+    const now = new Date("2026-02-08T00:00:00.000Z");
+    const baseDir = mkdtempSync(join(tmpdir(), "ayati-memory-"));
+
+    const manager = new SessionManager({
+      dbPath: join(baseDir, "memory.sqlite"),
+      dataDir: baseDir,
+      now: () => new Date(now),
+      memoryDetailMode: "debug",
+    });
+
+    manager.initialize("c-agent-step-debug");
+
+    const run = manager.beginRun("c-agent-step-debug", "test debug agent step");
+    manager.recordAgentStep("c-agent-step-debug", {
+      runId: run.runId,
+      sessionId: run.sessionId,
+      step: 1,
+      phase: "progress",
+      summary: "Step 1 progress",
+    });
+    manager.recordAssistantFinal("c-agent-step-debug", run.runId, run.sessionId, "done");
+
+    const sessionFile = findSessionFile(baseDir, run.sessionId);
+    const content = readFileSync(sessionFile, "utf8");
+    expect(content).toContain("\"type\":\"agent_step\"");
 
     manager.shutdown();
   });

@@ -38,6 +38,8 @@ function createSessionMemory(): SessionMemory {
     recordAssistantFinal: vi.fn(),
     recordRunFailure: vi.fn(),
     recordAgentStep: vi.fn(),
+    recordRunLedger: vi.fn(),
+    recordTaskSummary: vi.fn(),
     recordAssistantFeedback: vi.fn(),
     getPromptMemoryContext: vi.fn().mockReturnValue({
       conversationTurns: [],
@@ -78,7 +80,8 @@ describe("IVecEngine", () => {
     try {
       const provider = createMockProvider();
       const onReply = vi.fn();
-      const engine = new IVecEngine({ onReply, provider, dataDir });
+      const sessionMemory = createSessionMemory();
+      const engine = new IVecEngine({ onReply, provider, sessionMemory, dataDir });
 
       await engine.start();
       engine.handleMessage("c1", { type: "chat", content: "hello" });
@@ -90,6 +93,14 @@ describe("IVecEngine", () => {
           content: "mock reply",
         });
       });
+      expect(sessionMemory.recordRunLedger as ReturnType<typeof vi.fn>).toHaveBeenCalledWith(
+        "c1",
+        expect.objectContaining({ state: "completed", status: "completed" }),
+      );
+      expect(sessionMemory.recordTaskSummary as ReturnType<typeof vi.fn>).toHaveBeenCalledWith(
+        "c1",
+        expect.objectContaining({ status: "completed", summary: "mock reply" }),
+      );
     } finally {
       rmSync(dataDir, { recursive: true, force: true });
     }

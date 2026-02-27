@@ -106,6 +106,25 @@ export interface AgentStepRecordInput {
   endStatus?: string;
 }
 
+export type RunLedgerState = "started" | "completed";
+
+export interface RunLedgerRecordInput {
+  runId: string;
+  sessionId: string;
+  runPath: string;
+  state: RunLedgerState;
+  status?: "completed" | "failed" | "stuck";
+  summary?: string;
+}
+
+export interface TaskSummaryRecordInput {
+  runId: string;
+  sessionId: string;
+  runPath: string;
+  status: "completed" | "failed" | "stuck";
+  summary: string;
+}
+
 export interface SessionMemory {
   initialize(clientId: string): void;
   shutdown(): void | Promise<void>;
@@ -117,6 +136,8 @@ export interface SessionMemory {
   recordAssistantFinal(clientId: string, runId: string, sessionId: string, content: string): void;
   recordRunFailure(clientId: string, runId: string, sessionId: string, message: string): void;
   recordAgentStep(clientId: string, input: AgentStepRecordInput): void;
+  recordRunLedger?(clientId: string, input: RunLedgerRecordInput): void;
+  recordTaskSummary?(clientId: string, input: TaskSummaryRecordInput): void;
   recordAssistantFeedback(clientId: string, runId: string, sessionId: string, message: string): void;
   getPromptMemoryContext(): PromptMemoryContext;
   getSessionStatus?(): SessionStatus | null;

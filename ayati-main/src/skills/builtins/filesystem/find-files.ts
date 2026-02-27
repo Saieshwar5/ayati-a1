@@ -1,4 +1,5 @@
 import { readdir } from "node:fs/promises";
+import { homedir } from "node:os";
 import { resolve, join } from "node:path";
 import type { ToolDefinition, ToolResult } from "../../types.js";
 import { validateFindFilesInput } from "./validators.js";
@@ -10,6 +11,17 @@ interface SearchState {
 
 function matchQuery(name: string, query: string): boolean {
   return name.toLowerCase().includes(query.toLowerCase());
+}
+
+function normalizeRootPath(pathValue: string): string {
+  const trimmed = pathValue.trim();
+  if (trimmed === "~") return homedir();
+  if (trimmed.startsWith("~/")) return join(homedir(), trimmed.slice(2));
+  return resolve(trimmed);
+}
+
+function hasWildcardSyntax(query: string): boolean {
+  return /[*?[\]{}]/.test(query);
 }
 
 export const findFilesTool: ToolDefinition = {
@@ -47,14 +59,22 @@ export const findFilesTool: ToolDefinition = {
     const maxResults = parsed.maxResults ?? defaultMaxResults;
     const includeHidden = parsed.includeHidden ?? false;
 
+    if (hasWildcardSyntax(parsed.query)) {
+      return {
+        ok: false,
+        error: "Invalid input: query contains wildcard syntax. find_files uses plain substring matching; pass query like 'learn1.go'.",
+      };
+    }
+
     const roots = (parsed.roots && parsed.roots.length > 0) ? parsed.roots : [process.cwd()];
     const start = Date.now();
     const matches: string[] = [];
     const searchedRoots: string[] = [];
+    const errors: Array<{ path: string; error: string }> = [];
 
     try {
       for (const root of roots) {
-        const rootPath = resolve(root);
+        const rootPath = normalizeRootPath(root);
         searchedRoots.push(rootPath);
         const queue: SearchState[] = [{ path: rootPath, depth: 0 }];
 
@@ -62,7 +82,15 @@ export const findFilesTool: ToolDefinition = {
           const current = queue.shift();
           if (!current) break;
 
-          const dirents = await readdir(current.path, { withFileTypes: true });
+          let dirents;
+          try {
+            dirents = await readdir(current.path, { withFileTypes: true });
+          } catch (err) {
+            const message = err instanceof Error ? err.message : "Unknown filesystem search error";
+            errors.push({ path: current.path, error: message });
+            continue;
+          }
+
           for (const dirent of dirents) {
             if (!includeHidden && dirent.name.startsWith(".")) continue;
             const fullPath = join(current.path, dirent.name);
@@ -90,6 +118,8 @@ export const findFilesTool: ToolDefinition = {
           maxDepth,
           maxResults,
           capped: matches.length >= maxResults,
+          errorCount: errors.length,
+          errors: errors.slice(0, 20),
         },
       };
     } catch (err) {

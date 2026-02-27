@@ -13,6 +13,8 @@ import type {
   ToolCallRecordInput,
   ToolCallResultRecordInput,
   AgentStepRecordInput,
+  RunLedgerRecordInput,
+  TaskSummaryRecordInput,
   PromptMemoryContext,
   ConversationTurn,
 } from "./types.js";
@@ -25,6 +27,8 @@ import type {
   ToolResultEvent,
   RunFailureEvent,
   AgentStepEvent,
+  RunLedgerEvent,
+  TaskSummaryEvent,
   AssistantFeedbackEvent,
 } from "./session-events.js";
 import { InMemorySession } from "./session.js";
@@ -45,6 +49,7 @@ export interface MemoryManagerOptions extends SessionPersistenceOptions {
   now?: () => Date;
   onSessionClose?: (data: SessionCloseData) => void | Promise<void>;
   contextTokenLimit?: number;
+  memoryDetailMode?: "compact" | "debug";
 }
 
 type TimelineEvent =
@@ -55,6 +60,8 @@ type TimelineEvent =
   | ToolResultEvent
   | RunFailureEvent
   | AgentStepEvent
+  | RunLedgerEvent
+  | TaskSummaryEvent
   | AssistantFeedbackEvent;
 
 export class MemoryManager implements SessionMemory {
@@ -62,6 +69,7 @@ export class MemoryManager implements SessionMemory {
   private readonly nowProvider: () => Date;
   private readonly onSessionCloseCallback?: (data: SessionCloseData) => void | Promise<void>;
   private readonly contextTokenLimit: number;
+  private readonly memoryDetailMode: "compact" | "debug";
 
   private currentSession: InMemorySession | null = null;
   private staticTokenBudget = 0;
@@ -76,6 +84,7 @@ export class MemoryManager implements SessionMemory {
     this.nowProvider = options?.now ?? (() => new Date());
     this.onSessionCloseCallback = options?.onSessionClose;
     this.contextTokenLimit = options?.contextTokenLimit ?? DEFAULT_CONTEXT_TOKEN_LIMIT;
+    this.memoryDetailMode = options?.memoryDetailMode ?? "compact";
   }
 
   initialize(clientId: string): void {
@@ -200,6 +209,10 @@ export class MemoryManager implements SessionMemory {
   }
 
   recordToolCall(clientId: string, input: ToolCallRecordInput): void {
+    if (this.memoryDetailMode !== "debug") {
+      return;
+    }
+
     const nowIso = this.nowIso();
     const session = this.ensureWritableSession(clientId, nowIso);
 
@@ -219,6 +232,10 @@ export class MemoryManager implements SessionMemory {
   }
 
   recordToolResult(clientId: string, input: ToolCallResultRecordInput): void {
+    if (this.memoryDetailMode !== "debug") {
+      return;
+    }
+
     const nowIso = this.nowIso();
     const session = this.ensureWritableSession(clientId, nowIso);
 
@@ -274,6 +291,10 @@ export class MemoryManager implements SessionMemory {
   }
 
   recordAgentStep(clientId: string, input: AgentStepRecordInput): void {
+    if (this.memoryDetailMode !== "debug") {
+      return;
+    }
+
     const nowIso = this.nowIso();
     const session = this.ensureWritableSession(clientId, nowIso);
 
@@ -289,6 +310,45 @@ export class MemoryManager implements SessionMemory {
       approachesTried: [],
       actionToolName: input.actionToolName,
       endStatus: input.endStatus,
+    };
+
+    this.appendTimelineEvent(event);
+  }
+
+  recordRunLedger(clientId: string, input: RunLedgerRecordInput): void {
+    const nowIso = this.nowIso();
+    const session = this.ensureWritableSession(clientId, nowIso);
+
+    const event: RunLedgerEvent = {
+      v: 2,
+      ts: nowIso,
+      type: "run_ledger",
+      sessionId: session.id,
+      sessionPath: session.sessionPath,
+      runId: input.runId,
+      runPath: input.runPath,
+      state: input.state,
+      status: input.status,
+      summary: input.summary,
+    };
+
+    this.appendTimelineEvent(event);
+  }
+
+  recordTaskSummary(clientId: string, input: TaskSummaryRecordInput): void {
+    const nowIso = this.nowIso();
+    const session = this.ensureWritableSession(clientId, nowIso);
+
+    const event: TaskSummaryEvent = {
+      v: 2,
+      ts: nowIso,
+      type: "task_summary",
+      sessionId: session.id,
+      sessionPath: session.sessionPath,
+      runId: input.runId,
+      runPath: input.runPath,
+      status: input.status,
+      summary: input.summary,
     };
 
     this.appendTimelineEvent(event);
@@ -498,20 +558,22 @@ export class MemoryManager implements SessionMemory {
       .map((turn) => `${turn.role}: ${turn.content}`)
       .join("\n");
 
-    const toolText = session
-      .getToolEvents()
-      .map((event) => {
-        const status = event.status ? ` status=${event.status}` : "";
-        const error = event.errorMessage ? ` error=${event.errorMessage}` : "";
-        return `${event.eventType} ${event.toolName}${status} args=${event.args} output=${event.output}${error}`;
-      })
-      .join("\n");
+    const toolText = this.memoryDetailMode === "debug"
+      ? session
+          .getToolEvents()
+          .map((event) => {
+            const status = event.status ? ` status=${event.status}` : "";
+            const error = event.errorMessage ? ` error=${event.errorMessage}` : "";
+            return `${event.eventType} ${event.toolName}${status} args=${event.args} output=${event.output}${error}`;
+          })
+          .join("\n")
+      : "";
 
     const estimate =
       this.staticTokenBudget +
       estimateTextTokens(conversationText) +
       estimateTextTokens(toolText) +
-      session.estimateToolEventTokens();
+      (this.memoryDetailMode === "debug" ? session.estimateToolEventTokens() : 0);
 
     // Calculated for observability only; not used for forced session rotation.
     return Math.min(estimate, this.contextTokenLimit * 10);

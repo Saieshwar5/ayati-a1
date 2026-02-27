@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { serializeEvent, deserializeEvent, isAgentStepEvent } from "../../src/memory/session-events.js";
-import type { SessionOpenEvent, UserMessageEvent, ToolResultEvent, AgentStepEvent } from "../../src/memory/session-events.js";
+import type { SessionOpenEvent, UserMessageEvent, ToolResultEvent, AgentStepEvent, TaskSummaryEvent } from "../../src/memory/session-events.js";
 
 describe("session-events", () => {
   it("serializes and deserializes a session_open event", () => {
@@ -62,6 +62,27 @@ describe("session-events", () => {
     expect(parsed.status).toBe("success");
     expect(parsed.durationMs).toBe(22);
     expect(parsed.sessionPath).toBe("sessions/2026-02-08/s1.md");
+  });
+
+  it("serializes and deserializes a task_summary event", () => {
+    const event: TaskSummaryEvent = {
+      v: 2,
+      ts: "2026-02-08T00:01:00.000Z",
+      type: "task_summary",
+      sessionId: "s1",
+      sessionPath: "sessions/2026-02-08/s1.md",
+      runId: "r1",
+      runPath: "data/runs/r1",
+      status: "completed",
+      summary: "Task finished",
+    };
+
+    const line = serializeEvent(event);
+    const parsed = deserializeEvent(line) as TaskSummaryEvent;
+
+    expect(parsed.type).toBe("task_summary");
+    expect(parsed.runId).toBe("r1");
+    expect(parsed.runPath).toBe("data/runs/r1");
   });
 
   it("isAgentStepEvent returns true for agent_step events", () => {

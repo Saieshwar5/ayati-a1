@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdtemp, writeFile, mkdir, rm } from "node:fs/promises";
 import { join } from "node:path";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { listDirectoryTool } from "../../../src/skills/builtins/filesystem/list-directory.js";
 
 describe("listDirectoryTool", () => {
@@ -61,5 +61,12 @@ describe("listDirectoryTool", () => {
   it("returns error for non-existent path", async () => {
     const result = await listDirectoryTool.execute({ path: join(tmp, "nope") });
     expect(result.ok).toBe(false);
+  });
+
+  it("expands tilde path to home directory", async () => {
+    const result = await listDirectoryTool.execute({ path: "~" });
+    expect(result.ok).toBe(true);
+    const meta = result.meta as { dirPath?: string } | undefined;
+    expect(meta?.dirPath).toBe(homedir());
   });
 });

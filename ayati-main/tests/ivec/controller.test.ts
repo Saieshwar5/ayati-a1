@@ -32,6 +32,7 @@ function createState(overrides?: Partial<LoopState>): LoopState {
     uncertainties: [],
     completedSteps: [],
     runPath: "/tmp/test",
+    failedApproaches: [],
     ...overrides,
   };
 }
@@ -40,6 +41,7 @@ describe("parseControllerResponse", () => {
   it("parses StepDirective JSON", () => {
     const json = JSON.stringify({
       done: false,
+      execution_mode: "independent",
       intent: "read file",
       type: "tool_use",
       tools_hint: ["read_file"],
@@ -48,9 +50,27 @@ describe("parseControllerResponse", () => {
     });
     const result = parseControllerResponse(json);
     expect(result.done).toBe(false);
-    if (!result.done) {
+    if (!result.done && "intent" in result) {
       expect(result.intent).toBe("read file");
       expect(result.tools_hint).toEqual(["read_file"]);
+      expect(result.execution_mode).toBe("independent");
+    }
+  });
+
+  it("defaults execution_mode to dependent when missing", () => {
+    const json = JSON.stringify({
+      done: false,
+      intent: "read file",
+      type: "tool_use",
+      tools_hint: ["read_file"],
+      success_criteria: "file content returned",
+      context: "need to check config",
+    });
+
+    const result = parseControllerResponse(json);
+    expect(result.done).toBe(false);
+    if (!result.done && "intent" in result) {
+      expect(result.execution_mode).toBe("dependent");
     }
   });
 
@@ -76,6 +96,20 @@ describe("parseControllerResponse", () => {
 
   it("throws on invalid JSON", () => {
     expect(() => parseControllerResponse("not json")).toThrow();
+  });
+
+  it("parses inspect directive JSON", () => {
+    const json = JSON.stringify({
+      done: false,
+      inspect_steps: [2, 7],
+      inspect_reason: "Need full step details",
+    });
+    const result = parseControllerResponse(json);
+    expect(result.done).toBe(false);
+    if (!result.done && "inspect_steps" in result) {
+      expect(result.inspect_steps).toEqual([2, 7]);
+      expect(result.inspect_reason).toBe("Need full step details");
+    }
   });
 });
 
@@ -120,5 +154,9 @@ describe("callController", () => {
     expect(prompt).toContain("shell");
     expect(prompt).toContain("Run a shell command");
     expect(prompt).toContain("cmd: string (required)");
+    expect(prompt).toContain("All completed steps index");
+    expect(prompt).toContain("Run artifacts root");
+    expect(prompt).toContain("execution_mode");
+    expect(prompt).toContain("max_total_tool_calls_per_step: 6");
   });
 });

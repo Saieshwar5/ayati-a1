@@ -5,6 +5,15 @@ import type { SessionMemory, MemoryRunHandle } from "../memory/types.js";
 
 // --- State ---
 
+export interface FailedApproach {
+  step: number;
+  intent: string;
+  tools_hint: string[];
+  failureType: "tool_error" | "permission" | "missing_path" | "verify_failed" | "no_progress" | "validation_error";
+  reason: string;
+  blockedTargets: string[];
+}
+
 export interface LoopState {
   runId: string;
   userMessage: string;
@@ -18,6 +27,7 @@ export interface LoopState {
   uncertainties: string[];
   completedSteps: StepSummary[];
   runPath: string;
+  failedApproaches: FailedApproach[];
 }
 
 export interface StepSummary {
@@ -28,17 +38,41 @@ export interface StepSummary {
   summary: string;
   newFacts: string[];
   artifacts: string[];
+  toolSuccessCount: number;
+  toolFailureCount: number;
+  stoppedEarlyReason?: "assistant_returned" | "max_act_turns_reached" | "max_total_tool_calls_reached" | "repeated_identical_failure" | "no_valid_tool_calls";
+  actFile?: string;
+  verifyFile?: string;
+  failureType?: FailedApproach["failureType"];
+  blockedTargets?: string[];
 }
 
 // --- Controller output ---
 
-export interface StepDirective {
+export interface ControllerDirectiveUpdates {
+  goal_update?: string;
+  approach_update?: string;
+  approach_change_reason?: string;
+}
+
+export interface StepDirective extends ControllerDirectiveUpdates {
   done: false;
+  approach: string;
+  execution_mode: "dependent" | "independent";
   intent: string;
   type: string;
   tools_hint: string[];
   success_criteria: string;
   context: string;
+  inspect_steps?: never;
+  inspect_reason?: never;
+}
+
+export interface InspectDirective extends ControllerDirectiveUpdates {
+  done: false;
+  inspect_steps: number[];
+  inspect_reason?: string;
+  approach?: string;
 }
 
 export interface CompletionDirective {
@@ -54,15 +88,9 @@ export interface SessionRotationDirective {
   handoff_summary: string;
 }
 
-export type ControllerOutput = StepDirective | CompletionDirective | SessionRotationDirective;
+export type ControllerOutput = StepDirective | InspectDirective | CompletionDirective | SessionRotationDirective;
 
 // --- Phase outputs ---
-
-export interface ReasonOutput {
-  thinking: string;
-  approach: string;
-  potential_issues: string[];
-}
 
 export interface ActToolCallRecord {
   tool: string;
@@ -74,6 +102,7 @@ export interface ActToolCallRecord {
 export interface ActOutput {
   toolCalls: ActToolCallRecord[];
   finalText: string;
+  stoppedEarlyReason?: "assistant_returned" | "max_act_turns_reached" | "max_total_tool_calls_reached" | "repeated_identical_failure" | "no_valid_tool_calls";
 }
 
 export interface VerifyOutput {
@@ -90,12 +119,18 @@ export interface LoopConfig {
   maxIterations: number;
   maxToolCallsPerStep: number;
   maxConsecutiveFailures: number;
+  maxInspectRequeriesPerIteration: number;
+  maxInspectStepsPerRequest: number;
+  maxTotalToolCallsPerStep: number;
 }
 
 export const DEFAULT_LOOP_CONFIG: LoopConfig = {
   maxIterations: 15,
   maxToolCallsPerStep: 4,
   maxConsecutiveFailures: 5,
+  maxInspectRequeriesPerIteration: 2,
+  maxInspectStepsPerRequest: 2,
+  maxTotalToolCallsPerStep: 6,
 };
 
 // --- Result + callbacks ---
