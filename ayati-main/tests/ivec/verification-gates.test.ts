@@ -102,4 +102,23 @@ describe("checkVerificationGates", () => {
     expect(result).not.toBeNull();
     expect(result!.passed).toBe(true);
   });
+
+  it("extracts deterministic path facts from successful tool output", () => {
+    const actOutput: ActOutput = {
+      toolCalls: [
+        {
+          tool: "shell",
+          input: { cmd: "find $HOME -type d -name 'boutique'" },
+          output: "/home/sai-eshwar/my_folder/my_workspace/boutique",
+        },
+      ],
+      finalText: "",
+    };
+
+    const result = checkVerificationGates(actOutput, "Find the folder named 'boutique' in the machine and return its path");
+    expect(result).not.toBeNull();
+    expect(result!.passed).toBe(true);
+    expect(result!.newFacts).toContain("found_path:/home/sai-eshwar/my_folder/my_workspace/boutique");
+    expect(result!.artifacts).toContain("tool:shell#1");
+  });
 });
