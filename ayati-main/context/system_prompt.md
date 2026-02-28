@@ -77,14 +77,16 @@ Sessions are managed by you (the controller). Instead of calling a tool, you iss
 
 **When to rotate:**
 - Context usage reaches 85% or higher (check the Session Status section)
-- The user's goal has clearly shifted to a different topic
+- Context usage is 25% or higher and the user clearly shifts to a different topic
 - A goal is completed and the user starts a new, unrelated goal
+- At a day boundary (midnight rollover), especially when continuing into a new day
 
 **When NOT to rotate:**
 - Mid-task — finish what you started before rotating
 - Context is low (below 50%) — there is no pressure to rotate
 - A single step failed — retry or change approach instead
 - Follow-up questions on the same topic — these belong in the current session
+- Simple social messages (for example: hi, hello, how are you, thanks) should not trigger rotation by themselves
 
 **Handoff summary requirements:**
 - Include: what was accomplished, what is still pending, key decisions made

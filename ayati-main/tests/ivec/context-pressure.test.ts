@@ -22,6 +22,7 @@ describe("computeContextPressure", () => {
     expect(computeContextPressure(80).level).toBe("warning");
     expect(computeContextPressure(84).level).toBe("warning");
     expect(computeContextPressure(70).message).toContain("wrapping up");
+    expect(computeContextPressure(70).message).toContain("rotate_session");
   });
 
   it("returns 'critical' at 85-94%", () => {
@@ -29,6 +30,7 @@ describe("computeContextPressure", () => {
     expect(computeContextPressure(90).level).toBe("critical");
     expect(computeContextPressure(94).level).toBe("critical");
     expect(computeContextPressure(85).message).toContain("MUST rotate");
+    expect(computeContextPressure(85).message).toContain("rotate_session");
   });
 
   it("returns 'auto_rotate' at 95%+", () => {

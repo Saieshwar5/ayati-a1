@@ -19,7 +19,7 @@ export function computeContextPressure(contextPercent: number): ContextPressureS
     return {
       level: "critical",
       message:
-        "CRITICAL: Context usage is very high. You MUST rotate the session NOW using create_session. " +
+        "CRITICAL: Context usage is very high. You MUST rotate the session NOW using a rotate_session directive. " +
         "Include a detailed handoff_summary of what was accomplished and what remains.",
     };
   }
@@ -29,7 +29,7 @@ export function computeContextPressure(contextPercent: number): ContextPressureS
       level: "warning",
       message:
         "WARNING: Context usage is elevated. Start wrapping up your current task. " +
-        "Prepare a handoff summary and rotate the session soon using create_session.",
+        "Prepare a handoff summary and rotate the session soon using a rotate_session directive.",
     };
   }
 

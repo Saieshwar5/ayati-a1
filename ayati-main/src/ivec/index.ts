@@ -10,8 +10,12 @@ import { estimateTextTokens } from "../prompt/token-estimator.js";
 import type { ToolExecutor } from "../skills/tool-executor.js";
 import { devLog, devWarn, devError } from "../shared/index.js";
 import { agentLoop } from "./agent-loop.js";
-import { buildAutoRotateHandoff } from "./context-pressure.js";
-import type { LoopConfig, AgentLoopResult } from "./types.js";
+import {
+  evaluateSessionRotation,
+  type RotationPolicyConfig,
+  type PendingMidnightRollover,
+} from "./session-rotation-policy.js";
+import type { LoopConfig } from "./types.js";
 
 interface SystemContextBuildResult {
   systemContext: string;
@@ -25,6 +29,8 @@ export interface IVecEngineOptions {
   sessionMemory?: SessionMemory;
   toolExecutor?: ToolExecutor;
   loopConfig?: Partial<LoopConfig>;
+  rotationPolicyConfig?: Partial<RotationPolicyConfig>;
+  now?: () => Date;
   dataDir?: string;
 }
 
@@ -35,10 +41,12 @@ export class IVecEngine {
   private readonly toolExecutor?: ToolExecutor;
   private sessionMemory: SessionMemory;
   private readonly loopConfig?: Partial<LoopConfig>;
+  private readonly rotationPolicyConfig?: Partial<RotationPolicyConfig>;
+  private readonly nowProvider: () => Date;
   private readonly dataDir?: string;
   private staticSystemTokens = 0;
   private staticTokensReady = false;
-  private lastClientId = "";
+  private readonly pendingMidnightByClient = new Map<string, PendingMidnightRollover>();
 
   constructor(options?: IVecEngineOptions) {
     this.onReply = options?.onReply;
@@ -47,6 +55,8 @@ export class IVecEngine {
     this.toolExecutor = options?.toolExecutor;
     this.sessionMemory = options?.sessionMemory ?? noopSessionMemory;
     this.loopConfig = options?.loopConfig;
+    this.rotationPolicyConfig = options?.rotationPolicyConfig;
+    this.nowProvider = options?.now ?? (() => new Date());
     this.dataDir = options?.dataDir;
   }
 
@@ -88,9 +98,9 @@ export class IVecEngine {
   }
 
   private async processChat(clientId: string, content: string): Promise<void> {
-    this.lastClientId = clientId;
     let runHandle: MemoryRunHandle | null = null;
     try {
+      this.rotateSessionBeforeRunIfNeeded(clientId, content);
       runHandle = this.sessionMemory.beginRun(clientId, content);
       this.recordTurnStatus(clientId, runHandle, "processing_started");
 
@@ -167,21 +177,6 @@ export class IVecEngine {
     const memoryContext = this.sessionMemory.getPromptMemoryContext();
     const sessionStatus = this.sessionMemory.getSessionStatus?.() ?? null;
 
-    if (sessionStatus && sessionStatus.contextPercent >= 95 && this.sessionMemory.createSession && this.lastClientId) {
-      const handoff = buildAutoRotateHandoff(
-        memoryContext.conversationTurns,
-        sessionStatus.contextPercent,
-        memoryContext.previousSessionSummary,
-      );
-      this.sessionMemory.createSession(this.lastClientId, {
-        runId: "auto-rotate",
-        reason: "context_overflow",
-        source: "system",
-        handoffSummary: handoff,
-      });
-      devWarn(`Auto-rotated session at ${Math.round(sessionStatus.contextPercent)}% context`);
-    }
-
     const promptInput = assemblePromptInput(this.staticContext, memoryContext, sessionStatus);
     const systemContext = buildSystemPrompt({
       ...promptInput,
@@ -200,6 +195,48 @@ export class IVecEngine {
       systemContext,
       dynamicSystemTokens: estimateTextTokens(dynamicContext),
     };
+  }
+
+  private rotateSessionBeforeRunIfNeeded(clientId: string, incomingMessage: string): void {
+    const createSession = this.sessionMemory.createSession;
+    if (!createSession) {
+      return;
+    }
+
+    const memoryContext = this.sessionMemory.getPromptMemoryContext();
+    const sessionStatus = this.sessionMemory.getSessionStatus?.() ?? null;
+
+    const rotationDecision = evaluateSessionRotation({
+      now: this.nowProvider(),
+      userMessage: incomingMessage,
+      contextPercent: sessionStatus?.contextPercent ?? 0,
+      turns: memoryContext.conversationTurns,
+      previousSessionSummary: memoryContext.previousSessionSummary,
+      pendingMidnight: this.pendingMidnightByClient.get(clientId) ?? null,
+      config: this.rotationPolicyConfig,
+    });
+
+    if (rotationDecision.pendingMidnight) {
+      this.pendingMidnightByClient.set(clientId, rotationDecision.pendingMidnight);
+    } else {
+      this.pendingMidnightByClient.delete(clientId);
+    }
+
+    if (!rotationDecision.rotate) {
+      return;
+    }
+
+    createSession.call(this.sessionMemory, clientId, {
+      runId: `pre-run-rotation-${Date.now()}`,
+      reason: rotationDecision.reason ?? "policy_rotation",
+      source: "system",
+      handoffSummary: rotationDecision.handoffSummary,
+    });
+    this.pendingMidnightByClient.delete(clientId);
+
+    devWarn(
+      `Pre-run session rotation triggered (${rotationDecision.reason ?? "unknown"}) at ${Math.round(sessionStatus?.contextPercent ?? 0)}% context`,
+    );
   }
 
   private ensureStaticTokenCache(): void {

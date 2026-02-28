@@ -153,4 +153,73 @@ describe("IVecEngine", () => {
 
     await engine.stop();
   });
+
+  it("rotates session before beginRun when pre-turn policy requires it", async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "ayati-eng-rotate-"));
+    try {
+      const provider = createMockProvider();
+      const onReply = vi.fn();
+
+      const beginRun = vi.fn().mockReturnValue({ sessionId: "s2", runId: "r2" });
+      const createSession = vi.fn().mockReturnValue({
+        previousSessionId: "s1",
+        sessionId: "s2",
+        sessionPath: "sessions/s2.md",
+      });
+
+      const sessionMemory: SessionMemory = {
+        initialize: vi.fn(),
+        shutdown: vi.fn(),
+        beginRun,
+        createSession,
+        recordToolCall: vi.fn(),
+        recordToolResult: vi.fn(),
+        recordAssistantFinal: vi.fn(),
+        recordRunFailure: vi.fn(),
+        recordAgentStep: vi.fn(),
+        recordRunLedger: vi.fn(),
+        recordTaskSummary: vi.fn(),
+        recordAssistantFeedback: vi.fn(),
+        getPromptMemoryContext: vi.fn().mockReturnValue({
+          conversationTurns: [
+            {
+              role: "user",
+              content: "long task context",
+              timestamp: new Date(Date.UTC(2026, 1, 20, 10, 0, 0)).toISOString(),
+              sessionPath: "sessions/s1.md",
+            },
+          ],
+          previousSessionSummary: "",
+        }),
+        getSessionStatus: vi.fn().mockReturnValue({
+          contextPercent: 96,
+          turns: 10,
+          sessionAgeMinutes: 20,
+        }),
+        setStaticTokenBudget: vi.fn(),
+      };
+
+      const engine = new IVecEngine({ onReply, provider, sessionMemory, dataDir });
+      await engine.start();
+
+      engine.handleMessage("c1", { type: "chat", content: "continue" });
+
+      await vi.waitFor(() => {
+        expect(createSession).toHaveBeenCalledTimes(1);
+        expect(beginRun).toHaveBeenCalledTimes(1);
+        expect(onReply).toHaveBeenCalledWith("c1", {
+          type: "reply",
+          content: "mock reply",
+        });
+      });
+
+      const rotateOrder = (createSession.mock.invocationCallOrder[0] ?? 0) as number;
+      const beginRunOrder = (beginRun.mock.invocationCallOrder[0] ?? 0) as number;
+      expect(rotateOrder).toBeGreaterThan(0);
+      expect(beginRunOrder).toBeGreaterThan(0);
+      expect(rotateOrder).toBeLessThan(beginRunOrder);
+    } finally {
+      rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
 });
