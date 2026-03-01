@@ -15,8 +15,8 @@ import { createToolExecutor } from "../skills/tool-executor.js";
 import { builtInSkillsProvider } from "../skills/provider.js";
 import { createIdentitySkill } from "../skills/builtins/identity/index.js";
 import { createRecallSkill } from "../skills/builtins/recall/index.js";
-
-import { devLog } from "../shared/index.js";
+import { DocumentProcessor } from "../documents/document-processor.js";
+import { RecursiveContextAgent } from "../subagents/context-extractor/recursive-context-agent.js";
 
 const thisDir = dirname(fileURLToPath(import.meta.url));
 const projectRoot = resolve(thisDir, "..", "..");
@@ -69,6 +69,10 @@ export async function main(): Promise<void> {
   const wsServer = new WsServer({
     onMessage: (clientId, data) => engine?.handleMessage(clientId, data),
   });
+  const documentProcessor = new DocumentProcessor();
+  const contextAgent = new RecursiveContextAgent({
+    provider,
+  });
   engine = new IVecEngine({
     onReply: wsServer.send.bind(wsServer),
     provider,
@@ -76,6 +80,8 @@ export async function main(): Promise<void> {
     toolExecutor,
     sessionMemory,
     dataDir: resolve(projectRoot, "data"),
+    documentProcessor,
+    contextAgent,
   });
   const registry = new PluginRegistry();
 
