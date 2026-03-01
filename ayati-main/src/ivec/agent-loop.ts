@@ -36,7 +36,11 @@ export async function agentLoop(deps: AgentLoopDeps): Promise<AgentLoopResult> {
 
   const state: LoopState = {
     runId,
+<<<<<<< HEAD
     userMessage: deps.initialUserMessage?.trim() ?? "",
+=======
+    userMessage: deps.userMessageOverride?.trim() || (deps.runHandle.runId ? getLastUserMessage(deps) : ""),
+>>>>>>> context-retrieval-agent
     goal: "",
     approach: "",
     status: "running",
@@ -51,7 +55,11 @@ export async function agentLoop(deps: AgentLoopDeps): Promise<AgentLoopResult> {
   };
 
   // Populate user message from sessionMemory context
+<<<<<<< HEAD
   state.userMessage = getPrimaryUserMessage(deps);
+=======
+  state.userMessage = deps.userMessageOverride?.trim() || getLastUserMessage(deps);
+>>>>>>> context-retrieval-agent
   state.goal = "";
   state.approach = "";
 

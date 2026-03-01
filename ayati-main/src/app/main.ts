@@ -15,9 +15,14 @@ import { createToolExecutor } from "../skills/tool-executor.js";
 import { builtInSkillsProvider } from "../skills/provider.js";
 import { createIdentitySkill } from "../skills/builtins/identity/index.js";
 import { createRecallSkill } from "../skills/builtins/recall/index.js";
+<<<<<<< HEAD
 import { PulseScheduler, PulseStore } from "../pulse/index.js";
 
 import { devLog } from "../shared/index.js";
+=======
+import { DocumentProcessor } from "../documents/document-processor.js";
+import { RecursiveContextAgent } from "../subagents/context-extractor/recursive-context-agent.js";
+>>>>>>> context-retrieval-agent
 
 const thisDir = dirname(fileURLToPath(import.meta.url));
 const projectRoot = resolve(thisDir, "..", "..");
@@ -72,6 +77,7 @@ export async function main(): Promise<void> {
   const wsServer = new WsServer({
     onMessage: (clientId, data) => engine?.handleMessage(clientId, data),
   });
+<<<<<<< HEAD
 
   const pulseScheduler = new PulseScheduler({
     clientId: CLIENT_ID,
@@ -84,6 +90,12 @@ export async function main(): Promise<void> {
     },
   });
 
+=======
+  const documentProcessor = new DocumentProcessor();
+  const contextAgent = new RecursiveContextAgent({
+    provider,
+  });
+>>>>>>> context-retrieval-agent
   engine = new IVecEngine({
     onReply: wsServer.send.bind(wsServer),
     provider,
@@ -91,6 +103,8 @@ export async function main(): Promise<void> {
     toolExecutor,
     sessionMemory,
     dataDir: resolve(projectRoot, "data"),
+    documentProcessor,
+    contextAgent,
   });
   const registry = new PluginRegistry();
 

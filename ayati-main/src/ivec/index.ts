@@ -10,13 +10,16 @@ import { renderMemorySection } from "../prompt/sections/memory.js";
 import { estimateTextTokens } from "../prompt/token-estimator.js";
 import type { ToolExecutor } from "../skills/tool-executor.js";
 import { devLog, devWarn, devError } from "../shared/index.js";
+import type { DocumentProcessor } from "../documents/document-processor.js";
+import type { RecursiveContextAgent } from "../subagents/context-extractor/recursive-context-agent.js";
+import { buildContextEnvelope } from "../subagents/context-extractor/context-envelope.js";
 import { agentLoop } from "./agent-loop.js";
 import {
   evaluateSessionRotation,
   type RotationPolicyConfig,
   type PendingMidnightRollover,
 } from "./session-rotation-policy.js";
-import type { LoopConfig } from "./types.js";
+import type { ChatAttachmentInput, ChatInboundMessage, LoopConfig } from "./types.js";
 
 interface SystemContextBuildResult {
   systemContext: string;
@@ -35,6 +38,8 @@ export interface IVecEngineOptions {
   rotationPolicyConfig?: Partial<RotationPolicyConfig>;
   now?: () => Date;
   dataDir?: string;
+  documentProcessor?: DocumentProcessor;
+  contextAgent?: RecursiveContextAgent;
 }
 
 export class IVecEngine {
@@ -47,6 +52,8 @@ export class IVecEngine {
   private readonly rotationPolicyConfig?: Partial<RotationPolicyConfig>;
   private readonly nowProvider: () => Date;
   private readonly dataDir?: string;
+  private readonly documentProcessor?: DocumentProcessor;
+  private readonly contextAgent?: RecursiveContextAgent;
   private staticSystemTokens = 0;
   private staticTokensReady = false;
   private readonly pendingMidnightByClient = new Map<string, PendingMidnightRollover>();
@@ -61,6 +68,8 @@ export class IVecEngine {
     this.rotationPolicyConfig = options?.rotationPolicyConfig;
     this.nowProvider = options?.now ?? (() => new Date());
     this.dataDir = options?.dataDir;
+    this.documentProcessor = options?.documentProcessor;
+    this.contextAgent = options?.contextAgent;
   }
 
   async start(): Promise<void> {
@@ -90,6 +99,7 @@ export class IVecEngine {
   handleMessage(clientId: string, data: unknown): void {
     devLog(`Message from ${clientId}:`, JSON.stringify(data));
 
+<<<<<<< HEAD
     const msg = data as {
       type?: string;
       content?: string;
@@ -114,9 +124,15 @@ export class IVecEngine {
 
   async handleSystemEvent(clientId: string, event: EngineSystemEvent): Promise<void> {
     await this.processSystemEvent(clientId, event);
+=======
+    const msg = parseChatInboundMessage(data);
+    if (!msg) return;
+
+    void this.processChat(clientId, msg.content, msg.attachments ?? []);
+>>>>>>> context-retrieval-agent
   }
 
-  private async processChat(clientId: string, content: string): Promise<void> {
+  private async processChat(clientId: string, content: string, attachments: ChatAttachmentInput[]): Promise<void> {
     let runHandle: MemoryRunHandle | null = null;
     try {
       this.rotateSessionBeforeRunIfNeeded(clientId, content);
@@ -124,6 +140,7 @@ export class IVecEngine {
       this.recordTurnStatus(clientId, runHandle, "processing_started");
 
       if (this.provider) {
+        const contextMessage = await this.buildContextAwareUserMessage(content, attachments);
         const toolDefs = this.toolExecutor?.definitions() ?? [];
         const system = await this.buildSystemContext();
         const result = await agentLoop({
@@ -136,6 +153,7 @@ export class IVecEngine {
           config: this.loopConfig,
           dataDir: this.dataDir ?? "data",
           systemContext: system.systemContext || undefined,
+          userMessageOverride: contextMessage,
           onProgress: (log, runPath) => {
             devLog(`[${clientId}] ${log}`);
             this.sessionMemory.recordAgentStep(clientId, {
@@ -186,6 +204,7 @@ export class IVecEngine {
     }
   }
 
+<<<<<<< HEAD
   private async processSystemEvent(clientId: string, event: EngineSystemEvent): Promise<void> {
     let runHandle: MemoryRunHandle | null = null;
     const incomingMessage = this.buildSystemEventUserMessage(event);
@@ -299,6 +318,60 @@ export class IVecEngine {
         content: "Failed to process system reminder event.",
       });
       throw err;
+=======
+  private async buildContextAwareUserMessage(content: string, attachments: ChatAttachmentInput[]): Promise<string> {
+    if (attachments.length === 0 || !this.documentProcessor || !this.contextAgent) {
+      return content;
+    }
+
+    try {
+      const processing = await this.documentProcessor.processAttachments(attachments);
+      if (processing.documents.length === 0) {
+        const warningLines = processing.errors.map((entry) => `- ${entry.path}: ${entry.message}`);
+        if (warningLines.length === 0) {
+          return content;
+        }
+
+        return [
+          content,
+          "",
+          "[Document Context Sub-Agent]",
+          "No document text could be extracted from attachments.",
+          "Attachment errors:",
+          ...warningLines,
+        ].join("\n");
+      }
+
+      const contextResult = await this.contextAgent.extractContext({
+        query: content,
+        documents: processing.documents,
+      });
+
+      const warnings = [
+        ...processing.errors.map((entry) => `${entry.path}: ${entry.message}`),
+        ...contextResult.warnings,
+      ];
+      const contextEnvelope = buildContextEnvelope(content, contextResult.contextBundle);
+      if (warnings.length === 0) {
+        return contextEnvelope;
+      }
+
+      return [
+        contextEnvelope,
+        "",
+        "[Attachment Processing Warnings]",
+        ...warnings.map((warning) => `- ${warning}`),
+      ].join("\n");
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      devWarn(`Document context extraction failed: ${message}`);
+      return [
+        content,
+        "",
+        "[Document Context Sub-Agent]",
+        `Context extraction failed: ${message}`,
+      ].join("\n");
+>>>>>>> context-retrieval-agent
     }
   }
 
@@ -489,6 +562,52 @@ export class IVecEngine {
       note,
     });
   }
+}
+
+function parseChatInboundMessage(data: unknown): ChatInboundMessage | null {
+  if (!data || typeof data !== "object") {
+    return null;
+  }
+
+  const payload = data as Record<string, unknown>;
+  if (payload["type"] !== "chat") {
+    return null;
+  }
+
+  const content = payload["content"];
+  if (typeof content !== "string") {
+    return null;
+  }
+
+  const attachmentsRaw = payload["attachments"];
+  if (!Array.isArray(attachmentsRaw)) {
+    return { type: "chat", content };
+  }
+
+  const attachments: ChatAttachmentInput[] = [];
+  for (const row of attachmentsRaw) {
+    if (!row || typeof row !== "object") {
+      continue;
+    }
+
+    const value = row as Record<string, unknown>;
+    const path = typeof value["path"] === "string" ? value["path"].trim() : "";
+    if (path.length === 0) {
+      continue;
+    }
+
+    const name = typeof value["name"] === "string" ? value["name"].trim() : undefined;
+    attachments.push({
+      path,
+      ...(name ? { name } : {}),
+    });
+  }
+
+  return {
+    type: "chat",
+    content,
+    ...(attachments.length > 0 ? { attachments } : {}),
+  };
 }
 
 export { IVecEngine as AgentEngine };

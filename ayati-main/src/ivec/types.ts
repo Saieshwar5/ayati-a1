@@ -160,6 +160,7 @@ export interface AgentLoopDeps {
   config?: Partial<LoopConfig>;
   dataDir: string;
   systemContext?: string;
+  userMessageOverride?: string;
 }
 
 export interface ExecutorDeps {
@@ -170,4 +171,15 @@ export interface ExecutorDeps {
   clientId: string;
   sessionMemory: SessionMemory;
   runHandle: MemoryRunHandle;
+}
+
+export interface ChatAttachmentInput {
+  path: string;
+  name?: string;
+}
+
+export interface ChatInboundMessage {
+  type: "chat";
+  content: string;
+  attachments?: ChatAttachmentInput[];
 }

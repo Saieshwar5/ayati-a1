@@ -1,14 +1,15 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import WebSocket from "ws";
+import type { ChatRequestMessage, ServerMessage } from "../types.js";
 
 const WS_URL = "ws://localhost:8080";
 
 type UseWebSocketOptions = {
-  onMessage: (data: unknown) => void;
+  onMessage: (data: ServerMessage | Record<string, unknown>) => void;
 };
 
 type UseWebSocketReturn = {
-  send: (data: unknown) => void;
+  send: (data: ChatRequestMessage) => void;
   connected: boolean;
 };
 
@@ -28,7 +29,7 @@ export function useWebSocket({
 
     ws.on("message", (raw) => {
       try {
-        const parsed: unknown = JSON.parse(raw.toString());
+        const parsed = JSON.parse(raw.toString()) as ServerMessage | Record<string, unknown>;
         onMessageRef.current(parsed);
       } catch {
         // ignore non-JSON messages
@@ -46,7 +47,7 @@ export function useWebSocket({
     };
   }, []);
 
-  const send = useCallback((data: unknown) => {
+  const send = useCallback((data: ChatRequestMessage) => {
     const ws = wsRef.current;
     if (ws && ws.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify(data));
