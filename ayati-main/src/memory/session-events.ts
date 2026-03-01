@@ -12,7 +12,9 @@ export type SessionEventType =
   | "agent_step"
   | "run_ledger"
   | "task_summary"
-  | "assistant_feedback";
+  | "assistant_feedback"
+  | "system_event_received"
+  | "system_event_processed";
 
 interface BaseEvent {
   v: 2;
@@ -112,6 +114,30 @@ export interface AssistantFeedbackEvent extends BaseEvent {
   message: string;
 }
 
+export interface SystemEventReceivedEvent extends BaseEvent {
+  type: "system_event_received";
+  runId: string;
+  source: string;
+  event: string;
+  eventId: string;
+  occurrenceId?: string;
+  reminderId?: string;
+  instruction?: string;
+  scheduledFor?: string;
+  triggeredAt?: string;
+  payload?: Record<string, unknown>;
+}
+
+export interface SystemEventProcessedEvent extends BaseEvent {
+  type: "system_event_processed";
+  runId: string;
+  source: string;
+  event: string;
+  eventId: string;
+  status: "completed" | "failed";
+  note?: string;
+}
+
 export type SessionEvent =
   | SessionOpenEvent
   | SessionCloseEvent
@@ -124,7 +150,9 @@ export type SessionEvent =
   | AgentStepEvent
   | RunLedgerEvent
   | TaskSummaryEvent
-  | AssistantFeedbackEvent;
+  | AssistantFeedbackEvent
+  | SystemEventReceivedEvent
+  | SystemEventProcessedEvent;
 
 export type CountableSessionEvent =
   | UserMessageEvent

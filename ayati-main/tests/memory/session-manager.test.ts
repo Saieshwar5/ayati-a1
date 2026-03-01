@@ -216,4 +216,38 @@ describe("MemoryManager", () => {
 
     await memory2.shutdown();
   });
+
+  it("records system events without adding user conversation turns", async () => {
+    const root = mkdtempSync(resolve(tmpdir(), "ayati-memory-test-"));
+    dirs.push(root);
+    const memory = new MemoryManager({
+      dataDir: root,
+      dbPath: resolve(root, "memory.sqlite"),
+      now: makeNow(),
+    });
+    memory.initialize("local");
+
+    const run = memory.beginSystemRun?.("local", {
+      source: "pulse",
+      event: "reminder_due",
+      eventId: "evt-1",
+      reminderId: "rem-1",
+      instruction: "check health",
+    });
+    expect(run).toBeDefined();
+
+    memory.recordSystemEventOutcome?.("local", {
+      runId: run?.runId ?? "missing",
+      eventId: "evt-1",
+      source: "pulse",
+      event: "reminder_due",
+      status: "completed",
+      note: "done",
+    });
+
+    const context = memory.getPromptMemoryContext();
+    expect(context.conversationTurns).toHaveLength(0);
+
+    await memory.shutdown();
+  });
 });

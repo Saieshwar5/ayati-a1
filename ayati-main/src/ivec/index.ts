@@ -1,6 +1,7 @@
 import type { LlmProvider } from "../core/contracts/provider.js";
 import { noopSessionMemory } from "../memory/provider.js";
 import type { SessionMemory, MemoryRunHandle } from "../memory/types.js";
+import type { PulseReminderDueEvent } from "../pulse/types.js";
 import type { StaticContext } from "../context/static-context-cache.js";
 import { assemblePromptInput } from "../context/load-system-prompt-input.js";
 import { buildSystemPrompt } from "../prompt/builder.js";
@@ -21,6 +22,8 @@ interface SystemContextBuildResult {
   systemContext: string;
   dynamicSystemTokens: number;
 }
+
+type EngineSystemEvent = PulseReminderDueEvent;
 
 export interface IVecEngineOptions {
   onReply?: (clientId: string, data: unknown) => void;
@@ -95,6 +98,22 @@ export class IVecEngine {
       void this.processChat(clientId, msg.content);
       return;
     }
+
+    if (msg.type === "system_event") {
+      const systemEvent = this.toSystemEvent(data);
+      if (!systemEvent) {
+        devWarn("Ignored invalid system_event payload");
+        return;
+      }
+      void this.processSystemEvent(clientId, systemEvent).catch((err) => {
+        devError("Unhandled system_event processing failure:", err);
+      });
+      return;
+    }
+  }
+
+  async handleSystemEvent(clientId: string, event: EngineSystemEvent): Promise<void> {
+    await this.processSystemEvent(clientId, event);
   }
 
   private async processChat(clientId: string, content: string): Promise<void> {
@@ -167,6 +186,122 @@ export class IVecEngine {
     }
   }
 
+  private async processSystemEvent(clientId: string, event: EngineSystemEvent): Promise<void> {
+    let runHandle: MemoryRunHandle | null = null;
+    const incomingMessage = this.buildSystemEventUserMessage(event);
+
+    try {
+      this.rotateSessionBeforeRunIfNeeded(clientId, incomingMessage);
+      runHandle = this.sessionMemory.beginSystemRun?.(clientId, {
+        source: event.source,
+        event: event.event,
+        eventId: event.eventId,
+        occurrenceId: event.occurrenceId,
+        reminderId: event.reminderId,
+        instruction: event.instruction,
+        scheduledFor: event.scheduledFor,
+        triggeredAt: event.triggeredAt,
+        payload: {
+          title: event.title,
+          timezone: event.timezone,
+          metadata: event.metadata,
+          originRunId: event.originRunId,
+          originSessionId: event.originSessionId,
+        },
+      }) ?? this.sessionMemory.beginRun(clientId, incomingMessage);
+
+      this.recordTurnStatus(clientId, runHandle, "processing_started", `system_event:${event.source}/${event.event}`);
+
+      if (!this.provider) {
+        this.sendAssistantReply(clientId, runHandle, `Pulse reminder: ${event.instruction}`);
+        this.sessionMemory.recordSystemEventOutcome?.(clientId, {
+          runId: runHandle.runId,
+          eventId: event.eventId,
+          source: event.source,
+          event: event.event,
+          status: "completed",
+          note: "echo_mode",
+        });
+        return;
+      }
+
+      const toolDefs = this.toolExecutor?.definitions() ?? [];
+      const system = await this.buildSystemContext();
+      const result = await agentLoop({
+        provider: this.provider,
+        toolExecutor: this.toolExecutor,
+        toolDefinitions: toolDefs,
+        sessionMemory: this.sessionMemory,
+        runHandle,
+        clientId,
+        initialUserMessage: incomingMessage,
+        config: this.loopConfig,
+        dataDir: this.dataDir ?? "data",
+        systemContext: system.systemContext || undefined,
+        onProgress: (log, runPath) => {
+          devLog(`[${clientId}] ${log}`);
+          this.sessionMemory.recordAgentStep(clientId, {
+            runId: runHandle!.runId,
+            sessionId: runHandle!.sessionId,
+            step: 0,
+            phase: "progress",
+            summary: `${log} | runPath: ${runPath}`,
+          });
+        },
+      });
+
+      this.sessionMemory.recordRunLedger?.(clientId, {
+        runId: runHandle.runId,
+        sessionId: runHandle.sessionId,
+        runPath: result.runPath,
+        state: "completed",
+        status: result.status,
+        summary: result.content,
+      });
+      this.sessionMemory.recordTaskSummary?.(clientId, {
+        runId: runHandle.runId,
+        sessionId: runHandle.sessionId,
+        runPath: result.runPath,
+        status: result.status,
+        summary: result.content,
+      });
+      this.sessionMemory.recordSystemEventOutcome?.(clientId, {
+        runId: runHandle.runId,
+        eventId: event.eventId,
+        source: event.source,
+        event: event.event,
+        status: result.status === "completed" ? "completed" : "failed",
+        note: result.content,
+      });
+      this.sendAssistantReply(clientId, runHandle, result.content);
+    } catch (err) {
+      devError("System event processing error:", err);
+      if (runHandle) {
+        const message = err instanceof Error ? err.message : "Unknown runtime failure";
+        this.sessionMemory.recordRunFailure(
+          clientId,
+          runHandle.runId,
+          runHandle.sessionId,
+          message,
+        );
+        this.recordTurnStatus(clientId, runHandle, "response_failed", message);
+        this.sessionMemory.recordSystemEventOutcome?.(clientId, {
+          runId: runHandle.runId,
+          eventId: event.eventId,
+          source: event.source,
+          event: event.event,
+          status: "failed",
+          note: message,
+        });
+      }
+      this.onReply?.(clientId, {
+        type: "error",
+        content: "Failed to process system reminder event.",
+      });
+      throw err;
+    }
+  }
+
   private async buildSystemContext(): Promise<SystemContextBuildResult> {
     if (!this.staticContext) {
       return { systemContext: "", dynamicSystemTokens: 0 };
@@ -195,6 +330,64 @@ export class IVecEngine {
       systemContext,
       dynamicSystemTokens: estimateTextTokens(dynamicContext),
     };
+  }
+
+  private toSystemEvent(data: unknown): EngineSystemEvent | null {
+    if (!data || typeof data !== "object") return null;
+    const value = data as Record<string, unknown>;
+    if (value["type"] !== "system_event") return null;
+    if (value["source"] !== "pulse") return null;
+    if (value["event"] !== "reminder_due") return null;
+    if (typeof value["eventId"] !== "string") return null;
+    if (typeof value["occurrenceId"] !== "string") return null;
+    if (typeof value["reminderId"] !== "string") return null;
+    if (typeof value["title"] !== "string") return null;
+    if (typeof value["instruction"] !== "string") return null;
+    if (typeof value["scheduledFor"] !== "string") return null;
+    if (typeof value["triggeredAt"] !== "string") return null;
+    if (typeof value["timezone"] !== "string") return null;
+
+    return {
+      type: "system_event",
+      source: "pulse",
+      event: "reminder_due",
+      eventId: value["eventId"],
+      occurrenceId: value["occurrenceId"],
+      reminderId: value["reminderId"],
+      title: value["title"],
+      instruction: value["instruction"],
+      scheduledFor: value["scheduledFor"],
+      triggeredAt: value["triggeredAt"],
+      timezone: value["timezone"],
+      metadata: (typeof value["metadata"] === "object" && value["metadata"] !== null)
+        ? (value["metadata"] as Record<string, unknown>)
+        : {},
+      originRunId: typeof value["originRunId"] === "string" ? value["originRunId"] : undefined,
+      originSessionId: typeof value["originSessionId"] === "string" ? value["originSessionId"] : undefined,
+    };
+  }
+
+  private buildSystemEventUserMessage(event: EngineSystemEvent): string {
+    const payload = {
+      source: event.source,
+      event: event.event,
+      reminderId: event.reminderId,
+      title: event.title,
+      instruction: event.instruction,
+      scheduledFor: event.scheduledFor,
+      triggeredAt: event.triggeredAt,
+      timezone: event.timezone,
+      metadata: event.metadata,
+      originRunId: event.originRunId,
+      originSessionId: event.originSessionId,
+    };
+
+    return [
+      "System event received from Pulse.",
+      "You must handle this reminder now.",
+      `Event payload: ${JSON.stringify(payload)}`,
+      "Reply to the user with a helpful reminder message and perform any requested action if needed.",
+    ].join("\n");
   }
 
   private rotateSessionBeforeRunIfNeeded(clientId: string, incomingMessage: string): void {

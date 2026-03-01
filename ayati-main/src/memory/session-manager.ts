@@ -15,6 +15,8 @@ import type {
   AgentStepRecordInput,
   RunLedgerRecordInput,
   TaskSummaryRecordInput,
+  SystemEventRecordInput,
+  SystemEventOutcomeRecordInput,
   PromptMemoryContext,
   ConversationTurn,
 } from "./types.js";
@@ -30,6 +32,8 @@ import type {
   RunLedgerEvent,
   TaskSummaryEvent,
   AssistantFeedbackEvent,
+  SystemEventReceivedEvent,
+  SystemEventProcessedEvent,
 } from "./session-events.js";
 import { InMemorySession } from "./session.js";
 import { SessionPersistence } from "./session-persistence.js";
@@ -83,7 +87,9 @@ type TimelineEvent =
   | AgentStepEvent
   | RunLedgerEvent
   | TaskSummaryEvent
-  | AssistantFeedbackEvent;
+  | AssistantFeedbackEvent
+  | SystemEventReceivedEvent
+  | SystemEventProcessedEvent;
 
 export class MemoryManager implements SessionMemory {
   private readonly persistence: SessionPersistence;
@@ -155,6 +161,35 @@ export class MemoryManager implements SessionMemory {
 
     this.appendTimelineEvent(event);
 
+    return { sessionId: session.id, runId };
+  }
+
+  beginSystemRun(clientId: string, input: SystemEventRecordInput): MemoryRunHandle {
+    const nowIso = this.nowIso();
+    this.ensureOpenSession(clientId, nowIso);
+
+    const session = this.currentSession!;
+    const runId = randomUUID();
+
+    const event: SystemEventReceivedEvent = {
+      v: 2,
+      ts: nowIso,
+      type: "system_event_received",
+      sessionId: session.id,
+      sessionPath: session.sessionPath,
+      runId,
+      source: input.source,
+      event: input.event,
+      eventId: input.eventId,
+      occurrenceId: input.occurrenceId,
+      reminderId: input.reminderId,
+      instruction: input.instruction,
+      scheduledFor: input.scheduledFor,
+      triggeredAt: input.triggeredAt,
+      payload: input.payload,
+    };
+
+    this.appendTimelineEvent(event);
     return { sessionId: session.id, runId };
   }
 
@@ -408,6 +443,27 @@ export class MemoryManager implements SessionMemory {
         await callback(callbackData);
       });
     }
+  }
+
+  recordSystemEventOutcome(clientId: string, input: SystemEventOutcomeRecordInput): void {
+    const nowIso = this.nowIso();
+    const session = this.ensureWritableSession(clientId, nowIso);
+
+    const event: SystemEventProcessedEvent = {
+      v: 2,
+      ts: nowIso,
+      type: "system_event_processed",
+      sessionId: session.id,
+      sessionPath: session.sessionPath,
+      runId: input.runId,
+      source: input.source,
+      event: input.event,
+      eventId: input.eventId,
+      status: input.status,
+      note: input.note,
+    };
+
+    this.appendTimelineEvent(event);
   }
 
   recordAssistantFeedback(clientId: string, runId: string, _sessionId: string, message: string): void {

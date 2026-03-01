@@ -11,6 +11,8 @@ import type {
   RunLedgerEvent,
   TaskSummaryEvent,
   AssistantFeedbackEvent,
+  SystemEventReceivedEvent,
+  SystemEventProcessedEvent,
 } from "./session-events.js";
 import { estimateTextTokens } from "../prompt/token-estimator.js";
 import type { AgentStepMemoryEvent, ConversationTurn, ToolMemoryEvent } from "./types.js";
@@ -25,7 +27,9 @@ export type SessionTimelineEntry =
   | AgentStepEvent
   | RunLedgerEvent
   | TaskSummaryEvent
-  | AssistantFeedbackEvent;
+  | AssistantFeedbackEvent
+  | SystemEventReceivedEvent
+  | SystemEventProcessedEvent;
 
 const COUNTABLE_EVENT_TYPES = new Set([
   "user_message",

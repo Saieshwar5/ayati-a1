@@ -155,6 +155,7 @@ export interface AgentLoopDeps {
   sessionMemory: SessionMemory;
   runHandle: MemoryRunHandle;
   clientId: string;
+  initialUserMessage?: string;
   onProgress?: OnProgressCallback;
   config?: Partial<LoopConfig>;
   dataDir: string;

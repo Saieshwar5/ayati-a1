@@ -33,6 +33,7 @@ function createSessionMemory(): SessionMemory {
     initialize: vi.fn(),
     shutdown: vi.fn(),
     beginRun: vi.fn().mockReturnValue({ sessionId: "s1", runId: "r1" }),
+    beginSystemRun: vi.fn().mockReturnValue({ sessionId: "s1", runId: "sys-r1" }),
     recordToolCall: vi.fn(),
     recordToolResult: vi.fn(),
     recordAssistantFinal: vi.fn(),
@@ -40,6 +41,7 @@ function createSessionMemory(): SessionMemory {
     recordAgentStep: vi.fn(),
     recordRunLedger: vi.fn(),
     recordTaskSummary: vi.fn(),
+    recordSystemEventOutcome: vi.fn(),
     recordAssistantFeedback: vi.fn(),
     getPromptMemoryContext: vi.fn().mockReturnValue({
       conversationTurns: [],
@@ -152,6 +154,48 @@ describe("IVecEngine", () => {
     expect(budget).toBe(0);
 
     await engine.stop();
+  });
+
+  it("processes pulse system_event through beginSystemRun", async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "ayati-eng-system-event-"));
+    try {
+      const provider = createMockProvider();
+      const onReply = vi.fn();
+      const sessionMemory = createSessionMemory();
+      const engine = new IVecEngine({ onReply, provider, sessionMemory, dataDir });
+
+      await engine.start();
+
+      await engine.handleSystemEvent("c1", {
+        type: "system_event",
+        source: "pulse",
+        event: "reminder_due",
+        eventId: "evt-1",
+        occurrenceId: "occ-1",
+        reminderId: "rem-1",
+        title: "Health",
+        instruction: "Check system health now",
+        scheduledFor: "2026-03-01T10:00:00.000Z",
+        triggeredAt: "2026-03-01T10:00:05.000Z",
+        timezone: "UTC",
+        metadata: {},
+      });
+
+      expect(sessionMemory.beginSystemRun as ReturnType<typeof vi.fn>).toHaveBeenCalledWith(
+        "c1",
+        expect.objectContaining({ source: "pulse", event: "reminder_due", eventId: "evt-1" }),
+      );
+      expect(onReply).toHaveBeenCalledWith("c1", {
+        type: "reply",
+        content: "mock reply",
+      });
+      expect(sessionMemory.recordSystemEventOutcome as ReturnType<typeof vi.fn>).toHaveBeenCalledWith(
+        "c1",
+        expect.objectContaining({ eventId: "evt-1", status: "completed" }),
+      );
+    } finally {
+      rmSync(dataDir, { recursive: true, force: true });
+    }
   });
 
   it("rotates session before beginRun when pre-turn policy requires it", async () => {

@@ -1,6 +1,13 @@
 import { describe, expect, it } from "vitest";
 import { InMemorySession } from "../../src/memory/session.js";
-import type { UserMessageEvent, AssistantMessageEvent, ToolCallEvent, ToolResultEvent, AgentStepEvent } from "../../src/memory/session-events.js";
+import type {
+  UserMessageEvent,
+  AssistantMessageEvent,
+  ToolCallEvent,
+  ToolResultEvent,
+  AgentStepEvent,
+  SystemEventReceivedEvent,
+} from "../../src/memory/session-events.js";
 
 describe("InMemorySession", () => {
   it("tracks conversation turns", () => {
@@ -300,6 +307,34 @@ describe("InMemorySession", () => {
 
     session.handoffSummary = "Completed task A, pending task B";
     expect(session.handoffSummary).toBe("Completed task A, pending task B");
+  });
+
+  it("does not count system events as conversation turns", () => {
+    const session = new InMemorySession(
+      "s1",
+      "c1",
+      "2026-02-08T00:00:00.000Z",
+      "sessions/s1.md",
+    );
+
+    const systemEvent: SystemEventReceivedEvent = {
+      v: 2,
+      ts: "2026-02-08T00:01:00.000Z",
+      type: "system_event_received",
+      sessionId: "s1",
+      sessionPath: "sessions/s1.md",
+      runId: "r1",
+      source: "pulse",
+      event: "reminder_due",
+      eventId: "evt-1",
+    };
+
+    session.addEntry(systemEvent);
+
+    expect(session.userTurnCount).toBe(0);
+    expect(session.assistantTurnCount).toBe(0);
+    expect(session.getConversationTurns()).toHaveLength(0);
+    expect(session.getCountableEventCount()).toBe(0);
   });
 
 });

@@ -1,6 +1,13 @@
 import { describe, expect, it } from "vitest";
 import { serializeEvent, deserializeEvent, isAgentStepEvent } from "../../src/memory/session-events.js";
-import type { SessionOpenEvent, UserMessageEvent, ToolResultEvent, AgentStepEvent, TaskSummaryEvent } from "../../src/memory/session-events.js";
+import type {
+  SessionOpenEvent,
+  UserMessageEvent,
+  ToolResultEvent,
+  AgentStepEvent,
+  TaskSummaryEvent,
+  SystemEventReceivedEvent,
+} from "../../src/memory/session-events.js";
 
 describe("session-events", () => {
   it("serializes and deserializes a session_open event", () => {
@@ -112,6 +119,34 @@ describe("session-events", () => {
     };
 
     expect(isAgentStepEvent(event)).toBe(false);
+  });
+
+  it("serializes and deserializes system_event_received", () => {
+    const event: SystemEventReceivedEvent = {
+      v: 2,
+      ts: "2026-02-08T00:01:00.000Z",
+      type: "system_event_received",
+      sessionId: "s1",
+      sessionPath: "sessions/2026-02-08/s1.md",
+      runId: "r1",
+      source: "pulse",
+      event: "reminder_due",
+      eventId: "evt-1",
+      occurrenceId: "occ-1",
+      reminderId: "rem-1",
+      instruction: "check health",
+      scheduledFor: "2026-02-08T00:00:00.000Z",
+      triggeredAt: "2026-02-08T00:01:00.000Z",
+      payload: { foo: "bar" },
+    };
+
+    const line = serializeEvent(event);
+    const parsed = deserializeEvent(line) as SystemEventReceivedEvent;
+
+    expect(parsed.type).toBe("system_event_received");
+    expect(parsed.source).toBe("pulse");
+    expect(parsed.eventId).toBe("evt-1");
+    expect(parsed.payload?.["foo"]).toBe("bar");
   });
 
   it("throws on unsupported version", () => {

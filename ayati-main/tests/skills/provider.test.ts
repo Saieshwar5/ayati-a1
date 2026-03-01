@@ -13,6 +13,7 @@ describe("builtInSkillsProvider", () => {
     expect(skills.length).toBeGreaterThanOrEqual(1);
     expect(skills.some((s) => s.id === "shell")).toBe(true);
     expect(skills.some((s) => s.id === "notes")).toBe(true);
+    expect(skills.some((s) => s.id === "pulse")).toBe(true);
   });
 
   it("returns prompt blocks for all skills", async () => {
@@ -23,6 +24,7 @@ describe("builtInSkillsProvider", () => {
     expect(blocks.length).toBeGreaterThanOrEqual(1);
     expect(blocks.some((b) => b.id === "shell")).toBe(true);
     expect(blocks.some((b) => b.id === "notes")).toBe(true);
+    expect(blocks.some((b) => b.id === "pulse")).toBe(true);
   });
 
   it("returns all tools", async () => {
@@ -32,5 +34,6 @@ describe("builtInSkillsProvider", () => {
 
     expect(tools.some((t) => t.name === "shell")).toBe(true);
     expect(tools.some((t) => t.name === "notes")).toBe(true);
+    expect(tools.some((t) => t.name === "pulse")).toBe(true);
   });
 });

@@ -125,10 +125,32 @@ export interface TaskSummaryRecordInput {
   summary: string;
 }
 
+export interface SystemEventRecordInput {
+  source: string;
+  event: string;
+  eventId: string;
+  occurrenceId?: string;
+  reminderId?: string;
+  instruction?: string;
+  scheduledFor?: string;
+  triggeredAt?: string;
+  payload?: Record<string, unknown>;
+}
+
+export interface SystemEventOutcomeRecordInput {
+  runId: string;
+  eventId: string;
+  source: string;
+  event: string;
+  status: "completed" | "failed";
+  note?: string;
+}
+
 export interface SessionMemory {
   initialize(clientId: string): void;
   shutdown(): void | Promise<void>;
   beginRun(clientId: string, userMessage: string): MemoryRunHandle;
+  beginSystemRun?(clientId: string, input: SystemEventRecordInput): MemoryRunHandle;
   recordTurnStatus?(clientId: string, input: TurnStatusRecordInput): void;
   createSession?(clientId: string, input: CreateSessionInput): CreateSessionResult;
   recordToolCall(clientId: string, input: ToolCallRecordInput): void;
@@ -138,6 +160,7 @@ export interface SessionMemory {
   recordAgentStep(clientId: string, input: AgentStepRecordInput): void;
   recordRunLedger?(clientId: string, input: RunLedgerRecordInput): void;
   recordTaskSummary?(clientId: string, input: TaskSummaryRecordInput): void;
+  recordSystemEventOutcome?(clientId: string, input: SystemEventOutcomeRecordInput): void;
   recordAssistantFeedback(clientId: string, runId: string, sessionId: string, message: string): void;
   getPromptMemoryContext(): PromptMemoryContext;
   getSessionStatus?(): SessionStatus | null;

@@ -1,6 +1,7 @@
 import calculatorSkill from "./builtins/calculator/index.js";
 import filesystemSkill from "./builtins/filesystem/index.js";
 import notesSkill from "./builtins/notes/index.js";
+import pulseSkill from "./builtins/pulse/index.js";
 import shellSkill from "./builtins/shell/index.js";
 import type {
   SkillDefinition,
@@ -9,7 +10,7 @@ import type {
   ToolDefinition,
 } from "./types.js";
 
-const BUILTIN_SKILLS: SkillDefinition[] = [shellSkill, calculatorSkill, filesystemSkill, notesSkill];
+const BUILTIN_SKILLS: SkillDefinition[] = [shellSkill, calculatorSkill, filesystemSkill, notesSkill, pulseSkill];
 
 export const builtInSkillsProvider: SkillsProvider = {
   async getAllSkills(): Promise<SkillDefinition[]> {

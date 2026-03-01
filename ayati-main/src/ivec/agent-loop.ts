@@ -36,7 +36,7 @@ export async function agentLoop(deps: AgentLoopDeps): Promise<AgentLoopResult> {
 
   const state: LoopState = {
     runId,
-    userMessage: deps.runHandle.runId ? getLastUserMessage(deps) : "",
+    userMessage: deps.initialUserMessage?.trim() ?? "",
     goal: "",
     approach: "",
     status: "running",
@@ -51,7 +51,7 @@ export async function agentLoop(deps: AgentLoopDeps): Promise<AgentLoopResult> {
   };
 
   // Populate user message from sessionMemory context
-  state.userMessage = getLastUserMessage(deps);
+  state.userMessage = getPrimaryUserMessage(deps);
   state.goal = "";
   state.approach = "";
 
@@ -346,7 +346,12 @@ function readFileSnippet(filePath: string): string {
   }
 }
 
-function getLastUserMessage(deps: AgentLoopDeps): string {
+function getPrimaryUserMessage(deps: AgentLoopDeps): string {
+  const explicit = deps.initialUserMessage?.trim();
+  if (explicit && explicit.length > 0) {
+    return explicit;
+  }
+
   const context = deps.sessionMemory.getPromptMemoryContext();
   const turns = context.conversationTurns ?? [];
   const lastUser = [...turns].reverse().find((t) => t.role === "user");

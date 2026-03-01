@@ -15,6 +15,7 @@ import { createToolExecutor } from "../skills/tool-executor.js";
 import { builtInSkillsProvider } from "../skills/provider.js";
 import { createIdentitySkill } from "../skills/builtins/identity/index.js";
 import { createRecallSkill } from "../skills/builtins/recall/index.js";
+import { PulseScheduler, PulseStore } from "../pulse/index.js";
 
 import { devLog } from "../shared/index.js";
 
@@ -49,6 +50,8 @@ export async function main(): Promise<void> {
   });
   sessionMemory.initialize(CLIENT_ID);
 
+  const pulseStore = new PulseStore();
+
   const identitySkill = createIdentitySkill({
     onSoulUpdated: (updatedSoul) => {
       staticContext.soul = updatedSoul;
@@ -69,6 +72,18 @@ export async function main(): Promise<void> {
   const wsServer = new WsServer({
     onMessage: (clientId, data) => engine?.handleMessage(clientId, data),
   });
+
+  const pulseScheduler = new PulseScheduler({
+    clientId: CLIENT_ID,
+    store: pulseStore,
+    onReminderDue: async (event) => {
+      if (!engine) {
+        throw new Error("Engine is not initialized");
+      }
+      await engine.handleSystemEvent(CLIENT_ID, event);
+    },
+  });
+
   engine = new IVecEngine({
     onReply: wsServer.send.bind(wsServer),
     provider,
@@ -86,6 +101,7 @@ export async function main(): Promise<void> {
 
   await engine.start();
   await wsServer.start();
+  await pulseScheduler.start();
   await registry.startAll();
 
   console.log(`Ayati i-vec ready — plugins: [${registry.list().join(", ")}]`);
@@ -93,6 +109,7 @@ export async function main(): Promise<void> {
   const shutdown = async (): Promise<void> => {
   
     await registry.stopAll();
+    await pulseScheduler.stop();
     await wsServer.stop();
     await engine.stop();
     await sessionMemory.shutdown();
