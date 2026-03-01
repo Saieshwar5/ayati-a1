@@ -45,9 +45,30 @@ export interface SessionCloseData {
   reason: string;
 }
 
+export interface TaskSummaryIndexData {
+  clientId: string;
+  sessionId: string;
+  sessionPath: string;
+  runId: string;
+  runPath: string;
+  status: "completed" | "failed" | "stuck";
+  summary: string;
+  timestamp: string;
+}
+
+export interface HandoffSummaryIndexData {
+  clientId: string;
+  sessionId: string;
+  sessionPath: string;
+  summary: string;
+  timestamp: string;
+}
+
 export interface MemoryManagerOptions extends SessionPersistenceOptions {
   now?: () => Date;
   onSessionClose?: (data: SessionCloseData) => void | Promise<void>;
+  onTaskSummaryIndexed?: (data: TaskSummaryIndexData) => void | Promise<void>;
+  onHandoffSummaryIndexed?: (data: HandoffSummaryIndexData) => void | Promise<void>;
   contextTokenLimit?: number;
   memoryDetailMode?: "compact" | "debug";
 }
@@ -68,6 +89,8 @@ export class MemoryManager implements SessionMemory {
   private readonly persistence: SessionPersistence;
   private readonly nowProvider: () => Date;
   private readonly onSessionCloseCallback?: (data: SessionCloseData) => void | Promise<void>;
+  private readonly onTaskSummaryIndexedCallback?: (data: TaskSummaryIndexData) => void | Promise<void>;
+  private readonly onHandoffSummaryIndexedCallback?: (data: HandoffSummaryIndexData) => void | Promise<void>;
   private readonly contextTokenLimit: number;
   private readonly memoryDetailMode: "compact" | "debug";
 
@@ -83,6 +106,8 @@ export class MemoryManager implements SessionMemory {
     });
     this.nowProvider = options?.now ?? (() => new Date());
     this.onSessionCloseCallback = options?.onSessionClose;
+    this.onTaskSummaryIndexedCallback = options?.onTaskSummaryIndexed;
+    this.onHandoffSummaryIndexedCallback = options?.onHandoffSummaryIndexed;
     this.contextTokenLimit = options?.contextTokenLimit ?? DEFAULT_CONTEXT_TOKEN_LIMIT;
     this.memoryDetailMode = options?.memoryDetailMode ?? "compact";
   }
@@ -162,6 +187,20 @@ export class MemoryManager implements SessionMemory {
     const handoffSummary = input.handoffSummary?.trim();
     const nextSessionId = randomUUID();
     const nextSessionPath = this.persistence.buildSessionPath(nowIso, nextSessionId);
+
+    if (handoffSummary && this.onHandoffSummaryIndexedCallback) {
+      const callback = this.onHandoffSummaryIndexedCallback;
+      const callbackData: HandoffSummaryIndexData = {
+        clientId,
+        sessionId: previousSession.id,
+        sessionPath: previousSession.sessionPath,
+        summary: handoffSummary,
+        timestamp: nowIso,
+      };
+      this.enqueueBackgroundTask(async () => {
+        await callback(callbackData);
+      });
+    }
 
     this.closeSessionInternal(previousSession, nowIso, `session_switch:${reason}`, {
       handoffSummary,
@@ -352,6 +391,23 @@ export class MemoryManager implements SessionMemory {
     };
 
     this.appendTimelineEvent(event);
+
+    if (this.onTaskSummaryIndexedCallback && input.summary.trim().length > 0) {
+      const callback = this.onTaskSummaryIndexedCallback;
+      const callbackData: TaskSummaryIndexData = {
+        clientId,
+        sessionId: session.id,
+        sessionPath: session.sessionPath,
+        runId: input.runId,
+        runPath: input.runPath,
+        status: input.status,
+        summary: input.summary,
+        timestamp: nowIso,
+      };
+      this.enqueueBackgroundTask(async () => {
+        await callback(callbackData);
+      });
+    }
   }
 
   recordAssistantFeedback(clientId: string, runId: string, _sessionId: string, message: string): void {

@@ -3,7 +3,11 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { SessionManager } from "../../src/memory/session-manager.js";
-import type { SessionCloseData } from "../../src/memory/session-manager.js";
+import type {
+  HandoffSummaryIndexData,
+  SessionCloseData,
+  TaskSummaryIndexData,
+} from "../../src/memory/session-manager.js";
 
 function createTmpDir(): string {
   return mkdtempSync(join(tmpdir(), "sm-cb-test-"));
@@ -167,6 +171,69 @@ describe("SessionManager onSessionClose callback", () => {
     order.push("flush-done");
 
     expect(order).toEqual(["callback-done", "flush-done"]);
+    await sm.shutdown();
+  });
+
+  it("fires task summary indexing callback after task summaries are recorded", async () => {
+    const onTaskSummaryIndexed = vi.fn();
+
+    const sm = new SessionManager({
+      dataDir,
+      dbPath,
+      now: () => new Date("2025-01-01T00:00:00Z"),
+      onTaskSummaryIndexed,
+    });
+
+    sm.initialize("client1");
+    const run = sm.beginRun("client1", "Summarize this");
+    sm.recordTaskSummary("client1", {
+      runId: run.runId,
+      sessionId: run.sessionId,
+      runPath: "data/runs/r-1",
+      status: "completed",
+      summary: "Completed the task",
+    });
+
+    await sm.flushBackgroundTasks();
+
+    expect(onTaskSummaryIndexed).toHaveBeenCalledTimes(1);
+    const data: TaskSummaryIndexData = onTaskSummaryIndexed.mock.calls[0]![0]!;
+    expect(data.sessionId).toBe(run.sessionId);
+    expect(data.summary).toBe("Completed the task");
+    expect(data.runPath).toBe("data/runs/r-1");
+
+    await sm.shutdown();
+  });
+
+  it("fires handoff summary indexing callback when a session is rotated", async () => {
+    const onHandoffSummaryIndexed = vi.fn();
+
+    const sm = new SessionManager({
+      dataDir,
+      dbPath,
+      now: () => new Date("2025-01-01T00:00:00Z"),
+      onHandoffSummaryIndexed,
+    });
+
+    sm.initialize("client1");
+    const run = sm.beginRun("client1", "Task A");
+    sm.recordAssistantFinal("client1", run.runId, run.sessionId, "Done");
+    const firstSessionId = run.sessionId;
+
+    sm.createSession("client1", {
+      runId: run.runId,
+      reason: "new topic",
+      source: "agent",
+      handoffSummary: "Task A completed successfully",
+    });
+
+    await sm.flushBackgroundTasks();
+
+    expect(onHandoffSummaryIndexed).toHaveBeenCalledTimes(1);
+    const data: HandoffSummaryIndexData = onHandoffSummaryIndexed.mock.calls[0]![0]!;
+    expect(data.sessionId).toBe(firstSessionId);
+    expect(data.summary).toBe("Task A completed successfully");
+
     await sm.shutdown();
   });
 });

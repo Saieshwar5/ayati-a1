@@ -121,6 +121,8 @@ Instructions:
 - Always choose execution_mode for next step:
   - dependent: tools depend on prior output; executor will run max 1 tool call per turn.
   - independent: tools are parallel-safe; executor will run max 2 tool calls per turn.
+- If the user refers to prior work, earlier conversations, dates, or says "like before", prefer a dependent step that uses recall_memory first.
+- recall_memory returns compact session metadata only. If exact prior details are needed, use read_file on the returned sessionPath in the same step or the next step.
 - Execution limits you must plan for:
   - max_act_turns_per_step: 4
   - max_calls_per_turn_dependent: 1
