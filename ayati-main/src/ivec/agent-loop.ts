@@ -36,11 +36,7 @@ export async function agentLoop(deps: AgentLoopDeps): Promise<AgentLoopResult> {
 
   const state: LoopState = {
     runId,
-<<<<<<< HEAD
-    userMessage: deps.initialUserMessage?.trim() ?? "",
-=======
-    userMessage: deps.userMessageOverride?.trim() || (deps.runHandle.runId ? getLastUserMessage(deps) : ""),
->>>>>>> context-retrieval-agent
+    userMessage: "",
     goal: "",
     approach: "",
     status: "running",
@@ -55,11 +51,7 @@ export async function agentLoop(deps: AgentLoopDeps): Promise<AgentLoopResult> {
   };
 
   // Populate user message from sessionMemory context
-<<<<<<< HEAD
   state.userMessage = getPrimaryUserMessage(deps);
-=======
-  state.userMessage = deps.userMessageOverride?.trim() || getLastUserMessage(deps);
->>>>>>> context-retrieval-agent
   state.goal = "";
   state.approach = "";
 
@@ -355,9 +347,14 @@ function readFileSnippet(filePath: string): string {
 }
 
 function getPrimaryUserMessage(deps: AgentLoopDeps): string {
-  const explicit = deps.initialUserMessage?.trim();
-  if (explicit && explicit.length > 0) {
-    return explicit;
+  const override = deps.userMessageOverride?.trim();
+  if (override && override.length > 0) {
+    return override;
+  }
+
+  const initial = deps.initialUserMessage?.trim();
+  if (initial && initial.length > 0) {
+    return initial;
   }
 
   const context = deps.sessionMemory.getPromptMemoryContext();

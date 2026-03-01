@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { WebSocketServer, WebSocket } from "ws";
 import { devLog, devWarn, devError } from "../shared/index.js";
 
@@ -16,6 +17,7 @@ export class WsServer {
   private readonly onMessage: (clientId: string, data: unknown) => void;
   private wss: WebSocketServer | null = null;
   private clients = new Map<string, WebSocket>();
+  private defaultClientId: string | null = null;
   private retryCount = 0;
   private retryTimer: ReturnType<typeof setTimeout> | null = null;
   private stopping = false;
@@ -42,8 +44,9 @@ export class WsServer {
       });
 
       this.wss.on("connection", (ws) => {
-        const clientId = "local";
+        const clientId = randomUUID();
         this.clients.set(clientId, ws);
+        this.defaultClientId = clientId;
         devLog(`Client connected: ${clientId}`);
 
         ws.on("message", (raw) => {
@@ -61,6 +64,10 @@ export class WsServer {
 
         ws.on("close", () => {
           this.clients.delete(clientId);
+          if (this.defaultClientId === clientId) {
+            const first = this.clients.keys().next();
+            this.defaultClientId = first.done ? null : first.value;
+          }
           devLog(`Client disconnected: ${clientId}`);
         });
 
@@ -108,7 +115,16 @@ export class WsServer {
   }
 
   send(clientId: string, data: unknown): void {
-    const ws = this.clients.get(clientId);
+    let ws = this.clients.get(clientId);
+    if (!ws && clientId === "local") {
+      if (this.defaultClientId) {
+        ws = this.clients.get(this.defaultClientId);
+      }
+      if (!ws) {
+        const first = this.clients.values().next();
+        ws = first.done ? undefined : first.value;
+      }
+    }
     if (!ws) {
       devWarn(`send(): unknown client ${clientId}`);
       return;

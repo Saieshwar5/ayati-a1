@@ -99,17 +99,8 @@ export class IVecEngine {
   handleMessage(clientId: string, data: unknown): void {
     devLog(`Message from ${clientId}:`, JSON.stringify(data));
 
-<<<<<<< HEAD
-    const msg = data as {
-      type?: string;
-      content?: string;
-    };
-    if (msg.type === "chat" && typeof msg.content === "string") {
-      void this.processChat(clientId, msg.content);
-      return;
-    }
-
-    if (msg.type === "system_event") {
+    const payload = data as { type?: string };
+    if (payload?.type === "system_event") {
       const systemEvent = this.toSystemEvent(data);
       if (!systemEvent) {
         devWarn("Ignored invalid system_event payload");
@@ -120,16 +111,15 @@ export class IVecEngine {
       });
       return;
     }
-  }
 
-  async handleSystemEvent(clientId: string, event: EngineSystemEvent): Promise<void> {
-    await this.processSystemEvent(clientId, event);
-=======
     const msg = parseChatInboundMessage(data);
     if (!msg) return;
 
     void this.processChat(clientId, msg.content, msg.attachments ?? []);
->>>>>>> context-retrieval-agent
+  }
+
+  async handleSystemEvent(clientId: string, event: EngineSystemEvent): Promise<void> {
+    await this.processSystemEvent(clientId, event);
   }
 
   private async processChat(clientId: string, content: string, attachments: ChatAttachmentInput[]): Promise<void> {
@@ -204,7 +194,6 @@ export class IVecEngine {
     }
   }
 
-<<<<<<< HEAD
   private async processSystemEvent(clientId: string, event: EngineSystemEvent): Promise<void> {
     let runHandle: MemoryRunHandle | null = null;
     const incomingMessage = this.buildSystemEventUserMessage(event);
@@ -318,7 +307,9 @@ export class IVecEngine {
         content: "Failed to process system reminder event.",
       });
       throw err;
-=======
+    }
+  }
+
   private async buildContextAwareUserMessage(content: string, attachments: ChatAttachmentInput[]): Promise<string> {
     if (attachments.length === 0 || !this.documentProcessor || !this.contextAgent) {
       return content;
@@ -371,7 +362,6 @@ export class IVecEngine {
         "[Document Context Sub-Agent]",
         `Context extraction failed: ${message}`,
       ].join("\n");
->>>>>>> context-retrieval-agent
     }
   }
 
