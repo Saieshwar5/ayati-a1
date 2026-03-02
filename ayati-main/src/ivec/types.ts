@@ -121,6 +121,7 @@ export interface LoopConfig {
   maxConsecutiveFailures: number;
   maxInspectRequeriesPerIteration: number;
   maxInspectStepsPerRequest: number;
+  maxInspectTotalStepsPerIteration: number;
   maxTotalToolCallsPerStep: number;
 }
 
@@ -128,8 +129,9 @@ export const DEFAULT_LOOP_CONFIG: LoopConfig = {
   maxIterations: 15,
   maxToolCallsPerStep: 4,
   maxConsecutiveFailures: 5,
-  maxInspectRequeriesPerIteration: 2,
-  maxInspectStepsPerRequest: 2,
+  maxInspectRequeriesPerIteration: 4,
+  maxInspectStepsPerRequest: 4,
+  maxInspectTotalStepsPerIteration: 10,
   maxTotalToolCallsPerStep: 6,
 };
 

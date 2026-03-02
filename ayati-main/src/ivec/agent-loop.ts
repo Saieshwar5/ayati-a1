@@ -207,6 +207,7 @@ async function resolveControllerDirective(
 ): Promise<ControllerResolution> {
   let inspectedStepsContext = "";
   let inspectRequeryCount = 0;
+  let inspectedStepsConsumed = 0;
 
   while (true) {
     const controllerOutput = await callController(
@@ -251,13 +252,23 @@ async function resolveControllerDirective(
       state.completedSteps.length,
       config.maxInspectStepsPerRequest,
     );
-    if (selectedSteps.length === 0) {
+    const remainingInspectBudget = Math.max(0, config.maxInspectTotalStepsPerIteration - inspectedStepsConsumed);
+    const budgetedSteps = selectedSteps.slice(0, remainingInspectBudget);
+
+    if (budgetedSteps.length === 0) {
+      if (remainingInspectBudget <= 0) {
+        return {
+          type: "failed",
+          message: "I couldn't progress because inspection requests exceeded the per-iteration inspected-steps budget.",
+        };
+      }
       inspectedStepsContext = "No valid inspect steps were requested (either out of range or unavailable). Choose the next action using available context.";
       inspectRequeryCount++;
       continue;
     }
 
-    inspectedStepsContext = buildInspectedStepsContext(runPath, selectedSteps);
+    inspectedStepsContext = buildInspectedStepsContext(runPath, budgetedSteps);
+    inspectedStepsConsumed += budgetedSteps.length;
     inspectRequeryCount++;
   }
 }

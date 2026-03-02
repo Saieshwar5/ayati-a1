@@ -133,7 +133,8 @@ Instructions:
 - If the task asks for machine-wide file/path discovery, first discover valid roots (for example, home directory) instead of guessing paths like /home/user or /Documents.
 - If there are 2 no-progress/missing-path outcomes in a row, pivot strategy (different roots or tool family such as shell) instead of retrying the same style search.
 - Never claim "entire filesystem searched" unless your tool inputs explicitly included root-level paths for that OS.
-- If you need full details for specific prior steps, request them via "inspect_steps" (max 2 step numbers).
+- If you need full details for specific prior steps, request them via "inspect_steps" (max 4 step numbers per request).
+- Keep total inspected step references within 10 for the current iteration.
 - Pick exactly 1 next action. Reduce uncertainty first.
 - If consecutiveFailures >= 2, radically change direction.
 - If the task is complete, set done: true.

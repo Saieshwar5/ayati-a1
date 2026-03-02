@@ -350,4 +350,130 @@ describe("agentLoop", () => {
       cleanup();
     }
   });
+
+  it("allows more than two inspect re-queries in a single iteration", async () => {
+    const dataDir = makeTmpDir();
+    try {
+      let callCount = 0;
+      const provider: LlmProvider = {
+        name: "mock",
+        version: "1.0.0",
+        capabilities: { nativeToolCalling: true },
+        start: vi.fn(),
+        stop: vi.fn(),
+        generateTurn: vi.fn().mockImplementation(async () => {
+          callCount++;
+          if (callCount === 1) {
+            return {
+              type: "assistant",
+              content: JSON.stringify({
+                done: false,
+                approach: "respond directly",
+                intent: "draft response",
+                type: "reasoning",
+                tools_hint: [],
+                success_criteria: "response drafted",
+                context: "",
+              }),
+            };
+          }
+          if (callCount === 2) {
+            return { type: "assistant", content: "Drafted response" };
+          }
+          if (callCount === 3 || callCount === 4 || callCount === 5) {
+            return {
+              type: "assistant",
+              content: JSON.stringify({
+                done: false,
+                inspect_steps: [1],
+                inspect_reason: "Need more context before finalizing",
+              }),
+            };
+          }
+          return {
+            type: "assistant",
+            content: JSON.stringify({
+              done: true,
+              summary: "Completed after deeper inspection",
+              status: "completed",
+            }),
+          };
+        }),
+      };
+
+      const result = await agentLoop({
+        provider,
+        toolDefinitions: [],
+        sessionMemory: createMockSessionMemory(),
+        runHandle: { sessionId: "s1", runId: "r1" },
+        clientId: "c1",
+        dataDir,
+      });
+
+      expect(result.status).toBe("completed");
+      expect(result.totalIterations).toBe(2);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("fails when inspect requests exceed per-iteration inspected-steps budget", async () => {
+    const dataDir = makeTmpDir();
+    try {
+      let callCount = 0;
+      const provider: LlmProvider = {
+        name: "mock",
+        version: "1.0.0",
+        capabilities: { nativeToolCalling: true },
+        start: vi.fn(),
+        stop: vi.fn(),
+        generateTurn: vi.fn().mockImplementation(async () => {
+          callCount++;
+          if (callCount === 1) {
+            return {
+              type: "assistant",
+              content: JSON.stringify({
+                done: false,
+                approach: "respond directly",
+                intent: "draft response",
+                type: "reasoning",
+                tools_hint: [],
+                success_criteria: "response drafted",
+                context: "",
+              }),
+            };
+          }
+          if (callCount === 2) {
+            return { type: "assistant", content: "Drafted response" };
+          }
+          return {
+            type: "assistant",
+            content: JSON.stringify({
+              done: false,
+              inspect_steps: [1],
+              inspect_reason: "Need full details",
+            }),
+          };
+        }),
+      };
+
+      const result = await agentLoop({
+        provider,
+        toolDefinitions: [],
+        sessionMemory: createMockSessionMemory(),
+        runHandle: { sessionId: "s1", runId: "r1" },
+        clientId: "c1",
+        dataDir,
+        config: {
+          maxInspectTotalStepsPerIteration: 1,
+        },
+      });
+
+      expect(result.status).toBe("failed");
+      expect(result.content).toContain("inspected-steps budget");
+      expect(result.totalIterations).toBe(2);
+    } finally {
+      cleanup();
+    }
+  });
 });

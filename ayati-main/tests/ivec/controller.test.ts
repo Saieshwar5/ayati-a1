@@ -158,5 +158,7 @@ describe("callController", () => {
     expect(prompt).toContain("Run artifacts root");
     expect(prompt).toContain("execution_mode");
     expect(prompt).toContain("max_total_tool_calls_per_step: 6");
+    expect(prompt).toContain("max 4 step numbers per request");
+    expect(prompt).toContain("within 10 for the current iteration");
   });
 });
