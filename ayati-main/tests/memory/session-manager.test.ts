@@ -217,6 +217,92 @@ describe("MemoryManager", () => {
     await memory2.shutdown();
   });
 
+  it("exposes last 5 unique run ledgers and active session path in prompt context", async () => {
+    const root = mkdtempSync(resolve(tmpdir(), "ayati-memory-test-"));
+    dirs.push(root);
+    const memory = new MemoryManager({
+      dataDir: root,
+      dbPath: resolve(root, "memory.sqlite"),
+      now: makeNow(),
+    });
+    memory.initialize("local");
+
+    for (let i = 0; i < 6; i++) {
+      const run = memory.beginRun("local", `task-${i}`);
+      memory.recordRunLedger?.("local", {
+        runId: run.runId,
+        sessionId: run.sessionId,
+        runPath: `data/runs/run-${i}`,
+        state: "started",
+      });
+      memory.recordRunLedger?.("local", {
+        runId: run.runId,
+        sessionId: run.sessionId,
+        runPath: `data/runs/run-${i}`,
+        state: "completed",
+        status: "completed",
+        summary: `done-${i}`,
+      });
+      memory.recordAssistantFinal("local", run.runId, run.sessionId, `a-${i}`);
+    }
+
+    const context = memory.getPromptMemoryContext();
+    expect(context.activeSessionPath).toMatch(/^sessions\/.+\.md$/);
+    expect(context.recentRunLedgers).toHaveLength(5);
+
+    const runIds = (context.recentRunLedgers ?? []).map((item) => item.runId);
+    expect(new Set(runIds).size).toBe(5);
+    expect((context.recentRunLedgers ?? []).every((item) => item.state === "completed")).toBe(true);
+
+    await memory.shutdown();
+  });
+
+  it("restores recent unique run ledgers after restart", async () => {
+    const root = mkdtempSync(resolve(tmpdir(), "ayati-memory-test-"));
+    dirs.push(root);
+    const memory = new MemoryManager({
+      dataDir: root,
+      dbPath: resolve(root, "memory.sqlite"),
+      now: makeNow(),
+    });
+    memory.initialize("local");
+
+    for (let i = 0; i < 3; i++) {
+      const run = memory.beginRun("local", `restart-${i}`);
+      memory.recordRunLedger?.("local", {
+        runId: run.runId,
+        sessionId: run.sessionId,
+        runPath: `data/runs/restart-${i}`,
+        state: "started",
+      });
+      memory.recordRunLedger?.("local", {
+        runId: run.runId,
+        sessionId: run.sessionId,
+        runPath: `data/runs/restart-${i}`,
+        state: "completed",
+        status: "completed",
+        summary: `restart-done-${i}`,
+      });
+      memory.recordAssistantFinal("local", run.runId, run.sessionId, `reply-${i}`);
+    }
+
+    await memory.shutdown();
+
+    const memoryAfterRestart = new MemoryManager({
+      dataDir: root,
+      dbPath: resolve(root, "memory.sqlite"),
+      now: makeNow(),
+    });
+    memoryAfterRestart.initialize("local");
+
+    const context = memoryAfterRestart.getPromptMemoryContext();
+    expect(context.activeSessionPath).toMatch(/^sessions\/.+\.md$/);
+    expect(context.recentRunLedgers).toHaveLength(3);
+    expect(new Set((context.recentRunLedgers ?? []).map((item) => item.runId)).size).toBe(3);
+
+    await memoryAfterRestart.shutdown();
+  });
+
   it("records system events without adding user conversation turns", async () => {
     const root = mkdtempSync(resolve(tmpdir(), "ayati-memory-test-"));
     dirs.push(root);

@@ -1,12 +1,14 @@
+import { randomUUID } from "node:crypto";
 import type { LlmProvider } from "../core/contracts/provider.js";
 import { noopSessionMemory } from "../memory/provider.js";
 import type { SessionMemory, MemoryRunHandle } from "../memory/types.js";
-import type { PulseReminderDueEvent } from "../pulse/types.js";
 import type { StaticContext } from "../context/static-context-cache.js";
 import { assemblePromptInput } from "../context/load-system-prompt-input.js";
 import { buildSystemPrompt } from "../prompt/builder.js";
 import { renderConversationSection } from "../prompt/sections/conversation.js";
+import { renderCurrentSessionSection } from "../prompt/sections/current-session.js";
 import { renderMemorySection } from "../prompt/sections/memory.js";
+import { renderRecentRunsSection } from "../prompt/sections/recent-runs.js";
 import { estimateTextTokens } from "../prompt/token-estimator.js";
 import type { ToolExecutor } from "../skills/tool-executor.js";
 import { devLog, devWarn, devError } from "../shared/index.js";
@@ -26,7 +28,22 @@ interface SystemContextBuildResult {
   dynamicSystemTokens: number;
 }
 
-type EngineSystemEvent = PulseReminderDueEvent;
+interface EngineSystemEvent {
+  type: "system_event";
+  source: string;
+  event: string;
+  eventId: string;
+  occurrenceId?: string;
+  reminderId?: string;
+  title?: string;
+  instruction?: string;
+  scheduledFor?: string;
+  triggeredAt?: string;
+  timezone?: string;
+  metadata: Record<string, unknown>;
+  originRunId?: string;
+  originSessionId?: string;
+}
 
 export interface IVecEngineOptions {
   onReply?: (clientId: string, data: unknown) => void;
@@ -143,6 +160,7 @@ export class IVecEngine {
           config: this.loopConfig,
           dataDir: this.dataDir ?? "data",
           systemContext: system.systemContext || undefined,
+          controllerPrompts: this.staticContext?.controllerPrompts,
           userMessageOverride: contextMessage,
           onProgress: (log, runPath) => {
             devLog(`[${clientId}] ${log}`);
@@ -221,7 +239,9 @@ export class IVecEngine {
       this.recordTurnStatus(clientId, runHandle, "processing_started", `system_event:${event.source}/${event.event}`);
 
       if (!this.provider) {
-        this.sendAssistantReply(clientId, runHandle, `Pulse reminder: ${event.instruction}`);
+        const fallbackInstruction =
+          event.instruction ?? event.title ?? `System event ${event.source}/${event.event}`;
+        this.sendAssistantReply(clientId, runHandle, fallbackInstruction);
         this.sessionMemory.recordSystemEventOutcome?.(clientId, {
           runId: runHandle.runId,
           eventId: event.eventId,
@@ -246,6 +266,7 @@ export class IVecEngine {
         config: this.loopConfig,
         dataDir: this.dataDir ?? "data",
         systemContext: system.systemContext || undefined,
+        controllerPrompts: this.staticContext?.controllerPrompts,
         onProgress: (log, runPath) => {
           devLog(`[${clientId}] ${log}`);
           this.sessionMemory.recordAgentStep(clientId, {
@@ -304,7 +325,7 @@ export class IVecEngine {
       }
       this.onReply?.(clientId, {
         type: "error",
-        content: "Failed to process system reminder event.",
+        content: "Failed to process system event.",
       });
       throw err;
     }
@@ -384,6 +405,8 @@ export class IVecEngine {
     const dynamicContext = [
       renderConversationSection(memoryContext.conversationTurns ?? []),
       renderMemorySection(memoryContext.previousSessionSummary ?? ""),
+      renderCurrentSessionSection(memoryContext.activeSessionPath ?? ""),
+      renderRecentRunsSection(memoryContext.recentRunLedgers ?? []),
     ]
       .filter((block) => block.trim().length > 0)
       .join("\n\n")
@@ -399,57 +422,91 @@ export class IVecEngine {
     if (!data || typeof data !== "object") return null;
     const value = data as Record<string, unknown>;
     if (value["type"] !== "system_event") return null;
-    if (value["source"] !== "pulse") return null;
-    if (value["event"] !== "reminder_due") return null;
-    if (typeof value["eventId"] !== "string") return null;
-    if (typeof value["occurrenceId"] !== "string") return null;
-    if (typeof value["reminderId"] !== "string") return null;
-    if (typeof value["title"] !== "string") return null;
-    if (typeof value["instruction"] !== "string") return null;
-    if (typeof value["scheduledFor"] !== "string") return null;
-    if (typeof value["triggeredAt"] !== "string") return null;
-    if (typeof value["timezone"] !== "string") return null;
+    const source = asRequiredString(value["source"]);
+    const event = asRequiredString(value["event"]);
+    if (!source || !event) {
+      return null;
+    }
+
+    const eventId = asOptionalString(value["eventId"]) ?? randomUUID();
+
+    if (source === "pulse" && event === "reminder_due") {
+      if (
+        !asRequiredString(value["occurrenceId"]) ||
+        !asRequiredString(value["reminderId"]) ||
+        !asRequiredString(value["title"]) ||
+        !asRequiredString(value["instruction"]) ||
+        !asRequiredString(value["scheduledFor"]) ||
+        !asRequiredString(value["triggeredAt"]) ||
+        !asRequiredString(value["timezone"])
+      ) {
+        return null;
+      }
+    }
 
     return {
       type: "system_event",
-      source: "pulse",
-      event: "reminder_due",
-      eventId: value["eventId"],
-      occurrenceId: value["occurrenceId"],
-      reminderId: value["reminderId"],
-      title: value["title"],
-      instruction: value["instruction"],
-      scheduledFor: value["scheduledFor"],
-      triggeredAt: value["triggeredAt"],
-      timezone: value["timezone"],
-      metadata: (typeof value["metadata"] === "object" && value["metadata"] !== null)
-        ? (value["metadata"] as Record<string, unknown>)
-        : {},
-      originRunId: typeof value["originRunId"] === "string" ? value["originRunId"] : undefined,
-      originSessionId: typeof value["originSessionId"] === "string" ? value["originSessionId"] : undefined,
+      source,
+      event,
+      eventId,
+      occurrenceId: asOptionalString(value["occurrenceId"]),
+      reminderId: asOptionalString(value["reminderId"]),
+      title: asOptionalString(value["title"]),
+      instruction: asOptionalString(value["instruction"]),
+      scheduledFor: asOptionalString(value["scheduledFor"]),
+      triggeredAt: asOptionalString(value["triggeredAt"]),
+      timezone: asOptionalString(value["timezone"]),
+      metadata: asRecord(value["metadata"]) ?? {},
+      originRunId: asOptionalString(value["originRunId"]),
+      originSessionId: asOptionalString(value["originSessionId"]),
     };
   }
 
   private buildSystemEventUserMessage(event: EngineSystemEvent): string {
+    if (event.source === "pulse" && event.event === "reminder_due") {
+      const payload = {
+        source: event.source,
+        event: event.event,
+        reminderId: event.reminderId,
+        title: event.title,
+        instruction: event.instruction,
+        scheduledFor: event.scheduledFor,
+        triggeredAt: event.triggeredAt,
+        timezone: event.timezone,
+        metadata: event.metadata,
+        originRunId: event.originRunId,
+        originSessionId: event.originSessionId,
+      };
+
+      return [
+        "System event received from Pulse.",
+        "You must handle this reminder now.",
+        `Event payload: ${JSON.stringify(payload)}`,
+        "Reply to the user with a helpful reminder message and perform any requested action if needed.",
+      ].join("\n");
+    }
+
+    const summary = event.title ?? event.instruction ?? "No summary provided.";
     const payload = {
       source: event.source,
       event: event.event,
-      reminderId: event.reminderId,
+      eventId: event.eventId,
       title: event.title,
       instruction: event.instruction,
-      scheduledFor: event.scheduledFor,
       triggeredAt: event.triggeredAt,
-      timezone: event.timezone,
+      reminderId: event.reminderId,
       metadata: event.metadata,
       originRunId: event.originRunId,
       originSessionId: event.originSessionId,
     };
 
     return [
-      "System event received from Pulse.",
-      "You must handle this reminder now.",
+      "System notification received.",
+      `Source: ${event.source}`,
+      `Event: ${event.event}`,
+      `Summary: ${summary}`,
       `Event payload: ${JSON.stringify(payload)}`,
-      "Reply to the user with a helpful reminder message and perform any requested action if needed.",
+      "Decide whether immediate action is needed. If action is needed, perform it and reply with the outcome.",
     ].join("\n");
   }
 
@@ -552,6 +609,21 @@ export class IVecEngine {
       note,
     });
   }
+}
+
+function asOptionalString(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim().length > 0 ? value : undefined;
+}
+
+function asRequiredString(value: unknown): string | null {
+  return typeof value === "string" && value.trim().length > 0 ? value : null;
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+  return value as Record<string, unknown>;
 }
 
 function parseChatInboundMessage(data: unknown): ChatInboundMessage | null {

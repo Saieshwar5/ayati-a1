@@ -1,15 +1,18 @@
 import { createId } from "../shared/index.js";
-import { existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { devLog } from "../shared/index.js";
 import type {
   AgentLoopDeps,
   AgentLoopResult,
   LoopState,
   LoopConfig,
   ControllerOutput,
-  InspectDirective,
+  ContextSearchDirective,
   SessionRotationDirective,
   StepDirective,
+  CompletionDirective,
+  ScoutResult,
+  GoalContract,
+  TaskValidationContext,
 } from "./types.js";
 import { DEFAULT_LOOP_CONFIG } from "./types.js";
 
@@ -17,15 +20,15 @@ function isRotationDirective(output: ControllerOutput): output is SessionRotatio
   return !output.done && "rotate_session" in output && (output as SessionRotationDirective).rotate_session === true;
 }
 
-function isInspectDirective(output: ControllerOutput): output is InspectDirective {
-  return !output.done && "inspect_steps" in output && Array.isArray(output.inspect_steps);
+function isContextSearchDirective(output: ControllerOutput): output is ContextSearchDirective {
+  return !output.done && "context_search" in output && (output as ContextSearchDirective).context_search === true;
 }
 
-import { initRunDirectory, writeJSON, readState } from "./state-persistence.js";
-import { callController } from "./controller.js";
+import { initRunDirectory, writeState, readState } from "./state-persistence.js";
+import { callUnderstand, callReEval, callDirect } from "./controller.js";
 import { executeStep } from "./executor.js";
-
-const MAX_INSPECT_SNIPPET_CHARS = 1000;
+import { runContextScout } from "./context-scout.js";
+import type { ScoutKnownLocations } from "./context-scout.js";
 
 export async function agentLoop(deps: AgentLoopDeps): Promise<AgentLoopResult> {
   const config: LoopConfig = { ...DEFAULT_LOOP_CONFIG, ...deps.config };
@@ -37,25 +40,28 @@ export async function agentLoop(deps: AgentLoopDeps): Promise<AgentLoopResult> {
   const state: LoopState = {
     runId,
     userMessage: "",
-    goal: "",
+    goal: emptyGoalContract(),
     approach: "",
+    constraints: [],
+    taskStatus: "not_done",
+    progressLedger: emptyProgressLedger(),
     status: "running",
+    finalOutput: "",
     iteration: 0,
     maxIterations: config.maxIterations,
     consecutiveFailures: 0,
-    facts: [],
-    uncertainties: [],
     completedSteps: [],
     runPath,
     failedApproaches: [],
+    sessionHistory: [],
+    recentRunLedgers: [],
   };
 
-  // Populate user message from sessionMemory context
+  // Populate user message and session history from sessionMemory context
   state.userMessage = getPrimaryUserMessage(deps);
-  state.goal = "";
-  state.approach = "";
+  syncTransientMemoryContext(state, deps);
 
-  writeJSON(runPath, "state.json", state);
+  writeState(runPath, state);
   deps.sessionMemory.recordRunLedger?.(deps.clientId, {
     runId: deps.runHandle.runId,
     sessionId: deps.runHandle.sessionId,
@@ -63,23 +69,109 @@ export async function agentLoop(deps: AgentLoopDeps): Promise<AgentLoopResult> {
     state: "started",
   });
 
+  // --- Understand stage (iteration 0) ---
+  const systemContext = deps.systemContext ?? "";
+  const understandResult = await callUnderstand(
+    deps.provider,
+    state,
+    deps.toolDefinitions,
+    systemContext,
+    deps.controllerPrompts,
+  );
+
+  if (understandResult.done) {
+    state.status = understandResult.status === "failed" ? "failed" : "completed";
+    state.finalOutput = understandResult.summary;
+    writeState(runPath, state);
+    return {
+      type: "reply",
+      content: state.finalOutput,
+      status: state.status,
+      totalIterations: 0,
+      totalToolCalls: 0,
+      runPath,
+    };
+  }
+
+  // Store understand output on state
+  state.goal = understandResult.goal;
+  state.approach = understandResult.approach;
+  state.constraints = understandResult.constraints;
+  writeState(runPath, state);
+
+  // --- Main loop: direct stage ---
   let lastDirective: StepDirective | undefined;
 
   while (state.status === "running" && state.iteration < config.maxIterations) {
+    if (deps.signal?.aborted) {
+      const finalOutput = "Agent was stopped.";
+      state.status = "failed";
+      state.finalOutput = finalOutput;
+      writeState(runPath, state);
+      return {
+        type: "reply",
+        content: finalOutput,
+        status: "failed",
+        totalIterations: state.iteration,
+        totalToolCalls,
+        runPath,
+      };
+    }
+
     const diskState = readState(runPath);
     if (diskState) {
       Object.assign(state, diskState);
     }
+    syncTransientMemoryContext(state, deps);
 
     state.iteration++;
+
+    // Re-evaluation on consecutive failures — use scout for context
+    if (state.consecutiveFailures >= 2) {
+      const scoutLocations = buildScoutLocations(deps, runPath);
+      const failureQuery = `Analyze why the last ${state.consecutiveFailures} steps failed. Current approach: '${state.approach}'. Read failure details from run artifacts and relevant project context to suggest a different approach.`;
+      const scoutResult = await runContextScout(
+        { provider: deps.provider, maxTurns: config.maxScoutTurns },
+        failureQuery,
+        "both",
+        scoutLocations,
+      );
+
+      const reeval = await callReEval(
+        deps.provider,
+        state,
+        deps.toolDefinitions,
+        formatScoutContext(scoutResult),
+        deps.controllerPrompts,
+        systemContext,
+      );
+      if (reeval.done) {
+        state.status = reeval.status === "failed" ? "failed" : "completed";
+        state.finalOutput = reeval.summary;
+        writeState(runPath, state);
+        return {
+          type: "reply",
+          content: state.finalOutput,
+          status: state.status,
+          totalIterations: state.iteration,
+          totalToolCalls,
+          runPath,
+        };
+      }
+      state.approach = reeval.approach;
+      state.constraints = reeval.constraints;
+      state.consecutiveFailures = 0;
+      writeState(runPath, state);
+    }
 
     const controllerResolution = await resolveControllerDirective(deps, state, config, runPath);
     if (controllerResolution.type === "done") {
       state.status = controllerResolution.status === "failed" ? "failed" : "completed";
-      writeJSON(runPath, "state.json", state);
+      state.finalOutput = controllerResolution.summary;
+      writeState(runPath, state);
       return {
         type: "reply",
-        content: controllerResolution.summary,
+        content: state.finalOutput,
         status: state.status,
         totalIterations: state.iteration,
         totalToolCalls,
@@ -88,6 +180,7 @@ export async function agentLoop(deps: AgentLoopDeps): Promise<AgentLoopResult> {
     }
 
     if (controllerResolution.type === "rotate") {
+      const finalOutput = `Session rotated: ${controllerResolution.reason}`;
       deps.sessionMemory.createSession?.(deps.clientId, {
         runId: deps.runHandle.runId,
         reason: controllerResolution.reason,
@@ -95,10 +188,11 @@ export async function agentLoop(deps: AgentLoopDeps): Promise<AgentLoopResult> {
         handoffSummary: controllerResolution.handoffSummary,
       });
       state.status = "completed";
-      writeJSON(runPath, "state.json", state);
+      state.finalOutput = finalOutput;
+      writeState(runPath, state);
       return {
         type: "reply",
-        content: `Session rotated: ${controllerResolution.reason}`,
+        content: finalOutput,
         status: "completed",
         totalIterations: state.iteration,
         totalToolCalls,
@@ -108,10 +202,11 @@ export async function agentLoop(deps: AgentLoopDeps): Promise<AgentLoopResult> {
 
     if (controllerResolution.type === "failed") {
       state.status = "failed";
-      writeJSON(runPath, "state.json", state);
+      state.finalOutput = controllerResolution.message;
+      writeState(runPath, state);
       return {
         type: "reply",
-        content: controllerResolution.message,
+        content: state.finalOutput,
         status: "failed",
         totalIterations: state.iteration,
         totalToolCalls,
@@ -120,13 +215,6 @@ export async function agentLoop(deps: AgentLoopDeps): Promise<AgentLoopResult> {
     }
 
     const controllerOutput = controllerResolution.directive;
-
-    if (state.goal.trim().length === 0) {
-      state.goal = state.userMessage;
-    }
-    if (state.approach.trim().length === 0) {
-      state.approach = controllerOutput.approach;
-    }
     lastDirective = controllerOutput;
 
     const stepSummary = await executeStep(
@@ -138,54 +226,66 @@ export async function agentLoop(deps: AgentLoopDeps): Promise<AgentLoopResult> {
         clientId: deps.clientId,
         sessionMemory: deps.sessionMemory,
         runHandle: deps.runHandle,
+        taskContext: buildTaskValidationContext(state),
       },
       controllerOutput,
-      state.facts,
       state.iteration,
       runPath,
     );
 
     state.completedSteps.push(stepSummary);
 
-    for (const fact of stepSummary.newFacts) {
-      if (!state.facts.includes(fact)) {
-        state.facts.push(fact);
-      }
-    }
-
-    totalToolCalls += stepSummary.artifacts.length || 1;
+    const stepToolCalls = stepSummary.toolSuccessCount + stepSummary.toolFailureCount;
+    totalToolCalls += stepToolCalls > 0 ? stepToolCalls : 1;
 
     if (stepSummary.outcome === "failed") {
       state.consecutiveFailures++;
+
+      const fallbackReason = `failureType=${stepSummary.failureType ?? "verify_failed"}; stop=${stepSummary.stoppedEarlyReason ?? "none"}; tool_success=${stepSummary.toolSuccessCount}; tool_failed=${stepSummary.toolFailureCount}`;
+      const failureReason = stepSummary.summary.trim().length > 0
+        ? stepSummary.summary.slice(0, 300)
+        : fallbackReason;
 
       state.failedApproaches.push({
         step: stepSummary.step,
         intent: stepSummary.intent,
         tools_hint: lastDirective?.tools_hint ?? [],
         failureType: stepSummary.failureType ?? "verify_failed",
-        reason: stepSummary.evidence.slice(0, 300),
+        reason: failureReason,
         blockedTargets: stepSummary.blockedTargets ?? [],
       });
 
+      if (state.consecutiveFailures >= config.maxConsecutiveFailures - 1) {
+        deps.onStuck?.(state);
+      }
       if (state.consecutiveFailures >= config.maxConsecutiveFailures) {
         state.status = "failed";
       }
     } else {
       state.consecutiveFailures = 0;
+      state.progressLedger.lastSuccessfulStepSummary = stepSummary.summary;
+      state.progressLedger.lastStepFacts = [...stepSummary.newFacts];
+      state.progressLedger.taskEvidence = mergeUniqueValues(
+        state.progressLedger.taskEvidence,
+        stepSummary.taskEvidence ?? [],
+      );
+      state.taskStatus = stepSummary.taskStatusAfter ?? state.taskStatus;
     }
 
-    writeJSON(runPath, "state.json", state);
+    writeState(runPath, state);
     deps.onProgress?.(
       `Step ${state.iteration}: ${stepSummary.intent} → ${stepSummary.outcome}`,
       runPath,
     );
   }
 
+  const finalOutput = "I've exhausted my reasoning steps. Here's what I found so far based on my analysis.";
   state.status = "failed";
-  writeJSON(runPath, "state.json", state);
+  state.finalOutput = finalOutput;
+  writeState(runPath, state);
   return {
     type: "reply",
-    content: "I've exhausted my reasoning steps. Here's what I found so far based on my analysis.",
+    content: finalOutput,
     status: "stuck",
     totalIterations: state.iteration,
     totalToolCalls,
@@ -205,17 +305,17 @@ async function resolveControllerDirective(
   config: LoopConfig,
   runPath: string,
 ): Promise<ControllerResolution> {
-  let inspectedStepsContext = "";
-  let inspectRequeryCount = 0;
-  let inspectedStepsConsumed = 0;
+  let scoutContext = "";
+  let scoutCallCount = 0;
 
   while (true) {
-    const controllerOutput = await callController(
+    const controllerOutput = await callDirect(
       deps.provider,
       state,
       deps.toolDefinitions,
-      deps.systemContext,
-      { inspectedStepsContext },
+      scoutContext || undefined,
+      deps.controllerPrompts,
+      deps.systemContext ?? "",
     );
 
     if (controllerOutput.done) {
@@ -234,127 +334,100 @@ async function resolveControllerDirective(
       };
     }
 
-    applyDirectiveUpdates(state, controllerOutput);
-
-    if (!isInspectDirective(controllerOutput)) {
-      return { type: "step", directive: controllerOutput };
+    if (!isContextSearchDirective(controllerOutput)) {
+      return { type: "step", directive: controllerOutput as StepDirective };
     }
 
-    if (inspectRequeryCount >= config.maxInspectRequeriesPerIteration) {
+    if (scoutCallCount >= config.maxScoutCallsPerIteration) {
       return {
         type: "failed",
-        message: "I couldn't progress because repeated inspection requests exceeded the per-iteration limit.",
+        message: "I couldn't progress because repeated context search requests exceeded the per-iteration limit.",
       };
     }
 
-    const selectedSteps = sanitizeInspectSteps(
-      controllerOutput.inspect_steps,
-      state.completedSteps.length,
-      config.maxInspectStepsPerRequest,
+    const locations = buildScoutLocations(deps, runPath);
+    const result = await runContextScout(
+      { provider: deps.provider, maxTurns: config.maxScoutTurns },
+      controllerOutput.query,
+      controllerOutput.scope,
+      locations,
     );
-    const remainingInspectBudget = Math.max(0, config.maxInspectTotalStepsPerIteration - inspectedStepsConsumed);
-    const budgetedSteps = selectedSteps.slice(0, remainingInspectBudget);
-
-    if (budgetedSteps.length === 0) {
-      if (remainingInspectBudget <= 0) {
-        return {
-          type: "failed",
-          message: "I couldn't progress because inspection requests exceeded the per-iteration inspected-steps budget.",
-        };
-      }
-      inspectedStepsContext = "No valid inspect steps were requested (either out of range or unavailable). Choose the next action using available context.";
-      inspectRequeryCount++;
-      continue;
-    }
-
-    inspectedStepsContext = buildInspectedStepsContext(runPath, budgetedSteps);
-    inspectedStepsConsumed += budgetedSteps.length;
-    inspectRequeryCount++;
+    scoutContext = formatScoutContext(result);
+    scoutCallCount++;
   }
 }
 
-function applyDirectiveUpdates(state: LoopState, directive: StepDirective | InspectDirective): void {
-  if (directive.goal_update && shouldAcceptGoalUpdate(state)) {
-    state.goal = directive.goal_update;
-  }
-
-  const proposedApproach = (directive.approach_update ?? "").trim();
-  if (proposedApproach.length > 0 && shouldAcceptApproachUpdate(state, directive.approach_change_reason)) {
-    state.approach = proposedApproach;
-    return;
-  }
-
-  const fallbackApproach = "approach" in directive && typeof directive.approach === "string"
-    ? directive.approach.trim()
+function formatScoutContext(result: ScoutResult): string {
+  if (!result.summary) return "";
+  const sourceLine = result.sources.length > 0
+    ? `\nSources: ${result.sources.join(", ")}`
     : "";
-  if (fallbackApproach.length > 0 && state.approach.trim().length === 0) {
-    state.approach = fallbackApproach;
-  }
+  return `${result.summary} (confidence: ${result.confidence})${sourceLine}`;
 }
 
-function shouldAcceptGoalUpdate(state: LoopState): boolean {
-  return state.goal.trim().length === 0 || state.goal.trim() === state.userMessage.trim();
+function buildScoutLocations(deps: AgentLoopDeps, runPath: string): ScoutKnownLocations {
+  const memCtx = deps.sessionMemory.getPromptMemoryContext();
+  return {
+    runPath,
+    contextDir: "context",
+    sessionPath: memCtx.activeSessionPath ?? undefined,
+    sessionDir: "data/memory/sessions",
+    skillsDir: "data/skills",
+    runId: deps.runHandle.runId,
+    activeSessionId: deps.runHandle.sessionId,
+  };
 }
 
-function shouldAcceptApproachUpdate(state: LoopState, reason?: string): boolean {
-  if (state.approach.trim().length === 0) return true;
-  if (state.completedSteps.length === 0) return true;
-  if (state.consecutiveFailures > 0) return true;
-
-  const lastStep = state.completedSteps[state.completedSteps.length - 1];
-  if (!lastStep) return true;
-  if (lastStep.outcome === "failed") return true;
-  if (lastStep.failureType === "no_progress") return true;
-  if (typeof reason === "string" && reason.trim().length > 0) return true;
-  return false;
+function syncTransientMemoryContext(state: LoopState, deps: AgentLoopDeps): void {
+  const memCtx = deps.sessionMemory.getPromptMemoryContext();
+  // Exclude the current user message from history — it's already on state.userMessage
+  state.sessionHistory = (memCtx.conversationTurns ?? []).filter(
+    (t) => !(t.role === "user" && t.content === state.userMessage),
+  );
+  state.recentRunLedgers = memCtx.recentRunLedgers ?? [];
 }
 
-function sanitizeInspectSteps(requested: number[], maxCompletedStep: number, maxPerRequest: number): number[] {
-  const unique = new Set<number>();
-  for (const raw of requested) {
-    const step = Math.trunc(raw);
-    if (!Number.isInteger(step) || step <= 0) continue;
-    if (step > maxCompletedStep) continue;
-    unique.add(step);
-    if (unique.size >= maxPerRequest) break;
-  }
-  return [...unique];
+function emptyGoalContract(): GoalContract {
+  return {
+    objective: "",
+    done_when: [],
+    required_evidence: [],
+    ask_user_when: [],
+    stop_when_no_progress: [],
+  };
 }
 
-function buildInspectedStepsContext(runPath: string, steps: number[]): string {
-  const lines = [
-    `Inspection root: ${runPath}`,
-  ];
-
-  for (const step of steps) {
-    const pad = String(step).padStart(3, "0");
-    const actRel = `steps/${pad}-act.json`;
-    const verifyRel = `steps/${pad}-verify.json`;
-    const actPath = join(runPath, actRel);
-    const verifyPath = join(runPath, verifyRel);
-
-    lines.push("");
-    lines.push(`Step ${step}:`);
-    lines.push(`- act_file: ${actPath}`);
-    lines.push(`- verify_file: ${verifyPath}`);
-    lines.push(`- act_content: ${readFileSnippet(actPath)}`);
-    lines.push(`- verify_content: ${readFileSnippet(verifyPath)}`);
-  }
-
-  return lines.join("\n");
+function emptyProgressLedger(): LoopState["progressLedger"] {
+  return {
+    lastSuccessfulStepSummary: "",
+    lastStepFacts: [],
+    taskEvidence: [],
+  };
 }
 
-function readFileSnippet(filePath: string): string {
-  if (!existsSync(filePath)) return "[missing file]";
+function buildTaskValidationContext(state: LoopState): TaskValidationContext {
+  return {
+    userMessage: state.userMessage,
+    goal: state.goal,
+    taskStatus: state.taskStatus,
+    approach: state.approach,
+    latestSuccessfulStepSummary: state.progressLedger.lastSuccessfulStepSummary,
+    latestStepNewFacts: state.progressLedger.lastStepFacts,
+    recentStepDigests: buildRecentStepDigests(state),
+  };
+}
 
-  try {
-    const raw = readFileSync(filePath, "utf-8").replace(/\s+/g, " ").trim();
-    if (raw.length <= MAX_INSPECT_SNIPPET_CHARS) return raw;
-    return `${raw.slice(0, MAX_INSPECT_SNIPPET_CHARS)}...`;
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    return `[failed to read file: ${message}]`;
-  }
+function buildRecentStepDigests(state: LoopState): string[] {
+  return state.completedSteps
+    .slice(-5)
+    .map((step) => {
+      const summary = step.summary.trim().length > 0 ? step.summary.trim() : "(no summary)";
+      return `step ${step.step}: ${step.intent} -> ${step.outcome} | ${summary.slice(0, 140)}`;
+    });
+}
+
+function mergeUniqueValues(existing: string[], incoming: string[]): string[] {
+  return [...new Set([...existing, ...incoming])];
 }
 
 function getPrimaryUserMessage(deps: AgentLoopDeps): string {

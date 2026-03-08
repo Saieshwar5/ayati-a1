@@ -13,6 +13,8 @@ export function assemblePromptInput(
     userProfile: staticContext.userProfile,
     conversationTurns: memoryContext.conversationTurns,
     previousSessionSummary: memoryContext.previousSessionSummary,
+    activeSessionPath: memoryContext.activeSessionPath,
+    recentRunLedgers: memoryContext.recentRunLedgers,
     skillBlocks: staticContext.skillBlocks,
     toolDirectory: staticContext.toolDirectory,
     sessionStatus,

@@ -131,12 +131,11 @@ export class SessionPersistence {
   getActiveSessionInfo(clientId?: string): ActiveSessionInfo | null {
     if (clientId) {
       const active = this.metaIndex.getActiveSession(clientId);
-      if (active) {
-        return {
-          sessionId: active.sessionId,
-          sessionPath: normalizePath(active.sessionPath),
-        };
-      }
+      if (!active) return null;
+      return {
+        sessionId: active.sessionId,
+        sessionPath: normalizePath(active.sessionPath),
+      };
     }
 
     const markerPath = resolve(this.sessionsDir, "active-session.json");
@@ -216,12 +215,22 @@ export class SessionPersistence {
     ts: string,
     options?: { parentSessionId?: string; handoffSummary?: string },
   ): void {
-    this.metaIndex.resumeSession(sessionId, clientId, normalizePath(sessionPath), ts, options);
-    const filePath = this.resolveSessionAbsolutePath(sessionPath);
+    const normalizedSessionPath = normalizePath(sessionPath);
+    this.metaIndex.resumeSession(sessionId, clientId, normalizedSessionPath, ts, options);
+    const filePath = this.resolveSessionAbsolutePath(normalizedSessionPath);
     const patch: Partial<Pick<
       SessionDocumentMetadata,
-      "status" | "closed_at" | "close_reason" | "updated_at" | "parent_session_id" | "handoff_summary"
+      | "client_id"
+      | "session_path"
+      | "status"
+      | "closed_at"
+      | "close_reason"
+      | "updated_at"
+      | "parent_session_id"
+      | "handoff_summary"
     >> = {
+      client_id: clientId,
+      session_path: normalizedSessionPath,
       status: "active",
       closed_at: null,
       close_reason: null,
@@ -340,12 +349,15 @@ export class SessionPersistence {
     const metadata = this.parseSessionMetadata(content);
     const inferredPath = this.toRelativeSessionPath(filePath);
     let session: InMemorySession | null = null;
+    const metadataClientId = typeof metadata?.client_id === "string" && metadata.client_id.trim().length > 0
+      ? metadata.client_id.trim()
+      : null;
 
     for (const event of events) {
       if (event.type === "session_open") {
         session = new InMemorySession(
           event.sessionId,
-          event.clientId,
+          metadataClientId ?? event.clientId,
           event.ts,
           inferredPath,
         );
@@ -366,6 +378,10 @@ export class SessionPersistence {
         metadata.opened_at,
         inferredPath,
       );
+    }
+
+    if (session && metadata?.handoff_summary && !session.handoffSummary) {
+      session.handoffSummary = metadata.handoff_summary;
     }
 
     return session;
@@ -592,7 +608,14 @@ export class SessionPersistence {
     filePath: string,
     patch: Partial<Pick<
       SessionDocumentMetadata,
-      "status" | "closed_at" | "close_reason" | "handoff_summary" | "updated_at" | "parent_session_id"
+      | "client_id"
+      | "session_path"
+      | "status"
+      | "closed_at"
+      | "close_reason"
+      | "handoff_summary"
+      | "updated_at"
+      | "parent_session_id"
     >>,
   ): void {
     if (!existsSync(filePath)) return;

@@ -34,10 +34,21 @@ export interface SessionStatus {
   sessionAgeMinutes: number;
 }
 
+export interface PromptRunLedger {
+  timestamp: string;
+  runId: string;
+  runPath: string;
+  state: "started" | "completed";
+  status?: "completed" | "failed" | "stuck";
+  summary?: string;
+}
+
 export interface PromptMemoryContext {
   conversationTurns: ConversationTurn[];
   previousSessionSummary: string;
   activeTopicLabel?: string;
+  activeSessionPath?: string;
+  recentRunLedgers?: PromptRunLedger[];
 }
 
 export interface MemoryRunHandle {

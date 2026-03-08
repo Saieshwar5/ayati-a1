@@ -150,6 +150,25 @@ export class InMemorySession {
     return this.getAgentStepEntries(limit);
   }
 
+  getRecentUniqueRunLedgerEvents(limit = 5): RunLedgerEvent[] {
+    if (limit <= 0) return [];
+
+    const uniqueRunIds = new Set<string>();
+    const events: RunLedgerEvent[] = [];
+
+    for (let idx = this.timeline.length - 1; idx >= 0; idx--) {
+      const entry = this.timeline[idx];
+      if (!entry || entry.type !== "run_ledger") continue;
+      if (uniqueRunIds.has(entry.runId)) continue;
+
+      uniqueRunIds.add(entry.runId);
+      events.push(entry);
+      if (events.length >= limit) break;
+    }
+
+    return events;
+  }
+
   findToolCallArgs(toolCallId: string): string {
     for (const entry of this.timeline) {
       if (entry.type === "tool_call" && entry.toolCallId === toolCallId) {

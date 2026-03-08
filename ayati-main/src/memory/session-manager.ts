@@ -483,9 +483,20 @@ export class MemoryManager implements SessionMemory {
   }
 
   getPromptMemoryContext(): PromptMemoryContext {
+    const recentRunLedgers = (this.currentSession?.getRecentUniqueRunLedgerEvents(5) ?? []).map((event) => ({
+      timestamp: event.ts,
+      runId: event.runId,
+      runPath: event.runPath,
+      state: event.state,
+      status: event.status,
+      summary: event.summary,
+    }));
+
     return {
       conversationTurns: this.currentSession?.getConversationTurns() ?? [],
       previousSessionSummary: this.currentSession?.handoffSummary ?? "",
+      activeSessionPath: this.currentSession?.sessionPath ?? "",
+      recentRunLedgers,
     };
   }
 
@@ -539,8 +550,13 @@ export class MemoryManager implements SessionMemory {
       const restoredFromCandidate = this.persistence.replaySessionFile(
         this.persistence.resolveSessionAbsolutePath(candidate.sessionPath),
       );
-      if (restoredFromCandidate && restoredFromCandidate.clientId === clientId) {
-        return restoredFromCandidate;
+      if (restoredFromCandidate) {
+        if (restoredFromCandidate.clientId === clientId) {
+          return restoredFromCandidate;
+        }
+        if (source === "marker" || source === "active_row") {
+          return this.reassignSessionClient(restoredFromCandidate, clientId);
+        }
       }
 
       if (candidate.sessionPath.endsWith(".jsonl")) {
@@ -551,8 +567,13 @@ export class MemoryManager implements SessionMemory {
           const restoredFromMarkdown = this.persistence.replaySessionFile(
             this.persistence.resolveSessionAbsolutePath(markdownPath),
           );
-          if (restoredFromMarkdown && restoredFromMarkdown.clientId === clientId) {
-            return restoredFromMarkdown;
+          if (restoredFromMarkdown) {
+            if (restoredFromMarkdown.clientId === clientId) {
+              return restoredFromMarkdown;
+            }
+            if (source === "marker" || source === "active_row") {
+              return this.reassignSessionClient(restoredFromMarkdown, clientId);
+            }
           }
         }
       }
@@ -751,6 +772,24 @@ export class MemoryManager implements SessionMemory {
     }
 
     return migrated;
+  }
+
+  private reassignSessionClient(session: InMemorySession, clientId: string): InMemorySession {
+    if (session.clientId === clientId) {
+      return session;
+    }
+
+    const reassigned = new InMemorySession(
+      session.id,
+      clientId,
+      session.startedAt,
+      session.sessionPath,
+    );
+    reassigned.handoffSummary = session.handoffSummary;
+    for (const entry of session.timeline) {
+      reassigned.addEntry(entry);
+    }
+    return reassigned;
   }
 }
 

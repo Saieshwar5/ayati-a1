@@ -20,6 +20,17 @@ describe("buildSystemPrompt", () => {
         { role: "assistant", content: "B", timestamp: "t2", sessionPath: "s/p" },
       ],
       previousSessionSummary: "Session summary",
+      activeSessionPath: "sessions/s-123.md",
+      recentRunLedgers: [
+        {
+          timestamp: "2026-02-16T00:00:00.000Z",
+          runId: "run-1",
+          runPath: "data/runs/run-1",
+          state: "completed",
+          status: "completed",
+          summary: "Finished task successfully",
+        },
+      ],
       skillBlocks: [{ id: "skill-1", content: "Do X" }],
     });
 
@@ -28,17 +39,23 @@ describe("buildSystemPrompt", () => {
     const profilePos = output.systemPrompt.indexOf("# User Profile");
     const conversationPos = output.systemPrompt.indexOf("# Previous Conversation");
     const memoryPos = output.systemPrompt.indexOf("# Memory");
+    const currentSessionPos = output.systemPrompt.indexOf("# Current Session");
+    const recentRunsPos = output.systemPrompt.indexOf("# Recent Runs");
     const skillsPos = output.systemPrompt.indexOf("# Skills");
 
     expect(soulPos).toBeGreaterThan(0);
     expect(profilePos).toBeGreaterThan(soulPos);
     expect(conversationPos).toBeGreaterThan(profilePos);
     expect(memoryPos).toBeGreaterThan(conversationPos);
-    expect(skillsPos).toBeGreaterThan(memoryPos);
+    expect(currentSessionPos).toBeGreaterThan(memoryPos);
+    expect(recentRunsPos).toBeGreaterThan(currentSessionPos);
+    expect(skillsPos).toBeGreaterThan(recentRunsPos);
     expect(output.systemPrompt).toContain("[t1]");
     expect(output.systemPrompt).toContain("[t2]");
     expect(output.systemPrompt).toContain("Name: CustomName");
     expect(output.systemPrompt).toContain("Session summary");
+    expect(output.systemPrompt).toContain("session_path: sessions/s-123.md");
+    expect(output.systemPrompt).toContain("runId=run-1");
 
     expect(output.sections.map((s) => s.id)).toEqual([
       "base",
@@ -46,6 +63,8 @@ describe("buildSystemPrompt", () => {
       "user_profile",
       "conversation",
       "memory",
+      "current_session",
+      "recent_runs",
       "skills",
       "tools",
       "session_status",

@@ -438,6 +438,55 @@ describe("MemoryManager markdown persistence", () => {
     manager2.shutdown();
   });
 
+  it("reassigns marker-restored session to the requested client", () => {
+    const now = new Date("2026-02-08T09:15:00.000Z");
+    const baseDir = mkdtempSync(join(tmpdir(), "ayati-memory-"));
+    const dbPath = join(baseDir, "memory.sqlite");
+
+    const manager1 = new SessionManager({
+      dbPath,
+      dataDir: baseDir,
+      now: () => new Date(now),
+    });
+    manager1.initialize("c-random-socket");
+    const run = manager1.beginRun("c-random-socket", "hello");
+    manager1.recordAssistantFinal("c-random-socket", run.runId, run.sessionId, "world");
+    manager1.shutdown();
+
+    const manager2 = new SessionManager({
+      dbPath,
+      dataDir: baseDir,
+      now: () => new Date(now),
+    });
+    manager2.initialize("local");
+    const resumed = manager2.beginRun("local", "resume");
+    expect(resumed.sessionId).toBe(run.sessionId);
+
+    const prompt = manager2.getPromptMemoryContext();
+    expect(prompt.conversationTurns.some((turn) => turn.content === "hello")).toBe(true);
+
+    const db = new DatabaseSync(dbPath);
+    const row = db.prepare(`
+      SELECT client_id, status, close_reason
+      FROM sessions_meta
+      WHERE session_id = ?
+    `).get(run.sessionId) as {
+      client_id: string;
+      status: string;
+      close_reason: string | null;
+    };
+    expect(row.client_id).toBe("local");
+    expect(row.status).toBe("active");
+    expect(row.close_reason).toBeNull();
+    db.close();
+
+    const sessionFile = findSessionFile(baseDir, run.sessionId);
+    const content = readFileSync(sessionFile, "utf8");
+    expect(content).toContain("\"client_id\":\"local\"");
+
+    manager2.shutdown();
+  });
+
   it("recovers last crashed session when marker is missing", () => {
     const now = new Date("2026-02-08T09:30:00.000Z");
     const baseDir = mkdtempSync(join(tmpdir(), "ayati-memory-"));

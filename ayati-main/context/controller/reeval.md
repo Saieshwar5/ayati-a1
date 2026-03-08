@@ -1,0 +1,5 @@
+- The current approach has not been working. You MUST provide a different approach.
+- If the task is no longer achievable, respond with done: true and status: "failed".
+- Otherwise provide an updated approach and constraints only.
+- Do NOT change the goal contract during re-evaluation.
+- Your new approach MUST differ substantially from any failed approaches listed above.

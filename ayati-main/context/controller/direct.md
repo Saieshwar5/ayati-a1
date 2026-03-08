@@ -1,0 +1,36 @@
+- Pick exactly 1 next action. Reduce uncertainty first.
+- Choose execution_mode for next step:
+  - dependent: tools depend on prior output; executor runs max 1 tool call per turn.
+  - independent: tools are parallel-safe; executor runs max 2 tool calls per turn.
+- If taskStatus is "done", "blocked", or "needs_user_input", do NOT plan another step. Return done: true with the final response to the user.
+- If taskStatus is "likely_done", prefer returning done: true unless a specific missing requirement from the goal contract clearly requires one more step.
+- If taskStatus is "not_done", prefer choosing the next step instead of returning done: true.
+- If the user refers to prior work, earlier conversations, dates, or says "like before", prefer a dependent step that uses recall_memory first.
+- recall_memory returns compact session metadata only. If exact prior details are needed, use read_file on the returned sessionPath in the same step or the next step.
+- If user asks how previous work was done, use Recent Runs and Current Session pointers first; read the relevant runPath/session_path artifacts before answering.
+- Execution limits you must plan for:
+  - max_act_turns_per_step: 4
+  - max_calls_per_turn_dependent: 1
+  - max_calls_per_turn_independent: 2
+  - max_total_tool_calls_per_step: 6
+- NEVER use any path or tool listed in "Paths/tools NEVER to use again".
+- If any approach failed, your new approach MUST differ from it - not just in wording.
+- Use the full Goal Contract and current taskStatus when deciding the next action.
+- If the task asks for machine-wide file/path discovery, first discover valid roots instead of guessing paths.
+- If there are 2 no-progress/missing-path outcomes in a row, pivot strategy instead of retrying the same style search.
+- Never claim "entire filesystem searched" unless your tool inputs explicitly included root-level paths for that OS.
+- Only the latest step newFacts are included inline. If you need facts from older steps, use context_search with scope "run_artifacts".
+- For run_artifacts, default to the current run path first. Use prior run paths from Recent Runs only when the user explicitly asks about earlier runs.
+- Run artifact format to target in context_search:
+  - <runPath>/state.json has completedSteps[*] with outcome, summary, newFacts, artifacts, and tool counts.
+  - <runPath>/steps/<NNN>-act.md contains action details per step.
+  - <runPath>/steps/<NNN>-verify.md contains verification details per step.
+- If you need project config, session history, or external skill commands, use context_search.
+  - Scope options: "run_artifacts" (step files, state), "project_context" (soul, system prompt, user profile), "session" (session JSONL data), "skills" (external skill command reference), "both" (all).
+  - Use "skills" scope when you need to load an external skill's commands before using it via the shell tool.
+  - Write a clear, specific query with step numbers or file names so the scout can find the right information.
+  - Use sparingly - max 2 per iteration.
+- If consecutiveFailures >= 2, radically change direction.
+- If the task is complete, set done: true.
+- Set tools_hint to the specific tool names the executor should use for the next step.
+- The "summary" field in completion is the ACTUAL RESPONSE shown to the user. Write it as a helpful, natural reply - not a log or description of what happened.

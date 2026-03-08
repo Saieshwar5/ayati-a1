@@ -16,6 +16,7 @@ import { builtInSkillsProvider } from "../skills/provider.js";
 import { createIdentitySkill } from "../skills/builtins/identity/index.js";
 import { createRecallSkill } from "../skills/builtins/recall/index.js";
 import { PulseScheduler, PulseStore } from "../pulse/index.js";
+import { scanExternalSkills, stopExternalSkills, buildExternalSkillsBlock } from "../skills/external/index.js";
 import { DocumentProcessor } from "../documents/document-processor.js";
 import { RecursiveContextAgent } from "../subagents/context-extractor/recursive-context-agent.js";
 
@@ -69,8 +70,13 @@ export async function main(): Promise<void> {
   staticContext.skillBlocks.push({ id: identitySkill.id, content: identitySkill.promptBlock });
   staticContext.skillBlocks.push({ id: recallSkill.id, content: recallSkill.promptBlock });
 
+  const externalSkills = await scanExternalSkills(resolve(projectRoot, "data", "skills"));
+  if (externalSkills.length > 0) {
+    staticContext.skillBlocks.push(buildExternalSkillsBlock(externalSkills));
+  }
+
   const wsServer = new WsServer({
-    onMessage: (clientId, data) => engine?.handleMessage(clientId, data),
+    onMessage: (_transportClientId, data) => engine?.handleMessage(CLIENT_ID, data),
   });
 
   const pulseScheduler = new PulseScheduler({
@@ -87,6 +93,7 @@ export async function main(): Promise<void> {
   const contextAgent = new RecursiveContextAgent({
     provider,
   });
+
   engine = new IVecEngine({
     onReply: wsServer.send.bind(wsServer),
     provider,
@@ -112,7 +119,7 @@ export async function main(): Promise<void> {
   console.log(`Ayati i-vec ready — plugins: [${registry.list().join(", ")}]`);
 
   const shutdown = async (): Promise<void> => {
-  
+    await stopExternalSkills(externalSkills);
     await registry.stopAll();
     await pulseScheduler.stop();
     await wsServer.stop();

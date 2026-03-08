@@ -198,6 +198,47 @@ describe("IVecEngine", () => {
     }
   });
 
+  it("processes generic external system_event through beginSystemRun", async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "ayati-eng-external-event-"));
+    try {
+      const provider = createMockProvider();
+      const onReply = vi.fn();
+      const sessionMemory = createSessionMemory();
+      const engine = new IVecEngine({ onReply, provider, sessionMemory, dataDir });
+
+      await engine.start();
+
+      await engine.handleSystemEvent("c1", {
+        type: "system_event",
+        source: "gmail-cli",
+        event: "new_messages",
+        eventId: "notif-1",
+        title: "3 new emails from work",
+        instruction: "Notification from gmail-cli: 3 new emails from work",
+        triggeredAt: "2026-03-01T10:00:05.000Z",
+        metadata: {
+          priority: "normal",
+          payload: { unreadCount: 3 },
+        },
+      });
+
+      expect(sessionMemory.beginSystemRun as ReturnType<typeof vi.fn>).toHaveBeenCalledWith(
+        "c1",
+        expect.objectContaining({ source: "gmail-cli", event: "new_messages", eventId: "notif-1" }),
+      );
+      expect(onReply).toHaveBeenCalledWith("c1", {
+        type: "reply",
+        content: "mock reply",
+      });
+      expect(sessionMemory.recordSystemEventOutcome as ReturnType<typeof vi.fn>).toHaveBeenCalledWith(
+        "c1",
+        expect.objectContaining({ eventId: "notif-1", status: "completed" }),
+      );
+    } finally {
+      rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+
   it("rotates session before beginRun when pre-turn policy requires it", async () => {
     const dataDir = mkdtempSync(join(tmpdir(), "ayati-eng-rotate-"));
     try {
