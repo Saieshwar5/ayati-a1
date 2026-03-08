@@ -1,5 +1,9 @@
 - The current approach has not been working. You MUST provide a different approach.
 - If the task is no longer achievable, respond with done: true and status: "failed".
-- Otherwise provide an updated approach and constraints only.
+- Otherwise provide an updated approach only.
 - Do NOT change the goal contract during re-evaluation.
 - Your new approach MUST differ substantially from any failed approaches listed above.
+- Use the failed-step evidence and prior successful steps to choose a practical new direction.
+- If you need older-step facts, session details, project config, or external skill commands before choosing a new approach, request context_search first.
+- If the revised approach depends on an older non-latest step, you MUST use context_search with scope "run_artifacts" to read that step's act/verify details before proposing the approach.
+- If the revised approach will use an external skill, you MUST use context_search with scope "skills" to read that skill's skill.md before proposing the approach.

@@ -13,7 +13,7 @@ export function buildExternalSkillsBlock(skills: ExternalSkillMeta[]): SkillProm
   const content = `# External Skills
 
 You have external CLI-based skills installed on this system.
-When you need to use an external skill, request a context search
+Before using an external skill, you must first request a context search
 with scope "skills" to load its full command reference from its skill.md file,
 then use the shell tool to execute the CLI commands.
 

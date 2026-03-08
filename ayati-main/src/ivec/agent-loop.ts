@@ -1,5 +1,4 @@
 import { createId } from "../shared/index.js";
-import { devLog } from "../shared/index.js";
 import type {
   AgentLoopDeps,
   AgentLoopResult,
@@ -7,6 +6,7 @@ import type {
   LoopConfig,
   ControllerOutput,
   ContextSearchDirective,
+  ReEvalDirective,
   SessionRotationDirective,
   StepDirective,
   CompletionDirective,
@@ -29,6 +29,7 @@ import { callUnderstand, callReEval, callDirect } from "./controller.js";
 import { executeStep } from "./executor.js";
 import { runContextScout } from "./context-scout.js";
 import type { ScoutKnownLocations } from "./context-scout.js";
+import { lookupContextCache, storeContextCache } from "./context-cache.js";
 
 export async function agentLoop(deps: AgentLoopDeps): Promise<AgentLoopResult> {
   const config: LoopConfig = { ...DEFAULT_LOOP_CONFIG, ...deps.config };
@@ -42,7 +43,6 @@ export async function agentLoop(deps: AgentLoopDeps): Promise<AgentLoopResult> {
     userMessage: "",
     goal: emptyGoalContract(),
     approach: "",
-    constraints: [],
     taskStatus: "not_done",
     progressLedger: emptyProgressLedger(),
     status: "running",
@@ -50,6 +50,7 @@ export async function agentLoop(deps: AgentLoopDeps): Promise<AgentLoopResult> {
     iteration: 0,
     maxIterations: config.maxIterations,
     consecutiveFailures: 0,
+    approachChangeCount: 0,
     completedSteps: [],
     runPath,
     failedApproaches: [],
@@ -96,7 +97,6 @@ export async function agentLoop(deps: AgentLoopDeps): Promise<AgentLoopResult> {
   // Store understand output on state
   state.goal = understandResult.goal;
   state.approach = understandResult.approach;
-  state.constraints = understandResult.constraints;
   writeState(runPath, state);
 
   // --- Main loop: direct stage ---
@@ -125,29 +125,36 @@ export async function agentLoop(deps: AgentLoopDeps): Promise<AgentLoopResult> {
     syncTransientMemoryContext(state, deps);
 
     state.iteration++;
+    const scoutBudget: ContextSearchBudget = { used: 0 };
 
-    // Re-evaluation on consecutive failures — use scout for context
-    if (state.consecutiveFailures >= 2) {
-      const scoutLocations = buildScoutLocations(deps, runPath);
-      const failureQuery = `Analyze why the last ${state.consecutiveFailures} steps failed. Current approach: '${state.approach}'. Read failure details from run artifacts and relevant project context to suggest a different approach.`;
-      const scoutResult = await runContextScout(
-        { provider: deps.provider, maxTurns: config.maxScoutTurns },
-        failureQuery,
-        "both",
-        scoutLocations,
-      );
+    // Re-evaluation after a failed step
+    if (state.consecutiveFailures >= 1) {
+      if (state.approachChangeCount >= config.maxApproachChanges) {
+        const finalOutput = `I couldn't complete the task after changing approach ${config.maxApproachChanges} times.`;
+        state.status = "failed";
+        state.finalOutput = finalOutput;
+        writeState(runPath, state);
+        return {
+          type: "reply",
+          content: finalOutput,
+          status: "failed",
+          totalIterations: state.iteration,
+          totalToolCalls,
+          runPath,
+        };
+      }
 
-      const reeval = await callReEval(
-        deps.provider,
+      const reevalResolution = await resolveReEvalDirective(
+        deps,
         state,
-        deps.toolDefinitions,
-        formatScoutContext(scoutResult),
-        deps.controllerPrompts,
+        config,
+        runPath,
+        scoutBudget,
         systemContext,
       );
-      if (reeval.done) {
-        state.status = reeval.status === "failed" ? "failed" : "completed";
-        state.finalOutput = reeval.summary;
+      if (reevalResolution.type === "done") {
+        state.status = reevalResolution.status === "failed" ? "failed" : "completed";
+        state.finalOutput = reevalResolution.summary;
         writeState(runPath, state);
         return {
           type: "reply",
@@ -158,13 +165,44 @@ export async function agentLoop(deps: AgentLoopDeps): Promise<AgentLoopResult> {
           runPath,
         };
       }
-      state.approach = reeval.approach;
-      state.constraints = reeval.constraints;
+
+      if (reevalResolution.type === "failed") {
+        state.status = "failed";
+        state.finalOutput = reevalResolution.message;
+        writeState(runPath, state);
+        return {
+          type: "reply",
+          content: state.finalOutput,
+          status: "failed",
+          totalIterations: state.iteration,
+          totalToolCalls,
+          runPath,
+        };
+      }
+
+      const nextApproach = reevalResolution.directive.approach.trim();
+      if (nextApproach.length === 0 || normalizeApproach(nextApproach) === normalizeApproach(state.approach)) {
+        const finalOutput = "I couldn't find a different working approach after the latest failure.";
+        state.status = "failed";
+        state.finalOutput = finalOutput;
+        writeState(runPath, state);
+        return {
+          type: "reply",
+          content: finalOutput,
+          status: "failed",
+          totalIterations: state.iteration,
+          totalToolCalls,
+          runPath,
+        };
+      }
+
+      state.approach = nextApproach;
+      state.approachChangeCount++;
       state.consecutiveFailures = 0;
       writeState(runPath, state);
     }
 
-    const controllerResolution = await resolveControllerDirective(deps, state, config, runPath);
+    const controllerResolution = await resolveControllerDirective(deps, state, config, runPath, scoutBudget);
     if (controllerResolution.type === "done") {
       state.status = controllerResolution.status === "failed" ? "failed" : "completed";
       state.finalOutput = controllerResolution.summary;
@@ -299,24 +337,108 @@ type ControllerResolution =
   | { type: "rotate"; reason: string; handoffSummary: string }
   | { type: "failed"; message: string };
 
+type ReEvalResolution =
+  | { type: "reeval"; directive: ReEvalDirective }
+  | { type: "done"; summary: string; status: "completed" | "failed" }
+  | { type: "failed"; message: string };
+
+type ContextSearchBudget = { used: number };
+
+type ContextAwareDirective = StepDirective | ReEvalDirective | SessionRotationDirective;
+
+type ContextAwareResolution =
+  | { type: "directive"; directive: ContextAwareDirective }
+  | { type: "done"; summary: string; status: "completed" | "failed" }
+  | { type: "failed"; message: string };
+
 async function resolveControllerDirective(
   deps: AgentLoopDeps,
   state: LoopState,
   config: LoopConfig,
   runPath: string,
+  scoutBudget: ContextSearchBudget,
 ): Promise<ControllerResolution> {
-  let scoutContext = "";
-  let scoutCallCount = 0;
-
-  while (true) {
-    const controllerOutput = await callDirect(
+  const resolution = await resolveContextAwareController(
+    deps,
+    state,
+    config,
+    runPath,
+    scoutBudget,
+    (scoutContext) => callDirect(
       deps.provider,
       state,
       deps.toolDefinitions,
-      scoutContext || undefined,
+      scoutContext,
       deps.controllerPrompts,
       deps.systemContext ?? "",
-    );
+    ),
+  );
+
+  if (resolution.type !== "directive") {
+    return resolution;
+  }
+
+  if (isRotationDirective(resolution.directive)) {
+    return {
+      type: "rotate",
+      reason: resolution.directive.reason,
+      handoffSummary: resolution.directive.handoff_summary,
+    };
+  }
+
+  return { type: "step", directive: resolution.directive as StepDirective };
+}
+
+async function resolveReEvalDirective(
+  deps: AgentLoopDeps,
+  state: LoopState,
+  config: LoopConfig,
+  runPath: string,
+  scoutBudget: ContextSearchBudget,
+  systemContext: string,
+): Promise<ReEvalResolution> {
+  const resolution = await resolveContextAwareController(
+    deps,
+    state,
+    config,
+    runPath,
+    scoutBudget,
+    (scoutContext) => callReEval(
+      deps.provider,
+      state,
+      deps.toolDefinitions,
+      scoutContext,
+      deps.controllerPrompts,
+      systemContext,
+    ),
+  );
+
+  if (resolution.type !== "directive") {
+    return resolution;
+  }
+
+  if (!("reeval" in resolution.directive) || resolution.directive.reeval !== true) {
+    return {
+      type: "failed",
+      message: "I couldn't determine a revised approach after the latest failure.",
+    };
+  }
+
+  return { type: "reeval", directive: resolution.directive };
+}
+
+async function resolveContextAwareController(
+  deps: AgentLoopDeps,
+  state: LoopState,
+  config: LoopConfig,
+  runPath: string,
+  scoutBudget: ContextSearchBudget,
+  invoke: (scoutContext?: string) => Promise<ContextAwareDirective | ContextSearchDirective | CompletionDirective>,
+): Promise<ContextAwareResolution> {
+  let scoutContext = "";
+
+  while (true) {
+    const controllerOutput = await invoke(scoutContext || undefined);
 
     if (controllerOutput.done) {
       return {
@@ -326,19 +448,11 @@ async function resolveControllerDirective(
       };
     }
 
-    if (isRotationDirective(controllerOutput)) {
-      return {
-        type: "rotate",
-        reason: controllerOutput.reason,
-        handoffSummary: controllerOutput.handoff_summary,
-      };
-    }
-
     if (!isContextSearchDirective(controllerOutput)) {
-      return { type: "step", directive: controllerOutput as StepDirective };
+      return { type: "directive", directive: controllerOutput as ContextAwareDirective };
     }
 
-    if (scoutCallCount >= config.maxScoutCallsPerIteration) {
+    if (scoutBudget.used >= config.maxScoutCallsPerIteration) {
       return {
         type: "failed",
         message: "I couldn't progress because repeated context search requests exceeded the per-iteration limit.",
@@ -346,14 +460,33 @@ async function resolveControllerDirective(
     }
 
     const locations = buildScoutLocations(deps, runPath);
+    scoutBudget.used++;
+
+    const cachedResult = lookupContextCache(runPath, {
+      scope: controllerOutput.scope,
+      query: controllerOutput.query,
+      knownLocations: locations,
+      iteration: state.iteration,
+    });
+    if (cachedResult) {
+      scoutContext = formatScoutContext(cachedResult);
+      continue;
+    }
+
     const result = await runContextScout(
       { provider: deps.provider, maxTurns: config.maxScoutTurns },
       controllerOutput.query,
       controllerOutput.scope,
       locations,
     );
+    storeContextCache(runPath, {
+      scope: controllerOutput.scope,
+      query: controllerOutput.query,
+      knownLocations: locations,
+      iteration: state.iteration,
+      result,
+    });
     scoutContext = formatScoutContext(result);
-    scoutCallCount++;
   }
 }
 
@@ -428,6 +561,10 @@ function buildRecentStepDigests(state: LoopState): string[] {
 
 function mergeUniqueValues(existing: string[], incoming: string[]): string[] {
   return [...new Set([...existing, ...incoming])];
+}
+
+function normalizeApproach(value: string): string {
+  return value.replace(/\s+/g, " ").trim().toLowerCase();
 }
 
 function getPrimaryUserMessage(deps: AgentLoopDeps): string {

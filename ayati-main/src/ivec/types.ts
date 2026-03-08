@@ -36,7 +36,6 @@ export interface LoopState {
   userMessage: string;
   goal: GoalContract;
   approach: string;
-  constraints: string[];
   taskStatus: TaskStatus;
   progressLedger: ProgressLedger;
   status: "running" | "completed" | "failed";
@@ -44,6 +43,7 @@ export interface LoopState {
   iteration: number;
   maxIterations: number;
   consecutiveFailures: number;
+  approachChangeCount: number;
   completedSteps: StepSummary[];
   runPath: string;
   failedApproaches: FailedApproach[];
@@ -75,14 +75,12 @@ export interface UnderstandDirective {
   understand: true;
   goal: GoalContract;
   approach: string;
-  constraints: string[];
 }
 
 export interface ReEvalDirective {
   done: false;
   reeval: true;
   approach: string;
-  constraints: string[];
 }
 
 export interface StepDirective {
@@ -170,6 +168,7 @@ export interface LoopConfig {
   maxIterations: number;
   maxToolCallsPerStep: number;
   maxConsecutiveFailures: number;
+  maxApproachChanges: number;
   maxScoutTurns: number;
   maxScoutCallsPerIteration: number;
   maxTotalToolCallsPerStep: number;
@@ -179,6 +178,7 @@ export const DEFAULT_LOOP_CONFIG: LoopConfig = {
   maxIterations: 15,
   maxToolCallsPerStep: 4,
   maxConsecutiveFailures: 5,
+  maxApproachChanges: 4,
   maxScoutTurns: 5,
   maxScoutCallsPerIteration: 2,
   maxTotalToolCallsPerStep: 6,

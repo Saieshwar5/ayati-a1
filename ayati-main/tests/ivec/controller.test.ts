@@ -37,7 +37,6 @@ function createState(overrides?: Partial<LoopState>): LoopState {
       stop_when_no_progress: [],
     },
     approach: "direct",
-    constraints: [],
     taskStatus: "not_done",
     progressLedger: {
       lastSuccessfulStepSummary: "",
@@ -49,6 +48,7 @@ function createState(overrides?: Partial<LoopState>): LoopState {
     iteration: 0,
     maxIterations: 15,
     consecutiveFailures: 0,
+    approachChangeCount: 0,
     completedSteps: [],
     runPath: "/tmp/test",
     failedApproaches: [],
@@ -96,7 +96,6 @@ describe("parseUnderstandResponse", () => {
         stop_when_no_progress: ["two searches return no results"],
       },
       approach: "Use shell to run find command",
-      constraints: ["stay within home directory"],
     });
     const result = parseUnderstandResponse(json);
     expect(result.done).toBe(false);
@@ -105,7 +104,6 @@ describe("parseUnderstandResponse", () => {
       expect(result.goal.objective).toBe("Find and list all JS files");
       expect(result.goal.done_when).toEqual(["JS file paths are returned"]);
       expect(result.approach).toBe("Use shell to run find command");
-      expect(result.constraints).toEqual(["stay within home directory"]);
     }
   });
 
@@ -220,14 +218,28 @@ describe("parseReEvalResponse", () => {
       done: false,
       reeval: true,
       approach: "Use a narrower search strategy",
-      constraints: ["avoid /tmp"],
     });
     const result = parseReEvalResponse(json);
     expect(result.done).toBe(false);
-    if (!result.done) {
+    if (!result.done && "reeval" in result) {
       expect(result.reeval).toBe(true);
       expect(result.approach).toBe("Use a narrower search strategy");
-      expect(result.constraints).toEqual(["avoid /tmp"]);
+    }
+  });
+
+  it("parses context_search during re-eval", () => {
+    const json = JSON.stringify({
+      done: false,
+      context_search: true,
+      query: "Read step 2 act and verify files",
+      scope: "run_artifacts",
+    });
+    const result = parseReEvalResponse(json);
+    expect(result.done).toBe(false);
+    if (!result.done && "context_search" in result) {
+      expect(result.context_search).toBe(true);
+      expect(result.query).toBe("Read step 2 act and verify files");
+      expect(result.scope).toBe("run_artifacts");
     }
   });
 });
@@ -245,7 +257,6 @@ describe("callUnderstand", () => {
         stop_when_no_progress: [],
       },
       approach: "direct reply",
-      constraints: [],
     });
     const provider = createMockProvider(json);
     const state = createState({
@@ -287,7 +298,6 @@ describe("callUnderstand", () => {
         stop_when_no_progress: [],
       },
       approach: "direct reply",
-      constraints: [],
     });
     const provider = createMockProvider(json);
     const state = createState({
@@ -450,6 +460,8 @@ describe("callDirect", () => {
     expect(prompt).toContain("/tmp/current-run/steps/<NNN>-act.md");
     expect(prompt).toContain("/tmp/current-run/steps/<NNN>-verify.md");
     expect(prompt).toContain("Only latest step newFacts are inlined here; use context_search to read older-step facts.");
+    expect(prompt).toContain("If the next action depends on an older non-latest step");
+    expect(prompt).toContain("Before using any external skill, you MUST use \"skills\" scope");
   });
 
   it("includes runPath in recent runs section for direct prompt", async () => {
@@ -519,16 +531,39 @@ describe("callDirect", () => {
 });
 
 describe("callReEval", () => {
-  it("includes failure context and returns new understand directive", async () => {
+  it("includes success and failure context and returns new approach", async () => {
     const json = JSON.stringify({
       done: false,
       reeval: true,
       approach: "use a different search strategy",
-      constraints: ["avoid /tmp"],
     });
     const provider = createMockProvider(json);
     const state = createState({
       consecutiveFailures: 2,
+      completedSteps: [
+        {
+          step: 1,
+          intent: "read config",
+          outcome: "success",
+          summary: "Read package config",
+          newFacts: ["package.json exists"],
+          artifacts: [],
+          toolSuccessCount: 1,
+          toolFailureCount: 0,
+        },
+        {
+          step: 2,
+          intent: "scan /tmp",
+          outcome: "failed",
+          summary: "Permission denied on /tmp/secret",
+          newFacts: [],
+          artifacts: [],
+          toolSuccessCount: 0,
+          toolFailureCount: 1,
+          failureType: "permission",
+          stoppedEarlyReason: "repeated_identical_failure",
+        },
+      ],
       failedApproaches: [
         {
           step: 1,
@@ -545,12 +580,12 @@ describe("callReEval", () => {
       provider,
       state,
       [shellTool],
-      "Scout found that step 1 failed due to EACCES on /tmp/secret",
+      "Scout found that step 2 failed because /tmp/secret is blocked",
       undefined,
       "system context here",
     );
     expect(result.done).toBe(false);
-    if (!result.done) {
+    if (!result.done && "reeval" in result) {
       expect(result.reeval).toBe(true);
       expect(result.approach).toBe("use a different search strategy");
     }
@@ -564,8 +599,14 @@ describe("callReEval", () => {
     expect(call.messages[0]!.content).toBe("system context here");
     expect(call.messages[1]!.role).toBe("user");
     expect(call.messages[1]!.content).toContain("Re-evaluate this task");
+    expect(call.messages[1]!.content).toContain("Run artifacts root: /tmp/test");
+    expect(call.messages[1]!.content).toContain("Previous successful steps");
+    expect(call.messages[1]!.content).toContain("Read package config");
+    expect(call.messages[1]!.content).toContain("Failed steps");
     expect(call.messages[1]!.content).toContain("Failed Approaches");
-    expect(call.messages[1]!.content).toContain("Context gathered by scout");
+    expect(call.messages[1]!.content).toContain("Scout research results (from prior context search):");
+    expect(call.messages[1]!.content).toContain("If the revised approach depends on an older non-latest step");
+    expect(call.messages[1]!.content).toContain("For context search: { \"done\": false, \"context_search\": true");
     expect(call.messages[1]!.content).toContain("Original goal:");
     expect(call.messages[1]!.content).toContain("objective: greet user");
   });
@@ -575,7 +616,6 @@ describe("callReEval", () => {
       done: false,
       reeval: true,
       approach: "try different strategy",
-      constraints: [],
     });
     const provider = createMockProvider(json);
     const state = createState({
@@ -588,7 +628,7 @@ describe("callReEval", () => {
       ],
     });
 
-    await callReEval(provider, state, [shellTool], "scout context");
+    await callReEval(provider, state, [shellTool]);
 
     const call = (provider.generateTurn as ReturnType<typeof vi.fn>).mock.calls[0]![0] as {
       messages: Array<{ role: string; content: string }>;

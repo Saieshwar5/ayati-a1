@@ -81,6 +81,26 @@ function toOutput(stdout: string, stderr: string): string {
   return [stdout, stderr].filter((v) => v.length > 0).join("\n").trim();
 }
 
+function getExecFailureOutput(err: unknown, maxOutputChars: number): { output: string; truncated: boolean } {
+  const execError = err as { stdout?: string | Buffer; stderr?: string | Buffer };
+  const stdout = typeof execError?.stdout === "string"
+    ? execError.stdout
+    : Buffer.isBuffer(execError?.stdout)
+      ? execError.stdout.toString()
+      : "";
+  const stderr = typeof execError?.stderr === "string"
+    ? execError.stderr
+    : Buffer.isBuffer(execError?.stderr)
+      ? execError.stderr.toString()
+      : "";
+  const combined = toOutput(stdout, stderr);
+  const truncated = combined.length > maxOutputChars;
+  return {
+    output: truncated ? `${combined.slice(0, maxOutputChars)}\n...[truncated]` : combined,
+    truncated,
+  };
+}
+
 function capWithDefault(inputCap: number | undefined, defaultCap: number): number {
   if (inputCap === undefined) return defaultCap;
   if (!Number.isFinite(inputCap) || inputCap <= 0) return defaultCap;
@@ -271,10 +291,12 @@ async function runExecCommand(
     };
   } catch (err) {
     const message = err instanceof Error ? err.message : "Unknown shell execution error";
+    const failureOutput = getExecFailureOutput(err, maxOutputChars);
     return {
       ok: false,
       error: message,
-      meta: { durationMs: Date.now() - start },
+      output: failureOutput.output,
+      meta: { durationMs: Date.now() - start, truncated: failureOutput.truncated },
     };
   }
 }

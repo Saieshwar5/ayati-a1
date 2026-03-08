@@ -52,7 +52,6 @@ describe("state-persistence", () => {
         userMessage: "hello",
         goal: goalContract("greet"),
         approach: "direct",
-        constraints: [],
         taskStatus: "not_done",
         progressLedger: {
           lastSuccessfulStepSummary: "",
@@ -64,6 +63,7 @@ describe("state-persistence", () => {
         iteration: 1,
         maxIterations: 15,
         consecutiveFailures: 0,
+        approachChangeCount: 0,
         completedSteps: [],
         runPath,
         failedApproaches: [],
@@ -91,7 +91,6 @@ describe("state-persistence", () => {
         userMessage: "hello",
         goal: goalContract("greet"),
         approach: "direct",
-        constraints: [],
         taskStatus: "not_done",
         progressLedger: {
           lastSuccessfulStepSummary: "",
@@ -103,6 +102,7 @@ describe("state-persistence", () => {
         iteration: 1,
         maxIterations: 15,
         consecutiveFailures: 0,
+        approachChangeCount: 0,
         completedSteps: [],
         runPath,
         failedApproaches: [],

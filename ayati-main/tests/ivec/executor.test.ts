@@ -288,6 +288,180 @@ describe("executeStep", () => {
     }
   });
 
+  it("keeps non-hinted built-in tools available during act", async () => {
+    const { runPath, cleanup } = setup();
+    try {
+      let callCount = 0;
+      const provider: LlmProvider = {
+        name: "mock",
+        version: "1.0.0",
+        capabilities: { nativeToolCalling: true },
+        start: vi.fn(),
+        stop: vi.fn(),
+        generateTurn: vi.fn().mockImplementation(async () => {
+          callCount++;
+          if (callCount === 1) {
+            return {
+              type: "tool_calls",
+              calls: [{ id: "tc1", name: "read_file", input: { path: "package.json" } }],
+            };
+          }
+          if (callCount === 2) {
+            return { type: "assistant", content: "Read the file successfully" };
+          }
+          return {
+            type: "assistant",
+            content: JSON.stringify({
+              taskStatusAfter: "done",
+              taskReason: "file content retrieved",
+              taskEvidence: ["package.json content"],
+            }),
+          };
+        }),
+      };
+
+      const shellExecute = vi.fn().mockResolvedValue({ ok: true, output: "shell-ok" });
+      const readFileExecute = vi.fn().mockResolvedValue({ ok: true, output: "{\"name\":\"ayati\"}" });
+      const toolExecutor: ToolExecutor = {
+        list: () => ["shell", "read_file"],
+        definitions: () => [
+          {
+            name: "shell",
+            description: "Run shell",
+            inputSchema: { type: "object", properties: { cmd: { type: "string" } } },
+            execute: shellExecute,
+          },
+          {
+            name: "read_file",
+            description: "Read a file",
+            inputSchema: { type: "object", properties: { path: { type: "string" } } },
+            execute: readFileExecute,
+          },
+        ],
+        execute: vi.fn().mockImplementation(async (toolName: string, input: unknown) => {
+          if (toolName === "shell") return shellExecute(input);
+          return readFileExecute(input);
+        }),
+        validate: vi.fn().mockReturnValue({ valid: true }),
+      };
+
+      const deps: ExecutorDeps = {
+        provider,
+        toolExecutor,
+        toolDefinitions: toolExecutor.definitions(),
+        config: DEFAULT_LOOP_CONFIG,
+        clientId: "c1",
+        sessionMemory: createMockSessionMemory(),
+        runHandle: { sessionId: "s1", runId: "r1" },
+        taskContext: createTaskContext(),
+      };
+
+      const summary = await executeStep(deps, createDirective({ tools_hint: ["shell"] }), 1, runPath);
+
+      expect(summary.outcome).toBe("success");
+      expect(summary.toolSuccessCount).toBe(1);
+      expect(shellExecute).not.toHaveBeenCalled();
+      expect(readFileExecute).toHaveBeenCalledTimes(1);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("blocks repeated failed retries and pivots to another available tool", async () => {
+    const { runPath, cleanup } = setup();
+    try {
+      let callCount = 0;
+      const provider: LlmProvider = {
+        name: "mock",
+        version: "1.0.0",
+        capabilities: { nativeToolCalling: true },
+        start: vi.fn(),
+        stop: vi.fn(),
+        generateTurn: vi.fn().mockImplementation(async () => {
+          callCount++;
+          if (callCount === 1) {
+            return {
+              type: "tool_calls",
+              calls: [{ id: "tc1", name: "shell", input: { cmd: "bad" } }],
+            };
+          }
+          if (callCount === 2) {
+            return {
+              type: "tool_calls",
+              calls: [{ id: "tc2", name: "shell", input: { cmd: "bad" } }],
+            };
+          }
+          if (callCount === 3) {
+            return {
+              type: "tool_calls",
+              calls: [{ id: "tc3", name: "read_file", input: { path: "package.json" } }],
+            };
+          }
+          if (callCount === 4) {
+            return { type: "assistant", content: "Recovered by reading the file" };
+          }
+          return {
+            type: "assistant",
+            content: JSON.stringify({
+              taskStatusAfter: "done",
+              taskReason: "recovered with alternate tool",
+              taskEvidence: ["package.json content"],
+            }),
+          };
+        }),
+      };
+
+      const shellExecute = vi.fn().mockResolvedValue({ ok: false, error: "command failed" });
+      const readFileExecute = vi.fn().mockResolvedValue({ ok: true, output: "{\"name\":\"ayati\"}" });
+      const toolExecutor: ToolExecutor = {
+        list: () => ["shell", "read_file"],
+        definitions: () => [
+          {
+            name: "shell",
+            description: "Run shell",
+            inputSchema: { type: "object", properties: { cmd: { type: "string" } } },
+            execute: shellExecute,
+          },
+          {
+            name: "read_file",
+            description: "Read a file",
+            inputSchema: { type: "object", properties: { path: { type: "string" } } },
+            execute: readFileExecute,
+          },
+        ],
+        execute: vi.fn().mockImplementation(async (toolName: string, input: unknown) => {
+          if (toolName === "shell") return shellExecute(input);
+          return readFileExecute(input);
+        }),
+        validate: vi.fn().mockReturnValue({ valid: true }),
+      };
+
+      const deps: ExecutorDeps = {
+        provider,
+        toolExecutor,
+        toolDefinitions: toolExecutor.definitions(),
+        config: DEFAULT_LOOP_CONFIG,
+        clientId: "c1",
+        sessionMemory: createMockSessionMemory(),
+        runHandle: { sessionId: "s1", runId: "r1" },
+        taskContext: createTaskContext(),
+      };
+
+      const summary = await executeStep(deps, createDirective({ tools_hint: ["shell"] }), 1, runPath);
+
+      expect(summary.outcome).toBe("success");
+      expect(summary.toolSuccessCount).toBe(1);
+      expect(summary.toolFailureCount).toBe(2);
+      expect(shellExecute).toHaveBeenCalledTimes(1);
+      expect(readFileExecute).toHaveBeenCalledTimes(1);
+      expect(summary.newFacts).toContain(
+        "tool_error:shell#2: Repeat blocked: tool 'shell' with the same input already failed in this step. Try different parameters or a different tool.",
+      );
+    } finally {
+      cleanup();
+    }
+  });
+
   it("enforces one tool call per turn in dependent mode", async () => {
     const { runPath, cleanup } = setup();
     try {
@@ -434,7 +608,7 @@ describe("executeStep", () => {
 
       const summary = await executeStep(deps, createDirective(), 1, runPath);
       expect(summary.outcome).toBe("failed");
-      expect(summary.toolFailureCount).toBe(2);
+      expect(summary.toolFailureCount).toBe(3);
       expect(summary.stoppedEarlyReason).toBe("repeated_identical_failure");
     } finally {
       cleanup();

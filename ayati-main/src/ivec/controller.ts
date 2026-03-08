@@ -3,7 +3,6 @@ import type { ControllerPrompts } from "../context/types.js";
 import type { ToolDefinition } from "../skills/types.js";
 import type {
   LoopState,
-  ControllerOutput,
   UnderstandDirective,
   ReEvalDirective,
   CompletionDirective,
@@ -21,14 +20,14 @@ const DEFAULT_UNDERSTAND_INSTRUCTIONS = `- First, classify the request:
 - Before creating a plan, run a readiness check:
   - Is the objective clear?
   - Are required inputs or targets sufficiently specified?
-  - Are constraints and boundaries clear enough to avoid unsafe or low-confidence assumptions?
+  - Are boundaries clear enough to avoid unsafe or low-confidence assumptions?
   - Is success verifiable with concrete evidence?
 - If the request is under-specified or ambiguous:
   - Do NOT start execution planning.
   - Return done: true and ask exactly ONE targeted clarification question that unlocks the next decision.
   - Ask the highest-information-gain question first (the single question whose answer most reduces uncertainty).
   - Keep the question short, specific, and easy to answer.
-  - Do not ask multiple questions in one turn unless safety or permission constraints require it.
+  - Do not ask multiple questions in one turn unless safety or permission boundaries require it.
   - Do not ask for information that is already available in conversation or memory context.
 - If the request is sufficiently clear, return done: false with:
   - goal.objective: specific, unambiguous intent
@@ -37,7 +36,6 @@ const DEFAULT_UNDERSTAND_INSTRUCTIONS = `- First, classify the request:
   - goal.ask_user_when: explicit triggers that require pausing for user input
   - goal.stop_when_no_progress: explicit conditions for stopping after repeated non-progress
   - approach: a practical initial direction using available tools
-  - constraints: relevant execution boundaries or preferences
 - Quality bar for done: false:
   - objective must be actionable and specific (not a restatement of the raw message).
   - done_when and required_evidence should be concrete and non-empty for non-trivial tasks.
@@ -46,9 +44,13 @@ const DEFAULT_UNDERSTAND_INSTRUCTIONS = `- First, classify the request:
 
 const DEFAULT_REEVAL_INSTRUCTIONS = `- The current approach has not been working. You MUST provide a different approach.
 - If the task is no longer achievable, respond with done: true and status: "failed".
-- Otherwise provide an updated approach and constraints only.
+- Otherwise provide an updated approach only.
 - Do NOT change the goal contract during re-evaluation.
-- Your new approach MUST differ substantially from any failed approaches listed above.`;
+- Your new approach MUST differ substantially from any failed approaches listed above.
+- Use prior successful and failed step evidence to choose the next approach.
+- If you need older-step facts, session details, project config, or external skill commands before choosing a new approach, request context_search first.
+- If the revised approach depends on an older non-latest step, you MUST use context_search with scope "run_artifacts" to read that step's act/verify details before proposing the approach.
+- If the revised approach will use an external skill, you MUST use context_search with scope "skills" to read that skill's skill.md before proposing the approach.`;
 
 const DEFAULT_DIRECT_INSTRUCTIONS = `- Pick exactly 1 next action. Reduce uncertainty first.
 - Choose execution_mode for next step:
@@ -65,12 +67,11 @@ const DEFAULT_DIRECT_INSTRUCTIONS = `- Pick exactly 1 next action. Reduce uncert
   - max_calls_per_turn_dependent: 1
   - max_calls_per_turn_independent: 2
   - max_total_tool_calls_per_step: 6
-- NEVER use any path or tool listed in "Paths/tools NEVER to use again".
-- If any approach failed, your new approach MUST differ from it - not just in wording.
 - If the task asks for machine-wide file/path discovery, first discover valid roots instead of guessing paths.
 - If there are 2 no-progress/missing-path outcomes in a row, pivot strategy instead of retrying the same style search.
 - Never claim "entire filesystem searched" unless your tool inputs explicitly included root-level paths for that OS.
 - Only the latest step newFacts are included inline. If you need facts from older steps, use context_search with scope "run_artifacts".
+- If the next action depends on an older non-latest step, you MUST use context_search with scope "run_artifacts" to read that step's act/verify details before planning the step.
 - For run_artifacts, default to the current run path first. Use prior run paths from Recent Runs only when the user explicitly asks about earlier runs.
 - Run artifact format to target in context_search:
   - <runPath>/state.json has completedSteps[*] with outcome, summary, newFacts, artifacts, and tool counts.
@@ -78,10 +79,9 @@ const DEFAULT_DIRECT_INSTRUCTIONS = `- Pick exactly 1 next action. Reduce uncert
   - <runPath>/steps/<NNN>-verify.md contains verification details per step.
 - If you need project config, session history, or external skill commands, use context_search.
   - Scope options: "run_artifacts" (step files, state), "project_context" (soul, system prompt, user profile), "session" (session JSONL data), "skills" (external skill command reference), "both" (all).
-  - Use "skills" scope when you need to load an external skill's commands before using it via the shell tool.
+  - Before using any external skill, you MUST use "skills" scope to load that skill's full command reference from skill.md.
   - Write a clear, specific query with step numbers or file names so the scout can find the right information.
   - Use sparingly - max 2 per iteration.
-- If consecutiveFailures >= 2, radically change direction.
 - If the task is complete, set done: true.
 - Set tools_hint to the specific tool names the executor should use for the next step.
 - The "summary" field in completion is the ACTUAL RESPONSE shown to the user. Write it as a helpful, natural reply - not a log or description of what happened.`;
@@ -117,18 +117,17 @@ export async function callUnderstand(
 }
 
 /**
- * Re-evaluation — runs understand again after consecutive failures.
- * Includes scout context (gathered by context scout) so the LLM can pivot.
+ * Re-evaluation — invoked after a failed step to choose a different approach.
  * Optionally includes system context when provided.
  */
 export async function callReEval(
   provider: LlmProvider,
   state: LoopState,
   toolDefinitions: ToolDefinition[],
-  scoutContext: string,
+  scoutContext?: string,
   controllerPrompts?: ControllerPrompts,
   systemContext?: string,
-): Promise<ReEvalDirective | CompletionDirective> {
+): Promise<ReEvalDirective | ContextSearchDirective | CompletionDirective> {
   const prompt = buildReEvalPrompt(
     state,
     toolDefinitions,
@@ -231,7 +230,7 @@ ${instructions}
 
 Respond with a single JSON object (no markdown fences):
 For simple reply: { "done": true, "summary": "<your reply to the user>", "status": "completed" }
-For complex task: { "done": false, "understand": true, "goal": { "objective": "...", "done_when": ["..."], "required_evidence": ["..."], "ask_user_when": ["..."], "stop_when_no_progress": ["..."] }, "approach": "...", "constraints": ["...", "..."] }`;
+For complex task: { "done": false, "understand": true, "goal": { "objective": "...", "done_when": ["..."], "required_evidence": ["..."], "ask_user_when": ["..."], "stop_when_no_progress": ["..."] }, "approach": "..." }`;
 }
 
 function buildReEvalPrompt(
@@ -246,22 +245,36 @@ function buildReEvalPrompt(
 
   const failureContext = buildFailureContext(state.failedApproaches);
 
-  const recentSteps = state.completedSteps
+  const recentSuccessfulSteps = state.completedSteps
+    .filter((s) => s.outcome === "success")
+    .slice(-5)
+    .map((s) => {
+      let line = `  Step ${s.step}: ${s.intent}`;
+      if (s.summary) line += ` — ${s.summary.slice(0, 220)}`;
+      line += ` (tool_success=${s.toolSuccessCount ?? 0}, tool_failed=${s.toolFailureCount ?? 0})`;
+      return line;
+    })
+    .join("\n");
+
+  const recentFailedSteps = state.completedSteps
+    .filter((s) => s.outcome === "failed")
     .slice(-5)
     .map((s) => {
       let line = `  Step ${s.step}: [${s.outcome}] ${s.intent}`;
       if (s.summary) line += ` — ${s.summary.slice(0, 200)}`;
       if (s.failureType) line += ` (${s.failureType})`;
+      if (s.stoppedEarlyReason) line += ` [stop=${s.stoppedEarlyReason}]`;
+      line += ` [tool_success=${s.toolSuccessCount ?? 0}, tool_failed=${s.toolFailureCount ?? 0}]`;
       return line;
     })
     .join("\n");
 
   const scoutBlock = scoutContext?.trim()
-    ? `Context gathered by scout:\n${scoutContext}\n`
+    ? `Scout research results (from prior context search):\n${scoutContext}\n`
     : "";
-
   const sessionBlock = formatSessionHistory(state);
   const runsBlock = formatRecentRuns(state);
+  const runArtifactsFormatBlock = buildRunArtifactsFormatBlock(state.runPath);
 
   return `The current approach has failed. Re-evaluate this task.
 
@@ -269,24 +282,32 @@ User message: ${state.userMessage}
 Original goal:
 ${formatGoalContract(state.goal)}
 Current approach: ${state.approach}
-Constraints: ${state.constraints.length > 0 ? state.constraints.join("; ") : "none"}
 
 Available tools: ${toolNames}
 ${sessionBlock}${runsBlock}
-Recent steps:
-${recentSteps || "  (none)"}
+
+Run artifacts root: ${state.runPath}
+${runArtifactsFormatBlock}
+
+Previous successful steps (latest 5):
+${recentSuccessfulSteps || "  (none)"}
+
+Failed steps (latest 5):
+${recentFailedSteps || "  (none)"}
 
 ${failureContext}
 
 ${scoutBlock}
 Consecutive failures: ${state.consecutiveFailures}
+Approach changes so far: ${state.approachChangeCount}
 
 Instructions:
 ${instructions ?? DEFAULT_REEVAL_INSTRUCTIONS}
 
 Respond with a single JSON object (no markdown fences):
 For giving up: { "done": true, "summary": "<explanation to user>", "status": "failed" }
-For new approach: { "done": false, "reeval": true, "approach": "...", "constraints": ["...", "..."] }`;
+For context search: { "done": false, "context_search": true, "query": "...", "scope": "run_artifacts" | "project_context" | "session" | "skills" | "both" }
+For new approach: { "done": false, "reeval": true, "approach": "..." }`;
 }
 
 function buildDirectPrompt(
@@ -332,23 +353,17 @@ function buildDirectPrompt(
     ? `Latest successful step summary:\n  - ${truncateInline(state.progressLedger.lastSuccessfulStepSummary, 300)}`
     : "Latest successful step summary: none yet";
 
-  const constraintsBlock = state.constraints.length > 0
-    ? `Constraints:\n${state.constraints.map((c) => `  - ${c}`).join("\n")}`
-    : "";
-
   const toolCatalog = buildToolCatalog(toolDefinitions);
-  const failureContext = buildFailureContext(state.failedApproaches);
   const scoutBlock = scoutContext?.trim()
     ? `Scout research results (from prior context search):\n${scoutContext}`
     : "";
-  const runArtifactsFormatBlock = `Run artifact format:\n  - ${state.runPath}/state.json (loop state; completedSteps[*] includes outcome, summary, newFacts, artifacts, toolSuccessCount, toolFailureCount)\n  - ${state.runPath}/steps/<NNN>-act.md (action details)\n  - ${state.runPath}/steps/<NNN>-verify.md (verification details)\n  - Only latest step newFacts are inlined here; use context_search to read older-step facts.`;
+  const runArtifactsFormatBlock = buildRunArtifactsFormatBlock(state.runPath);
 
   return `You are directing an AI agent. Decide the next step.
 
 Goal Contract:
 ${formatGoalContract(state.goal)}
 Approach: ${state.approach}
-${constraintsBlock}
 
 User request: ${state.userMessage}
 Task status: ${state.taskStatus}
@@ -369,8 +384,6 @@ Recent detailed steps (last 5):
 ${recentDetailedSteps || "  (none yet)"}
 
 ${scoutBlock}
-
-${failureContext}
 
 Consecutive failures: ${state.consecutiveFailures}
 Iteration: ${state.iteration} / ${state.maxIterations}
@@ -407,13 +420,10 @@ export function parseUnderstandResponse(text: string): UnderstandDirective | Com
     understand: true,
     goal: normalizeGoalContract(parsed["goal"]),
     approach: String(parsed["approach"] ?? ""),
-    constraints: Array.isArray(parsed["constraints"])
-      ? (parsed["constraints"] as unknown[]).map(String)
-      : [],
   };
 }
 
-export function parseReEvalResponse(text: string): ReEvalDirective | CompletionDirective {
+export function parseReEvalResponse(text: string): ReEvalDirective | ContextSearchDirective | CompletionDirective {
   const parsed = extractJson(text);
 
   if (parsed["done"] === true) {
@@ -424,13 +434,19 @@ export function parseReEvalResponse(text: string): ReEvalDirective | CompletionD
     };
   }
 
+  if (parsed["context_search"] === true) {
+    return {
+      done: false,
+      context_search: true,
+      query: String(parsed["query"] ?? ""),
+      scope: normalizeScope(parsed["scope"]),
+    } satisfies ContextSearchDirective;
+  }
+
   return {
     done: false,
     reeval: true,
     approach: String(parsed["approach"] ?? ""),
-    constraints: Array.isArray(parsed["constraints"])
-      ? (parsed["constraints"] as unknown[]).map(String)
-      : [],
   };
 }
 
@@ -541,6 +557,10 @@ function formatGoalContract(goal: GoalContract): string {
 function formatInlineList(values: string[]): string {
   if (values.length === 0) return "(none)";
   return values.join("; ");
+}
+
+function buildRunArtifactsFormatBlock(runPath: string): string {
+  return `Run artifact format:\n  - ${runPath}/state.json (loop state; completedSteps[*] includes outcome, summary, newFacts, artifacts, toolSuccessCount, toolFailureCount)\n  - ${runPath}/steps/<NNN>-act.md (action details)\n  - ${runPath}/steps/<NNN>-verify.md (verification details)\n  - Only latest step newFacts are inlined here; use context_search to read older-step facts.`;
 }
 
 function buildFailureContext(failedApproaches: FailedApproach[]): string {

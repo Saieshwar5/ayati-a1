@@ -217,6 +217,145 @@ describe("runContextScout", () => {
     expect(toolResultMsg?.content).toContain("shell");
   });
 
+  it("grep_file returns targeted snippets from a known file", async () => {
+    const locs = createLocations(tmpDir);
+    const skillDir = join(tmpDir, "skills");
+    mkdirSync(skillDir, { recursive: true });
+    const skillFile = join(skillDir, "playwright.skill.md");
+    writeFileSync(
+      skillFile,
+      [
+        "# Playwright Skill",
+        "Setup instructions",
+        "Run npx playwright install before screenshots",
+        "Usage example",
+        "Run npx playwright test",
+      ].join("\n"),
+    );
+
+    const provider = createMockProvider([
+      {
+        type: "tool_calls",
+        calls: [
+          {
+            id: "tc1",
+            name: "grep_file",
+            input: { path: skillFile, pattern: "playwright install", context_before: 1, context_after: 1 },
+          },
+        ],
+      },
+      {
+        type: "assistant",
+        content: JSON.stringify({
+          summary: "Found install instructions in the skill file",
+          sources: [skillFile],
+          confidence: 0.92,
+        }),
+      },
+    ]);
+
+    const result = await runContextScout(
+      { provider, maxTurns: 5 },
+      "Find install instructions in the known skill file",
+      "both",
+      locs,
+    );
+
+    expect(result.confidence).toBe(0.92);
+
+    const calls = (provider.generateTurn as ReturnType<typeof vi.fn>).mock.calls;
+    const secondCallInput = calls[1]![0] as { messages: Array<{ role: string; content: string }> };
+    const toolResultMsg = secondCallInput.messages.find((m) => m.role === "tool");
+    expect(toolResultMsg?.content).toContain("Match 1");
+    expect(toolResultMsg?.content).toContain("Run npx playwright install before screenshots");
+    expect(toolResultMsg?.content).toContain("Usage example");
+  });
+
+  it("grep_file reports invalid regex errors", async () => {
+    const locs = createLocations(tmpDir);
+    const provider = createMockProvider([
+      {
+        type: "tool_calls",
+        calls: [
+          { id: "tc1", name: "grep_file", input: { path: join(locs.runPath, "steps", "001-act.md"), pattern: "[" } },
+        ],
+      },
+      {
+        type: "assistant",
+        content: JSON.stringify({
+          summary: "regex invalid",
+          sources: [],
+          confidence: 0,
+        }),
+      },
+    ]);
+
+    await runContextScout(
+      { provider, maxTurns: 5 },
+      "Find invalid regex handling",
+      "run_artifacts",
+      locs,
+    );
+
+    const calls = (provider.generateTurn as ReturnType<typeof vi.fn>).mock.calls;
+    const secondCallInput = calls[1]![0] as { messages: Array<{ role: string; content: string }> };
+    const toolResultMsg = secondCallInput.messages.find((m) => m.role === "tool");
+    expect(toolResultMsg?.content).toContain("[error] invalid regex");
+  });
+
+  it("grep_file respects max_matches and returns focused blocks", async () => {
+    const locs = createLocations(tmpDir);
+    const stepFile = join(locs.runPath, "steps", "002-verify.md");
+    writeFileSync(
+      stepFile,
+      [
+        "# Verify",
+        "error: first issue",
+        "details one",
+        "ok line",
+        "error: second issue",
+        "details two",
+        "error: third issue",
+        "details three",
+      ].join("\n"),
+    );
+
+    const provider = createMockProvider([
+      {
+        type: "tool_calls",
+        calls: [
+          {
+            id: "tc1",
+            name: "grep_file",
+            input: { path: stepFile, pattern: "error:", context_before: 0, context_after: 1, max_matches: 2 },
+          },
+        ],
+      },
+      {
+        type: "assistant",
+        content: JSON.stringify({
+          summary: "Found two error blocks",
+          sources: [stepFile],
+          confidence: 0.88,
+        }),
+      },
+    ]);
+
+    await runContextScout(
+      { provider, maxTurns: 5 },
+      "Find the first two error blocks",
+      "run_artifacts",
+      locs,
+    );
+
+    const calls = (provider.generateTurn as ReturnType<typeof vi.fn>).mock.calls;
+    const secondCallInput = calls[1]![0] as { messages: Array<{ role: string; content: string }> };
+    const toolResultMsg = secondCallInput.messages.find((m) => m.role === "tool");
+    expect(toolResultMsg?.content).toContain("error: first issue");
+    expect(toolResultMsg?.content).toContain("error: second issue");
+    expect(toolResultMsg?.content).not.toContain("error: third issue");
+  });
+
   it("list_directory tool returns directory entries", async () => {
     const locs = createLocations(tmpDir);
     const provider = createMockProvider([
@@ -277,5 +416,8 @@ describe("runContextScout", () => {
     expect(systemPrompt).toContain(`${locs.runPath}/steps/<NNN>-act.md`);
     expect(systemPrompt).toContain(`${locs.runPath}/steps/<NNN>-verify.md`);
     expect(systemPrompt).toContain("For run_artifacts queries, read state.json first");
+    expect(systemPrompt).toContain("Use search_content to discover which file matters");
+    expect(systemPrompt).toContain("Use grep_file to narrow within a known file");
+    expect(systemPrompt).toContain("Use read_file only when you need a larger block");
   });
 });

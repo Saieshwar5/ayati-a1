@@ -16,6 +16,16 @@ describe("shell tool", () => {
     expect(result.output).toContain("hello");
   });
 
+  it("returns stdout and stderr when a command fails", async () => {
+    const result = await shellExecTool.execute({
+      cmd: "echo stdout-line; echo stderr-line >&2; exit 7",
+    });
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain("Command failed");
+    expect(result.output).toContain("stdout-line");
+    expect(result.output).toContain("stderr-line");
+  });
+
   it("runs a script", async () => {
     const scriptPath = join("/tmp", `ayati-shell-test-${Date.now()}.sh`);
     writeFileSync(scriptPath, "echo script-ok\n");

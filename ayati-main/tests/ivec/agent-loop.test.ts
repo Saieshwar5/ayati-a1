@@ -25,6 +25,15 @@ function taskVerifyResponse(taskStatusAfter = "not_done", taskReason = "more wor
   });
 }
 
+function stepVerifyFailureResponse(evidence = "permission denied"): string {
+  return JSON.stringify({
+    passed: false,
+    evidence,
+    newFacts: [],
+    artifacts: [],
+  });
+}
+
 function createMockSessionMemory(): SessionMemory {
   return {
     initialize: vi.fn(),
@@ -125,7 +134,6 @@ describe("agentLoop", () => {
                 understand: true,
                 goal: goalContract("analyze request"),
                 approach: "analyze then conclude",
-                constraints: [],
               }),
             };
           }
@@ -200,7 +208,6 @@ describe("agentLoop", () => {
                 understand: true,
                 goal: goalContract("keep trying"),
                 approach: "keep trying",
-                constraints: [],
               }),
             };
           }
@@ -235,6 +242,289 @@ describe("agentLoop", () => {
       });
 
       expect(result.status).toBe("stuck");
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("re-evaluates approach after a single failed step", async () => {
+    const dataDir = makeTmpDir();
+    try {
+      let callCount = 0;
+      const provider: LlmProvider = {
+        name: "mock",
+        version: "1.0.0",
+        capabilities: { nativeToolCalling: true },
+        start: vi.fn(),
+        stop: vi.fn(),
+        generateTurn: vi.fn().mockImplementation(async (input: LlmTurnInput) => {
+          callCount++;
+          if (callCount === 1) {
+            return {
+              type: "assistant",
+              content: JSON.stringify({
+                done: false,
+                understand: true,
+                goal: goalContract("recover from failure"),
+                approach: "initial approach",
+              }),
+            };
+          }
+          if (callCount === 2) {
+            return {
+              type: "assistant",
+              content: JSON.stringify({
+                done: false,
+                execution_mode: "dependent",
+                intent: "first attempt",
+                tools_hint: [],
+                success_criteria: "must produce evidence",
+                context: "",
+              }),
+            };
+          }
+          if (callCount === 3) {
+            return { type: "assistant", content: "" };
+          }
+          if (callCount === 4) {
+            return { type: "assistant", content: stepVerifyFailureResponse("permission denied while executing") };
+          }
+          if (callCount === 5) {
+            const messages = (input as { messages: Array<{ role: string; content: string }> }).messages;
+            const prompt = messages.find((message) => message.role === "user")?.content ?? "";
+            if (!prompt.includes("Re-evaluate this task")) {
+              throw new Error("Expected re-eval prompt after single failure");
+            }
+            if (!prompt.includes("Current approach: initial approach")) {
+              throw new Error("Expected current approach in re-eval prompt");
+            }
+            return {
+              type: "assistant",
+              content: JSON.stringify({
+                done: false,
+                reeval: true,
+                approach: "fallback approach",
+              }),
+            };
+          }
+
+          const messages = (input as { messages: Array<{ role: string; content: string }> }).messages;
+          const prompt = messages.find((message) => message.role === "user")?.content ?? "";
+          if (!prompt.includes("Approach: fallback approach")) {
+            throw new Error("Expected direct prompt to use re-evaluated approach");
+          }
+          return {
+            type: "assistant",
+            content: JSON.stringify({
+              done: true,
+              summary: "Recovered with new approach",
+              status: "completed",
+            }),
+          };
+        }),
+      };
+
+      const result = await agentLoop({
+        provider,
+        toolDefinitions: [],
+        sessionMemory: createMockSessionMemory(),
+        runHandle: { sessionId: "s1", runId: "r1" },
+        clientId: "c1",
+        dataDir,
+      });
+
+      expect(result.status).toBe("completed");
+      expect(result.content).toBe("Recovered with new approach");
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("handles context_search during re-eval before choosing a new approach", async () => {
+    const dataDir = makeTmpDir();
+    try {
+      let callCount = 0;
+      const provider: LlmProvider = {
+        name: "mock",
+        version: "1.0.0",
+        capabilities: { nativeToolCalling: true },
+        start: vi.fn(),
+        stop: vi.fn(),
+        generateTurn: vi.fn().mockImplementation(async (input: LlmTurnInput) => {
+          callCount++;
+          if (callCount === 1) {
+            return {
+              type: "assistant",
+              content: JSON.stringify({
+                done: false,
+                understand: true,
+                goal: goalContract("recover after lookup"),
+                approach: "initial approach",
+              }),
+            };
+          }
+          if (callCount === 2) {
+            return {
+              type: "assistant",
+              content: JSON.stringify({
+                done: false,
+                execution_mode: "dependent",
+                intent: "first attempt",
+                tools_hint: [],
+                success_criteria: "must produce evidence",
+                context: "",
+              }),
+            };
+          }
+          if (callCount === 3) {
+            return { type: "assistant", content: "" };
+          }
+          if (callCount === 4) {
+            return { type: "assistant", content: stepVerifyFailureResponse("step 1 failed because skill commands were missing") };
+          }
+          if (callCount === 5) {
+            return {
+              type: "assistant",
+              content: JSON.stringify({
+                done: false,
+                context_search: true,
+                query: "Read the playwright skill.md commands needed after the last failure",
+                scope: "skills",
+              }),
+            };
+          }
+          if (callCount === 6) {
+            return {
+              type: "assistant",
+              content: JSON.stringify({
+                summary: "Playwright skill.md says to install browsers before running screenshot commands",
+                sources: ["playwright/skill.md"],
+                confidence: 0.9,
+              }),
+            };
+          }
+          if (callCount === 7) {
+            const messages = (input as { messages: Array<{ role: string; content: string }> }).messages;
+            const prompt = messages.find((message) => message.role === "user")?.content ?? "";
+            if (!prompt.includes("Scout research results (from prior context search):")) {
+              throw new Error("Expected scout results in re-eval prompt");
+            }
+            if (!prompt.includes("install browsers before running screenshot commands")) {
+              throw new Error("Expected scout summary in re-eval prompt");
+            }
+            return {
+              type: "assistant",
+              content: JSON.stringify({
+                done: false,
+                reeval: true,
+                approach: "load skill instructions first, then run the command",
+              }),
+            };
+          }
+
+          const messages = (input as { messages: Array<{ role: string; content: string }> }).messages;
+          const prompt = messages.find((message) => message.role === "user")?.content ?? "";
+          if (!prompt.includes("Approach: load skill instructions first, then run the command")) {
+            throw new Error("Expected direct prompt to use the re-evaluated approach");
+          }
+          return {
+            type: "assistant",
+            content: JSON.stringify({
+              done: true,
+              summary: "Recovered after re-eval lookup",
+              status: "completed",
+            }),
+          };
+        }),
+      };
+
+      const result = await agentLoop({
+        provider,
+        toolDefinitions: [],
+        sessionMemory: createMockSessionMemory(),
+        runHandle: { sessionId: "s1", runId: "r1" },
+        clientId: "c1",
+        dataDir,
+      });
+
+      expect(result.status).toBe("completed");
+      expect(result.content).toBe("Recovered after re-eval lookup");
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("fails when approach changes reach configured maximum", async () => {
+    const dataDir = makeTmpDir();
+    try {
+      let callCount = 0;
+      const provider: LlmProvider = {
+        name: "mock",
+        version: "1.0.0",
+        capabilities: { nativeToolCalling: true },
+        start: vi.fn(),
+        stop: vi.fn(),
+        generateTurn: vi.fn().mockImplementation(async () => {
+          callCount++;
+          if (callCount === 1) {
+            return {
+              type: "assistant",
+              content: JSON.stringify({
+                done: false,
+                understand: true,
+                goal: goalContract("retry with limits"),
+                approach: "approach A",
+              }),
+            };
+          }
+          if (callCount === 2 || callCount === 6) {
+            return {
+              type: "assistant",
+              content: JSON.stringify({
+                done: false,
+                execution_mode: "dependent",
+                intent: "attempt step",
+                tools_hint: [],
+                success_criteria: "must succeed",
+                context: "",
+              }),
+            };
+          }
+          if (callCount === 3 || callCount === 7) {
+            return { type: "assistant", content: "" };
+          }
+          if (callCount === 4 || callCount === 8) {
+            return { type: "assistant", content: stepVerifyFailureResponse("no such file") };
+          }
+          if (callCount === 5) {
+            return {
+              type: "assistant",
+              content: JSON.stringify({
+                done: false,
+                reeval: true,
+                approach: "approach B",
+              }),
+            };
+          }
+          throw new Error(`Unexpected provider call ${callCount}`);
+        }),
+      };
+
+      const result = await agentLoop({
+        provider,
+        toolDefinitions: [],
+        sessionMemory: createMockSessionMemory(),
+        runHandle: { sessionId: "s1", runId: "r1" },
+        clientId: "c1",
+        dataDir,
+        config: {
+          maxApproachChanges: 1,
+          maxIterations: 5,
+        },
+      });
+
+      expect(result.status).toBe("failed");
+      expect(result.content).toContain("changing approach 1 times");
     } finally {
       cleanup();
     }
@@ -309,7 +599,6 @@ describe("agentLoop", () => {
                 understand: true,
                 goal: goalContract("respond"),
                 approach: "direct response",
-                constraints: [],
               }),
             };
           }
@@ -385,7 +674,6 @@ describe("agentLoop", () => {
                 understand: true,
                 goal: goalContract("respond"),
                 approach: "respond directly",
-                constraints: [],
               }),
             };
           }
@@ -462,7 +750,154 @@ describe("agentLoop", () => {
     }
   });
 
-  it("understand stage stores goal, approach, and constraints on state", async () => {
+  it("reuses cached context_search results across later steps without re-running scout", async () => {
+    const dataDir = makeTmpDir();
+    try {
+      let callCount = 0;
+      const provider: LlmProvider = {
+        name: "mock",
+        version: "1.0.0",
+        capabilities: { nativeToolCalling: true },
+        start: vi.fn(),
+        stop: vi.fn(),
+        generateTurn: vi.fn().mockImplementation(async (input: LlmTurnInput) => {
+          callCount++;
+          if (callCount === 1) {
+            return {
+              type: "assistant",
+              content: JSON.stringify({
+                done: false,
+                understand: true,
+                goal: goalContract("reuse earlier step context"),
+                approach: "use run artifacts when needed",
+              }),
+            };
+          }
+          if (callCount === 2) {
+            return {
+              type: "assistant",
+              content: JSON.stringify({
+                done: false,
+                execution_mode: "dependent",
+                intent: "complete the first step",
+                tools_hint: [],
+                success_criteria: "step 1 is done",
+                context: "",
+              }),
+            };
+          }
+          if (callCount === 3) {
+            return { type: "assistant", content: "Step 1 finished" };
+          }
+          if (callCount === 4) {
+            return { type: "assistant", content: taskVerifyResponse("not_done", "step 2 still needs prior context") };
+          }
+          if (callCount === 5) {
+            return {
+              type: "assistant",
+              content: JSON.stringify({
+                done: false,
+                context_search: true,
+                query: "What happened in step 1?",
+                scope: "run_artifacts",
+              }),
+            };
+          }
+          if (callCount === 6) {
+            return {
+              type: "assistant",
+              content: JSON.stringify({
+                summary: "Step 1 created the draft answer and verified it successfully.",
+                sources: ["steps/001-act.md", "steps/001-verify.md"],
+                confidence: 0.87,
+              }),
+            };
+          }
+          if (callCount === 7) {
+            const messages = (input as { messages: Array<{ role: string; content: string }> }).messages;
+            const prompt = messages.find((message) => message.role === "user")?.content ?? "";
+            if (!prompt.includes("Step 1 created the draft answer")) {
+              throw new Error("Expected direct prompt to receive scout context after the first lookup");
+            }
+            return {
+              type: "assistant",
+              content: JSON.stringify({
+                done: false,
+                execution_mode: "dependent",
+                intent: "use retrieved context",
+                tools_hint: [],
+                success_criteria: "step 2 uses step 1 facts",
+                context: "",
+              }),
+            };
+          }
+          if (callCount === 8) {
+            return { type: "assistant", content: "Step 2 used the earlier facts" };
+          }
+          if (callCount === 9) {
+            return { type: "assistant", content: taskVerifyResponse("not_done", "one more summary remains") };
+          }
+          if (callCount === 10) {
+            return {
+              type: "assistant",
+              content: JSON.stringify({
+                done: false,
+                context_search: true,
+                query: "Review step 1 act and verify files again before finishing",
+                scope: "run_artifacts",
+              }),
+            };
+          }
+          if (callCount === 11) {
+            const messages = (input as { messages: Array<{ role: string; content: string }> }).messages;
+            const prompt = messages.find((message) => message.role === "user")?.content ?? "";
+            if (!prompt.includes("Scout research results (from prior context search):")) {
+              throw new Error("Expected cached scout context in the repeated direct prompt");
+            }
+            if (!prompt.includes("Step 1 created the draft answer and verified it successfully.")) {
+              throw new Error("Expected cached scout summary to be reused");
+            }
+            return {
+              type: "assistant",
+              content: JSON.stringify({
+                done: true,
+                summary: "Completed with cached context reuse",
+                status: "completed",
+              }),
+            };
+          }
+
+          throw new Error(`Unexpected provider call ${callCount}`);
+        }),
+      };
+
+      const result = await agentLoop({
+        provider,
+        toolDefinitions: [],
+        sessionMemory: createMockSessionMemory(),
+        runHandle: { sessionId: "s1", runId: "r1" },
+        clientId: "c1",
+        dataDir,
+      });
+
+      expect(result.status).toBe("completed");
+      expect(result.content).toBe("Completed with cached context reuse");
+      expect(provider.generateTurn).toHaveBeenCalledTimes(11);
+
+      const cachePath = join(result.runPath, "context-cache.json");
+      expect(existsSync(cachePath)).toBe(true);
+      const cache = JSON.parse(readFileSync(cachePath, "utf-8")) as {
+        entries: Array<{ scope: string; targets: string[] }>;
+      };
+      expect(cache.entries).toHaveLength(1);
+      expect(cache.entries[0]?.scope).toBe("run_artifacts");
+      expect(cache.entries[0]?.targets).toContain("run_artifacts:step:1");
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("understand stage stores goal and approach on state", async () => {
     const dataDir = makeTmpDir();
     try {
       let callCount = 0;
@@ -489,7 +924,6 @@ describe("agentLoop", () => {
                   stop_when_no_progress: ["two search attempts fail"],
                 },
                 approach: "use shell to search",
-                constraints: ["stay in home dir", "skip hidden files"],
               }),
             };
           }
@@ -586,7 +1020,6 @@ describe("agentLoop", () => {
                 understand: true,
                 goal: goalContract("respond"),
                 approach: "respond directly",
-                constraints: [],
               }),
             };
           }

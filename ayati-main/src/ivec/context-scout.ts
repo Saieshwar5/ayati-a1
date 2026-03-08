@@ -1,9 +1,8 @@
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
-import { createId } from "../shared/index.js";
 import { devLog } from "../shared/index.js";
 import type { LlmProvider } from "../core/contracts/provider.js";
-import type { LlmMessage, LlmToolSchema, LlmToolCall } from "../core/contracts/llm-protocol.js";
+import type { LlmMessage, LlmToolSchema } from "../core/contracts/llm-protocol.js";
 import type { ScoutResult } from "./types.js";
 
 // ---------------------------------------------------------------------------
@@ -66,6 +65,21 @@ const SCOUT_TOOLS: LlmToolSchema[] = [
       },
     },
   },
+  {
+    name: "grep_file",
+    description: "Regex search within one known file. Returns only matching snippets with nearby lines. Prefer this before read_file when the target file is already known.",
+    inputSchema: {
+      type: "object",
+      required: ["path", "pattern"],
+      properties: {
+        path: { type: "string", description: "Absolute or relative file path" },
+        pattern: { type: "string", description: "Regex pattern to search for" },
+        context_before: { type: "number", description: "Lines to include before each match" },
+        context_after: { type: "number", description: "Lines to include after each match" },
+        max_matches: { type: "number", description: "Maximum matches to return" },
+      },
+    },
+  },
 ];
 
 // ---------------------------------------------------------------------------
@@ -76,6 +90,9 @@ const MAX_READ_CHARS = 8000;
 const MAX_DIR_ENTRIES = 50;
 const MAX_SEARCH_RESULTS = 10;
 const MAX_SEARCH_DEPTH = 3;
+const DEFAULT_GREP_CONTEXT_BEFORE = 2;
+const DEFAULT_GREP_CONTEXT_AFTER = 2;
+const DEFAULT_GREP_MAX_MATCHES = 5;
 const SKIP_DIRS = new Set(["node_modules", ".git", "dist", ".cache"]);
 
 function executeReadFile(input: Record<string, unknown>): string {
@@ -187,6 +204,93 @@ function executeSearchContent(input: Record<string, unknown>): string {
     : `[no matches for pattern "${pattern}" in ${directory}]`;
 }
 
+function executeGrepFile(input: Record<string, unknown>): string {
+  const filePath = String(input["path"] ?? "");
+  const pattern = String(input["pattern"] ?? "");
+  if (!filePath || !pattern) return "[error] path and pattern are required";
+  if (!existsSync(filePath)) return `[error] file not found: ${filePath}`;
+
+  let regex: RegExp;
+  try {
+    regex = new RegExp(pattern, "i");
+  } catch {
+    return `[error] invalid regex: ${pattern}`;
+  }
+
+  let stat;
+  try {
+    stat = statSync(filePath);
+  } catch (err) {
+    return `[error] ${err instanceof Error ? err.message : String(err)}`;
+  }
+  if (!stat.isFile()) return `[error] path is not a file: ${filePath}`;
+
+  const contextBefore = Math.max(0, Number(input["context_before"]) || DEFAULT_GREP_CONTEXT_BEFORE);
+  const contextAfter = Math.max(0, Number(input["context_after"]) || DEFAULT_GREP_CONTEXT_AFTER);
+  const maxMatches = Math.max(1, Number(input["max_matches"]) || DEFAULT_GREP_MAX_MATCHES);
+
+  try {
+    const raw = readFileSync(filePath, "utf-8");
+    const lines = raw.split("\n");
+    const matches: Array<{ start: number; end: number; matchLine: number }> = [];
+    const seenRanges = new Set<string>();
+
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      if (!line || !regex.test(line)) continue;
+
+      const start = Math.max(0, i - contextBefore);
+      const end = Math.min(lines.length - 1, i + contextAfter);
+      const rangeKey = `${start}:${end}`;
+      if (seenRanges.has(rangeKey)) {
+        continue;
+      }
+      seenRanges.add(rangeKey);
+      matches.push({ start, end, matchLine: i });
+      if (matches.length >= maxMatches) {
+        break;
+      }
+    }
+
+    if (matches.length === 0) {
+      return `[no matches for pattern "${pattern}" in ${filePath}]`;
+    }
+
+    let result = "";
+    for (let idx = 0; idx < matches.length; idx++) {
+      const match = matches[idx]!;
+      const header = `Match ${idx + 1} (lines ${match.start + 1}-${match.end + 1}, matched line ${match.matchLine + 1})\n`;
+      if (result.length + header.length > MAX_READ_CHARS) {
+        result += `\n... truncated at ${MAX_READ_CHARS} chars`;
+        break;
+      }
+      result += header;
+
+      for (let lineIdx = match.start; lineIdx <= match.end; lineIdx++) {
+        const line = `${String(lineIdx + 1).padStart(4)} | ${lines[lineIdx]}\n`;
+        if (result.length + line.length > MAX_READ_CHARS) {
+          result += `\n... truncated at ${MAX_READ_CHARS} chars`;
+          return result;
+        }
+        result += line;
+      }
+
+      if (idx < matches.length - 1) {
+        const separator = "\n";
+        if (result.length + separator.length > MAX_READ_CHARS) {
+          result += `\n... truncated at ${MAX_READ_CHARS} chars`;
+          break;
+        }
+        result += separator;
+      }
+    }
+
+    return result.trimEnd();
+  } catch (err) {
+    return `[error] ${err instanceof Error ? err.message : String(err)}`;
+  }
+}
+
 function executeTool(name: string, input: unknown): string {
   const args = (typeof input === "object" && input !== null ? input : {}) as Record<string, unknown>;
   switch (name) {
@@ -196,6 +300,8 @@ function executeTool(name: string, input: unknown): string {
       return executeListDirectory(args);
     case "search_content":
       return executeSearchContent(args);
+    case "grep_file":
+      return executeGrepFile(args);
     default:
       return `[error] unknown tool: ${name}`;
   }
@@ -254,6 +360,9 @@ ${scopeInstructions[scope] ?? ""}
 
 Instructions:
 - Use the provided tools to find and read relevant files.
+- Use search_content to discover which file matters when the target file is not yet known.
+- Use grep_file to narrow within a known file and return only the matching snippets with nearby lines.
+- Use read_file only when you need a larger block after grep_file, or when the file is already known and small enough to read directly.
 - For run_artifacts queries, read state.json first to locate the exact step numbers/files, then read targeted step markdown files.
 - Stop once you have enough information to answer the query.
 - If you check the most relevant locations and find nothing, return an empty summary.

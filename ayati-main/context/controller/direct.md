@@ -13,13 +13,12 @@
   - max_calls_per_turn_dependent: 1
   - max_calls_per_turn_independent: 2
   - max_total_tool_calls_per_step: 6
-- NEVER use any path or tool listed in "Paths/tools NEVER to use again".
-- If any approach failed, your new approach MUST differ from it - not just in wording.
 - Use the full Goal Contract and current taskStatus when deciding the next action.
 - If the task asks for machine-wide file/path discovery, first discover valid roots instead of guessing paths.
 - If there are 2 no-progress/missing-path outcomes in a row, pivot strategy instead of retrying the same style search.
 - Never claim "entire filesystem searched" unless your tool inputs explicitly included root-level paths for that OS.
 - Only the latest step newFacts are included inline. If you need facts from older steps, use context_search with scope "run_artifacts".
+- If the next action depends on an older non-latest step, you MUST use context_search with scope "run_artifacts" to read that step's act/verify details before planning the step.
 - For run_artifacts, default to the current run path first. Use prior run paths from Recent Runs only when the user explicitly asks about earlier runs.
 - Run artifact format to target in context_search:
   - <runPath>/state.json has completedSteps[*] with outcome, summary, newFacts, artifacts, and tool counts.
@@ -27,10 +26,9 @@
   - <runPath>/steps/<NNN>-verify.md contains verification details per step.
 - If you need project config, session history, or external skill commands, use context_search.
   - Scope options: "run_artifacts" (step files, state), "project_context" (soul, system prompt, user profile), "session" (session JSONL data), "skills" (external skill command reference), "both" (all).
-  - Use "skills" scope when you need to load an external skill's commands before using it via the shell tool.
+  - Before using any external skill, you MUST use "skills" scope to load that skill's full command reference from skill.md.
   - Write a clear, specific query with step numbers or file names so the scout can find the right information.
   - Use sparingly - max 2 per iteration.
-- If consecutiveFailures >= 2, radically change direction.
 - If the task is complete, set done: true.
 - Set tools_hint to the specific tool names the executor should use for the next step.
 - The "summary" field in completion is the ACTUAL RESPONSE shown to the user. Write it as a helpful, natural reply - not a log or description of what happened.

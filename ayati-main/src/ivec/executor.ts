@@ -63,19 +63,19 @@ async function act(
   deps: ExecutorDeps,
   directive: StepDirective,
 ): Promise<ActOutput> {
-  const toolSchemas = buildToolSchemas(deps, directive.tools_hint);
-  const allowedToolNames = new Set(toolSchemas.map((schema) => schema.name));
+  const toolSchemas = buildToolSchemas(deps);
+  const availableToolNames = new Set(toolSchemas.map((schema) => schema.name));
   const toolCalls: ActToolCallRecord[] = [];
+  const failedCallSignatures = new Set<string>();
+  const blockedRetryCounts = new Map<string, number>();
   const repeatedFailureCounts = new Map<string, number>();
+  const toolFailureCounts = new Map<string, number>();
+  const blockedTools = new Set<string>();
   const maxCallsPerTurn = directive.execution_mode === "independent" ? 2 : 1;
   const maxTotalCalls = Math.max(1, deps.config.maxTotalToolCallsPerStep);
   let executedCalls = 0;
 
-  const prompt = `Execute this step:
-Intent: ${directive.intent}
-Context: ${directive.context}
-
-Use the available tools to accomplish this. When done, respond with a text summary.`;
+  const prompt = buildActPrompt(directive, toolSchemas.map((tool) => tool.name));
 
   const messages: LlmMessage[] = [{ role: "user", content: prompt }];
 
@@ -93,9 +93,15 @@ Use the available tools to accomplish this. When done, respond with a text summa
       };
     }
 
-    const orderedCalls = prioritizeCallsByHint(turn.calls, directive.tools_hint)
-      .filter((call) => allowedToolNames.has(call.name))
-      .slice(0, maxCallsPerTurn);
+    const candidateCalls = prioritizeCallsByHint(turn.calls, directive.tools_hint)
+      .filter((call) => availableToolNames.has(call.name));
+
+    const orderedCalls = selectCallsForTurn(
+      candidateCalls,
+      maxCallsPerTurn,
+      failedCallSignatures,
+      blockedTools,
+    );
 
     if (orderedCalls.length === 0) {
       return {
@@ -114,7 +120,11 @@ Use the available tools to accomplish this. When done, respond with a text summa
         };
       }
 
-      const record = await executeSingleTool(deps, call.name, call.input, i + 1);
+      const callSignature = buildCallSignature(call.name, call.input);
+      const blockedReason = getBlockedCallReason(call.name, call.input, failedCallSignatures, blockedTools);
+      const record = blockedReason
+        ? { tool: call.name, input: call.input, output: "", error: blockedReason }
+        : await executeSingleTool(deps, call.name, call.input, i + 1);
       toolCalls.push(record);
       executedCalls++;
 
@@ -152,6 +162,38 @@ Use the available tools to accomplish this. When done, respond with a text summa
         const fingerprint = buildFailureFingerprint(call.name, call.input, record.error);
         const repeatedCount = (repeatedFailureCounts.get(fingerprint) ?? 0) + 1;
         repeatedFailureCounts.set(fingerprint, repeatedCount);
+        failedCallSignatures.add(callSignature);
+
+        const toolFailureCount = (toolFailureCounts.get(call.name) ?? 0) + 1;
+        toolFailureCounts.set(call.name, toolFailureCount);
+        if (toolFailureCount >= 2) {
+          blockedTools.add(call.name);
+        }
+
+        messages.push({
+          role: "user",
+          content: buildRecoveryGuidance(
+            call.name,
+            call.input,
+            record.error,
+            toolFailureCount,
+            directive.tools_hint,
+            toolSchemas.map((tool) => tool.name),
+          ),
+        });
+
+        if (blockedReason) {
+          const blockedRetryCount = (blockedRetryCounts.get(callSignature) ?? 0) + 1;
+          blockedRetryCounts.set(callSignature, blockedRetryCount);
+          if (blockedRetryCount >= 2) {
+            return {
+              toolCalls,
+              finalText: "",
+              stoppedEarlyReason: "repeated_identical_failure",
+            };
+          }
+        }
+
         if (repeatedCount >= 2) {
           return {
             toolCalls,
@@ -235,16 +277,12 @@ async function verify(
 
 // --- Helpers ---
 
-function buildToolSchemas(deps: ExecutorDeps, toolsHint: string[]): LlmToolSchema[] {
+function buildToolSchemas(deps: ExecutorDeps): LlmToolSchema[] {
   const allDefs = deps.toolDefinitions.length > 0
     ? deps.toolDefinitions
     : (deps.toolExecutor?.definitions() ?? []);
 
-  const filtered = toolsHint.length > 0
-    ? allDefs.filter((d) => toolsHint.includes(d.name))
-    : allDefs;
-
-  return filtered.map((d) => ({
+  return allDefs.map((d) => ({
     name: d.name,
     description: d.description,
     inputSchema: d.inputSchema ?? { type: "object", properties: {} },
@@ -266,13 +304,132 @@ function prioritizeCallsByHint<T extends { name: string }>(calls: T[], toolsHint
 
 function buildFailureFingerprint(toolName: string, input: unknown, error: string): string {
   const normalizedError = error.replace(/\s+/g, " ").trim().toLowerCase();
+  const callSignature = buildCallSignature(toolName, input);
+  return `${callSignature}::${normalizedError}`;
+}
+
+function buildCallSignature(toolName: string, input: unknown): string {
   let normalizedInput = "";
   try {
     normalizedInput = JSON.stringify(input ?? {});
   } catch {
     normalizedInput = String(input);
   }
-  return `${toolName}::${normalizedInput}::${normalizedError}`;
+  return `${toolName}::${normalizedInput}`;
+}
+
+function buildActPrompt(directive: StepDirective, availableToolNames: string[]): string {
+  const preferredTools = directive.tools_hint.length > 0
+    ? directive.tools_hint.join(", ")
+    : "none";
+  const availableTools = availableToolNames.length > 0
+    ? availableToolNames.join(", ")
+    : "none";
+
+  return `Execute this step:
+Intent: ${directive.intent}
+Context: ${directive.context}
+Preferred tools: ${preferredTools}
+Available tools: ${availableTools}
+
+Prefer the suggested tools first, but you may use any available tool if it is better for progress or recovery.
+If a tool call fails, do not repeat the same tool call with identical input in this step.
+If the same tool fails twice in this step, switch to a different available tool or a materially different strategy.
+When done, respond with a text summary.`;
+}
+
+function selectCallsForTurn<T extends { name: string; input: unknown }>(
+  calls: T[],
+  maxCallsPerTurn: number,
+  failedCallSignatures: Set<string>,
+  blockedTools: Set<string>,
+): T[] {
+  if (calls.length === 0) return [];
+
+  const executable = calls.filter(
+    (call) => !getBlockedCallReason(call.name, call.input, failedCallSignatures, blockedTools),
+  );
+
+  if (executable.length > 0) {
+    return executable.slice(0, maxCallsPerTurn);
+  }
+
+  return calls.slice(0, maxCallsPerTurn);
+}
+
+function getBlockedCallReason(
+  toolName: string,
+  input: unknown,
+  failedCallSignatures: Set<string>,
+  blockedTools: Set<string>,
+): string | undefined {
+  if (blockedTools.has(toolName)) {
+    return `Tool '${toolName}' already failed twice in this step. Try a different available tool or strategy.`;
+  }
+
+  if (failedCallSignatures.has(buildCallSignature(toolName, input))) {
+    return `Repeat blocked: tool '${toolName}' with the same input already failed in this step. Try different parameters or a different tool.`;
+  }
+
+  return undefined;
+}
+
+function buildRecoveryGuidance(
+  toolName: string,
+  input: unknown,
+  error: string,
+  toolFailureCount: number,
+  hintedTools: string[],
+  availableToolNames: string[],
+): string {
+  const failureKind = classifyActFailure(error);
+  const preferredTools = hintedTools.length > 0 ? hintedTools.join(", ") : "none";
+  const availableTools = availableToolNames.length > 0 ? availableToolNames.join(", ") : "none";
+  const sameToolRule = toolFailureCount >= 2
+    ? `Tool '${toolName}' has already failed ${toolFailureCount} times in this step. Do not use it again in this step unless you truly have no better option.`
+    : `You may still use '${toolName}' only with materially different input if that can plausibly recover.`;
+
+  return `Recovery guidance:
+- Last failed tool: ${toolName}
+- Failed input: ${summarizeForPrompt(input)}
+- Error: ${error}
+- Failure type: ${failureKind}
+- Do not repeat the same tool call with identical input in this step.
+- ${sameToolRule}
+- Preferred tools remain: ${preferredTools}
+- Available tools you may use: ${availableTools}
+- Recovery suggestion: ${buildRecoverySuggestion(failureKind, toolName)}`;
+}
+
+function classifyActFailure(error: string): "permission" | "missing_path" | "validation_error" | "no_progress" | "tool_error" {
+  const normalized = error.toLowerCase();
+  if (normalized.includes("validation failed")) return "validation_error";
+  if (normalized.includes("permission denied") || normalized.includes("eacces")) return "permission";
+  if (normalized.includes("no such file") || normalized.includes("does not exist") || normalized.includes("enoent")) {
+    return "missing_path";
+  }
+  if (normalized.includes("not found") || normalized.includes("no matches") || normalized.includes("returned no")) {
+    return "no_progress";
+  }
+  return "tool_error";
+}
+
+function buildRecoverySuggestion(
+  failureKind: "permission" | "missing_path" | "validation_error" | "no_progress" | "tool_error",
+  toolName: string,
+): string {
+  switch (failureKind) {
+    case "permission":
+      return `Avoid the same blocked target/path. Use a different tool or route that does not require the denied access.`;
+    case "missing_path":
+      return `Discover the correct path or resource first before retrying.`;
+    case "validation_error":
+      return `Repair the tool arguments to match the schema before retrying '${toolName}'.`;
+    case "no_progress":
+      return `Broaden or change the search strategy instead of repeating the same attempt.`;
+    default:
+      return `Try a different tool or materially different parameters instead of repeating the failed call.`;
+  }
 }
 
 function parseJSON<T>(text: string): T {
