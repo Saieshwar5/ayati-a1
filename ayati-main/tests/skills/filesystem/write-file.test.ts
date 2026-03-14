@@ -3,16 +3,20 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { writeFileTool } from "../../../src/skills/builtins/filesystem/write-file.js";
+import { workspaceRoot } from "../../../src/skills/workspace-paths.js";
 
 describe("writeFileTool", () => {
   let tmp: string;
+  let workspaceArtifacts: string[];
 
   beforeEach(async () => {
     tmp = await mkdtemp(join(tmpdir(), "fs-test-"));
+    workspaceArtifacts = [];
   });
 
   afterEach(async () => {
     await rm(tmp, { recursive: true, force: true });
+    await Promise.all(workspaceArtifacts.map((path) => rm(path, { recursive: true, force: true })));
   });
 
   it("writes a file", async () => {
@@ -52,5 +56,17 @@ describe("writeFileTool", () => {
     const result = await writeFileTool.execute({ path: join(tmp, "a.txt") });
     expect(result.ok).toBe(false);
     expect(result.error).toContain("content");
+  });
+
+  it("writes relative paths inside work_space by default", async () => {
+    const relativePath = `vitest-write-${Date.now()}-${Math.random().toString(36).slice(2)}.txt`;
+    const expectedPath = join(workspaceRoot, relativePath);
+    workspaceArtifacts.push(expectedPath);
+
+    const result = await writeFileTool.execute({ path: relativePath, content: "workspace default" });
+    expect(result.ok).toBe(true);
+
+    const content = await readFile(expectedPath, "utf-8");
+    expect(content).toBe("workspace default");
   });
 });

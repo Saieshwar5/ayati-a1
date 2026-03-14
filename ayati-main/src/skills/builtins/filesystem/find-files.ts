@@ -1,7 +1,7 @@
 import { readdir } from "node:fs/promises";
-import { homedir } from "node:os";
-import { resolve, join } from "node:path";
+import { join } from "node:path";
 import type { ToolDefinition, ToolResult } from "../../types.js";
+import { resolveWorkspaceRoots } from "../../workspace-paths.js";
 import { validateFindFilesInput } from "./validators.js";
 
 interface SearchState {
@@ -11,13 +11,6 @@ interface SearchState {
 
 function matchQuery(name: string, query: string): boolean {
   return name.toLowerCase().includes(query.toLowerCase());
-}
-
-function normalizeRootPath(pathValue: string): string {
-  const trimmed = pathValue.trim();
-  if (trimmed === "~") return homedir();
-  if (trimmed.startsWith("~/")) return join(homedir(), trimmed.slice(2));
-  return resolve(trimmed);
 }
 
 function hasWildcardSyntax(query: string): boolean {
@@ -66,7 +59,7 @@ export const findFilesTool: ToolDefinition = {
       };
     }
 
-    const roots = (parsed.roots && parsed.roots.length > 0) ? parsed.roots : [process.cwd()];
+    const roots = resolveWorkspaceRoots(parsed.roots);
     const start = Date.now();
     const matches: string[] = [];
     const searchedRoots: string[] = [];
@@ -74,7 +67,7 @@ export const findFilesTool: ToolDefinition = {
 
     try {
       for (const root of roots) {
-        const rootPath = normalizeRootPath(root);
+        const rootPath = root;
         searchedRoots.push(rootPath);
         const queue: SearchState[] = [{ path: rootPath, depth: 0 }];
 

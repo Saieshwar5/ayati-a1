@@ -108,7 +108,7 @@ describe("WsServer", () => {
     client.send("not valid json");
     const response = await errorReceived;
 
-    expect(JSON.parse(response)).toEqual({ error: "Invalid JSON" });
+    expect(JSON.parse(response)).toEqual({ type: "error", content: "Invalid JSON" });
     expect(onMessage).not.toHaveBeenCalled();
 
     await closeClient(client);

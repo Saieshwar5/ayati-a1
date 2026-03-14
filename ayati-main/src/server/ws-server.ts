@@ -56,7 +56,7 @@ export class WsServer {
             parsed = JSON.parse(text);
           } catch {
             devWarn(`Invalid JSON from ${clientId}: ${text}`);
-            ws.send(JSON.stringify({ error: "Invalid JSON" }));
+            ws.send(JSON.stringify({ type: "error", content: "Invalid JSON" }));
             return;
           }
           this.onMessage(clientId, parsed);

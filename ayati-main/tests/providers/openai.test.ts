@@ -7,6 +7,10 @@ vi.mock("openai", () => {
 
 import OpenAI from "openai";
 import type { LlmProvider } from "../../src/core/contracts/provider.js";
+import {
+  type ProviderRuntimeConfigHandle,
+  setupProviderRuntimeConfig,
+} from "./runtime-config-test-helpers.js";
 
 async function getProvider(): Promise<LlmProvider> {
   const mod = await import("../../src/providers/openai/index.js");
@@ -26,14 +30,17 @@ function mockOpenAIConstructor(mockCreate: ReturnType<typeof vi.fn>): void {
 describe("OpenAI provider", () => {
   const originalEnv = { ...process.env };
   let provider: LlmProvider;
+  let runtimeConfig: ProviderRuntimeConfigHandle;
 
   beforeEach(async () => {
     vi.clearAllMocks();
+    runtimeConfig = await setupProviderRuntimeConfig("openai", "gpt-4o");
     provider = await getProvider();
     provider.stop();
   });
 
-  afterEach(() => {
+  afterEach(async () => {
+    await runtimeConfig.cleanup();
     process.env = { ...originalEnv };
   });
 
@@ -50,7 +57,6 @@ describe("OpenAI provider", () => {
 
   it("should call OpenAI API with canonical turn input", async () => {
     process.env["OPENAI_API_KEY"] = "sk-test-key";
-    process.env["OPENAI_MODEL"] = "gpt-4o";
 
     const mockCreate = vi.fn().mockResolvedValue({
       choices: [{ message: { content: "Hello from AI" } }],
@@ -78,7 +84,6 @@ describe("OpenAI provider", () => {
 
   it("should count input tokens for the outgoing context", async () => {
     process.env["OPENAI_API_KEY"] = "sk-test-key";
-    process.env["OPENAI_MODEL"] = "gpt-4o";
 
     const mockCreate = vi.fn();
     const mockCount = vi.fn().mockResolvedValue({ input_tokens: 321 });
@@ -160,6 +165,86 @@ describe("OpenAI provider", () => {
     expect(out).toEqual({
       type: "tool_calls",
       calls: [{ id: "call_1", name: "shell", input: { cmd: "pwd" } }],
+    });
+  });
+
+  it("should pass structured output settings when requested", async () => {
+    process.env["OPENAI_API_KEY"] = "sk-test-key";
+
+    const mockCreate = vi.fn().mockResolvedValue({
+      choices: [{ message: { content: "{\"done\":true,\"summary\":\"ok\",\"status\":\"completed\"}" } }],
+    });
+
+    mockOpenAIConstructor(mockCreate);
+
+    provider.start();
+    await provider.generateTurn({
+      messages: [{ role: "user", content: "Hi" }],
+      responseFormat: {
+        type: "json_schema",
+        name: "controller_direct_response",
+        strict: true,
+        schema: {
+          type: "object",
+          properties: {
+            status: { type: "string" },
+          },
+          required: ["status"],
+          additionalProperties: false,
+        },
+      },
+    });
+
+    expect(mockCreate).toHaveBeenCalledWith({
+      model: "gpt-4o",
+      messages: [{ role: "user", content: "Hi" }],
+      response_format: {
+        type: "json_schema",
+        json_schema: {
+          name: "controller_direct_response",
+          schema: {
+            type: "object",
+            properties: {
+              status: { type: "string" },
+            },
+            required: ["status"],
+            additionalProperties: false,
+          },
+          strict: true,
+        },
+      },
+    });
+  });
+
+  it("should fall back to json_object for unsupported strict schemas", async () => {
+    process.env["OPENAI_API_KEY"] = "sk-test-key";
+
+    const mockCreate = vi.fn().mockResolvedValue({
+      choices: [{ message: { content: "{\"done\":true,\"summary\":\"ok\",\"status\":\"completed\"}" } }],
+    });
+
+    mockOpenAIConstructor(mockCreate);
+
+    provider.start();
+    await provider.generateTurn({
+      messages: [{ role: "user", content: "Hi" }],
+      responseFormat: {
+        type: "json_schema",
+        name: "controller_direct_response",
+        strict: true,
+        schema: {
+          type: "object",
+          anyOf: [{ type: "object" }],
+        },
+      },
+    });
+
+    expect(mockCreate).toHaveBeenCalledWith({
+      model: "gpt-4o",
+      messages: [{ role: "user", content: "Hi" }],
+      response_format: {
+        type: "json_object",
+      },
     });
   });
 

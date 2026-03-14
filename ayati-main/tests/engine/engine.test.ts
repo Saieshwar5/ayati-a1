@@ -169,16 +169,19 @@ describe("IVecEngine", () => {
       await engine.handleSystemEvent("c1", {
         type: "system_event",
         source: "pulse",
-        event: "reminder_due",
+        eventName: "reminder_due",
         eventId: "evt-1",
-        occurrenceId: "occ-1",
-        reminderId: "rem-1",
-        title: "Health",
-        instruction: "Check system health now",
-        scheduledFor: "2026-03-01T10:00:00.000Z",
-        triggeredAt: "2026-03-01T10:00:05.000Z",
-        timezone: "UTC",
-        metadata: {},
+        receivedAt: "2026-03-01T10:00:05.000Z",
+        summary: "Reminder due: Health",
+        payload: {
+          occurrenceId: "occ-1",
+          reminderId: "rem-1",
+          title: "Health",
+          instruction: "Check system health now",
+          scheduledFor: "2026-03-01T10:00:00.000Z",
+          triggeredAt: "2026-03-01T10:00:05.000Z",
+          timezone: "UTC",
+        },
       });
 
       expect(sessionMemory.beginSystemRun as ReturnType<typeof vi.fn>).toHaveBeenCalledWith(
@@ -211,14 +214,13 @@ describe("IVecEngine", () => {
       await engine.handleSystemEvent("c1", {
         type: "system_event",
         source: "gmail-cli",
-        event: "new_messages",
+        eventName: "new_messages",
         eventId: "notif-1",
-        title: "3 new emails from work",
-        instruction: "Notification from gmail-cli: 3 new emails from work",
-        triggeredAt: "2026-03-01T10:00:05.000Z",
-        metadata: {
+        receivedAt: "2026-03-01T10:00:05.000Z",
+        summary: "3 new emails from work",
+        payload: {
           priority: "normal",
-          payload: { unreadCount: 3 },
+          unreadCount: 3,
         },
       });
 

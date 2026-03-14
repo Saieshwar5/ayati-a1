@@ -3,6 +3,7 @@ import { stat } from "node:fs/promises";
 import { resolve as resolvePath } from "node:path";
 import { promisify } from "node:util";
 import type { SkillDefinition, ToolDefinition, ToolResult } from "../../types.js";
+import { resolveWorkspaceCwd } from "../../workspace-paths.js";
 
 const execAsync = promisify(exec);
 
@@ -59,6 +60,10 @@ interface ShellSessionState {
   exitCode: number | null;
   signal: NodeJS.Signals | null;
   closePromise: Promise<void>;
+}
+
+interface ErrnoExceptionLike {
+  code?: string;
 }
 
 const shellSessions = new Map<string, ShellSessionState>();
@@ -136,6 +141,10 @@ function ensureSessionNotIdle(session: ShellSessionState): ToolResult | null {
 
 function validateStringArray(value: unknown): value is string[] {
   return Array.isArray(value) && value.every((v) => typeof v === "string");
+}
+
+function isErrnoException(err: unknown): err is NodeJS.ErrnoException {
+  return typeof err === "object" && err !== null && "code" in (err as ErrnoExceptionLike);
 }
 
 function validateShellExecInput(input: unknown): ShellExecInput | ToolResult {
@@ -380,7 +389,7 @@ async function runProcessCommand(
 function preflightShellCommand(
   cwd: string | undefined,
 ): { ok: true; resolvedCwd?: string } {
-  const resolvedCwd = cwd ? resolvePath(cwd) : undefined;
+  const resolvedCwd = resolveWorkspaceCwd(cwd);
   return { ok: true, resolvedCwd };
 }
 
@@ -411,7 +420,7 @@ export const shellExecTool: ToolDefinition = {
     const preflight = preflightShellCommand(parsed.cwd);
     const timeoutMs = capWithDefault(parsed.timeoutMs, DEFAULT_TIMEOUT_MS);
     const maxOutputChars = capWithDefault(parsed.maxOutputChars, DEFAULT_MAX_OUTPUT_CHARS);
-    return await runExecCommand(parsed.cmd, preflight.resolvedCwd ?? parsed.cwd, timeoutMs, maxOutputChars);
+    return await runExecCommand(parsed.cmd, preflight.resolvedCwd, timeoutMs, maxOutputChars);
   },
 };
 
@@ -440,19 +449,29 @@ export const shellRunScriptTool: ToolDefinition = {
     const parsed = validateRunScriptInput(input);
     if ("ok" in parsed) return parsed;
 
-    const scriptPath = parsed.cwd ? resolvePath(parsed.cwd, parsed.scriptPath) : resolvePath(parsed.scriptPath);
-    const fileStats = await stat(scriptPath);
+    const preflight = preflightShellCommand(parsed.cwd);
+    const resolvedCwd = preflight.resolvedCwd ?? resolveWorkspaceCwd();
+    const scriptPath = resolvePath(resolvedCwd, parsed.scriptPath);
+    let fileStats;
+    try {
+      fileStats = await stat(scriptPath);
+    } catch (err) {
+      if (isErrnoException(err) && err.code === "ENOENT") {
+        return { ok: false, error: `Script not found: ${scriptPath}` };
+      }
+
+      const message = err instanceof Error ? err.message : "Unable to inspect script path.";
+      return { ok: false, error: `Unable to inspect script path: ${message}` };
+    }
     if (!fileStats.isFile()) {
       return { ok: false, error: "scriptPath must point to a regular file." };
     }
-
-    const preflight = preflightShellCommand(parsed.cwd);
     const timeoutMs = capWithDefault(parsed.timeoutMs, DEFAULT_TIMEOUT_MS);
     const maxOutputChars = capWithDefault(parsed.maxOutputChars, DEFAULT_MAX_OUTPUT_CHARS);
     return await runProcessCommand(
       "bash",
       [scriptPath, ...(parsed.args ?? [])],
-      preflight.resolvedCwd ?? parsed.cwd,
+      resolvedCwd,
       timeoutMs,
       maxOutputChars,
     );
@@ -486,7 +505,7 @@ export const shellSessionStartTool: ToolDefinition = {
     const preflight = preflightShellCommand(parsed.cwd);
     const outputCap = capWithDefault(parsed.maxOutputChars, DEFAULT_MAX_SESSION_OUTPUT_CHARS);
     const process = spawn("/bin/bash", ["-lc", parsed.cmd], {
-      cwd: preflight.resolvedCwd ?? parsed.cwd,
+      cwd: preflight.resolvedCwd,
       stdio: ["pipe", "pipe", "pipe"],
       shell: false,
     });
@@ -659,6 +678,7 @@ export const shellSessionCloseTool: ToolDefinition = {
 const SHELL_PROMPT_BLOCK = [
   "Shell Skill is available.",
   "Use shell for terminal execution, developer workflows, and orchestrating system tools.",
+  "Default shell work to work_space/ unless the user or task clearly points to another directory.",
   "Use shell_run_script to execute project scripts.",
   "Use shell_session_start/shell_session_write/shell_session_close for interactive commands.",
   "Prefer concise commands and summarize results clearly.",

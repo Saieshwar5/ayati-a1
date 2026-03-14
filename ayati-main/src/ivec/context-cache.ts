@@ -2,23 +2,24 @@ import { existsSync, readFileSync, readdirSync, statSync, writeFileSync } from "
 import { join, relative } from "node:path";
 import { devLog } from "../shared/index.js";
 import type { ScoutKnownLocations } from "./context-scout.js";
-import type { ContextSearchDirective, ScoutResult } from "./types.js";
+import type { ContextSearchDirective, ScoutResult, DocumentScoutState } from "./types.js";
 
 export type ContextSearchScope = ContextSearchDirective["scope"];
 
 export interface ContextCacheEntry {
   scope: ContextSearchScope;
   targets: string[];
-  summary: string;
+  context: string;
   sources: string[];
   confidence: number;
-  status: "success" | "empty";
+  status: "success" | "empty" | "unavailable";
+  documentState?: DocumentScoutState;
   createdAtIteration: number;
   lastUsedIteration: number;
 }
 
 interface ContextCacheFile {
-  version: 1;
+  version: 2;
   entries: ContextCacheEntry[];
 }
 
@@ -27,6 +28,7 @@ export interface ContextCacheLookupInput {
   query: string;
   knownLocations: ScoutKnownLocations;
   iteration: number;
+  documentPaths?: string[];
 }
 
 export interface ContextCacheStoreInput extends ContextCacheLookupInput {
@@ -34,7 +36,7 @@ export interface ContextCacheStoreInput extends ContextCacheLookupInput {
 }
 
 const CACHE_FILE_NAME = "context-cache.json";
-const CACHE_VERSION = 1;
+const CACHE_VERSION = 2;
 const MAX_CACHE_ENTRIES = 20;
 const MIN_SUCCESS_CONFIDENCE = 0.6;
 const SKILL_QUERY_STOPWORDS = new Set([
@@ -57,9 +59,9 @@ const SKILL_QUERY_STOPWORDS = new Set([
 ]);
 
 export function lookupContextCache(runPath: string, input: ContextCacheLookupInput): ContextCacheEntry | null {
-  const requestedTargets = normalizeTargetsFromQuery(input.scope, input.query, input.knownLocations);
+  const requestedTargets = normalizeTargetsFromQuery(input.scope, input.query, input.knownLocations, input.documentPaths);
   if (requestedTargets.length === 0) {
-    devLog(`[context-cache] miss scope=${input.scope} reason=no-normalized-targets`);
+    devLog(`[context-cache] miss scope=${input.scope} reason=no-normalized-targets query="${formatQueryForLog(input.query)}"`);
     return null;
   }
 
@@ -67,7 +69,11 @@ export function lookupContextCache(runPath: string, input: ContextCacheLookupInp
   const candidates = cache.entries
     .filter((entry) => scopeSatisfies(entry.scope, input.scope))
     .filter((entry) => coversTargets(entry.targets, requestedTargets))
-    .filter((entry) => entry.status === "empty" || entry.confidence >= MIN_SUCCESS_CONFIDENCE)
+    .filter((entry) =>
+      entry.status === "empty"
+      || entry.status === "unavailable"
+      || entry.confidence >= MIN_SUCCESS_CONFIDENCE
+    )
     .sort((a, b) => {
       if (a.targets.length !== b.targets.length) return a.targets.length - b.targets.length;
       return b.lastUsedIteration - a.lastUsedIteration;
@@ -75,13 +81,13 @@ export function lookupContextCache(runPath: string, input: ContextCacheLookupInp
 
   const hit = candidates[0];
   if (!hit) {
-    devLog(`[context-cache] miss scope=${input.scope} targets=${requestedTargets.join(",")}`);
+    devLog(`[context-cache] miss scope=${input.scope} targets=${requestedTargets.join(",")} query="${formatQueryForLog(input.query)}"`);
     return null;
   }
 
   hit.lastUsedIteration = input.iteration;
   writeCache(runPath, cache.entries);
-  devLog(`[context-cache] hit scope=${input.scope} targets=${hit.targets.join(",")} status=${hit.status}`);
+  devLog(`[context-cache] hit scope=${input.scope} targets=${hit.targets.join(",")} status=${hit.status} query="${formatQueryForLog(input.query)}"`);
   return hit;
 }
 
@@ -91,6 +97,7 @@ export function storeContextCache(runPath: string, input: ContextCacheStoreInput
     input.query,
     input.result.sources,
     input.knownLocations,
+    input.documentPaths,
   );
   if (targets.length === 0) {
     devLog(`[context-cache] skip-store scope=${input.scope} reason=no-normalized-targets`);
@@ -99,14 +106,22 @@ export function storeContextCache(runPath: string, input: ContextCacheStoreInput
 
   const cache = readCache(runPath);
   const existing = cache.entries.find((entry) => entry.scope === input.scope && sameTargets(entry.targets, targets));
-  const status: ContextCacheEntry["status"] = input.result.summary.trim().length > 0 ? "success" : "empty";
+  const resultContext = input.result.context;
+  const status: ContextCacheEntry["status"] = input.result.documentState?.status === "unavailable"
+    ? "unavailable"
+    : input.result.documentState?.status === "empty"
+    ? "empty"
+    : resultContext.trim().length > 0
+    ? "success"
+    : "empty";
   const nextEntry: ContextCacheEntry = {
     scope: input.scope,
     targets,
-    summary: input.result.summary,
+    context: resultContext,
     sources: uniqueStrings(input.result.sources.map(normalizePath)),
     confidence: clampConfidence(input.result.confidence),
     status,
+    documentState: input.result.documentState,
     createdAtIteration: existing?.createdAtIteration ?? input.iteration,
     lastUsedIteration: input.iteration,
   };
@@ -115,7 +130,7 @@ export function storeContextCache(runPath: string, input: ContextCacheStoreInput
   nextEntries.push(nextEntry);
   const pruned = pruneEntries(nextEntries);
   writeCache(runPath, pruned);
-  devLog(`[context-cache] store scope=${input.scope} targets=${targets.join(",")} status=${status}`);
+  devLog(`[context-cache] store scope=${input.scope} targets=${targets.join(",")} status=${status} query="${formatQueryForLog(input.query)}"`);
   return nextEntry;
 }
 
@@ -132,7 +147,12 @@ function readCache(runPath: string): ContextCacheFile {
   try {
     const raw = readFileSync(cachePath, "utf-8");
     const parsed = JSON.parse(raw) as Partial<ContextCacheFile>;
-    const entries = Array.isArray(parsed.entries) ? parsed.entries.filter(isCacheEntry) : [];
+    if (parsed.version !== CACHE_VERSION) {
+      return { version: CACHE_VERSION, entries: [] };
+    }
+    const entries = Array.isArray(parsed.entries)
+      ? parsed.entries.map(normalizeCacheEntry).filter((entry): entry is ContextCacheEntry => entry !== null)
+      : [];
     return { version: CACHE_VERSION, entries };
   } catch {
     return { version: CACHE_VERSION, entries: [] };
@@ -151,11 +171,27 @@ function isCacheEntry(value: unknown): value is ContextCacheEntry {
   return typeof entry.scope === "string"
     && Array.isArray(entry.targets)
     && Array.isArray(entry.sources)
-    && typeof entry.summary === "string"
+    && typeof entry.context === "string"
     && typeof entry.confidence === "number"
-    && (entry.status === "success" || entry.status === "empty")
+    && (entry.status === "success" || entry.status === "empty" || entry.status === "unavailable")
     && typeof entry.createdAtIteration === "number"
     && typeof entry.lastUsedIteration === "number";
+}
+
+function normalizeCacheEntry(value: unknown): ContextCacheEntry | null {
+  if (!isCacheEntry(value)) return null;
+  const entry = value as Partial<ContextCacheEntry>;
+  return {
+    scope: entry.scope!,
+    targets: [...entry.targets!],
+    context: entry.context!,
+    sources: [...entry.sources!],
+    confidence: entry.confidence!,
+    status: entry.status!,
+    documentState: entry.documentState,
+    createdAtIteration: entry.createdAtIteration!,
+    lastUsedIteration: entry.lastUsedIteration!,
+  };
 }
 
 function normalizeTargetsForStorage(
@@ -163,10 +199,11 @@ function normalizeTargetsForStorage(
   query: string,
   sources: string[],
   knownLocations: ScoutKnownLocations,
+  documentPaths?: string[],
 ): string[] {
   return uniqueStrings([
-    ...normalizeTargetsFromQuery(scope, query, knownLocations),
-    ...normalizeTargetsFromSources(scope, sources, knownLocations),
+    ...normalizeTargetsFromQuery(scope, query, knownLocations, documentPaths),
+    ...normalizeTargetsFromSources(scope, sources, knownLocations, documentPaths),
   ]).sort();
 }
 
@@ -174,6 +211,7 @@ function normalizeTargetsFromQuery(
   scope: ContextSearchScope,
   query: string,
   knownLocations: ScoutKnownLocations,
+  documentPaths?: string[],
 ): string[] {
   const targets: string[] = [];
 
@@ -189,6 +227,10 @@ function normalizeTargetsFromQuery(
   if (scope === "session" || scope === "both") {
     targets.push(...extractSessionTargetsFromQuery(query, knownLocations));
   }
+  if (scope === "documents") {
+    targets.push(...extractDocumentTargetsFromPaths(documentPaths, knownLocations));
+    targets.push(`documents:query:${hashQuery(query)}`);
+  }
 
   return uniqueStrings(targets).sort();
 }
@@ -197,6 +239,7 @@ function normalizeTargetsFromSources(
   scope: ContextSearchScope,
   sources: string[],
   knownLocations: ScoutKnownLocations,
+  documentPaths?: string[],
 ): string[] {
   const targets: string[] = [];
 
@@ -214,9 +257,42 @@ function normalizeTargetsFromSources(
     if (scope === "session" || scope === "both") {
       targets.push(...extractSessionTargetsFromSource(normalizedSource, knownLocations));
     }
+    if (scope === "documents") {
+      targets.push(...extractDocumentTargetsFromSource(normalizedSource, knownLocations));
+    }
+  }
+
+  if (scope === "documents") {
+    targets.push(...extractDocumentTargetsFromPaths(documentPaths, knownLocations));
   }
 
   return uniqueStrings(targets).sort();
+}
+
+function extractDocumentTargetsFromPaths(documentPaths: string[] | undefined, knownLocations: ScoutKnownLocations): string[] {
+  const attachedDocuments = knownLocations.attachedDocuments ?? [];
+  if (attachedDocuments.length === 0) return [];
+
+  const requested = documentPaths && documentPaths.length > 0
+    ? new Set(documentPaths.map(normalizePath))
+    : null;
+
+  return attachedDocuments
+    .filter((document) => {
+      if (!requested) return true;
+      return requested.has(normalizePath(document.originalPath)) || requested.has(normalizePath(document.storedPath));
+    })
+    .map((document) => `documents:doc:${document.documentId}`);
+}
+
+function extractDocumentTargetsFromSource(source: string, knownLocations: ScoutKnownLocations): string[] {
+  const attachedDocuments = knownLocations.attachedDocuments ?? [];
+  for (const document of attachedDocuments) {
+    if (source === normalizePath(document.originalPath) || source === normalizePath(document.storedPath)) {
+      return [`documents:doc:${document.documentId}`];
+    }
+  }
+  return [];
 }
 
 function extractSkillTargetsFromQuery(query: string, skillsDir?: string): string[] {
@@ -367,6 +443,22 @@ function uniqueStrings(values: string[]): string[] {
   return [...new Set(values.filter((value) => value.trim().length > 0))];
 }
 
+function formatQueryForLog(query: string): string {
+  const compact = query.replace(/\s+/g, " ").trim();
+  if (compact.length <= 140) return compact;
+  return `${compact.slice(0, 140)}...`;
+}
+
 function clampConfidence(value: number): number {
   return Math.min(1, Math.max(0, Number(value) || 0));
+}
+
+function hashQuery(value: string): string {
+  let hash = 2166136261;
+  const normalized = value.trim().toLowerCase();
+  for (let i = 0; i < normalized.length; i++) {
+    hash ^= normalized.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+  return Math.abs(hash >>> 0).toString(36);
 }

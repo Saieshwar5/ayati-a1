@@ -3,16 +3,20 @@ import { mkdtemp, writeFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { readFileTool } from "../../../src/skills/builtins/filesystem/read-file.js";
+import { workspaceRoot } from "../../../src/skills/workspace-paths.js";
 
 describe("readFileTool", () => {
   let tmp: string;
+  let workspaceArtifacts: string[];
 
   beforeEach(async () => {
     tmp = await mkdtemp(join(tmpdir(), "fs-test-"));
+    workspaceArtifacts = [];
   });
 
   afterEach(async () => {
     await rm(tmp, { recursive: true, force: true });
+    await Promise.all(workspaceArtifacts.map((path) => rm(path, { recursive: true, force: true })));
   });
 
   it("reads a file successfully", async () => {
@@ -55,5 +59,16 @@ describe("readFileTool", () => {
   it("rejects null input", async () => {
     const result = await readFileTool.execute(null);
     expect(result.ok).toBe(false);
+  });
+
+  it("reads relative paths from work_space by default", async () => {
+    const relativePath = `vitest-read-${Date.now()}-${Math.random().toString(36).slice(2)}.txt`;
+    const expectedPath = join(workspaceRoot, relativePath);
+    workspaceArtifacts.push(expectedPath);
+    await writeFile(expectedPath, "workspace read", "utf-8");
+
+    const result = await readFileTool.execute({ path: relativePath });
+    expect(result.ok).toBe(true);
+    expect(result.output).toContain("workspace read");
   });
 });

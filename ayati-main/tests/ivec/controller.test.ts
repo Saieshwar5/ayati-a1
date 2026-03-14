@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
 import {
+  ControllerResponseFormatError,
   parseUnderstandResponse,
   parseReEvalResponse,
   parseDirectResponse,
@@ -12,16 +13,23 @@ import type { LlmTurnInput, LlmTurnOutput } from "../../src/core/contracts/llm-p
 import type { LoopState } from "../../src/ivec/types.js";
 import type { ToolDefinition } from "../../src/skills/types.js";
 
-function createMockProvider(response: string): LlmProvider {
+function createMockProvider(
+  response: string | string[],
+  capabilities?: LlmProvider["capabilities"],
+): LlmProvider {
+  const replies = Array.isArray(response) ? [...response] : [response];
   return {
     name: "mock",
     version: "1.0.0",
-    capabilities: { nativeToolCalling: true },
+    capabilities: capabilities ?? { nativeToolCalling: true },
     start: vi.fn(),
     stop: vi.fn(),
     generateTurn: vi
       .fn<(input: LlmTurnInput) => Promise<LlmTurnOutput>>()
-      .mockResolvedValue({ type: "assistant", content: response }),
+      .mockImplementation(async () => ({
+        type: "assistant",
+        content: replies.shift() ?? replies[replies.length - 1] ?? "",
+      })),
   };
 }
 
@@ -107,8 +115,44 @@ describe("parseUnderstandResponse", () => {
     }
   });
 
+  it("parses a wrapped understand directive", () => {
+    const json = JSON.stringify({
+      kind: "understand",
+      payload: {
+        done: false,
+        understand: true,
+        goal: {
+          objective: "Find and list all JS files",
+          done_when: ["JS file paths are returned"],
+          required_evidence: ["at least one JS file path"],
+          ask_user_when: ["the search root is ambiguous"],
+          stop_when_no_progress: ["two searches return no results"],
+        },
+        approach: "Use shell to run find command",
+      },
+    });
+    const result = parseUnderstandResponse(json);
+    expect(result.done).toBe(false);
+    if (!result.done) {
+      expect(result.understand).toBe(true);
+      expect(result.goal.objective).toBe("Find and list all JS files");
+    }
+  });
+
   it("handles JSON wrapped in ```json fences", () => {
     const text = '```json\n{ "done": true, "summary": "done", "status": "completed" }\n```';
+    const result = parseUnderstandResponse(text);
+    expect(result.done).toBe(true);
+  });
+
+  it("extracts JSON when prose appears before it", () => {
+    const text = 'I need to think first.\n{"done":true,"summary":"done","status":"completed"}';
+    const result = parseUnderstandResponse(text);
+    expect(result.done).toBe(true);
+  });
+
+  it("recovers Python-style booleans outside strings", () => {
+    const text = '{"done": True, "summary": "done", "status": "completed"}';
     const result = parseUnderstandResponse(text);
     expect(result.done).toBe(true);
   });
@@ -196,6 +240,22 @@ describe("parseDirectResponse", () => {
     }
   });
 
+  it("parses document context_search with document_paths", () => {
+    const json = JSON.stringify({
+      done: false,
+      context_search: true,
+      query: "What is the termination clause?",
+      scope: "documents",
+      document_paths: ["/tmp/policy.pdf"],
+    });
+    const result = parseDirectResponse(json);
+    expect(result.done).toBe(false);
+    if (!result.done && "context_search" in result) {
+      expect(result.scope).toBe("documents");
+      expect(result.document_paths).toEqual(["/tmp/policy.pdf"]);
+    }
+  });
+
   it("parses session rotation directive JSON", () => {
     const json = JSON.stringify({
       done: false,
@@ -208,6 +268,15 @@ describe("parseDirectResponse", () => {
     if (!result.done && "rotate_session" in result) {
       expect(result.rotate_session).toBe(true);
       expect(result.reason).toBe("context full");
+    }
+  });
+
+  it("extracts the first JSON object when prose surrounds it", () => {
+    const text = 'I will respond with JSON now: {"done":true,"summary":"Task completed successfully","status":"completed"} Thanks!';
+    const result = parseDirectResponse(text);
+    expect(result.done).toBe(true);
+    if (result.done) {
+      expect(result.summary).toBe("Task completed successfully");
     }
   });
 });
@@ -324,6 +393,37 @@ describe("callUnderstand", () => {
     expect(prompt).toContain("runPath=/runs/abc");
   });
 
+  it("includes low-risk vs high-cost clarification guidance in understand prompt", async () => {
+    const json = JSON.stringify({
+      done: false,
+      understand: true,
+      goal: {
+        objective: "answer a user request",
+        done_when: ["the user receives a useful answer"],
+        required_evidence: [],
+        ask_user_when: [],
+        stop_when_no_progress: [],
+      },
+      approach: "proceed carefully",
+    });
+    const provider = createMockProvider(json);
+    const state = createState({
+      userMessage: "latest t20 final man of the match",
+    });
+
+    await callUnderstand(provider, state, [shellTool], "system context");
+
+    const call = (provider.generateTurn as ReturnType<typeof vi.fn>).mock.calls[0]![0] as {
+      messages: Array<{ role: string; content: string }>;
+    };
+    const prompt = call.messages[1]!.content;
+    expect(prompt).toContain("Do NOT ask by default.");
+    expect(prompt).toContain("proceed safely by making a reasonable assumption or by verifying with available tools");
+    expect(prompt).toContain("materially changes the answer or outcome");
+    expect(prompt).toContain("a mistake would be costly because the work is expensive, time-consuming, or hard to redo");
+    expect(prompt).toContain("If the ambiguity is low-risk and recoverable, proceed with the best reasonable interpretation");
+  });
+
   it("returns completion for simple messages", async () => {
     const json = JSON.stringify({
       done: true,
@@ -338,6 +438,52 @@ describe("callUnderstand", () => {
     if (result.done) {
       expect(result.summary).toBe("Hello! How are you?");
     }
+  });
+
+  it("requests structured output when the provider advertises support", async () => {
+    const provider = createMockProvider(
+      JSON.stringify({
+        kind: "completion",
+        payload: {
+          done: true,
+          summary: "Hello! How are you?",
+          status: "completed",
+        },
+      }),
+      {
+        nativeToolCalling: true,
+        structuredOutput: {
+          jsonObject: true,
+          jsonSchema: true,
+        },
+      },
+    );
+
+    await callUnderstand(provider, createState(), [], "system context");
+
+    const call = (provider.generateTurn as ReturnType<typeof vi.fn>).mock.calls[0]![0] as LlmTurnInput;
+    expect(call.responseFormat).toEqual({
+      type: "json_schema",
+      name: "controller_understand_response",
+      strict: true,
+      schema: expect.objectContaining({
+        type: "object",
+        properties: expect.objectContaining({
+          kind: expect.any(Object),
+          payload: expect.objectContaining({
+            anyOf: expect.any(Array),
+          }),
+        }),
+      }),
+    });
+    expect(call.responseFormat?.type).toBe("json_schema");
+    if (call.responseFormat?.type === "json_schema") {
+      expect(call.responseFormat.schema).not.toHaveProperty("anyOf");
+      expect(call.responseFormat.schema).not.toHaveProperty("oneOf");
+    }
+    expect(call.messages[1]?.content).toContain(
+      "Use strict JSON syntax with double-quoted strings and lowercase true, false, and null.",
+    );
   });
 });
 
@@ -464,6 +610,37 @@ describe("callDirect", () => {
     expect(prompt).toContain("Before using any external skill, you MUST use \"skills\" scope");
   });
 
+  it("includes verification-first and high-cost clarification guidance in direct prompt", async () => {
+    const json = JSON.stringify({
+      done: false,
+      execution_mode: "dependent",
+      intent: "verify a public fact",
+      tools_hint: ["shell"],
+      success_criteria: "fact is verified",
+      context: "",
+    });
+    const provider = createMockProvider(json);
+    const state = createState({
+      goal: {
+        objective: "answer the latest sports fact question",
+        done_when: ["a verified answer is returned"],
+        required_evidence: ["source or verification"],
+        ask_user_when: [],
+        stop_when_no_progress: [],
+      },
+      approach: "verify before replying",
+    });
+
+    await callDirect(provider, state, [shellTool]);
+
+    const call = (provider.generateTurn as ReturnType<typeof vi.fn>).mock.calls[0]![0] as {
+      messages: Array<{ role: string; content: string }>;
+    };
+    const prompt = call.messages[0]!.content;
+    expect(prompt).toContain("prefer checking with tools/search instead of asking the user to restate or reconfirm");
+    expect(prompt).toContain("If the next step would be expensive, time-consuming, or hard to undo");
+  });
+
   it("includes runPath in recent runs section for direct prompt", async () => {
     const json = JSON.stringify({
       done: false,
@@ -497,6 +674,41 @@ describe("callDirect", () => {
     expect(prompt).toContain("runId=abc runPath=/runs/abc");
   });
 
+  it("includes attached document manifest in direct prompt", async () => {
+    const json = JSON.stringify({
+      done: false,
+      context_search: true,
+      query: "What does the policy say?",
+      scope: "documents",
+      document_paths: ["/docs/policy.txt"],
+    });
+    const provider = createMockProvider(json);
+    const state = createState({
+      attachedDocuments: [
+        {
+          documentId: "doc-1",
+          name: "policy.txt",
+          originalPath: "/docs/policy.txt",
+          storedPath: "/managed/docs/policy.txt",
+          kind: "txt",
+          sizeBytes: 128,
+          checksum: "abc123",
+        },
+      ],
+    });
+
+    await callDirect(provider, state, [shellTool]);
+
+    const call = (provider.generateTurn as ReturnType<typeof vi.fn>).mock.calls[0]![0] as {
+      messages: Array<{ role: string; content: string }>;
+    };
+    const prompt = call.messages[0]!.content;
+    expect(prompt).toContain("Attached documents available (1):");
+    expect(prompt).toContain("policy.txt | kind=txt | path=/docs/policy.txt");
+    expect(prompt).toContain("\"documents\"");
+    expect(prompt).toContain("\"document_paths\": [\"optional/path or empty array\"]");
+  });
+
   it("uses injected direct instructions when provided", async () => {
     const json = JSON.stringify({
       done: false,
@@ -527,6 +739,44 @@ describe("callDirect", () => {
     expect(call.messages).toHaveLength(1);
     expect(call.messages[0]!.role).toBe("user");
     expect(call.messages[0]!.content).toContain("- custom direct instruction");
+  });
+
+  it("retries once when the first controller response is prose instead of JSON", async () => {
+    const provider = createMockProvider([
+      "I need to inspect the mail first.",
+      JSON.stringify({
+        done: true,
+        summary: "I need access to the latest mail details first.",
+        status: "completed",
+      }),
+    ]);
+
+    const result = await callDirect(provider, createState(), [shellTool]);
+    expect(result.done).toBe(true);
+    if (result.done) {
+      expect(result.summary).toContain("latest mail details");
+    }
+
+    expect(provider.generateTurn).toHaveBeenCalledTimes(2);
+    const retryCall = (provider.generateTurn as ReturnType<typeof vi.fn>).mock.calls[1]![0] as {
+      messages: Array<{ role: string; content: string }>;
+    };
+    const assistantRetryMessage = retryCall.messages[retryCall.messages.length - 2];
+    const repairPrompt = retryCall.messages[retryCall.messages.length - 1];
+    expect(assistantRetryMessage?.role).toBe("assistant");
+    expect(assistantRetryMessage?.content).toContain("inspect the mail");
+    expect(repairPrompt?.content).toContain("Reply again with exactly one JSON object");
+  });
+
+  it("throws a controller format error after two invalid controller responses", async () => {
+    const provider = createMockProvider([
+      "I need to inspect the mail first.",
+      "Still not JSON.",
+    ]);
+
+    const run = callDirect(provider, createState(), [shellTool]);
+    await expect(run).rejects.toThrow(ControllerResponseFormatError);
+    await expect(run).rejects.toThrow(/Invalid controller response format at direct stage/);
   });
 });
 
@@ -604,9 +854,11 @@ describe("callReEval", () => {
     expect(call.messages[1]!.content).toContain("Read package config");
     expect(call.messages[1]!.content).toContain("Failed steps");
     expect(call.messages[1]!.content).toContain("Failed Approaches");
-    expect(call.messages[1]!.content).toContain("Scout research results (from prior context search):");
+    expect(call.messages[1]!.content).toContain("Retrieved context from prior context_search:");
     expect(call.messages[1]!.content).toContain("If the revised approach depends on an older non-latest step");
-    expect(call.messages[1]!.content).toContain("For context search: { \"done\": false, \"context_search\": true");
+    expect(call.messages[1]!.content).toContain(
+      "For context search: { \"kind\": \"context_search\", \"payload\": { \"done\": false, \"context_search\": true",
+    );
     expect(call.messages[1]!.content).toContain("Original goal:");
     expect(call.messages[1]!.content).toContain("objective: greet user");
   });

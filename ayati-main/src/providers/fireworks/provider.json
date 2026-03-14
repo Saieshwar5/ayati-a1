@@ -1,0 +1,5 @@
+{
+  "name": "fireworks",
+  "version": "1.0.0",
+  "description": "Fireworks AI LLM provider using the OpenAI-compatible chat completions API"
+}

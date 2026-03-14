@@ -1,6 +1,6 @@
 import { readFile, stat } from "node:fs/promises";
-import { resolve } from "node:path";
 import type { ToolDefinition, ToolResult } from "../../types.js";
+import { resolveWorkspacePath } from "../../workspace-paths.js";
 import { validateReadFileInput } from "./validators.js";
 
 const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10 MB
@@ -29,7 +29,7 @@ export const readFileTool: ToolDefinition = {
     const parsed = validateReadFileInput(input);
     if ("ok" in parsed) return parsed;
 
-    const filePath = resolve(parsed.path);
+    const filePath = resolveWorkspacePath(parsed.path);
     const start = Date.now();
 
     try {

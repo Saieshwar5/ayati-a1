@@ -6,6 +6,10 @@ const provider: LlmProvider = {
   version: "1.0.0",
   capabilities: {
     nativeToolCalling: true,
+    structuredOutput: {
+      jsonObject: false,
+      jsonSchema: false,
+    },
   },
 
   start() {

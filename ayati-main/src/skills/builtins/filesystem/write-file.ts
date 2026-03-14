@@ -1,6 +1,7 @@
 import { writeFile, mkdir } from "node:fs/promises";
-import { resolve, dirname } from "node:path";
+import { dirname } from "node:path";
 import type { ToolDefinition, ToolResult } from "../../types.js";
+import { resolveWorkspacePath } from "../../workspace-paths.js";
 import { validateWriteFileInput } from "./validators.js";
 
 export const writeFileTool: ToolDefinition = {
@@ -29,7 +30,7 @@ export const writeFileTool: ToolDefinition = {
     const parsed = validateWriteFileInput(input);
     if ("ok" in parsed) return parsed;
 
-    const filePath = resolve(parsed.path);
+    const filePath = resolveWorkspacePath(parsed.path);
     const start = Date.now();
 
     try {

@@ -1,5 +1,10 @@
 import type { UserProfileContext } from "./types.js";
-import type { UserProfilePatch } from "./evolution-types.js";
+import type {
+  EvolutionConfidence,
+  ProfileFieldSource,
+  UserProfilePatch,
+  UserProfilePatchSources,
+} from "./evolution-types.js";
 
 function isStringArray(value: unknown): value is string[] {
   return Array.isArray(value) && value.every((item) => typeof item === "string");
@@ -16,6 +21,34 @@ function appendUnique(existing: string[], additions: string[]): string[] {
     }
   }
   return result;
+}
+
+function isProfileFieldSource(value: unknown): value is ProfileFieldSource {
+  return value === "explicit" || value === "inferred";
+}
+
+function shouldPersistAutoField(
+  source: ProfileFieldSource | undefined,
+  confidence: EvolutionConfidence,
+): boolean {
+  if (source === "explicit") {
+    return confidence === "medium" || confidence === "high";
+  }
+  if (source === "inferred") {
+    return confidence === "high";
+  }
+  return false;
+}
+
+function shouldPersistConservativeField(
+  source: ProfileFieldSource | undefined,
+  confidence: EvolutionConfidence,
+): boolean {
+  return source === "explicit" && confidence === "high";
+}
+
+function hasKeys(value: Record<string, unknown>): boolean {
+  return Object.keys(value).length > 0;
 }
 
 export function validateProfilePatch(raw: unknown): UserProfilePatch | null {
@@ -74,6 +107,132 @@ export function validateProfilePatch(raw: unknown): UserProfilePatch | null {
   }
 
   return patch;
+}
+
+export function validateProfilePatchSources(raw: unknown): UserProfilePatchSources | null {
+  if (!raw || typeof raw !== "object") return null;
+  const obj = raw as Record<string, unknown>;
+  const sources: UserProfilePatchSources = {};
+
+  const scalarFields = [
+    "name", "nickname", "occupation", "location", "languages", "interests", "facts", "people", "projects", "active_hours",
+  ] as const;
+
+  for (const field of scalarFields) {
+    if (isProfileFieldSource(obj[field])) {
+      (sources as Record<string, unknown>)[field] = obj[field];
+    }
+  }
+
+  if (obj["communication"] && typeof obj["communication"] === "object") {
+    const comm = obj["communication"] as Record<string, unknown>;
+    const commSources: Record<string, ProfileFieldSource> = {};
+    for (const key of ["formality", "verbosity", "humor_receptiveness", "emoji_usage"] as const) {
+      if (isProfileFieldSource(comm[key])) {
+        commSources[key] = comm[key];
+      }
+    }
+    if (hasKeys(commSources)) {
+      sources.communication = commSources as UserProfilePatchSources["communication"];
+    }
+  }
+
+  if (obj["emotional_patterns"] && typeof obj["emotional_patterns"] === "object") {
+    const emotional = obj["emotional_patterns"] as Record<string, unknown>;
+    const emotionalSources: Record<string, ProfileFieldSource> = {};
+    for (const key of ["mood_baseline", "stress_triggers", "joy_triggers"] as const) {
+      if (isProfileFieldSource(emotional[key])) {
+        emotionalSources[key] = emotional[key];
+      }
+    }
+    if (hasKeys(emotionalSources)) {
+      sources.emotional_patterns = emotionalSources as UserProfilePatchSources["emotional_patterns"];
+    }
+  }
+
+  return sources;
+}
+
+export function filterProfilePatchByPolicy(
+  patch: UserProfilePatch,
+  sources: UserProfilePatchSources | null,
+  confidence: EvolutionConfidence,
+): UserProfilePatch {
+  const filtered: UserProfilePatch = {};
+
+  const autoStringFields = ["name", "nickname", "occupation", "active_hours"] as const;
+  for (const field of autoStringFields) {
+    const value = patch[field];
+    if (typeof value === "string" && shouldPersistAutoField(sources?.[field], confidence)) {
+      filtered[field] = value;
+    }
+  }
+
+  const autoArrayFields = ["languages", "interests", "projects"] as const;
+  for (const field of autoArrayFields) {
+    const value = patch[field];
+    if (value && value.length > 0 && shouldPersistAutoField(sources?.[field], confidence)) {
+      filtered[field] = value;
+    }
+  }
+
+  const conservativeStringFields = ["location"] as const;
+  for (const field of conservativeStringFields) {
+    const value = patch[field];
+    if (typeof value === "string" && shouldPersistConservativeField(sources?.[field], confidence)) {
+      filtered[field] = value;
+    }
+  }
+
+  const conservativeArrayFields = ["facts", "people"] as const;
+  for (const field of conservativeArrayFields) {
+    const value = patch[field];
+    if (value && value.length > 0 && shouldPersistConservativeField(sources?.[field], confidence)) {
+      filtered[field] = value;
+    }
+  }
+
+  if (patch.communication) {
+    const communication: NonNullable<UserProfilePatch["communication"]> = {};
+    for (const key of ["formality", "verbosity", "humor_receptiveness", "emoji_usage"] as const) {
+      const value = patch.communication[key];
+      if (typeof value === "string" && shouldPersistAutoField(sources?.communication?.[key], confidence)) {
+        communication[key] = value;
+      }
+    }
+    if (hasKeys(communication as Record<string, unknown>)) {
+      filtered.communication = communication;
+    }
+  }
+
+  if (patch.emotional_patterns) {
+    const emotionalPatterns: NonNullable<UserProfilePatch["emotional_patterns"]> = {};
+    if (
+      typeof patch.emotional_patterns.mood_baseline === "string" &&
+      shouldPersistConservativeField(sources?.emotional_patterns?.mood_baseline, confidence)
+    ) {
+      emotionalPatterns.mood_baseline = patch.emotional_patterns.mood_baseline;
+    }
+    if (
+      patch.emotional_patterns.stress_triggers &&
+      patch.emotional_patterns.stress_triggers.length > 0 &&
+      shouldPersistConservativeField(sources?.emotional_patterns?.stress_triggers, confidence)
+    ) {
+      emotionalPatterns.stress_triggers = patch.emotional_patterns.stress_triggers;
+    }
+    if (
+      patch.emotional_patterns.joy_triggers &&
+      patch.emotional_patterns.joy_triggers.length > 0 &&
+      shouldPersistConservativeField(sources?.emotional_patterns?.joy_triggers, confidence)
+    ) {
+      emotionalPatterns.joy_triggers = patch.emotional_patterns.joy_triggers;
+    }
+    if (hasKeys(emotionalPatterns as Record<string, unknown>)) {
+      filtered.emotional_patterns = emotionalPatterns;
+    }
+  }
+
+  return filtered;
 }
 
 export function mergeProfilePatch(

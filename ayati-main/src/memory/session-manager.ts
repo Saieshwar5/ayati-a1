@@ -47,6 +47,7 @@ export interface SessionCloseData {
   clientId: string;
   turns: ConversationTurn[];
   reason: string;
+  handoffSummary: string | null;
 }
 
 export interface TaskSummaryIndexData {
@@ -666,12 +667,13 @@ export class MemoryManager implements SessionMemory {
 
     if (this.onSessionCloseCallback && turns.length >= MIN_TURNS_FOR_CALLBACK) {
       const cb = this.onSessionCloseCallback;
-      const cbData: SessionCloseData = {
-        sessionId: session.id,
-        clientId: session.clientId,
-        turns,
-        reason,
-      };
+        const cbData: SessionCloseData = {
+          sessionId: session.id,
+          clientId: session.clientId,
+          turns,
+          reason,
+          handoffSummary: options?.handoffSummary ?? null,
+        };
       this.enqueueBackgroundTask(async () => {
         await cb(cbData);
       });

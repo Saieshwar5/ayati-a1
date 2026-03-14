@@ -8,6 +8,7 @@ import {
 } from "../../src/skills/builtins/shell/index.js";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { workspaceRoot } from "../../src/skills/workspace-paths.js";
 
 describe("shell tool", () => {
   it("executes a command", async () => {
@@ -26,6 +27,12 @@ describe("shell tool", () => {
     expect(result.output).toContain("stderr-line");
   });
 
+  it("defaults cwd to work_space", async () => {
+    const result = await shellExecTool.execute({ cmd: "pwd" });
+    expect(result.ok).toBe(true);
+    expect(String(result.output ?? "").trim()).toBe(workspaceRoot);
+  });
+
   it("runs a script", async () => {
     const scriptPath = join("/tmp", `ayati-shell-test-${Date.now()}.sh`);
     writeFileSync(scriptPath, "echo script-ok\n");
@@ -33,6 +40,15 @@ describe("shell tool", () => {
     const result = await shellRunScriptTool.execute({ scriptPath });
     expect(result.ok).toBe(true);
     expect(result.output).toContain("script-ok");
+  });
+
+  it("returns a normal tool error when the script is missing", async () => {
+    const scriptPath = join("/tmp", `ayati-shell-missing-${Date.now()}.sh`);
+
+    const result = await shellRunScriptTool.execute({ scriptPath });
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain("Script not found:");
+    expect(result.error).toContain(scriptPath);
   });
 
   it("supports interactive shell sessions", async () => {

@@ -78,21 +78,25 @@ export class PulseScheduler {
 
     this.inFlightOccurrences.add(occurrenceId);
 
+    const triggeredAt = this.nowProvider().toISOString();
     const event: PulseReminderDueEvent = {
-      type: "system_event",
       source: "pulse",
-      event: "reminder_due",
+      eventName: "reminder_due",
       eventId: randomUUID(),
-      occurrenceId,
-      reminderId: reminder.id,
-      title: reminder.title,
-      instruction: reminder.instruction,
-      scheduledFor: reminder.nextTriggerAt,
-      triggeredAt: this.nowProvider().toISOString(),
-      timezone: reminder.timezone,
-      metadata: reminder.metadata,
-      originRunId: reminder.originRunId,
-      originSessionId: reminder.originSessionId,
+      receivedAt: triggeredAt,
+      summary: `Reminder due: ${reminder.title}`,
+      payload: {
+        occurrenceId,
+        reminderId: reminder.id,
+        title: reminder.title,
+        instruction: reminder.instruction,
+        scheduledFor: reminder.nextTriggerAt,
+        triggeredAt,
+        timezone: reminder.timezone,
+        metadata: reminder.metadata,
+        originRunId: reminder.originRunId,
+        originSessionId: reminder.originSessionId,
+      },
     };
 
     try {
@@ -101,8 +105,8 @@ export class PulseScheduler {
         clientId: this.clientId,
         reminderId: reminder.id,
         occurrenceId,
-        scheduledFor: event.scheduledFor,
-        triggeredAt: event.triggeredAt,
+        scheduledFor: reminder.nextTriggerAt,
+        triggeredAt,
       });
     } catch (err) {
       devWarn(

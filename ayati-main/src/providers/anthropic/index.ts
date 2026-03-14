@@ -1,5 +1,6 @@
 import Anthropic from "@anthropic-ai/sdk";
 import type { LlmProvider } from "../../core/contracts/provider.js";
+import { getModelForProvider } from "../../config/llm-runtime-config.js";
 import type {
   LlmMessage,
   LlmToolCall,
@@ -8,6 +9,13 @@ import type {
   LlmTurnInput,
   LlmTurnOutput,
 } from "../../core/contracts/llm-protocol.js";
+import { getProviderCapabilities } from "../shared/provider-profiles.js";
+import {
+  buildToolNameMapsForProvider,
+  toCanonicalToolName,
+  toProviderToolName,
+  type ToolNameMaps,
+} from "../shared/tool-name-mapping.js";
 
 let client: Anthropic | null = null;
 
@@ -19,7 +27,7 @@ interface AnthropicMessageBuild {
   }>;
 }
 
-function toAnthropicPayload(messages: LlmMessage[]): AnthropicMessageBuild {
+function toAnthropicPayload(messages: LlmMessage[], maps: ToolNameMaps): AnthropicMessageBuild {
   const out: AnthropicMessageBuild = {
     messages: [],
   };
@@ -45,7 +53,7 @@ function toAnthropicPayload(messages: LlmMessage[]): AnthropicMessageBuild {
           blocks.push({
             type: "tool_use",
             id: call.id,
-            name: call.name,
+            name: toProviderToolName(call.name, maps),
             input: call.input ?? {},
           });
         }
@@ -75,10 +83,13 @@ function toAnthropicPayload(messages: LlmMessage[]): AnthropicMessageBuild {
   return out;
 }
 
-function toAnthropicTools(tools?: LlmToolSchema[]): Array<Record<string, unknown>> | undefined {
+function toAnthropicTools(
+  tools: LlmToolSchema[] | undefined,
+  maps: ToolNameMaps,
+): Array<Record<string, unknown>> | undefined {
   if (!tools || tools.length === 0) return undefined;
   return tools.map((tool) => ({
-    name: tool.name,
+    name: toProviderToolName(tool.name, maps),
     description: tool.description,
     input_schema: tool.inputSchema,
   }));
@@ -87,9 +98,7 @@ function toAnthropicTools(tools?: LlmToolSchema[]): Array<Record<string, unknown
 const provider: LlmProvider = {
   name: "anthropic",
   version: "1.0.0",
-  capabilities: {
-    nativeToolCalling: true,
-  },
+  capabilities: getProviderCapabilities("anthropic"),
 
   start() {
     const apiKey = process.env["ANTHROPIC_API_KEY"];
@@ -108,9 +117,10 @@ const provider: LlmProvider = {
       throw new Error("Anthropic provider not started.");
     }
 
-    const model = process.env["ANTHROPIC_MODEL"] ?? "claude-sonnet-4-5-20250929";
-    const payload = toAnthropicPayload(input.messages);
-    const tools = toAnthropicTools(input.tools);
+    const model = getModelForProvider("anthropic");
+    const nameMaps = buildToolNameMapsForProvider(provider.name, input.tools);
+    const payload = toAnthropicPayload(input.messages, nameMaps);
+    const tools = toAnthropicTools(input.tools, nameMaps);
 
     const count = await client.messages.countTokens({
       model,
@@ -132,9 +142,10 @@ const provider: LlmProvider = {
       throw new Error("Anthropic provider not started.");
     }
 
-    const model = process.env["ANTHROPIC_MODEL"] ?? "claude-sonnet-4-5-20250929";
-    const payload = toAnthropicPayload(input.messages);
-    const tools = toAnthropicTools(input.tools);
+    const model = getModelForProvider("anthropic");
+    const nameMaps = buildToolNameMapsForProvider(provider.name, input.tools);
+    const payload = toAnthropicPayload(input.messages, nameMaps);
+    const tools = toAnthropicTools(input.tools, nameMaps);
 
     const response = await client.messages.create({
       model,
@@ -151,7 +162,9 @@ const provider: LlmProvider = {
       if (block.type === "tool_use") {
         calls.push({
           id: typeof block.id === "string" ? block.id : crypto.randomUUID(),
-          name: typeof block.name === "string" ? block.name : "unknown_tool",
+          name: typeof block.name === "string"
+            ? toCanonicalToolName(block.name, nameMaps)
+            : "unknown_tool",
           input: block.input ?? {},
         });
         continue;

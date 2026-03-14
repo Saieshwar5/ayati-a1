@@ -1,11 +1,14 @@
 import { describe, it, expect, vi } from "vitest";
-import { mkdtempSync, rmSync, existsSync, readFileSync } from "node:fs";
+import { mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { agentLoop } from "../../src/ivec/agent-loop.js";
 import type { LlmProvider } from "../../src/core/contracts/provider.js";
 import type { LlmTurnInput, LlmTurnOutput } from "../../src/core/contracts/llm-protocol.js";
 import type { SessionMemory, MemoryRunHandle } from "../../src/memory/types.js";
+import { DocumentStore } from "../../src/documents/document-store.js";
+import { DocumentContextBackend } from "../../src/documents/document-context-backend.js";
+import type { ManagedDocumentManifest } from "../../src/documents/types.js";
 
 function goalContract(objective: string): Record<string, unknown> {
   return {
@@ -56,6 +59,18 @@ function createMockSessionMemory(): SessionMemory {
   };
 }
 
+function createAttachedDocument(path: string, name = "resume.pdf"): ManagedDocumentManifest {
+  return {
+    documentId: "doc-1",
+    name,
+    originalPath: path,
+    storedPath: path,
+    kind: "pdf",
+    sizeBytes: 1024,
+    checksum: "checksum-1",
+  };
+}
+
 describe("agentLoop", () => {
   let tmpDir: string;
 
@@ -96,6 +111,7 @@ describe("agentLoop", () => {
         sessionMemory,
         runHandle: { sessionId: "s1", runId: "r1" },
         clientId: "c1",
+        inputKind: "user_message",
         dataDir,
       });
 
@@ -177,6 +193,7 @@ describe("agentLoop", () => {
         sessionMemory: createMockSessionMemory(),
         runHandle: { sessionId: "s1", runId: "r1" },
         clientId: "c1",
+        inputKind: "user_message",
         dataDir,
       });
 
@@ -397,7 +414,7 @@ describe("agentLoop", () => {
             return {
               type: "assistant",
               content: JSON.stringify({
-                summary: "Playwright skill.md says to install browsers before running screenshot commands",
+                context: "Playwright skill.md says to install browsers before running screenshot commands",
                 sources: ["playwright/skill.md"],
                 confidence: 0.9,
               }),
@@ -406,7 +423,7 @@ describe("agentLoop", () => {
           if (callCount === 7) {
             const messages = (input as { messages: Array<{ role: string; content: string }> }).messages;
             const prompt = messages.find((message) => message.role === "user")?.content ?? "";
-            if (!prompt.includes("Scout research results (from prior context search):")) {
+            if (!prompt.includes("Retrieved context from prior context_search:")) {
               throw new Error("Expected scout results in re-eval prompt");
             }
             if (!prompt.includes("install browsers before running screenshot commands")) {
@@ -716,7 +733,7 @@ describe("agentLoop", () => {
             return {
               type: "assistant",
               content: JSON.stringify({
-                summary: "Step 1 drafted a response",
+                context: "Step 1 drafted a response",
                 sources: ["steps/001-act.md"],
                 confidence: 0.8,
               }),
@@ -807,7 +824,7 @@ describe("agentLoop", () => {
             return {
               type: "assistant",
               content: JSON.stringify({
-                summary: "Step 1 created the draft answer and verified it successfully.",
+                context: "Step 1 created the draft answer and verified it successfully.",
                 sources: ["steps/001-act.md", "steps/001-verify.md"],
                 confidence: 0.87,
               }),
@@ -851,7 +868,7 @@ describe("agentLoop", () => {
           if (callCount === 11) {
             const messages = (input as { messages: Array<{ role: string; content: string }> }).messages;
             const prompt = messages.find((message) => message.role === "user")?.content ?? "";
-            if (!prompt.includes("Scout research results (from prior context search):")) {
+            if (!prompt.includes("Retrieved context from prior context_search:")) {
               throw new Error("Expected cached scout context in the repeated direct prompt");
             }
             if (!prompt.includes("Step 1 created the draft answer and verified it successfully.")) {
@@ -892,6 +909,99 @@ describe("agentLoop", () => {
       expect(cache.entries).toHaveLength(1);
       expect(cache.entries[0]?.scope).toBe("run_artifacts");
       expect(cache.entries[0]?.targets).toContain("run_artifacts:step:1");
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("preloads attached document context before the first direct decision", async () => {
+    const dataDir = makeTmpDir();
+    const attachmentPath = join(dataDir, "policy.txt");
+    try {
+      writeFileSync(
+        attachmentPath,
+        "Termination requires 30 days written notice before cancellation.",
+        "utf-8",
+      );
+
+      const documentStore = new DocumentStore({
+        dataDir: join(dataDir, "documents"),
+        preferCli: false,
+      });
+      const registered = await documentStore.registerAttachments([{ path: attachmentPath, name: "policy.txt" }]);
+      const prepared = await documentStore.prepareDocuments(registered.documents);
+      const chunkId = prepared[0]?.chunks[0]?.sourceId;
+      expect(chunkId).toBeTruthy();
+
+      let callCount = 0;
+      const provider: LlmProvider = {
+        name: "mock",
+        version: "1.0.0",
+        capabilities: { nativeToolCalling: true },
+        start: vi.fn(),
+        stop: vi.fn(),
+        generateTurn: vi.fn().mockImplementation(async (input: LlmTurnInput) => {
+          callCount++;
+          if (callCount === 1) {
+            return {
+              type: "assistant",
+              content: JSON.stringify({
+                done: false,
+                understand: true,
+                goal: goalContract("answer from the attachment"),
+                approach: "use shell to search",
+              }),
+            };
+          }
+          if (callCount === 2) {
+            return {
+              type: "assistant",
+              content: JSON.stringify({
+                items: [
+                  {
+                    sourceId: chunkId,
+                    fact: "Termination requires 30 days written notice before cancellation.",
+                    quote: "Termination requires 30 days written notice before cancellation.",
+                    relevance: 0.95,
+                    confidence: 0.88,
+                  },
+                ],
+                dropped_noise_count: 0,
+                insufficient_evidence: false,
+              }),
+            };
+          }
+          const messages = (input as { messages: Array<{ role: string; content: string }> }).messages;
+          const prompt = messages.find((message) => message.role === "user")?.content ?? "";
+          if (!prompt.includes("Termination requires 30 days written notice before cancellation.")) {
+            throw new Error("Expected direct prompt to receive document scout context");
+          }
+          return {
+            type: "assistant",
+            content: JSON.stringify({
+              done: true,
+              summary: "The policy requires 30 days written notice before cancellation.",
+              status: "completed",
+            }),
+          };
+        }),
+      };
+
+      const result = await agentLoop({
+        provider,
+        toolDefinitions: [],
+        sessionMemory: createMockSessionMemory(),
+        runHandle: { sessionId: "s1", runId: "r1" },
+        clientId: "c1",
+        dataDir,
+        userMessageOverride: "What is the termination clause?",
+        attachedDocuments: registered.documents,
+        documentContextBackend: new DocumentContextBackend({ store: documentStore }),
+      });
+
+      expect(result.status).toBe("completed");
+      expect(result.content).toContain("30 days written notice");
+      expect(provider.generateTurn).toHaveBeenCalledTimes(3);
     } finally {
       cleanup();
     }
@@ -999,6 +1109,284 @@ describe("agentLoop", () => {
     }
   });
 
+  it("reuses sufficient attached-document evidence instead of rerunning document context search", async () => {
+    const dataDir = makeTmpDir();
+    const attachmentPath = join(dataDir, "resume.pdf");
+    try {
+      writeFileSync(attachmentPath, "placeholder", "utf-8");
+      const attachedDocuments = [createAttachedDocument(attachmentPath)];
+        const documentContextBackend = {
+          search: vi.fn().mockResolvedValue({
+            context: "1. Sai Eshwar worked as a software engineer building Node.js services.",
+            sources: [attachmentPath],
+            confidence: 0.91,
+            documentState: {
+            status: "sufficient",
+            insufficientEvidence: false,
+            warnings: [],
+          },
+        }),
+      } as unknown as DocumentContextBackend;
+
+      let callCount = 0;
+      const provider: LlmProvider = {
+        name: "mock",
+        version: "1.0.0",
+        capabilities: { nativeToolCalling: true },
+        start: vi.fn(),
+        stop: vi.fn(),
+        generateTurn: vi.fn().mockImplementation(async (input: LlmTurnInput) => {
+          callCount++;
+          if (callCount === 1) {
+            return {
+              type: "assistant",
+              content: JSON.stringify({
+                done: false,
+                understand: true,
+                goal: goalContract("answer from the attachment"),
+                approach: "search the document",
+              }),
+            };
+          }
+
+          if (callCount === 2) {
+            return {
+              type: "assistant",
+              content: JSON.stringify({
+                done: false,
+                context_search: true,
+                query: "Extract the full work experience section from resume.pdf",
+                scope: "documents",
+                document_paths: [attachmentPath],
+              }),
+            };
+          }
+
+          const messages = (input as { messages: Array<{ role: string; content: string }> }).messages;
+          const prompt = messages.find((message) => message.role === "user")?.content ?? "";
+          expect(prompt).toContain("Document retrieval status: sufficient");
+          expect(prompt).toContain("Do not request another document context search");
+          return {
+            type: "assistant",
+            content: JSON.stringify({
+              done: true,
+              summary: "Sai Eshwar worked as a software engineer building Node.js services.",
+              status: "completed",
+            }),
+          };
+        }),
+      };
+
+      const result = await agentLoop({
+        provider,
+        toolDefinitions: [],
+        sessionMemory: createMockSessionMemory(),
+        runHandle: { sessionId: "s1", runId: "r1" },
+        clientId: "c1",
+        dataDir,
+        userMessageOverride: "what is the sai eshwar working experience",
+        attachedDocuments,
+        documentContextBackend,
+      });
+
+      expect(result.status).toBe("completed");
+      expect(result.content).toContain("software engineer");
+      expect(documentContextBackend.search).toHaveBeenCalledTimes(1);
+      expect(provider.generateTurn).toHaveBeenCalledTimes(3);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("allows one narrower document retry when the initial attachment evidence is partial", async () => {
+    const dataDir = makeTmpDir();
+    const attachmentPath = join(dataDir, "resume.pdf");
+    try {
+      writeFileSync(attachmentPath, "placeholder", "utf-8");
+      const attachedDocuments = [createAttachedDocument(attachmentPath)];
+      const documentContextBackend = {
+        search: vi.fn()
+          .mockResolvedValueOnce({
+            context: "The resume appears to describe a software profile, but the relevant section is incomplete.",
+            sources: [attachmentPath],
+            confidence: 0.52,
+            documentState: {
+              status: "partial",
+              insufficientEvidence: true,
+              warnings: [],
+            },
+          })
+          .mockResolvedValueOnce({
+            context: "1. Skills include TypeScript, Node.js, React, and testing.",
+            sources: [attachmentPath],
+            confidence: 0.9,
+            documentState: {
+              status: "sufficient",
+              insufficientEvidence: false,
+              warnings: [],
+            },
+          }),
+      } as unknown as DocumentContextBackend;
+
+      let callCount = 0;
+      const provider: LlmProvider = {
+        name: "mock",
+        version: "1.0.0",
+        capabilities: { nativeToolCalling: true },
+        start: vi.fn(),
+        stop: vi.fn(),
+        generateTurn: vi.fn().mockImplementation(async (input: LlmTurnInput) => {
+          callCount++;
+          if (callCount === 1) {
+            return {
+              type: "assistant",
+              content: JSON.stringify({
+                done: false,
+                understand: true,
+                goal: goalContract("answer from the attachment"),
+                approach: "use the attached resume",
+              }),
+            };
+          }
+
+          if (callCount === 2) {
+            return {
+              type: "assistant",
+              content: JSON.stringify({
+                done: false,
+                context_search: true,
+                query: "Extract the skills section from resume.pdf",
+                scope: "documents",
+                document_paths: [attachmentPath],
+              }),
+            };
+          }
+
+          const messages = (input as { messages: Array<{ role: string; content: string }> }).messages;
+          const prompt = messages.find((message) => message.role === "user")?.content ?? "";
+          expect(prompt).toContain("Document retrieval status: sufficient");
+          expect(prompt).toContain("TypeScript, Node.js, React, and testing");
+          return {
+            type: "assistant",
+            content: JSON.stringify({
+              done: true,
+              summary: "Sai Eshwar's skills include TypeScript, Node.js, React, and testing.",
+              status: "completed",
+            }),
+          };
+        }),
+      };
+
+      const result = await agentLoop({
+        provider,
+        toolDefinitions: [],
+        sessionMemory: createMockSessionMemory(),
+        runHandle: { sessionId: "s1", runId: "r1" },
+        clientId: "c1",
+        dataDir,
+        userMessageOverride: "tell me about sai eshwar",
+        attachedDocuments,
+        documentContextBackend,
+      });
+
+      expect(result.status).toBe("completed");
+      expect(result.content).toContain("TypeScript");
+      expect(documentContextBackend.search).toHaveBeenCalledTimes(2);
+      expect(provider.generateTurn).toHaveBeenCalledTimes(3);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("surfaces empty attached-document retrieval as a not-found outcome after one narrower retry", async () => {
+    const dataDir = makeTmpDir();
+    const attachmentPath = join(dataDir, "resume.pdf");
+    try {
+      writeFileSync(attachmentPath, "placeholder", "utf-8");
+      const attachedDocuments = [createAttachedDocument(attachmentPath)];
+      const documentContextBackend = {
+        search: vi.fn().mockResolvedValue({
+          context: "No relevant document context was found for this query.",
+          sources: [attachmentPath],
+          confidence: 0,
+          documentState: {
+            status: "empty",
+            insufficientEvidence: true,
+            warnings: [],
+          },
+        }),
+      } as unknown as DocumentContextBackend;
+
+      let callCount = 0;
+      const provider: LlmProvider = {
+        name: "mock",
+        version: "1.0.0",
+        capabilities: { nativeToolCalling: true },
+        start: vi.fn(),
+        stop: vi.fn(),
+        generateTurn: vi.fn().mockImplementation(async (input: LlmTurnInput) => {
+          callCount++;
+          if (callCount === 1) {
+            return {
+              type: "assistant",
+              content: JSON.stringify({
+                done: false,
+                understand: true,
+                goal: goalContract("check whether the attachment contains the requested detail"),
+                approach: "use the attachment",
+              }),
+            };
+          }
+
+          if (callCount === 2) {
+            return {
+              type: "assistant",
+              content: JSON.stringify({
+                done: false,
+                context_search: true,
+                query: "Find the aws certification section in resume.pdf",
+                scope: "documents",
+                document_paths: [attachmentPath],
+              }),
+            };
+          }
+
+          const messages = (input as { messages: Array<{ role: string; content: string }> }).messages;
+          const prompt = messages.find((message) => message.role === "user")?.content ?? "";
+          expect(prompt).toContain("Document retrieval status: empty");
+          expect(prompt).toContain("requested information was not found");
+          return {
+            type: "assistant",
+            content: JSON.stringify({
+              done: true,
+              summary: "I couldn't find AWS certification information in the attached resume.",
+              status: "completed",
+            }),
+          };
+        }),
+      };
+
+      const result = await agentLoop({
+        provider,
+        toolDefinitions: [],
+        sessionMemory: createMockSessionMemory(),
+        runHandle: { sessionId: "s1", runId: "r1" },
+        clientId: "c1",
+        dataDir,
+        userMessageOverride: "does the attached resume mention an aws certification",
+        attachedDocuments,
+        documentContextBackend,
+      });
+
+      expect(result.status).toBe("completed");
+      expect(result.content).toContain("couldn't find AWS certification");
+      expect(documentContextBackend.search).toHaveBeenCalledTimes(2);
+      expect(provider.generateTurn).toHaveBeenCalledTimes(3);
+    } finally {
+      cleanup();
+    }
+  });
+
   it("fails when context search requests exceed per-iteration limit", async () => {
     const dataDir = makeTmpDir();
     try {
@@ -1062,7 +1450,7 @@ describe("agentLoop", () => {
           return {
             type: "assistant",
             content: JSON.stringify({
-              summary: "Some context",
+              context: "Some context",
               sources: [],
               confidence: 0.5,
             }),
@@ -1083,7 +1471,7 @@ describe("agentLoop", () => {
       });
 
       expect(result.status).toBe("failed");
-      expect(result.content).toContain("context search requests exceeded");
+      expect(result.content).toContain("controller requested context_search too many times");
       expect(result.totalIterations).toBe(2);
     } finally {
       cleanup();

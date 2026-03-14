@@ -78,6 +78,35 @@ describe("SessionManager onSessionClose callback", () => {
     expect(data.sessionId).toBe(firstSessionId);
     expect(data.reason).toBe("session_switch:new unrelated task");
     expect(data.turns.length).toBe(2);
+    expect(data.handoffSummary).toBeNull();
+
+    await sm.shutdown();
+  });
+
+  it("includes handoff summary in close callback data when provided", async () => {
+    const callback = vi.fn();
+    const sm = new SessionManager({
+      dataDir,
+      dbPath,
+      now: () => new Date("2025-01-01T00:00:00Z"),
+      onSessionClose: callback,
+    });
+
+    sm.initialize("client1");
+
+    const run = sm.beginRun("client1", "wrap up task");
+    sm.recordAssistantFinal("client1", run.runId, run.sessionId, "done");
+    sm.createSession("client1", {
+      runId: run.runId,
+      reason: "new unrelated task",
+      source: "agent",
+      handoffSummary: "Task completed and user likes brief responses",
+    });
+
+    await sm.flushBackgroundTasks();
+
+    const data: SessionCloseData = callback.mock.calls[0]![0]!;
+    expect(data.handoffSummary).toBe("Task completed and user likes brief responses");
 
     await sm.shutdown();
   });
@@ -233,6 +262,8 @@ describe("SessionManager onSessionClose callback", () => {
     const data: HandoffSummaryIndexData = onHandoffSummaryIndexed.mock.calls[0]![0]!;
     expect(data.sessionId).toBe(firstSessionId);
     expect(data.summary).toBe("Task A completed successfully");
+
+    await sm.flushBackgroundTasks();
 
     await sm.shutdown();
   });

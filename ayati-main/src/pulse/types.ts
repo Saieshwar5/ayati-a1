@@ -1,3 +1,5 @@
+import type { PluginSystemEventInput } from "../core/contracts/plugin.js";
+
 export type PulseReminderStatus = "active" | "completed" | "cancelled";
 
 export type PulseWeekday = 1 | 2 | 3 | 4 | 5 | 6 | 7;
@@ -59,22 +61,7 @@ export interface PulseStoreDocument {
   reminders: PulseReminder[];
 }
 
-export interface PulseReminderDueEvent {
-  type: "system_event";
-  source: "pulse";
-  event: "reminder_due";
-  eventId: string;
-  occurrenceId: string;
-  reminderId: string;
-  title: string;
-  instruction: string;
-  scheduledFor: string;
-  triggeredAt: string;
-  timezone: string;
-  metadata: Record<string, unknown>;
-  originRunId?: string;
-  originSessionId?: string;
-}
+export interface PulseReminderDueEvent extends PluginSystemEventInput {}
 
 export interface PulseNowSnapshot {
   nowUtc: string;

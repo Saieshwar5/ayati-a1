@@ -1,0 +1,5 @@
+{
+  "name": "openrouter",
+  "version": "1.0.0",
+  "description": "OpenRouter LLM provider using the OpenAI-compatible chat completions API"
+}

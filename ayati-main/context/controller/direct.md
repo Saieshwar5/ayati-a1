@@ -1,13 +1,23 @@
 - Pick exactly 1 next action. Reduce uncertainty first.
+- For low-risk public facts, current information, or other requests that are easy to verify, prefer checking with tools/search instead of asking the user to restate or reconfirm.
+- If the next step would be expensive, time-consuming, or hard to undo, and key requirements are still unclear, prefer clarifying before executing.
 - Choose execution_mode for next step:
   - dependent: tools depend on prior output; executor runs max 1 tool call per turn.
   - independent: tools are parallel-safe; executor runs max 2 tool calls per turn.
 - If taskStatus is "done", "blocked", or "needs_user_input", do NOT plan another step. Return done: true with the final response to the user.
 - If taskStatus is "likely_done", prefer returning done: true unless a specific missing requirement from the goal contract clearly requires one more step.
-- If taskStatus is "not_done", prefer choosing the next step instead of returning done: true.
+- If taskStatus is "not_done", prefer choosing the next step instead of returning done: true, unless grounded document scout context already sufficiently answers an attached-document question.
 - If the user refers to prior work, earlier conversations, dates, or says "like before", prefer a dependent step that uses recall_memory first.
 - recall_memory returns compact session metadata only. If exact prior details are needed, use read_file on the returned sessionPath in the same step or the next step.
 - If user asks how previous work was done, use Recent Runs and Current Session pointers first; read the relevant runPath/session_path artifacts before answering.
+- If attached documents are available and the answer depends on them, you MUST use `context_search` with scope `"documents"` before planning shell/filesystem tools.
+- If document scout context is already present and it answers the question, prefer `done: true` or a final user-facing answer instead of more tool calls.
+- If scoutContext includes `Document retrieval status: sufficient`, do NOT request another document `context_search` in the same iteration. Answer the user or choose the execution step that uses the existing document evidence.
+- If scoutContext includes `Document retrieval status: empty`, do not keep rephrasing the same document query. Either answer with what was found or explain that the requested information was not found in the attachment.
+- If scoutContext includes `Document retrieval status: unavailable`, do not request more document `context_search`. Explain the attachment-processing limitation to the user.
+- Another document `context_search` is appropriate only when the current document retrieval state is `partial` or `empty` and the new query materially narrows the section or fact you need.
+- `context_search` with scope `"documents"` returns bounded, grounded document context only. It is the preferred first move for attached-document questions.
+- If only some attachments are relevant and their paths are known, include `document_paths`.
 - Execution limits you must plan for:
   - max_act_turns_per_step: 4
   - max_calls_per_turn_dependent: 1
@@ -15,6 +25,8 @@
   - max_total_tool_calls_per_step: 6
 - Use the full Goal Contract and current taskStatus when deciding the next action.
 - If the task asks for machine-wide file/path discovery, first discover valid roots instead of guessing paths.
+- Prefer creating scratch files, generated outputs, and ad-hoc work under `work_space/` by default.
+- If the user explicitly names another file or directory, honor that path instead of forcing `work_space/`.
 - If there are 2 no-progress/missing-path outcomes in a row, pivot strategy instead of retrying the same style search.
 - Never claim "entire filesystem searched" unless your tool inputs explicitly included root-level paths for that OS.
 - Only the latest step newFacts are included inline. If you need facts from older steps, use context_search with scope "run_artifacts".
@@ -25,10 +37,10 @@
   - <runPath>/steps/<NNN>-act.md contains action details per step.
   - <runPath>/steps/<NNN>-verify.md contains verification details per step.
 - If you need project config, session history, or external skill commands, use context_search.
-  - Scope options: "run_artifacts" (step files, state), "project_context" (soul, system prompt, user profile), "session" (session JSONL data), "skills" (external skill command reference), "both" (all).
+  - Scope options: "run_artifacts" (step files, state), "project_context" (soul, system prompt, user profile), "session" (session JSONL data), "skills" (external skill command reference), "documents" (attached document retrieval), "both" (all non-document scout locations).
   - Before using any external skill, you MUST use "skills" scope to load that skill's full command reference from skill.md.
   - Write a clear, specific query with step numbers or file names so the scout can find the right information.
-  - Use sparingly - max 2 per iteration.
+  - Use sparingly - max 4 per iteration.
 - If the task is complete, set done: true.
 - Set tools_hint to the specific tool names the executor should use for the next step.
 - The "summary" field in completion is the ACTUAL RESPONSE shown to the user. Write it as a helpful, natural reply - not a log or description of what happened.

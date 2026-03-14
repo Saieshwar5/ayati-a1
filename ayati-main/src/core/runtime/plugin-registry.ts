@@ -1,4 +1,4 @@
-import type { AyatiPlugin } from "../contracts/plugin.js";
+import type { AyatiPlugin, PluginRuntimeContext } from "../contracts/plugin.js";
 
 export class PluginRegistry {
   private plugins: AyatiPlugin[] = [];
@@ -7,15 +7,15 @@ export class PluginRegistry {
     this.plugins.push(plugin);
   }
 
-  async startAll(): Promise<void> {
+  async startAll(context: PluginRuntimeContext): Promise<void> {
     for (const plugin of this.plugins) {
-      await plugin.start();
+      await plugin.start(context);
     }
   }
 
-  async stopAll(): Promise<void> {
+  async stopAll(context?: PluginRuntimeContext): Promise<void> {
     for (const plugin of [...this.plugins].reverse()) {
-      await plugin.stop();
+      await plugin.stop(context);
     }
   }
 

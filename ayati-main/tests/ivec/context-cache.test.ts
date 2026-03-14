@@ -64,7 +64,7 @@ describe("context-cache", () => {
         knownLocations,
         iteration: 1,
         result: {
-          summary: "Use gws-gmail-triage for read-only inbox summaries.",
+          context: "Use gws-gmail-triage for read-only inbox summaries.",
           sources: [
             join(knownLocations.skillsDir!, "gws-gmail", "skill.md"),
             join(knownLocations.skillsDir!, "gws-gmail-triage", "skill.md"),
@@ -82,7 +82,7 @@ describe("context-cache", () => {
 
       expect(hit).not.toBeNull();
       expect(hit?.targets).toEqual(["skills:gws-gmail", "skills:gws-gmail-triage"]);
-      expect(hit?.summary).toContain("read-only inbox summaries");
+      expect(hit?.context).toContain("read-only inbox summaries");
 
       const cacheFile = JSON.parse(readFileSync(getContextCachePath(runPath), "utf-8")) as {
         entries: Array<{ lastUsedIteration: number }>;
@@ -102,7 +102,7 @@ describe("context-cache", () => {
         knownLocations,
         iteration: 3,
         result: {
-          summary: "Step 2 failed because the tool output was incomplete.",
+          context: "Step 2 failed because the tool output was incomplete.",
           sources: [
             join(runPath, "steps", "002-act.md"),
             join(runPath, "steps", "002-verify.md"),
@@ -120,7 +120,7 @@ describe("context-cache", () => {
 
       expect(hit).not.toBeNull();
       expect(hit?.targets).toContain("run_artifacts:step:2");
-      expect(hit?.summary).toContain("tool output was incomplete");
+      expect(hit?.context).toContain("tool output was incomplete");
     } finally {
       cleanup();
     }
@@ -135,7 +135,7 @@ describe("context-cache", () => {
         knownLocations,
         iteration: 5,
         result: {
-          summary: "",
+          context: "",
           sources: [knownLocations.sessionPath!],
           confidence: 0.1,
         },
@@ -150,7 +150,7 @@ describe("context-cache", () => {
 
       expect(hit).not.toBeNull();
       expect(hit?.status).toBe("empty");
-      expect(hit?.summary).toBe("");
+      expect(hit?.context).toBe("");
     } finally {
       cleanup();
     }
@@ -165,7 +165,7 @@ describe("context-cache", () => {
         knownLocations,
         iteration: 7,
         result: {
-          summary: "Step 2 context",
+          context: "Step 2 context",
           sources: [join(runPath, "steps", "002-act.md")],
           confidence: 0.8,
         },
@@ -183,4 +183,63 @@ describe("context-cache", () => {
       cleanup();
     }
   });
+
+  it("keeps document cache entries query-aware for the same attachment", () => {
+    const { runPath, knownLocations } = makeFixture();
+    const documentPath = join(tmpRoot, "docs", "policy.txt");
+
+    try {
+      mkdirSync(join(tmpRoot, "docs"), { recursive: true });
+      writeFileSync(documentPath, "Termination requires 30 days written notice.", "utf-8");
+
+      knownLocations.attachedDocuments = [
+        {
+          documentId: "doc-policy",
+          name: "policy.txt",
+          originalPath: documentPath,
+          storedPath: documentPath,
+          kind: "txt",
+          sizeBytes: 41,
+          checksum: "abc123",
+        },
+      ];
+
+      storeContextCache(runPath, {
+        scope: "documents",
+        query: "What is the termination clause?",
+        knownLocations,
+        iteration: 9,
+        documentPaths: [documentPath],
+        result: {
+          context: "Termination requires 30 days written notice.",
+          sources: [documentPath],
+          confidence: 0.93,
+        },
+      });
+
+      const hit = lookupContextCache(runPath, {
+        scope: "documents",
+        query: "What is the termination clause?",
+        knownLocations,
+        iteration: 10,
+        documentPaths: [documentPath],
+      });
+
+      const miss = lookupContextCache(runPath, {
+        scope: "documents",
+        query: "Who signed the agreement?",
+        knownLocations,
+        iteration: 11,
+        documentPaths: [documentPath],
+      });
+
+      expect(hit).not.toBeNull();
+      expect(hit?.targets).toContain("documents:doc:doc-policy");
+      expect(hit?.context).toContain("30 days written notice");
+      expect(miss).toBeNull();
+    } finally {
+      cleanup();
+    }
+  });
+
 });

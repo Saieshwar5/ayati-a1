@@ -15,6 +15,7 @@ function makeTurns(count: number): ConversationTurn[] {
     role: i % 2 === 0 ? ("user" as const) : ("assistant" as const),
     content: `Turn ${i}`,
     timestamp: `2025-01-01T00:00:${String(i).padStart(2, "0")}Z`,
+    sessionPath: "sessions/test.md",
   }));
 }
 
@@ -34,6 +35,7 @@ function highConfidenceResponse(): LlmTurnOutput {
     type: "assistant",
     content: JSON.stringify({
       user_profile_patch: { name: "Alice", interests: ["Rust"] },
+      field_sources: { name: "explicit", interests: "inferred" },
       confidence: "high",
       reasoning: "User stated their name and interests",
     }),
@@ -45,6 +47,7 @@ function noneConfidenceResponse(): LlmTurnOutput {
     type: "assistant",
     content: JSON.stringify({
       user_profile_patch: {},
+      field_sources: {},
       confidence: "none",
       reasoning: "Nothing extractable",
     }),
@@ -56,6 +59,7 @@ function lowConfidenceResponse(): LlmTurnOutput {
     type: "assistant",
     content: JSON.stringify({
       user_profile_patch: { name: "Maybe" },
+      field_sources: { name: "inferred" },
       confidence: "low",
       reasoning: "Not confident",
     }),
@@ -220,11 +224,34 @@ describe("ContextEvolver", () => {
     expect(provider.generateTurn).toHaveBeenCalledTimes(1);
   });
 
+  it("does not rate limit handoff-triggered evolution", async () => {
+    const provider = makeProvider(highConfidenceResponse());
+
+    const evolver = new ContextEvolver({
+      provider,
+      contextDir: "/ctx",
+      historyDir: "/history",
+      currentProfile: emptyUserProfileContext(),
+    });
+
+    await evolver.evolveFromSession(makeTurns(6), {
+      trigger: "handoff",
+      handoffSummary: "User prefers concise answers.",
+    });
+    await evolver.evolveFromSession(makeTurns(6), {
+      trigger: "handoff",
+      handoffSummary: "User prefers concise answers.",
+    });
+
+    expect(provider.generateTurn).toHaveBeenCalledTimes(2);
+  });
+
   it("handles response wrapped in markdown code fences", async () => {
     const response: LlmTurnOutput = {
       type: "assistant",
       content: "```json\n" + JSON.stringify({
         user_profile_patch: { name: "Bob" },
+        field_sources: { name: "explicit" },
         confidence: "high",
         reasoning: "Name found",
       }) + "\n```",

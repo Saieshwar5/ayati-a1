@@ -24,7 +24,7 @@ export function ChatInput({
         value={value}
         onChange={onChange}
         onSubmit={onSubmit}
-        placeholder="Type a message or /attach <path>"
+        placeholder="Type a message or /attach <path> [-- message]"
         focus={!isLoading}
         showCursor
       />

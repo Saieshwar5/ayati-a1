@@ -3,16 +3,20 @@ import { mkdtemp, rm, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { createDirectoryTool } from "../../../src/skills/builtins/filesystem/create-directory.js";
+import { workspaceRoot } from "../../../src/skills/workspace-paths.js";
 
 describe("createDirectoryTool", () => {
   let tmp: string;
+  let workspaceArtifacts: string[];
 
   beforeEach(async () => {
     tmp = await mkdtemp(join(tmpdir(), "fs-test-"));
+    workspaceArtifacts = [];
   });
 
   afterEach(async () => {
     await rm(tmp, { recursive: true, force: true });
+    await Promise.all(workspaceArtifacts.map((path) => rm(path, { recursive: true, force: true })));
   });
 
   it("creates a directory", async () => {
@@ -50,5 +54,17 @@ describe("createDirectoryTool", () => {
     const result = await createDirectoryTool.execute({});
     expect(result.ok).toBe(false);
     expect(result.error).toContain("path");
+  });
+
+  it("creates relative directories inside work_space by default", async () => {
+    const relativePath = `vitest-dir-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const expectedPath = join(workspaceRoot, relativePath);
+    workspaceArtifacts.push(expectedPath);
+
+    const result = await createDirectoryTool.execute({ path: relativePath });
+    expect(result.ok).toBe(true);
+
+    const info = await stat(expectedPath);
+    expect(info.isDirectory()).toBe(true);
   });
 });

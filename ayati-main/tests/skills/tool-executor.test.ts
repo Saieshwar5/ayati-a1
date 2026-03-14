@@ -24,6 +24,23 @@ describe("createToolExecutor", () => {
     expect(result.error).toContain("Unknown tool");
   });
 
+  it("converts thrown tool exceptions into normal tool errors", async () => {
+    const executor = createToolExecutor([
+      {
+        name: "boom",
+        description: "Throws",
+        async execute() {
+          throw new Error("unexpected failure");
+        },
+      },
+    ]);
+
+    const result = await executor.execute("boom", {});
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain("Tool 'boom' threw an exception");
+    expect(result.error).toContain("unexpected failure");
+  });
+
   it("validate() returns valid for correct input", () => {
     const executor = createToolExecutor([
       {
@@ -111,4 +128,5 @@ describe("createToolExecutor", () => {
       expect((result.schema as { availableTools: string[] }).availableTools).toContain("shell");
     }
   });
+
 });

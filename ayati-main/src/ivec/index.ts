@@ -12,9 +12,10 @@ import { renderRecentRunsSection } from "../prompt/sections/recent-runs.js";
 import { estimateTextTokens } from "../prompt/token-estimator.js";
 import type { ToolExecutor } from "../skills/tool-executor.js";
 import { devLog, devWarn, devError } from "../shared/index.js";
-import type { DocumentProcessor } from "../documents/document-processor.js";
-import type { RecursiveContextAgent } from "../subagents/context-extractor/recursive-context-agent.js";
-import { buildContextEnvelope } from "../subagents/context-extractor/context-envelope.js";
+import type { ManagedDocumentManifest } from "../documents/types.js";
+import type { DocumentStore } from "../documents/document-store.js";
+import type { DocumentContextBackend } from "../documents/document-context-backend.js";
+import type { AyatiSystemEvent } from "../core/contracts/plugin.js";
 import { agentLoop } from "./agent-loop.js";
 import {
   evaluateSessionRotation,
@@ -28,23 +29,6 @@ interface SystemContextBuildResult {
   dynamicSystemTokens: number;
 }
 
-interface EngineSystemEvent {
-  type: "system_event";
-  source: string;
-  event: string;
-  eventId: string;
-  occurrenceId?: string;
-  reminderId?: string;
-  title?: string;
-  instruction?: string;
-  scheduledFor?: string;
-  triggeredAt?: string;
-  timezone?: string;
-  metadata: Record<string, unknown>;
-  originRunId?: string;
-  originSessionId?: string;
-}
-
 export interface IVecEngineOptions {
   onReply?: (clientId: string, data: unknown) => void;
   provider?: LlmProvider;
@@ -55,8 +39,8 @@ export interface IVecEngineOptions {
   rotationPolicyConfig?: Partial<RotationPolicyConfig>;
   now?: () => Date;
   dataDir?: string;
-  documentProcessor?: DocumentProcessor;
-  contextAgent?: RecursiveContextAgent;
+  documentStore?: DocumentStore;
+  documentContextBackend?: DocumentContextBackend;
 }
 
 export class IVecEngine {
@@ -69,8 +53,8 @@ export class IVecEngine {
   private readonly rotationPolicyConfig?: Partial<RotationPolicyConfig>;
   private readonly nowProvider: () => Date;
   private readonly dataDir?: string;
-  private readonly documentProcessor?: DocumentProcessor;
-  private readonly contextAgent?: RecursiveContextAgent;
+  private readonly documentStore?: DocumentStore;
+  private readonly documentContextBackend?: DocumentContextBackend;
   private staticSystemTokens = 0;
   private staticTokensReady = false;
   private readonly pendingMidnightByClient = new Map<string, PendingMidnightRollover>();
@@ -85,8 +69,8 @@ export class IVecEngine {
     this.rotationPolicyConfig = options?.rotationPolicyConfig;
     this.nowProvider = options?.now ?? (() => new Date());
     this.dataDir = options?.dataDir;
-    this.documentProcessor = options?.documentProcessor;
-    this.contextAgent = options?.contextAgent;
+    this.documentStore = options?.documentStore;
+    this.documentContextBackend = options?.documentContextBackend;
   }
 
   async start(): Promise<void> {
@@ -135,7 +119,7 @@ export class IVecEngine {
     void this.processChat(clientId, msg.content, msg.attachments ?? []);
   }
 
-  async handleSystemEvent(clientId: string, event: EngineSystemEvent): Promise<void> {
+  async handleSystemEvent(clientId: string, event: AyatiSystemEvent): Promise<void> {
     await this.processSystemEvent(clientId, event);
   }
 
@@ -147,7 +131,7 @@ export class IVecEngine {
       this.recordTurnStatus(clientId, runHandle, "processing_started");
 
       if (this.provider) {
-        const contextMessage = await this.buildContextAwareUserMessage(content, attachments);
+        const registeredAttachments = await this.registerIncomingDocuments(attachments);
         const toolDefs = this.toolExecutor?.definitions() ?? [];
         const system = await this.buildSystemContext();
         const result = await agentLoop({
@@ -161,7 +145,9 @@ export class IVecEngine {
           dataDir: this.dataDir ?? "data",
           systemContext: system.systemContext || undefined,
           controllerPrompts: this.staticContext?.controllerPrompts,
-          userMessageOverride: contextMessage,
+          attachedDocuments: registeredAttachments.documents,
+          attachmentWarnings: registeredAttachments.warnings,
+          documentContextBackend: this.documentContextBackend,
           onProgress: (log, runPath) => {
             devLog(`[${clientId}] ${log}`);
             this.sessionMemory.recordAgentStep(clientId, {
@@ -212,41 +198,33 @@ export class IVecEngine {
     }
   }
 
-  private async processSystemEvent(clientId: string, event: EngineSystemEvent): Promise<void> {
+  private async processSystemEvent(clientId: string, event: AyatiSystemEvent): Promise<void> {
     let runHandle: MemoryRunHandle | null = null;
-    const incomingMessage = this.buildSystemEventUserMessage(event);
+    const incomingMessage = event.summary;
 
     try {
+      devLog(
+        `[${clientId}] system_event start source=${event.source} eventName=${event.eventName} eventId=${event.eventId} summary=${event.summary}`,
+      );
       this.rotateSessionBeforeRunIfNeeded(clientId, incomingMessage);
       runHandle = this.sessionMemory.beginSystemRun?.(clientId, {
         source: event.source,
-        event: event.event,
+        event: event.eventName,
         eventId: event.eventId,
-        occurrenceId: event.occurrenceId,
-        reminderId: event.reminderId,
-        instruction: event.instruction,
-        scheduledFor: event.scheduledFor,
-        triggeredAt: event.triggeredAt,
-        payload: {
-          title: event.title,
-          timezone: event.timezone,
-          metadata: event.metadata,
-          originRunId: event.originRunId,
-          originSessionId: event.originSessionId,
-        },
+        triggeredAt: event.receivedAt,
+        payload: event.payload,
       }) ?? this.sessionMemory.beginRun(clientId, incomingMessage);
 
-      this.recordTurnStatus(clientId, runHandle, "processing_started", `system_event:${event.source}/${event.event}`);
+      this.recordTurnStatus(clientId, runHandle, "processing_started", `system_event:${event.source}/${event.eventName}`);
 
       if (!this.provider) {
-        const fallbackInstruction =
-          event.instruction ?? event.title ?? `System event ${event.source}/${event.event}`;
-        this.sendAssistantReply(clientId, runHandle, fallbackInstruction);
+        devLog(`[${clientId}] system_event echo_mode eventId=${event.eventId}`);
+        this.sendAssistantReply(clientId, runHandle, event.summary);
         this.sessionMemory.recordSystemEventOutcome?.(clientId, {
           runId: runHandle.runId,
           eventId: event.eventId,
           source: event.source,
-          event: event.event,
+          event: event.eventName,
           status: "completed",
           note: "echo_mode",
         });
@@ -255,6 +233,9 @@ export class IVecEngine {
 
       const toolDefs = this.toolExecutor?.definitions() ?? [];
       const system = await this.buildSystemContext();
+      devLog(
+        `[${clientId}] system_event entering agentLoop eventId=${event.eventId} tools=${toolDefs.length} payloadKeys=${Object.keys(event.payload).join(",") || "none"}`,
+      );
       const result = await agentLoop({
         provider: this.provider,
         toolExecutor: this.toolExecutor,
@@ -262,6 +243,8 @@ export class IVecEngine {
         sessionMemory: this.sessionMemory,
         runHandle,
         clientId,
+        inputKind: "system_event",
+        systemEvent: event,
         initialUserMessage: incomingMessage,
         config: this.loopConfig,
         dataDir: this.dataDir ?? "data",
@@ -298,10 +281,13 @@ export class IVecEngine {
         runId: runHandle.runId,
         eventId: event.eventId,
         source: event.source,
-        event: event.event,
+        event: event.eventName,
         status: result.status === "completed" ? "completed" : "failed",
         note: result.content,
       });
+      devLog(
+        `[${clientId}] system_event agentLoop completed eventId=${event.eventId} status=${result.status} runPath=${result.runPath}`,
+      );
       this.sendAssistantReply(clientId, runHandle, result.content);
     } catch (err) {
       devError("System event processing error:", err);
@@ -318,7 +304,7 @@ export class IVecEngine {
           runId: runHandle.runId,
           eventId: event.eventId,
           source: event.source,
-          event: event.event,
+          event: event.eventName,
           status: "failed",
           note: message,
         });
@@ -328,61 +314,6 @@ export class IVecEngine {
         content: "Failed to process system event.",
       });
       throw err;
-    }
-  }
-
-  private async buildContextAwareUserMessage(content: string, attachments: ChatAttachmentInput[]): Promise<string> {
-    if (attachments.length === 0 || !this.documentProcessor || !this.contextAgent) {
-      return content;
-    }
-
-    try {
-      const processing = await this.documentProcessor.processAttachments(attachments);
-      if (processing.documents.length === 0) {
-        const warningLines = processing.errors.map((entry) => `- ${entry.path}: ${entry.message}`);
-        if (warningLines.length === 0) {
-          return content;
-        }
-
-        return [
-          content,
-          "",
-          "[Document Context Sub-Agent]",
-          "No document text could be extracted from attachments.",
-          "Attachment errors:",
-          ...warningLines,
-        ].join("\n");
-      }
-
-      const contextResult = await this.contextAgent.extractContext({
-        query: content,
-        documents: processing.documents,
-      });
-
-      const warnings = [
-        ...processing.errors.map((entry) => `${entry.path}: ${entry.message}`),
-        ...contextResult.warnings,
-      ];
-      const contextEnvelope = buildContextEnvelope(content, contextResult.contextBundle);
-      if (warnings.length === 0) {
-        return contextEnvelope;
-      }
-
-      return [
-        contextEnvelope,
-        "",
-        "[Attachment Processing Warnings]",
-        ...warnings.map((warning) => `- ${warning}`),
-      ].join("\n");
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      devWarn(`Document context extraction failed: ${message}`);
-      return [
-        content,
-        "",
-        "[Document Context Sub-Agent]",
-        `Context extraction failed: ${message}`,
-      ].join("\n");
     }
   }
 
@@ -399,6 +330,7 @@ export class IVecEngine {
     const promptInput = assemblePromptInput(this.staticContext, memoryContext, sessionStatus);
     const systemContext = buildSystemPrompt({
       ...promptInput,
+      toolDirectory: this.staticContext.toolDirectory,
       includeToolDirectory: this.shouldIncludeToolDirectoryInPrompt(),
     }).systemPrompt;
 
@@ -418,96 +350,37 @@ export class IVecEngine {
     };
   }
 
-  private toSystemEvent(data: unknown): EngineSystemEvent | null {
+  private toSystemEvent(data: unknown): AyatiSystemEvent | null {
     if (!data || typeof data !== "object") return null;
     const value = data as Record<string, unknown>;
     if (value["type"] !== "system_event") return null;
     const source = asRequiredString(value["source"]);
-    const event = asRequiredString(value["event"]);
-    if (!source || !event) {
+    const eventName = asRequiredString(value["eventName"]) ?? asRequiredString(value["event"]);
+    if (!source || !eventName) {
       return null;
     }
 
     const eventId = asOptionalString(value["eventId"]) ?? randomUUID();
-
-    if (source === "pulse" && event === "reminder_due") {
-      if (
-        !asRequiredString(value["occurrenceId"]) ||
-        !asRequiredString(value["reminderId"]) ||
-        !asRequiredString(value["title"]) ||
-        !asRequiredString(value["instruction"]) ||
-        !asRequiredString(value["scheduledFor"]) ||
-        !asRequiredString(value["triggeredAt"]) ||
-        !asRequiredString(value["timezone"])
-      ) {
-        return null;
-      }
+    const receivedAt = asOptionalString(value["receivedAt"])
+      ?? asOptionalString(value["occurredAt"])
+      ?? asOptionalString(value["triggeredAt"])
+      ?? asOptionalString(value["scheduledFor"])
+      ?? this.nowProvider().toISOString();
+    const summary = this.toSystemEventSummary(source, eventName, value);
+    if (!summary) {
+      return null;
     }
+    const payload = this.toSystemEventPayload(value);
 
     return {
       type: "system_event",
-      source,
-      event,
       eventId,
-      occurrenceId: asOptionalString(value["occurrenceId"]),
-      reminderId: asOptionalString(value["reminderId"]),
-      title: asOptionalString(value["title"]),
-      instruction: asOptionalString(value["instruction"]),
-      scheduledFor: asOptionalString(value["scheduledFor"]),
-      triggeredAt: asOptionalString(value["triggeredAt"]),
-      timezone: asOptionalString(value["timezone"]),
-      metadata: asRecord(value["metadata"]) ?? {},
-      originRunId: asOptionalString(value["originRunId"]),
-      originSessionId: asOptionalString(value["originSessionId"]),
+      source,
+      eventName,
+      receivedAt,
+      summary,
+      payload,
     };
-  }
-
-  private buildSystemEventUserMessage(event: EngineSystemEvent): string {
-    if (event.source === "pulse" && event.event === "reminder_due") {
-      const payload = {
-        source: event.source,
-        event: event.event,
-        reminderId: event.reminderId,
-        title: event.title,
-        instruction: event.instruction,
-        scheduledFor: event.scheduledFor,
-        triggeredAt: event.triggeredAt,
-        timezone: event.timezone,
-        metadata: event.metadata,
-        originRunId: event.originRunId,
-        originSessionId: event.originSessionId,
-      };
-
-      return [
-        "System event received from Pulse.",
-        "You must handle this reminder now.",
-        `Event payload: ${JSON.stringify(payload)}`,
-        "Reply to the user with a helpful reminder message and perform any requested action if needed.",
-      ].join("\n");
-    }
-
-    const summary = event.title ?? event.instruction ?? "No summary provided.";
-    const payload = {
-      source: event.source,
-      event: event.event,
-      eventId: event.eventId,
-      title: event.title,
-      instruction: event.instruction,
-      triggeredAt: event.triggeredAt,
-      reminderId: event.reminderId,
-      metadata: event.metadata,
-      originRunId: event.originRunId,
-      originSessionId: event.originSessionId,
-    };
-
-    return [
-      "System notification received.",
-      `Source: ${event.source}`,
-      `Event: ${event.event}`,
-      `Summary: ${summary}`,
-      `Event payload: ${JSON.stringify(payload)}`,
-      "Decide whether immediate action is needed. If action is needed, perform it and reply with the outcome.",
-    ].join("\n");
   }
 
   private rotateSessionBeforeRunIfNeeded(clientId: string, incomingMessage: string): void {
@@ -580,6 +453,63 @@ export class IVecEngine {
     devLog(`Static context tokens cached: ${this.staticSystemTokens} (prompt=${promptTokens})`);
   }
 
+  private toSystemEventSummary(
+    source: string,
+    eventName: string,
+    value: Record<string, unknown>,
+  ): string | null {
+    const summary = asOptionalString(value["summary"]);
+    if (summary) {
+      return summary;
+    }
+
+    const title = asOptionalString(value["title"]);
+    const instruction = asOptionalString(value["instruction"]);
+    if (source === "pulse" && eventName === "reminder_due") {
+      return title
+        ? `Reminder due: ${title}`
+        : instruction
+          ? `Reminder due: ${instruction}`
+          : "Reminder due";
+    }
+
+    const fallback = `${source} ${eventName}`.trim();
+    return title ?? instruction ?? (fallback.length > 0 ? fallback : null);
+  }
+
+  private toSystemEventPayload(value: Record<string, unknown>): Record<string, unknown> {
+    const directPayload = asRecord(value["payload"]);
+    if (directPayload) {
+      return directPayload;
+    }
+
+    const metadata = asRecord(value["metadata"]);
+    const payload: Record<string, unknown> = {};
+    const fieldMap = {
+      occurrenceId: value["occurrenceId"],
+      reminderId: value["reminderId"],
+      title: value["title"],
+      instruction: value["instruction"],
+      scheduledFor: value["scheduledFor"],
+      triggeredAt: value["triggeredAt"],
+      timezone: value["timezone"],
+      originRunId: value["originRunId"],
+      originSessionId: value["originSessionId"],
+    } satisfies Record<string, unknown>;
+
+    for (const [key, fieldValue] of Object.entries(fieldMap)) {
+      if (fieldValue !== undefined) {
+        payload[key] = fieldValue;
+      }
+    }
+
+    if (metadata) {
+      payload["metadata"] = metadata;
+    }
+
+    return payload;
+  }
+
   private shouldIncludeToolDirectoryInPrompt(): boolean {
     return process.env["PROMPT_INCLUDE_TOOL_DIRECTORY"] === "1";
   }
@@ -608,6 +538,23 @@ export class IVecEngine {
       status,
       note,
     });
+  }
+
+  private async registerIncomingDocuments(
+    attachments: ChatAttachmentInput[],
+  ): Promise<{ documents: ManagedDocumentManifest[]; warnings: string[] }> {
+    if (attachments.length === 0) {
+      return { documents: [], warnings: [] };
+    }
+
+    if (!this.documentStore) {
+      return {
+        documents: [],
+        warnings: ["Attachments were provided but no document store is configured."],
+      };
+    }
+
+    return this.documentStore.registerAttachments(attachments);
   }
 }
 

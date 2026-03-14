@@ -1,6 +1,6 @@
 import { readFile, writeFile } from "node:fs/promises";
-import { resolve } from "node:path";
 import type { ToolDefinition, ToolResult } from "../../types.js";
+import { resolveWorkspacePath } from "../../workspace-paths.js";
 import { validateEditFileInput } from "./validators.js";
 
 export const editFileTool: ToolDefinition = {
@@ -30,7 +30,7 @@ export const editFileTool: ToolDefinition = {
     const parsed = validateEditFileInput(input);
     if ("ok" in parsed) return parsed;
 
-    const filePath = resolve(parsed.path);
+    const filePath = resolveWorkspacePath(parsed.path);
     const start = Date.now();
 
     try {

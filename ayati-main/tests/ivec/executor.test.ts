@@ -8,7 +8,7 @@ import type { ExecutorDeps, StepDirective, LoopConfig } from "../../src/ivec/typ
 import type { LlmProvider } from "../../src/core/contracts/provider.js";
 import type { LlmTurnInput, LlmTurnOutput } from "../../src/core/contracts/llm-protocol.js";
 import type { SessionMemory, MemoryRunHandle } from "../../src/memory/types.js";
-import type { ToolExecutor } from "../../src/skills/tool-executor.js";
+import { createToolExecutor, type ToolExecutor } from "../../src/skills/tool-executor.js";
 import { DEFAULT_LOOP_CONFIG } from "../../src/ivec/types.js";
 
 function createTaskContext() {
@@ -283,6 +283,64 @@ describe("executeStep", () => {
       expect(verifyMarkdown).toContain("- **Method:** gate");
       expect(verifyMarkdown).toContain("- 1. shell - fail (command failed)");
       expect(verifyMarkdown).toContain("- **Tool Summary:** pass=0, fail=1");
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("treats thrown tool exceptions as failed tool results instead of aborting the step", async () => {
+    const { runPath, cleanup } = setup();
+    try {
+      let callCount = 0;
+      const provider: LlmProvider = {
+        name: "mock",
+        version: "1.0.0",
+        capabilities: { nativeToolCalling: true },
+        start: vi.fn(),
+        stop: vi.fn(),
+        generateTurn: vi.fn().mockImplementation(async () => {
+          callCount++;
+          if (callCount === 1) {
+            return { type: "tool_calls", calls: [{ id: "tc1", name: "shell_run_script", input: { scriptPath: "/tmp/fetch_wttr.sh" } }] };
+          }
+          return { type: "assistant", content: "failed" };
+        }),
+      };
+
+      const toolExecutor = createToolExecutor([
+        {
+          name: "shell_run_script",
+          description: "Run script",
+          inputSchema: { type: "object", properties: { scriptPath: { type: "string" } }, required: ["scriptPath"] },
+          async execute() {
+            throw new Error("ENOENT: no such file or directory, stat '/tmp/fetch_wttr.sh'");
+          },
+        },
+      ]);
+
+      const sessionMemory = createMockSessionMemory();
+      const runHandle: MemoryRunHandle = { sessionId: "s1", runId: "r1" };
+
+      const deps: ExecutorDeps = {
+        provider,
+        toolExecutor,
+        toolDefinitions: toolExecutor.definitions(),
+        config: DEFAULT_LOOP_CONFIG,
+        clientId: "c1",
+        sessionMemory,
+        runHandle,
+        taskContext: createTaskContext(),
+      };
+
+      const summary = await executeStep(deps, createDirective({ tools_hint: ["shell_run_script"] }), 1, runPath);
+      expect(summary.outcome).toBe("failed");
+      expect(summary.toolSuccessCount).toBe(0);
+      expect(summary.toolFailureCount).toBe(1);
+      expect(summary.newFacts).toContain(
+        "tool_error:shell_run_script#1: Tool 'shell_run_script' threw an exception: ENOENT: no such file or directory, stat '/tmp/fetch_wttr.sh'",
+      );
+      expect(existsSync(join(runPath, "steps", "001-act.md"))).toBe(true);
+      expect(existsSync(join(runPath, "steps", "001-verify.md"))).toBe(true);
     } finally {
       cleanup();
     }

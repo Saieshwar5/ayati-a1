@@ -1,6 +1,6 @@
 import { rename, copyFile, cp, stat, rm, access } from "node:fs/promises";
-import { resolve } from "node:path";
 import type { ToolDefinition, ToolResult } from "../../types.js";
+import { resolveWorkspacePath } from "../../workspace-paths.js";
 import { validateMoveInput } from "./validators.js";
 
 async function exists(p: string): Promise<boolean> {
@@ -38,8 +38,8 @@ export const moveTool: ToolDefinition = {
     const parsed = validateMoveInput(input);
     if ("ok" in parsed) return parsed;
 
-    const src = resolve(parsed.source);
-    const dest = resolve(parsed.destination);
+    const src = resolveWorkspacePath(parsed.source);
+    const dest = resolveWorkspacePath(parsed.destination);
     const start = Date.now();
 
     try {

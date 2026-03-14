@@ -4,6 +4,17 @@ export interface LlmToolSchema {
   inputSchema: Record<string, unknown>;
 }
 
+export type LlmResponseFormat =
+  | {
+      type: "json_object";
+    }
+  | {
+      type: "json_schema";
+      name: string;
+      schema: Record<string, unknown>;
+      strict?: boolean;
+    };
+
 export interface LlmToolCall {
   id: string;
   name: string;
@@ -30,6 +41,7 @@ export type LlmMessage =
 export interface LlmTurnInput {
   messages: LlmMessage[];
   tools?: LlmToolSchema[];
+  responseFormat?: LlmResponseFormat;
 }
 
 export interface LlmInputTokenCount {
@@ -52,4 +64,8 @@ export type LlmTurnOutput =
 
 export interface LlmProviderCapabilities {
   nativeToolCalling: boolean;
+  structuredOutput?: {
+    jsonObject: boolean;
+    jsonSchema: boolean;
+  };
 }

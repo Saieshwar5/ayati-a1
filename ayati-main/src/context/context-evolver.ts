@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from "node:util";
 import { resolve } from "node:path";
 import type { LlmProvider } from "../core/contracts/provider.js";
 import type { ConversationTurn } from "../memory/types.js";
@@ -5,7 +6,12 @@ import type { UserProfileContext } from "./types.js";
 import { isUserProfileContext } from "./types.js";
 import type { EvolutionResponse } from "./evolution-types.js";
 import { buildExtractionMessages } from "./evolution-prompt.js";
-import { validateProfilePatch, mergeProfilePatch } from "./evolution-merge.js";
+import {
+  filterProfilePatchByPolicy,
+  mergeProfilePatch,
+  validateProfilePatch,
+  validateProfilePatchSources,
+} from "./evolution-merge.js";
 import { writeJsonFileAtomic, backupFile } from "./loaders/io.js";
 import { devLog, devWarn } from "../shared/index.js";
 
@@ -18,6 +24,11 @@ export interface ContextEvolverOptions {
   historyDir: string;
   currentProfile: UserProfileContext;
   onContextUpdated?: (updated: { userProfile: UserProfileContext }) => void;
+}
+
+export interface ContextEvolutionRunOptions {
+  trigger?: "reply" | "handoff";
+  handoffSummary?: string | null;
 }
 
 export class ContextEvolver {
@@ -38,20 +49,25 @@ export class ContextEvolver {
     this.onContextUpdated = options.onContextUpdated;
   }
 
-  async evolveFromSession(turns: ConversationTurn[]): Promise<void> {
+  async evolveFromSession(turns: ConversationTurn[], options?: ContextEvolutionRunOptions): Promise<void> {
     try {
       if (turns.length < MIN_TURNS) {
         devLog(`Context evolution skipped: only ${turns.length} turns (need ${MIN_TURNS})`);
         return;
       }
 
-      const now = Date.now();
-      if (now - this.lastEvolvedAt < RATE_LIMIT_MS) {
-        devLog("Context evolution skipped: rate limited");
-        return;
+      const trigger = options?.trigger ?? "reply";
+      if (trigger === "reply") {
+        const now = Date.now();
+        if (now - this.lastEvolvedAt < RATE_LIMIT_MS) {
+          devLog("Context evolution skipped: rate limited");
+          return;
+        }
       }
 
-      const messages = buildExtractionMessages(turns, this.currentProfile);
+      const messages = buildExtractionMessages(turns, this.currentProfile, {
+        handoffSummary: options?.handoffSummary,
+      });
       const output = await this.provider.generateTurn({ messages });
 
       if (output.type !== "assistant" || !output.content) {
@@ -68,13 +84,31 @@ export class ContextEvolver {
       }
 
       const profilePatch = validateProfilePatch(parsed.user_profile_patch);
+      const profileSources = validateProfilePatchSources(parsed.field_sources);
+      const filteredPatch = profilePatch
+        ? filterProfilePatchByPolicy(profilePatch, profileSources, parsed.confidence)
+        : null;
 
-      const mergedProfile = profilePatch
-        ? mergeProfilePatch(this.currentProfile, profilePatch)
-        : this.currentProfile;
+      if (!filteredPatch || Object.keys(filteredPatch).length === 0) {
+        devLog("Context evolution skipped: no durable profile updates passed write policy");
+        if (trigger === "reply") {
+          this.lastEvolvedAt = Date.now();
+        }
+        return;
+      }
+
+      const mergedProfile = mergeProfilePatch(this.currentProfile, filteredPatch);
 
       if (!isUserProfileContext(mergedProfile)) {
         devWarn("Context evolution: merged profile failed validation, aborting");
+        return;
+      }
+
+      if (isDeepStrictEqual(mergedProfile, this.currentProfile)) {
+        devLog("Context evolution skipped: no net change after merge");
+        if (trigger === "reply") {
+          this.lastEvolvedAt = Date.now();
+        }
         return;
       }
 
@@ -84,7 +118,9 @@ export class ContextEvolver {
       await writeJsonFileAtomic(profilePath, mergedProfile);
 
       this.currentProfile = mergedProfile;
-      this.lastEvolvedAt = Date.now();
+      if (trigger === "reply") {
+        this.lastEvolvedAt = Date.now();
+      }
 
       devLog(`Context evolution complete: ${parsed.reasoning}`);
 

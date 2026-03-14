@@ -1,8 +1,16 @@
-export type { AyatiPlugin } from "./contracts/plugin.js";
+export type {
+  AyatiPlugin,
+  PluginRuntimeContext,
+  PluginSystemEventInput,
+  AyatiSystemEvent,
+  SystemEventPublishResult,
+} from "./contracts/plugin.js";
+export { normalizeSystemEvent } from "./contracts/plugin.js";
 export type { LlmProvider } from "./contracts/provider.js";
 export type {
   LlmMessage,
   LlmToolCall,
+  LlmResponseFormat,
   LlmToolSchema,
   LlmTurnInput,
   LlmTurnOutput,

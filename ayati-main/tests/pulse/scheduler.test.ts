@@ -38,7 +38,7 @@ describe("PulseScheduler", () => {
       clientId: "local",
       store,
       onReminderDue: async (event) => {
-        received.push(event.reminderId);
+        received.push(String(event.payload["reminderId"]));
       },
       pollIntervalMs: 10_000,
       now: () => fixedNow,

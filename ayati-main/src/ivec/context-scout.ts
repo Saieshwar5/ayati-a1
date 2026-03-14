@@ -4,6 +4,8 @@ import { devLog } from "../shared/index.js";
 import type { LlmProvider } from "../core/contracts/provider.js";
 import type { LlmMessage, LlmToolSchema } from "../core/contracts/llm-protocol.js";
 import type { ScoutResult } from "./types.js";
+import type { ManagedDocumentManifest } from "../documents/types.js";
+import type { DocumentContextBackend } from "../documents/document-context-backend.js";
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -15,6 +17,8 @@ export interface ScoutKnownLocations {
   sessionPath?: string;
   sessionDir?: string;
   skillsDir?: string;
+  documentsDir?: string;
+  attachedDocuments?: ManagedDocumentManifest[];
   runId: string;
   activeSessionId: string;
 }
@@ -22,6 +26,7 @@ export interface ScoutKnownLocations {
 export interface ContextScoutOptions {
   provider: LlmProvider;
   maxTurns: number;
+  documentContextBackend?: DocumentContextBackend;
 }
 
 // ---------------------------------------------------------------------------
@@ -311,9 +316,11 @@ function executeTool(name: string, input: unknown): string {
 // System prompt builder
 // ---------------------------------------------------------------------------
 
+type GenericScoutScope = "run_artifacts" | "project_context" | "session" | "skills" | "both";
+
 function buildScoutSystemPrompt(
   query: string,
-  scope: "run_artifacts" | "project_context" | "session" | "skills" | "both",
+  scope: GenericScoutScope,
   locations: ScoutKnownLocations,
 ): string {
   const scopeInstructions: Record<string, string> = {
@@ -334,7 +341,7 @@ function buildScoutSystemPrompt(
   };
 
   return `You are a Context Scout — a focused retrieval sub-agent.
-Your job: find, read, and summarize information relevant to a specific query.
+Your job: find, read, and retrieve the minimum sufficient grounded context relevant to a specific query.
 
 Query: ${query}
 
@@ -365,11 +372,12 @@ Instructions:
 - Use read_file only when you need a larger block after grep_file, or when the file is already known and small enough to read directly.
 - For run_artifacts queries, read state.json first to locate the exact step numbers/files, then read targeted step markdown files.
 - Stop once you have enough information to answer the query.
-- If you check the most relevant locations and find nothing, return an empty summary.
+- If you check the most relevant locations and find nothing, return an empty context.
 - When done, respond with a JSON object (no tool calls):
-  { "summary": "...", "sources": ["file1", "file2"], "confidence": 0.0-1.0 }
+  { "context": "...", "sources": ["file1", "file2"], "confidence": 0.0-1.0 }
+- context: retrieve the minimum sufficient grounded context needed for the caller. Preserve exact commands, flags, paths, schemas, and quoted text verbatim. Do not paraphrase when exact wording matters. Trim only irrelevant surrounding text.
 - confidence: 1.0 = found exactly what was needed, 0.0 = found nothing relevant
-- Keep summary concise but informative (under 500 tokens).`;
+- Keep context concise but informative (under 500 tokens).`;
 }
 
 // ---------------------------------------------------------------------------
@@ -379,7 +387,44 @@ Instructions:
 export async function runContextScout(
   options: ContextScoutOptions,
   query: string,
-  scope: "run_artifacts" | "project_context" | "session" | "skills" | "both",
+  scope: "run_artifacts" | "project_context" | "session" | "skills" | "documents" | "both",
+  knownLocations: ScoutKnownLocations,
+  requestedDocumentPaths?: string[],
+): Promise<ScoutResult> {
+  if (scope === "documents") {
+    if (!options.documentContextBackend) {
+      return {
+        context: "Document context search is unavailable because no document backend is configured.",
+        sources: [],
+        confidence: 0,
+        documentState: {
+          status: "unavailable",
+          insufficientEvidence: true,
+          warnings: ["No document backend is configured."],
+        },
+      };
+    }
+
+    return options.documentContextBackend.search({
+      provider: options.provider,
+      query,
+      attachedDocuments: knownLocations.attachedDocuments ?? [],
+      requestedDocumentPaths,
+    });
+  }
+
+  return runGenericContextScout(
+    options,
+    query,
+    scope,
+    knownLocations,
+  );
+}
+
+async function runGenericContextScout(
+  options: ContextScoutOptions,
+  query: string,
+  scope: GenericScoutScope,
   knownLocations: ScoutKnownLocations,
 ): Promise<ScoutResult> {
   const { provider, maxTurns } = options;
@@ -428,7 +473,7 @@ export async function runContextScout(
   }
 
   devLog("[scout] max turns exhausted, returning empty result");
-  return { summary: "", sources: [], confidence: 0 };
+  return { context: "", sources: [], confidence: 0 };
 }
 
 function parseScoutResult(text: string): ScoutResult {
@@ -440,8 +485,9 @@ function parseScoutResult(text: string): ScoutResult {
     }
 
     const parsed = JSON.parse(jsonStr) as Record<string, unknown>;
+    const context = String(parsed["context"] ?? "");
     return {
-      summary: String(parsed["summary"] ?? ""),
+      context,
       sources: Array.isArray(parsed["sources"])
         ? (parsed["sources"] as unknown[]).map(String)
         : [],
@@ -449,8 +495,9 @@ function parseScoutResult(text: string): ScoutResult {
     };
   } catch {
     devLog("[scout] failed to parse JSON response, wrapping as plain text");
+    const fallback = text.trim().slice(0, 2000);
     return {
-      summary: text.trim().slice(0, 2000),
+      context: fallback,
       sources: [],
       confidence: 0.5,
     };

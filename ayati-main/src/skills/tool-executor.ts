@@ -12,6 +12,11 @@ export interface ToolExecutor {
   validate(toolName: string, input: unknown): ValidationResult;
 }
 
+function formatToolExecutionError(toolName: string, err: unknown): string {
+  const message = err instanceof Error ? err.message : String(err);
+  return `Tool '${toolName}' threw an exception: ${message}`;
+}
+
 const JSON_SCHEMA_TYPES = new Set(["string", "number", "integer", "boolean", "array", "object"]);
 
 function matchesType(value: unknown, expectedType: string): boolean {
@@ -87,7 +92,11 @@ export function createToolExecutor(tools: ToolDefinition[]): ToolExecutor {
       if (!tool) {
         return { ok: false, error: `Unknown tool: ${toolName}` };
       }
-      return tool.execute(input, context);
+      try {
+        return await tool.execute(input, context);
+      } catch (err) {
+        return { ok: false, error: formatToolExecutionError(toolName, err) };
+      }
     },
   };
 }

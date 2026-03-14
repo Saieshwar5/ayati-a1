@@ -3,6 +3,9 @@ import type { ControllerPrompts } from "../context/types.js";
 import type { ToolExecutor } from "../skills/tool-executor.js";
 import type { ToolDefinition } from "../skills/types.js";
 import type { SessionMemory, MemoryRunHandle, ConversationTurn, PromptRunLedger } from "../memory/types.js";
+import type { ManagedDocumentManifest } from "../documents/types.js";
+import type { DocumentContextBackend } from "../documents/document-context-backend.js";
+import type { AyatiSystemEvent } from "../core/contracts/plugin.js";
 
 // --- State ---
 
@@ -33,7 +36,9 @@ export interface FailedApproach {
 
 export interface LoopState {
   runId: string;
+  inputKind?: "user_message" | "system_event";
   userMessage: string;
+  systemEvent?: AyatiSystemEvent;
   goal: GoalContract;
   approach: string;
   taskStatus: TaskStatus;
@@ -47,6 +52,8 @@ export interface LoopState {
   completedSteps: StepSummary[];
   runPath: string;
   failedApproaches: FailedApproach[];
+  attachedDocuments?: ManagedDocumentManifest[];
+  attachmentWarnings?: string[];
   sessionHistory: ConversationTurn[];
   recentRunLedgers: PromptRunLedger[];
 }
@@ -96,13 +103,23 @@ export interface ContextSearchDirective {
   done: false;
   context_search: true;
   query: string;
-  scope: "run_artifacts" | "project_context" | "session" | "skills" | "both";
+  scope: "run_artifacts" | "project_context" | "session" | "skills" | "documents" | "both";
+  document_paths?: string[];
+}
+
+export type DocumentScoutStatus = "sufficient" | "partial" | "empty" | "unavailable";
+
+export interface DocumentScoutState {
+  status: DocumentScoutStatus;
+  insufficientEvidence: boolean;
+  warnings: string[];
 }
 
 export interface ScoutResult {
-  summary: string;
+  context: string;
   sources: string[];
   confidence: number;
+  documentState?: DocumentScoutState;
 }
 
 export interface CompletionDirective {
@@ -153,7 +170,9 @@ export interface VerifyOutput {
 }
 
 export interface TaskValidationContext {
+  inputKind?: "user_message" | "system_event";
   userMessage: string;
+  systemEvent?: AyatiSystemEvent;
   goal: GoalContract;
   taskStatus: TaskStatus;
   approach: string;
@@ -179,8 +198,8 @@ export const DEFAULT_LOOP_CONFIG: LoopConfig = {
   maxToolCallsPerStep: 4,
   maxConsecutiveFailures: 5,
   maxApproachChanges: 4,
-  maxScoutTurns: 5,
-  maxScoutCallsPerIteration: 2,
+  maxScoutTurns: 10,
+  maxScoutCallsPerIteration: 4,
   maxTotalToolCallsPerStep: 6,
 };
 
@@ -206,6 +225,8 @@ export interface AgentLoopDeps {
   sessionMemory: SessionMemory;
   runHandle: MemoryRunHandle;
   clientId: string;
+  inputKind?: "user_message" | "system_event";
+  systemEvent?: AyatiSystemEvent;
   initialUserMessage?: string;
   onProgress?: OnProgressCallback;
   config?: Partial<LoopConfig>;
@@ -213,6 +234,9 @@ export interface AgentLoopDeps {
   systemContext?: string;
   controllerPrompts?: ControllerPrompts;
   userMessageOverride?: string;
+  attachedDocuments?: ManagedDocumentManifest[];
+  attachmentWarnings?: string[];
+  documentContextBackend?: DocumentContextBackend;
   signal?: AbortSignal;
   onStuck?: (state: LoopState) => void;
 }

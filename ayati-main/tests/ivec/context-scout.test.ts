@@ -6,6 +6,8 @@ import { runContextScout } from "../../src/ivec/context-scout.js";
 import type { ScoutKnownLocations, ContextScoutOptions } from "../../src/ivec/context-scout.js";
 import type { LlmProvider } from "../../src/core/contracts/provider.js";
 import type { LlmTurnInput, LlmTurnOutput } from "../../src/core/contracts/llm-protocol.js";
+import { DocumentStore } from "../../src/documents/document-store.js";
+import { DocumentContextBackend } from "../../src/documents/document-context-backend.js";
 
 function createMockProvider(responses: LlmTurnOutput[]): LlmProvider {
   let callIndex = 0;
@@ -57,7 +59,7 @@ describe("runContextScout", () => {
       {
         type: "assistant",
         content: JSON.stringify({
-          summary: "Found state.json with running status",
+          context: "Found state.json with running status",
           sources: ["state.json"],
           confidence: 0.9,
         }),
@@ -71,7 +73,7 @@ describe("runContextScout", () => {
       createLocations(tmpDir),
     );
 
-    expect(result.summary).toBe("Found state.json with running status");
+    expect(result.context).toBe("Found state.json with running status");
     expect(result.sources).toEqual(["state.json"]);
     expect(result.confidence).toBe(0.9);
   });
@@ -88,7 +90,7 @@ describe("runContextScout", () => {
       {
         type: "assistant",
         content: JSON.stringify({
-          summary: "Run is in running status",
+          context: "Run is in running status",
           sources: ["state.json"],
           confidence: 0.95,
         }),
@@ -103,7 +105,7 @@ describe("runContextScout", () => {
     );
 
     expect(result.confidence).toBe(0.95);
-    expect(result.summary).toContain("running");
+    expect(result.context).toContain("running");
     expect(provider.generateTurn).toHaveBeenCalledTimes(2);
   });
 
@@ -124,7 +126,7 @@ describe("runContextScout", () => {
       createLocations(tmpDir),
     );
 
-    expect(result.summary).toBe("");
+    expect(result.context).toBe("");
     expect(result.sources).toEqual([]);
     expect(result.confidence).toBe(0);
   });
@@ -144,7 +146,7 @@ describe("runContextScout", () => {
       createLocations(tmpDir),
     );
 
-    expect(result.summary).toBe("I couldn't find any relevant files for this query.");
+    expect(result.context).toBe("I couldn't find any relevant files for this query.");
     expect(result.confidence).toBe(0.5);
   });
 
@@ -159,7 +161,7 @@ describe("runContextScout", () => {
       {
         type: "assistant",
         content: JSON.stringify({
-          summary: "File not found",
+          context: "File not found",
           sources: [],
           confidence: 0,
         }),
@@ -194,7 +196,7 @@ describe("runContextScout", () => {
       {
         type: "assistant",
         content: JSON.stringify({
-          summary: "Found shell command reference in step 1",
+          context: "Found shell command reference in step 1",
           sources: ["steps/001-act.md"],
           confidence: 0.8,
         }),
@@ -247,7 +249,7 @@ describe("runContextScout", () => {
       {
         type: "assistant",
         content: JSON.stringify({
-          summary: "Found install instructions in the skill file",
+          context: "Found install instructions in the skill file",
           sources: [skillFile],
           confidence: 0.92,
         }),
@@ -283,7 +285,7 @@ describe("runContextScout", () => {
       {
         type: "assistant",
         content: JSON.stringify({
-          summary: "regex invalid",
+          context: "regex invalid",
           sources: [],
           confidence: 0,
         }),
@@ -334,7 +336,7 @@ describe("runContextScout", () => {
       {
         type: "assistant",
         content: JSON.stringify({
-          summary: "Found two error blocks",
+          context: "Found two error blocks",
           sources: [stepFile],
           confidence: 0.88,
         }),
@@ -368,7 +370,7 @@ describe("runContextScout", () => {
       {
         type: "assistant",
         content: JSON.stringify({
-          summary: "Found soul.json in context directory",
+          context: "Found soul.json in context directory",
           sources: ["context/soul.json"],
           confidence: 0.85,
         }),
@@ -391,7 +393,7 @@ describe("runContextScout", () => {
       {
         type: "assistant",
         content: JSON.stringify({
-          summary: "ok",
+          context: "ok",
           sources: [],
           confidence: 0.7,
         }),
@@ -419,5 +421,143 @@ describe("runContextScout", () => {
     expect(systemPrompt).toContain("Use search_content to discover which file matters");
     expect(systemPrompt).toContain("Use grep_file to narrow within a known file");
     expect(systemPrompt).toContain("Use read_file only when you need a larger block");
+  });
+
+  it("routes document scope through the document backend and returns bounded evidence", async () => {
+    const locs = createLocations(tmpDir);
+    const attachmentPath = join(tmpDir, "policy.txt");
+    writeFileSync(
+      attachmentPath,
+      [
+        "Service Terms",
+        "",
+        "Termination requires 30 days written notice before cancellation.",
+        "",
+        "Payments are due within 15 days of invoice receipt.",
+      ].join("\n"),
+      "utf-8",
+    );
+
+    const store = new DocumentStore({
+      dataDir: join(tmpDir, "managed-documents"),
+      preferCli: false,
+    });
+    const registered = await store.registerAttachments([{ path: attachmentPath, name: "policy.txt" }]);
+    const prepared = await store.prepareDocuments(registered.documents);
+    const chunkId = prepared[0]?.chunks[0]?.sourceId;
+    expect(chunkId).toBeTruthy();
+
+    const provider = createMockProvider([
+      {
+        type: "assistant",
+        content: JSON.stringify({
+          items: [
+            {
+              sourceId: chunkId,
+              fact: "Termination requires 30 days written notice before cancellation.",
+              quote: "Termination requires 30 days written notice before cancellation.",
+              relevance: 0.95,
+              confidence: 0.9,
+            },
+          ],
+          dropped_noise_count: 0,
+          insufficient_evidence: false,
+        }),
+      },
+    ]);
+
+    const backend = new DocumentContextBackend({ store });
+    const result = await runContextScout(
+      { provider, maxTurns: 5, documentContextBackend: backend },
+      "What is the termination clause?",
+      "documents",
+      {
+        ...locs,
+        attachedDocuments: registered.documents,
+      },
+      [attachmentPath],
+    );
+
+    expect(result.context).toContain("Termination requires 30 days written notice");
+    expect(result.sources).toEqual([attachmentPath]);
+    expect(result.confidence).toBe(0.9);
+    expect(result.documentState?.status).toBe("sufficient");
+    expect(provider.generateTurn).toHaveBeenCalledTimes(1);
+  });
+
+  it("treats multi-topic attachment questions as broad document retrieval", async () => {
+    const locs = createLocations(tmpDir);
+    const attachmentPath = join(tmpDir, "resume.txt");
+    writeFileSync(
+      attachmentPath,
+      [
+        "Profile",
+        "Sai Eshwar is a software engineer.",
+        "",
+        "Skills",
+        "TypeScript, Node.js, React, testing, debugging",
+        "",
+        "Education",
+        "B.Tech in Computer Science",
+      ].join("\n"),
+      "utf-8",
+    );
+
+    const store = new DocumentStore({
+      dataDir: join(tmpDir, "broad-documents"),
+      preferCli: false,
+    });
+    const registered = await store.registerAttachments([{ path: attachmentPath, name: "resume.txt" }]);
+
+    const provider: LlmProvider = {
+      name: "mock",
+      version: "1.0.0",
+      capabilities: { nativeToolCalling: true },
+      start: vi.fn(),
+      stop: vi.fn(),
+      generateTurn: vi.fn().mockImplementation(async (input: LlmTurnInput) => {
+        const message = input.messages.find((entry) => entry.role === "user")?.content ?? "";
+        expect(message).toContain("Skills");
+        expect(message).toContain("Education");
+        return {
+          type: "assistant",
+          content: JSON.stringify({
+            items: [],
+            dropped_noise_count: 0,
+            insufficient_evidence: true,
+          }),
+        };
+      }),
+    };
+
+    const backend = new DocumentContextBackend({ store });
+    const result = await runContextScout(
+      { provider, maxTurns: 5, documentContextBackend: backend },
+      "what are the skills and qualifications of sai eshwar",
+      "documents",
+      {
+        ...locs,
+        attachedDocuments: registered.documents,
+      },
+      [attachmentPath],
+    );
+
+    expect(result.context).toContain("Skills");
+    expect(result.context).toContain("Education");
+    expect(result.documentState?.status).toBe("partial");
+    expect(provider.generateTurn).toHaveBeenCalledTimes(1);
+  });
+
+  it("returns document unavailable state when no document backend is configured", async () => {
+    const result = await runContextScout(
+      { provider: createMockProvider([]), maxTurns: 5 },
+      "what is in the attachment",
+      "documents",
+      createLocations(tmpDir),
+    );
+
+    expect(result.documentState?.status).toBe("unavailable");
+    expect(result.context).toContain("unavailable");
+    expect(result.confidence).toBe(0);
   });
 });

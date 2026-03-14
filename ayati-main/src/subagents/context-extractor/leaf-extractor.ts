@@ -1,5 +1,6 @@
 import type { LlmProvider } from "../../core/contracts/provider.js";
 import { estimateTextTokens } from "../../prompt/token-estimator.js";
+import { devLog, devWarn } from "../../shared/index.js";
 import type { ContextEvidenceItem, SourceChunk } from "./types.js";
 
 export interface LeafExtractInput {
@@ -31,6 +32,9 @@ interface LeafRawOutput {
 }
 
 export async function extractLeafEvidence(input: LeafExtractInput): Promise<LeafExtractOutput> {
+  devLog(
+    `[leaf-extract] start query="${input.query.replace(/\s+/g, " ").trim().slice(0, 140)}" chunks=${input.chunks.length} maxItems=${input.maxItems}`,
+  );
   const sourceById = new Map<string, SourceChunk>();
   const sourceBlocks: string[] = [];
   let sourceTokens = 0;
@@ -70,6 +74,7 @@ export async function extractLeafEvidence(input: LeafExtractInput): Promise<Leaf
   });
 
   if (turn.type !== "assistant") {
+    devWarn("[leaf-extract] provider returned non-assistant turn");
     return {
       items: [],
       droppedNoiseCount: 0,
@@ -80,6 +85,7 @@ export async function extractLeafEvidence(input: LeafExtractInput): Promise<Leaf
 
   const parsed = safeParseJson<LeafRawOutput>(turn.content);
   if (!parsed) {
+    devWarn("[leaf-extract] failed to parse evidence JSON");
     return {
       items: [],
       droppedNoiseCount: 0,
@@ -120,6 +126,9 @@ export async function extractLeafEvidence(input: LeafExtractInput): Promise<Leaf
 
   const droppedNoiseCount = Number(parsed.dropped_noise_count ?? 0);
   const insufficientEvidence = parsed.insufficient_evidence === true;
+  devLog(
+    `[leaf-extract] parsed items=${items.length} dropped_noise=${Number.isFinite(droppedNoiseCount) ? Math.max(0, Math.floor(droppedNoiseCount)) : 0} insufficient=${insufficientEvidence} sourceTokens=${sourceTokens}`,
+  );
 
   return {
     items,

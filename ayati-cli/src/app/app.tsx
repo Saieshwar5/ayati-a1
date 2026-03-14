@@ -1,12 +1,13 @@
 import React, { useState, useCallback, useEffect } from "react";
 import { Box } from "ink";
 import { existsSync } from "node:fs";
-import { resolve } from "node:path";
+import { basename, resolve } from "node:path";
 import { Header } from "./components/header.js";
 import { MessageList } from "./components/message-list.js";
 import { ChatInput } from "./components/chat-input.js";
 import { StatusBar } from "./components/status-bar.js";
 import { useWebSocket } from "./hooks/use-websocket.js";
+import { ATTACH_USAGE, parseCliCommand } from "./commands.js";
 import type { ChatAttachment, ChatMessage, ServerMessage } from "./types.js";
 
 const HEADER_HEIGHT = 3;
@@ -76,6 +77,32 @@ export function App(): React.JSX.Element {
 
   const { send, connected } = useWebSocket({ onMessage });
 
+  const submitChatMessage = useCallback((
+    content: string,
+    attachments: ChatAttachment[],
+    clearPendingAttachments = false,
+  ) => {
+    const trimmed = content.trim();
+    if (!trimmed) return;
+
+    const attachmentNote = attachments.length > 0
+      ? `\n\n[attached files: ${attachments.length}]`
+      : "";
+    const userMessage = createMessage("user", `${trimmed}${attachmentNote}`);
+    setMessages((prev) => [...prev, userMessage]);
+
+    setIsLoading(true);
+    send({
+      type: "chat",
+      content: trimmed,
+      ...(attachments.length > 0 ? { attachments } : {}),
+    });
+
+    if (clearPendingAttachments) {
+      setPendingAttachments([]);
+    }
+  }, [send]);
+
   const handleSubmit = useCallback(
     (value: string) => {
       const trimmed = value.trim();
@@ -88,31 +115,19 @@ export function App(): React.JSX.Element {
           pushAssistantMessage: (content) => {
             setMessages((prev) => [...prev, createMessage("assistant", content)]);
           },
+          submitChatMessage,
+          isLoading,
         });
         setInputValue("");
         return;
       }
 
       if (isLoading) return;
-
-      const attachmentNote = pendingAttachments.length > 0
-        ? `\n\n[attached files: ${pendingAttachments.length}]`
-        : "";
-      const userMessage = createMessage("user", `${trimmed}${attachmentNote}`);
-      setMessages((prev) => [...prev, userMessage]);
       setInputValue("");
 
-      setIsLoading(true);
-      send({
-        type: "chat",
-        content: trimmed,
-        ...(pendingAttachments.length > 0 ? { attachments: pendingAttachments } : {}),
-      });
-      if (pendingAttachments.length > 0) {
-        setPendingAttachments([]);
-      }
+      submitChatMessage(trimmed, pendingAttachments, pendingAttachments.length > 0);
     },
-    [isLoading, pendingAttachments, send],
+    [isLoading, pendingAttachments, submitChatMessage],
   );
 
   const messageViewportHeight = Math.max(
@@ -147,16 +162,20 @@ interface CommandContext {
   pendingAttachments: ChatAttachment[];
   setPendingAttachments: React.Dispatch<React.SetStateAction<ChatAttachment[]>>;
   pushAssistantMessage: (content: string) => void;
+  submitChatMessage: (
+    content: string,
+    attachments: ChatAttachment[],
+    clearPendingAttachments?: boolean,
+  ) => void;
+  isLoading: boolean;
 }
 
 function handleCommand(command: string, context: CommandContext): void {
-  const [name, ...rest] = command.split(" ");
-  const normalized = (name ?? "").toLowerCase();
-  const arg = rest.join(" ").trim();
+  const parsed = parseCliCommand(command);
 
-  if (normalized === "/files") {
+  if (parsed.type === "files") {
     if (context.pendingAttachments.length === 0) {
-      context.pushAssistantMessage("No files queued. Use /attach <path> to add documents.");
+      context.pushAssistantMessage("No files queued. Use /attach <path> or /attach <path> -- <message>.");
       return;
     }
 
@@ -168,34 +187,58 @@ function handleCommand(command: string, context: CommandContext): void {
     return;
   }
 
-  if (normalized === "/clearfiles") {
+  if (parsed.type === "clearfiles") {
     context.setPendingAttachments([]);
     context.pushAssistantMessage("Cleared all queued attachments.");
     return;
   }
 
-  if (normalized === "/attach") {
-    if (arg.length === 0) {
-      context.pushAssistantMessage("Usage: /attach <local-file-path>");
-      return;
-    }
+  if (parsed.type === "invalid") {
+    context.pushAssistantMessage(parsed.message);
+    return;
+  }
 
-    const absolutePath = resolve(arg);
+  if (parsed.type === "attach") {
+    const absolutePath = resolve(parsed.rawPath);
     if (!existsSync(absolutePath)) {
       context.pushAssistantMessage(`File not found: ${absolutePath}`);
       return;
     }
 
-    context.setPendingAttachments((prev) => {
-      if (prev.some((entry) => entry.path === absolutePath)) {
-        return prev;
+    const attachment = {
+      path: absolutePath,
+      name: basename(absolutePath),
+    };
+
+    if (parsed.content) {
+      if (context.isLoading) {
+        context.pushAssistantMessage("Ayati is still responding. Wait for the current reply before sending another file+message.");
+        return;
       }
 
-      return [...prev, { path: absolutePath }];
-    });
+      const attachments = mergeAttachments(context.pendingAttachments, attachment);
+      context.submitChatMessage(parsed.content, attachments, context.pendingAttachments.length > 0);
+      return;
+    }
+
+    if (context.pendingAttachments.some((entry) => entry.path === absolutePath)) {
+      context.pushAssistantMessage(`Attachment already queued: ${absolutePath}`);
+      return;
+    }
+
+    context.setPendingAttachments((prev) => mergeAttachments(prev, attachment));
     context.pushAssistantMessage(`Queued attachment: ${absolutePath}`);
     return;
   }
 
-  context.pushAssistantMessage("Unknown command. Use /attach <path>, /files, or /clearfiles.");
+  context.pushAssistantMessage(`Unknown command. Use ${ATTACH_USAGE}, /files, or /clearfiles.`);
+}
+
+function mergeAttachments(
+  existing: ChatAttachment[],
+  nextAttachment: ChatAttachment,
+): ChatAttachment[] {
+  const merged = new Map(existing.map((attachment) => [attachment.path, attachment]));
+  merged.set(nextAttachment.path, nextAttachment);
+  return [...merged.values()];
 }

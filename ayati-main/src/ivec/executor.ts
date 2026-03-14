@@ -501,9 +501,24 @@ async function verifyTaskProgress(
     ? effectiveFacts.map((fact) => `- ${fact}`).join("\n")
     : "- none";
 
-  const prompt = `Assess overall task progress after the latest successful step.
+  const inputBlock = deps.taskContext.inputKind === "system_event" && deps.taskContext.systemEvent
+    ? [
+      "Assess overall task progress after the latest successful step.",
+      "",
+      "Input kind: system_event",
+      `System event summary: ${deps.taskContext.userMessage}`,
+      `System event payload: ${JSON.stringify({
+        source: deps.taskContext.systemEvent.source,
+        eventName: deps.taskContext.systemEvent.eventName,
+        receivedAt: deps.taskContext.systemEvent.receivedAt,
+        payload: deps.taskContext.systemEvent.payload,
+      })}`,
+    ].join("\n")
+    : `Assess overall task progress after the latest successful step.
 
-User message: ${deps.taskContext.userMessage}
+User message: ${deps.taskContext.userMessage}`;
+
+  const prompt = `${inputBlock}
 Goal contract:
 - objective: ${deps.taskContext.goal.objective || "(none)"}
 - done_when: ${formatPromptList(deps.taskContext.goal.done_when)}

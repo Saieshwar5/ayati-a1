@@ -1,6 +1,7 @@
 import { readdir, readFile, stat } from "node:fs/promises";
-import { resolve, join } from "node:path";
+import { join } from "node:path";
 import type { ToolDefinition, ToolResult } from "../../types.js";
+import { resolveWorkspaceRoots } from "../../workspace-paths.js";
 import { validateSearchInFilesInput } from "./validators.js";
 
 interface SearchState {
@@ -68,7 +69,7 @@ export const searchInFilesTool: ToolDefinition = {
     const maxResults = parsed.maxResults ?? defaultMaxResults;
     const includeHidden = parsed.includeHidden ?? false;
     const caseSensitive = parsed.caseSensitive ?? false;
-    const roots = (parsed.roots && parsed.roots.length > 0) ? parsed.roots : [process.cwd()];
+    const roots = resolveWorkspaceRoots(parsed.roots);
     const start = Date.now();
 
     const lines: string[] = [];
@@ -77,7 +78,7 @@ export const searchInFilesTool: ToolDefinition = {
 
     try {
       for (const root of roots) {
-        const rootPath = resolve(root);
+        const rootPath = root;
         searchedRoots.push(rootPath);
         const queue: SearchState[] = [{ path: rootPath, depth: 0 }];
 

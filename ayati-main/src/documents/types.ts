@@ -3,6 +3,16 @@ export interface ChatAttachment {
   name?: string;
 }
 
+export interface ManagedDocumentManifest {
+  documentId: string;
+  name: string;
+  originalPath: string;
+  storedPath: string;
+  kind: DocumentKind;
+  sizeBytes: number;
+  checksum: string;
+}
+
 export type DocumentKind =
   | "pdf"
   | "docx"
@@ -29,33 +39,4 @@ export interface ProcessedDocument {
   sizeBytes: number;
   segments: DocumentSegment[];
   warnings: string[];
-}
-
-export interface ProcessedDocumentError {
-  path: string;
-  message: string;
-}
-
-export interface DocumentProcessingResult {
-  documents: ProcessedDocument[];
-  errors: ProcessedDocumentError[];
-  totalSegments: number;
-  totalChars: number;
-}
-
-export interface ExtractorInput {
-  filePath: string;
-  fileName: string;
-  bytes: Buffer;
-}
-
-export interface ExtractorOutput {
-  kind: DocumentKind;
-  segments: DocumentSegment[];
-  warnings?: string[];
-}
-
-export interface DocumentExtractor {
-  supports(kind: DocumentKind): boolean;
-  extract(input: ExtractorInput): Promise<ExtractorOutput>;
 }

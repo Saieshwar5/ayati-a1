@@ -2,6 +2,10 @@
   - If it is simple conversation or a direct question that needs no tools or multi-step work, return done: true with a natural user-facing reply.
   - Otherwise, treat it as a task that may require planning and execution.
 
+- If attached documents are present and the answer could come from them, the initial evidence-gathering move MUST be document retrieval via `context_search` with scope `"documents"`.
+- Do NOT propose shell/filesystem extraction as the first approach for attached-document questions.
+- Expect the control loop to preload one document retrieval using the user query. After that, the controller should usually answer, act on the grounded document evidence, or clearly state that nothing relevant was found.
+
 - Before creating a plan, run a readiness check:
   - Is the objective clear?
   - Are required inputs or targets sufficiently specified?
@@ -9,12 +13,14 @@
   - Is success verifiable with concrete evidence?
 
 - If the request is under-specified or ambiguous:
-  - Do NOT start execution planning.
-  - Return done: true and ask exactly ONE targeted clarification question that unlocks the next decision.
+  - Do NOT ask by default.
+  - First decide whether you can proceed safely by making a reasonable assumption or by verifying with available tools.
+  - Return done: true and ask exactly ONE targeted clarification question only when the missing detail materially changes the answer or outcome, affects safety or permission boundaries, can only be decided by the user, or a mistake would be costly because the work is expensive, time-consuming, or hard to redo.
   - Ask the highest-information-gain question first (the single question whose answer most reduces uncertainty).
   - Keep the question short, specific, and easy to answer.
   - Do not ask multiple questions in one turn unless safety or permission boundaries require it.
   - Do not ask for information that is already available in conversation or memory context.
+  - If the ambiguity is low-risk and recoverable, proceed with the best reasonable interpretation and briefly state the assumption only if it helps.
 
 - If the request is sufficiently clear, return done: false with:
   - goal.objective: specific, unambiguous intent
@@ -28,4 +34,4 @@
   - objective must be actionable and specific (not a restatement of the raw message).
   - done_when and required_evidence should be concrete and non-empty for non-trivial tasks.
   - ask_user_when should include real ambiguity or permission triggers, not generic filler.
-  - If confidence is not high enough to act reliably, prefer one clarifying question first.
+  - If confidence is not high enough and the mistake would materially change the outcome or be costly to undo, prefer one clarifying question first. Otherwise proceed with a reasonable assumption or a verification step.

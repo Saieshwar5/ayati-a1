@@ -3,16 +3,20 @@ import { mkdtemp, writeFile, mkdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { searchInFilesTool } from "../../../src/skills/builtins/filesystem/search-in-files.js";
+import { workspaceRoot } from "../../../src/skills/workspace-paths.js";
 
 describe("searchInFilesTool", () => {
   let tmp: string;
+  let workspaceArtifacts: string[];
 
   beforeEach(async () => {
     tmp = await mkdtemp(join(tmpdir(), "fs-search-test-"));
+    workspaceArtifacts = [];
   });
 
   afterEach(async () => {
     await rm(tmp, { recursive: true, force: true });
+    await Promise.all(workspaceArtifacts.map((path) => rm(path, { recursive: true, force: true })));
   });
 
   it("finds text matches inside files", async () => {
@@ -43,5 +47,18 @@ describe("searchInFilesTool", () => {
 
     expect(result.ok).toBe(true);
     expect(result.output).toContain("caps.txt");
+  });
+
+  it("searches work_space by default when roots are omitted", async () => {
+    const relativeDir = `vitest-search-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const expectedDir = join(workspaceRoot, relativeDir);
+    const filePath = join(expectedDir, "inside.txt");
+    workspaceArtifacts.push(expectedDir);
+    await mkdir(expectedDir, { recursive: true });
+    await writeFile(filePath, "workspace needle", "utf-8");
+
+    const result = await searchInFilesTool.execute({ query: "workspace needle" });
+    expect(result.ok).toBe(true);
+    expect(result.output).toContain(filePath);
   });
 });

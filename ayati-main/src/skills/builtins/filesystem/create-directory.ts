@@ -1,6 +1,6 @@
 import { mkdir } from "node:fs/promises";
-import { resolve } from "node:path";
 import type { ToolDefinition, ToolResult } from "../../types.js";
+import { resolveWorkspacePath } from "../../workspace-paths.js";
 import { validateCreateDirectoryInput } from "./validators.js";
 
 export const createDirectoryTool: ToolDefinition = {
@@ -28,7 +28,7 @@ export const createDirectoryTool: ToolDefinition = {
     const parsed = validateCreateDirectoryInput(input);
     if ("ok" in parsed) return parsed;
 
-    const dirPath = resolve(parsed.path);
+    const dirPath = resolveWorkspacePath(parsed.path);
     const start = Date.now();
 
     try {

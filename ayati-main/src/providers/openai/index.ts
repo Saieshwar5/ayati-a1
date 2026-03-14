@@ -1,5 +1,6 @@
 import OpenAI from "openai";
 import type { LlmProvider } from "../../core/contracts/provider.js";
+import { getModelForProvider } from "../../config/llm-runtime-config.js";
 import type {
   LlmMessage,
   LlmToolCall,
@@ -8,50 +9,19 @@ import type {
   LlmTurnInput,
   LlmTurnOutput,
 } from "../../core/contracts/llm-protocol.js";
+import { toOpenAiResponseFormat } from "../shared/openai-response-format.js";
+import {
+  compileResponseFormatForProvider,
+  getProviderCapabilities,
+} from "../shared/provider-profiles.js";
+import {
+  buildToolNameMapsForProvider,
+  toCanonicalToolName,
+  toProviderToolName,
+  type ToolNameMaps,
+} from "../shared/tool-name-mapping.js";
 
 let client: OpenAI | null = null;
-
-interface ToolNameMaps {
-  canonicalToOpenAi: Map<string, string>;
-  openAiToCanonical: Map<string, string>;
-}
-
-const OPENAI_TOOL_NAME_PATTERN = /^[a-zA-Z0-9_-]+$/;
-
-function encodeToolName(name: string): string {
-  return `tool_${Buffer.from(name, "utf8").toString("base64url")}`;
-}
-
-function toOpenAiToolName(name: string, maps: ToolNameMaps): string {
-  const mapped = maps.canonicalToOpenAi.get(name);
-  if (mapped) return mapped;
-  if (OPENAI_TOOL_NAME_PATTERN.test(name)) return name;
-  return encodeToolName(name);
-}
-
-function toCanonicalToolName(name: string, maps: ToolNameMaps): string {
-  return maps.openAiToCanonical.get(name) ?? name;
-}
-
-function buildToolNameMaps(tools?: LlmToolSchema[]): ToolNameMaps {
-  const canonicalToOpenAi = new Map<string, string>();
-  const openAiToCanonical = new Map<string, string>();
-
-  for (const tool of tools ?? []) {
-    let openAiName = OPENAI_TOOL_NAME_PATTERN.test(tool.name)
-      ? tool.name
-      : encodeToolName(tool.name);
-    let suffix = 1;
-    while (openAiToCanonical.has(openAiName)) {
-      openAiName = `${openAiName}_${suffix}`;
-      suffix++;
-    }
-    canonicalToOpenAi.set(tool.name, openAiName);
-    openAiToCanonical.set(openAiName, tool.name);
-  }
-
-  return { canonicalToOpenAi, openAiToCanonical };
-}
 
 function toOpenAiMessages(
   messages: LlmMessage[],
@@ -74,7 +44,7 @@ function toOpenAiMessages(
             id: call.id,
             type: "function",
             function: {
-              name: toOpenAiToolName(call.name, maps),
+              name: toProviderToolName(call.name, maps),
               arguments: JSON.stringify(call.input ?? {}),
             },
           })),
@@ -124,7 +94,7 @@ function toOpenAiCountInputItems(
           out.push({
             type: "function_call",
             call_id: call.id,
-            name: toOpenAiToolName(call.name, maps),
+            name: toProviderToolName(call.name, maps),
             arguments: JSON.stringify(call.input ?? {}),
           });
         }
@@ -152,7 +122,7 @@ function toOpenAiResponseTools(
 
   return tools.map((tool) => ({
     type: "function",
-    name: toOpenAiToolName(tool.name, maps),
+    name: toProviderToolName(tool.name, maps),
     description: tool.description,
     parameters: tool.inputSchema,
   }));
@@ -169,9 +139,7 @@ function parseToolArguments(raw: string): unknown {
 const provider: LlmProvider = {
   name: "openai",
   version: "1.0.0",
-  capabilities: {
-    nativeToolCalling: true,
-  },
+  capabilities: getProviderCapabilities("openai"),
 
   start() {
     const apiKey = process.env["OPENAI_API_KEY"];
@@ -190,8 +158,8 @@ const provider: LlmProvider = {
       throw new Error("OpenAI provider not started.");
     }
 
-    const model = process.env["OPENAI_MODEL"] ?? "gpt-4o-mini";
-    const nameMaps = buildToolNameMaps(input.tools);
+    const model = getModelForProvider("openai");
+    const nameMaps = buildToolNameMapsForProvider(provider.name, input.tools);
     const inputItems = toOpenAiCountInputItems(input.messages, nameMaps);
     const tools = toOpenAiResponseTools(input.tools, nameMaps);
 
@@ -214,14 +182,18 @@ const provider: LlmProvider = {
       throw new Error("OpenAI provider not started.");
     }
 
-    const model = process.env["OPENAI_MODEL"] ?? "gpt-4o-mini";
-    const nameMaps = buildToolNameMaps(input.tools);
+    const model = getModelForProvider("openai");
+    const nameMaps = buildToolNameMapsForProvider(provider.name, input.tools);
     const messages = toOpenAiMessages(input.messages, nameMaps);
     const responseTools = toOpenAiResponseTools(input.tools, nameMaps);
+    const responseFormat = toOpenAiResponseFormat(
+      compileResponseFormatForProvider(provider.name, provider.capabilities, input.responseFormat),
+    );
 
     const response = await client.chat.completions.create({
       model,
       messages,
+      ...(responseFormat ? { response_format: responseFormat as any } : {}),
       ...(responseTools
         ? {
             tools: responseTools.map((tool) => ({

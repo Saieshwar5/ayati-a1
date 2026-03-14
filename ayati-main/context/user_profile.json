@@ -3,15 +3,27 @@
   "nickname": null,
   "occupation": null,
   "location": null,
-  "languages": [],
+  "languages": [
+    "Python",
+    "JavaScript",
+    "TypeScript",
+    "Java",
+    "SQL"
+  ],
   "interests": [],
   "facts": [
-    "user's name is Sai Eshwar"
+    "user's name is Sai Eshwar",
+    "user is getting married"
   ],
   "people": [
-    "sister"
+    "sister",
+    "Rakesh"
   ],
-  "projects": [],
+  "projects": [
+    "Sai Eshwar single-page light-themed portfolio website",
+    "Anoosh single-page portfolio website (generated from resume)",
+    "Patrick Tyson portfolio website"
+  ],
   "communication": {
     "formality": "balanced",
     "verbosity": "balanced",
@@ -24,5 +36,5 @@
     "joy_triggers": []
   },
   "active_hours": null,
-  "last_updated": "2026-02-16T13:21:06.562Z"
+  "last_updated": "2026-03-14T03:58:40.276Z"
 }

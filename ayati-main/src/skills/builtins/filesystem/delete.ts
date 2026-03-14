@@ -1,6 +1,6 @@
 import { rm, stat } from "node:fs/promises";
-import { resolve } from "node:path";
 import type { ToolDefinition, ToolResult } from "../../types.js";
+import { resolveWorkspacePath } from "../../workspace-paths.js";
 import { validateDeleteInput } from "./validators.js";
 
 export const deleteTool: ToolDefinition = {
@@ -28,7 +28,7 @@ export const deleteTool: ToolDefinition = {
     const parsed = validateDeleteInput(input);
     if ("ok" in parsed) return parsed;
 
-    const targetPath = resolve(parsed.path);
+    const targetPath = resolveWorkspacePath(parsed.path);
     const start = Date.now();
 
     try {

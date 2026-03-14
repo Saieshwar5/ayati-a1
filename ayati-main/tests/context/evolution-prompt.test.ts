@@ -4,10 +4,10 @@ import { emptyUserProfileContext } from "../../src/context/types.js";
 import type { ConversationTurn } from "../../src/memory/types.js";
 
 const sampleTurns: ConversationTurn[] = [
-  { role: "user", content: "Hi, my name is Alice", timestamp: "2025-01-01T00:00:00Z" },
-  { role: "assistant", content: "Hello Alice!", timestamp: "2025-01-01T00:00:01Z" },
-  { role: "user", content: "I work as a developer", timestamp: "2025-01-01T00:00:02Z" },
-  { role: "assistant", content: "That's great!", timestamp: "2025-01-01T00:00:03Z" },
+  { role: "user", content: "Hi, my name is Alice", timestamp: "2025-01-01T00:00:00Z", sessionPath: "sessions/a.md" },
+  { role: "assistant", content: "Hello Alice!", timestamp: "2025-01-01T00:00:01Z", sessionPath: "sessions/a.md" },
+  { role: "user", content: "I work as a developer", timestamp: "2025-01-01T00:00:02Z", sessionPath: "sessions/a.md" },
+  { role: "assistant", content: "That's great!", timestamp: "2025-01-01T00:00:03Z", sessionPath: "sessions/a.md" },
 ];
 
 describe("buildExtractionMessages", () => {
@@ -48,11 +48,22 @@ describe("buildExtractionMessages", () => {
     expect(systemContent).not.toContain("IMMUTABLE");
   });
 
+  it("includes handoff summary when provided", () => {
+    const messages = buildExtractionMessages(sampleTurns, emptyUserProfileContext(), {
+      handoffSummary: "Wrapped up onboarding and prefers concise replies.",
+    });
+
+    const userContent = (messages[1] as { role: string; content: string }).content;
+    expect(userContent).toContain("## Session Handoff Summary");
+    expect(userContent).toContain("prefers concise replies");
+  });
+
   it("truncates to last 30 turns", () => {
     const manyTurns: ConversationTurn[] = Array.from({ length: 40 }, (_, i) => ({
       role: i % 2 === 0 ? "user" as const : "assistant" as const,
       content: `Message ${i}`,
       timestamp: `2025-01-01T00:00:${String(i).padStart(2, "0")}Z`,
+      sessionPath: "sessions/a.md",
     }));
 
     const messages = buildExtractionMessages(manyTurns, emptyUserProfileContext());

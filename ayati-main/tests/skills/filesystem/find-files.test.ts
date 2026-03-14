@@ -3,16 +3,20 @@ import { mkdtemp, writeFile, mkdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { homedir, tmpdir } from "node:os";
 import { findFilesTool } from "../../../src/skills/builtins/filesystem/find-files.js";
+import { workspaceRoot } from "../../../src/skills/workspace-paths.js";
 
 describe("findFilesTool", () => {
   let tmp: string;
+  let workspaceArtifacts: string[];
 
   beforeEach(async () => {
     tmp = await mkdtemp(join(tmpdir(), "fs-find-test-"));
+    workspaceArtifacts = [];
   });
 
   afterEach(async () => {
     await rm(tmp, { recursive: true, force: true });
+    await Promise.all(workspaceArtifacts.map((path) => rm(path, { recursive: true, force: true })));
   });
 
   it("finds files by name fragment", async () => {
@@ -82,5 +86,18 @@ describe("findFilesTool", () => {
     const result = await findFilesTool.execute({ query: "*learn1.go*" });
     expect(result.ok).toBe(false);
     expect(result.error).toContain("wildcard");
+  });
+
+  it("searches work_space by default when roots are omitted", async () => {
+    const relativeDir = `vitest-find-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const expectedDir = join(workspaceRoot, relativeDir);
+    const filePath = join(expectedDir, "needle.txt");
+    workspaceArtifacts.push(expectedDir);
+    await mkdir(expectedDir, { recursive: true });
+    await writeFile(filePath, "x", "utf-8");
+
+    const result = await findFilesTool.execute({ query: "needle.txt" });
+    expect(result.ok).toBe(true);
+    expect(result.output).toContain(filePath);
   });
 });

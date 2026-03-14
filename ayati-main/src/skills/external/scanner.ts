@@ -3,7 +3,12 @@ import { join } from "node:path";
 import { exec } from "node:child_process";
 import { promisify } from "node:util";
 import { devLog, devWarn, devError } from "../../shared/index.js";
-import type { ExternalSkillMeta, ExternalSkillManifest } from "./types.js";
+import type {
+  ExternalSkillMeta,
+  ExternalSkillManifest,
+  ExternalSkillRuntime,
+  ExternalSkillType,
+} from "./types.js";
 
 const execAsync = promisify(exec);
 
@@ -51,6 +56,20 @@ async function tryExec(command: string): Promise<boolean> {
   }
 }
 
+function normalizeSkillType(value: unknown): ExternalSkillType {
+  if (value === "cli" || value === "shell") {
+    return value;
+  }
+  return "shell";
+}
+
+function normalizeSkillRuntime(value: unknown): ExternalSkillRuntime {
+  if (value === "plugin" || value === "direct") {
+    return value;
+  }
+  return "direct";
+}
+
 export async function scanExternalSkills(skillsDir: string): Promise<ExternalSkillMeta[]> {
   let entries: string[];
   try {
@@ -77,6 +96,16 @@ export async function scanExternalSkills(skillsDir: string): Promise<ExternalSki
       continue;
     }
 
+    const type = normalizeSkillType(manifest.type);
+    const runtime = normalizeSkillRuntime(manifest.runtime);
+    const plugin = typeof manifest.plugin === "string" && manifest.plugin.trim().length > 0
+      ? manifest.plugin.trim()
+      : undefined;
+
+    if (runtime === "plugin" && !plugin) {
+      devWarn(`Skill "${manifest.id}" declares runtime=plugin but has no plugin field`);
+    }
+
     let installed = true;
 
     if (manifest.dependency?.check) {
@@ -100,10 +129,15 @@ export async function scanExternalSkills(skillsDir: string): Promise<ExternalSki
       }
     }
 
-    devLog(`Loaded external skill: ${manifest.id} (installed=${installed})`);
+    devLog(
+      `Loaded external skill: ${manifest.id} (type=${type}, runtime=${runtime}, installed=${installed})`,
+    );
 
     skills.push({
       id: manifest.id,
+      type,
+      runtime,
+      ...(plugin ? { plugin } : {}),
       description: manifest.description,
       skillFilePath,
       skillDir: join(skillsDir, entry),

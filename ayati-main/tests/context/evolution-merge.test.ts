@@ -1,7 +1,9 @@
 import { describe, it, expect } from "vitest";
 import {
+  filterProfilePatchByPolicy,
   mergeProfilePatch,
   validateProfilePatch,
+  validateProfilePatchSources,
 } from "../../src/context/evolution-merge.js";
 import { emptyUserProfileContext } from "../../src/context/types.js";
 import type { UserProfileContext } from "../../src/context/types.js";
@@ -52,6 +54,122 @@ describe("validateProfilePatch", () => {
     const patch = validateProfilePatch({ foo: "bar" });
     expect(patch).not.toBeNull();
     expect(Object.keys(patch!).length).toBe(0);
+  });
+});
+
+describe("validateProfilePatchSources", () => {
+  it("extracts valid field source values", () => {
+    const sources = validateProfilePatchSources({
+      name: "explicit",
+      interests: "inferred",
+      communication: { verbosity: "explicit", bad: "unknown" },
+      garbage: 123,
+    });
+
+    expect(sources).toEqual({
+      name: "explicit",
+      interests: "inferred",
+      communication: { verbosity: "explicit" },
+    });
+  });
+
+  it("returns null for non-object input", () => {
+    expect(validateProfilePatchSources(null)).toBeNull();
+    expect(validateProfilePatchSources("nope")).toBeNull();
+  });
+});
+
+describe("filterProfilePatchByPolicy", () => {
+  it("keeps explicit medium-confidence auto-save fields", () => {
+    const filtered = filterProfilePatchByPolicy(
+      {
+        name: "Alice",
+        communication: { verbosity: "brief" },
+      },
+      {
+        name: "explicit",
+        communication: { verbosity: "explicit" },
+      },
+      "medium",
+    );
+
+    expect(filtered).toEqual({
+      name: "Alice",
+      communication: { verbosity: "brief" },
+    });
+  });
+
+  it("drops inferred fields unless confidence is high", () => {
+    const filtered = filterProfilePatchByPolicy(
+      {
+        interests: ["Rust"],
+      },
+      {
+        interests: "inferred",
+      },
+      "medium",
+    );
+
+    expect(filtered).toEqual({});
+  });
+
+  it("keeps inferred auto-save fields at high confidence", () => {
+    const filtered = filterProfilePatchByPolicy(
+      {
+        interests: ["Rust"],
+      },
+      {
+        interests: "inferred",
+      },
+      "high",
+    );
+
+    expect(filtered).toEqual({ interests: ["Rust"] });
+  });
+
+  it("requires explicit high confidence for conservative fields", () => {
+    const mediumConfidence = filterProfilePatchByPolicy(
+      {
+        location: "Bengaluru",
+        emotional_patterns: { joy_triggers: ["shipping code"] },
+      },
+      {
+        location: "explicit",
+        emotional_patterns: { joy_triggers: "explicit" },
+      },
+      "medium",
+    );
+
+    expect(mediumConfidence).toEqual({});
+
+    const highConfidence = filterProfilePatchByPolicy(
+      {
+        location: "Bengaluru",
+        emotional_patterns: { joy_triggers: ["shipping code"] },
+      },
+      {
+        location: "explicit",
+        emotional_patterns: { joy_triggers: "explicit" },
+      },
+      "high",
+    );
+
+    expect(highConfidence).toEqual({
+      location: "Bengaluru",
+      emotional_patterns: { joy_triggers: ["shipping code"] },
+    });
+  });
+
+  it("drops fields without source metadata", () => {
+    const filtered = filterProfilePatchByPolicy(
+      {
+        occupation: "Developer",
+      },
+      null,
+      "high",
+    );
+
+    expect(filtered).toEqual({});
   });
 });
 
