@@ -1,56 +1,97 @@
 # Ayati
 
-Ayati is a modular AI agent system with two parts:
+Ayati is a modular AI agent platform built as a small monorepo.
 
-- `ayati-main`: the agent server (engine, memory, skills, provider adapters, WebSocket transport)
+It includes:
+
+- `ayati-main`: the backend agent runtime and transport servers
 - `ayati-cli`: a terminal chat client built with Ink + React
+- `ayati-web`: a Next.js web chat interface
 
-## How the Agent Works
+Ayati is designed around a provider-agnostic runtime, composable skills/tools, layered prompt context, session memory, document handling, and artifact generation.
 
-At runtime, Ayati follows this flow:
+## What Ayati Includes
 
-1. The CLI sends a chat message to the server over WebSocket (`ws://localhost:8080`).
-2. The server bootstraps the runtime:
-   - loads the LLM provider (OpenAI by default)
-   - loads static context layers (`context/system_prompt.md`, `context/soul.json`, `context/user_profile.json`)
-   - loads built-in skills/tools
-3. `IVecEngine` builds a layered system prompt using static context + session memory.
-4. The agent loop runs:
-   - decides next action
-   - calls tools when needed
-   - verifies outcomes
-   - produces the final assistant reply
-5. Memory and run artifacts are persisted under `ayati-main/data/`.
-6. The final reply is streamed back to the CLI.
+- WebSocket-based chat runtime
+- Terminal and web chat clients
+- File upload support
+- Document ingestion and retrieval
+- Session memory and recall
+- Tool execution through built-in skills
+- Runtime-selectable LLM providers
+- Plugin lifecycle support
+- Artifact serving for generated outputs such as images and run files
 
-### Runtime Architecture (high-level)
-
-```text
-User (CLI)
-   -> ayati-cli (Ink UI)
-      -> WebSocket message
-         -> ayati-main WsServer
-            -> IVecEngine
-               -> Provider (OpenAI/Anthropic)
-               -> Skills/Tools (shell, filesystem, calculator, notes, pulse, identity, recall)
-               -> Memory (session + retrieval)
-            -> assistant reply
-         -> CLI render
-```
-
-## Repository Structure
+## Repository Layout
 
 ```text
 .
-├─ ayati-main/   # agent server
-│  ├─ src/
-│  ├─ context/
-│  ├─ tests/
-│  └─ data/      # runtime artifacts (generated)
-└─ ayati-cli/    # terminal client
-   ├─ src/
-   └─ dist/
+|- README.md
+|- ayati-main/   # backend runtime, WebSocket server, upload/artifact server
+|- ayati-cli/    # Ink-based terminal client
+`- ayati-web/    # Next.js web client
 ```
+
+## Package Overview
+
+### `ayati-main`
+
+The backend service. It is responsible for:
+
+- bootstrapping the `IVecEngine`
+- loading static context and skills
+- managing session memory and retrieval
+- accepting chat messages over WebSocket
+- accepting uploaded files over HTTP
+- serving generated artifacts
+- loading runtime provider configuration
+- starting plugins and system event flows
+
+Default runtime ports:
+
+- WebSocket chat server: `ws://localhost:8080`
+- Upload/artifact server: `http://localhost:8081`
+
+### `ayati-cli`
+
+A terminal client for chatting with Ayati over WebSocket.
+
+Features include:
+
+- terminal-first chat workflow
+- local attachment queue
+- lightweight status and reply rendering
+
+Supported input commands:
+
+- `/attach <local-file-path>`
+- `/attach <local-file-path> -- <message>`
+- `/files`
+- `/clearfiles`
+
+### `ayati-web`
+
+A browser-based chat interface built with Next.js.
+
+Features include:
+
+- live chat over WebSocket
+- file uploads to the backend upload API
+- Markdown rendering for assistant replies
+- connection state feedback
+- artifact preview and download support
+
+## Architecture Summary
+
+At runtime, Ayati works like this:
+
+1. A user sends a message from the CLI or web app.
+2. The client sends the message to `ayati-main` over WebSocket.
+3. The backend loads context, tools, memory, and the active provider.
+4. The `IVecEngine` runs the agent loop and executes tools when needed.
+5. Uploaded files and generated artifacts are managed by the backend HTTP server.
+6. Replies and artifact metadata are returned to the client.
+7. Runtime data is persisted under `ayati-main/data/`.
 
 ## Prerequisites
 
@@ -59,7 +100,9 @@ User (CLI)
 
 ## Quick Start
 
-### 1) Start the agent server
+Install dependencies separately in each package you want to run.
+
+### 1. Start the backend
 
 ```bash
 cd ayati-main
@@ -68,15 +111,24 @@ npm run build
 npm start
 ```
 
-Before starting, make sure `ayati-main/.env` contains at least:
+The backend expects an `.env` file in `ayati-main/`.
+
+At minimum, provide the API key for the provider you plan to use.
+
+Example:
 
 ```env
-OPENAI_API_KEY=your_key_here
-# optional:
-# OPENAI_MODEL=gpt-4o-mini
+OPENAI_API_KEY=your_openai_key
+OPENROUTER_API_KEY=your_openrouter_key
+ANTHROPIC_API_KEY=your_anthropic_key
+FIREWORKS_API_KEY=your_fireworks_key
 ```
 
-### 2) Start the CLI (new terminal)
+You do not need all of them at once. You only need the key for the active provider.
+
+### 2. Run the CLI
+
+In a new terminal:
 
 ```bash
 cd ayati-cli
@@ -85,44 +137,121 @@ npm run build
 npm start
 ```
 
-Now type messages in the CLI and chat with Ayati.
+### 3. Run the web app
 
-## CLI Commands
+In another terminal:
 
-Inside the CLI input box, these commands are supported:
+```bash
+cd ayati-web
+npm install
+npm run dev
+```
 
-- `/attach <path>`: queue a local file as an attachment
-- `/files`: list queued attachments
-- `/clearfiles`: clear queued attachments
+Then open the local Next.js URL shown in the terminal.
+
+## Web Client Environment
+
+`ayati-web` can run with defaults, but you can override backend endpoints with `.env.local`.
+
+Example:
+
+```env
+NEXT_PUBLIC_AYATI_WS_URL=ws://localhost:8080
+NEXT_PUBLIC_AYATI_UPLOAD_URL=http://localhost:8081/api/uploads
+NEXT_PUBLIC_AYATI_ARTIFACT_BASE_URL=http://localhost:8081
+```
+
+## LLM Provider Configuration
+
+Ayati supports these providers at runtime:
+
+- OpenRouter
+- OpenAI
+- Anthropic
+- Fireworks
+
+The active provider is managed through the backend runtime config in:
+
+- `ayati-main/data/runtime/llm-config.json`
+
+That means provider choice is runtime-configurable rather than locked to one provider implementation.
+
+## Documents and Attachments
+
+Ayati can ingest uploaded files and use them in chat workflows.
+
+The backend includes document handling for common formats such as:
+
+- PDF
+- DOCX
+- PPTX
+- XLSX
+- CSV
+- TXT
+- Markdown
+- JSON
+- HTML
+
+Uploads are accepted through the backend HTTP API and stored under backend-managed data directories.
 
 ## Development Commands
 
 ### `ayati-main`
 
-- `npm run dev` - watch, rebuild, restart server
-- `npm run build` - compile TypeScript
-- `npm start` - run compiled server
-- `npm test` - run tests once
+```bash
+npm run build
+npm start
+npm run dev
+npm test
+npm run test:watch
+```
 
 ### `ayati-cli`
 
-- `npm run dev` - compile and run CLI
-- `npm run build` - compile TypeScript
-- `npm start` - run compiled CLI
-- `npm test` - run tests once
+```bash
+npm run build
+npm start
+npm run dev
+npm test
+npm run test:watch
+```
 
-## Provider Configuration
+### `ayati-web`
 
-The server currently uses OpenAI by default in:
+```bash
+npm run dev
+npm run build
+npm run start
+npm run lint
+```
 
-- `ayati-main/src/config/provider.ts`
+## Runtime Data
 
-To switch providers, point that module to another provider adapter (for example, Anthropic) and set the corresponding API key in `.env`.
+Backend runtime output is stored under `ayati-main/data/`, including things like:
 
-## Important Notes
+- session data
+- memory indexes
+- document data
+- runtime config
+- generated run artifacts
 
-- Do not commit secrets. Keep API keys only in `.env`.
-- `dist/`, `data/`, and other generated artifacts should not be committed.
-- For architecture direction and design decisions, see:
-  - `ayati-main/AGENT.md`
-  - `ayati-main/AGENTS.md`
+These files are runtime state, not source code.
+
+## Security Notes
+
+- Never commit secrets or API keys.
+- Keep credentials in local env files only.
+- Do not document real keys in README examples.
+- Review tool access and runtime policies before exposing the backend beyond local development.
+
+## Important Internal References
+
+If you want to go deeper into the architecture, start with:
+
+- `ayati-main/AGENT.md`
+- `ayati-main/AGENTS.md`
+- `ayati-main/src/app/main.ts`
+
+## Current Status
+
+Ayati is structured as a modular agent system with separate backend, CLI, and web surfaces. The backend already supports runtime provider selection, built-in tools/skills, memory, document workflows, and artifact delivery, while the clients provide terminal and browser-based access to the same core runtime.
