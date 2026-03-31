@@ -1,5 +1,7 @@
-import { join } from "node:path";
-import { createId, devLog, devWarn } from "../shared/index.js";
+import { join, resolve } from "node:path";
+import { devLog, devWarn } from "../shared/index.js";
+import type { LlmResponseFormat, LlmTurnOutput } from "../core/contracts/llm-protocol.js";
+import { compileResponseFormatForProvider } from "../providers/shared/provider-profiles.js";
 import type {
   AgentLoopDeps,
   AgentLoopResult,
@@ -14,6 +16,7 @@ import type {
   ScoutResult,
   GoalContract,
   TaskValidationContext,
+  PreparedAttachmentStateUpdate,
 } from "./types.js";
 import { DEFAULT_LOOP_CONFIG } from "./types.js";
 
@@ -26,15 +29,68 @@ function isContextSearchDirective(output: ControllerOutput): output is ContextSe
 }
 
 import { initRunDirectory, writeState, readState } from "./state-persistence.js";
-import { callUnderstand, callReEval, callDirect } from "./controller.js";
+import { callUnderstand, callReEval, callDirect, resolveOpenFeedbackReference } from "./controller.js";
 import { executeStep } from "./executor.js";
 import { runContextScout } from "./context-scout.js";
+import { collectAgentArtifacts } from "./agent-artifacts.js";
+import { prepareIncomingAttachments } from "../documents/attachment-preparer.js";
+import type { ManagedDocumentManifest, PreparedAttachmentSummary } from "../documents/types.js";
 import type { ScoutKnownLocations } from "./context-scout.js";
-import { lookupContextCache, storeContextCache } from "./context-cache.js";
+import {
+  getContextCacheEntriesByIds,
+  listContextCacheMetadata,
+  storeContextCache,
+  type ContextCacheEntry,
+  type ContextCacheMetadataEntry,
+  type ContextCacheStatus,
+} from "./context-cache.js";
+
+const CACHE_SELECTION_RESPONSE_FORMAT: LlmResponseFormat = {
+  type: "json_schema",
+  name: "context_cache_selection_response",
+  strict: true,
+  schema: {
+    type: "object",
+    properties: {
+      ids: {
+        type: "array",
+        items: { type: "string" },
+      },
+      reason: { type: "string" },
+    },
+    required: ["ids", "reason"],
+    additionalProperties: false,
+  },
+};
+
+const CACHE_SUFFICIENCY_RESPONSE_FORMAT: LlmResponseFormat = {
+  type: "json_schema",
+  name: "context_cache_sufficiency_response",
+  strict: true,
+  schema: {
+    type: "object",
+    properties: {
+      sufficient: { type: "boolean" },
+      ids: {
+        type: "array",
+        items: { type: "string" },
+      },
+      reason: { type: "string" },
+    },
+    required: ["sufficient", "ids", "reason"],
+    additionalProperties: false,
+  },
+};
+
+const CACHE_JSON_REPAIR_PROMPT = `Your previous response was invalid because it was not a single valid JSON object that matched the requested shape.
+Reply again with exactly one JSON object.
+Use strict JSON syntax with double-quoted strings and lowercase true, false, and null.
+Do not include markdown fences.
+Do not include any explanation before or after the JSON.`;
 
 export async function agentLoop(deps: AgentLoopDeps): Promise<AgentLoopResult> {
   const config: LoopConfig = { ...DEFAULT_LOOP_CONFIG, ...deps.config };
-  const runId = createId();
+  const runId = deps.runHandle.runId;
   const runPath = initRunDirectory(deps.dataDir, runId);
 
   let totalToolCalls = 0;
@@ -44,6 +100,17 @@ export async function agentLoop(deps: AgentLoopDeps): Promise<AgentLoopResult> {
     inputKind: deps.inputKind ?? (deps.systemEvent ? "system_event" : "user_message"),
     userMessage: "",
     systemEvent: deps.systemEvent,
+    originSource: deps.systemEvent?.source,
+    systemEventIntentKind: deps.systemEventIntentKind,
+    systemEventRequestedAction: deps.systemEventRequestedAction,
+    systemEventCreatedBy: deps.systemEventCreatedBy,
+    handlingMode: deps.systemEventHandlingMode,
+    approvalRequired: deps.systemEventApprovalRequired,
+    approvalState: deps.systemEventApprovalState,
+    contextVisibility: deps.systemEventContextVisibility,
+    feedbackTtlHours: deps.feedbackTtlHours,
+    preferredResponseKind: deps.preferredResponseKind,
+    matchedFeedback: null,
     goal: emptyGoalContract(),
     approach: "",
     taskStatus: "not_done",
@@ -59,8 +126,12 @@ export async function agentLoop(deps: AgentLoopDeps): Promise<AgentLoopResult> {
     failedApproaches: [],
     attachedDocuments: deps.attachedDocuments ?? [],
     attachmentWarnings: deps.attachmentWarnings ?? [],
+    preparedAttachments: [],
+    activeSessionAttachments: [],
     sessionHistory: [],
     recentRunLedgers: [],
+    openFeedbacks: [],
+    recentSystemActivity: [],
   };
 
   // Populate user message and session history from sessionMemory context
@@ -75,6 +146,12 @@ export async function agentLoop(deps: AgentLoopDeps): Promise<AgentLoopResult> {
     );
   }
 
+  const feedbackResolution = await resolveOpenFeedbackIfNeeded(deps, state, runPath);
+  if (feedbackResolution) {
+    writeState(runPath, state);
+    return feedbackResolution;
+  }
+
   writeState(runPath, state);
   deps.sessionMemory.recordRunLedger?.(deps.clientId, {
     runId: deps.runHandle.runId,
@@ -82,6 +159,19 @@ export async function agentLoop(deps: AgentLoopDeps): Promise<AgentLoopResult> {
     runPath,
     state: "started",
   });
+
+  if ((state.attachedDocuments ?? []).length > 0 && deps.documentStore && deps.preparedAttachmentRegistry) {
+    const prepared = await prepareIncomingAttachments({
+      attachedDocuments: state.attachedDocuments ?? [],
+      runId,
+      runPath,
+      documentStore: deps.documentStore,
+      registry: deps.preparedAttachmentRegistry,
+    });
+    state.preparedAttachments = prepared.summaries;
+    recordActiveSessionAttachments(deps, runId, runPath, "prepared");
+    writeState(runPath, state);
+  }
 
   // --- Understand stage (iteration 0) ---
   const systemContext = deps.systemContext ?? "";
@@ -97,27 +187,22 @@ export async function agentLoop(deps: AgentLoopDeps): Promise<AgentLoopResult> {
     state.status = understandResult.status === "failed" ? "failed" : "completed";
     state.finalOutput = understandResult.summary;
     writeState(runPath, state);
-    return {
-      type: "reply",
-      content: state.finalOutput,
+    return buildLoopResult(state, {
+      dataDir: deps.dataDir,
+      completion: understandResult,
       status: state.status,
       totalIterations: 0,
       totalToolCalls: 0,
-      runPath,
-    };
+    });
   }
 
   // Store understand output on state
   state.goal = understandResult.goal;
   state.approach = understandResult.approach;
+  state.workMode = understandResult.work_mode;
   writeState(runPath, state);
 
-  let initialControllerScoutResult = await buildInitialDocumentScoutContext(
-    deps,
-    state,
-    config,
-    runPath,
-  );
+  let initialControllerScoutResult: ScoutResult | undefined;
 
   // --- Main loop: direct stage ---
   let lastDirective: StepDirective | undefined;
@@ -128,14 +213,13 @@ export async function agentLoop(deps: AgentLoopDeps): Promise<AgentLoopResult> {
       state.status = "failed";
       state.finalOutput = finalOutput;
       writeState(runPath, state);
-      return {
-        type: "reply",
-        content: finalOutput,
+      return buildLoopResult(state, {
+        dataDir: deps.dataDir,
         status: "failed",
+        content: finalOutput,
         totalIterations: state.iteration,
         totalToolCalls,
-        runPath,
-      };
+      });
     }
 
     const diskState = readState(runPath);
@@ -154,14 +238,13 @@ export async function agentLoop(deps: AgentLoopDeps): Promise<AgentLoopResult> {
         state.status = "failed";
         state.finalOutput = finalOutput;
         writeState(runPath, state);
-        return {
-          type: "reply",
-          content: finalOutput,
+        return buildLoopResult(state, {
+          dataDir: deps.dataDir,
           status: "failed",
+          content: finalOutput,
           totalIterations: state.iteration,
           totalToolCalls,
-          runPath,
-        };
+        });
       }
 
       const reevalResolution = await resolveReEvalDirective(
@@ -173,31 +256,30 @@ export async function agentLoop(deps: AgentLoopDeps): Promise<AgentLoopResult> {
         systemContext,
       );
       if (reevalResolution.type === "done") {
-        state.status = reevalResolution.status === "failed" ? "failed" : "completed";
-        state.finalOutput = reevalResolution.summary;
+        state.status = reevalResolution.completion.status === "failed" ? "failed" : "completed";
+        state.finalOutput = reevalResolution.completion.summary;
         writeState(runPath, state);
-        return {
-          type: "reply",
-          content: state.finalOutput,
+        return buildLoopResult(state, {
+          dataDir: deps.dataDir,
+          completion: reevalResolution.completion,
           status: state.status,
+          content: state.finalOutput,
           totalIterations: state.iteration,
           totalToolCalls,
-          runPath,
-        };
+        });
       }
 
       if (reevalResolution.type === "failed") {
         state.status = "failed";
         state.finalOutput = reevalResolution.message;
         writeState(runPath, state);
-        return {
-          type: "reply",
-          content: state.finalOutput,
+        return buildLoopResult(state, {
+          dataDir: deps.dataDir,
           status: "failed",
+          content: state.finalOutput,
           totalIterations: state.iteration,
           totalToolCalls,
-          runPath,
-        };
+        });
       }
 
       const nextApproach = reevalResolution.directive.approach.trim();
@@ -206,14 +288,13 @@ export async function agentLoop(deps: AgentLoopDeps): Promise<AgentLoopResult> {
         state.status = "failed";
         state.finalOutput = finalOutput;
         writeState(runPath, state);
-        return {
-          type: "reply",
-          content: finalOutput,
+        return buildLoopResult(state, {
+          dataDir: deps.dataDir,
           status: "failed",
+          content: finalOutput,
           totalIterations: state.iteration,
           totalToolCalls,
-          runPath,
-        };
+        });
       }
 
       state.approach = nextApproach;
@@ -232,17 +313,17 @@ export async function agentLoop(deps: AgentLoopDeps): Promise<AgentLoopResult> {
     );
     initialControllerScoutResult = undefined;
     if (controllerResolution.type === "done") {
-      state.status = controllerResolution.status === "failed" ? "failed" : "completed";
-      state.finalOutput = controllerResolution.summary;
+      state.status = controllerResolution.completion.status === "failed" ? "failed" : "completed";
+      state.finalOutput = controllerResolution.completion.summary;
       writeState(runPath, state);
-      return {
-        type: "reply",
-        content: state.finalOutput,
+      return buildLoopResult(state, {
+        dataDir: deps.dataDir,
+        completion: controllerResolution.completion,
         status: state.status,
+        content: state.finalOutput,
         totalIterations: state.iteration,
         totalToolCalls,
-        runPath,
-      };
+      });
     }
 
     if (controllerResolution.type === "rotate") {
@@ -256,28 +337,26 @@ export async function agentLoop(deps: AgentLoopDeps): Promise<AgentLoopResult> {
       state.status = "completed";
       state.finalOutput = finalOutput;
       writeState(runPath, state);
-      return {
-        type: "reply",
-        content: finalOutput,
+      return buildLoopResult(state, {
+        dataDir: deps.dataDir,
         status: "completed",
+        content: finalOutput,
         totalIterations: state.iteration,
         totalToolCalls,
-        runPath,
-      };
+      });
     }
 
     if (controllerResolution.type === "failed") {
       state.status = "failed";
       state.finalOutput = controllerResolution.message;
       writeState(runPath, state);
-      return {
-        type: "reply",
-        content: state.finalOutput,
+      return buildLoopResult(state, {
+        dataDir: deps.dataDir,
         status: "failed",
+        content: state.finalOutput,
         totalIterations: state.iteration,
         totalToolCalls,
-        runPath,
-      };
+      });
     }
 
     const controllerOutput = controllerResolution.directive;
@@ -298,6 +377,16 @@ export async function agentLoop(deps: AgentLoopDeps): Promise<AgentLoopResult> {
       state.iteration,
       runPath,
     );
+
+    applyPreparedAttachmentStateUpdates(
+      state,
+      deps.preparedAttachmentRegistry,
+      deps.runHandle.runId,
+      stepSummary.stateUpdates ?? [],
+    );
+    if ((stepSummary.stateUpdates ?? []).some((update) => update.type === "restore_prepared_attachment")) {
+      recordActiveSessionAttachments(deps, runId, runPath, "restored");
+    }
 
     state.completedSteps.push(stepSummary);
 
@@ -349,25 +438,24 @@ export async function agentLoop(deps: AgentLoopDeps): Promise<AgentLoopResult> {
   state.status = "failed";
   state.finalOutput = finalOutput;
   writeState(runPath, state);
-  return {
-    type: "reply",
-    content: finalOutput,
+  return buildLoopResult(state, {
+    dataDir: deps.dataDir,
     status: "stuck",
+    content: finalOutput,
     totalIterations: state.iteration,
     totalToolCalls,
-    runPath,
-  };
+  });
 }
 
 type ControllerResolution =
   | { type: "step"; directive: StepDirective }
-  | { type: "done"; summary: string; status: "completed" | "failed" }
+  | { type: "done"; completion: CompletionDirective }
   | { type: "rotate"; reason: string; handoffSummary: string }
   | { type: "failed"; message: string };
 
 type ReEvalResolution =
   | { type: "reeval"; directive: ReEvalDirective }
-  | { type: "done"; summary: string; status: "completed" | "failed" }
+  | { type: "done"; completion: CompletionDirective }
   | { type: "failed"; message: string };
 
 type ContextSearchBudget = { used: number };
@@ -383,7 +471,7 @@ type ContextAwareDirective = StepDirective | ReEvalDirective | SessionRotationDi
 
 type ContextAwareResolution =
   | { type: "directive"; directive: ContextAwareDirective }
-  | { type: "done"; summary: string; status: "completed" | "failed" }
+  | { type: "done"; completion: CompletionDirective }
   | { type: "failed"; message: string };
 
 async function resolveControllerDirective(
@@ -475,6 +563,7 @@ async function resolveContextAwareController(
   invoke: (scoutContext?: string) => Promise<ContextAwareDirective | ContextSearchDirective | CompletionDirective>,
 ): Promise<ContextAwareResolution> {
   const documentScout = createDocumentScoutSessionState(initialScoutResult, state.userMessage);
+  const priorGenericScoutResults = new Map<string, ScoutResult>();
   let scoutContext = buildCurrentScoutContext(initialScoutResult, documentScout);
   if (scoutContext) {
     devLog(
@@ -488,8 +577,7 @@ async function resolveContextAwareController(
     if (controllerOutput.done) {
       return {
         type: "done",
-        summary: controllerOutput.summary,
-        status: controllerOutput.status,
+        completion: controllerOutput,
       };
     }
 
@@ -514,6 +602,22 @@ async function resolveContextAwareController(
       return { type: "failed", message: documentDecision.message };
     }
 
+    if (controllerOutput.scope !== "documents") {
+      const repeatedKey = buildScoutAttemptKey(controllerOutput.scope, controllerOutput.query);
+      const repeatedResult = priorGenericScoutResults.get(repeatedKey);
+      if (isReusableNegativeScoutResult(repeatedResult)) {
+        devLog(
+          `[context-search] reusing prior negative result iteration=${state.iteration} scope=${controllerOutput.scope} query="${controllerOutput.query.replace(/\s+/g, " ").trim().slice(0, 140)}"`,
+        );
+        scoutContext = buildCurrentScoutContext(
+          repeatedResult,
+          documentScout,
+          "Repeat blocked: do not run the same context_search again in this iteration. Narrow the query, change scope, or explain that nothing relevant was found.",
+        );
+        continue;
+      }
+    }
+
     if (scoutBudget.used >= config.maxScoutCallsPerIteration) {
       devWarn(
         `[context-search] limit exceeded iteration=${state.iteration} used=${scoutBudget.used} limit=${config.maxScoutCallsPerIteration} latest_scope=${controllerOutput.scope} latest_query="${controllerOutput.query.replace(/\s+/g, " ").trim().slice(0, 140)}"`,
@@ -527,16 +631,21 @@ async function resolveContextAwareController(
     const locations = buildScoutLocations(deps, state, runPath);
     scoutBudget.used++;
 
-    const cachedResult = lookupContextCache(runPath, {
-      scope: controllerOutput.scope,
-      query: controllerOutput.query,
-      knownLocations: locations,
-      iteration: state.iteration,
-      documentPaths: controllerOutput.document_paths,
-    });
-    if (cachedResult) {
-      updateDocumentScoutSessionState(documentScout, controllerOutput.query, cachedResult);
-      scoutContext = buildCurrentScoutContext(cachedResult, documentScout);
+    const cachedResult = await resolveContextCacheBeforeScout(
+      deps,
+      state,
+      runPath,
+      controllerOutput,
+    );
+    if (cachedResult.type === "sufficient") {
+      if (controllerOutput.scope !== "documents") {
+        priorGenericScoutResults.set(
+          buildScoutAttemptKey(controllerOutput.scope, controllerOutput.query),
+          cachedResult.result,
+        );
+      }
+      updateDocumentScoutSessionState(documentScout, controllerOutput.query, cachedResult.result);
+      scoutContext = buildCurrentScoutContext(cachedResult.result, documentScout);
       continue;
     }
 
@@ -554,14 +663,429 @@ async function resolveContextAwareController(
     storeContextCache(runPath, {
       scope: controllerOutput.scope,
       query: controllerOutput.query,
-      knownLocations: locations,
-      iteration: state.iteration,
-      documentPaths: controllerOutput.document_paths,
       result,
     });
+    if (controllerOutput.scope !== "documents") {
+      priorGenericScoutResults.set(
+        buildScoutAttemptKey(controllerOutput.scope, controllerOutput.query),
+        result,
+      );
+    }
     updateDocumentScoutSessionState(documentScout, controllerOutput.query, result);
     scoutContext = buildCurrentScoutContext(result, documentScout);
   }
+}
+
+type CacheResolution =
+  | { type: "miss" }
+  | { type: "sufficient"; result: ScoutResult };
+
+interface CacheSelectionResponse {
+  ids: string[];
+  reason: string;
+}
+
+interface CacheSufficiencyResponse {
+  sufficient: boolean;
+  ids: string[];
+  reason: string;
+}
+
+async function resolveContextCacheBeforeScout(
+  deps: AgentLoopDeps,
+  state: LoopState,
+  runPath: string,
+  directive: ContextSearchDirective,
+): Promise<CacheResolution> {
+  if (directive.scope === "documents") {
+    devLog("[context-cache] skip scope=documents reason=existing-document-reuse-flow");
+    return { type: "miss" };
+  }
+
+  const metadata = listContextCacheMetadata(runPath, directive.scope);
+  if (metadata.length === 0) {
+    devLog(`[context-cache] miss scope=${directive.scope} reason=no-entries`);
+    return { type: "miss" };
+  }
+
+  const selection = await selectRelevantContextCacheEntries(
+    deps,
+    state,
+    directive,
+    metadata,
+  );
+  const selectedIds = uniqueIds(selection.ids).slice(0, 3);
+  if (selectedIds.length === 0) {
+    devLog(
+      `[context-cache] miss scope=${directive.scope} reason=no-relevant-entries query="${directive.query.replace(/\s+/g, " ").trim().slice(0, 140)}"`,
+    );
+    return { type: "miss" };
+  }
+
+  const selectedEntries = getContextCacheEntriesByIds(runPath, selectedIds);
+  if (selectedEntries.length === 0) {
+    devLog(`[context-cache] miss scope=${directive.scope} reason=selected-ids-not-found`);
+    return { type: "miss" };
+  }
+
+  const sufficiency = await assessContextCacheSufficiency(
+    deps,
+    state,
+    directive,
+    selectedEntries,
+  );
+  if (!sufficiency.sufficient) {
+    devLog(
+      `[context-cache] insufficient scope=${directive.scope} ids=${selectedIds.join(",")} reason="${sufficiency.reason.replace(/\s+/g, " ").trim().slice(0, 160)}"`,
+    );
+    return { type: "miss" };
+  }
+
+  const idsToUse = uniqueIds(sufficiency.ids).filter((id) => selectedIds.includes(id));
+  const entriesToUse = idsToUse.length > 0
+    ? getContextCacheEntriesByIds(runPath, idsToUse)
+    : selectedEntries;
+  const result = buildScoutResultFromCacheEntries(directive.scope, entriesToUse);
+
+  devLog(
+    `[context-cache] sufficient scope=${directive.scope} ids=${entriesToUse.map((entry) => entry.id).join(",")} reason="${sufficiency.reason.replace(/\s+/g, " ").trim().slice(0, 160)}"`,
+  );
+  return { type: "sufficient", result };
+}
+
+async function selectRelevantContextCacheEntries(
+  deps: AgentLoopDeps,
+  state: LoopState,
+  directive: ContextSearchDirective,
+  metadata: ContextCacheMetadataEntry[],
+): Promise<CacheSelectionResponse> {
+  const prompt = buildContextCacheSelectionPrompt(state, directive, metadata);
+  return runContextCacheJsonTurn(
+    deps.provider,
+    [{ role: "user", content: prompt }],
+    CACHE_SELECTION_RESPONSE_FORMAT,
+    parseCacheSelectionResponse,
+  );
+}
+
+async function assessContextCacheSufficiency(
+  deps: AgentLoopDeps,
+  state: LoopState,
+  directive: ContextSearchDirective,
+  entries: ContextCacheEntry[],
+): Promise<CacheSufficiencyResponse> {
+  const prompt = buildContextCacheSufficiencyPrompt(state, directive, entries);
+  return runContextCacheJsonTurn(
+    deps.provider,
+    [{ role: "user", content: prompt }],
+    CACHE_SUFFICIENCY_RESPONSE_FORMAT,
+    parseCacheSufficiencyResponse,
+  );
+}
+
+function buildContextCacheSelectionPrompt(
+  state: LoopState,
+  directive: ContextSearchDirective,
+  metadata: ContextCacheMetadataEntry[],
+): string {
+  const metadataBlock = metadata
+    .map((entry) => {
+      const query = entry.query.trim().length > 0 ? entry.query : "(empty query)";
+      return `- id=${entry.id} | status=${entry.status} | confidence=${entry.confidence.toFixed(2)} | query=${query.slice(0, 220)}`;
+    })
+    .join("\n");
+
+  return `You are selecting useful cached context-search entries.
+
+Current request:
+- scope: ${directive.scope}
+- query: ${directive.query}
+- overall goal: ${state.goal.objective || state.userMessage}
+
+Choose up to 3 cache ids that are likely useful for this request.
+- Read only the metadata below.
+- Prefer entries with status "success" or "sufficient".
+- Use "partial" only if it may still help.
+- Choose "empty" or "unavailable" only when they clearly match the same request and would help avoid repeating the same failed search.
+- If none are useful, return an empty ids array.
+
+Cache metadata:
+${metadataBlock}
+
+Respond with strict JSON:
+{ "ids": ["..."], "reason": "..." }`;
+}
+
+function buildContextCacheSufficiencyPrompt(
+  state: LoopState,
+  directive: ContextSearchDirective,
+  entries: ContextCacheEntry[],
+): string {
+  const entriesBlock = entries
+    .map((entry) => {
+      const sources = entry.sources.length > 0 ? entry.sources.join(", ") : "(none)";
+      const context = entry.context.trim().length > 0 ? entry.context : "(empty context)";
+      return [
+        `Entry ${entry.id}`,
+        `- status: ${entry.status}`,
+        `- confidence: ${entry.confidence.toFixed(2)}`,
+        `- cached query: ${entry.query || "(empty)"}`,
+        `- sources: ${sources}`,
+        `- context:`,
+        context,
+      ].join("\n");
+    })
+    .join("\n\n");
+
+  return `You are deciding whether cached context-search entries are sufficient.
+
+Current request:
+- scope: ${directive.scope}
+- query: ${directive.query}
+- overall goal: ${state.goal.objective || state.userMessage}
+
+Rules:
+- Return sufficient=true only if the cached entries already provide enough grounded context to hand back to the controller.
+- If any important detail still appears missing, return sufficient=false so the system can run scout.
+- If sufficient=true, choose the subset of ids to keep (you may keep all of them).
+- Be conservative.
+
+Selected cache entries:
+${entriesBlock}
+
+Respond with strict JSON:
+{ "sufficient": true|false, "ids": ["..."], "reason": "..." }`;
+}
+
+async function runContextCacheJsonTurn<T>(
+  provider: AgentLoopDeps["provider"],
+  messages: Array<{ role: "user"; content: string }>,
+  preferredResponseFormat: LlmResponseFormat,
+  parser: (text: string) => T,
+): Promise<T> {
+  const responseFormat = compileResponseFormatForProvider(
+    provider.name,
+    provider.capabilities,
+    preferredResponseFormat,
+  );
+
+  const firstTurn = await provider.generateTurn({
+    messages,
+    ...(responseFormat ? { responseFormat } : {}),
+  });
+  const firstText = extractContextCacheTurnText(firstTurn);
+
+  try {
+    return parser(firstText);
+  } catch {
+    const retryTurn = await provider.generateTurn({
+      messages: [
+        ...messages,
+        ...(firstText.trim().length > 0 ? [{ role: "assistant" as const, content: firstText }] : []),
+        { role: "user" as const, content: CACHE_JSON_REPAIR_PROMPT },
+      ],
+      ...(responseFormat ? { responseFormat } : {}),
+    });
+    return parser(extractContextCacheTurnText(retryTurn));
+  }
+}
+
+function parseCacheSelectionResponse(text: string): CacheSelectionResponse {
+  const parsed = extractContextCacheJson(text);
+  return {
+    ids: Array.isArray(parsed["ids"]) ? (parsed["ids"] as unknown[]).map(String) : [],
+    reason: String(parsed["reason"] ?? ""),
+  };
+}
+
+function parseCacheSufficiencyResponse(text: string): CacheSufficiencyResponse {
+  const parsed = extractContextCacheJson(text);
+  return {
+    sufficient: parsed["sufficient"] === true,
+    ids: Array.isArray(parsed["ids"]) ? (parsed["ids"] as unknown[]).map(String) : [],
+    reason: String(parsed["reason"] ?? ""),
+  };
+}
+
+function extractContextCacheTurnText(turn: LlmTurnOutput): string {
+  if (turn.type === "assistant") {
+    return turn.content;
+  }
+  return turn.assistantContent ?? "";
+}
+
+function extractContextCacheJson(text: string): Record<string, unknown> {
+  const normalized = unwrapContextCacheJsonFence(text.trim());
+  const direct = tryParseContextCacheJsonObject(normalized);
+  if (direct) return direct;
+
+  const extracted = findFirstContextCacheJsonObject(normalized);
+  if (extracted) {
+    const parsed = tryParseContextCacheJsonObject(extracted);
+    if (parsed) return parsed;
+  }
+
+  throw new SyntaxError("Expected a JSON object from context-cache helper prompt.");
+}
+
+function unwrapContextCacheJsonFence(text: string): string {
+  const fenceMatch = text.match(/```(?:json)?\s*\n?([\s\S]*?)\n?```/);
+  if (fenceMatch?.[1]) {
+    return fenceMatch[1].trim();
+  }
+  return text;
+}
+
+function tryParseContextCacheJsonObject(text: string): Record<string, unknown> | null {
+  if (text.length === 0) return null;
+  try {
+    const parsed = JSON.parse(normalizeContextCacheJsonLikeRecord(text));
+    if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)) {
+      return parsed as Record<string, unknown>;
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+
+function normalizeContextCacheJsonLikeRecord(text: string): string {
+  return text
+    .replace(/\bTrue\b/g, "true")
+    .replace(/\bFalse\b/g, "false")
+    .replace(/\bNone\b/g, "null");
+}
+
+function findFirstContextCacheJsonObject(text: string): string | null {
+  let start = -1;
+  let depth = 0;
+  let inString = false;
+  let escaping = false;
+
+  for (let index = 0; index < text.length; index++) {
+    const char = text[index];
+    if (!char) continue;
+
+    if (start === -1) {
+      if (char === "{") {
+        start = index;
+        depth = 1;
+        inString = false;
+        escaping = false;
+      }
+      continue;
+    }
+
+    if (inString) {
+      if (escaping) {
+        escaping = false;
+      } else if (char === "\\") {
+        escaping = true;
+      } else if (char === "\"") {
+        inString = false;
+      }
+      continue;
+    }
+
+    if (char === "\"") {
+      inString = true;
+      continue;
+    }
+
+    if (char === "{") {
+      depth++;
+    } else if (char === "}") {
+      depth--;
+      if (depth === 0 && start >= 0) {
+        return text.slice(start, index + 1);
+      }
+    }
+  }
+
+  return null;
+}
+
+function buildScoutResultFromCacheEntries(
+  scope: ContextSearchDirective["scope"],
+  entries: ContextCacheEntry[],
+): ScoutResult {
+  const contextBlocks = entries
+    .map((entry) => {
+      const context = entry.context.trim();
+      if (context.length === 0) {
+        return "";
+      }
+      return entries.length === 1
+        ? context
+        : `Cached query: ${entry.query}\n${context}`;
+    })
+    .filter((block) => block.length > 0);
+
+  const mergedContext = contextBlocks.join("\n\n");
+  const mergedSources = [...new Set(entries.flatMap((entry) => entry.sources))];
+  const mergedConfidence = entries.length > 0
+    ? entries.reduce((sum, entry) => sum + entry.confidence, 0) / entries.length
+    : 0;
+
+  if (scope === "documents") {
+    const mergedStatus = selectBestCacheStatus(entries.map((entry) => entry.status));
+    return {
+      context: mergedContext,
+      sources: mergedSources,
+      confidence: mergedConfidence,
+      documentState: {
+        status: toDocumentScoutStatus(mergedStatus),
+        insufficientEvidence: mergedStatus === "partial" || mergedStatus === "empty" || mergedStatus === "unavailable",
+        warnings: [],
+      },
+    };
+  }
+
+  const firstEntry = entries[0];
+  const genericScoutState = entries.length === 1 && firstEntry?.status === "empty"
+    ? {
+        status: "empty" as const,
+        scope,
+        query: firstEntry.query,
+        searchedLocations: firstEntry.sources,
+        attemptedSearches: [],
+        errors: [],
+      }
+    : undefined;
+
+  return {
+    context: mergedContext,
+    sources: mergedSources,
+    confidence: mergedConfidence,
+    ...(genericScoutState ? { scoutState: genericScoutState } : {}),
+  };
+}
+
+function selectBestCacheStatus(statuses: ContextCacheStatus[]): ContextCacheStatus {
+  if (statuses.includes("sufficient")) return "sufficient";
+  if (statuses.includes("success")) return "success";
+  if (statuses.includes("partial")) return "partial";
+  if (statuses.includes("empty")) return "empty";
+  return "unavailable";
+}
+
+function toDocumentScoutStatus(status: ContextCacheStatus): NonNullable<ScoutResult["documentState"]>["status"] {
+  switch (status) {
+    case "partial":
+      return "partial";
+    case "empty":
+      return "empty";
+    case "unavailable":
+      return "unavailable";
+    case "success":
+    case "sufficient":
+    default:
+      return "sufficient";
+  }
+}
+
+function uniqueIds(ids: string[]): string[] {
+  return [...new Set(ids.filter((id) => id.trim().length > 0))];
 }
 
 function formatScoutContext(result: ScoutResult, note?: string): string {
@@ -591,23 +1115,35 @@ function formatScoutContext(result: ScoutResult, note?: string): string {
   return `${lines.join("\n")} (confidence: ${result.confidence})${sourceLine ? `\n${sourceLine}` : ""}`;
 }
 
-function buildCurrentScoutContext(current: ScoutResult | undefined, documentScout: DocumentScoutSessionState): string {
+function buildCurrentScoutContext(
+  current: ScoutResult | undefined,
+  documentScout: DocumentScoutSessionState,
+  note?: string,
+): string {
   const bestDocumentContext = documentScout.bestResult?.documentState
     ? formatScoutContext(documentScout.bestResult)
     : "";
 
   if (current?.documentState) {
-    return bestDocumentContext || formatScoutContext(current);
+    return bestDocumentContext || formatScoutContext(current, note);
   }
 
   if (current) {
     if (bestDocumentContext) {
-      return `${bestDocumentContext}\n\nAdditional scout context:\n${formatScoutContext(current)}`;
+      return `${bestDocumentContext}\n\nAdditional scout context:\n${formatScoutContext(current, note)}`;
     }
-    return formatScoutContext(current);
+    return formatScoutContext(current, note);
   }
 
   return bestDocumentContext;
+}
+
+function buildScoutAttemptKey(scope: ContextSearchDirective["scope"], query: string): string {
+  return `${scope}:${normalizeScoutQuery(query)}`;
+}
+
+function isReusableNegativeScoutResult(result: ScoutResult | undefined): result is ScoutResult {
+  return result?.scoutState?.status === "empty" || result?.scoutState?.status === "max_turns_exhausted";
 }
 
 async function buildInitialDocumentScoutContext(
@@ -644,8 +1180,6 @@ async function buildInitialDocumentScoutContext(
   storeContextCache(runPath, {
     scope: "documents",
     query,
-    knownLocations: locations,
-    iteration: 0,
     result,
   });
 
@@ -659,10 +1193,10 @@ function buildScoutLocations(deps: AgentLoopDeps, state: LoopState, runPath: str
   const memCtx = deps.sessionMemory.getPromptMemoryContext();
   return {
     runPath,
-    contextDir: "context",
+    contextDir: resolve(deps.dataDir, "..", "context"),
     sessionPath: memCtx.activeSessionPath ?? undefined,
-    sessionDir: "data/memory/sessions",
-    skillsDir: "data/skills",
+    sessionDir: resolve(deps.dataDir, "memory", "sessions"),
+    skillsDir: resolve(deps.dataDir, "skills"),
     documentsDir: join(deps.dataDir, "documents"),
     attachedDocuments: state.attachedDocuments ?? [],
     runId: deps.runHandle.runId,
@@ -680,6 +1214,128 @@ function syncTransientMemoryContext(state: LoopState, deps: AgentLoopDeps): void
     return !(t.role === "user" && t.content === state.userMessage);
   });
   state.recentRunLedgers = memCtx.recentRunLedgers ?? [];
+  state.activeSessionAttachments = memCtx.activeAttachments ?? [];
+  state.openFeedbacks = memCtx.openFeedbacks ?? [];
+  state.recentSystemActivity = memCtx.recentSystemActivity ?? [];
+}
+
+async function resolveOpenFeedbackIfNeeded(
+  deps: AgentLoopDeps,
+  state: LoopState,
+  runPath: string,
+): Promise<AgentLoopResult | null> {
+  if (state.inputKind !== "user_message" || state.openFeedbacks.length === 0) {
+    return null;
+  }
+
+  const feedbackResolution = await resolveOpenFeedbackReference(
+    deps.provider,
+    state,
+    deps.systemContext,
+  );
+
+  if (feedbackResolution.resolution === "none") {
+    return null;
+  }
+
+  if (feedbackResolution.resolution === "ambiguous") {
+    const clarification = feedbackResolution.clarification?.trim().length
+      ? feedbackResolution.clarification.trim()
+      : "I have a few open requests. Which one are you responding to?";
+    state.status = "completed";
+    state.finalOutput = clarification;
+    return {
+      type: "feedback",
+      content: clarification,
+      status: "completed",
+      totalIterations: 0,
+      totalToolCalls: 0,
+      runPath,
+    };
+  }
+
+  const matchedFeedback = state.openFeedbacks.find((item) => item.feedbackId === feedbackResolution.feedback_id);
+  if (!matchedFeedback) {
+    if (state.openFeedbacks.length <= 1) {
+      return null;
+    }
+
+    const clarification = "I have a few open requests. Which one are you responding to?";
+    state.status = "completed";
+    state.finalOutput = clarification;
+    return {
+      type: "feedback",
+      content: clarification,
+      status: "completed",
+      totalIterations: 0,
+      totalToolCalls: 0,
+      runPath,
+    };
+  }
+
+  state.matchedFeedback = matchedFeedback;
+  const feedbackOutcome = classifyMatchedFeedbackReply(state.userMessage);
+  deps.sessionMemory.resolveOpenFeedback?.(deps.clientId, {
+    runId: deps.runHandle.runId,
+    sessionId: deps.runHandle.sessionId,
+    feedbackId: matchedFeedback.feedbackId,
+    resolution: feedbackOutcome,
+    userResponse: state.userMessage,
+  });
+  syncTransientMemoryContext(state, deps);
+  state.openFeedbacks = state.openFeedbacks.filter((item) => item.feedbackId !== matchedFeedback.feedbackId);
+
+  if (feedbackOutcome === "rejected") {
+    const content = buildFeedbackRejectionReply(matchedFeedback.shortLabel);
+    state.status = "completed";
+    state.finalOutput = content;
+    return {
+      type: "reply",
+      content,
+      status: "completed",
+      totalIterations: 0,
+      totalToolCalls: 0,
+      runPath,
+      resolvedFeedbackId: matchedFeedback.feedbackId,
+    };
+  }
+
+  return null;
+}
+
+function classifyMatchedFeedbackReply(userMessage: string): "completed" | "rejected" {
+  const normalized = userMessage.trim().toLowerCase();
+  if (normalized.length === 0) {
+    return "completed";
+  }
+
+  const rejectionPatterns = [
+    /^(?:no|nope|nah)\b/,
+    /\bdo not\b/,
+    /\bdon'?t\b/,
+    /\bno need\b/,
+    /\bnot now\b/,
+    /\bcancel\b/,
+    /\bstop\b/,
+    /\bignore\b/,
+    /\bskip it\b/,
+    /\bdo nothing\b/,
+    /\bleave (?:it|that|this)\b/,
+    /\bhold off\b/,
+    /\bwon't need\b/,
+  ];
+
+  return rejectionPatterns.some((pattern) => pattern.test(normalized))
+    ? "rejected"
+    : "completed";
+}
+
+function buildFeedbackRejectionReply(shortLabel: string): string {
+  const compactLabel = shortLabel.trim();
+  if (!compactLabel) {
+    return "Okay, I won't do anything with that request.";
+  }
+  return `Okay, I won't do anything with "${compactLabel}".`;
 }
 
 function emptyGoalContract(): GoalContract {
@@ -705,6 +1361,13 @@ function buildTaskValidationContext(state: LoopState): TaskValidationContext {
     inputKind: state.inputKind,
     userMessage: state.userMessage,
     systemEvent: state.systemEvent,
+    originSource: state.originSource,
+    systemEventIntentKind: state.systemEventIntentKind,
+    systemEventRequestedAction: state.systemEventRequestedAction,
+    systemEventCreatedBy: state.systemEventCreatedBy,
+    handlingMode: state.handlingMode,
+    approvalRequired: state.approvalRequired,
+    approvalState: state.approvalState,
     goal: state.goal,
     taskStatus: state.taskStatus,
     approach: state.approach,
@@ -725,6 +1388,112 @@ function buildRecentStepDigests(state: LoopState): string[] {
 
 function mergeUniqueValues(existing: string[], incoming: string[]): string[] {
   return [...new Set([...existing, ...incoming])];
+}
+
+function applyPreparedAttachmentStateUpdates(
+  state: LoopState,
+  registry: AgentLoopDeps["preparedAttachmentRegistry"] | undefined,
+  runId: string,
+  updates: PreparedAttachmentStateUpdate[],
+): void {
+  if (updates.length === 0) {
+    return;
+  }
+
+  for (const update of updates) {
+    if (update.type === "restore_prepared_attachment") {
+      state.preparedAttachments = mergePreparedAttachmentSummary(state.preparedAttachments ?? [], update.summary);
+      state.attachedDocuments = mergeManagedDocumentManifest(state.attachedDocuments ?? [], update.manifest);
+      continue;
+    }
+
+    const attachment = state.preparedAttachments?.find((entry) => entry.preparedInputId === update.preparedInputId);
+    if (attachment) {
+      if (update.type === "mark_dataset_staged" && attachment.structured) {
+        attachment.structured = {
+          ...attachment.structured,
+          staged: true,
+          stagingDbPath: update.stagingDbPath ?? attachment.structured.stagingDbPath,
+          stagingTableName: update.stagingTableName ?? attachment.structured.stagingTableName,
+        };
+      }
+      if (update.type === "mark_document_indexed" && attachment.unstructured) {
+        attachment.unstructured = {
+          ...attachment.unstructured,
+          indexed: true,
+        };
+      }
+    }
+
+    registry?.updateAttachmentSummary(runId, update.preparedInputId, (summary) => {
+      if (update.type === "mark_dataset_staged" && summary.structured) {
+        return {
+          ...summary,
+          structured: {
+            ...summary.structured,
+            staged: true,
+            stagingDbPath: update.stagingDbPath ?? summary.structured.stagingDbPath,
+            stagingTableName: update.stagingTableName ?? summary.structured.stagingTableName,
+          },
+        };
+      }
+      if (update.type === "mark_document_indexed" && summary.unstructured) {
+        return {
+          ...summary,
+          unstructured: {
+            ...summary.unstructured,
+            indexed: true,
+          },
+        };
+      }
+      return summary;
+    });
+  }
+}
+
+function mergePreparedAttachmentSummary(existing: LoopState["preparedAttachments"], summary: PreparedAttachmentSummary): PreparedAttachmentSummary[] {
+  const list = [...(existing ?? [])];
+  const index = list.findIndex((entry) => entry.documentId === summary.documentId || entry.preparedInputId === summary.preparedInputId);
+  if (index >= 0) {
+    list[index] = summary;
+    return list;
+  }
+  list.push(summary);
+  return list;
+}
+
+function mergeManagedDocumentManifest(existing: LoopState["attachedDocuments"], manifest: ManagedDocumentManifest): ManagedDocumentManifest[] {
+  const list = [...(existing ?? [])];
+  const index = list.findIndex((entry) => entry.documentId === manifest.documentId);
+  if (index >= 0) {
+    list[index] = manifest;
+    return list;
+  }
+  list.push(manifest);
+  return list;
+}
+
+function recordActiveSessionAttachments(
+  deps: AgentLoopDeps,
+  runId: string,
+  runPath: string,
+  action: "prepared" | "restored" | "used",
+): void {
+  const records = deps.preparedAttachmentRegistry?.getRunAttachments(runId) ?? [];
+  if (records.length === 0) {
+    return;
+  }
+  deps.sessionMemory.recordActiveAttachments?.(deps.clientId, {
+    runId,
+    sessionId: deps.runHandle.sessionId,
+    runPath,
+    action,
+    attachments: records.map((record) => ({
+      manifest: record.manifest,
+      summary: record.summary,
+      detail: record.detail.payload,
+    })),
+  });
 }
 
 function normalizeApproach(value: string): string {
@@ -950,4 +1719,81 @@ function getPrimaryUserMessage(deps: AgentLoopDeps): string {
   const turns = context.conversationTurns ?? [];
   const lastUser = [...turns].reverse().find((t) => t.role === "user");
   return lastUser?.content ?? "";
+}
+
+function buildLoopResult(
+  state: LoopState,
+  input: {
+    dataDir: string;
+    status: AgentLoopResult["status"];
+    totalIterations: number;
+    totalToolCalls: number;
+    completion?: CompletionDirective;
+    content?: string;
+  },
+): AgentLoopResult {
+  const content = input.content ?? input.completion?.summary ?? state.finalOutput;
+  const type = shouldForceApprovalFeedback(state)
+    ? "feedback"
+    : input.completion?.response_kind ?? state.preferredResponseKind ?? "reply";
+  const result: AgentLoopResult = {
+    type,
+    content,
+    status: input.status,
+    totalIterations: input.totalIterations,
+    totalToolCalls: input.totalToolCalls,
+    runPath: state.runPath,
+  };
+
+  const artifacts = collectAgentArtifacts(state.runId, state.runPath, input.dataDir, state.completedSteps);
+  if (artifacts.length > 0) {
+    result.artifacts = artifacts;
+  }
+
+  if (type === "feedback") {
+    result.openFeedback = buildOpenFeedbackResult(state, input.completion, content);
+  }
+
+  if (state.matchedFeedback) {
+    result.resolvedFeedbackId = state.matchedFeedback.feedbackId;
+  }
+
+  return result;
+}
+
+function shouldForceApprovalFeedback(state: LoopState): boolean {
+  return state.inputKind === "system_event"
+    && state.approvalRequired === true
+    && state.approvalState === "pending";
+}
+
+function buildOpenFeedbackResult(
+  state: LoopState,
+  completion: CompletionDirective | undefined,
+  content: string,
+): NonNullable<AgentLoopResult["openFeedback"]> {
+  const fallbackLabel = truncateFeedbackLabel(
+    completion?.feedback_label
+      ?? state.matchedFeedback?.shortLabel
+      ?? content
+      ?? state.userMessage,
+  );
+  return {
+    kind: completion?.feedback_kind ?? state.matchedFeedback?.kind ?? "clarification",
+    shortLabel: fallbackLabel.length > 0 ? fallbackLabel : "follow_up",
+    actionType: completion?.action_type ?? state.matchedFeedback?.actionType ?? state.systemEventRequestedAction,
+    sourceEventId: state.systemEvent?.eventId ?? state.matchedFeedback?.sourceEventId,
+    entityHints: completion?.entity_hints ?? state.matchedFeedback?.entityHints ?? [],
+    payloadSummary: state.matchedFeedback?.payloadSummary
+      ?? (state.systemEvent ? truncateFeedbackLabel(state.userMessage, 200) : undefined),
+    ttlHours: state.feedbackTtlHours,
+  };
+}
+
+function truncateFeedbackLabel(value: string, maxLength = 80): string {
+  const compact = value.replace(/\s+/g, " ").trim();
+  if (compact.length <= maxLength) {
+    return compact;
+  }
+  return `${compact.slice(0, maxLength)}...`;
 }

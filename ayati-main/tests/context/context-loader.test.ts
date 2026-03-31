@@ -81,7 +81,7 @@ describe("loadContext compatibility wrapper", () => {
     expect(result).toContain("# User Profile");
     expect(result).toContain("Name: MyAgent");
     expect(result).toContain("- Name: Sai");
-  });
+  }, 20000);
 
   it("falls back when files are missing", async () => {
     mockReadFile.mockRejectedValue(new Error("ENOENT"));

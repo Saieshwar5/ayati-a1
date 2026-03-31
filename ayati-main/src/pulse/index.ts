@@ -9,6 +9,7 @@ export { resolveTimeZone } from "./time.js";
 export type {
   PulseReminder,
   PulseReminderStatus,
+  PulseScheduledItemIntentKind,
   PulseReminderSchedule,
   PulseReminderDueEvent,
   PulseNowSnapshot,

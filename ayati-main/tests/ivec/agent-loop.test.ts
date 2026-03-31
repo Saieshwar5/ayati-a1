@@ -3,12 +3,19 @@ import { mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync } from "no
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { agentLoop } from "../../src/ivec/agent-loop.js";
+import * as XLSX from "xlsx";
 import type { LlmProvider } from "../../src/core/contracts/provider.js";
 import type { LlmTurnInput, LlmTurnOutput } from "../../src/core/contracts/llm-protocol.js";
 import type { SessionMemory, MemoryRunHandle } from "../../src/memory/types.js";
+import { MemoryManager } from "../../src/memory/session-manager.js";
 import { DocumentStore } from "../../src/documents/document-store.js";
-import { DocumentContextBackend } from "../../src/documents/document-context-backend.js";
-import type { ManagedDocumentManifest } from "../../src/documents/types.js";
+import { PreparedAttachmentRegistry } from "../../src/documents/prepared-attachment-registry.js";
+import { PreparedAttachmentService } from "../../src/documents/prepared-attachment-service.js";
+import { SessionAttachmentService } from "../../src/documents/session-attachment-service.js";
+import { createAttachmentSkill } from "../../src/skills/builtins/attachments/index.js";
+import { createDatasetSkill } from "../../src/skills/builtins/datasets/index.js";
+import { createDocumentSkill } from "../../src/skills/builtins/documents/index.js";
+import { createToolExecutor } from "../../src/skills/tool-executor.js";
 
 function goalContract(objective: string): Record<string, unknown> {
   return {
@@ -50,25 +57,25 @@ function createMockSessionMemory(): SessionMemory {
     recordRunLedger: vi.fn(),
     recordTaskSummary: vi.fn(),
     recordAssistantFeedback: vi.fn(),
+    resolveOpenFeedback: vi.fn(),
+    recordAssistantNotification: vi.fn(),
     getPromptMemoryContext: vi.fn().mockReturnValue({
       conversationTurns: [{ role: "user", content: "hello", timestamp: "", sessionPath: "" }],
       previousSessionSummary: "",
       recentRunLedgers: [],
+      openFeedbacks: [],
+      recentSystemActivity: [],
     }),
     setStaticTokenBudget: vi.fn(),
   };
 }
 
-function createAttachedDocument(path: string, name = "resume.pdf"): ManagedDocumentManifest {
-  return {
-    documentId: "doc-1",
-    name,
-    originalPath: path,
-    storedPath: path,
-    kind: "pdf",
-    sizeBytes: 1024,
-    checksum: "checksum-1",
-  };
+function writeWorkbook(filePath: string, sheets: Array<{ name: string; rows: unknown[][] }>): void {
+  const workbook = XLSX.utils.book_new();
+  for (const sheet of sheets) {
+    XLSX.utils.book_append_sheet(workbook, XLSX.utils.aoa_to_sheet(sheet.rows), sheet.name);
+  }
+  XLSX.writeFile(workbook, filePath);
 }
 
 describe("agentLoop", () => {
@@ -124,6 +131,233 @@ describe("agentLoop", () => {
         runId: "r1",
         state: "started",
       }));
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("resolves a matched open feedback before normal reasoning continues", async () => {
+    const dataDir = makeTmpDir();
+    try {
+      const sessionMemory = createMockSessionMemory();
+      (sessionMemory.getPromptMemoryContext as ReturnType<typeof vi.fn>).mockReturnValue({
+        conversationTurns: [{ role: "user", content: "yes, send it", timestamp: "", sessionPath: "" }],
+        previousSessionSummary: "",
+        recentRunLedgers: [],
+        openFeedbacks: [
+          {
+            feedbackId: "fb-1",
+            status: "open",
+            kind: "approval",
+            shortLabel: "send Arun email",
+            message: "Should I send the draft reply to Arun?",
+            actionType: "send_email",
+            sourceRunId: "r0",
+            sourceEventId: "evt-1",
+            entityHints: ["Arun", "email"],
+          payloadSummary: "Draft ready",
+          createdAt: "2026-02-16T00:00:00.000Z",
+          expiresAt: "2026-02-17T00:00:00.000Z",
+        },
+      ],
+        recentSystemActivity: [],
+      });
+
+      let callCount = 0;
+      const provider: LlmProvider = {
+        name: "mock",
+        version: "1.0.0",
+        capabilities: { nativeToolCalling: true },
+        start: vi.fn(),
+        stop: vi.fn(),
+        generateTurn: vi.fn().mockImplementation(async () => {
+          callCount++;
+          if (callCount === 1) {
+            return {
+              type: "assistant",
+              content: JSON.stringify({
+                resolution: "matched",
+                feedback_id: "fb-1",
+                clarification: "",
+                reason: "single approval request matches",
+              }),
+            };
+          }
+          return {
+            type: "assistant",
+            content: JSON.stringify({
+              done: true,
+              summary: "Sending the draft now.",
+              status: "completed",
+            }),
+          };
+        }),
+      };
+
+      const result = await agentLoop({
+        provider,
+        toolDefinitions: [],
+        sessionMemory,
+        runHandle: { sessionId: "s1", runId: "r1" },
+        clientId: "c1",
+        inputKind: "user_message",
+        initialUserMessage: "yes, send it",
+        dataDir,
+      });
+
+      expect(result.type).toBe("reply");
+      expect(result.content).toBe("Sending the draft now.");
+      expect(result.resolvedFeedbackId).toBe("fb-1");
+      expect(sessionMemory.resolveOpenFeedback as ReturnType<typeof vi.fn>).toHaveBeenCalledWith("c1", {
+        runId: "r1",
+        sessionId: "s1",
+        feedbackId: "fb-1",
+        resolution: "completed",
+        userResponse: "yes, send it",
+      });
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("stops immediately when a matched feedback reply is an explicit rejection", async () => {
+    const dataDir = makeTmpDir();
+    try {
+      const sessionMemory = createMockSessionMemory();
+      (sessionMemory.getPromptMemoryContext as ReturnType<typeof vi.fn>).mockReturnValue({
+        conversationTurns: [{ role: "user", content: "do not do anything", timestamp: "", sessionPath: "" }],
+        previousSessionSummary: "",
+        recentRunLedgers: [],
+        openFeedbacks: [
+          {
+            feedbackId: "fb-1",
+            status: "open",
+            kind: "approval",
+            shortLabel: "send Arun email",
+            message: "Should I send the draft reply to Arun?",
+            actionType: "send_email",
+            sourceRunId: "r0",
+            sourceEventId: "evt-1",
+            entityHints: ["Arun", "email"],
+            payloadSummary: "Draft ready",
+            createdAt: "2026-02-16T00:00:00.000Z",
+            expiresAt: "2026-02-17T00:00:00.000Z",
+          },
+        ],
+        recentSystemActivity: [],
+      });
+
+      const provider: LlmProvider = {
+        name: "mock",
+        version: "1.0.0",
+        capabilities: { nativeToolCalling: true },
+        start: vi.fn(),
+        stop: vi.fn(),
+        generateTurn: vi.fn().mockResolvedValue({
+          type: "assistant",
+          content: JSON.stringify({
+            resolution: "matched",
+            feedback_id: "fb-1",
+            clarification: "",
+            reason: "single approval request matches",
+          }),
+        }),
+      };
+
+      const result = await agentLoop({
+        provider,
+        toolDefinitions: [],
+        sessionMemory,
+        runHandle: { sessionId: "s1", runId: "r1" },
+        clientId: "c1",
+        inputKind: "user_message",
+        initialUserMessage: "do not do anything",
+        dataDir,
+      });
+
+      expect(result.type).toBe("reply");
+      expect(result.content).toContain("won't do anything");
+      expect(result.resolvedFeedbackId).toBe("fb-1");
+      expect(provider.generateTurn).toHaveBeenCalledTimes(1);
+      expect(sessionMemory.resolveOpenFeedback as ReturnType<typeof vi.fn>).toHaveBeenCalledWith("c1", {
+        runId: "r1",
+        sessionId: "s1",
+        feedbackId: "fb-1",
+        resolution: "rejected",
+        userResponse: "do not do anything",
+      });
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("asks for clarification when a user reply is ambiguous across open feedbacks", async () => {
+    const dataDir = makeTmpDir();
+    try {
+      const sessionMemory = createMockSessionMemory();
+      (sessionMemory.getPromptMemoryContext as ReturnType<typeof vi.fn>).mockReturnValue({
+        conversationTurns: [{ role: "user", content: "go ahead", timestamp: "", sessionPath: "" }],
+        previousSessionSummary: "",
+        recentRunLedgers: [],
+        openFeedbacks: [
+          {
+            feedbackId: "fb-1",
+            status: "open",
+            kind: "approval",
+            shortLabel: "send Arun email",
+            message: "Should I send Arun the reply?",
+            sourceRunId: "r0",
+            entityHints: ["Arun"],
+            createdAt: "2026-02-16T00:00:00.000Z",
+            expiresAt: "2026-02-17T00:00:00.000Z",
+          },
+          {
+            feedbackId: "fb-2",
+            status: "open",
+            kind: "approval",
+            shortLabel: "restart staging",
+            message: "Should I restart the staging service?",
+            sourceRunId: "r0",
+            entityHints: ["staging"],
+            createdAt: "2026-02-16T00:00:10.000Z",
+            expiresAt: "2026-02-17T00:00:10.000Z",
+          },
+        ],
+        recentSystemActivity: [],
+      });
+
+      const provider: LlmProvider = {
+        name: "mock",
+        version: "1.0.0",
+        capabilities: { nativeToolCalling: true },
+        start: vi.fn(),
+        stop: vi.fn(),
+        generateTurn: vi.fn().mockResolvedValue({
+          type: "assistant",
+          content: JSON.stringify({
+            resolution: "ambiguous",
+            feedback_id: "",
+            clarification: "Which open request do you mean: Arun email or staging restart?",
+            reason: "multiple approvals could match",
+          }),
+        }),
+      };
+
+      const result = await agentLoop({
+        provider,
+        toolDefinitions: [],
+        sessionMemory,
+        runHandle: { sessionId: "s1", runId: "r1" },
+        clientId: "c1",
+        inputKind: "user_message",
+        initialUserMessage: "go ahead",
+        dataDir,
+      });
+
+      expect(result.type).toBe("feedback");
+      expect(result.content).toContain("Which open request");
+      expect(provider.generateTurn).toHaveBeenCalledTimes(1);
+      expect(sessionMemory.resolveOpenFeedback as ReturnType<typeof vi.fn>).not.toHaveBeenCalled();
     } finally {
       cleanup();
     }
@@ -868,6 +1102,38 @@ describe("agentLoop", () => {
           if (callCount === 11) {
             const messages = (input as { messages: Array<{ role: string; content: string }> }).messages;
             const prompt = messages.find((message) => message.role === "user")?.content ?? "";
+            if (!prompt.includes("selecting useful cached context-search entries")) {
+              throw new Error("Expected cache metadata selection prompt before reusing cached context");
+            }
+            return {
+              type: "assistant",
+              content: JSON.stringify({
+                ids: ["cc_001"],
+                reason: "The cached run-artifacts query is clearly about step 1 and should be reused.",
+              }),
+            };
+          }
+          if (callCount === 12) {
+            const messages = (input as { messages: Array<{ role: string; content: string }> }).messages;
+            const prompt = messages.find((message) => message.role === "user")?.content ?? "";
+            if (!prompt.includes("deciding whether cached context-search entries are sufficient")) {
+              throw new Error("Expected cache sufficiency prompt before reusing cached context");
+            }
+            if (!prompt.includes("Step 1 created the draft answer and verified it successfully.")) {
+              throw new Error("Expected cached context to be evaluated for sufficiency");
+            }
+            return {
+              type: "assistant",
+              content: JSON.stringify({
+                sufficient: true,
+                ids: ["cc_001"],
+                reason: "The cached step 1 summary is enough for the repeated run-artifacts request.",
+              }),
+            };
+          }
+          if (callCount === 13) {
+            const messages = (input as { messages: Array<{ role: string; content: string }> }).messages;
+            const prompt = messages.find((message) => message.role === "user")?.content ?? "";
             if (!prompt.includes("Retrieved context from prior context_search:")) {
               throw new Error("Expected cached scout context in the repeated direct prompt");
             }
@@ -899,22 +1165,151 @@ describe("agentLoop", () => {
 
       expect(result.status).toBe("completed");
       expect(result.content).toBe("Completed with cached context reuse");
-      expect(provider.generateTurn).toHaveBeenCalledTimes(11);
+      expect(provider.generateTurn).toHaveBeenCalledTimes(13);
 
       const cachePath = join(result.runPath, "context-cache.json");
       expect(existsSync(cachePath)).toBe(true);
       const cache = JSON.parse(readFileSync(cachePath, "utf-8")) as {
-        entries: Array<{ scope: string; targets: string[] }>;
+        version: number;
+        entries: Array<{ id: string; scope: string; query: string }>;
       };
+      expect(cache.version).toBe(3);
       expect(cache.entries).toHaveLength(1);
+      expect(cache.entries[0]?.id).toBeTruthy();
       expect(cache.entries[0]?.scope).toBe("run_artifacts");
-      expect(cache.entries[0]?.targets).toContain("run_artifacts:step:1");
+      expect(cache.entries[0]?.query).toBe("What happened in step 1?");
     } finally {
       cleanup();
     }
   });
 
-  it("preloads attached document context before the first direct decision", async () => {
+  it("falls back to scout when cached context is selected but not sufficient", async () => {
+    const dataDir = makeTmpDir();
+    try {
+      let callCount = 0;
+      const provider: LlmProvider = {
+        name: "mock",
+        version: "1.0.0",
+        capabilities: { nativeToolCalling: true },
+        start: vi.fn(),
+        stop: vi.fn(),
+        generateTurn: vi.fn().mockImplementation(async (input: LlmTurnInput) => {
+          callCount++;
+          if (callCount === 1) {
+            return {
+              type: "assistant",
+              content: JSON.stringify({
+                done: false,
+                understand: true,
+                goal: goalContract("reuse cache but fetch more exact evidence when needed"),
+                approach: "use run artifacts when needed",
+              }),
+            };
+          }
+          if (callCount === 2) {
+            return {
+              type: "assistant",
+              content: JSON.stringify({
+                done: false,
+                context_search: true,
+                query: "What happened in step 1?",
+                scope: "run_artifacts",
+              }),
+            };
+          }
+          if (callCount === 3) {
+            return {
+              type: "assistant",
+              content: JSON.stringify({
+                context: "Step 1 created the draft answer.",
+                sources: ["steps/001-act.md"],
+                confidence: 0.82,
+              }),
+            };
+          }
+          if (callCount === 4) {
+            return {
+              type: "assistant",
+              content: JSON.stringify({
+                done: false,
+                context_search: true,
+                query: "What exact verify error happened in step 1?",
+                scope: "run_artifacts",
+              }),
+            };
+          }
+          if (callCount === 5) {
+            return {
+              type: "assistant",
+              content: JSON.stringify({
+                ids: ["cc_001"],
+                reason: "The cached step 1 summary is related to the new run-artifacts query.",
+              }),
+            };
+          }
+          if (callCount === 6) {
+            const messages = (input as { messages: Array<{ role: string; content: string }> }).messages;
+            const prompt = messages.find((message) => message.role === "user")?.content ?? "";
+            if (!prompt.includes("Step 1 created the draft answer.")) {
+              throw new Error("Expected cached step 1 context in the sufficiency prompt");
+            }
+            return {
+              type: "assistant",
+              content: JSON.stringify({
+                sufficient: false,
+                ids: ["cc_001"],
+                reason: "The cached summary does not contain the exact verify error requested.",
+              }),
+            };
+          }
+          if (callCount === 7) {
+            return {
+              type: "assistant",
+              content: JSON.stringify({
+                context: "Step 1 verify failed with the message: permission denied while reading config.",
+                sources: ["steps/001-verify.md"],
+                confidence: 0.91,
+              }),
+            };
+          }
+          if (callCount === 8) {
+            const messages = (input as { messages: Array<{ role: string; content: string }> }).messages;
+            const prompt = messages.find((message) => message.role === "user")?.content ?? "";
+            if (!prompt.includes("permission denied while reading config")) {
+              throw new Error("Expected scout fallback context in the direct prompt");
+            }
+            return {
+              type: "assistant",
+              content: JSON.stringify({
+                done: true,
+                summary: "The exact step 1 verify error was permission denied while reading config.",
+                status: "completed",
+              }),
+            };
+          }
+
+          throw new Error(`Unexpected provider call ${callCount}`);
+        }),
+      };
+
+      const result = await agentLoop({
+        provider,
+        toolDefinitions: [],
+        sessionMemory: createMockSessionMemory(),
+        runHandle: { sessionId: "s1", runId: "r1" },
+        clientId: "c1",
+        dataDir,
+      });
+
+      expect(result.status).toBe("completed");
+      expect(result.content).toContain("permission denied");
+      expect(provider.generateTurn).toHaveBeenCalledTimes(8);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("prepares attached documents before understand and shows prepared metadata in the direct prompt", async () => {
     const dataDir = makeTmpDir();
     const attachmentPath = join(dataDir, "policy.txt");
     try {
@@ -929,9 +1324,7 @@ describe("agentLoop", () => {
         preferCli: false,
       });
       const registered = await documentStore.registerAttachments([{ path: attachmentPath, name: "policy.txt" }]);
-      const prepared = await documentStore.prepareDocuments(registered.documents);
-      const chunkId = prepared[0]?.chunks[0]?.sourceId;
-      expect(chunkId).toBeTruthy();
+      const preparedAttachmentRegistry = new PreparedAttachmentRegistry();
 
       let callCount = 0;
       const provider: LlmProvider = {
@@ -949,33 +1342,17 @@ describe("agentLoop", () => {
                 done: false,
                 understand: true,
                 goal: goalContract("answer from the attachment"),
-                approach: "use shell to search",
-              }),
-            };
-          }
-          if (callCount === 2) {
-            return {
-              type: "assistant",
-              content: JSON.stringify({
-                items: [
-                  {
-                    sourceId: chunkId,
-                    fact: "Termination requires 30 days written notice before cancellation.",
-                    quote: "Termination requires 30 days written notice before cancellation.",
-                    relevance: 0.95,
-                    confidence: 0.88,
-                  },
-                ],
-                dropped_noise_count: 0,
-                insufficient_evidence: false,
+                approach: "use the prepared attachment",
+                work_mode: "document_lookup",
               }),
             };
           }
           const messages = (input as { messages: Array<{ role: string; content: string }> }).messages;
           const prompt = messages.find((message) => message.role === "user")?.content ?? "";
-          if (!prompt.includes("Termination requires 30 days written notice before cancellation.")) {
-            throw new Error("Expected direct prompt to receive document scout context");
-          }
+          expect(prompt).toContain("Prepared attachments available (1):");
+          expect(prompt).toContain("policy.txt | kind=txt | mode=unstructured_text | status=ready");
+          expect(prompt).toContain("Work mode: document_lookup");
+          expect(prompt).not.toContain("Document retrieval status:");
           return {
             type: "assistant",
             content: JSON.stringify({
@@ -996,12 +1373,21 @@ describe("agentLoop", () => {
         dataDir,
         userMessageOverride: "What is the termination clause?",
         attachedDocuments: registered.documents,
-        documentContextBackend: new DocumentContextBackend({ store: documentStore }),
+        documentStore,
+        preparedAttachmentRegistry,
       });
 
       expect(result.status).toBe("completed");
       expect(result.content).toContain("30 days written notice");
-      expect(provider.generateTurn).toHaveBeenCalledTimes(3);
+      expect(provider.generateTurn).toHaveBeenCalledTimes(2);
+
+      const persisted = JSON.parse(readFileSync(join(result.runPath, "state.json"), "utf-8")) as {
+        preparedAttachments?: Array<{ mode?: string; displayName?: string }>;
+        workMode?: string;
+      };
+      expect(persisted.preparedAttachments?.[0]?.displayName).toBe("policy.txt");
+      expect(persisted.preparedAttachments?.[0]?.mode).toBe("unstructured_text");
+      expect(persisted.workMode).toBe("document_lookup");
     } finally {
       cleanup();
     }
@@ -1109,24 +1495,17 @@ describe("agentLoop", () => {
     }
   });
 
-  it("reuses sufficient attached-document evidence instead of rerunning document context search", async () => {
+  it("stores structured attachment metadata before the first controller decision", async () => {
     const dataDir = makeTmpDir();
-    const attachmentPath = join(dataDir, "resume.pdf");
+    const attachmentPath = join(dataDir, "sales.csv");
     try {
-      writeFileSync(attachmentPath, "placeholder", "utf-8");
-      const attachedDocuments = [createAttachedDocument(attachmentPath)];
-        const documentContextBackend = {
-          search: vi.fn().mockResolvedValue({
-            context: "1. Sai Eshwar worked as a software engineer building Node.js services.",
-            sources: [attachmentPath],
-            confidence: 0.91,
-            documentState: {
-            status: "sufficient",
-            insufficientEvidence: false,
-            warnings: [],
-          },
-        }),
-      } as unknown as DocumentContextBackend;
+      writeFileSync(attachmentPath, "month,amount\nJan,120\nFeb,180\n", "utf-8");
+      const documentStore = new DocumentStore({
+        dataDir: join(dataDir, "documents"),
+        preferCli: false,
+      });
+      const registered = await documentStore.registerAttachments([{ path: attachmentPath, name: "sales.csv" }]);
+      const preparedAttachmentRegistry = new PreparedAttachmentRegistry();
 
       let callCount = 0;
       const provider: LlmProvider = {
@@ -1143,34 +1522,23 @@ describe("agentLoop", () => {
               content: JSON.stringify({
                 done: false,
                 understand: true,
-                goal: goalContract("answer from the attachment"),
-                approach: "search the document",
-              }),
-            };
-          }
-
-          if (callCount === 2) {
-            return {
-              type: "assistant",
-              content: JSON.stringify({
-                done: false,
-                context_search: true,
-                query: "Extract the full work experience section from resume.pdf",
-                scope: "documents",
-                document_paths: [attachmentPath],
+                goal: goalContract("analyze the attached sales csv"),
+                approach: "use dataset tools",
+                work_mode: "structured_data_process",
               }),
             };
           }
 
           const messages = (input as { messages: Array<{ role: string; content: string }> }).messages;
           const prompt = messages.find((message) => message.role === "user")?.content ?? "";
-          expect(prompt).toContain("Document retrieval status: sufficient");
-          expect(prompt).toContain("Do not request another document context search");
+          expect(prompt).toContain("Prepared attachments available (1):");
+          expect(prompt).toContain("sales.csv | kind=csv | mode=structured_data | status=ready | rows=2 | columns=month, amount");
+          expect(prompt).toContain("Work mode: structured_data_process");
           return {
             type: "assistant",
             content: JSON.stringify({
               done: true,
-              summary: "Sai Eshwar worked as a software engineer building Node.js services.",
+              summary: "The CSV has 2 rows with columns month and amount.",
               status: "completed",
             }),
           };
@@ -1184,49 +1552,336 @@ describe("agentLoop", () => {
         runHandle: { sessionId: "s1", runId: "r1" },
         clientId: "c1",
         dataDir,
-        userMessageOverride: "what is the sai eshwar working experience",
-        attachedDocuments,
-        documentContextBackend,
+        userMessageOverride: "analyze the attached sales csv",
+        attachedDocuments: registered.documents,
+        documentStore,
+        preparedAttachmentRegistry,
       });
 
       expect(result.status).toBe("completed");
-      expect(result.content).toContain("software engineer");
-      expect(documentContextBackend.search).toHaveBeenCalledTimes(1);
-      expect(provider.generateTurn).toHaveBeenCalledTimes(3);
+      expect(result.content).toContain("2 rows");
+      expect(provider.generateTurn).toHaveBeenCalledTimes(2);
     } finally {
       cleanup();
     }
   });
 
-  it("allows one narrower document retry when the initial attachment evidence is partial", async () => {
+  it("stores xlsx attachment metadata before the first controller decision", async () => {
     const dataDir = makeTmpDir();
-    const attachmentPath = join(dataDir, "resume.pdf");
+    const attachmentPath = join(dataDir, "sales.xlsx");
     try {
-      writeFileSync(attachmentPath, "placeholder", "utf-8");
-      const attachedDocuments = [createAttachedDocument(attachmentPath)];
+      writeWorkbook(attachmentPath, [
+        {
+          name: "Orders",
+          rows: [["month", "amount"], ["Jan", 120], ["Feb", 180]],
+        },
+        {
+          name: "Archive",
+          rows: [["month", "amount"], ["Mar", 90]],
+        },
+      ]);
+      const documentStore = new DocumentStore({
+        dataDir: join(dataDir, "documents"),
+        preferCli: false,
+      });
+      const registered = await documentStore.registerAttachments([{ path: attachmentPath, name: "sales.xlsx" }]);
+      const preparedAttachmentRegistry = new PreparedAttachmentRegistry();
+
+      let callCount = 0;
+      const provider: LlmProvider = {
+        name: "mock",
+        version: "1.0.0",
+        capabilities: { nativeToolCalling: true },
+        start: vi.fn(),
+        stop: vi.fn(),
+        generateTurn: vi.fn().mockImplementation(async (input: LlmTurnInput) => {
+          callCount++;
+          if (callCount === 1) {
+            return {
+              type: "assistant",
+              content: JSON.stringify({
+                done: false,
+                understand: true,
+                goal: goalContract("analyze the attached sales workbook"),
+                approach: "use dataset tools",
+                work_mode: "structured_data_process",
+              }),
+            };
+          }
+
+          const messages = (input as { messages: Array<{ role: string; content: string }> }).messages;
+          const prompt = messages.find((message) => message.role === "user")?.content ?? "";
+          expect(prompt).toContain("Prepared attachments available (1):");
+          expect(prompt).toContain("sales.xlsx | kind=xlsx | mode=structured_data | status=ready | sheet=Orders | rows=2 | columns=month, amount");
+          expect(prompt).toContain("Workbook has 2 sheets; using first sheet: Orders");
+          expect(prompt).toContain("Work mode: structured_data_process");
+          return {
+            type: "assistant",
+            content: JSON.stringify({
+              done: true,
+              summary: "The workbook has 2 rows on the Orders sheet with columns month and amount.",
+              status: "completed",
+            }),
+          };
+        }),
+      };
+
+      const result = await agentLoop({
+        provider,
+        toolDefinitions: [],
+        sessionMemory: createMockSessionMemory(),
+        runHandle: { sessionId: "s1", runId: "r1" },
+        clientId: "c1",
+        dataDir,
+        userMessageOverride: "analyze the attached sales workbook",
+        attachedDocuments: registered.documents,
+        documentStore,
+        preparedAttachmentRegistry,
+      });
+
+      expect(result.status).toBe("completed");
+      expect(result.content).toContain("Orders sheet");
+      expect(provider.generateTurn).toHaveBeenCalledTimes(2);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("writes prepared attachment artifacts for structured and unstructured inputs", async () => {
+    const dataDir = makeTmpDir();
+    const csvPath = join(dataDir, "sales.csv");
+    const textPath = join(dataDir, "profile.txt");
+    try {
+      writeFileSync(csvPath, "month,amount\nJan,120\n", "utf-8");
+      writeFileSync(textPath, "Profile\n\nBackend engineer with Node.js experience.", "utf-8");
+      const documentStore = new DocumentStore({
+        dataDir: join(dataDir, "documents"),
+        preferCli: false,
+      });
+      const registered = await documentStore.registerAttachments([
+        { path: csvPath, name: "sales.csv" },
+        { path: textPath, name: "profile.txt" },
+      ]);
+      const preparedAttachmentRegistry = new PreparedAttachmentRegistry();
+
+      let callCount = 0;
+      const provider: LlmProvider = {
+        name: "mock",
+        version: "1.0.0",
+        capabilities: { nativeToolCalling: true },
+        start: vi.fn(),
+        stop: vi.fn(),
+        generateTurn: vi.fn().mockImplementation(async (input: LlmTurnInput) => {
+          callCount++;
+          if (callCount === 1) {
+            return {
+              type: "assistant",
+              content: JSON.stringify({
+                done: false,
+                understand: true,
+                goal: goalContract("inspect prepared attachments"),
+                approach: "review the prepared metadata",
+              }),
+            };
+          }
+          return {
+            type: "assistant",
+            content: JSON.stringify({
+              done: true,
+              summary: "Prepared attachment metadata is ready.",
+              status: "completed",
+            }),
+          };
+        }),
+      };
+
+      const result = await agentLoop({
+        provider,
+        toolDefinitions: [],
+        sessionMemory: createMockSessionMemory(),
+        runHandle: { sessionId: "s1", runId: "r1" },
+        clientId: "c1",
+        dataDir,
+        userMessageOverride: "inspect the prepared attachments",
+        attachedDocuments: registered.documents,
+        documentStore,
+        preparedAttachmentRegistry,
+      });
+
+      expect(result.status).toBe("completed");
+      const attachmentsIndex = JSON.parse(readFileSync(join(result.runPath, "attachments", "index.json"), "utf-8")) as {
+        attachments?: Array<{ displayName?: string; mode?: string }>;
+      };
+      expect(attachmentsIndex.attachments).toHaveLength(2);
+      expect(attachmentsIndex.attachments?.map((entry) => entry.displayName)).toEqual(["sales.csv", "profile.txt"]);
+      expect(attachmentsIndex.attachments?.map((entry) => entry.mode)).toEqual(["structured_data", "unstructured_text"]);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("updates prepared attachment state after dataset_query stages a dataset", async () => {
+    const dataDir = makeTmpDir();
+    const csvPath = join(dataDir, "employees.csv");
+    try {
+      writeFileSync(csvPath, "name,state\nLila,Maharashtra\nAsha,Kerala\n", "utf-8");
+      const documentStore = new DocumentStore({
+        dataDir: join(dataDir, "documents"),
+        preferCli: false,
+      });
+      const registered = await documentStore.registerAttachments([{ path: csvPath, name: "employees.csv" }]);
+      const preparedAttachmentRegistry = new PreparedAttachmentRegistry();
+      const serviceProvider: LlmProvider = {
+        name: "service-mock",
+        version: "1.0.0",
+        capabilities: { nativeToolCalling: true },
+        start: vi.fn(),
+        stop: vi.fn(),
+        generateTurn: vi.fn(),
+      };
+      const preparedAttachmentService = new PreparedAttachmentService({
+        registry: preparedAttachmentRegistry,
+        documentStore,
+        provider: serviceProvider,
+      });
+      const datasetSkill = createDatasetSkill({ preparedAttachmentService });
+      const toolExecutor = createToolExecutor(datasetSkill.tools);
+      const preparedInputId = `att_1_${registered.documents[0]!.documentId.slice(0, 8)}`;
+
+      let callCount = 0;
+      const provider: LlmProvider = {
+        name: "mock",
+        version: "1.0.0",
+        capabilities: { nativeToolCalling: true },
+        start: vi.fn(),
+        stop: vi.fn(),
+        generateTurn: vi.fn().mockImplementation(async () => {
+          callCount++;
+          if (callCount === 1) {
+            return {
+              type: "assistant",
+              content: JSON.stringify({
+                done: false,
+                understand: true,
+                goal: goalContract("count employees from Maharashtra"),
+                approach: "use dataset_query",
+                work_mode: "structured_data_process",
+              }),
+            };
+          }
+          if (callCount === 2) {
+            return {
+              type: "assistant",
+              content: JSON.stringify({
+                done: false,
+                execution_mode: "dependent",
+                intent: "count Maharashtra employees",
+                tools_hint: ["dataset_query"],
+                success_criteria: "dataset query returns the employee count",
+                context: "Use the prepared employees.csv attachment.",
+              }),
+            };
+          }
+          if (callCount === 3) {
+            return {
+              type: "tool_calls",
+              calls: [{
+                id: "tc1",
+                name: "dataset_query",
+                input: {
+                  preparedInputId: "employees.csv",
+                  sql: `SELECT COUNT(*) AS employee_count FROM staging_${preparedInputId} WHERE state = 'Maharashtra'`,
+                },
+              }],
+            };
+          }
+          if (callCount === 4) {
+            return { type: "assistant", content: "Found 1 employee from Maharashtra." };
+          }
+          if (callCount === 5) {
+            return { type: "assistant", content: taskVerifyResponse("done", "dataset query returned the requested count") };
+          }
+          return {
+            type: "assistant",
+            content: JSON.stringify({
+              done: true,
+              summary: "There is 1 employee from Maharashtra.",
+              status: "completed",
+            }),
+          };
+        }),
+      };
+
+      const result = await agentLoop({
+        provider,
+        toolExecutor,
+        toolDefinitions: toolExecutor.definitions(),
+        sessionMemory: createMockSessionMemory(),
+        runHandle: { sessionId: "s1", runId: "r1" },
+        clientId: "c1",
+        dataDir,
+        userMessageOverride: "how many employees are from Maharashtra",
+        attachedDocuments: registered.documents,
+        documentStore,
+        preparedAttachmentRegistry,
+      });
+
+      expect(result.status).toBe("completed");
+      const persisted = JSON.parse(readFileSync(join(result.runPath, "state.json"), "utf-8")) as {
+        preparedAttachments?: Array<{ structured?: { staged?: boolean; stagingTableName?: string } }>;
+      };
+      expect(persisted.preparedAttachments?.[0]?.structured?.staged).toBe(true);
+      expect(persisted.preparedAttachments?.[0]?.structured?.stagingTableName).toBe(`staging_${preparedInputId}`);
+      expect(existsSync(join(result.runPath, "attachments", "staging.sqlite"))).toBe(true);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("updates prepared attachment state after document_query confirms indexing", async () => {
+    const dataDir = makeTmpDir();
+    const textPath = join(dataDir, "book.txt");
+    try {
+      writeFileSync(textPath, "Book summary\n\nA story about identity and isolation.", "utf-8");
+      const documentStore = new DocumentStore({
+        dataDir: join(dataDir, "documents"),
+        preferCli: false,
+      });
+      const registered = await documentStore.registerAttachments([{ path: textPath, name: "book.txt" }]);
+      const preparedAttachmentRegistry = new PreparedAttachmentRegistry();
+      const serviceProvider: LlmProvider = {
+        name: "service-mock",
+        version: "1.0.0",
+        capabilities: { nativeToolCalling: true },
+        start: vi.fn(),
+        stop: vi.fn(),
+        generateTurn: vi.fn(),
+      };
       const documentContextBackend = {
-        search: vi.fn()
-          .mockResolvedValueOnce({
-            context: "The resume appears to describe a software profile, but the relevant section is incomplete.",
-            sources: [attachmentPath],
-            confidence: 0.52,
-            documentState: {
-              status: "partial",
-              insufficientEvidence: true,
-              warnings: [],
-            },
-          })
-          .mockResolvedValueOnce({
-            context: "1. Skills include TypeScript, Node.js, React, and testing.",
-            sources: [attachmentPath],
-            confidence: 0.9,
+        search: vi.fn().mockImplementation(async ({ attachedDocuments }: { attachedDocuments: Array<{ documentId: string; originalPath: string }> }) => {
+          const documentId = attachedDocuments[0]!.documentId;
+          const indexDir = join(documentStore.documentsDir, documentId);
+          writeFileSync(join(indexDir, "vector-index.json"), JSON.stringify({ indexed: true }), "utf-8");
+          return {
+            context: "The document is about identity and isolation.",
+            sources: [attachedDocuments[0]!.originalPath],
+            confidence: 0.91,
             documentState: {
               status: "sufficient",
               insufficientEvidence: false,
               warnings: [],
             },
-          }),
-      } as unknown as DocumentContextBackend;
+          };
+        }),
+      } as unknown as import("../../src/documents/document-context-backend.js").DocumentContextBackend;
+      const preparedAttachmentService = new PreparedAttachmentService({
+        registry: preparedAttachmentRegistry,
+        documentStore,
+        provider: serviceProvider,
+        documentContextBackend,
+      });
+      const documentSkill = createDocumentSkill({ preparedAttachmentService });
+      const toolExecutor = createToolExecutor(documentSkill.tools);
 
       let callCount = 0;
       const provider: LlmProvider = {
@@ -1235,7 +1890,7 @@ describe("agentLoop", () => {
         capabilities: { nativeToolCalling: true },
         start: vi.fn(),
         stop: vi.fn(),
-        generateTurn: vi.fn().mockImplementation(async (input: LlmTurnInput) => {
+        generateTurn: vi.fn().mockImplementation(async () => {
           callCount++;
           if (callCount === 1) {
             return {
@@ -1243,34 +1898,46 @@ describe("agentLoop", () => {
               content: JSON.stringify({
                 done: false,
                 understand: true,
-                goal: goalContract("answer from the attachment"),
-                approach: "use the attached resume",
+                goal: goalContract("summarize the attached document"),
+                approach: "use document_query",
+                work_mode: "document_lookup",
               }),
             };
           }
-
           if (callCount === 2) {
             return {
               type: "assistant",
               content: JSON.stringify({
                 done: false,
-                context_search: true,
-                query: "Extract the skills section from resume.pdf",
-                scope: "documents",
-                document_paths: [attachmentPath],
+                execution_mode: "dependent",
+                intent: "summarize the document",
+                tools_hint: ["document_query"],
+                success_criteria: "document query returns the document subject",
+                context: "Use the prepared book.txt attachment.",
               }),
             };
           }
-
-          const messages = (input as { messages: Array<{ role: string; content: string }> }).messages;
-          const prompt = messages.find((message) => message.role === "user")?.content ?? "";
-          expect(prompt).toContain("Document retrieval status: sufficient");
-          expect(prompt).toContain("TypeScript, Node.js, React, and testing");
+          if (callCount === 3) {
+            return {
+              type: "tool_calls",
+              calls: [{
+                id: "tc1",
+                name: "document_query",
+                input: { query: "What is this document about?" },
+              }],
+            };
+          }
+          if (callCount === 4) {
+            return { type: "assistant", content: "The document is about identity and isolation." };
+          }
+          if (callCount === 5) {
+            return { type: "assistant", content: taskVerifyResponse("done", "document query returned the requested summary") };
+          }
           return {
             type: "assistant",
             content: JSON.stringify({
               done: true,
-              summary: "Sai Eshwar's skills include TypeScript, Node.js, React, and testing.",
+              summary: "The document is about identity and isolation.",
               status: "completed",
             }),
           };
@@ -1279,43 +1946,264 @@ describe("agentLoop", () => {
 
       const result = await agentLoop({
         provider,
-        toolDefinitions: [],
+        toolExecutor,
+        toolDefinitions: toolExecutor.definitions(),
         sessionMemory: createMockSessionMemory(),
         runHandle: { sessionId: "s1", runId: "r1" },
         clientId: "c1",
         dataDir,
-        userMessageOverride: "tell me about sai eshwar",
-        attachedDocuments,
-        documentContextBackend,
+        userMessageOverride: "what is this document about",
+        attachedDocuments: registered.documents,
+        documentStore,
+        preparedAttachmentRegistry,
       });
 
       expect(result.status).toBe("completed");
-      expect(result.content).toContain("TypeScript");
-      expect(documentContextBackend.search).toHaveBeenCalledTimes(2);
-      expect(provider.generateTurn).toHaveBeenCalledTimes(3);
+      const persisted = JSON.parse(readFileSync(join(result.runPath, "state.json"), "utf-8")) as {
+        preparedAttachments?: Array<{ unstructured?: { indexed?: boolean } }>;
+      };
+      expect(persisted.preparedAttachments?.[0]?.unstructured?.indexed).toBe(true);
+      expect(existsSync(join(documentStore.documentsDir, registered.documents[0]!.documentId, "vector-index.json"))).toBe(true);
     } finally {
       cleanup();
     }
   });
 
-  it("surfaces empty attached-document retrieval as a not-found outcome after one narrower retry", async () => {
+  it("restores an active session attachment in a follow-up run without re-upload", async () => {
     const dataDir = makeTmpDir();
-    const attachmentPath = join(dataDir, "resume.pdf");
+    const csvPath = join(dataDir, "employees.csv");
+    const sessionMemory = new MemoryManager({ dataDir: join(dataDir, "memory") });
+    sessionMemory.initialize("c1");
     try {
-      writeFileSync(attachmentPath, "placeholder", "utf-8");
-      const attachedDocuments = [createAttachedDocument(attachmentPath)];
-      const documentContextBackend = {
-        search: vi.fn().mockResolvedValue({
-          context: "No relevant document context was found for this query.",
-          sources: [attachmentPath],
-          confidence: 0,
-          documentState: {
-            status: "empty",
-            insufficientEvidence: true,
-            warnings: [],
-          },
+      writeFileSync(csvPath, "name,state\nLila,Maharashtra\nAsha,Kerala\n", "utf-8");
+      const documentStore = new DocumentStore({
+        dataDir: join(dataDir, "documents"),
+        preferCli: false,
+      });
+      const preparedAttachmentRegistry = new PreparedAttachmentRegistry();
+      const registered = await documentStore.registerAttachments([{ path: csvPath, name: "employees.csv" }]);
+
+      const firstRunHandle = sessionMemory.beginRun("c1", "please remember this csv");
+      const firstProvider: LlmProvider = {
+        name: "mock",
+        version: "1.0.0",
+        capabilities: { nativeToolCalling: true },
+        start: vi.fn(),
+        stop: vi.fn(),
+        generateTurn: vi.fn().mockResolvedValue({
+          type: "assistant",
+          content: JSON.stringify({
+            done: true,
+            summary: "I have the CSV ready.",
+            status: "completed",
+          }),
         }),
-      } as unknown as DocumentContextBackend;
+      };
+
+      await agentLoop({
+        provider: firstProvider,
+        toolExecutor: createToolExecutor([]),
+        toolDefinitions: [],
+        sessionMemory,
+        runHandle: firstRunHandle,
+        clientId: "c1",
+        dataDir,
+        userMessageOverride: "please remember this csv",
+        attachedDocuments: registered.documents,
+        documentStore,
+        preparedAttachmentRegistry,
+      });
+
+      const preparedAttachmentService = new PreparedAttachmentService({
+        registry: preparedAttachmentRegistry,
+        documentStore,
+        provider: firstProvider,
+      });
+      const sessionAttachmentService = new SessionAttachmentService({
+        sessionMemory,
+        preparedAttachmentRegistry,
+        dataDir,
+      });
+      const attachmentSkill = createAttachmentSkill({ sessionAttachmentService });
+      const datasetSkill = createDatasetSkill({ preparedAttachmentService });
+      const toolExecutor = createToolExecutor([...attachmentSkill.tools, ...datasetSkill.tools]);
+      const restoredPreparedInputId = `att_1_${registered.documents[0]!.documentId.slice(0, 8)}`;
+
+      const secondRunHandle = sessionMemory.beginRun("c1", "how many people are from Maharashtra in that csv");
+      let callCount = 0;
+      const secondProvider: LlmProvider = {
+        name: "mock",
+        version: "1.0.0",
+        capabilities: { nativeToolCalling: true },
+        start: vi.fn(),
+        stop: vi.fn(),
+        generateTurn: vi.fn().mockImplementation(async (input) => {
+          callCount++;
+          if (callCount === 1) {
+            const prompt = (input as { messages: Array<{ role: string; content: string }> }).messages.find((message) => message.role === "user")?.content ?? "";
+            expect(prompt).toContain("Active session attachments (1):");
+            expect(prompt).toContain("employees.csv");
+            return {
+              type: "assistant",
+              content: JSON.stringify({
+                done: false,
+                understand: true,
+                goal: goalContract("count employees from Maharashtra using the previous csv"),
+                approach: "restore the active session attachment and query it",
+                work_mode: "structured_data_process",
+              }),
+            };
+          }
+          if (callCount === 2) {
+            return {
+              type: "assistant",
+              content: JSON.stringify({
+                done: false,
+                execution_mode: "dependent",
+                intent: "restore the previous csv and count Maharashtra rows",
+                tools_hint: ["restore_attachment_context", "dataset_query"],
+                success_criteria: "the previous csv is restored and the count is returned",
+                context: "Use the active session attachment for employees.csv.",
+              }),
+            };
+          }
+          if (callCount === 3) {
+            return {
+              type: "tool_calls",
+              calls: [{ id: "tc1", name: "restore_attachment_context", input: { reference: "employees.csv" } }],
+            };
+          }
+          if (callCount === 4) {
+            return {
+              type: "tool_calls",
+              calls: [{ id: "tc2", name: "dataset_query", input: { sql: `SELECT COUNT(*) AS employee_count FROM staging_${restoredPreparedInputId} WHERE state = 'Maharashtra'` } }],
+            };
+          }
+          if (callCount === 5) {
+            return { type: "assistant", content: "There is 1 person from Maharashtra." };
+          }
+          if (callCount === 6) {
+            return { type: "assistant", content: taskVerifyResponse("done", "the restored csv returned the requested count") };
+          }
+          return {
+            type: "assistant",
+            content: JSON.stringify({
+              done: true,
+              summary: "There is 1 person from Maharashtra.",
+              status: "completed",
+            }),
+          };
+        }),
+      };
+
+      const result = await agentLoop({
+        provider: secondProvider,
+        toolExecutor,
+        toolDefinitions: toolExecutor.definitions(),
+        sessionMemory,
+        runHandle: secondRunHandle,
+        clientId: "c1",
+        dataDir,
+        userMessageOverride: "how many people are from Maharashtra in that csv",
+        documentStore,
+        preparedAttachmentRegistry,
+      });
+
+      expect(result.status).toBe("completed");
+      expect(result.content).toContain("1 person");
+      const persisted = JSON.parse(readFileSync(join(result.runPath, "state.json"), "utf-8")) as {
+        preparedAttachments?: Array<{ displayName?: string; structured?: { staged?: boolean } }>;
+      };
+      expect(persisted.preparedAttachments?.[0]?.displayName).toBe("employees.csv");
+      expect(persisted.preparedAttachments?.[0]?.structured?.staged).toBe(true);
+    } finally {
+      await sessionMemory.shutdown();
+      cleanup();
+    }
+  });
+
+  it("uses the canonical runHandle run id for prepared attachment registration and run path", async () => {
+    const dataDir = makeTmpDir();
+    const csvPath = join(dataDir, "employees.csv");
+    try {
+      writeFileSync(csvPath, "name,salary\nLila,42000\n", "utf-8");
+      const documentStore = new DocumentStore({
+        dataDir: join(dataDir, "documents"),
+        preferCli: false,
+      });
+      const registered = await documentStore.registerAttachments([{ path: csvPath, name: "employees.csv" }]);
+      const preparedAttachmentRegistry = new PreparedAttachmentRegistry();
+      const runHandle = { sessionId: "s1", runId: "canonical-run-id" };
+
+      let callCount = 0;
+      const provider: LlmProvider = {
+        name: "mock",
+        version: "1.0.0",
+        capabilities: { nativeToolCalling: true },
+        start: vi.fn(),
+        stop: vi.fn(),
+        generateTurn: vi.fn().mockImplementation(async () => {
+          callCount++;
+          if (callCount === 1) {
+            return {
+              type: "assistant",
+              content: JSON.stringify({
+                done: false,
+                understand: true,
+                goal: goalContract("inspect canonical run id"),
+                approach: "review the prepared metadata",
+                work_mode: "structured_data_process",
+              }),
+            };
+          }
+          return {
+            type: "assistant",
+            content: JSON.stringify({
+              done: true,
+              summary: "Prepared metadata is available.",
+              status: "completed",
+            }),
+          };
+        }),
+      };
+
+      const result = await agentLoop({
+        provider,
+        toolDefinitions: [],
+        sessionMemory: createMockSessionMemory(),
+        runHandle,
+        clientId: "c1",
+        dataDir,
+        userMessageOverride: "inspect the attached csv",
+        attachedDocuments: registered.documents,
+        documentStore,
+        preparedAttachmentRegistry,
+      });
+
+      expect(result.runPath).toBe(join(dataDir, "runs", runHandle.runId));
+      const persisted = JSON.parse(readFileSync(join(result.runPath, "state.json"), "utf-8")) as {
+        runId?: string;
+      };
+      expect(persisted.runId).toBe(runHandle.runId);
+      const registeredAttachments = preparedAttachmentRegistry.getRunAttachments(runHandle.runId);
+      expect(registeredAttachments).toHaveLength(1);
+      expect(registeredAttachments[0]!.summary.displayName).toBe("employees.csv");
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("supports prepared attachment prompts in HTTP upload flows", async () => {
+    const dataDir = makeTmpDir();
+    const attachmentPath = join(dataDir, "resume.txt");
+    try {
+      writeFileSync(attachmentPath, "Policy\n\nTermination requires 30 days notice.", "utf-8");
+      const documentStore = new DocumentStore({
+        dataDir: join(dataDir, "documents"),
+        preferCli: false,
+      });
+      const registered = await documentStore.registerAttachments([{ path: attachmentPath, name: "resume.txt" }]);
+      const preparedAttachmentRegistry = new PreparedAttachmentRegistry();
 
       let callCount = 0;
       const provider: LlmProvider = {
@@ -1332,34 +2220,21 @@ describe("agentLoop", () => {
               content: JSON.stringify({
                 done: false,
                 understand: true,
-                goal: goalContract("check whether the attachment contains the requested detail"),
-                approach: "use the attachment",
-              }),
-            };
-          }
-
-          if (callCount === 2) {
-            return {
-              type: "assistant",
-              content: JSON.stringify({
-                done: false,
-                context_search: true,
-                query: "Find the aws certification section in resume.pdf",
-                scope: "documents",
-                document_paths: [attachmentPath],
+                goal: goalContract("check the prepared uploaded attachment"),
+                approach: "use the prepared uploaded attachment",
               }),
             };
           }
 
           const messages = (input as { messages: Array<{ role: string; content: string }> }).messages;
           const prompt = messages.find((message) => message.role === "user")?.content ?? "";
-          expect(prompt).toContain("Document retrieval status: empty");
-          expect(prompt).toContain("requested information was not found");
+          expect(prompt).toContain("Prepared attachments available (1):");
+          expect(prompt).toContain("resume.txt | kind=txt | mode=unstructured_text | status=ready");
           return {
             type: "assistant",
             content: JSON.stringify({
               done: true,
-              summary: "I couldn't find AWS certification information in the attached resume.",
+              summary: "The prepared uploaded attachment is visible to the agent.",
               status: "completed",
             }),
           };
@@ -1373,15 +2248,110 @@ describe("agentLoop", () => {
         runHandle: { sessionId: "s1", runId: "r1" },
         clientId: "c1",
         dataDir,
-        userMessageOverride: "does the attached resume mention an aws certification",
-        attachedDocuments,
-        documentContextBackend,
+        userMessageOverride: "can you see the uploaded attachment",
+        attachedDocuments: registered.documents,
+        documentStore,
+        preparedAttachmentRegistry,
       });
 
       expect(result.status).toBe("completed");
-      expect(result.content).toContain("couldn't find AWS certification");
-      expect(documentContextBackend.search).toHaveBeenCalledTimes(2);
-      expect(provider.generateTurn).toHaveBeenCalledTimes(3);
+      expect(result.content).toContain("visible to the agent");
+      expect(provider.generateTurn).toHaveBeenCalledTimes(2);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("reuses a failed non-document scout summary instead of rerunning the same context_search", async () => {
+    const dataDir = makeTmpDir();
+    try {
+      let callCount = 0;
+      const provider: LlmProvider = {
+        name: "mock",
+        version: "1.0.0",
+        capabilities: { nativeToolCalling: true },
+        start: vi.fn(),
+        stop: vi.fn(),
+        generateTurn: vi.fn().mockImplementation(async (input: LlmTurnInput) => {
+          callCount++;
+          if (callCount === 1) {
+            return {
+              type: "assistant",
+              content: JSON.stringify({
+                done: false,
+                understand: true,
+                goal: goalContract("find the missing detail"),
+                approach: "look up context first",
+              }),
+            };
+          }
+
+          if (callCount === 2) {
+            return {
+              type: "assistant",
+              content: JSON.stringify({
+                done: false,
+                context_search: true,
+                query: "Need more details",
+                scope: "run_artifacts",
+              }),
+            };
+          }
+
+          if (callCount === 3) {
+            return {
+              type: "tool_calls",
+              calls: [
+                { id: "tc1", name: "list_directory", input: { path: dataDir } },
+              ],
+            };
+          }
+
+          const messages = (input as { messages: Array<{ role: string; content: string }> }).messages;
+          const prompt = messages.find((message) => message.role === "user")?.content ?? "";
+
+          if (callCount === 4) {
+            expect(prompt).toContain("Context search status: max_turns_exhausted");
+            expect(prompt).toContain("What was searched:");
+            expect(prompt).toContain(dataDir);
+            return {
+              type: "assistant",
+              content: JSON.stringify({
+                done: false,
+                context_search: true,
+                query: "Need more details",
+                scope: "run_artifacts",
+              }),
+            };
+          }
+
+          expect(prompt).toContain("Repeat blocked: do not run the same context_search again in this iteration");
+          return {
+            type: "assistant",
+            content: JSON.stringify({
+              done: true,
+              summary: "I couldn't find additional details after the repeated lookup was blocked.",
+              status: "completed",
+            }),
+          };
+        }),
+      };
+
+      const result = await agentLoop({
+        provider,
+        toolDefinitions: [],
+        sessionMemory: createMockSessionMemory(),
+        runHandle: { sessionId: "s1", runId: "r1" },
+        clientId: "c1",
+        dataDir,
+        config: {
+          maxScoutTurns: 1,
+        },
+      });
+
+      expect(result.status).toBe("completed");
+      expect(result.content).toContain("repeated lookup was blocked");
+      expect(provider.generateTurn).toHaveBeenCalledTimes(5);
     } finally {
       cleanup();
     }

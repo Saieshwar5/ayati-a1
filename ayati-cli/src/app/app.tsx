@@ -1,12 +1,14 @@
-import React, { useState, useCallback, useEffect } from "react";
+import React, { useState, useCallback, useEffect, useRef } from "react";
 import { Box } from "ink";
 import { existsSync } from "node:fs";
 import { basename, resolve } from "node:path";
 import { Header } from "./components/header.js";
-import { MessageList } from "./components/message-list.js";
+import { MessageList, type MessageListHandle } from "./components/message-list.js";
 import { ChatInput } from "./components/chat-input.js";
 import { StatusBar } from "./components/status-bar.js";
 import { useWebSocket } from "./hooks/use-websocket.js";
+import { useMouseScroll } from "./hooks/use-mouse-scroll.js";
+import type { MouseScrollEvent } from "./input/terminal-mouse.js";
 import { ATTACH_USAGE, parseCliCommand } from "./commands.js";
 import type { ChatAttachment, ChatMessage, ServerMessage } from "./types.js";
 
@@ -23,10 +25,12 @@ let nextId = 1;
 function createMessage(
   role: ChatMessage["role"],
   content: string,
+  kind: ChatMessage["kind"] = role === "user" ? "user" : "reply",
 ): ChatMessage {
   return {
     id: String(nextId++),
     role,
+    kind,
     content,
     timestamp: Date.now(),
   };
@@ -43,6 +47,7 @@ export function App(): React.JSX.Element {
   const [terminalColumns, setTerminalColumns] = useState(
     Math.max(process.stdout.columns ?? 80, MIN_TERMINAL_COLUMNS),
   );
+  const messageListRef = useRef<MessageListHandle>(null);
 
   useEffect(() => {
     const handleResize = (): void => {
@@ -62,20 +67,44 @@ export function App(): React.JSX.Element {
   const onMessage = useCallback((data: unknown) => {
     const msg = data as ServerMessage | { type?: string; content?: string };
     if (msg.type === "reply" && typeof msg.content === "string") {
-      const reply = createMessage("assistant", msg.content);
+      const reply = createMessage("assistant", msg.content, "reply");
       setMessages((prev) => [...prev, reply]);
       setIsLoading(false);
       return;
     }
 
+    if (msg.type === "feedback" && typeof msg.content === "string") {
+      const feedback = createMessage("assistant", msg.content, "feedback");
+      setMessages((prev) => [...prev, feedback]);
+      setIsLoading(false);
+      return;
+    }
+
+    if (msg.type === "notification" && typeof msg.content === "string") {
+      const notification = createMessage("assistant", msg.content, "notification");
+      setMessages((prev) => [...prev, notification]);
+      return;
+    }
+
     if (msg.type === "error" && typeof msg.content === "string") {
-      const reply = createMessage("assistant", `[error] ${msg.content}`);
+      const reply = createMessage("assistant", msg.content, "error");
       setMessages((prev) => [...prev, reply]);
       setIsLoading(false);
     }
   }, []);
 
   const { send, connected } = useWebSocket({ onMessage });
+
+  const handleMouseScroll = useCallback((event: MouseScrollEvent) => {
+    if (event.direction === "up") {
+      messageListRef.current?.scrollByLines(-event.amount);
+      return;
+    }
+
+    messageListRef.current?.scrollByLines(event.amount);
+  }, []);
+
+  useMouseScroll({ onScroll: handleMouseScroll });
 
   const submitChatMessage = useCallback((
     content: string,
@@ -139,6 +168,7 @@ export function App(): React.JSX.Element {
     <Box flexDirection="column" height={terminalRows}>
       <Header />
       <MessageList
+        ref={messageListRef}
         messages={messages}
         height={messageViewportHeight}
         width={terminalColumns - 2}

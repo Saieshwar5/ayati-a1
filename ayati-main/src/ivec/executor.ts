@@ -8,10 +8,12 @@ import type {
   ActToolCallRecord,
   VerifyOutput,
   TaskStatus,
+  PreparedAttachmentStateUpdate,
 } from "./types.js";
 import { writeStepMarkdown, formatActMarkdown, formatVerifyMarkdown } from "./state-persistence.js";
 import { checkVerificationGates } from "./verification-gates.js";
 import { formatToolResult, formatValidationError } from "./tool-helpers.js";
+import type { ManagedDocumentManifest, PreparedAttachmentSummary } from "../documents/types.js";
 
 export async function executeStep(
   deps: ExecutorDeps,
@@ -32,6 +34,7 @@ export async function executeStep(
 
   const artifacts = [...new Set([actMarkdownPath, verifyMarkdownPath, ...verifyOut.artifacts])];
   const newFacts = buildStepNewFacts(actOut.toolCalls, verifyOut.newFacts);
+  const stateUpdates = buildStepStateUpdates(actOut.toolCalls);
 
   const classification = verifyOut.passed
     ? { failureType: undefined, blockedTargets: undefined }
@@ -54,6 +57,7 @@ export async function executeStep(
     stoppedEarlyReason: actOut.stoppedEarlyReason,
     failureType: classification.failureType,
     blockedTargets: classification.blockedTargets,
+    stateUpdates,
   };
 }
 
@@ -104,20 +108,24 @@ async function act(
     );
 
     if (orderedCalls.length === 0) {
-      return {
+      return await finalizeActOutput(
+        deps,
+        directive,
+        messages,
         toolCalls,
-        finalText: "",
-        stoppedEarlyReason: "no_valid_tool_calls",
-      };
+        "no_valid_tool_calls",
+      );
     }
 
     for (const call of orderedCalls) {
       if (executedCalls >= maxTotalCalls) {
-        return {
+        return await finalizeActOutput(
+          deps,
+          directive,
+          messages,
           toolCalls,
-          finalText: "",
-          stoppedEarlyReason: "max_total_tool_calls_reached",
-        };
+          "max_total_tool_calls_reached",
+        );
       }
 
       const callSignature = buildCallSignature(call.name, call.input);
@@ -186,30 +194,77 @@ async function act(
           const blockedRetryCount = (blockedRetryCounts.get(callSignature) ?? 0) + 1;
           blockedRetryCounts.set(callSignature, blockedRetryCount);
           if (blockedRetryCount >= 2) {
-            return {
+            return await finalizeActOutput(
+              deps,
+              directive,
+              messages,
               toolCalls,
-              finalText: "",
-              stoppedEarlyReason: "repeated_identical_failure",
-            };
+              "repeated_identical_failure",
+            );
           }
         }
 
         if (repeatedCount >= 2) {
-          return {
+          return await finalizeActOutput(
+            deps,
+            directive,
+            messages,
             toolCalls,
-            finalText: "",
-            stoppedEarlyReason: "repeated_identical_failure",
-          };
+            "repeated_identical_failure",
+          );
         }
       }
     }
   }
 
+  return await finalizeActOutput(
+    deps,
+    directive,
+    messages,
+    toolCalls,
+    toolCalls.length > 0 ? "max_act_turns_reached" : "no_valid_tool_calls",
+  );
+}
+
+async function finalizeActOutput(
+  deps: ExecutorDeps,
+  directive: StepDirective,
+  messages: LlmMessage[],
+  toolCalls: ActToolCallRecord[],
+  stoppedEarlyReason: NonNullable<ActOutput["stoppedEarlyReason"]>,
+): Promise<ActOutput> {
+  const finalText = toolCalls.length > 0
+    ? await requestForcedStepSummary(deps, directive, messages, toolCalls, stoppedEarlyReason)
+    : "";
+
   return {
     toolCalls,
-    finalText: "",
-    stoppedEarlyReason: toolCalls.length > 0 ? "max_act_turns_reached" : "no_valid_tool_calls",
+    finalText,
+    stoppedEarlyReason,
   };
+}
+
+async function requestForcedStepSummary(
+  deps: ExecutorDeps,
+  directive: StepDirective,
+  messages: LlmMessage[],
+  toolCalls: ActToolCallRecord[],
+  stoppedEarlyReason: NonNullable<ActOutput["stoppedEarlyReason"]>,
+): Promise<string> {
+  const prompt = buildForcedSummaryPrompt(directive, toolCalls, stoppedEarlyReason);
+
+  try {
+    const turn = await deps.provider.generateTurn({
+      messages: [...messages, { role: "user", content: prompt }],
+    });
+    if (turn.type === "assistant" && turn.content.trim().length > 0) {
+      return turn.content.trim();
+    }
+  } catch {
+    // Fall back to a deterministic summary built from tool results.
+  }
+
+  return buildFallbackActSummary(toolCalls, stoppedEarlyReason);
 }
 
 async function executeSingleTool(
@@ -239,10 +294,10 @@ async function executeSingleTool(
     sessionId: deps.runHandle.sessionId,
   });
   if (!result.ok) {
-    return { tool: toolName, input, output: result.output ?? "", error: result.error ?? "Tool execution failed" };
+    return { tool: toolName, input, output: result.output ?? "", error: result.error ?? "Tool execution failed", meta: result.meta };
   }
 
-  return { tool: toolName, input, output: result.output ?? "" };
+  return { tool: toolName, input, output: result.output ?? "", meta: result.meta };
 }
 
 // --- Phase 2: Verify ---
@@ -336,6 +391,58 @@ Prefer the suggested tools first, but you may use any available tool if it is be
 If a tool call fails, do not repeat the same tool call with identical input in this step.
 If the same tool fails twice in this step, switch to a different available tool or a materially different strategy.
 When done, respond with a text summary.`;
+}
+
+function buildForcedSummaryPrompt(
+  directive: StepDirective,
+  toolCalls: ActToolCallRecord[],
+  stoppedEarlyReason: NonNullable<ActOutput["stoppedEarlyReason"]>,
+): string {
+  const toolFacts = toolCalls.map((call, index) => {
+    const status = call.error ? "failed" : "succeeded";
+    const detail = call.error
+      ? `error=${summarizeForPrompt(call.error)}`
+      : `output=${summarizeForPrompt(call.output)}`;
+    return `- ${index + 1}. ${call.tool} ${status}; ${detail}`;
+  }).join("\n");
+
+  return `Execution for this step has stopped because of ${stoppedEarlyReason}.
+Do not call any tools.
+Write a concise 1-3 sentence summary of what happened in this step using only the existing tool results.
+Be explicit about whether the step made progress, partially succeeded, or failed.
+
+Step intent: ${directive.intent}
+Success criteria: ${directive.success_criteria}
+Tool results:
+${toolFacts}`;
+}
+
+function buildFallbackActSummary(
+  toolCalls: ActToolCallRecord[],
+  stoppedEarlyReason: NonNullable<ActOutput["stoppedEarlyReason"]>,
+): string {
+  const successfulCalls = toolCalls.filter((call) => !call.error);
+  const failedCalls = toolCalls.filter((call) => !!call.error);
+  const details: string[] = [];
+
+  if (successfulCalls.length > 0) {
+    const successPreview = successfulCalls
+      .slice(0, 2)
+      .map((call) => `${call.tool}: ${summarizeForPrompt(call.output)}`)
+      .join("; ");
+    details.push(`Successful results: ${successPreview}`);
+  }
+
+  if (failedCalls.length > 0) {
+    const failurePreview = failedCalls
+      .slice(0, 2)
+      .map((call) => `${call.tool}: ${summarizeForPrompt(call.error ?? "")}`)
+      .join("; ");
+    details.push(`Failures: ${failurePreview}`);
+  }
+
+  const base = `Step stopped due to ${stoppedEarlyReason} after ${toolCalls.length} tool call(s) (${successfulCalls.length} succeeded, ${failedCalls.length} failed).`;
+  return details.length > 0 ? `${base} ${details.join(" ")}` : base;
 }
 
 function selectCallsForTurn<T extends { name: string; input: unknown }>(
@@ -506,6 +613,13 @@ async function verifyTaskProgress(
       "Assess overall task progress after the latest successful step.",
       "",
       "Input kind: system_event",
+      `Origin source: ${deps.taskContext.originSource ?? deps.taskContext.systemEvent.source}`,
+      `Intent kind: ${deps.taskContext.systemEventIntentKind ?? deps.taskContext.systemEvent.intent?.kind ?? "unknown"}`,
+      ...(deps.taskContext.systemEventRequestedAction ? [`Requested action: ${deps.taskContext.systemEventRequestedAction}`] : []),
+      `Created by: ${deps.taskContext.systemEventCreatedBy ?? deps.taskContext.systemEvent.intent?.createdBy ?? "unknown"}`,
+      ...(deps.taskContext.handlingMode ? [`Handling mode: ${deps.taskContext.handlingMode}`] : []),
+      ...(typeof deps.taskContext.approvalRequired === "boolean" ? [`Approval required: ${deps.taskContext.approvalRequired ? "yes" : "no"}`] : []),
+      ...(deps.taskContext.approvalState ? [`Approval state: ${deps.taskContext.approvalState}`] : []),
       `System event summary: ${deps.taskContext.userMessage}`,
       `System event payload: ${JSON.stringify({
         source: deps.taskContext.systemEvent.source,
@@ -613,6 +727,132 @@ function buildStepNewFacts(toolCalls: ActToolCallRecord[], verifyFacts: string[]
   }
 
   return [...new Set(combined)];
+}
+
+function buildStepStateUpdates(toolCalls: ActToolCallRecord[]): PreparedAttachmentStateUpdate[] {
+  const updates: PreparedAttachmentStateUpdate[] = [];
+
+  for (const call of toolCalls) {
+    if (call.error) {
+      continue;
+    }
+    const rawUpdates = call.meta?.["stateUpdates"];
+    if (!Array.isArray(rawUpdates)) {
+      continue;
+    }
+    for (const rawUpdate of rawUpdates) {
+      const parsed = parsePreparedAttachmentStateUpdate(rawUpdate);
+      if (parsed) {
+        updates.push(parsed);
+      }
+    }
+  }
+
+  return dedupePreparedAttachmentStateUpdates(updates);
+}
+
+function parsePreparedAttachmentStateUpdate(value: unknown): PreparedAttachmentStateUpdate | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+  const record = value as Record<string, unknown>;
+  if (record["type"] === "restore_prepared_attachment") {
+    const manifest = parseManagedDocumentManifest(record["manifest"]);
+    const summary = parsePreparedAttachmentSummary(record["summary"]);
+    if (manifest && summary) {
+      return {
+        type: "restore_prepared_attachment",
+        manifest,
+        summary,
+      };
+    }
+    return null;
+  }
+  const preparedInputId = typeof record["preparedInputId"] === "string" ? record["preparedInputId"].trim() : "";
+  if (!preparedInputId) {
+    return null;
+  }
+  if (record["type"] === "mark_dataset_staged" && record["staged"] === true) {
+    const stagingDbPath = typeof record["stagingDbPath"] === "string" && record["stagingDbPath"].trim().length > 0
+      ? record["stagingDbPath"].trim()
+      : undefined;
+    const stagingTableName = typeof record["stagingTableName"] === "string" && record["stagingTableName"].trim().length > 0
+      ? record["stagingTableName"].trim()
+      : undefined;
+    return {
+      type: "mark_dataset_staged",
+      preparedInputId,
+      staged: true,
+      ...(stagingDbPath ? { stagingDbPath } : {}),
+      ...(stagingTableName ? { stagingTableName } : {}),
+    };
+  }
+  if (record["type"] === "mark_document_indexed" && record["indexed"] === true) {
+    return {
+      type: "mark_document_indexed",
+      preparedInputId,
+      indexed: true,
+    };
+  }
+  return null;
+}
+
+function dedupePreparedAttachmentStateUpdates(
+  updates: PreparedAttachmentStateUpdate[],
+): PreparedAttachmentStateUpdate[] {
+  const latestByKey = new Map<string, PreparedAttachmentStateUpdate>();
+  for (const update of updates) {
+    const key = update.type === "restore_prepared_attachment"
+      ? `${update.type}:${update.summary.preparedInputId}`
+      : `${update.type}:${update.preparedInputId}`;
+    latestByKey.set(key, update);
+  }
+  return [...latestByKey.values()];
+}
+
+function parseManagedDocumentManifest(value: unknown): ManagedDocumentManifest | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const record = value as Record<string, unknown>;
+  const required = ["documentId", "name", "displayName", "source", "originalPath", "storedPath", "kind", "sizeBytes", "checksum"];
+  if (!required.every((field) => field in record)) return null;
+  if (
+    typeof record["documentId"] !== "string"
+    || typeof record["name"] !== "string"
+    || typeof record["displayName"] !== "string"
+    || typeof record["source"] !== "string"
+    || typeof record["originalPath"] !== "string"
+    || typeof record["storedPath"] !== "string"
+    || typeof record["kind"] !== "string"
+    || typeof record["sizeBytes"] !== "number"
+    || typeof record["checksum"] !== "string"
+  ) {
+    return null;
+  }
+  return record as unknown as ManagedDocumentManifest;
+}
+
+function parsePreparedAttachmentSummary(value: unknown): PreparedAttachmentSummary | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const record = value as Record<string, unknown>;
+  const required = ["preparedInputId", "documentId", "displayName", "source", "kind", "mode", "sizeBytes", "checksum", "originalPath", "status", "warnings", "artifactPath"];
+  if (!required.every((field) => field in record)) return null;
+  if (
+    typeof record["preparedInputId"] !== "string"
+    || typeof record["documentId"] !== "string"
+    || typeof record["displayName"] !== "string"
+    || typeof record["source"] !== "string"
+    || typeof record["kind"] !== "string"
+    || typeof record["mode"] !== "string"
+    || typeof record["sizeBytes"] !== "number"
+    || typeof record["checksum"] !== "string"
+    || typeof record["originalPath"] !== "string"
+    || typeof record["status"] !== "string"
+    || !Array.isArray(record["warnings"])
+    || typeof record["artifactPath"] !== "string"
+  ) {
+    return null;
+  }
+  return record as unknown as PreparedAttachmentSummary;
 }
 
 // --- Failure Classifier ---

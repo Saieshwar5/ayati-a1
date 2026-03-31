@@ -1,4 +1,5 @@
-import type { ToolEventStatus } from "./types.js";
+import type { AgentResponseKind, FeedbackKind, FeedbackResolutionOutcome, ToolEventStatus } from "./types.js";
+import type { ManagedDocumentManifest, PreparedAttachmentSummary } from "../documents/types.js";
 
 export type SessionEventType =
   | "session_open"
@@ -11,8 +12,12 @@ export type SessionEventType =
   | "run_failure"
   | "agent_step"
   | "run_ledger"
+  | "active_attachments"
   | "task_summary"
   | "assistant_feedback"
+  | "assistant_notification"
+  | "feedback_opened"
+  | "feedback_resolved"
   | "system_event_received"
   | "system_event_processed";
 
@@ -101,6 +106,18 @@ export interface RunLedgerEvent extends BaseEvent {
   summary?: string;
 }
 
+export interface ActiveAttachmentsEvent extends BaseEvent {
+  type: "active_attachments";
+  runId: string;
+  runPath: string;
+  action: "prepared" | "restored" | "used";
+  attachments: Array<{
+    manifest: ManagedDocumentManifest;
+    summary: PreparedAttachmentSummary;
+    detail?: Record<string, unknown>;
+  }>;
+}
+
 export interface TaskSummaryEvent extends BaseEvent {
   type: "task_summary";
   runId: string;
@@ -112,6 +129,36 @@ export interface TaskSummaryEvent extends BaseEvent {
 export interface AssistantFeedbackEvent extends BaseEvent {
   type: "assistant_feedback";
   message: string;
+}
+
+export interface AssistantNotificationEvent extends BaseEvent {
+  type: "assistant_notification";
+  message: string;
+  source?: string;
+  event?: string;
+  eventId?: string;
+}
+
+export interface FeedbackOpenedEvent extends BaseEvent {
+  type: "feedback_opened";
+  runId: string;
+  feedbackId: string;
+  kind: FeedbackKind;
+  shortLabel: string;
+  message: string;
+  actionType?: string;
+  sourceEventId?: string;
+  entityHints: string[];
+  payloadSummary?: string;
+  expiresAt: string;
+}
+
+export interface FeedbackResolvedEvent extends BaseEvent {
+  type: "feedback_resolved";
+  runId: string;
+  feedbackId: string;
+  resolution: FeedbackResolutionOutcome;
+  userResponse?: string;
 }
 
 export interface SystemEventReceivedEvent extends BaseEvent {
@@ -134,6 +181,8 @@ export interface SystemEventProcessedEvent extends BaseEvent {
   source: string;
   event: string;
   eventId: string;
+  summary?: string;
+  responseKind?: AgentResponseKind;
   status: "completed" | "failed";
   note?: string;
 }
@@ -149,8 +198,12 @@ export type SessionEvent =
   | RunFailureEvent
   | AgentStepEvent
   | RunLedgerEvent
+  | ActiveAttachmentsEvent
   | TaskSummaryEvent
   | AssistantFeedbackEvent
+  | AssistantNotificationEvent
+  | FeedbackOpenedEvent
+  | FeedbackResolvedEvent
   | SystemEventReceivedEvent
   | SystemEventProcessedEvent;
 

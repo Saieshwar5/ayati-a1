@@ -3,49 +3,20 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { describe, expect, it } from "vitest";
 import {
+  getContextCacheEntriesByIds,
   getContextCachePath,
-  lookupContextCache,
+  listContextCacheMetadata,
   storeContextCache,
 } from "../../src/ivec/context-cache.js";
-import type { ScoutKnownLocations } from "../../src/ivec/context-scout.js";
 
 describe("context-cache", () => {
   let tmpRoot = "";
 
-  function makeFixture(): { runPath: string; knownLocations: ScoutKnownLocations } {
+  function makeFixture(): { runPath: string } {
     tmpRoot = mkdtempSync(join(tmpdir(), "ayati-context-cache-"));
     const runPath = join(tmpRoot, "runs", "run-1");
-    const stepsDir = join(runPath, "steps");
-    const skillsDir = join(tmpRoot, "skills");
-    const contextDir = join(tmpRoot, "context");
-    const sessionDir = join(tmpRoot, "sessions");
-    const sessionPath = join(sessionDir, "session-1.jsonl");
-
-    mkdirSync(stepsDir, { recursive: true });
-    mkdirSync(join(skillsDir, "gws-gmail"), { recursive: true });
-    mkdirSync(join(skillsDir, "gws-gmail-triage"), { recursive: true });
-    mkdirSync(contextDir, { recursive: true });
-    mkdirSync(sessionDir, { recursive: true });
-
-    writeFileSync(join(skillsDir, "gws-gmail", "skill.md"), "# gws-gmail\n", "utf-8");
-    writeFileSync(join(skillsDir, "gws-gmail-triage", "skill.md"), "# gws-gmail-triage\n", "utf-8");
-    writeFileSync(join(stepsDir, "002-act.md"), "# Act\n", "utf-8");
-    writeFileSync(join(stepsDir, "002-verify.md"), "# Verify\n", "utf-8");
-    writeFileSync(join(contextDir, "system_prompt.md"), "# Prompt\n", "utf-8");
-    writeFileSync(sessionPath, "{\"role\":\"user\",\"content\":\"hi\"}\n", "utf-8");
-
-    return {
-      runPath,
-      knownLocations: {
-        runPath,
-        contextDir,
-        sessionDir,
-        sessionPath,
-        skillsDir,
-        runId: "run-1",
-        activeSessionId: "session-1",
-      },
-    };
+    mkdirSync(runPath, { recursive: true });
+    return { runPath };
   }
 
   function cleanup(): void {
@@ -55,191 +26,181 @@ describe("context-cache", () => {
     }
   }
 
-  it("reuses cached skill lookups across different query wording", () => {
-    const { runPath, knownLocations } = makeFixture();
+  it("stores the simplified cache entry schema", () => {
+    const { runPath } = makeFixture();
     try {
-      storeContextCache(runPath, {
+      const entry = storeContextCache(runPath, {
         scope: "skills",
-        query: "Load the full command reference for the installed Gmail skills",
-        knownLocations,
-        iteration: 1,
+        query: "Read github-cli auth commands",
         result: {
-          context: "Use gws-gmail-triage for read-only inbox summaries.",
-          sources: [
-            join(knownLocations.skillsDir!, "gws-gmail", "skill.md"),
-            join(knownLocations.skillsDir!, "gws-gmail-triage", "skill.md"),
-          ],
-          confidence: 0.92,
+          context: "Use gh auth status to verify login.",
+          sources: ["data/skills/github-cli/skill.md"],
+          confidence: 0.94,
         },
       });
 
-      const hit = lookupContextCache(runPath, {
-        scope: "skills",
-        query: "Need the Gmail skill command reference again before using triage",
-        knownLocations,
-        iteration: 2,
-      });
-
-      expect(hit).not.toBeNull();
-      expect(hit?.targets).toEqual(["skills:gws-gmail", "skills:gws-gmail-triage"]);
-      expect(hit?.context).toContain("read-only inbox summaries");
+      expect(entry.id).toBeTruthy();
+      expect(entry.scope).toBe("skills");
+      expect(entry.status).toBe("success");
+      expect(entry.query).toBe("Read github-cli auth commands");
 
       const cacheFile = JSON.parse(readFileSync(getContextCachePath(runPath), "utf-8")) as {
-        entries: Array<{ lastUsedIteration: number }>;
+        version: number;
+        entries: Array<Record<string, unknown>>;
       };
-      expect(cacheFile.entries[0]?.lastUsedIteration).toBe(2);
+
+      expect(cacheFile.version).toBe(3);
+      expect(cacheFile.entries).toHaveLength(1);
+      expect(cacheFile.entries[0]).toMatchObject({
+        id: entry.id,
+        scope: "skills",
+        status: "success",
+        query: "Read github-cli auth commands",
+        context: "Use gh auth status to verify login.",
+        sources: ["data/skills/github-cli/skill.md"],
+        confidence: 0.94,
+      });
+      expect(cacheFile.entries[0]).not.toHaveProperty("targets");
     } finally {
       cleanup();
     }
   });
 
-  it("reuses cached run artifact lookups by step identity", () => {
-    const { runPath, knownLocations } = makeFixture();
+  it("keeps negative scout summaries marked as empty", () => {
+    const { runPath } = makeFixture();
     try {
-      storeContextCache(runPath, {
-        scope: "run_artifacts",
-        query: "Read step 2 act and verify files",
-        knownLocations,
-        iteration: 3,
+      const entry = storeContextCache(runPath, {
+        scope: "skills",
+        query: "Read pulse schedule syntax",
         result: {
-          context: "Step 2 failed because the tool output was incomplete.",
-          sources: [
-            join(runPath, "steps", "002-act.md"),
-            join(runPath, "steps", "002-verify.md"),
-          ],
-          confidence: 0.88,
+          context: [
+            "Context search status: max_turns_exhausted",
+            "Scope: skills",
+            "Query: Read pulse schedule syntax",
+          ].join("\n"),
+          sources: ["data/skills"],
+          confidence: 0,
+          scoutState: {
+            status: "max_turns_exhausted",
+            scope: "skills",
+            query: "Read pulse schedule syntax",
+            searchedLocations: ["data/skills"],
+            attemptedSearches: ["list_directory path=data/skills"],
+            errors: [],
+          },
         },
       });
 
-      const hit = lookupContextCache(runPath, {
-        scope: "run_artifacts",
-        query: "What happened in step 2?",
-        knownLocations,
-        iteration: 4,
-      });
-
-      expect(hit).not.toBeNull();
-      expect(hit?.targets).toContain("run_artifacts:step:2");
-      expect(hit?.context).toContain("tool output was incomplete");
+      expect(entry.status).toBe("empty");
+      expect(entry.context).toContain("max_turns_exhausted");
     } finally {
       cleanup();
     }
   });
 
-  it("reuses empty cached results so missing context is not searched repeatedly", () => {
-    const { runPath, knownLocations } = makeFixture();
+  it("returns cache metadata filtered by scope", () => {
+    const { runPath } = makeFixture();
     try {
-      storeContextCache(runPath, {
-        scope: "session",
-        query: "Read the current session log",
-        knownLocations,
-        iteration: 5,
+      const skillEntry = storeContextCache(runPath, {
+        scope: "skills",
+        query: "Read github-cli auth commands",
         result: {
-          context: "",
-          sources: [knownLocations.sessionPath!],
-          confidence: 0.1,
+          context: "Use gh auth status to verify login.",
+          sources: ["data/skills/github-cli/skill.md"],
+          confidence: 0.94,
+        },
+      });
+      storeContextCache(runPath, {
+        scope: "run_artifacts",
+        query: "Review step 2 verify output",
+        result: {
+          context: "Step 2 failed because the path was missing.",
+          sources: ["data/runs/run-1/steps/002-verify.md"],
+          confidence: 0.81,
         },
       });
 
-      const hit = lookupContextCache(runPath, {
-        scope: "session",
-        query: "Read the active session log again",
-        knownLocations,
-        iteration: 6,
-      });
+      const metadata = listContextCacheMetadata(runPath, "skills");
 
-      expect(hit).not.toBeNull();
-      expect(hit?.status).toBe("empty");
-      expect(hit?.context).toBe("");
-    } finally {
-      cleanup();
-    }
-  });
-
-  it("misses when the requested target is different", () => {
-    const { runPath, knownLocations } = makeFixture();
-    try {
-      storeContextCache(runPath, {
-        scope: "run_artifacts",
-        query: "Read step 2 act and verify files",
-        knownLocations,
-        iteration: 7,
-        result: {
-          context: "Step 2 context",
-          sources: [join(runPath, "steps", "002-act.md")],
-          confidence: 0.8,
-        },
-      });
-
-      const miss = lookupContextCache(runPath, {
-        scope: "run_artifacts",
-        query: "What happened in step 3?",
-        knownLocations,
-        iteration: 8,
-      });
-
-      expect(miss).toBeNull();
-    } finally {
-      cleanup();
-    }
-  });
-
-  it("keeps document cache entries query-aware for the same attachment", () => {
-    const { runPath, knownLocations } = makeFixture();
-    const documentPath = join(tmpRoot, "docs", "policy.txt");
-
-    try {
-      mkdirSync(join(tmpRoot, "docs"), { recursive: true });
-      writeFileSync(documentPath, "Termination requires 30 days written notice.", "utf-8");
-
-      knownLocations.attachedDocuments = [
+      expect(metadata).toEqual([
         {
-          documentId: "doc-policy",
-          name: "policy.txt",
-          originalPath: documentPath,
-          storedPath: documentPath,
-          kind: "txt",
-          sizeBytes: 41,
-          checksum: "abc123",
+          id: skillEntry.id,
+          scope: "skills",
+          status: "success",
+          query: "Read github-cli auth commands",
+          confidence: 0.94,
         },
-      ];
-
-      storeContextCache(runPath, {
-        scope: "documents",
-        query: "What is the termination clause?",
-        knownLocations,
-        iteration: 9,
-        documentPaths: [documentPath],
-        result: {
-          context: "Termination requires 30 days written notice.",
-          sources: [documentPath],
-          confidence: 0.93,
-        },
-      });
-
-      const hit = lookupContextCache(runPath, {
-        scope: "documents",
-        query: "What is the termination clause?",
-        knownLocations,
-        iteration: 10,
-        documentPaths: [documentPath],
-      });
-
-      const miss = lookupContextCache(runPath, {
-        scope: "documents",
-        query: "Who signed the agreement?",
-        knownLocations,
-        iteration: 11,
-        documentPaths: [documentPath],
-      });
-
-      expect(hit).not.toBeNull();
-      expect(hit?.targets).toContain("documents:doc:doc-policy");
-      expect(hit?.context).toContain("30 days written notice");
-      expect(miss).toBeNull();
+      ]);
     } finally {
       cleanup();
     }
   });
 
+  it("reads only the selected cache entries by id in the requested order", () => {
+    const { runPath } = makeFixture();
+    try {
+      const first = storeContextCache(runPath, {
+        scope: "skills",
+        query: "Read github-cli auth commands",
+        result: {
+          context: "Use gh auth status to verify login.",
+          sources: ["data/skills/github-cli/skill.md"],
+          confidence: 0.94,
+        },
+      });
+      const second = storeContextCache(runPath, {
+        scope: "skills",
+        query: "Read github-cli repo listing commands",
+        result: {
+          context: "Use gh repo list <owner> --limit 100.",
+          sources: ["data/skills/github-cli/skill.md"],
+          confidence: 0.9,
+        },
+      });
+
+      const selected = getContextCacheEntriesByIds(runPath, [second.id, first.id]);
+
+      expect(selected.map((entry) => entry.id)).toEqual([second.id, first.id]);
+      expect(selected[0]?.context).toContain("gh repo list");
+      expect(selected[1]?.context).toContain("gh auth status");
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("migrates legacy version 2 cache files into the new simplified shape", () => {
+    const { runPath } = makeFixture();
+    try {
+      writeFileSync(
+        getContextCachePath(runPath),
+        JSON.stringify({
+          version: 2,
+          entries: [
+            {
+              scope: "run_artifacts",
+              targets: ["run_artifacts:step:2"],
+              context: "Step 2 failed because the tool output was incomplete.",
+              sources: ["data/runs/run-1/steps/002-verify.md"],
+              confidence: 0.88,
+              status: "success",
+              createdAtIteration: 3,
+              lastUsedIteration: 4,
+            },
+          ],
+        }, null, 2),
+        "utf-8",
+      );
+
+      const metadata = listContextCacheMetadata(runPath, "run_artifacts");
+      const selected = getContextCacheEntriesByIds(runPath, [metadata[0]!.id]);
+
+      expect(metadata).toHaveLength(1);
+      expect(metadata[0]?.scope).toBe("run_artifacts");
+      expect(metadata[0]?.status).toBe("success");
+      expect(selected[0]?.context).toContain("tool output was incomplete");
+      expect(selected[0]?.query).toContain("run_artifacts:step:2");
+    } finally {
+      cleanup();
+    }
+  });
 });

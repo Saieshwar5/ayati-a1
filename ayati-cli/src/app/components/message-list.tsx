@@ -1,6 +1,25 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, {
+  forwardRef,
+  useCallback,
+  useEffect,
+  useImperativeHandle,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { Box, Text, useInput } from "ink";
 import type { ChatMessage } from "../types.js";
+import {
+  formatAssistantMessage,
+  type DisplayLine,
+  type DisplaySegment,
+} from "./assistant-message-formatter.js";
+import {
+  clamp,
+  resolveScrollTopAfterContentChange,
+  scrollByLines,
+  scrollByPages,
+} from "./message-list-scroll.js";
 
 type Props = {
   readonly messages: ChatMessage[];
@@ -8,15 +27,12 @@ type Props = {
   readonly width: number;
 };
 
-type DisplayLine = {
-  readonly text: string;
-  readonly color?: "green" | "cyan";
-  readonly bold?: boolean;
+export type MessageListHandle = {
+  readonly scrollByLines: (delta: number) => void;
+  readonly scrollByPages: (pageDelta: number) => void;
+  readonly scrollToTop: () => void;
+  readonly scrollToBottom: () => void;
 };
-
-function clamp(value: number, min: number, max: number): number {
-  return Math.max(min, Math.min(max, value));
-}
 
 function wrapSegment(segment: string, width: number): string[] {
   if (segment.length === 0) {
@@ -87,25 +103,73 @@ function toDisplayLines(messages: ChatMessage[], width: number): DisplayLine[] {
 
   for (const message of messages) {
     const isUser = message.role === "user";
+    const assistantPresentation = message.kind === "feedback"
+      ? { label: "Ayati [feedback]", color: "yellow" as const }
+      : message.kind === "notification"
+        ? { label: "Ayati [notification]", color: "magenta" as const }
+        : message.kind === "error"
+          ? { label: "Ayati [error]", color: "red" as const }
+          : { label: "Ayati", color: "cyan" as const };
 
     lines.push({
-      text: isUser ? "You" : "Ayati",
-      bold: true,
-      color: isUser ? "green" : "cyan",
+      segments: [{
+        text: isUser ? "You" : assistantPresentation.label,
+        bold: true,
+        color: isUser ? "green" : assistantPresentation.color,
+      }],
     });
 
-    const wrappedLines = wrapContent(message.content, contentWidth);
-    for (const line of wrappedLines) {
-      lines.push({ text: `  ${line}` });
+    if (isUser) {
+      const wrappedLines = wrapContent(message.content, contentWidth);
+      for (const line of wrappedLines) {
+        lines.push({
+          segments: [{ text: `  ${line}` }],
+        });
+      }
+    } else {
+      lines.push(...formatAssistantMessage({
+        content: message.content,
+        width: contentWidth,
+        assistantColor: assistantPresentation.color,
+      }));
     }
 
-    lines.push({ text: "" });
+    lines.push({ segments: [] });
   }
 
   return lines;
 }
 
-export function MessageList({ messages, height, width }: Props): React.JSX.Element {
+function renderSegments(segments: DisplaySegment[], lineKey: string): React.JSX.Element {
+  if (segments.length === 0) {
+    return <Text key={`${lineKey}-empty`}> </Text>;
+  }
+
+  return (
+    <>
+      {segments.map((segment, segmentIndex) => (
+        <Text
+          key={`${lineKey}-${segmentIndex}`}
+          color={segment.color}
+          backgroundColor={segment.backgroundColor}
+          dimColor={segment.dimColor}
+          bold={segment.bold}
+          italic={segment.italic}
+          underline={segment.underline}
+          inverse={segment.inverse}
+          strikethrough={segment.strikethrough}
+        >
+          {segment.text}
+        </Text>
+      ))}
+    </>
+  );
+}
+
+export const MessageList = forwardRef<MessageListHandle, Props>(function MessageList(
+  { messages, height, width },
+  ref,
+): React.JSX.Element {
   const [scrollTop, setScrollTop] = useState(0);
 
   const lines = useMemo(() => toDisplayLines(messages, width), [messages, width]);
@@ -114,20 +178,50 @@ export function MessageList({ messages, height, width }: Props): React.JSX.Eleme
   const maxScrollTop = Math.max(0, lines.length - viewportHeight);
   const previousMaxRef = useRef(0);
 
-  useEffect(() => {
-    const previousMax = previousMaxRef.current;
-    const wasAtBottom = scrollTop >= previousMax;
-
-    if (wasAtBottom) {
-      if (scrollTop !== maxScrollTop) {
-        setScrollTop(maxScrollTop);
-      }
-    } else if (scrollTop > maxScrollTop) {
-      setScrollTop(maxScrollTop);
+  const handleScrollByLines = useCallback((delta: number) => {
+    if (lines.length === 0) {
+      return;
     }
 
+    setScrollTop((value) => scrollByLines(value, delta, maxScrollTop));
+  }, [lines.length, maxScrollTop]);
+
+  const handleScrollByPages = useCallback((pageDelta: number) => {
+    if (lines.length === 0) {
+      return;
+    }
+
+    setScrollTop((value) => scrollByPages(value, pageDelta, viewportHeight, maxScrollTop));
+  }, [lines.length, maxScrollTop, viewportHeight]);
+
+  const handleScrollToTop = useCallback(() => {
+    setScrollTop(0);
+  }, []);
+
+  const handleScrollToBottom = useCallback(() => {
+    setScrollTop(maxScrollTop);
+  }, [maxScrollTop]);
+
+  useImperativeHandle(ref, () => ({
+    scrollByLines: handleScrollByLines,
+    scrollByPages: handleScrollByPages,
+    scrollToTop: handleScrollToTop,
+    scrollToBottom: handleScrollToBottom,
+  }), [
+    handleScrollByLines,
+    handleScrollByPages,
+    handleScrollToTop,
+    handleScrollToBottom,
+  ]);
+
+  useEffect(() => {
+    setScrollTop((value) => resolveScrollTopAfterContentChange({
+      scrollTop: value,
+      previousMaxScrollTop: previousMaxRef.current,
+      nextMaxScrollTop: maxScrollTop,
+    }));
     previousMaxRef.current = maxScrollTop;
-  }, [maxScrollTop, scrollTop]);
+  }, [maxScrollTop]);
 
   useInput((_, key) => {
     if (lines.length === 0) {
@@ -135,32 +229,32 @@ export function MessageList({ messages, height, width }: Props): React.JSX.Eleme
     }
 
     if (key.upArrow) {
-      setScrollTop((value) => clamp(value - 1, 0, maxScrollTop));
+      handleScrollByLines(-1);
       return;
     }
 
     if (key.downArrow) {
-      setScrollTop((value) => clamp(value + 1, 0, maxScrollTop));
+      handleScrollByLines(1);
       return;
     }
 
     if (key.pageUp) {
-      setScrollTop((value) => clamp(value - viewportHeight, 0, maxScrollTop));
+      handleScrollByPages(-1);
       return;
     }
 
     if (key.pageDown) {
-      setScrollTop((value) => clamp(value + viewportHeight, 0, maxScrollTop));
+      handleScrollByPages(1);
       return;
     }
 
     if (key.home) {
-      setScrollTop(0);
+      handleScrollToTop();
       return;
     }
 
     if (key.end) {
-      setScrollTop(maxScrollTop);
+      handleScrollToBottom();
     }
   });
 
@@ -178,10 +272,10 @@ export function MessageList({ messages, height, width }: Props): React.JSX.Eleme
   return (
     <Box flexDirection="column" paddingX={1} height={viewportHeight}>
       {visibleLines.map((line, index) => (
-        <Text key={`${start}-${index}`} color={line.color} bold={line.bold}>
-          {line.text.length > 0 ? line.text : " "}
-        </Text>
+        <Box key={`${start}-${index}`}>
+          {renderSegments(line.segments, `${start}-${index}`)}
+        </Box>
       ))}
     </Box>
   );
-}
+});

@@ -29,6 +29,7 @@ describe("loadControllerPrompts", () => {
       if (path.endsWith("context/controller/understand.md")) return "  understand instructions  ";
       if (path.endsWith("context/controller/direct.md")) return "  direct instructions  ";
       if (path.endsWith("context/controller/reeval.md")) return "  reeval instructions  ";
+      if (path.endsWith("context/controller/system-event.md")) return "  system event instructions  ";
       throw new Error("Unexpected file");
     });
 
@@ -37,6 +38,7 @@ describe("loadControllerPrompts", () => {
       understand: "understand instructions",
       direct: "direct instructions",
       reeval: "reeval instructions",
+      systemEvent: "system event instructions",
     });
   });
 
@@ -50,6 +52,7 @@ describe("loadControllerPrompts", () => {
       understand: "",
       direct: "",
       reeval: "",
+      systemEvent: "",
     });
     expect(devWarn).toHaveBeenCalledWith(
       "Controller prompt missing or empty. Using built-in fallback for: controller/understand.md",
@@ -59,6 +62,9 @@ describe("loadControllerPrompts", () => {
     );
     expect(devWarn).toHaveBeenCalledWith(
       "Controller prompt missing or empty. Using built-in fallback for: controller/reeval.md",
+    );
+    expect(devWarn).toHaveBeenCalledWith(
+      "Controller prompt missing or empty. Using built-in fallback for: controller/system-event.md",
     );
   });
 });

@@ -1,8 +1,41 @@
+import type { ManagedDocumentManifest, PreparedAttachmentSummary } from "../documents/types.js";
+
 export interface ConversationTurn {
   role: "user" | "assistant";
   content: string;
   timestamp: string;
   sessionPath: string;
+}
+
+export type AgentResponseKind = "reply" | "feedback" | "notification" | "none";
+
+export type FeedbackKind = "approval" | "confirmation" | "clarification";
+export type FeedbackResolutionOutcome = "completed" | "rejected" | "expired";
+
+export interface OpenFeedbackItem {
+  feedbackId: string;
+  status: "open";
+  kind: FeedbackKind;
+  shortLabel: string;
+  message: string;
+  actionType?: string;
+  sourceRunId: string;
+  sourceEventId?: string;
+  entityHints: string[];
+  payloadSummary?: string;
+  createdAt: string;
+  expiresAt: string;
+}
+
+export interface SystemActivityItem {
+  timestamp: string;
+  source: string;
+  event: string;
+  eventId: string;
+  summary: string;
+  note?: string;
+  responseKind?: AgentResponseKind;
+  userVisible: boolean;
 }
 
 export type ToolEventStatus = "success" | "failed";
@@ -43,12 +76,33 @@ export interface PromptRunLedger {
   summary?: string;
 }
 
+export interface ActiveAttachmentRef {
+  documentId: string;
+  displayName: string;
+  kind: string;
+  mode: string;
+  runId: string;
+  runPath: string;
+  preparedInputId: string;
+  lastUsedAt: string;
+  lastAction: string;
+}
+
+export interface ActiveAttachmentRecord extends ActiveAttachmentRef {
+  manifest: ManagedDocumentManifest;
+  summary: PreparedAttachmentSummary;
+  detail: Record<string, unknown>;
+}
+
 export interface PromptMemoryContext {
   conversationTurns: ConversationTurn[];
   previousSessionSummary: string;
   activeTopicLabel?: string;
   activeSessionPath?: string;
   recentRunLedgers?: PromptRunLedger[];
+  activeAttachments?: ActiveAttachmentRef[];
+  openFeedbacks?: OpenFeedbackItem[];
+  recentSystemActivity?: SystemActivityItem[];
 }
 
 export interface MemoryRunHandle {
@@ -128,6 +182,18 @@ export interface RunLedgerRecordInput {
   summary?: string;
 }
 
+export interface ActiveAttachmentsRecordInput {
+  runId: string;
+  sessionId: string;
+  runPath: string;
+  action: "prepared" | "restored" | "used";
+  attachments: Array<{
+    manifest: ManagedDocumentManifest;
+    summary: PreparedAttachmentSummary;
+    detail?: Record<string, unknown>;
+  }>;
+}
+
 export interface TaskSummaryRecordInput {
   runId: string;
   sessionId: string;
@@ -154,7 +220,39 @@ export interface SystemEventOutcomeRecordInput {
   source: string;
   event: string;
   status: "completed" | "failed";
+  summary?: string;
+  responseKind?: AgentResponseKind;
   note?: string;
+}
+
+export interface FeedbackOpenRecordInput {
+  runId: string;
+  sessionId: string;
+  kind: FeedbackKind;
+  shortLabel: string;
+  message: string;
+  actionType?: string;
+  sourceEventId?: string;
+  entityHints?: string[];
+  payloadSummary?: string;
+  ttlHours?: number;
+}
+
+export interface FeedbackResolveRecordInput {
+  runId: string;
+  sessionId: string;
+  feedbackId: string;
+  resolution: FeedbackResolutionOutcome;
+  userResponse?: string;
+}
+
+export interface AssistantNotificationRecordInput {
+  runId: string;
+  sessionId: string;
+  message: string;
+  source?: string;
+  event?: string;
+  eventId?: string;
 }
 
 export interface SessionMemory {
@@ -170,10 +268,15 @@ export interface SessionMemory {
   recordRunFailure(clientId: string, runId: string, sessionId: string, message: string): void;
   recordAgentStep(clientId: string, input: AgentStepRecordInput): void;
   recordRunLedger?(clientId: string, input: RunLedgerRecordInput): void;
+  recordActiveAttachments?(clientId: string, input: ActiveAttachmentsRecordInput): void;
   recordTaskSummary?(clientId: string, input: TaskSummaryRecordInput): void;
   recordSystemEventOutcome?(clientId: string, input: SystemEventOutcomeRecordInput): void;
   recordAssistantFeedback(clientId: string, runId: string, sessionId: string, message: string): void;
+  recordFeedbackOpened?(clientId: string, input: FeedbackOpenRecordInput): OpenFeedbackItem | null;
+  resolveOpenFeedback?(clientId: string, input: FeedbackResolveRecordInput): void;
+  recordAssistantNotification?(clientId: string, input: AssistantNotificationRecordInput): void;
   getPromptMemoryContext(): PromptMemoryContext;
+  getActiveAttachmentRecords?(): ActiveAttachmentRecord[];
   getSessionStatus?(): SessionStatus | null;
   setStaticTokenBudget(tokens: number): void;
 }

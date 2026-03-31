@@ -8,6 +8,7 @@ const CONTROLLER_DIR = "controller";
 const UNDERSTAND_FILE = "understand.md";
 const DIRECT_FILE = "direct.md";
 const REEVAL_FILE = "reeval.md";
+const SYSTEM_EVENT_FILE = "system-event.md";
 
 function resolveContextDir(): string {
   const thisDir = dirname(fileURLToPath(import.meta.url));
@@ -28,15 +29,17 @@ async function loadPromptFile(fileName: string): Promise<string> {
 }
 
 export async function loadControllerPrompts(): Promise<ControllerPrompts> {
-  const [understand, direct, reeval] = await Promise.all([
+  const [understand, direct, reeval, systemEvent] = await Promise.all([
     loadPromptFile(UNDERSTAND_FILE),
     loadPromptFile(DIRECT_FILE),
     loadPromptFile(REEVAL_FILE),
+    loadPromptFile(SYSTEM_EVENT_FILE),
   ]);
 
   return {
     understand,
     direct,
     reeval,
+    systemEvent,
   };
 }

@@ -1,0 +1,148 @@
+@import "tailwindcss";
+
+:root {
+  --app-background: #f4f6fb;
+  --app-foreground: #162033;
+  --app-surface: rgba(255, 255, 255, 0.96);
+  --app-border: rgba(15, 23, 42, 0.08);
+  --app-muted: #667085;
+  --app-accent: #2563eb;
+  --app-accent-soft: #dbeafe;
+  --app-composer-border: #d8dee9;
+  --app-user-bubble: #ffffff;
+  --app-user-foreground: #162033;
+  --app-assistant-bubble: #ffffff;
+  --app-system-bubble: #fff8e7;
+  --app-error-bubble: #fff1f2;
+}
+
+@theme inline {
+  --color-background: var(--app-background);
+  --color-foreground: var(--app-foreground);
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  height: 100%;
+}
+
+body {
+  min-height: 100%;
+  background: linear-gradient(180deg, #fafbff 0%, var(--app-background) 100%);
+  color: var(--app-foreground);
+  font-family: var(--font-geist-sans), Arial, Helvetica, sans-serif;
+}
+
+button,
+input,
+textarea {
+  font: inherit;
+}
+
+::selection {
+  background: var(--app-accent-soft);
+  color: var(--app-foreground);
+}
+
+.chat-markdown {
+  color: inherit;
+}
+
+.chat-markdown > :first-child {
+  margin-top: 0;
+}
+
+.chat-markdown > :last-child {
+  margin-bottom: 0;
+}
+
+.chat-markdown p {
+  margin: 0;
+}
+
+.chat-markdown p + p {
+  margin-top: 0.875rem;
+}
+
+.chat-markdown :is(ul, ol) {
+  margin: 0.875rem 0;
+  padding-left: 1.25rem;
+}
+
+.chat-markdown ul {
+  list-style: disc;
+}
+
+.chat-markdown ol {
+  list-style: decimal;
+}
+
+.chat-markdown li + li {
+  margin-top: 0.375rem;
+}
+
+.chat-markdown :is(p, li, blockquote, td, th) {
+  overflow-wrap: anywhere;
+}
+
+.chat-markdown a {
+  color: var(--app-accent);
+  font-weight: 600;
+  text-decoration: underline;
+  text-underline-offset: 0.18em;
+}
+
+.chat-markdown code {
+  border-radius: 0.5rem;
+  background: rgba(15, 23, 42, 0.06);
+  padding: 0.12rem 0.38rem;
+  font-family: var(--font-geist-mono), monospace;
+  font-size: 0.92em;
+}
+
+.chat-markdown pre {
+  margin: 0.875rem 0;
+  overflow-x: auto;
+  border-radius: 1rem;
+  background: #0f172a;
+  color: #e5e7eb;
+  padding: 0.875rem 1rem;
+}
+
+.chat-markdown pre code {
+  background: transparent;
+  padding: 0;
+  color: inherit;
+}
+
+.chat-markdown blockquote {
+  margin: 0.875rem 0;
+  border-left: 3px solid var(--app-accent-soft);
+  padding-left: 0.875rem;
+  color: var(--app-muted);
+}
+
+.chat-markdown table {
+  display: block;
+  width: 100%;
+  overflow-x: auto;
+  border-collapse: collapse;
+  margin: 0.875rem 0;
+}
+
+.chat-markdown th,
+.chat-markdown td {
+  border: 1px solid var(--app-border);
+  padding: 0.5rem 0.75rem;
+  text-align: left;
+}
+
+.chat-markdown th {
+  background: rgba(15, 23, 42, 0.04);
+  font-weight: 600;
+}

@@ -2,10 +2,51 @@ import type { LlmProvider } from "../core/contracts/provider.js";
 import type { ControllerPrompts } from "../context/types.js";
 import type { ToolExecutor } from "../skills/tool-executor.js";
 import type { ToolDefinition } from "../skills/types.js";
-import type { SessionMemory, MemoryRunHandle, ConversationTurn, PromptRunLedger } from "../memory/types.js";
-import type { ManagedDocumentManifest } from "../documents/types.js";
+import type { ActiveAttachmentRef } from "../memory/types.js";
+import type {
+  AgentResponseKind,
+  FeedbackKind,
+  OpenFeedbackItem,
+  SessionMemory,
+  MemoryRunHandle,
+  ConversationTurn,
+  PromptRunLedger,
+  SystemActivityItem,
+} from "../memory/types.js";
+import type { DocumentStore } from "../documents/document-store.js";
+import type { PreparedAttachmentRegistry } from "../documents/prepared-attachment-registry.js";
+import type { ManagedDocumentManifest, PreparedAttachmentSummary } from "../documents/types.js";
 import type { DocumentContextBackend } from "../documents/document-context-backend.js";
-import type { AyatiSystemEvent } from "../core/contracts/plugin.js";
+import type {
+  AyatiSystemEvent,
+  SystemEventCreatedBy,
+  SystemEventIntentKind,
+} from "../core/contracts/plugin.js";
+import type {
+  SystemEventContextVisibility,
+  SystemEventHandlingMode,
+} from "./system-event-policy.js";
+
+export type SystemEventApprovalState = "not_needed" | "pending" | "granted" | "rejected";
+export type WorkMode = "background_lookup" | "document_lookup" | "document_process" | "structured_data_process";
+export type PreparedAttachmentStateUpdate =
+  | {
+    type: "mark_dataset_staged";
+    preparedInputId: string;
+    staged: true;
+    stagingDbPath?: string;
+    stagingTableName?: string;
+  }
+  | {
+    type: "mark_document_indexed";
+    preparedInputId: string;
+    indexed: true;
+  }
+  | {
+    type: "restore_prepared_attachment";
+    manifest: ManagedDocumentManifest;
+    summary: PreparedAttachmentSummary;
+  };
 
 // --- State ---
 
@@ -39,6 +80,17 @@ export interface LoopState {
   inputKind?: "user_message" | "system_event";
   userMessage: string;
   systemEvent?: AyatiSystemEvent;
+  originSource?: string;
+  systemEventIntentKind?: SystemEventIntentKind;
+  systemEventRequestedAction?: string;
+  systemEventCreatedBy?: SystemEventCreatedBy;
+  handlingMode?: SystemEventHandlingMode;
+  approvalRequired?: boolean;
+  approvalState?: SystemEventApprovalState;
+  contextVisibility?: SystemEventContextVisibility;
+  feedbackTtlHours?: number;
+  preferredResponseKind?: AgentResponseKind;
+  matchedFeedback?: OpenFeedbackItem | null;
   goal: GoalContract;
   approach: string;
   taskStatus: TaskStatus;
@@ -54,8 +106,13 @@ export interface LoopState {
   failedApproaches: FailedApproach[];
   attachedDocuments?: ManagedDocumentManifest[];
   attachmentWarnings?: string[];
+  preparedAttachments?: PreparedAttachmentSummary[];
+  activeSessionAttachments?: ActiveAttachmentRef[];
+  workMode?: WorkMode;
   sessionHistory: ConversationTurn[];
   recentRunLedgers: PromptRunLedger[];
+  openFeedbacks: OpenFeedbackItem[];
+  recentSystemActivity: SystemActivityItem[];
 }
 
 export interface StepSummary {
@@ -73,6 +130,7 @@ export interface StepSummary {
   stoppedEarlyReason?: "assistant_returned" | "max_act_turns_reached" | "max_total_tool_calls_reached" | "repeated_identical_failure" | "no_valid_tool_calls";
   failureType?: FailedApproach["failureType"];
   blockedTargets?: string[];
+  stateUpdates?: PreparedAttachmentStateUpdate[];
 }
 
 // --- Controller output ---
@@ -82,6 +140,7 @@ export interface UnderstandDirective {
   understand: true;
   goal: GoalContract;
   approach: string;
+  work_mode?: WorkMode;
 }
 
 export interface ReEvalDirective {
@@ -99,11 +158,13 @@ export interface StepDirective {
   context: string;
 }
 
+export type GenericScoutScope = "run_artifacts" | "project_context" | "session" | "skills" | "both";
+
 export interface ContextSearchDirective {
   done: false;
   context_search: true;
   query: string;
-  scope: "run_artifacts" | "project_context" | "session" | "skills" | "documents" | "both";
+  scope: GenericScoutScope | "documents";
   document_paths?: string[];
 }
 
@@ -115,17 +176,41 @@ export interface DocumentScoutState {
   warnings: string[];
 }
 
+export type GenericScoutStatus = "empty" | "max_turns_exhausted";
+
+export interface GenericScoutState {
+  status: GenericScoutStatus;
+  scope: GenericScoutScope;
+  query: string;
+  searchedLocations: string[];
+  attemptedSearches: string[];
+  errors: string[];
+}
+
 export interface ScoutResult {
   context: string;
   sources: string[];
   confidence: number;
   documentState?: DocumentScoutState;
+  scoutState?: GenericScoutState;
 }
 
 export interface CompletionDirective {
   done: true;
   summary: string;
   status: "completed" | "failed";
+  response_kind?: AgentResponseKind;
+  feedback_kind?: FeedbackKind;
+  feedback_label?: string;
+  action_type?: string;
+  entity_hints?: string[];
+}
+
+export interface FeedbackResolutionDirective {
+  resolution: "matched" | "none" | "ambiguous";
+  feedback_id?: string;
+  clarification?: string;
+  reason?: string;
 }
 
 export interface SessionRotationDirective {
@@ -150,6 +235,7 @@ export interface ActToolCallRecord {
   input: unknown;
   output: string;
   error?: string;
+  meta?: Record<string, unknown>;
 }
 
 export interface ActOutput {
@@ -169,10 +255,26 @@ export interface VerifyOutput {
   taskEvidence?: string[];
 }
 
+export interface AgentArtifact {
+  kind: "image";
+  name: string;
+  relativePath: string;
+  urlPath: string;
+  mimeType: string;
+  sizeBytes?: number;
+}
+
 export interface TaskValidationContext {
   inputKind?: "user_message" | "system_event";
   userMessage: string;
   systemEvent?: AyatiSystemEvent;
+  originSource?: string;
+  systemEventIntentKind?: SystemEventIntentKind;
+  systemEventRequestedAction?: string;
+  systemEventCreatedBy?: SystemEventCreatedBy;
+  handlingMode?: SystemEventHandlingMode;
+  approvalRequired?: boolean;
+  approvalState?: SystemEventApprovalState;
   goal: GoalContract;
   taskStatus: TaskStatus;
   approach: string;
@@ -206,12 +308,23 @@ export const DEFAULT_LOOP_CONFIG: LoopConfig = {
 // --- Result + callbacks ---
 
 export interface AgentLoopResult {
-  type: "reply";
+  type: AgentResponseKind;
   content: string;
   status: "completed" | "failed" | "stuck";
   totalIterations: number;
   totalToolCalls: number;
   runPath: string;
+  artifacts?: AgentArtifact[];
+  openFeedback?: {
+    kind: FeedbackKind;
+    shortLabel: string;
+    actionType?: string;
+    sourceEventId?: string;
+    entityHints: string[];
+    payloadSummary?: string;
+    ttlHours?: number;
+  };
+  resolvedFeedbackId?: string;
 }
 
 export type OnProgressCallback = (log: string, runPath: string) => void;
@@ -227,6 +340,15 @@ export interface AgentLoopDeps {
   clientId: string;
   inputKind?: "user_message" | "system_event";
   systemEvent?: AyatiSystemEvent;
+  systemEventIntentKind?: SystemEventIntentKind;
+  systemEventRequestedAction?: string;
+  systemEventCreatedBy?: SystemEventCreatedBy;
+  systemEventHandlingMode?: SystemEventHandlingMode;
+  systemEventApprovalRequired?: boolean;
+  systemEventApprovalState?: SystemEventApprovalState;
+  systemEventContextVisibility?: SystemEventContextVisibility;
+  feedbackTtlHours?: number;
+  preferredResponseKind?: AgentResponseKind;
   initialUserMessage?: string;
   onProgress?: OnProgressCallback;
   config?: Partial<LoopConfig>;
@@ -236,6 +358,8 @@ export interface AgentLoopDeps {
   userMessageOverride?: string;
   attachedDocuments?: ManagedDocumentManifest[];
   attachmentWarnings?: string[];
+  documentStore?: DocumentStore;
+  preparedAttachmentRegistry?: PreparedAttachmentRegistry;
   documentContextBackend?: DocumentContextBackend;
   signal?: AbortSignal;
   onStuck?: (state: LoopState) => void;
@@ -252,10 +376,21 @@ export interface ExecutorDeps {
   taskContext: TaskValidationContext;
 }
 
-export interface ChatAttachmentInput {
+export interface CliChatAttachmentInput {
+  source?: "cli";
   path: string;
   name?: string;
 }
+
+export interface WebChatAttachmentInput {
+  source: "web";
+  uploadedPath: string;
+  originalName: string;
+  mimeType?: string;
+  sizeBytes?: number;
+}
+
+export type ChatAttachmentInput = CliChatAttachmentInput | WebChatAttachmentInput;
 
 export interface ChatInboundMessage {
   type: "chat";

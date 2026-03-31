@@ -8,25 +8,58 @@ import { buildSystemPrompt } from "../prompt/builder.js";
 import { renderConversationSection } from "../prompt/sections/conversation.js";
 import { renderCurrentSessionSection } from "../prompt/sections/current-session.js";
 import { renderMemorySection } from "../prompt/sections/memory.js";
+import { renderOpenFeedbackSection } from "../prompt/sections/open-feedback.js";
 import { renderRecentRunsSection } from "../prompt/sections/recent-runs.js";
+import { renderSystemActivitySection } from "../prompt/sections/system-activity.js";
 import { estimateTextTokens } from "../prompt/token-estimator.js";
 import type { ToolExecutor } from "../skills/tool-executor.js";
+import type { ToolDefinition } from "../skills/types.js";
 import { devLog, devWarn, devError } from "../shared/index.js";
 import type { ManagedDocumentManifest } from "../documents/types.js";
 import type { DocumentStore } from "../documents/document-store.js";
 import type { DocumentContextBackend } from "../documents/document-context-backend.js";
-import type { AyatiSystemEvent } from "../core/contracts/plugin.js";
+import { PreparedAttachmentRegistry } from "../documents/prepared-attachment-registry.js";
+import {
+  normalizeSystemEvent,
+  type AyatiSystemEvent,
+  type SystemEventCreatedBy,
+  type SystemEventIntentKind,
+  type SystemEventIntentMetadata,
+} from "../core/contracts/plugin.js";
+import type { AgentResponseKind } from "../memory/types.js";
 import { agentLoop } from "./agent-loop.js";
 import {
   evaluateSessionRotation,
   type RotationPolicyConfig,
   type PendingMidnightRollover,
 } from "./session-rotation-policy.js";
-import type { ChatAttachmentInput, ChatInboundMessage, LoopConfig } from "./types.js";
+import {
+  classifySystemEvent,
+  resolveSystemEventPolicy,
+  type ResolvedSystemEventPolicy,
+  type SystemEventClassification,
+  type SystemEventHandlingMode,
+  type SystemEventPolicyConfig,
+} from "./system-event-policy.js";
+import type {
+  AgentArtifact,
+  ChatAttachmentInput,
+  ChatInboundMessage,
+  LoopConfig,
+  SystemEventApprovalState,
+} from "./types.js";
 
 interface SystemContextBuildResult {
   systemContext: string;
   dynamicSystemTokens: number;
+}
+
+interface SystemEventExecutionPlan {
+  classification: SystemEventClassification;
+  policy: ResolvedSystemEventPolicy;
+  preferredResponseKind: AgentResponseKind;
+  approvalState: SystemEventApprovalState;
+  toolDefinitions: ToolDefinition[];
 }
 
 export interface IVecEngineOptions {
@@ -40,7 +73,9 @@ export interface IVecEngineOptions {
   now?: () => Date;
   dataDir?: string;
   documentStore?: DocumentStore;
+  preparedAttachmentRegistry?: PreparedAttachmentRegistry;
   documentContextBackend?: DocumentContextBackend;
+  systemEventPolicy?: SystemEventPolicyConfig;
 }
 
 export class IVecEngine {
@@ -54,7 +89,9 @@ export class IVecEngine {
   private readonly nowProvider: () => Date;
   private readonly dataDir?: string;
   private readonly documentStore?: DocumentStore;
+  private readonly preparedAttachmentRegistry?: PreparedAttachmentRegistry;
   private readonly documentContextBackend?: DocumentContextBackend;
+  private readonly systemEventPolicy?: SystemEventPolicyConfig;
   private staticSystemTokens = 0;
   private staticTokensReady = false;
   private readonly pendingMidnightByClient = new Map<string, PendingMidnightRollover>();
@@ -70,7 +107,10 @@ export class IVecEngine {
     this.nowProvider = options?.now ?? (() => new Date());
     this.dataDir = options?.dataDir;
     this.documentStore = options?.documentStore;
+    this.preparedAttachmentRegistry = options?.preparedAttachmentRegistry
+      ?? (this.documentStore ? new PreparedAttachmentRegistry() : undefined);
     this.documentContextBackend = options?.documentContextBackend;
+    this.systemEventPolicy = options?.systemEventPolicy;
   }
 
   async start(): Promise<void> {
@@ -147,6 +187,8 @@ export class IVecEngine {
           controllerPrompts: this.staticContext?.controllerPrompts,
           attachedDocuments: registeredAttachments.documents,
           attachmentWarnings: registeredAttachments.warnings,
+          documentStore: this.documentStore,
+          preparedAttachmentRegistry: this.preparedAttachmentRegistry,
           documentContextBackend: this.documentContextBackend,
           onProgress: (log, runPath) => {
             devLog(`[${clientId}] ${log}`);
@@ -174,10 +216,12 @@ export class IVecEngine {
           status: result.status,
           summary: result.content,
         });
-        this.sendAssistantReply(clientId, runHandle, result.content);
+        this.dispatchAgentResponse(clientId, runHandle, result);
       } else {
-        const reply = `Received: "${content}"`;
-        this.sendAssistantReply(clientId, runHandle, reply);
+        this.dispatchAgentResponse(clientId, runHandle, {
+          type: "reply",
+          content: `Received: "${content}"`,
+        });
       }
     } catch (err) {
       devError("Provider error:", err);
@@ -201,6 +245,8 @@ export class IVecEngine {
   private async processSystemEvent(clientId: string, event: AyatiSystemEvent): Promise<void> {
     let runHandle: MemoryRunHandle | null = null;
     const incomingMessage = event.summary;
+    const systemEventPlan = this.buildSystemEventExecutionPlan(event);
+    const preferredResponseKind = systemEventPlan.preferredResponseKind;
 
     try {
       devLog(
@@ -215,26 +261,40 @@ export class IVecEngine {
         payload: event.payload,
       }) ?? this.sessionMemory.beginRun(clientId, incomingMessage);
 
-      this.recordTurnStatus(clientId, runHandle, "processing_started", `system_event:${event.source}/${event.eventName}`);
+      this.recordTurnStatus(
+        clientId,
+        runHandle,
+        "processing_started",
+        `system_event:${event.source}/${event.eventName} mode=${systemEventPlan.policy.mode}`,
+      );
 
       if (!this.provider) {
         devLog(`[${clientId}] system_event echo_mode eventId=${event.eventId}`);
-        this.sendAssistantReply(clientId, runHandle, event.summary);
+        this.dispatchAgentResponse(clientId, runHandle, {
+          type: preferredResponseKind,
+          content: event.summary,
+        }, {
+          source: event.source,
+          event: event.eventName,
+          eventId: event.eventId,
+        });
         this.sessionMemory.recordSystemEventOutcome?.(clientId, {
           runId: runHandle.runId,
           eventId: event.eventId,
           source: event.source,
           event: event.eventName,
+          summary: event.summary,
+          responseKind: preferredResponseKind,
           status: "completed",
-          note: "echo_mode",
+          note: this.buildSystemEventOutcomeNote(systemEventPlan, event.summary, preferredResponseKind, "echo_mode"),
         });
         return;
       }
 
-      const toolDefs = this.toolExecutor?.definitions() ?? [];
+      const toolDefs = systemEventPlan.toolDefinitions;
       const system = await this.buildSystemContext();
       devLog(
-        `[${clientId}] system_event entering agentLoop eventId=${event.eventId} tools=${toolDefs.length} payloadKeys=${Object.keys(event.payload).join(",") || "none"}`,
+        `[${clientId}] system_event entering agentLoop eventId=${event.eventId} mode=${systemEventPlan.policy.mode} intent=${systemEventPlan.classification.intentKind} approval=${systemEventPlan.policy.approvalRequired ? "required" : "not_required"} tools=${toolDefs.length} payloadKeys=${Object.keys(event.payload).join(",") || "none"}`,
       );
       const result = await agentLoop({
         provider: this.provider,
@@ -245,11 +305,22 @@ export class IVecEngine {
         clientId,
         inputKind: "system_event",
         systemEvent: event,
+        systemEventIntentKind: systemEventPlan.classification.intentKind,
+        systemEventRequestedAction: systemEventPlan.classification.requestedAction,
+        systemEventCreatedBy: systemEventPlan.classification.createdBy,
+        systemEventHandlingMode: systemEventPlan.policy.mode,
+        systemEventApprovalRequired: systemEventPlan.policy.approvalRequired,
+        systemEventApprovalState: systemEventPlan.approvalState,
+        systemEventContextVisibility: systemEventPlan.policy.contextVisibility,
+        feedbackTtlHours: systemEventPlan.policy.feedbackTtlHours,
+        preferredResponseKind,
         initialUserMessage: incomingMessage,
         config: this.loopConfig,
         dataDir: this.dataDir ?? "data",
         systemContext: system.systemContext || undefined,
         controllerPrompts: this.staticContext?.controllerPrompts,
+        documentStore: this.documentStore,
+        preparedAttachmentRegistry: this.preparedAttachmentRegistry,
         onProgress: (log, runPath) => {
           devLog(`[${clientId}] ${log}`);
           this.sessionMemory.recordAgentStep(clientId, {
@@ -282,13 +353,19 @@ export class IVecEngine {
         eventId: event.eventId,
         source: event.source,
         event: event.eventName,
+        summary: event.summary,
+        responseKind: result.type,
         status: result.status === "completed" ? "completed" : "failed",
-        note: result.content,
+        note: this.buildSystemEventOutcomeNote(systemEventPlan, result.content, result.type),
       });
       devLog(
         `[${clientId}] system_event agentLoop completed eventId=${event.eventId} status=${result.status} runPath=${result.runPath}`,
       );
-      this.sendAssistantReply(clientId, runHandle, result.content);
+      this.dispatchAgentResponse(clientId, runHandle, result, {
+        source: event.source,
+        event: event.eventName,
+        eventId: event.eventId,
+      });
     } catch (err) {
       devError("System event processing error:", err);
       if (runHandle) {
@@ -305,8 +382,10 @@ export class IVecEngine {
           eventId: event.eventId,
           source: event.source,
           event: event.eventName,
+          summary: event.summary,
+          responseKind: preferredResponseKind,
           status: "failed",
-          note: message,
+          note: this.buildSystemEventOutcomeNote(systemEventPlan, message, preferredResponseKind, "failed_before_dispatch"),
         });
       }
       this.onReply?.(clientId, {
@@ -336,9 +415,11 @@ export class IVecEngine {
 
     const dynamicContext = [
       renderConversationSection(memoryContext.conversationTurns ?? []),
+      renderOpenFeedbackSection(memoryContext.openFeedbacks ?? []),
       renderMemorySection(memoryContext.previousSessionSummary ?? ""),
       renderCurrentSessionSection(memoryContext.activeSessionPath ?? ""),
       renderRecentRunsSection(memoryContext.recentRunLedgers ?? []),
+      renderSystemActivitySection(memoryContext.recentSystemActivity ?? []),
     ]
       .filter((block) => block.trim().length > 0)
       .join("\n\n")
@@ -371,16 +452,17 @@ export class IVecEngine {
       return null;
     }
     const payload = this.toSystemEventPayload(value);
+    const intent = this.toSystemEventIntent(value);
 
-    return {
-      type: "system_event",
+    return normalizeSystemEvent({
       eventId,
       source,
       eventName,
       receivedAt,
       summary,
       payload,
-    };
+      ...(intent ? { intent } : {}),
+    });
   }
 
   private rotateSessionBeforeRunIfNeeded(clientId: string, incomingMessage: string): void {
@@ -472,6 +554,13 @@ export class IVecEngine {
           ? `Reminder due: ${instruction}`
           : "Reminder due";
     }
+    if (source === "pulse" && eventName === "task_due") {
+      return title
+        ? `Scheduled task due: ${title}`
+        : instruction
+          ? `Scheduled task due: ${instruction}`
+          : "Scheduled task due";
+    }
 
     const fallback = `${source} ${eventName}`.trim();
     return title ?? instruction ?? (fallback.length > 0 ? fallback : null);
@@ -487,12 +576,16 @@ export class IVecEngine {
     const payload: Record<string, unknown> = {};
     const fieldMap = {
       occurrenceId: value["occurrenceId"],
+      scheduledItemId: value["scheduledItemId"],
       reminderId: value["reminderId"],
+      taskId: value["taskId"],
       title: value["title"],
       instruction: value["instruction"],
       scheduledFor: value["scheduledFor"],
       triggeredAt: value["triggeredAt"],
       timezone: value["timezone"],
+      intentKind: value["intentKind"],
+      requestedAction: value["requestedAction"],
       originRunId: value["originRunId"],
       originSessionId: value["originSessionId"],
     } satisfies Record<string, unknown>;
@@ -510,11 +603,82 @@ export class IVecEngine {
     return payload;
   }
 
+  private toSystemEventIntent(value: Record<string, unknown>): SystemEventIntentMetadata | undefined {
+    const nestedIntent = asRecord(value["intent"]);
+    const kind = asSystemEventIntentKind(nestedIntent?.["kind"])
+      ?? asSystemEventIntentKind(value["intentKind"]);
+    const requestedAction = asOptionalString(nestedIntent?.["requestedAction"])
+      ?? asOptionalString(value["requestedAction"]);
+    const createdBy = asSystemEventCreatedBy(nestedIntent?.["createdBy"])
+      ?? asSystemEventCreatedBy(value["createdBy"]);
+
+    if (!kind && !requestedAction && !createdBy) {
+      return undefined;
+    }
+
+    return {
+      ...(kind ? { kind } : {}),
+      ...(requestedAction ? { requestedAction } : {}),
+      ...(createdBy ? { createdBy } : {}),
+    };
+  }
+
+  private buildSystemEventExecutionPlan(event: AyatiSystemEvent): SystemEventExecutionPlan {
+    const classification = classifySystemEvent(event);
+    const policy = resolveSystemEventPolicy(this.systemEventPolicy, event, classification.intentKind);
+
+    return {
+      classification,
+      policy,
+      preferredResponseKind: policy.delivery,
+      approvalState: policy.approvalRequired ? "pending" : "not_needed",
+      toolDefinitions: this.resolveSystemEventToolDefinitions(policy.mode),
+    };
+  }
+
+  private resolveSystemEventToolDefinitions(mode: SystemEventHandlingMode): ToolDefinition[] {
+    const allToolDefinitions = this.toolExecutor?.definitions() ?? [];
+    switch (mode) {
+      case "auto_execute_notify":
+        return allToolDefinitions;
+      case "analyze_notify":
+      case "draft_then_approve":
+      case "approve_then_execute":
+        return [];
+    }
+  }
+
+  private buildSystemEventOutcomeNote(
+    plan: SystemEventExecutionPlan,
+    content: string,
+    responseKind: AgentResponseKind,
+    prefix?: string,
+  ): string {
+    const parts = [
+      prefix,
+      `mode=${plan.policy.mode}`,
+      `delivery=${plan.policy.delivery}`,
+      `intent=${plan.classification.intentKind}`,
+      `createdBy=${plan.classification.createdBy}`,
+      `approvalRequired=${plan.policy.approvalRequired ? "yes" : "no"}`,
+      `response=${responseKind}`,
+      `tools=${plan.toolDefinitions.length}`,
+      plan.classification.requestedAction ? `requestedAction=${plan.classification.requestedAction}` : undefined,
+      content ? `summary=${content}` : undefined,
+    ].filter((part) => typeof part === "string" && part.length > 0);
+    return parts.join(" | ");
+  }
+
   private shouldIncludeToolDirectoryInPrompt(): boolean {
     return process.env["PROMPT_INCLUDE_TOOL_DIRECTORY"] === "1";
   }
 
-  private sendAssistantReply(clientId: string, runHandle: MemoryRunHandle, content: string): void {
+  private sendAssistantReply(
+    clientId: string,
+    runHandle: MemoryRunHandle,
+    content: string,
+    artifacts?: AgentArtifact[],
+  ): void {
     this.recordTurnStatus(clientId, runHandle, "response_started");
     this.sessionMemory.recordAssistantFinal(
       clientId,
@@ -523,7 +687,132 @@ export class IVecEngine {
       content,
     );
     this.recordTurnStatus(clientId, runHandle, "response_completed");
-    this.onReply?.(clientId, { type: "reply", content });
+    const artifactPayload = artifacts && artifacts.length > 0
+      ? { artifacts, runId: runHandle.runId }
+      : {};
+    this.onReply?.(clientId, {
+      type: "reply",
+      content,
+      ...artifactPayload,
+    });
+  }
+
+  private sendAssistantFeedback(
+    clientId: string,
+    runHandle: MemoryRunHandle,
+    content: string,
+    artifacts?: AgentArtifact[],
+    feedback?: {
+      kind: "approval" | "confirmation" | "clarification";
+      shortLabel: string;
+      actionType?: string;
+      sourceEventId?: string;
+      entityHints: string[];
+      payloadSummary?: string;
+      ttlHours?: number;
+    },
+  ): void {
+    this.recordTurnStatus(clientId, runHandle, "response_started");
+    this.sessionMemory.recordAssistantFeedback(
+      clientId,
+      runHandle.runId,
+      runHandle.sessionId,
+      content,
+    );
+    const opened = feedback
+      ? this.sessionMemory.recordFeedbackOpened?.(clientId, {
+        runId: runHandle.runId,
+        sessionId: runHandle.sessionId,
+        kind: feedback.kind,
+        shortLabel: feedback.shortLabel,
+        message: content,
+        actionType: feedback.actionType,
+        sourceEventId: feedback.sourceEventId,
+        entityHints: feedback.entityHints,
+        payloadSummary: feedback.payloadSummary,
+        ttlHours: feedback.ttlHours,
+      }) ?? null
+      : null;
+    this.recordTurnStatus(clientId, runHandle, "response_completed");
+    const artifactPayload = artifacts && artifacts.length > 0
+      ? { artifacts, runId: runHandle.runId }
+      : {};
+    this.onReply?.(clientId, {
+      type: "feedback",
+      content,
+      ...artifactPayload,
+      ...(opened ? { feedbackId: opened.feedbackId } : {}),
+    });
+  }
+
+  private sendAssistantNotification(
+    clientId: string,
+    runHandle: MemoryRunHandle,
+    content: string,
+    artifacts?: AgentArtifact[],
+    meta?: {
+      source?: string;
+      event?: string;
+      eventId?: string;
+    },
+  ): void {
+    this.recordTurnStatus(clientId, runHandle, "response_started");
+    this.sessionMemory.recordAssistantNotification?.(clientId, {
+      runId: runHandle.runId,
+      sessionId: runHandle.sessionId,
+      message: content,
+      source: meta?.source,
+      event: meta?.event,
+      eventId: meta?.eventId,
+    });
+    this.recordTurnStatus(clientId, runHandle, "response_completed");
+    const artifactPayload = artifacts && artifacts.length > 0
+      ? { artifacts, runId: runHandle.runId }
+      : {};
+    this.onReply?.(clientId, {
+      type: "notification",
+      content,
+      ...artifactPayload,
+    });
+  }
+
+  private dispatchAgentResponse(
+    clientId: string,
+    runHandle: MemoryRunHandle,
+    result: {
+      type: AgentResponseKind;
+      content: string;
+      artifacts?: AgentArtifact[];
+      openFeedback?: {
+        kind: "approval" | "confirmation" | "clarification";
+        shortLabel: string;
+        actionType?: string;
+        sourceEventId?: string;
+        entityHints: string[];
+        payloadSummary?: string;
+        ttlHours?: number;
+      };
+    },
+    meta?: {
+      source?: string;
+      event?: string;
+      eventId?: string;
+    },
+  ): void {
+    switch (result.type) {
+      case "reply":
+        this.sendAssistantReply(clientId, runHandle, result.content, result.artifacts);
+        return;
+      case "feedback":
+        this.sendAssistantFeedback(clientId, runHandle, result.content, result.artifacts, result.openFeedback);
+        return;
+      case "notification":
+        this.sendAssistantNotification(clientId, runHandle, result.content, result.artifacts, meta);
+        return;
+      case "none":
+        this.recordTurnStatus(clientId, runHandle, "response_completed", "delivery=none");
+        return;
+    }
   }
 
   private recordTurnStatus(
@@ -566,6 +855,10 @@ function asRequiredString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value : null;
 }
 
+function asOptionalPositiveNumber(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined;
+}
+
 function asRecord(value: unknown): Record<string, unknown> | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     return null;
@@ -573,7 +866,19 @@ function asRecord(value: unknown): Record<string, unknown> | null {
   return value as Record<string, unknown>;
 }
 
-function parseChatInboundMessage(data: unknown): ChatInboundMessage | null {
+function asSystemEventIntentKind(value: unknown): SystemEventIntentKind | undefined {
+  return value === "reminder" || value === "task" || value === "notification" || value === "unknown"
+    ? value
+    : undefined;
+}
+
+function asSystemEventCreatedBy(value: unknown): SystemEventCreatedBy | undefined {
+  return value === "user" || value === "system" || value === "external" || value === "unknown"
+    ? value
+    : undefined;
+}
+
+export function parseChatInboundMessage(data: unknown): ChatInboundMessage | null {
   if (!data || typeof data !== "object") {
     return null;
   }
@@ -595,20 +900,45 @@ function parseChatInboundMessage(data: unknown): ChatInboundMessage | null {
 
   const attachments: ChatAttachmentInput[] = [];
   for (const row of attachmentsRaw) {
-    if (!row || typeof row !== "object") {
+    const value = asRecord(row);
+    if (!value) {
       continue;
     }
 
-    const value = row as Record<string, unknown>;
-    const path = typeof value["path"] === "string" ? value["path"].trim() : "";
-    if (path.length === 0) {
+    const source = typeof value["source"] === "string" ? value["source"].trim().toLowerCase() : undefined;
+    if ((source === undefined || source === "cli")) {
+      const path = typeof value["path"] === "string" ? value["path"].trim() : "";
+      if (path.length === 0) {
+        continue;
+      }
+
+      const name = typeof value["name"] === "string" ? value["name"].trim() : undefined;
+      attachments.push({
+        source: "cli",
+        path,
+        ...(name ? { name } : {}),
+      });
       continue;
     }
 
-    const name = typeof value["name"] === "string" ? value["name"].trim() : undefined;
+    if (source !== "web") {
+      continue;
+    }
+
+    const uploadedPath = typeof value["uploadedPath"] === "string" ? value["uploadedPath"].trim() : "";
+    const originalName = typeof value["originalName"] === "string" ? value["originalName"].trim() : "";
+    if (uploadedPath.length === 0 || originalName.length === 0) {
+      continue;
+    }
+
+    const mimeType = typeof value["mimeType"] === "string" ? value["mimeType"].trim() : undefined;
+    const sizeBytes = asOptionalPositiveNumber(value["sizeBytes"]);
     attachments.push({
-      path,
-      ...(name ? { name } : {}),
+      source: "web",
+      uploadedPath,
+      originalName,
+      ...(mimeType ? { mimeType } : {}),
+      ...(sizeBytes !== undefined ? { sizeBytes } : {}),
     });
   }
 

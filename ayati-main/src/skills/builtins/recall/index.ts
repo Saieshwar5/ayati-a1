@@ -94,8 +94,8 @@ function createRecallTool(deps: RecallSkillDeps): ToolDefinition {
 }
 
 const RECALL_PROMPT_BLOCK = [
-  "Recall Skill is available.",
-  "Use recall_memory when the user refers to prior work, earlier conversations, 'like before', or asks what happened on a past date/time.",
+  "The `recall_memory` tool is built in.",
+  "Use it directly when the user refers to prior work, earlier conversations, 'like before', or asks what happened on a past date/time.",
   "recall_memory returns compact summary matches with sessionPath metadata only.",
   "If you need exact details after recall_memory, use the existing read_file tool on the returned sessionPath to inspect that session file.",
   "Prefer recall_memory before guessing how prior work was done.",

@@ -5,7 +5,8 @@ import { tmpdir } from "node:os";
 import { IVecEngine } from "../../src/ivec/index.js";
 import type { LlmProvider } from "../../src/core/contracts/provider.js";
 import type { LlmTurnInput, LlmTurnOutput } from "../../src/core/contracts/llm-protocol.js";
-import type { SessionMemory } from "../../src/memory/types.js";
+import type { FeedbackOpenRecordInput, OpenFeedbackItem, SessionMemory } from "../../src/memory/types.js";
+import type { SystemEventPolicyConfig } from "../../src/ivec/system-event-policy.js";
 
 function createMockProvider(overrides?: Partial<LlmProvider>): LlmProvider {
   return {
@@ -43,11 +44,80 @@ function createSessionMemory(): SessionMemory {
     recordTaskSummary: vi.fn(),
     recordSystemEventOutcome: vi.fn(),
     recordAssistantFeedback: vi.fn(),
+    recordFeedbackOpened: vi.fn().mockImplementation((_clientId: string, input: FeedbackOpenRecordInput): OpenFeedbackItem => ({
+      feedbackId: "fb-1",
+      status: "open",
+      kind: input.kind,
+      shortLabel: input.shortLabel,
+      message: input.message,
+      actionType: input.actionType,
+      sourceRunId: input.runId,
+      sourceEventId: input.sourceEventId,
+      entityHints: input.entityHints ?? [],
+      payloadSummary: input.payloadSummary,
+      createdAt: "2026-03-25T10:00:00.000Z",
+      expiresAt: "2026-03-26T10:00:00.000Z",
+    })),
+    recordAssistantNotification: vi.fn(),
     getPromptMemoryContext: vi.fn().mockReturnValue({
       conversationTurns: [],
       previousSessionSummary: "",
+      openFeedbacks: [],
+      recentSystemActivity: [],
     }),
     setStaticTokenBudget: vi.fn(),
+  };
+}
+
+function createSystemEventPolicy(): SystemEventPolicyConfig {
+  return {
+    schemaVersion: 1,
+    defaults: {
+      mode: "analyze_notify",
+      delivery: "notification",
+      contextVisibility: "summary",
+      approvalRequired: false,
+      feedbackTtlHours: 24,
+    },
+    rules: [
+      {
+        source: "pulse",
+        eventName: "reminder_due",
+        intentKind: "reminder",
+        mode: "auto_execute_notify",
+        delivery: "notification",
+        contextVisibility: "summary",
+        approvalRequired: false,
+      },
+      {
+        source: "pulse",
+        eventName: "task_due",
+        intentKind: "task",
+        mode: "auto_execute_notify",
+        delivery: "notification",
+        contextVisibility: "summary",
+        approvalRequired: false,
+      },
+      {
+        source: "custom-system",
+        eventName: "task.requested",
+        intentKind: "task",
+        mode: "draft_then_approve",
+        delivery: "feedback",
+        contextVisibility: "summary",
+        approvalRequired: true,
+        feedbackTtlHours: 24,
+      },
+      {
+        source: "gmail-cli",
+        eventName: "new_messages",
+        mode: "draft_then_approve",
+        delivery: "feedback",
+        contextVisibility: "summary",
+        approvalRequired: true,
+        feedbackTtlHours: 24,
+      },
+    ],
   };
 }
 
@@ -83,7 +153,13 @@ describe("IVecEngine", () => {
       const provider = createMockProvider();
       const onReply = vi.fn();
       const sessionMemory = createSessionMemory();
-      const engine = new IVecEngine({ onReply, provider, sessionMemory, dataDir });
+      const engine = new IVecEngine({
+        onReply,
+        provider,
+        sessionMemory,
+        dataDir,
+        systemEventPolicy: createSystemEventPolicy(),
+      });
 
       await engine.start();
       engine.handleMessage("c1", { type: "chat", content: "hello" });
@@ -162,7 +238,13 @@ describe("IVecEngine", () => {
       const provider = createMockProvider();
       const onReply = vi.fn();
       const sessionMemory = createSessionMemory();
-      const engine = new IVecEngine({ onReply, provider, sessionMemory, dataDir });
+      const engine = new IVecEngine({
+        onReply,
+        provider,
+        sessionMemory,
+        dataDir,
+        systemEventPolicy: createSystemEventPolicy(),
+      });
 
       await engine.start();
 
@@ -189,52 +271,151 @@ describe("IVecEngine", () => {
         expect.objectContaining({ source: "pulse", event: "reminder_due", eventId: "evt-1" }),
       );
       expect(onReply).toHaveBeenCalledWith("c1", {
-        type: "reply",
+        type: "notification",
         content: "mock reply",
       });
+      expect(sessionMemory.recordAssistantNotification as ReturnType<typeof vi.fn>).toHaveBeenCalledWith(
+        "c1",
+        expect.objectContaining({ message: "mock reply", source: "pulse", event: "reminder_due", eventId: "evt-1" }),
+      );
       expect(sessionMemory.recordSystemEventOutcome as ReturnType<typeof vi.fn>).toHaveBeenCalledWith(
         "c1",
-        expect.objectContaining({ eventId: "evt-1", status: "completed" }),
+        expect.objectContaining({
+          eventId: "evt-1",
+          status: "completed",
+          responseKind: "notification",
+          note: expect.stringContaining("mode=auto_execute_notify"),
+        }),
       );
     } finally {
       rmSync(dataDir, { recursive: true, force: true });
     }
   });
 
-  it("processes generic external system_event through beginSystemRun", async () => {
-    const dataDir = mkdtempSync(join(tmpdir(), "ayati-eng-external-event-"));
+  it("processes pulse scheduled task system_event through beginSystemRun", async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "ayati-eng-system-task-event-"));
     try {
       const provider = createMockProvider();
       const onReply = vi.fn();
       const sessionMemory = createSessionMemory();
-      const engine = new IVecEngine({ onReply, provider, sessionMemory, dataDir });
+      const engine = new IVecEngine({
+        onReply,
+        provider,
+        sessionMemory,
+        dataDir,
+        systemEventPolicy: createSystemEventPolicy(),
+      });
 
       await engine.start();
 
       await engine.handleSystemEvent("c1", {
         type: "system_event",
-        source: "gmail-cli",
-        eventName: "new_messages",
-        eventId: "notif-1",
+        source: "pulse",
+        eventName: "task_due",
+        eventId: "evt-task-1",
         receivedAt: "2026-03-01T10:00:05.000Z",
-        summary: "3 new emails from work",
+        summary: "Scheduled task due: Health",
+        intent: {
+          kind: "task",
+          requestedAction: "check_system_health",
+          createdBy: "user",
+        },
         payload: {
-          priority: "normal",
-          unreadCount: 3,
+          occurrenceId: "occ-task-1",
+          scheduledItemId: "task-1",
+          taskId: "task-1",
+          title: "Health",
+          instruction: "Check system health",
+          scheduledFor: "2026-03-01T10:00:00.000Z",
+          triggeredAt: "2026-03-01T10:00:05.000Z",
+          timezone: "UTC",
+          intentKind: "task",
+          requestedAction: "check_system_health",
         },
       });
 
       expect(sessionMemory.beginSystemRun as ReturnType<typeof vi.fn>).toHaveBeenCalledWith(
         "c1",
-        expect.objectContaining({ source: "gmail-cli", event: "new_messages", eventId: "notif-1" }),
+        expect.objectContaining({ source: "pulse", event: "task_due", eventId: "evt-task-1" }),
       );
       expect(onReply).toHaveBeenCalledWith("c1", {
-        type: "reply",
+        type: "notification",
         content: "mock reply",
       });
+      expect(sessionMemory.recordAssistantNotification as ReturnType<typeof vi.fn>).toHaveBeenCalledWith(
+        "c1",
+        expect.objectContaining({ message: "mock reply", source: "pulse", event: "task_due", eventId: "evt-task-1" }),
+      );
       expect(sessionMemory.recordSystemEventOutcome as ReturnType<typeof vi.fn>).toHaveBeenCalledWith(
         "c1",
-        expect.objectContaining({ eventId: "notif-1", status: "completed" }),
+        expect.objectContaining({
+          eventId: "evt-task-1",
+          status: "completed",
+          responseKind: "notification",
+          note: expect.stringContaining("requestedAction=check_system_health"),
+        }),
+      );
+    } finally {
+      rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it("parses raw system_event intent metadata and routes approval-gated work as feedback", async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "ayati-eng-external-event-"));
+    try {
+      const provider = createMockProvider();
+      const onReply = vi.fn();
+      const sessionMemory = createSessionMemory();
+      const engine = new IVecEngine({
+        onReply,
+        provider,
+        sessionMemory,
+        dataDir,
+        systemEventPolicy: createSystemEventPolicy(),
+      });
+
+      await engine.start();
+
+      engine.handleMessage("c1", {
+        type: "system_event",
+        source: "custom-system",
+        eventName: "task.requested",
+        eventId: "evt-approval-1",
+        receivedAt: "2026-03-01T10:00:05.000Z",
+        summary: "Please send the status report",
+        intentKind: "task",
+        requestedAction: "send report",
+        createdBy: "external",
+        payload: {},
+      });
+
+      await vi.waitFor(() => {
+        expect(sessionMemory.beginSystemRun as ReturnType<typeof vi.fn>).toHaveBeenCalledWith(
+          "c1",
+          expect.objectContaining({ source: "custom-system", event: "task.requested", eventId: "evt-approval-1" }),
+        );
+        expect(onReply).toHaveBeenCalledWith("c1", {
+          type: "feedback",
+          content: "mock reply",
+          feedbackId: "fb-1",
+        });
+      });
+      expect(sessionMemory.recordFeedbackOpened as ReturnType<typeof vi.fn>).toHaveBeenCalledWith(
+        "c1",
+        expect.objectContaining({
+          sourceEventId: "evt-approval-1",
+          ttlHours: 24,
+          actionType: "send_report",
+        }),
+      );
+      expect(sessionMemory.recordSystemEventOutcome as ReturnType<typeof vi.fn>).toHaveBeenCalledWith(
+        "c1",
+        expect.objectContaining({
+          eventId: "evt-approval-1",
+          status: "completed",
+          responseKind: "feedback",
+          note: expect.stringContaining("requestedAction=send_report"),
+        }),
       );
     } finally {
       rmSync(dataDir, { recursive: true, force: true });
@@ -267,6 +448,8 @@ describe("IVecEngine", () => {
         recordRunLedger: vi.fn(),
         recordTaskSummary: vi.fn(),
         recordAssistantFeedback: vi.fn(),
+        recordAssistantNotification: vi.fn(),
+        recordFeedbackOpened: vi.fn().mockReturnValue(null),
         getPromptMemoryContext: vi.fn().mockReturnValue({
           conversationTurns: [
             {
@@ -277,6 +460,8 @@ describe("IVecEngine", () => {
             },
           ],
           previousSessionSummary: "",
+          openFeedbacks: [],
+          recentSystemActivity: [],
         }),
         getSessionStatus: vi.fn().mockReturnValue({
           contextPercent: 96,

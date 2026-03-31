@@ -1,5 +1,6 @@
 import type {
   PulseDailySchedule,
+  PulseDurationUnit,
   PulseIntervalSchedule,
   PulseOnceSchedule,
   PulseReminderSchedule,
@@ -98,6 +99,39 @@ function parseDurationToMillis(value: number, unitRaw: string): number | null {
   }
   if (unit === "week" || unit === "weeks") {
     return value * WEEK_MS;
+  }
+  return null;
+}
+
+export function normalizePulseDurationUnit(raw: string): PulseDurationUnit | null {
+  const unit = raw.trim().toLowerCase();
+  if (unit === "minute" || unit === "minutes" || unit === "min" || unit === "mins") return "minute";
+  if (unit === "hour" || unit === "hours" || unit === "hr" || unit === "hrs") return "hour";
+  if (unit === "day" || unit === "days") return "day";
+  if (unit === "week" || unit === "weeks") return "week";
+  return null;
+}
+
+export function pulseDurationToMillis(value: number, unit: PulseDurationUnit): number | null {
+  return parseDurationToMillis(value, unit);
+}
+
+export function pulseIntervalMsToValueUnit(everyMs: number): { value: number; unit: PulseDurationUnit } | null {
+  if (!Number.isFinite(everyMs) || everyMs <= 0) return null;
+  const normalized = Math.trunc(everyMs);
+  const units: Array<{ unit: PulseDurationUnit; size: number }> = [
+    { unit: "week", size: WEEK_MS },
+    { unit: "day", size: DAY_MS },
+    { unit: "hour", size: HOUR_MS },
+    { unit: "minute", size: MINUTE_MS },
+  ];
+  for (const entry of units) {
+    if (normalized % entry.size === 0) {
+      const value = normalized / entry.size;
+      if (value > 0) {
+        return { value, unit: entry.unit };
+      }
+    }
   }
   return null;
 }
@@ -267,10 +301,14 @@ function parseEveryExpression(expression: string, timezone: string, now: Date): 
 
   const everyMs = parseDurationToMillis(value, intervalMatch[2] ?? "");
   if (!everyMs) return null;
+  const unit = normalizePulseDurationUnit(intervalMatch[2] ?? "");
+  if (!unit) return null;
 
   const schedule: PulseIntervalSchedule = {
     kind: "interval",
     everyMs,
+    value,
+    unit,
     anchorAt: now.toISOString(),
     expression,
   };

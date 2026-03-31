@@ -6,6 +6,7 @@ import type {
   ToolCallEvent,
   ToolResultEvent,
   AgentStepEvent,
+  FeedbackOpenedEvent,
   SystemEventReceivedEvent,
 } from "../../src/memory/session-events.js";
 
@@ -335,6 +336,71 @@ describe("InMemorySession", () => {
     expect(session.assistantTurnCount).toBe(0);
     expect(session.getConversationTurns()).toHaveLength(0);
     expect(session.getCountableEventCount()).toBe(0);
+  });
+
+  it("tracks open feedbacks and recent system activity separately from conversation turns", () => {
+    const session = new InMemorySession(
+      "s1",
+      "c1",
+      "2026-02-08T00:00:00.000Z",
+      "sessions/s1.md",
+    );
+
+    const feedbackEvent: FeedbackOpenedEvent = {
+      v: 2,
+      ts: "2026-02-08T00:01:00.000Z",
+      type: "feedback_opened",
+      sessionId: "s1",
+      sessionPath: "sessions/s1.md",
+      runId: "r1",
+      feedbackId: "fb-1",
+      kind: "approval",
+      shortLabel: "send Arun email",
+      message: "Should I send the draft reply?",
+      actionType: "send_email",
+      sourceEventId: "evt-1",
+      entityHints: ["Arun", "email"],
+      payloadSummary: "Draft ready",
+      expiresAt: "2026-02-09T00:01:00.000Z",
+    };
+
+    session.addEntry(feedbackEvent);
+    session.addEntry({
+      v: 2,
+      ts: "2026-02-08T00:01:05.000Z",
+      type: "assistant_notification",
+      sessionId: "s1",
+      sessionPath: "sessions/s1.md",
+      runId: "r1",
+      message: "Memory usage is stable.",
+      source: "pulse",
+      event: "reminder_due",
+      eventId: "evt-2",
+    });
+    session.addEntry({
+      v: 2,
+      ts: "2026-02-08T00:01:10.000Z",
+      type: "system_event_processed",
+      sessionId: "s1",
+      sessionPath: "sessions/s1.md",
+      runId: "r1",
+      source: "pulse",
+      event: "reminder_due",
+      eventId: "evt-2",
+      status: "completed",
+      summary: "Checked memory usage",
+      responseKind: "notification",
+    });
+
+    const openFeedbacks = session.getOpenFeedbacks();
+    const systemActivity = session.getRecentSystemActivity();
+
+    expect(openFeedbacks).toHaveLength(1);
+    expect(openFeedbacks[0]?.feedbackId).toBe("fb-1");
+    expect(openFeedbacks[0]?.expiresAt).toBe("2026-02-09T00:01:00.000Z");
+    expect(systemActivity).toHaveLength(2);
+    expect(systemActivity[0]?.source).toBe("pulse");
+    expect(systemActivity[0]?.summary).toBe("Memory usage is stable.");
   });
 
 });

@@ -58,6 +58,11 @@ describe("AgentMail helpers", () => {
       eventId: "evt_123",
       receivedAt: "2026-03-11T10:00:00Z",
       summary: "Incoming email from jane@example.com with subject Need help",
+      intent: {
+        kind: "task",
+        requestedAction: "review_incoming_message",
+        createdBy: "external",
+      },
       payload,
     });
   });

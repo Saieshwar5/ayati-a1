@@ -2,7 +2,7 @@ import { mkdirSync, writeFileSync, readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import type { LoopState, ActOutput, ActToolCallRecord, VerifyOutput } from "./types.js";
 
-type PersistedLoopState = Omit<LoopState, "sessionHistory" | "recentRunLedgers">;
+type PersistedLoopState = Omit<LoopState, "sessionHistory" | "recentRunLedgers" | "activeSessionAttachments" | "openFeedbacks" | "recentSystemActivity">;
 
 export function initRunDirectory(dataDir: string, runId: string): string {
   const runPath = join(dataDir, "runs", runId);
@@ -16,7 +16,14 @@ export function writeJSON(runPath: string, filename: string, data: unknown): voi
 }
 
 export function writeState(runPath: string, state: LoopState): void {
-  const { sessionHistory: _sessionHistory, recentRunLedgers: _recentRunLedgers, ...persisted } = state;
+  const {
+    sessionHistory: _sessionHistory,
+    recentRunLedgers: _recentRunLedgers,
+    activeSessionAttachments: _activeSessionAttachments,
+    openFeedbacks: _openFeedbacks,
+    recentSystemActivity: _recentSystemActivity,
+    ...persisted
+  } = state;
   const persistedState: PersistedLoopState = persisted;
   writeJSON(runPath, "state.json", persistedState);
 }
@@ -34,6 +41,9 @@ export function readState(runPath: string): Partial<LoopState> | null {
   if (parsed && typeof parsed === "object") {
     delete (parsed as Record<string, unknown>)["sessionHistory"];
     delete (parsed as Record<string, unknown>)["recentRunLedgers"];
+    delete (parsed as Record<string, unknown>)["activeSessionAttachments"];
+    delete (parsed as Record<string, unknown>)["openFeedbacks"];
+    delete (parsed as Record<string, unknown>)["recentSystemActivity"];
   }
   return parsed;
 }

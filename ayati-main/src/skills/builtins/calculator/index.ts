@@ -74,8 +74,8 @@ export const calculatorTool: ToolDefinition = {
 };
 
 const CALC_PROMPT_BLOCK = [
-  "Calculator Skill is available.",
-  "Use calculator for any mathematical computation — do NOT attempt mental math.",
+  "The `calculator` tool is built in.",
+  "Use it directly for mathematical computation instead of mental math.",
   "Supports: arithmetic, exponents, trig, logs, factorial, combinatorics, constants (pi, e, tau, phi).",
   "Supports hex (0xFF), binary (0b1010), octal (0o77), scientific notation (1.5e10).",
   "Implicit multiplication: 2pi, 3(4+5). Percentage: 50% = 0.5. Factorial: 5! = 120.",

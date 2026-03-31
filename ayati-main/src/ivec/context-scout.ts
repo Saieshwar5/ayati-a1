@@ -1,9 +1,9 @@
-import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
-import { join, relative } from "node:path";
+import { existsSync, readFileSync, readdirSync, realpathSync, statSync } from "node:fs";
+import { isAbsolute, join, relative, resolve } from "node:path";
 import { devLog } from "../shared/index.js";
 import type { LlmProvider } from "../core/contracts/provider.js";
 import type { LlmMessage, LlmToolSchema } from "../core/contracts/llm-protocol.js";
-import type { ScoutResult } from "./types.js";
+import type { GenericScoutScope, GenericScoutState, ScoutResult } from "./types.js";
 import type { ManagedDocumentManifest } from "../documents/types.js";
 import type { DocumentContextBackend } from "../documents/document-context-backend.js";
 
@@ -99,14 +99,132 @@ const DEFAULT_GREP_CONTEXT_BEFORE = 2;
 const DEFAULT_GREP_CONTEXT_AFTER = 2;
 const DEFAULT_GREP_MAX_MATCHES = 5;
 const SKIP_DIRS = new Set(["node_modules", ".git", "dist", ".cache"]);
+const MAX_SUMMARY_ITEMS = 8;
+const MAX_SUMMARY_ERRORS = 5;
 
-function executeReadFile(input: Record<string, unknown>): string {
-  const filePath = String(input["path"] ?? "");
-  if (!filePath) return "[error] path is required";
-  if (!existsSync(filePath)) return `[error] file not found: ${filePath}`;
+interface ScoutAccessPolicy {
+  scope: GenericScoutScope;
+  allowedRoots: string[];
+}
+
+function normalizeScoutRoot(pathValue?: string): string | null {
+  if (!pathValue || pathValue.trim().length === 0) {
+    return null;
+  }
+  return resolve(pathValue);
+}
+
+function buildScoutAccessPolicy(scope: GenericScoutScope, locations: ScoutKnownLocations): ScoutAccessPolicy {
+  const normalizedRoots = {
+    runPath: normalizeScoutRoot(locations.runPath),
+    contextDir: normalizeScoutRoot(locations.contextDir),
+    sessionPath: normalizeScoutRoot(locations.sessionPath),
+    sessionDir: normalizeScoutRoot(locations.sessionDir),
+    skillsDir: normalizeScoutRoot(locations.skillsDir),
+  };
+
+  const rootsByScope: Record<GenericScoutScope, Array<string | null>> = {
+    run_artifacts: [normalizedRoots.runPath],
+    project_context: [normalizedRoots.contextDir],
+    session: [normalizedRoots.sessionPath, normalizedRoots.sessionDir],
+    skills: [normalizedRoots.skillsDir],
+    both: [
+      normalizedRoots.runPath,
+      normalizedRoots.contextDir,
+      normalizedRoots.sessionPath,
+      normalizedRoots.sessionDir,
+      normalizedRoots.skillsDir,
+    ],
+  };
+
+  return {
+    scope,
+    allowedRoots: [...new Set(rootsByScope[scope].filter((root): root is string => Boolean(root)))],
+  };
+}
+
+function canonicalizeForScope(pathValue: string): string {
+  if (existsSync(pathValue)) {
+    try {
+      return realpathSync(pathValue);
+    } catch {
+      // Fall back to lexical normalization below.
+    }
+  }
+  return resolve(pathValue);
+}
+
+function isWithinAllowedRoot(targetPath: string, rootPath: string): boolean {
+  const normalizedTarget = canonicalizeForScope(targetPath);
+  const normalizedRoot = canonicalizeForScope(rootPath);
 
   try {
-    const raw = readFileSync(filePath, "utf-8");
+    const rootStat = statSync(rootPath);
+    if (rootStat.isFile()) {
+      return normalizedTarget === normalizedRoot;
+    }
+  } catch {
+    // Treat unknown roots as directories using lexical containment.
+  }
+
+  const rel = relative(normalizedRoot, normalizedTarget);
+  return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
+}
+
+function isWithinAllowedRoots(targetPath: string, allowedRoots: string[]): boolean {
+  return allowedRoots.some((root) => isWithinAllowedRoot(targetPath, root));
+}
+
+function collectScopedPathCandidates(pathValue: string, allowedRoots: string[]): string[] {
+  const candidates = new Set<string>();
+  candidates.add(resolve(pathValue));
+
+  if (!isAbsolute(pathValue)) {
+    for (const root of allowedRoots) {
+      candidates.add(resolve(root, pathValue));
+    }
+  }
+
+  return [...candidates];
+}
+
+function resolveScopedPath(
+  pathValue: string,
+  policy: ScoutAccessPolicy,
+  kind: "path" | "directory",
+): { ok: true; path: string } | { ok: false; error: string } {
+  const trimmed = pathValue.trim();
+  if (!trimmed) {
+    return { ok: false, error: `[error] ${kind} is required` };
+  }
+
+  const candidates = collectScopedPathCandidates(trimmed, policy.allowedRoots);
+  const inScopeCandidates = candidates.filter((candidate) => isWithinAllowedRoots(candidate, policy.allowedRoots));
+  const existingCandidate = inScopeCandidates.find((candidate) => existsSync(candidate));
+  if (existingCandidate) {
+    return { ok: true, path: existingCandidate };
+  }
+
+  if (inScopeCandidates[0]) {
+    return { ok: true, path: inScopeCandidates[0] };
+  }
+
+  return {
+    ok: false,
+    error: `[error] ${kind} outside allowed scope (${policy.scope})`,
+  };
+}
+
+function executeReadFile(input: Record<string, unknown>, policy: ScoutAccessPolicy): string {
+  const filePath = String(input["path"] ?? "");
+  if (!filePath) return "[error] path is required";
+  const resolved = resolveScopedPath(filePath, policy, "path");
+  if (!resolved.ok) return resolved.error;
+  const resolvedPath = resolved.path;
+  if (!existsSync(resolvedPath)) return `[error] file not found: ${resolvedPath}`;
+
+  try {
+    const raw = readFileSync(resolvedPath, "utf-8");
     const lines = raw.split("\n");
     const offset = Math.max(0, Number(input["offset"]) || 0);
     const limit = Number(input["limit"]) || lines.length;
@@ -128,17 +246,20 @@ function executeReadFile(input: Record<string, unknown>): string {
   }
 }
 
-function executeListDirectory(input: Record<string, unknown>): string {
+function executeListDirectory(input: Record<string, unknown>, policy: ScoutAccessPolicy): string {
   const dirPath = String(input["path"] ?? "");
   if (!dirPath) return "[error] path is required";
-  if (!existsSync(dirPath)) return `[error] directory not found: ${dirPath}`;
+  const resolved = resolveScopedPath(dirPath, policy, "directory");
+  if (!resolved.ok) return resolved.error;
+  const resolvedPath = resolved.path;
+  if (!existsSync(resolvedPath)) return `[error] directory not found: ${resolvedPath}`;
 
   try {
-    const entries = readdirSync(dirPath);
+    const entries = readdirSync(resolvedPath);
     const lines: string[] = [];
     for (const entry of entries.slice(0, MAX_DIR_ENTRIES)) {
       try {
-        const fullPath = join(dirPath, entry);
+        const fullPath = join(resolvedPath, entry);
         const stat = statSync(fullPath);
         lines.push(stat.isDirectory() ? `${entry}/` : entry);
       } catch {
@@ -154,11 +275,14 @@ function executeListDirectory(input: Record<string, unknown>): string {
   }
 }
 
-function executeSearchContent(input: Record<string, unknown>): string {
+function executeSearchContent(input: Record<string, unknown>, policy: ScoutAccessPolicy): string {
   const directory = String(input["directory"] ?? "");
   const pattern = String(input["pattern"] ?? "");
   if (!directory || !pattern) return "[error] directory and pattern are required";
-  if (!existsSync(directory)) return `[error] directory not found: ${directory}`;
+  const resolved = resolveScopedPath(directory, policy, "directory");
+  if (!resolved.ok) return resolved.error;
+  const resolvedPath = resolved.path;
+  if (!existsSync(resolvedPath)) return `[error] directory not found: ${resolvedPath}`;
 
   let regex: RegExp;
   try {
@@ -192,7 +316,7 @@ function executeSearchContent(input: Record<string, unknown>): string {
             if (results.length >= MAX_SEARCH_RESULTS) return;
             const line = lines[i];
             if (line && regex.test(line)) {
-              const relPath = relative(directory, fullPath);
+              const relPath = relative(resolvedPath, fullPath);
               results.push(`${relPath}:${i + 1}: ${line.slice(0, 200)}`);
             }
           }
@@ -203,17 +327,20 @@ function executeSearchContent(input: Record<string, unknown>): string {
     }
   }
 
-  walk(directory, 0);
+  walk(resolvedPath, 0);
   return results.length > 0
     ? results.join("\n")
-    : `[no matches for pattern "${pattern}" in ${directory}]`;
+    : `[no matches for pattern "${pattern}" in ${resolvedPath}]`;
 }
 
-function executeGrepFile(input: Record<string, unknown>): string {
+function executeGrepFile(input: Record<string, unknown>, policy: ScoutAccessPolicy): string {
   const filePath = String(input["path"] ?? "");
   const pattern = String(input["pattern"] ?? "");
   if (!filePath || !pattern) return "[error] path and pattern are required";
-  if (!existsSync(filePath)) return `[error] file not found: ${filePath}`;
+  const resolved = resolveScopedPath(filePath, policy, "path");
+  if (!resolved.ok) return resolved.error;
+  const resolvedPath = resolved.path;
+  if (!existsSync(resolvedPath)) return `[error] file not found: ${resolvedPath}`;
 
   let regex: RegExp;
   try {
@@ -224,18 +351,18 @@ function executeGrepFile(input: Record<string, unknown>): string {
 
   let stat;
   try {
-    stat = statSync(filePath);
+    stat = statSync(resolvedPath);
   } catch (err) {
     return `[error] ${err instanceof Error ? err.message : String(err)}`;
   }
-  if (!stat.isFile()) return `[error] path is not a file: ${filePath}`;
+  if (!stat.isFile()) return `[error] path is not a file: ${resolvedPath}`;
 
   const contextBefore = Math.max(0, Number(input["context_before"]) || DEFAULT_GREP_CONTEXT_BEFORE);
   const contextAfter = Math.max(0, Number(input["context_after"]) || DEFAULT_GREP_CONTEXT_AFTER);
   const maxMatches = Math.max(1, Number(input["max_matches"]) || DEFAULT_GREP_MAX_MATCHES);
 
   try {
-    const raw = readFileSync(filePath, "utf-8");
+    const raw = readFileSync(resolvedPath, "utf-8");
     const lines = raw.split("\n");
     const matches: Array<{ start: number; end: number; matchLine: number }> = [];
     const seenRanges = new Set<string>();
@@ -258,7 +385,7 @@ function executeGrepFile(input: Record<string, unknown>): string {
     }
 
     if (matches.length === 0) {
-      return `[no matches for pattern "${pattern}" in ${filePath}]`;
+      return `[no matches for pattern "${pattern}" in ${resolvedPath}]`;
     }
 
     let result = "";
@@ -296,33 +423,193 @@ function executeGrepFile(input: Record<string, unknown>): string {
   }
 }
 
-function executeTool(name: string, input: unknown): string {
+function executeTool(name: string, input: unknown, policy: ScoutAccessPolicy): string {
   const args = (typeof input === "object" && input !== null ? input : {}) as Record<string, unknown>;
   switch (name) {
     case "read_file":
-      return executeReadFile(args);
+      return executeReadFile(args, policy);
     case "list_directory":
-      return executeListDirectory(args);
+      return executeListDirectory(args, policy);
     case "search_content":
-      return executeSearchContent(args);
+      return executeSearchContent(args, policy);
     case "grep_file":
-      return executeGrepFile(args);
+      return executeGrepFile(args, policy);
     default:
       return `[error] unknown tool: ${name}`;
   }
+}
+
+interface ScoutAttemptSummary {
+  searchedLocations: string[];
+  attemptedSearches: string[];
+  errors: string[];
+  discoveredSources: string[];
+}
+
+function createScoutAttemptSummary(): ScoutAttemptSummary {
+  return {
+    searchedLocations: [],
+    attemptedSearches: [],
+    errors: [],
+    discoveredSources: [],
+  };
+}
+
+function pushUniqueLimited(target: string[], value: string | undefined, limit: number): void {
+  const normalized = value?.trim();
+  if (!normalized || target.includes(normalized) || target.length >= limit) {
+    return;
+  }
+  target.push(normalized);
+}
+
+function summarizeToolCall(name: string, input: unknown): string {
+  const args = (typeof input === "object" && input !== null ? input : {}) as Record<string, unknown>;
+  switch (name) {
+    case "read_file":
+      return `read_file path=${String(args["path"] ?? "")}`;
+    case "list_directory":
+      return `list_directory path=${String(args["path"] ?? "")}`;
+    case "search_content":
+      return `search_content directory=${String(args["directory"] ?? "")} pattern=${String(args["pattern"] ?? "")}`;
+    case "grep_file":
+      return `grep_file path=${String(args["path"] ?? "")} pattern=${String(args["pattern"] ?? "")}`;
+    default:
+      return `${name} ${JSON.stringify(args)}`;
+  }
+}
+
+function recordScoutAttempt(
+  summary: ScoutAttemptSummary,
+  name: string,
+  input: unknown,
+  result: string,
+): void {
+  const args = (typeof input === "object" && input !== null ? input : {}) as Record<string, unknown>;
+  pushUniqueLimited(summary.attemptedSearches, summarizeToolCall(name, input), MAX_SUMMARY_ITEMS);
+
+  if (typeof args["path"] === "string") {
+    pushUniqueLimited(summary.searchedLocations, args["path"], MAX_SUMMARY_ITEMS);
+  }
+  if (typeof args["directory"] === "string") {
+    pushUniqueLimited(summary.searchedLocations, args["directory"], MAX_SUMMARY_ITEMS);
+  }
+
+  const discoveredSources = extractToolDiscoveredSources(name, args, result);
+  for (const source of discoveredSources) {
+    pushUniqueLimited(summary.discoveredSources, source, MAX_SUMMARY_ITEMS);
+  }
+
+  if (result.startsWith("[error]")) {
+    pushUniqueLimited(summary.errors, result, MAX_SUMMARY_ERRORS);
+  }
+}
+
+function extractToolDiscoveredSources(
+  name: string,
+  input: Record<string, unknown>,
+  result: string,
+): string[] {
+  if (result.startsWith("[error]")) {
+    return [];
+  }
+
+  if (name === "read_file" || name === "grep_file") {
+    return typeof input["path"] === "string" ? [input["path"]] : [];
+  }
+
+  if (name === "list_directory") {
+    return typeof input["path"] === "string" ? [input["path"]] : [];
+  }
+
+  if (name !== "search_content" || typeof input["directory"] !== "string") {
+    return [];
+  }
+
+  const directory = input["directory"];
+  const lines = result.split("\n");
+  const sources: string[] = [];
+  for (const line of lines) {
+    const match = line.match(/^([^:\n]+):\d+:/);
+    if (!match?.[1]) continue;
+    pushUniqueLimited(sources, join(directory, match[1]), MAX_SUMMARY_ITEMS);
+  }
+  return sources;
+}
+
+function buildScoutFailureResult(input: {
+  status: GenericScoutState["status"];
+  query: string;
+  scope: GenericScoutScope;
+  summary: ScoutAttemptSummary;
+}): ScoutResult {
+  const searchedLocations = input.summary.searchedLocations.slice(0, MAX_SUMMARY_ITEMS);
+  const attemptedSearches = input.summary.attemptedSearches.slice(0, MAX_SUMMARY_ITEMS);
+  const errors = input.summary.errors.slice(0, MAX_SUMMARY_ERRORS);
+  const discoveredSources = input.summary.discoveredSources.slice(0, MAX_SUMMARY_ITEMS);
+  const whatWasSearched = searchedLocations.length > 0
+    ? searchedLocations.map((entry) => `- ${entry}`)
+    : ["- No valid search locations were recorded."];
+  const searchAttempts = attemptedSearches.length > 0
+    ? attemptedSearches.map((entry) => `- ${entry}`)
+    : ["- No tool attempts were recorded."];
+  const findings = discoveredSources.length > 0
+    ? discoveredSources.map((entry) => `- ${entry}`)
+    : ["- no grounded context found"];
+  const lines = [
+    `Context search status: ${input.status}`,
+    `Scope: ${input.scope}`,
+    `Query: ${input.query}`,
+    "",
+    "What was searched:",
+    ...whatWasSearched,
+    "",
+    "Search attempts:",
+    ...searchAttempts,
+    "",
+    "Findings:",
+    ...findings,
+  ];
+
+  if (errors.length > 0) {
+    lines.push("", "Errors:", ...errors.map((entry) => `- ${entry}`));
+  }
+
+  lines.push(
+    "",
+    "Guidance:",
+    "- Do not repeat the same or equivalent context_search in this iteration.",
+    "- Retry only if the query materially narrows or the scope changes.",
+  );
+
+  return {
+    context: lines.join("\n"),
+    sources: [...new Set([...searchedLocations, ...discoveredSources])],
+    confidence: 0,
+    scoutState: {
+      status: input.status,
+      scope: input.scope,
+      query: input.query,
+      searchedLocations,
+      attemptedSearches,
+      errors,
+    },
+  };
 }
 
 // ---------------------------------------------------------------------------
 // System prompt builder
 // ---------------------------------------------------------------------------
 
-type GenericScoutScope = "run_artifacts" | "project_context" | "session" | "skills" | "both";
-
 function buildScoutSystemPrompt(
   query: string,
   scope: GenericScoutScope,
   locations: ScoutKnownLocations,
 ): string {
+  const accessPolicy = buildScoutAccessPolicy(scope, locations);
+  const allowedRootsBlock = accessPolicy.allowedRoots.length > 0
+    ? accessPolicy.allowedRoots.map((root) => `- ${root}`).join("\n")
+    : "- No allowed roots are configured for this scope.";
   const scopeInstructions: Record<string, string> = {
     run_artifacts: [
       `Only search within the run directory: ${locations.runPath}`,
@@ -337,7 +624,7 @@ function buildScoutSystemPrompt(
     skills: locations.skillsDir
       ? `Only search within the skills directory: ${locations.skillsDir}\nEach subdirectory contains a skill.md file. Read the skill.md to get the full command reference.`
       : "No skills directory available.",
-    both: "You may search all known locations.",
+    both: "You may search only the known scout locations listed below, and no other directories or files.",
   };
 
   return `You are a Context Scout — a focused retrieval sub-agent.
@@ -364,9 +651,12 @@ Active session ID: ${locations.activeSessionId}
 
 Scope: ${scope}
 ${scopeInstructions[scope] ?? ""}
+Allowed roots for this scope:
+${allowedRootsBlock}
 
 Instructions:
 - Use the provided tools to find and read relevant files.
+- Any tool call that targets a path outside the allowed roots will fail.
 - Use search_content to discover which file matters when the target file is not yet known.
 - Use grep_file to narrow within a known file and return only the matching snippets with nearby lines.
 - Use read_file only when you need a larger block after grep_file, or when the file is already known and small enough to read directly.
@@ -428,6 +718,8 @@ async function runGenericContextScout(
   knownLocations: ScoutKnownLocations,
 ): Promise<ScoutResult> {
   const { provider, maxTurns } = options;
+  const attemptSummary = createScoutAttemptSummary();
+  const accessPolicy = buildScoutAccessPolicy(scope, knownLocations);
 
   devLog(`[scout] invoked: query="${query.slice(0, 80)}", scope=${scope}`);
 
@@ -445,7 +737,16 @@ async function runGenericContextScout(
 
     if (response.type === "assistant") {
       devLog(`[scout] text response at turn ${turn}, parsing result`);
-      return parseScoutResult(response.content);
+      const parsed = parseScoutResult(response.content);
+      if (parsed.context.trim().length === 0 && parsed.confidence === 0) {
+        return buildScoutFailureResult({
+          status: "empty",
+          query,
+          scope,
+          summary: attemptSummary,
+        });
+      }
+      return parsed;
     }
 
     if (response.type === "tool_calls") {
@@ -460,8 +761,9 @@ async function runGenericContextScout(
 
       for (const call of response.calls) {
         devLog(`[scout] tool call: ${call.name}(${JSON.stringify(call.input).slice(0, 100)})`);
-        const result = executeTool(call.name, call.input);
+        const result = executeTool(call.name, call.input, accessPolicy);
         devLog(`[scout] tool result: ${result.length} chars${result.startsWith("[error]") ? " (error)" : ""}`);
+        recordScoutAttempt(attemptSummary, call.name, call.input, result);
         messages.push({
           role: "tool",
           toolCallId: call.id,
@@ -473,7 +775,12 @@ async function runGenericContextScout(
   }
 
   devLog("[scout] max turns exhausted, returning empty result");
-  return { context: "", sources: [], confidence: 0 };
+  return buildScoutFailureResult({
+    status: "max_turns_exhausted",
+    query,
+    scope,
+    summary: attemptSummary,
+  });
 }
 
 function parseScoutResult(text: string): ScoutResult {

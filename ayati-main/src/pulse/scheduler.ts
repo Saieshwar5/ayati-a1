@@ -5,6 +5,11 @@ import { PulseStore } from "./store.js";
 
 const DEFAULT_POLL_INTERVAL_MS = 30_000;
 
+function toRequestedAction(value: string): string | undefined {
+  const compact = value.trim().toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "");
+  return compact.length > 0 ? compact : undefined;
+}
+
 export interface PulseSchedulerOptions {
   clientId: string;
   store: PulseStore;
@@ -79,20 +84,31 @@ export class PulseScheduler {
     this.inFlightOccurrences.add(occurrenceId);
 
     const triggeredAt = this.nowProvider().toISOString();
+    const isTask = reminder.intentKind === "task";
+    const requestedAction = reminder.task?.requestedAction ?? reminder.requestedAction ?? toRequestedAction(reminder.instruction);
     const event: PulseReminderDueEvent = {
       source: "pulse",
-      eventName: "reminder_due",
+      eventName: isTask ? "task_due" : "reminder_due",
       eventId: randomUUID(),
       receivedAt: triggeredAt,
-      summary: `Reminder due: ${reminder.title}`,
+      summary: `${isTask ? "Scheduled task due" : "Reminder due"}: ${reminder.title}`,
+      intent: {
+        kind: reminder.intentKind,
+        createdBy: "user",
+        ...(requestedAction ? { requestedAction } : {}),
+      },
       payload: {
         occurrenceId,
-        reminderId: reminder.id,
+        scheduledItemId: reminder.id,
+        ...(isTask ? { taskId: reminder.id } : { reminderId: reminder.id }),
         title: reminder.title,
         instruction: reminder.instruction,
         scheduledFor: reminder.nextTriggerAt,
         triggeredAt,
         timezone: reminder.timezone,
+        intentKind: reminder.intentKind,
+        ...(requestedAction ? { requestedAction } : {}),
+        ...(reminder.task ? { task: reminder.task } : {}),
         metadata: reminder.metadata,
         originRunId: reminder.originRunId,
         originSessionId: reminder.originSessionId,

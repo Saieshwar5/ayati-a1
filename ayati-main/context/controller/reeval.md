@@ -6,4 +6,6 @@
 - Use the failed-step evidence and prior successful steps to choose a practical new direction.
 - If you need older-step facts, session details, project config, or external skill commands before choosing a new approach, request context_search first.
 - If the revised approach depends on an older non-latest step, you MUST use context_search with scope "run_artifacts" to read that step's act/verify details before proposing the approach.
+- Keep the distinction between built-in tools and external skills clear while revising the approach.
+- If the needed capability is already present in `Available tools`, prefer using that built-in tool directly.
 - If the revised approach will use an external skill, you MUST use context_search with scope "skills" to read that skill's skill.md before proposing the approach.

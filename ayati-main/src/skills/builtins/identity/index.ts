@@ -81,8 +81,8 @@ function createRenameTool(deps: IdentitySkillDeps): ToolDefinition {
 }
 
 const IDENTITY_PROMPT_BLOCK = [
-  "Identity Skill is available.",
-  "Use rename_agent when a user asks you to change your name.",
+  "The `rename_agent` tool is built in.",
+  "Use it directly when a user asks you to change your name.",
   "Only the agent's display name is modified — all other soul properties remain unchanged.",
   "After renaming, immediately use the new name in conversation.",
 ].join("\n");

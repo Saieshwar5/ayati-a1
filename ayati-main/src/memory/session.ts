@@ -1,4 +1,8 @@
 import type {
+  ActiveAttachmentsEvent,
+  AssistantNotificationEvent,
+  FeedbackOpenedEvent,
+  FeedbackResolvedEvent,
   CountableSessionEvent,
   ToolSessionEvent,
   UserMessageEvent,
@@ -15,7 +19,15 @@ import type {
   SystemEventProcessedEvent,
 } from "./session-events.js";
 import { estimateTextTokens } from "../prompt/token-estimator.js";
-import type { AgentStepMemoryEvent, ConversationTurn, ToolMemoryEvent } from "./types.js";
+import type {
+  ActiveAttachmentRecord,
+  ActiveAttachmentRef,
+  AgentStepMemoryEvent,
+  ConversationTurn,
+  OpenFeedbackItem,
+  SystemActivityItem,
+  ToolMemoryEvent,
+} from "./types.js";
 
 export type SessionTimelineEntry =
   | UserMessageEvent
@@ -26,8 +38,12 @@ export type SessionTimelineEntry =
   | RunFailureEvent
   | AgentStepEvent
   | RunLedgerEvent
+  | ActiveAttachmentsEvent
   | TaskSummaryEvent
   | AssistantFeedbackEvent
+  | AssistantNotificationEvent
+  | FeedbackOpenedEvent
+  | FeedbackResolvedEvent
   | SystemEventReceivedEvent
   | SystemEventProcessedEvent;
 
@@ -35,6 +51,7 @@ const COUNTABLE_EVENT_TYPES = new Set([
   "user_message",
   "assistant_message",
 ]);
+const LEGACY_FEEDBACK_TTL_MS = 24 * 60 * 60 * 1000;
 
 export class InMemorySession {
   readonly id: string;
@@ -150,6 +167,70 @@ export class InMemorySession {
     return this.getAgentStepEntries(limit);
   }
 
+  getOpenFeedbacks(): OpenFeedbackItem[] {
+    const open = new Map<string, OpenFeedbackItem>();
+
+    for (const entry of this.timeline) {
+      if (entry.type === "feedback_opened") {
+        open.set(entry.feedbackId, {
+          feedbackId: entry.feedbackId,
+          status: "open",
+          kind: entry.kind,
+          shortLabel: entry.shortLabel,
+          message: entry.message,
+          actionType: entry.actionType,
+          sourceRunId: entry.runId,
+          sourceEventId: entry.sourceEventId,
+          entityHints: [...entry.entityHints],
+          payloadSummary: entry.payloadSummary,
+          createdAt: entry.ts,
+          expiresAt: typeof entry.expiresAt === "string" && entry.expiresAt.trim().length > 0
+            ? entry.expiresAt
+            : new Date(new Date(entry.ts).getTime() + LEGACY_FEEDBACK_TTL_MS).toISOString(),
+        });
+      } else if (entry.type === "feedback_resolved") {
+        open.delete(entry.feedbackId);
+      }
+    }
+
+    return [...open.values()].sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+  }
+
+  getRecentSystemActivity(limit = 10): SystemActivityItem[] {
+    if (limit <= 0) return [];
+
+    const activity: SystemActivityItem[] = [];
+    for (const entry of this.timeline) {
+      if (entry.type === "assistant_notification") {
+        activity.push({
+          timestamp: entry.ts,
+          source: entry.source ?? "assistant",
+          event: entry.event ?? "notification",
+          eventId: entry.eventId ?? `notification:${entry.ts}`,
+          summary: entry.message,
+          userVisible: true,
+          responseKind: "notification",
+        });
+        continue;
+      }
+
+      if (entry.type === "system_event_processed") {
+        activity.push({
+          timestamp: entry.ts,
+          source: entry.source,
+          event: entry.event,
+          eventId: entry.eventId,
+          summary: entry.summary?.trim() || `${entry.source}/${entry.event}`,
+          note: entry.note,
+          responseKind: entry.responseKind,
+          userVisible: entry.responseKind !== "none",
+        });
+      }
+    }
+
+    return activity.slice(-limit);
+  }
+
   getRecentUniqueRunLedgerEvents(limit = 5): RunLedgerEvent[] {
     if (limit <= 0) return [];
 
@@ -167,6 +248,58 @@ export class InMemorySession {
     }
 
     return events;
+  }
+
+  getActiveAttachmentRecords(limit = 5): ActiveAttachmentRecord[] {
+    if (limit <= 0) return [];
+
+    const seen = new Set<string>();
+    const records: ActiveAttachmentRecord[] = [];
+
+    for (let idx = this.timeline.length - 1; idx >= 0; idx--) {
+      const entry = this.timeline[idx];
+      if (!entry || entry.type !== "active_attachments") continue;
+      for (const attachment of entry.attachments) {
+        const documentId = attachment.summary.documentId;
+        if (!documentId || seen.has(documentId)) {
+          continue;
+        }
+        seen.add(documentId);
+        records.push({
+          documentId,
+          displayName: attachment.summary.displayName,
+          kind: attachment.summary.kind,
+          mode: attachment.summary.mode,
+          runId: entry.runId,
+          runPath: entry.runPath,
+          preparedInputId: attachment.summary.preparedInputId,
+          lastUsedAt: entry.ts,
+          lastAction: entry.action,
+          manifest: attachment.manifest,
+          summary: attachment.summary,
+          detail: attachment.detail ?? {},
+        });
+        if (records.length >= limit) {
+          return records;
+        }
+      }
+    }
+
+    return records;
+  }
+
+  getActiveAttachmentRefs(limit = 5): ActiveAttachmentRef[] {
+    return this.getActiveAttachmentRecords(limit).map((record) => ({
+      documentId: record.documentId,
+      displayName: record.displayName,
+      kind: record.kind,
+      mode: record.mode,
+      runId: record.runId,
+      runPath: record.runPath,
+      preparedInputId: record.preparedInputId,
+      lastUsedAt: record.lastUsedAt,
+      lastAction: record.lastAction,
+    }));
   }
 
   findToolCallArgs(toolCallId: string): string {

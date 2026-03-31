@@ -14,9 +14,16 @@ export function buildExternalSkillsBlock(skills: ExternalSkillMeta[]): SkillProm
   const content = `# External Skills
 
 You have external skills installed on this system.
-Before using an external skill, you must first request a context search
+
+External skills are not built-in tools.
+They are separate documented workflows or integrations that you may consult when a task depends on something beyond the built-in toolset.
+
+Before using an external skill, first request a context search
 with scope "skills" to load its full command reference from its skill.md file,
-then use the shell tool to execute the documented commands.
+then use the documented commands or workflow.
+
+If the needed capability is already present in Available Tools,
+use the built-in tool directly instead of searching here.
 
 Skill types:
 - type=cli: commands are centered around an installed CLI.

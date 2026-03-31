@@ -62,6 +62,8 @@ function createState(overrides?: Partial<LoopState>): LoopState {
     failedApproaches: [],
     sessionHistory: [],
     recentRunLedgers: [],
+    openFeedbacks: [],
+    recentSystemActivity: [],
     ...overrides,
   };
 }
@@ -136,6 +138,27 @@ describe("parseUnderstandResponse", () => {
     if (!result.done) {
       expect(result.understand).toBe(true);
       expect(result.goal.objective).toBe("Find and list all JS files");
+    }
+  });
+
+  it("parses understand work_mode when provided", () => {
+    const json = JSON.stringify({
+      done: false,
+      understand: true,
+      goal: {
+        objective: "analyze attached csv",
+        done_when: ["the dataset question is answered"],
+        required_evidence: ["query results are returned"],
+        ask_user_when: [],
+        stop_when_no_progress: ["dataset tools fail twice"],
+      },
+      approach: "use dataset tools",
+      work_mode: "structured_data_process",
+    });
+    const result = parseUnderstandResponse(json);
+    expect(result.done).toBe(false);
+    if (!result.done) {
+      expect(result.work_mode).toBe("structured_data_process");
     }
   });
 
@@ -674,25 +697,39 @@ describe("callDirect", () => {
     expect(prompt).toContain("runId=abc runPath=/runs/abc");
   });
 
-  it("includes attached document manifest in direct prompt", async () => {
+  it("includes prepared attachment guidance in direct prompt when available", async () => {
     const json = JSON.stringify({
       done: false,
-      context_search: true,
-      query: "What does the policy say?",
-      scope: "documents",
-      document_paths: ["/docs/policy.txt"],
+      execution_mode: "dependent",
+      intent: "query the prepared attachment",
+      tools_hint: ["document_query"],
+      success_criteria: "the answer is grounded in the prepared attachment",
+      context: "use the prepared attachment metadata",
     });
     const provider = createMockProvider(json);
     const state = createState({
-      attachedDocuments: [
+      workMode: "document_lookup",
+      preparedAttachments: [
         {
+          preparedInputId: "att_1_doc1",
           documentId: "doc-1",
-          name: "policy.txt",
-          originalPath: "/docs/policy.txt",
-          storedPath: "/managed/docs/policy.txt",
+          displayName: "policy.txt",
+          source: "cli",
           kind: "txt",
+          mode: "unstructured_text",
           sizeBytes: 128,
           checksum: "abc123",
+          originalPath: "/docs/policy.txt",
+          status: "ready",
+          warnings: [],
+          artifactPath: "/tmp/test/attachments/att_1_doc1.json",
+          unstructured: {
+            extractorUsed: "direct",
+            sectionCount: 3,
+            chunkCount: 4,
+            sectionHints: ["summary", "policy", "termination"],
+            indexed: false,
+          },
         },
       ],
     });
@@ -703,10 +740,11 @@ describe("callDirect", () => {
       messages: Array<{ role: string; content: string }>;
     };
     const prompt = call.messages[0]!.content;
-    expect(prompt).toContain("Attached documents available (1):");
-    expect(prompt).toContain("policy.txt | kind=txt | path=/docs/policy.txt");
-    expect(prompt).toContain("\"documents\"");
-    expect(prompt).toContain("\"document_paths\": [\"optional/path or empty array\"]");
+    expect(prompt).toContain("Work mode: document_lookup");
+    expect(prompt).toContain("Prepared attachments available (1):");
+    expect(prompt).toContain("policy.txt | kind=txt | mode=unstructured_text | status=ready");
+    expect(prompt).toContain("document_query");
+    expect(prompt).not.toContain("\"documents\"");
   });
 
   it("uses injected direct instructions when provided", async () => {
@@ -730,6 +768,7 @@ describe("callDirect", () => {
         understand: "- custom understand instruction",
         direct: "- custom direct instruction",
         reeval: "- custom reeval instruction",
+        systemEvent: "- custom system event instruction",
       },
     );
 

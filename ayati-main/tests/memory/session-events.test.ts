@@ -6,6 +6,7 @@ import type {
   ToolResultEvent,
   AgentStepEvent,
   TaskSummaryEvent,
+  FeedbackOpenedEvent,
   SystemEventReceivedEvent,
 } from "../../src/memory/session-events.js";
 
@@ -147,6 +148,58 @@ describe("session-events", () => {
     expect(parsed.source).toBe("pulse");
     expect(parsed.eventId).toBe("evt-1");
     expect(parsed.payload?.["foo"]).toBe("bar");
+  });
+
+  it("serializes and deserializes feedback_opened", () => {
+    const event: FeedbackOpenedEvent = {
+      v: 2,
+      ts: "2026-02-08T00:02:00.000Z",
+      type: "feedback_opened",
+      sessionId: "s1",
+      sessionPath: "sessions/2026-02-08/s1.md",
+      runId: "r1",
+      feedbackId: "fb-1",
+      kind: "approval",
+      shortLabel: "send Arun email",
+      message: "Should I send the draft?",
+      actionType: "send_email",
+      sourceEventId: "evt-1",
+      entityHints: ["Arun", "email"],
+      payloadSummary: "Draft ready",
+      expiresAt: "2026-02-09T00:02:00.000Z",
+    };
+
+    const line = serializeEvent(event);
+    const parsed = deserializeEvent(line) as FeedbackOpenedEvent;
+
+    expect(parsed.type).toBe("feedback_opened");
+    expect(parsed.feedbackId).toBe("fb-1");
+    expect(parsed.kind).toBe("approval");
+    expect(parsed.payloadSummary).toBe("Draft ready");
+    expect(parsed.expiresAt).toBe("2026-02-09T00:02:00.000Z");
+  });
+
+  it("serializes and deserializes feedback_resolved with outcome", () => {
+    const event = {
+      v: 2,
+      ts: "2026-02-08T00:03:00.000Z",
+      type: "feedback_resolved" as const,
+      sessionId: "s1",
+      sessionPath: "sessions/2026-02-08/s1.md",
+      runId: "r1",
+      feedbackId: "fb-1",
+      resolution: "expired" as const,
+    };
+
+    const line = serializeEvent(event);
+    const parsed = deserializeEvent(line);
+
+    expect(parsed.type).toBe("feedback_resolved");
+    if (parsed.type !== "feedback_resolved") {
+      throw new Error("unexpected event type");
+    }
+    expect(parsed.feedbackId).toBe("fb-1");
+    expect(parsed.resolution).toBe("expired");
   });
 
   it("throws on unsupported version", () => {

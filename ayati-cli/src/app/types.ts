@@ -1,6 +1,7 @@
 export type ChatMessage = {
   id: string;
   role: "user" | "assistant";
+  kind: "user" | "reply" | "feedback" | "notification" | "error";
   content: string;
   timestamp: number;
 };
@@ -21,9 +22,23 @@ export interface ReplyMessage {
   content: string;
 }
 
+export interface FeedbackMessage {
+  type: "feedback";
+  content: string;
+}
+
+export interface NotificationMessage {
+  type: "notification";
+  content: string;
+}
+
 export interface ErrorMessage {
   type: "error";
   content: string;
 }
 
-export type ServerMessage = ReplyMessage | ErrorMessage;
+export type ServerMessage =
+  | ReplyMessage
+  | FeedbackMessage
+  | NotificationMessage
+  | ErrorMessage;

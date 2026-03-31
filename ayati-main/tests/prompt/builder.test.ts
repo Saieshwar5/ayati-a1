@@ -62,16 +62,22 @@ describe("buildSystemPrompt", () => {
       "soul",
       "user_profile",
       "conversation",
+      "open_feedbacks",
       "memory",
       "current_session",
       "recent_runs",
+      "system_activity",
       "skills",
       "tools",
       "session_status",
     ]);
-    const emptyOptionalIds = new Set(["tools", "session_status"]);
+    const emptyOptionalIds = new Set(["open_feedbacks", "system_activity", "tools", "session_status"]);
     const includedSections = output.sections.filter((s) => !emptyOptionalIds.has(s.id));
     expect(includedSections.every((s) => s.included)).toBe(true);
+    const feedbackSection = output.sections.find((s) => s.id === "open_feedbacks");
+    expect(feedbackSection?.included).toBe(false);
+    const activitySection = output.sections.find((s) => s.id === "system_activity");
+    expect(activitySection?.included).toBe(false);
     const toolsSection = output.sections.find((s) => s.id === "tools");
     expect(toolsSection?.included).toBe(false);
     const statusSection = output.sections.find((s) => s.id === "session_status");
@@ -110,5 +116,47 @@ describe("buildSystemPrompt", () => {
     expect(conversation?.included).toBe(false);
     expect(memory?.included).toBe(false);
     expect(skills?.included).toBe(false);
+  });
+
+  it("renders open feedback and recent system activity sections when present", () => {
+    const output = buildSystemPrompt({
+      basePrompt: "Base rules",
+      soul: emptySoulContext(),
+      userProfile: emptyUserProfileContext(),
+      openFeedbacks: [
+        {
+          feedbackId: "fb-1",
+          status: "open",
+          kind: "approval",
+          shortLabel: "send Arun email",
+          message: "Should I send the draft reply to Arun?",
+          actionType: "send_email",
+          sourceRunId: "run-1",
+          sourceEventId: "evt-1",
+          entityHints: ["Arun", "email"],
+          payloadSummary: "Draft email ready",
+          createdAt: "2026-02-16T00:00:00.000Z",
+          expiresAt: "2026-02-17T00:00:00.000Z",
+        },
+      ],
+      recentSystemActivity: [
+        {
+          timestamp: "2026-02-16T00:01:00.000Z",
+          source: "pulse",
+          event: "reminder_due",
+          eventId: "evt-2",
+          summary: "Checked memory usage",
+          responseKind: "notification",
+          userVisible: true,
+        },
+      ],
+    });
+
+    expect(output.systemPrompt).toContain("# Open Feedback Requests");
+    expect(output.systemPrompt).toContain("send Arun email");
+    expect(output.systemPrompt).toContain("# Recent System Activity");
+    expect(output.systemPrompt).toContain("Checked memory usage");
+    expect(output.sections.find((s) => s.id === "open_feedbacks")?.included).toBe(true);
+    expect(output.sections.find((s) => s.id === "system_activity")?.included).toBe(true);
   });
 });

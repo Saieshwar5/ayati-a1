@@ -10,8 +10,8 @@ import { findFilesTool } from "./find-files.js";
 import { searchInFilesTool } from "./search-in-files.js";
 
 const FS_PROMPT_BLOCK = [
-  "Filesystem Skill is available.",
-  "Use filesystem tools for safe, structured file and directory operations.",
+  "Filesystem tools are built in.",
+  "Use them directly for safe, structured file and directory operations.",
   "Prefer creating scratch files, generated output, and ad-hoc work inside work_space/ by default.",
   "Treat relative paths as relative to work_space/ unless the user clearly targets another location.",
   "Absolute paths and explicit non-work_space paths are allowed when the task calls for them.",

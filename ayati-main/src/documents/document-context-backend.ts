@@ -2,14 +2,19 @@ import type { LlmProvider } from "../core/contracts/provider.js";
 import { extractLeafEvidence } from "../subagents/context-extractor/leaf-extractor.js";
 import type { SourceChunk } from "../subagents/context-extractor/types.js";
 import type { ScoutResult, DocumentScoutStatus } from "../ivec/types.js";
-import { devLog } from "../shared/index.js";
+import { devLog, devWarn } from "../shared/index.js";
 import type { ManagedDocumentManifest } from "./types.js";
 import { DocumentStore } from "./document-store.js";
+import type { DocumentIndexer } from "./document-indexer.js";
+import type { DocumentRetriever } from "./document-retriever.js";
 
 export interface DocumentContextBackendOptions {
   store: DocumentStore;
   maxRetrievedChunks?: number;
   maxEvidenceItems?: number;
+  documentIndexer?: DocumentIndexer;
+  documentRetriever?: DocumentRetriever;
+  largeDocumentMinChunks?: number;
 }
 
 const STOPWORDS = new Set([
@@ -44,11 +49,17 @@ export class DocumentContextBackend {
   private readonly store: DocumentStore;
   private readonly maxRetrievedChunks: number;
   private readonly maxEvidenceItems: number;
+  private readonly documentIndexer?: DocumentIndexer;
+  private readonly documentRetriever?: DocumentRetriever;
+  private readonly largeDocumentMinChunks: number;
 
   constructor(options: DocumentContextBackendOptions) {
     this.store = options.store;
     this.maxRetrievedChunks = Math.max(4, options.maxRetrievedChunks ?? 8);
     this.maxEvidenceItems = Math.max(3, options.maxEvidenceItems ?? 6);
+    this.documentIndexer = options.documentIndexer;
+    this.documentRetriever = options.documentRetriever;
+    this.largeDocumentMinChunks = Math.max(1, options.largeDocumentMinChunks ?? 40);
   }
 
   async search(input: {
@@ -102,7 +113,7 @@ export class DocumentContextBackend {
       });
     }
 
-    const selection = selectChunksForQuery(input.query, allChunks, this.maxRetrievedChunks);
+    const selection = await this.selectDocumentChunks(input.query, prepared, allChunks);
     const selectedChunks = selection.chunks;
     devLog(
       `[document-search] selected strategy=${selection.strategy} chunks=${selectedChunks.length}/${allChunks.length} tokens=${selection.queryTokens.length} sample=${selectedChunks.slice(0, 4).map((chunk) => `${chunk.documentName}@${chunk.location}`).join(" | ")}`,
@@ -168,6 +179,73 @@ export class DocumentContextBackend {
       `[document-search] returning fallback summary status=${fallbackStatus} sources=${result.sources.length} confidence=${result.confidence.toFixed(3)}`,
     );
     return result;
+  }
+
+  private async selectDocumentChunks(
+    query: string,
+    preparedDocuments: Awaited<ReturnType<DocumentStore["prepareDocuments"]>>,
+    allChunks: SourceChunk[],
+  ): Promise<{
+    chunks: SourceChunk[];
+    strategy: "coverage:summary" | "coverage:empty-tokens" | "coverage:multi-topic" | "ranked" | "vector" | "vector+ranked";
+    queryTokens: string[];
+  }> {
+    const lexicalSelection = selectChunksForQuery(query, allChunks, this.maxRetrievedChunks);
+    const useVector = this.shouldUseVectorRetrieval(preparedDocuments, allChunks, lexicalSelection.strategy);
+    if (!useVector || !this.documentIndexer || !this.documentRetriever) {
+      return lexicalSelection;
+    }
+
+    try {
+      await this.documentIndexer.ensureIndexed(preparedDocuments);
+      const vectorResult = await this.documentRetriever.search({
+        query,
+        documents: preparedDocuments,
+        limit: this.maxRetrievedChunks,
+      });
+      if (vectorResult.chunks.length === 0) {
+        return lexicalSelection;
+      }
+
+      const lexicalSupplement = lexicalSelection.chunks.filter((chunk) => !vectorResult.chunks.some((candidate) => candidate.sourceId === chunk.sourceId));
+      const merged = [...vectorResult.chunks];
+      for (const chunk of lexicalSupplement) {
+        if (merged.length >= this.maxRetrievedChunks) {
+          break;
+        }
+        merged.push(chunk);
+      }
+
+      return {
+        chunks: merged,
+        strategy: merged.length > vectorResult.chunks.length ? "vector+ranked" : "vector",
+        queryTokens: lexicalSelection.queryTokens,
+      };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      devWarn(`[document-search] vector retrieval failed, falling back to lexical selection: ${truncate(message, 180)}`);
+      return lexicalSelection;
+    }
+  }
+
+  private shouldUseVectorRetrieval(
+    preparedDocuments: Awaited<ReturnType<DocumentStore["prepareDocuments"]>>,
+    allChunks: SourceChunk[],
+    lexicalStrategy: ReturnType<typeof selectChunksForQuery>["strategy"],
+  ): boolean {
+    if (!this.documentIndexer || !this.documentRetriever) {
+      return false;
+    }
+
+    if (lexicalStrategy === "coverage:summary" || lexicalStrategy === "coverage:multi-topic") {
+      return false;
+    }
+
+    const largestDocumentChunkCount = preparedDocuments.reduce(
+      (max, document) => Math.max(max, document.chunks.length),
+      0,
+    );
+    return allChunks.length >= this.largeDocumentMinChunks || largestDocumentChunkCount >= this.largeDocumentMinChunks;
   }
 }
 

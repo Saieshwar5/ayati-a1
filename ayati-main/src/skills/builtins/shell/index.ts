@@ -676,8 +676,8 @@ export const shellSessionCloseTool: ToolDefinition = {
 };
 
 const SHELL_PROMPT_BLOCK = [
-  "Shell Skill is available.",
-  "Use shell for terminal execution, developer workflows, and orchestrating system tools.",
+  "Shell tools are built in.",
+  "Use them directly for terminal execution, developer workflows, and orchestrating system tools.",
   "Default shell work to work_space/ unless the user or task clearly points to another directory.",
   "Use shell_run_script to execute project scripts.",
   "Use shell_session_start/shell_session_write/shell_session_close for interactive commands.",

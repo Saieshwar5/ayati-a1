@@ -64,6 +64,8 @@ describe("PulseScheduler", () => {
       schedule: {
         kind: "interval",
         everyMs: 60 * 60 * 1000,
+        value: 1,
+        unit: "hour",
         anchorAt: "2026-03-01T07:00:00.000Z",
       },
       nextTriggerAt: "2026-03-01T08:00:00.000Z",
@@ -83,5 +85,64 @@ describe("PulseScheduler", () => {
     const reminders = await store.listReminders({ clientId: "local", status: "all" });
     expect(reminders[0]?.status).toBe("active");
     expect(reminders[0]?.nextTriggerAt).toBe("2026-03-01T13:00:00.000Z");
+  });
+
+  it("emits task_due events for scheduled tasks", async () => {
+    const store = new PulseStore({ filePath: storePath, now: () => fixedNow });
+    await store.createReminder({
+      clientId: "local",
+      intentKind: "task",
+      title: "Health check",
+      instruction: "Check system health",
+      timezone: "UTC",
+      schedule: {
+        kind: "once",
+        at: "2026-03-01T10:00:00.000Z",
+      },
+      nextTriggerAt: "2026-03-01T10:00:00.000Z",
+      requestedAction: "check_system_health",
+      task: {
+        objective: "Check system health and report status",
+        requestedAction: "check_system_health",
+        successCriteria: ["Return current system health summary"],
+      },
+    });
+
+    const received: Array<{ eventName: string; payload: Record<string, unknown>; intent?: Record<string, unknown> }> = [];
+    const scheduler = new PulseScheduler({
+      clientId: "local",
+      store,
+      onReminderDue: async (event) => {
+        received.push({
+          eventName: event.eventName,
+          payload: event.payload,
+          intent: event.intent as Record<string, unknown> | undefined,
+        });
+      },
+      pollIntervalMs: 10_000,
+      now: () => fixedNow,
+    });
+
+    await scheduler.start();
+    await scheduler.stop();
+
+    expect(received).toHaveLength(1);
+    expect(received[0]?.eventName).toBe("task_due");
+    expect(received[0]?.intent).toEqual({
+      kind: "task",
+      createdBy: "user",
+      requestedAction: "check_system_health",
+    });
+    expect(received[0]?.payload).toEqual(expect.objectContaining({
+      scheduledItemId: expect.any(String),
+      taskId: expect.any(String),
+      intentKind: "task",
+      requestedAction: "check_system_health",
+      task: {
+        objective: "Check system health and report status",
+        requestedAction: "check_system_health",
+        successCriteria: ["Return current system health summary"],
+      },
+    }));
   });
 });

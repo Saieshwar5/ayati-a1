@@ -14,11 +14,17 @@ import type {
   ToolCallResultRecordInput,
   AgentStepRecordInput,
   RunLedgerRecordInput,
+  ActiveAttachmentsRecordInput,
   TaskSummaryRecordInput,
   SystemEventRecordInput,
   SystemEventOutcomeRecordInput,
+  FeedbackOpenRecordInput,
+  FeedbackResolveRecordInput,
+  AssistantNotificationRecordInput,
+  OpenFeedbackItem,
   PromptMemoryContext,
   ConversationTurn,
+  ActiveAttachmentRecord,
 } from "./types.js";
 import type {
   SessionEvent,
@@ -30,8 +36,12 @@ import type {
   RunFailureEvent,
   AgentStepEvent,
   RunLedgerEvent,
+  ActiveAttachmentsEvent,
   TaskSummaryEvent,
   AssistantFeedbackEvent,
+  AssistantNotificationEvent,
+  FeedbackOpenedEvent,
+  FeedbackResolvedEvent,
   SystemEventReceivedEvent,
   SystemEventProcessedEvent,
 } from "./session-events.js";
@@ -41,6 +51,7 @@ import type { ActiveSessionInfo, SessionPersistenceOptions } from "./session-per
 
 const MIN_TURNS_FOR_CALLBACK = 2;
 const DEFAULT_CONTEXT_TOKEN_LIMIT = 100_000;
+const DEFAULT_FEEDBACK_TTL_HOURS = 24;
 
 export interface SessionCloseData {
   sessionId: string;
@@ -87,8 +98,12 @@ type TimelineEvent =
   | RunFailureEvent
   | AgentStepEvent
   | RunLedgerEvent
+  | ActiveAttachmentsEvent
   | TaskSummaryEvent
   | AssistantFeedbackEvent
+  | AssistantNotificationEvent
+  | FeedbackOpenedEvent
+  | FeedbackResolvedEvent
   | SystemEventReceivedEvent
   | SystemEventProcessedEvent;
 
@@ -147,6 +162,7 @@ export class MemoryManager implements SessionMemory {
   beginRun(clientId: string, userMessage: string): MemoryRunHandle {
     const nowIso = this.nowIso();
     this.ensureOpenSession(clientId, nowIso);
+    this.expireOverdueFeedbacks(nowIso);
 
     const session = this.currentSession!;
     const runId = randomUUID();
@@ -168,6 +184,7 @@ export class MemoryManager implements SessionMemory {
   beginSystemRun(clientId: string, input: SystemEventRecordInput): MemoryRunHandle {
     const nowIso = this.nowIso();
     this.ensureOpenSession(clientId, nowIso);
+    this.expireOverdueFeedbacks(nowIso);
 
     const session = this.currentSession!;
     const runId = randomUUID();
@@ -410,6 +427,32 @@ export class MemoryManager implements SessionMemory {
     this.appendTimelineEvent(event);
   }
 
+  recordActiveAttachments(clientId: string, input: ActiveAttachmentsRecordInput): void {
+    if (input.attachments.length === 0) {
+      return;
+    }
+    const nowIso = this.nowIso();
+    const session = this.ensureWritableSession(clientId, nowIso);
+
+    const event: ActiveAttachmentsEvent = {
+      v: 2,
+      ts: nowIso,
+      type: "active_attachments",
+      sessionId: session.id,
+      sessionPath: session.sessionPath,
+      runId: input.runId,
+      runPath: input.runPath,
+      action: input.action,
+      attachments: input.attachments.map((attachment) => ({
+        manifest: attachment.manifest,
+        summary: attachment.summary,
+        ...(attachment.detail ? { detail: attachment.detail } : {}),
+      })),
+    };
+
+    this.appendTimelineEvent(event);
+  }
+
   recordTaskSummary(clientId: string, input: TaskSummaryRecordInput): void {
     const nowIso = this.nowIso();
     const session = this.ensureWritableSession(clientId, nowIso);
@@ -460,6 +503,8 @@ export class MemoryManager implements SessionMemory {
       source: input.source,
       event: input.event,
       eventId: input.eventId,
+      summary: input.summary,
+      responseKind: input.responseKind,
       status: input.status,
       note: input.note,
     };
@@ -483,7 +528,92 @@ export class MemoryManager implements SessionMemory {
     this.appendTimelineEvent(event);
   }
 
+  recordFeedbackOpened(clientId: string, input: FeedbackOpenRecordInput): OpenFeedbackItem {
+    const now = this.nowProvider();
+    const nowIso = now.toISOString();
+    const session = this.ensureWritableSession(clientId, nowIso);
+    const feedbackId = randomUUID();
+    const ttlHours = typeof input.ttlHours === "number" && Number.isFinite(input.ttlHours) && input.ttlHours > 0
+      ? input.ttlHours
+      : DEFAULT_FEEDBACK_TTL_HOURS;
+    const expiresAt = new Date(now.getTime() + (ttlHours * 60 * 60 * 1000)).toISOString();
+
+    const event: FeedbackOpenedEvent = {
+      v: 2,
+      ts: nowIso,
+      type: "feedback_opened",
+      sessionId: session.id,
+      sessionPath: session.sessionPath,
+      runId: input.runId,
+      feedbackId,
+      kind: input.kind,
+      shortLabel: input.shortLabel,
+      message: input.message,
+      actionType: input.actionType,
+      sourceEventId: input.sourceEventId,
+      entityHints: input.entityHints ?? [],
+      payloadSummary: input.payloadSummary,
+      expiresAt,
+    };
+
+    this.appendTimelineEvent(event);
+
+    return {
+      feedbackId,
+      status: "open",
+      kind: event.kind,
+      shortLabel: event.shortLabel,
+      message: event.message,
+      actionType: event.actionType,
+      sourceRunId: event.runId,
+      sourceEventId: event.sourceEventId,
+      entityHints: [...event.entityHints],
+      payloadSummary: event.payloadSummary,
+      createdAt: nowIso,
+      expiresAt,
+    };
+  }
+
+  resolveOpenFeedback(clientId: string, input: FeedbackResolveRecordInput): void {
+    const nowIso = this.nowIso();
+    const session = this.ensureWritableSession(clientId, nowIso);
+
+    const event: FeedbackResolvedEvent = {
+      v: 2,
+      ts: nowIso,
+      type: "feedback_resolved",
+      sessionId: session.id,
+      sessionPath: session.sessionPath,
+      runId: input.runId,
+      feedbackId: input.feedbackId,
+      resolution: input.resolution,
+      userResponse: input.userResponse,
+    };
+
+    this.appendTimelineEvent(event);
+  }
+
+  recordAssistantNotification(clientId: string, input: AssistantNotificationRecordInput): void {
+    const nowIso = this.nowIso();
+    const session = this.ensureWritableSession(clientId, nowIso);
+
+    const event: AssistantNotificationEvent = {
+      v: 2,
+      ts: nowIso,
+      type: "assistant_notification",
+      sessionId: session.id,
+      sessionPath: session.sessionPath,
+      message: input.message,
+      source: input.source,
+      event: input.event,
+      eventId: input.eventId,
+    };
+
+    this.appendTimelineEvent(event);
+  }
+
   getPromptMemoryContext(): PromptMemoryContext {
+    this.expireOverdueFeedbacks(this.nowIso());
     const recentRunLedgers = (this.currentSession?.getRecentUniqueRunLedgerEvents(5) ?? []).map((event) => ({
       timestamp: event.ts,
       runId: event.runId,
@@ -498,7 +628,14 @@ export class MemoryManager implements SessionMemory {
       previousSessionSummary: this.currentSession?.handoffSummary ?? "",
       activeSessionPath: this.currentSession?.sessionPath ?? "",
       recentRunLedgers,
+      activeAttachments: this.currentSession?.getActiveAttachmentRefs(5) ?? [],
+      openFeedbacks: this.currentSession?.getOpenFeedbacks() ?? [],
+      recentSystemActivity: this.currentSession?.getRecentSystemActivity(10) ?? [],
     };
+  }
+
+  getActiveAttachmentRecords(): ActiveAttachmentRecord[] {
+    return this.currentSession?.getActiveAttachmentRecords(5) ?? [];
   }
 
   setStaticTokenBudget(tokens: number): void {
@@ -507,6 +644,7 @@ export class MemoryManager implements SessionMemory {
 
   getSessionStatus(): SessionStatus | null {
     if (!this.currentSession) return null;
+    this.expireOverdueFeedbacks(this.nowIso());
 
     const dynamicTokens = this.estimateDynamicTokens(this.currentSession);
     const available = Math.max(1, this.contextTokenLimit - this.staticTokenBudget);
@@ -527,6 +665,7 @@ export class MemoryManager implements SessionMemory {
 
   private ensureWritableSession(clientId: string, nowIso: string): InMemorySession {
     this.ensureOpenSession(clientId, nowIso);
+    this.expireOverdueFeedbacks(nowIso);
     return this.currentSession!;
   }
 
@@ -601,6 +740,7 @@ export class MemoryManager implements SessionMemory {
 
     restored = this.migrateLegacyJsonlSessionIfNeeded(restored);
     this.currentSession = restored;
+    this.expireOverdueFeedbacks(nowIso);
     this.persistence.resumeSession(restored.id, clientId, restored.sessionPath, nowIso);
     this.persistence.writeActiveSessionMarker(restored.id, restored.sessionPath);
   }
@@ -687,6 +827,30 @@ export class MemoryManager implements SessionMemory {
     this.persistence.appendEvent(event);
   }
 
+  private expireOverdueFeedbacks(nowIso: string): void {
+    if (!this.currentSession) {
+      return;
+    }
+
+    const overdue = this.currentSession
+      .getOpenFeedbacks()
+      .filter((item) => item.expiresAt <= nowIso);
+
+    for (const item of overdue) {
+      const event: FeedbackResolvedEvent = {
+        v: 2,
+        ts: nowIso,
+        type: "feedback_resolved",
+        sessionId: this.currentSession.id,
+        sessionPath: this.currentSession.sessionPath,
+        runId: item.sourceRunId,
+        feedbackId: item.feedbackId,
+        resolution: "expired",
+      };
+      this.appendTimelineEvent(event);
+    }
+  }
+
   private estimateDynamicTokens(session: InMemorySession): number {
     const turns = session.getConversationTurns();
     const conversationText = turns
@@ -704,9 +868,21 @@ export class MemoryManager implements SessionMemory {
           .join("\n")
       : "";
 
+    const feedbackText = session
+      .getOpenFeedbacks()
+      .map((item) => `${item.kind} ${item.shortLabel} ${item.message} ${(item.entityHints ?? []).join(" ")}`)
+      .join("\n");
+
+    const activityText = session
+      .getRecentSystemActivity(10)
+      .map((item) => `${item.source}/${item.event} ${item.summary} ${item.note ?? ""}`)
+      .join("\n");
+
     const estimate =
       this.staticTokenBudget +
       estimateTextTokens(conversationText) +
+      estimateTextTokens(feedbackText) +
+      estimateTextTokens(activityText) +
       estimateTextTokens(toolText) +
       (this.memoryDetailMode === "debug" ? session.estimateToolEventTokens() : 0);
 

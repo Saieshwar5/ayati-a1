@@ -9,7 +9,7 @@ describe("filesystemSkill", () => {
 
   it("has a non-empty prompt block", () => {
     expect(filesystemSkill.promptBlock.length).toBeGreaterThan(0);
-    expect(filesystemSkill.promptBlock).toContain("Filesystem Skill");
+    expect(filesystemSkill.promptBlock).toContain("Filesystem tools are built in.");
   });
 
   it("exports all 9 tools", () => {

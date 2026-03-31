@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { runContextScout } from "../../src/ivec/context-scout.js";
@@ -8,6 +8,15 @@ import type { LlmProvider } from "../../src/core/contracts/provider.js";
 import type { LlmTurnInput, LlmTurnOutput } from "../../src/core/contracts/llm-protocol.js";
 import { DocumentStore } from "../../src/documents/document-store.js";
 import { DocumentContextBackend } from "../../src/documents/document-context-backend.js";
+import { DocumentIndexer } from "../../src/documents/document-indexer.js";
+import { DocumentRetriever } from "../../src/documents/document-retriever.js";
+import type {
+  DocumentChunkVectorMatch,
+  DocumentChunkVectorRecord,
+  DocumentEmbeddingProvider,
+  DocumentVectorSearchInput,
+  DocumentVectorStore,
+} from "../../src/documents/document-vector-types.js";
 
 function createMockProvider(responses: LlmTurnOutput[]): LlmProvider {
   let callIndex = 0;
@@ -33,6 +42,65 @@ function createLocations(tmpDir: string): ScoutKnownLocations {
     runId: "r-test",
     activeSessionId: "s-test",
   };
+}
+
+class InMemoryDocumentVectorStore implements DocumentVectorStore {
+  readonly records: DocumentChunkVectorRecord[] = [];
+  upsertCalls = 0;
+  searchCalls = 0;
+
+  async upsertDocumentChunks(records: DocumentChunkVectorRecord[]): Promise<void> {
+    this.upsertCalls++;
+    this.records.push(...records);
+  }
+
+  async search(input: DocumentVectorSearchInput): Promise<DocumentChunkVectorMatch[]> {
+    this.searchCalls++;
+    const recordBySource = [...this.records]
+      .filter((record) => input.documentIds.includes(record.documentId))
+      .filter((record) => record.embeddingModel === input.embeddingModel)
+      .map((record) => ({
+        record,
+        score: cosineSimilarity(input.vector, record.embedding),
+      }))
+      .sort((a, b) => b.score - a.score)
+      .slice(0, input.limit);
+
+    return recordBySource.map(({ record, score }) => ({
+      id: record.id,
+      documentId: record.documentId,
+      sourceId: record.sourceId,
+      documentName: record.documentName,
+      documentPath: record.documentPath,
+      location: record.location,
+      text: record.text,
+      tokens: record.tokens,
+      score,
+    }));
+  }
+}
+
+function cosineSimilarity(a: number[], b: number[]): number {
+  if (a.length === 0 || b.length === 0 || a.length !== b.length) {
+    return 0;
+  }
+
+  let dot = 0;
+  let normA = 0;
+  let normB = 0;
+  for (let i = 0; i < a.length; i++) {
+    const left = a[i] ?? 0;
+    const right = b[i] ?? 0;
+    dot += left * right;
+    normA += left * left;
+    normB += right * right;
+  }
+
+  if (normA === 0 || normB === 0) {
+    return 0;
+  }
+
+  return dot / (Math.sqrt(normA) * Math.sqrt(normB));
 }
 
 describe("runContextScout", () => {
@@ -109,7 +177,7 @@ describe("runContextScout", () => {
     expect(provider.generateTurn).toHaveBeenCalledTimes(2);
   });
 
-  it("returns empty result when maxTurns exhausted", async () => {
+  it("returns a negative summary when maxTurns exhausted", async () => {
     const provider = createMockProvider([
       {
         type: "tool_calls",
@@ -126,9 +194,12 @@ describe("runContextScout", () => {
       createLocations(tmpDir),
     );
 
-    expect(result.context).toBe("");
-    expect(result.sources).toEqual([]);
+    expect(result.context).toContain("Context search status: max_turns_exhausted");
+    expect(result.context).toContain("What was searched:");
+    expect(result.context).toContain(tmpDir);
+    expect(result.sources).toContain(tmpDir);
     expect(result.confidence).toBe(0);
+    expect(result.scoutState?.status).toBe("max_turns_exhausted");
   });
 
   it("handles plain text fallback when LLM returns non-JSON text", async () => {
@@ -219,9 +290,140 @@ describe("runContextScout", () => {
     expect(toolResultMsg?.content).toContain("shell");
   });
 
+  it("allows relative file paths inside the scoped run directory", async () => {
+    const provider = createMockProvider([
+      {
+        type: "tool_calls",
+        calls: [
+          { id: "tc1", name: "read_file", input: { path: "steps/001-act.md" } },
+        ],
+      },
+      {
+        type: "assistant",
+        content: JSON.stringify({
+          context: "Found step details",
+          sources: ["steps/001-act.md"],
+          confidence: 0.9,
+        }),
+      },
+    ]);
+
+    await runContextScout(
+      { provider, maxTurns: 5 },
+      "Read the current step details",
+      "run_artifacts",
+      createLocations(tmpDir),
+    );
+
+    const calls = (provider.generateTurn as ReturnType<typeof vi.fn>).mock.calls;
+    const secondCallInput = calls[1]![0] as { messages: Array<{ role: string; content: string }> };
+    const toolResultMsg = secondCallInput.messages.find((m) => m.role === "tool");
+    expect(toolResultMsg?.content).toContain("Ran shell command ls");
+  });
+
+  it("blocks read_file outside the project_context scope", async () => {
+    const outsideFile = join(tmpDir, "outside.txt");
+    writeFileSync(outsideFile, "secret", "utf-8");
+
+    const provider = createMockProvider([
+      {
+        type: "tool_calls",
+        calls: [
+          { id: "tc1", name: "read_file", input: { path: outsideFile } },
+        ],
+      },
+      {
+        type: "assistant",
+        content: JSON.stringify({
+          context: "blocked",
+          sources: [],
+          confidence: 0,
+        }),
+      },
+    ]);
+
+    await runContextScout(
+      { provider, maxTurns: 5 },
+      "Read an unrelated file",
+      "project_context",
+      createLocations(tmpDir),
+    );
+
+    const calls = (provider.generateTurn as ReturnType<typeof vi.fn>).mock.calls;
+    const secondCallInput = calls[1]![0] as { messages: Array<{ role: string; content: string }> };
+    const toolResultMsg = secondCallInput.messages.find((m) => m.role === "tool");
+    expect(toolResultMsg?.content).toContain("[error] path outside allowed scope (project_context)");
+  });
+
+  it("blocks search_content outside the run_artifacts scope", async () => {
+    const provider = createMockProvider([
+      {
+        type: "tool_calls",
+        calls: [
+          { id: "tc1", name: "search_content", input: { directory: tmpDir, pattern: "shell" } },
+        ],
+      },
+      {
+        type: "assistant",
+        content: JSON.stringify({
+          context: "blocked",
+          sources: [],
+          confidence: 0,
+        }),
+      },
+    ]);
+
+    await runContextScout(
+      { provider, maxTurns: 5 },
+      "Search outside the run",
+      "run_artifacts",
+      createLocations(tmpDir),
+    );
+
+    const calls = (provider.generateTurn as ReturnType<typeof vi.fn>).mock.calls;
+    const secondCallInput = calls[1]![0] as { messages: Array<{ role: string; content: string }> };
+    const toolResultMsg = secondCallInput.messages.find((m) => m.role === "tool");
+    expect(toolResultMsg?.content).toContain("[error] directory outside allowed scope (run_artifacts)");
+  });
+
+  it("keeps both scope limited to known scout roots", async () => {
+    const outsideFile = join(tmpDir, "outside.txt");
+    writeFileSync(outsideFile, "secret", "utf-8");
+
+    const provider = createMockProvider([
+      {
+        type: "tool_calls",
+        calls: [
+          { id: "tc1", name: "grep_file", input: { path: outsideFile, pattern: "secret" } },
+        ],
+      },
+      {
+        type: "assistant",
+        content: JSON.stringify({
+          context: "blocked",
+          sources: [],
+          confidence: 0,
+        }),
+      },
+    ]);
+
+    await runContextScout(
+      { provider, maxTurns: 5 },
+      "Read a file outside known roots",
+      "both",
+      createLocations(tmpDir),
+    );
+
+    const calls = (provider.generateTurn as ReturnType<typeof vi.fn>).mock.calls;
+    const secondCallInput = calls[1]![0] as { messages: Array<{ role: string; content: string }> };
+    const toolResultMsg = secondCallInput.messages.find((m) => m.role === "tool");
+    expect(toolResultMsg?.content).toContain("[error] path outside allowed scope (both)");
+  });
+
   it("grep_file returns targeted snippets from a known file", async () => {
     const locs = createLocations(tmpDir);
     const skillDir = join(tmpDir, "skills");
+    locs.skillsDir = skillDir;
     mkdirSync(skillDir, { recursive: true });
     const skillFile = join(skillDir, "playwright.skill.md");
     writeFileSync(
@@ -421,6 +623,8 @@ describe("runContextScout", () => {
     expect(systemPrompt).toContain("Use search_content to discover which file matters");
     expect(systemPrompt).toContain("Use grep_file to narrow within a known file");
     expect(systemPrompt).toContain("Use read_file only when you need a larger block");
+    expect(systemPrompt).toContain("Allowed roots for this scope:");
+    expect(systemPrompt).toContain("Any tool call that targets a path outside the allowed roots will fail.");
   });
 
   it("routes document scope through the document backend and returns bounded evidence", async () => {
@@ -485,6 +689,76 @@ describe("runContextScout", () => {
     expect(provider.generateTurn).toHaveBeenCalledTimes(1);
   });
 
+  it("matches uploaded web documents when document_paths references the saved upload path", async () => {
+    const locs = createLocations(tmpDir);
+    const documentsDir = join(tmpDir, "managed-web-documents");
+    const uploadPath = join(documentsDir, "uploads", "upload-1", "policy.txt");
+    mkdirSync(join(documentsDir, "uploads", "upload-1"), { recursive: true });
+    writeFileSync(
+      uploadPath,
+      [
+        "Service Terms",
+        "",
+        "Termination requires 45 days written notice before cancellation.",
+      ].join("\n"),
+      "utf-8",
+    );
+
+    const store = new DocumentStore({
+      dataDir: documentsDir,
+      preferCli: false,
+    });
+    const uploadedBytes = Buffer.byteLength(readFileSync(uploadPath, "utf-8"));
+    const registered = await store.registerAttachments([
+      {
+        source: "web",
+        uploadedPath: uploadPath,
+        originalName: "policy.txt",
+        mimeType: "text/plain",
+        sizeBytes: uploadedBytes,
+      },
+    ]);
+    const prepared = await store.prepareDocuments(registered.documents);
+    const chunkId = prepared[0]?.chunks[0]?.sourceId;
+    expect(chunkId).toBeTruthy();
+
+    const provider = createMockProvider([
+      {
+        type: "assistant",
+        content: JSON.stringify({
+          items: [
+            {
+              sourceId: chunkId,
+              fact: "Termination requires 45 days written notice before cancellation.",
+              quote: "Termination requires 45 days written notice before cancellation.",
+              relevance: 0.97,
+              confidence: 0.93,
+            },
+          ],
+          dropped_noise_count: 0,
+          insufficient_evidence: false,
+        }),
+      },
+    ]);
+
+    const backend = new DocumentContextBackend({ store });
+    const result = await runContextScout(
+      { provider, maxTurns: 5, documentContextBackend: backend },
+      "What is the termination clause?",
+      "documents",
+      {
+        ...locs,
+        attachedDocuments: registered.documents,
+      },
+      [uploadPath],
+    );
+
+    expect(result.context).toContain("45 days written notice");
+    expect(result.sources).toEqual([uploadPath]);
+    expect(result.confidence).toBe(0.93);
+    expect(result.documentState?.status).toBe("sufficient");
+  });
+
   it("treats multi-topic attachment questions as broad document retrieval", async () => {
     const locs = createLocations(tmpDir);
     const attachmentPath = join(tmpDir, "resume.txt");
@@ -546,6 +820,84 @@ describe("runContextScout", () => {
     expect(result.context).toContain("Education");
     expect(result.documentState?.status).toBe("partial");
     expect(provider.generateTurn).toHaveBeenCalledTimes(1);
+  });
+
+  it("uses vector retrieval for large documents before evidence extraction", async () => {
+    const locs = createLocations(tmpDir);
+    const attachmentPath = join(tmpDir, "handbook.txt");
+    writeFileSync(
+      attachmentPath,
+      [
+        "Company handbook overview.\f",
+        "Billing details and payment schedules.\f",
+        "Termination requires 45 days written notice before cancellation.\f",
+        "Support is available on weekdays.",
+      ].join("\n"),
+      "utf-8",
+    );
+
+    const store = new DocumentStore({
+      dataDir: join(tmpDir, "vector-documents"),
+      preferCli: false,
+    });
+    const registered = await store.registerAttachments([{ path: attachmentPath, name: "handbook.txt" }]);
+    const prepared = await store.prepareDocuments(registered.documents);
+    const terminationChunk = prepared[0]?.chunks.find((chunk) => chunk.text.includes("45 days written notice"));
+    expect(terminationChunk).toBeTruthy();
+
+    const vectorStore = new InMemoryDocumentVectorStore();
+    const embedder: DocumentEmbeddingProvider = {
+      modelName: "test-embedding-model",
+      embed: vi.fn(async (text: string) => text.toLowerCase().includes("termination") ? [1, 0] : [0, 1]),
+      embedBatch: vi.fn(async (texts: string[]) => texts.map((text) => text.toLowerCase().includes("termination") ? [1, 0] : [0, 1])),
+    };
+    const backend = new DocumentContextBackend({
+      store,
+      documentIndexer: new DocumentIndexer({
+        embedder,
+        store: vectorStore,
+        documentsDir: store.documentsDir,
+      }),
+      documentRetriever: new DocumentRetriever({
+        embedder,
+        store: vectorStore,
+      }),
+      largeDocumentMinChunks: 3,
+    });
+    const provider = createMockProvider([
+      {
+        type: "assistant",
+        content: JSON.stringify({
+          items: [
+            {
+              sourceId: terminationChunk?.sourceId,
+              fact: "Termination requires 45 days written notice before cancellation.",
+              quote: "Termination requires 45 days written notice before cancellation.",
+              relevance: 0.97,
+              confidence: 0.94,
+            },
+          ],
+          dropped_noise_count: 0,
+          insufficient_evidence: false,
+        }),
+      },
+    ]);
+
+    const result = await runContextScout(
+      { provider, maxTurns: 5, documentContextBackend: backend },
+      "What is the termination clause?",
+      "documents",
+      {
+        ...locs,
+        attachedDocuments: registered.documents,
+      },
+      [attachmentPath],
+    );
+
+    expect(result.context).toContain("45 days written notice");
+    expect(result.documentState?.status).toBe("sufficient");
+    expect(vectorStore.upsertCalls).toBe(1);
+    expect(vectorStore.searchCalls).toBe(1);
   });
 
   it("returns document unavailable state when no document backend is configured", async () => {

@@ -43,6 +43,7 @@ export interface ControllerPrompts {
   understand: string;
   direct: string;
   reeval: string;
+  systemEvent: string;
 }
 
 function isStringArray(value: unknown): value is string[] {

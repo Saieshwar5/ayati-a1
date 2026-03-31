@@ -108,6 +108,11 @@ export function parseAgentMailWebhook(payload: unknown, rawBody: string): Parsed
     eventId,
     receivedAt: triggeredAt,
     summary,
+    intent: {
+      kind: "task",
+      requestedAction: "review_incoming_message",
+      createdBy: "external",
+    },
     payload: root,
   };
 

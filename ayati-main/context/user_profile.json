@@ -10,19 +10,26 @@
     "Java",
     "SQL"
   ],
-  "interests": [],
+  "interests": [
+    "diet tracking",
+    "Helix editor",
+    "literature"
+  ],
   "facts": [
     "user's name is Sai Eshwar",
     "user is getting married"
   ],
   "people": [
     "sister",
-    "Rakesh"
+    "Rakesh",
+    "Patrick Tyson"
   ],
   "projects": [
     "Sai Eshwar single-page light-themed portfolio website",
     "Anoosh single-page portfolio website (generated from resume)",
-    "Patrick Tyson portfolio website"
+    "Patrick Tyson portfolio website",
+    "personal diet tracking website",
+    "E-Commerce Platform"
   ],
   "communication": {
     "formality": "balanced",
@@ -36,5 +43,5 @@
     "joy_triggers": []
   },
   "active_hours": null,
-  "last_updated": "2026-03-14T03:58:40.276Z"
+  "last_updated": "2026-03-31T04:43:24.037Z"
 }

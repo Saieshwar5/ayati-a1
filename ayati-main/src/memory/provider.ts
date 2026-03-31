@@ -43,10 +43,22 @@ export const noopSessionMemory: SessionMemory = {
   recordRunLedger(_clientId: string, _input: RunLedgerRecordInput): void {
     return;
   },
+  recordActiveAttachments(): void {
+    return;
+  },
   recordTaskSummary(_clientId: string, _input: TaskSummaryRecordInput): void {
     return;
   },
   recordAssistantFeedback(): void {
+    return;
+  },
+  recordFeedbackOpened(): null {
+    return null;
+  },
+  resolveOpenFeedback(): void {
+    return;
+  },
+  recordAssistantNotification(): void {
     return;
   },
   getSessionStatus(): null {
@@ -56,7 +68,13 @@ export const noopSessionMemory: SessionMemory = {
     return {
       conversationTurns: [],
       previousSessionSummary: "",
+      activeAttachments: [],
+      openFeedbacks: [],
+      recentSystemActivity: [],
     };
+  },
+  getActiveAttachmentRecords(): [] {
+    return [];
   },
   setStaticTokenBudget(): void {
     return;

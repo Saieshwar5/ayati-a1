@@ -22,7 +22,7 @@ export function StatusBar({ isLoading, connected, pendingAttachmentCount }: Prop
       ) : (
         <Text dimColor>
           {connected === false ? "[disconnected] " : ""}
-          {"Enter: send | /attach <path> [-- message] /files /clearfiles | Up/Down/PgUp/PgDn: scroll | Ctrl+C: exit"}
+          {"Enter: send | /attach <path> [-- message] /files /clearfiles | Wheel/trackpad + Up/Down/PgUp/PgDn: scroll | Ctrl+C: exit"}
           {attachmentLabel}
         </Text>
       )}

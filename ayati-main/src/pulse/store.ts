@@ -2,14 +2,16 @@ import { randomUUID } from "node:crypto";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { computeNextTriggerForSchedule } from "./parser.js";
+import { computeNextTriggerForSchedule, normalizePulseDurationUnit, pulseDurationToMillis, pulseIntervalMsToValueUnit } from "./parser.js";
 import { getZonedDateParts, resolveTimeZone, toDateLabel, toTimeLabel, weekdayName } from "./time.js";
 import type {
   PulseCreateReminderInput,
+  PulseScheduledItemIntentKind,
   PulseListRemindersOptions,
   PulseMarkDeliveredInput,
   PulseNowSnapshot,
   PulseReminder,
+  PulseTaskSpec,
   PulseStoreDocument,
 } from "./types.js";
 
@@ -31,6 +33,13 @@ function isValidReminder(value: unknown): value is PulseReminder {
   if (!isObject(value)) return false;
   if (typeof value["id"] !== "string") return false;
   if (typeof value["clientId"] !== "string") return false;
+  if (
+    value["intentKind"] !== undefined
+    && value["intentKind"] !== "reminder"
+    && value["intentKind"] !== "task"
+  ) {
+    return false;
+  }
   if (typeof value["title"] !== "string") return false;
   if (typeof value["instruction"] !== "string") return false;
   if (typeof value["timezone"] !== "string") return false;
@@ -41,6 +50,8 @@ function isValidReminder(value: unknown): value is PulseReminder {
   if (value["nextTriggerAt"] !== null && typeof value["nextTriggerAt"] !== "string") return false;
   if (typeof value["createdAt"] !== "string") return false;
   if (typeof value["updatedAt"] !== "string") return false;
+  if (value["requestedAction"] !== undefined && typeof value["requestedAction"] !== "string") return false;
+  if (value["task"] !== undefined && !isObject(value["task"])) return false;
   if (!isObject(value["metadata"])) return false;
   return true;
 }
@@ -50,6 +61,99 @@ function isValidStoreDocument(value: unknown): value is PulseStoreDocument {
   if (value["version"] !== 1) return false;
   if (!Array.isArray(value["reminders"])) return false;
   return value["reminders"].every((item) => isValidReminder(item));
+}
+
+function normalizeIntentKind(value: unknown): PulseScheduledItemIntentKind {
+  return value === "task" ? "task" : "reminder";
+}
+
+function sanitizeStringArray(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const items = value
+    .filter((entry): entry is string => typeof entry === "string")
+    .map((entry) => entry.trim())
+    .filter((entry) => entry.length > 0);
+  return items.length > 0 ? items : undefined;
+}
+
+function normalizeTaskSpec(value: unknown): PulseTaskSpec | undefined {
+  if (!isObject(value)) return undefined;
+  const objective = typeof value["objective"] === "string" ? value["objective"].trim() : "";
+  if (objective.length === 0) return undefined;
+
+  const requestedAction = typeof value["requestedAction"] === "string" && value["requestedAction"].trim().length > 0
+    ? value["requestedAction"].trim()
+    : undefined;
+  const constraints = sanitizeStringArray(value["constraints"]);
+  const successCriteria = sanitizeStringArray(value["successCriteria"]);
+
+  return {
+    objective,
+    ...(requestedAction ? { requestedAction } : {}),
+    ...(isObject(value["inputs"]) ? { inputs: value["inputs"] } : {}),
+    ...(isObject(value["context"]) ? { context: value["context"] } : {}),
+    ...(constraints ? { constraints } : {}),
+    ...(successCriteria ? { successCriteria } : {}),
+  };
+}
+
+function normalizeSchedule(schedule: PulseReminder["schedule"]): PulseReminder["schedule"] {
+  if (!isObject(schedule) || schedule["kind"] !== "interval") {
+    return schedule;
+  }
+
+  const existingEveryMs = typeof schedule["everyMs"] === "number" && Number.isFinite(schedule["everyMs"]) && schedule["everyMs"] > 0
+    ? schedule["everyMs"]
+    : undefined;
+  const existingValue = typeof schedule["value"] === "number" && Number.isFinite(schedule["value"]) && schedule["value"] > 0
+    ? Math.trunc(schedule["value"])
+    : undefined;
+  const existingUnit = typeof schedule["unit"] === "string"
+    ? normalizePulseDurationUnit(schedule["unit"])
+    : null;
+
+  const everyMs = existingEveryMs ?? (existingValue && existingUnit ? pulseDurationToMillis(existingValue, existingUnit) ?? undefined : undefined);
+  const derived = everyMs !== undefined ? pulseIntervalMsToValueUnit(everyMs) : null;
+  const value = existingValue ?? derived?.value;
+  const unit = existingUnit ?? derived?.unit;
+
+  return {
+    ...schedule,
+    ...(everyMs !== undefined ? { everyMs } : {}),
+    ...(value !== undefined ? { value } : {}),
+    ...(unit ? { unit } : {}),
+  } as PulseReminder["schedule"];
+}
+
+function normalizeReminder(value: PulseReminder): PulseReminder {
+  const task = normalizeTaskSpec(value.task);
+  const requestedAction = typeof value.requestedAction === "string" && value.requestedAction.trim().length > 0
+    ? value.requestedAction.trim()
+    : undefined;
+  const normalizedRequestedAction = task?.requestedAction ?? requestedAction;
+  const normalizedTask = task && normalizedRequestedAction && !task.requestedAction
+    ? { ...task, requestedAction: normalizedRequestedAction }
+    : task;
+
+  const normalized: PulseReminder = {
+    ...value,
+    intentKind: normalizeIntentKind(value.intentKind),
+    schedule: normalizeSchedule(value.schedule),
+  };
+
+  if (normalizedRequestedAction) {
+    normalized.requestedAction = normalizedRequestedAction;
+  } else {
+    delete normalized.requestedAction;
+  }
+
+  if (normalizedTask) {
+    normalized.task = normalizedTask;
+  } else {
+    delete normalized.task;
+  }
+
+  return normalized;
 }
 
 function getStoreFilePath(): string {
@@ -73,7 +177,10 @@ async function loadDocument(filePath: string): Promise<PulseStoreDocument> {
     if (!isValidStoreDocument(parsed)) {
       throw new Error("Pulse store has invalid shape.");
     }
-    return parsed;
+    return {
+      version: 1,
+      reminders: parsed.reminders.map((item) => normalizeReminder(item)),
+    };
   } catch (err) {
     if (typeof err === "object" && err !== null && "code" in err && (err as NodeJS.ErrnoException).code === "ENOENT") {
       return { version: 1, reminders: [] };
@@ -126,6 +233,7 @@ export class PulseStore {
       const reminder: PulseReminder = {
         id: randomUUID(),
         clientId: input.clientId,
+        intentKind: normalizeIntentKind(input.intentKind),
         title: input.title,
         instruction: input.instruction,
         timezone,
@@ -137,6 +245,10 @@ export class PulseStore {
         metadata: input.metadata ?? {},
         originRunId: input.originRunId,
         originSessionId: input.originSessionId,
+        ...(typeof input.requestedAction === "string" && input.requestedAction.trim().length > 0
+          ? { requestedAction: input.requestedAction.trim() }
+          : {}),
+        ...(input.task ? { task: input.task } : {}),
       };
 
       document.reminders.unshift(reminder);

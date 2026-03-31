@@ -14,6 +14,7 @@ describe("assemblePromptInput", () => {
         understand: "",
         direct: "",
         reeval: "",
+        systemEvent: "",
       },
       skillBlocks: [{ id: "skill-a", content: "Use A" }],
       toolDirectory: "",
@@ -33,6 +34,31 @@ describe("assemblePromptInput", () => {
           summary: "done",
         },
       ],
+      openFeedbacks: [
+        {
+          feedbackId: "fb-1",
+          status: "open",
+          kind: "approval",
+          shortLabel: "send report",
+          message: "Should I send the report?",
+          actionType: "send_email",
+          sourceRunId: "r1",
+          entityHints: ["report"],
+          createdAt: "t0",
+          expiresAt: "t1",
+        },
+      ],
+      recentSystemActivity: [
+        {
+          timestamp: "t3",
+          source: "pulse",
+          event: "reminder_due",
+          eventId: "evt-1",
+          summary: "checked health",
+          userVisible: true,
+          responseKind: "notification",
+        },
+      ],
     };
 
     const result = assemblePromptInput(staticContext, memoryContext);
@@ -42,6 +68,8 @@ describe("assemblePromptInput", () => {
     expect(result.previousSessionSummary).toBe("summary");
     expect(result.activeSessionPath).toBe("sessions/s1.md");
     expect(result.recentRunLedgers).toHaveLength(1);
+    expect(result.openFeedbacks).toHaveLength(1);
+    expect(result.recentSystemActivity).toHaveLength(1);
     expect(result.skillBlocks).toEqual([{ id: "skill-a", content: "Use A" }]);
   });
 
@@ -54,6 +82,7 @@ describe("assemblePromptInput", () => {
         understand: "",
         direct: "",
         reeval: "",
+        systemEvent: "",
       },
       skillBlocks: [],
       toolDirectory: "",
@@ -64,6 +93,8 @@ describe("assemblePromptInput", () => {
       previousSessionSummary: "",
       activeSessionPath: "",
       recentRunLedgers: [],
+      openFeedbacks: [],
+      recentSystemActivity: [],
     };
 
     const result = assemblePromptInput(staticContext, memoryContext);
@@ -71,5 +102,7 @@ describe("assemblePromptInput", () => {
     expect(result.conversationTurns).toEqual([]);
     expect(result.previousSessionSummary).toBe("");
     expect(result.recentRunLedgers).toEqual([]);
+    expect(result.openFeedbacks).toEqual([]);
+    expect(result.recentSystemActivity).toEqual([]);
   });
 });

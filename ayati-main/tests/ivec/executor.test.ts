@@ -621,6 +621,82 @@ describe("executeStep", () => {
       const summary = await executeStep(deps, createDirective({ execution_mode: "independent" }), 1, runPath);
       expect(summary.toolSuccessCount).toBe(6);
       expect(summary.stoppedEarlyReason).toBe("max_total_tool_calls_reached");
+      expect(summary.summary).not.toBe("");
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("forces a final assistant-only wrap-up when tool execution ends without assistant text", async () => {
+    const { runPath, cleanup } = setup();
+    try {
+      const turnInputs: LlmTurnInput[] = [];
+      let callCount = 0;
+      const provider: LlmProvider = {
+        name: "mock",
+        version: "1.0.0",
+        capabilities: { nativeToolCalling: true },
+        start: vi.fn(),
+        stop: vi.fn(),
+        generateTurn: vi.fn().mockImplementation(async (input: LlmTurnInput) => {
+          turnInputs.push(input);
+          callCount++;
+          if (callCount === 1) {
+            return {
+              type: "tool_calls",
+              calls: [{ id: "tc1", name: "shell", input: { cmd: "echo hello" } }],
+            };
+          }
+          if (callCount === 2) {
+            return {
+              type: "assistant",
+              content: "Executed the shell command and captured the output hello before the step hit its tool-turn limit.",
+            };
+          }
+          return {
+            type: "assistant",
+            content: JSON.stringify({
+              taskStatusAfter: "done",
+              taskReason: "command output satisfied the goal",
+              taskEvidence: ["command output: hello"],
+            }),
+          };
+        }),
+      };
+
+      const toolExecutor: ToolExecutor = {
+        list: () => ["shell"],
+        definitions: () => [{
+          name: "shell",
+          description: "Run shell",
+          inputSchema: { type: "object", properties: { cmd: { type: "string" } } },
+          execute: vi.fn().mockResolvedValue({ ok: true, output: "hello" }),
+        }],
+        execute: vi.fn().mockResolvedValue({ ok: true, output: "hello" }),
+        validate: vi.fn().mockReturnValue({ valid: true }),
+      };
+
+      const deps: ExecutorDeps = {
+        provider,
+        toolExecutor,
+        toolDefinitions: toolExecutor.definitions(),
+        config: { ...DEFAULT_LOOP_CONFIG, maxToolCallsPerStep: 1 },
+        clientId: "c1",
+        sessionMemory: createMockSessionMemory(),
+        runHandle: { sessionId: "s1", runId: "r1" },
+        taskContext: createTaskContext(),
+      };
+
+      const summary = await executeStep(deps, createDirective(), 1, runPath);
+
+      expect(summary.outcome).toBe("success");
+      expect(summary.stoppedEarlyReason).toBe("max_act_turns_reached");
+      expect(summary.summary).toContain("captured the output hello");
+      expect(turnInputs[1]?.tools).toBeUndefined();
+
+      const actMarkdown = readFileSync(join(runPath, "steps", "001-act.md"), "utf-8");
+      expect(actMarkdown).toContain("## Final Text");
+      expect(actMarkdown).toContain("captured the output hello");
     } finally {
       cleanup();
     }
@@ -668,6 +744,71 @@ describe("executeStep", () => {
       expect(summary.outcome).toBe("failed");
       expect(summary.toolFailureCount).toBe(3);
       expect(summary.stoppedEarlyReason).toBe("repeated_identical_failure");
+      expect(summary.summary).not.toBe("");
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("does not add an extra wrap-up turn when act already returned assistant text", async () => {
+    const { runPath, cleanup } = setup();
+    try {
+      let callCount = 0;
+      const provider: LlmProvider = {
+        name: "mock",
+        version: "1.0.0",
+        capabilities: { nativeToolCalling: true },
+        start: vi.fn(),
+        stop: vi.fn(),
+        generateTurn: vi.fn().mockImplementation(async () => {
+          callCount++;
+          if (callCount === 1) {
+            return {
+              type: "tool_calls",
+              calls: [{ id: "tc1", name: "shell", input: { cmd: "echo hello" } }],
+            };
+          }
+          if (callCount === 2) {
+            return { type: "assistant", content: "Command executed successfully" };
+          }
+          return {
+            type: "assistant",
+            content: JSON.stringify({
+              taskStatusAfter: "done",
+              taskReason: "command output satisfied the goal",
+              taskEvidence: ["command output: hello"],
+            }),
+          };
+        }),
+      };
+
+      const toolExecutor: ToolExecutor = {
+        list: () => ["shell"],
+        definitions: () => [{
+          name: "shell",
+          description: "Run shell",
+          inputSchema: { type: "object", properties: { cmd: { type: "string" } } },
+          execute: vi.fn().mockResolvedValue({ ok: true, output: "hello" }),
+        }],
+        execute: vi.fn().mockResolvedValue({ ok: true, output: "hello" }),
+        validate: vi.fn().mockReturnValue({ valid: true }),
+      };
+
+      const deps: ExecutorDeps = {
+        provider,
+        toolExecutor,
+        toolDefinitions: toolExecutor.definitions(),
+        config: DEFAULT_LOOP_CONFIG,
+        clientId: "c1",
+        sessionMemory: createMockSessionMemory(),
+        runHandle: { sessionId: "s1", runId: "r1" },
+        taskContext: createTaskContext(),
+      };
+
+      const summary = await executeStep(deps, createDirective(), 1, runPath);
+
+      expect(summary.summary).toBe("Command executed successfully");
+      expect(provider.generateTurn).toHaveBeenCalledTimes(3);
     } finally {
       cleanup();
     }

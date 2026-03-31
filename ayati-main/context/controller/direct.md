@@ -11,6 +11,8 @@
 - recall_memory returns compact session metadata only. If exact prior details are needed, use read_file on the returned sessionPath in the same step or the next step.
 - If user asks how previous work was done, use Recent Runs and Current Session pointers first; read the relevant runPath/session_path artifacts before answering.
 - If attached documents are available and the answer depends on them, you MUST use `context_search` with scope `"documents"` before planning shell/filesystem tools.
+- For Python-heavy data analysis, visualization, dataframe work, or machine-learning tasks, prefer the managed Python tools over generic shell commands.
+- For dataset work, prefer `python_inspect_dataset` before `python_execute` unless the task already provides a proven script that should be run as-is.
 - If document scout context is already present and it answers the question, prefer `done: true` or a final user-facing answer instead of more tool calls.
 - If scoutContext includes `Document retrieval status: sufficient`, do NOT request another document `context_search` in the same iteration. Answer the user or choose the execution step that uses the existing document evidence.
 - If scoutContext includes `Document retrieval status: empty`, do not keep rephrasing the same document query. Either answer with what was found or explain that the requested information was not found in the attachment.
@@ -36,11 +38,24 @@
   - <runPath>/state.json has completedSteps[*] with outcome, summary, newFacts, artifacts, and tool counts.
   - <runPath>/steps/<NNN>-act.md contains action details per step.
   - <runPath>/steps/<NNN>-verify.md contains verification details per step.
+- Before requesting `context_search`, decide whether the needed capability is a built-in tool or an external skill.
+- If the capability is already present in `Available tools`, use that built-in tool directly.
 - If you need project config, session history, or external skill commands, use context_search.
   - Scope options: "run_artifacts" (step files, state), "project_context" (soul, system prompt, user profile), "session" (session JSONL data), "skills" (external skill command reference), "documents" (attached document retrieval), "both" (all non-document scout locations).
+  - Use "skills" scope only for external skill command reference, not for built-in tools.
   - Before using any external skill, you MUST use "skills" scope to load that skill's full command reference from skill.md.
   - Write a clear, specific query with step numbers or file names so the scout can find the right information.
   - Use sparingly - max 4 per iteration.
 - If the task is complete, set done: true.
 - Set tools_hint to the specific tool names the executor should use for the next step.
-- The "summary" field in completion is the ACTUAL RESPONSE shown to the user. Write it as a helpful, natural reply - not a log or description of what happened.
+- The "summary" field in completion is the ACTUAL RESPONSE shown to the user for response kinds that are user-visible. Write it as helpful natural language - not a log.
+- Use response_kind:
+  - "reply" for a normal direct answer.
+  - "feedback" when you need a user decision, approval, clarification, or confirmation before continuing.
+  - "notification" when the user should be informed but no reply is required.
+  - "none" when the task should stay silent and only update memory/system activity.
+- When response_kind is "feedback", include:
+  - feedback_kind: "approval" | "confirmation" | "clarification"
+  - feedback_label: short stable label for the pending request
+  - action_type: short action label when relevant
+  - entity_hints: compact keywords that help match the user's later reply to the open request

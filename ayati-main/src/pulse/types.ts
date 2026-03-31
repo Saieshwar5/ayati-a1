@@ -1,6 +1,8 @@
 import type { PluginSystemEventInput } from "../core/contracts/plugin.js";
 
 export type PulseReminderStatus = "active" | "completed" | "cancelled";
+export type PulseScheduledItemIntentKind = "reminder" | "task";
+export type PulseDurationUnit = "minute" | "hour" | "day" | "week";
 
 export type PulseWeekday = 1 | 2 | 3 | 4 | 5 | 6 | 7;
 
@@ -13,8 +15,19 @@ export interface PulseOnceSchedule {
 export interface PulseIntervalSchedule {
   kind: "interval";
   everyMs: number;
+  value?: number;
+  unit?: PulseDurationUnit;
   anchorAt: string;
   expression?: string;
+}
+
+export interface PulseTaskSpec {
+  objective: string;
+  requestedAction?: string;
+  inputs?: Record<string, unknown>;
+  constraints?: string[];
+  successCriteria?: string[];
+  context?: Record<string, unknown>;
 }
 
 export interface PulseDailySchedule {
@@ -41,6 +54,7 @@ export type PulseReminderSchedule =
 export interface PulseReminder {
   id: string;
   clientId: string;
+  intentKind: PulseScheduledItemIntentKind;
   title: string;
   instruction: string;
   timezone: string;
@@ -53,6 +67,8 @@ export interface PulseReminder {
   lastDeliveredOccurrenceId?: string;
   originRunId?: string;
   originSessionId?: string;
+  requestedAction?: string;
+  task?: PulseTaskSpec;
   metadata: Record<string, unknown>;
 }
 
@@ -73,6 +89,7 @@ export interface PulseNowSnapshot {
 
 export interface PulseCreateReminderInput {
   clientId: string;
+  intentKind?: PulseScheduledItemIntentKind;
   title: string;
   instruction: string;
   timezone: string;
@@ -81,6 +98,8 @@ export interface PulseCreateReminderInput {
   metadata?: Record<string, unknown>;
   originRunId?: string;
   originSessionId?: string;
+  requestedAction?: string;
+  task?: PulseTaskSpec;
 }
 
 export interface PulseListRemindersOptions {

@@ -1,16 +1,19 @@
 import { createHash } from "node:crypto";
 import { copyFile, mkdir, readFile, stat, writeFile } from "node:fs/promises";
-import { basename, extname, join, resolve } from "node:path";
+import { basename, join, relative, resolve, sep } from "node:path";
 import { buildSourceChunks } from "../subagents/context-extractor/chunk-builder.js";
 import type { SourceChunk } from "../subagents/context-extractor/types.js";
 import { extractTextWithPandoc } from "./cli/pandoc-cli.js";
 import { extractTextWithTika } from "./cli/tika-cli.js";
+import { inferKindFromNameOrMime, inferKindFromPath, sanitizeFileName } from "./document-ingress.js";
 import type {
   ChatAttachment,
+  CliChatAttachment,
   DocumentKind,
   ManagedDocumentManifest,
   ProcessedDocument,
   DocumentSegment,
+  WebChatAttachment,
 } from "./types.js";
 
 interface StoredDocumentMetadata extends ManagedDocumentManifest {
@@ -53,12 +56,14 @@ const DEFAULT_MAX_CHUNK_TOKENS = 700;
 
 export class DocumentStore {
   readonly documentsDir: string;
+  readonly uploadsDir: string;
   private readonly preferCli: boolean;
   private readonly nowProvider: () => Date;
   private readonly maxChunkTokens: number;
 
   constructor(options?: DocumentStoreOptions) {
     this.documentsDir = resolve(options?.dataDir ?? join(process.cwd(), "data", "documents"));
+    this.uploadsDir = resolve(this.documentsDir, "uploads");
     this.preferCli = options?.preferCli !== false;
     this.nowProvider = options?.now ?? (() => new Date());
     this.maxChunkTokens = Math.max(250, options?.maxChunkTokens ?? DEFAULT_MAX_CHUNK_TOKENS);
@@ -69,49 +74,14 @@ export class DocumentStore {
     const warnings: string[] = [];
 
     for (const attachment of attachments) {
-      const absolutePath = resolve(attachment.path);
-
       try {
-        const info = await stat(absolutePath);
-        if (!info.isFile()) {
-          warnings.push(`${absolutePath}: attachment path is not a file.`);
-          continue;
-        }
-
-        const bytes = await readFile(absolutePath);
-        const checksum = createHash("sha256").update(bytes).digest("hex");
-        const documentId = checksum.slice(0, 16);
-        const kind = inferKindFromPath(attachment.name?.trim() || absolutePath);
-        const docDir = join(this.documentsDir, documentId);
-        const sourceDir = join(docDir, "source");
-        const storedName = sanitizeFileName(attachment.name?.trim() || basename(absolutePath));
-        const storedPath = join(sourceDir, storedName);
-        const nowIso = this.nowProvider().toISOString();
-
-        await mkdir(sourceDir, { recursive: true });
-        await copyFile(absolutePath, storedPath);
-
-        const manifest: ManagedDocumentManifest = {
-          documentId,
-          name: storedName,
-          originalPath: absolutePath,
-          storedPath,
-          kind,
-          sizeBytes: info.size,
-          checksum,
-        };
-
-        const metadata: StoredDocumentMetadata = {
-          ...manifest,
-          createdAt: nowIso,
-          updatedAt: nowIso,
-        };
-
-        await writeFile(join(docDir, "metadata.json"), JSON.stringify(metadata, null, 2), "utf-8");
+        const manifest = attachment.source === "web"
+          ? await this.registerWebAttachment(attachment)
+          : await this.registerCliAttachment(attachment);
         documents.push(manifest);
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
-        warnings.push(`${absolutePath}: ${message}`);
+        warnings.push(formatAttachmentError(attachment, message));
       }
     }
 
@@ -212,6 +182,97 @@ export class DocumentStore {
       case "direct":
         return readFile(manifest.storedPath, "utf-8");
     }
+  }
+
+  private async registerCliAttachment(attachment: CliChatAttachment): Promise<ManagedDocumentManifest> {
+    const absolutePath = resolve(attachment.path);
+    const displayName = attachment.name?.trim() || basename(absolutePath);
+    const kind = inferKindFromPath(displayName || absolutePath);
+    return this.registerFromPath({
+      source: "cli",
+      sourcePath: absolutePath,
+      displayName,
+      kind,
+    });
+  }
+
+  private async registerWebAttachment(attachment: WebChatAttachment): Promise<ManagedDocumentManifest> {
+    const uploadedPath = resolve(attachment.uploadedPath);
+    if (!isPathInsideDirectory(this.uploadsDir, uploadedPath)) {
+      throw new Error("uploaded file path is outside the managed uploads directory.");
+    }
+
+    const displayName = attachment.originalName.trim();
+    if (displayName.length === 0) {
+      throw new Error("uploaded file is missing an original name.");
+    }
+
+    const kind = inferKindFromNameOrMime(displayName, attachment.mimeType);
+    return this.registerFromPath({
+      source: "web",
+      sourcePath: uploadedPath,
+      displayName,
+      kind,
+      expectedSizeBytes: attachment.sizeBytes,
+    });
+  }
+
+  private async registerFromPath(input: {
+    source: "cli" | "web";
+    sourcePath: string;
+    displayName: string;
+    kind: DocumentKind;
+    expectedSizeBytes?: number;
+  }): Promise<ManagedDocumentManifest> {
+    const info = await stat(input.sourcePath);
+    if (!info.isFile()) {
+      throw new Error("attachment path is not a file.");
+    }
+
+    if (info.size === 0) {
+      throw new Error("attachment file is empty.");
+    }
+
+    if (input.expectedSizeBytes !== undefined && input.expectedSizeBytes !== info.size) {
+      throw new Error(`attachment size mismatch: expected ${input.expectedSizeBytes} bytes, found ${info.size}.`);
+    }
+
+    if (input.kind === "unknown") {
+      throw new Error("unsupported attachment type.");
+    }
+
+    const bytes = await readFile(input.sourcePath);
+    const checksum = createHash("sha256").update(bytes).digest("hex");
+    const documentId = checksum.slice(0, 16);
+    const docDir = join(this.documentsDir, documentId);
+    const sourceDir = join(docDir, "source");
+    const storedName = sanitizeFileName(input.displayName || basename(input.sourcePath));
+    const storedPath = join(sourceDir, storedName);
+    const nowIso = this.nowProvider().toISOString();
+
+    await mkdir(sourceDir, { recursive: true });
+    await copyFile(input.sourcePath, storedPath);
+
+    const manifest: ManagedDocumentManifest = {
+      documentId,
+      name: storedName,
+      displayName: input.displayName,
+      source: input.source,
+      originalPath: input.sourcePath,
+      storedPath,
+      kind: input.kind,
+      sizeBytes: info.size,
+      checksum,
+    };
+
+    const metadata: StoredDocumentMetadata = {
+      ...manifest,
+      createdAt: nowIso,
+      updatedAt: nowIso,
+    };
+
+    await writeFile(join(docDir, "metadata.json"), JSON.stringify(metadata, null, 2), "utf-8");
+    return manifest;
   }
 }
 
@@ -330,36 +391,13 @@ function normalizeExtractedText(value: string): string {
     .trim();
 }
 
-function sanitizeFileName(value: string): string {
-  const trimmed = value.trim();
-  if (trimmed.length === 0) return "document";
-  return trimmed.replace(/[^a-zA-Z0-9._-]+/g, "-");
+function formatAttachmentError(attachment: ChatAttachment, message: string): string {
+  const label = attachment.source === "web" ? attachment.uploadedPath : attachment.path;
+  return `${label}: ${message}`;
 }
 
-function inferKindFromPath(filePath: string): DocumentKind {
-  const ext = extname(filePath).toLowerCase();
-  switch (ext) {
-    case ".pdf":
-      return "pdf";
-    case ".docx":
-      return "docx";
-    case ".pptx":
-      return "pptx";
-    case ".xlsx":
-      return "xlsx";
-    case ".csv":
-      return "csv";
-    case ".txt":
-      return "txt";
-    case ".md":
-    case ".markdown":
-      return "markdown";
-    case ".json":
-      return "json";
-    case ".html":
-    case ".htm":
-      return "html";
-    default:
-      return "unknown";
-  }
+function isPathInsideDirectory(rootDir: string, targetPath: string): boolean {
+  const relativePath = relative(rootDir, targetPath);
+  return relativePath === ""
+    || (!relativePath.startsWith(`..${sep}`) && relativePath !== ".." && !relativePath.includes(`${sep}..${sep}`));
 }

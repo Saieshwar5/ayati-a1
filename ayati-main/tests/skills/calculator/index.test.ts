@@ -6,7 +6,7 @@ describe("calculator skill definition", () => {
     expect(calculatorSkill.id).toBe("calculator");
     expect(calculatorSkill.version).toBe("1.0.0");
     expect(calculatorSkill.tools).toHaveLength(1);
-    expect(calculatorSkill.promptBlock).toContain("Calculator Skill");
+    expect(calculatorSkill.promptBlock).toContain("The `calculator` tool is built in.");
   });
 
   it("tool has correct name and schema", () => {

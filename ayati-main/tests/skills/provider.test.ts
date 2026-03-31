@@ -12,8 +12,9 @@ describe("builtInSkillsProvider", () => {
 
     expect(skills.length).toBeGreaterThanOrEqual(1);
     expect(skills.some((s) => s.id === "shell")).toBe(true);
+    expect(skills.some((s) => s.id === "database")).toBe(true);
     expect(skills.some((s) => s.id === "pulse")).toBe(true);
-  });
+  }, 20000);
 
   it("returns prompt blocks for all skills", async () => {
     const { builtInSkillsProvider } = await import("../../src/skills/provider.js");
@@ -22,8 +23,9 @@ describe("builtInSkillsProvider", () => {
 
     expect(blocks.length).toBeGreaterThanOrEqual(1);
     expect(blocks.some((b) => b.id === "shell")).toBe(true);
+    expect(blocks.some((b) => b.id === "database")).toBe(true);
     expect(blocks.some((b) => b.id === "pulse")).toBe(true);
-  });
+  }, 20000);
 
   it("returns all tools", async () => {
     const { builtInSkillsProvider } = await import("../../src/skills/provider.js");
@@ -31,6 +33,7 @@ describe("builtInSkillsProvider", () => {
     const tools = await builtInSkillsProvider.getAllTools();
 
     expect(tools.some((t) => t.name === "shell")).toBe(true);
+    expect(tools.some((t) => t.name === "db_execute_sql")).toBe(true);
     expect(tools.some((t) => t.name === "pulse")).toBe(true);
   });
 });

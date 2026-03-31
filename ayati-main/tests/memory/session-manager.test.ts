@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { MemoryManager } from "../../src/memory/session-manager.js";
@@ -7,6 +7,16 @@ import { MemoryManager } from "../../src/memory/session-manager.js";
 function makeNow(): () => Date {
   let tick = 0;
   return () => new Date(Date.UTC(2026, 1, 16, 0, 0, tick++));
+}
+
+function makeMutableNow(start: Date): { now: () => Date; advanceHours: (hours: number) => void } {
+  let current = start.getTime();
+  return {
+    now: () => new Date(current),
+    advanceHours: (hours: number) => {
+      current += hours * 60 * 60 * 1000;
+    },
+  };
 }
 
 describe("MemoryManager", () => {
@@ -333,6 +343,98 @@ describe("MemoryManager", () => {
 
     const context = memory.getPromptMemoryContext();
     expect(context.conversationTurns).toHaveLength(0);
+
+    await memory.shutdown();
+  });
+
+  it("exposes open feedbacks and recent system activity in prompt memory context", async () => {
+    const root = mkdtempSync(resolve(tmpdir(), "ayati-memory-test-"));
+    dirs.push(root);
+    const memory = new MemoryManager({
+      dataDir: root,
+      dbPath: resolve(root, "memory.sqlite"),
+      now: makeNow(),
+    });
+    memory.initialize("local");
+
+    const run = memory.beginRun("local", "review this request");
+    memory.recordAssistantFeedback("local", run.runId, run.sessionId, "Should I send the draft?");
+    memory.recordFeedbackOpened?.("local", {
+      runId: run.runId,
+      sessionId: run.sessionId,
+      kind: "approval",
+      shortLabel: "send draft",
+      message: "Should I send the draft?",
+      actionType: "send_email",
+      sourceEventId: "evt-1",
+      entityHints: ["draft", "email"],
+      payloadSummary: "Draft email ready",
+    });
+    memory.recordAssistantNotification?.("local", {
+      runId: run.runId,
+      sessionId: run.sessionId,
+      message: "Memory usage is 61%",
+      source: "pulse",
+      event: "reminder_due",
+      eventId: "evt-2",
+    });
+
+    const context = memory.getPromptMemoryContext();
+    expect(context.openFeedbacks).toHaveLength(1);
+    expect(context.openFeedbacks?.[0]?.shortLabel).toBe("send draft");
+    expect(context.openFeedbacks?.[0]?.expiresAt).toBe("2026-02-17T00:00:03.000Z");
+    expect(context.recentSystemActivity).toHaveLength(1);
+    expect(context.recentSystemActivity?.[0]?.summary).toBe("Memory usage is 61%");
+
+    await memory.shutdown();
+  });
+
+  it("expires overdue feedback requests and keeps the original system event history", async () => {
+    const root = mkdtempSync(resolve(tmpdir(), "ayati-memory-test-"));
+    dirs.push(root);
+    const clock = makeMutableNow(new Date(Date.UTC(2026, 1, 16, 0, 0, 0)));
+    const memory = new MemoryManager({
+      dataDir: root,
+      dbPath: resolve(root, "memory.sqlite"),
+      now: clock.now,
+    });
+    memory.initialize("local");
+
+    memory.beginSystemRun?.("local", {
+      source: "agentmail",
+      event: "message.received",
+      eventId: "evt-keep",
+      payload: { subject: "Need approval" },
+    });
+
+    const run = memory.beginRun("local", "check this later");
+    memory.recordAssistantFeedback("local", run.runId, run.sessionId, "Should I send the draft?");
+    memory.recordFeedbackOpened?.("local", {
+      runId: run.runId,
+      sessionId: run.sessionId,
+      kind: "approval",
+      shortLabel: "send draft",
+      message: "Should I send the draft?",
+      actionType: "send_email",
+      sourceEventId: "evt-keep",
+      entityHints: ["draft", "email"],
+      payloadSummary: "Draft email ready",
+    });
+
+    const beforeExpiry = memory.getPromptMemoryContext();
+    expect(beforeExpiry.openFeedbacks).toHaveLength(1);
+    const sessionPath = beforeExpiry.activeSessionPath;
+
+    clock.advanceHours(25);
+
+    const afterExpiry = memory.getPromptMemoryContext();
+    expect(afterExpiry.openFeedbacks).toEqual([]);
+
+    const sessionDoc = readFileSync(resolve(root, sessionPath ?? ""), "utf8");
+    expect(sessionDoc).toContain("\"type\":\"system_event_received\"");
+    expect(sessionDoc).toContain("\"eventId\":\"evt-keep\"");
+    expect(sessionDoc).toContain("\"type\":\"feedback_resolved\"");
+    expect(sessionDoc).toContain("\"resolution\":\"expired\"");
 
     await memory.shutdown();
   });
