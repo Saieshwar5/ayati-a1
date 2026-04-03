@@ -53,17 +53,21 @@ export class SessionAttachmentService {
     manifest: ManagedDocumentManifest;
     summary: PreparedAttachmentSummary;
   }> {
+    const currentRunAttachments = this.preparedAttachmentRegistry.getRunAttachments(input.runId);
+    if ((input.reference?.trim().length ?? 0) === 0 && currentRunAttachments.length > 0) {
+      throw new Error("Current run already has attachments. Use the current attachment, or specify the earlier file to restore.");
+    }
+
     const activeRecords = this.sessionMemory.getActiveAttachmentRecords?.() ?? [];
     const sourceRecord = resolveActiveAttachment(activeRecords, input.reference);
 
-    const existing = this.preparedAttachmentRegistry
-      .getRunAttachments(input.runId)
+    const existing = currentRunAttachments
       .find((record) => record.summary.documentId === sourceRecord.documentId);
     if (existing) {
       return {
         restored: false,
-        manifest: existing.manifest,
-        summary: existing.summary,
+      manifest: existing.manifest,
+      summary: existing.summary,
       };
     }
 

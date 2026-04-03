@@ -23,6 +23,8 @@ const DEFAULT_UNDERSTAND_INSTRUCTIONS = `- First, classify the request:
   - Otherwise, treat it as a task that may require planning and execution.
 - Prepared attachments are task inputs, not context_search targets.
 - Active session attachments are recently used files from earlier runs in the same session. They are not active in the current run until restored.
+- If the current run already has attached or prepared files, treat those current-run files as authoritative.
+- Do not switch to an active session attachment when current-run files are present unless the user explicitly asks for an earlier or previous file.
 - If prepared attachments are present, classify the task by how those inputs should be handled:
   - use work_mode "structured_data_process" for CSV-style data work,
   - use work_mode "document_lookup" for semantic questions over prepared text attachments,
@@ -81,7 +83,8 @@ const DEFAULT_DIRECT_INSTRUCTIONS = `- Pick exactly 1 next action. Reduce uncert
 - If user asks how previous work was done, use Recent Runs and Current Session pointers first; read the relevant runPath/session_path artifacts before answering.
 - Prepared attachments are already available in state. Use them through normal tools, not through context_search.
 - If there are no current prepared attachments but Active session attachments strongly match the user's follow-up file reference, prefer restore_attachment_context before asking for re-upload.
-- If exactly one Active session attachment exists and the user asks a natural follow-up about "this document/file/csv", prefer restore_attachment_context without making the user repeat the filename.
+- If current prepared attachments exist, prefer those current-run attachments by default.
+- Use restore_attachment_context only when there are no current prepared attachments, or when the user explicitly asks for an earlier or previous file by name.
 - If work_mode is "structured_data_process", prefer dataset tools.
 - If work_mode is "document_lookup", prefer document_query for semantic questions over prepared text attachments.
 - If work_mode is "document_process", prefer document_list_sections or document_read_section before generic filesystem or shell approaches.
@@ -587,7 +590,7 @@ function buildUnderstandPrompt(
   const runsBlock = formatRecentRuns(state);
   const feedbacksBlock = formatOpenFeedbacks(state);
   const matchedFeedbackBlock = formatMatchedFeedback(state);
-  const activeAttachmentsBlock = formatActiveSessionAttachments(state);
+  const activeAttachmentsBlock = shouldShowActiveSessionAttachments(state) ? formatActiveSessionAttachments(state) : "";
   const attachmentsBlock = formatAttachedDocuments(state);
   const workModeBlock = formatWorkMode(state);
   const inputBlock = buildInputBlock(state);
@@ -650,7 +653,7 @@ function buildReEvalPrompt(
   const runsBlock = formatRecentRuns(state);
   const feedbacksBlock = formatOpenFeedbacks(state);
   const matchedFeedbackBlock = formatMatchedFeedback(state);
-  const activeAttachmentsBlock = formatActiveSessionAttachments(state);
+  const activeAttachmentsBlock = shouldShowActiveSessionAttachments(state) ? formatActiveSessionAttachments(state) : "";
   const attachmentsBlock = formatAttachedDocuments(state);
   const workModeBlock = formatWorkMode(state);
   const runArtifactsFormatBlock = buildRunArtifactsFormatBlock(state.runPath);
@@ -740,7 +743,7 @@ function buildDirectPrompt(
   const scoutBlock = scoutContext?.trim()
     ? `Retrieved context from prior context_search:\n${scoutContext}`
     : "";
-  const activeAttachmentsBlock = formatActiveSessionAttachments(state);
+  const activeAttachmentsBlock = shouldShowActiveSessionAttachments(state) ? formatActiveSessionAttachments(state) : "";
   const attachmentsBlock = formatAttachedDocuments(state);
   const workModeBlock = formatWorkMode(state);
   const runArtifactsFormatBlock = buildRunArtifactsFormatBlock(state.runPath);
@@ -1284,6 +1287,10 @@ function formatInlineList(values: string[]): string {
 
 function formatWorkMode(state: LoopState): string {
   return state.workMode ? `\nWork mode: ${state.workMode}\n` : "";
+}
+
+function shouldShowActiveSessionAttachments(state: LoopState): boolean {
+  return (state.preparedAttachments?.length ?? 0) === 0 && (state.attachedDocuments?.length ?? 0) === 0;
 }
 
 function formatActiveSessionAttachments(state: LoopState): string {

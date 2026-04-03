@@ -2122,6 +2122,169 @@ describe("agentLoop", () => {
     }
   });
 
+  it("prefers the current uploaded attachment over older active session attachments", async () => {
+    const dataDir = makeTmpDir();
+    const oldCsvPath = join(dataDir, "chat_states_1k.csv");
+    const newCsvPath = join(dataDir, "electronic-card-transactions-february-2026-csv-tables.csv");
+    const sessionMemory = new MemoryManager({ dataDir: join(dataDir, "memory") });
+    sessionMemory.initialize("c1");
+    try {
+      writeFileSync(oldCsvPath, "stage,count\nLEAD-NEW,10\nLEAD-INCOME,3\n", "utf-8");
+      writeFileSync(newCsvPath, "txn_type,amount,channel\npurchase,120,pos\nrefund,40,online\n", "utf-8");
+      const documentStore = new DocumentStore({
+        dataDir: join(dataDir, "documents"),
+        preferCli: false,
+      });
+      const preparedAttachmentRegistry = new PreparedAttachmentRegistry();
+
+      const firstRegistered = await documentStore.registerAttachments([{ path: oldCsvPath, name: "chat_states_1k.csv" }]);
+      const firstRunHandle = sessionMemory.beginRun("c1", "remember this chat state dataset");
+      const firstProvider: LlmProvider = {
+        name: "mock",
+        version: "1.0.0",
+        capabilities: { nativeToolCalling: true },
+        start: vi.fn(),
+        stop: vi.fn(),
+        generateTurn: vi.fn().mockResolvedValue({
+          type: "assistant",
+          content: JSON.stringify({
+            done: true,
+            summary: "I have the chat state dataset ready.",
+            status: "completed",
+          }),
+        }),
+      };
+
+      await agentLoop({
+        provider: firstProvider,
+        toolExecutor: createToolExecutor([]),
+        toolDefinitions: [],
+        sessionMemory,
+        runHandle: firstRunHandle,
+        clientId: "c1",
+        dataDir,
+        userMessageOverride: "remember this chat state dataset",
+        attachedDocuments: firstRegistered.documents,
+        documentStore,
+        preparedAttachmentRegistry,
+      });
+
+      const secondRegistered = await documentStore.registerAttachments([{ path: newCsvPath, name: "electronic-card-transactions-february-2026-csv-tables.csv" }]);
+      const preparedAttachmentService = new PreparedAttachmentService({
+        registry: preparedAttachmentRegistry,
+        documentStore,
+        provider: firstProvider,
+      });
+      const sessionAttachmentService = new SessionAttachmentService({
+        sessionMemory,
+        preparedAttachmentRegistry,
+        dataDir,
+      });
+      const attachmentSkill = createAttachmentSkill({ sessionAttachmentService });
+      const datasetSkill = createDatasetSkill({ preparedAttachmentService });
+      const toolExecutor = createToolExecutor([...attachmentSkill.tools, ...datasetSkill.tools]);
+
+      const secondRunHandle = sessionMemory.beginRun("c1", "analyze the data and find insights");
+      let callCount = 0;
+      const secondProvider: LlmProvider = {
+        name: "mock",
+        version: "1.0.0",
+        capabilities: { nativeToolCalling: true },
+        start: vi.fn(),
+        stop: vi.fn(),
+        generateTurn: vi.fn().mockImplementation(async (input: LlmTurnInput) => {
+          callCount++;
+          const prompt = (input as { messages: Array<{ role: string; content: string }> }).messages.find((message) => message.role === "user")?.content ?? "";
+          if (callCount === 1) {
+            expect(prompt).toContain("Prepared attachments available (1):");
+            expect(prompt).toContain("electronic-card-transactions-february-2026-csv-tables.csv");
+            expect(prompt).not.toContain("Active session attachments (1):");
+            expect(prompt).not.toContain("chat_states_1k.csv");
+            return {
+              type: "assistant",
+              content: JSON.stringify({
+                done: false,
+                understand: true,
+                goal: goalContract("analyze the newly uploaded card transaction dataset"),
+                approach: "inspect the current uploaded dataset and summarize insights",
+                work_mode: "structured_data_process",
+              }),
+            };
+          }
+          if (callCount === 2) {
+            expect(prompt).toContain("electronic-card-transactions-february-2026-csv-tables.csv");
+            expect(prompt).not.toContain("chat_states_1k.csv");
+            expect(prompt).not.toContain("Active session attachments (1):");
+            return {
+              type: "assistant",
+              content: JSON.stringify({
+                done: false,
+                execution_mode: "dependent",
+                intent: "profile the current uploaded transaction dataset",
+                tools_hint: ["dataset_profile"],
+                success_criteria: "the uploaded transaction dataset is inspected and key columns are identified",
+                context: "Use the current uploaded transaction CSV, not an older session file.",
+              }),
+            };
+          }
+          if (callCount === 3) {
+            return {
+              type: "tool_calls",
+              calls: [{ id: "tc1", name: "dataset_profile", input: {} }],
+            };
+          }
+          if (callCount === 4) {
+            const toolMessages = (input as { messages: Array<{ role: string; content: string }> }).messages.filter((message) => message.role === "tool");
+            expect(toolMessages.some((message) => message.content.includes("electronic-card-transactions-february-2026-csv-tables.csv"))).toBe(true);
+            expect(toolMessages.some((message) => message.content.includes("chat_states_1k.csv"))).toBe(false);
+            return {
+              type: "assistant",
+              content: "The current upload is a card transaction dataset with transaction type, amount, and channel columns.",
+            };
+          }
+          if (callCount === 5) {
+            return {
+              type: "assistant",
+              content: taskVerifyResponse("done", "the current uploaded transaction dataset was profiled successfully"),
+            };
+          }
+          return {
+            type: "assistant",
+            content: JSON.stringify({
+              done: true,
+              summary: "The uploaded card transaction file was analyzed from the current run, not from a previous session attachment.",
+              status: "completed",
+            }),
+          };
+        }),
+      };
+
+      const result = await agentLoop({
+        provider: secondProvider,
+        toolExecutor,
+        toolDefinitions: toolExecutor.definitions(),
+        sessionMemory,
+        runHandle: secondRunHandle,
+        clientId: "c1",
+        dataDir,
+        userMessageOverride: "analyze the data and find insights",
+        attachedDocuments: secondRegistered.documents,
+        documentStore,
+        preparedAttachmentRegistry,
+      });
+
+      expect(result.status).toBe("completed");
+      expect(result.content).toContain("current run");
+      const persisted = JSON.parse(readFileSync(join(result.runPath, "state.json"), "utf-8")) as {
+        preparedAttachments?: Array<{ displayName?: string }>;
+      };
+      expect(persisted.preparedAttachments?.map((entry) => entry.displayName)).toEqual(["electronic-card-transactions-february-2026-csv-tables.csv"]);
+    } finally {
+      await sessionMemory.shutdown();
+      cleanup();
+    }
+  });
+
   it("uses the canonical runHandle run id for prepared attachment registration and run path", async () => {
     const dataDir = makeTmpDir();
     const csvPath = join(dataDir, "employees.csv");

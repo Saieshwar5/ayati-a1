@@ -747,6 +747,70 @@ describe("callDirect", () => {
     expect(prompt).not.toContain("\"documents\"");
   });
 
+  it("hides active session attachments when current run attachments are already prepared", async () => {
+    const json = JSON.stringify({
+      done: false,
+      execution_mode: "dependent",
+      intent: "profile the current attachment",
+      tools_hint: ["dataset_profile"],
+      success_criteria: "the current attachment is inspected",
+      context: "use the current prepared attachment",
+    });
+    const provider = createMockProvider(json);
+    const state = createState({
+      workMode: "structured_data_process",
+      activeSessionAttachments: [
+        {
+          documentId: "doc-old",
+          displayName: "chat_states_1k.csv",
+          kind: "csv",
+          mode: "structured_data",
+          runId: "run-old",
+          runPath: "/tmp/old-run",
+          preparedInputId: "att_1_old",
+          lastUsedAt: "2026-03-31T00:00:00.000Z",
+          lastAction: "prepared",
+        },
+      ],
+      preparedAttachments: [
+        {
+          preparedInputId: "att_1_new",
+          documentId: "doc-new",
+          displayName: "electronic-card-transactions-february-2026-csv-tables.csv",
+          source: "web",
+          kind: "csv",
+          mode: "structured_data",
+          sizeBytes: 1024,
+          checksum: "new123",
+          originalPath: "/uploads/electronic-card-transactions-february-2026-csv-tables.csv",
+          status: "ready",
+          warnings: [],
+          artifactPath: "/tmp/test/attachments/att_1_new.json",
+          structured: {
+            columns: ["txn_type", "amount"],
+            inferredTypes: { txn_type: "text", amount: "integer" },
+            rowCount: 12,
+            sampleRowCount: 5,
+            stagingDbPath: "/tmp/test/attachments/staging.sqlite",
+            stagingTableName: "staging_att_1_new",
+            staged: false,
+          },
+        },
+      ],
+    });
+
+    await callDirect(provider, state, [shellTool]);
+
+    const call = (provider.generateTurn as ReturnType<typeof vi.fn>).mock.calls[0]![0] as {
+      messages: Array<{ role: string; content: string }>;
+    };
+    const prompt = call.messages[0]!.content;
+    expect(prompt).toContain("Prepared attachments available (1):");
+    expect(prompt).toContain("electronic-card-transactions-february-2026-csv-tables.csv");
+    expect(prompt).not.toContain("Active session attachments (1):");
+    expect(prompt).not.toContain("chat_states_1k.csv");
+  });
+
   it("uses injected direct instructions when provided", async () => {
     const json = JSON.stringify({
       done: false,

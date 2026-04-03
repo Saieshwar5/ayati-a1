@@ -8,6 +8,7 @@ export interface AttachmentSkillDeps {
 const ATTACHMENT_PROMPT_BLOCK = [
   "Active session attachment restoration is built in.",
   "Use restore_attachment_context when the user refers to a file from earlier in the same session and no current attachment is available.",
+  "If the current run already has attached or prepared files, do not restore an older session attachment unless the user explicitly asks for the earlier file.",
   "Inputs accept a prior attachment reference: preparedInputId is preferred, but the display name also works.",
   "If exactly one active session attachment exists, restore_attachment_context can auto-select it.",
 ].join("\n");
