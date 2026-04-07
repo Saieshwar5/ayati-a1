@@ -1,5 +1,5 @@
 import type { LlmProvider } from "../core/contracts/provider.js";
-import type { LlmResponseFormat, LlmTurnOutput } from "../core/contracts/llm-protocol.js";
+import type { LlmMessage, LlmResponseFormat, LlmTurnOutput, LlmUserContentPart } from "../core/contracts/llm-protocol.js";
 import type { ControllerPrompts } from "../context/types.js";
 import { compileResponseFormatForProvider } from "../providers/shared/provider-profiles.js";
 import type { ToolDefinition } from "../skills/types.js";
@@ -15,12 +15,17 @@ import type {
   FailedApproach,
   GoalContract,
   WorkMode,
+  StepPlanCall,
 } from "./types.js";
 import { buildToolCatalog } from "./tool-catalog.js";
+import type { ManagedDocumentManifest } from "../documents/types.js";
 
 const DEFAULT_UNDERSTAND_INSTRUCTIONS = `- First, classify the request:
   - If it is simple conversation or a direct question that needs no tools or multi-step work, return done: true with a natural user-facing reply.
   - Otherwise, treat it as a task that may require planning and execution.
+- A request is NOT a simple direct question when it asks you to fetch, pull, open, read, check, inspect, search, retrieve, send, run, or otherwise operate on external state.
+- If the answer depends on inbox contents, files, websites, accounts, current state, prior run artifacts, or any other information that still needs tool verification, return done: false.
+- Do not return completion text that only says you will do the work next. If action is still required, continue into execution planning.
 - Prepared attachments are task inputs, not context_search targets.
 - Active session attachments are recently used files from earlier runs in the same session. They are not active in the current run until restored.
 - If the current run already has attached or prepared files, treat those current-run files as authoritative.
@@ -67,19 +72,24 @@ const DEFAULT_REEVAL_INSTRUCTIONS = `- The current approach has not been working
 - Use prior successful and failed step evidence to choose the next approach.
 - If you need older-step facts, session details, project config, or external skill commands before choosing a new approach, request context_search first.
 - If the revised approach depends on an older non-latest step, you MUST use context_search with scope "run_artifacts" to read that step's act/verify details before proposing the approach.
-- If the revised approach will use an external skill, you MUST use context_search with scope "skills" to read that skill's skill.md before proposing the approach.`;
+- If the revised approach will use one or more external skills, you MUST use context_search with scope "skills" to read the required skill.md files before proposing the approach.
+- If multiple external skills are needed for the same next step, prefer one broader "skills" context_search query that asks for all required skills together instead of separate one-skill lookups.`;
 
 const DEFAULT_DIRECT_INSTRUCTIONS = `- Pick exactly 1 next action. Reduce uncertainty first.
+- Emit exactly 1 next execution contract. Reduce uncertainty first.
 - For low-risk public facts, current information, or other requests that are easy to verify, prefer checking with tools/search instead of asking the user to restate or reconfirm.
 - If the next step would be expensive, time-consuming, or hard to undo, and key requirements are still unclear, prefer clarifying before executing.
 - Choose execution_mode for next step:
-  - dependent: tools depend on prior output; executor runs max 1 tool call per turn.
-  - independent: tools are parallel-safe; executor runs max 2 tool calls per turn.
+  - dependent: planned tool calls must run in the listed order.
+  - independent: planned tool calls are explicitly safe to run in parallel.
 - If taskStatus is "done", "blocked", or "needs_user_input", do NOT plan another step. Return done: true with the final response to the user.
-- If taskStatus is "likely_done", prefer returning done: true unless a specific missing requirement from the goal contract clearly requires one more step.
+- If taskStatus is "likely_done", prefer one final grounded step when required evidence is still missing. Return done: true only when the goal contract is actually satisfied.
 - If taskStatus is "not_done", prefer choosing the next step instead of returning done: true.
 - If the user refers to prior work, earlier conversations, dates, or says "like before", prefer a dependent step that uses recall_memory first.
-- recall_memory returns compact session metadata only. If exact prior details are needed, use read_file on the returned sessionPath in the same step or the next step.
+- recall_memory returns run/session drill-down metadata. If exact prior details are needed, use read_file on returned sessionFilePath or runStatePath in the same step or the next step.
+- For personalized user knowledge, prefer the wiki tools over context_search when the task is about the user's background, preferences, people, education, hobbies, organizations, achievements, or saved facts.
+- Use wiki_search when the relevant section is not yet known, wiki_read_section when the section is known, and wiki_list_sections when you need the wiki structure first.
+- Use wiki_update only when the user explicitly asks to save, correct, or remember information.
 - If user asks how previous work was done, use Recent Runs and Current Session pointers first; read the relevant runPath/session_path artifacts before answering.
 - Prepared attachments are already available in state. Use them through normal tools, not through context_search.
 - If there are no current prepared attachments but Active session attachments strongly match the user's follow-up file reference, prefer restore_attachment_context before asking for re-upload.
@@ -89,10 +99,7 @@ const DEFAULT_DIRECT_INSTRUCTIONS = `- Pick exactly 1 next action. Reduce uncert
 - If work_mode is "document_lookup", prefer document_query for semantic questions over prepared text attachments.
 - If work_mode is "document_process", prefer document_list_sections or document_read_section before generic filesystem or shell approaches.
 - Execution limits you must plan for:
-  - max_act_turns_per_step: 4
-  - max_calls_per_turn_dependent: 1
-  - max_calls_per_turn_independent: 2
-  - max_total_tool_calls_per_step: 6
+  - max_planned_calls_per_step: 6
 - If the task asks for machine-wide file/path discovery, first discover valid roots instead of guessing paths.
 - If there are 2 no-progress/missing-path outcomes in a row, pivot strategy instead of retrying the same style search.
 - Never claim "entire filesystem searched" unless your tool inputs explicitly included root-level paths for that OS.
@@ -104,13 +111,27 @@ const DEFAULT_DIRECT_INSTRUCTIONS = `- Pick exactly 1 next action. Reduce uncert
   - <runPath>/steps/<NNN>-act.md contains action details per step.
   - <runPath>/steps/<NNN>-verify.md contains verification details per step.
 - If you need project config, session history, or external skill commands, use context_search.
-  - Scope options: "run_artifacts" (step files, state), "project_context" (soul, system prompt, user profile), "session" (session JSONL data), "skills" (external skill command reference), "both" (all non-document scout locations).
-  - Before using any external skill, you MUST use "skills" scope to load that skill's full command reference from skill.md.
+  - Scope options: "run_artifacts" (step files, state), "project_context" (soul, system prompt, user profile, user wiki, wiki schema), "session" (session JSONL data), "skills" (external skill command reference), "both" (all non-document scout locations).
+  - Before using one or more external skills, you MUST use "skills" scope to load the required skill.md files.
+  - If the next step depends on multiple external skills, prefer one broad "skills" query that names all of them together.
+  - Example broad skills query: "Read the playwright and websearch skill.md commands needed for this step."
   - Write a clear, specific query with step numbers or file names so the scout can find the right information.
   - Use sparingly - max 4 per iteration.
+- The step payload is an execution contract, not a rough plan.
+- execution_contract must say exactly what the executor should run.
+- tool_plan must contain the exact ordered tool invocations with full literal arguments.
+- Do not output a step if you cannot name the exact tool inputs yet. Use context_search or feedback instead.
+- If the next action still needs tools, do not return completion text that only promises the work. Return a step instead.
+- Do not output tools_hint or loose tool preferences.
+- If using the shell tool, provide the literal shell command string in the tool input.
+- If using an external skill:
+  - you MUST load its skill.md via context_search scope "skills" first,
+  - you MUST copy the documented command form into tool_plan instead of paraphrasing,
+  - each external-skill planned call MUST set origin to "external_skill" and include source_refs from the retrieved skill docs.
+- Use origin "builtin" for built-in tool calls with empty source_refs unless grounded run/project/session context is essential to the call.
 - If the task is complete, set done: true.
-- Set tools_hint to the specific tool names the executor should use for the next step.
 - The "summary" field in completion is the ACTUAL RESPONSE shown to the user for response_kind "reply", "feedback", or "notification". Write it as helpful natural language - not a log.
+- Completion text must be a finished answer, a targeted feedback request, or a grounded failure explanation. It must not narrate future work such as "I'll check", "let me pull", or "I need to inspect first".
 - Use response_kind:
   - "reply" for a normal direct answer.
   - "feedback" when you need a user decision, approval, clarification, or confirmation before continuing.
@@ -148,6 +169,7 @@ Reply again with exactly one JSON object.
 ${STRICT_JSON_RESPONSE_NOTE}
 Do not include markdown fences.
 Do not include any explanation before or after the JSON.`;
+const CONTROLLER_SEMANTIC_REPAIR_PROMPT_PREFIX = `Your previous JSON object was invalid for the requested controller stage.`;
 
 const JSON_STRING_SCHEMA = { type: "string" } as const;
 const JSON_STRING_ARRAY_SCHEMA = {
@@ -243,12 +265,26 @@ const DIRECT_STEP_DIRECTIVE_SCHEMA = {
   properties: {
     done: { enum: [false] },
     execution_mode: { type: "string", enum: [...EXECUTION_MODE_ENUM] },
-    intent: JSON_STRING_SCHEMA,
-    tools_hint: JSON_STRING_ARRAY_SCHEMA,
+    execution_contract: JSON_STRING_SCHEMA,
+    tool_plan: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          tool: JSON_STRING_SCHEMA,
+          input: { type: "object", additionalProperties: true },
+          origin: { type: "string", enum: ["builtin", "external_skill"] },
+          source_refs: JSON_STRING_ARRAY_SCHEMA,
+          retry_policy: { type: "string", enum: ["none", "same_call_once_on_timeout"] },
+        },
+        required: ["tool", "input", "origin", "source_refs", "retry_policy"],
+        additionalProperties: false,
+      },
+    },
     success_criteria: JSON_STRING_SCHEMA,
     context: JSON_STRING_SCHEMA,
   },
-  required: ["done", "execution_mode", "intent", "tools_hint", "success_criteria", "context"],
+  required: ["done", "execution_mode", "execution_contract", "tool_plan", "success_criteria", "context"],
   additionalProperties: false,
 } as const;
 
@@ -340,6 +376,7 @@ const FEEDBACK_RESOLUTION_RESPONSE_FORMAT: LlmResponseFormat = {
 };
 
 type ControllerStage = "understand" | "direct" | "reeval";
+type ControllerTurnValidator<T> = (parsed: T) => void;
 
 export class ControllerResponseFormatError extends Error {
   readonly stage: ControllerStage;
@@ -372,6 +409,13 @@ export class ControllerResponseFormatError extends Error {
   }
 }
 
+class ControllerDirectiveValidationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ControllerDirectiveValidationError";
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
@@ -399,7 +443,7 @@ export async function callUnderstand(
   );
   const messages = [
     { role: "system" as const, content: systemContext },
-    { role: "user" as const, content: prompt },
+    buildControllerUserMessage(state, prompt),
   ];
   return runControllerTurn(
     provider,
@@ -407,6 +451,7 @@ export async function callUnderstand(
     messages,
     UNDERSTAND_RESPONSE_FORMAT,
     parseUnderstandResponse,
+    (parsed) => validateUnderstandOutput(parsed, state),
   );
 }
 
@@ -437,7 +482,7 @@ export async function callReEval(
     ...(systemContext && systemContext.trim().length > 0
       ? [{ role: "system" as const, content: systemContext }]
       : []),
-    { role: "user" as const, content: prompt },
+    buildControllerUserMessage(state, prompt),
   ];
   return runControllerTurn(
     provider,
@@ -475,7 +520,7 @@ export async function callDirect(
     ...(systemContext && systemContext.trim().length > 0
       ? [{ role: "system" as const, content: systemContext }]
       : []),
-    { role: "user" as const, content: prompt },
+    buildControllerUserMessage(state, prompt),
   ];
   return runControllerTurn(
     provider,
@@ -483,6 +528,7 @@ export async function callDirect(
     messages,
     DIRECT_RESPONSE_FORMAT,
     parseDirectResponse,
+    (parsed) => validateDirectOutput(parsed, state),
   );
 }
 
@@ -496,7 +542,7 @@ export async function resolveOpenFeedbackReference(
     ...(systemContext && systemContext.trim().length > 0
       ? [{ role: "system" as const, content: systemContext }]
       : []),
-    { role: "user" as const, content: prompt },
+    buildControllerUserMessage(state, prompt),
   ];
   return runControllerTurn(
     provider,
@@ -504,6 +550,7 @@ export async function resolveOpenFeedbackReference(
     messages,
     FEEDBACK_RESOLUTION_RESPONSE_FORMAT,
     parseFeedbackResolutionResponse,
+    (parsed) => validateFeedbackResolutionOutput(parsed, state),
   );
 }
 
@@ -626,7 +673,7 @@ function buildReEvalPrompt(
     .filter((s) => s.outcome === "success")
     .slice(-5)
     .map((s) => {
-      let line = `  Step ${s.step}: ${s.intent}`;
+      let line = `  Step ${s.step}: ${getStepExecutionContract(s)}`;
       if (s.summary) line += ` — ${s.summary.slice(0, 220)}`;
       line += ` (tool_success=${s.toolSuccessCount ?? 0}, tool_failed=${s.toolFailureCount ?? 0})`;
       return line;
@@ -637,7 +684,7 @@ function buildReEvalPrompt(
     .filter((s) => s.outcome === "failed")
     .slice(-5)
     .map((s) => {
-      let line = `  Step ${s.step}: [${s.outcome}] ${s.intent}`;
+      let line = `  Step ${s.step}: [${s.outcome}] ${getStepExecutionContract(s)}`;
       if (s.summary) line += ` — ${s.summary.slice(0, 200)}`;
       if (s.failureType) line += ` (${s.failureType})`;
       if (s.stoppedEarlyReason) line += ` [stop=${s.stoppedEarlyReason}]`;
@@ -646,6 +693,7 @@ function buildReEvalPrompt(
     })
     .join("\n");
 
+  const recentContextSearchesBlock = formatRecentContextSearches(state);
   const scoutBlock = scoutContext?.trim()
     ? `Retrieved context from prior context_search:\n${scoutContext}\n`
     : "";
@@ -671,6 +719,8 @@ ${sessionBlock}${runsBlock}${feedbacksBlock}${matchedFeedbackBlock}${activeAttac
 
 Run artifacts root: ${state.runPath}
 ${runArtifactsFormatBlock}
+
+${recentContextSearchesBlock}
 
 Previous successful steps (latest 5):
 ${recentSuccessfulSteps || "  (none)"}
@@ -706,7 +756,7 @@ function buildDirectPrompt(
   const recentDetailedSteps = state.completedSteps
     .slice(-5)
     .map((s) => {
-      let line = `  Step ${s.step}: [${s.outcome}] ${s.intent}`;
+      let line = `  Step ${s.step}: [${s.outcome}] ${getStepExecutionContract(s)}`;
       if (s.summary) line += `\n    Summary: ${s.summary.slice(0, 300)}`;
       line += `\n    Tool results: success=${s.toolSuccessCount ?? 0}, failed=${s.toolFailureCount ?? 0}`;
       if (s.stoppedEarlyReason) line += `\n    Stop reason: ${s.stoppedEarlyReason}`;
@@ -727,7 +777,7 @@ function buildDirectPrompt(
       const summary = s.summary?.trim().length > 0
         ? ` | summary=${truncateInline(s.summary, 120)}`
         : "";
-      return `  Step ${s.step} | ${s.outcome}${failure}${telemetry}${stopReason} | intent=${truncateInline(s.intent, 90)}${artifactRefs}${summary}`;
+      return `  Step ${s.step} | ${s.outcome}${failure}${telemetry}${stopReason} | execution_contract=${truncateInline(getStepExecutionContract(s), 90)}${artifactRefs}${summary}`;
     })
     .join("\n");
 
@@ -740,6 +790,7 @@ function buildDirectPrompt(
     : "Latest successful step summary: none yet";
 
   const toolCatalog = buildToolCatalog(toolDefinitions);
+  const recentContextSearchesBlock = formatRecentContextSearches(state);
   const scoutBlock = scoutContext?.trim()
     ? `Retrieved context from prior context_search:\n${scoutContext}`
     : "";
@@ -777,6 +828,8 @@ ${latestStepFactsBlock}
 Run artifacts root: ${state.runPath}
 ${runArtifactsFormatBlock}
 
+${recentContextSearchesBlock}
+
 All completed steps index (${state.completedSteps.length} total):
 ${allStepsIndex || "  (none yet)"}
 
@@ -795,7 +848,7 @@ ${instructions ?? DEFAULT_DIRECT_INSTRUCTIONS}
 
 Respond with a single JSON object (no markdown fences):
 ${STRICT_JSON_RESPONSE_NOTE}
-For next step: { "kind": "step", "payload": { "done": false, "execution_mode": "dependent" | "independent", "intent": "...", "tools_hint": [...], "success_criteria": "...", "context": "..." } }
+For next step: { "kind": "step", "payload": { "done": false, "execution_mode": "dependent" | "independent", "execution_contract": "...", "tool_plan": [{ "tool": "shell", "input": { "cmd": "pwd" }, "origin": "builtin", "source_refs": [], "retry_policy": "none" }], "success_criteria": "...", "context": "..." } }
 For context search: { "kind": "context_search", "payload": { "done": false, "context_search": true, "query": "...", "scope": "run_artifacts" | "project_context" | "session" | "skills" | "both" } }
 For completion: { "kind": "completion", "payload": { "done": true, "summary": "<user-facing text or internal note>", "status": "completed" | "failed", "response_kind": "reply" | "feedback" | "notification" | "none", "feedback_kind": "approval" | "confirmation" | "clarification", "feedback_label": "optional short label", "action_type": "optional short action", "entity_hints": ["optional", "keywords"] } }
 For session rotation: { "kind": "rotate_session", "payload": { "done": false, "rotate_session": true, "reason": "...", "handoff_summary": "..." } }`;
@@ -821,6 +874,7 @@ Instructions:
 - Return resolution "none" when the message appears unrelated and should be handled as normal chat or a new request.
 - Return resolution "ambiguous" when the message appears to respond to feedback but more than one request is a plausible match.
 - If there is exactly one open feedback and the user message is a short approval or rejection like "yes", "no", "go ahead", or "don't do it", prefer "matched".
+- If the user message is a fresh request or follow-up task such as "can you check...", "give me details...", "fetch...", "pull...", or "show me...", return "none" even if there is an open feedback request.
 - If resolution is "matched", set feedback_id to the matching feedbackId.
 - If resolution is "ambiguous", provide a short clarification question in clarification.
 - If resolution is "none", leave feedback_id empty and clarification empty.
@@ -859,6 +913,54 @@ function buildInputBlock(state: LoopState): string {
     `System event payload: ${payloadPreview}`,
     ...(state.preferredResponseKind ? [`Preferred response kind: ${state.preferredResponseKind}`] : []),
   ].join("\n");
+}
+
+function formatRecentContextSearches(state: LoopState): string {
+  const entries = state.recentContextSearches ?? [];
+  if (entries.length === 0) {
+    return "Recent context_search results (latest 5): none";
+  }
+
+  const lines = entries
+    .slice()
+    .reverse()
+    .map((entry, index) => {
+      const sources = entry.sources.length > 0 ? entry.sources.join(", ") : "(none)";
+      const context = entry.context.trim().length > 0 ? entry.context : "(empty context)";
+      return [
+        `  ${index + 1}. scope=${entry.scope} status=${entry.status} confidence=${entry.confidence.toFixed(2)} iteration=${entry.iteration}`,
+        `     query=${truncateInline(entry.query || "(empty)", 220)}`,
+        `     sources=${truncateInline(sources, 220)}`,
+        `     context=${truncateInline(context, 500)}`,
+      ].join("\n");
+    })
+    .join("\n");
+
+  return `Recent context_search results (latest 5):\n${lines}`;
+}
+
+function buildControllerUserMessage(
+  state: LoopState,
+  prompt: string,
+): LlmMessage & { role: "user" } {
+  const imageParts = getCurrentImageAttachments(state).map<LlmUserContentPart>((document) => ({
+    type: "image",
+    imagePath: document.storedPath,
+    mimeType: document.mimeType ?? inferImageMimeTypeFromPath(document.displayName),
+    name: document.displayName,
+  }));
+
+  if (imageParts.length === 0) {
+    return { role: "user", content: prompt };
+  }
+
+  return {
+    role: "user",
+    content: [
+      { type: "text", text: prompt },
+      ...imageParts,
+    ],
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -942,10 +1044,12 @@ export function parseDirectResponse(
   return {
     done: false,
     execution_mode: normalizeExecutionMode(parsed["execution_mode"]),
-    intent: String(parsed["intent"] ?? ""),
+    execution_contract: String(parsed["execution_contract"] ?? parsed["intent"] ?? ""),
+    tool_plan: normalizeToolPlan(parsed["tool_plan"]),
+    intent: parsed["intent"] === undefined ? undefined : String(parsed["intent"]),
     tools_hint: Array.isArray(parsed["tools_hint"])
       ? (parsed["tools_hint"] as unknown[]).map(String)
-      : [],
+      : undefined,
     success_criteria: String(parsed["success_criteria"] ?? ""),
     context: String(parsed["context"] ?? ""),
   };
@@ -979,6 +1083,127 @@ function normalizeCompletionDirective(parsed: Record<string, unknown>): Completi
   };
 }
 
+function validateUnderstandOutput(
+  output: UnderstandDirective | CompletionDirective,
+  state: LoopState,
+): void {
+  if (!output.done) return;
+  validateCompletionDirective("understand", output, state);
+}
+
+function validateDirectOutput(
+  output: StepDirective | ContextSearchDirective | CompletionDirective | SessionRotationDirective,
+  state: LoopState,
+): void {
+  if (!("done" in output) || !output.done) return;
+  validateCompletionDirective("direct", output, state);
+}
+
+function validateFeedbackResolutionOutput(
+  output: FeedbackResolutionDirective,
+  state: LoopState,
+): void {
+  if (output.resolution !== "matched") return;
+  if (looksLikeFreshTaskRequest(state.userMessage)) {
+    throw new ControllerDirectiveValidationError(
+      "Feedback resolution must return resolution=\"none\" for a fresh task request instead of matching an open feedback item.",
+    );
+  }
+}
+
+function validateCompletionDirective(
+  stage: "understand" | "direct",
+  completion: CompletionDirective,
+  state: LoopState,
+): void {
+  const summary = completion.summary.trim();
+  if (!summary) {
+    throw new ControllerDirectiveValidationError("Completion summary must not be empty.");
+  }
+
+  if (completion.status !== "completed" || completion.response_kind === "feedback") {
+    return;
+  }
+
+  if (looksLikeDeferredActionSummary(summary)) {
+    throw new ControllerDirectiveValidationError(
+      "Completion summary must not promise or narrate future work. Return a step for unfinished action, or return targeted feedback when user input is required.",
+    );
+  }
+
+  if (looksLikeStalledNonAnswerSummary(summary) && requestLikelyNeedsExecution(state)) {
+    throw new ControllerDirectiveValidationError(
+      `A ${stage} completion cannot stop with an excuse or missing-action note when the request still needs execution. Return a step or targeted feedback instead.`,
+    );
+  }
+}
+
+function looksLikeDeferredActionSummary(summary: string): boolean {
+  const normalized = summary.trim().toLowerCase();
+  const deferredPatterns = [
+    /\bi(?:'ll| will)\b/,
+    /\bi(?:'m| am) going to\b/,
+    /\blet me\b/,
+    /\bi can (?:check|fetch|get|pull|look|look up|read|inspect|search|find|draft|send|open|retrieve|show)\b/,
+    /\bi(?:'ll| will) (?:check|fetch|get|pull|look|look up|read|inspect|search|find|draft|send|open|retrieve|show)\b/,
+    /\bi need to inspect\b/,
+    /\bi need to check\b/,
+    /\bi need to pull\b/,
+    /\bbefore (?:continuing|proceeding)\b/,
+  ];
+  return deferredPatterns.some((pattern) => pattern.test(normalized));
+}
+
+function looksLikeStalledNonAnswerSummary(summary: string): boolean {
+  const normalized = summary.trim().toLowerCase();
+  const stallPatterns = [
+    /^\s*i need (?:to|access|more|the|your)\b/,
+    /^\s*i first need\b/,
+    /^\s*before i can\b/,
+    /^\s*to proceed\b/,
+  ];
+  return stallPatterns.some((pattern) => pattern.test(normalized)) && !normalized.includes("?");
+}
+
+function requestLikelyNeedsExecution(state: LoopState): boolean {
+  const message = state.userMessage.trim().toLowerCase();
+  if (!message) return false;
+
+  const actionablePatterns = [
+    /^(?:can|could|would|will)\s+you\b/,
+    /^(?:please\s+)?(?:check|fetch|pull|get|give|show|read|open|search|find|inspect|retrieve|draft|send|run|look up|summarize|explain|tell me)\b/,
+    /\b(?:latest|full details|details about|open|read|check|fetch|pull|inspect|search|find|retrieve|send|run)\b/,
+  ];
+  return actionablePatterns.some((pattern) => pattern.test(message));
+}
+
+function looksLikeFreshTaskRequest(message: string): boolean {
+  const normalized = message.trim().toLowerCase();
+  if (normalized.length < 12) return false;
+
+  const taskPatterns = [
+    /^(?:can|could|would|will)\s+you\b/,
+    /^(?:please\s+)?(?:check|fetch|pull|get|give|show|read|open|search|find|inspect|retrieve|draft|send|run|look up|summarize|explain|tell me)\b/,
+    /\b(?:full details|details about|what is in|what's in|show me|tell me about)\b/,
+  ];
+  return taskPatterns.some((pattern) => pattern.test(normalized));
+}
+
+function buildControllerRepairPrompt(error: unknown): string {
+  if (!(error instanceof ControllerDirectiveValidationError)) {
+    return CONTROLLER_JSON_REPAIR_PROMPT;
+  }
+
+  return `${CONTROLLER_SEMANTIC_REPAIR_PROMPT_PREFIX}
+Issue: ${error.message}
+Reply again with exactly one JSON object.
+${STRICT_JSON_RESPONSE_NOTE}
+If action still needs to happen, return a step or context_search instead of completion.
+If user input is required, return completion with response_kind "feedback" and ask a targeted question.
+Do not include markdown fences.
+Do not include any explanation before or after the JSON.`;
+}
+
 // Keep backward-compat export for any external callers
 export const parseControllerResponse = parseDirectResponse;
 
@@ -989,9 +1214,10 @@ export const parseControllerResponse = parseDirectResponse;
 async function runControllerTurn<T>(
   provider: LlmProvider,
   stage: ControllerStage,
-  messages: Array<{ role: "system" | "user"; content: string }>,
+  messages: LlmMessage[],
   preferredResponseFormat: LlmResponseFormat,
   parser: (text: string) => T,
+  validator?: ControllerTurnValidator<T>,
 ): Promise<T> {
   const responseFormat = resolveResponseFormat(provider, preferredResponseFormat);
   const firstTurn = await provider.generateTurn({
@@ -1001,12 +1227,14 @@ async function runControllerTurn<T>(
   const firstText = extractControllerTurnText(firstTurn);
 
   try {
-    return parser(firstText);
+    const parsed = parser(firstText);
+    validator?.(parsed);
+    return parsed;
   } catch (error) {
     const retryMessages = [
       ...messages,
       ...(firstText.trim().length > 0 ? [{ role: "assistant" as const, content: firstText }] : []),
-      { role: "user" as const, content: CONTROLLER_JSON_REPAIR_PROMPT },
+      { role: "user" as const, content: buildControllerRepairPrompt(error) },
     ];
     let retryText = firstText;
 
@@ -1016,7 +1244,9 @@ async function runControllerTurn<T>(
         ...(responseFormat ? { responseFormat } : {}),
       });
       retryText = extractControllerTurnText(retryTurn);
-      return parser(retryText);
+      const parsed = parser(retryText);
+      validator?.(parsed);
+      return parsed;
     } catch (retryError) {
       throw new ControllerResponseFormatError({
         stage,
@@ -1305,8 +1535,19 @@ function formatActiveSessionAttachments(state: LoopState): string {
 function formatAttachedDocuments(state: LoopState): string {
   const preparedAttachments = state.preparedAttachments ?? [];
   const attachedDocuments = state.attachedDocuments ?? [];
+  const imageAttachments = getCurrentImageAttachments(state);
+  const nonImageDocuments = attachedDocuments.filter((document) => document.kind !== "image");
   const warnings = state.attachmentWarnings ?? [];
   if (preparedAttachments.length === 0 && attachedDocuments.length === 0 && warnings.length === 0) return "";
+
+  const blocks: string[] = [];
+
+  if (imageAttachments.length > 0) {
+    const imageLines = imageAttachments.map((document) =>
+      `  - ${document.displayName} | source=${document.source} | kind=${document.kind} | mime=${document.mimeType ?? inferImageMimeTypeFromPath(document.displayName)} | path=${truncateInline(document.originalPath, 140)}`,
+    );
+    blocks.push(`\nImage attachments available (${imageAttachments.length}):\n${imageLines.join("\n")}\n`);
+  }
 
   if (preparedAttachments.length > 0) {
     const lines = preparedAttachments.map((attachment) => {
@@ -1325,18 +1566,35 @@ function formatAttachedDocuments(state: LoopState): string {
       return `  - ${attachment.displayName} | kind=${attachment.kind} | ${mode} | ${status} | warning=${truncateInline(attachment.warnings.join(" | "), 140)}`;
     });
     const warningLines = warnings.map((warning) => `  - warning: ${truncateInline(warning, 160)}`);
-    return `\nPrepared attachments available (${preparedAttachments.length}):\n${[...lines, ...warningLines].join("\n")}\n`;
+    blocks.push(`\nPrepared attachments available (${preparedAttachments.length}):\n${[...lines, ...warningLines].join("\n")}\n`);
+    return blocks.join("");
   }
 
-  const lines = attachedDocuments.map((document) =>
+  if (nonImageDocuments.length > 0 || warnings.length > 0) {
+    const lines = nonImageDocuments.map((document) =>
     `  - ${document.displayName} | source=${document.source} | kind=${document.kind} | path=${truncateInline(document.originalPath, 140)}`,
-  );
-  const warningLines = warnings.map((warning) => `  - warning: ${truncateInline(warning, 160)}`);
-  return `\nAttached documents available (${attachedDocuments.length}):\n${[...lines, ...warningLines].join("\n")}\n`;
+    );
+    const warningLines = warnings.map((warning) => `  - warning: ${truncateInline(warning, 160)}`);
+    blocks.push(`\nAttached documents available (${nonImageDocuments.length}):\n${[...lines, ...warningLines].join("\n")}\n`);
+  }
+
+  return blocks.join("");
 }
 
 function buildRunArtifactsFormatBlock(runPath: string): string {
   return `Run artifact format:\n  - ${runPath}/state.json (loop state; completedSteps[*] includes outcome, summary, newFacts, artifacts, toolSuccessCount, toolFailureCount)\n  - ${runPath}/steps/<NNN>-act.md (action details)\n  - ${runPath}/steps/<NNN>-verify.md (verification details)\n  - Only latest step newFacts are inlined here; use context_search to read older-step facts.`;
+}
+
+function getCurrentImageAttachments(state: LoopState): ManagedDocumentManifest[] {
+  return (state.attachedDocuments ?? []).filter((document) => document.kind === "image");
+}
+
+function inferImageMimeTypeFromPath(fileName: string): string {
+  const normalized = fileName.trim().toLowerCase();
+  if (normalized.endsWith(".png")) return "image/png";
+  if (normalized.endsWith(".webp")) return "image/webp";
+  if (normalized.endsWith(".gif")) return "image/gif";
+  return "image/jpeg";
 }
 
 function buildFailureContext(failedApproaches: FailedApproach[]): string {
@@ -1344,7 +1602,7 @@ function buildFailureContext(failedApproaches: FailedApproach[]): string {
 
   const lines: string[] = ["## Failed Approaches — DO NOT REPEAT"];
   for (const f of failedApproaches) {
-    lines.push(`- Step ${f.step} [${f.failureType}]: ${f.intent}`);
+    lines.push(`- Step ${f.step} [${f.failureType}]: ${getFailedApproachExecutionContract(f)}`);
     lines.push(`  Reason: ${f.reason}`);
     if (f.blockedTargets.length > 0) {
       lines.push(`  Blocked: ${f.blockedTargets.join(", ")}`);
@@ -1362,6 +1620,46 @@ function buildFailureContext(failedApproaches: FailedApproach[]): string {
 function normalizeExecutionMode(value: unknown): "dependent" | "independent" {
   if (value === "independent") return "independent";
   return "dependent";
+}
+
+function normalizeToolPlan(toolPlan: unknown): StepPlanCall[] | undefined {
+  if (Array.isArray(toolPlan)) {
+    const normalized = toolPlan
+      .map((item) => normalizePlannedToolCall(item))
+      .filter((item): item is StepPlanCall => item !== null);
+    return normalized;
+  }
+  return undefined;
+}
+
+function normalizePlannedToolCall(value: unknown): StepPlanCall | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+
+  const record = value as Record<string, unknown>;
+  const input = record["input"];
+  return {
+    tool: String(record["tool"] ?? ""),
+    input: input && typeof input === "object" && !Array.isArray(input)
+      ? { ...(input as Record<string, unknown>) }
+      : {},
+    origin: record["origin"] === "external_skill" ? "external_skill" : "builtin",
+    source_refs: Array.isArray(record["source_refs"])
+      ? (record["source_refs"] as unknown[]).map(String).filter((ref) => ref.trim().length > 0)
+      : [],
+    retry_policy: record["retry_policy"] === "same_call_once_on_timeout"
+      ? "same_call_once_on_timeout"
+      : "none",
+  };
+}
+
+function getStepExecutionContract(step: Pick<LoopState["completedSteps"][number], "executionContract"> & { intent?: string }): string {
+  return step.executionContract || step.intent || "";
+}
+
+function getFailedApproachExecutionContract(failure: FailedApproach & { intent?: string }): string {
+  return failure.executionContract || failure.intent || "";
 }
 
 function normalizeResponseKind(value: unknown): "reply" | "feedback" | "notification" | "none" | undefined {

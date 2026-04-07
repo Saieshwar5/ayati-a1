@@ -9,6 +9,7 @@ import type {
   VerifyOutput,
   TaskStatus,
   PreparedAttachmentStateUpdate,
+  StepPlanCall,
 } from "./types.js";
 import { writeStepMarkdown, formatActMarkdown, formatVerifyMarkdown } from "./state-persistence.js";
 import { checkVerificationGates } from "./verification-gates.js";
@@ -44,7 +45,7 @@ export async function executeStep(
 
   return {
     step: stepNumber,
-    intent: directive.intent,
+    executionContract: getDirectiveExecutionContract(directive),
     outcome: verifyOut.passed ? "success" : "failed",
     summary: actOut.finalText.slice(0, 500),
     newFacts,
@@ -67,174 +68,46 @@ async function act(
   deps: ExecutorDeps,
   directive: StepDirective,
 ): Promise<ActOutput> {
-  const toolSchemas = buildToolSchemas(deps);
-  const availableToolNames = new Set(toolSchemas.map((schema) => schema.name));
+  const explicitToolPlan = Array.isArray(directive.tool_plan) ? directive.tool_plan : [];
+  if (explicitToolPlan.length === 0) {
+    return actWithLegacyAutonomy(deps, directive);
+  }
+
+  const plannedCalls = explicitToolPlan.slice(0, Math.max(1, deps.config.maxTotalToolCallsPerStep));
   const toolCalls: ActToolCallRecord[] = [];
-  const failedCallSignatures = new Set<string>();
-  const blockedRetryCounts = new Map<string, number>();
-  const repeatedFailureCounts = new Map<string, number>();
-  const toolFailureCounts = new Map<string, number>();
-  const blockedTools = new Set<string>();
-  const maxCallsPerTurn = directive.execution_mode === "independent" ? 2 : 1;
-  const maxTotalCalls = Math.max(1, deps.config.maxTotalToolCallsPerStep);
-  let executedCalls = 0;
+  if (plannedCalls.length === 0) {
+    return finalizeActOutput(deps, directive, toolCalls, "no_valid_tool_calls");
+  }
 
-  const prompt = buildActPrompt(directive, toolSchemas.map((tool) => tool.name));
+  if (explicitToolPlan.length > deps.config.maxTotalToolCallsPerStep) {
+    return finalizeActOutput(deps, directive, toolCalls, "max_total_tool_calls_reached");
+  }
 
-  const messages: LlmMessage[] = [{ role: "user", content: prompt }];
+  const maxCallsPerBatch = directive.execution_mode === "independent" ? 2 : 1;
 
-  for (let i = 0; i < deps.config.maxToolCallsPerStep; i++) {
-    const turn = await deps.provider.generateTurn({
-      messages,
-      tools: toolSchemas.length > 0 ? toolSchemas : undefined,
-    });
-
-    if (turn.type === "assistant") {
-      return {
-        toolCalls,
-        finalText: turn.content,
-        stoppedEarlyReason: "assistant_returned",
-      };
-    }
-
-    const candidateCalls = prioritizeCallsByHint(turn.calls, directive.tools_hint)
-      .filter((call) => availableToolNames.has(call.name));
-
-    const orderedCalls = selectCallsForTurn(
-      candidateCalls,
-      maxCallsPerTurn,
-      failedCallSignatures,
-      blockedTools,
+  for (let index = 0; index < plannedCalls.length; index += maxCallsPerBatch) {
+    const batch = plannedCalls.slice(index, index + maxCallsPerBatch);
+    const batchResults = await Promise.all(
+      batch.map((call, batchIndex) => executePlannedCall(deps, call, index + batchIndex + 1)),
     );
+    toolCalls.push(...batchResults);
 
-    if (orderedCalls.length === 0) {
-      return await finalizeActOutput(
-        deps,
-        directive,
-        messages,
-        toolCalls,
-        "no_valid_tool_calls",
-      );
-    }
-
-    for (const call of orderedCalls) {
-      if (executedCalls >= maxTotalCalls) {
-        return await finalizeActOutput(
-          deps,
-          directive,
-          messages,
-          toolCalls,
-          "max_total_tool_calls_reached",
-        );
-      }
-
-      const callSignature = buildCallSignature(call.name, call.input);
-      const blockedReason = getBlockedCallReason(call.name, call.input, failedCallSignatures, blockedTools);
-      const record = blockedReason
-        ? { tool: call.name, input: call.input, output: "", error: blockedReason }
-        : await executeSingleTool(deps, call.name, call.input, i + 1);
-      toolCalls.push(record);
-      executedCalls++;
-
-      deps.sessionMemory.recordToolCall(deps.clientId, {
-        runId: deps.runHandle.runId,
-        sessionId: deps.runHandle.sessionId,
-        stepId: i + 1,
-        toolCallId: call.id,
-        toolName: call.name,
-        args: call.input,
-      });
-
-      deps.sessionMemory.recordToolResult(deps.clientId, {
-        runId: deps.runHandle.runId,
-        sessionId: deps.runHandle.sessionId,
-        stepId: i + 1,
-        toolCallId: call.id,
-        toolName: call.name,
-        status: record.error ? "failed" : "success",
-        output: record.output,
-        errorMessage: record.error,
-      });
-
-      messages.push({ role: "assistant_tool_calls", calls: [call] });
-      messages.push({
-        role: "tool",
-        toolCallId: call.id,
-        name: call.name,
-        content: record.error
-          ? formatToolResult(call.name, { ok: false, error: record.error })
-          : formatToolResult(call.name, { ok: true, output: record.output }),
-      });
-
-      if (record.error) {
-        const fingerprint = buildFailureFingerprint(call.name, call.input, record.error);
-        const repeatedCount = (repeatedFailureCounts.get(fingerprint) ?? 0) + 1;
-        repeatedFailureCounts.set(fingerprint, repeatedCount);
-        failedCallSignatures.add(callSignature);
-
-        const toolFailureCount = (toolFailureCounts.get(call.name) ?? 0) + 1;
-        toolFailureCounts.set(call.name, toolFailureCount);
-        if (toolFailureCount >= 2) {
-          blockedTools.add(call.name);
-        }
-
-        messages.push({
-          role: "user",
-          content: buildRecoveryGuidance(
-            call.name,
-            call.input,
-            record.error,
-            toolFailureCount,
-            directive.tools_hint,
-            toolSchemas.map((tool) => tool.name),
-          ),
-        });
-
-        if (blockedReason) {
-          const blockedRetryCount = (blockedRetryCounts.get(callSignature) ?? 0) + 1;
-          blockedRetryCounts.set(callSignature, blockedRetryCount);
-          if (blockedRetryCount >= 2) {
-            return await finalizeActOutput(
-              deps,
-              directive,
-              messages,
-              toolCalls,
-              "repeated_identical_failure",
-            );
-          }
-        }
-
-        if (repeatedCount >= 2) {
-          return await finalizeActOutput(
-            deps,
-            directive,
-            messages,
-            toolCalls,
-            "repeated_identical_failure",
-          );
-        }
-      }
+    if (batchResults.some((record) => !!record.error)) {
+      return finalizeActOutput(deps, directive, toolCalls, "planned_call_failed");
     }
   }
 
-  return await finalizeActOutput(
-    deps,
-    directive,
-    messages,
-    toolCalls,
-    toolCalls.length > 0 ? "max_act_turns_reached" : "no_valid_tool_calls",
-  );
+  return finalizeActOutput(deps, directive, toolCalls);
 }
 
-async function finalizeActOutput(
+function finalizeActOutput(
   deps: ExecutorDeps,
   directive: StepDirective,
-  messages: LlmMessage[],
   toolCalls: ActToolCallRecord[],
-  stoppedEarlyReason: NonNullable<ActOutput["stoppedEarlyReason"]>,
-): Promise<ActOutput> {
+  stoppedEarlyReason?: NonNullable<ActOutput["stoppedEarlyReason"]>,
+): ActOutput {
   const finalText = toolCalls.length > 0
-    ? await requestForcedStepSummary(deps, directive, messages, toolCalls, stoppedEarlyReason)
+    ? buildFallbackActSummary(directive, toolCalls, stoppedEarlyReason)
     : "";
 
   return {
@@ -242,29 +115,6 @@ async function finalizeActOutput(
     finalText,
     stoppedEarlyReason,
   };
-}
-
-async function requestForcedStepSummary(
-  deps: ExecutorDeps,
-  directive: StepDirective,
-  messages: LlmMessage[],
-  toolCalls: ActToolCallRecord[],
-  stoppedEarlyReason: NonNullable<ActOutput["stoppedEarlyReason"]>,
-): Promise<string> {
-  const prompt = buildForcedSummaryPrompt(directive, toolCalls, stoppedEarlyReason);
-
-  try {
-    const turn = await deps.provider.generateTurn({
-      messages: [...messages, { role: "user", content: prompt }],
-    });
-    if (turn.type === "assistant" && turn.content.trim().length > 0) {
-      return turn.content.trim();
-    }
-  } catch {
-    // Fall back to a deterministic summary built from tool results.
-  }
-
-  return buildFallbackActSummary(toolCalls, stoppedEarlyReason);
 }
 
 async function executeSingleTool(
@@ -298,6 +148,81 @@ async function executeSingleTool(
   }
 
   return { tool: toolName, input, output: result.output ?? "", meta: result.meta };
+}
+
+async function executePlannedCall(
+  deps: ExecutorDeps,
+  plannedCall: StepPlanCall,
+  stepId: number,
+): Promise<ActToolCallRecord> {
+  if (plannedCall.origin === "external_skill" && plannedCall.source_refs.length === 0) {
+    const record = {
+      tool: plannedCall.tool,
+      input: plannedCall.input,
+      output: "",
+      error: `External skill call '${plannedCall.tool}' is missing source_refs from a prior skills context_search.`,
+    };
+    recordPlannedToolResult(deps, plannedCall, record, stepId);
+    return record;
+  }
+
+  const firstAttempt = await executeSingleTool(deps, plannedCall.tool, plannedCall.input, stepId);
+  recordPlannedToolResult(deps, plannedCall, firstAttempt, stepId);
+  if (!firstAttempt.error) {
+    return firstAttempt;
+  }
+
+  if (
+    plannedCall.retry_policy !== "same_call_once_on_timeout"
+    || !isTimeoutError(firstAttempt.error)
+  ) {
+    return firstAttempt;
+  }
+
+  const retryAttempt = await executeSingleTool(deps, plannedCall.tool, plannedCall.input, stepId);
+  recordPlannedToolResult(deps, plannedCall, retryAttempt, stepId, "retry-1");
+  if (!retryAttempt.error) {
+    return retryAttempt;
+  }
+
+  return {
+    ...retryAttempt,
+    error: `Retry policy exhausted for '${plannedCall.tool}': ${retryAttempt.error}`,
+  };
+}
+
+function recordPlannedToolResult(
+  deps: ExecutorDeps,
+  plannedCall: StepPlanCall,
+  record: ActToolCallRecord,
+  stepId: number,
+  suffix = "initial",
+): void {
+  const toolCallId = `plan-${stepId}-${suffix}`;
+  deps.sessionMemory.recordToolCall(deps.clientId, {
+    runId: deps.runHandle.runId,
+    sessionId: deps.runHandle.sessionId,
+    stepId,
+    toolCallId,
+    toolName: plannedCall.tool,
+    args: plannedCall.input,
+  });
+
+  deps.sessionMemory.recordToolResult(deps.clientId, {
+    runId: deps.runHandle.runId,
+    sessionId: deps.runHandle.sessionId,
+    stepId,
+    toolCallId,
+    toolName: plannedCall.tool,
+    status: record.error ? "failed" : "success",
+    output: record.output,
+    errorMessage: record.error,
+  });
+}
+
+function isTimeoutError(error: string): boolean {
+  const normalized = error.toLowerCase();
+  return normalized.includes("timeout") || normalized.includes("timed out");
 }
 
 // --- Phase 2: Verify ---
@@ -374,15 +299,15 @@ function buildCallSignature(toolName: string, input: unknown): string {
 }
 
 function buildActPrompt(directive: StepDirective, availableToolNames: string[]): string {
-  const preferredTools = directive.tools_hint.length > 0
-    ? directive.tools_hint.join(", ")
+  const preferredTools = (directive.tools_hint ?? []).length > 0
+    ? (directive.tools_hint ?? []).join(", ")
     : "none";
   const availableTools = availableToolNames.length > 0
     ? availableToolNames.join(", ")
     : "none";
 
   return `Execute this step:
-Intent: ${directive.intent}
+Intent: ${getDirectiveExecutionContract(directive)}
 Context: ${directive.context}
 Preferred tools: ${preferredTools}
 Available tools: ${availableTools}
@@ -411,15 +336,16 @@ Do not call any tools.
 Write a concise 1-3 sentence summary of what happened in this step using only the existing tool results.
 Be explicit about whether the step made progress, partially succeeded, or failed.
 
-Step intent: ${directive.intent}
+Step intent: ${getDirectiveExecutionContract(directive)}
 Success criteria: ${directive.success_criteria}
 Tool results:
 ${toolFacts}`;
 }
 
 function buildFallbackActSummary(
+  directive: StepDirective,
   toolCalls: ActToolCallRecord[],
-  stoppedEarlyReason: NonNullable<ActOutput["stoppedEarlyReason"]>,
+  stoppedEarlyReason?: NonNullable<ActOutput["stoppedEarlyReason"]>,
 ): string {
   const successfulCalls = toolCalls.filter((call) => !call.error);
   const failedCalls = toolCalls.filter((call) => !!call.error);
@@ -441,7 +367,11 @@ function buildFallbackActSummary(
     details.push(`Failures: ${failurePreview}`);
   }
 
-  const base = `Step stopped due to ${stoppedEarlyReason} after ${toolCalls.length} tool call(s) (${successfulCalls.length} succeeded, ${failedCalls.length} failed).`;
+  const executionContract = getDirectiveExecutionContract(directive);
+  const statusPrefix = stoppedEarlyReason
+    ? `Execution contract "${executionContract}" stopped due to ${stoppedEarlyReason}.`
+    : `Execution contract "${executionContract}" completed.`;
+  const base = `${statusPrefix} ${toolCalls.length} tool call(s) ran (${successfulCalls.length} succeeded, ${failedCalls.length} failed).`;
   return details.length > 0 ? `${base} ${details.join(" ")}` : base;
 }
 
@@ -537,6 +467,213 @@ function buildRecoverySuggestion(
     default:
       return `Try a different tool or materially different parameters instead of repeating the failed call.`;
   }
+}
+
+function getDirectiveExecutionContract(directive: StepDirective): string {
+  return directive.execution_contract ?? directive.intent ?? "";
+}
+
+async function actWithLegacyAutonomy(
+  deps: ExecutorDeps,
+  directive: StepDirective,
+): Promise<ActOutput> {
+  const toolSchemas = buildToolSchemas(deps);
+  const availableToolNames = new Set(toolSchemas.map((schema) => schema.name));
+  const toolCalls: ActToolCallRecord[] = [];
+  const failedCallSignatures = new Set<string>();
+  const blockedRetryCounts = new Map<string, number>();
+  const repeatedFailureCounts = new Map<string, number>();
+  const toolFailureCounts = new Map<string, number>();
+  const blockedTools = new Set<string>();
+  const maxCallsPerTurn = directive.execution_mode === "independent" ? 2 : 1;
+  const maxTotalCalls = Math.max(1, deps.config.maxTotalToolCallsPerStep);
+  let executedCalls = 0;
+
+  const prompt = buildActPrompt(directive, toolSchemas.map((tool) => tool.name));
+  const messages: LlmMessage[] = [{ role: "user", content: prompt }];
+
+  for (let i = 0; i < deps.config.maxToolCallsPerStep; i++) {
+    const turn = await deps.provider.generateTurn({
+      messages,
+      tools: toolSchemas.length > 0 ? toolSchemas : undefined,
+    });
+
+    if (turn.type === "assistant") {
+      return {
+        toolCalls,
+        finalText: turn.content,
+        stoppedEarlyReason: "assistant_returned",
+      };
+    }
+
+    const candidateCalls = prioritizeCallsByHint(turn.calls, directive.tools_hint ?? [])
+      .filter((call) => availableToolNames.has(call.name));
+
+    const orderedCalls = selectCallsForTurn(
+      candidateCalls,
+      maxCallsPerTurn,
+      failedCallSignatures,
+      blockedTools,
+    );
+
+    if (orderedCalls.length === 0) {
+      return await finalizeLegacyActOutput(
+        deps,
+        directive,
+        messages,
+        toolCalls,
+        "no_valid_tool_calls",
+      );
+    }
+
+    for (const call of orderedCalls) {
+      if (executedCalls >= maxTotalCalls) {
+        return await finalizeLegacyActOutput(
+          deps,
+          directive,
+          messages,
+          toolCalls,
+          "max_total_tool_calls_reached",
+        );
+      }
+
+      const callSignature = buildCallSignature(call.name, call.input);
+      const blockedReason = getBlockedCallReason(call.name, call.input, failedCallSignatures, blockedTools);
+      const record = blockedReason
+        ? { tool: call.name, input: call.input, output: "", error: blockedReason }
+        : await executeSingleTool(deps, call.name, call.input, i + 1);
+      toolCalls.push(record);
+      executedCalls++;
+
+      deps.sessionMemory.recordToolCall(deps.clientId, {
+        runId: deps.runHandle.runId,
+        sessionId: deps.runHandle.sessionId,
+        stepId: i + 1,
+        toolCallId: call.id,
+        toolName: call.name,
+        args: call.input,
+      });
+
+      deps.sessionMemory.recordToolResult(deps.clientId, {
+        runId: deps.runHandle.runId,
+        sessionId: deps.runHandle.sessionId,
+        stepId: i + 1,
+        toolCallId: call.id,
+        toolName: call.name,
+        status: record.error ? "failed" : "success",
+        output: record.output,
+        errorMessage: record.error,
+      });
+
+      messages.push({ role: "assistant_tool_calls", calls: [call] });
+      messages.push({
+        role: "tool",
+        toolCallId: call.id,
+        name: call.name,
+        content: record.error
+          ? formatToolResult(call.name, { ok: false, error: record.error })
+          : formatToolResult(call.name, { ok: true, output: record.output }),
+      });
+
+      if (record.error) {
+        const fingerprint = buildFailureFingerprint(call.name, call.input, record.error);
+        const repeatedCount = (repeatedFailureCounts.get(fingerprint) ?? 0) + 1;
+        repeatedFailureCounts.set(fingerprint, repeatedCount);
+        failedCallSignatures.add(callSignature);
+
+        const toolFailureCount = (toolFailureCounts.get(call.name) ?? 0) + 1;
+        toolFailureCounts.set(call.name, toolFailureCount);
+        if (toolFailureCount >= 2) {
+          blockedTools.add(call.name);
+        }
+
+        messages.push({
+          role: "user",
+          content: buildRecoveryGuidance(
+            call.name,
+            call.input,
+            record.error,
+            toolFailureCount,
+            directive.tools_hint ?? [],
+            toolSchemas.map((tool) => tool.name),
+          ),
+        });
+
+        if (blockedReason) {
+          const blockedRetryCount = (blockedRetryCounts.get(callSignature) ?? 0) + 1;
+          blockedRetryCounts.set(callSignature, blockedRetryCount);
+          if (blockedRetryCount >= 2) {
+            return await finalizeLegacyActOutput(
+              deps,
+              directive,
+              messages,
+              toolCalls,
+              "repeated_identical_failure",
+            );
+          }
+        }
+
+        if (repeatedCount >= 2) {
+          return await finalizeLegacyActOutput(
+            deps,
+            directive,
+            messages,
+            toolCalls,
+            "repeated_identical_failure",
+          );
+        }
+      }
+    }
+  }
+
+  return await finalizeLegacyActOutput(
+    deps,
+    directive,
+    messages,
+    toolCalls,
+    toolCalls.length > 0 ? "max_act_turns_reached" : "no_valid_tool_calls",
+  );
+}
+
+async function finalizeLegacyActOutput(
+  deps: ExecutorDeps,
+  directive: StepDirective,
+  messages: LlmMessage[],
+  toolCalls: ActToolCallRecord[],
+  stoppedEarlyReason: NonNullable<ActOutput["stoppedEarlyReason"]>,
+): Promise<ActOutput> {
+  const finalText = toolCalls.length > 0
+    ? await requestForcedStepSummary(deps, directive, messages, toolCalls, stoppedEarlyReason)
+    : "";
+
+  return {
+    toolCalls,
+    finalText,
+    stoppedEarlyReason,
+  };
+}
+
+async function requestForcedStepSummary(
+  deps: ExecutorDeps,
+  directive: StepDirective,
+  messages: LlmMessage[],
+  toolCalls: ActToolCallRecord[],
+  stoppedEarlyReason: NonNullable<ActOutput["stoppedEarlyReason"]>,
+): Promise<string> {
+  const prompt = buildForcedSummaryPrompt(directive, toolCalls, stoppedEarlyReason);
+
+  try {
+    const turn = await deps.provider.generateTurn({
+      messages: [...messages, { role: "user", content: prompt }],
+    });
+    if (turn.type === "assistant" && turn.content.trim().length > 0) {
+      return turn.content.trim();
+    }
+  } catch {
+    // Fall back to a deterministic summary built from tool results.
+  }
+
+  return buildFallbackActSummary(directive, toolCalls, stoppedEarlyReason);
 }
 
 function parseJSON<T>(text: string): T {

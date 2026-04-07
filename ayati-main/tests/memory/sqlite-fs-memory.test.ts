@@ -77,7 +77,7 @@ describe("MemoryManager markdown persistence", () => {
     expect(content).not.toContain("\"tool_result\"");
     expect(content).toContain("\"session_open\"");
     expect(content).toContain("\"sessionPath\"");
-    expect(content).not.toContain("\"runId\"");
+    expect(content).toContain("\"runId\"");
 
     manager.shutdown();
   });

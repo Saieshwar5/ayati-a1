@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { agentLoop } from "../../src/ivec/agent-loop.js";
@@ -16,6 +16,7 @@ import { createAttachmentSkill } from "../../src/skills/builtins/attachments/ind
 import { createDatasetSkill } from "../../src/skills/builtins/datasets/index.js";
 import { createDocumentSkill } from "../../src/skills/builtins/documents/index.js";
 import { createToolExecutor } from "../../src/skills/tool-executor.js";
+import type { ToolDefinition } from "../../src/skills/types.js";
 
 function goalContract(objective: string): Record<string, unknown> {
   return {
@@ -77,6 +78,20 @@ function writeWorkbook(filePath: string, sheets: Array<{ name: string; rows: unk
   }
   XLSX.writeFile(workbook, filePath);
 }
+
+const sendEmailTool: ToolDefinition = {
+  name: "send_email",
+  description: "Send an email draft",
+  inputSchema: {
+    type: "object",
+    required: ["to"],
+    properties: {
+      to: { type: "string" },
+      subject: { type: "string" },
+    },
+  },
+  execute: vi.fn().mockResolvedValue({ ok: true, output: "Draft sent to Arun." }),
+};
 
 describe("agentLoop", () => {
   let tmpDir: string;
@@ -183,11 +198,60 @@ describe("agentLoop", () => {
               }),
             };
           }
+          if (callCount === 2) {
+            return {
+              type: "assistant",
+              content: JSON.stringify({
+                done: false,
+                understand: true,
+                goal: goalContract("send the approved draft to Arun"),
+                approach: "execute the approved send_email action",
+              }),
+            };
+          }
+          if (callCount === 3) {
+            return {
+              type: "assistant",
+              content: JSON.stringify({
+                done: false,
+                execution_mode: "dependent",
+                execution_contract: "Send the approved draft email to Arun",
+                tool_plan: [
+                  {
+                    tool: "send_email",
+                    input: { to: "arun@example.com", subject: "Draft reply" },
+                    origin: "builtin",
+                    source_refs: [],
+                    retry_policy: "none",
+                  },
+                ],
+                success_criteria: "The draft email is sent to Arun",
+                context: "The user approved sending the prepared draft",
+              }),
+            };
+          }
+          if (callCount === 4) {
+            return {
+              type: "assistant",
+              content: JSON.stringify({
+                passed: true,
+                evidence: "send_email succeeded",
+                newFacts: ["The draft email was sent to Arun."],
+                artifacts: [],
+              }),
+            };
+          }
+          if (callCount === 5) {
+            return {
+              type: "assistant",
+              content: taskVerifyResponse("done", "The approved send_email action completed successfully"),
+            };
+          }
           return {
             type: "assistant",
             content: JSON.stringify({
               done: true,
-              summary: "Sending the draft now.",
+              summary: "Sent the draft reply to Arun.",
               status: "completed",
             }),
           };
@@ -196,7 +260,8 @@ describe("agentLoop", () => {
 
       const result = await agentLoop({
         provider,
-        toolDefinitions: [],
+        toolExecutor: createToolExecutor([sendEmailTool]),
+        toolDefinitions: [sendEmailTool],
         sessionMemory,
         runHandle: { sessionId: "s1", runId: "r1" },
         clientId: "c1",
@@ -206,7 +271,7 @@ describe("agentLoop", () => {
       });
 
       expect(result.type).toBe("reply");
-      expect(result.content).toBe("Sending the draft now.");
+      expect(result.content).toBe("Sent the draft reply to Arun.");
       expect(result.resolvedFeedbackId).toBe("fb-1");
       expect(sessionMemory.resolveOpenFeedback as ReturnType<typeof vi.fn>).toHaveBeenCalledWith("c1", {
         runId: "r1",
@@ -215,6 +280,146 @@ describe("agentLoop", () => {
         resolution: "completed",
         userResponse: "yes, send it",
       });
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("treats a fresh follow-up request as a new task instead of resolving open feedback", async () => {
+    const dataDir = makeTmpDir();
+    try {
+      const sessionMemory = createMockSessionMemory();
+      (sessionMemory.getPromptMemoryContext as ReturnType<typeof vi.fn>).mockReturnValue({
+        conversationTurns: [{ role: "user", content: "Can you give full details about the AWS billing mail?", timestamp: "", sessionPath: "" }],
+        previousSessionSummary: "",
+        recentRunLedgers: [],
+        openFeedbacks: [
+          {
+            feedbackId: "fb-1",
+            status: "open",
+            kind: "approval",
+            shortLabel: "search more companies",
+            message: "Want me to search for more companies?",
+            actionType: "websearch",
+            sourceRunId: "r0",
+            sourceEventId: "evt-1",
+            entityHints: ["companies", "outreach"],
+            payloadSummary: "Cold outreach follow-up",
+            createdAt: "2026-02-16T00:00:00.000Z",
+            expiresAt: "2026-02-17T00:00:00.000Z",
+          },
+        ],
+        recentSystemActivity: [],
+      });
+
+      let callCount = 0;
+      const provider: LlmProvider = {
+        name: "mock",
+        version: "1.0.0",
+        capabilities: { nativeToolCalling: true },
+        start: vi.fn(),
+        stop: vi.fn(),
+        generateTurn: vi.fn().mockImplementation(async () => {
+          callCount++;
+          if (callCount === 1) {
+            return {
+              type: "assistant",
+              content: JSON.stringify({
+                resolution: "matched",
+                feedback_id: "fb-1",
+                clarification: "",
+                reason: "single open feedback matched",
+              }),
+            };
+          }
+          if (callCount === 2) {
+            return {
+              type: "assistant",
+              content: JSON.stringify({
+                resolution: "none",
+                feedback_id: "",
+                clarification: "",
+                reason: "The message is a fresh task request about AWS billing mail details",
+              }),
+            };
+          }
+          if (callCount === 3) {
+            return {
+              type: "assistant",
+              content: JSON.stringify({
+                done: false,
+                understand: true,
+                goal: goalContract("read the AWS billing email details"),
+                approach: "fetch the requested email and summarize its contents",
+              }),
+            };
+          }
+          if (callCount === 4) {
+            return {
+              type: "assistant",
+              content: JSON.stringify({
+                done: false,
+                execution_mode: "dependent",
+                execution_contract: "Read the AWS billing email details",
+                tool_plan: [
+                  {
+                    tool: "send_email",
+                    input: { to: "audit@example.com", subject: "AWS mail fetched for inspection" },
+                    origin: "builtin",
+                    source_refs: [],
+                    retry_policy: "none",
+                  },
+                ],
+                success_criteria: "The requested mail details are retrieved for inspection",
+                context: "Fresh user request about AWS billing email details",
+              }),
+            };
+          }
+          if (callCount === 5) {
+            return {
+              type: "assistant",
+              content: JSON.stringify({
+                passed: true,
+                evidence: "mail details fetched",
+                newFacts: ["Fetched the AWS billing email details for review."],
+                artifacts: [],
+              }),
+            };
+          }
+          if (callCount === 6) {
+            return {
+              type: "assistant",
+              content: taskVerifyResponse("done", "The requested email details were fetched"),
+            };
+          }
+          return {
+            type: "assistant",
+            content: JSON.stringify({
+              done: true,
+              summary: "Fetched the AWS billing mail details.",
+              status: "completed",
+            }),
+          };
+        }),
+      };
+
+      const result = await agentLoop({
+        provider,
+        toolExecutor: createToolExecutor([sendEmailTool]),
+        toolDefinitions: [sendEmailTool],
+        sessionMemory,
+        runHandle: { sessionId: "s1", runId: "r1" },
+        clientId: "c1",
+        inputKind: "user_message",
+        initialUserMessage: "Can you give full details about the AWS billing mail?",
+        dataDir,
+      });
+
+      expect(result.type).toBe("reply");
+      expect(result.content).toBe("Fetched the AWS billing mail details.");
+      expect(result.resolvedFeedbackId).toBeUndefined();
+      expect(sessionMemory.resolveOpenFeedback as ReturnType<typeof vi.fn>).not.toHaveBeenCalled();
+      expect((provider.generateTurn as ReturnType<typeof vi.fn>).mock.calls.length).toBeGreaterThan(2);
     } finally {
       cleanup();
     }
@@ -639,7 +844,7 @@ describe("agentLoop", () => {
               content: JSON.stringify({
                 done: false,
                 context_search: true,
-                query: "Read the playwright skill.md commands needed after the last failure",
+                query: "Read the playwright and websearch skill.md commands needed after the last failure",
                 scope: "skills",
               }),
             };
@@ -648,8 +853,20 @@ describe("agentLoop", () => {
             return {
               type: "assistant",
               content: JSON.stringify({
-                context: "Playwright skill.md says to install browsers before running screenshot commands",
-                sources: ["playwright/skill.md"],
+                context: [
+                  "Source: playwright/skill.md",
+                  "Lines: 2-3",
+                  "Excerpt:",
+                  "   2 | Run npx playwright install before screenshots",
+                  "   3 | Run npx playwright screenshot dashboard",
+                  "",
+                  "Source: websearch/skill.md",
+                  "Lines: 2-3",
+                  "Excerpt:",
+                  "   2 | websearch \"query terms\"",
+                  "   3 | websearch --limit 5 \"query terms\"",
+                ].join("\n"),
+                sources: ["playwright/skill.md", "websearch/skill.md"],
                 confidence: 0.9,
               }),
             };
@@ -660,8 +877,14 @@ describe("agentLoop", () => {
             if (!prompt.includes("Retrieved context from prior context_search:")) {
               throw new Error("Expected scout results in re-eval prompt");
             }
-            if (!prompt.includes("install browsers before running screenshot commands")) {
-              throw new Error("Expected scout summary in re-eval prompt");
+            if (!prompt.includes("Run npx playwright install before screenshots")) {
+              throw new Error("Expected verbatim playwright command in re-eval prompt");
+            }
+            if (!prompt.includes("websearch --limit 5 \"query terms\"")) {
+              throw new Error("Expected verbatim websearch command in re-eval prompt");
+            }
+            if (!prompt.includes("Sources: playwright/skill.md, websearch/skill.md")) {
+              throw new Error("Expected both skill sources in re-eval prompt");
             }
             return {
               type: "assistant",
@@ -1001,7 +1224,7 @@ describe("agentLoop", () => {
     }
   });
 
-  it("reuses cached context_search results across later steps without re-running scout", async () => {
+  it("keeps recent context_search results visible to later controller turns", async () => {
     const dataDir = makeTmpDir();
     try {
       let callCount = 0;
@@ -1019,7 +1242,7 @@ describe("agentLoop", () => {
               content: JSON.stringify({
                 done: false,
                 understand: true,
-                goal: goalContract("reuse earlier step context"),
+                goal: goalContract("reuse earlier lookup context"),
                 approach: "use run artifacts when needed",
               }),
             };
@@ -1089,62 +1312,22 @@ describe("agentLoop", () => {
             return { type: "assistant", content: taskVerifyResponse("not_done", "one more summary remains") };
           }
           if (callCount === 10) {
-            return {
-              type: "assistant",
-              content: JSON.stringify({
-                done: false,
-                context_search: true,
-                query: "Review step 1 act and verify files again before finishing",
-                scope: "run_artifacts",
-              }),
-            };
-          }
-          if (callCount === 11) {
             const messages = (input as { messages: Array<{ role: string; content: string }> }).messages;
             const prompt = messages.find((message) => message.role === "user")?.content ?? "";
-            if (!prompt.includes("selecting useful cached context-search entries")) {
-              throw new Error("Expected cache metadata selection prompt before reusing cached context");
+            if (!prompt.includes("Recent context_search results (latest 5):")) {
+              throw new Error("Expected recent context_search history in the later controller prompt");
             }
-            return {
-              type: "assistant",
-              content: JSON.stringify({
-                ids: ["cc_001"],
-                reason: "The cached run-artifacts query is clearly about step 1 and should be reused.",
-              }),
-            };
-          }
-          if (callCount === 12) {
-            const messages = (input as { messages: Array<{ role: string; content: string }> }).messages;
-            const prompt = messages.find((message) => message.role === "user")?.content ?? "";
-            if (!prompt.includes("deciding whether cached context-search entries are sufficient")) {
-              throw new Error("Expected cache sufficiency prompt before reusing cached context");
+            if (!prompt.includes("query=What happened in step 1?")) {
+              throw new Error("Expected the earlier context_search query in the rolling history");
             }
-            if (!prompt.includes("Step 1 created the draft answer and verified it successfully.")) {
-              throw new Error("Expected cached context to be evaluated for sufficiency");
-            }
-            return {
-              type: "assistant",
-              content: JSON.stringify({
-                sufficient: true,
-                ids: ["cc_001"],
-                reason: "The cached step 1 summary is enough for the repeated run-artifacts request.",
-              }),
-            };
-          }
-          if (callCount === 13) {
-            const messages = (input as { messages: Array<{ role: string; content: string }> }).messages;
-            const prompt = messages.find((message) => message.role === "user")?.content ?? "";
-            if (!prompt.includes("Retrieved context from prior context_search:")) {
-              throw new Error("Expected cached scout context in the repeated direct prompt");
-            }
-            if (!prompt.includes("Step 1 created the draft answer and verified it successfully.")) {
-              throw new Error("Expected cached scout summary to be reused");
+            if (!prompt.includes("context=Step 1 created the draft answer and verified it successfully.")) {
+              throw new Error("Expected the earlier context_search result in the rolling history");
             }
             return {
               type: "assistant",
               content: JSON.stringify({
                 done: true,
-                summary: "Completed with cached context reuse",
+                summary: "Completed with recent context search history",
                 status: "completed",
               }),
             };
@@ -1164,26 +1347,22 @@ describe("agentLoop", () => {
       });
 
       expect(result.status).toBe("completed");
-      expect(result.content).toBe("Completed with cached context reuse");
-      expect(provider.generateTurn).toHaveBeenCalledTimes(13);
+      expect(result.content).toBe("Completed with recent context search history");
+      expect(provider.generateTurn).toHaveBeenCalledTimes(10);
 
-      const cachePath = join(result.runPath, "context-cache.json");
-      expect(existsSync(cachePath)).toBe(true);
-      const cache = JSON.parse(readFileSync(cachePath, "utf-8")) as {
-        version: number;
-        entries: Array<{ id: string; scope: string; query: string }>;
+      const persistedState = JSON.parse(readFileSync(join(result.runPath, "state.json"), "utf-8")) as {
+        recentContextSearches: Array<{ scope: string; query: string; context: string }>;
       };
-      expect(cache.version).toBe(3);
-      expect(cache.entries).toHaveLength(1);
-      expect(cache.entries[0]?.id).toBeTruthy();
-      expect(cache.entries[0]?.scope).toBe("run_artifacts");
-      expect(cache.entries[0]?.query).toBe("What happened in step 1?");
+      expect(persistedState.recentContextSearches).toHaveLength(1);
+      expect(persistedState.recentContextSearches[0]?.scope).toBe("run_artifacts");
+      expect(persistedState.recentContextSearches[0]?.query).toBe("What happened in step 1?");
+      expect(persistedState.recentContextSearches[0]?.context).toContain("Step 1 created the draft answer");
     } finally {
       cleanup();
     }
   });
 
-  it("falls back to scout when cached context is selected but not sufficient", async () => {
+  it("keeps only the latest five context_search results", async () => {
     const dataDir = makeTmpDir();
     try {
       let callCount = 0;
@@ -1201,88 +1380,51 @@ describe("agentLoop", () => {
               content: JSON.stringify({
                 done: false,
                 understand: true,
-                goal: goalContract("reuse cache but fetch more exact evidence when needed"),
-                approach: "use run artifacts when needed",
+                goal: goalContract("collect multiple context searches"),
+                approach: "query prior run facts repeatedly",
               }),
             };
           }
-          if (callCount === 2) {
+          if (callCount >= 2 && callCount <= 12 && callCount % 2 === 0) {
+            const queryNumber = callCount / 2;
             return {
               type: "assistant",
               content: JSON.stringify({
                 done: false,
                 context_search: true,
-                query: "What happened in step 1?",
+                query: `query ${queryNumber}`,
                 scope: "run_artifacts",
               }),
             };
           }
-          if (callCount === 3) {
+          if (callCount >= 3 && callCount <= 13 && callCount % 2 === 1) {
+            const queryNumber = (callCount - 1) / 2;
             return {
               type: "assistant",
               content: JSON.stringify({
-                context: "Step 1 created the draft answer.",
-                sources: ["steps/001-act.md"],
-                confidence: 0.82,
+                context: `context ${queryNumber}`,
+                sources: [`steps/00${queryNumber}-act.md`],
+                confidence: 0.8,
               }),
             };
           }
-          if (callCount === 4) {
-            return {
-              type: "assistant",
-              content: JSON.stringify({
-                done: false,
-                context_search: true,
-                query: "What exact verify error happened in step 1?",
-                scope: "run_artifacts",
-              }),
-            };
-          }
-          if (callCount === 5) {
-            return {
-              type: "assistant",
-              content: JSON.stringify({
-                ids: ["cc_001"],
-                reason: "The cached step 1 summary is related to the new run-artifacts query.",
-              }),
-            };
-          }
-          if (callCount === 6) {
+          if (callCount === 14) {
             const messages = (input as { messages: Array<{ role: string; content: string }> }).messages;
             const prompt = messages.find((message) => message.role === "user")?.content ?? "";
-            if (!prompt.includes("Step 1 created the draft answer.")) {
-              throw new Error("Expected cached step 1 context in the sufficiency prompt");
+            if (!prompt.includes("query=query 2")) {
+              throw new Error("Expected query 2 to remain in the rolling context_search history");
             }
-            return {
-              type: "assistant",
-              content: JSON.stringify({
-                sufficient: false,
-                ids: ["cc_001"],
-                reason: "The cached summary does not contain the exact verify error requested.",
-              }),
-            };
-          }
-          if (callCount === 7) {
-            return {
-              type: "assistant",
-              content: JSON.stringify({
-                context: "Step 1 verify failed with the message: permission denied while reading config.",
-                sources: ["steps/001-verify.md"],
-                confidence: 0.91,
-              }),
-            };
-          }
-          if (callCount === 8) {
-            const messages = (input as { messages: Array<{ role: string; content: string }> }).messages;
-            const prompt = messages.find((message) => message.role === "user")?.content ?? "";
-            if (!prompt.includes("permission denied while reading config")) {
-              throw new Error("Expected scout fallback context in the direct prompt");
+            if (!prompt.includes("query=query 6")) {
+              throw new Error("Expected query 6 to appear in the rolling context_search history");
+            }
+            if (prompt.includes("query=query 1")) {
+              throw new Error("Did not expect query 1 after the rolling history exceeded five entries");
             }
             return {
               type: "assistant",
               content: JSON.stringify({
                 done: true,
-                summary: "The exact step 1 verify error was permission denied while reading config.",
+                summary: "Completed after six context searches",
                 status: "completed",
               }),
             };
@@ -1299,11 +1441,25 @@ describe("agentLoop", () => {
         runHandle: { sessionId: "s1", runId: "r1" },
         clientId: "c1",
         dataDir,
+        config: {
+          maxScoutCallsPerIteration: 6,
+        },
       });
 
       expect(result.status).toBe("completed");
-      expect(result.content).toContain("permission denied");
-      expect(provider.generateTurn).toHaveBeenCalledTimes(8);
+      expect(result.content).toContain("six context searches");
+      expect(provider.generateTurn).toHaveBeenCalledTimes(14);
+
+      const persistedState = JSON.parse(readFileSync(join(result.runPath, "state.json"), "utf-8")) as {
+        recentContextSearches: Array<{ query: string }>;
+      };
+      expect(persistedState.recentContextSearches.map((entry) => entry.query)).toEqual([
+        "query 2",
+        "query 3",
+        "query 4",
+        "query 5",
+        "query 6",
+      ]);
     } finally {
       cleanup();
     }
@@ -2515,6 +2671,213 @@ describe("agentLoop", () => {
       expect(result.status).toBe("completed");
       expect(result.content).toContain("repeated lookup was blocked");
       expect(provider.generateTurn).toHaveBeenCalledTimes(5);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("reuses an already loaded skill search instead of rerunning the same skill lookup", async () => {
+    const dataDir = makeTmpDir();
+    const skillsDir = join(dataDir, "skills");
+    const gmailSkillPath = join(skillsDir, "gws-gmail", "skill.md");
+    mkdirSync(join(skillsDir, "gws-gmail"), { recursive: true });
+    writeFileSync(gmailSkillPath, "gws gmail users messages get --message-id <id>");
+
+    try {
+      let callCount = 0;
+      const provider: LlmProvider = {
+        name: "mock",
+        version: "1.0.0",
+        capabilities: { nativeToolCalling: true },
+        start: vi.fn(),
+        stop: vi.fn(),
+        generateTurn: vi.fn().mockImplementation(async (input: LlmTurnInput) => {
+          callCount++;
+          if (callCount === 1) {
+            return {
+              type: "assistant",
+              content: JSON.stringify({
+                done: false,
+                understand: true,
+                goal: goalContract("fetch the AWS billing email details"),
+                approach: "load the Gmail skill docs before planning the command",
+              }),
+            };
+          }
+
+          if (callCount === 2) {
+            return {
+              type: "assistant",
+              content: JSON.stringify({
+                done: false,
+                context_search: true,
+                query: "gws-gmail skill documentation and commands for fetching specific email content",
+                scope: "skills",
+              }),
+            };
+          }
+
+          if (callCount === 3) {
+            return {
+              type: "assistant",
+              content: JSON.stringify({
+                context: "Source: data skills gws-gmail",
+                sources: [gmailSkillPath],
+                confidence: 0.92,
+              }),
+            };
+          }
+
+          const messages = (input as { messages: Array<{ role: string; content: string }> }).messages;
+          const prompt = messages.find((message) => message.role === "user")?.content ?? "";
+
+          if (callCount === 4) {
+            expect(prompt).toContain(gmailSkillPath);
+            return {
+              type: "assistant",
+              content: JSON.stringify({
+                done: false,
+                context_search: true,
+                query: "gws gmail CLI commands for fetching specific email content and message details",
+                scope: "skills",
+              }),
+            };
+          }
+
+          expect(prompt).toContain("Skill documentation for this request was already retrieved in this iteration");
+          expect(prompt).toContain(gmailSkillPath);
+          return {
+            type: "assistant",
+            content: JSON.stringify({
+              done: true,
+              summary: "Reused the existing Gmail skill documentation instead of running another skill lookup.",
+              status: "completed",
+            }),
+          };
+        }),
+      };
+
+      const result = await agentLoop({
+        provider,
+        toolDefinitions: [],
+        sessionMemory: createMockSessionMemory(),
+        runHandle: { sessionId: "s1", runId: "r1" },
+        clientId: "c1",
+        dataDir,
+      });
+
+      expect(result.status).toBe("completed");
+      expect(result.content).toContain("Reused the existing Gmail skill documentation");
+      expect(provider.generateTurn).toHaveBeenCalledTimes(5);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("allows a second skills search when the new query targets a different skill", async () => {
+    const dataDir = makeTmpDir();
+    const skillsDir = join(dataDir, "skills");
+    const gmailSkillPath = join(skillsDir, "gws-gmail", "skill.md");
+    const docsSkillPath = join(skillsDir, "gws-docs", "skill.md");
+    mkdirSync(join(skillsDir, "gws-gmail"), { recursive: true });
+    mkdirSync(join(skillsDir, "gws-docs"), { recursive: true });
+    writeFileSync(gmailSkillPath, "gws gmail users messages get --message-id <id>");
+    writeFileSync(docsSkillPath, "gws docs get --document-id <id>");
+
+    try {
+      let callCount = 0;
+      const provider: LlmProvider = {
+        name: "mock",
+        version: "1.0.0",
+        capabilities: { nativeToolCalling: true },
+        start: vi.fn(),
+        stop: vi.fn(),
+        generateTurn: vi.fn().mockImplementation(async (input: LlmTurnInput) => {
+          callCount++;
+          if (callCount === 1) {
+            return {
+              type: "assistant",
+              content: JSON.stringify({
+                done: false,
+                understand: true,
+                goal: goalContract("compare Gmail and Docs skill commands"),
+                approach: "load both skill docs as needed",
+              }),
+            };
+          }
+
+          if (callCount === 2) {
+            return {
+              type: "assistant",
+              content: JSON.stringify({
+                done: false,
+                context_search: true,
+                query: "Read the gws-gmail skill commands needed for this step.",
+                scope: "skills",
+              }),
+            };
+          }
+
+          if (callCount === 3) {
+            return {
+              type: "assistant",
+              content: JSON.stringify({
+                context: "Gmail skill command reference",
+                sources: [gmailSkillPath],
+                confidence: 0.91,
+              }),
+            };
+          }
+
+          if (callCount === 4) {
+            return {
+              type: "assistant",
+              content: JSON.stringify({
+                done: false,
+                context_search: true,
+                query: "Read the gws-docs skill commands needed for this step.",
+                scope: "skills",
+              }),
+            };
+          }
+
+          if (callCount === 5) {
+            return {
+              type: "assistant",
+              content: JSON.stringify({
+                context: "Docs skill command reference",
+                sources: [docsSkillPath],
+                confidence: 0.9,
+              }),
+            };
+          }
+
+          const messages = (input as { messages: Array<{ role: string; content: string }> }).messages;
+          const prompt = messages.find((message) => message.role === "user")?.content ?? "";
+          expect(prompt).toContain(docsSkillPath);
+          return {
+            type: "assistant",
+            content: JSON.stringify({
+              done: true,
+              summary: "Loaded both Gmail and Docs skill references successfully.",
+              status: "completed",
+            }),
+          };
+        }),
+      };
+
+      const result = await agentLoop({
+        provider,
+        toolDefinitions: [],
+        sessionMemory: createMockSessionMemory(),
+        runHandle: { sessionId: "s1", runId: "r1" },
+        clientId: "c1",
+        dataDir,
+      });
+
+      expect(result.status).toBe("completed");
+      expect(result.content).toContain("Loaded both Gmail and Docs skill references");
+      expect(provider.generateTurn).toHaveBeenCalledTimes(6);
     } finally {
       cleanup();
     }

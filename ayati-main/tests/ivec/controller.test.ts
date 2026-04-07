@@ -58,6 +58,7 @@ function createState(overrides?: Partial<LoopState>): LoopState {
     consecutiveFailures: 0,
     approachChangeCount: 0,
     completedSteps: [],
+    recentContextSearches: [],
     runPath: "/tmp/test",
     failedApproaches: [],
     sessionHistory: [],
@@ -630,7 +631,9 @@ describe("callDirect", () => {
     expect(prompt).toContain("/tmp/current-run/steps/<NNN>-verify.md");
     expect(prompt).toContain("Only latest step newFacts are inlined here; use context_search to read older-step facts.");
     expect(prompt).toContain("If the next action depends on an older non-latest step");
-    expect(prompt).toContain("Before using any external skill, you MUST use \"skills\" scope");
+    expect(prompt).toContain("Before using one or more external skills, you MUST use \"skills\" scope");
+    expect(prompt).toContain("If the next step depends on multiple external skills, prefer one broad \"skills\" query");
+    expect(prompt).toContain("Read the playwright and websearch skill.md commands needed for this step.");
   });
 
   it("includes verification-first and high-cost clarification guidance in direct prompt", async () => {
@@ -848,16 +851,27 @@ describe("callDirect", () => {
     const provider = createMockProvider([
       "I need to inspect the mail first.",
       JSON.stringify({
-        done: true,
-        summary: "I need access to the latest mail details first.",
-        status: "completed",
+        done: false,
+        execution_mode: "dependent",
+        execution_contract: "Read the AWS billing email details from Gmail",
+        tool_plan: [
+          {
+            tool: "gmail_read",
+            input: { messageId: "msg-1" },
+            origin: "builtin",
+            source_refs: [],
+            retry_policy: "none",
+          },
+        ],
+        success_criteria: "The email body and metadata are returned",
+        context: "User asked for full AWS billing mail details",
       }),
     ]);
 
     const result = await callDirect(provider, createState(), [shellTool]);
-    expect(result.done).toBe(true);
-    if (result.done) {
-      expect(result.summary).toContain("latest mail details");
+    expect(result.done).toBe(false);
+    if (!result.done && "execution_contract" in result) {
+      expect(result.execution_contract).toContain("AWS billing email");
     }
 
     expect(provider.generateTurn).toHaveBeenCalledTimes(2);
@@ -869,6 +883,96 @@ describe("callDirect", () => {
     expect(assistantRetryMessage?.role).toBe("assistant");
     expect(assistantRetryMessage?.content).toContain("inspect the mail");
     expect(repairPrompt?.content).toContain("Reply again with exactly one JSON object");
+  });
+
+  it("rejects promise-style completion and retries for an executable step", async () => {
+    const provider = createMockProvider([
+      JSON.stringify({
+        done: true,
+        summary: "Let me pull the full details of that AWS billing mail for you now.",
+        status: "completed",
+        response_kind: "reply",
+      }),
+      JSON.stringify({
+        done: false,
+        execution_mode: "dependent",
+        execution_contract: "Read the AWS billing email details from Gmail",
+        tool_plan: [
+          {
+            tool: "gmail_read",
+            input: { messageId: "msg-1" },
+            origin: "builtin",
+            source_refs: [],
+            retry_policy: "none",
+          },
+        ],
+        success_criteria: "The email body and metadata are returned",
+        context: "User asked for full AWS billing mail details",
+      }),
+    ]);
+
+    const result = await callDirect(
+      provider,
+      createState({ userMessage: "Can you give full details about the AWS billing mail?" }),
+      [shellTool],
+    );
+
+    expect(result.done).toBe(false);
+    if (!result.done && "execution_contract" in result) {
+      expect(result.execution_contract).toContain("AWS billing email");
+    }
+
+    expect(provider.generateTurn).toHaveBeenCalledTimes(2);
+    const retryCall = (provider.generateTurn as ReturnType<typeof vi.fn>).mock.calls[1]![0] as {
+      messages: Array<{ role: string; content: string }>;
+    };
+    const repairPrompt = retryCall.messages[retryCall.messages.length - 1];
+    expect(repairPrompt?.content).toContain("must not promise or narrate future work");
+    expect(repairPrompt?.content).toContain("return a step or context_search instead of completion");
+  });
+
+  it("rejects excuse-style completion and retries for an executable step", async () => {
+    const provider = createMockProvider([
+      JSON.stringify({
+        done: true,
+        summary: "I need access to the latest mail details first.",
+        status: "completed",
+        response_kind: "reply",
+      }),
+      JSON.stringify({
+        done: false,
+        execution_mode: "dependent",
+        execution_contract: "Read the AWS billing email details from Gmail",
+        tool_plan: [
+          {
+            tool: "gmail_read",
+            input: { messageId: "msg-1" },
+            origin: "builtin",
+            source_refs: [],
+            retry_policy: "none",
+          },
+        ],
+        success_criteria: "The email body and metadata are returned",
+        context: "User asked for full AWS billing mail details",
+      }),
+    ]);
+
+    const result = await callDirect(
+      provider,
+      createState({ userMessage: "Can you give full details about the AWS billing mail?" }),
+      [shellTool],
+    );
+
+    expect(result.done).toBe(false);
+    if (!result.done && "execution_contract" in result) {
+      expect(result.execution_contract).toContain("AWS billing email");
+    }
+
+    const retryCall = (provider.generateTurn as ReturnType<typeof vi.fn>).mock.calls[1]![0] as {
+      messages: Array<{ role: string; content: string }>;
+    };
+    const repairPrompt = retryCall.messages[retryCall.messages.length - 1];
+    expect(repairPrompt?.content).toContain("excuse or missing-action note");
   });
 
   it("throws a controller format error after two invalid controller responses", async () => {
@@ -927,6 +1031,17 @@ describe("callReEval", () => {
           blockedTargets: ["/tmp/secret"],
         },
       ],
+      recentContextSearches: [
+        {
+          scope: "run_artifacts",
+          query: "What happened in step 2?",
+          status: "success",
+          context: "Step 2 failed because /tmp/secret is blocked.",
+          sources: ["/tmp/test/steps/002-verify.md"],
+          confidence: 0.92,
+          iteration: 2,
+        },
+      ],
     });
 
     const result = await callReEval(
@@ -957,6 +1072,8 @@ describe("callReEval", () => {
     expect(call.messages[1]!.content).toContain("Read package config");
     expect(call.messages[1]!.content).toContain("Failed steps");
     expect(call.messages[1]!.content).toContain("Failed Approaches");
+    expect(call.messages[1]!.content).toContain("Recent context_search results (latest 5):");
+    expect(call.messages[1]!.content).toContain("query=What happened in step 2?");
     expect(call.messages[1]!.content).toContain("Retrieved context from prior context_search:");
     expect(call.messages[1]!.content).toContain("If the revised approach depends on an older non-latest step");
     expect(call.messages[1]!.content).toContain(

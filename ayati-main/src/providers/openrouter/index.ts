@@ -11,6 +11,7 @@ import type {
 } from "../../core/contracts/llm-protocol.js";
 import { estimateTurnInputTokens } from "../../prompt/token-estimator.js";
 import { toOpenAiResponseFormat } from "../shared/openai-response-format.js";
+import { toOpenAiCompatibleContent } from "../shared/multimodal.js";
 import {
   compileResponseFormatForProvider,
   getProviderCapabilities,
@@ -26,18 +27,23 @@ let client: OpenAI | null = null;
 
 const DEFAULT_OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1";
 
-function toOpenRouterMessages(
+async function toOpenRouterMessages(
   messages: LlmMessage[],
   maps: ToolNameMaps,
-): OpenAI.ChatCompletionMessageParam[] {
+): Promise<OpenAI.ChatCompletionMessageParam[]> {
   const out: OpenAI.ChatCompletionMessageParam[] = [];
 
   for (const msg of messages) {
     switch (msg.role) {
       case "system":
-      case "user":
       case "assistant":
         out.push({ role: msg.role, content: msg.content });
+        break;
+      case "user":
+        out.push({
+          role: "user",
+          content: await toOpenAiCompatibleContent(msg.content),
+        } as OpenAI.ChatCompletionUserMessageParam);
         break;
       case "assistant_tool_calls":
         out.push({
@@ -146,7 +152,7 @@ const provider: LlmProvider = {
 
     const model = getModelForProvider("openrouter");
     const nameMaps = buildToolNameMapsForProvider(provider.name, input.tools);
-    const messages = toOpenRouterMessages(input.messages, nameMaps);
+    const messages = await toOpenRouterMessages(input.messages, nameMaps);
     const responseTools = toOpenRouterResponseTools(input.tools, nameMaps);
     const responseFormat = toOpenAiResponseFormat(
       compileResponseFormatForProvider(provider.name, provider.capabilities, input.responseFormat),

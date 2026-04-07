@@ -9,7 +9,9 @@ import type {
   LlmTurnInput,
   LlmTurnOutput,
 } from "../../core/contracts/llm-protocol.js";
+import { estimateTurnInputTokens } from "../../prompt/token-estimator.js";
 import { toOpenAiResponseFormat } from "../shared/openai-response-format.js";
+import { hasImageInput, toOpenAiCompatibleContent } from "../shared/multimodal.js";
 import {
   compileResponseFormatForProvider,
   getProviderCapabilities,
@@ -23,18 +25,23 @@ import {
 
 let client: OpenAI | null = null;
 
-function toOpenAiMessages(
+async function toOpenAiMessages(
   messages: LlmMessage[],
   maps: ToolNameMaps,
-): OpenAI.ChatCompletionMessageParam[] {
+): Promise<OpenAI.ChatCompletionMessageParam[]> {
   const out: OpenAI.ChatCompletionMessageParam[] = [];
 
   for (const msg of messages) {
     switch (msg.role) {
       case "system":
-      case "user":
       case "assistant":
         out.push({ role: msg.role, content: msg.content });
+        break;
+      case "user":
+        out.push({
+          role: "user",
+          content: await toOpenAiCompatibleContent(msg.content),
+        } as OpenAI.ChatCompletionUserMessageParam);
         break;
       case "assistant_tool_calls":
         out.push({
@@ -159,6 +166,16 @@ const provider: LlmProvider = {
     }
 
     const model = getModelForProvider("openai");
+    if (hasImageInput(input.messages)) {
+      const estimate = estimateTurnInputTokens(input);
+      return {
+        provider: "openai",
+        model,
+        inputTokens: estimate.totalTokens,
+        exact: false,
+      };
+    }
+
     const nameMaps = buildToolNameMapsForProvider(provider.name, input.tools);
     const inputItems = toOpenAiCountInputItems(input.messages, nameMaps);
     const tools = toOpenAiResponseTools(input.tools, nameMaps);
@@ -184,7 +201,7 @@ const provider: LlmProvider = {
 
     const model = getModelForProvider("openai");
     const nameMaps = buildToolNameMapsForProvider(provider.name, input.tools);
-    const messages = toOpenAiMessages(input.messages, nameMaps);
+    const messages = await toOpenAiMessages(input.messages, nameMaps);
     const responseTools = toOpenAiResponseTools(input.tools, nameMaps);
     const responseFormat = toOpenAiResponseFormat(
       compileResponseFormatForProvider(provider.name, provider.capabilities, input.responseFormat),

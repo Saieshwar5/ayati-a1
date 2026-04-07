@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { runContextScout } from "../../src/ivec/context-scout.js";
 import type { ScoutKnownLocations, ContextScoutOptions } from "../../src/ivec/context-scout.js";
 import type { LlmProvider } from "../../src/core/contracts/provider.js";
-import type { LlmTurnInput, LlmTurnOutput } from "../../src/core/contracts/llm-protocol.js";
+import type { LlmProviderCapabilities, LlmTurnInput, LlmTurnOutput } from "../../src/core/contracts/llm-protocol.js";
 import { DocumentStore } from "../../src/documents/document-store.js";
 import { DocumentContextBackend } from "../../src/documents/document-context-backend.js";
 import { DocumentIndexer } from "../../src/documents/document-indexer.js";
@@ -18,12 +18,18 @@ import type {
   DocumentVectorStore,
 } from "../../src/documents/document-vector-types.js";
 
-function createMockProvider(responses: LlmTurnOutput[]): LlmProvider {
+function createMockProvider(
+  responses: LlmTurnOutput[],
+  options?: {
+    name?: string;
+    capabilities?: LlmProviderCapabilities;
+  },
+): LlmProvider {
   let callIndex = 0;
   return {
-    name: "mock",
+    name: options?.name ?? "mock",
     version: "1.0.0",
-    capabilities: { nativeToolCalling: true },
+    capabilities: options?.capabilities ?? { nativeToolCalling: true },
     start: vi.fn(),
     stop: vi.fn(),
     generateTurn: vi.fn().mockImplementation(async () => {
@@ -146,6 +152,30 @@ describe("runContextScout", () => {
     expect(result.confidence).toBe(0.9);
   });
 
+  it("parses a JSON object embedded in surrounding prose", async () => {
+    const provider = createMockProvider([
+      {
+        type: "assistant",
+        content: `I found the answer.\n${JSON.stringify({
+          context: "Found state.json with running status",
+          sources: ["state.json"],
+          confidence: 0.9,
+        })}\nThis should help.`,
+      },
+    ]);
+
+    const result = await runContextScout(
+      { provider, maxTurns: 5 },
+      "What is the current run status?",
+      "run_artifacts",
+      createLocations(tmpDir),
+    );
+
+    expect(result.context).toBe("Found state.json with running status");
+    expect(result.sources).toEqual(["state.json"]);
+    expect(result.confidence).toBe(0.9);
+  });
+
   it("executes tool calls and feeds results back before getting final answer", async () => {
     const locs = createLocations(tmpDir);
     const provider = createMockProvider([
@@ -202,11 +232,15 @@ describe("runContextScout", () => {
     expect(result.scoutState?.status).toBe("max_turns_exhausted");
   });
 
-  it("handles plain text fallback when LLM returns non-JSON text", async () => {
+  it("retries once and falls back to plain text when both responses are invalid", async () => {
     const provider = createMockProvider([
       {
         type: "assistant",
         content: "I couldn't find any relevant files for this query.",
+      },
+      {
+        type: "assistant",
+        content: "Still no structured result to return.",
       },
     ]);
 
@@ -217,8 +251,203 @@ describe("runContextScout", () => {
       createLocations(tmpDir),
     );
 
-    expect(result.context).toBe("I couldn't find any relevant files for this query.");
+    expect(result.context).toBe("Still no structured result to return.");
     expect(result.confidence).toBe(0.5);
+    expect(provider.generateTurn).toHaveBeenCalledTimes(2);
+  });
+
+  it("retries once and succeeds when the repair response is valid JSON", async () => {
+    const provider = createMockProvider(
+      [
+        {
+          type: "assistant",
+          content: "I found the status in state.json.",
+        },
+        {
+          type: "assistant",
+          content: JSON.stringify({
+            context: "Found state.json with running status",
+            sources: ["state.json"],
+            confidence: 0.85,
+          }),
+        },
+      ],
+      {
+        capabilities: {
+          nativeToolCalling: true,
+          structuredOutput: {
+            jsonObject: true,
+            jsonSchema: true,
+          },
+        },
+      },
+    );
+
+    const result = await runContextScout(
+      { provider, maxTurns: 5 },
+      "What is the current run status?",
+      "run_artifacts",
+      createLocations(tmpDir),
+    );
+
+    expect(result.context).toBe("Found state.json with running status");
+    expect(result.sources).toEqual(["state.json"]);
+    expect(result.confidence).toBe(0.85);
+    expect(provider.generateTurn).toHaveBeenCalledTimes(2);
+
+    const calls = (provider.generateTurn as ReturnType<typeof vi.fn>).mock.calls;
+    const secondCallInput = calls[1]![0] as LlmTurnInput;
+    expect(secondCallInput.messages.at(-1)).toEqual({
+      role: "user",
+      content: expect.stringContaining("exactly one JSON object"),
+    });
+    expect(secondCallInput.tools).toBeUndefined();
+    expect(secondCallInput.responseFormat).toEqual({
+      type: "json_schema",
+      name: "context_scout_result",
+      strict: true,
+      schema: {
+        type: "object",
+        additionalProperties: false,
+        required: ["context", "sources", "confidence"],
+        properties: {
+          context: { type: "string" },
+          sources: {
+            type: "array",
+            items: { type: "string" },
+          },
+          confidence: { type: "number" },
+        },
+      },
+    });
+  });
+
+  it("returns a skills fallback when the provider fails after reading skill docs", async () => {
+    const skillsRoot = join(tmpDir, "skills");
+    const skillDir = join(skillsRoot, "gws-gmail");
+    mkdirSync(skillDir, { recursive: true });
+    writeFileSync(join(skillDir, "SKILL.md"), "gws gmail users messages get --message-id <id>");
+
+    let callCount = 0;
+    const provider: LlmProvider = {
+      name: "mock",
+      version: "1.0.0",
+      capabilities: { nativeToolCalling: true },
+      start: vi.fn(),
+      stop: vi.fn(),
+      generateTurn: vi.fn().mockImplementation(async () => {
+        callCount++;
+        if (callCount === 1) {
+          return {
+            type: "tool_calls",
+            calls: [
+              { id: "tc1", name: "read_file", input: { path: join(skillDir, "SKILL.md") } },
+            ],
+          };
+        }
+        throw new Error("Empty response from Fireworks: no choices were returned.");
+      }),
+    };
+
+    const result = await runContextScout(
+      { provider, maxTurns: 3 },
+      "Read the gws-gmail skill commands for fetching message content",
+      "skills",
+      {
+        ...createLocations(tmpDir),
+        skillsDirs: [skillsRoot],
+      },
+    );
+
+    expect(result.context).toContain("Source:");
+    expect(result.context).toContain("gws gmail users messages get");
+    expect(result.sources).toContain(join(skillDir, "SKILL.md"));
+    expect(result.confidence).toBe(0.75);
+  });
+
+  it("returns a structured failure when the provider throws before any scout result is available", async () => {
+    const provider: LlmProvider = {
+      name: "mock",
+      version: "1.0.0",
+      capabilities: { nativeToolCalling: true },
+      start: vi.fn(),
+      stop: vi.fn(),
+      generateTurn: vi.fn().mockRejectedValue(new Error("Empty response from Fireworks: no choices were returned.")),
+    };
+
+    const result = await runContextScout(
+      { provider, maxTurns: 3 },
+      "Read the gws-gmail skill commands for fetching message content",
+      "skills",
+      createLocations(tmpDir),
+    );
+
+    expect(result.context).toContain("Context search status: empty");
+    expect(result.context).toContain("[provider_error] turn 1: Empty response from Fireworks: no choices were returned.");
+    expect(result.confidence).toBe(0);
+    expect(result.scoutState?.status).toBe("empty");
+  });
+
+  it("requests structured output when the provider supports it", async () => {
+    const provider = createMockProvider(
+      [
+        {
+          type: "assistant",
+          content: JSON.stringify({
+            context: "Found state.json with running status",
+            sources: ["state.json"],
+            confidence: 0.9,
+          }),
+        },
+      ],
+      {
+        capabilities: {
+          nativeToolCalling: true,
+          structuredOutput: {
+            jsonObject: true,
+            jsonSchema: true,
+          },
+        },
+      },
+    );
+
+    await runContextScout(
+      { provider, maxTurns: 5 },
+      "What is the current run status?",
+      "run_artifacts",
+      createLocations(tmpDir),
+    );
+
+    const calls = (provider.generateTurn as ReturnType<typeof vi.fn>).mock.calls;
+    const firstCallInput = calls[0]![0] as LlmTurnInput;
+    expect(firstCallInput.responseFormat).toMatchObject({
+      type: "json_schema",
+      name: "context_scout_result",
+    });
+  });
+
+  it("does not request structured output when the provider does not support it", async () => {
+    const provider = createMockProvider([
+      {
+        type: "assistant",
+        content: JSON.stringify({
+          context: "Found state.json with running status",
+          sources: ["state.json"],
+          confidence: 0.9,
+        }),
+      },
+    ]);
+
+    await runContextScout(
+      { provider, maxTurns: 5 },
+      "What is the current run status?",
+      "run_artifacts",
+      createLocations(tmpDir),
+    );
+
+    const calls = (provider.generateTurn as ReturnType<typeof vi.fn>).mock.calls;
+    const firstCallInput = calls[0]![0] as LlmTurnInput;
+    expect(firstCallInput.responseFormat).toBeUndefined();
   });
 
   it("read_file tool handles missing files gracefully", async () => {
@@ -420,12 +649,13 @@ describe("runContextScout", () => {
     expect(toolResultMsg?.content).toContain("[error] path outside allowed scope (both)");
   });
 
-  it("grep_file returns targeted snippets from a known file", async () => {
+  it("returns verbatim targeted snippets for skills queries", async () => {
     const locs = createLocations(tmpDir);
     const skillDir = join(tmpDir, "skills");
-    locs.skillsDir = skillDir;
-    mkdirSync(skillDir, { recursive: true });
-    const skillFile = join(skillDir, "playwright.skill.md");
+    const playwrightDir = join(skillDir, "playwright");
+    locs.skillsDirs = [skillDir];
+    mkdirSync(playwrightDir, { recursive: true });
+    const skillFile = join(playwrightDir, "skill.md");
     writeFileSync(
       skillFile,
       [
@@ -461,11 +691,18 @@ describe("runContextScout", () => {
     const result = await runContextScout(
       { provider, maxTurns: 5 },
       "Find install instructions in the known skill file",
-      "both",
+      "skills",
       locs,
     );
 
     expect(result.confidence).toBe(0.92);
+    expect(result.sources).toEqual([skillFile]);
+    expect(result.context).toContain(`Source: ${skillFile}`);
+    expect(result.context).toContain("Lines: 2-4");
+    expect(result.context).toContain("Excerpt:");
+    expect(result.context).toContain("Run npx playwright install before screenshots");
+    expect(result.context).toContain("Usage example");
+    expect(result.context).not.toContain("Found install instructions in the skill file");
 
     const calls = (provider.generateTurn as ReturnType<typeof vi.fn>).mock.calls;
     const secondCallInput = calls[1]![0] as { messages: Array<{ role: string; content: string }> };
@@ -473,6 +710,125 @@ describe("runContextScout", () => {
     expect(toolResultMsg?.content).toContain("Match 1");
     expect(toolResultMsg?.content).toContain("Run npx playwright install before screenshots");
     expect(toolResultMsg?.content).toContain("Usage example");
+  });
+
+  it("returns combined context and sources for multiple skill files in one skills query", async () => {
+    const locs = createLocations(tmpDir);
+    const skillsRoot = join(tmpDir, "skills");
+    const playwrightDir = join(skillsRoot, "playwright");
+    const websearchDir = join(skillsRoot, "websearch");
+    mkdirSync(playwrightDir, { recursive: true });
+    mkdirSync(websearchDir, { recursive: true });
+    const playwrightFile = join(playwrightDir, "skill.md");
+    const websearchFile = join(websearchDir, "skill.md");
+    writeFileSync(
+      playwrightFile,
+      [
+        "# Playwright Skill",
+        "Run npx playwright install before screenshots",
+        "Run npx playwright test",
+      ].join("\n"),
+    );
+    writeFileSync(
+      websearchFile,
+      [
+        "# Websearch Skill",
+        "Use the websearch command with the query terms directly",
+        "Return concise results",
+      ].join("\n"),
+    );
+    locs.skillsDirs = [skillsRoot];
+
+    const provider = createMockProvider([
+      {
+        type: "tool_calls",
+        calls: [
+          { id: "tc1", name: "read_file", input: { path: playwrightFile } },
+          { id: "tc2", name: "read_file", input: { path: websearchFile } },
+        ],
+      },
+      {
+        type: "assistant",
+        content: JSON.stringify({
+          context: "Playwright requires browser install before screenshots. Websearch uses the query terms directly.",
+          sources: [playwrightFile, websearchFile],
+          confidence: 0.94,
+        }),
+      },
+    ]);
+
+    const result = await runContextScout(
+      { provider, maxTurns: 5 },
+      "Read the playwright and websearch skill.md commands needed for this step",
+      "skills",
+      locs,
+    );
+
+    expect(result.context).toContain(`Source: ${playwrightFile}`);
+    expect(result.context).toContain(`Source: ${websearchFile}`);
+    expect(result.context).toContain("Lines: 1-3");
+    expect(result.context).toContain("Run npx playwright install before screenshots");
+    expect(result.context).toContain("Run npx playwright test");
+    expect(result.context).toContain("Use the websearch command with the query terms directly");
+    expect(result.context).not.toContain("Playwright requires browser install");
+    expect(result.sources).toEqual([playwrightFile, websearchFile]);
+    expect(result.confidence).toBe(0.94);
+
+    const calls = (provider.generateTurn as ReturnType<typeof vi.fn>).mock.calls;
+    const firstCallInput = calls[0]![0] as { messages: Array<{ role: string; content: string }> };
+    expect(firstCallInput.messages[0]?.content).toContain("If the query clearly requires multiple skills for the same step");
+    const secondCallInput = calls[1]![0] as { messages: Array<{ role: string; content: string }> };
+    const toolMessages = secondCallInput.messages.filter((message) => message.role === "tool");
+    expect(toolMessages).toHaveLength(2);
+  });
+
+  it("does not compress larger relevant skill command blocks", async () => {
+    const locs = createLocations(tmpDir);
+    const skillsRoot = join(tmpDir, "skills");
+    const deployDir = join(skillsRoot, "deploy");
+    mkdirSync(deployDir, { recursive: true });
+    const deployFile = join(deployDir, "skill.md");
+    const commands = Array.from({ length: 18 }, (_, index) => `deployctl run task-${index + 1} --region us-east-1 --retries 3 --timeout 600`);
+    writeFileSync(
+      deployFile,
+      [
+        "# Deploy Skill",
+        "Use these commands exactly:",
+        ...commands,
+      ].join("\n"),
+    );
+    locs.skillsDirs = [skillsRoot];
+
+    const provider = createMockProvider([
+      {
+        type: "tool_calls",
+        calls: [
+          { id: "tc1", name: "read_file", input: { path: deployFile } },
+        ],
+      },
+      {
+        type: "assistant",
+        content: JSON.stringify({
+          context: "The deploy skill contains a list of deployctl commands.",
+          sources: [deployFile],
+          confidence: 0.96,
+        }),
+      },
+    ]);
+
+    const result = await runContextScout(
+      { provider, maxTurns: 5 },
+      "Read the deploy skill commands needed for this step",
+      "skills",
+      locs,
+    );
+
+    expect(result.sources).toEqual([deployFile]);
+    expect(result.context).toContain(`Source: ${deployFile}`);
+    expect(result.context).toContain("Use these commands exactly:");
+    expect(result.context).toContain(commands[0]!);
+    expect(result.context).toContain(commands[17]!);
+    expect(result.context).not.toContain("contains a list of deployctl commands");
   });
 
   it("grep_file reports invalid regex errors", async () => {
@@ -589,6 +945,34 @@ describe("runContextScout", () => {
     expect(result.confidence).toBe(0.85);
   });
 
+  it("includes wiki files in project_context scout prompt", async () => {
+    const locs = createLocations(tmpDir);
+    const provider = createMockProvider([
+      {
+        type: "assistant",
+        content: JSON.stringify({
+          context: "ok",
+          sources: [],
+          confidence: 0.5,
+        }),
+      },
+    ]);
+
+    await runContextScout(
+      { provider, maxTurns: 5 },
+      "Read user personalization context",
+      "project_context",
+      locs,
+    );
+
+    const calls = (provider.generateTurn as ReturnType<typeof vi.fn>).mock.calls;
+    const firstCallInput = calls[0]![0] as { messages: Array<{ role: string; content: string }> };
+    const systemPrompt = firstCallInput.messages.find((message) => message.role === "system")?.content ?? "";
+
+    expect(systemPrompt).toContain("user.wiki");
+    expect(systemPrompt).toContain("user.wiki.schema");
+  });
+
   it("includes run artifact format guidance in scout system prompt", async () => {
     const locs = createLocations(tmpDir);
     const provider = createMockProvider([
@@ -616,7 +1000,7 @@ describe("runContextScout", () => {
     expect(systemPrompt).toContain(`Only search within the run directory: ${locs.runPath}`);
     expect(systemPrompt).toContain("Default to the current run.");
     expect(systemPrompt).toContain(`${locs.runPath}/state.json`);
-    expect(systemPrompt).toContain("completedSteps[] has step, intent, outcome, summary, newFacts, artifacts, toolSuccessCount, toolFailureCount");
+    expect(systemPrompt).toContain("completedSteps[] has step, executionContract, outcome, summary, newFacts, artifacts, toolSuccessCount, toolFailureCount");
     expect(systemPrompt).toContain(`${locs.runPath}/steps/<NNN>-act.md`);
     expect(systemPrompt).toContain(`${locs.runPath}/steps/<NNN>-verify.md`);
     expect(systemPrompt).toContain("For run_artifacts queries, read state.json first");

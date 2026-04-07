@@ -11,6 +11,7 @@ import type {
 } from "../../core/contracts/llm-protocol.js";
 import { estimateTurnInputTokens } from "../../prompt/token-estimator.js";
 import { toOpenAiResponseFormat } from "../shared/openai-response-format.js";
+import { toOpenAiCompatibleContent } from "../shared/multimodal.js";
 import {
   compileResponseFormatForProvider,
   getProviderCapabilities,
@@ -28,18 +29,23 @@ const DEFAULT_FIREWORKS_BASE_URL = "https://api.fireworks.ai/inference/v1";
 const DEFAULT_FIREWORKS_REASONING_EFFORT = "medium";
 const FIREWORKS_REASONING_EFFORTS = new Set(["low", "medium", "high"]);
 
-function toFireworksMessages(
+async function toFireworksMessages(
   messages: LlmMessage[],
   maps: ToolNameMaps,
-): OpenAI.ChatCompletionMessageParam[] {
+): Promise<OpenAI.ChatCompletionMessageParam[]> {
   const out: OpenAI.ChatCompletionMessageParam[] = [];
 
   for (const msg of messages) {
     switch (msg.role) {
       case "system":
-      case "user":
       case "assistant":
         out.push({ role: msg.role, content: msg.content });
+        break;
+      case "user":
+        out.push({
+          role: "user",
+          content: await toOpenAiCompatibleContent(msg.content),
+        } as OpenAI.ChatCompletionUserMessageParam);
         break;
       case "assistant_tool_calls":
         out.push({
@@ -108,6 +114,37 @@ function getReasoningEffort(): "low" | "medium" | "high" {
   return configured as "low" | "medium" | "high";
 }
 
+function buildEmptyResponseMessage(response: {
+  choices?: Array<{
+    message?: {
+      content?: unknown;
+      tool_calls?: unknown;
+    } | null;
+    finish_reason?: unknown;
+  }> | null;
+}): string {
+  const firstChoice = response.choices?.[0];
+  if (!firstChoice) {
+    return "Empty response from Fireworks: no choices were returned.";
+  }
+
+  const finishReason = typeof firstChoice.finish_reason === "string"
+    ? ` finish_reason=${firstChoice.finish_reason}.`
+    : "";
+  const message = firstChoice.message;
+  if (!message) {
+    return `Empty response from Fireworks: first choice did not include a message.${finishReason}`;
+  }
+
+  const hasToolCalls = Array.isArray(message.tool_calls) && message.tool_calls.length > 0;
+  const hasStringContent = typeof message.content === "string" && message.content.trim().length > 0;
+  if (!hasStringContent && !hasToolCalls) {
+    return `Empty response from Fireworks: first message had no text content and no tool calls.${finishReason}`;
+  }
+
+  return `Empty response from Fireworks: no usable assistant payload was returned.${finishReason}`;
+}
+
 const provider: LlmProvider = {
   name: "fireworks",
   version: "1.0.0",
@@ -154,11 +191,13 @@ const provider: LlmProvider = {
 
     const model = getModelForProvider("fireworks");
     const nameMaps = buildToolNameMapsForProvider(provider.name, input.tools);
-    const messages = toFireworksMessages(input.messages, nameMaps);
+    const messages = await toFireworksMessages(input.messages, nameMaps);
     const responseTools = toFireworksResponseTools(input.tools, nameMaps);
-    const responseFormat = toOpenAiResponseFormat(
-      compileResponseFormatForProvider(provider.name, provider.capabilities, input.responseFormat),
-    );
+    const responseFormat = responseTools
+      ? undefined
+      : toOpenAiResponseFormat(
+          compileResponseFormatForProvider(provider.name, provider.capabilities, input.responseFormat),
+        );
 
     const request: Record<string, unknown> = {
       model,
@@ -182,12 +221,12 @@ const provider: LlmProvider = {
 
     const response = await client.chat.completions.create(request as any);
 
-    const message = response.choices[0]?.message;
+    const message = response.choices?.[0]?.message;
     if (!message) {
-      throw new Error("Empty response from Fireworks.");
+      throw new Error(buildEmptyResponseMessage(response));
     }
 
-    const calls = (message.tool_calls ?? []).map<LlmToolCall>((call) => {
+    const calls = (Array.isArray(message.tool_calls) ? message.tool_calls : []).map<LlmToolCall>((call) => {
       const fn =
         "function" in call
           ? (call.function as { name?: string; arguments?: string } | undefined)
@@ -207,9 +246,9 @@ const provider: LlmProvider = {
       };
     }
 
-    const reply = message.content;
-    if (!reply) {
-      throw new Error("Empty response from Fireworks.");
+    const reply = typeof message.content === "string" ? message.content : "";
+    if (reply.trim().length === 0) {
+      throw new Error(buildEmptyResponseMessage(response));
     }
 
     return {

@@ -1,7 +1,7 @@
-import { join, resolve } from "node:path";
+import { readdirSync, statSync } from "node:fs";
+import { basename, dirname, join, resolve } from "node:path";
+import { homedir } from "node:os";
 import { devLog, devWarn } from "../shared/index.js";
-import type { LlmResponseFormat, LlmTurnOutput } from "../core/contracts/llm-protocol.js";
-import { compileResponseFormatForProvider } from "../providers/shared/provider-profiles.js";
 import type {
   AgentLoopDeps,
   AgentLoopResult,
@@ -17,6 +17,8 @@ import type {
   GoalContract,
   TaskValidationContext,
   PreparedAttachmentStateUpdate,
+  RecentContextSearch,
+  RecentContextSearchStatus,
 } from "./types.js";
 import { DEFAULT_LOOP_CONFIG } from "./types.js";
 
@@ -36,57 +38,7 @@ import { collectAgentArtifacts } from "./agent-artifacts.js";
 import { prepareIncomingAttachments } from "../documents/attachment-preparer.js";
 import type { ManagedDocumentManifest, PreparedAttachmentSummary } from "../documents/types.js";
 import type { ScoutKnownLocations } from "./context-scout.js";
-import {
-  getContextCacheEntriesByIds,
-  listContextCacheMetadata,
-  storeContextCache,
-  type ContextCacheEntry,
-  type ContextCacheMetadataEntry,
-  type ContextCacheStatus,
-} from "./context-cache.js";
-
-const CACHE_SELECTION_RESPONSE_FORMAT: LlmResponseFormat = {
-  type: "json_schema",
-  name: "context_cache_selection_response",
-  strict: true,
-  schema: {
-    type: "object",
-    properties: {
-      ids: {
-        type: "array",
-        items: { type: "string" },
-      },
-      reason: { type: "string" },
-    },
-    required: ["ids", "reason"],
-    additionalProperties: false,
-  },
-};
-
-const CACHE_SUFFICIENCY_RESPONSE_FORMAT: LlmResponseFormat = {
-  type: "json_schema",
-  name: "context_cache_sufficiency_response",
-  strict: true,
-  schema: {
-    type: "object",
-    properties: {
-      sufficient: { type: "boolean" },
-      ids: {
-        type: "array",
-        items: { type: "string" },
-      },
-      reason: { type: "string" },
-    },
-    required: ["sufficient", "ids", "reason"],
-    additionalProperties: false,
-  },
-};
-
-const CACHE_JSON_REPAIR_PROMPT = `Your previous response was invalid because it was not a single valid JSON object that matched the requested shape.
-Reply again with exactly one JSON object.
-Use strict JSON syntax with double-quoted strings and lowercase true, false, and null.
-Do not include markdown fences.
-Do not include any explanation before or after the JSON.`;
+import type { OpenFeedbackItem } from "../memory/types.js";
 
 export async function agentLoop(deps: AgentLoopDeps): Promise<AgentLoopResult> {
   const config: LoopConfig = { ...DEFAULT_LOOP_CONFIG, ...deps.config };
@@ -122,6 +74,7 @@ export async function agentLoop(deps: AgentLoopDeps): Promise<AgentLoopResult> {
     consecutiveFailures: 0,
     approachChangeCount: 0,
     completedSteps: [],
+    recentContextSearches: [],
     runPath,
     failedApproaches: [],
     attachedDocuments: deps.attachedDocuments ?? [],
@@ -160,9 +113,10 @@ export async function agentLoop(deps: AgentLoopDeps): Promise<AgentLoopResult> {
     state: "started",
   });
 
-  if ((state.attachedDocuments ?? []).length > 0 && deps.documentStore && deps.preparedAttachmentRegistry) {
+  const preparableDocuments = (state.attachedDocuments ?? []).filter((document) => document.kind !== "image");
+  if (preparableDocuments.length > 0 && deps.documentStore && deps.preparedAttachmentRegistry) {
     const prepared = await prepareIncomingAttachments({
-      attachedDocuments: state.attachedDocuments ?? [],
+      attachedDocuments: preparableDocuments,
       runId,
       runPath,
       documentStore: deps.documentStore,
@@ -403,8 +357,7 @@ export async function agentLoop(deps: AgentLoopDeps): Promise<AgentLoopResult> {
 
       state.failedApproaches.push({
         step: stepSummary.step,
-        intent: stepSummary.intent,
-        tools_hint: lastDirective?.tools_hint ?? [],
+        executionContract: stepSummary.executionContract,
         failureType: stepSummary.failureType ?? "verify_failed",
         reason: failureReason,
         blockedTargets: stepSummary.blockedTargets ?? [],
@@ -429,7 +382,7 @@ export async function agentLoop(deps: AgentLoopDeps): Promise<AgentLoopResult> {
 
     writeState(runPath, state);
     deps.onProgress?.(
-      `Step ${state.iteration}: ${stepSummary.intent} → ${stepSummary.outcome}`,
+      `Step ${state.iteration}: ${stepSummary.executionContract} → ${stepSummary.outcome}`,
       runPath,
     );
   }
@@ -465,6 +418,26 @@ interface DocumentScoutSessionState {
   latestResult?: ScoutResult;
   executedQueries: string[];
   blockedRequests: number;
+}
+
+interface SkillsScoutEntry {
+  normalizedQuery: string;
+  queryTokens: string[];
+  result: ScoutResult;
+  coveredSkillKeys: string[];
+  coveredSkillTokens: string[];
+}
+
+interface KnownSkillRef {
+  raw: string;
+  key: string;
+  tokens: string[];
+}
+
+interface SkillsScoutSessionState {
+  entries: SkillsScoutEntry[];
+  blockedRequests: number;
+  knownSkills: KnownSkillRef[];
 }
 
 type ContextAwareDirective = StepDirective | ReEvalDirective | SessionRotationDirective;
@@ -562,7 +535,9 @@ async function resolveContextAwareController(
   initialScoutResult: ScoutResult | undefined,
   invoke: (scoutContext?: string) => Promise<ContextAwareDirective | ContextSearchDirective | CompletionDirective>,
 ): Promise<ContextAwareResolution> {
+  const scoutLocations = buildScoutLocations(deps, state, runPath);
   const documentScout = createDocumentScoutSessionState(initialScoutResult, state.userMessage);
+  const skillsScout = createSkillsScoutSessionState(scoutLocations);
   const priorGenericScoutResults = new Map<string, ScoutResult>();
   let scoutContext = buildCurrentScoutContext(initialScoutResult, documentScout);
   if (scoutContext) {
@@ -602,6 +577,18 @@ async function resolveContextAwareController(
       return { type: "failed", message: documentDecision.message };
     }
 
+    const skillsDecision = decideSkillsContextSearch({
+      skillsScout,
+      directive: controllerOutput,
+    });
+    if (skillsDecision.type === "reuse") {
+      scoutContext = buildCurrentScoutContext(skillsDecision.result, documentScout, skillsDecision.note);
+      continue;
+    }
+    if (skillsDecision.type === "failed") {
+      return { type: "failed", message: skillsDecision.message };
+    }
+
     if (controllerOutput.scope !== "documents") {
       const repeatedKey = buildScoutAttemptKey(controllerOutput.scope, controllerOutput.query);
       const repeatedResult = priorGenericScoutResults.get(repeatedKey);
@@ -628,26 +615,7 @@ async function resolveContextAwareController(
       };
     }
 
-    const locations = buildScoutLocations(deps, state, runPath);
     scoutBudget.used++;
-
-    const cachedResult = await resolveContextCacheBeforeScout(
-      deps,
-      state,
-      runPath,
-      controllerOutput,
-    );
-    if (cachedResult.type === "sufficient") {
-      if (controllerOutput.scope !== "documents") {
-        priorGenericScoutResults.set(
-          buildScoutAttemptKey(controllerOutput.scope, controllerOutput.query),
-          cachedResult.result,
-        );
-      }
-      updateDocumentScoutSessionState(documentScout, controllerOutput.query, cachedResult.result);
-      scoutContext = buildCurrentScoutContext(cachedResult.result, documentScout);
-      continue;
-    }
 
     const result = await runContextScout(
       {
@@ -657,14 +625,10 @@ async function resolveContextAwareController(
       },
       controllerOutput.query,
       controllerOutput.scope,
-      locations,
+      scoutLocations,
       controllerOutput.document_paths,
     );
-    storeContextCache(runPath, {
-      scope: controllerOutput.scope,
-      query: controllerOutput.query,
-      result,
-    });
+    appendRecentContextSearch(state, controllerOutput.scope, controllerOutput.query, result);
     if (controllerOutput.scope !== "documents") {
       priorGenericScoutResults.set(
         buildScoutAttemptKey(controllerOutput.scope, controllerOutput.query),
@@ -672,420 +636,57 @@ async function resolveContextAwareController(
       );
     }
     updateDocumentScoutSessionState(documentScout, controllerOutput.query, result);
+    updateSkillsScoutSessionState(skillsScout, controllerOutput.query, result, controllerOutput.scope);
     scoutContext = buildCurrentScoutContext(result, documentScout);
   }
 }
 
-type CacheResolution =
-  | { type: "miss" }
-  | { type: "sufficient"; result: ScoutResult };
-
-interface CacheSelectionResponse {
-  ids: string[];
-  reason: string;
-}
-
-interface CacheSufficiencyResponse {
-  sufficient: boolean;
-  ids: string[];
-  reason: string;
-}
-
-async function resolveContextCacheBeforeScout(
-  deps: AgentLoopDeps,
+function appendRecentContextSearch(
   state: LoopState,
-  runPath: string,
-  directive: ContextSearchDirective,
-): Promise<CacheResolution> {
-  if (directive.scope === "documents") {
-    devLog("[context-cache] skip scope=documents reason=existing-document-reuse-flow");
-    return { type: "miss" };
-  }
-
-  const metadata = listContextCacheMetadata(runPath, directive.scope);
-  if (metadata.length === 0) {
-    devLog(`[context-cache] miss scope=${directive.scope} reason=no-entries`);
-    return { type: "miss" };
-  }
-
-  const selection = await selectRelevantContextCacheEntries(
-    deps,
-    state,
-    directive,
-    metadata,
-  );
-  const selectedIds = uniqueIds(selection.ids).slice(0, 3);
-  if (selectedIds.length === 0) {
-    devLog(
-      `[context-cache] miss scope=${directive.scope} reason=no-relevant-entries query="${directive.query.replace(/\s+/g, " ").trim().slice(0, 140)}"`,
-    );
-    return { type: "miss" };
-  }
-
-  const selectedEntries = getContextCacheEntriesByIds(runPath, selectedIds);
-  if (selectedEntries.length === 0) {
-    devLog(`[context-cache] miss scope=${directive.scope} reason=selected-ids-not-found`);
-    return { type: "miss" };
-  }
-
-  const sufficiency = await assessContextCacheSufficiency(
-    deps,
-    state,
-    directive,
-    selectedEntries,
-  );
-  if (!sufficiency.sufficient) {
-    devLog(
-      `[context-cache] insufficient scope=${directive.scope} ids=${selectedIds.join(",")} reason="${sufficiency.reason.replace(/\s+/g, " ").trim().slice(0, 160)}"`,
-    );
-    return { type: "miss" };
-  }
-
-  const idsToUse = uniqueIds(sufficiency.ids).filter((id) => selectedIds.includes(id));
-  const entriesToUse = idsToUse.length > 0
-    ? getContextCacheEntriesByIds(runPath, idsToUse)
-    : selectedEntries;
-  const result = buildScoutResultFromCacheEntries(directive.scope, entriesToUse);
-
-  devLog(
-    `[context-cache] sufficient scope=${directive.scope} ids=${entriesToUse.map((entry) => entry.id).join(",")} reason="${sufficiency.reason.replace(/\s+/g, " ").trim().slice(0, 160)}"`,
-  );
-  return { type: "sufficient", result };
-}
-
-async function selectRelevantContextCacheEntries(
-  deps: AgentLoopDeps,
-  state: LoopState,
-  directive: ContextSearchDirective,
-  metadata: ContextCacheMetadataEntry[],
-): Promise<CacheSelectionResponse> {
-  const prompt = buildContextCacheSelectionPrompt(state, directive, metadata);
-  return runContextCacheJsonTurn(
-    deps.provider,
-    [{ role: "user", content: prompt }],
-    CACHE_SELECTION_RESPONSE_FORMAT,
-    parseCacheSelectionResponse,
-  );
-}
-
-async function assessContextCacheSufficiency(
-  deps: AgentLoopDeps,
-  state: LoopState,
-  directive: ContextSearchDirective,
-  entries: ContextCacheEntry[],
-): Promise<CacheSufficiencyResponse> {
-  const prompt = buildContextCacheSufficiencyPrompt(state, directive, entries);
-  return runContextCacheJsonTurn(
-    deps.provider,
-    [{ role: "user", content: prompt }],
-    CACHE_SUFFICIENCY_RESPONSE_FORMAT,
-    parseCacheSufficiencyResponse,
-  );
-}
-
-function buildContextCacheSelectionPrompt(
-  state: LoopState,
-  directive: ContextSearchDirective,
-  metadata: ContextCacheMetadataEntry[],
-): string {
-  const metadataBlock = metadata
-    .map((entry) => {
-      const query = entry.query.trim().length > 0 ? entry.query : "(empty query)";
-      return `- id=${entry.id} | status=${entry.status} | confidence=${entry.confidence.toFixed(2)} | query=${query.slice(0, 220)}`;
-    })
-    .join("\n");
-
-  return `You are selecting useful cached context-search entries.
-
-Current request:
-- scope: ${directive.scope}
-- query: ${directive.query}
-- overall goal: ${state.goal.objective || state.userMessage}
-
-Choose up to 3 cache ids that are likely useful for this request.
-- Read only the metadata below.
-- Prefer entries with status "success" or "sufficient".
-- Use "partial" only if it may still help.
-- Choose "empty" or "unavailable" only when they clearly match the same request and would help avoid repeating the same failed search.
-- If none are useful, return an empty ids array.
-
-Cache metadata:
-${metadataBlock}
-
-Respond with strict JSON:
-{ "ids": ["..."], "reason": "..." }`;
-}
-
-function buildContextCacheSufficiencyPrompt(
-  state: LoopState,
-  directive: ContextSearchDirective,
-  entries: ContextCacheEntry[],
-): string {
-  const entriesBlock = entries
-    .map((entry) => {
-      const sources = entry.sources.length > 0 ? entry.sources.join(", ") : "(none)";
-      const context = entry.context.trim().length > 0 ? entry.context : "(empty context)";
-      return [
-        `Entry ${entry.id}`,
-        `- status: ${entry.status}`,
-        `- confidence: ${entry.confidence.toFixed(2)}`,
-        `- cached query: ${entry.query || "(empty)"}`,
-        `- sources: ${sources}`,
-        `- context:`,
-        context,
-      ].join("\n");
-    })
-    .join("\n\n");
-
-  return `You are deciding whether cached context-search entries are sufficient.
-
-Current request:
-- scope: ${directive.scope}
-- query: ${directive.query}
-- overall goal: ${state.goal.objective || state.userMessage}
-
-Rules:
-- Return sufficient=true only if the cached entries already provide enough grounded context to hand back to the controller.
-- If any important detail still appears missing, return sufficient=false so the system can run scout.
-- If sufficient=true, choose the subset of ids to keep (you may keep all of them).
-- Be conservative.
-
-Selected cache entries:
-${entriesBlock}
-
-Respond with strict JSON:
-{ "sufficient": true|false, "ids": ["..."], "reason": "..." }`;
-}
-
-async function runContextCacheJsonTurn<T>(
-  provider: AgentLoopDeps["provider"],
-  messages: Array<{ role: "user"; content: string }>,
-  preferredResponseFormat: LlmResponseFormat,
-  parser: (text: string) => T,
-): Promise<T> {
-  const responseFormat = compileResponseFormatForProvider(
-    provider.name,
-    provider.capabilities,
-    preferredResponseFormat,
-  );
-
-  const firstTurn = await provider.generateTurn({
-    messages,
-    ...(responseFormat ? { responseFormat } : {}),
-  });
-  const firstText = extractContextCacheTurnText(firstTurn);
-
-  try {
-    return parser(firstText);
-  } catch {
-    const retryTurn = await provider.generateTurn({
-      messages: [
-        ...messages,
-        ...(firstText.trim().length > 0 ? [{ role: "assistant" as const, content: firstText }] : []),
-        { role: "user" as const, content: CACHE_JSON_REPAIR_PROMPT },
-      ],
-      ...(responseFormat ? { responseFormat } : {}),
-    });
-    return parser(extractContextCacheTurnText(retryTurn));
-  }
-}
-
-function parseCacheSelectionResponse(text: string): CacheSelectionResponse {
-  const parsed = extractContextCacheJson(text);
-  return {
-    ids: Array.isArray(parsed["ids"]) ? (parsed["ids"] as unknown[]).map(String) : [],
-    reason: String(parsed["reason"] ?? ""),
-  };
-}
-
-function parseCacheSufficiencyResponse(text: string): CacheSufficiencyResponse {
-  const parsed = extractContextCacheJson(text);
-  return {
-    sufficient: parsed["sufficient"] === true,
-    ids: Array.isArray(parsed["ids"]) ? (parsed["ids"] as unknown[]).map(String) : [],
-    reason: String(parsed["reason"] ?? ""),
-  };
-}
-
-function extractContextCacheTurnText(turn: LlmTurnOutput): string {
-  if (turn.type === "assistant") {
-    return turn.content;
-  }
-  return turn.assistantContent ?? "";
-}
-
-function extractContextCacheJson(text: string): Record<string, unknown> {
-  const normalized = unwrapContextCacheJsonFence(text.trim());
-  const direct = tryParseContextCacheJsonObject(normalized);
-  if (direct) return direct;
-
-  const extracted = findFirstContextCacheJsonObject(normalized);
-  if (extracted) {
-    const parsed = tryParseContextCacheJsonObject(extracted);
-    if (parsed) return parsed;
-  }
-
-  throw new SyntaxError("Expected a JSON object from context-cache helper prompt.");
-}
-
-function unwrapContextCacheJsonFence(text: string): string {
-  const fenceMatch = text.match(/```(?:json)?\s*\n?([\s\S]*?)\n?```/);
-  if (fenceMatch?.[1]) {
-    return fenceMatch[1].trim();
-  }
-  return text;
-}
-
-function tryParseContextCacheJsonObject(text: string): Record<string, unknown> | null {
-  if (text.length === 0) return null;
-  try {
-    const parsed = JSON.parse(normalizeContextCacheJsonLikeRecord(text));
-    if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)) {
-      return parsed as Record<string, unknown>;
-    }
-  } catch {
-    return null;
-  }
-  return null;
-}
-
-function normalizeContextCacheJsonLikeRecord(text: string): string {
-  return text
-    .replace(/\bTrue\b/g, "true")
-    .replace(/\bFalse\b/g, "false")
-    .replace(/\bNone\b/g, "null");
-}
-
-function findFirstContextCacheJsonObject(text: string): string | null {
-  let start = -1;
-  let depth = 0;
-  let inString = false;
-  let escaping = false;
-
-  for (let index = 0; index < text.length; index++) {
-    const char = text[index];
-    if (!char) continue;
-
-    if (start === -1) {
-      if (char === "{") {
-        start = index;
-        depth = 1;
-        inString = false;
-        escaping = false;
-      }
-      continue;
-    }
-
-    if (inString) {
-      if (escaping) {
-        escaping = false;
-      } else if (char === "\\") {
-        escaping = true;
-      } else if (char === "\"") {
-        inString = false;
-      }
-      continue;
-    }
-
-    if (char === "\"") {
-      inString = true;
-      continue;
-    }
-
-    if (char === "{") {
-      depth++;
-    } else if (char === "}") {
-      depth--;
-      if (depth === 0 && start >= 0) {
-        return text.slice(start, index + 1);
-      }
-    }
-  }
-
-  return null;
-}
-
-function buildScoutResultFromCacheEntries(
   scope: ContextSearchDirective["scope"],
-  entries: ContextCacheEntry[],
-): ScoutResult {
-  const contextBlocks = entries
-    .map((entry) => {
-      const context = entry.context.trim();
-      if (context.length === 0) {
-        return "";
-      }
-      return entries.length === 1
-        ? context
-        : `Cached query: ${entry.query}\n${context}`;
-    })
-    .filter((block) => block.length > 0);
-
-  const mergedContext = contextBlocks.join("\n\n");
-  const mergedSources = [...new Set(entries.flatMap((entry) => entry.sources))];
-  const mergedConfidence = entries.length > 0
-    ? entries.reduce((sum, entry) => sum + entry.confidence, 0) / entries.length
-    : 0;
-
-  if (scope === "documents") {
-    const mergedStatus = selectBestCacheStatus(entries.map((entry) => entry.status));
-    return {
-      context: mergedContext,
-      sources: mergedSources,
-      confidence: mergedConfidence,
-      documentState: {
-        status: toDocumentScoutStatus(mergedStatus),
-        insufficientEvidence: mergedStatus === "partial" || mergedStatus === "empty" || mergedStatus === "unavailable",
-        warnings: [],
-      },
-    };
-  }
-
-  const firstEntry = entries[0];
-  const genericScoutState = entries.length === 1 && firstEntry?.status === "empty"
-    ? {
-        status: "empty" as const,
-        scope,
-        query: firstEntry.query,
-        searchedLocations: firstEntry.sources,
-        attemptedSearches: [],
-        errors: [],
-      }
-    : undefined;
-
-  return {
-    context: mergedContext,
-    sources: mergedSources,
-    confidence: mergedConfidence,
-    ...(genericScoutState ? { scoutState: genericScoutState } : {}),
+  query: string,
+  result: ScoutResult,
+): void {
+  const nextEntry: RecentContextSearch = {
+    scope,
+    query: query.trim(),
+    status: deriveRecentContextSearchStatus(result),
+    context: result.context,
+    sources: uniqueStrings(result.sources.map(normalizePath)),
+    confidence: clampConfidence(result.confidence),
+    iteration: state.iteration,
   };
+  const entryKey = buildRecentContextSearchKey(scope, query);
+  const existing = state.recentContextSearches ?? [];
+  const withoutDuplicate = existing.filter((entry) => buildRecentContextSearchKey(entry.scope, entry.query) !== entryKey);
+  state.recentContextSearches = [...withoutDuplicate, nextEntry].slice(-5);
 }
 
-function selectBestCacheStatus(statuses: ContextCacheStatus[]): ContextCacheStatus {
-  if (statuses.includes("sufficient")) return "sufficient";
-  if (statuses.includes("success")) return "success";
-  if (statuses.includes("partial")) return "partial";
-  if (statuses.includes("empty")) return "empty";
-  return "unavailable";
-}
-
-function toDocumentScoutStatus(status: ContextCacheStatus): NonNullable<ScoutResult["documentState"]>["status"] {
-  switch (status) {
-    case "partial":
-      return "partial";
-    case "empty":
-      return "empty";
-    case "unavailable":
-      return "unavailable";
-    case "success":
-    case "sufficient":
-    default:
-      return "sufficient";
+function deriveRecentContextSearchStatus(result: ScoutResult): RecentContextSearchStatus {
+  const documentStatus = result.documentState?.status;
+  if (documentStatus) {
+    return documentStatus;
   }
+  if (result.scoutState?.status === "empty" || result.scoutState?.status === "max_turns_exhausted") {
+    return "empty";
+  }
+  return result.context.trim().length > 0 ? "success" : "empty";
 }
 
-function uniqueIds(ids: string[]): string[] {
-  return [...new Set(ids.filter((id) => id.trim().length > 0))];
+function buildRecentContextSearchKey(scope: ContextSearchDirective["scope"], query: string): string {
+  return `${scope}:${normalizeScoutQuery(query)}`;
+}
+
+function normalizePath(value: string): string {
+  return value.replace(/\\/g, "/");
+}
+
+function uniqueStrings(values: string[]): string[] {
+  return [...new Set(values.filter((value) => value.trim().length > 0))];
+}
+
+function clampConfidence(value: number): number {
+  return Math.min(1, Math.max(0, Number(value) || 0));
 }
 
 function formatScoutContext(result: ScoutResult, note?: string): string {
@@ -1176,12 +777,7 @@ async function buildInitialDocumentScoutContext(
     "documents",
     locations,
   );
-
-  storeContextCache(runPath, {
-    scope: "documents",
-    query,
-    result,
-  });
+  appendRecentContextSearch(state, "documents", query, result);
 
   devLog(
     `[context-search] preload-result scope=documents status=${result.documentState?.status ?? "unknown"} context=${result.context.trim().length > 0 ? "present" : "empty"} sources=${result.sources.length} confidence=${result.confidence.toFixed(3)}`,
@@ -1191,12 +787,17 @@ async function buildInitialDocumentScoutContext(
 
 function buildScoutLocations(deps: AgentLoopDeps, state: LoopState, runPath: string): ScoutKnownLocations {
   const memCtx = deps.sessionMemory.getPromptMemoryContext();
+  const skillsDirs = [
+    resolve(deps.dataDir, "skills"),
+    resolve(homedir(), ".agents", "skills"),
+  ];
   return {
     runPath,
     contextDir: resolve(deps.dataDir, "..", "context"),
     sessionPath: memCtx.activeSessionPath ?? undefined,
     sessionDir: resolve(deps.dataDir, "memory", "sessions"),
-    skillsDir: resolve(deps.dataDir, "skills"),
+    skillsDir: skillsDirs[0],
+    skillsDirs,
     documentsDir: join(deps.dataDir, "documents"),
     attachedDocuments: state.attachedDocuments ?? [],
     runId: deps.runHandle.runId,
@@ -1274,6 +875,11 @@ async function resolveOpenFeedbackIfNeeded(
   }
 
   state.matchedFeedback = matchedFeedback;
+  if (shouldTreatMatchedFeedbackAsFreshTask(state.userMessage, matchedFeedback)) {
+    state.matchedFeedback = null;
+    return null;
+  }
+
   const feedbackOutcome = classifyMatchedFeedbackReply(state.userMessage);
   deps.sessionMemory.resolveOpenFeedback?.(deps.clientId, {
     runId: deps.runHandle.runId,
@@ -1330,6 +936,106 @@ function classifyMatchedFeedbackReply(userMessage: string): "completed" | "rejec
     : "completed";
 }
 
+function shouldTreatMatchedFeedbackAsFreshTask(
+  userMessage: string,
+  matchedFeedback: OpenFeedbackItem,
+): boolean {
+  const normalized = userMessage.trim().toLowerCase();
+  if (!looksLikeFreshTaskRequest(normalized) || looksLikeConciseFeedbackReply(normalized)) {
+    return false;
+  }
+
+  return !hasFeedbackOverlap(normalized, matchedFeedback);
+}
+
+function looksLikeFreshTaskRequest(normalizedMessage: string): boolean {
+  if (normalizedMessage.length < 12) return false;
+
+  const patterns = [
+    /^(?:can|could|would|will)\s+you\b/,
+    /^(?:please\s+)?(?:check|fetch|pull|get|give|show|read|open|search|find|inspect|retrieve|draft|send|run|look up|summarize|explain|tell me)\b/,
+    /\b(?:full details|details about|what is in|what's in|show me|tell me about)\b/,
+  ];
+  return patterns.some((pattern) => pattern.test(normalizedMessage));
+}
+
+function looksLikeConciseFeedbackReply(normalizedMessage: string): boolean {
+  if (normalizedMessage.length === 0) return true;
+  const compact = normalizedMessage.replace(/[!?.,]/g, " ").trim();
+  const wordCount = compact.length === 0 ? 0 : compact.split(/\s+/).length;
+  if (wordCount <= 4) return true;
+
+  const concisePatterns = [
+    /^(?:yes|yep|yeah|ok|okay|sure|go ahead)\b/,
+    /^(?:no|nope|nah)\b/,
+    /^(?:send|do|run|share|ship|approve)\s+(?:it|that|this)\b/,
+  ];
+  return concisePatterns.some((pattern) => pattern.test(compact));
+}
+
+function hasFeedbackOverlap(normalizedMessage: string, matchedFeedback: OpenFeedbackItem): boolean {
+  const messageTokens = tokenizeForOverlap(normalizedMessage);
+  if (messageTokens.size === 0) return false;
+
+  const feedbackText = [
+    matchedFeedback.shortLabel,
+    matchedFeedback.message,
+    matchedFeedback.actionType ?? "",
+    matchedFeedback.payloadSummary ?? "",
+    ...matchedFeedback.entityHints,
+  ].join(" ").toLowerCase();
+  const feedbackTokens = tokenizeForOverlap(feedbackText);
+  for (const token of messageTokens) {
+    if (feedbackTokens.has(token)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function tokenizeForOverlap(text: string): Set<string> {
+  const stopWords = new Set([
+    "a",
+    "an",
+    "and",
+    "are",
+    "about",
+    "can",
+    "could",
+    "details",
+    "do",
+    "for",
+    "from",
+    "full",
+    "get",
+    "give",
+    "hello",
+    "i",
+    "it",
+    "latest",
+    "mail",
+    "me",
+    "my",
+    "of",
+    "on",
+    "please",
+    "show",
+    "tell",
+    "that",
+    "the",
+    "this",
+    "to",
+    "you",
+  ]);
+
+  return new Set(
+    text
+      .split(/[^a-z0-9_]+/)
+      .map((token) => token.trim())
+      .filter((token) => token.length >= 3 && !stopWords.has(token)),
+  );
+}
+
 function buildFeedbackRejectionReply(shortLabel: string): string {
   const compactLabel = shortLabel.trim();
   if (!compactLabel) {
@@ -1382,7 +1088,7 @@ function buildRecentStepDigests(state: LoopState): string[] {
     .slice(-5)
     .map((step) => {
       const summary = step.summary.trim().length > 0 ? step.summary.trim() : "(no summary)";
-      return `step ${step.step}: ${step.intent} -> ${step.outcome} | ${summary.slice(0, 140)}`;
+      return `step ${step.step}: ${step.executionContract} -> ${step.outcome} | ${summary.slice(0, 140)}`;
     });
 }
 
@@ -1535,6 +1241,213 @@ function updateDocumentScoutSessionState(
 
   session.latestResult = result;
   session.bestResult = selectPreferredDocumentResult(session.bestResult, result);
+}
+
+function createSkillsScoutSessionState(locations: ScoutKnownLocations): SkillsScoutSessionState {
+  return {
+    entries: [],
+    blockedRequests: 0,
+    knownSkills: listKnownSkills(locations),
+  };
+}
+
+function updateSkillsScoutSessionState(
+  session: SkillsScoutSessionState,
+  query: string,
+  result: ScoutResult,
+  scope: ContextSearchDirective["scope"],
+): void {
+  if (scope !== "skills" || !isPositiveGenericScoutResult(result)) {
+    return;
+  }
+
+  const normalizedQuery = normalizeScoutQuery(query);
+  if (normalizedQuery.length === 0) {
+    return;
+  }
+
+  const coveredSkillKeys = uniqueStrings(extractSkillIdsFromSources(result.sources).map(normalizeSkillIdentifier));
+  const coveredSkillTokens = uniqueStrings(coveredSkillKeys.flatMap(tokenizeSkillIdentifier));
+  const queryTokens = tokenizeScoutQuery(normalizedQuery);
+  const nextEntry: SkillsScoutEntry = {
+    normalizedQuery,
+    queryTokens,
+    result,
+    coveredSkillKeys,
+    coveredSkillTokens,
+  };
+
+  session.entries = [
+    ...session.entries.filter((entry) => entry.normalizedQuery !== normalizedQuery),
+    nextEntry,
+  ].slice(-5);
+}
+
+function isPositiveGenericScoutResult(result: ScoutResult): boolean {
+  if (result.scoutState?.status === "empty" || result.scoutState?.status === "max_turns_exhausted") {
+    return false;
+  }
+
+  return result.context.trim().length > 0 || result.sources.length > 0;
+}
+
+function decideSkillsContextSearch(input: {
+  skillsScout: SkillsScoutSessionState;
+  directive: ContextSearchDirective;
+}): { type: "allow" } | { type: "reuse"; result: ScoutResult; note: string } | { type: "failed"; message: string } {
+  if (input.directive.scope !== "skills") {
+    return { type: "allow" };
+  }
+
+  const reusable = findReusableSkillsScoutEntry(input.skillsScout, input.directive.query);
+  if (!reusable) {
+    return { type: "allow" };
+  }
+
+  return reuseSkillsScoutContext(
+    input.skillsScout,
+    reusable.result,
+    "Skill documentation for this request was already retrieved in this iteration. Do not run another skills context_search for the same skill docs; use the existing excerpts to plan the next step.",
+    "existing-skill-docs",
+  );
+}
+
+function findReusableSkillsScoutEntry(
+  session: SkillsScoutSessionState,
+  query: string,
+): SkillsScoutEntry | undefined {
+  const normalizedQuery = normalizeScoutQuery(query);
+  if (normalizedQuery.length === 0) {
+    return undefined;
+  }
+
+  const queryTokens = tokenizeScoutQuery(normalizedQuery);
+  const requestedSkillKeys = extractRequestedSkillKeys(query, session.knownSkills);
+  if (requestedSkillKeys.length > 0) {
+    return session.entries.find((entry) => requestedSkillKeys.every((key) => entry.coveredSkillKeys.includes(key)));
+  }
+
+  return session.entries.find((entry) => {
+    const priorTokens = new Set([...entry.queryTokens, ...entry.coveredSkillTokens]);
+    const overlap = queryTokens.filter((token) => priorTokens.has(token));
+    const novelTokens = queryTokens.filter((token) => !priorTokens.has(token));
+    return overlap.length >= 2 && novelTokens.length < 2;
+  });
+}
+
+function reuseSkillsScoutContext(
+  session: SkillsScoutSessionState,
+  result: ScoutResult,
+  note: string,
+  reason: string,
+): { type: "reuse"; result: ScoutResult; note: string } | { type: "failed"; message: string } {
+  session.blockedRequests++;
+  devLog(
+    `[context-search] skills reuse reason=${reason} blocked=${session.blockedRequests} confidence=${result.confidence.toFixed(3)} sources=${result.sources.length}`,
+  );
+  if (session.blockedRequests >= 3) {
+    devWarn("[context-search] controller kept requesting redundant skills searches after skill docs were available");
+    return {
+      type: "failed",
+      message: "I couldn't progress because the controller kept requesting redundant skills context_search calls after the needed skill documentation was already available.",
+    };
+  }
+
+  return {
+    type: "reuse",
+    result,
+    note,
+  };
+}
+
+function listKnownSkills(locations: ScoutKnownLocations): KnownSkillRef[] {
+  const roots = [
+    ...(locations.skillsDirs ?? []),
+    ...(locations.skillsDir ? [locations.skillsDir] : []),
+  ];
+  const skills: KnownSkillRef[] = [];
+
+  for (const root of roots) {
+    if (!root) {
+      continue;
+    }
+
+    try {
+      for (const entry of readdirSync(root)) {
+        const fullPath = join(root, entry);
+        let stat;
+        try {
+          stat = statSync(fullPath);
+        } catch {
+          continue;
+        }
+        if (!stat.isDirectory()) {
+          continue;
+        }
+
+        const key = normalizeSkillIdentifier(entry);
+        if (key.length === 0) {
+          continue;
+        }
+
+        skills.push({
+          raw: entry,
+          key,
+          tokens: tokenizeSkillIdentifier(entry),
+        });
+      }
+    } catch {
+      continue;
+    }
+  }
+
+  const deduped = new Map<string, KnownSkillRef>();
+  for (const skill of skills) {
+    if (!deduped.has(skill.key)) {
+      deduped.set(skill.key, skill);
+    }
+  }
+  return [...deduped.values()];
+}
+
+function extractRequestedSkillKeys(query: string, knownSkills: KnownSkillRef[]): string[] {
+  const queryTokens = new Set(tokenizeScoutQuery(normalizeScoutQuery(query)));
+  return uniqueStrings(knownSkills
+    .filter((skill) => skill.tokens.length > 0 && skill.tokens.every((token) => queryTokens.has(token)))
+    .map((skill) => skill.key));
+}
+
+function extractSkillIdsFromSources(sources: string[]): string[] {
+  return uniqueStrings(sources.map((source) => {
+    const trimmed = source.trim();
+    if (!trimmed) {
+      return "";
+    }
+
+    const lower = basename(trimmed).toLowerCase();
+    if (lower === "skill.md" || lower === "skill.markdown") {
+      return basename(dirname(trimmed));
+    }
+
+    return basename(trimmed);
+  }));
+}
+
+function normalizeSkillIdentifier(value: string): string {
+  return value.toLowerCase().replace(/[^a-z0-9]+/g, "");
+}
+
+function tokenizeSkillIdentifier(value: string): string[] {
+  return value
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter((token) => token.length >= 2);
+}
+
+function isMateriallyBroaderSkillQuery(queryTokens: string[], entry: SkillsScoutEntry): boolean {
+  const priorTokens = new Set([...entry.queryTokens, ...entry.coveredSkillTokens]);
+  const novelTokens = queryTokens.filter((token) => !priorTokens.has(token));
+  return novelTokens.length >= 2;
 }
 
 function selectPreferredDocumentResult(

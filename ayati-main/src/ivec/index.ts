@@ -215,6 +215,8 @@ export class IVecEngine {
           runPath: result.runPath,
           status: result.status,
           summary: result.content,
+          userMessage: content,
+          assistantResponse: result.content,
         });
         this.dispatchAgentResponse(clientId, runHandle, result);
       } else {
@@ -347,6 +349,8 @@ export class IVecEngine {
         runPath: result.runPath,
         status: result.status,
         summary: result.content,
+        userMessage: incomingMessage,
+        assistantResponse: result.content,
       });
       this.sessionMemory.recordSystemEventOutcome?.(clientId, {
         runId: runHandle.runId,

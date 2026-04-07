@@ -68,8 +68,9 @@ export interface ProgressLedger {
 
 export interface FailedApproach {
   step: number;
-  intent: string;
-  tools_hint: string[];
+  executionContract?: string;
+  intent?: string;
+  tools_hint?: string[];
   failureType: "tool_error" | "permission" | "missing_path" | "verify_failed" | "no_progress" | "validation_error";
   reason: string;
   blockedTargets: string[];
@@ -102,6 +103,7 @@ export interface LoopState {
   consecutiveFailures: number;
   approachChangeCount: number;
   completedSteps: StepSummary[];
+  recentContextSearches: RecentContextSearch[];
   runPath: string;
   failedApproaches: FailedApproach[];
   attachedDocuments?: ManagedDocumentManifest[];
@@ -117,7 +119,8 @@ export interface LoopState {
 
 export interface StepSummary {
   step: number;
-  intent: string;
+  executionContract?: string;
+  intent?: string;
   outcome: string;
   summary: string;
   newFacts: string[];
@@ -127,7 +130,7 @@ export interface StepSummary {
   taskStatusAfter?: TaskStatus;
   taskReason?: string;
   taskEvidence?: string[];
-  stoppedEarlyReason?: "assistant_returned" | "max_act_turns_reached" | "max_total_tool_calls_reached" | "repeated_identical_failure" | "no_valid_tool_calls";
+  stoppedEarlyReason?: "assistant_returned" | "max_act_turns_reached" | "max_total_tool_calls_reached" | "repeated_identical_failure" | "no_valid_tool_calls" | "planned_call_failed";
   failureType?: FailedApproach["failureType"];
   blockedTargets?: string[];
   stateUpdates?: PreparedAttachmentStateUpdate[];
@@ -149,11 +152,24 @@ export interface ReEvalDirective {
   approach: string;
 }
 
+export type StepPlanCallOrigin = "builtin" | "external_skill";
+export type StepPlanRetryPolicy = "none" | "same_call_once_on_timeout";
+
+export interface StepPlanCall {
+  tool: string;
+  input: Record<string, unknown>;
+  origin: StepPlanCallOrigin;
+  source_refs: string[];
+  retry_policy: StepPlanRetryPolicy;
+}
+
 export interface StepDirective {
   done: false;
   execution_mode: "dependent" | "independent";
-  intent: string;
-  tools_hint: string[];
+  execution_contract?: string;
+  tool_plan?: StepPlanCall[];
+  intent?: string;
+  tools_hint?: string[];
   success_criteria: string;
   context: string;
 }
@@ -169,6 +185,18 @@ export interface ContextSearchDirective {
 }
 
 export type DocumentScoutStatus = "sufficient" | "partial" | "empty" | "unavailable";
+
+export type RecentContextSearchStatus = "success" | DocumentScoutStatus;
+
+export interface RecentContextSearch {
+  scope: ContextSearchDirective["scope"];
+  query: string;
+  status: RecentContextSearchStatus;
+  context: string;
+  sources: string[];
+  confidence: number;
+  iteration: number;
+}
 
 export interface DocumentScoutState {
   status: DocumentScoutStatus;
@@ -241,7 +269,7 @@ export interface ActToolCallRecord {
 export interface ActOutput {
   toolCalls: ActToolCallRecord[];
   finalText: string;
-  stoppedEarlyReason?: "assistant_returned" | "max_act_turns_reached" | "max_total_tool_calls_reached" | "repeated_identical_failure" | "no_valid_tool_calls";
+  stoppedEarlyReason?: "assistant_returned" | "max_act_turns_reached" | "max_total_tool_calls_reached" | "repeated_identical_failure" | "no_valid_tool_calls" | "planned_call_failed";
 }
 
 export interface VerifyOutput {

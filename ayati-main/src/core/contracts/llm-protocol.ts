@@ -21,10 +21,29 @@ export interface LlmToolCall {
   input: unknown;
 }
 
+export interface LlmTextContentPart {
+  type: "text";
+  text: string;
+}
+
+export interface LlmImageContentPart {
+  type: "image";
+  imagePath: string;
+  mimeType: string;
+  name?: string;
+}
+
+export type LlmUserContentPart = LlmTextContentPart | LlmImageContentPart;
+export type LlmUserContent = string | LlmUserContentPart[];
+
 export type LlmMessage =
   | {
-      role: "system" | "user" | "assistant";
+      role: "system" | "assistant";
       content: string;
+    }
+  | {
+      role: "user";
+      content: LlmUserContent;
     }
   | {
       role: "assistant_tool_calls";
@@ -64,6 +83,7 @@ export type LlmTurnOutput =
 
 export interface LlmProviderCapabilities {
   nativeToolCalling: boolean;
+  imageInput?: boolean;
   structuredOutput?: {
     jsonObject: boolean;
     jsonSchema: boolean;

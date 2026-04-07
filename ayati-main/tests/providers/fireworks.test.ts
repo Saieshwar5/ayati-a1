@@ -1,4 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { estimateTurnInputTokens } from "../../src/prompt/token-estimator.js";
 
 vi.mock("openai", () => {
@@ -24,6 +27,16 @@ function mockOpenAIConstructor(mockCreate: ReturnType<typeof vi.fn>): void {
       chat: { completions: { create: mockCreate } },
     } as unknown as OpenAI;
   } as never);
+}
+
+function makeImageFixture(): { imagePath: string; cleanup: () => void } {
+  const dir = mkdtempSync(join(tmpdir(), "ayati-fireworks-image-"));
+  const imagePath = join(dir, "sample.png");
+  writeFileSync(imagePath, Buffer.from("fake-image-bytes"));
+  return {
+    imagePath,
+    cleanup: () => rmSync(dir, { recursive: true, force: true }),
+  };
 }
 
 describe("Fireworks provider", () => {
@@ -86,6 +99,51 @@ describe("Fireworks provider", () => {
       ],
     });
     expect(out).toEqual({ type: "assistant", content: "Hello from Fireworks" });
+  });
+
+  it("should serialize user images as multimodal content", async () => {
+    process.env["FIREWORKS_API_KEY"] = "fw-test-key";
+    process.env["FIREWORKS_REASONING_EFFORT"] = "medium";
+    const fixture = makeImageFixture();
+
+    const mockCreate = vi.fn().mockResolvedValue({
+      choices: [{ message: { content: "I can see the image." } }],
+    });
+
+    mockOpenAIConstructor(mockCreate);
+
+    try {
+      provider.start();
+      const out = await provider.generateTurn({
+        messages: [
+          {
+            role: "user",
+            content: [
+              { type: "text", text: "What is in this image?" },
+              { type: "image", imagePath: fixture.imagePath, mimeType: "image/png", name: "sample.png" },
+            ],
+          },
+        ],
+      });
+
+      expect((mockCreate.mock.calls[0]?.[0] as any)?.messages).toEqual([
+        {
+          role: "user",
+          content: [
+            { type: "text", text: "What is in this image?" },
+            {
+              type: "image_url",
+              image_url: {
+                url: expect.stringMatching(/^data:image\/png;base64,/),
+              },
+            },
+          ],
+        },
+      ]);
+      expect(out).toEqual({ type: "assistant", content: "I can see the image." });
+    } finally {
+      fixture.cleanup();
+    }
   });
 
   it("should estimate input tokens locally", async () => {
@@ -200,6 +258,80 @@ describe("Fireworks provider", () => {
     });
   });
 
+  it("should omit structured output when tools are present", async () => {
+    process.env["FIREWORKS_API_KEY"] = "fw-test-key";
+    process.env["FIREWORKS_REASONING_EFFORT"] = "medium";
+
+    const mockCreate = vi.fn().mockResolvedValue({
+      choices: [
+        {
+          message: {
+            content: null,
+            tool_calls: [
+              {
+                id: "call_1",
+                type: "function",
+                function: {
+                  name: "read_file",
+                  arguments: "{\"path\":\"skill.md\"}",
+                },
+              },
+            ],
+          },
+        },
+      ],
+    });
+
+    mockOpenAIConstructor(mockCreate);
+
+    provider.start();
+    await provider.generateTurn({
+      messages: [{ role: "user", content: "Find the skill command" }],
+      tools: [
+        {
+          name: "read_file",
+          description: "Read a file",
+          inputSchema: {
+            type: "object",
+            properties: {
+              path: { type: "string" },
+            },
+          },
+        },
+      ],
+      responseFormat: {
+        type: "json_schema",
+        name: "context_scout_result",
+        strict: true,
+        schema: {
+          type: "object",
+        },
+      },
+    });
+
+    expect(mockCreate).toHaveBeenCalledWith({
+      model: "fireworks/minimax-m2p5",
+      reasoning_effort: "medium",
+      messages: [{ role: "user", content: "Find the skill command" }],
+      tools: [
+        {
+          type: "function",
+          function: {
+            name: "read_file",
+            description: "Read a file",
+            parameters: {
+              type: "object",
+              properties: {
+                path: { type: "string" },
+              },
+            },
+          },
+        },
+      ],
+      tool_choice: "auto",
+    });
+  });
+
   it("should throw for invalid MiniMax reasoning effort", async () => {
     process.env["FIREWORKS_API_KEY"] = "fw-test-key";
     process.env["FIREWORKS_REASONING_EFFORT"] = "max";
@@ -215,7 +347,7 @@ describe("Fireworks provider", () => {
     );
   });
 
-  it("should throw on empty response", async () => {
+  it("should throw on empty response with diagnostic context", async () => {
     process.env["FIREWORKS_API_KEY"] = "fw-test-key";
 
     const mockCreate = vi.fn().mockResolvedValue({
@@ -227,7 +359,22 @@ describe("Fireworks provider", () => {
     provider.start();
     await expect(
       provider.generateTurn({ messages: [{ role: "user", content: "Hi" }] }),
-    ).rejects.toThrow("Empty response from Fireworks.");
+    ).rejects.toThrow("Empty response from Fireworks: first message had no text content and no tool calls.");
+  });
+
+  it("should throw when Fireworks returns no choices", async () => {
+    process.env["FIREWORKS_API_KEY"] = "fw-test-key";
+
+    const mockCreate = vi.fn().mockResolvedValue({
+      choices: [],
+    });
+
+    mockOpenAIConstructor(mockCreate);
+
+    provider.start();
+    await expect(
+      provider.generateTurn({ messages: [{ role: "user", content: "Hi" }] }),
+    ).rejects.toThrow("Empty response from Fireworks: no choices were returned.");
   });
 
   it("should throw when calling generateTurn before start", async () => {

@@ -5,6 +5,7 @@ export interface ConversationTurn {
   content: string;
   timestamp: string;
   sessionPath: string;
+  runId?: string;
 }
 
 export type AgentResponseKind = "reply" | "feedback" | "notification" | "none";
@@ -200,6 +201,8 @@ export interface TaskSummaryRecordInput {
   runPath: string;
   status: "completed" | "failed" | "stuck";
   summary: string;
+  userMessage?: string;
+  assistantResponse?: string;
 }
 
 export interface SystemEventRecordInput {

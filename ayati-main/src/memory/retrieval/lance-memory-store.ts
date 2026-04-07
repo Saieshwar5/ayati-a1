@@ -6,9 +6,10 @@ import {
 } from "node:fs";
 import { resolve } from "node:path";
 import type {
-  RecallMemoryMatch,
+  RecallCandidate,
   RecallMemoryRecord,
   RecallSearchInput,
+  RecallSourceType,
   SummaryVectorStore,
 } from "./types.js";
 
@@ -44,7 +45,7 @@ export class LanceMemoryStore implements SummaryVectorStore {
     this.writeFallbackRecords(next);
   }
 
-  async search(input: RecallSearchInput): Promise<RecallMemoryMatch[]> {
+  async search(input: RecallSearchInput): Promise<RecallCandidate[]> {
     const viaLance = await this.trySearchWithLance(input);
     if (viaLance) {
       return viaLance;
@@ -74,7 +75,7 @@ export class LanceMemoryStore implements SummaryVectorStore {
     return false;
   }
 
-  private async trySearchWithLance(input: RecallSearchInput): Promise<RecallMemoryMatch[] | null> {
+  private async trySearchWithLance(input: RecallSearchInput): Promise<RecallCandidate[] | null> {
     const table = await this.getLanceTable() as {
       search?: (vector: number[]) => unknown;
       query?: () => unknown;
@@ -109,18 +110,8 @@ export class LanceMemoryStore implements SummaryVectorStore {
         return null;
       }
 
-      const whereParts = [`clientId = '${escapeSql(input.clientId)}'`];
-      const lower = normalizeLowerBound(input.dateFrom);
-      const upper = normalizeUpperBound(input.dateTo);
-      if (lower) {
-        whereParts.push(`createdAt >= '${escapeSql(lower)}'`);
-      }
-      if (upper) {
-        whereParts.push(`createdAt <= '${escapeSql(upper)}'`);
-      }
-
       if (typeof query.where === "function") {
-        query = await query.where(whereParts.join(" AND "), { prefilter: true }) as typeof query;
+        query = await query.where(buildFilterClause(input), { prefilter: true }) as typeof query;
       }
       if (typeof query.limit === "function") {
         query = await query.limit(input.limit) as typeof query;
@@ -135,8 +126,8 @@ export class LanceMemoryStore implements SummaryVectorStore {
       }
 
       return rows
-        .map((row) => normalizeMatchRow(row))
-        .filter((row): row is RecallMemoryMatch => row !== null)
+        .map((row) => normalizeCandidateRow(row))
+        .filter((row): row is RecallCandidate => row !== null)
         .slice(0, input.limit);
     } catch {
       this.lanceDisabled = true;
@@ -184,14 +175,16 @@ export class LanceMemoryStore implements SummaryVectorStore {
     return null;
   }
 
-  private searchFallback(input: RecallSearchInput): RecallMemoryMatch[] {
+  private searchFallback(input: RecallSearchInput): RecallCandidate[] {
     const lower = normalizeLowerBound(input.dateFrom);
     const upper = normalizeUpperBound(input.dateTo);
+    const sourceTypes = input.sourceTypes?.length ? new Set(input.sourceTypes) : null;
 
-    const rows = this.readFallbackRecords()
+    return this.readFallbackRecords()
       .filter((record) => record.clientId === input.clientId)
       .filter((record) => (lower ? record.createdAt >= lower : true))
       .filter((record) => (upper ? record.createdAt <= upper : true))
+      .filter((record) => (sourceTypes ? sourceTypes.has(record.sourceType) : true))
       .map((record) => ({
         record,
         score: input.vector && input.vector.length > 0
@@ -204,16 +197,8 @@ export class LanceMemoryStore implements SummaryVectorStore {
         }
         return b.record.createdAt.localeCompare(a.record.createdAt);
       })
-      .slice(0, input.limit);
-
-    return rows.map(({ record, score }) => ({
-      sessionId: record.sessionId,
-      sessionPath: record.sessionPath,
-      createdAt: record.createdAt,
-      sourceType: record.sourceType,
-      summaryText: record.summaryText,
-      score: Number(score.toFixed(4)),
-    }));
+      .slice(0, input.limit)
+      .map(({ record, score }) => toCandidate(record, score));
   }
 
   private readFallbackRecords(): RecallMemoryRecord[] {
@@ -239,34 +224,88 @@ export class LanceMemoryStore implements SummaryVectorStore {
   }
 }
 
-function normalizeMatchRow(row: unknown): RecallMemoryMatch | null {
+function buildFilterClause(input: RecallSearchInput): string {
+  const whereParts = [`clientId = '${escapeSql(input.clientId)}'`];
+  const lower = normalizeLowerBound(input.dateFrom);
+  const upper = normalizeUpperBound(input.dateTo);
+  if (lower) {
+    whereParts.push(`createdAt >= '${escapeSql(lower)}'`);
+  }
+  if (upper) {
+    whereParts.push(`createdAt <= '${escapeSql(upper)}'`);
+  }
+  if (input.sourceTypes && input.sourceTypes.length > 0) {
+    whereParts.push(`sourceType IN (${input.sourceTypes.map((value) => `'${escapeSql(value)}'`).join(", ")})`);
+  }
+  return whereParts.join(" AND ");
+}
+
+function normalizeCandidateRow(row: unknown): RecallCandidate | null {
   if (!row || typeof row !== "object") {
     return null;
   }
 
   const value = row as Record<string, unknown>;
   if (
-    typeof value["sessionId"] !== "string" ||
-    typeof value["sessionPath"] !== "string" ||
-    typeof value["createdAt"] !== "string" ||
-    typeof value["sourceType"] !== "string" ||
-    typeof value["summaryText"] !== "string"
+    typeof value["id"] !== "string"
+    || typeof value["nodeType"] !== "string"
+    || typeof value["sourceType"] !== "string"
+    || typeof value["sessionId"] !== "string"
+    || typeof value["sessionPath"] !== "string"
+    || typeof value["sessionFilePath"] !== "string"
+    || typeof value["createdAt"] !== "string"
+    || typeof value["summaryText"] !== "string"
+    || typeof value["retrievalText"] !== "string"
   ) {
     return null;
   }
 
-  const rawScore = value["_distance"] ?? value["_score"] ?? value["score"] ?? 0;
-  const normalizedScore = typeof rawScore === "number"
-    ? rawScore
-    : Number(rawScore) || 0;
+  const distanceValue = value["_distance"];
+  const rawScore = distanceValue ?? value["_score"] ?? value["score"] ?? 0;
+  const normalizedScore = typeof distanceValue === "number"
+    ? 1 / (1 + Math.max(distanceValue, 0))
+    : (typeof rawScore === "number" ? rawScore : Number(rawScore) || 0);
 
   return {
+    nodeId: value["id"],
+    nodeType: value["nodeType"] === "handoff" ? "handoff" : "run",
+    sourceType: normalizeSourceType(value["sourceType"]),
     sessionId: value["sessionId"],
     sessionPath: value["sessionPath"],
+    sessionFilePath: value["sessionFilePath"],
+    runId: typeof value["runId"] === "string" ? value["runId"] : undefined,
+    runPath: typeof value["runPath"] === "string" ? value["runPath"] : undefined,
+    runStatePath: typeof value["runStatePath"] === "string" ? value["runStatePath"] : undefined,
     createdAt: value["createdAt"],
-    sourceType: value["sourceType"] === "handoff" ? "handoff" : "task_summary",
+    status: normalizeStatus(value["status"]),
     summaryText: value["summaryText"],
+    retrievalText: value["retrievalText"],
+    userMessage: typeof value["userMessage"] === "string" ? value["userMessage"] : undefined,
+    assistantResponse: typeof value["assistantResponse"] === "string" ? value["assistantResponse"] : undefined,
+    metadataJson: typeof value["metadataJson"] === "string" ? value["metadataJson"] : undefined,
     score: Number(normalizedScore.toFixed(4)),
+  };
+}
+
+function toCandidate(record: RecallMemoryRecord, score: number): RecallCandidate {
+  return {
+    nodeId: record.id,
+    nodeType: record.nodeType,
+    sourceType: record.sourceType,
+    sessionId: record.sessionId,
+    sessionPath: record.sessionPath,
+    sessionFilePath: record.sessionFilePath,
+    runId: record.runId,
+    runPath: record.runPath,
+    runStatePath: record.runStatePath,
+    createdAt: record.createdAt,
+    status: record.status,
+    summaryText: record.summaryText,
+    retrievalText: record.retrievalText,
+    userMessage: record.userMessage,
+    assistantResponse: record.assistantResponse,
+    metadataJson: record.metadataJson,
+    score: Number(score.toFixed(4)),
   };
 }
 
@@ -277,15 +316,30 @@ function isRecallMemoryRecord(value: unknown): value is RecallMemoryRecord {
 
   const row = value as Record<string, unknown>;
   return (
-    typeof row["id"] === "string" &&
-    typeof row["clientId"] === "string" &&
-    typeof row["sessionId"] === "string" &&
-    typeof row["sessionPath"] === "string" &&
-    typeof row["createdAt"] === "string" &&
-    typeof row["sourceType"] === "string" &&
-    typeof row["summaryText"] === "string" &&
-    Array.isArray(row["embedding"])
+    typeof row["id"] === "string"
+    && typeof row["clientId"] === "string"
+    && typeof row["nodeType"] === "string"
+    && typeof row["sourceType"] === "string"
+    && typeof row["sessionId"] === "string"
+    && typeof row["sessionPath"] === "string"
+    && typeof row["sessionFilePath"] === "string"
+    && typeof row["createdAt"] === "string"
+    && typeof row["summaryText"] === "string"
+    && typeof row["retrievalText"] === "string"
+    && typeof row["embeddingModel"] === "string"
+    && Array.isArray(row["embedding"])
   );
+}
+
+function normalizeSourceType(value: unknown): RecallSourceType {
+  return value === "handoff" ? "handoff" : "run";
+}
+
+function normalizeStatus(value: unknown): RecallCandidate["status"] {
+  if (value === "completed" || value === "failed" || value === "stuck") {
+    return value;
+  }
+  return undefined;
 }
 
 function cosineSimilarity(a: number[], b: number[]): number {
@@ -344,10 +398,9 @@ function escapeSql(value: string): string {
 }
 
 async function importOptionalModules(...specifiers: string[]): Promise<unknown | null> {
-  const importer = new Function("s", "return import(s);") as (name: string) => Promise<unknown>;
   for (const specifier of specifiers) {
     try {
-      return await importer(specifier);
+      return await import(specifier);
     } catch {
       continue;
     }

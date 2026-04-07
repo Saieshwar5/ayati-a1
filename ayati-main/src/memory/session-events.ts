@@ -48,11 +48,13 @@ export interface SessionCloseEvent extends BaseEvent {
 
 export interface UserMessageEvent extends BaseEvent {
   type: "user_message";
+  runId?: string;
   content: string;
 }
 
 export interface AssistantMessageEvent extends BaseEvent {
   type: "assistant_message";
+  runId?: string;
   content: string;
 }
 
@@ -124,6 +126,8 @@ export interface TaskSummaryEvent extends BaseEvent {
   runPath: string;
   status: "completed" | "failed" | "stuck";
   summary: string;
+  userMessage?: string;
+  assistantResponse?: string;
 }
 
 export interface AssistantFeedbackEvent extends BaseEvent {

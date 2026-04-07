@@ -49,7 +49,7 @@ function validateRecallInput(input: unknown): RecallMemoryInput | ToolResult {
 function createRecallTool(deps: RecallSkillDeps): ToolDefinition {
   return {
     name: "recall_memory",
-    description: "Search past task summaries and session handoff notes. Returns compact matches with session metadata only.",
+    description: "Search past run memory and session handoffs. Returns drill-down pointers plus related context.",
     inputSchema: {
       type: "object",
       properties: {
@@ -96,8 +96,8 @@ function createRecallTool(deps: RecallSkillDeps): ToolDefinition {
 const RECALL_PROMPT_BLOCK = [
   "The `recall_memory` tool is built in.",
   "Use it directly when the user refers to prior work, earlier conversations, 'like before', or asks what happened on a past date/time.",
-  "recall_memory returns compact summary matches with sessionPath metadata only.",
-  "If you need exact details after recall_memory, use the existing read_file tool on the returned sessionPath to inspect that session file.",
+  "recall_memory returns run/session drill-down metadata, including absolute sessionFilePath and runStatePath when available.",
+  "If you need exact details after recall_memory, use the existing read_file tool on sessionFilePath or runStatePath, then inspect the run/session artifacts directly.",
   "Prefer recall_memory before guessing how prior work was done.",
 ].join("\n");
 
@@ -105,7 +105,7 @@ export function createRecallSkill(deps: RecallSkillDeps): SkillDefinition {
   return {
     id: "recall",
     version: "1.0.0",
-    description: "Recall past task summaries and handoff notes.",
+    description: "Recall past run memory and session handoffs.",
     promptBlock: RECALL_PROMPT_BLOCK,
     tools: [createRecallTool(deps)],
   };

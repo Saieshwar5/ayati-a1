@@ -24,11 +24,13 @@ export interface ManagedDocumentManifest {
   originalPath: string;
   storedPath: string;
   kind: DocumentKind;
+  mimeType?: string;
   sizeBytes: number;
   checksum: string;
 }
 
 export type DocumentKind =
+  | "image"
   | "pdf"
   | "docx"
   | "pptx"

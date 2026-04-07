@@ -61,6 +61,11 @@ describe("scanExternalSkills", () => {
       `---
 id: test-skill
 description: A test skill for unit tests
+command: test-skill
+commands:
+  - test-skill init
+aliases:
+  - test-skill-cli
 start: echo started
 stop: echo stopped
 ---
@@ -75,6 +80,11 @@ Full documentation here.
     expect(result[0]?.id).toBe("test-skill");
     expect(result[0]?.description).toBe("A test skill for unit tests");
     expect(result[0]?.installed).toBe(true);
+    expect(result[0]?.source).toBe("project");
+    expect(result[0]?.resolvedFrom).toBe(tmpDir);
+    expect(result[0]?.command).toBe("test-skill");
+    expect(result[0]?.commands).toEqual(["test-skill init"]);
+    expect(result[0]?.aliases).toEqual(["test-skill-cli"]);
     expect(result[0]?.start).toBe("echo started");
     expect(result[0]?.stop).toBe("echo stopped");
     expect(result[0]?.skillFilePath).toBe(join(skillDir, "skill.md"));
@@ -85,6 +95,25 @@ Full documentation here.
     mkdirSync(join(tmpDir, "empty-dir"));
     const result = await scanExternalSkills(tmpDir);
     expect(result).toEqual([]);
+  });
+
+  it("scans an uppercase SKILL.md file", async () => {
+    const skillDir = join(tmpDir, "upper-skill");
+    mkdirSync(skillDir);
+    writeFileSync(
+      join(skillDir, "SKILL.md"),
+      `---
+id: upper-skill
+description: Uppercase skill file
+command: upper-skill
+---
+`,
+    );
+
+    const result = await scanExternalSkills(tmpDir);
+    expect(result).toHaveLength(1);
+    expect(result[0]?.id).toBe("upper-skill");
+    expect(result[0]?.skillFilePath).toBe(join(skillDir, "SKILL.md"));
   });
 
   it("skips skills missing id or description", async () => {
@@ -147,6 +176,46 @@ description: ${name} skill
     const ids = result.map((s) => s.id).sort();
     expect(ids).toEqual(["alpha", "beta"]);
   });
+
+  it("prefers earlier roots when duplicate skill ids exist", async () => {
+    const projectSkillsDir = join(tmpDir, "project-skills");
+    const globalSkillsDir = join(tmpDir, "global-skills");
+    const projectSkillDir = join(projectSkillsDir, "websearch");
+    const globalSkillDir = join(globalSkillsDir, "websearch");
+
+    mkdirSync(projectSkillDir, { recursive: true });
+    mkdirSync(globalSkillDir, { recursive: true });
+
+    writeFileSync(
+      join(projectSkillDir, "skill.md"),
+      `---
+id: websearch
+description: Project version
+command: websearch
+---
+`,
+    );
+    writeFileSync(
+      join(globalSkillDir, "skill.md"),
+      `---
+id: websearch
+description: Global version
+command: websearch-global
+---
+`,
+    );
+
+    const result = await scanExternalSkills([
+      { skillsDir: projectSkillsDir, source: "project" },
+      { skillsDir: globalSkillsDir, source: "global" },
+    ]);
+
+    expect(result).toHaveLength(1);
+    expect(result[0]?.description).toBe("Project version");
+    expect(result[0]?.source).toBe("project");
+    expect(result[0]?.resolvedFrom).toBe(projectSkillsDir);
+    expect(result[0]?.command).toBe("websearch");
+  });
 });
 
 describe("stopExternalSkills", () => {
@@ -154,6 +223,10 @@ describe("stopExternalSkills", () => {
     const skills: ExternalSkillMeta[] = [
       {
         id: "no-stop",
+        type: "shell",
+        runtime: "direct",
+        source: "project",
+        resolvedFrom: "/tmp",
         description: "no stop command",
         skillFilePath: "/tmp/skill.md",
         skillDir: "/tmp",

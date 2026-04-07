@@ -1,36 +1,13 @@
 {
-  "name": "Sai Eshwar",
+  "name": null,
   "nickname": null,
   "occupation": null,
   "location": null,
-  "languages": [
-    "Python",
-    "JavaScript",
-    "TypeScript",
-    "Java",
-    "SQL"
-  ],
-  "interests": [
-    "diet tracking",
-    "Helix editor",
-    "literature"
-  ],
-  "facts": [
-    "user's name is Sai Eshwar",
-    "user is getting married"
-  ],
-  "people": [
-    "sister",
-    "Rakesh",
-    "Patrick Tyson"
-  ],
-  "projects": [
-    "Sai Eshwar single-page light-themed portfolio website",
-    "Anoosh single-page portfolio website (generated from resume)",
-    "Patrick Tyson portfolio website",
-    "personal diet tracking website",
-    "E-Commerce Platform"
-  ],
+  "languages": [],
+  "interests": [],
+  "facts": [],
+  "people": [],
+  "projects": [],
   "communication": {
     "formality": "balanced",
     "verbosity": "balanced",
@@ -43,5 +20,5 @@
     "joy_triggers": []
   },
   "active_hours": null,
-  "last_updated": "2026-03-31T04:43:24.037Z"
+  "last_updated": "2026-04-06T04:48:53.196Z"
 }

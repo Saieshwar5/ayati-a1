@@ -1,10 +1,9 @@
-import { randomUUID } from "node:crypto";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { createReadStream } from "node:fs";
-import { mkdir, stat, writeFile } from "node:fs/promises";
+import { stat } from "node:fs/promises";
 import { join, resolve, sep } from "node:path";
 import { devError, devLog, devWarn } from "../shared/index.js";
-import { isSupportedDocumentInput, sanitizeFileName } from "../documents/document-ingress.js";
+import { persistManagedUpload, type ManagedUploadRecord } from "./upload-storage.js";
 
 const DEFAULT_HOST = "0.0.0.0";
 const DEFAULT_PORT = 8081;
@@ -32,14 +31,6 @@ export interface UploadServerOptions {
   port?: number;
   maxUploadBytes?: number;
   allowOrigin?: string;
-}
-
-interface UploadResponseBody {
-  uploadId: string;
-  uploadedPath: string;
-  originalName: string;
-  mimeType?: string;
-  sizeBytes: number;
 }
 
 type UploadBlobLike = {
@@ -146,7 +137,7 @@ export class UploadServer {
     }
   }
 
-  private async handleUpload(req: IncomingMessage, requestUrl: URL): Promise<UploadResponseBody> {
+  private async handleUpload(req: IncomingMessage, requestUrl: URL): Promise<ManagedUploadRecord> {
     const contentType = req.headers["content-type"]?.trim() ?? "";
     if (!contentType.toLowerCase().startsWith("multipart/form-data")) {
       throw new Error("unsupported content type: expected multipart/form-data.");
@@ -174,34 +165,17 @@ export class UploadServer {
       throw new Error("uploaded file is missing a filename.");
     }
 
-    const mimeType = file.type?.trim() || undefined;
-    if (!isSupportedDocumentInput(originalName, mimeType)) {
-      throw new Error("unsupported file type.");
-    }
-
-    if (file.size <= 0) {
-      throw new Error("uploaded file is empty.");
-    }
     if (file.size > this.maxUploadBytes) {
       throw new Error(`upload exceeds ${this.maxUploadBytes} bytes.`);
     }
 
-    const uploadId = randomUUID();
-    const storedName = sanitizeFileName(originalName);
-    const uploadDir = join(this.uploadsDir, uploadId);
-    const uploadedPath = resolve(join(uploadDir, storedName));
-    const bytes = Buffer.from(await file.arrayBuffer());
-
-    await mkdir(uploadDir, { recursive: true });
-    await writeFile(uploadedPath, bytes);
-
-    return {
-      uploadId,
-      uploadedPath,
+    return persistManagedUpload({
+      uploadsDir: this.uploadsDir,
       originalName,
-      ...(mimeType ? { mimeType } : {}),
-      sizeBytes: bytes.length,
-    };
+      mimeType: file.type?.trim() || undefined,
+      bytes: new Uint8Array(await file.arrayBuffer()),
+      maxUploadBytes: this.maxUploadBytes,
+    });
   }
 
   private applyCors(res: ServerResponse): void {

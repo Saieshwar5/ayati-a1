@@ -1,4 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { estimateTurnInputTokens } from "../../src/prompt/token-estimator.js";
 
 vi.mock("openai", () => {
@@ -24,6 +27,16 @@ function mockOpenAIConstructor(mockCreate: ReturnType<typeof vi.fn>): void {
       chat: { completions: { create: mockCreate } },
     } as unknown as OpenAI;
   } as never);
+}
+
+function makeImageFixture(): { imagePath: string; cleanup: () => void } {
+  const dir = mkdtempSync(join(tmpdir(), "ayati-openrouter-image-"));
+  const imagePath = join(dir, "sample.png");
+  writeFileSync(imagePath, Buffer.from("fake-image-bytes"));
+  return {
+    imagePath,
+    cleanup: () => rmSync(dir, { recursive: true, force: true }),
+  };
 }
 
 describe("OpenRouter provider", () => {
@@ -102,6 +115,50 @@ describe("OpenRouter provider", () => {
       ],
     });
     expect(out).toEqual({ type: "assistant", content: "Hello from OpenRouter" });
+  });
+
+  it("should serialize user images as multimodal content", async () => {
+    process.env["OPENROUTER_API_KEY"] = "or-test-key";
+    const fixture = makeImageFixture();
+
+    const mockCreate = vi.fn().mockResolvedValue({
+      choices: [{ message: { content: "I can see the image." } }],
+    });
+
+    mockOpenAIConstructor(mockCreate);
+
+    try {
+      provider.start();
+      const out = await provider.generateTurn({
+        messages: [
+          {
+            role: "user",
+            content: [
+              { type: "text", text: "What is in this image?" },
+              { type: "image", imagePath: fixture.imagePath, mimeType: "image/png", name: "sample.png" },
+            ],
+          },
+        ],
+      });
+
+      expect((mockCreate.mock.calls[0]?.[0] as any)?.messages).toEqual([
+        {
+          role: "user",
+          content: [
+            { type: "text", text: "What is in this image?" },
+            {
+              type: "image_url",
+              image_url: {
+                url: expect.stringMatching(/^data:image\/png;base64,/),
+              },
+            },
+          ],
+        },
+      ]);
+      expect(out).toEqual({ type: "assistant", content: "I can see the image." });
+    } finally {
+      fixture.cleanup();
+    }
   });
 
   it("should estimate input tokens locally", async () => {

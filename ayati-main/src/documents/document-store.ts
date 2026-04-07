@@ -213,6 +213,7 @@ export class DocumentStore {
       sourcePath: uploadedPath,
       displayName,
       kind,
+      mimeType: attachment.mimeType,
       expectedSizeBytes: attachment.sizeBytes,
     });
   }
@@ -222,6 +223,7 @@ export class DocumentStore {
     sourcePath: string;
     displayName: string;
     kind: DocumentKind;
+    mimeType?: string;
     expectedSizeBytes?: number;
   }): Promise<ManagedDocumentManifest> {
     const info = await stat(input.sourcePath);
@@ -261,6 +263,7 @@ export class DocumentStore {
       originalPath: input.sourcePath,
       storedPath,
       kind: input.kind,
+      ...(input.mimeType ? { mimeType: input.mimeType } : {}),
       sizeBytes: info.size,
       checksum,
     };

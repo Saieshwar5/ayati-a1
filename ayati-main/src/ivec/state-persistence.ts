@@ -44,8 +44,31 @@ export function readState(runPath: string): Partial<LoopState> | null {
     delete (parsed as Record<string, unknown>)["activeSessionAttachments"];
     delete (parsed as Record<string, unknown>)["openFeedbacks"];
     delete (parsed as Record<string, unknown>)["recentSystemActivity"];
+    normalizeLegacyLoopState(parsed);
   }
   return parsed;
+}
+
+function normalizeLegacyLoopState(parsed: Partial<LoopState>): void {
+  if (Array.isArray(parsed.completedSteps)) {
+    parsed.completedSteps = parsed.completedSteps.map((step) => {
+      const legacy = step as typeof step & { intent?: string };
+      return {
+        ...step,
+        executionContract: step.executionContract ?? legacy.intent ?? "",
+      };
+    });
+  }
+
+  if (Array.isArray(parsed.failedApproaches)) {
+    parsed.failedApproaches = parsed.failedApproaches.map((failure) => {
+      const legacy = failure as typeof failure & { intent?: string };
+      return {
+        ...failure,
+        executionContract: failure.executionContract ?? legacy.intent ?? "",
+      };
+    });
+  }
 }
 
 // --- Markdown formatters ---

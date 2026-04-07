@@ -2,6 +2,10 @@ import { extname } from "node:path";
 import type { DocumentKind } from "./types.js";
 
 const MIME_KIND_MAP = new Map<string, DocumentKind>([
+  ["image/gif", "image"],
+  ["image/jpeg", "image"],
+  ["image/png", "image"],
+  ["image/webp", "image"],
   ["application/pdf", "pdf"],
   ["application/vnd.openxmlformats-officedocument.wordprocessingml.document", "docx"],
   ["application/vnd.openxmlformats-officedocument.presentationml.presentation", "pptx"],
@@ -25,6 +29,12 @@ export function sanitizeFileName(value: string): string {
 export function inferKindFromPath(filePath: string): DocumentKind {
   const ext = extname(filePath).toLowerCase();
   switch (ext) {
+    case ".gif":
+    case ".jpeg":
+    case ".jpg":
+    case ".png":
+    case ".webp":
+      return "image";
     case ".pdf":
       return "pdf";
     case ".docx":

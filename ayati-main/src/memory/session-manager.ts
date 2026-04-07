@@ -69,6 +69,8 @@ export interface TaskSummaryIndexData {
   runPath: string;
   status: "completed" | "failed" | "stuck";
   summary: string;
+  userMessage?: string;
+  assistantResponse?: string;
   timestamp: string;
 }
 
@@ -76,6 +78,9 @@ export interface HandoffSummaryIndexData {
   clientId: string;
   sessionId: string;
   sessionPath: string;
+  nextSessionId?: string;
+  nextSessionPath?: string;
+  reason?: string;
   summary: string;
   timestamp: string;
 }
@@ -173,6 +178,7 @@ export class MemoryManager implements SessionMemory {
       type: "user_message",
       sessionId: session.id,
       sessionPath: session.sessionPath,
+      runId,
       content: userMessage,
     };
 
@@ -247,6 +253,9 @@ export class MemoryManager implements SessionMemory {
         clientId,
         sessionId: previousSession.id,
         sessionPath: previousSession.sessionPath,
+        nextSessionId,
+        nextSessionPath,
+        reason,
         summary: handoffSummary,
         timestamp: nowIso,
       };
@@ -360,6 +369,7 @@ export class MemoryManager implements SessionMemory {
       type: "assistant_message",
       sessionId: session.id,
       sessionPath: session.sessionPath,
+      runId,
       content,
     };
 
@@ -467,6 +477,8 @@ export class MemoryManager implements SessionMemory {
       runPath: input.runPath,
       status: input.status,
       summary: input.summary,
+      userMessage: input.userMessage,
+      assistantResponse: input.assistantResponse,
     };
 
     this.appendTimelineEvent(event);
@@ -481,6 +493,8 @@ export class MemoryManager implements SessionMemory {
         runPath: input.runPath,
         status: input.status,
         summary: input.summary,
+        userMessage: input.userMessage,
+        assistantResponse: input.assistantResponse,
         timestamp: nowIso,
       };
       this.enqueueBackgroundTask(async () => {

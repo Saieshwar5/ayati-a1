@@ -1,7 +1,8 @@
 import { dirname, resolve } from "node:path";
+import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { IVecEngine } from "../ivec/index.js";
-import { UploadServer, WsServer } from "../server/index.js";
+import { loadTelegramRuntimeConfig, TelegramServer, UploadServer, WsServer } from "../server/index.js";
 import pluginFactories from "../config/plugins.js";
 import providerFactory from "../config/provider.js";
 import { initializeLlmRuntimeConfig } from "../config/llm-runtime-config.js";
@@ -12,19 +13,22 @@ import {
   normalizeSystemEvent,
   type PluginRuntimeContext,
 } from "../core/index.js";
-import { ContextEvolver } from "../context/context-evolver.js";
 import { loadStaticContext, type StaticContext } from "../context/static-context-cache.js";
+import { UserWikiStore } from "../context/wiki-store.js";
+import { WikiEvolver } from "../context/wiki-evolution.js";
 import { MemoryManager } from "../memory/session-manager.js";
-import { LocalTextEmbedder } from "../memory/retrieval/local-embedder.js";
 import { LanceMemoryStore } from "../memory/retrieval/lance-memory-store.js";
 import { MemoryIndexer } from "../memory/retrieval/memory-indexer.js";
 import { MemoryRetriever } from "../memory/retrieval/memory-retriever.js";
+import { MemoryGraphStore } from "../memory/retrieval/memory-graph-store.js";
+import { OpenAiMemoryEmbedder } from "../memory/retrieval/openai-memory-embedder.js";
 import { devLog, devWarn } from "../shared/index.js";
 import { createToolExecutor } from "../skills/tool-executor.js";
 import type { ToolExecutor } from "../skills/tool-executor.js";
 import { builtInSkillsProvider } from "../skills/provider.js";
 import { createIdentitySkill } from "../skills/builtins/identity/index.js";
 import { createRecallSkill } from "../skills/builtins/recall/index.js";
+import { createWikiSkill } from "../skills/builtins/wiki/index.js";
 import { createPythonSkill } from "../skills/builtins/python/index.js";
 import { createAttachmentSkill } from "../skills/builtins/attachments/index.js";
 import { createDatasetSkill } from "../skills/builtins/datasets/index.js";
@@ -46,6 +50,7 @@ const thisDir = dirname(fileURLToPath(import.meta.url));
 const projectRoot = resolve(thisDir, "..", "..");
 
 const CLIENT_ID = "local";
+const TELEGRAM_CLIENT_ID = "telegram-shared";
 const DEFAULT_UPLOAD_PORT = 8081;
 const DEFAULT_UPLOAD_MAX_BYTES = 25 * 1024 * 1024;
 
@@ -68,37 +73,56 @@ export async function main(): Promise<void> {
   const systemEventPolicy = loadSystemEventPolicy(projectRoot);
   let engine: IVecEngine | null = null;
   let staticContext: StaticContext | null = null;
-  let contextEvolver: ContextEvolver | null = null;
-
-  const embedder = new LocalTextEmbedder({
-    cacheDir: resolve(projectRoot, "data", "models-cache"),
+  let wikiEvolver: WikiEvolver | null = null;
+  const wikiStore = new UserWikiStore({
+    contextDir: resolve(projectRoot, "context"),
+    historyDir: resolve(projectRoot, "data", "context-history"),
   });
+
   const recallStore = new LanceMemoryStore({
     dataDir: resolve(projectRoot, "data", "memory", "retrieval"),
   });
-  const memoryIndexer = new MemoryIndexer({
-    embedder,
-    store: recallStore,
+  const memoryGraphStore = new MemoryGraphStore({
+    dataDir: resolve(projectRoot, "data", "memory", "retrieval"),
+    sessionDataDir: resolve(projectRoot, "data", "memory"),
   });
-  const memoryRetriever = new MemoryRetriever({
-    embedder,
-    store: recallStore,
-  });
+  let memoryIndexer: MemoryIndexer | null = null;
+  let memoryRetriever: MemoryRetriever;
+  try {
+    const embedder = new OpenAiMemoryEmbedder();
+    memoryIndexer = new MemoryIndexer({
+      embedder,
+      store: recallStore,
+      graphStore: memoryGraphStore,
+    });
+    memoryIndexer.start();
+    memoryRetriever = new MemoryRetriever({
+      embedder,
+      store: recallStore,
+      graphStore: memoryGraphStore,
+    });
+    devLog(`Memory recall enabled with model=${embedder.modelName}`);
+  } catch (err) {
+    devWarn(`Memory recall disabled: ${err instanceof Error ? err.message : String(err)}`);
+    memoryRetriever = {
+      recall: async () => [],
+    } as unknown as MemoryRetriever;
+  }
 
   const sessionMemory = new MemoryManager({
-    onTaskSummaryIndexed: (data) => memoryIndexer.indexTaskSummary(data),
-    onHandoffSummaryIndexed: (data) => memoryIndexer.indexHandoffSummary(data),
+    onTaskSummaryIndexed: (data) => memoryIndexer?.indexTaskSummary(data),
+    onHandoffSummaryIndexed: (data) => memoryIndexer?.indexHandoffSummary(data),
     onSessionClose: async (data) => {
-      await contextEvolver?.evolveFromSession(data.turns, {
-        trigger: "handoff",
-        handoffSummary: data.handoffSummary,
-      });
+      await wikiEvolver?.evolveFromSession(data.turns, data.handoffSummary);
     },
   });
   sessionMemory.initialize(CLIENT_ID);
 
   const pulseStore = new PulseStore();
-  const externalSkills = await scanExternalSkills(resolve(projectRoot, "data", "skills"));
+  const externalSkills = await scanExternalSkills([
+    { skillsDir: resolve(projectRoot, "data", "skills"), source: "project" },
+    { skillsDir: resolve(homedir(), ".agents", "skills"), source: "global" },
+  ]);
 
   const identitySkill = createIdentitySkill({
     onSoulUpdated: (updatedSoul) => {
@@ -111,6 +135,16 @@ export async function main(): Promise<void> {
   });
   const recallSkill = createRecallSkill({
     retriever: memoryRetriever,
+  });
+  const wikiSkill = createWikiSkill({
+    wikiStore,
+    onProfileUpdated: (userProfile) => {
+      if (!staticContext) {
+        return;
+      }
+      staticContext.userProfile = userProfile;
+      engine?.invalidateStaticTokenCache();
+    },
   });
   const pythonSkill = createPythonSkill({
     dataDir: resolve(projectRoot, "data"),
@@ -185,6 +219,7 @@ export async function main(): Promise<void> {
     ...enabledTools,
     ...identitySkill.tools,
     ...recallSkill.tools,
+    ...wikiSkill.tools,
     ...pythonSkill.tools,
     ...attachmentSkill.tools,
     ...datasetSkill.tools,
@@ -193,19 +228,20 @@ export async function main(): Promise<void> {
   toolExecutor = createToolExecutor(allToolDefs);
 
   staticContext = await loadStaticContext({ toolDefinitions: allToolDefs });
+  staticContext.userProfile = await wikiStore.syncProfileFromWiki(staticContext.userProfile);
   staticContext.skillBlocks.push({ id: identitySkill.id, content: identitySkill.promptBlock });
   staticContext.skillBlocks.push({ id: recallSkill.id, content: recallSkill.promptBlock });
+  staticContext.skillBlocks.push({ id: wikiSkill.id, content: wikiSkill.promptBlock });
   staticContext.skillBlocks.push({ id: pythonSkill.id, content: pythonSkill.promptBlock });
   staticContext.skillBlocks.push({ id: attachmentSkill.id, content: attachmentSkill.promptBlock });
   staticContext.skillBlocks.push({ id: datasetSkill.id, content: datasetSkill.promptBlock });
   staticContext.skillBlocks.push({ id: documentSkill.id, content: documentSkill.promptBlock });
 
-  contextEvolver = new ContextEvolver({
+  wikiEvolver = new WikiEvolver({
     provider,
-    contextDir: resolve(projectRoot, "context"),
-    historyDir: resolve(projectRoot, "data", "context-history"),
+    wikiStore,
     currentProfile: staticContext.userProfile,
-    onContextUpdated: ({ userProfile }) => {
+    onProfileUpdated: (userProfile) => {
       if (!staticContext) {
         return;
       }
@@ -226,9 +262,25 @@ export async function main(): Promise<void> {
     maxUploadBytes: parsePositiveInt(process.env["AYATI_UPLOAD_MAX_BYTES"], DEFAULT_UPLOAD_MAX_BYTES),
     allowOrigin: process.env["AYATI_UPLOAD_ALLOW_ORIGIN"]?.trim() || "*",
   });
+  const telegramConfig = loadTelegramRuntimeConfig(process.env);
+  const telegramServer = telegramConfig
+    ? new TelegramServer({
+      ...telegramConfig,
+      clientId: telegramConfig.clientId || TELEGRAM_CLIENT_ID,
+      uploadsDir: documentStore.uploadsDir,
+      stateDir: resolve(projectRoot, "data", "telegram"),
+      onMessage: (clientId, data) => engine?.handleMessage(clientId, data),
+    })
+    : null;
 
   engine = new IVecEngine({
-    onReply: wsServer.send.bind(wsServer),
+    onReply: (clientId, data) => {
+      if (telegramServer && clientId === telegramServer.clientId) {
+        telegramServer.send(clientId, data);
+        return;
+      }
+      wsServer.send(clientId, data);
+    },
     provider,
     staticContext,
     toolExecutor,
@@ -274,18 +326,25 @@ export async function main(): Promise<void> {
   await engine.start();
   await wsServer.start();
   await uploadServer.start();
+  if (telegramServer) {
+    await telegramServer.start();
+  }
   await pulseScheduler.start();
   await registry.startAll(pluginRuntimeContext);
 
   console.log(`Ayati i-vec ready — plugins: [${registry.list().join(", ")}]`);
 
   const shutdown = async (): Promise<void> => {
-      await registry.stopAll(pluginRuntimeContext);
-      await pulseScheduler.stop();
-      await uploadServer.stop();
-      await wsServer.stop();
-      await sessionMemory.shutdown();
-      await engine.stop();
+    await registry.stopAll(pluginRuntimeContext);
+    await pulseScheduler.stop();
+    if (telegramServer) {
+      await telegramServer.stop();
+    }
+    await uploadServer.stop();
+    await wsServer.stop();
+    await sessionMemory.shutdown();
+    await memoryIndexer?.shutdown();
+    await engine.stop();
     await stopExternalSkills(externalSkills);
   };
 

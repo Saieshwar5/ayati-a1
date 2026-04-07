@@ -6,12 +6,21 @@ describe("recall skill", () => {
   it("returns compact JSON matches from the retriever", async () => {
     const matches: RecallMemoryMatch[] = [
       {
+        nodeId: "run:abc-123:r1",
+        nodeType: "run",
         sessionId: "abc-123",
-        sessionPath: "data/memory/sessions/abc-123.md",
+        sessionPath: "sessions/abc-123.md",
+        sessionFilePath: "/tmp/sessions/abc-123.md",
+        runId: "r1",
+        runPath: "/tmp/runs/r1",
+        runStatePath: "/tmp/runs/r1/state.json",
         createdAt: "2026-02-08T14:20:00.000Z",
-        sourceType: "task_summary",
+        sourceType: "run",
         summaryText: "Completed auth migration and updated login flow",
+        userMessage: "fix auth login",
+        assistantResponse: "Completed auth migration and updated login flow",
         score: 0.91,
+        related: [],
       },
     ];
 

@@ -1,0 +1,111 @@
+# User Wiki Schema
+
+## Identity
+- kind: key_value
+- save_policy: auto
+- description: Durable identity details such as name, nickname, role, location, and active hours.
+- project_to_profile: name, nickname, occupation, location, active_hours
+
+## Communication Preferences
+- kind: key_value
+- save_policy: auto
+- description: How the user prefers the agent to communicate.
+- project_to_profile: formality, verbosity, humor_receptiveness, emoji_usage
+
+## Emotional Patterns
+- kind: key_value
+- save_policy: conservative
+- description: Only durable, explicitly stated emotional baselines.
+- project_to_profile: mood_baseline
+
+## Stress Triggers
+- kind: bullet_list
+- save_policy: conservative
+- description: Topics or situations the user explicitly says are stressful.
+- project_to_profile: stress_triggers
+
+## Joy Triggers
+- kind: bullet_list
+- save_policy: conservative
+- description: Topics or situations the user explicitly says are joyful or motivating.
+- project_to_profile: joy_triggers
+
+## Languages
+- kind: bullet_list
+- save_policy: auto
+- description: Programming or spoken languages the user works with or uses.
+- project_to_profile: languages
+
+## Skills
+- kind: bullet_list
+- save_policy: auto
+- description: Important durable skills the user has or is developing.
+
+## Education
+- kind: bullet_list
+- save_policy: auto
+- description: Education history and notable study details.
+
+## Work And Organizations
+- kind: bullet_list
+- save_policy: auto
+- description: Work history, teams, and organizations the user belongs to.
+
+## Projects
+- kind: bullet_list
+- save_policy: auto
+- description: Current or durable projects the user cares about.
+- project_to_profile: projects
+
+## Interests And Hobbies
+- kind: bullet_list
+- save_policy: auto
+- description: Durable interests, hobbies, and topics the user enjoys.
+- project_to_profile: interests
+
+## People
+- kind: bullet_list
+- save_policy: conservative
+- description: Important people explicitly mentioned by the user.
+- project_to_profile: people
+
+## Contacts
+- kind: bullet_list
+- save_policy: conservative
+- description: Explicit contact information only when clearly useful later.
+
+## Places And Addresses
+- kind: bullet_list
+- save_policy: conservative
+- description: Important locations or addresses when explicitly stated.
+
+## Achievements
+- kind: bullet_list
+- save_policy: auto
+- description: Awards, milestones, and accomplishments.
+
+## Durable Facts
+- kind: bullet_list
+- save_policy: conservative
+- description: Other durable facts worth remembering later.
+- project_to_profile: facts
+
+## Personal Preferences
+- kind: bullet_list
+- save_policy: auto
+- description: Preferences that do not fit the communication section.
+
+## Constraints And Dislikes
+- kind: bullet_list
+- save_policy: auto
+- description: Constraints, dislikes, and things to avoid.
+
+## Important Dates
+- kind: bullet_list
+- save_policy: conservative
+- description: Birthdays, anniversaries, and other explicitly useful dates.
+
+## Unverified Or Needs Confirmation
+- kind: bullet_list
+- save_policy: conservative
+- description: Potential facts that should not be trusted until the user confirms them.

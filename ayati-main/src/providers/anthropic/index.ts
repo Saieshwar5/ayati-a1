@@ -9,6 +9,8 @@ import type {
   LlmTurnInput,
   LlmTurnOutput,
 } from "../../core/contracts/llm-protocol.js";
+import { estimateTurnInputTokens } from "../../prompt/token-estimator.js";
+import { hasImageInput, toAnthropicContent } from "../shared/multimodal.js";
 import { getProviderCapabilities } from "../shared/provider-profiles.js";
 import {
   buildToolNameMapsForProvider,
@@ -27,7 +29,7 @@ interface AnthropicMessageBuild {
   }>;
 }
 
-function toAnthropicPayload(messages: LlmMessage[], maps: ToolNameMaps): AnthropicMessageBuild {
+async function toAnthropicPayload(messages: LlmMessage[], maps: ToolNameMaps): Promise<AnthropicMessageBuild> {
   const out: AnthropicMessageBuild = {
     messages: [],
   };
@@ -38,6 +40,11 @@ function toAnthropicPayload(messages: LlmMessage[], maps: ToolNameMaps): Anthrop
         out.system = out.system ? `${out.system}\n\n${msg.content}` : msg.content;
         break;
       case "user":
+        out.messages.push({
+          role: "user",
+          content: await toAnthropicContent(msg.content),
+        });
+        break;
       case "assistant":
         out.messages.push({
           role: msg.role,
@@ -118,8 +125,18 @@ const provider: LlmProvider = {
     }
 
     const model = getModelForProvider("anthropic");
+    if (hasImageInput(input.messages)) {
+      const estimate = estimateTurnInputTokens(input);
+      return {
+        provider: "anthropic",
+        model,
+        inputTokens: estimate.totalTokens,
+        exact: false,
+      };
+    }
+
     const nameMaps = buildToolNameMapsForProvider(provider.name, input.tools);
-    const payload = toAnthropicPayload(input.messages, nameMaps);
+    const payload = await toAnthropicPayload(input.messages, nameMaps);
     const tools = toAnthropicTools(input.tools, nameMaps);
 
     const count = await client.messages.countTokens({
@@ -144,7 +161,7 @@ const provider: LlmProvider = {
 
     const model = getModelForProvider("anthropic");
     const nameMaps = buildToolNameMapsForProvider(provider.name, input.tools);
-    const payload = toAnthropicPayload(input.messages, nameMaps);
+    const payload = await toAnthropicPayload(input.messages, nameMaps);
     const tools = toAnthropicTools(input.tools, nameMaps);
 
     const response = await client.messages.create({

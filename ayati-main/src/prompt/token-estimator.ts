@@ -4,6 +4,7 @@ const BYTES_PER_TOKEN = 4;
 const REQUEST_OVERHEAD_TOKENS = 3;
 const MESSAGE_OVERHEAD_TOKENS = 4;
 const TOOL_OVERHEAD_TOKENS = 8;
+const IMAGE_PART_OVERHEAD_TOKENS = 850;
 
 function estimateSerializedTokens(value: unknown): number {
   return estimateTextTokens(JSON.stringify(value));
@@ -12,9 +13,18 @@ function estimateSerializedTokens(value: unknown): number {
 function estimateMessageTokens(message: LlmMessage): number {
   switch (message.role) {
     case "system":
-    case "user":
     case "assistant":
       return MESSAGE_OVERHEAD_TOKENS + estimateTextTokens(message.content);
+    case "user":
+      if (typeof message.content === "string") {
+        return MESSAGE_OVERHEAD_TOKENS + estimateTextTokens(message.content);
+      }
+      return MESSAGE_OVERHEAD_TOKENS + message.content.reduce((sum, part) => {
+        if (part.type === "text") {
+          return sum + estimateTextTokens(part.text);
+        }
+        return sum + IMAGE_PART_OVERHEAD_TOKENS + estimateTextTokens(part.mimeType);
+      }, 0);
     case "assistant_tool_calls":
       return (
         MESSAGE_OVERHEAD_TOKENS +

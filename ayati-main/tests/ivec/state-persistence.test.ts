@@ -65,10 +65,13 @@ describe("state-persistence", () => {
         consecutiveFailures: 0,
         approachChangeCount: 0,
         completedSteps: [],
+        recentContextSearches: [],
         runPath,
         failedApproaches: [],
         sessionHistory: [],
         recentRunLedgers: [],
+        openFeedbacks: [],
+        recentSystemActivity: [],
       };
       writeState(runPath, state);
       const loaded = readState(runPath);
@@ -104,10 +107,13 @@ describe("state-persistence", () => {
         consecutiveFailures: 0,
         approachChangeCount: 0,
         completedSteps: [],
+        recentContextSearches: [],
         runPath,
         failedApproaches: [],
         sessionHistory: [{ role: "user", content: "hi", timestamp: "2026-03-07T00:00:00.000Z", sessionPath: "sessions/x.md" }],
         recentRunLedgers: [{ timestamp: "2026-03-07T00:00:00.000Z", runId: "r-1", runPath: "/tmp/r-1", state: "completed", status: "completed", summary: "done" }],
+        openFeedbacks: [],
+        recentSystemActivity: [],
       };
 
       writeJSON(runPath, "state.json", legacyState);

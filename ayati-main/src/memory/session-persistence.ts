@@ -405,6 +405,7 @@ export class SessionPersistence {
           content: event.content,
           timestamp: event.ts,
           sessionPath: inferredPath,
+          runId: event.runId,
         });
       } else if (event.type === "assistant_message") {
         turns.push({
@@ -412,6 +413,7 @@ export class SessionPersistence {
           content: event.content,
           timestamp: event.ts,
           sessionPath: inferredPath,
+          runId: event.runId,
         });
       }
     }
@@ -506,6 +508,7 @@ export class SessionPersistence {
             content: event.content,
             timestamp: event.ts,
             sessionPath: inferredPath,
+            runId: event.runId,
           });
         } else if (event.type === "assistant_message") {
           turns.push({
@@ -513,6 +516,7 @@ export class SessionPersistence {
             content: event.content,
             timestamp: event.ts,
             sessionPath: inferredPath,
+            runId: event.runId,
           });
         }
       }

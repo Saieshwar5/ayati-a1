@@ -56,6 +56,30 @@ function closeClient(ws: WebSocket): Promise<void> {
   });
 }
 
+function messageContentToText(content: unknown): string {
+  if (typeof content === "string") {
+    return content;
+  }
+  if (!Array.isArray(content)) {
+    return "";
+  }
+  return content
+    .map((part) => {
+      if (!part || typeof part !== "object") {
+        return "";
+      }
+      const value = part as Record<string, unknown>;
+      if (value["type"] === "text") {
+        return String(value["text"] ?? "");
+      }
+      if (value["type"] === "image") {
+        return `[image:${String(value["mimeType"] ?? "")}]`;
+      }
+      return "";
+    })
+    .join("\n");
+}
+
 describe("UploadServer", () => {
   it("saves multipart uploads and returns saved-file metadata", async () => {
     const dataDir = makeTmpDir();
@@ -145,18 +169,18 @@ describe("UploadServer", () => {
         start: vi.fn(),
         stop: vi.fn(),
         generateTurn: vi.fn().mockImplementation(async (input: LlmTurnInput) => {
-          const prompt = input.messages.map((message) => message.content).join("\n");
-        expect(prompt).toContain("Prepared attachments available (1)");
-        expect(prompt).toContain("policy.txt");
-        return {
-          type: "assistant",
-          content: JSON.stringify({
-            done: true,
-            summary: "I can see the attached policy document.",
-            status: "completed",
-          }),
-        };
-      }),
+          const prompt = input.messages.map((message) => messageContentToText(message.content)).join("\n");
+          expect(prompt).toContain("Prepared attachments available (1)");
+          expect(prompt).toContain("policy.txt");
+          return {
+            type: "assistant",
+            content: JSON.stringify({
+              done: true,
+              summary: "I can see the attached policy document.",
+              status: "completed",
+            }),
+          };
+        }),
     };
 
     let wsServer: WsServer | null = null;
@@ -220,6 +244,121 @@ describe("UploadServer", () => {
       expect(response).toEqual({
         type: "reply",
         content: "I can see the attached policy document.",
+      });
+      expect(provider.generateTurn).toHaveBeenCalled();
+    } finally {
+      if (client) {
+        await closeClient(client);
+      }
+      if (uploadServer) {
+        await uploadServer.stop();
+      }
+      if (wsServer) {
+        await wsServer.stop();
+      }
+      if (engine) {
+        await engine.stop();
+      }
+      rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it("uploads an image over HTTP and passes it into the agent as multimodal input", async () => {
+    const dataDir = makeTmpDir();
+    const wsPort = getPort();
+    const uploadPort = getPort();
+    const documentStore = new DocumentStore({
+      dataDir: join(dataDir, "documents"),
+      preferCli: false,
+    });
+    const documentContextBackend = new DocumentContextBackend({ store: documentStore });
+    const provider: LlmProvider = {
+      name: "mock",
+      version: "1.0.0",
+      capabilities: { nativeToolCalling: true, imageInput: true },
+      start: vi.fn(),
+      stop: vi.fn(),
+      generateTurn: vi.fn().mockImplementation(async (input: LlmTurnInput) => {
+        const userMessage = input.messages.find((message) => message.role === "user");
+        expect(Array.isArray(userMessage?.content)).toBe(true);
+        expect(userMessage?.content).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({ type: "text" }),
+            expect.objectContaining({ type: "image", mimeType: "image/png" }),
+          ]),
+        );
+        return {
+          type: "assistant",
+          content: JSON.stringify({
+            done: true,
+            summary: "I can see the attached image.",
+            status: "completed",
+          }),
+        };
+      }),
+    };
+
+    let wsServer: WsServer | null = null;
+    let uploadServer: UploadServer | null = null;
+    let engine: IVecEngine | null = null;
+    let client: WebSocket | null = null;
+
+    try {
+      engine = new IVecEngine({
+        onReply: (clientId, data) => wsServer?.send(clientId, data),
+        provider,
+        dataDir,
+        documentStore,
+        documentContextBackend,
+      });
+      wsServer = new WsServer({
+        port: wsPort,
+        onMessage: (clientId, data) => engine?.handleMessage(clientId, data),
+      });
+      uploadServer = new UploadServer({
+        uploadsDir: documentStore.uploadsDir,
+        host: "127.0.0.1",
+        port: uploadPort,
+      });
+
+      await engine.start();
+      await wsServer.start();
+      await uploadServer.start();
+
+      const uploadResponse = await postFile(uploadPort, "photo.png", "png-binary-ish", "image/png");
+      const uploadPayload = await uploadResponse.json() as Record<string, unknown>;
+      expect(uploadResponse.status).toBe(201);
+
+      client = await connectClient(wsPort);
+      const connectedClient = client;
+      const replyPromise = new Promise<Record<string, unknown>>((resolve, reject) => {
+        connectedClient.on("message", (raw) => {
+          const parsed = JSON.parse(raw.toString()) as Record<string, unknown>;
+          if (parsed["type"] === "reply") {
+            resolve(parsed);
+          }
+        });
+        connectedClient.on("error", reject);
+      });
+
+      connectedClient.send(JSON.stringify({
+        type: "chat",
+        content: "What is in this image?",
+        attachments: [
+          {
+            source: "web",
+            uploadedPath: String(uploadPayload["uploadedPath"]),
+            originalName: String(uploadPayload["originalName"]),
+            mimeType: typeof uploadPayload["mimeType"] === "string" ? uploadPayload["mimeType"] : undefined,
+            sizeBytes: Number(uploadPayload["sizeBytes"]),
+          },
+        ],
+      }));
+
+      const response = await replyPromise;
+      expect(response).toEqual({
+        type: "reply",
+        content: "I can see the attached image.",
       });
       expect(provider.generateTurn).toHaveBeenCalled();
     } finally {

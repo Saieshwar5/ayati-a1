@@ -85,6 +85,7 @@ export const PROVIDER_PROFILES: Record<SupportedLlmProvider, ProviderProfile> = 
   openai: {
     capabilities: {
       nativeToolCalling: true,
+      imageInput: true,
       structuredOutput: {
         jsonObject: OPENAI_STRUCTURED_OUTPUT.jsonObject,
         jsonSchema: OPENAI_STRUCTURED_OUTPUT.jsonSchema,
@@ -95,6 +96,7 @@ export const PROVIDER_PROFILES: Record<SupportedLlmProvider, ProviderProfile> = 
   anthropic: {
     capabilities: {
       nativeToolCalling: true,
+      imageInput: true,
       structuredOutput: {
         jsonObject: ANTHROPIC_STRUCTURED_OUTPUT.jsonObject,
         jsonSchema: ANTHROPIC_STRUCTURED_OUTPUT.jsonSchema,
@@ -105,6 +107,7 @@ export const PROVIDER_PROFILES: Record<SupportedLlmProvider, ProviderProfile> = 
   openrouter: {
     capabilities: {
       nativeToolCalling: true,
+      imageInput: true,
       structuredOutput: {
         jsonObject: OPENROUTER_STRUCTURED_OUTPUT.jsonObject,
         jsonSchema: OPENROUTER_STRUCTURED_OUTPUT.jsonSchema,
@@ -115,6 +118,7 @@ export const PROVIDER_PROFILES: Record<SupportedLlmProvider, ProviderProfile> = 
   fireworks: {
     capabilities: {
       nativeToolCalling: true,
+      imageInput: true,
       structuredOutput: {
         jsonObject: FIREWORKS_STRUCTURED_OUTPUT.jsonObject,
         jsonSchema: FIREWORKS_STRUCTURED_OUTPUT.jsonSchema,
@@ -191,6 +195,11 @@ function getKnownProviderProfile(providerName: string): ProviderProfile | undefi
 function cloneCapabilities(capabilities: LlmProviderCapabilities): LlmProviderCapabilities {
   return {
     nativeToolCalling: capabilities.nativeToolCalling,
+    ...(typeof capabilities.imageInput === "boolean"
+      ? {
+          imageInput: capabilities.imageInput,
+        }
+      : {}),
     ...(capabilities.structuredOutput
       ? {
           structuredOutput: {

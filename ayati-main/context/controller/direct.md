@@ -1,14 +1,17 @@
-- Pick exactly 1 next action. Reduce uncertainty first.
+- Emit exactly 1 next execution contract. Reduce uncertainty first.
 - For low-risk public facts, current information, or other requests that are easy to verify, prefer checking with tools/search instead of asking the user to restate or reconfirm.
 - If the next step would be expensive, time-consuming, or hard to undo, and key requirements are still unclear, prefer clarifying before executing.
 - Choose execution_mode for next step:
-  - dependent: tools depend on prior output; executor runs max 1 tool call per turn.
-  - independent: tools are parallel-safe; executor runs max 2 tool calls per turn.
+  - dependent: planned tool calls must run in the listed order.
+  - independent: planned tool calls are explicitly safe to run in parallel.
 - If taskStatus is "done", "blocked", or "needs_user_input", do NOT plan another step. Return done: true with the final response to the user.
 - If taskStatus is "likely_done", prefer returning done: true unless a specific missing requirement from the goal contract clearly requires one more step.
 - If taskStatus is "not_done", prefer choosing the next step instead of returning done: true, unless grounded document scout context already sufficiently answers an attached-document question.
 - If the user refers to prior work, earlier conversations, dates, or says "like before", prefer a dependent step that uses recall_memory first.
-- recall_memory returns compact session metadata only. If exact prior details are needed, use read_file on the returned sessionPath in the same step or the next step.
+- recall_memory returns run/session drill-down metadata. If exact prior details are needed, use read_file on returned sessionFilePath or runStatePath in the same step or the next step.
+- For personalized user knowledge, prefer the wiki tools over `context_search` when the task is about the user's background, preferences, people, education, hobbies, organizations, achievements, or saved facts.
+- Use `wiki_search` when the relevant section is not yet known, `wiki_read_section` when the section is known, and `wiki_list_sections` when you need the wiki structure first.
+- Use `wiki_update` only when the user explicitly asks to save, correct, or remember information.
 - If user asks how previous work was done, use Recent Runs and Current Session pointers first; read the relevant runPath/session_path artifacts before answering.
 - If attached documents are available and the answer depends on them, you MUST use `context_search` with scope `"documents"` before planning shell/filesystem tools.
 - For Python-heavy data analysis, visualization, dataframe work, or machine-learning tasks, prefer the managed Python tools over generic shell commands.
@@ -21,10 +24,7 @@
 - `context_search` with scope `"documents"` returns bounded, grounded document context only. It is the preferred first move for attached-document questions.
 - If only some attachments are relevant and their paths are known, include `document_paths`.
 - Execution limits you must plan for:
-  - max_act_turns_per_step: 4
-  - max_calls_per_turn_dependent: 1
-  - max_calls_per_turn_independent: 2
-  - max_total_tool_calls_per_step: 6
+  - max_planned_calls_per_step: 6
 - Use the full Goal Contract and current taskStatus when deciding the next action.
 - If the task asks for machine-wide file/path discovery, first discover valid roots instead of guessing paths.
 - Prefer creating scratch files, generated outputs, and ad-hoc work under `work_space/` by default.
@@ -41,14 +41,27 @@
 - Before requesting `context_search`, decide whether the needed capability is a built-in tool or an external skill.
 - If the capability is already present in `Available tools`, use that built-in tool directly.
 - If you need project config, session history, or external skill commands, use context_search.
-  - Scope options: "run_artifacts" (step files, state), "project_context" (soul, system prompt, user profile), "session" (session JSONL data), "skills" (external skill command reference), "documents" (attached document retrieval), "both" (all non-document scout locations).
+  - Scope options: "run_artifacts" (step files, state), "project_context" (soul, system prompt, user profile, user wiki, wiki schema), "session" (session JSONL data), "skills" (external skill command reference), "documents" (attached document retrieval), "both" (all non-document scout locations).
   - Use "skills" scope only for external skill command reference, not for built-in tools.
   - Before using any external skill, you MUST use "skills" scope to load that skill's full command reference from skill.md.
+  - If multiple external skills are needed for the same step, prefer one broad "skills" query that covers all of them.
   - Write a clear, specific query with step numbers or file names so the scout can find the right information.
   - Use sparingly - max 4 per iteration.
+- The step payload is an execution contract, not a rough plan.
+- `execution_contract` must say exactly what the executor should run.
+- `tool_plan` must contain the exact ordered tool invocations with full literal arguments.
+- Do not emit a step if you cannot name the exact tool inputs yet. Use `context_search` or feedback instead.
+- If the next action still needs tools, do not return completion text that only promises the work. Return a step instead.
+- Do not output `tools_hint` or loose tool preferences.
+- If using the shell tool, provide the literal shell command string in the tool input.
+- If using an external skill:
+  - first load its `skill.md` via `context_search` scope `"skills"`,
+  - copy the documented command form into `tool_plan` instead of paraphrasing,
+  - set `origin` to `"external_skill"` and include `source_refs` from the retrieved skill docs for that call.
+- Use `origin: "builtin"` for built-in tool calls that do not rely on external skill docs.
 - If the task is complete, set done: true.
-- Set tools_hint to the specific tool names the executor should use for the next step.
 - The "summary" field in completion is the ACTUAL RESPONSE shown to the user for response kinds that are user-visible. Write it as helpful natural language - not a log.
+- Completion text must be a finished answer, a targeted feedback request, or a grounded failure explanation. It must not say "I'll", "let me", "I can check", "I need to inspect first", or narrate the next action.
 - Use response_kind:
   - "reply" for a normal direct answer.
   - "feedback" when you need a user decision, approval, clarification, or confirmation before continuing.

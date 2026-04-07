@@ -1,4 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 
 vi.mock("@anthropic-ai/sdk", () => {
   const MockAnthropic = vi.fn();
@@ -25,6 +28,16 @@ function mockAnthropicConstructor(
   vi.mocked(Anthropic).mockImplementation(function (this: unknown) {
     return { messages: { create: mockCreate, countTokens } } as unknown as Anthropic;
   } as never);
+}
+
+function makeImageFixture(): { imagePath: string; cleanup: () => void } {
+  const dir = mkdtempSync(join(tmpdir(), "ayati-anthropic-image-"));
+  const imagePath = join(dir, "sample.png");
+  writeFileSync(imagePath, Buffer.from("fake-image-bytes"));
+  return {
+    imagePath,
+    cleanup: () => rmSync(dir, { recursive: true, force: true }),
+  };
 }
 
 describe("Anthropic provider", () => {
@@ -79,6 +92,52 @@ describe("Anthropic provider", () => {
       messages: [{ role: "user", content: "Hi" }],
     });
     expect(out).toEqual({ type: "assistant", content: "Hello from Claude" });
+  });
+
+  it("should serialize user images as Anthropic image blocks", async () => {
+    process.env["ANTHROPIC_API_KEY"] = "sk-ant-test-key";
+    const fixture = makeImageFixture();
+
+    const mockCreate = vi.fn().mockResolvedValue({
+      content: [{ type: "text", text: "I can see the image." }],
+    });
+
+    mockAnthropicConstructor(mockCreate);
+
+    try {
+      provider.start();
+      const out = await provider.generateTurn({
+        messages: [
+          {
+            role: "user",
+            content: [
+              { type: "text", text: "What is in this image?" },
+              { type: "image", imagePath: fixture.imagePath, mimeType: "image/png", name: "sample.png" },
+            ],
+          },
+        ],
+      });
+
+      expect((mockCreate.mock.calls[0]?.[0] as any)?.messages).toEqual([
+        {
+          role: "user",
+          content: [
+            { type: "text", text: "What is in this image?" },
+            {
+              type: "image",
+              source: {
+                type: "base64",
+                media_type: "image/png",
+                data: expect.any(String),
+              },
+            },
+          ],
+        },
+      ]);
+      expect(out).toEqual({ type: "assistant", content: "I can see the image." });
+    } finally {
+      fixture.cleanup();
+    }
   });
 
   it("should count input tokens for the outgoing context", async () => {
