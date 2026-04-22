@@ -1,0 +1,14 @@
+Hyderabad, India — current conditions (sources saved at 2026-04-19T19:12:29Z and 2026-04-19T19:12:31Z):
+Current: 32°C, Clear (observed_at: 05:59 PM)
+Humidity: 37%
+Wind: 18 km/h E
+Precipitation: 0.0 mm; chance: 0% (approx)
+
+3-day forecast (Open-Meteo):
+2026-04-20: high 38.2°C / low 24.7°C — precip chance 33% — weathercode 96
+2026-04-21: high 37.0°C / low 25.9°C — precip chance 23% — weathercode 81
+2026-04-22: high 37.4°C / low 25.1°C — precip chance 20% — weathercode 3
+
+Sources:
+- wttr.in (j1): https://wttr.in/Hyderabad?format=j1 (retrieved 2026-04-19T19:12:29Z)
+- Open-Meteo: https://api.open-meteo.com/v1/forecast?latitude=17.375&longitude=78.5&current_weather=true&daily=temperature_2m_max,temperature_2m_min,precipitation_probability_max,weathercode (retrieved 2026-04-19T19:12:31Z)

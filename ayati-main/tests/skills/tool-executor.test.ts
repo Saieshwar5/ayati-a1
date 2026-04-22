@@ -129,4 +129,44 @@ describe("createToolExecutor", () => {
     }
   });
 
+  it("supports mounting scoped dynamic tool groups and expiring step-scoped tools", async () => {
+    const executor = createToolExecutor([
+      {
+        name: "shell",
+        description: "Run",
+        async execute() {
+          return { ok: true };
+        },
+      },
+    ]);
+
+    executor.mount?.("dynamic:websearch", [
+      {
+        name: "websearch.search",
+        description: "Search",
+        async execute() {
+          return { ok: true, output: "ok" };
+        },
+      },
+    ], {
+      scope: "step",
+      runId: "r1",
+      sessionId: "s1",
+      activatedAtStep: 1,
+      expiresAfterStep: 2,
+      skillId: "websearch",
+      toolIds: ["search"],
+    });
+
+    expect(executor.list({ runId: "r1", sessionId: "s1", stepNumber: 1 })).toContain("websearch.search");
+    expect(executor.list({ runId: "other", sessionId: "s1", stepNumber: 1 })).not.toContain("websearch.search");
+
+    const result = await executor.execute("websearch.search", {}, { runId: "r1", sessionId: "s1", stepNumber: 2 });
+    expect(result.ok).toBe(true);
+
+    const removed = executor.cleanupExpired?.({ runId: "r1", sessionId: "s1", stepNumber: 2 }) ?? [];
+    expect(removed).toContain("dynamic:websearch");
+    expect(executor.list({ runId: "r1", sessionId: "s1", stepNumber: 3 })).not.toContain("websearch.search");
+  });
+
 });

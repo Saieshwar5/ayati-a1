@@ -1,17 +1,16 @@
 export interface SoulContext {
   version: number;
-  soul: {
+  identity: {
     name?: string;
-    identity?: string;
-    personality?: string[];
-    values?: string[];
+    role?: string;
+    responsibility?: string;
   };
-  voice: {
-    tone?: string[];
-    style?: string[];
-    quirks?: string[];
-    never_do?: string[];
+  behavior: {
+    traits?: string[];
+    working_style?: string[];
+    communication?: string[];
   };
+  boundaries?: string[];
 }
 
 export interface UserProfileContext {
@@ -19,6 +18,7 @@ export interface UserProfileContext {
   nickname: string | null;
   occupation: string | null;
   location: string | null;
+  timezone?: string | null;
   languages: string[];
   interests: string[];
   facts: string[];
@@ -57,22 +57,21 @@ function isStringOrNull(value: unknown): value is string | null {
 export function isSoulContext(value: unknown): value is SoulContext {
   if (!value || typeof value !== "object") return false;
   const v = value as Partial<SoulContext>;
-  if (typeof v.version !== "number") return false;
-  if (!v.soul || typeof v.soul !== "object") return false;
-  if (!v.voice || typeof v.voice !== "object") return false;
+  if (v.version !== 3) return false;
+  if (!v.identity || typeof v.identity !== "object") return false;
+  if (!v.behavior || typeof v.behavior !== "object") return false;
 
-  const soul = v.soul;
-  const voice = v.voice;
+  const identity = v.identity;
+  const behavior = v.behavior;
 
   return (
-    (soul.name === undefined || typeof soul.name === "string") &&
-    (soul.identity === undefined || typeof soul.identity === "string") &&
-    (soul.personality === undefined || isStringArray(soul.personality)) &&
-    (soul.values === undefined || isStringArray(soul.values)) &&
-    (voice.tone === undefined || isStringArray(voice.tone)) &&
-    (voice.style === undefined || isStringArray(voice.style)) &&
-    (voice.quirks === undefined || isStringArray(voice.quirks)) &&
-    (voice.never_do === undefined || isStringArray(voice.never_do))
+    (identity.name === undefined || typeof identity.name === "string") &&
+    (identity.role === undefined || typeof identity.role === "string") &&
+    (identity.responsibility === undefined || typeof identity.responsibility === "string") &&
+    (behavior.traits === undefined || isStringArray(behavior.traits)) &&
+    (behavior.working_style === undefined || isStringArray(behavior.working_style)) &&
+    (behavior.communication === undefined || isStringArray(behavior.communication)) &&
+    (v.boundaries === undefined || isStringArray(v.boundaries))
   );
 }
 
@@ -85,6 +84,7 @@ export function isUserProfileContext(value: unknown): value is UserProfileContex
     isStringOrNull(v.nickname) &&
     isStringOrNull(v.occupation) &&
     isStringOrNull(v.location) &&
+    (v.timezone === undefined || isStringOrNull(v.timezone)) &&
     isStringArray(v.languages) &&
     isStringArray(v.interests) &&
     isStringArray(v.facts) &&
@@ -108,19 +108,18 @@ export function isUserProfileContext(value: unknown): value is UserProfileContex
 
 export function emptySoulContext(): SoulContext {
   return {
-    version: 1,
-    soul: {
+    version: 3,
+    identity: {
       name: "",
-      identity: "",
-      personality: [],
-      values: [],
+      role: "",
+      responsibility: "",
     },
-    voice: {
-      tone: [],
-      style: [],
-      quirks: [],
-      never_do: [],
+    behavior: {
+      traits: [],
+      working_style: [],
+      communication: [],
     },
+    boundaries: [],
   };
 }
 
@@ -130,6 +129,7 @@ export function emptyUserProfileContext(): UserProfileContext {
     nickname: null,
     occupation: null,
     location: null,
+    timezone: null,
     languages: [],
     interests: [],
     facts: [],

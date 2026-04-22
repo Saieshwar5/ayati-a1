@@ -21,22 +21,20 @@ describe("computeContextPressure", () => {
     expect(computeContextPressure(70).level).toBe("warning");
     expect(computeContextPressure(80).level).toBe("warning");
     expect(computeContextPressure(84).level).toBe("warning");
-    expect(computeContextPressure(70).message).toContain("wrapping up");
-    expect(computeContextPressure(70).message).toContain("rotate_session");
+    expect(computeContextPressure(70).message).toContain("rotate on the next run");
   });
 
   it("returns 'critical' at 85-94%", () => {
     expect(computeContextPressure(85).level).toBe("critical");
     expect(computeContextPressure(90).level).toBe("critical");
     expect(computeContextPressure(94).level).toBe("critical");
-    expect(computeContextPressure(85).message).toContain("MUST rotate");
-    expect(computeContextPressure(85).message).toContain("rotate_session");
+    expect(computeContextPressure(85).message).toContain("Automatic rotation is pending");
   });
 
   it("returns 'auto_rotate' at 95%+", () => {
     expect(computeContextPressure(95).level).toBe("auto_rotate");
     expect(computeContextPressure(100).level).toBe("auto_rotate");
-    expect(computeContextPressure(95).message).toContain("Auto-rotating");
+    expect(computeContextPressure(95).message).toContain("must rotate");
   });
 
   it("handles boundary values precisely", () => {
@@ -61,11 +59,14 @@ describe("buildAutoRotateHandoff", () => {
   });
 
   it("includes last 5 turns only", () => {
-    const turns = Array.from({ length: 8 }, (_, i) =>
-      makeTurn(i % 2 === 0 ? "user" : "assistant", `message ${i}`),
+    const turns = Array.from({ length: 8 }, (_, i) => ({
+        ...makeTurn(i % 2 === 0 ? "user" : "assistant", `message ${i}`),
+        ...(i % 2 === 0 ? {} : { assistantResponseKind: "reply" as const }),
+      }),
     );
     const result = buildAutoRotateHandoff(turns, 96, "");
-    expect(result).toContain("[user]: message 4");
+    expect(result).toContain("user: message 4");
+    expect(result).toContain("assistant[reply]: message 5");
     expect(result).not.toContain("message 0");
     expect(result).not.toContain("message 2");
   });

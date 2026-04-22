@@ -130,6 +130,9 @@ describe("PulseScheduler", () => {
     expect(received[0]?.eventName).toBe("task_due");
     expect(received[0]?.intent).toEqual({
       kind: "task",
+      eventClass: "trigger_fired",
+      trustTier: "internal",
+      effectLevel: "act",
       createdBy: "user",
       requestedAction: "check_system_health",
     });

@@ -5,9 +5,21 @@ import type { ConversationTurn } from "../../src/memory/types.js";
 
 const sampleTurns: ConversationTurn[] = [
   { role: "user", content: "Hi, my name is Alice", timestamp: "2025-01-01T00:00:00Z", sessionPath: "sessions/a.md" },
-  { role: "assistant", content: "Hello Alice!", timestamp: "2025-01-01T00:00:01Z", sessionPath: "sessions/a.md" },
+  {
+    role: "assistant",
+    content: "Hello Alice!",
+    timestamp: "2025-01-01T00:00:01Z",
+    sessionPath: "sessions/a.md",
+    assistantResponseKind: "reply",
+  },
   { role: "user", content: "I work as a developer", timestamp: "2025-01-01T00:00:02Z", sessionPath: "sessions/a.md" },
-  { role: "assistant", content: "That's great!", timestamp: "2025-01-01T00:00:03Z", sessionPath: "sessions/a.md" },
+  {
+    role: "assistant",
+    content: "That's great!",
+    timestamp: "2025-01-01T00:00:03Z",
+    sessionPath: "sessions/a.md",
+    assistantResponseKind: "reply",
+  },
 ];
 
 describe("buildExtractionMessages", () => {
@@ -36,8 +48,8 @@ describe("buildExtractionMessages", () => {
   it("formats conversation turns with role labels", () => {
     const messages = buildExtractionMessages(sampleTurns, emptyUserProfileContext());
     const userContent = (messages[1] as { role: string; content: string }).content;
-    expect(userContent).toContain("[user]: Hi, my name is Alice");
-    expect(userContent).toContain("[assistant]: Hello Alice!");
+    expect(userContent).toContain("user: Hi, my name is Alice");
+    expect(userContent).toContain("assistant[reply]: Hello Alice!");
   });
 
   it("system message does not mention soul fields", () => {
@@ -64,6 +76,7 @@ describe("buildExtractionMessages", () => {
       content: `Message ${i}`,
       timestamp: `2025-01-01T00:00:${String(i).padStart(2, "0")}Z`,
       sessionPath: "sessions/a.md",
+      ...(i % 2 === 0 ? {} : { assistantResponseKind: "reply" as const }),
     }));
 
     const messages = buildExtractionMessages(manyTurns, emptyUserProfileContext());

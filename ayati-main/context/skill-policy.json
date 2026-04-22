@@ -1,0 +1,19 @@
+{
+  "defaultMode": "allow",
+  "capabilities": {
+    "mail.send": "allow",
+    "mail.read": "allow",
+    "network.read": "allow",
+    "network.write": "allow",
+    "github.read": "allow",
+    "github.write": "allow",
+    "notes.read": "allow",
+    "notes.write": "allow",
+    "browser.automation": "allow",
+    "exec.cli:gws": "allow",
+    "exec.cli:websearch": "allow",
+    "exec.cli:gh": "allow",
+    "exec.cli:notes": "allow",
+    "exec.cli:agent-browser": "allow"
+  }
+}

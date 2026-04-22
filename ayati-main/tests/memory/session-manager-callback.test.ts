@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { mkdtempSync, rmSync } from "node:fs";
-import { join } from "node:path";
+import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { SessionManager } from "../../src/memory/session-manager.js";
 import type {
@@ -11,6 +11,16 @@ import type {
 
 function createTmpDir(): string {
   return mkdtempSync(join(tmpdir(), "sm-cb-test-"));
+}
+
+function findSessionFile(baseDir: string, sessionId: string): string {
+  const sessionsDir = join(baseDir, "data", "sessions");
+  const entries = readdirSync(sessionsDir);
+  const match = entries.find((entry) => entry === `${sessionId}.md` || entry === `${sessionId}.jsonl`);
+  if (!match) {
+    throw new Error(`Session file not found for ${sessionId}`);
+  }
+  return resolve(sessionsDir, match);
 }
 
 describe("SessionManager onSessionClose callback", () => {
@@ -78,7 +88,7 @@ describe("SessionManager onSessionClose callback", () => {
     expect(data.sessionId).toBe(firstSessionId);
     expect(data.reason).toBe("session_switch:new unrelated task");
     expect(data.turns.length).toBe(2);
-    expect(data.handoffSummary).toBeNull();
+    expect(data.handoffSummary).toContain("Rotation reason:");
 
     await sm.shutdown();
   });
@@ -220,7 +230,15 @@ describe("SessionManager onSessionClose callback", () => {
       sessionId: run.sessionId,
       runPath: "data/runs/r-1",
       status: "completed",
+      taskStatus: "done",
+      objective: "Summarize this",
       summary: "Completed the task",
+      completedMilestones: ["task completed"],
+      openWork: [],
+      blockers: [],
+      keyFacts: ["used the latest summary"],
+      evidence: ["task completed"],
+      attachmentNames: [],
     });
 
     await sm.flushBackgroundTasks();
@@ -230,6 +248,70 @@ describe("SessionManager onSessionClose callback", () => {
     expect(data.sessionId).toBe(run.sessionId);
     expect(data.summary).toBe("Completed the task");
     expect(data.runPath).toBe("data/runs/r-1");
+    expect(data.taskStatus).toBe("done");
+    expect(data.objective).toBe("Summarize this");
+
+    await sm.shutdown();
+  });
+
+  it("queues task summaries in background and writes them to the originating session after rotation", async () => {
+    const onTaskSummaryIndexed = vi.fn();
+
+    const sm = new SessionManager({
+      dataDir,
+      dbPath,
+      now: () => new Date("2025-01-01T00:00:00Z"),
+      onTaskSummaryIndexed,
+    });
+
+    sm.initialize("client1");
+    const run = sm.beginRun("client1", "Continue the report");
+    sm.recordAssistantFinal("client1", run.runId, run.sessionId, "Can I send the draft now?");
+
+    sm.queueTaskSummary("client1", {
+      runId: run.runId,
+      sessionId: run.sessionId,
+      runPath: "data/runs/r-queue",
+      status: "completed",
+      taskStatus: "needs_user_input",
+      objective: "Continue the report",
+      summary: "Waiting for the user to confirm draft delivery.",
+      assistantResponse: "Can I send the draft now?",
+      assistantResponseKind: "feedback",
+      feedbackKind: "approval",
+      feedbackLabel: "Send draft",
+      actionType: "send_draft",
+      entityHints: ["draft", "report"],
+      userInputNeeded: "Confirm whether to send the draft.",
+      nextAction: "Wait for approval to send the draft.",
+      stopReason: "needs_user_input",
+      goalDoneWhen: ["draft is sent"],
+      goalRequiredEvidence: ["sent confirmation"],
+      attachmentNames: [],
+    });
+
+    const rotated = sm.createSession("client1", {
+      runId: run.runId,
+      reason: "new topic",
+      source: "agent",
+    });
+
+    await sm.flushBackgroundTasks();
+    await sm.flushPersistence();
+
+    const originalContent = readFileSync(findSessionFile(tmpDir, run.sessionId), "utf8");
+    const rotatedContent = readFileSync(findSessionFile(tmpDir, rotated.sessionId), "utf8");
+
+    expect(originalContent).toContain("\"type\":\"task_summary\"");
+    expect(originalContent).toContain("\"assistantResponseKind\":\"feedback\"");
+    expect(originalContent).toContain("\"feedbackLabel\":\"Send draft\"");
+    expect(rotatedContent).not.toContain("\"runPath\":\"data/runs/r-queue\"");
+
+    expect(onTaskSummaryIndexed).toHaveBeenCalledTimes(1);
+    const callbackData: TaskSummaryIndexData = onTaskSummaryIndexed.mock.calls[0]![0]!;
+    expect(callbackData.sessionId).toBe(run.sessionId);
+    expect(callbackData.feedbackLabel).toBe("Send draft");
+    expect(callbackData.assistantResponseKind).toBe("feedback");
 
     await sm.shutdown();
   });

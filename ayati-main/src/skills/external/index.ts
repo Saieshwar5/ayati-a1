@@ -3,6 +3,24 @@ import type { ExternalSkillMeta } from "./types.js";
 
 export type { ExternalSkillMeta, ExternalSkillManifest, ExternalSkillScanRoot } from "./types.js";
 export { scanExternalSkills, stopExternalSkills } from "./scanner.js";
+export { loadExternalSkillCatalog, buildExternalCapabilityDigest, searchExternalSkillCatalog, getExternalSkillById } from "./catalog.js";
+export { createExternalSkillBroker, ExternalSkillBroker } from "./broker.js";
+export {
+  ExternalSkillRegistry,
+  type ExternalSkillCard,
+  type ExternalSkillDetail,
+  type ExternalSkillRegistryOptions,
+  type ExternalSkillSearchResult,
+  type ExternalSkillToolSummary,
+  type ExternalToolSearchResult,
+  type QuarantinedExternalSkill,
+} from "./registry.js";
+export {
+  RunExternalToolWindow,
+  type LoadedExternalTool,
+  type LoadedExternalToolResult,
+  type RunExternalToolWindowOptions,
+} from "./run-window.js";
 
 export function buildExternalSkillsBlock(skills: ExternalSkillMeta[]): SkillPromptBlock {
   const lines = skills.map((s) => {
@@ -25,17 +43,14 @@ External skills are not built-in tools.
 They are separate documented workflows or integrations that you may consult when a task depends on something beyond the built-in toolset.
 
 Before using one or more external skills, first request a context search
-with scope "skills" to load the required command references from their skill.md files,
-then use the documented commands or workflow.
-
-If a step depends on multiple external skills together,
-prefer one broader skills context search over several one-skill lookups.
+only when the task itself is about broader project/session context rather than using a skill.
+For normal external capability usage, inspect the visible skill cards and activate the needed skill through the controller's \`activate_skill\` directive.
 
 The skill id is not always the same as the executable name.
 When a skill entry includes command metadata, prefer that canonical command over guessing from the skill id.
 
 If the needed capability is already present in Available Tools,
-use the built-in tool directly instead of searching here.
+use that mounted tool directly instead of re-activating the skill.
 
 Project-local skills override global skills with the same id.
 

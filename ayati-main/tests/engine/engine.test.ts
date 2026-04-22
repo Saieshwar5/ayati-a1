@@ -5,7 +5,9 @@ import { tmpdir } from "node:os";
 import { IVecEngine } from "../../src/ivec/index.js";
 import type { LlmProvider } from "../../src/core/contracts/provider.js";
 import type { LlmTurnInput, LlmTurnOutput } from "../../src/core/contracts/llm-protocol.js";
-import type { FeedbackOpenRecordInput, OpenFeedbackItem, SessionMemory } from "../../src/memory/types.js";
+import type { SessionMemory } from "../../src/memory/types.js";
+import type { StaticContext } from "../../src/context/static-context-cache.js";
+import { buildSystemPrompt } from "../../src/prompt/builder.js";
 import type { SystemEventPolicyConfig } from "../../src/ivec/system-event-policy.js";
 
 function createMockProvider(overrides?: Partial<LlmProvider>): LlmProvider {
@@ -42,27 +44,12 @@ function createSessionMemory(): SessionMemory {
     recordAgentStep: vi.fn(),
     recordRunLedger: vi.fn(),
     recordTaskSummary: vi.fn(),
+    queueTaskSummary: vi.fn(),
     recordSystemEventOutcome: vi.fn(),
-    recordAssistantFeedback: vi.fn(),
-    recordFeedbackOpened: vi.fn().mockImplementation((_clientId: string, input: FeedbackOpenRecordInput): OpenFeedbackItem => ({
-      feedbackId: "fb-1",
-      status: "open",
-      kind: input.kind,
-      shortLabel: input.shortLabel,
-      message: input.message,
-      actionType: input.actionType,
-      sourceRunId: input.runId,
-      sourceEventId: input.sourceEventId,
-      entityHints: input.entityHints ?? [],
-      payloadSummary: input.payloadSummary,
-      createdAt: "2026-03-25T10:00:00.000Z",
-      expiresAt: "2026-03-26T10:00:00.000Z",
-    })),
     recordAssistantNotification: vi.fn(),
     getPromptMemoryContext: vi.fn().mockReturnValue({
       conversationTurns: [],
       previousSessionSummary: "",
-      openFeedbacks: [],
       recentSystemActivity: [],
     }),
     setStaticTokenBudget: vi.fn(),
@@ -71,53 +58,93 @@ function createSessionMemory(): SessionMemory {
 
 function createSystemEventPolicy(): SystemEventPolicyConfig {
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     defaults: {
       mode: "analyze_notify",
       delivery: "notification",
       contextVisibility: "summary",
       approvalRequired: false,
-      feedbackTtlHours: 24,
     },
     rules: [
       {
         source: "pulse",
-        eventName: "reminder_due",
-        intentKind: "reminder",
+        eventClass: "trigger_fired",
+        createdBy: "user",
         mode: "auto_execute_notify",
-        delivery: "notification",
-        contextVisibility: "summary",
-        approvalRequired: false,
       },
       {
         source: "pulse",
-        eventName: "task_due",
-        intentKind: "task",
+        eventClass: "trigger_fired",
+        createdBy: "user",
         mode: "auto_execute_notify",
-        delivery: "notification",
-        contextVisibility: "summary",
-        approvalRequired: false,
       },
       {
         source: "custom-system",
         eventName: "task.requested",
-        intentKind: "task",
+        requestedAction: "send_report",
         mode: "draft_then_approve",
-        delivery: "feedback",
-        contextVisibility: "summary",
-        approvalRequired: true,
-        feedbackTtlHours: 24,
       },
       {
         source: "gmail-cli",
         eventName: "new_messages",
-        mode: "draft_then_approve",
-        delivery: "feedback",
-        contextVisibility: "summary",
-        approvalRequired: true,
-        feedbackTtlHours: 24,
+        mode: "analyze_ask",
       },
     ],
+  };
+}
+
+function createStaticContext(): StaticContext {
+  return {
+    basePrompt: "You are Ayati.",
+    soul: {
+      version: 3,
+      identity: {
+        name: "Ayati",
+        role: "General-purpose autonomous AI teammate",
+        responsibility: "Help the user complete useful work.",
+      },
+      behavior: {
+        traits: ["calm"],
+        working_style: ["verify important facts"],
+        communication: ["warm and direct"],
+      },
+      boundaries: ["invent facts"],
+    },
+    userProfile: {
+      name: "Sai",
+      nickname: null,
+      occupation: "Engineer",
+      location: "India",
+      timezone: "Asia/Kolkata",
+      languages: ["English"],
+      interests: ["systems"],
+      facts: ["prefers concrete answers"],
+      people: [],
+      projects: ["Ayati"],
+      communication: {
+        formality: "balanced",
+        verbosity: "balanced",
+        humor_receptiveness: "medium",
+        emoji_usage: "rare",
+      },
+      emotional_patterns: {
+        mood_baseline: "focused",
+        stress_triggers: [],
+        joy_triggers: [],
+      },
+      active_hours: "09:00-19:00",
+      last_updated: "2026-04-18T00:00:00.000Z",
+    },
+    controllerPrompts: {
+      understand: "",
+      direct: "",
+      reeval: "",
+      systemEvent: "",
+    },
+    skillBlocks: [
+      { id: "shell", content: "Use the shell tool when concrete inspection is needed." },
+    ],
+    toolDirectory: "shell: Run a shell command.",
   };
 }
 
@@ -175,10 +202,146 @@ describe("IVecEngine", () => {
         "c1",
         expect.objectContaining({ state: "completed", status: "completed" }),
       );
-      expect(sessionMemory.recordTaskSummary as ReturnType<typeof vi.fn>).toHaveBeenCalledWith(
+      expect(sessionMemory.queueTaskSummary as ReturnType<typeof vi.fn>).not.toHaveBeenCalled();
+    } finally {
+      rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it("records an enriched task summary only for runs that enter direct execution", async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "ayati-eng-task-"));
+    try {
+      let callCount = 0;
+      const provider = createMockProvider({
+        generateTurn: vi.fn<(input: LlmTurnInput) => Promise<LlmTurnOutput>>().mockImplementation(async () => {
+          callCount++;
+          if (callCount === 1) {
+            return {
+              type: "assistant",
+              content: JSON.stringify({
+                done: false,
+                understand: true,
+                goal: {
+                  objective: "Find the requested config files",
+                  done_when: ["the config file paths are returned"],
+                  required_evidence: ["config file paths"],
+                  ask_user_when: [],
+                  stop_when_no_progress: ["searching no longer finds new config paths"],
+                },
+                approach: "inspect the workspace for config files",
+              }),
+            };
+          }
+
+          return {
+            type: "assistant",
+            content: JSON.stringify({
+              done: true,
+              summary: "Found config files",
+              status: "completed",
+              response_kind: "reply",
+            }),
+          };
+        }),
+      });
+      const onReply = vi.fn();
+      const sessionMemory = createSessionMemory();
+      const engine = new IVecEngine({
+        onReply,
+        provider,
+        sessionMemory,
+        dataDir,
+        systemEventPolicy: createSystemEventPolicy(),
+      });
+
+      await engine.start();
+      engine.handleMessage("c1", { type: "chat", content: "find config files" });
+
+      await vi.waitFor(() => {
+        expect(onReply).toHaveBeenCalledWith("c1", {
+          type: "reply",
+          content: "Found config files",
+        });
+      });
+
+      expect(sessionMemory.queueTaskSummary as ReturnType<typeof vi.fn>).toHaveBeenCalledWith(
         "c1",
-        expect.objectContaining({ status: "completed", summary: "mock reply" }),
+        expect.objectContaining({
+          status: "completed",
+          taskStatus: "not_done",
+          objective: "Find the requested config files",
+          summary: "Found config files",
+          sessionId: "s1",
+          assistantResponseKind: "reply",
+          approach: "inspect the workspace for config files",
+          goalDoneWhen: ["the config file paths are returned"],
+          goalRequiredEvidence: ["config file paths"],
+        }),
       );
+    } finally {
+      rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it("does not await task summary queueing before sending the user response", async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "ayati-eng-task-async-"));
+    try {
+      const provider = createMockProvider({
+        generateTurn: vi.fn<(input: LlmTurnInput) => Promise<LlmTurnOutput>>()
+          .mockResolvedValueOnce({
+            type: "assistant",
+            content: JSON.stringify({
+              done: false,
+              understand: true,
+              goal: {
+                objective: "Collect the latest notes",
+                done_when: ["notes are returned"],
+                required_evidence: ["notes"],
+                ask_user_when: [],
+                stop_when_no_progress: [],
+              },
+              approach: "read the prepared notes",
+            }),
+          })
+          .mockResolvedValueOnce({
+            type: "assistant",
+            content: JSON.stringify({
+              done: true,
+              summary: "Collected the latest notes",
+              status: "completed",
+              response_kind: "reply",
+            }),
+          }),
+      });
+      const onReply = vi.fn();
+      const sessionMemory = createSessionMemory();
+      let releaseQueue: (() => void) | null = null;
+      (sessionMemory.queueTaskSummary as ReturnType<typeof vi.fn>).mockImplementation(
+        () => new Promise<void>((resolve) => {
+          releaseQueue = resolve;
+        }),
+      );
+
+      const engine = new IVecEngine({
+        onReply,
+        provider,
+        sessionMemory,
+        dataDir,
+        systemEventPolicy: createSystemEventPolicy(),
+      });
+
+      await engine.start();
+      engine.handleMessage("c1", { type: "chat", content: "collect notes" });
+
+      await vi.waitFor(() => {
+        expect(onReply).toHaveBeenCalledWith("c1", {
+          type: "reply",
+          content: "Collected the latest notes",
+        });
+      });
+
+      expect(sessionMemory.queueTaskSummary as ReturnType<typeof vi.fn>).toHaveBeenCalledTimes(1);
+      releaseQueue?.();
     } finally {
       rmSync(dataDir, { recursive: true, force: true });
     }
@@ -232,6 +395,138 @@ describe("IVecEngine", () => {
     await engine.stop();
   });
 
+  it("builds cached understand context with the same prompt output as the canonical builder across turns", async () => {
+    const staticContext = createStaticContext();
+    const provider = createMockProvider();
+    const sessionMemory = createSessionMemory();
+    const getPromptMemoryContext = sessionMemory.getPromptMemoryContext as ReturnType<typeof vi.fn>;
+    const getSessionStatus = vi.fn().mockReturnValue({
+      contextPercent: 42,
+      turns: 4,
+      sessionAgeMinutes: 12,
+      startedAt: "2026-04-18T09:00:00.000Z",
+      handoffPhase: "inactive",
+      pendingRotationReason: null,
+    });
+    sessionMemory.getSessionStatus = getSessionStatus;
+
+    let memoryContext = {
+      conversationTurns: [
+        {
+          role: "user" as const,
+          content: "first question",
+          timestamp: "2026-04-18T09:00:00.000Z",
+          sessionPath: "sessions/s1.md",
+        },
+      ],
+      previousSessionSummary: "The user is optimizing agent latency.",
+      activeSessionPath: "sessions/s1.md",
+      recentTaskSummaries: [
+        {
+          timestamp: "2026-04-18T08:30:00.000Z",
+          runId: "run-1",
+          runPath: "/tmp/run-1",
+          runStatus: "completed" as const,
+          taskStatus: "done" as const,
+          objective: "Measure the current agent loop",
+          summary: "Profiled understand latency",
+          completedMilestones: ["Captured baseline timings"],
+          openWork: [],
+          blockers: [],
+          keyFacts: ["understand is the first controller pass"],
+          evidence: ["profiling log"],
+          attachmentNames: [],
+        },
+      ],
+      recentSystemActivity: [
+        {
+          timestamp: "2026-04-18T08:50:00.000Z",
+          source: "engine",
+          event: "cache_refresh",
+          eventId: "evt-1",
+          summary: "Context cache refreshed",
+          userVisible: false,
+        },
+      ],
+    };
+    getPromptMemoryContext.mockImplementation(() => memoryContext);
+
+    const engine = new IVecEngine({ provider, sessionMemory, staticContext });
+    const buildSystemContext = async () => {
+      const privateEngine = engine as unknown as {
+        buildSystemContext(): Promise<{
+          systemContext: string;
+          controllerSystemContext: string;
+          dynamicSystemTokens: number;
+        }>;
+      };
+      return privateEngine.buildSystemContext();
+    };
+
+    const first = await buildSystemContext();
+    const expectedFirst = buildSystemPrompt({
+      basePrompt: staticContext.basePrompt,
+      soul: staticContext.soul,
+      userProfile: staticContext.userProfile,
+      conversationTurns: memoryContext.conversationTurns,
+      previousSessionSummary: memoryContext.previousSessionSummary,
+      activeSessionPath: memoryContext.activeSessionPath,
+      recentTaskSummaries: memoryContext.recentTaskSummaries,
+      recentSystemActivity: memoryContext.recentSystemActivity,
+      skillBlocks: staticContext.skillBlocks,
+      toolDirectory: staticContext.toolDirectory,
+      includeToolDirectory: false,
+      sessionStatus: getSessionStatus(),
+    }).systemPrompt;
+    expect(first.systemContext).toBe(expectedFirst);
+    expect(first.controllerSystemContext).toContain("# Base System Prompt");
+
+    memoryContext = {
+      ...memoryContext,
+      conversationTurns: [
+        ...memoryContext.conversationTurns,
+        {
+          role: "assistant" as const,
+          content: "Here is the first answer.",
+          timestamp: "2026-04-18T09:01:00.000Z",
+          sessionPath: "sessions/s1.md",
+        },
+        {
+          role: "user" as const,
+          content: "follow up question",
+          timestamp: "2026-04-18T09:02:00.000Z",
+          sessionPath: "sessions/s1.md",
+        },
+      ],
+    };
+
+    const second = await buildSystemContext();
+    const expectedSecond = buildSystemPrompt({
+      basePrompt: staticContext.basePrompt,
+      soul: staticContext.soul,
+      userProfile: staticContext.userProfile,
+      conversationTurns: memoryContext.conversationTurns,
+      previousSessionSummary: memoryContext.previousSessionSummary,
+      activeSessionPath: memoryContext.activeSessionPath,
+      recentTaskSummaries: memoryContext.recentTaskSummaries,
+      recentSystemActivity: memoryContext.recentSystemActivity,
+      skillBlocks: staticContext.skillBlocks,
+      toolDirectory: staticContext.toolDirectory,
+      includeToolDirectory: false,
+      sessionStatus: getSessionStatus(),
+    }).systemPrompt;
+    expect(second.systemContext).toBe(expectedSecond);
+    expect(second.systemContext.match(/# Previous Conversation/g)).toHaveLength(1);
+
+    const cachedConversation = (
+      engine as unknown as {
+        understandContextCache?: { conversationTurns: Array<{ content: string }> };
+      }
+    ).understandContextCache;
+    expect(cachedConversation?.conversationTurns).toHaveLength(3);
+    expect(cachedConversation?.conversationTurns.at(-1)?.content).toBe("follow up question");
+  });
+
   it("processes pulse system_event through beginSystemRun", async () => {
     const dataDir = mkdtempSync(join(tmpdir(), "ayati-eng-system-event-"));
     try {
@@ -274,6 +569,13 @@ describe("IVecEngine", () => {
         type: "notification",
         content: "mock reply",
       });
+      expect(sessionMemory.recordAssistantFinal as ReturnType<typeof vi.fn>).toHaveBeenCalledWith(
+        "c1",
+        "sys-r1",
+        "s1",
+        "mock reply",
+        { responseKind: "notification" },
+      );
       expect(sessionMemory.recordAssistantNotification as ReturnType<typeof vi.fn>).toHaveBeenCalledWith(
         "c1",
         expect.objectContaining({ message: "mock reply", source: "pulse", event: "reminder_due", eventId: "evt-1" }),
@@ -342,6 +644,13 @@ describe("IVecEngine", () => {
         type: "notification",
         content: "mock reply",
       });
+      expect(sessionMemory.recordAssistantFinal as ReturnType<typeof vi.fn>).toHaveBeenCalledWith(
+        "c1",
+        "sys-r1",
+        "s1",
+        "mock reply",
+        { responseKind: "notification" },
+      );
       expect(sessionMemory.recordAssistantNotification as ReturnType<typeof vi.fn>).toHaveBeenCalledWith(
         "c1",
         expect.objectContaining({ message: "mock reply", source: "pulse", event: "task_due", eventId: "evt-task-1" }),
@@ -397,16 +706,14 @@ describe("IVecEngine", () => {
         expect(onReply).toHaveBeenCalledWith("c1", {
           type: "feedback",
           content: "mock reply",
-          feedbackId: "fb-1",
         });
       });
-      expect(sessionMemory.recordFeedbackOpened as ReturnType<typeof vi.fn>).toHaveBeenCalledWith(
+      expect(sessionMemory.recordAssistantFinal as ReturnType<typeof vi.fn>).toHaveBeenCalledWith(
         "c1",
-        expect.objectContaining({
-          sourceEventId: "evt-approval-1",
-          ttlHours: 24,
-          actionType: "send_report",
-        }),
+        "sys-r1",
+        "s1",
+        "mock reply",
+        { responseKind: "feedback" },
       );
       expect(sessionMemory.recordSystemEventOutcome as ReturnType<typeof vi.fn>).toHaveBeenCalledWith(
         "c1",
@@ -447,9 +754,7 @@ describe("IVecEngine", () => {
         recordAgentStep: vi.fn(),
         recordRunLedger: vi.fn(),
         recordTaskSummary: vi.fn(),
-        recordAssistantFeedback: vi.fn(),
         recordAssistantNotification: vi.fn(),
-        recordFeedbackOpened: vi.fn().mockReturnValue(null),
         getPromptMemoryContext: vi.fn().mockReturnValue({
           conversationTurns: [
             {
@@ -460,14 +765,18 @@ describe("IVecEngine", () => {
             },
           ],
           previousSessionSummary: "",
-          openFeedbacks: [],
           recentSystemActivity: [],
         }),
         getSessionStatus: vi.fn().mockReturnValue({
           contextPercent: 96,
           turns: 10,
           sessionAgeMinutes: 20,
+          startedAt: new Date(Date.UTC(2026, 1, 20, 8, 0, 0)).toISOString(),
+          handoffPhase: "finalized",
+          pendingRotationReason: "context_threshold",
         }),
+        updateSessionLifecycle: vi.fn(),
+        flushPersistence: vi.fn().mockResolvedValue(undefined),
         setStaticTokenBudget: vi.fn(),
       };
 

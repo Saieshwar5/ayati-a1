@@ -1,4 +1,5 @@
 import type { LlmMessage } from "../core/contracts/llm-protocol.js";
+import { formatConversationTurnInline } from "../memory/conversation-turn-format.js";
 import type { ConversationTurn } from "../memory/types.js";
 import type { UserProfileContext } from "./types.js";
 
@@ -55,7 +56,7 @@ Return a single JSON object with this exact structure:
 
 function formatTurns(turns: ConversationTurn[]): string {
   return turns
-    .map((t) => `[${t.role}]: ${t.content}`)
+    .map((t) => formatConversationTurnInline(t))
     .join("\n\n");
 }
 

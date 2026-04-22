@@ -10,6 +10,8 @@ export function renderSessionStatusSection(status: SessionStatus | null): string
     `- context_usage: ${Math.round(status.contextPercent)}%`,
     `- turns: ${status.turns}`,
     `- session_age: ${status.sessionAgeMinutes}m`,
+    `- handoff_state: ${status.handoffPhase}`,
+    `- rotation_pending: ${status.pendingRotationReason ?? "none"}`,
   ];
 
   const pressure = computeContextPressure(status.contextPercent);

@@ -1,0 +1,27 @@
+/* Simple responsive calculator styling */
+:root{--bg:#0f1724;--panel:#111827;--accent:#10b981;--btn:#e5e7eb;--operator:#f59e0b}
+*{box-sizing:border-box;font-family:system-ui,-apple-system,Segoe UI,Roboto,'Helvetica Neue',Arial}
+html,body{height:100%;margin:0;background:linear-gradient(180deg,#071024, #0b1220);display:flex;align-items:center;justify-content:center}
+.calculator{background:var(--panel);padding:18px;border-radius:12px;box-shadow:0 10px 30px rgba(2,6,23,.6);width:320px;max-width:95%}
+.display{background:#071126;color:var(--btn);font-size:2rem;padding:14px;border-radius:8px;text-align:right;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+.keys{display:grid;grid-template-columns:repeat(4,1fr);grid-gap:10px;margin-top:12px}
+.btn{padding:14px;border-radius:8px;border:0;background:linear-gradient(180deg,#ffffff,#f3f4f6);font-size:1.1rem;cursor:pointer}
+.btn:active{transform:translateY(1px)}
+.operator{background:linear-gradient(180deg,#fde68a,#fbbf24)}
+.function{background:linear-gradient(180deg,#d1d5db,#9ca3af)}
+.equals{grid-row:3 / span 2;background:linear-gradient(180deg,#34d399,#059669);color:white}
+.zero{grid-column:1 / span 2}
+
+/* Per-digit distinct colors for numeric buttons (0-9) */
+.btn[data-value="0"]{background:linear-gradient(180deg,#ef4444,#dc2626);color:white}
+.btn[data-value="1"]{background:linear-gradient(180deg,#f97316,#ea580c);color:white}
+.btn[data-value="2"]{background:linear-gradient(180deg,#f59e0b,#d97706);color:black}
+.btn[data-value="3"]{background:linear-gradient(180deg,#eab308,#ca8a04);color:black}
+.btn[data-value="4"]{background:linear-gradient(180deg,#84cc16,#65a30d);color:white}
+.btn[data-value="5"]{background:linear-gradient(180deg,#10b981,#059669);color:white}
+.btn[data-value="6"]{background:linear-gradient(180deg,#06b6d4,#0891b2);color:white}
+.btn[data-value="7"]{background:linear-gradient(180deg,#3b82f6,#1d4ed8);color:white}
+.btn[data-value="8"]{background:linear-gradient(180deg,#6366f1,#4f46e5);color:white}
+.btn[data-value="9"]{background:linear-gradient(180deg,#a855f7,#7c3aed);color:white}
+
+@media (max-width:420px){.display{font-size:1.6rem;padding:10px}.btn{padding:12px;font-size:1rem}}

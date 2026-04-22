@@ -1,0 +1,64 @@
+{
+  "location": "Hyderabad, India",
+  "assumed_units": "Celsius",
+  "sources": [
+    {
+      "name": "wttr.in (j1)",
+      "url": "https://wttr.in/Hyderabad?format=j1",
+      "retrieved_at": "2026-04-19T19:12:29Z"
+    },
+    {
+      "name": "Open-Meteo",
+      "url": "https://api.open-meteo.com/v1/forecast?latitude=17.375&longitude=78.5&current_weather=true&daily=temperature_2m_max,temperature_2m_min,precipitation_probability_max,weathercode",
+      "retrieved_at": "2026-04-19T19:12:31Z"
+    }
+  ],
+  "current": {
+    "temp_C": 32,
+    "condition": "Clear",
+    "humidity_pct": 37,
+    "wind_kmph": 18,
+    "wind_dir": "E",
+    "precip_mm": 0.0,
+    "observed_at": "05:59 PM",
+    "precip_chance_pct": 0
+  },
+  "current_evidence": {
+    "wttr_snippet": "{\"FeelsLikeC\": \"32\", \"FeelsLikeF\": \"89\", \"cloudcover\": \"15\", \"humidity\": \"37\", \"localObsDateTime\": \"2026-04-19 11:29 PM\", \"observation_time\": \"05:59 PM\", \"precipInches\": \"0.0\", \"precipMM\": \"0.0\", \"pressure\": \"1010\", \"pressureInches\": \"30\", \"temp_C\": \"32\", \"temp_F\": \"89\", \"uvIndex\": \"0\", \"visibility\": \"10\", \"visibilityMiles\": \"6\", \"weatherCode\": \"113\", \"weatherDesc\": [{\"value\": \"Clear\"}], \"weatherI"
+  },
+  "current_precip_evidence": "{\"DewPointC\": \"13\", \"DewPointF\": \"56\", \"FeelsLikeC\": \"31\", \"FeelsLikeF\": \"87\", \"HeatIndexC\": \"31\", \"HeatIndexF\": \"87\", \"WindChillC\": \"31\", \"WindChillF\": \"88\", \"WindGustKmph\": \"25\", \"WindGustMiles\": \"15\", \"chanceoffog\": \"0\", \"chanceoffrost\": \"0\", \"chanceofhightemp\": \"50\", \"chanceofovercast\": \"0\", \"chanceofrain\": \"0\", \"chanceofremdry\": \"88\", \"chanceofsnow\": \"0\", \"chanceofsunshine\": \"94\", \"chanceofth",
+  "forecast": [
+    {
+      "date": "2026-04-20",
+      "max_C": 38.2,
+      "min_C": 24.7,
+      "precip_prob_pct": 33,
+      "weathercode": 96,
+      "source": "Open-Meteo"
+    },
+    {
+      "date": "2026-04-21",
+      "max_C": 37.0,
+      "min_C": 25.9,
+      "precip_prob_pct": 23,
+      "weathercode": 81,
+      "source": "Open-Meteo"
+    },
+    {
+      "date": "2026-04-22",
+      "max_C": 37.4,
+      "min_C": 25.1,
+      "precip_prob_pct": 20,
+      "weathercode": 3,
+      "source": "Open-Meteo"
+    }
+  ],
+  "forecast_evidence_sample": [
+    "daily keys present: time,temperature_2m_max,temperature_2m_min,precipitation_probability_max,weathercode"
+  ],
+  "source_files": {
+    "wttr_path": "steps/wttr_hyderabad_j1.json",
+    "open_meteo_path": "steps/open_meteo_hyderabad.json"
+  },
+  "extracted_at": "2026-04-19T19:18:21.715133Z"
+}

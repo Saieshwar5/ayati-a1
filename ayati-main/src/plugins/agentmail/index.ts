@@ -1,15 +1,12 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import { mkdir, writeFile } from "node:fs/promises";
-import { dirname, resolve } from "node:path";
 import { URL } from "node:url";
-import type { AyatiPlugin, PluginRuntimeContext, PluginSystemEventInput } from "../../core/contracts/plugin.js";
+import type { AyatiPlugin, PluginRuntimeContext } from "../../core/contracts/plugin.js";
+import { AgentMailAdapter } from "./adapter.js";
 import { devError, devLog, devWarn } from "../../shared/index.js";
 import {
   buildWebhookListenerPath,
   normalizeWebhookPath,
-  parseAgentMailWebhook,
   parseAllowedSenders,
-  sanitizeEventIdForFileName,
 } from "./helpers.js";
 
 const DEFAULT_BASE_URL = "https://api.agentmail.to/v0";
@@ -155,11 +152,15 @@ class AgentMailPlugin implements AyatiPlugin {
   readonly version = "1.0.0";
 
   private readonly config = loadConfig();
+  private readonly adapter = new AgentMailAdapter({
+    allowedSenders: this.config.allowedSenders,
+  });
   private server: Server | null = null;
   private runtimeContext: PluginRuntimeContext | null = null;
 
   async start(context: PluginRuntimeContext): Promise<void> {
     this.runtimeContext = context;
+    context.registerSystemAdapter?.(this.adapter);
 
     if (!this.config.enabled) {
       devLog("AgentMail plugin disabled via AGENTMAIL_PLUGIN_ENABLED.");
@@ -272,97 +273,50 @@ class AgentMailPlugin implements AyatiPlugin {
       return;
     }
 
-    const parsed = parseAgentMailWebhook(payload, rawBody);
-    if (!parsed) {
-      devWarn("AgentMail webhook ignored: unsupported payload shape.");
-      res.statusCode = 202;
-      res.setHeader("Content-Type", "application/json");
-      res.end(json({ ok: true, accepted: false, reason: "Unsupported payload." }));
-      return;
-    }
-
-    devLog(
-      `AgentMail webhook parsed: event=${parsed.eventType} eventId=${parsed.eventId} sender=${parsed.senderEmail ?? "unknown"}`,
-    );
-
-    if (parsed.eventType !== "message.received") {
-      devLog(`AgentMail webhook ignored: unsupported event ${parsed.eventType}.`);
-      res.statusCode = 202;
-      res.setHeader("Content-Type", "application/json");
-      res.end(json({ ok: true, accepted: false, reason: `Ignoring event ${parsed.eventType}.` }));
-      return;
-    }
-
-    if (this.config.allowedSenders.length > 0) {
-      const sender = parsed.senderEmail?.toLowerCase();
-      if (!sender || !this.config.allowedSenders.includes(sender)) {
-        devWarn(`AgentMail webhook blocked sender: ${sender ?? "unknown"}`);
-        res.statusCode = 202;
-        res.setHeader("Content-Type", "application/json");
-        res.end(json({ ok: true, accepted: false, reason: "Sender not allowlisted." }));
-        return;
-      }
-    }
-
-    const saved = await this.persistEvent(parsed.eventId, rawBody).catch((err) => {
-      devError("Failed to persist AgentMail event:", err instanceof Error ? err.message : String(err));
-      return null;
-    });
-    if (saved === null) {
-      res.statusCode = 500;
-      res.setHeader("Content-Type", "application/json");
-      res.end(json({ ok: false, error: "Failed to persist incoming event." }));
-      return;
-    }
-    if (!saved) {
-      devLog(`AgentMail webhook ignored duplicate event: ${parsed.eventId}`);
-      res.statusCode = 202;
-      res.setHeader("Content-Type", "application/json");
-      res.end(json({ ok: true, accepted: false, reason: "Duplicate event." }));
-      return;
-    }
-
-    devLog(`AgentMail webhook accepted: eventId=${parsed.eventId}`);
-    res.statusCode = 202;
-    res.setHeader("Content-Type", "application/json");
-    res.end(json({ ok: true, accepted: true, eventId: parsed.eventId }));
-
-    void this.dispatchIncomingEvent(parsed.systemEvent);
-  }
-
-  private async dispatchIncomingEvent(event: PluginSystemEventInput): Promise<void> {
     try {
       if (!this.runtimeContext) {
         throw new Error("Plugin runtime context is not available.");
       }
-      devLog(
-        `AgentMail publish start: source=${event.source} eventName=${event.eventName} eventId=${event.eventId ?? "generated"} summary=${event.summary}`,
-      );
-      await this.runtimeContext.publishSystemEvent(event);
-      devLog(`AgentMail publish success: eventId=${event.eventId ?? "generated"}`);
-    } catch (err) {
-      devError("Failed to dispatch AgentMail system event:", err instanceof Error ? err.message : String(err));
-    }
-  }
-
-  private async persistEvent(eventId: string, rawBody: string): Promise<boolean> {
-    if (!this.runtimeContext) {
-      throw new Error("Plugin runtime context is not available.");
-    }
-
-    const safeEventId = sanitizeEventIdForFileName(eventId);
-    const eventPath = resolve(this.runtimeContext.dataDir, "agentmail", "events", `${safeEventId}.json`);
-    await mkdir(dirname(eventPath), { recursive: true });
-
-    try {
-      await writeFile(eventPath, rawBody, { encoding: "utf-8", flag: "wx" });
-      return true;
-    } catch (err) {
-      const code = err && typeof err === "object" && "code" in err ? (err as NodeJS.ErrnoException).code : undefined;
-      if (code === "EEXIST") {
-        return false;
+      if (!this.runtimeContext.ingestExternalRequest) {
+        throw new Error("Plugin runtime does not support external ingress.");
       }
-      throw err;
+
+      const result = await this.runtimeContext.ingestExternalRequest({
+        source: "agentmail",
+        clientId: this.runtimeContext.clientId,
+        method: req.method ?? "POST",
+        path: url.pathname,
+        headers: req.headers,
+        body: rawBody,
+        payload,
+        metadata: {
+          listenerPath: this.config.listenerPath,
+        },
+      });
+
+      if (!result.accepted) {
+        devWarn(`AgentMail webhook ignored: ${result.reason ?? "adapter did not emit any events"}`);
+        res.statusCode = 202;
+        res.setHeader("Content-Type", "application/json");
+        res.end(json({ ok: true, accepted: false, reason: result.reason ?? "No events accepted." }));
+        return;
+      }
+
+      const primaryReceipt = result.receipts[0];
+      res.statusCode = 202;
+      res.setHeader("Content-Type", "application/json");
+      res.end(json({
+        ok: true,
+        accepted: true,
+        queued: result.queuedCount,
+        duplicates: result.duplicateCount,
+        eventId: primaryReceipt?.event.eventId,
+      }));
+    } catch (err) {
+      devError("Failed to ingest AgentMail webhook:", err instanceof Error ? err.message : String(err));
+      res.statusCode = 500;
+      res.setHeader("Content-Type", "application/json");
+      res.end(json({ ok: false, error: "Failed to ingest webhook request." }));
     }
   }
 

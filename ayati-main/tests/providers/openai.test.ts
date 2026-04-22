@@ -225,6 +225,65 @@ describe("OpenAI provider", () => {
     });
   });
 
+  it("should preserve array item schemas in outgoing tool parameters", async () => {
+    process.env["OPENAI_API_KEY"] = "sk-test-key";
+
+    const mockCreate = vi.fn().mockResolvedValue({
+      choices: [{ message: { content: "Schema forwarded." } }],
+    });
+
+    mockOpenAIConstructor(mockCreate);
+
+    provider.start();
+    await provider.generateTurn({
+      messages: [{ role: "user", content: "Use a tool" }],
+      tools: [
+        {
+          name: "db_insert_rows",
+          description: "Insert rows",
+          inputSchema: {
+            type: "object",
+            properties: {
+              rows: {
+                type: "array",
+                items: {
+                  type: "object",
+                  properties: {
+                    id: { type: "number" },
+                  },
+                },
+              },
+              orderBy: {
+                type: "array",
+                items: { type: "string" },
+              },
+            },
+          },
+        },
+      ],
+    });
+
+    const sentParameters = (mockCreate.mock.calls[0]?.[0] as any)?.tools?.[0]?.function?.parameters;
+    expect(sentParameters).toMatchObject({
+      type: "object",
+      properties: {
+        rows: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              id: { type: "number" },
+            },
+          },
+        },
+        orderBy: {
+          type: "array",
+          items: { type: "string" },
+        },
+      },
+    });
+  });
+
   it("should pass structured output settings when requested", async () => {
     process.env["OPENAI_API_KEY"] = "sk-test-key";
 
@@ -292,6 +351,49 @@ describe("OpenAI provider", () => {
         schema: {
           type: "object",
           anyOf: [{ type: "object" }],
+        },
+      },
+    });
+
+    expect(mockCreate).toHaveBeenCalledWith({
+      model: "gpt-4o",
+      messages: [{ role: "user", content: "Hi" }],
+      response_format: {
+        type: "json_object",
+      },
+    });
+  });
+
+  it("should fall back to json_object for nested schema nodes that omit type", async () => {
+    process.env["OPENAI_API_KEY"] = "sk-test-key";
+
+    const mockCreate = vi.fn().mockResolvedValue({
+      choices: [{ message: { content: "{\"done\":true,\"summary\":\"ok\",\"status\":\"completed\"}" } }],
+    });
+
+    mockOpenAIConstructor(mockCreate);
+
+    provider.start();
+    await provider.generateTurn({
+      messages: [{ role: "user", content: "Hi" }],
+      responseFormat: {
+        type: "json_schema",
+        name: "controller_direct_response",
+        strict: true,
+        schema: {
+          type: "object",
+          properties: {
+            payload: {
+              type: "object",
+              properties: {
+                input: {},
+              },
+              required: ["input"],
+              additionalProperties: false,
+            },
+          },
+          required: ["payload"],
+          additionalProperties: false,
         },
       },
     });

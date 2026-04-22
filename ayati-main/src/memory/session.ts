@@ -1,6 +1,7 @@
 import type {
   ActiveAttachmentsEvent,
   AssistantNotificationEvent,
+  AssistantFeedbackEvent,
   FeedbackOpenedEvent,
   FeedbackResolvedEvent,
   CountableSessionEvent,
@@ -14,7 +15,6 @@ import type {
   AgentStepEvent,
   RunLedgerEvent,
   TaskSummaryEvent,
-  AssistantFeedbackEvent,
   SystemEventReceivedEvent,
   SystemEventProcessedEvent,
 } from "./session-events.js";
@@ -24,7 +24,9 @@ import type {
   ActiveAttachmentRef,
   AgentStepMemoryEvent,
   ConversationTurn,
-  OpenFeedbackItem,
+  SessionHandoffArtifact,
+  SessionHandoffPhase,
+  SessionRotationReason,
   SystemActivityItem,
   ToolMemoryEvent,
 } from "./types.js";
@@ -50,29 +52,56 @@ export type SessionTimelineEntry =
 const COUNTABLE_EVENT_TYPES = new Set([
   "user_message",
   "assistant_message",
+  "assistant_feedback",
 ]);
-const LEGACY_FEEDBACK_TTL_MS = 24 * 60 * 60 * 1000;
+
+interface SessionHandoffRuntimeState {
+  phase: SessionHandoffPhase;
+  requestedRevision: number;
+  preparedRevision: number;
+  preparedAt: string | null;
+  artifact: SessionHandoffArtifact | null;
+  jobScheduled: boolean;
+}
 
 export class InMemorySession {
   readonly id: string;
   readonly clientId: string;
   readonly startedAt: string;
   readonly sessionPath: string;
+  readonly parentSessionId: string | null;
   lastActivityAt: string;
   timeline: SessionTimelineEntry[];
   userTurnCount: number;
   assistantTurnCount: number;
   handoffSummary: string | null = null;
+  pendingRotationReason: SessionRotationReason | null = null;
+  handoff: SessionHandoffRuntimeState;
 
-  constructor(id: string, clientId: string, startedAt: string, sessionPath: string) {
+  constructor(
+    id: string,
+    clientId: string,
+    startedAt: string,
+    sessionPath: string,
+    parentSessionId?: string | null,
+  ) {
     this.id = id;
     this.clientId = clientId;
     this.startedAt = startedAt;
     this.sessionPath = sessionPath;
+    this.parentSessionId = parentSessionId ?? null;
     this.lastActivityAt = startedAt;
     this.timeline = [];
     this.userTurnCount = 0;
     this.assistantTurnCount = 0;
+    this.handoff = {
+      phase: "inactive",
+      requestedRevision: 0,
+      preparedRevision: 0,
+      preparedAt: null,
+      artifact: null,
+      jobScheduled: false,
+    };
   }
 
   addEntry(entry: SessionTimelineEntry): void {
@@ -81,7 +110,7 @@ export class InMemorySession {
 
     if (entry.type === "user_message") {
       this.userTurnCount++;
-    } else if (entry.type === "assistant_message") {
+    } else if (entry.type === "assistant_message" || entry.type === "assistant_feedback") {
       this.assistantTurnCount++;
     }
   }
@@ -98,12 +127,15 @@ export class InMemorySession {
           timestamp: entry.ts,
           sessionPath: entry.sessionPath,
         });
-      } else if (entry.type === "assistant_message") {
+      } else if (entry.type === "assistant_message" || entry.type === "assistant_feedback") {
         turns.push({
           role: "assistant",
-          content: entry.content,
+          content: entry.type === "assistant_message" ? entry.content : entry.message,
           timestamp: entry.ts,
           sessionPath: entry.sessionPath,
+          assistantResponseKind: entry.type === "assistant_message"
+            ? (entry.responseKind ?? "reply")
+            : "feedback",
         });
       }
     }
@@ -167,35 +199,6 @@ export class InMemorySession {
     return this.getAgentStepEntries(limit);
   }
 
-  getOpenFeedbacks(): OpenFeedbackItem[] {
-    const open = new Map<string, OpenFeedbackItem>();
-
-    for (const entry of this.timeline) {
-      if (entry.type === "feedback_opened") {
-        open.set(entry.feedbackId, {
-          feedbackId: entry.feedbackId,
-          status: "open",
-          kind: entry.kind,
-          shortLabel: entry.shortLabel,
-          message: entry.message,
-          actionType: entry.actionType,
-          sourceRunId: entry.runId,
-          sourceEventId: entry.sourceEventId,
-          entityHints: [...entry.entityHints],
-          payloadSummary: entry.payloadSummary,
-          createdAt: entry.ts,
-          expiresAt: typeof entry.expiresAt === "string" && entry.expiresAt.trim().length > 0
-            ? entry.expiresAt
-            : new Date(new Date(entry.ts).getTime() + LEGACY_FEEDBACK_TTL_MS).toISOString(),
-        });
-      } else if (entry.type === "feedback_resolved") {
-        open.delete(entry.feedbackId);
-      }
-    }
-
-    return [...open.values()].sort((a, b) => a.createdAt.localeCompare(b.createdAt));
-  }
-
   getRecentSystemActivity(limit = 10): SystemActivityItem[] {
     if (limit <= 0) return [];
 
@@ -243,6 +246,20 @@ export class InMemorySession {
       if (uniqueRunIds.has(entry.runId)) continue;
 
       uniqueRunIds.add(entry.runId);
+      events.push(entry);
+      if (events.length >= limit) break;
+    }
+
+    return events;
+  }
+
+  getRecentTaskSummaryEvents(limit = 5): TaskSummaryEvent[] {
+    if (limit <= 0) return [];
+
+    const events: TaskSummaryEvent[] = [];
+    for (let idx = this.timeline.length - 1; idx >= 0; idx--) {
+      const entry = this.timeline[idx];
+      if (!entry || entry.type !== "task_summary") continue;
       events.push(entry);
       if (events.length >= limit) break;
     }

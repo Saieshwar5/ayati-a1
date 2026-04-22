@@ -26,19 +26,18 @@ describe("loadContext compatibility wrapper", () => {
   it("builds system prompt from base + soul + user profile", async () => {
     const systemPromptMd = "Keep answers practical.";
     const soulJson = JSON.stringify({
-      version: 2,
-      soul: {
+      version: 3,
+      identity: {
         name: "MyAgent",
-        identity: "Identity text",
-        personality: ["curious"],
-        values: ["honesty"],
+        role: "General-purpose autonomous AI teammate",
+        responsibility: "Help the user complete useful work.",
       },
-      voice: {
-        tone: ["warm"],
-        style: ["direct"],
-        quirks: [],
-        never_do: [],
+      behavior: {
+        traits: ["curious"],
+        working_style: ["verify important facts"],
+        communication: ["warm and direct"],
       },
+      boundaries: ["do not invent facts"],
     });
     const userProfileJson = JSON.stringify({
       name: "Sai",
@@ -80,6 +79,8 @@ describe("loadContext compatibility wrapper", () => {
     expect(result).toContain("# Soul");
     expect(result).toContain("# User Profile");
     expect(result).toContain("Name: MyAgent");
+    expect(result).toContain("Role: General-purpose autonomous AI teammate");
+    expect(result).toContain("Responsibility: Help the user complete useful work.");
     expect(result).toContain("- Name: Sai");
   }, 20000);
 

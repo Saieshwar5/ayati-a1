@@ -16,10 +16,11 @@ import type { ToolDefinition } from "../../src/skills/types.js";
 function createMockProvider(
   response: string | string[],
   capabilities?: LlmProvider["capabilities"],
+  providerName = "mock",
 ): LlmProvider {
   const replies = Array.isArray(response) ? [...response] : [response];
   return {
-    name: "mock",
+    name: providerName,
     version: "1.0.0",
     capabilities: capabilities ?? { nativeToolCalling: true },
     start: vi.fn(),
@@ -36,6 +37,7 @@ function createMockProvider(
 function createState(overrides?: Partial<LoopState>): LoopState {
   return {
     runId: "r1",
+    runClass: "interaction",
     userMessage: "hello",
     goal: {
       objective: "greet user",
@@ -45,11 +47,14 @@ function createState(overrides?: Partial<LoopState>): LoopState {
       stop_when_no_progress: [],
     },
     approach: "direct",
-    taskStatus: "not_done",
-    progressLedger: {
-      lastSuccessfulStepSummary: "",
-      lastStepFacts: [],
-      taskEvidence: [],
+    sessionContextSummary: "",
+    dependentTask: false,
+    dependentTaskSummary: null,
+    taskProgress: {
+      status: "not_done",
+      progressSummary: "",
+      keyFacts: [],
+      evidence: [],
     },
     status: "running",
     finalOutput: "",
@@ -63,7 +68,7 @@ function createState(overrides?: Partial<LoopState>): LoopState {
     failedApproaches: [],
     sessionHistory: [],
     recentRunLedgers: [],
-    openFeedbacks: [],
+    recentTaskSummaries: [],
     recentSystemActivity: [],
     ...overrides,
   };
@@ -107,6 +112,8 @@ describe("parseUnderstandResponse", () => {
         stop_when_no_progress: ["two searches return no results"],
       },
       approach: "Use shell to run find command",
+      session_context_summary: "The user previously asked about JS files under this repo.",
+      dependent_task: false,
     });
     const result = parseUnderstandResponse(json);
     expect(result.done).toBe(false);
@@ -132,6 +139,8 @@ describe("parseUnderstandResponse", () => {
           stop_when_no_progress: ["two searches return no results"],
         },
         approach: "Use shell to run find command",
+        session_context_summary: "The user previously asked about JS files under this repo.",
+        dependent_task: false,
       },
     });
     const result = parseUnderstandResponse(json);
@@ -154,12 +163,62 @@ describe("parseUnderstandResponse", () => {
         stop_when_no_progress: ["dataset tools fail twice"],
       },
       approach: "use dataset tools",
+      session_context_summary: "The uploaded CSV is the primary task input.",
+      dependent_task: false,
       work_mode: "structured_data_process",
     });
     const result = parseUnderstandResponse(json);
     expect(result.done).toBe(false);
     if (!result.done) {
       expect(result.work_mode).toBe("structured_data_process");
+    }
+  });
+
+  it("parses dependent task selection when provided", () => {
+    const json = JSON.stringify({
+      done: false,
+      understand: true,
+      goal: {
+        objective: "continue the earlier config task",
+        done_when: ["the config task is resumed correctly"],
+        required_evidence: ["matching prior run context"],
+        ask_user_when: [],
+        stop_when_no_progress: ["the prior task cannot be identified"],
+      },
+      approach: "continue from the prior config run",
+      session_context_summary: "Resume from the earlier config investigation.",
+      dependent_task: true,
+      dependent_task_slot: 2,
+    });
+    const result = parseUnderstandResponse(json);
+    expect(result.done).toBe(false);
+    if (!result.done) {
+      expect(result.dependent_task).toBe(true);
+      expect(result.dependent_task_slot).toBe(2);
+    }
+  });
+
+  it("drops dependent_task_slot when dependent_task is false", () => {
+    const json = JSON.stringify({
+      done: false,
+      understand: true,
+      goal: {
+        objective: "start a new task",
+        done_when: ["the task is described"],
+        required_evidence: ["a clear objective"],
+        ask_user_when: [],
+        stop_when_no_progress: ["planning cannot proceed"],
+      },
+      approach: "treat this as a fresh task",
+      session_context_summary: "",
+      dependent_task: false,
+      dependent_task_slot: 2,
+    });
+    const result = parseUnderstandResponse(json);
+    expect(result.done).toBe(false);
+    if (!result.done) {
+      expect(result.dependent_task).toBe(false);
+      expect(result.dependent_task_slot).toBeUndefined();
     }
   });
 
@@ -254,7 +313,7 @@ describe("parseDirectResponse", () => {
     const json = JSON.stringify({
       done: false,
       context_search: true,
-      query: "playwright commands",
+      query: "agent-browser commands",
       scope: "skills",
     });
     const result = parseDirectResponse(json);
@@ -280,19 +339,88 @@ describe("parseDirectResponse", () => {
     }
   });
 
-  it("parses session rotation directive JSON", () => {
+  it("parses builtin and external tool origins distinctly", () => {
     const json = JSON.stringify({
       done: false,
-      rotate_session: true,
-      reason: "context full",
-      handoff_summary: "discussed files",
+      execution_mode: "dependent",
+      execution_contract: "Use a built-in tool and an external tool",
+      tool_plan: [
+        {
+          tool: "shell",
+          input: { cmd: "pwd" },
+          origin: "builtin",
+          source_refs: [],
+          retry_policy: "none",
+        },
+        {
+          tool: "demo-search.query",
+          input: {},
+          origin: "external_tool",
+          source_refs: [],
+          retry_policy: "none",
+        },
+      ],
+      success_criteria: "The planned tool calls are preserved",
+      context: "Need to distinguish built-in tools from external tools",
     });
     const result = parseDirectResponse(json);
     expect(result.done).toBe(false);
-    if (!result.done && "rotate_session" in result) {
-      expect(result.rotate_session).toBe(true);
-      expect(result.reason).toBe("context full");
+    if (!result.done && "tool_plan" in result) {
+      expect(result.tool_plan?.[0]?.origin).toBe("builtin");
+      expect(result.tool_plan?.[1]?.origin).toBe("external_tool");
     }
+  });
+
+  it("parses read_run_state directives", () => {
+    const json = JSON.stringify({
+      kind: "read_run_state",
+      payload: {
+        done: false,
+        read_run_state: true,
+        action: "read_summary_window",
+        window: { from: 1, to: 3 },
+        reason: "Need older failed-step context",
+      },
+    });
+    const result = parseDirectResponse(json);
+    expect(result.done).toBe(false);
+    if (!result.done && "read_run_state" in result) {
+      expect(result.read_run_state).toBe(true);
+      expect(result.action).toBe("read_summary_window");
+      expect(result.window).toEqual({ from: 1, to: 3 });
+    }
+  });
+
+  it("parses activate_skill directives and normalizes skill_id", () => {
+    const json = JSON.stringify({
+      kind: "activate_skill",
+      payload: {
+        done: false,
+        activate_skill: true,
+        skillId: " agent-browser ",
+        reason: "Need live web tools",
+      },
+    });
+    const result = parseDirectResponse(json);
+    expect(result.done).toBe(false);
+    if (!result.done && "activate_skill" in result) {
+      expect(result.activate_skill).toBe(true);
+      expect(result.skill_id).toBe("agent-browser");
+      expect(result.reason).toBe("Need live web tools");
+    }
+  });
+
+  it("rejects legacy read_skills directives", () => {
+    const json = JSON.stringify({
+      kind: "read_skills",
+      payload: {
+        done: false,
+        read_skills: true,
+        mode: "skill_details",
+        skill_ids: ["agent-browser", "websearch"],
+      },
+    });
+    expect(() => parseDirectResponse(json)).toThrow(/Unsupported direct response kind "read_skills"/);
   });
 
   it("extracts the first JSON object when prose surrounds it", () => {
@@ -335,6 +463,24 @@ describe("parseReEvalResponse", () => {
       expect(result.scope).toBe("run_artifacts");
     }
   });
+
+  it("parses read_run_state during re-eval", () => {
+    const json = JSON.stringify({
+      kind: "read_run_state",
+      payload: {
+        done: false,
+        read_run_state: true,
+        action: "read_step_full",
+        step: 3,
+      },
+    });
+    const result = parseReEvalResponse(json);
+    expect(result.done).toBe(false);
+    if (!result.done && "read_run_state" in result) {
+      expect(result.action).toBe("read_step_full");
+      expect(result.step).toBe(3);
+    }
+  });
 });
 
 describe("callUnderstand", () => {
@@ -350,6 +496,8 @@ describe("callUnderstand", () => {
         stop_when_no_progress: [],
       },
       approach: "direct reply",
+      session_context_summary: "The user is continuing a prior help request.",
+      dependent_task: false,
     });
     const provider = createMockProvider(json);
     const state = createState({
@@ -367,6 +515,7 @@ describe("callUnderstand", () => {
     expect(result.done).toBe(false);
     if (!result.done) {
       expect(result.goal.objective).toBe("help user");
+      expect(result.session_context_summary).toBe("The user is continuing a prior help request.");
     }
 
     // Verify system message was included
@@ -379,7 +528,7 @@ describe("callUnderstand", () => {
     expect(call.messages[1]!.content).toContain("shell");
   });
 
-  it("includes session history and recent runs in understand prompt", async () => {
+  it("includes session history and recent tasks in understand prompt", async () => {
     const json = JSON.stringify({
       done: false,
       understand: true,
@@ -391,6 +540,8 @@ describe("callUnderstand", () => {
         stop_when_no_progress: [],
       },
       approach: "direct reply",
+      session_context_summary: "Use the earlier folder lookup result if it is still relevant.",
+      dependent_task: false,
     });
     const provider = createMockProvider(json);
     const state = createState({
@@ -398,8 +549,22 @@ describe("callUnderstand", () => {
         { role: "user", content: "find the folder slokan", timestamp: "2026-02-28T05:20:00Z", sessionPath: "/s/1" },
         { role: "assistant", content: "Found folder slokan at /home/slokan", timestamp: "2026-02-28T05:20:15Z", sessionPath: "/s/1" },
       ],
-      recentRunLedgers: [
-        { timestamp: "2026-02-28T05:20:15Z", runId: "abc", runPath: "/runs/abc", state: "completed", status: "completed", summary: "Found the folder slokan" },
+      recentTaskSummaries: [
+        {
+          timestamp: "2026-02-28T05:20:15Z",
+          runId: "abc",
+          runPath: "/runs/abc",
+          runStatus: "completed",
+          taskStatus: "done",
+          objective: "Find the folder slokan",
+          summary: "Found the folder slokan",
+          completedMilestones: [],
+          openWork: [],
+          blockers: [],
+          keyFacts: [],
+          evidence: [],
+          attachmentNames: [],
+        },
       ],
     });
 
@@ -412,9 +577,180 @@ describe("callUnderstand", () => {
     expect(prompt).toContain("Session conversation so far:");
     expect(prompt).toContain("find the folder slokan");
     expect(prompt).toContain("Found folder slokan");
-    expect(prompt).toContain("Recent runs (last 1):");
-    expect(prompt).toContain("runId=abc");
-    expect(prompt).toContain("runPath=/runs/abc");
+    expect(prompt).toContain("Recent tasks (last 1, newest first; use slot numbers):");
+    expect(prompt).toContain("slot=1");
+    expect(prompt).toContain("task_status=done");
+    expect(prompt).toContain("dependent_task");
+    expect(prompt).toContain("dependent_task_slot");
+    expect(prompt).not.toContain("runId=abc");
+    expect(prompt).not.toContain("runPath=/runs/abc");
+  });
+
+  it("accepts a dependent task slot that matches a listed recent task", async () => {
+    const json = JSON.stringify({
+      done: false,
+      understand: true,
+      goal: {
+        objective: "resume the earlier folder search",
+        done_when: ["the earlier search context is resumed"],
+        required_evidence: ["matching prior task context"],
+        ask_user_when: [],
+        stop_when_no_progress: ["the prior task cannot be resumed"],
+      },
+      approach: "continue the previous run",
+      session_context_summary: "Resume from the earlier folder lookup.",
+      dependent_task: true,
+      dependent_task_slot: 1,
+    });
+    const provider = createMockProvider(json);
+    const state = createState({
+      recentTaskSummaries: [
+        {
+          timestamp: "2026-02-28T05:20:15Z",
+          runId: "abc",
+          runPath: "/runs/abc",
+          runStatus: "completed",
+          taskStatus: "done",
+          objective: "Find the folder slokan",
+          summary: "Found the folder slokan",
+          completedMilestones: [],
+          openWork: [],
+          blockers: [],
+          keyFacts: [],
+          evidence: [],
+          attachmentNames: [],
+        },
+      ],
+    });
+
+    const result = await callUnderstand(provider, state, [shellTool], "system context");
+    expect(result.done).toBe(false);
+    if (!result.done) {
+      expect(result.dependent_task).toBe(true);
+      expect(result.dependent_task_slot).toBe(1);
+    }
+  });
+
+  it("sanitizes an out-of-range dependent task slot instead of retrying", async () => {
+    const provider = createMockProvider(JSON.stringify({
+      done: false,
+      understand: true,
+      goal: {
+        objective: "resume the earlier folder search",
+        done_when: ["the earlier search context is resumed"],
+        required_evidence: ["matching prior task context"],
+        ask_user_when: [],
+        stop_when_no_progress: ["the prior task cannot be resumed"],
+      },
+      approach: "continue the previous run",
+      session_context_summary: "Resume from the earlier folder lookup.",
+      dependent_task: true,
+      dependent_task_slot: 3,
+    }));
+    const state = createState({
+      recentTaskSummaries: [
+        {
+          timestamp: "2026-02-28T05:20:15Z",
+          runId: "abc",
+          runPath: "/runs/abc",
+          runStatus: "completed",
+          taskStatus: "done",
+          objective: "Find the folder slokan",
+          summary: "Found the folder slokan",
+          completedMilestones: [],
+          openWork: [],
+          blockers: [],
+          keyFacts: [],
+          evidence: [],
+          attachmentNames: [],
+        },
+      ],
+    });
+
+    const result = await callUnderstand(provider, state, [shellTool], "system context");
+    expect(result.done).toBe(false);
+    if (!result.done) {
+      expect(result.dependent_task).toBe(false);
+      expect(result.dependent_task_slot).toBeUndefined();
+    }
+    expect(provider.generateTurn).toHaveBeenCalledTimes(1);
+  });
+
+  it("sanitizes dependent task metadata for system_event understand inputs", async () => {
+    const provider = createMockProvider(JSON.stringify({
+      done: false,
+      understand: true,
+      goal: {
+        objective: "handle the system event",
+        done_when: ["the event is handled"],
+        required_evidence: ["a follow-up action is planned"],
+        ask_user_when: [],
+        stop_when_no_progress: ["the event payload is insufficient"],
+      },
+      approach: "continue from the prior run",
+      session_context_summary: "",
+      dependent_task: true,
+      dependent_task_slot: 1,
+    }));
+    const state = createState({
+      inputKind: "system_event",
+      recentTaskSummaries: [
+        {
+          timestamp: "2026-02-28T05:20:15Z",
+          runId: "abc",
+          runPath: "/runs/abc",
+          runStatus: "completed",
+          taskStatus: "done",
+          objective: "Find the folder slokan",
+          summary: "Found the folder slokan",
+          completedMilestones: [],
+          openWork: [],
+          blockers: [],
+          keyFacts: [],
+          evidence: [],
+          attachmentNames: [],
+        },
+      ],
+    });
+
+    const result = await callUnderstand(provider, state, [shellTool], "system context");
+    expect(result.done).toBe(false);
+    if (!result.done) {
+      expect(result.dependent_task).toBe(false);
+      expect(result.dependent_task_slot).toBeUndefined();
+    }
+
+    const firstCall = (provider.generateTurn as ReturnType<typeof vi.fn>).mock.calls[0]![0] as {
+      messages: Array<{ role: string; content: string }>;
+    };
+    expect(provider.generateTurn).toHaveBeenCalledTimes(1);
+    expect(firstCall.messages[1]!.content).not.toContain("Recent tasks (last 1");
+  });
+
+  it("sanitizes dependent_task_slot when dependent_task is false instead of retrying", async () => {
+    const provider = createMockProvider(JSON.stringify({
+      done: false,
+      understand: true,
+      goal: {
+        objective: "start a fresh folder lookup",
+        done_when: ["the new search is planned"],
+        required_evidence: ["a concrete objective"],
+        ask_user_when: [],
+        stop_when_no_progress: ["the search cannot be scoped"],
+      },
+      approach: "start a new search",
+      session_context_summary: "",
+      dependent_task: false,
+      dependent_task_slot: 1,
+    }));
+
+    const result = await callUnderstand(provider, createState(), [shellTool], "system context");
+    expect(result.done).toBe(false);
+    if (!result.done) {
+      expect(result.dependent_task).toBe(false);
+      expect(result.dependent_task_slot).toBeUndefined();
+    }
+    expect(provider.generateTurn).toHaveBeenCalledTimes(1);
   });
 
   it("includes low-risk vs high-cost clarification guidance in understand prompt", async () => {
@@ -429,6 +765,8 @@ describe("callUnderstand", () => {
         stop_when_no_progress: [],
       },
       approach: "proceed carefully",
+      session_context_summary: "",
+      dependent_task: false,
     });
     const provider = createMockProvider(json);
     const state = createState({
@@ -448,6 +786,32 @@ describe("callUnderstand", () => {
     expect(prompt).toContain("If the ambiguity is low-risk and recoverable, proceed with the best reasonable interpretation");
   });
 
+  it("requires simple-chat understand completions to be exact user-facing reply text", async () => {
+    const provider = createMockProvider(JSON.stringify({
+      done: true,
+      summary: "Hey, how are you?",
+      status: "completed",
+    }));
+    const state = createState({
+      userMessage: "hii",
+    });
+
+    await callUnderstand(provider, state, [shellTool], "system context");
+
+    const call = (provider.generateTurn as ReturnType<typeof vi.fn>).mock.calls[0]![0] as {
+      messages: Array<{ role: string; content: string }>;
+    };
+    const prompt = call.messages[1]!.content;
+    expect(prompt).toContain("For simple conversation, the completion summary is the exact text that will be sent to the user.");
+    expect(prompt).toContain("Write only the reply itself.");
+    expect(prompt).toContain("Do not include analysis, explanation, labels, quoted answer wrappers, or meta-commentary");
+    expect(prompt).toContain('user: "hii" -> summary: "Hey, how are you?"');
+    expect(prompt).toContain('user: "how ru ?" -> summary: "I\'m doing well. How about you?"');
+    expect(prompt).toContain('summary: "This is a simple greeting. A suitable reply is: \\"I\'m doing well. How about you?\\""');
+    expect(prompt).toContain('"summary": "<exact user-facing reply text only>"');
+    expect(prompt).not.toContain('"summary": "<user-facing text or internal note>"');
+  });
+
   it("returns completion for simple messages", async () => {
     const json = JSON.stringify({
       done: true,
@@ -462,6 +826,44 @@ describe("callUnderstand", () => {
     if (result.done) {
       expect(result.summary).toBe("Hello! How are you?");
     }
+  });
+
+  it("includes available external skill cards in the understand prompt", async () => {
+    const provider = createMockProvider(JSON.stringify({
+      done: true,
+      summary: "done",
+      status: "completed",
+    }));
+
+    await callUnderstand(
+      provider,
+      createState(),
+      [shellTool],
+      "system context",
+      undefined,
+      [{
+        skillId: "agent-browser",
+        title: "Agent Browser",
+        summary: "Search the public web, inspect snapshot refs, and use a structured advanced dispatcher for rarer browser commands.",
+        whenToUse: "Use for current public-web discovery, rendered page inspection, or browser interaction.",
+        roleLabel: "Browser Agent",
+        useFor: ["finding the right site before browsing", "opening pages and acting on snapshot refs"],
+        notFor: ["raw shell browser strings", "credential persistence or setup flows"],
+        workflowHint: "Search when the site is unknown, then open the page, snapshot refs, interact, and use help before advanced.",
+        toolCount: 18,
+        domains: ["browser", "web", "search"],
+        tags: ["browser", "search"],
+      }],
+    );
+
+    const call = (provider.generateTurn as ReturnType<typeof vi.fn>).mock.calls[0]![0] as {
+      messages: Array<{ role: string; content: string }>;
+    };
+    expect(call.messages[1]!.content).toContain("Available external skills:");
+    expect(call.messages[1]!.content).toContain("agent-browser [Browser Agent] (18 tools)");
+    expect(call.messages[1]!.content).toContain("Use when: Use for current public-web discovery, rendered page inspection, or browser interaction.");
+    expect(call.messages[1]!.content).toContain("Best for: finding the right site before browsing; opening pages and acting on snapshot refs");
+    expect(call.messages[1]!.content).toContain("Workflow: Search when the site is unknown, then open the page, snapshot refs, interact, and use help before advanced.");
   });
 
   it("requests structured output when the provider advertises support", async () => {
@@ -481,6 +883,7 @@ describe("callUnderstand", () => {
           jsonSchema: true,
         },
       },
+      "openai",
     );
 
     await callUnderstand(provider, createState(), [], "system context");
@@ -505,9 +908,68 @@ describe("callUnderstand", () => {
       expect(call.responseFormat.schema).not.toHaveProperty("anyOf");
       expect(call.responseFormat.schema).not.toHaveProperty("oneOf");
     }
+    expect(call.messages[1]?.content).toContain('"dependent_task": false, "dependent_task_slot": null');
+    expect(call.messages[1]?.content).toContain("If no Recent tasks block is shown");
     expect(call.messages[1]?.content).toContain(
       "Use strict JSON syntax with double-quoted strings and lowercase true, false, and null.",
     );
+  });
+
+  it("falls back to json_object for direct-stage OpenAI controller schemas with generic tool inputs", async () => {
+    const provider = createMockProvider(
+      JSON.stringify({
+        done: false,
+        execution_mode: "dependent",
+        execution_contract: "Inspect one config file",
+        tool_plan: [
+          {
+            tool: "read_file",
+            input: { path: "config.json" },
+            origin: "builtin",
+            source_refs: [],
+            retry_policy: "none",
+          },
+        ],
+        success_criteria: "The config file contents are returned",
+        context: "Inspect the project config",
+      }),
+      {
+        nativeToolCalling: true,
+        structuredOutput: {
+          jsonObject: true,
+          jsonSchema: true,
+        },
+      },
+      "openai",
+    );
+
+    await callDirect(provider, createState(), [shellTool]);
+
+    const call = (provider.generateTurn as ReturnType<typeof vi.fn>).mock.calls[0]![0] as LlmTurnInput;
+    expect(call.responseFormat?.type).toBe("json_object");
+  });
+
+  it("keeps reeval-stage response_format as json_schema for OpenAI-compatible schemas", async () => {
+    const provider = createMockProvider(
+      JSON.stringify({
+        done: false,
+        reeval: true,
+        approach: "switch to a different lookup path",
+      }),
+      {
+        nativeToolCalling: true,
+        structuredOutput: {
+          jsonObject: true,
+          jsonSchema: true,
+        },
+      },
+      "openai",
+    );
+
+    await callReEval(provider, createState(), [shellTool]);
+
+    const call = (provider.generateTurn as ReturnType<typeof vi.fn>).mock.calls[0]![0] as LlmTurnInput;
+    expect(call.responseFormat?.type).toBe("json_schema");
   });
 });
 
@@ -549,12 +1011,91 @@ describe("callDirect", () => {
     expect(call.messages[1]!.role).toBe("user");
     expect(call.messages[1]!.content).toContain("Goal Contract:");
     expect(call.messages[1]!.content).toContain("objective: check project config");
-    expect(call.messages[1]!.content).toContain("Task status: not_done");
     expect(call.messages[1]!.content).toContain("shell");
     expect(call.messages[1]!.content).toContain("Run a shell command");
+    expect(call.messages[1]!.content).toContain("Status: not_done");
   });
 
-  it("includes only latest step newFacts in direct prompt", async () => {
+  it("includes available external skills and loaded external tools distinctly in direct prompt", async () => {
+    const json = JSON.stringify({
+      done: false,
+      execution_mode: "dependent",
+      execution_contract: "Use the loaded search tool",
+      tool_plan: [
+        {
+          tool: "agent-browser.search",
+          input: { query: "latest market news" },
+          origin: "external_tool",
+          source_refs: [],
+          retry_policy: "none",
+        },
+      ],
+      success_criteria: "Search results are retrieved",
+      context: "Use the live web search capability",
+    });
+    const provider = createMockProvider(json);
+    const externalTool: ToolDefinition = {
+      name: "agent-browser.search",
+      description: "Search the public web before browsing",
+      inputSchema: {
+        type: "object",
+        required: ["query"],
+        properties: {
+          query: { type: "string" },
+        },
+      },
+      execute: vi.fn().mockResolvedValue({ ok: true, output: "ok" }),
+    };
+
+    await callDirect(
+      provider,
+      createState(),
+      [shellTool, externalTool],
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      [{
+        skillId: "agent-browser",
+        title: "Agent Browser",
+        summary: "Search the public web, browse rendered pages, and use structured help plus advanced commands for the long tail.",
+        whenToUse: "Use for public-web discovery, rendered page inspection, and browser interaction.",
+        roleLabel: "Browser Agent",
+        useFor: ["source discovery", "snapshot-driven browser interaction"],
+        notFor: ["raw shell browser strings", "setup or auth persistence flows"],
+        workflowHint: "Search first when needed, then open the page, snapshot refs, and use help before advanced.",
+        toolCount: 18,
+        toolsPreview: [
+          {
+            toolId: "help",
+            toolName: "agent-browser.help",
+            title: "Load Browser Help",
+            description: "Load version-matched docs before using a rare browser command family",
+            inputSummary: "topic: string (required)",
+          },
+        ],
+        previewTruncated: false,
+        domains: ["browser", "web", "search"],
+        tags: ["browser", "search"],
+      }],
+    );
+
+    const call = (provider.generateTurn as ReturnType<typeof vi.fn>).mock.calls[0]![0] as {
+      messages: Array<{ role: string; content: string }>;
+    };
+    const prompt = call.messages[0]!.content;
+    expect(prompt).toContain("Available tools (2):");
+    expect(prompt).toContain("agent-browser.search");
+    expect(prompt).toContain("Available external skills:");
+    expect(prompt).toContain("agent-browser [Browser Agent] (18 tools)");
+    expect(prompt).toContain("agent-browser.help");
+    expect(prompt).toContain("Direct activation: return activate_skill with skill_id \"agent-browser\"");
+    expect(prompt).toContain("If you need an external capability that is shown in Available external skills but its tools are not yet listed in Available tools");
+    expect(prompt).toContain("For inline activation: { \"kind\": \"activate_skill\"");
+    expect(prompt).not.toContain("read_skills");
+  });
+
+  it("includes compact task progress in the direct prompt", async () => {
     const json = JSON.stringify({
       done: false,
       execution_mode: "dependent",
@@ -565,6 +1106,12 @@ describe("callDirect", () => {
     });
     const provider = createMockProvider(json);
     const state = createState({
+      taskProgress: {
+        status: "not_done",
+        progressSummary: "We found the main config file but still need to inspect one nested include.",
+        keyFacts: ["config/app.yml exists", "database settings likely live in config/database.yml"],
+        evidence: ["verified read_file output from config/app.yml"],
+      },
       completedSteps: [
         {
           step: 1,
@@ -598,13 +1145,17 @@ describe("callDirect", () => {
       messages: Array<{ role: string; content: string }>;
     };
     const prompt = call.messages[0]!.content;
-    expect(prompt).toContain("Latest step newFacts (step 2):");
-    expect(prompt).toContain("tool_output:shell#1: latest output");
-    expect(prompt).toContain("tool_error:read_file#2: file not found");
-    expect(prompt).not.toContain("tool_output:shell#1: old output");
+    expect(prompt).toContain("Task progress:");
+    expect(prompt).toContain("Status: not_done");
+    expect(prompt).toContain("We found the main config file but still need to inspect one nested include.");
+    expect(prompt).toContain("config/app.yml exists");
+    expect(prompt).not.toContain("Remaining work:");
+    expect(prompt).not.toContain("Next focus:");
+    expect(prompt).toContain("Recent successful step summaries:");
+    expect(prompt).toContain("Step 2: second done");
   });
 
-  it("includes run artifact format guidance in direct prompt", async () => {
+  it("includes inline run-state guidance and avoids legacy scout guidance in direct prompt", async () => {
     const json = JSON.stringify({
       done: false,
       execution_mode: "dependent",
@@ -624,16 +1175,15 @@ describe("callDirect", () => {
       messages: Array<{ role: string; content: string }>;
     };
     const prompt = call.messages[0]!.content;
-    expect(prompt).toContain("Run artifacts root: /tmp/current-run");
-    expect(prompt).toContain("Run artifact format:");
-    expect(prompt).toContain("/tmp/current-run/state.json");
-    expect(prompt).toContain("/tmp/current-run/steps/<NNN>-act.md");
-    expect(prompt).toContain("/tmp/current-run/steps/<NNN>-verify.md");
-    expect(prompt).toContain("Only latest step newFacts are inlined here; use context_search to read older-step facts.");
-    expect(prompt).toContain("If the next action depends on an older non-latest step");
-    expect(prompt).toContain("Before using one or more external skills, you MUST use \"skills\" scope");
-    expect(prompt).toContain("If the next step depends on multiple external skills, prefer one broad \"skills\" query");
-    expect(prompt).toContain("Read the playwright and websearch skill.md commands needed for this step.");
+    expect(prompt).toContain("Automatic run state context:");
+    expect(prompt).toContain("Current Step Count: 0");
+    expect(prompt).toContain("Latest completed step full text:");
+    expect(prompt).toContain("Use the automatic run-state bundle as your first source of recent task context.");
+    expect(prompt).toContain("If the next action depends on older active-run history that is not covered by the inline bundle, return read_run_state.");
+    expect(prompt).toContain("First use read_summary_window on an explicit 10-step range.");
+    expect(prompt).toContain("Use read_step_full only when one specific step becomes important.");
+    expect(prompt).not.toContain("context_search");
+    expect(prompt).not.toContain("state.json has completedSteps");
   });
 
   it("includes verification-first and high-cost clarification guidance in direct prompt", async () => {
@@ -664,10 +1214,11 @@ describe("callDirect", () => {
     };
     const prompt = call.messages[0]!.content;
     expect(prompt).toContain("prefer checking with tools/search instead of asking the user to restate or reconfirm");
-    expect(prompt).toContain("If the next step would be expensive, time-consuming, or hard to undo");
+    expect(prompt).toContain("If the next step would be expensive, time-consuming, risky, or hard to undo");
+    expect(prompt).toContain("Pick exactly 1 outcome:");
   });
 
-  it("includes runPath in recent runs section for direct prompt", async () => {
+  it("uses the compact session context summary instead of recent task and feedback lists in direct prompt", async () => {
     const json = JSON.stringify({
       done: false,
       execution_mode: "dependent",
@@ -678,14 +1229,22 @@ describe("callDirect", () => {
     });
     const provider = createMockProvider(json);
     const state = createState({
-      recentRunLedgers: [
+      sessionContextSummary: "Relevant carry-over: prior website discussion preferred a brutalist landing page and Tailwind CSS.",
+      recentTaskSummaries: [
         {
           timestamp: "2026-02-28T05:20:15Z",
           runId: "abc",
           runPath: "/runs/abc",
-          state: "completed",
-          status: "completed",
+          runStatus: "completed",
+          taskStatus: "done",
+          objective: "Find the folder slokan",
           summary: "Found the folder slokan",
+          completedMilestones: [],
+          openWork: [],
+          blockers: [],
+          keyFacts: [],
+          evidence: [],
+          attachmentNames: [],
         },
       ],
     });
@@ -696,8 +1255,73 @@ describe("callDirect", () => {
       messages: Array<{ role: string; content: string }>;
     };
     const prompt = call.messages[0]!.content;
-    expect(prompt).toContain("Recent runs (last 1):");
-    expect(prompt).toContain("runId=abc runPath=/runs/abc");
+    expect(prompt).toContain("Session-relevant prior context:");
+    expect(prompt).toContain("brutalist landing page");
+    expect(prompt).not.toContain("Recent tasks (last 1):");
+    expect(prompt).not.toContain("runId=abc runPath=/runs/abc");
+  });
+
+  it("includes the selected dependent prior task in the direct prompt", async () => {
+    const json = JSON.stringify({
+      done: false,
+      execution_mode: "dependent",
+      intent: "continue",
+      tools_hint: ["shell"],
+      success_criteria: "done",
+      context: "",
+    });
+    const provider = createMockProvider(json);
+    const state = createState({
+      dependentTask: true,
+      dependentTaskSummary: {
+        timestamp: "2026-02-28T05:20:15Z",
+        runId: "abc",
+        runPath: "/runs/abc",
+        runStatus: "completed",
+        taskStatus: "done",
+        objective: "Find the folder slokan",
+        summary: "Found the folder slokan",
+        progressSummary: "Folder lookup completed successfully.",
+        currentFocus: "Resume from the located folder.",
+        approach: "Reuse the earlier folder lookup and continue from it.",
+        assistantResponseKind: "feedback",
+        feedbackKind: "confirmation",
+        feedbackLabel: "Use previous folder",
+        actionType: "resume_task",
+        entityHints: ["folder", "slokan"],
+        userInputNeeded: "Confirm whether to reuse the earlier folder result.",
+        nextAction: "Reuse the located folder for the next step.",
+        completedMilestones: ["Located the folder"],
+        openWork: ["Use the folder for the next step"],
+        blockers: [],
+        keyFacts: ["The folder is under /home/slokan"],
+        evidence: ["shell output showed /home/slokan"],
+        goalDoneWhen: ["The next step reuses the earlier folder correctly."],
+        goalRequiredEvidence: ["The folder path is referenced in the new work."],
+        attachmentNames: [],
+      },
+    });
+
+    await callDirect(provider, state, [shellTool]);
+
+    const call = (provider.generateTurn as ReturnType<typeof vi.fn>).mock.calls[0]![0] as {
+      messages: Array<{ role: string; content: string }>;
+    };
+    const prompt = call.messages[0]!.content;
+    expect(prompt).toContain("Run continuity:");
+    expect(prompt).toContain("This run continues a prior task from the same session.");
+    expect(prompt).toContain("- runId: abc");
+    expect(prompt).toContain("- runPath: /runs/abc");
+    expect(prompt).toContain("- objective: Find the folder slokan");
+    expect(prompt).toContain("- summary: Found the folder slokan");
+    expect(prompt).toContain("- assistantResponseKind: feedback");
+    expect(prompt).toContain("- feedbackLabel: Use previous folder");
+    expect(prompt).toContain("- entityHints: folder; slokan");
+    expect(prompt).toContain("- userInputNeeded: Confirm whether to reuse the earlier folder result.");
+    expect(prompt).toContain("- nextAction: Reuse the located folder for the next step.");
+    expect(prompt).toContain("- openWork: Use the folder for the next step");
+    expect(prompt).toContain("- keyFacts: The folder is under /home/slokan");
+    expect(prompt).toContain("- goalDoneWhen: The next step reuses the earlier folder correctly.");
   });
 
   it("includes prepared attachment guidance in direct prompt when available", async () => {
@@ -748,6 +1372,7 @@ describe("callDirect", () => {
     expect(prompt).toContain("policy.txt | kind=txt | mode=unstructured_text | status=ready");
     expect(prompt).toContain("document_query");
     expect(prompt).not.toContain("\"documents\"");
+    expect(prompt).not.toContain("Document retrieval status:");
   });
 
   it("hides active session attachments when current run attachments are already prepared", async () => {
@@ -928,7 +1553,7 @@ describe("callDirect", () => {
     };
     const repairPrompt = retryCall.messages[retryCall.messages.length - 1];
     expect(repairPrompt?.content).toContain("must not promise or narrate future work");
-    expect(repairPrompt?.content).toContain("return a step or context_search instead of completion");
+    expect(repairPrompt?.content).toContain("If action still needs to happen, return a step, activate_skill, or read_run_state instead of completion.");
   });
 
   it("rejects excuse-style completion and retries for an executable step", async () => {
@@ -975,6 +1600,110 @@ describe("callDirect", () => {
     expect(repairPrompt?.content).toContain("excuse or missing-action note");
   });
 
+  it("rejects legacy rotate_session direct responses and retries for a step", async () => {
+    const provider = createMockProvider([
+      JSON.stringify({
+        kind: "rotate_session",
+        payload: {
+          done: false,
+          rotate_session: true,
+          reason: "context full",
+          handoff_summary: "handoff details",
+        },
+      }),
+      JSON.stringify({
+        done: false,
+        execution_mode: "dependent",
+        execution_contract: "Search current India smartphone options under Rs 50,000",
+        tool_plan: [
+          {
+            tool: "websearch.search",
+            input: { query: "best smartphones under 50000 in India" },
+            origin: "external_tool",
+            source_refs: [],
+            retry_policy: "none",
+          },
+        ],
+        success_criteria: "Current smartphone options are found",
+        context: "Need a live market search",
+      }),
+    ]);
+
+    const result = await callDirect(provider, createState(), [shellTool]);
+
+    expect(result.done).toBe(false);
+    if (!result.done && "execution_contract" in result) {
+      expect(result.execution_contract).toContain("smartphone");
+    }
+
+    expect(provider.generateTurn).toHaveBeenCalledTimes(2);
+    const retryCall = (provider.generateTurn as ReturnType<typeof vi.fn>).mock.calls[1]![0] as {
+      messages: Array<{ role: string; content: string }>;
+    };
+    const repairPrompt = retryCall.messages[retryCall.messages.length - 1];
+    expect(repairPrompt?.content).toContain("Unsupported direct response kind");
+    expect(repairPrompt?.content).toContain("rotate_session");
+  });
+
+  it("rejects dependent steps with multiple tool-plan calls and retries", async () => {
+    const provider = createMockProvider([
+      JSON.stringify({
+        done: false,
+        execution_mode: "dependent",
+        execution_contract: "Inspect two files in sequence",
+        tool_plan: [
+          {
+            tool: "read_file",
+            input: { path: "one.txt" },
+            origin: "builtin",
+            source_refs: [],
+            retry_policy: "none",
+          },
+          {
+            tool: "read_file",
+            input: { path: "two.txt" },
+            origin: "builtin",
+            source_refs: [],
+            retry_policy: "none",
+          },
+        ],
+        success_criteria: "The file contents are returned",
+        context: "Need to inspect two files",
+      }),
+      JSON.stringify({
+        done: false,
+        execution_mode: "dependent",
+        execution_contract: "Inspect the first file",
+        tool_plan: [
+          {
+            tool: "read_file",
+            input: { path: "one.txt" },
+            origin: "builtin",
+            source_refs: [],
+            retry_policy: "none",
+          },
+        ],
+        success_criteria: "The first file contents are returned",
+        context: "Start with the first file",
+      }),
+    ]);
+
+    const result = await callDirect(provider, createState(), [shellTool]);
+
+    expect(result.done).toBe(false);
+    if (!result.done && "execution_contract" in result) {
+      expect(result.execution_contract).toContain("first file");
+      expect(result.tool_plan).toHaveLength(1);
+    }
+
+    expect(provider.generateTurn).toHaveBeenCalledTimes(2);
+    const retryCall = (provider.generateTurn as ReturnType<typeof vi.fn>).mock.calls[1]![0] as {
+      messages: Array<{ role: string; content: string }>;
+    };
+    const repairPrompt = retryCall.messages[retryCall.messages.length - 1];
+    expect(repairPrompt?.content).toContain("Dependent steps must contain exactly one tool call");
+  });
+
   it("throws a controller format error after two invalid controller responses", async () => {
     const provider = createMockProvider([
       "I need to inspect the mail first.",
@@ -985,10 +1714,31 @@ describe("callDirect", () => {
     await expect(run).rejects.toThrow(ControllerResponseFormatError);
     await expect(run).rejects.toThrow(/Invalid controller response format at direct stage/);
   });
+
+  it("returns read_run_state from direct when older active-run history is needed", async () => {
+    const provider = createMockProvider(JSON.stringify({
+      kind: "read_run_state",
+      payload: {
+        done: false,
+        read_run_state: true,
+        action: "read_summary_window",
+        window: { from: 1, to: 3 },
+        reason: "Need to inspect the earlier failed steps",
+      },
+    }));
+
+    const result = await callDirect(provider, createState(), [shellTool]);
+    expect(result.done).toBe(false);
+    if (!result.done && "read_run_state" in result) {
+      expect(result.read_run_state).toBe(true);
+      expect(result.action).toBe("read_summary_window");
+      expect(result.window).toEqual({ from: 1, to: 3 });
+    }
+  });
 });
 
 describe("callReEval", () => {
-  it("includes success and failure context and returns new approach", async () => {
+  it("uses a compact task-progress and serial-failure prompt for re-eval", async () => {
     const json = JSON.stringify({
       done: false,
       reeval: true,
@@ -996,51 +1746,111 @@ describe("callReEval", () => {
     });
     const provider = createMockProvider(json);
     const state = createState({
-      consecutiveFailures: 2,
+      consecutiveFailures: 3,
+      dependentTask: true,
+      dependentTaskSummary: {
+        timestamp: "2026-02-28T05:20:15Z",
+        runId: "dep-1",
+        runPath: "/runs/dep-1",
+        runStatus: "completed",
+        taskStatus: "done",
+        objective: "Inspect blocked filesystem roots",
+        summary: "Earlier filesystem sweep found blocked roots that should be avoided.",
+        completedMilestones: ["Blocked roots identified"],
+        openWork: ["Pivot to a healthy search root"],
+        blockers: ["/tmp/secret-a"],
+        keyFacts: ["Earlier sweep hit /tmp/secret-a"],
+        evidence: ["permission denied on /tmp/secret-a"],
+        attachmentNames: [],
+      },
+      taskProgress: {
+        status: "not_done",
+        progressSummary: "We keep failing to inspect the blocked target.",
+        keyFacts: [],
+        evidence: [],
+      },
       completedSteps: [
         {
           step: 1,
-          intent: "read config",
-          outcome: "success",
-          summary: "Read package config",
-          newFacts: ["package.json exists"],
+          intent: "search root A",
+          outcome: "failed",
+          summary: "Permission denied on /tmp/secret-a",
+          newFacts: [],
           artifacts: [],
-          toolSuccessCount: 1,
-          toolFailureCount: 0,
+          toolSuccessCount: 0,
+          toolFailureCount: 1,
+          failureType: "permission",
+          blockedTargets: ["/tmp/secret-a"],
+          stoppedEarlyReason: "planned_call_failed",
         },
         {
           step: 2,
-          intent: "scan /tmp",
           outcome: "failed",
-          summary: "Permission denied on /tmp/secret",
+          summary: "Permission denied on /tmp/secret-b",
           newFacts: [],
           artifacts: [],
           toolSuccessCount: 0,
           toolFailureCount: 1,
           failureType: "permission",
           stoppedEarlyReason: "repeated_identical_failure",
+          blockedTargets: ["/tmp/secret-b"],
         },
-      ],
-      failedApproaches: [
         {
-          step: 1,
-          intent: "search /tmp",
-          tools_hint: ["shell"],
+          step: 3,
+          intent: "search root C",
+          outcome: "success",
+          summary: "A healthy path was inspected once.",
+          newFacts: ["src/config exists"],
+          artifacts: [],
+          toolSuccessCount: 1,
+          toolFailureCount: 0,
+        },
+        {
+          step: 4,
+          intent: "search root D",
+          outcome: "failed",
+          summary: "Permission denied on /tmp/secret-d",
+          newFacts: [],
+          artifacts: [],
+          toolSuccessCount: 0,
+          toolFailureCount: 1,
           failureType: "permission",
-          reason: "EACCES",
-          blockedTargets: ["/tmp/secret"],
+          stoppedEarlyReason: "planned_call_failed",
+          blockedTargets: ["/tmp/secret-d"],
+        },
+        {
+          step: 5,
+          intent: "search root E",
+          outcome: "failed",
+          summary: "Permission denied on /tmp/secret-e",
+          newFacts: [],
+          artifacts: [],
+          toolSuccessCount: 0,
+          toolFailureCount: 1,
+          failureType: "permission",
+          stoppedEarlyReason: "planned_call_failed",
+          blockedTargets: ["/tmp/secret-e"],
+        },
+        {
+          step: 6,
+          intent: "search root F",
+          outcome: "failed",
+          summary: "Permission denied on /tmp/secret-f",
+          newFacts: [],
+          artifacts: [],
+          toolSuccessCount: 0,
+          toolFailureCount: 1,
+          failureType: "permission",
+          stoppedEarlyReason: "repeated_identical_failure",
+          blockedTargets: ["/tmp/secret-f"],
         },
       ],
-      recentContextSearches: [
-        {
-          scope: "run_artifacts",
-          query: "What happened in step 2?",
-          status: "success",
-          context: "Step 2 failed because /tmp/secret is blocked.",
-          sources: ["/tmp/test/steps/002-verify.md"],
-          confidence: 0.92,
-          iteration: 2,
-        },
+      sessionContextSummary: "Relevant carry-over: the blocked paths came from an earlier filesystem sweep, but the user still wants the same config search.",
+      sessionHistory: [
+        { role: "user", content: "earlier question", timestamp: "2026-02-28T05:00:00Z", sessionPath: "/s/1" },
+      ],
+      recentRunLedgers: [
+        { timestamp: "2026-02-28T05:00:10Z", runId: "prev1", runPath: "/runs/prev1", state: "completed", status: "completed", summary: "Answered earlier question" },
       ],
     });
 
@@ -1048,7 +1858,6 @@ describe("callReEval", () => {
       provider,
       state,
       [shellTool],
-      "Scout found that step 2 failed because /tmp/secret is blocked",
       undefined,
       "system context here",
     );
@@ -1067,50 +1876,46 @@ describe("callReEval", () => {
     expect(call.messages[0]!.content).toBe("system context here");
     expect(call.messages[1]!.role).toBe("user");
     expect(call.messages[1]!.content).toContain("Re-evaluate this task");
-    expect(call.messages[1]!.content).toContain("Run artifacts root: /tmp/test");
-    expect(call.messages[1]!.content).toContain("Previous successful steps");
-    expect(call.messages[1]!.content).toContain("Read package config");
-    expect(call.messages[1]!.content).toContain("Failed steps");
-    expect(call.messages[1]!.content).toContain("Failed Approaches");
-    expect(call.messages[1]!.content).toContain("Recent context_search results (latest 5):");
-    expect(call.messages[1]!.content).toContain("query=What happened in step 2?");
-    expect(call.messages[1]!.content).toContain("Retrieved context from prior context_search:");
-    expect(call.messages[1]!.content).toContain("If the revised approach depends on an older non-latest step");
-    expect(call.messages[1]!.content).toContain(
-      "For context search: { \"kind\": \"context_search\", \"payload\": { \"done\": false, \"context_search\": true",
-    );
+    expect(call.messages[1]!.content).toContain("Session-relevant prior context:");
+    expect(call.messages[1]!.content).toContain("blocked paths came from an earlier filesystem sweep");
+    expect(call.messages[1]!.content).toContain("Run continuity:");
+    expect(call.messages[1]!.content).toContain("- runId: dep-1");
+    expect(call.messages[1]!.content).toContain("Earlier filesystem sweep found blocked roots");
+    expect(call.messages[1]!.content).toContain("Task progress:");
+    expect(call.messages[1]!.content).toContain("Status: not_done");
+    expect(call.messages[1]!.content).toContain("We keep failing to inspect the blocked target.");
+    expect(call.messages[1]!.content).toContain("Recent consecutive failed steps");
+    expect(call.messages[1]!.content).toContain("Step 4");
+    expect(call.messages[1]!.content).toContain("Step 5");
+    expect(call.messages[1]!.content).toContain("Step 6");
+    expect(call.messages[1]!.content).not.toContain("Step 1");
+    expect(call.messages[1]!.content).not.toContain("Step 3");
+    expect(call.messages[1]!.content).not.toContain("Session conversation so far:");
+    expect(call.messages[1]!.content).not.toContain("Recent runs (last");
+    expect(call.messages[1]!.content).not.toContain("Automatic run state context:");
+    expect(call.messages[1]!.content).toContain("If you still need older active-run context before choosing a new approach, return read_run_state.");
+    expect(call.messages[1]!.content).toContain("Read a summary window first. Read a full step only when one specific step looks important.");
     expect(call.messages[1]!.content).toContain("Original goal:");
     expect(call.messages[1]!.content).toContain("objective: greet user");
   });
 
-  it("includes session history in re-eval prompt", async () => {
-    const json = JSON.stringify({
-      done: false,
-      reeval: true,
-      approach: "try different strategy",
-    });
-    const provider = createMockProvider(json);
-    const state = createState({
-      consecutiveFailures: 2,
-      sessionHistory: [
-        { role: "user", content: "earlier question", timestamp: "2026-02-28T05:00:00Z", sessionPath: "/s/1" },
-      ],
-      recentRunLedgers: [
-        { timestamp: "2026-02-28T05:00:10Z", runId: "prev1", runPath: "/runs/prev1", state: "completed", status: "completed", summary: "Answered earlier question" },
-      ],
-    });
+  it("returns read_run_state from re-eval when older active-run history is needed", async () => {
+    const provider = createMockProvider(JSON.stringify({
+      kind: "read_run_state",
+      payload: {
+        done: false,
+        read_run_state: true,
+        action: "read_step_full",
+        step: 3,
+      },
+    }));
 
-    await callReEval(provider, state, [shellTool]);
-
-    const call = (provider.generateTurn as ReturnType<typeof vi.fn>).mock.calls[0]![0] as {
-      messages: Array<{ role: string; content: string }>;
-    };
-    expect(call.messages[0]!.role).toBe("user");
-    const prompt = call.messages[0]!.content;
-    expect(prompt).toContain("Session conversation so far:");
-    expect(prompt).toContain("earlier question");
-    expect(prompt).toContain("Recent runs (last 1):");
-    expect(prompt).toContain("runId=prev1");
-    expect(prompt).toContain("runPath=/runs/prev1");
+    const result = await callReEval(provider, createState({ consecutiveFailures: 3 }), [shellTool]);
+    expect(result.done).toBe(false);
+    if (!result.done && "read_run_state" in result) {
+      expect(result.read_run_state).toBe(true);
+      expect(result.action).toBe("read_step_full");
+      expect(result.step).toBe(3);
+    }
   });
 });

@@ -110,6 +110,9 @@ export function parseAgentMailWebhook(payload: unknown, rawBody: string): Parsed
     summary,
     intent: {
       kind: "task",
+      eventClass: "message_received",
+      trustTier: "external",
+      effectLevel: "observe",
       requestedAction: "review_incoming_message",
       createdBy: "external",
     },

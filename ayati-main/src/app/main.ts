@@ -1,5 +1,4 @@
 import { dirname, resolve } from "node:path";
-import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { IVecEngine } from "../ivec/index.js";
 import { loadTelegramRuntimeConfig, TelegramServer, UploadServer, WsServer } from "../server/index.js";
@@ -7,7 +6,11 @@ import pluginFactories from "../config/plugins.js";
 import providerFactory from "../config/provider.js";
 import { initializeLlmRuntimeConfig } from "../config/llm-runtime-config.js";
 import {
+  AdapterRegistry,
+  InboundQueueStore,
   PluginRegistry,
+  SystemEventWorker,
+  SystemIngressService,
   loadPlugins,
   loadProvider,
   normalizeSystemEvent,
@@ -34,7 +37,8 @@ import { createAttachmentSkill } from "../skills/builtins/attachments/index.js";
 import { createDatasetSkill } from "../skills/builtins/datasets/index.js";
 import { createDocumentSkill } from "../skills/builtins/documents/index.js";
 import { PulseScheduler, PulseStore } from "../pulse/index.js";
-import { scanExternalSkills, stopExternalSkills, buildExternalSkillsBlock } from "../skills/external/index.js";
+import { createSkillBrokerSkill } from "../skills/builtins/skill-broker/index.js";
+import { createExternalSkillBroker, ExternalSkillRegistry } from "../skills/external/index.js";
 import { DocumentStore } from "../documents/document-store.js";
 import { DocumentContextBackend } from "../documents/document-context-backend.js";
 import { OpenAiDocumentEmbedder } from "../documents/openai-document-embedder.js";
@@ -118,11 +122,17 @@ export async function main(): Promise<void> {
   });
   sessionMemory.initialize(CLIENT_ID);
 
+  const adapterRegistry = new AdapterRegistry();
+  const inboundQueueStore = new InboundQueueStore({
+    dataDir: resolve(projectRoot, "data", "memory"),
+  });
+  inboundQueueStore.start();
+  const systemIngress = new SystemIngressService({
+    adapterRegistry,
+    queueStore: inboundQueueStore,
+  });
+
   const pulseStore = new PulseStore();
-  const externalSkills = await scanExternalSkills([
-    { skillsDir: resolve(projectRoot, "data", "skills"), source: "project" },
-    { skillsDir: resolve(homedir(), ".agents", "skills"), source: "global" },
-  ]);
 
   const identitySkill = createIdentitySkill({
     onSoulUpdated: (updatedSoul) => {
@@ -152,6 +162,7 @@ export async function main(): Promise<void> {
   });
 
   let toolExecutor: ToolExecutor;
+  const registry = new PluginRegistry();
 
   const wsServer = new WsServer({
     onMessage: (_transportClientId, data) => engine?.handleMessage(CLIENT_ID, data),
@@ -161,10 +172,7 @@ export async function main(): Promise<void> {
     clientId: CLIENT_ID,
     store: pulseStore,
     onReminderDue: async (event) => {
-      if (!engine) {
-        throw new Error("Engine is not initialized");
-      }
-      await engine.handleSystemEvent(CLIENT_ID, normalizeSystemEvent(event));
+      await systemIngress.ingestInternalEvent(CLIENT_ID, event);
     },
   });
   const documentStore = new DocumentStore({
@@ -215,7 +223,7 @@ export async function main(): Promise<void> {
   const datasetSkill = createDatasetSkill({ preparedAttachmentService });
   const documentSkill = createDocumentSkill({ preparedAttachmentService });
 
-  const allToolDefs = [
+  const baseToolDefs = [
     ...enabledTools,
     ...identitySkill.tools,
     ...recallSkill.tools,
@@ -225,9 +233,35 @@ export async function main(): Promise<void> {
     ...datasetSkill.tools,
     ...documentSkill.tools,
   ];
-  toolExecutor = createToolExecutor(allToolDefs);
+  toolExecutor = createToolExecutor(baseToolDefs);
 
-  staticContext = await loadStaticContext({ toolDefinitions: allToolDefs });
+  const externalSkillBroker = createExternalSkillBroker({
+    roots: [
+      { skillsDir: resolve(projectRoot, "data", "skills"), source: "project" },
+    ],
+    cachePath: resolve(projectRoot, "data", "skills", "catalog.json"),
+    secretMappingPath: resolve(projectRoot, "context", "skill-secrets.json"),
+    policyPath: resolve(projectRoot, "context", "skill-policy.json"),
+    toolExecutor,
+  });
+  await externalSkillBroker.initialize();
+  const skillBrokerSkill = createSkillBrokerSkill(externalSkillBroker);
+  toolExecutor.mount?.("static:skill-broker", skillBrokerSkill.tools, {
+    scope: "static",
+    description: skillBrokerSkill.description,
+  });
+  const runtimeToolDefs = [...baseToolDefs, ...skillBrokerSkill.tools];
+
+  const externalSkillRegistry = new ExternalSkillRegistry({
+    roots: [
+      { skillsDir: resolve(projectRoot, "data", "skills"), source: "project" },
+    ],
+    secretMappingPath: resolve(projectRoot, "context", "skill-secrets.json"),
+    policyPath: resolve(projectRoot, "context", "skill-policy.json"),
+  });
+  await externalSkillRegistry.initialize();
+
+  staticContext = await loadStaticContext({ toolDefinitions: runtimeToolDefs });
   staticContext.userProfile = await wikiStore.syncProfileFromWiki(staticContext.userProfile);
   staticContext.skillBlocks.push({ id: identitySkill.id, content: identitySkill.promptBlock });
   staticContext.skillBlocks.push({ id: recallSkill.id, content: recallSkill.promptBlock });
@@ -236,6 +270,7 @@ export async function main(): Promise<void> {
   staticContext.skillBlocks.push({ id: attachmentSkill.id, content: attachmentSkill.promptBlock });
   staticContext.skillBlocks.push({ id: datasetSkill.id, content: datasetSkill.promptBlock });
   staticContext.skillBlocks.push({ id: documentSkill.id, content: documentSkill.promptBlock });
+  staticContext.skillBlocks.push({ id: skillBrokerSkill.id, content: skillBrokerSkill.promptBlock });
 
   wikiEvolver = new WikiEvolver({
     provider,
@@ -249,10 +284,6 @@ export async function main(): Promise<void> {
       engine?.invalidateStaticTokenCache();
     },
   });
-
-  if (externalSkills.length > 0) {
-    staticContext.skillBlocks.push(buildExternalSkillsBlock(externalSkills));
-  }
 
   const uploadServer = new UploadServer({
     uploadsDir: documentStore.uploadsDir,
@@ -284,6 +315,8 @@ export async function main(): Promise<void> {
     provider,
     staticContext,
     toolExecutor,
+    externalSkillBroker,
+    externalSkillRegistry,
     sessionMemory,
     dataDir: resolve(projectRoot, "data"),
     documentStore,
@@ -291,11 +324,16 @@ export async function main(): Promise<void> {
     documentContextBackend,
     systemEventPolicy,
   });
-  const registry = new PluginRegistry();
+  const systemEventWorker = new SystemEventWorker({
+    queueStore: inboundQueueStore,
+    processEvent: async (clientId, event) => {
+      if (!engine) {
+        throw new Error("Engine is not initialized");
+      }
+      await engine.handleSystemEvent(clientId, event);
+    },
+  });
   const publishSystemEvent: PluginRuntimeContext["publishSystemEvent"] = async (event) => {
-    if (!engine) {
-      throw new Error("Engine is not initialized");
-    }
     devLog(
       `System event ingress received: source=${event.source} eventName=${event.eventName} eventId=${event.eventId ?? "generated"} summary=${event.summary}`,
     );
@@ -303,12 +341,11 @@ export async function main(): Promise<void> {
     devLog(
       `System event normalized: source=${normalized.source} eventName=${normalized.eventName} eventId=${normalized.eventId} receivedAt=${normalized.receivedAt}`,
     );
-    await engine.handleSystemEvent(CLIENT_ID, normalized);
-    devLog(`System event handed to engine: eventId=${normalized.eventId} source=${normalized.source}/${normalized.eventName}`);
-    return {
-      accepted: true,
-      event: normalized,
-    };
+    const result = await systemIngress.ingestInternalEvent(CLIENT_ID, normalized);
+    devLog(
+      `System event handed to ingress queue: eventId=${normalized.eventId} source=${normalized.source}/${normalized.eventName} queued=${result.queued !== false}`,
+    );
+    return result;
   };
   const pluginRuntimeContext: PluginRuntimeContext = {
     clientId: CLIENT_ID,
@@ -316,6 +353,8 @@ export async function main(): Promise<void> {
     projectRoot,
     publishSystemEvent,
     emitSystemEvent: publishSystemEvent,
+    registerSystemAdapter: (adapter) => adapterRegistry.register(adapter),
+    ingestExternalRequest: async (request) => await systemIngress.ingestExternalRequest(request),
   };
 
   const plugins = await loadPlugins(pluginFactories);
@@ -324,6 +363,7 @@ export async function main(): Promise<void> {
   }
 
   await engine.start();
+  systemEventWorker.start();
   await wsServer.start();
   await uploadServer.start();
   if (telegramServer) {
@@ -342,10 +382,11 @@ export async function main(): Promise<void> {
     }
     await uploadServer.stop();
     await wsServer.stop();
+    await systemEventWorker.stop();
+    inboundQueueStore.stop();
     await sessionMemory.shutdown();
     await memoryIndexer?.shutdown();
     await engine.stop();
-    await stopExternalSkills(externalSkills);
   };
 
   process.on("SIGINT", () => void shutdown());

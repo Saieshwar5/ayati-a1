@@ -5,9 +5,18 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { SoulContext } from "../../src/context/types.js";
 
 const VALID_SOUL: SoulContext = {
-  version: 2,
-  soul: { name: "Ayati", identity: "test identity", personality: ["curious"], values: ["honesty"] },
-  voice: { tone: ["warm"], style: ["casual"], quirks: ["says okay so"], never_do: ["never be rude"] },
+  version: 3,
+  identity: {
+    name: "Ayati",
+    role: "General-purpose autonomous AI teammate",
+    responsibility: "Help the user complete useful work.",
+  },
+  behavior: {
+    traits: ["curious"],
+    working_style: ["verify important facts"],
+    communication: ["warm and direct"],
+  },
+  boundaries: ["never be rude"],
 };
 
 let tmpDir: string;
@@ -60,7 +69,13 @@ async function buildTool(overrides?: { onSoulUpdated?: (s: SoulContext) => void 
 
       await io.backupFile(soulPath, historyDir, "soul");
 
-      const updated: SoulContext = { ...raw, soul: { ...raw.soul, name: trimmed } };
+      const updated: SoulContext = {
+        ...raw,
+        identity: {
+          ...raw.identity,
+          name: trimmed,
+        },
+      };
       await io.writeJsonFileAtomic(soulPath, updated);
 
       overrides?.onSoulUpdated?.(updated);
@@ -68,7 +83,7 @@ async function buildTool(overrides?: { onSoulUpdated?: (s: SoulContext) => void 
       return {
         ok: true,
         output: `Name changed to "${trimmed}".`,
-        meta: { previousName: raw.soul.name ?? "", newName: trimmed },
+        meta: { previousName: raw.identity.name ?? "", newName: trimmed },
       };
     },
   };
@@ -125,7 +140,7 @@ describe("rename_agent tool", () => {
       expect(result.output).toContain("Nova");
 
       const ondisk = JSON.parse(await readFile(soulPath, "utf-8")) as SoulContext;
-      expect(ondisk.soul.name).toBe("Nova");
+      expect(ondisk.identity.name).toBe("Nova");
     });
 
     it("preserves all other soul fields", async () => {
@@ -136,10 +151,10 @@ describe("rename_agent tool", () => {
 
       const ondisk = JSON.parse(await readFile(soulPath, "utf-8")) as SoulContext;
       expect(ondisk.version).toBe(VALID_SOUL.version);
-      expect(ondisk.soul.identity).toBe(VALID_SOUL.soul.identity);
-      expect(ondisk.soul.personality).toEqual(VALID_SOUL.soul.personality);
-      expect(ondisk.soul.values).toEqual(VALID_SOUL.soul.values);
-      expect(ondisk.voice).toEqual(VALID_SOUL.voice);
+      expect(ondisk.identity.role).toBe(VALID_SOUL.identity.role);
+      expect(ondisk.identity.responsibility).toBe(VALID_SOUL.identity.responsibility);
+      expect(ondisk.behavior).toEqual(VALID_SOUL.behavior);
+      expect(ondisk.boundaries).toEqual(VALID_SOUL.boundaries);
     });
 
     it("trims whitespace from the name", async () => {
@@ -150,7 +165,7 @@ describe("rename_agent tool", () => {
 
       expect(result.ok).toBe(true);
       const ondisk = JSON.parse(await readFile(soulPath, "utf-8")) as SoulContext;
-      expect(ondisk.soul.name).toBe("Nova");
+      expect(ondisk.identity.name).toBe("Nova");
     });
   });
 
@@ -164,9 +179,9 @@ describe("rename_agent tool", () => {
 
       expect(callback).toHaveBeenCalledOnce();
       const arg = callback.mock.calls[0]![0] as SoulContext;
-      expect(arg.soul.name).toBe("Nova");
-      expect(arg.soul.identity).toBe(VALID_SOUL.soul.identity);
-      expect(arg.voice).toEqual(VALID_SOUL.voice);
+      expect(arg.identity.name).toBe("Nova");
+      expect(arg.identity.role).toBe(VALID_SOUL.identity.role);
+      expect(arg.behavior).toEqual(VALID_SOUL.behavior);
     });
   });
 

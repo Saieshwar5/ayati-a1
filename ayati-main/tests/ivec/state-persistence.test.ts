@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { mkdtempSync, rmSync, existsSync } from "node:fs";
+import { mkdtempSync, rmSync, existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
@@ -7,6 +7,10 @@ import {
   writeJSON,
   writeState,
   readState,
+  queueStateWrite,
+  flushStateWrites,
+  queueStepMarkdownWrite,
+  writeStepArtifactText,
 } from "../../src/ivec/state-persistence.js";
 import type { LoopState } from "../../src/ivec/types.js";
 
@@ -49,14 +53,18 @@ describe("state-persistence", () => {
       const runPath = initRunDirectory(dataDir, "run-456");
       const state: LoopState = {
         runId: "run-456",
+        runClass: "interaction",
         userMessage: "hello",
         goal: goalContract("greet"),
         approach: "direct",
-        taskStatus: "not_done",
-        progressLedger: {
-          lastSuccessfulStepSummary: "",
-          lastStepFacts: [],
-          taskEvidence: [],
+        sessionContextSummary: "",
+        dependentTask: false,
+        dependentTaskSummary: null,
+        taskProgress: {
+          status: "not_done",
+          progressSummary: "",
+          keyFacts: [],
+          evidence: [],
         },
         status: "running",
         finalOutput: "",
@@ -70,7 +78,7 @@ describe("state-persistence", () => {
         failedApproaches: [],
         sessionHistory: [],
         recentRunLedgers: [],
-        openFeedbacks: [],
+        recentTaskSummaries: [],
         recentSystemActivity: [],
       };
       writeState(runPath, state);
@@ -80,25 +88,111 @@ describe("state-persistence", () => {
       expect(loaded!.finalOutput).toBe("");
       expect(loaded).not.toHaveProperty("sessionHistory");
       expect(loaded).not.toHaveProperty("recentRunLedgers");
+      expect(loaded).not.toHaveProperty("recentTaskSummaries");
     } finally {
       cleanup();
     }
   });
 
-  it("readState strips transient context from legacy state files", () => {
+  it("queues async state snapshots and flushes the latest persisted state", async () => {
     const dataDir = makeTmpDir();
     try {
-      const runPath = initRunDirectory(dataDir, "run-legacy");
-      const legacyState: LoopState = {
-        runId: "run-legacy",
+      const runPath = initRunDirectory(dataDir, "run-async");
+      const state: LoopState = {
+        runId: "run-async",
+        runClass: "interaction",
         userMessage: "hello",
         goal: goalContract("greet"),
         approach: "direct",
-        taskStatus: "not_done",
-        progressLedger: {
-          lastSuccessfulStepSummary: "",
-          lastStepFacts: [],
-          taskEvidence: [],
+        sessionContextSummary: "",
+        dependentTask: true,
+        dependentTaskSummary: {
+          timestamp: "2026-03-07T00:00:00.000Z",
+          runId: "dep-1",
+          runPath: "/tmp/dep-1",
+          runStatus: "completed",
+          taskStatus: "done",
+          objective: "Earlier task",
+          summary: "Earlier task finished",
+          completedMilestones: ["done"],
+          openWork: [],
+          blockers: [],
+          keyFacts: ["fact"],
+          evidence: ["proof"],
+          attachmentNames: [],
+        },
+        taskProgress: {
+          status: "not_done",
+          progressSummary: "",
+          keyFacts: [],
+          evidence: [],
+        },
+        status: "running",
+        finalOutput: "",
+        iteration: 1,
+        maxIterations: 15,
+        consecutiveFailures: 0,
+        approachChangeCount: 0,
+        completedSteps: [],
+        recentContextSearches: [],
+        runPath,
+        failedApproaches: [],
+        sessionHistory: [{ role: "user", content: "hello", timestamp: "", sessionPath: "" }],
+        recentRunLedgers: [{ timestamp: "2026-03-07T00:00:00.000Z", runId: "r-1", runPath: "/tmp/r-1", state: "completed" }],
+        recentTaskSummaries: [{ runId: "r-1", runPath: "/tmp/r-1", status: "completed", summary: "done" }],
+        activeSessionAttachments: [],
+        recentSystemActivity: [],
+      };
+
+      const firstWrite = queueStateWrite(runPath, state);
+      state.finalOutput = "latest";
+      state.iteration = 2;
+      const secondWrite = queueStateWrite(runPath, state);
+
+      expect(existsSync(join(runPath, "state.json"))).toBe(false);
+
+      await Promise.all([firstWrite, secondWrite]);
+      await flushStateWrites(runPath);
+
+      const persisted = JSON.parse(readFileSync(join(runPath, "state.json"), "utf-8")) as {
+        dependentTask?: boolean;
+        dependentTaskSummary?: { runId?: string };
+        finalOutput?: string;
+        iteration?: number;
+        sessionHistory?: unknown;
+        recentRunLedgers?: unknown;
+        recentTaskSummaries?: unknown;
+      };
+      expect(persisted.dependentTask).toBe(true);
+      expect(persisted.dependentTaskSummary?.runId).toBe("dep-1");
+      expect(persisted.finalOutput).toBe("latest");
+      expect(persisted.iteration).toBe(2);
+      expect(persisted).not.toHaveProperty("sessionHistory");
+      expect(persisted).not.toHaveProperty("recentRunLedgers");
+      expect(persisted).not.toHaveProperty("recentTaskSummaries");
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("readState strips transient context from state files", () => {
+    const dataDir = makeTmpDir();
+    try {
+      const runPath = initRunDirectory(dataDir, "run-current");
+      const persistedState = {
+        runId: "run-current",
+        runClass: "interaction",
+        userMessage: "hello",
+        goal: goalContract("greet"),
+        approach: "direct",
+        sessionContextSummary: "",
+        dependentTask: false,
+        dependentTaskSummary: null,
+        taskProgress: {
+          status: "not_done",
+          progressSummary: "",
+          keyFacts: [],
+          evidence: [],
         },
         status: "running",
         finalOutput: "",
@@ -112,16 +206,17 @@ describe("state-persistence", () => {
         failedApproaches: [],
         sessionHistory: [{ role: "user", content: "hi", timestamp: "2026-03-07T00:00:00.000Z", sessionPath: "sessions/x.md" }],
         recentRunLedgers: [{ timestamp: "2026-03-07T00:00:00.000Z", runId: "r-1", runPath: "/tmp/r-1", state: "completed", status: "completed", summary: "done" }],
-        openFeedbacks: [],
+        recentTaskSummaries: [],
         recentSystemActivity: [],
       };
 
-      writeJSON(runPath, "state.json", legacyState);
+      writeJSON(runPath, "state.json", persistedState);
       const loaded = readState(runPath);
       expect(loaded).not.toBeNull();
-      expect(loaded!.runId).toBe("run-legacy");
+      expect(loaded!.runId).toBe("run-current");
       expect(loaded).not.toHaveProperty("sessionHistory");
       expect(loaded).not.toHaveProperty("recentRunLedgers");
+      expect(loaded).not.toHaveProperty("recentTaskSummaries");
     } finally {
       cleanup();
     }
@@ -133,6 +228,22 @@ describe("state-persistence", () => {
       const runPath = initRunDirectory(dataDir, "run-missing");
       const result = readState(join(runPath, "nonexistent"));
       expect(result).toBeNull();
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("writes queued step markdown and raw text artifacts", async () => {
+    const dataDir = makeTmpDir();
+    try {
+      const runPath = initRunDirectory(dataDir, "run-artifacts");
+      await Promise.all([
+        queueStepMarkdownWrite(runPath, "steps/001-act.md", "# Act Output\n\nhello"),
+        writeStepArtifactText(runPath, "steps/001-call-01-raw.txt", "raw-output"),
+      ]);
+
+      expect(existsSync(join(runPath, "steps", "001-act.md"))).toBe(true);
+      expect(existsSync(join(runPath, "steps", "001-call-01-raw.txt"))).toBe(true);
     } finally {
       cleanup();
     }

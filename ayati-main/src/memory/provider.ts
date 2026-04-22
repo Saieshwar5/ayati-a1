@@ -1,4 +1,5 @@
 import type {
+  AssistantMessageRecordInput,
   SessionMemory,
   SessionStatus,
   MemoryRunHandle,
@@ -31,7 +32,13 @@ export const noopSessionMemory: SessionMemory = {
   recordToolResult(_clientId: string, _input: ToolCallResultRecordInput): void {
     return;
   },
-  recordAssistantFinal(): void {
+  recordAssistantFinal(
+    _clientId?: string,
+    _runId?: string,
+    _sessionId?: string,
+    _content?: string,
+    _metadata?: AssistantMessageRecordInput,
+  ): void {
     return;
   },
   recordRunFailure(): void {
@@ -49,13 +56,7 @@ export const noopSessionMemory: SessionMemory = {
   recordTaskSummary(_clientId: string, _input: TaskSummaryRecordInput): void {
     return;
   },
-  recordAssistantFeedback(): void {
-    return;
-  },
-  recordFeedbackOpened(): null {
-    return null;
-  },
-  resolveOpenFeedback(): void {
+  queueTaskSummary(_clientId: string, _input: TaskSummaryRecordInput): void {
     return;
   },
   recordAssistantNotification(): void {
@@ -64,12 +65,18 @@ export const noopSessionMemory: SessionMemory = {
   getSessionStatus(): null {
     return null;
   },
+  updateSessionLifecycle(): void {
+    return;
+  },
+  flushPersistence(): Promise<void> {
+    return Promise.resolve();
+  },
   getPromptMemoryContext(): PromptMemoryContext {
     return {
       conversationTurns: [],
       previousSessionSummary: "",
+      recentTaskSummaries: [],
       activeAttachments: [],
-      openFeedbacks: [],
       recentSystemActivity: [],
     };
   },

@@ -43,7 +43,7 @@ export interface IdentitySkillDeps {
 function createRenameTool(deps: IdentitySkillDeps): ToolDefinition {
   return {
     name: "rename_agent",
-    description: "Change the agent's display name. Only modifies soul.name in soul.json.",
+    description: "Change the agent's display name. Only modifies identity.name in soul.json.",
     inputSchema: {
       type: "object",
       required: ["newName"],
@@ -66,7 +66,13 @@ function createRenameTool(deps: IdentitySkillDeps): ToolDefinition {
 
       await backupFile(soulPath, historyDir, "soul");
 
-      const updated: SoulContext = { ...raw, soul: { ...raw.soul, name: parsed.newName } };
+      const updated: SoulContext = {
+        ...raw,
+        identity: {
+          ...raw.identity,
+          name: parsed.newName,
+        },
+      };
       await writeJsonFileAtomic(soulPath, updated);
 
       deps.onSoulUpdated(updated);
@@ -74,7 +80,7 @@ function createRenameTool(deps: IdentitySkillDeps): ToolDefinition {
       return {
         ok: true,
         output: `Name changed to "${parsed.newName}".`,
-        meta: { previousName: raw.soul.name ?? "", newName: parsed.newName },
+        meta: { previousName: raw.identity.name ?? "", newName: parsed.newName },
       };
     },
   };

@@ -24,7 +24,7 @@ describe("MemoryManager event-window flow", () => {
     }
   });
 
-  it("keeps the same session even after 20 countable events", () => {
+  it("keeps the same session even after 20 countable events", async () => {
     tmpDir = createTmpDir();
     const sm = new SessionManager({
       dataDir: tmpDir,
@@ -47,10 +47,10 @@ describe("MemoryManager event-window flow", () => {
     expect(prompt.previousSessionSummary).toBe("");
     // All turns are returned — no sliding window cap
     expect(prompt.conversationTurns.length).toBeGreaterThanOrEqual(21);
-    sm.shutdown();
+    await sm.shutdown();
   });
 
-  it("does not rotate by token limit alone", () => {
+  it("does not rotate by token limit alone", async () => {
     tmpDir = createTmpDir();
     const sm = new SessionManager({
       dataDir: tmpDir,
@@ -65,6 +65,6 @@ describe("MemoryManager event-window flow", () => {
 
     const second = sm.beginRun("u2", "next request");
     expect(second.sessionId).toBe(first.sessionId);
-    sm.shutdown();
+    await sm.shutdown();
   });
 });

@@ -1,154 +1,95 @@
 import { describe, expect, it } from "vitest";
-import type { ConversationTurn } from "../../src/memory/types.js";
 import {
   evaluateSessionRotation,
-  isLikelyTopicShift,
-  isSmallTalkMessage,
+  getLogicalDayKey,
+  resolveRotationTimezone,
+  shouldPrepareSessionHandoff,
+  shouldRotateSessionForContext,
 } from "../../src/ivec/session-rotation-policy.js";
 
-function turn(role: "user" | "assistant", content: string, date: Date): ConversationTurn {
-  return {
-    role,
-    content,
-    timestamp: date.toISOString(),
-    sessionPath: "sessions/test.md",
-  };
-}
-
 describe("session rotation policy", () => {
-  it("treats greetings as small talk", () => {
-    expect(isSmallTalkMessage("hi")).toBe(true);
-    expect(isSmallTalkMessage("how are you?")).toBe(true);
-    expect(isSmallTalkMessage("thanks")).toBe(true);
+  it("starts handoff preparation at 50%", () => {
+    expect(shouldPrepareSessionHandoff(49)).toBe(false);
+    expect(shouldPrepareSessionHandoff(50)).toBe(true);
   });
 
-  it("does not treat substantive requests as small talk", () => {
-    expect(isSmallTalkMessage("can you check the nginx config and restart plan")).toBe(false);
+  it("marks rotation at 70%", () => {
+    expect(shouldRotateSessionForContext(69)).toBe(false);
+    expect(shouldRotateSessionForContext(70)).toBe(true);
   });
 
-  it("detects likely topic shift from recent user context", () => {
-    const base = new Date(Date.UTC(2026, 1, 20, 12, 0, 0));
-    const turns: ConversationTurn[] = [
-      turn("user", "check disk usage and inode counts for the server", new Date(base.getTime() - 20_000)),
-      turn("assistant", "I can inspect disk usage details.", new Date(base.getTime() - 10_000)),
-    ];
-
-    expect(isLikelyTopicShift("what movie should I watch tonight", turns)).toBe(true);
-    expect(isLikelyTopicShift("also check disk usage for /var", turns)).toBe(false);
+  it("uses the fallback timezone when profile timezone is missing", () => {
+    expect(resolveRotationTimezone(null)).toBe("Asia/Kolkata");
+    expect(resolveRotationTimezone("")).toBe("Asia/Kolkata");
   });
 
-  it("forces rotation when context is at or above hard threshold", () => {
-    const now = new Date(Date.UTC(2026, 1, 20, 12, 0, 0));
+  it("computes logical day key with a 1 AM cutover", () => {
+    const beforeCutover = new Date("2026-04-16T00:30:00+05:30");
+    const afterCutover = new Date("2026-04-16T01:30:00+05:30");
+
+    expect(getLogicalDayKey(beforeCutover, "Asia/Kolkata")).toBe("2026-04-15");
+    expect(getLogicalDayKey(afterCutover, "Asia/Kolkata")).toBe("2026-04-16");
+  });
+
+  it("rotates on daily cutover when the logical day changed", () => {
     const result = evaluateSessionRotation({
-      now,
-      userMessage: "new question",
-      contextPercent: 96,
-      turns: [],
-      previousSessionSummary: "",
+      now: new Date("2026-04-16T01:05:00+05:30"),
+      contextPercent: 10,
+      sessionStartedAt: new Date("2026-04-15T10:00:00+05:30").toISOString(),
+      timezone: "Asia/Kolkata",
     });
 
     expect(result.rotate).toBe(true);
-    expect(result.reason).toBe("context_overflow");
+    expect(result.reason).toBe("daily_cutover");
   });
 
-  it("rotates at midnight when the user is not actively chatting", () => {
-    const last = new Date(2026, 1, 28, 22, 0, 0);
-    const now = new Date(2026, 2, 1, 0, 15, 0);
-
+  it("does not rotate before the 1 AM cutover when still in the same logical day", () => {
     const result = evaluateSessionRotation({
-      now,
-      userMessage: "continue",
-      contextPercent: 40,
-      turns: [turn("user", "working on deployment", last)],
-      previousSessionSummary: "deployment notes",
-    });
-
-    expect(result.rotate).toBe(true);
-    expect(result.reason).toBe("midnight_rollover");
-  });
-
-  it("defers midnight rollover while user is active", () => {
-    const last = new Date(2026, 1, 28, 23, 59, 0);
-    const now = new Date(2026, 2, 1, 0, 2, 0);
-
-    const result = evaluateSessionRotation({
-      now,
-      userMessage: "still fixing the same bug",
-      contextPercent: 40,
-      turns: [turn("user", "working on auth bug", last)],
-      previousSessionSummary: "",
+      now: new Date("2026-04-16T00:45:00+05:30"),
+      contextPercent: 10,
+      sessionStartedAt: new Date("2026-04-15T10:00:00+05:30").toISOString(),
+      timezone: "Asia/Kolkata",
     });
 
     expect(result.rotate).toBe(false);
-    expect(result.pendingMidnight).not.toBeNull();
+    expect(result.currentDayKey).toBe("2026-04-15");
   });
 
-  it("rotates after midnight deferral limit is reached", () => {
-    const last = new Date(2026, 2, 1, 1, 9, 0);
-    const firstDetect = new Date(2026, 2, 1, 0, 2, 0);
-    const now = new Date(2026, 2, 1, 1, 10, 0);
-
-    const pending = {
-      fromDayKey: "2026-02-28",
-      toDayKey: `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`,
-      firstDetectedAtMs: firstDetect.getTime(),
-    };
-
+  it("rotates for a pending context threshold", () => {
     const result = evaluateSessionRotation({
-      now,
-      userMessage: "still same task",
-      contextPercent: 40,
-      turns: [turn("user", "working on auth bug", last)],
-      previousSessionSummary: "",
-      pendingMidnight: pending,
+      now: new Date("2026-04-16T14:00:00+05:30"),
+      contextPercent: 55,
+      sessionStartedAt: new Date("2026-04-16T08:00:00+05:30").toISOString(),
+      timezone: "Asia/Kolkata",
+      pendingRotationReason: "context_threshold",
     });
 
     expect(result.rotate).toBe(true);
-    expect(result.reason).toBe("midnight_rollover_deferred_limit");
+    expect(result.reason).toBe("context_threshold");
   });
 
-  it("only rotates for topic shift when context is at least 25%", () => {
-    const now = new Date(Date.UTC(2026, 1, 20, 12, 0, 0));
-    const turns: ConversationTurn[] = [
-      turn("user", "check disk usage and inode counts", new Date(now.getTime() - 60_000)),
-      turn("assistant", "I can do that.", new Date(now.getTime() - 30_000)),
-    ];
-
-    const lowContext = evaluateSessionRotation({
-      now,
-      userMessage: "what movie should I watch tonight",
-      contextPercent: 24,
-      turns,
-      previousSessionSummary: "",
-    });
-    expect(lowContext.rotate).toBe(false);
-
-    const readyContext = evaluateSessionRotation({
-      now,
-      userMessage: "what movie should I watch tonight",
-      contextPercent: 25,
-      turns,
-      previousSessionSummary: "",
-    });
-    expect(readyContext.rotate).toBe(true);
-    expect(readyContext.reason).toBe("topic_shift");
-  });
-
-  it("never rotates for small-talk-only message", () => {
-    const now = new Date(Date.UTC(2026, 1, 20, 12, 0, 0));
-    const turns: ConversationTurn[] = [
-      turn("user", "check disk usage and inode counts", new Date(now.getTime() - 60_000)),
-      turn("assistant", "I can do that.", new Date(now.getTime() - 30_000)),
-    ];
-
+  it("rotates immediately when restored session is already above the context threshold", () => {
     const result = evaluateSessionRotation({
-      now,
-      userMessage: "hi",
-      contextPercent: 70,
-      turns,
-      previousSessionSummary: "",
+      now: new Date("2026-04-16T14:00:00+05:30"),
+      contextPercent: 74,
+      sessionStartedAt: new Date("2026-04-16T08:00:00+05:30").toISOString(),
+      timezone: "Asia/Kolkata",
     });
 
-    expect(result.rotate).toBe(false);
+    expect(result.rotate).toBe(true);
+    expect(result.reason).toBe("context_threshold");
+  });
+
+  it("prefers daily cutover over context rotation when both are true", () => {
+    const result = evaluateSessionRotation({
+      now: new Date("2026-04-17T01:10:00+05:30"),
+      contextPercent: 80,
+      sessionStartedAt: new Date("2026-04-16T09:00:00+05:30").toISOString(),
+      timezone: "Asia/Kolkata",
+      pendingRotationReason: "context_threshold",
+    });
+
+    expect(result.rotate).toBe(true);
+    expect(result.reason).toBe("daily_cutover");
   });
 });

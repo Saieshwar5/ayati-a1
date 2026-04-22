@@ -123,9 +123,33 @@ export interface TaskSummaryMemoryInput {
   runId: string;
   runPath: string;
   status: "completed" | "failed" | "stuck";
+  taskStatus?: "not_done" | "likely_done" | "done" | "blocked" | "needs_user_input";
+  objective?: string;
   summary: string;
+  progressSummary?: string;
+  currentFocus?: string;
+  completedMilestones?: string[];
+  openWork?: string[];
+  blockers?: string[];
+  keyFacts?: string[];
+  evidence?: string[];
+  userInputNeeded?: string;
+  workMode?: string;
   userMessage?: string;
   assistantResponse?: string;
+  approach?: string;
+  sessionContextSummary?: string;
+  dependentTaskRunId?: string;
+  assistantResponseKind?: "reply" | "feedback" | "notification";
+  feedbackKind?: "approval" | "confirmation" | "clarification";
+  feedbackLabel?: string;
+  actionType?: string;
+  entityHints?: string[];
+  goalDoneWhen?: string[];
+  goalRequiredEvidence?: string[];
+  nextAction?: string;
+  stopReason?: "completed" | "needs_user_input" | "blocked" | "failed" | "stuck";
+  attachmentNames?: string[];
   timestamp: string;
 }
 

@@ -21,11 +21,20 @@ function createTaskContext() {
       ask_user_when: [],
       stop_when_no_progress: [],
     },
-    taskStatus: "not_done" as const,
     approach: "use shell",
-    latestSuccessfulStepSummary: "",
-    latestStepNewFacts: [],
-    recentStepDigests: [],
+    previousTaskProgress: {
+      status: "not_done" as const,
+      progressSummary: "",
+      keyFacts: [],
+      evidence: [],
+    },
+    latestSuccessfulStep: {
+      summary: "",
+      evidenceItems: [],
+      taskFacts: [],
+      artifacts: [],
+    },
+    recentSuccessfulSummaries: [],
   };
 }
 
@@ -39,7 +48,6 @@ function createMockSessionMemory(): SessionMemory {
     recordAssistantFinal: vi.fn(),
     recordRunFailure: vi.fn(),
     recordAgentStep: vi.fn(),
-    recordAssistantFeedback: vi.fn(),
     getPromptMemoryContext: vi.fn().mockReturnValue({
       conversationTurns: [],
       previousSessionSummary: "",
@@ -58,6 +66,42 @@ function createDirective(overrides?: Partial<StepDirective>): StepDirective {
     context: "",
     ...overrides,
   };
+}
+
+function stepVerifyResponse(overrides?: {
+  passed?: boolean;
+  summary?: string;
+  evidenceSummary?: string;
+  evidenceItems?: string[];
+  newFacts?: string[];
+  artifacts?: string[];
+}): string {
+  return JSON.stringify({
+    passed: overrides?.passed ?? true,
+    summary: overrides?.summary ?? "Verified step output satisfied the success criteria.",
+    evidenceSummary: overrides?.evidenceSummary ?? "Tool output matched the requested result.",
+    evidenceItems: overrides?.evidenceItems ?? ["tool output reviewed"],
+    newFacts: overrides?.newFacts ?? [],
+    artifacts: overrides?.artifacts ?? [],
+  });
+}
+
+function taskVerifyResponse(
+  status = "done",
+  progressSummary = "task completed",
+  evidence: string[] = [],
+  extra?: Partial<{
+    keyFacts: string[];
+    userInputNeeded: string;
+  }>,
+): string {
+  return JSON.stringify({
+    status,
+    progressSummary,
+    evidence,
+    keyFacts: extra?.keyFacts ?? [],
+    userInputNeeded: extra?.userInputNeeded,
+  });
 }
 
 describe("executeStep", () => {
@@ -95,13 +139,19 @@ describe("executeStep", () => {
             // act phase — after tool result, assistant text
             return { type: "assistant", content: "Command executed successfully" };
           }
+          if (callCount === 3) {
+            return {
+              type: "assistant",
+              content: stepVerifyResponse({
+                summary: "Verified that the command returned hello.",
+                evidenceSummary: "The shell output contained hello.",
+                evidenceItems: ["shell output: hello"],
+              }),
+            };
+          }
           return {
             type: "assistant",
-            content: JSON.stringify({
-              taskStatusAfter: "done",
-              taskReason: "command output satisfied the goal",
-              taskEvidence: ["command output: hello"],
-            }),
+            content: taskVerifyResponse("done", "command output satisfied the goal", ["command output: hello"]),
           };
         }),
       };
@@ -140,22 +190,28 @@ describe("executeStep", () => {
       expect(summary.toolFailureCount).toBe(0);
       expect(Object.prototype.hasOwnProperty.call(summary, "evidence")).toBe(false);
       expect(summary.stoppedEarlyReason).toBe("assistant_returned");
-      expect(summary.newFacts).toContain("tool_output:shell#1: hello");
+      expect(summary.newFacts).toEqual([]);
       expect(existsSync(join(runPath, "steps", "001-act.md"))).toBe(true);
       expect(existsSync(join(runPath, "steps", "001-verify.md"))).toBe(true);
       expect(summary.artifacts).toContain("steps/001-act.md");
       expect(summary.artifacts).toContain("steps/001-verify.md");
-      expect(summary.taskStatusAfter).toBe("done");
-      expect(summary.taskEvidence).toEqual(["command output: hello"]);
+      expect(summary.summary).toContain("Verified that the command returned hello.");
+      expect(summary.taskProgress?.progressSummary).toBe("command output satisfied the goal");
+      expect(summary.taskProgress?.status).toBe("done");
+      expect(summary.taskProgress?.evidence).toEqual(["command output: hello", "shell output: hello"]);
 
       const verifyMarkdown = readFileSync(join(runPath, "steps", "001-verify.md"), "utf-8");
       expect(verifyMarkdown).toContain("- **Passed:** yes");
-      expect(verifyMarkdown).toContain("- **Method:** gate");
+      expect(verifyMarkdown).toContain("- **Method:** llm");
+      expect(verifyMarkdown).toContain("- **Execution Status:** all_succeeded");
+      expect(verifyMarkdown).toContain("- **Validation Status:** passed");
       expect(verifyMarkdown).toContain("## Tool Calls");
       expect(verifyMarkdown).toContain("- 1. shell - pass");
       expect(verifyMarkdown).toContain("- **Tool Summary:** pass=1, fail=0");
-      expect(verifyMarkdown).toContain("- **Task Status After:** done");
-      expect(verifyMarkdown).toContain("command output satisfied the goal");
+      expect(verifyMarkdown).toContain("Verified that the command returned hello.");
+      expect(verifyMarkdown).toContain("## Task Progress");
+      expect(verifyMarkdown).toContain("- Status: done");
+      expect(verifyMarkdown).toContain("- Progress Summary: command output satisfied the goal");
     } finally {
       cleanup();
     }
@@ -179,13 +235,19 @@ describe("executeStep", () => {
           if (callCount === 2) {
             return { type: "assistant", content: "done" };
           }
+          if (callCount === 3) {
+            return {
+              type: "assistant",
+              content: stepVerifyResponse({
+                summary: "Verified that the file list output was returned.",
+                evidenceSummary: "The shell output listed file.txt.",
+                evidenceItems: ["shell output: file.txt"],
+              }),
+            };
+          }
           return {
             type: "assistant",
-            content: JSON.stringify({
-              taskStatusAfter: "done",
-              taskReason: "listed files",
-              taskEvidence: ["file.txt"],
-            }),
+            content: taskVerifyResponse("done", "listed files", ["file.txt"]),
           };
         }),
       };
@@ -274,13 +336,15 @@ describe("executeStep", () => {
       expect(summary.outcome).toBe("failed");
       expect(summary.toolSuccessCount).toBe(0);
       expect(summary.toolFailureCount).toBe(1);
-      expect(summary.newFacts).toContain("tool_error:shell#1: command failed");
+      expect(summary.newFacts).toEqual([]);
       expect(summary.artifacts).toContain("steps/001-act.md");
       expect(summary.artifacts).toContain("steps/001-verify.md");
 
       const verifyMarkdown = readFileSync(join(runPath, "steps", "001-verify.md"), "utf-8");
       expect(verifyMarkdown).toContain("- **Passed:** no");
-      expect(verifyMarkdown).toContain("- **Method:** gate");
+      expect(verifyMarkdown).toContain("- **Method:** execution_gate");
+      expect(verifyMarkdown).toContain("- **Execution Status:** all_failed");
+      expect(verifyMarkdown).toContain("- **Validation Status:** skipped");
       expect(verifyMarkdown).toContain("- 1. shell - fail (command failed)");
       expect(verifyMarkdown).toContain("- **Tool Summary:** pass=0, fail=1");
     } finally {
@@ -336,9 +400,7 @@ describe("executeStep", () => {
       expect(summary.outcome).toBe("failed");
       expect(summary.toolSuccessCount).toBe(0);
       expect(summary.toolFailureCount).toBe(1);
-      expect(summary.newFacts).toContain(
-        "tool_error:shell_run_script#1: Tool 'shell_run_script' threw an exception: ENOENT: no such file or directory, stat '/tmp/fetch_wttr.sh'",
-      );
+      expect(summary.newFacts).toEqual([]);
       expect(existsSync(join(runPath, "steps", "001-act.md"))).toBe(true);
       expect(existsSync(join(runPath, "steps", "001-verify.md"))).toBe(true);
     } finally {
@@ -367,13 +429,19 @@ describe("executeStep", () => {
           if (callCount === 2) {
             return { type: "assistant", content: "Read the file successfully" };
           }
+          if (callCount === 3) {
+            return {
+              type: "assistant",
+              content: stepVerifyResponse({
+                summary: "Verified that package.json content was retrieved.",
+                evidenceSummary: "The read_file output contained package.json content.",
+                evidenceItems: ["read_file output reviewed"],
+              }),
+            };
+          }
           return {
             type: "assistant",
-            content: JSON.stringify({
-              taskStatusAfter: "done",
-              taskReason: "file content retrieved",
-              taskEvidence: ["package.json content"],
-            }),
+            content: taskVerifyResponse("done", "file content retrieved", ["package.json content"]),
           };
         }),
       };
@@ -414,7 +482,12 @@ describe("executeStep", () => {
         taskContext: createTaskContext(),
       };
 
-      const summary = await executeStep(deps, createDirective({ tools_hint: ["shell"] }), 1, runPath);
+      const summary = await executeStep(
+        deps,
+        createDirective({ execution_mode: "independent", tools_hint: ["shell"] }),
+        1,
+        runPath,
+      );
 
       expect(summary.outcome).toBe("success");
       expect(summary.toolSuccessCount).toBe(1);
@@ -458,13 +531,19 @@ describe("executeStep", () => {
           if (callCount === 4) {
             return { type: "assistant", content: "Recovered by reading the file" };
           }
+          if (callCount === 5) {
+            return {
+              type: "assistant",
+              content: stepVerifyResponse({
+                summary: "Verified that the fallback read_file call recovered the step.",
+                evidenceSummary: "The successful read_file output satisfied the step despite earlier shell failures.",
+                evidenceItems: ["read_file output reviewed", "shell retry failure observed"],
+              }),
+            };
+          }
           return {
             type: "assistant",
-            content: JSON.stringify({
-              taskStatusAfter: "done",
-              taskReason: "recovered with alternate tool",
-              taskEvidence: ["package.json content"],
-            }),
+            content: taskVerifyResponse("done", "recovered with alternate tool", ["package.json content"]),
           };
         }),
       };
@@ -505,16 +584,19 @@ describe("executeStep", () => {
         taskContext: createTaskContext(),
       };
 
-      const summary = await executeStep(deps, createDirective({ tools_hint: ["shell"] }), 1, runPath);
+      const summary = await executeStep(
+        deps,
+        createDirective({ execution_mode: "independent", tools_hint: ["shell"] }),
+        1,
+        runPath,
+      );
 
       expect(summary.outcome).toBe("success");
       expect(summary.toolSuccessCount).toBe(1);
       expect(summary.toolFailureCount).toBe(2);
       expect(shellExecute).toHaveBeenCalledTimes(1);
       expect(readFileExecute).toHaveBeenCalledTimes(1);
-      expect(summary.newFacts).toContain(
-        "tool_error:shell#2: Repeat blocked: tool 'shell' with the same input already failed in this step. Try different parameters or a different tool.",
-      );
+      expect(summary.newFacts).toEqual([]);
     } finally {
       cleanup();
     }
@@ -572,6 +654,262 @@ describe("executeStep", () => {
       const summary = await executeStep(deps, createDirective({ execution_mode: "dependent" }), 1, runPath);
       expect(summary.toolSuccessCount).toBe(1);
       expect(executeSpy).toHaveBeenCalledTimes(1);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("rejects multi-call planned directives in dependent mode", async () => {
+    const { runPath, cleanup } = setup();
+    try {
+      const executeSpy = vi.fn().mockResolvedValue({ ok: true, output: "ok" });
+      const provider: LlmProvider = {
+        name: "mock",
+        version: "1.0.0",
+        capabilities: { nativeToolCalling: true },
+        start: vi.fn(),
+        stop: vi.fn(),
+        generateTurn: vi.fn().mockResolvedValue({
+          type: "assistant",
+          content: JSON.stringify({ status: "not_done", progressSummary: "should not be called", evidence: [] }),
+        }),
+      };
+
+      const toolExecutor: ToolExecutor = {
+        list: () => ["shell"],
+        definitions: () => [{
+          name: "shell",
+          description: "Run shell",
+          inputSchema: { type: "object", properties: { cmd: { type: "string" } } },
+          execute: executeSpy,
+        }],
+        execute: executeSpy,
+        validate: vi.fn().mockReturnValue({ valid: true }),
+      };
+
+      const deps: ExecutorDeps = {
+        provider,
+        toolExecutor,
+        toolDefinitions: toolExecutor.definitions(),
+        config: DEFAULT_LOOP_CONFIG,
+        clientId: "c1",
+        sessionMemory: createMockSessionMemory(),
+        runHandle: { sessionId: "s1", runId: "r1" },
+        taskContext: createTaskContext(),
+      };
+
+      const summary = await executeStep(deps, createDirective({
+        execution_mode: "dependent",
+        tool_plan: [
+          { tool: "shell", input: { cmd: "echo one" }, origin: "builtin", source_refs: [], retry_policy: "none" },
+          { tool: "shell", input: { cmd: "echo two" }, origin: "builtin", source_refs: [], retry_policy: "none" },
+        ],
+      }), 1, runPath);
+
+      expect(summary.outcome).toBe("failed");
+      expect(summary.stoppedEarlyReason).toBe("planned_call_failed");
+      expect(summary.toolSuccessCount).toBe(0);
+      expect(summary.toolFailureCount).toBe(0);
+      expect(executeSpy).not.toHaveBeenCalled();
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("allows broker-mounted external tools without source refs", async () => {
+    const { runPath, cleanup } = setup();
+    try {
+      const executeSpy = vi.fn().mockResolvedValue({ ok: true, output: "external ok" });
+      const provider: LlmProvider = {
+        name: "mock",
+        version: "1.0.0",
+        capabilities: { nativeToolCalling: true },
+        start: vi.fn(),
+        stop: vi.fn(),
+        generateTurn: vi.fn()
+          .mockResolvedValueOnce({
+            type: "assistant",
+            content: stepVerifyResponse({
+              summary: "Verified the broker-mounted external tool output.",
+              evidenceSummary: "The external tool returned the expected response.",
+              evidenceItems: ["external tool output: external ok"],
+            }),
+          })
+          .mockResolvedValueOnce({
+            type: "assistant",
+            content: taskVerifyResponse("done", "external tool completed", ["external tool output: external ok"]),
+          }),
+      };
+
+      const toolExecutor: ToolExecutor = {
+        list: () => ["demo-search.query"],
+        definitions: () => [{
+          name: "demo-search.query",
+          description: "Run external query",
+          inputSchema: { type: "object", properties: {} },
+          execute: executeSpy,
+        }],
+        execute: executeSpy,
+        validate: vi.fn().mockReturnValue({ valid: true }),
+      };
+
+      const deps: ExecutorDeps = {
+        provider,
+        toolExecutor,
+        toolDefinitions: toolExecutor.definitions(),
+        config: DEFAULT_LOOP_CONFIG,
+        clientId: "c1",
+        sessionMemory: createMockSessionMemory(),
+        runHandle: { sessionId: "s1", runId: "r1" },
+        taskContext: createTaskContext(),
+      };
+
+      const summary = await executeStep(deps, createDirective({
+        tool_plan: [
+          { tool: "demo-search.query", input: {}, origin: "external_tool", source_refs: [], retry_policy: "none" },
+        ],
+      }), 1, runPath);
+
+      expect(summary.outcome).toBe("success");
+      expect(summary.toolSuccessCount).toBe(1);
+      expect(executeSpy).toHaveBeenCalledTimes(1);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("surfaces external tool execution failures directly", async () => {
+    const { runPath, cleanup } = setup();
+    try {
+      const executeSpy = vi.fn().mockResolvedValue({ ok: false, error: "External tool is runtime-inactive", output: "" });
+      const provider: LlmProvider = {
+        name: "mock",
+        version: "1.0.0",
+        capabilities: { nativeToolCalling: true },
+        start: vi.fn(),
+        stop: vi.fn(),
+        generateTurn: vi.fn()
+          .mockResolvedValueOnce({
+            type: "assistant",
+            content: stepVerifyResponse({
+              passed: false,
+              summary: "The external tool failed before completing the step.",
+              evidenceSummary: "The external tool reported a runtime-inactive failure.",
+              evidenceItems: ["external tool runtime-inactive"],
+            }),
+          })
+          .mockResolvedValueOnce({
+            type: "assistant",
+            content: taskVerifyResponse("not_done", "external tool blocked", ["external tool runtime-inactive"]),
+          }),
+      };
+
+      const toolExecutor: ToolExecutor = {
+        list: () => ["demo-search.query"],
+        definitions: () => [{
+          name: "demo-search.query",
+          description: "External tool placeholder",
+          inputSchema: { type: "object", properties: {} },
+          execute: executeSpy,
+        }],
+        execute: executeSpy,
+        validate: vi.fn().mockReturnValue({ valid: true }),
+      };
+
+      const deps: ExecutorDeps = {
+        provider,
+        toolExecutor,
+        toolDefinitions: toolExecutor.definitions(),
+        config: DEFAULT_LOOP_CONFIG,
+        clientId: "c1",
+        sessionMemory: createMockSessionMemory(),
+        runHandle: { sessionId: "s1", runId: "r1" },
+        taskContext: createTaskContext(),
+      };
+
+      const summary = await executeStep(deps, createDirective({
+        tool_plan: [
+          { tool: "demo-search.query", input: {}, origin: "external_tool", source_refs: [], retry_policy: "none" },
+        ],
+      }), 1, runPath);
+
+      expect(summary.outcome).toBe("failed");
+      expect(summary.stoppedEarlyReason).toBe("planned_call_failed");
+      expect(summary.toolFailureCount).toBe(1);
+      expect(executeSpy).toHaveBeenCalledTimes(1);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("spills large tool output to a raw artifact file", async () => {
+    const { runPath, cleanup } = setup();
+    try {
+      const largeOutput = "A".repeat(DEFAULT_LOOP_CONFIG.maxInlineActOutputChars + 500);
+      const provider: LlmProvider = {
+        name: "mock",
+        version: "1.0.0",
+        capabilities: { nativeToolCalling: true },
+        start: vi.fn(),
+        stop: vi.fn(),
+        generateTurn: vi.fn()
+          .mockResolvedValueOnce({
+            type: "assistant",
+            content: stepVerifyResponse({
+              summary: "Verified the large shell output from the raw artifact.",
+              evidenceSummary: "Verification reopened the persisted raw artifact for validation.",
+              evidenceItems: ["raw artifact content reviewed"],
+              artifacts: ["steps/001-call-01-raw.txt"],
+            }),
+          })
+          .mockResolvedValueOnce({
+            type: "assistant",
+            content: taskVerifyResponse("done", "large output captured", ["raw artifact persisted"]),
+          }),
+      };
+
+      const toolExecutor: ToolExecutor = {
+        list: () => ["shell"],
+        definitions: () => [{
+          name: "shell",
+          description: "Run shell",
+          inputSchema: { type: "object", properties: { cmd: { type: "string" } } },
+          execute: vi.fn().mockResolvedValue({ ok: true, output: largeOutput }),
+        }],
+        execute: vi.fn().mockResolvedValue({ ok: true, output: largeOutput }),
+        validate: vi.fn().mockReturnValue({ valid: true }),
+      };
+
+      const deps: ExecutorDeps = {
+        provider,
+        toolExecutor,
+        toolDefinitions: toolExecutor.definitions(),
+        config: DEFAULT_LOOP_CONFIG,
+        clientId: "c1",
+        sessionMemory: createMockSessionMemory(),
+        runHandle: { sessionId: "s1", runId: "r1" },
+        taskContext: createTaskContext(),
+      };
+
+      const summary = await executeStep(deps, createDirective({
+        tool_plan: [
+          { tool: "shell", input: { cmd: "echo huge" }, origin: "builtin", source_refs: [], retry_policy: "none" },
+        ],
+      }), 1, runPath);
+
+      const rawOutputRelativePath = "steps/001-call-01-raw.txt";
+      const rawOutputFile = join(runPath, rawOutputRelativePath);
+      const actMarkdown = readFileSync(join(runPath, "steps", "001-act.md"), "utf-8");
+
+      expect(summary.outcome).toBe("success");
+      expect(summary.artifacts).toContain(rawOutputRelativePath);
+      expect(summary.newFacts).toEqual([]);
+      expect(existsSync(rawOutputFile)).toBe(true);
+      expect(readFileSync(rawOutputFile, "utf-8")).toBe(largeOutput);
+      expect(actMarkdown).toContain("**Output Storage:** raw_file");
+      expect(actMarkdown).toContain(`**Raw Output File:** ${rawOutputRelativePath}`);
+      expect(actMarkdown).not.toContain(largeOutput);
+      expect(summary.usedRawArtifacts).toContain(rawOutputRelativePath);
     } finally {
       cleanup();
     }
@@ -653,13 +991,19 @@ describe("executeStep", () => {
               content: "Executed the shell command and captured the output hello before the step hit its tool-turn limit.",
             };
           }
+          if (callCount === 3) {
+            return {
+              type: "assistant",
+              content: stepVerifyResponse({
+                summary: "Verified that the captured shell output hello satisfies the step.",
+                evidenceSummary: "The assistant wrap-up and shell output both confirmed hello was captured.",
+                evidenceItems: ["shell output: hello"],
+              }),
+            };
+          }
           return {
             type: "assistant",
-            content: JSON.stringify({
-              taskStatusAfter: "done",
-              taskReason: "command output satisfied the goal",
-              taskEvidence: ["command output: hello"],
-            }),
+            content: taskVerifyResponse("done", "command output satisfied the goal", ["command output: hello"]),
           };
         }),
       };
@@ -687,11 +1031,16 @@ describe("executeStep", () => {
         taskContext: createTaskContext(),
       };
 
-      const summary = await executeStep(deps, createDirective(), 1, runPath);
+      const summary = await executeStep(
+        deps,
+        createDirective({ execution_mode: "independent" }),
+        1,
+        runPath,
+      );
 
       expect(summary.outcome).toBe("success");
       expect(summary.stoppedEarlyReason).toBe("max_act_turns_reached");
-      expect(summary.summary).toContain("captured the output hello");
+      expect(summary.summary).toContain("captured shell output hello");
       expect(turnInputs[1]?.tools).toBeUndefined();
 
       const actMarkdown = readFileSync(join(runPath, "steps", "001-act.md"), "utf-8");
@@ -740,7 +1089,12 @@ describe("executeStep", () => {
         taskContext: createTaskContext(),
       };
 
-      const summary = await executeStep(deps, createDirective(), 1, runPath);
+      const summary = await executeStep(
+        deps,
+        createDirective({ execution_mode: "independent" }),
+        1,
+        runPath,
+      );
       expect(summary.outcome).toBe("failed");
       expect(summary.toolFailureCount).toBe(3);
       expect(summary.stoppedEarlyReason).toBe("repeated_identical_failure");
@@ -771,13 +1125,19 @@ describe("executeStep", () => {
           if (callCount === 2) {
             return { type: "assistant", content: "Command executed successfully" };
           }
+          if (callCount === 3) {
+            return {
+              type: "assistant",
+              content: stepVerifyResponse({
+                summary: "Verified that the command executed successfully and returned hello.",
+                evidenceSummary: "The shell output contained hello.",
+                evidenceItems: ["shell output: hello"],
+              }),
+            };
+          }
           return {
             type: "assistant",
-            content: JSON.stringify({
-              taskStatusAfter: "done",
-              taskReason: "command output satisfied the goal",
-              taskEvidence: ["command output: hello"],
-            }),
+            content: taskVerifyResponse("done", "command output satisfied the goal", ["command output: hello"]),
           };
         }),
       };
@@ -807,8 +1167,8 @@ describe("executeStep", () => {
 
       const summary = await executeStep(deps, createDirective(), 1, runPath);
 
-      expect(summary.summary).toBe("Command executed successfully");
-      expect(provider.generateTurn).toHaveBeenCalledTimes(3);
+      expect(summary.summary).toBe("Verified that the command executed successfully and returned hello.");
+      expect(provider.generateTurn).toHaveBeenCalledTimes(4);
     } finally {
       cleanup();
     }

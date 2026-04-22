@@ -34,18 +34,21 @@ describe("assemblePromptInput", () => {
           summary: "done",
         },
       ],
-      openFeedbacks: [
+      recentTaskSummaries: [
         {
-          feedbackId: "fb-1",
-          status: "open",
-          kind: "approval",
-          shortLabel: "send report",
-          message: "Should I send the report?",
-          actionType: "send_email",
-          sourceRunId: "r1",
-          entityHints: ["report"],
-          createdAt: "t0",
-          expiresAt: "t1",
+          timestamp: "t2",
+          runId: "r1",
+          runPath: "data/runs/r1",
+          runStatus: "completed",
+          taskStatus: "done",
+          objective: "Finish the task",
+          summary: "done",
+          completedMilestones: [],
+          openWork: [],
+          blockers: [],
+          keyFacts: [],
+          evidence: [],
+          attachmentNames: [],
         },
       ],
       recentSystemActivity: [
@@ -68,7 +71,7 @@ describe("assemblePromptInput", () => {
     expect(result.previousSessionSummary).toBe("summary");
     expect(result.activeSessionPath).toBe("sessions/s1.md");
     expect(result.recentRunLedgers).toHaveLength(1);
-    expect(result.openFeedbacks).toHaveLength(1);
+    expect(result.recentTaskSummaries).toHaveLength(1);
     expect(result.recentSystemActivity).toHaveLength(1);
     expect(result.skillBlocks).toEqual([{ id: "skill-a", content: "Use A" }]);
   });
@@ -93,7 +96,7 @@ describe("assemblePromptInput", () => {
       previousSessionSummary: "",
       activeSessionPath: "",
       recentRunLedgers: [],
-      openFeedbacks: [],
+      recentTaskSummaries: [],
       recentSystemActivity: [],
     };
 
@@ -102,7 +105,7 @@ describe("assemblePromptInput", () => {
     expect(result.conversationTurns).toEqual([]);
     expect(result.previousSessionSummary).toBe("");
     expect(result.recentRunLedgers).toEqual([]);
-    expect(result.openFeedbacks).toEqual([]);
+    expect(result.recentTaskSummaries).toEqual([]);
     expect(result.recentSystemActivity).toEqual([]);
   });
 });

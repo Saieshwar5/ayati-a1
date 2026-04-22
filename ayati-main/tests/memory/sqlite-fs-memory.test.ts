@@ -31,7 +31,7 @@ function findSessionFile(baseDir: string, sessionId: string): string {
 }
 
 describe("MemoryManager markdown persistence", () => {
-  it("stores compact run memory and returns prompt context", () => {
+  it("stores compact run memory and returns prompt context", async () => {
     const now = new Date("2026-02-08T00:00:00.000Z");
     const baseDir = mkdtempSync(join(tmpdir(), "ayati-memory-"));
 
@@ -72,6 +72,7 @@ describe("MemoryManager markdown persistence", () => {
     // Tool events are recorded to JSONL audit log but not returned in prompt context
     expect(prompt).not.toHaveProperty("toolEvents");
 
+    await manager.flushPersistence?.();
     const sessionFile = findSessionFile(baseDir, run.sessionId);
     const content = readFileSync(sessionFile, "utf8");
     expect(content).not.toContain("\"tool_result\"");
@@ -79,10 +80,10 @@ describe("MemoryManager markdown persistence", () => {
     expect(content).toContain("\"sessionPath\"");
     expect(content).toContain("\"runId\"");
 
-    manager.shutdown();
+    await manager.shutdown();
   });
 
-  it("writes session files directly under sessions directory", () => {
+  it("writes session files directly under sessions directory", async () => {
     const now = new Date("2026-02-08T12:30:00.000Z");
     const baseDir = mkdtempSync(join(tmpdir(), "ayati-memory-"));
 
@@ -96,14 +97,15 @@ describe("MemoryManager markdown persistence", () => {
     const run = manager.beginRun("c-date", "hello");
     manager.recordAssistantFinal("c-date", run.runId, run.sessionId, "hey");
 
+    await manager.flushPersistence?.();
     const sessionFile = findSessionFile(baseDir, run.sessionId);
     const normalized = sessionFile.replace(/\\/g, "/");
     expect(normalized).toMatch(/\/sessions\/[^/]+\.md$/);
 
-    manager.shutdown();
+    await manager.shutdown();
   });
 
-  it("keeps active-session.json on shutdown so session can resume", () => {
+  it("keeps active-session.json on shutdown so session can resume", async () => {
     const now = new Date("2026-02-08T00:00:00.000Z");
     const baseDir = mkdtempSync(join(tmpdir(), "ayati-memory-"));
     const markerPath = join(baseDir, "sessions", "active-session.json");
@@ -126,7 +128,7 @@ describe("MemoryManager markdown persistence", () => {
     expect(marker.sessionId).toBe(run.sessionId);
     expect(marker.sessionPath).toMatch(/^sessions\/[^/]+\.md$/);
 
-    manager.shutdown();
+    await manager.shutdown();
     expect(existsSync(markerPath)).toBe(true);
 
     const manager2 = new SessionManager({
@@ -137,10 +139,10 @@ describe("MemoryManager markdown persistence", () => {
     manager2.initialize("c-marker");
     const resumed = manager2.beginRun("c-marker", "resume");
     expect(resumed.sessionId).toBe(run.sessionId);
-    manager2.shutdown();
+    await manager2.shutdown();
   });
 
-  it("tracks sessions in sqlite sessions_meta with metadata-only schema", () => {
+  it("tracks sessions in sqlite sessions_meta with metadata-only schema", async () => {
     const now = new Date("2026-02-08T00:00:00.000Z");
     const baseDir = mkdtempSync(join(tmpdir(), "ayati-memory-"));
     const dbPath = join(baseDir, "memory.sqlite");
@@ -154,7 +156,7 @@ describe("MemoryManager markdown persistence", () => {
     manager.initialize("c-sqlite");
     const run = manager.beginRun("c-sqlite", "hello");
     manager.recordAssistantFinal("c-sqlite", run.runId, run.sessionId, "world");
-    manager.shutdown();
+    await manager.shutdown();
 
     const db = new DatabaseSync(dbPath);
     const tables = db
@@ -197,7 +199,7 @@ describe("MemoryManager markdown persistence", () => {
     db.close();
   });
 
-  it("restores active session via marker after restart", () => {
+  it("restores active session via marker after restart", async () => {
     let now = new Date("2026-02-08T08:00:00.000Z");
     const baseDir = mkdtempSync(join(tmpdir(), "ayati-memory-"));
 
@@ -210,6 +212,7 @@ describe("MemoryManager markdown persistence", () => {
     manager1.initialize("c-restart");
     const run = manager1.beginRun("c-restart", "hello");
     manager1.recordAssistantFinal("c-restart", run.runId, run.sessionId, "hey there");
+    await manager1.flushPersistence?.();
 
     // Simulate crash (no shutdown)
     now = new Date("2026-02-08T08:05:00.000Z");
@@ -227,10 +230,10 @@ describe("MemoryManager markdown persistence", () => {
     expect(prompt.conversationTurns.length).toBeGreaterThanOrEqual(3);
     expect(prompt.conversationTurns.every((turn) => turn.sessionPath.includes("sessions/"))).toBe(true);
 
-    manager2.shutdown();
+    await manager2.shutdown();
   });
 
-  it("migrates legacy active .jsonl session to .md on restore", () => {
+  it("migrates legacy active .jsonl session to .md on restore", async () => {
     const now = new Date("2026-02-16T13:50:00.000Z");
     const baseDir = mkdtempSync(join(tmpdir(), "ayati-memory-"));
     const dbPath = join(baseDir, "memory.sqlite");
@@ -328,10 +331,10 @@ describe("MemoryManager markdown persistence", () => {
     expect(migratedContent).toContain("\"type\":\"session_open\"");
     expect(migratedContent).toContain("\"type\":\"assistant_message\"");
 
-    manager.shutdown();
+    await manager.shutdown();
   });
 
-  it("restores tool activity when active session is reloaded", () => {
+  it("restores tool activity when active session is reloaded", async () => {
     let now = new Date("2026-02-08T10:00:00.000Z");
     const baseDir = mkdtempSync(join(tmpdir(), "ayati-memory-"));
 
@@ -361,6 +364,7 @@ describe("MemoryManager markdown persistence", () => {
       output: "/workspace",
     });
     manager1.recordAssistantFinal("c-restart-tools", run.runId, run.sessionId, "done");
+    await manager1.flushPersistence?.();
 
     // Simulate crash (no shutdown)
     now = new Date("2026-02-08T10:05:00.000Z");
@@ -379,10 +383,10 @@ describe("MemoryManager markdown persistence", () => {
     const resumed = manager2.beginRun("c-restart-tools", "continue");
     expect(resumed.sessionId).toBe(run.sessionId);
 
-    manager2.shutdown();
+    await manager2.shutdown();
   });
 
-  it("falls back to marker restore when sqlite active row has stale path", () => {
+  it("falls back to marker restore when sqlite active row has stale path", async () => {
     const now = new Date("2026-02-08T09:00:00.000Z");
     const baseDir = mkdtempSync(join(tmpdir(), "ayati-memory-"));
     const dbPath = join(baseDir, "memory.sqlite");
@@ -396,7 +400,7 @@ describe("MemoryManager markdown persistence", () => {
     manager1.initialize("c-stale-active");
     const run = manager1.beginRun("c-stale-active", "hello");
     manager1.recordAssistantFinal("c-stale-active", run.runId, run.sessionId, "world");
-    manager1.shutdown();
+    await manager1.shutdown();
 
     const marker = JSON.parse(readFileSync(markerPath, "utf8")) as {
       sessionId: string;
@@ -435,10 +439,10 @@ describe("MemoryManager markdown persistence", () => {
     expect(row.session_path).toBe(marker.sessionPath);
     db2.close();
 
-    manager2.shutdown();
+    await manager2.shutdown();
   });
 
-  it("reassigns marker-restored session to the requested client", () => {
+  it("reassigns marker-restored session to the requested client", async () => {
     const now = new Date("2026-02-08T09:15:00.000Z");
     const baseDir = mkdtempSync(join(tmpdir(), "ayati-memory-"));
     const dbPath = join(baseDir, "memory.sqlite");
@@ -451,7 +455,7 @@ describe("MemoryManager markdown persistence", () => {
     manager1.initialize("c-random-socket");
     const run = manager1.beginRun("c-random-socket", "hello");
     manager1.recordAssistantFinal("c-random-socket", run.runId, run.sessionId, "world");
-    manager1.shutdown();
+    await manager1.shutdown();
 
     const manager2 = new SessionManager({
       dbPath,
@@ -484,10 +488,10 @@ describe("MemoryManager markdown persistence", () => {
     const content = readFileSync(sessionFile, "utf8");
     expect(content).toContain("\"client_id\":\"local\"");
 
-    manager2.shutdown();
+    await manager2.shutdown();
   });
 
-  it("recovers last crashed session when marker is missing", () => {
+  it("recovers last crashed session when marker is missing", async () => {
     const now = new Date("2026-02-08T09:30:00.000Z");
     const baseDir = mkdtempSync(join(tmpdir(), "ayati-memory-"));
     const dbPath = join(baseDir, "memory.sqlite");
@@ -501,7 +505,7 @@ describe("MemoryManager markdown persistence", () => {
     manager1.initialize("c-recover-crashed");
     const run = manager1.beginRun("c-recover-crashed", "start");
     manager1.recordAssistantFinal("c-recover-crashed", run.runId, run.sessionId, "ok");
-    manager1.shutdown();
+    await manager1.shutdown();
 
     try {
       unlinkSync(markerPath);
@@ -539,10 +543,10 @@ describe("MemoryManager markdown persistence", () => {
     expect(row.status).toBe("active");
     db2.close();
 
-    manager2.shutdown();
+    await manager2.shutdown();
   });
 
-  it("hydrates active session window after restart", () => {
+  it("hydrates active session window after restart", async () => {
     const now = new Date("2026-02-08T00:00:00.000Z");
     const baseDir = mkdtempSync(join(tmpdir(), "ayati-memory-"));
 
@@ -557,7 +561,7 @@ describe("MemoryManager markdown persistence", () => {
       const run = manager1.beginRun("c-hydrate", `user ${i}`);
       manager1.recordAssistantFinal("c-hydrate", run.runId, run.sessionId, `assistant ${i}`);
     }
-    manager1.shutdown();
+    await manager1.shutdown();
 
     const manager2 = new SessionManager({
       dbPath: join(baseDir, "memory.sqlite"),
@@ -572,10 +576,10 @@ describe("MemoryManager markdown persistence", () => {
     expect(prompt.conversationTurns[0]?.content).toBe("user 0");
     expect(prompt.conversationTurns[23]?.content).toBe("assistant 11");
 
-    manager2.shutdown();
+    await manager2.shutdown();
   });
 
-  it("does not rotate session when 20 countable events are reached", () => {
+  it("does not rotate session when 20 countable events are reached", async () => {
     const now = new Date("2026-02-08T00:00:00.000Z");
     const baseDir = mkdtempSync(join(tmpdir(), "ayati-memory-"));
 
@@ -598,10 +602,10 @@ describe("MemoryManager markdown persistence", () => {
     const next = manager.beginRun("c-rotate", "after limit");
     expect(next.sessionId).toBe(firstSessionId);
 
-    manager.shutdown();
+    await manager.shutdown();
   });
 
-  it("create_session atomically closes current session and opens new active session with handoff", () => {
+  it("create_session atomically closes current session and opens new active session with handoff", async () => {
     const now = new Date("2026-02-08T00:00:00.000Z");
     const baseDir = mkdtempSync(join(tmpdir(), "ayati-memory-"));
     const dbPath = join(baseDir, "memory.sqlite");
@@ -627,6 +631,7 @@ describe("MemoryManager markdown persistence", () => {
     expect(switched.sessionId).not.toBe(run.sessionId);
     expect(switched.sessionPath.endsWith(".md")).toBe(true);
 
+    await manager.flushPersistence?.();
     const oldContent = readFileSync(findSessionFile(baseDir, run.sessionId), "utf8");
     expect(oldContent).toContain("\"type\":\"session_close\"");
     expect(oldContent).toContain("\"handoffSummary\":\"task 1 completed with shell output\"");
@@ -656,10 +661,10 @@ describe("MemoryManager markdown persistence", () => {
     expect(newRow.handoff_summary).toBe("task 1 completed with shell output");
     db.close();
 
-    manager.shutdown();
+    await manager.shutdown();
   });
 
-  it("does not persist tool-context or tool-output side stores", () => {
+  it("does not persist tool-context or tool-output side stores", async () => {
     const now = new Date("2026-02-08T00:00:00.000Z");
     const baseDir = mkdtempSync(join(tmpdir(), "ayati-memory-"));
 
@@ -695,10 +700,10 @@ describe("MemoryManager markdown persistence", () => {
     expect(existsSync(join(baseDir, "tool-context"))).toBe(false);
     expect(existsSync(join(baseDir, "tool-output"))).toBe(false);
 
-    manager.shutdown();
+    await manager.shutdown();
   });
 
-  it("stores full tool output text inside session markdown document in debug mode", () => {
+  it("stores full tool output text inside session markdown document in debug mode", async () => {
     const now = new Date("2026-02-08T00:00:00.000Z");
     const baseDir = mkdtempSync(join(tmpdir(), "ayati-memory-"));
 
@@ -731,14 +736,15 @@ describe("MemoryManager markdown persistence", () => {
       output: fullOutput,
     });
 
+    await manager.flushPersistence?.();
     const sessionFile = findSessionFile(baseDir, run.sessionId);
     const content = readFileSync(sessionFile, "utf8");
     expect(content).toContain(fullOutput);
 
-    manager.shutdown();
+    await manager.shutdown();
   });
 
-  it("stores run ledger and task summary pointers", () => {
+  it("stores run ledger and task summary pointers", async () => {
     const now = new Date("2026-02-08T00:00:00.000Z");
     const baseDir = mkdtempSync(join(tmpdir(), "ayati-memory-"));
 
@@ -774,16 +780,17 @@ describe("MemoryManager markdown persistence", () => {
     });
     manager.recordAssistantFinal("c-ledger", run.runId, run.sessionId, "done");
 
+    await manager.flushPersistence?.();
     const sessionFile = findSessionFile(baseDir, run.sessionId);
     const content = readFileSync(sessionFile, "utf8");
     expect(content).toContain("\"type\":\"run_ledger\"");
     expect(content).toContain("\"type\":\"task_summary\"");
     expect(content).toContain("\"runPath\":\"data/runs/r-ledger-1\"");
 
-    manager.shutdown();
+    await manager.shutdown();
   });
 
-  it("does not store agent_step events in compact mode", () => {
+  it("does not store agent_step events in compact mode", async () => {
     const now = new Date("2026-02-08T00:00:00.000Z");
     const baseDir = mkdtempSync(join(tmpdir(), "ayati-memory-"));
 
@@ -805,14 +812,15 @@ describe("MemoryManager markdown persistence", () => {
     });
     manager.recordAssistantFinal("c-agent-step-compact", run.runId, run.sessionId, "done");
 
+    await manager.flushPersistence?.();
     const sessionFile = findSessionFile(baseDir, run.sessionId);
     const content = readFileSync(sessionFile, "utf8");
     expect(content).not.toContain("\"type\":\"agent_step\"");
 
-    manager.shutdown();
+    await manager.shutdown();
   });
 
-  it("stores agent_step events in debug mode", () => {
+  it("stores agent_step events in debug mode", async () => {
     const now = new Date("2026-02-08T00:00:00.000Z");
     const baseDir = mkdtempSync(join(tmpdir(), "ayati-memory-"));
 
@@ -835,10 +843,11 @@ describe("MemoryManager markdown persistence", () => {
     });
     manager.recordAssistantFinal("c-agent-step-debug", run.runId, run.sessionId, "done");
 
+    await manager.flushPersistence?.();
     const sessionFile = findSessionFile(baseDir, run.sessionId);
     const content = readFileSync(sessionFile, "utf8");
     expect(content).toContain("\"type\":\"agent_step\"");
 
-    manager.shutdown();
+    await manager.shutdown();
   });
 });

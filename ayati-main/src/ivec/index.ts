@@ -1,19 +1,23 @@
 import { randomUUID } from "node:crypto";
 import type { LlmProvider } from "../core/contracts/provider.js";
 import { noopSessionMemory } from "../memory/provider.js";
-import type { SessionMemory, MemoryRunHandle } from "../memory/types.js";
+import type { ConversationTurn, SessionMemory, MemoryRunHandle, PromptMemoryContext, SessionStatus } from "../memory/types.js";
 import type { StaticContext } from "../context/static-context-cache.js";
-import { assemblePromptInput } from "../context/load-system-prompt-input.js";
-import { buildSystemPrompt } from "../prompt/builder.js";
-import { renderConversationSection } from "../prompt/sections/conversation.js";
+import { renderBasePromptSection } from "../prompt/sections/base.js";
+import { renderConversationLines, renderConversationSection } from "../prompt/sections/conversation.js";
 import { renderCurrentSessionSection } from "../prompt/sections/current-session.js";
 import { renderMemorySection } from "../prompt/sections/memory.js";
-import { renderOpenFeedbackSection } from "../prompt/sections/open-feedback.js";
-import { renderRecentRunsSection } from "../prompt/sections/recent-runs.js";
+import { renderRecentTasksSection } from "../prompt/sections/recent-tasks.js";
+import { renderSessionStatusSection } from "../prompt/sections/session-status.js";
+import { renderSkillsSection } from "../prompt/sections/skills.js";
+import { renderSoulSection } from "../prompt/sections/soul.js";
 import { renderSystemActivitySection } from "../prompt/sections/system-activity.js";
+import { renderUserProfileSection } from "../prompt/sections/user-profile.js";
 import { estimateTextTokens } from "../prompt/token-estimator.js";
 import type { ToolExecutor } from "../skills/tool-executor.js";
 import type { ToolDefinition } from "../skills/types.js";
+import type { ExternalSkillBroker } from "../skills/external/broker.js";
+import type { ExternalSkillRegistry } from "../skills/external/registry.js";
 import { devLog, devWarn, devError } from "../shared/index.js";
 import type { ManagedDocumentManifest } from "../documents/types.js";
 import type { DocumentStore } from "../documents/document-store.js";
@@ -22,16 +26,18 @@ import { PreparedAttachmentRegistry } from "../documents/prepared-attachment-reg
 import {
   normalizeSystemEvent,
   type AyatiSystemEvent,
+  type SystemEventClass,
   type SystemEventCreatedBy,
+  type SystemEventEffectLevel,
   type SystemEventIntentKind,
   type SystemEventIntentMetadata,
+  type SystemEventTrustTier,
 } from "../core/contracts/plugin.js";
 import type { AgentResponseKind } from "../memory/types.js";
 import { agentLoop } from "./agent-loop.js";
 import {
   evaluateSessionRotation,
   type RotationPolicyConfig,
-  type PendingMidnightRollover,
 } from "./session-rotation-policy.js";
 import {
   classifySystemEvent,
@@ -42,6 +48,7 @@ import {
   type SystemEventPolicyConfig,
 } from "./system-event-policy.js";
 import type {
+  AgentLoopResult,
   AgentArtifact,
   ChatAttachmentInput,
   ChatInboundMessage,
@@ -51,6 +58,32 @@ import type {
 
 interface SystemContextBuildResult {
   systemContext: string;
+  controllerSystemContext: string;
+  dynamicSystemTokens: number;
+}
+
+interface StaticPromptSectionsCache {
+  head: string;
+  tail: string;
+  controllerSystemContext: string;
+}
+
+interface UnderstandContextCache {
+  sessionKey: string;
+  conversationTurns: ConversationTurn[];
+  conversationSection: string;
+  previousSessionSummary: string;
+  memorySection: string;
+  activeSessionPath: string;
+  currentSessionSection: string;
+  recentTasksFingerprint: string;
+  recentTasksSection: string;
+  recentSystemActivityFingerprint: string;
+  recentSystemActivitySection: string;
+  sessionStatusFingerprint: string;
+  systemContextWithoutStatus: string;
+  systemContext: string;
+  dynamicContext: string;
   dynamicSystemTokens: number;
 }
 
@@ -68,6 +101,8 @@ export interface IVecEngineOptions {
   staticContext?: StaticContext;
   sessionMemory?: SessionMemory;
   toolExecutor?: ToolExecutor;
+  externalSkillBroker?: ExternalSkillBroker;
+  externalSkillRegistry?: ExternalSkillRegistry;
   loopConfig?: Partial<LoopConfig>;
   rotationPolicyConfig?: Partial<RotationPolicyConfig>;
   now?: () => Date;
@@ -83,6 +118,8 @@ export class IVecEngine {
   private readonly provider?: LlmProvider;
   private readonly staticContext?: StaticContext;
   private readonly toolExecutor?: ToolExecutor;
+  private readonly externalSkillBroker?: ExternalSkillBroker;
+  private readonly externalSkillRegistry?: ExternalSkillRegistry;
   private sessionMemory: SessionMemory;
   private readonly loopConfig?: Partial<LoopConfig>;
   private readonly rotationPolicyConfig?: Partial<RotationPolicyConfig>;
@@ -94,13 +131,16 @@ export class IVecEngine {
   private readonly systemEventPolicy?: SystemEventPolicyConfig;
   private staticSystemTokens = 0;
   private staticTokensReady = false;
-  private readonly pendingMidnightByClient = new Map<string, PendingMidnightRollover>();
+  private staticPromptSections?: StaticPromptSectionsCache;
+  private understandContextCache?: UnderstandContextCache;
 
   constructor(options?: IVecEngineOptions) {
     this.onReply = options?.onReply;
     this.provider = options?.provider;
     this.staticContext = options?.staticContext;
     this.toolExecutor = options?.toolExecutor;
+    this.externalSkillBroker = options?.externalSkillBroker;
+    this.externalSkillRegistry = options?.externalSkillRegistry;
     this.sessionMemory = options?.sessionMemory ?? noopSessionMemory;
     this.loopConfig = options?.loopConfig;
     this.rotationPolicyConfig = options?.rotationPolicyConfig;
@@ -135,6 +175,8 @@ export class IVecEngine {
 
   invalidateStaticTokenCache(): void {
     this.staticTokensReady = false;
+    this.staticPromptSections = undefined;
+    this.understandContextCache = undefined;
   }
 
   handleMessage(clientId: string, data: unknown): void {
@@ -165,6 +207,7 @@ export class IVecEngine {
 
   private async processChat(clientId: string, content: string, attachments: ChatAttachmentInput[]): Promise<void> {
     let runHandle: MemoryRunHandle | null = null;
+    let runStatus: "completed" | "failed" | "stuck" | null = null;
     try {
       this.rotateSessionBeforeRunIfNeeded(clientId, content);
       runHandle = this.sessionMemory.beginRun(clientId, content);
@@ -172,18 +215,25 @@ export class IVecEngine {
 
       if (this.provider) {
         const registeredAttachments = await this.registerIncomingDocuments(attachments);
-        const toolDefs = this.toolExecutor?.definitions() ?? [];
+        const toolDefs = this.toolExecutor?.definitions({
+          clientId,
+          runId: runHandle.runId,
+          sessionId: runHandle.sessionId,
+        }) ?? [];
         const system = await this.buildSystemContext();
         const result = await agentLoop({
           provider: this.provider,
           toolExecutor: this.toolExecutor,
           toolDefinitions: toolDefs,
+          externalSkillBroker: this.externalSkillBroker,
+          externalSkillRegistry: this.externalSkillRegistry,
           sessionMemory: this.sessionMemory,
           runHandle,
           clientId,
           config: this.loopConfig,
           dataDir: this.dataDir ?? "data",
           systemContext: system.systemContext || undefined,
+          controllerSystemContext: system.controllerSystemContext || undefined,
           controllerPrompts: this.staticContext?.controllerPrompts,
           attachedDocuments: registeredAttachments.documents,
           attachmentWarnings: registeredAttachments.warnings,
@@ -209,21 +259,15 @@ export class IVecEngine {
           status: result.status,
           summary: result.content,
         });
-        this.sessionMemory.recordTaskSummary?.(clientId, {
-          runId: runHandle.runId,
-          sessionId: runHandle.sessionId,
-          runPath: result.runPath,
-          status: result.status,
-          summary: result.content,
-          userMessage: content,
-          assistantResponse: result.content,
-        });
         this.dispatchAgentResponse(clientId, runHandle, result);
+        this.queueTaskSummaryPublication(clientId, runHandle, result.taskSummary);
+        runStatus = result.status;
       } else {
         this.dispatchAgentResponse(clientId, runHandle, {
           type: "reply",
           content: `Received: "${content}"`,
         });
+        runStatus = "completed";
       }
     } catch (err) {
       devError("Provider error:", err);
@@ -236,16 +280,20 @@ export class IVecEngine {
           message,
         );
         this.recordTurnStatus(clientId, runHandle, "response_failed", message);
+        runStatus = "failed";
       }
       this.onReply?.(clientId, {
         type: "error",
         content: "Failed to generate a response.",
       });
+    } finally {
+      await this.completeSessionLifecycle(clientId, runHandle, runStatus);
     }
   }
 
   private async processSystemEvent(clientId: string, event: AyatiSystemEvent): Promise<void> {
     let runHandle: MemoryRunHandle | null = null;
+    let runStatus: "completed" | "failed" | "stuck" | null = null;
     const incomingMessage = event.summary;
     const systemEventPlan = this.buildSystemEventExecutionPlan(event);
     const preferredResponseKind = systemEventPlan.preferredResponseKind;
@@ -259,6 +307,18 @@ export class IVecEngine {
         source: event.source,
         event: event.eventName,
         eventId: event.eventId,
+        summary: event.summary,
+        eventClass: systemEventPlan.classification.eventClass,
+        trustTier: systemEventPlan.classification.trustTier,
+        effectLevel: systemEventPlan.classification.effectLevel,
+        createdBy: systemEventPlan.classification.createdBy,
+        requestedAction: systemEventPlan.classification.requestedAction,
+        modeApplied: systemEventPlan.policy.mode,
+        approvalState: systemEventPlan.approvalState,
+        occurrenceId: asOptionalString(event.payload["occurrenceId"]),
+        reminderId: asOptionalString(event.payload["reminderId"]),
+        instruction: asOptionalString(event.payload["instruction"]),
+        scheduledFor: asOptionalString(event.payload["scheduledFor"]),
         triggeredAt: event.receivedAt,
         payload: event.payload,
       }) ?? this.sessionMemory.beginRun(clientId, incomingMessage);
@@ -269,6 +329,23 @@ export class IVecEngine {
         "processing_started",
         `system_event:${event.source}/${event.eventName} mode=${systemEventPlan.policy.mode}`,
       );
+
+      if (systemEventPlan.policy.mode === "log_only") {
+        this.sessionMemory.recordSystemEventOutcome?.(clientId, {
+          runId: runHandle.runId,
+          eventId: event.eventId,
+          source: event.source,
+          event: event.eventName,
+          summary: event.summary,
+          responseKind: "none",
+          approvalState: systemEventPlan.approvalState,
+          status: "completed",
+          note: this.buildSystemEventOutcomeNote(systemEventPlan, event.summary, "none", "log_only"),
+        });
+        this.recordTurnStatus(clientId, runHandle, "response_completed", "delivery=none");
+        runStatus = "completed";
+        return;
+      }
 
       if (!this.provider) {
         devLog(`[${clientId}] system_event echo_mode eventId=${event.eventId}`);
@@ -287,9 +364,11 @@ export class IVecEngine {
           event: event.eventName,
           summary: event.summary,
           responseKind: preferredResponseKind,
+          approvalState: systemEventPlan.approvalState,
           status: "completed",
           note: this.buildSystemEventOutcomeNote(systemEventPlan, event.summary, preferredResponseKind, "echo_mode"),
         });
+        runStatus = "completed";
         return;
       }
 
@@ -302,6 +381,8 @@ export class IVecEngine {
         provider: this.provider,
         toolExecutor: this.toolExecutor,
         toolDefinitions: toolDefs,
+        externalSkillBroker: this.externalSkillBroker,
+        externalSkillRegistry: this.externalSkillRegistry,
         sessionMemory: this.sessionMemory,
         runHandle,
         clientId,
@@ -314,12 +395,12 @@ export class IVecEngine {
         systemEventApprovalRequired: systemEventPlan.policy.approvalRequired,
         systemEventApprovalState: systemEventPlan.approvalState,
         systemEventContextVisibility: systemEventPlan.policy.contextVisibility,
-        feedbackTtlHours: systemEventPlan.policy.feedbackTtlHours,
         preferredResponseKind,
         initialUserMessage: incomingMessage,
         config: this.loopConfig,
         dataDir: this.dataDir ?? "data",
         systemContext: system.systemContext || undefined,
+        controllerSystemContext: system.controllerSystemContext || undefined,
         controllerPrompts: this.staticContext?.controllerPrompts,
         documentStore: this.documentStore,
         preparedAttachmentRegistry: this.preparedAttachmentRegistry,
@@ -343,15 +424,6 @@ export class IVecEngine {
         status: result.status,
         summary: result.content,
       });
-      this.sessionMemory.recordTaskSummary?.(clientId, {
-        runId: runHandle.runId,
-        sessionId: runHandle.sessionId,
-        runPath: result.runPath,
-        status: result.status,
-        summary: result.content,
-        userMessage: incomingMessage,
-        assistantResponse: result.content,
-      });
       this.sessionMemory.recordSystemEventOutcome?.(clientId, {
         runId: runHandle.runId,
         eventId: event.eventId,
@@ -359,6 +431,7 @@ export class IVecEngine {
         event: event.eventName,
         summary: event.summary,
         responseKind: result.type,
+        approvalState: systemEventPlan.approvalState,
         status: result.status === "completed" ? "completed" : "failed",
         note: this.buildSystemEventOutcomeNote(systemEventPlan, result.content, result.type),
       });
@@ -370,6 +443,8 @@ export class IVecEngine {
         event: event.eventName,
         eventId: event.eventId,
       });
+      this.queueTaskSummaryPublication(clientId, runHandle, result.taskSummary);
+      runStatus = result.status;
     } catch (err) {
       devError("System event processing error:", err);
       if (runHandle) {
@@ -388,50 +463,110 @@ export class IVecEngine {
           event: event.eventName,
           summary: event.summary,
           responseKind: preferredResponseKind,
+          approvalState: systemEventPlan.approvalState,
           status: "failed",
           note: this.buildSystemEventOutcomeNote(systemEventPlan, message, preferredResponseKind, "failed_before_dispatch"),
         });
+        runStatus = "failed";
       }
       this.onReply?.(clientId, {
         type: "error",
         content: "Failed to process system event.",
       });
       throw err;
+    } finally {
+      await this.completeSessionLifecycle(clientId, runHandle, runStatus);
     }
   }
 
   private async buildSystemContext(): Promise<SystemContextBuildResult> {
     if (!this.staticContext) {
-      return { systemContext: "", dynamicSystemTokens: 0 };
+      return { systemContext: "", controllerSystemContext: "", dynamicSystemTokens: 0 };
     }
 
     this.ensureStaticTokenCache();
 
     const memoryContext = this.sessionMemory.getPromptMemoryContext();
     const sessionStatus = this.sessionMemory.getSessionStatus?.() ?? null;
+    const staticSections = this.getStaticPromptSections();
+    const cached = this.understandContextCache;
+    const sessionKey = buildSessionCacheKey(memoryContext);
+    const sameSession = cached?.sessionKey === sessionKey;
 
-    const promptInput = assemblePromptInput(this.staticContext, memoryContext, sessionStatus);
-    const systemContext = buildSystemPrompt({
-      ...promptInput,
-      toolDirectory: this.staticContext.toolDirectory,
-      includeToolDirectory: this.shouldIncludeToolDirectoryInPrompt(),
-    }).systemPrompt;
+    const conversationTurns = memoryContext.conversationTurns ?? [];
+    const conversationSection = sameSession
+      ? appendConversationSection(cached?.conversationTurns ?? [], cached?.conversationSection ?? "", conversationTurns)
+      : renderConversationSection(conversationTurns);
 
-    const dynamicContext = [
-      renderConversationSection(memoryContext.conversationTurns ?? []),
-      renderOpenFeedbackSection(memoryContext.openFeedbacks ?? []),
-      renderMemorySection(memoryContext.previousSessionSummary ?? ""),
-      renderCurrentSessionSection(memoryContext.activeSessionPath ?? ""),
-      renderRecentRunsSection(memoryContext.recentRunLedgers ?? []),
-      renderSystemActivitySection(memoryContext.recentSystemActivity ?? []),
-    ]
-      .filter((block) => block.trim().length > 0)
-      .join("\n\n")
-      .trim();
+    const previousSessionSummary = memoryContext.previousSessionSummary ?? "";
+    const memorySection = sameSession && cached?.previousSessionSummary === previousSessionSummary
+      ? cached.memorySection
+      : renderMemorySection(previousSessionSummary);
+
+    const activeSessionPath = memoryContext.activeSessionPath ?? "";
+    const currentSessionSection = sameSession && cached?.activeSessionPath === activeSessionPath
+      ? cached.currentSessionSection
+      : renderCurrentSessionSection(activeSessionPath);
+
+    const recentTasksFingerprint = JSON.stringify(memoryContext.recentTaskSummaries ?? []);
+    const recentTasksSection = sameSession && cached?.recentTasksFingerprint === recentTasksFingerprint
+      ? cached.recentTasksSection
+      : renderRecentTasksSection(memoryContext.recentTaskSummaries ?? []);
+
+    const recentSystemActivityFingerprint = JSON.stringify(memoryContext.recentSystemActivity ?? []);
+    const recentSystemActivitySection = sameSession && cached?.recentSystemActivityFingerprint === recentSystemActivityFingerprint
+      ? cached.recentSystemActivitySection
+      : renderSystemActivitySection(memoryContext.recentSystemActivity ?? []);
+
+    const dynamicContext = joinPromptSections([
+      conversationSection,
+      memorySection,
+      currentSessionSection,
+      recentTasksSection,
+      recentSystemActivitySection,
+    ]);
+    const systemContextWithoutStatus = joinPromptSections([
+      staticSections.head,
+      dynamicContext,
+      staticSections.tail,
+    ]);
+
+    const sessionStatusFingerprint = JSON.stringify(sessionStatus);
+    const systemContext = sameSession
+      && cached?.systemContextWithoutStatus === systemContextWithoutStatus
+      && cached?.sessionStatusFingerprint === sessionStatusFingerprint
+      ? cached.systemContext
+      : joinPromptSections([
+        systemContextWithoutStatus,
+        renderSessionStatusSection(sessionStatus),
+      ]);
+    const dynamicSystemTokens = sameSession && cached?.dynamicContext === dynamicContext
+      ? cached.dynamicSystemTokens
+      : estimateTextTokens(dynamicContext);
+
+    this.understandContextCache = {
+      sessionKey,
+      conversationTurns: cloneConversationTurns(conversationTurns),
+      conversationSection,
+      previousSessionSummary,
+      memorySection,
+      activeSessionPath,
+      currentSessionSection,
+      recentTasksFingerprint,
+      recentTasksSection,
+      recentSystemActivityFingerprint,
+      recentSystemActivitySection,
+      sessionStatusFingerprint,
+      systemContextWithoutStatus,
+      systemContext,
+      dynamicContext,
+      dynamicSystemTokens,
+    };
 
     return {
       systemContext,
-      dynamicSystemTokens: estimateTextTokens(dynamicContext),
+      controllerSystemContext: staticSections.controllerSystemContext,
+      dynamicSystemTokens,
     };
   }
 
@@ -469,30 +604,25 @@ export class IVecEngine {
     });
   }
 
-  private rotateSessionBeforeRunIfNeeded(clientId: string, incomingMessage: string): void {
+  private rotateSessionBeforeRunIfNeeded(clientId: string, _incomingMessage: string): void {
     const createSession = this.sessionMemory.createSession;
     if (!createSession) {
       return;
     }
 
-    const memoryContext = this.sessionMemory.getPromptMemoryContext();
     const sessionStatus = this.sessionMemory.getSessionStatus?.() ?? null;
+    if (!sessionStatus) {
+      return;
+    }
 
     const rotationDecision = evaluateSessionRotation({
       now: this.nowProvider(),
-      userMessage: incomingMessage,
-      contextPercent: sessionStatus?.contextPercent ?? 0,
-      turns: memoryContext.conversationTurns,
-      previousSessionSummary: memoryContext.previousSessionSummary,
-      pendingMidnight: this.pendingMidnightByClient.get(clientId) ?? null,
+      contextPercent: sessionStatus.contextPercent,
+      sessionStartedAt: sessionStatus.startedAt,
+      timezone: this.resolveUserTimezone(),
+      pendingRotationReason: sessionStatus.pendingRotationReason,
       config: this.rotationPolicyConfig,
     });
-
-    if (rotationDecision.pendingMidnight) {
-      this.pendingMidnightByClient.set(clientId, rotationDecision.pendingMidnight);
-    } else {
-      this.pendingMidnightByClient.delete(clientId);
-    }
 
     if (!rotationDecision.rotate) {
       return;
@@ -502,13 +632,38 @@ export class IVecEngine {
       runId: `pre-run-rotation-${Date.now()}`,
       reason: rotationDecision.reason ?? "policy_rotation",
       source: "system",
-      handoffSummary: rotationDecision.handoffSummary,
+      timezone: rotationDecision.timezone,
     });
-    this.pendingMidnightByClient.delete(clientId);
 
     devWarn(
-      `Pre-run session rotation triggered (${rotationDecision.reason ?? "unknown"}) at ${Math.round(sessionStatus?.contextPercent ?? 0)}% context`,
+      `Pre-run session rotation triggered (${rotationDecision.reason ?? "unknown"}) at ${Math.round(sessionStatus.contextPercent)}% context`,
     );
+  }
+
+  private async completeSessionLifecycle(
+    clientId: string,
+    runHandle: MemoryRunHandle | null,
+    status: "completed" | "failed" | "stuck" | null,
+  ): Promise<void> {
+    if (!runHandle || !status) {
+      return;
+    }
+
+    try {
+      await this.sessionMemory.updateSessionLifecycle?.(clientId, {
+        runId: runHandle.runId,
+        sessionId: runHandle.sessionId,
+        timezone: this.resolveUserTimezone(),
+        status,
+      });
+      await this.sessionMemory.flushPersistence?.();
+    } catch (err) {
+      devWarn("Session lifecycle update failed:", err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  private resolveUserTimezone(): string | null {
+    return this.staticContext?.userProfile.timezone ?? null;
   }
 
   private ensureStaticTokenCache(): void {
@@ -520,16 +675,7 @@ export class IVecEngine {
       return;
     }
 
-    const staticOnlyPrompt = buildSystemPrompt({
-      basePrompt: this.staticContext.basePrompt,
-      soul: this.staticContext.soul,
-      userProfile: this.staticContext.userProfile,
-      conversationTurns: [],
-      previousSessionSummary: "",
-      skillBlocks: this.staticContext.skillBlocks,
-      toolDirectory: this.staticContext.toolDirectory,
-      includeToolDirectory: this.shouldIncludeToolDirectoryInPrompt(),
-    }).systemPrompt;
+    const staticOnlyPrompt = this.buildStaticSystemContextText();
 
     const promptTokens = estimateTextTokens(staticOnlyPrompt);
 
@@ -537,6 +683,44 @@ export class IVecEngine {
     this.staticTokensReady = true;
     this.sessionMemory.setStaticTokenBudget(this.staticSystemTokens);
     devLog(`Static context tokens cached: ${this.staticSystemTokens} (prompt=${promptTokens})`);
+  }
+
+  private buildStaticSystemContextText(): string {
+    return this.getStaticPromptSections().controllerSystemContext;
+  }
+
+  private getStaticPromptSections(): StaticPromptSectionsCache {
+    if (this.staticPromptSections) {
+      return this.staticPromptSections;
+    }
+
+    if (!this.staticContext) {
+      this.staticPromptSections = {
+        head: "",
+        tail: "",
+        controllerSystemContext: "",
+      };
+      return this.staticPromptSections;
+    }
+
+    const head = joinPromptSections([
+      renderBasePromptSection(this.staticContext.basePrompt),
+      renderSoulSection(this.staticContext.soul),
+      renderUserProfileSection(this.staticContext.userProfile),
+    ]);
+    const tail = joinPromptSections([
+      renderSkillsSection(this.staticContext.skillBlocks),
+      renderToolDirectorySection(
+        this.staticContext.toolDirectory,
+        this.shouldIncludeToolDirectoryInPrompt(),
+      ),
+    ]);
+    this.staticPromptSections = {
+      head,
+      tail,
+      controllerSystemContext: joinPromptSections([head, tail]),
+    };
+    return this.staticPromptSections;
   }
 
   private toSystemEventSummary(
@@ -611,17 +795,29 @@ export class IVecEngine {
     const nestedIntent = asRecord(value["intent"]);
     const kind = asSystemEventIntentKind(nestedIntent?.["kind"])
       ?? asSystemEventIntentKind(value["intentKind"]);
+    const eventClass = asSystemEventClass(nestedIntent?.["eventClass"])
+      ?? asSystemEventClass(value["eventClass"])
+      ?? asSystemEventClass(value["event_class"]);
+    const trustTier = asSystemEventTrustTier(nestedIntent?.["trustTier"])
+      ?? asSystemEventTrustTier(value["trustTier"])
+      ?? asSystemEventTrustTier(value["trust_tier"]);
+    const effectLevel = asSystemEventEffectLevel(nestedIntent?.["effectLevel"])
+      ?? asSystemEventEffectLevel(value["effectLevel"])
+      ?? asSystemEventEffectLevel(value["effect_level"]);
     const requestedAction = asOptionalString(nestedIntent?.["requestedAction"])
       ?? asOptionalString(value["requestedAction"]);
     const createdBy = asSystemEventCreatedBy(nestedIntent?.["createdBy"])
       ?? asSystemEventCreatedBy(value["createdBy"]);
 
-    if (!kind && !requestedAction && !createdBy) {
+    if (!kind && !eventClass && !trustTier && !effectLevel && !requestedAction && !createdBy) {
       return undefined;
     }
 
     return {
       ...(kind ? { kind } : {}),
+      ...(eventClass ? { eventClass } : {}),
+      ...(trustTier ? { trustTier } : {}),
+      ...(effectLevel ? { effectLevel } : {}),
       ...(requestedAction ? { requestedAction } : {}),
       ...(createdBy ? { createdBy } : {}),
     };
@@ -629,7 +825,7 @@ export class IVecEngine {
 
   private buildSystemEventExecutionPlan(event: AyatiSystemEvent): SystemEventExecutionPlan {
     const classification = classifySystemEvent(event);
-    const policy = resolveSystemEventPolicy(this.systemEventPolicy, event, classification.intentKind);
+    const policy = resolveSystemEventPolicy(this.systemEventPolicy, event, classification);
 
     return {
       classification,
@@ -644,8 +840,11 @@ export class IVecEngine {
     const allToolDefinitions = this.toolExecutor?.definitions() ?? [];
     switch (mode) {
       case "auto_execute_notify":
+      case "auto_execute_silent":
         return allToolDefinitions;
+      case "log_only":
       case "analyze_notify":
+      case "analyze_ask":
       case "draft_then_approve":
       case "approve_then_execute":
         return [];
@@ -663,6 +862,9 @@ export class IVecEngine {
       `mode=${plan.policy.mode}`,
       `delivery=${plan.policy.delivery}`,
       `intent=${plan.classification.intentKind}`,
+      `eventClass=${plan.classification.eventClass}`,
+      `trustTier=${plan.classification.trustTier}`,
+      `effectLevel=${plan.classification.effectLevel}`,
       `createdBy=${plan.classification.createdBy}`,
       `approvalRequired=${plan.policy.approvalRequired ? "yes" : "no"}`,
       `response=${responseKind}`,
@@ -671,6 +873,30 @@ export class IVecEngine {
       content ? `summary=${content}` : undefined,
     ].filter((part) => typeof part === "string" && part.length > 0);
     return parts.join(" | ");
+  }
+
+  private queueTaskSummaryPublication(
+    clientId: string,
+    runHandle: MemoryRunHandle,
+    taskSummary: AgentLoopResult["taskSummary"] | undefined,
+  ): void {
+    if (!taskSummary) {
+      return;
+    }
+
+    const payload = {
+      ...taskSummary,
+      sessionId: runHandle.sessionId,
+    };
+
+    if (this.sessionMemory.queueTaskSummary) {
+      void Promise.resolve(this.sessionMemory.queueTaskSummary(clientId, payload)).catch((err) => {
+        devWarn(`Task summary queue failed: ${err instanceof Error ? err.message : String(err)}`);
+      });
+      return;
+    }
+
+    this.sessionMemory.recordTaskSummary?.(clientId, payload);
   }
 
   private shouldIncludeToolDirectoryInPrompt(): boolean {
@@ -689,6 +915,7 @@ export class IVecEngine {
       runHandle.runId,
       runHandle.sessionId,
       content,
+      { responseKind: "reply" },
     );
     this.recordTurnStatus(clientId, runHandle, "response_completed");
     const artifactPayload = artifacts && artifacts.length > 0
@@ -706,37 +933,15 @@ export class IVecEngine {
     runHandle: MemoryRunHandle,
     content: string,
     artifacts?: AgentArtifact[],
-    feedback?: {
-      kind: "approval" | "confirmation" | "clarification";
-      shortLabel: string;
-      actionType?: string;
-      sourceEventId?: string;
-      entityHints: string[];
-      payloadSummary?: string;
-      ttlHours?: number;
-    },
   ): void {
     this.recordTurnStatus(clientId, runHandle, "response_started");
-    this.sessionMemory.recordAssistantFeedback(
+    this.sessionMemory.recordAssistantFinal(
       clientId,
       runHandle.runId,
       runHandle.sessionId,
       content,
+      { responseKind: "feedback" },
     );
-    const opened = feedback
-      ? this.sessionMemory.recordFeedbackOpened?.(clientId, {
-        runId: runHandle.runId,
-        sessionId: runHandle.sessionId,
-        kind: feedback.kind,
-        shortLabel: feedback.shortLabel,
-        message: content,
-        actionType: feedback.actionType,
-        sourceEventId: feedback.sourceEventId,
-        entityHints: feedback.entityHints,
-        payloadSummary: feedback.payloadSummary,
-        ttlHours: feedback.ttlHours,
-      }) ?? null
-      : null;
     this.recordTurnStatus(clientId, runHandle, "response_completed");
     const artifactPayload = artifacts && artifacts.length > 0
       ? { artifacts, runId: runHandle.runId }
@@ -745,7 +950,6 @@ export class IVecEngine {
       type: "feedback",
       content,
       ...artifactPayload,
-      ...(opened ? { feedbackId: opened.feedbackId } : {}),
     });
   }
 
@@ -761,6 +965,13 @@ export class IVecEngine {
     },
   ): void {
     this.recordTurnStatus(clientId, runHandle, "response_started");
+    this.sessionMemory.recordAssistantFinal(
+      clientId,
+      runHandle.runId,
+      runHandle.sessionId,
+      content,
+      { responseKind: "notification" },
+    );
     this.sessionMemory.recordAssistantNotification?.(clientId, {
       runId: runHandle.runId,
       sessionId: runHandle.sessionId,
@@ -787,15 +998,6 @@ export class IVecEngine {
       type: AgentResponseKind;
       content: string;
       artifacts?: AgentArtifact[];
-      openFeedback?: {
-        kind: "approval" | "confirmation" | "clarification";
-        shortLabel: string;
-        actionType?: string;
-        sourceEventId?: string;
-        entityHints: string[];
-        payloadSummary?: string;
-        ttlHours?: number;
-      };
     },
     meta?: {
       source?: string;
@@ -808,7 +1010,7 @@ export class IVecEngine {
         this.sendAssistantReply(clientId, runHandle, result.content, result.artifacts);
         return;
       case "feedback":
-        this.sendAssistantFeedback(clientId, runHandle, result.content, result.artifacts, result.openFeedback);
+        this.sendAssistantFeedback(clientId, runHandle, result.content, result.artifacts);
         return;
       case "notification":
         this.sendAssistantNotification(clientId, runHandle, result.content, result.artifacts, meta);
@@ -877,7 +1079,30 @@ function asSystemEventIntentKind(value: unknown): SystemEventIntentKind | undefi
 }
 
 function asSystemEventCreatedBy(value: unknown): SystemEventCreatedBy | undefined {
-  return value === "user" || value === "system" || value === "external" || value === "unknown"
+  return value === "user" || value === "agent" || value === "system" || value === "external" || value === "unknown"
+    ? value
+    : undefined;
+}
+
+function asSystemEventClass(value: unknown): SystemEventClass | undefined {
+  return value === "message_received"
+    || value === "trigger_fired"
+    || value === "task_requested"
+    || value === "state_changed"
+    || value === "artifact_received"
+    || value === "approval_response"
+    ? value
+    : undefined;
+}
+
+function asSystemEventTrustTier(value: unknown): SystemEventTrustTier | undefined {
+  return value === "internal" || value === "trusted_system" || value === "external"
+    ? value
+    : undefined;
+}
+
+function asSystemEventEffectLevel(value: unknown): SystemEventEffectLevel | undefined {
+  return value === "observe" || value === "assist" || value === "act" || value === "act_external"
     ? value
     : undefined;
 }
@@ -951,6 +1176,80 @@ export function parseChatInboundMessage(data: unknown): ChatInboundMessage | nul
     content,
     ...(attachments.length > 0 ? { attachments } : {}),
   };
+}
+
+function joinPromptSections(sections: string[]): string {
+  return sections.filter((section) => section.trim().length > 0).join("\n\n").trim();
+}
+
+function renderToolDirectorySection(toolDirectory: string | undefined, includeToolDirectory: boolean): string {
+  if (!includeToolDirectory) return "";
+  if (!toolDirectory || toolDirectory.trim().length === 0) return "";
+  return `# Available Tools\n\n${toolDirectory}`;
+}
+
+function buildSessionCacheKey(memoryContext: PromptMemoryContext): string {
+  const activeSessionPath = memoryContext.activeSessionPath?.trim();
+  return activeSessionPath && activeSessionPath.length > 0 ? activeSessionPath : "__no_active_session__";
+}
+
+function cloneConversationTurns(turns: ConversationTurn[]): ConversationTurn[] {
+  return turns.map((turn) => ({ ...turn }));
+}
+
+function appendConversationSection(
+  previousTurns: ConversationTurn[],
+  previousSection: string,
+  nextTurns: ConversationTurn[],
+): string {
+  if (nextTurns.length === 0) {
+    return "";
+  }
+
+  if (previousTurns.length === 0 || !isConversationPrefix(previousTurns, nextTurns)) {
+    return renderConversationSection(nextTurns);
+  }
+
+  if (previousTurns.length === nextTurns.length) {
+    return previousSection;
+  }
+
+  const appendedLines = renderConversationLines(nextTurns.slice(previousTurns.length));
+  if (appendedLines.length === 0) {
+    return previousSection;
+  }
+
+  if (previousSection.trim().length === 0) {
+    return renderConversationSection(nextTurns);
+  }
+
+  return `${previousSection}\n${appendedLines.join("\n")}`;
+}
+
+function isConversationPrefix(previousTurns: ConversationTurn[], nextTurns: ConversationTurn[]): boolean {
+  if (previousTurns.length > nextTurns.length) {
+    return false;
+  }
+
+  for (let index = 0; index < previousTurns.length; index++) {
+    const previous = previousTurns[index];
+    const next = nextTurns[index];
+    if (!previous || !next) {
+      return false;
+    }
+    if (
+      previous.role !== next.role
+      || previous.content !== next.content
+      || previous.timestamp !== next.timestamp
+      || previous.sessionPath !== next.sessionPath
+      || previous.runId !== next.runId
+      || previous.assistantResponseKind !== next.assistantResponseKind
+    ) {
+      return false;
+    }
+  }
+
+  return true;
 }
 
 export { IVecEngine as AgentEngine };

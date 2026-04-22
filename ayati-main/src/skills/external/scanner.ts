@@ -13,7 +13,7 @@ import type {
 } from "./types.js";
 
 const execAsync = promisify(exec);
-const SKILL_FILENAMES = ["skill.md", "SKILL.md"] as const;
+export const SKILL_FILENAMES = ["skill.md", "SKILL.md"] as const;
 
 function normalizeYamlScalar(value: string): string {
   const trimmed = value.trim();
@@ -26,7 +26,7 @@ function normalizeYamlScalar(value: string): string {
   return trimmed;
 }
 
-function parseYamlFrontmatter(raw: string): Record<string, unknown> {
+export function parseYamlFrontmatter(raw: string): Record<string, unknown> {
   const match = raw.match(/^---\s*\n([\s\S]*?)\n---/);
   if (!match?.[1]) return {};
 
@@ -77,7 +77,7 @@ function parseYamlFrontmatter(raw: string): Record<string, unknown> {
   return result;
 }
 
-async function tryExec(command: string): Promise<boolean> {
+export async function tryExec(command: string): Promise<boolean> {
   try {
     await execAsync(command, { timeout: 30_000 });
     return true;
@@ -117,7 +117,7 @@ function normalizeStringArray(value: unknown): string[] | undefined {
   return normalized.length > 0 ? normalized : undefined;
 }
 
-function normalizeScanRoots(
+export function normalizeScanRoots(
   input: string | ExternalSkillScanRoot | Array<string | ExternalSkillScanRoot>,
 ): ExternalSkillScanRoot[] {
   const values = Array.isArray(input) ? input : [input];
@@ -138,7 +138,7 @@ function normalizeScanRoots(
   return roots;
 }
 
-function inferSource(root: ExternalSkillScanRoot): ExternalSkillSource {
+export function inferSource(root: ExternalSkillScanRoot): ExternalSkillSource {
   return root.source ?? "project";
 }
 
@@ -232,14 +232,21 @@ export async function scanExternalSkills(
 
       const manifest = parseYamlFrontmatter(raw) as unknown as ExternalSkillManifest;
 
-      if (!manifest.id || !manifest.description) {
+      const manifestId = typeof manifest.id === "string" && manifest.id.trim().length > 0
+        ? manifest.id.trim()
+        : (typeof manifest.name === "string" && manifest.name.trim().length > 0 ? manifest.name.trim() : undefined);
+      const manifestDescription = typeof manifest.description === "string" && manifest.description.trim().length > 0
+        ? manifest.description.trim()
+        : undefined;
+
+      if (!manifestId || !manifestDescription) {
         devWarn(`Skipping skill in ${entry}: missing id or description`);
         continue;
       }
 
-      if (seenIds.has(manifest.id)) {
+      if (seenIds.has(manifestId)) {
         devLog(
-          `Skipping duplicate external skill "${manifest.id}" from ${skillFilePath}; an earlier root already provided it.`,
+          `Skipping duplicate external skill "${manifestId}" from ${skillFilePath}; an earlier root already provided it.`,
         );
         continue;
       }
@@ -251,7 +258,7 @@ export async function scanExternalSkills(
         : undefined;
 
       if (runtime === "plugin" && !plugin) {
-        devWarn(`Skill "${manifest.id}" declares runtime=plugin but has no plugin field`);
+        devWarn(`Skill "${manifestId}" declares runtime=plugin but has no plugin field`);
       }
 
       let installed = true;
@@ -259,10 +266,10 @@ export async function scanExternalSkills(
       if (manifest.dependency?.check) {
         const depOk = await tryExec(manifest.dependency.check);
         if (!depOk && manifest.dependency.install) {
-          devLog(`Installing dependency for skill "${manifest.id}"...`);
+          devLog(`Installing dependency for skill "${manifestId}"...`);
           const installOk = await tryExec(manifest.dependency.install);
           if (!installOk) {
-            devWarn(`Failed to install dependency for skill "${manifest.id}"`);
+            devWarn(`Failed to install dependency for skill "${manifestId}"`);
             installed = false;
           }
         } else if (!depOk) {
@@ -273,12 +280,12 @@ export async function scanExternalSkills(
       if (installed && manifest.start) {
         const started = await tryExec(manifest.start);
         if (!started) {
-          devWarn(`Failed to start skill "${manifest.id}"`);
+          devWarn(`Failed to start skill "${manifestId}"`);
         }
       }
 
       const skill: ExternalSkillMeta = {
-        id: manifest.id,
+        id: manifestId,
         type,
         runtime,
         source: inferSource(root),
@@ -287,7 +294,7 @@ export async function scanExternalSkills(
         ...(normalizeOptionalString(manifest.command) ? { command: normalizeOptionalString(manifest.command) } : {}),
         ...(normalizeStringArray(manifest.commands) ? { commands: normalizeStringArray(manifest.commands) } : {}),
         ...(normalizeStringArray(manifest.aliases) ? { aliases: normalizeStringArray(manifest.aliases) } : {}),
-        description: manifest.description,
+        description: manifestDescription,
         skillFilePath,
         skillDir: join(root.skillsDir, entry),
         installed,
@@ -298,7 +305,7 @@ export async function scanExternalSkills(
       await validateCanonicalCommands(skill);
 
       devLog(
-        `Loaded external skill: ${manifest.id} (type=${type}, runtime=${runtime}, source=${skill.source}, installed=${installed}${skill.command ? `, command=${skill.command}` : ""})`,
+        `Loaded external skill: ${manifestId} (type=${type}, runtime=${runtime}, source=${skill.source}, installed=${installed}${skill.command ? `, command=${skill.command}` : ""})`,
       );
 
       skills.push(skill);

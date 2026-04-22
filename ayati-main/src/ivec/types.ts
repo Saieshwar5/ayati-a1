@@ -2,16 +2,19 @@ import type { LlmProvider } from "../core/contracts/provider.js";
 import type { ControllerPrompts } from "../context/types.js";
 import type { ToolExecutor } from "../skills/tool-executor.js";
 import type { ToolDefinition } from "../skills/types.js";
+import type { ExternalSkillBroker } from "../skills/external/broker.js";
+import type { ExternalSkillRegistry } from "../skills/external/registry.js";
 import type { ActiveAttachmentRef } from "../memory/types.js";
 import type {
   AgentResponseKind,
   FeedbackKind,
-  OpenFeedbackItem,
   SessionMemory,
   MemoryRunHandle,
   ConversationTurn,
   PromptRunLedger,
+  PromptTaskSummary,
   SystemActivityItem,
+  TaskSummaryRecordInput,
 } from "../memory/types.js";
 import type { DocumentStore } from "../documents/document-store.js";
 import type { PreparedAttachmentRegistry } from "../documents/prepared-attachment-registry.js";
@@ -29,6 +32,9 @@ import type {
 
 export type SystemEventApprovalState = "not_needed" | "pending" | "granted" | "rejected";
 export type WorkMode = "background_lookup" | "document_lookup" | "document_process" | "structured_data_process";
+export type RunClass = "interaction" | "task";
+export type AgentTaskSummaryRecord = Omit<TaskSummaryRecordInput, "sessionId">;
+export const RECENT_TASK_SELECTION_LIMIT = 5;
 export type PreparedAttachmentStateUpdate =
   | {
     type: "mark_dataset_staged";
@@ -60,10 +66,16 @@ export interface GoalContract {
   stop_when_no_progress: string[];
 }
 
-export interface ProgressLedger {
-  lastSuccessfulStepSummary: string;
-  lastStepFacts: string[];
-  taskEvidence: string[];
+export interface TaskProgressState {
+  status: TaskStatus;
+  progressSummary: string;
+  currentFocus?: string;
+  completedMilestones?: string[];
+  openWork?: string[];
+  blockers?: string[];
+  keyFacts: string[];
+  evidence: string[];
+  userInputNeeded?: string;
 }
 
 export interface FailedApproach {
@@ -78,6 +90,7 @@ export interface FailedApproach {
 
 export interface LoopState {
   runId: string;
+  runClass: RunClass;
   inputKind?: "user_message" | "system_event";
   userMessage: string;
   systemEvent?: AyatiSystemEvent;
@@ -89,13 +102,13 @@ export interface LoopState {
   approvalRequired?: boolean;
   approvalState?: SystemEventApprovalState;
   contextVisibility?: SystemEventContextVisibility;
-  feedbackTtlHours?: number;
   preferredResponseKind?: AgentResponseKind;
-  matchedFeedback?: OpenFeedbackItem | null;
   goal: GoalContract;
   approach: string;
-  taskStatus: TaskStatus;
-  progressLedger: ProgressLedger;
+  sessionContextSummary: string;
+  dependentTask: boolean;
+  dependentTaskSummary: PromptTaskSummary | null;
+  taskProgress: TaskProgressState;
   status: "running" | "completed" | "failed";
   finalOutput: string;
   iteration: number;
@@ -113,7 +126,7 @@ export interface LoopState {
   workMode?: WorkMode;
   sessionHistory: ConversationTurn[];
   recentRunLedgers: PromptRunLedger[];
-  openFeedbacks: OpenFeedbackItem[];
+  recentTaskSummaries: PromptTaskSummary[];
   recentSystemActivity: SystemActivityItem[];
 }
 
@@ -127,9 +140,13 @@ export interface StepSummary {
   artifacts: string[];
   toolSuccessCount: number;
   toolFailureCount: number;
-  taskStatusAfter?: TaskStatus;
-  taskReason?: string;
-  taskEvidence?: string[];
+  verificationMethod?: VerificationMethod;
+  executionStatus?: VerificationExecutionStatus;
+  validationStatus?: VerificationValidationStatus;
+  evidenceSummary?: string;
+  evidenceItems?: string[];
+  usedRawArtifacts?: string[];
+  taskProgress?: TaskProgressState;
   stoppedEarlyReason?: "assistant_returned" | "max_act_turns_reached" | "max_total_tool_calls_reached" | "repeated_identical_failure" | "no_valid_tool_calls" | "planned_call_failed";
   failureType?: FailedApproach["failureType"];
   blockedTargets?: string[];
@@ -143,6 +160,9 @@ export interface UnderstandDirective {
   understand: true;
   goal: GoalContract;
   approach: string;
+  session_context_summary: string;
+  dependent_task: boolean;
+  dependent_task_slot?: number;
   work_mode?: WorkMode;
 }
 
@@ -152,7 +172,26 @@ export interface ReEvalDirective {
   approach: string;
 }
 
-export type StepPlanCallOrigin = "builtin" | "external_skill";
+export interface ReadRunStateDirective {
+  done: false;
+  read_run_state: true;
+  action: "read_summary_window" | "read_step_full";
+  window?: {
+    from: number;
+    to: number;
+  };
+  step?: number;
+  reason?: string;
+}
+
+export interface ActivateSkillDirective {
+  done: false;
+  activate_skill: true;
+  skill_id: string;
+  reason?: string;
+}
+
+export type StepPlanCallOrigin = "builtin" | "external_tool";
 export type StepPlanRetryPolicy = "none" | "same_call_once_on_timeout";
 
 export interface StepPlanCall {
@@ -234,27 +273,14 @@ export interface CompletionDirective {
   entity_hints?: string[];
 }
 
-export interface FeedbackResolutionDirective {
-  resolution: "matched" | "none" | "ambiguous";
-  feedback_id?: string;
-  clarification?: string;
-  reason?: string;
-}
-
-export interface SessionRotationDirective {
-  done: false;
-  rotate_session: true;
-  reason: string;
-  handoff_summary: string;
-}
-
 export type ControllerOutput =
   | UnderstandDirective
   | ReEvalDirective
+  | ReadRunStateDirective
+  | ActivateSkillDirective
   | StepDirective
   | ContextSearchDirective
-  | CompletionDirective
-  | SessionRotationDirective;
+  | CompletionDirective;
 
 // --- Phase outputs ---
 
@@ -262,6 +288,10 @@ export interface ActToolCallRecord {
   tool: string;
   input: unknown;
   output: string;
+  outputStorage?: "inline" | "raw_file";
+  rawOutputPath?: string;
+  rawOutputChars?: number;
+  outputTruncated?: boolean;
   error?: string;
   meta?: Record<string, unknown>;
 }
@@ -272,15 +302,22 @@ export interface ActOutput {
   stoppedEarlyReason?: "assistant_returned" | "max_act_turns_reached" | "max_total_tool_calls_reached" | "repeated_identical_failure" | "no_valid_tool_calls" | "planned_call_failed";
 }
 
+export type VerificationMethod = "execution_gate" | "llm" | "script";
+export type VerificationExecutionStatus = "no_tools" | "all_succeeded" | "partial_success" | "all_failed";
+export type VerificationValidationStatus = "passed" | "failed" | "skipped";
+
 export interface VerifyOutput {
   passed: boolean;
-  method: "gate" | "llm";
-  evidence: string;
+  method: VerificationMethod;
+  executionStatus: VerificationExecutionStatus;
+  validationStatus: VerificationValidationStatus;
+  summary: string;
+  evidenceSummary: string;
+  evidenceItems: string[];
   newFacts: string[];
   artifacts: string[];
-  taskStatusAfter?: TaskStatus;
-  taskReason?: string;
-  taskEvidence?: string[];
+  usedRawArtifacts: string[];
+  taskProgress?: TaskProgressState;
 }
 
 export interface AgentArtifact {
@@ -304,11 +341,33 @@ export interface TaskValidationContext {
   approvalRequired?: boolean;
   approvalState?: SystemEventApprovalState;
   goal: GoalContract;
-  taskStatus: TaskStatus;
   approach: string;
-  latestSuccessfulStepSummary: string;
-  latestStepNewFacts: string[];
-  recentStepDigests: string[];
+  previousTaskProgress: TaskProgressState;
+  recentSuccessfulSteps: Array<{
+    step: number;
+    executionContract: string;
+    summary: string;
+    evidenceItems: string[];
+    taskFacts: string[];
+    artifacts: string[];
+  }>;
+  recentFailedSteps: Array<{
+    step: number;
+    executionContract: string;
+    summary: string;
+    evidenceItems: string[];
+    taskFacts: string[];
+    artifacts: string[];
+    blockedTargets: string[];
+    failureType?: FailedApproach["failureType"];
+  }>;
+  latestSuccessfulStep: {
+    summary: string;
+    evidenceItems: string[];
+    taskFacts: string[];
+    artifacts: string[];
+  };
+  recentSuccessfulSummaries: string[];
 }
 
 // --- Config ---
@@ -317,42 +376,40 @@ export interface LoopConfig {
   maxIterations: number;
   maxToolCallsPerStep: number;
   maxConsecutiveFailures: number;
+  approachReevalThreshold: number;
   maxApproachChanges: number;
   maxScoutTurns: number;
   maxScoutCallsPerIteration: number;
   maxTotalToolCallsPerStep: number;
+  maxInlineActOutputChars: number;
+  maxVerifyArtifactChars: number;
 }
 
 export const DEFAULT_LOOP_CONFIG: LoopConfig = {
   maxIterations: 15,
   maxToolCallsPerStep: 4,
   maxConsecutiveFailures: 5,
+  approachReevalThreshold: 3,
   maxApproachChanges: 4,
   maxScoutTurns: 10,
   maxScoutCallsPerIteration: 4,
   maxTotalToolCallsPerStep: 6,
+  maxInlineActOutputChars: 8_000,
+  maxVerifyArtifactChars: 20_000,
 };
 
 // --- Result + callbacks ---
 
 export interface AgentLoopResult {
   type: AgentResponseKind;
+  runClass: RunClass;
   content: string;
   status: "completed" | "failed" | "stuck";
   totalIterations: number;
   totalToolCalls: number;
   runPath: string;
+  taskSummary?: AgentTaskSummaryRecord;
   artifacts?: AgentArtifact[];
-  openFeedback?: {
-    kind: FeedbackKind;
-    shortLabel: string;
-    actionType?: string;
-    sourceEventId?: string;
-    entityHints: string[];
-    payloadSummary?: string;
-    ttlHours?: number;
-  };
-  resolvedFeedbackId?: string;
 }
 
 export type OnProgressCallback = (log: string, runPath: string) => void;
@@ -363,6 +420,8 @@ export interface AgentLoopDeps {
   provider: LlmProvider;
   toolExecutor?: ToolExecutor;
   toolDefinitions: ToolDefinition[];
+  externalSkillBroker?: ExternalSkillBroker;
+  externalSkillRegistry?: ExternalSkillRegistry;
   sessionMemory: SessionMemory;
   runHandle: MemoryRunHandle;
   clientId: string;
@@ -375,13 +434,13 @@ export interface AgentLoopDeps {
   systemEventApprovalRequired?: boolean;
   systemEventApprovalState?: SystemEventApprovalState;
   systemEventContextVisibility?: SystemEventContextVisibility;
-  feedbackTtlHours?: number;
   preferredResponseKind?: AgentResponseKind;
   initialUserMessage?: string;
   onProgress?: OnProgressCallback;
   config?: Partial<LoopConfig>;
   dataDir: string;
   systemContext?: string;
+  controllerSystemContext?: string;
   controllerPrompts?: ControllerPrompts;
   userMessageOverride?: string;
   attachedDocuments?: ManagedDocumentManifest[];
@@ -397,6 +456,8 @@ export interface ExecutorDeps {
   provider: LlmProvider;
   toolExecutor?: ToolExecutor;
   toolDefinitions: ToolDefinition[];
+  externalSkillBroker?: ExternalSkillBroker;
+  externalSkillRegistry?: ExternalSkillRegistry;
   config: LoopConfig;
   clientId: string;
   sessionMemory: SessionMemory;

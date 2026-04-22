@@ -26,6 +26,37 @@ const DATABASE_PROMPT_BLOCK = [
   "Tools: db_list_tables, db_describe_table, db_get_table_ddl, db_create_table, db_rename_table, db_drop_table, db_add_columns, db_insert_rows, db_update_rows, db_delete_rows, db_query, db_execute_sql.",
 ].join("\n");
 
+const GENERIC_JSON_VALUE_SCHEMA: Record<string, unknown> = {};
+const STRING_ARRAY_ITEM_SCHEMA: Record<string, unknown> = {
+  type: "string",
+};
+const DATABASE_COLUMN_REFERENCE_SCHEMA: Record<string, unknown> = {
+  type: "object",
+  required: ["table", "column"],
+  properties: {
+    table: { type: "string", description: "Referenced table name." },
+    column: { type: "string", description: "Referenced column name." },
+  },
+};
+const DATABASE_COLUMN_SCHEMA: Record<string, unknown> = {
+  type: "object",
+  required: ["name"],
+  properties: {
+    name: { type: "string", description: "Column name." },
+    type: { type: "string", description: "SQLite column type such as TEXT or INTEGER." },
+    notNull: { type: "boolean", description: "Mark the column as NOT NULL." },
+    primaryKey: { type: "boolean", description: "Mark the column as part of the primary key." },
+    unique: { type: "boolean", description: "Require unique values in the column." },
+    defaultValue: { description: "Literal default value for the column." },
+    defaultSql: { type: "string", description: "Raw SQL DEFAULT expression." },
+    references: DATABASE_COLUMN_REFERENCE_SCHEMA,
+    check: { type: "string", description: "CHECK constraint SQL for the column." },
+  },
+};
+const DATABASE_ROW_OBJECT_SCHEMA: Record<string, unknown> = {
+  type: "object",
+};
+
 function buildSuccessResult(output: unknown, meta?: Record<string, unknown>): ToolResult {
   return {
     ok: true,
@@ -154,6 +185,7 @@ function createCreateTableTool(): ToolDefinition {
         columns: {
           type: "array",
           description: "Column definitions for the new table.",
+          items: DATABASE_COLUMN_SCHEMA,
         },
       },
     },
@@ -270,7 +302,11 @@ function createAddColumnsTool(): ToolDefinition {
       properties: {
         dbPath: { type: "string", description: "Optional SQLite database path." },
         table: { type: "string", description: "Table name." },
-        columns: { type: "array", description: "Column definitions to add." },
+        columns: {
+          type: "array",
+          description: "Column definitions to add.",
+          items: DATABASE_COLUMN_SCHEMA,
+        },
       },
     },
     selectionHints: {
@@ -305,7 +341,11 @@ function createInsertRowsTool(): ToolDefinition {
       properties: {
         dbPath: { type: "string", description: "Optional SQLite database path." },
         table: { type: "string", description: "Table name." },
-        rows: { type: "array", description: "Rows to insert as objects keyed by column name." },
+        rows: {
+          type: "array",
+          description: "Rows to insert as objects keyed by column name.",
+          items: DATABASE_ROW_OBJECT_SCHEMA,
+        },
       },
     },
     selectionHints: {
@@ -342,7 +382,11 @@ function createUpdateRowsTool(): ToolDefinition {
         table: { type: "string", description: "Table name." },
         set: { type: "object", description: "Patch object keyed by column name." },
         whereSql: { type: "string", description: "Optional SQL after WHERE, such as id = ?." },
-        params: { type: "array", description: "Optional positional parameters for whereSql." },
+        params: {
+          type: "array",
+          description: "Optional positional parameters for whereSql.",
+          items: GENERIC_JSON_VALUE_SCHEMA,
+        },
       },
     },
     selectionHints: {
@@ -387,7 +431,11 @@ function createDeleteRowsTool(): ToolDefinition {
         dbPath: { type: "string", description: "Optional SQLite database path." },
         table: { type: "string", description: "Table name." },
         whereSql: { type: "string", description: "Optional SQL after WHERE, such as created_at < ?." },
-        params: { type: "array", description: "Optional positional parameters for whereSql." },
+        params: {
+          type: "array",
+          description: "Optional positional parameters for whereSql.",
+          items: GENERIC_JSON_VALUE_SCHEMA,
+        },
       },
     },
     selectionHints: {
@@ -428,10 +476,22 @@ function createQueryTool(): ToolDefinition {
       properties: {
         dbPath: { type: "string", description: "Optional SQLite database path." },
         table: { type: "string", description: "Table name." },
-        columns: { type: "array", description: "Optional list of columns to select." },
+        columns: {
+          type: "array",
+          description: "Optional list of columns to select.",
+          items: STRING_ARRAY_ITEM_SCHEMA,
+        },
         whereSql: { type: "string", description: "Optional SQL after WHERE." },
-        params: { type: "array", description: "Optional positional parameters for whereSql." },
-        orderBy: { type: "array", description: "Optional ORDER BY expressions." },
+        params: {
+          type: "array",
+          description: "Optional positional parameters for whereSql.",
+          items: GENERIC_JSON_VALUE_SCHEMA,
+        },
+        orderBy: {
+          type: "array",
+          description: "Optional ORDER BY expressions.",
+          items: STRING_ARRAY_ITEM_SCHEMA,
+        },
         limit: { type: "number", description: "Optional row limit (default 50, max 200)." },
         offset: { type: "number", description: "Optional row offset." },
       },
@@ -487,7 +547,11 @@ function createExecuteSqlTool(): ToolDefinition {
       properties: {
         dbPath: { type: "string", description: "Optional SQLite database path." },
         sql: { type: "string", description: "SQL to execute." },
-        params: { type: "array", description: "Optional positional parameters for a single prepared statement." },
+        params: {
+          type: "array",
+          description: "Optional positional parameters for a single prepared statement.",
+          items: GENERIC_JSON_VALUE_SCHEMA,
+        },
         mode: { type: "string", description: "auto, query, or execute." },
         maxRows: { type: "number", description: "Optional row cap for query mode (default 50, max 200)." },
       },

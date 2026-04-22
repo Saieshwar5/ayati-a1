@@ -7,6 +7,12 @@ import {
   readdirSync,
   existsSync,
 } from "node:fs";
+import {
+  appendFile as appendFileAsync,
+  mkdir as mkdirAsync,
+  readFile as readFileAsync,
+  writeFile as writeFileAsync,
+} from "node:fs/promises";
 import { dirname, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { AgentStepEvent, CountableSessionEvent, SessionEvent, SessionOpenEvent, ToolSessionEvent } from "./session-events.js";
@@ -120,12 +126,49 @@ export class SessionPersistence {
     this.metaIndex.recordEvent(event.sessionId, event.ts);
   }
 
+  async appendEventAsync(event: SessionEvent): Promise<void> {
+    const filePath = this.resolveSessionAbsolutePath(event.sessionPath);
+    await mkdirAsync(dirname(filePath), { recursive: true });
+    await this.ensureSessionDocumentAsync(filePath, event);
+    await appendFileAsync(filePath, this.renderEventEntry(event), "utf8");
+
+    if (event.type === "session_open") {
+      this.metaIndex.openSession({
+        sessionId: event.sessionId,
+        clientId: event.clientId,
+        sessionPath: event.sessionPath,
+        openedAt: event.ts,
+        parentSessionId: event.parentSessionId,
+        handoffSummary: event.handoffSummary,
+      });
+      return;
+    }
+
+    if (event.type === "session_close") {
+      this.metaIndex.closeSession(event.sessionId, event.ts, event.reason, event.handoffSummary);
+      await this.updateSessionMetadataAsync(filePath, {
+        status: "closed",
+        closed_at: event.ts,
+        close_reason: event.reason,
+        handoff_summary: event.handoffSummary ?? null,
+        updated_at: event.ts,
+      });
+      return;
+    }
+
+    this.metaIndex.recordEvent(event.sessionId, event.ts);
+  }
+
   getSessionFilePath(sessionId: string): string {
     const existing = this.findSessionRelativePathById(sessionId);
     if (existing) {
       return this.resolveSessionAbsolutePath(existing);
     }
     return this.resolveSessionAbsolutePath(`sessions/legacy/${sessionId}.md`);
+  }
+
+  getSessionRelativePath(sessionId: string): string | null {
+    return this.findSessionRelativePathById(sessionId);
   }
 
   getActiveSessionInfo(clientId?: string): ActiveSessionInfo | null {
@@ -360,6 +403,7 @@ export class SessionPersistence {
           metadataClientId ?? event.clientId,
           event.ts,
           inferredPath,
+          event.parentSessionId ?? metadata?.parent_session_id ?? null,
         );
         if (event.handoffSummary) {
           session.handoffSummary = event.handoffSummary;
@@ -377,6 +421,7 @@ export class SessionPersistence {
         metadata.client_id,
         metadata.opened_at,
         inferredPath,
+        metadata.parent_session_id,
       );
     }
 
@@ -407,13 +452,16 @@ export class SessionPersistence {
           sessionPath: inferredPath,
           runId: event.runId,
         });
-      } else if (event.type === "assistant_message") {
+      } else if (event.type === "assistant_message" || event.type === "assistant_feedback") {
         turns.push({
           role: "assistant",
-          content: event.content,
+          content: event.type === "assistant_message" ? event.content : event.message,
           timestamp: event.ts,
           sessionPath: inferredPath,
-          runId: event.runId,
+          runId: event.type === "assistant_message" ? event.runId : undefined,
+          assistantResponseKind: event.type === "assistant_message"
+            ? (event.responseKind ?? "reply")
+            : "feedback",
         });
       }
     }
@@ -510,13 +558,16 @@ export class SessionPersistence {
             sessionPath: inferredPath,
             runId: event.runId,
           });
-        } else if (event.type === "assistant_message") {
+        } else if (event.type === "assistant_message" || event.type === "assistant_feedback") {
           turns.push({
             role: "assistant",
-            content: event.content,
+            content: event.type === "assistant_message" ? event.content : event.message,
             timestamp: event.ts,
             sessionPath: inferredPath,
-            runId: event.runId,
+            runId: event.type === "assistant_message" ? event.runId : undefined,
+            assistantResponseKind: event.type === "assistant_message"
+              ? (event.responseKind ?? "reply")
+              : "feedback",
           });
         }
       }
@@ -531,6 +582,13 @@ export class SessionPersistence {
 
     const meta = this.defaultMetadataFromEvent(event);
     writeFileSync(filePath, this.renderSessionDocument(meta, ""), "utf8");
+  }
+
+  private async ensureSessionDocumentAsync(filePath: string, event: SessionEvent): Promise<void> {
+    if (existsSync(filePath)) return;
+
+    const meta = this.defaultMetadataFromEvent(event);
+    await writeFileAsync(filePath, this.renderSessionDocument(meta, ""), "utf8");
   }
 
   private defaultMetadataFromEvent(event: SessionEvent): SessionDocumentMetadata {
@@ -640,6 +698,40 @@ export class SessionPersistence {
     };
     const eventsBody = this.extractEventsBody(content);
     writeFileSync(filePath, this.renderSessionDocument(merged, eventsBody), "utf8");
+  }
+
+  private async updateSessionMetadataAsync(
+    filePath: string,
+    patch: Partial<Pick<
+      SessionDocumentMetadata,
+      | "client_id"
+      | "session_path"
+      | "status"
+      | "closed_at"
+      | "close_reason"
+      | "handoff_summary"
+      | "updated_at"
+      | "parent_session_id"
+    >>,
+  ): Promise<void> {
+    if (!existsSync(filePath)) return;
+
+    let content = "";
+    try {
+      content = await readFileAsync(filePath, "utf8");
+    } catch {
+      return;
+    }
+
+    const metadata = this.parseSessionMetadata(content);
+    if (!metadata) return;
+
+    const merged: SessionDocumentMetadata = {
+      ...metadata,
+      ...patch,
+    };
+    const eventsBody = this.extractEventsBody(content);
+    await writeFileAsync(filePath, this.renderSessionDocument(merged, eventsBody), "utf8");
   }
 
   private parseSessionMetadata(content: string): SessionDocumentMetadata | null {

@@ -1,48 +1,29 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "defaults": {
-    "mode": "analyze_notify",
-    "delivery": "notification",
-    "contextVisibility": "summary",
-    "approvalRequired": false,
-    "feedbackTtlHours": 24
+    "mode": "analyze_notify"
   },
   "rules": [
     {
       "source": "pulse",
-      "eventName": "reminder_due",
-      "intentKind": "reminder",
-      "mode": "auto_execute_notify",
-      "delivery": "notification",
-      "contextVisibility": "summary",
-      "approvalRequired": false
-    },
-    {
-      "source": "pulse",
-      "eventName": "task_due",
-      "intentKind": "task",
-      "mode": "auto_execute_notify",
-      "delivery": "notification",
-      "contextVisibility": "summary",
-      "approvalRequired": false
+      "eventClass": "trigger_fired",
+      "createdBy": "user",
+      "mode": "auto_execute_notify"
     },
     {
       "source": "agentmail",
-      "eventName": "message.received",
-      "mode": "draft_then_approve",
-      "delivery": "feedback",
-      "contextVisibility": "summary",
-      "approvalRequired": true,
-      "feedbackTtlHours": 24
+      "eventClass": "message_received",
+      "mode": "analyze_ask"
     },
     {
       "source": "gmail-cli",
       "eventName": "new_messages",
-      "mode": "draft_then_approve",
-      "delivery": "feedback",
-      "contextVisibility": "summary",
-      "approvalRequired": true,
-      "feedbackTtlHours": 24
+      "mode": "analyze_ask"
+    },
+    {
+      "source": "calendar-sync",
+      "eventClass": "state_changed",
+      "mode": "log_only"
     }
   ]
 }

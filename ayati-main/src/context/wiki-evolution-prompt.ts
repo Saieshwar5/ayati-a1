@@ -1,4 +1,5 @@
 import type { LlmMessage } from "../core/contracts/llm-protocol.js";
+import { formatConversationTurnInline } from "../memory/conversation-turn-format.js";
 import type { ConversationTurn } from "../memory/types.js";
 import type { UserWikiDocument, UserWikiSchema } from "./wiki-types.js";
 import { renderUserWiki, renderUserWikiSchema } from "./wiki-format.js";
@@ -33,7 +34,7 @@ Rules:
 - Return ONLY the JSON object. No markdown fences.`;
 
 function formatTurns(turns: ConversationTurn[]): string {
-  return turns.map((turn) => `[${turn.role}]: ${turn.content}`).join("\n\n");
+  return turns.map((turn) => formatConversationTurnInline(turn)).join("\n\n");
 }
 
 export function buildWikiExtractionMessages(

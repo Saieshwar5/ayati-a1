@@ -3,6 +3,7 @@ import { serializeEvent, deserializeEvent, isAgentStepEvent } from "../../src/me
 import type {
   SessionOpenEvent,
   UserMessageEvent,
+  AssistantMessageEvent,
   ToolResultEvent,
   AgentStepEvent,
   TaskSummaryEvent,
@@ -48,6 +49,25 @@ describe("session-events", () => {
     expect(parsed.sessionPath).toBe("sessions/2026-02-08/s1.md");
   });
 
+  it("serializes and deserializes an assistant_message event with response kind", () => {
+    const event: AssistantMessageEvent = {
+      v: 2,
+      ts: "2026-02-08T00:01:00.000Z",
+      type: "assistant_message",
+      sessionId: "s1",
+      sessionPath: "sessions/2026-02-08/s1.md",
+      content: "Should I send the draft?",
+      responseKind: "feedback",
+    };
+
+    const line = serializeEvent(event);
+    const parsed = deserializeEvent(line) as AssistantMessageEvent;
+
+    expect(parsed.type).toBe("assistant_message");
+    expect(parsed.content).toBe("Should I send the draft?");
+    expect(parsed.responseKind).toBe("feedback");
+  });
+
   it("serializes and deserializes a tool_result event", () => {
     const event: ToolResultEvent = {
       v: 2,
@@ -83,6 +103,9 @@ describe("session-events", () => {
       runPath: "data/runs/r1",
       status: "completed",
       summary: "Task finished",
+      assistantResponseKind: "feedback",
+      feedbackLabel: "Send draft",
+      entityHints: ["draft"],
     };
 
     const line = serializeEvent(event);
@@ -91,6 +114,8 @@ describe("session-events", () => {
     expect(parsed.type).toBe("task_summary");
     expect(parsed.runId).toBe("r1");
     expect(parsed.runPath).toBe("data/runs/r1");
+    expect(parsed.assistantResponseKind).toBe("feedback");
+    expect(parsed.feedbackLabel).toBe("Send draft");
   });
 
   it("isAgentStepEvent returns true for agent_step events", () => {

@@ -3,21 +3,23 @@ import { checkVerificationGates } from "../../src/ivec/verification-gates.js";
 import type { ActOutput } from "../../src/ivec/types.js";
 
 describe("checkVerificationGates", () => {
-  it("returns passed: false when all tool calls fail", () => {
+  it("returns an execution failure when all tool calls fail", () => {
     const actOutput: ActOutput = {
       toolCalls: [
         { tool: "shell", input: {}, output: "", error: "command not found" },
       ],
       finalText: "",
     };
-    const result = checkVerificationGates(actOutput, "should succeed");
+    const result = checkVerificationGates(actOutput);
     expect(result).not.toBeNull();
     expect(result!.passed).toBe(false);
-    expect(result!.method).toBe("gate");
-    expect(result!.evidence).toContain("command not found");
+    expect(result!.method).toBe("execution_gate");
+    expect(result!.executionStatus).toBe("all_failed");
+    expect(result!.validationStatus).toBe("skipped");
+    expect(result!.evidenceSummary).toContain("command not found");
   });
 
-  it("returns passed: true when all tool calls succeed with output (gate 3)", () => {
+  it("returns null when execution succeeded and LLM validation should decide", () => {
     const actOutput: ActOutput = {
       toolCalls: [
         { tool: "shell", input: {}, output: "hello" },
@@ -25,23 +27,20 @@ describe("checkVerificationGates", () => {
       ],
       finalText: "",
     };
-    const result = checkVerificationGates(actOutput, "should succeed");
-    expect(result).not.toBeNull();
-    expect(result!.passed).toBe(true);
-    expect(result!.method).toBe("gate");
+    const result = checkVerificationGates(actOutput);
+    expect(result).toBeNull();
   });
 
-  it("returns passed: true when no tools but text present", () => {
+  it("returns null when no tools ran but assistant text exists for validation", () => {
     const actOutput: ActOutput = {
       toolCalls: [],
       finalText: "Here is your answer.",
     };
-    const result = checkVerificationGates(actOutput, "should succeed");
-    expect(result).not.toBeNull();
-    expect(result!.passed).toBe(true);
+    const result = checkVerificationGates(actOutput);
+    expect(result).toBeNull();
   });
 
-  it("returns passed: true when mixed but useful output exists", () => {
+  it("returns null when there is partial execution success", () => {
     const actOutput: ActOutput = {
       toolCalls: [
         { tool: "shell", input: {}, output: "ok" },
@@ -49,48 +48,23 @@ describe("checkVerificationGates", () => {
       ],
       finalText: "",
     };
-    const result = checkVerificationGates(actOutput, "should succeed");
-    expect(result).not.toBeNull();
-    expect(result!.passed).toBe(true);
+    const result = checkVerificationGates(actOutput);
+    expect(result).toBeNull();
   });
 
-  it("returns passed: false when mixed has critical blocker", () => {
-    const actOutput: ActOutput = {
-      toolCalls: [
-        { tool: "shell", input: {}, output: "ok" },
-        { tool: "read", input: {}, output: "", error: "permission denied" },
-      ],
-      finalText: "",
-    };
-    const result = checkVerificationGates(actOutput, "should succeed");
-    expect(result).not.toBeNull();
-    expect(result!.passed).toBe(false);
-  });
-
-  it("returns null for empty act output (no tools, no text)", () => {
+  it("returns an execution failure for empty act output", () => {
     const actOutput: ActOutput = {
       toolCalls: [],
       finalText: "",
     };
-    const result = checkVerificationGates(actOutput, "should succeed");
-    expect(result).toBeNull();
-  });
-
-  it("returns passed: false for discovery criteria when output has no matches", () => {
-    const actOutput: ActOutput = {
-      toolCalls: [
-        { tool: "find_files", input: { query: "learn1.go" }, output: "(no matches)" },
-      ],
-      finalText: "",
-    };
-
-    const result = checkVerificationGates(actOutput, "Find and return the file path");
+    const result = checkVerificationGates(actOutput);
     expect(result).not.toBeNull();
     expect(result!.passed).toBe(false);
-    expect(result!.evidence.toLowerCase()).toContain("no matches");
+    expect(result!.executionStatus).toBe("no_tools");
+    expect(result!.validationStatus).toBe("skipped");
   });
 
-  it("allows no-match output when criteria explicitly asks to confirm absence", () => {
+  it("does not make content-judgment decisions like discovery success or failure", () => {
     const actOutput: ActOutput = {
       toolCalls: [
         { tool: "find_files", input: { query: "learn1.go" }, output: "(no matches)" },
@@ -98,27 +72,7 @@ describe("checkVerificationGates", () => {
       finalText: "",
     };
 
-    const result = checkVerificationGates(actOutput, "Confirm the file does not exist");
-    expect(result).not.toBeNull();
-    expect(result!.passed).toBe(true);
-  });
-
-  it("extracts deterministic path facts from successful tool output", () => {
-    const actOutput: ActOutput = {
-      toolCalls: [
-        {
-          tool: "shell",
-          input: { cmd: "find $HOME -type d -name 'boutique'" },
-          output: "/home/sai-eshwar/my_folder/my_workspace/boutique",
-        },
-      ],
-      finalText: "",
-    };
-
-    const result = checkVerificationGates(actOutput, "Find the folder named 'boutique' in the machine and return its path");
-    expect(result).not.toBeNull();
-    expect(result!.passed).toBe(true);
-    expect(result!.newFacts).toContain("found_path:/home/sai-eshwar/my_folder/my_workspace/boutique");
-    expect(result!.artifacts).toContain("tool:shell#1");
+    const result = checkVerificationGates(actOutput);
+    expect(result).toBeNull();
   });
 });

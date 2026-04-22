@@ -3,10 +3,10 @@ import { InMemorySession } from "../../src/memory/session.js";
 import type {
   UserMessageEvent,
   AssistantMessageEvent,
+  AssistantFeedbackEvent,
   ToolCallEvent,
   ToolResultEvent,
   AgentStepEvent,
-  FeedbackOpenedEvent,
   SystemEventReceivedEvent,
 } from "../../src/memory/session-events.js";
 
@@ -35,6 +35,7 @@ describe("InMemorySession", () => {
       sessionId: "s1",
       sessionPath: "sessions/2026-02-08/s1.md",
       content: "hi there",
+      responseKind: "reply",
     };
 
     session.addEntry(userEvent);
@@ -47,6 +48,7 @@ describe("InMemorySession", () => {
     expect(turns[0]?.sessionPath).toBe("sessions/2026-02-08/s1.md");
     expect(turns[1]?.role).toBe("assistant");
     expect(turns[1]?.content).toBe("hi there");
+    expect(turns[1]?.assistantResponseKind).toBe("reply");
   });
 
   it("tracks user turn count", () => {
@@ -338,7 +340,7 @@ describe("InMemorySession", () => {
     expect(session.getCountableEventCount()).toBe(0);
   });
 
-  it("tracks open feedbacks and recent system activity separately from conversation turns", () => {
+  it("includes legacy assistant_feedback entries in conversation turns and keeps system activity separate", () => {
     const session = new InMemorySession(
       "s1",
       "c1",
@@ -346,22 +348,13 @@ describe("InMemorySession", () => {
       "sessions/s1.md",
     );
 
-    const feedbackEvent: FeedbackOpenedEvent = {
+    const feedbackEvent: AssistantFeedbackEvent = {
       v: 2,
       ts: "2026-02-08T00:01:00.000Z",
-      type: "feedback_opened",
+      type: "assistant_feedback",
       sessionId: "s1",
       sessionPath: "sessions/s1.md",
-      runId: "r1",
-      feedbackId: "fb-1",
-      kind: "approval",
-      shortLabel: "send Arun email",
       message: "Should I send the draft reply?",
-      actionType: "send_email",
-      sourceEventId: "evt-1",
-      entityHints: ["Arun", "email"],
-      payloadSummary: "Draft ready",
-      expiresAt: "2026-02-09T00:01:00.000Z",
     };
 
     session.addEntry(feedbackEvent);
@@ -392,12 +385,16 @@ describe("InMemorySession", () => {
       responseKind: "notification",
     });
 
-    const openFeedbacks = session.getOpenFeedbacks();
+    const conversationTurns = session.getConversationTurns();
     const systemActivity = session.getRecentSystemActivity();
 
-    expect(openFeedbacks).toHaveLength(1);
-    expect(openFeedbacks[0]?.feedbackId).toBe("fb-1");
-    expect(openFeedbacks[0]?.expiresAt).toBe("2026-02-09T00:01:00.000Z");
+    expect(conversationTurns).toHaveLength(1);
+    expect(conversationTurns[0]).toMatchObject({
+      role: "assistant",
+      content: "Should I send the draft reply?",
+      assistantResponseKind: "feedback",
+      sessionPath: "sessions/s1.md",
+    });
     expect(systemActivity).toHaveLength(2);
     expect(systemActivity[0]?.source).toBe("pulse");
     expect(systemActivity[0]?.summary).toBe("Memory usage is stable.");

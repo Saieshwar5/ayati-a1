@@ -31,9 +31,6 @@ interface RunStateSnapshot {
   approach?: string;
   workMode?: string;
   completedSteps?: StepSummary[];
-  progressLedger?: {
-    lastSuccessfulStepSummary?: string;
-  };
 }
 
 const MAX_SUMMARY_CHARS = 700;
@@ -300,31 +297,78 @@ export class MemoryIndexer {
 }
 
 function buildRunDerivedMemory(input: TaskSummaryMemoryInput, state: RunStateSnapshot | null): RunDerivedMemory {
-  const goal = normalizeOptionalText(state?.goal?.objective);
-  const approach = normalizeOptionalText(state?.approach);
-  const latestSuccessful = normalizeOptionalText(state?.progressLedger?.lastSuccessfulStepSummary);
-  const recentSteps = [...(state?.completedSteps ?? [])].slice(-2);
+  const goal = normalizeOptionalText(input.objective) ?? normalizeOptionalText(state?.goal?.objective);
+  const completedSteps = [...(state?.completedSteps ?? [])];
+  const latestSuccessful = normalizeOptionalText(
+    [...completedSteps].reverse().find((step) => step.outcome === "success")?.summary,
+  );
+  const recentSteps = completedSteps.slice(-2);
   const recentStepLines = recentSteps
     .map((step) => normalizeOptionalText(step.summary))
     .filter((value): value is string => Boolean(value))
     .map((value, index) => `Recent step ${index + 1}: ${value}`);
-  const facts = uniqueStrings(recentSteps.flatMap((step) => step.newFacts ?? [])).slice(0, 6);
+  const facts = uniqueStrings([
+    ...(input.keyFacts ?? []),
+    ...recentSteps.flatMap((step) => step.newFacts ?? []),
+  ]).slice(0, 6);
+  const evidence = uniqueStrings(input.evidence ?? []).slice(0, 6);
+  const openWork = uniqueStrings(input.openWork ?? []).slice(0, 4);
+  const blockers = uniqueStrings(input.blockers ?? []).slice(0, 4);
   const artifacts = uniqueStrings(recentSteps.flatMap((step) => step.artifacts ?? [])).slice(0, 4);
+  const completedMilestones = uniqueStrings(input.completedMilestones ?? []).slice(0, 4);
+  const attachmentNames = uniqueStrings(input.attachmentNames ?? []).slice(0, 4);
   const userMessage = normalizeOptionalText(input.userMessage);
   const assistantResponse = normalizeOptionalText(input.assistantResponse ?? input.summary);
-  const summaryText = normalizeSummary(input.summary || assistantResponse || userMessage || goal || "");
+  const progressSummary = normalizeOptionalText(input.progressSummary);
+  const currentFocus = normalizeOptionalText(input.currentFocus);
+  const userInputNeeded = normalizeOptionalText(input.userInputNeeded);
+  const taskStatus = normalizeOptionalText(input.taskStatus);
+  const approach = normalizeOptionalText(input.approach) ?? normalizeOptionalText(state?.approach);
+  const sessionContextSummary = normalizeOptionalText(input.sessionContextSummary);
+  const dependentTaskRunId = normalizeOptionalText(input.dependentTaskRunId);
+  const assistantResponseKind = normalizeOptionalText(input.assistantResponseKind);
+  const feedbackKind = normalizeOptionalText(input.feedbackKind);
+  const feedbackLabel = normalizeOptionalText(input.feedbackLabel);
+  const actionType = normalizeOptionalText(input.actionType);
+  const nextAction = normalizeOptionalText(input.nextAction);
+  const stopReason = normalizeOptionalText(input.stopReason);
+  const workMode = normalizeOptionalText(input.workMode) ?? normalizeOptionalText(state?.workMode);
+  const entityHints = uniqueStrings(input.entityHints ?? []).slice(0, 6);
+  const goalDoneWhen = uniqueStrings(input.goalDoneWhen ?? []).slice(0, 4);
+  const goalRequiredEvidence = uniqueStrings(input.goalRequiredEvidence ?? []).slice(0, 4);
+  const summaryText = normalizeSummary(input.summary || progressSummary || assistantResponse || userMessage || goal || "");
   const retrievalText = truncateText([
     "Source: run memory",
     userMessage ? `User asked: ${userMessage}` : "",
     goal ? `Goal: ${goal}` : "",
+    taskStatus ? `Task status: ${taskStatus}` : "",
     approach ? `Approach: ${approach}` : "",
     `Run status: ${input.status}`,
+    assistantResponseKind ? `Assistant response kind: ${assistantResponseKind}` : "",
+    feedbackKind ? `Feedback kind: ${feedbackKind}` : "",
+    feedbackLabel ? `Feedback label: ${feedbackLabel}` : "",
+    actionType ? `Action type: ${actionType}` : "",
+    progressSummary ? `Progress summary: ${progressSummary}` : "",
+    currentFocus ? `Current focus: ${currentFocus}` : "",
+    sessionContextSummary ? `Session context summary: ${sessionContextSummary}` : "",
+    dependentTaskRunId ? `Depends on run: ${dependentTaskRunId}` : "",
+    completedMilestones.length > 0 ? `Completed milestones: ${completedMilestones.join(" | ")}` : "",
+    openWork.length > 0 ? `Open work: ${openWork.join(" | ")}` : "",
+    blockers.length > 0 ? `Blockers: ${blockers.join(" | ")}` : "",
+    userInputNeeded ? `User input needed: ${userInputNeeded}` : "",
+    nextAction ? `Next action: ${nextAction}` : "",
+    stopReason ? `Stop reason: ${stopReason}` : "",
     assistantResponse ? `Assistant outcome: ${assistantResponse}` : "",
     latestSuccessful ? `Latest successful step: ${latestSuccessful}` : "",
     ...recentStepLines,
     facts.length > 0 ? `Key facts: ${facts.join(" | ")}` : "",
+    evidence.length > 0 ? `Evidence: ${evidence.join(" | ")}` : "",
+    entityHints.length > 0 ? `Entity hints: ${entityHints.join(" | ")}` : "",
+    goalDoneWhen.length > 0 ? `Done when: ${goalDoneWhen.join(" | ")}` : "",
+    goalRequiredEvidence.length > 0 ? `Required evidence: ${goalRequiredEvidence.join(" | ")}` : "",
     artifacts.length > 0 ? `Artifacts: ${artifacts.join(" | ")}` : "",
-    state?.workMode ? `Work mode: ${state.workMode}` : "",
+    attachmentNames.length > 0 ? `Attachments: ${attachmentNames.join(" | ")}` : "",
+    workMode ? `Work mode: ${workMode}` : "",
   ].filter(Boolean).join("\n"), MAX_RETRIEVAL_CHARS);
 
   return {
@@ -332,11 +376,31 @@ function buildRunDerivedMemory(input: TaskSummaryMemoryInput, state: RunStateSna
     retrievalText,
     metadataJson: JSON.stringify({
       goal,
+      taskStatus,
       approach,
+      progressSummary,
+      currentFocus,
+      sessionContextSummary,
+      dependentTaskRunId,
+      assistantResponseKind,
+      feedbackKind,
+      feedbackLabel,
+      actionType,
+      completedMilestones,
+      openWork,
+      blockers,
+      evidence,
+      userInputNeeded,
+      nextAction,
+      stopReason,
       latestSuccessful,
       facts,
+      entityHints,
+      goalDoneWhen,
+      goalRequiredEvidence,
       artifacts,
-      workMode: state?.workMode,
+      attachmentNames,
+      workMode,
     }),
   };
 }

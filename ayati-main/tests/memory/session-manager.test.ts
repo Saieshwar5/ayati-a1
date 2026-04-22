@@ -1,22 +1,13 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { tmpdir } from "node:os";
+import { DatabaseSync } from "node:sqlite";
 import { MemoryManager } from "../../src/memory/session-manager.js";
 
 function makeNow(): () => Date {
   let tick = 0;
   return () => new Date(Date.UTC(2026, 1, 16, 0, 0, tick++));
-}
-
-function makeMutableNow(start: Date): { now: () => Date; advanceHours: (hours: number) => void } {
-  let current = start.getTime();
-  return {
-    now: () => new Date(current),
-    advanceHours: (hours: number) => {
-      current += hours * 60 * 60 * 1000;
-    },
-  };
 }
 
 describe("MemoryManager", () => {
@@ -104,6 +95,7 @@ describe("MemoryManager", () => {
 
     const context = memory.getPromptMemoryContext();
     expect(context.conversationTurns.map((turn) => turn.role)).toEqual(["user", "assistant"]);
+    expect(context.conversationTurns[1]?.assistantResponseKind).toBe("reply");
     // Tool events are recorded for audit but not returned in prompt context
     expect(context).not.toHaveProperty("toolEvents");
 
@@ -227,6 +219,40 @@ describe("MemoryManager", () => {
     await memory2.shutdown();
   });
 
+  it("restores assistant response kinds after restart", async () => {
+    const root = mkdtempSync(resolve(tmpdir(), "ayati-memory-test-"));
+    dirs.push(root);
+    const memory = new MemoryManager({
+      dataDir: root,
+      dbPath: resolve(root, "memory.sqlite"),
+      now: makeNow(),
+    });
+    memory.initialize("local");
+
+    const run = memory.beginRun("local", "review this request");
+    memory.recordAssistantFinal("local", run.runId, run.sessionId, "Should I send the draft?", {
+      responseKind: "feedback",
+    });
+
+    await memory.shutdown();
+
+    const restored = new MemoryManager({
+      dataDir: root,
+      dbPath: resolve(root, "memory.sqlite"),
+      now: makeNow(),
+    });
+    restored.initialize("local");
+
+    const context = restored.getPromptMemoryContext();
+    expect(context.conversationTurns.at(-1)).toMatchObject({
+      role: "assistant",
+      content: "Should I send the draft?",
+      assistantResponseKind: "feedback",
+    });
+
+    await restored.shutdown();
+  });
+
   it("exposes last 5 unique run ledgers and active session path in prompt context", async () => {
     const root = mkdtempSync(resolve(tmpdir(), "ayati-memory-test-"));
     dirs.push(root);
@@ -253,16 +279,39 @@ describe("MemoryManager", () => {
         status: "completed",
         summary: `done-${i}`,
       });
+      memory.recordTaskSummary?.("local", {
+        runId: run.runId,
+        sessionId: run.sessionId,
+        runPath: `data/runs/run-${i}`,
+        status: "completed",
+        taskStatus: "done",
+        objective: `task-${i}`,
+        summary: `done-${i}`,
+        completedMilestones: [`milestone-${i}`],
+        openWork: [],
+        blockers: [],
+        keyFacts: [],
+        evidence: [],
+        attachmentNames: [],
+      });
       memory.recordAssistantFinal("local", run.runId, run.sessionId, `a-${i}`);
     }
 
     const context = memory.getPromptMemoryContext();
     expect(context.activeSessionPath).toMatch(/^sessions\/.+\.md$/);
     expect(context.recentRunLedgers).toHaveLength(5);
+    expect(context.recentTaskSummaries).toHaveLength(5);
 
     const runIds = (context.recentRunLedgers ?? []).map((item) => item.runId);
     expect(new Set(runIds).size).toBe(5);
     expect((context.recentRunLedgers ?? []).every((item) => item.state === "completed")).toBe(true);
+    expect((context.recentTaskSummaries ?? []).map((item) => item.objective)).toEqual([
+      "task-5",
+      "task-4",
+      "task-3",
+      "task-2",
+      "task-1",
+    ]);
 
     await memory.shutdown();
   });
@@ -293,6 +342,21 @@ describe("MemoryManager", () => {
         status: "completed",
         summary: `restart-done-${i}`,
       });
+      memory.recordTaskSummary?.("local", {
+        runId: run.runId,
+        sessionId: run.sessionId,
+        runPath: `data/runs/restart-${i}`,
+        status: "completed",
+        taskStatus: "done",
+        objective: `restart-${i}`,
+        summary: `restart-done-${i}`,
+        completedMilestones: [],
+        openWork: [],
+        blockers: [],
+        keyFacts: [],
+        evidence: [],
+        attachmentNames: [],
+      });
       memory.recordAssistantFinal("local", run.runId, run.sessionId, `reply-${i}`);
     }
 
@@ -309,6 +373,11 @@ describe("MemoryManager", () => {
     expect(context.activeSessionPath).toMatch(/^sessions\/.+\.md$/);
     expect(context.recentRunLedgers).toHaveLength(3);
     expect(new Set((context.recentRunLedgers ?? []).map((item) => item.runId)).size).toBe(3);
+    expect((context.recentTaskSummaries ?? []).map((item) => item.objective)).toEqual([
+      "restart-2",
+      "restart-1",
+      "restart-0",
+    ]);
 
     await memoryAfterRestart.shutdown();
   });
@@ -344,10 +413,32 @@ describe("MemoryManager", () => {
     const context = memory.getPromptMemoryContext();
     expect(context.conversationTurns).toHaveLength(0);
 
+    const db = new DatabaseSync(resolve(root, "memory.sqlite"));
+    const row = db.prepare(`
+      SELECT event_id, source, event_name, status, summary
+      FROM system_events
+      WHERE event_id = 'evt-1'
+    `).get() as {
+      event_id: string;
+      source: string;
+      event_name: string;
+      status: string;
+      summary: string;
+    } | undefined;
+    db.close();
+
+    expect(row).toMatchObject({
+      event_id: "evt-1",
+      source: "pulse",
+      event_name: "reminder_due",
+      status: "completed",
+      summary: "pulse:reminder_due",
+    });
+
     await memory.shutdown();
   });
 
-  it("exposes open feedbacks and recent system activity in prompt memory context", async () => {
+  it("keeps assistant response types in conversation history and system activity in prompt memory context", async () => {
     const root = mkdtempSync(resolve(tmpdir(), "ayati-memory-test-"));
     dirs.push(root);
     const memory = new MemoryManager({
@@ -358,17 +449,11 @@ describe("MemoryManager", () => {
     memory.initialize("local");
 
     const run = memory.beginRun("local", "review this request");
-    memory.recordAssistantFeedback("local", run.runId, run.sessionId, "Should I send the draft?");
-    memory.recordFeedbackOpened?.("local", {
-      runId: run.runId,
-      sessionId: run.sessionId,
-      kind: "approval",
-      shortLabel: "send draft",
-      message: "Should I send the draft?",
-      actionType: "send_email",
-      sourceEventId: "evt-1",
-      entityHints: ["draft", "email"],
-      payloadSummary: "Draft email ready",
+    memory.recordAssistantFinal("local", run.runId, run.sessionId, "Should I send the draft?", {
+      responseKind: "feedback",
+    });
+    memory.recordAssistantFinal("local", run.runId, run.sessionId, "Memory usage is 61%", {
+      responseKind: "notification",
     });
     memory.recordAssistantNotification?.("local", {
       runId: run.runId,
@@ -380,61 +465,214 @@ describe("MemoryManager", () => {
     });
 
     const context = memory.getPromptMemoryContext();
-    expect(context.openFeedbacks).toHaveLength(1);
-    expect(context.openFeedbacks?.[0]?.shortLabel).toBe("send draft");
-    expect(context.openFeedbacks?.[0]?.expiresAt).toBe("2026-02-17T00:00:03.000Z");
+    expect(context.conversationTurns).toHaveLength(3);
+    expect(context.conversationTurns.at(-2)).toMatchObject({
+      role: "assistant",
+      content: "Should I send the draft?",
+      assistantResponseKind: "feedback",
+    });
+    expect(context.conversationTurns.at(-1)).toMatchObject({
+      role: "assistant",
+      content: "Memory usage is 61%",
+      assistantResponseKind: "notification",
+    });
+    expect(context).not.toHaveProperty("openFeedbacks");
     expect(context.recentSystemActivity).toHaveLength(1);
     expect(context.recentSystemActivity?.[0]?.summary).toBe("Memory usage is 61%");
 
     await memory.shutdown();
   });
 
-  it("expires overdue feedback requests and keeps the original system event history", async () => {
+  it("replays legacy feedback events without restoring open feedback state", async () => {
     const root = mkdtempSync(resolve(tmpdir(), "ayati-memory-test-"));
     dirs.push(root);
-    const clock = makeMutableNow(new Date(Date.UTC(2026, 1, 16, 0, 0, 0)));
+    const sessionId = "legacy-feedback";
+    const sessionPath = `sessions/${sessionId}.md`;
+    const sessionFile = resolve(root, sessionPath);
+    const openedAt = "2026-02-16T00:00:00.000Z";
+    const updatedAt = "2026-02-16T00:00:10.000Z";
+
+    mkdirSync(resolve(root, "sessions"), { recursive: true });
+    writeFileSync(
+      resolve(root, "sessions", "active-session.json"),
+      JSON.stringify({ sessionId, sessionPath }),
+      "utf8",
+    );
+
+    const metadata = {
+      v: 1,
+      session_id: sessionId,
+      client_id: "local",
+      session_path: sessionPath,
+      status: "active",
+      opened_at: openedAt,
+      closed_at: null,
+      close_reason: null,
+      parent_session_id: null,
+      handoff_summary: null,
+      updated_at: updatedAt,
+    };
+    const events = [
+      {
+        v: 2,
+        ts: openedAt,
+        type: "session_open",
+        sessionId,
+        sessionPath,
+        clientId: "local",
+      },
+      {
+        v: 2,
+        ts: "2026-02-16T00:00:01.000Z",
+        type: "user_message",
+        sessionId,
+        sessionPath,
+        runId: "r1",
+        content: "review this request",
+      },
+      {
+        v: 2,
+        ts: "2026-02-16T00:00:02.000Z",
+        type: "assistant_feedback",
+        sessionId,
+        sessionPath,
+        message: "Should I send the draft?",
+      },
+      {
+        v: 2,
+        ts: "2026-02-16T00:00:03.000Z",
+        type: "feedback_opened",
+        sessionId,
+        sessionPath,
+        runId: "r1",
+        feedbackId: "fb-1",
+        kind: "approval",
+        shortLabel: "send draft",
+        message: "Should I send the draft?",
+        actionType: "send_email",
+        entityHints: ["draft", "email"],
+        expiresAt: "2026-02-17T00:00:03.000Z",
+      },
+    ];
+    writeFileSync(
+      sessionFile,
+      [
+        "# Ayati Session",
+        "",
+        `<!-- AYATI_SESSION_META ${JSON.stringify(metadata)} -->`,
+        "",
+        "## Events",
+        "",
+        ...events.map((event) => `<!-- AYATI_EVENT ${JSON.stringify(event)} -->`),
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+
     const memory = new MemoryManager({
       dataDir: root,
       dbPath: resolve(root, "memory.sqlite"),
-      now: clock.now,
+      now: makeNow(),
     });
     memory.initialize("local");
 
-    memory.beginSystemRun?.("local", {
-      source: "agentmail",
-      event: "message.received",
-      eventId: "evt-keep",
-      payload: { subject: "Need approval" },
+    const context = memory.getPromptMemoryContext();
+    expect(context.activeSessionPath).toBe(sessionPath);
+    expect(context.conversationTurns).toHaveLength(2);
+    expect(context.conversationTurns.at(-1)).toMatchObject({
+      role: "assistant",
+      content: "Should I send the draft?",
+      assistantResponseKind: "feedback",
     });
+    expect(context).not.toHaveProperty("openFeedbacks");
 
-    const run = memory.beginRun("local", "check this later");
-    memory.recordAssistantFeedback("local", run.runId, run.sessionId, "Should I send the draft?");
-    memory.recordFeedbackOpened?.("local", {
+    const resumedRun = memory.beginRun("local", "continue");
+    expect(resumedRun.sessionId).toBe(sessionId);
+
+    await memory.shutdown();
+  });
+
+  it("prepares handoff asynchronously once context usage reaches 50%", async () => {
+    const root = mkdtempSync(resolve(tmpdir(), "ayati-memory-test-"));
+    dirs.push(root);
+    const memory = new MemoryManager({
+      dataDir: root,
+      dbPath: resolve(root, "memory.sqlite"),
+      now: makeNow(),
+      contextTokenLimit: 1_000,
+    });
+    memory.initialize("local");
+
+    const run = memory.beginRun("local", "u".repeat(1200));
+    memory.recordAssistantFinal("local", run.runId, run.sessionId, "a".repeat(1200));
+
+    await memory.updateSessionLifecycle("local", {
       runId: run.runId,
       sessionId: run.sessionId,
-      kind: "approval",
-      shortLabel: "send draft",
-      message: "Should I send the draft?",
-      actionType: "send_email",
-      sourceEventId: "evt-keep",
-      entityHints: ["draft", "email"],
-      payloadSummary: "Draft email ready",
+      timezone: "Asia/Kolkata",
+      status: "completed",
+    });
+    await memory.flushBackgroundTasks();
+
+    const status = memory.getSessionStatus();
+    expect(status?.handoffPhase).toBe("ready");
+    expect(status?.pendingRotationReason).toBeNull();
+
+    await memory.shutdown();
+  });
+
+  it("finalizes handoff and marks rotation once context usage reaches 70%", async () => {
+    const root = mkdtempSync(resolve(tmpdir(), "ayati-memory-test-"));
+    dirs.push(root);
+    const memory = new MemoryManager({
+      dataDir: root,
+      dbPath: resolve(root, "memory.sqlite"),
+      now: makeNow(),
+      contextTokenLimit: 1_000,
+    });
+    memory.initialize("local");
+
+    const run = memory.beginRun("local", "u".repeat(1600));
+    memory.recordAssistantFinal("local", run.runId, run.sessionId, "a".repeat(1600));
+
+    await memory.updateSessionLifecycle("local", {
+      runId: run.runId,
+      sessionId: run.sessionId,
+      timezone: "Asia/Kolkata",
+      status: "completed",
     });
 
-    const beforeExpiry = memory.getPromptMemoryContext();
-    expect(beforeExpiry.openFeedbacks).toHaveLength(1);
-    const sessionPath = beforeExpiry.activeSessionPath;
+    const status = memory.getSessionStatus();
+    expect(status?.handoffPhase).toBe("finalized");
+    expect(status?.pendingRotationReason).toBe("context_threshold");
 
-    clock.advanceHours(25);
+    await memory.shutdown();
+  });
 
-    const afterExpiry = memory.getPromptMemoryContext();
-    expect(afterExpiry.openFeedbacks).toEqual([]);
+  it("creates a continuity handoff automatically without carrying open feedback state into the next session", async () => {
+    const root = mkdtempSync(resolve(tmpdir(), "ayati-memory-test-"));
+    dirs.push(root);
+    const memory = new MemoryManager({
+      dataDir: root,
+      dbPath: resolve(root, "memory.sqlite"),
+      now: makeNow(),
+    });
+    memory.initialize("local");
 
-    const sessionDoc = readFileSync(resolve(root, sessionPath ?? ""), "utf8");
-    expect(sessionDoc).toContain("\"type\":\"system_event_received\"");
-    expect(sessionDoc).toContain("\"eventId\":\"evt-keep\"");
-    expect(sessionDoc).toContain("\"type\":\"feedback_resolved\"");
-    expect(sessionDoc).toContain("\"resolution\":\"expired\"");
+    const run = memory.beginRun("local", "please review this");
+    memory.recordAssistantFinal("local", run.runId, run.sessionId, "Should I send this?");
+    memory.recordAssistantFinal("local", run.runId, run.sessionId, "Draft is ready.");
+
+    memory.createSession("local", {
+      runId: run.runId,
+      reason: "daily_cutover",
+      source: "system",
+      timezone: "Asia/Kolkata",
+    });
+
+    const context = memory.getPromptMemoryContext();
+    expect(context.previousSessionSummary.length).toBeGreaterThan(0);
+    expect(context).not.toHaveProperty("openFeedbacks");
 
     await memory.shutdown();
   });

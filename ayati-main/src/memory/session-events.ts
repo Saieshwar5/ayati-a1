@@ -1,5 +1,13 @@
-import type { AgentResponseKind, FeedbackKind, FeedbackResolutionOutcome, ToolEventStatus } from "./types.js";
+import type {
+  AgentResponseKind,
+  AssistantResponseKind,
+  FeedbackKind,
+  TaskSummaryTaskStatus,
+  ToolEventStatus,
+} from "./types.js";
 import type { ManagedDocumentManifest, PreparedAttachmentSummary } from "../documents/types.js";
+
+type LegacyFeedbackResolutionOutcome = "completed" | "rejected" | "expired";
 
 export type SessionEventType =
   | "session_open"
@@ -56,6 +64,7 @@ export interface AssistantMessageEvent extends BaseEvent {
   type: "assistant_message";
   runId?: string;
   content: string;
+  responseKind?: AssistantResponseKind;
 }
 
 export interface TurnStatusEvent extends BaseEvent {
@@ -125,9 +134,33 @@ export interface TaskSummaryEvent extends BaseEvent {
   runId: string;
   runPath: string;
   status: "completed" | "failed" | "stuck";
+  taskStatus?: TaskSummaryTaskStatus;
+  objective?: string;
   summary: string;
+  progressSummary?: string;
+  currentFocus?: string;
+  completedMilestones?: string[];
+  openWork?: string[];
+  blockers?: string[];
+  keyFacts?: string[];
+  evidence?: string[];
+  userInputNeeded?: string;
+  workMode?: string;
   userMessage?: string;
   assistantResponse?: string;
+  approach?: string;
+  sessionContextSummary?: string;
+  dependentTaskRunId?: string;
+  assistantResponseKind?: AssistantResponseKind;
+  feedbackKind?: FeedbackKind;
+  feedbackLabel?: string;
+  actionType?: string;
+  entityHints?: string[];
+  goalDoneWhen?: string[];
+  goalRequiredEvidence?: string[];
+  nextAction?: string;
+  stopReason?: "completed" | "needs_user_input" | "blocked" | "failed" | "stuck";
+  attachmentNames?: string[];
 }
 
 export interface AssistantFeedbackEvent extends BaseEvent {
@@ -161,7 +194,7 @@ export interface FeedbackResolvedEvent extends BaseEvent {
   type: "feedback_resolved";
   runId: string;
   feedbackId: string;
-  resolution: FeedbackResolutionOutcome;
+  resolution: LegacyFeedbackResolutionOutcome;
   userResponse?: string;
 }
 
@@ -213,7 +246,8 @@ export type SessionEvent =
 
 export type CountableSessionEvent =
   | UserMessageEvent
-  | AssistantMessageEvent;
+  | AssistantMessageEvent
+  | AssistantFeedbackEvent;
 
 export type ToolSessionEvent =
   | ToolCallEvent
@@ -222,6 +256,7 @@ export type ToolSessionEvent =
 const COUNTABLE_EVENT_TYPES = new Set<SessionEventType>([
   "user_message",
   "assistant_message",
+  "assistant_feedback",
 ]);
 
 export function isCountableSessionEvent(event: SessionEvent): event is CountableSessionEvent {

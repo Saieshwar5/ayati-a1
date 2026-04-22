@@ -10,6 +10,13 @@ function toRequestedAction(value: string): string | undefined {
   return compact.length > 0 ? compact : undefined;
 }
 
+function inferEffectLevel(requestedAction: string | undefined, instruction: string): "act" | "act_external" {
+  const text = `${requestedAction ?? ""} ${instruction}`.toLowerCase();
+  return /\b(send|reply|email|mail|message|notify|post|share|forward|invite|publish|dispatch)\b/.test(text)
+    ? "act_external"
+    : "act";
+}
+
 export interface PulseSchedulerOptions {
   clientId: string;
   store: PulseStore;
@@ -94,6 +101,9 @@ export class PulseScheduler {
       summary: `${isTask ? "Scheduled task due" : "Reminder due"}: ${reminder.title}`,
       intent: {
         kind: reminder.intentKind,
+        eventClass: "trigger_fired",
+        trustTier: "internal",
+        effectLevel: inferEffectLevel(requestedAction, reminder.instruction),
         createdBy: "user",
         ...(requestedAction ? { requestedAction } : {}),
       },

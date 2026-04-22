@@ -652,18 +652,17 @@ describe("runContextScout", () => {
   it("returns verbatim targeted snippets for skills queries", async () => {
     const locs = createLocations(tmpDir);
     const skillDir = join(tmpDir, "skills");
-    const playwrightDir = join(skillDir, "playwright");
+    const agentBrowserDir = join(skillDir, "agent-browser");
     locs.skillsDirs = [skillDir];
-    mkdirSync(playwrightDir, { recursive: true });
-    const skillFile = join(playwrightDir, "skill.md");
+    mkdirSync(agentBrowserDir, { recursive: true });
+    const skillFile = join(agentBrowserDir, "skill.md");
     writeFileSync(
       skillFile,
       [
-        "# Playwright Skill",
-        "Setup instructions",
-        "Run npx playwright install before screenshots",
-        "Usage example",
-        "Run npx playwright test",
+        "# Agent Browser Skill",
+        "Use agent-browser.help before agent-browser.advanced when the command family is uncommon",
+        "agent-browser open https://example.com",
+        "agent-browser snapshot -i",
       ].join("\n"),
     );
 
@@ -674,7 +673,7 @@ describe("runContextScout", () => {
           {
             id: "tc1",
             name: "grep_file",
-            input: { path: skillFile, pattern: "playwright install", context_before: 1, context_after: 1 },
+            input: { path: skillFile, pattern: "agent-browser.help", context_before: 1, context_after: 2 },
           },
         ],
       },
@@ -690,7 +689,7 @@ describe("runContextScout", () => {
 
     const result = await runContextScout(
       { provider, maxTurns: 5 },
-      "Find install instructions in the known skill file",
+      "Find the browser help-driven command flow in the known skill file",
       "skills",
       locs,
     );
@@ -698,35 +697,36 @@ describe("runContextScout", () => {
     expect(result.confidence).toBe(0.92);
     expect(result.sources).toEqual([skillFile]);
     expect(result.context).toContain(`Source: ${skillFile}`);
-    expect(result.context).toContain("Lines: 2-4");
+    expect(result.context).toContain("Lines: 1-4");
     expect(result.context).toContain("Excerpt:");
-    expect(result.context).toContain("Run npx playwright install before screenshots");
-    expect(result.context).toContain("Usage example");
+    expect(result.context).toContain("Use agent-browser.help before agent-browser.advanced");
+    expect(result.context).toContain("agent-browser snapshot -i");
     expect(result.context).not.toContain("Found install instructions in the skill file");
 
     const calls = (provider.generateTurn as ReturnType<typeof vi.fn>).mock.calls;
     const secondCallInput = calls[1]![0] as { messages: Array<{ role: string; content: string }> };
     const toolResultMsg = secondCallInput.messages.find((m) => m.role === "tool");
     expect(toolResultMsg?.content).toContain("Match 1");
-    expect(toolResultMsg?.content).toContain("Run npx playwright install before screenshots");
-    expect(toolResultMsg?.content).toContain("Usage example");
+    expect(toolResultMsg?.content).toContain("Use agent-browser.help before agent-browser.advanced");
+    expect(toolResultMsg?.content).toContain("agent-browser snapshot -i");
   });
 
   it("returns combined context and sources for multiple skill files in one skills query", async () => {
     const locs = createLocations(tmpDir);
     const skillsRoot = join(tmpDir, "skills");
-    const playwrightDir = join(skillsRoot, "playwright");
+    const agentBrowserDir = join(skillsRoot, "agent-browser");
     const websearchDir = join(skillsRoot, "websearch");
-    mkdirSync(playwrightDir, { recursive: true });
+    mkdirSync(agentBrowserDir, { recursive: true });
     mkdirSync(websearchDir, { recursive: true });
-    const playwrightFile = join(playwrightDir, "skill.md");
+    const agentBrowserFile = join(agentBrowserDir, "skill.md");
     const websearchFile = join(websearchDir, "skill.md");
     writeFileSync(
-      playwrightFile,
+      agentBrowserFile,
       [
-        "# Playwright Skill",
-        "Run npx playwright install before screenshots",
-        "Run npx playwright test",
+        "# Agent Browser Skill",
+        "Use agent-browser.help before agent-browser.advanced when the command family is uncommon",
+        "agent-browser open https://example.com",
+        "agent-browser snapshot -i",
       ].join("\n"),
     );
     writeFileSync(
@@ -743,15 +743,15 @@ describe("runContextScout", () => {
       {
         type: "tool_calls",
         calls: [
-          { id: "tc1", name: "read_file", input: { path: playwrightFile } },
+          { id: "tc1", name: "read_file", input: { path: agentBrowserFile } },
           { id: "tc2", name: "read_file", input: { path: websearchFile } },
         ],
       },
       {
         type: "assistant",
         content: JSON.stringify({
-          context: "Playwright requires browser install before screenshots. Websearch uses the query terms directly.",
-          sources: [playwrightFile, websearchFile],
+          context: "Agent-browser should use help before advanced for rare commands. Websearch uses the query terms directly.",
+          sources: [agentBrowserFile, websearchFile],
           confidence: 0.94,
         }),
       },
@@ -759,19 +759,19 @@ describe("runContextScout", () => {
 
     const result = await runContextScout(
       { provider, maxTurns: 5 },
-      "Read the playwright and websearch skill.md commands needed for this step",
+      "Read the agent-browser and websearch skill.md commands needed for this step",
       "skills",
       locs,
     );
 
-    expect(result.context).toContain(`Source: ${playwrightFile}`);
+    expect(result.context).toContain(`Source: ${agentBrowserFile}`);
     expect(result.context).toContain(`Source: ${websearchFile}`);
-    expect(result.context).toContain("Lines: 1-3");
-    expect(result.context).toContain("Run npx playwright install before screenshots");
-    expect(result.context).toContain("Run npx playwright test");
+    expect(result.context).toContain("Lines: 1-4");
+    expect(result.context).toContain("Use agent-browser.help before agent-browser.advanced");
+    expect(result.context).toContain("agent-browser snapshot -i");
     expect(result.context).toContain("Use the websearch command with the query terms directly");
-    expect(result.context).not.toContain("Playwright requires browser install");
-    expect(result.sources).toEqual([playwrightFile, websearchFile]);
+    expect(result.context).not.toContain("Agent-browser should use help before advanced");
+    expect(result.sources).toEqual([agentBrowserFile, websearchFile]);
     expect(result.confidence).toBe(0.94);
 
     const calls = (provider.generateTurn as ReturnType<typeof vi.fn>).mock.calls;

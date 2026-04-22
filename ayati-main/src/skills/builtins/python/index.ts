@@ -145,6 +145,10 @@ if __name__ == "__main__":
 
 export interface PythonSkillDeps extends PythonSkillRuntimeDeps {}
 
+const PYTHON_STRING_ARRAY_ITEM_SCHEMA: Record<string, unknown> = {
+  type: "string",
+};
+
 function buildSuccessResult(output: Record<string, unknown>, meta?: Record<string, unknown>): ToolResult {
   return {
     ok: true,
@@ -427,12 +431,24 @@ function createPythonExecuteTool(deps: PythonSkillDeps): ToolDefinition {
         mode: { type: "string", description: "One of code or script." },
         code: { type: "string", description: "Inline Python code to execute when mode is code." },
         scriptPath: { type: "string", description: "Absolute or cwd-relative script path when mode is script." },
-        args: { type: "array", description: "Optional script arguments." },
+        args: {
+          type: "array",
+          description: "Optional script arguments.",
+          items: PYTHON_STRING_ARRAY_ITEM_SCHEMA,
+        },
         cwd: { type: "string", description: "Optional working directory for execution." },
         timeoutMs: { type: "number", description: "Optional timeout override in milliseconds." },
         maxOutputChars: { type: "number", description: "Optional cap for stdout/stderr previews." },
-        inputFiles: { type: "array", description: "Optional dataset file paths exposed through AYATI_PYTHON_INPUT_FILES." },
-        sqliteDbPaths: { type: "array", description: "Optional SQLite database paths exposed through AYATI_PYTHON_SQLITE_DB_PATHS." },
+        inputFiles: {
+          type: "array",
+          description: "Optional dataset file paths exposed through AYATI_PYTHON_INPUT_FILES.",
+          items: PYTHON_STRING_ARRAY_ITEM_SCHEMA,
+        },
+        sqliteDbPaths: {
+          type: "array",
+          description: "Optional SQLite database paths exposed through AYATI_PYTHON_SQLITE_DB_PATHS.",
+          items: PYTHON_STRING_ARRAY_ITEM_SCHEMA,
+        },
       },
     },
     selectionHints: {

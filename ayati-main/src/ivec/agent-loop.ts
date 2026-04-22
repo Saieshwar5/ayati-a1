@@ -5,12 +5,15 @@ import { devLog, devWarn } from "../shared/index.js";
 import type {
   AgentLoopDeps,
   AgentLoopResult,
+  AgentTaskSummaryRecord,
   LoopState,
   LoopConfig,
   ControllerOutput,
   ContextSearchDirective,
+  UnderstandDirective,
   ReEvalDirective,
-  SessionRotationDirective,
+  ReadRunStateDirective,
+  ActivateSkillDirective,
   StepDirective,
   CompletionDirective,
   ScoutResult,
@@ -20,35 +23,142 @@ import type {
   RecentContextSearch,
   RecentContextSearchStatus,
 } from "./types.js";
-import { DEFAULT_LOOP_CONFIG } from "./types.js";
-
-function isRotationDirective(output: ControllerOutput): output is SessionRotationDirective {
-  return !output.done && "rotate_session" in output && (output as SessionRotationDirective).rotate_session === true;
-}
+import { DEFAULT_LOOP_CONFIG, RECENT_TASK_SELECTION_LIMIT } from "./types.js";
 
 function isContextSearchDirective(output: ControllerOutput): output is ContextSearchDirective {
   return !output.done && "context_search" in output && (output as ContextSearchDirective).context_search === true;
 }
 
-import { initRunDirectory, writeState, readState } from "./state-persistence.js";
-import { callUnderstand, callReEval, callDirect, resolveOpenFeedbackReference } from "./controller.js";
+function isReadRunStateDirective(output: unknown): output is ReadRunStateDirective {
+  return !!output
+    && typeof output === "object"
+    && !Array.isArray(output)
+    && "read_run_state" in output
+    && (output as ReadRunStateDirective).read_run_state === true;
+}
+
+function isActivateSkillDirective(output: unknown): output is ActivateSkillDirective {
+  return !!output
+    && typeof output === "object"
+    && !Array.isArray(output)
+    && "activate_skill" in output
+    && (output as ActivateSkillDirective).activate_skill === true;
+}
+
+function truncateControllerLogValue(value: string | undefined, maxLen = 140): string {
+  const normalized = (value ?? "").replace(/\s+/g, " ").trim();
+  if (normalized.length <= maxLen) {
+    return normalized;
+  }
+  return `${normalized.slice(0, Math.max(0, maxLen - 3))}...`;
+}
+
+function formatReadRunStateTarget(directive: ReadRunStateDirective): string {
+  if (directive.action === "read_step_full") {
+    return `step=${directive.step ?? "missing"}`;
+  }
+
+  const from = directive.window?.from ?? "?";
+  const to = directive.window?.to ?? "?";
+  return `window=${from}..${to}`;
+}
+
+function summarizeStepTools(directive: StepDirective): string {
+  const tools = directive.tool_plan?.map((call) => call.tool) ?? [];
+  return tools.length > 0 ? tools.join(",") : "(none)";
+}
+
+function logUnderstandDirective(clientId: string, directive: UnderstandDirective | CompletionDirective): void {
+  if (directive.done) {
+    devLog(
+      `[${clientId}] [controller] understand -> completion status=${directive.status} response_kind=${directive.response_kind ?? "reply"} summary="${truncateControllerLogValue(directive.summary, 120)}"`,
+    );
+    return;
+  }
+
+  devLog(
+    `[${clientId}] [controller] understand -> task objective="${truncateControllerLogValue(directive.goal.objective, 120)}" dependent_task=${directive.dependent_task} work_mode=${directive.work_mode ?? "none"}`,
+  );
+}
+
+function logDirectDirective(
+  clientId: string,
+  directive: StepDirective | ReadRunStateDirective | ActivateSkillDirective | CompletionDirective,
+): void {
+  if (directive.done) {
+    devLog(
+      `[${clientId}] [controller] direct -> completion status=${directive.status} response_kind=${directive.response_kind ?? "reply"} summary="${truncateControllerLogValue(directive.summary, 120)}"`,
+    );
+    return;
+  }
+
+  if (isReadRunStateDirective(directive)) {
+    devLog(
+      `[${clientId}] [controller] direct -> read_run_state action=${directive.action} ${formatReadRunStateTarget(directive)} reason="${truncateControllerLogValue(directive.reason, 120)}"`,
+    );
+    return;
+  }
+
+  if (isActivateSkillDirective(directive)) {
+    devLog(
+      `[${clientId}] [controller] direct -> activate_skill skill_id=${directive.skill_id} reason="${truncateControllerLogValue(directive.reason, 120)}"`,
+    );
+    return;
+  }
+
+  devLog(
+    `[${clientId}] [controller] direct -> step execution_mode=${directive.execution_mode} tools=${summarizeStepTools(directive)} contract="${truncateControllerLogValue(directive.execution_contract || directive.intent, 120)}"`,
+  );
+}
+
+function logReEvalDirective(clientId: string, directive: ReEvalDirective | ReadRunStateDirective | CompletionDirective): void {
+  if (directive.done) {
+    devLog(
+      `[${clientId}] [controller] reeval -> completion status=${directive.status} response_kind=${directive.response_kind ?? "reply"} summary="${truncateControllerLogValue(directive.summary, 120)}"`,
+    );
+    return;
+  }
+
+  if (isReadRunStateDirective(directive)) {
+    devLog(
+      `[${clientId}] [controller] reeval -> read_run_state action=${directive.action} ${formatReadRunStateTarget(directive)} reason="${truncateControllerLogValue(directive.reason, 120)}"`,
+    );
+    return;
+  }
+
+  devLog(
+    `[${clientId}] [controller] reeval -> approach "${truncateControllerLogValue(directive.approach, 140)}"`,
+  );
+}
+
+import { initRunDirectory, queueStateWrite, flushStateWrites } from "./state-persistence.js";
+import { callUnderstand, callReEval, callDirect } from "./controller.js";
 import { executeStep } from "./executor.js";
 import { runContextScout } from "./context-scout.js";
+import { RunStateManager } from "./run-state-manager.js";
 import { collectAgentArtifacts } from "./agent-artifacts.js";
+import type { ToolDefinition, ToolExecutionContext } from "../skills/types.js";
+import type { ExternalSkillCard } from "../skills/external/registry.js";
+import type { ActiveExternalSkillContext } from "../skills/external/broker.js";
 import { prepareIncomingAttachments } from "../documents/attachment-preparer.js";
 import type { ManagedDocumentManifest, PreparedAttachmentSummary } from "../documents/types.js";
 import type { ScoutKnownLocations } from "./context-scout.js";
-import type { OpenFeedbackItem } from "../memory/types.js";
 
 export async function agentLoop(deps: AgentLoopDeps): Promise<AgentLoopResult> {
   const config: LoopConfig = { ...DEFAULT_LOOP_CONFIG, ...deps.config };
+  validateLoopConfig(config);
   const runId = deps.runHandle.runId;
   const runPath = initRunDirectory(deps.dataDir, runId);
+  const runStateManager = new RunStateManager(runPath);
+  await runStateManager.ready();
+  const currentToolExecutionContext = currentToolRegistryContextFactory(deps);
+  const currentToolRegistryContext = currentToolExecutionContext;
 
   let totalToolCalls = 0;
 
   const state: LoopState = {
     runId,
+    runClass: "interaction",
     inputKind: deps.inputKind ?? (deps.systemEvent ? "system_event" : "user_message"),
     userMessage: "",
     systemEvent: deps.systemEvent,
@@ -60,13 +170,13 @@ export async function agentLoop(deps: AgentLoopDeps): Promise<AgentLoopResult> {
     approvalRequired: deps.systemEventApprovalRequired,
     approvalState: deps.systemEventApprovalState,
     contextVisibility: deps.systemEventContextVisibility,
-    feedbackTtlHours: deps.feedbackTtlHours,
     preferredResponseKind: deps.preferredResponseKind,
-    matchedFeedback: null,
     goal: emptyGoalContract(),
     approach: "",
-    taskStatus: "not_done",
-    progressLedger: emptyProgressLedger(),
+    sessionContextSummary: "",
+    dependentTask: false,
+    dependentTaskSummary: null,
+    taskProgress: emptyTaskProgress(),
     status: "running",
     finalOutput: "",
     iteration: 0,
@@ -83,9 +193,38 @@ export async function agentLoop(deps: AgentLoopDeps): Promise<AgentLoopResult> {
     activeSessionAttachments: [],
     sessionHistory: [],
     recentRunLedgers: [],
-    openFeedbacks: [],
+    recentTaskSummaries: [],
     recentSystemActivity: [],
   };
+
+  const queueStateSnapshot = (): void => {
+    void queueStateWrite(runPath, state).catch((error) => {
+      devWarn(
+        `[${deps.clientId}] failed to persist run state snapshot: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    });
+  };
+
+  const finalizeLoopResult = async (input: Parameters<typeof buildLoopResult>[1]): Promise<AgentLoopResult> => {
+    queueStateSnapshot();
+    await flushStateWrites(runPath);
+    deps.externalSkillBroker?.deactivate({}, currentToolExecutionContext(state.iteration));
+    return buildLoopResult(state, input);
+  };
+
+  const resolveVisibleToolDefinitions = (stepNumber?: number): ToolDefinition[] => deps.toolExecutor?.definitions(
+    currentToolRegistryContext(stepNumber),
+  ) ?? deps.toolDefinitions;
+  const resolveExternalSkillCards = () => deps.externalSkillRegistry?.getSkillCards();
+  const resolveActiveExternalSkills = (stepNumber?: number) => deps.externalSkillBroker?.getActiveSkillContexts(
+    currentToolExecutionContext(stepNumber),
+  );
+  const resolveControllerRuntimeSnapshot = (): ControllerRuntimeSnapshot => ({
+    toolDefinitions: resolveVisibleToolDefinitions(state.iteration),
+    externalSkillCards: resolveExternalSkillCards(),
+    activeExternalSkills: resolveActiveExternalSkills(state.iteration),
+    toolExecutionContext: currentToolExecutionContext(state.iteration),
+  });
 
   // Populate user message and session history from sessionMemory context
   state.userMessage = getPrimaryUserMessage(deps);
@@ -99,13 +238,7 @@ export async function agentLoop(deps: AgentLoopDeps): Promise<AgentLoopResult> {
     );
   }
 
-  const feedbackResolution = await resolveOpenFeedbackIfNeeded(deps, state, runPath);
-  if (feedbackResolution) {
-    writeState(runPath, state);
-    return feedbackResolution;
-  }
-
-  writeState(runPath, state);
+  queueStateSnapshot();
   deps.sessionMemory.recordRunLedger?.(deps.clientId, {
     runId: deps.runHandle.runId,
     sessionId: deps.runHandle.sessionId,
@@ -124,24 +257,26 @@ export async function agentLoop(deps: AgentLoopDeps): Promise<AgentLoopResult> {
     });
     state.preparedAttachments = prepared.summaries;
     recordActiveSessionAttachments(deps, runId, runPath, "prepared");
-    writeState(runPath, state);
+    queueStateSnapshot();
   }
 
   // --- Understand stage (iteration 0) ---
   const systemContext = deps.systemContext ?? "";
+  const controllerSystemContext = deps.controllerSystemContext ?? systemContext;
   const understandResult = await callUnderstand(
     deps.provider,
     state,
-    deps.toolDefinitions,
+    resolveVisibleToolDefinitions(),
     systemContext,
     deps.controllerPrompts,
+    resolveExternalSkillCards(),
   );
+  logUnderstandDirective(deps.clientId, understandResult);
 
   if (understandResult.done) {
     state.status = understandResult.status === "failed" ? "failed" : "completed";
     state.finalOutput = understandResult.summary;
-    writeState(runPath, state);
-    return buildLoopResult(state, {
+    return finalizeLoopResult({
       dataDir: deps.dataDir,
       completion: understandResult,
       status: state.status,
@@ -151,12 +286,16 @@ export async function agentLoop(deps: AgentLoopDeps): Promise<AgentLoopResult> {
   }
 
   // Store understand output on state
+  state.runClass = "task";
   state.goal = understandResult.goal;
   state.approach = understandResult.approach;
+  state.sessionContextSummary = understandResult.session_context_summary.trim();
+  state.dependentTask = understandResult.dependent_task;
+  state.dependentTaskSummary = understandResult.dependent_task
+    ? resolveDependentTaskSummary(state.recentTaskSummaries, understandResult.dependent_task_slot)
+    : null;
   state.workMode = understandResult.work_mode;
-  writeState(runPath, state);
-
-  let initialControllerScoutResult: ScoutResult | undefined;
+  queueStateSnapshot();
 
   // --- Main loop: direct stage ---
   let lastDirective: StepDirective | undefined;
@@ -166,8 +305,7 @@ export async function agentLoop(deps: AgentLoopDeps): Promise<AgentLoopResult> {
       const finalOutput = "Agent was stopped.";
       state.status = "failed";
       state.finalOutput = finalOutput;
-      writeState(runPath, state);
-      return buildLoopResult(state, {
+      return finalizeLoopResult({
         dataDir: deps.dataDir,
         status: "failed",
         content: finalOutput,
@@ -175,24 +313,17 @@ export async function agentLoop(deps: AgentLoopDeps): Promise<AgentLoopResult> {
         totalToolCalls,
       });
     }
-
-    const diskState = readState(runPath);
-    if (diskState) {
-      Object.assign(state, diskState);
-    }
     syncTransientMemoryContext(state, deps);
 
     state.iteration++;
-    const scoutBudget: ContextSearchBudget = { used: 0 };
 
-    // Re-evaluation after a failed step
-    if (state.consecutiveFailures >= 1) {
+    // Re-evaluation after the configured number of consecutive failures
+    if (state.consecutiveFailures >= config.approachReevalThreshold) {
       if (state.approachChangeCount >= config.maxApproachChanges) {
         const finalOutput = `I couldn't complete the task after changing approach ${config.maxApproachChanges} times.`;
         state.status = "failed";
         state.finalOutput = finalOutput;
-        writeState(runPath, state);
-        return buildLoopResult(state, {
+        return finalizeLoopResult({
           dataDir: deps.dataDir,
           status: "failed",
           content: finalOutput,
@@ -204,16 +335,16 @@ export async function agentLoop(deps: AgentLoopDeps): Promise<AgentLoopResult> {
       const reevalResolution = await resolveReEvalDirective(
         deps,
         state,
-        config,
-        runPath,
-        scoutBudget,
-        systemContext,
+        runStateManager,
+        controllerSystemContext,
+        resolveVisibleToolDefinitions(state.iteration),
+        resolveExternalSkillCards(),
+        resolveActiveExternalSkills(state.iteration),
       );
       if (reevalResolution.type === "done") {
         state.status = reevalResolution.completion.status === "failed" ? "failed" : "completed";
         state.finalOutput = reevalResolution.completion.summary;
-        writeState(runPath, state);
-        return buildLoopResult(state, {
+        return finalizeLoopResult({
           dataDir: deps.dataDir,
           completion: reevalResolution.completion,
           status: state.status,
@@ -226,8 +357,7 @@ export async function agentLoop(deps: AgentLoopDeps): Promise<AgentLoopResult> {
       if (reevalResolution.type === "failed") {
         state.status = "failed";
         state.finalOutput = reevalResolution.message;
-        writeState(runPath, state);
-        return buildLoopResult(state, {
+        return finalizeLoopResult({
           dataDir: deps.dataDir,
           status: "failed",
           content: state.finalOutput,
@@ -241,8 +371,7 @@ export async function agentLoop(deps: AgentLoopDeps): Promise<AgentLoopResult> {
         const finalOutput = "I couldn't find a different working approach after the latest failure.";
         state.status = "failed";
         state.finalOutput = finalOutput;
-        writeState(runPath, state);
-        return buildLoopResult(state, {
+        return finalizeLoopResult({
           dataDir: deps.dataDir,
           status: "failed",
           content: finalOutput,
@@ -254,23 +383,20 @@ export async function agentLoop(deps: AgentLoopDeps): Promise<AgentLoopResult> {
       state.approach = nextApproach;
       state.approachChangeCount++;
       state.consecutiveFailures = 0;
-      writeState(runPath, state);
+      queueStateSnapshot();
     }
 
     const controllerResolution = await resolveControllerDirective(
       deps,
       state,
-      config,
-      runPath,
-      scoutBudget,
-      initialControllerScoutResult,
+      runStateManager,
+      controllerSystemContext,
+      resolveControllerRuntimeSnapshot,
     );
-    initialControllerScoutResult = undefined;
     if (controllerResolution.type === "done") {
       state.status = controllerResolution.completion.status === "failed" ? "failed" : "completed";
       state.finalOutput = controllerResolution.completion.summary;
-      writeState(runPath, state);
-      return buildLoopResult(state, {
+      return finalizeLoopResult({
         dataDir: deps.dataDir,
         completion: controllerResolution.completion,
         status: state.status,
@@ -280,31 +406,10 @@ export async function agentLoop(deps: AgentLoopDeps): Promise<AgentLoopResult> {
       });
     }
 
-    if (controllerResolution.type === "rotate") {
-      const finalOutput = `Session rotated: ${controllerResolution.reason}`;
-      deps.sessionMemory.createSession?.(deps.clientId, {
-        runId: deps.runHandle.runId,
-        reason: controllerResolution.reason,
-        source: "agent",
-        handoffSummary: controllerResolution.handoffSummary,
-      });
-      state.status = "completed";
-      state.finalOutput = finalOutput;
-      writeState(runPath, state);
-      return buildLoopResult(state, {
-        dataDir: deps.dataDir,
-        status: "completed",
-        content: finalOutput,
-        totalIterations: state.iteration,
-        totalToolCalls,
-      });
-    }
-
     if (controllerResolution.type === "failed") {
       state.status = "failed";
       state.finalOutput = controllerResolution.message;
-      writeState(runPath, state);
-      return buildLoopResult(state, {
+      return finalizeLoopResult({
         dataDir: deps.dataDir,
         status: "failed",
         content: state.finalOutput,
@@ -316,11 +421,11 @@ export async function agentLoop(deps: AgentLoopDeps): Promise<AgentLoopResult> {
     const controllerOutput = controllerResolution.directive;
     lastDirective = controllerOutput;
 
-    const stepSummary = await executeStep(
+    const executedStep = await executeStep(
       {
         provider: deps.provider,
         toolExecutor: deps.toolExecutor,
-        toolDefinitions: deps.toolDefinitions,
+        toolDefinitions: resolveVisibleToolDefinitions(state.iteration),
         config,
         clientId: deps.clientId,
         sessionMemory: deps.sessionMemory,
@@ -331,6 +436,11 @@ export async function agentLoop(deps: AgentLoopDeps): Promise<AgentLoopResult> {
       state.iteration,
       runPath,
     );
+    const {
+      stepRecord,
+      fullStepText,
+      ...stepSummary
+    } = executedStep;
 
     applyPreparedAttachmentStateUpdates(
       state,
@@ -343,11 +453,24 @@ export async function agentLoop(deps: AgentLoopDeps): Promise<AgentLoopResult> {
     }
 
     state.completedSteps.push(stepSummary);
+    if (stepSummary.taskProgress) {
+      state.taskProgress = stepSummary.taskProgress;
+    }
+
+    await runStateManager.appendStepRecord(stepRecord, fullStepText);
 
     const stepToolCalls = stepSummary.toolSuccessCount + stepSummary.toolFailureCount;
     totalToolCalls += stepToolCalls > 0 ? stepToolCalls : 1;
 
-    if (stepSummary.outcome === "failed") {
+    deps.toolExecutor?.cleanupExpired?.({
+      clientId: deps.clientId,
+      runId: deps.runHandle.runId,
+      sessionId: deps.runHandle.sessionId,
+      stepNumber: state.iteration,
+    });
+    deps.externalSkillBroker?.cleanupExpired?.(currentToolExecutionContext(state.iteration));
+
+      if (stepSummary.outcome === "failed") {
       state.consecutiveFailures++;
 
       const fallbackReason = `failureType=${stepSummary.failureType ?? "verify_failed"}; stop=${stepSummary.stoppedEarlyReason ?? "none"}; tool_success=${stepSummary.toolSuccessCount}; tool_failed=${stepSummary.toolFailureCount}`;
@@ -371,16 +494,9 @@ export async function agentLoop(deps: AgentLoopDeps): Promise<AgentLoopResult> {
       }
     } else {
       state.consecutiveFailures = 0;
-      state.progressLedger.lastSuccessfulStepSummary = stepSummary.summary;
-      state.progressLedger.lastStepFacts = [...stepSummary.newFacts];
-      state.progressLedger.taskEvidence = mergeUniqueValues(
-        state.progressLedger.taskEvidence,
-        stepSummary.taskEvidence ?? [],
-      );
-      state.taskStatus = stepSummary.taskStatusAfter ?? state.taskStatus;
     }
 
-    writeState(runPath, state);
+    queueStateSnapshot();
     deps.onProgress?.(
       `Step ${state.iteration}: ${stepSummary.executionContract} → ${stepSummary.outcome}`,
       runPath,
@@ -390,8 +506,7 @@ export async function agentLoop(deps: AgentLoopDeps): Promise<AgentLoopResult> {
   const finalOutput = "I've exhausted my reasoning steps. Here's what I found so far based on my analysis.";
   state.status = "failed";
   state.finalOutput = finalOutput;
-  writeState(runPath, state);
-  return buildLoopResult(state, {
+  return finalizeLoopResult({
     dataDir: deps.dataDir,
     status: "stuck",
     content: finalOutput,
@@ -400,16 +515,53 @@ export async function agentLoop(deps: AgentLoopDeps): Promise<AgentLoopResult> {
   });
 }
 
+function validateLoopConfig(config: LoopConfig): void {
+  if (!Number.isInteger(config.approachReevalThreshold) || config.approachReevalThreshold < 1) {
+    throw new Error("Invalid loop config: approachReevalThreshold must be an integer greater than or equal to 1.");
+  }
+
+  if (!Number.isInteger(config.maxConsecutiveFailures) || config.maxConsecutiveFailures < 1) {
+    throw new Error("Invalid loop config: maxConsecutiveFailures must be an integer greater than or equal to 1.");
+  }
+
+  if (config.approachReevalThreshold >= config.maxConsecutiveFailures) {
+    throw new Error(
+      "Invalid loop config: approachReevalThreshold must be less than maxConsecutiveFailures.",
+    );
+  }
+}
+
+function currentToolRegistryContextFactory(
+  deps: AgentLoopDeps,
+): (stepNumber?: number) => ToolExecutionContext {
+  return (stepNumber?: number) => ({
+    clientId: deps.clientId,
+    runId: deps.runHandle.runId,
+    sessionId: deps.runHandle.sessionId,
+    ...(typeof stepNumber === "number" ? { stepNumber } : {}),
+  });
+}
+
 type ControllerResolution =
   | { type: "step"; directive: StepDirective }
   | { type: "done"; completion: CompletionDirective }
-  | { type: "rotate"; reason: string; handoffSummary: string }
   | { type: "failed"; message: string };
 
 type ReEvalResolution =
   | { type: "reeval"; directive: ReEvalDirective }
   | { type: "done"; completion: CompletionDirective }
   | { type: "failed"; message: string };
+
+const MAX_INLINE_CONTROLLER_PREP_DIRECTIVES = 4;
+
+interface ControllerRuntimeSnapshot {
+  toolDefinitions: ToolDefinition[];
+  externalSkillCards?: ExternalSkillCard[];
+  activeExternalSkills?: ActiveExternalSkillContext[];
+  toolExecutionContext: ToolExecutionContext;
+}
+
+type ControllerRuntimeSnapshotResolver = () => ControllerRuntimeSnapshot;
 
 type ContextSearchBudget = { used: number };
 
@@ -440,7 +592,7 @@ interface SkillsScoutSessionState {
   knownSkills: KnownSkillRef[];
 }
 
-type ContextAwareDirective = StepDirective | ReEvalDirective | SessionRotationDirective;
+type ContextAwareDirective = StepDirective | ReEvalDirective;
 
 type ContextAwareResolution =
   | { type: "directive"; directive: ContextAwareDirective }
@@ -450,80 +602,327 @@ type ContextAwareResolution =
 async function resolveControllerDirective(
   deps: AgentLoopDeps,
   state: LoopState,
-  config: LoopConfig,
-  runPath: string,
-  scoutBudget: ContextSearchBudget,
-  initialScoutResult?: ScoutResult,
+  runStateManager: RunStateManager,
+  systemContext: string,
+  resolveRuntimeSnapshot: ControllerRuntimeSnapshotResolver,
 ): Promise<ControllerResolution> {
-  const resolution = await resolveContextAwareController(
-    deps,
-    state,
-    config,
-    runPath,
-    scoutBudget,
-    initialScoutResult,
-    (scoutContext) => callDirect(
+  const controllerHistoryBundle = await runStateManager.buildControllerHistoryBundle(state.completedSteps);
+  const prepContext: string[] = [];
+  const seenReadRunStateRequests = new Set<string>();
+  const seenActivateSkillRequests = new Set<string>();
+
+  while (prepContext.length < MAX_INLINE_CONTROLLER_PREP_DIRECTIVES + 1) {
+    const runtimeSnapshot = resolveRuntimeSnapshot();
+    const resolution = await callDirect(
       deps.provider,
       state,
-      deps.toolDefinitions,
-      scoutContext,
+      runtimeSnapshot.toolDefinitions,
+      controllerHistoryBundle,
       deps.controllerPrompts,
-      deps.systemContext ?? "",
-    ),
-  );
+      systemContext,
+      deps.config?.approachReevalThreshold,
+      runtimeSnapshot.externalSkillCards,
+      runtimeSnapshot.activeExternalSkills,
+      prepContext.join("\n\n"),
+    );
+    logDirectDirective(deps.clientId, resolution);
 
-  if (resolution.type !== "directive") {
-    return resolution;
+    if (resolution.done) {
+      return {
+        type: "done",
+        completion: resolution,
+      };
+    }
+
+    if (isReadRunStateDirective(resolution)) {
+      if (prepContext.length >= MAX_INLINE_CONTROLLER_PREP_DIRECTIVES) {
+        devWarn(
+          `[${deps.clientId}] [controller] direct prep limit exceeded while handling ${buildReadRunStateRequestKey(resolution)}`,
+        );
+        return {
+          type: "failed",
+          message: `I couldn't progress because the controller requested too many inline prep directives in one direct resolution (limit ${MAX_INLINE_CONTROLLER_PREP_DIRECTIVES}).`,
+        };
+      }
+
+      const requestKey = buildReadRunStateRequestKey(resolution);
+      if (seenReadRunStateRequests.has(requestKey)) {
+        devWarn(
+          `[${deps.clientId}] [controller] direct repeated prep directive read_run_state request=${requestKey}`,
+        );
+        return {
+          type: "failed",
+          message: "I couldn't progress because the controller repeated the same read_run_state request in one direct resolution.",
+        };
+      }
+      seenReadRunStateRequests.add(requestKey);
+
+      const retrievedContext = await buildReadRunStateContext(runStateManager, resolution);
+      prepContext.push(retrievedContext);
+      devLog(
+        `[${deps.clientId}] [controller] direct prep appended read_run_state request=${requestKey} chars=${retrievedContext.length}`,
+      );
+      continue;
+    }
+
+    if (isActivateSkillDirective(resolution)) {
+      if (prepContext.length >= MAX_INLINE_CONTROLLER_PREP_DIRECTIVES) {
+        devWarn(
+          `[${deps.clientId}] [controller] direct prep limit exceeded while handling activate_skill:${buildActivateSkillRequestKey(resolution)}`,
+        );
+        return {
+          type: "failed",
+          message: `I couldn't progress because the controller requested too many inline prep directives in one direct resolution (limit ${MAX_INLINE_CONTROLLER_PREP_DIRECTIVES}).`,
+        };
+      }
+
+      const requestKey = buildActivateSkillRequestKey(resolution);
+      if (seenActivateSkillRequests.has(requestKey)) {
+        devWarn(
+          `[${deps.clientId}] [controller] direct repeated prep directive activate_skill request=${requestKey}`,
+        );
+        return {
+          type: "failed",
+          message: "I couldn't progress because the controller repeated the same activate_skill request in one direct resolution.",
+        };
+      }
+      seenActivateSkillRequests.add(requestKey);
+
+      const activationResult = await buildActivateSkillContext(
+        deps,
+        resolution,
+        resolveRuntimeSnapshot,
+      );
+      prepContext.push(activationResult.context);
+      devLog(
+        `[${deps.clientId}] [controller] direct prep appended activate_skill request=${requestKey} status=${activationResult.status} already_active=${activationResult.alreadyActive} mounted_tools=${formatPrepListValue(activationResult.mountedTools)} evicted_skills=${formatPrepListValue(activationResult.evictedSkills)} evicted_tools=${formatPrepListValue(activationResult.evictedTools)}${activationResult.error ? ` error="${truncateControllerLogValue(activationResult.error, 120)}"` : ""}`,
+      );
+      continue;
+    }
+
+    return { type: "step", directive: resolution };
   }
 
-  if (isRotationDirective(resolution.directive)) {
-    return {
-      type: "rotate",
-      reason: resolution.directive.reason,
-      handoffSummary: resolution.directive.handoff_summary,
-    };
-  }
-
-  return { type: "step", directive: resolution.directive as StepDirective };
+  return {
+    type: "failed",
+    message: `I couldn't progress because the controller requested too many inline prep directives in one direct resolution (limit ${MAX_INLINE_CONTROLLER_PREP_DIRECTIVES}).`,
+  };
 }
 
 async function resolveReEvalDirective(
   deps: AgentLoopDeps,
   state: LoopState,
-  config: LoopConfig,
-  runPath: string,
-  scoutBudget: ContextSearchBudget,
+  runStateManager: RunStateManager,
   systemContext: string,
+  toolDefinitions: ToolDefinition[],
+  externalSkillCards?: ReturnType<NonNullable<AgentLoopDeps["externalSkillRegistry"]>["getSkillCards"]>,
+  activeExternalSkills?: ReturnType<NonNullable<AgentLoopDeps["externalSkillBroker"]>["getActiveSkillContexts"]>,
 ): Promise<ReEvalResolution> {
-  const resolution = await resolveContextAwareController(
-    deps,
-    state,
-    config,
-    runPath,
-    scoutBudget,
-    undefined,
-    (scoutContext) => callReEval(
+  const prepContext: string[] = [];
+  const seenReadRunStateRequests = new Set<string>();
+
+  while (prepContext.length < MAX_INLINE_CONTROLLER_PREP_DIRECTIVES + 1) {
+    const resolution = await callReEval(
       deps.provider,
       state,
-      deps.toolDefinitions,
-      scoutContext,
+      toolDefinitions,
       deps.controllerPrompts,
       systemContext,
-    ),
+      externalSkillCards,
+      activeExternalSkills,
+      prepContext.join("\n\n"),
+    );
+    logReEvalDirective(deps.clientId, resolution);
+
+    if (resolution.done) {
+      return {
+        type: "done",
+        completion: resolution,
+      };
+    }
+
+    if (isReadRunStateDirective(resolution)) {
+      if (prepContext.length >= MAX_INLINE_CONTROLLER_PREP_DIRECTIVES) {
+        devWarn(
+          `[${deps.clientId}] [controller] reeval prep limit exceeded while handling ${buildReadRunStateRequestKey(resolution)}`,
+        );
+        return {
+          type: "failed",
+          message: `I couldn't progress because the controller requested too many inline prep directives in one reeval resolution (limit ${MAX_INLINE_CONTROLLER_PREP_DIRECTIVES}).`,
+        };
+      }
+
+      const requestKey = buildReadRunStateRequestKey(resolution);
+      if (seenReadRunStateRequests.has(requestKey)) {
+        devWarn(
+          `[${deps.clientId}] [controller] reeval repeated prep directive read_run_state request=${requestKey}`,
+        );
+        return {
+          type: "failed",
+          message: "I couldn't progress because the controller repeated the same read_run_state request in one reeval resolution.",
+        };
+      }
+      seenReadRunStateRequests.add(requestKey);
+
+      const retrievedContext = await buildReadRunStateContext(runStateManager, resolution);
+      prepContext.push(retrievedContext);
+      devLog(
+        `[${deps.clientId}] [controller] reeval prep appended read_run_state request=${requestKey} chars=${retrievedContext.length}`,
+      );
+      continue;
+    }
+
+    if (!("reeval" in resolution) || resolution.reeval !== true) {
+      return {
+        type: "failed",
+        message: "I couldn't determine a revised approach after the latest failure.",
+      };
+    }
+
+    return { type: "reeval", directive: resolution };
+  }
+
+  return {
+    type: "failed",
+    message: `I couldn't progress because the controller requested too many inline prep directives in one reeval resolution (limit ${MAX_INLINE_CONTROLLER_PREP_DIRECTIVES}).`,
+  };
+}
+
+function buildReadRunStateRequestKey(directive: ReadRunStateDirective): string {
+  if (directive.action === "read_step_full") {
+    return `read_step_full:${directive.step ?? "missing"}`;
+  }
+
+  const from = Math.min(directive.window?.from ?? 0, directive.window?.to ?? 0);
+  const to = Math.max(directive.window?.from ?? 0, directive.window?.to ?? 0);
+  return `read_summary_window:${from}:${to}`;
+}
+
+function buildActivateSkillRequestKey(directive: ActivateSkillDirective): string {
+  return directive.skill_id.trim().toLowerCase();
+}
+
+function formatPrepListValue(values: string[]): string {
+  return values.length > 0 ? values.join(",") : "(none)";
+}
+
+async function buildReadRunStateContext(
+  runStateManager: RunStateManager,
+  directive: ReadRunStateDirective,
+): Promise<string> {
+  if (directive.action === "read_step_full") {
+    const step = directive.step ?? 0;
+    const result = await runStateManager.readStepFull(step);
+    if (!result) {
+      return `Retrieved run state for read_step_full:
+- Requested step ${step} was not found in the active run.`;
+    }
+
+    return [
+      "Retrieved run state:",
+      `- action: read_step_full`,
+      `- step: ${result.step}`,
+      `- executionContract: ${result.record.executionContract || "(none)"}`,
+      `- outcome: ${result.record.outcome}`,
+      `- summary: ${result.record.summary || "(none)"}`,
+      `- keyFacts: ${result.record.newFacts.slice(0, 4).join(" | ") || "(none)"}`,
+      `- evidence: ${result.record.evidenceItems.slice(0, 4).join(" | ") || "(none)"}`,
+      `- blockedTargets: ${(result.record.blockedTargets ?? []).slice(0, 4).join(" | ") || "(none)"}`,
+    ].join("\n");
+  }
+
+  const window = directive.window ?? { from: 1, to: 1 };
+  const result = await runStateManager.readSummaryWindow(window);
+  const stepLines = result.steps.length > 0
+    ? result.steps.map((step) => `  - step=${step.step} outcome=${step.outcome} contract=${step.executionContract || "(none)"} summary=${step.summary || "(none)"} keyFacts=${step.keyFacts.slice(0, 3).join(" | ") || "(none)"} evidence=${step.evidence.slice(0, 3).join(" | ") || "(none)"}`)
+    : ["  - no recorded steps in that window"];
+
+  return [
+    "Retrieved run state:",
+    `- action: read_summary_window`,
+    `- window: ${result.window.from}..${result.window.to}`,
+    ...stepLines,
+  ].join("\n");
+}
+
+async function buildActivateSkillContext(
+  deps: AgentLoopDeps,
+  directive: ActivateSkillDirective,
+  resolveRuntimeSnapshot: ControllerRuntimeSnapshotResolver,
+): Promise<{
+  context: string;
+  status: string;
+  alreadyActive: boolean;
+  mountedTools: string[];
+  evictedSkills: string[];
+  evictedTools: string[];
+  error?: string;
+}> {
+  let status = "failed";
+  let alreadyActive = false;
+  let activationBrief: string | undefined;
+  let mountedTools: string[] = [];
+  let evictedSkills: string[] = [];
+  let evictedTools: string[] = [];
+  let error: string | undefined;
+
+  if (!deps.externalSkillBroker) {
+    error = "External skill activation is unavailable in this run.";
+  } else {
+    try {
+      const activationResult = await deps.externalSkillBroker.activate(
+        { skillId: directive.skill_id },
+        resolveRuntimeSnapshot().toolExecutionContext,
+      );
+
+      if (!activationResult.ok || !activationResult.activation) {
+        error = activationResult.error ?? `Failed to activate external skill "${directive.skill_id}".`;
+      } else {
+        status = activationResult.activation.status ?? "activated";
+        alreadyActive = activationResult.activation.status === "already_active";
+        activationBrief = activationResult.activation.activationBrief;
+        mountedTools = activationResult.activation.activatedTools.map((entry) => entry.toolName);
+        evictedSkills = [...(activationResult.activation.evictedSkills ?? [])];
+        evictedTools = activationResult.activation.evictedTools.map((entry) => entry.toolName);
+      }
+    } catch (activationError) {
+      error = activationError instanceof Error ? activationError.message : String(activationError);
+    }
+  }
+
+  const refreshedSnapshot = resolveRuntimeSnapshot();
+  const activeSkillLines = (refreshedSnapshot.activeExternalSkills ?? []).map((skill) =>
+    `${skill.skillId} [${skill.toolNames.join(", ") || "(none)"}]`,
   );
 
-  if (resolution.type !== "directive") {
-    return resolution;
+  const lines = [
+    "Retrieved skill activation:",
+    "- action: activate_skill",
+    `- skill_id: ${directive.skill_id}`,
+    `- reason: ${directive.reason?.trim() || "(none)"}`,
+    `- status: ${error ? "failed" : status}`,
+    `- already_active: ${alreadyActive ? "true" : "false"}`,
+    `- activation_brief: ${activationBrief?.trim() || "(none)"}`,
+    `- mounted_tools: ${mountedTools.join(" | ") || "(none)"}`,
+    `- evicted_skills: ${evictedSkills.join(" | ") || "(none)"}`,
+    `- evicted_tools: ${evictedTools.join(" | ") || "(none)"}`,
+    `- available_tools_now: ${refreshedSnapshot.toolDefinitions.map((tool) => tool.name).join(", ") || "(none)"}`,
+    `- active_external_skills_now: ${activeSkillLines.join(" | ") || "(none)"}`,
+  ];
+
+  if (error) {
+    lines.push(`- error: ${error}`);
   }
 
-  if (!("reeval" in resolution.directive) || resolution.directive.reeval !== true) {
-    return {
-      type: "failed",
-      message: "I couldn't determine a revised approach after the latest failure.",
-    };
-  }
-
-  return { type: "reeval", directive: resolution.directive };
+  return {
+    context: lines.join("\n"),
+    status: error ? "failed" : status,
+    alreadyActive,
+    mountedTools,
+    evictedSkills,
+    evictedTools,
+    ...(error ? { error } : {}),
+  };
 }
 
 async function resolveContextAwareController(
@@ -815,233 +1214,36 @@ function syncTransientMemoryContext(state: LoopState, deps: AgentLoopDeps): void
     return !(t.role === "user" && t.content === state.userMessage);
   });
   state.recentRunLedgers = memCtx.recentRunLedgers ?? [];
+  state.recentTaskSummaries = memCtx.recentTaskSummaries ?? [];
   state.activeSessionAttachments = memCtx.activeAttachments ?? [];
-  state.openFeedbacks = memCtx.openFeedbacks ?? [];
   state.recentSystemActivity = memCtx.recentSystemActivity ?? [];
 }
 
-async function resolveOpenFeedbackIfNeeded(
-  deps: AgentLoopDeps,
-  state: LoopState,
-  runPath: string,
-): Promise<AgentLoopResult | null> {
-  if (state.inputKind !== "user_message" || state.openFeedbacks.length === 0) {
-    return null;
-  }
+function resolveDependentTaskSummary(
+  recentTaskSummaries: LoopState["recentTaskSummaries"],
+  slot: number | undefined,
+): LoopState["dependentTaskSummary"] {
+  if (!slot || slot < 1) return null;
 
-  const feedbackResolution = await resolveOpenFeedbackReference(
-    deps.provider,
-    state,
-    deps.systemContext,
-  );
+  const match = recentTaskSummaries.slice(0, RECENT_TASK_SELECTION_LIMIT)[slot - 1];
+  if (!match) return null;
 
-  if (feedbackResolution.resolution === "none") {
-    return null;
-  }
-
-  if (feedbackResolution.resolution === "ambiguous") {
-    const clarification = feedbackResolution.clarification?.trim().length
-      ? feedbackResolution.clarification.trim()
-      : "I have a few open requests. Which one are you responding to?";
-    state.status = "completed";
-    state.finalOutput = clarification;
-    return {
-      type: "feedback",
-      content: clarification,
-      status: "completed",
-      totalIterations: 0,
-      totalToolCalls: 0,
-      runPath,
-    };
-  }
-
-  const matchedFeedback = state.openFeedbacks.find((item) => item.feedbackId === feedbackResolution.feedback_id);
-  if (!matchedFeedback) {
-    if (state.openFeedbacks.length <= 1) {
-      return null;
-    }
-
-    const clarification = "I have a few open requests. Which one are you responding to?";
-    state.status = "completed";
-    state.finalOutput = clarification;
-    return {
-      type: "feedback",
-      content: clarification,
-      status: "completed",
-      totalIterations: 0,
-      totalToolCalls: 0,
-      runPath,
-    };
-  }
-
-  state.matchedFeedback = matchedFeedback;
-  if (shouldTreatMatchedFeedbackAsFreshTask(state.userMessage, matchedFeedback)) {
-    state.matchedFeedback = null;
-    return null;
-  }
-
-  const feedbackOutcome = classifyMatchedFeedbackReply(state.userMessage);
-  deps.sessionMemory.resolveOpenFeedback?.(deps.clientId, {
-    runId: deps.runHandle.runId,
-    sessionId: deps.runHandle.sessionId,
-    feedbackId: matchedFeedback.feedbackId,
-    resolution: feedbackOutcome,
-    userResponse: state.userMessage,
-  });
-  syncTransientMemoryContext(state, deps);
-  state.openFeedbacks = state.openFeedbacks.filter((item) => item.feedbackId !== matchedFeedback.feedbackId);
-
-  if (feedbackOutcome === "rejected") {
-    const content = buildFeedbackRejectionReply(matchedFeedback.shortLabel);
-    state.status = "completed";
-    state.finalOutput = content;
-    return {
-      type: "reply",
-      content,
-      status: "completed",
-      totalIterations: 0,
-      totalToolCalls: 0,
-      runPath,
-      resolvedFeedbackId: matchedFeedback.feedbackId,
-    };
-  }
-
-  return null;
+  return clonePromptTaskSummary(match);
 }
 
-function classifyMatchedFeedbackReply(userMessage: string): "completed" | "rejected" {
-  const normalized = userMessage.trim().toLowerCase();
-  if (normalized.length === 0) {
-    return "completed";
-  }
-
-  const rejectionPatterns = [
-    /^(?:no|nope|nah)\b/,
-    /\bdo not\b/,
-    /\bdon'?t\b/,
-    /\bno need\b/,
-    /\bnot now\b/,
-    /\bcancel\b/,
-    /\bstop\b/,
-    /\bignore\b/,
-    /\bskip it\b/,
-    /\bdo nothing\b/,
-    /\bleave (?:it|that|this)\b/,
-    /\bhold off\b/,
-    /\bwon't need\b/,
-  ];
-
-  return rejectionPatterns.some((pattern) => pattern.test(normalized))
-    ? "rejected"
-    : "completed";
-}
-
-function shouldTreatMatchedFeedbackAsFreshTask(
-  userMessage: string,
-  matchedFeedback: OpenFeedbackItem,
-): boolean {
-  const normalized = userMessage.trim().toLowerCase();
-  if (!looksLikeFreshTaskRequest(normalized) || looksLikeConciseFeedbackReply(normalized)) {
-    return false;
-  }
-
-  return !hasFeedbackOverlap(normalized, matchedFeedback);
-}
-
-function looksLikeFreshTaskRequest(normalizedMessage: string): boolean {
-  if (normalizedMessage.length < 12) return false;
-
-  const patterns = [
-    /^(?:can|could|would|will)\s+you\b/,
-    /^(?:please\s+)?(?:check|fetch|pull|get|give|show|read|open|search|find|inspect|retrieve|draft|send|run|look up|summarize|explain|tell me)\b/,
-    /\b(?:full details|details about|what is in|what's in|show me|tell me about)\b/,
-  ];
-  return patterns.some((pattern) => pattern.test(normalizedMessage));
-}
-
-function looksLikeConciseFeedbackReply(normalizedMessage: string): boolean {
-  if (normalizedMessage.length === 0) return true;
-  const compact = normalizedMessage.replace(/[!?.,]/g, " ").trim();
-  const wordCount = compact.length === 0 ? 0 : compact.split(/\s+/).length;
-  if (wordCount <= 4) return true;
-
-  const concisePatterns = [
-    /^(?:yes|yep|yeah|ok|okay|sure|go ahead)\b/,
-    /^(?:no|nope|nah)\b/,
-    /^(?:send|do|run|share|ship|approve)\s+(?:it|that|this)\b/,
-  ];
-  return concisePatterns.some((pattern) => pattern.test(compact));
-}
-
-function hasFeedbackOverlap(normalizedMessage: string, matchedFeedback: OpenFeedbackItem): boolean {
-  const messageTokens = tokenizeForOverlap(normalizedMessage);
-  if (messageTokens.size === 0) return false;
-
-  const feedbackText = [
-    matchedFeedback.shortLabel,
-    matchedFeedback.message,
-    matchedFeedback.actionType ?? "",
-    matchedFeedback.payloadSummary ?? "",
-    ...matchedFeedback.entityHints,
-  ].join(" ").toLowerCase();
-  const feedbackTokens = tokenizeForOverlap(feedbackText);
-  for (const token of messageTokens) {
-    if (feedbackTokens.has(token)) {
-      return true;
-    }
-  }
-  return false;
-}
-
-function tokenizeForOverlap(text: string): Set<string> {
-  const stopWords = new Set([
-    "a",
-    "an",
-    "and",
-    "are",
-    "about",
-    "can",
-    "could",
-    "details",
-    "do",
-    "for",
-    "from",
-    "full",
-    "get",
-    "give",
-    "hello",
-    "i",
-    "it",
-    "latest",
-    "mail",
-    "me",
-    "my",
-    "of",
-    "on",
-    "please",
-    "show",
-    "tell",
-    "that",
-    "the",
-    "this",
-    "to",
-    "you",
-  ]);
-
-  return new Set(
-    text
-      .split(/[^a-z0-9_]+/)
-      .map((token) => token.trim())
-      .filter((token) => token.length >= 3 && !stopWords.has(token)),
-  );
-}
-
-function buildFeedbackRejectionReply(shortLabel: string): string {
-  const compactLabel = shortLabel.trim();
-  if (!compactLabel) {
-    return "Okay, I won't do anything with that request.";
-  }
-  return `Okay, I won't do anything with "${compactLabel}".`;
+function clonePromptTaskSummary(summary: NonNullable<LoopState["dependentTaskSummary"]>): NonNullable<LoopState["dependentTaskSummary"]> {
+  return {
+    ...summary,
+    completedMilestones: [...summary.completedMilestones],
+    openWork: [...summary.openWork],
+    blockers: [...summary.blockers],
+    keyFacts: [...summary.keyFacts],
+    evidence: [...summary.evidence],
+    entityHints: summary.entityHints ? [...summary.entityHints] : undefined,
+    goalDoneWhen: summary.goalDoneWhen ? [...summary.goalDoneWhen] : undefined,
+    goalRequiredEvidence: summary.goalRequiredEvidence ? [...summary.goalRequiredEvidence] : undefined,
+    attachmentNames: [...summary.attachmentNames],
+  };
 }
 
 function emptyGoalContract(): GoalContract {
@@ -1054,15 +1256,45 @@ function emptyGoalContract(): GoalContract {
   };
 }
 
-function emptyProgressLedger(): LoopState["progressLedger"] {
+function emptyTaskProgress(): LoopState["taskProgress"] {
   return {
-    lastSuccessfulStepSummary: "",
-    lastStepFacts: [],
-    taskEvidence: [],
+    status: "not_done",
+    progressSummary: "",
+    currentFocus: "",
+    completedMilestones: [],
+    openWork: [],
+    blockers: [],
+    keyFacts: [],
+    evidence: [],
   };
 }
 
 function buildTaskValidationContext(state: LoopState): TaskValidationContext {
+  const latestSuccessfulStep = findLatestSuccessfulStep(state);
+  const recentSuccessfulSteps = state.completedSteps
+    .filter((step) => step.outcome === "success")
+    .slice(-5)
+    .map((step) => ({
+      step: step.step,
+      executionContract: step.executionContract ?? "",
+      summary: step.summary,
+      evidenceItems: [...(step.evidenceItems ?? [])],
+      taskFacts: [...step.newFacts],
+      artifacts: [...step.artifacts],
+    }));
+  const recentFailedSteps = state.completedSteps
+    .filter((step) => step.outcome === "failed")
+    .slice(-5)
+    .map((step) => ({
+      step: step.step,
+      executionContract: step.executionContract ?? "",
+      summary: step.summary,
+      evidenceItems: [...(step.evidenceItems ?? [])],
+      taskFacts: [...step.newFacts],
+      artifacts: [...step.artifacts],
+      blockedTargets: [...(step.blockedTargets ?? [])],
+      failureType: step.failureType,
+    }));
   return {
     inputKind: state.inputKind,
     userMessage: state.userMessage,
@@ -1075,11 +1307,24 @@ function buildTaskValidationContext(state: LoopState): TaskValidationContext {
     approvalRequired: state.approvalRequired,
     approvalState: state.approvalState,
     goal: state.goal,
-    taskStatus: state.taskStatus,
     approach: state.approach,
-    latestSuccessfulStepSummary: state.progressLedger.lastSuccessfulStepSummary,
-    latestStepNewFacts: state.progressLedger.lastStepFacts,
-    recentStepDigests: buildRecentStepDigests(state),
+    previousTaskProgress: state.taskProgress,
+    recentSuccessfulSteps,
+    recentFailedSteps,
+    latestSuccessfulStep: latestSuccessfulStep
+      ? {
+        summary: latestSuccessfulStep.summary,
+        evidenceItems: [...(latestSuccessfulStep.evidenceItems ?? [])],
+        taskFacts: [...latestSuccessfulStep.newFacts],
+        artifacts: [...latestSuccessfulStep.artifacts],
+      }
+      : {
+        summary: "",
+        evidenceItems: [],
+        taskFacts: [],
+        artifacts: [],
+      },
+    recentSuccessfulSummaries: buildRecentSuccessfulSummaries(state),
   };
 }
 
@@ -1092,8 +1337,15 @@ function buildRecentStepDigests(state: LoopState): string[] {
     });
 }
 
-function mergeUniqueValues(existing: string[], incoming: string[]): string[] {
-  return [...new Set([...existing, ...incoming])];
+function findLatestSuccessfulStep(state: LoopState): LoopState["completedSteps"][number] | undefined {
+  return [...state.completedSteps].reverse().find((step) => step.outcome === "success");
+}
+
+function buildRecentSuccessfulSummaries(state: LoopState): string[] {
+  return state.completedSteps
+    .filter((step) => step.outcome === "success" && step.summary.trim().length > 0)
+    .slice(-3)
+    .map((step) => step.summary.trim());
 }
 
 function applyPreparedAttachmentStateUpdates(
@@ -1646,11 +1898,12 @@ function buildLoopResult(
   },
 ): AgentLoopResult {
   const content = input.content ?? input.completion?.summary ?? state.finalOutput;
-  const type = shouldForceApprovalFeedback(state)
+  const responseKind = shouldForceApprovalFeedback(state)
     ? "feedback"
     : input.completion?.response_kind ?? state.preferredResponseKind ?? "reply";
   const result: AgentLoopResult = {
-    type,
+    type: responseKind,
+    runClass: state.runClass,
     content,
     status: input.status,
     totalIterations: input.totalIterations,
@@ -1658,55 +1911,185 @@ function buildLoopResult(
     runPath: state.runPath,
   };
 
+  if (state.runClass === "task") {
+    result.taskSummary = buildTaskSummaryRecord(state, {
+      assistantResponse: content,
+      status: input.status,
+      responseKind,
+      completion: input.completion,
+    });
+  }
+
   const artifacts = collectAgentArtifacts(state.runId, state.runPath, input.dataDir, state.completedSteps);
   if (artifacts.length > 0) {
     result.artifacts = artifacts;
   }
 
-  if (type === "feedback") {
-    result.openFeedback = buildOpenFeedbackResult(state, input.completion, content);
-  }
-
-  if (state.matchedFeedback) {
-    result.resolvedFeedbackId = state.matchedFeedback.feedbackId;
-  }
-
   return result;
+}
+
+function buildTaskSummaryRecord(
+  state: LoopState,
+  input: {
+    assistantResponse: string;
+    status: AgentLoopResult["status"];
+    responseKind: AgentLoopResult["type"];
+    completion?: CompletionDirective;
+  },
+): AgentLoopResult["taskSummary"] {
+  const assistantResponse = input.assistantResponse.trim();
+  const progressSummary = state.taskProgress.progressSummary.trim() || undefined;
+  const taskStatus = deriveTaskSummaryTaskStatus(state, input.responseKind);
+  const userInputNeeded = deriveTaskSummaryUserInputNeeded(state, input.responseKind, assistantResponse);
+  const summary = deriveTaskSummarySummary(progressSummary, assistantResponse);
+  const completedMilestones = normalizeTaskSummaryList(state.taskProgress.completedMilestones);
+  const openWork = normalizeTaskSummaryList(state.taskProgress.openWork);
+  const blockers = normalizeTaskSummaryList(state.taskProgress.blockers);
+  const keyFacts = normalizeTaskSummaryList(state.taskProgress.keyFacts);
+  const evidence = normalizeTaskSummaryList(state.taskProgress.evidence);
+  const entityHints = normalizeTaskSummaryList(input.completion?.entity_hints);
+  const goalDoneWhen = normalizeTaskSummaryList(state.goal.done_when);
+  const goalRequiredEvidence = normalizeTaskSummaryList(state.goal.required_evidence);
+  const nextAction = deriveTaskSummaryNextAction(userInputNeeded, openWork, blockers, summary);
+  const stopReason = deriveTaskSummaryStopReason(taskStatus, input.status);
+
+  return {
+    runId: state.runId,
+    runPath: state.runPath,
+    status: input.status,
+    taskStatus,
+    objective: state.goal.objective.trim() || undefined,
+    summary,
+    progressSummary,
+    currentFocus: state.taskProgress.currentFocus?.trim() || undefined,
+    completedMilestones,
+    openWork,
+    blockers,
+    keyFacts,
+    evidence,
+    userInputNeeded,
+    workMode: state.workMode,
+    userMessage: state.userMessage.trim() || undefined,
+    assistantResponse: assistantResponse || undefined,
+    approach: state.approach.trim() || undefined,
+    sessionContextSummary: state.sessionContextSummary.trim() || undefined,
+    dependentTaskRunId: state.dependentTaskSummary?.runId,
+    assistantResponseKind: input.responseKind === "none" ? undefined : input.responseKind,
+    feedbackKind: input.completion?.feedback_kind,
+    feedbackLabel: input.completion?.feedback_label,
+    actionType: input.completion?.action_type,
+    entityHints,
+    goalDoneWhen,
+    goalRequiredEvidence,
+    nextAction,
+    stopReason,
+    attachmentNames: collectTaskAttachmentNames(state),
+  };
+}
+
+function deriveTaskSummarySummary(progressSummary: string | undefined, assistantResponse: string): string {
+  const summary = progressSummary ?? assistantResponse;
+  return summary.trim();
+}
+
+function deriveTaskSummaryTaskStatus(
+  state: LoopState,
+  responseKind: AgentLoopResult["type"],
+): AgentTaskSummaryRecord["taskStatus"] {
+  if (responseKind === "feedback") {
+    return state.taskProgress.status === "done" ? "done" : "needs_user_input";
+  }
+  return state.taskProgress.status;
+}
+
+function deriveTaskSummaryUserInputNeeded(
+  state: LoopState,
+  responseKind: AgentLoopResult["type"],
+  assistantResponse: string,
+): string | undefined {
+  const current = state.taskProgress.userInputNeeded?.trim();
+  if (current) {
+    return current;
+  }
+  if (responseKind !== "feedback") {
+    return undefined;
+  }
+  return assistantResponse.length > 0 ? assistantResponse : undefined;
+}
+
+function deriveTaskSummaryNextAction(
+  userInputNeeded: string | undefined,
+  openWork: string[],
+  blockers: string[],
+  summary: string,
+): string | undefined {
+  if (userInputNeeded?.trim()) {
+    return userInputNeeded.trim();
+  }
+  if (openWork[0]) {
+    return openWork[0];
+  }
+  if (blockers[0]) {
+    return blockers[0];
+  }
+  return summary.trim() || undefined;
+}
+
+function deriveTaskSummaryStopReason(
+  taskStatus: AgentTaskSummaryRecord["taskStatus"],
+  status: AgentLoopResult["status"],
+): AgentTaskSummaryRecord["stopReason"] {
+  if (taskStatus === "needs_user_input") {
+    return "needs_user_input";
+  }
+  if (taskStatus === "blocked") {
+    return "blocked";
+  }
+  if (status === "stuck") {
+    return "stuck";
+  }
+  if (status === "failed") {
+    return "failed";
+  }
+  return "completed";
+}
+
+function normalizeTaskSummaryList(values: string[] | undefined): string[] {
+  if (!values || values.length === 0) return [];
+
+  const seen = new Set<string>();
+  const normalized: string[] = [];
+  for (const value of values) {
+    const clean = value.replace(/\s+/g, " ").trim();
+    if (!clean || seen.has(clean)) continue;
+    seen.add(clean);
+    normalized.push(clean);
+  }
+  return normalized;
+}
+
+function collectTaskAttachmentNames(state: LoopState): string[] {
+  const names = new Set<string>();
+
+  for (const attachment of state.preparedAttachments ?? []) {
+    const displayName = attachment.displayName?.trim();
+    if (displayName) {
+      names.add(displayName);
+    }
+  }
+
+  for (const document of state.attachedDocuments ?? []) {
+    const displayName = document.displayName?.trim() || document.name?.trim();
+    if (displayName) {
+      names.add(displayName);
+    }
+  }
+
+  return [...names];
 }
 
 function shouldForceApprovalFeedback(state: LoopState): boolean {
   return state.inputKind === "system_event"
     && state.approvalRequired === true
     && state.approvalState === "pending";
-}
-
-function buildOpenFeedbackResult(
-  state: LoopState,
-  completion: CompletionDirective | undefined,
-  content: string,
-): NonNullable<AgentLoopResult["openFeedback"]> {
-  const fallbackLabel = truncateFeedbackLabel(
-    completion?.feedback_label
-      ?? state.matchedFeedback?.shortLabel
-      ?? content
-      ?? state.userMessage,
-  );
-  return {
-    kind: completion?.feedback_kind ?? state.matchedFeedback?.kind ?? "clarification",
-    shortLabel: fallbackLabel.length > 0 ? fallbackLabel : "follow_up",
-    actionType: completion?.action_type ?? state.matchedFeedback?.actionType ?? state.systemEventRequestedAction,
-    sourceEventId: state.systemEvent?.eventId ?? state.matchedFeedback?.sourceEventId,
-    entityHints: completion?.entity_hints ?? state.matchedFeedback?.entityHints ?? [],
-    payloadSummary: state.matchedFeedback?.payloadSummary
-      ?? (state.systemEvent ? truncateFeedbackLabel(state.userMessage, 200) : undefined),
-    ttlHours: state.feedbackTtlHours,
-  };
-}
-
-function truncateFeedbackLabel(value: string, maxLength = 80): string {
-  const compact = value.replace(/\s+/g, " ").trim();
-  if (compact.length <= maxLength) {
-    return compact;
-  }
-  return `${compact.slice(0, maxLength)}...`;
 }

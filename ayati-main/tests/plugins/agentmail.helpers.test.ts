@@ -60,6 +60,9 @@ describe("AgentMail helpers", () => {
       summary: "Incoming email from jane@example.com with subject Need help",
       intent: {
         kind: "task",
+        eventClass: "message_received",
+        trustTier: "external",
+        effectLevel: "observe",
         requestedAction: "review_incoming_message",
         createdBy: "external",
       },

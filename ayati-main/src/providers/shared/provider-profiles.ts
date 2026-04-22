@@ -223,6 +223,10 @@ function validateSchemaNode(
 ): boolean {
   if (!isPlainObject(value)) return true;
 
+  if (!hasRecognizedSchemaKeyword(value)) {
+    return false;
+  }
+
   if ("oneOf" in value && !options.allowOneOf) return false;
   if ("allOf" in value && !options.allowAllOf) return false;
   if ("not" in value && !options.allowNot) return false;
@@ -312,6 +316,36 @@ function validateSchemaNode(
 
 function isObjectSchema(value: Record<string, unknown>): boolean {
   return value["type"] === "object" || isPlainObject(value["properties"]);
+}
+
+function hasRecognizedSchemaKeyword(value: Record<string, unknown>): boolean {
+  const schemaKeywords = [
+    "type",
+    "enum",
+    "const",
+    "properties",
+    "items",
+    "anyOf",
+    "allOf",
+    "oneOf",
+    "not",
+    "additionalProperties",
+    "required",
+    "$defs",
+    "definitions",
+    "minimum",
+    "maximum",
+    "exclusiveMinimum",
+    "exclusiveMaximum",
+    "minItems",
+    "maxItems",
+    "minLength",
+    "maxLength",
+    "pattern",
+    "format",
+  ];
+
+  return schemaKeywords.some((keyword) => keyword in value);
 }
 
 function getObjectPropertyMap(value: unknown): Record<string, unknown> {

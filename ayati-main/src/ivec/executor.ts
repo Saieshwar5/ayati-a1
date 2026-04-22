@@ -1,3 +1,5 @@
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
 import type { LlmMessage, LlmToolSchema } from "../core/contracts/llm-protocol.js";
 import type {
   ExecutorDeps,
@@ -8,11 +10,20 @@ import type {
   ActToolCallRecord,
   VerifyOutput,
   TaskStatus,
+  TaskProgressState,
   PreparedAttachmentStateUpdate,
   StepPlanCall,
+  VerificationExecutionStatus,
 } from "./types.js";
-import { writeStepMarkdown, formatActMarkdown, formatVerifyMarkdown } from "./state-persistence.js";
-import { checkVerificationGates } from "./verification-gates.js";
+import {
+  writeStepMarkdown,
+  queueStepMarkdownWrite,
+  writeStepArtifactText,
+  formatActMarkdown,
+  formatVerifyMarkdown,
+} from "./state-persistence.js";
+import type { StepRecord } from "./run-state-manager.js";
+import { checkVerificationGates, deriveExecutionStatus } from "./verification-gates.js";
 import { formatToolResult, formatValidationError } from "./tool-helpers.js";
 import type { ManagedDocumentManifest, PreparedAttachmentSummary } from "../documents/types.js";
 
@@ -21,44 +32,93 @@ export async function executeStep(
   directive: StepDirective,
   stepNumber: number,
   runPath: string,
-): Promise<StepSummary> {
+): Promise<StepSummary & { stepRecord: StepRecord; fullStepText: string }> {
   const pad = String(stepNumber).padStart(3, "0");
 
-  const actOut = await act(deps, directive);
+  const actOut = await act(deps, directive, stepNumber, runPath);
   const actMarkdownPath = `steps/${pad}-act.md`;
   const verifyMarkdownPath = `steps/${pad}-verify.md`;
+  const actMarkdownWrite = queueStepMarkdownWrite(runPath, actMarkdownPath, formatActMarkdown(actOut));
 
-  writeStepMarkdown(runPath, actMarkdownPath, formatActMarkdown(actOut));
-
-  const verifyOut = await verify(deps, actOut, directive.success_criteria, pad, runPath);
+  let verifyOut: VerifyOutput;
+  try {
+    verifyOut = await verify(deps, actOut, directive.success_criteria, runPath);
+  } finally {
+    await actMarkdownWrite;
+  }
   writeStepMarkdown(runPath, verifyMarkdownPath, formatVerifyMarkdown(verifyOut, actOut.toolCalls));
+  const fullStepText = [
+    `Step ${stepNumber}`,
+    formatActMarkdown(actOut),
+    formatVerifyMarkdown(verifyOut, actOut.toolCalls),
+  ].join("\n\n");
 
-  const artifacts = [...new Set([actMarkdownPath, verifyMarkdownPath, ...verifyOut.artifacts])];
+  const artifacts = [
+    ...new Set([actMarkdownPath, verifyMarkdownPath, ...collectActArtifacts(actOut.toolCalls), ...verifyOut.artifacts]),
+  ];
   const newFacts = buildStepNewFacts(actOut.toolCalls, verifyOut.newFacts);
   const stateUpdates = buildStepStateUpdates(actOut.toolCalls);
 
   const classification = verifyOut.passed
     ? { failureType: undefined, blockedTargets: undefined }
-    : classifyFailure(actOut.toolCalls, verifyOut.evidence);
+    : classifyFailure(actOut.toolCalls, verifyOut.evidenceSummary);
   const toolSuccessCount = actOut.toolCalls.filter((call) => !call.error).length;
   const toolFailureCount = actOut.toolCalls.length - toolSuccessCount;
+  const executionContract = getDirectiveExecutionContract(directive);
 
   return {
     step: stepNumber,
-    executionContract: getDirectiveExecutionContract(directive),
+    executionContract,
     outcome: verifyOut.passed ? "success" : "failed",
-    summary: actOut.finalText.slice(0, 500),
+    summary: verifyOut.summary,
     newFacts,
     artifacts,
     toolSuccessCount,
     toolFailureCount,
-    taskStatusAfter: verifyOut.taskStatusAfter,
-    taskReason: verifyOut.taskReason,
-    taskEvidence: verifyOut.taskEvidence,
+    verificationMethod: verifyOut.method,
+    executionStatus: verifyOut.executionStatus,
+    validationStatus: verifyOut.validationStatus,
+    evidenceSummary: verifyOut.evidenceSummary,
+    evidenceItems: verifyOut.evidenceItems,
+    usedRawArtifacts: verifyOut.usedRawArtifacts,
+    taskProgress: verifyOut.taskProgress,
     stoppedEarlyReason: actOut.stoppedEarlyReason,
     failureType: classification.failureType,
     blockedTargets: classification.blockedTargets,
     stateUpdates,
+    fullStepText,
+    stepRecord: {
+      step: stepNumber,
+      executionContract,
+      outcome: verifyOut.passed ? "success" : "failed",
+      summary: verifyOut.summary,
+      newFacts,
+      artifacts,
+      toolSuccessCount,
+      toolFailureCount,
+      verificationMethod: verifyOut.method,
+      executionStatus: verifyOut.executionStatus,
+      validationStatus: verifyOut.validationStatus,
+      evidenceSummary: verifyOut.evidenceSummary,
+      evidenceItems: verifyOut.evidenceItems,
+      stoppedEarlyReason: actOut.stoppedEarlyReason,
+      failureType: classification.failureType,
+      blockedTargets: classification.blockedTargets ?? [],
+      act: {
+        toolCalls: actOut.toolCalls.map((call) => ({
+          tool: call.tool,
+          input: call.input,
+          output: call.output,
+          outputStorage: call.outputStorage,
+          rawOutputPath: call.rawOutputPath,
+          rawOutputChars: call.rawOutputChars,
+          outputTruncated: call.outputTruncated,
+          error: call.error,
+          meta: call.meta,
+        })),
+        finalText: actOut.finalText,
+      },
+    },
   };
 }
 
@@ -67,20 +127,41 @@ export async function executeStep(
 async function act(
   deps: ExecutorDeps,
   directive: StepDirective,
+  stepNumber: number,
+  runPath: string,
 ): Promise<ActOutput> {
   const explicitToolPlan = Array.isArray(directive.tool_plan) ? directive.tool_plan : [];
   if (explicitToolPlan.length === 0) {
-    return actWithLegacyAutonomy(deps, directive);
+    return actWithLegacyAutonomy(deps, directive, stepNumber, runPath);
   }
 
-  const plannedCalls = explicitToolPlan.slice(0, Math.max(1, deps.config.maxTotalToolCallsPerStep));
+  if (directive.execution_mode === "dependent" && explicitToolPlan.length > 1) {
+    return finalizeActOutput(
+      deps,
+      directive,
+      [],
+      "planned_call_failed",
+      "Dependent steps may contain exactly one tool call.",
+    );
+  }
+
+  const maxTotalCalls = directive.execution_mode === "dependent"
+    ? 1
+    : Math.max(1, deps.config.maxTotalToolCallsPerStep);
+  const plannedCalls = explicitToolPlan.slice(0, maxTotalCalls);
   const toolCalls: ActToolCallRecord[] = [];
   if (plannedCalls.length === 0) {
     return finalizeActOutput(deps, directive, toolCalls, "no_valid_tool_calls");
   }
 
-  if (explicitToolPlan.length > deps.config.maxTotalToolCallsPerStep) {
-    return finalizeActOutput(deps, directive, toolCalls, "max_total_tool_calls_reached");
+  if (explicitToolPlan.length > maxTotalCalls) {
+    return finalizeActOutput(
+      deps,
+      directive,
+      [],
+      "max_total_tool_calls_reached",
+      `Tool plan exceeded the per-step execution limit of ${maxTotalCalls} call(s).`,
+    );
   }
 
   const maxCallsPerBatch = directive.execution_mode === "independent" ? 2 : 1;
@@ -88,7 +169,7 @@ async function act(
   for (let index = 0; index < plannedCalls.length; index += maxCallsPerBatch) {
     const batch = plannedCalls.slice(index, index + maxCallsPerBatch);
     const batchResults = await Promise.all(
-      batch.map((call, batchIndex) => executePlannedCall(deps, call, index + batchIndex + 1)),
+      batch.map((call, batchIndex) => executePlannedCall(deps, call, stepNumber, runPath, index + batchIndex + 1)),
     );
     toolCalls.push(...batchResults);
 
@@ -105,10 +186,11 @@ function finalizeActOutput(
   directive: StepDirective,
   toolCalls: ActToolCallRecord[],
   stoppedEarlyReason?: NonNullable<ActOutput["stoppedEarlyReason"]>,
+  fallbackText?: string,
 ): ActOutput {
   const finalText = toolCalls.length > 0
     ? buildFallbackActSummary(directive, toolCalls, stoppedEarlyReason)
-    : "";
+    : (fallbackText ?? buildNoToolActSummary(directive, stoppedEarlyReason));
 
   return {
     toolCalls,
@@ -117,17 +199,90 @@ function finalizeActOutput(
   };
 }
 
+function buildNoToolActSummary(
+  directive: StepDirective,
+  stoppedEarlyReason?: NonNullable<ActOutput["stoppedEarlyReason"]>,
+): string {
+  const executionContract = getDirectiveExecutionContract(directive);
+  if (!stoppedEarlyReason) {
+    return `Execution contract "${executionContract}" produced no tool calls.`;
+  }
+  return `Execution contract "${executionContract}" stopped before running tools due to ${stoppedEarlyReason}.`;
+}
+
+async function normalizeToolCallRecord(
+  deps: ExecutorDeps,
+  record: ActToolCallRecord,
+  runPath: string,
+  stepNumber: number,
+  stepId: number,
+): Promise<ActToolCallRecord> {
+  const normalizedOutput = typeof record.output === "string" ? record.output : String(record.output ?? "");
+  const rawOutputChars = normalizedOutput.length;
+  if (rawOutputChars <= deps.config.maxInlineActOutputChars) {
+    return {
+      ...record,
+      output: normalizedOutput,
+      outputStorage: "inline",
+      rawOutputChars,
+      outputTruncated: false,
+    };
+  }
+
+  const rawOutputPath = buildRawOutputArtifactPath(stepNumber, stepId);
+  await writeStepArtifactText(runPath, rawOutputPath, normalizedOutput);
+
+  return {
+    ...record,
+    output: buildOutputPreview(normalizedOutput, deps.config.maxInlineActOutputChars),
+    outputStorage: "raw_file",
+    rawOutputPath,
+    rawOutputChars,
+    outputTruncated: true,
+  };
+}
+
+function buildRawOutputArtifactPath(stepNumber: number, stepId: number): string {
+  const pad = String(stepNumber).padStart(3, "0");
+  const callPad = String(stepId).padStart(2, "0");
+  return `steps/${pad}-call-${callPad}-raw.txt`;
+}
+
+function buildOutputPreview(output: string, maxChars: number): string {
+  if (output.length <= maxChars) {
+    return output;
+  }
+
+  const marker = "\n...[truncated]...\n";
+  const available = Math.max(0, maxChars - marker.length);
+  const headChars = Math.max(1, Math.floor(available * 0.7));
+  const tailChars = Math.max(1, available - headChars);
+  return `${output.slice(0, headChars)}${marker}${output.slice(output.length - tailChars)}`;
+}
+
+function collectActArtifacts(toolCalls: ActToolCallRecord[]): string[] {
+  return toolCalls
+    .map((call) => call.rawOutputPath)
+    .filter((path): path is string => typeof path === "string" && path.trim().length > 0);
+}
+
 async function executeSingleTool(
   deps: ExecutorDeps,
   toolName: string,
   input: unknown,
+  stepNumber: number,
   stepId: number,
 ): Promise<ActToolCallRecord> {
   if (!deps.toolExecutor) {
     return { tool: toolName, input, output: "", error: `No tool executor available` };
   }
 
-  const validation = deps.toolExecutor.validate(toolName, input);
+  const validation = deps.toolExecutor.validate(toolName, input, {
+    clientId: deps.clientId,
+    runId: deps.runHandle.runId,
+    sessionId: deps.runHandle.sessionId,
+    stepNumber,
+  });
   if (!validation.valid) {
     const schema = "schema" in validation ? validation.schema : undefined;
     return {
@@ -142,6 +297,7 @@ async function executeSingleTool(
     clientId: deps.clientId,
     runId: deps.runHandle.runId,
     sessionId: deps.runHandle.sessionId,
+    stepNumber,
   });
   if (!result.ok) {
     return { tool: toolName, input, output: result.output ?? "", error: result.error ?? "Tool execution failed", meta: result.meta };
@@ -153,20 +309,17 @@ async function executeSingleTool(
 async function executePlannedCall(
   deps: ExecutorDeps,
   plannedCall: StepPlanCall,
+  stepNumber: number,
+  runPath: string,
   stepId: number,
 ): Promise<ActToolCallRecord> {
-  if (plannedCall.origin === "external_skill" && plannedCall.source_refs.length === 0) {
-    const record = {
-      tool: plannedCall.tool,
-      input: plannedCall.input,
-      output: "",
-      error: `External skill call '${plannedCall.tool}' is missing source_refs from a prior skills context_search.`,
-    };
-    recordPlannedToolResult(deps, plannedCall, record, stepId);
-    return record;
-  }
-
-  const firstAttempt = await executeSingleTool(deps, plannedCall.tool, plannedCall.input, stepId);
+  const firstAttempt = await normalizeToolCallRecord(
+    deps,
+    await executeSingleTool(deps, plannedCall.tool, plannedCall.input, stepNumber, stepId),
+    runPath,
+    stepNumber,
+    stepId,
+  );
   recordPlannedToolResult(deps, plannedCall, firstAttempt, stepId);
   if (!firstAttempt.error) {
     return firstAttempt;
@@ -179,7 +332,13 @@ async function executePlannedCall(
     return firstAttempt;
   }
 
-  const retryAttempt = await executeSingleTool(deps, plannedCall.tool, plannedCall.input, stepId);
+  const retryAttempt = await normalizeToolCallRecord(
+    deps,
+    await executeSingleTool(deps, plannedCall.tool, plannedCall.input, stepNumber, stepId),
+    runPath,
+    stepNumber,
+    stepId,
+  );
   recordPlannedToolResult(deps, plannedCall, retryAttempt, stepId, "retry-1");
   if (!retryAttempt.error) {
     return retryAttempt;
@@ -231,27 +390,27 @@ async function verify(
   deps: ExecutorDeps,
   actOut: ActOutput,
   successCriteria: string,
-  pad: string,
   runPath: string,
 ): Promise<VerifyOutput> {
-  const gateResult = checkVerificationGates(actOut, successCriteria);
-  if (gateResult && !gateResult.passed) {
-    return gateResult;
-  }
-
-  const stepResult = gateResult ?? await verifyStepWithLlm(deps, actOut, successCriteria);
-  if (!stepResult.passed) {
-    return stepResult;
-  }
-
+  const executionStatus = deriveExecutionStatus(actOut);
+  const gateResult = checkVerificationGates(actOut);
+  const stepResult = gateResult
+    ?? await verifyStepWithLlm(deps, actOut, successCriteria, executionStatus, runPath);
   const mergedFacts = buildStepNewFacts(actOut.toolCalls, stepResult.newFacts);
-  const taskResult = await verifyTaskProgress(deps, actOut.finalText.slice(0, 500), mergedFacts);
+  const taskResult = await updateTaskProgress(
+    deps,
+    {
+      outcome: stepResult.passed ? "success" : "failed",
+      summary: stepResult.summary,
+      evidenceItems: stepResult.evidenceItems,
+      taskFacts: mergedFacts,
+      artifacts: stepResult.artifacts,
+    },
+  );
 
   return {
     ...stepResult,
-    taskStatusAfter: taskResult.taskStatusAfter,
-    taskReason: taskResult.taskReason,
-    taskEvidence: taskResult.taskEvidence,
+    taskProgress: taskResult,
   };
 }
 
@@ -476,6 +635,8 @@ function getDirectiveExecutionContract(directive: StepDirective): string {
 async function actWithLegacyAutonomy(
   deps: ExecutorDeps,
   directive: StepDirective,
+  stepNumber: number,
+  runPath: string,
 ): Promise<ActOutput> {
   const toolSchemas = buildToolSchemas(deps);
   const availableToolNames = new Set(toolSchemas.map((schema) => schema.name));
@@ -486,7 +647,9 @@ async function actWithLegacyAutonomy(
   const toolFailureCounts = new Map<string, number>();
   const blockedTools = new Set<string>();
   const maxCallsPerTurn = directive.execution_mode === "independent" ? 2 : 1;
-  const maxTotalCalls = Math.max(1, deps.config.maxTotalToolCallsPerStep);
+  const maxTotalCalls = directive.execution_mode === "dependent"
+    ? 1
+    : Math.max(1, deps.config.maxTotalToolCallsPerStep);
   let executedCalls = 0;
 
   const prompt = buildActPrompt(directive, toolSchemas.map((tool) => tool.name));
@@ -539,9 +702,16 @@ async function actWithLegacyAutonomy(
 
       const callSignature = buildCallSignature(call.name, call.input);
       const blockedReason = getBlockedCallReason(call.name, call.input, failedCallSignatures, blockedTools);
-      const record = blockedReason
+      const rawRecord = blockedReason
         ? { tool: call.name, input: call.input, output: "", error: blockedReason }
-        : await executeSingleTool(deps, call.name, call.input, i + 1);
+        : await executeSingleTool(deps, call.name, call.input, stepNumber, i + 1);
+      const record = await normalizeToolCallRecord(
+        deps,
+        rawRecord,
+        runPath,
+        stepNumber,
+        i + 1,
+      );
       toolCalls.push(record);
       executedCalls++;
 
@@ -689,24 +859,31 @@ async function verifyStepWithLlm(
   deps: ExecutorDeps,
   actOut: ActOutput,
   successCriteria: string,
+  executionStatus: VerificationExecutionStatus,
+  runPath: string,
 ): Promise<VerifyOutput> {
-  const actSummary = JSON.stringify({
-    toolCalls: actOut.toolCalls.map((call) => ({
-      tool: call.tool,
-      input: summarizeForPrompt(call.input),
-      output: summarizeForPrompt(call.output),
-      error: call.error ?? "",
-    })),
-    finalText: actOut.finalText.slice(0, 500),
-  });
+  const verificationPayload = await buildVerificationPayload(
+    actOut,
+    runPath,
+    deps.config.maxVerifyArtifactChars,
+  );
+  const actSummary = JSON.stringify(verificationPayload);
 
   const prompt = `Verify whether this step succeeded.
 
+Execution status: ${executionStatus}
 Action output: ${actSummary}
 Success criteria: ${successCriteria}
 
 Respond with JSON:
-{ "passed": true|false, "evidence": "...", "newFacts": ["..."], "artifacts": ["..."] }`;
+{
+  "passed": true|false,
+  "summary": "...",
+  "evidenceSummary": "...",
+  "evidenceItems": ["..."],
+  "newFacts": ["..."],
+  "artifacts": ["..."]
+}`;
 
   const turn = await deps.provider.generateTurn({
     messages: [{ role: "user", content: prompt }],
@@ -715,39 +892,77 @@ Respond with JSON:
   const text = turn.type === "assistant" ? turn.content : "";
   try {
     const parsed = parseJSON<Record<string, unknown>>(text);
+    const artifacts = Array.isArray(parsed["artifacts"]) ? (parsed["artifacts"] as unknown[]).map(String) : [];
+    const evidenceSummary = String(parsed["evidenceSummary"] ?? "");
+    const summary = String(parsed["summary"] ?? "").trim()
+      || evidenceSummary.trim()
+      || actOut.finalText.slice(0, 500)
+      || (parsed["passed"] === true ? "Step passed verification." : "Step failed verification.");
     return {
       passed: parsed["passed"] === true,
       method: "llm",
-      evidence: String(parsed["evidence"] ?? ""),
+      executionStatus,
+      validationStatus: parsed["passed"] === true ? "passed" : "failed",
+      summary,
+      evidenceSummary,
+      evidenceItems: Array.isArray(parsed["evidenceItems"])
+        ? (parsed["evidenceItems"] as unknown[]).map(String)
+        : [],
       newFacts: Array.isArray(parsed["newFacts"]) ? (parsed["newFacts"] as unknown[]).map(String) : [],
-      artifacts: Array.isArray(parsed["artifacts"]) ? (parsed["artifacts"] as unknown[]).map(String) : [],
+      artifacts: [...new Set([...artifacts, ...verificationPayload.usedRawArtifacts])],
+      usedRawArtifacts: verificationPayload.usedRawArtifacts,
     };
   } catch {
-    return { passed: false, method: "llm", evidence: `Failed to parse verify response: ${text}`, newFacts: [], artifacts: [] };
+    return {
+      passed: false,
+      method: "llm",
+      executionStatus,
+      validationStatus: "failed",
+      summary: "Verification failed because the validator response could not be parsed.",
+      evidenceSummary: `Failed to parse verify response: ${text}`,
+      evidenceItems: [],
+      newFacts: [],
+      artifacts: [...verificationPayload.usedRawArtifacts],
+      usedRawArtifacts: verificationPayload.usedRawArtifacts,
+    };
   }
 }
 
-async function verifyTaskProgress(
+async function updateTaskProgress(
   deps: ExecutorDeps,
-  latestSuccessfulStepSummary: string,
-  latestStepNewFacts: string[],
-): Promise<Pick<VerifyOutput, "taskStatusAfter" | "taskReason" | "taskEvidence">> {
-  const effectiveSummary = latestSuccessfulStepSummary.trim().length > 0
-    ? latestSuccessfulStepSummary
-    : deps.taskContext.latestSuccessfulStepSummary;
-  const effectiveFacts = latestStepNewFacts.length > 0
-    ? latestStepNewFacts
-    : deps.taskContext.latestStepNewFacts;
-  const recentDigests = deps.taskContext.recentStepDigests.length > 0
-    ? deps.taskContext.recentStepDigests.map((digest) => `- ${digest}`).join("\n")
+  latestStep: {
+    outcome: "success" | "failed";
+    summary: string;
+    evidenceItems: string[];
+    taskFacts: string[];
+    artifacts: string[];
+  },
+): Promise<TaskProgressState> {
+  const effectiveSummary = latestStep.summary.trim().length > 0
+    ? latestStep.summary
+    : deps.taskContext.latestSuccessfulStep.summary;
+  const effectiveFacts = latestStep.taskFacts.length > 0
+    ? latestStep.taskFacts
+    : deps.taskContext.latestSuccessfulStep.taskFacts;
+  const effectiveEvidenceItems = latestStep.evidenceItems.length > 0
+    ? latestStep.evidenceItems
+    : deps.taskContext.latestSuccessfulStep.evidenceItems;
+  const latestEvidence = effectiveEvidenceItems.length > 0
+    ? effectiveEvidenceItems.map((item) => `- ${item}`).join("\n")
     : "- none";
   const latestFacts = effectiveFacts.length > 0
     ? effectiveFacts.map((fact) => `- ${fact}`).join("\n")
     : "- none";
+  const latestArtifacts = latestStep.artifacts.length > 0
+    ? latestStep.artifacts.map((artifact) => `- ${artifact}`).join("\n")
+    : "- none";
+  const previousTaskProgress = formatTaskProgressForPrompt(deps.taskContext.previousTaskProgress);
+  const recentSuccessfulSteps = formatTaskProgressDigests(deps.taskContext.recentSuccessfulSteps, false);
+  const recentFailedSteps = formatTaskProgressDigests(deps.taskContext.recentFailedSteps, true);
 
   const inputBlock = deps.taskContext.inputKind === "system_event" && deps.taskContext.systemEvent
     ? [
-      "Assess overall task progress after the latest successful step.",
+      "Assess overall task progress after the latest completed step.",
       "",
       "Input kind: system_event",
       `Origin source: ${deps.taskContext.originSource ?? deps.taskContext.systemEvent.source}`,
@@ -765,7 +980,7 @@ async function verifyTaskProgress(
         payload: deps.taskContext.systemEvent.payload,
       })}`,
     ].join("\n")
-    : `Assess overall task progress after the latest successful step.
+    : `Assess overall task progress after the latest completed step.
 
 User message: ${deps.taskContext.userMessage}`;
 
@@ -776,23 +991,36 @@ Goal contract:
 - required_evidence: ${formatPromptList(deps.taskContext.goal.required_evidence)}
 - ask_user_when: ${formatPromptList(deps.taskContext.goal.ask_user_when)}
 - stop_when_no_progress: ${formatPromptList(deps.taskContext.goal.stop_when_no_progress)}
-Current taskStatus: ${deps.taskContext.taskStatus}
+Current task progress status: ${deps.taskContext.previousTaskProgress.status}
 Current approach: ${deps.taskContext.approach || "(none)"}
-Latest successful step summary: ${effectiveSummary || "(none)"}
-Latest step newFacts:
+Previous task progress:
+${previousTaskProgress}
+Latest completed step outcome: ${latestStep.outcome}
+Latest completed step summary: ${effectiveSummary || "(none)"}
+Latest step evidence:
+${latestEvidence}
+Latest step facts:
 ${latestFacts}
-Recent step digests:
-${recentDigests}
+Latest step artifacts:
+${latestArtifacts}
+Recent successful steps:
+${recentSuccessfulSteps}
+Recent failed steps:
+${recentFailedSteps}
 
-Decide the task status using only these values.
-- "done" means the goal is satisfied and the user can be answered now.
-- "likely_done" means the task is almost complete and the controller should prefer responding.
-- "not_done" means more action is clearly needed.
-- "blocked" means the task cannot proceed usefully.
-- "needs_user_input" means the user must answer before continuing.
+Update the task progress using only these values.
+- Keep the output compact, cumulative, and task-facing.
+- This stage summarizes overall task state only; do not plan the next step.
+- completedMilestones should capture stable achieved outcomes, max 6.
+- openWork should capture the most important remaining work, max 5.
+- blockers should capture active obstacles only, max 4.
+- keyFacts should contain semantic facts only, max 8.
+- evidence should contain the strongest supporting evidence only, max 6.
+- currentFocus should state the main next area of work in one short sentence.
+- If status is "needs_user_input", set userInputNeeded.
 
 Respond with JSON:
-{ "taskStatusAfter": "not_done" | "likely_done" | "done" | "blocked" | "needs_user_input", "taskReason": "...", "taskEvidence": ["..."] }`;
+{ "status": "not_done" | "likely_done" | "done" | "blocked" | "needs_user_input", "progressSummary": "...", "currentFocus": "...", "completedMilestones": ["..."], "openWork": ["..."], "blockers": ["..."], "keyFacts": ["..."], "evidence": ["..."], "userInputNeeded": "optional" }`;
 
   const turn = await deps.provider.generateTurn({
     messages: [{ role: "user", content: prompt }],
@@ -801,18 +1029,105 @@ Respond with JSON:
   const text = turn.type === "assistant" ? turn.content : "";
   try {
     const parsed = parseJSON<Record<string, unknown>>(text);
-    return {
-      taskStatusAfter: normalizeTaskStatus(parsed["taskStatusAfter"]),
-      taskReason: String(parsed["taskReason"] ?? ""),
-      taskEvidence: Array.isArray(parsed["taskEvidence"])
-        ? (parsed["taskEvidence"] as unknown[]).map(String)
-        : [],
-    };
+    return normalizeTaskProgressState(parsed, deps.taskContext.previousTaskProgress, {
+      summary: effectiveSummary,
+      evidenceItems: effectiveEvidenceItems,
+      taskFacts: effectiveFacts,
+    });
   } catch {
     return {
-      taskStatusAfter: deps.taskContext.taskStatus,
-      taskReason: `Failed to parse task verification response: ${text}`,
-      taskEvidence: [],
+      ...deps.taskContext.previousTaskProgress,
+      status: deps.taskContext.previousTaskProgress.status,
+      progressSummary: deps.taskContext.previousTaskProgress.progressSummary.trim().length > 0
+        ? deps.taskContext.previousTaskProgress.progressSummary
+        : `Failed to parse task progress response: ${text}`,
+      currentFocus: deps.taskContext.previousTaskProgress.currentFocus,
+      completedMilestones: deps.taskContext.previousTaskProgress.completedMilestones,
+      openWork: deps.taskContext.previousTaskProgress.openWork,
+      blockers: deps.taskContext.previousTaskProgress.blockers,
+      keyFacts: deps.taskContext.previousTaskProgress.keyFacts,
+      evidence: deps.taskContext.previousTaskProgress.evidence,
+      userInputNeeded: deps.taskContext.previousTaskProgress.userInputNeeded,
+    };
+  }
+}
+
+async function buildVerificationPayload(
+  actOut: ActOutput,
+  runPath: string,
+  maxVerifyArtifactChars: number,
+): Promise<{
+  toolCalls: Array<Record<string, unknown>>;
+  finalText: string;
+  usedRawArtifacts: string[];
+}> {
+  const views = await Promise.all(actOut.toolCalls.map(async (call) => {
+    const verificationView = await buildVerificationView(call, runPath, maxVerifyArtifactChars);
+    return {
+      verificationView,
+      callPayload: {
+      tool: call.tool,
+      input: summarizeForPrompt(call.input),
+      output: verificationView.output,
+      outputSource: verificationView.outputSource,
+      rawOutputPath: verificationView.rawOutputPath,
+      rawOutputChars: call.rawOutputChars ?? 0,
+      outputTruncated: verificationView.outputTruncated,
+      error: call.error ?? "",
+      },
+    };
+  }));
+  const usedRawArtifacts = views
+    .map(({ verificationView }) => verificationView.usedRawArtifact ? verificationView.rawOutputPath : undefined)
+    .filter((path): path is string => typeof path === "string" && path.length > 0);
+
+  return {
+    toolCalls: views.map(({ callPayload }) => callPayload),
+    finalText: actOut.finalText.slice(0, 500),
+    usedRawArtifacts,
+  };
+}
+
+async function buildVerificationView(
+  call: ActToolCallRecord,
+  runPath: string,
+  maxVerifyArtifactChars: number,
+): Promise<{
+  output: string;
+  outputSource: "inline" | "raw_file";
+  rawOutputPath?: string;
+  outputTruncated: boolean;
+  usedRawArtifact: boolean;
+}> {
+  if (call.outputStorage !== "raw_file" || !call.rawOutputPath) {
+    return {
+      output: call.output,
+      outputSource: "inline",
+      rawOutputPath: call.rawOutputPath,
+      outputTruncated: call.outputTruncated === true,
+      usedRawArtifact: false,
+    };
+  }
+
+  try {
+    const rawOutput = await readFile(join(runPath, call.rawOutputPath), "utf-8");
+    return {
+      output: rawOutput.length <= maxVerifyArtifactChars
+        ? rawOutput
+        : buildOutputPreview(rawOutput, maxVerifyArtifactChars),
+      outputSource: "raw_file",
+      rawOutputPath: call.rawOutputPath,
+      outputTruncated: rawOutput.length > maxVerifyArtifactChars,
+      usedRawArtifact: true,
+    };
+  } catch (error) {
+    const fallbackError = error instanceof Error ? error.message : String(error);
+    return {
+      output: `${call.output}\n[raw output unavailable: ${fallbackError}]`.trim(),
+      outputSource: "inline",
+      rawOutputPath: call.rawOutputPath,
+      outputTruncated: true,
+      usedRawArtifact: false,
     };
   }
 }
@@ -827,6 +1142,102 @@ function normalizeTaskStatus(value: unknown): TaskStatus {
     default:
       return "not_done";
   }
+}
+
+function normalizeTaskProgressState(
+  parsed: Record<string, unknown>,
+  previous: TaskProgressState,
+  latestSuccessfulStep: {
+    summary: string;
+    evidenceItems: string[];
+    taskFacts: string[];
+  },
+): TaskProgressState {
+  const status = normalizeTaskStatus(parsed["status"]);
+  const progressSummary = String(parsed["progressSummary"] ?? "").trim()
+    || latestSuccessfulStep.summary
+    || previous.progressSummary;
+  const keyFacts = uniqueStrings([
+    ...readStringArray(parsed["keyFacts"]),
+    ...latestSuccessfulStep.taskFacts,
+  ]).slice(0, 8);
+  const evidence = uniqueStrings([
+    ...readStringArray(parsed["evidence"]),
+    ...latestSuccessfulStep.evidenceItems,
+  ]).slice(0, 6);
+  const userInputNeeded = String(parsed["userInputNeeded"] ?? "").trim()
+    || (status === "needs_user_input" ? previous.userInputNeeded ?? "" : "");
+
+  return {
+    status,
+    progressSummary,
+    currentFocus: String(parsed["currentFocus"] ?? "").trim() || previous.currentFocus,
+    completedMilestones: normalizeProgressList(parsed["completedMilestones"], previous.completedMilestones, 6),
+    openWork: normalizeProgressList(parsed["openWork"], previous.openWork, 5),
+    blockers: normalizeProgressList(parsed["blockers"], previous.blockers, 4),
+    keyFacts,
+    evidence,
+    userInputNeeded: userInputNeeded.length > 0 ? userInputNeeded : undefined,
+  };
+}
+
+function formatTaskProgressForPrompt(taskProgress: TaskProgressState): string {
+  const lines = [
+    `- status: ${taskProgress.status}`,
+    `- progressSummary: ${taskProgress.progressSummary || "(none)"}`,
+    `- currentFocus: ${taskProgress.currentFocus || "(none)"}`,
+    `- completedMilestones: ${(taskProgress.completedMilestones ?? []).length > 0 ? (taskProgress.completedMilestones ?? []).join("; ") : "(none)"}`,
+    `- openWork: ${(taskProgress.openWork ?? []).length > 0 ? (taskProgress.openWork ?? []).join("; ") : "(none)"}`,
+    `- blockers: ${(taskProgress.blockers ?? []).length > 0 ? (taskProgress.blockers ?? []).join("; ") : "(none)"}`,
+    `- keyFacts: ${taskProgress.keyFacts.length > 0 ? taskProgress.keyFacts.join("; ") : "(none)"}`,
+    `- evidence: ${taskProgress.evidence.length > 0 ? taskProgress.evidence.join("; ") : "(none)"}`,
+  ];
+  if (taskProgress.userInputNeeded) {
+    lines.push(`- userInputNeeded: ${taskProgress.userInputNeeded}`);
+  }
+  return lines.join("\n");
+}
+
+function readStringArray(value: unknown): string[] {
+  return Array.isArray(value) ? (value as unknown[]).map(String).filter((item) => item.trim().length > 0) : [];
+}
+
+function normalizeProgressList(
+  value: unknown,
+  previous: string[] | undefined,
+  limit: number,
+): string[] {
+  const next = readStringArray(value);
+  if (next.length > 0) {
+    return uniqueStrings(next).slice(0, limit);
+  }
+  return uniqueStrings(previous ?? []).slice(0, limit);
+}
+
+function uniqueStrings(values: string[]): string[] {
+  return [...new Set(values.filter((value) => value.trim().length > 0))];
+}
+
+function formatTaskProgressDigests(
+  steps: ExecutorDeps["taskContext"]["recentSuccessfulSteps"] | ExecutorDeps["taskContext"]["recentFailedSteps"] | undefined,
+  includeFailureMeta: boolean,
+): string {
+  if (!steps || steps.length === 0) {
+    return "- none";
+  }
+  return steps.map((step) => {
+    let line = `- Step ${step.step}: ${step.executionContract || "(no contract)"} — ${step.summary || "(no summary)"}`;
+    if (step.taskFacts.length > 0) {
+      line += ` | facts=${step.taskFacts.slice(0, 3).join(" / ")}`;
+    }
+    if (includeFailureMeta && "failureType" in step && step.failureType) {
+      line += ` | failureType=${step.failureType}`;
+    }
+    if (includeFailureMeta && "blockedTargets" in step && step.blockedTargets.length > 0) {
+      line += ` | blocked=${step.blockedTargets.slice(0, 3).join(", ")}`;
+    }
+    return line;
+  }).join("\n");
 }
 
 function summarizeForPrompt(value: unknown, maxLen = 220): string {
@@ -847,23 +1258,8 @@ function formatPromptList(values: string[]): string {
   return values.length > 0 ? values.join("; ") : "(none)";
 }
 
-function buildStepNewFacts(toolCalls: ActToolCallRecord[], verifyFacts: string[]): string[] {
-  const combined: string[] = [];
-
-  for (let i = 0; i < toolCalls.length; i++) {
-    const call = toolCalls[i]!;
-    if (call.error) {
-      combined.push(`tool_error:${call.tool}#${i + 1}: ${call.error}`);
-    } else {
-      combined.push(`tool_output:${call.tool}#${i + 1}: ${call.output}`);
-    }
-  }
-
-  for (const fact of verifyFacts) {
-    combined.push(fact);
-  }
-
-  return [...new Set(combined)];
+function buildStepNewFacts(_toolCalls: ActToolCallRecord[], verifyFacts: string[]): string[] {
+  return uniqueStrings(verifyFacts);
 }
 
 function buildStepStateUpdates(toolCalls: ActToolCallRecord[]): PreparedAttachmentStateUpdate[] {

@@ -5,8 +5,10 @@ import { emptySoulContext, emptyUserProfileContext } from "../../src/context/typ
 describe("buildSystemPrompt", () => {
   it("assembles deterministic section order and metadata", () => {
     const soul = emptySoulContext();
-    soul.soul.name = "CustomName";
-    soul.soul.identity = "Identity text";
+    soul.identity.name = "CustomName";
+    soul.identity.role = "General-purpose autonomous AI teammate";
+    soul.identity.responsibility = "Help the user complete useful work.";
+    soul.behavior.communication = ["Warm and direct"];
 
     const profile = emptyUserProfileContext();
     profile.name = "Sai";
@@ -17,18 +19,25 @@ describe("buildSystemPrompt", () => {
       userProfile: profile,
       conversationTurns: [
         { role: "user", content: "A", timestamp: "t1", sessionPath: "s/p" },
-        { role: "assistant", content: "B", timestamp: "t2", sessionPath: "s/p" },
+        { role: "assistant", content: "B", timestamp: "t2", sessionPath: "s/p", assistantResponseKind: "reply" },
       ],
       previousSessionSummary: "Session summary",
       activeSessionPath: "sessions/s-123.md",
-      recentRunLedgers: [
+      recentTaskSummaries: [
         {
           timestamp: "2026-02-16T00:00:00.000Z",
           runId: "run-1",
           runPath: "data/runs/run-1",
-          state: "completed",
-          status: "completed",
+          runStatus: "completed",
+          taskStatus: "done",
+          objective: "Finish the task",
           summary: "Finished task successfully",
+          completedMilestones: [],
+          openWork: [],
+          blockers: [],
+          keyFacts: [],
+          evidence: [],
+          attachmentNames: [],
         },
       ],
       skillBlocks: [{ id: "skill-1", content: "Do X" }],
@@ -40,7 +49,7 @@ describe("buildSystemPrompt", () => {
     const conversationPos = output.systemPrompt.indexOf("# Previous Conversation");
     const memoryPos = output.systemPrompt.indexOf("# Memory");
     const currentSessionPos = output.systemPrompt.indexOf("# Current Session");
-    const recentRunsPos = output.systemPrompt.indexOf("# Recent Runs");
+    const recentTasksPos = output.systemPrompt.indexOf("# Recent Tasks");
     const skillsPos = output.systemPrompt.indexOf("# Skills");
 
     expect(soulPos).toBeGreaterThan(0);
@@ -48,34 +57,36 @@ describe("buildSystemPrompt", () => {
     expect(conversationPos).toBeGreaterThan(profilePos);
     expect(memoryPos).toBeGreaterThan(conversationPos);
     expect(currentSessionPos).toBeGreaterThan(memoryPos);
-    expect(recentRunsPos).toBeGreaterThan(currentSessionPos);
-    expect(skillsPos).toBeGreaterThan(recentRunsPos);
+    expect(recentTasksPos).toBeGreaterThan(currentSessionPos);
+    expect(skillsPos).toBeGreaterThan(recentTasksPos);
     expect(output.systemPrompt).toContain("[t1]");
     expect(output.systemPrompt).toContain("[t2]");
+    expect(output.systemPrompt).toContain("assistant[reply]: B");
     expect(output.systemPrompt).toContain("Name: CustomName");
+    expect(output.systemPrompt).toContain("Role: General-purpose autonomous AI teammate");
+    expect(output.systemPrompt).toContain("Responsibility: Help the user complete useful work.");
+    expect(output.systemPrompt).toContain("## Communication");
     expect(output.systemPrompt).toContain("Session summary");
     expect(output.systemPrompt).toContain("session_path: sessions/s-123.md");
-    expect(output.systemPrompt).toContain("runId=run-1");
+    expect(output.systemPrompt).toContain("objective=Finish the task");
+    expect(output.systemPrompt).toContain("task_status=done");
 
     expect(output.sections.map((s) => s.id)).toEqual([
       "base",
       "soul",
       "user_profile",
       "conversation",
-      "open_feedbacks",
       "memory",
       "current_session",
-      "recent_runs",
+      "recent_tasks",
       "system_activity",
       "skills",
       "tools",
       "session_status",
     ]);
-    const emptyOptionalIds = new Set(["open_feedbacks", "system_activity", "tools", "session_status"]);
+    const emptyOptionalIds = new Set(["system_activity", "tools", "session_status"]);
     const includedSections = output.sections.filter((s) => !emptyOptionalIds.has(s.id));
     expect(includedSections.every((s) => s.included)).toBe(true);
-    const feedbackSection = output.sections.find((s) => s.id === "open_feedbacks");
-    expect(feedbackSection?.included).toBe(false);
     const activitySection = output.sections.find((s) => s.id === "system_activity");
     expect(activitySection?.included).toBe(false);
     const toolsSection = output.sections.find((s) => s.id === "tools");
@@ -118,27 +129,11 @@ describe("buildSystemPrompt", () => {
     expect(skills?.included).toBe(false);
   });
 
-  it("renders open feedback and recent system activity sections when present", () => {
+  it("renders recent system activity when present", () => {
     const output = buildSystemPrompt({
       basePrompt: "Base rules",
       soul: emptySoulContext(),
       userProfile: emptyUserProfileContext(),
-      openFeedbacks: [
-        {
-          feedbackId: "fb-1",
-          status: "open",
-          kind: "approval",
-          shortLabel: "send Arun email",
-          message: "Should I send the draft reply to Arun?",
-          actionType: "send_email",
-          sourceRunId: "run-1",
-          sourceEventId: "evt-1",
-          entityHints: ["Arun", "email"],
-          payloadSummary: "Draft email ready",
-          createdAt: "2026-02-16T00:00:00.000Z",
-          expiresAt: "2026-02-17T00:00:00.000Z",
-        },
-      ],
       recentSystemActivity: [
         {
           timestamp: "2026-02-16T00:01:00.000Z",
@@ -152,11 +147,8 @@ describe("buildSystemPrompt", () => {
       ],
     });
 
-    expect(output.systemPrompt).toContain("# Open Feedback Requests");
-    expect(output.systemPrompt).toContain("send Arun email");
     expect(output.systemPrompt).toContain("# Recent System Activity");
     expect(output.systemPrompt).toContain("Checked memory usage");
-    expect(output.sections.find((s) => s.id === "open_feedbacks")?.included).toBe(true);
     expect(output.sections.find((s) => s.id === "system_activity")?.included).toBe(true);
   });
 });

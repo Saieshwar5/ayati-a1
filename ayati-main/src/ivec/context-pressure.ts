@@ -1,3 +1,4 @@
+import { formatConversationTurnSpeaker } from "../memory/conversation-turn-format.js";
 import type { ConversationTurn } from "../memory/types.js";
 
 export type PressureLevel = "none" | "info" | "warning" | "critical" | "auto_rotate";
@@ -11,7 +12,7 @@ export function computeContextPressure(contextPercent: number): ContextPressureS
   if (contextPercent >= 95) {
     return {
       level: "auto_rotate",
-      message: "SYSTEM: Context is full (≥95%). Auto-rotating session now.",
+      message: "SYSTEM: Context is critically full (>=95%). The engine must rotate the session before more work continues.",
     };
   }
 
@@ -19,8 +20,7 @@ export function computeContextPressure(contextPercent: number): ContextPressureS
     return {
       level: "critical",
       message:
-        "CRITICAL: Context usage is very high. You MUST rotate the session NOW using a rotate_session directive. " +
-        "Include a detailed handoff_summary of what was accomplished and what remains.",
+        "CRITICAL: Context usage is very high. Automatic rotation is pending, and the engine will carry a finalized handoff into the next session.",
     };
   }
 
@@ -28,8 +28,7 @@ export function computeContextPressure(contextPercent: number): ContextPressureS
     return {
       level: "warning",
       message:
-        "WARNING: Context usage is elevated. Start wrapping up your current task. " +
-        "Prepare a handoff summary and rotate the session soon using a rotate_session directive.",
+        "WARNING: Context usage has reached the rotation band. Finish the current run normally; the engine will rotate on the next run using the prepared handoff.",
     };
   }
 
@@ -37,8 +36,7 @@ export function computeContextPressure(contextPercent: number): ContextPressureS
     return {
       level: "info",
       message:
-        "INFO: Context usage is moderate. Be mindful of context limits. " +
-        "Consider whether a session rotation will be needed soon.",
+        "INFO: Context usage is moderate. Background handoff preparation is active so continuity stays ready if the session needs to rotate.",
     };
   }
 
@@ -53,7 +51,7 @@ export function buildAutoRotateHandoff(
   const recent = turns.slice(-5);
   const turnLines = recent.map((t) => {
     const truncated = t.content.length > 200 ? t.content.slice(0, 200) + "..." : t.content;
-    return `[${t.role}]: ${truncated}`;
+    return `${formatConversationTurnSpeaker(t)}: ${truncated}`;
   });
 
   const parts: string[] = [

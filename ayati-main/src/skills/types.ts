@@ -15,6 +15,7 @@ export interface ToolExecutionContext {
   clientId?: string;
   runId?: string;
   sessionId?: string;
+  stepNumber?: number;
 }
 
 export interface ToolResult {
