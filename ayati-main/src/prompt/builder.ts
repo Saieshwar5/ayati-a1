@@ -8,12 +8,13 @@ import { renderBasePromptSection } from "./sections/base.js";
 import { renderConversationSection } from "./sections/conversation.js";
 import { renderCurrentSessionSection } from "./sections/current-session.js";
 import { renderMemorySection } from "./sections/memory.js";
+import { renderPersonalMemorySection } from "./sections/personal-memory.js";
 import { renderRecentTasksSection } from "./sections/recent-tasks.js";
+import { renderRuntimeContextSection } from "./sections/runtime-context.js";
 import { renderSkillsSection } from "./sections/skills.js";
 import { renderSoulSection } from "./sections/soul.js";
 import { renderSystemActivitySection } from "./sections/system-activity.js";
 import { renderSessionStatusSection } from "./sections/session-status.js";
-import { renderUserProfileSection } from "./sections/user-profile.js";
 
 function makeSection(id: PromptLayerId, content: string, missingReason: string): PromptSectionMetadata {
   if (content.trim().length === 0) {
@@ -41,7 +42,8 @@ function renderToolDirectorySection(toolDirectory: string | undefined, includeTo
 export function buildSystemPrompt(input: PromptBuildInput): PromptBuildOutput {
   const base = renderBasePromptSection(input.basePrompt);
   const soul = renderSoulSection(input.soul);
-  const profile = renderUserProfileSection(input.userProfile);
+  const runtimeContext = renderRuntimeContextSection(input.runtimeContext ?? null);
+  const personalMemory = renderPersonalMemorySection(input.personalMemorySnapshot ?? "");
   const conversation = renderConversationSection(input.conversationTurns ?? []);
   const memory = renderMemorySection(input.previousSessionSummary ?? "");
   const currentSession = renderCurrentSessionSection(input.activeSessionPath ?? "");
@@ -54,7 +56,8 @@ export function buildSystemPrompt(input: PromptBuildInput): PromptBuildOutput {
   const sections = [
     makeSection("base", base, "Base prompt is empty"),
     makeSection("soul", soul, "Soul context is empty"),
-    makeSection("user_profile", profile, "User profile is empty"),
+    makeSection("runtime_context", runtimeContext, "No runtime context available"),
+    makeSection("personal_memory", personalMemory, "No personal memory snapshot available"),
     makeSection("conversation", conversation, "No previous conversation available"),
     makeSection("memory", memory, "No previous session summary available"),
     makeSection("current_session", currentSession, "No active session path available"),
@@ -68,7 +71,8 @@ export function buildSystemPrompt(input: PromptBuildInput): PromptBuildOutput {
   const systemPrompt = [
     base,
     soul,
-    profile,
+    runtimeContext,
+    personalMemory,
     conversation,
     memory,
     currentSession,

@@ -761,7 +761,7 @@ Known locations:
   - ${locations.runPath}/steps/<NNN>-verify.md — step verification details (markdown)
   - step filenames use zero-padded numbers (example: 001, 002)
 - Project context: ${locations.contextDir}
-  - ${locations.contextDir}/soul.json, system_prompt.md, user_profile.json, user.wiki, user.wiki.schema
+  - ${locations.contextDir}/soul.json, system_prompt.md, memory-policy.json
 ${locations.sessionPath ? `- Active session: ${locations.sessionPath}` : "- Active session: (not available)"}
 ${locations.sessionDir ? `- Session data directory: ${locations.sessionDir}` : ""}
 ${skillsLocationBlock}

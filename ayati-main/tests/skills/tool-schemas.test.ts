@@ -6,12 +6,10 @@ import { createDocumentSkill } from "../../src/skills/builtins/documents/index.j
 import { createIdentitySkill } from "../../src/skills/builtins/identity/index.js";
 import { createPythonSkill } from "../../src/skills/builtins/python/index.js";
 import { createRecallSkill } from "../../src/skills/builtins/recall/index.js";
-import { createWikiSkill } from "../../src/skills/builtins/wiki/index.js";
 import type { PreparedAttachmentService } from "../../src/documents/prepared-attachment-service.js";
 import type { SessionAttachmentService } from "../../src/documents/session-attachment-service.js";
-import type { MemoryRetriever } from "../../src/memory/retrieval/memory-retriever.js";
+import type { RecallRetriever } from "../../src/skills/builtins/recall/index.js";
 import type { ToolDefinition } from "../../src/skills/types.js";
-import type { UserWikiStore } from "../../src/context/wiki-store.js";
 
 function findMissingArrayItems(schema: unknown, path = "inputSchema"): string[] {
   if (!schema || typeof schema !== "object") {
@@ -53,11 +51,7 @@ async function buildRuntimeTools(): Promise<ToolDefinition[]> {
     ...builtInTools,
     ...createIdentitySkill({ onSoulUpdated: () => undefined }).tools,
     ...createRecallSkill({
-      retriever: { recall: async () => [] } as unknown as MemoryRetriever,
-    }).tools,
-    ...createWikiSkill({
-      wikiStore: {} as unknown as UserWikiStore,
-      onProfileUpdated: () => undefined,
+      retriever: { recall: async () => [] } satisfies RecallRetriever,
     }).tools,
     ...createPythonSkill({
       dataDir: "/tmp/ayati-test-data",

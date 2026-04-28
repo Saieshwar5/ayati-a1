@@ -1,14 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { devWarn } from "../shared/index.js";
-import type { PulseReminderDueEvent, PulseReminder } from "./types.js";
+import type { PulseLeasedOccurrence, PulseReminderDueEvent } from "./types.js";
 import { PulseStore } from "./store.js";
 
 const DEFAULT_POLL_INTERVAL_MS = 30_000;
-
-function toRequestedAction(value: string): string | undefined {
-  const compact = value.trim().toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "");
-  return compact.length > 0 ? compact : undefined;
-}
+const DEFAULT_LEASE_MS = 5 * 60_000;
 
 function inferEffectLevel(requestedAction: string | undefined, instruction: string): "act" | "act_external" {
   const text = `${requestedAction ?? ""} ${instruction}`.toLowerCase();
@@ -22,6 +18,7 @@ export interface PulseSchedulerOptions {
   store: PulseStore;
   onReminderDue: (event: PulseReminderDueEvent) => Promise<void>;
   pollIntervalMs?: number;
+  leaseMs?: number;
   now?: () => Date;
 }
 
@@ -30,26 +27,29 @@ export class PulseScheduler {
   private readonly store: PulseStore;
   private readonly onReminderDue: (event: PulseReminderDueEvent) => Promise<void>;
   private readonly pollIntervalMs: number;
+  private readonly leaseMs: number;
   private readonly nowProvider: () => Date;
+  private readonly leaseOwner: string;
 
   private timer: ReturnType<typeof setInterval> | null = null;
   private running = false;
-  private inFlightOccurrences = new Set<string>();
 
   constructor(options: PulseSchedulerOptions) {
     this.clientId = options.clientId;
     this.store = options.store;
     this.onReminderDue = options.onReminderDue;
     this.pollIntervalMs = Math.max(1_000, options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS);
+    this.leaseMs = Math.max(5_000, options.leaseMs ?? DEFAULT_LEASE_MS);
     this.nowProvider = options.now ?? (() => new Date());
+    this.leaseOwner = `pulse-scheduler:${randomUUID()}`;
   }
 
   async start(): Promise<void> {
     if (this.timer) return;
     this.timer = setInterval(() => {
-      void this.tick();
+      void this.runOnce();
     }, this.pollIntervalMs);
-    await this.tick();
+    await this.runOnce();
   }
 
   async stop(): Promise<void> {
@@ -63,84 +63,95 @@ export class PulseScheduler {
     }
   }
 
-  private async tick(): Promise<void> {
+  async runOnce(): Promise<void> {
     if (this.running) return;
     this.running = true;
 
     try {
       const now = this.nowProvider();
-      const dueReminders = await this.store.getDueReminders(this.clientId, now);
-      for (const reminder of dueReminders) {
-        await this.deliverReminder(reminder);
+      const leased = await this.store.leaseDueOccurrences({
+        clientId: this.clientId,
+        leaseOwner: this.leaseOwner,
+        leaseMs: this.leaseMs,
+        now,
+      });
+      for (const entry of leased) {
+        await this.dispatchOccurrence(entry);
       }
-    } catch (err) {
-      devWarn("Pulse scheduler tick failed:", err instanceof Error ? err.message : String(err));
+    } catch (error) {
+      devWarn("Pulse scheduler tick failed:", error instanceof Error ? error.message : String(error));
     } finally {
       this.running = false;
     }
   }
 
-  private async deliverReminder(reminder: PulseReminder): Promise<void> {
-    if (!reminder.nextTriggerAt) return;
+  private async dispatchOccurrence(entry: PulseLeasedOccurrence): Promise<void> {
+    const event = this.buildEvent(entry);
+    await this.store.recordOccurrenceDispatched({
+      occurrenceId: entry.occurrence.id,
+      eventId: event.eventId ?? "",
+      now: this.nowProvider(),
+    });
 
-    const occurrenceId = `${reminder.id}:${reminder.nextTriggerAt}`;
-    if (this.inFlightOccurrences.has(occurrenceId)) {
-      return;
+    try {
+      await this.onReminderDue(event);
+    } catch (error) {
+      await this.store.markOccurrenceDispatchFailure({
+        occurrenceId: entry.occurrence.id,
+        errorMessage: error instanceof Error ? error.message : String(error),
+        now: this.nowProvider(),
+      });
+      devWarn(
+        `Pulse occurrence dispatch failed for ${entry.occurrence.id}:`,
+        error instanceof Error ? error.message : String(error),
+      );
     }
+  }
 
-    this.inFlightOccurrences.add(occurrenceId);
-
+  private buildEvent(entry: PulseLeasedOccurrence): PulseReminderDueEvent {
+    const eventId = randomUUID();
     const triggeredAt = this.nowProvider().toISOString();
-    const isTask = reminder.intentKind === "task";
-    const requestedAction = reminder.task?.requestedAction ?? reminder.requestedAction ?? toRequestedAction(reminder.instruction);
-    const event: PulseReminderDueEvent = {
+    const item = entry.item;
+    const occurrence = entry.occurrence;
+    const isTask = item.kind === "task";
+    const requestedAction = item.payload.task?.requestedAction ?? item.payload.requestedAction;
+    const intentKind = isTask ? "task" : item.kind === "notification" ? "notification" : "reminder";
+    const dedupeKey = occurrence.attemptCount > 1
+      ? `pulse:occurrence:${occurrence.id}:attempt:${occurrence.attemptCount}`
+      : `pulse:occurrence:${occurrence.id}`;
+
+    return {
       source: "pulse",
       eventName: isTask ? "task_due" : "reminder_due",
-      eventId: randomUUID(),
+      eventId,
       receivedAt: triggeredAt,
-      summary: `${isTask ? "Scheduled task due" : "Reminder due"}: ${reminder.title}`,
+      summary: `${isTask ? "Scheduled task due" : "Reminder due"}: ${item.title}`,
       intent: {
-        kind: reminder.intentKind,
+        kind: intentKind,
         eventClass: "trigger_fired",
         trustTier: "internal",
-        effectLevel: inferEffectLevel(requestedAction, reminder.instruction),
+        effectLevel: inferEffectLevel(requestedAction, item.instruction),
         createdBy: "user",
         ...(requestedAction ? { requestedAction } : {}),
       },
       payload: {
-        occurrenceId,
-        scheduledItemId: reminder.id,
-        ...(isTask ? { taskId: reminder.id } : { reminderId: reminder.id }),
-        title: reminder.title,
-        instruction: reminder.instruction,
-        scheduledFor: reminder.nextTriggerAt,
+        occurrenceId: occurrence.id,
+        dedupeKey,
+        dispatchAttempt: occurrence.attemptCount,
+        scheduledItemId: item.id,
+        ...(isTask ? { taskId: item.id } : { reminderId: item.id }),
+        title: item.title,
+        instruction: item.instruction,
+        scheduledFor: occurrence.scheduledFor,
         triggeredAt,
-        timezone: reminder.timezone,
-        intentKind: reminder.intentKind,
+        timezone: item.timezone,
+        intentKind,
+        executionMode: item.executionMode,
         ...(requestedAction ? { requestedAction } : {}),
-        ...(reminder.task ? { task: reminder.task } : {}),
-        metadata: reminder.metadata,
-        originRunId: reminder.originRunId,
-        originSessionId: reminder.originSessionId,
+        ...(item.payload.task ? { task: item.payload.task } : {}),
+        metadata: item.metadata,
+        payload: item.payload,
       },
     };
-
-    try {
-      await this.onReminderDue(event);
-      await this.store.markDelivered({
-        clientId: this.clientId,
-        reminderId: reminder.id,
-        occurrenceId,
-        scheduledFor: reminder.nextTriggerAt,
-        triggeredAt,
-      });
-    } catch (err) {
-      devWarn(
-        `Pulse reminder delivery failed for ${reminder.id}:`,
-        err instanceof Error ? err.message : String(err),
-      );
-    } finally {
-      this.inFlightOccurrences.delete(occurrenceId);
-    }
   }
 }

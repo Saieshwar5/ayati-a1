@@ -16,6 +16,11 @@
       "mode": "analyze_ask"
     },
     {
+      "source": "nylas-mail",
+      "eventClass": "message_received",
+      "mode": "analyze_ask"
+    },
+    {
       "source": "gmail-cli",
       "eventName": "new_messages",
       "mode": "analyze_ask"

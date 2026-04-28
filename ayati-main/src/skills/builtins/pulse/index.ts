@@ -1,27 +1,46 @@
 import type { SkillDefinition, ToolDefinition, ToolResult } from "../../types.js";
 import {
   computeNextTriggerForSchedule,
-  normalizePulseDurationUnit,
   parsePulseExpression,
   parseSnoozeDuration,
+  previewPulseOccurrences,
   pulseDurationToMillis,
   pulseIntervalMsToValueUnit,
 } from "../../../pulse/parser.js";
 import { PulseStore } from "../../../pulse/store.js";
 import { resolveTimeZone } from "../../../pulse/time.js";
 import type {
+  PulseClockHealth,
   PulseDailySchedule,
   PulseDurationUnit,
-  PulseIntervalSchedule,
+  PulseItem,
+  PulseItemKind,
+  PulseItemPayload,
+  PulseItemStatus,
+  PulseMonthlySchedule,
+  PulsePreviewOccurrence,
   PulseReminder,
-  PulseReminderSchedule,
+  PulseSchedule,
   PulseScheduledItemIntentKind,
-  PulseReminderStatus,
   PulseTaskSpec,
   PulseWeeklySchedule,
+  PulseYearlySchedule,
 } from "../../../pulse/types.js";
 
-type PulseAction = "create" | "list" | "cancel" | "snooze" | "now";
+type PulseAction =
+  | "create"
+  | "list"
+  | "get"
+  | "update"
+  | "pause"
+  | "resume"
+  | "cancel"
+  | "delete"
+  | "snooze"
+  | "dismiss"
+  | "preview"
+  | "now"
+  | "health";
 
 const MAX_TITLE_CHARS = 160;
 const MAX_INSTRUCTION_CHARS = 2_000;
@@ -29,8 +48,8 @@ const MAX_OUTPUT_CHARS = 120_000;
 const TASK_INTENT_PATTERN = /\b(check|review|browse|search|monitor|watch|scan|summarize|fetch|collect|send|create|update|run|execute|sync|verify|inspect|audit|analyze)\b/i;
 const REMINDER_INTENT_PATTERN = /\b(remind|reminder|notify|notification|alert)\b/i;
 
-interface CreateInput {
-  action: "create";
+interface CreateOrUpdateSeed {
+  kind?: PulseItemKind;
   intentKind?: PulseScheduledItemIntentKind;
   title?: string;
   instruction?: string;
@@ -38,20 +57,56 @@ interface CreateInput {
   when?: string;
   every?: string;
   timezone?: string;
-  requestedAction?: string;
   metadata?: Record<string, unknown>;
   schedule?: Record<string, unknown>;
+  startAt?: string;
+  endAt?: string;
+  durationMs?: number;
+  allDay?: boolean;
   task?: unknown;
+  requestedAction?: string;
+  priority?: string | number;
+  tags?: string[];
+}
+
+interface CreateInput extends CreateOrUpdateSeed {
+  action: "create";
 }
 
 interface ListInput {
   action: "list";
-  status?: PulseReminderStatus | "all";
+  status?: PulseItemStatus | "all";
+  kind?: PulseItemKind | "all";
   limit?: number;
+}
+
+interface GetInput {
+  action: "get";
+  id: string;
+}
+
+interface UpdateInput extends CreateOrUpdateSeed {
+  action: "update";
+  id: string;
+}
+
+interface PauseInput {
+  action: "pause";
+  id: string;
+}
+
+interface ResumeInput {
+  action: "resume";
+  id: string;
 }
 
 interface CancelInput {
   action: "cancel";
+  id: string;
+}
+
+interface DeleteInput {
+  action: "delete";
   id: string;
 }
 
@@ -62,12 +117,42 @@ interface SnoozeInput {
   durationMs?: number;
 }
 
+interface DismissInput {
+  action: "dismiss";
+  id: string;
+  occurrenceId?: string;
+}
+
+interface PreviewInput extends CreateOrUpdateSeed {
+  action: "preview";
+  id?: string;
+  count?: number;
+}
+
 interface NowInput {
   action: "now";
   timezone?: string;
 }
 
-type PulseInput = CreateInput | ListInput | CancelInput | SnoozeInput | NowInput;
+interface HealthInput {
+  action: "health";
+  timezone?: string;
+}
+
+type PulseInput =
+  | CreateInput
+  | ListInput
+  | GetInput
+  | UpdateInput
+  | PauseInput
+  | ResumeInput
+  | CancelInput
+  | DeleteInput
+  | SnoozeInput
+  | DismissInput
+  | PreviewInput
+  | NowInput
+  | HealthInput;
 
 function createStore(): PulseStore {
   return new PulseStore();
@@ -86,7 +171,21 @@ function isToolResult(value: unknown): value is ToolResult {
 }
 
 function parseAction(raw: unknown): PulseAction | null {
-  if (raw === "create" || raw === "list" || raw === "cancel" || raw === "snooze" || raw === "now") {
+  if (
+    raw === "create"
+    || raw === "list"
+    || raw === "get"
+    || raw === "update"
+    || raw === "pause"
+    || raw === "resume"
+    || raw === "cancel"
+    || raw === "delete"
+    || raw === "snooze"
+    || raw === "dismiss"
+    || raw === "preview"
+    || raw === "now"
+    || raw === "health"
+  ) {
     return raw;
   }
   return null;
@@ -157,7 +256,7 @@ function parseTitle(raw: unknown, fallback: string): string | ToolResult {
 function parseInstruction(raw: unknown, fallback: string): string | ToolResult {
   const value = typeof raw === "string" ? raw.trim() : fallback.trim();
   if (value.length === 0) {
-    return fail("instruction (or message) is required for create.");
+    return fail("instruction (or message) is required.");
   }
   if (value.length > MAX_INSTRUCTION_CHARS) {
     return fail(`instruction must be ${MAX_INSTRUCTION_CHARS} characters or fewer.`);
@@ -165,19 +264,39 @@ function parseInstruction(raw: unknown, fallback: string): string | ToolResult {
   return value;
 }
 
-function parseReminderId(raw: unknown): string | ToolResult {
+function parseId(raw: unknown): string | ToolResult {
   if (typeof raw !== "string" || raw.trim().length === 0) {
     return fail("id must be a non-empty string.");
   }
   return raw.trim();
 }
 
-function parseStatus(raw: unknown): PulseReminderStatus | "all" | ToolResult {
+function parseStatus(raw: unknown): PulseItemStatus | "all" | ToolResult {
   if (raw === undefined) return "active";
-  if (raw === "active" || raw === "completed" || raw === "cancelled" || raw === "all") {
+  if (raw === "active" || raw === "paused" || raw === "completed" || raw === "cancelled" || raw === "all") {
     return raw;
   }
-  return fail("status must be one of: active, completed, cancelled, all.");
+  return fail("status must be one of: active, paused, completed, cancelled, all.");
+}
+
+function parseKind(rawKind: unknown, rawIntentKind: unknown): PulseItemKind | undefined | ToolResult {
+  if (rawKind === undefined) {
+    if (rawIntentKind === "task") return "task";
+    if (rawIntentKind === "reminder") return "reminder";
+    return undefined;
+  }
+  if (rawKind === "event" || rawKind === "reminder" || rawKind === "notification" || rawKind === "task") {
+    return rawKind;
+  }
+  return fail("kind must be one of: event, reminder, notification, task.");
+}
+
+function parseListKind(raw: unknown): PulseItemKind | "all" | ToolResult {
+  if (raw === undefined) return "all";
+  if (raw === "all" || raw === "event" || raw === "reminder" || raw === "notification" || raw === "task") {
+    return raw;
+  }
+  return fail("kind filter must be one of: all, event, reminder, notification, task.");
 }
 
 function parseLimit(raw: unknown): number | ToolResult {
@@ -186,6 +305,14 @@ function parseLimit(raw: unknown): number | ToolResult {
     return fail("limit must be a positive integer.");
   }
   return Math.min(200, raw);
+}
+
+function parseCount(raw: unknown): number | ToolResult {
+  if (raw === undefined) return 5;
+  if (typeof raw !== "number" || !Number.isFinite(raw) || !Number.isInteger(raw) || raw <= 0) {
+    return fail("count must be a positive integer.");
+  }
+  return Math.min(20, raw);
 }
 
 function parseDurationMs(rawDuration: unknown, rawDurationMs: unknown): number | ToolResult {
@@ -207,35 +334,36 @@ function parseDurationMs(rawDuration: unknown, rawDurationMs: unknown): number |
   return fail("snooze requires duration or durationMs.");
 }
 
-function parseIntentKind(raw: unknown): PulseScheduledItemIntentKind | undefined | ToolResult {
-  if (raw === undefined) return undefined;
-  if (raw === "reminder" || raw === "task") return raw;
-  return fail("intentKind must be either 'reminder' or 'task'.");
-}
-
-function inferIntentKind(
-  requestedIntent: PulseScheduledItemIntentKind | undefined,
+function inferKind(
+  requestedKind: PulseItemKind | undefined,
   instruction: string,
   title: string,
-  _schedule: PulseReminderSchedule,
-): PulseScheduledItemIntentKind {
-  if (requestedIntent) {
-    return requestedIntent;
+  hasTaskPayload: boolean,
+  startAt: string | undefined,
+): PulseItemKind {
+  if (requestedKind) {
+    return requestedKind;
   }
-
+  if (hasTaskPayload) {
+    return "task";
+  }
+  if (startAt) {
+    return "event";
+  }
   const seed = `${title} ${instruction}`.trim();
   if (REMINDER_INTENT_PATTERN.test(seed)) {
     return "reminder";
   }
-
   if (TASK_INTENT_PATTERN.test(seed)) {
     return "task";
   }
-
   return "reminder";
 }
 
-function formatScheduleText(schedule: PulseReminderSchedule): string {
+function formatScheduleText(schedule: PulseSchedule | null): string | null {
+  if (!schedule) {
+    return null;
+  }
   if (schedule.kind === "once") {
     return `once at ${schedule.at}`;
   }
@@ -243,7 +371,14 @@ function formatScheduleText(schedule: PulseReminderSchedule): string {
     return `every day at ${String(schedule.hour).padStart(2, "0")}:${String(schedule.minute).padStart(2, "0")}`;
   }
   if (schedule.kind === "weekly") {
-    return `weekly on day ${schedule.weekday} at ${String(schedule.hour).padStart(2, "0")}:${String(schedule.minute).padStart(2, "0")}`;
+    const weekday = schedule.weekdays?.[0] ?? schedule.weekday ?? 1;
+    return `every week on day ${weekday} at ${String(schedule.hour).padStart(2, "0")}:${String(schedule.minute).padStart(2, "0")}`;
+  }
+  if (schedule.kind === "monthly") {
+    return `every month on day ${schedule.day} at ${String(schedule.hour).padStart(2, "0")}:${String(schedule.minute).padStart(2, "0")}`;
+  }
+  if (schedule.kind === "yearly") {
+    return `every year on ${String(schedule.month).padStart(2, "0")}/${String(schedule.day).padStart(2, "0")} at ${String(schedule.hour).padStart(2, "0")}:${String(schedule.minute).padStart(2, "0")}`;
   }
   const intervalValue = schedule.value ?? pulseIntervalMsToValueUnit(schedule.everyMs)?.value;
   const intervalUnit = schedule.unit ?? pulseIntervalMsToValueUnit(schedule.everyMs)?.unit;
@@ -253,22 +388,31 @@ function formatScheduleText(schedule: PulseReminderSchedule): string {
   return `every ${intervalValue} ${intervalUnit}${intervalValue === 1 ? "" : "s"}`;
 }
 
-function parseStructuredSchedule(raw: unknown, timezone: string, now: Date): { schedule: PulseReminderSchedule; nextTriggerAt: string } | ToolResult {
+function parseIsoDate(raw: unknown, fieldName: string): string | ToolResult | undefined {
+  if (raw === undefined) return undefined;
+  if (typeof raw !== "string" || raw.trim().length === 0) {
+    return fail(`${fieldName} must be a non-empty datetime string.`);
+  }
+  const parsed = Date.parse(raw);
+  if (!Number.isFinite(parsed)) {
+    return fail(`${fieldName} must be a valid datetime string.`);
+  }
+  return new Date(parsed).toISOString();
+}
+
+function parseStructuredSchedule(raw: unknown, timezone: string, now: Date): { schedule: PulseSchedule; nextTriggerAt: string } | ToolResult {
   if (!isObject(raw)) {
     return fail("schedule must be an object.");
   }
   const kind = raw["kind"];
+
   if (kind === "once") {
-    if (typeof raw["at"] !== "string") {
-      return fail("schedule.kind=once requires 'at' (ISO date string).");
-    }
-    const atMs = Date.parse(raw["at"]);
-    if (!Number.isFinite(atMs)) {
-      return fail("schedule.at must be a valid datetime string.");
-    }
+    const at = parseIsoDate(raw["at"], "schedule.at");
+    if (isToolResult(at)) return at;
+    if (!at) return fail("schedule.kind=once requires 'at'.");
     return {
-      schedule: { kind: "once", at: new Date(atMs).toISOString() },
-      nextTriggerAt: new Date(atMs).toISOString(),
+      schedule: { kind: "once", at },
+      nextTriggerAt: at,
     };
   }
 
@@ -278,32 +422,30 @@ function parseStructuredSchedule(raw: unknown, timezone: string, now: Date): { s
     const intervalValue = typeof rawValue === "number" && Number.isFinite(rawValue) && rawValue > 0
       ? Math.trunc(rawValue)
       : undefined;
-    const intervalUnit = typeof rawUnit === "string"
-      ? normalizePulseDurationUnit(rawUnit)
-      : null;
+    const intervalUnit = typeof rawUnit === "string" ? rawUnit as PulseDurationUnit : undefined;
     let everyMs = typeof raw["everyMs"] === "number" && Number.isFinite(raw["everyMs"]) && raw["everyMs"] > 0
-      ? raw["everyMs"]
+      ? Math.trunc(raw["everyMs"])
       : undefined;
 
     if (intervalValue !== undefined && intervalUnit) {
       everyMs = pulseDurationToMillis(intervalValue, intervalUnit) ?? undefined;
     }
-
     if (everyMs === undefined) {
-      return fail("schedule.kind=interval requires positive interval value/unit (preferred) or everyMs.");
+      return fail("schedule.kind=interval requires positive value/unit or everyMs.");
     }
-
     const normalized = pulseIntervalMsToValueUnit(everyMs);
-    const schedule: PulseIntervalSchedule = {
+    const schedule = {
       kind: "interval",
       everyMs,
       ...(intervalValue !== undefined ? { value: intervalValue } : normalized ? { value: normalized.value } : {}),
-      ...(intervalUnit ? { unit: intervalUnit } : normalized ? { unit: normalized.unit as PulseDurationUnit } : {}),
-      anchorAt: now.toISOString(),
-    };
+      ...(intervalUnit ? { unit: intervalUnit } : normalized ? { unit: normalized.unit } : {}),
+      anchorAt: typeof raw["anchorAt"] === "string" && Number.isFinite(Date.parse(raw["anchorAt"]))
+        ? new Date(Date.parse(raw["anchorAt"])).toISOString()
+        : now.toISOString(),
+    } satisfies PulseSchedule;
     return {
       schedule,
-      nextTriggerAt: new Date(now.getTime() + everyMs).toISOString(),
+      nextTriggerAt: computeNextTriggerForSchedule(schedule, timezone, now) ?? new Date(now.getTime() + everyMs).toISOString(),
     };
   }
 
@@ -313,48 +455,141 @@ function parseStructuredSchedule(raw: unknown, timezone: string, now: Date): { s
     if (typeof hour !== "number" || typeof minute !== "number") {
       return fail("schedule.kind=daily requires numeric hour and minute.");
     }
-    if (!Number.isInteger(hour) || hour < 0 || hour > 23 || !Number.isInteger(minute) || minute < 0 || minute > 59) {
-      return fail("daily hour must be 0-23 and minute must be 0-59.");
-    }
     const schedule: PulseDailySchedule = {
       kind: "daily",
-      hour,
-      minute,
+      hour: Math.trunc(hour),
+      minute: Math.trunc(minute),
     };
     const nextTriggerAt = computeNextTriggerForSchedule(schedule, timezone, now);
-    if (!nextTriggerAt) {
-      return fail("failed to compute next daily trigger.");
-    }
+    if (!nextTriggerAt) return fail("failed to compute next daily trigger.");
     return { schedule, nextTriggerAt };
   }
 
   if (kind === "weekly") {
-    const weekday = raw["weekday"];
     const hour = raw["hour"];
     const minute = raw["minute"];
-    if (typeof weekday !== "number" || typeof hour !== "number" || typeof minute !== "number") {
-      return fail("schedule.kind=weekly requires numeric weekday/hour/minute.");
+    if (typeof hour !== "number" || typeof minute !== "number") {
+      return fail("schedule.kind=weekly requires numeric hour and minute.");
     }
-    if (!Number.isInteger(weekday) || weekday < 1 || weekday > 7) {
-      return fail("weekly weekday must be 1-7 (Mon-Sun).");
-    }
-    if (!Number.isInteger(hour) || hour < 0 || hour > 23 || !Number.isInteger(minute) || minute < 0 || minute > 59) {
-      return fail("weekly hour must be 0-23 and minute must be 0-59.");
+    const weekday = typeof raw["weekday"] === "number" ? Math.trunc(raw["weekday"]) : undefined;
+    const weekdays = Array.isArray(raw["weekdays"])
+      ? raw["weekdays"].filter((entry): entry is number => typeof entry === "number").map((entry) => Math.trunc(entry))
+      : undefined;
+    if (weekday === undefined && (!weekdays || weekdays.length === 0)) {
+      return fail("schedule.kind=weekly requires weekday or weekdays.");
     }
     const schedule: PulseWeeklySchedule = {
       kind: "weekly",
-      weekday: weekday as PulseWeeklySchedule["weekday"],
-      hour,
-      minute,
+      ...(weekday !== undefined ? { weekday: weekday as PulseWeeklySchedule["weekday"] } : {}),
+      ...(weekdays && weekdays.length > 0 ? { weekdays: weekdays as PulseWeeklySchedule["weekdays"] } : {}),
+      hour: Math.trunc(hour),
+      minute: Math.trunc(minute),
     };
     const nextTriggerAt = computeNextTriggerForSchedule(schedule, timezone, now);
-    if (!nextTriggerAt) {
-      return fail("failed to compute next weekly trigger.");
-    }
+    if (!nextTriggerAt) return fail("failed to compute next weekly trigger.");
     return { schedule, nextTriggerAt };
   }
 
-  return fail("unsupported schedule.kind. Use once, interval, daily, or weekly.");
+  if (kind === "monthly") {
+    const day = raw["day"];
+    const hour = raw["hour"];
+    const minute = raw["minute"];
+    if (typeof day !== "number" || typeof hour !== "number" || typeof minute !== "number") {
+      return fail("schedule.kind=monthly requires numeric day/hour/minute.");
+    }
+    const schedule: PulseMonthlySchedule = {
+      kind: "monthly",
+      day: Math.trunc(day),
+      hour: Math.trunc(hour),
+      minute: Math.trunc(minute),
+    };
+    const nextTriggerAt = computeNextTriggerForSchedule(schedule, timezone, now);
+    if (!nextTriggerAt) return fail("failed to compute next monthly trigger.");
+    return { schedule, nextTriggerAt };
+  }
+
+  if (kind === "yearly") {
+    const month = raw["month"];
+    const day = raw["day"];
+    const hour = raw["hour"];
+    const minute = raw["minute"];
+    if (typeof month !== "number" || typeof day !== "number" || typeof hour !== "number" || typeof minute !== "number") {
+      return fail("schedule.kind=yearly requires numeric month/day/hour/minute.");
+    }
+    const schedule: PulseYearlySchedule = {
+      kind: "yearly",
+      month: Math.trunc(month),
+      day: Math.trunc(day),
+      hour: Math.trunc(hour),
+      minute: Math.trunc(minute),
+    };
+    const nextTriggerAt = computeNextTriggerForSchedule(schedule, timezone, now);
+    if (!nextTriggerAt) return fail("failed to compute next yearly trigger.");
+    return { schedule, nextTriggerAt };
+  }
+
+  return fail("unsupported schedule.kind. Use once, interval, daily, weekly, monthly, or yearly.");
+}
+
+function parsePayload(raw: CreateOrUpdateSeed, kind: PulseItemKind, instruction: string): PulseItemPayload | ToolResult {
+  const payload: PulseItemPayload = {};
+  if (raw.priority !== undefined) {
+    if (typeof raw.priority !== "string" && typeof raw.priority !== "number") {
+      return fail("priority must be a string or number.");
+    }
+    payload.priority = raw.priority;
+  }
+  if (raw.tags !== undefined) {
+    const tags = parseStringArray(raw.tags, "tags");
+    if (isToolResult(tags)) return tags;
+    if (tags) payload.tags = tags;
+  }
+  if (raw.requestedAction) {
+    payload.requestedAction = normalizeRequestedAction(raw.requestedAction);
+  }
+  if (kind === "task") {
+    const task = parseTaskSpec(raw.task, instruction, raw.requestedAction);
+    if (isToolResult(task)) return task;
+    payload.task = task;
+    payload.requestedAction = task.requestedAction ?? payload.requestedAction;
+  }
+  return payload;
+}
+
+function hasPayloadChanges(raw: CreateOrUpdateSeed): boolean {
+  return raw.task !== undefined
+    || raw.requestedAction !== undefined
+    || raw.priority !== undefined
+    || raw.tags !== undefined;
+}
+
+function parseSeed(raw: Record<string, unknown>): CreateOrUpdateSeed | ToolResult {
+  const kind = parseKind(raw["kind"], raw["intentKind"]);
+  if (isToolResult(kind)) return kind;
+  const tags = raw["tags"];
+  if (tags !== undefined && !Array.isArray(tags)) {
+    return fail("tags must be an array of strings.");
+  }
+  return {
+    kind,
+    intentKind: raw["intentKind"] === "reminder" || raw["intentKind"] === "task" ? raw["intentKind"] : undefined,
+    title: typeof raw["title"] === "string" ? raw["title"] : undefined,
+    instruction: typeof raw["instruction"] === "string" ? raw["instruction"] : undefined,
+    message: typeof raw["message"] === "string" ? raw["message"] : undefined,
+    when: typeof raw["when"] === "string" ? raw["when"] : undefined,
+    every: typeof raw["every"] === "string" ? raw["every"] : undefined,
+    timezone: typeof raw["timezone"] === "string" ? raw["timezone"] : undefined,
+    metadata: isObject(raw["metadata"]) ? raw["metadata"] : undefined,
+    schedule: isObject(raw["schedule"]) ? raw["schedule"] : undefined,
+    startAt: typeof raw["startAt"] === "string" ? raw["startAt"] : undefined,
+    endAt: typeof raw["endAt"] === "string" ? raw["endAt"] : undefined,
+    durationMs: typeof raw["durationMs"] === "number" ? raw["durationMs"] : undefined,
+    allDay: typeof raw["allDay"] === "boolean" ? raw["allDay"] : undefined,
+    task: raw["task"],
+    requestedAction: typeof raw["requestedAction"] === "string" ? raw["requestedAction"] : undefined,
+    priority: typeof raw["priority"] === "string" || typeof raw["priority"] === "number" ? raw["priority"] : undefined,
+    tags: Array.isArray(tags) ? tags.filter((entry): entry is string => typeof entry === "string") : undefined,
+  };
 }
 
 function parseInput(input: unknown): PulseInput | ToolResult {
@@ -364,45 +599,42 @@ function parseInput(input: unknown): PulseInput | ToolResult {
 
   const action = parseAction(input["action"]);
   if (!action) {
-    return fail("action must be one of: create, list, cancel, snooze, now.");
+    return fail("action must be one of: create, list, get, update, pause, resume, cancel, delete, snooze, dismiss, preview, now, health.");
   }
 
   if (action === "create") {
-    const intentKind = parseIntentKind(input["intentKind"]);
-    if (isToolResult(intentKind)) return intentKind;
-    const parsed: CreateInput = {
-      action,
-      intentKind,
-      title: typeof input["title"] === "string" ? input["title"] : undefined,
-      instruction: typeof input["instruction"] === "string" ? input["instruction"] : undefined,
-      message: typeof input["message"] === "string" ? input["message"] : undefined,
-      when: typeof input["when"] === "string" ? input["when"] : undefined,
-      every: typeof input["every"] === "string" ? input["every"] : undefined,
-      timezone: typeof input["timezone"] === "string" ? input["timezone"] : undefined,
-      requestedAction: typeof input["requestedAction"] === "string" ? input["requestedAction"] : undefined,
-      metadata: isObject(input["metadata"]) ? input["metadata"] : undefined,
-      schedule: isObject(input["schedule"]) ? input["schedule"] : undefined,
-      task: input["task"],
-    };
-    return parsed;
+    const seed = parseSeed(input);
+    if (isToolResult(seed)) return seed;
+    return { action, ...seed };
   }
 
   if (action === "list") {
+    const kind = parseListKind(input["kind"]);
+    if (isToolResult(kind)) return kind;
     return {
       action,
       status: input["status"] as ListInput["status"],
+      kind,
       limit: input["limit"] as number | undefined,
     };
   }
 
-  if (action === "cancel") {
-    const id = parseReminderId(input["id"]);
+  if (action === "get" || action === "pause" || action === "resume" || action === "cancel" || action === "delete") {
+    const id = parseId(input["id"]);
     if (isToolResult(id)) return id;
-    return { action, id };
+    return { action, id } as GetInput | PauseInput | ResumeInput | CancelInput | DeleteInput;
+  }
+
+  if (action === "update") {
+    const id = parseId(input["id"]);
+    if (isToolResult(id)) return id;
+    const seed = parseSeed(input);
+    if (isToolResult(seed)) return seed;
+    return { action, id, ...seed };
   }
 
   if (action === "snooze") {
-    const id = parseReminderId(input["id"]);
+    const id = parseId(input["id"]);
     if (isToolResult(id)) return id;
     return {
       action,
@@ -412,9 +644,74 @@ function parseInput(input: unknown): PulseInput | ToolResult {
     };
   }
 
+  if (action === "dismiss") {
+    const id = parseId(input["id"]);
+    if (isToolResult(id)) return id;
+    return {
+      action,
+      id,
+      occurrenceId: typeof input["occurrenceId"] === "string" ? input["occurrenceId"] : undefined,
+    };
+  }
+
+  if (action === "preview") {
+    const seed = parseSeed(input);
+    if (isToolResult(seed)) return seed;
+    return {
+      action,
+      ...seed,
+      id: typeof input["id"] === "string" ? input["id"] : undefined,
+      count: typeof input["count"] === "number" ? input["count"] : undefined,
+    };
+  }
+
+  if (action === "now" || action === "health") {
+    return {
+      action,
+      timezone: typeof input["timezone"] === "string" ? input["timezone"] : undefined,
+    };
+  }
+
+  return fail("unsupported pulse action.");
+}
+
+function formatPreview(preview: PulsePreviewOccurrence[]): Record<string, unknown>[] {
+  return preview.map((entry) => ({
+    index: entry.index,
+    scheduledForUtc: entry.scheduledForUtc,
+    timezone: entry.timezone,
+    localDate: entry.localDate,
+    localTime: entry.localTime,
+    weekday: entry.weekday,
+  }));
+}
+
+function formatItem(item: PulseItem): Record<string, unknown> {
   return {
-    action,
-    timezone: typeof input["timezone"] === "string" ? input["timezone"] : undefined,
+    id: item.id,
+    kind: item.kind,
+    executionMode: item.executionMode,
+    title: item.title,
+    instruction: item.instruction,
+    status: item.status,
+    timezone: item.timezone,
+    nextDueAt: item.nextDueAt,
+    nextTriggerAt: item.nextDueAt,
+    scheduleText: formatScheduleText(item.schedule),
+    isRecurring: item.schedule ? item.schedule.kind !== "once" : false,
+    schedule: item.schedule,
+    startAt: item.startAtUtc,
+    endAt: item.endAtUtc,
+    durationMs: item.durationMs,
+    allDay: item.allDay,
+    createdAt: item.createdAt,
+    updatedAt: item.updatedAt,
+    lastDueAt: item.lastDueAt,
+    lastCompletedAt: item.lastCompletedAt,
+    requestedAction: item.payload.requestedAction ?? item.payload.task?.requestedAction,
+    task: item.payload.task,
+    payload: item.payload,
+    metadata: item.metadata,
   };
 }
 
@@ -439,66 +736,96 @@ function formatReminder(reminder: PulseReminder): Record<string, unknown> {
   };
 }
 
+function formatLegacyReminderFromItem(item: PulseItem): Record<string, unknown> {
+  return {
+    id: item.id,
+    intentKind: item.kind === "task" ? "task" : "reminder",
+    title: item.title,
+    instruction: item.instruction,
+    status: item.status === "paused" ? "active" : item.status,
+    timezone: item.timezone,
+    nextTriggerAt: item.nextDueAt,
+    scheduleText: formatScheduleText(item.schedule),
+    isRecurring: item.schedule ? item.schedule.kind !== "once" : false,
+    schedule: item.schedule,
+    createdAt: item.createdAt,
+    updatedAt: item.updatedAt,
+    lastTriggeredAt: item.lastDueAt,
+    requestedAction: item.payload.requestedAction ?? item.payload.task?.requestedAction,
+    task: item.payload.task,
+    metadata: item.metadata,
+  };
+}
+
 function toJsonOutput(payload: unknown): string {
   const text = JSON.stringify(payload, null, 2);
   if (text.length <= MAX_OUTPUT_CHARS) return text;
   return `${text.slice(0, MAX_OUTPUT_CHARS)}\n...[truncated]`;
 }
 
+function buildPreview(
+  item: PulseItem | null,
+  schedule: PulseSchedule | null,
+  timezone: string,
+  count: number,
+  startAt?: string | null,
+): PulsePreviewOccurrence[] {
+  return previewPulseOccurrences(
+    item?.schedule ?? schedule,
+    item?.timezone ?? timezone,
+    new Date(),
+    count,
+    item?.startAtUtc ?? startAt,
+  );
+}
+
 export const pulseTool: ToolDefinition = {
   name: "pulse",
-  description: "Calendar, reminder, and scheduled-task management. Create, list, cancel, snooze items and query current time.",
+  description: "SQLite-backed calendar, reminder, notification, and scheduled-task management with previews and health checks.",
   inputSchema: {
     type: "object",
     required: ["action"],
     properties: {
       action: {
         type: "string",
-        description: "One of: create, list, cancel, snooze, now.",
+        description: "One of: create, list, get, update, pause, resume, cancel, delete, snooze, dismiss, preview, now, health.",
+      },
+      kind: {
+        type: "string",
+        description: "event, reminder, notification, or task.",
       },
       intentKind: {
         type: "string",
-        description: "Optional create intent: reminder for notify-only items, task for executable scheduled work.",
+        description: "Compatibility alias for reminder/task item creation.",
       },
-      title: { type: "string", description: "Reminder or scheduled task title." },
-      instruction: { type: "string", description: "Short human-readable instruction/message for the reminder or scheduled task." },
+      title: { type: "string" },
+      instruction: { type: "string" },
       message: { type: "string", description: "Alias for instruction." },
-      when: { type: "string", description: "Compatibility input for one-time schedules using natural language." },
-      every: { type: "string", description: "Compatibility input for recurring schedules using natural language, e.g. every 1 hour." },
+      when: { type: "string", description: "Compatibility natural-language schedule expression for one-time items." },
+      every: { type: "string", description: "Compatibility natural-language schedule expression for recurring items." },
       timezone: { type: "string", description: "IANA timezone, e.g. Asia/Kolkata." },
-      requestedAction: { type: "string", description: "Optional action slug for scheduled task execution. Prefer task.requestedAction for task items." },
-      metadata: { type: "object", description: "Optional metadata object." },
+      requestedAction: { type: "string" },
+      metadata: { type: "object" },
+      startAt: { type: "string", description: "ISO datetime for passive events or explicit start time." },
+      endAt: { type: "string", description: "ISO datetime end time." },
+      durationMs: { type: "number", description: "Optional duration in milliseconds." },
+      allDay: { type: "boolean" },
+      priority: { type: ["string", "number"] },
+      tags: { type: "array", items: { type: "string" } },
       schedule: {
         type: "object",
-        description: "Preferred structured schedule object. Use this instead of when/every when possible.",
-        properties: {
-          kind: { type: "string", description: "once, interval, daily, or weekly." },
-          at: { type: "string", description: "ISO datetime for schedule.kind=once." },
-          value: { type: "number", description: "Positive interval amount for schedule.kind=interval, e.g. 10." },
-          unit: { type: "string", description: "Interval unit for schedule.kind=interval: minute, hour, day, week." },
-          everyMs: { type: "number", description: "Legacy interval milliseconds. Accepted for compatibility." },
-          hour: { type: "number", description: "Hour for daily/weekly schedules (0-23)." },
-          minute: { type: "number", description: "Minute for daily/weekly schedules (0-59)." },
-          weekday: { type: "number", description: "Weekday for weekly schedules (1=Mon ... 7=Sun)." },
-        },
+        description: "Preferred structured schedule object. Use once, interval, daily, weekly, monthly, or yearly.",
       },
       task: {
         type: "object",
-        description: "Structured task payload for intentKind=task. Include enough data for future system_event execution.",
-        properties: {
-          objective: { type: "string", description: "What the agent should accomplish when the task becomes due." },
-          requestedAction: { type: "string", description: "Stable action slug for routing and recovery." },
-          inputs: { type: "object", description: "Named task inputs the agent should use when the task runs." },
-          constraints: { type: "array", description: "Optional task constraints.", items: { type: "string" } },
-          successCriteria: { type: "array", description: "Optional success criteria.", items: { type: "string" } },
-          context: { type: "object", description: "Optional supporting context for task execution." },
-        },
+        description: "Structured task payload for kind=task.",
       },
-      id: { type: "string", description: "Pulse item ID for cancel/snooze." },
-      status: { type: "string", description: "Filter for list: active, completed, cancelled, all." },
-      limit: { type: "number", description: "Max reminders in list response." },
+      id: { type: "string", description: "Pulse item id for get/update/pause/resume/cancel/delete/snooze/dismiss/preview." },
+      occurrenceId: { type: "string", description: "Optional occurrence id for dismiss." },
+      status: { type: "string", description: "Filter for list: active, paused, completed, cancelled, all." },
+      limit: { type: "number" },
+      count: { type: "number", description: "Number of preview occurrences to return." },
       duration: { type: "string", description: "Snooze duration like '30 minutes'." },
-      durationMs: { type: "number", description: "Snooze duration in milliseconds." },
     },
   },
   selectionHints: {
@@ -506,11 +833,11 @@ export const pulseTool: ToolDefinition = {
     aliases: ["set_reminder", "calendar", "remind_me", "schedule_reminder", "schedule_task", "set_recurring_task"],
     examples: [
       "remind me every one hour to check system health",
-      "every hour check system health",
       "every morning browse AI news and summarize it",
-      "remind me tomorrow about my girlfriend birthday",
-      "show my active reminders",
-      "cancel reminder 123",
+      "create a passive event for tomorrow at 2pm",
+      "show my active pulse items",
+      "preview this monthly schedule",
+      "check pulse clock health",
     ],
     domain: "time-management",
     priority: 98,
@@ -533,117 +860,288 @@ export const pulseTool: ToolDefinition = {
         };
       }
 
+      if (parsed.action === "health") {
+        const health: PulseClockHealth = store.getClockHealth(parsed.timezone);
+        return {
+          ok: true,
+          output: toJsonOutput({ action: "health", health }),
+          meta: { action: "health", syncHealthy: health.syncHealthy },
+        };
+      }
+
       if (parsed.action === "list") {
         const status = parseStatus(parsed.status);
         if (isToolResult(status)) return status;
         const limit = parseLimit(parsed.limit);
         if (isToolResult(limit)) return limit;
-        const reminders = await store.listReminders({ clientId, status, limit });
+        const items = await store.listItems({ clientId, status, kind: parsed.kind, limit });
+        const reminders = await store.listReminders({ clientId, status: status === "paused" ? "active" : status, limit });
         return {
           ok: true,
           output: toJsonOutput({
             action: "list",
-            total: reminders.length,
+            total: items.length,
+            items: items.map((item) => formatItem(item)),
             reminders: reminders.map((reminder) => formatReminder(reminder)),
           }),
-          meta: { action: "list", count: reminders.length },
+          meta: { action: "list", count: items.length },
         };
       }
 
-      if (parsed.action === "cancel") {
-        const reminder = await store.cancelReminder(clientId, parsed.id);
-        if (!reminder) {
+      if (parsed.action === "get") {
+        const details = await store.getItemDetails(clientId, parsed.id);
+        if (!details) {
           return { ok: false, error: `Pulse item not found: ${parsed.id}` };
         }
         return {
           ok: true,
-          output: toJsonOutput({ action: "cancel", reminder: formatReminder(reminder) }),
-          meta: { action: "cancel", reminderId: reminder.id, itemId: reminder.id },
+          output: toJsonOutput({
+            action: "get",
+            item: formatItem(details.item),
+            occurrences: details.occurrences,
+            history: details.history,
+          }),
+          meta: { action: "get", itemId: details.item.id },
+        };
+      }
+
+      if (parsed.action === "pause") {
+        const item = await store.pauseItem(clientId, parsed.id);
+        if (!item) {
+          return { ok: false, error: `Pulse item not found: ${parsed.id}` };
+        }
+        return {
+          ok: true,
+          output: toJsonOutput({
+            action: "pause",
+            item: formatItem(item),
+            ...(item.kind === "reminder" || item.kind === "task" ? { reminder: formatLegacyReminderFromItem(item) } : {}),
+          }),
+          meta: { action: "pause", itemId: item.id },
+        };
+      }
+
+      if (parsed.action === "resume") {
+        const item = await store.resumeItem(clientId, parsed.id);
+        if (!item) {
+          return { ok: false, error: `Pulse item not found: ${parsed.id}` };
+        }
+        const preview = buildPreview(item, null, item.timezone, 5, item.startAtUtc);
+        return {
+          ok: true,
+          output: toJsonOutput({
+            action: "resume",
+            item: formatItem(item),
+            ...(item.kind === "reminder" || item.kind === "task" ? { reminder: formatLegacyReminderFromItem(item) } : {}),
+            preview: formatPreview(preview),
+          }),
+          meta: { action: "resume", itemId: item.id },
+        };
+      }
+
+      if (parsed.action === "cancel") {
+        const item = await store.cancelItem(clientId, parsed.id);
+        if (!item) {
+          return { ok: false, error: `Pulse item not found: ${parsed.id}` };
+        }
+        return {
+          ok: true,
+          output: toJsonOutput({
+            action: "cancel",
+            item: formatItem(item),
+            ...(item.kind === "reminder" || item.kind === "task" ? { reminder: formatLegacyReminderFromItem(item) } : {}),
+          }),
+          meta: { action: "cancel", itemId: item.id },
+        };
+      }
+
+      if (parsed.action === "delete") {
+        const deleted = await store.deleteItem(clientId, parsed.id);
+        if (!deleted) {
+          return { ok: false, error: `Pulse item not found: ${parsed.id}` };
+        }
+        return {
+          ok: true,
+          output: toJsonOutput({ action: "delete", id: parsed.id, deleted: true }),
+          meta: { action: "delete", itemId: parsed.id },
         };
       }
 
       if (parsed.action === "snooze") {
         const durationMs = parseDurationMs(parsed.duration, parsed.durationMs);
         if (isToolResult(durationMs)) return durationMs;
-        const reminder = await store.snoozeReminder(clientId, parsed.id, durationMs);
-        if (!reminder) {
+        const item = await store.snoozeItem(clientId, parsed.id, durationMs);
+        if (!item) {
           return { ok: false, error: `Pulse item not found or not snoozable: ${parsed.id}` };
         }
+        const preview = buildPreview(item, null, item.timezone, 5, item.startAtUtc);
         return {
           ok: true,
-          output: toJsonOutput({ action: "snooze", reminder: formatReminder(reminder) }),
-          meta: { action: "snooze", reminderId: reminder.id, itemId: reminder.id, durationMs },
+          output: toJsonOutput({
+            action: "snooze",
+            item: formatItem(item),
+            ...(item.kind === "reminder" || item.kind === "task" ? { reminder: formatLegacyReminderFromItem(item) } : {}),
+            preview: formatPreview(preview),
+          }),
+          meta: { action: "snooze", itemId: item.id, durationMs },
         };
       }
 
-      const timezone = resolveTimeZone(parsed.timezone);
+      if (parsed.action === "dismiss") {
+        const item = await store.dismissItem({
+          clientId,
+          itemId: parsed.id,
+          occurrenceId: parsed.occurrenceId,
+          now,
+        });
+        if (!item) {
+          return { ok: false, error: `Pulse item not found or not dismissable: ${parsed.id}` };
+        }
+        const preview = buildPreview(item, null, item.timezone, 5, item.startAtUtc);
+        return {
+          ok: true,
+          output: toJsonOutput({
+            action: "dismiss",
+            item: formatItem(item),
+            ...(item.kind === "reminder" || item.kind === "task" ? { reminder: formatLegacyReminderFromItem(item) } : {}),
+            preview: formatPreview(preview),
+          }),
+          meta: { action: "dismiss", itemId: item.id },
+        };
+      }
+
+      if (parsed.action === "preview") {
+        const count = parseCount(parsed.count);
+        if (isToolResult(count)) return count;
+        if (parsed.id) {
+          const details = await store.getItemDetails(clientId, parsed.id);
+          if (!details) {
+            return { ok: false, error: `Pulse item not found: ${parsed.id}` };
+          }
+          const preview = buildPreview(details.item, null, details.item.timezone, count, details.item.startAtUtc);
+          return {
+            ok: true,
+            output: toJsonOutput({ action: "preview", item: formatItem(details.item), preview: formatPreview(preview) }),
+            meta: { action: "preview", itemId: details.item.id, count },
+          };
+        }
+
+        const timezone = resolveTimeZone(parsed.timezone);
+        const scheduleInfo = resolveScheduleSeed(parsed, timezone, now, false);
+        if (isToolResult(scheduleInfo)) return scheduleInfo;
+        const startAt = parseIsoDate(parsed.startAt, "startAt");
+        if (isToolResult(startAt)) return startAt;
+        const preview = buildPreview(null, scheduleInfo?.schedule ?? null, timezone, count, startAt ?? null);
+        return {
+          ok: true,
+          output: toJsonOutput({ action: "preview", preview: formatPreview(preview), schedule: scheduleInfo?.schedule ?? null }),
+          meta: { action: "preview", count },
+        };
+      }
+
+      const existingItem = parsed.action === "update"
+        ? await store.getItem(clientId, parsed.id)
+        : null;
+      if (parsed.action === "update" && !existingItem) {
+        return { ok: false, error: `Pulse item not found: ${parsed.id}` };
+      }
+
+      const timezone = resolveTimeZone(parsed.timezone ?? existingItem?.timezone);
       const taskObjectiveSeed = isObject(parsed.task) && typeof parsed.task["objective"] === "string"
         ? parsed.task["objective"]
         : "";
-      const instructionSeed = parsed.instruction ?? parsed.message ?? parsed.title ?? taskObjectiveSeed ?? "";
+      const instructionSeed = parsed.instruction
+        ?? parsed.message
+        ?? parsed.title
+        ?? taskObjectiveSeed
+        ?? existingItem?.instruction
+        ?? "";
       const instruction = parseInstruction(parsed.instruction ?? parsed.message, instructionSeed);
       if (isToolResult(instruction)) return instruction;
 
-      const title = parseTitle(parsed.title, instruction);
+      const title = parseTitle(parsed.title, existingItem?.title ?? instruction);
       if (isToolResult(title)) return title;
 
-      let scheduleResult: { schedule: PulseReminderSchedule; nextTriggerAt: string } | ToolResult;
+      const kind = inferKind(parsed.kind ?? existingItem?.kind, instruction, title, parsed.task !== undefined, parsed.startAt);
+      const payload = parsed.action === "create" || hasPayloadChanges(parsed)
+        ? parsePayload(parsed, kind, instruction)
+        : undefined;
+      if (isToolResult(payload)) return payload;
 
-      if (parsed.schedule) {
-        scheduleResult = parseStructuredSchedule(parsed.schedule, timezone, now);
-      } else {
-        const expression = parsed.every?.trim() || parsed.when?.trim() || "";
-        if (expression.length === 0) {
-          return fail("create requires one of: schedule, when, every.");
-        }
-        const parsedExpression = parsePulseExpression(expression, timezone, now);
-        if (!parsedExpression) {
-          return fail("unable to parse schedule expression. Try examples like 'tomorrow at 9am' or 'every 1 hour', or provide a structured schedule object.");
-        }
-        scheduleResult = {
-          schedule: parsedExpression.schedule,
-          nextTriggerAt: parsedExpression.nextTriggerAt,
+      const startAt = parseIsoDate(parsed.startAt, "startAt");
+      if (isToolResult(startAt)) return startAt;
+      const endAt = parseIsoDate(parsed.endAt, "endAt");
+      if (isToolResult(endAt)) return endAt;
+
+      const scheduleInfo = resolveScheduleSeed(parsed, timezone, now, parsed.action === "create" && kind !== "event");
+      if (isToolResult(scheduleInfo)) return scheduleInfo;
+
+      if (parsed.action === "create") {
+        const item = await store.createItem({
+          clientId,
+          kind,
+          title,
+          instruction,
+          timezone,
+          schedule: scheduleInfo?.schedule ?? null,
+          nextDueAt: scheduleInfo?.nextTriggerAt,
+          payload: {
+            ...(payload ?? {}),
+            ...(context?.runId ? { originRunId: context.runId } : {}),
+            ...(context?.sessionId ? { originSessionId: context.sessionId } : {}),
+          },
+          metadata: parsed.metadata,
+          startAtUtc: startAt ?? null,
+          endAtUtc: endAt ?? null,
+          durationMs: parsed.durationMs,
+          allDay: parsed.allDay,
+        });
+        const preview = buildPreview(item, null, timezone, 5, item.startAtUtc);
+        return {
+          ok: true,
+          output: toJsonOutput({
+            action: "create",
+            item: formatItem(item),
+            ...(item.kind === "reminder" || item.kind === "task" ? { reminder: formatLegacyReminderFromItem(item) } : {}),
+            preview: formatPreview(preview),
+          }),
+          meta: {
+            action: "create",
+            itemId: item.id,
+            nextDueAt: item.nextDueAt,
+          },
         };
       }
 
-      if (isToolResult(scheduleResult)) {
-        return scheduleResult;
-      }
-
-      const intentKind = parsed.task !== undefined
-        ? "task"
-        : inferIntentKind(parsed.intentKind, instruction, title, scheduleResult.schedule);
-      const task = intentKind === "task"
-        ? parseTaskSpec(parsed.task, instruction, parsed.requestedAction)
-        : undefined;
-      if (isToolResult(task)) return task;
-      const requestedAction = intentKind === "task"
-        ? task?.requestedAction ?? normalizeRequestedAction(parsed.requestedAction ?? instruction)
-        : undefined;
-
-      const reminder = await store.createReminder({
-        clientId,
-        intentKind,
+      const item = await store.updateItem(clientId, parsed.id, {
         title,
         instruction,
         timezone,
-        schedule: scheduleResult.schedule,
-        nextTriggerAt: scheduleResult.nextTriggerAt,
+        schedule: scheduleInfo?.schedule ?? undefined,
+        ...(payload !== undefined ? { payload } : {}),
         metadata: parsed.metadata,
-        originRunId: context?.runId,
-        originSessionId: context?.sessionId,
-        ...(intentKind === "task" && requestedAction ? { requestedAction } : {}),
-        ...(intentKind === "task" && task ? { task } : {}),
+        ...(startAt !== undefined ? { startAtUtc: startAt } : {}),
+        ...(endAt !== undefined ? { endAtUtc: endAt } : {}),
+        durationMs: parsed.durationMs,
+        allDay: parsed.allDay,
+        ...(scheduleInfo?.nextTriggerAt !== undefined ? { nextDueAt: scheduleInfo.nextTriggerAt } : {}),
       });
-
+      if (!item) {
+        return { ok: false, error: `Pulse item not found: ${parsed.id}` };
+      }
+      const preview = buildPreview(item, null, timezone, 5, item.startAtUtc);
       return {
         ok: true,
-        output: toJsonOutput({ action: "create", reminder: formatReminder(reminder) }),
+        output: toJsonOutput({
+          action: "update",
+          item: formatItem(item),
+          ...(item.kind === "reminder" || item.kind === "task" ? { reminder: formatLegacyReminderFromItem(item) } : {}),
+          preview: formatPreview(preview),
+        }),
         meta: {
-          action: "create",
-          reminderId: reminder.id,
-          itemId: reminder.id,
-          nextTriggerAt: reminder.nextTriggerAt,
+          action: "update",
+          itemId: item.id,
+          nextDueAt: item.nextDueAt,
         },
       };
     } catch (err) {
@@ -651,24 +1149,51 @@ export const pulseTool: ToolDefinition = {
         ok: false,
         error: err instanceof Error ? err.message : "Pulse tool failed",
       };
+    } finally {
+      store.close();
     }
   },
 };
 
+function resolveScheduleSeed(
+  parsed: CreateOrUpdateSeed | PreviewInput,
+  timezone: string,
+  now: Date,
+  requireSchedule: boolean,
+): { schedule: PulseSchedule; nextTriggerAt: string } | null | ToolResult {
+  if (parsed.schedule) {
+    return parseStructuredSchedule(parsed.schedule, timezone, now);
+  }
+  const expression = parsed.every?.trim() || parsed.when?.trim() || "";
+  if (expression.length === 0) {
+    return requireSchedule ? fail("create/update requires one of: schedule, when, every.") : null;
+  }
+  const parsedExpression = parsePulseExpression(expression, timezone, now);
+  if (!parsedExpression) {
+    return fail("unable to parse schedule expression. Try examples like 'tomorrow at 9am', 'every 1 hour', or provide a structured schedule object.");
+  }
+  return {
+    schedule: parsedExpression.schedule,
+    nextTriggerAt: parsedExpression.nextTriggerAt,
+  };
+}
+
 const PULSE_PROMPT_BLOCK = [
   "The `pulse` tool is built in.",
   "Use it directly for reminders, schedules, recurring checks, periodic browsing, periodic monitoring, dates, or times.",
-  "Use action=create to save reminders or scheduled tasks, action=list to view, action=cancel to stop, action=snooze to delay, action=now for current date/time.",
-  "Use intentKind=reminder for notify-only items and intentKind=task when the user wants the agent to do work on a schedule.",
-  "Prefer structured schedule objects for recurring work, especially interval schedules with value/unit fields.",
+  "Pulse V2 stores all schedule state in SQLite and supports events, reminders, notifications, and executable scheduled tasks.",
+  "Use action=create, update, list, get, pause, resume, cancel, delete, snooze, dismiss, preview, now, and health as needed.",
+  "Use kind=event for passive calendar records, kind=reminder or kind=notification for internal notifications, and kind=task for scheduled agent work.",
+  "Prefer structured schedule objects when possible. Supported recurrence kinds are once, interval, daily, weekly, monthly, and yearly.",
+  "After create or update, inspect the preview output to confirm schedule math before relying on it for important work.",
   "For scheduled tasks, include task.objective and task.requestedAction when known so future system_event handling has enough execution context.",
-  "When creating reminders or tasks, include clear instruction text and timezone when known.",
+  "When the user accepts an assistant-suggested recurring Pulse routine, create kind=task with requestedAction=run_responsibility and metadata.source=pulse_proposal.",
 ].join("\n");
 
 const pulseSkill: SkillDefinition = {
   id: "pulse",
   version: "1.0.0",
-  description: "Persistent reminder and scheduled-task orchestration for time-based agent work.",
+  description: "Persistent SQLite-backed calendar, reminder, notification, and scheduled-task orchestration for time-based agent work.",
   promptBlock: PULSE_PROMPT_BLOCK,
   tools: [pulseTool],
 };

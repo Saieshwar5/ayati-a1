@@ -129,8 +129,8 @@ const DEFAULT_DIRECT_INSTRUCTIONS = `- This stage chooses exactly 1 next move in
 - If the user refers to prior work, earlier conversations, dates, or says "like before", prefer recall_memory first.
 - If exact prior details are needed after recall_memory, use normal file tools on the returned sessionFilePath or runStatePath.
 
-- For user-specific knowledge, prefer wiki_search, wiki_read_section, or wiki_list_sections.
-- Use wiki_update only when the user explicitly asks to save, correct, or remember information.
+- Use the always-loaded Personal Memory Snapshot for user-specific personalization.
+- Use memory tools only when the user explicitly asks to save, correct, inspect, or remember personal memory.
 
 - If there are no current prepared attachments but Active session attachments strongly match the user's follow-up file reference, prefer restore_attachment_context before asking for re-upload.
 
@@ -1954,14 +1954,25 @@ function formatActiveSessionAttachments(state: LoopState): string {
 }
 
 function formatAttachedDocuments(state: LoopState): string {
+  const managedFiles = state.managedFiles ?? [];
   const preparedAttachments = state.preparedAttachments ?? [];
   const attachedDocuments = state.attachedDocuments ?? [];
   const imageAttachments = getCurrentImageAttachments(state);
   const nonImageDocuments = attachedDocuments.filter((document) => document.kind !== "image");
   const warnings = state.attachmentWarnings ?? [];
-  if (preparedAttachments.length === 0 && attachedDocuments.length === 0 && warnings.length === 0) return "";
+  if (managedFiles.length === 0 && preparedAttachments.length === 0 && attachedDocuments.length === 0 && warnings.length === 0) return "";
 
   const blocks: string[] = [];
+
+  if (managedFiles.length > 0) {
+    const fileLines = managedFiles.map((file) => {
+      const warning = file.warnings.length > 0
+        ? ` | warning=${truncateInline(file.warnings.join(" | "), 140)}`
+        : "";
+      return `  - ${file.fileId} | name=${file.originalName} | kind=${file.kind} | capabilities=${file.capabilities.join(",")} | status=${file.processingStatus}${warning}`;
+    });
+    blocks.push(`\nManaged files available (${managedFiles.length}):\n${fileLines.join("\n")}\n`);
+  }
 
   if (imageAttachments.length > 0) {
     const imageLines = imageAttachments.map((document) =>

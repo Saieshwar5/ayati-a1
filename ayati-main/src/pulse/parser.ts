@@ -2,21 +2,29 @@ import type {
   PulseDailySchedule,
   PulseDurationUnit,
   PulseIntervalSchedule,
+  PulseMonthlySchedule,
   PulseOnceSchedule,
-  PulseReminderSchedule,
+  PulsePreviewOccurrence,
+  PulseSchedule,
   PulseWeeklySchedule,
   PulseWeekday,
+  PulseYearlySchedule,
 } from "./types.js";
 import {
   addDaysInTimeZone,
+  addMonthsToLocalDate,
+  addYearsToLocalDate,
+  daysInMonth,
   getZonedDateParts,
-  type LocalDate,
   resolveTimeZone,
+  toDateLabel,
+  toTimeLabel,
+  weekdayName,
   zonedDateTimeToUtc,
 } from "./time.js";
 
 export interface ParsedPulseSchedule {
-  schedule: PulseReminderSchedule;
+  schedule: PulseSchedule;
   nextTriggerAt: string;
   normalizedExpression: string;
 }
@@ -41,6 +49,33 @@ const WEEKDAY_LOOKUP: Record<string, PulseWeekday> = {
   friday: 5,
   saturday: 6,
   sunday: 7,
+};
+
+const MONTH_LOOKUP: Record<string, number> = {
+  jan: 1,
+  january: 1,
+  feb: 2,
+  february: 2,
+  mar: 3,
+  march: 3,
+  apr: 4,
+  april: 4,
+  may: 5,
+  jun: 6,
+  june: 6,
+  jul: 7,
+  july: 7,
+  aug: 8,
+  august: 8,
+  sep: 9,
+  sept: 9,
+  september: 9,
+  oct: 10,
+  october: 10,
+  nov: 11,
+  november: 11,
+  dec: 12,
+  december: 12,
 };
 
 const NUMBER_WORDS: Record<string, number> = {
@@ -150,7 +185,6 @@ function parseTimeInText(text: string): ParsedTime {
   }
 
   const isMeridiemOnly = withMeridiem !== null && withAt === null && withColon === null;
-
   const hourRaw = Number(match[1] ?? "0");
   const minuteRaw = isMeridiemOnly ? 0 : Number(match[2] ?? "0");
   const suffixValue = isMeridiemOnly ? match[2] : match[3];
@@ -164,8 +198,10 @@ function parseTimeInText(text: string): ParsedTime {
     if (hourRaw < 1 || hourRaw > 12) {
       return { hour: DEFAULT_HOUR, minute: DEFAULT_MINUTE };
     }
-    const normalizedHour = hourRaw % 12 + (suffix === "pm" ? 12 : 0);
-    return { hour: normalizedHour, minute: minuteRaw };
+    return {
+      hour: hourRaw % 12 + (suffix === "pm" ? 12 : 0),
+      minute: minuteRaw,
+    };
   }
 
   if (hourRaw < 0 || hourRaw > 23) {
@@ -175,21 +211,46 @@ function parseTimeInText(text: string): ParsedTime {
   return { hour: hourRaw, minute: minuteRaw };
 }
 
-function toDateFromParts(parts: { year: number; month: number; day: number }): LocalDate {
-  return {
-    year: parts.year,
-    month: parts.month,
-    day: parts.day,
+function normalizeWeekdays(schedule: PulseWeeklySchedule): PulseWeekday[] {
+  const weekdays = schedule.weekdays?.length
+    ? schedule.weekdays
+    : schedule.weekday !== undefined
+      ? [schedule.weekday]
+      : [];
+  const deduped = Array.from(new Set(weekdays.filter((entry) => entry >= 1 && entry <= 7)));
+  deduped.sort((a, b) => a - b);
+  return deduped.length > 0 ? deduped : [1];
+}
+
+function nextOnce(schedule: PulseOnceSchedule, after: Date): string | null {
+  const atMillis = Date.parse(schedule.at);
+  if (!Number.isFinite(atMillis)) return null;
+  return atMillis > after.getTime() ? new Date(atMillis).toISOString() : null;
+}
+
+function nextInterval(schedule: PulseIntervalSchedule, after: Date): string | null {
+  const anchorMillis = Date.parse(schedule.anchorAt);
+  if (!Number.isFinite(anchorMillis)) {
+    return new Date(after.getTime() + schedule.everyMs).toISOString();
+  }
+
+  const firstMillis = anchorMillis + schedule.everyMs;
+  if (after.getTime() < firstMillis) {
+    return new Date(firstMillis).toISOString();
+  }
+
+  const steps = Math.floor((after.getTime() - anchorMillis) / schedule.everyMs) + 1;
+  const nextMillis = anchorMillis + (Math.max(1, steps) * schedule.everyMs);
+  return new Date(nextMillis).toISOString();
+}
+
+function nextDaily(schedule: PulseDailySchedule, timezone: string, after: Date): string {
+  const afterParts = getZonedDateParts(after, timezone);
+  let targetDate = {
+    year: afterParts.year,
+    month: afterParts.month,
+    day: afterParts.day,
   };
-}
-
-function daysInMonth(year: number, month: number): number {
-  return new Date(Date.UTC(year, month, 0)).getUTCDate();
-}
-
-function computeNextDailyOccurrence(schedule: PulseDailySchedule, timezone: string, now: Date): string {
-  const nowParts = getZonedDateParts(now, timezone);
-  let targetDate = toDateFromParts(nowParts);
 
   let candidate = zonedDateTimeToUtc(
     {
@@ -201,7 +262,7 @@ function computeNextDailyOccurrence(schedule: PulseDailySchedule, timezone: stri
     timezone,
   );
 
-  if (candidate.getTime() <= now.getTime()) {
+  if (candidate.getTime() <= after.getTime()) {
     targetDate = addDaysInTimeZone(targetDate, 1, timezone);
     candidate = zonedDateTimeToUtc(
       {
@@ -217,16 +278,65 @@ function computeNextDailyOccurrence(schedule: PulseDailySchedule, timezone: stri
   return candidate.toISOString();
 }
 
-function computeNextWeeklyOccurrence(schedule: PulseWeeklySchedule, timezone: string, now: Date): string {
-  const nowParts = getZonedDateParts(now, timezone);
-  const currentWeekday = nowParts.weekday;
+function nextWeekly(schedule: PulseWeeklySchedule, timezone: string, after: Date): string {
+  const weekdays = normalizeWeekdays(schedule);
+  const afterParts = getZonedDateParts(after, timezone);
+  const baseDate = {
+    year: afterParts.year,
+    month: afterParts.month,
+    day: afterParts.day,
+  };
 
-  let dayDelta = (schedule.weekday - currentWeekday + 7) % 7;
-  let targetDate = toDateFromParts(nowParts);
+  for (let offset = 0; offset <= 14; offset++) {
+    const targetDate = addDaysInTimeZone(baseDate, offset, timezone);
+    const candidateWeekday = getZonedDateParts(
+      zonedDateTimeToUtc(
+        {
+          ...targetDate,
+          hour: 12,
+          minute: 0,
+          second: 0,
+        },
+        timezone,
+      ),
+      timezone,
+    ).weekday;
+    if (!weekdays.includes(candidateWeekday)) {
+      continue;
+    }
 
-  if (dayDelta > 0) {
-    targetDate = addDaysInTimeZone(targetDate, dayDelta, timezone);
+    const candidate = zonedDateTimeToUtc(
+      {
+        ...targetDate,
+        hour: schedule.hour,
+        minute: schedule.minute,
+        second: 0,
+      },
+      timezone,
+    );
+    if (candidate.getTime() > after.getTime()) {
+      return candidate.toISOString();
+    }
   }
+
+  return zonedDateTimeToUtc(
+    {
+      ...addDaysInTimeZone(baseDate, 7, timezone),
+      hour: schedule.hour,
+      minute: schedule.minute,
+      second: 0,
+    },
+    timezone,
+  ).toISOString();
+}
+
+function nextMonthly(schedule: PulseMonthlySchedule, timezone: string, after: Date): string {
+  const afterParts = getZonedDateParts(after, timezone);
+  let targetDate = {
+    year: afterParts.year,
+    month: afterParts.month,
+    day: Math.min(schedule.day, daysInMonth(afterParts.year, afterParts.month)),
+  };
 
   let candidate = zonedDateTimeToUtc(
     {
@@ -238,9 +348,16 @@ function computeNextWeeklyOccurrence(schedule: PulseWeeklySchedule, timezone: st
     timezone,
   );
 
-  if (candidate.getTime() <= now.getTime()) {
-    dayDelta = dayDelta === 0 ? 7 : dayDelta + 7;
-    targetDate = addDaysInTimeZone(toDateFromParts(nowParts), dayDelta, timezone);
+  if (candidate.getTime() <= after.getTime()) {
+    const nextMonth = addMonthsToLocalDate(
+      { year: afterParts.year, month: afterParts.month, day: 1 },
+      1,
+    );
+    targetDate = {
+      year: nextMonth.year,
+      month: nextMonth.month,
+      day: Math.min(schedule.day, daysInMonth(nextMonth.year, nextMonth.month)),
+    };
     candidate = zonedDateTimeToUtc(
       {
         ...targetDate,
@@ -255,24 +372,345 @@ function computeNextWeeklyOccurrence(schedule: PulseWeeklySchedule, timezone: st
   return candidate.toISOString();
 }
 
-function parseEveryExpression(expression: string, timezone: string, now: Date): ParsedPulseSchedule | null {
-  const weeklyMatch = expression.match(/\bevery\s+(monday|tuesday|wednesday|thursday|friday|saturday|sunday)(?:\s+at\s+(.+))?$/i);
-  if (weeklyMatch) {
-    const dayLabel = (weeklyMatch[1] ?? "").toLowerCase();
-    const weekday = WEEKDAY_LOOKUP[dayLabel];
-    if (!weekday) return null;
+function nextYearly(schedule: PulseYearlySchedule, timezone: string, after: Date): string {
+  const afterParts = getZonedDateParts(after, timezone);
+  let targetYear = afterParts.year;
+  let targetDate = {
+    year: targetYear,
+    month: schedule.month,
+    day: Math.min(schedule.day, daysInMonth(targetYear, schedule.month)),
+  };
 
+  let candidate = zonedDateTimeToUtc(
+    {
+      ...targetDate,
+      hour: schedule.hour,
+      minute: schedule.minute,
+      second: 0,
+    },
+    timezone,
+  );
+
+  if (candidate.getTime() <= after.getTime()) {
+    targetYear += 1;
+    targetDate = {
+      year: targetYear,
+      month: schedule.month,
+      day: Math.min(schedule.day, daysInMonth(targetYear, schedule.month)),
+    };
+    candidate = zonedDateTimeToUtc(
+      {
+        ...targetDate,
+        hour: schedule.hour,
+        minute: schedule.minute,
+        second: 0,
+      },
+      timezone,
+    );
+  }
+
+  return candidate.toISOString();
+}
+
+function latestIntervalOnOrBefore(schedule: PulseIntervalSchedule, now: Date): string | null {
+  const anchorMillis = Date.parse(schedule.anchorAt);
+  if (!Number.isFinite(anchorMillis)) return null;
+  const firstMillis = anchorMillis + schedule.everyMs;
+  if (now.getTime() < firstMillis) return null;
+  const steps = Math.floor((now.getTime() - anchorMillis) / schedule.everyMs);
+  if (steps < 1) return null;
+  return new Date(anchorMillis + (steps * schedule.everyMs)).toISOString();
+}
+
+function latestDailyOnOrBefore(schedule: PulseDailySchedule, timezone: string, now: Date): string {
+  const nowParts = getZonedDateParts(now, timezone);
+  let targetDate = {
+    year: nowParts.year,
+    month: nowParts.month,
+    day: nowParts.day,
+  };
+
+  let candidate = zonedDateTimeToUtc(
+    {
+      ...targetDate,
+      hour: schedule.hour,
+      minute: schedule.minute,
+      second: 0,
+    },
+    timezone,
+  );
+  if (candidate.getTime() > now.getTime()) {
+    targetDate = addDaysInTimeZone(targetDate, -1, timezone);
+    candidate = zonedDateTimeToUtc(
+      {
+        ...targetDate,
+        hour: schedule.hour,
+        minute: schedule.minute,
+        second: 0,
+      },
+      timezone,
+    );
+  }
+  return candidate.toISOString();
+}
+
+function latestWeeklyOnOrBefore(schedule: PulseWeeklySchedule, timezone: string, now: Date): string {
+  const weekdays = normalizeWeekdays(schedule);
+  const nowParts = getZonedDateParts(now, timezone);
+  const baseDate = {
+    year: nowParts.year,
+    month: nowParts.month,
+    day: nowParts.day,
+  };
+
+  for (let offset = 0; offset <= 14; offset++) {
+    const targetDate = addDaysInTimeZone(baseDate, -offset, timezone);
+    const candidateWeekday = getZonedDateParts(
+      zonedDateTimeToUtc(
+        {
+          ...targetDate,
+          hour: 12,
+          minute: 0,
+          second: 0,
+        },
+        timezone,
+      ),
+      timezone,
+    ).weekday;
+    if (!weekdays.includes(candidateWeekday)) {
+      continue;
+    }
+    const candidate = zonedDateTimeToUtc(
+      {
+        ...targetDate,
+        hour: schedule.hour,
+        minute: schedule.minute,
+        second: 0,
+      },
+      timezone,
+    );
+    if (candidate.getTime() <= now.getTime()) {
+      return candidate.toISOString();
+    }
+  }
+
+  return zonedDateTimeToUtc(
+    {
+      ...addDaysInTimeZone(baseDate, -7, timezone),
+      hour: schedule.hour,
+      minute: schedule.minute,
+      second: 0,
+    },
+    timezone,
+  ).toISOString();
+}
+
+function latestMonthlyOnOrBefore(schedule: PulseMonthlySchedule, timezone: string, now: Date): string {
+  const nowParts = getZonedDateParts(now, timezone);
+  let year = nowParts.year;
+  let month = nowParts.month;
+  let candidate = zonedDateTimeToUtc(
+    {
+      year,
+      month,
+      day: Math.min(schedule.day, daysInMonth(year, month)),
+      hour: schedule.hour,
+      minute: schedule.minute,
+      second: 0,
+    },
+    timezone,
+  );
+
+  if (candidate.getTime() > now.getTime()) {
+    const previousMonth = addMonthsToLocalDate({ year, month, day: 1 }, -1);
+    year = previousMonth.year;
+    month = previousMonth.month;
+    candidate = zonedDateTimeToUtc(
+      {
+        year,
+        month,
+        day: Math.min(schedule.day, daysInMonth(year, month)),
+        hour: schedule.hour,
+        minute: schedule.minute,
+        second: 0,
+      },
+      timezone,
+    );
+  }
+
+  return candidate.toISOString();
+}
+
+function latestYearlyOnOrBefore(schedule: PulseYearlySchedule, timezone: string, now: Date): string {
+  const nowParts = getZonedDateParts(now, timezone);
+  let year = nowParts.year;
+  let candidate = zonedDateTimeToUtc(
+    {
+      year,
+      month: schedule.month,
+      day: Math.min(schedule.day, daysInMonth(year, schedule.month)),
+      hour: schedule.hour,
+      minute: schedule.minute,
+      second: 0,
+    },
+    timezone,
+  );
+
+  if (candidate.getTime() > now.getTime()) {
+    year -= 1;
+    candidate = zonedDateTimeToUtc(
+      {
+        year,
+        month: schedule.month,
+        day: Math.min(schedule.day, daysInMonth(year, schedule.month)),
+        hour: schedule.hour,
+        minute: schedule.minute,
+        second: 0,
+      },
+      timezone,
+    );
+  }
+
+  return candidate.toISOString();
+}
+
+export function computeNextOccurrenceAfter(
+  schedule: PulseSchedule,
+  timezoneInput: string | undefined,
+  afterInput: Date | string,
+): string | null {
+  const timezone = resolveTimeZone(timezoneInput);
+  const after = typeof afterInput === "string" ? new Date(afterInput) : afterInput;
+  if (Number.isNaN(after.getTime())) {
+    return null;
+  }
+
+  if (schedule.kind === "once") {
+    return nextOnce(schedule, after);
+  }
+  if (schedule.kind === "interval") {
+    return nextInterval(schedule, after);
+  }
+  if (schedule.kind === "daily") {
+    return nextDaily(schedule, timezone, after);
+  }
+  if (schedule.kind === "weekly") {
+    return nextWeekly(schedule, timezone, after);
+  }
+  if (schedule.kind === "monthly") {
+    return nextMonthly(schedule, timezone, after);
+  }
+  return nextYearly(schedule, timezone, after);
+}
+
+export function computeLatestDueAtOrBefore(
+  schedule: PulseSchedule,
+  timezoneInput: string | undefined,
+  nowInput: Date,
+): string | null {
+  const timezone = resolveTimeZone(timezoneInput);
+  if (schedule.kind === "once") {
+    const atMillis = Date.parse(schedule.at);
+    if (!Number.isFinite(atMillis) || atMillis > nowInput.getTime()) {
+      return null;
+    }
+    return new Date(atMillis).toISOString();
+  }
+  if (schedule.kind === "interval") {
+    return latestIntervalOnOrBefore(schedule, nowInput);
+  }
+  if (schedule.kind === "daily") {
+    return latestDailyOnOrBefore(schedule, timezone, nowInput);
+  }
+  if (schedule.kind === "weekly") {
+    return latestWeeklyOnOrBefore(schedule, timezone, nowInput);
+  }
+  if (schedule.kind === "monthly") {
+    return latestMonthlyOnOrBefore(schedule, timezone, nowInput);
+  }
+  return latestYearlyOnOrBefore(schedule, timezone, nowInput);
+}
+
+export function previewPulseOccurrences(
+  schedule: PulseSchedule | null,
+  timezoneInput: string | undefined,
+  nowInput: Date,
+  count = 5,
+  startAtUtc?: string | null,
+): PulsePreviewOccurrence[] {
+  const timezone = resolveTimeZone(timezoneInput);
+  const safeCount = Math.max(0, Math.min(50, Math.trunc(count)));
+  const results: PulsePreviewOccurrence[] = [];
+
+  if (safeCount === 0) {
+    return results;
+  }
+
+  if (!schedule) {
+    if (!startAtUtc) {
+      return results;
+    }
+    const parts = getZonedDateParts(new Date(startAtUtc), timezone);
+    return [{
+      index: 1,
+      scheduledForUtc: new Date(startAtUtc).toISOString(),
+      timezone,
+      localDate: toDateLabel(parts),
+      localTime: toTimeLabel(parts),
+      weekday: weekdayName(parts.weekday),
+    }];
+  }
+
+  let cursor = new Date(nowInput.getTime() - 1);
+  for (let index = 1; index <= safeCount; index++) {
+    const next = computeNextOccurrenceAfter(schedule, timezone, cursor);
+    if (!next) {
+      break;
+    }
+    const parts = getZonedDateParts(new Date(next), timezone);
+    results.push({
+      index,
+      scheduledForUtc: next,
+      timezone,
+      localDate: toDateLabel(parts),
+      localTime: toTimeLabel(parts),
+      weekday: weekdayName(parts.weekday),
+    });
+    cursor = new Date(next);
+  }
+
+  return results;
+}
+
+function parseMonthToken(raw: string): number | null {
+  const normalized = raw.trim().toLowerCase();
+  if (MONTH_LOOKUP[normalized] !== undefined) {
+    return MONTH_LOOKUP[normalized] ?? null;
+  }
+  const numeric = Number(normalized);
+  if (!Number.isInteger(numeric) || numeric < 1 || numeric > 12) {
+    return null;
+  }
+  return numeric;
+}
+
+function parseEveryExpression(expression: string, timezone: string, now: Date): ParsedPulseSchedule | null {
+  const weeklyMatch = expression.match(/\bevery(?: week)?(?: on)?\s+(monday|tuesday|wednesday|thursday|friday|saturday|sunday)(?:\s+at\s+(.+))?$/i);
+  if (weeklyMatch) {
+    const weekday = WEEKDAY_LOOKUP[(weeklyMatch[1] ?? "").toLowerCase()];
+    if (!weekday) return null;
     const { hour, minute } = parseTimeInText(weeklyMatch[2] ?? "");
     const schedule: PulseWeeklySchedule = {
       kind: "weekly",
       weekday,
+      weekdays: [weekday],
       hour,
       minute,
       expression,
     };
     return {
       schedule,
-      nextTriggerAt: computeNextWeeklyOccurrence(schedule, timezone, now),
+      nextTriggerAt: computeNextOccurrenceAfter(schedule, timezone, now) ?? now.toISOString(),
       normalizedExpression: expression,
     };
   }
@@ -288,13 +726,78 @@ function parseEveryExpression(expression: string, timezone: string, now: Date): 
     };
     return {
       schedule,
-      nextTriggerAt: computeNextDailyOccurrence(schedule, timezone, now),
+      nextTriggerAt: computeNextOccurrenceAfter(schedule, timezone, now) ?? now.toISOString(),
+      normalizedExpression: expression,
+    };
+  }
+
+  const monthlyMatch = expression.match(/\bevery\s+month(?:\s+on)?\s+(\d{1,2})(?:st|nd|rd|th)?(?:\s+at\s+(.+))?$/i);
+  if (monthlyMatch) {
+    const day = Number(monthlyMatch[1]);
+    if (!Number.isInteger(day) || day < 1 || day > 31) return null;
+    const { hour, minute } = parseTimeInText(monthlyMatch[2] ?? "");
+    const schedule: PulseMonthlySchedule = {
+      kind: "monthly",
+      day,
+      hour,
+      minute,
+      expression,
+    };
+    return {
+      schedule,
+      nextTriggerAt: computeNextOccurrenceAfter(schedule, timezone, now) ?? now.toISOString(),
+      normalizedExpression: expression,
+    };
+  }
+
+  const yearlyNameMatch = expression.match(/\bevery\s+year(?:\s+on)?\s+([a-z]+)\s+(\d{1,2})(?:st|nd|rd|th)?(?:\s+at\s+(.+))?$/i);
+  if (yearlyNameMatch) {
+    const month = parseMonthToken(yearlyNameMatch[1] ?? "");
+    const day = Number(yearlyNameMatch[2]);
+    if (!month || !Number.isInteger(day) || day < 1 || day > 31) return null;
+    const { hour, minute } = parseTimeInText(yearlyNameMatch[3] ?? "");
+    const schedule: PulseYearlySchedule = {
+      kind: "yearly",
+      month,
+      day,
+      hour,
+      minute,
+      expression,
+    };
+    return {
+      schedule,
+      nextTriggerAt: computeNextOccurrenceAfter(schedule, timezone, now) ?? now.toISOString(),
+      normalizedExpression: expression,
+    };
+  }
+
+  const yearlyNumericMatch = expression.match(/\bevery\s+year(?:\s+on)?\s+(\d{1,2})\/(\d{1,2})(?:\s+at\s+(.+))?$/i);
+  if (yearlyNumericMatch) {
+    const month = Number(yearlyNumericMatch[1]);
+    const day = Number(yearlyNumericMatch[2]);
+    if (!Number.isInteger(month) || month < 1 || month > 12 || !Number.isInteger(day) || day < 1 || day > 31) {
+      return null;
+    }
+    const { hour, minute } = parseTimeInText(yearlyNumericMatch[3] ?? "");
+    const schedule: PulseYearlySchedule = {
+      kind: "yearly",
+      month,
+      day,
+      hour,
+      minute,
+      expression,
+    };
+    return {
+      schedule,
+      nextTriggerAt: computeNextOccurrenceAfter(schedule, timezone, now) ?? now.toISOString(),
       normalizedExpression: expression,
     };
   }
 
   const intervalMatch = expression.match(/(?:\bevery\b|\bafter every\b)\s+([a-z0-9]+)\s*(minute|minutes|min|mins|hour|hours|hr|hrs|day|days|week|weeks)\b/i);
-  if (!intervalMatch) return null;
+  if (!intervalMatch) {
+    return null;
+  }
 
   const value = parseNumberToken(intervalMatch[1] ?? "");
   if (value === null) return null;
@@ -315,7 +818,7 @@ function parseEveryExpression(expression: string, timezone: string, now: Date): 
 
   return {
     schedule,
-    nextTriggerAt: new Date(now.getTime() + everyMs).toISOString(),
+    nextTriggerAt: nextInterval(schedule, now) ?? new Date(now.getTime() + everyMs).toISOString(),
     normalizedExpression: expression,
   };
 }
@@ -326,7 +829,6 @@ function parseRelativeExpression(expression: string, now: Date): ParsedPulseSche
 
   const value = parseNumberToken(match[1] ?? "");
   if (value === null) return null;
-
   const ms = parseDurationToMillis(value, match[2] ?? "");
   if (!ms) return null;
 
@@ -336,7 +838,6 @@ function parseRelativeExpression(expression: string, now: Date): ParsedPulseSche
     at: when,
     expression,
   };
-
   return {
     schedule,
     nextTriggerAt: when,
@@ -351,7 +852,11 @@ function parseTomorrowTodayExpression(expression: string, timezone: string, now:
   if (!includesTomorrow && !includesToday) return null;
 
   const nowParts = getZonedDateParts(now, timezone);
-  let targetDate = toDateFromParts(nowParts);
+  let targetDate = {
+    year: nowParts.year,
+    month: nowParts.month,
+    day: nowParts.day,
+  };
   if (includesTomorrow) {
     targetDate = addDaysInTimeZone(targetDate, 1, timezone);
   }
@@ -366,13 +871,11 @@ function parseTomorrowTodayExpression(expression: string, timezone: string, now:
     },
     timezone,
   ).toISOString();
-
   const schedule: PulseOnceSchedule = {
     kind: "once",
     at: when,
     expression,
   };
-
   return {
     schedule,
     nextTriggerAt: when,
@@ -390,20 +893,20 @@ function parseNextMonthExpression(expression: string, timezone: string, now: Dat
   }
 
   const nowParts = getZonedDateParts(now, timezone);
-  let targetYear = nowParts.year;
-  let targetMonth = nowParts.month + 1;
-  if (targetMonth > 12) {
-    targetMonth = 1;
-    targetYear++;
-  }
-
-  const cappedDay = Math.min(requestedDay, daysInMonth(targetYear, targetMonth));
+  const nextMonth = addMonthsToLocalDate(
+    {
+      year: nowParts.year,
+      month: nowParts.month,
+      day: 1,
+    },
+    1,
+  );
   const { hour, minute } = parseTimeInText(expression);
   const when = zonedDateTimeToUtc(
     {
-      year: targetYear,
-      month: targetMonth,
-      day: cappedDay,
+      year: nextMonth.year,
+      month: nextMonth.month,
+      day: Math.min(requestedDay, daysInMonth(nextMonth.year, nextMonth.month)),
       hour,
       minute,
       second: 0,
@@ -416,7 +919,6 @@ function parseNextMonthExpression(expression: string, timezone: string, now: Dat
     at: when,
     expression,
   };
-
   return {
     schedule,
     nextTriggerAt: when,
@@ -428,8 +930,7 @@ function parseNextWeekdayExpression(expression: string, timezone: string, now: D
   const match = expression.match(/\bnext\s+(monday|tuesday|wednesday|thursday|friday|saturday|sunday)(?:\s+at\s+(.+))?$/i);
   if (!match) return null;
 
-  const weekdayLabel = (match[1] ?? "").toLowerCase();
-  const weekday = WEEKDAY_LOOKUP[weekdayLabel];
+  const weekday = WEEKDAY_LOOKUP[(match[1] ?? "").toLowerCase()];
   if (!weekday) return null;
 
   const nowParts = getZonedDateParts(now, timezone);
@@ -438,7 +939,6 @@ function parseNextWeekdayExpression(expression: string, timezone: string, now: D
   if (dayDelta === 0) {
     dayDelta = 7;
   }
-
   const targetDate = addDaysInTimeZone(
     {
       year: nowParts.year,
@@ -448,7 +948,6 @@ function parseNextWeekdayExpression(expression: string, timezone: string, now: D
     dayDelta,
     timezone,
   );
-
   const { hour, minute } = parseTimeInText(match[2] ?? "");
   const when = zonedDateTimeToUtc(
     {
@@ -459,13 +958,11 @@ function parseNextWeekdayExpression(expression: string, timezone: string, now: D
     },
     timezone,
   ).toISOString();
-
   const schedule: PulseOnceSchedule = {
     kind: "once",
     at: when,
     expression,
   };
-
   return {
     schedule,
     nextTriggerAt: when,
@@ -528,46 +1025,30 @@ export function parsePulseExpression(rawExpression: string, timezoneInput: strin
   const lowered = expression.toLowerCase();
 
   return (
-    parseEveryExpression(lowered, timezone, nowInput) ??
-    parseRelativeExpression(lowered, nowInput) ??
-    parseTomorrowTodayExpression(lowered, timezone, nowInput) ??
-    parseNextMonthExpression(lowered, timezone, nowInput) ??
-    parseNextWeekdayExpression(lowered, timezone, nowInput) ??
-    parseIsoLikeExpression(expression, timezone)
+    parseEveryExpression(lowered, timezone, nowInput)
+    ?? parseRelativeExpression(lowered, nowInput)
+    ?? parseTomorrowTodayExpression(lowered, timezone, nowInput)
+    ?? parseNextMonthExpression(lowered, timezone, nowInput)
+    ?? parseNextWeekdayExpression(lowered, timezone, nowInput)
+    ?? parseIsoLikeExpression(expression, timezone)
   );
 }
 
 export function computeNextTriggerForSchedule(
-  schedule: PulseReminderSchedule,
+  schedule: PulseSchedule,
   timezoneInput: string,
   nowInput: Date,
   currentScheduledFor?: string,
 ): string | null {
-  const timezone = resolveTimeZone(timezoneInput);
   if (schedule.kind === "once") {
-    if (currentScheduledFor) return null;
-    return schedule.at;
+    return currentScheduledFor ? null : schedule.at;
   }
 
-  if (schedule.kind === "interval") {
-    const baseMillis = currentScheduledFor
-      ? Date.parse(currentScheduledFor)
-      : Date.parse(schedule.anchorAt);
-    if (!Number.isFinite(baseMillis)) {
-      return new Date(nowInput.getTime() + schedule.everyMs).toISOString();
-    }
-    let next = baseMillis + schedule.everyMs;
-    while (next <= nowInput.getTime()) {
-      next += schedule.everyMs;
-    }
-    return new Date(next).toISOString();
-  }
-
-  if (schedule.kind === "daily") {
-    return computeNextDailyOccurrence(schedule, timezone, nowInput);
-  }
-
-  return computeNextWeeklyOccurrence(schedule, timezone, nowInput);
+  const referenceMillis = currentScheduledFor ? Date.parse(currentScheduledFor) : Number.NaN;
+  const effectiveAfter = Number.isFinite(referenceMillis)
+    ? new Date(Math.max(nowInput.getTime(), referenceMillis))
+    : nowInput;
+  return computeNextOccurrenceAfter(schedule, timezoneInput, effectiveAfter);
 }
 
 export function parseSnoozeDuration(raw: string): number | null {

@@ -1,4 +1,5 @@
 import type { ManagedDocumentManifest, PreparedAttachmentSummary } from "../documents/types.js";
+import type { PromptPersonalMemory } from "./personal/types.js";
 import type {
   SystemEventCreatedBy,
   SystemEventClass,
@@ -158,6 +159,8 @@ export interface SessionHandoffArtifact {
 export interface PromptMemoryContext {
   conversationTurns: ConversationTurn[];
   previousSessionSummary: string;
+  personalMemorySnapshot?: string;
+  personalMemories?: PromptPersonalMemory[];
   activeTopicLabel?: string;
   activeSessionPath?: string;
   recentRunLedgers?: PromptRunLedger[];

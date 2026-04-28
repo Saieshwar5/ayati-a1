@@ -2,6 +2,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { extname, join, resolve } from "node:path";
 import { devError, devLog, devWarn } from "../shared/index.js";
 import { persistManagedUpload, type ManagedUploadRecord } from "./upload-storage.js";
+import type { FileLibrary } from "../files/file-library.js";
 
 const DEFAULT_API_BASE_URL = "https://api.telegram.org";
 const DEFAULT_POLL_TIMEOUT_SECONDS = 30;
@@ -68,6 +69,7 @@ export interface TelegramServerOptions extends TelegramRuntimeConfig {
   stateDir: string;
   onMessage: (clientId: string, data: unknown) => void;
   fetchImpl?: typeof fetch;
+  fileLibrary?: FileLibrary;
 }
 
 export function loadTelegramRuntimeConfig(env: NodeJS.ProcessEnv = process.env): TelegramRuntimeConfig | null {
@@ -122,6 +124,7 @@ export class TelegramServer {
   private readonly maxFileBytes: number;
   private readonly defaultDocumentPrompt: string;
   private readonly sendMessageMaxChars: number;
+  private readonly fileLibrary?: FileLibrary;
   private readonly offsetFilePath: string;
 
   private nextUpdateId = 0;
@@ -146,6 +149,7 @@ export class TelegramServer {
     this.maxFileBytes = Math.max(1_024, options.maxFileBytes);
     this.defaultDocumentPrompt = options.defaultDocumentPrompt.trim() || DEFAULT_DOCUMENT_PROMPT;
     this.sendMessageMaxChars = Math.max(32, options.sendMessageMaxChars);
+    this.fileLibrary = options.fileLibrary;
     this.offsetFilePath = join(this.stateDir, "telegram-offset.json");
   }
 
@@ -354,6 +358,22 @@ export class TelegramServer {
     }
 
     const bytes = new Uint8Array(await response.arrayBuffer());
+    if (this.fileLibrary) {
+      const managed = await this.fileLibrary.registerUpload({
+        originalName: input.originalName,
+        mimeType: input.mimeType?.trim() || undefined,
+        bytes,
+        origin: "telegram_upload",
+      });
+      return {
+        uploadId: managed.fileId,
+        fileId: managed.fileId,
+        uploadedPath: managed.storagePath,
+        originalName: managed.originalName,
+        ...(managed.mimeType ? { mimeType: managed.mimeType } : {}),
+        sizeBytes: managed.sizeBytes,
+      };
+    }
     return persistManagedUpload({
       uploadsDir: this.uploadsDir,
       originalName: input.originalName,

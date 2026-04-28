@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { buildSystemPrompt } from "../../src/prompt/builder.js";
-import { emptySoulContext, emptyUserProfileContext } from "../../src/context/types.js";
+import { emptySoulContext } from "../../src/context/types.js";
 
 describe("buildSystemPrompt", () => {
   it("assembles deterministic section order and metadata", () => {
@@ -10,13 +10,16 @@ describe("buildSystemPrompt", () => {
     soul.identity.responsibility = "Help the user complete useful work.";
     soul.behavior.communication = ["Warm and direct"];
 
-    const profile = emptyUserProfileContext();
-    profile.name = "Sai";
-
     const output = buildSystemPrompt({
       basePrompt: "Base rules",
       soul,
-      userProfile: profile,
+      runtimeContext: {
+        nowUtc: "2026-04-24T10:15:30.000Z",
+        timezone: "Asia/Kolkata",
+        localDate: "2026-04-24",
+        localTime: "15:45:30",
+        weekday: "friday",
+      },
       conversationTurns: [
         { role: "user", content: "A", timestamp: "t1", sessionPath: "s/p" },
         { role: "assistant", content: "B", timestamp: "t2", sessionPath: "s/p", assistantResponseKind: "reply" },
@@ -45,7 +48,7 @@ describe("buildSystemPrompt", () => {
 
     expect(output.systemPrompt).toMatch(/^# Base System Prompt/);
     const soulPos = output.systemPrompt.indexOf("# Soul");
-    const profilePos = output.systemPrompt.indexOf("# User Profile");
+    const runtimeContextPos = output.systemPrompt.indexOf("# Runtime Context");
     const conversationPos = output.systemPrompt.indexOf("# Previous Conversation");
     const memoryPos = output.systemPrompt.indexOf("# Memory");
     const currentSessionPos = output.systemPrompt.indexOf("# Current Session");
@@ -53,8 +56,8 @@ describe("buildSystemPrompt", () => {
     const skillsPos = output.systemPrompt.indexOf("# Skills");
 
     expect(soulPos).toBeGreaterThan(0);
-    expect(profilePos).toBeGreaterThan(soulPos);
-    expect(conversationPos).toBeGreaterThan(profilePos);
+    expect(runtimeContextPos).toBeGreaterThan(soulPos);
+    expect(conversationPos).toBeGreaterThan(runtimeContextPos);
     expect(memoryPos).toBeGreaterThan(conversationPos);
     expect(currentSessionPos).toBeGreaterThan(memoryPos);
     expect(recentTasksPos).toBeGreaterThan(currentSessionPos);
@@ -66,6 +69,8 @@ describe("buildSystemPrompt", () => {
     expect(output.systemPrompt).toContain("Role: General-purpose autonomous AI teammate");
     expect(output.systemPrompt).toContain("Responsibility: Help the user complete useful work.");
     expect(output.systemPrompt).toContain("## Communication");
+    expect(output.systemPrompt).toContain("- local_date: 2026-04-24");
+    expect(output.systemPrompt).toContain("- weekday: friday");
     expect(output.systemPrompt).toContain("Session summary");
     expect(output.systemPrompt).toContain("session_path: sessions/s-123.md");
     expect(output.systemPrompt).toContain("objective=Finish the task");
@@ -74,7 +79,8 @@ describe("buildSystemPrompt", () => {
     expect(output.sections.map((s) => s.id)).toEqual([
       "base",
       "soul",
-      "user_profile",
+      "runtime_context",
+      "personal_memory",
       "conversation",
       "memory",
       "current_session",
@@ -84,7 +90,7 @@ describe("buildSystemPrompt", () => {
       "tools",
       "session_status",
     ]);
-    const emptyOptionalIds = new Set(["system_activity", "tools", "session_status"]);
+    const emptyOptionalIds = new Set(["personal_memory", "system_activity", "tools", "session_status"]);
     const includedSections = output.sections.filter((s) => !emptyOptionalIds.has(s.id));
     expect(includedSections.every((s) => s.included)).toBe(true);
     const activitySection = output.sections.find((s) => s.id === "system_activity");
@@ -99,7 +105,6 @@ describe("buildSystemPrompt", () => {
     const output = buildSystemPrompt({
       basePrompt: "Base rules",
       soul: emptySoulContext(),
-      userProfile: emptyUserProfileContext(),
       previousSessionSummary: "Last session: completed auth migration.",
     });
 
@@ -114,7 +119,6 @@ describe("buildSystemPrompt", () => {
     const output = buildSystemPrompt({
       basePrompt: "Base rules",
       soul: emptySoulContext(),
-      userProfile: emptyUserProfileContext(),
       conversationTurns: [],
       previousSessionSummary: "",
       skillBlocks: [],
@@ -133,7 +137,6 @@ describe("buildSystemPrompt", () => {
     const output = buildSystemPrompt({
       basePrompt: "Base rules",
       soul: emptySoulContext(),
-      userProfile: emptyUserProfileContext(),
       recentSystemActivity: [
         {
           timestamp: "2026-02-16T00:01:00.000Z",

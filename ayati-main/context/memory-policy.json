@@ -1,0 +1,67 @@
+{
+  "sections": {
+    "userFacts": {
+      "maxLiveCards": 50,
+      "minActiveConfidence": 0.8,
+      "admissionMargin": 0.1,
+      "allowInferredFacts": false
+    },
+    "timeBased": {
+      "maxLiveCards": 50,
+      "minActiveConfidence": 0.75,
+      "admissionMargin": 0.1
+    },
+    "evolvingMemory": {
+      "maxLiveCards": 300,
+      "minActiveConfidence": 0.72,
+      "admissionMargin": 0.08,
+      "defaultContextThreshold": 0.45,
+      "defaultArchiveThreshold": 0.18,
+      "pressureStartsAtRatio": 0.75,
+      "decay": {
+        "stable": {
+          "graceDays": 30,
+          "halfLifeDays": 365,
+          "pressureSensitivity": 0.15,
+          "contextThreshold": 0.45,
+          "archiveThreshold": 0.18
+        },
+        "linear": {
+          "graceDays": 14,
+          "halfLifeDays": 120,
+          "pressureSensitivity": 0.5,
+          "contextThreshold": 0.45,
+          "archiveThreshold": 0.18
+        },
+        "exponential": {
+          "graceDays": 7,
+          "halfLifeDays": 90,
+          "pressureSensitivity": 0.65,
+          "contextThreshold": 0.45,
+          "archiveThreshold": 0.18
+        },
+        "delayedDrop": {
+          "graceDays": 14,
+          "halfLifeDays": 7,
+          "pressureSensitivity": 0.8,
+          "contextThreshold": 0.45,
+          "archiveThreshold": 0.18
+        },
+        "superFast": {
+          "graceDays": 0,
+          "halfLifeDays": 2,
+          "pressureSensitivity": 1,
+          "contextThreshold": 0.45,
+          "archiveThreshold": 0.18
+        }
+      }
+    }
+  },
+  "extraction": {
+    "maxTurns": 40,
+    "maxExistingFacts": 50,
+    "maxExistingTimed": 50,
+    "maxExistingEvolving": 50,
+    "maxProposals": 12
+  }
+}

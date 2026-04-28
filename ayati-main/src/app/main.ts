@@ -17,26 +17,34 @@ import {
   type PluginRuntimeContext,
 } from "../core/index.js";
 import { loadStaticContext, type StaticContext } from "../context/static-context-cache.js";
-import { UserWikiStore } from "../context/wiki-store.js";
-import { WikiEvolver } from "../context/wiki-evolution.js";
 import { MemoryManager } from "../memory/session-manager.js";
-import { LanceMemoryStore } from "../memory/retrieval/lance-memory-store.js";
-import { MemoryIndexer } from "../memory/retrieval/memory-indexer.js";
-import { MemoryRetriever } from "../memory/retrieval/memory-retriever.js";
-import { MemoryGraphStore } from "../memory/retrieval/memory-graph-store.js";
-import { OpenAiMemoryEmbedder } from "../memory/retrieval/openai-memory-embedder.js";
+import { loadMemoryPolicy } from "../memory/personal/memory-policy.js";
+import { PersonalMemoryStore } from "../memory/personal/personal-memory-store.js";
+import { PersonalMemorySnapshotCache } from "../memory/personal/personal-memory-snapshot-cache.js";
+import { MemoryConsolidator } from "../memory/personal/memory-consolidator.js";
+import { OpenAiMemoryEmbedder } from "../memory/openai-memory-embedder.js";
+import {
+  EpisodicMemoryController,
+  EpisodicMemoryIndexer,
+  EpisodicMemoryJobStore,
+  EpisodicMemoryRetriever,
+  EpisodicMemorySettingsStore,
+  LanceEpisodicVectorStore,
+} from "../memory/episodic/index.js";
 import { devLog, devWarn } from "../shared/index.js";
 import { createToolExecutor } from "../skills/tool-executor.js";
 import type { ToolExecutor } from "../skills/tool-executor.js";
 import { builtInSkillsProvider } from "../skills/provider.js";
 import { createIdentitySkill } from "../skills/builtins/identity/index.js";
 import { createRecallSkill } from "../skills/builtins/recall/index.js";
-import { createWikiSkill } from "../skills/builtins/wiki/index.js";
+import { createMemorySkill } from "../skills/builtins/memory/index.js";
 import { createPythonSkill } from "../skills/builtins/python/index.js";
 import { createAttachmentSkill } from "../skills/builtins/attachments/index.js";
 import { createDatasetSkill } from "../skills/builtins/datasets/index.js";
 import { createDocumentSkill } from "../skills/builtins/documents/index.js";
+import { createFilesSkill } from "../skills/builtins/files/index.js";
 import { PulseScheduler, PulseStore } from "../pulse/index.js";
+import { pulseTool } from "../skills/builtins/pulse/index.js";
 import { createSkillBrokerSkill } from "../skills/builtins/skill-broker/index.js";
 import { createExternalSkillBroker, ExternalSkillRegistry } from "../skills/external/index.js";
 import { DocumentStore } from "../documents/document-store.js";
@@ -48,6 +56,7 @@ import { DocumentRetriever } from "../documents/document-retriever.js";
 import { PreparedAttachmentRegistry } from "../documents/prepared-attachment-registry.js";
 import { PreparedAttachmentService } from "../documents/prepared-attachment-service.js";
 import { SessionAttachmentService } from "../documents/session-attachment-service.js";
+import { FileLibrary } from "../files/file-library.js";
 import { loadSystemEventPolicy } from "../ivec/system-event-policy.js";
 
 const thisDir = dirname(fileURLToPath(import.meta.url));
@@ -55,7 +64,7 @@ const projectRoot = resolve(thisDir, "..", "..");
 
 const CLIENT_ID = "local";
 const TELEGRAM_CLIENT_ID = "telegram-shared";
-const DEFAULT_UPLOAD_PORT = 8081;
+const DEFAULT_HTTP_PORT = 8081;
 const DEFAULT_UPLOAD_MAX_BYTES = 25 * 1024 * 1024;
 
 function parsePositiveInt(rawValue: string | undefined, fallback: number): number {
@@ -77,50 +86,89 @@ export async function main(): Promise<void> {
   const systemEventPolicy = loadSystemEventPolicy(projectRoot);
   let engine: IVecEngine | null = null;
   let staticContext: StaticContext | null = null;
-  let wikiEvolver: WikiEvolver | null = null;
-  const wikiStore = new UserWikiStore({
-    contextDir: resolve(projectRoot, "context"),
-    historyDir: resolve(projectRoot, "data", "context-history"),
+  const personalMemoryStore = new PersonalMemoryStore({
+    dataDir: resolve(projectRoot, "data", "memory"),
   });
+  personalMemoryStore.start(loadMemoryPolicy(projectRoot));
+  const personalMemorySnapshotCache = new PersonalMemorySnapshotCache({
+    store: personalMemoryStore,
+    projectRoot,
+  });
+  await personalMemorySnapshotCache.refresh(CLIENT_ID, "startup");
 
-  const recallStore = new LanceMemoryStore({
-    dataDir: resolve(projectRoot, "data", "memory", "retrieval"),
+  const episodicSettingsStore = new EpisodicMemorySettingsStore({
+    dataDir: resolve(projectRoot, "data", "memory", "episodic"),
   });
-  const memoryGraphStore = new MemoryGraphStore({
-    dataDir: resolve(projectRoot, "data", "memory", "retrieval"),
-    sessionDataDir: resolve(projectRoot, "data", "memory"),
+  const episodicJobStore = new EpisodicMemoryJobStore({
+    dataDir: resolve(projectRoot, "data", "memory", "episodic"),
   });
-  let memoryIndexer: MemoryIndexer | null = null;
-  let memoryRetriever: MemoryRetriever;
+  const episodicVectorStore = new LanceEpisodicVectorStore({
+    dataDir: resolve(projectRoot, "data", "memory", "episodic-vectors"),
+  });
+  let memoryEmbedder: OpenAiMemoryEmbedder | undefined;
   try {
-    const embedder = new OpenAiMemoryEmbedder();
-    memoryIndexer = new MemoryIndexer({
-      embedder,
-      store: recallStore,
-      graphStore: memoryGraphStore,
-    });
-    memoryIndexer.start();
-    memoryRetriever = new MemoryRetriever({
-      embedder,
-      store: recallStore,
-      graphStore: memoryGraphStore,
-    });
-    devLog(`Memory recall enabled with model=${embedder.modelName}`);
+    memoryEmbedder = new OpenAiMemoryEmbedder();
+    devLog(`Episodic memory embeddings available with model=${memoryEmbedder.modelName}`);
   } catch (err) {
-    devWarn(`Memory recall disabled: ${err instanceof Error ? err.message : String(err)}`);
-    memoryRetriever = {
-      recall: async () => [],
-    } as unknown as MemoryRetriever;
+    devWarn(`Episodic memory embeddings unavailable: ${err instanceof Error ? err.message : String(err)}`);
   }
+  const memoryIndexer = new EpisodicMemoryIndexer({
+    settingsStore: episodicSettingsStore,
+    jobStore: episodicJobStore,
+    vectorStore: episodicVectorStore,
+    ...(memoryEmbedder ? { embedder: memoryEmbedder } : {}),
+  });
+  memoryIndexer.start();
+  const memoryRetriever = new EpisodicMemoryRetriever({
+    settingsStore: episodicSettingsStore,
+    vectorStore: episodicVectorStore,
+    ...(memoryEmbedder ? { embedder: memoryEmbedder } : {}),
+  });
+  const episodicMemoryController = new EpisodicMemoryController({
+    settingsStore: episodicSettingsStore,
+    jobStore: episodicJobStore,
+    embeddingAvailable: () => memoryEmbedder !== undefined,
+    embeddingModel: () => memoryEmbedder?.modelName ?? episodicSettingsStore.get(CLIENT_ID).embeddingModel,
+  });
 
+  let personalMemoryConsolidator: MemoryConsolidator | null = null;
   const sessionMemory = new MemoryManager({
-    onTaskSummaryIndexed: (data) => memoryIndexer?.indexTaskSummary(data),
-    onHandoffSummaryIndexed: (data) => memoryIndexer?.indexHandoffSummary(data),
-    onSessionClose: async (data) => {
-      await wikiEvolver?.evolveFromSession(data.turns, data.handoffSummary);
+    personalMemorySnapshotProvider: (clientId) => personalMemorySnapshotCache.getSnapshot(clientId),
+    onSessionClose: (data) => {
+      personalMemoryConsolidator?.enqueueSession({
+        userId: data.clientId,
+        sessionId: data.sessionId,
+        sessionPath: data.sessionPath,
+        handoffSummary: data.handoffSummary,
+        reason: data.reason,
+        turns: data.turns.map((turn) => ({
+          role: turn.role,
+          content: turn.content,
+          timestamp: turn.timestamp,
+          sessionPath: turn.sessionPath,
+          ...(turn.runId ? { runId: turn.runId } : {}),
+        })),
+      });
+      void memoryIndexer.enqueueClosedSession({
+        clientId: data.clientId,
+        sessionId: data.sessionId,
+        sessionPath: data.sessionPath,
+        sessionFilePath: data.sessionFilePath,
+        reason: data.reason,
+        handoffSummary: data.handoffSummary,
+      });
     },
   });
   sessionMemory.initialize(CLIENT_ID);
+  personalMemoryConsolidator = new MemoryConsolidator({
+    provider,
+    store: personalMemoryStore,
+    projectRoot,
+    onSnapshotRegenerated: (userId, snapshot, result) => {
+      personalMemorySnapshotCache.setSnapshot(userId, snapshot, "evolution", result);
+    },
+  });
+  personalMemoryConsolidator.scheduleProcessing();
 
   const adapterRegistry = new AdapterRegistry();
   const inboundQueueStore = new InboundQueueStore({
@@ -145,16 +193,11 @@ export async function main(): Promise<void> {
   });
   const recallSkill = createRecallSkill({
     retriever: memoryRetriever,
+    controls: episodicMemoryController,
   });
-  const wikiSkill = createWikiSkill({
-    wikiStore,
-    onProfileUpdated: (userProfile) => {
-      if (!staticContext) {
-        return;
-      }
-      staticContext.userProfile = userProfile;
-      engine?.invalidateStaticTokenCache();
-    },
+  const memorySkill = createMemorySkill({
+    store: personalMemoryStore,
+    defaultUserId: CLIENT_ID,
   });
   const pythonSkill = createPythonSkill({
     dataDir: resolve(projectRoot, "data"),
@@ -177,6 +220,10 @@ export async function main(): Promise<void> {
   });
   const documentStore = new DocumentStore({
     dataDir: resolve(projectRoot, "data", "documents"),
+  });
+  const fileLibrary = new FileLibrary({
+    dataDir: resolve(projectRoot, "data"),
+    defaultMaxDownloadBytes: parsePositiveInt(process.env["AYATI_UPLOAD_MAX_BYTES"], DEFAULT_UPLOAD_MAX_BYTES),
   });
   let documentIndexer: DocumentIndexer | undefined;
   let documentRetriever: DocumentRetriever | undefined;
@@ -222,16 +269,18 @@ export async function main(): Promise<void> {
   const attachmentSkill = createAttachmentSkill({ sessionAttachmentService });
   const datasetSkill = createDatasetSkill({ preparedAttachmentService });
   const documentSkill = createDocumentSkill({ preparedAttachmentService });
+  const filesSkill = createFilesSkill({ fileLibrary });
 
   const baseToolDefs = [
     ...enabledTools,
     ...identitySkill.tools,
     ...recallSkill.tools,
-    ...wikiSkill.tools,
+    ...memorySkill.tools,
     ...pythonSkill.tools,
     ...attachmentSkill.tools,
     ...datasetSkill.tools,
     ...documentSkill.tools,
+    ...filesSkill.tools,
   ];
   toolExecutor = createToolExecutor(baseToolDefs);
 
@@ -262,36 +311,27 @@ export async function main(): Promise<void> {
   await externalSkillRegistry.initialize();
 
   staticContext = await loadStaticContext({ toolDefinitions: runtimeToolDefs });
-  staticContext.userProfile = await wikiStore.syncProfileFromWiki(staticContext.userProfile);
   staticContext.skillBlocks.push({ id: identitySkill.id, content: identitySkill.promptBlock });
   staticContext.skillBlocks.push({ id: recallSkill.id, content: recallSkill.promptBlock });
-  staticContext.skillBlocks.push({ id: wikiSkill.id, content: wikiSkill.promptBlock });
+  staticContext.skillBlocks.push({ id: memorySkill.id, content: memorySkill.promptBlock });
   staticContext.skillBlocks.push({ id: pythonSkill.id, content: pythonSkill.promptBlock });
   staticContext.skillBlocks.push({ id: attachmentSkill.id, content: attachmentSkill.promptBlock });
   staticContext.skillBlocks.push({ id: datasetSkill.id, content: datasetSkill.promptBlock });
   staticContext.skillBlocks.push({ id: documentSkill.id, content: documentSkill.promptBlock });
+  staticContext.skillBlocks.push({ id: filesSkill.id, content: filesSkill.promptBlock });
   staticContext.skillBlocks.push({ id: skillBrokerSkill.id, content: skillBrokerSkill.promptBlock });
-
-  wikiEvolver = new WikiEvolver({
-    provider,
-    wikiStore,
-    currentProfile: staticContext.userProfile,
-    onProfileUpdated: (userProfile) => {
-      if (!staticContext) {
-        return;
-      }
-      staticContext.userProfile = userProfile;
-      engine?.invalidateStaticTokenCache();
-    },
-  });
 
   const uploadServer = new UploadServer({
     uploadsDir: documentStore.uploadsDir,
     runsDir: resolve(projectRoot, "data", "runs"),
-    host: process.env["AYATI_UPLOAD_HOST"]?.trim() || "0.0.0.0",
-    port: parsePositiveInt(process.env["AYATI_UPLOAD_PORT"], DEFAULT_UPLOAD_PORT),
+    host: process.env["AYATI_HTTP_HOST"]?.trim() || process.env["AYATI_UPLOAD_HOST"]?.trim() || "127.0.0.1",
+    port: parsePositiveInt(process.env["AYATI_HTTP_PORT"] ?? process.env["AYATI_UPLOAD_PORT"], DEFAULT_HTTP_PORT),
     maxUploadBytes: parsePositiveInt(process.env["AYATI_UPLOAD_MAX_BYTES"], DEFAULT_UPLOAD_MAX_BYTES),
-    allowOrigin: process.env["AYATI_UPLOAD_ALLOW_ORIGIN"]?.trim() || "*",
+    allowOrigin: process.env["AYATI_HTTP_ALLOW_ORIGIN"]?.trim() || process.env["AYATI_UPLOAD_ALLOW_ORIGIN"]?.trim() || "*",
+    pulseTool,
+    pulseClientId: CLIENT_ID,
+    pulseApiToken: process.env["AYATI_HTTP_API_TOKEN"]?.trim() || undefined,
+    fileLibrary,
   });
   const telegramConfig = loadTelegramRuntimeConfig(process.env);
   const telegramServer = telegramConfig
@@ -301,6 +341,7 @@ export async function main(): Promise<void> {
       uploadsDir: documentStore.uploadsDir,
       stateDir: resolve(projectRoot, "data", "telegram"),
       onMessage: (clientId, data) => engine?.handleMessage(clientId, data),
+      fileLibrary,
     })
     : null;
 
@@ -322,6 +363,7 @@ export async function main(): Promise<void> {
     documentStore,
     preparedAttachmentRegistry,
     documentContextBackend,
+    fileLibrary,
     systemEventPolicy,
   });
   const systemEventWorker = new SystemEventWorker({
@@ -377,6 +419,7 @@ export async function main(): Promise<void> {
   const shutdown = async (): Promise<void> => {
     await registry.stopAll(pluginRuntimeContext);
     await pulseScheduler.stop();
+    pulseStore.close();
     if (telegramServer) {
       await telegramServer.stop();
     }
@@ -385,7 +428,9 @@ export async function main(): Promise<void> {
     await systemEventWorker.stop();
     inboundQueueStore.stop();
     await sessionMemory.shutdown();
-    await memoryIndexer?.shutdown();
+    await personalMemoryConsolidator?.shutdown();
+    personalMemoryStore.stop();
+    await memoryIndexer.shutdown();
     await engine.stop();
   };
 

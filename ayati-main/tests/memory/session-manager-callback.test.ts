@@ -4,9 +4,7 @@ import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { SessionManager } from "../../src/memory/session-manager.js";
 import type {
-  HandoffSummaryIndexData,
   SessionCloseData,
-  TaskSummaryIndexData,
 } from "../../src/memory/session-manager.js";
 
 function createTmpDir(): string {
@@ -213,14 +211,11 @@ describe("SessionManager onSessionClose callback", () => {
     await sm.shutdown();
   });
 
-  it("fires task summary indexing callback after task summaries are recorded", async () => {
-    const onTaskSummaryIndexed = vi.fn();
-
+  it("records task summaries to the session file", async () => {
     const sm = new SessionManager({
       dataDir,
       dbPath,
       now: () => new Date("2025-01-01T00:00:00Z"),
-      onTaskSummaryIndexed,
     });
 
     sm.initialize("client1");
@@ -242,26 +237,23 @@ describe("SessionManager onSessionClose callback", () => {
     });
 
     await sm.flushBackgroundTasks();
+    await sm.flushPersistence();
 
-    expect(onTaskSummaryIndexed).toHaveBeenCalledTimes(1);
-    const data: TaskSummaryIndexData = onTaskSummaryIndexed.mock.calls[0]![0]!;
-    expect(data.sessionId).toBe(run.sessionId);
-    expect(data.summary).toBe("Completed the task");
-    expect(data.runPath).toBe("data/runs/r-1");
-    expect(data.taskStatus).toBe("done");
-    expect(data.objective).toBe("Summarize this");
+    const content = readFileSync(findSessionFile(tmpDir, run.sessionId), "utf8");
+    expect(content).toContain("\"type\":\"task_summary\"");
+    expect(content).toContain("\"summary\":\"Completed the task\"");
+    expect(content).toContain("\"runPath\":\"data/runs/r-1\"");
+    expect(content).toContain("\"taskStatus\":\"done\"");
+    expect(content).toContain("\"objective\":\"Summarize this\"");
 
     await sm.shutdown();
   });
 
   it("queues task summaries in background and writes them to the originating session after rotation", async () => {
-    const onTaskSummaryIndexed = vi.fn();
-
     const sm = new SessionManager({
       dataDir,
       dbPath,
       now: () => new Date("2025-01-01T00:00:00Z"),
-      onTaskSummaryIndexed,
     });
 
     sm.initialize("client1");
@@ -307,23 +299,14 @@ describe("SessionManager onSessionClose callback", () => {
     expect(originalContent).toContain("\"feedbackLabel\":\"Send draft\"");
     expect(rotatedContent).not.toContain("\"runPath\":\"data/runs/r-queue\"");
 
-    expect(onTaskSummaryIndexed).toHaveBeenCalledTimes(1);
-    const callbackData: TaskSummaryIndexData = onTaskSummaryIndexed.mock.calls[0]![0]!;
-    expect(callbackData.sessionId).toBe(run.sessionId);
-    expect(callbackData.feedbackLabel).toBe("Send draft");
-    expect(callbackData.assistantResponseKind).toBe("feedback");
-
     await sm.shutdown();
   });
 
-  it("fires handoff summary indexing callback when a session is rotated", async () => {
-    const onHandoffSummaryIndexed = vi.fn();
-
+  it("persists handoff summary when a session is rotated", async () => {
     const sm = new SessionManager({
       dataDir,
       dbPath,
       now: () => new Date("2025-01-01T00:00:00Z"),
-      onHandoffSummaryIndexed,
     });
 
     sm.initialize("client1");
@@ -339,11 +322,11 @@ describe("SessionManager onSessionClose callback", () => {
     });
 
     await sm.flushBackgroundTasks();
+    await sm.flushPersistence();
 
-    expect(onHandoffSummaryIndexed).toHaveBeenCalledTimes(1);
-    const data: HandoffSummaryIndexData = onHandoffSummaryIndexed.mock.calls[0]![0]!;
-    expect(data.sessionId).toBe(firstSessionId);
-    expect(data.summary).toBe("Task A completed successfully");
+    const originalContent = readFileSync(findSessionFile(tmpDir, firstSessionId), "utf8");
+    expect(originalContent).toContain("\"type\":\"session_close\"");
+    expect(originalContent).toContain("\"handoffSummary\":\"Task A completed successfully\"");
 
     await sm.flushBackgroundTasks();
 

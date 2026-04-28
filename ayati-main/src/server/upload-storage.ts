@@ -5,6 +5,7 @@ import { isSupportedDocumentInput, sanitizeFileName } from "../documents/documen
 
 export interface ManagedUploadRecord {
   uploadId: string;
+  fileId?: string;
   uploadedPath: string;
   originalName: string;
   mimeType?: string;

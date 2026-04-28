@@ -190,6 +190,7 @@ export async function agentLoop(deps: AgentLoopDeps): Promise<AgentLoopResult> {
     attachedDocuments: deps.attachedDocuments ?? [],
     attachmentWarnings: deps.attachmentWarnings ?? [],
     preparedAttachments: [],
+    managedFiles: deps.managedFiles ?? [],
     activeSessionAttachments: [],
     sessionHistory: [],
     recentRunLedgers: [],
@@ -503,8 +504,8 @@ export async function agentLoop(deps: AgentLoopDeps): Promise<AgentLoopResult> {
     );
   }
 
-  const finalOutput = "I've exhausted my reasoning steps. Here's what I found so far based on my analysis.";
-  state.status = "failed";
+  const finalOutput = buildStuckLimitReply(state, config.maxIterations);
+  state.status = "stuck";
   state.finalOutput = finalOutput;
   return finalizeLoopResult({
     dataDir: deps.dataDir,
@@ -1333,7 +1334,8 @@ function buildRecentStepDigests(state: LoopState): string[] {
     .slice(-5)
     .map((step) => {
       const summary = step.summary.trim().length > 0 ? step.summary.trim() : "(no summary)";
-      return `step ${step.step}: ${step.executionContract} -> ${step.outcome} | ${summary.slice(0, 140)}`;
+      const contract = step.executionContract?.trim() || "(no contract)";
+      return `step ${step.step}: ${contract} -> ${step.outcome} | ${summary.slice(0, 140)}`;
     });
 }
 
@@ -1346,6 +1348,85 @@ function buildRecentSuccessfulSummaries(state: LoopState): string[] {
     .filter((step) => step.outcome === "success" && step.summary.trim().length > 0)
     .slice(-3)
     .map((step) => step.summary.trim());
+}
+
+function buildStuckLimitReply(state: LoopState, maxIterations: number): string {
+  const completedSteps = state.completedSteps.length;
+  const progressSummary = state.taskProgress.progressSummary.trim();
+  const completedMilestones = normalizeTaskSummaryList(state.taskProgress.completedMilestones).slice(0, 3);
+  const keyFacts = normalizeTaskSummaryList(state.taskProgress.keyFacts).slice(0, 3);
+  const evidence = normalizeTaskSummaryList(state.taskProgress.evidence).slice(0, 2);
+  const openWork = normalizeTaskSummaryList(state.taskProgress.openWork).slice(0, 3);
+  const blockers = normalizeTaskSummaryList(state.taskProgress.blockers).slice(0, 2);
+  const userInputNeeded = state.taskProgress.userInputNeeded?.replace(/\s+/g, " ").trim();
+  const currentFocus = state.taskProgress.currentFocus?.replace(/\s+/g, " ").trim();
+  const recentSuccesses = state.completedSteps
+    .filter((step) => step.outcome === "success")
+    .slice(-3)
+    .map((step) => {
+      const summary = step.summary.trim() || step.executionContract?.trim() || `step ${step.step}`;
+      return summarizeStuckReplyValue(summary, 180);
+    });
+  const recentStepDigests = buildRecentStepDigests(state)
+    .slice(-3)
+    .map((item) => summarizeStuckReplyValue(item, 180));
+
+  const completedSection: string[] = [];
+  if (progressSummary) {
+    completedSection.push(summarizeStuckReplyValue(progressSummary, 220));
+  }
+  if (completedMilestones.length > 0) {
+    completedSection.push(`Completed milestones: ${completedMilestones.map((item) => summarizeStuckReplyValue(item, 140)).join("; ")}`);
+  }
+  if (keyFacts.length > 0) {
+    completedSection.push(`Key facts: ${keyFacts.map((item) => summarizeStuckReplyValue(item, 140)).join("; ")}`);
+  }
+  if (evidence.length > 0) {
+    completedSection.push(`Evidence: ${evidence.map((item) => summarizeStuckReplyValue(item, 140)).join("; ")}`);
+  }
+  if (completedSection.length === 0 && recentSuccesses.length > 0) {
+    completedSection.push(...recentSuccesses.map((item) => `Recent success: ${item}`));
+  }
+  if (completedSection.length === 0 && recentStepDigests.length > 0) {
+    completedSection.push(...recentStepDigests.map((item) => `Recent step: ${item}`));
+  }
+  if (completedSection.length === 0 && state.goal.objective.trim()) {
+    completedSection.push(`The task is still in progress toward: ${summarizeStuckReplyValue(state.goal.objective, 180)}`);
+  }
+
+  const nextSection: string[] = [];
+  if (userInputNeeded) {
+    nextSection.push(`User input needed: ${summarizeStuckReplyValue(userInputNeeded, 180)}`);
+  } else if (openWork.length > 0) {
+    nextSection.push(`Remaining work: ${openWork.map((item) => summarizeStuckReplyValue(item, 140)).join("; ")}`);
+  } else if (blockers.length > 0) {
+    nextSection.push(`Current blockers: ${blockers.map((item) => summarizeStuckReplyValue(item, 140)).join("; ")}`);
+  } else if (currentFocus) {
+    nextSection.push(`Current focus: ${summarizeStuckReplyValue(currentFocus, 180)}`);
+  } else if (state.goal.objective.trim()) {
+    nextSection.push(`Goal still in progress: ${summarizeStuckReplyValue(state.goal.objective, 180)}`);
+  }
+
+  const lines = [
+    `I reached the ${maxIterations}-step limit before finishing the task. Here is the progress from the ${completedSteps} completed step${completedSteps === 1 ? "" : "s"}:`,
+  ];
+
+  if (completedSection.length > 0) {
+    lines.push("", "What I completed so far:", ...completedSection.map((line) => `- ${line}`));
+  }
+  if (nextSection.length > 0) {
+    lines.push("", "What still needs attention:", ...nextSection.map((line) => `- ${line}`));
+  }
+
+  return lines.join("\n");
+}
+
+function summarizeStuckReplyValue(value: string, maxLen: number): string {
+  const clean = value.replace(/\s+/g, " ").trim();
+  if (clean.length <= maxLen) {
+    return clean;
+  }
+  return `${clean.slice(0, Math.max(0, maxLen - 3)).trimEnd()}...`;
 }
 
 function applyPreparedAttachmentStateUpdates(

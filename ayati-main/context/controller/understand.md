@@ -16,6 +16,16 @@
   - multiple actions
   - evidence that must be gathered before the answer can be trusted
 
+- If the immediately previous assistant message proposed creating a Pulse routine/task and the user now agrees, gives a schedule edit, or says something like "yes", "do it", "weekdays at 8 PM", or "make it daily":
+  - Do NOT treat the user reply as casual chat.
+  - Treat it as a concrete task to create the Pulse item using the existing `pulse` tool.
+  - Use the previous assistant proposal, the original task context, and the user's latest schedule edits as the task context.
+  - Return done: false with a goal whose objective is to create the approved Pulse task.
+
+- If the immediately previous assistant message proposed creating a Pulse routine/task and the user now rejects it with "no", "not now", "skip", or similar:
+  - Return done: true with a brief natural acknowledgement.
+  - Do not create, store, or track anything.
+
 - If action is still required, do not return completion text that only says you will do the work next.
 - If the work is not already finished, return done: false.
 

@@ -26,8 +26,8 @@
 - If the user refers to prior work, earlier conversations, dates, or says "like before", prefer recall_memory first.
 - If exact prior details are needed after recall_memory, use normal file tools on the returned sessionFilePath or runStatePath.
 
-- For user-specific knowledge, prefer wiki_search, wiki_read_section, or wiki_list_sections.
-- Use wiki_update only when the user explicitly asks to save, correct, or remember information.
+- Use the always-loaded Personal Memory Snapshot for user-specific personalization.
+- Use memory tools only when the user explicitly asks to save, correct, inspect, or remember personal memory.
 
 - If there are no current prepared attachments but Active session attachments strongly match the user's follow-up file reference, prefer restore_attachment_context before asking for re-upload.
 
@@ -41,6 +41,13 @@
 - If the user explicitly names another file or directory, honor that path instead of forcing work_space/.
 - If there are 2 no-progress or missing-path outcomes in a row, pivot strategy instead of retrying the same style search.
 - Never claim "entire filesystem searched" unless the tool inputs explicitly included root-level paths for that OS.
+
+- When the current goal is to create a Pulse task because the user accepted a previous Pulse routine proposal:
+  - Use the existing `pulse` tool with action "create".
+  - Infer title, instruction, objective, and schedule from the previous assistant proposal, original task context, and the user's latest edits.
+  - Use kind "task" and requestedAction "run_responsibility" for scheduled agent work.
+  - Include metadata.source "pulse_proposal" when creating the item.
+  - If the schedule or action is still materially unclear, return feedback with one targeted clarification question instead of guessing.
 
 - If the next action depends on older active-run history that is not covered by the inline bundle, return read_run_state.
   - First use read_summary_window on an explicit 10-step range.

@@ -137,6 +137,11 @@ function toCanonicalEvent(input: PluginSystemEventInput | CanonicalInboundEvent)
 }
 
 function deriveDefaultDedupeKey(event: CanonicalInboundEvent): string {
+  const explicitDedupeKey = asNonEmptyString(event.payload["dedupeKey"]);
+  if (explicitDedupeKey) {
+    return explicitDedupeKey;
+  }
+
   const occurrenceId = asNonEmptyString(event.payload["occurrenceId"]);
   if (occurrenceId) {
     return `${event.source}:occurrence:${occurrenceId}`;

@@ -8,6 +8,7 @@ import type { LlmTurnInput, LlmTurnOutput } from "../../src/core/contracts/llm-p
 import type { SessionMemory } from "../../src/memory/types.js";
 import type { StaticContext } from "../../src/context/static-context-cache.js";
 import { buildSystemPrompt } from "../../src/prompt/builder.js";
+import { getNowSnapshot } from "../../src/pulse/time.js";
 import type { SystemEventPolicyConfig } from "../../src/ivec/system-event-policy.js";
 
 function createMockProvider(overrides?: Partial<LlmProvider>): LlmProvider {
@@ -109,31 +110,6 @@ function createStaticContext(): StaticContext {
         communication: ["warm and direct"],
       },
       boundaries: ["invent facts"],
-    },
-    userProfile: {
-      name: "Sai",
-      nickname: null,
-      occupation: "Engineer",
-      location: "India",
-      timezone: "Asia/Kolkata",
-      languages: ["English"],
-      interests: ["systems"],
-      facts: ["prefers concrete answers"],
-      people: [],
-      projects: ["Ayati"],
-      communication: {
-        formality: "balanced",
-        verbosity: "balanced",
-        humor_receptiveness: "medium",
-        emoji_usage: "rare",
-      },
-      emotional_patterns: {
-        mood_baseline: "focused",
-        stress_triggers: [],
-        joy_triggers: [],
-      },
-      active_hours: "09:00-19:00",
-      last_updated: "2026-04-18T00:00:00.000Z",
     },
     controllerPrompts: {
       understand: "",
@@ -451,7 +427,9 @@ describe("IVecEngine", () => {
     };
     getPromptMemoryContext.mockImplementation(() => memoryContext);
 
-    const engine = new IVecEngine({ provider, sessionMemory, staticContext });
+    const fixedNow = new Date("2026-04-18T03:30:00.000Z");
+    const runtimeContext = getNowSnapshot(fixedNow);
+    const engine = new IVecEngine({ provider, sessionMemory, staticContext, now: () => fixedNow });
     const buildSystemContext = async () => {
       const privateEngine = engine as unknown as {
         buildSystemContext(): Promise<{
@@ -467,7 +445,7 @@ describe("IVecEngine", () => {
     const expectedFirst = buildSystemPrompt({
       basePrompt: staticContext.basePrompt,
       soul: staticContext.soul,
-      userProfile: staticContext.userProfile,
+      runtimeContext,
       conversationTurns: memoryContext.conversationTurns,
       previousSessionSummary: memoryContext.previousSessionSummary,
       activeSessionPath: memoryContext.activeSessionPath,
@@ -480,6 +458,11 @@ describe("IVecEngine", () => {
     }).systemPrompt;
     expect(first.systemContext).toBe(expectedFirst);
     expect(first.controllerSystemContext).toContain("# Base System Prompt");
+    expect(first.controllerSystemContext).toContain("# Runtime Context");
+    expect(first.controllerSystemContext).toContain(`- local_date: ${runtimeContext.localDate}`);
+    expect(first.controllerSystemContext).toContain(`- local_time: ${runtimeContext.localTime}`);
+    expect(first.controllerSystemContext).toContain(`- weekday: ${runtimeContext.weekday}`);
+    expect(first.controllerSystemContext).not.toContain("# Previous Conversation");
 
     memoryContext = {
       ...memoryContext,
@@ -504,7 +487,7 @@ describe("IVecEngine", () => {
     const expectedSecond = buildSystemPrompt({
       basePrompt: staticContext.basePrompt,
       soul: staticContext.soul,
-      userProfile: staticContext.userProfile,
+      runtimeContext,
       conversationTurns: memoryContext.conversationTurns,
       previousSessionSummary: memoryContext.previousSessionSummary,
       activeSessionPath: memoryContext.activeSessionPath,

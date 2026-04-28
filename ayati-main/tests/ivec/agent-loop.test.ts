@@ -35,6 +35,9 @@ function taskVerifyResponse(
   extra?: Partial<{
     keyFacts: string[];
     userInputNeeded: string;
+    completedMilestones: string[];
+    openWork: string[];
+    blockers: string[];
   }>,
 ): string {
   return JSON.stringify({
@@ -43,6 +46,9 @@ function taskVerifyResponse(
     evidence,
     keyFacts: extra?.keyFacts ?? [],
     userInputNeeded: extra?.userInputNeeded,
+    completedMilestones: extra?.completedMilestones,
+    openWork: extra?.openWork,
+    blockers: extra?.blockers,
   });
 }
 
@@ -396,7 +402,19 @@ describe("agentLoop", () => {
           if (callCount === 4 || callCount === 7) {
             return { type: "assistant", content: stepVerifySuccessResponse("The latest step still leaves more work to do") };
           }
-          return { type: "assistant", content: taskVerifyResponse("not_done") };
+          return {
+            type: "assistant",
+            content: taskVerifyResponse(
+              "not_done",
+              "Inspected the repo and captured the current state, but more work remains.",
+              ["Verified the latest analysis step output"],
+              {
+                completedMilestones: ["Captured the current repo state"],
+                openWork: ["Finish the remaining investigation"],
+                keyFacts: ["The latest step still leaves more work to do"],
+              },
+            ),
+          };
         }),
       };
 
@@ -411,6 +429,81 @@ describe("agentLoop", () => {
       });
 
       expect(result.status).toBe("stuck");
+      expect(result.content).toContain("I reached the 2-step limit before finishing the task.");
+      expect(result.content).toContain("Inspected the repo and captured the current state, but more work remains.");
+      expect(result.content).toContain("Completed milestones: Captured the current repo state");
+      expect(result.content).toContain("Remaining work: Finish the remaining investigation");
+      const persistedState = JSON.parse(readFileSync(join(result.runPath, "state.json"), "utf-8")) as { status?: string };
+      expect(persistedState.status).toBe("stuck");
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("uses recent step summaries when task progress details are sparse at the step limit", async () => {
+    const dataDir = makeTmpDir();
+    try {
+      let callCount = 0;
+      const provider: LlmProvider = {
+        name: "mock",
+        version: "1.0.0",
+        capabilities: { nativeToolCalling: true },
+        start: vi.fn(),
+        stop: vi.fn(),
+        generateTurn: vi.fn().mockImplementation(async () => {
+          callCount++;
+          if (callCount === 1) {
+            return {
+              type: "assistant",
+              content: JSON.stringify({
+                done: false,
+                understand: true,
+                goal: goalContract("inspect config files"),
+                approach: "inspect config files",
+              }),
+            };
+          }
+          if (callCount === 2) {
+            return {
+              type: "assistant",
+              content: JSON.stringify({
+                done: false,
+                execution_mode: "dependent",
+                execution_contract: "Inspect the main config files",
+                tool_plan: [],
+                success_criteria: "find the main config file paths",
+                context: "",
+              }),
+            };
+          }
+          if (callCount === 3) {
+            return { type: "assistant", content: "Found the config file paths." };
+          }
+          if (callCount === 4) {
+            return { type: "assistant", content: stepVerifySuccessResponse("Located the main config file paths") };
+          }
+          return {
+            type: "assistant",
+            content: JSON.stringify({
+              status: "not_done",
+            }),
+          };
+        }),
+      };
+
+      const result = await agentLoop({
+        provider,
+        toolDefinitions: [],
+        sessionMemory: createMockSessionMemory(),
+        runHandle: { sessionId: "s1", runId: "r1" },
+        clientId: "c1",
+        dataDir,
+        config: { maxIterations: 1 },
+      });
+
+      expect(result.status).toBe("stuck");
+      expect(result.content).toContain("Located the main config file paths");
+      expect(result.content).toContain("Goal still in progress: inspect config files");
     } finally {
       cleanup();
     }

@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { readFile } from "node:fs/promises";
 import type { LlmProvider } from "../core/contracts/provider.js";
 import { noopSessionMemory } from "../memory/provider.js";
 import type { ConversationTurn, SessionMemory, MemoryRunHandle, PromptMemoryContext, SessionStatus } from "../memory/types.js";
@@ -7,13 +8,19 @@ import { renderBasePromptSection } from "../prompt/sections/base.js";
 import { renderConversationLines, renderConversationSection } from "../prompt/sections/conversation.js";
 import { renderCurrentSessionSection } from "../prompt/sections/current-session.js";
 import { renderMemorySection } from "../prompt/sections/memory.js";
+import { renderPersonalMemorySection } from "../prompt/sections/personal-memory.js";
 import { renderRecentTasksSection } from "../prompt/sections/recent-tasks.js";
+import { renderRuntimeContextSection } from "../prompt/sections/runtime-context.js";
 import { renderSessionStatusSection } from "../prompt/sections/session-status.js";
 import { renderSkillsSection } from "../prompt/sections/skills.js";
 import { renderSoulSection } from "../prompt/sections/soul.js";
 import { renderSystemActivitySection } from "../prompt/sections/system-activity.js";
-import { renderUserProfileSection } from "../prompt/sections/user-profile.js";
 import { estimateTextTokens } from "../prompt/token-estimator.js";
+import {
+  appendPulseProposalQuestion,
+  PulseProposalReflectionService,
+} from "../pulse/proposal-reflection.js";
+import { getNowSnapshot } from "../pulse/time.js";
 import type { ToolExecutor } from "../skills/tool-executor.js";
 import type { ToolDefinition } from "../skills/types.js";
 import type { ExternalSkillBroker } from "../skills/external/broker.js";
@@ -23,6 +30,8 @@ import type { ManagedDocumentManifest } from "../documents/types.js";
 import type { DocumentStore } from "../documents/document-store.js";
 import type { DocumentContextBackend } from "../documents/document-context-backend.js";
 import { PreparedAttachmentRegistry } from "../documents/prepared-attachment-registry.js";
+import type { FileLibrary } from "../files/file-library.js";
+import type { ManagedFileRecord } from "../files/types.js";
 import {
   normalizeSystemEvent,
   type AyatiSystemEvent,
@@ -74,12 +83,15 @@ interface UnderstandContextCache {
   conversationSection: string;
   previousSessionSummary: string;
   memorySection: string;
+  personalMemorySnapshot: string;
+  personalMemorySection: string;
   activeSessionPath: string;
   currentSessionSection: string;
   recentTasksFingerprint: string;
   recentTasksSection: string;
   recentSystemActivityFingerprint: string;
   recentSystemActivitySection: string;
+  runtimeContextSection: string;
   sessionStatusFingerprint: string;
   systemContextWithoutStatus: string;
   systemContext: string;
@@ -110,6 +122,7 @@ export interface IVecEngineOptions {
   documentStore?: DocumentStore;
   preparedAttachmentRegistry?: PreparedAttachmentRegistry;
   documentContextBackend?: DocumentContextBackend;
+  fileLibrary?: FileLibrary;
   systemEventPolicy?: SystemEventPolicyConfig;
 }
 
@@ -128,7 +141,9 @@ export class IVecEngine {
   private readonly documentStore?: DocumentStore;
   private readonly preparedAttachmentRegistry?: PreparedAttachmentRegistry;
   private readonly documentContextBackend?: DocumentContextBackend;
+  private readonly fileLibrary?: FileLibrary;
   private readonly systemEventPolicy?: SystemEventPolicyConfig;
+  private readonly pulseProposalReflectionService = new PulseProposalReflectionService();
   private staticSystemTokens = 0;
   private staticTokensReady = false;
   private staticPromptSections?: StaticPromptSectionsCache;
@@ -150,6 +165,7 @@ export class IVecEngine {
     this.preparedAttachmentRegistry = options?.preparedAttachmentRegistry
       ?? (this.documentStore ? new PreparedAttachmentRegistry() : undefined);
     this.documentContextBackend = options?.documentContextBackend;
+    this.fileLibrary = options?.fileLibrary;
     this.systemEventPolicy = options?.systemEventPolicy;
   }
 
@@ -214,14 +230,14 @@ export class IVecEngine {
       this.recordTurnStatus(clientId, runHandle, "processing_started");
 
       if (this.provider) {
-        const registeredAttachments = await this.registerIncomingDocuments(attachments);
+        const registeredAttachments = await this.registerIncomingDocuments(attachments, runHandle.runId);
         const toolDefs = this.toolExecutor?.definitions({
           clientId,
           runId: runHandle.runId,
           sessionId: runHandle.sessionId,
         }) ?? [];
         const system = await this.buildSystemContext();
-        const result = await agentLoop({
+        let result = await agentLoop({
           provider: this.provider,
           toolExecutor: this.toolExecutor,
           toolDefinitions: toolDefs,
@@ -237,6 +253,7 @@ export class IVecEngine {
           controllerPrompts: this.staticContext?.controllerPrompts,
           attachedDocuments: registeredAttachments.documents,
           attachmentWarnings: registeredAttachments.warnings,
+          managedFiles: registeredAttachments.managedFiles,
           documentStore: this.documentStore,
           preparedAttachmentRegistry: this.preparedAttachmentRegistry,
           documentContextBackend: this.documentContextBackend,
@@ -251,6 +268,7 @@ export class IVecEngine {
             });
           },
         });
+        result = await this.applyPulseProposalReflection(clientId, content, result, toolDefs);
         this.sessionMemory.recordRunLedger?.(clientId, {
           runId: runHandle.runId,
           sessionId: runHandle.sessionId,
@@ -489,6 +507,14 @@ export class IVecEngine {
     const memoryContext = this.sessionMemory.getPromptMemoryContext();
     const sessionStatus = this.sessionMemory.getSessionStatus?.() ?? null;
     const staticSections = this.getStaticPromptSections();
+    const runtimeContextSection = renderRuntimeContextSection(
+      getNowSnapshot(this.nowProvider()),
+    );
+    const controllerSystemContext = joinPromptSections([
+      staticSections.head,
+      runtimeContextSection,
+      staticSections.tail,
+    ]);
     const cached = this.understandContextCache;
     const sessionKey = buildSessionCacheKey(memoryContext);
     const sameSession = cached?.sessionKey === sessionKey;
@@ -502,6 +528,11 @@ export class IVecEngine {
     const memorySection = sameSession && cached?.previousSessionSummary === previousSessionSummary
       ? cached.memorySection
       : renderMemorySection(previousSessionSummary);
+
+    const personalMemorySnapshot = memoryContext.personalMemorySnapshot ?? "";
+    const personalMemorySection = sameSession && cached?.personalMemorySnapshot === personalMemorySnapshot
+      ? cached.personalMemorySection
+      : renderPersonalMemorySection(personalMemorySnapshot);
 
     const activeSessionPath = memoryContext.activeSessionPath ?? "";
     const currentSessionSection = sameSession && cached?.activeSessionPath === activeSessionPath
@@ -519,6 +550,7 @@ export class IVecEngine {
       : renderSystemActivitySection(memoryContext.recentSystemActivity ?? []);
 
     const dynamicContext = joinPromptSections([
+      personalMemorySection,
       conversationSection,
       memorySection,
       currentSessionSection,
@@ -527,6 +559,7 @@ export class IVecEngine {
     ]);
     const systemContextWithoutStatus = joinPromptSections([
       staticSections.head,
+      runtimeContextSection,
       dynamicContext,
       staticSections.tail,
     ]);
@@ -541,8 +574,9 @@ export class IVecEngine {
         renderSessionStatusSection(sessionStatus),
       ]);
     const dynamicSystemTokens = sameSession && cached?.dynamicContext === dynamicContext
+      && cached?.runtimeContextSection === runtimeContextSection
       ? cached.dynamicSystemTokens
-      : estimateTextTokens(dynamicContext);
+      : estimateTextTokens(joinPromptSections([runtimeContextSection, dynamicContext]));
 
     this.understandContextCache = {
       sessionKey,
@@ -550,12 +584,15 @@ export class IVecEngine {
       conversationSection,
       previousSessionSummary,
       memorySection,
+      personalMemorySnapshot,
+      personalMemorySection,
       activeSessionPath,
       currentSessionSection,
       recentTasksFingerprint,
       recentTasksSection,
       recentSystemActivityFingerprint,
       recentSystemActivitySection,
+      runtimeContextSection,
       sessionStatusFingerprint,
       systemContextWithoutStatus,
       systemContext,
@@ -565,7 +602,7 @@ export class IVecEngine {
 
     return {
       systemContext,
-      controllerSystemContext: staticSections.controllerSystemContext,
+      controllerSystemContext,
       dynamicSystemTokens,
     };
   }
@@ -619,7 +656,7 @@ export class IVecEngine {
       now: this.nowProvider(),
       contextPercent: sessionStatus.contextPercent,
       sessionStartedAt: sessionStatus.startedAt,
-      timezone: this.resolveUserTimezone(),
+      timezone: null,
       pendingRotationReason: sessionStatus.pendingRotationReason,
       config: this.rotationPolicyConfig,
     });
@@ -653,17 +690,13 @@ export class IVecEngine {
       await this.sessionMemory.updateSessionLifecycle?.(clientId, {
         runId: runHandle.runId,
         sessionId: runHandle.sessionId,
-        timezone: this.resolveUserTimezone(),
+        timezone: null,
         status,
       });
       await this.sessionMemory.flushPersistence?.();
     } catch (err) {
       devWarn("Session lifecycle update failed:", err instanceof Error ? err.message : String(err));
     }
-  }
-
-  private resolveUserTimezone(): string | null {
-    return this.staticContext?.userProfile.timezone ?? null;
   }
 
   private ensureStaticTokenCache(): void {
@@ -706,7 +739,6 @@ export class IVecEngine {
     const head = joinPromptSections([
       renderBasePromptSection(this.staticContext.basePrompt),
       renderSoulSection(this.staticContext.soul),
-      renderUserProfileSection(this.staticContext.userProfile),
     ]);
     const tail = joinPromptSections([
       renderSkillsSection(this.staticContext.skillBlocks),
@@ -899,6 +931,54 @@ export class IVecEngine {
     this.sessionMemory.recordTaskSummary?.(clientId, payload);
   }
 
+  private async applyPulseProposalReflection(
+    clientId: string,
+    userMessage: string,
+    result: AgentLoopResult,
+    toolDefinitions: ToolDefinition[],
+  ): Promise<AgentLoopResult> {
+    if (!this.provider || result.type !== "reply" || result.status !== "completed" || result.runClass !== "task" || !result.taskSummary) {
+      return result;
+    }
+
+    try {
+      const reflection = await this.pulseProposalReflectionService.reflect({
+        provider: this.provider,
+        currentUserMessage: userMessage,
+        assistantResponse: result.content,
+        taskSummary: result.taskSummary,
+        memoryContext: this.sessionMemory.getPromptMemoryContext(),
+        toolDefinitions,
+        now: this.nowProvider(),
+      });
+
+      if (reflection.action !== "ask_user") {
+        if (reflection.reason) {
+          devLog(`[${clientId}] pulse proposal reflection skipped: ${reflection.reason}`);
+        }
+        return result;
+      }
+
+      devLog(
+        `[${clientId}] pulse proposal reflection asking confidence=${reflection.confidence.toFixed(2)} reason=${reflection.reason}`,
+      );
+      const content = appendPulseProposalQuestion(result.content, reflection.question);
+      return {
+        ...result,
+        type: "feedback",
+        content,
+        taskSummary: {
+          ...result.taskSummary,
+          assistantResponse: content,
+          assistantResponseKind: "feedback",
+        },
+      };
+    } catch (err) {
+      devWarn("Pulse proposal reflection failed:", err instanceof Error ? err.message : String(err));
+      return result;
+    }
+  }
+
   private shouldIncludeToolDirectoryInPrompt(): boolean {
     return process.env["PROMPT_INCLUDE_TOOL_DIRECTORY"] === "1";
   }
@@ -1037,20 +1117,104 @@ export class IVecEngine {
 
   private async registerIncomingDocuments(
     attachments: ChatAttachmentInput[],
-  ): Promise<{ documents: ManagedDocumentManifest[]; warnings: string[] }> {
+    runId: string,
+  ): Promise<{ documents: ManagedDocumentManifest[]; warnings: string[]; managedFiles: ManagedFileRecord[] }> {
     if (attachments.length === 0) {
-      return { documents: [], warnings: [] };
+      return { documents: [], warnings: [], managedFiles: [] };
+    }
+
+    if (this.fileLibrary) {
+      const managedFiles: ManagedFileRecord[] = [];
+      const warnings: string[] = [];
+      for (const attachment of attachments) {
+        try {
+          managedFiles.push(await this.registerIncomingManagedFile(attachment, runId));
+        } catch (err) {
+          warnings.push(`${formatAttachmentLabel(attachment)}: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      }
+
+      return {
+        documents: managedFiles.map(managedFileToDocumentManifest),
+        warnings,
+        managedFiles,
+      };
     }
 
     if (!this.documentStore) {
       return {
         documents: [],
         warnings: ["Attachments were provided but no document store is configured."],
+        managedFiles: [],
       };
     }
 
-    return this.documentStore.registerAttachments(attachments);
+    const registered = await this.documentStore.registerAttachments(attachments.filter(isLegacyDocumentAttachment));
+    return { ...registered, managedFiles: [] };
   }
+
+  private async registerIncomingManagedFile(
+    attachment: ChatAttachmentInput,
+    runId: string,
+  ): Promise<ManagedFileRecord> {
+    if ("fileId" in attachment && typeof attachment.fileId === "string" && attachment.fileId.trim().length > 0) {
+      await this.fileLibrary!.touchRunFile(runId, attachment.fileId, "attached");
+      return this.fileLibrary!.getFile(attachment.fileId);
+    }
+
+    if (attachment.source === "web") {
+      const bytes = await readFile(attachment.uploadedPath);
+      return this.fileLibrary!.registerUpload({
+        originalName: attachment.originalName,
+        bytes,
+        origin: "user_upload",
+        mimeType: attachment.mimeType,
+        runId,
+        runRole: "attached",
+        originalPath: attachment.uploadedPath,
+      });
+    }
+
+    if ("path" in attachment) {
+      return this.fileLibrary!.registerPath({
+        path: attachment.path,
+        name: attachment.name,
+        runId,
+        runRole: "attached",
+      });
+    }
+
+    throw new Error("Attachment is missing a usable fileId or path.");
+  }
+}
+
+function managedFileToDocumentManifest(file: ManagedFileRecord): ManagedDocumentManifest {
+  return {
+    documentId: file.sha256.slice(0, 16),
+    name: file.safeName,
+    displayName: file.originalName,
+    source: file.origin === "local_path" ? "cli" : "web",
+    originalPath: file.originalPath ?? file.sourceUri ?? file.storagePath,
+    storedPath: file.storagePath,
+    kind: file.kind,
+    ...(file.mimeType ? { mimeType: file.mimeType } : {}),
+    sizeBytes: file.sizeBytes,
+    checksum: file.sha256,
+  };
+}
+
+function isLegacyDocumentAttachment(attachment: ChatAttachmentInput): attachment is Exclude<ChatAttachmentInput, { fileId: string }> {
+  return !("fileId" in attachment);
+}
+
+function formatAttachmentLabel(attachment: ChatAttachmentInput): string {
+  if ("fileId" in attachment && typeof attachment.fileId === "string") {
+    return attachment.fileId;
+  }
+  if (attachment.source === "web") {
+    return attachment.uploadedPath;
+  }
+  return "path" in attachment ? attachment.path : "attachment";
 }
 
 function asOptionalString(value: unknown): string | undefined {
@@ -1131,6 +1295,15 @@ export function parseChatInboundMessage(data: unknown): ChatInboundMessage | nul
   for (const row of attachmentsRaw) {
     const value = asRecord(row);
     if (!value) {
+      continue;
+    }
+
+    const fileId = typeof value["fileId"] === "string" ? value["fileId"].trim() : "";
+    if (fileId.length > 0) {
+      attachments.push({
+        source: "file",
+        fileId,
+      });
       continue;
     }
 

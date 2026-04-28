@@ -969,8 +969,9 @@ describe("runContextScout", () => {
     const firstCallInput = calls[0]![0] as { messages: Array<{ role: string; content: string }> };
     const systemPrompt = firstCallInput.messages.find((message) => message.role === "system")?.content ?? "";
 
-    expect(systemPrompt).toContain("user.wiki");
-    expect(systemPrompt).toContain("user.wiki.schema");
+    expect(systemPrompt).toContain("memory-policy.json");
+    expect(systemPrompt).not.toContain("user.wiki");
+    expect(systemPrompt).not.toContain("user_profile.json");
   });
 
   it("includes run artifact format guidance in scout system prompt", async () => {

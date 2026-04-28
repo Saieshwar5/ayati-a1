@@ -1,4 +1,4 @@
-import type { SoulContext, UserProfileContext } from "../context/types.js";
+import type { SoulContext } from "../context/types.js";
 import type {
   ConversationTurn,
   PromptRunLedger,
@@ -11,7 +11,8 @@ import type { SkillPromptBlock } from "../skills/types.js";
 export type PromptLayerId =
   | "base"
   | "soul"
-  | "user_profile"
+  | "runtime_context"
+  | "personal_memory"
   | "conversation"
   | "memory"
   | "current_session"
@@ -22,10 +23,19 @@ export type PromptLayerId =
   | "tools"
   | "session_status";
 
+export interface PromptRuntimeContext {
+  nowUtc: string;
+  timezone: string;
+  localDate: string;
+  localTime: string;
+  weekday: string;
+}
+
 export interface PromptBuildInput {
   basePrompt: string;
   soul: SoulContext;
-  userProfile: UserProfileContext;
+  runtimeContext?: PromptRuntimeContext | null;
+  personalMemorySnapshot?: string;
   conversationTurns?: ConversationTurn[];
   previousSessionSummary?: string;
   activeSessionPath?: string;

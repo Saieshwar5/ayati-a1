@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { assemblePromptInput } from "../../src/context/load-system-prompt-input.js";
-import { emptySoulContext, emptyUserProfileContext } from "../../src/context/types.js";
+import { emptySoulContext } from "../../src/context/types.js";
 import type { StaticContext } from "../../src/context/static-context-cache.js";
 import type { PromptMemoryContext } from "../../src/memory/types.js";
 
@@ -9,7 +9,6 @@ describe("assemblePromptInput", () => {
     const staticContext: StaticContext = {
       basePrompt: "Base prompt",
       soul: emptySoulContext(),
-      userProfile: emptyUserProfileContext(),
       controllerPrompts: {
         understand: "",
         direct: "",
@@ -80,7 +79,6 @@ describe("assemblePromptInput", () => {
     const staticContext: StaticContext = {
       basePrompt: "Base",
       soul: emptySoulContext(),
-      userProfile: emptyUserProfileContext(),
       controllerPrompts: {
         understand: "",
         direct: "",

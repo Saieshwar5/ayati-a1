@@ -10,7 +10,7 @@ export function assemblePromptInput(
   return {
     basePrompt: staticContext.basePrompt,
     soul: staticContext.soul,
-    userProfile: staticContext.userProfile,
+    personalMemorySnapshot: memoryContext.personalMemorySnapshot,
     conversationTurns: memoryContext.conversationTurns,
     previousSessionSummary: memoryContext.previousSessionSummary,
     activeSessionPath: memoryContext.activeSessionPath,

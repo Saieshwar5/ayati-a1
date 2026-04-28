@@ -20,6 +20,7 @@ import type { DocumentStore } from "../documents/document-store.js";
 import type { PreparedAttachmentRegistry } from "../documents/prepared-attachment-registry.js";
 import type { ManagedDocumentManifest, PreparedAttachmentSummary } from "../documents/types.js";
 import type { DocumentContextBackend } from "../documents/document-context-backend.js";
+import type { ManagedFileRecord } from "../files/types.js";
 import type {
   AyatiSystemEvent,
   SystemEventCreatedBy,
@@ -109,7 +110,7 @@ export interface LoopState {
   dependentTask: boolean;
   dependentTaskSummary: PromptTaskSummary | null;
   taskProgress: TaskProgressState;
-  status: "running" | "completed" | "failed";
+  status: "running" | "completed" | "failed" | "stuck";
   finalOutput: string;
   iteration: number;
   maxIterations: number;
@@ -122,6 +123,7 @@ export interface LoopState {
   attachedDocuments?: ManagedDocumentManifest[];
   attachmentWarnings?: string[];
   preparedAttachments?: PreparedAttachmentSummary[];
+  managedFiles?: ManagedFileRecord[];
   activeSessionAttachments?: ActiveAttachmentRef[];
   workMode?: WorkMode;
   sessionHistory: ConversationTurn[];
@@ -445,6 +447,7 @@ export interface AgentLoopDeps {
   userMessageOverride?: string;
   attachedDocuments?: ManagedDocumentManifest[];
   attachmentWarnings?: string[];
+  managedFiles?: ManagedFileRecord[];
   documentStore?: DocumentStore;
   preparedAttachmentRegistry?: PreparedAttachmentRegistry;
   documentContextBackend?: DocumentContextBackend;
@@ -477,9 +480,15 @@ export interface WebChatAttachmentInput {
   originalName: string;
   mimeType?: string;
   sizeBytes?: number;
+  fileId?: string;
 }
 
-export type ChatAttachmentInput = CliChatAttachmentInput | WebChatAttachmentInput;
+export interface ManagedFileChatAttachmentInput {
+  source?: "file";
+  fileId: string;
+}
+
+export type ChatAttachmentInput = CliChatAttachmentInput | WebChatAttachmentInput | ManagedFileChatAttachmentInput;
 
 export interface ChatInboundMessage {
   type: "chat";

@@ -75,6 +75,8 @@ export const noopSessionMemory: SessionMemory = {
     return {
       conversationTurns: [],
       previousSessionSummary: "",
+      personalMemorySnapshot: "",
+      personalMemories: [],
       recentTaskSummaries: [],
       activeAttachments: [],
       recentSystemActivity: [],
