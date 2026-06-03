@@ -5,14 +5,9 @@ import Spinner from "ink-spinner";
 type Props = {
   readonly isLoading: boolean;
   readonly connected?: boolean;
-  readonly pendingAttachmentCount?: number;
 };
 
-export function StatusBar({ isLoading, connected, pendingAttachmentCount }: Props): React.JSX.Element {
-  const attachmentLabel = pendingAttachmentCount && pendingAttachmentCount > 0
-    ? ` | Files queued: ${pendingAttachmentCount}`
-    : "";
-
+export function StatusBar({ isLoading, connected }: Props): React.JSX.Element {
   return (
     <Box paddingX={1} height={1}>
       {isLoading ? (
@@ -22,8 +17,7 @@ export function StatusBar({ isLoading, connected, pendingAttachmentCount }: Prop
       ) : (
         <Text dimColor>
           {connected === false ? "[disconnected] " : ""}
-          {"Enter: send | /attach <path> [-- message] /files /clearfiles | Wheel/trackpad + Up/Down/PgUp/PgDn: scroll | Ctrl+C: exit"}
-          {attachmentLabel}
+          {"Enter: select suggestion/send | @path files/folders | delete @path to remove | Tab drill/accept | Esc close suggestions | Ctrl+C: exit"}
         </Text>
       )}
     </Box>

@@ -1,20 +1,29 @@
-import React, { useState, useCallback, useEffect, useRef } from "react";
+import React, { useState, useCallback, useEffect, useMemo, useRef } from "react";
 import { Box } from "ink";
-import { existsSync } from "node:fs";
-import { basename, resolve } from "node:path";
+import { dirname } from "node:path";
 import { Header } from "./components/header.js";
 import { MessageList, type MessageListHandle } from "./components/message-list.js";
 import { ChatInput } from "./components/chat-input.js";
 import { StatusBar } from "./components/status-bar.js";
+import { PathSuggestionList, pathSuggestionHeight } from "./components/path-suggestion-list.js";
 import { useWebSocket } from "./hooks/use-websocket.js";
 import { useMouseScroll } from "./hooks/use-mouse-scroll.js";
 import type { MouseScrollEvent } from "./input/terminal-mouse.js";
-import { ATTACH_USAGE, parseCliCommand } from "./commands.js";
+import { DOC_COMMAND_HELP, parseCliCommand } from "./commands.js";
+import {
+  applyPathSuggestion,
+  getPathSuggestions,
+} from "./path-suggestions.js";
+import {
+  replacePathMentionsWithResolvedPaths,
+  resolvePathMentions,
+  stripPathMentions,
+} from "./path-mentions.js";
 import type { ChatAttachment, ChatMessage, ServerMessage } from "./types.js";
 
 const HEADER_HEIGHT = 3;
 const STATUS_HEIGHT = 1;
-const INPUT_HEIGHT = 3;
+const INPUT_HEIGHT = 5;
 const RESERVED_ROWS = HEADER_HEIGHT + STATUS_HEIGHT + INPUT_HEIGHT;
 const MIN_TERMINAL_ROWS = 10;
 const MIN_MESSAGE_ROWS = 3;
@@ -26,12 +35,14 @@ function createMessage(
   role: ChatMessage["role"],
   content: string,
   kind: ChatMessage["kind"] = role === "user" ? "user" : "reply",
+  attachments?: ChatAttachment[],
 ): ChatMessage {
   return {
     id: String(nextId++),
     role,
     kind,
     content,
+    ...(attachments && attachments.length > 0 ? { attachments } : {}),
     timestamp: Date.now(),
   };
 }
@@ -40,7 +51,9 @@ export function App(): React.JSX.Element {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [inputValue, setInputValue] = useState("");
   const [isLoading, setIsLoading] = useState(false);
-  const [pendingAttachments, setPendingAttachments] = useState<ChatAttachment[]>([]);
+  const [recentRoots, setRecentRoots] = useState<string[]>([]);
+  const [selectedSuggestionIndex, setSelectedSuggestionIndex] = useState(0);
+  const [dismissedSuggestionInput, setDismissedSuggestionInput] = useState<string | null>(null);
   const [terminalRows, setTerminalRows] = useState(
     Math.max(process.stdout.rows ?? 24, MIN_TERMINAL_ROWS),
   );
@@ -95,6 +108,27 @@ export function App(): React.JSX.Element {
 
   const { send, connected } = useWebSocket({ onMessage });
 
+  const pathSuggestions = useMemo(
+    () => getPathSuggestions(inputValue, { limit: 6, roots: recentRoots }),
+    [inputValue, recentRoots],
+  );
+  const suggestionsVisible = pathSuggestions.length > 0
+    && !isLoading
+    && dismissedSuggestionInput !== inputValue;
+
+  useEffect(() => {
+    setSelectedSuggestionIndex(0);
+  }, [inputValue]);
+
+  useEffect(() => {
+    setSelectedSuggestionIndex((index) => {
+      if (pathSuggestions.length === 0) {
+        return 0;
+      }
+      return Math.min(index, pathSuggestions.length - 1);
+    });
+  }, [pathSuggestions.length]);
+
   const handleMouseScroll = useCallback((event: MouseScrollEvent) => {
     if (event.direction === "up") {
       messageListRef.current?.scrollByLines(-event.amount);
@@ -104,33 +138,51 @@ export function App(): React.JSX.Element {
     messageListRef.current?.scrollByLines(event.amount);
   }, []);
 
-  useMouseScroll({ onScroll: handleMouseScroll });
+  useMouseScroll({
+    enabled: process.env["AYATI_MOUSE_SCROLL"] === "1",
+    onScroll: handleMouseScroll,
+  });
+
+  const rememberAttachmentRoots = useCallback((attachments: ChatAttachment[]) => {
+    if (attachments.length === 0) {
+      return;
+    }
+
+    setRecentRoots((prev) => {
+      const merged = new Map(prev.map((root) => [root, root]));
+      for (const attachment of attachments) {
+        const root = attachment.kind === "directory"
+          ? attachment.path
+          : dirname(attachment.path);
+        merged.delete(root);
+        merged.set(root, root);
+      }
+      return [...merged.values()].slice(-8);
+    });
+  }, []);
 
   const submitChatMessage = useCallback((
-    content: string,
+    serverContent: string,
+    displayContent: string,
     attachments: ChatAttachment[],
-    clearPendingAttachments = false,
+    displayAttachments: ChatAttachment[],
   ) => {
-    const trimmed = content.trim();
-    if (!trimmed) return;
+    const trimmedServerContent = serverContent.trim();
+    const trimmedDisplayContent = displayContent.trim();
+    if (!trimmedServerContent || !trimmedDisplayContent) return;
 
-    const attachmentNote = attachments.length > 0
-      ? `\n\n[attached files: ${attachments.length}]`
-      : "";
-    const userMessage = createMessage("user", `${trimmed}${attachmentNote}`);
+    const userMessage = createMessage("user", trimmedDisplayContent, "user", displayAttachments);
     setMessages((prev) => [...prev, userMessage]);
 
     setIsLoading(true);
     send({
       type: "chat",
-      content: trimmed,
+      content: trimmedServerContent,
       ...(attachments.length > 0 ? { attachments } : {}),
     });
 
-    if (clearPendingAttachments) {
-      setPendingAttachments([]);
-    }
-  }, [send]);
+    rememberAttachmentRoots(displayAttachments);
+  }, [rememberAttachmentRoots, send]);
 
   const handleSubmit = useCallback(
     (value: string) => {
@@ -138,30 +190,76 @@ export function App(): React.JSX.Element {
       if (!trimmed) return;
 
       if (trimmed.startsWith("/")) {
-        handleCommand(trimmed, {
-          pendingAttachments,
-          setPendingAttachments,
-          pushAssistantMessage: (content) => {
-            setMessages((prev) => [...prev, createMessage("assistant", content)]);
-          },
-          submitChatMessage,
-          isLoading,
+        handleCommand(trimmed, (content) => {
+          setMessages((prev) => [...prev, createMessage("assistant", content)]);
         });
         setInputValue("");
         return;
       }
 
       if (isLoading) return;
-      setInputValue("");
 
-      submitChatMessage(trimmed, pendingAttachments, pendingAttachments.length > 0);
+      const resolvedMentions = resolvePathMentions(trimmed);
+      if (resolvedMentions.missing.length > 0) {
+        const lines = ["Could not find:"];
+        for (const missing of resolvedMentions.missing) {
+          lines.push(`- ${missing.path}`);
+        }
+        setMessages((prev) => [...prev, createMessage("assistant", lines.join("\n"), "error")]);
+        return;
+      }
+
+      const mentionedAttachments = resolvedMentions.resolved.map((entry) => entry.attachment);
+      const messageWithoutMentions = stripPathMentions(trimmed);
+      const displayContent = messageWithoutMentions.length > 0
+        ? messageWithoutMentions
+        : attachmentOnlyMessage(mentionedAttachments);
+
+      const contentWithResolvedPaths = replacePathMentionsWithResolvedPaths(trimmed, resolvedMentions.resolved);
+      const contentForServer = appendDirectoryContext(
+        messageWithoutMentions.length > 0 ? contentWithResolvedPaths : displayContent,
+        mentionedAttachments,
+      );
+      const serverAttachments = toServerAttachments(mentionedAttachments);
+      setInputValue("");
+      submitChatMessage(
+        contentForServer,
+        displayContent,
+        serverAttachments,
+        mentionedAttachments,
+      );
     },
-    [isLoading, pendingAttachments, submitChatMessage],
+    [isLoading, submitChatMessage],
   );
 
+  const handleSuggestionUp = useCallback(() => {
+    setSelectedSuggestionIndex((index) => {
+      if (pathSuggestions.length === 0) return 0;
+      return (index - 1 + pathSuggestions.length) % pathSuggestions.length;
+    });
+  }, [pathSuggestions.length]);
+
+  const handleSuggestionDown = useCallback(() => {
+    setSelectedSuggestionIndex((index) => {
+      if (pathSuggestions.length === 0) return 0;
+      return (index + 1) % pathSuggestions.length;
+    });
+  }, [pathSuggestions.length]);
+
+  const handleAcceptSuggestion = useCallback((options?: { finalizeDirectory?: boolean }) => {
+    const suggestion = pathSuggestions[selectedSuggestionIndex] ?? pathSuggestions[0];
+    if (!suggestion) return;
+    setInputValue((value) => applyPathSuggestion(value, suggestion, options));
+  }, [pathSuggestions, selectedSuggestionIndex]);
+
+  const handleDismissSuggestions = useCallback(() => {
+    setDismissedSuggestionInput(inputValue);
+  }, [inputValue]);
+
+  const suggestionsHeight = suggestionsVisible ? pathSuggestionHeight(pathSuggestions) : 0;
   const messageViewportHeight = Math.max(
     MIN_MESSAGE_ROWS,
-    terminalRows - RESERVED_ROWS,
+    terminalRows - RESERVED_ROWS - suggestionsHeight,
   );
 
   return (
@@ -172,103 +270,82 @@ export function App(): React.JSX.Element {
         messages={messages}
         height={messageViewportHeight}
         width={terminalColumns - 2}
+        keyboardScrollEnabled={!suggestionsVisible}
+      />
+      <PathSuggestionList
+        suggestions={pathSuggestions}
+        selectedIndex={selectedSuggestionIndex}
+        height={suggestionsHeight}
       />
       <StatusBar
         isLoading={isLoading}
         connected={connected}
-        pendingAttachmentCount={pendingAttachments.length}
       />
       <ChatInput
         value={inputValue}
         onChange={setInputValue}
         onSubmit={handleSubmit}
         isLoading={isLoading}
+        width={terminalColumns}
+        height={INPUT_HEIGHT}
+        suggestionsVisible={suggestionsVisible}
+        onSuggestionUp={handleSuggestionUp}
+        onSuggestionDown={handleSuggestionDown}
+        onAcceptSuggestion={handleAcceptSuggestion}
+        onDismissSuggestions={handleDismissSuggestions}
       />
     </Box>
   );
 }
 
-interface CommandContext {
-  pendingAttachments: ChatAttachment[];
-  setPendingAttachments: React.Dispatch<React.SetStateAction<ChatAttachment[]>>;
-  pushAssistantMessage: (content: string) => void;
-  submitChatMessage: (
-    content: string,
-    attachments: ChatAttachment[],
-    clearPendingAttachments?: boolean,
-  ) => void;
-  isLoading: boolean;
-}
-
-function handleCommand(command: string, context: CommandContext): void {
+function handleCommand(command: string, pushAssistantMessage: (content: string) => void): void {
   const parsed = parseCliCommand(command);
 
-  if (parsed.type === "files") {
-    if (context.pendingAttachments.length === 0) {
-      context.pushAssistantMessage("No files queued. Use /attach <path> or /attach <path> -- <message>.");
-      return;
-    }
-
-    const lines = ["Queued attachments:"];
-    context.pendingAttachments.forEach((entry, index) => {
-      lines.push(`${index + 1}. ${entry.path}`);
-    });
-    context.pushAssistantMessage(lines.join("\n"));
-    return;
-  }
-
-  if (parsed.type === "clearfiles") {
-    context.setPendingAttachments([]);
-    context.pushAssistantMessage("Cleared all queued attachments.");
+  if (parsed.type === "clearDocs") {
+    pushAssistantMessage("There is no separate attachment tray. Delete @path text from the input to remove attachments before sending.");
     return;
   }
 
   if (parsed.type === "invalid") {
-    context.pushAssistantMessage(parsed.message);
+    pushAssistantMessage(parsed.message);
     return;
   }
 
-  if (parsed.type === "attach") {
-    const absolutePath = resolve(parsed.rawPath);
-    if (!existsSync(absolutePath)) {
-      context.pushAssistantMessage(`File not found: ${absolutePath}`);
-      return;
-    }
-
-    const attachment = {
-      path: absolutePath,
-      name: basename(absolutePath),
-    };
-
-    if (parsed.content) {
-      if (context.isLoading) {
-        context.pushAssistantMessage("Ayati is still responding. Wait for the current reply before sending another file+message.");
-        return;
-      }
-
-      const attachments = mergeAttachments(context.pendingAttachments, attachment);
-      context.submitChatMessage(parsed.content, attachments, context.pendingAttachments.length > 0);
-      return;
-    }
-
-    if (context.pendingAttachments.some((entry) => entry.path === absolutePath)) {
-      context.pushAssistantMessage(`Attachment already queued: ${absolutePath}`);
-      return;
-    }
-
-    context.setPendingAttachments((prev) => mergeAttachments(prev, attachment));
-    context.pushAssistantMessage(`Queued attachment: ${absolutePath}`);
-    return;
-  }
-
-  context.pushAssistantMessage(`Unknown command. Use ${ATTACH_USAGE}, /files, or /clearfiles.`);
+  pushAssistantMessage(`Unknown command. ${DOC_COMMAND_HELP}`);
 }
 
-function mergeAttachments(
-  existing: ChatAttachment[],
-  nextAttachment: ChatAttachment,
-): ChatAttachment[] {
-  const merged = new Map(existing.map((attachment) => [attachment.path, attachment]));
-  merged.set(nextAttachment.path, nextAttachment);
-  return [...merged.values()];
+function toServerAttachments(attachments: ChatAttachment[]): ChatAttachment[] {
+  return attachments
+    .filter((attachment) => attachment.kind !== "directory")
+    .map((attachment) => ({
+      source: "cli",
+      path: attachment.path,
+      ...(attachment.name ? { name: attachment.name } : {}),
+    }));
+}
+
+function appendDirectoryContext(content: string, attachments: ChatAttachment[]): string {
+  const trimmed = content.trim();
+  const directories = attachments.filter((attachment) => (
+    attachment.kind === "directory" && !trimmed.includes(attachment.path)
+  ));
+  if (directories.length === 0) {
+    return trimmed;
+  }
+
+  const lines = [
+    trimmed,
+    "",
+    "[selected local directories]",
+    ...directories.map((directory) => `- ${directory.path}`),
+  ];
+  return lines.join("\n");
+}
+
+function attachmentOnlyMessage(attachments: ChatAttachment[]): string {
+  if (attachments.length === 0) {
+    return "";
+  }
+
+  return "Attached selected items.";
 }

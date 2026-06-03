@@ -15,7 +15,7 @@ const ENABLE_MOUSE_SCROLL = "\u001B[?1000h\u001B[?1006h";
 const DISABLE_MOUSE_SCROLL = "\u001B[?1000l\u001B[?1006l";
 
 export function useMouseScroll({
-  enabled = true,
+  enabled = false,
   onScroll,
 }: Options): void {
   const { stdin, isRawModeSupported } = useStdin();

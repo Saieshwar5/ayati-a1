@@ -1,3 +1,6 @@
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import React, { act } from "react";
 import { render } from "ink-testing-library";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -31,6 +34,7 @@ vi.mock("./hooks/use-websocket.js", () => ({
 import { App } from "./app.js";
 
 type RenderedApp = ReturnType<typeof render>;
+let tempDir: string | null = null;
 
 function deliver(message: ServerMessage): void {
   if (!websocketState.onMessage) {
@@ -54,10 +58,32 @@ async function renderApp(): Promise<RenderedApp> {
   return app as RenderedApp;
 }
 
+function createTempDir(): string {
+  tempDir = mkdtempSync(join(tmpdir(), "ayati-cli-app-"));
+  return tempDir;
+}
+
+async function writeInput(app: RenderedApp, value: string): Promise<void> {
+  await act(async () => {
+    app.stdin.write(value);
+  });
+  await pressEnter(app);
+}
+
+async function pressEnter(app: RenderedApp): Promise<void> {
+  await act(async () => {
+    app.stdin.write("\r");
+  });
+}
+
 describe("App", () => {
   afterEach(() => {
     websocketState.onMessage = null;
     websocketState.send.mockReset();
+    if (tempDir) {
+      rmSync(tempDir, { recursive: true, force: true });
+      tempDir = null;
+    }
   });
 
   it("renders notifications from the backend", async () => {
@@ -164,6 +190,84 @@ describe("App", () => {
 
     await act(async () => {
       unmount();
+    });
+  });
+
+  it("sends @file mentions as local CLI attachments without uploading bytes", async () => {
+    const root = createTempDir();
+    const reportPath = join(root, "report.txt");
+    writeFileSync(reportPath, "hello", "utf8");
+    const app = await renderApp();
+
+    await writeInput(app, `Summarize @${reportPath}`);
+    expect(websocketState.send).not.toHaveBeenCalled();
+
+    await pressEnter(app);
+
+    expect(websocketState.send).toHaveBeenCalledWith({
+      type: "chat",
+      content: `Summarize ${reportPath}`,
+      attachments: [{
+        source: "cli",
+        path: reportPath,
+        name: "report.txt",
+      }],
+    });
+    expect(app.lastFrame() ?? "").toContain("Attachments:");
+    expect(app.lastFrame() ?? "").toContain("report.txt");
+
+    await act(async () => {
+      app.unmount();
+    });
+  });
+
+  it("selects a directory mention without sending until Enter is pressed again", async () => {
+    const root = createTempDir();
+    const docsPath = join(root, "docs");
+    mkdirSync(docsPath);
+    const app = await renderApp();
+
+    await writeInput(app, `@${docsPath}`);
+
+    expect(websocketState.send).not.toHaveBeenCalled();
+    expect(app.lastFrame() ?? "").toContain(docsPath);
+
+    await pressEnter(app);
+    expect(websocketState.send).toHaveBeenCalledWith({
+      type: "chat",
+      content: [
+        "Attached selected items.",
+        "",
+        "[selected local directories]",
+        `- ${docsPath}`,
+      ].join("\n"),
+    });
+    expect(app.lastFrame() ?? "").toContain("Attachments:");
+    expect(app.lastFrame() ?? "").toContain("docs");
+
+    await act(async () => {
+      app.unmount();
+    });
+  });
+
+  it("sends directory mentions as local context instead of file attachments", async () => {
+    const root = createTempDir();
+    const docsPath = join(root, "docs");
+    mkdirSync(docsPath);
+    const app = await renderApp();
+
+    await writeInput(app, `What is missing in @${docsPath}`);
+    await pressEnter(app);
+
+    expect(websocketState.send).toHaveBeenCalledWith({
+      type: "chat",
+      content: `What is missing in ${docsPath}`,
+    });
+    expect(app.lastFrame() ?? "").toContain("Attachments:");
+    expect(app.lastFrame() ?? "").toContain("docs");
+
+    await act(async () => {
+      app.unmount();
     });
   });
 });

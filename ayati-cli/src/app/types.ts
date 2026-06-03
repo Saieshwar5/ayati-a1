@@ -3,12 +3,17 @@ export type ChatMessage = {
   role: "user" | "assistant";
   kind: "user" | "reply" | "feedback" | "notification" | "error";
   content: string;
+  attachments?: ChatAttachment[];
   timestamp: number;
 };
 
 export interface ChatAttachment {
+  source?: "cli";
   path: string;
   name?: string;
+  kind?: "file" | "directory";
+  sizeBytes?: number;
+  entryCount?: number;
 }
 
 export interface ChatRequestMessage {

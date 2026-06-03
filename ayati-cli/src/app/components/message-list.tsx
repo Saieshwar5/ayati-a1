@@ -25,6 +25,7 @@ type Props = {
   readonly messages: ChatMessage[];
   readonly height: number;
   readonly width: number;
+  readonly keyboardScrollEnabled?: boolean;
 };
 
 export type MessageListHandle = {
@@ -126,6 +127,22 @@ function toDisplayLines(messages: ChatMessage[], width: number): DisplayLine[] {
           segments: [{ text: `  ${line}` }],
         });
       }
+      if (message.attachments && message.attachments.length > 0) {
+        lines.push({
+          segments: [{ text: "  Attachments:", bold: true, color: "cyan" }],
+        });
+        for (const attachment of message.attachments) {
+          const kind = attachment.kind === "directory" ? "directory" : "file";
+          const label = attachment.name ?? attachment.path;
+          lines.push({
+            segments: [
+              { text: "  - " },
+              { text: label, color: kind === "directory" ? "cyan" : "green" },
+              { text: ` (${kind})`, dimColor: true },
+            ],
+          });
+        }
+      }
     } else {
       lines.push(...formatAssistantMessage({
         content: message.content,
@@ -167,7 +184,7 @@ function renderSegments(segments: DisplaySegment[], lineKey: string): React.JSX.
 }
 
 export const MessageList = forwardRef<MessageListHandle, Props>(function MessageList(
-  { messages, height, width },
+  { messages, height, width, keyboardScrollEnabled = true },
   ref,
 ): React.JSX.Element {
   const [scrollTop, setScrollTop] = useState(0);
@@ -224,6 +241,10 @@ export const MessageList = forwardRef<MessageListHandle, Props>(function Message
   }, [maxScrollTop]);
 
   useInput((_, key) => {
+    if (!keyboardScrollEnabled) {
+      return;
+    }
+
     if (lines.length === 0) {
       return;
     }
