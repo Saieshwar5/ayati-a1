@@ -13,7 +13,7 @@ import type {
   ManagedDocumentManifest,
   ProcessedDocument,
   DocumentSegment,
-  WebChatAttachment,
+  UploadedChatAttachment,
 } from "./types.js";
 
 interface StoredDocumentMetadata extends ManagedDocumentManifest {
@@ -75,8 +75,8 @@ export class DocumentStore {
 
     for (const attachment of attachments) {
       try {
-        const manifest = attachment.source === "web"
-          ? await this.registerWebAttachment(attachment)
+        const manifest = attachment.source === "upload"
+          ? await this.registerUploadedAttachment(attachment)
           : await this.registerCliAttachment(attachment);
         documents.push(manifest);
       } catch (err) {
@@ -196,7 +196,7 @@ export class DocumentStore {
     });
   }
 
-  private async registerWebAttachment(attachment: WebChatAttachment): Promise<ManagedDocumentManifest> {
+  private async registerUploadedAttachment(attachment: UploadedChatAttachment): Promise<ManagedDocumentManifest> {
     const uploadedPath = resolve(attachment.uploadedPath);
     if (!isPathInsideDirectory(this.uploadsDir, uploadedPath)) {
       throw new Error("uploaded file path is outside the managed uploads directory.");
@@ -209,7 +209,7 @@ export class DocumentStore {
 
     const kind = inferKindFromNameOrMime(displayName, attachment.mimeType);
     return this.registerFromPath({
-      source: "web",
+      source: "upload",
       sourcePath: uploadedPath,
       displayName,
       kind,
@@ -219,7 +219,7 @@ export class DocumentStore {
   }
 
   private async registerFromPath(input: {
-    source: "cli" | "web";
+    source: "cli" | "upload";
     sourcePath: string;
     displayName: string;
     kind: DocumentKind;
@@ -395,7 +395,7 @@ function normalizeExtractedText(value: string): string {
 }
 
 function formatAttachmentError(attachment: ChatAttachment, message: string): string {
-  const label = attachment.source === "web" ? attachment.uploadedPath : attachment.path;
+  const label = attachment.source === "upload" ? attachment.uploadedPath : attachment.path;
   return `${label}: ${message}`;
 }
 

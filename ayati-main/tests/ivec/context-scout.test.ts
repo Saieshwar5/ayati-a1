@@ -1074,7 +1074,7 @@ describe("runContextScout", () => {
     expect(provider.generateTurn).toHaveBeenCalledTimes(1);
   });
 
-  it("matches uploaded web documents when document_paths references the saved upload path", async () => {
+  it("matches uploaded documents when document_paths references the saved upload path", async () => {
     const locs = createLocations(tmpDir);
     const documentsDir = join(tmpDir, "managed-web-documents");
     const uploadPath = join(documentsDir, "uploads", "upload-1", "policy.txt");
@@ -1096,7 +1096,7 @@ describe("runContextScout", () => {
     const uploadedBytes = Buffer.byteLength(readFileSync(uploadPath, "utf-8"));
     const registered = await store.registerAttachments([
       {
-        source: "web",
+        source: "upload",
         uploadedPath: uploadPath,
         originalName: "policy.txt",
         mimeType: "text/plain",

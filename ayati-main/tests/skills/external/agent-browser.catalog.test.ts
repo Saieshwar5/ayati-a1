@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { loadExternalSkillCatalog } from "../../../src/skills/external/catalog.js";
@@ -29,18 +29,20 @@ const AGENT_BROWSER_TOOL_IDS = [
 ];
 
 const AGENT_BROWSER_TOOL_NAMES = AGENT_BROWSER_TOOL_IDS.map((toolId) => `agent-browser.${toolId}`);
+const REAL_SKILLS_DIR = resolve(process.cwd(), "data", "skills");
+const describeIfAgentBrowserExists = existsSync(join(REAL_SKILLS_DIR, "agent-browser")) ? describe : describe.skip;
 
-describe("real agent-browser skill catalog", () => {
+describeIfAgentBrowserExists("real agent-browser skill catalog", () => {
   let tempDir: string;
   let secretsPath: string;
   let policyPath: string;
   let skillsDir: string;
 
   beforeEach(() => {
-    tempDir = mkdtempSync(join(tmpdir(), "ayati-web-catalog-"));
+    tempDir = mkdtempSync(join(tmpdir(), "ayati-browser-catalog-"));
     secretsPath = join(tempDir, "skill-secrets.json");
     policyPath = join(tempDir, "skill-policy.json");
-    skillsDir = resolve(process.cwd(), "data", "skills");
+    skillsDir = REAL_SKILLS_DIR;
     mkdirSync(tempDir, { recursive: true });
     writeFileSync(secretsPath, JSON.stringify({}, null, 2));
     writeFileSync(policyPath, JSON.stringify({

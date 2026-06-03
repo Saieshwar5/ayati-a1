@@ -146,7 +146,7 @@ describe("TelegramServer", () => {
         content: "Summarize this file",
         attachments: [
           expect.objectContaining({
-            source: "web",
+            source: "upload",
             originalName: "policy.txt",
             mimeType: "text/plain",
             sizeBytes: Buffer.byteLength("Policy body."),
@@ -253,7 +253,7 @@ describe("TelegramServer", () => {
         content: "What is in this image?",
         attachments: [
           expect.objectContaining({
-            source: "web",
+            source: "upload",
             originalName: "telegram-photo-photo-large.jpg",
             mimeType: "image/jpeg",
             sizeBytes: Buffer.byteLength("jpeg-bytes"),
@@ -347,7 +347,7 @@ describe("TelegramServer", () => {
         content: "Please analyze this document.",
         attachments: [
           expect.objectContaining({
-            source: "web",
+            source: "upload",
             originalName: "telegram-photo-photo-no-caption.png",
             mimeType: "image/png",
           }),

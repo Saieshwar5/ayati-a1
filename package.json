@@ -1,0 +1,19 @@
+{
+  "name": "ayati",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "pnpm -r build",
+    "test": "pnpm -r test",
+    "dev:main": "pnpm --filter ayati-main dev",
+    "dev:cli": "pnpm --filter ayati-cli dev",
+    "start:main": "pnpm --filter ayati-main start",
+    "start:cli": "pnpm --filter ayati-cli start"
+  },
+  "packageManager": "pnpm@10.0.0",
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "esbuild"
+    ]
+  }
+}

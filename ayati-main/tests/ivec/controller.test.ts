@@ -1405,7 +1405,7 @@ describe("callDirect", () => {
           preparedInputId: "att_1_new",
           documentId: "doc-new",
           displayName: "electronic-card-transactions-february-2026-csv-tables.csv",
-          source: "web",
+          source: "upload",
           kind: "csv",
           mode: "structured_data",
           sizeBytes: 1024,

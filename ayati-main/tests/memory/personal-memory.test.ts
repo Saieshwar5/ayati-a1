@@ -14,10 +14,12 @@ import { PERSONAL_MEMORY_SNAPSHOT_LINE_LIMIT, ProfileProjector } from "../../src
 import type { MemoryPolicy, MemoryProposal } from "../../src/memory/personal/types.js";
 import { EVOLVING_MEMORY_SECTION_ID, TIME_BASED_SECTION_ID } from "../../src/memory/personal/types.js";
 
+const TEST_NOW = "2026-04-24T00:00:00.000Z";
+
 function makeStore(root: string): PersonalMemoryStore {
   const store = new PersonalMemoryStore({
     dataDir: resolve(root, "data", "memory"),
-    now: () => new Date("2026-04-24T00:00:00.000Z"),
+    now: () => new Date(TEST_NOW),
   });
   store.start(DEFAULT_MEMORY_POLICY);
   return store;
@@ -578,14 +580,14 @@ describe("User Facts personal memory section", () => {
     const store = makeStore(root);
     const resolver = new MemoryResolver(store);
 
-    const created = resolver.resolve("local", payload("s1"), [timedProposal()], DEFAULT_MEMORY_POLICY);
+    const created = resolver.resolve("local", payload("s1"), [timedProposal()], DEFAULT_MEMORY_POLICY, TEST_NOW);
     const rejected = resolver.resolve("local", payload("s2"), [timedProposal({
       slot: "travel/vacation",
       text: "User is going on vacation next week.",
       eventAt: null,
       expiresAt: null,
       evidence: "User said they are going on vacation next week.",
-    })], DEFAULT_MEMORY_POLICY);
+    })], DEFAULT_MEMORY_POLICY, TEST_NOW);
     const timed = store.listMemories("local", ["active"], 10, TIME_BASED_SECTION_ID);
 
     expect(created.created).toBe(1);
@@ -627,11 +629,11 @@ describe("User Facts personal memory section", () => {
     const store = makeStore(root);
     const resolver = new MemoryResolver(store);
 
-    resolver.resolve("local", payload("s1"), [timedProposal()], DEFAULT_MEMORY_POLICY);
+    resolver.resolve("local", payload("s1"), [timedProposal()], DEFAULT_MEMORY_POLICY, TEST_NOW);
     const result = resolver.resolve("local", payload("s2"), [timedProposal({
       text: "User's exam is on May 20, 2026.",
       evidence: "User repeated that the exam is on May 20, 2026.",
-    })], DEFAULT_MEMORY_POLICY);
+    })], DEFAULT_MEMORY_POLICY, TEST_NOW);
     const memories = store.findCardsByAddress(
       "local",
       "exam",
@@ -652,13 +654,13 @@ describe("User Facts personal memory section", () => {
     const store = makeStore(root);
     const resolver = new MemoryResolver(store);
 
-    resolver.resolve("local", payload("s1"), [timedProposal()], DEFAULT_MEMORY_POLICY);
+    resolver.resolve("local", payload("s1"), [timedProposal()], DEFAULT_MEMORY_POLICY, TEST_NOW);
     const result = resolver.resolve("local", payload("s2"), [timedProposal({
       text: "User's exam moved to May 22, 2026.",
       eventAt: "2026-05-22T09:00:00.000+05:30",
       expiresAt: "2026-05-22T23:59:59.000+05:30",
       evidence: "User said the exam moved to May 22, 2026.",
-    })], DEFAULT_MEMORY_POLICY);
+    })], DEFAULT_MEMORY_POLICY, TEST_NOW);
     const memories = store.findCardsByAddress(
       "local",
       "exam",
@@ -690,7 +692,7 @@ describe("User Facts personal memory section", () => {
       confidence: 0.55,
       importance: 0.2,
       evidence: "User mentioned a possible minor trip.",
-    })], smallPolicy);
+    })], smallPolicy, TEST_NOW);
     resolver.resolve("local", payload("s2"), [timedProposal({
       kind: "meeting",
       slot: "calendar/low_value_meeting",
@@ -701,8 +703,8 @@ describe("User Facts personal memory section", () => {
       confidence: 0.6,
       importance: 0.25,
       evidence: "User mentioned a low-value meeting.",
-    })], smallPolicy);
-    const result = resolver.resolve("local", payload("s3"), [timedProposal()], smallPolicy);
+    })], smallPolicy, TEST_NOW);
+    const result = resolver.resolve("local", payload("s3"), [timedProposal()], smallPolicy, TEST_NOW);
 
     expect(result.created).toBe(1);
     expect(result.archived).toBe(1);
@@ -825,13 +827,13 @@ describe("User Facts personal memory section", () => {
     const resolver = new MemoryResolver(store);
 
     resolver.resolve("local", payload("s-fact"), [proposal()], DEFAULT_MEMORY_POLICY);
-    resolver.resolve("local", payload("s-time"), [timedProposal()], DEFAULT_MEMORY_POLICY);
+    resolver.resolve("local", payload("s-time"), [timedProposal()], DEFAULT_MEMORY_POLICY, TEST_NOW);
     resolver.resolve("local", payload("s-evolving"), [evolvingProposal()], DEFAULT_MEMORY_POLICY);
 
     const result = await new ProfileProjector({
       projectRoot: root,
       userId: "local",
-      now: () => new Date("2026-04-24T00:00:00.000Z"),
+      now: () => new Date(TEST_NOW),
     }).regenerate(store);
     const snapshot = store.getSnapshot("local");
 

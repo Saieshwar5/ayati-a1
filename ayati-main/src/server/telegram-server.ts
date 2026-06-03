@@ -264,7 +264,7 @@ export class TelegramServer {
   private async normalizeMessage(message: TelegramMessage): Promise<{
     type: "chat";
     content: string;
-    attachments?: Array<ManagedUploadRecord & { source: "web" }>;
+    attachments?: Array<ManagedUploadRecord & { source: "upload" }>;
   } | null> {
     const text = typeof message.text === "string" ? message.text.trim() : "";
     const caption = typeof message.caption === "string" ? message.caption.trim() : "";
@@ -289,7 +289,7 @@ export class TelegramServer {
     return {
       type: "chat",
       content,
-      attachments: [{ source: "web", ...attachment }],
+      attachments: [{ source: "upload", ...attachment }],
     };
   }
 

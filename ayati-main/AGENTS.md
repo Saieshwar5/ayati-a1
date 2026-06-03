@@ -14,11 +14,11 @@
 - `AGENT.md` documents architecture direction; read it before major design changes.
 
 ## Build, Test, and Development Commands
-- `npm run build` compiles TypeScript to `dist/`.
-- `npm start` runs the compiled server (`node --env-file=.env dist/index.js`).
-- `npm run dev` watches `src/**/*.ts`, rebuilds, and restarts.
-- `npm test` runs all Vitest suites once.
-- `npm run test:watch` runs Vitest in watch mode.
+- `pnpm build` compiles TypeScript to `dist/`.
+- `pnpm start` runs the compiled server (`node --env-file=.env dist/index.js`).
+- `pnpm dev` watches `src/**/*.ts`, rebuilds, and restarts.
+- `pnpm test` runs all Vitest suites once.
+- `pnpm test:watch` runs Vitest in watch mode.
 
 ## Coding Style & Naming Conventions
 - Language: TypeScript (ESM, strict mode).
@@ -31,7 +31,7 @@
 - Framework: Vitest (`vitest.config.ts` includes `tests/**/*.test.ts`).
 - Add/extend tests in the matching domain folder when changing behavior.
 - Prefer deterministic unit tests over networked/integration dependencies.
-- Before opening a PR, run: `npm run build && npm test`.
+- Before opening a PR, run: `pnpm build && pnpm test`.
 
 ## Commit & Pull Request Guidelines
 - Existing history uses short, lowercase, imperative summaries (example: `added tool-selection`).
@@ -39,7 +39,7 @@
 - PRs should include:
   - what changed and why,
   - impacted modules/paths,
-  - test evidence (`npm test` output summary),
+  - test evidence (`pnpm test` output summary),
   - screenshots/log samples for protocol or UX-visible changes.
 
 ## Security & Configuration Tips

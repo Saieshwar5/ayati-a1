@@ -405,7 +405,7 @@ describe("UploadServer", () => {
         content: "Can you see the attachment?",
         attachments: [
           {
-            source: "web",
+            source: "upload",
             uploadedPath: String(uploadPayload["uploadedPath"]),
             originalName: String(uploadPayload["originalName"]),
             mimeType: typeof uploadPayload["mimeType"] === "string" ? uploadPayload["mimeType"] : undefined,
@@ -520,7 +520,7 @@ describe("UploadServer", () => {
         content: "What is in this image?",
         attachments: [
           {
-            source: "web",
+            source: "upload",
             uploadedPath: String(uploadPayload["uploadedPath"]),
             originalName: String(uploadPayload["originalName"]),
             mimeType: typeof uploadPayload["mimeType"] === "string" ? uploadPayload["mimeType"] : undefined,

@@ -36,7 +36,7 @@ describe("DocumentStore.registerAttachments", () => {
     }
   });
 
-  it("registers uploaded web files from the managed uploads directory", async () => {
+  it("registers uploaded files from the managed uploads directory", async () => {
     const dataDir = makeTmpDir();
     const documentsDir = join(dataDir, "documents");
     const uploadPath = join(documentsDir, "uploads", "upload-1", "policy.txt");
@@ -51,7 +51,7 @@ describe("DocumentStore.registerAttachments", () => {
 
       const result = await store.registerAttachments([
         {
-          source: "web",
+          source: "upload",
           uploadedPath: uploadPath,
           originalName: "policy.txt",
           mimeType: "text/plain",
@@ -62,7 +62,7 @@ describe("DocumentStore.registerAttachments", () => {
       expect(result.warnings).toEqual([]);
       expect(result.documents).toHaveLength(1);
       expect(result.documents[0]).toEqual(expect.objectContaining({
-        source: "web",
+        source: "upload",
         displayName: "policy.txt",
         originalPath: uploadPath,
         kind: "txt",
@@ -93,20 +93,20 @@ describe("DocumentStore.registerAttachments", () => {
 
       const result = await store.registerAttachments([
         {
-          source: "web",
+          source: "upload",
           uploadedPath: missingUploadPath,
           originalName: "policy.txt",
           mimeType: "text/plain",
         },
         {
-          source: "web",
+          source: "upload",
           uploadedPath: emptyUploadPath,
           originalName: "policy.txt",
           mimeType: "text/plain",
           sizeBytes: 0,
         },
         {
-          source: "web",
+          source: "upload",
           uploadedPath: unsupportedUploadPath,
           originalName: "payload.bin",
           mimeType: "application/octet-stream",
@@ -143,14 +143,14 @@ describe("DocumentStore.registerAttachments", () => {
 
       const [first, second] = (await store.registerAttachments([
         {
-          source: "web",
+          source: "upload",
           uploadedPath: uploadPathA,
           originalName: "policy.txt",
           mimeType: "text/plain",
           sizeBytes: Buffer.byteLength(contents),
         },
         {
-          source: "web",
+          source: "upload",
           uploadedPath: uploadPathB,
           originalName: "policy-copy.txt",
           mimeType: "text/plain",

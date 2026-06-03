@@ -474,8 +474,8 @@ export interface CliChatAttachmentInput {
   name?: string;
 }
 
-export interface WebChatAttachmentInput {
-  source: "web";
+export interface UploadedChatAttachmentInput {
+  source: "upload";
   uploadedPath: string;
   originalName: string;
   mimeType?: string;
@@ -488,7 +488,7 @@ export interface ManagedFileChatAttachmentInput {
   fileId: string;
 }
 
-export type ChatAttachmentInput = CliChatAttachmentInput | WebChatAttachmentInput | ManagedFileChatAttachmentInput;
+export type ChatAttachmentInput = CliChatAttachmentInput | UploadedChatAttachmentInput | ManagedFileChatAttachmentInput;
 
 export interface ChatInboundMessage {
   type: "chat";

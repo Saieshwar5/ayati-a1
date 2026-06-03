@@ -2,17 +2,16 @@
 
 Ayati is a modular AI agent platform built as a small monorepo. It combines a
 provider-agnostic agent runtime, layered prompt context, memory systems,
-composable tools, file/document handling, generated artifacts, and multiple user
-interfaces.
+composable tools, file/document handling, generated artifacts, and a terminal
+chat interface.
 
 The core idea is simple: keep the agent "chassis" stable while allowing models,
 skills, tools, plugins, clients, and memory behavior to evolve independently.
 
 This repository includes:
 
-- `ayati-main`: the backend agent runtime, WebSocket server, upload/artifact API, memory, tools, plugins, and event processing
+- `ayati-main`: the backend agent runtime, WebSocket server, HTTP API, memory, tools, plugins, and event processing
 - `ayati-cli`: a terminal chat client built with Ink and React
-- `ayati-web`: a Next.js browser chat interface
 
 ## What Ayati Is
 
@@ -32,7 +31,7 @@ At a high level, Ayati provides:
 - Managed file registration, upload processing, document extraction, structured data profiling, and artifact serving
 - External skill activation from project skill manifests under runtime data
 - Optional system-event integrations such as Telegram, AgentMail, and Nylas Mail
-- Terminal and browser clients that talk to the same backend runtime
+- A terminal client that talks to the backend runtime
 
 ## Repository Layout
 
@@ -40,8 +39,7 @@ At a high level, Ayati provides:
 .
 |- README.md
 |- ayati-main/   # backend runtime, WebSocket server, upload/artifact server, tools, memory, plugins
-|- ayati-cli/    # Ink-based terminal client
-`- ayati-web/    # Next.js web client
+`- ayati-cli/    # Ink-based terminal client
 ```
 
 ## Agent Runtime
@@ -62,7 +60,7 @@ context, memory, available tools, run state, and provider capabilities.
 
 ## How Ayati Works In Practice
 
-1. A user sends a message from the CLI, web app, Telegram, or another runtime input.
+1. A user sends a message from the CLI, Telegram, or another runtime input.
 2. `ayati-main` receives the message through WebSocket, HTTP, polling, or a plugin event adapter.
 3. The backend loads static context, current session state, memory snapshots, available tools, active skills, and the configured LLM provider.
 4. The `IVecEngine` asks the model to understand the request and choose the next responsible step.
@@ -210,22 +208,10 @@ Supported input commands:
 - `/files`
 - `/clearfiles`
 
-### `ayati-web`
-
-A browser-based chat interface built with Next.js.
-
-Features include:
-
-- Live chat over WebSocket
-- File uploads to the backend upload API
-- Markdown rendering for assistant replies
-- Connection state feedback
-- Artifact preview and download support
-
 ## Prerequisites
 
 - Node.js 20+
-- npm
+- pnpm
 
 Some optional capabilities need extra local dependencies or credentials:
 
@@ -235,15 +221,17 @@ Some optional capabilities need extra local dependencies or credentials:
 
 ## Quick Start
 
-Install dependencies separately in each package you want to run.
+Install dependencies once from the repository root:
+
+```bash
+pnpm install
+```
 
 ### 1. Start the backend
 
 ```bash
-cd ayati-main
-npm install
-npm run build
-npm start
+pnpm --filter ayati-main build
+pnpm --filter ayati-main start
 ```
 
 The backend expects an `.env` file in `ayati-main/`.
@@ -267,38 +255,11 @@ provider.
 In a new terminal:
 
 ```bash
-cd ayati-cli
-npm install
-npm run build
-npm start
+pnpm --filter ayati-cli build
+pnpm --filter ayati-cli start
 ```
-
-### 3. Run the web app
-
-In another terminal:
-
-```bash
-cd ayati-web
-npm install
-npm run dev
-```
-
-Then open the local Next.js URL shown in the terminal.
 
 ## Environment Configuration
-
-### Web Client
-
-`ayati-web` can run with defaults, but you can override backend endpoints with
-`.env.local`.
-
-Example:
-
-```env
-NEXT_PUBLIC_AYATI_WS_URL=ws://localhost:8080
-NEXT_PUBLIC_AYATI_UPLOAD_URL=http://localhost:8081/api/uploads
-NEXT_PUBLIC_AYATI_ARTIFACT_BASE_URL=http://localhost:8081
-```
 
 ### Backend HTTP Server
 
@@ -342,30 +303,21 @@ NYLAS_WEBHOOK_PUBLIC_URL=https://your-public-url.example/webhook
 ### `ayati-main`
 
 ```bash
-npm run build
-npm start
-npm run dev
-npm test
-npm run test:watch
+pnpm --filter ayati-main build
+pnpm --filter ayati-main start
+pnpm --filter ayati-main dev
+pnpm --filter ayati-main test
+pnpm --filter ayati-main test:watch
 ```
 
 ### `ayati-cli`
 
 ```bash
-npm run build
-npm start
-npm run dev
-npm test
-npm run test:watch
-```
-
-### `ayati-web`
-
-```bash
-npm run dev
-npm run build
-npm run start
-npm run lint
+pnpm --filter ayati-cli build
+pnpm --filter ayati-cli start
+pnpm --filter ayati-cli dev
+pnpm --filter ayati-cli test
+pnpm --filter ayati-cli test:watch
 ```
 
 ## Runtime Data
@@ -402,8 +354,8 @@ If you want to go deeper into the architecture, start with:
 
 ## Current Status
 
-Ayati is structured as a modular agent system with separate backend, CLI, and web
-surfaces. The backend supports runtime provider selection, staged agent control,
+Ayati is structured as a modular agent system with separate backend and CLI
+packages. The backend supports runtime provider selection, staged agent control,
 built-in and external skills, personal and episodic memory, document/data
 workflows, generated artifacts, scheduled Pulse work, and optional event-driven
 integrations.

@@ -1,0 +1,24 @@
+# Modules
+
+Backend package: `ayati-main`
+
+- `src/app`: bootstrap and runtime wiring.
+- `src/ivec`: agent loop, controller flow, staged execution, session rotation, context pressure, tool selection, and system-event policy.
+- `src/context`: static prompt, controller prompt, soul, and policy loading.
+- `src/prompt`: prompt section rendering and token estimation.
+- `src/core`: provider/plugin contracts, registries, system ingress, inbound queue, and plugin loading.
+- `src/providers`: provider adapters for OpenRouter, OpenAI, Anthropic, and Fireworks.
+- `src/skills`: built-in tools, tool executor, external skill registry, and skill broker.
+- `src/memory`: session, personal memory, episodic memory, embeddings, and recall support.
+- `src/documents`: document storage, preparation, indexing, retrieval, attachment handling, and structured document support.
+- `src/files`: managed file library, file metadata, storage layout, and file processors.
+- `src/pulse`: reminders, scheduled tasks, parser, scheduler, and proposal reflection.
+- `src/server`: WebSocket server, HTTP upload/artifact server, Telegram server, and upload storage.
+- `src/plugins`: optional plugin integrations such as AgentMail and Nylas Mail.
+
+CLI package: `ayati-cli`
+
+- `src/app/app.tsx`: Ink app composition and chat workflow.
+- `src/app/components`: terminal UI components.
+- `src/app/hooks`: WebSocket and terminal mouse behavior.
+- `src/app/commands.ts`: slash command parsing for file attachment workflows.

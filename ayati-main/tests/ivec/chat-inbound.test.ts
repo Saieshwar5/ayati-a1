@@ -16,13 +16,13 @@ describe("parseChatInboundMessage", () => {
     });
   });
 
-  it("accepts uploaded web attachment metadata", () => {
+  it("accepts uploaded attachment metadata", () => {
     const parsed = parseChatInboundMessage({
       type: "chat",
       content: "Summarize the upload",
       attachments: [
         {
-          source: "web",
+          source: "upload",
           uploadedPath: "/tmp/uploads/abc/policy.txt",
           originalName: "policy.txt",
           mimeType: "text/plain",
@@ -36,7 +36,7 @@ describe("parseChatInboundMessage", () => {
       content: "Summarize the upload",
       attachments: [
         {
-          source: "web",
+          source: "upload",
           uploadedPath: "/tmp/uploads/abc/policy.txt",
           originalName: "policy.txt",
           mimeType: "text/plain",
@@ -51,8 +51,8 @@ describe("parseChatInboundMessage", () => {
       type: "chat",
       content: "Hello",
       attachments: [
-        { source: "web", uploadedPath: "/tmp/uploads/abc/policy.txt" },
-        { source: "web", originalName: "policy.txt" },
+        { source: "upload", uploadedPath: "/tmp/uploads/abc/policy.txt" },
+        { source: "upload", originalName: "policy.txt" },
       ],
     });
 

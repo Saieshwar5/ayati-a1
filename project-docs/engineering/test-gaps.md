@@ -1,0 +1,19 @@
+# Test Gaps To Watch
+
+Areas that deserve careful test coverage when changed:
+
+- IVec staged loop behavior.
+- Daemon lifecycle and long-running service assumptions.
+- Tool call validation and execution.
+- Session rotation and memory persistence.
+- Personal memory consolidation.
+- Episodic indexing and retrieval.
+- Document preparation and retrieval.
+- File upload and artifact serving.
+- WebSocket and CLI message contracts.
+- Future multi-client/channel behavior.
+- Plugin event normalization and system-event policy.
+- External skill activation and policy enforcement.
+- Provider adapter response formatting.
+
+When a change touches cross-module behavior, run more than the single local test file.

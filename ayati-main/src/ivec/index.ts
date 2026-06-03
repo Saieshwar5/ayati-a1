@@ -1162,7 +1162,7 @@ export class IVecEngine {
       return this.fileLibrary!.getFile(attachment.fileId);
     }
 
-    if (attachment.source === "web") {
+    if (attachment.source === "upload") {
       const bytes = await readFile(attachment.uploadedPath);
       return this.fileLibrary!.registerUpload({
         originalName: attachment.originalName,
@@ -1193,7 +1193,7 @@ function managedFileToDocumentManifest(file: ManagedFileRecord): ManagedDocument
     documentId: file.sha256.slice(0, 16),
     name: file.safeName,
     displayName: file.originalName,
-    source: file.origin === "local_path" ? "cli" : "web",
+    source: file.origin === "local_path" ? "cli" : "upload",
     originalPath: file.originalPath ?? file.sourceUri ?? file.storagePath,
     storedPath: file.storagePath,
     kind: file.kind,
@@ -1211,7 +1211,7 @@ function formatAttachmentLabel(attachment: ChatAttachmentInput): string {
   if ("fileId" in attachment && typeof attachment.fileId === "string") {
     return attachment.fileId;
   }
-  if (attachment.source === "web") {
+  if (attachment.source === "upload") {
     return attachment.uploadedPath;
   }
   return "path" in attachment ? attachment.path : "attachment";
@@ -1323,7 +1323,7 @@ export function parseChatInboundMessage(data: unknown): ChatInboundMessage | nul
       continue;
     }
 
-    if (source !== "web") {
+    if (source !== "upload") {
       continue;
     }
 
@@ -1336,7 +1336,7 @@ export function parseChatInboundMessage(data: unknown): ChatInboundMessage | nul
     const mimeType = typeof value["mimeType"] === "string" ? value["mimeType"].trim() : undefined;
     const sizeBytes = asOptionalPositiveNumber(value["sizeBytes"]);
     attachments.push({
-      source: "web",
+      source: "upload",
       uploadedPath,
       originalName,
       ...(mimeType ? { mimeType } : {}),

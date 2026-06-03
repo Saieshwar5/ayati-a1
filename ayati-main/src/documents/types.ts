@@ -1,4 +1,4 @@
-export type DocumentAttachmentSource = "cli" | "web";
+export type DocumentAttachmentSource = "cli" | "upload";
 
 export interface CliChatAttachment {
   source?: "cli";
@@ -6,15 +6,15 @@ export interface CliChatAttachment {
   name?: string;
 }
 
-export interface WebChatAttachment {
-  source: "web";
+export interface UploadedChatAttachment {
+  source: "upload";
   uploadedPath: string;
   originalName: string;
   mimeType?: string;
   sizeBytes?: number;
 }
 
-export type ChatAttachment = CliChatAttachment | WebChatAttachment;
+export type ChatAttachment = CliChatAttachment | UploadedChatAttachment;
 
 export interface ManagedDocumentManifest {
   documentId: string;

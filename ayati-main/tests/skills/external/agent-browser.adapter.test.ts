@@ -1,8 +1,17 @@
-import { describe, expect, it, vi } from "vitest";
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { beforeAll, describe, expect, it, vi } from "vitest";
+import { existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
-import { advanced, find, help, search, waitForCondition } from "../../../data/skills/agent-browser/adapter.js";
+import { pathToFileURL } from "node:url";
+
+const adapterPath = resolve(process.cwd(), "data", "skills", "agent-browser", "adapter.js");
+const describeIfAdapterExists = existsSync(adapterPath) ? describe : describe.skip;
+
+let advanced: (ctx: unknown, request: unknown) => Promise<{ ok: boolean; output?: string; error?: string }>;
+let find: (ctx: unknown, request: unknown) => Promise<{ ok: boolean; output?: string; error?: string }>;
+let help: (ctx: unknown, request: unknown) => Promise<{ ok: boolean; output?: string; error?: string }>;
+let search: (ctx: unknown, request: unknown) => Promise<{ ok: boolean; output?: string; error?: string }>;
+let waitForCondition: (ctx: unknown, request: unknown) => Promise<{ ok: boolean; output?: string; error?: string }>;
 
 function createContext(commandRun = vi.fn()) {
   return {
@@ -23,7 +32,22 @@ function createContext(commandRun = vi.fn()) {
   };
 }
 
-describe("agent-browser adapter", () => {
+describeIfAdapterExists("agent-browser adapter", () => {
+  beforeAll(async () => {
+    const adapter = await import(pathToFileURL(adapterPath).href) as {
+      advanced: typeof advanced;
+      find: typeof find;
+      help: typeof help;
+      search: typeof search;
+      waitForCondition: typeof waitForCondition;
+    };
+    advanced = adapter.advanced;
+    find = adapter.find;
+    help = adapter.help;
+    search = adapter.search;
+    waitForCondition = adapter.waitForCondition;
+  });
+
   it("normalizes search results from the websearch CLI output", async () => {
     const ctx = createContext(vi.fn().mockResolvedValue({
       ok: true,

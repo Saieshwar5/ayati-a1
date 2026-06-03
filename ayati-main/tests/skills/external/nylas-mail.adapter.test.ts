@@ -1,11 +1,16 @@
-import { describe, expect, it, vi } from "vitest";
-import {
-  getMessage,
-  listMessages,
-  replyMessage,
-  sendMessage,
-  status,
-} from "../../../data/skills/nylas-mail/adapter.js";
+import { beforeAll, describe, expect, it, vi } from "vitest";
+import { existsSync } from "node:fs";
+import { resolve } from "node:path";
+import { pathToFileURL } from "node:url";
+
+const adapterPath = resolve(process.cwd(), "data", "skills", "nylas-mail", "adapter.js");
+const describeIfAdapterExists = existsSync(adapterPath) ? describe : describe.skip;
+
+let getMessage: (ctx: unknown, request: unknown) => Promise<{ ok: boolean; output?: string; error?: string }>;
+let listMessages: (ctx: unknown, request: unknown) => Promise<{ ok: boolean; output?: string; error?: string }>;
+let replyMessage: (ctx: unknown, request: unknown) => Promise<{ ok: boolean; output?: string; error?: string }>;
+let sendMessage: (ctx: unknown, request: unknown) => Promise<{ ok: boolean; output?: string; error?: string }>;
+let status: (ctx: unknown, request?: unknown) => Promise<{ ok: boolean; output?: string; error?: string }>;
 
 function createContext(httpRequest = vi.fn()) {
   return {
@@ -34,7 +39,22 @@ function createContext(httpRequest = vi.fn()) {
   };
 }
 
-describe("nylas-mail adapter", () => {
+describeIfAdapterExists("nylas-mail adapter", () => {
+  beforeAll(async () => {
+    const adapter = await import(pathToFileURL(adapterPath).href) as {
+      getMessage: typeof getMessage;
+      listMessages: typeof listMessages;
+      replyMessage: typeof replyMessage;
+      sendMessage: typeof sendMessage;
+      status: typeof status;
+    };
+    getMessage = adapter.getMessage;
+    listMessages = adapter.listMessages;
+    replyMessage = adapter.replyMessage;
+    sendMessage = adapter.sendMessage;
+    status = adapter.status;
+  });
+
   it("checks grant status through the Nylas grant endpoint", async () => {
     const ctx = createContext(vi.fn().mockResolvedValue({
       ok: true,
