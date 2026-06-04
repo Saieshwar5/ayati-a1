@@ -56,6 +56,7 @@ import { DocumentRetriever } from "../documents/document-retriever.js";
 import { PreparedAttachmentRegistry } from "../documents/prepared-attachment-registry.js";
 import { PreparedAttachmentService } from "../documents/prepared-attachment-service.js";
 import { SessionAttachmentService } from "../documents/session-attachment-service.js";
+import { DirectoryLibrary } from "../files/directory-library.js";
 import { FileLibrary } from "../files/file-library.js";
 import { loadSystemEventPolicy } from "../ivec/system-event-policy.js";
 
@@ -225,6 +226,9 @@ export async function main(): Promise<void> {
     dataDir: resolve(projectRoot, "data"),
     defaultMaxDownloadBytes: parsePositiveInt(process.env["AYATI_UPLOAD_MAX_BYTES"], DEFAULT_UPLOAD_MAX_BYTES),
   });
+  const directoryLibrary = new DirectoryLibrary({
+    dataDir: resolve(projectRoot, "data"),
+  });
   let documentIndexer: DocumentIndexer | undefined;
   let documentRetriever: DocumentRetriever | undefined;
   if (!isEnvFalse(process.env["AYATI_DOCUMENT_VECTOR_ENABLED"])) {
@@ -269,7 +273,7 @@ export async function main(): Promise<void> {
   const attachmentSkill = createAttachmentSkill({ sessionAttachmentService });
   const datasetSkill = createDatasetSkill({ preparedAttachmentService });
   const documentSkill = createDocumentSkill({ preparedAttachmentService });
-  const filesSkill = createFilesSkill({ fileLibrary });
+  const filesSkill = createFilesSkill({ fileLibrary, directoryLibrary });
 
   const baseToolDefs = [
     ...enabledTools,
@@ -364,6 +368,7 @@ export async function main(): Promise<void> {
     preparedAttachmentRegistry,
     documentContextBackend,
     fileLibrary,
+    directoryLibrary,
     systemEventPolicy,
   });
   const systemEventWorker = new SystemEventWorker({

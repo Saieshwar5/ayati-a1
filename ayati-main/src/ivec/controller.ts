@@ -1941,7 +1941,9 @@ function formatWorkMode(state: LoopState): string {
 }
 
 function shouldShowActiveSessionAttachments(state: LoopState): boolean {
-  return (state.preparedAttachments?.length ?? 0) === 0 && (state.attachedDocuments?.length ?? 0) === 0;
+  return (state.preparedAttachments?.length ?? 0) === 0
+    && (state.attachedDocuments?.length ?? 0) === 0
+    && (state.managedDirectories?.length ?? 0) === 0;
 }
 
 function formatActiveSessionAttachments(state: LoopState): string {
@@ -1955,14 +1957,45 @@ function formatActiveSessionAttachments(state: LoopState): string {
 
 function formatAttachedDocuments(state: LoopState): string {
   const managedFiles = state.managedFiles ?? [];
+  const managedDirectories = state.managedDirectories ?? [];
   const preparedAttachments = state.preparedAttachments ?? [];
   const attachedDocuments = state.attachedDocuments ?? [];
   const imageAttachments = getCurrentImageAttachments(state);
   const nonImageDocuments = attachedDocuments.filter((document) => document.kind !== "image");
   const warnings = state.attachmentWarnings ?? [];
-  if (managedFiles.length === 0 && preparedAttachments.length === 0 && attachedDocuments.length === 0 && warnings.length === 0) return "";
+  if (
+    managedFiles.length === 0
+    && managedDirectories.length === 0
+    && preparedAttachments.length === 0
+    && attachedDocuments.length === 0
+    && warnings.length === 0
+  ) return "";
 
   const blocks: string[] = [];
+  const attachedInputLines: string[] = [];
+
+  for (const file of managedFiles) {
+    attachedInputLines.push(
+      `  - id=${file.fileId} | type=file | name=${file.originalName} | kind=${file.kind} | capabilities=${file.capabilities.join(",")} | status=${file.processingStatus}`,
+    );
+  }
+
+  for (const directory of managedDirectories) {
+    attachedInputLines.push(
+      `  - id=${directory.directoryId} | type=directory | name=${directory.name} | files=${directory.fileCount} | dirs=${directory.directoryCount} | capabilities=${directory.capabilities.join(",")} | status=${directory.status} | root=${truncateInline(directory.rootPath, 140)}`,
+    );
+  }
+
+  for (const attachment of preparedAttachments) {
+    attachedInputLines.push(
+      `  - id=${attachment.preparedInputId} | type=prepared_${attachment.mode} | name=${attachment.displayName} | kind=${attachment.kind} | status=${attachment.status}`,
+    );
+  }
+
+  if (attachedInputLines.length > 0 || warnings.length > 0) {
+    const warningLines = warnings.map((warning) => `  - warning: ${truncateInline(warning, 160)}`);
+    blocks.push(`\nAttached inputs (${attachedInputLines.length}):\n${[...attachedInputLines, ...warningLines].join("\n")}\n`);
+  }
 
   if (managedFiles.length > 0) {
     const fileLines = managedFiles.map((file) => {
@@ -1972,6 +2005,20 @@ function formatAttachedDocuments(state: LoopState): string {
       return `  - ${file.fileId} | name=${file.originalName} | kind=${file.kind} | capabilities=${file.capabilities.join(",")} | status=${file.processingStatus}${warning}`;
     });
     blocks.push(`\nManaged files available (${managedFiles.length}):\n${fileLines.join("\n")}\n`);
+  }
+
+  if (managedDirectories.length > 0) {
+    const directoryLines = managedDirectories.map((directory) => {
+      const warning = directory.warnings.length > 0
+        ? ` | warning=${truncateInline(directory.warnings.join(" | "), 140)}`
+        : "";
+      const preview = directory.entries
+        .slice(0, 8)
+        .map((entry) => entry.relativePath)
+        .join(", ");
+      return `  - ${directory.directoryId} | name=${directory.name} | root=${truncateInline(directory.rootPath, 140)} | files=${directory.fileCount} | dirs=${directory.directoryCount} | status=${directory.status} | preview=${truncateInline(preview, 180)}${warning}`;
+    });
+    blocks.push(`\nManaged directories available (${managedDirectories.length}):\n${directoryLines.join("\n")}\n`);
   }
 
   if (imageAttachments.length > 0) {

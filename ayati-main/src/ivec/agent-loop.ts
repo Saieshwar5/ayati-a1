@@ -191,6 +191,7 @@ export async function agentLoop(deps: AgentLoopDeps): Promise<AgentLoopResult> {
     attachmentWarnings: deps.attachmentWarnings ?? [],
     preparedAttachments: [],
     managedFiles: deps.managedFiles ?? [],
+    managedDirectories: deps.managedDirectories ?? [],
     activeSessionAttachments: [],
     sessionHistory: [],
     recentRunLedgers: [],

@@ -30,8 +30,9 @@ import type { ManagedDocumentManifest } from "../documents/types.js";
 import type { DocumentStore } from "../documents/document-store.js";
 import type { DocumentContextBackend } from "../documents/document-context-backend.js";
 import { PreparedAttachmentRegistry } from "../documents/prepared-attachment-registry.js";
+import type { DirectoryLibrary } from "../files/directory-library.js";
 import type { FileLibrary } from "../files/file-library.js";
-import type { ManagedFileRecord } from "../files/types.js";
+import type { DirectoryAttachmentRecord, ManagedFileRecord } from "../files/types.js";
 import {
   normalizeSystemEvent,
   type AyatiSystemEvent,
@@ -61,6 +62,7 @@ import type {
   AgentArtifact,
   ChatAttachmentInput,
   ChatInboundMessage,
+  DirectoryChatAttachmentInput,
   LoopConfig,
   SystemEventApprovalState,
 } from "./types.js";
@@ -123,6 +125,7 @@ export interface IVecEngineOptions {
   preparedAttachmentRegistry?: PreparedAttachmentRegistry;
   documentContextBackend?: DocumentContextBackend;
   fileLibrary?: FileLibrary;
+  directoryLibrary?: DirectoryLibrary;
   systemEventPolicy?: SystemEventPolicyConfig;
 }
 
@@ -142,6 +145,7 @@ export class IVecEngine {
   private readonly preparedAttachmentRegistry?: PreparedAttachmentRegistry;
   private readonly documentContextBackend?: DocumentContextBackend;
   private readonly fileLibrary?: FileLibrary;
+  private readonly directoryLibrary?: DirectoryLibrary;
   private readonly systemEventPolicy?: SystemEventPolicyConfig;
   private readonly pulseProposalReflectionService = new PulseProposalReflectionService();
   private staticSystemTokens = 0;
@@ -166,6 +170,7 @@ export class IVecEngine {
       ?? (this.documentStore ? new PreparedAttachmentRegistry() : undefined);
     this.documentContextBackend = options?.documentContextBackend;
     this.fileLibrary = options?.fileLibrary;
+    this.directoryLibrary = options?.directoryLibrary;
     this.systemEventPolicy = options?.systemEventPolicy;
   }
 
@@ -254,6 +259,7 @@ export class IVecEngine {
           attachedDocuments: registeredAttachments.documents,
           attachmentWarnings: registeredAttachments.warnings,
           managedFiles: registeredAttachments.managedFiles,
+          managedDirectories: registeredAttachments.managedDirectories,
           documentStore: this.documentStore,
           preparedAttachmentRegistry: this.preparedAttachmentRegistry,
           documentContextBackend: this.documentContextBackend,
@@ -1118,16 +1124,39 @@ export class IVecEngine {
   private async registerIncomingDocuments(
     attachments: ChatAttachmentInput[],
     runId: string,
-  ): Promise<{ documents: ManagedDocumentManifest[]; warnings: string[]; managedFiles: ManagedFileRecord[] }> {
+  ): Promise<{
+    documents: ManagedDocumentManifest[];
+    warnings: string[];
+    managedFiles: ManagedFileRecord[];
+    managedDirectories: DirectoryAttachmentRecord[];
+  }> {
     if (attachments.length === 0) {
-      return { documents: [], warnings: [], managedFiles: [] };
+      return { documents: [], warnings: [], managedFiles: [], managedDirectories: [] };
     }
 
     if (this.fileLibrary) {
       const managedFiles: ManagedFileRecord[] = [];
+      const managedDirectories: DirectoryAttachmentRecord[] = [];
       const warnings: string[] = [];
       for (const attachment of attachments) {
         try {
+          if (isDirectoryChatAttachment(attachment)) {
+            if (!this.directoryLibrary) {
+              warnings.push(`${formatAttachmentLabel(attachment)}: Directory attachments are not configured.`);
+              continue;
+            }
+            managedDirectories.push(await this.directoryLibrary.registerPath({
+              path: attachment.path,
+              name: attachment.name,
+              runId,
+              include: attachment.include,
+              exclude: attachment.exclude,
+              maxDepth: attachment.maxDepth,
+              maxFiles: attachment.maxFiles,
+            }));
+            continue;
+          }
+
           managedFiles.push(await this.registerIncomingManagedFile(attachment, runId));
         } catch (err) {
           warnings.push(`${formatAttachmentLabel(attachment)}: ${err instanceof Error ? err.message : String(err)}`);
@@ -1138,6 +1167,7 @@ export class IVecEngine {
         documents: managedFiles.map(managedFileToDocumentManifest),
         warnings,
         managedFiles,
+        managedDirectories,
       };
     }
 
@@ -1146,11 +1176,12 @@ export class IVecEngine {
         documents: [],
         warnings: ["Attachments were provided but no document store is configured."],
         managedFiles: [],
+        managedDirectories: [],
       };
     }
 
     const registered = await this.documentStore.registerAttachments(attachments.filter(isLegacyDocumentAttachment));
-    return { ...registered, managedFiles: [] };
+    return { ...registered, managedFiles: [], managedDirectories: [] };
   }
 
   private async registerIncomingManagedFile(
@@ -1203,8 +1234,14 @@ function managedFileToDocumentManifest(file: ManagedFileRecord): ManagedDocument
   };
 }
 
-function isLegacyDocumentAttachment(attachment: ChatAttachmentInput): attachment is Exclude<ChatAttachmentInput, { fileId: string }> {
-  return !("fileId" in attachment);
+function isDirectoryChatAttachment(attachment: ChatAttachmentInput): attachment is DirectoryChatAttachmentInput {
+  return attachment.type === "directory";
+}
+
+function isLegacyDocumentAttachment(
+  attachment: ChatAttachmentInput,
+): attachment is Exclude<ChatAttachmentInput, { fileId: string } | DirectoryChatAttachmentInput> {
+  return !("fileId" in attachment) && !isDirectoryChatAttachment(attachment);
 }
 
 function formatAttachmentLabel(attachment: ChatAttachmentInput): string {
@@ -1213,6 +1250,9 @@ function formatAttachmentLabel(attachment: ChatAttachmentInput): string {
   }
   if (attachment.source === "upload") {
     return attachment.uploadedPath;
+  }
+  if (isDirectoryChatAttachment(attachment)) {
+    return attachment.path;
   }
   return "path" in attachment ? attachment.path : "attachment";
 }
@@ -1227,6 +1267,16 @@ function asRequiredString(value: unknown): string | null {
 
 function asOptionalPositiveNumber(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined;
+}
+
+function asOptionalStringArray(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) {
+    return undefined;
+  }
+  const strings = value
+    .map((entry) => typeof entry === "string" ? entry.trim() : "")
+    .filter((entry) => entry.length > 0);
+  return strings.length > 0 ? strings : undefined;
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -1307,8 +1357,36 @@ export function parseChatInboundMessage(data: unknown): ChatInboundMessage | nul
       continue;
     }
 
+    const attachmentType = typeof value["type"] === "string" ? value["type"].trim().toLowerCase() : undefined;
     const source = typeof value["source"] === "string" ? value["source"].trim().toLowerCase() : undefined;
-    if ((source === undefined || source === "cli")) {
+    if (attachmentType === "directory") {
+      if (source !== undefined && source !== "cli") {
+        continue;
+      }
+      const path = typeof value["path"] === "string" ? value["path"].trim() : "";
+      if (path.length === 0) {
+        continue;
+      }
+
+      const name = typeof value["name"] === "string" ? value["name"].trim() : undefined;
+      const include = asOptionalStringArray(value["include"]);
+      const exclude = asOptionalStringArray(value["exclude"]);
+      const maxDepth = asOptionalPositiveNumber(value["maxDepth"]);
+      const maxFiles = asOptionalPositiveNumber(value["maxFiles"]);
+      attachments.push({
+        type: "directory",
+        source: "cli",
+        path,
+        ...(name ? { name } : {}),
+        ...(include ? { include } : {}),
+        ...(exclude ? { exclude } : {}),
+        ...(maxDepth !== undefined ? { maxDepth } : {}),
+        ...(maxFiles !== undefined ? { maxFiles } : {}),
+      });
+      continue;
+    }
+
+    if (attachmentType !== "upload" && (source === undefined || source === "cli")) {
       const path = typeof value["path"] === "string" ? value["path"].trim() : "";
       if (path.length === 0) {
         continue;
@@ -1316,6 +1394,7 @@ export function parseChatInboundMessage(data: unknown): ChatInboundMessage | nul
 
       const name = typeof value["name"] === "string" ? value["name"].trim() : undefined;
       attachments.push({
+        ...(attachmentType === "file" ? { type: "file" as const } : {}),
         source: "cli",
         path,
         ...(name ? { name } : {}),
@@ -1323,7 +1402,7 @@ export function parseChatInboundMessage(data: unknown): ChatInboundMessage | nul
       continue;
     }
 
-    if (source !== "upload") {
+    if (source !== "upload" && attachmentType !== "upload") {
       continue;
     }
 

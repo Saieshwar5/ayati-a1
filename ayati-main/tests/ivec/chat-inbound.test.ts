@@ -46,6 +46,55 @@ describe("parseChatInboundMessage", () => {
     });
   });
 
+  it("accepts explicit file attachments", () => {
+    const parsed = parseChatInboundMessage({
+      type: "chat",
+      content: "Read this file",
+      attachments: [{ type: "file", path: "/tmp/policy.txt", name: "policy.txt" }],
+    });
+
+    expect(parsed).toEqual({
+      type: "chat",
+      content: "Read this file",
+      attachments: [{ type: "file", source: "cli", path: "/tmp/policy.txt", name: "policy.txt" }],
+    });
+  });
+
+  it("accepts explicit directory attachments", () => {
+    const parsed = parseChatInboundMessage({
+      type: "chat",
+      content: "Inspect this project",
+      attachments: [
+        {
+          type: "directory",
+          path: "/tmp/project",
+          name: "project",
+          include: ["**/*.ts"],
+          exclude: ["node_modules"],
+          maxDepth: 4,
+          maxFiles: 50,
+        },
+      ],
+    });
+
+    expect(parsed).toEqual({
+      type: "chat",
+      content: "Inspect this project",
+      attachments: [
+        {
+          type: "directory",
+          source: "cli",
+          path: "/tmp/project",
+          name: "project",
+          include: ["**/*.ts"],
+          exclude: ["node_modules"],
+          maxDepth: 4,
+          maxFiles: 50,
+        },
+      ],
+    });
+  });
+
   it("ignores malformed web attachment rows", () => {
     const parsed = parseChatInboundMessage({
       type: "chat",

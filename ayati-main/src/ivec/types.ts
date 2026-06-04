@@ -20,7 +20,7 @@ import type { DocumentStore } from "../documents/document-store.js";
 import type { PreparedAttachmentRegistry } from "../documents/prepared-attachment-registry.js";
 import type { ManagedDocumentManifest, PreparedAttachmentSummary } from "../documents/types.js";
 import type { DocumentContextBackend } from "../documents/document-context-backend.js";
-import type { ManagedFileRecord } from "../files/types.js";
+import type { DirectoryAttachmentRecord, ManagedFileRecord } from "../files/types.js";
 import type {
   AyatiSystemEvent,
   SystemEventCreatedBy,
@@ -124,6 +124,7 @@ export interface LoopState {
   attachmentWarnings?: string[];
   preparedAttachments?: PreparedAttachmentSummary[];
   managedFiles?: ManagedFileRecord[];
+  managedDirectories?: DirectoryAttachmentRecord[];
   activeSessionAttachments?: ActiveAttachmentRef[];
   workMode?: WorkMode;
   sessionHistory: ConversationTurn[];
@@ -448,6 +449,7 @@ export interface AgentLoopDeps {
   attachedDocuments?: ManagedDocumentManifest[];
   attachmentWarnings?: string[];
   managedFiles?: ManagedFileRecord[];
+  managedDirectories?: DirectoryAttachmentRecord[];
   documentStore?: DocumentStore;
   preparedAttachmentRegistry?: PreparedAttachmentRegistry;
   documentContextBackend?: DocumentContextBackend;
@@ -469,12 +471,25 @@ export interface ExecutorDeps {
 }
 
 export interface CliChatAttachmentInput {
+  type?: "file";
   source?: "cli";
   path: string;
   name?: string;
 }
 
+export interface DirectoryChatAttachmentInput {
+  type: "directory";
+  source?: "cli";
+  path: string;
+  name?: string;
+  include?: string[];
+  exclude?: string[];
+  maxDepth?: number;
+  maxFiles?: number;
+}
+
 export interface UploadedChatAttachmentInput {
+  type?: "upload";
   source: "upload";
   uploadedPath: string;
   originalName: string;
@@ -484,11 +499,16 @@ export interface UploadedChatAttachmentInput {
 }
 
 export interface ManagedFileChatAttachmentInput {
+  type?: "managed_file" | "file";
   source?: "file";
   fileId: string;
 }
 
-export type ChatAttachmentInput = CliChatAttachmentInput | UploadedChatAttachmentInput | ManagedFileChatAttachmentInput;
+export type ChatAttachmentInput =
+  | CliChatAttachmentInput
+  | DirectoryChatAttachmentInput
+  | UploadedChatAttachmentInput
+  | ManagedFileChatAttachmentInput;
 
 export interface ChatInboundMessage {
   type: "chat";

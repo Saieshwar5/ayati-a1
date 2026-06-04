@@ -60,6 +60,68 @@ export interface RunFilesManifest {
   files: RunFileReference[];
 }
 
+export type DirectoryAttachmentStatus = "ready" | "partial" | "failed";
+
+export type DirectoryAttachmentCapability =
+  | "list"
+  | "search"
+  | "read_files"
+  | "register_files";
+
+export interface DirectoryAttachmentEntry {
+  path: string;
+  relativePath: string;
+  name: string;
+  kind: "file" | "directory";
+  depth: number;
+  sizeBytes?: number;
+  extension?: string;
+}
+
+export interface DirectoryAttachmentRecord {
+  directoryId: string;
+  name: string;
+  rootPath: string;
+  source: "cli";
+  createdAt: string;
+  updatedAt: string;
+  lastUsedAt?: string;
+  status: DirectoryAttachmentStatus;
+  capabilities: DirectoryAttachmentCapability[];
+  include: string[];
+  exclude: string[];
+  maxDepth: number;
+  maxFiles: number;
+  fileCount: number;
+  directoryCount: number;
+  totalSizeBytes: number;
+  fileTypes: Record<string, number>;
+  entries: DirectoryAttachmentEntry[];
+  truncated: boolean;
+  warnings: string[];
+}
+
+export interface RegisterDirectoryInput {
+  path: string;
+  name?: string;
+  runId?: string;
+  include?: string[];
+  exclude?: string[];
+  maxDepth?: number;
+  maxFiles?: number;
+}
+
+export interface RunDirectoryReference {
+  directoryId: string;
+  role: "attached" | "used";
+  addedAt: string;
+}
+
+export interface RunDirectoriesManifest {
+  runId: string;
+  directories: RunDirectoryReference[];
+}
+
 export interface PreparedTextSection {
   id: string;
   location: string;

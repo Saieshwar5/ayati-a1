@@ -1375,6 +1375,71 @@ describe("callDirect", () => {
     expect(prompt).not.toContain("Document retrieval status:");
   });
 
+  it("includes directory attachments in the direct prompt", async () => {
+    const json = JSON.stringify({
+      done: false,
+      execution_mode: "dependent",
+      intent: "search attached project directory",
+      tools_hint: ["directory_search"],
+      success_criteria: "the relevant file is found",
+      context: "use the attached directory",
+    });
+    const provider = createMockProvider(json);
+    const state = createState({
+      managedDirectories: [
+        {
+          directoryId: "dir_0123456789abcdef",
+          name: "project",
+          rootPath: "/tmp/project",
+          source: "cli",
+          createdAt: "2026-06-03T00:00:00.000Z",
+          updatedAt: "2026-06-03T00:00:00.000Z",
+          status: "ready",
+          capabilities: ["list", "search", "read_files", "register_files"],
+          include: [],
+          exclude: ["node_modules"],
+          maxDepth: 8,
+          maxFiles: 1000,
+          fileCount: 2,
+          directoryCount: 1,
+          totalSizeBytes: 256,
+          fileTypes: { ".ts": 2 },
+          entries: [
+            {
+              path: "/tmp/project/src",
+              relativePath: "src",
+              name: "src",
+              kind: "directory",
+              depth: 1,
+            },
+            {
+              path: "/tmp/project/src/agent.ts",
+              relativePath: "src/agent.ts",
+              name: "agent.ts",
+              kind: "file",
+              depth: 2,
+              sizeBytes: 128,
+              extension: ".ts",
+            },
+          ],
+          truncated: false,
+          warnings: [],
+        },
+      ],
+    });
+
+    await callDirect(provider, state, [shellTool]);
+
+    const call = (provider.generateTurn as ReturnType<typeof vi.fn>).mock.calls[0]![0] as {
+      messages: Array<{ role: string; content: string }>;
+    };
+    const prompt = call.messages[0]!.content;
+    expect(prompt).toContain("Attached inputs (1):");
+    expect(prompt).toContain("id=dir_0123456789abcdef | type=directory | name=project");
+    expect(prompt).toContain("Managed directories available (1):");
+    expect(prompt).toContain("preview=src, src/agent.ts");
+  });
+
   it("hides active session attachments when current run attachments are already prepared", async () => {
     const json = JSON.stringify({
       done: false,
