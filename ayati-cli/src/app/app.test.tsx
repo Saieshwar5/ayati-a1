@@ -159,6 +159,62 @@ describe("App", () => {
     });
   });
 
+  it("renders progress outside chat history and clears it after a reply", async () => {
+    const { lastFrame, unmount } = await renderApp();
+
+    await act(async () => {
+      deliver({
+        type: "progress",
+        content: "Step 1: Inspect files -> succeeded",
+        runId: "r1",
+      });
+    });
+
+    let frame = lastFrame() ?? "";
+    expect(frame).toContain("Ayati is working");
+    expect(frame).toContain("Step 1: Inspect files -> succeeded");
+    expect(frame).not.toContain("Ayati [progress]");
+
+    await act(async () => {
+      deliver({
+        type: "reply",
+        content: "Done.",
+      });
+    });
+
+    frame = lastFrame() ?? "";
+    expect(frame).toContain("Done.");
+    expect(frame).not.toContain("Ayati is working");
+    expect(frame).not.toContain("Step 1: Inspect files -> succeeded");
+
+    await act(async () => {
+      unmount();
+    });
+  });
+
+  it("keeps only the latest progress lines", async () => {
+    const { lastFrame, unmount } = await renderApp();
+
+    await act(async () => {
+      for (let index = 1; index <= 6; index++) {
+        deliver({
+          type: "progress",
+          content: `Step ${index}: work item`,
+          runId: "r1",
+        });
+      }
+    });
+
+    const frame = lastFrame() ?? "";
+    expect(frame).not.toContain("Step 1: work item");
+    expect(frame).toContain("Step 2: work item");
+    expect(frame).toContain("Step 6: work item");
+
+    await act(async () => {
+      unmount();
+    });
+  });
+
   it("keeps reply messages labeled as normal assistant replies", async () => {
     const { lastFrame, unmount } = await renderApp();
 

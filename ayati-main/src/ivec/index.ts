@@ -278,6 +278,7 @@ export class IVecEngine {
               phase: "progress",
               summary: `${log} | runPath: ${runPath}`,
             });
+            this.sendProgress(clientId, runHandle!, log);
           },
         });
         result = await this.applyPulseProposalReflection(clientId, content, result, toolDefs);
@@ -435,6 +436,7 @@ export class IVecEngine {
             phase: "progress",
             summary: `${log} | runPath: ${runPath}`,
           });
+          this.sendProgress(clientId, runHandle!, log);
         },
       });
 
@@ -1096,6 +1098,14 @@ export class IVecEngine {
         this.recordTurnStatus(clientId, runHandle, "response_completed", "delivery=none");
         return;
     }
+  }
+
+  private sendProgress(clientId: string, runHandle: MemoryRunHandle, content: string): void {
+    this.onReply?.(clientId, {
+      type: "progress",
+      content,
+      runId: runHandle.runId,
+    });
   }
 
   private recordTurnStatus(

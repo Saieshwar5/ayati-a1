@@ -5,6 +5,7 @@ import { Header } from "./components/header.js";
 import { MessageList, type MessageListHandle } from "./components/message-list.js";
 import { ChatInput } from "./components/chat-input.js";
 import { StatusBar } from "./components/status-bar.js";
+import { MAX_PROGRESS_LINES, ProgressPanel, progressPanelHeight } from "./components/progress-panel.js";
 import { PathSuggestionList, pathSuggestionHeight } from "./components/path-suggestion-list.js";
 import { useWebSocket } from "./hooks/use-websocket.js";
 import { useMouseScroll } from "./hooks/use-mouse-scroll.js";
@@ -52,6 +53,7 @@ export function App(): React.JSX.Element {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [inputValue, setInputValue] = useState("");
   const [isLoading, setIsLoading] = useState(false);
+  const [progressLines, setProgressLines] = useState<string[]>([]);
   const [recentRoots, setRecentRoots] = useState<string[]>([]);
   const [selectedSuggestionIndex, setSelectedSuggestionIndex] = useState(0);
   const [dismissedSuggestionInput, setDismissedSuggestionInput] = useState<string | null>(null);
@@ -83,6 +85,7 @@ export function App(): React.JSX.Element {
     if (msg.type === "reply" && typeof msg.content === "string") {
       const reply = createMessage("assistant", msg.content, "reply");
       setMessages((prev) => [...prev, reply]);
+      setProgressLines([]);
       setIsLoading(false);
       return;
     }
@@ -90,6 +93,7 @@ export function App(): React.JSX.Element {
     if (msg.type === "feedback" && typeof msg.content === "string") {
       const feedback = createMessage("assistant", msg.content, "feedback");
       setMessages((prev) => [...prev, feedback]);
+      setProgressLines([]);
       setIsLoading(false);
       return;
     }
@@ -98,14 +102,22 @@ export function App(): React.JSX.Element {
       const notification = createMessage("assistant", msg.content, "notification");
       setMessages((prev) => [...prev, notification]);
       if (msg.final === true) {
+        setProgressLines([]);
         setIsLoading(false);
       }
+      return;
+    }
+
+    if (msg.type === "progress" && typeof msg.content === "string") {
+      const progressContent = msg.content;
+      setProgressLines((prev) => [...prev, progressContent].slice(-MAX_PROGRESS_LINES));
       return;
     }
 
     if (msg.type === "error" && typeof msg.content === "string") {
       const reply = createMessage("assistant", msg.content, "error");
       setMessages((prev) => [...prev, reply]);
+      setProgressLines([]);
       setIsLoading(false);
     }
   }, []);
@@ -178,6 +190,7 @@ export function App(): React.JSX.Element {
     const userMessage = createMessage("user", trimmedDisplayContent, "user", displayAttachments);
     setMessages((prev) => [...prev, userMessage]);
 
+    setProgressLines([]);
     setIsLoading(true);
     void (async () => {
       const uiContext = await detectAgentCliUiContext();
@@ -265,9 +278,10 @@ export function App(): React.JSX.Element {
   }, [inputValue]);
 
   const suggestionsHeight = suggestionsVisible ? pathSuggestionHeight(pathSuggestions) : 0;
+  const progressHeight = progressPanelHeight(progressLines);
   const messageViewportHeight = Math.max(
     MIN_MESSAGE_ROWS,
-    terminalRows - RESERVED_ROWS - suggestionsHeight,
+    terminalRows - RESERVED_ROWS - suggestionsHeight - progressHeight,
   );
 
   return (
@@ -279,6 +293,10 @@ export function App(): React.JSX.Element {
         height={messageViewportHeight}
         width={terminalColumns - 2}
         keyboardScrollEnabled={!suggestionsVisible}
+      />
+      <ProgressPanel
+        lines={progressLines}
+        width={terminalColumns}
       />
       <PathSuggestionList
         suggestions={pathSuggestions}

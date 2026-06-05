@@ -179,6 +179,109 @@ describe("IVecEngine", () => {
     }
   });
 
+  it("forwards chat progress events to the client", async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "ayati-eng-progress-"));
+    try {
+      let callCount = 0;
+      const provider = createMockProvider({
+        generateTurn: vi.fn<(input: LlmTurnInput) => Promise<LlmTurnOutput>>().mockImplementation(async () => {
+          callCount++;
+          if (callCount === 1) {
+            return {
+              type: "assistant",
+              content: JSON.stringify({
+                done: false,
+                understand: true,
+                goal: {
+                  objective: "Inspect the workspace",
+                  done_when: ["workspace inspected"],
+                  required_evidence: [],
+                  ask_user_when: [],
+                  stop_when_no_progress: [],
+                },
+                approach: "inspect relevant files",
+              }),
+            };
+          }
+          if (callCount === 2) {
+            return {
+              type: "assistant",
+              content: JSON.stringify({
+                done: false,
+                execution_mode: "dependent",
+                intent: "Inspect files",
+                tools_hint: [],
+                success_criteria: "files inspected",
+                context: "",
+              }),
+            };
+          }
+          if (callCount === 3) {
+            return { type: "assistant", content: "Inspected files." };
+          }
+          if (callCount === 4) {
+            return {
+              type: "assistant",
+              content: JSON.stringify({
+                status: "not_done",
+                progressSummary: "Inspected files",
+                evidence: ["files inspected"],
+                keyFacts: [],
+                completedMilestones: ["files inspected"],
+                openWork: [],
+                blockers: [],
+              }),
+            };
+          }
+          return {
+            type: "assistant",
+            content: JSON.stringify({
+              done: true,
+              summary: "Workspace inspected.",
+              status: "completed",
+              response_kind: "reply",
+            }),
+          };
+        }),
+      });
+      const onReply = vi.fn();
+      const sessionMemory = createSessionMemory();
+      const engine = new IVecEngine({
+        onReply,
+        provider,
+        sessionMemory,
+        dataDir,
+        systemEventPolicy: createSystemEventPolicy(),
+      });
+
+      await engine.start();
+      engine.handleMessage("c1", { type: "chat", content: "inspect workspace" });
+
+      await vi.waitFor(() => {
+        expect(onReply).toHaveBeenCalledWith("c1", {
+          type: "reply",
+          content: "Workspace inspected.",
+        });
+      });
+
+      expect(onReply).toHaveBeenCalledWith("c1", {
+        type: "progress",
+        content: expect.stringContaining("Step 1"),
+        runId: "r1",
+      });
+      expect(sessionMemory.recordAgentStep as ReturnType<typeof vi.fn>).toHaveBeenCalledWith(
+        "c1",
+        expect.objectContaining({
+          runId: "r1",
+          phase: "progress",
+          summary: expect.stringContaining("Step 1"),
+        }),
+      );
+    } finally {
+      rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+
   it("records an enriched task summary only for runs that enter direct execution", async () => {
     const dataDir = mkdtempSync(join(tmpdir(), "ayati-eng-task-"));
     try {
@@ -568,6 +671,115 @@ describe("IVecEngine", () => {
           note: expect.stringContaining("mode=auto_execute_notify"),
         }),
       );
+    } finally {
+      rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it("forwards system event progress events to the client", async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "ayati-eng-system-progress-"));
+    try {
+      let callCount = 0;
+      const provider = createMockProvider({
+        generateTurn: vi.fn<(input: LlmTurnInput) => Promise<LlmTurnOutput>>().mockImplementation(async () => {
+          callCount++;
+          if (callCount === 1) {
+            return {
+              type: "assistant",
+              content: JSON.stringify({
+                done: false,
+                understand: true,
+                goal: {
+                  objective: "Check system health",
+                  done_when: ["health checked"],
+                  required_evidence: [],
+                  ask_user_when: [],
+                  stop_when_no_progress: [],
+                },
+                approach: "inspect health signal",
+              }),
+            };
+          }
+          if (callCount === 2) {
+            return {
+              type: "assistant",
+              content: JSON.stringify({
+                done: false,
+                execution_mode: "dependent",
+                intent: "Check health",
+                tools_hint: [],
+                success_criteria: "health checked",
+                context: "",
+              }),
+            };
+          }
+          if (callCount === 3) {
+            return { type: "assistant", content: "Health checked." };
+          }
+          if (callCount === 4) {
+            return {
+              type: "assistant",
+              content: JSON.stringify({
+                status: "not_done",
+                progressSummary: "Checked health",
+                evidence: ["health checked"],
+                keyFacts: [],
+                completedMilestones: ["health checked"],
+                openWork: [],
+                blockers: [],
+              }),
+            };
+          }
+          return {
+            type: "assistant",
+            content: JSON.stringify({
+              done: true,
+              summary: "Health check complete.",
+              status: "completed",
+              response_kind: "notification",
+            }),
+          };
+        }),
+      });
+      const onReply = vi.fn();
+      const sessionMemory = createSessionMemory();
+      const engine = new IVecEngine({
+        onReply,
+        provider,
+        sessionMemory,
+        dataDir,
+        systemEventPolicy: createSystemEventPolicy(),
+      });
+
+      await engine.start();
+      await engine.handleSystemEvent("c1", {
+        type: "system_event",
+        source: "pulse",
+        eventName: "reminder_due",
+        eventId: "evt-progress-1",
+        receivedAt: "2026-03-01T10:00:05.000Z",
+        summary: "Reminder due: Health",
+        payload: {
+          occurrenceId: "occ-progress-1",
+          reminderId: "rem-progress-1",
+          title: "Health",
+          instruction: "Check system health now",
+          scheduledFor: "2026-03-01T10:00:00.000Z",
+          triggeredAt: "2026-03-01T10:00:05.000Z",
+          timezone: "UTC",
+        },
+      });
+
+      expect(onReply).toHaveBeenCalledWith("c1", {
+        type: "progress",
+        content: expect.stringContaining("Step 1"),
+        runId: "sys-r1",
+      });
+      expect(onReply).toHaveBeenCalledWith("c1", {
+        type: "notification",
+        content: "Health check complete.",
+        final: true,
+      });
     } finally {
       rmSync(dataDir, { recursive: true, force: true });
     }

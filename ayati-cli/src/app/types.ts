@@ -53,6 +53,12 @@ export interface NotificationMessage {
   final?: boolean;
 }
 
+export interface ProgressMessage {
+  type: "progress";
+  content: string;
+  runId?: string;
+}
+
 export interface ErrorMessage {
   type: "error";
   content: string;
@@ -62,4 +68,5 @@ export type ServerMessage =
   | ReplyMessage
   | FeedbackMessage
   | NotificationMessage
+  | ProgressMessage
   | ErrorMessage;
