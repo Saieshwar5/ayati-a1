@@ -2,6 +2,7 @@ import type { LlmProvider } from "../core/contracts/provider.js";
 import type { ControllerPrompts } from "../context/types.js";
 import type { ToolExecutor } from "../skills/tool-executor.js";
 import type { ToolDefinition } from "../skills/types.js";
+import type { AgentUiContext } from "../ui/context.js";
 import type { ExternalSkillBroker } from "../skills/external/broker.js";
 import type { ExternalSkillRegistry } from "../skills/external/registry.js";
 import type { ActiveAttachmentRef } from "../memory/types.js";
@@ -11,7 +12,6 @@ import type {
   SessionMemory,
   MemoryRunHandle,
   ConversationTurn,
-  PromptRunLedger,
   PromptTaskSummary,
   SystemActivityItem,
   TaskSummaryRecordInput,
@@ -128,7 +128,6 @@ export interface LoopState {
   activeSessionAttachments?: ActiveAttachmentRef[];
   workMode?: WorkMode;
   sessionHistory: ConversationTurn[];
-  recentRunLedgers: PromptRunLedger[];
   recentTaskSummaries: PromptTaskSummary[];
   recentSystemActivity: SystemActivityItem[];
 }
@@ -439,6 +438,7 @@ export interface AgentLoopDeps {
   systemEventContextVisibility?: SystemEventContextVisibility;
   preferredResponseKind?: AgentResponseKind;
   initialUserMessage?: string;
+  uiContext?: AgentUiContext;
   onProgress?: OnProgressCallback;
   config?: Partial<LoopConfig>;
   dataDir: string;
@@ -465,6 +465,7 @@ export interface ExecutorDeps {
   externalSkillRegistry?: ExternalSkillRegistry;
   config: LoopConfig;
   clientId: string;
+  uiContext?: AgentUiContext;
   sessionMemory: SessionMemory;
   runHandle: MemoryRunHandle;
   taskContext: TaskValidationContext;
@@ -514,4 +515,5 @@ export interface ChatInboundMessage {
   type: "chat";
   content: string;
   attachments?: ChatAttachmentInput[];
+  uiContext?: AgentUiContext;
 }

@@ -6,6 +6,8 @@ import { devError, devLog, devWarn } from "../shared/index.js";
 import type { ToolDefinition, ToolResult } from "../skills/types.js";
 import { persistManagedUpload, type ManagedUploadRecord } from "./upload-storage.js";
 import type { FileLibrary } from "../files/file-library.js";
+import type { CourseStore } from "../learning/course-store.js";
+import type { LearningWorkspaceController } from "../ui/learning-workspace.js";
 
 const DEFAULT_HOST = "0.0.0.0";
 const DEFAULT_PORT = 8081;
@@ -15,16 +17,23 @@ const DEFAULT_ALLOW_ORIGIN = "*";
 const UPLOAD_PATH = "/api/uploads";
 const ARTIFACT_PATH_PREFIX = "/api/artifacts/";
 const PULSE_PATH = "/api/pulse";
+const LEARNING_PATH_PREFIX = "/api/learning";
 
 const CONTENT_TYPE_BY_EXTENSION: Record<string, string> = {
   ".gif": "image/gif",
+  ".css": "text/css; charset=utf-8",
+  ".html": "text/html; charset=utf-8",
   ".jpeg": "image/jpeg",
   ".jpg": "image/jpeg",
+  ".js": "text/javascript; charset=utf-8",
   ".json": "application/json; charset=utf-8",
   ".md": "text/markdown; charset=utf-8",
+  ".mp4": "video/mp4",
   ".png": "image/png",
   ".svg": "image/svg+xml",
   ".txt": "text/plain; charset=utf-8",
+  ".wasm": "application/wasm",
+  ".webm": "video/webm",
   ".webp": "image/webp",
 };
 
@@ -40,6 +49,9 @@ export interface UploadServerOptions {
   pulseClientId?: string;
   pulseApiToken?: string;
   fileLibrary?: FileLibrary;
+  courseStore?: CourseStore;
+  learningWorkspace?: LearningWorkspaceController;
+  learningClientId?: string;
 }
 
 type UploadBlobLike = {
@@ -61,6 +73,9 @@ export class UploadServer {
   private readonly pulseClientId: string;
   private readonly pulseApiToken: string | null;
   private readonly fileLibrary?: FileLibrary;
+  private readonly courseStore?: CourseStore;
+  private readonly learningWorkspace?: LearningWorkspaceController;
+  private readonly learningClientId: string;
   private server: Server | null = null;
 
   constructor(options: UploadServerOptions) {
@@ -75,6 +90,9 @@ export class UploadServer {
     this.pulseClientId = options.pulseClientId?.trim() || "local";
     this.pulseApiToken = options.pulseApiToken?.trim() || null;
     this.fileLibrary = options.fileLibrary;
+    this.courseStore = options.courseStore;
+    this.learningWorkspace = options.learningWorkspace;
+    this.learningClientId = options.learningClientId?.trim() || "local";
   }
 
   async start(): Promise<void> {
@@ -119,6 +137,11 @@ export class UploadServer {
     }
 
     const requestUrl = new URL(req.url ?? "/", `http://${req.headers.host ?? `${this.host}:${this.port}`}`);
+    if (requestUrl.pathname.startsWith(LEARNING_PATH_PREFIX)) {
+      await this.handleLearningRequest(req, res, requestUrl);
+      return;
+    }
+
     if (requestUrl.pathname === PULSE_PATH) {
       await this.handlePulseRequest(req, res);
       return;
@@ -267,6 +290,132 @@ export class UploadServer {
     }
   }
 
+  private async handleLearningRequest(req: IncomingMessage, res: ServerResponse, requestUrl: URL): Promise<void> {
+    if (!this.courseStore) {
+      this.sendJson(res, 503, { ok: false, error: "learning API is not configured." });
+      return;
+    }
+
+    try {
+      const payload = await this.resolveLearningRequest(req, requestUrl);
+      if (payload?.kind === "file") {
+        await this.sendFile(res, payload.filePath, payload.cacheControl);
+        return;
+      }
+      this.sendJson(res, payload?.statusCode ?? 200, payload?.body ?? { ok: true });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      const statusCode = classifyLearningError(message);
+      if (statusCode >= 500) {
+        devError("Learning API server error:", message);
+      } else {
+        devWarn(`Learning API request rejected: ${message}`);
+      }
+      this.sendJson(res, statusCode, { ok: false, error: message });
+    }
+  }
+
+  private async resolveLearningRequest(req: IncomingMessage, requestUrl: URL): Promise<
+    | { kind: "json"; statusCode?: number; body: unknown }
+    | { kind: "file"; filePath: string; cacheControl?: string }
+  > {
+    if (!this.courseStore) {
+      throw new Error("learning API is not configured.");
+    }
+
+    const method = req.method ?? "GET";
+    const suffix = requestUrl.pathname.slice(LEARNING_PATH_PREFIX.length);
+    const segments = suffix.split("/").filter((segment) => segment.length > 0).map((segment) => decodeURIComponent(segment));
+    const clientId = requestUrl.searchParams.get("clientId")?.trim() || this.learningClientId;
+
+    if (method === "GET" && segments.length === 1 && segments[0] === "courses") {
+      const courses = await this.courseStore.listCourses(clientId, {
+        includeArchived: requestUrl.searchParams.get("includeArchived") === "true",
+      });
+      return {
+        kind: "json",
+        body: { ok: true, courses, total: courses.length },
+      };
+    }
+
+    if (method === "GET" && segments.length === 1 && segments[0] === "active-course") {
+      const course = await this.courseStore.getActiveCourse(clientId);
+      return {
+        kind: "json",
+        body: { ok: true, activeCourse: course },
+      };
+    }
+
+    if (method === "GET" && segments.length === 1 && segments[0] === "workspace-state") {
+      const state = this.learningWorkspace
+        ? await this.learningWorkspace.getState(clientId)
+        : null;
+      return {
+        kind: "json",
+        body: { ok: true, state },
+      };
+    }
+
+    if (segments.length >= 2 && segments[0] === "courses") {
+      const courseId = segments[1];
+      if (!courseId) {
+        throw new Error("course id is required.");
+      }
+
+      if (method === "GET" && segments.length === 2) {
+        const course = await this.courseStore.getCourse(courseId, clientId);
+        return {
+          kind: "json",
+          body: { ok: true, course },
+        };
+      }
+
+      if (method === "POST" && segments.length === 3 && segments[2] === "activate") {
+        const course = await this.courseStore.activateCourse(clientId, courseId);
+        return {
+          kind: "json",
+          body: { ok: true, course },
+        };
+      }
+
+      if (method === "POST" && segments.length === 5 && segments[2] === "lessons" && segments[4] === "complete") {
+        const lessonId = segments[3];
+        if (!lessonId) {
+          throw new Error("lesson id is required.");
+        }
+        const course = await this.courseStore.markLessonDone({ clientId, courseId, lessonId });
+        return {
+          kind: "json",
+          body: { ok: true, course, progress: course.progress },
+        };
+      }
+
+      if (method === "GET" && segments.length >= 4 && segments[2] === "files") {
+        const relativePath = segments.slice(3).join(sep);
+        if (!relativePath) {
+          throw new Error("learning file path is incomplete.");
+        }
+        const summary = this.courseStore.courseFileSummary(courseId);
+        const filePath = resolve(summary.rootPath, relativePath);
+        const allowedPrefix = `${summary.rootPath}${sep}`;
+        if (filePath !== summary.rootPath && !filePath.startsWith(allowedPrefix)) {
+          throw new Error("learning file path escapes the course directory.");
+        }
+        return {
+          kind: "file",
+          filePath,
+          cacheControl: "no-cache",
+        };
+      }
+    }
+
+    if (method === "OPTIONS") {
+      return { kind: "json", statusCode: 204, body: null };
+    }
+
+    throw new Error("learning API route was not found.");
+  }
+
   private authorizePulseRequest(req: IncomingMessage): { ok: true } | { ok: false; statusCode: number; error: string } {
     if (this.pulseApiToken) {
       const token = readBearerToken(req.headers["authorization"]);
@@ -316,15 +465,24 @@ export class UploadServer {
       throw new Error("artifact path escapes the run directory.");
     }
 
+    await this.sendFile(res, filePath, "public, max-age=3600", "artifact file was not found.");
+  }
+
+  private async sendFile(
+    res: ServerResponse,
+    filePath: string,
+    cacheControl = "public, max-age=3600",
+    missingMessage = "file was not found.",
+  ): Promise<void> {
     const fileStat = await stat(filePath);
     if (!fileStat.isFile()) {
-      throw new Error("artifact file was not found.");
+      throw new Error(missingMessage);
     }
 
     res.statusCode = 200;
     res.setHeader("Content-Type", getContentType(filePath));
     res.setHeader("Content-Length", String(fileStat.size));
-    res.setHeader("Cache-Control", "public, max-age=3600");
+    res.setHeader("Cache-Control", cacheControl);
 
     await new Promise<void>((resolveStream, rejectStream) => {
       const stream = createReadStream(filePath);
@@ -417,8 +575,25 @@ function classifyArtifactError(message: string): number {
   return 500;
 }
 
+function classifyLearningError(message: string): number {
+  const normalized = message.toLowerCase();
+  if (normalized.includes("not found") || normalized.includes("enoent")) return 404;
+  if (
+    normalized.includes("required")
+    || normalized.includes("incomplete")
+    || normalized.includes("escapes")
+    || normalized.includes("does not belong")
+  ) {
+    return 400;
+  }
+  return 500;
+}
+
 function isManagedPath(url: string): boolean {
-  return url.startsWith(UPLOAD_PATH) || url.startsWith(ARTIFACT_PATH_PREFIX) || url.startsWith(PULSE_PATH);
+  return url.startsWith(UPLOAD_PATH)
+    || url.startsWith(ARTIFACT_PATH_PREFIX)
+    || url.startsWith(PULSE_PATH)
+    || url.startsWith(LEARNING_PATH_PREFIX);
 }
 
 function getContentType(filePath: string): string {

@@ -7,8 +7,10 @@
     "test": "pnpm -r test",
     "dev:main": "pnpm --filter ayati-main dev",
     "dev:cli": "pnpm --filter ayati-cli dev",
+    "dev:learning-ui": "pnpm --filter ayati-learning-ui tauri:dev",
     "start:main": "pnpm --filter ayati-main start",
-    "start:cli": "pnpm --filter ayati-cli start"
+    "start:cli": "pnpm --filter ayati-cli start",
+    "build:learning-ui": "pnpm --filter ayati-learning-ui build"
   },
   "packageManager": "pnpm@10.0.0",
   "pnpm": {

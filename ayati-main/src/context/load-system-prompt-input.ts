@@ -14,7 +14,6 @@ export function assemblePromptInput(
     conversationTurns: memoryContext.conversationTurns,
     previousSessionSummary: memoryContext.previousSessionSummary,
     activeSessionPath: memoryContext.activeSessionPath,
-    recentRunLedgers: memoryContext.recentRunLedgers,
     recentTaskSummaries: memoryContext.recentTaskSummaries,
     recentSystemActivity: memoryContext.recentSystemActivity,
     skillBlocks: staticContext.skillBlocks,

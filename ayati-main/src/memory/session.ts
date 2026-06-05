@@ -2,8 +2,6 @@ import type {
   ActiveAttachmentsEvent,
   AssistantNotificationEvent,
   AssistantFeedbackEvent,
-  FeedbackOpenedEvent,
-  FeedbackResolvedEvent,
   CountableSessionEvent,
   ToolSessionEvent,
   UserMessageEvent,
@@ -13,7 +11,6 @@ import type {
   ToolResultEvent,
   RunFailureEvent,
   AgentStepEvent,
-  RunLedgerEvent,
   TaskSummaryEvent,
   SystemEventReceivedEvent,
   SystemEventProcessedEvent,
@@ -39,13 +36,10 @@ export type SessionTimelineEntry =
   | ToolResultEvent
   | RunFailureEvent
   | AgentStepEvent
-  | RunLedgerEvent
   | ActiveAttachmentsEvent
   | TaskSummaryEvent
   | AssistantFeedbackEvent
   | AssistantNotificationEvent
-  | FeedbackOpenedEvent
-  | FeedbackResolvedEvent
   | SystemEventReceivedEvent
   | SystemEventProcessedEvent;
 
@@ -232,25 +226,6 @@ export class InMemorySession {
     }
 
     return activity.slice(-limit);
-  }
-
-  getRecentUniqueRunLedgerEvents(limit = 5): RunLedgerEvent[] {
-    if (limit <= 0) return [];
-
-    const uniqueRunIds = new Set<string>();
-    const events: RunLedgerEvent[] = [];
-
-    for (let idx = this.timeline.length - 1; idx >= 0; idx--) {
-      const entry = this.timeline[idx];
-      if (!entry || entry.type !== "run_ledger") continue;
-      if (uniqueRunIds.has(entry.runId)) continue;
-
-      uniqueRunIds.add(entry.runId);
-      events.push(entry);
-      if (events.length >= limit) break;
-    }
-
-    return events;
   }
 
   getRecentTaskSummaryEvents(limit = 5): TaskSummaryEvent[] {

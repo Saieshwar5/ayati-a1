@@ -14,7 +14,7 @@ function createTmpDir(): string {
 function findSessionFile(baseDir: string, sessionId: string): string {
   const sessionsDir = join(baseDir, "data", "sessions");
   const entries = readdirSync(sessionsDir);
-  const match = entries.find((entry) => entry === `${sessionId}.md` || entry === `${sessionId}.jsonl`);
+  const match = entries.find((entry) => entry === `${sessionId}.jsonl`);
   if (!match) {
     throw new Error(`Session file not found for ${sessionId}`);
   }

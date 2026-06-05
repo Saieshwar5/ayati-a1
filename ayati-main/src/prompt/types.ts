@@ -1,7 +1,6 @@
 import type { SoulContext } from "../context/types.js";
 import type {
   ConversationTurn,
-  PromptRunLedger,
   PromptTaskSummary,
   SessionStatus,
   SystemActivityItem,
@@ -16,7 +15,6 @@ export type PromptLayerId =
   | "conversation"
   | "memory"
   | "current_session"
-  | "recent_runs"
   | "recent_tasks"
   | "system_activity"
   | "skills"
@@ -39,7 +37,6 @@ export interface PromptBuildInput {
   conversationTurns?: ConversationTurn[];
   previousSessionSummary?: string;
   activeSessionPath?: string;
-  recentRunLedgers?: PromptRunLedger[];
   recentTaskSummaries?: PromptTaskSummary[];
   recentSystemActivity?: SystemActivityItem[];
   skillBlocks?: SkillPromptBlock[];

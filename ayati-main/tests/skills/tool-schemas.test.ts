@@ -4,8 +4,12 @@ import { createAttachmentSkill } from "../../src/skills/builtins/attachments/ind
 import { createDatasetSkill } from "../../src/skills/builtins/datasets/index.js";
 import { createDocumentSkill } from "../../src/skills/builtins/documents/index.js";
 import { createIdentitySkill } from "../../src/skills/builtins/identity/index.js";
+import { createLearningSkill } from "../../src/skills/builtins/learning/index.js";
 import { createPythonSkill } from "../../src/skills/builtins/python/index.js";
 import { createRecallSkill } from "../../src/skills/builtins/recall/index.js";
+import { createUiSkill } from "../../src/skills/builtins/ui/index.js";
+import { CourseStore } from "../../src/learning/course-store.js";
+import { LearningWorkspaceController } from "../../src/ui/learning-workspace.js";
 import type { PreparedAttachmentService } from "../../src/documents/prepared-attachment-service.js";
 import type { SessionAttachmentService } from "../../src/documents/session-attachment-service.js";
 import type { RecallRetriever } from "../../src/skills/builtins/recall/index.js";
@@ -66,6 +70,17 @@ async function buildRuntimeTools(): Promise<ToolDefinition[]> {
     ...createDocumentSkill({
       preparedAttachmentService,
     }).tools,
+    ...createLearningSkill({
+      courseStore: new CourseStore({ dataDir: "/tmp/ayati-test-data" }),
+    }).tools,
+    ...createUiSkill({
+      learningWorkspace: new LearningWorkspaceController({
+        projectRoot: "/tmp/ayati-test-data",
+        dataDir: "/tmp/ayati-test-data",
+        httpBaseUrl: "http://127.0.0.1:8081",
+        hyprlandEnabled: false,
+      }),
+    }).tools,
   ];
 }
 
@@ -80,6 +95,8 @@ describe("runtime tool schemas", () => {
 
     expect(tools.some((tool) => tool.name === "db_create_table")).toBe(true);
     expect(tools.some((tool) => tool.name === "python_execute")).toBe(true);
+    expect(tools.some((tool) => tool.name === "learning_create_course")).toBe(true);
+    expect(tools.some((tool) => tool.name === "ui_open_learning_workspace")).toBe(true);
     expect(issues).toEqual([]);
   });
 });

@@ -1,4 +1,5 @@
 import { devWarn } from "../shared/index.js";
+import type { AgentUiContext } from "../ui/context.js";
 import type { ToolDefinition, ToolExecutionContext, ToolResult } from "./types.js";
 
 export type ValidationResult =
@@ -12,6 +13,7 @@ export interface ToolRegistryContext {
   runId?: string;
   sessionId?: string;
   stepNumber?: number;
+  uiContext?: AgentUiContext;
 }
 
 export interface ToolGroupMeta {

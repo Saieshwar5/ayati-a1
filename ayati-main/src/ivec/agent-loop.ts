@@ -194,7 +194,6 @@ export async function agentLoop(deps: AgentLoopDeps): Promise<AgentLoopResult> {
     managedDirectories: deps.managedDirectories ?? [],
     activeSessionAttachments: [],
     sessionHistory: [],
-    recentRunLedgers: [],
     recentTaskSummaries: [],
     recentSystemActivity: [],
   };
@@ -241,12 +240,6 @@ export async function agentLoop(deps: AgentLoopDeps): Promise<AgentLoopResult> {
   }
 
   queueStateSnapshot();
-  deps.sessionMemory.recordRunLedger?.(deps.clientId, {
-    runId: deps.runHandle.runId,
-    sessionId: deps.runHandle.sessionId,
-    runPath,
-    state: "started",
-  });
 
   const preparableDocuments = (state.attachedDocuments ?? []).filter((document) => document.kind !== "image");
   if (preparableDocuments.length > 0 && deps.documentStore && deps.preparedAttachmentRegistry) {
@@ -430,6 +423,7 @@ export async function agentLoop(deps: AgentLoopDeps): Promise<AgentLoopResult> {
         toolDefinitions: resolveVisibleToolDefinitions(state.iteration),
         config,
         clientId: deps.clientId,
+        uiContext: deps.uiContext,
         sessionMemory: deps.sessionMemory,
         runHandle: deps.runHandle,
         taskContext: buildTaskValidationContext(state),
@@ -540,6 +534,7 @@ function currentToolRegistryContextFactory(
     clientId: deps.clientId,
     runId: deps.runHandle.runId,
     sessionId: deps.runHandle.sessionId,
+    ...(deps.uiContext ? { uiContext: deps.uiContext } : {}),
     ...(typeof stepNumber === "number" ? { stepNumber } : {}),
   });
 }
@@ -1215,7 +1210,6 @@ function syncTransientMemoryContext(state: LoopState, deps: AgentLoopDeps): void
     }
     return !(t.role === "user" && t.content === state.userMessage);
   });
-  state.recentRunLedgers = memCtx.recentRunLedgers ?? [];
   state.recentTaskSummaries = memCtx.recentTaskSummaries ?? [];
   state.activeSessionAttachments = memCtx.activeAttachments ?? [];
   state.recentSystemActivity = memCtx.recentSystemActivity ?? [];

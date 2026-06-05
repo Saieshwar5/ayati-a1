@@ -1,8 +1,7 @@
-import type { RunLedgerEvent, TaskSummaryEvent } from "./session-events.js";
+import type { TaskSummaryEvent } from "./session-events.js";
 import { formatConversationTurnSpeaker } from "./conversation-turn-format.js";
 import { InMemorySession } from "./session.js";
 import type {
-  PromptRunLedger,
   PromptTaskSummary,
   SessionHandoffArtifact,
   SessionHandoffSnapshot,
@@ -13,7 +12,7 @@ const MAX_COMPLETED_ITEMS = 4;
 const MAX_PENDING_ITEMS = 4;
 const MAX_FACT_ITEMS = 5;
 const MAX_DIALOG_TURNS = 6;
-const MAX_RECENT_RUNS = 5;
+const MAX_RECENT_TASKS = 5;
 const MAX_SUMMARY_CHARS = 1800;
 
 export interface BuildSessionHandoffInput {
@@ -26,15 +25,14 @@ export function buildSessionHandoff(
   session: InMemorySession,
   input: BuildSessionHandoffInput,
 ): SessionHandoffArtifact {
-  const recentRuns = session.getRecentUniqueRunLedgerEvents(MAX_RECENT_RUNS).map(toPromptRunLedger);
-  const recentTasks = session.getRecentTaskSummaryEvents(MAX_RECENT_RUNS).map(toPromptTaskSummary);
+  const recentTasks = session.getRecentTaskSummaryEvents(MAX_RECENT_TASKS).map(toPromptTaskSummary);
   const recentDialog = session.getConversationTurns(MAX_DIALOG_TURNS);
   const activeAttachments = session.getActiveAttachmentRefs(5);
-  const activeGoals = inferActiveGoals(session, recentTasks, recentRuns);
-  const completedWork = inferCompletedWork(recentTasks, recentRuns);
-  const pendingWork = inferPendingWork(recentTasks, activeAttachments, recentRuns);
-  const keyFacts = inferKeyFacts(session, recentTasks, activeAttachments, recentRuns);
-  const nextAction = inferNextAction(recentTasks, pendingWork, recentRuns);
+  const activeGoals = inferActiveGoals(session, recentTasks);
+  const completedWork = inferCompletedWork(recentTasks);
+  const pendingWork = inferPendingWork(recentTasks, activeAttachments);
+  const keyFacts = inferKeyFacts(session, recentTasks, activeAttachments);
+  const nextAction = inferNextAction(recentTasks, pendingWork);
 
   const snapshot: SessionHandoffSnapshot = {
     sessionId: session.id,
@@ -48,7 +46,6 @@ export function buildSessionHandoff(
     pendingWork,
     keyFacts,
     activeAttachments,
-    recentRuns,
     recentTasks,
     recentDialog,
     nextAction,
@@ -65,7 +62,6 @@ export function buildSessionHandoff(
 function inferActiveGoals(
   session: InMemorySession,
   recentTasks: PromptTaskSummary[],
-  recentRuns: PromptRunLedger[],
 ): string[] {
   const goals = new Set<string>();
 
@@ -87,19 +83,10 @@ function inferActiveGoals(
     goals.add(truncateInline(turn.content, 180));
   }
 
-  for (const run of recentRuns) {
-    if (run.summary && run.summary.trim().length > 0) {
-      goals.add(truncateInline(run.summary, 180));
-    }
-    if (goals.size >= 3) {
-      break;
-    }
-  }
-
   return [...goals].filter(Boolean);
 }
 
-function inferCompletedWork(recentTasks: PromptTaskSummary[], recentRuns: PromptRunLedger[]): string[] {
+function inferCompletedWork(recentTasks: PromptTaskSummary[]): string[] {
   const completed = new Set<string>();
 
   for (const task of recentTasks) {
@@ -112,25 +99,12 @@ function inferCompletedWork(recentTasks: PromptTaskSummary[], recentRuns: Prompt
     }
   }
 
-  if (completed.size === 0) {
-    for (const run of recentRuns) {
-      if (run.status !== "completed" || !run.summary?.trim()) {
-        continue;
-      }
-      completed.add(truncateInline(run.summary, 220));
-      if (completed.size >= MAX_COMPLETED_ITEMS) {
-        break;
-      }
-    }
-  }
-
   return [...completed];
 }
 
 function inferPendingWork(
   recentTasks: PromptTaskSummary[],
   activeAttachments: SessionHandoffSnapshot["activeAttachments"],
-  recentRuns: PromptRunLedger[],
 ): string[] {
   const pending = new Set<string>();
 
@@ -165,11 +139,6 @@ function inferPendingWork(
     pending.add(`Continue with active artifacts: ${activeAttachments.map((item) => item.displayName).join(", ")}`);
   }
 
-  const latestRun = recentRuns[0];
-  if (latestRun?.summary?.trim()) {
-    pending.add(`Continue from latest run: ${truncateInline(latestRun.summary, 220)}`);
-  }
-
   return [...pending].slice(0, MAX_PENDING_ITEMS);
 }
 
@@ -177,7 +146,6 @@ function inferKeyFacts(
   session: InMemorySession,
   recentTasks: PromptTaskSummary[],
   activeAttachments: SessionHandoffSnapshot["activeAttachments"],
-  recentRuns: PromptRunLedger[],
 ): string[] {
   const facts = new Set<string>();
 
@@ -205,21 +173,12 @@ function inferKeyFacts(
     }
   }
 
-  for (const run of recentRuns) {
-    if (!run.summary?.trim()) continue;
-    facts.add(`Recent run outcome: ${truncateInline(run.summary, 180)}`);
-    if (facts.size >= MAX_FACT_ITEMS) {
-      return [...facts];
-    }
-  }
-
   return [...facts].slice(0, MAX_FACT_ITEMS);
 }
 
 function inferNextAction(
   recentTasks: PromptTaskSummary[],
   pendingWork: string[],
-  recentRuns: PromptRunLedger[],
 ): string {
   for (const task of recentTasks) {
     if (task.nextAction?.trim()) {
@@ -237,12 +196,7 @@ function inferNextAction(
   }
 
   if (pendingWork.length > 0) {
-    return pendingWork[0] ?? "Resume the active work from the latest run state.";
-  }
-
-  const latestRun = recentRuns[0];
-  if (latestRun?.summary?.trim()) {
-    return `Resume from the latest run summary: ${truncateInline(latestRun.summary, 180)}`;
+    return pendingWork[0] ?? "Resume the active work from the latest task summary.";
   }
 
   return "Resume from the latest conversation turn and continue the same thread.";
@@ -337,17 +291,6 @@ function toPromptTaskSummary(event: TaskSummaryEvent): PromptTaskSummary {
     nextAction: event.nextAction,
     stopReason: event.stopReason,
     attachmentNames: event.attachmentNames ?? [],
-  };
-}
-
-function toPromptRunLedger(event: RunLedgerEvent): PromptRunLedger {
-  return {
-    timestamp: event.ts,
-    runId: event.runId,
-    runPath: event.runPath,
-    state: event.state,
-    status: event.status,
-    summary: event.summary,
   };
 }
 

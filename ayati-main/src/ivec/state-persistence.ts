@@ -5,7 +5,7 @@ import type { LoopState, ActOutput, ActToolCallRecord, VerifyOutput } from "./ty
 
 type PersistedLoopState = Omit<
   LoopState,
-  "sessionHistory" | "recentRunLedgers" | "recentTaskSummaries" | "activeSessionAttachments" | "recentSystemActivity"
+  "sessionHistory" | "recentTaskSummaries" | "activeSessionAttachments" | "recentSystemActivity"
 >;
 const runArtifactWriteQueues = new Map<string, Promise<void>>();
 const runStateWriteQueues = new Map<string, RunStateWriteQueue>();
@@ -118,7 +118,6 @@ function normalizeLegacyLoopState(parsed: Partial<LoopState>): void {
 function buildPersistedLoopState(state: LoopState): PersistedLoopState {
   const {
     sessionHistory: _sessionHistory,
-    recentRunLedgers: _recentRunLedgers,
     recentTaskSummaries: _recentTaskSummaries,
     activeSessionAttachments: _activeSessionAttachments,
     recentSystemActivity: _recentSystemActivity,

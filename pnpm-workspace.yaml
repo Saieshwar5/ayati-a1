@@ -1,3 +1,4 @@
 packages:
   - "ayati-main"
   - "ayati-cli"
+  - "ayati-learning-ui"

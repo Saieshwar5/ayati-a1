@@ -1,5 +1,4 @@
 import { randomUUID } from "node:crypto";
-import { existsSync, rmSync } from "node:fs";
 import { resolve } from "node:path";
 import {
   resolveRotationTimezone,
@@ -23,7 +22,6 @@ import type {
   ToolCallRecordInput,
   ToolCallResultRecordInput,
   AgentStepRecordInput,
-  RunLedgerRecordInput,
   ActiveAttachmentsRecordInput,
   TaskSummaryRecordInput,
   SystemEventRecordInput,
@@ -44,13 +42,10 @@ import type {
   ToolResultEvent,
   RunFailureEvent,
   AgentStepEvent,
-  RunLedgerEvent,
   ActiveAttachmentsEvent,
   TaskSummaryEvent,
   AssistantFeedbackEvent,
   AssistantNotificationEvent,
-  FeedbackOpenedEvent,
-  FeedbackResolvedEvent,
   SystemEventReceivedEvent,
   SystemEventProcessedEvent,
 } from "./session-events.js";
@@ -88,13 +83,10 @@ type TimelineEvent =
   | ToolResultEvent
   | RunFailureEvent
   | AgentStepEvent
-  | RunLedgerEvent
   | ActiveAttachmentsEvent
   | TaskSummaryEvent
   | AssistantFeedbackEvent
   | AssistantNotificationEvent
-  | FeedbackOpenedEvent
-  | FeedbackResolvedEvent
   | SystemEventReceivedEvent
   | SystemEventProcessedEvent;
 
@@ -437,26 +429,6 @@ export class MemoryManager implements SessionMemory {
     this.appendTimelineEvent(event);
   }
 
-  recordRunLedger(clientId: string, input: RunLedgerRecordInput): void {
-    const nowIso = this.nowIso();
-    const session = this.ensureWritableSession(clientId, nowIso);
-
-    const event: RunLedgerEvent = {
-      v: 2,
-      ts: nowIso,
-      type: "run_ledger",
-      sessionId: session.id,
-      sessionPath: session.sessionPath,
-      runId: input.runId,
-      runPath: input.runPath,
-      state: input.state,
-      status: input.status,
-      summary: input.summary,
-    };
-
-    this.appendTimelineEvent(event);
-  }
-
   recordActiveAttachments(clientId: string, input: ActiveAttachmentsRecordInput): void {
     if (input.attachments.length === 0) {
       return;
@@ -626,14 +598,6 @@ export class MemoryManager implements SessionMemory {
   }
 
   getPromptMemoryContext(): PromptMemoryContext {
-    const recentRunLedgers = (this.currentSession?.getRecentUniqueRunLedgerEvents(5) ?? []).map((event) => ({
-      timestamp: event.ts,
-      runId: event.runId,
-      runPath: event.runPath,
-      state: event.state,
-      status: event.status,
-      summary: event.summary,
-    }));
     const recentTaskSummaries = (this.currentSession?.getRecentTaskSummaryEvents(5) ?? []).map((event) => ({
       timestamp: event.ts,
       runId: event.runId,
@@ -674,7 +638,6 @@ export class MemoryManager implements SessionMemory {
       personalMemorySnapshot: this.personalMemorySnapshotProvider?.(this.currentSession?.clientId ?? this.activeClientId) ?? "",
       personalMemories: [],
       activeSessionPath: this.currentSession?.sessionPath ?? "",
-      recentRunLedgers,
       recentTaskSummaries,
       activeAttachments: this.currentSession?.getActiveAttachmentRefs(5) ?? [],
       recentSystemActivity: this.currentSession?.getRecentSystemActivity(10) ?? [],
@@ -758,7 +721,7 @@ export class MemoryManager implements SessionMemory {
 
     const tryRestore = (
       candidate: ActiveSessionInfo | null,
-      source: "active_row" | "marker" | "recovery_candidate",
+      source: "active_row" | "recovery_candidate",
     ): InMemorySession | null => {
       if (!candidate) return null;
       const key = `${candidate.sessionId}:${candidate.sessionPath}`;
@@ -772,28 +735,6 @@ export class MemoryManager implements SessionMemory {
         if (restoredFromCandidate.clientId === clientId) {
           return restoredFromCandidate;
         }
-        if (source === "marker" || source === "active_row") {
-          return this.reassignSessionClient(restoredFromCandidate, clientId);
-        }
-      }
-
-      if (candidate.sessionPath.endsWith(".jsonl")) {
-        const markdownPath = `${candidate.sessionPath.slice(0, -".jsonl".length)}.md`;
-        const markdownKey = `${candidate.sessionId}:${markdownPath}`;
-        if (!attempted.has(markdownKey)) {
-          attempted.add(markdownKey);
-          const restoredFromMarkdown = this.persistence.replaySessionFile(
-            this.persistence.resolveSessionAbsolutePath(markdownPath),
-          );
-          if (restoredFromMarkdown) {
-            if (restoredFromMarkdown.clientId === clientId) {
-              return restoredFromMarkdown;
-            }
-            if (source === "marker" || source === "active_row") {
-              return this.reassignSessionClient(restoredFromMarkdown, clientId);
-            }
-          }
-        }
       }
 
       if (restoredFromCandidate?.clientId !== clientId) {
@@ -802,10 +743,7 @@ export class MemoryManager implements SessionMemory {
       return null;
     };
 
-    const fromActive = tryRestore(this.persistence.getActiveSessionInfo(clientId), "active_row");
-    const fromMarker = fromActive ?? tryRestore(this.persistence.getActiveSessionInfo(), "marker");
-
-    let restored = fromMarker;
+    let restored = tryRestore(this.persistence.getActiveSessionInfo(clientId), "active_row");
     if (!restored) {
       const candidates = this.persistence.listRecoveryCandidates(clientId, 24);
       for (const candidate of candidates) {
@@ -816,7 +754,6 @@ export class MemoryManager implements SessionMemory {
 
     if (!restored) return;
 
-    restored = this.migrateLegacyJsonlSessionIfNeeded(restored);
     this.currentSession = restored;
     this.persistence.resumeSession(restored.id, clientId, restored.sessionPath, nowIso);
     this.persistence.writeActiveSessionMarker(restored.id, restored.sessionPath);
@@ -1076,85 +1013,6 @@ export class MemoryManager implements SessionMemory {
 
   private nowIso(): string {
     return this.nowProvider().toISOString();
-  }
-
- 
-  private migrateLegacyJsonlSessionIfNeeded(session: InMemorySession): InMemorySession {
-    if (!session.sessionPath.endsWith(".jsonl")) {
-      return session;
-    }
-
-    const markdownSessionPath = `${session.sessionPath.slice(0, -".jsonl".length)}.md`;
-    const markdownAbsolutePath = this.persistence.resolveSessionAbsolutePath(markdownSessionPath);
-
-    // Idempotent restore path: if markdown already exists and is readable, prefer it.
-    if (existsSync(markdownAbsolutePath)) {
-      const replayed = this.persistence.replaySessionFile(markdownAbsolutePath);
-      if (replayed && replayed.clientId === session.clientId) {
-        return replayed;
-      }
-    }
-
-    const migrated = new InMemorySession(
-      session.id,
-      session.clientId,
-      session.startedAt,
-      markdownSessionPath,
-      session.parentSessionId,
-    );
-    migrated.handoffSummary = session.handoffSummary;
-    migrated.pendingRotationReason = session.pendingRotationReason;
-    migrated.handoff = { ...session.handoff, jobScheduled: false };
-
-    this.persistence.appendEvent({
-      v: 2,
-      ts: session.startedAt,
-      type: "session_open",
-      sessionId: session.id,
-      sessionPath: markdownSessionPath,
-      clientId: session.clientId,
-      parentSessionId: session.parentSessionId ?? undefined,
-      handoffSummary: session.handoffSummary ?? undefined,
-    });
-
-    for (const entry of session.timeline) {
-      const migratedEntry: TimelineEvent = {
-        ...entry,
-        sessionPath: markdownSessionPath,
-      };
-      this.persistence.appendEvent(migratedEntry);
-      migrated.addEntry(migratedEntry);
-    }
-
-    const legacyPath = this.persistence.resolveSessionAbsolutePath(session.sessionPath);
-    try {
-      rmSync(legacyPath, { force: true });
-    } catch (err) {
-      devWarn("Failed to remove legacy session jsonl file:", err instanceof Error ? err.message : String(err));
-    }
-
-    return migrated;
-  }
-
-  private reassignSessionClient(session: InMemorySession, clientId: string): InMemorySession {
-    if (session.clientId === clientId) {
-      return session;
-    }
-
-    const reassigned = new InMemorySession(
-      session.id,
-      clientId,
-      session.startedAt,
-      session.sessionPath,
-      session.parentSessionId,
-    );
-    reassigned.handoffSummary = session.handoffSummary;
-    reassigned.pendingRotationReason = session.pendingRotationReason;
-    reassigned.handoff = { ...session.handoff, jobScheduled: false };
-    for (const entry of session.timeline) {
-      reassigned.addEntry(entry);
-    }
-    return reassigned;
   }
 }
 

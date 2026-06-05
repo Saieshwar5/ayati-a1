@@ -282,6 +282,7 @@ async function executeSingleTool(
     runId: deps.runHandle.runId,
     sessionId: deps.runHandle.sessionId,
     stepNumber,
+    ...(deps.uiContext ? { uiContext: deps.uiContext } : {}),
   });
   if (!validation.valid) {
     const schema = "schema" in validation ? validation.schema : undefined;
@@ -298,6 +299,7 @@ async function executeSingleTool(
     runId: deps.runHandle.runId,
     sessionId: deps.runHandle.sessionId,
     stepNumber,
+    ...(deps.uiContext ? { uiContext: deps.uiContext } : {}),
   });
   if (!result.ok) {
     return { tool: toolName, input, output: result.output ?? "", error: result.error ?? "Tool execution failed", meta: result.meta };

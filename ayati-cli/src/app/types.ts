@@ -20,6 +20,21 @@ export interface ChatRequestMessage {
   type: "chat";
   content: string;
   attachments?: ChatAttachment[];
+  uiContext?: AgentUiContext;
+}
+
+export interface AgentUiContext {
+  source: "agent-cli";
+  terminalPid?: number;
+  processPid?: number;
+  processTreePids?: number[];
+  windowAddress?: string;
+  windowClass?: string;
+  windowTitle?: string;
+  workspaceId?: number;
+  workspaceName?: string;
+  monitor?: string;
+  detectedAt?: string;
 }
 
 export interface ReplyMessage {
@@ -35,6 +50,7 @@ export interface FeedbackMessage {
 export interface NotificationMessage {
   type: "notification";
   content: string;
+  final?: boolean;
 }
 
 export interface ErrorMessage {

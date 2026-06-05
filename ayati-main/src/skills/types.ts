@@ -1,3 +1,5 @@
+import type { AgentUiContext } from "../ui/context.js";
+
 export interface SkillPromptBlock {
   id: string;
   content: string;
@@ -16,6 +18,7 @@ export interface ToolExecutionContext {
   runId?: string;
   sessionId?: string;
   stepNumber?: number;
+  uiContext?: AgentUiContext;
 }
 
 export interface ToolResult {

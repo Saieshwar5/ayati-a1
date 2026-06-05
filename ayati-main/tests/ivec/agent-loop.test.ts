@@ -84,13 +84,11 @@ function createMockSessionMemory(): SessionMemory {
     recordAssistantFinal: vi.fn(),
     recordRunFailure: vi.fn(),
     recordAgentStep: vi.fn(),
-    recordRunLedger: vi.fn(),
     recordTaskSummary: vi.fn(),
     recordAssistantNotification: vi.fn(),
     getPromptMemoryContext: vi.fn().mockReturnValue({
       conversationTurns: [{ role: "user", content: "hello", timestamp: "", sessionPath: "" }],
       previousSessionSummary: "",
-      recentRunLedgers: [],
       recentSystemActivity: [],
     }),
     setStaticTokenBudget: vi.fn(),
@@ -168,10 +166,6 @@ describe("agentLoop", () => {
       expect(result.status).toBe("completed");
       expect(result.totalIterations).toBe(0);
       expect(provider.generateTurn).toHaveBeenCalledTimes(1);
-      expect(sessionMemory.recordRunLedger as ReturnType<typeof vi.fn>).toHaveBeenCalledWith("c1", expect.objectContaining({
-        runId: "r1",
-        state: "started",
-      }));
     } finally {
       cleanup();
     }
@@ -187,7 +181,6 @@ describe("agentLoop", () => {
           { role: "user", content: "yes, send it", timestamp: "", sessionPath: "" },
         ],
         previousSessionSummary: "",
-        recentRunLedgers: [],
         recentSystemActivity: [],
       });
 
@@ -1081,14 +1074,12 @@ describe("agentLoop", () => {
         goal?: { objective?: string };
         taskProgress?: { status?: string };
         sessionHistory?: unknown;
-        recentRunLedgers?: unknown;
         recentTaskSummaries?: unknown;
       };
       expect(state.finalOutput).toBe("done");
       expect(state.goal?.objective).toBe("");
       expect(state.taskProgress?.status).toBe("not_done");
       expect(state).not.toHaveProperty("sessionHistory");
-      expect(state).not.toHaveProperty("recentRunLedgers");
       expect(state).not.toHaveProperty("recentTaskSummaries");
     } finally {
       cleanup();
@@ -1605,7 +1596,6 @@ describe("agentLoop", () => {
       (sessionMemory.getPromptMemoryContext as ReturnType<typeof vi.fn>).mockReturnValue({
         conversationTurns: [{ role: "user", content: "hello", timestamp: "", sessionPath: "" }],
         previousSessionSummary: "",
-        recentRunLedgers: [],
         recentTaskSummaries: [
           {
             timestamp: "2026-02-28T05:20:15Z",

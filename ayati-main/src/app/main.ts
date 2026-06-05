@@ -43,6 +43,8 @@ import { createAttachmentSkill } from "../skills/builtins/attachments/index.js";
 import { createDatasetSkill } from "../skills/builtins/datasets/index.js";
 import { createDocumentSkill } from "../skills/builtins/documents/index.js";
 import { createFilesSkill } from "../skills/builtins/files/index.js";
+import { createLearningSkill } from "../skills/builtins/learning/index.js";
+import { createUiSkill } from "../skills/builtins/ui/index.js";
 import { PulseScheduler, PulseStore } from "../pulse/index.js";
 import { pulseTool } from "../skills/builtins/pulse/index.js";
 import { createSkillBrokerSkill } from "../skills/builtins/skill-broker/index.js";
@@ -58,6 +60,8 @@ import { PreparedAttachmentService } from "../documents/prepared-attachment-serv
 import { SessionAttachmentService } from "../documents/session-attachment-service.js";
 import { DirectoryLibrary } from "../files/directory-library.js";
 import { FileLibrary } from "../files/file-library.js";
+import { CourseStore } from "../learning/course-store.js";
+import { LearningWorkspaceController } from "../ui/learning-workspace.js";
 import { loadSystemEventPolicy } from "../ivec/system-event-policy.js";
 
 const thisDir = dirname(fileURLToPath(import.meta.url));
@@ -78,6 +82,10 @@ function parsePositiveInt(rawValue: string | undefined, fallback: number): numbe
 
 function isEnvFalse(rawValue: string | undefined): boolean {
   return /^(?:0|false|no|off)$/i.test(rawValue ?? "");
+}
+
+function hostForLocalClient(host: string): string {
+  return host === "0.0.0.0" || host === "::" ? "127.0.0.1" : host;
 }
 
 export async function main(): Promise<void> {
@@ -274,6 +282,19 @@ export async function main(): Promise<void> {
   const datasetSkill = createDatasetSkill({ preparedAttachmentService });
   const documentSkill = createDocumentSkill({ preparedAttachmentService });
   const filesSkill = createFilesSkill({ fileLibrary, directoryLibrary });
+  const courseStore = new CourseStore({
+    dataDir: resolve(projectRoot, "data"),
+  });
+  const httpHost = process.env["AYATI_HTTP_HOST"]?.trim() || process.env["AYATI_UPLOAD_HOST"]?.trim() || "127.0.0.1";
+  const httpPort = parsePositiveInt(process.env["AYATI_HTTP_PORT"] ?? process.env["AYATI_UPLOAD_PORT"], DEFAULT_HTTP_PORT);
+  const learningWorkspace = new LearningWorkspaceController({
+    projectRoot,
+    dataDir: resolve(projectRoot, "data"),
+    httpBaseUrl: process.env["AYATI_LEARNING_API_BASE"]?.trim()
+      || `http://${hostForLocalClient(httpHost)}:${httpPort}`,
+  });
+  const learningSkill = createLearningSkill({ courseStore, learningWorkspace });
+  const uiSkill = createUiSkill({ learningWorkspace });
 
   const baseToolDefs = [
     ...enabledTools,
@@ -285,6 +306,8 @@ export async function main(): Promise<void> {
     ...datasetSkill.tools,
     ...documentSkill.tools,
     ...filesSkill.tools,
+    ...learningSkill.tools,
+    ...uiSkill.tools,
   ];
   toolExecutor = createToolExecutor(baseToolDefs);
 
@@ -323,19 +346,24 @@ export async function main(): Promise<void> {
   staticContext.skillBlocks.push({ id: datasetSkill.id, content: datasetSkill.promptBlock });
   staticContext.skillBlocks.push({ id: documentSkill.id, content: documentSkill.promptBlock });
   staticContext.skillBlocks.push({ id: filesSkill.id, content: filesSkill.promptBlock });
+  staticContext.skillBlocks.push({ id: learningSkill.id, content: learningSkill.promptBlock });
+  staticContext.skillBlocks.push({ id: uiSkill.id, content: uiSkill.promptBlock });
   staticContext.skillBlocks.push({ id: skillBrokerSkill.id, content: skillBrokerSkill.promptBlock });
 
   const uploadServer = new UploadServer({
     uploadsDir: documentStore.uploadsDir,
     runsDir: resolve(projectRoot, "data", "runs"),
-    host: process.env["AYATI_HTTP_HOST"]?.trim() || process.env["AYATI_UPLOAD_HOST"]?.trim() || "127.0.0.1",
-    port: parsePositiveInt(process.env["AYATI_HTTP_PORT"] ?? process.env["AYATI_UPLOAD_PORT"], DEFAULT_HTTP_PORT),
+    host: httpHost,
+    port: httpPort,
     maxUploadBytes: parsePositiveInt(process.env["AYATI_UPLOAD_MAX_BYTES"], DEFAULT_UPLOAD_MAX_BYTES),
     allowOrigin: process.env["AYATI_HTTP_ALLOW_ORIGIN"]?.trim() || process.env["AYATI_UPLOAD_ALLOW_ORIGIN"]?.trim() || "*",
     pulseTool,
     pulseClientId: CLIENT_ID,
     pulseApiToken: process.env["AYATI_HTTP_API_TOKEN"]?.trim() || undefined,
     fileLibrary,
+    courseStore,
+    learningWorkspace,
+    learningClientId: CLIENT_ID,
   });
   const telegramConfig = loadTelegramRuntimeConfig(process.env);
   const telegramServer = telegramConfig

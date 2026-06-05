@@ -1,8 +1,8 @@
 import {
   appendFileSync,
   mkdirSync,
-  writeFileSync,
   readFileSync,
+  writeFileSync,
   unlinkSync,
   readdirSync,
   existsSync,
@@ -10,12 +10,10 @@ import {
 import {
   appendFile as appendFileAsync,
   mkdir as mkdirAsync,
-  readFile as readFileAsync,
-  writeFile as writeFileAsync,
 } from "node:fs/promises";
 import { dirname, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { AgentStepEvent, CountableSessionEvent, SessionEvent, SessionOpenEvent, ToolSessionEvent } from "./session-events.js";
+import type { AgentStepEvent, CountableSessionEvent, SessionEvent, ToolSessionEvent } from "./session-events.js";
 import { serializeEvent, deserializeEvent, isCountableSessionEvent, isAgentStepEvent } from "./session-events.js";
 import { InMemorySession } from "./session.js";
 import type { ConversationTurn } from "./types.js";
@@ -24,24 +22,6 @@ import { SqliteMemoryIndex } from "./sqlite-memory-index.js";
 const thisDir = dirname(fileURLToPath(import.meta.url));
 const projectRoot = resolve(thisDir, "..", "..");
 const DEFAULT_DATA_DIR = resolve(projectRoot, "data", "memory");
-
-const META_MARKER = "AYATI_SESSION_META";
-const EVENT_MARKER = "AYATI_EVENT";
-const EVENTS_SECTION_MARKER = "## Events\n\n";
-
-interface SessionDocumentMetadata {
-  v: 1;
-  session_id: string;
-  client_id: string;
-  session_path: string;
-  status: "active" | "closed" | "crashed";
-  opened_at: string;
-  closed_at: string | null;
-  close_reason: string | null;
-  parent_session_id: string | null;
-  handoff_summary: string | null;
-  updated_at: string;
-}
 
 export interface ActiveSessionInfo {
   sessionId: string;
@@ -55,11 +35,6 @@ export interface SessionPersistenceOptions {
 
 function normalizePath(path: string): string {
   return path.replace(/\\/g, "/");
-}
-
-function escapeMetaValue(value: string | null): string {
-  if (value === null) return "null";
-  return value.replace(/\n/g, "\\n");
 }
 
 export class SessionPersistence {
@@ -86,7 +61,7 @@ export class SessionPersistence {
   }
 
   buildSessionPath(_nowIso: string, sessionId: string): string {
-    return `sessions/${sessionId}.md`;
+    return `sessions/${sessionId}.jsonl`;
   }
 
   resolveSessionAbsolutePath(sessionPath: string): string {
@@ -96,8 +71,7 @@ export class SessionPersistence {
   appendEvent(event: SessionEvent): void {
     const filePath = this.resolveSessionAbsolutePath(event.sessionPath);
     mkdirSync(dirname(filePath), { recursive: true });
-    this.ensureSessionDocument(filePath, event);
-    appendFileSync(filePath, this.renderEventEntry(event), "utf8");
+    appendFileSync(filePath, `${serializeEvent(event)}\n`, "utf8");
 
     if (event.type === "session_open") {
       this.metaIndex.openSession({
@@ -113,13 +87,6 @@ export class SessionPersistence {
 
     if (event.type === "session_close") {
       this.metaIndex.closeSession(event.sessionId, event.ts, event.reason, event.handoffSummary);
-      this.updateSessionMetadata(filePath, {
-        status: "closed",
-        closed_at: event.ts,
-        close_reason: event.reason,
-        handoff_summary: event.handoffSummary ?? null,
-        updated_at: event.ts,
-      });
       return;
     }
 
@@ -129,8 +96,7 @@ export class SessionPersistence {
   async appendEventAsync(event: SessionEvent): Promise<void> {
     const filePath = this.resolveSessionAbsolutePath(event.sessionPath);
     await mkdirAsync(dirname(filePath), { recursive: true });
-    await this.ensureSessionDocumentAsync(filePath, event);
-    await appendFileAsync(filePath, this.renderEventEntry(event), "utf8");
+    await appendFileAsync(filePath, `${serializeEvent(event)}\n`, "utf8");
 
     if (event.type === "session_open") {
       this.metaIndex.openSession({
@@ -146,13 +112,6 @@ export class SessionPersistence {
 
     if (event.type === "session_close") {
       this.metaIndex.closeSession(event.sessionId, event.ts, event.reason, event.handoffSummary);
-      await this.updateSessionMetadataAsync(filePath, {
-        status: "closed",
-        closed_at: event.ts,
-        close_reason: event.reason,
-        handoff_summary: event.handoffSummary ?? null,
-        updated_at: event.ts,
-      });
       return;
     }
 
@@ -164,7 +123,7 @@ export class SessionPersistence {
     if (existing) {
       return this.resolveSessionAbsolutePath(existing);
     }
-    return this.resolveSessionAbsolutePath(`sessions/legacy/${sessionId}.md`);
+    return this.resolveSessionAbsolutePath(`sessions/${sessionId}.jsonl`);
   }
 
   getSessionRelativePath(sessionId: string): string | null {
@@ -181,38 +140,7 @@ export class SessionPersistence {
       };
     }
 
-    const markerPath = resolve(this.sessionsDir, "active-session.json");
-    if (existsSync(markerPath)) {
-      try {
-        const raw = readFileSync(markerPath, "utf8");
-        const parsed = JSON.parse(raw) as ActiveSessionInfo;
-        if (
-          typeof parsed.sessionId === "string" && parsed.sessionId.trim().length > 0 &&
-          typeof parsed.sessionPath === "string" && parsed.sessionPath.trim().length > 0
-        ) {
-          return {
-            sessionId: parsed.sessionId.trim(),
-            sessionPath: normalizePath(parsed.sessionPath.trim()),
-          };
-        }
-      } catch {
-        return null;
-      }
-      return null;
-    }
-
-    // Backward compatibility with older marker format.
-    const legacyMarkerPath = resolve(this.sessionsDir, "active-session.txt");
-    if (!existsSync(legacyMarkerPath)) return null;
-
-    try {
-      const sessionId = readFileSync(legacyMarkerPath, "utf8").trim();
-      if (sessionId.length === 0) return null;
-      const sessionPath = this.findSessionRelativePathById(sessionId) ?? `sessions/legacy/${sessionId}.md`;
-      return { sessionId, sessionPath };
-    } catch {
-      return null;
-    }
+    return null;
   }
 
   writeActiveSessionMarker(sessionId: string, sessionPath: string): void {
@@ -242,13 +170,6 @@ export class SessionPersistence {
 
   markSessionCrashed(sessionId: string, ts: string, reason = "restore_failed"): void {
     this.metaIndex.markSessionCrashed(sessionId, ts, reason);
-    const filePath = this.getSessionFilePath(sessionId);
-    this.updateSessionMetadata(filePath, {
-      status: "crashed",
-      close_reason: reason,
-      closed_at: ts,
-      updated_at: ts,
-    });
   }
 
   resumeSession(
@@ -260,32 +181,6 @@ export class SessionPersistence {
   ): void {
     const normalizedSessionPath = normalizePath(sessionPath);
     this.metaIndex.resumeSession(sessionId, clientId, normalizedSessionPath, ts, options);
-    const filePath = this.resolveSessionAbsolutePath(normalizedSessionPath);
-    const patch: Partial<Pick<
-      SessionDocumentMetadata,
-      | "client_id"
-      | "session_path"
-      | "status"
-      | "closed_at"
-      | "close_reason"
-      | "updated_at"
-      | "parent_session_id"
-      | "handoff_summary"
-    >> = {
-      client_id: clientId,
-      session_path: normalizedSessionPath,
-      status: "active",
-      closed_at: null,
-      close_reason: null,
-      updated_at: ts,
-    };
-    if (options?.parentSessionId !== undefined) {
-      patch.parent_session_id = options.parentSessionId;
-    }
-    if (options?.handoffSummary !== undefined) {
-      patch.handoff_summary = options.handoffSummary;
-    }
-    this.updateSessionMetadata(filePath, patch);
   }
 
   listRecoveryCandidates(clientId: string, limit = 16): ActiveSessionInfo[] {
@@ -388,22 +283,18 @@ export class SessionPersistence {
 
     if (content.trim().length === 0) return null;
 
-    const events = this.parseEventsFromContent(content);
-    const metadata = this.parseSessionMetadata(content);
+    const events = this.parseJsonlEvents(content);
     const inferredPath = this.toRelativeSessionPath(filePath);
     let session: InMemorySession | null = null;
-    const metadataClientId = typeof metadata?.client_id === "string" && metadata.client_id.trim().length > 0
-      ? metadata.client_id.trim()
-      : null;
 
     for (const event of events) {
       if (event.type === "session_open") {
         session = new InMemorySession(
           event.sessionId,
-          metadataClientId ?? event.clientId,
+          event.clientId,
           event.ts,
           inferredPath,
-          event.parentSessionId ?? metadata?.parent_session_id ?? null,
+          event.parentSessionId ?? null,
         );
         if (event.handoffSummary) {
           session.handoffSummary = event.handoffSummary;
@@ -413,20 +304,6 @@ export class SessionPersistence {
 
       if (!session || event.type === "session_close") continue;
       session.addEntry(this.withInferredSessionPath(event, inferredPath));
-    }
-
-    if (!session && metadata) {
-      session = new InMemorySession(
-        metadata.session_id,
-        metadata.client_id,
-        metadata.opened_at,
-        inferredPath,
-        metadata.parent_session_id,
-      );
-    }
-
-    if (session && metadata?.handoff_summary && !session.handoffSummary) {
-      session.handoffSummary = metadata.handoff_summary;
     }
 
     return session;
@@ -443,7 +320,7 @@ export class SessionPersistence {
 
     const turns: ConversationTurn[] = [];
     const inferredPath = this.toRelativeSessionPath(filePath);
-    for (const event of this.parseEventsFromContent(content)) {
+    for (const event of this.parseJsonlEvents(content)) {
       if (event.type === "user_message") {
         turns.push({
           role: "user",
@@ -479,7 +356,7 @@ export class SessionPersistence {
 
     const events: CountableSessionEvent[] = [];
     const inferredPath = this.toRelativeSessionPath(filePath);
-    for (const event of this.parseEventsFromContent(content)) {
+    for (const event of this.parseJsonlEvents(content)) {
       if (isCountableSessionEvent(event)) {
         events.push(this.withInferredSessionPath(event, inferredPath));
       }
@@ -498,7 +375,7 @@ export class SessionPersistence {
 
     const events: ToolSessionEvent[] = [];
     const inferredPath = this.toRelativeSessionPath(filePath);
-    for (const event of this.parseEventsFromContent(content)) {
+    for (const event of this.parseJsonlEvents(content)) {
       if (event.type === "tool_call" || event.type === "tool_result") {
         events.push(this.withInferredSessionPath(event, inferredPath));
       }
@@ -517,7 +394,7 @@ export class SessionPersistence {
 
     const events: AgentStepEvent[] = [];
     const inferredPath = this.toRelativeSessionPath(filePath);
-    for (const event of this.parseEventsFromContent(content)) {
+    for (const event of this.parseJsonlEvents(content)) {
       if (isAgentStepEvent(event)) {
         events.push(this.withInferredSessionPath(event, inferredPath));
       }
@@ -538,12 +415,11 @@ export class SessionPersistence {
         continue;
       }
 
-      const metadata = this.parseSessionMetadata(content);
       const inferredPath = this.toRelativeSessionPath(filePath);
-      let matchesClient = metadata?.client_id === clientId;
+      let matchesClient = false;
 
-      for (const event of this.parseEventsFromContent(content)) {
-        if (event.type === "session_open" && !metadata) {
+      for (const event of this.parseJsonlEvents(content)) {
+        if (event.type === "session_open") {
           matchesClient = event.clientId === clientId;
           continue;
         }
@@ -577,208 +453,20 @@ export class SessionPersistence {
     return turns;
   }
 
-  private ensureSessionDocument(filePath: string, event: SessionEvent): void {
-    if (existsSync(filePath)) return;
-
-    const meta = this.defaultMetadataFromEvent(event);
-    writeFileSync(filePath, this.renderSessionDocument(meta, ""), "utf8");
-  }
-
-  private async ensureSessionDocumentAsync(filePath: string, event: SessionEvent): Promise<void> {
-    if (existsSync(filePath)) return;
-
-    const meta = this.defaultMetadataFromEvent(event);
-    await writeFileAsync(filePath, this.renderSessionDocument(meta, ""), "utf8");
-  }
-
-  private defaultMetadataFromEvent(event: SessionEvent): SessionDocumentMetadata {
-    if (event.type === "session_open") {
-      const open = event as SessionOpenEvent;
-      return {
-        v: 1,
-        session_id: open.sessionId,
-        client_id: open.clientId,
-        session_path: open.sessionPath,
-        status: "active",
-        opened_at: open.ts,
-        closed_at: null,
-        close_reason: null,
-        parent_session_id: open.parentSessionId ?? null,
-        handoff_summary: open.handoffSummary ?? null,
-        updated_at: open.ts,
-      };
-    }
-
-    return {
-      v: 1,
-      session_id: event.sessionId,
-      client_id: "unknown",
-      session_path: event.sessionPath,
-      status: "active",
-      opened_at: event.ts,
-      closed_at: null,
-      close_reason: null,
-      parent_session_id: null,
-      handoff_summary: null,
-      updated_at: event.ts,
-    };
-  }
-
-  private renderSessionDocument(metadata: SessionDocumentMetadata, eventsBody: string): string {
-    const body = eventsBody.trim().length > 0
-      ? `${eventsBody.trimEnd()}\n`
-      : "";
-    return [
-      "# Ayati Session",
-      "",
-      `<!-- ${META_MARKER} ${JSON.stringify(metadata)} -->`,
-      "",
-      "## Metadata",
-      `- session_id: ${metadata.session_id}`,
-      `- client_id: ${metadata.client_id}`,
-      `- session_path: ${metadata.session_path}`,
-      `- status: ${metadata.status}`,
-      `- opened_at: ${metadata.opened_at}`,
-      `- closed_at: ${escapeMetaValue(metadata.closed_at)}`,
-      `- close_reason: ${escapeMetaValue(metadata.close_reason)}`,
-      `- parent_session_id: ${escapeMetaValue(metadata.parent_session_id)}`,
-      `- handoff_summary: ${escapeMetaValue(metadata.handoff_summary)}`,
-      `- updated_at: ${metadata.updated_at}`,
-      "",
-      "## Events",
-      "",
-      body,
-    ].join("\n");
-  }
-
-  private renderEventEntry(event: SessionEvent): string {
-    const pretty = JSON.stringify(event, null, 2);
-    const compact = serializeEvent(event);
-    return [
-      `### ${event.ts} | ${event.type}`,
-      "",
-      "```json",
-      pretty,
-      "```",
-      "",
-      `<!-- ${EVENT_MARKER} ${compact} -->`,
-      "",
-    ].join("\n");
-  }
-
-  private updateSessionMetadata(
-    filePath: string,
-    patch: Partial<Pick<
-      SessionDocumentMetadata,
-      | "client_id"
-      | "session_path"
-      | "status"
-      | "closed_at"
-      | "close_reason"
-      | "handoff_summary"
-      | "updated_at"
-      | "parent_session_id"
-    >>,
-  ): void {
-    if (!existsSync(filePath)) return;
-
-    let content = "";
-    try {
-      content = readFileSync(filePath, "utf8");
-    } catch {
-      return;
-    }
-
-    const metadata = this.parseSessionMetadata(content);
-    if (!metadata) return;
-
-    const merged: SessionDocumentMetadata = {
-      ...metadata,
-      ...patch,
-    };
-    const eventsBody = this.extractEventsBody(content);
-    writeFileSync(filePath, this.renderSessionDocument(merged, eventsBody), "utf8");
-  }
-
-  private async updateSessionMetadataAsync(
-    filePath: string,
-    patch: Partial<Pick<
-      SessionDocumentMetadata,
-      | "client_id"
-      | "session_path"
-      | "status"
-      | "closed_at"
-      | "close_reason"
-      | "handoff_summary"
-      | "updated_at"
-      | "parent_session_id"
-    >>,
-  ): Promise<void> {
-    if (!existsSync(filePath)) return;
-
-    let content = "";
-    try {
-      content = await readFileAsync(filePath, "utf8");
-    } catch {
-      return;
-    }
-
-    const metadata = this.parseSessionMetadata(content);
-    if (!metadata) return;
-
-    const merged: SessionDocumentMetadata = {
-      ...metadata,
-      ...patch,
-    };
-    const eventsBody = this.extractEventsBody(content);
-    await writeFileAsync(filePath, this.renderSessionDocument(merged, eventsBody), "utf8");
-  }
-
-  private parseSessionMetadata(content: string): SessionDocumentMetadata | null {
-    const pattern = new RegExp(`<!--\\s*${META_MARKER}\\s+(.+?)\\s*-->`);
-    const match = content.match(pattern);
-    if (!match || !match[1]) return null;
-
-    try {
-      const parsed = JSON.parse(match[1]) as SessionDocumentMetadata;
-      if (parsed && parsed.v === 1 && typeof parsed.session_id === "string") {
-        return parsed;
-      }
-      return null;
-    } catch {
-      return null;
-    }
-  }
-
-  private extractEventsBody(content: string): string {
-    const idx = content.indexOf(EVENTS_SECTION_MARKER);
-    if (idx < 0) return "";
-    return content.slice(idx + EVENTS_SECTION_MARKER.length).trim();
-  }
-
-  private parseEventsFromContent(content: string): SessionEvent[] {
+  private parseJsonlEvents(content: string): SessionEvent[] {
     const events: SessionEvent[] = [];
-    const markerPattern = new RegExp(`<!--\\s*${EVENT_MARKER}\\s+(.+?)\\s*-->`, "g");
-    let match: RegExpExecArray | null = null;
-    while ((match = markerPattern.exec(content)) !== null) {
-      const payload = match[1];
-      if (!payload) continue;
-      try {
-        events.push(deserializeEvent(payload));
-      } catch {
-        // ignore malformed marker
-      }
-    }
-    if (events.length > 0) return events;
 
-    // Legacy fallback: parse JSONL lines.
     for (const line of content.split("\n")) {
       const trimmed = line.trim();
       if (trimmed.length === 0) continue;
       try {
-        events.push(deserializeEvent(trimmed));
+        const event = deserializeEvent(trimmed);
+        if (isRemovedLegacyEvent(event)) {
+          continue;
+        }
+        events.push(event);
       } catch {
-        // ignore malformed line
+        // Ignore malformed lines so a partial final append does not hide older events.
       }
     }
 
@@ -787,11 +475,10 @@ export class SessionPersistence {
 
   private findSessionRelativePathById(sessionId: string): string | null {
     const files = this.listSessionFiles(this.sessionsDir);
-    const mdSuffix = `/${sessionId}.md`;
     const jsonlSuffix = `/${sessionId}.jsonl`;
     for (const filePath of files) {
       const normalized = normalizePath(filePath);
-      if (normalized.endsWith(mdSuffix) || normalized.endsWith(jsonlSuffix)) {
+      if (normalized.endsWith(jsonlSuffix)) {
         return this.toRelativeSessionPath(filePath);
       }
     }
@@ -808,7 +495,7 @@ export class SessionPersistence {
       const fullPath = resolve(dir, entry.name);
       if (entry.isDirectory()) {
         files.push(...this.listSessionFiles(fullPath));
-      } else if (entry.isFile() && (entry.name.endsWith(".md") || entry.name.endsWith(".jsonl"))) {
+      } else if (entry.isFile() && entry.name.endsWith(".jsonl")) {
         files.push(fullPath);
       }
     }
@@ -829,4 +516,9 @@ export class SessionPersistence {
     };
   }
 
+}
+
+function isRemovedLegacyEvent(event: SessionEvent): boolean {
+  const type = (event as { type?: string }).type;
+  return type === "run_ledger" || type === "feedback_opened" || type === "feedback_resolved";
 }

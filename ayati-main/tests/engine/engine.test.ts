@@ -43,7 +43,6 @@ function createSessionMemory(): SessionMemory {
     recordAssistantFinal: vi.fn(),
     recordRunFailure: vi.fn(),
     recordAgentStep: vi.fn(),
-    recordRunLedger: vi.fn(),
     recordTaskSummary: vi.fn(),
     queueTaskSummary: vi.fn(),
     recordSystemEventOutcome: vi.fn(),
@@ -174,10 +173,6 @@ describe("IVecEngine", () => {
           content: "mock reply",
         });
       });
-      expect(sessionMemory.recordRunLedger as ReturnType<typeof vi.fn>).toHaveBeenCalledWith(
-        "c1",
-        expect.objectContaining({ state: "completed", status: "completed" }),
-      );
       expect(sessionMemory.queueTaskSummary as ReturnType<typeof vi.fn>).not.toHaveBeenCalled();
     } finally {
       rmSync(dataDir, { recursive: true, force: true });
@@ -551,6 +546,7 @@ describe("IVecEngine", () => {
       expect(onReply).toHaveBeenCalledWith("c1", {
         type: "notification",
         content: "mock reply",
+        final: true,
       });
       expect(sessionMemory.recordAssistantFinal as ReturnType<typeof vi.fn>).toHaveBeenCalledWith(
         "c1",
@@ -626,6 +622,7 @@ describe("IVecEngine", () => {
       expect(onReply).toHaveBeenCalledWith("c1", {
         type: "notification",
         content: "mock reply",
+        final: true,
       });
       expect(sessionMemory.recordAssistantFinal as ReturnType<typeof vi.fn>).toHaveBeenCalledWith(
         "c1",
@@ -735,7 +732,6 @@ describe("IVecEngine", () => {
         recordAssistantFinal: vi.fn(),
         recordRunFailure: vi.fn(),
         recordAgentStep: vi.fn(),
-        recordRunLedger: vi.fn(),
         recordTaskSummary: vi.fn(),
         recordAssistantNotification: vi.fn(),
         getPromptMemoryContext: vi.fn().mockReturnValue({

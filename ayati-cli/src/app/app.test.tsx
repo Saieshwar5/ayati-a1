@@ -31,6 +31,10 @@ vi.mock("./hooks/use-websocket.js", () => ({
   },
 }));
 
+vi.mock("./ui-context.js", () => ({
+  detectAgentCliUiContext: vi.fn().mockResolvedValue(null),
+}));
+
 import { App } from "./app.js";
 
 type RenderedApp = ReturnType<typeof render>;
@@ -102,6 +106,37 @@ describe("App", () => {
 
     await act(async () => {
       unmount();
+    });
+  });
+
+  it("accepts new input after a final backend notification", async () => {
+    const app = await renderApp();
+
+    await writeInput(app, "first message");
+    await vi.waitFor(() => {
+      expect(websocketState.send).toHaveBeenCalledTimes(1);
+    });
+
+    await act(async () => {
+      deliver({
+        type: "notification",
+        content: "Background task complete.",
+        final: true,
+      });
+    });
+
+    await writeInput(app, "second message");
+
+    await vi.waitFor(() => {
+      expect(websocketState.send).toHaveBeenCalledTimes(2);
+      expect(websocketState.send).toHaveBeenLastCalledWith({
+        type: "chat",
+        content: "second message",
+      });
+    });
+
+    await act(async () => {
+      app.unmount();
     });
   });
 

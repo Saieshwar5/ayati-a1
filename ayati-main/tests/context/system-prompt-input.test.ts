@@ -23,16 +23,6 @@ describe("assemblePromptInput", () => {
       conversationTurns: [{ role: "user", content: "hi", timestamp: "t1", sessionPath: "s/p" }],
       previousSessionSummary: "summary",
       activeSessionPath: "sessions/s1.md",
-      recentRunLedgers: [
-        {
-          timestamp: "t2",
-          runId: "r1",
-          runPath: "data/runs/r1",
-          state: "completed",
-          status: "completed",
-          summary: "done",
-        },
-      ],
       recentTaskSummaries: [
         {
           timestamp: "t2",
@@ -69,7 +59,6 @@ describe("assemblePromptInput", () => {
     expect(result.conversationTurns).toHaveLength(1);
     expect(result.previousSessionSummary).toBe("summary");
     expect(result.activeSessionPath).toBe("sessions/s1.md");
-    expect(result.recentRunLedgers).toHaveLength(1);
     expect(result.recentTaskSummaries).toHaveLength(1);
     expect(result.recentSystemActivity).toHaveLength(1);
     expect(result.skillBlocks).toEqual([{ id: "skill-a", content: "Use A" }]);
@@ -93,7 +82,6 @@ describe("assemblePromptInput", () => {
       conversationTurns: [],
       previousSessionSummary: "",
       activeSessionPath: "",
-      recentRunLedgers: [],
       recentTaskSummaries: [],
       recentSystemActivity: [],
     };
@@ -102,7 +90,6 @@ describe("assemblePromptInput", () => {
 
     expect(result.conversationTurns).toEqual([]);
     expect(result.previousSessionSummary).toBe("");
-    expect(result.recentRunLedgers).toEqual([]);
     expect(result.recentTaskSummaries).toEqual([]);
     expect(result.recentSystemActivity).toEqual([]);
   });

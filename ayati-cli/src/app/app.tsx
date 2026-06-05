@@ -19,6 +19,7 @@ import {
   resolvePathMentions,
   stripPathMentions,
 } from "./path-mentions.js";
+import { detectAgentCliUiContext } from "./ui-context.js";
 import type { ChatAttachment, ChatMessage, ServerMessage } from "./types.js";
 
 const HEADER_HEIGHT = 3;
@@ -78,7 +79,7 @@ export function App(): React.JSX.Element {
   }, []);
 
   const onMessage = useCallback((data: unknown) => {
-    const msg = data as ServerMessage | { type?: string; content?: string };
+    const msg = data as ServerMessage | { type?: string; content?: string; final?: boolean };
     if (msg.type === "reply" && typeof msg.content === "string") {
       const reply = createMessage("assistant", msg.content, "reply");
       setMessages((prev) => [...prev, reply]);
@@ -96,6 +97,9 @@ export function App(): React.JSX.Element {
     if (msg.type === "notification" && typeof msg.content === "string") {
       const notification = createMessage("assistant", msg.content, "notification");
       setMessages((prev) => [...prev, notification]);
+      if (msg.final === true) {
+        setIsLoading(false);
+      }
       return;
     }
 
@@ -175,11 +179,15 @@ export function App(): React.JSX.Element {
     setMessages((prev) => [...prev, userMessage]);
 
     setIsLoading(true);
-    send({
-      type: "chat",
-      content: trimmedServerContent,
-      ...(attachments.length > 0 ? { attachments } : {}),
-    });
+    void (async () => {
+      const uiContext = await detectAgentCliUiContext();
+      send({
+        type: "chat",
+        content: trimmedServerContent,
+        ...(attachments.length > 0 ? { attachments } : {}),
+        ...(uiContext ? { uiContext } : {}),
+      });
+    })();
 
     rememberAttachmentRoots(displayAttachments);
   }, [rememberAttachmentRoots, send]);

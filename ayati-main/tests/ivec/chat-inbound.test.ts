@@ -110,4 +110,42 @@ describe("parseChatInboundMessage", () => {
       content: "Hello",
     });
   });
+
+  it("accepts agent CLI UI context for render placement", () => {
+    const parsed = parseChatInboundMessage({
+      type: "chat",
+      content: "Open the lesson",
+      uiContext: {
+        source: "agent-cli",
+        processPid: 222,
+        terminalPid: 111,
+        processTreePids: [222, 200, 111],
+        windowAddress: "0xabc",
+        windowClass: "Alacritty",
+        windowTitle: "ayati-a1",
+        workspaceId: 3,
+        workspaceName: "3",
+        monitor: "eDP-1",
+        detectedAt: "2026-06-04T10:00:00.000Z",
+      },
+    });
+
+    expect(parsed).toEqual({
+      type: "chat",
+      content: "Open the lesson",
+      uiContext: {
+        source: "agent-cli",
+        processPid: 222,
+        terminalPid: 111,
+        processTreePids: [222, 200, 111],
+        windowAddress: "0xabc",
+        windowClass: "Alacritty",
+        windowTitle: "ayati-a1",
+        workspaceId: 3,
+        workspaceName: "3",
+        monitor: "eDP-1",
+        detectedAt: "2026-06-04T10:00:00.000Z",
+      },
+    });
+  });
 });

@@ -7,8 +7,6 @@ import type {
 } from "./types.js";
 import type { ManagedDocumentManifest, PreparedAttachmentSummary } from "../documents/types.js";
 
-type LegacyFeedbackResolutionOutcome = "completed" | "rejected" | "expired";
-
 export type SessionEventType =
   | "session_open"
   | "session_close"
@@ -19,13 +17,10 @@ export type SessionEventType =
   | "tool_result"
   | "run_failure"
   | "agent_step"
-  | "run_ledger"
   | "active_attachments"
   | "task_summary"
   | "assistant_feedback"
   | "assistant_notification"
-  | "feedback_opened"
-  | "feedback_resolved"
   | "system_event_received"
   | "system_event_processed";
 
@@ -108,15 +103,6 @@ export interface AgentStepEvent extends BaseEvent {
   endStatus?: string;
 }
 
-export interface RunLedgerEvent extends BaseEvent {
-  type: "run_ledger";
-  runId: string;
-  runPath: string;
-  state: "started" | "completed";
-  status?: "completed" | "failed" | "stuck";
-  summary?: string;
-}
-
 export interface ActiveAttachmentsEvent extends BaseEvent {
   type: "active_attachments";
   runId: string;
@@ -176,28 +162,6 @@ export interface AssistantNotificationEvent extends BaseEvent {
   eventId?: string;
 }
 
-export interface FeedbackOpenedEvent extends BaseEvent {
-  type: "feedback_opened";
-  runId: string;
-  feedbackId: string;
-  kind: FeedbackKind;
-  shortLabel: string;
-  message: string;
-  actionType?: string;
-  sourceEventId?: string;
-  entityHints: string[];
-  payloadSummary?: string;
-  expiresAt: string;
-}
-
-export interface FeedbackResolvedEvent extends BaseEvent {
-  type: "feedback_resolved";
-  runId: string;
-  feedbackId: string;
-  resolution: LegacyFeedbackResolutionOutcome;
-  userResponse?: string;
-}
-
 export interface SystemEventReceivedEvent extends BaseEvent {
   type: "system_event_received";
   runId: string;
@@ -234,13 +198,10 @@ export type SessionEvent =
   | ToolResultEvent
   | RunFailureEvent
   | AgentStepEvent
-  | RunLedgerEvent
   | ActiveAttachmentsEvent
   | TaskSummaryEvent
   | AssistantFeedbackEvent
   | AssistantNotificationEvent
-  | FeedbackOpenedEvent
-  | FeedbackResolvedEvent
   | SystemEventReceivedEvent
   | SystemEventProcessedEvent;
 
@@ -285,7 +246,7 @@ export function deserializeEvent(line: string): SessionEvent {
   if (parsed.v === 1) {
     const fallbackPath = parsed.sessionPath && parsed.sessionPath.length > 0
       ? parsed.sessionPath
-      : `sessions/legacy/${parsed.sessionId}.md`;
+      : `sessions/${parsed.sessionId}.jsonl`;
     return {
       ...(parsed as Record<string, unknown>),
       v: 2,

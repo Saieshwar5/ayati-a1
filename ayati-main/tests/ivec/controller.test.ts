@@ -67,7 +67,6 @@ function createState(overrides?: Partial<LoopState>): LoopState {
     runPath: "/tmp/test",
     failedApproaches: [],
     sessionHistory: [],
-    recentRunLedgers: [],
     recentTaskSummaries: [],
     recentSystemActivity: [],
     ...overrides,
@@ -1913,9 +1912,6 @@ describe("callReEval", () => {
       sessionContextSummary: "Relevant carry-over: the blocked paths came from an earlier filesystem sweep, but the user still wants the same config search.",
       sessionHistory: [
         { role: "user", content: "earlier question", timestamp: "2026-02-28T05:00:00Z", sessionPath: "/s/1" },
-      ],
-      recentRunLedgers: [
-        { timestamp: "2026-02-28T05:00:10Z", runId: "prev1", runPath: "/runs/prev1", state: "completed", status: "completed", summary: "Answered earlier question" },
       ],
     });
 

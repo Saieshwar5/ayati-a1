@@ -77,7 +77,6 @@ describe("state-persistence", () => {
         runPath,
         failedApproaches: [],
         sessionHistory: [],
-        recentRunLedgers: [],
         recentTaskSummaries: [],
         recentSystemActivity: [],
       };
@@ -138,7 +137,6 @@ describe("state-persistence", () => {
         runPath,
         failedApproaches: [],
         sessionHistory: [{ role: "user", content: "hello", timestamp: "", sessionPath: "" }],
-        recentRunLedgers: [{ timestamp: "2026-03-07T00:00:00.000Z", runId: "r-1", runPath: "/tmp/r-1", state: "completed" }],
         recentTaskSummaries: [{ runId: "r-1", runPath: "/tmp/r-1", status: "completed", summary: "done" }],
         activeSessionAttachments: [],
         recentSystemActivity: [],

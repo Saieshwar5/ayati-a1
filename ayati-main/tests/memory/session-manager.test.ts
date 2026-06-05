@@ -253,7 +253,7 @@ describe("MemoryManager", () => {
     await restored.shutdown();
   });
 
-  it("exposes last 5 unique run ledgers and active session path in prompt context", async () => {
+  it("exposes last 5 task summaries and active session path in prompt context", async () => {
     const root = mkdtempSync(resolve(tmpdir(), "ayati-memory-test-"));
     dirs.push(root);
     const memory = new MemoryManager({
@@ -265,20 +265,6 @@ describe("MemoryManager", () => {
 
     for (let i = 0; i < 6; i++) {
       const run = memory.beginRun("local", `task-${i}`);
-      memory.recordRunLedger?.("local", {
-        runId: run.runId,
-        sessionId: run.sessionId,
-        runPath: `data/runs/run-${i}`,
-        state: "started",
-      });
-      memory.recordRunLedger?.("local", {
-        runId: run.runId,
-        sessionId: run.sessionId,
-        runPath: `data/runs/run-${i}`,
-        state: "completed",
-        status: "completed",
-        summary: `done-${i}`,
-      });
       memory.recordTaskSummary?.("local", {
         runId: run.runId,
         sessionId: run.sessionId,
@@ -298,13 +284,11 @@ describe("MemoryManager", () => {
     }
 
     const context = memory.getPromptMemoryContext();
-    expect(context.activeSessionPath).toMatch(/^sessions\/.+\.md$/);
-    expect(context.recentRunLedgers).toHaveLength(5);
+    expect(context.activeSessionPath).toMatch(/^sessions\/.+\.jsonl$/);
     expect(context.recentTaskSummaries).toHaveLength(5);
 
-    const runIds = (context.recentRunLedgers ?? []).map((item) => item.runId);
+    const runIds = (context.recentTaskSummaries ?? []).map((item) => item.runId);
     expect(new Set(runIds).size).toBe(5);
-    expect((context.recentRunLedgers ?? []).every((item) => item.state === "completed")).toBe(true);
     expect((context.recentTaskSummaries ?? []).map((item) => item.objective)).toEqual([
       "task-5",
       "task-4",
@@ -316,7 +300,7 @@ describe("MemoryManager", () => {
     await memory.shutdown();
   });
 
-  it("restores recent unique run ledgers after restart", async () => {
+  it("restores recent task summaries after restart", async () => {
     const root = mkdtempSync(resolve(tmpdir(), "ayati-memory-test-"));
     dirs.push(root);
     const memory = new MemoryManager({
@@ -328,20 +312,6 @@ describe("MemoryManager", () => {
 
     for (let i = 0; i < 3; i++) {
       const run = memory.beginRun("local", `restart-${i}`);
-      memory.recordRunLedger?.("local", {
-        runId: run.runId,
-        sessionId: run.sessionId,
-        runPath: `data/runs/restart-${i}`,
-        state: "started",
-      });
-      memory.recordRunLedger?.("local", {
-        runId: run.runId,
-        sessionId: run.sessionId,
-        runPath: `data/runs/restart-${i}`,
-        state: "completed",
-        status: "completed",
-        summary: `restart-done-${i}`,
-      });
       memory.recordTaskSummary?.("local", {
         runId: run.runId,
         sessionId: run.sessionId,
@@ -370,9 +340,9 @@ describe("MemoryManager", () => {
     memoryAfterRestart.initialize("local");
 
     const context = memoryAfterRestart.getPromptMemoryContext();
-    expect(context.activeSessionPath).toMatch(/^sessions\/.+\.md$/);
-    expect(context.recentRunLedgers).toHaveLength(3);
-    expect(new Set((context.recentRunLedgers ?? []).map((item) => item.runId)).size).toBe(3);
+    expect(context.activeSessionPath).toMatch(/^sessions\/.+\.jsonl$/);
+    expect(context.recentTaskSummaries).toHaveLength(3);
+    expect(new Set((context.recentTaskSummaries ?? []).map((item) => item.runId)).size).toBe(3);
     expect((context.recentTaskSummaries ?? []).map((item) => item.objective)).toEqual([
       "restart-2",
       "restart-1",
@@ -483,35 +453,16 @@ describe("MemoryManager", () => {
     await memory.shutdown();
   });
 
-  it("replays legacy feedback events without restoring open feedback state", async () => {
+  it("replays assistant_feedback and ignores removed feedback lifecycle events", async () => {
     const root = mkdtempSync(resolve(tmpdir(), "ayati-memory-test-"));
     dirs.push(root);
-    const sessionId = "legacy-feedback";
-    const sessionPath = `sessions/${sessionId}.md`;
+    const sessionId = "feedback-session";
+    const sessionPath = `sessions/${sessionId}.jsonl`;
     const sessionFile = resolve(root, sessionPath);
     const openedAt = "2026-02-16T00:00:00.000Z";
     const updatedAt = "2026-02-16T00:00:10.000Z";
 
     mkdirSync(resolve(root, "sessions"), { recursive: true });
-    writeFileSync(
-      resolve(root, "sessions", "active-session.json"),
-      JSON.stringify({ sessionId, sessionPath }),
-      "utf8",
-    );
-
-    const metadata = {
-      v: 1,
-      session_id: sessionId,
-      client_id: "local",
-      session_path: sessionPath,
-      status: "active",
-      opened_at: openedAt,
-      closed_at: null,
-      close_reason: null,
-      parent_session_id: null,
-      handoff_summary: null,
-      updated_at: updatedAt,
-    };
     const events = [
       {
         v: 2,
@@ -554,20 +505,40 @@ describe("MemoryManager", () => {
         expiresAt: "2026-02-17T00:00:03.000Z",
       },
     ];
-    writeFileSync(
-      sessionFile,
-      [
-        "# Ayati Session",
-        "",
-        `<!-- AYATI_SESSION_META ${JSON.stringify(metadata)} -->`,
-        "",
-        "## Events",
-        "",
-        ...events.map((event) => `<!-- AYATI_EVENT ${JSON.stringify(event)} -->`),
-        "",
-      ].join("\n"),
-      "utf8",
-    );
+    writeFileSync(sessionFile, `${events.map((event) => JSON.stringify(event)).join("\n")}\n`, "utf8");
+
+    const db = new DatabaseSync(resolve(root, "memory.sqlite"));
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS sessions_meta (
+        session_id TEXT PRIMARY KEY,
+        client_id TEXT NOT NULL,
+        status TEXT NOT NULL CHECK (status IN ('active', 'closed', 'crashed')),
+        session_path TEXT NOT NULL,
+        opened_at TEXT NOT NULL,
+        closed_at TEXT,
+        close_reason TEXT,
+        parent_session_id TEXT,
+        handoff_summary TEXT,
+        last_event_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+    `);
+    db.prepare(`
+      INSERT INTO sessions_meta (
+        session_id,
+        client_id,
+        status,
+        session_path,
+        opened_at,
+        closed_at,
+        close_reason,
+        parent_session_id,
+        handoff_summary,
+        last_event_at,
+        updated_at
+      ) VALUES (?, 'local', 'active', ?, ?, NULL, NULL, NULL, NULL, ?, ?)
+    `).run(sessionId, sessionPath, openedAt, updatedAt, updatedAt);
+    db.close();
 
     const memory = new MemoryManager({
       dataDir: root,

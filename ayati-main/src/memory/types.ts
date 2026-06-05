@@ -67,15 +67,6 @@ export interface SessionStatus {
   pendingRotationReason: SessionRotationReason | null;
 }
 
-export interface PromptRunLedger {
-  timestamp: string;
-  runId: string;
-  runPath: string;
-  state: "started" | "completed";
-  status?: "completed" | "failed" | "stuck";
-  summary?: string;
-}
-
 export type TaskSummaryTaskStatus = "not_done" | "likely_done" | "done" | "blocked" | "needs_user_input";
 export type TaskSummaryStopReason = "completed" | "needs_user_input" | "blocked" | "failed" | "stuck";
 
@@ -143,7 +134,6 @@ export interface SessionHandoffSnapshot {
   pendingWork: string[];
   keyFacts: string[];
   activeAttachments: ActiveAttachmentRef[];
-  recentRuns: PromptRunLedger[];
   recentTasks: PromptTaskSummary[];
   recentDialog: ConversationTurn[];
   nextAction: string;
@@ -163,7 +153,6 @@ export interface PromptMemoryContext {
   personalMemories?: PromptPersonalMemory[];
   activeTopicLabel?: string;
   activeSessionPath?: string;
-  recentRunLedgers?: PromptRunLedger[];
   recentTaskSummaries?: PromptTaskSummary[];
   activeAttachments?: ActiveAttachmentRef[];
   recentSystemActivity?: SystemActivityItem[];
@@ -241,17 +230,6 @@ export interface AgentStepRecordInput {
   summary: string;
   actionToolName?: string;
   endStatus?: string;
-}
-
-export type RunLedgerState = "started" | "completed";
-
-export interface RunLedgerRecordInput {
-  runId: string;
-  sessionId: string;
-  runPath: string;
-  state: RunLedgerState;
-  status?: "completed" | "failed" | "stuck";
-  summary?: string;
 }
 
 export interface ActiveAttachmentsRecordInput {
@@ -363,7 +341,6 @@ export interface SessionMemory {
   ): void;
   recordRunFailure(clientId: string, runId: string, sessionId: string, message: string): void;
   recordAgentStep(clientId: string, input: AgentStepRecordInput): void;
-  recordRunLedger?(clientId: string, input: RunLedgerRecordInput): void;
   recordActiveAttachments?(clientId: string, input: ActiveAttachmentsRecordInput): void;
   recordTaskSummary?(clientId: string, input: TaskSummaryRecordInput): void;
   queueTaskSummary?(clientId: string, input: TaskSummaryRecordInput): void | Promise<void>;

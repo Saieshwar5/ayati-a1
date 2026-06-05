@@ -14,7 +14,7 @@ function listSessionFiles(dir: string): string[] {
     const full = resolve(dir, entry.name);
     if (entry.isDirectory()) {
       files.push(...listSessionFiles(full));
-    } else if (entry.isFile() && entry.name.endsWith(".md")) {
+    } else if (entry.isFile() && entry.name.endsWith(".jsonl")) {
       files.push(full);
     }
   }
@@ -23,14 +23,14 @@ function listSessionFiles(dir: string): string[] {
 
 function findSessionFile(baseDir: string, sessionId: string): string {
   const files = listSessionFiles(join(baseDir, "sessions"));
-  const match = files.find((file) => file.endsWith(`${sessionId}.md`));
+  const match = files.find((file) => file.endsWith(`${sessionId}.jsonl`));
   if (!match) {
     throw new Error(`Session file not found for ${sessionId}`);
   }
   return match;
 }
 
-describe("MemoryManager markdown persistence", () => {
+describe("MemoryManager JSONL persistence", () => {
   it("stores compact run memory and returns prompt context", async () => {
     const now = new Date("2026-02-08T00:00:00.000Z");
     const baseDir = mkdtempSync(join(tmpdir(), "ayati-memory-"));
@@ -100,7 +100,7 @@ describe("MemoryManager markdown persistence", () => {
     await manager.flushPersistence?.();
     const sessionFile = findSessionFile(baseDir, run.sessionId);
     const normalized = sessionFile.replace(/\\/g, "/");
-    expect(normalized).toMatch(/\/sessions\/[^/]+\.md$/);
+    expect(normalized).toMatch(/\/sessions\/[^/]+\.jsonl$/);
 
     await manager.shutdown();
   });
@@ -126,7 +126,7 @@ describe("MemoryManager markdown persistence", () => {
       sessionPath: string;
     };
     expect(marker.sessionId).toBe(run.sessionId);
-    expect(marker.sessionPath).toMatch(/^sessions\/[^/]+\.md$/);
+    expect(marker.sessionPath).toMatch(/^sessions\/[^/]+\.jsonl$/);
 
     await manager.shutdown();
     expect(existsSync(markerPath)).toBe(true);
@@ -192,14 +192,14 @@ describe("MemoryManager markdown persistence", () => {
       };
 
     expect(row.status).toBe("active");
-    expect(row.session_path).toMatch(/^sessions\/[^/]+\.md$/);
+    expect(row.session_path).toMatch(/^sessions\/[^/]+\.jsonl$/);
     expect(row.parent_session_id).toBeNull();
     expect(row.handoff_summary).toBeNull();
 
     db.close();
   });
 
-  it("restores active session via marker after restart", async () => {
+  it("restores active session via sqlite after restart", async () => {
     let now = new Date("2026-02-08T08:00:00.000Z");
     const baseDir = mkdtempSync(join(tmpdir(), "ayati-memory-"));
 
@@ -233,24 +233,23 @@ describe("MemoryManager markdown persistence", () => {
     await manager2.shutdown();
   });
 
-  it("migrates legacy active .jsonl session to .md on restore", async () => {
+  it("restores active JSONL session from sqlite metadata", async () => {
     const now = new Date("2026-02-16T13:50:00.000Z");
     const baseDir = mkdtempSync(join(tmpdir(), "ayati-memory-"));
     const dbPath = join(baseDir, "memory.sqlite");
     const sessionId = "legacy-active-session";
-    const legacyPath = `sessions/2026/02/16/${sessionId}.jsonl`;
-    const markdownPath = `sessions/2026/02/16/${sessionId}.md`;
-    const legacyAbsolutePath = join(baseDir, legacyPath);
+    const sessionPath = `sessions/2026/02/16/${sessionId}.jsonl`;
+    const sessionAbsolutePath = join(baseDir, sessionPath);
     const markerPath = join(baseDir, "sessions", "active-session.json");
 
     mkdirSync(join(baseDir, "sessions", "2026", "02", "16"), { recursive: true });
-    writeFileSync(legacyAbsolutePath, [
+    writeFileSync(sessionAbsolutePath, [
       JSON.stringify({
         v: 2,
         ts: "2026-02-16T13:46:51.871Z",
         type: "session_open",
         sessionId,
-        sessionPath: legacyPath,
+        sessionPath,
         clientId: "local",
       }),
       JSON.stringify({
@@ -258,7 +257,7 @@ describe("MemoryManager markdown persistence", () => {
         ts: "2026-02-16T13:46:51.872Z",
         type: "user_message",
         sessionId,
-        sessionPath: legacyPath,
+        sessionPath,
         content: "hii",
       }),
       JSON.stringify({
@@ -266,11 +265,11 @@ describe("MemoryManager markdown persistence", () => {
         ts: "2026-02-16T13:46:53.776Z",
         type: "assistant_message",
         sessionId,
-        sessionPath: legacyPath,
+        sessionPath,
         content: "Hey there!",
       }),
     ].join("\n"), "utf8");
-    writeFileSync(markerPath, JSON.stringify({ sessionId, sessionPath: legacyPath }), "utf8");
+    writeFileSync(markerPath, JSON.stringify({ sessionId, sessionPath }), "utf8");
 
     const db = new DatabaseSync(dbPath);
     db.exec(`
@@ -305,7 +304,7 @@ describe("MemoryManager markdown persistence", () => {
     `).run(
       sessionId,
       "local",
-      legacyPath,
+      sessionPath,
       "2026-02-16T13:46:51.871Z",
       "2026-02-16T13:46:53.776Z",
       "2026-02-16T13:46:53.776Z",
@@ -323,13 +322,12 @@ describe("MemoryManager markdown persistence", () => {
     expect(resumed.sessionId).toBe(sessionId);
 
     const updatedMarker = JSON.parse(readFileSync(markerPath, "utf8")) as { sessionPath: string };
-    expect(updatedMarker.sessionPath).toBe(markdownPath);
-    expect(existsSync(join(baseDir, markdownPath))).toBe(true);
-    expect(existsSync(legacyAbsolutePath)).toBe(false);
+    expect(updatedMarker.sessionPath).toBe(sessionPath);
+    expect(existsSync(sessionAbsolutePath)).toBe(true);
 
-    const migratedContent = readFileSync(join(baseDir, markdownPath), "utf8");
-    expect(migratedContent).toContain("\"type\":\"session_open\"");
-    expect(migratedContent).toContain("\"type\":\"assistant_message\"");
+    const restoredContent = readFileSync(sessionAbsolutePath, "utf8");
+    expect(restoredContent).toContain("\"type\":\"session_open\"");
+    expect(restoredContent).toContain("\"type\":\"assistant_message\"");
 
     await manager.shutdown();
   });
@@ -386,7 +384,7 @@ describe("MemoryManager markdown persistence", () => {
     await manager2.shutdown();
   });
 
-  it("falls back to marker restore when sqlite active row has stale path", async () => {
+  it("ignores marker restore when sqlite active row has stale path", async () => {
     const now = new Date("2026-02-08T09:00:00.000Z");
     const baseDir = mkdtempSync(join(tmpdir(), "ayati-memory-"));
     const dbPath = join(baseDir, "memory.sqlite");
@@ -412,7 +410,7 @@ describe("MemoryManager markdown persistence", () => {
     db.prepare(`
       UPDATE sessions_meta
       SET
-        session_path = 'sessions/invalid/missing.md',
+        session_path = 'sessions/invalid/missing.jsonl',
         status = 'active',
         closed_at = NULL,
         close_reason = NULL
@@ -427,7 +425,7 @@ describe("MemoryManager markdown persistence", () => {
     });
     manager2.initialize("c-stale-active");
     const resumed = manager2.beginRun("c-stale-active", "resume");
-    expect(resumed.sessionId).toBe(run.sessionId);
+    expect(resumed.sessionId).not.toBe(run.sessionId);
 
     const db2 = new DatabaseSync(dbPath);
     const row = db2.prepare(`
@@ -435,14 +433,14 @@ describe("MemoryManager markdown persistence", () => {
       FROM sessions_meta
       WHERE session_id = ?
     `).get(run.sessionId) as { status: string; session_path: string };
-    expect(row.status).toBe("active");
-    expect(row.session_path).toBe(marker.sessionPath);
+    expect(row.status).toBe("crashed");
+    expect(row.session_path).toBe("sessions/invalid/missing.jsonl");
     db2.close();
 
     await manager2.shutdown();
   });
 
-  it("reassigns marker-restored session to the requested client", async () => {
+  it("does not restore another client's session from the marker", async () => {
     const now = new Date("2026-02-08T09:15:00.000Z");
     const baseDir = mkdtempSync(join(tmpdir(), "ayati-memory-"));
     const dbPath = join(baseDir, "memory.sqlite");
@@ -464,10 +462,10 @@ describe("MemoryManager markdown persistence", () => {
     });
     manager2.initialize("local");
     const resumed = manager2.beginRun("local", "resume");
-    expect(resumed.sessionId).toBe(run.sessionId);
+    expect(resumed.sessionId).not.toBe(run.sessionId);
 
     const prompt = manager2.getPromptMemoryContext();
-    expect(prompt.conversationTurns.some((turn) => turn.content === "hello")).toBe(true);
+    expect(prompt.conversationTurns.some((turn) => turn.content === "hello")).toBe(false);
 
     const db = new DatabaseSync(dbPath);
     const row = db.prepare(`
@@ -479,14 +477,14 @@ describe("MemoryManager markdown persistence", () => {
       status: string;
       close_reason: string | null;
     };
-    expect(row.client_id).toBe("local");
+    expect(row.client_id).toBe("c-random-socket");
     expect(row.status).toBe("active");
     expect(row.close_reason).toBeNull();
     db.close();
 
     const sessionFile = findSessionFile(baseDir, run.sessionId);
     const content = readFileSync(sessionFile, "utf8");
-    expect(content).toContain("\"client_id\":\"local\"");
+    expect(content).toContain("\"clientId\":\"c-random-socket\"");
 
     await manager2.shutdown();
   });
@@ -629,7 +627,7 @@ describe("MemoryManager markdown persistence", () => {
 
     expect(switched.previousSessionId).toBe(run.sessionId);
     expect(switched.sessionId).not.toBe(run.sessionId);
-    expect(switched.sessionPath.endsWith(".md")).toBe(true);
+    expect(switched.sessionPath.endsWith(".jsonl")).toBe(true);
 
     await manager.flushPersistence?.();
     const oldContent = readFileSync(findSessionFile(baseDir, run.sessionId), "utf8");
@@ -703,7 +701,7 @@ describe("MemoryManager markdown persistence", () => {
     await manager.shutdown();
   });
 
-  it("stores full tool output text inside session markdown document in debug mode", async () => {
+  it("stores full tool output text inside session JSONL document in debug mode", async () => {
     const now = new Date("2026-02-08T00:00:00.000Z");
     const baseDir = mkdtempSync(join(tmpdir(), "ayati-memory-"));
 
@@ -744,7 +742,7 @@ describe("MemoryManager markdown persistence", () => {
     await manager.shutdown();
   });
 
-  it("stores run ledger and task summary pointers", async () => {
+  it("stores task summary pointers", async () => {
     const now = new Date("2026-02-08T00:00:00.000Z");
     const baseDir = mkdtempSync(join(tmpdir(), "ayati-memory-"));
 
@@ -757,20 +755,6 @@ describe("MemoryManager markdown persistence", () => {
     manager.initialize("c-ledger");
 
     const run = manager.beginRun("c-ledger", "summarize run pointers");
-    manager.recordRunLedger?.("c-ledger", {
-      runId: run.runId,
-      sessionId: run.sessionId,
-      runPath: "data/runs/r-ledger-1",
-      state: "started",
-    });
-    manager.recordRunLedger?.("c-ledger", {
-      runId: run.runId,
-      sessionId: run.sessionId,
-      runPath: "data/runs/r-ledger-1",
-      state: "completed",
-      status: "completed",
-      summary: "Completed run",
-    });
     manager.recordTaskSummary?.("c-ledger", {
       runId: run.runId,
       sessionId: run.sessionId,
@@ -783,7 +767,7 @@ describe("MemoryManager markdown persistence", () => {
     await manager.flushPersistence?.();
     const sessionFile = findSessionFile(baseDir, run.sessionId);
     const content = readFileSync(sessionFile, "utf8");
-    expect(content).toContain("\"type\":\"run_ledger\"");
+    expect(content).not.toContain("\"type\":\"run_ledger\"");
     expect(content).toContain("\"type\":\"task_summary\"");
     expect(content).toContain("\"runPath\":\"data/runs/r-ledger-1\"");
 

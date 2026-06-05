@@ -32,13 +32,11 @@ function createMockSessionMemory(): SessionMemory {
     recordAssistantFinal: vi.fn(),
     recordRunFailure: vi.fn(),
     recordAgentStep: vi.fn(),
-    recordRunLedger: vi.fn(),
     recordTaskSummary: vi.fn(),
     recordAssistantNotification: vi.fn(),
     getPromptMemoryContext: vi.fn().mockReturnValue({
       conversationTurns: [{ role: "user", content: "hello", timestamp: "", sessionPath: "" }],
       previousSessionSummary: "",
-      recentRunLedgers: [],
       recentSystemActivity: [],
     }),
     setStaticTokenBudget: vi.fn(),
