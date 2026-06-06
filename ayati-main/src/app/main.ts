@@ -24,7 +24,7 @@ import { loadSystemEventPolicy } from "../ivec/system-event-policy.js";
 import { createMemoryRuntime } from "./memory-runtime.js";
 import { createContentRuntime } from "./content-runtime.js";
 import { appendSkillBlocks, createSkillRuntime } from "./skill-runtime.js";
-import { DEFAULT_UPLOAD_MAX_BYTES, parsePositiveInt } from "./runtime-utils.js";
+import { loadAyatiRuntimeConfig } from "../config/runtime-config.js";
 
 const thisDir = dirname(fileURLToPath(import.meta.url));
 const projectRoot = resolve(thisDir, "..", "..");
@@ -34,6 +34,7 @@ const TELEGRAM_CLIENT_ID = "telegram-shared";
 
 export async function main(): Promise<void> {
   await initializeLlmRuntimeConfig({ projectRoot });
+  const runtimeConfig = loadAyatiRuntimeConfig(process.env);
   const provider = await loadProvider(providerFactory);
   const systemEventPolicy = loadSystemEventPolicy(projectRoot);
   let engine: IVecEngine | null = null;
@@ -74,6 +75,7 @@ export async function main(): Promise<void> {
     projectRoot,
     provider,
     sessionMemory: memory.sessionMemory,
+    config: runtimeConfig,
   });
 
   const skills = await createSkillRuntime({
@@ -88,6 +90,7 @@ export async function main(): Promise<void> {
     directoryLibrary: content.directoryLibrary,
     courseStore: content.courseStore,
     learningWorkspace: content.learningWorkspace,
+    config: runtimeConfig,
     onSoulUpdated: (updatedSoul) => {
       if (!staticContext) {
         return;
@@ -105,11 +108,11 @@ export async function main(): Promise<void> {
     runsDir: resolve(projectRoot, "data", "runs"),
     host: content.httpHost,
     port: content.httpPort,
-    maxUploadBytes: parsePositiveInt(process.env["AYATI_UPLOAD_MAX_BYTES"], DEFAULT_UPLOAD_MAX_BYTES),
-    allowOrigin: process.env["AYATI_HTTP_ALLOW_ORIGIN"]?.trim() || process.env["AYATI_UPLOAD_ALLOW_ORIGIN"]?.trim() || "*",
+    maxUploadBytes: runtimeConfig.http.maxUploadBytes,
+    allowOrigin: runtimeConfig.http.allowOrigin,
     pulseTool,
     pulseClientId: CLIENT_ID,
-    pulseApiToken: process.env["AYATI_HTTP_API_TOKEN"]?.trim() || undefined,
+    pulseApiToken: runtimeConfig.http.apiToken,
     fileLibrary: content.fileLibrary,
     courseStore: content.courseStore,
     learningWorkspace: content.learningWorkspace,

@@ -12,6 +12,7 @@ import type { DirectoryLibrary } from "../files/directory-library.js";
 import type { FileLibrary } from "../files/file-library.js";
 import type { CourseStore } from "../learning/course-store.js";
 import type { LearningWorkspaceController } from "../ui/learning-workspace.js";
+import type { AyatiRuntimeConfig } from "../config/runtime-config.js";
 import { builtInSkillsProvider } from "../skills/provider.js";
 import { createToolExecutor, type ToolExecutor } from "../skills/tool-executor.js";
 import type { SkillDefinition, ToolDefinition } from "../skills/types.js";
@@ -46,7 +47,7 @@ export interface SkillRuntimeOptions {
   courseStore: CourseStore;
   learningWorkspace: LearningWorkspaceController;
   onSoulUpdated: (updatedSoul: SoulContext) => void;
-  env?: NodeJS.ProcessEnv;
+  config: AyatiRuntimeConfig;
 }
 
 export interface SkillRuntime {
@@ -59,7 +60,6 @@ export interface SkillRuntime {
 }
 
 export async function createSkillRuntime(options: SkillRuntimeOptions): Promise<SkillRuntime> {
-  const env = options.env ?? process.env;
   const enabledTools = await builtInSkillsProvider.getAllTools();
 
   const runtimeSkills: SkillDefinition[] = [
@@ -76,7 +76,7 @@ export async function createSkillRuntime(options: SkillRuntimeOptions): Promise<
     }),
     createPythonSkill({
       dataDir: resolve(options.projectRoot, "data"),
-      interpreterPath: env["AYATI_PYTHON_INTERPRETER"]?.trim() || undefined,
+      interpreterPath: options.config.python.interpreterPath,
     }),
     createAttachmentSkill({ sessionAttachmentService: options.sessionAttachmentService }),
     createDatasetSkill({ preparedAttachmentService: options.preparedAttachmentService }),
