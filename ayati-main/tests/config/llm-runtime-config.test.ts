@@ -4,12 +4,22 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   createDefaultLlmRuntimeConfig,
+  getActiveEmbeddingProvider,
+  getActiveImageGenerationProvider,
+  getEmbeddingDimensionsForProvider,
+  getEmbeddingModelForProvider,
   getActiveProvider,
+  getImageGenerationModelForProvider,
   getLlmRuntimeConfig,
   getModelForProvider,
   initializeLlmRuntimeConfig,
   resetLlmRuntimeConfigForTests,
+  setActiveEmbeddingProvider,
+  setActiveImageGenerationProvider,
   setActiveProvider,
+  setEmbeddingDimensionsForProvider,
+  setEmbeddingModelForProvider,
+  setImageGenerationModelForProvider,
   setModelForProvider,
 } from "../../src/config/llm-runtime-config.js";
 
@@ -53,11 +63,98 @@ describe("llm runtime config", () => {
         anthropic: "claude-sonnet-4-5-20250929",
         fireworks: "fireworks/minimax-m2p5",
       },
+      embeddings: {
+        activeProvider: "openai",
+        models: {
+          openai: "text-embedding-3-small",
+        },
+        dimensions: {
+          openai: null,
+        },
+      },
+      imageGeneration: {
+        activeProvider: "openai",
+        models: {
+          openai: "gpt-image-2",
+        },
+      },
     });
 
     const saved = JSON.parse(await readFile(configPath, "utf8"));
     expect(saved.activeProvider).toBe("openai");
     expect(saved.models.openai).toBe("gpt-5-mini");
+  });
+
+  it("persists embedding and image generation changes", async () => {
+    const tempDir = await mkdtemp(join(tmpdir(), "ayati-llm-config-"));
+    tempDirs.push(tempDir);
+    const configPath = join(tempDir, "llm-config.json");
+
+    await initializeLlmRuntimeConfig({ configPath });
+    await setActiveEmbeddingProvider("openai");
+    await setEmbeddingModelForProvider("openai", "text-embedding-3-large");
+    await setEmbeddingDimensionsForProvider("openai", 1024);
+    await setActiveImageGenerationProvider("openai");
+    await setImageGenerationModelForProvider("openai", "gpt-image-2");
+
+    expect(getActiveEmbeddingProvider()).toBe("openai");
+    expect(getEmbeddingModelForProvider("openai")).toBe("text-embedding-3-large");
+    expect(getEmbeddingDimensionsForProvider("openai")).toBe(1024);
+    expect(getActiveImageGenerationProvider()).toBe("openai");
+    expect(getImageGenerationModelForProvider("openai")).toBe("gpt-image-2");
+
+    const saved = JSON.parse(await readFile(configPath, "utf8"));
+    expect(saved.embeddings.activeProvider).toBe("openai");
+    expect(saved.embeddings.models.openai).toBe("text-embedding-3-large");
+    expect(saved.embeddings.dimensions.openai).toBe(1024);
+    expect(saved.imageGeneration.activeProvider).toBe("openai");
+    expect(saved.imageGeneration.models.openai).toBe("gpt-image-2");
+  });
+
+  it("normalizes old configs with embedding and image generation defaults", async () => {
+    const tempDir = await mkdtemp(join(tmpdir(), "ayati-llm-config-"));
+    tempDirs.push(tempDir);
+    const configPath = join(tempDir, "llm-config.json");
+
+    await writeFile(
+      configPath,
+      JSON.stringify(
+        {
+          activeProvider: "fireworks",
+          models: {
+            openrouter: "nvidia/nemotron-3-super-120b-a12b:free",
+            openai: "gpt-4o-mini",
+            anthropic: "claude-sonnet-4-5-20250929",
+            fireworks: "fireworks/minimax-m2p7",
+          },
+        },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+
+    const config = await initializeLlmRuntimeConfig({ configPath });
+
+    expect(config.embeddings).toEqual({
+      activeProvider: "openai",
+      models: {
+        openai: "text-embedding-3-small",
+      },
+      dimensions: {
+        openai: null,
+      },
+    });
+    expect(config.imageGeneration).toEqual({
+      activeProvider: "openai",
+      models: {
+        openai: "gpt-image-2",
+      },
+    });
+
+    const saved = JSON.parse(await readFile(configPath, "utf8"));
+    expect(saved.embeddings.models.openai).toBe("text-embedding-3-small");
+    expect(saved.imageGeneration.models.openai).toBe("gpt-image-2");
   });
 
   it("throws when the config file contains invalid JSON", async () => {

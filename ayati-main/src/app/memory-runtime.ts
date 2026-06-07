@@ -5,7 +5,7 @@ import { loadMemoryPolicy } from "../memory/personal/memory-policy.js";
 import { PersonalMemoryStore } from "../memory/personal/personal-memory-store.js";
 import { PersonalMemorySnapshotCache } from "../memory/personal/personal-memory-snapshot-cache.js";
 import { MemoryConsolidator } from "../memory/personal/memory-consolidator.js";
-import { OpenAiMemoryEmbedder } from "../memory/openai-memory-embedder.js";
+import type { SummaryEmbeddingProvider } from "../memory/embedding-provider.js";
 import {
   EpisodicMemoryController,
   EpisodicMemoryIndexer,
@@ -15,11 +15,13 @@ import {
   LanceEpisodicVectorStore,
 } from "../memory/episodic/index.js";
 import { devLog, devWarn } from "../shared/index.js";
+import type { EmbeddingProvider } from "../embeddings/contracts.js";
 
 export interface MemoryRuntimeOptions {
   projectRoot: string;
   clientId: string;
   provider: LlmProvider;
+  embeddingProvider?: EmbeddingProvider;
 }
 
 export interface MemoryRuntime {
@@ -59,12 +61,15 @@ export async function createMemoryRuntime(options: MemoryRuntimeOptions): Promis
     dataDir: resolve(memoryDataDir, "episodic-vectors"),
   });
 
-  let memoryEmbedder: OpenAiMemoryEmbedder | undefined;
-  try {
-    memoryEmbedder = new OpenAiMemoryEmbedder();
-    devLog(`Episodic memory embeddings available with model=${memoryEmbedder.modelName}`);
-  } catch (err) {
-    devWarn(`Episodic memory embeddings unavailable: ${err instanceof Error ? err.message : String(err)}`);
+  let memoryEmbedder: SummaryEmbeddingProvider | undefined;
+  if (options.embeddingProvider) {
+    try {
+      await options.embeddingProvider.start();
+      memoryEmbedder = options.embeddingProvider;
+      devLog(`Episodic memory embeddings available with model=${memoryEmbedder.modelName}`);
+    } catch (err) {
+      devWarn(`Episodic memory embeddings unavailable: ${err instanceof Error ? err.message : String(err)}`);
+    }
   }
 
   const memoryIndexer = new EpisodicMemoryIndexer({

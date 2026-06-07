@@ -3,7 +3,6 @@ import type { LlmProvider } from "../core/index.js";
 import type { SessionMemory } from "../memory/types.js";
 import { DocumentStore } from "../documents/document-store.js";
 import { DocumentContextBackend } from "../documents/document-context-backend.js";
-import { OpenAiDocumentEmbedder } from "../documents/openai-document-embedder.js";
 import { LanceDocumentVectorStore } from "../documents/document-vector-store.js";
 import { DocumentIndexer } from "../documents/document-indexer.js";
 import { DocumentRetriever } from "../documents/document-retriever.js";
@@ -16,12 +15,14 @@ import { CourseStore } from "../learning/course-store.js";
 import { LearningWorkspaceController } from "../ui/learning-workspace.js";
 import { devLog, devWarn } from "../shared/index.js";
 import type { AyatiRuntimeConfig } from "../config/runtime-config.js";
+import type { EmbeddingProvider } from "../embeddings/contracts.js";
 
 export interface ContentRuntimeOptions {
   projectRoot: string;
   provider: LlmProvider;
   sessionMemory: SessionMemory;
   config: AyatiRuntimeConfig;
+  embeddingProvider?: EmbeddingProvider;
 }
 
 export interface ContentRuntime {
@@ -38,7 +39,7 @@ export interface ContentRuntime {
   httpPort: number;
 }
 
-export function createContentRuntime(options: ContentRuntimeOptions): ContentRuntime {
+export async function createContentRuntime(options: ContentRuntimeOptions): Promise<ContentRuntime> {
   const { projectRoot, provider, sessionMemory, config } = options;
   const dataDir = resolve(projectRoot, "data");
 
@@ -55,9 +56,10 @@ export function createContentRuntime(options: ContentRuntimeOptions): ContentRun
 
   let documentIndexer: DocumentIndexer | undefined;
   let documentRetriever: DocumentRetriever | undefined;
-  if (config.documents.vectorEnabled) {
+  if (config.documents.vectorEnabled && options.embeddingProvider) {
     try {
-      const documentEmbedder = new OpenAiDocumentEmbedder();
+      const documentEmbedder = options.embeddingProvider;
+      await documentEmbedder.start();
       const documentVectorStore = new LanceDocumentVectorStore({
         dataDir: resolve(dataDir, "documents", "vector"),
       });
@@ -75,6 +77,8 @@ export function createContentRuntime(options: ContentRuntimeOptions): ContentRun
     } catch (err) {
       devWarn(`Document vector retrieval disabled: ${err instanceof Error ? err.message : String(err)}`);
     }
+  } else if (config.documents.vectorEnabled) {
+    devWarn("Document vector retrieval disabled: no embedding provider configured.");
   }
 
   const documentContextBackend = new DocumentContextBackend({

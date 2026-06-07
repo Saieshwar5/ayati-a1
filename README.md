@@ -87,6 +87,11 @@ The active provider is stored in:
 
 - `ayati-main/data/runtime/llm-config.json`
 
+The same file also stores the active embedding provider/model and image
+generation provider/model. Chat, embeddings, and image generation are separate
+runtime categories so memory, document retrieval, and image tools can use the
+right API without coupling to the chat provider.
+
 Provider API keys are read from the backend `.env` file.
 
 ### Prompt Context

@@ -9,6 +9,12 @@ ANTHROPIC_API_KEY=
 FIREWORKS_API_KEY=
 ```
 
+Model selection:
+
+- Chat, embedding, and image generation model choices live in `ayati-main/data/runtime/llm-config.json`.
+- Embeddings currently support the OpenAI provider and use `OPENAI_API_KEY`.
+- Image generation currently supports the OpenAI provider and uses `OPENAI_API_KEY`.
+
 HTTP API:
 
 ```env

@@ -7,6 +7,10 @@ Model providers live under `ayati-main/src/providers/`:
 - Anthropic.
 - Fireworks.
 
+Embedding providers live under `ayati-main/src/embeddings/`.
+
+Image generation providers live under `ayati-main/src/image-generation/`.
+
 Current and optional communication/event integrations:
 
 - CLI client over WebSocket.

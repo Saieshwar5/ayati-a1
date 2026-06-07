@@ -25,6 +25,8 @@ import { createMemoryRuntime } from "./memory-runtime.js";
 import { createContentRuntime } from "./content-runtime.js";
 import { appendSkillBlocks, createSkillRuntime } from "./skill-runtime.js";
 import { loadAyatiRuntimeConfig } from "../config/runtime-config.js";
+import embeddingProvider from "../embeddings/runtime/index.js";
+import imageGenerationProvider from "../image-generation/runtime/index.js";
 
 const thisDir = dirname(fileURLToPath(import.meta.url));
 const projectRoot = resolve(thisDir, "..", "..");
@@ -44,6 +46,7 @@ export async function main(): Promise<void> {
     projectRoot,
     clientId: CLIENT_ID,
     provider,
+    embeddingProvider,
   });
 
   const adapterRegistry = new AdapterRegistry();
@@ -71,11 +74,12 @@ export async function main(): Promise<void> {
     },
   });
 
-  const content = createContentRuntime({
+  const content = await createContentRuntime({
     projectRoot,
     provider,
     sessionMemory: memory.sessionMemory,
     config: runtimeConfig,
+    embeddingProvider,
   });
 
   const skills = await createSkillRuntime({
@@ -214,6 +218,8 @@ export async function main(): Promise<void> {
     await systemEventWorker.stop();
     inboundQueueStore.stop();
     await memory.stop();
+    await embeddingProvider.stop();
+    await imageGenerationProvider.stop();
     await engine.stop();
   };
 
