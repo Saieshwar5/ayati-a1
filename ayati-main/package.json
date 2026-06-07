@@ -8,6 +8,7 @@
     "build": "tsc",
     "start": "node --env-file=../.env dist/index.js",
     "dev": "nodemon --watch src --ext ts --exec \"pnpm build && pnpm start\"",
+    "doctor": "pnpm build && node --env-file=../.env dist/doctor.js",
     "test": "vitest run",
     "test:watch": "vitest"
   },

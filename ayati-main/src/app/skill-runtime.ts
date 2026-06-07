@@ -1,6 +1,5 @@
 import { resolve } from "node:path";
 import type { StaticContext } from "../context/static-context-cache.js";
-import type { SoulContext } from "../context/types.js";
 import type {
   EpisodicMemoryController,
   EpisodicMemoryRetriever,
@@ -16,7 +15,6 @@ import type { AyatiRuntimeConfig } from "../config/runtime-config.js";
 import { builtInSkillsProvider } from "../skills/provider.js";
 import { createToolExecutor, type ToolExecutor } from "../skills/tool-executor.js";
 import type { SkillDefinition, ToolDefinition } from "../skills/types.js";
-import { createIdentitySkill } from "../skills/builtins/identity/index.js";
 import { createRecallSkill } from "../skills/builtins/recall/index.js";
 import { createMemorySkill } from "../skills/builtins/memory/index.js";
 import { createPythonSkill } from "../skills/builtins/python/index.js";
@@ -46,7 +44,6 @@ export interface SkillRuntimeOptions {
   directoryLibrary: DirectoryLibrary;
   courseStore: CourseStore;
   learningWorkspace: LearningWorkspaceController;
-  onSoulUpdated: (updatedSoul: SoulContext) => void;
   config: AyatiRuntimeConfig;
 }
 
@@ -63,9 +60,6 @@ export async function createSkillRuntime(options: SkillRuntimeOptions): Promise<
   const enabledTools = await builtInSkillsProvider.getAllTools();
 
   const runtimeSkills: SkillDefinition[] = [
-    createIdentitySkill({
-      onSoulUpdated: options.onSoulUpdated,
-    }),
     createRecallSkill({
       retriever: options.memoryRetriever,
       controls: options.episodicMemoryController,

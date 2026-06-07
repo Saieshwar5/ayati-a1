@@ -95,13 +95,6 @@ export async function main(): Promise<void> {
     courseStore: content.courseStore,
     learningWorkspace: content.learningWorkspace,
     config: runtimeConfig,
-    onSoulUpdated: (updatedSoul) => {
-      if (!staticContext) {
-        return;
-      }
-      staticContext.soul = updatedSoul;
-      engine?.invalidateStaticTokenCache();
-    },
   });
 
   staticContext = await loadStaticContext({ toolDefinitions: skills.runtimeToolDefs });

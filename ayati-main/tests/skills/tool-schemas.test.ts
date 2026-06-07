@@ -3,7 +3,6 @@ import { builtInSkillsProvider } from "../../src/skills/provider.js";
 import { createAttachmentSkill } from "../../src/skills/builtins/attachments/index.js";
 import { createDatasetSkill } from "../../src/skills/builtins/datasets/index.js";
 import { createDocumentSkill } from "../../src/skills/builtins/documents/index.js";
-import { createIdentitySkill } from "../../src/skills/builtins/identity/index.js";
 import { createLearningSkill } from "../../src/skills/builtins/learning/index.js";
 import { createPythonSkill } from "../../src/skills/builtins/python/index.js";
 import { createRecallSkill } from "../../src/skills/builtins/recall/index.js";
@@ -53,7 +52,6 @@ async function buildRuntimeTools(): Promise<ToolDefinition[]> {
 
   return [
     ...builtInTools,
-    ...createIdentitySkill({ onSoulUpdated: () => undefined }).tools,
     ...createRecallSkill({
       retriever: { recall: async () => [] } satisfies RecallRetriever,
     }).tools,
