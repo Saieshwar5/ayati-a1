@@ -33,6 +33,8 @@ import { PreparedAttachmentRegistry } from "../documents/prepared-attachment-reg
 import type { DirectoryLibrary } from "../files/directory-library.js";
 import type { FileLibrary } from "../files/file-library.js";
 import type { DirectoryAttachmentRecord, ManagedFileRecord } from "../files/types.js";
+import type { CourseStore } from "../learning/course-store.js";
+import type { ActiveLearningContext } from "../learning/types.js";
 import {
   normalizeSystemEvent,
   type AyatiSystemEvent,
@@ -93,6 +95,8 @@ interface UnderstandContextCache {
   recentTasksSection: string;
   recentSystemActivityFingerprint: string;
   recentSystemActivitySection: string;
+  activeLearningFingerprint: string;
+  activeLearningSection: string;
   runtimeContextSection: string;
   sessionStatusFingerprint: string;
   systemContextWithoutStatus: string;
@@ -126,6 +130,7 @@ export interface IVecEngineOptions {
   documentContextBackend?: DocumentContextBackend;
   fileLibrary?: FileLibrary;
   directoryLibrary?: DirectoryLibrary;
+  courseStore?: CourseStore;
   systemEventPolicy?: SystemEventPolicyConfig;
 }
 
@@ -146,6 +151,7 @@ export class IVecEngine {
   private readonly documentContextBackend?: DocumentContextBackend;
   private readonly fileLibrary?: FileLibrary;
   private readonly directoryLibrary?: DirectoryLibrary;
+  private readonly courseStore?: CourseStore;
   private readonly systemEventPolicy?: SystemEventPolicyConfig;
   private readonly pulseProposalReflectionService = new PulseProposalReflectionService();
   private staticSystemTokens = 0;
@@ -171,6 +177,7 @@ export class IVecEngine {
     this.documentContextBackend = options?.documentContextBackend;
     this.fileLibrary = options?.fileLibrary;
     this.directoryLibrary = options?.directoryLibrary;
+    this.courseStore = options?.courseStore;
     this.systemEventPolicy = options?.systemEventPolicy;
   }
 
@@ -246,7 +253,7 @@ export class IVecEngine {
           runId: runHandle.runId,
           sessionId: runHandle.sessionId,
         }) ?? [];
-        const system = await this.buildSystemContext();
+        const system = await this.buildSystemContext(clientId);
         let result = await agentLoop({
           provider: this.provider,
           toolExecutor: this.toolExecutor,
@@ -396,7 +403,7 @@ export class IVecEngine {
       }
 
       const toolDefs = systemEventPlan.toolDefinitions;
-      const system = await this.buildSystemContext();
+      const system = await this.buildSystemContext(clientId);
       devLog(
         `[${clientId}] system_event entering agentLoop eventId=${event.eventId} mode=${systemEventPlan.policy.mode} intent=${systemEventPlan.classification.intentKind} approval=${systemEventPlan.policy.approvalRequired ? "required" : "not_required"} tools=${toolDefs.length} payloadKeys=${Object.keys(event.payload).join(",") || "none"}`,
       );
@@ -495,7 +502,7 @@ export class IVecEngine {
     }
   }
 
-  private async buildSystemContext(): Promise<SystemContextBuildResult> {
+  private async buildSystemContext(clientId: string): Promise<SystemContextBuildResult> {
     if (!this.staticContext) {
       return { systemContext: "", controllerSystemContext: "", dynamicSystemTokens: 0 };
     }
@@ -508,14 +515,18 @@ export class IVecEngine {
     const runtimeContextSection = renderRuntimeContextSection(
       getNowSnapshot(this.nowProvider()),
     );
+    const activeLearningSection = await this.renderActiveLearningContextSection(clientId);
+    const activeLearningFingerprint = activeLearningSection;
     const controllerSystemContext = joinPromptSections([
       staticSections.head,
       runtimeContextSection,
+      activeLearningSection,
       staticSections.tail,
     ]);
     const cached = this.understandContextCache;
     const sessionKey = buildSessionCacheKey(memoryContext);
-    const sameSession = cached?.sessionKey === sessionKey;
+    const sameSession = cached?.sessionKey === sessionKey
+      && cached?.activeLearningFingerprint === activeLearningFingerprint;
 
     const conversationTurns = memoryContext.conversationTurns ?? [];
     const conversationSection = sameSession
@@ -548,6 +559,7 @@ export class IVecEngine {
       : renderSystemActivitySection(memoryContext.recentSystemActivity ?? []);
 
     const dynamicContext = joinPromptSections([
+      activeLearningSection,
       personalMemorySection,
       conversationSection,
       memorySection,
@@ -590,6 +602,8 @@ export class IVecEngine {
       recentTasksSection,
       recentSystemActivityFingerprint,
       recentSystemActivitySection,
+      activeLearningFingerprint,
+      activeLearningSection,
       runtimeContextSection,
       sessionStatusFingerprint,
       systemContextWithoutStatus,
@@ -694,6 +708,22 @@ export class IVecEngine {
       await this.sessionMemory.flushPersistence?.();
     } catch (err) {
       devWarn("Session lifecycle update failed:", err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  private async renderActiveLearningContextSection(clientId: string): Promise<string> {
+    if (!this.courseStore) {
+      return "";
+    }
+    try {
+      const context = await this.courseStore.getActiveLearningContext(clientId);
+      if (!context) {
+        return "";
+      }
+      return renderActiveLearningContext(context);
+    } catch (err) {
+      devWarn("Active learning context unavailable:", err instanceof Error ? err.message : String(err));
+      return "";
     }
   }
 
@@ -1483,6 +1513,61 @@ function parseAgentUiContext(raw: unknown): ChatInboundMessage["uiContext"] | un
 
 function joinPromptSections(sections: string[]): string {
   return sections.filter((section) => section.trim().length > 0).join("\n\n").trim();
+}
+
+function renderActiveLearningContext(context: ActiveLearningContext): string {
+  const lesson = context.activeLesson;
+  const lines = [
+    "# Active Learning Context",
+    "Use this section when the user is learning, continuing a course, or asking a doubt about the visible lesson. Do not generate duplicate core lessons; plan the next step from the course map and learning index.",
+    `- active_course: ${context.course.title} (${context.course.courseId})`,
+    `- topic: ${context.course.topic}`,
+    `- status: ${context.course.status}`,
+    ...(context.course.purpose ? [`- purpose: ${context.course.purpose}`] : []),
+    ...(context.course.targetOutcome ? [`- target_outcome: ${context.course.targetOutcome}`] : []),
+    ...(context.learnerProfile ? [`- learner_profile: ${formatInlineObject(context.learnerProfile)}`] : []),
+    `- preferences: ${formatInlineObject(context.preferences)}`,
+    ...(context.currentPosition ? [`- current_position: ${context.currentPosition}`] : []),
+    `- learned_concepts: ${formatPromptValues(context.learnedConcepts)}`,
+    `- weak_concepts: ${formatPromptValues(context.weakConcepts)}`,
+    `- open_questions: ${formatPromptValues(context.openQuestions)}`,
+    `- next_likely_topics: ${formatPromptValues(context.nextLikelyTopics)}`,
+    `- course_next_candidates: ${formatPromptValues(context.courseMap.nextCandidates)}`,
+    `- avoid_for_now: ${formatPromptValues(context.courseMap.avoidForNow)}`,
+    `- direction_warnings: ${formatPromptValues(context.courseMap.wrongDirectionWarnings)}`,
+    ...(lesson
+      ? [
+        "## Visible Lesson",
+        `- lesson: ${lesson.title} (${lesson.lessonId})`,
+        ...(lesson.purpose ? [`- lesson_purpose: ${lesson.purpose}`] : []),
+        `- summary_for_agent: ${lesson.summaryForAgent}`,
+        `- primitives: ${formatPromptValues(lesson.primitiveIdeas)}`,
+        `- first_principles: ${formatPromptValues(lesson.firstPrinciples)}`,
+        `- concepts_introduced: ${formatPromptValues(lesson.conceptsIntroduced)}`,
+        `- concepts_practiced: ${formatPromptValues(lesson.conceptsPracticed)}`,
+        `- examples_used: ${formatPromptValues(lesson.examplesUsed)}`,
+        `- common_doubts: ${formatPromptValues(lesson.commonDoubts)}`,
+        `- next_suggested_concepts: ${formatPromptValues(lesson.nextSuggestedConcepts)}`,
+      ]
+      : []),
+  ];
+  return lines.join("\n");
+}
+
+function formatPromptValues(values: string[]): string {
+  return values.length > 0 ? values.join("; ") : "(none)";
+}
+
+function formatInlineObject(value: object): string {
+  const entries = Object.entries(value)
+    .filter(([, entry]) => {
+      if (Array.isArray(entry)) {
+        return entry.length > 0;
+      }
+      return entry !== undefined && entry !== null && String(entry).trim().length > 0;
+    })
+    .map(([key, entry]) => `${key}=${Array.isArray(entry) ? entry.join("|") : String(entry)}`);
+  return entries.length > 0 ? entries.join("; ") : "(none)";
 }
 
 function renderToolDirectorySection(toolDirectory: string | undefined, includeToolDirectory: boolean): string {

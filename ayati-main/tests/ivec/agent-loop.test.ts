@@ -592,6 +592,111 @@ describe("agentLoop", () => {
     }
   });
 
+  it("stops after a verified workspace layout failure instead of replanning into shell fallbacks", async () => {
+    const dataDir = makeTmpDir();
+    try {
+      let callCount = 0;
+      const workspaceSetLayout = vi.fn().mockResolvedValue({
+        ok: true,
+        output: JSON.stringify({
+          lastActionStatus: "failed",
+          activeLayout: "30-70",
+          layoutVerification: {
+            verified: false,
+            expectedCliRatio: 0.3,
+            actualCliRatio: 0.5,
+            reason: "Measured CLI ratio 0.5 does not match requested 30-70 (0.3).",
+          },
+        }),
+      });
+      const workspaceTool: ToolDefinition = {
+        name: "workspace_set_layout",
+        description: "Apply a workspace layout",
+        inputSchema: { type: "object" },
+        execute: workspaceSetLayout,
+      };
+      const provider: LlmProvider = {
+        name: "mock",
+        version: "1.0.0",
+        capabilities: { nativeToolCalling: true },
+        start: vi.fn(),
+        stop: vi.fn(),
+        generateTurn: vi.fn().mockImplementation(async () => {
+          callCount++;
+          if (callCount === 1) {
+            return {
+              type: "assistant",
+              content: JSON.stringify({
+                done: false,
+                understand: true,
+                goal: goalContract("set workspace layout to 30-70"),
+                approach: "use workspace_set_layout only",
+              }),
+            };
+          }
+          if (callCount === 2) {
+            return {
+              type: "assistant",
+              content: JSON.stringify({
+                done: false,
+                execution_mode: "independent",
+                execution_contract: "Call workspace_set_layout with layout=30-70 and inspect layoutVerification.",
+                tool_plan: [
+                  {
+                    tool: "workspace_set_layout",
+                    input: { layout: "30-70" },
+                    origin: "builtin",
+                    source_refs: [],
+                    retry_policy: "none",
+                  },
+                ],
+                success_criteria: "layoutVerification.verified is true",
+                context: "",
+              }),
+            };
+          }
+          if (callCount === 3) {
+            return {
+              type: "assistant",
+              content: stepVerifyFailureResponse(
+                "workspace_set_layout returned layoutVerification.verified = false with actualCliRatio 0.5.",
+              ),
+            };
+          }
+          if (callCount === 4) {
+            return {
+              type: "assistant",
+              content: taskVerifyResponse(
+                "not_done",
+                "workspace_set_layout failed verification",
+                ["layoutVerification.verified = false"],
+              ),
+            };
+          }
+          throw new Error(`Unexpected provider call ${callCount}`);
+        }),
+      };
+
+      const result = await agentLoop({
+        provider,
+        toolDefinitions: [workspaceTool],
+        toolExecutor: createToolExecutor([workspaceTool]),
+        sessionMemory: createMockSessionMemory(),
+        runHandle: { sessionId: "s1", runId: "r1" },
+        clientId: "c1",
+        dataDir,
+      });
+
+      expect(result.status).toBe("failed");
+      expect(result.content).toContain("workspace_set_layout returned layoutVerification.verified = false");
+      expect(result.content).toContain("I stopped here instead of trying raw Hyprland shell resize commands");
+      expect(workspaceSetLayout).toHaveBeenCalledOnce();
+      expect(provider.generateTurn).toHaveBeenCalledTimes(4);
+    } finally {
+      cleanup();
+    }
+  });
+
   it("re-evaluates only after three consecutive failed steps", async () => {
     const dataDir = makeTmpDir();
     try {

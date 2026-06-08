@@ -80,6 +80,18 @@ async function pressEnter(app: RenderedApp): Promise<void> {
   });
 }
 
+function sentMessages(): unknown[] {
+  return websocketState.send.mock.calls.map((call) => call[0]);
+}
+
+function sentChatMessages(): unknown[] {
+  return sentMessages().filter((message) => (
+    typeof message === "object"
+    && message !== null
+    && (message as { type?: unknown }).type === "chat"
+  ));
+}
+
 describe("App", () => {
   afterEach(() => {
     websocketState.onMessage = null;
@@ -114,7 +126,7 @@ describe("App", () => {
 
     await writeInput(app, "first message");
     await vi.waitFor(() => {
-      expect(websocketState.send).toHaveBeenCalledTimes(1);
+      expect(sentChatMessages()).toHaveLength(1);
     });
 
     await act(async () => {
@@ -128,11 +140,29 @@ describe("App", () => {
     await writeInput(app, "second message");
 
     await vi.waitFor(() => {
-      expect(websocketState.send).toHaveBeenCalledTimes(2);
-      expect(websocketState.send).toHaveBeenLastCalledWith({
+      expect(sentChatMessages()).toHaveLength(2);
+      expect(sentChatMessages().at(-1)).toEqual({
         type: "chat",
         content: "second message",
       });
+    });
+
+    await act(async () => {
+      app.unmount();
+    });
+  });
+
+  it("sends workspace compose events around a submitted chat message", async () => {
+    const app = await renderApp();
+
+    await writeInput(app, "hello");
+
+    await vi.waitFor(() => {
+      expect(sentMessages()).toEqual([
+        { type: "workspace_event", event: "cli_input_started" },
+        { type: "workspace_event", event: "cli_message_submitted" },
+        { type: "chat", content: "hello" },
+      ]);
     });
 
     await act(async () => {
@@ -291,7 +321,7 @@ describe("App", () => {
     const app = await renderApp();
 
     await writeInput(app, `Summarize @${reportPath}`);
-    expect(websocketState.send).not.toHaveBeenCalled();
+    expect(sentChatMessages()).toHaveLength(0);
 
     await pressEnter(app);
 
@@ -320,7 +350,7 @@ describe("App", () => {
 
     await writeInput(app, `@${docsPath}`);
 
-    expect(websocketState.send).not.toHaveBeenCalled();
+    expect(sentChatMessages()).toHaveLength(0);
     expect(app.lastFrame() ?? "").toContain(docsPath);
 
     await pressEnter(app);

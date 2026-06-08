@@ -28,13 +28,18 @@ describe("learning built-in skill", () => {
         "learning_list_courses",
         "learning_activate_course",
         "learning_get_active_course",
+        "learning_get_active_learning_context",
+        "learning_get_active_lesson_context",
         "learning_get_course",
         "learning_update_course_context",
+        "learning_plan_next_lesson",
         "learning_continue_course",
         "learning_generate_lesson_page",
         "learning_mark_lesson_done",
         "learning_get_course_progress",
         "learning_add_course_note",
+        "learning_record_doubt",
+        "learning_search_active_course_context",
       ]);
     } finally {
       rmSync(dataDir, { recursive: true, force: true });
@@ -116,6 +121,11 @@ describe("learning built-in skill", () => {
           summary: "A beginner orientation to learning from data.",
           objectives: ["Understand what machine learning means"],
           html: "<main><h1>What is Machine Learning?</h1></main>",
+          metadata: {
+            conceptsIntroduced: ["learning from data"],
+            firstPrinciples: ["A system needs examples to improve"],
+            summaryForAgent: "The first lesson introduces learning from examples.",
+          },
         },
       }, { clientId: "local" });
 
@@ -127,6 +137,63 @@ describe("learning built-in skill", () => {
       expect(policy["generatedLessonCount"]).toBe(1);
       expect(totals["generated"]).toBe(1);
       expect(totals["planned"]).toBe(2);
+    } finally {
+      rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it("returns active learning context and records doubts through tools", async () => {
+    const dataDir = makeTmpDir();
+    try {
+      const skill = createLearningSkill({ courseStore: new CourseStore({ dataDir }) });
+      const start = skill.tools.find((tool) => tool.name === "learning_start_course_session");
+      const contextTool = skill.tools.find((tool) => tool.name === "learning_get_active_learning_context");
+      const lessonTool = skill.tools.find((tool) => tool.name === "learning_get_active_lesson_context");
+      const doubtTool = skill.tools.find((tool) => tool.name === "learning_record_doubt");
+      const searchTool = skill.tools.find((tool) => tool.name === "learning_search_active_course_context");
+      expect(start).toBeTruthy();
+      expect(contextTool).toBeTruthy();
+      expect(lessonTool).toBeTruthy();
+      expect(doubtTool).toBeTruthy();
+      expect(searchTool).toBeTruthy();
+
+      await start!.execute({
+        title: "Databases",
+        topic: "databases",
+        learnerProfile: { qualification: "student" },
+        context: { userGoal: "understand why databases exist" },
+        firstLesson: {
+          title: "Why Store Data?",
+          html: "<main><h1>Why Store Data?</h1></main>",
+          metadata: {
+            conceptsIntroduced: ["durable memory"],
+            examplesUsed: ["student marks"],
+            summaryForAgent: "The lesson explains durable memory from first principles.",
+          },
+        },
+      }, { clientId: "local" });
+
+      const contextResult = await contextTool!.execute({}, { clientId: "local" });
+      const contextPayload = parseOutput(contextResult.output);
+      const active = contextPayload["activeLearningContext"] as Record<string, unknown>;
+      const course = active["course"] as Record<string, unknown>;
+      expect(course["title"]).toBe("Databases");
+
+      const lessonResult = await lessonTool!.execute({}, { clientId: "local" });
+      const lessonPayloadResult = parseOutput(lessonResult.output);
+      const lessonContext = lessonPayloadResult["lessonContext"] as Record<string, unknown>;
+      expect(lessonContext["summaryForAgent"]).toContain("durable memory");
+
+      const doubtResult = await doubtTool!.execute({
+        text: "I do not understand durable memory.",
+        conceptIds: ["durable memory"],
+      }, { clientId: "local" });
+      expect(doubtResult.ok).toBe(true);
+
+      const searchResult = await searchTool!.execute({ query: "durable memory" }, { clientId: "local" });
+      const searchPayload = parseOutput(searchResult.output);
+      const results = searchPayload["results"] as unknown[];
+      expect(results.length).toBeGreaterThan(0);
     } finally {
       rmSync(dataDir, { recursive: true, force: true });
     }

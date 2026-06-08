@@ -11,6 +11,8 @@ Current product features:
 - Managed file registration and upload processing.
 - Document extraction, section reads, and optional vector retrieval.
 - Structured data profiling and query workflows.
+- Durable first-principles learning courses with one active course per user, structured course maps, learning indexes, lesson metadata, doubt tracking, and Tauri-rendered visual lessons.
+- CLI-anchored Omarchy/Hyprland workspace orchestration with role-based windows, layout presets, protected CLI anchor, and max-five-window cleanup.
 - Generated run artifacts served over HTTP.
 - Terminal chat UI with attachment queue commands.
 - Optional Telegram transport and event/plugin integrations.
@@ -20,6 +22,8 @@ Core product capabilities:
 - Persistent daemon runtime that can keep agent state alive across user interactions.
 - Multi-channel communication model where clients connect to the daemon.
 - Long-term personalization through personal memory, session memory, and episodic recall.
+- Learning continuity through active-course context capsules, duplicate-aware lesson planning, and scoped search over the active course map, lesson metadata, notes, and doubts.
+- General visual workbench control for learning, coding, browsing, references, previews, scratch explanations, and other workspace-heavy tasks.
 - Computer-access layer for useful work across files, shell, Python, SQLite, documents, datasets, and generated artifacts.
 - Event-driven and proactive behavior through system events, plugins, and Pulse scheduling.
 - Provider abstraction so model choice can change without rewriting the agent loop.

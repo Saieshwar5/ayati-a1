@@ -64,6 +64,7 @@ export function App(): React.JSX.Element {
     Math.max(process.stdout.columns ?? 80, MIN_TERMINAL_COLUMNS),
   );
   const messageListRef = useRef<MessageListHandle>(null);
+  const composeEventSentRef = useRef(false);
 
   useEffect(() => {
     const handleResize = (): void => {
@@ -123,6 +124,32 @@ export function App(): React.JSX.Element {
   }, []);
 
   const { send, connected } = useWebSocket({ onMessage });
+
+  const emitWorkspaceEvent = useCallback((event: "cli_input_started" | "cli_message_submitted") => {
+    void (async () => {
+      const uiContext = await detectAgentCliUiContext();
+      send({
+        type: "workspace_event",
+        event,
+        ...(uiContext ? { uiContext } : {}),
+      });
+    })();
+  }, [send]);
+
+  const handleInputChange = useCallback((nextValue: string) => {
+    const userStartedComposing = !isLoading
+      && !composeEventSentRef.current
+      && inputValue.trim().length === 0
+      && nextValue.trim().length > 0;
+    if (userStartedComposing) {
+      composeEventSentRef.current = true;
+      emitWorkspaceEvent("cli_input_started");
+    }
+    if (nextValue.trim().length === 0) {
+      composeEventSentRef.current = false;
+    }
+    setInputValue(nextValue);
+  }, [emitWorkspaceEvent, inputValue, isLoading]);
 
   const pathSuggestions = useMemo(
     () => getPathSuggestions(inputValue, { limit: 6, roots: recentRoots }),
@@ -195,6 +222,11 @@ export function App(): React.JSX.Element {
     void (async () => {
       const uiContext = await detectAgentCliUiContext();
       send({
+        type: "workspace_event",
+        event: "cli_message_submitted",
+        ...(uiContext ? { uiContext } : {}),
+      });
+      send({
         type: "chat",
         content: trimmedServerContent,
         ...(attachments.length > 0 ? { attachments } : {}),
@@ -243,6 +275,7 @@ export function App(): React.JSX.Element {
       );
       const serverAttachments = toServerAttachments(mentionedAttachments);
       setInputValue("");
+      composeEventSentRef.current = false;
       submitChatMessage(
         contentForServer,
         displayContent,
@@ -309,7 +342,7 @@ export function App(): React.JSX.Element {
       />
       <ChatInput
         value={inputValue}
-        onChange={setInputValue}
+        onChange={handleInputChange}
         onSubmit={handleSubmit}
         isLoading={isLoading}
         width={terminalColumns}

@@ -4,6 +4,7 @@ import type {
   CourseContext,
   CourseFileSummary,
   CourseLesson,
+  LessonMetadataInput,
   LearningCourse,
   LearningPreferences,
 } from "../../../learning/types.js";
@@ -28,6 +29,11 @@ const LEARNING_PROMPT_BLOCK = [
   "Use learning_continue_course when the user asks for the next lesson. It generates exactly one planned lesson, updates progress, and opens the visual workspace when available.",
   "Use learning_generate_lesson_page only for low-level repair or explicit manual lesson writing. Prefer the session tools for normal learning.",
   "Use saved course context, previous generated lessons, notes, and progress to keep future lessons consistent.",
+  "Use learning_get_active_learning_context before answering course-specific doubts or deciding what to teach next.",
+  "When the user asks a doubt while a learning lesson is active, use learning_get_active_lesson_context first, answer from that lesson's concepts/examples, then call learning_record_doubt when the doubt should affect future lessons.",
+  "Use learning_plan_next_lesson before generating a continuation. The planner checks the course map, learning index, duplicate topics, prerequisites, and wrong-direction warnings.",
+  "Use learning_search_active_course_context when you need details from prior lessons, notes, doubts, the course map, or the learning index. Do not assume from conversation alone.",
+  "Generated lesson HTML is the visual teaching surface. The lesson metadata is the agent-readable source of truth and must summarize primitives, first principles, concepts, examples, exercises, and next suggestions.",
   "Use learning_mark_lesson_done when the user finishes a lesson, and learning_add_course_note for durable course-specific notes.",
 ].join("\n");
 
@@ -43,13 +49,18 @@ export function createLearningSkill(deps: LearningSkillDeps): SkillDefinition {
       createListCoursesTool(deps),
       createActivateCourseTool(deps),
       createGetActiveCourseTool(deps),
+      createGetActiveLearningContextTool(deps),
+      createGetActiveLessonContextTool(deps),
       createGetCourseTool(deps),
       createUpdateCourseContextTool(deps),
+      createPlanNextLessonTool(deps),
       createContinueCourseTool(deps),
       createGenerateLessonPageTool(deps),
       createMarkLessonDoneTool(deps),
       createGetProgressTool(deps),
       createAddCourseNoteTool(deps),
+      createRecordDoubtTool(deps),
+      createSearchActiveCourseContextTool(deps),
     ],
   };
 }
@@ -66,6 +77,7 @@ function createStartCourseSessionTool(deps: LearningSkillDeps): ToolDefinition {
         title: { type: "string", description: "Course title." },
         topic: { type: "string", description: "Learning topic." },
         description: { type: "string", description: "Short course description." },
+        learnerProfile: learnerProfileSchema(),
         preferences: preferencesSchema(),
         context: contextSchema(),
         modules: modulesSchema(),
@@ -114,6 +126,7 @@ function createStartCourseSessionTool(deps: LearningSkillDeps): ToolDefinition {
           topic: readRequiredString(value, "topic"),
           courseId: readOptionalString(value, "courseId"),
           description: readOptionalString(value, "description"),
+          learnerProfile: readOptionalRecord(value, "learnerProfile") as LearningCourse["learnerProfile"],
           preferences: readOptionalRecord(value, "preferences") as LearningPreferences | undefined,
           context: readOptionalRecord(value, "context") as CourseContext | undefined,
           modules,
@@ -132,6 +145,7 @@ function createStartCourseSessionTool(deps: LearningSkillDeps): ToolDefinition {
           css: readOptionalString(firstLesson, "css"),
           js: readOptionalString(firstLesson, "js"),
           assets: readOptionalArray(firstLesson, "assets") as CourseAssetInput[] | undefined,
+          metadata: readOptionalRecord(firstLesson, "metadata") as LessonMetadataInput | undefined,
         });
 
         const workspace = await maybeOpenWorkspace(deps, {
@@ -149,6 +163,7 @@ function createStartCourseSessionTool(deps: LearningSkillDeps): ToolDefinition {
           },
           course: courseSummary(generated.course, deps.courseStore.courseFileSummary(generated.course.courseId)),
           lesson: lessonPayload(generated.lesson),
+          metadata: generated.metadata,
           files: generated.files,
           workspace,
         };
@@ -169,6 +184,7 @@ function createCourseTool(deps: LearningSkillDeps): ToolDefinition {
         title: { type: "string", description: "Course title." },
         topic: { type: "string", description: "Learning topic." },
         description: { type: "string", description: "Short course description." },
+        learnerProfile: learnerProfileSchema(),
         preferences: preferencesSchema(),
         context: contextSchema(),
         modules: modulesSchema(),
@@ -190,6 +206,7 @@ function createCourseTool(deps: LearningSkillDeps): ToolDefinition {
           topic: readRequiredString(value, "topic"),
           courseId: readOptionalString(value, "courseId"),
           description: readOptionalString(value, "description"),
+          learnerProfile: readOptionalRecord(value, "learnerProfile") as LearningCourse["learnerProfile"],
           preferences: readOptionalRecord(value, "preferences") as LearningPreferences | undefined,
           context: readOptionalRecord(value, "context") as CourseContext | undefined,
           modules: readOptionalArray(value, "modules") as CourseModuleInput[] | undefined,
@@ -288,6 +305,60 @@ function createGetActiveCourseTool(deps: LearningSkillDeps): ToolDefinition {
   };
 }
 
+function createGetActiveLearningContextTool(deps: LearningSkillDeps): ToolDefinition {
+  return {
+    name: "learning_get_active_learning_context",
+    description: "Return the compact active-course context capsule used for first-principles tutoring decisions.",
+    inputSchema: {
+      type: "object",
+      properties: {},
+      additionalProperties: false,
+    },
+    selectionHints: {
+      tags: ["learning", "active", "context", "course", "first principles"],
+      domain: "learning",
+      priority: 115,
+    },
+    async execute(_input, context): Promise<ToolResult> {
+      return withJsonResult(async () => ({
+        activeLearningContext: await deps.courseStore.getActiveLearningContext(clientIdFromContext(context)),
+      }));
+    },
+  };
+}
+
+function createGetActiveLessonContextTool(deps: LearningSkillDeps): ToolDefinition {
+  return {
+    name: "learning_get_active_lesson_context",
+    description: "Return the metadata for the active visible lesson, including concepts, examples, first-principles notes, and summary for answering doubts.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        courseId: { type: "string", description: "Optional course id. Defaults to active course." },
+        lessonId: { type: "string", description: "Optional lesson id. Defaults to course active lesson." },
+      },
+      additionalProperties: false,
+    },
+    selectionHints: {
+      tags: ["learning", "lesson", "context", "doubt", "active"],
+      domain: "learning",
+      priority: 120,
+    },
+    async execute(input, context): Promise<ToolResult> {
+      return withJsonResult(async () => {
+        const value = asRecord(input);
+        return {
+          lessonContext: await deps.courseStore.getActiveLessonMetadata(
+            clientIdFromContext(context),
+            readOptionalString(value, "courseId"),
+            readOptionalString(value, "lessonId"),
+          ),
+        };
+      });
+    },
+  };
+}
+
 function createGetCourseTool(deps: LearningSkillDeps): ToolDefinition {
   return {
     name: "learning_get_course",
@@ -353,6 +424,36 @@ function createUpdateCourseContextTool(deps: LearningSkillDeps): ToolDefinition 
   };
 }
 
+function createPlanNextLessonTool(deps: LearningSkillDeps): ToolDefinition {
+  return {
+    name: "learning_plan_next_lesson",
+    description: "Plan the next single lesson from the active course map and learning index before generating content. Use this to avoid duplicates and wrong direction.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        courseId: { type: "string", description: "Optional course id. Defaults to active course." },
+        focus: { type: "string", description: "Optional requested focus/topic from the user." },
+      },
+      additionalProperties: false,
+    },
+    selectionHints: {
+      tags: ["learning", "course", "plan", "next lesson", "duplicates", "direction"],
+      domain: "learning",
+      priority: 125,
+    },
+    async execute(input, context): Promise<ToolResult> {
+      return withJsonResult(async () => {
+        const value = asRecord(input);
+        return deps.courseStore.planNextLesson({
+          clientId: clientIdFromContext(context),
+          courseId: readOptionalString(value, "courseId"),
+          focus: readOptionalString(value, "focus"),
+        });
+      });
+    },
+  };
+}
+
 function createContinueCourseTool(deps: LearningSkillDeps): ToolDefinition {
   return {
     name: "learning_continue_course",
@@ -375,6 +476,7 @@ function createContinueCourseTool(deps: LearningSkillDeps): ToolDefinition {
         css: { type: "string", description: "Optional lesson stylesheet content." },
         js: { type: "string", description: "Optional lesson JavaScript content." },
         assets: assetsSchema(),
+        metadata: lessonMetadataSchema(),
         markCurrentDone: {
           type: "boolean",
           description: "Mark the current active lesson complete before generating the next one. Defaults to false.",
@@ -418,6 +520,7 @@ function createContinueCourseTool(deps: LearningSkillDeps): ToolDefinition {
           css: readOptionalString(value, "css"),
           js: readOptionalString(value, "js"),
           assets: readOptionalArray(value, "assets") as CourseAssetInput[] | undefined,
+          metadata: readOptionalRecord(value, "metadata") as LessonMetadataInput | undefined,
         });
         const workspace = await maybeOpenWorkspace(deps, {
           clientId,
@@ -434,6 +537,7 @@ function createContinueCourseTool(deps: LearningSkillDeps): ToolDefinition {
           },
           course: courseSummary(result.course, deps.courseStore.courseFileSummary(result.course.courseId)),
           lesson: lessonPayload(result.lesson),
+          metadata: result.metadata,
           files: result.files,
           workspace,
         };
@@ -464,6 +568,7 @@ function createGenerateLessonPageTool(deps: LearningSkillDeps): ToolDefinition {
         css: { type: "string", description: "Optional lesson stylesheet content." },
         js: { type: "string", description: "Optional lesson JavaScript content." },
         assets: assetsSchema(),
+        metadata: lessonMetadataSchema(),
       },
       additionalProperties: false,
     },
@@ -487,10 +592,12 @@ function createGenerateLessonPageTool(deps: LearningSkillDeps): ToolDefinition {
           css: readOptionalString(value, "css"),
           js: readOptionalString(value, "js"),
           assets: readOptionalArray(value, "assets") as CourseAssetInput[] | undefined,
+          metadata: readOptionalRecord(value, "metadata") as LessonMetadataInput | undefined,
         });
         return {
           course: courseSummary(result.course, deps.courseStore.courseFileSummary(result.course.courseId)),
           lesson: lessonPayload(result.lesson),
+          metadata: result.metadata,
           files: result.files,
         };
       });
@@ -598,6 +705,82 @@ function createAddCourseNoteTool(deps: LearningSkillDeps): ToolDefinition {
           course: courseSummary(course, deps.courseStore.courseFileSummary(course.courseId)),
           notes: course.notes,
         };
+      });
+    },
+  };
+}
+
+function createRecordDoubtTool(deps: LearningSkillDeps): ToolDefinition {
+  return {
+    name: "learning_record_doubt",
+    description: "Record a learner doubt or confusion against the active course/lesson so future lessons can adapt.",
+    inputSchema: {
+      type: "object",
+      required: ["text"],
+      properties: {
+        courseId: { type: "string", description: "Optional course id. Defaults to active course." },
+        lessonId: { type: "string", description: "Optional lesson id. Defaults to active lesson." },
+        text: { type: "string", description: "The learner's doubt or confusion." },
+        answerSummary: { type: "string", description: "Short summary of the answer/explanation given, if already answered." },
+        conceptIds: {
+          type: "array",
+          items: { type: "string" },
+          description: "Concept ids or names linked to the doubt.",
+        },
+        status: { type: "string", enum: ["open", "answered"], description: "Whether this doubt is still open. Defaults to open." },
+      },
+      additionalProperties: false,
+    },
+    selectionHints: {
+      tags: ["learning", "doubt", "confusion", "weak concept", "lesson"],
+      domain: "learning",
+      priority: 110,
+    },
+    async execute(input, context): Promise<ToolResult> {
+      return withJsonResult(async () => {
+        const value = asRecord(input);
+        return deps.courseStore.recordDoubt({
+          clientId: clientIdFromContext(context),
+          courseId: readOptionalString(value, "courseId"),
+          lessonId: readOptionalString(value, "lessonId"),
+          text: readRequiredString(value, "text"),
+          answerSummary: readOptionalString(value, "answerSummary"),
+          conceptIds: readOptionalStringArray(value, "conceptIds"),
+          status: readOptionalString(value, "status") === "answered" ? "answered" : "open",
+        });
+      });
+    },
+  };
+}
+
+function createSearchActiveCourseContextTool(deps: LearningSkillDeps): ToolDefinition {
+  return {
+    name: "learning_search_active_course_context",
+    description: "Search the active course map, learning index, lesson metadata, notes, and doubts for course-specific context.",
+    inputSchema: {
+      type: "object",
+      required: ["query"],
+      properties: {
+        query: { type: "string", description: "Search query." },
+        courseId: { type: "string", description: "Optional course id. Defaults to active course." },
+        limit: { type: "integer", description: "Maximum results, default 8." },
+      },
+      additionalProperties: false,
+    },
+    selectionHints: {
+      tags: ["learning", "search", "course context", "lesson history", "doubt"],
+      domain: "learning",
+      priority: 105,
+    },
+    async execute(input, context): Promise<ToolResult> {
+      return withJsonResult(async () => {
+        const value = asRecord(input);
+        return deps.courseStore.searchActiveCourseContext({
+          clientId: clientIdFromContext(context),
+          query: readRequiredString(value, "query"),
+          courseId: readOptionalString(value, "courseId"),
+          limit: readOptionalInteger(value, "limit"),
+        });
       });
     },
   };
@@ -744,6 +927,27 @@ function lessonPayload(lesson: CourseLesson): Record<string, unknown> {
   };
 }
 
+function learnerProfileSchema(): Record<string, unknown> {
+  return {
+    type: "object",
+    properties: {
+      age: { type: "string" },
+      qualification: { type: "string" },
+      background: { type: "string" },
+      motivation: { type: "string" },
+      knownStrengths: {
+        type: "array",
+        items: { type: "string" },
+      },
+      knownWeaknesses: {
+        type: "array",
+        items: { type: "string" },
+      },
+    },
+    additionalProperties: true,
+  };
+}
+
 function preferencesSchema(): Record<string, unknown> {
   return {
     type: "object",
@@ -762,6 +966,81 @@ function preferencesSchema(): Record<string, unknown> {
       notes: { type: "string" },
     },
     additionalProperties: true,
+  };
+}
+
+function lessonMetadataSchema(): Record<string, unknown> {
+  return {
+    type: "object",
+    description: "Agent-readable lesson meaning. Store the first-principles structure separately from visual HTML.",
+    properties: {
+      purpose: { type: "string" },
+      primitiveIdeas: {
+        type: "array",
+        items: { type: "string" },
+      },
+      firstPrinciples: {
+        type: "array",
+        items: { type: "string" },
+      },
+      conceptsIntroduced: {
+        type: "array",
+        items: { type: "string" },
+      },
+      conceptsPracticed: {
+        type: "array",
+        items: { type: "string" },
+      },
+      prerequisitesUsed: {
+        type: "array",
+        items: { type: "string" },
+      },
+      examplesUsed: {
+        type: "array",
+        items: { type: "string" },
+      },
+      exercises: {
+        type: "array",
+        items: {
+          type: "object",
+          required: ["prompt"],
+          properties: {
+            id: { type: "string" },
+            prompt: { type: "string" },
+            expectedInsight: { type: "string" },
+          },
+          additionalProperties: false,
+        },
+      },
+      visualSections: {
+        type: "array",
+        items: {
+          type: "object",
+          required: ["title"],
+          properties: {
+            id: { type: "string" },
+            title: { type: "string" },
+            summary: { type: "string" },
+            htmlAnchor: { type: "string" },
+          },
+          additionalProperties: false,
+        },
+      },
+      commonDoubts: {
+        type: "array",
+        items: { type: "string" },
+      },
+      summaryForAgent: { type: "string" },
+      nextSuggestedConcepts: {
+        type: "array",
+        items: { type: "string" },
+      },
+      avoidRepeating: {
+        type: "array",
+        items: { type: "string" },
+      },
+    },
+    additionalProperties: false,
   };
 }
 
@@ -846,6 +1125,7 @@ function lessonContentSchema(input: { description: string; requireHtml: boolean 
       css: { type: "string", description: "Optional lesson stylesheet content." },
       js: { type: "string", description: "Optional lesson JavaScript content." },
       assets: assetsSchema(),
+      metadata: lessonMetadataSchema(),
     },
     additionalProperties: false,
   };
@@ -901,6 +1181,11 @@ function readOptionalStringArray(record: Record<string, unknown>, field: string)
     return undefined;
   }
   return value.flatMap((entry) => typeof entry === "string" && entry.trim() ? [entry.trim()] : []);
+}
+
+function readOptionalInteger(record: Record<string, unknown>, field: string): number | undefined {
+  const value = record[field];
+  return typeof value === "number" && Number.isInteger(value) ? value : undefined;
 }
 
 function clientIdFromContext(context: ToolExecutionContext | undefined): string {

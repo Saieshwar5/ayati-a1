@@ -22,6 +22,7 @@ import type {
   PreparedAttachmentStateUpdate,
   RecentContextSearch,
   RecentContextSearchStatus,
+  StepSummary,
 } from "./types.js";
 import { DEFAULT_LOOP_CONFIG, RECENT_TASK_SELECTION_LIMIT } from "./types.js";
 
@@ -466,7 +467,11 @@ export async function agentLoop(deps: AgentLoopDeps): Promise<AgentLoopResult> {
     });
     deps.externalSkillBroker?.cleanupExpired?.(currentToolExecutionContext(state.iteration));
 
-      if (stepSummary.outcome === "failed") {
+    const terminalWorkspaceLayoutFailure = stepSummary.outcome === "failed" && isVerifiedWorkspaceLayoutFailure(stepSummary)
+      ? buildWorkspaceLayoutFailureReply(stepSummary)
+      : undefined;
+
+    if (stepSummary.outcome === "failed") {
       state.consecutiveFailures++;
 
       const fallbackReason = `failureType=${stepSummary.failureType ?? "verify_failed"}; stop=${stepSummary.stoppedEarlyReason ?? "none"}; tool_success=${stepSummary.toolSuccessCount}; tool_failed=${stepSummary.toolFailureCount}`;
@@ -488,6 +493,10 @@ export async function agentLoop(deps: AgentLoopDeps): Promise<AgentLoopResult> {
       if (state.consecutiveFailures >= config.maxConsecutiveFailures) {
         state.status = "failed";
       }
+      if (terminalWorkspaceLayoutFailure) {
+        state.status = "failed";
+        state.finalOutput = terminalWorkspaceLayoutFailure;
+      }
     } else {
       state.consecutiveFailures = 0;
     }
@@ -497,6 +506,15 @@ export async function agentLoop(deps: AgentLoopDeps): Promise<AgentLoopResult> {
       `Step ${state.iteration}: ${stepSummary.executionContract} → ${stepSummary.outcome}`,
       runPath,
     );
+    if (terminalWorkspaceLayoutFailure) {
+      return finalizeLoopResult({
+        dataDir: deps.dataDir,
+        status: "failed",
+        content: terminalWorkspaceLayoutFailure,
+        totalIterations: state.iteration,
+        totalToolCalls,
+      });
+    }
   }
 
   const finalOutput = buildStuckLimitReply(state, config.maxIterations);
@@ -525,6 +543,27 @@ function validateLoopConfig(config: LoopConfig): void {
       "Invalid loop config: approachReevalThreshold must be less than maxConsecutiveFailures.",
     );
   }
+}
+
+function isVerifiedWorkspaceLayoutFailure(step: StepSummary): boolean {
+  const haystack = [
+    step.executionContract,
+    step.intent,
+    step.summary,
+    step.evidenceSummary,
+    ...(step.evidenceItems ?? []),
+  ].join("\n").toLowerCase();
+  return haystack.includes("workspace_set_layout")
+    && haystack.includes("layoutverification")
+    && (haystack.includes("verified = false") || haystack.includes("verified=false") || haystack.includes("\"verified\": false"));
+}
+
+function buildWorkspaceLayoutFailureReply(step: StepSummary): string {
+  const evidence = step.evidenceItems?.length
+    ? ` Evidence: ${step.evidenceItems.slice(0, 4).join(" ")}`
+    : "";
+  const detail = step.evidenceSummary?.trim() || step.summary.trim() || "The requested workspace layout could not be verified.";
+  return `${detail}${evidence} I stopped here instead of trying raw Hyprland shell resize commands, because the workspace layout tool already owns layout retries and verification.`;
 }
 
 function currentToolRegistryContextFactory(

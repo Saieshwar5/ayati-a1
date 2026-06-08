@@ -27,6 +27,8 @@ import { appendSkillBlocks, createSkillRuntime } from "./skill-runtime.js";
 import { loadAyatiRuntimeConfig } from "../config/runtime-config.js";
 import embeddingProvider from "../embeddings/runtime/index.js";
 import imageGenerationProvider from "../image-generation/runtime/index.js";
+import type { AgentUiContext } from "../ui/context.js";
+import type { WorkspaceInteractionEvent } from "../ui/workspace-orchestrator.js";
 
 const thisDir = dirname(fileURLToPath(import.meta.url));
 const projectRoot = resolve(thisDir, "..", "..");
@@ -62,8 +64,22 @@ export async function main(): Promise<void> {
   const pulseStore = new PulseStore();
   const registry = new PluginRegistry();
 
+  let content: Awaited<ReturnType<typeof createContentRuntime>> | null = null;
   const wsServer = new WsServer({
-    onMessage: (_transportClientId, data) => engine?.handleMessage(CLIENT_ID, data),
+    onMessage: (_transportClientId, data) => {
+      const workspaceEvent = parseWorkspaceEventMessage(data);
+      if (workspaceEvent) {
+        void content?.workspaceOrchestrator.handleInteractionEvent({
+          clientId: CLIENT_ID,
+          event: workspaceEvent.event,
+          uiContext: workspaceEvent.uiContext,
+        }).catch((err: unknown) => {
+          devLog(`Workspace event ${workspaceEvent.event} failed: ${err instanceof Error ? err.message : String(err)}`);
+        });
+        return;
+      }
+      engine?.handleMessage(CLIENT_ID, data);
+    },
   });
 
   const pulseScheduler = new PulseScheduler({
@@ -74,7 +90,7 @@ export async function main(): Promise<void> {
     },
   });
 
-  const content = await createContentRuntime({
+  content = await createContentRuntime({
     projectRoot,
     provider,
     sessionMemory: memory.sessionMemory,
@@ -94,6 +110,7 @@ export async function main(): Promise<void> {
     directoryLibrary: content.directoryLibrary,
     courseStore: content.courseStore,
     learningWorkspace: content.learningWorkspace,
+    workspaceOrchestrator: content.workspaceOrchestrator,
     config: runtimeConfig,
   });
 
@@ -147,6 +164,7 @@ export async function main(): Promise<void> {
     documentContextBackend: content.documentContextBackend,
     fileLibrary: content.fileLibrary,
     directoryLibrary: content.directoryLibrary,
+    courseStore: content.courseStore,
     systemEventPolicy,
   });
   const systemEventWorker = new SystemEventWorker({
@@ -218,4 +236,52 @@ export async function main(): Promise<void> {
 
   process.on("SIGINT", () => void shutdown());
   process.on("SIGTERM", () => void shutdown());
+}
+
+function parseWorkspaceEventMessage(data: unknown): {
+  event: WorkspaceInteractionEvent;
+  uiContext?: AgentUiContext;
+} | null {
+  if (!data || typeof data !== "object" || Array.isArray(data)) {
+    return null;
+  }
+  const record = data as Record<string, unknown>;
+  if (record["type"] !== "workspace_event") {
+    return null;
+  }
+  const event = record["event"];
+  if (event !== "cli_input_started" && event !== "cli_message_submitted") {
+    return null;
+  }
+  const uiContext = normalizeAgentUiContext(record["uiContext"]);
+  return {
+    event,
+    ...(uiContext ? { uiContext } : {}),
+  };
+}
+
+function normalizeAgentUiContext(value: unknown): AgentUiContext | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return undefined;
+  }
+  const record = value as Record<string, unknown>;
+  if (record["source"] !== "agent-cli") {
+    return undefined;
+  }
+  const processTreePids = Array.isArray(record["processTreePids"])
+    ? record["processTreePids"].filter((pid): pid is number => typeof pid === "number")
+    : undefined;
+  return {
+    source: "agent-cli",
+    ...(typeof record["terminalPid"] === "number" ? { terminalPid: record["terminalPid"] } : {}),
+    ...(typeof record["processPid"] === "number" ? { processPid: record["processPid"] } : {}),
+    ...(processTreePids && processTreePids.length > 0 ? { processTreePids } : {}),
+    ...(typeof record["windowAddress"] === "string" ? { windowAddress: record["windowAddress"] } : {}),
+    ...(typeof record["windowClass"] === "string" ? { windowClass: record["windowClass"] } : {}),
+    ...(typeof record["windowTitle"] === "string" ? { windowTitle: record["windowTitle"] } : {}),
+    ...(typeof record["workspaceId"] === "number" ? { workspaceId: record["workspaceId"] } : {}),
+    ...(typeof record["workspaceName"] === "string" ? { workspaceName: record["workspaceName"] } : {}),
+    ...(typeof record["monitor"] === "string" ? { monitor: record["monitor"] } : {}),
+    ...(typeof record["detectedAt"] === "string" ? { detectedAt: record["detectedAt"] } : {}),
+  };
 }

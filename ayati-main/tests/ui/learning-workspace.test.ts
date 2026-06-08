@@ -88,6 +88,8 @@ describe("LearningWorkspaceController", () => {
       expect(opened.arrangementStatus).toBe("arranged");
       expect(spawnImpl).toHaveBeenCalledOnce();
       expect(hyprctl).toHaveBeenCalledWith(["dispatch", "focuswindow", "address:0xlearning"]);
+      expect(hyprctl).not.toHaveBeenCalledWith(["dispatch", "splitratio", "exact 0.3"]);
+      expect(hyprctl).not.toHaveBeenCalledWith(["dispatch", "splitratio", "exact 0.5"]);
 
       const shown = await controller.showLesson({
         clientId: "local",
@@ -248,6 +250,195 @@ describe("LearningWorkspaceController", () => {
       expect(opened.anchorWorkspaceName).toBe("3");
       expect(hyprctl).toHaveBeenCalledWith(["dispatch", "movetoworkspacesilent", "3,address:0xlearning"]);
       expect(hyprctl).toHaveBeenCalledWith(["dispatch", "focuswindow", "address:0xlearning"]);
+    } finally {
+      rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it("delegates learning placement to the floating 30-70 workspace controller", async () => {
+    const dataDir = makeTmpDir();
+    try {
+      const child = new EventEmitter() as EventEmitter & {
+        pid: number;
+        exitCode: number | null;
+        killed: boolean;
+        kill: () => boolean;
+        unref: () => void;
+      };
+      child.pid = 4321;
+      child.exitCode = null;
+      child.killed = false;
+      child.kill = () => true;
+      child.unref = () => undefined;
+      const workspaceOrchestrator = {
+        setLayout: vi.fn(async () => ({
+          lastActionStatus: "applied",
+          layoutVerification: { verified: true },
+        })),
+      };
+      const hyprctl = vi.fn(async (args: string[]) => {
+        if (args[0] === "clients") {
+          return JSON.stringify([
+            {
+              address: "0xcli-terminal",
+              visible: true,
+              hidden: false,
+              class: "Alacritty",
+              title: "ayati-a1",
+              pid: 111,
+              workspace: { id: 3, name: "3" },
+              focusHistoryID: 1,
+            },
+            {
+              address: "0xlearning",
+              visible: true,
+              hidden: false,
+              class: "ayati-learning-ui",
+              title: "Ayati Learning Workspace",
+              pid: 4321,
+              workspace: { id: 3, name: "3" },
+              focusHistoryID: 0,
+            },
+          ]);
+        }
+        if (args[0] === "activeworkspace") {
+          return JSON.stringify({ id: 3, name: "3" });
+        }
+        return "ok";
+      });
+      const controller = new LearningWorkspaceController({
+        projectRoot: dataDir,
+        dataDir,
+        httpBaseUrl: "http://127.0.0.1:8081",
+        spawnImpl: vi.fn(() => child) as never,
+        hyprctl,
+        hyprlandEnabled: true,
+        windowPollAttempts: 1,
+        windowPollIntervalMs: 0,
+        workspaceOrchestrator: workspaceOrchestrator as never,
+      });
+
+      const uiContext = {
+        source: "agent-cli" as const,
+        terminalPid: 111,
+        windowAddress: "0xcli-terminal",
+        workspaceId: 3,
+        workspaceName: "3",
+      };
+      const opened = await controller.open({
+        clientId: "local",
+        courseId: "machine-learning",
+        lessonId: "intro",
+        uiContext,
+      });
+
+      expect(opened.arrangementStatus).toBe("arranged");
+      expect(workspaceOrchestrator.setLayout).toHaveBeenCalledWith({
+        clientId: "local",
+        uiContext,
+        layout: "30-70",
+        primaryAddress: "0xlearning",
+      });
+      expect(hyprctl).toHaveBeenCalledWith(["dispatch", "movetoworkspacesilent", "3,address:0xlearning"]);
+      expect(hyprctl).not.toHaveBeenCalledWith(["dispatch", "settiled", "address:0xlearning"]);
+    } finally {
+      rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it("reopens the learning window when showLesson finds stale Hyprland state", async () => {
+    const dataDir = makeTmpDir();
+    try {
+      const child = new EventEmitter() as EventEmitter & {
+        pid: number;
+        exitCode: number | null;
+        killed: boolean;
+        kill: () => boolean;
+        unref: () => void;
+      };
+      child.pid = 9876;
+      child.exitCode = null;
+      child.killed = false;
+      child.kill = () => true;
+      child.unref = () => undefined;
+      let launched = false;
+      const spawnImpl = vi.fn(() => {
+        launched = true;
+        return child;
+      });
+      const workspaceOrchestrator = {
+        setLayout: vi.fn(async () => ({
+          lastActionStatus: "applied",
+          layoutVerification: { verified: true },
+        })),
+      };
+      const hyprctl = vi.fn(async (args: string[]) => {
+        if (args[0] === "clients") {
+          return JSON.stringify([
+            {
+              address: "0xcli-terminal",
+              visible: true,
+              hidden: false,
+              class: "Alacritty",
+              title: "ayati-a1",
+              pid: 111,
+              workspace: { id: 3, name: "3" },
+              focusHistoryID: 0,
+            },
+            ...(launched
+              ? [{
+                address: "0xlearning",
+                visible: true,
+                hidden: false,
+                class: "ayati-learning-ui",
+                title: "Ayati Learning Workspace",
+                pid: 9876,
+                workspace: { id: 3, name: "3" },
+                focusHistoryID: 1,
+              }]
+              : []),
+          ]);
+        }
+        if (args[0] === "activeworkspace") {
+          return JSON.stringify({ id: 3, name: "3" });
+        }
+        return "ok";
+      });
+      const controller = new LearningWorkspaceController({
+        projectRoot: dataDir,
+        dataDir,
+        httpBaseUrl: "http://127.0.0.1:8081",
+        spawnImpl: spawnImpl as never,
+        hyprctl,
+        hyprlandEnabled: true,
+        windowPollAttempts: 1,
+        windowPollIntervalMs: 0,
+        workspaceOrchestrator: workspaceOrchestrator as never,
+      });
+
+      const shown = await controller.showLesson({
+        clientId: "local",
+        courseId: "thermodynamics-beginner-001",
+        lessonId: "brayton-cycle-analysis-gas-turbine-fundamentals",
+        uiContext: {
+          source: "agent-cli",
+          terminalPid: 111,
+          windowAddress: "0xcli-terminal",
+          workspaceId: 3,
+          workspaceName: "3",
+        },
+      });
+
+      expect(spawnImpl).toHaveBeenCalledOnce();
+      expect(shown.lastCommand).toBe("show_lesson");
+      expect(shown.launchStatus).toBe("running");
+      expect(shown.windowVisible).toBe(true);
+      expect(shown.windowAddress).toBe("0xlearning");
+      expect(shown.arrangementStatus).toBe("arranged");
+      expect(workspaceOrchestrator.setLayout).toHaveBeenCalledWith(expect.objectContaining({
+        layout: "30-70",
+        primaryAddress: "0xlearning",
+      }));
     } finally {
       rmSync(dataDir, { recursive: true, force: true });
     }

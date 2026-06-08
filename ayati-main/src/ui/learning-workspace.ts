@@ -4,6 +4,7 @@ import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { promisify } from "node:util";
 import type { AgentUiContext } from "./context.js";
+import type { WorkspaceOrchestrator } from "./workspace-orchestrator.js";
 
 export type LearningWorkspaceCommand = "open" | "focus" | "show_lesson" | "show_course" | "close";
 export type LearningWorkspaceLaunchStatus = "not_started" | "starting" | "running" | "failed";
@@ -52,6 +53,7 @@ export interface LearningWorkspaceControllerOptions {
   spawnImpl?: typeof spawn;
   hyprctl?: HyprctlRunner;
   hyprlandEnabled?: boolean;
+  workspaceOrchestrator?: WorkspaceOrchestrator;
   windowTitle?: string;
   windowClass?: string;
   windowPollAttempts?: number;
@@ -77,6 +79,7 @@ export class LearningWorkspaceController {
   private readonly windowClass: string;
   private readonly windowPollAttempts: number;
   private readonly windowPollIntervalMs: number;
+  private readonly workspaceOrchestrator?: WorkspaceOrchestrator;
   private child: ChildProcess | null = null;
 
   constructor(options: LearningWorkspaceControllerOptions) {
@@ -91,6 +94,7 @@ export class LearningWorkspaceController {
     this.windowClass = options.windowClass?.trim() || "ayati-learning-ui";
     this.windowPollAttempts = Math.max(1, options.windowPollAttempts ?? 20);
     this.windowPollIntervalMs = Math.max(0, options.windowPollIntervalMs ?? 300);
+    this.workspaceOrchestrator = options.workspaceOrchestrator;
   }
 
   async open(input: OpenLearningWorkspaceInput): Promise<LearningWorkspaceState> {
@@ -157,7 +161,19 @@ export class LearningWorkspaceController {
       lastCommand: "show_lesson",
       lastCommandId: this.commandId(),
     });
-    return this.syncHyprlandWindow(input.clientId, { arrange: true, waitForWindow: false, uiContext: input.uiContext });
+    const synced = await this.syncHyprlandWindow(input.clientId, { arrange: true, waitForWindow: false, uiContext: input.uiContext });
+    if (isMissingLearningWindow(synced)) {
+      const opened = await this.open(input);
+      return this.updateState(input.clientId, {
+        lastCommand: "show_lesson",
+        lastCommandId: this.commandId(),
+        activeCourseId: optionalTrim(input.courseId),
+        activeLessonId: optionalTrim(input.lessonId),
+        error: opened.error,
+        arrangementError: opened.arrangementError,
+      });
+    }
+    return synced;
   }
 
   async showCourse(input: OpenLearningWorkspaceInput): Promise<LearningWorkspaceState> {
@@ -168,7 +184,19 @@ export class LearningWorkspaceController {
       lastCommand: "show_course",
       lastCommandId: this.commandId(),
     });
-    return this.syncHyprlandWindow(input.clientId, { arrange: true, waitForWindow: false, uiContext: input.uiContext });
+    const synced = await this.syncHyprlandWindow(input.clientId, { arrange: true, waitForWindow: false, uiContext: input.uiContext });
+    if (isMissingLearningWindow(synced)) {
+      const opened = await this.open(input);
+      return this.updateState(input.clientId, {
+        lastCommand: "show_course",
+        lastCommandId: this.commandId(),
+        activeCourseId: optionalTrim(input.courseId),
+        activeLessonId: optionalTrim(input.lessonId),
+        error: opened.error,
+        arrangementError: opened.arrangementError,
+      });
+    }
+    return synced;
   }
 
   async close(clientId: string): Promise<LearningWorkspaceState> {
@@ -267,6 +295,7 @@ export class LearningWorkspaceController {
 
       if (options.arrange) {
         const arranged = await this.arrangeCurrentWorkspace({
+          clientId,
           learningClient: lookup.client,
           clients: lookup.clients,
           activeWorkspace,
@@ -332,6 +361,7 @@ export class LearningWorkspaceController {
   }
 
   private async arrangeCurrentWorkspace(input: {
+    clientId: string;
     learningClient: HyprlandClient;
     clients: HyprlandClient[];
     activeWorkspace: HyprlandWorkspace | null;
@@ -354,12 +384,32 @@ export class LearningWorkspaceController {
     const terminal = anchor ?? findTerminalClient(input.clients, workspace.id);
     try {
       await this.dispatchHyprland("movetoworkspacesilent", `${workspace.name},address:${input.learningClient.address}`);
-      await this.dispatchHyprland("settiled", `address:${input.learningClient.address}`);
       if (terminal?.address) {
         await this.dispatchHyprland("movetoworkspacesilent", `${workspace.name},address:${terminal.address}`);
-        await this.dispatchHyprland("settiled", `address:${terminal.address}`);
         await this.dispatchHyprland("focuswindow", `address:${terminal.address}`);
-        await this.dispatchHyprlandOptional("splitratio", "exact 0.5");
+      }
+
+      if (this.workspaceOrchestrator) {
+        const arranged = await this.workspaceOrchestrator.setLayout({
+          clientId: input.clientId,
+          uiContext: input.uiContext,
+          layout: "30-70",
+          primaryAddress: input.learningClient.address,
+        });
+        await this.dispatchHyprland("focuswindow", `address:${input.learningClient.address}`);
+        if (arranged.lastActionStatus === "failed") {
+          return {
+            status: "failed",
+            terminal,
+            error: arranged.error ?? arranged.layoutVerification?.reason ?? "Workspace orchestrator could not verify the learning layout.",
+          };
+        }
+        return { status: "arranged", terminal };
+      }
+
+      await this.dispatchHyprland("settiled", `address:${input.learningClient.address}`);
+      if (terminal?.address) {
+        await this.dispatchHyprland("settiled", `address:${terminal.address}`);
       }
       await this.dispatchHyprland("focuswindow", `address:${input.learningClient.address}`);
       return { status: "arranged", terminal };
@@ -669,6 +719,12 @@ function isPlacementPolicy(value: unknown): value is LearningWorkspacePlacementP
     || value === "active-workspace"
     || value === "dedicated-workspace"
     || value === "last-used";
+}
+
+function isMissingLearningWindow(state: LearningWorkspaceState): boolean {
+  return state.arrangementStatus === "failed"
+    && state.windowVisible === false
+    && (state.arrangementError?.includes("Tauri window was not found") ?? false);
 }
 
 async function delay(ms: number): Promise<void> {

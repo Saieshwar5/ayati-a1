@@ -13,6 +13,7 @@ import { DirectoryLibrary } from "../files/directory-library.js";
 import { FileLibrary } from "../files/file-library.js";
 import { CourseStore } from "../learning/course-store.js";
 import { LearningWorkspaceController } from "../ui/learning-workspace.js";
+import { WorkspaceOrchestrator } from "../ui/workspace-orchestrator.js";
 import { devLog, devWarn } from "../shared/index.js";
 import type { AyatiRuntimeConfig } from "../config/runtime-config.js";
 import type { EmbeddingProvider } from "../embeddings/contracts.js";
@@ -35,6 +36,7 @@ export interface ContentRuntime {
   directoryLibrary: DirectoryLibrary;
   courseStore: CourseStore;
   learningWorkspace: LearningWorkspaceController;
+  workspaceOrchestrator: WorkspaceOrchestrator;
   httpHost: string;
   httpPort: number;
 }
@@ -103,10 +105,14 @@ export async function createContentRuntime(options: ContentRuntimeOptions): Prom
   const courseStore = new CourseStore({
     dataDir,
   });
+  const workspaceOrchestrator = new WorkspaceOrchestrator({
+    dataDir,
+  });
   const learningWorkspace = new LearningWorkspaceController({
     projectRoot,
     dataDir,
     httpBaseUrl: config.learning.apiBaseUrl,
+    workspaceOrchestrator,
   });
 
   return {
@@ -119,6 +125,7 @@ export async function createContentRuntime(options: ContentRuntimeOptions): Prom
     directoryLibrary,
     courseStore,
     learningWorkspace,
+    workspaceOrchestrator,
     httpHost: config.http.host,
     httpPort: config.http.port,
   };

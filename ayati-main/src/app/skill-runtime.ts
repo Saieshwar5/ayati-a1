@@ -11,6 +11,7 @@ import type { DirectoryLibrary } from "../files/directory-library.js";
 import type { FileLibrary } from "../files/file-library.js";
 import type { CourseStore } from "../learning/course-store.js";
 import type { LearningWorkspaceController } from "../ui/learning-workspace.js";
+import type { WorkspaceOrchestrator } from "../ui/workspace-orchestrator.js";
 import type { AyatiRuntimeConfig } from "../config/runtime-config.js";
 import { builtInSkillsProvider } from "../skills/provider.js";
 import { createToolExecutor, type ToolExecutor } from "../skills/tool-executor.js";
@@ -44,6 +45,7 @@ export interface SkillRuntimeOptions {
   directoryLibrary: DirectoryLibrary;
   courseStore: CourseStore;
   learningWorkspace: LearningWorkspaceController;
+  workspaceOrchestrator: WorkspaceOrchestrator;
   config: AyatiRuntimeConfig;
 }
 
@@ -83,7 +85,10 @@ export async function createSkillRuntime(options: SkillRuntimeOptions): Promise<
       courseStore: options.courseStore,
       learningWorkspace: options.learningWorkspace,
     }),
-    createUiSkill({ learningWorkspace: options.learningWorkspace }),
+    createUiSkill({
+      learningWorkspace: options.learningWorkspace,
+      workspaceOrchestrator: options.workspaceOrchestrator,
+    }),
   ];
 
   const baseToolDefs = [

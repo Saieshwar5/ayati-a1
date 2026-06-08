@@ -23,6 +23,18 @@ export interface ChatRequestMessage {
   uiContext?: AgentUiContext;
 }
 
+export type WorkspaceEventName =
+  | "cli_input_started"
+  | "cli_message_submitted";
+
+export interface WorkspaceEventMessage {
+  type: "workspace_event";
+  event: WorkspaceEventName;
+  uiContext?: AgentUiContext;
+}
+
+export type ClientMessage = ChatRequestMessage | WorkspaceEventMessage;
+
 export interface AgentUiContext {
   source: "agent-cli";
   terminalPid?: number;

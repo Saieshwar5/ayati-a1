@@ -9,6 +9,7 @@ import { createRecallSkill } from "../../src/skills/builtins/recall/index.js";
 import { createUiSkill } from "../../src/skills/builtins/ui/index.js";
 import { CourseStore } from "../../src/learning/course-store.js";
 import { LearningWorkspaceController } from "../../src/ui/learning-workspace.js";
+import { WorkspaceOrchestrator } from "../../src/ui/workspace-orchestrator.js";
 import type { PreparedAttachmentService } from "../../src/documents/prepared-attachment-service.js";
 import type { SessionAttachmentService } from "../../src/documents/session-attachment-service.js";
 import type { RecallRetriever } from "../../src/skills/builtins/recall/index.js";
@@ -76,6 +77,10 @@ async function buildRuntimeTools(): Promise<ToolDefinition[]> {
         projectRoot: "/tmp/ayati-test-data",
         dataDir: "/tmp/ayati-test-data",
         httpBaseUrl: "http://127.0.0.1:8081",
+        hyprlandEnabled: false,
+      }),
+      workspaceOrchestrator: new WorkspaceOrchestrator({
+        dataDir: "/tmp/ayati-test-data",
         hyprlandEnabled: false,
       }),
     }).tools,

@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import WebSocket from "ws";
-import type { ChatRequestMessage, ServerMessage } from "../types.js";
+import type { ClientMessage, ServerMessage } from "../types.js";
 
 const WS_URL = "ws://localhost:8080";
 
@@ -9,7 +9,7 @@ type UseWebSocketOptions = {
 };
 
 type UseWebSocketReturn = {
-  send: (data: ChatRequestMessage) => void;
+  send: (data: ClientMessage) => void;
   connected: boolean;
 };
 
@@ -47,7 +47,7 @@ export function useWebSocket({
     };
   }, []);
 
-  const send = useCallback((data: ChatRequestMessage) => {
+  const send = useCallback((data: ClientMessage) => {
     const ws = wsRef.current;
     if (ws && ws.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify(data));
