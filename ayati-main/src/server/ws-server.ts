@@ -10,11 +10,13 @@ const MAX_RETRIES = 10;
 export interface WsServerOptions {
   port?: number;
   onMessage: (clientId: string, data: unknown) => void;
+  onDisconnect?: (clientId: string) => void;
 }
 
 export class WsServer {
   private readonly port: number;
   private readonly onMessage: (clientId: string, data: unknown) => void;
+  private readonly onDisconnect?: (clientId: string) => void;
   private wss: WebSocketServer | null = null;
   private clients = new Map<string, WebSocket>();
   private defaultClientId: string | null = null;
@@ -25,6 +27,7 @@ export class WsServer {
   constructor(options: WsServerOptions) {
     this.port = options.port ?? DEFAULT_PORT;
     this.onMessage = options.onMessage;
+    this.onDisconnect = options.onDisconnect;
   }
 
   async start(): Promise<void> {
@@ -69,6 +72,7 @@ export class WsServer {
             this.defaultClientId = first.done ? null : first.value;
           }
           devLog(`Client disconnected: ${clientId}`);
+          this.onDisconnect?.(clientId);
         });
 
         ws.on("error", (err) => {

@@ -92,6 +92,14 @@ function sentChatMessages(): unknown[] {
   ));
 }
 
+function workspaceEvent(event: string): unknown {
+  return expect.objectContaining({
+    type: "workspace_event",
+    event,
+    workspaceSessionId: expect.any(String),
+  });
+}
+
 describe("App", () => {
   afterEach(() => {
     websocketState.onMessage = null;
@@ -158,10 +166,59 @@ describe("App", () => {
     await writeInput(app, "hello");
 
     await vi.waitFor(() => {
-      expect(sentMessages()).toEqual([
-        { type: "workspace_event", event: "cli_input_started" },
-        { type: "workspace_event", event: "cli_message_submitted" },
+      const messages = sentMessages();
+      expect(messages).toEqual(expect.arrayContaining([
+        workspaceEvent("workspace_session_started"),
+        workspaceEvent("cli_input_started"),
+        workspaceEvent("cli_message_submitted"),
         { type: "chat", content: "hello" },
+      ]));
+      const submittedIndex = messages.findIndex((message) => (
+        typeof message === "object"
+        && message !== null
+        && (message as { event?: unknown }).event === "cli_message_submitted"
+      ));
+      const chatIndex = messages.findIndex((message) => (
+        typeof message === "object"
+        && message !== null
+        && (message as { type?: unknown }).type === "chat"
+      ));
+      expect(submittedIndex).toBeGreaterThanOrEqual(0);
+      expect(chatIndex).toBeGreaterThan(submittedIndex);
+    });
+
+    await act(async () => {
+      app.unmount();
+    });
+  });
+
+  it("sends compose activity for later edits while draft text remains", async () => {
+    const app = await renderApp();
+
+    await vi.waitFor(() => {
+      expect(sentMessages()).toContainEqual(workspaceEvent("workspace_session_started"));
+    });
+    websocketState.send.mockClear();
+
+    await act(async () => {
+      app.stdin.write("he");
+    });
+
+    await vi.waitFor(() => {
+      expect(sentMessages()).toEqual([
+        workspaceEvent("cli_input_started"),
+      ]);
+    });
+
+    websocketState.send.mockClear();
+
+    await act(async () => {
+      app.stdin.write("llo");
+    });
+
+    await vi.waitFor(() => {
+      expect(sentMessages()).toEqual([
+        workspaceEvent("cli_input_started"),
       ]);
     });
 

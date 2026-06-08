@@ -505,6 +505,252 @@ describe("WorkspaceOrchestrator", () => {
     }
   });
 
+  it("restores visual layout on visual focus and expands again on later CLI typing", async () => {
+    const dataDir = makeTmpDir();
+    try {
+      let cliWidth = 500;
+      let primaryWidth = 500;
+      let focusedAddress = "0xcli";
+      const hyprctl = vi.fn(async (args: string[]) => {
+        if (args[0] === "clients") {
+          return JSON.stringify([
+            {
+              address: "0xcli",
+              visible: true,
+              hidden: false,
+              class: "Alacritty",
+              title: "ayati-a1",
+              pid: 111,
+              at: [0, 0],
+              size: [cliWidth, 900],
+              floating: false,
+              workspace: { id: 3, name: "3" },
+              focusHistoryID: focusedAddress === "0xcli" ? 0 : 1,
+            },
+            {
+              address: "0xpreview",
+              visible: true,
+              hidden: false,
+              class: "ayati-learning-ui",
+              title: "Ayati Learning Workspace",
+              pid: 222,
+              at: [cliWidth, 0],
+              size: [primaryWidth, 900],
+              floating: false,
+              workspace: { id: 3, name: "3" },
+              focusHistoryID: focusedAddress === "0xpreview" ? 0 : 1,
+            },
+          ]);
+        }
+        if (args[0] === "activeworkspace") {
+          return JSON.stringify({ id: 3, name: "3" });
+        }
+        if (args[0] === "dispatch" && args[1] === "focuswindow") {
+          focusedAddress = args[2]?.replace("address:", "") ?? focusedAddress;
+        }
+        const delta = resizeDeltaFromHyprctlArgs(args);
+        if (delta !== undefined) {
+          cliWidth += delta;
+          primaryWidth -= delta;
+        }
+        return "ok";
+      });
+      const orchestrator = new WorkspaceOrchestrator({
+        dataDir,
+        hyprctl,
+        hyprlandEnabled: true,
+        now: () => new Date("2026-06-07T10:00:00.000Z"),
+        layoutSettleMs: 0,
+      });
+      const uiContext = {
+        source: "agent-cli" as const,
+        windowAddress: "0xcli",
+        terminalPid: 111,
+        workspaceId: 3,
+        workspaceName: "3",
+      };
+
+      const visual = await orchestrator.setLayout({
+        clientId: "local",
+        layout: "30-70",
+        primaryAddress: "0xpreview",
+        uiContext,
+      });
+      expect(visual.attentionMode).toBe("visual");
+      expect(visual.returnLayout).toBe("30-70");
+      expect(visual.layoutVerification?.actualCliRatio).toBe(0.3);
+
+      const compose = await orchestrator.handleInteractionEvent({
+        clientId: "local",
+        event: "cli_input_started",
+        uiContext,
+      });
+      expect(compose.attentionMode).toBe("compose");
+      expect(compose.activeLayout).toBe("50-50");
+      expect(compose.returnLayout).toBe("30-70");
+      expect(compose.layoutVerification?.actualCliRatio).toBe(0.5);
+
+      focusedAddress = "0xpreview";
+      const restored = await orchestrator.handleInteractionEvent({
+        clientId: "local",
+        event: "visual_surface_focused",
+        windowAddress: "0xpreview",
+      });
+      expect(restored.attentionMode).toBe("visual");
+      expect(restored.activeLayout).toBe("30-70");
+      expect(restored.lastFocusedWindowAddress).toBe("0xpreview");
+      expect(restored.layoutVerification?.actualCliRatio).toBe(0.3);
+      expect(focusedAddress).toBe("0xpreview");
+
+      focusedAddress = "0xcli";
+      const recomposed = await orchestrator.handleInteractionEvent({
+        clientId: "local",
+        event: "cli_input_started",
+        uiContext,
+      });
+      expect(recomposed.attentionMode).toBe("compose");
+      expect(recomposed.activeLayout).toBe("50-50");
+      expect(recomposed.returnLayout).toBe("30-70");
+      expect(recomposed.layoutVerification?.actualCliRatio).toBe(0.5);
+      expect(recomposed.windows.find((window) => window.address === "0xcli")?.geometry?.width).toBe(500);
+      expect(recomposed.windows.find((window) => window.address === "0xpreview")?.geometry?.width).toBe(500);
+    } finally {
+      rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it("clears workspace state only for the matching CLI workspace session", async () => {
+    const dataDir = makeTmpDir();
+    try {
+      let cliWidth = 300;
+      let primaryWidth = 700;
+      const hyprctl = vi.fn(async (args: string[]) => {
+        if (args[0] === "clients") {
+          return JSON.stringify([
+            {
+              address: "0xcli",
+              visible: true,
+              hidden: false,
+              class: "Alacritty",
+              title: "ayati-a1",
+              pid: 111,
+              at: [0, 0],
+              size: [cliWidth, 900],
+              floating: false,
+              workspace: { id: 3, name: "3" },
+              focusHistoryID: 0,
+            },
+            {
+              address: "0xpreview",
+              visible: true,
+              hidden: false,
+              class: "ayati-learning-ui",
+              title: "Ayati Learning Workspace",
+              pid: 222,
+              at: [cliWidth, 0],
+              size: [primaryWidth, 900],
+              floating: false,
+              workspace: { id: 3, name: "3" },
+              focusHistoryID: 1,
+            },
+          ]);
+        }
+        if (args[0] === "activeworkspace") {
+          return JSON.stringify({ id: 3, name: "3" });
+        }
+        const delta = resizeDeltaFromHyprctlArgs(args);
+        if (delta !== undefined) {
+          cliWidth += delta;
+          primaryWidth -= delta;
+        }
+        return "ok";
+      });
+      const orchestrator = new WorkspaceOrchestrator({
+        dataDir,
+        hyprctl,
+        hyprlandEnabled: true,
+        now: () => new Date("2026-06-07T10:00:00.000Z"),
+        layoutSettleMs: 0,
+      });
+      const uiContext = {
+        source: "agent-cli" as const,
+        windowAddress: "0xcli",
+        terminalPid: 111,
+        workspaceId: 3,
+        workspaceName: "3",
+      };
+
+      const started = await orchestrator.startSession({
+        clientId: "local",
+        workspaceSessionId: "session-1",
+        transportClientId: "transport-1",
+        uiContext,
+      });
+      expect(started.workspaceSessionId).toBe("session-1");
+      expect(started.transportClientId).toBe("transport-1");
+      expect(started.anchorCliAddress).toBe("0xcli");
+
+      const compose = await orchestrator.handleInteractionEvent({
+        clientId: "local",
+        event: "cli_input_started",
+        workspaceSessionId: "session-1",
+        uiContext,
+      });
+      expect(compose.activeLayout).toBe("50-50");
+      expect(compose.layoutVerification?.actualCliRatio).toBe(0.5);
+
+      const duplicateStart = await orchestrator.startSession({
+        clientId: "local",
+        workspaceSessionId: "session-1",
+        transportClientId: "transport-1",
+        uiContext,
+      });
+      expect(duplicateStart.workspaceSessionId).toBe("session-1");
+      expect(duplicateStart.activeLayout).toBe("50-50");
+
+      const ignoredEnd = await orchestrator.endSession({
+        clientId: "local",
+        workspaceSessionId: "older-session",
+        reason: "transport_closed",
+      });
+      expect(ignoredEnd.workspaceSessionId).toBe("session-1");
+      expect(ignoredEnd.activeLayout).toBe("50-50");
+
+      const cleared = await orchestrator.endSession({
+        clientId: "local",
+        workspaceSessionId: "session-1",
+        reason: "transport_closed",
+      });
+      expect(cleared.workspaceSessionId).toBeUndefined();
+      expect(cleared.windows).toEqual([]);
+      expect(cleared.activeLayout).toBe("30-70");
+
+      cliWidth = 300;
+      primaryWidth = 700;
+      const restarted = await orchestrator.startSession({
+        clientId: "local",
+        workspaceSessionId: "session-2",
+        transportClientId: "transport-2",
+        uiContext,
+      });
+      expect(restarted.workspaceSessionId).toBe("session-2");
+      expect(restarted.activeLayout).toBe("30-70");
+
+      const staleCompose = await orchestrator.handleInteractionEvent({
+        clientId: "local",
+        event: "cli_input_started",
+        workspaceSessionId: "session-1",
+        uiContext,
+      });
+      expect(staleCompose.workspaceSessionId).toBe("session-2");
+      expect(staleCompose.activeLayout).toBe("30-70");
+      expect(cliWidth).toBe(300);
+      expect(primaryWidth).toBe(700);
+    } finally {
+      rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+
   it("reuses an existing same-role window instead of opening a new one", async () => {
     const dataDir = makeTmpDir();
     try {

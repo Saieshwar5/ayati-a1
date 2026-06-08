@@ -1,16 +1,18 @@
 import { execFile, spawn, type ChildProcess } from "node:child_process";
 import { existsSync } from "node:fs";
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { promisify } from "node:util";
 import type { AgentUiContext } from "./context.js";
 
 export type WorkspaceLayout = "50-50" | "30-70" | "20-80" | "grid" | "focus";
 export type WorkspaceControlMode = "normal" | "agent-30-70" | "compose-50-50";
+export type WorkspaceAttentionMode = "visual" | "compose";
 export type WorkspaceInteractionEvent =
   | "cli_input_started"
   | "cli_message_submitted"
-  | "agent_visual_response_started";
+  | "agent_visual_response_started"
+  | "visual_surface_focused";
 export type WorkspaceWindowRole =
   | "cli"
   | "primary"
@@ -74,15 +76,23 @@ export interface WorkspaceState {
   workspaceId?: number;
   workspaceName?: string;
   anchorCliAddress?: string;
+  workspaceSessionId?: string;
+  transportClientId?: string;
+  sessionStartedAt?: string;
+  sessionLastSeenAt?: string;
   controlMode: WorkspaceControlMode;
+  attentionMode: WorkspaceAttentionMode;
   activeLayout: WorkspaceLayout;
   desiredLayout?: WorkspaceLayout;
+  returnLayout?: WorkspaceLayout;
   verifiedLayout?: WorkspaceLayout;
   layoutVerification?: WorkspaceLayoutVerification;
   maxWindows: number;
   windows: WorkspaceWindowRecord[];
   lastCommand?: string;
   lastCommandId?: string;
+  lastFocusedWindowAddress?: string;
+  lastComposeActivityAt?: string;
   lastActionStatus: WorkspaceActionStatus;
   lastUpdatedAt: string;
   error?: string;
@@ -106,6 +116,17 @@ export interface WorkspaceOrchestratorOptions {
 export interface WorkspaceActionInput {
   clientId: string;
   uiContext?: AgentUiContext;
+  workspaceSessionId?: string;
+  transportClientId?: string;
+}
+
+export interface StartWorkspaceSessionInput extends WorkspaceActionInput {
+  workspaceSessionId: string;
+}
+
+export interface EndWorkspaceSessionInput extends WorkspaceActionInput {
+  workspaceSessionId: string;
+  reason?: "client_ended" | "transport_closed" | "anchor_missing";
 }
 
 export interface SetWorkspaceLayoutInput extends WorkspaceActionInput {
@@ -146,6 +167,7 @@ export interface CloseWorkspaceWindowInput extends WorkspaceActionInput {
 
 export interface WorkspaceInteractionInput extends WorkspaceActionInput {
   event: WorkspaceInteractionEvent;
+  windowAddress?: string;
 }
 
 export class WorkspaceOrchestrator {
@@ -181,13 +203,59 @@ export class WorkspaceOrchestrator {
     return this.syncState(input.clientId, input.uiContext, {});
   }
 
+  async startSession(input: StartWorkspaceSessionInput): Promise<WorkspaceState> {
+    const workspaceSessionId = normalizeSessionId(input.workspaceSessionId);
+    const now = this.nowIso();
+    const current = await this.readState(input.clientId);
+    if (current.workspaceSessionId === workspaceSessionId) {
+      return this.syncState(input.clientId, input.uiContext, {
+        workspaceSessionId,
+        ...(input.transportClientId?.trim() ? { transportClientId: input.transportClientId.trim() } : {}),
+        sessionStartedAt: current.sessionStartedAt ?? now,
+        sessionLastSeenAt: now,
+        lastCommand: "workspace_session_started",
+        lastActionStatus: "applied",
+        error: undefined,
+      });
+    }
+    await this.clearStateFile();
+    return this.syncState(input.clientId, input.uiContext, {
+      workspaceSessionId,
+      ...(input.transportClientId?.trim() ? { transportClientId: input.transportClientId.trim() } : {}),
+      sessionStartedAt: now,
+      sessionLastSeenAt: now,
+      controlMode: "agent-30-70",
+      attentionMode: "visual",
+      activeLayout: "30-70",
+      desiredLayout: "30-70",
+      returnLayout: "30-70",
+      lastCommand: "workspace_session_started",
+      lastActionStatus: "applied",
+      error: undefined,
+    });
+  }
+
+  async endSession(input: EndWorkspaceSessionInput): Promise<WorkspaceState> {
+    const workspaceSessionId = normalizeSessionId(input.workspaceSessionId);
+    const current = await this.readState(input.clientId);
+    if (current.workspaceSessionId && current.workspaceSessionId !== workspaceSessionId) {
+      return current;
+    }
+    await this.clearStateFile();
+    return this.defaultState(input.clientId);
+  }
+
   async setLayout(input: SetWorkspaceLayoutInput): Promise<WorkspaceState> {
     const layout = normalizeLayout(input.layout);
     const controlMode = controlModeForLayout(layout);
+    const attentionMode = attentionModeForLayout(layout);
+    const returnLayout = returnLayoutForExplicitLayout(layout);
     const synced = await this.syncState(input.clientId, input.uiContext, {
       controlMode,
+      attentionMode,
       activeLayout: layout,
       desiredLayout: layout,
+      ...(returnLayout ? { returnLayout } : {}),
       lastCommand: "set_layout",
       lastActionStatus: "not_attempted",
     });
@@ -196,8 +264,10 @@ export class WorkspaceOrchestrator {
       return this.writeState({
         ...synced,
         controlMode,
+        attentionMode,
         activeLayout: layout,
         desiredLayout: layout,
+        ...(returnLayout ? { returnLayout } : {}),
         lastCommand: "set_layout",
         lastCommandId: this.commandId(),
         lastActionStatus: "unavailable",
@@ -211,16 +281,20 @@ export class WorkspaceOrchestrator {
       await this.applyLayout(cleaned, layout, input);
       const refreshedForVerification = await this.syncState(input.clientId, input.uiContext, {
         controlMode,
+        attentionMode,
         activeLayout: layout,
         desiredLayout: layout,
+        ...(returnLayout ? { returnLayout } : {}),
         lastCommand: "set_layout",
         lastActionStatus: "not_attempted",
       });
       const verification = await this.applyAndVerifyLayout(refreshedForVerification, layout, input);
       const finalState = await this.syncState(input.clientId, input.uiContext, {
         controlMode,
+        attentionMode,
         activeLayout: layout,
         desiredLayout: layout,
+        ...(returnLayout ? { returnLayout } : {}),
         verifiedLayout: verification.verified ? layout : undefined,
         layoutVerification: verification,
         lastCommand: "set_layout",
@@ -230,8 +304,10 @@ export class WorkspaceOrchestrator {
       return this.writeState({
         ...finalState,
         controlMode,
+        attentionMode,
         activeLayout: layout,
         desiredLayout: layout,
+        ...(returnLayout ? { returnLayout } : {}),
         verifiedLayout: verification.verified ? layout : undefined,
         layoutVerification: verification,
         lastCommand: "set_layout",
@@ -244,8 +320,10 @@ export class WorkspaceOrchestrator {
       return this.writeState({
         ...synced,
         controlMode,
+        attentionMode,
         activeLayout: layout,
         desiredLayout: layout,
+        ...(returnLayout ? { returnLayout } : {}),
         lastCommand: "set_layout",
         lastCommandId: this.commandId(),
         lastActionStatus: "failed",
@@ -256,6 +334,11 @@ export class WorkspaceOrchestrator {
   }
 
   async handleInteractionEvent(input: WorkspaceInteractionInput): Promise<WorkspaceState> {
+    const stale = await this.readStaleSessionState(input);
+    if (stale) {
+      return stale;
+    }
+
     if (input.event === "cli_input_started") {
       return this.applyComposeLayout(input);
     }
@@ -268,7 +351,12 @@ export class WorkspaceOrchestrator {
       });
     }
 
+    if (input.event === "visual_surface_focused") {
+      return this.applyVisualFocusLayout(input);
+    }
+
     const state = await this.syncState(input.clientId, input.uiContext, {
+      ...sessionPatchFromInput(input),
       lastCommand: input.event,
       lastActionStatus: "not_attempted",
     });
@@ -447,6 +535,17 @@ export class WorkspaceOrchestrator {
     });
   }
 
+  private async readStaleSessionState(input: WorkspaceActionInput): Promise<WorkspaceState | null> {
+    if (!input.workspaceSessionId?.trim()) {
+      return null;
+    }
+    const current = await this.readState(input.clientId);
+    if (current.workspaceSessionId && current.workspaceSessionId !== normalizeSessionId(input.workspaceSessionId)) {
+      return current;
+    }
+    return null;
+  }
+
   private async syncState(
     clientId: string,
     uiContext: AgentUiContext | undefined,
@@ -492,9 +591,31 @@ export class WorkspaceOrchestrator {
       workspaceId: workspace?.id,
       workspaceName: workspace?.name,
       anchorCliAddress: anchor?.address ?? current.anchorCliAddress,
+      ...(typeof patch.workspaceSessionId === "string"
+        ? { workspaceSessionId: normalizeSessionId(patch.workspaceSessionId) }
+        : current.workspaceSessionId
+          ? { workspaceSessionId: current.workspaceSessionId }
+          : {}),
+      ...(typeof patch.transportClientId === "string"
+        ? { transportClientId: patch.transportClientId }
+        : current.transportClientId
+          ? { transportClientId: current.transportClientId }
+          : {}),
+      ...(typeof patch.sessionStartedAt === "string"
+        ? { sessionStartedAt: patch.sessionStartedAt }
+        : current.sessionStartedAt
+          ? { sessionStartedAt: current.sessionStartedAt }
+          : typeof patch.workspaceSessionId === "string"
+            ? { sessionStartedAt: now }
+          : {}),
+      ...(typeof patch.workspaceSessionId === "string" || current.workspaceSessionId
+        ? { sessionLastSeenAt: typeof patch.sessionLastSeenAt === "string" ? patch.sessionLastSeenAt : now }
+        : {}),
       controlMode: normalizeControlMode(patch.controlMode ?? current.controlMode ?? controlModeForLayout(patch.activeLayout ?? current.activeLayout)),
+      attentionMode: normalizeAttentionMode(patch.attentionMode ?? current.attentionMode ?? attentionModeForLayout(patch.activeLayout ?? current.activeLayout)),
       activeLayout: normalizeLayout(patch.activeLayout ?? current.activeLayout),
       desiredLayout: normalizeLayout(patch.desiredLayout ?? current.desiredLayout ?? patch.activeLayout ?? current.activeLayout),
+      returnLayout: normalizeLayout(patch.returnLayout ?? current.returnLayout ?? resolveVisualReturnLayout(current)),
       ...(patch.verifiedLayout
         ? { verifiedLayout: normalizeLayout(patch.verifiedLayout) }
         : current.verifiedLayout && patch.lastCommand !== "set_layout"
@@ -502,6 +623,16 @@ export class WorkspaceOrchestrator {
           : {}),
       maxWindows: this.maxWindows,
       windows,
+      ...(typeof patch.lastFocusedWindowAddress === "string"
+        ? { lastFocusedWindowAddress: patch.lastFocusedWindowAddress }
+        : current.lastFocusedWindowAddress
+          ? { lastFocusedWindowAddress: current.lastFocusedWindowAddress }
+          : {}),
+      ...(typeof patch.lastComposeActivityAt === "string"
+        ? { lastComposeActivityAt: patch.lastComposeActivityAt }
+        : current.lastComposeActivityAt
+          ? { lastComposeActivityAt: current.lastComposeActivityAt }
+          : {}),
       lastUpdatedAt: now,
     });
   }
@@ -530,17 +661,136 @@ export class WorkspaceOrchestrator {
     };
   }
 
+  private async applyVisualFocusLayout(input: WorkspaceInteractionInput): Promise<WorkspaceState> {
+    const synced = await this.syncState(input.clientId, input.uiContext, {});
+    const focused = input.windowAddress?.trim()
+      ? findWindowByAddress(synced.windows, input.windowAddress.trim())
+      : findRecentlyFocusedVisualWindow(synced);
+
+    if (!focused || !isVisualAttentionWindow(synced, focused)) {
+      return synced;
+    }
+
+    if (!isComposeAttentionState(synced)) {
+      return this.writeState({
+        ...synced,
+        attentionMode: "visual",
+        lastCommand: "visual_surface_focused",
+        lastCommandId: this.commandId(),
+        lastFocusedWindowAddress: focused.address,
+        lastActionStatus: "applied",
+        error: undefined,
+        lastUpdatedAt: this.nowIso(),
+      });
+    }
+
+    if (!this.hyprlandEnabled) {
+      return this.writeState({
+        ...synced,
+        attentionMode: "visual",
+        lastCommand: "visual_surface_focused",
+        lastCommandId: this.commandId(),
+        lastFocusedWindowAddress: focused.address,
+        lastActionStatus: "unavailable",
+        error: "Hyprland is not available in this process environment.",
+        lastUpdatedAt: this.nowIso(),
+      });
+    }
+
+    const layout = resolveVisualReturnLayout(synced);
+    try {
+      await this.applyLayout(synced, layout, { primaryAddress: focused.address });
+      const refreshedForVerification = await this.syncState(input.clientId, input.uiContext, {
+        controlMode: controlModeForLayout(layout),
+        attentionMode: "visual",
+        activeLayout: layout,
+        desiredLayout: layout,
+        returnLayout: layout,
+        lastFocusedWindowAddress: focused.address,
+        lastCommand: "visual_surface_focused",
+        lastActionStatus: "not_attempted",
+      });
+      const verification = await this.applyAndVerifyLayout(refreshedForVerification, layout, {
+        primaryAddress: focused.address,
+      });
+      await this.dispatchHyprlandOptional("focuswindow", `address:${focused.address}`);
+      const finalState = await this.syncState(input.clientId, input.uiContext, {
+        controlMode: controlModeForLayout(layout),
+        attentionMode: "visual",
+        activeLayout: layout,
+        desiredLayout: layout,
+        returnLayout: layout,
+        verifiedLayout: verification.verified ? layout : undefined,
+        layoutVerification: verification,
+        lastFocusedWindowAddress: focused.address,
+        lastCommand: "visual_surface_focused",
+        lastActionStatus: "not_attempted",
+      });
+      const status: WorkspaceActionStatus = verification.verified ? "applied" : "failed";
+      return this.writeState({
+        ...finalState,
+        controlMode: controlModeForLayout(layout),
+        attentionMode: "visual",
+        activeLayout: layout,
+        desiredLayout: layout,
+        returnLayout: layout,
+        verifiedLayout: verification.verified ? layout : undefined,
+        layoutVerification: verification,
+        lastCommand: "visual_surface_focused",
+        lastCommandId: this.commandId(),
+        lastFocusedWindowAddress: focused.address,
+        lastActionStatus: status,
+        error: verification.verified ? undefined : verification.reason ?? "Workspace visual layout did not match the return ratio.",
+        lastUpdatedAt: this.nowIso(),
+      });
+    } catch (err) {
+      return this.writeState({
+        ...synced,
+        attentionMode: "visual",
+        activeLayout: layout,
+        desiredLayout: layout,
+        returnLayout: layout,
+        lastCommand: "visual_surface_focused",
+        lastCommandId: this.commandId(),
+        lastFocusedWindowAddress: focused.address,
+        lastActionStatus: "failed",
+        error: err instanceof Error ? err.message : String(err),
+        lastUpdatedAt: this.nowIso(),
+      });
+    }
+  }
+
   private async applyComposeLayout(input: WorkspaceActionInput): Promise<WorkspaceState> {
+    const composeActivityAt = this.nowIso();
     const synced = await this.syncState(input.clientId, input.uiContext, {
+      ...sessionPatchFromInput(input),
       controlMode: "compose-50-50",
+      attentionMode: "compose",
+      returnLayout: resolveVisualReturnLayout(await this.readState(input.clientId)),
+      lastComposeActivityAt: composeActivityAt,
       lastCommand: "cli_input_started",
       lastActionStatus: "not_attempted",
     });
+
+    if (synced.controlMode === "compose-50-50" && synced.verifiedLayout === "50-50") {
+      return this.writeState({
+        ...synced,
+        attentionMode: "compose",
+        lastComposeActivityAt: composeActivityAt,
+        lastCommand: "cli_input_started",
+        lastCommandId: this.commandId(),
+        lastActionStatus: "applied",
+        error: undefined,
+        lastUpdatedAt: this.nowIso(),
+      });
+    }
 
     if (!this.hyprlandEnabled) {
       return this.writeState({
         ...synced,
         controlMode: "compose-50-50",
+        attentionMode: "compose",
+        lastComposeActivityAt: composeActivityAt,
         lastCommand: "cli_input_started",
         lastCommandId: this.commandId(),
         lastActionStatus: "unavailable",
@@ -554,6 +804,8 @@ export class WorkspaceOrchestrator {
       return this.writeState({
         ...synced,
         controlMode: "compose-50-50",
+        attentionMode: "compose",
+        lastComposeActivityAt: composeActivityAt,
         lastCommand: "cli_input_started",
         lastCommandId: this.commandId(),
         lastActionStatus: "applied",
@@ -567,8 +819,10 @@ export class WorkspaceOrchestrator {
     });
     const refreshedForVerification = await this.syncState(input.clientId, input.uiContext, {
       controlMode: "compose-50-50",
+      attentionMode: "compose",
       activeLayout: "50-50",
       desiredLayout: "50-50",
+      lastComposeActivityAt: composeActivityAt,
       lastCommand: "cli_input_started",
       lastActionStatus: "not_attempted",
     });
@@ -577,10 +831,12 @@ export class WorkspaceOrchestrator {
     });
     const finalState = await this.syncState(input.clientId, input.uiContext, {
       controlMode: "compose-50-50",
+      attentionMode: "compose",
       activeLayout: "50-50",
       desiredLayout: "50-50",
       verifiedLayout: verification.verified ? "50-50" : undefined,
       layoutVerification: verification,
+      lastComposeActivityAt: composeActivityAt,
       lastCommand: "cli_input_started",
       lastActionStatus: "not_attempted",
     });
@@ -588,10 +844,12 @@ export class WorkspaceOrchestrator {
     return this.writeState({
       ...finalState,
       controlMode: "compose-50-50",
+      attentionMode: "compose",
       activeLayout: "50-50",
       desiredLayout: "50-50",
       verifiedLayout: verification.verified ? "50-50" : undefined,
       layoutVerification: verification,
+      lastComposeActivityAt: composeActivityAt,
       lastCommand: "cli_input_started",
       lastCommandId: this.commandId(),
       lastActionStatus: status,
@@ -970,14 +1228,20 @@ export class WorkspaceOrchestrator {
     return state;
   }
 
+  private async clearStateFile(): Promise<void> {
+    await rm(this.statePath, { force: true });
+  }
+
   private defaultState(clientId: string): WorkspaceState {
     return {
       schemaVersion: 1,
       clientId: normalizeClientId(clientId),
       hyprlandAvailable: this.hyprlandEnabled,
       controlMode: "agent-30-70",
+      attentionMode: "visual",
       activeLayout: "30-70",
       desiredLayout: "30-70",
+      returnLayout: "30-70",
       maxWindows: this.maxWindows,
       windows: [],
       lastActionStatus: "not_attempted",
@@ -1131,6 +1395,12 @@ function normalizeState(raw: unknown, clientId: string, maxWindows: number, now:
   }
   const record = raw as Record<string, unknown>;
   const layoutVerification = normalizeLayoutVerification(record["layoutVerification"]);
+  const activeLayout = normalizeLayout(record["activeLayout"]);
+  const returnLayout = isWorkspaceLayout(record["returnLayout"]) && record["returnLayout"] !== "50-50"
+    ? record["returnLayout"]
+    : activeLayout !== "50-50"
+      ? activeLayout
+      : "30-70";
   return {
     schemaVersion: 1,
     clientId: typeof record["clientId"] === "string" ? normalizeClientId(record["clientId"]) : normalizeClientId(clientId),
@@ -1138,15 +1408,23 @@ function normalizeState(raw: unknown, clientId: string, maxWindows: number, now:
     ...(typeof record["workspaceId"] === "number" ? { workspaceId: record["workspaceId"] } : {}),
     ...(typeof record["workspaceName"] === "string" ? { workspaceName: record["workspaceName"] } : {}),
     ...(typeof record["anchorCliAddress"] === "string" ? { anchorCliAddress: record["anchorCliAddress"] } : {}),
-    controlMode: normalizeControlMode(record["controlMode"] ?? controlModeForLayout(normalizeLayout(record["activeLayout"]))),
-    activeLayout: normalizeLayout(record["activeLayout"]),
+    ...(typeof record["workspaceSessionId"] === "string" ? { workspaceSessionId: normalizeSessionId(record["workspaceSessionId"]) } : {}),
+    ...(typeof record["transportClientId"] === "string" ? { transportClientId: record["transportClientId"] } : {}),
+    ...(typeof record["sessionStartedAt"] === "string" ? { sessionStartedAt: record["sessionStartedAt"] } : {}),
+    ...(typeof record["sessionLastSeenAt"] === "string" ? { sessionLastSeenAt: record["sessionLastSeenAt"] } : {}),
+    controlMode: normalizeControlMode(record["controlMode"] ?? controlModeForLayout(activeLayout)),
+    attentionMode: normalizeAttentionMode(record["attentionMode"] ?? attentionModeForLayout(activeLayout)),
+    activeLayout,
     ...(isWorkspaceLayout(record["desiredLayout"]) ? { desiredLayout: record["desiredLayout"] } : {}),
+    returnLayout,
     ...(isWorkspaceLayout(record["verifiedLayout"]) ? { verifiedLayout: record["verifiedLayout"] } : {}),
     ...(layoutVerification ? { layoutVerification } : {}),
     maxWindows,
     windows: normalizeWindowRecords(record["windows"]),
     ...(typeof record["lastCommand"] === "string" ? { lastCommand: record["lastCommand"] } : {}),
     ...(typeof record["lastCommandId"] === "string" ? { lastCommandId: record["lastCommandId"] } : {}),
+    ...(typeof record["lastFocusedWindowAddress"] === "string" ? { lastFocusedWindowAddress: record["lastFocusedWindowAddress"] } : {}),
+    ...(typeof record["lastComposeActivityAt"] === "string" ? { lastComposeActivityAt: record["lastComposeActivityAt"] } : {}),
     lastActionStatus: normalizeActionStatus(record["lastActionStatus"]),
     lastUpdatedAt: typeof record["lastUpdatedAt"] === "string" ? record["lastUpdatedAt"] : now,
     ...(typeof record["error"] === "string" ? { error: record["error"] } : {}),
@@ -1492,8 +1770,75 @@ function normalizeControlMode(value: unknown): WorkspaceControlMode {
   return value === "agent-30-70" || value === "compose-50-50" ? value : "normal";
 }
 
+function normalizeAttentionMode(value: unknown): WorkspaceAttentionMode {
+  return value === "compose" ? "compose" : "visual";
+}
+
 function controlModeForLayout(layout: WorkspaceLayout): WorkspaceControlMode {
   return layout === "30-70" ? "agent-30-70" : "normal";
+}
+
+function attentionModeForLayout(layout: WorkspaceLayout): WorkspaceAttentionMode {
+  return layout === "50-50" ? "compose" : "visual";
+}
+
+function returnLayoutForExplicitLayout(layout: WorkspaceLayout): WorkspaceLayout | undefined {
+  return layout === "50-50" ? undefined : layout;
+}
+
+function resolveVisualReturnLayout(state: Pick<WorkspaceState, "returnLayout" | "activeLayout" | "desiredLayout">): WorkspaceLayout {
+  if (state.returnLayout && state.returnLayout !== "50-50") {
+    return state.returnLayout;
+  }
+  if (state.activeLayout !== "50-50") {
+    return state.activeLayout;
+  }
+  if (state.desiredLayout && state.desiredLayout !== "50-50") {
+    return state.desiredLayout;
+  }
+  return "30-70";
+}
+
+function isComposeAttentionState(state: WorkspaceState): boolean {
+  return state.attentionMode === "compose" || state.controlMode === "compose-50-50" || state.activeLayout === "50-50";
+}
+
+function sessionPatchFromInput(input: WorkspaceActionInput): Partial<WorkspaceState> {
+  return {
+    ...(input.workspaceSessionId?.trim() ? { workspaceSessionId: input.workspaceSessionId.trim() } : {}),
+    ...(input.transportClientId?.trim() ? { transportClientId: input.transportClientId.trim() } : {}),
+  };
+}
+
+function findWindowByAddress(windows: WorkspaceWindowRecord[], address: string): WorkspaceWindowRecord | undefined {
+  return windows.find((window) => sameHyprlandAddress(window.address, address));
+}
+
+function findRecentlyFocusedVisualWindow(state: WorkspaceState): WorkspaceWindowRecord | undefined {
+  const focusedAt = state.windows
+    .filter((window) => isVisualAttentionWindow(state, window) && window.lastFocusedAt)
+    .sort((a, b) => Date.parse(b.lastFocusedAt ?? "") - Date.parse(a.lastFocusedAt ?? ""))[0];
+  return focusedAt ?? state.windows.find((window) => isVisualAttentionWindow(state, window));
+}
+
+function isVisualAttentionWindow(state: WorkspaceState, window: WorkspaceWindowRecord): boolean {
+  if (!window.address || sameHyprlandAddress(window.address, state.anchorCliAddress) || window.role === "cli" || window.role === "terminal") {
+    return false;
+  }
+  return window.role === "primary"
+    || window.role === "secondary"
+    || window.role === "browser"
+    || window.role === "code"
+    || window.role === "preview"
+    || window.role === "reference"
+    || window.role === "scratch";
+}
+
+function sameHyprlandAddress(left: string | undefined, right: string | undefined): boolean {
+  if (!left || !right) {
+    return false;
+  }
+  return left.toLowerCase() === right.toLowerCase();
 }
 
 function isWorkspaceLayout(value: unknown): value is WorkspaceLayout {
@@ -1557,6 +1902,14 @@ function cleanupPriority(role: WorkspaceWindowRole): number {
 
 function normalizeClientId(clientId: string): string {
   return clientId.trim() || "local";
+}
+
+function normalizeSessionId(sessionId: string): string {
+  const trimmed = sessionId.trim();
+  if (!trimmed) {
+    throw new Error("workspaceSessionId is required.");
+  }
+  return trimmed;
 }
 
 async function delay(ms: number): Promise<void> {

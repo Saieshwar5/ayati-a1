@@ -1,5 +1,6 @@
 import React, { useState, useCallback, useEffect, useMemo, useRef } from "react";
 import { Box } from "ink";
+import { randomUUID } from "node:crypto";
 import { dirname } from "node:path";
 import { Header } from "./components/header.js";
 import { MessageList, type MessageListHandle } from "./components/message-list.js";
@@ -21,7 +22,7 @@ import {
   stripPathMentions,
 } from "./path-mentions.js";
 import { detectAgentCliUiContext } from "./ui-context.js";
-import type { ChatAttachment, ChatMessage, ServerMessage } from "./types.js";
+import type { ChatAttachment, ChatMessage, ServerMessage, WorkspaceEventName } from "./types.js";
 
 const HEADER_HEIGHT = 3;
 const STATUS_HEIGHT = 1;
@@ -64,7 +65,7 @@ export function App(): React.JSX.Element {
     Math.max(process.stdout.columns ?? 80, MIN_TERMINAL_COLUMNS),
   );
   const messageListRef = useRef<MessageListHandle>(null);
-  const composeEventSentRef = useRef(false);
+  const workspaceSessionId = useMemo(() => randomUUID(), []);
 
   useEffect(() => {
     const handleResize = (): void => {
@@ -125,28 +126,39 @@ export function App(): React.JSX.Element {
 
   const { send, connected } = useWebSocket({ onMessage });
 
-  const emitWorkspaceEvent = useCallback((event: "cli_input_started" | "cli_message_submitted") => {
+  const emitWorkspaceEvent = useCallback((event: WorkspaceEventName) => {
     void (async () => {
       const uiContext = await detectAgentCliUiContext();
       send({
         type: "workspace_event",
         event,
+        workspaceSessionId,
         ...(uiContext ? { uiContext } : {}),
       });
     })();
-  }, [send]);
+  }, [send, workspaceSessionId]);
+
+  useEffect(() => {
+    if (!connected) {
+      return;
+    }
+    emitWorkspaceEvent("workspace_session_started");
+  }, [connected, emitWorkspaceEvent]);
+
+  useEffect(() => () => {
+    send({
+      type: "workspace_event",
+      event: "workspace_session_ended",
+      workspaceSessionId,
+    });
+  }, [send, workspaceSessionId]);
 
   const handleInputChange = useCallback((nextValue: string) => {
-    const userStartedComposing = !isLoading
-      && !composeEventSentRef.current
-      && inputValue.trim().length === 0
+    const userComposed = !isLoading
+      && inputValue !== nextValue
       && nextValue.trim().length > 0;
-    if (userStartedComposing) {
-      composeEventSentRef.current = true;
+    if (userComposed) {
       emitWorkspaceEvent("cli_input_started");
-    }
-    if (nextValue.trim().length === 0) {
-      composeEventSentRef.current = false;
     }
     setInputValue(nextValue);
   }, [emitWorkspaceEvent, inputValue, isLoading]);
@@ -224,6 +236,7 @@ export function App(): React.JSX.Element {
       send({
         type: "workspace_event",
         event: "cli_message_submitted",
+        workspaceSessionId,
         ...(uiContext ? { uiContext } : {}),
       });
       send({
@@ -235,7 +248,7 @@ export function App(): React.JSX.Element {
     })();
 
     rememberAttachmentRoots(displayAttachments);
-  }, [rememberAttachmentRoots, send]);
+  }, [rememberAttachmentRoots, send, workspaceSessionId]);
 
   const handleSubmit = useCallback(
     (value: string) => {
@@ -275,7 +288,6 @@ export function App(): React.JSX.Element {
       );
       const serverAttachments = toServerAttachments(mentionedAttachments);
       setInputValue("");
-      composeEventSentRef.current = false;
       submitChatMessage(
         contentForServer,
         displayContent,

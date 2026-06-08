@@ -24,12 +24,15 @@ export interface ChatRequestMessage {
 }
 
 export type WorkspaceEventName =
+  | "workspace_session_started"
+  | "workspace_session_ended"
   | "cli_input_started"
   | "cli_message_submitted";
 
 export interface WorkspaceEventMessage {
   type: "workspace_event";
   event: WorkspaceEventName;
+  workspaceSessionId: string;
   uiContext?: AgentUiContext;
 }
 

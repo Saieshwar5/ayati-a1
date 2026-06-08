@@ -13,6 +13,7 @@ import { DirectoryLibrary } from "../files/directory-library.js";
 import { FileLibrary } from "../files/file-library.js";
 import { CourseStore } from "../learning/course-store.js";
 import { LearningWorkspaceController } from "../ui/learning-workspace.js";
+import { WorkspaceFocusWatcher } from "../ui/workspace-focus-watcher.js";
 import { WorkspaceOrchestrator } from "../ui/workspace-orchestrator.js";
 import { devLog, devWarn } from "../shared/index.js";
 import type { AyatiRuntimeConfig } from "../config/runtime-config.js";
@@ -20,6 +21,7 @@ import type { EmbeddingProvider } from "../embeddings/contracts.js";
 
 export interface ContentRuntimeOptions {
   projectRoot: string;
+  clientId: string;
   provider: LlmProvider;
   sessionMemory: SessionMemory;
   config: AyatiRuntimeConfig;
@@ -37,6 +39,7 @@ export interface ContentRuntime {
   courseStore: CourseStore;
   learningWorkspace: LearningWorkspaceController;
   workspaceOrchestrator: WorkspaceOrchestrator;
+  workspaceFocusWatcher: WorkspaceFocusWatcher;
   httpHost: string;
   httpPort: number;
 }
@@ -108,6 +111,10 @@ export async function createContentRuntime(options: ContentRuntimeOptions): Prom
   const workspaceOrchestrator = new WorkspaceOrchestrator({
     dataDir,
   });
+  const workspaceFocusWatcher = new WorkspaceFocusWatcher({
+    clientId: options.clientId,
+    orchestrator: workspaceOrchestrator,
+  });
   const learningWorkspace = new LearningWorkspaceController({
     projectRoot,
     dataDir,
@@ -126,6 +133,7 @@ export async function createContentRuntime(options: ContentRuntimeOptions): Prom
     courseStore,
     learningWorkspace,
     workspaceOrchestrator,
+    workspaceFocusWatcher,
     httpHost: config.http.host,
     httpPort: config.http.port,
   };
