@@ -371,7 +371,7 @@ describe("executeStep", () => {
         provider,
         toolExecutor,
         toolDefinitions: toolExecutor.definitions(),
-        config: DEFAULT_LOOP_CONFIG,
+        config: { ...DEFAULT_LOOP_CONFIG, maxToolCallsPerStep: 1 },
         clientId: "c1",
         sessionMemory,
         runHandle,
@@ -382,9 +382,11 @@ describe("executeStep", () => {
       expect(summary.outcome).toBe("failed");
       expect(summary.toolSuccessCount).toBe(0);
       expect(summary.toolFailureCount).toBe(1);
+      expect(summary.taskProgress?.status).toBe("not_done");
       expect(summary.newFacts).toEqual([]);
       expect(summary.artifacts).toContain("steps/001-act.md");
       expect(summary.artifacts).toContain("steps/001-verify.md");
+      expect(provider.generateTurn).toHaveBeenCalledTimes(1);
 
       const verifyMarkdown = readFileSync(join(runPath, "steps", "001-verify.md"), "utf-8");
       expect(verifyMarkdown).toContain("- **Passed:** no");
@@ -535,7 +537,7 @@ describe("executeStep", () => {
 
       const summary = await executeStep(
         deps,
-        createDirective({ execution_plan: autonomousPlan(["shell", "read_file"], 4) }),
+        createDirective({ execution_plan: autonomousPlan(["read_file"], 4) }),
         1,
         runPath,
       );
@@ -549,66 +551,38 @@ describe("executeStep", () => {
     }
   });
 
-  it("blocks repeated failed retries and pivots to another allowed tool", async () => {
+  it("passes only autonomous allowed tool schemas to the act model", async () => {
     const { runPath, cleanup } = setup();
     try {
-      let callCount = 0;
+      const turnInputs: LlmTurnInput[] = [];
       const provider: LlmProvider = {
         name: "mock",
         version: "1.0.0",
         capabilities: { nativeToolCalling: true },
         start: vi.fn(),
         stop: vi.fn(),
-        generateTurn: vi.fn().mockImplementation(async () => {
-          callCount++;
-          if (callCount === 1) {
-            return {
-              type: "tool_calls",
-              calls: [{ id: "tc1", name: "shell", input: { cmd: "bad" } }],
-            };
-          }
-          if (callCount === 2) {
-            return {
-              type: "tool_calls",
-              calls: [{ id: "tc2", name: "shell", input: { cmd: "bad" } }],
-            };
-          }
-          if (callCount === 3) {
-            return {
-              type: "tool_calls",
-              calls: [{ id: "tc3", name: "read_file", input: { path: "package.json" } }],
-            };
-          }
-          if (callCount === 4) {
-            return { type: "assistant", content: "Recovered by reading the file" };
-          }
-          if (callCount === 5) {
-            return {
-              type: "assistant",
-              content: stepVerifyResponse({
-                summary: "Verified that the fallback read_file call recovered the step.",
-                evidenceSummary: "The successful read_file output satisfied the step despite earlier shell failures.",
-                evidenceItems: ["read_file output reviewed", "shell retry failure observed"],
-              }),
-            };
-          }
+        generateTurn: vi.fn().mockImplementation(async (input: LlmTurnInput) => {
+          turnInputs.push(input);
           return {
-            type: "assistant",
-            content: taskVerifyResponse("done", "recovered with alternate tool", ["package.json content"]),
+            type: "tool_calls",
+            calls: [{ id: "tc1", name: "read_file", input: { path: "package.json" } }],
           };
         }),
       };
 
-      const shellExecute = vi.fn().mockResolvedValue({ ok: false, error: "command failed" });
-      const readFileExecute = vi.fn().mockResolvedValue({ ok: true, output: "{\"name\":\"ayati\"}" });
+      const readFileExecute = vi.fn().mockResolvedValue({
+        ok: true,
+        output: "{\"name\":\"ayati\"}",
+        meta: { filePath: "package.json" },
+      });
       const toolExecutor: ToolExecutor = {
-        list: () => ["shell", "read_file"],
+        list: () => ["shell", "read_file", "write_file"],
         definitions: () => [
           {
             name: "shell",
             description: "Run shell",
             inputSchema: { type: "object", properties: { cmd: { type: "string" } } },
-            execute: shellExecute,
+            execute: vi.fn(),
           },
           {
             name: "read_file",
@@ -616,11 +590,147 @@ describe("executeStep", () => {
             inputSchema: { type: "object", properties: { path: { type: "string" } } },
             execute: readFileExecute,
           },
+          {
+            name: "write_file",
+            description: "Write a file",
+            inputSchema: { type: "object", properties: { path: { type: "string" } } },
+            execute: vi.fn(),
+          },
         ],
-        execute: vi.fn().mockImplementation(async (toolName: string, input: unknown) => {
-          if (toolName === "shell") return shellExecute(input);
-          return readFileExecute(input);
+        execute: vi.fn().mockImplementation(async (_toolName: string, input: unknown) => readFileExecute(input)),
+        validate: vi.fn().mockReturnValue({ valid: true }),
+      };
+
+      const deps: ExecutorDeps = {
+        provider,
+        toolExecutor,
+        toolDefinitions: toolExecutor.definitions(),
+        config: DEFAULT_LOOP_CONFIG,
+        clientId: "c1",
+        sessionMemory: createMockSessionMemory(),
+        runHandle: { sessionId: "s1", runId: "r1" },
+        taskContext: createTaskContext(),
+      };
+
+      const summary = await executeStep(
+        deps,
+        createDirective({ execution_plan: autonomousPlan(["read_file"], 4), success_criteria: "read package.json" }),
+        1,
+        runPath,
+      );
+
+      expect(summary.outcome).toBe("success");
+      expect(provider.generateTurn).toHaveBeenCalledTimes(1);
+      expect(turnInputs[0]?.tools?.map((tool) => tool.name)).toEqual(["read_file"]);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("executes multiple autonomous read-only tool calls in one model turn", async () => {
+    const { runPath, cleanup } = setup();
+    try {
+      const provider: LlmProvider = {
+        name: "mock",
+        version: "1.0.0",
+        capabilities: { nativeToolCalling: true },
+        start: vi.fn(),
+        stop: vi.fn(),
+        generateTurn: vi.fn().mockResolvedValue({
+          type: "tool_calls",
+          calls: [
+            { id: "read-a", name: "read_file", input: { path: "a.md" } },
+            { id: "read-b", name: "read_file", input: { path: "b.md" } },
+          ],
         }),
+      };
+
+      const executeSpy = vi.fn().mockImplementation(async (_toolName: string, input: unknown) => {
+        const path = (input as { path?: string }).path;
+        return {
+          ok: true,
+          output: path === "a.md" ? "alpha content for first file" : "beta content for second file",
+          meta: { filePath: path },
+        };
+      });
+      const toolExecutor: ToolExecutor = {
+        list: () => ["read_file"],
+        definitions: () => [{
+          name: "read_file",
+          description: "Read file",
+          inputSchema: { type: "object", properties: { path: { type: "string" } } },
+          execute: vi.fn(),
+        }],
+        execute: executeSpy,
+        validate: vi.fn().mockReturnValue({ valid: true }),
+      };
+
+      const deps: ExecutorDeps = {
+        provider,
+        toolExecutor,
+        toolDefinitions: toolExecutor.definitions(),
+        config: { ...DEFAULT_LOOP_CONFIG, maxInlineActOutputChars: 8 },
+        clientId: "c1",
+        sessionMemory: createMockSessionMemory(),
+        runHandle: { sessionId: "s1", runId: "r1" },
+        taskContext: createTaskContext(),
+      };
+
+      const summary = await executeStep(
+        deps,
+        createDirective({
+          execution_plan: autonomousPlan(["read_file"], 2),
+          success_criteria: "read both files",
+        }),
+        1,
+        runPath,
+      );
+
+      expect(summary.outcome).toBe("success");
+      expect(summary.verificationMethod).toBe("script");
+      expect(summary.toolSuccessCount).toBe(2);
+      expect(provider.generateTurn).toHaveBeenCalledTimes(1);
+      expect(executeSpy).toHaveBeenCalledTimes(2);
+      expect(summary.usedRawArtifacts).toEqual([
+        "steps/001-call-01-raw.txt",
+        "steps/001-call-02-raw.txt",
+      ]);
+      expect(readFileSync(join(runPath, "steps", "001-call-01-raw.txt"), "utf-8")).toContain("alpha content");
+      expect(readFileSync(join(runPath, "steps", "001-call-02-raw.txt"), "utf-8")).toContain("beta content");
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("fails mixed-phase autonomous plans locally", async () => {
+    const { runPath, cleanup } = setup();
+    try {
+      const provider: LlmProvider = {
+        name: "mock",
+        version: "1.0.0",
+        capabilities: { nativeToolCalling: true },
+        start: vi.fn(),
+        stop: vi.fn(),
+        generateTurn: vi.fn(),
+      };
+
+      const toolExecutor: ToolExecutor = {
+        list: () => ["shell", "read_file"],
+        definitions: () => [
+          {
+            name: "shell",
+            description: "Run shell",
+            inputSchema: { type: "object", properties: { cmd: { type: "string" } } },
+            execute: vi.fn(),
+          },
+          {
+            name: "read_file",
+            description: "Read a file",
+            inputSchema: { type: "object", properties: { path: { type: "string" } } },
+            execute: vi.fn(),
+          },
+        ],
+        execute: vi.fn(),
         validate: vi.fn().mockReturnValue({ valid: true }),
       };
 
@@ -642,12 +752,13 @@ describe("executeStep", () => {
         runPath,
       );
 
-      expect(summary.outcome).toBe("success");
-      expect(summary.toolSuccessCount).toBe(1);
-      expect(summary.toolFailureCount).toBe(2);
-      expect(shellExecute).toHaveBeenCalledTimes(1);
-      expect(readFileExecute).toHaveBeenCalledTimes(1);
-      expect(summary.newFacts).toEqual([]);
+      expect(summary.outcome).toBe("failed");
+      expect(summary.toolSuccessCount).toBe(0);
+      expect(summary.toolFailureCount).toBe(1);
+      expect(summary.summary).toContain("Step failed during tool execution");
+      expect(summary.evidenceSummary).toContain("mixes incompatible tool phases");
+      expect(provider.generateTurn).not.toHaveBeenCalled();
+      expect(toolExecutor.execute).not.toHaveBeenCalled();
     } finally {
       cleanup();
     }
@@ -1036,7 +1147,7 @@ describe("executeStep", () => {
     }
   });
 
-  it("forces a final assistant-only wrap-up when tool execution ends without assistant text", async () => {
+  it("uses a local wrap-up when tool execution ends without assistant text", async () => {
     const { runPath, cleanup } = setup();
     try {
       const turnInputs: LlmTurnInput[] = [];
@@ -1059,22 +1170,35 @@ describe("executeStep", () => {
           if (callCount === 2) {
             return {
               type: "assistant",
-              content: "Executed the shell command and captured the output hello before the step hit its tool-turn limit.",
-            };
-          }
-          if (callCount === 3) {
-            return {
-              type: "assistant",
-              content: stepVerifyResponse({
-                summary: "Verified that the captured shell output hello satisfies the step.",
-                evidenceSummary: "The assistant wrap-up and shell output both confirmed hello was captured.",
-                evidenceItems: ["shell output: hello"],
+              content: JSON.stringify({
+                step: {
+                  passed: true,
+                  summary: "Verified that the captured shell output hello satisfies the step.",
+                  evidenceSummary: "The shell output confirmed hello was captured.",
+                  evidenceItems: ["shell output: hello"],
+                  newFacts: [],
+                  artifacts: [],
+                },
+                taskProgress: {
+                  status: "done",
+                  progressSummary: "command output satisfied the goal",
+                  currentFocus: "Complete.",
+                  completedMilestones: ["command output captured"],
+                  openWork: [],
+                  blockers: [],
+                  keyFacts: [],
+                  evidence: ["command output: hello"],
+                },
               }),
             };
           }
           return {
             type: "assistant",
-            content: taskVerifyResponse("done", "command output satisfied the goal", ["command output: hello"]),
+            content: stepVerifyResponse({
+              summary: "Verified that the captured shell output hello satisfies the step.",
+              evidenceSummary: "The assistant wrap-up and shell output both confirmed hello was captured.",
+              evidenceItems: ["shell output: hello"],
+            }),
           };
         }),
       };
@@ -1112,11 +1236,13 @@ describe("executeStep", () => {
       expect(summary.outcome).toBe("success");
       expect(summary.stoppedEarlyReason).toBe("max_act_turns_reached");
       expect(summary.summary).toContain("captured shell output hello");
+      expect(provider.generateTurn).toHaveBeenCalledTimes(2);
       expect(turnInputs[1]?.tools).toBeUndefined();
 
       const actMarkdown = readFileSync(join(runPath, "steps", "001-act.md"), "utf-8");
       expect(actMarkdown).toContain("## Final Text");
-      expect(actMarkdown).toContain("captured the output hello");
+      expect(actMarkdown).toContain("stopped due to max_act_turns_reached");
+      expect(actMarkdown).toContain("Successful results: shell: hello");
     } finally {
       cleanup();
     }

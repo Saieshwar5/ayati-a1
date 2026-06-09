@@ -1,6 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
-import type { LlmMessage, LlmToolSchema } from "../core/contracts/llm-protocol.js";
+import type { LlmMessage, LlmToolSchema, LlmTurnOutput } from "../core/contracts/llm-protocol.js";
 import type {
   ExecutorDeps,
   StepDirective,
@@ -23,9 +23,16 @@ import {
   formatVerifyMarkdown,
 } from "./state-persistence.js";
 import type { StepRecord } from "./run-state-manager.js";
-import { checkVerificationGates, deriveExecutionStatus } from "./verification-gates.js";
+import {
+  checkDeterministicSuccessGate,
+  checkVerificationGates,
+  deriveExecutionStatus,
+  isDeterministicSuccessTool,
+} from "./verification-gates.js";
 import { formatToolResult, formatValidationError } from "./tool-helpers.js";
 import type { ManagedDocumentManifest, PreparedAttachmentSummary } from "../documents/types.js";
+import { recordRunMetric } from "./metrics.js";
+import type { ToolResult } from "../skills/types.js";
 
 export async function executeStep(
   deps: ExecutorDeps,
@@ -56,6 +63,7 @@ export async function executeStep(
   const artifacts = [
     ...new Set([actMarkdownPath, verifyMarkdownPath, ...collectActArtifacts(actOut.toolCalls), ...verifyOut.artifacts]),
   ];
+  const toolsUsed = uniqueStrings(actOut.toolCalls.map((call) => call.tool));
   const newFacts = buildStepNewFacts(actOut.toolCalls, verifyOut.newFacts);
   const stateUpdates = buildStepStateUpdates(actOut.toolCalls);
 
@@ -73,6 +81,7 @@ export async function executeStep(
     summary: verifyOut.summary,
     newFacts,
     artifacts,
+    toolsUsed,
     toolSuccessCount,
     toolFailureCount,
     verificationMethod: verifyOut.method,
@@ -295,13 +304,29 @@ async function executeSingleTool(
     };
   }
 
-  const result = await deps.toolExecutor.execute(toolName, input, {
-    clientId: deps.clientId,
-    runId: deps.runHandle.runId,
-    sessionId: deps.runHandle.sessionId,
-    stepNumber,
-    ...(deps.uiContext ? { uiContext: deps.uiContext } : {}),
-  });
+  const startedAt = Date.now();
+  let result: ToolResult;
+  try {
+    result = await deps.toolExecutor.execute(toolName, input, {
+      clientId: deps.clientId,
+      runId: deps.runHandle.runId,
+      sessionId: deps.runHandle.sessionId,
+      stepNumber,
+      ...(deps.uiContext ? { uiContext: deps.uiContext } : {}),
+    });
+    recordRunMetric(deps.metrics, `tool:${toolName}`, {
+      durationMs: Date.now() - startedAt,
+      kind: "tool",
+      status: result.ok ? "success" : "failed",
+    });
+  } catch (error) {
+    recordRunMetric(deps.metrics, `tool:${toolName}`, {
+      durationMs: Date.now() - startedAt,
+      kind: "tool",
+      status: "failed",
+    });
+    throw error;
+  }
   if (!result.ok) {
     return { tool: toolName, input, output: result.output ?? "", error: result.error ?? "Tool execution failed", meta: result.meta };
   }
@@ -390,13 +415,12 @@ function isTimeoutError(error: string): boolean {
 function hasUnsafeParallelFilesystemCalls(calls: ExecutionPlanCall[]): boolean {
   const writeTargets = new Set<string>();
   for (const call of calls) {
-    if (call.tool !== "write_file") continue;
-    const writePath = normalizePathInput(call.input["path"]);
-    if (!writePath) continue;
-    if (writeTargets.has(writePath)) {
-      return true;
+    for (const writePath of writeTargetInputs(call)) {
+      if (writeTargets.has(writePath)) {
+        return true;
+      }
+      writeTargets.add(writePath);
     }
-    writeTargets.add(writePath);
   }
 
   for (let leftIndex = 0; leftIndex < calls.length; leftIndex++) {
@@ -416,7 +440,7 @@ function filesystemCallsConflict(left: ExecutionPlanCall, right: ExecutionPlanCa
 }
 
 function createDirectoryWriteConflict(createCall: ExecutionPlanCall, writeCall: ExecutionPlanCall): boolean {
-  if (createCall.tool !== "create_directory" || writeCall.tool !== "write_file") {
+  if (createCall.tool !== "create_directory" || writeTargetInputs(writeCall).length === 0) {
     return false;
   }
   if (writeCall.input["createDirs"] === true) {
@@ -424,22 +448,48 @@ function createDirectoryWriteConflict(createCall: ExecutionPlanCall, writeCall: 
   }
 
   const createdDir = normalizePathInput(createCall.input["path"]);
-  const writePath = normalizePathInput(writeCall.input["path"]);
-  if (!createdDir || !writePath) {
+  const writePaths = writeTargetInputs(writeCall);
+  if (!createdDir || writePaths.length === 0) {
     return false;
   }
-  return pathsOverlap(createdDir, dirname(writePath));
+  return writePaths.some((writePath) => pathsOverlap(createdDir, dirname(writePath)));
 }
 
 function mutatingPathConflict(left: ExecutionPlanCall, right: ExecutionPlanCall): boolean {
-  const mutationTools = new Set(["delete", "move"]);
+  const mutationTools = new Set(["write_file", "write_files", "delete", "move"]);
   if (!mutationTools.has(left.tool) && !mutationTools.has(right.tool)) {
     return false;
   }
 
-  const leftPath = firstPathInput(left.input);
-  const rightPath = firstPathInput(right.input);
-  return Boolean(leftPath && rightPath && pathsOverlap(leftPath, rightPath));
+  const leftPaths = pathInputs(left);
+  const rightPaths = pathInputs(right);
+  return leftPaths.some((leftPath) => rightPaths.some((rightPath) => pathsOverlap(leftPath, rightPath)));
+}
+
+function pathInputs(call: ExecutionPlanCall): string[] {
+  const writeTargets = writeTargetInputs(call);
+  const directPath = firstPathInput(call.input);
+  return [...new Set([...writeTargets, ...(directPath ? [directPath] : [])])];
+}
+
+function writeTargetInputs(call: ExecutionPlanCall): string[] {
+  if (call.tool === "write_file") {
+    const writePath = normalizePathInput(call.input["path"]);
+    return writePath ? [writePath] : [];
+  }
+  if (call.tool !== "write_files") {
+    return [];
+  }
+  const files = call.input["files"];
+  if (!Array.isArray(files)) {
+    return [];
+  }
+  return files
+    .map((file) => {
+      if (!file || typeof file !== "object" || Array.isArray(file)) return undefined;
+      return normalizePathInput((file as Record<string, unknown>)["path"]);
+    })
+    .filter((path): path is string => typeof path === "string" && path.length > 0);
 }
 
 function firstPathInput(input: Record<string, unknown>): string | undefined {
@@ -476,23 +526,90 @@ async function verify(
 ): Promise<VerifyOutput> {
   const executionStatus = deriveExecutionStatus(actOut);
   const gateResult = checkVerificationGates(actOut);
-  const stepResult = gateResult
-    ?? await verifyStepWithLlm(deps, actOut, successCriteria, executionStatus, runPath);
-  const mergedFacts = buildStepNewFacts(actOut.toolCalls, stepResult.newFacts);
-  const taskResult = await updateTaskProgress(
-    deps,
-    {
-      outcome: stepResult.passed ? "success" : "failed",
-      summary: stepResult.summary,
-      evidenceItems: stepResult.evidenceItems,
-      taskFacts: mergedFacts,
-      artifacts: stepResult.artifacts,
-    },
-  );
+  if (gateResult) {
+    recordRunMetric(deps.metrics, "local_failure_progress", { kind: "local" });
+    return {
+      ...gateResult,
+      taskProgress: buildLocalFailureTaskProgress(deps, actOut, gateResult),
+    };
+  }
+
+  const deterministicResult = checkDeterministicSuccessGate(actOut, successCriteria);
+  if (deterministicResult) {
+    recordRunMetric(deps.metrics, "deterministic_verify", { kind: "local" });
+    return {
+      ...deterministicResult,
+      taskProgress: buildLocalTaskProgress(deps, deterministicResult),
+    };
+  }
+
+  return await verifyStepAndProgressWithLlm(deps, actOut, successCriteria, executionStatus, runPath);
+}
+
+function buildLocalFailureTaskProgress(
+  deps: ExecutorDeps,
+  actOut: ActOutput,
+  stepResult: VerifyOutput,
+): TaskProgressState {
+  const previous = deps.taskContext.previousTaskProgress;
+  const classification = classifyFailure(actOut.toolCalls, stepResult.evidenceSummary);
+  const hardBlocker = classification.failureType === "permission" || classification.failureType === "validation_error";
+  const blockerText = buildFailureProgressBlocker(classification, stepResult);
 
   return {
-    ...stepResult,
-    taskProgress: taskResult,
+    status: hardBlocker ? "blocked" : previous.status === "blocked" ? "blocked" : "not_done",
+    progressSummary: stepResult.summary || previous.progressSummary || "Tool execution failed before validation.",
+    currentFocus: hardBlocker
+      ? "Resolve the execution blocker before retrying."
+      : "Recover from the failed tool execution with a different next step.",
+    completedMilestones: previous.completedMilestones,
+    openWork: uniqueStrings([
+      ...(previous.openWork ?? []),
+      hardBlocker ? "Resolve the blocked tool execution." : "Choose a different tool call or corrected input.",
+    ]).slice(0, 5),
+    blockers: hardBlocker
+      ? uniqueStrings([...(previous.blockers ?? []), blockerText]).slice(0, 4)
+      : previous.blockers,
+    keyFacts: previous.keyFacts,
+    evidence: uniqueStrings([...previous.evidence, ...stepResult.evidenceItems]).slice(0, 6),
+    userInputNeeded: previous.userInputNeeded,
+  };
+}
+
+function buildFailureProgressBlocker(
+  classification: { failureType: FailedApproach["failureType"]; blockedTargets: string[] },
+  stepResult: VerifyOutput,
+): string {
+  const targets = classification.blockedTargets.length > 0
+    ? ` Targets: ${classification.blockedTargets.slice(0, 3).join(", ")}.`
+    : "";
+  return `${classification.failureType}: ${stepResult.summary}${targets}`.trim();
+}
+
+function buildLocalTaskProgress(
+  deps: ExecutorDeps,
+  stepResult: VerifyOutput,
+): TaskProgressState {
+  const mergedFacts = uniqueStrings(stepResult.newFacts);
+  const previous = deps.taskContext.previousTaskProgress;
+  const status: TaskStatus = stepResult.passed ? "likely_done" : previous.status;
+  const completedMilestones = stepResult.passed
+    ? uniqueStrings([...(previous.completedMilestones ?? []), stepResult.summary]).slice(0, 6)
+    : previous.completedMilestones;
+  const blockers = stepResult.passed ? [] : previous.blockers;
+
+  return {
+    status,
+    progressSummary: stepResult.summary || previous.progressSummary,
+    currentFocus: stepResult.passed
+      ? "Confirm whether the goal is fully satisfied."
+      : previous.currentFocus,
+    completedMilestones,
+    openWork: previous.openWork,
+    blockers,
+    keyFacts: uniqueStrings([...previous.keyFacts, ...mergedFacts]).slice(0, 8),
+    evidence: uniqueStrings([...previous.evidence, ...stepResult.evidenceItems]).slice(0, 6),
+    userInputNeeded: status === "needs_user_input" ? previous.userInputNeeded : undefined,
   };
 }
 
@@ -636,6 +753,68 @@ function selectCallsForTurn<T extends { name: string; input: unknown }>(
   return calls.slice(0, maxCallsPerTurn);
 }
 
+const AUTONOMOUS_READ_ONLY_TOOLS = new Set([
+  "read_file",
+  "list_directory",
+  "find_files",
+  "search_in_files",
+]);
+
+const AUTONOMOUS_TOOL_PHASES = new Map<string, string>([
+  ["read_file", "read"],
+  ["list_directory", "read"],
+  ["find_files", "read"],
+  ["search_in_files", "read"],
+  ["document_list_sections", "read"],
+  ["document_read_section", "read"],
+  ["dataset_profile", "read"],
+  ["create_directory", "write"],
+  ["write_file", "write"],
+  ["write_files", "write"],
+  ["edit_file", "write"],
+  ["delete", "write"],
+  ["move", "write"],
+  ["dataset_promote_table", "write"],
+  ["dataset_query", "query"],
+  ["document_query", "query"],
+  ["restore_attachment_context", "restore"],
+  ["learning_workspace_show", "display"],
+]);
+
+function describeAutonomousPhaseConflict(tools: string[]): string | undefined {
+  const phases = new Set(tools.map((tool) => AUTONOMOUS_TOOL_PHASES.get(tool) ?? "generic"));
+  if (phases.size <= 1) {
+    return undefined;
+  }
+  return `Autonomous execution_plan mixes incompatible tool phases (${[...phases].join(", ")}). Split inspect, write/query, restore, and display work into separate steps.`;
+}
+
+function resolveAutonomousMaxCallsPerTurn<T extends { name: string }>(
+  candidateCalls: T[],
+  remainingCallBudget: number,
+): number {
+  if (remainingCallBudget <= 1 || candidateCalls.length <= 1) {
+    return 1;
+  }
+  if (!candidateCalls.every((call) => AUTONOMOUS_READ_ONLY_TOOLS.has(call.name))) {
+    return 1;
+  }
+  return Math.max(1, Math.min(candidateCalls.length, remainingCallBudget));
+}
+
+function canStopAfterDeterministicAutonomousTurn<T extends { name: string }>(
+  toolCalls: ActToolCallRecord[],
+  latestCalls: T[],
+): boolean {
+  if (latestCalls.length === 0 || toolCalls.length === 0) {
+    return false;
+  }
+  const latestTools = new Set(latestCalls.map((call) => call.name));
+  const latestRecords = toolCalls.slice(-latestCalls.length);
+  return latestRecords.length === latestCalls.length
+    && latestRecords.every((record) => !record.error && latestTools.has(record.tool) && isDeterministicSuccessTool(record.tool));
+}
+
 function getBlockedCallReason(
   toolName: string,
   input: unknown,
@@ -721,7 +900,25 @@ async function actWithExecutorAutonomy(
   stepNumber: number,
   runPath: string,
 ): Promise<ActOutput> {
-  const toolSchemas = buildToolSchemas(deps);
+  const allToolSchemas = buildToolSchemas(deps);
+  const allowedAutonomyTools = new Set(directive.execution_plan.allowed_tools);
+  const phaseConflict = describeAutonomousPhaseConflict(directive.execution_plan.allowed_tools);
+  if (phaseConflict) {
+    return {
+      toolCalls: [{
+        tool: "execution_plan",
+        input: directive.execution_plan,
+        output: "",
+        error: phaseConflict,
+      }],
+      finalText: "",
+      stoppedEarlyReason: "planned_call_failed",
+    };
+  }
+
+  const toolSchemas = allowedAutonomyTools.size > 0
+    ? allToolSchemas.filter((schema) => allowedAutonomyTools.has(schema.name))
+    : allToolSchemas;
   const availableToolNames = new Set(toolSchemas.map((schema) => schema.name));
   const toolCalls: ActToolCallRecord[] = [];
   const failedCallSignatures = new Set<string>();
@@ -729,8 +926,6 @@ async function actWithExecutorAutonomy(
   const repeatedFailureCounts = new Map<string, number>();
   const toolFailureCounts = new Map<string, number>();
   const blockedTools = new Set<string>();
-  const allowedAutonomyTools = new Set(directive.execution_plan.allowed_tools);
-  const maxCallsPerTurn = 1;
   const maxTotalCalls = Math.max(
     1,
     Math.min(
@@ -744,10 +939,26 @@ async function actWithExecutorAutonomy(
   const messages: LlmMessage[] = [{ role: "user", content: prompt }];
 
   for (let i = 0; i < deps.config.maxToolCallsPerStep; i++) {
-    const turn = await deps.provider.generateTurn({
-      messages,
-      tools: toolSchemas.length > 0 ? toolSchemas : undefined,
-    });
+    const startedAt = Date.now();
+    let turn: LlmTurnOutput;
+    try {
+      turn = await deps.provider.generateTurn({
+        messages,
+        tools: toolSchemas.length > 0 ? toolSchemas : undefined,
+      });
+      recordRunMetric(deps.metrics, "act_model", {
+        durationMs: Date.now() - startedAt,
+        kind: "llm",
+        status: "success",
+      });
+    } catch (error) {
+      recordRunMetric(deps.metrics, "act_model", {
+        durationMs: Date.now() - startedAt,
+        kind: "llm",
+        status: "failed",
+      });
+      throw error;
+    }
 
     if (turn.type === "assistant") {
       return {
@@ -763,6 +974,7 @@ async function actWithExecutorAutonomy(
         && (allowedAutonomyTools.size === 0 || allowedAutonomyTools.has(call.name)),
       );
 
+    const maxCallsPerTurn = resolveAutonomousMaxCallsPerTurn(candidateCalls, maxTotalCalls - executedCalls);
     const orderedCalls = selectCallsForTurn(
       candidateCalls,
       maxCallsPerTurn,
@@ -791,17 +1003,18 @@ async function actWithExecutorAutonomy(
         );
       }
 
+      const callStepId = executedCalls + 1;
       const callSignature = buildCallSignature(call.name, call.input);
       const blockedReason = getBlockedCallReason(call.name, call.input, failedCallSignatures, blockedTools);
       const rawRecord = blockedReason
         ? { tool: call.name, input: call.input, output: "", error: blockedReason }
-        : await executeSingleTool(deps, call.name, call.input, stepNumber, i + 1);
+        : await executeSingleTool(deps, call.name, call.input, stepNumber, callStepId);
       const record = await normalizeToolCallRecord(
         deps,
         rawRecord,
         runPath,
         stepNumber,
-        i + 1,
+        callStepId,
       );
       toolCalls.push(record);
       executedCalls++;
@@ -809,7 +1022,7 @@ async function actWithExecutorAutonomy(
       deps.sessionMemory.recordToolCall(deps.clientId, {
         runId: deps.runHandle.runId,
         sessionId: deps.runHandle.sessionId,
-        stepId: i + 1,
+        stepId: callStepId,
         toolCallId: call.id,
         toolName: call.name,
         args: call.input,
@@ -818,7 +1031,7 @@ async function actWithExecutorAutonomy(
       deps.sessionMemory.recordToolResult(deps.clientId, {
         runId: deps.runHandle.runId,
         sessionId: deps.runHandle.sessionId,
-        stepId: i + 1,
+        stepId: callStepId,
         toolCallId: call.id,
         toolName: call.name,
         status: record.error ? "failed" : "success",
@@ -885,6 +1098,23 @@ async function actWithExecutorAutonomy(
         }
       }
     }
+
+    if (canStopAfterDeterministicAutonomousTurn(toolCalls, orderedCalls)) {
+      recordRunMetric(deps.metrics, "act_local_summary", { kind: "local" });
+      return {
+        toolCalls,
+        finalText: buildFallbackActSummary(directive, toolCalls),
+      };
+    }
+
+    if (executedCalls >= maxTotalCalls) {
+      recordRunMetric(deps.metrics, "act_local_summary", { kind: "local" });
+      return {
+        toolCalls,
+        finalText: buildFallbackActSummary(directive, toolCalls, "max_total_tool_calls_reached"),
+        stoppedEarlyReason: "max_total_tool_calls_reached",
+      };
+    }
   }
 
   return await finalizeLegacyActOutput(
@@ -903,38 +1133,21 @@ async function finalizeLegacyActOutput(
   toolCalls: ActToolCallRecord[],
   stoppedEarlyReason: NonNullable<ActOutput["stoppedEarlyReason"]>,
 ): Promise<ActOutput> {
-  const finalText = toolCalls.length > 0
-    ? await requestForcedStepSummary(deps, directive, messages, toolCalls, stoppedEarlyReason)
-    : "";
+  void messages;
+  if (toolCalls.length > 0) {
+    recordRunMetric(deps.metrics, "act_local_summary", { kind: "local" });
+    return {
+      toolCalls,
+      finalText: buildFallbackActSummary(directive, toolCalls, stoppedEarlyReason),
+      stoppedEarlyReason,
+    };
+  }
 
   return {
     toolCalls,
-    finalText,
+    finalText: "",
     stoppedEarlyReason,
   };
-}
-
-async function requestForcedStepSummary(
-  deps: ExecutorDeps,
-  directive: StepDirective,
-  messages: LlmMessage[],
-  toolCalls: ActToolCallRecord[],
-  stoppedEarlyReason: NonNullable<ActOutput["stoppedEarlyReason"]>,
-): Promise<string> {
-  const prompt = buildForcedSummaryPrompt(directive, toolCalls, stoppedEarlyReason);
-
-  try {
-    const turn = await deps.provider.generateTurn({
-      messages: [...messages, { role: "user", content: prompt }],
-    });
-    if (turn.type === "assistant" && turn.content.trim().length > 0) {
-      return turn.content.trim();
-    }
-  } catch {
-    // Fall back to a deterministic summary built from tool results.
-  }
-
-  return buildFallbackActSummary(directive, toolCalls, stoppedEarlyReason);
 }
 
 function parseJSON<T>(text: string): T {
@@ -946,7 +1159,7 @@ function parseJSON<T>(text: string): T {
   return JSON.parse(jsonStr) as T;
 }
 
-async function verifyStepWithLlm(
+async function verifyStepAndProgressWithLlm(
   deps: ExecutorDeps,
   actOut: ActOutput,
   successCriteria: string,
@@ -959,64 +1172,187 @@ async function verifyStepWithLlm(
     deps.config.maxVerifyArtifactChars,
   );
   const actSummary = JSON.stringify(verificationPayload);
+  const previousTaskProgress = formatTaskProgressForPrompt(deps.taskContext.previousTaskProgress);
+  const recentSuccessfulSteps = formatTaskProgressDigests(deps.taskContext.recentSuccessfulSteps, false);
+  const recentFailedSteps = formatTaskProgressDigests(deps.taskContext.recentFailedSteps, true);
 
-  const prompt = `Verify whether this step succeeded.
+  const prompt = `${buildTaskProgressInputBlock(deps)}
+Goal contract:
+- objective: ${deps.taskContext.goal.objective || "(none)"}
+- done_when: ${formatPromptList(deps.taskContext.goal.done_when)}
+- required_evidence: ${formatPromptList(deps.taskContext.goal.required_evidence)}
+- ask_user_when: ${formatPromptList(deps.taskContext.goal.ask_user_when)}
+- stop_when_no_progress: ${formatPromptList(deps.taskContext.goal.stop_when_no_progress)}
+Current task progress status: ${deps.taskContext.previousTaskProgress.status}
+Current approach: ${deps.taskContext.approach || "(none)"}
+Previous task progress:
+${previousTaskProgress}
 
+Verify whether this completed step succeeded and update overall task progress.
 Execution status: ${executionStatus}
 Action output: ${actSummary}
 Success criteria: ${successCriteria}
+Recent successful steps:
+${recentSuccessfulSteps}
+Recent failed steps:
+${recentFailedSteps}
+
+Use only the values above.
+- step describes validation of the just-completed step.
+- taskProgress summarizes cumulative task state only; do not plan the next step.
+- completedMilestones should capture stable achieved outcomes, max 6.
+- openWork should capture the most important remaining work, max 5.
+- blockers should capture active obstacles only, max 4.
+- keyFacts should contain semantic facts only, max 8.
+- evidence should contain the strongest supporting evidence only, max 6.
+- currentFocus should state the main next area of work in one short sentence.
+- If status is "needs_user_input", set userInputNeeded.
 
 Respond with JSON:
 {
-  "passed": true|false,
-  "summary": "...",
-  "evidenceSummary": "...",
-  "evidenceItems": ["..."],
-  "newFacts": ["..."],
-  "artifacts": ["..."]
+  "step": {
+    "passed": true|false,
+    "summary": "...",
+    "evidenceSummary": "...",
+    "evidenceItems": ["..."],
+    "newFacts": ["..."],
+    "artifacts": ["..."]
+  },
+  "taskProgress": {
+    "status": "not_done" | "likely_done" | "done" | "blocked" | "needs_user_input",
+    "progressSummary": "...",
+    "currentFocus": "...",
+    "completedMilestones": ["..."],
+    "openWork": ["..."],
+    "blockers": ["..."],
+    "keyFacts": ["..."],
+    "evidence": ["..."],
+    "userInputNeeded": "optional"
+  }
 }`;
 
-  const turn = await deps.provider.generateTurn({
-    messages: [{ role: "user", content: prompt }],
-  });
+  const startedAt = Date.now();
+  let turn: LlmTurnOutput;
+  try {
+    turn = await deps.provider.generateTurn({
+      messages: [{ role: "user", content: prompt }],
+    });
+    recordRunMetric(deps.metrics, "verify_and_progress", {
+      durationMs: Date.now() - startedAt,
+      kind: "llm",
+      status: "success",
+    });
+  } catch (error) {
+    recordRunMetric(deps.metrics, "verify_and_progress", {
+      durationMs: Date.now() - startedAt,
+      kind: "llm",
+      status: "failed",
+    });
+    throw error;
+  }
 
   const text = turn.type === "assistant" ? turn.content : "";
   try {
     const parsed = parseJSON<Record<string, unknown>>(text);
-    const artifacts = Array.isArray(parsed["artifacts"]) ? (parsed["artifacts"] as unknown[]).map(String) : [];
-    const evidenceSummary = String(parsed["evidenceSummary"] ?? "");
-    const summary = String(parsed["summary"] ?? "").trim()
+    const taskProgressRecord = asRecord(parsed["taskProgress"]);
+    const step = asRecord(parsed["step"]) ?? parsed;
+    const artifacts = Array.isArray(step["artifacts"]) ? (step["artifacts"] as unknown[]).map(String) : [];
+    const evidenceSummary = String(step["evidenceSummary"] ?? "");
+    const evidenceItems = Array.isArray(step["evidenceItems"])
+      ? (step["evidenceItems"] as unknown[]).map(String)
+      : [];
+    const newFacts = Array.isArray(step["newFacts"]) ? (step["newFacts"] as unknown[]).map(String) : [];
+    const summary = String(step["summary"] ?? "").trim()
       || evidenceSummary.trim()
       || actOut.finalText.slice(0, 500)
-      || (parsed["passed"] === true ? "Step passed verification." : "Step failed verification.");
-    return {
-      passed: parsed["passed"] === true,
+      || (step["passed"] === true ? "Step passed verification." : "Step failed verification.");
+    const stepResult: VerifyOutput = {
+      passed: step["passed"] === true,
       method: "llm",
       executionStatus,
-      validationStatus: parsed["passed"] === true ? "passed" : "failed",
+      validationStatus: step["passed"] === true ? "passed" : "failed",
       summary,
       evidenceSummary,
-      evidenceItems: Array.isArray(parsed["evidenceItems"])
-        ? (parsed["evidenceItems"] as unknown[]).map(String)
-        : [],
-      newFacts: Array.isArray(parsed["newFacts"]) ? (parsed["newFacts"] as unknown[]).map(String) : [],
+      evidenceItems,
+      newFacts,
       artifacts: [...new Set([...artifacts, ...verificationPayload.usedRawArtifacts])],
       usedRawArtifacts: verificationPayload.usedRawArtifacts,
     };
-  } catch {
+    const taskFacts = buildStepNewFacts(actOut.toolCalls, newFacts);
+    const taskProgress = taskProgressRecord
+      ? normalizeTaskProgressState(
+        taskProgressRecord,
+        deps.taskContext.previousTaskProgress,
+        {
+          summary,
+          evidenceItems,
+          taskFacts,
+        },
+      )
+      : await updateTaskProgress(
+        deps,
+        {
+          outcome: stepResult.passed ? "success" : "failed",
+          summary,
+          evidenceItems,
+          taskFacts,
+          artifacts: stepResult.artifacts,
+        },
+      );
     return {
+      ...stepResult,
+      taskProgress,
+    };
+  } catch {
+    const stepResult: VerifyOutput = {
       passed: false,
       method: "llm",
       executionStatus,
       validationStatus: "failed",
-      summary: "Verification failed because the validator response could not be parsed.",
-      evidenceSummary: `Failed to parse verify response: ${text}`,
+      summary: "Verification and progress update failed because the validator response could not be parsed.",
+      evidenceSummary: `Failed to parse combined verify/progress response: ${text}`,
       evidenceItems: [],
       newFacts: [],
       artifacts: [...verificationPayload.usedRawArtifacts],
       usedRawArtifacts: verificationPayload.usedRawArtifacts,
     };
+    return {
+      ...stepResult,
+      taskProgress: buildLocalTaskProgress(deps, stepResult),
+    };
   }
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
+
+function buildTaskProgressInputBlock(deps: ExecutorDeps): string {
+  return deps.taskContext.inputKind === "system_event" && deps.taskContext.systemEvent
+    ? [
+      "Assess overall task progress after the latest completed step.",
+      "",
+      "Input kind: system_event",
+      `Origin source: ${deps.taskContext.originSource ?? deps.taskContext.systemEvent.source}`,
+      `Intent kind: ${deps.taskContext.systemEventIntentKind ?? deps.taskContext.systemEvent.intent?.kind ?? "unknown"}`,
+      ...(deps.taskContext.systemEventRequestedAction ? [`Requested action: ${deps.taskContext.systemEventRequestedAction}`] : []),
+      `Created by: ${deps.taskContext.systemEventCreatedBy ?? deps.taskContext.systemEvent.intent?.createdBy ?? "unknown"}`,
+      ...(deps.taskContext.handlingMode ? [`Handling mode: ${deps.taskContext.handlingMode}`] : []),
+      ...(typeof deps.taskContext.approvalRequired === "boolean" ? [`Approval required: ${deps.taskContext.approvalRequired ? "yes" : "no"}`] : []),
+      ...(deps.taskContext.approvalState ? [`Approval state: ${deps.taskContext.approvalState}`] : []),
+      `System event summary: ${deps.taskContext.userMessage}`,
+      `System event payload: ${JSON.stringify({
+        source: deps.taskContext.systemEvent.source,
+        eventName: deps.taskContext.systemEvent.eventName,
+        receivedAt: deps.taskContext.systemEvent.receivedAt,
+        payload: deps.taskContext.systemEvent.payload,
+      })}`,
+    ].join("\n")
+    : `Assess overall task progress after the latest completed step.
+
+User message: ${deps.taskContext.userMessage}`;
 }
 
 async function updateTaskProgress(
@@ -1051,29 +1387,7 @@ async function updateTaskProgress(
   const recentSuccessfulSteps = formatTaskProgressDigests(deps.taskContext.recentSuccessfulSteps, false);
   const recentFailedSteps = formatTaskProgressDigests(deps.taskContext.recentFailedSteps, true);
 
-  const inputBlock = deps.taskContext.inputKind === "system_event" && deps.taskContext.systemEvent
-    ? [
-      "Assess overall task progress after the latest completed step.",
-      "",
-      "Input kind: system_event",
-      `Origin source: ${deps.taskContext.originSource ?? deps.taskContext.systemEvent.source}`,
-      `Intent kind: ${deps.taskContext.systemEventIntentKind ?? deps.taskContext.systemEvent.intent?.kind ?? "unknown"}`,
-      ...(deps.taskContext.systemEventRequestedAction ? [`Requested action: ${deps.taskContext.systemEventRequestedAction}`] : []),
-      `Created by: ${deps.taskContext.systemEventCreatedBy ?? deps.taskContext.systemEvent.intent?.createdBy ?? "unknown"}`,
-      ...(deps.taskContext.handlingMode ? [`Handling mode: ${deps.taskContext.handlingMode}`] : []),
-      ...(typeof deps.taskContext.approvalRequired === "boolean" ? [`Approval required: ${deps.taskContext.approvalRequired ? "yes" : "no"}`] : []),
-      ...(deps.taskContext.approvalState ? [`Approval state: ${deps.taskContext.approvalState}`] : []),
-      `System event summary: ${deps.taskContext.userMessage}`,
-      `System event payload: ${JSON.stringify({
-        source: deps.taskContext.systemEvent.source,
-        eventName: deps.taskContext.systemEvent.eventName,
-        receivedAt: deps.taskContext.systemEvent.receivedAt,
-        payload: deps.taskContext.systemEvent.payload,
-      })}`,
-    ].join("\n")
-    : `Assess overall task progress after the latest completed step.
-
-User message: ${deps.taskContext.userMessage}`;
+  const inputBlock = buildTaskProgressInputBlock(deps);
 
   const prompt = `${inputBlock}
 Goal contract:
@@ -1113,9 +1427,25 @@ Update the task progress using only these values.
 Respond with JSON:
 { "status": "not_done" | "likely_done" | "done" | "blocked" | "needs_user_input", "progressSummary": "...", "currentFocus": "...", "completedMilestones": ["..."], "openWork": ["..."], "blockers": ["..."], "keyFacts": ["..."], "evidence": ["..."], "userInputNeeded": "optional" }`;
 
-  const turn = await deps.provider.generateTurn({
-    messages: [{ role: "user", content: prompt }],
-  });
+  const startedAt = Date.now();
+  let turn: LlmTurnOutput;
+  try {
+    turn = await deps.provider.generateTurn({
+      messages: [{ role: "user", content: prompt }],
+    });
+    recordRunMetric(deps.metrics, "task_progress", {
+      durationMs: Date.now() - startedAt,
+      kind: "llm",
+      status: "success",
+    });
+  } catch (error) {
+    recordRunMetric(deps.metrics, "task_progress", {
+      durationMs: Date.now() - startedAt,
+      kind: "llm",
+      status: "failed",
+    });
+    throw error;
+  }
 
   const text = turn.type === "assistant" ? turn.content : "";
   try {
@@ -1496,6 +1826,7 @@ function classifyFailure(
   }
 
   if (/eacces|permission denied/.test(combined)) return { failureType: "permission", blockedTargets };
+  if (/validation failed|invalid input|schema/.test(combined)) return { failureType: "validation_error", blockedTargets };
   if (/enoent|no such file|does not exist/.test(combined)) return { failureType: "missing_path", blockedTargets };
   if (/no match|not found|not present|returned no/.test(combined)) return { failureType: "no_progress", blockedTargets: [] };
   if (errors.trim().length > 0) return { failureType: "tool_error", blockedTargets };

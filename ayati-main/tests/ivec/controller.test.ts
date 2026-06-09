@@ -1822,6 +1822,41 @@ describe("callDirect", () => {
     expect(repairPrompt?.content).toContain("Parallel execution_plan contains filesystem calls");
   });
 
+  it("rejects mixed-phase autonomous plans and retries for a single-phase plan", async () => {
+    const provider = createMockProvider([
+      JSON.stringify({
+        done: false,
+        execution_contract: "Inspect and rewrite a lesson view",
+        execution_plan: executionPlan("autonomous", [], ["read_file", "write_file", "learning_workspace_show"], 3),
+        success_criteria: "the lesson is inspected, rewritten, and displayed",
+        context: "Fix the lesson rendering issue.",
+      }),
+      JSON.stringify({
+        done: false,
+        execution_contract: "Read the current lesson files",
+        execution_plan: executionPlan("autonomous", [], ["read_file"], 2),
+        success_criteria: "the lesson files are read",
+        context: "Inspect first; writing and display will be separate steps.",
+      }),
+    ]);
+
+    const result = await callDirect(provider, createState(), [shellTool]);
+
+    expect(result.done).toBe(false);
+    if (!result.done && "execution_contract" in result) {
+      expect(result.execution_contract).toContain("Read the current lesson");
+      expect(result.execution_plan.mode).toBe("autonomous");
+      expect(result.execution_plan.allowed_tools).toEqual(["read_file"]);
+    }
+
+    expect(provider.generateTurn).toHaveBeenCalledTimes(2);
+    const retryCall = (provider.generateTurn as ReturnType<typeof vi.fn>).mock.calls[1]![0] as {
+      messages: Array<{ role: string; content: string }>;
+    };
+    const repairPrompt = retryCall.messages[retryCall.messages.length - 1];
+    expect(repairPrompt?.content).toContain("Autonomous execution_plan mixes incompatible tool phases");
+  });
+
   it("throws a controller format error after two invalid controller responses", async () => {
     const provider = createMockProvider([
       "I need to inspect the mail first.",

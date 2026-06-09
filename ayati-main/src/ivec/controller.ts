@@ -1,6 +1,6 @@
 import type { LlmProvider } from "../core/contracts/provider.js";
 import { dirname, isAbsolute, relative, resolve } from "node:path";
-import type { LlmMessage, LlmResponseFormat, LlmUserContentPart } from "../core/contracts/llm-protocol.js";
+import type { LlmMessage, LlmResponseFormat, LlmTurnOutput, LlmUserContentPart } from "../core/contracts/llm-protocol.js";
 import type { ControllerPrompts } from "../context/types.js";
 import { formatConversationTurnSpeaker } from "../memory/conversation-turn-format.js";
 import { compileResponseFormatForProvider } from "../providers/shared/provider-profiles.js";
@@ -30,6 +30,8 @@ import { buildToolCatalog } from "./tool-catalog.js";
 import type { ManagedDocumentManifest } from "../documents/types.js";
 import type { ControllerHistoryBundle } from "./run-state-manager.js";
 import { formatControllerHistoryBundle } from "./controller-state-tool.js";
+import type { RunMetrics } from "./metrics.js";
+import { recordRunMetric } from "./metrics.js";
 
 const DEFAULT_UNDERSTAND_INSTRUCTIONS = `- First, classify the request:
   - If it is simple conversation or a direct question that needs no tools or multi-step work, return done: true with a natural user-facing reply.
@@ -180,9 +182,13 @@ const DEFAULT_DIRECT_INSTRUCTIONS = `- This stage chooses exactly 1 next move in
 - Each concrete call needs id, tool, input, origin, source_refs, retry_policy, depends_on, and purpose.
 - Use sequential when later calls depend on earlier filesystem, UI, or external state.
 - Use parallel only when calls have no ordering, path, state, or data dependency.
-- Do not group create_directory and write_file as parallel unless each write_file has createDirs=true.
+- Do not group create_directory with write_file/write_files as parallel unless each write call has createDirs=true.
 - Do not put generated documents, Markdown lessons, HTML, CSS, JS, source files, heredocs, or long file contents inside execution_plan.calls[].input.
+- Prefer concrete parallel read-only plans before autonomous generation when inspection is needed.
 - If the next step requires creating or editing substantial generated content, use execution_plan.mode "autonomous" with bounded allowed_tools and max_calls. The executor will generate and pass the large content through normal tool calling.
+- Keep autonomous contracts to one phase: inspect OR generate/write OR display/verify. Do not combine reading, regenerating multiple files, showing UI, and confirming success in one autonomous contract.
+- Autonomous allowed_tools must stay within one phase: read, write, query, restore, display, or generic. Split mixed phases into separate steps.
+- For related generated files such as view.html + script.js + style.css, prefer write_files over multiple write_file calls so the batch is serialized and verified as one filesystem mutation.
 - Use origin "builtin" for built-in tool calls.
 - Use origin "external_tool" for external tools.
 - Leave source_refs empty unless grounded run, project, or session context materially matters to the call.
@@ -520,6 +526,7 @@ export async function callUnderstand(
   systemContext: string,
   controllerPrompts?: ControllerPrompts,
   externalSkillCards?: ExternalSkillCard[],
+  metrics?: RunMetrics,
 ): Promise<UnderstandDirective | CompletionDirective> {
   const prompt = buildUnderstandPrompt(
     state,
@@ -543,6 +550,7 @@ export async function callUnderstand(
     buildUnderstandResponseFormat(state),
     parseUnderstandResponse,
     (parsed) => validateUnderstandOutput(parsed, state),
+    metrics,
   );
 }
 
@@ -559,6 +567,7 @@ export async function callReEval(
   externalSkillCards?: ExternalSkillCard[],
   activeExternalSkills?: ActiveExternalSkillContext[],
   inlineDirectiveContext?: string,
+  metrics?: RunMetrics,
 ): Promise<ReEvalDirective | ReadRunStateDirective | CompletionDirective> {
   const resolved = resolveControllerTurnOptions(controllerPrompts, systemContext);
   const prompt = buildReEvalPrompt(
@@ -587,6 +596,7 @@ export async function callReEval(
     buildReEvalResponseFormat(),
     parseReEvalResponse,
     (parsed) => validateReEvalOutput(parsed, state),
+    metrics,
   );
 }
 
@@ -605,6 +615,7 @@ export async function callDirect(
   externalSkillCards?: ExternalSkillCard[],
   activeExternalSkills?: ActiveExternalSkillContext[],
   inlineDirectiveContext?: string,
+  metrics?: RunMetrics,
 ): Promise<StepDirective | ReadRunStateDirective | ActivateSkillDirective | ContextSearchDirective | CompletionDirective> {
   const resolved = resolveDirectInvocationOptions(
     state,
@@ -640,6 +651,7 @@ export async function callDirect(
     buildDirectResponseFormat(),
     parseDirectResponse,
     (parsed) => validateDirectOutput(parsed, state),
+    metrics,
   );
 }
 
@@ -1568,6 +1580,10 @@ function validateExecutionPlan(plan: ExecutionPlan): void {
         "Autonomous execution_plan must include at least one allowed tool.",
       );
     }
+    const phaseConflict = describeAutonomousPhaseConflict(plan.allowed_tools);
+    if (phaseConflict) {
+      throw new ControllerDirectiveValidationError(phaseConflict);
+    }
     validateMaxCalls(plan.max_calls, "execution_plan.max_calls");
     return;
   }
@@ -1605,6 +1621,35 @@ function validateMaxCalls(value: number | undefined, path: string): void {
       `${path} must be between 1 and ${MAX_CONTROLLER_PLANNED_CALLS}.`,
     );
   }
+}
+
+const AUTONOMOUS_TOOL_PHASES = new Map<string, string>([
+  ["read_file", "read"],
+  ["list_directory", "read"],
+  ["find_files", "read"],
+  ["search_in_files", "read"],
+  ["document_list_sections", "read"],
+  ["document_read_section", "read"],
+  ["dataset_profile", "read"],
+  ["create_directory", "write"],
+  ["write_file", "write"],
+  ["write_files", "write"],
+  ["edit_file", "write"],
+  ["delete", "write"],
+  ["move", "write"],
+  ["dataset_promote_table", "write"],
+  ["dataset_query", "query"],
+  ["document_query", "query"],
+  ["restore_attachment_context", "restore"],
+  ["learning_workspace_show", "display"],
+]);
+
+function describeAutonomousPhaseConflict(tools: string[]): string | undefined {
+  const phases = new Set(tools.map((tool) => AUTONOMOUS_TOOL_PHASES.get(tool) ?? "generic"));
+  if (phases.size <= 1) {
+    return undefined;
+  }
+  return `Autonomous execution_plan mixes incompatible tool phases (${[...phases].join(", ")}). Split inspect, write/query, restore, and display work into separate steps.`;
 }
 
 function validateExecutionPlanCalls(calls: ExecutionPlanCall[], mode: ExecutionPlanMode): void {
@@ -1664,14 +1709,11 @@ function validateCompactExecutionPlan(calls: ExecutionPlanCall[]): void {
 function hasUnsafeParallelFilesystemCalls(calls: ExecutionPlanCall[]): boolean {
   const writeTargets = new Set<string>();
   for (const call of calls) {
-    if (call.tool === "write_file") {
-      const writePath = normalizePathInput(call.input["path"]);
-      if (writePath) {
-        if (writeTargets.has(writePath)) {
-          return true;
-        }
-        writeTargets.add(writePath);
+    for (const writePath of writeTargetInputs(call)) {
+      if (writeTargets.has(writePath)) {
+        return true;
       }
+      writeTargets.add(writePath);
     }
   }
 
@@ -1696,7 +1738,7 @@ function filesystemCallsConflict(left: ExecutionPlanCall, right: ExecutionPlanCa
 }
 
 function createDirectoryWriteConflict(createCall: ExecutionPlanCall, writeCall: ExecutionPlanCall): boolean {
-  if (createCall.tool !== "create_directory" || writeCall.tool !== "write_file") {
+  if (createCall.tool !== "create_directory" || writeTargetInputs(writeCall).length === 0) {
     return false;
   }
   if (writeCall.input["createDirs"] === true) {
@@ -1704,24 +1746,49 @@ function createDirectoryWriteConflict(createCall: ExecutionPlanCall, writeCall: 
   }
 
   const createdDir = normalizePathInput(createCall.input["path"]);
-  const writePath = normalizePathInput(writeCall.input["path"]);
-  if (!createdDir || !writePath) {
+  const writePaths = writeTargetInputs(writeCall);
+  if (!createdDir || writePaths.length === 0) {
     return false;
   }
 
-  const writeParent = dirname(writePath);
-  return pathsOverlap(createdDir, writeParent);
+  return writePaths.some((writePath) => pathsOverlap(createdDir, dirname(writePath)));
 }
 
 function mutatingPathConflict(left: ExecutionPlanCall, right: ExecutionPlanCall): boolean {
-  const mutationTools = new Set(["delete", "move"]);
+  const mutationTools = new Set(["write_file", "write_files", "delete", "move"]);
   if (!mutationTools.has(left.tool) && !mutationTools.has(right.tool)) {
     return false;
   }
 
-  const leftPath = firstPathInput(left.input);
-  const rightPath = firstPathInput(right.input);
-  return Boolean(leftPath && rightPath && pathsOverlap(leftPath, rightPath));
+  const leftPaths = pathInputs(left);
+  const rightPaths = pathInputs(right);
+  return leftPaths.some((leftPath) => rightPaths.some((rightPath) => pathsOverlap(leftPath, rightPath)));
+}
+
+function pathInputs(call: ExecutionPlanCall): string[] {
+  const writeTargets = writeTargetInputs(call);
+  const directPath = firstPathInput(call.input);
+  return [...new Set([...writeTargets, ...(directPath ? [directPath] : [])])];
+}
+
+function writeTargetInputs(call: ExecutionPlanCall): string[] {
+  if (call.tool === "write_file") {
+    const writePath = normalizePathInput(call.input["path"]);
+    return writePath ? [writePath] : [];
+  }
+  if (call.tool !== "write_files") {
+    return [];
+  }
+  const files = call.input["files"];
+  if (!Array.isArray(files)) {
+    return [];
+  }
+  return files
+    .map((file) => {
+      if (!file || typeof file !== "object" || Array.isArray(file)) return undefined;
+      return normalizePathInput((file as Record<string, unknown>)["path"]);
+    })
+    .filter((path): path is string => typeof path === "string" && path.length > 0);
 }
 
 function firstPathInput(input: Record<string, unknown>): string | undefined {
@@ -1923,6 +1990,7 @@ async function runControllerTurn<T>(
   preferredResponseFormat: LlmResponseFormat,
   parser: (text: string) => T,
   validator?: ControllerTurnValidator<T>,
+  metrics?: RunMetrics,
 ): Promise<T> {
   const responseFormat = resolveResponseFormat(provider, preferredResponseFormat);
   let workingMessages = [...messages];
@@ -1932,10 +2000,27 @@ async function runControllerTurn<T>(
 
   while (attempts < 6) {
     attempts++;
-    const turn = await provider.generateTurn({
-      messages: workingMessages,
-      ...(responseFormat ? { responseFormat } : {}),
-    });
+    const metricStage = repairUsed ? `${stage}_repair` : stage;
+    const startedAt = Date.now();
+    let turn: LlmTurnOutput;
+    try {
+      turn = await provider.generateTurn({
+        messages: workingMessages,
+        ...(responseFormat ? { responseFormat } : {}),
+      });
+      recordRunMetric(metrics, metricStage, {
+        durationMs: Date.now() - startedAt,
+        kind: "llm",
+        status: "success",
+      });
+    } catch (error) {
+      recordRunMetric(metrics, metricStage, {
+        durationMs: Date.now() - startedAt,
+        kind: "llm",
+        status: "failed",
+      });
+      throw error;
+    }
 
     if (turn.type === "tool_calls") {
       retryText = turn.assistantContent?.trim().length

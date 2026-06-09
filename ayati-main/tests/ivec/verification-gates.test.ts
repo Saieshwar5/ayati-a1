@@ -1,5 +1,9 @@
 import { describe, it, expect } from "vitest";
-import { checkVerificationGates } from "../../src/ivec/verification-gates.js";
+import {
+  checkDeterministicSuccessGate,
+  checkVerificationGates,
+  isDeterministicSuccessTool,
+} from "../../src/ivec/verification-gates.js";
 import type { ActOutput } from "../../src/ivec/types.js";
 
 describe("checkVerificationGates", () => {
@@ -74,5 +78,78 @@ describe("checkVerificationGates", () => {
 
     const result = checkVerificationGates(actOutput);
     expect(result).toBeNull();
+  });
+});
+
+describe("checkDeterministicSuccessGate", () => {
+  it("passes deterministic dataset query results without LLM validation", () => {
+    const actOutput: ActOutput = {
+      toolCalls: [{
+        tool: "dataset_query",
+        input: { sql: "SELECT COUNT(*) AS count FROM employees" },
+        output: JSON.stringify({
+          preparedInputId: "att_1",
+          tableName: "staging_att_1",
+          rows: [{ count: 2 }],
+          rowCount: 1,
+          columns: ["count"],
+        }),
+      }],
+      finalText: "",
+    };
+
+    const result = checkDeterministicSuccessGate(actOutput, "dataset query returns the count");
+
+    expect(result).not.toBeNull();
+    expect(result!.passed).toBe(true);
+    expect(result!.method).toBe("script");
+    expect(result!.evidenceSummary).toContain("dataset_query succeeded");
+    expect(result!.evidenceSummary).toContain("count=1");
+  });
+
+  it("passes grounded document query results but rejects insufficient evidence", () => {
+    const grounded: ActOutput = {
+      toolCalls: [{
+        tool: "document_query",
+        input: { query: "What is the document about?" },
+        output: JSON.stringify({
+          context: "The document is about identity and isolation.",
+          sources: ["/docs/book.txt"],
+          confidence: 0.91,
+          documentState: { insufficientEvidence: false },
+        }),
+      }],
+      finalText: "",
+    };
+    const insufficient: ActOutput = {
+      toolCalls: [{
+        tool: "document_query",
+        input: { query: "What is the document about?" },
+        output: JSON.stringify({
+          context: "",
+          sources: [],
+          confidence: 0,
+          documentState: { insufficientEvidence: true },
+        }),
+      }],
+      finalText: "",
+    };
+
+    expect(checkDeterministicSuccessGate(grounded, "document query returns a grounded answer")).not.toBeNull();
+    expect(checkDeterministicSuccessGate(insufficient, "document query returns a grounded answer")).toBeNull();
+  });
+
+  it("does not treat send_email as a deterministic built-in verification tool", () => {
+    const actOutput: ActOutput = {
+      toolCalls: [{
+        tool: "send_email",
+        input: { to: "demo@example.com" },
+        output: "sent",
+      }],
+      finalText: "",
+    };
+
+    expect(isDeterministicSuccessTool("send_email")).toBe(false);
+    expect(checkDeterministicSuccessGate(actOutput, "email is sent")).toBeNull();
   });
 });

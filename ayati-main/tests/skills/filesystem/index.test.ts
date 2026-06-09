@@ -12,12 +12,13 @@ describe("filesystemSkill", () => {
     expect(filesystemSkill.promptBlock).toContain("Filesystem tools are built in.");
   });
 
-  it("exports all 9 tools", () => {
-    expect(filesystemSkill.tools).toHaveLength(9);
+  it("exports all 10 tools", () => {
+    expect(filesystemSkill.tools).toHaveLength(10);
 
     const names = filesystemSkill.tools.map((t) => t.name);
     expect(names).toContain("read_file");
     expect(names).toContain("write_file");
+    expect(names).toContain("write_files");
     expect(names).toContain("edit_file");
     expect(names).toContain("delete");
     expect(names).toContain("list_directory");

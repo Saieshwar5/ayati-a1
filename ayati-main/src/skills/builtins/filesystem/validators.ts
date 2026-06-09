@@ -2,6 +2,8 @@ import type { ToolResult } from "../../types.js";
 import type {
   ReadFileInput,
   WriteFileInput,
+  WriteFilesInput,
+  WriteFilesInputFile,
   EditFileInput,
   DeleteInput,
   ListDirectoryInput,
@@ -57,6 +59,28 @@ export function validateWriteFileInput(input: unknown): WriteFileInput | ToolRes
   const tokenErr = validateConfirmationToken(v.confirmationToken);
   if (tokenErr) return tokenErr;
   return { path: v.path, content: v.content, createDirs: v.createDirs, confirmationToken: v.confirmationToken };
+}
+
+export function validateWriteFilesInput(input: unknown): WriteFilesInput | ToolResult {
+  if (!isObject(input)) return fail("expected object.");
+  const v = input as Partial<WriteFilesInput>;
+  if (!Array.isArray(v.files) || v.files.length === 0) {
+    return fail("files must be a non-empty array.");
+  }
+  const files: WriteFilesInputFile[] = [];
+  for (const [index, file] of v.files.entries()) {
+    if (!isObject(file)) return fail(`files[${index}] must be an object.`);
+    const candidate = file as Partial<WriteFilesInputFile>;
+    if (!isNonEmptyString(candidate.path)) return fail(`files[${index}].path must be a non-empty string.`);
+    if (typeof candidate.content !== "string") return fail(`files[${index}].content must be a string.`);
+    files.push({ path: candidate.path, content: candidate.content });
+  }
+  if (v.createDirs !== undefined && typeof v.createDirs !== "boolean") {
+    return fail("createDirs must be a boolean.");
+  }
+  const tokenErr = validateConfirmationToken(v.confirmationToken);
+  if (tokenErr) return tokenErr;
+  return { files, createDirs: v.createDirs, confirmationToken: v.confirmationToken };
 }
 
 export function validateEditFileInput(input: unknown): EditFileInput | ToolResult {

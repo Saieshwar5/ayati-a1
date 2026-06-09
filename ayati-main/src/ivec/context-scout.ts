@@ -7,6 +7,8 @@ import type { GenericScoutScope, GenericScoutState, ScoutResult } from "./types.
 import type { ManagedDocumentManifest } from "../documents/types.js";
 import type { DocumentContextBackend } from "../documents/document-context-backend.js";
 import { compileResponseFormatForProvider } from "../providers/shared/provider-profiles.js";
+import type { RunMetrics } from "./metrics.js";
+import { recordRunMetric } from "./metrics.js";
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -29,6 +31,7 @@ export interface ContextScoutOptions {
   provider: LlmProvider;
   maxTurns: number;
   documentContextBackend?: DocumentContextBackend;
+  metrics?: RunMetrics;
 }
 
 // ---------------------------------------------------------------------------
@@ -856,13 +859,24 @@ async function runGenericContextScout(
 
   for (let turn = 0; turn < maxTurns; turn++) {
     let response: LlmTurnOutput;
+    const startedAt = Date.now();
     try {
       response = await provider.generateTurn({
         messages,
         tools: SCOUT_TOOLS,
         ...(responseFormat ? { responseFormat } : {}),
       });
+      recordRunMetric(options.metrics, "context_search", {
+        durationMs: Date.now() - startedAt,
+        kind: "llm",
+        status: "success",
+      });
     } catch (error) {
+      recordRunMetric(options.metrics, "context_search", {
+        durationMs: Date.now() - startedAt,
+        kind: "llm",
+        status: "failed",
+      });
       return buildScoutProviderFailureResult({
         summary: attemptSummary,
         toolHistory,

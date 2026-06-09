@@ -11,6 +11,17 @@ export interface WriteFileInput {
   confirmationToken?: string;
 }
 
+export interface WriteFilesInputFile {
+  path: string;
+  content: string;
+}
+
+export interface WriteFilesInput {
+  files: WriteFilesInputFile[];
+  createDirs?: boolean;
+  confirmationToken?: string;
+}
+
 export interface EditFileInput {
   path: string;
   oldString: string;

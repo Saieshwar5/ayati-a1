@@ -1,6 +1,7 @@
 import type { SkillDefinition } from "../../types.js";
 import { readFileTool } from "./read-file.js";
 import { writeFileTool } from "./write-file.js";
+import { writeFilesTool } from "./write-files.js";
 import { editFileTool } from "./edit-file.js";
 import { deleteTool } from "./delete.js";
 import { listDirectoryTool } from "./list-directory.js";
@@ -17,9 +18,10 @@ const FS_PROMPT_BLOCK = [
   "Absolute paths and explicit non-work_space paths are allowed when the task calls for them.",
   "Prefer find_files and search_in_files for discovery tasks.",
   "Use list_directory only when folder listing is explicitly needed.",
-  "Tools: read_file, write_file, edit_file, delete, list_directory, create_directory, move, find_files, search_in_files.",
+  "Tools: read_file, write_file, write_files, edit_file, delete, list_directory, create_directory, move, find_files, search_in_files.",
   "read_file supports offset/limit for large files; output is capped at 100K characters.",
   "write_file can create parent directories with createDirs=true.",
+  "write_files serializes a validated multi-file batch with temp-file writes and renames; prefer it over separate writes for generated files that belong together.",
   "edit_file performs find-and-replace; use replaceAll=true for global replacement.",
   "delete requires recursive=true to remove directories and may require confirmation.",
   "list_directory supports recursive and showHidden options; caps are guardrail-controlled.",
@@ -35,6 +37,7 @@ const filesystemSkill: SkillDefinition = {
   tools: [
     readFileTool,
     writeFileTool,
+    writeFilesTool,
     editFileTool,
     deleteTool,
     listDirectoryTool,

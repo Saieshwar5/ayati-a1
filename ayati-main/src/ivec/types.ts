@@ -30,6 +30,7 @@ import type {
   SystemEventContextVisibility,
   SystemEventHandlingMode,
 } from "./system-event-policy.js";
+import type { RunMetrics } from "./metrics.js";
 
 export type SystemEventApprovalState = "not_needed" | "pending" | "granted" | "rejected";
 export type WorkMode = "background_lookup" | "document_lookup" | "document_process" | "structured_data_process";
@@ -139,6 +140,7 @@ export interface StepSummary {
   summary: string;
   newFacts: string[];
   artifacts: string[];
+  toolsUsed?: string[];
   toolSuccessCount: number;
   toolFailureCount: number;
   verificationMethod?: VerificationMethod;
@@ -476,6 +478,7 @@ export interface ExecutorDeps {
   sessionMemory: SessionMemory;
   runHandle: MemoryRunHandle;
   taskContext: TaskValidationContext;
+  metrics?: RunMetrics;
 }
 
 export interface CliChatAttachmentInput {

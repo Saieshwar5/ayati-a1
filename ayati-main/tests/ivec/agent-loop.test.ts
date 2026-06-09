@@ -2178,19 +2178,16 @@ describe("agentLoop", () => {
             };
           }
           if (callCount === 4) {
-            return { type: "assistant", content: "Found 1 employee from Maharashtra." };
+            return {
+              type: "assistant",
+              content: JSON.stringify({
+                done: true,
+                summary: "There is 1 employee from Maharashtra.",
+                status: "completed",
+              }),
+            };
           }
-          if (callCount === 5) {
-            return { type: "assistant", content: taskVerifyResponse("done", "dataset query returned the requested count") };
-          }
-          return {
-            type: "assistant",
-            content: JSON.stringify({
-              done: true,
-              summary: "There is 1 employee from Maharashtra.",
-              status: "completed",
-            }),
-          };
+          throw new Error(`Unexpected provider call ${callCount}`);
         }),
       };
 
@@ -2309,19 +2306,16 @@ describe("agentLoop", () => {
             };
           }
           if (callCount === 4) {
-            return { type: "assistant", content: "The document is about identity and isolation." };
+            return {
+              type: "assistant",
+              content: JSON.stringify({
+                done: true,
+                summary: "The document is about identity and isolation.",
+                status: "completed",
+              }),
+            };
           }
-          if (callCount === 5) {
-            return { type: "assistant", content: taskVerifyResponse("done", "document query returned the requested summary") };
-          }
-          return {
-            type: "assistant",
-            content: JSON.stringify({
-              done: true,
-              summary: "The document is about identity and isolation.",
-              status: "completed",
-            }),
-          };
+          throw new Error(`Unexpected provider call ${callCount}`);
         }),
       };
 
@@ -2454,15 +2448,6 @@ describe("agentLoop", () => {
             };
           }
           if (callCount === 4) {
-            return { type: "assistant", content: "The previous csv was restored successfully." };
-          }
-          if (callCount === 5) {
-            return { type: "assistant", content: stepVerifySuccessResponse("The previous csv was restored successfully") };
-          }
-          if (callCount === 6) {
-            return { type: "assistant", content: taskVerifyResponse("not_done", "the restored csv is ready for querying") };
-          }
-          if (callCount === 7) {
             return {
               type: "assistant",
               content: JSON.stringify({
@@ -2474,29 +2459,23 @@ describe("agentLoop", () => {
               }),
             };
           }
-          if (callCount === 8) {
+          if (callCount === 5) {
             return {
               type: "tool_calls",
               calls: [{ id: "tc2", name: "dataset_query", input: { sql: `SELECT COUNT(*) AS employee_count FROM staging_${restoredPreparedInputId} WHERE state = 'Maharashtra'` } }],
             };
           }
-          if (callCount === 9) {
-            return { type: "assistant", content: "There is 1 person from Maharashtra." };
+          if (callCount === 6) {
+            return {
+              type: "assistant",
+              content: JSON.stringify({
+                done: true,
+                summary: "There is 1 person from Maharashtra.",
+                status: "completed",
+              }),
+            };
           }
-          if (callCount === 10) {
-            return { type: "assistant", content: stepVerifySuccessResponse("The restored csv count was returned successfully") };
-          }
-          if (callCount === 11) {
-            return { type: "assistant", content: taskVerifyResponse("done", "the restored csv returned the requested count") };
-          }
-          return {
-            type: "assistant",
-            content: JSON.stringify({
-              done: true,
-              summary: "There is 1 person from Maharashtra.",
-              status: "completed",
-            }),
-          };
+          throw new Error(`Unexpected provider call ${callCount}`);
         }),
       };
 
@@ -2637,28 +2616,16 @@ describe("agentLoop", () => {
             };
           }
           if (callCount === 4) {
-            const toolMessages = (input as { messages: Array<{ role: string; content: string }> }).messages.filter((message) => message.role === "tool");
-            expect(toolMessages.some((message) => message.content.includes("electronic-card-transactions-february-2026-csv-tables.csv"))).toBe(true);
-            expect(toolMessages.some((message) => message.content.includes("chat_states_1k.csv"))).toBe(false);
             return {
               type: "assistant",
-              content: "The current upload is a card transaction dataset with transaction type, amount, and channel columns.",
+              content: JSON.stringify({
+                done: true,
+                summary: "The uploaded card transaction file was analyzed from the current run, not from a previous session attachment.",
+                status: "completed",
+              }),
             };
           }
-          if (callCount === 5) {
-            return {
-              type: "assistant",
-              content: taskVerifyResponse("done", "the current uploaded transaction dataset was profiled successfully"),
-            };
-          }
-          return {
-            type: "assistant",
-            content: JSON.stringify({
-              done: true,
-              summary: "The uploaded card transaction file was analyzed from the current run, not from a previous session attachment.",
-              status: "completed",
-            }),
-          };
+          throw new Error(`Unexpected provider call ${callCount}`);
         }),
       };
 

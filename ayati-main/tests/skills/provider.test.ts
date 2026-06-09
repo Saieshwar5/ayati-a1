@@ -35,5 +35,6 @@ describe("builtInSkillsProvider", () => {
     expect(tools.some((t) => t.name === "shell")).toBe(true);
     expect(tools.some((t) => t.name === "db_execute_sql")).toBe(true);
     expect(tools.some((t) => t.name === "pulse")).toBe(true);
+    expect(tools.some((t) => t.name === "send_email")).toBe(false);
   });
 });

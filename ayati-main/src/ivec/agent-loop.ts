@@ -147,6 +147,8 @@ import { executeStep } from "./executor.js";
 import { runContextScout } from "./context-scout.js";
 import { RunStateManager } from "./run-state-manager.js";
 import { collectAgentArtifacts } from "./agent-artifacts.js";
+import { createRunMetrics, formatRunMetrics } from "./metrics.js";
+import type { RunMetrics } from "./metrics.js";
 import type { ToolDefinition, ToolExecutionContext } from "../skills/types.js";
 import type { ExternalSkillCard } from "../skills/external/registry.js";
 import type { ActiveExternalSkillContext } from "../skills/external/broker.js";
@@ -163,6 +165,7 @@ export async function agentLoop(deps: AgentLoopDeps): Promise<AgentLoopResult> {
   await runStateManager.ready();
   const currentToolExecutionContext = currentToolRegistryContextFactory(deps);
   const currentToolRegistryContext = currentToolExecutionContext;
+  const metrics = createRunMetrics();
 
   let totalToolCalls = 0;
 
@@ -220,6 +223,7 @@ export async function agentLoop(deps: AgentLoopDeps): Promise<AgentLoopResult> {
     queueStateSnapshot();
     await flushStateWrites(runPath);
     deps.externalSkillBroker?.deactivate({}, currentToolExecutionContext(state.iteration));
+    devLog(`[${deps.clientId}] [metrics] ${formatRunMetrics(metrics)}`);
     return buildLoopResult(state, input);
   };
 
@@ -275,6 +279,7 @@ export async function agentLoop(deps: AgentLoopDeps): Promise<AgentLoopResult> {
     systemContext,
     deps.controllerPrompts,
     resolveExternalSkillCards(),
+    metrics,
   );
   logUnderstandDirective(deps.clientId, understandResult);
 
@@ -345,6 +350,7 @@ export async function agentLoop(deps: AgentLoopDeps): Promise<AgentLoopResult> {
         resolveVisibleToolDefinitions(state.iteration),
         resolveExternalSkillCards(),
         resolveActiveExternalSkills(state.iteration),
+        metrics,
       );
       if (reevalResolution.type === "done") {
         state.status = reevalResolution.completion.status === "failed" ? "failed" : "completed";
@@ -397,6 +403,7 @@ export async function agentLoop(deps: AgentLoopDeps): Promise<AgentLoopResult> {
       runStateManager,
       controllerSystemContext,
       resolveControllerRuntimeSnapshot,
+      metrics,
     );
     if (controllerResolution.type === "done") {
       state.status = controllerResolution.completion.status === "failed" ? "failed" : "completed";
@@ -437,6 +444,7 @@ export async function agentLoop(deps: AgentLoopDeps): Promise<AgentLoopResult> {
         sessionMemory: deps.sessionMemory,
         runHandle: deps.runHandle,
         taskContext: buildTaskValidationContext(state),
+        metrics,
       },
       controllerOutput,
       state.iteration,
@@ -524,6 +532,18 @@ export async function agentLoop(deps: AgentLoopDeps): Promise<AgentLoopResult> {
         totalToolCalls,
       });
     }
+    if (canCompleteLocallyAfterStep(state, stepSummary)) {
+      const finalOutput = buildLocalCompletionReply(state, stepSummary);
+      state.status = "completed";
+      state.finalOutput = finalOutput;
+      return finalizeLoopResult({
+        dataDir: deps.dataDir,
+        status: "completed",
+        content: finalOutput,
+        totalIterations: state.iteration,
+        totalToolCalls,
+      });
+    }
   }
 
   const finalOutput = buildStuckLimitReply(state, config.maxIterations);
@@ -573,6 +593,51 @@ function buildWorkspaceLayoutFailureReply(step: StepSummary): string {
     : "";
   const detail = step.evidenceSummary?.trim() || step.summary.trim() || "The requested workspace layout could not be verified.";
   return `${detail}${evidence} I stopped here instead of trying raw Hyprland shell resize commands, because the workspace layout tool already owns layout retries and verification.`;
+}
+
+function canCompleteLocallyAfterStep(state: LoopState, step: StepSummary): boolean {
+  if (state.inputKind === "system_event") {
+    return false;
+  }
+  if (step.outcome !== "success" || state.taskProgress.status !== "done") {
+    return false;
+  }
+  if (!canUseLocalCompletionForTools(step.toolsUsed ?? [])) {
+    return false;
+  }
+  if (state.taskProgress.userInputNeeded?.trim()) {
+    return false;
+  }
+  if ((state.taskProgress.blockers ?? []).length > 0) {
+    return false;
+  }
+  const evidence = [
+    ...(step.evidenceItems ?? []),
+    ...(state.taskProgress.evidence ?? []),
+  ].filter((item) => item.trim().length > 0);
+  return state.goal.required_evidence.length === 0 || evidence.length > 0;
+}
+
+const LOCAL_COMPLETION_TOOLS = new Set([
+  "create_directory",
+  "write_file",
+  "write_files",
+]);
+
+function canUseLocalCompletionForTools(toolsUsed: string[]): boolean {
+  return toolsUsed.length > 0 && toolsUsed.every((tool) => LOCAL_COMPLETION_TOOLS.has(tool));
+}
+
+function buildLocalCompletionReply(state: LoopState, step: StepSummary): string {
+  const summary = state.taskProgress.progressSummary.trim() || step.summary.trim() || "The task is complete.";
+  const evidence = normalizeTaskSummaryList([
+    ...(step.evidenceItems ?? []),
+    ...(state.taskProgress.evidence ?? []),
+  ]).slice(0, 3);
+  if (evidence.length === 0) {
+    return `Done - ${summary}`;
+  }
+  return `Done - ${summary}\n\nEvidence: ${evidence.join("; ")}`;
 }
 
 function currentToolRegistryContextFactory(
@@ -650,6 +715,7 @@ async function resolveControllerDirective(
   runStateManager: RunStateManager,
   systemContext: string,
   resolveRuntimeSnapshot: ControllerRuntimeSnapshotResolver,
+  metrics?: RunMetrics,
 ): Promise<ControllerResolution> {
   const controllerHistoryBundle = await runStateManager.buildControllerHistoryBundle(state.completedSteps);
   const prepContext: string[] = [];
@@ -669,6 +735,7 @@ async function resolveControllerDirective(
       runtimeSnapshot.externalSkillCards,
       runtimeSnapshot.activeExternalSkills,
       prepContext.join("\n\n"),
+      metrics,
     );
     logDirectDirective(deps.clientId, resolution);
 
@@ -769,6 +836,7 @@ async function resolveReEvalDirective(
   toolDefinitions: ToolDefinition[],
   externalSkillCards?: ReturnType<NonNullable<AgentLoopDeps["externalSkillRegistry"]>["getSkillCards"]>,
   activeExternalSkills?: ReturnType<NonNullable<AgentLoopDeps["externalSkillBroker"]>["getActiveSkillContexts"]>,
+  metrics?: RunMetrics,
 ): Promise<ReEvalResolution> {
   const prepContext: string[] = [];
   const seenReadRunStateRequests = new Set<string>();
@@ -783,6 +851,7 @@ async function resolveReEvalDirective(
       externalSkillCards,
       activeExternalSkills,
       prepContext.join("\n\n"),
+      metrics,
     );
     logReEvalDirective(deps.clientId, resolution);
 

@@ -67,3 +67,249 @@ export function checkVerificationGates(actOutput: ActOutput): VerifyOutput | nul
 
   return null;
 }
+
+const DETERMINISTIC_SUCCESS_TOOLS = new Set([
+  "create_directory",
+  "delete",
+  "edit_file",
+  "move",
+  "write_file",
+  "write_files",
+  "read_file",
+  "list_directory",
+  "find_files",
+  "search_in_files",
+  "restore_attachment_context",
+  "dataset_profile",
+  "dataset_query",
+  "dataset_promote_table",
+  "document_list_sections",
+  "document_read_section",
+  "document_query",
+  "learning_workspace_show",
+]);
+
+export function checkDeterministicSuccessGate(
+  actOutput: ActOutput,
+  successCriteria: string,
+): VerifyOutput | null {
+  const executionStatus = deriveExecutionStatus(actOutput);
+  if (executionStatus !== "all_succeeded" || actOutput.toolCalls.length === 0) {
+    return null;
+  }
+
+  const unsupportedTool = actOutput.toolCalls.find((call) => !isDeterministicSuccessCall(call));
+  if (unsupportedTool) {
+    return null;
+  }
+  if (!isDeterministicCriteriaCompatible(actOutput, successCriteria)) {
+    return null;
+  }
+
+  const evidenceItems = actOutput.toolCalls.map(formatDeterministicEvidenceItem);
+  const summary = buildDeterministicSummary(actOutput, successCriteria, evidenceItems);
+  const usedRawArtifacts = actOutput.toolCalls
+    .map((call) => call.rawOutputPath)
+    .filter((path): path is string => typeof path === "string" && path.trim().length > 0);
+
+  return {
+    passed: true,
+    method: "script",
+    executionStatus,
+    validationStatus: "passed",
+    summary,
+    evidenceSummary: evidenceItems.join("; "),
+    evidenceItems,
+    newFacts: evidenceItems,
+    artifacts: [...usedRawArtifacts],
+    usedRawArtifacts,
+  };
+}
+
+const READ_ONLY_SUCCESS_TOOLS = new Set([
+  "read_file",
+  "list_directory",
+  "find_files",
+  "search_in_files",
+  "dataset_profile",
+  "dataset_query",
+  "document_list_sections",
+  "document_read_section",
+  "document_query",
+]);
+
+export function isDeterministicSuccessTool(tool: string): boolean {
+  return DETERMINISTIC_SUCCESS_TOOLS.has(tool);
+}
+
+function isDeterministicSuccessCall(call: ActOutput["toolCalls"][number]): boolean {
+  if (!DETERMINISTIC_SUCCESS_TOOLS.has(call.tool)) {
+    return false;
+  }
+
+  const payload = parseJsonObject(call.output);
+  switch (call.tool) {
+    case "restore_attachment_context":
+      return payload?.["restored"] === true
+        && typeof payload["preparedInputId"] === "string"
+        && payload["preparedInputId"].trim().length > 0;
+    case "dataset_profile":
+      return typeof payload?.["rowCount"] === "number" && Array.isArray(payload["columns"]);
+    case "dataset_query":
+      return typeof payload?.["rowCount"] === "number" && Array.isArray(payload["rows"]);
+    case "dataset_promote_table":
+      return typeof payload?.["rowsCopied"] === "number"
+        && typeof payload["targetTable"] === "string"
+        && payload["targetTable"].trim().length > 0;
+    case "document_list_sections":
+      return typeof payload?.["sectionCount"] === "number" && Array.isArray(payload["sections"]);
+    case "document_read_section":
+      return Array.isArray(payload?.["sections"]) && payload["sections"].length > 0;
+    case "document_query":
+      return isGroundedDocumentQueryPayload(payload);
+    case "learning_workspace_show":
+      return isLearningWorkspaceShown(payload);
+    default:
+      return true;
+  }
+}
+
+function parseJsonObject(text: string): Record<string, unknown> | null {
+  try {
+    const parsed = JSON.parse(text);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? parsed as Record<string, unknown>
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function isGroundedDocumentQueryPayload(payload: Record<string, unknown> | null): boolean {
+  if (!payload) {
+    return false;
+  }
+  const context = typeof payload["context"] === "string" ? payload["context"].trim() : "";
+  const sources = Array.isArray(payload["sources"]) ? payload["sources"] : [];
+  const confidence = typeof payload["confidence"] === "number" ? payload["confidence"] : 0;
+  const documentState = payload["documentState"] && typeof payload["documentState"] === "object" && !Array.isArray(payload["documentState"])
+    ? payload["documentState"] as Record<string, unknown>
+    : {};
+  return context.length > 0
+    && sources.length > 0
+    && confidence > 0
+    && documentState["insufficientEvidence"] !== true;
+}
+
+function isLearningWorkspaceShown(payload: Record<string, unknown> | null): boolean {
+  const workspace = payload?.["workspace"];
+  return !!workspace
+    && typeof workspace === "object"
+    && !Array.isArray(workspace)
+    && (workspace as Record<string, unknown>)["opened"] === true;
+}
+
+function isDeterministicCriteriaCompatible(actOutput: ActOutput, successCriteria: string): boolean {
+  const tools = new Set(actOutput.toolCalls.map((call) => call.tool));
+  const readOnly = [...tools].every((tool) => READ_ONLY_SUCCESS_TOOLS.has(tool));
+  if (!readOnly) {
+    return true;
+  }
+
+  const normalized = successCriteria.toLowerCase();
+  return !/\b(write|wrote|save|saved|regenerate|rewrite|create|created|update|updated|modify|modified|edit|edited|delete|deleted|move|moved|show|open|display|reopen)\b/.test(normalized);
+}
+
+function buildDeterministicSummary(
+  actOutput: ActOutput,
+  successCriteria: string,
+  evidenceItems: string[],
+): string {
+  const criteria = successCriteria.replace(/\s+/g, " ").trim();
+  const criteriaText = criteria.length > 0 ? ` Success criteria: ${criteria}` : "";
+  const contentPreview = buildContentPreview(actOutput);
+  return [
+    `Deterministic tool execution passed: ${evidenceItems.join("; ")}.${criteriaText}`.trim(),
+    contentPreview,
+  ].filter((part) => part.trim().length > 0).join(" ");
+}
+
+function formatDeterministicEvidenceItem(call: ActOutput["toolCalls"][number]): string {
+  const payload = parseJsonObject(call.output);
+  const target = readMetaString(call, ["filePath", "dirPath", "targetPath", "source", "destination", "preparedInputId"])
+    ?? readPayloadString(payload, ["filePath", "dirPath", "targetPath", "source", "destination", "preparedInputId", "displayName", "targetTable"]);
+  const bytes = readMetaNumber(call, ["bytesWritten", "sizeBytes", "rawOutputChars"]);
+  const count = readMetaNumber(call, ["lineCount", "matchCount", "rowCount", "resultCount", "entryCount", "replacements"])
+    ?? readPayloadNumber(payload, ["rowCount", "sectionCount", "rowsCopied"]);
+  const output = call.output.replace(/\s+/g, " ").trim();
+  const outputPreview = output.length > 0 ? ` output="${truncate(output, 180)}"` : "";
+  const targetText = target ? ` target=${target}` : "";
+  const bytesText = bytes !== undefined ? ` bytes=${bytes}` : "";
+  const countText = count !== undefined ? ` count=${count}` : "";
+  return `${call.tool} succeeded${targetText}${bytesText}${countText}${outputPreview}`.trim();
+}
+
+function buildContentPreview(actOutput: ActOutput): string {
+  const readableOutputs = actOutput.toolCalls
+    .filter((call) => ["read_file", "search_in_files", "find_files", "dataset_query", "document_query"].includes(call.tool))
+    .map((call) => {
+      const output = call.output.replace(/\s+/g, " ").trim();
+      if (!output) return "";
+      return `${call.tool} preview: ${truncate(output, 600)}`;
+    })
+    .filter((item) => item.length > 0);
+  return readableOutputs.length > 0 ? readableOutputs.join(" ") : "";
+}
+
+function readMetaString(call: ActOutput["toolCalls"][number], keys: string[]): string | undefined {
+  for (const key of keys) {
+    const value = call.meta?.[key];
+    if (typeof value === "string" && value.trim().length > 0) {
+      return value.trim();
+    }
+  }
+  return undefined;
+}
+
+function readMetaNumber(call: ActOutput["toolCalls"][number], keys: string[]): number | undefined {
+  for (const key of keys) {
+    const value = call.meta?.[key];
+    if (typeof value === "number" && Number.isFinite(value)) {
+      return value;
+    }
+  }
+  return undefined;
+}
+
+function readPayloadString(payload: Record<string, unknown> | null, keys: string[]): string | undefined {
+  if (!payload) {
+    return undefined;
+  }
+  for (const key of keys) {
+    const value = payload[key];
+    if (typeof value === "string" && value.trim().length > 0) {
+      return value.trim();
+    }
+  }
+  return undefined;
+}
+
+function readPayloadNumber(payload: Record<string, unknown> | null, keys: string[]): number | undefined {
+  if (!payload) {
+    return undefined;
+  }
+  for (const key of keys) {
+    const value = payload[key];
+    if (typeof value === "number" && Number.isFinite(value)) {
+      return value;
+    }
+  }
+  return undefined;
+}
+
+function truncate(value: string, maxLen: number): string {
+  if (value.length <= maxLen) {
+    return value;
+  }
+  return `${value.slice(0, Math.max(0, maxLen - 3))}...`;
+}

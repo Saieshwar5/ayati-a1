@@ -357,21 +357,43 @@ describe("agentLoop inline prep directives", () => {
           }
 
           if (callCount === 4) {
-            return { type: "assistant", content: stepVerifySuccessResponse("The external search tool ran successfully") };
+            return {
+              type: "assistant",
+              content: JSON.stringify({
+                step: {
+                  passed: true,
+                  summary: "The external search tool ran successfully",
+                  evidenceSummary: "The external search tool ran successfully",
+                  evidenceItems: ["The external search tool ran successfully"],
+                  newFacts: [],
+                  artifacts: [],
+                },
+                taskProgress: {
+                  status: "done",
+                  progressSummary: "The external skill task is complete",
+                  currentFocus: "Complete.",
+                  completedMilestones: ["The external search tool ran successfully"],
+                  openWork: [],
+                  blockers: [],
+                  keyFacts: [],
+                  evidence: ["The external skill task is complete"],
+                },
+              }),
+            };
           }
 
           if (callCount === 5) {
-            return { type: "assistant", content: taskVerifyResponse("done", "The external skill task is complete") };
+            return {
+              type: "assistant",
+              content: JSON.stringify({
+                done: true,
+                summary: "Finished after reading skill details and running the external tool.",
+                status: "completed",
+              }),
+            };
           }
 
-          return {
-            type: "assistant",
-            content: JSON.stringify({
-              done: true,
-              summary: "Finished after reading skill details and running the external tool.",
-              status: "completed",
-            }),
-          };
+          throw new Error(`Unexpected provider call ${callCount}`);
         }),
       };
 
@@ -389,7 +411,7 @@ describe("agentLoop inline prep directives", () => {
 
       expect(result.status).toBe("completed");
       expect(result.content).toContain("external tool");
-      expect((provider.generateTurn as ReturnType<typeof vi.fn>).mock.calls.length).toBeGreaterThanOrEqual(6);
+      expect((provider.generateTurn as ReturnType<typeof vi.fn>).mock.calls.length).toBe(5);
       const logLines = consoleSpy.mock.calls.map((call) => call.map(String).join(" "));
       expect(logLines.some((line) =>
         line.includes("[controller] direct -> activate_skill skill_id=demo-search"),
