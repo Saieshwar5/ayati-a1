@@ -83,7 +83,6 @@ export interface FailedApproach {
   step: number;
   executionContract?: string;
   intent?: string;
-  tools_hint?: string[];
   failureType: "tool_error" | "permission" | "missing_path" | "verify_failed" | "no_progress" | "validation_error";
   reason: string;
   blockedTargets: string[];
@@ -193,24 +192,32 @@ export interface ActivateSkillDirective {
   reason?: string;
 }
 
-export type StepPlanCallOrigin = "builtin" | "external_tool";
-export type StepPlanRetryPolicy = "none" | "same_call_once_on_timeout";
+export type ExecutionPlanCallOrigin = "builtin" | "external_tool";
+export type ExecutionPlanRetryPolicy = "none" | "same_call_once_on_timeout";
+export type ExecutionPlanMode = "single" | "sequential" | "parallel" | "autonomous";
 
-export interface StepPlanCall {
+export interface ExecutionPlanCall {
+  id: string;
   tool: string;
   input: Record<string, unknown>;
-  origin: StepPlanCallOrigin;
+  origin: ExecutionPlanCallOrigin;
   source_refs: string[];
-  retry_policy: StepPlanRetryPolicy;
+  retry_policy: ExecutionPlanRetryPolicy;
+  depends_on: string[];
+  purpose: string;
+}
+
+export interface ExecutionPlan {
+  mode: ExecutionPlanMode;
+  calls: ExecutionPlanCall[];
+  allowed_tools: string[];
+  max_calls?: number;
 }
 
 export interface StepDirective {
   done: false;
-  execution_mode: "dependent" | "independent";
-  execution_contract?: string;
-  tool_plan?: StepPlanCall[];
-  intent?: string;
-  tools_hint?: string[];
+  execution_contract: string;
+  execution_plan: ExecutionPlan;
   success_criteria: string;
   context: string;
 }

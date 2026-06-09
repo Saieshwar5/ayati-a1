@@ -5,9 +5,10 @@ import type { SkillDefinition, ToolDefinition, ToolExecutionContext, ToolResult 
 export interface UiSkillDeps {
   learningWorkspace: LearningWorkspaceController;
   workspaceOrchestrator: WorkspaceOrchestrator;
+  includeLearningTools?: boolean;
 }
 
-const UI_PROMPT_BLOCK = [
+const UI_PROMPT_LINES = [
   "UI workspace tools are built in for the current Omarchy/Hyprland workspace anchored by the user's Ayati CLI window.",
   "Use general workspace tools for learning, coding, browsing, app previews, references, scratch explanations, and other visual work.",
   "The current CLI window is the protected anchor. You may focus, resize, and arrange it, but do not close it unless the user explicitly asks.",
@@ -16,22 +17,31 @@ const UI_PROMPT_BLOCK = [
   "Use layout presets instead of improvising geometry: 50-50 for discussion, 30-70 as the default work/learning layout, 20-80 for visual-heavy work, grid for several supporting windows, focus for one dominant surface.",
   "After calling workspace_set_layout, inspect lastActionStatus and layoutVerification. Tell the user the layout is done only when the status is applied; if it is failed, explain the measured ratio or failure reason. The 30-70 layout is the reliable agent workspace mode: protected CLI on the left and primary visual surface on the right.",
   "Do not recover from a failed workspace_set_layout by issuing raw shell hyprctl resize or move commands unless the user explicitly asks for diagnosis; the workspace tool owns layout retries and verification.",
-  "Learning workspace tools still control the native Ayati Learning Workspace Tauri window. For learning tasks, show generated lessons visually instead of leaving the user in CLI-only mode.",
-].join("\n");
+];
+
+const LEARNING_UI_PROMPT_LINE = "Learning workspace tools still control the native Ayati Learning Workspace Tauri window. For learning tasks, show generated lessons visually instead of leaving the user in CLI-only mode.";
 
 export function createUiSkill(deps: UiSkillDeps): SkillDefinition {
+  const includeLearningTools = deps.includeLearningTools !== false;
   return {
     id: "ui-workspace",
     version: "1.0.0",
     description: "Scoped OS/window control for Ayati-owned visual workspaces.",
-    promptBlock: UI_PROMPT_BLOCK,
+    promptBlock: [
+      ...UI_PROMPT_LINES,
+      ...(includeLearningTools ? [LEARNING_UI_PROMPT_LINE] : []),
+    ].join("\n"),
     tools: [
-      createOpenLearningWorkspaceTool(deps),
-      createFocusLearningWorkspaceTool(deps),
-      createShowLearningCourseTool(deps),
-      createShowLearningLessonTool(deps),
-      createGetLearningWorkspaceStateTool(deps),
-      createCloseLearningWorkspaceTool(deps),
+      ...(includeLearningTools
+        ? [
+          createOpenLearningWorkspaceTool(deps),
+          createFocusLearningWorkspaceTool(deps),
+          createShowLearningCourseTool(deps),
+          createShowLearningLessonTool(deps),
+          createGetLearningWorkspaceStateTool(deps),
+          createCloseLearningWorkspaceTool(deps),
+        ]
+        : []),
       createWorkspaceGetStateTool(deps),
       createWorkspaceSetLayoutTool(deps),
       createWorkspaceFocusWindowTool(deps),

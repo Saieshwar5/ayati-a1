@@ -32,6 +32,15 @@ function createMockProvider(overrides?: Partial<LlmProvider>): LlmProvider {
   };
 }
 
+function autonomousPlan(allowedTools: string[] = ["shell"], maxCalls = 4): Record<string, unknown> {
+  return {
+    mode: "autonomous",
+    calls: [],
+    allowed_tools: allowedTools,
+    max_calls: maxCalls,
+  };
+}
+
 function createSessionMemory(): SessionMemory {
   return {
     initialize: vi.fn(),
@@ -208,9 +217,8 @@ describe("IVecEngine", () => {
               type: "assistant",
               content: JSON.stringify({
                 done: false,
-                execution_mode: "dependent",
-                intent: "Inspect files",
-                tools_hint: [],
+                execution_contract: "Inspect files",
+                execution_plan: autonomousPlan(["shell"], 4),
                 success_criteria: "files inspected",
                 context: "",
               }),
@@ -705,9 +713,8 @@ describe("IVecEngine", () => {
               type: "assistant",
               content: JSON.stringify({
                 done: false,
-                execution_mode: "dependent",
-                intent: "Check health",
-                tools_hint: [],
+                execution_contract: "Check health",
+                execution_plan: autonomousPlan(["shell"], 4),
                 success_criteria: "health checked",
                 context: "",
               }),

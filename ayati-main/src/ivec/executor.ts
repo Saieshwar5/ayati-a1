@@ -1,5 +1,5 @@
 import { readFile } from "node:fs/promises";
-import { join } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import type { LlmMessage, LlmToolSchema } from "../core/contracts/llm-protocol.js";
 import type {
   ExecutorDeps,
@@ -12,7 +12,7 @@ import type {
   TaskStatus,
   TaskProgressState,
   PreparedAttachmentStateUpdate,
-  StepPlanCall,
+  ExecutionPlanCall,
   VerificationExecutionStatus,
 } from "./types.js";
 import {
@@ -130,31 +130,29 @@ async function act(
   stepNumber: number,
   runPath: string,
 ): Promise<ActOutput> {
-  const explicitToolPlan = Array.isArray(directive.tool_plan) ? directive.tool_plan : [];
-  if (explicitToolPlan.length === 0) {
-    return actWithLegacyAutonomy(deps, directive, stepNumber, runPath);
+  const plan = directive.execution_plan;
+  if (plan.mode === "autonomous") {
+    return actWithExecutorAutonomy(deps, directive, stepNumber, runPath);
   }
 
-  if (directive.execution_mode === "dependent" && explicitToolPlan.length > 1) {
+  if (plan.mode === "single" && plan.calls.length !== 1) {
     return finalizeActOutput(
       deps,
       directive,
       [],
       "planned_call_failed",
-      "Dependent steps may contain exactly one tool call.",
+      "Single execution plans must contain exactly one tool call.",
     );
   }
 
-  const maxTotalCalls = directive.execution_mode === "dependent"
-    ? 1
-    : Math.max(1, deps.config.maxTotalToolCallsPerStep);
-  const plannedCalls = explicitToolPlan.slice(0, maxTotalCalls);
+  const maxTotalCalls = Math.max(1, deps.config.maxTotalToolCallsPerStep);
+  const plannedCalls = plan.calls.slice(0, maxTotalCalls);
   const toolCalls: ActToolCallRecord[] = [];
   if (plannedCalls.length === 0) {
     return finalizeActOutput(deps, directive, toolCalls, "no_valid_tool_calls");
   }
 
-  if (explicitToolPlan.length > maxTotalCalls) {
+  if (plan.calls.length > maxTotalCalls) {
     return finalizeActOutput(
       deps,
       directive,
@@ -164,7 +162,10 @@ async function act(
     );
   }
 
-  const maxCallsPerBatch = directive.execution_mode === "independent" ? 2 : 1;
+  const effectiveMode = plan.mode === "parallel" && !hasUnsafeParallelFilesystemCalls(plannedCalls)
+    ? "parallel"
+    : "sequential";
+  const maxCallsPerBatch = effectiveMode === "parallel" ? 2 : 1;
 
   for (let index = 0; index < plannedCalls.length; index += maxCallsPerBatch) {
     const batch = plannedCalls.slice(index, index + maxCallsPerBatch);
@@ -310,7 +311,7 @@ async function executeSingleTool(
 
 async function executePlannedCall(
   deps: ExecutorDeps,
-  plannedCall: StepPlanCall,
+  plannedCall: ExecutionPlanCall,
   stepNumber: number,
   runPath: string,
   stepId: number,
@@ -354,7 +355,7 @@ async function executePlannedCall(
 
 function recordPlannedToolResult(
   deps: ExecutorDeps,
-  plannedCall: StepPlanCall,
+  plannedCall: ExecutionPlanCall,
   record: ActToolCallRecord,
   stepId: number,
   suffix = "initial",
@@ -384,6 +385,85 @@ function recordPlannedToolResult(
 function isTimeoutError(error: string): boolean {
   const normalized = error.toLowerCase();
   return normalized.includes("timeout") || normalized.includes("timed out");
+}
+
+function hasUnsafeParallelFilesystemCalls(calls: ExecutionPlanCall[]): boolean {
+  const writeTargets = new Set<string>();
+  for (const call of calls) {
+    if (call.tool !== "write_file") continue;
+    const writePath = normalizePathInput(call.input["path"]);
+    if (!writePath) continue;
+    if (writeTargets.has(writePath)) {
+      return true;
+    }
+    writeTargets.add(writePath);
+  }
+
+  for (let leftIndex = 0; leftIndex < calls.length; leftIndex++) {
+    for (let rightIndex = leftIndex + 1; rightIndex < calls.length; rightIndex++) {
+      if (filesystemCallsConflict(calls[leftIndex]!, calls[rightIndex]!)) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+function filesystemCallsConflict(left: ExecutionPlanCall, right: ExecutionPlanCall): boolean {
+  return createDirectoryWriteConflict(left, right)
+    || createDirectoryWriteConflict(right, left)
+    || mutatingPathConflict(left, right);
+}
+
+function createDirectoryWriteConflict(createCall: ExecutionPlanCall, writeCall: ExecutionPlanCall): boolean {
+  if (createCall.tool !== "create_directory" || writeCall.tool !== "write_file") {
+    return false;
+  }
+  if (writeCall.input["createDirs"] === true) {
+    return false;
+  }
+
+  const createdDir = normalizePathInput(createCall.input["path"]);
+  const writePath = normalizePathInput(writeCall.input["path"]);
+  if (!createdDir || !writePath) {
+    return false;
+  }
+  return pathsOverlap(createdDir, dirname(writePath));
+}
+
+function mutatingPathConflict(left: ExecutionPlanCall, right: ExecutionPlanCall): boolean {
+  const mutationTools = new Set(["delete", "move"]);
+  if (!mutationTools.has(left.tool) && !mutationTools.has(right.tool)) {
+    return false;
+  }
+
+  const leftPath = firstPathInput(left.input);
+  const rightPath = firstPathInput(right.input);
+  return Boolean(leftPath && rightPath && pathsOverlap(leftPath, rightPath));
+}
+
+function firstPathInput(input: Record<string, unknown>): string | undefined {
+  for (const key of ["path", "source", "from", "src", "target", "destination", "to"]) {
+    const candidate = normalizePathInput(input[key]);
+    if (candidate) return candidate;
+  }
+  return undefined;
+}
+
+function normalizePathInput(value: unknown): string | undefined {
+  if (typeof value !== "string" || !value.trim()) {
+    return undefined;
+  }
+  return resolve(value.trim());
+}
+
+function pathsOverlap(left: string, right: string): boolean {
+  return isSameOrAncestor(left, right) || isSameOrAncestor(right, left);
+}
+
+function isSameOrAncestor(ancestor: string, child: string): boolean {
+  const rel = relative(ancestor, child);
+  return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
 }
 
 // --- Phase 2: Verify ---
@@ -460,8 +540,8 @@ function buildCallSignature(toolName: string, input: unknown): string {
 }
 
 function buildActPrompt(directive: StepDirective, availableToolNames: string[]): string {
-  const preferredTools = (directive.tools_hint ?? []).length > 0
-    ? (directive.tools_hint ?? []).join(", ")
+  const allowedTools = directive.execution_plan.allowed_tools.length > 0
+    ? directive.execution_plan.allowed_tools.join(", ")
     : "none";
   const availableTools = availableToolNames.length > 0
     ? availableToolNames.join(", ")
@@ -470,10 +550,11 @@ function buildActPrompt(directive: StepDirective, availableToolNames: string[]):
   return `Execute this step:
 Intent: ${getDirectiveExecutionContract(directive)}
 Context: ${directive.context}
-Preferred tools: ${preferredTools}
+Allowed tools for this autonomous step: ${allowedTools}
 Available tools: ${availableTools}
+Maximum tool calls for this autonomous step: ${directive.execution_plan.max_calls ?? "default"}
 
-Prefer the suggested tools first, but you may use any available tool if it is better for progress or recovery.
+Use only the allowed tools when that list is non-empty. You may use any available tool only if allowed tools is none.
 If a tool call fails, do not repeat the same tool call with identical input in this step.
 If the same tool fails twice in this step, switch to a different available tool or a materially different strategy.
 When done, respond with a text summary.`;
@@ -631,10 +712,10 @@ function buildRecoverySuggestion(
 }
 
 function getDirectiveExecutionContract(directive: StepDirective): string {
-  return directive.execution_contract ?? directive.intent ?? "";
+  return directive.execution_contract;
 }
 
-async function actWithLegacyAutonomy(
+async function actWithExecutorAutonomy(
   deps: ExecutorDeps,
   directive: StepDirective,
   stepNumber: number,
@@ -648,10 +729,15 @@ async function actWithLegacyAutonomy(
   const repeatedFailureCounts = new Map<string, number>();
   const toolFailureCounts = new Map<string, number>();
   const blockedTools = new Set<string>();
-  const maxCallsPerTurn = directive.execution_mode === "independent" ? 2 : 1;
-  const maxTotalCalls = directive.execution_mode === "dependent"
-    ? 1
-    : Math.max(1, deps.config.maxTotalToolCallsPerStep);
+  const allowedAutonomyTools = new Set(directive.execution_plan.allowed_tools);
+  const maxCallsPerTurn = 1;
+  const maxTotalCalls = Math.max(
+    1,
+    Math.min(
+      directive.execution_plan.max_calls ?? deps.config.maxTotalToolCallsPerStep,
+      deps.config.maxTotalToolCallsPerStep,
+    ),
+  );
   let executedCalls = 0;
 
   const prompt = buildActPrompt(directive, toolSchemas.map((tool) => tool.name));
@@ -671,8 +757,11 @@ async function actWithLegacyAutonomy(
       };
     }
 
-    const candidateCalls = prioritizeCallsByHint(turn.calls, directive.tools_hint ?? [])
-      .filter((call) => availableToolNames.has(call.name));
+    const candidateCalls = prioritizeCallsByHint(turn.calls, directive.execution_plan.allowed_tools)
+      .filter((call) =>
+        availableToolNames.has(call.name)
+        && (allowedAutonomyTools.size === 0 || allowedAutonomyTools.has(call.name)),
+      );
 
     const orderedCalls = selectCallsForTurn(
       candidateCalls,
@@ -766,7 +855,7 @@ async function actWithLegacyAutonomy(
             call.input,
             record.error,
             toolFailureCount,
-            directive.tools_hint ?? [],
+            directive.execution_plan.allowed_tools,
             toolSchemas.map((tool) => tool.name),
           ),
         });

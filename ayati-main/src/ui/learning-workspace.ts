@@ -13,6 +13,8 @@ export type LearningWorkspacePlacementPolicy = "current-agent-cli-window" | "act
 
 export type HyprctlRunner = (args: string[]) => Promise<string>;
 
+export type LearningWorkspaceVersion = "v1" | "v2";
+
 export interface LearningWorkspaceState {
   schemaVersion: 1;
   clientId: string;
@@ -33,7 +35,10 @@ export interface LearningWorkspaceState {
   anchorWorkspaceName?: string;
   arrangementStatus?: LearningWorkspaceArrangementStatus;
   activeCourseId?: string;
+  activeInterestId?: string;
   activeLessonId?: string;
+  activeViewPath?: string;
+  learningVersion?: LearningWorkspaceVersion;
   lastCommand?: LearningWorkspaceCommand;
   lastCommandId?: string;
   lastOpenedAt?: string;
@@ -63,7 +68,10 @@ export interface LearningWorkspaceControllerOptions {
 export interface OpenLearningWorkspaceInput {
   clientId: string;
   courseId?: string;
+  interestId?: string;
   lessonId?: string;
+  viewPath?: string;
+  learningVersion?: LearningWorkspaceVersion;
   uiContext?: AgentUiContext;
 }
 
@@ -102,7 +110,10 @@ export class LearningWorkspaceController {
       isOpen: true,
       launchStatus: "starting",
       activeCourseId: optionalTrim(input.courseId),
+      activeInterestId: optionalTrim(input.interestId),
       activeLessonId: optionalTrim(input.lessonId),
+      activeViewPath: optionalTrim(input.viewPath),
+      learningVersion: input.learningVersion,
       lastCommand: "open",
       lastCommandId: this.commandId(),
       lastOpenedAt: this.nowIso(),
@@ -157,7 +168,10 @@ export class LearningWorkspaceController {
     await this.updateState(input.clientId, {
       isOpen: true,
       activeCourseId: optionalTrim(input.courseId),
+      activeInterestId: optionalTrim(input.interestId),
       activeLessonId: optionalTrim(input.lessonId),
+      activeViewPath: optionalTrim(input.viewPath),
+      learningVersion: input.learningVersion,
       lastCommand: "show_lesson",
       lastCommandId: this.commandId(),
     });
@@ -168,7 +182,10 @@ export class LearningWorkspaceController {
         lastCommand: "show_lesson",
         lastCommandId: this.commandId(),
         activeCourseId: optionalTrim(input.courseId),
+        activeInterestId: optionalTrim(input.interestId),
         activeLessonId: optionalTrim(input.lessonId),
+        activeViewPath: optionalTrim(input.viewPath),
+        learningVersion: input.learningVersion,
         error: opened.error,
         arrangementError: opened.arrangementError,
       });
@@ -180,7 +197,10 @@ export class LearningWorkspaceController {
     await this.updateState(input.clientId, {
       isOpen: true,
       activeCourseId: optionalTrim(input.courseId),
+      activeInterestId: optionalTrim(input.interestId),
       activeLessonId: optionalTrim(input.lessonId),
+      activeViewPath: optionalTrim(input.viewPath),
+      learningVersion: input.learningVersion,
       lastCommand: "show_course",
       lastCommandId: this.commandId(),
     });
@@ -191,7 +211,10 @@ export class LearningWorkspaceController {
         lastCommand: "show_course",
         lastCommandId: this.commandId(),
         activeCourseId: optionalTrim(input.courseId),
+        activeInterestId: optionalTrim(input.interestId),
         activeLessonId: optionalTrim(input.lessonId),
+        activeViewPath: optionalTrim(input.viewPath),
+        learningVersion: input.learningVersion,
         error: opened.error,
         arrangementError: opened.arrangementError,
       });
@@ -232,7 +255,9 @@ export class LearningWorkspaceController {
       ...process.env,
       AYATI_LEARNING_API_BASE: this.httpBaseUrl,
       AYATI_LEARNING_INITIAL_COURSE_ID: optionalTrim(input.courseId) ?? "",
+      AYATI_LEARNING_INITIAL_INTEREST_ID: optionalTrim(input.interestId) ?? "",
       AYATI_LEARNING_INITIAL_LESSON_ID: optionalTrim(input.lessonId) ?? "",
+      AYATI_LEARNING_INITIAL_VIEW_PATH: optionalTrim(input.viewPath) ?? "",
     };
 
     if (configured) {
@@ -545,7 +570,10 @@ function normalizeState(raw: unknown, clientId: string, fallbackUpdatedAt: strin
     ...(typeof record["anchorWorkspaceName"] === "string" ? { anchorWorkspaceName: record["anchorWorkspaceName"] } : {}),
     ...(arrangementStatus ? { arrangementStatus } : {}),
     ...(typeof record["activeCourseId"] === "string" && record["activeCourseId"].trim() ? { activeCourseId: record["activeCourseId"].trim() } : {}),
+    ...(typeof record["activeInterestId"] === "string" && record["activeInterestId"].trim() ? { activeInterestId: record["activeInterestId"].trim() } : {}),
     ...(typeof record["activeLessonId"] === "string" && record["activeLessonId"].trim() ? { activeLessonId: record["activeLessonId"].trim() } : {}),
+    ...(typeof record["activeViewPath"] === "string" && record["activeViewPath"].trim() ? { activeViewPath: record["activeViewPath"].trim() } : {}),
+    ...(record["learningVersion"] === "v1" || record["learningVersion"] === "v2" ? { learningVersion: record["learningVersion"] } : {}),
     ...(lastCommand ? { lastCommand } : {}),
     ...(typeof record["lastCommandId"] === "string" ? { lastCommandId: record["lastCommandId"] } : {}),
     ...(typeof record["lastOpenedAt"] === "string" ? { lastOpenedAt: record["lastOpenedAt"] } : {}),

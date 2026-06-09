@@ -1,4 +1,5 @@
 import type { LlmProvider } from "../core/contracts/provider.js";
+import { dirname, isAbsolute, relative, resolve } from "node:path";
 import type { LlmMessage, LlmResponseFormat, LlmUserContentPart } from "../core/contracts/llm-protocol.js";
 import type { ControllerPrompts } from "../context/types.js";
 import { formatConversationTurnSpeaker } from "../memory/conversation-turn-format.js";
@@ -14,10 +15,13 @@ import type {
   ReadRunStateDirective,
   ActivateSkillDirective,
   CompletionDirective,
+  ContextSearchDirective,
   StepDirective,
   GoalContract,
   WorkMode,
-  StepPlanCall,
+  ExecutionPlan,
+  ExecutionPlanCall,
+  ExecutionPlanMode,
   TaskProgressState,
   StepSummary,
 } from "./types.js";
@@ -154,26 +158,36 @@ const DEFAULT_DIRECT_INSTRUCTIONS = `- This stage chooses exactly 1 next move in
 - Active external skills show which skills are already activated for this run and which mounted tools they provide.
 - If you need an external capability that is shown in Available external skills but its tools are not yet listed in Available tools, return activate_skill with the exact skill_id.
 - After activate_skill, direct will be called again immediately in the same iteration with refreshed Available tools and Active external skills.
-- Only reference an external tool in tool_plan when that tool is already listed in Available tools for the current run.
+- Only reference an external tool in execution_plan.calls when that tool is already listed in Available tools for the current run.
 - After activating a skill, use its mounted tools in the next direct decision.
 
-- Choose execution_mode for the next step:
-  - dependent: planned tool calls must run in the listed order
-  - independent: planned tool calls are explicitly safe to run in parallel
+- Choose execution_plan.mode for the next step:
+  - single: exactly one concrete tool call
+  - sequential: concrete tool calls must run in listed order
+  - parallel: concrete tool calls are explicitly safe to run in parallel
+  - autonomous: executor must choose exact calls from a bounded contract
 
 - Execution limits you must plan for:
-  - max_planned_calls_per_step: 6
+  - single: exactly 1 call
+  - sequential/parallel: max 6 concrete calls
+  - autonomous: max_calls must be 1..6 and allowed_tools must be non-empty
 
 - The step payload is an execution contract, not a rough plan.
 - execution_contract must say exactly what the executor should run.
-- tool_plan must contain the exact ordered tool invocations with full literal arguments.
-- Do not emit a step if you cannot name the exact tool inputs yet. Use read_run_state, activate_skill, or feedback instead when appropriate.
+- Keep controller JSON compact.
+- execution_plan is the only tool-execution field.
+- Use concrete calls only when the exact tool arguments are small and already known.
+- Each concrete call needs id, tool, input, origin, source_refs, retry_policy, depends_on, and purpose.
+- Use sequential when later calls depend on earlier filesystem, UI, or external state.
+- Use parallel only when calls have no ordering, path, state, or data dependency.
+- Do not group create_directory and write_file as parallel unless each write_file has createDirs=true.
+- Do not put generated documents, Markdown lessons, HTML, CSS, JS, source files, heredocs, or long file contents inside execution_plan.calls[].input.
+- If the next step requires creating or editing substantial generated content, use execution_plan.mode "autonomous" with bounded allowed_tools and max_calls. The executor will generate and pass the large content through normal tool calling.
 - Use origin "builtin" for built-in tool calls.
 - Use origin "external_tool" for external tools.
 - Leave source_refs empty unless grounded run, project, or session context materially matters to the call.
 - If using the shell tool, provide the literal shell command string in the tool input.
 - If the next action still needs tools, do not return completion text that only promises the work. Return a step instead.
-- Do not output tools_hint or loose tool preferences.
 
 - If the task is complete, set done: true.
 - The summary field in completion is the actual user-visible response for response_kind "reply", "feedback", or "notification". Write it as helpful natural language, not a log.
@@ -217,7 +231,9 @@ const DEFAULT_SYSTEM_EVENT_OVERLAY = `- This input came from a system, not from 
 
 const CONTROLLER_STAGE_FORMAT_ERROR_PREFIX = "Invalid controller response format";
 const STRICT_JSON_RESPONSE_NOTE =
-  `Use strict JSON syntax with double-quoted strings and lowercase true, false, and null.`;
+  `Use strict JSON syntax with double-quoted strings and lowercase true, false, and null. Never use Python literals such as True, False, or None.`;
+const MAX_CONTROLLER_EXECUTION_PLAN_INLINE_STRING_CHARS = 2_000;
+const MAX_CONTROLLER_PLANNED_CALLS = 6;
 const CONTROLLER_JSON_REPAIR_PROMPT = `Your previous response was invalid because it was not a single valid JSON object that matched the requested shape.
 Reply again with exactly one JSON object.
 ${STRICT_JSON_RESPONSE_NOTE}
@@ -238,7 +254,7 @@ const JSON_STRING_ARRAY_SCHEMA = {
 const STATUS_ENUM = ["completed", "failed"] as const;
 const RESPONSE_KIND_ENUM = ["reply", "feedback", "notification", "none"] as const;
 const FEEDBACK_KIND_ENUM = ["approval", "confirmation", "clarification"] as const;
-const EXECUTION_MODE_ENUM = ["dependent", "independent"] as const;
+const EXECUTION_PLAN_MODE_ENUM = ["single", "sequential", "parallel", "autonomous"] as const;
 const WORK_MODE_ENUM = ["background_lookup", "document_lookup", "document_process", "structured_data_process"] as const;
 function strictObjectSchema(properties: Record<string, unknown>): Record<string, unknown> {
   return {
@@ -286,23 +302,31 @@ const COMPLETION_DIRECTIVE_SCHEMA = strictObjectSchema({
   entity_hints: JSON_STRING_ARRAY_OR_NULL_SCHEMA,
 });
 
-const DIRECT_STEP_TOOL_SCHEMA = strictObjectSchema({
+const EXECUTION_PLAN_CALL_SCHEMA = strictObjectSchema({
+  id: JSON_STRING_SCHEMA,
   tool: JSON_STRING_SCHEMA,
   input: JSON_GENERIC_OBJECT_SCHEMA,
   origin: stringEnumSchema(["builtin", "external_tool"]),
   source_refs: JSON_STRING_ARRAY_SCHEMA,
   retry_policy: stringEnumSchema(["none", "same_call_once_on_timeout"]),
+  depends_on: JSON_STRING_ARRAY_SCHEMA,
+  purpose: JSON_STRING_SCHEMA,
+});
+
+const EXECUTION_PLAN_SCHEMA = strictObjectSchema({
+  mode: stringEnumSchema(EXECUTION_PLAN_MODE_ENUM),
+  calls: {
+    type: "array",
+    items: EXECUTION_PLAN_CALL_SCHEMA,
+  },
+  allowed_tools: JSON_STRING_ARRAY_SCHEMA,
+  max_calls: INTEGER_OR_NULL_SCHEMA,
 });
 
 const DIRECT_STEP_DIRECTIVE_SCHEMA = strictObjectSchema({
   done: { enum: [false] },
-  execution_mode: stringEnumSchema(EXECUTION_MODE_ENUM),
   execution_contract: JSON_STRING_SCHEMA,
-  tool_plan: {
-    type: "array",
-    minItems: 1,
-    items: DIRECT_STEP_TOOL_SCHEMA,
-  },
+  execution_plan: EXECUTION_PLAN_SCHEMA,
   success_criteria: JSON_STRING_SCHEMA,
   context: JSON_STRING_SCHEMA,
 });
@@ -581,7 +605,7 @@ export async function callDirect(
   externalSkillCards?: ExternalSkillCard[],
   activeExternalSkills?: ActiveExternalSkillContext[],
   inlineDirectiveContext?: string,
-): Promise<StepDirective | ReadRunStateDirective | ActivateSkillDirective | CompletionDirective> {
+): Promise<StepDirective | ReadRunStateDirective | ActivateSkillDirective | ContextSearchDirective | CompletionDirective> {
   const resolved = resolveDirectInvocationOptions(
     state,
     controllerHistoryBundle,
@@ -993,7 +1017,7 @@ ${instructions ?? DEFAULT_DIRECT_INSTRUCTIONS}
 
 Respond with a single JSON object (no markdown fences):
 ${STRICT_JSON_RESPONSE_NOTE}
-For next step: { "kind": "step", "payload": { "done": false, "execution_mode": "dependent" | "independent", "execution_contract": "...", "tool_plan": [{ "tool": "shell", "input": { "cmd": "pwd" }, "origin": "builtin" | "external_tool", "source_refs": [], "retry_policy": "none" }], "success_criteria": "...", "context": "..." } }
+For next step: { "kind": "step", "payload": { "done": false, "execution_contract": "...", "execution_plan": { "mode": "single" | "sequential" | "parallel" | "autonomous", "calls": [{ "id": "call_id", "tool": "shell", "input": { "cmd": "pwd" }, "origin": "builtin" | "external_tool", "source_refs": [], "retry_policy": "none", "depends_on": [], "purpose": "..." }], "allowed_tools": [], "max_calls": null }, "success_criteria": "...", "context": "..." } }
 For inline activation: { "kind": "activate_skill", "payload": { "done": false, "activate_skill": true, "skill_id": "agent-browser", "reason": "optional short reason" } }
 For extra run history: { "kind": "read_run_state", "payload": { "done": false, "read_run_state": true, "action": "read_summary_window" | "read_step_full", "window": { "from": 1, "to": 10 }, "step": 3, "reason": "optional short reason" } }
 For completion: { "kind": "completion", "payload": { "done": true, "summary": "<user-facing text or internal note>", "status": "completed" | "failed", "response_kind": "reply" | "feedback" | "notification" | "none", "feedback_kind": "approval" | "confirmation" | "clarification", "feedback_label": "optional short label", "action_type": "optional short action", "entity_hints": ["optional", "keywords"] } }`;
@@ -1288,12 +1312,19 @@ export function parseReEvalResponse(
 
 export function parseDirectResponse(
   text: string,
-): StepDirective | ReadRunStateDirective | ActivateSkillDirective | CompletionDirective {
+): StepDirective | ReadRunStateDirective | ActivateSkillDirective | ContextSearchDirective | CompletionDirective {
   const extracted = extractJson(text);
   const kind = typeof extracted["kind"] === "string" ? extracted["kind"] : undefined;
-  if (kind && kind !== "completion" && kind !== "step" && kind !== "read_run_state" && kind !== "activate_skill") {
+  if (
+    kind
+    && kind !== "completion"
+    && kind !== "step"
+    && kind !== "read_run_state"
+    && kind !== "activate_skill"
+    && kind !== "context_search"
+  ) {
     throw new ControllerDirectiveValidationError(
-      `Unsupported direct response kind "${kind}". Return only "step", "read_run_state", "activate_skill", or "completion".`,
+      `Unsupported direct response kind "${kind}". Return only "step", "context_search", "read_run_state", "activate_skill", or "completion".`,
     );
   }
 
@@ -1317,18 +1348,51 @@ export function parseDirectResponse(
     return normalizeActivateSkillDirective(parsed);
   }
 
+  if (parsed["context_search"] === true) {
+    return normalizeContextSearchDirective(parsed);
+  }
+
+  const executionPlan = normalizeExecutionPlan(parsed["execution_plan"]);
+  if (!executionPlan) {
+    throw new ControllerDirectiveValidationError(
+      "Step responses must include execution_plan with mode, calls, allowed_tools, and max_calls.",
+    );
+  }
+
   return {
     done: false,
-    execution_mode: normalizeExecutionMode(parsed["execution_mode"]),
-    execution_contract: String(parsed["execution_contract"] ?? parsed["intent"] ?? ""),
-    tool_plan: normalizeToolPlan(parsed["tool_plan"]),
-    intent: parsed["intent"] === undefined ? undefined : String(parsed["intent"]),
-    tools_hint: Array.isArray(parsed["tools_hint"])
-      ? (parsed["tools_hint"] as unknown[]).map(String)
-      : undefined,
+    execution_contract: String(parsed["execution_contract"] ?? ""),
+    execution_plan: executionPlan,
     success_criteria: String(parsed["success_criteria"] ?? ""),
     context: String(parsed["context"] ?? ""),
   };
+}
+
+function normalizeContextSearchDirective(parsed: Record<string, unknown>): ContextSearchDirective {
+  const rawScope = typeof parsed["scope"] === "string" ? parsed["scope"] : "run_artifacts";
+  const scope = normalizeContextSearchScope(rawScope);
+  return {
+    done: false,
+    context_search: true,
+    query: String(parsed["query"] ?? ""),
+    scope,
+    ...(scope === "documents" && Array.isArray(parsed["document_paths"])
+      ? { document_paths: (parsed["document_paths"] as unknown[]).map(String).filter((item) => item.trim().length > 0) }
+      : {}),
+  };
+}
+
+function normalizeContextSearchScope(scope: string): ContextSearchDirective["scope"] {
+  switch (scope) {
+    case "project_context":
+    case "session":
+    case "skills":
+    case "both":
+    case "documents":
+      return scope;
+    default:
+      return "run_artifacts";
+  }
 }
 
 function normalizeCompletionDirective(parsed: Record<string, unknown>): CompletionDirective {
@@ -1464,7 +1528,7 @@ function normalizeReadRunStateWindow(value: unknown): ReadRunStateDirective["win
 }
 
 function validateDirectOutput(
-  output: StepDirective | ReadRunStateDirective | ActivateSkillDirective | CompletionDirective,
+  output: StepDirective | ReadRunStateDirective | ActivateSkillDirective | ContextSearchDirective | CompletionDirective,
   state: LoopState,
 ): void {
   if ("read_run_state" in output && output.read_run_state) {
@@ -1475,13 +1539,243 @@ function validateDirectOutput(
     validateActivateSkillDirective(output);
     return;
   }
-  if ("execution_mode" in output && output.execution_mode === "dependent" && (output.tool_plan?.length ?? 0) > 1) {
+  if ("execution_plan" in output) {
+    validateExecutionPlan(output.execution_plan);
+    return;
+  }
+  if ("context_search" in output && output.context_search) {
+    return;
+  }
+  if (output.done) {
+    validateCompletionDirective("direct", output, state);
+  }
+}
+
+function validateExecutionPlan(plan: ExecutionPlan): void {
+  if (!plan) {
+    throw new ControllerDirectiveValidationError("Step responses must include execution_plan.");
+  }
+
+  const calls = plan.calls;
+  if (plan.mode === "autonomous") {
+    if (calls.length > 0) {
+      throw new ControllerDirectiveValidationError(
+        "Autonomous execution_plan must leave calls empty; use allowed_tools and max_calls to bound executor autonomy.",
+      );
+    }
+    if (plan.allowed_tools.length === 0) {
+      throw new ControllerDirectiveValidationError(
+        "Autonomous execution_plan must include at least one allowed tool.",
+      );
+    }
+    validateMaxCalls(plan.max_calls, "execution_plan.max_calls");
+    return;
+  }
+
+  if (plan.mode === "single" && calls.length !== 1) {
+    throw new ControllerDirectiveValidationError("Single execution_plan must contain exactly one call.");
+  }
+
+  if ((plan.mode === "sequential" || plan.mode === "parallel") && calls.length === 0) {
+    throw new ControllerDirectiveValidationError(`${plan.mode} execution_plan must contain at least one call.`);
+  }
+
+  if (calls.length > MAX_CONTROLLER_PLANNED_CALLS) {
     throw new ControllerDirectiveValidationError(
-      "Dependent steps must contain exactly one tool call in tool_plan.",
+      `execution_plan cannot contain more than ${MAX_CONTROLLER_PLANNED_CALLS} planned calls.`,
     );
   }
-  if (!("done" in output) || !output.done) return;
-  validateCompletionDirective("direct", output, state);
+
+  validateExecutionPlanCalls(calls, plan.mode);
+  validateCompactExecutionPlan(calls);
+
+  if (plan.mode === "parallel" && hasUnsafeParallelFilesystemCalls(calls)) {
+    throw new ControllerDirectiveValidationError(
+      "Parallel execution_plan contains filesystem calls with path/order dependencies. Use mode \"sequential\" or make write_file createDirs=true when parent creation is intentionally independent.",
+    );
+  }
+}
+
+function validateMaxCalls(value: number | undefined, path: string): void {
+  if (value === undefined) {
+    throw new ControllerDirectiveValidationError(`${path} must be a positive integer for autonomous execution_plan.`);
+  }
+  if (!Number.isInteger(value) || value < 1 || value > MAX_CONTROLLER_PLANNED_CALLS) {
+    throw new ControllerDirectiveValidationError(
+      `${path} must be between 1 and ${MAX_CONTROLLER_PLANNED_CALLS}.`,
+    );
+  }
+}
+
+function validateExecutionPlanCalls(calls: ExecutionPlanCall[], mode: ExecutionPlanMode): void {
+  const ids = new Set<string>();
+  const seen = new Set<string>();
+  for (const [index, call] of calls.entries()) {
+    const id = call.id.trim();
+    if (!id) {
+      throw new ControllerDirectiveValidationError(`execution_plan.calls[${index}].id must not be empty.`);
+    }
+    if (ids.has(id)) {
+      throw new ControllerDirectiveValidationError(`execution_plan call id "${id}" is duplicated.`);
+    }
+    ids.add(id);
+
+    if (!call.tool.trim()) {
+      throw new ControllerDirectiveValidationError(`execution_plan.calls[${index}].tool must not be empty.`);
+    }
+    if (!call.purpose.trim()) {
+      throw new ControllerDirectiveValidationError(`execution_plan.calls[${index}].purpose must not be empty.`);
+    }
+    if (mode === "single" && call.depends_on.length > 0) {
+      throw new ControllerDirectiveValidationError("Single execution_plan calls cannot declare dependencies.");
+    }
+    if (mode === "parallel" && call.depends_on.length > 0) {
+      throw new ControllerDirectiveValidationError("Parallel execution_plan calls cannot declare depends_on.");
+    }
+    for (const dep of call.depends_on) {
+      if (!ids.has(dep) && !seen.has(dep)) {
+        throw new ControllerDirectiveValidationError(
+          `execution_plan call "${id}" depends on unknown or later call "${dep}". Sequential dependencies must point to earlier calls.`,
+        );
+      }
+      if (dep === id) {
+        throw new ControllerDirectiveValidationError(`execution_plan call "${id}" cannot depend on itself.`);
+      }
+    }
+    seen.add(id);
+  }
+}
+
+function validateCompactExecutionPlan(calls: ExecutionPlanCall[]): void {
+  for (const [index, plannedCall] of calls.entries()) {
+    const oversized = findOversizedString(
+      plannedCall.input,
+      `execution_plan.calls[${index}].input`,
+      MAX_CONTROLLER_EXECUTION_PLAN_INLINE_STRING_CHARS,
+    );
+    if (!oversized) continue;
+
+    throw new ControllerDirectiveValidationError(
+      `Direct step execution_plan contains a large string at ${oversized.path} (${oversized.length} chars). Do not put generated lessons, documents, HTML, CSS, JS, source files, heredocs, or long file contents inside controller JSON. Use execution_plan.mode "autonomous" with bounded allowed_tools so the executor can generate the content through tool calling.`,
+    );
+  }
+}
+
+function hasUnsafeParallelFilesystemCalls(calls: ExecutionPlanCall[]): boolean {
+  const writeTargets = new Set<string>();
+  for (const call of calls) {
+    if (call.tool === "write_file") {
+      const writePath = normalizePathInput(call.input["path"]);
+      if (writePath) {
+        if (writeTargets.has(writePath)) {
+          return true;
+        }
+        writeTargets.add(writePath);
+      }
+    }
+  }
+
+  for (let leftIndex = 0; leftIndex < calls.length; leftIndex++) {
+    for (let rightIndex = leftIndex + 1; rightIndex < calls.length; rightIndex++) {
+      if (filesystemCallsConflict(calls[leftIndex]!, calls[rightIndex]!)) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+function filesystemCallsConflict(left: ExecutionPlanCall, right: ExecutionPlanCall): boolean {
+  if (createDirectoryWriteConflict(left, right) || createDirectoryWriteConflict(right, left)) {
+    return true;
+  }
+  if (mutatingPathConflict(left, right)) {
+    return true;
+  }
+  return false;
+}
+
+function createDirectoryWriteConflict(createCall: ExecutionPlanCall, writeCall: ExecutionPlanCall): boolean {
+  if (createCall.tool !== "create_directory" || writeCall.tool !== "write_file") {
+    return false;
+  }
+  if (writeCall.input["createDirs"] === true) {
+    return false;
+  }
+
+  const createdDir = normalizePathInput(createCall.input["path"]);
+  const writePath = normalizePathInput(writeCall.input["path"]);
+  if (!createdDir || !writePath) {
+    return false;
+  }
+
+  const writeParent = dirname(writePath);
+  return pathsOverlap(createdDir, writeParent);
+}
+
+function mutatingPathConflict(left: ExecutionPlanCall, right: ExecutionPlanCall): boolean {
+  const mutationTools = new Set(["delete", "move"]);
+  if (!mutationTools.has(left.tool) && !mutationTools.has(right.tool)) {
+    return false;
+  }
+
+  const leftPath = firstPathInput(left.input);
+  const rightPath = firstPathInput(right.input);
+  return Boolean(leftPath && rightPath && pathsOverlap(leftPath, rightPath));
+}
+
+function firstPathInput(input: Record<string, unknown>): string | undefined {
+  for (const key of ["path", "source", "from", "src", "target", "destination", "to"]) {
+    const candidate = normalizePathInput(input[key]);
+    if (candidate) return candidate;
+  }
+  return undefined;
+}
+
+function normalizePathInput(value: unknown): string | undefined {
+  if (typeof value !== "string" || !value.trim()) {
+    return undefined;
+  }
+  return resolve(value.trim());
+}
+
+function pathsOverlap(left: string, right: string): boolean {
+  return isSameOrAncestor(left, right) || isSameOrAncestor(right, left);
+}
+
+function isSameOrAncestor(ancestor: string, child: string): boolean {
+  const rel = relative(ancestor, child);
+  return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
+}
+
+function findOversizedString(
+  value: unknown,
+  path: string,
+  maxLength: number,
+  depth = 0,
+): { path: string; length: number } | undefined {
+  if (typeof value === "string") {
+    return value.length > maxLength ? { path, length: value.length } : undefined;
+  }
+
+  if (!value || typeof value !== "object" || depth >= 8) {
+    return undefined;
+  }
+
+  if (Array.isArray(value)) {
+    for (const [index, item] of value.entries()) {
+      const oversized = findOversizedString(item, `${path}[${index}]`, maxLength, depth + 1);
+      if (oversized) return oversized;
+    }
+    return undefined;
+  }
+
+  for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
+    const oversized = findOversizedString(item, `${path}.${key}`, maxLength, depth + 1);
+    if (oversized) return oversized;
+  }
+
+  return undefined;
 }
 
 function validateReEvalOutput(
@@ -2072,22 +2366,41 @@ function inferImageMimeTypeFromPath(fileName: string): string {
   return "image/jpeg";
 }
 
-function normalizeExecutionMode(value: unknown): "dependent" | "independent" {
-  if (value === "independent") return "independent";
-  return "dependent";
-}
-
-function normalizeToolPlan(toolPlan: unknown): StepPlanCall[] | undefined {
-  if (Array.isArray(toolPlan)) {
-    const normalized = toolPlan
-      .map((item) => normalizePlannedToolCall(item))
-      .filter((item): item is StepPlanCall => item !== null);
-    return normalized;
+function normalizeExecutionPlan(value: unknown): ExecutionPlan | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
   }
-  return undefined;
+
+  const record = value as Record<string, unknown>;
+  const mode = normalizeExecutionPlanMode(record["mode"]);
+  if (!mode) {
+    return null;
+  }
+
+  return {
+    mode,
+    calls: Array.isArray(record["calls"])
+      ? record["calls"]
+        .map((item) => normalizeExecutionPlanCall(item))
+        .filter((item): item is ExecutionPlanCall => item !== null)
+      : [],
+    allowed_tools: Array.isArray(record["allowed_tools"])
+      ? (record["allowed_tools"] as unknown[]).map(String).filter((tool) => tool.trim().length > 0)
+      : [],
+    max_calls: normalizeOptionalPositiveInteger(record["max_calls"]),
+  };
 }
 
-function normalizePlannedToolCall(value: unknown): StepPlanCall | null {
+function normalizeExecutionPlanMode(value: unknown): ExecutionPlanMode | null {
+  return value === "single"
+    || value === "sequential"
+    || value === "parallel"
+    || value === "autonomous"
+    ? value
+    : null;
+}
+
+function normalizeExecutionPlanCall(value: unknown): ExecutionPlanCall | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     return null;
   }
@@ -2095,6 +2408,7 @@ function normalizePlannedToolCall(value: unknown): StepPlanCall | null {
   const record = value as Record<string, unknown>;
   const input = record["input"];
   return {
+    id: String(record["id"] ?? ""),
     tool: String(record["tool"] ?? ""),
     input: input && typeof input === "object" && !Array.isArray(input)
       ? { ...(input as Record<string, unknown>) }
@@ -2108,6 +2422,10 @@ function normalizePlannedToolCall(value: unknown): StepPlanCall | null {
     retry_policy: record["retry_policy"] === "same_call_once_on_timeout"
       ? "same_call_once_on_timeout"
       : "none",
+    depends_on: Array.isArray(record["depends_on"])
+      ? (record["depends_on"] as unknown[]).map(String).filter((dep) => dep.trim().length > 0)
+      : [],
+    purpose: String(record["purpose"] ?? ""),
   };
 }
 

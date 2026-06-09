@@ -84,6 +84,44 @@ const shellTool: ToolDefinition = {
   execute: vi.fn().mockResolvedValue({ ok: true, output: "done" }),
 };
 
+function planCall(
+  tool: string,
+  input: Record<string, unknown> = {},
+  overrides?: Partial<{
+    id: string;
+    origin: "builtin" | "external_tool";
+    source_refs: string[];
+    retry_policy: "none" | "same_call_once_on_timeout";
+    depends_on: string[];
+    purpose: string;
+  }>,
+): Record<string, unknown> {
+  return {
+    id: overrides?.id ?? tool.replaceAll(".", "_"),
+    tool,
+    input,
+    origin: overrides?.origin ?? "builtin",
+    source_refs: overrides?.source_refs ?? [],
+    retry_policy: overrides?.retry_policy ?? "none",
+    depends_on: overrides?.depends_on ?? [],
+    purpose: overrides?.purpose ?? `Run ${tool}`,
+  };
+}
+
+function executionPlan(
+  mode: "single" | "sequential" | "parallel" | "autonomous",
+  calls: Record<string, unknown>[] = [],
+  allowedTools: string[] = [],
+  maxCalls: number | null = null,
+): Record<string, unknown> {
+  return {
+    mode,
+    calls,
+    allowed_tools: allowedTools,
+    max_calls: maxCalls,
+  };
+}
+
 describe("parseUnderstandResponse", () => {
   it("parses a completion directive (simple reply)", () => {
     const json = JSON.stringify({
@@ -248,34 +286,43 @@ describe("parseDirectResponse", () => {
   it("parses StepDirective JSON", () => {
     const json = JSON.stringify({
       done: false,
-      execution_mode: "independent",
-      intent: "read file",
-      tools_hint: ["read_file"],
+      execution_contract: "read file",
+      execution_plan: executionPlan("single", [
+        planCall("read_file", { path: "config.json" }, { id: "read_config", purpose: "Read the config file" }),
+      ]),
       success_criteria: "file content returned",
       context: "need to check config",
     });
     const result = parseDirectResponse(json);
     expect(result.done).toBe(false);
-    if (!result.done && "intent" in result) {
-      expect(result.intent).toBe("read file");
-      expect(result.tools_hint).toEqual(["read_file"]);
-      expect(result.execution_mode).toBe("independent");
+    if (!result.done && "execution_plan" in result) {
+      expect(result.execution_contract).toBe("read file");
+      expect(result.execution_plan.mode).toBe("single");
+      expect(result.execution_plan.calls[0]?.tool).toBe("read_file");
     }
   });
 
-  it("defaults execution_mode to dependent when missing", () => {
+  it("recovers Python-style literals in direct-stage controller envelopes", () => {
+    const text = `{"kind":"step","payload":{"done":False,"execution_contract":"Create the 'machine-learning' interest directory","execution_plan":{"mode":"single","calls":[{"id":"write_active","tool":"write_file","input":{"path":"data/learning/system/active.json","content":"False stays text","createDirs":True,"previous":None},"origin":"builtin","source_refs":[],"retry_policy":"none","depends_on":[],"purpose":"Write active learning state"}],"allowed_tools":[],"max_calls":None},"success_criteria":"The interest is active","context":"Activate the selected interest"}}}`;
+    const result = parseDirectResponse(text);
+    expect(result.done).toBe(false);
+    if (!result.done && "execution_plan" in result) {
+      expect(result.execution_contract).toContain("machine-learning");
+      const input = result.execution_plan.calls[0]?.input;
+      expect(input?.["createDirs"]).toBe(true);
+      expect(input?.["previous"]).toBeNull();
+      expect(input?.["content"]).toBe("False stays text");
+    }
+  });
+
+  it("throws when execution_plan is missing", () => {
     const json = JSON.stringify({
       done: false,
-      intent: "read file",
-      tools_hint: ["read_file"],
+      execution_contract: "read file",
       success_criteria: "file content returned",
       context: "need to check config",
     });
-    const result = parseDirectResponse(json);
-    expect(result.done).toBe(false);
-    if (!result.done && "intent" in result) {
-      expect(result.execution_mode).toBe("dependent");
-    }
+    expect(() => parseDirectResponse(json)).toThrow(/execution_plan/);
   });
 
   it("parses CompletionDirective JSON", () => {
@@ -341,32 +388,24 @@ describe("parseDirectResponse", () => {
   it("parses builtin and external tool origins distinctly", () => {
     const json = JSON.stringify({
       done: false,
-      execution_mode: "dependent",
       execution_contract: "Use a built-in tool and an external tool",
-      tool_plan: [
-        {
-          tool: "shell",
-          input: { cmd: "pwd" },
-          origin: "builtin",
-          source_refs: [],
-          retry_policy: "none",
-        },
-        {
-          tool: "demo-search.query",
-          input: {},
+      execution_plan: executionPlan("sequential", [
+        planCall("shell", { cmd: "pwd" }, { id: "pwd", origin: "builtin", purpose: "Get current directory" }),
+        planCall("demo-search.query", {}, {
+          id: "external_query",
           origin: "external_tool",
-          source_refs: [],
-          retry_policy: "none",
-        },
-      ],
+          depends_on: ["pwd"],
+          purpose: "Run external query",
+        }),
+      ]),
       success_criteria: "The planned tool calls are preserved",
       context: "Need to distinguish built-in tools from external tools",
     });
     const result = parseDirectResponse(json);
     expect(result.done).toBe(false);
-    if (!result.done && "tool_plan" in result) {
-      expect(result.tool_plan?.[0]?.origin).toBe("builtin");
-      expect(result.tool_plan?.[1]?.origin).toBe("external_tool");
+    if (!result.done && "execution_plan" in result) {
+      expect(result.execution_plan.calls[0]?.origin).toBe("builtin");
+      expect(result.execution_plan.calls[1]?.origin).toBe("external_tool");
     }
   });
 
@@ -918,17 +957,10 @@ describe("callUnderstand", () => {
     const provider = createMockProvider(
       JSON.stringify({
         done: false,
-        execution_mode: "dependent",
         execution_contract: "Inspect one config file",
-        tool_plan: [
-          {
-            tool: "read_file",
-            input: { path: "config.json" },
-            origin: "builtin",
-            source_refs: [],
-            retry_policy: "none",
-          },
-        ],
+        execution_plan: executionPlan("single", [
+          planCall("read_file", { path: "config.json" }, { id: "read_config", purpose: "Inspect config file" }),
+        ]),
         success_criteria: "The config file contents are returned",
         context: "Inspect the project config",
       }),
@@ -976,9 +1008,10 @@ describe("callDirect", () => {
   it("includes system context and returns step directive", async () => {
     const json = JSON.stringify({
       done: false,
-      execution_mode: "dependent",
-      intent: "read config file",
-      tools_hint: ["shell"],
+      execution_contract: "read config file",
+      execution_plan: executionPlan("single", [
+        planCall("shell", { cmd: "cat config.json" }, { id: "read_config", purpose: "Read config file" }),
+      ]),
       success_criteria: "config content available",
       context: "checking project config",
     });
@@ -996,8 +1029,8 @@ describe("callDirect", () => {
 
     const result = await callDirect(provider, state, [shellTool], undefined, undefined, "system context here");
     expect(result.done).toBe(false);
-    if (!result.done && "intent" in result) {
-      expect(result.intent).toBe("read config file");
+    if (!result.done && "execution_plan" in result) {
+      expect(result.execution_contract).toBe("read config file");
     }
 
     // Verify system message was included
@@ -1013,22 +1046,82 @@ describe("callDirect", () => {
     expect(call.messages[1]!.content).toContain("shell");
     expect(call.messages[1]!.content).toContain("Run a shell command");
     expect(call.messages[1]!.content).toContain("Status: not_done");
+    expect(call.messages[1]!.content).toContain("Do not put generated documents");
+    expect(call.messages[1]!.content).toContain("execution_plan");
+  });
+
+  it("accepts Python-style booleans from direct-stage providers without a repair retry", async () => {
+    const provider = createMockProvider(
+      `{"kind":"step","payload":{"done":False,"execution_contract":"Run one shell command","execution_plan":{"mode":"single","calls":[{"id":"pwd","tool":"shell","input":{"cmd":"pwd","dryRun":False},"origin":"builtin","source_refs":[],"retry_policy":"none","depends_on":[],"purpose":"Run pwd"}],"allowed_tools":[],"max_calls":None},"success_criteria":"The command output is returned","context":"Need the current directory"}}}`,
+      undefined,
+      "fireworks",
+    );
+
+    const result = await callDirect(provider, createState(), [shellTool]);
+
+    expect(result.done).toBe(false);
+    if (!result.done && "execution_plan" in result) {
+      expect(result.execution_plan.calls[0]?.input["dryRun"]).toBe(false);
+    }
+    expect(provider.generateTurn).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects large generated content in direct execution plans and repairs to executor autonomy", async () => {
+    const oversizedLesson = "# Intro\n\n" + "Machine learning lesson content.\n".repeat(120);
+    const provider = createMockProvider([
+      JSON.stringify({
+        kind: "step",
+        payload: {
+          done: false,
+          execution_contract: "Write a generated ML lesson file",
+          execution_plan: executionPlan("single", [
+            planCall("write_file", {
+              path: "data/learning/interests/machine-learning/lessons/001-intro-to-ml/lesson.md",
+              content: oversizedLesson,
+              createDirs: true,
+            }, { id: "write_lesson", purpose: "Write generated lesson file" }),
+          ]),
+          success_criteria: "The lesson file is written",
+          context: "Generated learning content",
+        },
+      }),
+      JSON.stringify({
+        kind: "step",
+        payload: {
+          done: false,
+          execution_contract: "Generate and write the first ML lesson files using write_file.",
+          execution_plan: executionPlan("autonomous", [], ["write_file"], 4),
+          success_criteria: "The lesson files are written",
+          context: "Generated learning content should be produced by the executor",
+        },
+      }),
+    ]);
+
+    const result = await callDirect(provider, createState(), [shellTool]);
+
+    expect(result.done).toBe(false);
+    if (!result.done && "execution_plan" in result) {
+      expect(result.execution_plan.mode).toBe("autonomous");
+      expect(result.execution_plan.allowed_tools).toEqual(["write_file"]);
+    }
+    expect(provider.generateTurn).toHaveBeenCalledTimes(2);
+    const retryCall = (provider.generateTurn as ReturnType<typeof vi.fn>).mock.calls[1]![0] as {
+      messages: Array<{ role: string; content: string }>;
+    };
+    expect(retryCall.messages[retryCall.messages.length - 1]?.content).toContain("large string");
   });
 
   it("includes available external skills and loaded external tools distinctly in direct prompt", async () => {
     const json = JSON.stringify({
       done: false,
-      execution_mode: "dependent",
       execution_contract: "Use the loaded search tool",
-      tool_plan: [
-        {
-          tool: "agent-browser.search",
-          input: { query: "latest market news" },
+      execution_plan: executionPlan("single", [
+        planCall("agent-browser.search", { query: "latest market news" }, {
+          id: "web_search",
           origin: "external_tool",
-          source_refs: [],
-          retry_policy: "none",
-        },
-      ],
+          purpose: "Search latest market news",
+        }),
+      ]),
       success_criteria: "Search results are retrieved",
       context: "Use the live web search capability",
     });
@@ -1097,9 +1190,8 @@ describe("callDirect", () => {
   it("includes compact task progress in the direct prompt", async () => {
     const json = JSON.stringify({
       done: false,
-      execution_mode: "dependent",
-      intent: "continue",
-      tools_hint: ["shell"],
+      execution_contract: "continue",
+      execution_plan: executionPlan("autonomous", [], ["shell"], 2),
       success_criteria: "done",
       context: "",
     });
@@ -1157,9 +1249,8 @@ describe("callDirect", () => {
   it("includes inline run-state guidance and avoids legacy scout guidance in direct prompt", async () => {
     const json = JSON.stringify({
       done: false,
-      execution_mode: "dependent",
-      intent: "continue",
-      tools_hint: ["shell"],
+      execution_contract: "continue",
+      execution_plan: executionPlan("autonomous", [], ["shell"], 2),
       success_criteria: "done",
       context: "",
     });
@@ -1188,9 +1279,8 @@ describe("callDirect", () => {
   it("includes verification-first and high-cost clarification guidance in direct prompt", async () => {
     const json = JSON.stringify({
       done: false,
-      execution_mode: "dependent",
-      intent: "verify a public fact",
-      tools_hint: ["shell"],
+      execution_contract: "verify a public fact",
+      execution_plan: executionPlan("autonomous", [], ["shell"], 2),
       success_criteria: "fact is verified",
       context: "",
     });
@@ -1220,9 +1310,8 @@ describe("callDirect", () => {
   it("uses the compact session context summary instead of recent task and feedback lists in direct prompt", async () => {
     const json = JSON.stringify({
       done: false,
-      execution_mode: "dependent",
-      intent: "continue",
-      tools_hint: ["shell"],
+      execution_contract: "continue",
+      execution_plan: executionPlan("autonomous", [], ["shell"], 2),
       success_criteria: "done",
       context: "",
     });
@@ -1263,9 +1352,8 @@ describe("callDirect", () => {
   it("includes the selected dependent prior task in the direct prompt", async () => {
     const json = JSON.stringify({
       done: false,
-      execution_mode: "dependent",
-      intent: "continue",
-      tools_hint: ["shell"],
+      execution_contract: "continue",
+      execution_plan: executionPlan("autonomous", [], ["shell"], 2),
       success_criteria: "done",
       context: "",
     });
@@ -1326,9 +1414,8 @@ describe("callDirect", () => {
   it("includes prepared attachment guidance in direct prompt when available", async () => {
     const json = JSON.stringify({
       done: false,
-      execution_mode: "dependent",
-      intent: "query the prepared attachment",
-      tools_hint: ["document_query"],
+      execution_contract: "query the prepared attachment",
+      execution_plan: executionPlan("autonomous", [], ["document_query"], 2),
       success_criteria: "the answer is grounded in the prepared attachment",
       context: "use the prepared attachment metadata",
     });
@@ -1377,9 +1464,8 @@ describe("callDirect", () => {
   it("includes directory attachments in the direct prompt", async () => {
     const json = JSON.stringify({
       done: false,
-      execution_mode: "dependent",
-      intent: "search attached project directory",
-      tools_hint: ["directory_search"],
+      execution_contract: "search attached project directory",
+      execution_plan: executionPlan("autonomous", [], ["directory_search"], 2),
       success_criteria: "the relevant file is found",
       context: "use the attached directory",
     });
@@ -1442,9 +1528,8 @@ describe("callDirect", () => {
   it("hides active session attachments when current run attachments are already prepared", async () => {
     const json = JSON.stringify({
       done: false,
-      execution_mode: "dependent",
-      intent: "profile the current attachment",
-      tools_hint: ["dataset_profile"],
+      execution_contract: "profile the current attachment",
+      execution_plan: executionPlan("autonomous", [], ["dataset_profile"], 2),
       success_criteria: "the current attachment is inspected",
       context: "use the current prepared attachment",
     });
@@ -1506,9 +1591,8 @@ describe("callDirect", () => {
   it("uses injected direct instructions when provided", async () => {
     const json = JSON.stringify({
       done: false,
-      execution_mode: "dependent",
-      intent: "read config file",
-      tools_hint: ["shell"],
+      execution_contract: "read config file",
+      execution_plan: executionPlan("autonomous", [], ["shell"], 2),
       success_criteria: "config content available",
       context: "checking project config",
     });
@@ -1541,17 +1625,10 @@ describe("callDirect", () => {
       "I need to inspect the mail first.",
       JSON.stringify({
         done: false,
-        execution_mode: "dependent",
         execution_contract: "Read the AWS billing email details from Gmail",
-        tool_plan: [
-          {
-            tool: "gmail_read",
-            input: { messageId: "msg-1" },
-            origin: "builtin",
-            source_refs: [],
-            retry_policy: "none",
-          },
-        ],
+        execution_plan: executionPlan("single", [
+          planCall("gmail_read", { messageId: "msg-1" }, { purpose: "Read the Gmail message" }),
+        ]),
         success_criteria: "The email body and metadata are returned",
         context: "User asked for full AWS billing mail details",
       }),
@@ -1584,17 +1661,10 @@ describe("callDirect", () => {
       }),
       JSON.stringify({
         done: false,
-        execution_mode: "dependent",
         execution_contract: "Read the AWS billing email details from Gmail",
-        tool_plan: [
-          {
-            tool: "gmail_read",
-            input: { messageId: "msg-1" },
-            origin: "builtin",
-            source_refs: [],
-            retry_policy: "none",
-          },
-        ],
+        execution_plan: executionPlan("single", [
+          planCall("gmail_read", { messageId: "msg-1" }, { purpose: "Read the Gmail message" }),
+        ]),
         success_criteria: "The email body and metadata are returned",
         context: "User asked for full AWS billing mail details",
       }),
@@ -1630,17 +1700,10 @@ describe("callDirect", () => {
       }),
       JSON.stringify({
         done: false,
-        execution_mode: "dependent",
         execution_contract: "Read the AWS billing email details from Gmail",
-        tool_plan: [
-          {
-            tool: "gmail_read",
-            input: { messageId: "msg-1" },
-            origin: "builtin",
-            source_refs: [],
-            retry_policy: "none",
-          },
-        ],
+        execution_plan: executionPlan("single", [
+          planCall("gmail_read", { messageId: "msg-1" }, { purpose: "Read the Gmail message" }),
+        ]),
         success_criteria: "The email body and metadata are returned",
         context: "User asked for full AWS billing mail details",
       }),
@@ -1677,17 +1740,13 @@ describe("callDirect", () => {
       }),
       JSON.stringify({
         done: false,
-        execution_mode: "dependent",
         execution_contract: "Search current India smartphone options under Rs 50,000",
-        tool_plan: [
-          {
-            tool: "websearch.search",
-            input: { query: "best smartphones under 50000 in India" },
+        execution_plan: executionPlan("single", [
+          planCall("websearch.search", { query: "best smartphones under 50000 in India" }, {
             origin: "external_tool",
-            source_refs: [],
-            retry_policy: "none",
-          },
-        ],
+            purpose: "Search current smartphone options",
+          }),
+        ]),
         success_criteria: "Current smartphone options are found",
         context: "Need a live market search",
       }),
@@ -1709,46 +1768,40 @@ describe("callDirect", () => {
     expect(repairPrompt?.content).toContain("rotate_session");
   });
 
-  it("rejects dependent steps with multiple tool-plan calls and retries", async () => {
+  it("rejects unsafe parallel filesystem plans and retries for a sequential plan", async () => {
     const provider = createMockProvider([
       JSON.stringify({
         done: false,
-        execution_mode: "dependent",
-        execution_contract: "Inspect two files in sequence",
-        tool_plan: [
-          {
-            tool: "read_file",
-            input: { path: "one.txt" },
-            origin: "builtin",
-            source_refs: [],
-            retry_policy: "none",
-          },
-          {
-            tool: "read_file",
-            input: { path: "two.txt" },
-            origin: "builtin",
-            source_refs: [],
-            retry_policy: "none",
-          },
-        ],
-        success_criteria: "The file contents are returned",
-        context: "Need to inspect two files",
+        execution_contract: "Create a lesson directory and write the course file",
+        execution_plan: executionPlan("parallel", [
+          planCall("create_directory", { path: "lessons/001-intro-fluids" }, {
+            id: "create_lesson_dir",
+            purpose: "Create lesson directory",
+          }),
+          planCall("write_file", { path: "lessons/001-intro-fluids/course.md", content: "intro", createDirs: false }, {
+            id: "write_course",
+            purpose: "Write course file",
+          }),
+        ]),
+        success_criteria: "The lesson course file is written",
+        context: "Need the directory before writing the file",
       }),
       JSON.stringify({
         done: false,
-        execution_mode: "dependent",
-        execution_contract: "Inspect the first file",
-        tool_plan: [
-          {
-            tool: "read_file",
-            input: { path: "one.txt" },
-            origin: "builtin",
-            source_refs: [],
-            retry_policy: "none",
-          },
-        ],
-        success_criteria: "The first file contents are returned",
-        context: "Start with the first file",
+        execution_contract: "Create a lesson directory and write the course file",
+        execution_plan: executionPlan("sequential", [
+          planCall("create_directory", { path: "lessons/001-intro-fluids" }, {
+            id: "create_lesson_dir",
+            purpose: "Create lesson directory",
+          }),
+          planCall("write_file", { path: "lessons/001-intro-fluids/course.md", content: "intro", createDirs: false }, {
+            id: "write_course",
+            depends_on: ["create_lesson_dir"],
+            purpose: "Write course file after the directory exists",
+          }),
+        ]),
+        success_criteria: "The lesson course file is written",
+        context: "Create the directory before writing the file",
       }),
     ]);
 
@@ -1756,8 +1809,9 @@ describe("callDirect", () => {
 
     expect(result.done).toBe(false);
     if (!result.done && "execution_contract" in result) {
-      expect(result.execution_contract).toContain("first file");
-      expect(result.tool_plan).toHaveLength(1);
+      expect(result.execution_contract).toContain("lesson directory");
+      expect(result.execution_plan.mode).toBe("sequential");
+      expect(result.execution_plan.calls).toHaveLength(2);
     }
 
     expect(provider.generateTurn).toHaveBeenCalledTimes(2);
@@ -1765,7 +1819,7 @@ describe("callDirect", () => {
       messages: Array<{ role: string; content: string }>;
     };
     const repairPrompt = retryCall.messages[retryCall.messages.length - 1];
-    expect(repairPrompt?.content).toContain("Dependent steps must contain exactly one tool call");
+    expect(repairPrompt?.content).toContain("Parallel execution_plan contains filesystem calls");
   });
 
   it("throws a controller format error after two invalid controller responses", async () => {

@@ -63,6 +63,44 @@ function taskVerifyResponse(status = "done", progressSummary = "work is complete
   });
 }
 
+function planCall(
+  tool: string,
+  input: Record<string, unknown> = {},
+  overrides?: Partial<{
+    id: string;
+    origin: "builtin" | "external_tool";
+    source_refs: string[];
+    retry_policy: "none" | "same_call_once_on_timeout";
+    depends_on: string[];
+    purpose: string;
+  }>,
+): Record<string, unknown> {
+  return {
+    id: overrides?.id ?? tool.replaceAll(".", "_"),
+    tool,
+    input,
+    origin: overrides?.origin ?? "builtin",
+    source_refs: overrides?.source_refs ?? [],
+    retry_policy: overrides?.retry_policy ?? "none",
+    depends_on: overrides?.depends_on ?? [],
+    purpose: overrides?.purpose ?? `Run ${tool}`,
+  };
+}
+
+function executionPlan(
+  mode: "single" | "sequential" | "parallel" | "autonomous",
+  calls: Record<string, unknown>[] = [],
+  allowedTools: string[] = [],
+  maxCalls: number | null = null,
+): Record<string, unknown> {
+  return {
+    mode,
+    calls,
+    allowed_tools: allowedTools,
+    max_calls: maxCalls,
+  };
+}
+
 const sendEmailTool: ToolDefinition = {
   name: "send_email",
   description: "Send an email draft",
@@ -129,17 +167,12 @@ describe("agentLoop inline prep directives", () => {
               type: "assistant",
               content: JSON.stringify({
                 done: false,
-                execution_mode: "dependent",
                 execution_contract: "Send the email after reviewing prior run state",
-                tool_plan: [
-                  {
-                    tool: "send_email",
-                    input: { to: "demo@example.com", subject: "Follow-up" },
-                    origin: "builtin",
-                    source_refs: [],
-                    retry_policy: "none",
-                  },
-                ],
+                execution_plan: executionPlan("single", [
+                  planCall("send_email", { to: "demo@example.com", subject: "Follow-up" }, {
+                    purpose: "Send the follow-up email",
+                  }),
+                ]),
                 success_criteria: "The email draft is sent",
                 context: "Use the retrieved run-state context to proceed safely.",
               }),
@@ -186,7 +219,7 @@ describe("agentLoop inline prep directives", () => {
         line.includes("[controller] direct prep appended read_run_state request=read_summary_window:1:3"),
       )).toBe(true);
       expect(logLines.some((line) =>
-        line.includes("[controller] direct -> step execution_mode=dependent tools=send_email"),
+        line.includes("[controller] direct -> step plan_mode=single tools=send_email"),
       )).toBe(true);
     } finally {
       consoleSpy.mockRestore();
@@ -310,17 +343,13 @@ describe("agentLoop inline prep directives", () => {
               type: "assistant",
               content: JSON.stringify({
                 done: false,
-                execution_mode: "dependent",
                 execution_contract: "Run the demo external search query",
-                tool_plan: [
-                  {
-                    tool: "demo-search.query",
-                    input: {},
+                execution_plan: executionPlan("single", [
+                  planCall("demo-search.query", {}, {
                     origin: "external_tool",
-                    source_refs: [],
-                    retry_policy: "none",
-                  },
-                ],
+                    purpose: "Run the demo external search query",
+                  }),
+                ]),
                 success_criteria: "The demo external query runs successfully",
                 context: "Use the selected external tool after skill inspection.",
               }),
@@ -369,7 +398,7 @@ describe("agentLoop inline prep directives", () => {
         line.includes("[controller] direct prep appended activate_skill request=demo-search status=activated"),
       )).toBe(true);
       expect(logLines.some((line) =>
-        line.includes("[controller] direct -> step execution_mode=dependent tools=demo-search.query"),
+        line.includes("[controller] direct -> step plan_mode=single tools=demo-search.query"),
       )).toBe(true);
     } finally {
       consoleSpy.mockRestore();

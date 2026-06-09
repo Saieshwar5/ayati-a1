@@ -1,53 +1,66 @@
 import "./styles.css";
 
-type LessonStatus = "planned" | "generated" | "completed";
-
-interface CourseLesson {
-  id: string;
-  title: string;
-  status: LessonStatus;
-  summary?: string;
-  objectives: string[];
-  htmlPath?: string;
+interface LearningActiveState {
+  activeInterestId?: string;
+  learningMode: "inactive" | "learning";
+  activeLessonId?: string;
+  activeViewPath?: string;
 }
 
-interface CourseModule {
-  id: string;
+interface LearningLessonSummary {
+  lessonId: string;
   title: string;
-  summary?: string;
-  lessons: CourseLesson[];
+  viewRelativePath?: string;
 }
 
-interface LearningCourse {
-  courseId: string;
+interface LearningInterestSummary {
+  interestId: string;
   title: string;
-  topic: string;
-  description?: string;
-  status: "active" | "paused" | "archived";
-  modules: CourseModule[];
-  progress: {
-    activeLessonId?: string;
-    completedLessonIds: string[];
-  };
-  updatedAt: string;
+  coursePath: string;
+  indexPath: string;
+  feedbackPath: string;
+  lessonsDir: string;
+  lessons: LearningLessonSummary[];
+  latestLesson?: LearningLessonSummary;
+}
+
+interface LearningFileStatus {
+  rootPath: string;
+  protocolPath: string;
+  preferencesPath: string;
+  activePath: string;
+  activeState: LearningActiveState;
+  interests: LearningInterestSummary[];
+  activeInterest?: LearningInterestSummary;
 }
 
 interface WorkspaceState {
   isOpen: boolean;
   launchStatus: string;
   activeCourseId?: string;
+  activeInterestId?: string;
   activeLessonId?: string;
+  activeViewPath?: string;
+  learningVersion?: "v1" | "v2";
   lastCommand?: string;
   lastCommandId?: string;
 }
 
+interface InterestPayload {
+  interest: LearningInterestSummary;
+  course: string;
+  index: string;
+  feedback: string;
+}
+
 interface AppState {
   apiBase: string;
-  courses: LearningCourse[];
-  activeCourse: LearningCourse | null;
-  selectedCourseId: string | null;
+  status: LearningFileStatus | null;
+  selectedInterestId: string | null;
   selectedLessonId: string | null;
+  selectedInterest: InterestPayload | null;
   workspaceCommandId: string | null;
+  navOpen: boolean;
   statusText: string;
 }
 
@@ -58,11 +71,12 @@ if (!app) {
 
 const state: AppState = {
   apiBase: resolveApiBase(),
-  courses: [],
-  activeCourse: null,
-  selectedCourseId: null,
+  status: null,
+  selectedInterestId: null,
   selectedLessonId: null,
+  selectedInterest: null,
   workspaceCommandId: null,
+  navOpen: false,
   statusText: "Connecting",
 };
 
@@ -80,25 +94,25 @@ function resolveApiBase(): string {
 
 async function refreshAll(): Promise<void> {
   try {
-    const [coursesPayload, activePayload, workspacePayload] = await Promise.all([
-      fetchJson<{ courses: LearningCourse[] }>("/api/learning/courses"),
-      fetchJson<{ activeCourse: LearningCourse | null }>("/api/learning/active-course"),
+    const [statusPayload, workspacePayload] = await Promise.all([
+      fetchJson<{ status: LearningFileStatus }>("/api/learning/v2/status"),
       fetchJson<{ state: WorkspaceState | null }>("/api/learning/workspace-state"),
     ]);
-    state.courses = coursesPayload.courses ?? [];
-    state.activeCourse = activePayload.activeCourse;
+    state.status = statusPayload.status;
     const workspace = workspacePayload.state;
-    state.selectedCourseId = workspace?.activeCourseId
-      ?? state.activeCourse?.courseId
-      ?? state.courses[0]?.courseId
+    state.selectedInterestId = workspace?.activeInterestId
+      ?? workspace?.activeCourseId
+      ?? statusPayload.status.activeState.activeInterestId
+      ?? statusPayload.status.interests[0]?.interestId
       ?? null;
     state.selectedLessonId = workspace?.activeLessonId
-      ?? state.activeCourse?.progress.activeLessonId
-      ?? firstLesson(state.activeCourse ?? selectedCourse())?.id
+      ?? statusPayload.status.activeState.activeLessonId
+      ?? selectedInterestSummary()?.latestLesson?.lessonId
+      ?? selectedInterestSummary()?.lessons[0]?.lessonId
       ?? null;
     state.workspaceCommandId = workspace?.lastCommandId ?? null;
     state.statusText = "Ready";
-    await ensureSelectedCourseLoaded();
+    await ensureSelectedInterestLoaded();
   } catch (err) {
     state.statusText = err instanceof Error ? err.message : String(err);
   }
@@ -115,9 +129,11 @@ async function pollWorkspaceState(): Promise<void> {
 
     if (workspace.lastCommandId && workspace.lastCommandId !== state.workspaceCommandId) {
       state.workspaceCommandId = workspace.lastCommandId;
-      if (workspace.activeCourseId) {
-        state.selectedCourseId = workspace.activeCourseId;
-        await ensureSelectedCourseLoaded();
+      const nextInterestId = workspace.activeInterestId ?? workspace.activeCourseId;
+      if (nextInterestId) {
+        state.selectedInterestId = nextInterestId;
+        state.selectedInterest = null;
+        await ensureSelectedInterestLoaded();
       }
       if (workspace.activeLessonId) {
         state.selectedLessonId = workspace.activeLessonId;
@@ -131,47 +147,25 @@ async function pollWorkspaceState(): Promise<void> {
       render();
       return;
     }
-
-    if (workspace.activeCourseId && workspace.activeCourseId !== state.selectedCourseId) {
-      state.selectedCourseId = workspace.activeCourseId;
-      await ensureSelectedCourseLoaded();
-      render();
-    }
   } catch {
     return;
   }
 }
 
-async function ensureSelectedCourseLoaded(): Promise<void> {
-  const courseId = state.selectedCourseId;
-  if (!courseId) {
+async function ensureSelectedInterestLoaded(): Promise<void> {
+  const interestId = state.selectedInterestId;
+  if (!interestId) {
     return;
   }
-  if (state.activeCourse?.courseId === courseId) {
+  if (state.selectedInterest?.interest.interestId === interestId) {
     return;
   }
-  const payload = await fetchJson<{ course: LearningCourse }>(`/api/learning/courses/${encodeURIComponent(courseId)}`);
-  state.activeCourse = payload.course;
-  state.selectedLessonId = state.selectedLessonId ?? firstLesson(payload.course)?.id ?? null;
-}
-
-async function activateCourse(courseId: string): Promise<void> {
-  await fetchJson(`/api/learning/courses/${encodeURIComponent(courseId)}/activate`, { method: "POST" });
-  state.selectedCourseId = courseId;
-  state.activeCourse = null;
-  await ensureSelectedCourseLoaded();
-  state.selectedLessonId = state.activeCourse?.progress.activeLessonId ?? firstLesson(state.activeCourse)?.id ?? null;
-  render();
-}
-
-async function completeLesson(courseId: string, lessonId: string): Promise<void> {
-  const payload = await fetchJson<{ course: LearningCourse }>(
-    `/api/learning/courses/${encodeURIComponent(courseId)}/lessons/${encodeURIComponent(lessonId)}/complete`,
-    { method: "POST" },
-  );
-  state.activeCourse = payload.course;
-  state.selectedLessonId = payload.course.progress.activeLessonId ?? lessonId;
-  render();
+  const payload = await fetchJson<InterestPayload>(`/api/learning/v2/interests/${encodeURIComponent(interestId)}`);
+  state.selectedInterest = payload;
+  state.selectedLessonId = state.selectedLessonId
+    ?? payload.interest.latestLesson?.lessonId
+    ?? payload.interest.lessons[0]?.lessonId
+    ?? null;
 }
 
 async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
@@ -183,63 +177,60 @@ async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
   return payload as T;
 }
 
-function selectedCourse(): LearningCourse | null {
-  return state.activeCourse?.courseId === state.selectedCourseId
-    ? state.activeCourse
-    : state.courses.find((course) => course.courseId === state.selectedCourseId) ?? null;
+function selectedInterestSummary(): LearningInterestSummary | null {
+  return state.status?.interests.find((interest) => interest.interestId === state.selectedInterestId) ?? null;
 }
 
-function selectedLesson(course: LearningCourse | null): CourseLesson | null {
-  if (!course) {
+function selectedInterest(): LearningInterestSummary | null {
+  return state.selectedInterest?.interest ?? selectedInterestSummary();
+}
+
+function selectedLesson(interest: LearningInterestSummary | null): LearningLessonSummary | null {
+  if (!interest) {
     return null;
   }
-  const lessonId = state.selectedLessonId ?? course.progress.activeLessonId;
-  return course.modules.flatMap((module) => module.lessons).find((lesson) => lesson.id === lessonId)
-    ?? firstLesson(course);
+  const lessonId = state.selectedLessonId ?? state.status?.activeState.activeLessonId;
+  return interest.lessons.find((lesson) => lesson.lessonId === lessonId)
+    ?? interest.latestLesson
+    ?? interest.lessons[0]
+    ?? null;
 }
 
-function firstLesson(course: LearningCourse | null): CourseLesson | null {
-  return course?.modules.flatMap((module) => module.lessons)[0] ?? null;
-}
-
-function lessonUrl(course: LearningCourse, lesson: CourseLesson): string | null {
-  if (!lesson.htmlPath) {
+function lessonUrl(lesson: LearningLessonSummary | null): string | null {
+  if (!lesson?.viewRelativePath) {
     return null;
   }
-  return `${state.apiBase}/api/learning/courses/${encodeURIComponent(course.courseId)}/files/${lesson.htmlPath}`;
+  return `${state.apiBase}/api/learning/v2/files/${encodePath(lesson.viewRelativePath)}`;
 }
 
 function render(): void {
-  const course = selectedCourse();
-  const lesson = selectedLesson(course);
+  const interest = selectedInterest();
+  const lesson = selectedLesson(interest);
+  const navClass = state.navOpen ? "lesson-nav open" : "lesson-nav";
   app.innerHTML = `
     <main class="shell">
-      <aside class="courses">
-        <div class="brand">
-          <span>Ayati</span>
-          <strong>Learning</strong>
-        </div>
-        <div class="course-list">
-          ${state.courses.map((item) => courseButton(item)).join("") || "<p class=\"empty\">No courses yet</p>"}
-        </div>
-      </aside>
       <section class="workspace">
         <header class="topbar">
-          <div>
+          <button class="icon-button nav-toggle" data-action="toggle-nav" title="Lessons" aria-label="Lessons">Menu</button>
+          <div class="title-block">
             <p class="eyebrow">${escapeHtml(state.statusText)}</p>
-            <h1>${escapeHtml(course?.title ?? "Learning Workspace")}</h1>
+            <h1>${escapeHtml(lesson?.title ?? interest?.title ?? "Learning Workspace")}</h1>
           </div>
-          <div class="actions">
-            ${course ? `<button data-action="activate" data-course-id="${escapeAttr(course.courseId)}">Activate</button>` : ""}
-            ${course && lesson ? `<button data-action="complete" data-course-id="${escapeAttr(course.courseId)}" data-lesson-id="${escapeAttr(lesson.id)}">Complete</button>` : ""}
-          </div>
+          <div class="mode">${escapeHtml(state.status?.activeState.learningMode ?? "inactive")}</div>
         </header>
         <div class="content-grid">
-          <nav class="lesson-nav">
-            ${course ? course.modules.map((module) => moduleBlock(module)).join("") : ""}
+          <nav class="${navClass}">
+            <div class="nav-header">
+              <strong>Learning</strong>
+              <button class="icon-button" data-action="toggle-nav" title="Close" aria-label="Close">Close</button>
+            </div>
+            <div class="course-list">
+              ${state.status?.interests.map((item) => interestButton(item)).join("") || "<p class=\"empty\">No interests yet</p>"}
+            </div>
+            ${interest ? `<div class="lesson-list">${interest.lessons.map((item) => lessonButton(item)).join("")}</div>` : ""}
           </nav>
           <section class="lesson-view">
-            ${renderLessonFrame(course, lesson)}
+            ${renderLessonFrame(interest, lesson)}
           </section>
         </div>
       </section>
@@ -248,76 +239,71 @@ function render(): void {
   bindActions();
 }
 
-function courseButton(course: LearningCourse): string {
-  const active = course.courseId === state.selectedCourseId ? " active" : "";
+function interestButton(interest: LearningInterestSummary): string {
+  const active = interest.interestId === state.selectedInterestId ? " active" : "";
   return `
-    <button class="course-button${active}" data-action="select-course" data-course-id="${escapeAttr(course.courseId)}">
-      <span>${escapeHtml(course.title)}</span>
-      <small>${escapeHtml(course.status)} · ${courseTotals(course)}</small>
+    <button class="course-button${active}" data-action="select-interest" data-interest-id="${escapeAttr(interest.interestId)}">
+      <span>${escapeHtml(interest.title)}</span>
+      <small>${interest.lessons.length} lesson${interest.lessons.length === 1 ? "" : "s"}</small>
     </button>
   `;
 }
 
-function moduleBlock(module: CourseModule): string {
+function lessonButton(lesson: LearningLessonSummary): string {
+  const active = lesson.lessonId === state.selectedLessonId ? " active" : "";
   return `
-    <section class="module">
-      <h2>${escapeHtml(module.title)}</h2>
-      ${module.lessons.map((lesson) => lessonButton(lesson)).join("")}
-    </section>
-  `;
-}
-
-function lessonButton(lesson: CourseLesson): string {
-  const active = lesson.id === state.selectedLessonId ? " active" : "";
-  return `
-    <button class="lesson-button${active}" data-action="select-lesson" data-lesson-id="${escapeAttr(lesson.id)}">
+    <button class="lesson-button${active}" data-action="select-lesson" data-lesson-id="${escapeAttr(lesson.lessonId)}">
       <span>${escapeHtml(lesson.title)}</span>
-      <small>${escapeHtml(lesson.status)}</small>
+      <small>${lesson.viewRelativePath ? "visual ready" : "markdown only"}</small>
     </button>
   `;
 }
 
-function renderLessonFrame(course: LearningCourse | null, lesson: CourseLesson | null): string {
-  if (!course || !lesson) {
-    return "<div class=\"placeholder\"><h2>Select a course</h2></div>";
+function renderLessonFrame(interest: LearningInterestSummary | null, lesson: LearningLessonSummary | null): string {
+  if (!interest) {
+    return renderTextPanel("No active interest", "Create a learning interest in the filesystem to begin.");
   }
 
-  const url = lessonUrl(course, lesson);
-  if (!url) {
-    return `
-      <div class="placeholder">
-        <h2>${escapeHtml(lesson.title)}</h2>
-        <p>${escapeHtml(lesson.summary ?? "This lesson is planned but has not been generated yet.")}</p>
-      </div>
-    `;
+  const url = lessonUrl(lesson);
+  if (!lesson || !url) {
+    return renderTextPanel(interest.title, state.selectedInterest?.index || "No visual lesson has been generated yet.");
   }
 
   return `<iframe title="${escapeAttr(lesson.title)}" src="${escapeAttr(url)}"></iframe>`;
+}
+
+function renderTextPanel(title: string, text: string): string {
+  return `
+    <article class="placeholder">
+      <h2>${escapeHtml(title)}</h2>
+      <pre>${escapeHtml(text)}</pre>
+    </article>
+  `;
 }
 
 function bindActions(): void {
   app.querySelectorAll<HTMLButtonElement>("button[data-action]").forEach((button) => {
     button.addEventListener("click", () => {
       const action = button.dataset.action;
-      const courseId = button.dataset.courseId;
-      const lessonId = button.dataset.lessonId;
       void (async () => {
-        if (action === "select-course" && courseId) {
-          state.selectedCourseId = courseId;
-          state.activeCourse = null;
-          await ensureSelectedCourseLoaded();
-          state.selectedLessonId = state.activeCourse?.progress.activeLessonId ?? firstLesson(state.activeCourse)?.id ?? null;
+        if (action === "toggle-nav") {
+          state.navOpen = !state.navOpen;
           render();
+          return;
         }
-        if (action === "select-lesson" && lessonId) {
-          state.selectedLessonId = lessonId;
+        if (action === "select-interest" && button.dataset.interestId) {
+          state.selectedInterestId = button.dataset.interestId;
+          state.selectedInterest = null;
+          state.selectedLessonId = null;
+          await ensureSelectedInterestLoaded();
+          state.navOpen = false;
           render();
+          return;
         }
-        if (action === "activate" && courseId) {
-          await activateCourse(courseId);
-        }
-        if (action === "complete" && courseId && lessonId) {
-          await completeLesson(courseId, lessonId);
+        if (action === "select-lesson" && button.dataset.lessonId) {
+          state.selectedLessonId = button.dataset.lessonId;
+          state.navOpen = false;
+          render();
         }
       })();
     });
@@ -342,10 +328,8 @@ async function closeWindow(): Promise<void> {
   }
 }
 
-function courseTotals(course: LearningCourse): string {
-  const lessons = course.modules.flatMap((module) => module.lessons);
-  const completed = lessons.filter((lesson) => lesson.status === "completed").length;
-  return `${completed}/${lessons.length}`;
+function encodePath(path: string): string {
+  return path.split("/").map((part) => encodeURIComponent(part)).join("/");
 }
 
 function escapeHtml(value: string): string {

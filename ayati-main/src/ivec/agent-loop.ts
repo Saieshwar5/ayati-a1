@@ -65,7 +65,9 @@ function formatReadRunStateTarget(directive: ReadRunStateDirective): string {
 }
 
 function summarizeStepTools(directive: StepDirective): string {
-  const tools = directive.tool_plan?.map((call) => call.tool) ?? [];
+  const tools = directive.execution_plan.mode === "autonomous"
+    ? directive.execution_plan.allowed_tools
+    : directive.execution_plan.calls.map((call) => call.tool);
   return tools.length > 0 ? tools.join(",") : "(none)";
 }
 
@@ -84,7 +86,7 @@ function logUnderstandDirective(clientId: string, directive: UnderstandDirective
 
 function logDirectDirective(
   clientId: string,
-  directive: StepDirective | ReadRunStateDirective | ActivateSkillDirective | CompletionDirective,
+  directive: StepDirective | ReadRunStateDirective | ActivateSkillDirective | ContextSearchDirective | CompletionDirective,
 ): void {
   if (directive.done) {
     devLog(
@@ -107,8 +109,15 @@ function logDirectDirective(
     return;
   }
 
+  if (isContextSearchDirective(directive)) {
+    devLog(
+      `[${clientId}] [controller] direct -> context_search scope=${directive.scope} query="${truncateControllerLogValue(directive.query, 120)}"`,
+    );
+    return;
+  }
+
   devLog(
-    `[${clientId}] [controller] direct -> step execution_mode=${directive.execution_mode} tools=${summarizeStepTools(directive)} contract="${truncateControllerLogValue(directive.execution_contract || directive.intent, 120)}"`,
+    `[${clientId}] [controller] direct -> step plan_mode=${directive.execution_plan.mode} tools=${summarizeStepTools(directive)} contract="${truncateControllerLogValue(directive.execution_contract, 120)}"`,
   );
 }
 
@@ -734,6 +743,13 @@ async function resolveControllerDirective(
         `[${deps.clientId}] [controller] direct prep appended activate_skill request=${requestKey} status=${activationResult.status} already_active=${activationResult.alreadyActive} mounted_tools=${formatPrepListValue(activationResult.mountedTools)} evicted_skills=${formatPrepListValue(activationResult.evictedSkills)} evicted_tools=${formatPrepListValue(activationResult.evictedTools)}${activationResult.error ? ` error="${truncateControllerLogValue(activationResult.error, 120)}"` : ""}`,
       );
       continue;
+    }
+
+    if (isContextSearchDirective(resolution)) {
+      return {
+        type: "failed",
+        message: "I couldn't progress because the controller requested context_search from the inline direct resolver. It must return a bounded execution_plan, read_run_state, activate_skill, or completion.",
+      };
     }
 
     return { type: "step", directive: resolution };

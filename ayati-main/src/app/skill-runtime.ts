@@ -10,6 +10,7 @@ import type { SessionAttachmentService } from "../documents/session-attachment-s
 import type { DirectoryLibrary } from "../files/directory-library.js";
 import type { FileLibrary } from "../files/file-library.js";
 import type { CourseStore } from "../learning/course-store.js";
+import type { LearningFileStore } from "../learning/file-store.js";
 import type { LearningWorkspaceController } from "../ui/learning-workspace.js";
 import type { WorkspaceOrchestrator } from "../ui/workspace-orchestrator.js";
 import type { AyatiRuntimeConfig } from "../config/runtime-config.js";
@@ -23,7 +24,7 @@ import { createAttachmentSkill } from "../skills/builtins/attachments/index.js";
 import { createDatasetSkill } from "../skills/builtins/datasets/index.js";
 import { createDocumentSkill } from "../skills/builtins/documents/index.js";
 import { createFilesSkill } from "../skills/builtins/files/index.js";
-import { createLearningSkill } from "../skills/builtins/learning/index.js";
+import { createLearningFileSkill } from "../skills/builtins/learning-v2/index.js";
 import { createUiSkill } from "../skills/builtins/ui/index.js";
 import { createSkillBrokerSkill } from "../skills/builtins/skill-broker/index.js";
 import {
@@ -44,6 +45,7 @@ export interface SkillRuntimeOptions {
   fileLibrary: FileLibrary;
   directoryLibrary: DirectoryLibrary;
   courseStore: CourseStore;
+  learningFileStore: LearningFileStore;
   learningWorkspace: LearningWorkspaceController;
   workspaceOrchestrator: WorkspaceOrchestrator;
   config: AyatiRuntimeConfig;
@@ -81,13 +83,14 @@ export async function createSkillRuntime(options: SkillRuntimeOptions): Promise<
       fileLibrary: options.fileLibrary,
       directoryLibrary: options.directoryLibrary,
     }),
-    createLearningSkill({
-      courseStore: options.courseStore,
+    createLearningFileSkill({
+      learningFileStore: options.learningFileStore,
       learningWorkspace: options.learningWorkspace,
     }),
     createUiSkill({
       learningWorkspace: options.learningWorkspace,
       workspaceOrchestrator: options.workspaceOrchestrator,
+      includeLearningTools: false,
     }),
   ];
 

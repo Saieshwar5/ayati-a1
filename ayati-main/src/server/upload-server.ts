@@ -1,12 +1,13 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { createReadStream } from "node:fs";
-import { stat } from "node:fs/promises";
+import { readFile, stat } from "node:fs/promises";
 import { join, resolve, sep } from "node:path";
 import { devError, devLog, devWarn } from "../shared/index.js";
 import type { ToolDefinition, ToolResult } from "../skills/types.js";
 import { persistManagedUpload, type ManagedUploadRecord } from "./upload-storage.js";
 import type { FileLibrary } from "../files/file-library.js";
 import type { CourseStore } from "../learning/course-store.js";
+import type { LearningFileStore } from "../learning/file-store.js";
 import type { LearningWorkspaceController } from "../ui/learning-workspace.js";
 
 const DEFAULT_HOST = "0.0.0.0";
@@ -50,6 +51,7 @@ export interface UploadServerOptions {
   pulseApiToken?: string;
   fileLibrary?: FileLibrary;
   courseStore?: CourseStore;
+  learningFileStore?: LearningFileStore;
   learningWorkspace?: LearningWorkspaceController;
   learningClientId?: string;
 }
@@ -74,6 +76,7 @@ export class UploadServer {
   private readonly pulseApiToken: string | null;
   private readonly fileLibrary?: FileLibrary;
   private readonly courseStore?: CourseStore;
+  private readonly learningFileStore?: LearningFileStore;
   private readonly learningWorkspace?: LearningWorkspaceController;
   private readonly learningClientId: string;
   private server: Server | null = null;
@@ -91,6 +94,7 @@ export class UploadServer {
     this.pulseApiToken = options.pulseApiToken?.trim() || null;
     this.fileLibrary = options.fileLibrary;
     this.courseStore = options.courseStore;
+    this.learningFileStore = options.learningFileStore;
     this.learningWorkspace = options.learningWorkspace;
     this.learningClientId = options.learningClientId?.trim() || "local";
   }
@@ -291,7 +295,7 @@ export class UploadServer {
   }
 
   private async handleLearningRequest(req: IncomingMessage, res: ServerResponse, requestUrl: URL): Promise<void> {
-    if (!this.courseStore) {
+    if (!this.courseStore && !this.learningFileStore) {
       this.sendJson(res, 503, { ok: false, error: "learning API is not configured." });
       return;
     }
@@ -319,7 +323,7 @@ export class UploadServer {
     | { kind: "json"; statusCode?: number; body: unknown }
     | { kind: "file"; filePath: string; cacheControl?: string }
   > {
-    if (!this.courseStore) {
+    if (!this.courseStore && !this.learningFileStore) {
       throw new Error("learning API is not configured.");
     }
 
@@ -327,6 +331,24 @@ export class UploadServer {
     const suffix = requestUrl.pathname.slice(LEARNING_PATH_PREFIX.length);
     const segments = suffix.split("/").filter((segment) => segment.length > 0).map((segment) => decodeURIComponent(segment));
     const clientId = requestUrl.searchParams.get("clientId")?.trim() || this.learningClientId;
+
+    if (segments[0] === "v2") {
+      return this.resolveLearningV2Request(method, segments.slice(1));
+    }
+
+    if (method === "GET" && segments.length === 1 && segments[0] === "workspace-state") {
+      const state = this.learningWorkspace
+        ? await this.learningWorkspace.getState(clientId)
+        : null;
+      return {
+        kind: "json",
+        body: { ok: true, state },
+      };
+    }
+
+    if (!this.courseStore) {
+      throw new Error("legacy learning API is not configured.");
+    }
 
     if (method === "GET" && segments.length === 1 && segments[0] === "courses") {
       const courses = await this.courseStore.listCourses(clientId, {
@@ -343,16 +365,6 @@ export class UploadServer {
       return {
         kind: "json",
         body: { ok: true, activeCourse: course },
-      };
-    }
-
-    if (method === "GET" && segments.length === 1 && segments[0] === "workspace-state") {
-      const state = this.learningWorkspace
-        ? await this.learningWorkspace.getState(clientId)
-        : null;
-      return {
-        kind: "json",
-        body: { ok: true, state },
       };
     }
 
@@ -414,6 +426,58 @@ export class UploadServer {
     }
 
     throw new Error("learning API route was not found.");
+  }
+
+  private async resolveLearningV2Request(method: string, segments: string[]): Promise<
+    | { kind: "json"; statusCode?: number; body: unknown }
+    | { kind: "file"; filePath: string; cacheControl?: string }
+  > {
+    if (!this.learningFileStore) {
+      throw new Error("learning V2 API is not configured.");
+    }
+
+    if (method === "GET" && segments.length === 1 && segments[0] === "status") {
+      return {
+        kind: "json",
+        body: { ok: true, status: await this.learningFileStore.getStatus() },
+      };
+    }
+
+    if (method === "GET" && segments.length === 2 && segments[0] === "interests") {
+      const status = await this.learningFileStore.getStatus();
+      const interest = status.interests.find((candidate) => candidate.interestId === segments[1]);
+      if (!interest) {
+        throw new Error(`learning interest "${segments[1]}" was not found.`);
+      }
+      return {
+        kind: "json",
+        body: {
+          ok: true,
+          interest,
+          course: await readTextFileForApi(interest.coursePath),
+          index: await readTextFileForApi(interest.indexPath),
+          feedback: await readTextFileForApi(interest.feedbackPath),
+        },
+      };
+    }
+
+    if (method === "GET" && segments.length >= 2 && segments[0] === "files") {
+      const relativePath = segments.slice(1).join(sep);
+      if (!relativePath) {
+        throw new Error("learning V2 file path is incomplete.");
+      }
+      return {
+        kind: "file",
+        filePath: this.learningFileStore.resolveFilePath(relativePath),
+        cacheControl: "no-cache",
+      };
+    }
+
+    if (method === "OPTIONS") {
+      return { kind: "json", statusCode: 204, body: null };
+    }
+
+    throw new Error("learning V2 API route was not found.");
   }
 
   private authorizePulseRequest(req: IncomingMessage): { ok: true } | { ok: false; statusCode: number; error: string } {
@@ -577,6 +641,7 @@ function classifyArtifactError(message: string): number {
 
 function classifyLearningError(message: string): number {
   const normalized = message.toLowerCase();
+  if (normalized.includes("not configured")) return 503;
   if (normalized.includes("not found") || normalized.includes("enoent")) return 404;
   if (
     normalized.includes("required")
@@ -587,6 +652,14 @@ function classifyLearningError(message: string): number {
     return 400;
   }
   return 500;
+}
+
+async function readTextFileForApi(path: string): Promise<string> {
+  try {
+    return await readFile(path, "utf8");
+  } catch {
+    return "";
+  }
 }
 
 function isManagedPath(url: string): boolean {

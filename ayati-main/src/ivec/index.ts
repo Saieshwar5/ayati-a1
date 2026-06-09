@@ -34,6 +34,7 @@ import type { DirectoryLibrary } from "../files/directory-library.js";
 import type { FileLibrary } from "../files/file-library.js";
 import type { DirectoryAttachmentRecord, ManagedFileRecord } from "../files/types.js";
 import type { CourseStore } from "../learning/course-store.js";
+import { LearningFileStore, shouldLoadLearningContext } from "../learning/file-store.js";
 import type { ActiveLearningContext } from "../learning/types.js";
 import {
   normalizeSystemEvent,
@@ -131,6 +132,7 @@ export interface IVecEngineOptions {
   fileLibrary?: FileLibrary;
   directoryLibrary?: DirectoryLibrary;
   courseStore?: CourseStore;
+  learningFileStore?: LearningFileStore;
   systemEventPolicy?: SystemEventPolicyConfig;
 }
 
@@ -152,6 +154,7 @@ export class IVecEngine {
   private readonly fileLibrary?: FileLibrary;
   private readonly directoryLibrary?: DirectoryLibrary;
   private readonly courseStore?: CourseStore;
+  private readonly learningFileStore?: LearningFileStore;
   private readonly systemEventPolicy?: SystemEventPolicyConfig;
   private readonly pulseProposalReflectionService = new PulseProposalReflectionService();
   private staticSystemTokens = 0;
@@ -178,6 +181,7 @@ export class IVecEngine {
     this.fileLibrary = options?.fileLibrary;
     this.directoryLibrary = options?.directoryLibrary;
     this.courseStore = options?.courseStore;
+    this.learningFileStore = options?.learningFileStore;
     this.systemEventPolicy = options?.systemEventPolicy;
   }
 
@@ -253,7 +257,7 @@ export class IVecEngine {
           runId: runHandle.runId,
           sessionId: runHandle.sessionId,
         }) ?? [];
-        const system = await this.buildSystemContext(clientId);
+        const system = await this.buildSystemContext(clientId, content);
         let result = await agentLoop({
           provider: this.provider,
           toolExecutor: this.toolExecutor,
@@ -403,7 +407,7 @@ export class IVecEngine {
       }
 
       const toolDefs = systemEventPlan.toolDefinitions;
-      const system = await this.buildSystemContext(clientId);
+      const system = await this.buildSystemContext(clientId, event.summary);
       devLog(
         `[${clientId}] system_event entering agentLoop eventId=${event.eventId} mode=${systemEventPlan.policy.mode} intent=${systemEventPlan.classification.intentKind} approval=${systemEventPlan.policy.approvalRequired ? "required" : "not_required"} tools=${toolDefs.length} payloadKeys=${Object.keys(event.payload).join(",") || "none"}`,
       );
@@ -502,7 +506,7 @@ export class IVecEngine {
     }
   }
 
-  private async buildSystemContext(clientId: string): Promise<SystemContextBuildResult> {
+  private async buildSystemContext(clientId: string, userMessage = ""): Promise<SystemContextBuildResult> {
     if (!this.staticContext) {
       return { systemContext: "", controllerSystemContext: "", dynamicSystemTokens: 0 };
     }
@@ -515,7 +519,7 @@ export class IVecEngine {
     const runtimeContextSection = renderRuntimeContextSection(
       getNowSnapshot(this.nowProvider()),
     );
-    const activeLearningSection = await this.renderActiveLearningContextSection(clientId);
+    const activeLearningSection = await this.renderActiveLearningContextSection(clientId, userMessage);
     const activeLearningFingerprint = activeLearningSection;
     const controllerSystemContext = joinPromptSections([
       staticSections.head,
@@ -711,11 +715,66 @@ export class IVecEngine {
     }
   }
 
-  private async renderActiveLearningContextSection(clientId: string): Promise<string> {
+  private async renderActiveLearningContextSection(clientId: string, userMessage: string): Promise<string> {
+    if (this.learningFileStore) {
+      try {
+        const context = await this.learningFileStore.renderPromptContext(userMessage);
+        if (context.included) {
+          return context.context;
+        }
+      } catch (err) {
+        devWarn("Learning V2 context unavailable:", err instanceof Error ? err.message : String(err));
+      }
+    }
+
     if (!this.courseStore) {
       return "";
     }
     try {
+      const activeCourse = await this.courseStore.getActiveCourse(clientId);
+      if (!activeCourse) {
+        return "";
+      }
+      const fallbackStatus = {
+        schemaVersion: 2 as const,
+        rootPath: "",
+        systemDir: "",
+        interestsDir: "",
+        protocolPath: "",
+        preferencesPath: "",
+        activePath: "",
+        activeState: {
+          schemaVersion: 2 as const,
+          activeInterestId: activeCourse.courseId,
+          learningMode: "inactive" as const,
+          updatedAt: activeCourse.updatedAt,
+        },
+        interests: [{
+          interestId: activeCourse.courseId,
+          title: activeCourse.title,
+          rootPath: "",
+          coursePath: "",
+          indexPath: "",
+          feedbackPath: "",
+          logPath: "",
+          lessonsDir: "",
+          lessons: [],
+        }],
+        activeInterest: {
+          interestId: activeCourse.courseId,
+          title: activeCourse.title,
+          rootPath: "",
+          coursePath: "",
+          indexPath: "",
+          feedbackPath: "",
+          logPath: "",
+          lessonsDir: "",
+          lessons: [],
+        },
+      };
+      if (!shouldLoadLearningContext(fallbackStatus, userMessage).load) {
+        return "";
+      }
       const context = await this.courseStore.getActiveLearningContext(clientId);
       if (!context) {
         return "";

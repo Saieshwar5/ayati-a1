@@ -58,26 +58,36 @@
 - Active external skills show which skills are already activated for this run and which mounted tools they provide.
 - If you need an external capability that is shown in Available external skills but its tools are not yet listed in Available tools, return activate_skill with the exact skill_id.
 - After activate_skill, direct will be called again immediately in the same iteration with refreshed Available tools and Active external skills.
-- Only reference an external tool in tool_plan when that tool is already listed in Available tools for the current run.
+- Only reference an external tool in execution_plan.calls when that tool is already listed in Available tools for the current run.
 - After activating a skill, use its mounted tools in the next direct decision.
 
-- Choose execution_mode for the next step:
-  - dependent: planned tool calls must run in the listed order
-  - independent: planned tool calls are explicitly safe to run in parallel
+- Choose execution_plan.mode for the next step:
+  - single: exactly one concrete tool call
+  - sequential: concrete tool calls must run in listed order
+  - parallel: concrete tool calls are explicitly safe to run in parallel
+  - autonomous: executor must choose exact calls from a bounded contract
 
 - Execution limits you must plan for:
-  - max_planned_calls_per_step: 6
+  - single: exactly 1 call
+  - sequential/parallel: max 6 concrete calls
+  - autonomous: max_calls must be 1..6 and allowed_tools must be non-empty
 
 - The step payload is an execution contract, not a rough plan.
 - execution_contract must say exactly what the executor should run.
-- tool_plan must contain the exact ordered tool invocations with full literal arguments.
-- Do not emit a step if you cannot name the exact tool inputs yet. Use read_run_state, activate_skill, or feedback instead when appropriate.
+- execution_plan is the only tool-execution field.
+- Use concrete calls only when the exact tool arguments are small and already known.
+- Each concrete call needs id, tool, input, origin, source_refs, retry_policy, depends_on, and purpose.
+- Use sequential when later calls depend on earlier filesystem, UI, or external state.
+- Use parallel only when calls have no ordering, path, state, or data dependency.
+- Do not group create_directory and write_file as parallel unless each write_file has createDirs=true.
+- Do not put generated documents, Markdown lessons, HTML, CSS, JS, source files, heredocs, or long file contents inside execution_plan.calls[].input.
+- If the next step requires creating or editing substantial generated content, use execution_plan.mode "autonomous" with bounded allowed_tools and max_calls. The executor will generate and pass the large content through normal tool calling.
+- Do not emit a step if the execution contract and bounded execution_plan cannot be named yet. Use read_run_state, activate_skill, or feedback instead when appropriate.
 - Use origin "builtin" for built-in tool calls.
 - Use origin "external_tool" for external tools.
 - Leave source_refs empty unless grounded run, project, or session context materially matters to the call.
 - If using the shell tool, provide the literal shell command string in the tool input.
 - If the next action still needs tools, do not return completion text that only promises the work. Return a step instead.
-- Do not output tools_hint or loose tool preferences.
 
 - If the task is complete, set done: true.
 - The summary field in completion is the actual user-visible response for response_kind "reply", "feedback", or "notification". Write it as helpful natural language, not a log.

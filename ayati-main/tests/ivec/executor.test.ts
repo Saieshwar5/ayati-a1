@@ -56,12 +56,58 @@ function createMockSessionMemory(): SessionMemory {
   };
 }
 
+function planCall(
+  tool: string,
+  input: Record<string, unknown> = {},
+  overrides?: Partial<{
+    id: string;
+    origin: "builtin" | "external_tool";
+    source_refs: string[];
+    retry_policy: "none" | "same_call_once_on_timeout";
+    depends_on: string[];
+    purpose: string;
+  }>,
+): StepDirective["execution_plan"]["calls"][number] {
+  return {
+    id: overrides?.id ?? tool.replaceAll(".", "_"),
+    tool,
+    input,
+    origin: overrides?.origin ?? "builtin",
+    source_refs: overrides?.source_refs ?? [],
+    retry_policy: overrides?.retry_policy ?? "none",
+    depends_on: overrides?.depends_on ?? [],
+    purpose: overrides?.purpose ?? `Run ${tool}`,
+  };
+}
+
+function autonomousPlan(
+  allowedTools: string[] = ["shell"],
+  maxCalls = 4,
+): StepDirective["execution_plan"] {
+  return {
+    mode: "autonomous",
+    calls: [],
+    allowed_tools: allowedTools,
+    max_calls: maxCalls,
+  };
+}
+
+function concretePlan(
+  mode: "single" | "sequential" | "parallel",
+  calls: StepDirective["execution_plan"]["calls"],
+): StepDirective["execution_plan"] {
+  return {
+    mode,
+    calls,
+    allowed_tools: [],
+  };
+}
+
 function createDirective(overrides?: Partial<StepDirective>): StepDirective {
   return {
     done: false,
-    execution_mode: "dependent",
-    intent: "run a shell command",
-    tools_hint: ["shell"],
+    execution_contract: "run a shell command",
+    execution_plan: autonomousPlan(["shell"], 4),
     success_criteria: "command output returned",
     context: "",
     ...overrides,
@@ -396,7 +442,12 @@ describe("executeStep", () => {
         taskContext: createTaskContext(),
       };
 
-      const summary = await executeStep(deps, createDirective({ tools_hint: ["shell_run_script"] }), 1, runPath);
+      const summary = await executeStep(
+        deps,
+        createDirective({ execution_plan: autonomousPlan(["shell_run_script"], 4) }),
+        1,
+        runPath,
+      );
       expect(summary.outcome).toBe("failed");
       expect(summary.toolSuccessCount).toBe(0);
       expect(summary.toolFailureCount).toBe(1);
@@ -408,7 +459,7 @@ describe("executeStep", () => {
     }
   });
 
-  it("keeps non-hinted built-in tools available during act", async () => {
+  it("allows any explicitly allowed built-in tool during autonomous act", async () => {
     const { runPath, cleanup } = setup();
     try {
       let callCount = 0;
@@ -484,7 +535,7 @@ describe("executeStep", () => {
 
       const summary = await executeStep(
         deps,
-        createDirective({ execution_mode: "independent", tools_hint: ["shell"] }),
+        createDirective({ execution_plan: autonomousPlan(["shell", "read_file"], 4) }),
         1,
         runPath,
       );
@@ -498,7 +549,7 @@ describe("executeStep", () => {
     }
   });
 
-  it("blocks repeated failed retries and pivots to another available tool", async () => {
+  it("blocks repeated failed retries and pivots to another allowed tool", async () => {
     const { runPath, cleanup } = setup();
     try {
       let callCount = 0;
@@ -586,7 +637,7 @@ describe("executeStep", () => {
 
       const summary = await executeStep(
         deps,
-        createDirective({ execution_mode: "independent", tools_hint: ["shell"] }),
+        createDirective({ execution_plan: autonomousPlan(["shell", "read_file"], 4) }),
         1,
         runPath,
       );
@@ -651,7 +702,12 @@ describe("executeStep", () => {
         taskContext: createTaskContext(),
       };
 
-      const summary = await executeStep(deps, createDirective({ execution_mode: "dependent" }), 1, runPath);
+      const summary = await executeStep(
+        deps,
+        createDirective({ execution_plan: autonomousPlan(["shell"], 4) }),
+        1,
+        runPath,
+      );
       expect(summary.toolSuccessCount).toBe(1);
       expect(executeSpy).toHaveBeenCalledTimes(1);
     } finally {
@@ -659,7 +715,7 @@ describe("executeStep", () => {
     }
   });
 
-  it("rejects multi-call planned directives in dependent mode", async () => {
+  it("runs sequential planned directives in order", async () => {
     const { runPath, cleanup } = setup();
     try {
       const executeSpy = vi.fn().mockResolvedValue({ ok: true, output: "ok" });
@@ -669,10 +725,19 @@ describe("executeStep", () => {
         capabilities: { nativeToolCalling: true },
         start: vi.fn(),
         stop: vi.fn(),
-        generateTurn: vi.fn().mockResolvedValue({
-          type: "assistant",
-          content: JSON.stringify({ status: "not_done", progressSummary: "should not be called", evidence: [] }),
-        }),
+        generateTurn: vi.fn()
+          .mockResolvedValueOnce({
+            type: "assistant",
+            content: stepVerifyResponse({
+              summary: "Verified that both planned shell calls ran in order.",
+              evidenceSummary: "The sequential plan executed both commands.",
+              evidenceItems: ["echo one", "echo two"],
+            }),
+          })
+          .mockResolvedValueOnce({
+            type: "assistant",
+            content: taskVerifyResponse("done", "sequential calls completed", ["two shell calls"]),
+          }),
       };
 
       const toolExecutor: ToolExecutor = {
@@ -699,18 +764,19 @@ describe("executeStep", () => {
       };
 
       const summary = await executeStep(deps, createDirective({
-        execution_mode: "dependent",
-        tool_plan: [
-          { tool: "shell", input: { cmd: "echo one" }, origin: "builtin", source_refs: [], retry_policy: "none" },
-          { tool: "shell", input: { cmd: "echo two" }, origin: "builtin", source_refs: [], retry_policy: "none" },
-        ],
+        execution_plan: concretePlan("sequential", [
+          planCall("shell", { cmd: "echo one" }, { id: "first", purpose: "Echo one" }),
+          planCall("shell", { cmd: "echo two" }, { id: "second", depends_on: ["first"], purpose: "Echo two after one" }),
+        ]),
       }), 1, runPath);
 
-      expect(summary.outcome).toBe("failed");
-      expect(summary.stoppedEarlyReason).toBe("planned_call_failed");
-      expect(summary.toolSuccessCount).toBe(0);
+      expect(summary.outcome).toBe("success");
+      expect(summary.stoppedEarlyReason).toBeUndefined();
+      expect(summary.toolSuccessCount).toBe(2);
       expect(summary.toolFailureCount).toBe(0);
-      expect(executeSpy).not.toHaveBeenCalled();
+      expect(executeSpy).toHaveBeenCalledTimes(2);
+      expect(executeSpy).toHaveBeenNthCalledWith(1, "shell", { cmd: "echo one" }, expect.any(Object));
+      expect(executeSpy).toHaveBeenNthCalledWith(2, "shell", { cmd: "echo two" }, expect.any(Object));
     } finally {
       cleanup();
     }
@@ -765,9 +831,9 @@ describe("executeStep", () => {
       };
 
       const summary = await executeStep(deps, createDirective({
-        tool_plan: [
-          { tool: "demo-search.query", input: {}, origin: "external_tool", source_refs: [], retry_policy: "none" },
-        ],
+        execution_plan: concretePlan("single", [
+          planCall("demo-search.query", {}, { origin: "external_tool", purpose: "Run external query" }),
+        ]),
       }), 1, runPath);
 
       expect(summary.outcome).toBe("success");
@@ -828,9 +894,9 @@ describe("executeStep", () => {
       };
 
       const summary = await executeStep(deps, createDirective({
-        tool_plan: [
-          { tool: "demo-search.query", input: {}, origin: "external_tool", source_refs: [], retry_policy: "none" },
-        ],
+        execution_plan: concretePlan("single", [
+          planCall("demo-search.query", {}, { origin: "external_tool", purpose: "Run external query" }),
+        ]),
       }), 1, runPath);
 
       expect(summary.outcome).toBe("failed");
@@ -892,9 +958,9 @@ describe("executeStep", () => {
       };
 
       const summary = await executeStep(deps, createDirective({
-        tool_plan: [
-          { tool: "shell", input: { cmd: "echo huge" }, origin: "builtin", source_refs: [], retry_policy: "none" },
-        ],
+        execution_plan: concretePlan("single", [
+          planCall("shell", { cmd: "echo huge" }, { purpose: "Generate large output" }),
+        ]),
       }), 1, runPath);
 
       const rawOutputRelativePath = "steps/001-call-01-raw.txt";
@@ -949,14 +1015,19 @@ describe("executeStep", () => {
         provider,
         toolExecutor,
         toolDefinitions: toolExecutor.definitions(),
-        config: { ...DEFAULT_LOOP_CONFIG, maxTotalToolCallsPerStep: 6 },
+        config: { ...DEFAULT_LOOP_CONFIG, maxToolCallsPerStep: 7, maxTotalToolCallsPerStep: 6 },
         clientId: "c1",
         sessionMemory: createMockSessionMemory(),
         runHandle: { sessionId: "s1", runId: "r1" },
         taskContext: createTaskContext(),
       };
 
-      const summary = await executeStep(deps, createDirective({ execution_mode: "independent" }), 1, runPath);
+      const summary = await executeStep(
+        deps,
+        createDirective({ execution_plan: autonomousPlan(["shell"], 6) }),
+        1,
+        runPath,
+      );
       expect(summary.toolSuccessCount).toBe(6);
       expect(summary.stoppedEarlyReason).toBe("max_total_tool_calls_reached");
       expect(summary.summary).not.toBe("");
@@ -1033,7 +1104,7 @@ describe("executeStep", () => {
 
       const summary = await executeStep(
         deps,
-        createDirective({ execution_mode: "independent" }),
+        createDirective({ execution_plan: autonomousPlan(["shell"], 4) }),
         1,
         runPath,
       );
@@ -1091,7 +1162,7 @@ describe("executeStep", () => {
 
       const summary = await executeStep(
         deps,
-        createDirective({ execution_mode: "independent" }),
+        createDirective({ execution_plan: autonomousPlan(["shell"], 4) }),
         1,
         runPath,
       );

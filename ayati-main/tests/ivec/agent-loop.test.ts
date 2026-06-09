@@ -74,6 +74,48 @@ function stepVerifyFailureResponse(evidenceSummary = "permission denied"): strin
   });
 }
 
+function planCall(
+  tool: string,
+  input: Record<string, unknown> = {},
+  overrides?: Partial<{
+    id: string;
+    origin: "builtin" | "external_tool";
+    source_refs: string[];
+    retry_policy: "none" | "same_call_once_on_timeout";
+    depends_on: string[];
+    purpose: string;
+  }>,
+): Record<string, unknown> {
+  return {
+    id: overrides?.id ?? tool.replaceAll(".", "_"),
+    tool,
+    input,
+    origin: overrides?.origin ?? "builtin",
+    source_refs: overrides?.source_refs ?? [],
+    retry_policy: overrides?.retry_policy ?? "none",
+    depends_on: overrides?.depends_on ?? [],
+    purpose: overrides?.purpose ?? `Run ${tool}`,
+  };
+}
+
+function executionPlan(
+  mode: "single" | "sequential" | "parallel" | "autonomous",
+  calls: Record<string, unknown>[] = [],
+  allowedTools: string[] = [],
+  maxCalls: number | null = null,
+): Record<string, unknown> {
+  return {
+    mode,
+    calls,
+    allowed_tools: allowedTools,
+    max_calls: maxCalls,
+  };
+}
+
+function autonomousPlan(allowedTools: string[] = ["shell"], maxCalls = 4): Record<string, unknown> {
+  return executionPlan("autonomous", [], allowedTools, maxCalls);
+}
+
 function createMockSessionMemory(): SessionMemory {
   return {
     initialize: vi.fn(),
@@ -209,17 +251,12 @@ describe("agentLoop", () => {
               type: "assistant",
               content: JSON.stringify({
                 done: false,
-                execution_mode: "dependent",
                 execution_contract: "Send the approved draft email to Arun",
-                tool_plan: [
-                  {
-                    tool: "send_email",
-                    input: { to: "arun@example.com", subject: "Draft reply" },
-                    origin: "builtin",
-                    source_refs: [],
-                    retry_policy: "none",
-                  },
-                ],
+                execution_plan: executionPlan("single", [
+                  planCall("send_email", { to: "arun@example.com", subject: "Draft reply" }, {
+                    purpose: "Send the approved draft email",
+                  }),
+                ]),
                 success_criteria: "The draft email is sent to Arun",
                 context: "The user approved sending the prepared draft",
               }),
@@ -303,9 +340,8 @@ describe("agentLoop", () => {
               type: "assistant",
               content: JSON.stringify({
                 done: false,
-                execution_mode: "dependent",
-                intent: "analyze request",
-                tools_hint: [],
+                execution_contract: "analyze request",
+                execution_plan: autonomousPlan(["shell"], 4),
                 success_criteria: "analysis complete",
                 context: "",
               }),
@@ -376,23 +412,22 @@ describe("agentLoop", () => {
               }),
             };
           }
-          if (callCount === 2 || callCount === 5) {
+          if (callCount === 2 || callCount === 6) {
             return {
               type: "assistant",
               content: JSON.stringify({
                 done: false,
-                execution_mode: "dependent",
-                intent: "try again",
-                tools_hint: [],
+                execution_contract: "try again",
+                execution_plan: autonomousPlan(["shell"], 4),
                 success_criteria: "succeed",
                 context: "",
               }),
             };
           }
-          if (callCount === 3 || callCount === 6) {
+          if (callCount === 3 || callCount === 7) {
             return { type: "assistant", content: "still trying" };
           }
-          if (callCount === 4 || callCount === 7) {
+          if (callCount === 4 || callCount === 8) {
             return { type: "assistant", content: stepVerifySuccessResponse("The latest step still leaves more work to do") };
           }
           return {
@@ -461,9 +496,8 @@ describe("agentLoop", () => {
               type: "assistant",
               content: JSON.stringify({
                 done: false,
-                execution_mode: "dependent",
                 execution_contract: "Inspect the main config files",
-                tool_plan: [],
+                execution_plan: autonomousPlan(["shell"], 4),
                 success_criteria: "find the main config file paths",
                 context: "",
               }),
@@ -530,9 +564,8 @@ describe("agentLoop", () => {
               type: "assistant",
               content: JSON.stringify({
                 done: false,
-                execution_mode: "dependent",
-                intent: "first attempt",
-                tools_hint: [],
+                execution_contract: "first attempt",
+                execution_plan: autonomousPlan(["shell"], 4),
                 success_criteria: "must produce evidence",
                 context: "",
               }),
@@ -639,17 +672,12 @@ describe("agentLoop", () => {
               type: "assistant",
               content: JSON.stringify({
                 done: false,
-                execution_mode: "independent",
                 execution_contract: "Call workspace_set_layout with layout=30-70 and inspect layoutVerification.",
-                tool_plan: [
-                  {
-                    tool: "workspace_set_layout",
-                    input: { layout: "30-70" },
-                    origin: "builtin",
-                    source_refs: [],
-                    retry_policy: "none",
-                  },
-                ],
+                execution_plan: executionPlan("single", [
+                  planCall("workspace_set_layout", { layout: "30-70" }, {
+                    purpose: "Set workspace layout to 30-70",
+                  }),
+                ]),
                 success_criteria: "layoutVerification.verified is true",
                 context: "",
               }),
@@ -733,9 +761,8 @@ describe("agentLoop", () => {
               type: "assistant",
               content: JSON.stringify({
                 done: false,
-                execution_mode: "dependent",
-                intent: `attempt ${callCount === 2 ? 1 : callCount === 6 ? 2 : 3}`,
-                tools_hint: [],
+                execution_contract: `attempt ${callCount === 2 ? 1 : callCount === 6 ? 2 : 3}`,
+                execution_plan: autonomousPlan(["shell"], 4),
                 success_criteria: "must produce evidence",
                 context: "",
               }),
@@ -839,9 +866,8 @@ describe("agentLoop", () => {
               type: "assistant",
               content: JSON.stringify({
                 done: false,
-                execution_mode: "dependent",
-                intent: `attempt ${callCount}`,
-                tools_hint: [],
+                execution_contract: `attempt ${callCount}`,
+                execution_plan: autonomousPlan(["shell"], 4),
                 success_criteria: "must produce evidence",
                 context: "",
               }),
@@ -926,9 +952,8 @@ describe("agentLoop", () => {
               type: "assistant",
               content: JSON.stringify({
                 done: false,
-                execution_mode: "dependent",
-                intent: "first attempt",
-                tools_hint: [],
+                execution_contract: "first attempt",
+                execution_plan: autonomousPlan(["shell"], 4),
                 success_criteria: "must produce evidence",
                 context: "",
               }),
@@ -1059,9 +1084,8 @@ describe("agentLoop", () => {
               type: "assistant",
               content: JSON.stringify({
                 done: false,
-                execution_mode: "dependent",
-                intent: "attempt step",
-                tools_hint: [],
+                execution_contract: "attempt step",
+                execution_plan: autonomousPlan(["shell"], 4),
                 success_criteria: "must succeed",
                 context: "",
               }),
@@ -1221,9 +1245,8 @@ describe("agentLoop", () => {
               type: "assistant",
               content: JSON.stringify({
                 done: false,
-                execution_mode: "dependent",
-                intent: "step 1",
-                tools_hint: [],
+                execution_contract: "step 1",
+                execution_plan: autonomousPlan(["shell"], 4),
                 success_criteria: "ok",
                 context: "",
               }),
@@ -1296,9 +1319,8 @@ describe("agentLoop", () => {
               type: "assistant",
               content: JSON.stringify({
                 done: false,
-                execution_mode: "dependent",
-                intent: "draft response",
-                tools_hint: [],
+                execution_contract: "draft response",
+                execution_plan: autonomousPlan(["shell"], 4),
                 success_criteria: "response drafted",
                 context: "",
               }),
@@ -1391,9 +1413,8 @@ describe("agentLoop", () => {
               type: "assistant",
               content: JSON.stringify({
                 done: false,
-                execution_mode: "dependent",
-                intent: "complete the first step",
-                tools_hint: [],
+                execution_contract: "complete the first step",
+                execution_plan: autonomousPlan(["shell"], 4),
                 success_criteria: "step 1 is done",
                 context: "",
               }),
@@ -1439,9 +1460,8 @@ describe("agentLoop", () => {
               type: "assistant",
               content: JSON.stringify({
                 done: false,
-                execution_mode: "dependent",
-                intent: "use retrieved context",
-                tools_hint: [],
+                execution_contract: "use retrieved context",
+                execution_plan: autonomousPlan(["shell"], 4),
                 success_criteria: "step 2 uses step 1 facts",
                 context: "",
               }),
@@ -1786,9 +1806,8 @@ describe("agentLoop", () => {
               type: "assistant",
               content: JSON.stringify({
                 done: false,
-                execution_mode: "dependent",
-                intent: "search config files",
-                tools_hint: [],
+                execution_contract: "search config files",
+                execution_plan: autonomousPlan(["shell"], 4),
                 success_criteria: "config file paths are returned",
                 context: "",
               }),
@@ -2138,9 +2157,8 @@ describe("agentLoop", () => {
               type: "assistant",
               content: JSON.stringify({
                 done: false,
-                execution_mode: "dependent",
-                intent: "count Maharashtra employees",
-                tools_hint: ["dataset_query"],
+                execution_contract: "count Maharashtra employees",
+                execution_plan: autonomousPlan(["dataset_query"], 4),
                 success_criteria: "dataset query returns the employee count",
                 context: "Use the prepared employees.csv attachment.",
               }),
@@ -2273,9 +2291,8 @@ describe("agentLoop", () => {
               type: "assistant",
               content: JSON.stringify({
                 done: false,
-                execution_mode: "dependent",
-                intent: "summarize the document",
-                tools_hint: ["document_query"],
+                execution_contract: "summarize the document",
+                execution_plan: autonomousPlan(["document_query"], 4),
                 success_criteria: "document query returns the document subject",
                 context: "Use the prepared book.txt attachment.",
               }),
@@ -2423,9 +2440,8 @@ describe("agentLoop", () => {
               type: "assistant",
               content: JSON.stringify({
                 done: false,
-                execution_mode: "dependent",
-                intent: "restore the previous csv",
-                tools_hint: ["restore_attachment_context"],
+                execution_contract: "restore the previous csv",
+                execution_plan: autonomousPlan(["restore_attachment_context"], 4),
                 success_criteria: "the previous csv is restored for follow-up analysis",
                 context: "Use the active session attachment for employees.csv.",
               }),
@@ -2451,9 +2467,8 @@ describe("agentLoop", () => {
               type: "assistant",
               content: JSON.stringify({
                 done: false,
-                execution_mode: "dependent",
-                intent: "count Maharashtra rows in the restored csv",
-                tools_hint: ["dataset_query"],
+                execution_contract: "count Maharashtra rows in the restored csv",
+                execution_plan: autonomousPlan(["dataset_query"], 4),
                 success_criteria: "the count of Maharashtra rows is returned",
                 context: `Use staging_${restoredPreparedInputId} to count employees from Maharashtra.`,
               }),
@@ -2608,9 +2623,8 @@ describe("agentLoop", () => {
               type: "assistant",
               content: JSON.stringify({
                 done: false,
-                execution_mode: "dependent",
-                intent: "profile the current uploaded transaction dataset",
-                tools_hint: ["dataset_profile"],
+                execution_contract: "profile the current uploaded transaction dataset",
+                execution_plan: autonomousPlan(["dataset_profile"], 4),
                 success_criteria: "the uploaded transaction dataset is inspected and key columns are identified",
                 context: "Use the current uploaded transaction CSV, not an older session file.",
               }),
@@ -3146,9 +3160,8 @@ describe("agentLoop", () => {
               type: "assistant",
               content: JSON.stringify({
                 done: false,
-                execution_mode: "dependent",
-                intent: "draft response",
-                tools_hint: [],
+                execution_contract: "draft response",
+                execution_plan: autonomousPlan(["shell"], 4),
                 success_criteria: "response drafted",
                 context: "",
               }),

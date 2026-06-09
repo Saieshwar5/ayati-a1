@@ -3,11 +3,11 @@ import { builtInSkillsProvider } from "../../src/skills/provider.js";
 import { createAttachmentSkill } from "../../src/skills/builtins/attachments/index.js";
 import { createDatasetSkill } from "../../src/skills/builtins/datasets/index.js";
 import { createDocumentSkill } from "../../src/skills/builtins/documents/index.js";
-import { createLearningSkill } from "../../src/skills/builtins/learning/index.js";
+import { createLearningFileSkill } from "../../src/skills/builtins/learning-v2/index.js";
 import { createPythonSkill } from "../../src/skills/builtins/python/index.js";
 import { createRecallSkill } from "../../src/skills/builtins/recall/index.js";
 import { createUiSkill } from "../../src/skills/builtins/ui/index.js";
-import { CourseStore } from "../../src/learning/course-store.js";
+import { LearningFileStore } from "../../src/learning/file-store.js";
 import { LearningWorkspaceController } from "../../src/ui/learning-workspace.js";
 import { WorkspaceOrchestrator } from "../../src/ui/workspace-orchestrator.js";
 import type { PreparedAttachmentService } from "../../src/documents/prepared-attachment-service.js";
@@ -69,8 +69,8 @@ async function buildRuntimeTools(): Promise<ToolDefinition[]> {
     ...createDocumentSkill({
       preparedAttachmentService,
     }).tools,
-    ...createLearningSkill({
-      courseStore: new CourseStore({ dataDir: "/tmp/ayati-test-data" }),
+    ...createLearningFileSkill({
+      learningFileStore: new LearningFileStore({ dataDir: "/tmp/ayati-test-data" }),
     }).tools,
     ...createUiSkill({
       learningWorkspace: new LearningWorkspaceController({
@@ -83,6 +83,7 @@ async function buildRuntimeTools(): Promise<ToolDefinition[]> {
         dataDir: "/tmp/ayati-test-data",
         hyprlandEnabled: false,
       }),
+      includeLearningTools: false,
     }).tools,
   ];
 }
@@ -98,8 +99,10 @@ describe("runtime tool schemas", () => {
 
     expect(tools.some((tool) => tool.name === "db_create_table")).toBe(true);
     expect(tools.some((tool) => tool.name === "python_execute")).toBe(true);
-    expect(tools.some((tool) => tool.name === "learning_create_course")).toBe(true);
-    expect(tools.some((tool) => tool.name === "ui_open_learning_workspace")).toBe(true);
+    expect(tools.some((tool) => tool.name === "learning_status")).toBe(true);
+    expect(tools.some((tool) => tool.name === "learning_workspace_show")).toBe(true);
+    expect(tools.some((tool) => tool.name === "learning_create_course")).toBe(false);
+    expect(tools.some((tool) => tool.name === "ui_open_learning_workspace")).toBe(false);
     expect(issues).toEqual([]);
   });
 });

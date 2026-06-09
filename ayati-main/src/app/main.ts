@@ -156,6 +156,7 @@ export async function main(): Promise<void> {
     fileLibrary: content.fileLibrary,
     directoryLibrary: content.directoryLibrary,
     courseStore: content.courseStore,
+    learningFileStore: content.learningFileStore,
     learningWorkspace: content.learningWorkspace,
     workspaceOrchestrator: content.workspaceOrchestrator,
     config: runtimeConfig,
@@ -176,6 +177,7 @@ export async function main(): Promise<void> {
     pulseApiToken: runtimeConfig.http.apiToken,
     fileLibrary: content.fileLibrary,
     courseStore: content.courseStore,
+    learningFileStore: content.learningFileStore,
     learningWorkspace: content.learningWorkspace,
     learningClientId: CLIENT_ID,
   });
@@ -212,6 +214,7 @@ export async function main(): Promise<void> {
     fileLibrary: content.fileLibrary,
     directoryLibrary: content.directoryLibrary,
     courseStore: content.courseStore,
+    learningFileStore: content.learningFileStore,
     systemEventPolicy,
   });
   const systemEventWorker = new SystemEventWorker({
