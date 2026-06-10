@@ -31,7 +31,8 @@ import type { ManagedDocumentManifest } from "../documents/types.js";
 import type { ControllerHistoryBundle } from "./run-state-manager.js";
 import { formatControllerHistoryBundle } from "./controller-state-tool.js";
 import type { RunMetrics } from "./metrics.js";
-import { recordRunMetric } from "./metrics.js";
+import { recordPromptMetric, recordRunMetric } from "./metrics.js";
+import { buildControllerPromptState } from "./state-compaction.js";
 
 const DEFAULT_UNDERSTAND_INSTRUCTIONS = `- First, classify the request:
   - If it is simple conversation or a direct question that needs no tools or multi-step work, return done: true with a natural user-facing reply.
@@ -539,6 +540,10 @@ export async function callUnderstand(
       controllerPrompts?.systemEvent,
     ),
   );
+  recordPromptMetric(metrics, "understand", {
+    systemContext,
+    prompt,
+  });
   const messages = [
     { role: "system" as const, content: systemContext },
     buildControllerUserMessage(state, prompt),
@@ -583,6 +588,11 @@ export async function callReEval(
     ),
     inlineDirectiveContext,
   );
+  recordPromptMetric(metrics, "reeval", {
+    systemContext: resolved.systemContext,
+    prompt,
+    inlineDirectiveContext,
+  });
   const messages = [
     ...(resolved.systemContext && resolved.systemContext.trim().length > 0
       ? [{ role: "system" as const, content: resolved.systemContext }]
@@ -623,7 +633,7 @@ export async function callDirect(
     controllerPrompts,
     systemContext,
   );
-  const prompt = buildDirectPrompt(
+  const promptResult = buildDirectPromptResult(
     state,
     toolDefinitions,
     externalSkillCards,
@@ -638,11 +648,15 @@ export async function callDirect(
     approachReevalThreshold,
     inlineDirectiveContext,
   );
+  recordPromptMetric(metrics, "direct", {
+    systemContext: resolved.systemContext,
+    ...promptResult.sections,
+  });
   const messages = [
     ...(resolved.systemContext && resolved.systemContext.trim().length > 0
       ? [{ role: "system" as const, content: resolved.systemContext }]
       : []),
-    buildControllerUserMessage(state, prompt),
+    buildControllerUserMessage(state, promptResult.prompt),
   ];
   return runControllerTurn(
     provider,
@@ -924,8 +938,9 @@ function buildReEvalPrompt(
   const workModeBlock = formatWorkMode(state);
   const inputBlock = buildInputBlock(state);
   const sessionContextSummaryBlock = formatSessionContextSummary(state);
-  const dependentTaskBlock = formatDependentTaskSummary(state.dependentTaskSummary);
-  const taskProgressBlock = formatReEvalTaskProgress(state.taskProgress);
+  const promptState = buildControllerPromptState(state);
+  const dependentTaskBlock = formatDependentTaskSummary(promptState.dependentTaskSummary);
+  const taskProgressBlock = formatReEvalTaskProgress(promptState.taskProgress);
   const inlineDirectiveContextBlock = formatInlineDirectiveContext(inlineDirectiveContext);
 
   return `The current approach has failed. Re-evaluate this task.
@@ -962,7 +977,12 @@ For new approach: { "kind": "reeval", "payload": { "done": false, "reeval": true
 For extra run history: { "kind": "read_run_state", "payload": { "done": false, "read_run_state": true, "action": "read_summary_window" | "read_step_full", "window": { "from": 1, "to": 10 }, "step": 3, "reason": "optional short reason" } }`;
 }
 
-function buildDirectPrompt(
+interface PromptBuildResult {
+  prompt: string;
+  sections: Record<string, string>;
+}
+
+function buildDirectPromptResult(
   state: LoopState,
   toolDefinitions: ToolDefinition[],
   externalSkillCards: ExternalSkillCard[] | undefined,
@@ -971,10 +991,11 @@ function buildDirectPrompt(
   instructions?: string,
   approachReevalThreshold = 3,
   inlineDirectiveContext?: string,
-): string {
+): PromptBuildResult {
+  const promptState = buildControllerPromptState(state, controllerHistoryBundle);
   const sessionContextSummaryBlock = formatSessionContextSummary(state);
-  const dependentTaskBlock = formatDependentTaskSummary(state.dependentTaskSummary);
-  const taskProgressBlock = formatDirectTaskProgress(state.taskProgress);
+  const dependentTaskBlock = formatDependentTaskSummary(promptState.dependentTaskSummary);
+  const taskProgressBlock = formatDirectTaskProgress(promptState.taskProgress);
   const recentSuccessfulSummariesBlock = formatRecentSuccessfulSummaries(state);
   const toolCatalog = buildToolCatalog(toolDefinitions);
   const externalSkillsBlock = formatExternalSkillCards(externalSkillCards);
@@ -982,19 +1003,30 @@ function buildDirectPrompt(
   const activeAttachmentsBlock = shouldShowActiveSessionAttachments(state) ? formatActiveSessionAttachments(state) : "";
   const attachmentsBlock = formatAttachedDocuments(state);
   const workModeBlock = formatWorkMode(state);
-  const controllerHistoryBlock = controllerHistoryBundle
-    ? formatControllerHistoryBundle(controllerHistoryBundle)
+  const controllerHistoryBlock = promptState.controllerHistoryBundle
+    ? formatControllerHistoryBundle(promptState.controllerHistoryBundle)
     : "Automatic run state context unavailable.";
   const inputBlock = buildInputBlock(state);
   const inlineDirectiveContextBlock = formatInlineDirectiveContext(inlineDirectiveContext);
+  const goalBlock = `Goal Contract:\n${formatGoalContract(state.goal)}\nApproach: ${state.approach}`;
+  const failureBlock = [
+    `Consecutive failures: ${state.consecutiveFailures}`,
+    `Re-evaluation threshold: ${approachReevalThreshold} consecutive failed steps`,
+    `Iteration: ${state.iteration} / ${state.maxIterations}`,
+  ].join("\n");
+  const instructionsBlock = `Instructions:\n${instructions ?? DEFAULT_DIRECT_INSTRUCTIONS}`;
+  const responseSchemaBlock = `Respond with a single JSON object (no markdown fences):
+${STRICT_JSON_RESPONSE_NOTE}
+For next step: { "kind": "step", "payload": { "done": false, "execution_contract": "...", "execution_plan": { "mode": "single" | "sequential" | "parallel" | "autonomous", "calls": [{ "id": "call_id", "tool": "shell", "input": { "cmd": "pwd" }, "origin": "builtin" | "external_tool", "source_refs": [], "retry_policy": "none", "depends_on": [], "purpose": "..." }], "allowed_tools": [], "max_calls": null }, "success_criteria": "...", "context": "..." } }
+For inline activation: { "kind": "activate_skill", "payload": { "done": false, "activate_skill": true, "skill_id": "agent-browser", "reason": "optional short reason" } }
+For extra run history: { "kind": "read_run_state", "payload": { "done": false, "read_run_state": true, "action": "read_summary_window" | "read_step_full", "window": { "from": 1, "to": 10 }, "step": 3, "reason": "optional short reason" } }
+For completion: { "kind": "completion", "payload": { "done": true, "summary": "<user-facing text or internal note>", "status": "completed" | "failed", "response_kind": "reply" | "feedback" | "notification" | "none", "feedback_kind": "approval" | "confirmation" | "clarification", "feedback_label": "optional short label", "action_type": "optional short action", "entity_hints": ["optional", "keywords"] } }`;
 
-  return `You are directing an AI agent. Decide the next step.
+  const prompt = `You are directing an AI agent. Decide the next step.
 
 ${inputBlock}
 
-Goal Contract:
-${formatGoalContract(state.goal)}
-Approach: ${state.approach}
+${goalBlock}
 
 ${sessionContextSummaryBlock}
 
@@ -1014,9 +1046,7 @@ ${workModeBlock}
 
 ${attachmentsBlock}
 
-Consecutive failures: ${state.consecutiveFailures}
-Re-evaluation threshold: ${approachReevalThreshold} consecutive failed steps
-Iteration: ${state.iteration} / ${state.maxIterations}
+${failureBlock}
 
 ${toolCatalog}
 
@@ -1024,15 +1054,32 @@ ${externalSkillsBlock}
 
 ${activeExternalSkillsBlock}
 
-Instructions:
-${instructions ?? DEFAULT_DIRECT_INSTRUCTIONS}
+${instructionsBlock}
 
-Respond with a single JSON object (no markdown fences):
-${STRICT_JSON_RESPONSE_NOTE}
-For next step: { "kind": "step", "payload": { "done": false, "execution_contract": "...", "execution_plan": { "mode": "single" | "sequential" | "parallel" | "autonomous", "calls": [{ "id": "call_id", "tool": "shell", "input": { "cmd": "pwd" }, "origin": "builtin" | "external_tool", "source_refs": [], "retry_policy": "none", "depends_on": [], "purpose": "..." }], "allowed_tools": [], "max_calls": null }, "success_criteria": "...", "context": "..." } }
-For inline activation: { "kind": "activate_skill", "payload": { "done": false, "activate_skill": true, "skill_id": "agent-browser", "reason": "optional short reason" } }
-For extra run history: { "kind": "read_run_state", "payload": { "done": false, "read_run_state": true, "action": "read_summary_window" | "read_step_full", "window": { "from": 1, "to": 10 }, "step": 3, "reason": "optional short reason" } }
-For completion: { "kind": "completion", "payload": { "done": true, "summary": "<user-facing text or internal note>", "status": "completed" | "failed", "response_kind": "reply" | "feedback" | "notification" | "none", "feedback_kind": "approval" | "confirmation" | "clarification", "feedback_label": "optional short label", "action_type": "optional short action", "entity_hints": ["optional", "keywords"] } }`;
+${responseSchemaBlock}`;
+
+  return {
+    prompt,
+    sections: {
+      input: inputBlock,
+      goal: goalBlock,
+      sessionContextSummary: sessionContextSummaryBlock,
+      dependentTask: dependentTaskBlock,
+      taskProgress: taskProgressBlock,
+      controllerHistory: controllerHistoryBlock,
+      inlineDirectiveContext: inlineDirectiveContextBlock,
+      recentSuccessfulSummaries: recentSuccessfulSummariesBlock,
+      activeAttachments: activeAttachmentsBlock,
+      workMode: workModeBlock,
+      attachments: attachmentsBlock,
+      failureState: failureBlock,
+      toolCatalog,
+      externalSkills: externalSkillsBlock,
+      activeExternalSkills: activeExternalSkillsBlock,
+      instructions: instructionsBlock,
+      responseSchema: responseSchemaBlock,
+    },
+  };
 }
 
 function resolveDirectInvocationOptions(
@@ -1089,7 +1136,7 @@ function isControllerHistoryBundle(value: unknown): value is ControllerHistoryBu
     return false;
   }
   const record = value as Record<string, unknown>;
-  return "recentStepDigests" in record || "currentStepCount" in record || "latestCompletedStepFullText" in record;
+  return "recentStepDigests" in record || "currentStepCount" in record || "latestStepDigest" in record || "latestCompletedStepFullText" in record;
 }
 
 function isControllerPrompts(value: unknown): value is ControllerPrompts {
@@ -1122,17 +1169,23 @@ function buildFallbackControllerHistoryBundle(state: LoopState): ControllerHisto
 
   return {
     currentStepCount: state.completedSteps.length,
-    latestCompletedStepFullText: latestStep
-      ? [
-        `Step ${latestStep.step}`,
-        `Execution contract: ${getStepExecutionContract(latestStep) || "(none)"}`,
-        `Outcome: ${latestStep.outcome}`,
-        `Summary: ${latestStep.summary || "(none)"}`,
-        `Key facts: ${latestStep.newFacts.length > 0 ? latestStep.newFacts.join(" | ") : "(none)"}`,
-        `Evidence: ${(latestStep.evidenceItems ?? []).length > 0 ? (latestStep.evidenceItems ?? []).join(" | ") : "(none)"}`,
-        `Artifacts: ${latestStep.artifacts.length > 0 ? latestStep.artifacts.join(" | ") : "(none)"}`,
-      ].join("\n")
+    latestStepDigest: latestStep
+      ? {
+        step: latestStep.step,
+        executionContract: getStepExecutionContract(latestStep),
+        outcome: latestStep.outcome,
+        summary: latestStep.summary,
+        keyFacts: latestStep.newFacts.slice(0, 6),
+        evidence: (latestStep.evidenceItems ?? []).slice(0, 6),
+        artifacts: latestStep.artifacts.slice(0, 6),
+        blockedTargets: (latestStep.blockedTargets ?? []).slice(0, 4),
+        stoppedEarlyReason: latestStep.stoppedEarlyReason,
+        toolSuccessCount: latestStep.toolSuccessCount ?? 0,
+        toolFailureCount: latestStep.toolFailureCount ?? 0,
+      }
       : undefined,
+    latestStepFullAvailable: Boolean(latestStep),
+    latestStepFullStep: latestStep?.step,
     recentStepDigests,
   };
 }

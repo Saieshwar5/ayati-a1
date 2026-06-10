@@ -3,6 +3,7 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import type {
   StepSummary,
+  TaskProgressState,
   VerificationExecutionStatus,
   VerificationMethod,
   VerificationValidationStatus,
@@ -37,6 +38,7 @@ export interface StepRecord {
   validationStatus?: VerificationValidationStatus;
   evidenceSummary?: string;
   evidenceItems: string[];
+  taskProgress?: TaskProgressState;
   stoppedEarlyReason?: StepSummary["stoppedEarlyReason"];
   failureType?: StepSummary["failureType"];
   blockedTargets: string[];
@@ -62,6 +64,9 @@ export interface ControllerStepDigest {
 
 export interface ControllerHistoryBundle {
   currentStepCount: number;
+  latestStepDigest?: ControllerStepDigest;
+  latestStepFullAvailable: boolean;
+  latestStepFullStep?: number;
   latestCompletedStepFullText?: string;
   recentStepDigests: ControllerStepDigest[];
 }
@@ -104,14 +109,13 @@ export class RunStateManager {
   async buildControllerHistoryBundle(completedSteps: StepSummary[]): Promise<ControllerHistoryBundle> {
     await this.ready();
     const latestStep = completedSteps[completedSteps.length - 1];
-    const latestCompletedStepFullText = latestStep
-      ? await this.readFullStepText(latestStep.step)
-      : undefined;
     const recentSteps = completedSteps.slice(-5, -1).reverse().slice(0, 4);
 
     return {
       currentStepCount: completedSteps.length,
-      latestCompletedStepFullText,
+      latestStepDigest: latestStep ? this.toControllerStepDigest(latestStep) : undefined,
+      latestStepFullAvailable: Boolean(latestStep),
+      latestStepFullStep: latestStep?.step,
       recentStepDigests: recentSteps.map((step) => this.toControllerStepDigest(step)),
     };
   }

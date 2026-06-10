@@ -97,8 +97,12 @@ function normalizeLegacyLoopState(parsed: Partial<LoopState>): void {
   if (Array.isArray(parsed.completedSteps)) {
     parsed.completedSteps = parsed.completedSteps.map((step) => {
       const legacy = step as typeof step & { intent?: string };
+      const {
+        taskProgress: _taskProgress,
+        ...withoutProgress
+      } = step as typeof step & { taskProgress?: unknown };
       return {
-        ...step,
+        ...withoutProgress,
         executionContract: step.executionContract ?? legacy.intent ?? "",
       };
     });
@@ -316,7 +320,8 @@ function sanitizeStepSummary(step: LoopState["completedSteps"][number]): LoopSta
   const {
     stepRecord: _stepRecord,
     fullStepText: _fullStepText,
+    taskProgress: _taskProgress,
     ...persistedStep
-  } = step as LoopState["completedSteps"][number] & { stepRecord?: unknown; fullStepText?: unknown };
+  } = step as LoopState["completedSteps"][number] & { stepRecord?: unknown; fullStepText?: unknown; taskProgress?: unknown };
   return persistedStep;
 }

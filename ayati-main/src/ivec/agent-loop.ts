@@ -147,8 +147,25 @@ import { executeStep } from "./executor.js";
 import { runContextScout } from "./context-scout.js";
 import { RunStateManager } from "./run-state-manager.js";
 import { collectAgentArtifacts } from "./agent-artifacts.js";
-import { createRunMetrics, formatRunMetrics } from "./metrics.js";
+import {
+  createRunMetrics,
+  formatRunMetrics,
+  recordCompactionMetric,
+  recordOptimizationWarning,
+  recordPlanModeMetric,
+  recordReadRunStateMetric,
+  recordStateSizeMetric,
+  recordVerificationMetric,
+  writeOptimizationMetrics,
+} from "./metrics.js";
 import type { RunMetrics } from "./metrics.js";
+import {
+  buildLoopStateSizeBreakdown,
+  compactDependentTaskSummary,
+  compactStepSummaryForState,
+  compactTaskProgress,
+  measureJson,
+} from "./state-compaction.js";
 import type { ToolDefinition, ToolExecutionContext } from "../skills/types.js";
 import type { ExternalSkillCard } from "../skills/external/registry.js";
 import type { ActiveExternalSkillContext } from "../skills/external/broker.js";
@@ -218,10 +235,21 @@ export async function agentLoop(deps: AgentLoopDeps): Promise<AgentLoopResult> {
       );
     });
   };
+  const recordStateSnapshotMetric = (label: string): void => {
+    const sizes = buildLoopStateSizeBreakdown(state);
+    recordStateSizeMetric(metrics, label, sizes);
+    recordStateSizeWarnings(deps.clientId, metrics, label, sizes);
+  };
 
   const finalizeLoopResult = async (input: Parameters<typeof buildLoopResult>[1]): Promise<AgentLoopResult> => {
     queueStateSnapshot();
+    recordStateSnapshotMetric("final");
     await flushStateWrites(runPath);
+    await writeOptimizationMetrics(runPath, metrics).catch((error) => {
+      devWarn(
+        `[${deps.clientId}] failed to persist optimization metrics: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    });
     deps.externalSkillBroker?.deactivate({}, currentToolExecutionContext(state.iteration));
     devLog(`[${deps.clientId}] [metrics] ${formatRunMetrics(metrics)}`);
     return buildLoopResult(state, input);
@@ -254,6 +282,7 @@ export async function agentLoop(deps: AgentLoopDeps): Promise<AgentLoopResult> {
   }
 
   queueStateSnapshot();
+  recordStateSnapshotMetric("initial");
 
   const preparableDocuments = (state.attachedDocuments ?? []).filter((document) => document.kind !== "image");
   if (preparableDocuments.length > 0 && deps.documentStore && deps.preparedAttachmentRegistry) {
@@ -301,11 +330,21 @@ export async function agentLoop(deps: AgentLoopDeps): Promise<AgentLoopResult> {
   state.approach = understandResult.approach;
   state.sessionContextSummary = understandResult.session_context_summary.trim();
   state.dependentTask = understandResult.dependent_task;
-  state.dependentTaskSummary = understandResult.dependent_task
+  const rawDependentTaskSummary = understandResult.dependent_task
     ? resolveDependentTaskSummary(state.recentTaskSummaries, understandResult.dependent_task_slot)
     : null;
+  const rawDependentTaskSummaryChars = measureJson(rawDependentTaskSummary);
+  state.dependentTaskSummary = compactDependentTaskSummary(rawDependentTaskSummary);
+  recordCompactionMetric(
+    metrics,
+    "dependentTaskSummary",
+    rawDependentTaskSummaryChars,
+    measureJson(state.dependentTaskSummary),
+    { stage: "understand" },
+  );
   state.workMode = understandResult.work_mode;
   queueStateSnapshot();
+  recordStateSnapshotMetric("after_understand");
 
   // --- Main loop: direct stage ---
   let lastDirective: StepDirective | undefined;
@@ -466,10 +505,28 @@ export async function agentLoop(deps: AgentLoopDeps): Promise<AgentLoopResult> {
       recordActiveSessionAttachments(deps, runId, runPath, "restored");
     }
 
-    state.completedSteps.push(stepSummary);
+    recordPlanModeMetric(metrics, controllerOutput.execution_plan.mode, {
+      step: state.iteration,
+      tools: summarizeStepTools(controllerOutput),
+    });
+    recordVerificationMetric(metrics, stepSummary.verificationMethod, {
+      step: state.iteration,
+      executionStatus: stepSummary.executionStatus,
+      validationStatus: stepSummary.validationStatus,
+    });
+
     if (stepSummary.taskProgress) {
-      state.taskProgress = stepSummary.taskProgress;
+      const beforeChars = measureJson(stepSummary.taskProgress);
+      const compactedTaskProgress = compactTaskProgress(stepSummary.taskProgress);
+      const afterChars = measureJson(compactedTaskProgress);
+      recordCompactionMetric(metrics, "taskProgress", beforeChars, afterChars, { step: state.iteration });
+      state.taskProgress = compactedTaskProgress;
+      stepSummary.taskProgress = compactedTaskProgress;
+      stepRecord.taskProgress = compactedTaskProgress;
     }
+    const stateStepSummary = compactStepSummaryForState(stepSummary);
+    recordCompactionMetric(metrics, "completedStepSummary", measureJson(stepSummary), measureJson(stateStepSummary), { step: state.iteration });
+    state.completedSteps.push(stateStepSummary);
 
     await runStateManager.appendStepRecord(stepRecord, fullStepText);
 
@@ -519,6 +576,7 @@ export async function agentLoop(deps: AgentLoopDeps): Promise<AgentLoopResult> {
     }
 
     queueStateSnapshot();
+    recordStateSnapshotMetric("after_step");
     deps.onProgress?.(
       `Step ${state.iteration}: ${stepSummary.executionContract} → ${stepSummary.outcome}`,
       runPath,
@@ -571,6 +629,38 @@ function validateLoopConfig(config: LoopConfig): void {
     throw new Error(
       "Invalid loop config: approachReevalThreshold must be less than maxConsecutiveFailures.",
     );
+  }
+}
+
+const STATE_SIZE_WARNING_LIMITS: Record<string, number> = {
+  stateJson: 120_000,
+  completedSteps: 70_000,
+  completedStepsTaskProgress: 1,
+  taskProgress: 5_000,
+  dependentTaskSummary: 5_000,
+};
+
+function recordStateSizeWarnings(
+  clientId: string,
+  metrics: RunMetrics,
+  label: string,
+  sizes: Record<string, number>,
+): void {
+  for (const [key, limit] of Object.entries(STATE_SIZE_WARNING_LIMITS)) {
+    const value = sizes[key] ?? 0;
+    if (value <= limit) {
+      continue;
+    }
+    const message = `${key} size ${value} exceeded budget ${limit} at ${label}`;
+    recordOptimizationWarning(metrics, "state_size_budget", message, {
+      label,
+      key,
+      value,
+      limit,
+    });
+    if (key !== "completedStepsTaskProgress") {
+      devWarn(`[${clientId}] [state-size] ${message}`);
+    }
   }
 }
 
@@ -770,6 +860,10 @@ async function resolveControllerDirective(
       seenReadRunStateRequests.add(requestKey);
 
       const retrievedContext = await buildReadRunStateContext(runStateManager, resolution);
+      recordReadRunStateMetric(metrics, "direct", resolution.action, {
+        request: requestKey,
+        chars: retrievedContext.length,
+      });
       prepContext.push(retrievedContext);
       devLog(
         `[${deps.clientId}] [controller] direct prep appended read_run_state request=${requestKey} chars=${retrievedContext.length}`,
@@ -886,6 +980,10 @@ async function resolveReEvalDirective(
       seenReadRunStateRequests.add(requestKey);
 
       const retrievedContext = await buildReadRunStateContext(runStateManager, resolution);
+      recordReadRunStateMetric(metrics, "reeval", resolution.action, {
+        request: requestKey,
+        chars: retrievedContext.length,
+      });
       prepContext.push(retrievedContext);
       devLog(
         `[${deps.clientId}] [controller] reeval prep appended read_run_state request=${requestKey} chars=${retrievedContext.length}`,

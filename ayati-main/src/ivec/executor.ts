@@ -110,6 +110,7 @@ export async function executeStep(
       validationStatus: verifyOut.validationStatus,
       evidenceSummary: verifyOut.evidenceSummary,
       evidenceItems: verifyOut.evidenceItems,
+      taskProgress: verifyOut.taskProgress,
       stoppedEarlyReason: actOut.stoppedEarlyReason,
       failureType: classification.failureType,
       blockedTargets: classification.blockedTargets ?? [],

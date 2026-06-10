@@ -106,6 +106,18 @@ export function createControllerStateToolRuntime(
 
 export function formatControllerHistoryBundle(bundle: ControllerHistoryBundle): string {
   const recentStepDigests = bundle.recentStepDigests ?? [];
+  const latestStep = bundle.latestStepDigest;
+  const latestStepBlock = latestStep
+    ? [
+      `  - Step ${latestStep.step}: ${latestStep.executionContract || "(no contract)"} [${latestStep.outcome}]`,
+      `    summary=${truncate(latestStep.summary, 260)}`,
+      `    keyFacts=${formatList(latestStep.keyFacts)}`,
+      `    evidence=${formatList(latestStep.evidence)}`,
+      `    artifacts=${formatList(latestStep.artifacts)}`,
+      `    blockedTargets=${formatList(latestStep.blockedTargets)}`,
+      `    toolCounts=success:${latestStep.toolSuccessCount}, failed:${latestStep.toolFailureCount}${latestStep.stoppedEarlyReason ? `, stop:${latestStep.stoppedEarlyReason}` : ""}`,
+    ].join("\n")
+    : "  - none yet";
   const recentDigests = recentStepDigests.length > 0
     ? recentStepDigests.map((step) => [
       `  - Step ${step.step}: ${step.executionContract || "(no contract)"} [${step.outcome}]`,
@@ -122,10 +134,20 @@ export function formatControllerHistoryBundle(bundle: ControllerHistoryBundle): 
     "Automatic run state context:",
     `Current Step Count: ${bundle.currentStepCount ?? 0}`,
     "",
+    "Latest completed step digest:",
+    latestStepBlock,
+    "",
     "Latest completed step full text:",
-    bundle.latestCompletedStepFullText?.trim().length
-      ? bundle.latestCompletedStepFullText
+    bundle.latestStepFullAvailable && typeof bundle.latestStepFullStep === "number"
+      ? `available via read_run_state action=read_step_full step=${bundle.latestStepFullStep}; request it only when exact act/verify/raw output is needed.`
       : "(none yet)",
+    ...(bundle.latestCompletedStepFullText?.trim().length
+      ? [
+        "",
+        "Legacy inline latest completed step full text:",
+        bundle.latestCompletedStepFullText,
+      ]
+      : []),
     "",
     "Previous 3-4 completed step digests:",
     recentDigests,
