@@ -639,16 +639,14 @@ export async function callDirect(
     externalSkillCards,
     activeExternalSkills,
     resolved.controllerHistoryBundle,
-    resolveStageInstructions(
-      state,
-      resolved.controllerPrompts?.direct,
-      DEFAULT_DIRECT_INSTRUCTIONS,
-      resolved.controllerPrompts?.systemEvent,
-    ),
+    resolved.controllerPrompts?.direct,
+    state.inputKind === "system_event"
+      ? resolveInstructions(resolved.controllerPrompts?.systemEvent, DEFAULT_SYSTEM_EVENT_OVERLAY)
+      : undefined,
     approachReevalThreshold,
     inlineDirectiveContext,
   );
-  recordPromptMetric(metrics, "direct", {
+  recordPromptMetric(metrics, `direct:${promptResult.profile}`, {
     systemContext: resolved.systemContext,
     ...promptResult.sections,
   });
@@ -977,8 +975,117 @@ For new approach: { "kind": "reeval", "payload": { "done": false, "reeval": true
 For extra run history: { "kind": "read_run_state", "payload": { "done": false, "read_run_state": true, "action": "read_summary_window" | "read_step_full", "window": { "from": 1, "to": 10 }, "step": 3, "reason": "optional short reason" } }`;
 }
 
+type DirectPromptProfile =
+  | "first_step"
+  | "continue_after_success"
+  | "continue_after_failure"
+  | "completion_candidate";
+
+interface DirectPromptProfileConfig {
+  title: string;
+  focus: string;
+  includeHistoryBlock: boolean;
+  includeRecentSuccessfulSummaries: boolean;
+  includeFailureDetails: boolean;
+  instructions: string;
+}
+
+const DIRECT_COMMON_INSTRUCTIONS = `- Choose exactly 1 next move inside the current Goal Contract and current approach.
+- Do not redo understand, change the goal contract, or replace the approach from direct.
+- Use compact task progress, latest step digest, attachments/work mode, and available tools as the main decision inputs.
+- Use the automatic run-state bundle as your first source of recent task context.
+- Return read_run_state only when exact active-run history is needed beyond the digest. Read a summary window first unless one exact step is clearly needed.
+- If the next action depends on older active-run history that is not covered by the inline bundle, return read_run_state.
+- First use read_summary_window on an explicit 10-step range.
+- Use read_step_full only when one specific step becomes important.
+- read_run_state is only for the active run; use memory/file/tools for older sessions, project files, documents, or external skill context.
+- If you need an external capability that is shown in Available external skills but its tools are not yet listed in Available tools, return activate_skill with the exact skill_id.
+- Prefer current prepared attachments over older session attachments. If no current prepared attachment exists and an active session attachment strongly matches the follow-up, plan restore_attachment_context.
+- Use work_mode as a routing hint: structured data uses dataset tools, document lookup uses document_query, document processing uses document section/read tools.
+- For low-risk public facts, current information, or other requests that are easy to verify, prefer checking with tools/search instead of asking the user to restate or reconfirm.
+- If the next step would be expensive, time-consuming, risky, or hard to undo, and key requirements are still unclear, prefer feedback before executing.
+- If the task asks for machine-wide file/path discovery, discover valid roots first instead of guessing paths.
+- Prefer scratch/generated/ad-hoc work under work_space/ unless the user explicitly names another path.
+- Prefer concrete execution_plan modes: single, sequential, or parallel. Use autonomous only when exact tool inputs cannot be known yet or substantial generated content must be created through tool calling.
+- Keep autonomous contracts to one phase: inspect OR generate/write OR display/verify.
+- Concrete plans must use exact small inputs only. Do not put generated documents, Markdown lessons, HTML, CSS, JS, source files, heredocs, or long file contents inside execution_plan.calls[].input.
+- For related generated files such as view.html + script.js + style.css, prefer write_files over multiple write_file calls so the batch is serialized and verified as one filesystem mutation.
+- Use parallel only when calls have no ordering, path, state, or data dependency. Use sequential when later calls depend on earlier filesystem, UI, or external state.
+- Execution limits: single exactly 1 call; sequential/parallel max 6 calls; autonomous max_calls 1..6 with non-empty allowed_tools.
+- Use origin "builtin" for built-in tool calls and "external_tool" for external tools.
+- If action still needs tools, do not return completion text that promises future work; return a step instead.
+- Completion summary is user-visible for response_kind "reply", "feedback", or "notification". Write it as a finished answer, targeted feedback request, or grounded failure explanation.
+- Keep controller JSON compact.`;
+
+const DIRECT_RESPONSE_INSTRUCTIONS = `- Pick exactly 1 outcome:
+  - completion when the goal is satisfied, impossible, blocked, or needs user feedback before more action
+  - feedback via completion when approval, confirmation, decision, or clarification is required
+  - read_run_state when exact older active-run context is required
+  - activate_skill when an external skill must be mounted before execution
+  - step for the next execution contract`;
+
+const DIRECT_PROFILE_CONFIGS: Record<DirectPromptProfile, DirectPromptProfileConfig> = {
+  first_step: {
+    title: "first_step",
+    focus: "Choose the first concrete execution step for this task.",
+    includeHistoryBlock: false,
+    includeRecentSuccessfulSummaries: false,
+    includeFailureDetails: false,
+    instructions: `- Convert the goal and approach into the smallest useful first execution step.
+- There are no prior active-run steps; do not request read_run_state for active-run history unless retrieved inline context is already present.
+- If the task needs files, documents, workspace state, external data, or current facts, plan an inspection/verification step first.
+- Prefer concrete single/sequential/parallel plans over autonomous.
+- Use autonomous only when the first step genuinely requires exploratory tool choice or substantial generated content through tool calling.
+- If required inputs are missing and cannot be safely inferred or verified, return completion with response_kind "feedback".
+- Do not return completion merely because you have a plan; execute when action is still required.`,
+  },
+  continue_after_success: {
+    title: "continue_after_success",
+    focus: "Continue from the latest successful step without repeating completed work.",
+    includeHistoryBlock: true,
+    includeRecentSuccessfulSummaries: true,
+    includeFailureDetails: false,
+    instructions: `- Treat taskProgress.openWork and currentFocus as the main guide.
+- Use latestStepDigest as the source of what just changed.
+- Do not repeat the latest successful step or rewrite the same artifacts unless task progress says a concrete issue remains.
+- If the task is now complete, return completion.
+- If one concrete missing item remains, plan the smallest deterministic step.
+- If exact prior output is needed, return read_run_state instead of guessing.
+- Prefer concrete plans. Use autonomous only when the next tool inputs cannot be determined from current state.`,
+  },
+  continue_after_failure: {
+    title: "continue_after_failure",
+    focus: "Recover from the latest failed step without repeating the same failed action.",
+    includeHistoryBlock: true,
+    includeRecentSuccessfulSummaries: false,
+    includeFailureDetails: true,
+    instructions: `- Inspect latestStepDigest, blockedTargets, failureType, stoppedEarlyReason, and consecutive failure count before planning.
+- Do not repeat the same failed action, same blocked target, or same tool input unless the failure evidence says it is now safe.
+- If exact tool output or verification details are needed, return read_run_state with read_step_full for the failed step.
+- If a small deterministic recovery is clear, plan it.
+- If the current approach is no longer viable, choose a bounded evidence-gathering step or let the loop reach re-eval after the configured failure threshold.
+- Prefer concrete recovery plans. Use autonomous only when recovery genuinely requires exploratory tool use.
+- Do not return completion unless the failure is irrelevant and the goal is already satisfied.`,
+  },
+  completion_candidate: {
+    title: "completion_candidate",
+    focus: "Decide whether the task is complete or needs one narrow final verification/fix.",
+    includeHistoryBlock: true,
+    includeRecentSuccessfulSummaries: false,
+    includeFailureDetails: false,
+    instructions: `- Prefer completion when taskProgress.status is "done" and required evidence is present.
+- If status is "likely_done", verify against goal.done_when and goal.required_evidence.
+- Do not plan broad continuation work.
+- Do not repeat successful work.
+- If exactly one evidence item is missing, plan one narrow verification step.
+- If exact prior evidence is needed, return read_run_state for the relevant step.
+- If blockers or userInputNeeded are present, do not mark completed; return feedback or one narrow step as appropriate.`,
+  },
+};
+
 interface PromptBuildResult {
   prompt: string;
+  profile: DirectPromptProfile;
   sections: Record<string, string>;
 }
 
@@ -988,33 +1095,37 @@ function buildDirectPromptResult(
   externalSkillCards: ExternalSkillCard[] | undefined,
   activeExternalSkills: ActiveExternalSkillContext[] | undefined,
   controllerHistoryBundle?: ControllerHistoryBundle,
-  instructions?: string,
+  configuredDirectInstructions?: string,
+  systemEventOverlay?: string,
   approachReevalThreshold = 3,
   inlineDirectiveContext?: string,
 ): PromptBuildResult {
+  const profile = selectDirectPromptProfile(state);
+  const profileConfig = DIRECT_PROFILE_CONFIGS[profile];
   const promptState = buildControllerPromptState(state, controllerHistoryBundle);
   const sessionContextSummaryBlock = formatSessionContextSummary(state);
   const dependentTaskBlock = formatDependentTaskSummary(promptState.dependentTaskSummary);
   const taskProgressBlock = formatDirectTaskProgress(promptState.taskProgress);
-  const recentSuccessfulSummariesBlock = formatRecentSuccessfulSummaries(state);
+  const recentSuccessfulSummariesBlock = profileConfig.includeRecentSuccessfulSummaries
+    ? formatRecentSuccessfulSummaries(state)
+    : "";
   const toolCatalog = buildToolCatalog(toolDefinitions);
   const externalSkillsBlock = formatExternalSkillCards(externalSkillCards);
   const activeExternalSkillsBlock = formatActiveExternalSkills(activeExternalSkills);
   const activeAttachmentsBlock = shouldShowActiveSessionAttachments(state) ? formatActiveSessionAttachments(state) : "";
   const attachmentsBlock = formatAttachedDocuments(state);
   const workModeBlock = formatWorkMode(state);
-  const controllerHistoryBlock = promptState.controllerHistoryBundle
-    ? formatControllerHistoryBundle(promptState.controllerHistoryBundle)
-    : "Automatic run state context unavailable.";
+  const controllerHistoryBlock = buildDirectControllerHistoryBlock(profileConfig, promptState.controllerHistoryBundle);
   const inputBlock = buildInputBlock(state);
   const inlineDirectiveContextBlock = formatInlineDirectiveContext(inlineDirectiveContext);
+  const profileBlock = formatDirectProfileBlock(profileConfig);
   const goalBlock = `Goal Contract:\n${formatGoalContract(state.goal)}\nApproach: ${state.approach}`;
-  const failureBlock = [
-    `Consecutive failures: ${state.consecutiveFailures}`,
-    `Re-evaluation threshold: ${approachReevalThreshold} consecutive failed steps`,
-    `Iteration: ${state.iteration} / ${state.maxIterations}`,
-  ].join("\n");
-  const instructionsBlock = `Instructions:\n${instructions ?? DEFAULT_DIRECT_INSTRUCTIONS}`;
+  const failureBlock = formatDirectFailureStateBlock(state, profileConfig, approachReevalThreshold);
+  const instructionsBlock = buildDirectInstructionsBlock(
+    profileConfig,
+    configuredDirectInstructions,
+    systemEventOverlay,
+  );
   const responseSchemaBlock = `Respond with a single JSON object (no markdown fences):
 ${STRICT_JSON_RESPONSE_NOTE}
 For next step: { "kind": "step", "payload": { "done": false, "execution_contract": "...", "execution_plan": { "mode": "single" | "sequential" | "parallel" | "autonomous", "calls": [{ "id": "call_id", "tool": "shell", "input": { "cmd": "pwd" }, "origin": "builtin" | "external_tool", "source_refs": [], "retry_policy": "none", "depends_on": [], "purpose": "..." }], "allowed_tools": [], "max_calls": null }, "success_criteria": "...", "context": "..." } }
@@ -1023,6 +1134,8 @@ For extra run history: { "kind": "read_run_state", "payload": { "done": false, "
 For completion: { "kind": "completion", "payload": { "done": true, "summary": "<user-facing text or internal note>", "status": "completed" | "failed", "response_kind": "reply" | "feedback" | "notification" | "none", "feedback_kind": "approval" | "confirmation" | "clarification", "feedback_label": "optional short label", "action_type": "optional short action", "entity_hints": ["optional", "keywords"] } }`;
 
   const prompt = `You are directing an AI agent. Decide the next step.
+
+${profileBlock}
 
 ${inputBlock}
 
@@ -1060,7 +1173,9 @@ ${responseSchemaBlock}`;
 
   return {
     prompt,
+    profile,
     sections: {
+      profile: profileBlock,
       input: inputBlock,
       goal: goalBlock,
       sessionContextSummary: sessionContextSummaryBlock,
@@ -1080,6 +1195,91 @@ ${responseSchemaBlock}`;
       responseSchema: responseSchemaBlock,
     },
   };
+}
+
+function selectDirectPromptProfile(state: LoopState): DirectPromptProfile {
+  const latestStep = state.completedSteps[state.completedSteps.length - 1];
+  if (!latestStep) {
+    return "first_step";
+  }
+  if (latestStep.outcome !== "success") {
+    return "continue_after_failure";
+  }
+  if (
+    state.taskProgress.status === "done"
+    || state.taskProgress.status === "likely_done"
+    || state.taskProgress.status === "blocked"
+    || state.taskProgress.status === "needs_user_input"
+  ) {
+    return "completion_candidate";
+  }
+  return "continue_after_success";
+}
+
+function formatDirectProfileBlock(profile: DirectPromptProfileConfig): string {
+  return [
+    `Direct profile: ${profile.title}`,
+    `Decision focus: ${profile.focus}`,
+  ].join("\n");
+}
+
+function buildDirectControllerHistoryBlock(
+  profile: DirectPromptProfileConfig,
+  controllerHistoryBundle: ControllerHistoryBundle | undefined,
+): string {
+  if (!profile.includeHistoryBlock) {
+    return [
+      "Automatic run state context:",
+      "Current Step Count: 0",
+      "",
+      "Latest completed step full text:",
+      "(none yet)",
+      "",
+      "Previous 3-4 completed step digests:",
+      "  - none",
+    ].join("\n");
+  }
+  return controllerHistoryBundle
+    ? formatControllerHistoryBundle(controllerHistoryBundle)
+    : "Automatic run state context unavailable.";
+}
+
+function formatDirectFailureStateBlock(
+  state: LoopState,
+  profile: DirectPromptProfileConfig,
+  approachReevalThreshold: number,
+): string {
+  const lines = [
+    "Failure and iteration state:",
+    `- Consecutive failures: ${state.consecutiveFailures}`,
+    `- Re-evaluation threshold: ${approachReevalThreshold} consecutive failed steps`,
+    `- Iteration: ${state.iteration} / ${state.maxIterations}`,
+  ];
+  if (profile.includeFailureDetails) {
+    lines.push("", "Recent consecutive failed steps (latest serial window, max 3):");
+    lines.push(formatRecentConsecutiveFailures(state.completedSteps));
+  }
+  return lines.join("\n");
+}
+
+function buildDirectInstructionsBlock(
+  profile: DirectPromptProfileConfig,
+  configuredDirectInstructions: string | undefined,
+  systemEventOverlay: string | undefined,
+): string {
+  const configured = configuredDirectInstructions?.trim();
+  const eventOverlay = systemEventOverlay?.trim();
+  return [
+    "Instructions:",
+    DIRECT_COMMON_INSTRUCTIONS,
+    "",
+    DIRECT_RESPONSE_INSTRUCTIONS,
+    "",
+    `Profile-specific instructions for ${profile.title}:`,
+    profile.instructions,
+    ...(eventOverlay ? ["", "System/event instructions:", eventOverlay] : []),
+    ...(configured ? ["", "Configured direct instructions:", configured] : []),
+  ].join("\n");
 }
 
 function resolveDirectInvocationOptions(
