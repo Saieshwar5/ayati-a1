@@ -106,10 +106,18 @@ function concretePlan(
 function createDirective(overrides?: Partial<StepDirective>): StepDirective {
   return {
     done: false,
+    contract_version: 2,
     execution_contract: "run a shell command",
     execution_plan: autonomousPlan(["shell"], 4),
     success_criteria: "command output returned",
     context: "",
+    verification: {
+      policy: "llm",
+      rationale: "Test fixture requires semantic validation.",
+      expected_artifacts: [],
+      expected_state_change: "The step result is available for validation.",
+      requires_full_step_context: false,
+    },
     ...overrides,
   };
 }
@@ -537,7 +545,16 @@ describe("executeStep", () => {
 
       const summary = await executeStep(
         deps,
-        createDirective({ execution_plan: autonomousPlan(["read_file"], 4) }),
+        createDirective({
+          execution_plan: autonomousPlan(["read_file"], 4),
+          verification: {
+            policy: "script",
+            rationale: "read_file success with the requested package.json path is enough for this local executor assertion.",
+            expected_artifacts: ["package.json"],
+            expected_state_change: "package.json is read successfully.",
+            requires_full_step_context: false,
+          },
+        }),
         1,
         runPath,
       );
@@ -614,7 +631,17 @@ describe("executeStep", () => {
 
       const summary = await executeStep(
         deps,
-        createDirective({ execution_plan: autonomousPlan(["read_file"], 4), success_criteria: "read package.json" }),
+        createDirective({
+          execution_plan: autonomousPlan(["read_file"], 4),
+          success_criteria: "read package.json",
+          verification: {
+            policy: "script",
+            rationale: "read_file success with a matching path is enough for this local executor assertion.",
+            expected_artifacts: ["package.json"],
+            expected_state_change: "package.json is read successfully.",
+            requires_full_step_context: false,
+          },
+        }),
         1,
         runPath,
       );
@@ -681,6 +708,13 @@ describe("executeStep", () => {
         createDirective({
           execution_plan: autonomousPlan(["read_file"], 2),
           success_criteria: "read both files",
+          verification: {
+            policy: "script",
+            rationale: "read_file success with both expected paths is enough for this local executor assertion.",
+            expected_artifacts: ["a.md", "b.md"],
+            expected_state_change: "Both files are read successfully.",
+            requires_full_step_context: false,
+          },
         }),
         1,
         runPath,

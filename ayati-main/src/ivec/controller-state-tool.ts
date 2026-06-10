@@ -116,6 +116,7 @@ export function formatControllerHistoryBundle(bundle: ControllerHistoryBundle): 
       `    artifacts=${formatList(latestStep.artifacts)}`,
       `    blockedTargets=${formatList(latestStep.blockedTargets)}`,
       `    toolCounts=success:${latestStep.toolSuccessCount}, failed:${latestStep.toolFailureCount}${latestStep.stoppedEarlyReason ? `, stop:${latestStep.stoppedEarlyReason}` : ""}`,
+      `    verification=${latestStep.verificationPolicy ?? "(unknown)"} expectation=${latestStep.expectationCheckStatus ?? "(unknown)"}`,
     ].join("\n")
     : "  - none yet";
   const recentDigests = recentStepDigests.length > 0
@@ -127,6 +128,7 @@ export function formatControllerHistoryBundle(bundle: ControllerHistoryBundle): 
       `    artifacts=${formatList(step.artifacts)}`,
       `    blockedTargets=${formatList(step.blockedTargets)}`,
       `    toolCounts=success:${step.toolSuccessCount}, failed:${step.toolFailureCount}${step.stoppedEarlyReason ? `, stop:${step.stoppedEarlyReason}` : ""}`,
+      `    verification=${step.verificationPolicy ?? "(unknown)"} expectation=${step.expectationCheckStatus ?? "(unknown)"}`,
     ].join("\n")).join("\n")
     : "  - none";
 

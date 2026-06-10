@@ -14,6 +14,7 @@ import type {
   PreparedAttachmentStateUpdate,
   ExecutionPlanCall,
   VerificationExecutionStatus,
+  StepExpectationCheckStatus,
 } from "./types.js";
 import {
   writeStepMarkdown,
@@ -31,7 +32,7 @@ import {
 } from "./verification-gates.js";
 import { formatToolResult, formatValidationError } from "./tool-helpers.js";
 import type { ManagedDocumentManifest, PreparedAttachmentSummary } from "../documents/types.js";
-import { recordRunMetric } from "./metrics.js";
+import { recordOptimizationEvent, recordRunMetric } from "./metrics.js";
 import type { ToolResult } from "../skills/types.js";
 
 export async function executeStep(
@@ -49,7 +50,7 @@ export async function executeStep(
 
   let verifyOut: VerifyOutput;
   try {
-    verifyOut = await verify(deps, actOut, directive.success_criteria, runPath);
+    verifyOut = await verify(deps, directive, actOut, stepNumber, runPath);
   } finally {
     await actMarkdownWrite;
   }
@@ -84,6 +85,14 @@ export async function executeStep(
     toolsUsed,
     toolSuccessCount,
     toolFailureCount,
+    contractVersion: directive.contract_version,
+    verificationPolicy: directive.verification.policy,
+    verificationRationale: directive.verification.rationale,
+    expectedArtifacts: directive.verification.expected_artifacts,
+    expectedStateChange: directive.verification.expected_state_change,
+    requiresFullStepContext: directive.verification.requires_full_step_context,
+    expectationCheckStatus: verifyOut.expectationCheckStatus,
+    expectationCheckSummary: verifyOut.expectationCheckSummary,
     verificationMethod: verifyOut.method,
     executionStatus: verifyOut.executionStatus,
     validationStatus: verifyOut.validationStatus,
@@ -105,6 +114,14 @@ export async function executeStep(
       artifacts,
       toolSuccessCount,
       toolFailureCount,
+      contractVersion: directive.contract_version,
+      verificationPolicy: directive.verification.policy,
+      verificationRationale: directive.verification.rationale,
+      expectedArtifacts: directive.verification.expected_artifacts,
+      expectedStateChange: directive.verification.expected_state_change,
+      requiresFullStepContext: directive.verification.requires_full_step_context,
+      expectationCheckStatus: verifyOut.expectationCheckStatus,
+      expectationCheckSummary: verifyOut.expectationCheckSummary,
       verificationMethod: verifyOut.method,
       executionStatus: verifyOut.executionStatus,
       validationStatus: verifyOut.validationStatus,
@@ -521,30 +538,288 @@ function isSameOrAncestor(ancestor: string, child: string): boolean {
 
 async function verify(
   deps: ExecutorDeps,
+  directive: StepDirective,
   actOut: ActOutput,
-  successCriteria: string,
+  stepNumber: number,
   runPath: string,
 ): Promise<VerifyOutput> {
   const executionStatus = deriveExecutionStatus(actOut);
   const gateResult = checkVerificationGates(actOut);
   if (gateResult) {
+    recordVerificationContractMetric(deps, directive, stepNumber, "skipped", "Execution failed before contract expectations could be checked.");
     recordRunMetric(deps.metrics, "local_failure_progress", { kind: "local" });
     return {
       ...gateResult,
+      expectationCheckStatus: "skipped",
+      expectationCheckSummary: "Execution failed before contract expectations could be checked.",
       taskProgress: buildLocalFailureTaskProgress(deps, actOut, gateResult),
     };
   }
 
-  const deterministicResult = checkDeterministicSuccessGate(actOut, successCriteria);
-  if (deterministicResult) {
-    recordRunMetric(deps.metrics, "deterministic_verify", { kind: "local" });
+  const verification = directive.verification;
+  if (verification.policy === "llm") {
+    recordVerificationContractMetric(deps, directive, stepNumber, "skipped", "LLM verification policy selected.");
+    const llmResult = await verifyStepAndProgressWithLlm(deps, actOut, directive.success_criteria, executionStatus, runPath);
     return {
-      ...deterministicResult,
-      taskProgress: buildLocalTaskProgress(deps, deterministicResult),
+      ...llmResult,
+      expectationCheckStatus: "skipped",
+      expectationCheckSummary: "LLM verification policy selected.",
     };
   }
 
-  return await verifyStepAndProgressWithLlm(deps, actOut, successCriteria, executionStatus, runPath);
+  const contractCheck = checkStepVerificationContract(directive, actOut, executionStatus);
+  recordVerificationContractMetric(deps, directive, stepNumber, contractCheck.status, contractCheck.summary);
+  if (contractCheck.status !== "passed") {
+    recordRunMetric(deps.metrics, "contract_verify", { kind: "local", status: "failed" });
+    const failedResult = buildContractVerificationFailure(directive, actOut, executionStatus, contractCheck);
+    return {
+      ...failedResult,
+      taskProgress: buildLocalFailureTaskProgress(deps, actOut, failedResult),
+    };
+  }
+
+  if (verification.policy === "hybrid") {
+    const llmResult = await verifyStepAndProgressWithLlm(deps, actOut, directive.success_criteria, executionStatus, runPath);
+    return {
+      ...llmResult,
+      expectationCheckStatus: contractCheck.status,
+      expectationCheckSummary: contractCheck.summary,
+      evidenceSummary: [contractCheck.summary, llmResult.evidenceSummary].filter((item) => item.trim().length > 0).join(" "),
+      evidenceItems: [...contractCheck.evidenceItems, ...llmResult.evidenceItems],
+      newFacts: [...contractCheck.evidenceItems, ...llmResult.newFacts],
+    };
+  }
+
+  recordRunMetric(deps.metrics, "contract_verify", { kind: "local", status: "success" });
+  const localResult = buildContractVerificationSuccess(directive, actOut, executionStatus, contractCheck);
+  return {
+    ...localResult,
+    taskProgress: buildLocalTaskProgress(deps, localResult),
+  };
+}
+
+interface StepContractCheckResult {
+  status: StepExpectationCheckStatus;
+  summary: string;
+  evidenceItems: string[];
+}
+
+function checkStepVerificationContract(
+  directive: StepDirective,
+  actOut: ActOutput,
+  executionStatus: VerificationExecutionStatus,
+): StepContractCheckResult {
+  if (executionStatus !== "all_succeeded") {
+    return {
+      status: "failed",
+      summary: `Verification contract failed: execution status is ${executionStatus}.`,
+      evidenceItems: [`executionStatus=${executionStatus}`],
+    };
+  }
+
+  const unsupportedTools = actOut.toolCalls
+    .map((call) => call.tool)
+    .filter((tool) => !isDeterministicSuccessTool(tool));
+  if (unsupportedTools.length > 0) {
+    return {
+      status: "invalid",
+      summary: `Verification contract invalid: policy ${directive.verification.policy} cannot be checked locally for non-deterministic tool(s): ${uniqueStrings(unsupportedTools).join(", ")}.`,
+      evidenceItems: [`nonDeterministicTools=${uniqueStrings(unsupportedTools).join(", ")}`],
+    };
+  }
+
+  const deterministicResult = checkDeterministicSuccessGate(actOut, directive.success_criteria);
+  if (!deterministicResult) {
+    return {
+      status: "invalid",
+      summary: `Verification contract invalid: deterministic success gates could not prove the step for policy ${directive.verification.policy}.`,
+      evidenceItems: ["deterministicSuccessGate=not_satisfied"],
+    };
+  }
+
+  const artifactResult = checkExpectedArtifacts(directive.verification.expected_artifacts, actOut);
+  if (!artifactResult.passed) {
+    return {
+      status: "failed",
+      summary: `Verification contract failed: missing expected artifact evidence for ${artifactResult.missing.join(", ")}.`,
+      evidenceItems: [
+        ...deterministicResult.evidenceItems,
+        `expectedArtifactsMissing=${artifactResult.missing.join(", ")}`,
+      ],
+    };
+  }
+
+  const artifactEvidence = directive.verification.expected_artifacts.length > 0
+    ? ` Expected artifacts matched: ${directive.verification.expected_artifacts.join(", ")}.`
+    : "";
+  return {
+    status: "passed",
+    summary: `Verification contract passed for policy ${directive.verification.policy}.${artifactEvidence} Expected state change: ${directive.verification.expected_state_change}`,
+    evidenceItems: [
+      ...deterministicResult.evidenceItems,
+      ...directive.verification.expected_artifacts.map((artifact) => `expected artifact matched: ${artifact}`),
+    ],
+  };
+}
+
+function buildContractVerificationSuccess(
+  directive: StepDirective,
+  actOut: ActOutput,
+  executionStatus: VerificationExecutionStatus,
+  contractCheck: StepContractCheckResult,
+): VerifyOutput {
+  const usedRawArtifacts = actOut.toolCalls
+    .map((call) => call.rawOutputPath)
+    .filter((path): path is string => typeof path === "string" && path.trim().length > 0);
+  return {
+    passed: true,
+    method: directive.verification.policy === "script" ? "script" : "execution_gate",
+    executionStatus,
+    validationStatus: "passed",
+    summary: contractCheck.summary,
+    evidenceSummary: contractCheck.evidenceItems.join("; "),
+    evidenceItems: contractCheck.evidenceItems,
+    newFacts: contractCheck.evidenceItems,
+    artifacts: [...new Set([...usedRawArtifacts, ...directive.verification.expected_artifacts])],
+    usedRawArtifacts,
+    expectationCheckStatus: contractCheck.status,
+    expectationCheckSummary: contractCheck.summary,
+  };
+}
+
+function buildContractVerificationFailure(
+  directive: StepDirective,
+  actOut: ActOutput,
+  executionStatus: VerificationExecutionStatus,
+  contractCheck: StepContractCheckResult,
+): VerifyOutput {
+  const usedRawArtifacts = actOut.toolCalls
+    .map((call) => call.rawOutputPath)
+    .filter((path): path is string => typeof path === "string" && path.trim().length > 0);
+  return {
+    passed: false,
+    method: directive.verification.policy === "script" ? "script" : "execution_gate",
+    executionStatus,
+    validationStatus: "failed",
+    summary: contractCheck.summary,
+    evidenceSummary: contractCheck.summary,
+    evidenceItems: contractCheck.evidenceItems,
+    newFacts: [],
+    artifacts: [...new Set([...usedRawArtifacts, ...directive.verification.expected_artifacts])],
+    usedRawArtifacts,
+    expectationCheckStatus: contractCheck.status,
+    expectationCheckSummary: contractCheck.summary,
+  };
+}
+
+function recordVerificationContractMetric(
+  deps: ExecutorDeps,
+  directive: StepDirective,
+  stepNumber: number,
+  expectationCheckStatus: StepExpectationCheckStatus,
+  expectationCheckSummary: string,
+): void {
+  recordOptimizationEvent(deps.metrics, "verification_contract", {
+    step: stepNumber,
+    policy: directive.verification.policy,
+    expectedArtifacts: directive.verification.expected_artifacts,
+    requiresFullStepContext: directive.verification.requires_full_step_context,
+    expectationCheckStatus,
+    expectationCheckSummary,
+  });
+}
+
+function checkExpectedArtifacts(expectedArtifacts: string[], actOut: ActOutput): { passed: boolean; missing: string[] } {
+  if (expectedArtifacts.length === 0) {
+    return { passed: true, missing: [] };
+  }
+
+  const evidenceTargets = collectArtifactEvidenceTargets(actOut);
+  const missing = expectedArtifacts.filter((artifact) => !artifactEvidenceIncludes(evidenceTargets, artifact, actOut));
+  return {
+    passed: missing.length === 0,
+    missing,
+  };
+}
+
+function collectArtifactEvidenceTargets(actOut: ActOutput): string[] {
+  const targets: string[] = [];
+  for (const call of actOut.toolCalls) {
+    collectTargetStrings(call.input, targets);
+    collectTargetStrings(call.meta, targets);
+    collectTargetStrings(parseJsonObject(call.output), targets);
+    if (call.rawOutputPath) {
+      targets.push(call.rawOutputPath);
+    }
+  }
+  return uniqueStrings(targets.map(normalizeArtifactTarget).filter((target) => target.length > 0));
+}
+
+function artifactEvidenceIncludes(targets: string[], expectedArtifact: string, actOut: ActOutput): boolean {
+  const expected = normalizeArtifactTarget(expectedArtifact);
+  if (!expected) {
+    return true;
+  }
+  if (targets.some((target) => target === expected || target.endsWith(`/${expected}`) || expected.endsWith(`/${target}`))) {
+    return true;
+  }
+  return actOut.toolCalls.some((call) => {
+    const output = normalizeArtifactTarget(call.output);
+    return output.includes(expected);
+  });
+}
+
+function collectTargetStrings(value: unknown, targets: string[]): void {
+  if (!value || typeof value !== "object") {
+    return;
+  }
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      collectTargetStrings(item, targets);
+    }
+    return;
+  }
+  const record = value as Record<string, unknown>;
+  for (const [key, item] of Object.entries(record)) {
+    if (isArtifactTargetKey(key) && typeof item === "string" && item.trim().length > 0) {
+      targets.push(item);
+      continue;
+    }
+    if (item && typeof item === "object") {
+      collectTargetStrings(item, targets);
+    }
+  }
+}
+
+function isArtifactTargetKey(key: string): boolean {
+  return [
+    "path",
+    "filePath",
+    "dirPath",
+    "targetPath",
+    "source",
+    "destination",
+    "outputPath",
+    "rawOutputPath",
+    "preparedInputId",
+    "targetTable",
+    "lessonSlug",
+  ].includes(key);
+}
+
+function normalizeArtifactTarget(value: string): string {
+  return value.replace(/\\/g, "/").replace(/\s+/g, " ").trim().toLowerCase();
+}
+
+function parseJsonObject(text: string): Record<string, unknown> | null {
+  try {
+    const parsed = JSON.parse(text);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? parsed as Record<string, unknown>
+      : null;
+  } catch {
+    return null;
+  }
 }
 
 function buildLocalFailureTaskProgress(
@@ -668,6 +943,10 @@ function buildActPrompt(directive: StepDirective, availableToolNames: string[]):
   return `Execute this step:
 Intent: ${getDirectiveExecutionContract(directive)}
 Context: ${directive.context}
+Verification policy: ${directive.verification.policy}
+Expected artifacts: ${directive.verification.expected_artifacts.length > 0 ? directive.verification.expected_artifacts.join(", ") : "none"}
+Expected state change: ${directive.verification.expected_state_change}
+Verification rationale: ${directive.verification.rationale}
 Allowed tools for this autonomous step: ${allowedTools}
 Available tools: ${availableTools}
 Maximum tool calls for this autonomous step: ${directive.execution_plan.max_calls ?? "default"}

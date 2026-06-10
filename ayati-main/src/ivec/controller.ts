@@ -330,12 +330,22 @@ const EXECUTION_PLAN_SCHEMA = strictObjectSchema({
   max_calls: INTEGER_OR_NULL_SCHEMA,
 });
 
+const STEP_VERIFICATION_CONTRACT_SCHEMA = strictObjectSchema({
+  policy: stringEnumSchema(["deterministic", "llm", "script", "hybrid"]),
+  rationale: JSON_STRING_SCHEMA,
+  expected_artifacts: JSON_STRING_ARRAY_SCHEMA,
+  expected_state_change: JSON_STRING_SCHEMA,
+  requires_full_step_context: { type: "boolean" },
+});
+
 const DIRECT_STEP_DIRECTIVE_SCHEMA = strictObjectSchema({
   done: { enum: [false] },
+  contract_version: { enum: [2] },
   execution_contract: JSON_STRING_SCHEMA,
   execution_plan: EXECUTION_PLAN_SCHEMA,
   success_criteria: JSON_STRING_SCHEMA,
   context: JSON_STRING_SCHEMA,
+  verification: STEP_VERIFICATION_CONTRACT_SCHEMA,
 });
 
 const REEVAL_DIRECTIVE_SCHEMA = strictObjectSchema({
@@ -1013,6 +1023,15 @@ const DIRECT_COMMON_INSTRUCTIONS = `- Choose exactly 1 next move inside the curr
 - Use parallel only when calls have no ordering, path, state, or data dependency. Use sequential when later calls depend on earlier filesystem, UI, or external state.
 - Execution limits: single exactly 1 call; sequential/parallel max 6 calls; autonomous max_calls 1..6 with non-empty allowed_tools.
 - Use origin "builtin" for built-in tool calls and "external_tool" for external tools.
+- Every step must use contract_version: 2 and include a verification contract.
+- verification.policy must be explicit:
+  - deterministic: deterministic tool success plus expected artifacts/state is enough; executor must not use LLM fallback
+  - llm: semantic/content/subjective validation is required
+  - script: local script/structured validation is required; executor must not use LLM fallback
+  - hybrid: deterministic expectations must pass first, then LLM validates the semantic part
+- verification.expected_artifacts lists concrete files/resources expected from tool inputs or outputs; use [] when there is no artifact.
+- verification.expected_state_change must describe the concrete state/result expected after the step.
+- verification.requires_full_step_context is true only when exact prior active-run act/verify details are required.
 - If action still needs tools, do not return completion text that promises future work; return a step instead.
 - Completion summary is user-visible for response_kind "reply", "feedback", or "notification". Write it as a finished answer, targeted feedback request, or grounded failure explanation.
 - Keep controller JSON compact.`;
@@ -1128,7 +1147,7 @@ function buildDirectPromptResult(
   );
   const responseSchemaBlock = `Respond with a single JSON object (no markdown fences):
 ${STRICT_JSON_RESPONSE_NOTE}
-For next step: { "kind": "step", "payload": { "done": false, "execution_contract": "...", "execution_plan": { "mode": "single" | "sequential" | "parallel" | "autonomous", "calls": [{ "id": "call_id", "tool": "shell", "input": { "cmd": "pwd" }, "origin": "builtin" | "external_tool", "source_refs": [], "retry_policy": "none", "depends_on": [], "purpose": "..." }], "allowed_tools": [], "max_calls": null }, "success_criteria": "...", "context": "..." } }
+For next step: { "kind": "step", "payload": { "done": false, "contract_version": 2, "execution_contract": "...", "execution_plan": { "mode": "single" | "sequential" | "parallel" | "autonomous", "calls": [{ "id": "call_id", "tool": "shell", "input": { "cmd": "pwd" }, "origin": "builtin" | "external_tool", "source_refs": [], "retry_policy": "none", "depends_on": [], "purpose": "..." }], "allowed_tools": [], "max_calls": null }, "success_criteria": "...", "context": "...", "verification": { "policy": "deterministic" | "llm" | "script" | "hybrid", "rationale": "...", "expected_artifacts": [], "expected_state_change": "...", "requires_full_step_context": false } } }
 For inline activation: { "kind": "activate_skill", "payload": { "done": false, "activate_skill": true, "skill_id": "agent-browser", "reason": "optional short reason" } }
 For extra run history: { "kind": "read_run_state", "payload": { "done": false, "read_run_state": true, "action": "read_summary_window" | "read_step_full", "window": { "from": 1, "to": 10 }, "step": 3, "reason": "optional short reason" } }
 For completion: { "kind": "completion", "payload": { "done": true, "summary": "<user-facing text or internal note>", "status": "completed" | "failed", "response_kind": "reply" | "feedback" | "notification" | "none", "feedback_kind": "approval" | "confirmation" | "clarification", "feedback_label": "optional short label", "action_type": "optional short action", "entity_hints": ["optional", "keywords"] } }`;
@@ -1363,6 +1382,8 @@ function buildFallbackControllerHistoryBundle(state: LoopState): ControllerHisto
       artifacts: step.artifacts.slice(0, 6),
       blockedTargets: (step.blockedTargets ?? []).slice(0, 4),
       stoppedEarlyReason: step.stoppedEarlyReason,
+      verificationPolicy: step.verificationPolicy,
+      expectationCheckStatus: step.expectationCheckStatus,
       toolSuccessCount: step.toolSuccessCount ?? 0,
       toolFailureCount: step.toolFailureCount ?? 0,
     }));
@@ -1380,6 +1401,8 @@ function buildFallbackControllerHistoryBundle(state: LoopState): ControllerHisto
         artifacts: latestStep.artifacts.slice(0, 6),
         blockedTargets: (latestStep.blockedTargets ?? []).slice(0, 4),
         stoppedEarlyReason: latestStep.stoppedEarlyReason,
+        verificationPolicy: latestStep.verificationPolicy,
+        expectationCheckStatus: latestStep.expectationCheckStatus,
         toolSuccessCount: latestStep.toolSuccessCount ?? 0,
         toolFailureCount: latestStep.toolFailureCount ?? 0,
       }
@@ -1623,14 +1646,59 @@ export function parseDirectResponse(
       "Step responses must include execution_plan with mode, calls, allowed_tools, and max_calls.",
     );
   }
+  if (parsed["contract_version"] !== 2) {
+    throw new ControllerDirectiveValidationError(
+      "Step responses must use contract_version: 2 and include a verification contract.",
+    );
+  }
+  const verification = normalizeStepVerificationContract(parsed["verification"]);
+  if (!verification) {
+    throw new ControllerDirectiveValidationError(
+      "Step responses must include verification with policy, rationale, expected_artifacts, expected_state_change, and requires_full_step_context.",
+    );
+  }
 
   return {
     done: false,
+    contract_version: 2,
     execution_contract: String(parsed["execution_contract"] ?? ""),
     execution_plan: executionPlan,
     success_criteria: String(parsed["success_criteria"] ?? ""),
     context: String(parsed["context"] ?? ""),
+    verification,
   };
+}
+
+function normalizeStepVerificationContract(value: unknown): StepDirective["verification"] | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+  const record = value as Record<string, unknown>;
+  const policy = normalizeStepVerificationPolicy(record["policy"]);
+  if (!policy) {
+    return null;
+  }
+  return {
+    policy,
+    rationale: String(record["rationale"] ?? ""),
+    expected_artifacts: Array.isArray(record["expected_artifacts"])
+      ? (record["expected_artifacts"] as unknown[]).map(String).filter((item) => item.trim().length > 0)
+      : [],
+    expected_state_change: String(record["expected_state_change"] ?? ""),
+    requires_full_step_context: record["requires_full_step_context"] === true,
+  };
+}
+
+function normalizeStepVerificationPolicy(value: unknown): StepDirective["verification"]["policy"] | null {
+  switch (value) {
+    case "deterministic":
+    case "llm":
+    case "script":
+    case "hybrid":
+      return value;
+    default:
+      return null;
+  }
 }
 
 function normalizeContextSearchDirective(parsed: Record<string, unknown>): ContextSearchDirective {
@@ -1805,6 +1873,7 @@ function validateDirectOutput(
     return;
   }
   if ("execution_plan" in output) {
+    validateStepContract(output);
     validateExecutionPlan(output.execution_plan);
     return;
   }
@@ -1813,6 +1882,36 @@ function validateDirectOutput(
   }
   if (output.done) {
     validateCompletionDirective("direct", output, state);
+  }
+}
+
+function validateStepContract(output: StepDirective): void {
+  if (output.contract_version !== 2) {
+    throw new ControllerDirectiveValidationError("Step responses must set contract_version to 2.");
+  }
+  const verification = output.verification;
+  if (!verification || typeof verification !== "object") {
+    throw new ControllerDirectiveValidationError("Step responses must include a verification contract.");
+  }
+  if (!["deterministic", "llm", "script", "hybrid"].includes(verification.policy)) {
+    throw new ControllerDirectiveValidationError(
+      "verification.policy must be one of deterministic, llm, script, or hybrid.",
+    );
+  }
+  if (verification.rationale.trim().length === 0) {
+    throw new ControllerDirectiveValidationError("verification.rationale must explain why the policy fits this step.");
+  }
+  if (verification.expected_state_change.trim().length === 0) {
+    throw new ControllerDirectiveValidationError("verification.expected_state_change must describe the expected result of the step.");
+  }
+  if (!Array.isArray(verification.expected_artifacts)) {
+    throw new ControllerDirectiveValidationError("verification.expected_artifacts must be an array.");
+  }
+  if (verification.expected_artifacts.some((artifact) => artifact.trim().length === 0)) {
+    throw new ControllerDirectiveValidationError("verification.expected_artifacts cannot contain empty strings.");
+  }
+  if (typeof verification.requires_full_step_context !== "boolean") {
+    throw new ControllerDirectiveValidationError("verification.requires_full_step_context must be a boolean.");
   }
 }
 

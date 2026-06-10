@@ -122,6 +122,22 @@ function executionPlan(
   };
 }
 
+function verificationContract(overrides?: Partial<{
+  policy: "deterministic" | "llm" | "script" | "hybrid";
+  rationale: string;
+  expected_artifacts: string[];
+  expected_state_change: string;
+  requires_full_step_context: boolean;
+}>): Record<string, unknown> {
+  return {
+    policy: overrides?.policy ?? "llm",
+    rationale: overrides?.rationale ?? "Test fixture requires semantic validation.",
+    expected_artifacts: overrides?.expected_artifacts ?? [],
+    expected_state_change: overrides?.expected_state_change ?? "The step result is available for validation.",
+    requires_full_step_context: overrides?.requires_full_step_context ?? false,
+  };
+}
+
 describe("parseUnderstandResponse", () => {
   it("parses a completion directive (simple reply)", () => {
     const json = JSON.stringify({
@@ -286,6 +302,8 @@ describe("parseDirectResponse", () => {
   it("parses StepDirective JSON", () => {
     const json = JSON.stringify({
       done: false,
+      contract_version: 2,
+      verification: verificationContract(),
       execution_contract: "read file",
       execution_plan: executionPlan("single", [
         planCall("read_file", { path: "config.json" }, { id: "read_config", purpose: "Read the config file" }),
@@ -303,7 +321,7 @@ describe("parseDirectResponse", () => {
   });
 
   it("recovers Python-style literals in direct-stage controller envelopes", () => {
-    const text = `{"kind":"step","payload":{"done":False,"execution_contract":"Create the 'machine-learning' interest directory","execution_plan":{"mode":"single","calls":[{"id":"write_active","tool":"write_file","input":{"path":"data/learning/system/active.json","content":"False stays text","createDirs":True,"previous":None},"origin":"builtin","source_refs":[],"retry_policy":"none","depends_on":[],"purpose":"Write active learning state"}],"allowed_tools":[],"max_calls":None},"success_criteria":"The interest is active","context":"Activate the selected interest"}}}`;
+    const text = `{"kind":"step","payload":{"done":False,"contract_version":2,"verification":{"policy":"deterministic","rationale":"write_file success is enough for this fixture","expected_artifacts":["data/learning/system/active.json"],"expected_state_change":"The interest is active","requires_full_step_context":False},"execution_contract":"Create the 'machine-learning' interest directory","execution_plan":{"mode":"single","calls":[{"id":"write_active","tool":"write_file","input":{"path":"data/learning/system/active.json","content":"False stays text","createDirs":True,"previous":None},"origin":"builtin","source_refs":[],"retry_policy":"none","depends_on":[],"purpose":"Write active learning state"}],"allowed_tools":[],"max_calls":None},"success_criteria":"The interest is active","context":"Activate the selected interest"}}}`;
     const result = parseDirectResponse(text);
     expect(result.done).toBe(false);
     if (!result.done && "execution_plan" in result) {
@@ -318,6 +336,8 @@ describe("parseDirectResponse", () => {
   it("throws when execution_plan is missing", () => {
     const json = JSON.stringify({
       done: false,
+      contract_version: 2,
+      verification: verificationContract(),
       execution_contract: "read file",
       success_criteria: "file content returned",
       context: "need to check config",
@@ -388,6 +408,8 @@ describe("parseDirectResponse", () => {
   it("parses builtin and external tool origins distinctly", () => {
     const json = JSON.stringify({
       done: false,
+      contract_version: 2,
+      verification: verificationContract(),
       execution_contract: "Use a built-in tool and an external tool",
       execution_plan: executionPlan("sequential", [
         planCall("shell", { cmd: "pwd" }, { id: "pwd", origin: "builtin", purpose: "Get current directory" }),
@@ -957,6 +979,8 @@ describe("callUnderstand", () => {
     const provider = createMockProvider(
       JSON.stringify({
         done: false,
+        contract_version: 2,
+        verification: verificationContract(),
         execution_contract: "Inspect one config file",
         execution_plan: executionPlan("single", [
           planCall("read_file", { path: "config.json" }, { id: "read_config", purpose: "Inspect config file" }),
@@ -1008,6 +1032,8 @@ describe("callDirect", () => {
   it("includes system context and returns step directive", async () => {
     const json = JSON.stringify({
       done: false,
+      contract_version: 2,
+      verification: verificationContract(),
       execution_contract: "read config file",
       execution_plan: executionPlan("single", [
         planCall("shell", { cmd: "cat config.json" }, { id: "read_config", purpose: "Read config file" }),
@@ -1052,7 +1078,7 @@ describe("callDirect", () => {
 
   it("accepts Python-style booleans from direct-stage providers without a repair retry", async () => {
     const provider = createMockProvider(
-      `{"kind":"step","payload":{"done":False,"execution_contract":"Run one shell command","execution_plan":{"mode":"single","calls":[{"id":"pwd","tool":"shell","input":{"cmd":"pwd","dryRun":False},"origin":"builtin","source_refs":[],"retry_policy":"none","depends_on":[],"purpose":"Run pwd"}],"allowed_tools":[],"max_calls":None},"success_criteria":"The command output is returned","context":"Need the current directory"}}}`,
+      `{"kind":"step","payload":{"done":False,"contract_version":2,"verification":{"policy":"llm","rationale":"shell command output needs semantic validation in this fixture","expected_artifacts":[],"expected_state_change":"The command output is returned","requires_full_step_context":False},"execution_contract":"Run one shell command","execution_plan":{"mode":"single","calls":[{"id":"pwd","tool":"shell","input":{"cmd":"pwd","dryRun":False},"origin":"builtin","source_refs":[],"retry_policy":"none","depends_on":[],"purpose":"Run pwd"}],"allowed_tools":[],"max_calls":None},"success_criteria":"The command output is returned","context":"Need the current directory"}}}`,
       undefined,
       "fireworks",
     );
@@ -1073,6 +1099,8 @@ describe("callDirect", () => {
         kind: "step",
         payload: {
           done: false,
+          contract_version: 2,
+          verification: verificationContract(),
           execution_contract: "Write a generated ML lesson file",
           execution_plan: executionPlan("single", [
             planCall("write_file", {
@@ -1089,6 +1117,8 @@ describe("callDirect", () => {
         kind: "step",
         payload: {
           done: false,
+          contract_version: 2,
+          verification: verificationContract(),
           execution_contract: "Generate and write the first ML lesson files using write_file.",
           execution_plan: executionPlan("autonomous", [], ["write_file"], 4),
           success_criteria: "The lesson files are written",
@@ -1114,6 +1144,8 @@ describe("callDirect", () => {
   it("includes available external skills and loaded external tools distinctly in direct prompt", async () => {
     const json = JSON.stringify({
       done: false,
+      contract_version: 2,
+      verification: verificationContract(),
       execution_contract: "Use the loaded search tool",
       execution_plan: executionPlan("single", [
         planCall("agent-browser.search", { query: "latest market news" }, {
@@ -1190,6 +1222,8 @@ describe("callDirect", () => {
   it("includes compact task progress in the direct prompt", async () => {
     const json = JSON.stringify({
       done: false,
+      contract_version: 2,
+      verification: verificationContract(),
       execution_contract: "continue",
       execution_plan: executionPlan("autonomous", [], ["shell"], 2),
       success_criteria: "done",
@@ -1249,6 +1283,8 @@ describe("callDirect", () => {
   it("includes inline run-state guidance and avoids legacy scout guidance in direct prompt", async () => {
     const json = JSON.stringify({
       done: false,
+      contract_version: 2,
+      verification: verificationContract(),
       execution_contract: "continue",
       execution_plan: executionPlan("autonomous", [], ["shell"], 2),
       success_criteria: "done",
@@ -1279,6 +1315,8 @@ describe("callDirect", () => {
   it("includes verification-first and high-cost clarification guidance in direct prompt", async () => {
     const json = JSON.stringify({
       done: false,
+      contract_version: 2,
+      verification: verificationContract(),
       execution_contract: "verify a public fact",
       execution_plan: executionPlan("autonomous", [], ["shell"], 2),
       success_criteria: "fact is verified",
@@ -1310,6 +1348,8 @@ describe("callDirect", () => {
   it("uses the compact session context summary instead of recent task and feedback lists in direct prompt", async () => {
     const json = JSON.stringify({
       done: false,
+      contract_version: 2,
+      verification: verificationContract(),
       execution_contract: "continue",
       execution_plan: executionPlan("autonomous", [], ["shell"], 2),
       success_criteria: "done",
@@ -1352,6 +1392,8 @@ describe("callDirect", () => {
   it("includes the selected dependent prior task in the direct prompt", async () => {
     const json = JSON.stringify({
       done: false,
+      contract_version: 2,
+      verification: verificationContract(),
       execution_contract: "continue",
       execution_plan: executionPlan("autonomous", [], ["shell"], 2),
       success_criteria: "done",
@@ -1414,6 +1456,8 @@ describe("callDirect", () => {
   it("includes prepared attachment guidance in direct prompt when available", async () => {
     const json = JSON.stringify({
       done: false,
+      contract_version: 2,
+      verification: verificationContract(),
       execution_contract: "query the prepared attachment",
       execution_plan: executionPlan("autonomous", [], ["document_query"], 2),
       success_criteria: "the answer is grounded in the prepared attachment",
@@ -1464,6 +1508,8 @@ describe("callDirect", () => {
   it("includes directory attachments in the direct prompt", async () => {
     const json = JSON.stringify({
       done: false,
+      contract_version: 2,
+      verification: verificationContract(),
       execution_contract: "search attached project directory",
       execution_plan: executionPlan("autonomous", [], ["directory_search"], 2),
       success_criteria: "the relevant file is found",
@@ -1528,6 +1574,8 @@ describe("callDirect", () => {
   it("hides active session attachments when current run attachments are already prepared", async () => {
     const json = JSON.stringify({
       done: false,
+      contract_version: 2,
+      verification: verificationContract(),
       execution_contract: "profile the current attachment",
       execution_plan: executionPlan("autonomous", [], ["dataset_profile"], 2),
       success_criteria: "the current attachment is inspected",
@@ -1591,6 +1639,8 @@ describe("callDirect", () => {
   it("uses injected direct instructions when provided", async () => {
     const json = JSON.stringify({
       done: false,
+      contract_version: 2,
+      verification: verificationContract(),
       execution_contract: "read config file",
       execution_plan: executionPlan("autonomous", [], ["shell"], 2),
       success_criteria: "config content available",
@@ -1625,6 +1675,8 @@ describe("callDirect", () => {
       "I need to inspect the mail first.",
       JSON.stringify({
         done: false,
+        contract_version: 2,
+        verification: verificationContract(),
         execution_contract: "Read the AWS billing email details from Gmail",
         execution_plan: executionPlan("single", [
           planCall("gmail_read", { messageId: "msg-1" }, { purpose: "Read the Gmail message" }),
@@ -1661,6 +1713,8 @@ describe("callDirect", () => {
       }),
       JSON.stringify({
         done: false,
+        contract_version: 2,
+        verification: verificationContract(),
         execution_contract: "Read the AWS billing email details from Gmail",
         execution_plan: executionPlan("single", [
           planCall("gmail_read", { messageId: "msg-1" }, { purpose: "Read the Gmail message" }),
@@ -1700,6 +1754,8 @@ describe("callDirect", () => {
       }),
       JSON.stringify({
         done: false,
+        contract_version: 2,
+        verification: verificationContract(),
         execution_contract: "Read the AWS billing email details from Gmail",
         execution_plan: executionPlan("single", [
           planCall("gmail_read", { messageId: "msg-1" }, { purpose: "Read the Gmail message" }),
@@ -1740,6 +1796,8 @@ describe("callDirect", () => {
       }),
       JSON.stringify({
         done: false,
+        contract_version: 2,
+        verification: verificationContract(),
         execution_contract: "Search current India smartphone options under Rs 50,000",
         execution_plan: executionPlan("single", [
           planCall("websearch.search", { query: "best smartphones under 50000 in India" }, {
@@ -1772,6 +1830,8 @@ describe("callDirect", () => {
     const provider = createMockProvider([
       JSON.stringify({
         done: false,
+        contract_version: 2,
+        verification: verificationContract(),
         execution_contract: "Create a lesson directory and write the course file",
         execution_plan: executionPlan("parallel", [
           planCall("create_directory", { path: "lessons/001-intro-fluids" }, {
@@ -1788,6 +1848,8 @@ describe("callDirect", () => {
       }),
       JSON.stringify({
         done: false,
+        contract_version: 2,
+        verification: verificationContract(),
         execution_contract: "Create a lesson directory and write the course file",
         execution_plan: executionPlan("sequential", [
           planCall("create_directory", { path: "lessons/001-intro-fluids" }, {
@@ -1826,6 +1888,8 @@ describe("callDirect", () => {
     const provider = createMockProvider([
       JSON.stringify({
         done: false,
+        contract_version: 2,
+        verification: verificationContract(),
         execution_contract: "Inspect and rewrite a lesson view",
         execution_plan: executionPlan("autonomous", [], ["read_file", "write_file", "learning_workspace_show"], 3),
         success_criteria: "the lesson is inspected, rewritten, and displayed",
@@ -1833,6 +1897,8 @@ describe("callDirect", () => {
       }),
       JSON.stringify({
         done: false,
+        contract_version: 2,
+        verification: verificationContract(),
         execution_contract: "Read the current lesson files",
         execution_plan: executionPlan("autonomous", [], ["read_file"], 2),
         success_criteria: "the lesson files are read",

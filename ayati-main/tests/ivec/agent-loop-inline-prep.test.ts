@@ -101,6 +101,22 @@ function executionPlan(
   };
 }
 
+function verificationContract(overrides?: Partial<{
+  policy: "deterministic" | "llm" | "script" | "hybrid";
+  rationale: string;
+  expected_artifacts: string[];
+  expected_state_change: string;
+  requires_full_step_context: boolean;
+}>): Record<string, unknown> {
+  return {
+    policy: overrides?.policy ?? "llm",
+    rationale: overrides?.rationale ?? "Test fixture requires semantic validation.",
+    expected_artifacts: overrides?.expected_artifacts ?? [],
+    expected_state_change: overrides?.expected_state_change ?? "The step result is available for validation.",
+    requires_full_step_context: overrides?.requires_full_step_context ?? false,
+  };
+}
+
 const sendEmailTool: ToolDefinition = {
   name: "send_email",
   description: "Send an email draft",
@@ -167,6 +183,8 @@ describe("agentLoop inline prep directives", () => {
               type: "assistant",
               content: JSON.stringify({
                 done: false,
+                contract_version: 2,
+                verification: verificationContract(),
                 execution_contract: "Send the email after reviewing prior run state",
                 execution_plan: executionPlan("single", [
                   planCall("send_email", { to: "demo@example.com", subject: "Follow-up" }, {
@@ -343,6 +361,8 @@ describe("agentLoop inline prep directives", () => {
               type: "assistant",
               content: JSON.stringify({
                 done: false,
+                contract_version: 2,
+                verification: verificationContract(),
                 execution_contract: "Run the demo external search query",
                 execution_plan: executionPlan("single", [
                   planCall("demo-search.query", {}, {

@@ -38,6 +38,10 @@ const STEP_SUMMARY_LIMITS = {
   evidenceItems: { count: 8, chars: 260 },
   blockedTargets: { count: 6, chars: 180 },
   usedRawArtifacts: { count: 8, chars: 240 },
+  expectedArtifacts: { count: 8, chars: 240 },
+  expectedStateChangeChars: 360,
+  verificationRationaleChars: 260,
+  expectationCheckSummaryChars: 360,
 };
 
 export interface ControllerPromptState {
@@ -113,6 +117,10 @@ export function compactStepSummaryForState(step: StepSummary): StepSummary {
     evidenceItems: compactStringList(step.evidenceItems, STEP_SUMMARY_LIMITS.evidenceItems),
     blockedTargets: compactStringList(step.blockedTargets, STEP_SUMMARY_LIMITS.blockedTargets),
     usedRawArtifacts: compactStringList(step.usedRawArtifacts, STEP_SUMMARY_LIMITS.usedRawArtifacts),
+    expectedArtifacts: compactStringList(step.expectedArtifacts, STEP_SUMMARY_LIMITS.expectedArtifacts),
+    expectedStateChange: compactOptionalText(step.expectedStateChange, STEP_SUMMARY_LIMITS.expectedStateChangeChars),
+    verificationRationale: compactOptionalText(step.verificationRationale, STEP_SUMMARY_LIMITS.verificationRationaleChars),
+    expectationCheckSummary: compactOptionalText(step.expectationCheckSummary, STEP_SUMMARY_LIMITS.expectationCheckSummaryChars),
   };
 }
 

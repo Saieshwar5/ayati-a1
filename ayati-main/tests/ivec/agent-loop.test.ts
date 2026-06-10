@@ -116,6 +116,22 @@ function autonomousPlan(allowedTools: string[] = ["shell"], maxCalls = 4): Recor
   return executionPlan("autonomous", [], allowedTools, maxCalls);
 }
 
+function verificationContract(overrides?: Partial<{
+  policy: "deterministic" | "llm" | "script" | "hybrid";
+  rationale: string;
+  expected_artifacts: string[];
+  expected_state_change: string;
+  requires_full_step_context: boolean;
+}>): Record<string, unknown> {
+  return {
+    policy: overrides?.policy ?? "llm",
+    rationale: overrides?.rationale ?? "Test fixture requires semantic validation.",
+    expected_artifacts: overrides?.expected_artifacts ?? [],
+    expected_state_change: overrides?.expected_state_change ?? "The step result is available for validation.",
+    requires_full_step_context: overrides?.requires_full_step_context ?? false,
+  };
+}
+
 function createMockSessionMemory(): SessionMemory {
   return {
     initialize: vi.fn(),
@@ -251,6 +267,8 @@ describe("agentLoop", () => {
               type: "assistant",
               content: JSON.stringify({
                 done: false,
+                contract_version: 2,
+                verification: verificationContract(),
                 execution_contract: "Send the approved draft email to Arun",
                 execution_plan: executionPlan("single", [
                   planCall("send_email", { to: "arun@example.com", subject: "Draft reply" }, {
@@ -340,6 +358,8 @@ describe("agentLoop", () => {
               type: "assistant",
               content: JSON.stringify({
                 done: false,
+                contract_version: 2,
+                verification: verificationContract(),
                 execution_contract: "analyze request",
                 execution_plan: autonomousPlan(["shell"], 4),
                 success_criteria: "analysis complete",
@@ -417,6 +437,8 @@ describe("agentLoop", () => {
               type: "assistant",
               content: JSON.stringify({
                 done: false,
+                contract_version: 2,
+                verification: verificationContract(),
                 execution_contract: "try again",
                 execution_plan: autonomousPlan(["shell"], 4),
                 success_criteria: "succeed",
@@ -496,6 +518,8 @@ describe("agentLoop", () => {
               type: "assistant",
               content: JSON.stringify({
                 done: false,
+                contract_version: 2,
+                verification: verificationContract(),
                 execution_contract: "Inspect the main config files",
                 execution_plan: autonomousPlan(["shell"], 4),
                 success_criteria: "find the main config file paths",
@@ -564,6 +588,8 @@ describe("agentLoop", () => {
               type: "assistant",
               content: JSON.stringify({
                 done: false,
+                contract_version: 2,
+                verification: verificationContract(),
                 execution_contract: "first attempt",
                 execution_plan: autonomousPlan(["shell"], 4),
                 success_criteria: "must produce evidence",
@@ -672,6 +698,8 @@ describe("agentLoop", () => {
               type: "assistant",
               content: JSON.stringify({
                 done: false,
+                contract_version: 2,
+                verification: verificationContract(),
                 execution_contract: "Call workspace_set_layout with layout=30-70 and inspect layoutVerification.",
                 execution_plan: executionPlan("single", [
                   planCall("workspace_set_layout", { layout: "30-70" }, {
@@ -761,6 +789,8 @@ describe("agentLoop", () => {
               type: "assistant",
               content: JSON.stringify({
                 done: false,
+                contract_version: 2,
+                verification: verificationContract(),
                 execution_contract: `attempt ${callCount === 2 ? 1 : callCount === 6 ? 2 : 3}`,
                 execution_plan: autonomousPlan(["shell"], 4),
                 success_criteria: "must produce evidence",
@@ -866,6 +896,8 @@ describe("agentLoop", () => {
               type: "assistant",
               content: JSON.stringify({
                 done: false,
+                contract_version: 2,
+                verification: verificationContract(),
                 execution_contract: `attempt ${callCount}`,
                 execution_plan: autonomousPlan(["shell"], 4),
                 success_criteria: "must produce evidence",
@@ -952,6 +984,8 @@ describe("agentLoop", () => {
               type: "assistant",
               content: JSON.stringify({
                 done: false,
+                contract_version: 2,
+                verification: verificationContract(),
                 execution_contract: "first attempt",
                 execution_plan: autonomousPlan(["shell"], 4),
                 success_criteria: "must produce evidence",
@@ -1084,6 +1118,8 @@ describe("agentLoop", () => {
               type: "assistant",
               content: JSON.stringify({
                 done: false,
+                contract_version: 2,
+                verification: verificationContract(),
                 execution_contract: "attempt step",
                 execution_plan: autonomousPlan(["shell"], 4),
                 success_criteria: "must succeed",
@@ -1245,6 +1281,8 @@ describe("agentLoop", () => {
               type: "assistant",
               content: JSON.stringify({
                 done: false,
+                contract_version: 2,
+                verification: verificationContract(),
                 execution_contract: "step 1",
                 execution_plan: autonomousPlan(["shell"], 4),
                 success_criteria: "ok",
@@ -1319,6 +1357,8 @@ describe("agentLoop", () => {
               type: "assistant",
               content: JSON.stringify({
                 done: false,
+                contract_version: 2,
+                verification: verificationContract(),
                 execution_contract: "draft response",
                 execution_plan: autonomousPlan(["shell"], 4),
                 success_criteria: "response drafted",
@@ -1413,6 +1453,8 @@ describe("agentLoop", () => {
               type: "assistant",
               content: JSON.stringify({
                 done: false,
+                contract_version: 2,
+                verification: verificationContract(),
                 execution_contract: "complete the first step",
                 execution_plan: autonomousPlan(["shell"], 4),
                 success_criteria: "step 1 is done",
@@ -1460,6 +1502,8 @@ describe("agentLoop", () => {
               type: "assistant",
               content: JSON.stringify({
                 done: false,
+                contract_version: 2,
+                verification: verificationContract(),
                 execution_contract: "use retrieved context",
                 execution_plan: autonomousPlan(["shell"], 4),
                 success_criteria: "step 2 uses step 1 facts",
@@ -1806,6 +1850,8 @@ describe("agentLoop", () => {
               type: "assistant",
               content: JSON.stringify({
                 done: false,
+                contract_version: 2,
+                verification: verificationContract(),
                 execution_contract: "search config files",
                 execution_plan: autonomousPlan(["shell"], 4),
                 success_criteria: "config file paths are returned",
@@ -2157,6 +2203,12 @@ describe("agentLoop", () => {
               type: "assistant",
               content: JSON.stringify({
                 done: false,
+                contract_version: 2,
+                verification: verificationContract({
+                  policy: "script",
+                  rationale: "dataset_query returns structured rows and rowCount for local validation.",
+                  expected_state_change: "The dataset query returns the employee count.",
+                }),
                 execution_contract: "count Maharashtra employees",
                 execution_plan: autonomousPlan(["dataset_query"], 4),
                 success_criteria: "dataset query returns the employee count",
@@ -2288,6 +2340,12 @@ describe("agentLoop", () => {
               type: "assistant",
               content: JSON.stringify({
                 done: false,
+                contract_version: 2,
+                verification: verificationContract({
+                  policy: "script",
+                  rationale: "document_query returns grounded context, sources, and confidence for local validation.",
+                  expected_state_change: "The document query returns the document subject.",
+                }),
                 execution_contract: "summarize the document",
                 execution_plan: autonomousPlan(["document_query"], 4),
                 success_criteria: "document query returns the document subject",
@@ -2434,6 +2492,12 @@ describe("agentLoop", () => {
               type: "assistant",
               content: JSON.stringify({
                 done: false,
+                contract_version: 2,
+                verification: verificationContract({
+                  policy: "script",
+                  rationale: "restore_attachment_context returns structured restored attachment metadata for local validation.",
+                  expected_state_change: "The previous csv is restored for follow-up analysis.",
+                }),
                 execution_contract: "restore the previous csv",
                 execution_plan: autonomousPlan(["restore_attachment_context"], 4),
                 success_criteria: "the previous csv is restored for follow-up analysis",
@@ -2452,6 +2516,12 @@ describe("agentLoop", () => {
               type: "assistant",
               content: JSON.stringify({
                 done: false,
+                contract_version: 2,
+                verification: verificationContract({
+                  policy: "script",
+                  rationale: "dataset_query returns structured rows and rowCount for local validation.",
+                  expected_state_change: "The count of Maharashtra rows is returned.",
+                }),
                 execution_contract: "count Maharashtra rows in the restored csv",
                 execution_plan: autonomousPlan(["dataset_query"], 4),
                 success_criteria: "the count of Maharashtra rows is returned",
@@ -2602,6 +2672,12 @@ describe("agentLoop", () => {
               type: "assistant",
               content: JSON.stringify({
                 done: false,
+                contract_version: 2,
+                verification: verificationContract({
+                  policy: "script",
+                  rationale: "dataset_profile returns structured row and column metadata for local validation.",
+                  expected_state_change: "The uploaded transaction dataset is inspected.",
+                }),
                 execution_contract: "profile the current uploaded transaction dataset",
                 execution_plan: autonomousPlan(["dataset_profile"], 4),
                 success_criteria: "the uploaded transaction dataset is inspected and key columns are identified",
@@ -3127,6 +3203,8 @@ describe("agentLoop", () => {
               type: "assistant",
               content: JSON.stringify({
                 done: false,
+                contract_version: 2,
+                verification: verificationContract(),
                 execution_contract: "draft response",
                 execution_plan: autonomousPlan(["shell"], 4),
                 success_criteria: "response drafted",

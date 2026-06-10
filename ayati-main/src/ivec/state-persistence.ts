@@ -271,6 +271,15 @@ export function formatVerifyMarkdown(data: VerifyOutput, toolCalls: ActToolCallR
   if (data.evidenceSummary.trim().length > 0) {
     lines.push("", "## Evidence Summary", "", summarizeValue(data.evidenceSummary, 400), "");
   }
+  if (data.expectationCheckStatus || data.expectationCheckSummary) {
+    lines.push("", "## Verification Contract", "");
+    if (data.expectationCheckStatus) {
+      lines.push(`- **Expectation Check:** ${data.expectationCheckStatus}`);
+    }
+    if (data.expectationCheckSummary?.trim()) {
+      lines.push(`- **Expectation Summary:** ${summarizeValue(data.expectationCheckSummary, 400)}`);
+    }
+  }
   if (data.evidenceItems.length > 0) {
     lines.push("", "## Evidence Items", "");
     for (const evidence of data.evidenceItems) {

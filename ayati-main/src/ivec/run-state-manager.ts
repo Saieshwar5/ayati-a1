@@ -3,9 +3,11 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import type {
   StepSummary,
+  StepExpectationCheckStatus,
   TaskProgressState,
   VerificationExecutionStatus,
   VerificationMethod,
+  StepVerificationPolicy,
   VerificationValidationStatus,
 } from "./types.js";
 import { devWarn } from "../shared/index.js";
@@ -33,6 +35,14 @@ export interface StepRecord {
   artifacts: string[];
   toolSuccessCount: number;
   toolFailureCount: number;
+  contractVersion?: 2;
+  verificationPolicy?: StepVerificationPolicy;
+  verificationRationale?: string;
+  expectedArtifacts?: string[];
+  expectedStateChange?: string;
+  requiresFullStepContext?: boolean;
+  expectationCheckStatus?: StepExpectationCheckStatus;
+  expectationCheckSummary?: string;
   verificationMethod?: VerificationMethod;
   executionStatus?: VerificationExecutionStatus;
   validationStatus?: VerificationValidationStatus;
@@ -60,6 +70,8 @@ export interface ControllerStepDigest {
   stoppedEarlyReason?: StepSummary["stoppedEarlyReason"];
   toolSuccessCount: number;
   toolFailureCount: number;
+  verificationPolicy?: StepVerificationPolicy;
+  expectationCheckStatus?: StepExpectationCheckStatus;
 }
 
 export interface ControllerHistoryBundle {
@@ -209,6 +221,8 @@ export class RunStateManager {
       stoppedEarlyReason: step.stoppedEarlyReason,
       toolSuccessCount: step.toolSuccessCount,
       toolFailureCount: step.toolFailureCount,
+      verificationPolicy: step.verificationPolicy,
+      expectationCheckStatus: step.expectationCheckStatus,
     };
   }
 }

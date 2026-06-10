@@ -143,6 +143,14 @@ export interface StepSummary {
   toolsUsed?: string[];
   toolSuccessCount: number;
   toolFailureCount: number;
+  contractVersion?: 2;
+  verificationPolicy?: StepVerificationPolicy;
+  verificationRationale?: string;
+  expectedArtifacts?: string[];
+  expectedStateChange?: string;
+  requiresFullStepContext?: boolean;
+  expectationCheckStatus?: StepExpectationCheckStatus;
+  expectationCheckSummary?: string;
   verificationMethod?: VerificationMethod;
   executionStatus?: VerificationExecutionStatus;
   validationStatus?: VerificationValidationStatus;
@@ -216,12 +224,25 @@ export interface ExecutionPlan {
   max_calls?: number;
 }
 
+export type StepVerificationPolicy = "deterministic" | "llm" | "script" | "hybrid";
+export type StepExpectationCheckStatus = "passed" | "failed" | "invalid" | "skipped";
+
+export interface StepVerificationContract {
+  policy: StepVerificationPolicy;
+  rationale: string;
+  expected_artifacts: string[];
+  expected_state_change: string;
+  requires_full_step_context: boolean;
+}
+
 export interface StepDirective {
   done: false;
+  contract_version: 2;
   execution_contract: string;
   execution_plan: ExecutionPlan;
   success_criteria: string;
   context: string;
+  verification: StepVerificationContract;
 }
 
 export type GenericScoutScope = "run_artifacts" | "project_context" | "session" | "skills" | "both";
@@ -328,6 +349,8 @@ export interface VerifyOutput {
   newFacts: string[];
   artifacts: string[];
   usedRawArtifacts: string[];
+  expectationCheckStatus?: StepExpectationCheckStatus;
+  expectationCheckSummary?: string;
   taskProgress?: TaskProgressState;
 }
 

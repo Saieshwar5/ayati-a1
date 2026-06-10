@@ -41,6 +41,22 @@ function autonomousPlan(allowedTools: string[] = ["shell"], maxCalls = 4): Recor
   };
 }
 
+function verificationContract(overrides?: Partial<{
+  policy: "deterministic" | "llm" | "script" | "hybrid";
+  rationale: string;
+  expected_artifacts: string[];
+  expected_state_change: string;
+  requires_full_step_context: boolean;
+}>): Record<string, unknown> {
+  return {
+    policy: overrides?.policy ?? "llm",
+    rationale: overrides?.rationale ?? "Test fixture requires semantic validation.",
+    expected_artifacts: overrides?.expected_artifacts ?? [],
+    expected_state_change: overrides?.expected_state_change ?? "The step result is available for validation.",
+    requires_full_step_context: overrides?.requires_full_step_context ?? false,
+  };
+}
+
 function createSessionMemory(): SessionMemory {
   return {
     initialize: vi.fn(),
@@ -217,6 +233,8 @@ describe("IVecEngine", () => {
               type: "assistant",
               content: JSON.stringify({
                 done: false,
+                contract_version: 2,
+                verification: verificationContract(),
                 execution_contract: "Inspect files",
                 execution_plan: autonomousPlan(["shell"], 4),
                 success_criteria: "files inspected",
@@ -713,6 +731,8 @@ describe("IVecEngine", () => {
               type: "assistant",
               content: JSON.stringify({
                 done: false,
+                contract_version: 2,
+                verification: verificationContract(),
                 execution_contract: "Check health",
                 execution_plan: autonomousPlan(["shell"], 4),
                 success_criteria: "health checked",
