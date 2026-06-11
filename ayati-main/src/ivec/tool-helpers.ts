@@ -8,6 +8,7 @@ export function formatToolResult(toolName: string, result: ToolResult): string {
       output: result.output ?? "",
       error: result.error ?? "",
       meta: result.meta ?? {},
+      v2: result.v2,
     },
     null,
     2,

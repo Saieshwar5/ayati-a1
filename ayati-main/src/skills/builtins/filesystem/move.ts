@@ -1,6 +1,7 @@
 import { rename, copyFile, cp, stat, rm, access } from "node:fs/promises";
 import type { ToolDefinition, ToolResult } from "../../types.js";
 import { resolveWorkspacePath } from "../../workspace-paths.js";
+import { commonAnnotations, errorResult, errorResultFromUnknown, okResult, succeededContract, successV2 } from "../contract-helpers.js";
 import { validateMoveInput } from "./validators.js";
 
 async function exists(p: string): Promise<boolean> {
@@ -27,6 +28,47 @@ export const moveTool: ToolDefinition = {
       },
     },
   },
+  outputSchema: {
+    type: "object",
+    required: ["requestedSource", "requestedDestination", "source", "destination", "moved"],
+    properties: {
+      requestedSource: { type: "string" },
+      requestedDestination: { type: "string" },
+      source: { type: "string" },
+      destination: { type: "string" },
+      kind: { type: "string" },
+      overwrite: { type: "boolean" },
+      moved: { type: "boolean" },
+    },
+  },
+  annotations: commonAnnotations({
+    domain: "filesystem",
+    readOnly: false,
+    mutatesWorkspace: true,
+    destructive: false,
+    idempotent: false,
+    retrySafe: false,
+  }),
+  resultContract: succeededContract({
+    assertions: [
+      {
+        id: "destination_exists",
+        kind: "file_exists",
+        path: "$.result.structuredContent.destination",
+      },
+      {
+        id: "source_absent",
+        kind: "file_not_exists",
+        path: "$.result.structuredContent.source",
+      },
+    ],
+    artifacts: [{ kind: "file", path: "$.result.structuredContent.destination" }],
+    progressFacts: [{
+      kind: "path_moved",
+      path: "$.result.structuredContent.destination",
+      message: "Path moved by move.",
+    }],
+  }),
   selectionHints: {
     tags: ["filesystem", "move", "rename"],
     aliases: ["mv", "rename_path"],
@@ -44,13 +86,19 @@ export const moveTool: ToolDefinition = {
 
     try {
       if (!parsed.overwrite && (await exists(dest))) {
-        return {
-          ok: false,
-          error: "Destination already exists. Set overwrite=true to replace.",
+        return errorResult({
+          code: "DESTINATION_EXISTS",
+          message: "Destination already exists. Set overwrite=true to replace.",
+          category: "conflict",
+          target: dest,
+          retryable: true,
+          recoverable: true,
+          suggestedNextActions: ["Retry move with overwrite=true or choose a different destination."],
           meta: { durationMs: Date.now() - start, source: src, destination: dest },
-        };
+        });
       }
 
+      let kind = "unknown";
       try {
         await rename(src, dest);
       } catch (err) {
@@ -58,6 +106,7 @@ export const moveTool: ToolDefinition = {
         if (code !== "EXDEV") throw err;
 
         const info = await stat(src);
+        kind = info.isDirectory() ? "directory" : "file";
         if (info.isDirectory()) {
           await cp(src, dest, { recursive: true, force: parsed.overwrite ?? false });
         } else {
@@ -66,14 +115,40 @@ export const moveTool: ToolDefinition = {
         await rm(src, { recursive: true, force: true });
       }
 
-      return {
-        ok: true,
-        output: `Moved ${src} → ${dest}`,
-        meta: { durationMs: Date.now() - start, source: src, destination: dest },
+      if (kind === "unknown") {
+        const destInfo = await stat(dest);
+        kind = destInfo.isDirectory() ? "directory" : "file";
+      }
+
+      const durationMs = Date.now() - start;
+      const structuredContent = {
+        requestedSource: parsed.source,
+        requestedDestination: parsed.destination,
+        source: src,
+        destination: dest,
+        kind,
+        overwrite: parsed.overwrite === true,
+        moved: true,
       };
+      const meta = { durationMs, source: src, destination: dest, kind };
+      return okResult({
+        output: `Moved ${src} -> ${dest}`,
+        meta,
+        v2: successV2({
+          code: "PATH_MOVED",
+          message: `Moved ${src} to ${dest}`,
+          structuredContent,
+          artifacts: [{ kind: kind === "directory" ? "directory" : "file", path: dest }],
+          diagnostics: meta,
+        }),
+      });
     } catch (err) {
-      const message = err instanceof Error ? err.message : "Unknown filesystem error";
-      return { ok: false, error: message, meta: { durationMs: Date.now() - start } };
+      return errorResultFromUnknown({
+        err,
+        fallbackMessage: "Unknown filesystem error",
+        target: src,
+        meta: { durationMs: Date.now() - start, source: src, destination: dest },
+      });
     }
   },
 };

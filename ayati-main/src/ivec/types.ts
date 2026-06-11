@@ -1,7 +1,14 @@
 import type { LlmProvider } from "../core/contracts/provider.js";
 import type { ControllerPrompts } from "../context/types.js";
 import type { ToolExecutor } from "../skills/tool-executor.js";
-import type { ToolDefinition } from "../skills/types.js";
+import type {
+  ArtifactRef,
+  AssertionResult,
+  ToolDefinition,
+  ToolOperationStatus,
+  ToolResultV2,
+  VerifiedFact,
+} from "../skills/types.js";
 import type { AgentUiContext } from "../ui/context.js";
 import type { ExternalSkillBroker } from "../skills/external/broker.js";
 import type { ExternalSkillRegistry } from "../skills/external/registry.js";
@@ -326,6 +333,12 @@ export interface ActToolCallRecord {
   outputTruncated?: boolean;
   error?: string;
   meta?: Record<string, unknown>;
+  result?: ToolResultV2;
+  operationStatus?: ToolOperationStatus;
+  code?: string;
+  artifacts?: ArtifactRef[];
+  verifiedFacts?: VerifiedFact[];
+  assertionResults?: AssertionResult[];
 }
 
 export interface ActOutput {

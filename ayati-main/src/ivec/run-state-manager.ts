@@ -2,6 +2,13 @@ import { appendFile, readFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import type {
+  ArtifactRef,
+  AssertionResult,
+  ToolOperationStatus,
+  ToolResultV2,
+  VerifiedFact,
+} from "../skills/types.js";
+import type {
   StepSummary,
   StepExpectationCheckStatus,
   TaskProgressState,
@@ -24,6 +31,12 @@ export interface StepRecordToolCall {
   outputTruncated?: boolean;
   error?: string;
   meta?: Record<string, unknown>;
+  result?: ToolResultV2;
+  operationStatus?: ToolOperationStatus;
+  code?: string;
+  artifacts?: ArtifactRef[];
+  verifiedFacts?: VerifiedFact[];
+  assertionResults?: AssertionResult[];
 }
 
 export interface StepRecord {

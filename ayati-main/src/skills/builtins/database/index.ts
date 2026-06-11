@@ -1,4 +1,5 @@
-import type { SkillDefinition, ToolDefinition, ToolResult } from "../../types.js";
+import type { ArtifactRef, SkillDefinition, ToolContractAssertion, ToolDefinition, ToolResult } from "../../types.js";
+import { commonAnnotations, errorResult, genericObjectOutputSchema, okJsonResult, succeededContract } from "../contract-helpers.js";
 import {
   addColumns,
   createTable,
@@ -58,18 +59,138 @@ const DATABASE_ROW_OBJECT_SCHEMA: Record<string, unknown> = {
 };
 
 function buildSuccessResult(output: unknown, meta?: Record<string, unknown>): ToolResult {
-  return {
-    ok: true,
-    output: JSON.stringify(output, null, 2),
+  const artifacts = databaseArtifacts(output, meta);
+  return okJsonResult({
+    structuredContent: output,
+    code: "DATABASE_OPERATION_SUCCEEDED",
+    message: "Database operation succeeded.",
     ...(meta ? { meta } : {}),
-  };
+    ...(artifacts.length > 0 ? { artifacts } : {}),
+  });
 }
 
 function buildFailureResult(error: string): ToolResult {
+  const isValidation = error.startsWith("Invalid input:");
+  return errorResult({
+    code: isValidation ? "DATABASE_INPUT_INVALID" : "DATABASE_OPERATION_FAILED",
+    message: error,
+    category: isValidation ? "validation" : undefined,
+    retryable: isValidation,
+    recoverable: true,
+    suggestedNextActions: isValidation
+      ? ["Fix the database tool arguments and retry."]
+      : ["Inspect the database error, schema, and SQL, then retry with corrected input."],
+  });
+}
+
+function databaseArtifacts(output: unknown, meta?: Record<string, unknown>): ArtifactRef[] {
+  const artifacts: ArtifactRef[] = [];
+  const dbPath = isPlainObject(output) && typeof output["dbPath"] === "string"
+    ? output["dbPath"]
+    : typeof meta?.["dbPath"] === "string"
+      ? meta["dbPath"]
+      : undefined;
+  const table = isPlainObject(output) && typeof output["table"] === "string"
+    ? output["table"]
+    : typeof meta?.["table"] === "string"
+      ? meta["table"]
+      : undefined;
+  const newName = isPlainObject(output) && typeof output["newName"] === "string"
+    ? output["newName"]
+    : typeof meta?.["newName"] === "string"
+      ? meta["newName"]
+      : undefined;
+
+  if (table) {
+    artifacts.push({ kind: "table", id: table, metadata: { dbPath } });
+  }
+  if (newName && newName !== table) {
+    artifacts.push({ kind: "table", id: newName, metadata: { dbPath } });
+  }
+  return artifacts;
+}
+
+type DatabaseContractMode = "read" | "write" | "destructive" | "raw";
+
+function withDatabaseContract(tool: ToolDefinition, mode: DatabaseContractMode): ToolDefinition {
+  const readOnly = mode === "read";
   return {
-    ok: false,
-    error,
+    ...tool,
+    outputSchema: genericObjectOutputSchema,
+    annotations: commonAnnotations({
+      domain: "database",
+      readOnly,
+      mutatesWorkspace: !readOnly,
+      destructive: mode === "destructive" || mode === "raw",
+      idempotent: readOnly,
+      retrySafe: readOnly,
+    }),
+    resultContract: succeededContract({
+      assertions: databaseContractAssertions(tool.name),
+      artifacts: [
+        { kind: "table", path: "$.result.structuredContent.table" },
+        { kind: "table", path: "$.result.structuredContent.newName" },
+      ],
+      progressFacts: [{
+        kind: readOnly ? "database_read" : "database_mutated",
+        path: "$.result.structuredContent.table",
+        message: readOnly ? "Database state read by database tool." : "Database state mutated by database tool.",
+      }],
+    }),
   };
+}
+
+function databaseContractAssertions(toolName: string): ToolContractAssertion[] {
+  const outputPresent: ToolContractAssertion = {
+    id: "database_output_present",
+    kind: "json_path_exists",
+    path: "$.result.structuredContent",
+  };
+  const tableExists = (id = "database_table_exists", tablePath = "$.result.structuredContent.table"): ToolContractAssertion => ({
+    id,
+    kind: "sqlite_table_exists",
+    tablePath,
+    dbPathPath: "$.input.dbPath",
+  });
+  const tableNotExists = (id = "database_table_absent", tablePath = "$.result.structuredContent.table"): ToolContractAssertion => ({
+    id,
+    kind: "sqlite_table_not_exists",
+    tablePath,
+    dbPathPath: "$.input.dbPath",
+  });
+
+  switch (toolName) {
+    case "db_create_table":
+    case "db_describe_table":
+    case "db_get_table_ddl":
+    case "db_add_columns":
+    case "db_update_rows":
+    case "db_delete_rows":
+      return [outputPresent, tableExists()];
+    case "db_insert_rows":
+      return [
+        outputPresent,
+        tableExists(),
+        {
+          id: "inserted_count_matches_input",
+          kind: "json_path_number_equals_count",
+          path: "$.result.structuredContent.insertedRowCount",
+          equalsPath: "$.input.rows",
+        },
+      ];
+    case "db_query":
+      return [outputPresent, tableExists("queried_table_exists", "$.input.table")];
+    case "db_rename_table":
+      return [
+        outputPresent,
+        tableNotExists("old_table_absent", "$.result.structuredContent.table"),
+        tableExists("new_table_exists", "$.result.structuredContent.newName"),
+      ];
+    case "db_drop_table":
+      return [outputPresent, tableNotExists()];
+    default:
+      return [outputPresent];
+  }
 }
 
 function createListTablesTool(): ToolDefinition {
@@ -671,18 +792,18 @@ const databaseSkill: SkillDefinition = {
   description: "SQLite database operations — inspect schema, create/alter tables, insert/update/delete rows, query data, and execute raw SQL.",
   promptBlock: DATABASE_PROMPT_BLOCK,
   tools: [
-    createListTablesTool(),
-    createDescribeTableTool(),
-    createGetTableDdlTool(),
-    createCreateTableTool(),
-    createRenameTableTool(),
-    createDropTableTool(),
-    createAddColumnsTool(),
-    createInsertRowsTool(),
-    createUpdateRowsTool(),
-    createDeleteRowsTool(),
-    createQueryTool(),
-    createExecuteSqlTool(),
+    withDatabaseContract(createListTablesTool(), "read"),
+    withDatabaseContract(createDescribeTableTool(), "read"),
+    withDatabaseContract(createGetTableDdlTool(), "read"),
+    withDatabaseContract(createCreateTableTool(), "write"),
+    withDatabaseContract(createRenameTableTool(), "write"),
+    withDatabaseContract(createDropTableTool(), "destructive"),
+    withDatabaseContract(createAddColumnsTool(), "write"),
+    withDatabaseContract(createInsertRowsTool(), "write"),
+    withDatabaseContract(createUpdateRowsTool(), "write"),
+    withDatabaseContract(createDeleteRowsTool(), "destructive"),
+    withDatabaseContract(createQueryTool(), "read"),
+    withDatabaseContract(createExecuteSqlTool(), "raw"),
   ],
 };
 

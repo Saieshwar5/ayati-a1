@@ -4,6 +4,7 @@ import { resolve as resolvePath } from "node:path";
 import { promisify } from "node:util";
 import type { SkillDefinition, ToolDefinition, ToolResult } from "../../types.js";
 import { resolveWorkspaceCwd } from "../../workspace-paths.js";
+import { commonAnnotations, errorResult, failureV2, genericObjectOutputSchema, okResult, succeededContract, successV2 } from "../contract-helpers.js";
 
 const execAsync = promisify(exec);
 
@@ -66,6 +67,29 @@ interface ErrnoExceptionLike {
   code?: string;
 }
 
+interface ShellOutputSnapshot {
+  stdout: string;
+  stderr: string;
+  output: string;
+  truncated: boolean;
+}
+
+interface ShellCommandResultInput {
+  ok: boolean;
+  code: string;
+  message: string;
+  command: string;
+  cwd?: string;
+  stdout: string;
+  stderr: string;
+  output: string;
+  truncated: boolean;
+  durationMs: number;
+  exitCode: number | null;
+  signal: string | null;
+  timedOut: boolean;
+}
+
 const shellSessions = new Map<string, ShellSessionState>();
 let nextSessionCounter = 1;
 
@@ -86,7 +110,18 @@ function toOutput(stdout: string, stderr: string): string {
   return [stdout, stderr].filter((v) => v.length > 0).join("\n").trim();
 }
 
-function getExecFailureOutput(err: unknown, maxOutputChars: number): { output: string; truncated: boolean } {
+function buildOutputSnapshot(stdout: string, stderr: string, maxOutputChars: number): ShellOutputSnapshot {
+  const combined = toOutput(stdout, stderr);
+  const truncated = combined.length > maxOutputChars;
+  return {
+    stdout,
+    stderr,
+    output: truncated ? `${combined.slice(0, maxOutputChars)}\n...[truncated]` : combined,
+    truncated,
+  };
+}
+
+function getExecFailureOutput(err: unknown, maxOutputChars: number): ShellOutputSnapshot {
   const execError = err as { stdout?: string | Buffer; stderr?: string | Buffer };
   const stdout = typeof execError?.stdout === "string"
     ? execError.stdout
@@ -98,11 +133,75 @@ function getExecFailureOutput(err: unknown, maxOutputChars: number): { output: s
     : Buffer.isBuffer(execError?.stderr)
       ? execError.stderr.toString()
       : "";
-  const combined = toOutput(stdout, stderr);
-  const truncated = combined.length > maxOutputChars;
+  return buildOutputSnapshot(stdout, stderr, maxOutputChars);
+}
+
+function execErrorExitCode(err: unknown): number | null {
+  const code = (err as { code?: unknown }).code;
+  return typeof code === "number" ? code : null;
+}
+
+function execErrorSignal(err: unknown): string | null {
+  const signal = (err as { signal?: unknown }).signal;
+  return typeof signal === "string" ? signal : null;
+}
+
+function execErrorTimedOut(err: unknown, message: string): boolean {
+  const killed = (err as { killed?: unknown }).killed;
+  return killed === true || message.toLowerCase().includes("timed out") || message.toLowerCase().includes("timeout");
+}
+
+function shellCommandResult(input: ShellCommandResultInput): ToolResult {
+  const meta = {
+    durationMs: input.durationMs,
+    exitCode: input.exitCode,
+    signal: input.signal,
+    timedOut: input.timedOut,
+    truncated: input.truncated,
+  };
+  const structuredContent = {
+    command: input.command,
+    ...(input.cwd ? { cwd: input.cwd } : {}),
+    exitCode: input.exitCode,
+    signal: input.signal,
+    stdout: input.stdout,
+    stderr: input.stderr,
+    output: input.output,
+    timedOut: input.timedOut,
+    durationMs: input.durationMs,
+    truncated: input.truncated,
+  };
+
+  if (input.ok) {
+    return okResult({
+      output: input.output,
+      meta,
+      v2: successV2({
+        code: input.code,
+        message: input.message,
+        structuredContent,
+        diagnostics: meta,
+      }),
+    });
+  }
+
   return {
-    output: truncated ? `${combined.slice(0, maxOutputChars)}\n...[truncated]` : combined,
-    truncated,
+    ok: false,
+    error: input.message,
+    output: input.output,
+    meta,
+    v2: failureV2({
+      code: input.code,
+      message: input.message,
+      category: input.timedOut ? "timeout" : "semantic",
+      retryable: input.timedOut,
+      recoverable: true,
+      suggestedNextActions: input.timedOut
+        ? ["Retry with a longer timeout or a narrower command."]
+        : ["Inspect stdout/stderr and rerun with corrected command or environment."],
+      structuredContent,
+      diagnostics: meta,
+    }),
   };
 }
 
@@ -136,7 +235,15 @@ function ensureSessionNotIdle(session: ShellSessionState): ToolResult | null {
   if (idleMs <= DEFAULT_SESSION_IDLE_TIMEOUT_MS) return null;
   session.process.kill("SIGTERM");
   session.exited = true;
-  return { ok: false, error: "Session expired due to inactivity. Start a new session." };
+  return errorResult({
+    code: "SHELL_SESSION_EXPIRED",
+    message: "Session expired due to inactivity. Start a new session.",
+    category: "timeout",
+    target: session.id,
+    retryable: true,
+    recoverable: true,
+    suggestedNextActions: ["Start a new shell session and rerun the needed command."],
+  });
 }
 
 function validateStringArray(value: unknown): value is string[] {
@@ -290,23 +397,42 @@ async function runExecCommand(
       shell: "/bin/bash",
       maxBuffer: Math.max(1_000_000, maxOutputChars * 4),
     });
-    const combined = toOutput(stdout, stderr);
-    const truncated = combined.length > maxOutputChars;
-    const output = truncated ? `${combined.slice(0, maxOutputChars)}\n...[truncated]` : combined;
-    return {
+    const durationMs = Date.now() - start;
+    const snapshot = buildOutputSnapshot(stdout, stderr, maxOutputChars);
+    return shellCommandResult({
       ok: true,
-      output,
-      meta: { durationMs: Date.now() - start, truncated },
-    };
+      code: "COMMAND_SUCCEEDED",
+      message: "Command exited with code 0.",
+      command: cmd,
+      cwd,
+      stdout: snapshot.stdout,
+      stderr: snapshot.stderr,
+      output: snapshot.output,
+      truncated: snapshot.truncated,
+      durationMs,
+      exitCode: 0,
+      signal: null,
+      timedOut: false,
+    });
   } catch (err) {
     const message = err instanceof Error ? err.message : "Unknown shell execution error";
     const failureOutput = getExecFailureOutput(err, maxOutputChars);
-    return {
+    const timedOut = execErrorTimedOut(err, message);
+    return shellCommandResult({
       ok: false,
-      error: message,
+      code: timedOut ? "COMMAND_TIMED_OUT" : "COMMAND_FAILED",
+      message,
+      command: cmd,
+      cwd,
+      stdout: failureOutput.stdout,
+      stderr: failureOutput.stderr,
       output: failureOutput.output,
-      meta: { durationMs: Date.now() - start, truncated: failureOutput.truncated },
-    };
+      truncated: failureOutput.truncated,
+      durationMs: Date.now() - start,
+      exitCode: execErrorExitCode(err),
+      signal: execErrorSignal(err),
+      timedOut,
+    });
   }
 }
 
@@ -349,39 +475,79 @@ async function runProcessCommand(
 
     child.on("error", (err: Error) => {
       clearTimeout(timeout);
-      finish({
+      finish(shellCommandResult({
         ok: false,
-        error: err.message,
-        meta: { durationMs: Date.now() - start },
-      });
+        code: "PROCESS_START_FAILED",
+        message: err.message,
+        command: [command, ...args].join(" "),
+        cwd,
+        stdout,
+        stderr,
+        output: toOutput(stdout, stderr),
+        truncated: false,
+        durationMs: Date.now() - start,
+        exitCode: null,
+        signal: null,
+        timedOut: false,
+      }));
     });
 
     child.on("close", (code, signal) => {
       clearTimeout(timeout);
       const output = toOutput(stdout, stderr);
+      const durationMs = Date.now() - start;
+      const commandLine = [command, ...args].join(" ");
       if (timedOut) {
-        finish({
+        finish(shellCommandResult({
           ok: false,
-          error: "Command timed out and was terminated.",
+          code: "COMMAND_TIMED_OUT",
+          message: "Command timed out and was terminated.",
+          command: commandLine,
+          cwd,
+          stdout,
+          stderr,
           output,
-          meta: { durationMs: Date.now() - start, signal },
-        });
+          truncated: false,
+          durationMs,
+          exitCode: code,
+          signal,
+          timedOut: true,
+        }));
         return;
       }
       if (code === 0) {
-        finish({
+        finish(shellCommandResult({
           ok: true,
+          code: "COMMAND_SUCCEEDED",
+          message: "Command exited with code 0.",
+          command: commandLine,
+          cwd,
+          stdout,
+          stderr,
           output,
-          meta: { durationMs: Date.now() - start, exitCode: code },
-        });
+          truncated: false,
+          durationMs,
+          exitCode: code,
+          signal,
+          timedOut: false,
+        }));
         return;
       }
-      finish({
+      finish(shellCommandResult({
         ok: false,
-        error: `Process exited with code ${code ?? "unknown"}.`,
+        code: "COMMAND_FAILED",
+        message: `Process exited with code ${code ?? "unknown"}.`,
+        command: commandLine,
+        cwd,
+        stdout,
+        stderr,
         output,
-        meta: { durationMs: Date.now() - start, exitCode: code, signal },
-      });
+        truncated: false,
+        durationMs,
+        exitCode: code,
+        signal,
+        timedOut: false,
+      }));
     });
   });
 }
@@ -392,6 +558,60 @@ function preflightShellCommand(
   const resolvedCwd = resolveWorkspaceCwd(cwd);
   return { ok: true, resolvedCwd };
 }
+
+const shellCommandOutputSchema = {
+  type: "object",
+  required: ["command", "exitCode", "stdout", "stderr", "output", "timedOut", "durationMs", "truncated"],
+  properties: {
+    command: { type: "string" },
+    cwd: { type: "string" },
+    exitCode: { type: ["integer", "null"] },
+    signal: { type: ["string", "null"] },
+    stdout: { type: "string" },
+    stderr: { type: "string" },
+    output: { type: "string" },
+    timedOut: { type: "boolean" },
+    durationMs: { type: "integer" },
+    truncated: { type: "boolean" },
+  },
+};
+
+const shellCommandAnnotations = commonAnnotations({
+  domain: "shell",
+  readOnly: false,
+  mutatesWorkspace: true,
+  mutatesExternalWorld: true,
+  idempotent: false,
+  retrySafe: false,
+  longRunning: false,
+});
+
+const shellCommandContract = succeededContract({
+  assertions: [
+    {
+      id: "exit_code_zero",
+      kind: "json_path_equals",
+      path: "$.result.structuredContent.exitCode",
+      value: 0,
+    },
+    {
+      id: "not_timed_out",
+      kind: "json_path_equals",
+      path: "$.result.structuredContent.timedOut",
+      value: false,
+    },
+  ],
+});
+
+const shellSessionAnnotations = commonAnnotations({
+  domain: "shell",
+  readOnly: false,
+  mutatesWorkspace: true,
+  mutatesExternalWorld: true,
+  idempotent: false,
+  retrySafe: false,
+  longRunning: true,
+});
 
 export const shellExecTool: ToolDefinition = {
   name: "shell",
@@ -406,6 +626,9 @@ export const shellExecTool: ToolDefinition = {
       maxOutputChars: { type: "number" },
     },
   },
+  outputSchema: shellCommandOutputSchema,
+  annotations: shellCommandAnnotations,
+  resultContract: shellCommandContract,
   selectionHints: {
     tags: ["shell", "terminal", "command", "search", "find", "system"],
     aliases: ["shell_exec", "run_command", "terminal_command"],
@@ -438,6 +661,9 @@ export const shellRunScriptTool: ToolDefinition = {
       maxOutputChars: { type: "number" },
     },
   },
+  outputSchema: shellCommandOutputSchema,
+  annotations: shellCommandAnnotations,
+  resultContract: shellCommandContract,
   selectionHints: {
     tags: ["shell", "script", "bash", "automation"],
     aliases: ["run_script", "execute_script"],
@@ -457,14 +683,38 @@ export const shellRunScriptTool: ToolDefinition = {
       fileStats = await stat(scriptPath);
     } catch (err) {
       if (isErrnoException(err) && err.code === "ENOENT") {
-        return { ok: false, error: `Script not found: ${scriptPath}` };
+        return errorResult({
+          code: "SCRIPT_NOT_FOUND",
+          message: `Script not found: ${scriptPath}`,
+          category: "missing_path",
+          target: scriptPath,
+          retryable: true,
+          recoverable: true,
+          suggestedNextActions: ["Check the script path or create the script before retrying."],
+        });
       }
 
       const message = err instanceof Error ? err.message : "Unable to inspect script path.";
-      return { ok: false, error: `Unable to inspect script path: ${message}` };
+      return errorResult({
+        code: "SCRIPT_INSPECT_FAILED",
+        message: `Unable to inspect script path: ${message}`,
+        category: "unknown",
+        target: scriptPath,
+        retryable: false,
+        recoverable: true,
+        suggestedNextActions: ["Inspect the script path and permissions before retrying."],
+      });
     }
     if (!fileStats.isFile()) {
-      return { ok: false, error: "scriptPath must point to a regular file." };
+      return errorResult({
+        code: "SCRIPT_PATH_NOT_FILE",
+        message: "scriptPath must point to a regular file.",
+        category: "validation",
+        target: scriptPath,
+        retryable: true,
+        recoverable: true,
+        suggestedNextActions: ["Retry with a path to a regular script file."],
+      });
     }
     const timeoutMs = capWithDefault(parsed.timeoutMs, DEFAULT_TIMEOUT_MS);
     const maxOutputChars = capWithDefault(parsed.maxOutputChars, DEFAULT_MAX_OUTPUT_CHARS);
@@ -491,6 +741,22 @@ export const shellSessionStartTool: ToolDefinition = {
       maxOutputChars: { type: "number" },
     },
   },
+  outputSchema: genericObjectOutputSchema,
+  annotations: shellSessionAnnotations,
+  resultContract: succeededContract({
+    assertions: [
+      {
+        id: "session_id_present",
+        kind: "json_path_exists",
+        path: "$.result.structuredContent.sessionId",
+      },
+      {
+        id: "session_running_state_present",
+        kind: "json_path_exists",
+        path: "$.result.structuredContent.running",
+      },
+    ],
+  }),
   selectionHints: {
     tags: ["shell", "interactive", "session"],
     aliases: ["terminal_session_start", "shell_start"],
@@ -553,15 +819,31 @@ export const shellSessionStartTool: ToolDefinition = {
     shellSessions.set(sessionId, session);
     await sleep(waitToPolicy(parsed.waitMs, 150));
     const output = consumePendingOutput(session);
-    return {
-      ok: true,
+    const structuredContent = {
+      sessionId,
+      command: parsed.cmd,
+      ...(preflight.resolvedCwd ? { cwd: preflight.resolvedCwd } : {}),
       output,
-      meta: {
-        sessionId,
-        running: !session.exited,
-        createdAt: session.createdAt,
-      },
+      running: !session.exited,
+      createdAt: session.createdAt,
+      exitCode: session.exitCode,
+      signal: session.signal,
     };
+    const meta = {
+      sessionId,
+      running: !session.exited,
+      createdAt: session.createdAt,
+    };
+    return okResult({
+      output,
+      meta,
+      v2: successV2({
+        code: "SHELL_SESSION_STARTED",
+        message: `Started shell session: ${sessionId}`,
+        structuredContent,
+        diagnostics: meta,
+      }),
+    });
   },
 };
 
@@ -579,6 +861,15 @@ export const shellSessionWriteTool: ToolDefinition = {
       waitMs: { type: "number" },
     },
   },
+  outputSchema: genericObjectOutputSchema,
+  annotations: shellSessionAnnotations,
+  resultContract: succeededContract({
+    assertions: [{
+      id: "session_id_present",
+      kind: "json_path_exists",
+      path: "$.result.structuredContent.sessionId",
+    }],
+  }),
   selectionHints: {
     tags: ["shell", "interactive", "session"],
     aliases: ["terminal_session_write", "shell_poll"],
@@ -591,7 +882,17 @@ export const shellSessionWriteTool: ToolDefinition = {
     if ("ok" in parsed) return parsed;
 
     const session = shellSessions.get(parsed.sessionId);
-    if (!session) return { ok: false, error: `Unknown shell session: ${parsed.sessionId}` };
+    if (!session) {
+      return errorResult({
+        code: "SHELL_SESSION_NOT_FOUND",
+        message: `Unknown shell session: ${parsed.sessionId}`,
+        category: "missing_path",
+        target: parsed.sessionId,
+        retryable: true,
+        recoverable: true,
+        suggestedNextActions: ["Start a new shell session or use a valid active sessionId."],
+      });
+    }
 
     const idleError = ensureSessionNotIdle(session);
     if (idleError) return idleError;
@@ -610,16 +911,32 @@ export const shellSessionWriteTool: ToolDefinition = {
     await sleep(waitToPolicy(parsed.waitMs, 120));
     const output = consumePendingOutput(session);
 
-    return {
-      ok: true,
+    const structuredContent = {
+      sessionId: session.id,
       output,
-      meta: {
-        sessionId: session.id,
-        running: !session.exited,
-        exitCode: session.exitCode,
-        signal: session.signal,
-      },
+      running: !session.exited,
+      exitCode: session.exitCode,
+      signal: session.signal,
+      inputSent: parsed.input !== undefined,
+      closeStdin: parsed.closeStdin === true,
+      signalSent: parsed.signal ?? null,
     };
+    const meta = {
+      sessionId: session.id,
+      running: !session.exited,
+      exitCode: session.exitCode,
+      signal: session.signal,
+    };
+    return okResult({
+      output,
+      meta,
+      v2: successV2({
+        code: "SHELL_SESSION_WRITTEN",
+        message: `Updated shell session: ${session.id}`,
+        structuredContent,
+        diagnostics: meta,
+      }),
+    });
   },
 };
 
@@ -635,6 +952,23 @@ export const shellSessionCloseTool: ToolDefinition = {
       waitMs: { type: "number" },
     },
   },
+  outputSchema: genericObjectOutputSchema,
+  annotations: shellSessionAnnotations,
+  resultContract: succeededContract({
+    assertions: [
+      {
+        id: "session_id_present",
+        kind: "json_path_exists",
+        path: "$.result.structuredContent.sessionId",
+      },
+      {
+        id: "session_closed",
+        kind: "json_path_equals",
+        path: "$.result.structuredContent.running",
+        value: false,
+      },
+    ],
+  }),
   selectionHints: {
     tags: ["shell", "interactive", "session"],
     aliases: ["terminal_session_close", "shell_stop"],
@@ -647,7 +981,17 @@ export const shellSessionCloseTool: ToolDefinition = {
     if ("ok" in parsed) return parsed;
 
     const session = shellSessions.get(parsed.sessionId);
-    if (!session) return { ok: false, error: `Unknown shell session: ${parsed.sessionId}` };
+    if (!session) {
+      return errorResult({
+        code: "SHELL_SESSION_NOT_FOUND",
+        message: `Unknown shell session: ${parsed.sessionId}`,
+        category: "missing_path",
+        target: parsed.sessionId,
+        retryable: true,
+        recoverable: true,
+        suggestedNextActions: ["Start a new shell session or use a valid active sessionId."],
+      });
+    }
 
     if (!session.exited) {
       session.process.kill(parsed.force ? "SIGKILL" : "SIGTERM");
@@ -662,16 +1006,30 @@ export const shellSessionCloseTool: ToolDefinition = {
     const output = consumePendingOutput(session);
     shellSessions.delete(session.id);
 
-    return {
-      ok: true,
+    const structuredContent = {
+      sessionId: session.id,
       output,
-      meta: {
-        sessionId: session.id,
-        exitCode: session.exitCode,
-        signal: session.signal,
-        running: false,
-      },
+      exitCode: session.exitCode,
+      signal: session.signal,
+      running: false,
+      force: parsed.force === true,
     };
+    const meta = {
+      sessionId: session.id,
+      exitCode: session.exitCode,
+      signal: session.signal,
+      running: false,
+    };
+    return okResult({
+      output,
+      meta,
+      v2: successV2({
+        code: "SHELL_SESSION_CLOSED",
+        message: `Closed shell session: ${session.id}`,
+        structuredContent,
+        diagnostics: meta,
+      }),
+    });
   },
 };
 

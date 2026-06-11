@@ -1,6 +1,7 @@
 import { mkdir } from "node:fs/promises";
 import type { ToolDefinition, ToolResult } from "../../types.js";
 import { resolveWorkspacePath } from "../../workspace-paths.js";
+import { commonAnnotations, errorResultFromUnknown, okResult, succeededContract, successV2 } from "../contract-helpers.js";
 import { validateCreateDirectoryInput } from "./validators.js";
 
 export const createDirectoryTool: ToolDefinition = {
@@ -17,6 +18,35 @@ export const createDirectoryTool: ToolDefinition = {
       },
     },
   },
+  outputSchema: {
+    type: "object",
+    required: ["requestedPath", "dirPath", "recursive"],
+    properties: {
+      requestedPath: { type: "string" },
+      dirPath: { type: "string" },
+      recursive: { type: "boolean" },
+    },
+  },
+  annotations: commonAnnotations({
+    domain: "filesystem",
+    readOnly: false,
+    mutatesWorkspace: true,
+    idempotent: true,
+    retrySafe: true,
+  }),
+  resultContract: succeededContract({
+    assertions: [{
+      id: "created_directory_exists",
+      kind: "file_exists",
+      path: "$.result.structuredContent.dirPath",
+    }],
+    artifacts: [{ kind: "directory", path: "$.result.structuredContent.dirPath" }],
+    progressFacts: [{
+      kind: "directory_created",
+      path: "$.result.structuredContent.dirPath",
+      message: "Directory created by create_directory.",
+    }],
+  }),
   selectionHints: {
     tags: ["filesystem", "directory", "mkdir", "create"],
     aliases: ["make_directory", "mkdir"],
@@ -34,14 +64,31 @@ export const createDirectoryTool: ToolDefinition = {
     try {
       await mkdir(dirPath, { recursive: parsed.recursive });
 
-      return {
-        ok: true,
-        output: `Created directory: ${dirPath}`,
-        meta: { durationMs: Date.now() - start, dirPath },
+      const durationMs = Date.now() - start;
+      const structuredContent = {
+        requestedPath: parsed.path,
+        dirPath,
+        recursive: parsed.recursive,
       };
+      const meta = { durationMs, dirPath };
+      return okResult({
+        output: `Created directory: ${dirPath}`,
+        meta,
+        v2: successV2({
+          code: "DIRECTORY_CREATED",
+          message: `Created directory: ${dirPath}`,
+          structuredContent,
+          artifacts: [{ kind: "directory", path: dirPath }],
+          diagnostics: meta,
+        }),
+      });
     } catch (err) {
-      const message = err instanceof Error ? err.message : "Unknown filesystem error";
-      return { ok: false, error: message, meta: { durationMs: Date.now() - start } };
+      return errorResultFromUnknown({
+        err,
+        fallbackMessage: "Unknown filesystem error",
+        target: dirPath,
+        meta: { durationMs: Date.now() - start, dirPath },
+      });
     }
   },
 };

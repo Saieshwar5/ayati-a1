@@ -30,6 +30,7 @@ import {
   deriveExecutionStatus,
   isDeterministicSuccessTool,
 } from "./verification-gates.js";
+import { reduceVerifiedTaskProgress } from "./verification-contracts/progress-reducer.js";
 import { formatToolResult, formatValidationError } from "./tool-helpers.js";
 import type { ManagedDocumentManifest, PreparedAttachmentSummary } from "../documents/types.js";
 import { recordOptimizationEvent, recordRunMetric } from "./metrics.js";
@@ -142,6 +143,12 @@ export async function executeStep(
           outputTruncated: call.outputTruncated,
           error: call.error,
           meta: call.meta,
+          result: call.result,
+          operationStatus: call.operationStatus,
+          code: call.code,
+          artifacts: call.artifacts,
+          verifiedFacts: call.verifiedFacts,
+          assertionResults: call.assertionResults,
         })),
         finalText: actOut.finalText,
       },
@@ -289,9 +296,10 @@ function buildOutputPreview(output: string, maxChars: number): string {
 }
 
 function collectActArtifacts(toolCalls: ActToolCallRecord[]): string[] {
-  return toolCalls
-    .map((call) => call.rawOutputPath)
-    .filter((path): path is string => typeof path === "string" && path.trim().length > 0);
+  return uniqueStrings(toolCalls.flatMap((call) => [
+    call.rawOutputPath,
+    ...(call.artifacts ?? []).map((artifact) => artifact.path ?? artifact.uri ?? artifact.id),
+  ]).filter((path): path is string => typeof path === "string" && path.trim().length > 0));
 }
 
 async function executeSingleTool(
@@ -346,10 +354,33 @@ async function executeSingleTool(
     throw error;
   }
   if (!result.ok) {
-    return { tool: toolName, input, output: result.output ?? "", error: result.error ?? "Tool execution failed", meta: result.meta };
+    return {
+      tool: toolName,
+      input,
+      output: result.output ?? "",
+      error: result.error ?? "Tool execution failed",
+      meta: result.meta,
+      result: result.v2,
+      operationStatus: result.v2?.operationStatus,
+      code: result.v2?.code,
+      artifacts: result.v2?.artifacts,
+      verifiedFacts: result.v2?.verification?.facts,
+      assertionResults: result.v2?.verification?.assertions,
+    };
   }
 
-  return { tool: toolName, input, output: result.output ?? "", meta: result.meta };
+  return {
+    tool: toolName,
+    input,
+    output: result.output ?? "",
+    meta: result.meta,
+    result: result.v2,
+    operationStatus: result.v2?.operationStatus,
+    code: result.v2?.code,
+    artifacts: result.v2?.artifacts,
+    verifiedFacts: result.v2?.verification?.facts,
+    assertionResults: result.v2?.verification?.assertions,
+  };
 }
 
 async function executePlannedCall(
@@ -602,6 +633,8 @@ interface StepContractCheckResult {
   status: StepExpectationCheckStatus;
   summary: string;
   evidenceItems: string[];
+  verifiedFacts?: string[];
+  artifacts?: string[];
 }
 
 function checkStepVerificationContract(
@@ -615,6 +648,11 @@ function checkStepVerificationContract(
       summary: `Verification contract failed: execution status is ${executionStatus}.`,
       evidenceItems: [`executionStatus=${executionStatus}`],
     };
+  }
+
+  const toolContractResult = checkToolContractVerifications(actOut);
+  if (toolContractResult) {
+    return toolContractResult;
   }
 
   const unsupportedTools = actOut.toolCalls
@@ -662,6 +700,58 @@ function checkStepVerificationContract(
   };
 }
 
+function checkToolContractVerifications(actOut: ActOutput): StepContractCheckResult | null {
+  if (actOut.toolCalls.length === 0) {
+    return null;
+  }
+  const verifications = actOut.toolCalls.map((call) => call.result?.verification);
+  if (verifications.every((verification) => verification === undefined)) {
+    return null;
+  }
+  if (verifications.some((verification) => verification === undefined)) {
+    return null;
+  }
+
+  const failedCalls = actOut.toolCalls.filter((call) => call.result?.verification?.status === "failed");
+  if (failedCalls.length > 0) {
+    return {
+      status: "failed",
+      summary: `Verification contract failed: ${failedCalls.map((call) => `${call.tool}:${call.result?.verification?.summary ?? "failed"}`).join("; ")}`,
+      evidenceItems: failedCalls.flatMap((call) => (
+        call.assertionResults?.map((assertion) => `${call.tool}.${assertion.id}: ${assertion.message}`) ?? []
+      )),
+    };
+  }
+
+  const skippedCalls = actOut.toolCalls.filter((call) => call.result?.verification?.status === "skipped");
+  if (skippedCalls.length > 0) {
+    return {
+      status: "skipped",
+      summary: `Verification contract skipped: ${skippedCalls.map((call) => `${call.tool}:${call.result?.verification?.summary ?? "skipped"}`).join("; ")}`,
+      evidenceItems: skippedCalls.map((call) => `${call.tool}: contract skipped`),
+    };
+  }
+
+  const evidenceItems = actOut.toolCalls.flatMap((call) => (
+    call.assertionResults?.map((assertion) => `${call.tool}.${assertion.id}: ${assertion.message}`) ?? []
+  ));
+  const verifiedFacts = actOut.toolCalls.flatMap((call) => (
+    call.verifiedFacts?.map((fact) => fact.message) ?? []
+  ));
+  const artifacts = actOut.toolCalls.flatMap((call) => (
+    (call.artifacts ?? []).map((artifact) => artifact.path ?? artifact.uri ?? artifact.id)
+      .filter((artifact): artifact is string => typeof artifact === "string" && artifact.trim().length > 0)
+  ));
+
+  return {
+    status: "passed",
+    summary: `Verification contract passed from tool-owned assertions for ${actOut.toolCalls.map((call) => call.tool).join(", ")}.`,
+    evidenceItems,
+    verifiedFacts,
+    artifacts,
+  };
+}
+
 function buildContractVerificationSuccess(
   directive: StepDirective,
   actOut: ActOutput,
@@ -679,8 +769,8 @@ function buildContractVerificationSuccess(
     summary: contractCheck.summary,
     evidenceSummary: contractCheck.evidenceItems.join("; "),
     evidenceItems: contractCheck.evidenceItems,
-    newFacts: contractCheck.evidenceItems,
-    artifacts: [...new Set([...usedRawArtifacts, ...directive.verification.expected_artifacts])],
+    newFacts: [...contractCheck.evidenceItems, ...(contractCheck.verifiedFacts ?? [])],
+    artifacts: [...new Set([...usedRawArtifacts, ...directive.verification.expected_artifacts, ...(contractCheck.artifacts ?? [])])],
     usedRawArtifacts,
     expectationCheckStatus: contractCheck.status,
     expectationCheckSummary: contractCheck.summary,
@@ -705,7 +795,7 @@ function buildContractVerificationFailure(
     evidenceSummary: contractCheck.summary,
     evidenceItems: contractCheck.evidenceItems,
     newFacts: [],
-    artifacts: [...new Set([...usedRawArtifacts, ...directive.verification.expected_artifacts])],
+    artifacts: [...new Set([...usedRawArtifacts, ...directive.verification.expected_artifacts, ...(contractCheck.artifacts ?? [])])],
     usedRawArtifacts,
     expectationCheckStatus: contractCheck.status,
     expectationCheckSummary: contractCheck.summary,
@@ -866,27 +956,8 @@ function buildLocalTaskProgress(
   deps: ExecutorDeps,
   stepResult: VerifyOutput,
 ): TaskProgressState {
-  const mergedFacts = uniqueStrings(stepResult.newFacts);
   const previous = deps.taskContext.previousTaskProgress;
-  const status: TaskStatus = stepResult.passed ? "likely_done" : previous.status;
-  const completedMilestones = stepResult.passed
-    ? uniqueStrings([...(previous.completedMilestones ?? []), stepResult.summary]).slice(0, 6)
-    : previous.completedMilestones;
-  const blockers = stepResult.passed ? [] : previous.blockers;
-
-  return {
-    status,
-    progressSummary: stepResult.summary || previous.progressSummary,
-    currentFocus: stepResult.passed
-      ? "Confirm whether the goal is fully satisfied."
-      : previous.currentFocus,
-    completedMilestones,
-    openWork: previous.openWork,
-    blockers,
-    keyFacts: uniqueStrings([...previous.keyFacts, ...mergedFacts]).slice(0, 8),
-    evidence: uniqueStrings([...previous.evidence, ...stepResult.evidenceItems]).slice(0, 6),
-    userInputNeeded: status === "needs_user_input" ? previous.userInputNeeded : undefined,
-  };
+  return reduceVerifiedTaskProgress(previous, stepResult);
 }
 
 // --- Helpers ---
@@ -1959,8 +2030,11 @@ function formatPromptList(values: string[]): string {
   return values.length > 0 ? values.join("; ") : "(none)";
 }
 
-function buildStepNewFacts(_toolCalls: ActToolCallRecord[], verifyFacts: string[]): string[] {
-  return uniqueStrings(verifyFacts);
+function buildStepNewFacts(toolCalls: ActToolCallRecord[], verifyFacts: string[]): string[] {
+  const toolFacts = toolCalls.flatMap((call) => (
+    (call.verifiedFacts ?? []).map((fact) => fact.message)
+  ));
+  return uniqueStrings([...verifyFacts, ...toolFacts]);
 }
 
 function buildStepStateUpdates(toolCalls: ActToolCallRecord[]): PreparedAttachmentStateUpdate[] {

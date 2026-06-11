@@ -1,6 +1,7 @@
 import { readFile, stat } from "node:fs/promises";
 import type { ToolDefinition, ToolResult } from "../../types.js";
 import { resolveWorkspacePath } from "../../workspace-paths.js";
+import { commonAnnotations, errorResult, errorResultFromUnknown, okResult, succeededContract, successV2 } from "../contract-helpers.js";
 import { validateReadFileInput } from "./validators.js";
 
 const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10 MB
@@ -18,6 +19,44 @@ export const readFileTool: ToolDefinition = {
       limit: { type: "number", description: "Maximum number of lines to read." },
     },
   },
+  outputSchema: {
+    type: "object",
+    required: ["requestedPath", "filePath", "content", "lineCount", "truncated", "sizeBytes"],
+    properties: {
+      requestedPath: { type: "string" },
+      filePath: { type: "string" },
+      content: { type: "string" },
+      lineCount: { type: "integer" },
+      truncated: { type: "boolean" },
+      sizeBytes: { type: "integer" },
+      offset: { type: "integer" },
+      limit: { type: "integer" },
+    },
+  },
+  annotations: commonAnnotations({
+    domain: "filesystem",
+    readOnly: true,
+  }),
+  resultContract: succeededContract({
+    assertions: [
+      {
+        id: "read_file_exists",
+        kind: "file_exists",
+        path: "$.result.structuredContent.filePath",
+      },
+      {
+        id: "read_content_present",
+        kind: "json_path_exists",
+        path: "$.result.structuredContent.content",
+      },
+    ],
+    artifacts: [{ kind: "file", path: "$.result.structuredContent.filePath" }],
+    progressFacts: [{
+      kind: "file_read",
+      path: "$.result.structuredContent.filePath",
+      message: "File read by read_file.",
+    }],
+  }),
   selectionHints: {
     tags: ["filesystem", "read", "file", "content"],
     aliases: ["cat_file", "open_file"],
@@ -35,14 +74,28 @@ export const readFileTool: ToolDefinition = {
     try {
       const info = await stat(filePath);
       if (!info.isFile()) {
-        return { ok: false, error: `Not a file: ${filePath}`, meta: { durationMs: Date.now() - start } };
+        return errorResult({
+          code: "NOT_A_FILE",
+          message: `Not a file: ${filePath}`,
+          category: "semantic",
+          target: filePath,
+          retryable: true,
+          recoverable: true,
+          suggestedNextActions: ["Use list_directory for directories or choose a regular file path."],
+          meta: { durationMs: Date.now() - start, filePath },
+        });
       }
       if (info.size > MAX_FILE_SIZE) {
-        return {
-          ok: false,
-          error: `File too large: ${(info.size / 1024 / 1024).toFixed(1)}MB exceeds 10MB limit.`,
-          meta: { durationMs: Date.now() - start },
-        };
+        return errorResult({
+          code: "FILE_TOO_LARGE",
+          message: `File too large: ${(info.size / 1024 / 1024).toFixed(1)}MB exceeds 10MB limit.`,
+          category: "validation",
+          target: filePath,
+          retryable: true,
+          recoverable: true,
+          suggestedNextActions: ["Retry with offset and limit if a smaller line slice is enough, or use a streaming/summary tool."],
+          meta: { durationMs: Date.now() - start, filePath, sizeBytes: info.size },
+        });
       }
 
       const raw = await readFile(filePath, "utf-8");
@@ -63,19 +116,41 @@ export const readFileTool: ToolDefinition = {
         truncated = true;
       }
 
-      return {
-        ok: true,
-        output,
-        meta: {
-          durationMs: Date.now() - start,
-          filePath,
-          lineCount: lines.length,
-          truncated,
-        },
+      const durationMs = Date.now() - start;
+      const structuredContent = {
+        requestedPath: parsed.path,
+        filePath,
+        content: output,
+        lineCount: lines.length,
+        truncated,
+        sizeBytes: info.size,
+        ...(parsed.offset !== undefined ? { offset: parsed.offset } : {}),
+        ...(parsed.limit !== undefined ? { limit: parsed.limit } : {}),
       };
+      const meta = {
+        durationMs,
+        filePath,
+        lineCount: lines.length,
+        truncated,
+      };
+      return okResult({
+        output,
+        meta,
+        v2: successV2({
+          code: "FILE_READ",
+          message: `Read file: ${filePath}`,
+          structuredContent,
+          artifacts: [{ kind: "file", path: filePath }],
+          diagnostics: meta,
+        }),
+      });
     } catch (err) {
-      const message = err instanceof Error ? err.message : "Unknown filesystem error";
-      return { ok: false, error: message, meta: { durationMs: Date.now() - start } };
+      return errorResultFromUnknown({
+        err,
+        fallbackMessage: "Unknown filesystem error",
+        target: filePath,
+        meta: { durationMs: Date.now() - start, filePath },
+      });
     }
   },
 };

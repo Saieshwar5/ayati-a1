@@ -1,4 +1,5 @@
-import type { SkillDefinition, ToolDefinition, ToolResult } from "../../types.js";
+import type { ArtifactRef, SkillDefinition, ToolDefinition, ToolResult } from "../../types.js";
+import { commonAnnotations, errorResult, genericObjectOutputSchema, okResult, succeededContract, successV2 } from "../contract-helpers.js";
 import {
   computeNextTriggerForSchedule,
   parsePulseExpression,
@@ -159,7 +160,14 @@ function createStore(): PulseStore {
 }
 
 function fail(message: string): ToolResult {
-  return { ok: false, error: `Invalid input: ${message}` };
+  return errorResult({
+    code: "PULSE_INPUT_INVALID",
+    message: `Invalid input: ${message}`,
+    category: "validation",
+    retryable: true,
+    recoverable: true,
+    suggestedNextActions: ["Fix the pulse action arguments and retry."],
+  });
 }
 
 function isObject(value: unknown): value is Record<string, unknown> {
@@ -763,6 +771,48 @@ function toJsonOutput(payload: unknown): string {
   return `${text.slice(0, MAX_OUTPUT_CHARS)}\n...[truncated]`;
 }
 
+function pulseArtifacts(payload: unknown): ArtifactRef[] {
+  if (!isObject(payload)) {
+    return [];
+  }
+  const action = typeof payload["action"] === "string" ? payload["action"] : undefined;
+  const item = isObject(payload["item"]) ? payload["item"] : undefined;
+  const id = typeof item?.["id"] === "string"
+    ? item["id"]
+    : typeof payload["id"] === "string"
+      ? payload["id"]
+      : undefined;
+  return id ? [{ kind: "unknown", id, label: "pulse_item", metadata: { action } }] : [];
+}
+
+function pulseSuccess(payload: Record<string, unknown>, meta: Record<string, unknown>): ToolResult {
+  const action = typeof payload["action"] === "string" ? payload["action"] : "unknown";
+  const artifacts = pulseArtifacts(payload);
+  return okResult({
+    output: toJsonOutput(payload),
+    meta,
+    v2: successV2({
+      code: `PULSE_${action.toUpperCase()}_SUCCEEDED`,
+      message: `Pulse ${action} succeeded.`,
+      structuredContent: payload,
+      ...(artifacts.length > 0 ? { artifacts } : {}),
+      diagnostics: meta,
+    }),
+  });
+}
+
+function pulseNotFound(id: string, message = `Pulse item not found: ${id}`): ToolResult {
+  return errorResult({
+    code: "PULSE_ITEM_NOT_FOUND",
+    message,
+    category: "missing_path",
+    target: id,
+    retryable: true,
+    recoverable: true,
+    suggestedNextActions: ["List pulse items to find a valid id, then retry the action."],
+  });
+}
+
 function buildPreview(
   item: PulseItem | null,
   schedule: PulseSchedule | null,
@@ -828,6 +878,27 @@ export const pulseTool: ToolDefinition = {
       duration: { type: "string", description: "Snooze duration like '30 minutes'." },
     },
   },
+  outputSchema: genericObjectOutputSchema,
+  annotations: commonAnnotations({
+    domain: "pulse",
+    readOnly: false,
+    mutatesWorkspace: true,
+    destructive: true,
+    idempotent: false,
+    retrySafe: false,
+  }),
+  resultContract: succeededContract({
+    assertions: [{
+      id: "pulse_action_present",
+      kind: "json_path_exists",
+      path: "$.result.structuredContent.action",
+    }],
+    progressFacts: [{
+      kind: "pulse_action_completed",
+      path: "$.result.structuredContent.action",
+      message: "Pulse action completed.",
+    }],
+  }),
   selectionHints: {
     tags: ["reminder", "calendar", "schedule", "time", "date", "alarm", "task", "recurring-task"],
     aliases: ["set_reminder", "calendar", "remind_me", "schedule_reminder", "schedule_task", "set_recurring_task"],
@@ -853,20 +924,12 @@ export const pulseTool: ToolDefinition = {
     try {
       if (parsed.action === "now") {
         const snapshot = store.getNowSnapshot(parsed.timezone);
-        return {
-          ok: true,
-          output: toJsonOutput({ action: "now", snapshot }),
-          meta: { action: "now" },
-        };
+        return pulseSuccess({ action: "now", snapshot }, { action: "now" });
       }
 
       if (parsed.action === "health") {
         const health: PulseClockHealth = store.getClockHealth(parsed.timezone);
-        return {
-          ok: true,
-          output: toJsonOutput({ action: "health", health }),
-          meta: { action: "health", syncHealthy: health.syncHealthy },
-        };
+        return pulseSuccess({ action: "health", health }, { action: "health", syncHealthy: health.syncHealthy });
       }
 
       if (parsed.action === "list") {
@@ -876,95 +939,71 @@ export const pulseTool: ToolDefinition = {
         if (isToolResult(limit)) return limit;
         const items = await store.listItems({ clientId, status, kind: parsed.kind, limit });
         const reminders = await store.listReminders({ clientId, status: status === "paused" ? "active" : status, limit });
-        return {
-          ok: true,
-          output: toJsonOutput({
+        return pulseSuccess({
             action: "list",
             total: items.length,
             items: items.map((item) => formatItem(item)),
             reminders: reminders.map((reminder) => formatReminder(reminder)),
-          }),
-          meta: { action: "list", count: items.length },
-        };
+          }, { action: "list", count: items.length });
       }
 
       if (parsed.action === "get") {
         const details = await store.getItemDetails(clientId, parsed.id);
         if (!details) {
-          return { ok: false, error: `Pulse item not found: ${parsed.id}` };
+          return pulseNotFound(parsed.id);
         }
-        return {
-          ok: true,
-          output: toJsonOutput({
+        return pulseSuccess({
             action: "get",
             item: formatItem(details.item),
             occurrences: details.occurrences,
             history: details.history,
-          }),
-          meta: { action: "get", itemId: details.item.id },
-        };
+          }, { action: "get", itemId: details.item.id });
       }
 
       if (parsed.action === "pause") {
         const item = await store.pauseItem(clientId, parsed.id);
         if (!item) {
-          return { ok: false, error: `Pulse item not found: ${parsed.id}` };
+          return pulseNotFound(parsed.id);
         }
-        return {
-          ok: true,
-          output: toJsonOutput({
+        return pulseSuccess({
             action: "pause",
             item: formatItem(item),
             ...(item.kind === "reminder" || item.kind === "task" ? { reminder: formatLegacyReminderFromItem(item) } : {}),
-          }),
-          meta: { action: "pause", itemId: item.id },
-        };
+          }, { action: "pause", itemId: item.id });
       }
 
       if (parsed.action === "resume") {
         const item = await store.resumeItem(clientId, parsed.id);
         if (!item) {
-          return { ok: false, error: `Pulse item not found: ${parsed.id}` };
+          return pulseNotFound(parsed.id);
         }
         const preview = buildPreview(item, null, item.timezone, 5, item.startAtUtc);
-        return {
-          ok: true,
-          output: toJsonOutput({
+        return pulseSuccess({
             action: "resume",
             item: formatItem(item),
             ...(item.kind === "reminder" || item.kind === "task" ? { reminder: formatLegacyReminderFromItem(item) } : {}),
             preview: formatPreview(preview),
-          }),
-          meta: { action: "resume", itemId: item.id },
-        };
+          }, { action: "resume", itemId: item.id });
       }
 
       if (parsed.action === "cancel") {
         const item = await store.cancelItem(clientId, parsed.id);
         if (!item) {
-          return { ok: false, error: `Pulse item not found: ${parsed.id}` };
+          return pulseNotFound(parsed.id);
         }
-        return {
-          ok: true,
-          output: toJsonOutput({
+        return pulseSuccess({
             action: "cancel",
             item: formatItem(item),
             ...(item.kind === "reminder" || item.kind === "task" ? { reminder: formatLegacyReminderFromItem(item) } : {}),
-          }),
-          meta: { action: "cancel", itemId: item.id },
-        };
+          }, { action: "cancel", itemId: item.id });
       }
 
       if (parsed.action === "delete") {
         const deleted = await store.deleteItem(clientId, parsed.id);
         if (!deleted) {
-          return { ok: false, error: `Pulse item not found: ${parsed.id}` };
+          return pulseNotFound(parsed.id);
         }
-        return {
-          ok: true,
-          output: toJsonOutput({ action: "delete", id: parsed.id, deleted: true }),
-          meta: { action: "delete", itemId: parsed.id },
-        };
+        return pulseSuccess({ action: "delete", id: parsed.id, deleted: true }, { action: "delete", itemId: parsed.id });
       }
 
       if (parsed.action === "snooze") {
@@ -972,19 +1011,15 @@ export const pulseTool: ToolDefinition = {
         if (isToolResult(durationMs)) return durationMs;
         const item = await store.snoozeItem(clientId, parsed.id, durationMs);
         if (!item) {
-          return { ok: false, error: `Pulse item not found or not snoozable: ${parsed.id}` };
+          return pulseNotFound(parsed.id, `Pulse item not found or not snoozable: ${parsed.id}`);
         }
         const preview = buildPreview(item, null, item.timezone, 5, item.startAtUtc);
-        return {
-          ok: true,
-          output: toJsonOutput({
+        return pulseSuccess({
             action: "snooze",
             item: formatItem(item),
             ...(item.kind === "reminder" || item.kind === "task" ? { reminder: formatLegacyReminderFromItem(item) } : {}),
             preview: formatPreview(preview),
-          }),
-          meta: { action: "snooze", itemId: item.id, durationMs },
-        };
+          }, { action: "snooze", itemId: item.id, durationMs });
       }
 
       if (parsed.action === "dismiss") {
@@ -995,19 +1030,15 @@ export const pulseTool: ToolDefinition = {
           now,
         });
         if (!item) {
-          return { ok: false, error: `Pulse item not found or not dismissable: ${parsed.id}` };
+          return pulseNotFound(parsed.id, `Pulse item not found or not dismissable: ${parsed.id}`);
         }
         const preview = buildPreview(item, null, item.timezone, 5, item.startAtUtc);
-        return {
-          ok: true,
-          output: toJsonOutput({
+        return pulseSuccess({
             action: "dismiss",
             item: formatItem(item),
             ...(item.kind === "reminder" || item.kind === "task" ? { reminder: formatLegacyReminderFromItem(item) } : {}),
             preview: formatPreview(preview),
-          }),
-          meta: { action: "dismiss", itemId: item.id },
-        };
+          }, { action: "dismiss", itemId: item.id });
       }
 
       if (parsed.action === "preview") {
@@ -1016,14 +1047,13 @@ export const pulseTool: ToolDefinition = {
         if (parsed.id) {
           const details = await store.getItemDetails(clientId, parsed.id);
           if (!details) {
-            return { ok: false, error: `Pulse item not found: ${parsed.id}` };
+            return pulseNotFound(parsed.id);
           }
           const preview = buildPreview(details.item, null, details.item.timezone, count, details.item.startAtUtc);
-          return {
-            ok: true,
-            output: toJsonOutput({ action: "preview", item: formatItem(details.item), preview: formatPreview(preview) }),
-            meta: { action: "preview", itemId: details.item.id, count },
-          };
+          return pulseSuccess(
+            { action: "preview", item: formatItem(details.item), preview: formatPreview(preview) },
+            { action: "preview", itemId: details.item.id, count },
+          );
         }
 
         const timezone = resolveTimeZone(parsed.timezone);
@@ -1032,18 +1062,17 @@ export const pulseTool: ToolDefinition = {
         const startAt = parseIsoDate(parsed.startAt, "startAt");
         if (isToolResult(startAt)) return startAt;
         const preview = buildPreview(null, scheduleInfo?.schedule ?? null, timezone, count, startAt ?? null);
-        return {
-          ok: true,
-          output: toJsonOutput({ action: "preview", preview: formatPreview(preview), schedule: scheduleInfo?.schedule ?? null }),
-          meta: { action: "preview", count },
-        };
+        return pulseSuccess(
+          { action: "preview", preview: formatPreview(preview), schedule: scheduleInfo?.schedule ?? null },
+          { action: "preview", count },
+        );
       }
 
       const existingItem = parsed.action === "update"
         ? await store.getItem(clientId, parsed.id)
         : null;
       if (parsed.action === "update" && !existingItem) {
-        return { ok: false, error: `Pulse item not found: ${parsed.id}` };
+        return pulseNotFound(parsed.id);
       }
 
       const timezone = resolveTimeZone(parsed.timezone ?? existingItem?.timezone);
@@ -1097,20 +1126,16 @@ export const pulseTool: ToolDefinition = {
           allDay: parsed.allDay,
         });
         const preview = buildPreview(item, null, timezone, 5, item.startAtUtc);
-        return {
-          ok: true,
-          output: toJsonOutput({
+        return pulseSuccess({
             action: "create",
             item: formatItem(item),
             ...(item.kind === "reminder" || item.kind === "task" ? { reminder: formatLegacyReminderFromItem(item) } : {}),
             preview: formatPreview(preview),
-          }),
-          meta: {
+          }, {
             action: "create",
             itemId: item.id,
             nextDueAt: item.nextDueAt,
-          },
-        };
+          });
       }
 
       const item = await store.updateItem(clientId, parsed.id, {
@@ -1127,28 +1152,28 @@ export const pulseTool: ToolDefinition = {
         ...(scheduleInfo?.nextTriggerAt !== undefined ? { nextDueAt: scheduleInfo.nextTriggerAt } : {}),
       });
       if (!item) {
-        return { ok: false, error: `Pulse item not found: ${parsed.id}` };
+        return pulseNotFound(parsed.id);
       }
       const preview = buildPreview(item, null, timezone, 5, item.startAtUtc);
-      return {
-        ok: true,
-        output: toJsonOutput({
+      return pulseSuccess({
           action: "update",
           item: formatItem(item),
           ...(item.kind === "reminder" || item.kind === "task" ? { reminder: formatLegacyReminderFromItem(item) } : {}),
           preview: formatPreview(preview),
-        }),
-        meta: {
+        }, {
           action: "update",
           itemId: item.id,
           nextDueAt: item.nextDueAt,
-        },
-      };
+        });
     } catch (err) {
-      return {
-        ok: false,
-        error: err instanceof Error ? err.message : "Pulse tool failed",
-      };
+      return errorResult({
+        code: "PULSE_OPERATION_FAILED",
+        message: err instanceof Error ? err.message : "Pulse tool failed",
+        category: "unknown",
+        retryable: false,
+        recoverable: true,
+        suggestedNextActions: ["Inspect the pulse input, schedule state, and storage health before retrying."],
+      });
     } finally {
       store.close();
     }

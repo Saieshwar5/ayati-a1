@@ -1,5 +1,6 @@
 import { devWarn } from "../shared/index.js";
 import type { AgentUiContext } from "../ui/context.js";
+import { applyToolContract } from "./contracts/tool-contract-registry.js";
 import type { ToolDefinition, ToolExecutionContext, ToolResult } from "./types.js";
 
 export type ValidationResult =
@@ -211,7 +212,7 @@ export function createToolExecutor(tools: ToolDefinition[]): ToolExecutor {
       }
 
       try {
-        return await tool.execute(input, context);
+        return await applyToolContract(tool, input, await tool.execute(input, context));
       } catch (err) {
         return { ok: false, error: formatToolExecutionError(toolName, err) };
       }
