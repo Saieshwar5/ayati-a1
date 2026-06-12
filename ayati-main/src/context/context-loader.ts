@@ -8,6 +8,8 @@ import { assemblePromptInput } from "./load-system-prompt-input.js";
 export async function loadContext(): Promise<string> {
   const staticCtx = await loadStaticContext();
   const input = assemblePromptInput(staticCtx, {
+    recentExchanges: [],
+    recentSystemEvents: [],
     conversationTurns: [],
     previousSessionSummary: "",
   });

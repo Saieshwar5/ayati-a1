@@ -12,6 +12,7 @@ type PersistedLoopState = Omit<
   | "attentionShelf"
   | "activeSessionPath"
   | "sessionStatus"
+  | "recentExchanges"
   | "sessionHistory"
   | "recentTaskSummaries"
   | "activeSessionAttachments"
@@ -94,6 +95,7 @@ export function readState(runPath: string): Partial<LoopState> | null {
   const parsed = JSON.parse(raw) as Partial<LoopState>;
   if (parsed && typeof parsed === "object") {
     delete (parsed as Record<string, unknown>)["sessionHistory"];
+    delete (parsed as Record<string, unknown>)["recentExchanges"];
     delete (parsed as Record<string, unknown>)["recentRunLedgers"];
     delete (parsed as Record<string, unknown>)["recentTaskSummaries"];
     delete (parsed as Record<string, unknown>)["activeSessionAttachments"];
@@ -112,6 +114,7 @@ export function readState(runPath: string): Partial<LoopState> | null {
 function buildPersistedLoopState(state: LoopState): PersistedLoopState {
   const {
     sessionHistory: _sessionHistory,
+    recentExchanges: _recentExchanges,
     recentTaskSummaries: _recentTaskSummaries,
     activeSessionAttachments: _activeSessionAttachments,
     recentSystemActivity: _recentSystemActivity,

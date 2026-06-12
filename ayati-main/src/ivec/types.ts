@@ -19,6 +19,7 @@ import type {
   SessionMemory,
   MemoryRunHandle,
   ConversationTurn,
+  ConversationExchange,
   FocusShelfItem,
   PromptTaskSummary,
   SessionStatus,
@@ -114,6 +115,7 @@ export interface LoopState {
   attentionShelf?: FocusShelfItem[];
   activeSessionPath?: string;
   sessionStatus?: SessionStatus | null;
+  recentExchanges: ConversationExchange[];
   sessionHistory: ConversationTurn[];
   recentTaskSummaries: PromptTaskSummary[];
   recentSystemActivity: SystemActivityItem[];

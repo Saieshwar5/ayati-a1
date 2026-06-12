@@ -19,6 +19,19 @@ export interface ConversationTurn {
   assistantResponseKind?: AssistantResponseKind;
 }
 
+export interface ConversationExchange {
+  runId: string;
+  user: {
+    timestamp: string;
+    content: string;
+  };
+  assistant?: {
+    timestamp: string;
+    content: string;
+    responseKind?: AssistantResponseKind;
+  };
+}
+
 export type AgentResponseKind = "reply" | "feedback" | "notification" | "none";
 export type AssistantResponseKind = Exclude<AgentResponseKind, "none">;
 
@@ -62,6 +75,9 @@ export type SessionRotationReason = "daily_cutover" | "context_threshold";
 export type SessionHandoffPhase = "inactive" | "preparing" | "ready" | "finalized";
 
 export interface SessionStatus {
+  sessionId: string;
+  sessionDate: string;
+  activeSessionPath: string;
   contextPercent: number;
   turns: number;
   sessionAgeMinutes: number;
@@ -146,6 +162,8 @@ export interface SessionHandoffArtifact {
 }
 
 export interface PromptMemoryContext {
+  recentExchanges: ConversationExchange[];
+  recentSystemEvents: SystemActivityItem[];
   conversationTurns: ConversationTurn[];
   previousSessionSummary: string;
   personalMemorySnapshot?: string;

@@ -1,0 +1,157 @@
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
+import { afterEach, describe, expect, it } from "vitest";
+import { SessionManager } from "../../src/memory/session-manager.js";
+
+const tempDirs: string[] = [];
+
+function tempDataDir(): string {
+  const dir = mkdtempSync(join(tmpdir(), "ayati-daily-session-"));
+  tempDirs.push(dir);
+  return dir;
+}
+
+function manager(dataDir: string, now: () => Date): SessionManager {
+  return new SessionManager({
+    dataDir,
+    now,
+    sessionTimezone: "UTC",
+  });
+}
+
+afterEach(() => {
+  for (const dir of tempDirs.splice(0)) {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+describe("daily session manager", () => {
+  it("stores one date-partitioned daily session with user, assistant, and system events", async () => {
+    let now = new Date("2026-06-12T09:00:00.000Z");
+    const memory = manager(tempDataDir(), () => now);
+    memory.initialize("local");
+
+    const run = memory.beginRun("local", "hello");
+    now = new Date("2026-06-12T09:00:01.000Z");
+    memory.recordAssistantFinal("local", run.runId, run.sessionId, "hi", { responseKind: "reply" });
+    const systemRun = memory.beginSystemRun("local", {
+      source: "pulse",
+      event: "reminder_due",
+      eventId: "evt-1",
+      summary: "Reminder due: standup",
+    });
+
+    await memory.flushPersistence();
+    const ctx = memory.getPromptMemoryContext();
+
+    expect(ctx.recentExchanges).toHaveLength(1);
+    expect(ctx.recentExchanges[0]).toMatchObject({
+      runId: run.runId,
+      user: { content: "hello" },
+      assistant: { content: "hi", responseKind: "reply" },
+    });
+    expect(ctx.recentSystemEvents).toHaveLength(1);
+    expect(ctx.recentSystemEvents[0]).toMatchObject({
+      source: "pulse",
+      event: "reminder_due",
+      eventId: "evt-1",
+      summary: "Reminder due: standup",
+    });
+    expect(systemRun.sessionId).toBe(run.sessionId);
+    expect(ctx.activeSessionPath).toMatch(/^sessions\/2026-06-12\/.+\.jsonl$/);
+
+    const sessionFile = join(memoryDataDirFromContext(ctx.activeSessionPath), "");
+    const content = readFileSync(sessionFile, "utf8");
+    expect(content).toContain("\"type\":\"user_message\"");
+    expect(content).toContain("\"type\":\"assistant_response\"");
+    expect(content).toContain("\"type\":\"system_event\"");
+    expect(content).not.toContain("task_summary");
+    expect(content).not.toContain("tool_call");
+  });
+
+  it("keeps only the last 5 hot exchanges and rebuilds them after restart", async () => {
+    let now = new Date("2026-06-12T10:00:00.000Z");
+    const dataDir = tempDataDir();
+    const memory = manager(dataDir, () => now);
+    memory.initialize("local");
+
+    for (let index = 0; index < 7; index++) {
+      now = new Date(`2026-06-12T10:00:0${index}.000Z`);
+      const run = memory.beginRun("local", `user ${index}`);
+      memory.recordAssistantFinal("local", run.runId, run.sessionId, `assistant ${index}`, { responseKind: "reply" });
+    }
+    await memory.shutdown();
+
+    const restored = manager(dataDir, () => new Date("2026-06-12T11:00:00.000Z"));
+    restored.initialize("local");
+    const ctx = restored.getPromptMemoryContext();
+
+    expect(ctx.recentExchanges.map((exchange) => exchange.user.content)).toEqual([
+      "user 2",
+      "user 3",
+      "user 4",
+      "user 5",
+      "user 6",
+    ]);
+    expect(ctx.recentExchanges.at(-1)?.assistant?.content).toBe("assistant 6");
+    await restored.shutdown();
+  });
+
+  it("creates a new session when the local date changes", async () => {
+    let now = new Date("2026-06-12T23:59:00.000Z");
+    const dataDir = tempDataDir();
+    const memory = manager(dataDir, () => now);
+    memory.initialize("local");
+
+    const first = memory.beginRun("local", "before midnight");
+    now = new Date("2026-06-13T00:01:00.000Z");
+    const second = memory.beginRun("local", "after midnight");
+
+    expect(second.sessionId).not.toBe(first.sessionId);
+    expect(memory.getPromptMemoryContext().activeSessionPath).toContain("sessions/2026-06-13/");
+    await memory.shutdown();
+  });
+
+  it("keeps SQLite session metadata limited to daily-session lookup fields", async () => {
+    const dataDir = tempDataDir();
+    const memory = manager(dataDir, () => new Date("2026-06-12T09:00:00.000Z"));
+    memory.initialize("local");
+    memory.beginRun("local", "hello");
+    await memory.shutdown();
+
+    const db = new DatabaseSync(join(dataDir, "memory.sqlite"));
+    try {
+      const columns = db
+        .prepare("PRAGMA table_info(sessions_meta)")
+        .all()
+        .map((row) => String((row as Record<string, unknown>)["name"]));
+
+      expect(columns).toEqual([
+        "session_id",
+        "client_id",
+        "status",
+        "session_path",
+        "opened_at",
+        "closed_at",
+        "close_reason",
+        "last_event_at",
+        "updated_at",
+      ]);
+    } finally {
+      db.close();
+    }
+  });
+});
+
+function memoryDataDirFromContext(activeSessionPath: string | undefined): string {
+  if (!activeSessionPath) {
+    throw new Error("expected active session path");
+  }
+  const dir = tempDirs[tempDirs.length - 1];
+  if (!dir) {
+    throw new Error("expected temp data dir");
+  }
+  return join(dir, activeSessionPath);
+}

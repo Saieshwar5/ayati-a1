@@ -69,6 +69,8 @@ export const noopSessionMemory: SessionMemory = {
   },
   getPromptMemoryContext(): PromptMemoryContext {
     return {
+      recentExchanges: [],
+      recentSystemEvents: [],
       conversationTurns: [],
       previousSessionSummary: "",
       personalMemorySnapshot: "",

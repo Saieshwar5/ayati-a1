@@ -1,71 +1,31 @@
-import { describe, it, expect } from "vitest";
+import { describe, expect, it } from "vitest";
 import { renderSessionStatusSection } from "../../../src/prompt/sections/session-status.js";
 
 describe("renderSessionStatusSection", () => {
-  const baseStatus = {
-    startedAt: "2026-04-16T00:00:00.000Z",
-    handoffPhase: "inactive" as const,
-    pendingRotationReason: null,
-  };
-
   it("returns empty string for null status", () => {
     expect(renderSessionStatusSection(null)).toBe("");
   });
 
-  it("renders correct markdown for valid status", () => {
+  it("renders daily session metadata", () => {
     const result = renderSessionStatusSection({
-      ...baseStatus,
-      contextPercent: 42,
-      turns: 10,
-      sessionAgeMinutes: 5,
-    });
-
-    expect(result).toContain("# Session Status");
-    expect(result).toContain("context_usage: 42%");
-    expect(result).toContain("turns: 10");
-    expect(result).toContain("session_age: 5m");
-    expect(result).toContain("handoff_state: inactive");
-    expect(result).toContain("rotation_pending: none");
-  });
-
-  it("includes pressure message when context is high", () => {
-    const result = renderSessionStatusSection({
-      ...baseStatus,
-      contextPercent: 87,
-      turns: 20,
-      sessionAgeMinutes: 15,
-      handoffPhase: "finalized",
-      pendingRotationReason: "context_threshold",
-    });
-
-    expect(result).toContain("CRITICAL");
-    expect(result).toContain("Automatic rotation is pending");
-    expect(result).toContain("rotation_pending: context_threshold");
-  });
-
-  it("does not include pressure message below 50%", () => {
-    const result = renderSessionStatusSection({
-      ...baseStatus,
-      contextPercent: 30,
-      turns: 4,
-      sessionAgeMinutes: 2,
-    });
-
-    expect(result).toContain("# Session Status");
-    expect(result).not.toContain("INFO");
-    expect(result).not.toContain("WARNING");
-    expect(result).not.toContain("CRITICAL");
-  });
-
-  it("rounds context percent", () => {
-    const result = renderSessionStatusSection({
-      ...baseStatus,
-      contextPercent: 55.7,
+      sessionId: "s1",
+      sessionDate: "2026-06-12",
+      activeSessionPath: "sessions/2026-06-12/s1.jsonl",
+      contextPercent: 0,
       turns: 6,
-      sessionAgeMinutes: 3,
-      handoffPhase: "preparing",
+      sessionAgeMinutes: 12,
+      startedAt: "2026-06-12T09:00:00.000Z",
+      handoffPhase: "inactive",
+      pendingRotationReason: null,
     });
 
-    expect(result).toContain("context_usage: 56%");
+    expect(result).toContain("# Session Status");
+    expect(result).toContain("session_id: s1");
+    expect(result).toContain("session_date: 2026-06-12");
+    expect(result).toContain("session_path: sessions/2026-06-12/s1.jsonl");
+    expect(result).toContain("turns: 6");
+    expect(result).toContain("session_age: 12m");
+    expect(result).not.toContain("context_usage");
+    expect(result).not.toContain("handoff_state");
   });
 });

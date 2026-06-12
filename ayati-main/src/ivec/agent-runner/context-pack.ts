@@ -1,5 +1,6 @@
 import type {
   ActiveAttachmentRef,
+  ConversationExchange,
   ConversationTurn,
   FocusShelfItem,
   PromptTaskSummary,
@@ -31,6 +32,18 @@ export interface AgentContextPack {
     handoffPhase?: string;
     rotationPending?: string;
   };
+  recentActivity: Array<{
+    runId: string;
+    user: {
+      timestamp: string;
+      content: string;
+    };
+    assistant?: {
+      timestamp: string;
+      content: string;
+      responseKind?: string;
+    };
+  }>;
   attentionShelf: Array<{
     focusId: string;
     type: string;
@@ -110,6 +123,7 @@ export function buildAgentContextPack(state: LoopState): AgentContextPack {
       ? { activeLearningContext: truncate(state.activeLearningContext, LIMITS.learningChars) }
       : {}),
     recentSystemActivity: compactSystemActivity(state.recentSystemActivity),
+    recentActivity: compactRecentActivity(state.recentExchanges ?? []),
   };
 }
 
@@ -148,6 +162,23 @@ function compactConversation(turns: ConversationTurn[]): AgentContextPack["recen
     content: truncate(turn.content, LIMITS.textChars),
     ...(turn.runId ? { runId: turn.runId } : {}),
     ...(turn.assistantResponseKind ? { assistantResponseKind: turn.assistantResponseKind } : {}),
+  }));
+}
+
+function compactRecentActivity(exchanges: ConversationExchange[]): AgentContextPack["recentActivity"] {
+  return exchanges.slice(-LIMITS.recentExact).map((exchange) => ({
+    runId: exchange.runId,
+    user: {
+      timestamp: exchange.user.timestamp,
+      content: truncate(exchange.user.content, LIMITS.textChars),
+    },
+    ...(exchange.assistant ? {
+      assistant: {
+        timestamp: exchange.assistant.timestamp,
+        content: truncate(exchange.assistant.content, LIMITS.textChars),
+        ...(exchange.assistant.responseKind ? { responseKind: exchange.assistant.responseKind } : {}),
+      },
+    } : {}),
   }));
 }
 

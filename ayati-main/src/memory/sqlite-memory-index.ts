@@ -18,8 +18,6 @@ export interface SessionMetaRecord {
   openedAt: string;
   closedAt: string | null;
   closeReason: string | null;
-  parentSessionId: string | null;
-  handoffSummary: string | null;
   lastEventAt: string;
   updatedAt: string;
 }
@@ -29,8 +27,6 @@ export interface OpenSessionInput {
   clientId: string;
   sessionPath: string;
   openedAt: string;
-  parentSessionId?: string;
-  handoffSummary?: string;
 }
 
 export interface SqliteMemoryIndexOptions {
@@ -96,11 +92,9 @@ export class SqliteMemoryIndex {
         opened_at,
         closed_at,
         close_reason,
-        parent_session_id,
-        handoff_summary,
         last_event_at,
         updated_at
-      ) VALUES (?, ?, 'active', ?, ?, NULL, NULL, ?, ?, ?, ?)
+      ) VALUES (?, ?, 'active', ?, ?, NULL, NULL, ?, ?)
       ON CONFLICT(session_id) DO UPDATE SET
         client_id = excluded.client_id,
         status = 'active',
@@ -108,8 +102,6 @@ export class SqliteMemoryIndex {
         opened_at = excluded.opened_at,
         closed_at = NULL,
         close_reason = NULL,
-        parent_session_id = excluded.parent_session_id,
-        handoff_summary = excluded.handoff_summary,
         last_event_at = excluded.last_event_at,
         updated_at = excluded.updated_at
     `).run(
@@ -117,8 +109,6 @@ export class SqliteMemoryIndex {
       input.clientId,
       input.sessionPath,
       input.openedAt,
-      input.parentSessionId ?? null,
-      input.handoffSummary ?? null,
       input.openedAt,
       input.openedAt,
     );
@@ -129,7 +119,6 @@ export class SqliteMemoryIndex {
     clientId: string,
     sessionPath: string,
     resumedAt: string,
-    options?: { parentSessionId?: string; handoffSummary?: string },
   ): void {
     const db = this.requireDb();
 
@@ -161,19 +150,15 @@ export class SqliteMemoryIndex {
         opened_at,
         closed_at,
         close_reason,
-        parent_session_id,
-        handoff_summary,
         last_event_at,
         updated_at
-      ) VALUES (?, ?, 'active', ?, ?, NULL, NULL, ?, ?, ?, ?)
+      ) VALUES (?, ?, 'active', ?, ?, NULL, NULL, ?, ?)
       ON CONFLICT(session_id) DO UPDATE SET
         client_id = excluded.client_id,
         status = 'active',
         session_path = excluded.session_path,
         closed_at = NULL,
         close_reason = NULL,
-        parent_session_id = COALESCE(excluded.parent_session_id, sessions_meta.parent_session_id),
-        handoff_summary = COALESCE(excluded.handoff_summary, sessions_meta.handoff_summary),
         last_event_at = CASE
           WHEN sessions_meta.last_event_at > excluded.last_event_at THEN sessions_meta.last_event_at
           ELSE excluded.last_event_at
@@ -184,8 +169,6 @@ export class SqliteMemoryIndex {
       clientId,
       sessionPath,
       resumedAt,
-      options?.parentSessionId ?? null,
-      options?.handoffSummary ?? null,
       resumedAt,
       resumedAt,
     );
@@ -225,7 +208,6 @@ export class SqliteMemoryIndex {
     sessionId: string,
     closedAt: string,
     reason: string,
-    handoffSummary?: string,
   ): void {
     const db = this.requireDb();
     db.prepare(`
@@ -234,14 +216,12 @@ export class SqliteMemoryIndex {
         status = 'closed',
         closed_at = ?,
         close_reason = ?,
-        handoff_summary = COALESCE(?, handoff_summary),
         last_event_at = ?,
         updated_at = ?
       WHERE session_id = ?
     `).run(
       closedAt,
       reason,
-      handoffSummary ?? null,
       closedAt,
       closedAt,
       sessionId,
@@ -279,8 +259,6 @@ export class SqliteMemoryIndex {
         opened_at,
         closed_at,
         close_reason,
-        parent_session_id,
-        handoff_summary,
         last_event_at,
         updated_at
       FROM sessions_meta
@@ -305,8 +283,6 @@ export class SqliteMemoryIndex {
         opened_at,
         closed_at,
         close_reason,
-        parent_session_id,
-        handoff_summary,
         last_event_at,
         updated_at
       FROM sessions_meta
@@ -337,8 +313,6 @@ export class SqliteMemoryIndex {
       openedAt: row.opened_at,
       closedAt: row.closed_at,
       closeReason: row.close_reason,
-      parentSessionId: row.parent_session_id,
-      handoffSummary: row.handoff_summary,
       lastEventAt: row.last_event_at,
       updatedAt: row.updated_at,
     };
@@ -369,8 +343,6 @@ export class SqliteMemoryIndex {
           opened_at TEXT NOT NULL,
           closed_at TEXT,
           close_reason TEXT,
-          parent_session_id TEXT,
-          handoff_summary TEXT,
           last_event_at TEXT NOT NULL,
           updated_at TEXT NOT NULL
         );
@@ -402,6 +374,7 @@ export class SqliteMemoryIndex {
 
     const existing = new Set(rows.map((row) => row.name));
     if (existing.has("keywords_json")) return false;
+    if (existing.has("parent_session_id") || existing.has("handoff_summary")) return false;
 
     const required = [
       "session_id",
@@ -411,8 +384,6 @@ export class SqliteMemoryIndex {
       "opened_at",
       "closed_at",
       "close_reason",
-      "parent_session_id",
-      "handoff_summary",
       "last_event_at",
       "updated_at",
     ];
@@ -429,8 +400,6 @@ interface SqliteSessionMetaRow {
   opened_at: string;
   closed_at: string | null;
   close_reason: string | null;
-  parent_session_id: string | null;
-  handoff_summary: string | null;
   last_event_at: string;
   updated_at: string;
 }

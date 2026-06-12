@@ -494,6 +494,7 @@ function buildInitialState(deps: AgentLoopDeps, config: LoopConfig, runPath: str
     attentionShelf: [],
     activeSessionPath: "",
     sessionStatus: deps.sessionStatus ?? null,
+    recentExchanges: [],
     sessionHistory: [],
     recentTaskSummaries: [],
     recentSystemActivity: [],
@@ -529,6 +530,7 @@ function syncTransientMemoryContext(state: LoopState, deps: AgentLoopDeps): void
   state.attentionShelf = memCtx.attentionShelf ?? [];
   state.activeSessionPath = memCtx.activeSessionPath ?? "";
   state.sessionStatus = deps.sessionStatus ?? deps.sessionMemory.getSessionStatus?.() ?? null;
+  state.recentExchanges = memCtx.recentExchanges ?? [];
   state.sessionHistory = (memCtx.conversationTurns ?? []).filter((turn) => {
     if (state.inputKind !== "user_message") {
       return true;

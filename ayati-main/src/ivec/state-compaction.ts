@@ -83,6 +83,7 @@ function buildPersistedLikeStateView(state: LoopState): Omit<
   | "attentionShelf"
   | "activeSessionPath"
   | "sessionStatus"
+  | "recentExchanges"
   | "sessionHistory"
   | "recentTaskSummaries"
   | "activeSessionAttachments"
@@ -90,6 +91,7 @@ function buildPersistedLikeStateView(state: LoopState): Omit<
 > {
   const {
     sessionHistory: _sessionHistory,
+    recentExchanges: _recentExchanges,
     recentTaskSummaries: _recentTaskSummaries,
     activeSessionAttachments: _activeSessionAttachments,
     recentSystemActivity: _recentSystemActivity,

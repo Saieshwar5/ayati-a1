@@ -1,24 +1,10 @@
 import { randomUUID } from "node:crypto";
-import { resolve } from "node:path";
-import {
-  resolveRotationTimezone,
-  shouldPrepareSessionHandoff,
-  shouldRotateSessionForContext,
-} from "../ivec/session-rotation-policy.js";
-import { estimateTextTokens } from "../prompt/token-estimator.js";
-import { devWarn } from "../shared/index.js";
-import { buildSessionHandoff } from "./session-handoff.js";
-import { formatConversationTurnInline } from "./conversation-turn-format.js";
 import type {
   SessionMemory,
   SessionStatus,
   MemoryRunHandle,
   AssistantMessageRecordInput,
-  AssistantResponseKind,
-  FeedbackKind,
   TurnStatusRecordInput,
-  CreateSessionInput,
-  CreateSessionResult,
   ToolCallRecordInput,
   ToolCallResultRecordInput,
   AgentStepRecordInput,
@@ -28,35 +14,26 @@ import type {
   SystemEventOutcomeRecordInput,
   AssistantNotificationRecordInput,
   PromptMemoryContext,
+  ConversationExchange,
   ConversationTurn,
   ActiveAttachmentRecord,
   SessionLifecycleUpdateInput,
-  SessionRotationReason,
+  SystemActivityItem,
 } from "./types.js";
 import type {
   SessionEvent,
+  SessionOpenEvent,
   UserMessageEvent,
-  AssistantMessageEvent,
-  TurnStatusEvent,
-  ToolCallEvent,
-  ToolResultEvent,
-  RunFailureEvent,
-  AgentStepEvent,
-  ActiveAttachmentsEvent,
-  TaskSummaryEvent,
-  AssistantFeedbackEvent,
-  AssistantNotificationEvent,
-  SystemEventReceivedEvent,
-  SystemEventProcessedEvent,
+  AssistantResponseEvent,
+  SystemEventEntry,
 } from "./session-events.js";
-import { InMemorySession } from "./session.js";
 import { SessionPersistence } from "./session-persistence.js";
 import type { ActiveSessionInfo, SessionPersistenceOptions } from "./session-persistence.js";
 import { SqliteSystemEventStore } from "./system-event-store.js";
-import { FocusStore } from "./focus/index.js";
 
-const MIN_TURNS_FOR_CALLBACK = 2;
-const DEFAULT_CONTEXT_TOKEN_LIMIT = 120_000;
+const RECENT_EXCHANGE_LIMIT = 5;
+const RECENT_SYSTEM_EVENT_LIMIT = 5;
+const DEFAULT_SESSION_TIMEZONE = "Asia/Kolkata";
 
 export interface SessionCloseData {
   sessionId: string;
@@ -72,43 +49,29 @@ export interface MemoryManagerOptions extends SessionPersistenceOptions {
   now?: () => Date;
   onSessionClose?: (data: SessionCloseData) => void | Promise<void>;
   personalMemorySnapshotProvider?: (clientId: string) => string;
-  contextTokenLimit?: number;
-  memoryDetailMode?: "compact" | "debug";
+  sessionTimezone?: string;
 }
 
-type TimelineEvent =
-  | UserMessageEvent
-  | AssistantMessageEvent
-  | TurnStatusEvent
-  | ToolCallEvent
-  | ToolResultEvent
-  | RunFailureEvent
-  | AgentStepEvent
-  | ActiveAttachmentsEvent
-  | TaskSummaryEvent
-  | AssistantFeedbackEvent
-  | AssistantNotificationEvent
-  | SystemEventReceivedEvent
-  | SystemEventProcessedEvent;
-
-interface PreparedTaskSummaryPublication {
-  event: TaskSummaryEvent;
+interface HotSessionState {
+  clientId: string;
+  sessionId: string;
+  sessionDate: string;
+  sessionPath: string;
+  startedAt: string;
+  recentExchanges: ConversationExchange[];
+  recentSystemEvents: SystemActivityItem[];
 }
+
+type TimelineEvent = UserMessageEvent | AssistantResponseEvent | SystemEventEntry;
 
 export class MemoryManager implements SessionMemory {
   private readonly persistence: SessionPersistence;
   private readonly systemEventStore: SqliteSystemEventStore;
-  private readonly focusStore: FocusStore;
   private readonly nowProvider: () => Date;
-  private readonly onSessionCloseCallback?: (data: SessionCloseData) => void | Promise<void>;
   private readonly personalMemorySnapshotProvider?: (clientId: string) => string;
-  private readonly contextTokenLimit: number;
-  private readonly memoryDetailMode: "compact" | "debug";
-
-  private currentSession: InMemorySession | null = null;
-  private staticTokenBudget = 0;
+  private readonly sessionTimezone: string;
   private activeClientId = "";
-  private backgroundQueue: Promise<void> = Promise.resolve();
+  private currentSession: HotSessionState | null = null;
   private persistenceQueue: Promise<void> = Promise.resolve();
 
   constructor(options?: MemoryManagerOptions) {
@@ -121,93 +84,83 @@ export class MemoryManager implements SessionMemory {
       dataDir: options?.dataDir,
     });
     this.nowProvider = options?.now ?? (() => new Date());
-    this.focusStore = new FocusStore({
-      dbPath: options?.dbPath,
-      dataDir: options?.dataDir,
-      now: this.nowProvider,
-    });
-    this.onSessionCloseCallback = options?.onSessionClose;
     this.personalMemorySnapshotProvider = options?.personalMemorySnapshotProvider;
-    this.contextTokenLimit = options?.contextTokenLimit ?? DEFAULT_CONTEXT_TOKEN_LIMIT;
-    this.memoryDetailMode = options?.memoryDetailMode ?? "compact";
+    this.sessionTimezone = options?.sessionTimezone ?? DEFAULT_SESSION_TIMEZONE;
   }
 
   initialize(clientId: string): void {
     this.activeClientId = clientId;
     this.persistence.start();
     this.systemEventStore.start();
-    this.focusStore.start();
-    this.restoreActiveSession(clientId);
+    this.restoreTodaysSession(clientId);
   }
 
   async shutdown(): Promise<void> {
     if (this.currentSession) {
-      // Keep the current session active across graceful restart.
       this.persistence.writeActiveSessionMarker(
-        this.currentSession.id,
+        this.currentSession.sessionId,
         this.currentSession.sessionPath,
       );
     }
-
-    await this.flushAllQueues();
-
+    await this.flushPersistence();
     this.persistence.stop();
     this.systemEventStore.stop();
-    this.focusStore.stop();
     this.currentSession = null;
   }
 
   beginRun(clientId: string, userMessage: string): MemoryRunHandle {
     const nowIso = this.nowIso();
-    this.ensureOpenSession(clientId, nowIso);
-
-    const session = this.currentSession!;
+    const session = this.ensureTodaySession(clientId, nowIso);
     const runId = randomUUID();
-
     const event: UserMessageEvent = {
-      v: 2,
+      v: 1,
       ts: nowIso,
       type: "user_message",
-      sessionId: session.id,
+      sessionId: session.sessionId,
       sessionPath: session.sessionPath,
+      sessionDate: session.sessionDate,
       runId,
       content: userMessage,
     };
 
     this.appendTimelineEvent(event);
+    session.recentExchanges.push({
+      runId,
+      user: {
+        timestamp: nowIso,
+        content: userMessage,
+      },
+    });
+    trimTail(session.recentExchanges, RECENT_EXCHANGE_LIMIT);
 
-    return { sessionId: session.id, runId };
+    return { sessionId: session.sessionId, runId };
   }
 
   beginSystemRun(clientId: string, input: SystemEventRecordInput): MemoryRunHandle {
     const nowIso = this.nowIso();
-    this.ensureOpenSession(clientId, nowIso);
-
-    const session = this.currentSession!;
+    const session = this.ensureTodaySession(clientId, nowIso);
     const runId = randomUUID();
-
-    const event: SystemEventReceivedEvent = {
-      v: 2,
+    const summary = input.summary?.trim() || `${input.source}:${input.event}`;
+    const event: SystemEventEntry = {
+      v: 1,
       ts: nowIso,
-      type: "system_event_received",
-      sessionId: session.id,
+      type: "system_event",
+      sessionId: session.sessionId,
       sessionPath: session.sessionPath,
+      sessionDate: session.sessionDate,
       runId,
       source: input.source,
       event: input.event,
       eventId: input.eventId,
-      occurrenceId: input.occurrenceId,
-      reminderId: input.reminderId,
-      instruction: input.instruction,
-      scheduledFor: input.scheduledFor,
-      triggeredAt: input.triggeredAt,
+      summary,
       payload: input.payload,
     };
 
     this.appendTimelineEvent(event);
+    this.pushSystemEvent(session, event);
     this.systemEventStore.recordReceived({
       clientId,
-      sessionId: session.id,
+      sessionId: session.sessionId,
       runId,
       eventId: input.eventId,
       source: input.source,
@@ -219,158 +172,24 @@ export class MemoryManager implements SessionMemory {
       requestedAction: input.requestedAction,
       modeApplied: input.modeApplied ?? "analyze_notify",
       approvalState: input.approvalState ?? "not_needed",
-      summary: input.summary?.trim() || `${input.source}:${input.event}`,
+      summary,
       payload: input.payload,
       receivedAt: input.triggeredAt ?? nowIso,
     });
-    return { sessionId: session.id, runId };
+
+    return { sessionId: session.sessionId, runId };
   }
 
-  recordTurnStatus(clientId: string, input: TurnStatusRecordInput): void {
-    const nowIso = this.nowIso();
-    const session = this.ensureWritableSession(clientId, nowIso);
-
-    const event: TurnStatusEvent = {
-      v: 2,
-      ts: nowIso,
-      type: "turn_status",
-      sessionId: session.id,
-      sessionPath: session.sessionPath,
-      status: input.status,
-      note: input.note,
-    };
-
-    this.appendTimelineEvent(event);
+  recordTurnStatus(_clientId: string, _input: TurnStatusRecordInput): void {
+    return;
   }
 
-  createSession(clientId: string, input: CreateSessionInput): CreateSessionResult {
-    const nowIso = this.nowIso();
-    this.ensureOpenSession(clientId, nowIso);
-
-    const previousSession = this.currentSession!;
-    const previousSessionId = previousSession.id;
-    const reason = input.reason.trim().length > 0 ? input.reason.trim() : "agent_requested";
-    const source = input.source ?? "agent";
-    const confidence = input.confidence;
-    const normalizedReason = this.normalizeRotationReason(reason);
-    const handoffSummary = input.handoffSummary?.trim()
-      || this.finalizeSessionHandoff(previousSession, nowIso, input.timezone ?? null, normalizedReason).summary;
-    const nextSessionId = randomUUID();
-    const nextSessionPath = this.persistence.buildSessionPath(nowIso, nextSessionId);
-    const carriedAttachments = previousSession.getActiveAttachmentRecords(5);
-
-    this.closeSessionInternal(previousSession, nowIso, `session_switch:${reason}`, {
-      handoffSummary,
-      nextSessionId,
-      nextSessionPath,
-    });
-    this.currentSession = null;
-    this.createNewSession(clientId, nowIso, {
-      sessionId: nextSessionId,
-      sessionPath: nextSessionPath,
-      parentSessionId: previousSessionId,
-      handoffSummary,
-    });
-    const active = this.currentSession!;
-
-    if (carriedAttachments.length > 0) {
-      const event: ActiveAttachmentsEvent = {
-        v: 2,
-        ts: nowIso,
-        type: "active_attachments",
-        sessionId: active.id,
-        sessionPath: active.sessionPath,
-        runId: input.runId,
-        runPath: carriedAttachments[0]?.runPath ?? active.sessionPath,
-        action: "restored",
-        attachments: carriedAttachments.map((attachment) => ({
-          manifest: attachment.manifest,
-          summary: attachment.summary,
-          ...(attachment.detail ? { detail: attachment.detail } : {}),
-        })),
-      };
-      this.appendTimelineEvent(event);
-    }
-
-    if (handoffSummary) {
-      const handoffEvent: TurnStatusEvent = {
-        v: 2,
-        ts: nowIso,
-        type: "turn_status",
-        sessionId: active.id,
-        sessionPath: active.sessionPath,
-        status: "session_switched",
-        note: `handoff_from=${previousSessionId}; handoff_summary=${handoffSummary}`,
-      };
-      this.appendTimelineEvent(handoffEvent);
-    }
-
-    const event: TurnStatusEvent = {
-      v: 2,
-      ts: nowIso,
-      type: "turn_status",
-      sessionId: active.id,
-      sessionPath: active.sessionPath,
-      status: "session_switched",
-      note: `source=${source}; reason=${reason}${typeof confidence === "number" ? `; confidence=${confidence}` : ""}`,
-    };
-    this.appendTimelineEvent(event);
-
-    return {
-      previousSessionId,
-      sessionId: active.id,
-      sessionPath: active.sessionPath,
-    };
+  recordToolCall(_clientId: string, _input: ToolCallRecordInput): void {
+    return;
   }
 
-  recordToolCall(clientId: string, input: ToolCallRecordInput): void {
-    if (this.memoryDetailMode !== "debug") {
-      return;
-    }
-
-    const nowIso = this.nowIso();
-    const session = this.ensureWritableSession(clientId, nowIso);
-
-    const event: ToolCallEvent = {
-      v: 2,
-      ts: nowIso,
-      type: "tool_call",
-      sessionId: session.id,
-      sessionPath: session.sessionPath,
-      stepId: input.stepId,
-      toolCallId: input.toolCallId,
-      toolName: input.toolName,
-      args: input.args,
-    };
-
-    this.appendTimelineEvent(event);
-  }
-
-  recordToolResult(clientId: string, input: ToolCallResultRecordInput): void {
-    if (this.memoryDetailMode !== "debug") {
-      return;
-    }
-
-    const nowIso = this.nowIso();
-    const session = this.ensureWritableSession(clientId, nowIso);
-
-    const event: ToolResultEvent = {
-      v: 2,
-      ts: nowIso,
-      type: "tool_result",
-      sessionId: session.id,
-      sessionPath: session.sessionPath,
-      stepId: input.stepId,
-      toolCallId: input.toolCallId,
-      toolName: input.toolName,
-      status: input.status,
-      output: input.output ?? "",
-      errorMessage: input.errorMessage,
-      errorCode: input.errorCode,
-      durationMs: input.durationMs,
-    };
-
-    this.appendTimelineEvent(event);
+  recordToolResult(_clientId: string, _input: ToolCallResultRecordInput): void {
+    return;
   }
 
   recordAssistantFinal(
@@ -381,688 +200,316 @@ export class MemoryManager implements SessionMemory {
     metadata?: AssistantMessageRecordInput,
   ): void {
     const nowIso = this.nowIso();
-    const session = this.ensureWritableSession(clientId, nowIso);
-
-    const event: AssistantMessageEvent = {
-      v: 2,
+    const session = this.ensureTodaySession(clientId, nowIso);
+    const event: AssistantResponseEvent = {
+      v: 1,
       ts: nowIso,
-      type: "assistant_message",
-      sessionId: session.id,
+      type: "assistant_response",
+      sessionId: session.sessionId,
       sessionPath: session.sessionPath,
+      sessionDate: session.sessionDate,
       runId,
       content,
       responseKind: metadata?.responseKind,
     };
 
     this.appendTimelineEvent(event);
-  }
-
-  recordRunFailure(clientId: string, runId: string, _sessionId: string, message: string): void {
-    const nowIso = this.nowIso();
-    const session = this.ensureWritableSession(clientId, nowIso);
-
-    const event: RunFailureEvent = {
-      v: 2,
-      ts: nowIso,
-      type: "run_failure",
-      sessionId: session.id,
-      sessionPath: session.sessionPath,
-      message,
-    };
-
-    this.appendTimelineEvent(event);
-  }
-
-  recordAgentStep(clientId: string, input: AgentStepRecordInput): void {
-    if (this.memoryDetailMode !== "debug") {
-      return;
+    const exchange = session.recentExchanges.find((item) => item.runId === runId);
+    if (exchange) {
+      exchange.assistant = {
+        timestamp: nowIso,
+        content,
+        responseKind: metadata?.responseKind,
+      };
+      trimTail(session.recentExchanges, RECENT_EXCHANGE_LIMIT);
     }
-
-    const nowIso = this.nowIso();
-    const session = this.ensureWritableSession(clientId, nowIso);
-
-    const event: AgentStepEvent = {
-      v: 2,
-      ts: nowIso,
-      type: "agent_step",
-      sessionId: session.id,
-      sessionPath: session.sessionPath,
-      step: input.step,
-      phase: input.phase,
-      summary: input.summary,
-      actionToolName: input.actionToolName,
-      endStatus: input.endStatus,
-    };
-
-    this.appendTimelineEvent(event);
   }
 
-  recordActiveAttachments(clientId: string, input: ActiveAttachmentsRecordInput): void {
-    if (input.attachments.length === 0) {
-      return;
-    }
-    const nowIso = this.nowIso();
-    const session = this.ensureWritableSession(clientId, nowIso);
-
-    const event: ActiveAttachmentsEvent = {
-      v: 2,
-      ts: nowIso,
-      type: "active_attachments",
-      sessionId: session.id,
-      sessionPath: session.sessionPath,
-      runId: input.runId,
-      runPath: input.runPath,
-      action: input.action,
-      attachments: input.attachments.map((attachment) => ({
-        manifest: attachment.manifest,
-        summary: attachment.summary,
-        ...(attachment.detail ? { detail: attachment.detail } : {}),
-      })),
-    };
-
-    this.appendTimelineEvent(event);
+  recordRunFailure(_clientId: string, _runId: string, _sessionId: string, _message: string): void {
+    return;
   }
 
-  recordTaskSummary(clientId: string, input: TaskSummaryRecordInput): void {
-    const publication = this.prepareTaskSummaryPublication(clientId, input, this.nowIso());
-    if (this.currentSession?.id === publication.event.sessionId && this.currentSession.sessionPath === publication.event.sessionPath) {
-      this.currentSession.addEntry(publication.event);
-    }
-    this.updateFocusFromTaskSummary(clientId, publication.event);
-    void this.enqueuePersistenceTask(() => this.persistence.appendEventAsync(publication.event));
+  recordAgentStep(_clientId: string, _input: AgentStepRecordInput): void {
+    return;
   }
 
-  queueTaskSummary(clientId: string, input: TaskSummaryRecordInput): void {
-    const publication = this.prepareTaskSummaryPublication(clientId, input, this.nowIso());
-    if (this.currentSession?.id === publication.event.sessionId && this.currentSession.sessionPath === publication.event.sessionPath) {
-      this.currentSession.addEntry(publication.event);
-    }
-    this.updateFocusFromTaskSummary(clientId, publication.event);
-    this.enqueueBackgroundTask(async () => {
-      await this.publishPreparedTaskSummary(publication, { addToCurrentSession: false });
-    });
+  recordActiveAttachments(_clientId: string, _input: ActiveAttachmentsRecordInput): void {
+    return;
   }
 
-  recordSystemEventOutcome(clientId: string, input: SystemEventOutcomeRecordInput): void {
-    const nowIso = this.nowIso();
-    const session = this.ensureWritableSession(clientId, nowIso);
+  recordTaskSummary(_clientId: string, _input: TaskSummaryRecordInput): void {
+    return;
+  }
 
-    const event: SystemEventProcessedEvent = {
-      v: 2,
-      ts: nowIso,
-      type: "system_event_processed",
-      sessionId: session.id,
-      sessionPath: session.sessionPath,
-      runId: input.runId,
-      source: input.source,
-      event: input.event,
-      eventId: input.eventId,
-      summary: input.summary,
-      responseKind: input.responseKind,
-      status: input.status,
-      note: input.note,
-    };
+  queueTaskSummary(_clientId: string, _input: TaskSummaryRecordInput): void {
+    return;
+  }
 
-    this.appendTimelineEvent(event);
+  recordSystemEventOutcome(_clientId: string, input: SystemEventOutcomeRecordInput): void {
     this.systemEventStore.recordOutcome({
       runId: input.runId,
       eventId: input.eventId,
       status: input.status,
-      processedAt: nowIso,
+      processedAt: this.nowIso(),
       responseKind: input.responseKind,
       approvalState: input.approvalState,
       note: input.note,
     });
   }
 
-  recordAssistantNotification(clientId: string, input: AssistantNotificationRecordInput): void {
-    const nowIso = this.nowIso();
-    const session = this.ensureWritableSession(clientId, nowIso);
-
-    const event: AssistantNotificationEvent = {
-      v: 2,
-      ts: nowIso,
-      type: "assistant_notification",
-      sessionId: session.id,
-      sessionPath: session.sessionPath,
-      message: input.message,
-      source: input.source,
-      event: input.event,
-      eventId: input.eventId,
-    };
-
-    this.appendTimelineEvent(event);
-  }
-
-  private prepareTaskSummaryPublication(
-    clientId: string,
-    input: TaskSummaryRecordInput,
-    timestamp: string,
-  ): PreparedTaskSummaryPublication {
-    const sessionPath = this.resolveTaskSummarySessionPath(clientId, input.sessionId, timestamp);
-    const event: TaskSummaryEvent = {
-      v: 2,
-      ts: timestamp,
-      type: "task_summary",
-      sessionId: input.sessionId,
-      sessionPath,
-      runId: input.runId,
-      runPath: input.runPath,
-      status: input.status,
-      taskStatus: input.taskStatus,
-      objective: input.objective,
-      summary: input.summary,
-      progressSummary: input.progressSummary,
-      currentFocus: input.currentFocus,
-      completedMilestones: input.completedMilestones,
-      openWork: input.openWork,
-      blockers: input.blockers,
-      keyFacts: input.keyFacts,
-      evidence: input.evidence,
-      userInputNeeded: input.userInputNeeded,
-      userMessage: input.userMessage,
-      assistantResponse: input.assistantResponse,
-      assistantResponseKind: input.assistantResponseKind,
-      feedbackKind: input.feedbackKind,
-      feedbackLabel: input.feedbackLabel,
-      actionType: input.actionType,
-      entityHints: input.entityHints,
-      goalDoneWhen: input.goalDoneWhen,
-      goalRequiredEvidence: input.goalRequiredEvidence,
-      nextAction: input.nextAction,
-      stopReason: input.stopReason,
-      attachmentNames: input.attachmentNames,
-    };
-
-    return {
-      event,
-    };
-  }
-
-  private resolveTaskSummarySessionPath(clientId: string, sessionId: string, nowIso: string): string {
-    if (this.currentSession?.id === sessionId) {
-      return this.currentSession.sessionPath;
-    }
-
-    const persistedPath = this.persistence.getSessionRelativePath(sessionId);
-    if (persistedPath) {
-      return persistedPath;
-    }
-
-    return this.ensureWritableSession(clientId, nowIso).sessionPath;
-  }
-
-  private async publishPreparedTaskSummary(
-    publication: PreparedTaskSummaryPublication,
-    options?: { addToCurrentSession?: boolean },
-  ): Promise<void> {
-    if (options?.addToCurrentSession === false) {
-      await this.enqueuePersistenceTask(() => this.persistence.appendEventAsync(publication.event));
-    } else {
-      await this.appendEventToResolvedSession(publication.event);
-    }
-  }
-
-  private updateFocusFromTaskSummary(clientId: string, event: TaskSummaryEvent): void {
-    try {
-      const activeAttachments = this.currentSession?.getActiveAttachmentRecords(5).map((attachment) => ({
-        documentId: attachment.documentId,
-        displayName: attachment.displayName,
-        kind: attachment.kind,
-        mode: attachment.mode,
-        runId: attachment.runId,
-        runPath: attachment.runPath,
-        preparedInputId: attachment.preparedInputId,
-        lastUsedAt: attachment.lastUsedAt,
-        manifest: {
-          originalPath: attachment.manifest.originalPath,
-          storedPath: attachment.manifest.storedPath,
-        },
-      })) ?? [];
-      this.focusStore.upsertFromTaskSummary({
-        clientId,
-        runId: event.runId,
-        runPath: event.runPath,
-        status: event.status,
-        taskStatus: event.taskStatus,
-        objective: event.objective,
-        summary: event.summary,
-        progressSummary: event.progressSummary,
-        currentFocus: event.currentFocus,
-        completedMilestones: event.completedMilestones,
-        openWork: event.openWork,
-        blockers: event.blockers,
-        keyFacts: event.keyFacts,
-        evidence: event.evidence,
-        userInputNeeded: event.userInputNeeded,
-        userMessage: event.userMessage,
-        assistantResponse: event.assistantResponse,
-        actionType: event.actionType,
-        entityHints: event.entityHints,
-        nextAction: event.nextAction,
-        attachmentNames: event.attachmentNames,
-        activeAttachments,
-        createdAt: event.ts,
-      });
-    } catch (err) {
-      devWarn("Focus update failed:", err instanceof Error ? err.message : String(err));
-    }
+  recordAssistantNotification(_clientId: string, _input: AssistantNotificationRecordInput): void {
+    return;
   }
 
   getPromptMemoryContext(): PromptMemoryContext {
-    const recentTaskSummaries = (this.currentSession?.getRecentTaskSummaryEvents(5) ?? []).map((event) => ({
-      timestamp: event.ts,
-      runId: event.runId,
-      runPath: event.runPath,
-      runStatus: event.status,
-      taskStatus: event.taskStatus ?? "not_done",
-      objective: event.objective,
-      summary: event.summary,
-      progressSummary: event.progressSummary,
-      currentFocus: event.currentFocus,
-      completedMilestones: event.completedMilestones ?? [],
-      openWork: event.openWork ?? [],
-      blockers: event.blockers ?? [],
-      keyFacts: event.keyFacts ?? [],
-      evidence: event.evidence ?? [],
-      userInputNeeded: event.userInputNeeded,
-      userMessage: event.userMessage,
-      assistantResponse: event.assistantResponse,
-      assistantResponseKind: event.assistantResponseKind,
-      feedbackKind: event.feedbackKind,
-      feedbackLabel: event.feedbackLabel,
-      actionType: event.actionType,
-      entityHints: event.entityHints ?? [],
-      goalDoneWhen: event.goalDoneWhen ?? [],
-      goalRequiredEvidence: event.goalRequiredEvidence ?? [],
-      nextAction: event.nextAction,
-      stopReason: event.stopReason,
-      attachmentNames: event.attachmentNames ?? [],
-    }));
+    const session = this.currentSession;
+    const clientId = session?.clientId ?? this.activeClientId;
+    const recentExchanges = cloneExchanges(session?.recentExchanges ?? []);
+    const recentSystemEvents = cloneSystemEvents(session?.recentSystemEvents ?? []);
 
     return {
-      conversationTurns: this.currentSession?.getConversationTurns() ?? [],
-      previousSessionSummary: this.currentSession?.handoffSummary ?? "",
-      personalMemorySnapshot: this.personalMemorySnapshotProvider?.(this.currentSession?.clientId ?? this.activeClientId) ?? "",
+      recentExchanges,
+      recentSystemEvents,
+      conversationTurns: flattenExchanges(recentExchanges, session?.sessionPath ?? ""),
+      previousSessionSummary: "",
+      personalMemorySnapshot: this.personalMemorySnapshotProvider?.(clientId) ?? "",
       personalMemories: [],
-      attentionShelf: this.focusStore.getShelf(this.currentSession?.clientId ?? this.activeClientId, 5),
-      activeSessionPath: this.currentSession?.sessionPath ?? "",
-      recentTaskSummaries,
-      activeAttachments: this.currentSession?.getActiveAttachmentRefs(5) ?? [],
-      recentSystemActivity: this.currentSession?.getRecentSystemActivity(10) ?? [],
+      attentionShelf: [],
+      activeSessionPath: session?.sessionPath ?? "",
+      recentTaskSummaries: [],
+      activeAttachments: [],
+      recentSystemActivity: recentSystemEvents,
     };
   }
 
   getActiveAttachmentRecords(): ActiveAttachmentRecord[] {
-    return this.currentSession?.getActiveAttachmentRecords(5) ?? [];
-  }
-
-  setStaticTokenBudget(tokens: number): void {
-    this.staticTokenBudget = tokens;
+    return [];
   }
 
   getSessionStatus(): SessionStatus | null {
-    if (!this.currentSession) return null;
+    const session = this.currentSession;
+    if (!session) return null;
 
-    const dynamicTokens = this.estimateDynamicTokens(this.currentSession);
-    const available = Math.max(1, this.contextTokenLimit - this.staticTokenBudget);
-    const contextPercent = Math.min(100, (dynamicTokens / available) * 100);
-
-    const turns = this.currentSession.userTurnCount + this.currentSession.assistantTurnCount;
-
-    const startMs = new Date(this.currentSession.startedAt).getTime();
+    const startMs = new Date(session.startedAt).getTime();
     const nowMs = this.nowProvider().getTime();
     const sessionAgeMinutes = Math.max(0, Math.floor((nowMs - startMs) / 60_000));
+    const turns = session.recentExchanges.reduce((count, exchange) => (
+      count + 1 + (exchange.assistant ? 1 : 0)
+    ), 0);
 
     return {
-      contextPercent,
+      sessionId: session.sessionId,
+      sessionDate: session.sessionDate,
+      activeSessionPath: session.sessionPath,
+      contextPercent: 0,
       turns,
       sessionAgeMinutes,
-      startedAt: this.currentSession.startedAt,
-      handoffPhase: this.currentSession.handoff.phase,
-      pendingRotationReason: this.currentSession.pendingRotationReason,
+      startedAt: session.startedAt,
+      handoffPhase: "inactive",
+      pendingRotationReason: null,
     };
   }
 
-  async updateSessionLifecycle(clientId: string, input: SessionLifecycleUpdateInput): Promise<void> {
-    const nowIso = this.nowIso();
-    const session = this.ensureWritableSession(clientId, nowIso);
-    if (session.id !== input.sessionId) {
-      return;
-    }
-
-    const status = this.getSessionStatus();
-    if (!status) {
-      return;
-    }
-
-    if (shouldPrepareSessionHandoff(status.contextPercent)) {
-      this.scheduleHandoffPreparation(session, input.timezone ?? null);
-    }
-
-    if (shouldRotateSessionForContext(status.contextPercent)) {
-      this.finalizeSessionHandoff(session, nowIso, input.timezone ?? null, "context_threshold");
-      session.pendingRotationReason = "context_threshold";
-    }
-  }
-
-  flushBackgroundTasks(): Promise<void> {
-    return this.flushAllQueues();
+  updateSessionLifecycle(_clientId: string, _input: SessionLifecycleUpdateInput): void {
+    return;
   }
 
   flushPersistence(): Promise<void> {
-    return this.flushPersistenceQueue();
+    return this.persistenceQueue;
   }
 
-  private ensureWritableSession(clientId: string, nowIso: string): InMemorySession {
-    this.ensureOpenSession(clientId, nowIso);
-    return this.currentSession!;
+  setStaticTokenBudget(_tokens: number): void {
+    return;
   }
 
-  private ensureOpenSession(clientId: string, nowIso: string): void {
-    if (this.currentSession) return;
-    this.createNewSession(clientId, nowIso);
-  }
-
-  private restoreActiveSession(clientId: string): void {
-    const nowIso = this.nowIso();
-    const attempted = new Set<string>();
-
-    const tryRestore = (
-      candidate: ActiveSessionInfo | null,
-      source: "active_row" | "recovery_candidate",
-    ): InMemorySession | null => {
-      if (!candidate) return null;
-      const key = `${candidate.sessionId}:${candidate.sessionPath}`;
-      if (attempted.has(key)) return null;
-      attempted.add(key);
-
-      const restoredFromCandidate = this.persistence.replaySessionFile(
-        this.persistence.resolveSessionAbsolutePath(candidate.sessionPath),
-      );
-      if (restoredFromCandidate) {
-        if (restoredFromCandidate.clientId === clientId) {
-          return restoredFromCandidate;
-        }
-      }
-
-      if (restoredFromCandidate?.clientId !== clientId) {
-        this.persistence.markSessionCrashed(candidate.sessionId, nowIso, `${source}_restore_failed`);
-      }
-      return null;
-    };
-
-    let restored = tryRestore(this.persistence.getActiveSessionInfo(clientId), "active_row");
-    if (!restored) {
-      const candidates = this.persistence.listRecoveryCandidates(clientId, 24);
-      for (const candidate of candidates) {
-        restored = tryRestore(candidate, "recovery_candidate");
-        if (restored) break;
-      }
+  private ensureTodaySession(clientId: string, nowIso: string): HotSessionState {
+    const sessionDate = this.getSessionDate(new Date(nowIso));
+    if (this.currentSession?.clientId === clientId && this.currentSession.sessionDate === sessionDate) {
+      return this.currentSession;
     }
 
-    if (!restored) return;
-
-    this.currentSession = restored;
-    this.persistence.resumeSession(restored.id, clientId, restored.sessionPath, nowIso);
-    this.persistence.writeActiveSessionMarker(restored.id, restored.sessionPath);
+    return this.createNewSession(clientId, nowIso, sessionDate);
   }
 
-  private createNewSession(
-    clientId: string,
-    nowIso: string,
-    options?: {
-      sessionId?: string;
-      sessionPath?: string;
-      parentSessionId?: string;
-      handoffSummary?: string;
-    },
-  ): void {
-    const sessionId = options?.sessionId ?? randomUUID();
-    const sessionPath = options?.sessionPath ?? this.persistence.buildSessionPath(nowIso, sessionId);
-    this.currentSession = new InMemorySession(
-      sessionId,
+  private createNewSession(clientId: string, nowIso: string, sessionDate: string): HotSessionState {
+    const sessionId = randomUUID();
+    const sessionPath = this.persistence.buildSessionPath(sessionDate, sessionId);
+    const session: HotSessionState = {
       clientId,
-      nowIso,
+      sessionId,
+      sessionDate,
       sessionPath,
-      options?.parentSessionId,
-    );
-    this.currentSession.handoffSummary = options?.handoffSummary ?? null;
+      startedAt: nowIso,
+      recentExchanges: [],
+      recentSystemEvents: [],
+    };
+    this.currentSession = session;
 
-    const openEvent: SessionEvent = {
-      v: 2,
+    const event: SessionOpenEvent = {
+      v: 1,
       ts: nowIso,
       type: "session_open",
       sessionId,
       sessionPath,
+      sessionDate,
       clientId,
-      parentSessionId: options?.parentSessionId,
-      handoffSummary: options?.handoffSummary,
     };
 
-    this.enqueuePersistenceTask(() => this.persistence.appendEventAsync(openEvent));
+    this.enqueuePersistenceTask(() => this.persistence.appendEventAsync(event));
     this.persistence.writeActiveSessionMarker(sessionId, sessionPath);
+    return session;
   }
 
-  private closeSessionInternal(
-    session: InMemorySession,
-    nowIso: string,
-    reason: string,
-    options?: {
-      handoffSummary?: string;
-      nextSessionId?: string;
-      nextSessionPath?: string;
-    },
-  ): void {
-    const turns = session.getConversationTurns();
-    const tokenAtClose = this.estimateDynamicTokens(session);
+  private restoreTodaysSession(clientId: string): void {
+    const nowIso = this.nowIso();
+    const today = this.getSessionDate(new Date(nowIso));
+    const candidate = this.persistence.getActiveSessionInfo(clientId);
+    const restored = this.restoreCandidate(clientId, today, candidate);
+    if (!restored) return;
 
-    const closeEvent: SessionEvent = {
-      v: 2,
-      ts: nowIso,
-      type: "session_close",
-      sessionId: session.id,
-      sessionPath: session.sessionPath,
-      reason,
-      tokenAtClose,
-      eventCount: session.getCountableEventCount(),
-      handoffSummary: options?.handoffSummary,
-      nextSessionId: options?.nextSessionId,
-      nextSessionPath: options?.nextSessionPath,
+    this.currentSession = restored;
+    this.persistence.resumeSession(restored.sessionId, clientId, restored.sessionPath, nowIso);
+    this.persistence.writeActiveSessionMarker(restored.sessionId, restored.sessionPath);
+  }
+
+  private restoreCandidate(
+    clientId: string,
+    today: string,
+    candidate: ActiveSessionInfo | null,
+  ): HotSessionState | null {
+    if (!candidate) return null;
+
+    const events = this.persistence.replaySessionFile(
+      this.persistence.resolveSessionAbsolutePath(candidate.sessionPath),
+    );
+    const open = events.find((event): event is SessionOpenEvent => event.type === "session_open");
+    if (!open || open.clientId !== clientId || open.sessionDate !== today) {
+      return null;
+    }
+
+    const session: HotSessionState = {
+      clientId,
+      sessionId: open.sessionId,
+      sessionDate: open.sessionDate,
+      sessionPath: open.sessionPath,
+      startedAt: open.ts,
+      recentExchanges: [],
+      recentSystemEvents: [],
     };
 
-    const closePersisted = this.enqueuePersistenceTask(() => this.persistence.appendEventAsync(closeEvent));
-    this.persistence.clearActiveSessionMarker();
+    for (const event of events) {
+      if (event.type === "user_message") {
+        session.recentExchanges.push({
+          runId: event.runId,
+          user: {
+            timestamp: event.ts,
+            content: event.content,
+          },
+        });
+        trimTail(session.recentExchanges, RECENT_EXCHANGE_LIMIT);
+        continue;
+      }
 
-    if (this.onSessionCloseCallback && turns.length >= MIN_TURNS_FOR_CALLBACK) {
-      const cb = this.onSessionCloseCallback;
-      const cbData: SessionCloseData = {
-        sessionId: session.id,
-        clientId: session.clientId,
-        sessionPath: session.sessionPath,
-        sessionFilePath: this.persistence.resolveSessionAbsolutePath(session.sessionPath),
-        turns,
-        reason,
-        handoffSummary: options?.handoffSummary ?? null,
-      };
-      this.enqueueBackgroundTask(async () => {
-        await closePersisted;
-        await cb(cbData);
-      });
+      if (event.type === "assistant_response") {
+        const exchange = session.recentExchanges.find((item) => item.runId === event.runId);
+        if (exchange) {
+          exchange.assistant = {
+            timestamp: event.ts,
+            content: event.content,
+            responseKind: event.responseKind,
+          };
+        }
+        continue;
+      }
+
+      if (event.type === "system_event") {
+        this.pushSystemEvent(session, event);
+      }
     }
+
+    return session;
   }
 
   private appendTimelineEvent(event: TimelineEvent): void {
-    if (!this.currentSession) return;
-
-    this.currentSession.addEntry(event);
     this.enqueuePersistenceTask(() => this.persistence.appendEventAsync(event));
-  }
-
-  private async appendEventToResolvedSession(event: TimelineEvent): Promise<void> {
-    if (this.currentSession?.id === event.sessionId && this.currentSession.sessionPath === event.sessionPath) {
-      this.currentSession.addEntry(event);
-    }
-
-    await this.enqueuePersistenceTask(() => this.persistence.appendEventAsync(event));
-  }
-
-  private estimateDynamicTokens(session: InMemorySession): number {
-    const turns = session.getConversationTurns();
-    const conversationText = turns
-      .map((turn) => formatConversationTurnInline(turn))
-      .join("\n");
-
-    const toolText = this.memoryDetailMode === "debug"
-      ? session
-          .getToolEvents()
-          .map((event) => {
-            const status = event.status ? ` status=${event.status}` : "";
-            const error = event.errorMessage ? ` error=${event.errorMessage}` : "";
-            return `${event.eventType} ${event.toolName}${status} args=${event.args} output=${event.output}${error}`;
-          })
-          .join("\n")
-      : "";
-
-    const activityText = session
-      .getRecentSystemActivity(10)
-      .map((item) => `${item.source}/${item.event} ${item.summary} ${item.note ?? ""}`)
-      .join("\n");
-
-    const estimate =
-      this.staticTokenBudget +
-      estimateTextTokens(conversationText) +
-      estimateTextTokens(activityText) +
-      estimateTextTokens(toolText) +
-      (this.memoryDetailMode === "debug" ? session.estimateToolEventTokens() : 0);
-
-    // Calculated for observability only; not used for forced session rotation.
-    return Math.min(estimate, this.contextTokenLimit * 10);
-  }
-
-  private enqueueBackgroundTask(task: () => Promise<void>): void {
-    this.backgroundQueue = this.backgroundQueue
-      .then(task)
-      .catch((err) => devWarn("Background memory task failed:", err instanceof Error ? err.message : String(err)));
   }
 
   private enqueuePersistenceTask(task: () => Promise<void>): Promise<void> {
     this.persistenceQueue = this.persistenceQueue
       .then(task)
-      .catch((err) => devWarn("Session persistence task failed:", err instanceof Error ? err.message : String(err)));
+      .catch(() => {
+        // Persistence failures should not crash the agent loop.
+      });
     return this.persistenceQueue;
   }
 
-  private async flushPersistenceQueue(): Promise<void> {
-    while (true) {
-      const current = this.persistenceQueue;
-      try {
-        await current;
-      } catch (err) {
-        devWarn("Session persistence task failed while flushing:", err instanceof Error ? err.message : String(err));
-      }
-      if (current === this.persistenceQueue) {
-        return;
-      }
-    }
-  }
-
-  private async flushAllQueues(): Promise<void> {
-    while (true) {
-      const currentBackground = this.backgroundQueue;
-      try {
-        await currentBackground;
-      } catch (err) {
-        devWarn("Background memory task failed while flushing:", err instanceof Error ? err.message : String(err));
-      }
-
-      await this.flushPersistenceQueue();
-
-      if (currentBackground === this.backgroundQueue) {
-        return;
-      }
-    }
-  }
-
-  private scheduleHandoffPreparation(session: InMemorySession, timezone: string | null): void {
-    session.handoff.requestedRevision = Math.max(session.handoff.requestedRevision, session.timeline.length);
-    if (session.handoff.phase !== "finalized") {
-      session.handoff.phase = "preparing";
-    }
-    if (session.handoff.jobScheduled) {
-      return;
-    }
-
-    session.handoff.jobScheduled = true;
-    this.enqueueBackgroundTask(async () => {
-      try {
-        while (this.currentSession?.id === session.id && session.handoff.phase !== "finalized") {
-          const artifact = buildSessionHandoff(session, {
-            timezone: resolveRotationTimezone(timezone),
-            reason: session.pendingRotationReason,
-            preparedAt: this.nowIso(),
-          });
-
-          if (this.currentSession?.id !== session.id) {
-            return;
-          }
-
-          session.handoff.artifact = artifact;
-          session.handoff.preparedRevision = artifact.revision;
-          session.handoff.preparedAt = artifact.preparedAt;
-          session.handoff.phase = "ready";
-
-          if (session.handoff.requestedRevision <= session.handoff.preparedRevision) {
-            return;
-          }
-        }
-      } finally {
-        session.handoff.jobScheduled = false;
-        if (
-          this.currentSession?.id === session.id &&
-          session.handoff.phase !== "finalized" &&
-          session.handoff.requestedRevision > session.handoff.preparedRevision
-        ) {
-          this.scheduleHandoffPreparation(session, timezone);
-        }
-      }
+  private pushSystemEvent(session: HotSessionState, event: SystemEventEntry): void {
+    session.recentSystemEvents.push({
+      timestamp: event.ts,
+      source: event.source,
+      event: event.event,
+      eventId: event.eventId,
+      summary: event.summary,
+      responseKind: "notification",
+      userVisible: true,
     });
-  }
-
-  private finalizeSessionHandoff(
-    session: InMemorySession,
-    nowIso: string,
-    timezone: string | null,
-    reason: SessionRotationReason | null,
-  ) {
-    const artifact = buildSessionHandoff(session, {
-      timezone: resolveRotationTimezone(timezone),
-      reason,
-      preparedAt: nowIso,
-    });
-    session.handoff.artifact = artifact;
-    session.handoff.preparedRevision = artifact.revision;
-    session.handoff.requestedRevision = artifact.revision;
-    session.handoff.preparedAt = artifact.preparedAt;
-    session.handoff.phase = "finalized";
-    session.pendingRotationReason = reason;
-    return artifact;
-  }
-
-  private normalizeRotationReason(reason: string): SessionRotationReason | null {
-    const normalized = reason.trim().toLowerCase();
-    if (normalized === "daily_cutover") {
-      return "daily_cutover";
-    }
-    if (normalized === "context_threshold") {
-      return "context_threshold";
-    }
-    return null;
+    trimTail(session.recentSystemEvents, RECENT_SYSTEM_EVENT_LIMIT);
   }
 
   private nowIso(): string {
     return this.nowProvider().toISOString();
   }
+
+  private getSessionDate(date: Date): string {
+    const formatter = new Intl.DateTimeFormat("en-CA", {
+      timeZone: this.sessionTimezone,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    });
+    return formatter.format(date);
+  }
+}
+
+function trimTail<T>(items: T[], limit: number): void {
+  if (items.length <= limit) return;
+  items.splice(0, items.length - limit);
+}
+
+function cloneExchanges(exchanges: ConversationExchange[]): ConversationExchange[] {
+  return exchanges.map((exchange) => ({
+    runId: exchange.runId,
+    user: { ...exchange.user },
+    ...(exchange.assistant ? { assistant: { ...exchange.assistant } } : {}),
+  }));
+}
+
+function cloneSystemEvents(events: SystemActivityItem[]): SystemActivityItem[] {
+  return events.map((event) => ({ ...event }));
+}
+
+function flattenExchanges(exchanges: ConversationExchange[], sessionPath: string): ConversationTurn[] {
+  const turns: ConversationTurn[] = [];
+  for (const exchange of exchanges) {
+    turns.push({
+      role: "user",
+      content: exchange.user.content,
+      timestamp: exchange.user.timestamp,
+      sessionPath,
+      runId: exchange.runId,
+    });
+    if (exchange.assistant) {
+      turns.push({
+        role: "assistant",
+        content: exchange.assistant.content,
+        timestamp: exchange.assistant.timestamp,
+        sessionPath,
+        runId: exchange.runId,
+        assistantResponseKind: exchange.assistant.responseKind,
+      });
+    }
+  }
+  return turns;
 }
 
 export type SessionManagerOptions = MemoryManagerOptions;

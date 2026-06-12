@@ -1,11 +1,9 @@
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import type {
-  AssistantFeedbackEvent,
-  AssistantMessageEvent,
-  SessionCloseEvent,
+  AssistantResponseEvent,
   SessionEvent,
-  TaskSummaryEvent,
+  SystemEventEntry,
   UserMessageEvent,
 } from "../session-events.js";
 import { deserializeEvent } from "../session-events.js";
@@ -40,7 +38,6 @@ export function extractEpisodicEpisodes(
 
   return [
     ...extractConversationExchanges(payload, events),
-    ...extractTaskOutcomes(payload, events),
     ...extractSessionSummary(payload, events),
   ];
 }
@@ -55,7 +52,7 @@ export function parseSessionEventsFromContent(content: string): SessionEvent[] {
     try {
       events.push(deserializeEvent(payload));
     } catch {
-      // Ignore malformed event markers; session replay does the same.
+      // Ignore malformed event markers.
     }
   }
 
@@ -69,7 +66,7 @@ export function parseSessionEventsFromContent(content: string): SessionEvent[] {
     try {
       events.push(deserializeEvent(trimmed));
     } catch {
-      // Ignore malformed legacy lines.
+      // Ignore malformed lines.
     }
   }
   return events;
@@ -87,16 +84,13 @@ function extractConversationExchanges(
       continue;
     }
 
-    const assistant = findFollowingAssistant(events, idx + 1);
+    const assistant = findFollowingAssistant(events, idx + 1, event.runId);
     if (!assistant) {
       continue;
     }
 
     const userText = truncateForEmbedding(redactSensitiveText(event.content), MAX_MESSAGE_CHARS);
-    const assistantText = truncateForEmbedding(
-      redactSensitiveText(assistant.event.type === "assistant_message" ? assistant.event.content : assistant.event.message),
-      MAX_MESSAGE_CHARS,
-    );
+    const assistantText = truncateForEmbedding(redactSensitiveText(assistant.event.content), MAX_MESSAGE_CHARS);
     if (!hasUsefulText(userText) && !hasUsefulText(assistantText)) {
       continue;
     }
@@ -109,42 +103,10 @@ function extractConversationExchanges(
     episodes.push(buildEpisode(payload, {
       episodeType: "conversation_exchange",
       createdAt: assistant.event.ts,
-      runId: event.runId ?? (assistant.event.type === "assistant_message" ? assistant.event.runId : undefined),
+      runId: event.runId,
       eventStartIndex: idx,
       eventEndIndex: assistant.index,
       summary: summarizeExchange(userText, assistantText),
-      sourceText,
-      embeddingText: sourceText,
-    }));
-  }
-
-  return episodes;
-}
-
-function extractTaskOutcomes(
-  payload: EpisodicSessionIndexPayload,
-  events: SessionEvent[],
-): EpisodicMemoryEpisode[] {
-  const episodes: EpisodicMemoryEpisode[] = [];
-
-  for (let idx = 0; idx < events.length; idx++) {
-    const event = events[idx];
-    if (!event || event.type !== "task_summary") {
-      continue;
-    }
-
-    const sourceText = truncateForEmbedding(redactSensitiveText(formatTaskSummary(event)), MAX_SOURCE_CHARS);
-    if (!hasUsefulText(sourceText)) {
-      continue;
-    }
-
-    episodes.push(buildEpisode(payload, {
-      episodeType: "task_outcome",
-      createdAt: event.ts,
-      runId: event.runId,
-      eventStartIndex: idx,
-      eventEndIndex: idx,
-      summary: truncateInline(redactSensitiveText(event.summary), MAX_SUMMARY_CHARS),
       sourceText,
       embeddingText: sourceText,
     }));
@@ -157,55 +119,41 @@ function extractSessionSummary(
   payload: EpisodicSessionIndexPayload,
   events: SessionEvent[],
 ): EpisodicMemoryEpisode[] {
-  const closeIndex = events.findIndex((event) => event.type === "session_close");
-  const closeEvent = closeIndex >= 0 ? events[closeIndex] as SessionCloseEvent : null;
-  const handoffSummary = closeEvent?.handoffSummary ?? payload.handoffSummary ?? null;
-  const recentTasks = events
-    .filter((event): event is TaskSummaryEvent => event.type === "task_summary")
-    .slice(-3);
   const recentMessages = events
-    .filter((event): event is UserMessageEvent | AssistantMessageEvent | AssistantFeedbackEvent => (
-      event.type === "user_message" || event.type === "assistant_message" || event.type === "assistant_feedback"
+    .filter((event): event is UserMessageEvent | AssistantResponseEvent => (
+      event.type === "user_message" || event.type === "assistant_response"
     ))
     .slice(-6);
+  const recentSystemEvents = events
+    .filter((event): event is SystemEventEntry => event.type === "system_event")
+    .slice(-5);
 
-  if (!handoffSummary && recentTasks.length === 0 && recentMessages.length === 0) {
+  if (recentMessages.length === 0 && recentSystemEvents.length === 0) {
     return [];
   }
 
   const lines = [
-    "Session summary",
-    `Close reason: ${closeEvent?.reason ?? payload.reason}`,
+    "Daily session recent activity",
+    `Close reason: ${payload.reason}`,
   ];
-  if (handoffSummary?.trim()) {
-    lines.push(`Handoff: ${handoffSummary.trim()}`);
-  }
-  for (const task of recentTasks) {
-    lines.push(`Task: ${task.summary}`);
-    if (task.nextAction?.trim()) {
-      lines.push(`Next action: ${task.nextAction}`);
-    }
-    if (task.blockers && task.blockers.length > 0) {
-      lines.push(`Blockers: ${task.blockers.join("; ")}`);
-    }
-  }
   for (const message of recentMessages) {
     if (message.type === "user_message") {
       lines.push(`Recent user: ${message.content}`);
-    } else if (message.type === "assistant_message") {
-      lines.push(`Recent assistant: ${message.content}`);
     } else {
-      lines.push(`Recent assistant feedback: ${message.message}`);
+      lines.push(`Recent assistant: ${message.content}`);
     }
+  }
+  for (const event of recentSystemEvents) {
+    lines.push(`Recent system event: ${event.source}/${event.event} ${event.summary}`);
   }
 
   const sourceText = truncateForEmbedding(redactSensitiveText(lines.join("\n")), MAX_SOURCE_CHARS);
   return [buildEpisode(payload, {
     episodeType: "session_summary",
-    createdAt: closeEvent?.ts ?? events[events.length - 1]?.ts ?? new Date().toISOString(),
+    createdAt: events[events.length - 1]?.ts ?? new Date().toISOString(),
     eventStartIndex: 0,
-    eventEndIndex: closeIndex >= 0 ? closeIndex : events.length - 1,
-    summary: summarizeSession(handoffSummary, recentTasks, recentMessages),
+    eventEndIndex: events.length - 1,
+    summary: summarizeSession(recentMessages, recentSystemEvents),
     sourceText,
     embeddingText: sourceText,
   })];
@@ -214,7 +162,8 @@ function extractSessionSummary(
 function findFollowingAssistant(
   events: SessionEvent[],
   startIndex: number,
-): { event: AssistantMessageEvent | AssistantFeedbackEvent; index: number } | null {
+  runId: string,
+): { event: AssistantResponseEvent; index: number } | null {
   for (let idx = startIndex; idx < events.length; idx++) {
     const event = events[idx];
     if (!event) {
@@ -223,33 +172,11 @@ function findFollowingAssistant(
     if (event.type === "user_message") {
       return null;
     }
-    if (event.type === "assistant_message" || event.type === "assistant_feedback") {
+    if (event.type === "assistant_response" && event.runId === runId) {
       return { event, index: idx };
     }
   }
   return null;
-}
-
-function formatTaskSummary(event: TaskSummaryEvent): string {
-  return [
-    "Task outcome",
-    `Status: ${event.status}`,
-    event.taskStatus ? `Task status: ${event.taskStatus}` : "",
-    event.objective ? `Objective: ${event.objective}` : "",
-    `Summary: ${event.summary}`,
-    event.progressSummary ? `Progress: ${event.progressSummary}` : "",
-    event.currentFocus ? `Current focus: ${event.currentFocus}` : "",
-    event.userMessage ? `User asked: ${event.userMessage}` : "",
-    event.assistantResponse ? `Assistant response: ${event.assistantResponse}` : "",
-    joinList("Completed", event.completedMilestones),
-    joinList("Open work", event.openWork),
-    joinList("Blockers", event.blockers),
-    joinList("Key facts", event.keyFacts),
-    joinList("Evidence", event.evidence),
-    event.userInputNeeded ? `User input needed: ${event.userInputNeeded}` : "",
-    event.nextAction ? `Next action: ${event.nextAction}` : "",
-    joinList("Attachments", event.attachmentNames),
-  ].filter((line) => line.trim().length > 0).join("\n");
 }
 
 function buildEpisode(
@@ -296,25 +223,21 @@ function summarizeExchange(userText: string, assistantText: string): string {
 }
 
 function summarizeSession(
-  handoffSummary: string | null,
-  recentTasks: TaskSummaryEvent[],
-  recentMessages: Array<UserMessageEvent | AssistantMessageEvent | AssistantFeedbackEvent>,
+  recentMessages: Array<UserMessageEvent | AssistantResponseEvent>,
+  recentSystemEvents: SystemEventEntry[],
 ): string {
-  if (handoffSummary?.trim()) {
-    return truncateInline(redactSensitiveText(handoffSummary), MAX_SUMMARY_CHARS);
-  }
-  const latestTask = recentTasks[recentTasks.length - 1];
-  if (latestTask) {
-    return truncateInline(redactSensitiveText(latestTask.summary), MAX_SUMMARY_CHARS);
-  }
   const latestMessage = recentMessages[recentMessages.length - 1];
-  if (!latestMessage) {
-    return "Session summary";
+  if (latestMessage) {
+    return truncateInline(
+      redactSensitiveText(latestMessage.type === "user_message" ? latestMessage.content : latestMessage.content),
+      MAX_SUMMARY_CHARS,
+    );
   }
-  const content = latestMessage.type === "user_message"
-    ? latestMessage.content
-    : (latestMessage.type === "assistant_message" ? latestMessage.content : latestMessage.message);
-  return truncateInline(redactSensitiveText(content), MAX_SUMMARY_CHARS);
+  const latestSystemEvent = recentSystemEvents[recentSystemEvents.length - 1];
+  if (latestSystemEvent) {
+    return truncateInline(redactSensitiveText(latestSystemEvent.summary), MAX_SUMMARY_CHARS);
+  }
+  return "Daily session summary";
 }
 
 function redactSensitiveText(value: string): string {
@@ -344,11 +267,6 @@ function truncateInline(value: string, maxChars: number): string {
 
 function hasUsefulText(value: string): boolean {
   return value.replace(/\[REDACTED_[^\]]+\]/g, "").trim().length > 0;
-}
-
-function joinList(label: string, values?: string[]): string {
-  const cleaned = values?.map((value) => value.trim()).filter(Boolean) ?? [];
-  return cleaned.length > 0 ? `${label}: ${cleaned.join("; ")}` : "";
 }
 
 function sha256(value: string): string {

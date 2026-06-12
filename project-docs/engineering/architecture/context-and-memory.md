@@ -6,8 +6,59 @@ threads, or context windows manually.
 Current runtime model:
 
 ```text
-session memory + focus cards + runtime context -> context pack -> decision state view
+daily session hot memory + runtime context + independent memory stores -> context pack -> decision state view
 ```
+
+## Session Scope
+
+A session is a simple daily activity log for one client. It is not the general
+agent memory store.
+
+Session files are date-partitioned:
+
+```text
+data/memory/sessions/YYYY-MM-DD/<sessionId>.jsonl
+```
+
+Each session has a unique `sessionId` and stores only:
+
+- `session_open`
+- `user_message`
+- `assistant_response`
+- `system_event`
+
+Each message/event entry keeps `runId`, so deeper debugging can jump from the
+daily activity log to the full run artifacts under `data/runs/<runId>/`.
+
+SQLite stores only session lookup metadata in `data/memory/memory.sqlite`:
+
+```text
+sessions_meta(
+  session_id,
+  client_id,
+  status,
+  session_path,
+  opened_at,
+  closed_at,
+  close_reason,
+  last_event_at,
+  updated_at
+)
+```
+
+User messages, assistant responses, and system events are not stored in SQLite;
+they live in the daily JSONL session file.
+
+## Hot Session Memory
+
+The active session keeps a small in-memory cache:
+
+- last 5 user/assistant exchanges
+- last 5 system events
+
+This cache is the fast path used by the agent loop. On startup, the memory
+manager replays today's active session file and rebuilds the cache. Old session
+files are not migrated into the new schema.
 
 ## Context Pack
 
@@ -17,93 +68,52 @@ The decision model receives dynamic runtime context through
 - `ayati-main/src/ivec/agent-runner/context-pack.ts`
 - `ayati-main/src/ivec/agent-runner/state-view.ts`
 
-The context pack is bounded JSON. It can include:
+The context pack is bounded JSON. Session-derived fields are:
 
-- `currentInput`
+- `session`: session id/date/path, age, and recent turn count
+- `recentActivity`: last 5 user/assistant exchanges
+- `recentSystemActivity`: last 5 system events
+
+Other context sources remain independent from session:
+
 - `runtime`: date, time, timezone, weekday
-- `session`: session path, context pressure, age, turn count, handoff state
-- `attentionShelf`: compact focus summaries
-- `recentExact`: last few conversation turns
-- `recentTasks`: recent task summaries
-- `activeAttachments`: recently used documents/files
-- `previousSessionSummary`
 - `personalMemorySnapshot`
 - `activeLearningContext`
-- `recentSystemActivity`
-
-The system prompt should contain stable rules. Dynamic memory should be in the
-context pack whenever possible.
-
-## Focus Cards
-
-Focus cards are durable records for meaningful ongoing work, not every message.
-They are stored by the memory layer and summarized into the attention shelf.
-
-Current focus types:
-
-- `artifact_work`
-- `document`
-- `learning`
-- `automation`
-- `investigation`
-- `debug_issue`
-- `generic_task`
-
-Focus cards store:
-
-- label and summaries
-- entities/hints
-- artifacts and document references
-- verified facts
-- open work and next step
-- source run IDs
-- memory strength, decay rate, importance, reuse count
-- timestamps and attention score inputs
-- type-specific details
-
-## Attention Shelf
-
-The attention shelf is a small list of high-lifespan or recently touched focus
-items. It gives the decision model continuity hints without loading full
-history.
-
-Shelf items include:
-
-- `focusId`
-- type/status
-- label and compact summary
-- hints
-- top artifacts
-- last touched time
-- attention score
-- next step when available
-
-Use shelf items only when relevant to the current input. They are not proof;
-important claims should still be verified through files, documents, tool
-results, or recall.
+- task/run details in `data/runs/<runId>/`
+- document/file stores
+- long-term or semantic memory stores
 
 ## Runtime Flow
 
 For each user message:
 
-1. `IVecEngine` starts or continues a session run.
-2. Session memory returns conversation turns, recent task summaries, active attachments, attention shelf, personal memory, and system activity.
-3. The runner syncs those transient values into `LoopState`.
-4. `context-pack.ts` compacts them into bounded JSON.
-5. `state-view.ts` includes the context pack in the decision prompt.
-6. Tool results and task summaries update memory after the run.
-7. Focus cards are created or updated from task summaries and active attachments.
+1. `IVecEngine` asks session memory for today's session.
+2. The session manager creates a new daily session if the local date changed.
+3. The user message is appended to the session JSONL file.
+4. The hot exchange cache is updated.
+5. The runner syncs hot recent activity into `LoopState`.
+6. `context-pack.ts` includes `recentActivity` in the decision prompt.
+7. The assistant response is appended to the session file and completes the hot
+   exchange.
 
-## Current Limitation
+For each system event:
 
-The attention shelf is visible to the decision model, but full focus-card
-activation is not complete yet.
+1. The event is appended as `system_event`.
+2. The hot system-event cache is updated.
+3. System events are exposed separately from user/assistant exchanges.
 
-Next improvement:
+## What Is Not Session
 
-```text
-attention shelf -> activeFocus / possibleFocus -> optional full focus load -> decision
-```
+These concepts should not be written into session files:
 
-This should let the agent confidently resume recent or high-lifespan work while
-still asking the user before risky ambiguous actions.
+- task summaries
+- tool calls and tool results
+- agent step traces
+- active attachments
+- focus cards
+- handoff summaries
+- context-pressure rotation state
+- personal memory facts
+
+Those belong in run artifacts or independent memory stores. Session answers one
+question: what recently happened today?
