@@ -5,6 +5,7 @@ import {
   type PromptSectionMetadata,
 } from "./types.js";
 import { renderBasePromptSection } from "./sections/base.js";
+import { renderAttentionShelfSection } from "./sections/attention-shelf.js";
 import { renderConversationSection } from "./sections/conversation.js";
 import { renderCurrentSessionSection } from "./sections/current-session.js";
 import { renderMemorySection } from "./sections/memory.js";
@@ -44,6 +45,7 @@ export function buildSystemPrompt(input: PromptBuildInput): PromptBuildOutput {
   const soul = renderSoulSection(input.soul);
   const runtimeContext = renderRuntimeContextSection(input.runtimeContext ?? null);
   const personalMemory = renderPersonalMemorySection(input.personalMemorySnapshot ?? "");
+  const attentionShelf = renderAttentionShelfSection(input.attentionShelf ?? []);
   const conversation = renderConversationSection(input.conversationTurns ?? []);
   const memory = renderMemorySection(input.previousSessionSummary ?? "");
   const currentSession = renderCurrentSessionSection(input.activeSessionPath ?? "");
@@ -58,6 +60,7 @@ export function buildSystemPrompt(input: PromptBuildInput): PromptBuildOutput {
     makeSection("soul", soul, "Soul context is empty"),
     makeSection("runtime_context", runtimeContext, "No runtime context available"),
     makeSection("personal_memory", personalMemory, "No personal memory snapshot available"),
+    makeSection("attention_shelf", attentionShelf, "No focus shelf items available"),
     makeSection("conversation", conversation, "No previous conversation available"),
     makeSection("memory", memory, "No previous session summary available"),
     makeSection("current_session", currentSession, "No active session path available"),
@@ -73,6 +76,7 @@ export function buildSystemPrompt(input: PromptBuildInput): PromptBuildOutput {
     soul,
     runtimeContext,
     personalMemory,
+    attentionShelf,
     conversation,
     memory,
     currentSession,

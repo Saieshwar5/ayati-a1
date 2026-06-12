@@ -81,6 +81,7 @@ describe("buildSystemPrompt", () => {
       "soul",
       "runtime_context",
       "personal_memory",
+      "attention_shelf",
       "conversation",
       "memory",
       "current_session",
@@ -90,7 +91,7 @@ describe("buildSystemPrompt", () => {
       "tools",
       "session_status",
     ]);
-    const emptyOptionalIds = new Set(["personal_memory", "system_activity", "tools", "session_status"]);
+    const emptyOptionalIds = new Set(["personal_memory", "attention_shelf", "system_activity", "tools", "session_status"]);
     const includedSections = output.sections.filter((s) => !emptyOptionalIds.has(s.id));
     expect(includedSections.every((s) => s.included)).toBe(true);
     const activitySection = output.sections.find((s) => s.id === "system_activity");
@@ -153,5 +154,30 @@ describe("buildSystemPrompt", () => {
     expect(output.systemPrompt).toContain("# Recent System Activity");
     expect(output.systemPrompt).toContain("Checked memory usage");
     expect(output.sections.find((s) => s.id === "system_activity")?.included).toBe(true);
+  });
+
+  it("renders attention shelf when focus items are present", () => {
+    const output = buildSystemPrompt({
+      basePrompt: "Base rules",
+      soul: emptySoulContext(),
+      attentionShelf: [{
+        focusId: "focus_todo_app",
+        type: "artifact_work",
+        status: "warm",
+        label: "todo app",
+        summary: "Todo app with dark mode and responsive CSS.",
+        hints: ["todo app", "responsive"],
+        topArtifacts: ["todo/index.html", "todo/style.css"],
+        lastTouchedAt: "2026-06-12T10:00:00.000Z",
+        lastTouchedLabel: "42m ago",
+        attentionScore: 0.82,
+      }],
+    });
+
+    expect(output.systemPrompt).toContain("# Attention Shelf");
+    expect(output.systemPrompt).toContain("focus_todo_app");
+    expect(output.systemPrompt).toContain("Todo app with dark mode");
+    expect(output.systemPrompt).toContain("Top artifacts: todo/index.html, todo/style.css");
+    expect(output.sections.find((s) => s.id === "attention_shelf")?.included).toBe(true);
   });
 });

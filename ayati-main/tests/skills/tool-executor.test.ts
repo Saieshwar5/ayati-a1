@@ -41,6 +41,34 @@ describe("createToolExecutor", () => {
     expect(result.error).toContain("unexpected failure");
   });
 
+  it("validates outputSchema even when no resultContract is defined", async () => {
+    const executor = createToolExecutor([
+      {
+        name: "schema_only",
+        description: "Returns structured content with schema only",
+        outputSchema: {
+          type: "object",
+          required: ["value"],
+          properties: {
+            value: { type: "string" },
+          },
+        },
+        async execute() {
+          return {
+            ok: true,
+            output: JSON.stringify({ other: "missing required value" }),
+          };
+        },
+      },
+    ]);
+
+    const result = await executor.execute("schema_only", {});
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain("Tool output schema validation failed");
+    expect(result.v2?.verification?.status).toBe("failed");
+    expect(result.v2?.code).toBe("CONTRACT_ASSERTION_FAILED");
+  });
+
   it("validate() returns valid for correct input", () => {
     const executor = createToolExecutor([
       {

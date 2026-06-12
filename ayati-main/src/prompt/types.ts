@@ -1,6 +1,7 @@
 import type { SoulContext } from "../context/types.js";
 import type {
   ConversationTurn,
+  FocusShelfItem,
   PromptTaskSummary,
   SessionStatus,
   SystemActivityItem,
@@ -12,6 +13,7 @@ export type PromptLayerId =
   | "soul"
   | "runtime_context"
   | "personal_memory"
+  | "attention_shelf"
   | "conversation"
   | "memory"
   | "current_session"
@@ -34,6 +36,7 @@ export interface PromptBuildInput {
   soul: SoulContext;
   runtimeContext?: PromptRuntimeContext | null;
   personalMemorySnapshot?: string;
+  attentionShelf?: FocusShelfItem[];
   conversationTurns?: ConversationTurn[];
   previousSessionSummary?: string;
   activeSessionPath?: string;

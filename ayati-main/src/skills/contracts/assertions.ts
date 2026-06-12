@@ -135,7 +135,7 @@ export async function verifyToolContract(
   input: unknown,
   result: ToolResultV2,
 ): Promise<ToolContractVerification | undefined> {
-  if (!tool.resultContract) {
+  if (!tool.resultContract && !tool.outputSchema) {
     return undefined;
   }
 
@@ -174,6 +174,24 @@ export async function verifyToolContract(
     };
   }
 
+  if (!tool.resultContract) {
+    return {
+      status: "passed",
+      summary: `Tool output schema passed for ${tool.name}.`,
+      assertions: [{
+        id: "output_schema_valid",
+        kind: "output_schema",
+        status: "passed",
+        severity: "required",
+        message: `Tool output schema passed for ${tool.name}.`,
+        expected: tool.outputSchema,
+        actual: result.structuredContent,
+      }],
+      facts: [],
+      artifacts: result.artifacts ?? [],
+    };
+  }
+
   const assertionRun = await runAssertions(tool.resultContract.successWhen, {
     toolName: tool.name,
     input,
@@ -193,4 +211,3 @@ export async function verifyToolContract(
     artifacts,
   };
 }
-

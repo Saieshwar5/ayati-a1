@@ -11,6 +11,7 @@ export function assemblePromptInput(
     basePrompt: staticContext.basePrompt,
     soul: staticContext.soul,
     personalMemorySnapshot: memoryContext.personalMemorySnapshot,
+    attentionShelf: memoryContext.attentionShelf,
     conversationTurns: memoryContext.conversationTurns,
     previousSessionSummary: memoryContext.previousSessionSummary,
     activeSessionPath: memoryContext.activeSessionPath,

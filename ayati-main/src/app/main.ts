@@ -216,6 +216,7 @@ export async function main(): Promise<void> {
     courseStore: content.courseStore,
     learningFileStore: content.learningFileStore,
     systemEventPolicy,
+    loopConfig: runtimeConfig.agent.loopConfig,
   });
   const systemEventWorker = new SystemEventWorker({
     queueStore: inboundQueueStore,

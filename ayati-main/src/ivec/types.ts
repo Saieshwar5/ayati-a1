@@ -420,6 +420,7 @@ export interface TaskValidationContext {
 // --- Config ---
 
 export interface LoopConfig {
+  harnessVersion: "v1" | "v2";
   maxIterations: number;
   maxToolCallsPerStep: number;
   maxConsecutiveFailures: number;
@@ -430,9 +431,12 @@ export interface LoopConfig {
   maxTotalToolCallsPerStep: number;
   maxInlineActOutputChars: number;
   maxVerifyArtifactChars: number;
+  v2MaxSelectedTools: number;
+  v2StrategyReviewFailureThreshold: number;
 }
 
 export const DEFAULT_LOOP_CONFIG: LoopConfig = {
+  harnessVersion: "v1",
   maxIterations: 15,
   maxToolCallsPerStep: 4,
   maxConsecutiveFailures: 5,
@@ -443,6 +447,8 @@ export const DEFAULT_LOOP_CONFIG: LoopConfig = {
   maxTotalToolCallsPerStep: 6,
   maxInlineActOutputChars: 8_000,
   maxVerifyArtifactChars: 20_000,
+  v2MaxSelectedTools: 12,
+  v2StrategyReviewFailureThreshold: 3,
 };
 
 // --- Result + callbacks ---

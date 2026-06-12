@@ -1,4 +1,5 @@
 import type { ManagedDocumentManifest, PreparedAttachmentSummary } from "../documents/types.js";
+import type { FocusShelfItem } from "./focus/types.js";
 import type { PromptPersonalMemory } from "./personal/types.js";
 import type {
   SystemEventCreatedBy,
@@ -6,6 +7,8 @@ import type {
   SystemEventEffectLevel,
   SystemEventTrustTier,
 } from "../core/contracts/plugin.js";
+
+export type { FocusShelfItem } from "./focus/types.js";
 
 export interface ConversationTurn {
   role: "user" | "assistant";
@@ -151,6 +154,7 @@ export interface PromptMemoryContext {
   previousSessionSummary: string;
   personalMemorySnapshot?: string;
   personalMemories?: PromptPersonalMemory[];
+  attentionShelf?: FocusShelfItem[];
   activeTopicLabel?: string;
   activeSessionPath?: string;
   recentTaskSummaries?: PromptTaskSummary[];

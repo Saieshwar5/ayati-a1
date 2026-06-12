@@ -4,6 +4,7 @@ import type { LlmProvider } from "../core/contracts/provider.js";
 import { noopSessionMemory } from "../memory/provider.js";
 import type { ConversationTurn, SessionMemory, MemoryRunHandle, PromptMemoryContext, SessionStatus } from "../memory/types.js";
 import type { StaticContext } from "../context/static-context-cache.js";
+import { renderAttentionShelfSection } from "../prompt/sections/attention-shelf.js";
 import { renderBasePromptSection } from "../prompt/sections/base.js";
 import { renderConversationLines, renderConversationSection } from "../prompt/sections/conversation.js";
 import { renderCurrentSessionSection } from "../prompt/sections/current-session.js";
@@ -90,6 +91,8 @@ interface UnderstandContextCache {
   memorySection: string;
   personalMemorySnapshot: string;
   personalMemorySection: string;
+  attentionShelfFingerprint: string;
+  attentionShelfSection: string;
   activeSessionPath: string;
   currentSessionSection: string;
   recentTasksFingerprint: string;
@@ -547,6 +550,11 @@ export class IVecEngine {
       ? cached.personalMemorySection
       : renderPersonalMemorySection(personalMemorySnapshot);
 
+    const attentionShelfFingerprint = JSON.stringify(memoryContext.attentionShelf ?? []);
+    const attentionShelfSection = sameSession && cached?.attentionShelfFingerprint === attentionShelfFingerprint
+      ? cached.attentionShelfSection
+      : renderAttentionShelfSection(memoryContext.attentionShelf ?? []);
+
     const activeSessionPath = memoryContext.activeSessionPath ?? "";
     const currentSessionSection = sameSession && cached?.activeSessionPath === activeSessionPath
       ? cached.currentSessionSection
@@ -565,6 +573,7 @@ export class IVecEngine {
     const dynamicContext = joinPromptSections([
       activeLearningSection,
       personalMemorySection,
+      attentionShelfSection,
       conversationSection,
       memorySection,
       currentSessionSection,
@@ -600,6 +609,8 @@ export class IVecEngine {
       memorySection,
       personalMemorySnapshot,
       personalMemorySection,
+      attentionShelfFingerprint,
+      attentionShelfSection,
       activeSessionPath,
       currentSessionSection,
       recentTasksFingerprint,

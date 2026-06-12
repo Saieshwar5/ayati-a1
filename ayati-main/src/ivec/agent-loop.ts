@@ -172,10 +172,14 @@ import type { ActiveExternalSkillContext } from "../skills/external/broker.js";
 import { prepareIncomingAttachments } from "../documents/attachment-preparer.js";
 import type { ManagedDocumentManifest, PreparedAttachmentSummary } from "../documents/types.js";
 import type { ScoutKnownLocations } from "./context-scout.js";
+import { agentLoopV2 } from "./agent-runner/runner.js";
 
 export async function agentLoop(deps: AgentLoopDeps): Promise<AgentLoopResult> {
   const config: LoopConfig = { ...DEFAULT_LOOP_CONFIG, ...deps.config };
   validateLoopConfig(config);
+  if (config.harnessVersion === "v2") {
+    return agentLoopV2(deps, config);
+  }
   const runId = deps.runHandle.runId;
   const runPath = initRunDirectory(deps.dataDir, runId);
   const runStateManager = new RunStateManager(runPath);

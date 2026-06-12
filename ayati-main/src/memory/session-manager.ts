@@ -53,6 +53,7 @@ import { InMemorySession } from "./session.js";
 import { SessionPersistence } from "./session-persistence.js";
 import type { ActiveSessionInfo, SessionPersistenceOptions } from "./session-persistence.js";
 import { SqliteSystemEventStore } from "./system-event-store.js";
+import { FocusStore } from "./focus/index.js";
 
 const MIN_TURNS_FOR_CALLBACK = 2;
 const DEFAULT_CONTEXT_TOKEN_LIMIT = 120_000;
@@ -97,6 +98,7 @@ interface PreparedTaskSummaryPublication {
 export class MemoryManager implements SessionMemory {
   private readonly persistence: SessionPersistence;
   private readonly systemEventStore: SqliteSystemEventStore;
+  private readonly focusStore: FocusStore;
   private readonly nowProvider: () => Date;
   private readonly onSessionCloseCallback?: (data: SessionCloseData) => void | Promise<void>;
   private readonly personalMemorySnapshotProvider?: (clientId: string) => string;
@@ -119,6 +121,11 @@ export class MemoryManager implements SessionMemory {
       dataDir: options?.dataDir,
     });
     this.nowProvider = options?.now ?? (() => new Date());
+    this.focusStore = new FocusStore({
+      dbPath: options?.dbPath,
+      dataDir: options?.dataDir,
+      now: this.nowProvider,
+    });
     this.onSessionCloseCallback = options?.onSessionClose;
     this.personalMemorySnapshotProvider = options?.personalMemorySnapshotProvider;
     this.contextTokenLimit = options?.contextTokenLimit ?? DEFAULT_CONTEXT_TOKEN_LIMIT;
@@ -129,6 +136,7 @@ export class MemoryManager implements SessionMemory {
     this.activeClientId = clientId;
     this.persistence.start();
     this.systemEventStore.start();
+    this.focusStore.start();
     this.restoreActiveSession(clientId);
   }
 
@@ -145,6 +153,7 @@ export class MemoryManager implements SessionMemory {
 
     this.persistence.stop();
     this.systemEventStore.stop();
+    this.focusStore.stop();
     this.currentSession = null;
   }
 
@@ -460,6 +469,7 @@ export class MemoryManager implements SessionMemory {
     if (this.currentSession?.id === publication.event.sessionId && this.currentSession.sessionPath === publication.event.sessionPath) {
       this.currentSession.addEntry(publication.event);
     }
+    this.updateFocusFromTaskSummary(clientId, publication.event);
     void this.enqueuePersistenceTask(() => this.persistence.appendEventAsync(publication.event));
   }
 
@@ -468,6 +478,7 @@ export class MemoryManager implements SessionMemory {
     if (this.currentSession?.id === publication.event.sessionId && this.currentSession.sessionPath === publication.event.sessionPath) {
       this.currentSession.addEntry(publication.event);
     }
+    this.updateFocusFromTaskSummary(clientId, publication.event);
     this.enqueueBackgroundTask(async () => {
       await this.publishPreparedTaskSummary(publication, { addToCurrentSession: false });
     });
@@ -597,6 +608,52 @@ export class MemoryManager implements SessionMemory {
     }
   }
 
+  private updateFocusFromTaskSummary(clientId: string, event: TaskSummaryEvent): void {
+    try {
+      const activeAttachments = this.currentSession?.getActiveAttachmentRecords(5).map((attachment) => ({
+        documentId: attachment.documentId,
+        displayName: attachment.displayName,
+        kind: attachment.kind,
+        mode: attachment.mode,
+        runId: attachment.runId,
+        runPath: attachment.runPath,
+        preparedInputId: attachment.preparedInputId,
+        lastUsedAt: attachment.lastUsedAt,
+        manifest: {
+          originalPath: attachment.manifest.originalPath,
+          storedPath: attachment.manifest.storedPath,
+        },
+      })) ?? [];
+      this.focusStore.upsertFromTaskSummary({
+        clientId,
+        runId: event.runId,
+        runPath: event.runPath,
+        status: event.status,
+        taskStatus: event.taskStatus,
+        objective: event.objective,
+        summary: event.summary,
+        progressSummary: event.progressSummary,
+        currentFocus: event.currentFocus,
+        completedMilestones: event.completedMilestones,
+        openWork: event.openWork,
+        blockers: event.blockers,
+        keyFacts: event.keyFacts,
+        evidence: event.evidence,
+        userInputNeeded: event.userInputNeeded,
+        userMessage: event.userMessage,
+        assistantResponse: event.assistantResponse,
+        actionType: event.actionType,
+        entityHints: event.entityHints,
+        nextAction: event.nextAction,
+        attachmentNames: event.attachmentNames,
+        activeAttachments,
+        createdAt: event.ts,
+      });
+    } catch (err) {
+      devWarn("Focus update failed:", err instanceof Error ? err.message : String(err));
+    }
+  }
+
   getPromptMemoryContext(): PromptMemoryContext {
     const recentTaskSummaries = (this.currentSession?.getRecentTaskSummaryEvents(5) ?? []).map((event) => ({
       timestamp: event.ts,
@@ -637,6 +694,7 @@ export class MemoryManager implements SessionMemory {
       previousSessionSummary: this.currentSession?.handoffSummary ?? "",
       personalMemorySnapshot: this.personalMemorySnapshotProvider?.(this.currentSession?.clientId ?? this.activeClientId) ?? "",
       personalMemories: [],
+      attentionShelf: this.focusStore.getShelf(this.currentSession?.clientId ?? this.activeClientId, 5),
       activeSessionPath: this.currentSession?.sessionPath ?? "",
       recentTaskSummaries,
       activeAttachments: this.currentSession?.getActiveAttachmentRefs(5) ?? [],

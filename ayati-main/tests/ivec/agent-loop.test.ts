@@ -15,6 +15,7 @@ import { SessionAttachmentService } from "../../src/documents/session-attachment
 import { createAttachmentSkill } from "../../src/skills/builtins/attachments/index.js";
 import { createDatasetSkill } from "../../src/skills/builtins/datasets/index.js";
 import { createDocumentSkill } from "../../src/skills/builtins/documents/index.js";
+import { writeFilesTool } from "../../src/skills/builtins/filesystem/write-files.js";
 import { createToolExecutor } from "../../src/skills/tool-executor.js";
 import type { ToolDefinition } from "../../src/skills/types.js";
 
@@ -224,6 +225,66 @@ describe("agentLoop", () => {
       expect(result.status).toBe("completed");
       expect(result.totalIterations).toBe(0);
       expect(provider.generateTurn).toHaveBeenCalledTimes(1);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("v2 executes deterministic write_files with local recovery and one decision call", async () => {
+    const dataDir = makeTmpDir();
+    try {
+      const targetPath = join(dataDir, "nested", "v2-created.txt");
+      const provider: LlmProvider = {
+        name: "mock",
+        version: "1.0.0",
+        capabilities: { nativeToolCalling: true },
+        start: vi.fn(),
+        stop: vi.fn(),
+        generateTurn: vi.fn<(input: LlmTurnInput) => Promise<LlmTurnOutput>>().mockResolvedValue({
+          type: "assistant",
+          content: JSON.stringify({
+            kind: "act",
+            action: {
+              mode: "single",
+              calls: [{
+                id: "write_files_1",
+                tool: "write_files",
+                input: {
+                  files: [{ path: targetPath, content: "created by v2" }],
+                },
+                dependsOn: [],
+                purpose: "Create the requested file",
+              }],
+              allowedTools: ["write_files"],
+              maxCalls: 1,
+              assertions: [],
+            },
+          }),
+        }),
+      };
+      const sessionMemory = createMockSessionMemory();
+      const toolExecutor = createToolExecutor([writeFilesTool]);
+
+      const result = await agentLoop({
+        provider,
+        toolExecutor,
+        toolDefinitions: toolExecutor.definitions(),
+        sessionMemory,
+        runHandle: { sessionId: "s1", runId: "r1" },
+        clientId: "c1",
+        inputKind: "user_message",
+        initialUserMessage: `Create ${targetPath}`,
+        config: { harnessVersion: "v2" },
+        dataDir,
+      });
+
+      expect(result.status).toBe("completed");
+      expect(result.runClass).toBe("task");
+      expect(result.totalIterations).toBe(1);
+      expect(result.totalToolCalls).toBe(2);
+      expect(provider.generateTurn).toHaveBeenCalledTimes(1);
+      expect(readFileSync(targetPath, "utf-8")).toBe("created by v2");
+      expect(result.content).toContain("Done -");
     } finally {
       cleanup();
     }
