@@ -9,12 +9,6 @@ describe("assemblePromptInput", () => {
     const staticContext: StaticContext = {
       basePrompt: "Base prompt",
       soul: emptySoulContext(),
-      controllerPrompts: {
-        understand: "",
-        direct: "",
-        reeval: "",
-        systemEvent: "",
-      },
       skillBlocks: [{ id: "skill-a", content: "Use A" }],
       toolDirectory: "",
     };
@@ -68,12 +62,6 @@ describe("assemblePromptInput", () => {
     const staticContext: StaticContext = {
       basePrompt: "Base",
       soul: emptySoulContext(),
-      controllerPrompts: {
-        understand: "",
-        direct: "",
-        reeval: "",
-        systemEvent: "",
-      },
       skillBlocks: [],
       toolDirectory: "",
     };

@@ -233,7 +233,7 @@ describe("Fireworks provider", () => {
       messages: [{ role: "user", content: "Hi" }],
       responseFormat: {
         type: "json_schema",
-        name: "controller_direct_response",
+        name: "agent_decision_response",
         strict: true,
         schema: {
           type: "object",
@@ -248,7 +248,7 @@ describe("Fireworks provider", () => {
       response_format: {
         type: "json_schema",
         json_schema: {
-          name: "controller_direct_response",
+          name: "agent_decision_response",
           schema: {
             type: "object",
           },
@@ -301,7 +301,7 @@ describe("Fireworks provider", () => {
       ],
       responseFormat: {
         type: "json_schema",
-        name: "context_scout_result",
+        name: "agent_context_result",
         strict: true,
         schema: {
           type: "object",

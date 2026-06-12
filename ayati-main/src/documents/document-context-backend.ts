@@ -1,7 +1,6 @@
 import type { LlmProvider } from "../core/contracts/provider.js";
 import { extractLeafEvidence } from "../subagents/context-extractor/leaf-extractor.js";
 import type { SourceChunk } from "../subagents/context-extractor/types.js";
-import type { ScoutResult, DocumentScoutStatus } from "../ivec/types.js";
 import { devLog, devWarn } from "../shared/index.js";
 import type { ManagedDocumentManifest } from "./types.js";
 import { DocumentStore } from "./document-store.js";
@@ -15,6 +14,19 @@ export interface DocumentContextBackendOptions {
   documentIndexer?: DocumentIndexer;
   documentRetriever?: DocumentRetriever;
   largeDocumentMinChunks?: number;
+}
+
+export type DocumentContextStatus = "sufficient" | "partial" | "empty" | "unavailable";
+
+export interface DocumentContextResult {
+  context: string;
+  sources: string[];
+  confidence: number;
+  documentState?: {
+    status: DocumentContextStatus;
+    insufficientEvidence: boolean;
+    warnings: string[];
+  };
 }
 
 const STOPWORDS = new Set([
@@ -67,7 +79,7 @@ export class DocumentContextBackend {
     query: string;
     attachedDocuments: ManagedDocumentManifest[];
     requestedDocumentPaths?: string[];
-  }): Promise<ScoutResult> {
+  }): Promise<DocumentContextResult> {
     const requestedDocuments = filterDocuments(input.attachedDocuments, input.requestedDocumentPaths);
     devLog(
       `[document-search] start query="${truncate(input.query.replace(/\s+/g, " ").trim(), 140)}" attached=${input.attachedDocuments.length} requested=${requestedDocuments.length}`,
@@ -164,7 +176,7 @@ export class DocumentContextBackend {
     }
 
     const fallbackSummary = formatFallbackSummary(selectedChunks);
-    const fallbackStatus: DocumentScoutStatus = fallbackSummary.trim().length > 0 ? "partial" : "empty";
+    const fallbackStatus: DocumentContextStatus = fallbackSummary.trim().length > 0 ? "partial" : "empty";
     const result = {
       context: fallbackSummary || "No relevant grounded context was found in the attached document.",
       sources: [...new Set(selectedChunks.map((chunk) => chunk.documentPath))],
@@ -253,10 +265,10 @@ function buildDocumentResult(input: {
   context: string;
   sources: string[];
   confidence: number;
-  status: DocumentScoutStatus;
+  status: DocumentContextStatus;
   insufficientEvidence: boolean;
   warnings?: string[];
-}): ScoutResult {
+}): DocumentContextResult {
   return {
     context: input.context,
     sources: input.sources,
@@ -363,7 +375,7 @@ function classifyDocumentEvidence(input: {
   confidence: number;
   evidenceItems: number;
   insufficientEvidence: boolean;
-}): DocumentScoutStatus {
+}): DocumentContextStatus {
   if (!input.hasSummary || input.evidenceItems === 0) {
     return "empty";
   }

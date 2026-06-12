@@ -241,7 +241,6 @@ function formatTaskSummary(event: TaskSummaryEvent): string {
     event.currentFocus ? `Current focus: ${event.currentFocus}` : "",
     event.userMessage ? `User asked: ${event.userMessage}` : "",
     event.assistantResponse ? `Assistant response: ${event.assistantResponse}` : "",
-    event.approach ? `Approach: ${event.approach}` : "",
     joinList("Completed", event.completedMilestones),
     joinList("Open work", event.openWork),
     joinList("Blockers", event.blockers),

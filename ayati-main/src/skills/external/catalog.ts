@@ -648,7 +648,7 @@ export function buildExternalCapabilityDigest(catalog: ExternalSkillCatalog): st
     ...(domainLines.length > 0
       ? ["Catalog snapshot:", ...domainLines]
       : ["Catalog snapshot: generic workflow and integration skills."]),
-    "Normal controller flow mounts external skills by returning activate_skill with the exact skill_id, then uses the mounted tools after the tool list refreshes.",
+    "Normal agent flow mounts external skills by calling the skill broker activation tool with the exact skill_id, then uses the mounted tools after the tool list refreshes.",
   ].join("\n");
 }
 

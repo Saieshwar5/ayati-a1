@@ -342,15 +342,15 @@ describe("UploadServer", () => {
         capabilities: { nativeToolCalling: true },
         start: vi.fn(),
         stop: vi.fn(),
-        generateTurn: vi.fn().mockImplementation(async (input: LlmTurnInput) => {
-          const prompt = input.messages.map((message) => messageContentToText(message.content)).join("\n");
-          expect(prompt).toContain("Prepared attachments available (1)");
+      generateTurn: vi.fn().mockImplementation(async (input: LlmTurnInput) => {
+        const prompt = input.messages.map((message) => messageContentToText(message.content)).join("\n");
+          expect(prompt).toContain('"prepared"');
           expect(prompt).toContain("policy.txt");
           return {
             type: "assistant",
             content: JSON.stringify({
-              done: true,
-              summary: "I can see the attached policy document.",
+              kind: "reply",
+              message: "I can see the attached policy document.",
               status: "completed",
             }),
           };
@@ -453,19 +453,15 @@ describe("UploadServer", () => {
       start: vi.fn(),
       stop: vi.fn(),
       generateTurn: vi.fn().mockImplementation(async (input: LlmTurnInput) => {
-        const userMessage = input.messages.find((message) => message.role === "user");
-        expect(Array.isArray(userMessage?.content)).toBe(true);
-        expect(userMessage?.content).toEqual(
-          expect.arrayContaining([
-            expect.objectContaining({ type: "text" }),
-            expect.objectContaining({ type: "image", mimeType: "image/png" }),
-          ]),
-        );
+        const prompt = input.messages.map((message) => messageContentToText(message.content)).join("\n");
+        expect(prompt).toContain("photo.png");
+        expect(prompt).toContain('"kind": "image"');
+        expect(prompt).toContain('"mimeType": "image/png"');
         return {
           type: "assistant",
           content: JSON.stringify({
-            done: true,
-            summary: "I can see the attached image.",
+            kind: "reply",
+            message: "I can see the attached image.",
             status: "completed",
           }),
         };

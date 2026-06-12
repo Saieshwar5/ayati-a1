@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import type { LlmProvider } from "../core/contracts/provider.js";
 import { noopSessionMemory } from "../memory/provider.js";
 import type { ConversationTurn, SessionMemory, MemoryRunHandle, PromptMemoryContext, SessionStatus } from "../memory/types.js";
+import type { PromptRuntimeContext } from "../prompt/types.js";
 import type { StaticContext } from "../context/static-context-cache.js";
 import { renderAttentionShelfSection } from "../prompt/sections/attention-shelf.js";
 import { renderBasePromptSection } from "../prompt/sections/base.js";
@@ -73,17 +74,19 @@ import type {
 
 interface SystemContextBuildResult {
   systemContext: string;
-  controllerSystemContext: string;
+  decisionSystemContext: string;
   dynamicSystemTokens: number;
+  runtimeContext?: PromptRuntimeContext;
+  activeLearningContext?: string;
+  sessionStatus?: SessionStatus | null;
 }
 
 interface StaticPromptSectionsCache {
   head: string;
   tail: string;
-  controllerSystemContext: string;
 }
 
-interface UnderstandContextCache {
+interface SystemContextCache {
   sessionKey: string;
   conversationTurns: ConversationTurn[];
   conversationSection: string;
@@ -163,7 +166,7 @@ export class IVecEngine {
   private staticSystemTokens = 0;
   private staticTokensReady = false;
   private staticPromptSections?: StaticPromptSectionsCache;
-  private understandContextCache?: UnderstandContextCache;
+  private systemContextCache?: SystemContextCache;
 
   constructor(options?: IVecEngineOptions) {
     this.onReply = options?.onReply;
@@ -211,7 +214,7 @@ export class IVecEngine {
   invalidateStaticTokenCache(): void {
     this.staticTokensReady = false;
     this.staticPromptSections = undefined;
-    this.understandContextCache = undefined;
+    this.systemContextCache = undefined;
   }
 
   handleMessage(clientId: string, data: unknown): void {
@@ -271,18 +274,19 @@ export class IVecEngine {
           runHandle,
           clientId,
           uiContext,
+          initialUserMessage: content,
           config: this.loopConfig,
           dataDir: this.dataDir ?? "data",
-          systemContext: system.systemContext || undefined,
-          controllerSystemContext: system.controllerSystemContext || undefined,
-          controllerPrompts: this.staticContext?.controllerPrompts,
+          systemContext: system.decisionSystemContext || system.systemContext || undefined,
+          runtimeContext: system.runtimeContext,
+          activeLearningContext: system.activeLearningContext,
+          sessionStatus: system.sessionStatus,
           attachedDocuments: registeredAttachments.documents,
           attachmentWarnings: registeredAttachments.warnings,
           managedFiles: registeredAttachments.managedFiles,
           managedDirectories: registeredAttachments.managedDirectories,
           documentStore: this.documentStore,
           preparedAttachmentRegistry: this.preparedAttachmentRegistry,
-          documentContextBackend: this.documentContextBackend,
           onProgress: (log, runPath) => {
             devLog(`[${clientId}] ${log}`);
             this.sessionMemory.recordAgentStep(clientId, {
@@ -436,9 +440,10 @@ export class IVecEngine {
         initialUserMessage: incomingMessage,
         config: this.loopConfig,
         dataDir: this.dataDir ?? "data",
-        systemContext: system.systemContext || undefined,
-        controllerSystemContext: system.controllerSystemContext || undefined,
-        controllerPrompts: this.staticContext?.controllerPrompts,
+        systemContext: system.decisionSystemContext || system.systemContext || undefined,
+        runtimeContext: system.runtimeContext,
+        activeLearningContext: system.activeLearningContext,
+        sessionStatus: system.sessionStatus,
         documentStore: this.documentStore,
         preparedAttachmentRegistry: this.preparedAttachmentRegistry,
         onProgress: (log, runPath) => {
@@ -511,7 +516,7 @@ export class IVecEngine {
 
   private async buildSystemContext(clientId: string, userMessage = ""): Promise<SystemContextBuildResult> {
     if (!this.staticContext) {
-      return { systemContext: "", controllerSystemContext: "", dynamicSystemTokens: 0 };
+      return { systemContext: "", decisionSystemContext: "", dynamicSystemTokens: 0 };
     }
 
     this.ensureStaticTokenCache();
@@ -519,18 +524,11 @@ export class IVecEngine {
     const memoryContext = this.sessionMemory.getPromptMemoryContext();
     const sessionStatus = this.sessionMemory.getSessionStatus?.() ?? null;
     const staticSections = this.getStaticPromptSections();
-    const runtimeContextSection = renderRuntimeContextSection(
-      getNowSnapshot(this.nowProvider()),
-    );
+    const runtimeContext = getNowSnapshot(this.nowProvider());
+    const runtimeContextSection = renderRuntimeContextSection(runtimeContext);
     const activeLearningSection = await this.renderActiveLearningContextSection(clientId, userMessage);
     const activeLearningFingerprint = activeLearningSection;
-    const controllerSystemContext = joinPromptSections([
-      staticSections.head,
-      runtimeContextSection,
-      activeLearningSection,
-      staticSections.tail,
-    ]);
-    const cached = this.understandContextCache;
+    const cached = this.systemContextCache;
     const sessionKey = buildSessionCacheKey(memoryContext);
     const sameSession = cached?.sessionKey === sessionKey
       && cached?.activeLearningFingerprint === activeLearningFingerprint;
@@ -596,12 +594,16 @@ export class IVecEngine {
         systemContextWithoutStatus,
         renderSessionStatusSection(sessionStatus),
       ]);
+    const decisionSystemContext = joinPromptSections([
+      staticSections.head,
+      staticSections.tail,
+    ]);
     const dynamicSystemTokens = sameSession && cached?.dynamicContext === dynamicContext
       && cached?.runtimeContextSection === runtimeContextSection
       ? cached.dynamicSystemTokens
       : estimateTextTokens(joinPromptSections([runtimeContextSection, dynamicContext]));
 
-    this.understandContextCache = {
+    this.systemContextCache = {
       sessionKey,
       conversationTurns: cloneConversationTurns(conversationTurns),
       conversationSection,
@@ -629,8 +631,11 @@ export class IVecEngine {
 
     return {
       systemContext,
-      controllerSystemContext,
+      decisionSystemContext,
       dynamicSystemTokens,
+      runtimeContext,
+      activeLearningContext: activeLearningSection || undefined,
+      sessionStatus,
     };
   }
 
@@ -817,7 +822,8 @@ export class IVecEngine {
   }
 
   private buildStaticSystemContextText(): string {
-    return this.getStaticPromptSections().controllerSystemContext;
+    const sections = this.getStaticPromptSections();
+    return joinPromptSections([sections.head, sections.tail]);
   }
 
   private getStaticPromptSections(): StaticPromptSectionsCache {
@@ -829,7 +835,6 @@ export class IVecEngine {
       this.staticPromptSections = {
         head: "",
         tail: "",
-        controllerSystemContext: "",
       };
       return this.staticPromptSections;
     }
@@ -848,7 +853,6 @@ export class IVecEngine {
     this.staticPromptSections = {
       head,
       tail,
-      controllerSystemContext: joinPromptSections([head, tail]),
     };
     return this.staticPromptSections;
   }

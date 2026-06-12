@@ -3,9 +3,11 @@
 Current product features:
 
 - Runtime-selectable LLM providers: OpenRouter, OpenAI, Anthropic, and Fireworks.
-- Staged IVec agent loop with `understand`, `direct`, `reeval`, and `system_event` stages.
-- Layered prompt context from static prompts, controller prompts, soul, memory, session state, tools, skills, and runtime activity.
+- Decision-action-reducer IVec harness with `reply`, `ask_user`, and `act` decisions.
+- Structured context pack with runtime time, recent exact conversation, attention shelf, recent tasks, active attachments, personal memory, active learning context, and recent system activity.
+- Deterministic tool verification through tool contracts, assertions, verified facts, and progress reduction.
 - Built-in skills for shell, filesystem, calculator, SQLite database work, Python execution, documents, datasets, files, memory, recall, identity, Pulse, and external skill brokering.
+- Focus cards and attention shelf for ongoing projects, documents, learning, automations, investigations, and debugging.
 - Personal memory for stable user facts, time-based facts, and evolving preferences.
 - Episodic memory for semantic recall over closed sessions when embeddings are available.
 - Managed file registration and upload processing.
@@ -21,7 +23,7 @@ Core product capabilities:
 
 - Persistent daemon runtime that can keep agent state alive across user interactions.
 - Multi-channel communication model where clients connect to the daemon.
-- Long-term personalization through personal memory, session memory, and episodic recall.
+- Long-term personalization and continuation through session memory, focus cards, personal memory, and episodic recall.
 - Learning continuity through active-course context capsules, duplicate-aware lesson planning, and scoped search over the active course map, lesson metadata, notes, and doubts.
 - General visual workbench control for learning, coding, browsing, references, previews, scratch explanations, and other workspace-heavy tasks.
 - Computer-access layer for useful work across files, shell, Python, SQLite, documents, datasets, and generated artifacts.

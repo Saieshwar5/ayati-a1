@@ -71,42 +71,6 @@ export interface StepRecord {
   };
 }
 
-export interface ControllerStepDigest {
-  step: number;
-  executionContract: string;
-  outcome: string;
-  summary: string;
-  keyFacts: string[];
-  evidence: string[];
-  artifacts: string[];
-  blockedTargets: string[];
-  stoppedEarlyReason?: StepSummary["stoppedEarlyReason"];
-  toolSuccessCount: number;
-  toolFailureCount: number;
-  verificationPolicy?: StepVerificationPolicy;
-  expectationCheckStatus?: StepExpectationCheckStatus;
-}
-
-export interface ControllerHistoryBundle {
-  currentStepCount: number;
-  latestStepDigest?: ControllerStepDigest;
-  latestStepFullAvailable: boolean;
-  latestStepFullStep?: number;
-  latestCompletedStepFullText?: string;
-  recentStepDigests: ControllerStepDigest[];
-}
-
-export interface SummaryWindowResult {
-  window: { from: number; to: number };
-  steps: ControllerStepDigest[];
-}
-
-export interface StepFullResult {
-  step: number;
-  record: StepRecord;
-  fullStepText: string;
-}
-
 export class RunStateManager {
   private readonly runPath: string;
   private readonly stepRecordsPath: string;
@@ -129,48 +93,6 @@ export class RunStateManager {
     this.stepRecords.set(record.step, record);
     this.fullStepTextCache.set(record.step, fullStepText);
     await appendFile(this.stepRecordsPath, `${JSON.stringify(record)}\n`, "utf-8");
-  }
-
-  async buildControllerHistoryBundle(completedSteps: StepSummary[]): Promise<ControllerHistoryBundle> {
-    await this.ready();
-    const latestStep = completedSteps[completedSteps.length - 1];
-    const recentSteps = completedSteps.slice(-5, -1).reverse().slice(0, 4);
-
-    return {
-      currentStepCount: completedSteps.length,
-      latestStepDigest: latestStep ? this.toControllerStepDigest(latestStep) : undefined,
-      latestStepFullAvailable: Boolean(latestStep),
-      latestStepFullStep: latestStep?.step,
-      recentStepDigests: recentSteps.map((step) => this.toControllerStepDigest(step)),
-    };
-  }
-
-  async readSummaryWindow(window: { from: number; to: number }): Promise<SummaryWindowResult> {
-    await this.ready();
-    const from = Math.min(window.from, window.to);
-    const to = Math.max(window.from, window.to);
-    const steps: ControllerStepDigest[] = [];
-    for (let stepNumber = from; stepNumber <= to; stepNumber++) {
-      const record = this.stepRecords.get(stepNumber);
-      if (!record) {
-        continue;
-      }
-      steps.push(this.toControllerStepDigest(record));
-    }
-    return { window: { from, to }, steps };
-  }
-
-  async readStepFull(step: number): Promise<StepFullResult | null> {
-    await this.ready();
-    const record = this.stepRecords.get(step);
-    if (!record) {
-      return null;
-    }
-    return {
-      step,
-      record,
-      fullStepText: await this.readFullStepText(step),
-    };
   }
 
   private async loadFromDisk(): Promise<void> {
@@ -196,57 +118,4 @@ export class RunStateManager {
     }
   }
 
-  private async readFullStepText(step: number): Promise<string> {
-    const cached = this.fullStepTextCache.get(step);
-    if (cached) {
-      return cached;
-    }
-    const pad = String(step).padStart(3, "0");
-    const actPath = join(this.runPath, "steps", `${pad}-act.md`);
-    const verifyPath = join(this.runPath, "steps", `${pad}-verify.md`);
-    const [actText, verifyText] = await Promise.all([
-      readOptionalText(actPath),
-      readOptionalText(verifyPath),
-    ]);
-    const fullText = [
-      `Step ${step}`,
-      actText.trim().length > 0 ? actText.trim() : "Act output unavailable.",
-      verifyText.trim().length > 0 ? verifyText.trim() : "Verify output unavailable.",
-    ].join("\n\n");
-    this.fullStepTextCache.set(step, fullText);
-    return fullText;
-  }
-
-  private toControllerStepDigest(step: StepSummary | StepRecord): ControllerStepDigest {
-    const executionContract = step.executionContract ?? "";
-    const newFacts = Array.isArray(step.newFacts) ? step.newFacts : [];
-    const evidenceItems = Array.isArray(step.evidenceItems) ? step.evidenceItems : [];
-    const blockedTargets = Array.isArray(step.blockedTargets) ? step.blockedTargets : [];
-    return {
-      step: step.step,
-      executionContract,
-      outcome: step.outcome,
-      summary: step.summary,
-      keyFacts: newFacts.slice(0, 6),
-      evidence: evidenceItems.slice(0, 6),
-      artifacts: step.artifacts.slice(0, 6),
-      blockedTargets: blockedTargets.slice(0, 4),
-      stoppedEarlyReason: step.stoppedEarlyReason,
-      toolSuccessCount: step.toolSuccessCount,
-      toolFailureCount: step.toolFailureCount,
-      verificationPolicy: step.verificationPolicy,
-      expectationCheckStatus: step.expectationCheckStatus,
-    };
-  }
-}
-
-async function readOptionalText(path: string): Promise<string> {
-  if (!existsSync(path)) {
-    return "";
-  }
-  try {
-    return await readFile(path, "utf-8");
-  } catch {
-    return "";
-  }
 }

@@ -11,7 +11,7 @@ export interface FilesSkillDeps {
 const FILES_PROMPT_BLOCK = [
   "Managed file tools are built in.",
   "Once a file matters to a task, register it and use its fileId instead of raw paths.",
-  "Attached files are registered before the controller runs and can be auto-selected when there is exactly one run file.",
+  "Attached files are registered before the agent loop runs and can be auto-selected when there is exactly one run file.",
   "Use file_describe to inspect file metadata and capabilities.",
   "Use file_register_path after filesystem search finds a local file the user wants to work on.",
   "Use file_fetch_url when the task requires downloading a file from a URL.",

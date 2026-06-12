@@ -46,7 +46,7 @@ import { executeAgentAction } from "./action-executor.js";
 import type { AgentActionExecutionResult } from "./action-executor.js";
 import { planLocalRecovery } from "./failure-policy.js";
 
-export async function agentLoopV2(
+export async function runAgentLoop(
   deps: AgentLoopDeps,
   resolvedConfig?: LoopConfig,
 ): Promise<AgentLoopResult> {
@@ -63,7 +63,7 @@ export async function agentLoopV2(
   const queueStateSnapshot = (): void => {
     void queueStateWrite(runPath, state).catch((error) => {
       devWarn(
-        `[${deps.clientId}] v2 failed to persist run state snapshot: ${error instanceof Error ? error.message : String(error)}`,
+        `[${deps.clientId}] failed to persist run state snapshot: ${error instanceof Error ? error.message : String(error)}`,
       );
     });
   };
@@ -81,7 +81,7 @@ export async function agentLoopV2(
     await flushStateWrites(runPath);
     await writeOptimizationMetrics(runPath, metrics).catch((error) => {
       devWarn(
-        `[${deps.clientId}] v2 failed to persist optimization metrics: ${error instanceof Error ? error.message : String(error)}`,
+        `[${deps.clientId}] failed to persist optimization metrics: ${error instanceof Error ? error.message : String(error)}`,
       );
     });
     deps.externalSkillBroker?.deactivate({}, {
@@ -91,8 +91,8 @@ export async function agentLoopV2(
       stepNumber: state.iteration,
       ...(deps.uiContext ? { uiContext: deps.uiContext } : {}),
     });
-    devLog(`[${deps.clientId}] [metrics:v2] ${formatRunMetrics(metrics)}`);
-    return buildV2LoopResult(state, deps.dataDir, {
+    devLog(`[${deps.clientId}] [metrics:agent_loop] ${formatRunMetrics(metrics)}`);
+    return buildLoopResult(state, deps.dataDir, {
       status: input.status,
       totalIterations: state.iteration,
       totalToolCalls,
@@ -107,18 +107,18 @@ export async function agentLoopV2(
   state.goal = goalFromUserMessage(state.userMessage);
   state.taskProgress = {
     ...state.taskProgress,
-    progressSummary: "Starting V2 decision-action-reducer loop.",
+    progressSummary: "Starting decision-action-reducer loop.",
     currentFocus: state.userMessage,
   };
 
   devLog(
-    `[${deps.clientId}] agentLoopV2 start inputKind=${state.inputKind ?? "user_message"} runHandle=${deps.runHandle.runId} message=${state.userMessage.slice(0, 160)}`,
+    `[${deps.clientId}] agentLoop start inputKind=${state.inputKind ?? "user_message"} runHandle=${deps.runHandle.runId} message=${state.userMessage.slice(0, 160)}`,
   );
 
   queueStateSnapshot();
   recordStateSnapshotMetric("initial");
 
-  await prepareAttachmentsForV2(deps, state, runId, runPath);
+  await prepareAttachmentsForRun(deps, state, runId, runPath);
   queueStateSnapshot();
 
   while (state.status === "running" && state.iteration < config.maxIterations) {
@@ -134,7 +134,7 @@ export async function agentLoopV2(
     if (canCompleteFromVerifiedState(state)) {
       state.status = "completed";
       state.finalOutput = buildLocalCompletionReply(state);
-      recordRunMetric(metrics, "v2_local_completion", { kind: "local" });
+      recordRunMetric(metrics, "local_completion", { kind: "local" });
       return finalize({ status: "completed", content: state.finalOutput });
     }
 
@@ -145,26 +145,28 @@ export async function agentLoopV2(
       stepNumber: state.iteration,
       ...(deps.uiContext ? { uiContext: deps.uiContext } : {}),
     }) ?? deps.toolDefinitions;
-    const selectedTools = selectToolsForDecision(state, visibleTools, config.v2MaxSelectedTools);
+    const selectedTools = selectToolsForDecision(state, visibleTools, config.maxSelectedTools);
     const decision = await callAgentDecision({
       provider: deps.provider,
       stateView: buildAgentStateView(state),
       toolDefinitions: selectedTools,
-      systemContext: deps.controllerSystemContext ?? deps.systemContext,
+      systemContext: deps.systemContext,
       metrics,
     });
 
     if (decision.kind === "reply") {
       state.status = decision.status === "failed" ? "failed" : "completed";
       state.finalOutput = decision.message;
+      const responseKind = state.preferredResponseKind ?? "reply";
       return finalize({
         status: state.status,
         content: state.finalOutput,
+        responseKind,
         completion: {
           done: true,
           summary: decision.message,
           status: decision.status,
-          response_kind: "reply",
+          response_kind: responseKind,
         },
       });
     }
@@ -193,7 +195,7 @@ export async function agentLoopV2(
       });
     }
 
-    const stepResult = await executeV2ActionStep({
+    const stepResult = await executeActionStep({
       deps,
       state,
       config,
@@ -206,13 +208,13 @@ export async function agentLoopV2(
 
     const beforeProgressChars = measureJson(stepResult.execution.nextProgress);
     const compactedProgress = compactTaskProgress(stepResult.execution.nextProgress);
-    recordCompactionMetric(metrics, "v2TaskProgress", beforeProgressChars, measureJson(compactedProgress), { step: state.iteration });
+    recordCompactionMetric(metrics, "taskProgress", beforeProgressChars, measureJson(compactedProgress), { step: state.iteration });
     state.taskProgress = compactedProgress;
     stepResult.stepSummary.taskProgress = compactedProgress;
     stepResult.stepRecord.taskProgress = compactedProgress;
 
     const compactedStep = compactStepSummaryForState(stepResult.stepSummary);
-    recordCompactionMetric(metrics, "v2CompletedStepSummary", measureJson(stepResult.stepSummary), measureJson(compactedStep), { step: state.iteration });
+    recordCompactionMetric(metrics, "completedStepSummary", measureJson(stepResult.stepSummary), measureJson(compactedStep), { step: state.iteration });
     state.completedSteps.push(compactedStep);
     await runStateManager.appendStepRecord(stepResult.stepRecord, stepResult.fullStepText);
 
@@ -228,7 +230,7 @@ export async function agentLoopV2(
 
     if (stepResult.stepSummary.outcome === "failed") {
       state.consecutiveFailures++;
-      state.failedApproaches.push({
+      state.failureHistory.push({
         step: stepResult.stepSummary.step,
         executionContract: stepResult.stepSummary.executionContract,
         failureType: stepResult.stepSummary.failureType ?? "verify_failed",
@@ -245,7 +247,7 @@ export async function agentLoopV2(
     }
 
     queueStateSnapshot();
-    recordStateSnapshotMetric("after_v2_step");
+    recordStateSnapshotMetric("after_step");
     deps.onProgress?.(
       `Step ${state.iteration}: ${stepResult.stepSummary.executionContract} -> ${stepResult.stepSummary.outcome}`,
       runPath,
@@ -263,7 +265,7 @@ export async function agentLoopV2(
   return finalize({ status: "stuck", content: state.finalOutput });
 }
 
-interface ExecuteV2ActionStepInput {
+interface ExecuteActionStepInput {
   deps: AgentLoopDeps;
   state: LoopState;
   config: LoopConfig;
@@ -273,14 +275,14 @@ interface ExecuteV2ActionStepInput {
   stepNumber: number;
 }
 
-interface ExecuteV2ActionStepResult {
+interface ExecuteActionStepResult {
   execution: AgentActionExecutionResult;
   stepSummary: StepSummary;
   stepRecord: StepRecord;
   fullStepText: string;
 }
 
-async function executeV2ActionStep(input: ExecuteV2ActionStepInput): Promise<ExecuteV2ActionStepResult> {
+async function executeActionStep(input: ExecuteActionStepInput): Promise<ExecuteActionStepResult> {
   input.state.runClass = "task";
   let execution = await executeAgentAction(
     {
@@ -301,7 +303,7 @@ async function executeV2ActionStep(input: ExecuteV2ActionStepInput): Promise<Exe
   if (!execution.verifyOutput.passed) {
     const recovery = planLocalRecovery(input.decision.action, execution.actOutput.toolCalls);
     if (recovery) {
-      recordRunMetric(input.metrics, "v2_local_recovery", { kind: "local" });
+      recordRunMetric(input.metrics, "local_recovery", { kind: "local" });
       const retryExecution = await executeAgentAction(
         {
           toolExecutor: input.deps.toolExecutor,
@@ -400,7 +402,7 @@ function buildStepSummary(input: {
     toolFailureCount,
     contractVersion: 2,
     verificationPolicy: "deterministic",
-    verificationRationale: "V2 uses tool result contracts and local assertions before any semantic model review.",
+    verificationRationale: "The runner uses tool result contracts and local assertions before any semantic model review.",
     expectedArtifacts: [],
     expectedStateChange: "Verified facts and progress state are updated from tool-owned evidence.",
     requiresFullStepContext: false,
@@ -470,35 +472,35 @@ function buildInitialState(deps: AgentLoopDeps, config: LoopConfig, runPath: str
     contextVisibility: deps.systemEventContextVisibility,
     preferredResponseKind: deps.preferredResponseKind,
     goal: emptyGoalContract(),
-    approach: "V2 decision-action-reducer loop.",
-    sessionContextSummary: "",
-    dependentTask: false,
-    dependentTaskSummary: null,
     taskProgress: emptyTaskProgress(),
     status: "running",
     finalOutput: "",
     iteration: 0,
     maxIterations: config.maxIterations,
     consecutiveFailures: 0,
-    approachChangeCount: 0,
     completedSteps: [],
-    recentContextSearches: [],
     runPath,
-    failedApproaches: [],
+    failureHistory: [],
     attachedDocuments: deps.attachedDocuments ?? [],
     attachmentWarnings: deps.attachmentWarnings ?? [],
     preparedAttachments: [],
     managedFiles: deps.managedFiles ?? [],
     managedDirectories: deps.managedDirectories ?? [],
     activeSessionAttachments: [],
-    workMode: undefined,
+    runtimeContext: deps.runtimeContext,
+    activeLearningContext: deps.activeLearningContext,
+    previousSessionSummary: "",
+    personalMemorySnapshot: "",
+    attentionShelf: [],
+    activeSessionPath: "",
+    sessionStatus: deps.sessionStatus ?? null,
     sessionHistory: [],
     recentTaskSummaries: [],
     recentSystemActivity: [],
   };
 }
 
-async function prepareAttachmentsForV2(
+async function prepareAttachmentsForRun(
   deps: AgentLoopDeps,
   state: LoopState,
   runId: string,
@@ -520,6 +522,13 @@ async function prepareAttachmentsForV2(
 
 function syncTransientMemoryContext(state: LoopState, deps: AgentLoopDeps): void {
   const memCtx = deps.sessionMemory.getPromptMemoryContext();
+  state.runtimeContext = deps.runtimeContext;
+  state.activeLearningContext = deps.activeLearningContext;
+  state.previousSessionSummary = memCtx.previousSessionSummary ?? "";
+  state.personalMemorySnapshot = memCtx.personalMemorySnapshot ?? "";
+  state.attentionShelf = memCtx.attentionShelf ?? [];
+  state.activeSessionPath = memCtx.activeSessionPath ?? "";
+  state.sessionStatus = deps.sessionStatus ?? deps.sessionMemory.getSessionStatus?.() ?? null;
   state.sessionHistory = (memCtx.conversationTurns ?? []).filter((turn) => {
     if (state.inputKind !== "user_message") {
       return true;
@@ -620,7 +629,7 @@ function buildLocalCompletionReply(state: LoopState): string {
 }
 
 function buildFailureReply(state: LoopState): string {
-  const latest = state.failedApproaches[state.failedApproaches.length - 1];
+  const latest = state.failureHistory[state.failureHistory.length - 1];
   if (!latest) {
     return "I couldn't complete the task.";
   }
@@ -629,7 +638,7 @@ function buildFailureReply(state: LoopState): string {
 
 function buildActionExecutionContract(action: AgentAction): string {
   const calls = action.calls.map((call) => `${call.tool}${call.purpose ? ` (${call.purpose})` : ""}`).join(", ");
-  return `V2 ${action.mode} action: ${calls || "no calls"}`;
+  return `${action.mode} action: ${calls || "no calls"}`;
 }
 
 function classifyFailure(execution: AgentActionExecutionResult): {
@@ -660,7 +669,7 @@ function classifyFailure(execution: AgentActionExecutionResult): {
   };
 }
 
-function buildV2LoopResult(
+function buildLoopResult(
   state: LoopState,
   dataDir: string,
   input: {
@@ -717,11 +726,8 @@ function buildTaskSummaryRecord(
     keyFacts: normalizeList(state.taskProgress.keyFacts),
     evidence: normalizeList(state.taskProgress.evidence),
     userInputNeeded: state.taskProgress.userInputNeeded?.trim() || undefined,
-    workMode: state.workMode,
     userMessage: state.userMessage.trim() || undefined,
     assistantResponse,
-    approach: state.approach,
-    sessionContextSummary: state.sessionContextSummary,
     assistantResponseKind: responseKind === "none" ? undefined : responseKind,
     feedbackKind: completion?.feedback_kind,
     feedbackLabel: completion?.feedback_label,

@@ -33,7 +33,7 @@ export function renderRecentTasksSection(tasks: PromptTaskSummary[]): string {
 
   return joinPromptBlocks([
     "# Recent Tasks",
-    "Ordered newest to oldest. These are task runs that passed understand and entered execution.",
+    "Ordered newest to oldest. These are task runs that entered action execution.",
     lines.join("\n"),
   ]);
 }

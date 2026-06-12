@@ -6,8 +6,7 @@ export const DEFAULT_HTTP_ALLOW_ORIGIN = "*";
 export const DEFAULT_UPLOAD_MAX_BYTES = 25 * 1024 * 1024;
 export const DEFAULT_DOCUMENT_EMBED_BATCH_SIZE = 32;
 export const DEFAULT_DOCUMENT_VECTOR_MIN_CHUNKS = 40;
-export const DEFAULT_AGENT_HARNESS_VERSION: LoopConfig["harnessVersion"] = "v1";
-export const DEFAULT_AGENT_V2_MAX_SELECTED_TOOLS = 12;
+export const DEFAULT_AGENT_MAX_SELECTED_TOOLS = 12;
 
 export interface HttpRuntimeConfig {
   host: string;
@@ -97,23 +96,16 @@ function loadLearningRuntimeConfig(env: NodeJS.ProcessEnv, http: HttpRuntimeConf
 }
 
 function loadAgentRuntimeConfig(env: NodeJS.ProcessEnv): AgentRuntimeConfig {
-  const harnessVersion = parseHarnessVersion(env["AYATI_AGENT_HARNESS_VERSION"]);
-  const v2MaxSelectedTools = parsePositiveInt(
-    env["AYATI_AGENT_V2_MAX_SELECTED_TOOLS"],
-    DEFAULT_AGENT_V2_MAX_SELECTED_TOOLS,
+  const maxSelectedTools = parsePositiveInt(
+    env["AYATI_AGENT_MAX_SELECTED_TOOLS"],
+    DEFAULT_AGENT_MAX_SELECTED_TOOLS,
   );
 
   return {
     loopConfig: {
-      harnessVersion,
-      v2MaxSelectedTools,
+      maxSelectedTools,
     },
   };
-}
-
-function parseHarnessVersion(rawValue: string | undefined): LoopConfig["harnessVersion"] {
-  const normalized = rawValue?.trim().toLowerCase();
-  return normalized === "v2" ? "v2" : DEFAULT_AGENT_HARNESS_VERSION;
 }
 
 function isEnvFalse(rawValue: string | undefined): boolean {

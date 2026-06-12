@@ -39,6 +39,15 @@ Python tool:
 AYATI_PYTHON_INTERPRETER=
 ```
 
+Agent harness:
+
+```env
+AYATI_AGENT_MAX_SELECTED_TOOLS=12
+```
+
+`AYATI_AGENT_MAX_SELECTED_TOOLS` bounds how many tool definitions are shown to
+the decision model for one decision.
+
 Telegram:
 
 ```env

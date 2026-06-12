@@ -1,6 +1,16 @@
 # Project Docs
 
-This directory is the AI-agent context layer for Ayati. It should help future agents understand the product vision, daemon-first architecture, code conventions, workflows, and external references before making changes.
+This directory is the stable AI-agent context layer for Ayati. Keep it small,
+current, and useful for future engineering work.
+
+Top-level docs are intentionally limited to two areas:
+
+- `product/`: product vision, users, features, non-goals, and future-facing product decisions.
+- `engineering/`: implementation guidance, architecture, workflows, commands, testing, security, and project history.
+
+Do not add new top-level documentation categories. If a doc is about how the
+product behaves for users, put it under `product/`. If it is about how the
+system is built, operated, tested, or changed, put it under `engineering/`.
 
 Core mental model:
 
@@ -8,23 +18,20 @@ Core mental model:
 Ayati = persistent agent daemon + communication clients + memory + tools + events
 ```
 
-`ayati-main` is the long-running agent daemon. It owns intelligence, memory, tools, providers, event processing, and runtime state. `ayati-cli` is currently the main user interface, but it is only one client surface. Future clients can include web, mobile, Telegram, email, voice, or other channels that communicate with the daemon.
+The current agent harness model:
 
-Top-level directories:
+```text
+context pack -> decision -> action executor -> deterministic verification -> progress reducer
+```
 
-- `product/`: product vision, users, features, and non-goals.
-- `architecture/`: daemon architecture, data flow, modules, clients, APIs, runtime data, integrations, and trust boundaries.
-- `engineering/`: coding conventions, commands, testing, workflows, troubleshooting, and AI-agent operating rules.
-- `history/`: decisions, progress records, and external references.
-
-Before editing code, read these first:
+Read these first before major code changes:
 
 1. `product/overview.md`
-2. `architecture/overview.md`
-3. `engineering/conventions.md`
-4. `engineering/ai-agent-instructions.md`
-5. `engineering/testing.md`
+2. `engineering/README.md`
+3. `engineering/architecture/overview.md`
+4. `engineering/architecture/agent-harness.md`
+5. `engineering/architecture/context-and-memory.md`
+6. `engineering/testing.md`
 
-Use this directory for stable project context. Do not place secrets, API keys, generated runtime data, or large build outputs here.
-
-`history/progress/` is reserved for commit-by-commit history and project state records.
+Use this directory for stable project context. Do not place secrets, API keys,
+generated runtime data, large build outputs, or scratch notes here.

@@ -194,7 +194,6 @@ describe("InMemorySession", () => {
       step: 1,
       phase: "reason",
       summary: "Analyze user request",
-      approachesTried: [],
     };
 
     const stepEvent2: AgentStepEvent = {
@@ -206,7 +205,6 @@ describe("InMemorySession", () => {
       step: 2,
       phase: "act",
       summary: "Create directory",
-      approachesTried: ["mkdir"],
       actionToolName: "create_directory",
       endStatus: "success",
     };
@@ -242,7 +240,6 @@ describe("InMemorySession", () => {
         step: i,
         phase: "reason",
         summary: `Step ${i}`,
-        approachesTried: [],
       });
     }
 
@@ -268,14 +265,13 @@ describe("InMemorySession", () => {
       sessionPath: "sessions/2026-02-08/s1.md",
       step: 1,
       phase: "reflect",
-      summary: "Tool failed, adjusting approach",
-      approachesTried: ["attempt1"],
+      summary: "Tool failed; recording failure context",
     });
 
     const raw = session.getAgentStepSessionEvents();
     expect(raw).toHaveLength(1);
     expect(raw[0]?.type).toBe("agent_step");
-    expect(raw[0]?.approachesTried).toEqual(["attempt1"]);
+    expect(raw[0]?.summary).toBe("Tool failed; recording failure context");
   });
 
   it("updates lastActivityAt on addEntry", () => {

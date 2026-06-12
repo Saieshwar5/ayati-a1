@@ -2,7 +2,8 @@
 
 Areas that deserve careful test coverage when changed:
 
-- IVec staged loop behavior.
+- IVec decision-action-reducer runner behavior.
+- Context pack, attention shelf, and focus-card continuation behavior.
 - Daemon lifecycle and long-running service assumptions.
 - Tool call validation and execution.
 - Session rotation and memory persistence.

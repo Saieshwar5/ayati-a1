@@ -298,7 +298,7 @@ describe("OpenAI provider", () => {
       messages: [{ role: "user", content: "Hi" }],
       responseFormat: {
         type: "json_schema",
-        name: "controller_direct_response",
+        name: "agent_decision_response",
         strict: true,
         schema: {
           type: "object",
@@ -317,7 +317,7 @@ describe("OpenAI provider", () => {
       response_format: {
         type: "json_schema",
         json_schema: {
-          name: "controller_direct_response",
+          name: "agent_decision_response",
           schema: {
             type: "object",
             properties: {
@@ -346,7 +346,7 @@ describe("OpenAI provider", () => {
       messages: [{ role: "user", content: "Hi" }],
       responseFormat: {
         type: "json_schema",
-        name: "controller_direct_response",
+        name: "agent_decision_response",
         strict: true,
         schema: {
           type: "object",
@@ -378,7 +378,7 @@ describe("OpenAI provider", () => {
       messages: [{ role: "user", content: "Hi" }],
       responseFormat: {
         type: "json_schema",
-        name: "controller_direct_response",
+        name: "agent_decision_response",
         strict: true,
         schema: {
           type: "object",

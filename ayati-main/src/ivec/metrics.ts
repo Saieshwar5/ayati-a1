@@ -44,7 +44,6 @@ export interface OptimizationMetricsSummary {
   stateSizes: Record<string, StateSizeMetricSummary>;
   planModes: Record<string, number>;
   verificationMethods: Record<string, number>;
-  readRunState: Record<string, number>;
   warnings: Array<{ tsMs: number; kind: string; message: string; data?: Record<string, unknown> }>;
 }
 
@@ -71,7 +70,6 @@ export function createRunMetrics(): RunMetrics {
       stateSizes: {},
       planModes: {},
       verificationMethods: {},
-      readRunState: {},
       warnings: [],
     },
     optimizationEvents: [],
@@ -234,20 +232,6 @@ export function recordVerificationMetric(
   }
   metrics.optimization.verificationMethods[method] = (metrics.optimization.verificationMethods[method] ?? 0) + 1;
   recordOptimizationEvent(metrics, "verification", { method, ...data });
-}
-
-export function recordReadRunStateMetric(
-  metrics: RunMetrics | undefined,
-  stage: string,
-  action: string,
-  data: Record<string, unknown> = {},
-): void {
-  if (!metrics) {
-    return;
-  }
-  const key = `${stage}:${action}`;
-  metrics.optimization.readRunState[key] = (metrics.optimization.readRunState[key] ?? 0) + 1;
-  recordOptimizationEvent(metrics, "read_run_state", { stage, action, ...data });
 }
 
 export function recordOptimizationWarning(

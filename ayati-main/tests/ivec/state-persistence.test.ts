@@ -56,10 +56,6 @@ describe("state-persistence", () => {
         runClass: "interaction",
         userMessage: "hello",
         goal: goalContract("greet"),
-        approach: "direct",
-        sessionContextSummary: "",
-        dependentTask: false,
-        dependentTaskSummary: null,
         taskProgress: {
           status: "not_done",
           progressSummary: "",
@@ -71,11 +67,9 @@ describe("state-persistence", () => {
         iteration: 1,
         maxIterations: 15,
         consecutiveFailures: 0,
-        approachChangeCount: 0,
         completedSteps: [],
-        recentContextSearches: [],
         runPath,
-        failedApproaches: [],
+        failureHistory: [],
         sessionHistory: [],
         recentTaskSummaries: [],
         recentSystemActivity: [],
@@ -102,24 +96,6 @@ describe("state-persistence", () => {
         runClass: "interaction",
         userMessage: "hello",
         goal: goalContract("greet"),
-        approach: "direct",
-        sessionContextSummary: "",
-        dependentTask: true,
-        dependentTaskSummary: {
-          timestamp: "2026-03-07T00:00:00.000Z",
-          runId: "dep-1",
-          runPath: "/tmp/dep-1",
-          runStatus: "completed",
-          taskStatus: "done",
-          objective: "Earlier task",
-          summary: "Earlier task finished",
-          completedMilestones: ["done"],
-          openWork: [],
-          blockers: [],
-          keyFacts: ["fact"],
-          evidence: ["proof"],
-          attachmentNames: [],
-        },
         taskProgress: {
           status: "not_done",
           progressSummary: "",
@@ -131,11 +107,9 @@ describe("state-persistence", () => {
         iteration: 1,
         maxIterations: 15,
         consecutiveFailures: 0,
-        approachChangeCount: 0,
         completedSteps: [],
-        recentContextSearches: [],
         runPath,
-        failedApproaches: [],
+        failureHistory: [],
         sessionHistory: [{ role: "user", content: "hello", timestamp: "", sessionPath: "" }],
         recentTaskSummaries: [{ runId: "r-1", runPath: "/tmp/r-1", status: "completed", summary: "done" }],
         activeSessionAttachments: [],
@@ -153,16 +127,12 @@ describe("state-persistence", () => {
       await flushStateWrites(runPath);
 
       const persisted = JSON.parse(readFileSync(join(runPath, "state.json"), "utf-8")) as {
-        dependentTask?: boolean;
-        dependentTaskSummary?: { runId?: string };
         finalOutput?: string;
         iteration?: number;
         sessionHistory?: unknown;
         recentRunLedgers?: unknown;
         recentTaskSummaries?: unknown;
       };
-      expect(persisted.dependentTask).toBe(true);
-      expect(persisted.dependentTaskSummary?.runId).toBe("dep-1");
       expect(persisted.finalOutput).toBe("latest");
       expect(persisted.iteration).toBe(2);
       expect(persisted).not.toHaveProperty("sessionHistory");
@@ -182,10 +152,6 @@ describe("state-persistence", () => {
         runClass: "interaction",
         userMessage: "hello",
         goal: goalContract("greet"),
-        approach: "direct",
-        sessionContextSummary: "",
-        dependentTask: false,
-        dependentTaskSummary: null,
         taskProgress: {
           status: "not_done",
           progressSummary: "",
@@ -197,11 +163,9 @@ describe("state-persistence", () => {
         iteration: 1,
         maxIterations: 15,
         consecutiveFailures: 0,
-        approachChangeCount: 0,
         completedSteps: [],
-        recentContextSearches: [],
         runPath,
-        failedApproaches: [],
+        failureHistory: [],
         sessionHistory: [{ role: "user", content: "hi", timestamp: "2026-03-07T00:00:00.000Z", sessionPath: "sessions/x.md" }],
         recentRunLedgers: [{ timestamp: "2026-03-07T00:00:00.000Z", runId: "r-1", runPath: "/tmp/r-1", state: "completed", status: "completed", summary: "done" }],
         recentTaskSummaries: [],

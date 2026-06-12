@@ -247,7 +247,7 @@ describe("OpenRouter provider", () => {
       messages: [{ role: "user", content: "Hi" }],
       responseFormat: {
         type: "json_schema",
-        name: "controller_direct_response",
+        name: "agent_decision_response",
         schema: { type: "object" },
       },
     });

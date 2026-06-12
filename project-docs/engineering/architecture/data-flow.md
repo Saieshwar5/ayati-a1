@@ -5,12 +5,13 @@ Daemon communication flow:
 1. A communication channel sends a user message or event into the daemon.
 2. Current CLI path: `ayati-cli` sends `{ type: "chat", content, attachments? }` to `ws://localhost:8080`.
 3. `WsServer` parses JSON and forwards payloads to `IVecEngine.handleMessage`.
-4. `IVecEngine` parses chat input, stores session turns, builds dynamic prompt context, and enters the agent loop.
-5. The engine retrieves relevant session, personal, episodic, document, file, tool, skill, runtime, and system-event context.
-6. The loop asks the provider for the next action.
-7. If tool calls are requested, `createToolExecutor` validates and dispatches to registered tool definitions.
-8. Tool results are fed back into the loop for continuation or final answer.
-9. The engine replies through `onReply`; local replies go back through `WsServer.send`.
+4. `IVecEngine` parses chat input, stores session turns, builds static decision context, and enters the agent runner.
+5. The runner builds a structured context pack from runtime time, session memory, attention shelf, recent tasks, active attachments, personal memory, learning context, and system activity.
+6. The decision model chooses `reply`, `ask_user`, or `act`.
+7. If tool calls are requested, the action executor validates the plan and dispatches through registered tool definitions.
+8. Tool contracts/assertions turn results into verified facts and progress evidence.
+9. The progress reducer updates task state; the runner either completes locally or asks for another decision.
+10. The engine replies through `onReply`; local replies go back through `WsServer.send`.
 
 Client model:
 
@@ -18,20 +19,23 @@ Client model:
 2. Clients should not own agent intelligence, memory, tool policy, provider selection, or long-running state.
 3. New clients should send normalized messages/events to the daemon and render replies/notifications.
 
-Memory flow:
+Memory and focus flow:
 
 1. User interactions are stored as session turns.
-2. Session close can enqueue memory consolidation and episodic indexing.
-3. Personal memory stores stable facts and preferences for personalization.
-4. Episodic memory indexes closed sessions for future recall when embeddings are available.
-5. Prompt sections render relevant memory back into future agent runs.
+2. Task summaries and active attachments can create or update focus cards.
+3. The attention shelf selects compact, high-relevance focus summaries for future decisions.
+4. Session close can enqueue memory consolidation and episodic indexing.
+5. Personal memory stores stable facts and preferences for personalization.
+6. Episodic memory indexes closed sessions for future recall when embeddings are available.
+7. The context pack renders relevant memory back into future agent runs as bounded JSON.
 
 Tool/action flow:
 
 1. The daemon exposes tools through built-in skills and external skill brokering.
-2. The agent loop selects tool calls only when needed for the user goal.
-3. The tool executor validates and executes requests.
-4. Results become evidence for the next loop step or final response.
+2. The decision model selects tool calls only when needed for the user goal.
+3. The action executor validates plan shape, selected tools, dependencies, and unsafe parallel filesystem overlap.
+4. The tool executor validates and executes requests.
+5. Results become artifacts, verified facts, and progress evidence for continuation or final response.
 
 Attachment flow:
 

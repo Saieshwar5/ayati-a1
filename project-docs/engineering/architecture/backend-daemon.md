@@ -15,7 +15,7 @@ Core responsibilities:
 - Start plugins and system-event worker.
 - Manage session memory, personal memory, and episodic memory.
 - Register built-in and external tools.
-- Execute the IVec staged agent loop.
+- Execute the IVec decision-action-reducer agent loop.
 - Preserve daemon-owned runtime state under `ayati-main/data/`.
 - Provide replies, feedback, notifications, and background event handling to client transports.
 

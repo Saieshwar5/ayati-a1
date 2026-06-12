@@ -42,9 +42,7 @@ You have external skills installed on this system.
 External skills are not built-in tools.
 They are separate documented workflows or integrations that you may consult when a task depends on something beyond the built-in toolset.
 
-Before using one or more external skills, first request a context search
-only when the task itself is about broader project/session context rather than using a skill.
-For normal external capability usage, inspect the visible skill cards and activate the needed skill through the controller's \`activate_skill\` directive.
+Before using one or more external skills, inspect the visible skill cards and use the built-in skill broker tools to activate the needed skill.
 
 The skill id is not always the same as the executable name.
 When a skill entry includes command metadata, prefer that canonical command over guessing from the skill id.

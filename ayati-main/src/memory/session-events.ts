@@ -98,7 +98,6 @@ export interface AgentStepEvent extends BaseEvent {
   step: number;
   phase: string;
   summary: string;
-  approachesTried: string[];
   actionToolName?: string;
   endStatus?: string;
 }
@@ -131,12 +130,8 @@ export interface TaskSummaryEvent extends BaseEvent {
   keyFacts?: string[];
   evidence?: string[];
   userInputNeeded?: string;
-  workMode?: string;
   userMessage?: string;
   assistantResponse?: string;
-  approach?: string;
-  sessionContextSummary?: string;
-  dependentTaskRunId?: string;
   assistantResponseKind?: AssistantResponseKind;
   feedbackKind?: FeedbackKind;
   feedbackLabel?: string;

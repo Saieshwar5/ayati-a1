@@ -53,7 +53,7 @@ export async function callAgentDecision(input: CallAgentDecisionInput): Promise<
   const prompt = Object.values(promptSections).filter((section) => section.trim().length > 0).join("\n\n");
   const systemContext = buildDecisionSystemContext(input.systemContext);
   const responseFormat = resolveDecisionResponseFormat(input.provider);
-  recordPromptMetric(input.metrics, "v2_decision", {
+  recordPromptMetric(input.metrics, "agent_decision", {
     systemContext,
     ...promptSections,
   });
@@ -65,7 +65,7 @@ export async function callAgentDecision(input: CallAgentDecisionInput): Promise<
 
   let rawText = "";
   for (let attempt = 0; attempt < 2; attempt++) {
-    const metricStage = attempt === 0 ? "v2_decision" : "v2_decision_repair";
+    const metricStage = attempt === 0 ? "agent_decision" : "agent_decision_repair";
     const startedAt = Date.now();
     let turn: LlmTurnOutput;
     try {
@@ -92,7 +92,7 @@ export async function callAgentDecision(input: CallAgentDecisionInput): Promise<
       : JSON.stringify({
           kind: "reply",
           status: "failed",
-          message: "The decision model returned tool calls in controller mode.",
+          message: "The decision model returned tool calls instead of a decision JSON object.",
         });
 
     try {
@@ -106,7 +106,7 @@ export async function callAgentDecision(input: CallAgentDecisionInput): Promise<
         { role: "assistant", content: rawText },
         {
           role: "user",
-          content: "Repair the previous response. Return one valid JSON object only, using exactly one of the documented V2 decision shapes.",
+          content: "Repair the previous response. Return one valid JSON object only, using exactly one of the documented agent decision shapes.",
         },
       ];
     }
@@ -149,20 +149,21 @@ export function parseAgentDecision(text: string): AgentDecision {
     };
   }
 
-  throw new SyntaxError(`Unsupported V2 decision kind: ${String(kind)}`);
+  throw new SyntaxError(`Unsupported agent decision kind: ${String(kind)}`);
 }
 
 function buildDecisionSystemContext(systemContext: string | undefined): string {
   const base = `You are the decision component of an AI agent harness.
-Choose the next controller decision only. Do not execute tools yourself.
+Choose the next agent decision only. Do not execute tools yourself.
 Prefer deterministic actions with concrete tool inputs.
+Use the structured context pack in the state view for runtime memory, recent conversation, focus shelf, attachments, and recent tasks.
 Return compact JSON only.`;
   const trimmed = systemContext?.trim();
   if (!trimmed) {
     return base;
   }
   const compact = trimmed.length > 6_000
-    ? `${trimmed.slice(0, 6_000).trimEnd()}\n[system context truncated for V2 decision budget]`
+    ? `${trimmed.slice(0, 6_000).trimEnd()}\n[system context truncated for decision budget]`
     : trimmed;
   return `${base}\n\nSystem context:\n${compact}`;
 }
@@ -176,6 +177,8 @@ function buildDecisionPromptSections(
     tools: `Selected tools:\n${formatSelectedTools(toolDefinitions)}`,
     instructions: `Decision rules:
 - Pick exactly one decision: reply, ask_user, or act.
+- Treat State view.context as the bounded runtime context pack for this decision.
+- Use attentionShelf and recentTasks only when relevant to currentInput; they are continuity hints, not proof.
 - Use reply only when no tool action is needed or the task has failed/finished.
 - Use ask_user only when a missing decision prevents safe progress.
 - Use act for tool work.

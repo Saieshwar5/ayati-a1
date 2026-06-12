@@ -1,9 +1,12 @@
 import type { LoopState } from "../types.js";
+import { buildAgentContextPack } from "./context-pack.js";
+import type { AgentContextPack } from "./context-pack.js";
 
 export interface AgentStateView {
   runId: string;
   inputKind: LoopState["inputKind"];
   userMessage: string;
+  context: AgentContextPack;
   goal: {
     objective: string;
     doneWhen: string[];
@@ -37,6 +40,7 @@ export interface AgentStateView {
     blockedTargets: string[];
   }>;
   attachments: {
+    incoming: Array<{ id: string; name: string; kind: string; source: string; mimeType?: string; status: string }>;
     prepared: Array<{ id: string; name: string; mode: string; status: string }>;
     managedFiles: Array<{ id: string; name: string; kind: string; status: string }>;
     managedDirectories: Array<{ id: string; name: string; rootPath: string; status: string }>;
@@ -58,6 +62,7 @@ export function buildAgentStateView(state: LoopState): AgentStateView {
     runId: state.runId,
     inputKind: state.inputKind,
     userMessage: state.userMessage,
+    context: buildAgentContextPack(state),
     goal: {
       objective: state.goal.objective,
       doneWhen: state.goal.done_when,
@@ -84,13 +89,21 @@ export function buildAgentStateView(state: LoopState): AgentStateView {
       ...(step.failureType ? { failureType: step.failureType } : {}),
       blockedTargets: step.blockedTargets ?? [],
     })),
-    recentFailures: state.failedApproaches.slice(-3).map((failure) => ({
+    recentFailures: state.failureHistory.slice(-3).map((failure) => ({
       step: failure.step,
       failureType: failure.failureType,
       reason: truncate(failure.reason, 300),
       blockedTargets: failure.blockedTargets,
     })),
     attachments: {
+      incoming: (state.attachedDocuments ?? []).slice(0, 8).map((document) => ({
+        id: document.documentId,
+        name: document.displayName,
+        kind: document.kind,
+        source: document.source,
+        ...(document.mimeType?.trim() ? { mimeType: document.mimeType } : {}),
+        status: "registered",
+      })),
       prepared: (state.preparedAttachments ?? []).slice(0, 8).map((attachment) => ({
         id: attachment.preparedInputId,
         name: attachment.displayName,

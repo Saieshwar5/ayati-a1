@@ -26,4 +26,4 @@ Other options considered.
 Tradeoffs, follow-ups, and future impact.
 ```
 
-Decision files should document stable design choices. Commit-by-commit history belongs in `project-docs/history/progress/`, not here.
+Decision files should document stable design choices. Commit-by-commit history belongs in `project-docs/engineering/history/progress/`, not here.

@@ -127,7 +127,6 @@ describe("session-events", () => {
       step: 1,
       phase: "reason",
       summary: "Analyzing request",
-      approachesTried: [],
     };
 
     expect(isAgentStepEvent(event)).toBe(true);

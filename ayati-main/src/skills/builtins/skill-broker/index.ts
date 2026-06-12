@@ -101,8 +101,8 @@ function createSkillHealthTool(broker: ExternalSkillBroker): ToolDefinition {
 
 const SKILL_BROKER_PROMPT_BLOCK = [
   "External skill management helpers are built in.",
-  "Available external skills are shown in the controller prompt as compact skill cards.",
-  "Normal controller-driven activation uses the direct-stage activate_skill directive with the exact skill_id.",
+  "Available external skills are shown as compact skill cards.",
+  "Normal activation uses skill_activate with the exact skill_id.",
   "After activation, call the mounted tools directly.",
   "Use skill_list_active to inspect which external skills are currently active.",
   "Use skill_deactivate to clear external tools you no longer need.",

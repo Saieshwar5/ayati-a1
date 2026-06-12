@@ -89,12 +89,8 @@ export interface PromptTaskSummary {
   keyFacts: string[];
   evidence: string[];
   userInputNeeded?: string;
-  workMode?: string;
   userMessage?: string;
   assistantResponse?: string;
-  approach?: string;
-  sessionContextSummary?: string;
-  dependentTaskRunId?: string;
   assistantResponseKind?: AssistantResponseKind;
   feedbackKind?: FeedbackKind;
   feedbackLabel?: string;
@@ -264,12 +260,8 @@ export interface TaskSummaryRecordInput {
   keyFacts?: string[];
   evidence?: string[];
   userInputNeeded?: string;
-  workMode?: string;
   userMessage?: string;
   assistantResponse?: string;
-  approach?: string;
-  sessionContextSummary?: string;
-  dependentTaskRunId?: string;
   assistantResponseKind?: AssistantResponseKind;
   feedbackKind?: FeedbackKind;
   feedbackLabel?: string;

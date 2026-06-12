@@ -18,7 +18,7 @@ Docs changes:
 
 - Keep docs concise and actionable.
 - Put stable context in `project-docs`.
-- Put commit-by-commit implementation history in `project-docs/history/progress`.
+- Put commit-by-commit implementation history in `project-docs/engineering/history/progress`.
 - Do not put secrets or private credentials in docs.
 
 Verification:

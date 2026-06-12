@@ -2,8 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   DEFAULT_DOCUMENT_EMBED_BATCH_SIZE,
   DEFAULT_DOCUMENT_VECTOR_MIN_CHUNKS,
-  DEFAULT_AGENT_HARNESS_VERSION,
-  DEFAULT_AGENT_V2_MAX_SELECTED_TOOLS,
+  DEFAULT_AGENT_MAX_SELECTED_TOOLS,
   DEFAULT_HTTP_ALLOW_ORIGIN,
   DEFAULT_HTTP_HOST,
   DEFAULT_HTTP_PORT,
@@ -34,8 +33,7 @@ describe("ayati runtime config", () => {
       },
       agent: {
         loopConfig: {
-          harnessVersion: DEFAULT_AGENT_HARNESS_VERSION,
-          v2MaxSelectedTools: DEFAULT_AGENT_V2_MAX_SELECTED_TOOLS,
+          maxSelectedTools: DEFAULT_AGENT_MAX_SELECTED_TOOLS,
         },
       },
     });
@@ -53,8 +51,7 @@ describe("ayati runtime config", () => {
       AYATI_DOCUMENT_VECTOR_MIN_CHUNKS: "12",
       AYATI_PYTHON_INTERPRETER: " /usr/bin/python3 ",
       AYATI_LEARNING_API_BASE: " http://learning.local:8081 ",
-      AYATI_AGENT_HARNESS_VERSION: " v2 ",
-      AYATI_AGENT_V2_MAX_SELECTED_TOOLS: "5",
+      AYATI_AGENT_MAX_SELECTED_TOOLS: "5",
     });
 
     expect(config).toEqual({
@@ -78,8 +75,7 @@ describe("ayati runtime config", () => {
       },
       agent: {
         loopConfig: {
-          harnessVersion: "v2",
-          v2MaxSelectedTools: 5,
+          maxSelectedTools: 5,
         },
       },
     });
@@ -117,7 +113,7 @@ describe("ayati runtime config", () => {
     expect(config.http.maxUploadBytes).toBe(DEFAULT_UPLOAD_MAX_BYTES);
     expect(config.documents.embedBatchSize).toBe(DEFAULT_DOCUMENT_EMBED_BATCH_SIZE);
     expect(config.documents.vectorMinChunks).toBe(DEFAULT_DOCUMENT_VECTOR_MIN_CHUNKS);
-    expect(config.agent.loopConfig.v2MaxSelectedTools).toBe(DEFAULT_AGENT_V2_MAX_SELECTED_TOOLS);
+    expect(config.agent.loopConfig.maxSelectedTools).toBe(DEFAULT_AGENT_MAX_SELECTED_TOOLS);
     expect(parsePositiveInt("42", 1)).toBe(42);
     expect(parsePositiveInt("0", 1)).toBe(1);
   });

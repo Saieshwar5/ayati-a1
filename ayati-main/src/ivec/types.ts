@@ -1,5 +1,4 @@
 import type { LlmProvider } from "../core/contracts/provider.js";
-import type { ControllerPrompts } from "../context/types.js";
 import type { ToolExecutor } from "../skills/tool-executor.js";
 import type {
   ArtifactRef,
@@ -12,6 +11,7 @@ import type {
 import type { AgentUiContext } from "../ui/context.js";
 import type { ExternalSkillBroker } from "../skills/external/broker.js";
 import type { ExternalSkillRegistry } from "../skills/external/registry.js";
+import type { PromptRuntimeContext } from "../prompt/types.js";
 import type { ActiveAttachmentRef } from "../memory/types.js";
 import type {
   AgentResponseKind,
@@ -19,14 +19,15 @@ import type {
   SessionMemory,
   MemoryRunHandle,
   ConversationTurn,
+  FocusShelfItem,
   PromptTaskSummary,
+  SessionStatus,
   SystemActivityItem,
   TaskSummaryRecordInput,
 } from "../memory/types.js";
 import type { DocumentStore } from "../documents/document-store.js";
 import type { PreparedAttachmentRegistry } from "../documents/prepared-attachment-registry.js";
 import type { ManagedDocumentManifest, PreparedAttachmentSummary } from "../documents/types.js";
-import type { DocumentContextBackend } from "../documents/document-context-backend.js";
 import type { DirectoryAttachmentRecord, ManagedFileRecord } from "../files/types.js";
 import type {
   AyatiSystemEvent,
@@ -40,28 +41,8 @@ import type {
 import type { RunMetrics } from "./metrics.js";
 
 export type SystemEventApprovalState = "not_needed" | "pending" | "granted" | "rejected";
-export type WorkMode = "background_lookup" | "document_lookup" | "document_process" | "structured_data_process";
 export type RunClass = "interaction" | "task";
 export type AgentTaskSummaryRecord = Omit<TaskSummaryRecordInput, "sessionId">;
-export const RECENT_TASK_SELECTION_LIMIT = 5;
-export type PreparedAttachmentStateUpdate =
-  | {
-    type: "mark_dataset_staged";
-    preparedInputId: string;
-    staged: true;
-    stagingDbPath?: string;
-    stagingTableName?: string;
-  }
-  | {
-    type: "mark_document_indexed";
-    preparedInputId: string;
-    indexed: true;
-  }
-  | {
-    type: "restore_prepared_attachment";
-    manifest: ManagedDocumentManifest;
-    summary: PreparedAttachmentSummary;
-  };
 
 // --- State ---
 
@@ -87,10 +68,9 @@ export interface TaskProgressState {
   userInputNeeded?: string;
 }
 
-export interface FailedApproach {
+export interface FailureRecord {
   step: number;
   executionContract?: string;
-  intent?: string;
   failureType: "tool_error" | "permission" | "missing_path" | "verify_failed" | "no_progress" | "validation_error";
   reason: string;
   blockedTargets: string[];
@@ -112,37 +92,39 @@ export interface LoopState {
   contextVisibility?: SystemEventContextVisibility;
   preferredResponseKind?: AgentResponseKind;
   goal: GoalContract;
-  approach: string;
-  sessionContextSummary: string;
-  dependentTask: boolean;
-  dependentTaskSummary: PromptTaskSummary | null;
   taskProgress: TaskProgressState;
   status: "running" | "completed" | "failed" | "stuck";
   finalOutput: string;
   iteration: number;
   maxIterations: number;
   consecutiveFailures: number;
-  approachChangeCount: number;
   completedSteps: StepSummary[];
-  recentContextSearches: RecentContextSearch[];
   runPath: string;
-  failedApproaches: FailedApproach[];
+  failureHistory: FailureRecord[];
   attachedDocuments?: ManagedDocumentManifest[];
   attachmentWarnings?: string[];
   preparedAttachments?: PreparedAttachmentSummary[];
   managedFiles?: ManagedFileRecord[];
   managedDirectories?: DirectoryAttachmentRecord[];
   activeSessionAttachments?: ActiveAttachmentRef[];
-  workMode?: WorkMode;
+  runtimeContext?: PromptRuntimeContext;
+  activeLearningContext?: string;
+  previousSessionSummary?: string;
+  personalMemorySnapshot?: string;
+  attentionShelf?: FocusShelfItem[];
+  activeSessionPath?: string;
+  sessionStatus?: SessionStatus | null;
   sessionHistory: ConversationTurn[];
   recentTaskSummaries: PromptTaskSummary[];
   recentSystemActivity: SystemActivityItem[];
 }
 
+export type StepVerificationPolicy = "deterministic" | "llm" | "script" | "hybrid";
+export type StepExpectationCheckStatus = "passed" | "failed" | "invalid" | "skipped";
+
 export interface StepSummary {
   step: number;
   executionContract?: string;
-  intent?: string;
   outcome: string;
   summary: string;
   newFacts: string[];
@@ -166,139 +148,8 @@ export interface StepSummary {
   usedRawArtifacts?: string[];
   taskProgress?: TaskProgressState;
   stoppedEarlyReason?: "assistant_returned" | "max_act_turns_reached" | "max_total_tool_calls_reached" | "repeated_identical_failure" | "no_valid_tool_calls" | "planned_call_failed";
-  failureType?: FailedApproach["failureType"];
+  failureType?: FailureRecord["failureType"];
   blockedTargets?: string[];
-  stateUpdates?: PreparedAttachmentStateUpdate[];
-}
-
-// --- Controller output ---
-
-export interface UnderstandDirective {
-  done: false;
-  understand: true;
-  goal: GoalContract;
-  approach: string;
-  session_context_summary: string;
-  dependent_task: boolean;
-  dependent_task_slot?: number;
-  work_mode?: WorkMode;
-}
-
-export interface ReEvalDirective {
-  done: false;
-  reeval: true;
-  approach: string;
-}
-
-export interface ReadRunStateDirective {
-  done: false;
-  read_run_state: true;
-  action: "read_summary_window" | "read_step_full";
-  window?: {
-    from: number;
-    to: number;
-  };
-  step?: number;
-  reason?: string;
-}
-
-export interface ActivateSkillDirective {
-  done: false;
-  activate_skill: true;
-  skill_id: string;
-  reason?: string;
-}
-
-export type ExecutionPlanCallOrigin = "builtin" | "external_tool";
-export type ExecutionPlanRetryPolicy = "none" | "same_call_once_on_timeout";
-export type ExecutionPlanMode = "single" | "sequential" | "parallel" | "autonomous";
-
-export interface ExecutionPlanCall {
-  id: string;
-  tool: string;
-  input: Record<string, unknown>;
-  origin: ExecutionPlanCallOrigin;
-  source_refs: string[];
-  retry_policy: ExecutionPlanRetryPolicy;
-  depends_on: string[];
-  purpose: string;
-}
-
-export interface ExecutionPlan {
-  mode: ExecutionPlanMode;
-  calls: ExecutionPlanCall[];
-  allowed_tools: string[];
-  max_calls?: number;
-}
-
-export type StepVerificationPolicy = "deterministic" | "llm" | "script" | "hybrid";
-export type StepExpectationCheckStatus = "passed" | "failed" | "invalid" | "skipped";
-
-export interface StepVerificationContract {
-  policy: StepVerificationPolicy;
-  rationale: string;
-  expected_artifacts: string[];
-  expected_state_change: string;
-  requires_full_step_context: boolean;
-}
-
-export interface StepDirective {
-  done: false;
-  contract_version: 2;
-  execution_contract: string;
-  execution_plan: ExecutionPlan;
-  success_criteria: string;
-  context: string;
-  verification: StepVerificationContract;
-}
-
-export type GenericScoutScope = "run_artifacts" | "project_context" | "session" | "skills" | "both";
-
-export interface ContextSearchDirective {
-  done: false;
-  context_search: true;
-  query: string;
-  scope: GenericScoutScope | "documents";
-  document_paths?: string[];
-}
-
-export type DocumentScoutStatus = "sufficient" | "partial" | "empty" | "unavailable";
-
-export type RecentContextSearchStatus = "success" | DocumentScoutStatus;
-
-export interface RecentContextSearch {
-  scope: ContextSearchDirective["scope"];
-  query: string;
-  status: RecentContextSearchStatus;
-  context: string;
-  sources: string[];
-  confidence: number;
-  iteration: number;
-}
-
-export interface DocumentScoutState {
-  status: DocumentScoutStatus;
-  insufficientEvidence: boolean;
-  warnings: string[];
-}
-
-export type GenericScoutStatus = "empty" | "max_turns_exhausted";
-
-export interface GenericScoutState {
-  status: GenericScoutStatus;
-  scope: GenericScoutScope;
-  query: string;
-  searchedLocations: string[];
-  attemptedSearches: string[];
-  errors: string[];
-}
-
-export interface ScoutResult {
-  context: string;
-  sources: string[];
-  confidence: number;
-  documentState?: DocumentScoutState;
-  scoutState?: GenericScoutState;
 }
 
 export interface CompletionDirective {
@@ -311,15 +162,6 @@ export interface CompletionDirective {
   action_type?: string;
   entity_hints?: string[];
 }
-
-export type ControllerOutput =
-  | UnderstandDirective
-  | ReEvalDirective
-  | ReadRunStateDirective
-  | ActivateSkillDirective
-  | StepDirective
-  | ContextSearchDirective
-  | CompletionDirective;
 
 // --- Phase outputs ---
 
@@ -376,79 +218,26 @@ export interface AgentArtifact {
   sizeBytes?: number;
 }
 
-export interface TaskValidationContext {
-  inputKind?: "user_message" | "system_event";
-  userMessage: string;
-  systemEvent?: AyatiSystemEvent;
-  originSource?: string;
-  systemEventIntentKind?: SystemEventIntentKind;
-  systemEventRequestedAction?: string;
-  systemEventCreatedBy?: SystemEventCreatedBy;
-  handlingMode?: SystemEventHandlingMode;
-  approvalRequired?: boolean;
-  approvalState?: SystemEventApprovalState;
-  goal: GoalContract;
-  approach: string;
-  previousTaskProgress: TaskProgressState;
-  recentSuccessfulSteps: Array<{
-    step: number;
-    executionContract: string;
-    summary: string;
-    evidenceItems: string[];
-    taskFacts: string[];
-    artifacts: string[];
-  }>;
-  recentFailedSteps: Array<{
-    step: number;
-    executionContract: string;
-    summary: string;
-    evidenceItems: string[];
-    taskFacts: string[];
-    artifacts: string[];
-    blockedTargets: string[];
-    failureType?: FailedApproach["failureType"];
-  }>;
-  latestSuccessfulStep: {
-    summary: string;
-    evidenceItems: string[];
-    taskFacts: string[];
-    artifacts: string[];
-  };
-  recentSuccessfulSummaries: string[];
-}
-
 // --- Config ---
 
 export interface LoopConfig {
-  harnessVersion: "v1" | "v2";
   maxIterations: number;
-  maxToolCallsPerStep: number;
   maxConsecutiveFailures: number;
-  approachReevalThreshold: number;
-  maxApproachChanges: number;
-  maxScoutTurns: number;
-  maxScoutCallsPerIteration: number;
   maxTotalToolCallsPerStep: number;
   maxInlineActOutputChars: number;
   maxVerifyArtifactChars: number;
-  v2MaxSelectedTools: number;
-  v2StrategyReviewFailureThreshold: number;
+  maxSelectedTools: number;
+  strategyReviewFailureThreshold: number;
 }
 
 export const DEFAULT_LOOP_CONFIG: LoopConfig = {
-  harnessVersion: "v1",
   maxIterations: 15,
-  maxToolCallsPerStep: 4,
   maxConsecutiveFailures: 5,
-  approachReevalThreshold: 3,
-  maxApproachChanges: 4,
-  maxScoutTurns: 10,
-  maxScoutCallsPerIteration: 4,
   maxTotalToolCallsPerStep: 6,
   maxInlineActOutputChars: 8_000,
   maxVerifyArtifactChars: 20_000,
-  v2MaxSelectedTools: 12,
-  v2StrategyReviewFailureThreshold: 3,
+  maxSelectedTools: 12,
+  strategyReviewFailureThreshold: 3,
 };
 
 // --- Result + callbacks ---
@@ -494,8 +283,9 @@ export interface AgentLoopDeps {
   config?: Partial<LoopConfig>;
   dataDir: string;
   systemContext?: string;
-  controllerSystemContext?: string;
-  controllerPrompts?: ControllerPrompts;
+  runtimeContext?: PromptRuntimeContext;
+  activeLearningContext?: string;
+  sessionStatus?: SessionStatus | null;
   userMessageOverride?: string;
   attachedDocuments?: ManagedDocumentManifest[];
   attachmentWarnings?: string[];
@@ -503,24 +293,8 @@ export interface AgentLoopDeps {
   managedDirectories?: DirectoryAttachmentRecord[];
   documentStore?: DocumentStore;
   preparedAttachmentRegistry?: PreparedAttachmentRegistry;
-  documentContextBackend?: DocumentContextBackend;
   signal?: AbortSignal;
   onStuck?: (state: LoopState) => void;
-}
-
-export interface ExecutorDeps {
-  provider: LlmProvider;
-  toolExecutor?: ToolExecutor;
-  toolDefinitions: ToolDefinition[];
-  externalSkillBroker?: ExternalSkillBroker;
-  externalSkillRegistry?: ExternalSkillRegistry;
-  config: LoopConfig;
-  clientId: string;
-  uiContext?: AgentUiContext;
-  sessionMemory: SessionMemory;
-  runHandle: MemoryRunHandle;
-  taskContext: TaskValidationContext;
-  metrics?: RunMetrics;
 }
 
 export interface CliChatAttachmentInput {

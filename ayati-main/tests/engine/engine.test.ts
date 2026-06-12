@@ -10,6 +10,8 @@ import type { StaticContext } from "../../src/context/static-context-cache.js";
 import { buildSystemPrompt } from "../../src/prompt/builder.js";
 import { getNowSnapshot } from "../../src/pulse/time.js";
 import type { SystemEventPolicyConfig } from "../../src/ivec/system-event-policy.js";
+import { writeFilesTool } from "../../src/skills/builtins/filesystem/write-files.js";
+import { createToolExecutor } from "../../src/skills/tool-executor.js";
 
 function createMockProvider(overrides?: Partial<LlmProvider>): LlmProvider {
   return {
@@ -23,37 +25,12 @@ function createMockProvider(overrides?: Partial<LlmProvider>): LlmProvider {
       .mockResolvedValue({
         type: "assistant",
         content: JSON.stringify({
-          done: true,
-          summary: "mock reply",
+          kind: "reply",
+          message: "mock reply",
           status: "completed",
         }),
       }),
     ...overrides,
-  };
-}
-
-function autonomousPlan(allowedTools: string[] = ["shell"], maxCalls = 4): Record<string, unknown> {
-  return {
-    mode: "autonomous",
-    calls: [],
-    allowed_tools: allowedTools,
-    max_calls: maxCalls,
-  };
-}
-
-function verificationContract(overrides?: Partial<{
-  policy: "deterministic" | "llm" | "script" | "hybrid";
-  rationale: string;
-  expected_artifacts: string[];
-  expected_state_change: string;
-  requires_full_step_context: boolean;
-}>): Record<string, unknown> {
-  return {
-    policy: overrides?.policy ?? "llm",
-    rationale: overrides?.rationale ?? "Test fixture requires semantic validation.",
-    expected_artifacts: overrides?.expected_artifacts ?? [],
-    expected_state_change: overrides?.expected_state_change ?? "The step result is available for validation.",
-    requires_full_step_context: overrides?.requires_full_step_context ?? false,
   };
 }
 
@@ -135,12 +112,6 @@ function createStaticContext(): StaticContext {
       },
       boundaries: ["invent facts"],
     },
-    controllerPrompts: {
-      understand: "",
-      direct: "",
-      reeval: "",
-      systemEvent: "",
-    },
     skillBlocks: [
       { id: "shell", content: "Use the shell tool when concrete inspection is needed." },
     ],
@@ -207,75 +178,36 @@ describe("IVecEngine", () => {
   it("forwards chat progress events to the client", async () => {
     const dataDir = mkdtempSync(join(tmpdir(), "ayati-eng-progress-"));
     try {
-      let callCount = 0;
+      const outputPath = join(dataDir, "workspace.txt");
       const provider = createMockProvider({
-        generateTurn: vi.fn<(input: LlmTurnInput) => Promise<LlmTurnOutput>>().mockImplementation(async () => {
-          callCount++;
-          if (callCount === 1) {
-            return {
-              type: "assistant",
-              content: JSON.stringify({
-                done: false,
-                understand: true,
-                goal: {
-                  objective: "Inspect the workspace",
-                  done_when: ["workspace inspected"],
-                  required_evidence: [],
-                  ask_user_when: [],
-                  stop_when_no_progress: [],
-                },
-                approach: "inspect relevant files",
-              }),
-            };
-          }
-          if (callCount === 2) {
-            return {
-              type: "assistant",
-              content: JSON.stringify({
-                done: false,
-                contract_version: 2,
-                verification: verificationContract(),
-                execution_contract: "Inspect files",
-                execution_plan: autonomousPlan(["shell"], 4),
-                success_criteria: "files inspected",
-                context: "",
-              }),
-            };
-          }
-          if (callCount === 3) {
-            return { type: "assistant", content: "Inspected files." };
-          }
-          if (callCount === 4) {
-            return {
-              type: "assistant",
-              content: JSON.stringify({
-                status: "not_done",
-                progressSummary: "Inspected files",
-                evidence: ["files inspected"],
-                keyFacts: [],
-                completedMilestones: ["files inspected"],
-                openWork: [],
-                blockers: [],
-              }),
-            };
-          }
-          return {
-            type: "assistant",
-            content: JSON.stringify({
-              done: true,
-              summary: "Workspace inspected.",
-              status: "completed",
-              response_kind: "reply",
-            }),
-          };
+        generateTurn: vi.fn<(input: LlmTurnInput) => Promise<LlmTurnOutput>>().mockResolvedValue({
+          type: "assistant",
+          content: JSON.stringify({
+            kind: "act",
+            action: {
+              mode: "single",
+              calls: [{
+                id: "call_1",
+                tool: "write_files",
+                input: { files: [{ path: outputPath, content: "workspace inspected" }] },
+                dependsOn: [],
+                purpose: "Record workspace inspection",
+              }],
+              allowedTools: ["write_files"],
+              maxCalls: 1,
+              assertions: [],
+            },
+          }),
         }),
       });
+      const toolExecutor = createToolExecutor([writeFilesTool]);
       const onReply = vi.fn();
       const sessionMemory = createSessionMemory();
       const engine = new IVecEngine({
         onReply,
         provider,
         sessionMemory,
+        toolExecutor,
         dataDir,
         systemEventPolicy: createSystemEventPolicy(),
       });
@@ -286,7 +218,7 @@ describe("IVecEngine", () => {
       await vi.waitFor(() => {
         expect(onReply).toHaveBeenCalledWith("c1", {
           type: "reply",
-          content: "Workspace inspected.",
+          content: expect.stringContaining("Done -"),
         });
       });
 
@@ -308,48 +240,39 @@ describe("IVecEngine", () => {
     }
   });
 
-  it("records an enriched task summary only for runs that enter direct execution", async () => {
+  it("records an enriched task summary only for runs that execute actions", async () => {
     const dataDir = mkdtempSync(join(tmpdir(), "ayati-eng-task-"));
     try {
-      let callCount = 0;
+      const outputPath = join(dataDir, "config.txt");
       const provider = createMockProvider({
-        generateTurn: vi.fn<(input: LlmTurnInput) => Promise<LlmTurnOutput>>().mockImplementation(async () => {
-          callCount++;
-          if (callCount === 1) {
-            return {
-              type: "assistant",
-              content: JSON.stringify({
-                done: false,
-                understand: true,
-                goal: {
-                  objective: "Find the requested config files",
-                  done_when: ["the config file paths are returned"],
-                  required_evidence: ["config file paths"],
-                  ask_user_when: [],
-                  stop_when_no_progress: ["searching no longer finds new config paths"],
-                },
-                approach: "inspect the workspace for config files",
-              }),
-            };
-          }
-
-          return {
-            type: "assistant",
-            content: JSON.stringify({
-              done: true,
-              summary: "Found config files",
-              status: "completed",
-              response_kind: "reply",
-            }),
-          };
+        generateTurn: vi.fn<(input: LlmTurnInput) => Promise<LlmTurnOutput>>().mockResolvedValue({
+          type: "assistant",
+          content: JSON.stringify({
+            kind: "act",
+            action: {
+              mode: "single",
+              calls: [{
+                id: "call_1",
+                tool: "write_files",
+                input: { files: [{ path: outputPath, content: "config=true" }] },
+                dependsOn: [],
+                purpose: "Create config file",
+              }],
+              allowedTools: ["write_files"],
+              maxCalls: 1,
+              assertions: [],
+            },
+          }),
         }),
       });
+      const toolExecutor = createToolExecutor([writeFilesTool]);
       const onReply = vi.fn();
       const sessionMemory = createSessionMemory();
       const engine = new IVecEngine({
         onReply,
         provider,
         sessionMemory,
+        toolExecutor,
         dataDir,
         systemEventPolicy: createSystemEventPolicy(),
       });
@@ -360,7 +283,7 @@ describe("IVecEngine", () => {
       await vi.waitFor(() => {
         expect(onReply).toHaveBeenCalledWith("c1", {
           type: "reply",
-          content: "Found config files",
+          content: expect.stringContaining("Done -"),
         });
       });
 
@@ -368,14 +291,12 @@ describe("IVecEngine", () => {
         "c1",
         expect.objectContaining({
           status: "completed",
-          taskStatus: "not_done",
-          objective: "Find the requested config files",
-          summary: "Found config files",
+          taskStatus: "likely_done",
+          objective: "find config files",
+          summary: expect.stringContaining("Executed 1 tool call"),
           sessionId: "s1",
           assistantResponseKind: "reply",
-          approach: "inspect the workspace for config files",
-          goalDoneWhen: ["the config file paths are returned"],
-          goalRequiredEvidence: ["config file paths"],
+          evidence: expect.arrayContaining([expect.stringContaining("write_files")]),
         }),
       );
     } finally {
@@ -386,33 +307,29 @@ describe("IVecEngine", () => {
   it("does not await task summary queueing before sending the user response", async () => {
     const dataDir = mkdtempSync(join(tmpdir(), "ayati-eng-task-async-"));
     try {
+      const outputPath = join(dataDir, "notes.txt");
       const provider = createMockProvider({
-        generateTurn: vi.fn<(input: LlmTurnInput) => Promise<LlmTurnOutput>>()
-          .mockResolvedValueOnce({
-            type: "assistant",
-            content: JSON.stringify({
-              done: false,
-              understand: true,
-              goal: {
-                objective: "Collect the latest notes",
-                done_when: ["notes are returned"],
-                required_evidence: ["notes"],
-                ask_user_when: [],
-                stop_when_no_progress: [],
-              },
-              approach: "read the prepared notes",
-            }),
-          })
-          .mockResolvedValueOnce({
-            type: "assistant",
-            content: JSON.stringify({
-              done: true,
-              summary: "Collected the latest notes",
-              status: "completed",
-              response_kind: "reply",
-            }),
+        generateTurn: vi.fn<(input: LlmTurnInput) => Promise<LlmTurnOutput>>().mockResolvedValue({
+          type: "assistant",
+          content: JSON.stringify({
+            kind: "act",
+            action: {
+              mode: "single",
+              calls: [{
+                id: "call_1",
+                tool: "write_files",
+                input: { files: [{ path: outputPath, content: "latest notes" }] },
+                dependsOn: [],
+                purpose: "Collect notes",
+              }],
+              allowedTools: ["write_files"],
+              maxCalls: 1,
+              assertions: [],
+            },
           }),
+        }),
       });
+      const toolExecutor = createToolExecutor([writeFilesTool]);
       const onReply = vi.fn();
       const sessionMemory = createSessionMemory();
       let releaseQueue: (() => void) | null = null;
@@ -426,6 +343,7 @@ describe("IVecEngine", () => {
         onReply,
         provider,
         sessionMemory,
+        toolExecutor,
         dataDir,
         systemEventPolicy: createSystemEventPolicy(),
       });
@@ -436,7 +354,7 @@ describe("IVecEngine", () => {
       await vi.waitFor(() => {
         expect(onReply).toHaveBeenCalledWith("c1", {
           type: "reply",
-          content: "Collected the latest notes",
+          content: expect.stringContaining("Done -"),
         });
       });
 
@@ -495,7 +413,7 @@ describe("IVecEngine", () => {
     await engine.stop();
   });
 
-  it("builds cached understand context with the same prompt output as the canonical builder across turns", async () => {
+  it("builds cached system context with the same prompt output as the canonical builder across turns", async () => {
     const staticContext = createStaticContext();
     const provider = createMockProvider();
     const sessionMemory = createSessionMemory();
@@ -529,11 +447,11 @@ describe("IVecEngine", () => {
           runStatus: "completed" as const,
           taskStatus: "done" as const,
           objective: "Measure the current agent loop",
-          summary: "Profiled understand latency",
+          summary: "Profiled decision latency",
           completedMilestones: ["Captured baseline timings"],
           openWork: [],
           blockers: [],
-          keyFacts: ["understand is the first controller pass"],
+          keyFacts: ["decision is the first agent pass"],
           evidence: ["profiling log"],
           attachmentNames: [],
         },
@@ -558,7 +476,6 @@ describe("IVecEngine", () => {
       const privateEngine = engine as unknown as {
         buildSystemContext(): Promise<{
           systemContext: string;
-          controllerSystemContext: string;
           dynamicSystemTokens: number;
         }>;
       };
@@ -581,12 +498,12 @@ describe("IVecEngine", () => {
       sessionStatus: getSessionStatus(),
     }).systemPrompt;
     expect(first.systemContext).toBe(expectedFirst);
-    expect(first.controllerSystemContext).toContain("# Base System Prompt");
-    expect(first.controllerSystemContext).toContain("# Runtime Context");
-    expect(first.controllerSystemContext).toContain(`- local_date: ${runtimeContext.localDate}`);
-    expect(first.controllerSystemContext).toContain(`- local_time: ${runtimeContext.localTime}`);
-    expect(first.controllerSystemContext).toContain(`- weekday: ${runtimeContext.weekday}`);
-    expect(first.controllerSystemContext).not.toContain("# Previous Conversation");
+    expect(first.systemContext).toContain("# Base System Prompt");
+    expect(first.systemContext).toContain("# Runtime Context");
+    expect(first.systemContext).toContain(`- local_date: ${runtimeContext.localDate}`);
+    expect(first.systemContext).toContain(`- local_time: ${runtimeContext.localTime}`);
+    expect(first.systemContext).toContain(`- weekday: ${runtimeContext.weekday}`);
+    expect(first.systemContext).toContain("# Previous Conversation");
 
     memoryContext = {
       ...memoryContext,
@@ -627,9 +544,9 @@ describe("IVecEngine", () => {
 
     const cachedConversation = (
       engine as unknown as {
-        understandContextCache?: { conversationTurns: Array<{ content: string }> };
+        systemContextCache?: { conversationTurns: Array<{ content: string }> };
       }
-    ).understandContextCache;
+    ).systemContextCache;
     expect(cachedConversation?.conversationTurns).toHaveLength(3);
     expect(cachedConversation?.conversationTurns.at(-1)?.content).toBe("follow up question");
   });
@@ -705,75 +622,36 @@ describe("IVecEngine", () => {
   it("forwards system event progress events to the client", async () => {
     const dataDir = mkdtempSync(join(tmpdir(), "ayati-eng-system-progress-"));
     try {
-      let callCount = 0;
+      const outputPath = join(dataDir, "health.txt");
       const provider = createMockProvider({
-        generateTurn: vi.fn<(input: LlmTurnInput) => Promise<LlmTurnOutput>>().mockImplementation(async () => {
-          callCount++;
-          if (callCount === 1) {
-            return {
-              type: "assistant",
-              content: JSON.stringify({
-                done: false,
-                understand: true,
-                goal: {
-                  objective: "Check system health",
-                  done_when: ["health checked"],
-                  required_evidence: [],
-                  ask_user_when: [],
-                  stop_when_no_progress: [],
-                },
-                approach: "inspect health signal",
-              }),
-            };
-          }
-          if (callCount === 2) {
-            return {
-              type: "assistant",
-              content: JSON.stringify({
-                done: false,
-                contract_version: 2,
-                verification: verificationContract(),
-                execution_contract: "Check health",
-                execution_plan: autonomousPlan(["shell"], 4),
-                success_criteria: "health checked",
-                context: "",
-              }),
-            };
-          }
-          if (callCount === 3) {
-            return { type: "assistant", content: "Health checked." };
-          }
-          if (callCount === 4) {
-            return {
-              type: "assistant",
-              content: JSON.stringify({
-                status: "not_done",
-                progressSummary: "Checked health",
-                evidence: ["health checked"],
-                keyFacts: [],
-                completedMilestones: ["health checked"],
-                openWork: [],
-                blockers: [],
-              }),
-            };
-          }
-          return {
-            type: "assistant",
-            content: JSON.stringify({
-              done: true,
-              summary: "Health check complete.",
-              status: "completed",
-              response_kind: "notification",
-            }),
-          };
+        generateTurn: vi.fn<(input: LlmTurnInput) => Promise<LlmTurnOutput>>().mockResolvedValue({
+          type: "assistant",
+          content: JSON.stringify({
+            kind: "act",
+            action: {
+              mode: "single",
+              calls: [{
+                id: "call_1",
+                tool: "write_files",
+                input: { files: [{ path: outputPath, content: "health checked" }] },
+                dependsOn: [],
+                purpose: "Record health check",
+              }],
+              allowedTools: ["write_files"],
+              maxCalls: 1,
+              assertions: [],
+            },
+          }),
         }),
       });
+      const toolExecutor = createToolExecutor([writeFilesTool]);
       const onReply = vi.fn();
       const sessionMemory = createSessionMemory();
       const engine = new IVecEngine({
         onReply,
         provider,
         sessionMemory,
+        toolExecutor,
         dataDir,
         systemEventPolicy: createSystemEventPolicy(),
       });
@@ -804,7 +682,7 @@ describe("IVecEngine", () => {
       });
       expect(onReply).toHaveBeenCalledWith("c1", {
         type: "notification",
-        content: "Health check complete.",
+        content: expect.stringContaining("Done -"),
         final: true,
       });
     } finally {
@@ -891,7 +769,16 @@ describe("IVecEngine", () => {
   it("parses raw system_event intent metadata and routes approval-gated work as feedback", async () => {
     const dataDir = mkdtempSync(join(tmpdir(), "ayati-eng-external-event-"));
     try {
-      const provider = createMockProvider();
+      const provider = createMockProvider({
+        generateTurn: vi.fn<(input: LlmTurnInput) => Promise<LlmTurnOutput>>().mockResolvedValue({
+          type: "assistant",
+          content: JSON.stringify({
+            kind: "ask_user",
+            question: "mock reply",
+            reason: "Approval is required before sending the report.",
+          }),
+        }),
+      });
       const onReply = vi.fn();
       const sessionMemory = createSessionMemory();
       const engine = new IVecEngine({

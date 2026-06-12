@@ -1,5 +1,3 @@
-import type { PromptTaskSummary } from "../memory/types.js";
-import type { ControllerHistoryBundle } from "./run-state-manager.js";
 import type { LoopState, StepSummary, TaskProgressState } from "./types.js";
 
 const TASK_PROGRESS_LIMITS = {
@@ -11,24 +9,6 @@ const TASK_PROGRESS_LIMITS = {
   blockers: { count: 4, chars: 220 },
   keyFacts: { count: 8, chars: 220 },
   evidence: { count: 6, chars: 240 },
-};
-
-const DEPENDENT_TASK_LIMITS = {
-  summaryChars: 700,
-  progressSummaryChars: 700,
-  currentFocusChars: 240,
-  userInputNeededChars: 260,
-  nextActionChars: 260,
-  approachChars: 320,
-  completedMilestones: { count: 5, chars: 200 },
-  openWork: { count: 4, chars: 200 },
-  blockers: { count: 4, chars: 200 },
-  keyFacts: { count: 6, chars: 200 },
-  evidence: { count: 4, chars: 220 },
-  entityHints: { count: 6, chars: 120 },
-  goalDoneWhen: { count: 5, chars: 180 },
-  goalRequiredEvidence: { count: 5, chars: 180 },
-  attachmentNames: { count: 8, chars: 120 },
 };
 
 const STEP_SUMMARY_LIMITS = {
@@ -44,23 +24,6 @@ const STEP_SUMMARY_LIMITS = {
   expectationCheckSummaryChars: 360,
 };
 
-export interface ControllerPromptState {
-  taskProgress: TaskProgressState;
-  dependentTaskSummary: PromptTaskSummary | null;
-  controllerHistoryBundle?: ControllerHistoryBundle;
-}
-
-export function buildControllerPromptState(
-  state: LoopState,
-  controllerHistoryBundle?: ControllerHistoryBundle,
-): ControllerPromptState {
-  return {
-    taskProgress: compactTaskProgress(state.taskProgress),
-    dependentTaskSummary: compactDependentTaskSummary(state.dependentTaskSummary),
-    controllerHistoryBundle,
-  };
-}
-
 export function compactTaskProgress(progress: TaskProgressState): TaskProgressState {
   return {
     status: progress.status,
@@ -72,34 +35,6 @@ export function compactTaskProgress(progress: TaskProgressState): TaskProgressSt
     keyFacts: compactStringList(progress.keyFacts, TASK_PROGRESS_LIMITS.keyFacts),
     evidence: compactStringList(progress.evidence, TASK_PROGRESS_LIMITS.evidence),
     userInputNeeded: compactOptionalText(progress.userInputNeeded, TASK_PROGRESS_LIMITS.userInputNeededChars),
-  };
-}
-
-export function compactDependentTaskSummary(summary: PromptTaskSummary | null): PromptTaskSummary | null {
-  if (!summary) {
-    return null;
-  }
-
-  return {
-    ...summary,
-    objective: compactOptionalText(summary.objective, 320),
-    summary: compactText(summary.summary, DEPENDENT_TASK_LIMITS.summaryChars),
-    progressSummary: compactOptionalText(summary.progressSummary, DEPENDENT_TASK_LIMITS.progressSummaryChars),
-    currentFocus: compactOptionalText(summary.currentFocus, DEPENDENT_TASK_LIMITS.currentFocusChars),
-    userInputNeeded: compactOptionalText(summary.userInputNeeded, DEPENDENT_TASK_LIMITS.userInputNeededChars),
-    nextAction: compactOptionalText(summary.nextAction, DEPENDENT_TASK_LIMITS.nextActionChars),
-    approach: compactOptionalText(summary.approach, DEPENDENT_TASK_LIMITS.approachChars),
-    sessionContextSummary: compactOptionalText(summary.sessionContextSummary, 400),
-    assistantResponse: compactOptionalText(summary.assistantResponse, 400),
-    completedMilestones: compactStringList(summary.completedMilestones, DEPENDENT_TASK_LIMITS.completedMilestones),
-    openWork: compactStringList(summary.openWork, DEPENDENT_TASK_LIMITS.openWork),
-    blockers: compactStringList(summary.blockers, DEPENDENT_TASK_LIMITS.blockers),
-    keyFacts: compactStringList(summary.keyFacts, DEPENDENT_TASK_LIMITS.keyFacts),
-    evidence: compactStringList(summary.evidence, DEPENDENT_TASK_LIMITS.evidence),
-    entityHints: compactStringList(summary.entityHints, DEPENDENT_TASK_LIMITS.entityHints),
-    goalDoneWhen: compactStringList(summary.goalDoneWhen, DEPENDENT_TASK_LIMITS.goalDoneWhen),
-    goalRequiredEvidence: compactStringList(summary.goalRequiredEvidence, DEPENDENT_TASK_LIMITS.goalRequiredEvidence),
-    attachmentNames: compactStringList(summary.attachmentNames, DEPENDENT_TASK_LIMITS.attachmentNames),
   };
 }
 
@@ -135,21 +70,36 @@ export function buildLoopStateSizeBreakdown(state: LoopState): Record<string, nu
     taskProgress: measureJson(state.taskProgress),
     completedSteps: measureJson(state.completedSteps),
     completedStepsTaskProgress: completedStepProgressChars,
-    dependentTaskSummary: measureJson(state.dependentTaskSummary),
-    failedApproaches: measureJson(state.failedApproaches),
-    recentContextSearches: measureJson(state.recentContextSearches),
+    failureHistory: measureJson(state.failureHistory),
   };
 }
 
 function buildPersistedLikeStateView(state: LoopState): Omit<
   LoopState,
-  "sessionHistory" | "recentTaskSummaries" | "activeSessionAttachments" | "recentSystemActivity"
+  | "runtimeContext"
+  | "activeLearningContext"
+  | "previousSessionSummary"
+  | "personalMemorySnapshot"
+  | "attentionShelf"
+  | "activeSessionPath"
+  | "sessionStatus"
+  | "sessionHistory"
+  | "recentTaskSummaries"
+  | "activeSessionAttachments"
+  | "recentSystemActivity"
 > {
   const {
     sessionHistory: _sessionHistory,
     recentTaskSummaries: _recentTaskSummaries,
     activeSessionAttachments: _activeSessionAttachments,
     recentSystemActivity: _recentSystemActivity,
+    runtimeContext: _runtimeContext,
+    activeLearningContext: _activeLearningContext,
+    previousSessionSummary: _previousSessionSummary,
+    personalMemorySnapshot: _personalMemorySnapshot,
+    attentionShelf: _attentionShelf,
+    activeSessionPath: _activeSessionPath,
+    sessionStatus: _sessionStatus,
     ...persistedLikeState
   } = state;
   return persistedLikeState;

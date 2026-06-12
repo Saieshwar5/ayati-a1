@@ -5,7 +5,17 @@ import type { LoopState, ActOutput, ActToolCallRecord, VerifyOutput } from "./ty
 
 type PersistedLoopState = Omit<
   LoopState,
-  "sessionHistory" | "recentTaskSummaries" | "activeSessionAttachments" | "recentSystemActivity"
+  | "runtimeContext"
+  | "activeLearningContext"
+  | "previousSessionSummary"
+  | "personalMemorySnapshot"
+  | "attentionShelf"
+  | "activeSessionPath"
+  | "sessionStatus"
+  | "sessionHistory"
+  | "recentTaskSummaries"
+  | "activeSessionAttachments"
+  | "recentSystemActivity"
 >;
 const runArtifactWriteQueues = new Map<string, Promise<void>>();
 const runStateWriteQueues = new Map<string, RunStateWriteQueue>();
@@ -88,35 +98,15 @@ export function readState(runPath: string): Partial<LoopState> | null {
     delete (parsed as Record<string, unknown>)["recentTaskSummaries"];
     delete (parsed as Record<string, unknown>)["activeSessionAttachments"];
     delete (parsed as Record<string, unknown>)["recentSystemActivity"];
-    normalizeLegacyLoopState(parsed);
+    delete (parsed as Record<string, unknown>)["runtimeContext"];
+    delete (parsed as Record<string, unknown>)["activeLearningContext"];
+    delete (parsed as Record<string, unknown>)["previousSessionSummary"];
+    delete (parsed as Record<string, unknown>)["personalMemorySnapshot"];
+    delete (parsed as Record<string, unknown>)["attentionShelf"];
+    delete (parsed as Record<string, unknown>)["activeSessionPath"];
+    delete (parsed as Record<string, unknown>)["sessionStatus"];
   }
   return parsed;
-}
-
-function normalizeLegacyLoopState(parsed: Partial<LoopState>): void {
-  if (Array.isArray(parsed.completedSteps)) {
-    parsed.completedSteps = parsed.completedSteps.map((step) => {
-      const legacy = step as typeof step & { intent?: string };
-      const {
-        taskProgress: _taskProgress,
-        ...withoutProgress
-      } = step as typeof step & { taskProgress?: unknown };
-      return {
-        ...withoutProgress,
-        executionContract: step.executionContract ?? legacy.intent ?? "",
-      };
-    });
-  }
-
-  if (Array.isArray(parsed.failedApproaches)) {
-    parsed.failedApproaches = parsed.failedApproaches.map((failure) => {
-      const legacy = failure as typeof failure & { intent?: string };
-      return {
-        ...failure,
-        executionContract: failure.executionContract ?? legacy.intent ?? "",
-      };
-    });
-  }
 }
 
 function buildPersistedLoopState(state: LoopState): PersistedLoopState {
@@ -125,6 +115,13 @@ function buildPersistedLoopState(state: LoopState): PersistedLoopState {
     recentTaskSummaries: _recentTaskSummaries,
     activeSessionAttachments: _activeSessionAttachments,
     recentSystemActivity: _recentSystemActivity,
+    runtimeContext: _runtimeContext,
+    activeLearningContext: _activeLearningContext,
+    previousSessionSummary: _previousSessionSummary,
+    personalMemorySnapshot: _personalMemorySnapshot,
+    attentionShelf: _attentionShelf,
+    activeSessionPath: _activeSessionPath,
+    sessionStatus: _sessionStatus,
     ...persisted
   } = state;
   return {

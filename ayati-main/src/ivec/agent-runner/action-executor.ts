@@ -101,10 +101,10 @@ export async function executeAgentAction(
 
 function validateActionPlan(deps: AgentActionExecutionDeps, action: AgentAction): string | undefined {
   if (!deps.toolExecutor) {
-    return "No tool executor is available for V2 action execution.";
+    return "No tool executor is available for action execution.";
   }
   if (action.mode === "autonomous") {
-    return "V2 autonomous actions are not enabled yet; return a concrete single, sequential, or parallel action.";
+    return "Autonomous actions are not enabled yet; return a concrete single, sequential, or parallel action.";
   }
   if (action.calls.length === 0) {
     return "Action contains no tool calls.";
@@ -340,8 +340,8 @@ function summarizeActionFailure(actOutput: ActOutput, assertionFailures: string[
     .map((call) => `${call.tool}: ${call.error}`);
   const reasons = [...toolFailures, ...assertionFailures].filter((reason) => reason.trim().length > 0);
   return reasons.length > 0
-    ? `V2 action failed: ${reasons.slice(0, 3).join(" | ")}`
-    : "V2 action failed.";
+    ? `Action failed: ${reasons.slice(0, 3).join(" | ")}`
+    : "Action failed.";
 }
 
 function resolveMaxCalls(config: LoopConfig, action: AgentAction): number {

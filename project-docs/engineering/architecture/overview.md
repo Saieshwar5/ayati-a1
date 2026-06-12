@@ -14,11 +14,18 @@ Main runtime flow:
 
 1. A user communicates through a client or an integration produces a system event.
 2. `ayati-main` receives the message/event through WebSocket, HTTP/integration ingress, Telegram, or plugin adapters.
-3. The backend loads static context, session state, personal memory, recent activity, tool definitions, external skills, document/file context, and provider configuration.
-4. `IVecEngine` coordinates staged model calls and tool execution.
-5. Tools run through the shared tool executor.
-6. Outputs, memory, files, uploads, documents, and artifacts are stored under `ayati-main/data/`.
-7. Replies, feedback, notifications, or actions are sent back through the appropriate transport.
+3. The backend loads static decision rules, session state, memory, attention shelf, recent activity, tools, external skills, document/file context, and provider configuration.
+4. `IVecEngine` builds the runtime context pack and enters the decision-action-reducer runner.
+5. The decision model chooses exactly one outcome: `reply`, `ask_user`, or `act`.
+6. Actions run through the shared tool executor and are verified through tool contracts, assertions, and local failure policy.
+7. Verified facts update progress state; run records, memory, files, uploads, documents, and artifacts are stored under `ayati-main/data/`.
+8. Replies, feedback, notifications, or actions are sent back through the appropriate transport.
+
+Current agent harness:
+
+```text
+context pack -> decision -> action executor -> deterministic verification -> progress reducer
+```
 
 Important entry points:
 

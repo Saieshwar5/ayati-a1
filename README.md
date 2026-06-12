@@ -15,18 +15,18 @@ This repository includes:
 
 ## What Ayati Is
 
-Ayati is designed as a staged autonomous agent runtime rather than a single
-prompt wrapper. The backend coordinates user messages, runtime context, tools,
-memory, external events, files, and model providers through the `IVecEngine`
+Ayati is designed as an autonomous agent harness rather than a single prompt
+wrapper. The backend coordinates user messages, runtime context, tools, memory,
+external events, files, and model providers through the `IVecEngine`
 Intelligence Variable Execution Core.
 
 At a high level, Ayati provides:
 
 - A runtime-selectable LLM provider layer for OpenRouter, OpenAI, Anthropic, and Fireworks
-- Layered prompt context from the base system prompt, controller prompts, soul, memory, session state, skills, tools, and runtime activity
-- A staged agent loop for understanding requests, selecting the next action, executing tools, and re-evaluating when needed
+- Stable decision rules plus a structured context pack containing runtime time, recent conversation, attention shelf, recent tasks, attachments, memory, and system activity
+- A decision-action-reducer agent loop that chooses `reply`, `ask_user`, or `act`, then verifies tool work deterministically
 - Built-in skills for shell, filesystem, calculator, SQLite database work, Python execution, documents, datasets, files, memory, recall, identity, and Pulse scheduling
-- Personal memory for stable user facts, time-based memory, and evolving preferences
+- Focus cards, attention shelf, personal memory, and episodic recall for continuity and personalization
 - Episodic recall for searching past sessions and run history
 - Managed file registration, upload processing, document extraction, structured data profiling, and artifact serving
 - External skill activation from project skill manifests under runtime data
@@ -38,6 +38,7 @@ At a high level, Ayati provides:
 ```text
 .
 |- README.md
+|- project-docs/ # product and engineering docs for humans and AI agents
 |- ayati-main/   # backend runtime, WebSocket server, upload/artifact server, tools, memory, plugins
 `- ayati-cli/    # Ink-based terminal client
 ```
@@ -47,27 +48,33 @@ At a high level, Ayati provides:
 The backend runtime is centered on `ayati-main/src/app/main.ts` and
 `ayati-main/src/ivec/index.ts`.
 
-Ayati runs work through named stages:
+Ayati runs work through a decision-action-reducer loop:
 
-- `understand`: identify the real user goal and decide whether the request can be answered directly or needs action
-- `direct`: choose the single next useful action, including tool calls or external skill activation
-- `reeval`: change course when evidence shows the current path is failing or incomplete
-- `system_event`: handle internal and external events such as reminders or inbound mail with the configured event policy
+```text
+context pack -> decision -> action executor -> deterministic verification -> progress reducer
+```
 
-This separation keeps the agent from mixing planning, execution, and
-verification. Each cycle is grounded in the current conversation, static
-context, memory, available tools, run state, and provider capabilities.
+The decision model chooses one next outcome:
+
+- `reply`: answer or finish without tool work.
+- `ask_user`: request missing information before safe progress.
+- `act`: run explicit tool calls through the action executor.
+
+Tool work is validated, executed, checked through tool contracts/assertions, and
+reduced into task progress before the next decision. System events such as
+reminders or inbound mail enter the same harness with event-policy constraints.
 
 ## How Ayati Works In Practice
 
 1. A user sends a message from the CLI, Telegram, or another runtime input.
 2. `ayati-main` receives the message through WebSocket, HTTP, polling, or a plugin event adapter.
-3. The backend loads static context, current session state, memory snapshots, available tools, active skills, and the configured LLM provider.
-4. The `IVecEngine` asks the model to understand the request and choose the next responsible step.
-5. If tools are needed, Ayati validates the tool request, executes it through the tool executor, and feeds the result back into the loop.
-6. Files, documents, datasets, Python outputs, and other generated files are stored as managed runtime data or run artifacts.
-7. Session history, personal memory candidates, episodic memory indexes, system activity, and task state are persisted under `ayati-main/data/`.
-8. The final reply and any artifact metadata are returned to the active client.
+3. The backend loads static decision rules, session state, focus summaries, memory snapshots, available tools, active skills, and the configured LLM provider.
+4. `IVecEngine` builds a bounded context pack and enters the agent runner.
+5. The decision model returns `reply`, `ask_user`, or `act`.
+6. If tools are needed, Ayati validates the action, executes it through the tool executor, verifies results with contracts/assertions, and updates progress from verified facts.
+7. Files, documents, datasets, Python outputs, and other generated files are stored as managed runtime data or run artifacts.
+8. Session history, focus cards, personal memory candidates, episodic memory indexes, system activity, and task state are persisted under `ayati-main/data/`.
+9. The final reply and any artifact metadata are returned to the active client.
 
 ## Runtime Capabilities
 
@@ -96,26 +103,39 @@ Provider API keys are read from the backend `.env` file.
 
 ### Prompt Context
 
-Ayati assembles a deterministic runtime prompt from multiple layers:
+Ayati separates stable operating rules from dynamic runtime context.
+
+Stable system context can include:
 
 - Base system prompt
-- Controller prompts
 - Soul and identity context
-- Personal memory snapshot
-- Previous conversation and current session context
-- Recent tasks and recent system activity
 - Skill prompt blocks
 - Available tool definitions
-- Session status
 
-This makes behavior easier to inspect and update because stable operating rules,
-personality, memory, and capability descriptions are kept separate.
+Dynamic context is sent to the decision model as structured JSON in the context
+pack:
+
+- Runtime date, time, weekday, and timezone
+- Session status and context pressure
+- Attention shelf / focus summaries
+- Recent exact conversation
+- Recent task summaries
+- Active attachments
+- Previous session summary
+- Personal memory snapshot
+- Active learning context
+- Recent system activity
+
+This keeps memory and continuation visible without hiding important facts inside
+a large truncatable prompt string.
 
 ### Memory and Continuity
 
 Ayati has several memory paths:
 
 - Session memory stores active conversation state and handoff summaries.
+- Focus cards track meaningful ongoing work such as projects, documents, learning, automations, investigations, and debugging.
+- The attention shelf injects compact high-relevance focus summaries into each decision.
 - Personal memory stores canonical facts in sections such as `user_facts`, `time_based`, and `evolving_memory`.
 - Episodic memory indexes closed sessions for later semantic recall when embeddings are available.
 - The built-in recall tools can search past work by query, date range, or episode type.
@@ -351,16 +371,21 @@ These files are runtime state, not source code.
 
 If you want to go deeper into the architecture, start with:
 
-- `ayati-main/AGENT.md`
 - `ayati-main/AGENTS.md`
+- `project-docs/README.md`
+- `project-docs/engineering/architecture/agent-harness.md`
+- `project-docs/engineering/architecture/context-and-memory.md`
+- `project-docs/engineering/architecture/tool-contracts.md`
 - `ayati-main/src/app/main.ts`
 - `ayati-main/src/ivec/index.ts`
+- `ayati-main/src/ivec/agent-runner/runner.ts`
 - `ayati-main/context/system_prompt.md`
 
 ## Current Status
 
 Ayati is structured as a modular agent system with separate backend and CLI
-packages. The backend supports runtime provider selection, staged agent control,
-built-in and external skills, personal and episodic memory, document/data
-workflows, generated artifacts, scheduled Pulse work, and optional event-driven
-integrations.
+packages. The backend supports runtime provider selection, the
+decision-action-reducer harness, built-in and external skills,
+focus/session/personal/episodic memory,
+document/data workflows, generated artifacts, scheduled Pulse work, and
+optional event-driven integrations.
