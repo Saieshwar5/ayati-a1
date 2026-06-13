@@ -6,10 +6,15 @@ import { DatabaseSync, type SQLInputValue } from "node:sqlite";
 import { scoreMemory } from "./memory-scorer.js";
 import type {
   MemoryCard,
+  MemoryAliasRecord,
+  MemoryCandidateMatch,
   MemoryConsolidationJob,
   MemoryConsolidationJobPayload,
+  MemoryEvolutionEventRecord,
+  MemoryEvolutionEventType,
   MemoryEvidenceRecord,
   MemoryEvidenceType,
+  MemoryLookupSignal,
   MemoryPolicy,
   MemoryProposal,
   MemorySectionId,
@@ -265,6 +270,72 @@ export class PersonalMemoryStore {
     return rows.map(mapCardRow);
   }
 
+  findCardsByAlias(
+    userId: string,
+    kind: string,
+    slot: string,
+    states: MemoryState[] = LIVE_STATES,
+    sectionId: MemorySectionId = USER_FACTS_SECTION_ID,
+  ): MemoryCard[] {
+    const aliasKind = normalizeKind(kind);
+    const aliasSlot = normalizeSlot(slot);
+    const aliases = this.requireDb().prepare(`
+      SELECT *
+      FROM memory_aliases
+      WHERE user_id = ?
+        AND section_id = ?
+        AND alias_kind = ?
+        AND alias_slot = ?
+      ORDER BY confidence DESC, last_used_at DESC, created_at DESC
+      LIMIT 10
+    `).all(userId, sectionId, aliasKind, aliasSlot) as Record<string, unknown>[];
+    if (aliases.length === 0) {
+      return [];
+    }
+
+    const cards = new Map<string, MemoryCard>();
+    const now = this.nowIso();
+    for (const rawAlias of aliases) {
+      const alias = mapAliasRow(rawAlias);
+      this.requireDb().prepare(`
+        UPDATE memory_aliases
+        SET last_used_at = ?
+        WHERE user_id = ?
+          AND section_id = ?
+          AND alias_kind = ?
+          AND alias_slot = ?
+      `).run(now, userId, sectionId, aliasKind, aliasSlot);
+      const rows = this.requireDb().prepare(`
+        SELECT *
+        FROM memory_cards
+        WHERE user_id = ?
+          AND section_id = ?
+          AND kind = ?
+          AND slot = ?
+          AND state IN (${states.map(() => "?").join(", ")})
+        ORDER BY
+          CASE WHEN id = ? THEN 0 ELSE 1 END,
+          confidence DESC,
+          last_confirmed_at DESC,
+          created_at DESC
+      `).all(
+        userId,
+        sectionId,
+        alias.targetKind,
+        alias.targetSlot,
+        ...states,
+        alias.targetMemoryId ?? "",
+      ) as Record<string, unknown>[];
+      for (const row of rows) {
+        const card = mapCardRow(row);
+        if (!cards.has(card.id)) {
+          cards.set(card.id, card);
+        }
+      }
+    }
+    return [...cards.values()];
+  }
+
   findMemoriesBySlot(
     userId: string,
     slotName: string,
@@ -284,28 +355,163 @@ export class PersonalMemoryStore {
     return rows.map(mapCardRow);
   }
 
-  findDedupCandidates(userId: string, proposal: MemoryProposal, limit = 20): MemoryCard[] {
-    const candidates = new Map<string, MemoryCard>();
-    const add = (cards: MemoryCard[]): void => {
+  findEvolutionCandidates(userId: string, proposal: MemoryProposal, limit = 20): MemoryCandidateMatch[] {
+    const sectionId = proposal.sectionId ?? USER_FACTS_SECTION_ID;
+    const candidates = new Map<string, MemoryCandidateMatch>();
+    const add = (
+      cards: MemoryCard[],
+      signal: MemoryLookupSignal,
+      score: number,
+      reason: string,
+    ): void => {
       for (const card of cards) {
-        if (!candidates.has(card.id)) {
-          candidates.set(card.id, card);
+        const adjustedScore = Math.min(1, score + (card.confidence * 0.03));
+        const existing = candidates.get(card.id);
+        if (!existing || adjustedScore > existing.score) {
+          candidates.set(card.id, {
+            memory: card,
+            signal,
+            score: adjustedScore,
+            reason,
+          });
         }
       }
     };
 
-    const sectionId = proposal.sectionId ?? USER_FACTS_SECTION_ID;
-    add(this.findCardsByAddress(userId, proposal.kind, proposal.slot, LIVE_STATES, sectionId));
-    add(this.findMemoriesBySlot(userId, proposal.slot, LIVE_STATES, sectionId));
+    add(
+      this.findCardsByAddress(userId, proposal.kind, proposal.slot, LIVE_STATES, sectionId),
+      "exact_address",
+      0.97,
+      "same canonical kind and slot",
+    );
+    add(
+      this.findCardsByAlias(userId, proposal.kind, proposal.slot, LIVE_STATES, sectionId),
+      "alias_address",
+      0.9,
+      "proposal address is a learned alias for an existing memory",
+    );
+    add(
+      this.findMemoriesBySlot(userId, proposal.slot, LIVE_STATES, sectionId),
+      "same_slot",
+      0.78,
+      "same normalized slot",
+    );
     add(this.searchMemories(userId, {
       query: [proposal.kind, proposal.slot, proposal.value ?? "", proposal.text].join(" "),
       sectionId,
       states: LIVE_STATES,
       limit,
-    }));
-    add(this.listMemories(userId, LIVE_STATES, Math.min(10, limit), sectionId));
+    }), "fts", 0.62, "full-text search match");
+    add(
+      this.listMemories(userId, LIVE_STATES, Math.min(10, limit), sectionId),
+      "recent",
+      0.25,
+      "recent high-confidence memory in the same section",
+    );
 
-    return [...candidates.values()].slice(0, limit);
+    return [...candidates.values()]
+      .sort((left, right) => right.score - left.score)
+      .slice(0, limit);
+  }
+
+  findDedupCandidates(userId: string, proposal: MemoryProposal, limit = 20): MemoryCard[] {
+    return this.findEvolutionCandidates(userId, proposal, limit).map((candidate) => candidate.memory);
+  }
+
+  upsertMemoryAlias(input: {
+    userId: string;
+    sectionId?: MemorySectionId;
+    aliasKind: string;
+    aliasSlot: string;
+    targetKind: string;
+    targetSlot: string;
+    targetMemoryId?: string | null;
+    confidence?: number;
+    createdAt?: string;
+  }): void {
+    const sectionId = input.sectionId ?? USER_FACTS_SECTION_ID;
+    const aliasKind = normalizeKind(input.aliasKind);
+    const aliasSlot = normalizeSlot(input.aliasSlot);
+    const targetKind = normalizeKind(input.targetKind);
+    const targetSlot = normalizeSlot(input.targetSlot);
+    if (aliasKind === targetKind && aliasSlot === targetSlot) {
+      return;
+    }
+    const now = input.createdAt ?? this.nowIso();
+    this.requireDb().prepare(`
+      INSERT INTO memory_aliases (
+        user_id,
+        section_id,
+        alias_kind,
+        alias_slot,
+        target_kind,
+        target_slot,
+        target_memory_id,
+        confidence,
+        created_at,
+        last_used_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(user_id, section_id, alias_kind, alias_slot) DO UPDATE SET
+        target_kind = excluded.target_kind,
+        target_slot = excluded.target_slot,
+        target_memory_id = excluded.target_memory_id,
+        confidence = MAX(memory_aliases.confidence, excluded.confidence),
+        last_used_at = excluded.last_used_at
+    `).run(
+      input.userId,
+      sectionId,
+      aliasKind,
+      aliasSlot,
+      targetKind,
+      targetSlot,
+      input.targetMemoryId ?? null,
+      clampUnit(input.confidence ?? 0.8),
+      now,
+      now,
+    );
+  }
+
+  retargetAliases(input: {
+    userId: string;
+    sectionId?: MemorySectionId;
+    targetKind: string;
+    targetSlot: string;
+    targetMemoryId: string;
+    now?: string;
+  }): void {
+    const sectionId = input.sectionId ?? USER_FACTS_SECTION_ID;
+    this.requireDb().prepare(`
+      UPDATE memory_aliases
+      SET target_memory_id = ?,
+          last_used_at = ?
+      WHERE user_id = ?
+        AND section_id = ?
+        AND target_kind = ?
+        AND target_slot = ?
+    `).run(
+      input.targetMemoryId,
+      input.now ?? this.nowIso(),
+      input.userId,
+      sectionId,
+      normalizeKind(input.targetKind),
+      normalizeSlot(input.targetSlot),
+    );
+  }
+
+  listMemoryAliases(userId: string, sectionId?: MemorySectionId): MemoryAliasRecord[] {
+    const clauses = ["user_id = ?"];
+    const params: SQLInputValue[] = [userId];
+    if (sectionId) {
+      clauses.push("section_id = ?");
+      params.push(sectionId);
+    }
+    const rows = this.requireDb().prepare(`
+      SELECT *
+      FROM memory_aliases
+      WHERE ${clauses.join(" AND ")}
+      ORDER BY confidence DESC, last_used_at DESC, created_at DESC
+    `).all(...params) as Record<string, unknown>[];
+    return rows.map(mapAliasRow);
   }
 
   confirmMemory(
@@ -488,6 +694,7 @@ export class PersonalMemoryStore {
 
   addEvidence(input: EvidenceInput): void {
     const now = input.createdAt ?? this.nowIso();
+    const evidenceId = `ev_${randomUUID()}`;
     this.requireDb().prepare(`
       INSERT INTO memory_evidence (
         id,
@@ -502,7 +709,7 @@ export class PersonalMemoryStore {
         created_at
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
-      `ev_${randomUUID()}`,
+      evidenceId,
       input.memoryId,
       input.userId,
       input.sessionId ?? null,
@@ -513,6 +720,20 @@ export class PersonalMemoryStore {
       input.sourceText,
       now,
     );
+    const memory = this.getMemory(input.memoryId);
+    if (memory) {
+      this.addEvolutionEvent({
+        memory,
+        eventType: input.evidenceType,
+        sourceText: input.sourceText,
+        payloadJson: JSON.stringify({ evidenceId }),
+        sessionId: input.sessionId ?? null,
+        runId: input.runId ?? null,
+        sessionPath: input.sessionPath ?? null,
+        runPath: input.runPath ?? null,
+        createdAt: now,
+      });
+    }
   }
 
   listEvidence(memoryId: string, limit = 20): MemoryEvidenceRecord[] {
@@ -525,6 +746,38 @@ export class PersonalMemoryStore {
       LIMIT ?
     `).all(memoryId, capped) as Record<string, unknown>[];
     return rows.map(mapEvidenceRow);
+  }
+
+  listEvolutionEvents(input: {
+    userId?: string;
+    memoryId?: string;
+    sectionId?: MemorySectionId;
+    limit?: number;
+  } = {}): MemoryEvolutionEventRecord[] {
+    const capped = Math.max(1, Math.min(500, Math.floor(input.limit ?? 100)));
+    const clauses: string[] = [];
+    const params: SQLInputValue[] = [];
+    if (input.userId) {
+      clauses.push("user_id = ?");
+      params.push(input.userId);
+    }
+    if (input.memoryId) {
+      clauses.push("memory_id = ?");
+      params.push(input.memoryId);
+    }
+    if (input.sectionId) {
+      clauses.push("section_id = ?");
+      params.push(input.sectionId);
+    }
+    params.push(capped);
+    const rows = this.requireDb().prepare(`
+      SELECT *
+      FROM memory_events
+      ${clauses.length > 0 ? `WHERE ${clauses.join(" AND ")}` : ""}
+      ORDER BY created_at DESC
+      LIMIT ?
+    `).all(...params) as Record<string, unknown>[];
+    return rows.map(mapEvolutionEventRow);
   }
 
   recordUsage(memoryId: string, runId: string | null, outcome: MemoryUsageOutcome): void {
@@ -787,6 +1040,55 @@ export class PersonalMemoryStore {
     );
   }
 
+  private addEvolutionEvent(input: {
+    memory: MemoryCard;
+    eventType: MemoryEvolutionEventType;
+    sourceText: string;
+    payloadJson?: string | null;
+    sessionId?: string | null;
+    runId?: string | null;
+    sessionPath?: string | null;
+    runPath?: string | null;
+    createdAt?: string;
+  }): void {
+    const now = input.createdAt ?? this.nowIso();
+    this.requireDb().prepare(`
+      INSERT INTO memory_events (
+        id,
+        memory_id,
+        user_id,
+        section_id,
+        kind,
+        slot,
+        address,
+        event_type,
+        source_text,
+        payload_json,
+        session_id,
+        run_id,
+        session_path,
+        run_path,
+        created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      `mev_${randomUUID()}`,
+      input.memory.id,
+      input.memory.userId,
+      input.memory.sectionId,
+      input.memory.kind,
+      input.memory.slot,
+      canonicalMemoryAddress(input.memory.sectionId, input.memory.kind, input.memory.slot),
+      input.eventType,
+      input.sourceText,
+      input.payloadJson ?? null,
+      input.sessionId ?? null,
+      input.runId ?? null,
+      input.sessionPath ?? null,
+      input.runPath ?? null,
+      now,
+    );
+  }
+
   private createSchema(): void {
     this.requireDb().exec(`
       CREATE TABLE IF NOT EXISTS memory_cards (
@@ -849,6 +1151,46 @@ export class PersonalMemoryStore {
 
       CREATE INDEX IF NOT EXISTS idx_memory_evidence_memory
         ON memory_evidence(memory_id, created_at DESC);
+
+      CREATE TABLE IF NOT EXISTS memory_events (
+        id TEXT PRIMARY KEY,
+        memory_id TEXT NOT NULL,
+        user_id TEXT NOT NULL,
+        section_id TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        slot TEXT NOT NULL,
+        address TEXT NOT NULL,
+        event_type TEXT NOT NULL,
+        source_text TEXT NOT NULL,
+        payload_json TEXT,
+        session_id TEXT,
+        run_id TEXT,
+        session_path TEXT,
+        run_path TEXT,
+        created_at TEXT NOT NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_memory_events_memory
+        ON memory_events(memory_id, created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_memory_events_user_address
+        ON memory_events(user_id, section_id, address, created_at DESC);
+
+      CREATE TABLE IF NOT EXISTS memory_aliases (
+        user_id TEXT NOT NULL,
+        section_id TEXT NOT NULL,
+        alias_kind TEXT NOT NULL,
+        alias_slot TEXT NOT NULL,
+        target_kind TEXT NOT NULL,
+        target_slot TEXT NOT NULL,
+        target_memory_id TEXT,
+        confidence REAL NOT NULL,
+        created_at TEXT NOT NULL,
+        last_used_at TEXT,
+        PRIMARY KEY (user_id, section_id, alias_kind, alias_slot)
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_memory_aliases_target
+        ON memory_aliases(user_id, section_id, target_kind, target_slot);
 
       CREATE TABLE IF NOT EXISTS memory_usage (
         id TEXT PRIMARY KEY,
@@ -929,6 +1271,10 @@ export function normalizeSlot(value: string): string {
 export function normalizeKind(value: string): string {
   const normalized = normalizeSlot(value).replace(/\//g, "_");
   return normalized || "general";
+}
+
+export function canonicalMemoryAddress(sectionId: MemorySectionId, kind: string, slot: string): string {
+  return `${sectionId}:${normalizeKind(kind)}:${normalizeSlot(slot)}`;
 }
 
 function normalizeText(value: string): string {
@@ -1049,6 +1395,41 @@ function mapEvidenceRow(row: Record<string, unknown>): MemoryEvidenceRecord {
   };
 }
 
+function mapEvolutionEventRow(row: Record<string, unknown>): MemoryEvolutionEventRecord {
+  return {
+    id: String(row["id"]),
+    memoryId: String(row["memory_id"]),
+    userId: String(row["user_id"]),
+    sectionId: normalizeSectionId(row["section_id"]),
+    kind: String(row["kind"]),
+    slot: String(row["slot"]),
+    address: String(row["address"]),
+    eventType: normalizeEvolutionEventType(row["event_type"]),
+    sourceText: String(row["source_text"]),
+    payloadJson: nullableString(row["payload_json"]),
+    sessionId: nullableString(row["session_id"]),
+    runId: nullableString(row["run_id"]),
+    sessionPath: nullableString(row["session_path"]),
+    runPath: nullableString(row["run_path"]),
+    createdAt: String(row["created_at"]),
+  };
+}
+
+function mapAliasRow(row: Record<string, unknown>): MemoryAliasRecord {
+  return {
+    userId: String(row["user_id"]),
+    sectionId: normalizeSectionId(row["section_id"]),
+    aliasKind: String(row["alias_kind"]),
+    aliasSlot: String(row["alias_slot"]),
+    targetKind: String(row["target_kind"]),
+    targetSlot: String(row["target_slot"]),
+    targetMemoryId: nullableString(row["target_memory_id"]),
+    confidence: Number(row["confidence"] ?? 0),
+    createdAt: String(row["created_at"]),
+    lastUsedAt: nullableString(row["last_used_at"]),
+  };
+}
+
 function mapJobRow(row: Record<string, unknown>): MemoryConsolidationJob {
   const status = row["status"] === "running" || row["status"] === "done" || row["status"] === "failed"
     ? row["status"]
@@ -1085,6 +1466,21 @@ function normalizeState(value: unknown): MemoryState {
 }
 
 function normalizeEvidenceType(value: unknown): MemoryEvidenceType {
+  if (
+    value === "creates" ||
+    value === "confirms" ||
+    value === "contradicts" ||
+    value === "supersedes" ||
+    value === "merges" ||
+    value === "archives" ||
+    value === "rejects"
+  ) {
+    return value;
+  }
+  return "creates";
+}
+
+function normalizeEvolutionEventType(value: unknown): MemoryEvolutionEventType {
   if (
     value === "creates" ||
     value === "confirms" ||

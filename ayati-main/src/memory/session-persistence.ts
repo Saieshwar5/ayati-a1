@@ -128,6 +128,10 @@ export class SessionPersistence {
     this.metaIndex.markSessionCrashed(sessionId, ts, reason);
   }
 
+  closeSession(sessionId: string, ts: string, reason: string): void {
+    this.metaIndex.closeSession(sessionId, ts, reason);
+  }
+
   replaySessionFile(filePath: string): SessionEvent[] {
     let content = "";
     try {

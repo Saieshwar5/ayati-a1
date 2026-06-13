@@ -745,6 +745,64 @@ describe("User Facts personal memory section", () => {
     store.stop();
   });
 
+  it("learns aliases for equivalent evolving memory addresses", () => {
+    const root = mkdtempSync(join(tmpdir(), "ayati-evolving-memory-"));
+    roots.push(root);
+    const store = makeStore(root);
+    const resolver = new MemoryResolver(store);
+
+    resolver.resolve("local", payload("s1"), [evolvingProposal()], DEFAULT_MEMORY_POLICY);
+    const aliasResult = resolver.resolve("local", payload("s2"), [evolvingProposal({
+      slot: "preference/explanation_depth",
+      text: "User prefers detailed practical explanations over shallow answers.",
+      evidence: "User again asked for detailed practical explanations.",
+    })], DEFAULT_MEMORY_POLICY);
+    const aliasMatches = store.findEvolutionCandidates("local", evolvingProposal({
+      slot: "preference/explanation_depth",
+      text: "User prefers detailed practical explanations over shallow answers.",
+      evidence: "User repeated this preference.",
+    }), 5);
+    const memories = store.listMemories("local", ["active"], 10, EVOLVING_MEMORY_SECTION_ID);
+    const aliases = store.listMemoryAliases("local", EVOLVING_MEMORY_SECTION_ID);
+
+    expect(aliasResult.confirmed).toBe(1);
+    expect(memories).toHaveLength(1);
+    expect(aliasMatches[0]?.signal).toBe("alias_address");
+    expect(aliases).toMatchObject([{
+      aliasKind: "preference",
+      aliasSlot: "preference/explanation_depth",
+      targetKind: "preference",
+      targetSlot: "preference/answer_depth",
+    }]);
+    store.stop();
+  });
+
+  it("keeps an append-only evolution event history for memory changes", () => {
+    const root = mkdtempSync(join(tmpdir(), "ayati-memory-events-"));
+    roots.push(root);
+    const store = makeStore(root);
+    const resolver = new MemoryResolver(store);
+
+    resolver.resolve("local", payload("s1"), [proposal()], DEFAULT_MEMORY_POLICY);
+    resolver.resolve("local", payload("s2"), [proposal({
+      evidence: "User repeated that their name is Sai.",
+    })], DEFAULT_MEMORY_POLICY);
+    resolver.resolve("local", payload("s3"), [proposal({
+      text: "User's name is Sai Eshwar.",
+      value: "Sai Eshwar",
+      evidence: "User said their full name is Sai Eshwar.",
+    })], DEFAULT_MEMORY_POLICY);
+    const events = store.listEvolutionEvents({ userId: "local", limit: 10 });
+
+    expect(events.map((event) => event.eventType)).toEqual(expect.arrayContaining([
+      "creates",
+      "confirms",
+      "supersedes",
+    ]));
+    expect(events.every((event) => event.address.startsWith("user_facts:identity:identity/name"))).toBe(true);
+    store.stop();
+  });
+
   it("archives low-scoring evolving memories after super-fast decay", () => {
     const root = mkdtempSync(join(tmpdir(), "ayati-evolving-memory-"));
     roots.push(root);
@@ -1042,6 +1100,130 @@ describe("User Facts personal memory section", () => {
     expect(evolving).toHaveLength(1);
     expect(store.getSnapshot("local")).toContain("## Evolving Memory");
     expect(store.getSnapshot("local")).toContain("[preference] User prefers detailed practical");
+    store.stop();
+  });
+
+  it("chunks large closed sessions and resolves only merged memory candidates", async () => {
+    const root = mkdtempSync(join(tmpdir(), "ayati-large-personal-memory-"));
+    roots.push(root);
+    mkdirSync(resolve(root, "context"), { recursive: true });
+    writeFileSync(resolve(root, "context", "memory-policy.json"), JSON.stringify({
+      extraction: {
+        maxTurns: 2,
+        maxExistingFacts: 10,
+        maxExistingTimed: 10,
+        maxExistingEvolving: 10,
+        maxProposals: 8,
+      },
+    }));
+    const store = makeStore(root);
+    const prompts: string[] = [];
+    const provider: LlmProvider = {
+      name: "chunked-fake",
+      version: "1",
+      capabilities: { nativeToolCalling: false, structuredOutput: { jsonObject: true, jsonSchema: false } },
+      start: vi.fn(),
+      stop: vi.fn(),
+      generateTurn: vi.fn(async (input) => {
+        const system = input.messages[0]?.content ?? "";
+        const user = input.messages[1]?.content ?? "";
+        prompts.push(user);
+        if (!system.includes("evolving_memory")) {
+          return { type: "assistant", content: JSON.stringify({ cards: [] }) };
+        }
+        if (user.includes("At first I want short answers.")) {
+          return {
+            type: "assistant",
+            content: JSON.stringify({
+              cards: [evolvingProposal({
+                text: "User prefers short answers.",
+                value: "short answers",
+                evidence: "User said they first wanted short answers.",
+              })],
+            }),
+          };
+        }
+        if (user.includes("Actually I generally prefer deep detailed explanations.")) {
+          return {
+            type: "assistant",
+            content: JSON.stringify({
+              cards: [evolvingProposal({
+                text: "User generally prefers deep detailed explanations.",
+                value: "deep detailed explanations",
+                evidence: "User corrected that they generally prefer deep detailed explanations.",
+              })],
+            }),
+          };
+        }
+        return { type: "assistant", content: JSON.stringify({ cards: [] }) };
+      }),
+    };
+    const consolidator = new MemoryConsolidator({
+      provider,
+      store,
+      projectRoot: root,
+      now: () => new Date("2026-04-24T00:00:00.000Z"),
+    });
+
+    consolidator.enqueueSession({
+      userId: "local",
+      sessionId: "large-session",
+      sessionPath: "sessions/large-session.md",
+      reason: "session_switch:test",
+      turns: [
+        {
+          role: "user",
+          content: "At first I want short answers.",
+          timestamp: "2026-04-24T00:00:00.000Z",
+          sessionPath: "sessions/large-session.md",
+        },
+        {
+          role: "assistant",
+          content: "Okay.",
+          timestamp: "2026-04-24T00:00:01.000Z",
+          sessionPath: "sessions/large-session.md",
+        },
+        {
+          role: "user",
+          content: "Now we are discussing memory chunking.",
+          timestamp: "2026-04-24T00:00:02.000Z",
+          sessionPath: "sessions/large-session.md",
+        },
+        {
+          role: "assistant",
+          content: "Chunking helps process long sessions.",
+          timestamp: "2026-04-24T00:00:03.000Z",
+          sessionPath: "sessions/large-session.md",
+        },
+        {
+          role: "user",
+          content: "Actually I generally prefer deep detailed explanations.",
+          timestamp: "2026-04-24T00:00:04.000Z",
+          sessionPath: "sessions/large-session.md",
+        },
+        {
+          role: "assistant",
+          content: "Understood.",
+          timestamp: "2026-04-24T00:00:05.000Z",
+          sessionPath: "sessions/large-session.md",
+        },
+      ],
+    });
+
+    await consolidator.shutdown();
+
+    const evolving = store.findCardsByAddress(
+      "local",
+      "preference",
+      "preference/answer_depth",
+      ["active"],
+      EVOLVING_MEMORY_SECTION_ID,
+    );
+    expect(prompts.some((prompt) => prompt.includes("Chunk 1 of 3"))).toBe(true);
+    expect(prompts.some((prompt) => prompt.includes("Chunk 3 of 3"))).toBe(true);
+    expect(evolving).toHaveLength(1);
+    expect(evolving[0]?.text).toContain("deep detailed explanations");
+    expect(evolving[0]?.text).not.toContain("short answers");
     store.stop();
   });
 });

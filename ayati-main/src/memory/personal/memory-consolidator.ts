@@ -17,6 +17,12 @@ import type {
 import { EVOLVING_MEMORY_SECTION_ID, TIME_BASED_SECTION_ID, USER_FACTS_SECTION_ID } from "./types.js";
 import { ProfileProjector, type SnapshotProjectionResult } from "./profile-projector.js";
 
+interface SectionChunkInfo {
+  index: number;
+  count: number;
+  totalTurns: number;
+}
+
 export interface MemoryConsolidatorOptions {
   provider: LlmProvider;
   store: PersonalMemoryStore;
@@ -172,16 +178,7 @@ export class MemoryConsolidator {
       sectionId,
       event: "section_started",
     });
-    const output = await this.provider.generateTurn({
-      messages: this.buildSectionMessages(payload, policy, sectionId),
-      responseFormat: this.provider.capabilities.structuredOutput?.jsonObject ? { type: "json_object" } : undefined,
-    });
-    if (output.type !== "assistant" || !output.content) {
-      throw new Error(`Personal memory ${sectionId} evolution returned no assistant JSON`);
-    }
-
-    const proposals = parseProposals(output.content, policy)
-      .filter((proposal) => proposal.sectionId === sectionId);
+    const proposals = await this.extractSectionProposals(job, payload, policy, sectionId);
     this.store.writeAuditEvent({
       jobId: job.jobId,
       userId: job.userId,
@@ -221,10 +218,95 @@ export class MemoryConsolidator {
     return result;
   }
 
+  private async extractSectionProposals(
+    job: MemoryConsolidationJob,
+    payload: MemoryConsolidationJobPayload,
+    policy: MemoryPolicy,
+    sectionId: MemorySectionId,
+  ): Promise<MemoryProposal[]> {
+    const chunkSize = Math.max(1, policy.extraction.maxTurns);
+    const chunks = chunkTurns(payload.turns, chunkSize);
+    if (chunks.length <= 1) {
+      return this.generateSectionProposals(payload, policy, sectionId, payload.turns.slice(-chunkSize));
+    }
+
+    const proposals: MemoryProposal[] = [];
+    for (let index = 0; index < chunks.length; index++) {
+      const turns = chunks[index]!;
+      this.store.writeAuditEvent({
+        jobId: job.jobId,
+        userId: job.userId,
+        sessionId: job.sessionId,
+        sectionId,
+        event: "section_chunk_started",
+        details: {
+          chunk: index + 1,
+          chunks: chunks.length,
+          totalTurns: payload.turns.length,
+          turns: turns.length,
+        },
+      });
+      const chunkProposals = await this.generateSectionProposals(payload, policy, sectionId, turns, {
+        index,
+        count: chunks.length,
+        totalTurns: payload.turns.length,
+      });
+      proposals.push(...chunkProposals);
+      this.store.writeAuditEvent({
+        jobId: job.jobId,
+        userId: job.userId,
+        sessionId: job.sessionId,
+        sectionId,
+        event: "section_chunk_done",
+        details: {
+          chunk: index + 1,
+          proposals: chunkProposals.length,
+          slots: chunkProposals.map((proposal) => proposal.slot),
+        },
+      });
+    }
+
+    const merged = mergeSectionProposals(proposals, policy);
+    this.store.writeAuditEvent({
+      jobId: job.jobId,
+      userId: job.userId,
+      sessionId: job.sessionId,
+      sectionId,
+      event: "section_chunks_merged",
+      details: {
+        chunks: chunks.length,
+        proposed: proposals.length,
+        merged: merged.length,
+      },
+    });
+    return merged;
+  }
+
+  private async generateSectionProposals(
+    payload: MemoryConsolidationJobPayload,
+    policy: MemoryPolicy,
+    sectionId: MemorySectionId,
+    turns: MemoryConsolidationJobPayload["turns"],
+    chunkInfo?: SectionChunkInfo,
+  ): Promise<MemoryProposal[]> {
+    const output = await this.provider.generateTurn({
+      messages: this.buildSectionMessages(payload, policy, sectionId, turns, chunkInfo),
+      responseFormat: this.provider.capabilities.structuredOutput?.jsonObject ? { type: "json_object" } : undefined,
+    });
+    if (output.type !== "assistant" || !output.content) {
+      throw new Error(`Personal memory ${sectionId} evolution returned no assistant JSON`);
+    }
+
+    return parseProposals(output.content, policy)
+      .filter((proposal) => proposal.sectionId === sectionId);
+  }
+
   private buildSectionMessages(
     payload: MemoryConsolidationJobPayload,
     policy: MemoryPolicy,
     sectionId: MemorySectionId,
+    sectionTurns: MemoryConsolidationJobPayload["turns"],
+    chunkInfo?: SectionChunkInfo,
   ): LlmMessage[] {
     const existing = this.store.listMemories(
       payload.userId,
@@ -232,7 +314,7 @@ export class MemoryConsolidator {
       existingLimitForSection(sectionId, policy),
       sectionId,
     ).map(formatMemoryForPrompt).join("\n");
-    const turns = payload.turns
+    const turns = sectionTurns
       .slice(-policy.extraction.maxTurns)
       .map((turn) => formatConversationTurnInline({
         role: turn.role,
@@ -252,6 +334,14 @@ export class MemoryConsolidator {
       "## Session Handoff Summary",
       payload.handoffSummary?.trim() || "(none)",
       "",
+      ...(chunkInfo
+        ? [
+          "## Session Chunk",
+          `Chunk ${chunkInfo.index + 1} of ${chunkInfo.count}; total session turns: ${chunkInfo.totalTurns}.`,
+          "Extract only memories supported by this chunk. A later merge pass will remove duplicates and corrections.",
+          "",
+        ]
+        : []),
       "## Session Conversation",
       turns || "(none)",
       "",
@@ -314,6 +404,133 @@ function sectionTitle(sectionId: MemorySectionId): string {
   if (sectionId === TIME_BASED_SECTION_ID) return "Time-Based Memories";
   if (sectionId === EVOLVING_MEMORY_SECTION_ID) return "Evolving Memories";
   return "User Facts";
+}
+
+function chunkTurns(
+  turns: MemoryConsolidationJobPayload["turns"],
+  chunkSize: number,
+): Array<MemoryConsolidationJobPayload["turns"]> {
+  if (turns.length === 0) {
+    return [[]];
+  }
+  const chunks: Array<MemoryConsolidationJobPayload["turns"]> = [];
+  for (let index = 0; index < turns.length; index += chunkSize) {
+    chunks.push(turns.slice(index, index + chunkSize));
+  }
+  return chunks;
+}
+
+function mergeSectionProposals(proposals: MemoryProposal[], policy: MemoryPolicy): MemoryProposal[] {
+  const merged = new Map<string, { proposal: MemoryProposal; index: number }>();
+  proposals.forEach((proposal, index) => {
+    const key = proposalMergeKey(proposal);
+    const existing = merged.get(key);
+    if (!existing) {
+      merged.set(key, { proposal, index });
+      return;
+    }
+    merged.set(key, {
+      proposal: mergeProposalPair(existing.proposal, proposal, existing.index, index),
+      index,
+    });
+  });
+  return [...merged.values()]
+    .map((entry) => entry.proposal)
+    .sort((left, right) => proposalPriority(right) - proposalPriority(left))
+    .slice(0, policy.extraction.maxProposals);
+}
+
+function proposalMergeKey(proposal: MemoryProposal): string {
+  const address = [
+    proposal.sectionId ?? USER_FACTS_SECTION_ID,
+    normalizeMergeToken(proposal.kind),
+    normalizeMergeSlot(proposal.slot),
+  ].join(":");
+  if (!isMultiValueProposal(proposal)) {
+    return address;
+  }
+  return `${address}:${normalizeMergeToken(proposal.value ?? proposal.text)}`;
+}
+
+function mergeProposalPair(
+  left: MemoryProposal,
+  right: MemoryProposal,
+  leftIndex: number,
+  rightIndex: number,
+): MemoryProposal {
+  const winner = chooseProposal(left, right, leftIndex, rightIndex);
+  const loser = winner === left ? right : left;
+  return {
+    ...winner,
+    text: richerText(winner.text, loser.text),
+    value: winner.value ?? loser.value ?? null,
+    startsAt: winner.startsAt ?? loser.startsAt ?? null,
+    eventAt: winner.eventAt ?? loser.eventAt ?? null,
+    expiresAt: winner.expiresAt ?? loser.expiresAt ?? null,
+    confidence: Math.max(winner.confidence, loser.confidence),
+    importance: Math.max(winner.importance, loser.importance),
+    sourceReliability: Math.max(winner.sourceReliability, loser.sourceReliability),
+    evidence: combineEvidence(winner.evidence, loser.evidence),
+    reasoning: winner.reasoning ?? loser.reasoning,
+    decay: winner.decay ?? loser.decay,
+  };
+}
+
+function chooseProposal(
+  left: MemoryProposal,
+  right: MemoryProposal,
+  leftIndex: number,
+  rightIndex: number,
+): MemoryProposal {
+  const leftScore = proposalPriority(left);
+  const rightScore = proposalPriority(right);
+  if (Math.abs(leftScore - rightScore) >= 0.08) {
+    return rightScore > leftScore ? right : left;
+  }
+  return rightIndex >= leftIndex ? right : left;
+}
+
+function proposalPriority(proposal: MemoryProposal): number {
+  const sourceBoost = proposal.sourceType === "manual_user_request"
+    ? 0.12
+    : (proposal.sourceType === "explicit_user_statement" ? 0.08 : 0);
+  return proposal.confidence * 0.5 +
+    proposal.sourceReliability * 0.3 +
+    proposal.importance * 0.2 +
+    sourceBoost;
+}
+
+function isMultiValueProposal(proposal: MemoryProposal): boolean {
+  if (proposal.sectionId === TIME_BASED_SECTION_ID) {
+    return false;
+  }
+  return /\b(friends?|siblings?|children|colleagues|contacts|important_people|family_members)\b/i.test(proposal.slot);
+}
+
+function richerText(left: string, right: string): string {
+  return right.length > left.length + 12 ? right : left;
+}
+
+function combineEvidence(left: string, right: string): string {
+  if (left === right) {
+    return left;
+  }
+  const combined = `${left} | ${right}`.replace(/\s+/g, " ").trim();
+  return combined.length > 1_000 ? `${combined.slice(0, 997)}...` : combined;
+}
+
+function normalizeMergeSlot(value: string): string {
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/['"]/g, "")
+    .replace(/[^a-z0-9_/-]+/g, "_")
+    .replace(/_+/g, "_")
+    .replace(/^[/_]+|[/_]+$/g, "");
+}
+
+function normalizeMergeToken(value: string): string {
+  return normalizeMergeSlot(value).replace(/\//g, "_") || "general";
 }
 
 function formatMemoryForPrompt(memory: MemoryCard): string {

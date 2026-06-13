@@ -3,7 +3,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, describe, expect, it } from "vitest";
-import { SessionManager } from "../../src/memory/session-manager.js";
+import { SessionManager, type SessionManagerOptions } from "../../src/memory/session-manager.js";
+import type { SessionCloseData } from "../../src/memory/session-manager.js";
 
 const tempDirs: string[] = [];
 
@@ -13,11 +14,16 @@ function tempDataDir(): string {
   return dir;
 }
 
-function manager(dataDir: string, now: () => Date): SessionManager {
+function manager(
+  dataDir: string,
+  now: () => Date,
+  options?: Omit<SessionManagerOptions, "dataDir" | "now" | "sessionTimezone">,
+): SessionManager {
   return new SessionManager({
     dataDir,
     now,
     sessionTimezone: "UTC",
+    ...options,
   });
 }
 
@@ -114,6 +120,104 @@ describe("daily session manager", () => {
     await memory.shutdown();
   });
 
+  it("closes the old session in the background with the full transcript when the date changes", async () => {
+    let now = new Date("2026-06-12T23:50:00.000Z");
+    const dataDir = tempDataDir();
+    const closedSessions: SessionCloseData[] = [];
+    const memory = manager(dataDir, () => now, {
+      onSessionClose: (data) => {
+        closedSessions.push(data);
+      },
+    });
+    memory.initialize("local");
+
+    let firstSessionId = "";
+    for (let index = 0; index < 7; index++) {
+      now = new Date(`2026-06-12T23:50:0${index}.000Z`);
+      const run = memory.beginRun("local", `old user ${index}`);
+      firstSessionId ||= run.sessionId;
+      memory.recordAssistantFinal("local", run.runId, run.sessionId, `old assistant ${index}`, {
+        responseKind: "reply",
+      });
+    }
+
+    now = new Date("2026-06-13T00:01:00.000Z");
+    const next = memory.beginRun("local", "new day user");
+
+    expect(next.sessionId).not.toBe(firstSessionId);
+    expect(memory.getPromptMemoryContext().recentExchanges.map((exchange) => exchange.user.content)).toEqual([
+      "new day user",
+    ]);
+
+    await memory.flushPersistence();
+    await waitFor(() => closedSessions.length === 1);
+
+    expect(closedSessions[0]?.sessionId).toBe(firstSessionId);
+    expect(closedSessions[0]?.reason).toBe("daily_session_rotated");
+    expect(closedSessions[0]?.turns.map((turn) => turn.content)).toEqual([
+      "old user 0",
+      "old assistant 0",
+      "old user 1",
+      "old assistant 1",
+      "old user 2",
+      "old assistant 2",
+      "old user 3",
+      "old assistant 3",
+      "old user 4",
+      "old assistant 4",
+      "old user 5",
+      "old assistant 5",
+      "old user 6",
+      "old assistant 6",
+    ]);
+
+    const db = new DatabaseSync(join(dataDir, "memory.sqlite"));
+    try {
+      const row = db.prepare("SELECT status, close_reason FROM sessions_meta WHERE session_id = ?")
+        .get(firstSessionId) as Record<string, unknown>;
+      expect(row["status"]).toBe("closed");
+      expect(row["close_reason"]).toBe("daily_session_rotated");
+    } finally {
+      db.close();
+    }
+    await memory.shutdown();
+  });
+
+  it("does not block new session creation on a slow session-close callback", async () => {
+    let now = new Date("2026-06-12T23:59:00.000Z");
+    const dataDir = tempDataDir();
+    let closeStarted = false;
+    let closeFinished = false;
+    let releaseClose!: () => void;
+    const slowClose = new Promise<void>((resolve) => {
+      releaseClose = resolve;
+    });
+    const memory = manager(dataDir, () => now, {
+      onSessionClose: async () => {
+        closeStarted = true;
+        await slowClose;
+        closeFinished = true;
+      },
+    });
+    memory.initialize("local");
+
+    const first = memory.beginRun("local", "before midnight");
+    memory.recordAssistantFinal("local", first.runId, first.sessionId, "before reply", { responseKind: "reply" });
+    now = new Date("2026-06-13T00:01:00.000Z");
+    const second = memory.beginRun("local", "after midnight");
+
+    expect(second.sessionId).not.toBe(first.sessionId);
+    expect(memory.getPromptMemoryContext().recentExchanges[0]?.user.content).toBe("after midnight");
+
+    await memory.flushPersistence();
+    await waitFor(() => closeStarted);
+    expect(closeFinished).toBe(false);
+
+    releaseClose();
+    await memory.shutdown();
+    expect(closeFinished).toBe(true);
+  });
+
   it("keeps SQLite session metadata limited to daily-session lookup fields", async () => {
     const dataDir = tempDataDir();
     const memory = manager(dataDir, () => new Date("2026-06-12T09:00:00.000Z"));
@@ -144,6 +248,16 @@ describe("daily session manager", () => {
     }
   });
 });
+
+async function waitFor(condition: () => boolean, timeoutMs = 1_000): Promise<void> {
+  const started = Date.now();
+  while (!condition()) {
+    if (Date.now() - started > timeoutMs) {
+      throw new Error("Timed out waiting for condition");
+    }
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+}
 
 function memoryDataDirFromContext(activeSessionPath: string | undefined): string {
   if (!activeSessionPath) {

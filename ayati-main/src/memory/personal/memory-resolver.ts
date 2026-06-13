@@ -135,6 +135,14 @@ export class MemoryResolver {
           createdAt: nowIso,
         });
         this.store.markSuperseded(strongest.id, card.id, nowIso);
+        this.store.retargetAliases({
+          userId,
+          sectionId: proposal.sectionId,
+          targetKind: proposal.kind,
+          targetSlot: proposal.slot,
+          targetMemoryId: card.id,
+          now: nowIso,
+        });
         this.store.addEvidence({
           memoryId: card.id,
           userId,
@@ -168,11 +176,89 @@ export class MemoryResolver {
       return { action: "rejected", reason: `Rejected weak contradiction slot=${proposal.slot}` };
     }
 
-    const candidates = this.store.findDedupCandidates(userId, proposal);
-    const semanticSame = candidates.find((memory) => sameMemory(memory, proposal));
+    const candidates = this.store.findEvolutionCandidates(userId, proposal);
+    const aliasEquivalent = candidates.find((candidate) =>
+      candidate.signal === "alias_address" && !sameMemory(candidate.memory, proposal)
+    );
+    if (aliasEquivalent && !isMultiValueSlot(proposal)) {
+      const strongest = aliasEquivalent.memory;
+      if (isStrongCorrection(proposal)) {
+        const card = this.store.createCard({
+          userId,
+          sectionId: proposal.sectionId,
+          kind: strongest.kind,
+          slot: strongest.slot,
+          text: proposal.text,
+          value: proposal.value,
+          startsAt: proposal.startsAt,
+          eventAt: proposal.eventAt,
+          expiresAt: proposal.expiresAt,
+          state: initialState(proposal, policy),
+          confidence: proposal.confidence,
+          importance: proposal.importance,
+          sourceType: proposal.sourceType,
+          sourceReliability: proposal.sourceReliability,
+          metadataJson: metadataForProposal(proposal, policy),
+          createdAt: nowIso,
+        });
+        this.store.markSuperseded(strongest.id, card.id, nowIso);
+        this.store.retargetAliases({
+          userId,
+          sectionId: proposal.sectionId,
+          targetKind: strongest.kind,
+          targetSlot: strongest.slot,
+          targetMemoryId: card.id,
+          now: nowIso,
+        });
+        this.store.upsertMemoryAlias({
+          userId,
+          sectionId: proposal.sectionId,
+          aliasKind: proposal.kind,
+          aliasSlot: proposal.slot,
+          targetKind: strongest.kind,
+          targetSlot: strongest.slot,
+          targetMemoryId: card.id,
+          confidence: 0.95,
+          createdAt: nowIso,
+        });
+        this.store.addEvidence({
+          memoryId: card.id,
+          userId,
+          sessionId: payload.sessionId,
+          sessionPath: payload.sessionPath,
+          evidenceType: "creates",
+          sourceText: proposal.evidence,
+          createdAt: nowIso,
+        });
+        this.store.addEvidence({
+          memoryId: strongest.id,
+          userId,
+          sessionId: payload.sessionId,
+          sessionPath: payload.sessionPath,
+          evidenceType: "supersedes",
+          sourceText: `Superseded by alias correction: ${proposal.text}`,
+          createdAt: nowIso,
+        });
+        return { action: "superseded", reason: `Superseded alias memory slot=${proposal.slot}` };
+      }
+
+      this.store.recordContradiction(strongest, {
+        memoryId: strongest.id,
+        userId,
+        sessionId: payload.sessionId,
+        sessionPath: payload.sessionPath,
+        evidenceType: "contradicts",
+        sourceText: proposal.evidence,
+        createdAt: nowIso,
+      });
+      return { action: "rejected", reason: `Rejected weak alias contradiction slot=${proposal.slot}` };
+    }
+
+    const semanticSame = candidates.find((candidate) => sameMemory(candidate.memory, proposal));
     if (semanticSame) {
-      this.store.confirmMemory(semanticSame, {
-        memoryId: semanticSame.id,
+      const matchedMemory = semanticSame.memory;
+      this.store.confirmMemory(matchedMemory, {
+        memoryId: matchedMemory.id,
         userId,
         sessionId: payload.sessionId,
         sessionPath: payload.sessionPath,
@@ -180,13 +266,26 @@ export class MemoryResolver {
         sourceText: proposal.evidence,
         createdAt: nowIso,
       }, {
-        text: richerText(semanticSame.text, proposal.text),
-        value: semanticSame.value ?? proposal.value ?? null,
-        startsAt: proposal.startsAt ?? semanticSame.startsAt,
-        eventAt: proposal.eventAt ?? semanticSame.eventAt,
-        expiresAt: proposal.expiresAt ?? semanticSame.expiresAt,
-        metadataJson: metadataForProposal(proposal, policy, semanticSame.metadataJson),
+        text: richerText(matchedMemory.text, proposal.text),
+        value: matchedMemory.value ?? proposal.value ?? null,
+        startsAt: proposal.startsAt ?? matchedMemory.startsAt,
+        eventAt: proposal.eventAt ?? matchedMemory.eventAt,
+        expiresAt: proposal.expiresAt ?? matchedMemory.expiresAt,
+        metadataJson: metadataForProposal(proposal, policy, matchedMemory.metadataJson),
       });
+      if (matchedMemory.kind !== proposal.kind || matchedMemory.slot !== proposal.slot) {
+        this.store.upsertMemoryAlias({
+          userId,
+          sectionId: proposal.sectionId,
+          aliasKind: proposal.kind,
+          aliasSlot: proposal.slot,
+          targetKind: matchedMemory.kind,
+          targetSlot: matchedMemory.slot,
+          targetMemoryId: matchedMemory.id,
+          confidence: semanticSame.signal === "alias_address" ? 0.95 : 0.86,
+          createdAt: nowIso,
+        });
+      }
       return { action: "confirmed", reason: `Confirmed similar memory slot=${proposal.slot}` };
     }
 

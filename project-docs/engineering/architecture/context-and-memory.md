@@ -60,6 +60,11 @@ This cache is the fast path used by the agent loop. On startup, the memory
 manager replays today's active session file and rebuilds the cache. Old session
 files are not migrated into the new schema.
 
+When a new daily session starts, the hot cache starts fresh for that session.
+The old session's recent exchanges are not carried into `recentActivity`; they
+remain in the old JSONL file and may later influence the compact
+`personalMemorySnapshot` through background memory evolution.
+
 ## Context Pack
 
 The decision model receives dynamic runtime context through
@@ -82,6 +87,53 @@ Other context sources remain independent from session:
 - task/run details in `data/runs/<runId>/`
 - document/file stores
 - long-term or semantic memory stores
+
+## Personal Memory
+
+Personal memory is the user personalization store. It is not raw chat history.
+The runtime injects only a compact projected snapshot into the prompt, while the
+store keeps enough structured state to safely evolve memories over time.
+
+The storage model is:
+
+- `memory_cards`: current best state for a memory card.
+- `memory_evidence`: source snippets that justify a card.
+- `memory_events`: append-only evolution timeline for create, confirm,
+  contradict, supersede, merge, archive, and reject events.
+- `memory_aliases`: learned alternate addresses that point to the canonical
+  memory address.
+- `memory_cards_fts`: local FTS5 fallback index for fuzzy search.
+
+Memory evolution is address-first:
+
+1. Normalize the proposal into `sectionId`, `kind`, and `slot`.
+2. Search exact canonical address.
+3. Search learned aliases for that address.
+4. Fall back to same-slot, FTS, and recent section candidates.
+5. Confirm, supersede, reject, or create while appending evidence and an
+   evolution event.
+6. Regenerate the compact `personalMemorySnapshot`.
+
+This avoids treating vector-like fuzzy search as truth. Fuzzy search can find a
+candidate, but only exact address or learned alias matches are strong enough to
+drive direct evolution. When fuzzy evidence proves two addresses are equivalent,
+Ayati learns an alias so later updates become deterministic.
+
+Automatic personal memory evolution runs after a session closes, not after every
+message. When the local session rotates, Ayati opens the new session immediately
+and closes the old session in a background task. The close task replays the old
+JSONL session file and sends the full ordered user/assistant transcript to the
+personal memory consolidator.
+
+Large closed sessions are not sent to the extractor in one prompt. The
+consolidator splits them into bounded turn chunks, extracts candidate memories
+from each chunk, merges duplicate or corrected candidates, and only then calls
+the resolver once for the final candidate set.
+
+The resolver updates personal memory through an append-only evolution model:
+current truth is kept in `memory_cards`, while evidence and events preserve why
+the card exists and how it changed. This keeps prompt injection compact without
+losing the audit trail needed for corrections, dedupe, and explanation.
 
 ## Runtime Flow
 

@@ -30,6 +30,7 @@ import type {
 import { SessionPersistence } from "./session-persistence.js";
 import type { ActiveSessionInfo, SessionPersistenceOptions } from "./session-persistence.js";
 import { SqliteSystemEventStore } from "./system-event-store.js";
+import { devWarn } from "../shared/index.js";
 
 const RECENT_EXCHANGE_LIMIT = 5;
 const RECENT_SYSTEM_EVENT_LIMIT = 5;
@@ -68,11 +69,13 @@ export class MemoryManager implements SessionMemory {
   private readonly persistence: SessionPersistence;
   private readonly systemEventStore: SqliteSystemEventStore;
   private readonly nowProvider: () => Date;
+  private readonly onSessionClose?: (data: SessionCloseData) => void | Promise<void>;
   private readonly personalMemorySnapshotProvider?: (clientId: string) => string;
   private readonly sessionTimezone: string;
   private activeClientId = "";
   private currentSession: HotSessionState | null = null;
   private persistenceQueue: Promise<void> = Promise.resolve();
+  private readonly sessionCloseTasks = new Set<Promise<void>>();
 
   constructor(options?: MemoryManagerOptions) {
     this.persistence = new SessionPersistence({
@@ -84,6 +87,7 @@ export class MemoryManager implements SessionMemory {
       dataDir: options?.dataDir,
     });
     this.nowProvider = options?.now ?? (() => new Date());
+    this.onSessionClose = options?.onSessionClose;
     this.personalMemorySnapshotProvider = options?.personalMemorySnapshotProvider;
     this.sessionTimezone = options?.sessionTimezone ?? DEFAULT_SESSION_TIMEZONE;
   }
@@ -103,6 +107,7 @@ export class MemoryManager implements SessionMemory {
       );
     }
     await this.flushPersistence();
+    await Promise.all([...this.sessionCloseTasks]);
     this.persistence.stop();
     this.systemEventStore.stop();
     this.currentSession = null;
@@ -328,6 +333,10 @@ export class MemoryManager implements SessionMemory {
       return this.currentSession;
     }
 
+    if (this.currentSession) {
+      const reason = this.currentSession.clientId === clientId ? "daily_session_rotated" : "client_session_switched";
+      this.scheduleSessionClose(this.currentSession, reason, nowIso, this.persistenceQueue);
+    }
     return this.createNewSession(clientId, nowIso, sessionDate);
   }
 
@@ -434,6 +443,48 @@ export class MemoryManager implements SessionMemory {
     this.enqueuePersistenceTask(() => this.persistence.appendEventAsync(event));
   }
 
+  private scheduleSessionClose(
+    session: HotSessionState,
+    reason: string,
+    closedAt: string,
+    pendingWrites: Promise<void>,
+  ): void {
+    const task = this.closeSessionAfterWrites(session, reason, closedAt, pendingWrites)
+      .catch((err) => {
+        devWarn(
+          `Session close hook failed session=${session.sessionId}: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      })
+      .finally(() => {
+        this.sessionCloseTasks.delete(task);
+      });
+    this.sessionCloseTasks.add(task);
+  }
+
+  private async closeSessionAfterWrites(
+    session: HotSessionState,
+    reason: string,
+    closedAt: string,
+    pendingWrites: Promise<void>,
+  ): Promise<void> {
+    await pendingWrites;
+    const sessionFilePath = this.persistence.resolveSessionAbsolutePath(session.sessionPath);
+    const turns = extractConversationTurns(
+      this.persistence.replaySessionFile(sessionFilePath),
+      session.sessionPath,
+    );
+    this.persistence.closeSession(session.sessionId, closedAt, reason);
+    await this.onSessionClose?.({
+      sessionId: session.sessionId,
+      clientId: session.clientId,
+      sessionPath: session.sessionPath,
+      sessionFilePath,
+      turns,
+      reason,
+      handoffSummary: null,
+    });
+  }
+
   private enqueuePersistenceTask(task: () => Promise<void>): Promise<void> {
     this.persistenceQueue = this.persistenceQueue
       .then(task)
@@ -506,6 +557,34 @@ function flattenExchanges(exchanges: ConversationExchange[], sessionPath: string
         sessionPath,
         runId: exchange.runId,
         assistantResponseKind: exchange.assistant.responseKind,
+      });
+    }
+  }
+  return turns;
+}
+
+function extractConversationTurns(events: SessionEvent[], fallbackSessionPath: string): ConversationTurn[] {
+  const turns: ConversationTurn[] = [];
+  for (const event of events) {
+    if (event.type === "user_message") {
+      turns.push({
+        role: "user",
+        content: event.content,
+        timestamp: event.ts,
+        sessionPath: event.sessionPath || fallbackSessionPath,
+        runId: event.runId,
+      });
+      continue;
+    }
+
+    if (event.type === "assistant_response") {
+      turns.push({
+        role: "assistant",
+        content: event.content,
+        timestamp: event.ts,
+        sessionPath: event.sessionPath || fallbackSessionPath,
+        runId: event.runId,
+        assistantResponseKind: event.responseKind,
       });
     }
   }

@@ -45,6 +45,22 @@ export type MemoryEvidenceType =
 
 export type MemoryUsageOutcome = "helpful" | "harmful" | "success" | "failure";
 
+export type MemoryEvolutionEventType =
+  | "creates"
+  | "confirms"
+  | "contradicts"
+  | "supersedes"
+  | "merges"
+  | "archives"
+  | "rejects";
+
+export type MemoryLookupSignal =
+  | "exact_address"
+  | "alias_address"
+  | "same_slot"
+  | "fts"
+  | "recent";
+
 export interface MemoryPolicy {
   sections: {
     userFacts: {
@@ -128,6 +144,37 @@ export interface MemoryEvidenceRecord {
   createdAt: string;
 }
 
+export interface MemoryEvolutionEventRecord {
+  id: string;
+  memoryId: string;
+  userId: string;
+  sectionId: MemorySectionId;
+  kind: string;
+  slot: string;
+  address: string;
+  eventType: MemoryEvolutionEventType;
+  sourceText: string;
+  payloadJson?: string | null;
+  sessionId?: string | null;
+  runId?: string | null;
+  sessionPath?: string | null;
+  runPath?: string | null;
+  createdAt: string;
+}
+
+export interface MemoryAliasRecord {
+  userId: string;
+  sectionId: MemorySectionId;
+  aliasKind: string;
+  aliasSlot: string;
+  targetKind: string;
+  targetSlot: string;
+  targetMemoryId?: string | null;
+  confidence: number;
+  createdAt: string;
+  lastUsedAt?: string | null;
+}
+
 export interface MemoryConsolidationJobPayload {
   userId: string;
   sessionId: string;
@@ -208,4 +255,11 @@ export interface PromptPersonalMemory {
   text: string;
   state: Extract<MemoryState, "active">;
   currentConfidence: number;
+}
+
+export interface MemoryCandidateMatch {
+  memory: MemoryCard;
+  signal: MemoryLookupSignal;
+  score: number;
+  reason: string;
 }

@@ -27,7 +27,7 @@ function userIdFromContext(contextUserId: string | undefined, fallback?: string)
 function createSearchTool(deps: MemorySkillDeps): ToolDefinition {
   return {
     name: "memory_search",
-    description: "Search canonical User Facts memory cards, not episodic conversation recall.",
+    description: "Search canonical personal memory cards, not episodic conversation recall.",
     inputSchema: {
       type: "object",
       properties: {
@@ -62,7 +62,7 @@ function createSearchTool(deps: MemorySkillDeps): ToolDefinition {
 function createRememberTool(deps: MemorySkillDeps): ToolDefinition {
   return {
     name: "memory_remember",
-    description: "Save an explicitly user-approved User Facts memory card.",
+    description: "Save an explicitly user-approved personal memory card.",
     inputSchema: {
       type: "object",
       required: ["text"],
@@ -128,7 +128,7 @@ function createRememberTool(deps: MemorySkillDeps): ToolDefinition {
 function createForgetTool(deps: MemorySkillDeps): ToolDefinition {
   return {
     name: "memory_forget",
-    description: "Archive a User Facts memory card by id or by exact slot.",
+    description: "Archive a personal memory card by id or by exact slot.",
     inputSchema: {
       type: "object",
       properties: {
@@ -166,7 +166,7 @@ function createForgetTool(deps: MemorySkillDeps): ToolDefinition {
 function createExplainTool(deps: MemorySkillDeps): ToolDefinition {
   return {
     name: "memory_explain",
-    description: "Explain why a User Facts memory exists, including evidence and confidence.",
+    description: "Explain why a personal memory exists, including evidence, confidence, and evolution history.",
     inputSchema: {
       type: "object",
       required: ["memoryId"],
@@ -185,9 +185,15 @@ function createExplainTool(deps: MemorySkillDeps): ToolDefinition {
         return { ok: false, error: `Unknown memory id: ${memoryId}` };
       }
       const evidence = deps.store.listEvidence(memoryId, 12);
+      const evolutionEvents = deps.store.listEvolutionEvents({ memoryId, limit: 20 });
       return {
         ok: true,
-        output: JSON.stringify({ memory: serializeMemory(memory), score: scoreMemory(memory), evidence }, null, 2),
+        output: JSON.stringify({
+          memory: serializeMemory(memory),
+          score: scoreMemory(memory),
+          evidence,
+          evolutionEvents,
+        }, null, 2),
       };
     },
   };
@@ -196,7 +202,7 @@ function createExplainTool(deps: MemorySkillDeps): ToolDefinition {
 function createFeedbackTool(deps: MemorySkillDeps): ToolDefinition {
   return {
     name: "memory_feedback",
-    description: "Mark a User Facts memory as helpful or harmful after it was used.",
+    description: "Mark a personal memory as helpful or harmful after it was used.",
     inputSchema: {
       type: "object",
       required: ["memoryId", "outcome"],
@@ -226,7 +232,7 @@ const MEMORY_PROMPT_BLOCK = [
   "Time-Based memories must include expiresAt.",
   "Use sectionId=evolving_memory for preferences, goals, skills, environment, constraints, procedures, feedback, routines, decisions, relationships, and permissions.",
   "Use memory_forget when the user asks to forget, remove, or correct a stored memory.",
-  "Use memory_explain when the user asks why Ayati believes a memory.",
+  "Use memory_explain when the user asks why Ayati believes a memory or how it evolved.",
 ].join("\n");
 
 export function createMemorySkill(deps: MemorySkillDeps): SkillDefinition {
