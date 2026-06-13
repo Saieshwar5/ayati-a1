@@ -78,7 +78,6 @@ export const noopSessionMemory: SessionMemory = {
       attentionShelf: [],
       recentTaskSummaries: [],
       activeAttachments: [],
-      recentSystemActivity: [],
     };
   },
   getActiveAttachmentRecords(): [] {

@@ -76,32 +76,22 @@ export function buildLoopStateSizeBreakdown(state: LoopState): Record<string, nu
 
 function buildPersistedLikeStateView(state: LoopState): Omit<
   LoopState,
-  | "runtimeContext"
   | "activeLearningContext"
   | "previousSessionSummary"
   | "personalMemorySnapshot"
   | "attentionShelf"
-  | "activeSessionPath"
-  | "sessionStatus"
   | "recentExchanges"
-  | "sessionHistory"
   | "recentTaskSummaries"
   | "activeSessionAttachments"
-  | "recentSystemActivity"
 > {
   const {
-    sessionHistory: _sessionHistory,
     recentExchanges: _recentExchanges,
     recentTaskSummaries: _recentTaskSummaries,
     activeSessionAttachments: _activeSessionAttachments,
-    recentSystemActivity: _recentSystemActivity,
-    runtimeContext: _runtimeContext,
     activeLearningContext: _activeLearningContext,
     previousSessionSummary: _previousSessionSummary,
     personalMemorySnapshot: _personalMemorySnapshot,
     attentionShelf: _attentionShelf,
-    activeSessionPath: _activeSessionPath,
-    sessionStatus: _sessionStatus,
     ...persistedLikeState
   } = state;
   return persistedLikeState;

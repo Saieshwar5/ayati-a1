@@ -173,7 +173,6 @@ export interface PromptMemoryContext {
   activeSessionPath?: string;
   recentTaskSummaries?: PromptTaskSummary[];
   activeAttachments?: ActiveAttachmentRef[];
-  recentSystemActivity?: SystemActivityItem[];
 }
 
 export interface MemoryRunHandle {

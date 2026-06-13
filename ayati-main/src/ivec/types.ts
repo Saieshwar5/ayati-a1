@@ -11,19 +11,15 @@ import type {
 import type { AgentUiContext } from "../ui/context.js";
 import type { ExternalSkillBroker } from "../skills/external/broker.js";
 import type { ExternalSkillRegistry } from "../skills/external/registry.js";
-import type { PromptRuntimeContext } from "../prompt/types.js";
 import type { ActiveAttachmentRef } from "../memory/types.js";
 import type {
   AgentResponseKind,
   FeedbackKind,
   SessionMemory,
   MemoryRunHandle,
-  ConversationTurn,
   ConversationExchange,
   FocusShelfItem,
   PromptTaskSummary,
-  SessionStatus,
-  SystemActivityItem,
   TaskSummaryRecordInput,
 } from "../memory/types.js";
 import type { DocumentStore } from "../documents/document-store.js";
@@ -108,17 +104,12 @@ export interface LoopState {
   managedFiles?: ManagedFileRecord[];
   managedDirectories?: DirectoryAttachmentRecord[];
   activeSessionAttachments?: ActiveAttachmentRef[];
-  runtimeContext?: PromptRuntimeContext;
   activeLearningContext?: string;
   previousSessionSummary?: string;
   personalMemorySnapshot?: string;
   attentionShelf?: FocusShelfItem[];
-  activeSessionPath?: string;
-  sessionStatus?: SessionStatus | null;
   recentExchanges: ConversationExchange[];
-  sessionHistory: ConversationTurn[];
   recentTaskSummaries: PromptTaskSummary[];
-  recentSystemActivity: SystemActivityItem[];
 }
 
 export type StepVerificationPolicy = "deterministic" | "llm" | "script" | "hybrid";
@@ -285,9 +276,7 @@ export interface AgentLoopDeps {
   config?: Partial<LoopConfig>;
   dataDir: string;
   systemContext?: string;
-  runtimeContext?: PromptRuntimeContext;
   activeLearningContext?: string;
-  sessionStatus?: SessionStatus | null;
   userMessageOverride?: string;
   attachedDocuments?: ManagedDocumentManifest[];
   attachmentWarnings?: string[];

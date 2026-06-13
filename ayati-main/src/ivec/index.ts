@@ -2,27 +2,16 @@ import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import type { LlmProvider } from "../core/contracts/provider.js";
 import { noopSessionMemory } from "../memory/provider.js";
-import type { ConversationTurn, SessionMemory, MemoryRunHandle, PromptMemoryContext, SessionStatus } from "../memory/types.js";
-import type { PromptRuntimeContext } from "../prompt/types.js";
+import type { SessionMemory, MemoryRunHandle } from "../memory/types.js";
 import type { StaticContext } from "../context/static-context-cache.js";
-import { renderAttentionShelfSection } from "../prompt/sections/attention-shelf.js";
 import { renderBasePromptSection } from "../prompt/sections/base.js";
-import { renderConversationLines, renderConversationSection } from "../prompt/sections/conversation.js";
-import { renderCurrentSessionSection } from "../prompt/sections/current-session.js";
-import { renderMemorySection } from "../prompt/sections/memory.js";
-import { renderPersonalMemorySection } from "../prompt/sections/personal-memory.js";
-import { renderRecentTasksSection } from "../prompt/sections/recent-tasks.js";
-import { renderRuntimeContextSection } from "../prompt/sections/runtime-context.js";
-import { renderSessionStatusSection } from "../prompt/sections/session-status.js";
 import { renderSkillsSection } from "../prompt/sections/skills.js";
 import { renderSoulSection } from "../prompt/sections/soul.js";
-import { renderSystemActivitySection } from "../prompt/sections/system-activity.js";
 import { estimateTextTokens } from "../prompt/token-estimator.js";
 import {
   appendPulseProposalQuestion,
   PulseProposalReflectionService,
 } from "../pulse/proposal-reflection.js";
-import { getNowSnapshot } from "../pulse/time.js";
 import type { ToolExecutor } from "../skills/tool-executor.js";
 import type { ToolDefinition } from "../skills/types.js";
 import type { ExternalSkillBroker } from "../skills/external/broker.js";
@@ -76,40 +65,12 @@ interface SystemContextBuildResult {
   systemContext: string;
   decisionSystemContext: string;
   dynamicSystemTokens: number;
-  runtimeContext?: PromptRuntimeContext;
   activeLearningContext?: string;
-  sessionStatus?: SessionStatus | null;
 }
 
 interface StaticPromptSectionsCache {
   head: string;
   tail: string;
-}
-
-interface SystemContextCache {
-  sessionKey: string;
-  conversationTurns: ConversationTurn[];
-  conversationSection: string;
-  previousSessionSummary: string;
-  memorySection: string;
-  personalMemorySnapshot: string;
-  personalMemorySection: string;
-  attentionShelfFingerprint: string;
-  attentionShelfSection: string;
-  activeSessionPath: string;
-  currentSessionSection: string;
-  recentTasksFingerprint: string;
-  recentTasksSection: string;
-  recentSystemActivityFingerprint: string;
-  recentSystemActivitySection: string;
-  activeLearningFingerprint: string;
-  activeLearningSection: string;
-  runtimeContextSection: string;
-  sessionStatusFingerprint: string;
-  systemContextWithoutStatus: string;
-  systemContext: string;
-  dynamicContext: string;
-  dynamicSystemTokens: number;
 }
 
 interface SystemEventExecutionPlan {
@@ -166,7 +127,6 @@ export class IVecEngine {
   private staticSystemTokens = 0;
   private staticTokensReady = false;
   private staticPromptSections?: StaticPromptSectionsCache;
-  private systemContextCache?: SystemContextCache;
 
   constructor(options?: IVecEngineOptions) {
     this.onReply = options?.onReply;
@@ -214,7 +174,6 @@ export class IVecEngine {
   invalidateStaticTokenCache(): void {
     this.staticTokensReady = false;
     this.staticPromptSections = undefined;
-    this.systemContextCache = undefined;
   }
 
   handleMessage(clientId: string, data: unknown): void {
@@ -278,9 +237,7 @@ export class IVecEngine {
           config: this.loopConfig,
           dataDir: this.dataDir ?? "data",
           systemContext: system.decisionSystemContext || system.systemContext || undefined,
-          runtimeContext: system.runtimeContext,
           activeLearningContext: system.activeLearningContext,
-          sessionStatus: system.sessionStatus,
           attachedDocuments: registeredAttachments.documents,
           attachmentWarnings: registeredAttachments.warnings,
           managedFiles: registeredAttachments.managedFiles,
@@ -441,9 +398,7 @@ export class IVecEngine {
         config: this.loopConfig,
         dataDir: this.dataDir ?? "data",
         systemContext: system.decisionSystemContext || system.systemContext || undefined,
-        runtimeContext: system.runtimeContext,
         activeLearningContext: system.activeLearningContext,
-        sessionStatus: system.sessionStatus,
         documentStore: this.documentStore,
         preparedAttachmentRegistry: this.preparedAttachmentRegistry,
         onProgress: (log, runPath) => {
@@ -521,121 +476,18 @@ export class IVecEngine {
 
     this.ensureStaticTokenCache();
 
-    const memoryContext = this.sessionMemory.getPromptMemoryContext();
-    const sessionStatus = this.sessionMemory.getSessionStatus?.() ?? null;
     const staticSections = this.getStaticPromptSections();
-    const runtimeContext = getNowSnapshot(this.nowProvider());
-    const runtimeContextSection = renderRuntimeContextSection(runtimeContext);
     const activeLearningSection = await this.renderActiveLearningContextSection(clientId, userMessage);
-    const activeLearningFingerprint = activeLearningSection;
-    const cached = this.systemContextCache;
-    const sessionKey = buildSessionCacheKey(memoryContext);
-    const sameSession = cached?.sessionKey === sessionKey
-      && cached?.activeLearningFingerprint === activeLearningFingerprint;
-
-    const conversationTurns = memoryContext.conversationTurns ?? [];
-    const conversationSection = sameSession
-      ? appendConversationSection(cached?.conversationTurns ?? [], cached?.conversationSection ?? "", conversationTurns)
-      : renderConversationSection(conversationTurns);
-
-    const previousSessionSummary = memoryContext.previousSessionSummary ?? "";
-    const memorySection = sameSession && cached?.previousSessionSummary === previousSessionSummary
-      ? cached.memorySection
-      : renderMemorySection(previousSessionSummary);
-
-    const personalMemorySnapshot = memoryContext.personalMemorySnapshot ?? "";
-    const personalMemorySection = sameSession && cached?.personalMemorySnapshot === personalMemorySnapshot
-      ? cached.personalMemorySection
-      : renderPersonalMemorySection(personalMemorySnapshot);
-
-    const attentionShelfFingerprint = JSON.stringify(memoryContext.attentionShelf ?? []);
-    const attentionShelfSection = sameSession && cached?.attentionShelfFingerprint === attentionShelfFingerprint
-      ? cached.attentionShelfSection
-      : renderAttentionShelfSection(memoryContext.attentionShelf ?? []);
-
-    const activeSessionPath = memoryContext.activeSessionPath ?? "";
-    const currentSessionSection = sameSession && cached?.activeSessionPath === activeSessionPath
-      ? cached.currentSessionSection
-      : renderCurrentSessionSection(activeSessionPath);
-
-    const recentTasksFingerprint = JSON.stringify(memoryContext.recentTaskSummaries ?? []);
-    const recentTasksSection = sameSession && cached?.recentTasksFingerprint === recentTasksFingerprint
-      ? cached.recentTasksSection
-      : renderRecentTasksSection(memoryContext.recentTaskSummaries ?? []);
-
-    const recentSystemActivityFingerprint = JSON.stringify(memoryContext.recentSystemActivity ?? []);
-    const recentSystemActivitySection = sameSession && cached?.recentSystemActivityFingerprint === recentSystemActivityFingerprint
-      ? cached.recentSystemActivitySection
-      : renderSystemActivitySection(memoryContext.recentSystemActivity ?? []);
-
-    const dynamicContext = joinPromptSections([
-      activeLearningSection,
-      personalMemorySection,
-      attentionShelfSection,
-      conversationSection,
-      memorySection,
-      currentSessionSection,
-      recentTasksSection,
-      recentSystemActivitySection,
-    ]);
-    const systemContextWithoutStatus = joinPromptSections([
-      staticSections.head,
-      runtimeContextSection,
-      dynamicContext,
-      staticSections.tail,
-    ]);
-
-    const sessionStatusFingerprint = JSON.stringify(sessionStatus);
-    const systemContext = sameSession
-      && cached?.systemContextWithoutStatus === systemContextWithoutStatus
-      && cached?.sessionStatusFingerprint === sessionStatusFingerprint
-      ? cached.systemContext
-      : joinPromptSections([
-        systemContextWithoutStatus,
-        renderSessionStatusSection(sessionStatus),
-      ]);
     const decisionSystemContext = joinPromptSections([
       staticSections.head,
       staticSections.tail,
     ]);
-    const dynamicSystemTokens = sameSession && cached?.dynamicContext === dynamicContext
-      && cached?.runtimeContextSection === runtimeContextSection
-      ? cached.dynamicSystemTokens
-      : estimateTextTokens(joinPromptSections([runtimeContextSection, dynamicContext]));
-
-    this.systemContextCache = {
-      sessionKey,
-      conversationTurns: cloneConversationTurns(conversationTurns),
-      conversationSection,
-      previousSessionSummary,
-      memorySection,
-      personalMemorySnapshot,
-      personalMemorySection,
-      attentionShelfFingerprint,
-      attentionShelfSection,
-      activeSessionPath,
-      currentSessionSection,
-      recentTasksFingerprint,
-      recentTasksSection,
-      recentSystemActivityFingerprint,
-      recentSystemActivitySection,
-      activeLearningFingerprint,
-      activeLearningSection,
-      runtimeContextSection,
-      sessionStatusFingerprint,
-      systemContextWithoutStatus,
-      systemContext,
-      dynamicContext,
-      dynamicSystemTokens,
-    };
 
     return {
-      systemContext,
+      systemContext: decisionSystemContext,
       decisionSystemContext,
-      dynamicSystemTokens,
-      runtimeContext,
+      dynamicSystemTokens: 0,
       activeLearningContext: activeLearningSection || undefined,
-      sessionStatus,
     };
   }
 
@@ -1648,70 +1500,6 @@ function renderToolDirectorySection(toolDirectory: string | undefined, includeTo
   if (!includeToolDirectory) return "";
   if (!toolDirectory || toolDirectory.trim().length === 0) return "";
   return `# Available Tools\n\n${toolDirectory}`;
-}
-
-function buildSessionCacheKey(memoryContext: PromptMemoryContext): string {
-  const activeSessionPath = memoryContext.activeSessionPath?.trim();
-  return activeSessionPath && activeSessionPath.length > 0 ? activeSessionPath : "__no_active_session__";
-}
-
-function cloneConversationTurns(turns: ConversationTurn[]): ConversationTurn[] {
-  return turns.map((turn) => ({ ...turn }));
-}
-
-function appendConversationSection(
-  previousTurns: ConversationTurn[],
-  previousSection: string,
-  nextTurns: ConversationTurn[],
-): string {
-  if (nextTurns.length === 0) {
-    return "";
-  }
-
-  if (previousTurns.length === 0 || !isConversationPrefix(previousTurns, nextTurns)) {
-    return renderConversationSection(nextTurns);
-  }
-
-  if (previousTurns.length === nextTurns.length) {
-    return previousSection;
-  }
-
-  const appendedLines = renderConversationLines(nextTurns.slice(previousTurns.length));
-  if (appendedLines.length === 0) {
-    return previousSection;
-  }
-
-  if (previousSection.trim().length === 0) {
-    return renderConversationSection(nextTurns);
-  }
-
-  return `${previousSection}\n${appendedLines.join("\n")}`;
-}
-
-function isConversationPrefix(previousTurns: ConversationTurn[], nextTurns: ConversationTurn[]): boolean {
-  if (previousTurns.length > nextTurns.length) {
-    return false;
-  }
-
-  for (let index = 0; index < previousTurns.length; index++) {
-    const previous = previousTurns[index];
-    const next = nextTurns[index];
-    if (!previous || !next) {
-      return false;
-    }
-    if (
-      previous.role !== next.role
-      || previous.content !== next.content
-      || previous.timestamp !== next.timestamp
-      || previous.sessionPath !== next.sessionPath
-      || previous.runId !== next.runId
-      || previous.assistantResponseKind !== next.assistantResponseKind
-    ) {
-      return false;
-    }
-  }
-
-  return true;
 }
 
 export { IVecEngine as AgentEngine };

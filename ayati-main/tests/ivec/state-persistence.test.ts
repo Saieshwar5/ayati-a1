@@ -70,16 +70,13 @@ describe("state-persistence", () => {
         completedSteps: [],
         runPath,
         failureHistory: [],
-        sessionHistory: [],
         recentTaskSummaries: [],
-        recentSystemActivity: [],
       };
       writeState(runPath, state);
       const loaded = readState(runPath);
       expect(loaded).not.toBeNull();
       expect(loaded!.runId).toBe("run-456");
       expect(loaded!.finalOutput).toBe("");
-      expect(loaded).not.toHaveProperty("sessionHistory");
       expect(loaded).not.toHaveProperty("recentRunLedgers");
       expect(loaded).not.toHaveProperty("recentTaskSummaries");
     } finally {
@@ -110,10 +107,8 @@ describe("state-persistence", () => {
         completedSteps: [],
         runPath,
         failureHistory: [],
-        sessionHistory: [{ role: "user", content: "hello", timestamp: "", sessionPath: "" }],
         recentTaskSummaries: [{ runId: "r-1", runPath: "/tmp/r-1", status: "completed", summary: "done" }],
         activeSessionAttachments: [],
-        recentSystemActivity: [],
       };
 
       const firstWrite = queueStateWrite(runPath, state);
@@ -129,13 +124,11 @@ describe("state-persistence", () => {
       const persisted = JSON.parse(readFileSync(join(runPath, "state.json"), "utf-8")) as {
         finalOutput?: string;
         iteration?: number;
-        sessionHistory?: unknown;
         recentRunLedgers?: unknown;
         recentTaskSummaries?: unknown;
       };
       expect(persisted.finalOutput).toBe("latest");
       expect(persisted.iteration).toBe(2);
-      expect(persisted).not.toHaveProperty("sessionHistory");
       expect(persisted).not.toHaveProperty("recentRunLedgers");
       expect(persisted).not.toHaveProperty("recentTaskSummaries");
     } finally {

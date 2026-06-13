@@ -14,7 +14,7 @@ Primary code paths:
 - `ayati-main/src/ivec/agent-loop.ts`: thin entry wrapper that resolves loop config and calls the runner.
 - `ayati-main/src/ivec/agent-runner/runner.ts`: loop orchestration, run persistence, local completion, and failure history.
 - `ayati-main/src/ivec/agent-runner/state-view.ts`: structured state view sent to the decision model.
-- `ayati-main/src/ivec/agent-runner/context-pack.ts`: bounded runtime context pack.
+- `ayati-main/src/ivec/agent-runner/context-pack.ts`: bounded decision context pack.
 - `ayati-main/src/ivec/agent-runner/decision.ts`: model-facing decision schema and prompt.
 - `ayati-main/src/ivec/agent-runner/action-executor.ts`: validates and executes tool actions.
 - `ayati-main/src/ivec/verification-contracts/progress-reducer.ts`: reduces verified facts into task progress.

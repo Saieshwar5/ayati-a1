@@ -487,17 +487,12 @@ function buildInitialState(deps: AgentLoopDeps, config: LoopConfig, runPath: str
     managedFiles: deps.managedFiles ?? [],
     managedDirectories: deps.managedDirectories ?? [],
     activeSessionAttachments: [],
-    runtimeContext: deps.runtimeContext,
     activeLearningContext: deps.activeLearningContext,
     previousSessionSummary: "",
     personalMemorySnapshot: "",
     attentionShelf: [],
-    activeSessionPath: "",
-    sessionStatus: deps.sessionStatus ?? null,
     recentExchanges: [],
-    sessionHistory: [],
     recentTaskSummaries: [],
-    recentSystemActivity: [],
   };
 }
 
@@ -523,23 +518,13 @@ async function prepareAttachmentsForRun(
 
 function syncTransientMemoryContext(state: LoopState, deps: AgentLoopDeps): void {
   const memCtx = deps.sessionMemory.getPromptMemoryContext();
-  state.runtimeContext = deps.runtimeContext;
   state.activeLearningContext = deps.activeLearningContext;
   state.previousSessionSummary = memCtx.previousSessionSummary ?? "";
   state.personalMemorySnapshot = memCtx.personalMemorySnapshot ?? "";
   state.attentionShelf = memCtx.attentionShelf ?? [];
-  state.activeSessionPath = memCtx.activeSessionPath ?? "";
-  state.sessionStatus = deps.sessionStatus ?? deps.sessionMemory.getSessionStatus?.() ?? null;
   state.recentExchanges = memCtx.recentExchanges ?? [];
-  state.sessionHistory = (memCtx.conversationTurns ?? []).filter((turn) => {
-    if (state.inputKind !== "user_message") {
-      return true;
-    }
-    return !(turn.role === "user" && turn.content === state.userMessage);
-  });
   state.recentTaskSummaries = memCtx.recentTaskSummaries ?? [];
   state.activeSessionAttachments = memCtx.activeAttachments ?? [];
-  state.recentSystemActivity = memCtx.recentSystemActivity ?? [];
 }
 
 function getPrimaryUserMessage(deps: AgentLoopDeps): string {

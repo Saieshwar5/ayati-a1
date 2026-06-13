@@ -6,7 +6,7 @@ Daemon communication flow:
 2. Current CLI path: `ayati-cli` sends `{ type: "chat", content, attachments? }` to `ws://localhost:8080`.
 3. `WsServer` parses JSON and forwards payloads to `IVecEngine.handleMessage`.
 4. `IVecEngine` parses chat input, stores session turns, builds static decision context, and enters the agent runner.
-5. The runner builds a structured context pack from runtime time, session memory, attention shelf, recent tasks, active attachments, personal memory, learning context, and system activity.
+5. The runner builds a structured context pack from session memory, attention shelf, recent tasks, active attachments, personal memory, and learning context.
 6. The decision model chooses `reply`, `ask_user`, or `act`.
 7. If tool calls are requested, the action executor validates the plan and dispatches through registered tool definitions.
 8. Tool contracts/assertions turn results into verified facts and progress evidence.

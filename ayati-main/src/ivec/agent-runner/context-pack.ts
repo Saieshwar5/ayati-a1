@@ -1,20 +1,16 @@
 import type {
   ActiveAttachmentRef,
   ConversationExchange,
-  ConversationTurn,
   FocusShelfItem,
   PromptTaskSummary,
-  SystemActivityItem,
 } from "../../memory/types.js";
-import type { PromptRuntimeContext } from "../../prompt/types.js";
 import type { LoopState } from "../types.js";
 
 const LIMITS = {
-  recentExact: 6,
+  recentConversation: 5,
   attentionShelf: 5,
   recentTasks: 5,
   activeAttachments: 5,
-  recentSystemActivity: 5,
   textChars: 500,
   summaryChars: 260,
   memoryChars: 1_200,
@@ -23,16 +19,7 @@ const LIMITS = {
 
 export interface AgentContextPack {
   currentInput: string;
-  runtime?: PromptRuntimeContext;
-  session: {
-    activeSessionPath?: string;
-    contextPercent?: number;
-    turns?: number;
-    sessionAgeMinutes?: number;
-    handoffPhase?: string;
-    rotationPending?: string;
-  };
-  recentActivity: Array<{
+  recentConversation: Array<{
     runId: string;
     user: {
       timestamp: string;
@@ -56,13 +43,6 @@ export interface AgentContextPack {
     lastTouchedLabel: string;
     attentionScore: number;
     nextStep?: string;
-  }>;
-  recentExact: Array<{
-    role: ConversationTurn["role"];
-    timestamp: string;
-    content: string;
-    runId?: string;
-    assistantResponseKind?: string;
   }>;
   recentTasks: Array<{
     timestamp: string;
@@ -93,24 +73,12 @@ export interface AgentContextPack {
   previousSessionSummary?: string;
   personalMemorySnapshot?: string;
   activeLearningContext?: string;
-  recentSystemActivity: Array<{
-    timestamp: string;
-    source: string;
-    event: string;
-    eventId: string;
-    summary: string;
-    responseKind?: string;
-    userVisible: boolean;
-  }>;
 }
 
 export function buildAgentContextPack(state: LoopState): AgentContextPack {
   return {
     currentInput: truncate(state.userMessage, LIMITS.textChars),
-    ...(state.runtimeContext ? { runtime: state.runtimeContext } : {}),
-    session: buildSessionContext(state),
     attentionShelf: compactAttentionShelf(state.attentionShelf ?? []),
-    recentExact: compactConversation(state.sessionHistory),
     recentTasks: compactRecentTasks(state.recentTaskSummaries),
     activeAttachments: compactActiveAttachments(state.activeSessionAttachments ?? []),
     ...(state.previousSessionSummary?.trim()
@@ -122,20 +90,7 @@ export function buildAgentContextPack(state: LoopState): AgentContextPack {
     ...(state.activeLearningContext?.trim()
       ? { activeLearningContext: truncate(state.activeLearningContext, LIMITS.learningChars) }
       : {}),
-    recentSystemActivity: compactSystemActivity(state.recentSystemActivity),
-    recentActivity: compactRecentActivity(state.recentExchanges ?? []),
-  };
-}
-
-function buildSessionContext(state: LoopState): AgentContextPack["session"] {
-  const status = state.sessionStatus;
-  return {
-    ...(state.activeSessionPath?.trim() ? { activeSessionPath: state.activeSessionPath } : {}),
-    ...(typeof status?.contextPercent === "number" ? { contextPercent: status.contextPercent } : {}),
-    ...(typeof status?.turns === "number" ? { turns: status.turns } : {}),
-    ...(typeof status?.sessionAgeMinutes === "number" ? { sessionAgeMinutes: status.sessionAgeMinutes } : {}),
-    ...(status?.handoffPhase ? { handoffPhase: status.handoffPhase } : {}),
-    ...(status?.pendingRotationReason ? { rotationPending: status.pendingRotationReason } : {}),
+    recentConversation: compactRecentConversation(state.recentExchanges ?? [], state.runId),
   };
 }
 
@@ -155,31 +110,24 @@ function compactAttentionShelf(items: FocusShelfItem[]): AgentContextPack["atten
   }));
 }
 
-function compactConversation(turns: ConversationTurn[]): AgentContextPack["recentExact"] {
-  return turns.slice(-LIMITS.recentExact).map((turn) => ({
-    role: turn.role,
-    timestamp: turn.timestamp,
-    content: truncate(turn.content, LIMITS.textChars),
-    ...(turn.runId ? { runId: turn.runId } : {}),
-    ...(turn.assistantResponseKind ? { assistantResponseKind: turn.assistantResponseKind } : {}),
-  }));
-}
-
-function compactRecentActivity(exchanges: ConversationExchange[]): AgentContextPack["recentActivity"] {
-  return exchanges.slice(-LIMITS.recentExact).map((exchange) => ({
-    runId: exchange.runId,
-    user: {
-      timestamp: exchange.user.timestamp,
-      content: truncate(exchange.user.content, LIMITS.textChars),
-    },
-    ...(exchange.assistant ? {
-      assistant: {
-        timestamp: exchange.assistant.timestamp,
-        content: truncate(exchange.assistant.content, LIMITS.textChars),
-        ...(exchange.assistant.responseKind ? { responseKind: exchange.assistant.responseKind } : {}),
+function compactRecentConversation(exchanges: ConversationExchange[], currentRunId: string): AgentContextPack["recentConversation"] {
+  return exchanges
+    .filter((exchange) => exchange.runId !== currentRunId && exchange.assistant !== undefined)
+    .slice(-LIMITS.recentConversation)
+    .map((exchange) => ({
+      runId: exchange.runId,
+      user: {
+        timestamp: exchange.user.timestamp,
+        content: truncate(exchange.user.content, LIMITS.textChars),
       },
-    } : {}),
-  }));
+      ...(exchange.assistant ? {
+        assistant: {
+          timestamp: exchange.assistant.timestamp,
+          content: truncate(exchange.assistant.content, LIMITS.textChars),
+          ...(exchange.assistant.responseKind ? { responseKind: exchange.assistant.responseKind } : {}),
+        },
+      } : {}),
+    }));
 }
 
 function compactRecentTasks(tasks: PromptTaskSummary[]): AgentContextPack["recentTasks"] {
@@ -211,18 +159,6 @@ function compactActiveAttachments(attachments: ActiveAttachmentRef[]): AgentCont
     runPath: attachment.runPath,
     preparedInputId: attachment.preparedInputId,
     lastUsedAt: attachment.lastUsedAt,
-  }));
-}
-
-function compactSystemActivity(items: SystemActivityItem[]): AgentContextPack["recentSystemActivity"] {
-  return items.slice(0, LIMITS.recentSystemActivity).map((item) => ({
-    timestamp: item.timestamp,
-    source: item.source,
-    event: item.event,
-    eventId: item.eventId,
-    summary: truncate(item.summary, LIMITS.summaryChars),
-    ...(item.responseKind ? { responseKind: item.responseKind } : {}),
-    userVisible: item.userVisible,
   }));
 }
 

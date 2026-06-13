@@ -20,7 +20,7 @@ Style:
 Implementation guidance:
 
 - Follow existing package boundaries.
-- Reuse existing services, tool definitions, stores, and prompt section patterns.
+- Reuse existing services, tool definitions, stores, and static prompt helpers.
 - Avoid introducing new dependencies unless the existing codebase cannot reasonably solve the problem.
 - Keep runtime state under `ayati-main/data/`, not source directories.
 - Do not commit generated output, logs, `dist/`, `data/`, or secrets.

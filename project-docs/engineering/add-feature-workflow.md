@@ -3,7 +3,7 @@
 1. Read the relevant `project-docs` context.
 2. Inspect existing modules and tests in the same domain.
 3. Keep package boundaries intact.
-4. Reuse existing providers, services, tools, stores, and prompt section patterns.
+4. Reuse existing providers, services, tools, stores, and static prompt helpers.
 5. Add or update focused tests near the changed domain.
 6. Run the narrow test first, then broader package tests if the change affects shared behavior.
 7. Update `project-docs` when architecture, commands, API contracts, or agent guidance changes.

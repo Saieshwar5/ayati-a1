@@ -5,18 +5,13 @@ import type { LoopState, ActOutput, ActToolCallRecord, VerifyOutput } from "./ty
 
 type PersistedLoopState = Omit<
   LoopState,
-  | "runtimeContext"
   | "activeLearningContext"
   | "previousSessionSummary"
   | "personalMemorySnapshot"
   | "attentionShelf"
-  | "activeSessionPath"
-  | "sessionStatus"
   | "recentExchanges"
-  | "sessionHistory"
   | "recentTaskSummaries"
   | "activeSessionAttachments"
-  | "recentSystemActivity"
 >;
 const runArtifactWriteQueues = new Map<string, Promise<void>>();
 const runStateWriteQueues = new Map<string, RunStateWriteQueue>();
@@ -113,18 +108,13 @@ export function readState(runPath: string): Partial<LoopState> | null {
 
 function buildPersistedLoopState(state: LoopState): PersistedLoopState {
   const {
-    sessionHistory: _sessionHistory,
     recentExchanges: _recentExchanges,
     recentTaskSummaries: _recentTaskSummaries,
     activeSessionAttachments: _activeSessionAttachments,
-    recentSystemActivity: _recentSystemActivity,
-    runtimeContext: _runtimeContext,
     activeLearningContext: _activeLearningContext,
     previousSessionSummary: _previousSessionSummary,
     personalMemorySnapshot: _personalMemorySnapshot,
     attentionShelf: _attentionShelf,
-    activeSessionPath: _activeSessionPath,
-    sessionStatus: _sessionStatus,
     ...persisted
   } = state;
   return {

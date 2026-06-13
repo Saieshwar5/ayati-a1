@@ -5,7 +5,6 @@ import type { AgentContextPack } from "./context-pack.js";
 export interface AgentStateView {
   runId: string;
   inputKind: LoopState["inputKind"];
-  userMessage: string;
   context: AgentContextPack;
   goal: {
     objective: string;
@@ -61,7 +60,6 @@ export function buildAgentStateView(state: LoopState): AgentStateView {
   return {
     runId: state.runId,
     inputKind: state.inputKind,
-    userMessage: state.userMessage,
     context: buildAgentContextPack(state),
     goal: {
       objective: state.goal.objective,

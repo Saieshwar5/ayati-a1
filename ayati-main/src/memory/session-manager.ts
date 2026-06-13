@@ -283,7 +283,6 @@ export class MemoryManager implements SessionMemory {
       activeSessionPath: session?.sessionPath ?? "",
       recentTaskSummaries: [],
       activeAttachments: [],
-      recentSystemActivity: recentSystemEvents,
     };
   }
 

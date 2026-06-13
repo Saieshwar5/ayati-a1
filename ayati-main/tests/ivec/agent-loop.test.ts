@@ -112,7 +112,7 @@ describe("agentLoop", () => {
     }
   });
 
-  it("feeds bounded runtime memory through the structured context pack", async () => {
+  it("feeds bounded session memory through the structured context pack", async () => {
     const dataDir = makeTmpDir();
     try {
       const generateTurn = vi.fn().mockResolvedValue({
@@ -130,6 +130,23 @@ describe("agentLoop", () => {
       const sessionMemory = {
         ...noopSessionMemory,
         getPromptMemoryContext: vi.fn().mockReturnValue({
+          recentExchanges: [{
+            runId: "old-run",
+            user: {
+              timestamp: "2026-06-12T09:00:00.000Z",
+              content: "Build a todo app",
+            },
+            assistant: {
+              timestamp: "2026-06-12T09:01:00.000Z",
+              content: "Created the todo app.",
+            },
+          }, {
+            runId: "r-context",
+            user: {
+              timestamp: "2026-06-12T09:10:00.000Z",
+              content: "make it responsive too",
+            },
+          }],
           conversationTurns: [
             { role: "user", content: "Build a todo app", timestamp: "2026-06-12T09:00:00.000Z", sessionPath: "sessions/s1.md", runId: "old-run" },
             { role: "assistant", content: "Created the todo app.", timestamp: "2026-06-12T09:01:00.000Z", sessionPath: "sessions/s1.md", runId: "old-run" },
@@ -148,7 +165,6 @@ describe("agentLoop", () => {
             lastTouchedLabel: "10m ago",
             attentionScore: 0.82,
           }],
-          activeSessionPath: "sessions/s1.md",
           recentTaskSummaries: [{
             timestamp: "2026-06-12T09:01:00.000Z",
             runId: "old-run",
@@ -166,7 +182,6 @@ describe("agentLoop", () => {
             attachmentNames: [],
           }],
           activeAttachments: [],
-          recentSystemActivity: [],
         }),
         getSessionStatus: vi.fn().mockReturnValue({
           contextPercent: 12,
@@ -187,13 +202,6 @@ describe("agentLoop", () => {
         initialUserMessage: "make it responsive too",
         dataDir,
         systemContext: "static decision context",
-        runtimeContext: {
-          nowUtc: "2026-06-12T03:40:00.000Z",
-          timezone: "Asia/Kolkata",
-          localDate: "2026-06-12",
-          localTime: "09:10",
-          weekday: "Friday",
-        },
       });
 
       const callInput = generateTurn.mock.calls[0]?.[0];
@@ -203,12 +211,17 @@ describe("agentLoop", () => {
         userPrompt.indexOf("\n\nSelected tools:"),
       );
       const stateView = JSON.parse(stateJson);
+      expect(stateView.userMessage).toBeUndefined();
       expect(stateView.context.currentInput).toBe("make it responsive too");
-      expect(stateView.context.runtime.localDate).toBe("2026-06-12");
-      expect(stateView.context.session.activeSessionPath).toBe("sessions/s1.md");
-      expect(stateView.context.session.contextPercent).toBe(12);
+      expect(stateView.context.runtime).toBeUndefined();
+      expect(stateView.context.session).toBeUndefined();
+      expect(stateView.context.recentSystemActivity).toBeUndefined();
       expect(stateView.context.attentionShelf[0].focusId).toBe("focus_todo");
-      expect(stateView.context.recentExact).toHaveLength(2);
+      expect(stateView.context.recentConversation).toHaveLength(1);
+      expect(stateView.context.recentConversation[0].user.content).toBe("Build a todo app");
+      expect(stateView.context.recentConversation[0].runId).toBe("old-run");
+      expect(stateView.context.recentActivity).toBeUndefined();
+      expect(stateView.context.recentExact).toBeUndefined();
       expect(stateView.context.recentTasks[0].openWork).toEqual(["make responsive"]);
       expect(stateView.context.previousSessionSummary).toContain("todo app shell");
       expect(stateView.context.personalMemorySnapshot).toContain("concise");

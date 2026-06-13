@@ -6,7 +6,7 @@ threads, or context windows manually.
 Current runtime model:
 
 ```text
-daily session hot memory + runtime context + independent memory stores -> context pack -> decision state view
+daily session hot memory + independent memory stores -> context pack -> decision state view
 ```
 
 ## Session Scope
@@ -61,27 +61,32 @@ manager replays today's active session file and rebuilds the cache. Old session
 files are not migrated into the new schema.
 
 When a new daily session starts, the hot cache starts fresh for that session.
-The old session's recent exchanges are not carried into `recentActivity`; they
+The old session's recent exchanges are not carried into `recentConversation`; they
 remain in the old JSONL file and may later influence the compact
 `personalMemorySnapshot` through background memory evolution.
 
 ## Context Pack
 
-The decision model receives dynamic runtime context through
+The decision model receives dynamic decision context through
 `State view.context`, built by:
 
 - `ayati-main/src/ivec/agent-runner/context-pack.ts`
 - `ayati-main/src/ivec/agent-runner/state-view.ts`
 
-The context pack is bounded JSON. Session-derived fields are:
+The context pack is bounded JSON. Session-derived model-facing fields are:
 
-- `session`: session id/date/path, age, and recent turn count
-- `recentActivity`: last 5 user/assistant exchanges
-- `recentSystemActivity`: last 5 system events
+- `recentConversation`: last 5 completed user/assistant exchanges
+
+Session metadata such as session id, path, age, turn count, and handoff state
+stays internal to the backend for persistence, debugging, rotation policy, and
+memory consolidation. It is not exposed to the decision model.
+
+Recent system activity is also kept internal by default. Direct system-event
+runs expose the current event through `State view.systemEvent`, but prior system
+events are not included in every decision context.
 
 Other context sources remain independent from session:
 
-- `runtime`: date, time, timezone, weekday
 - `personalMemorySnapshot`
 - `activeLearningContext`
 - task/run details in `data/runs/<runId>/`
@@ -144,7 +149,7 @@ For each user message:
 3. The user message is appended to the session JSONL file.
 4. The hot exchange cache is updated.
 5. The runner syncs hot recent activity into `LoopState`.
-6. `context-pack.ts` includes `recentActivity` in the decision prompt.
+6. `context-pack.ts` includes `recentConversation` in the decision prompt.
 7. The assistant response is appended to the session file and completes the hot
    exchange.
 

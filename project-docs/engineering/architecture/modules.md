@@ -5,7 +5,7 @@ Backend package: `ayati-main`
 - `src/app`: bootstrap and runtime wiring.
 - `src/ivec`: `IVecEngine`, decision-action-reducer runner, state view, context pack, tool selection, progress reduction, session rotation, context pressure, and system-event policy.
 - `src/context`: base prompt, soul, static context, and policy loading.
-- `src/prompt`: prompt section rendering and token estimation.
+- `src/prompt`: static prompt section helpers and token estimation.
 - `src/core`: provider/plugin contracts, registries, system ingress, inbound queue, and plugin loading.
 - `src/providers`: provider adapters for OpenRouter, OpenAI, Anthropic, and Fireworks.
 - `src/skills`: built-in tools, tool executor, external skill registry, and skill broker.

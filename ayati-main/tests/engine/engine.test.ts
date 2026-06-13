@@ -7,8 +7,6 @@ import type { LlmProvider } from "../../src/core/contracts/provider.js";
 import type { LlmTurnInput, LlmTurnOutput } from "../../src/core/contracts/llm-protocol.js";
 import type { SessionMemory } from "../../src/memory/types.js";
 import type { StaticContext } from "../../src/context/static-context-cache.js";
-import { buildSystemPrompt } from "../../src/prompt/builder.js";
-import { getNowSnapshot } from "../../src/pulse/time.js";
 import type { SystemEventPolicyConfig } from "../../src/ivec/system-event-policy.js";
 import { writeFilesTool } from "../../src/skills/builtins/filesystem/write-files.js";
 import { createToolExecutor } from "../../src/skills/tool-executor.js";
@@ -52,7 +50,6 @@ function createSessionMemory(): SessionMemory {
     getPromptMemoryContext: vi.fn().mockReturnValue({
       conversationTurns: [],
       previousSessionSummary: "",
-      recentSystemActivity: [],
     }),
     setStaticTokenBudget: vi.fn(),
   };
@@ -413,7 +410,7 @@ describe("IVecEngine", () => {
     await engine.stop();
   });
 
-  it("builds cached system context with the same prompt output as the canonical builder across turns", async () => {
+  it("keeps decision system context static and returns dynamic context separately", async () => {
     const staticContext = createStaticContext();
     const provider = createMockProvider();
     const sessionMemory = createSessionMemory();
@@ -456,26 +453,16 @@ describe("IVecEngine", () => {
           attachmentNames: [],
         },
       ],
-      recentSystemActivity: [
-        {
-          timestamp: "2026-04-18T08:50:00.000Z",
-          source: "engine",
-          event: "cache_refresh",
-          eventId: "evt-1",
-          summary: "Context cache refreshed",
-          userVisible: false,
-        },
-      ],
     };
     getPromptMemoryContext.mockImplementation(() => memoryContext);
 
     const fixedNow = new Date("2026-04-18T03:30:00.000Z");
-    const runtimeContext = getNowSnapshot(fixedNow);
     const engine = new IVecEngine({ provider, sessionMemory, staticContext, now: () => fixedNow });
     const buildSystemContext = async () => {
       const privateEngine = engine as unknown as {
         buildSystemContext(): Promise<{
           systemContext: string;
+          decisionSystemContext: string;
           dynamicSystemTokens: number;
         }>;
       };
@@ -483,27 +470,13 @@ describe("IVecEngine", () => {
     };
 
     const first = await buildSystemContext();
-    const expectedFirst = buildSystemPrompt({
-      basePrompt: staticContext.basePrompt,
-      soul: staticContext.soul,
-      runtimeContext,
-      conversationTurns: memoryContext.conversationTurns,
-      previousSessionSummary: memoryContext.previousSessionSummary,
-      activeSessionPath: memoryContext.activeSessionPath,
-      recentTaskSummaries: memoryContext.recentTaskSummaries,
-      recentSystemActivity: memoryContext.recentSystemActivity,
-      skillBlocks: staticContext.skillBlocks,
-      toolDirectory: staticContext.toolDirectory,
-      includeToolDirectory: false,
-      sessionStatus: getSessionStatus(),
-    }).systemPrompt;
-    expect(first.systemContext).toBe(expectedFirst);
+    expect(first.systemContext).toBe(first.decisionSystemContext);
     expect(first.systemContext).toContain("# Base System Prompt");
-    expect(first.systemContext).toContain("# Runtime Context");
-    expect(first.systemContext).toContain(`- local_date: ${runtimeContext.localDate}`);
-    expect(first.systemContext).toContain(`- local_time: ${runtimeContext.localTime}`);
-    expect(first.systemContext).toContain(`- weekday: ${runtimeContext.weekday}`);
-    expect(first.systemContext).toContain("# Previous Conversation");
+    expect(first.systemContext).toContain("# Skills");
+    expect(first.systemContext).not.toContain("# Runtime Context");
+    expect(first.systemContext).not.toContain("# Previous Conversation");
+    expect(first.systemContext).not.toContain("first question");
+    expect(first.dynamicSystemTokens).toBe(0);
 
     memoryContext = {
       ...memoryContext,
@@ -525,30 +498,9 @@ describe("IVecEngine", () => {
     };
 
     const second = await buildSystemContext();
-    const expectedSecond = buildSystemPrompt({
-      basePrompt: staticContext.basePrompt,
-      soul: staticContext.soul,
-      runtimeContext,
-      conversationTurns: memoryContext.conversationTurns,
-      previousSessionSummary: memoryContext.previousSessionSummary,
-      activeSessionPath: memoryContext.activeSessionPath,
-      recentTaskSummaries: memoryContext.recentTaskSummaries,
-      recentSystemActivity: memoryContext.recentSystemActivity,
-      skillBlocks: staticContext.skillBlocks,
-      toolDirectory: staticContext.toolDirectory,
-      includeToolDirectory: false,
-      sessionStatus: getSessionStatus(),
-    }).systemPrompt;
-    expect(second.systemContext).toBe(expectedSecond);
-    expect(second.systemContext.match(/# Previous Conversation/g)).toHaveLength(1);
-
-    const cachedConversation = (
-      engine as unknown as {
-        systemContextCache?: { conversationTurns: Array<{ content: string }> };
-      }
-    ).systemContextCache;
-    expect(cachedConversation?.conversationTurns).toHaveLength(3);
-    expect(cachedConversation?.conversationTurns.at(-1)?.content).toBe("follow up question");
+    expect(second.systemContext).toBe(first.systemContext);
+    expect(second.systemContext).not.toContain("follow up question");
+    expect(second.dynamicSystemTokens).toBe(0);
   });
 
   it("processes pulse system_event through beginSystemRun", async () => {
@@ -870,7 +822,6 @@ describe("IVecEngine", () => {
             },
           ],
           previousSessionSummary: "",
-          recentSystemActivity: [],
         }),
         getSessionStatus: vi.fn().mockReturnValue({
           contextPercent: 96,

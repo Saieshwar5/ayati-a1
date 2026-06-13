@@ -156,7 +156,7 @@ function buildDecisionSystemContext(systemContext: string | undefined): string {
   const base = `You are the decision component of an AI agent harness.
 Choose the next agent decision only. Do not execute tools yourself.
 Prefer deterministic actions with concrete tool inputs.
-Use the structured context pack in the state view for runtime memory, recentActivity, and recent system events.
+Use the structured context pack in the state view for session memory and recentConversation.
 Return compact JSON only.`;
   const trimmed = systemContext?.trim();
   if (!trimmed) {
@@ -177,9 +177,8 @@ function buildDecisionPromptSections(
     tools: `Selected tools:\n${formatSelectedTools(toolDefinitions)}`,
     instructions: `Decision rules:
 - Pick exactly one decision: reply, ask_user, or act.
-- Treat State view.context as the bounded runtime context pack for this decision.
-- Use context.recentActivity as the latest session activity. It contains the last user/assistant exchanges, not raw unlimited history.
-- Use context.recentSystemActivity separately from user conversation turns.
+- Treat State view.context as the bounded context pack for this decision.
+- Use context.recentConversation as the latest completed session activity. It contains prior user/assistant exchanges, not the current input or raw unlimited history.
 - Use reply only when no tool action is needed or the task has failed/finished.
 - Use ask_user only when a missing decision prevents safe progress.
 - Use act for tool work.
