@@ -66,7 +66,7 @@ Workspace orchestration flow:
 
 System-event flow:
 
-1. Plugins, Pulse, Telegram, or external adapters normalize events.
+1. Plugins and Pulse normalize events.
 2. `SystemIngressService` queues events in the inbound queue store.
 3. `SystemEventWorker` feeds events to `IVecEngine.handleSystemEvent`.
 4. `context/system-event-policy.json` controls event handling behavior.

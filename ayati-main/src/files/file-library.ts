@@ -392,7 +392,6 @@ function roleForOrigin(origin: FileOrigin): RunFileReference["role"] {
     case "local_path":
       return "found";
     case "user_upload":
-    case "telegram_upload":
       return "attached";
   }
 }

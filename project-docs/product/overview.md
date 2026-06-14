@@ -31,4 +31,4 @@ Primary value:
 - Broad computer-access tools for local workspace work, files, documents, datasets, Python, SQLite, reminders, and recall.
 - Multi-channel user communication, with CLI current and other clients intended.
 - Proactive and event-driven assistance through Pulse, plugins, and system events.
-- Optional inbound event integrations such as Telegram, AgentMail, and Nylas Mail.
+- Pulse reminders and scheduled system events.

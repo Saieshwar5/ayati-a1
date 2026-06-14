@@ -1,7 +1,7 @@
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { IVecEngine } from "../ivec/index.js";
-import { loadTelegramRuntimeConfig, TelegramServer, UploadServer, WsServer } from "../server/index.js";
+import { UploadServer, WsServer } from "../server/index.js";
 import pluginFactories from "../config/plugins.js";
 import providerFactory from "../config/provider.js";
 import { initializeLlmRuntimeConfig } from "../config/llm-runtime-config.js";
@@ -34,7 +34,6 @@ const thisDir = dirname(fileURLToPath(import.meta.url));
 const projectRoot = resolve(thisDir, "..", "..");
 
 const CLIENT_ID = "local";
-const TELEGRAM_CLIENT_ID = "telegram-shared";
 
 export async function main(): Promise<void> {
   await initializeLlmRuntimeConfig({ projectRoot });
@@ -184,24 +183,8 @@ export async function main(): Promise<void> {
     learningWorkspace: content.learningWorkspace,
     learningClientId: CLIENT_ID,
   });
-  const telegramConfig = loadTelegramRuntimeConfig(process.env);
-  const telegramServer = telegramConfig
-    ? new TelegramServer({
-      ...telegramConfig,
-      clientId: telegramConfig.clientId || TELEGRAM_CLIENT_ID,
-      uploadsDir: content.documentStore.uploadsDir,
-      stateDir: resolve(projectRoot, "data", "telegram"),
-      onMessage: (clientId, data) => engine?.handleMessage(clientId, data),
-      fileLibrary: content.fileLibrary,
-    })
-    : null;
-
   engine = new IVecEngine({
     onReply: (clientId, data) => {
-      if (telegramServer && clientId === telegramServer.clientId) {
-        telegramServer.send(clientId, data);
-        return;
-      }
       wsServer.send(clientId, data);
     },
     provider,
@@ -262,9 +245,6 @@ export async function main(): Promise<void> {
   systemEventWorker.start();
   await wsServer.start();
   await uploadServer.start();
-  if (telegramServer) {
-    await telegramServer.start();
-  }
   await pulseScheduler.start();
   await registry.startAll(pluginRuntimeContext);
 
@@ -275,9 +255,6 @@ export async function main(): Promise<void> {
     await registry.stopAll(pluginRuntimeContext);
     await pulseScheduler.stop();
     pulseStore.close();
-    if (telegramServer) {
-      await telegramServer.stop();
-    }
     await uploadServer.stop();
     await wsServer.stop();
     await systemEventWorker.stop();

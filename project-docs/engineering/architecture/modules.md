@@ -13,8 +13,8 @@ Backend package: `ayati-main`
 - `src/documents`: document storage, preparation, indexing, retrieval, attachment handling, and structured document support.
 - `src/files`: managed file library, file metadata, storage layout, and file processors.
 - `src/pulse`: reminders, scheduled tasks, parser, scheduler, and proposal reflection.
-- `src/server`: WebSocket server, HTTP upload/artifact server, Telegram server, and upload storage.
-- `src/plugins`: optional plugin integrations such as AgentMail and Nylas Mail.
+- `src/server`: WebSocket server, HTTP upload/artifact server, and upload storage.
+- `src/plugins`: optional plugin integrations.
 
 CLI package: `ayati-cli`
 

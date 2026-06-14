@@ -47,13 +47,3 @@ AYATI_AGENT_MAX_SELECTED_TOOLS=12
 
 `AYATI_AGENT_MAX_SELECTED_TOOLS` bounds how many tool definitions are shown to
 the decision model for one decision.
-
-Telegram:
-
-```env
-AYATI_TELEGRAM_ENABLED=true
-AYATI_TELEGRAM_BOT_TOKEN=
-AYATI_TELEGRAM_ALLOWED_CHAT_ID=
-```
-
-AgentMail and Nylas Mail have plugin-specific variables documented in the root README.

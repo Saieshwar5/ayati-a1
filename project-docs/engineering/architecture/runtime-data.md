@@ -14,7 +14,6 @@ Known runtime data categories:
 - Generated run artifacts.
 - System-event queues.
 - Plugin state.
-- Telegram state.
 - SQLite tool database.
 
 Do not commit runtime data unless a specific fixture is intentionally created for tests.

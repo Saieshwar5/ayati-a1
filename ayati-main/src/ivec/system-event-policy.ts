@@ -396,10 +396,6 @@ function inferIntentKind(event: AyatiSystemEvent): SystemEventIntentKind {
     return "task";
   }
 
-  if (source.includes("mail") && eventName.includes("received")) {
-    return "task";
-  }
-
   if (
     eventName.includes("notification")
     || eventName.includes("alert")
@@ -428,10 +424,6 @@ function inferRequestedAction(event: AyatiSystemEvent, intentKind: SystemEventIn
     return "check_system_health";
   }
 
-  if (event.source.toLowerCase().includes("mail")) {
-    return "review_incoming_message";
-  }
-
   if (intentKind === "reminder") {
     return "handle_reminder";
   }
@@ -450,9 +442,6 @@ function inferEventClass(event: AyatiSystemEvent, requestedAction?: string): Sys
 
   if (eventName.includes("approval")) {
     return "approval_response";
-  }
-  if (source.includes("mail") && eventName.includes("received")) {
-    return "message_received";
   }
   if (eventName.includes("message") && eventName.includes("received")) {
     return "message_received";
@@ -501,9 +490,6 @@ function inferTrustTier(
   if (
     createdBy === "external"
     || eventClass === "message_received"
-    || source.includes("mail")
-    || source.includes("telegram")
-    || source.includes("whatsapp")
   ) {
     return "external";
   }
@@ -538,7 +524,7 @@ function inferCreatedBy(event: AyatiSystemEvent): SystemEventCreatedBy {
   if (source === "pulse" || typeof event.payload["reminderId"] === "string" || typeof event.payload["taskId"] === "string") {
     return "user";
   }
-  if (source.includes("mail") || event.eventName.toLowerCase().includes("received")) {
+  if (event.eventName.toLowerCase().includes("received")) {
     return "external";
   }
   return "system";

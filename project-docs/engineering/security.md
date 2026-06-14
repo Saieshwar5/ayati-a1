@@ -2,7 +2,7 @@
 
 Never commit secrets. Keep API keys in local `.env` files.
 
-Important env vars include provider keys, Telegram credentials, AgentMail credentials, Nylas credentials, and optional HTTP API token.
+Important env vars include provider keys and optional HTTP API token.
 
 High-risk runtime capabilities:
 

@@ -14,9 +14,6 @@ Image generation providers live under `ayati-main/src/image-generation/`.
 Current and optional communication/event integrations:
 
 - CLI client over WebSocket.
-- Telegram transport in `ayati-main/src/server/telegram-server.ts`.
-- AgentMail plugin under `ayati-main/src/plugins/agentmail`.
-- Nylas Mail plugin under `ayati-main/src/plugins/nylas-mail`.
 - Pulse reminders and scheduled work under `ayati-main/src/pulse`.
 
 Future communication channels can include:
@@ -24,7 +21,6 @@ Future communication channels can include:
 - Browser/web client.
 - Mobile client.
 - Voice interface.
-- Email-first workflows.
 - Other chat apps or notification surfaces.
 
 Integration rule:

@@ -17,7 +17,7 @@ Current product features:
 - CLI-anchored Omarchy/Hyprland workspace orchestration with role-based windows, layout presets, protected CLI anchor, and max-five-window cleanup.
 - Generated run artifacts served over HTTP.
 - Terminal chat UI with attachment queue commands.
-- Optional Telegram transport and event/plugin integrations.
+- Pulse scheduling and system-event processing.
 
 Core product capabilities:
 

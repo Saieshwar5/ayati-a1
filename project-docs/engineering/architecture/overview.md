@@ -13,7 +13,7 @@ user channels -> agent daemon -> memory/context/tools/providers -> actions/repli
 Main runtime flow:
 
 1. A user communicates through a client or an integration produces a system event.
-2. `ayati-main` receives the message/event through WebSocket, HTTP/integration ingress, Telegram, or plugin adapters.
+2. `ayati-main` receives the message/event through WebSocket, HTTP/Pulse ingress, or plugin adapters.
 3. The backend loads static decision rules, session state, memory, tools, dynamic built-in skill cards, document/file context, and provider configuration.
 4. `IVecEngine` builds static decision context and enters the decision-action-reducer runner.
 5. The decision model chooses exactly one outcome: `reply`, `ask_user`, or `act`.

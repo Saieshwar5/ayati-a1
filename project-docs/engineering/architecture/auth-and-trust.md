@@ -9,7 +9,6 @@ Current trust boundaries:
 - CLI connects to local WebSocket server on `localhost:8080`.
 - HTTP upload/artifact/Pulse API runs on `127.0.0.1:8081` by default.
 - `AYATI_HTTP_API_TOKEN` can protect Pulse API access.
-- Telegram access can be restricted with `AYATI_TELEGRAM_ALLOWED_CHAT_ID`.
 - Provider and integration credentials are read from environment variables.
 
 Security-sensitive capabilities:

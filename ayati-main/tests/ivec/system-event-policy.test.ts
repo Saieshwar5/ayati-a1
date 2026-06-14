@@ -55,20 +55,19 @@ describe("system-event-policy", () => {
     });
   });
 
-  it("infers inbound email as external observed work", () => {
+  it("infers inbound external messages as observed work", () => {
     const event = normalizeSystemEvent({
-      source: "agentmail",
+      source: "external-message-source",
       eventName: "message.received",
-      summary: "Incoming email from jane@example.com with subject Need help",
+      summary: "Incoming message from Jane asking for help",
       payload: {},
     });
 
     expect(classifySystemEvent(event)).toEqual({
-      intentKind: "task",
+      intentKind: "unknown",
       eventClass: "message_received",
       trustTier: "external",
       effectLevel: "observe",
-      requestedAction: "review_incoming_message",
       createdBy: "external",
     });
   });
@@ -84,7 +83,7 @@ describe("system-event-policy", () => {
       },
       rules: [
         {
-          source: "agentmail",
+          source: "external-message-source",
           eventClass: "message_received",
           mode: "analyze_ask",
         },
@@ -92,9 +91,9 @@ describe("system-event-policy", () => {
     };
 
     const event = normalizeSystemEvent({
-      source: "agentmail",
+      source: "external-message-source",
       eventName: "message.received",
-      summary: "Incoming email from jane@example.com with subject Need help",
+      summary: "Incoming message from Jane asking for help",
       payload: {},
     });
 

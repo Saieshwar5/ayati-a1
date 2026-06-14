@@ -11,7 +11,6 @@ Core responsibilities:
 - Load static prompt context and skill prompt blocks.
 - Start WebSocket chat transport.
 - Start HTTP upload/artifact/Pulse API.
-- Start optional Telegram transport.
 - Start plugins and system-event worker.
 - Manage session memory, personal memory, and episodic memory.
 - Register kernel tools and dynamically activate additional built-in tools.

@@ -29,8 +29,8 @@ At a high level, Ayati provides:
 - Focus cards, attention shelf, personal memory, and episodic recall for continuity and personalization
 - Episodic recall for searching past sessions and run history
 - Managed file registration, upload processing, document extraction, structured data profiling, and artifact serving
-- External skill activation from project skill manifests under runtime data
-- Optional system-event integrations such as Telegram, AgentMail, and Nylas Mail
+- Dynamic activation for built-in skills
+- Pulse scheduling and system-event processing
 - A terminal client that talks to the backend runtime
 
 ## Repository Layout
@@ -62,12 +62,12 @@ The decision model chooses one next outcome:
 
 Tool work is validated, executed, checked through tool contracts/assertions, and
 reduced into task progress before the next decision. System events such as
-reminders or inbound mail enter the same harness with event-policy constraints.
+reminders enter the same harness with event-policy constraints.
 
 ## How Ayati Works In Practice
 
-1. A user sends a message from the CLI, Telegram, or another runtime input.
-2. `ayati-main` receives the message through WebSocket, HTTP, polling, or a plugin event adapter.
+1. A user sends a message from the CLI or another runtime input.
+2. `ayati-main` receives the message through WebSocket, HTTP, or a plugin event adapter.
 3. The backend loads static decision rules, session state, focus summaries, memory snapshots, available tools, active skills, and the configured LLM provider.
 4. `IVecEngine` builds a bounded context pack and enters the agent runner.
 5. The decision model returns `reply`, `ask_user`, or `act`.
@@ -178,8 +178,8 @@ The backend starts with a broad built-in tool set:
 - Identity tools for updating agent identity context
 - Pulse tools for reminders, notifications, scheduled tasks, previews, snoozing, and health checks
 
-External skills can also be discovered from runtime skill manifests and mounted
-for the current run through the skill broker.
+Additional built-in skills can be mounted for the current run through the skill
+broker.
 
 ### Events and Plugins
 
@@ -187,11 +187,8 @@ Ayati includes a plugin lifecycle and an internal system-event ingress queue.
 Plugins can register adapters, publish normalized events, and let the engine
 analyze or act on those events according to `context/system-event-policy.json`.
 
-Current plugin paths include:
+Current event sources include:
 
-- AgentMail inbound mail events
-- Nylas Mail inbound mail events
-- Optional Telegram chat transport
 - Pulse reminders and scheduled work
 
 ## Package Overview
@@ -208,7 +205,7 @@ The backend service. It is responsible for:
 - Accepting uploaded files over HTTP
 - Serving generated run artifacts
 - Registering and executing built-in tools
-- Discovering and activating external skills
+- Dynamically activating built-in skills
 - Starting plugins and system-event workers
 
 Default runtime ports:
@@ -242,7 +239,6 @@ Some optional capabilities need extra local dependencies or credentials:
 
 - OpenAI API key for document and episodic memory embeddings
 - Python interpreter for the managed Python tool, configurable with `AYATI_PYTHON_INTERPRETER`
-- Telegram, AgentMail, or Nylas credentials when those integrations are enabled
 
 ## Quick Start
 
@@ -298,31 +294,6 @@ AYATI_UPLOAD_MAX_BYTES=26214400
 AYATI_HTTP_API_TOKEN=local_optional_token
 ```
 
-### Optional Integrations
-
-Telegram is enabled when configured with:
-
-```env
-AYATI_TELEGRAM_ENABLED=true
-AYATI_TELEGRAM_BOT_TOKEN=your_bot_token
-AYATI_TELEGRAM_ALLOWED_CHAT_ID=your_chat_id
-```
-
-AgentMail and Nylas Mail are optional plugin integrations. Their plugin modules
-read environment variables such as:
-
-```env
-AGENTMAIL_PLUGIN_ENABLED=true
-AGENTMAIL_API_KEY=your_agentmail_key
-AGENTMAIL_INBOX_ID=your_inbox_id
-AGENTMAIL_WEBHOOK_PUBLIC_URL=https://your-public-url.example/webhook
-
-NYLAS_MAIL_PLUGIN_ENABLED=true
-NYLAS_API_KEY=your_nylas_key
-NYLAS_GRANT_ID=your_grant_id
-NYLAS_WEBHOOK_PUBLIC_URL=https://your-public-url.example/webhook
-```
-
 ## Development Commands
 
 ### `ayati-main`
@@ -353,7 +324,6 @@ Backend runtime output is stored under `ayati-main/data/`, including:
 - Personal memory and episodic memory indexes
 - Document and file-library data
 - Runtime provider config
-- External skill catalog/cache data
 - Generated run artifacts
 - System-event queues and plugin state
 
@@ -364,7 +334,7 @@ These files are runtime state, not source code.
 - Never commit secrets or API keys.
 - Keep credentials in local env files only.
 - Do not document real keys in README examples.
-- Review tool access, filesystem access, external skill policy, plugin webhooks, and runtime event policies before exposing the backend beyond local development.
+- Review tool access, filesystem access, plugin webhooks, and runtime event policies before exposing the backend beyond local development.
 - Treat shell, filesystem, Python, database, and external HTTP-backed tools as powerful local capabilities that should be enabled only in trusted environments.
 
 ## Important Internal References
@@ -385,7 +355,7 @@ If you want to go deeper into the architecture, start with:
 
 Ayati is structured as a modular agent system with separate backend and CLI
 packages. The backend supports runtime provider selection, the
-decision-action-reducer harness, built-in and external skills,
+decision-action-reducer harness, built-in skills,
 focus/session/personal/episodic memory,
 document/data workflows, generated artifacts, scheduled Pulse work, and
 optional event-driven integrations.

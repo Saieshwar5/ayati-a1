@@ -1,6 +1,5 @@
 export type FileOrigin =
   | "user_upload"
-  | "telegram_upload"
   | "local_path"
   | "agent_download"
   | "generated_artifact";

@@ -26,35 +26,35 @@ function makeAdapter(sourceId: string): SystemAdapter {
 describe("AdapterRegistry", () => {
   it("registers and lists manifests", () => {
     const registry = new AdapterRegistry();
-    registry.register(makeAdapter("agentmail"));
+    registry.register(makeAdapter("test-adapter"));
 
     expect(registry.listManifests()).toEqual([
       expect.objectContaining({
-        sourceId: "agentmail",
-        displayName: "agentmail",
+        sourceId: "test-adapter",
+        displayName: "test-adapter",
       }),
     ]);
   });
 
   it("resolves adapters by source", () => {
     const registry = new AdapterRegistry();
-    const agentmail = makeAdapter("agentmail");
-    registry.register(agentmail);
+    const adapter = makeAdapter("test-adapter");
+    registry.register(adapter);
 
     const resolved = registry.resolve({
-      source: "agentmail",
+      source: "test-adapter",
       clientId: "local",
     });
 
-    expect(resolved).toBe(agentmail);
+    expect(resolved).toBe(adapter);
   });
 
   it("rejects duplicate source registration", () => {
     const registry = new AdapterRegistry();
-    registry.register(makeAdapter("agentmail"));
+    registry.register(makeAdapter("test-adapter"));
 
-    expect(() => registry.register(makeAdapter("agentmail"))).toThrow(
-      "System adapter already registered for source agentmail.",
+    expect(() => registry.register(makeAdapter("test-adapter"))).toThrow(
+      "System adapter already registered for source test-adapter.",
     );
   });
 });

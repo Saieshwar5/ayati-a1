@@ -9,11 +9,11 @@ Expected user workflows:
 - Start or install the agent daemon.
 - Let the daemon keep running in the background.
 - Communicate with the daemon through the CLI today.
-- Communicate through future channels such as web, mobile, Telegram, email, or voice.
+- Communicate through future channels such as web, mobile, or voice.
 - Attach files and ask questions about them.
 - Let the agent use local tools when appropriate and safe.
 - Receive reminders, notifications, or event-driven assistance.
 - Configure provider credentials and runtime provider selection.
-- Optionally enable integrations such as Telegram, AgentMail, Nylas Mail, and Pulse reminders.
+- Optionally enable Pulse reminders and future event integrations.
 
 AI agents working on this repo are also a first-class audience for documentation in `project-docs/`.

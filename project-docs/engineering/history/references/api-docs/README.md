@@ -8,8 +8,5 @@ Current relevant APIs:
 - OpenRouter.
 - Anthropic.
 - Fireworks.
-- Telegram Bot API.
-- AgentMail.
-- Nylas.
 
 Prefer summaries of the exact endpoints, payloads, auth requirements, and rate limits that matter to this project.
