@@ -25,7 +25,7 @@ export function buildSessionHandoff(
       pendingWork: [],
       keyFacts: [],
       activeAttachments: [],
-      recentTasks: [],
+      sessionFocusCards: [],
       recentDialog: session.getConversationTurns(5),
       nextAction: "",
     },

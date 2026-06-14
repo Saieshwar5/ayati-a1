@@ -33,6 +33,25 @@ There is no separate required model call to create a goal. The runner creates a
 simple local goal from the current input, and the decision model uses the state
 view/context pack to decide the next outcome.
 
+## State View And Context
+
+The decision model receives a compact `State view` each iteration. The context
+portion is built by `context-pack.ts` and currently includes:
+
+- `currentInput`
+- `recentConversation`
+- `activeFocus`
+- `sessionFocusCards`
+- `attentionShelf`
+- `activeAttachments`
+- optional `previousSessionSummary`
+- optional `personalMemorySnapshot`
+- optional `activeLearningContext`
+
+`recentTasks` is no longer a model-facing field. Tool-using task outcomes are
+converted into session focus cards after the run, and reusable cards can later
+be searched, activated, updated, and promoted into the attention shelf.
+
 ## Action Execution
 
 Actions are explicit tool-call plans. Supported modes are:

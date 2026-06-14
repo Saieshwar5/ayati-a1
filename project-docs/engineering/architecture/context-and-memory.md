@@ -76,6 +76,10 @@ The decision model receives dynamic decision context through
 The context pack is bounded JSON. Session-derived model-facing fields are:
 
 - `recentConversation`: last 5 completed user/assistant exchanges
+- `activeFocus`: focus cards explicitly activated for the current session
+- `sessionFocusCards`: up to 5 current-session focus cards ranked by recency
+  and usefulness
+- `attentionShelf`: up to 5 global focus cards promoted from prior sessions
 
 Session metadata such as session id, path, age, turn count, and handoff state
 stays internal to the backend for persistence, debugging, rotation policy, and
@@ -92,6 +96,47 @@ Other context sources remain independent from session:
 - task/run details in `data/runs/<runId>/`
 - document/file stores
 - long-term or semantic memory stores
+
+## Focus Cards
+
+Focus cards are the durable continuation surface for tool-using work. They are
+stored outside session JSONL in `data/memory/memory.sqlite`.
+
+Tables:
+
+- `focus_items`: current focus card state.
+- `focus_events`: append-only focus-card event history.
+- `focus_search`: compact local search text for card lookup.
+
+Scopes:
+
+- `session`: cards created from tool-using task summaries in the active
+  session.
+- `global`: cross-session attention shelf cards.
+
+Lifecycle:
+
+1. The runner completes a task run and builds a task summary from verified
+   progress, open work, blockers, facts, evidence, tools used, and artifacts.
+2. `IVecEngine` publishes the summary through `queueTaskSummaryPublication`.
+3. `MemoryManager.queueTaskSummary` creates a session focus card only when the
+   summary has at least one tool in `toolsUsed`.
+4. No-tool direct replies are intentionally skipped.
+5. Focus tools can search, get, activate, deactivate, update, and list focus
+   cards.
+6. Activated cards are returned as `activeFocus` for the current session.
+7. When a session closes, durable session focus cards are promoted or merged
+   into global cards for the attention shelf.
+
+The decision model sees compact shelf items, not full focus rows. Full card
+details can be retrieved through focus tools when needed.
+
+Boundary:
+
+- Current-run progress belongs in run state and run artifacts.
+- Reusable continuation state belongs in focus cards.
+- Raw conversation remains in session JSONL.
+- Personal facts and preferences belong in personal memory.
 
 ## Personal Memory
 
@@ -148,8 +193,10 @@ For each user message:
 2. The session manager creates a new daily session if the local date changed.
 3. The user message is appended to the session JSONL file.
 4. The hot exchange cache is updated.
-5. The runner syncs hot recent activity into `LoopState`.
-6. `context-pack.ts` includes `recentConversation` in the decision prompt.
+5. The runner syncs hot recent activity and focus-card shelves into
+   `LoopState`.
+6. `context-pack.ts` includes bounded recent conversation and focus context in
+   the decision prompt.
 7. The assistant response is appended to the session file and completes the hot
    exchange.
 

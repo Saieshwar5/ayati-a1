@@ -502,9 +502,10 @@ function buildInitialState(deps: AgentLoopDeps, config: LoopConfig, runPath: str
     activeLearningContext: deps.activeLearningContext,
     previousSessionSummary: "",
     personalMemorySnapshot: "",
+    activeFocus: [],
     attentionShelf: [],
+    sessionFocusCards: [],
     recentExchanges: [],
-    recentTaskSummaries: [],
   };
 }
 
@@ -533,9 +534,10 @@ function syncTransientMemoryContext(state: LoopState, deps: AgentLoopDeps): void
   state.activeLearningContext = deps.activeLearningContext;
   state.previousSessionSummary = memCtx.previousSessionSummary ?? "";
   state.personalMemorySnapshot = memCtx.personalMemorySnapshot ?? "";
+  state.activeFocus = memCtx.activeFocus ?? [];
   state.attentionShelf = memCtx.attentionShelf ?? [];
+  state.sessionFocusCards = memCtx.sessionFocusCards ?? [];
   state.recentExchanges = memCtx.recentExchanges ?? [];
-  state.recentTaskSummaries = memCtx.recentTaskSummaries ?? [];
   state.activeSessionAttachments = memCtx.activeAttachments ?? [];
 }
 
@@ -732,6 +734,7 @@ function buildTaskSummaryRecord(
     feedbackLabel: completion?.feedback_label,
     actionType: completion?.action_type,
     entityHints: completion?.entity_hints,
+    toolsUsed: normalizeList(state.completedSteps.flatMap((step) => step.toolsUsed ?? [])),
     goalDoneWhen: normalizeList(state.goal.done_when),
     goalRequiredEvidence: normalizeList(state.goal.required_evidence),
     nextAction: deriveNextAction(state),

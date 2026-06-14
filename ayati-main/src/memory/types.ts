@@ -8,7 +8,7 @@ import type {
   SystemEventTrustTier,
 } from "../core/contracts/plugin.js";
 
-export type { FocusShelfItem } from "./focus/types.js";
+export type { FocusCard, FocusScope, FocusShelfItem } from "./focus/types.js";
 
 export interface ConversationTurn {
   role: "user" | "assistant";
@@ -149,7 +149,7 @@ export interface SessionHandoffSnapshot {
   pendingWork: string[];
   keyFacts: string[];
   activeAttachments: ActiveAttachmentRef[];
-  recentTasks: PromptTaskSummary[];
+  sessionFocusCards: FocusShelfItem[];
   recentDialog: ConversationTurn[];
   nextAction: string;
 }
@@ -168,6 +168,8 @@ export interface PromptMemoryContext {
   previousSessionSummary: string;
   personalMemorySnapshot?: string;
   personalMemories?: PromptPersonalMemory[];
+  activeFocus?: FocusShelfItem[];
+  sessionFocusCards?: FocusShelfItem[];
   attentionShelf?: FocusShelfItem[];
   activeTopicLabel?: string;
   activeSessionPath?: string;
@@ -284,6 +286,7 @@ export interface TaskSummaryRecordInput {
   feedbackLabel?: string;
   actionType?: string;
   entityHints?: string[];
+  toolsUsed?: string[];
   goalDoneWhen?: string[];
   goalRequiredEvidence?: string[];
   nextAction?: string;

@@ -18,7 +18,6 @@ import type {
   MemoryRunHandle,
   ConversationExchange,
   FocusShelfItem,
-  PromptTaskSummary,
   TaskSummaryRecordInput,
 } from "../memory/types.js";
 import type { DocumentStore } from "../documents/document-store.js";
@@ -106,9 +105,10 @@ export interface LoopState {
   activeLearningContext?: string;
   previousSessionSummary?: string;
   personalMemorySnapshot?: string;
+  activeFocus?: FocusShelfItem[];
   attentionShelf?: FocusShelfItem[];
+  sessionFocusCards?: FocusShelfItem[];
   recentExchanges: ConversationExchange[];
-  recentTaskSummaries: PromptTaskSummary[];
 }
 
 export type StepVerificationPolicy = "deterministic" | "llm" | "script" | "hybrid";

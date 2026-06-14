@@ -2,19 +2,36 @@ import type {
   ActiveAttachmentRef,
   ConversationExchange,
   FocusShelfItem,
-  PromptTaskSummary,
 } from "../../memory/types.js";
 import type { LoopState } from "../types.js";
 
 const LIMITS = {
   recentConversation: 5,
+  activeFocus: 3,
+  sessionFocusCards: 5,
   attentionShelf: 5,
-  recentTasks: 5,
   activeAttachments: 5,
   textChars: 500,
   summaryChars: 260,
   memoryChars: 1_200,
   learningChars: 1_200,
+};
+
+type ContextFocusItem = {
+  focusId: string;
+  scope: string;
+  type: string;
+  status: string;
+  label: string;
+  summary: string;
+  hints: string[];
+  topArtifacts: string[];
+  openWork: string[];
+  lastTouchedAt: string;
+  lastTouchedLabel: string;
+  attentionScore: number;
+  nextStep?: string;
+  activatedReason?: string;
 };
 
 export interface AgentContextPack {
@@ -31,35 +48,9 @@ export interface AgentContextPack {
       responseKind?: string;
     };
   }>;
-  attentionShelf: Array<{
-    focusId: string;
-    type: string;
-    status: string;
-    label: string;
-    summary: string;
-    hints: string[];
-    topArtifacts: string[];
-    lastTouchedAt: string;
-    lastTouchedLabel: string;
-    attentionScore: number;
-    nextStep?: string;
-  }>;
-  recentTasks: Array<{
-    timestamp: string;
-    runId: string;
-    runPath: string;
-    runStatus: string;
-    taskStatus: string;
-    objective?: string;
-    summary: string;
-    progressSummary?: string;
-    openWork: string[];
-    blockers: string[];
-    keyFacts: string[];
-    evidence: string[];
-    nextAction?: string;
-    attachmentNames: string[];
-  }>;
+  activeFocus: ContextFocusItem[];
+  sessionFocusCards: ContextFocusItem[];
+  attentionShelf: ContextFocusItem[];
   activeAttachments: Array<{
     documentId: string;
     displayName: string;
@@ -78,8 +69,9 @@ export interface AgentContextPack {
 export function buildAgentContextPack(state: LoopState): AgentContextPack {
   return {
     currentInput: truncate(state.userMessage, LIMITS.textChars),
+    activeFocus: compactFocusShelf(state.activeFocus ?? [], LIMITS.activeFocus),
+    sessionFocusCards: compactFocusShelf(state.sessionFocusCards ?? [], LIMITS.sessionFocusCards),
     attentionShelf: compactAttentionShelf(state.attentionShelf ?? []),
-    recentTasks: compactRecentTasks(state.recentTaskSummaries),
     activeAttachments: compactActiveAttachments(state.activeSessionAttachments ?? []),
     ...(state.previousSessionSummary?.trim()
       ? { previousSessionSummary: truncate(state.previousSessionSummary, LIMITS.memoryChars) }
@@ -94,19 +86,26 @@ export function buildAgentContextPack(state: LoopState): AgentContextPack {
   };
 }
 
-function compactAttentionShelf(items: FocusShelfItem[]): AgentContextPack["attentionShelf"] {
-  return items.slice(0, LIMITS.attentionShelf).map((item) => ({
+function compactAttentionShelf(items: FocusShelfItem[]): ContextFocusItem[] {
+  return compactFocusShelf(items, LIMITS.attentionShelf);
+}
+
+function compactFocusShelf(items: FocusShelfItem[], limit: number): ContextFocusItem[] {
+  return items.slice(0, limit).map((item) => ({
     focusId: item.focusId,
+    scope: item.scope,
     type: item.type,
     status: item.status,
     label: truncate(item.label, 120),
     summary: truncate(item.summary, LIMITS.summaryChars),
     hints: item.hints.slice(0, 8).map((hint) => truncate(hint, 80)),
     topArtifacts: item.topArtifacts.slice(0, 5).map((artifact) => truncate(artifact, 160)),
+    openWork: compactList(item.openWork, 5, 180),
     lastTouchedAt: item.lastTouchedAt,
     lastTouchedLabel: item.lastTouchedLabel,
     attentionScore: Math.round(item.attentionScore * 1000) / 1000,
     ...(item.nextStep?.trim() ? { nextStep: truncate(item.nextStep, LIMITS.summaryChars) } : {}),
+    ...(item.activatedReason?.trim() ? { activatedReason: truncate(item.activatedReason, 160) } : {}),
   }));
 }
 
@@ -128,25 +127,6 @@ function compactRecentConversation(exchanges: ConversationExchange[], currentRun
         },
       } : {}),
     }));
-}
-
-function compactRecentTasks(tasks: PromptTaskSummary[]): AgentContextPack["recentTasks"] {
-  return tasks.slice(0, LIMITS.recentTasks).map((task) => ({
-    timestamp: task.timestamp,
-    runId: task.runId,
-    runPath: task.runPath,
-    runStatus: task.runStatus,
-    taskStatus: task.taskStatus,
-    ...(task.objective?.trim() ? { objective: truncate(task.objective, LIMITS.summaryChars) } : {}),
-    summary: truncate(task.summary, LIMITS.summaryChars),
-    ...(task.progressSummary?.trim() ? { progressSummary: truncate(task.progressSummary, LIMITS.summaryChars) } : {}),
-    openWork: compactList(task.openWork, 5, 180),
-    blockers: compactList(task.blockers, 4, 180),
-    keyFacts: compactList(task.keyFacts, 6, 180),
-    evidence: compactList(task.evidence, 5, 180),
-    ...(task.nextAction?.trim() ? { nextAction: truncate(task.nextAction, 180) } : {}),
-    attachmentNames: compactList(task.attachmentNames, 6, 120),
-  }));
 }
 
 function compactActiveAttachments(attachments: ActiveAttachmentRef[]): AgentContextPack["activeAttachments"] {

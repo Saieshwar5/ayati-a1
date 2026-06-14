@@ -30,6 +30,8 @@ import type {
 import { SessionPersistence } from "./session-persistence.js";
 import type { ActiveSessionInfo, SessionPersistenceOptions } from "./session-persistence.js";
 import { SqliteSystemEventStore } from "./system-event-store.js";
+import { FocusStore } from "./focus/focus-store.js";
+import type { FocusUpsertInput } from "./focus/types.js";
 import { devWarn } from "../shared/index.js";
 
 const RECENT_EXCHANGE_LIMIT = 5;
@@ -51,6 +53,7 @@ export interface MemoryManagerOptions extends SessionPersistenceOptions {
   onSessionClose?: (data: SessionCloseData) => void | Promise<void>;
   personalMemorySnapshotProvider?: (clientId: string) => string;
   sessionTimezone?: string;
+  focusStore?: FocusStore;
 }
 
 interface HotSessionState {
@@ -68,6 +71,8 @@ type TimelineEvent = UserMessageEvent | AssistantResponseEvent | SystemEventEntr
 export class MemoryManager implements SessionMemory {
   private readonly persistence: SessionPersistence;
   private readonly systemEventStore: SqliteSystemEventStore;
+  private readonly focusStore: FocusStore;
+  private readonly ownsFocusStore: boolean;
   private readonly nowProvider: () => Date;
   private readonly onSessionClose?: (data: SessionCloseData) => void | Promise<void>;
   private readonly personalMemorySnapshotProvider?: (clientId: string) => string;
@@ -86,6 +91,12 @@ export class MemoryManager implements SessionMemory {
       dbPath: options?.dbPath,
       dataDir: options?.dataDir,
     });
+    this.focusStore = options?.focusStore ?? new FocusStore({
+      dbPath: options?.dbPath,
+      dataDir: options?.dataDir,
+      now: options?.now,
+    });
+    this.ownsFocusStore = !options?.focusStore;
     this.nowProvider = options?.now ?? (() => new Date());
     this.onSessionClose = options?.onSessionClose;
     this.personalMemorySnapshotProvider = options?.personalMemorySnapshotProvider;
@@ -96,6 +107,7 @@ export class MemoryManager implements SessionMemory {
     this.activeClientId = clientId;
     this.persistence.start();
     this.systemEventStore.start();
+    this.focusStore.start();
     this.restoreTodaysSession(clientId);
   }
 
@@ -110,6 +122,9 @@ export class MemoryManager implements SessionMemory {
     await Promise.all([...this.sessionCloseTasks]);
     this.persistence.stop();
     this.systemEventStore.stop();
+    if (this.ownsFocusStore) {
+      this.focusStore.stop();
+    }
     this.currentSession = null;
   }
 
@@ -242,12 +257,15 @@ export class MemoryManager implements SessionMemory {
     return;
   }
 
-  recordTaskSummary(_clientId: string, _input: TaskSummaryRecordInput): void {
-    return;
+  recordTaskSummary(clientId: string, input: TaskSummaryRecordInput): void {
+    this.queueTaskSummary(clientId, input);
   }
 
-  queueTaskSummary(_clientId: string, _input: TaskSummaryRecordInput): void {
-    return;
+  queueTaskSummary(clientId: string, input: TaskSummaryRecordInput): void {
+    if ((input.toolsUsed?.length ?? 0) === 0) {
+      return;
+    }
+    this.focusStore.upsertSessionFromTaskSummary(taskSummaryToFocusInput(clientId, input, this.nowIso()));
   }
 
   recordSystemEventOutcome(_clientId: string, input: SystemEventOutcomeRecordInput): void {
@@ -279,7 +297,9 @@ export class MemoryManager implements SessionMemory {
       previousSessionSummary: "",
       personalMemorySnapshot: this.personalMemorySnapshotProvider?.(clientId) ?? "",
       personalMemories: [],
-      attentionShelf: [],
+      activeFocus: session ? this.focusStore.getActiveFocus(clientId, session.sessionId, 3) : [],
+      sessionFocusCards: session ? this.focusStore.getSessionShelf(clientId, session.sessionId, 5) : [],
+      attentionShelf: this.focusStore.getGlobalShelf(clientId, 5),
       activeSessionPath: session?.sessionPath ?? "",
       recentTaskSummaries: [],
       activeAttachments: [],
@@ -324,6 +344,10 @@ export class MemoryManager implements SessionMemory {
 
   setStaticTokenBudget(_tokens: number): void {
     return;
+  }
+
+  getFocusStore(): FocusStore {
+    return this.focusStore;
   }
 
   private ensureTodaySession(clientId: string, nowIso: string): HotSessionState {
@@ -473,6 +497,7 @@ export class MemoryManager implements SessionMemory {
       session.sessionPath,
     );
     this.persistence.closeSession(session.sessionId, closedAt, reason);
+    this.focusStore.promoteSessionCards(session.clientId, session.sessionId);
     await this.onSessionClose?.({
       sessionId: session.sessionId,
       clientId: session.clientId,
@@ -588,6 +613,36 @@ function extractConversationTurns(events: SessionEvent[], fallbackSessionPath: s
     }
   }
   return turns;
+}
+
+function taskSummaryToFocusInput(clientId: string, input: TaskSummaryRecordInput, createdAt: string): FocusUpsertInput & { sessionId: string } {
+  return {
+    clientId,
+    scope: "session",
+    sessionId: input.sessionId,
+    runId: input.runId,
+    runPath: input.runPath,
+    status: input.status,
+    taskStatus: input.taskStatus,
+    objective: input.objective,
+    summary: input.summary,
+    progressSummary: input.progressSummary,
+    currentFocus: input.currentFocus,
+    completedMilestones: input.completedMilestones,
+    openWork: input.openWork,
+    blockers: input.blockers,
+    keyFacts: input.keyFacts,
+    evidence: input.evidence,
+    userInputNeeded: input.userInputNeeded,
+    userMessage: input.userMessage,
+    assistantResponse: input.assistantResponse,
+    actionType: input.actionType,
+    entityHints: input.entityHints,
+    toolsUsed: input.toolsUsed,
+    nextAction: input.nextAction,
+    attachmentNames: input.attachmentNames,
+    createdAt,
+  };
 }
 
 export type SessionManagerOptions = MemoryManagerOptions;

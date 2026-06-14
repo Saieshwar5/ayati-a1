@@ -8,6 +8,7 @@ export type FocusType =
   | "generic_task";
 
 export type FocusStatus = "active" | "warm" | "dormant" | "archived";
+export type FocusScope = "session" | "global";
 
 export interface FocusArtifactRef {
   kind: "file" | "directory" | "document" | "url" | "run" | "other";
@@ -27,6 +28,9 @@ export interface FocusArtifactRef {
 export interface FocusCard {
   focusId: string;
   clientId: string;
+  scope: FocusScope;
+  sessionId?: string;
+  parentFocusId?: string;
   type: FocusType;
   status: FocusStatus;
   label: string;
@@ -45,25 +49,38 @@ export interface FocusCard {
   createdAt: string;
   lastTouchedAt: string;
   attentionUntil?: string;
+  activeSessionId?: string;
+  activatedAt?: string;
+  activatedReason?: string;
   details: Record<string, unknown>;
 }
 
 export interface FocusShelfItem {
   focusId: string;
+  scope: FocusScope;
+  sessionId?: string;
+  parentFocusId?: string;
   type: FocusType;
   status: FocusStatus;
   label: string;
   summary: string;
   hints: string[];
   topArtifacts: string[];
+  openWork: string[];
   lastTouchedAt: string;
   lastTouchedLabel: string;
   attentionScore: number;
   nextStep?: string;
+  activeSessionId?: string;
+  activatedAt?: string;
+  activatedReason?: string;
 }
 
 export interface FocusUpsertInput {
   clientId: string;
+  scope?: FocusScope;
+  sessionId?: string;
+  parentFocusId?: string;
   runId: string;
   runPath: string;
   status: "completed" | "failed" | "stuck";
@@ -82,6 +99,7 @@ export interface FocusUpsertInput {
   assistantResponse?: string;
   actionType?: string;
   entityHints?: string[];
+  toolsUsed?: string[];
   nextAction?: string;
   attachmentNames?: string[];
   activeAttachments?: Array<{
@@ -103,4 +121,3 @@ export interface FocusAdmissionResult {
   score: number;
   reason: string;
 }
-

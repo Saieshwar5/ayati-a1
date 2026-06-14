@@ -79,19 +79,21 @@ function buildPersistedLikeStateView(state: LoopState): Omit<
   | "activeLearningContext"
   | "previousSessionSummary"
   | "personalMemorySnapshot"
+  | "activeFocus"
   | "attentionShelf"
+  | "sessionFocusCards"
   | "recentExchanges"
-  | "recentTaskSummaries"
   | "activeSessionAttachments"
 > {
   const {
     recentExchanges: _recentExchanges,
-    recentTaskSummaries: _recentTaskSummaries,
     activeSessionAttachments: _activeSessionAttachments,
     activeLearningContext: _activeLearningContext,
     previousSessionSummary: _previousSessionSummary,
     personalMemorySnapshot: _personalMemorySnapshot,
+    activeFocus: _activeFocus,
     attentionShelf: _attentionShelf,
+    sessionFocusCards: _sessionFocusCards,
     ...persistedLikeState
   } = state;
   return persistedLikeState;

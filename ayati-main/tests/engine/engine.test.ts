@@ -436,23 +436,24 @@ describe("IVecEngine", () => {
       ],
       previousSessionSummary: "The user is optimizing agent latency.",
       activeSessionPath: "sessions/s1.md",
-      recentTaskSummaries: [
+      sessionFocusCards: [
         {
-          timestamp: "2026-04-18T08:30:00.000Z",
-          runId: "run-1",
-          runPath: "/tmp/run-1",
-          runStatus: "completed" as const,
-          taskStatus: "done" as const,
-          objective: "Measure the current agent loop",
+          focusId: "focus-latency",
+          scope: "session" as const,
+          sessionId: "s1",
+          type: "investigation" as const,
+          status: "active" as const,
+          label: "Measure the current agent loop",
           summary: "Profiled decision latency",
-          completedMilestones: ["Captured baseline timings"],
+          hints: ["latency", "decision"],
+          topArtifacts: [],
           openWork: [],
-          blockers: [],
-          keyFacts: ["decision is the first agent pass"],
-          evidence: ["profiling log"],
-          attachmentNames: [],
+          lastTouchedAt: "2026-04-18T08:30:00.000Z",
+          lastTouchedLabel: "30m ago",
+          attentionScore: 0.76,
         },
       ],
+      attentionShelf: [],
     };
     getPromptMemoryContext.mockImplementation(() => memoryContext);
 

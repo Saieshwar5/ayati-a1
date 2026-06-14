@@ -153,33 +153,50 @@ describe("agentLoop", () => {
           ],
           previousSessionSummary: "Earlier work created the todo app shell.",
           personalMemorySnapshot: "- Prefers concise implementation notes.",
+          activeFocus: [{
+            focusId: "focus_todo",
+            scope: "global",
+            type: "artifact_work",
+            status: "active",
+            label: "todo app",
+            summary: "Created todo app shell.",
+            hints: ["todo app", "responsive"],
+            topArtifacts: ["todo/index.html"],
+            openWork: ["make responsive"],
+            lastTouchedAt: "2026-06-12T09:01:00.000Z",
+            lastTouchedLabel: "10m ago",
+            attentionScore: 0.92,
+            activatedAt: "2026-06-12T09:09:00.000Z",
+            activatedReason: "current follow-up",
+          }],
           attentionShelf: [{
             focusId: "focus_todo",
+            scope: "global",
             type: "artifact_work",
             status: "warm",
             label: "todo app",
             summary: "Created todo app shell.",
             hints: ["todo app", "responsive"],
             topArtifacts: ["todo/index.html"],
+            openWork: ["make responsive"],
             lastTouchedAt: "2026-06-12T09:01:00.000Z",
             lastTouchedLabel: "10m ago",
             attentionScore: 0.82,
           }],
-          recentTaskSummaries: [{
-            timestamp: "2026-06-12T09:01:00.000Z",
-            runId: "old-run",
-            runPath: "data/runs/old-run",
-            runStatus: "completed",
-            taskStatus: "likely_done",
-            objective: "Create todo app",
-            summary: "Created todo app shell.",
-            progressSummary: "Wrote initial files.",
-            completedMilestones: ["write_files completed"],
+          sessionFocusCards: [{
+            focusId: "focus_todo_session",
+            scope: "session",
+            sessionId: "s1",
+            type: "artifact_work",
+            status: "active",
+            label: "todo app",
+            summary: "Wrote initial files.",
+            hints: ["todo app"],
+            topArtifacts: ["todo/index.html"],
             openWork: ["make responsive"],
-            blockers: [],
-            keyFacts: ["todo/index.html exists"],
-            evidence: ["write_files verified"],
-            attachmentNames: [],
+            lastTouchedAt: "2026-06-12T09:01:00.000Z",
+            lastTouchedLabel: "10m ago",
+            attentionScore: 0.88,
           }],
           activeAttachments: [],
         }),
@@ -216,13 +233,15 @@ describe("agentLoop", () => {
       expect(stateView.context.runtime).toBeUndefined();
       expect(stateView.context.session).toBeUndefined();
       expect(stateView.context.recentSystemActivity).toBeUndefined();
+      expect(stateView.context.activeFocus[0].focusId).toBe("focus_todo");
       expect(stateView.context.attentionShelf[0].focusId).toBe("focus_todo");
       expect(stateView.context.recentConversation).toHaveLength(1);
       expect(stateView.context.recentConversation[0].user.content).toBe("Build a todo app");
       expect(stateView.context.recentConversation[0].runId).toBe("old-run");
       expect(stateView.context.recentActivity).toBeUndefined();
       expect(stateView.context.recentExact).toBeUndefined();
-      expect(stateView.context.recentTasks[0].openWork).toEqual(["make responsive"]);
+      expect(stateView.context.recentTasks).toBeUndefined();
+      expect(stateView.context.sessionFocusCards[0].openWork).toEqual(["make responsive"]);
       expect(stateView.context.previousSessionSummary).toContain("todo app shell");
       expect(stateView.context.personalMemorySnapshot).toContain("concise");
     } finally {

@@ -2,8 +2,8 @@ import type { LlmProvider } from "../core/contracts/provider.js";
 import type { LlmResponseFormat } from "../core/contracts/llm-protocol.js";
 import type {
   ConversationTurn,
+  FocusShelfItem,
   PromptMemoryContext,
-  PromptTaskSummary,
   TaskSummaryTaskStatus,
 } from "../memory/types.js";
 import type { ToolDefinition } from "../skills/types.js";
@@ -11,7 +11,7 @@ import type { ToolDefinition } from "../skills/types.js";
 const MIN_ASK_CONFIDENCE = 0.75;
 const MAX_TEXT_CHARS = 1_200;
 const MAX_RESPONSE_CHARS = 3_000;
-const MAX_RECENT_TASKS = 5;
+const MAX_FOCUS_CARDS = 5;
 const MAX_CONVERSATION_TURNS = 8;
 
 const REFLECTION_RESPONSE_FORMAT: LlmResponseFormat = {
@@ -177,7 +177,8 @@ function buildReflectionUserPrompt(input: PulseProposalReflectionInput): string 
     currentUserMessage: truncateText(input.currentUserMessage),
     finalAssistantResponse: truncateText(input.assistantResponse, MAX_RESPONSE_CHARS),
     taskSummary: compactReflectionTaskSummary(input.taskSummary),
-    recentTaskSummaries: compactRecentTasks(memoryContext.recentTaskSummaries ?? []),
+    sessionFocusCards: compactFocusCards(memoryContext.sessionFocusCards ?? []),
+    attentionShelf: compactFocusCards(memoryContext.attentionShelf ?? []),
     personalMemorySnapshot: truncateText(memoryContext.personalMemorySnapshot ?? ""),
     previousSessionSummary: truncateText(memoryContext.previousSessionSummary ?? ""),
     recentConversation: compactConversation(memoryContext.conversationTurns ?? []),
@@ -206,17 +207,18 @@ function compactReflectionTaskSummary(summary: PulseProposalReflectionTaskSummar
   };
 }
 
-function compactRecentTasks(tasks: PromptTaskSummary[]): Array<Record<string, unknown>> {
-  return tasks.slice(0, MAX_RECENT_TASKS).map((task) => ({
-    timestamp: task.timestamp,
-    runStatus: task.runStatus,
-    taskStatus: task.taskStatus,
-    objective: truncateText(task.objective ?? ""),
-    summary: truncateText(task.summary),
-    userMessage: truncateText(task.userMessage ?? ""),
-    assistantResponseKind: task.assistantResponseKind,
-    actionType: task.actionType,
-    entityHints: task.entityHints?.slice(0, 8),
+function compactFocusCards(cards: FocusShelfItem[]): Array<Record<string, unknown>> {
+  return cards.slice(0, MAX_FOCUS_CARDS).map((card) => ({
+    focusId: card.focusId,
+    scope: card.scope,
+    type: card.type,
+    status: card.status,
+    label: truncateText(card.label),
+    summary: truncateText(card.summary),
+    hints: card.hints.slice(0, 8),
+    openWork: card.openWork.slice(0, 5).map((item) => truncateText(item, 240)),
+    nextStep: truncateText(card.nextStep ?? "", 240),
+    topArtifacts: card.topArtifacts.slice(0, 5),
   }));
 }
 

@@ -105,6 +105,55 @@ describe("daily session manager", () => {
     await restored.shutdown();
   });
 
+  it("stores tool-using task summaries as session focus cards only", async () => {
+    let now = new Date("2026-06-12T10:00:00.000Z");
+    const dataDir = tempDataDir();
+    const memory = manager(dataDir, () => now);
+    memory.initialize("local");
+
+    const run = memory.beginRun("local", "build the todo app");
+    memory.queueTaskSummary("local", {
+      runId: "no-tools",
+      sessionId: run.sessionId,
+      runPath: "data/runs/no-tools",
+      status: "completed",
+      objective: "Answer a simple question",
+      summary: "Answered directly without tools.",
+      toolsUsed: [],
+    });
+    now = new Date("2026-06-12T10:01:00.000Z");
+    memory.queueTaskSummary("local", {
+      runId: run.runId,
+      sessionId: run.sessionId,
+      runPath: "data/runs/tool-run",
+      status: "completed",
+      taskStatus: "not_done",
+      objective: "Build todo app",
+      summary: "Created todo app shell in todo/index.html.",
+      progressSummary: "Initial files are written.",
+      openWork: ["make responsive"],
+      keyFacts: ["todo/index.html exists"],
+      evidence: ["write_files verified"],
+      toolsUsed: ["write_files"],
+    });
+
+    const ctx = memory.getPromptMemoryContext();
+    expect(ctx.sessionFocusCards).toHaveLength(1);
+    expect(ctx.sessionFocusCards?.[0]).toMatchObject({
+      scope: "session",
+      sessionId: run.sessionId,
+      label: "Build todo app",
+      openWork: ["make responsive"],
+    });
+    expect(ctx.recentTaskSummaries).toEqual([]);
+
+    await memory.flushPersistence();
+    const sessionFile = join(memoryDataDirFromContext(ctx.activeSessionPath), "");
+    const content = readFileSync(sessionFile, "utf8");
+    expect(content).not.toContain("task_summary");
+    await memory.shutdown();
+  });
+
   it("creates a new session when the local date changes", async () => {
     let now = new Date("2026-06-12T23:59:00.000Z");
     const dataDir = tempDataDir();

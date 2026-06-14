@@ -6,7 +6,9 @@ Daemon communication flow:
 2. Current CLI path: `ayati-cli` sends `{ type: "chat", content, attachments? }` to `ws://localhost:8080`.
 3. `WsServer` parses JSON and forwards payloads to `IVecEngine.handleMessage`.
 4. `IVecEngine` parses chat input, stores session turns, builds static decision context, and enters the agent runner.
-5. The runner builds a structured context pack from session memory, attention shelf, recent tasks, active attachments, personal memory, and learning context.
+5. The runner builds a structured context pack from session memory, active focus
+   cards, session focus cards, attention shelf, active attachments, personal
+   memory, and learning context.
 6. The decision model chooses `reply`, `ask_user`, or `act`.
 7. If tool calls are requested, the action executor validates the plan and dispatches through registered tool definitions.
 8. Tool contracts/assertions turn results into verified facts and progress evidence.
@@ -22,12 +24,19 @@ Client model:
 Memory and focus flow:
 
 1. User interactions are stored as session turns.
-2. Task summaries and active attachments can create or update focus cards.
-3. The attention shelf selects compact, high-relevance focus summaries for future decisions.
-4. Session close can enqueue memory consolidation and episodic indexing.
-5. Personal memory stores stable facts and preferences for personalization.
-6. Episodic memory indexes closed sessions for future recall when embeddings are available.
-7. The context pack renders relevant memory back into future agent runs as bounded JSON.
+2. Tool-using task summaries create session focus cards in `memory.sqlite`.
+3. Direct replies and no-tool interactions do not create focus cards.
+4. Focus tools can search, get, activate, deactivate, update, and list focus
+   cards.
+5. Activated cards appear in `activeFocus` for the current session.
+6. Session close promotes durable session focus cards into global attention
+   shelf cards.
+7. The attention shelf selects compact, high-relevance global focus summaries
+   for future decisions.
+8. Session close can enqueue memory consolidation and episodic indexing.
+9. Personal memory stores stable facts and preferences for personalization.
+10. Episodic memory indexes closed sessions for future recall when embeddings are available.
+11. The context pack renders relevant memory back into future agent runs as bounded JSON.
 
 Tool/action flow:
 

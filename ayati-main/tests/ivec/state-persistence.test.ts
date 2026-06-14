@@ -70,7 +70,9 @@ describe("state-persistence", () => {
         completedSteps: [],
         runPath,
         failureHistory: [],
-        recentTaskSummaries: [],
+        activeFocus: [],
+        sessionFocusCards: [],
+        attentionShelf: [],
       };
       writeState(runPath, state);
       const loaded = readState(runPath);
@@ -79,6 +81,9 @@ describe("state-persistence", () => {
       expect(loaded!.finalOutput).toBe("");
       expect(loaded).not.toHaveProperty("recentRunLedgers");
       expect(loaded).not.toHaveProperty("recentTaskSummaries");
+      expect(loaded).not.toHaveProperty("activeFocus");
+      expect(loaded).not.toHaveProperty("sessionFocusCards");
+      expect(loaded).not.toHaveProperty("attentionShelf");
     } finally {
       cleanup();
     }
@@ -107,7 +112,9 @@ describe("state-persistence", () => {
         completedSteps: [],
         runPath,
         failureHistory: [],
-        recentTaskSummaries: [{ runId: "r-1", runPath: "/tmp/r-1", status: "completed", summary: "done" }],
+        activeFocus: [],
+        sessionFocusCards: [],
+        attentionShelf: [],
         activeSessionAttachments: [],
       };
 
@@ -126,11 +133,17 @@ describe("state-persistence", () => {
         iteration?: number;
         recentRunLedgers?: unknown;
         recentTaskSummaries?: unknown;
+        activeFocus?: unknown;
+        sessionFocusCards?: unknown;
+        attentionShelf?: unknown;
       };
       expect(persisted.finalOutput).toBe("latest");
       expect(persisted.iteration).toBe(2);
       expect(persisted).not.toHaveProperty("recentRunLedgers");
       expect(persisted).not.toHaveProperty("recentTaskSummaries");
+      expect(persisted).not.toHaveProperty("activeFocus");
+      expect(persisted).not.toHaveProperty("sessionFocusCards");
+      expect(persisted).not.toHaveProperty("attentionShelf");
     } finally {
       cleanup();
     }
@@ -162,6 +175,9 @@ describe("state-persistence", () => {
         sessionHistory: [{ role: "user", content: "hi", timestamp: "2026-03-07T00:00:00.000Z", sessionPath: "sessions/x.md" }],
         recentRunLedgers: [{ timestamp: "2026-03-07T00:00:00.000Z", runId: "r-1", runPath: "/tmp/r-1", state: "completed", status: "completed", summary: "done" }],
         recentTaskSummaries: [],
+        activeFocus: [],
+        sessionFocusCards: [],
+        attentionShelf: [],
         recentSystemActivity: [],
       };
 
@@ -172,6 +188,9 @@ describe("state-persistence", () => {
       expect(loaded).not.toHaveProperty("sessionHistory");
       expect(loaded).not.toHaveProperty("recentRunLedgers");
       expect(loaded).not.toHaveProperty("recentTaskSummaries");
+      expect(loaded).not.toHaveProperty("activeFocus");
+      expect(loaded).not.toHaveProperty("sessionFocusCards");
+      expect(loaded).not.toHaveProperty("attentionShelf");
     } finally {
       cleanup();
     }

@@ -1,6 +1,7 @@
 import { resolve } from "node:path";
 import type { LlmProvider } from "../core/index.js";
 import { MemoryManager } from "../memory/session-manager.js";
+import { FocusStore } from "../memory/focus/index.js";
 import { loadMemoryPolicy } from "../memory/personal/memory-policy.js";
 import { PersonalMemoryStore } from "../memory/personal/personal-memory-store.js";
 import { PersonalMemorySnapshotCache } from "../memory/personal/personal-memory-snapshot-cache.js";
@@ -29,6 +30,7 @@ export interface MemoryRuntime {
   personalMemoryStore: PersonalMemoryStore;
   personalMemorySnapshotCache: PersonalMemorySnapshotCache;
   personalMemoryConsolidator: MemoryConsolidator;
+  focusStore: FocusStore;
   memoryIndexer: EpisodicMemoryIndexer;
   memoryRetriever: EpisodicMemoryRetriever;
   episodicMemoryController: EpisodicMemoryController;
@@ -50,6 +52,9 @@ export async function createMemoryRuntime(options: MemoryRuntimeOptions): Promis
     projectRoot,
   });
   await personalMemorySnapshotCache.refresh(clientId, "startup");
+  const focusStore = new FocusStore({
+    dataDir: memoryDataDir,
+  });
 
   const episodicSettingsStore = new EpisodicMemorySettingsStore({
     dataDir: episodicDataDir,
@@ -95,6 +100,7 @@ export async function createMemoryRuntime(options: MemoryRuntimeOptions): Promis
 
   let personalMemoryConsolidator: MemoryConsolidator | null = null;
   const sessionMemory = new MemoryManager({
+    focusStore,
     personalMemorySnapshotProvider: (snapshotClientId) => personalMemorySnapshotCache.getSnapshot(snapshotClientId),
     onSessionClose: (data) => {
       personalMemoryConsolidator?.enqueueSession({
@@ -138,6 +144,7 @@ export async function createMemoryRuntime(options: MemoryRuntimeOptions): Promis
     personalMemoryStore,
     personalMemorySnapshotCache,
     personalMemoryConsolidator,
+    focusStore,
     memoryIndexer,
     memoryRetriever,
     episodicMemoryController,

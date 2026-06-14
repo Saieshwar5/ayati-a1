@@ -8,9 +8,10 @@ type PersistedLoopState = Omit<
   | "activeLearningContext"
   | "previousSessionSummary"
   | "personalMemorySnapshot"
+  | "activeFocus"
   | "attentionShelf"
+  | "sessionFocusCards"
   | "recentExchanges"
-  | "recentTaskSummaries"
   | "activeSessionAttachments"
 >;
 const runArtifactWriteQueues = new Map<string, Promise<void>>();
@@ -93,6 +94,8 @@ export function readState(runPath: string): Partial<LoopState> | null {
     delete (parsed as Record<string, unknown>)["recentExchanges"];
     delete (parsed as Record<string, unknown>)["recentRunLedgers"];
     delete (parsed as Record<string, unknown>)["recentTaskSummaries"];
+    delete (parsed as Record<string, unknown>)["activeFocus"];
+    delete (parsed as Record<string, unknown>)["sessionFocusCards"];
     delete (parsed as Record<string, unknown>)["activeSessionAttachments"];
     delete (parsed as Record<string, unknown>)["recentSystemActivity"];
     delete (parsed as Record<string, unknown>)["runtimeContext"];
@@ -109,12 +112,13 @@ export function readState(runPath: string): Partial<LoopState> | null {
 function buildPersistedLoopState(state: LoopState): PersistedLoopState {
   const {
     recentExchanges: _recentExchanges,
-    recentTaskSummaries: _recentTaskSummaries,
     activeSessionAttachments: _activeSessionAttachments,
     activeLearningContext: _activeLearningContext,
     previousSessionSummary: _previousSessionSummary,
     personalMemorySnapshot: _personalMemorySnapshot,
+    activeFocus: _activeFocus,
     attentionShelf: _attentionShelf,
+    sessionFocusCards: _sessionFocusCards,
     ...persisted
   } = state;
   return {
