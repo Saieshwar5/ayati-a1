@@ -162,7 +162,10 @@ export async function main(): Promise<void> {
     config: runtimeConfig,
   });
 
-  staticContext = await loadStaticContext({ toolDefinitions: skills.runtimeToolDefs });
+  staticContext = await loadStaticContext({
+    skillsProvider: skills.staticSkillsProvider,
+    toolDefinitions: skills.runtimeToolDefs,
+  });
   appendSkillBlocks(staticContext, skills.additionalSkills);
 
   const uploadServer = new UploadServer({
@@ -204,8 +207,7 @@ export async function main(): Promise<void> {
     provider,
     staticContext,
     toolExecutor: skills.toolExecutor,
-    externalSkillBroker: skills.externalSkillBroker,
-    externalSkillRegistry: skills.externalSkillRegistry,
+    skillActivationManager: skills.skillActivationManager,
     sessionMemory: memory.sessionMemory,
     dataDir: resolve(projectRoot, "data"),
     documentStore: content.documentStore,

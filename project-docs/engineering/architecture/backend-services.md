@@ -17,7 +17,7 @@ Major backend services and stores:
 - `SystemIngressService`: normalizes and queues internal/external system events for daemon processing.
 - `SystemEventWorker`: processes queued system events through the engine.
 - `PluginRegistry`: starts and stops plugins.
-- `ExternalSkillRegistry` and external skill broker: discover and mount runtime skills.
+- `SkillActivationManager`: mounts dynamic built-in skills into the tool executor when needed.
 
 Daemon-specific responsibilities:
 

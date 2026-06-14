@@ -31,7 +31,7 @@ Memory and focus flow:
 
 Tool/action flow:
 
-1. The daemon exposes tools through built-in skills and external skill brokering.
+1. The daemon exposes kernel tools by default and can dynamically activate additional built-in skills.
 2. The decision model selects tool calls only when needed for the user goal.
 3. The action executor validates plan shape, selected tools, dependencies, and unsafe parallel filesystem overlap.
 4. The tool executor validates and executes requests.

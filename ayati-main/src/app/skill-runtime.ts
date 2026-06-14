@@ -16,7 +16,7 @@ import type { WorkspaceOrchestrator } from "../ui/workspace-orchestrator.js";
 import type { AyatiRuntimeConfig } from "../config/runtime-config.js";
 import { builtInSkillsProvider } from "../skills/provider.js";
 import { createToolExecutor, type ToolExecutor } from "../skills/tool-executor.js";
-import type { SkillDefinition, ToolDefinition } from "../skills/types.js";
+import type { SkillDefinition, SkillsProvider, SkillPromptBlock, ToolDefinition } from "../skills/types.js";
 import { createRecallSkill } from "../skills/builtins/recall/index.js";
 import { createMemorySkill } from "../skills/builtins/memory/index.js";
 import { createPythonSkill } from "../skills/builtins/python/index.js";
@@ -27,12 +27,8 @@ import { createFilesSkill } from "../skills/builtins/files/index.js";
 import { createLearningFileSkill } from "../skills/builtins/learning-v2/index.js";
 import { createUiSkill } from "../skills/builtins/ui/index.js";
 import { createSkillBrokerSkill } from "../skills/builtins/skill-broker/index.js";
-import {
-  createExternalSkillBroker,
-  ExternalSkillRegistry,
-  type ExternalSkillBroker,
-  type ExternalSkillScanRoot,
-} from "../skills/external/index.js";
+import { SkillActivationManager } from "../skills/activation-manager.js";
+import { createSkillBundle, SkillCatalog } from "../skills/skill-catalog.js";
 
 export interface SkillRuntimeOptions {
   projectRoot: string;
@@ -53,15 +49,19 @@ export interface SkillRuntimeOptions {
 
 export interface SkillRuntime {
   toolExecutor: ToolExecutor;
-  externalSkillBroker: ExternalSkillBroker;
-  externalSkillRegistry: ExternalSkillRegistry;
+  skillActivationManager: SkillActivationManager;
+  dynamicSkillCatalog: SkillCatalog;
+  staticSkillsProvider: SkillsProvider;
   baseToolDefs: ToolDefinition[];
   runtimeToolDefs: ToolDefinition[];
   additionalSkills: SkillDefinition[];
 }
 
 export async function createSkillRuntime(options: SkillRuntimeOptions): Promise<SkillRuntime> {
-  const enabledTools = await builtInSkillsProvider.getAllTools();
+  const builtInSkills = await builtInSkillsProvider.getAllSkills();
+  const kernelSkillIds = new Set(["shell", "filesystem"]);
+  const kernelSkills = builtInSkills.filter((skill) => kernelSkillIds.has(skill.id));
+  const dynamicBuiltInSkills = builtInSkills.filter((skill) => !kernelSkillIds.has(skill.id));
 
   const runtimeSkills: SkillDefinition[] = [
     createRecallSkill({
@@ -94,42 +94,33 @@ export async function createSkillRuntime(options: SkillRuntimeOptions): Promise<
     }),
   ];
 
-  const baseToolDefs = [
-    ...enabledTools,
-    ...runtimeSkills.flatMap((skill) => skill.tools),
-  ];
+  const dynamicSkillCatalog = new SkillCatalog([
+    ...dynamicBuiltInSkills,
+    ...runtimeSkills,
+  ].map((skill) => createSkillBundle(skill)));
+
+  const baseToolDefs = kernelSkills.flatMap((skill) => skill.tools);
   const toolExecutor = createToolExecutor(baseToolDefs);
-  const externalSkillRoots: ExternalSkillScanRoot[] = [
-    { skillsDir: resolve(options.projectRoot, "data", "skills"), source: "project" },
-  ];
-  const externalSkillBroker = createExternalSkillBroker({
-    roots: externalSkillRoots,
-    cachePath: resolve(options.projectRoot, "data", "skills", "catalog.json"),
-    secretMappingPath: resolve(options.projectRoot, "context", "skill-secrets.json"),
-    policyPath: resolve(options.projectRoot, "context", "skill-policy.json"),
+
+  const skillActivationManager = new SkillActivationManager({
+    catalog: dynamicSkillCatalog,
     toolExecutor,
   });
-  await externalSkillBroker.initialize();
 
-  const skillBrokerSkill = createSkillBrokerSkill(externalSkillBroker);
+  const skillBrokerSkill = createSkillBrokerSkill(skillActivationManager);
   toolExecutor.mount?.("static:skill-broker", skillBrokerSkill.tools, {
     scope: "static",
     description: skillBrokerSkill.description,
   });
 
-  const externalSkillRegistry = new ExternalSkillRegistry({
-    roots: externalSkillRoots,
-    secretMappingPath: resolve(options.projectRoot, "context", "skill-secrets.json"),
-    policyPath: resolve(options.projectRoot, "context", "skill-policy.json"),
-  });
-  await externalSkillRegistry.initialize();
-
-  const additionalSkills = [...runtimeSkills, skillBrokerSkill];
+  const staticSkillsProvider = createStaticSkillsProvider([...kernelSkills, skillBrokerSkill]);
+  const additionalSkills: SkillDefinition[] = [];
 
   return {
     toolExecutor,
-    externalSkillBroker,
-    externalSkillRegistry,
+    skillActivationManager,
+    dynamicSkillCatalog,
+    staticSkillsProvider,
     baseToolDefs,
     runtimeToolDefs: [...baseToolDefs, ...skillBrokerSkill.tools],
     additionalSkills,
@@ -140,4 +131,20 @@ export function appendSkillBlocks(staticContext: StaticContext, skills: SkillDef
   for (const skill of skills) {
     staticContext.skillBlocks.push({ id: skill.id, content: skill.promptBlock });
   }
+}
+
+function createStaticSkillsProvider(skills: SkillDefinition[]): SkillsProvider {
+  return {
+    async getAllSkills(): Promise<SkillDefinition[]> {
+      return skills;
+    },
+
+    async getAllSkillBlocks(): Promise<SkillPromptBlock[]> {
+      return skills.map((skill) => ({ id: skill.id, content: skill.promptBlock }));
+    },
+
+    async getAllTools(): Promise<ToolDefinition[]> {
+      return skills.flatMap((skill) => skill.tools);
+    },
+  };
 }

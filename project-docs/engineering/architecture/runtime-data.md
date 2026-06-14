@@ -11,7 +11,6 @@ Known runtime data categories:
 - Document storage and document vectors.
 - Managed file library.
 - Runtime provider configuration.
-- External skill catalog/cache data.
 - Generated run artifacts.
 - System-event queues.
 - Plugin state.

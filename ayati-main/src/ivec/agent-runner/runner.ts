@@ -84,7 +84,7 @@ export async function runAgentLoop(
         `[${deps.clientId}] failed to persist optimization metrics: ${error instanceof Error ? error.message : String(error)}`,
       );
     });
-    deps.externalSkillBroker?.deactivate({}, {
+    deps.skillActivationManager?.deactivateRun({
       clientId: deps.clientId,
       runId: deps.runHandle.runId,
       sessionId: deps.runHandle.sessionId,
@@ -138,12 +138,17 @@ export async function runAgentLoop(
       return finalize({ status: "completed", content: state.finalOutput });
     }
 
-    const visibleTools = deps.toolExecutor?.definitions({
+    const toolContext = {
       clientId: deps.clientId,
       runId: deps.runHandle.runId,
       sessionId: deps.runHandle.sessionId,
       stepNumber: state.iteration,
       ...(deps.uiContext ? { uiContext: deps.uiContext } : {}),
+    };
+    await deps.skillActivationManager?.prepareForDecision(state, toolContext);
+
+    const visibleTools = deps.toolExecutor?.definitions({
+      ...toolContext,
     }) ?? deps.toolDefinitions;
     const selectedTools = selectToolsForDecision(state, visibleTools, config.maxSelectedTools);
     const decision = await callAgentDecision({
@@ -226,6 +231,13 @@ export async function runAgentLoop(
       step: state.iteration,
       executionStatus: stepResult.stepSummary.executionStatus,
       validationStatus: stepResult.stepSummary.validationStatus,
+    });
+    deps.skillActivationManager?.cleanupAfterStep(stepResult.stepSummary.toolsUsed ?? [], {
+      clientId: deps.clientId,
+      runId: deps.runHandle.runId,
+      sessionId: deps.runHandle.sessionId,
+      stepNumber: state.iteration,
+      ...(deps.uiContext ? { uiContext: deps.uiContext } : {}),
     });
 
     if (stepResult.stepSummary.outcome === "failed") {

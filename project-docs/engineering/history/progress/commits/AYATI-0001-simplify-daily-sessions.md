@@ -55,4 +55,4 @@ Both commands passed after the simplification.
 
 The full backend test suite still has unrelated environment/tool failures:
 socket bind `EPERM` in server/plugin tests and command stdout expectations in
-python/external skill tests.
+Python tool tests.

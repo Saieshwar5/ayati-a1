@@ -24,6 +24,7 @@ export interface ToolExecutionContext {
 export type JsonSchema = Record<string, unknown>;
 
 export type ToolDomain =
+  | "general"
   | "filesystem"
   | "shell"
   | "calculator"
@@ -37,8 +38,7 @@ export type ToolDomain =
   | "attachments"
   | "datasets"
   | "recall"
-  | "files"
-  | "external";
+  | "files";
 
 export interface ToolAnnotations {
   domain: ToolDomain;

@@ -10,14 +10,11 @@ High-risk runtime capabilities:
 - Filesystem tools.
 - Python tool.
 - SQLite database tools.
-- External skill broker.
 - Plugin webhooks.
 - Upload handling.
 
 Agents should not weaken validation or policy files casually. Review these files before changing tool or event permissions:
 
-- `ayati-main/context/skill-policy.json`
-- `ayati-main/context/skill-secrets.json`
 - `ayati-main/context/system-event-policy.json`
 - `ayati-main/context/memory-policy.json`
 

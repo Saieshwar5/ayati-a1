@@ -13,7 +13,7 @@ Avoid these:
 - Adding a new tool without validation and tests.
 - Changing prompt context without considering token budget, the structured context pack, and attention shelf behavior.
 - Writing runtime state into source-controlled docs.
-- Ignoring `context/skill-policy.json` or `context/system-event-policy.json`.
+- Ignoring `context/system-event-policy.json`.
 - Breaking CLI/server message contracts.
 - Assuming a browser frontend exists in the current active product.
 - Running tests that require real provider credentials without isolating them.

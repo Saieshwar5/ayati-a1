@@ -27,13 +27,6 @@ Future communication channels can include:
 - Email-first workflows.
 - Other chat apps or notification surfaces.
 
-External skills:
-
-- Runtime skill manifests are discovered from `ayati-main/data/skills`.
-- Catalog cache path: `ayati-main/data/skills/catalog.json`.
-- Secret mapping: `ayati-main/context/skill-secrets.json`.
-- Policy file: `ayati-main/context/skill-policy.json`.
-
 Integration rule:
 
 - Communication channels should feed normalized messages/events into `ayati-main`.

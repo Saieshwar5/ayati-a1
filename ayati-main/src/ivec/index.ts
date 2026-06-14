@@ -14,8 +14,7 @@ import {
 } from "../pulse/proposal-reflection.js";
 import type { ToolExecutor } from "../skills/tool-executor.js";
 import type { ToolDefinition } from "../skills/types.js";
-import type { ExternalSkillBroker } from "../skills/external/broker.js";
-import type { ExternalSkillRegistry } from "../skills/external/registry.js";
+import type { SkillActivationManager } from "../skills/activation-manager.js";
 import { devLog, devWarn, devError } from "../shared/index.js";
 import type { ManagedDocumentManifest } from "../documents/types.js";
 import type { DocumentStore } from "../documents/document-store.js";
@@ -87,8 +86,7 @@ export interface IVecEngineOptions {
   staticContext?: StaticContext;
   sessionMemory?: SessionMemory;
   toolExecutor?: ToolExecutor;
-  externalSkillBroker?: ExternalSkillBroker;
-  externalSkillRegistry?: ExternalSkillRegistry;
+  skillActivationManager?: SkillActivationManager;
   loopConfig?: Partial<LoopConfig>;
   rotationPolicyConfig?: Partial<RotationPolicyConfig>;
   now?: () => Date;
@@ -108,8 +106,7 @@ export class IVecEngine {
   private readonly provider?: LlmProvider;
   private readonly staticContext?: StaticContext;
   private readonly toolExecutor?: ToolExecutor;
-  private readonly externalSkillBroker?: ExternalSkillBroker;
-  private readonly externalSkillRegistry?: ExternalSkillRegistry;
+  private readonly skillActivationManager?: SkillActivationManager;
   private sessionMemory: SessionMemory;
   private readonly loopConfig?: Partial<LoopConfig>;
   private readonly rotationPolicyConfig?: Partial<RotationPolicyConfig>;
@@ -133,8 +130,7 @@ export class IVecEngine {
     this.provider = options?.provider;
     this.staticContext = options?.staticContext;
     this.toolExecutor = options?.toolExecutor;
-    this.externalSkillBroker = options?.externalSkillBroker;
-    this.externalSkillRegistry = options?.externalSkillRegistry;
+    this.skillActivationManager = options?.skillActivationManager;
     this.sessionMemory = options?.sessionMemory ?? noopSessionMemory;
     this.loopConfig = options?.loopConfig;
     this.rotationPolicyConfig = options?.rotationPolicyConfig;
@@ -226,9 +222,8 @@ export class IVecEngine {
         let result = await agentLoop({
           provider: this.provider,
           toolExecutor: this.toolExecutor,
+          skillActivationManager: this.skillActivationManager,
           toolDefinitions: toolDefs,
-          externalSkillBroker: this.externalSkillBroker,
-          externalSkillRegistry: this.externalSkillRegistry,
           sessionMemory: this.sessionMemory,
           runHandle,
           clientId,
@@ -378,9 +373,8 @@ export class IVecEngine {
       const result = await agentLoop({
         provider: this.provider,
         toolExecutor: this.toolExecutor,
+        skillActivationManager: this.skillActivationManager,
         toolDefinitions: toolDefs,
-        externalSkillBroker: this.externalSkillBroker,
-        externalSkillRegistry: this.externalSkillRegistry,
         sessionMemory: this.sessionMemory,
         runHandle,
         clientId,

@@ -1,8 +1,19 @@
 import type { SkillDefinition, ToolDefinition, ToolExecutionContext, ToolResult } from "../../types.js";
-import type { ExternalSkillBroker } from "../../../skills/external/broker.js";
+import type { SkillActivationManager } from "../../activation-manager.js";
 
 interface SkillDeactivateInput {
   skillId?: string;
+}
+
+interface SkillSearchInput {
+  query?: string;
+  limit?: number;
+}
+
+interface SkillActivateInput {
+  skillId?: string;
+  scope?: "step" | "run" | "session";
+  reason?: string;
 }
 
 function asObject(input: unknown): Record<string, unknown> {
@@ -26,57 +37,137 @@ function jsonResult(value: unknown): ToolResult {
   };
 }
 
-function createSkillListActiveTool(broker: ExternalSkillBroker): ToolDefinition {
+function createSkillSearchTool(manager: SkillActivationManager): ToolDefinition {
   return {
-    name: "skill_list_active",
-    description: "List currently activated external skills and mounted typed external tools.",
+    name: "skill_search",
+    description: "Search compact built-in skill cards by task need before activating full tool schemas.",
     inputSchema: {
       type: "object",
-      properties: {},
-    },
-    selectionHints: {
-      tags: ["external", "catalog", "list", "active"],
-      aliases: ["list_active_external_skills"],
-      examples: ["what external tools are active"],
-      domain: "external",
-      priority: 20,
-    },
-    async execute(_input, context?: ToolExecutionContext): Promise<ToolResult> {
-      return jsonResult(broker.listActive(context));
-    },
-  };
-}
-
-function createSkillDeactivateTool(broker: ExternalSkillBroker): ToolDefinition {
-  return {
-    name: "skill_deactivate",
-    description: "Deactivate one external skill or all active external skills for the current scope.",
-    inputSchema: {
-      type: "object",
+      required: ["query"],
       properties: {
-        skillId: { type: "string" },
+        query: { type: "string", description: "Natural language capability query." },
+        limit: { type: "number", description: "Maximum results to return. Defaults to 5." },
       },
     },
     selectionHints: {
-      tags: ["external", "catalog", "deactivate", "cleanup"],
-      aliases: ["unmount_external_skill", "remove_external_tools"],
-      examples: ["deactivate gws-gmail", "clear active external tools"],
-      domain: "external",
-      priority: 18,
+      tags: ["skill", "search", "catalog", "discover", "activate"],
+      aliases: ["find_skill", "search_tools", "capability_search"],
+      examples: ["find tools for pdf summary", "search database skill"],
+      domain: "skills",
+      priority: 35,
     },
-    async execute(input, context?: ToolExecutionContext): Promise<ToolResult> {
-      const payload = asObject(input) as SkillDeactivateInput;
+    async execute(input): Promise<ToolResult> {
+      const value = asObject(input);
+      const payload = value as SkillSearchInput;
+      const query = readRequiredString(value, "query");
+      if (typeof query !== "string") {
+        return query;
+      }
       return jsonResult({
-        removed: broker.deactivate(payload, context),
+        results: await manager.search({
+          query,
+          limit: typeof payload.limit === "number" ? payload.limit : undefined,
+        }),
       });
     },
   };
 }
 
-function createSkillHealthTool(broker: ExternalSkillBroker): ToolDefinition {
+function createSkillDescribeTool(manager: SkillActivationManager): ToolDefinition {
   return {
-    name: "skill_health",
-    description: "Check readiness for one external skill or the whole external skill catalog, including secrets and dependency checks.",
+    name: "skill_describe",
+    description: "Describe one skill card and its tool summaries before activation.",
+    inputSchema: {
+      type: "object",
+      required: ["skillId"],
+      properties: {
+        skillId: { type: "string", description: "Skill id to describe." },
+      },
+    },
+    selectionHints: {
+      tags: ["skill", "describe", "catalog", "tools"],
+      aliases: ["inspect_skill", "show_skill"],
+      examples: ["describe documents", "show database skill"],
+      domain: "skills",
+      priority: 30,
+    },
+    async execute(input): Promise<ToolResult> {
+      const payload = asObject(input);
+      const skillId = readRequiredString(payload, "skillId");
+      if (typeof skillId !== "string") {
+        return skillId;
+      }
+      const description = await manager.describe(skillId);
+      if (!description) {
+        return { ok: false, error: `Unknown skill: ${skillId}` };
+      }
+      return jsonResult({ skill: description });
+    },
+  };
+}
+
+function createSkillActivateTool(manager: SkillActivationManager): ToolDefinition {
+  return {
+    name: "skill_activate",
+    description: "Activate one built-in skill so its full tool schemas become visible on the next decision step.",
+    inputSchema: {
+      type: "object",
+      required: ["skillId"],
+      properties: {
+        skillId: { type: "string", description: "Skill id to activate." },
+        scope: { type: "string", description: "Optional activation scope: step, run, or session. Defaults to the skill card scope." },
+        reason: { type: "string", description: "Short reason for activation." },
+      },
+    },
+    selectionHints: {
+      tags: ["skill", "activate", "mount", "tools"],
+      aliases: ["load_skill", "enable_skill", "mount_tools"],
+      examples: ["activate documents", "load database tools"],
+      domain: "skills",
+      priority: 40,
+    },
+    async execute(input, context?: ToolExecutionContext): Promise<ToolResult> {
+      const value = asObject(input);
+      const payload = value as SkillActivateInput;
+      const skillId = readRequiredString(value, "skillId");
+      if (typeof skillId !== "string") {
+        return skillId;
+      }
+      const result = await manager.activate({
+        skillId,
+        scope: payload.scope,
+        reason: payload.reason,
+      }, context);
+      return result.ok ? jsonResult(result) : { ok: false, error: result.error ?? `Failed to activate skill: ${skillId}` };
+    },
+  };
+}
+
+function createSkillListActiveTool(manager: SkillActivationManager): ToolDefinition {
+  return {
+    name: "skill_list_active",
+    description: "List currently activated dynamic skills and mounted typed tools.",
+    inputSchema: {
+      type: "object",
+      properties: {},
+    },
+    selectionHints: {
+      tags: ["skill", "catalog", "list", "active"],
+      aliases: ["list_active_skills"],
+      examples: ["what dynamic tools are active"],
+      domain: "skills",
+      priority: 20,
+    },
+    async execute(_input, context?: ToolExecutionContext): Promise<ToolResult> {
+      return jsonResult(manager.listActive(context));
+    },
+  };
+}
+
+function createSkillDeactivateTool(manager: SkillActivationManager): ToolDefinition {
+  return {
+    name: "skill_deactivate",
+    description: "Deactivate one dynamic skill or all active dynamic skills for the current scope.",
     inputSchema: {
       type: "object",
       properties: {
@@ -84,41 +175,44 @@ function createSkillHealthTool(broker: ExternalSkillBroker): ToolDefinition {
       },
     },
     selectionHints: {
-      tags: ["external", "health", "secrets", "dependencies"],
-      aliases: ["check_external_skill_health", "skill_ready"],
-      examples: ["check gws-gmail health", "show external skill readiness"],
-      domain: "external",
+      tags: ["skill", "catalog", "deactivate", "cleanup"],
+      aliases: ["unmount_skill", "remove_dynamic_tools"],
+      examples: ["deactivate documents", "clear active dynamic tools"],
+      domain: "skills",
       priority: 18,
     },
-    async execute(input): Promise<ToolResult> {
-      const payload = asObject(input);
+    async execute(input, context?: ToolExecutionContext): Promise<ToolResult> {
+      const payload = asObject(input) as SkillDeactivateInput;
       return jsonResult({
-        skills: await broker.health(typeof payload.skillId === "string" ? payload.skillId : undefined),
+        removed: manager.deactivate(payload, context),
       });
     },
   };
 }
 
 const SKILL_BROKER_PROMPT_BLOCK = [
-  "External skill management helpers are built in.",
-  "Available external skills are shown as compact skill cards.",
-  "Normal activation uses skill_activate with the exact skill_id.",
-  "After activation, call the mounted tools directly.",
-  "Use skill_list_active to inspect which external skills are currently active.",
-  "Use skill_deactivate to clear external tools you no longer need.",
-  "Use skill_health only when a skill seems blocked or misconfigured.",
+  "Dynamic skill management helpers are built in.",
+  "Most non-kernel skills are shown as compact skill cards instead of always-visible full tool schemas.",
+  "Use skill_search to find a matching skill when the needed capability is not currently active.",
+  "Use skill_describe to inspect one skill before activation when the match is uncertain.",
+  "Use skill_activate with the exact skillId to mount its full tool schemas for the current scope.",
+  "After activation, call the mounted tools directly on the next decision step.",
+  "Use skill_list_active to inspect currently active dynamic skills.",
+  "Use skill_deactivate to clear dynamic tools you no longer need.",
 ].join("\n");
 
-export function createSkillBrokerSkill(broker: ExternalSkillBroker): SkillDefinition {
+export function createSkillBrokerSkill(manager: SkillActivationManager): SkillDefinition {
   return {
     id: "skill-broker",
     version: "2.0.0",
-    description: "Activate and manage external skills and their mounted typed tools.",
-    promptBlock: `${SKILL_BROKER_PROMPT_BLOCK}\n${broker.getPromptBlock()}`,
+    description: "Search, activate, and manage dynamic built-in skills.",
+    promptBlock: `${SKILL_BROKER_PROMPT_BLOCK}\n\n${manager.getPromptBlock()}`,
     tools: [
-      createSkillListActiveTool(broker),
-      createSkillDeactivateTool(broker),
-      createSkillHealthTool(broker),
+      createSkillSearchTool(manager),
+      createSkillDescribeTool(manager),
+      createSkillActivateTool(manager),
+      createSkillListActiveTool(manager),
+      createSkillDeactivateTool(manager),
     ],
   };
 }

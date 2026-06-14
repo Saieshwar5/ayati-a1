@@ -14,7 +14,7 @@ Core responsibilities:
 - Start optional Telegram transport.
 - Start plugins and system-event worker.
 - Manage session memory, personal memory, and episodic memory.
-- Register built-in and external tools.
+- Register kernel tools and dynamically activate additional built-in tools.
 - Execute the IVec decision-action-reducer agent loop.
 - Preserve daemon-owned runtime state under `ayati-main/data/`.
 - Provide replies, feedback, notifications, and background event handling to client transports.

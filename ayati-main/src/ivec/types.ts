@@ -1,5 +1,6 @@
 import type { LlmProvider } from "../core/contracts/provider.js";
 import type { ToolExecutor } from "../skills/tool-executor.js";
+import type { SkillActivationManager } from "../skills/activation-manager.js";
 import type {
   ArtifactRef,
   AssertionResult,
@@ -9,8 +10,6 @@ import type {
   VerifiedFact,
 } from "../skills/types.js";
 import type { AgentUiContext } from "../ui/context.js";
-import type { ExternalSkillBroker } from "../skills/external/broker.js";
-import type { ExternalSkillRegistry } from "../skills/external/registry.js";
 import type { ActiveAttachmentRef } from "../memory/types.js";
 import type {
   AgentResponseKind,
@@ -254,9 +253,8 @@ export type OnProgressCallback = (log: string, runPath: string) => void;
 export interface AgentLoopDeps {
   provider: LlmProvider;
   toolExecutor?: ToolExecutor;
+  skillActivationManager?: SkillActivationManager;
   toolDefinitions: ToolDefinition[];
-  externalSkillBroker?: ExternalSkillBroker;
-  externalSkillRegistry?: ExternalSkillRegistry;
   sessionMemory: SessionMemory;
   runHandle: MemoryRunHandle;
   clientId: string;

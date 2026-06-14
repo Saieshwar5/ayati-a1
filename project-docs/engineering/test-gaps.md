@@ -14,7 +14,6 @@ Areas that deserve careful test coverage when changed:
 - WebSocket and CLI message contracts.
 - Future multi-client/channel behavior.
 - Plugin event normalization and system-event policy.
-- External skill activation and policy enforcement.
 - Provider adapter response formatting.
 
 When a change touches cross-module behavior, run more than the single local test file.
