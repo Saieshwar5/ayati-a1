@@ -15,6 +15,11 @@ import type { AgentAction, AgentToolCallSpec } from "./decision.js";
 import { reduceVerifiedWorkState } from "../verification-contracts/progress-reducer.js";
 import type { WorkEvidenceRef, WorkState } from "../types.js";
 import { buildToolObservation } from "./observation-builder.js";
+import {
+  checkDeterministicSuccessGate,
+  checkVerificationGates,
+  deriveExecutionStatus,
+} from "../verification-gates.js";
 
 export interface AgentActionExecutionDeps {
   toolExecutor?: ToolExecutor;
@@ -67,31 +72,12 @@ export async function executeAgentAction(
 
   const calls = action.calls.slice(0, resolveMaxCalls(deps.config, action));
   const actOutput = await executeCalls(deps, action, calls, stepNumber);
-  const assertionResults = collectToolAssertionResults(actOutput);
-  const failedAssertions = assertionResults.filter((assertion) => assertion.status === "failed" && assertion.severity === "required");
-  const passed = actOutput.toolCalls.every((call) => !call.error) && failedAssertions.length === 0;
-  const evidenceItems = buildEvidenceItems(actOutput);
-  const newFacts = buildNewFacts(actOutput);
-  const artifacts = uniqueArtifacts(actOutput.toolCalls.flatMap((call) => call.artifacts ?? []))
-    .map((artifact) => artifact.path ?? artifact.uri ?? artifact.id ?? artifact.label ?? "artifact")
-    .filter((artifact) => artifact.trim().length > 0);
-  const summary = passed
-    ? `Executed ${actOutput.toolCalls.length} tool call${actOutput.toolCalls.length === 1 ? "" : "s"} with deterministic verification.`
-    : summarizeActionFailure(actOutput, failedAssertions.map((assertion) => assertion.message));
-  const verifyOutput = buildVerifyOutput(
-    passed,
-    actOutput,
-    evidenceItems,
-    newFacts,
-    artifacts,
-    summary,
-    assertionResults,
-  );
+  const verifyOutput = verifyActOutput(action, actOutput);
   const reducedWorkState = reduceVerifiedWorkState(previousWorkState, {
-    passed,
-    summary,
-    evidenceItems,
-    newFacts,
+    passed: verifyOutput.passed,
+    summary: verifyOutput.summary,
+    evidenceItems: verifyOutput.evidenceItems,
+    newFacts: verifyOutput.newFacts,
   });
 
   return {
@@ -99,6 +85,70 @@ export async function executeAgentAction(
     verifyOutput,
     nextWorkState: mergeWorkEvidenceRefs(reducedWorkState, previousWorkState, collectWorkEvidenceRefs(actOutput)),
   };
+}
+
+function verifyActOutput(action: AgentAction, actOutput: ActOutput): VerifyOutput {
+  const assertionResults = collectToolAssertionResults(actOutput);
+  const failedAssertions = assertionResults.filter((assertion) => assertion.status === "failed" && assertion.severity === "required");
+  const evidenceItems = buildEvidenceItems(actOutput);
+  const newFacts = buildNewFacts(actOutput);
+  const artifacts = uniqueArtifacts(actOutput.toolCalls.flatMap((call) => call.artifacts ?? []))
+    .map((artifact) => artifact.path ?? artifact.uri ?? artifact.id ?? artifact.label ?? "artifact")
+    .filter((artifact) => artifact.trim().length > 0);
+
+  const executionGate = checkVerificationGates(actOutput);
+  if (executionGate) {
+    return mergeGateVerifyOutput(executionGate, {
+      evidenceItems,
+      newFacts,
+      artifacts,
+      assertionResults,
+    });
+  }
+
+  if (failedAssertions.length > 0) {
+    return buildVerifyOutput(
+      false,
+      actOutput,
+      evidenceItems,
+      newFacts,
+      artifacts,
+      summarizeActionFailure(actOutput, failedAssertions.map((assertion) => assertion.message)),
+      assertionResults,
+      { method: "script", validationStatus: "failed" },
+    );
+  }
+
+  const deterministicSuccess = checkDeterministicSuccessGate(actOutput, buildActionSuccessCriteria(action));
+  if (deterministicSuccess) {
+    return mergeGateVerifyOutput(deterministicSuccess, {
+      evidenceItems,
+      newFacts,
+      artifacts,
+      assertionResults,
+    });
+  }
+
+  const passed = actOutput.toolCalls.every((call) => !call.error);
+  const hasContractProof = hasToolContractProof(actOutput);
+  const summary = passed
+    ? hasContractProof
+      ? `Executed ${actOutput.toolCalls.length} tool call${actOutput.toolCalls.length === 1 ? "" : "s"} with deterministic verification.`
+      : `Executed ${actOutput.toolCalls.length} tool call${actOutput.toolCalls.length === 1 ? "" : "s"} successfully; no deterministic verification contract was available.`
+    : summarizeActionFailure(actOutput, []);
+  return buildVerifyOutput(
+    passed,
+    actOutput,
+    evidenceItems,
+    newFacts,
+    artifacts,
+    summary,
+    assertionResults,
+    {
+      method: hasContractProof ? "script" : "execution_gate",
+      validationStatus: hasContractProof ? "passed" : "skipped",
+    },
+  );
 }
 
 function validateActionPlan(deps: AgentActionExecutionDeps, action: AgentAction): string | undefined {
@@ -293,34 +343,87 @@ function buildVerifyOutput(
   artifacts: string[],
   summary: string,
   assertionResults: NonNullable<ActToolCallRecord["assertionResults"]> = [],
+  options: {
+    method?: VerifyOutput["method"];
+    validationStatus?: VerifyOutput["validationStatus"];
+    usedRawArtifacts?: string[];
+  } = {},
 ): VerifyOutput {
-  const toolFailures = actOutput.toolCalls.filter((call) => call.error).length;
   return {
     passed,
-    method: "execution_gate",
-    executionStatus: actOutput.toolCalls.length === 0
-      ? "no_tools"
-      : toolFailures === 0
-        ? "all_succeeded"
-        : toolFailures === actOutput.toolCalls.length
-          ? "all_failed"
-          : "partial_success",
-    validationStatus: passed ? "passed" : "failed",
+    method: options.method ?? "execution_gate",
+    executionStatus: deriveExecutionStatus(actOutput),
+    validationStatus: options.validationStatus ?? (passed ? "passed" : "failed"),
     summary,
     evidenceSummary: evidenceItems.slice(0, 6).join(" "),
     evidenceItems,
     newFacts,
     artifacts,
-    usedRawArtifacts: [],
+    usedRawArtifacts: options.usedRawArtifacts ?? [],
     expectationCheckStatus: assertionResults.some((assertion) => assertion.status === "failed" && assertion.severity === "required")
       ? "failed"
-      : passed
+      : assertionResults.length > 0 && passed
         ? "passed"
         : "skipped",
     expectationCheckSummary: assertionResults.length > 0
       ? assertionResults.map((assertion) => `${assertion.id}:${assertion.status}`).join("; ")
       : undefined,
   };
+}
+
+function mergeGateVerifyOutput(
+  gateOutput: VerifyOutput,
+  details: {
+    evidenceItems: string[];
+    newFacts: string[];
+    artifacts: string[];
+    assertionResults: NonNullable<ActToolCallRecord["assertionResults"]>;
+  },
+): VerifyOutput {
+  const evidenceItems = uniqueStrings([...gateOutput.evidenceItems, ...details.evidenceItems]);
+  const newFacts = details.newFacts.length > 0
+    ? details.newFacts
+    : uniqueStrings([...gateOutput.newFacts, ...details.newFacts]);
+  const artifacts = uniqueStrings([...gateOutput.artifacts, ...details.artifacts]);
+  const usedRawArtifacts = uniqueStrings(gateOutput.usedRawArtifacts);
+  const failedRequiredAssertion = details.assertionResults.some((assertion) => assertion.status === "failed" && assertion.severity === "required");
+  const expectationCheckStatus = failedRequiredAssertion
+    ? "failed"
+    : details.assertionResults.length > 0 && gateOutput.passed
+      ? "passed"
+      : gateOutput.expectationCheckStatus ?? "skipped";
+  const expectationCheckSummary = details.assertionResults.length > 0
+    ? details.assertionResults.map((assertion) => `${assertion.id}:${assertion.status}`).join("; ")
+    : gateOutput.expectationCheckSummary;
+
+  return {
+    ...gateOutput,
+    evidenceItems,
+    evidenceSummary: uniqueStrings([gateOutput.evidenceSummary, details.evidenceItems.slice(0, 6).join(" ")]).join(" "),
+    newFacts,
+    artifacts,
+    usedRawArtifacts,
+    expectationCheckStatus,
+    expectationCheckSummary,
+  };
+}
+
+function hasToolContractProof(actOutput: ActOutput): boolean {
+  return actOutput.toolCalls.some((call) => (
+    call.result?.verification?.status === "passed"
+    || (call.assertionResults ?? []).some((assertion) => assertion.status === "passed" && assertion.severity === "required")
+    || (call.verifiedFacts ?? []).length > 0
+  ));
+}
+
+function buildActionSuccessCriteria(action: AgentAction): string {
+  const purposes = action.calls
+    .map((call) => call.purpose?.replace(/\s+/g, " ").trim() ?? "")
+    .filter((purpose) => purpose.length > 0);
+  if (purposes.length > 0) {
+    return purposes.join("; ");
+  }
+  return action.calls.map((call) => `${call.tool} completed`).join("; ");
 }
 
 function buildEvidenceItems(actOutput: ActOutput): string[] {

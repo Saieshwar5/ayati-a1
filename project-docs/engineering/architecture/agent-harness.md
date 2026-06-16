@@ -92,13 +92,22 @@ The default verification path is deterministic:
 
 1. Tool input is validated.
 2. Tool executes.
-3. Tool result contracts and assertions run.
-4. Action-level assertions run when supplied.
-5. Evidence and verified facts are extracted.
-6. Progress reducer updates `workState`.
+3. Tool result contracts and assertions run through the tool executor.
+4. The action executor applies execution gates before reducing progress:
+   all-failed executions and empty action output fail with validation skipped.
+5. Required contract assertion failures fail the step.
+6. Known deterministic tool outputs can pass through deterministic success gates
+   when their output shape proves the requested operation succeeded.
+7. Evidence, artifacts, and verified facts are extracted.
+8. Progress reducer updates `workState`.
 
 Use semantic/LLM verification only for work that cannot be proven with tool
 contracts, assertions, file checks, process exits, database state, or artifacts.
+
+Successful tool transport alone is not proof of completed work. Tools without
+deterministic gates or contract-backed verification can execute successfully,
+but their validation status remains skipped unless another verifier proves the
+result. This keeps `workState` grounded in machine-checkable evidence.
 
 ## Completion
 

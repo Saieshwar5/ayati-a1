@@ -445,7 +445,7 @@ function buildStepSummary(input: {
     validationStatus: input.execution.verifyOutput.validationStatus,
     evidenceSummary: input.execution.verifyOutput.evidenceSummary,
     evidenceItems: input.execution.verifyOutput.evidenceItems,
-    usedRawArtifacts: [],
+    usedRawArtifacts: input.execution.verifyOutput.usedRawArtifacts,
     workState: input.execution.nextWorkState,
     stoppedEarlyReason: input.execution.actOutput.stoppedEarlyReason,
     failureType: failure.failureType,

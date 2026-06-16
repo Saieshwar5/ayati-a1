@@ -47,11 +47,24 @@ For a deterministic action:
 3. Execute tool calls.
 4. Normalize result.
 5. Run tool-owned result contract.
-6. Run action-level assertions when supplied.
-7. Extract artifacts and verified facts.
-8. Reduce progress from verified evidence.
+6. Apply action-executor verification gates.
+7. Run action-level assertions when supplied.
+8. Extract artifacts and verified facts.
+9. Reduce progress from verified evidence.
 
 This keeps common work fast because no extra verifier model call is needed.
+
+The gate layer separates execution status from validation status:
+
+- all tool calls failed: execution failed, validation skipped
+- no tool output and no final text: execution failed, validation skipped
+- required contract assertion failed: execution may have succeeded, validation failed
+- known deterministic output shape passed: validation passed through a script gate
+- successful tool output without a contract or deterministic gate: execution
+  succeeded, but validation remains skipped
+
+Only contract-backed facts, deterministic success-gate evidence, and artifacts
+should update progress as verified work.
 
 ## Good Contract Examples
 
