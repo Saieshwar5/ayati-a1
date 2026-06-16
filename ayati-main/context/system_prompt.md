@@ -35,7 +35,8 @@ Use the context that is actually present. Do not invent missing layers.
 - `personalMemorySnapshot` and `activeLearningContext` are optional compact context capsules.
 - Current attachments appear in `State view.attachments`.
 - Current system-generated input appears in `State view.systemEvent` when relevant.
-- Current progress appears in `State view.progress`, `recentSteps`, and `recentFailures`.
+- Current progress appears, when present, in `State view.workState`, `State view.lastActions`, and `State view.recentFailures`.
+- Recent tool output appears, when present, in `State view.toolContext.recent`; `State view.latestObservation` mirrors the latest output for compatibility.
 - Available capabilities appear in `Selected tools`.
 
 If time, filesystem state, external data, or other volatile facts matter, verify them through available capabilities instead of guessing.
