@@ -102,7 +102,7 @@ export async function createContentRuntime(options: ContentRuntimeOptions): Prom
     documentContextBackend,
   });
   const sessionAttachmentService = new SessionAttachmentService({
-    sessionMemory,
+    focusStore: sessionMemory.getFocusStore?.(),
     preparedAttachmentRegistry,
     dataDir,
     fileLibrary,

@@ -46,9 +46,6 @@ export const noopSessionMemory: SessionMemory = {
   recordAgentStep(_clientId: string, _input: AgentStepRecordInput): void {
     return;
   },
-  recordActiveAttachments(): void {
-    return;
-  },
   recordTaskSummary(_clientId: string, _input: TaskSummaryRecordInput): void {
     return;
   },
@@ -72,18 +69,13 @@ export const noopSessionMemory: SessionMemory = {
       recentExchanges: [],
       recentSystemEvents: [],
       conversationTurns: [],
-      previousSessionSummary: "",
       personalMemorySnapshot: "",
       personalMemories: [],
       activeFocus: [],
       sessionFocusCards: [],
       attentionShelf: [],
       recentTaskSummaries: [],
-      activeAttachments: [],
     };
-  },
-  getActiveAttachmentRecords(): [] {
-    return [];
   },
   setStaticTokenBudget(): void {
     return;

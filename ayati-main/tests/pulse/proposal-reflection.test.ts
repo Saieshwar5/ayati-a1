@@ -54,7 +54,6 @@ const memoryContext: PromptMemoryContext = {
       sessionPath: "session.md",
     },
   ],
-  previousSessionSummary: "",
   personalMemorySnapshot: "User is building Ayati and cares about agent autonomy.",
   sessionFocusCards: [{
     focusId: "focus_ai_news",

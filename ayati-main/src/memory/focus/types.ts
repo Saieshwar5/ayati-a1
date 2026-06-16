@@ -179,25 +179,6 @@ export interface FocusUpsertInput {
   nextAction?: string;
   attachmentNames?: string[];
   focusAssets?: FocusAssetRef[];
-  activeAttachments?: Array<{
-    attachmentKind?: FocusAssetKind;
-    assetId?: string;
-    documentId?: string;
-    fileId?: string;
-    directoryId?: string;
-    displayName: string;
-    kind: string;
-    mode?: string;
-    capabilities?: string[];
-    runId: string;
-    runPath: string;
-    preparedInputId?: string;
-    path?: string;
-    lastUsedAt: string;
-    manifest?: ManagedDocumentManifest & { path?: string; sourcePath?: string };
-    summary?: PreparedAttachmentSummary;
-    detail?: PreparedAttachmentDetailRecord | Record<string, unknown>;
-  }>;
   createdAt: string;
 }
 

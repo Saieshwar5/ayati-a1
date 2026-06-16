@@ -7,10 +7,10 @@ export interface AttachmentSkillDeps {
 
 const ATTACHMENT_PROMPT_BLOCK = [
   "Unified attachment restoration is built in.",
-  "Use attachment_restore when the user refers to a file, document, dataset, or directory from an active focus card or earlier run.",
+  "Use attachment_restore when the user refers to a file, document, dataset, or directory stored on a focus card.",
+  "For follow-up work, call focus_activate first, then call attachment_restore with no input when the focus has exactly one restorable asset, or with assetId/reference when it has multiple.",
   "If the current run already has attached files, do not restore an older attachment unless the user explicitly asks for the earlier one.",
-  "Inputs accept a prior attachment reference: attachment id, preparedInputId, fileId, directoryId, display name, or path.",
-  "If exactly one active attachment exists, attachment_restore can auto-select it.",
+  "Inputs accept focusId, assetId, or a reference such as preparedInputId, fileId, directoryId, display name, or path.",
 ].join("\n");
 
 function buildSuccessResult(output: Record<string, unknown>, meta?: Record<string, unknown>): ToolResult {
@@ -35,9 +35,17 @@ function createRestoreAttachmentContextTool(deps: AttachmentSkillDeps, name = "a
     inputSchema: {
       type: "object",
       properties: {
+        focusId: {
+          type: "string",
+          description: "Optional focus card id to restore from. If omitted, the currently activated focus card for this session is used.",
+        },
+        assetId: {
+          type: "string",
+          description: "Optional focus asset id to restore.",
+        },
         reference: {
           type: "string",
-          description: "Optional active attachment reference. Use display name, preparedInputId, fileId, directoryId, assetId, or path when known.",
+          description: "Optional focus asset reference. Use display name, preparedInputId, fileId, directoryId, documentId, assetId, or path when known.",
         },
       },
       additionalProperties: false,
@@ -49,9 +57,20 @@ function createRestoreAttachmentContextTool(deps: AttachmentSkillDeps, name = "a
     },
     async execute(input, context): Promise<ToolResult> {
       const runId = readRunId(context);
+      const clientId = readContextString(context, "clientId");
+      const sessionId = readContextString(context, "sessionId");
+      const focusId = readOptionalString(input, "focusId");
+      const assetId = readOptionalString(input, "assetId");
       const reference = readOptionalString(input, "reference");
       try {
-        const restored = await deps.sessionAttachmentService.restoreAttachmentContext({ runId, reference });
+        const restored = await deps.sessionAttachmentService.restoreAttachmentContext({
+          runId,
+          clientId,
+          sessionId,
+          focusId,
+          assetId,
+          reference,
+        });
         const stateUpdates = buildRestoreStateUpdates(restored);
         return buildSuccessResult(buildRestoreOutput(restored), stateUpdates.length > 0 ? { stateUpdates } : undefined);
       } catch (err) {
@@ -79,6 +98,8 @@ function buildRestoreOutput(restored: RestoredAttachmentContext): Record<string,
     return {
       restored: restored.restored,
       attachmentKind: restored.attachmentKind,
+      focusId: restored.focusId,
+      assetId: restored.assetId,
       attachmentId: restored.fileId,
       fileId: restored.fileId,
       displayName: restored.displayName,
@@ -90,6 +111,8 @@ function buildRestoreOutput(restored: RestoredAttachmentContext): Record<string,
     return {
       restored: restored.restored,
       attachmentKind: restored.attachmentKind,
+      focusId: restored.focusId,
+      assetId: restored.assetId,
       attachmentId: restored.directoryId,
       directoryId: restored.directoryId,
       displayName: restored.displayName,
@@ -100,6 +123,8 @@ function buildRestoreOutput(restored: RestoredAttachmentContext): Record<string,
   return {
     restored: restored.restored,
     attachmentKind: restored.attachmentKind,
+    focusId: restored.focusId,
+    assetId: restored.assetId,
     attachmentId: restored.summary.preparedInputId,
     preparedInputId: restored.summary.preparedInputId,
     documentId: restored.summary.documentId,
@@ -128,6 +153,14 @@ function readRunId(context: { runId?: string } | undefined): string {
     throw new Error("attachment restore requires a runId in tool execution context.");
   }
   return context.runId;
+}
+
+function readContextString(
+  context: { clientId?: string; sessionId?: string } | undefined,
+  field: "clientId" | "sessionId",
+): string | undefined {
+  const value = context?.[field];
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
 }
 
 function readOptionalString(input: unknown, field: string): string | undefined {

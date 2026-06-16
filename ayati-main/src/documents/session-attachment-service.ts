@@ -1,20 +1,26 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
-import type { ActiveAttachmentRecord, SessionMemory } from "../memory/types.js";
 import { PreparedAttachmentRegistry, type PreparedAttachmentRecord } from "./prepared-attachment-registry.js";
 import type { ManagedDocumentManifest, PreparedAttachmentSummary } from "./types.js";
 import type { DirectoryLibrary } from "../files/directory-library.js";
 import type { FileLibrary } from "../files/file-library.js";
+import type { FocusStore } from "../memory/focus/focus-store.js";
+import type { FocusAssetRef, FocusCard } from "../memory/focus/types.js";
 
 export interface SessionAttachmentServiceOptions {
-  sessionMemory: SessionMemory;
+  focusStore?: FocusStore;
   preparedAttachmentRegistry: PreparedAttachmentRegistry;
   dataDir: string;
   fileLibrary?: FileLibrary;
   directoryLibrary?: DirectoryLibrary;
 }
 
-export type RestoredAttachmentContext =
+type RestoredFocusSource = {
+  focusId: string;
+  assetId: string;
+};
+
+export type RestoredAttachmentContext = RestoredFocusSource & (
   | {
     restored: boolean;
     attachmentKind: "document" | "dataset";
@@ -34,84 +40,59 @@ export type RestoredAttachmentContext =
     directoryId: string;
     displayName: string;
     kind: "directory";
-  };
+  }
+);
+
+interface FocusAttachmentCandidate {
+  focus: FocusCard;
+  asset: FocusAssetRef;
+}
 
 export class SessionAttachmentService {
-  private readonly sessionMemory: SessionMemory;
+  private readonly focusStore?: FocusStore;
   private readonly preparedAttachmentRegistry: PreparedAttachmentRegistry;
   private readonly dataDir: string;
   private readonly fileLibrary?: FileLibrary;
   private readonly directoryLibrary?: DirectoryLibrary;
 
   constructor(options: SessionAttachmentServiceOptions) {
-    this.sessionMemory = options.sessionMemory;
+    this.focusStore = options.focusStore;
     this.preparedAttachmentRegistry = options.preparedAttachmentRegistry;
     this.dataDir = options.dataDir;
     this.fileLibrary = options.fileLibrary;
     this.directoryLibrary = options.directoryLibrary;
   }
 
-  listActiveAttachments(): Array<{
-    attachmentKind: string;
-    assetId?: string;
-    documentId?: string;
-    fileId?: string;
-    directoryId?: string;
-    displayName: string;
-    kind: string;
-    mode?: string;
-    capabilities?: string[];
-    runId: string;
-    runPath: string;
-    preparedInputId?: string;
-    path?: string;
-    lastUsedAt: string;
-    lastAction: string;
-  }> {
-    return this.sessionMemory.getActiveAttachmentRecords?.().map((record) => ({
-      attachmentKind: record.attachmentKind,
-      ...(record.assetId ? { assetId: record.assetId } : {}),
-      ...(record.documentId ? { documentId: record.documentId } : {}),
-      ...(record.fileId ? { fileId: record.fileId } : {}),
-      ...(record.directoryId ? { directoryId: record.directoryId } : {}),
-      displayName: record.displayName,
-      kind: record.kind,
-      ...(record.mode ? { mode: record.mode } : {}),
-      ...(record.capabilities?.length ? { capabilities: record.capabilities } : {}),
-      runId: record.runId,
-      runPath: record.runPath,
-      ...(record.preparedInputId ? { preparedInputId: record.preparedInputId } : {}),
-      ...(record.path ? { path: record.path } : {}),
-      lastUsedAt: record.lastUsedAt,
-      lastAction: record.lastAction,
-    })) ?? [];
-  }
-
   async restoreAttachmentContext(input: {
     runId: string;
+    clientId?: string;
+    sessionId?: string;
+    focusId?: string;
+    assetId?: string;
     reference?: string;
   }): Promise<RestoredAttachmentContext> {
     const currentRunAttachments = this.preparedAttachmentRegistry.getRunAttachments(input.runId);
-    if ((input.reference?.trim().length ?? 0) === 0 && currentRunAttachments.length > 0) {
+    if (!hasExplicitRestoreReference(input) && currentRunAttachments.length > 0) {
       throw new Error("Current run already has attachments. Use the current attachment, or specify the earlier file to restore.");
     }
 
-    const activeRecords = this.sessionMemory.getActiveAttachmentRecords?.() ?? [];
-    const sourceRecord = resolveActiveAttachment(activeRecords, input.reference);
-    if (sourceRecord.attachmentKind === "file") {
-      return this.restoreFileAttachment(input.runId, sourceRecord);
+    const source = this.resolveFocusAttachment(input);
+    if (source.asset.kind === "file") {
+      return this.restoreFileAttachment(input.runId, source);
     }
-    if (sourceRecord.attachmentKind === "directory") {
-      return this.restoreDirectoryAttachment(input.runId, sourceRecord);
+    if (source.asset.kind === "directory") {
+      return this.restoreDirectoryAttachment(input.runId, source);
     }
-    if (!sourceRecord.manifest || !sourceRecord.summary || !sourceRecord.documentId) {
-      throw new Error(`Active attachment is missing prepared metadata: ${sourceRecord.displayName}`);
+    if (!source.asset.manifest || !source.asset.summary || !source.asset.summary.documentId) {
+      throw new Error(`Focus asset is missing prepared metadata: ${assetDisplayName(source.asset)}`);
     }
 
     const existing = currentRunAttachments
-      .find((record) => record.summary.documentId === sourceRecord.documentId);
+      .find((record) => record.summary.documentId === source.asset.summary?.documentId);
     if (existing) {
       return {
+        focusId: source.focus.focusId,
+        assetId: source.asset.assetId,
         restored: false,
         attachmentKind: existing.summary.mode === "structured_data" ? "dataset" : "document",
         manifest: existing.manifest,
@@ -121,17 +102,17 @@ export class SessionAttachmentService {
 
     const runPath = resolve(this.dataDir, "runs", input.runId);
     const summary = cloneSummaryWithNewId(
-      sourceRecord.summary,
-      buildPreparedInputId(this.preparedAttachmentRegistry.getRunAttachments(input.runId).length + 1, sourceRecord.documentId),
+      source.asset.summary,
+      buildPreparedInputId(this.preparedAttachmentRegistry.getRunAttachments(input.runId).length + 1, source.asset.summary.documentId),
       runPath,
     );
     const restored: PreparedAttachmentRecord = {
       summary,
-      manifest: sourceRecord.manifest,
+      manifest: source.asset.manifest,
       runPath,
       detail: {
-        kind: sourceRecord.summary.mode,
-        payload: buildRestoredDetailPayload(sourceRecord.detail ?? {}, summary),
+        kind: source.asset.summary.mode,
+        payload: buildRestoredDetailPayload(normalizeAssetDetail(source.asset.detail), summary),
       },
     };
 
@@ -139,6 +120,8 @@ export class SessionAttachmentService {
     await persistRestoredAttachmentArtifacts(runPath, this.preparedAttachmentRegistry.getRunAttachments(input.runId));
 
     return {
+      focusId: source.focus.focusId,
+      assetId: source.asset.assetId,
       restored: true,
       attachmentKind: restored.summary.mode === "structured_data" ? "dataset" : "document",
       manifest: restored.manifest,
@@ -146,13 +129,71 @@ export class SessionAttachmentService {
     };
   }
 
-  private async restoreFileAttachment(runId: string, sourceRecord: ActiveAttachmentRecord): Promise<RestoredAttachmentContext> {
+  private resolveFocusAttachment(input: {
+    clientId?: string;
+    sessionId?: string;
+    focusId?: string;
+    assetId?: string;
+    reference?: string;
+  }): FocusAttachmentCandidate {
+    const focusStore = this.requireFocusStore();
+    const cards = this.resolveCandidateFocusCards(focusStore, input);
+    const candidates = uniqueFocusCandidates(cards.flatMap((focus) => (
+      focus.assets
+        .filter(isRestorableFocusAttachmentAsset)
+        .map((asset) => ({ focus, asset }))
+    )));
+
+    if (candidates.length === 0) {
+      const labels = cards.map((card) => card.label).join(", ");
+      throw new Error(labels
+        ? `The selected focus card has no restorable attachment assets: ${labels}.`
+        : "No active focus card is available for attachment restore. Activate a focus card first or pass focusId.");
+    }
+
+    return resolveFocusAttachmentCandidate(candidates, input);
+  }
+
+  private resolveCandidateFocusCards(
+    focusStore: FocusStore,
+    input: { clientId?: string; sessionId?: string; focusId?: string },
+  ): FocusCard[] {
+    const explicitFocusId = input.focusId?.trim();
+    if (explicitFocusId) {
+      const card = focusStore.getFocus(explicitFocusId);
+      if (!card || (input.clientId && card.clientId !== input.clientId)) {
+        throw new Error(`Focus card is not available for attachment restore: ${explicitFocusId}`);
+      }
+      return [card];
+    }
+
+    if (!input.clientId || !input.sessionId) {
+      throw new Error("Attachment restore requires an active focus card, or explicit clientId/sessionId/focusId context.");
+    }
+
+    const cards = focusStore.getActiveFocus(input.clientId, input.sessionId, 3)
+      .map((item) => focusStore.getFocus(item.focusId))
+      .filter((card): card is FocusCard => card !== null);
+    if (cards.length === 0) {
+      throw new Error("No active focus card is available for attachment restore. Use focus_activate first or pass focusId.");
+    }
+    return uniqueFocusCards(cards);
+  }
+
+  private requireFocusStore(): FocusStore {
+    if (!this.focusStore) {
+      throw new Error("Attachment restore requires a configured FocusStore.");
+    }
+    return this.focusStore;
+  }
+
+  private async restoreFileAttachment(runId: string, source: FocusAttachmentCandidate): Promise<RestoredAttachmentContext> {
     if (!this.fileLibrary) {
       throw new Error("Managed file restoration is not configured.");
     }
-    const fileId = sourceRecord.fileId;
+    const fileId = source.asset.fileId;
     if (!fileId) {
-      throw new Error(`Active file attachment is missing a fileId: ${sourceRecord.displayName}`);
+      throw new Error(`Focus file asset is missing a fileId: ${assetDisplayName(source.asset)}`);
     }
 
     const currentFiles = await this.fileLibrary.listRunFiles(runId);
@@ -162,6 +203,8 @@ export class SessionAttachmentService {
     }
     const file = existing ?? await this.fileLibrary.getFile(fileId);
     return {
+      focusId: source.focus.focusId,
+      assetId: source.asset.assetId,
       restored: !existing,
       attachmentKind: "file",
       fileId: file.fileId,
@@ -170,13 +213,13 @@ export class SessionAttachmentService {
     };
   }
 
-  private async restoreDirectoryAttachment(runId: string, sourceRecord: ActiveAttachmentRecord): Promise<RestoredAttachmentContext> {
+  private async restoreDirectoryAttachment(runId: string, source: FocusAttachmentCandidate): Promise<RestoredAttachmentContext> {
     if (!this.directoryLibrary) {
       throw new Error("Managed directory restoration is not configured.");
     }
-    const directoryId = sourceRecord.directoryId;
+    const directoryId = source.asset.directoryId;
     if (!directoryId) {
-      throw new Error(`Active directory attachment is missing a directoryId: ${sourceRecord.displayName}`);
+      throw new Error(`Focus directory asset is missing a directoryId: ${assetDisplayName(source.asset)}`);
     }
 
     const currentDirectories = await this.directoryLibrary.listRunDirectories(runId);
@@ -186,6 +229,8 @@ export class SessionAttachmentService {
     }
     const directory = existing ?? await this.directoryLibrary.getDirectory(directoryId);
     return {
+      focusId: source.focus.focusId,
+      assetId: source.asset.assetId,
       restored: !existing,
       attachmentKind: "directory",
       directoryId: directory.directoryId,
@@ -195,66 +240,152 @@ export class SessionAttachmentService {
   }
 }
 
-function resolveActiveAttachment(
-  records: ActiveAttachmentRecord[],
-  reference?: string,
-): ActiveAttachmentRecord {
-  if (records.length === 0) {
-    throw new Error("No active session attachments are available to restore.");
+function hasExplicitRestoreReference(input: {
+  focusId?: string;
+  assetId?: string;
+  reference?: string;
+}): boolean {
+  return [input.focusId, input.assetId, input.reference].some((value) => typeof value === "string" && value.trim().length > 0);
+}
+
+function resolveFocusAttachmentCandidate(
+  candidates: FocusAttachmentCandidate[],
+  input: { assetId?: string; reference?: string },
+): FocusAttachmentCandidate {
+  const explicitAssetId = input.assetId?.trim();
+  if (explicitAssetId) {
+    const matches = candidates.filter((candidate) => candidate.asset.assetId === explicitAssetId);
+    return pickResolvedCandidate(matches, candidates);
   }
 
-  const normalizedReference = reference?.trim();
+  const normalizedReference = input.reference?.trim();
   if (!normalizedReference) {
-    if (records.length === 1) {
-      return records[0]!;
+    if (candidates.length === 1) {
+      return candidates[0]!;
     }
-    throw new Error(buildRestoreResolutionError(records));
+    throw new Error(buildRestoreResolutionError(candidates));
   }
 
   const loweredReference = normalizedReference.toLowerCase();
-  const strategies: Array<(record: NonNullable<(typeof records)[number]>) => boolean> = [
-    (record) => record.preparedInputId === normalizedReference,
-    (record) => record.preparedInputId?.startsWith(normalizedReference) === true,
-    (record) => record.fileId === normalizedReference,
-    (record) => record.directoryId === normalizedReference,
-    (record) => record.assetId === normalizedReference,
-    (record) => record.documentId === normalizedReference,
-    (record) => record.documentId?.startsWith(normalizedReference) === true,
-    (record) => record.displayName.toLowerCase() === loweredReference,
-    (record) => record.manifest?.name.toLowerCase() === loweredReference,
-    (record) => record.manifest?.originalPath === normalizedReference,
-    (record) => record.manifest?.originalPath.toLowerCase().endsWith(loweredReference) === true,
-    (record) => record.path === normalizedReference,
-    (record) => record.path?.toLowerCase().endsWith(loweredReference) === true,
+  const strategies: Array<(candidate: FocusAttachmentCandidate) => boolean> = [
+    (candidate) => candidate.asset.preparedInputId === normalizedReference,
+    (candidate) => candidate.asset.preparedInputId?.startsWith(normalizedReference) === true,
+    (candidate) => candidate.asset.fileId === normalizedReference,
+    (candidate) => candidate.asset.directoryId === normalizedReference,
+    (candidate) => candidate.asset.assetId === normalizedReference,
+    (candidate) => candidate.asset.documentId === normalizedReference,
+    (candidate) => candidate.asset.documentId?.startsWith(normalizedReference) === true,
+    (candidate) => candidate.asset.summary?.documentId === normalizedReference,
+    (candidate) => candidate.asset.summary?.documentId.startsWith(normalizedReference) === true,
+    (candidate) => assetDisplayName(candidate.asset).toLowerCase() === loweredReference,
+    (candidate) => candidate.asset.manifest?.name.toLowerCase() === loweredReference,
+    (candidate) => candidate.asset.manifest?.originalPath === normalizedReference,
+    (candidate) => candidate.asset.manifest?.originalPath.toLowerCase().endsWith(loweredReference) === true,
+    (candidate) => candidate.asset.path === normalizedReference,
+    (candidate) => candidate.asset.path?.toLowerCase().endsWith(loweredReference) === true,
+    (candidate) => candidate.asset.restore?.filePath === normalizedReference,
+    (candidate) => candidate.asset.restore?.filePath?.toLowerCase().endsWith(loweredReference) === true,
+    (candidate) => candidate.asset.restore?.directoryPath === normalizedReference,
+    (candidate) => candidate.asset.restore?.directoryPath?.toLowerCase().endsWith(loweredReference) === true,
   ];
 
   for (const matcher of strategies) {
-    const matches = records.filter(matcher);
-    if (matches.length === 1) {
-      return matches[0]!;
-    }
-    if (matches.length > 1) {
-      throw new Error(buildRestoreResolutionError(matches));
+    const matches = candidates.filter(matcher);
+    if (matches.length > 0) {
+      return pickResolvedCandidate(matches, candidates);
     }
   }
 
-  if (records.length === 1) {
-    return records[0]!;
+  if (candidates.length === 1) {
+    return candidates[0]!;
   }
-  throw new Error(buildRestoreResolutionError(records));
+  throw new Error(buildRestoreResolutionError(candidates));
 }
 
-function buildRestoreResolutionError(records: ActiveAttachmentRecord[]): string {
-  return `Unable to uniquely resolve the active attachment. Available options: ${records.map((record) => `${attachmentReferenceLabel(record)} (${record.displayName})`).join(", ")}`;
+function pickResolvedCandidate(
+  matches: FocusAttachmentCandidate[],
+  allCandidates: FocusAttachmentCandidate[],
+): FocusAttachmentCandidate {
+  const unique = uniqueFocusCandidates(matches);
+  if (unique.length === 1) {
+    return unique[0]!;
+  }
+  throw new Error(buildRestoreResolutionError(unique.length > 0 ? unique : allCandidates));
 }
 
-function attachmentReferenceLabel(record: ActiveAttachmentRecord): string {
-  return record.preparedInputId
-    ?? record.fileId
-    ?? record.directoryId
-    ?? record.assetId
-    ?? record.documentId
-    ?? record.attachmentKind;
+function buildRestoreResolutionError(candidates: FocusAttachmentCandidate[]): string {
+  return `Unable to uniquely resolve the focus attachment. Available options: ${candidates.map(candidateReferenceLabel).join(", ")}`;
+}
+
+function candidateReferenceLabel(candidate: FocusAttachmentCandidate): string {
+  const asset = candidate.asset;
+  const reference = asset.preparedInputId
+    ?? asset.fileId
+    ?? asset.directoryId
+    ?? asset.assetId
+    ?? asset.documentId
+    ?? asset.summary?.documentId
+    ?? asset.kind;
+  return `${reference} (${assetDisplayName(asset)} in ${candidate.focus.label})`;
+}
+
+function uniqueFocusCards(cards: FocusCard[]): FocusCard[] {
+  const seen = new Set<string>();
+  const output: FocusCard[] = [];
+  for (const card of cards) {
+    if (seen.has(card.focusId)) {
+      continue;
+    }
+    seen.add(card.focusId);
+    output.push(card);
+  }
+  return output;
+}
+
+function uniqueFocusCandidates(candidates: FocusAttachmentCandidate[]): FocusAttachmentCandidate[] {
+  const seen = new Set<string>();
+  const output: FocusAttachmentCandidate[] = [];
+  for (const candidate of candidates) {
+    const key = `${candidate.focus.focusId}:${candidate.asset.assetId}`;
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    output.push(candidate);
+  }
+  return output;
+}
+
+function isRestorableFocusAttachmentAsset(asset: FocusAssetRef): boolean {
+  if ((asset.kind === "document" || asset.kind === "dataset") && asset.manifest && asset.summary) {
+    return true;
+  }
+  if (asset.kind === "file" && typeof asset.fileId === "string" && asset.fileId.trim().length > 0) {
+    return true;
+  }
+  return asset.kind === "directory" && typeof asset.directoryId === "string" && asset.directoryId.trim().length > 0;
+}
+
+function assetDisplayName(asset: FocusAssetRef): string {
+  return asset.displayName
+    ?? asset.summary?.displayName
+    ?? asset.path
+    ?? asset.fileId
+    ?? asset.directoryId
+    ?? asset.documentId
+    ?? asset.assetId;
+}
+
+function normalizeAssetDetail(detail: FocusAssetRef["detail"]): Record<string, unknown> {
+  if (!detail || typeof detail !== "object" || Array.isArray(detail)) {
+    return {};
+  }
+  const record = detail as Record<string, unknown>;
+  const payload = record["payload"];
+  if (payload && typeof payload === "object" && !Array.isArray(payload)) {
+    return payload as Record<string, unknown>;
+  }
+  return record;
 }
 
 function buildPreparedInputId(index: number, documentId: string): string {

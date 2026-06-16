@@ -236,7 +236,6 @@ describe("agentLoop", () => {
             { role: "user", content: "Build a todo app", timestamp: "2026-06-12T09:00:00.000Z", sessionPath: "sessions/s1.md", runId: "old-run" },
             { role: "assistant", content: "Created the todo app.", timestamp: "2026-06-12T09:01:00.000Z", sessionPath: "sessions/s1.md", runId: "old-run" },
           ],
-          previousSessionSummary: "Earlier work created the todo app shell.",
           personalMemorySnapshot: "- Prefers concise implementation notes.",
           activeFocus: [{
             focusId: "focus_todo",
@@ -283,7 +282,6 @@ describe("agentLoop", () => {
             lastTouchedLabel: "10m ago",
             attentionScore: 0.88,
           }],
-          activeAttachments: [],
         }),
         getSessionStatus: vi.fn().mockReturnValue({
           contextPercent: 12,
@@ -333,7 +331,7 @@ describe("agentLoop", () => {
       expect(stateView.context.recentExact).toBeUndefined();
       expect(stateView.context.recentTasks).toBeUndefined();
       expect(stateView.context.sessionFocusCards[0].openWork).toEqual(["make responsive"]);
-      expect(stateView.context.previousSessionSummary).toContain("todo app shell");
+      expect(stateView.context.previousSessionSummary).toBeUndefined();
       expect(stateView.context.personalMemorySnapshot).toContain("concise");
     } finally {
       cleanup(dataDir);

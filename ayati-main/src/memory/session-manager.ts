@@ -8,7 +8,6 @@ import type {
   ToolCallRecordInput,
   ToolCallResultRecordInput,
   AgentStepRecordInput,
-  ActiveAttachmentsRecordInput,
   TaskSummaryRecordInput,
   SystemEventRecordInput,
   SystemEventOutcomeRecordInput,
@@ -16,8 +15,6 @@ import type {
   PromptMemoryContext,
   ConversationExchange,
   ConversationTurn,
-  ActiveAttachmentRef,
-  ActiveAttachmentRecord,
   SessionLifecycleUpdateInput,
   SystemActivityItem,
 } from "./types.js";
@@ -32,7 +29,7 @@ import { SessionPersistence } from "./session-persistence.js";
 import type { ActiveSessionInfo, SessionPersistenceOptions } from "./session-persistence.js";
 import { SqliteSystemEventStore } from "./system-event-store.js";
 import { FocusStore } from "./focus/focus-store.js";
-import type { FocusAssetRef, FocusCard, FocusUpsertInput } from "./focus/types.js";
+import type { FocusUpsertInput } from "./focus/types.js";
 import { devWarn } from "../shared/index.js";
 
 const RECENT_EXCHANGE_LIMIT = 5;
@@ -254,33 +251,6 @@ export class MemoryManager implements SessionMemory {
     return;
   }
 
-  recordActiveAttachments(clientId: string, input: ActiveAttachmentsRecordInput): void {
-    const session = this.currentSession;
-    if (!session || session.clientId !== clientId) {
-      return;
-    }
-    const active = this.focusStore.getActiveFocus(clientId, session.sessionId, 1)[0];
-    if (!active) {
-      return;
-    }
-    this.focusStore.upsertSessionFromTaskSummary({
-      clientId,
-      focusId: active.focusId,
-      scope: active.scope,
-      sessionId: session.sessionId,
-      runId: input.runId,
-      runPath: input.runPath,
-      status: "completed",
-      objective: active.label,
-      summary: `Updated active assets for ${active.label}.`,
-      currentFocus: active.label,
-      focusAssets: input.attachments.map((attachment) => attachmentToFocusAsset(input, attachment, this.nowIso())),
-      attachmentNames: input.attachments.map((attachment) => attachment.summary.displayName),
-      toolsUsed: [],
-      createdAt: this.nowIso(),
-    });
-  }
-
   recordTaskSummary(clientId: string, input: TaskSummaryRecordInput): void {
     this.queueTaskSummary(clientId, input);
   }
@@ -323,7 +293,6 @@ export class MemoryManager implements SessionMemory {
       recentExchanges,
       recentSystemEvents,
       conversationTurns: flattenExchanges(recentExchanges, session?.sessionPath ?? ""),
-      previousSessionSummary: "",
       personalMemorySnapshot: this.personalMemorySnapshotProvider?.(clientId) ?? "",
       personalMemories: [],
       activeFocus: session ? this.focusStore.getActiveFocus(clientId, session.sessionId, 3) : [],
@@ -331,32 +300,7 @@ export class MemoryManager implements SessionMemory {
       attentionShelf: this.focusStore.getGlobalShelf(clientId, 5),
       activeSessionPath: session?.sessionPath ?? "",
       recentTaskSummaries: [],
-      activeAttachments: this.getActiveAttachmentRecords().map(activeAttachmentRecordToRef),
     };
-  }
-
-  getActiveAttachmentRecords(): ActiveAttachmentRecord[] {
-    const session = this.currentSession;
-    if (!session) {
-      return [];
-    }
-    const cards = uniqueFocusCards([
-      ...this.focusStore.getActiveFocus(session.clientId, session.sessionId, 3)
-        .map((item) => this.focusStore.getFocus(item.focusId))
-        .filter((card): card is FocusCard => card !== null),
-      ...this.focusStore.listCards({
-        clientId: session.clientId,
-        scope: "session",
-        sessionId: session.sessionId,
-        limit: 10,
-      }),
-      ...this.focusStore.listCards({
-        clientId: session.clientId,
-        scope: "global",
-        limit: 10,
-      }).filter((card) => card.activeSessionId === session.sessionId),
-    ]);
-    return focusCardsToActiveAttachmentRecords(cards);
   }
 
   getSessionStatus(): SessionStatus | null {
@@ -662,203 +606,6 @@ function extractConversationTurns(events: SessionEvent[], fallbackSessionPath: s
     }
   }
   return turns;
-}
-
-function activeAttachmentRecordToRef(record: ActiveAttachmentRecord): ActiveAttachmentRef {
-  return {
-    attachmentKind: record.attachmentKind,
-    ...(record.assetId ? { assetId: record.assetId } : {}),
-    ...(record.documentId ? { documentId: record.documentId } : {}),
-    ...(record.fileId ? { fileId: record.fileId } : {}),
-    ...(record.directoryId ? { directoryId: record.directoryId } : {}),
-    displayName: record.displayName,
-    kind: record.kind,
-    ...(record.mode ? { mode: record.mode } : {}),
-    ...(record.capabilities?.length ? { capabilities: [...record.capabilities] } : {}),
-    runId: record.runId,
-    runPath: record.runPath,
-    ...(record.preparedInputId ? { preparedInputId: record.preparedInputId } : {}),
-    ...(record.path ? { path: record.path } : {}),
-    lastUsedAt: record.lastUsedAt,
-    lastAction: record.lastAction,
-  };
-}
-
-function attachmentToFocusAsset(
-  input: ActiveAttachmentsRecordInput,
-  attachment: ActiveAttachmentsRecordInput["attachments"][number],
-  nowIso: string,
-): FocusAssetRef {
-  const kind = attachment.summary.mode === "structured_data" ? "dataset" : "document";
-  return {
-    assetId: `asset_${attachment.summary.documentId}`,
-    kind,
-    origin: "user_attached",
-    role: "input",
-    displayName: attachment.summary.displayName,
-    documentId: attachment.summary.documentId,
-    preparedInputId: attachment.summary.preparedInputId,
-    manifest: attachment.manifest,
-    summary: attachment.summary,
-    detail: attachment.detail ?? {},
-    restore: {
-      documentId: attachment.summary.documentId,
-      preparedInputId: attachment.summary.preparedInputId,
-      manifestPath: attachment.summary.artifactPath,
-    },
-    sourceRunId: input.runId,
-    sourceRunPath: input.runPath,
-    lastUsedRunId: input.runId,
-    lastUsedAt: nowIso,
-    metadata: {
-      sessionId: input.sessionId,
-      action: input.action,
-    },
-  };
-}
-
-function uniqueFocusCards(cards: FocusCard[]): FocusCard[] {
-  const seen = new Set<string>();
-  const output: FocusCard[] = [];
-  for (const card of cards) {
-    if (seen.has(card.focusId)) {
-      continue;
-    }
-    seen.add(card.focusId);
-    output.push(card);
-  }
-  return output;
-}
-
-function focusCardsToActiveAttachmentRecords(cards: FocusCard[]): ActiveAttachmentRecord[] {
-  const records = new Map<string, ActiveAttachmentRecord>();
-  for (const card of cards) {
-    for (const asset of card.assets) {
-      if (!isRestorableAttachmentAsset(asset)) {
-        continue;
-      }
-      records.set(activeAttachmentKey(asset), focusAssetToActiveAttachmentRecord(asset));
-    }
-  }
-  return [...records.values()]
-    .sort((left, right) => right.lastUsedAt.localeCompare(left.lastUsedAt));
-}
-
-function isRestorableAttachmentAsset(asset: FocusAssetRef): boolean {
-  if ((asset.kind === "document" || asset.kind === "dataset") && asset.manifest && asset.summary) {
-    return true;
-  }
-  if (asset.kind === "file" && typeof asset.fileId === "string" && asset.fileId.trim().length > 0) {
-    return true;
-  }
-  return asset.kind === "directory" && typeof asset.directoryId === "string" && asset.directoryId.trim().length > 0;
-}
-
-function activeAttachmentKey(asset: FocusAssetRef): string {
-  if (asset.kind === "file" && asset.fileId) {
-    return `file:${asset.fileId}`;
-  }
-  if (asset.kind === "directory" && asset.directoryId) {
-    return `directory:${asset.directoryId}`;
-  }
-  if (asset.summary?.documentId) {
-    return `${asset.kind}:${asset.summary.documentId}`;
-  }
-  return asset.assetId;
-}
-
-function focusAssetToActiveAttachmentRecord(asset: FocusAssetRef): ActiveAttachmentRecord {
-  if ((asset.kind === "document" || asset.kind === "dataset") && asset.manifest && asset.summary) {
-    return {
-      attachmentKind: asset.kind,
-      assetId: asset.assetId,
-      documentId: asset.summary.documentId,
-      displayName: asset.summary.displayName,
-      kind: asset.summary.kind,
-      mode: asset.summary.mode,
-      capabilities: capabilitiesForPreparedAttachment(asset),
-      runId: asset.lastUsedRunId || asset.sourceRunId,
-      runPath: asset.sourceRunPath,
-      preparedInputId: asset.summary.preparedInputId,
-      path: asset.manifest.storedPath,
-      lastUsedAt: asset.lastUsedAt,
-      lastAction: String(asset.metadata?.["action"] ?? "focus_asset"),
-      manifest: asset.manifest,
-      summary: asset.summary,
-      detail: normalizeAssetDetail(asset.detail),
-      asset,
-    };
-  }
-
-  if (asset.kind === "file" && asset.fileId) {
-    const capabilities = readStringArray(asset.metadata?.["capabilities"]);
-    return {
-      attachmentKind: "file",
-      assetId: asset.assetId,
-      fileId: asset.fileId,
-      displayName: asset.displayName ?? asset.fileId,
-      kind: readString(asset.metadata?.["kind"]) ?? "file",
-      mode: "file",
-      ...(capabilities.length > 0 ? { capabilities } : {}),
-      runId: asset.lastUsedRunId || asset.sourceRunId,
-      runPath: asset.sourceRunPath,
-      path: asset.path,
-      lastUsedAt: asset.lastUsedAt,
-      lastAction: String(asset.metadata?.["action"] ?? "focus_asset"),
-      asset,
-    };
-  }
-
-  return {
-    attachmentKind: "directory",
-    assetId: asset.assetId,
-    ...(asset.directoryId ? { directoryId: asset.directoryId } : {}),
-    displayName: asset.displayName ?? asset.directoryId ?? "directory",
-    kind: "directory",
-    mode: "directory",
-    capabilities: readStringArray(asset.metadata?.["capabilities"]),
-    runId: asset.lastUsedRunId || asset.sourceRunId,
-    runPath: asset.sourceRunPath,
-    path: asset.path,
-    lastUsedAt: asset.lastUsedAt,
-    lastAction: String(asset.metadata?.["action"] ?? "focus_asset"),
-    asset,
-  };
-}
-
-function capabilitiesForPreparedAttachment(asset: FocusAssetRef): string[] {
-  if (asset.summary?.mode === "structured_data") {
-    return ["table"];
-  }
-  if (asset.summary?.mode === "unstructured_text") {
-    return ["text"];
-  }
-  return [];
-}
-
-function normalizeAssetDetail(detail: FocusAssetRef["detail"]): Record<string, unknown> {
-  if (!detail || typeof detail !== "object" || Array.isArray(detail)) {
-    return {};
-  }
-  const record = detail as Record<string, unknown>;
-  const payload = record["payload"];
-  if (payload && typeof payload === "object" && !Array.isArray(payload)) {
-    return payload as Record<string, unknown>;
-  }
-  return record;
-}
-
-function readString(value: unknown): string | undefined {
-  return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
-}
-
-function readStringArray(value: unknown): string[] {
-  if (!Array.isArray(value)) {
-    return [];
-  }
-  return value
-    .filter((item): item is string => typeof item === "string" && item.trim().length > 0)
-    .map((item) => item.trim());
 }
 
 function taskSummaryToFocusInput(clientId: string, input: TaskSummaryRecordInput, createdAt: string): FocusUpsertInput & { sessionId: string } {

@@ -5,11 +5,11 @@ Current product features:
 - Runtime-selectable LLM providers: OpenRouter, OpenAI, Anthropic, and Fireworks.
 - Decision-action-reducer IVec harness with `reply`, `ask_user`, and `act` decisions.
 - Structured context pack with recent conversation, active focus cards, session
-  focus cards, attention shelf, active attachments, personal memory, and active
-  learning context.
+  focus cards, attention shelf, personal memory, and active learning context.
 - Deterministic tool verification through tool contracts, assertions, verified facts, and progress reduction.
 - Built-in skills for shell, filesystem, calculator, SQLite database work, Python execution, documents, datasets, files, memory, recall, identity, Pulse, and dynamic built-in skill activation.
 - Focus cards and attention shelf for ongoing projects, documents, learning, automations, investigations, and debugging.
+- Focus card assets for restoring user-attached documents, datasets, files, and directories into later follow-up runs.
 - Personal memory for stable user facts, time-based facts, and evolving preferences.
 - Episodic memory for semantic recall over closed sessions when embeddings are available.
 - Managed file registration and upload processing.

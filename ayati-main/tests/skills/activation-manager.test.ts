@@ -85,6 +85,38 @@ describe("SkillActivationManager", () => {
     ]));
   });
 
+  it("auto-activates attachment handling skills for focus continuation artifacts", async () => {
+    const catalog = new SkillCatalog([
+      createSkillBundle(skill("attachments", [tool("attachment_restore")])),
+      createSkillBundle(skill("files", [tool("attachment_query")])),
+      createSkillBundle(skill("documents", [tool("document_query")])),
+      createSkillBundle(skill("datasets", [tool("dataset_query")])),
+    ]);
+    const executor = createToolExecutor([tool("shell")]);
+    const manager = new SkillActivationManager({ catalog, toolExecutor: executor });
+
+    const activated = await manager.prepareForDecision({
+      sessionFocusCards: [{
+        focusId: "focus_policy",
+        topArtifacts: ["policy.txt"],
+      }],
+    }, {
+      clientId: "c1",
+      runId: "r1",
+      sessionId: "s1",
+      stepNumber: 1,
+    });
+
+    expect(activated.map((record) => record.skillId).sort()).toEqual(["attachments", "datasets", "documents", "files"]);
+    const visible = executor.list({ clientId: "c1", runId: "r1", sessionId: "s1", stepNumber: 1 });
+    expect(visible).toEqual(expect.arrayContaining([
+      "attachment_restore",
+      "attachment_query",
+      "document_query",
+      "dataset_query",
+    ]));
+  });
+
   it("searches compact skill cards without activating full schemas", async () => {
     const catalog = new SkillCatalog([
       createSkillBundle(skill("documents", [tool("document_query")])),

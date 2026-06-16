@@ -39,19 +39,6 @@ describe("SessionAttachmentService", () => {
         registry,
       });
 
-      const firstRunRecords = registry.getRunAttachments("run-1");
-      sessionMemory.recordActiveAttachments?.("c1", {
-        runId: "run-1",
-        sessionId: "session-1",
-        runPath: join(dataDir, "runs", "run-1"),
-        action: "prepared",
-        attachments: firstRunRecords.map((record) => ({
-          manifest: record.manifest,
-          summary: record.summary,
-          detail: record.detail.payload,
-        })),
-      });
-
       const secondRegistered = await documentStore.registerAttachments([{ path: newCsvPath, name: "electronic-card-transactions-february-2026-csv-tables.csv" }]);
       await prepareIncomingAttachments({
         attachedDocuments: secondRegistered.documents,
@@ -62,7 +49,7 @@ describe("SessionAttachmentService", () => {
       });
 
       const service = new SessionAttachmentService({
-        sessionMemory,
+        focusStore: sessionMemory.getFocusStore(),
         preparedAttachmentRegistry: registry,
         dataDir,
       });

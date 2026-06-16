@@ -104,7 +104,6 @@ describe("state-persistence", () => {
         activeFocus: [],
         sessionFocusCards: [],
         attentionShelf: [],
-        activeSessionAttachments: [],
       };
 
       const firstWrite = queueStateWrite(runPath, state);

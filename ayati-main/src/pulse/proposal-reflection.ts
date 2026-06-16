@@ -180,7 +180,6 @@ function buildReflectionUserPrompt(input: PulseProposalReflectionInput): string 
     sessionFocusCards: compactFocusCards(memoryContext.sessionFocusCards ?? []),
     attentionShelf: compactFocusCards(memoryContext.attentionShelf ?? []),
     personalMemorySnapshot: truncateText(memoryContext.personalMemorySnapshot ?? ""),
-    previousSessionSummary: truncateText(memoryContext.previousSessionSummary ?? ""),
     recentConversation: compactConversation(memoryContext.conversationTurns ?? []),
     availableCapabilities: summarizeCapabilities(input.toolDefinitions),
   };

@@ -10,7 +10,6 @@ import type {
   VerifiedFact,
 } from "../skills/types.js";
 import type { AgentUiContext } from "../ui/context.js";
-import type { ActiveAttachmentRef } from "../memory/types.js";
 import type {
   AgentResponseKind,
   FeedbackKind,
@@ -143,9 +142,7 @@ export interface LoopState {
   preparedAttachmentRecords?: PreparedAttachmentRecord[];
   managedFiles?: ManagedFileRecord[];
   managedDirectories?: DirectoryAttachmentRecord[];
-  activeSessionAttachments?: ActiveAttachmentRef[];
   activeLearningContext?: string;
-  previousSessionSummary?: string;
   personalMemorySnapshot?: string;
   activeFocus?: FocusShelfItem[];
   attentionShelf?: FocusShelfItem[];

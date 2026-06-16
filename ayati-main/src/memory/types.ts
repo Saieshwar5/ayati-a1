@@ -1,5 +1,5 @@
-import type { ManagedDocumentManifest, PreparedAttachmentSummary } from "../documents/types.js";
 import type { FocusAssetRef, FocusShelfItem } from "./focus/types.js";
+import type { FocusStore } from "./focus/focus-store.js";
 import type { PromptPersonalMemory } from "./personal/types.js";
 import type {
   SystemEventCreatedBy,
@@ -119,33 +119,6 @@ export interface PromptTaskSummary {
   attachmentNames: string[];
 }
 
-export type ActiveAttachmentKind = "document" | "dataset" | "file" | "directory";
-
-export interface ActiveAttachmentRef {
-  attachmentKind: ActiveAttachmentKind;
-  assetId?: string;
-  documentId?: string;
-  fileId?: string;
-  directoryId?: string;
-  displayName: string;
-  kind: string;
-  mode?: string;
-  capabilities?: string[];
-  runId: string;
-  runPath: string;
-  preparedInputId?: string;
-  path?: string;
-  lastUsedAt: string;
-  lastAction: string;
-}
-
-export interface ActiveAttachmentRecord extends ActiveAttachmentRef {
-  manifest?: ManagedDocumentManifest;
-  summary?: PreparedAttachmentSummary;
-  detail?: Record<string, unknown>;
-  asset?: FocusAssetRef;
-}
-
 export interface SessionHandoffSnapshot {
   sessionId: string;
   parentSessionId: string | null;
@@ -157,7 +130,6 @@ export interface SessionHandoffSnapshot {
   completedWork: string[];
   pendingWork: string[];
   keyFacts: string[];
-  activeAttachments: ActiveAttachmentRef[];
   sessionFocusCards: FocusShelfItem[];
   recentDialog: ConversationTurn[];
   nextAction: string;
@@ -174,7 +146,6 @@ export interface PromptMemoryContext {
   recentExchanges: ConversationExchange[];
   recentSystemEvents: SystemActivityItem[];
   conversationTurns: ConversationTurn[];
-  previousSessionSummary: string;
   personalMemorySnapshot?: string;
   personalMemories?: PromptPersonalMemory[];
   activeFocus?: FocusShelfItem[];
@@ -183,7 +154,6 @@ export interface PromptMemoryContext {
   activeTopicLabel?: string;
   activeSessionPath?: string;
   recentTaskSummaries?: PromptTaskSummary[];
-  activeAttachments?: ActiveAttachmentRef[];
 }
 
 export interface MemoryRunHandle {
@@ -258,18 +228,6 @@ export interface AgentStepRecordInput {
   summary: string;
   actionToolName?: string;
   endStatus?: string;
-}
-
-export interface ActiveAttachmentsRecordInput {
-  runId: string;
-  sessionId: string;
-  runPath: string;
-  action: "prepared" | "restored" | "used";
-  attachments: Array<{
-    manifest: ManagedDocumentManifest;
-    summary: PreparedAttachmentSummary;
-    detail?: Record<string, unknown>;
-  }>;
 }
 
 export interface TaskSummaryRecordInput {
@@ -368,13 +326,12 @@ export interface SessionMemory {
   ): void;
   recordRunFailure(clientId: string, runId: string, sessionId: string, message: string): void;
   recordAgentStep(clientId: string, input: AgentStepRecordInput): void;
-  recordActiveAttachments?(clientId: string, input: ActiveAttachmentsRecordInput): void;
   recordTaskSummary?(clientId: string, input: TaskSummaryRecordInput): void;
   queueTaskSummary?(clientId: string, input: TaskSummaryRecordInput): void | Promise<void>;
   recordSystemEventOutcome?(clientId: string, input: SystemEventOutcomeRecordInput): void;
   recordAssistantNotification?(clientId: string, input: AssistantNotificationRecordInput): void;
   getPromptMemoryContext(): PromptMemoryContext;
-  getActiveAttachmentRecords?(): ActiveAttachmentRecord[];
+  getFocusStore?(): FocusStore;
   getSessionStatus?(): SessionStatus | null;
   updateSessionLifecycle?(clientId: string, input: SessionLifecycleUpdateInput): void | Promise<void>;
   flushPersistence?(): Promise<void>;

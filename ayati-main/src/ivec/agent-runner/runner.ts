@@ -607,9 +607,7 @@ function buildInitialState(deps: AgentLoopDeps, config: LoopConfig, runPath: str
     preparedAttachmentRecords: [],
     managedFiles: deps.managedFiles ?? [],
     managedDirectories: deps.managedDirectories ?? [],
-    activeSessionAttachments: [],
     activeLearningContext: deps.activeLearningContext,
-    previousSessionSummary: "",
     personalMemorySnapshot: "",
     activeFocus: [],
     attentionShelf: [],
@@ -638,29 +636,16 @@ async function prepareAttachmentsForRun(
   });
   state.preparedAttachments = prepared.summaries;
   state.preparedAttachmentRecords = prepared.records;
-  deps.sessionMemory.recordActiveAttachments?.(deps.clientId, {
-    runId,
-    sessionId: deps.runHandle.sessionId,
-    runPath,
-    action: "prepared",
-    attachments: prepared.records.map((record) => ({
-      manifest: record.manifest,
-      summary: record.summary,
-      detail: record.detail.payload,
-    })),
-  });
 }
 
 function syncTransientMemoryContext(state: LoopState, deps: AgentLoopDeps): void {
   const memCtx = deps.sessionMemory.getPromptMemoryContext();
   state.activeLearningContext = deps.activeLearningContext;
-  state.previousSessionSummary = memCtx.previousSessionSummary ?? "";
   state.personalMemorySnapshot = memCtx.personalMemorySnapshot ?? "";
   state.activeFocus = memCtx.activeFocus ?? [];
   state.attentionShelf = memCtx.attentionShelf ?? [];
   state.sessionFocusCards = memCtx.sessionFocusCards ?? [];
   state.recentExchanges = memCtx.recentExchanges ?? [];
-  state.activeSessionAttachments = memCtx.activeAttachments ?? [];
 }
 
 function getPrimaryUserMessage(deps: AgentLoopDeps): string {

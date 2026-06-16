@@ -47,7 +47,9 @@ export interface ActivationRouterState {
   preparedAttachments?: unknown[];
   managedFiles?: unknown[];
   managedDirectories?: unknown[];
-  activeSessionAttachments?: unknown[];
+  activeFocus?: unknown[];
+  sessionFocusCards?: unknown[];
+  attentionShelf?: unknown[];
 }
 
 const DEFAULT_MAX_ACTIVE_BUILT_IN_SKILLS = 4;
@@ -201,7 +203,7 @@ export class SkillActivationManager {
   }
 
   async prepareForDecision(state: ActivationRouterState, context: ToolExecutionContext): Promise<ActiveSkillRecord[]> {
-    if (!hasAttachments(state)) {
+    if (!hasAttachmentWork(state)) {
       return [];
     }
 
@@ -210,7 +212,7 @@ export class SkillActivationManager {
       const result = await this.activate({
         skillId,
         scope: "run",
-        reason: "incoming attachment",
+        reason: hasCurrentRunAttachments(state) ? "incoming attachment" : "focus continuation attachment",
       }, context);
       if (!result.ok) {
         continue;
@@ -279,14 +281,35 @@ export class SkillActivationManager {
   }
 }
 
-function hasAttachments(state: ActivationRouterState): boolean {
+function hasAttachmentWork(state: ActivationRouterState): boolean {
+  return hasCurrentRunAttachments(state) || hasFocusArtifactContext(state);
+}
+
+function hasCurrentRunAttachments(state: ActivationRouterState): boolean {
   return [
     state.attachedDocuments,
     state.preparedAttachments,
     state.managedFiles,
     state.managedDirectories,
-    state.activeSessionAttachments,
   ].some((items) => Array.isArray(items) && items.length > 0);
+}
+
+function hasFocusArtifactContext(state: ActivationRouterState): boolean {
+  return [
+    state.activeFocus,
+    state.sessionFocusCards,
+    state.attentionShelf,
+  ].some((items) => Array.isArray(items) && items.some(hasTopArtifacts));
+}
+
+function hasTopArtifacts(item: unknown): boolean {
+  return Boolean(
+    item
+      && typeof item === "object"
+      && !Array.isArray(item)
+      && Array.isArray((item as { topArtifacts?: unknown[] }).topArtifacts)
+      && ((item as { topArtifacts: unknown[] }).topArtifacts).length > 0,
+  );
 }
 
 function toToolGroupScope(scope: SkillActivationScope): ToolGroupScope {

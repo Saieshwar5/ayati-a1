@@ -28,8 +28,10 @@ Primary value:
 - A stable backend loop that can use different model providers.
 - Persistent session, focus, personal, and episodic memory for personalization and continuity.
 - Structured context packs that keep recent conversation, active focus cards,
-  session focus cards, attention shelf summaries, and active attachments
-  available to the decision model.
+  session focus cards, attention shelf summaries, personal memory, and active
+  learning context available to the decision model.
+- Focus card assets keep user-attached documents, datasets, files, and
+  directories resumable across later runs.
 - Broad computer-access tools for local workspace work, files, documents, datasets, Python, SQLite, reminders, and recall.
 - Multi-channel user communication, with CLI current and other clients intended.
 - Proactive and event-driven assistance through Pulse, plugins, and system events.

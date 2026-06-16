@@ -149,7 +149,6 @@ describe("buildAgentStateView", () => {
           blockedTargets: ["ayati-main/tests/ivec/state-view.test.ts"],
         },
       ],
-      previousSessionSummary: "Previous session identified the prompt drift.",
       personalMemorySnapshot: "Prefer exact schema contracts.",
       activeLearningContext: "Golden tests should lock model-facing JSON.",
       recentExchanges: [
@@ -194,8 +193,6 @@ describe("buildAgentStateView", () => {
           "activeFocus": [],
           "sessionFocusCards": [],
           "attentionShelf": [],
-          "activeAttachments": [],
-          "previousSessionSummary": "Previous session identified the prompt drift.",
           "personalMemorySnapshot": "Prefer exact schema contracts.",
           "activeLearningContext": "Golden tests should lock model-facing JSON.",
           "recentConversation": [

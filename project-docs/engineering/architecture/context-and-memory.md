@@ -271,7 +271,8 @@ These concepts should not be written into session files:
 - task summaries
 - tool calls and tool results
 - agent step traces
-- active attachments
+- managed attachment payloads
+- focus-card attachment assets
 - focus cards
 - handoff summaries
 - context-pressure rotation state

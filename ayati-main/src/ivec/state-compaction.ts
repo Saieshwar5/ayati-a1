@@ -88,19 +88,15 @@ export function buildLoopStateSizeBreakdown(state: LoopState): Record<string, nu
 function buildPersistedLikeStateView(state: LoopState): Omit<
   LoopState,
   | "activeLearningContext"
-  | "previousSessionSummary"
   | "personalMemorySnapshot"
   | "activeFocus"
   | "attentionShelf"
   | "sessionFocusCards"
   | "recentExchanges"
-  | "activeSessionAttachments"
 > {
   const {
     recentExchanges: _recentExchanges,
-    activeSessionAttachments: _activeSessionAttachments,
     activeLearningContext: _activeLearningContext,
-    previousSessionSummary: _previousSessionSummary,
     personalMemorySnapshot: _personalMemorySnapshot,
     activeFocus: _activeFocus,
     attentionShelf: _attentionShelf,

@@ -44,8 +44,6 @@ portion is built by `context-pack.ts` and currently includes:
 - `activeFocus`
 - `sessionFocusCards`
 - `attentionShelf`
-- `activeAttachments`
-- optional `previousSessionSummary`
 - optional `personalMemorySnapshot`
 - optional `activeLearningContext`
 

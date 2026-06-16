@@ -14,7 +14,7 @@ export function inferFocusType(input: FocusUpsertInput): FocusType {
     ...(input.attachmentNames ?? []),
   ].filter(Boolean).join(" ").toLowerCase();
 
-  if ((input.activeAttachments?.length ?? 0) > 0 || (input.attachmentNames?.length ?? 0) > 0 || /\b(pdf|document|attachment|contract|policy|paper)\b/.test(text)) {
+  if ((input.focusAssets?.length ?? 0) > 0 || (input.attachmentNames?.length ?? 0) > 0 || /\b(pdf|document|attachment|contract|policy|paper)\b/.test(text)) {
     return "document";
   }
   if (/\b(learn|learning|teach|lesson|study|course|practice|understand)\b/.test(text)) {
@@ -77,7 +77,7 @@ export function admitFocus(input: FocusUpsertInput, type: FocusType): FocusAdmis
   let score = 0;
   const reasons: string[] = [];
 
-  if ((input.activeAttachments?.length ?? 0) > 0 || (input.attachmentNames?.length ?? 0) > 0) {
+  if ((input.focusAssets?.length ?? 0) > 0 || (input.attachmentNames?.length ?? 0) > 0) {
     score += 35;
     reasons.push("document_or_attachment_present");
   }
@@ -179,7 +179,7 @@ function looksOneOff(input: FocusUpsertInput): boolean {
 
 function hasDurableState(input: FocusUpsertInput, type: FocusType): boolean {
   if (type === "learning" || type === "automation") return true;
-  return (input.activeAttachments?.length ?? 0) > 0
+  return (input.focusAssets?.length ?? 0) > 0
     || (input.attachmentNames?.length ?? 0) > 0
     || (input.openWork?.length ?? 0) > 0
     || (input.evidence?.length ?? 0) > 0
@@ -190,4 +190,3 @@ function hasDurableState(input: FocusUpsertInput, type: FocusType): boolean {
 function round4(value: number): number {
   return Number(value.toFixed(4));
 }
-

@@ -49,7 +49,6 @@ function createSessionMemory(): SessionMemory {
     recordAssistantNotification: vi.fn(),
     getPromptMemoryContext: vi.fn().mockReturnValue({
       conversationTurns: [],
-      previousSessionSummary: "",
     }),
     setStaticTokenBudget: vi.fn(),
   };
@@ -481,7 +480,6 @@ describe("IVecEngine", () => {
           sessionPath: "sessions/s1.md",
         },
       ],
-      previousSessionSummary: "The user is optimizing agent latency.",
       activeSessionPath: "sessions/s1.md",
       sessionFocusCards: [
         {
@@ -879,7 +877,6 @@ describe("IVecEngine", () => {
               sessionPath: "sessions/s1.md",
             },
           ],
-          previousSessionSummary: "",
         }),
         getSessionStatus: vi.fn().mockReturnValue({
           contextPercent: 96,

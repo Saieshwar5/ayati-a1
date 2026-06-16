@@ -81,7 +81,7 @@ describe("focus continuation in the agent loop", () => {
         provider: createProvider([]),
       });
       const sessionAttachmentService = new SessionAttachmentService({
-        sessionMemory: memory,
+        focusStore: memory.getFocusStore(),
         preparedAttachmentRegistry: registry,
         dataDir,
       });
@@ -150,7 +150,7 @@ describe("focus continuation in the agent loop", () => {
         origin: "user_attached",
         displayName: "policy.txt",
       });
-      expect(memory.getActiveAttachmentRecords()).toHaveLength(1);
+      expect(firstCard?.assets).toHaveLength(1);
 
       now = new Date("2026-06-12T09:05:00.000Z");
       const run2 = memory.beginRun("c1", "What about renewal in that document?");
@@ -259,7 +259,7 @@ describe("focus continuation in the agent loop", () => {
         runId: "seed-directory-run",
       });
       const sessionAttachmentService = new SessionAttachmentService({
-        sessionMemory: memory,
+        focusStore: memory.getFocusStore(),
         preparedAttachmentRegistry: new PreparedAttachmentRegistry(),
         dataDir,
         fileLibrary,
@@ -325,7 +325,7 @@ describe("focus continuation in the agent loop", () => {
         expect.objectContaining({ kind: "file", fileId: file.fileId, displayName: "refund-policy.txt" }),
         expect.objectContaining({ kind: "directory", directoryId: directory.directoryId, displayName: "project" }),
       ]));
-      expect(memory.getActiveAttachmentRecords().map((record) => record.attachmentKind).sort()).toEqual(["directory", "file"]);
+      expect(card?.assets.map((asset) => asset.kind).sort()).toEqual(["directory", "file"]);
 
       now = new Date("2026-06-12T10:05:00.000Z");
       const run2 = memory.beginRun("c1", "What does the refund policy say?");

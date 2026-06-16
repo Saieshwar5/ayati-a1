@@ -1,8 +1,4 @@
-import type {
-  ActiveAttachmentRef,
-  ConversationExchange,
-  FocusShelfItem,
-} from "../../memory/types.js";
+import type { ConversationExchange, FocusShelfItem } from "../../memory/types.js";
 import type { LoopState } from "../types.js";
 
 const LIMITS = {
@@ -10,7 +6,6 @@ const LIMITS = {
   activeFocus: 3,
   sessionFocusCards: 5,
   attentionShelf: 5,
-  activeAttachments: 5,
   textChars: 500,
   summaryChars: 260,
   memoryChars: 1_200,
@@ -51,23 +46,6 @@ export interface AgentContextPack {
   activeFocus: ContextFocusItem[];
   sessionFocusCards: ContextFocusItem[];
   attentionShelf: ContextFocusItem[];
-  activeAttachments: Array<{
-    attachmentKind: string;
-    assetId?: string;
-    documentId?: string;
-    fileId?: string;
-    directoryId?: string;
-    displayName: string;
-    kind: string;
-    mode?: string;
-    capabilities?: string[];
-    runId: string;
-    runPath: string;
-    preparedInputId?: string;
-    path?: string;
-    lastUsedAt: string;
-  }>;
-  previousSessionSummary?: string;
   personalMemorySnapshot?: string;
   activeLearningContext?: string;
 }
@@ -78,10 +56,6 @@ export function buildAgentContextPack(state: LoopState): AgentContextPack {
     activeFocus: compactFocusShelf(state.activeFocus ?? [], LIMITS.activeFocus),
     sessionFocusCards: compactFocusShelf(state.sessionFocusCards ?? [], LIMITS.sessionFocusCards),
     attentionShelf: compactAttentionShelf(state.attentionShelf ?? []),
-    activeAttachments: compactActiveAttachments(state.activeSessionAttachments ?? []),
-    ...(state.previousSessionSummary?.trim()
-      ? { previousSessionSummary: truncate(state.previousSessionSummary, LIMITS.memoryChars) }
-      : {}),
     ...(state.personalMemorySnapshot?.trim()
       ? { personalMemorySnapshot: truncate(state.personalMemorySnapshot, LIMITS.memoryChars) }
       : {}),
@@ -133,25 +107,6 @@ function compactRecentConversation(exchanges: ConversationExchange[], currentRun
         },
       } : {}),
     }));
-}
-
-function compactActiveAttachments(attachments: ActiveAttachmentRef[]): AgentContextPack["activeAttachments"] {
-  return attachments.slice(0, LIMITS.activeAttachments).map((attachment) => ({
-    attachmentKind: attachment.attachmentKind,
-    ...(attachment.assetId ? { assetId: attachment.assetId } : {}),
-    ...(attachment.documentId ? { documentId: attachment.documentId } : {}),
-    ...(attachment.fileId ? { fileId: attachment.fileId } : {}),
-    ...(attachment.directoryId ? { directoryId: attachment.directoryId } : {}),
-    displayName: truncate(attachment.displayName, 160),
-    kind: attachment.kind,
-    ...(attachment.mode ? { mode: attachment.mode } : {}),
-    ...(attachment.capabilities?.length ? { capabilities: compactList(attachment.capabilities, 6, 40) } : {}),
-    runId: attachment.runId,
-    runPath: attachment.runPath,
-    ...(attachment.preparedInputId ? { preparedInputId: attachment.preparedInputId } : {}),
-    ...(attachment.path ? { path: truncate(attachment.path, 180) } : {}),
-    lastUsedAt: attachment.lastUsedAt,
-  }));
 }
 
 function compactList(values: string[], limit: number, maxChars: number): string[] {

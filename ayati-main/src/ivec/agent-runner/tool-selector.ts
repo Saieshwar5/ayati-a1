@@ -104,7 +104,7 @@ function buildToolSelectionQuery(state: LoopState): string {
     ...focusTerms(state.activeFocus),
     ...focusTerms(state.sessionFocusCards),
     ...focusTerms(state.attentionShelf),
-    ...attachmentTerms(state.activeSessionAttachments),
+    ...focusContinuationAttachmentTerms(state),
     ...(state.completedSteps.slice(-2).flatMap((step) => [
       step.executionContract,
       step.summary,
@@ -129,25 +129,31 @@ function focusTerms(items: LoopState["activeFocus"]): string[] {
   ]).filter((term): term is string => typeof term === "string" && term.trim().length > 0);
 }
 
-function attachmentTerms(items: LoopState["activeSessionAttachments"]): string[] {
-  return (items ?? []).flatMap((item) => [
+function focusContinuationAttachmentTerms(state: LoopState): string[] {
+  const focusItems = [
+    ...(state.activeFocus ?? []),
+    ...(state.sessionFocusCards ?? []),
+    ...(state.attentionShelf ?? []),
+  ];
+  const artifactTerms = focusItems.flatMap((item) => item.topArtifacts);
+  if (artifactTerms.length === 0) {
+    return [];
+  }
+  return [
     "attachment",
     "attachment_restore",
     "restore",
     "query",
     "read",
+    "document_query",
+    "attachment_query",
     "directory_search",
-    item.attachmentKind,
-    item.displayName,
-    item.kind,
-    item.mode,
-    item.documentId,
-    item.preparedInputId,
-    item.fileId,
-    item.directoryId,
-    item.path,
-    ...(item.capabilities ?? []),
-  ]).filter((term): term is string => typeof term === "string" && term.trim().length > 0);
+    "file",
+    "directory",
+    "document",
+    "dataset",
+    ...artifactTerms,
+  ].filter((term): term is string => typeof term === "string" && term.trim().length > 0);
 }
 
 function scoreTool(tool: ToolDefinition, tokens: Set<string>, query: string): number {
