@@ -29,15 +29,18 @@ export type AgentDecision =
       kind: "reply";
       message: string;
       status: AgentDecisionStatus;
+      workingNotes?: string[];
     }
   | {
       kind: "ask_user";
       question: string;
       reason: string;
+      workingNotes?: string[];
     }
   | {
       kind: "act";
       action: AgentAction;
+      workingNotes?: string[];
     };
 
 interface CallAgentDecisionInput {
@@ -124,6 +127,7 @@ export function parseAgentDecision(text: string): AgentDecision {
       kind: "reply",
       message: String(parsed["message"] ?? parsed["summary"] ?? ""),
       status: parsed["status"] === "failed" ? "failed" : "completed",
+      workingNotes: normalizeWorkingNotes(parsed["workingNotes"] ?? parsed["working_notes"]),
     };
   }
 
@@ -132,6 +136,7 @@ export function parseAgentDecision(text: string): AgentDecision {
       kind: "ask_user",
       question: String(parsed["question"] ?? ""),
       reason: String(parsed["reason"] ?? ""),
+      workingNotes: normalizeWorkingNotes(parsed["workingNotes"] ?? parsed["working_notes"]),
     };
   }
 
@@ -139,6 +144,7 @@ export function parseAgentDecision(text: string): AgentDecision {
     return {
       kind: "act",
       action: normalizeAgentAction(parsed["action"]),
+      workingNotes: normalizeWorkingNotes(parsed["workingNotes"] ?? parsed["working_notes"]),
     };
   }
 
@@ -146,6 +152,7 @@ export function parseAgentDecision(text: string): AgentDecision {
     return {
       kind: "act",
       action: normalizeAgentAction(parsed["action"]),
+      workingNotes: normalizeWorkingNotes(parsed["workingNotes"] ?? parsed["working_notes"]),
     };
   }
 
@@ -156,7 +163,7 @@ function buildDecisionSystemContext(systemContext: string | undefined): string {
   const base = `You are the decision component of an AI agent harness.
 Choose the next agent decision only. Do not execute tools yourself.
 Prefer deterministic actions with concrete tool inputs.
-Use the structured context pack in the state view for session memory and recentConversation.
+Use the structured context pack and optional work state in the state view.
 Return compact JSON only.`;
   const trimmed = systemContext?.trim();
   if (!trimmed) {
@@ -179,19 +186,32 @@ function buildDecisionPromptSections(
 - Pick exactly one decision: reply, ask_user, or act.
 - Treat State view.context as the bounded context pack for this decision.
 - Use context.recentConversation as the latest completed session activity. It contains prior user/assistant exchanges, not the current input or raw unlimited history.
+- Treat State view.workState as sparse run progress. It may be absent on the first decision.
+- Use State view.lastActions and recentFailures only when present.
+- Use State view.toolContext.recent as the latest real tool output cards. If these cards answer the user, reply instead of rerunning equivalent tools.
+- State view.latestObservation is a compatibility view of the last recent tool output. Prefer toolContext.recent when present.
+- Do not use workingNotes as factual memory; the harness owns tool-output context.
+- Use evidence tools for truncated or chunked evidence before rerunning the original output-producing tool.
+- If State view.workState.status is "done", return a reply. Do not call more tools.
 - Use reply only when no tool action is needed or the task has failed/finished.
+- Final replies must answer the user's request in natural, human-readable language.
+- Do not mention internal execution details in final replies: tool calls, deterministic verification, evidence contracts, assertions, reducers, work state, or harness steps.
+- Use user-visible results from tool context and last actions, such as created paths, changed files, command results, document findings, or next steps.
 - Use ask_user only when a missing decision prevents safe progress.
 - Use act for tool work.
 - For deterministic tool tasks, use concrete single/sequential/parallel actions.
 - Use autonomous only when exact tool inputs cannot be known yet.
 - Keep actions to one phase.
 - Use only tools listed in Selected tools.
-- Include assertions only for extra checks not already covered by tool contracts.
+- Shell and filesystem tools are kernel tools when listed; use them directly without skill_search or skill_activate.
+- Prefer write_files for generated websites, apps, and multi-file file creation.
+- Use skill_search or skill_activate only for non-kernel capabilities that are not already listed.
+- Do not include assertions. Tool-owned contracts provide deterministic verification.
 
 Response JSON shapes:
 { "kind": "reply", "status": "completed" | "failed", "message": "..." }
 { "kind": "ask_user", "question": "...", "reason": "..." }
-{ "kind": "act", "action": { "mode": "single" | "sequential" | "parallel" | "autonomous", "calls": [{ "id": "call_1", "tool": "write_files", "input": {}, "dependsOn": [], "purpose": "..." }], "allowedTools": ["write_files"], "maxCalls": 1, "assertions": [] } }`,
+{ "kind": "act", "action": { "mode": "single" | "sequential" | "parallel" | "autonomous", "calls": [{ "id": "call_1", "tool": "write_files", "input": {}, "dependsOn": [], "purpose": "..." }], "allowedTools": ["write_files"], "maxCalls": 1 } }`,
   };
 }
 
@@ -231,9 +251,7 @@ function normalizeAgentAction(value: unknown): AgentAction {
       ? record["allowed_tools"].map(String).filter((tool) => tool.trim().length > 0)
       : [];
   const maxCalls = normalizePositiveInteger(record["maxCalls"] ?? record["max_calls"]);
-  const assertions = Array.isArray(record["assertions"])
-    ? record["assertions"].filter(isPlainObject) as ToolContractAssertion[]
-    : [];
+  const assertions: ToolContractAssertion[] = [];
 
   return {
     mode,
@@ -242,6 +260,17 @@ function normalizeAgentAction(value: unknown): AgentAction {
     ...(maxCalls ? { maxCalls } : {}),
     assertions,
   };
+}
+
+function normalizeWorkingNotes(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) {
+    return undefined;
+  }
+  const notes = value
+    .map((note) => String(note).replace(/\s+/g, " ").trim())
+    .filter((note) => note.length > 0)
+    .slice(0, 12);
+  return notes.length > 0 ? notes : [];
 }
 
 function normalizeActionMode(value: unknown): AgentActionMode {

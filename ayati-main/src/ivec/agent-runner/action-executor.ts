@@ -10,11 +10,11 @@ import type { ToolExecutor } from "../../skills/tool-executor.js";
 import type { ToolDefinition, ToolResult } from "../../skills/types.js";
 import type { RunMetrics } from "../metrics.js";
 import { recordRunMetric } from "../metrics.js";
-import { runAssertions } from "../../verification/assertion-engine.js";
 import { uniqueArtifacts } from "../../verification/artifact-assertions.js";
 import type { AgentAction, AgentToolCallSpec } from "./decision.js";
-import { reduceVerifiedTaskProgress } from "../verification-contracts/progress-reducer.js";
-import type { TaskProgressState } from "../types.js";
+import { reduceVerifiedWorkState } from "../verification-contracts/progress-reducer.js";
+import type { WorkEvidenceRef, WorkState } from "../types.js";
+import { buildToolObservation } from "./observation-builder.js";
 
 export interface AgentActionExecutionDeps {
   toolExecutor?: ToolExecutor;
@@ -24,20 +24,21 @@ export interface AgentActionExecutionDeps {
   uiContext?: AgentUiContext;
   sessionMemory: SessionMemory;
   runHandle: MemoryRunHandle;
+  runPath: string;
   metrics?: RunMetrics;
 }
 
 export interface AgentActionExecutionResult {
   actOutput: ActOutput;
   verifyOutput: VerifyOutput;
-  nextProgress: TaskProgressState;
+  nextWorkState: WorkState;
 }
 
 export async function executeAgentAction(
   deps: AgentActionExecutionDeps,
   action: AgentAction,
   stepNumber: number,
-  previousProgress: TaskProgressState,
+  previousWorkState: WorkState,
 ): Promise<AgentActionExecutionResult> {
   const planError = validateActionPlan(deps, action);
   if (planError) {
@@ -55,7 +56,7 @@ export async function executeAgentAction(
     return {
       actOutput,
       verifyOutput,
-      nextProgress: reduceVerifiedTaskProgress(previousProgress, {
+      nextWorkState: reduceVerifiedWorkState(previousWorkState, {
         passed: false,
         summary: verifyOutput.summary,
         evidenceItems: verifyOutput.evidenceItems,
@@ -66,17 +67,17 @@ export async function executeAgentAction(
 
   const calls = action.calls.slice(0, resolveMaxCalls(deps.config, action));
   const actOutput = await executeCalls(deps, action, calls, stepNumber);
-  const actionAssertionResults = await runActionAssertions(action, actOutput);
-  const failedActionAssertions = actionAssertionResults.filter((assertion) => assertion.status === "failed" && assertion.severity === "required");
-  const passed = actOutput.toolCalls.every((call) => !call.error) && failedActionAssertions.length === 0;
-  const evidenceItems = buildEvidenceItems(actOutput, actionAssertionResults);
-  const newFacts = buildNewFacts(actOutput, actionAssertionResults);
+  const assertionResults = collectToolAssertionResults(actOutput);
+  const failedAssertions = assertionResults.filter((assertion) => assertion.status === "failed" && assertion.severity === "required");
+  const passed = actOutput.toolCalls.every((call) => !call.error) && failedAssertions.length === 0;
+  const evidenceItems = buildEvidenceItems(actOutput);
+  const newFacts = buildNewFacts(actOutput);
   const artifacts = uniqueArtifacts(actOutput.toolCalls.flatMap((call) => call.artifacts ?? []))
     .map((artifact) => artifact.path ?? artifact.uri ?? artifact.id ?? artifact.label ?? "artifact")
     .filter((artifact) => artifact.trim().length > 0);
   const summary = passed
     ? `Executed ${actOutput.toolCalls.length} tool call${actOutput.toolCalls.length === 1 ? "" : "s"} with deterministic verification.`
-    : summarizeActionFailure(actOutput, failedActionAssertions.map((assertion) => assertion.message));
+    : summarizeActionFailure(actOutput, failedAssertions.map((assertion) => assertion.message));
   const verifyOutput = buildVerifyOutput(
     passed,
     actOutput,
@@ -84,18 +85,19 @@ export async function executeAgentAction(
     newFacts,
     artifacts,
     summary,
-    actionAssertionResults,
+    assertionResults,
   );
+  const reducedWorkState = reduceVerifiedWorkState(previousWorkState, {
+    passed,
+    summary,
+    evidenceItems,
+    newFacts,
+  });
 
   return {
     actOutput,
     verifyOutput,
-    nextProgress: reduceVerifiedTaskProgress(previousProgress, {
-      passed,
-      summary,
-      evidenceItems,
-      newFacts,
-    }),
+    nextWorkState: mergeWorkEvidenceRefs(reducedWorkState, previousWorkState, collectWorkEvidenceRefs(actOutput)),
   };
 }
 
@@ -146,6 +148,7 @@ async function executeCalls(
   for (const call of calls) {
     if (call.dependsOn.some((dep) => failedCallIds.has(dep))) {
       const skipped: ActToolCallRecord = {
+        callId: call.id,
         tool: call.tool,
         input: call.input,
         output: "",
@@ -185,6 +188,7 @@ async function executeToolCall(
   const validation = deps.toolExecutor.validate(call.tool, call.input, context);
   if (!validation.valid) {
     return {
+      callId: call.id,
       tool: call.tool,
       input: call.input,
       output: "",
@@ -220,6 +224,7 @@ async function executeToolCall(
   }
 
   const record: ActToolCallRecord = {
+    callId: call.id,
     tool: call.tool,
     input: call.input,
     output: result.output ?? "",
@@ -232,6 +237,35 @@ async function executeToolCall(
     ...(result.v2?.verification?.facts ? { verifiedFacts: result.v2.verification.facts } : {}),
     ...(result.v2?.verification?.assertions ? { assertionResults: result.v2.verification.assertions } : {}),
   };
+  const toolDefinition = deps.selectedTools.find((tool) => tool.name === call.tool);
+  const observationResult = await buildToolObservation({
+    runPath: deps.runPath,
+    stepNumber,
+    call,
+    record,
+    toolDefinition,
+  });
+  if (observationResult.observation) {
+    record.observation = observationResult.observation;
+  }
+  if (observationResult.rawOutputPath) {
+    record.rawOutputPath = observationResult.rawOutputPath;
+    record.outputStorage = "raw_file";
+  }
+  if (typeof observationResult.rawOutputChars === "number") {
+    record.rawOutputChars = observationResult.rawOutputChars;
+  }
+  if (observationResult.outputTruncated) {
+    record.outputTruncated = true;
+  }
+  if (observationResult.evidenceRef) {
+    record.evidenceRef = observationResult.evidenceRef;
+    record.artifacts = [...(record.artifacts ?? []), { kind: "file", path: observationResult.evidenceRef.rawOutputPath }];
+    record.meta = {
+      ...(record.meta ?? {}),
+      evidenceRef: observationResult.evidenceRef,
+    };
+  }
 
   deps.sessionMemory.recordToolResult(deps.clientId, {
     runId: deps.runHandle.runId,
@@ -247,24 +281,8 @@ async function executeToolCall(
   return record;
 }
 
-async function runActionAssertions(action: AgentAction, actOutput: ActOutput): Promise<NonNullable<ActToolCallRecord["assertionResults"]>> {
-  const results = actOutput.toolCalls.flatMap((call) => call.assertionResults ?? []);
-  if (action.assertions.length === 0) {
-    return results;
-  }
-
-  for (const call of actOutput.toolCalls) {
-    if (!call.result) {
-      continue;
-    }
-    const assertionRun = await runAssertions(action.assertions, {
-      toolName: call.tool,
-      input: call.input,
-      result: call.result,
-    });
-    results.push(...assertionRun.assertions);
-  }
-  return results;
+function collectToolAssertionResults(actOutput: ActOutput): NonNullable<ActToolCallRecord["assertionResults"]> {
+  return actOutput.toolCalls.flatMap((call) => call.assertionResults ?? []);
 }
 
 function buildVerifyOutput(
@@ -305,33 +323,51 @@ function buildVerifyOutput(
   };
 }
 
-function buildEvidenceItems(
-  actOutput: ActOutput,
-  actionAssertionResults: NonNullable<ActToolCallRecord["assertionResults"]>,
-): string[] {
+function buildEvidenceItems(actOutput: ActOutput): string[] {
   return uniqueStrings([
     ...actOutput.toolCalls.flatMap((call) => [
       call.result?.verification?.summary,
       call.result?.message,
       ...(call.assertionResults ?? []).map((assertion) => `${call.tool}.${assertion.id}: ${assertion.message}`),
       ...(call.verifiedFacts ?? []).map((fact) => fact.message),
+      call.evidenceRef ? `${call.tool} raw output saved as ${call.evidenceRef.ref}.` : undefined,
       call.error ? `${call.tool} failed: ${call.error}` : undefined,
     ]),
-    ...actionAssertionResults.map((assertion) => `action.${assertion.id}: ${assertion.message}`),
   ]).slice(0, 12);
 }
 
-function buildNewFacts(
-  actOutput: ActOutput,
-  actionAssertionResults: NonNullable<ActToolCallRecord["assertionResults"]>,
-): string[] {
+function buildNewFacts(actOutput: ActOutput): string[] {
   return uniqueStrings([
     ...actOutput.toolCalls.flatMap((call) => [
       ...(call.verifiedFacts ?? []).map((fact) => fact.message),
       ...(call.assertionResults ?? []).flatMap((assertion) => (assertion.facts ?? []).map((fact) => fact.message)),
     ]),
-    ...actionAssertionResults.flatMap((assertion) => (assertion.facts ?? []).map((fact) => fact.message)),
   ]).slice(0, 12);
+}
+
+function collectWorkEvidenceRefs(actOutput: ActOutput): WorkEvidenceRef[] {
+  return actOutput.toolCalls
+    .map((call) => call.evidenceRef)
+    .filter((ref): ref is WorkEvidenceRef => ref !== undefined);
+}
+
+function mergeWorkEvidenceRefs(
+  next: WorkState,
+  previous: WorkState,
+  refs: WorkEvidenceRef[],
+): WorkState {
+  const byId = new Map<string, WorkEvidenceRef>();
+  for (const ref of previous.evidenceRefs ?? []) {
+    byId.set(ref.id, ref);
+  }
+  for (const ref of refs) {
+    byId.set(ref.id, ref);
+  }
+  const evidenceRefs = [...byId.values()].slice(-12);
+  return {
+    ...next,
+    ...(evidenceRefs.length > 0 ? { evidenceRefs } : {}),
+  };
 }
 
 function summarizeActionFailure(actOutput: ActOutput, assertionFailures: string[]): string {

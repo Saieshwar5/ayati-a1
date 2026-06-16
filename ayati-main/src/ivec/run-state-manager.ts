@@ -11,7 +11,9 @@ import type {
 import type {
   StepSummary,
   StepExpectationCheckStatus,
-  TaskProgressState,
+  ToolObservation,
+  WorkEvidenceRef,
+  WorkState,
   VerificationExecutionStatus,
   VerificationMethod,
   StepVerificationPolicy,
@@ -22,6 +24,7 @@ import { devWarn } from "../shared/index.js";
 const STEP_RECORDS_FILENAME = "step-records.jsonl";
 
 export interface StepRecordToolCall {
+  callId?: string;
   tool: string;
   input: unknown;
   output: string;
@@ -35,8 +38,10 @@ export interface StepRecordToolCall {
   operationStatus?: ToolOperationStatus;
   code?: string;
   artifacts?: ArtifactRef[];
+  evidenceRef?: WorkEvidenceRef;
   verifiedFacts?: VerifiedFact[];
   assertionResults?: AssertionResult[];
+  observation?: ToolObservation;
 }
 
 export interface StepRecord {
@@ -61,7 +66,7 @@ export interface StepRecord {
   validationStatus?: VerificationValidationStatus;
   evidenceSummary?: string;
   evidenceItems: string[];
-  taskProgress?: TaskProgressState;
+  workState?: WorkState;
   stoppedEarlyReason?: StepSummary["stoppedEarlyReason"];
   failureType?: StepSummary["failureType"];
   blockedTargets: string[];

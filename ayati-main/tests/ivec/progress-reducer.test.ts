@@ -1,17 +1,17 @@
 import { describe, expect, it } from "vitest";
-import { reduceVerifiedTaskProgress } from "../../src/ivec/verification-contracts/progress-reducer.js";
-import type { TaskProgressState } from "../../src/ivec/types.js";
+import { reduceVerifiedWorkState } from "../../src/ivec/verification-contracts/progress-reducer.js";
+import type { WorkState } from "../../src/ivec/types.js";
 
-describe("reduceVerifiedTaskProgress", () => {
-  it("marks write_files verification as a completed milestone", () => {
-    const previous: TaskProgressState = {
+describe("reduceVerifiedWorkState", () => {
+  it("records verified facts and evidence without synthetic completion", () => {
+    const previous: WorkState = {
       status: "not_done",
-      progressSummary: "",
-      keyFacts: [],
+      summary: "",
+      verifiedFacts: [],
       evidence: [],
     };
 
-    const next = reduceVerifiedTaskProgress(previous, {
+    const next = reduceVerifiedWorkState(previous, {
       passed: true,
       summary: "Verification contract passed from tool-owned assertions for write_files.",
       evidenceItems: [
@@ -22,9 +22,9 @@ describe("reduceVerifiedTaskProgress", () => {
       ],
     });
 
-    expect(next.status).toBe("likely_done");
-    expect(next.completedMilestones).toContain("write_files completed and read-back hashes verified");
-    expect(next.keyFacts).toContain("Read-back hash verified for /tmp/a.txt.");
+    expect(next.status).toBe("not_done");
+    expect(next.summary).toContain("Verification contract passed");
+    expect(next.verifiedFacts).toContain("Read-back hash verified for /tmp/a.txt.");
+    expect(next.evidence).toContain("write_files.written_hashes_match: Verified read-back hashes for 2 written file(s).");
   });
 });
-

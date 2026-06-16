@@ -129,6 +129,35 @@ function isWriteInputRecord(value: unknown): value is WriteInputRecord {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+function unsupportedAssertionResult(assertion: ToolContractAssertion): AssertionResult {
+  const raw = assertion as { id?: unknown; kind?: unknown; severity?: unknown };
+  const id = typeof raw.id === "string" && raw.id.trim().length > 0
+    ? raw.id.trim()
+    : "unsupported_assertion";
+  const severityValue = raw.severity === "warning" || raw.severity === "info"
+    ? raw.severity
+    : "required";
+  const kind = typeof raw.kind === "string" && raw.kind.trim().length > 0
+    ? raw.kind
+    : "unsupported_assertion";
+
+  return {
+    id,
+    kind,
+    status: "failed",
+    severity: severityValue,
+    message: `Unsupported assertion kind: ${String(raw.kind ?? "missing")}.`,
+    expected: "supported assertion kind",
+    actual: raw.kind ?? "missing",
+    error: {
+      code: "UNSUPPORTED_ASSERTION",
+      category: "validation",
+      retryable: false,
+      suggestedNextActions: ["Use a supported tool contract assertion kind."],
+    },
+  };
+}
+
 function recordString(record: Record<string, unknown>, field: string): string | undefined {
   const value = record[field];
   return typeof value === "string" ? value : undefined;
@@ -416,6 +445,9 @@ async function runAssertion(assertion: ToolContractAssertion, context: Assertion
 
     case "written_hashes_match":
       return await runWrittenHashesMatch(assertion, context);
+
+    default:
+      return unsupportedAssertionResult(assertion);
   }
 }
 

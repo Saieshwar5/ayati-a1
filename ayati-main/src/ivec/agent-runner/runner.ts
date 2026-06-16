@@ -3,15 +3,15 @@ import { prepareIncomingAttachments } from "../../documents/attachment-preparer.
 import type { PreparedAttachmentSummary } from "../../documents/types.js";
 import type { AgentArtifact } from "../types.js";
 import type {
+  ActToolCallRecord,
   AgentLoopDeps,
   AgentLoopResult,
   AgentTaskSummaryRecord,
   CompletionDirective,
-  GoalContract,
   LoopConfig,
   LoopState,
   StepSummary,
-  TaskProgressState,
+  WorkState,
 } from "../types.js";
 import {
   DEFAULT_LOOP_CONFIG,
@@ -36,7 +36,15 @@ import {
   recordVerificationMetric,
   writeOptimizationMetrics,
 } from "../metrics.js";
-import { buildLoopStateSizeBreakdown, compactStepSummaryForState, compactTaskProgress, measureJson } from "../state-compaction.js";
+import {
+  buildLoopStateSizeBreakdown,
+  compactLatestObservation,
+  compactLatestObservations,
+  compactStepSummaryForState,
+  compactToolContext,
+  compactWorkState,
+  measureJson,
+} from "../state-compaction.js";
 import { collectAgentArtifacts } from "../agent-artifacts.js";
 import { buildAgentStateView } from "./state-view.js";
 import { selectToolsForDecision } from "./tool-selector.js";
@@ -45,6 +53,8 @@ import type { AgentAction, AgentDecision } from "./decision.js";
 import { executeAgentAction } from "./action-executor.js";
 import type { AgentActionExecutionResult } from "./action-executor.js";
 import { planLocalRecovery } from "./failure-policy.js";
+import { createEvidenceTools } from "./evidence-tools.js";
+import { isEvidenceToolName } from "./observation-builder.js";
 
 export async function runAgentLoop(
   deps: AgentLoopDeps,
@@ -91,6 +101,7 @@ export async function runAgentLoop(
       stepNumber: state.iteration,
       ...(deps.uiContext ? { uiContext: deps.uiContext } : {}),
     });
+    deps.toolExecutor?.unmount?.(evidenceToolGroupId(deps.runHandle.runId));
     devLog(`[${deps.clientId}] [metrics:agent_loop] ${formatRunMetrics(metrics)}`);
     return buildLoopResult(state, deps.dataDir, {
       status: input.status,
@@ -104,12 +115,6 @@ export async function runAgentLoop(
 
   syncTransientMemoryContext(state, deps);
   state.userMessage = getPrimaryUserMessage(deps);
-  state.goal = goalFromUserMessage(state.userMessage);
-  state.taskProgress = {
-    ...state.taskProgress,
-    progressSummary: "Starting decision-action-reducer loop.",
-    currentFocus: state.userMessage,
-  };
 
   devLog(
     `[${deps.clientId}] agentLoop start inputKind=${state.inputKind ?? "user_message"} runHandle=${deps.runHandle.runId} message=${state.userMessage.slice(0, 160)}`,
@@ -130,13 +135,7 @@ export async function runAgentLoop(
 
     syncTransientMemoryContext(state, deps);
     state.iteration++;
-
-    if (canCompleteFromVerifiedState(state)) {
-      state.status = "completed";
-      state.finalOutput = buildLocalCompletionReply(state);
-      recordRunMetric(metrics, "local_completion", { kind: "local" });
-      return finalize({ status: "completed", content: state.finalOutput });
-    }
+    const finalReplyFromVerifiedState = canCompleteFromVerifiedState(state);
 
     const toolContext = {
       clientId: deps.clientId,
@@ -146,11 +145,14 @@ export async function runAgentLoop(
       ...(deps.uiContext ? { uiContext: deps.uiContext } : {}),
     };
     await deps.skillActivationManager?.prepareForDecision(state, toolContext);
+    syncEvidenceTools(deps, state, toolContext);
 
     const visibleTools = deps.toolExecutor?.definitions({
       ...toolContext,
     }) ?? deps.toolDefinitions;
-    const selectedTools = selectToolsForDecision(state, visibleTools, config.maxSelectedTools);
+    const selectedTools = finalReplyFromVerifiedState
+      ? []
+      : selectToolsForDecision(state, visibleTools, config.maxSelectedTools);
     const decision = await callAgentDecision({
       provider: deps.provider,
       stateView: buildAgentStateView(state),
@@ -158,6 +160,7 @@ export async function runAgentLoop(
       systemContext: deps.systemContext,
       metrics,
     });
+    discardModelWorkingNotes(decision);
 
     if (decision.kind === "reply") {
       state.status = decision.status === "failed" ? "failed" : "completed";
@@ -179,11 +182,11 @@ export async function runAgentLoop(
     if (decision.kind === "ask_user") {
       state.runClass = "task";
       state.status = "completed";
-      state.taskProgress = {
-        ...state.taskProgress,
+      state.workState = {
+        ...state.workState,
         status: "needs_user_input",
         userInputNeeded: decision.question,
-        progressSummary: decision.reason || "User input is needed before the task can continue.",
+        summary: decision.reason || "User input is needed before the task can continue.",
       };
       state.finalOutput = decision.question;
       return finalize({
@@ -211,17 +214,24 @@ export async function runAgentLoop(
     });
     totalToolCalls += stepResult.stepSummary.toolSuccessCount + stepResult.stepSummary.toolFailureCount;
 
-    const beforeProgressChars = measureJson(stepResult.execution.nextProgress);
-    const compactedProgress = compactTaskProgress(stepResult.execution.nextProgress);
-    recordCompactionMetric(metrics, "taskProgress", beforeProgressChars, measureJson(compactedProgress), { step: state.iteration });
-    state.taskProgress = compactedProgress;
-    stepResult.stepSummary.taskProgress = compactedProgress;
-    stepResult.stepRecord.taskProgress = compactedProgress;
+    const beforeWorkStateChars = measureJson(stepResult.execution.nextWorkState);
+    const compactedWorkState = compactWorkState(stepResult.execution.nextWorkState);
+    recordCompactionMetric(metrics, "workState", beforeWorkStateChars, measureJson(compactedWorkState), { step: state.iteration });
+    state.workState = compactedWorkState;
+    const latestObservations = compactLatestObservations(getLatestObservations(stepResult.execution));
+    state.latestObservations = latestObservations;
+    state.latestObservation = compactLatestObservation(latestObservations?.at(-1));
+    state.toolContext = compactToolContext(latestObservations ? { recent: latestObservations } : undefined);
+    stepResult.stepSummary.workState = compactedWorkState;
+    stepResult.stepRecord.workState = compactedWorkState;
 
     const compactedStep = compactStepSummaryForState(stepResult.stepSummary);
     recordCompactionMetric(metrics, "completedStepSummary", measureJson(stepResult.stepSummary), measureJson(compactedStep), { step: state.iteration });
-    state.completedSteps.push(compactedStep);
-    await runStateManager.appendStepRecord(stepResult.stepRecord, stepResult.fullStepText);
+    const evidenceReviewAction = isEvidenceReviewAction(decision.action);
+    if (!evidenceReviewAction) {
+      state.completedSteps.push(compactedStep);
+      await runStateManager.appendStepRecord(stepResult.stepRecord, stepResult.fullStepText);
+    }
 
     recordPlanModeMetric(metrics, decision.action.mode, {
       step: state.iteration,
@@ -265,10 +275,18 @@ export async function runAgentLoop(
       runPath,
     );
 
-    if (canCompleteLocallyAfterAction(decision.action, stepResult.stepSummary, state.taskProgress)) {
-      state.status = "completed";
-      state.finalOutput = buildLocalCompletionReply(state);
-      return finalize({ status: "completed", content: state.finalOutput });
+    if (canCompleteLocallyAfterAction(decision.action, stepResult.stepSummary, state.workState)) {
+      state.workState = compactWorkState({
+        ...state.workState,
+        status: "done",
+      });
+      recordRunMetric(metrics, "verified_completion", { kind: "local" });
+      if (state.iteration >= config.maxIterations) {
+        state.status = "completed";
+        state.finalOutput = "I completed the task.";
+        return finalize({ status: "completed", content: state.finalOutput });
+      }
+      continue;
     }
   }
 
@@ -306,10 +324,11 @@ async function executeActionStep(input: ExecuteActionStepInput): Promise<Execute
       sessionMemory: input.deps.sessionMemory,
       runHandle: input.deps.runHandle,
       metrics: input.metrics,
+      runPath: input.state.runPath,
     },
     input.decision.action,
     input.stepNumber,
-    input.state.taskProgress,
+    input.state.workState,
   );
 
   if (!execution.verifyOutput.passed) {
@@ -326,10 +345,11 @@ async function executeActionStep(input: ExecuteActionStepInput): Promise<Execute
           sessionMemory: input.deps.sessionMemory,
           runHandle: input.deps.runHandle,
           metrics: input.metrics,
+          runPath: input.state.runPath,
         },
         recovery.action,
         input.stepNumber,
-        input.state.taskProgress,
+        input.state.workState,
       );
       execution = mergeRecoveredExecution(execution, retryExecution, recovery.reason);
     }
@@ -381,7 +401,7 @@ function mergeRecoveredExecution(
         .filter((item) => item.trim().length > 0)
         .join(" "),
     },
-    nextProgress: retry.nextProgress,
+    nextWorkState: retry.nextWorkState,
   };
 }
 
@@ -416,7 +436,7 @@ function buildStepSummary(input: {
     verificationPolicy: "deterministic",
     verificationRationale: "The runner uses tool result contracts and local assertions before any semantic model review.",
     expectedArtifacts: [],
-    expectedStateChange: "Verified facts and progress state are updated from tool-owned evidence.",
+    expectedStateChange: "Verified facts and work state are updated from tool-owned evidence.",
     requiresFullStepContext: false,
     expectationCheckStatus: input.execution.verifyOutput.expectationCheckStatus,
     expectationCheckSummary: input.execution.verifyOutput.expectationCheckSummary,
@@ -426,7 +446,7 @@ function buildStepSummary(input: {
     evidenceSummary: input.execution.verifyOutput.evidenceSummary,
     evidenceItems: input.execution.verifyOutput.evidenceItems,
     usedRawArtifacts: [],
-    taskProgress: input.execution.nextProgress,
+    workState: input.execution.nextWorkState,
     stoppedEarlyReason: input.execution.actOutput.stoppedEarlyReason,
     failureType: failure.failureType,
     blockedTargets: failure.blockedTargets,
@@ -456,7 +476,7 @@ function buildStepRecord(step: StepSummary, execution: AgentActionExecutionResul
     validationStatus: step.validationStatus,
     evidenceSummary: step.evidenceSummary,
     evidenceItems: step.evidenceItems ?? [],
-    taskProgress: step.taskProgress,
+    workState: step.workState,
     stoppedEarlyReason: step.stoppedEarlyReason,
     failureType: step.failureType,
     blockedTargets: step.blockedTargets ?? [],
@@ -483,8 +503,7 @@ function buildInitialState(deps: AgentLoopDeps, config: LoopConfig, runPath: str
     approvalState: deps.systemEventApprovalState,
     contextVisibility: deps.systemEventContextVisibility,
     preferredResponseKind: deps.preferredResponseKind,
-    goal: emptyGoalContract(),
-    taskProgress: emptyTaskProgress(),
+    workState: emptyWorkState(),
     status: "running",
     finalOutput: "",
     iteration: 0,
@@ -506,6 +525,7 @@ function buildInitialState(deps: AgentLoopDeps, config: LoopConfig, runPath: str
     attentionShelf: [],
     sessionFocusCards: [],
     recentExchanges: [],
+    toolContext: { recent: [] },
   };
 }
 
@@ -559,42 +579,62 @@ function getPrimaryUserMessage(deps: AgentLoopDeps): string {
   return lastUser?.content ?? "";
 }
 
-function goalFromUserMessage(userMessage: string): GoalContract {
-  const objective = userMessage.trim() || "Handle the user request.";
-  return {
-    objective,
-    done_when: ["The user request has been satisfied."],
-    required_evidence: [],
-    ask_user_when: ["Required information is missing and cannot be inferred safely."],
-    stop_when_no_progress: ["The same failure repeats without deterministic recovery."],
-  };
-}
-
-function emptyGoalContract(): GoalContract {
-  return {
-    objective: "",
-    done_when: [],
-    required_evidence: [],
-    ask_user_when: [],
-    stop_when_no_progress: [],
-  };
-}
-
-function emptyTaskProgress(): TaskProgressState {
+function emptyWorkState(): WorkState {
   return {
     status: "not_done",
-    progressSummary: "",
-    currentFocus: "",
-    completedMilestones: [],
     openWork: [],
     blockers: [],
-    keyFacts: [],
+    summary: "",
+    verifiedFacts: [],
     evidence: [],
   };
 }
 
+function discardModelWorkingNotes(decision: AgentDecision): void {
+  void decision.workingNotes;
+}
+
+function getLatestObservations(execution: AgentActionExecutionResult): NonNullable<LoopState["latestObservations"]> {
+  return execution.actOutput.toolCalls
+    .map((call) => call.observation)
+    .filter((observation): observation is NonNullable<ActToolCallRecord["observation"]> => observation !== undefined);
+}
+
+function isEvidenceReviewAction(action: AgentAction): boolean {
+  return action.calls.length > 0 && action.calls.every((call) => isEvidenceToolName(call.tool));
+}
+
+function syncEvidenceTools(
+  deps: AgentLoopDeps,
+  state: LoopState,
+  toolContext: { runId: string; sessionId: string; stepNumber: number; clientId: string },
+): void {
+  if (!deps.toolExecutor?.mount || !deps.toolExecutor.unmount) {
+    return;
+  }
+  const groupId = evidenceToolGroupId(deps.runHandle.runId);
+  const evidenceRefs = state.workState.evidenceRefs ?? [];
+  if (evidenceRefs.length === 0) {
+    deps.toolExecutor.unmount(groupId);
+    return;
+  }
+  deps.toolExecutor.mount(groupId, createEvidenceTools(state), {
+    scope: "run",
+    runId: toolContext.runId,
+    sessionId: toolContext.sessionId,
+    activatedAtStep: toolContext.stepNumber,
+    skillId: "evidence",
+    toolIds: ["next_chunk", "search", "read_lines", "tail"],
+    description: "Run-scoped tools for reading saved tool-output evidence.",
+  });
+}
+
+function evidenceToolGroupId(runId: string): string {
+  return `dynamic:evidence:${runId}`;
+}
+
 function canCompleteFromVerifiedState(state: LoopState): boolean {
-  return state.taskProgress.status === "done" && state.taskProgress.userInputNeeded === undefined;
+  return state.workState.status === "done" && state.workState.userInputNeeded === undefined;
 }
 
 const LOCAL_COMPLETION_TOOLS = new Set([
@@ -609,7 +649,7 @@ const LOCAL_COMPLETION_TOOLS = new Set([
 function canCompleteLocallyAfterAction(
   action: AgentAction,
   step: StepSummary,
-  progress: TaskProgressState,
+  workState: WorkState,
 ): boolean {
   if (step.outcome !== "success") {
     return false;
@@ -617,16 +657,7 @@ function canCompleteLocallyAfterAction(
   const tools = action.calls.map((call) => call.tool);
   return tools.length > 0
     && tools.every((tool) => LOCAL_COMPLETION_TOOLS.has(tool))
-    && !(progress.userInputNeeded?.trim());
-}
-
-function buildLocalCompletionReply(state: LoopState): string {
-  const summary = state.taskProgress.progressSummary.trim() || "The task is complete.";
-  const evidence = normalizeList(state.taskProgress.evidence).slice(0, 3);
-  if (evidence.length === 0) {
-    return `Done - ${summary}`;
-  }
-  return `Done - ${summary}\n\nEvidence: ${evidence.join("; ")}`;
+    && !(workState.userInputNeeded?.trim());
 }
 
 function buildFailureReply(state: LoopState): string {
@@ -712,21 +743,23 @@ function buildTaskSummaryRecord(
   responseKind: AgentLoopResult["type"],
   completion?: CompletionDirective,
 ): AgentTaskSummaryRecord {
+  const userFacingSummary = completion?.summary?.trim() || assistantResponse.trim();
+  const progressSummary = state.workState.summary.trim();
   return {
     runId: state.runId,
     runPath: state.runPath,
     status,
-    taskStatus: state.taskProgress.status,
-    objective: state.goal.objective.trim() || undefined,
-    summary: state.taskProgress.progressSummary.trim() || assistantResponse,
-    progressSummary: state.taskProgress.progressSummary.trim() || undefined,
-    currentFocus: state.taskProgress.currentFocus?.trim() || undefined,
-    completedMilestones: normalizeList(state.taskProgress.completedMilestones),
-    openWork: normalizeList(state.taskProgress.openWork),
-    blockers: normalizeList(state.taskProgress.blockers),
-    keyFacts: normalizeList(state.taskProgress.keyFacts),
-    evidence: normalizeList(state.taskProgress.evidence),
-    userInputNeeded: state.taskProgress.userInputNeeded?.trim() || undefined,
+    taskStatus: state.workState.status,
+    objective: state.userMessage.trim() || undefined,
+    summary: userFacingSummary || progressSummary,
+    progressSummary: progressSummary || undefined,
+    currentFocus: state.workState.nextStep?.trim() || undefined,
+    completedMilestones: [],
+    openWork: normalizeList(state.workState.openWork),
+    blockers: normalizeList(state.workState.blockers),
+    keyFacts: normalizeList(state.workState.verifiedFacts),
+    evidence: normalizeList(state.workState.evidence),
+    userInputNeeded: state.workState.userInputNeeded?.trim() || undefined,
     userMessage: state.userMessage.trim() || undefined,
     assistantResponse,
     assistantResponseKind: responseKind === "none" ? undefined : responseKind,
@@ -735,8 +768,6 @@ function buildTaskSummaryRecord(
     actionType: completion?.action_type,
     entityHints: completion?.entity_hints,
     toolsUsed: normalizeList(state.completedSteps.flatMap((step) => step.toolsUsed ?? [])),
-    goalDoneWhen: normalizeList(state.goal.done_when),
-    goalRequiredEvidence: normalizeList(state.goal.required_evidence),
     nextAction: deriveNextAction(state),
     stopReason: deriveStopReason(state, status),
     attachmentNames: buildAttachmentNames(state.preparedAttachments),
@@ -744,14 +775,17 @@ function buildTaskSummaryRecord(
 }
 
 function deriveNextAction(state: LoopState): string | undefined {
-  if (state.taskProgress.userInputNeeded?.trim()) {
-    return state.taskProgress.userInputNeeded.trim();
+  if (state.workState.userInputNeeded?.trim()) {
+    return state.workState.userInputNeeded.trim();
   }
-  const openWork = state.taskProgress.openWork ?? [];
+  if (state.workState.nextStep?.trim()) {
+    return state.workState.nextStep.trim();
+  }
+  const openWork = state.workState.openWork ?? [];
   if (openWork.length > 0) {
     return openWork[0];
   }
-  const blockers = state.taskProgress.blockers ?? [];
+  const blockers = state.workState.blockers ?? [];
   if (blockers.length > 0) {
     return blockers[0];
   }
@@ -762,8 +796,8 @@ function deriveStopReason(
   state: LoopState,
   status: AgentLoopResult["status"],
 ): AgentTaskSummaryRecord["stopReason"] {
-  if (state.taskProgress.status === "needs_user_input") return "needs_user_input";
-  if (state.taskProgress.status === "blocked") return "blocked";
+  if (state.workState.status === "needs_user_input") return "needs_user_input";
+  if (state.workState.status === "blocked") return "blocked";
   if (status === "failed") return "failed";
   if (status === "stuck") return "stuck";
   return "completed";

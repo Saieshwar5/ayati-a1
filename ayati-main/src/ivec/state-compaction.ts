@@ -1,14 +1,21 @@
-import type { LoopState, StepSummary, TaskProgressState } from "./types.js";
+import type { LoopState, StepSummary, ToolContextState, ToolObservation, WorkEvidenceRef, WorkState } from "./types.js";
 
-const TASK_PROGRESS_LIMITS = {
-  progressSummaryChars: 900,
-  currentFocusChars: 240,
+const WORK_STATE_LIMITS = {
+  summaryChars: 900,
+  nextStepChars: 240,
   userInputNeededChars: 320,
-  completedMilestones: { count: 6, chars: 220 },
   openWork: { count: 5, chars: 220 },
   blockers: { count: 4, chars: 220 },
-  keyFacts: { count: 8, chars: 220 },
+  verifiedFacts: { count: 8, chars: 220 },
   evidence: { count: 6, chars: 240 },
+  evidenceRefs: 8,
+};
+
+const LOOP_STATE_LIMITS = {
+  workingNotes: { count: 12, chars: 420 },
+  latestObservationChars: 8_000,
+  toolContextCards: 5,
+  toolContextCardChars: 4_000,
 };
 
 const STEP_SUMMARY_LIMITS = {
@@ -24,23 +31,23 @@ const STEP_SUMMARY_LIMITS = {
   expectationCheckSummaryChars: 360,
 };
 
-export function compactTaskProgress(progress: TaskProgressState): TaskProgressState {
+export function compactWorkState(workState: WorkState): WorkState {
   return {
-    status: progress.status,
-    progressSummary: compactText(progress.progressSummary, TASK_PROGRESS_LIMITS.progressSummaryChars),
-    currentFocus: compactOptionalText(progress.currentFocus, TASK_PROGRESS_LIMITS.currentFocusChars),
-    completedMilestones: compactStringList(progress.completedMilestones, TASK_PROGRESS_LIMITS.completedMilestones),
-    openWork: compactStringList(progress.openWork, TASK_PROGRESS_LIMITS.openWork),
-    blockers: compactStringList(progress.blockers, TASK_PROGRESS_LIMITS.blockers),
-    keyFacts: compactStringList(progress.keyFacts, TASK_PROGRESS_LIMITS.keyFacts),
-    evidence: compactStringList(progress.evidence, TASK_PROGRESS_LIMITS.evidence),
-    userInputNeeded: compactOptionalText(progress.userInputNeeded, TASK_PROGRESS_LIMITS.userInputNeededChars),
+    status: workState.status,
+    summary: compactText(workState.summary, WORK_STATE_LIMITS.summaryChars),
+    openWork: compactStringList(workState.openWork, WORK_STATE_LIMITS.openWork),
+    blockers: compactStringList(workState.blockers, WORK_STATE_LIMITS.blockers),
+    verifiedFacts: compactStringList(workState.verifiedFacts, WORK_STATE_LIMITS.verifiedFacts),
+    evidence: compactStringList(workState.evidence, WORK_STATE_LIMITS.evidence),
+    evidenceRefs: compactEvidenceRefs(workState.evidenceRefs, WORK_STATE_LIMITS.evidenceRefs),
+    nextStep: compactOptionalText(workState.nextStep, WORK_STATE_LIMITS.nextStepChars),
+    userInputNeeded: compactOptionalText(workState.userInputNeeded, WORK_STATE_LIMITS.userInputNeededChars),
   };
 }
 
 export function compactStepSummaryForState(step: StepSummary): StepSummary {
   const {
-    taskProgress: _taskProgress,
+    workState: _workState,
     ...withoutProgress
   } = step;
 
@@ -60,17 +67,21 @@ export function compactStepSummaryForState(step: StepSummary): StepSummary {
 }
 
 export function buildLoopStateSizeBreakdown(state: LoopState): Record<string, number> {
-  const completedStepProgressChars = state.completedSteps.reduce((sum, step) => {
-    return sum + measureJson((step as StepSummary & { taskProgress?: TaskProgressState }).taskProgress);
+  const completedStepWorkStateChars = state.completedSteps.reduce((sum, step) => {
+    return sum + measureJson((step as StepSummary & { workState?: WorkState }).workState);
   }, 0);
   const persistedLikeState = buildPersistedLikeStateView(state);
 
   return {
     stateJson: measureJson(persistedLikeState),
-    taskProgress: measureJson(state.taskProgress),
+    workState: measureJson(state.workState),
     completedSteps: measureJson(state.completedSteps),
-    completedStepsTaskProgress: completedStepProgressChars,
+    completedStepsWorkState: completedStepWorkStateChars,
     failureHistory: measureJson(state.failureHistory),
+    latestObservation: measureJson(state.latestObservation),
+    latestObservations: measureJson(state.latestObservations),
+    toolContext: measureJson(state.toolContext),
+    workingNotes: measureJson(state.workingNotes),
   };
 }
 
@@ -123,6 +134,36 @@ export function compactOptionalText(value: unknown, maxChars: number): string | 
   return text.length > 0 ? text : undefined;
 }
 
+export function compactLatestObservation(observation: ToolObservation | undefined): ToolObservation | undefined {
+  if (!observation) {
+    return undefined;
+  }
+  return compactToolObservation(observation, LOOP_STATE_LIMITS.latestObservationChars);
+}
+
+export function compactLatestObservations(observations: ToolObservation[] | undefined): ToolObservation[] | undefined {
+  const compacted = (observations ?? [])
+    .slice(-LOOP_STATE_LIMITS.toolContextCards)
+    .map((observation) => compactToolObservation(observation, LOOP_STATE_LIMITS.toolContextCardChars));
+  return compacted.length > 0 ? compacted : undefined;
+}
+
+export function compactToolContext(toolContext: ToolContextState | undefined): ToolContextState | undefined {
+  const recent = compactLatestObservations(toolContext?.recent);
+  return recent ? { recent } : undefined;
+}
+
+function compactToolObservation(observation: ToolObservation, maxChars: number): ToolObservation {
+  return {
+    ...observation,
+    content: compactText(observation.content, maxChars),
+  };
+}
+
+export function compactWorkingNotes(notes: string[] | undefined): string[] {
+  return compactStringList(notes, LOOP_STATE_LIMITS.workingNotes);
+}
+
 function compactStringList(
   values: string[] | undefined,
   limits: { count: number; chars: number },
@@ -145,6 +186,13 @@ function uniqueStrings(values: string[]): string[] {
     output.push(compact);
   }
   return output;
+}
+
+function compactEvidenceRefs(values: WorkEvidenceRef[] | undefined, limit: number): WorkEvidenceRef[] | undefined {
+  const refs = (values ?? [])
+    .filter((ref) => ref.id.trim().length > 0 && ref.ref.trim().length > 0)
+    .slice(-limit);
+  return refs.length > 0 ? refs : undefined;
 }
 
 function normalizeText(value: string): string {

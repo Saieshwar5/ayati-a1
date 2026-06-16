@@ -59,9 +59,5 @@ Both commands passed. The full backend suite reported 82 test files passed and
 
 ## Follow-Ups
 
-- Simplify the run state view now that tools and focus cards carry better
-  structured context.
-- Consider replacing the old local goal contract with a smaller current-run
-  `workState`.
 - Decide whether source tracking should become a first-class `sourceState`
   alongside `workState`.

@@ -1,6 +1,28 @@
 import type { ToolDefinition } from "../../skills/types.js";
 import type { LoopState } from "../types.js";
 
+export const ALWAYS_SELECTED_KERNEL_TOOL_NAMES = new Set([
+  "shell",
+  "shell_run_script",
+  "shell_session_start",
+  "shell_session_write",
+  "shell_session_close",
+  "read_file",
+  "write_file",
+  "write_files",
+  "edit_file",
+  "delete",
+  "list_directory",
+  "create_directory",
+  "move",
+  "find_files",
+  "search_in_files",
+  "evidence_next_chunk",
+  "evidence_search",
+  "evidence_read_lines",
+  "evidence_tail",
+]);
+
 export function selectToolsForDecision(
   state: LoopState,
   toolDefinitions: ToolDefinition[],
@@ -10,9 +32,16 @@ export function selectToolsForDecision(
     return [...toolDefinitions];
   }
 
+  const alwaysSelected = toolDefinitions.filter((tool) => ALWAYS_SELECTED_KERNEL_TOOL_NAMES.has(tool.name));
+  const optionalTools = toolDefinitions.filter((tool) => !ALWAYS_SELECTED_KERNEL_TOOL_NAMES.has(tool.name));
+  const optionalLimit = Math.max(0, Math.floor(limit));
+  if (optionalTools.length === 0 || optionalLimit === 0) {
+    return alwaysSelected;
+  }
+
   const query = buildToolSelectionQuery(state);
   const tokens = tokenize(query);
-  const scored = toolDefinitions.map((tool, index) => ({
+  const scored = optionalTools.map((tool, index) => ({
     tool,
     index,
     score: scoreTool(tool, tokens, query),
@@ -22,31 +51,78 @@ export function selectToolsForDecision(
     .sort((left, right) => right.score - left.score || left.index - right.index);
 
   if (matches.length > 0) {
-    return matches
-      .slice(0, Math.max(1, limit))
-      .map((entry) => entry.tool);
+    return [
+      ...alwaysSelected,
+      ...matches
+        .slice(0, optionalLimit)
+        .map((entry) => entry.tool),
+    ];
   }
 
-  return scored
-    .sort((left, right) => right.score - left.score || left.index - right.index)
-    .slice(0, Math.max(1, limit))
-    .map((entry) => entry.tool);
+  return [
+    ...alwaysSelected,
+    ...scored
+      .sort((left, right) => right.score - left.score || left.index - right.index)
+      .slice(0, optionalLimit)
+      .map((entry) => entry.tool),
+  ];
 }
 
 function buildToolSelectionQuery(state: LoopState): string {
   const parts = [
     state.userMessage,
-    state.goal.objective,
-    state.taskProgress.currentFocus,
-    ...(state.taskProgress.openWork ?? []),
-    ...(state.taskProgress.blockers ?? []),
+    state.workState.summary,
+    state.workState.nextStep,
+    ...(state.workState.openWork ?? []),
+    ...(state.workState.blockers ?? []),
+    ...(state.toolContext?.recent ?? []).flatMap((card) => [
+      card.tool,
+      card.purpose,
+      card.content,
+      card.evidenceRef,
+      card.sourceEvidenceRef,
+    ]),
+    ...(state.latestObservations ?? []).flatMap((observation) => [
+      observation.tool,
+      observation.purpose,
+      observation.content,
+      observation.evidenceRef,
+      observation.sourceEvidenceRef,
+    ]),
+    state.latestObservation?.content,
+    state.latestObservation?.evidenceRef,
+    ...(state.workState.evidenceRefs ?? []).flatMap((ref) => [
+      ref.id,
+      ref.ref,
+      ref.title,
+      ref.tool,
+      ...ref.access,
+    ]),
+    ...focusTerms(state.activeFocus),
+    ...focusTerms(state.sessionFocusCards),
+    ...focusTerms(state.attentionShelf),
     ...(state.completedSteps.slice(-2).flatMap((step) => [
       step.executionContract,
       step.summary,
       ...(step.blockedTargets ?? []),
     ])),
+    ...(state.failureHistory.slice(-2).flatMap((failure) => [
+      failure.reason,
+      ...(failure.blockedTargets ?? []),
+    ])),
   ];
   return parts.filter((part): part is string => typeof part === "string" && part.trim().length > 0).join(" ");
+}
+
+function focusTerms(items: LoopState["activeFocus"]): string[] {
+  return (items ?? []).flatMap((item) => [
+    item.label,
+    item.summary,
+    item.nextStep,
+    ...item.openWork,
+    ...item.hints,
+    ...item.topArtifacts,
+  ]).filter((term): term is string => typeof term === "string" && term.trim().length > 0);
 }
 
 function scoreTool(tool: ToolDefinition, tokens: Set<string>, query: string): number {

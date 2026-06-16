@@ -26,6 +26,7 @@ interface RunStateWriteQueue {
 export function initRunDirectory(dataDir: string, runId: string): string {
   const runPath = join(dataDir, "runs", runId);
   mkdirSync(join(runPath, "steps"), { recursive: true });
+  mkdirSync(join(runPath, "raw"), { recursive: true });
   return runPath;
 }
 
@@ -211,6 +212,12 @@ export function formatActMarkdown(data: ActOutput): string {
       if (call.error) {
         lines.push(`**Error:** ${call.error}`, "");
       }
+      if (call.observation) {
+        lines.push("**Observation:**", summarizeValue(call.observation, 1_200), "");
+      }
+      if (call.evidenceRef) {
+        lines.push("**Evidence Ref:**", summarizeValue(call.evidenceRef, 800), "");
+      }
     }
   } else {
     lines.push("## Tool Calls", "", "_No tool calls made._", "");
@@ -287,32 +294,29 @@ export function formatVerifyMarkdown(data: VerifyOutput, toolCalls: ActToolCallR
     }
   }
 
-  if (data.taskProgress) {
-    lines.push("", "## Task Progress", "");
-    lines.push(`- Status: ${data.taskProgress.status}`);
-    if (data.taskProgress.progressSummary.trim().length > 0) {
-      lines.push(`- Progress Summary: ${summarizeValue(data.taskProgress.progressSummary, 220)}`);
+  if (data.workState) {
+    lines.push("", "## Work State", "");
+    lines.push(`- Status: ${data.workState.status}`);
+    if (data.workState.summary.trim().length > 0) {
+      lines.push(`- Summary: ${summarizeValue(data.workState.summary, 220)}`);
     }
-    if (data.taskProgress.currentFocus?.trim().length) {
-      lines.push(`- Current Focus: ${summarizeValue(data.taskProgress.currentFocus, 220)}`);
+    if ((data.workState.openWork ?? []).length > 0) {
+      lines.push(`- Open Work: ${(data.workState.openWork ?? []).map((item) => summarizeValue(item, 180)).join(" | ")}`);
     }
-    if ((data.taskProgress.completedMilestones ?? []).length > 0) {
-      lines.push(`- Completed Milestones: ${(data.taskProgress.completedMilestones ?? []).map((item) => summarizeValue(item, 180)).join(" | ")}`);
+    if ((data.workState.blockers ?? []).length > 0) {
+      lines.push(`- Blockers: ${(data.workState.blockers ?? []).map((item) => summarizeValue(item, 180)).join(" | ")}`);
     }
-    if ((data.taskProgress.openWork ?? []).length > 0) {
-      lines.push(`- Open Work: ${(data.taskProgress.openWork ?? []).map((item) => summarizeValue(item, 180)).join(" | ")}`);
+    if (data.workState.verifiedFacts.length > 0) {
+      lines.push(`- Verified Facts: ${data.workState.verifiedFacts.map((fact) => summarizeValue(fact, 180)).join(" | ")}`);
     }
-    if ((data.taskProgress.blockers ?? []).length > 0) {
-      lines.push(`- Blockers: ${(data.taskProgress.blockers ?? []).map((item) => summarizeValue(item, 180)).join(" | ")}`);
+    if (data.workState.evidence.length > 0) {
+      lines.push(`- Evidence: ${data.workState.evidence.map((evidence) => summarizeValue(evidence, 180)).join(" | ")}`);
     }
-    if (data.taskProgress.keyFacts.length > 0) {
-      lines.push(`- Key Facts: ${data.taskProgress.keyFacts.map((fact) => summarizeValue(fact, 180)).join(" | ")}`);
+    if (data.workState.nextStep?.trim()) {
+      lines.push(`- Next Step: ${summarizeValue(data.workState.nextStep, 220)}`);
     }
-    if (data.taskProgress.evidence.length > 0) {
-      lines.push(`- Evidence: ${data.taskProgress.evidence.map((evidence) => summarizeValue(evidence, 180)).join(" | ")}`);
-    }
-    if (data.taskProgress.userInputNeeded) {
-      lines.push(`- User Input Needed: ${summarizeValue(data.taskProgress.userInputNeeded, 220)}`);
+    if (data.workState.userInputNeeded) {
+      lines.push(`- User Input Needed: ${summarizeValue(data.workState.userInputNeeded, 220)}`);
     }
   }
 
@@ -324,7 +328,8 @@ function sanitizeStepSummary(step: LoopState["completedSteps"][number]): LoopSta
     stepRecord: _stepRecord,
     fullStepText: _fullStepText,
     taskProgress: _taskProgress,
+    workState: _workState,
     ...persistedStep
-  } = step as LoopState["completedSteps"][number] & { stepRecord?: unknown; fullStepText?: unknown; taskProgress?: unknown };
+  } = step as LoopState["completedSteps"][number] & { stepRecord?: unknown; fullStepText?: unknown; taskProgress?: unknown; workState?: unknown };
   return persistedStep;
 }

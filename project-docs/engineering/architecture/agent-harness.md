@@ -17,7 +17,7 @@ Primary code paths:
 - `ayati-main/src/ivec/agent-runner/context-pack.ts`: bounded decision context pack.
 - `ayati-main/src/ivec/agent-runner/decision.ts`: model-facing decision schema and prompt.
 - `ayati-main/src/ivec/agent-runner/action-executor.ts`: validates and executes tool actions.
-- `ayati-main/src/ivec/verification-contracts/progress-reducer.ts`: reduces verified facts into task progress.
+- `ayati-main/src/ivec/verification-contracts/progress-reducer.ts`: reduces verified facts into the current run `workState`.
 
 ## Decision Shape
 
@@ -29,9 +29,10 @@ The decision model returns exactly one of:
 { "kind": "act", "action": { "mode": "single", "calls": [], "allowedTools": [], "assertions": [] } }
 ```
 
-There is no separate required model call to create a goal. The runner creates a
-simple local goal from the current input, and the decision model uses the state
-view/context pack to decide the next outcome.
+There is no separate required model call to create a goal. The first decision
+uses the current input and context pack directly. `workState` starts minimal and
+only appears in the model-facing state view after real progress, blockers,
+verified facts, evidence, or user-input needs exist.
 
 ## State View And Context
 
@@ -51,6 +52,19 @@ portion is built by `context-pack.ts` and currently includes:
 `recentTasks` is no longer a model-facing field. Tool-using task outcomes are
 converted into session focus cards after the run, and reusable cards can later
 be searched, activated, updated, and promoted into the attention shelf.
+
+The rest of the state view is sparse. Empty sections are omitted. When present,
+it can include:
+
+- `workState`: current-run status, summary, open work, blockers, verified facts,
+  evidence, next step, or user input needed.
+- `lastActions`: the last one or two tool actions, not full step history.
+- `recentFailures`: recent deterministic failures only when failures exist.
+- `attachments`: incoming/prepared/managed attachments only when present.
+- `systemEvent`: the current system event only for system-event runs.
+
+The decision model does not receive the internal run path, generated goal
+contract, or empty progress scaffolding.
 
 ## Action Execution
 
@@ -81,19 +95,24 @@ The default verification path is deterministic:
 3. Tool result contracts and assertions run.
 4. Action-level assertions run when supplied.
 5. Evidence and verified facts are extracted.
-6. Progress reducer updates task state.
+6. Progress reducer updates `workState`.
 
 Use semantic/LLM verification only for work that cannot be proven with tool
 contracts, assertions, file checks, process exits, database state, or artifacts.
 
 ## Completion
 
-The runner can complete locally when:
+The runner can mark work complete when:
 
-- task progress is already `done`, or
+- `workState.status` is already `done`, or
 - a deterministic local action succeeded and no user input is needed.
 
-This avoids extra model calls for simple file/tool tasks.
+Completion does not mean the deterministic verifier writes the user-facing
+answer. Verified local work sets `workState.status` to `done`, keeps evidence
+and contract details internal, and then routes through a final decision-model
+reply. The final reply should answer the user naturally using user-visible
+results such as paths, changed files, command findings, or next steps, without
+mentioning harness internals.
 
 ## Failure Handling
 

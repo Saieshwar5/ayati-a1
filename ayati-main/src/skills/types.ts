@@ -203,6 +203,12 @@ export interface ToolResult {
   v2?: ToolResultV2;
 }
 
+export interface ToolObservationPolicy {
+  outputImportance: "none" | "operation_summary" | "decision_context";
+  maxObservationChars?: number;
+  rawStorage?: "never" | "when_truncated" | "always";
+}
+
 export interface ToolDefinition {
   name: string;
   description: string;
@@ -211,6 +217,7 @@ export interface ToolDefinition {
   annotations?: ToolAnnotations;
   resultContract?: ToolResultContract;
   errorContract?: ToolErrorContract;
+  observationPolicy?: ToolObservationPolicy;
   selectionHints?: ToolSelectionHints;
   execute(input: unknown, context?: ToolExecutionContext): Promise<ToolResult>;
 }

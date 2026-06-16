@@ -116,6 +116,16 @@ function createStaticContext(): StaticContext {
   };
 }
 
+function findReplyContent(onReply: ReturnType<typeof vi.fn>, type = "reply"): string {
+  const call = onReply.mock.calls.find(([, message]) => {
+    return typeof message === "object"
+      && message !== null
+      && (message as { type?: unknown }).type === type;
+  });
+  const message = call?.[1] as { content?: unknown } | undefined;
+  return typeof message?.content === "string" ? message.content : "";
+}
+
 describe("IVecEngine", () => {
   it("is constructible without options", () => {
     const engine = new IVecEngine();
@@ -177,25 +187,34 @@ describe("IVecEngine", () => {
     try {
       const outputPath = join(dataDir, "workspace.txt");
       const provider = createMockProvider({
-        generateTurn: vi.fn<(input: LlmTurnInput) => Promise<LlmTurnOutput>>().mockResolvedValue({
-          type: "assistant",
-          content: JSON.stringify({
-            kind: "act",
-            action: {
-              mode: "single",
-              calls: [{
-                id: "call_1",
-                tool: "write_files",
-                input: { files: [{ path: outputPath, content: "workspace inspected" }] },
-                dependsOn: [],
-                purpose: "Record workspace inspection",
-              }],
-              allowedTools: ["write_files"],
-              maxCalls: 1,
-              assertions: [],
-            },
+        generateTurn: vi.fn<(input: LlmTurnInput) => Promise<LlmTurnOutput>>()
+          .mockResolvedValueOnce({
+            type: "assistant",
+            content: JSON.stringify({
+              kind: "act",
+              action: {
+                mode: "single",
+                calls: [{
+                  id: "call_1",
+                  tool: "write_files",
+                  input: { files: [{ path: outputPath, content: "workspace inspected" }] },
+                  dependsOn: [],
+                  purpose: "Record workspace inspection",
+                }],
+                allowedTools: ["write_files"],
+                maxCalls: 1,
+                assertions: [],
+              },
+            }),
+          })
+          .mockResolvedValueOnce({
+            type: "assistant",
+            content: JSON.stringify({
+              kind: "reply",
+              status: "completed",
+              message: `I inspected the workspace and saved the result at ${outputPath}.`,
+            }),
           }),
-        }),
       });
       const toolExecutor = createToolExecutor([writeFilesTool]);
       const onReply = vi.fn();
@@ -215,9 +234,14 @@ describe("IVecEngine", () => {
       await vi.waitFor(() => {
         expect(onReply).toHaveBeenCalledWith("c1", {
           type: "reply",
-          content: expect.stringContaining("Done -"),
+          content: expect.stringContaining(outputPath),
         });
       });
+      const replyContent = findReplyContent(onReply);
+      expect(replyContent).not.toContain("Done -");
+      expect(replyContent).not.toContain("deterministic verification");
+      expect(replyContent).not.toContain("Evidence:");
+      expect(provider.generateTurn).toHaveBeenCalledTimes(2);
 
       expect(onReply).toHaveBeenCalledWith("c1", {
         type: "progress",
@@ -242,25 +266,34 @@ describe("IVecEngine", () => {
     try {
       const outputPath = join(dataDir, "config.txt");
       const provider = createMockProvider({
-        generateTurn: vi.fn<(input: LlmTurnInput) => Promise<LlmTurnOutput>>().mockResolvedValue({
-          type: "assistant",
-          content: JSON.stringify({
-            kind: "act",
-            action: {
-              mode: "single",
-              calls: [{
-                id: "call_1",
-                tool: "write_files",
-                input: { files: [{ path: outputPath, content: "config=true" }] },
-                dependsOn: [],
-                purpose: "Create config file",
-              }],
-              allowedTools: ["write_files"],
-              maxCalls: 1,
-              assertions: [],
-            },
+        generateTurn: vi.fn<(input: LlmTurnInput) => Promise<LlmTurnOutput>>()
+          .mockResolvedValueOnce({
+            type: "assistant",
+            content: JSON.stringify({
+              kind: "act",
+              action: {
+                mode: "single",
+                calls: [{
+                  id: "call_1",
+                  tool: "write_files",
+                  input: { files: [{ path: outputPath, content: "config=true" }] },
+                  dependsOn: [],
+                  purpose: "Create config file",
+                }],
+                allowedTools: ["write_files"],
+                maxCalls: 1,
+                assertions: [],
+              },
+            }),
+          })
+          .mockResolvedValueOnce({
+            type: "assistant",
+            content: JSON.stringify({
+              kind: "reply",
+              status: "completed",
+              message: `I created the config file at ${outputPath}.`,
+            }),
           }),
-        }),
       });
       const toolExecutor = createToolExecutor([writeFilesTool]);
       const onReply = vi.fn();
@@ -280,17 +313,22 @@ describe("IVecEngine", () => {
       await vi.waitFor(() => {
         expect(onReply).toHaveBeenCalledWith("c1", {
           type: "reply",
-          content: expect.stringContaining("Done -"),
+          content: expect.stringContaining(outputPath),
         });
       });
+      const replyContent = findReplyContent(onReply);
+      expect(replyContent).not.toContain("tool call");
+      expect(replyContent).not.toContain("deterministic verification");
+      expect(replyContent).not.toContain("Evidence:");
+      expect(provider.generateTurn).toHaveBeenCalledTimes(2);
 
       expect(sessionMemory.queueTaskSummary as ReturnType<typeof vi.fn>).toHaveBeenCalledWith(
         "c1",
         expect.objectContaining({
           status: "completed",
-          taskStatus: "likely_done",
+          taskStatus: "done",
           objective: "find config files",
-          summary: expect.stringContaining("Executed 1 tool call"),
+          summary: expect.stringContaining(outputPath),
           sessionId: "s1",
           assistantResponseKind: "reply",
           evidence: expect.arrayContaining([expect.stringContaining("write_files")]),
@@ -306,25 +344,34 @@ describe("IVecEngine", () => {
     try {
       const outputPath = join(dataDir, "notes.txt");
       const provider = createMockProvider({
-        generateTurn: vi.fn<(input: LlmTurnInput) => Promise<LlmTurnOutput>>().mockResolvedValue({
-          type: "assistant",
-          content: JSON.stringify({
-            kind: "act",
-            action: {
-              mode: "single",
-              calls: [{
-                id: "call_1",
-                tool: "write_files",
-                input: { files: [{ path: outputPath, content: "latest notes" }] },
-                dependsOn: [],
-                purpose: "Collect notes",
-              }],
-              allowedTools: ["write_files"],
-              maxCalls: 1,
-              assertions: [],
-            },
+        generateTurn: vi.fn<(input: LlmTurnInput) => Promise<LlmTurnOutput>>()
+          .mockResolvedValueOnce({
+            type: "assistant",
+            content: JSON.stringify({
+              kind: "act",
+              action: {
+                mode: "single",
+                calls: [{
+                  id: "call_1",
+                  tool: "write_files",
+                  input: { files: [{ path: outputPath, content: "latest notes" }] },
+                  dependsOn: [],
+                  purpose: "Collect notes",
+                }],
+                allowedTools: ["write_files"],
+                maxCalls: 1,
+                assertions: [],
+              },
+            }),
+          })
+          .mockResolvedValueOnce({
+            type: "assistant",
+            content: JSON.stringify({
+              kind: "reply",
+              status: "completed",
+              message: `I collected the notes and saved them at ${outputPath}.`,
+            }),
           }),
-        }),
       });
       const toolExecutor = createToolExecutor([writeFilesTool]);
       const onReply = vi.fn();
@@ -351,7 +398,7 @@ describe("IVecEngine", () => {
       await vi.waitFor(() => {
         expect(onReply).toHaveBeenCalledWith("c1", {
           type: "reply",
-          content: expect.stringContaining("Done -"),
+          content: expect.stringContaining(outputPath),
         });
       });
 
@@ -577,25 +624,34 @@ describe("IVecEngine", () => {
     try {
       const outputPath = join(dataDir, "health.txt");
       const provider = createMockProvider({
-        generateTurn: vi.fn<(input: LlmTurnInput) => Promise<LlmTurnOutput>>().mockResolvedValue({
-          type: "assistant",
-          content: JSON.stringify({
-            kind: "act",
-            action: {
-              mode: "single",
-              calls: [{
-                id: "call_1",
-                tool: "write_files",
-                input: { files: [{ path: outputPath, content: "health checked" }] },
-                dependsOn: [],
-                purpose: "Record health check",
-              }],
-              allowedTools: ["write_files"],
-              maxCalls: 1,
-              assertions: [],
-            },
+        generateTurn: vi.fn<(input: LlmTurnInput) => Promise<LlmTurnOutput>>()
+          .mockResolvedValueOnce({
+            type: "assistant",
+            content: JSON.stringify({
+              kind: "act",
+              action: {
+                mode: "single",
+                calls: [{
+                  id: "call_1",
+                  tool: "write_files",
+                  input: { files: [{ path: outputPath, content: "health checked" }] },
+                  dependsOn: [],
+                  purpose: "Record health check",
+                }],
+                allowedTools: ["write_files"],
+                maxCalls: 1,
+                assertions: [],
+              },
+            }),
+          })
+          .mockResolvedValueOnce({
+            type: "assistant",
+            content: JSON.stringify({
+              kind: "reply",
+              status: "completed",
+              message: `I checked system health and wrote the result to ${outputPath}.`,
+            }),
           }),
-        }),
       });
       const toolExecutor = createToolExecutor([writeFilesTool]);
       const onReply = vi.fn();
@@ -635,9 +691,10 @@ describe("IVecEngine", () => {
       });
       expect(onReply).toHaveBeenCalledWith("c1", {
         type: "notification",
-        content: expect.stringContaining("Done -"),
+        content: expect.stringContaining(outputPath),
         final: true,
       });
+      expect(findReplyContent(onReply, "notification")).not.toContain("deterministic verification");
     } finally {
       rmSync(dataDir, { recursive: true, force: true });
     }

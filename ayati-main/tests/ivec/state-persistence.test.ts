@@ -14,16 +14,6 @@ import {
 } from "../../src/ivec/state-persistence.js";
 import type { LoopState } from "../../src/ivec/types.js";
 
-function goalContract(objective: string): LoopState["goal"] {
-  return {
-    objective,
-    done_when: [`${objective} is complete`],
-    required_evidence: [],
-    ask_user_when: [],
-    stop_when_no_progress: [],
-  };
-}
-
 describe("state-persistence", () => {
   let tmpDir: string;
 
@@ -42,6 +32,7 @@ describe("state-persistence", () => {
       const runPath = initRunDirectory(dataDir, "run-123");
       expect(existsSync(runPath)).toBe(true);
       expect(existsSync(join(runPath, "steps"))).toBe(true);
+      expect(existsSync(join(runPath, "raw"))).toBe(true);
     } finally {
       cleanup();
     }
@@ -55,11 +46,10 @@ describe("state-persistence", () => {
         runId: "run-456",
         runClass: "interaction",
         userMessage: "hello",
-        goal: goalContract("greet"),
-        taskProgress: {
+        workState: {
           status: "not_done",
-          progressSummary: "",
-          keyFacts: [],
+          summary: "",
+          verifiedFacts: [],
           evidence: [],
         },
         status: "running",
@@ -97,11 +87,10 @@ describe("state-persistence", () => {
         runId: "run-async",
         runClass: "interaction",
         userMessage: "hello",
-        goal: goalContract("greet"),
-        taskProgress: {
+        workState: {
           status: "not_done",
-          progressSummary: "",
-          keyFacts: [],
+          summary: "",
+          verifiedFacts: [],
           evidence: [],
         },
         status: "running",
@@ -157,11 +146,10 @@ describe("state-persistence", () => {
         runId: "run-current",
         runClass: "interaction",
         userMessage: "hello",
-        goal: goalContract("greet"),
-        taskProgress: {
+        workState: {
           status: "not_done",
-          progressSummary: "",
-          keyFacts: [],
+          summary: "",
+          verifiedFacts: [],
           evidence: [],
         },
         status: "running",

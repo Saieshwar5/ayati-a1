@@ -81,6 +81,12 @@ The context pack is bounded JSON. Session-derived model-facing fields are:
   and usefulness
 - `attentionShelf`: up to 5 global focus cards promoted from prior sessions
 
+Outside `State view.context`, the prompt state is intentionally sparse. The
+first decision normally receives no `workState` at all. `workState`,
+`lastActions`, `recentFailures`, `attachments`, and `systemEvent` are included
+only when they carry useful data. This keeps early decisions fast and prevents
+empty or synthetic state from steering the model.
+
 Session metadata such as session id, path, age, turn count, and handoff state
 stays internal to the backend for persistence, debugging, rotation policy, and
 memory consolidation. It is not exposed to the decision model.
@@ -116,8 +122,8 @@ Scopes:
 
 Lifecycle:
 
-1. The runner completes a task run and builds a task summary from verified
-   progress, open work, blockers, facts, evidence, tools used, and artifacts.
+1. The runner completes a task run and builds a task summary from `workState`,
+   open work, blockers, verified facts, evidence, tools used, and artifacts.
 2. `IVecEngine` publishes the summary through `queueTaskSummaryPublication`.
 3. `MemoryManager.queueTaskSummary` creates a session focus card only when the
    summary has at least one tool in `toolsUsed`.

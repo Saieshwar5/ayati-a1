@@ -1,4 +1,4 @@
-import type { TaskProgressState, TaskStatus } from "../types.js";
+import type { WorkState, WorkStatus } from "../types.js";
 
 interface VerifiedStepProgressInput {
   passed: boolean;
@@ -11,35 +11,25 @@ function uniqueStrings(values: string[]): string[] {
   return [...new Set(values.map((value) => value.trim()).filter((value) => value.length > 0))];
 }
 
-function deriveMilestones(step: VerifiedStepProgressInput): string[] {
-  const haystack = [...step.evidenceItems, ...step.newFacts].join(" ").toLowerCase();
-  if (haystack.includes("write_files") && haystack.includes("written_hashes_match")) {
-    return ["write_files completed and read-back hashes verified"];
-  }
-  return step.summary.trim().length > 0 ? [step.summary] : [];
-}
-
-export function reduceVerifiedTaskProgress(
-  previous: TaskProgressState,
+export function reduceVerifiedWorkState(
+  previous: WorkState,
   step: VerifiedStepProgressInput,
-): TaskProgressState {
-  const status: TaskStatus = step.passed ? "likely_done" : previous.status;
-  const completedMilestones = step.passed
-    ? uniqueStrings([...(previous.completedMilestones ?? []), ...deriveMilestones(step)]).slice(0, 6)
-    : previous.completedMilestones;
+): WorkState {
+  const status: WorkStatus = step.passed
+    ? previous.status === "done" ? "done" : "not_done"
+    : "blocked";
+  const summary = step.summary || previous.summary;
+  const blockers = step.passed
+    ? []
+    : uniqueStrings([...(previous.blockers ?? []), step.summary]).slice(0, 4);
 
   return {
     status,
-    progressSummary: step.summary || previous.progressSummary,
-    currentFocus: step.passed
-      ? "Confirm whether the goal is fully satisfied."
-      : previous.currentFocus,
-    completedMilestones,
+    summary,
     openWork: previous.openWork,
-    blockers: step.passed ? [] : previous.blockers,
-    keyFacts: uniqueStrings([...previous.keyFacts, ...step.newFacts]).slice(0, 8),
+    blockers,
+    verifiedFacts: uniqueStrings([...previous.verifiedFacts, ...step.newFacts]).slice(0, 8),
     evidence: uniqueStrings([...previous.evidence, ...step.evidenceItems]).slice(0, 6),
-    userInputNeeded: status === "needs_user_input" ? previous.userInputNeeded : undefined,
+    nextStep: previous.nextStep,
   };
 }
-

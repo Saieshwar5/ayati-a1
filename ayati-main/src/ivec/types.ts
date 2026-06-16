@@ -41,25 +41,61 @@ export type AgentTaskSummaryRecord = Omit<TaskSummaryRecordInput, "sessionId">;
 
 // --- State ---
 
-export type TaskStatus = "not_done" | "likely_done" | "done" | "blocked" | "needs_user_input";
+export type WorkStatus = "not_done" | "done" | "blocked" | "needs_user_input";
 
-export interface GoalContract {
-  objective: string;
-  done_when: string[];
-  required_evidence: string[];
-  ask_user_when: string[];
-  stop_when_no_progress: string[];
+export type EvidenceAccessMode = "full" | "next_chunk" | "search" | "read_lines" | "tail";
+export type ToolObservationMode = "full" | "chunk" | "large_ref" | "summary";
+export type ToolObservationStatus = "success" | "failed";
+
+export interface WorkEvidenceRef {
+  id: string;
+  step: number;
+  callId: string;
+  tool: string;
+  title: string;
+  ref: string;
+  rawOutputPath: string;
+  rawOutputChars: number;
+  lineCount?: number;
+  truncated: boolean;
+  access: EvidenceAccessMode[];
 }
 
-export interface TaskProgressState {
-  status: TaskStatus;
-  progressSummary: string;
-  currentFocus?: string;
-  completedMilestones?: string[];
+export interface ToolObservation {
+  id: string;
+  step: number;
+  callId: string;
+  tool: string;
+  purpose?: string;
+  status: ToolObservationStatus;
+  mode: ToolObservationMode;
+  content: string;
+  evidenceRef?: string;
+  sourceEvidenceRef?: string;
+  rawOutputPath?: string;
+  rawOutputChars?: number;
+  lineCount?: number;
+  hasMore: boolean;
+  cursor?: {
+    currentRange: [number, number];
+    nextOffset?: number;
+  };
+  availableActions?: Array<"next_chunk" | "search" | "read_lines" | "tail">;
+}
+
+export interface ToolContextState {
+  recent: ToolObservation[];
+}
+
+export interface WorkState {
+  status: WorkStatus;
+  summary: string;
   openWork?: string[];
   blockers?: string[];
-  keyFacts: string[];
+  verifiedFacts: string[];
   evidence: string[];
+  evidenceRefs?: WorkEvidenceRef[];
+  nextStep?: string;
   userInputNeeded?: string;
 }
 
@@ -86,8 +122,11 @@ export interface LoopState {
   approvalState?: SystemEventApprovalState;
   contextVisibility?: SystemEventContextVisibility;
   preferredResponseKind?: AgentResponseKind;
-  goal: GoalContract;
-  taskProgress: TaskProgressState;
+  workState: WorkState;
+  latestObservation?: ToolObservation;
+  latestObservations?: ToolObservation[];
+  toolContext?: ToolContextState;
+  workingNotes?: string[];
   status: "running" | "completed" | "failed" | "stuck";
   finalOutput: string;
   iteration: number;
@@ -138,7 +177,7 @@ export interface StepSummary {
   evidenceSummary?: string;
   evidenceItems?: string[];
   usedRawArtifacts?: string[];
-  taskProgress?: TaskProgressState;
+  workState?: WorkState;
   stoppedEarlyReason?: "assistant_returned" | "max_act_turns_reached" | "max_total_tool_calls_reached" | "repeated_identical_failure" | "no_valid_tool_calls" | "planned_call_failed";
   failureType?: FailureRecord["failureType"];
   blockedTargets?: string[];
@@ -158,6 +197,7 @@ export interface CompletionDirective {
 // --- Phase outputs ---
 
 export interface ActToolCallRecord {
+  callId?: string;
   tool: string;
   input: unknown;
   output: string;
@@ -171,8 +211,10 @@ export interface ActToolCallRecord {
   operationStatus?: ToolOperationStatus;
   code?: string;
   artifacts?: ArtifactRef[];
+  evidenceRef?: WorkEvidenceRef;
   verifiedFacts?: VerifiedFact[];
   assertionResults?: AssertionResult[];
+  observation?: ToolObservation;
 }
 
 export interface ActOutput {
@@ -198,7 +240,7 @@ export interface VerifyOutput {
   usedRawArtifacts: string[];
   expectationCheckStatus?: StepExpectationCheckStatus;
   expectationCheckSummary?: string;
-  taskProgress?: TaskProgressState;
+  workState?: WorkState;
 }
 
 export interface AgentArtifact {

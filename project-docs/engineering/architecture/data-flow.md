@@ -11,9 +11,12 @@ Daemon communication flow:
    memory, and learning context.
 6. The decision model chooses `reply`, `ask_user`, or `act`.
 7. If tool calls are requested, the action executor validates the plan and dispatches through registered tool definitions.
-8. Tool contracts/assertions turn results into verified facts and progress evidence.
-9. The progress reducer updates task state; the runner either completes locally or asks for another decision.
-10. The engine replies through `onReply`; local replies go back through `WsServer.send`.
+8. Tool contracts/assertions turn results into verified facts and evidence.
+9. The progress reducer updates sparse `workState`; verified local work can mark
+   `workState.status` as `done`.
+10. Completed tool work routes through a final decision-model reply so the user
+   sees a natural answer while verification details stay internal.
+11. The engine replies through `onReply`; local replies go back through `WsServer.send`.
 
 Client model:
 
@@ -41,10 +44,10 @@ Memory and focus flow:
 Tool/action flow:
 
 1. The daemon exposes kernel tools by default and can dynamically activate additional built-in skills.
-2. The decision model selects tool calls only when needed for the user goal.
+2. The decision model selects tool calls only when needed for the current input or active focus.
 3. The action executor validates plan shape, selected tools, dependencies, and unsafe parallel filesystem overlap.
 4. The tool executor validates and executes requests.
-5. Results become artifacts, verified facts, and progress evidence for continuation or final response.
+5. Results become artifacts, verified facts, evidence, and optional `workState` updates for continuation or final response.
 
 Attachment flow:
 
