@@ -237,6 +237,8 @@ export class IVecEngine {
           attachmentWarnings: registeredAttachments.warnings,
           managedFiles: registeredAttachments.managedFiles,
           managedDirectories: registeredAttachments.managedDirectories,
+          fileLibrary: this.fileLibrary,
+          directoryLibrary: this.directoryLibrary,
           documentStore: this.documentStore,
           preparedAttachmentRegistry: this.preparedAttachmentRegistry,
           onProgress: (log, runPath) => {
@@ -393,6 +395,8 @@ export class IVecEngine {
         dataDir: this.dataDir ?? "data",
         systemContext: system.decisionSystemContext || system.systemContext || undefined,
         activeLearningContext: system.activeLearningContext,
+        fileLibrary: this.fileLibrary,
+        directoryLibrary: this.directoryLibrary,
         documentStore: this.documentStore,
         preparedAttachmentRegistry: this.preparedAttachmentRegistry,
         onProgress: (log, runPath) => {

@@ -37,9 +37,8 @@ Memory and focus flow:
    cards.
 6. Activated cards appear in `activeFocus` for the current session and can be
    loaded as full cards for continuation.
-7. Focus-card assets can restore user-attached documents/datasets into the
-   current run or point the agent back to files/directories created in earlier
-   runs.
+7. Focus-card assets can restore user-attached documents, datasets, files, and
+   directories into the current run through `attachment_restore`.
 8. Session close promotes durable session focus cards into global attention
    shelf cards.
 9. The attention shelf selects compact, high-relevance global focus summaries
@@ -59,14 +58,29 @@ Tool/action flow:
 
 Attachment flow:
 
-1. CLI slash commands queue local file attachments.
-2. Chat payloads can include attachment metadata.
-3. The daemon prepares attachments through document/file services.
-4. Structured data can be profiled or queried.
-5. Text documents can be read by section or queried through retrieval when vector indexing is available.
-6. Prepared user attachments are recorded as focus-card assets when they are
-   part of a durable run, with enough manifest/summary/detail data to restore
-   them in later runs.
+1. Communication clients send attachments with the user message. CLI clients
+   normally send path metadata; HTTP/API clients can send uploaded bytes or
+   directory uploads.
+2. The daemon normalizes every input into a managed attachment record. Uploaded
+   files are copied under `data/files/<fileId>/original/`; CLI file paths are
+   copied into the same storage when registered; CLI directories are scanned
+   into `data/directories/<directoryId>/metadata.json` with include/exclude
+   rules instead of copying the whole tree.
+3. The run state carries compact attachment summaries: managed files, managed
+   directories, and compatibility prepared document/dataset records.
+4. The agent should prefer the unified attachment tools:
+   `attachment_list`, `attachment_inspect`, `attachment_read`,
+   `attachment_query`, `attachment_query_table`, `directory_search`, and
+   `attachment_restore`.
+5. Text-capable files are extracted and chunked lazily when read or queried.
+   CSV/XLSX files are staged lazily into a run-scoped SQLite table when queried.
+   Directories are searched by manifest/path and optionally by UTF-8 file
+   contents; individual files can be registered/queryable when deeper parsing is
+   needed.
+6. Focus cards store restorable attachment assets, not full file contents. Later
+   follow-up runs activate the card and call `attachment_restore`, which touches
+   the stored file or directory into the current run or restores prepared
+   document/dataset metadata.
 
 Learning flow:
 

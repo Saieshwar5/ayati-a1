@@ -107,6 +107,31 @@ describe("checkDeterministicSuccessGate", () => {
     expect(result!.evidenceSummary).toContain("count=1");
   });
 
+  it("passes unified attachment restore results without LLM validation", () => {
+    const actOutput: ActOutput = {
+      toolCalls: [{
+        tool: "attachment_restore",
+        input: { reference: "file_1234567890abcdef" },
+        output: JSON.stringify({
+          restored: true,
+          attachmentKind: "file",
+          attachmentId: "file_1234567890abcdef",
+          fileId: "file_1234567890abcdef",
+          displayName: "policy.txt",
+          kind: "txt",
+          mode: "file",
+        }),
+      }],
+      finalText: "",
+    };
+
+    const result = checkDeterministicSuccessGate(actOutput, "restore the previous attachment");
+
+    expect(result).not.toBeNull();
+    expect(result!.passed).toBe(true);
+    expect(result!.evidenceSummary).toContain("attachment_restore succeeded");
+  });
+
   it("passes grounded document query results but rejects insufficient evidence", () => {
     const grounded: ActOutput = {
       toolCalls: [{

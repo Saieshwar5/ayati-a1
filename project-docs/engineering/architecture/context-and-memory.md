@@ -163,10 +163,10 @@ Compact shelf items include:
 
 Full focus cards include continuation fields:
 
-- `assets`: durable inputs and work products. User-attached documents and
-  datasets use `origin: "user_attached"` and `role: "input"`. Agent-created or
-  modified files use `origin: "agent_generated"` or `"agent_modified"` and
-  usually `role: "working_artifact"`.
+- `assets`: durable inputs and work products. User-provided files, directories,
+  documents, and datasets use `origin: "user_attached"` and `role: "input"`.
+  Agent-created or modified files use `origin: "agent_generated"` or
+  `"agent_modified"` and usually `role: "working_artifact"`.
 - `runs`: compact run history with run id, run path, status, task status, user
   message, assistant response, summary, tools used, asset ids, and timestamp.
 - `currentState`: resumable state such as goal, open work, blockers, key
@@ -182,8 +182,9 @@ Activation:
 3. The activation tool returns the full card, including `assets`, `runs`, and
    `currentState`.
 4. Subsequent tool calls in the same action can use that full state. For
-   example, `restore_attachment_context` can restore a user-attached document
-   asset into the current run's prepared attachment registry.
+   example, `attachment_restore` can restore a user-attached document, dataset,
+   file, or directory asset into the current run. `restore_attachment_context`
+   remains as a compatibility alias.
 5. At finalization, the runner uses active focus to set `focusId` on the task
    summary. The progress reducer then updates the same card with the new run,
    refreshed assets, and current state.

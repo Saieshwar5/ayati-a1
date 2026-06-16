@@ -119,22 +119,31 @@ export interface PromptTaskSummary {
   attachmentNames: string[];
 }
 
+export type ActiveAttachmentKind = "document" | "dataset" | "file" | "directory";
+
 export interface ActiveAttachmentRef {
-  documentId: string;
+  attachmentKind: ActiveAttachmentKind;
+  assetId?: string;
+  documentId?: string;
+  fileId?: string;
+  directoryId?: string;
   displayName: string;
   kind: string;
-  mode: string;
+  mode?: string;
+  capabilities?: string[];
   runId: string;
   runPath: string;
-  preparedInputId: string;
+  preparedInputId?: string;
+  path?: string;
   lastUsedAt: string;
   lastAction: string;
 }
 
 export interface ActiveAttachmentRecord extends ActiveAttachmentRef {
-  manifest: ManagedDocumentManifest;
-  summary: PreparedAttachmentSummary;
-  detail: Record<string, unknown>;
+  manifest?: ManagedDocumentManifest;
+  summary?: PreparedAttachmentSummary;
+  detail?: Record<string, unknown>;
+  asset?: FocusAssetRef;
 }
 
 export interface SessionHandoffSnapshot {

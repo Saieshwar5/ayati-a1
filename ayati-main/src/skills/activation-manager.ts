@@ -51,7 +51,7 @@ export interface ActivationRouterState {
 }
 
 const DEFAULT_MAX_ACTIVE_BUILT_IN_SKILLS = 4;
-const ATTACHMENT_SKILL_IDS = ["attachments", "files", "documents"];
+const ATTACHMENT_SKILL_IDS = ["attachments", "files", "documents", "datasets"];
 
 export class SkillActivationManager {
   private readonly catalog: SkillCatalog;

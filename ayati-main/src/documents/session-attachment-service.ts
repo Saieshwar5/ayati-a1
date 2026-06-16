@@ -3,43 +3,85 @@ import { join, resolve } from "node:path";
 import type { ActiveAttachmentRecord, SessionMemory } from "../memory/types.js";
 import { PreparedAttachmentRegistry, type PreparedAttachmentRecord } from "./prepared-attachment-registry.js";
 import type { ManagedDocumentManifest, PreparedAttachmentSummary } from "./types.js";
+import type { DirectoryLibrary } from "../files/directory-library.js";
+import type { FileLibrary } from "../files/file-library.js";
 
 export interface SessionAttachmentServiceOptions {
   sessionMemory: SessionMemory;
   preparedAttachmentRegistry: PreparedAttachmentRegistry;
   dataDir: string;
+  fileLibrary?: FileLibrary;
+  directoryLibrary?: DirectoryLibrary;
 }
+
+export type RestoredAttachmentContext =
+  | {
+    restored: boolean;
+    attachmentKind: "document" | "dataset";
+    manifest: ManagedDocumentManifest;
+    summary: PreparedAttachmentSummary;
+  }
+  | {
+    restored: boolean;
+    attachmentKind: "file";
+    fileId: string;
+    displayName: string;
+    kind: string;
+  }
+  | {
+    restored: boolean;
+    attachmentKind: "directory";
+    directoryId: string;
+    displayName: string;
+    kind: "directory";
+  };
 
 export class SessionAttachmentService {
   private readonly sessionMemory: SessionMemory;
   private readonly preparedAttachmentRegistry: PreparedAttachmentRegistry;
   private readonly dataDir: string;
+  private readonly fileLibrary?: FileLibrary;
+  private readonly directoryLibrary?: DirectoryLibrary;
 
   constructor(options: SessionAttachmentServiceOptions) {
     this.sessionMemory = options.sessionMemory;
     this.preparedAttachmentRegistry = options.preparedAttachmentRegistry;
     this.dataDir = options.dataDir;
+    this.fileLibrary = options.fileLibrary;
+    this.directoryLibrary = options.directoryLibrary;
   }
 
   listActiveAttachments(): Array<{
-    documentId: string;
+    attachmentKind: string;
+    assetId?: string;
+    documentId?: string;
+    fileId?: string;
+    directoryId?: string;
     displayName: string;
     kind: string;
-    mode: string;
+    mode?: string;
+    capabilities?: string[];
     runId: string;
     runPath: string;
-    preparedInputId: string;
+    preparedInputId?: string;
+    path?: string;
     lastUsedAt: string;
     lastAction: string;
   }> {
     return this.sessionMemory.getActiveAttachmentRecords?.().map((record) => ({
-      documentId: record.documentId,
+      attachmentKind: record.attachmentKind,
+      ...(record.assetId ? { assetId: record.assetId } : {}),
+      ...(record.documentId ? { documentId: record.documentId } : {}),
+      ...(record.fileId ? { fileId: record.fileId } : {}),
+      ...(record.directoryId ? { directoryId: record.directoryId } : {}),
       displayName: record.displayName,
       kind: record.kind,
-      mode: record.mode,
+      ...(record.mode ? { mode: record.mode } : {}),
+      ...(record.capabilities?.length ? { capabilities: record.capabilities } : {}),
       runId: record.runId,
       runPath: record.runPath,
-      preparedInputId: record.preparedInputId,
+      ...(record.preparedInputId ? { preparedInputId: record.preparedInputId } : {}),
+      ...(record.path ? { path: record.path } : {}),
       lastUsedAt: record.lastUsedAt,
       lastAction: record.lastAction,
     })) ?? [];
@@ -48,11 +90,7 @@ export class SessionAttachmentService {
   async restoreAttachmentContext(input: {
     runId: string;
     reference?: string;
-  }): Promise<{
-    restored: boolean;
-    manifest: ManagedDocumentManifest;
-    summary: PreparedAttachmentSummary;
-  }> {
+  }): Promise<RestoredAttachmentContext> {
     const currentRunAttachments = this.preparedAttachmentRegistry.getRunAttachments(input.runId);
     if ((input.reference?.trim().length ?? 0) === 0 && currentRunAttachments.length > 0) {
       throw new Error("Current run already has attachments. Use the current attachment, or specify the earlier file to restore.");
@@ -60,14 +98,24 @@ export class SessionAttachmentService {
 
     const activeRecords = this.sessionMemory.getActiveAttachmentRecords?.() ?? [];
     const sourceRecord = resolveActiveAttachment(activeRecords, input.reference);
+    if (sourceRecord.attachmentKind === "file") {
+      return this.restoreFileAttachment(input.runId, sourceRecord);
+    }
+    if (sourceRecord.attachmentKind === "directory") {
+      return this.restoreDirectoryAttachment(input.runId, sourceRecord);
+    }
+    if (!sourceRecord.manifest || !sourceRecord.summary || !sourceRecord.documentId) {
+      throw new Error(`Active attachment is missing prepared metadata: ${sourceRecord.displayName}`);
+    }
 
     const existing = currentRunAttachments
       .find((record) => record.summary.documentId === sourceRecord.documentId);
     if (existing) {
       return {
         restored: false,
-      manifest: existing.manifest,
-      summary: existing.summary,
+        attachmentKind: existing.summary.mode === "structured_data" ? "dataset" : "document",
+        manifest: existing.manifest,
+        summary: existing.summary,
       };
     }
 
@@ -83,7 +131,7 @@ export class SessionAttachmentService {
       runPath,
       detail: {
         kind: sourceRecord.summary.mode,
-        payload: buildRestoredDetailPayload(sourceRecord.detail, summary),
+        payload: buildRestoredDetailPayload(sourceRecord.detail ?? {}, summary),
       },
     };
 
@@ -92,8 +140,57 @@ export class SessionAttachmentService {
 
     return {
       restored: true,
+      attachmentKind: restored.summary.mode === "structured_data" ? "dataset" : "document",
       manifest: restored.manifest,
       summary: restored.summary,
+    };
+  }
+
+  private async restoreFileAttachment(runId: string, sourceRecord: ActiveAttachmentRecord): Promise<RestoredAttachmentContext> {
+    if (!this.fileLibrary) {
+      throw new Error("Managed file restoration is not configured.");
+    }
+    const fileId = sourceRecord.fileId;
+    if (!fileId) {
+      throw new Error(`Active file attachment is missing a fileId: ${sourceRecord.displayName}`);
+    }
+
+    const currentFiles = await this.fileLibrary.listRunFiles(runId);
+    const existing = currentFiles.find((file) => file.fileId === fileId);
+    if (!existing) {
+      await this.fileLibrary.touchRunFile(runId, fileId, "used");
+    }
+    const file = existing ?? await this.fileLibrary.getFile(fileId);
+    return {
+      restored: !existing,
+      attachmentKind: "file",
+      fileId: file.fileId,
+      displayName: file.originalName,
+      kind: file.kind,
+    };
+  }
+
+  private async restoreDirectoryAttachment(runId: string, sourceRecord: ActiveAttachmentRecord): Promise<RestoredAttachmentContext> {
+    if (!this.directoryLibrary) {
+      throw new Error("Managed directory restoration is not configured.");
+    }
+    const directoryId = sourceRecord.directoryId;
+    if (!directoryId) {
+      throw new Error(`Active directory attachment is missing a directoryId: ${sourceRecord.displayName}`);
+    }
+
+    const currentDirectories = await this.directoryLibrary.listRunDirectories(runId);
+    const existing = currentDirectories.find((directory) => directory.directoryId === directoryId);
+    if (!existing) {
+      await this.directoryLibrary.touchRunDirectory(runId, directoryId, "used");
+    }
+    const directory = existing ?? await this.directoryLibrary.getDirectory(directoryId);
+    return {
+      restored: !existing,
+      attachmentKind: "directory",
+      directoryId: directory.directoryId,
+      displayName: directory.name,
+      kind: "directory",
     };
   }
 }
@@ -117,13 +214,18 @@ function resolveActiveAttachment(
   const loweredReference = normalizedReference.toLowerCase();
   const strategies: Array<(record: NonNullable<(typeof records)[number]>) => boolean> = [
     (record) => record.preparedInputId === normalizedReference,
-    (record) => record.preparedInputId.startsWith(normalizedReference),
+    (record) => record.preparedInputId?.startsWith(normalizedReference) === true,
+    (record) => record.fileId === normalizedReference,
+    (record) => record.directoryId === normalizedReference,
+    (record) => record.assetId === normalizedReference,
     (record) => record.documentId === normalizedReference,
-    (record) => record.documentId.startsWith(normalizedReference),
+    (record) => record.documentId?.startsWith(normalizedReference) === true,
     (record) => record.displayName.toLowerCase() === loweredReference,
-    (record) => record.manifest.name.toLowerCase() === loweredReference,
-    (record) => record.manifest.originalPath === normalizedReference,
-    (record) => record.manifest.originalPath.toLowerCase().endsWith(loweredReference),
+    (record) => record.manifest?.name.toLowerCase() === loweredReference,
+    (record) => record.manifest?.originalPath === normalizedReference,
+    (record) => record.manifest?.originalPath.toLowerCase().endsWith(loweredReference) === true,
+    (record) => record.path === normalizedReference,
+    (record) => record.path?.toLowerCase().endsWith(loweredReference) === true,
   ];
 
   for (const matcher of strategies) {
@@ -142,8 +244,17 @@ function resolveActiveAttachment(
   throw new Error(buildRestoreResolutionError(records));
 }
 
-function buildRestoreResolutionError(records: Array<{ preparedInputId: string; displayName: string }>): string {
-  return `Unable to uniquely resolve the active attachment. Available options: ${records.map((record) => `${record.preparedInputId} (${record.displayName})`).join(", ")}`;
+function buildRestoreResolutionError(records: ActiveAttachmentRecord[]): string {
+  return `Unable to uniquely resolve the active attachment. Available options: ${records.map((record) => `${attachmentReferenceLabel(record)} (${record.displayName})`).join(", ")}`;
+}
+
+function attachmentReferenceLabel(record: ActiveAttachmentRecord): string {
+  return record.preparedInputId
+    ?? record.fileId
+    ?? record.directoryId
+    ?? record.assetId
+    ?? record.documentId
+    ?? record.attachmentKind;
 }
 
 function buildPreparedInputId(index: number, documentId: string): string {

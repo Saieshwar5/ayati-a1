@@ -360,7 +360,7 @@ async function executeActionStep(input: ExecuteActionStepInput): Promise<Execute
     }
   }
 
-  applyToolStateUpdates(input.state, input.deps, execution.actOutput.toolCalls);
+  await applyToolStateUpdates(input.state, input.deps, execution.actOutput.toolCalls);
   syncPreparedAttachmentsFromRegistry(input.state, input.deps);
 
   const pad = String(input.stepNumber).padStart(3, "0");
@@ -391,10 +391,18 @@ async function executeActionStep(input: ExecuteActionStepInput): Promise<Execute
   };
 }
 
-function applyToolStateUpdates(state: LoopState, deps: AgentLoopDeps, calls: ActToolCallRecord[]): void {
+async function applyToolStateUpdates(state: LoopState, deps: AgentLoopDeps, calls: ActToolCallRecord[]): Promise<void> {
   for (const update of calls.flatMap((call) => readToolStateUpdates(call.meta))) {
     if (update["type"] === "restore_prepared_attachment") {
       syncPreparedAttachmentsFromRegistry(state, deps);
+      continue;
+    }
+    if (update["type"] === "restore_managed_file") {
+      await syncManagedFilesFromLibrary(state, deps);
+      continue;
+    }
+    if (update["type"] === "restore_managed_directory") {
+      await syncManagedDirectoriesFromLibrary(state, deps);
       continue;
     }
     if (update["type"] === "mark_document_indexed") {
@@ -427,6 +435,20 @@ function applyToolStateUpdates(state: LoopState, deps: AgentLoopDeps, calls: Act
       }));
     }
   }
+}
+
+async function syncManagedFilesFromLibrary(state: LoopState, deps: AgentLoopDeps): Promise<void> {
+  if (!deps.fileLibrary) {
+    return;
+  }
+  state.managedFiles = await deps.fileLibrary.listRunFiles(state.runId);
+}
+
+async function syncManagedDirectoriesFromLibrary(state: LoopState, deps: AgentLoopDeps): Promise<void> {
+  if (!deps.directoryLibrary) {
+    return;
+  }
+  state.managedDirectories = await deps.directoryLibrary.listRunDirectories(state.runId);
 }
 
 function syncPreparedAttachmentsFromRegistry(state: LoopState, deps: AgentLoopDeps): void {
@@ -922,6 +944,7 @@ function buildFocusAssets(state: LoopState): FocusAssetRef[] {
       lastUsedAt: file.lastUsedAt ?? now,
       metadata: {
         kind: file.kind,
+        capabilities: file.capabilities,
         sizeBytes: file.sizeBytes,
         processingStatus: file.processingStatus,
       },
@@ -940,6 +963,7 @@ function buildFocusAssets(state: LoopState): FocusAssetRef[] {
       lastUsedRunId: state.runId,
       lastUsedAt: directory.lastUsedAt ?? now,
       metadata: {
+        capabilities: directory.capabilities,
         fileCount: directory.fileCount,
         directoryCount: directory.directoryCount,
         truncated: directory.truncated,

@@ -9,10 +9,11 @@ Major backend services and stores:
 - `MemoryConsolidator`: post-session personal memory evolution.
 - `EpisodicMemoryIndexer`: indexes closed sessions when embeddings are available.
 - `EpisodicMemoryRetriever`: semantic recall for past sessions.
-- `DocumentStore`: managed document storage.
-- `DocumentContextBackend`: document reads and retrieval.
-- `PreparedAttachmentService`: prepares files for document/dataset workflows.
-- `FileLibrary`: managed file upload/download/metadata store.
+- `DocumentStore`: prepared-document compatibility storage.
+- `DocumentContextBackend`: document reads and retrieval for prepared text attachments.
+- `PreparedAttachmentService`: compatibility layer for document/dataset workflows.
+- `FileLibrary`: primary managed file upload/download/metadata store.
+- `DirectoryLibrary`: primary managed directory manifest/search store.
 - `PulseScheduler`: reminder and scheduled-work execution.
 - `SystemIngressService`: normalizes and queues internal/external system events for daemon processing.
 - `SystemEventWorker`: processes queued system events through the engine.

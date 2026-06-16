@@ -61,6 +61,7 @@ describe("SkillActivationManager", () => {
       createSkillBundle(skill("attachments", [tool("restore_attachment_context")])),
       createSkillBundle(skill("files", [tool("attachment_list")])),
       createSkillBundle(skill("documents", [tool("document_query")])),
+      createSkillBundle(skill("datasets", [tool("dataset_query")])),
     ]);
     const executor = createToolExecutor([tool("shell")]);
     const manager = new SkillActivationManager({ catalog, toolExecutor: executor });
@@ -74,12 +75,13 @@ describe("SkillActivationManager", () => {
       stepNumber: 1,
     });
 
-    expect(activated.map((record) => record.skillId).sort()).toEqual(["attachments", "documents", "files"]);
+    expect(activated.map((record) => record.skillId).sort()).toEqual(["attachments", "datasets", "documents", "files"]);
     const visible = executor.list({ clientId: "c1", runId: "r1", sessionId: "s1", stepNumber: 1 });
     expect(visible).toEqual(expect.arrayContaining([
       "restore_attachment_context",
       "attachment_list",
       "document_query",
+      "dataset_query",
     ]));
   });
 

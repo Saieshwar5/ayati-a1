@@ -23,6 +23,8 @@ import type {
 import type { DocumentStore } from "../documents/document-store.js";
 import type { PreparedAttachmentRecord, PreparedAttachmentRegistry } from "../documents/prepared-attachment-registry.js";
 import type { ManagedDocumentManifest, PreparedAttachmentSummary } from "../documents/types.js";
+import type { DirectoryLibrary } from "../files/directory-library.js";
+import type { FileLibrary } from "../files/file-library.js";
 import type { DirectoryAttachmentRecord, ManagedFileRecord } from "../files/types.js";
 import type {
   AyatiSystemEvent,
@@ -323,6 +325,8 @@ export interface AgentLoopDeps {
   attachmentWarnings?: string[];
   managedFiles?: ManagedFileRecord[];
   managedDirectories?: DirectoryAttachmentRecord[];
+  fileLibrary?: FileLibrary;
+  directoryLibrary?: DirectoryLibrary;
   documentStore?: DocumentStore;
   preparedAttachmentRegistry?: PreparedAttachmentRegistry;
   signal?: AbortSignal;

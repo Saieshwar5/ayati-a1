@@ -21,6 +21,9 @@ export const ALWAYS_SELECTED_KERNEL_TOOL_NAMES = new Set([
   "evidence_search",
   "evidence_read_lines",
   "evidence_tail",
+  "focus_activate",
+  "attachment_restore",
+  "restore_attachment_context",
 ]);
 
 export function selectToolsForDecision(
@@ -101,6 +104,7 @@ function buildToolSelectionQuery(state: LoopState): string {
     ...focusTerms(state.activeFocus),
     ...focusTerms(state.sessionFocusCards),
     ...focusTerms(state.attentionShelf),
+    ...attachmentTerms(state.activeSessionAttachments),
     ...(state.completedSteps.slice(-2).flatMap((step) => [
       step.executionContract,
       step.summary,
@@ -122,6 +126,27 @@ function focusTerms(items: LoopState["activeFocus"]): string[] {
     ...item.openWork,
     ...item.hints,
     ...item.topArtifacts,
+  ]).filter((term): term is string => typeof term === "string" && term.trim().length > 0);
+}
+
+function attachmentTerms(items: LoopState["activeSessionAttachments"]): string[] {
+  return (items ?? []).flatMap((item) => [
+    "attachment",
+    "attachment_restore",
+    "restore",
+    "query",
+    "read",
+    "directory_search",
+    item.attachmentKind,
+    item.displayName,
+    item.kind,
+    item.mode,
+    item.documentId,
+    item.preparedInputId,
+    item.fileId,
+    item.directoryId,
+    item.path,
+    ...(item.capabilities ?? []),
   ]).filter((term): term is string => typeof term === "string" && term.trim().length > 0);
 }
 
@@ -165,6 +190,12 @@ function scoreDomainNeed(tool: ToolDefinition, tokens: Set<string>): number {
   }
   if (domain === "documents" && intersects(tokens, ["document", "pdf", "doc", "extract", "summarize"])) {
     return 6;
+  }
+  if (domain === "attachments" && intersects(tokens, ["attachment", "attached", "restore", "file", "directory", "document", "dataset", "query", "read"])) {
+    return 8;
+  }
+  if (domain === "files" && intersects(tokens, ["attachment", "attached", "file", "directory", "document", "dataset", "query", "read"])) {
+    return 7;
   }
   if (domain === "database" && intersects(tokens, ["database", "sql", "table", "rows", "query"])) {
     return 6;

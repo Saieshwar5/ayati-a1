@@ -79,6 +79,13 @@ const DETERMINISTIC_SUCCESS_TOOLS = new Set([
   "list_directory",
   "find_files",
   "search_in_files",
+  "attachment_restore",
+  "attachment_list",
+  "attachment_inspect",
+  "attachment_read",
+  "attachment_query",
+  "attachment_query_table",
+  "directory_search",
   "restore_attachment_context",
   "dataset_profile",
   "dataset_query",
@@ -131,6 +138,12 @@ const READ_ONLY_SUCCESS_TOOLS = new Set([
   "list_directory",
   "find_files",
   "search_in_files",
+  "attachment_list",
+  "attachment_inspect",
+  "attachment_read",
+  "attachment_query",
+  "attachment_query_table",
+  "directory_search",
   "dataset_profile",
   "dataset_query",
   "document_list_sections",
@@ -149,10 +162,27 @@ function isDeterministicSuccessCall(call: ActOutput["toolCalls"][number]): boole
 
   const payload = parseJsonObject(call.output);
   switch (call.tool) {
+    case "attachment_restore":
     case "restore_attachment_context":
-      return payload?.["restored"] === true
-        && typeof payload["preparedInputId"] === "string"
-        && payload["preparedInputId"].trim().length > 0;
+      return typeof payload?.["attachmentKind"] === "string"
+        && typeof payload["attachmentId"] === "string"
+        && payload["attachmentId"].trim().length > 0;
+    case "attachment_list":
+      return Array.isArray(payload?.["files"]) && Array.isArray(payload["directories"]);
+    case "attachment_inspect":
+      return payload?.["type"] === "file" || payload?.["type"] === "directory";
+    case "attachment_read":
+      return payload?.["type"] === "file"
+        ? typeof payload["text"] === "string"
+        : payload?.["type"] === "directory" && typeof payload["directory"] === "object";
+    case "attachment_query":
+      return payload?.["type"] === "file"
+        ? typeof payload["matchCount"] === "number" && Array.isArray(payload["matches"])
+        : payload?.["type"] === "directory" && typeof payload["matchCount"] === "number" && Array.isArray(payload["matches"]);
+    case "attachment_query_table":
+      return typeof payload?.["rowCount"] === "number" && Array.isArray(payload["rows"]);
+    case "directory_search":
+      return typeof payload?.["matchCount"] === "number" && Array.isArray(payload["matches"]);
     case "dataset_profile":
       return typeof payload?.["rowCount"] === "number" && Array.isArray(payload["columns"]);
     case "dataset_query":

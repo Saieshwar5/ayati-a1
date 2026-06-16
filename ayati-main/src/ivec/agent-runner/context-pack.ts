@@ -52,13 +52,19 @@ export interface AgentContextPack {
   sessionFocusCards: ContextFocusItem[];
   attentionShelf: ContextFocusItem[];
   activeAttachments: Array<{
-    documentId: string;
+    attachmentKind: string;
+    assetId?: string;
+    documentId?: string;
+    fileId?: string;
+    directoryId?: string;
     displayName: string;
     kind: string;
-    mode: string;
+    mode?: string;
+    capabilities?: string[];
     runId: string;
     runPath: string;
-    preparedInputId: string;
+    preparedInputId?: string;
+    path?: string;
     lastUsedAt: string;
   }>;
   previousSessionSummary?: string;
@@ -131,13 +137,19 @@ function compactRecentConversation(exchanges: ConversationExchange[], currentRun
 
 function compactActiveAttachments(attachments: ActiveAttachmentRef[]): AgentContextPack["activeAttachments"] {
   return attachments.slice(0, LIMITS.activeAttachments).map((attachment) => ({
-    documentId: attachment.documentId,
+    attachmentKind: attachment.attachmentKind,
+    ...(attachment.assetId ? { assetId: attachment.assetId } : {}),
+    ...(attachment.documentId ? { documentId: attachment.documentId } : {}),
+    ...(attachment.fileId ? { fileId: attachment.fileId } : {}),
+    ...(attachment.directoryId ? { directoryId: attachment.directoryId } : {}),
     displayName: truncate(attachment.displayName, 160),
     kind: attachment.kind,
-    mode: attachment.mode,
+    ...(attachment.mode ? { mode: attachment.mode } : {}),
+    ...(attachment.capabilities?.length ? { capabilities: compactList(attachment.capabilities, 6, 40) } : {}),
     runId: attachment.runId,
     runPath: attachment.runPath,
-    preparedInputId: attachment.preparedInputId,
+    ...(attachment.preparedInputId ? { preparedInputId: attachment.preparedInputId } : {}),
+    ...(attachment.path ? { path: truncate(attachment.path, 180) } : {}),
     lastUsedAt: attachment.lastUsedAt,
   }));
 }

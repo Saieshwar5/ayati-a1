@@ -1,4 +1,4 @@
-import type { SessionAttachmentService } from "../../../documents/session-attachment-service.js";
+import type { RestoredAttachmentContext, SessionAttachmentService } from "../../../documents/session-attachment-service.js";
 import type { SkillDefinition, ToolDefinition, ToolResult } from "../../types.js";
 
 export interface AttachmentSkillDeps {
@@ -6,11 +6,11 @@ export interface AttachmentSkillDeps {
 }
 
 const ATTACHMENT_PROMPT_BLOCK = [
-  "Active session attachment restoration is built in.",
-  "Use restore_attachment_context when the user refers to a file from earlier in the same session and no current attachment is available.",
-  "If the current run already has attached or prepared files, do not restore an older session attachment unless the user explicitly asks for the earlier file.",
-  "Inputs accept a prior attachment reference: preparedInputId is preferred, but the display name also works.",
-  "If exactly one active session attachment exists, restore_attachment_context can auto-select it.",
+  "Unified attachment restoration is built in.",
+  "Use attachment_restore when the user refers to a file, document, dataset, or directory from an active focus card or earlier run.",
+  "If the current run already has attached files, do not restore an older attachment unless the user explicitly asks for the earlier one.",
+  "Inputs accept a prior attachment reference: attachment id, preparedInputId, fileId, directoryId, display name, or path.",
+  "If exactly one active attachment exists, attachment_restore can auto-select it.",
 ].join("\n");
 
 function buildSuccessResult(output: Record<string, unknown>, meta?: Record<string, unknown>): ToolResult {
@@ -28,16 +28,16 @@ function buildFailureResult(error: string): ToolResult {
   };
 }
 
-function createRestoreAttachmentContextTool(deps: AttachmentSkillDeps): ToolDefinition {
+function createRestoreAttachmentContextTool(deps: AttachmentSkillDeps, name = "attachment_restore"): ToolDefinition {
   return {
-    name: "restore_attachment_context",
-    description: "Restore a previously used attachment from the active session into the current run so normal document or dataset tools can use it.",
+    name,
+    description: "Restore a previously used file, directory, document, or dataset attachment into the current run.",
     inputSchema: {
       type: "object",
       properties: {
         reference: {
           type: "string",
-          description: "Optional active attachment reference. Use the display name or preparedInputId when known.",
+          description: "Optional active attachment reference. Use display name, preparedInputId, fileId, directoryId, assetId, or path when known.",
         },
       },
       additionalProperties: false,
@@ -45,23 +45,15 @@ function createRestoreAttachmentContextTool(deps: AttachmentSkillDeps): ToolDefi
     selectionHints: {
       tags: ["attachments", "restore", "followup"],
       domain: "attachments",
-      priority: 95,
+      priority: name === "attachment_restore" ? 100 : 85,
     },
     async execute(input, context): Promise<ToolResult> {
       const runId = readRunId(context);
       const reference = readOptionalString(input, "reference");
       try {
         const restored = await deps.sessionAttachmentService.restoreAttachmentContext({ runId, reference });
-        const stateUpdates = restored.restored
-          ? [{ type: "restore_prepared_attachment", manifest: restored.manifest, summary: restored.summary }]
-          : [];
-        return buildSuccessResult({
-          restored: restored.restored,
-          preparedInputId: restored.summary.preparedInputId,
-          displayName: restored.summary.displayName,
-          kind: restored.summary.kind,
-          mode: restored.summary.mode,
-        }, stateUpdates.length > 0 ? { stateUpdates } : undefined);
+        const stateUpdates = buildRestoreStateUpdates(restored);
+        return buildSuccessResult(buildRestoreOutput(restored), stateUpdates.length > 0 ? { stateUpdates } : undefined);
       } catch (err) {
         return buildFailureResult(err instanceof Error ? err.message : String(err));
       }
@@ -73,10 +65,62 @@ export function createAttachmentSkill(deps: AttachmentSkillDeps): SkillDefinitio
   return {
     id: "attachments",
     version: "1.0.0",
-    description: "Restore previously used attachments from the active session into the current run.",
+    description: "Restore previously used attachments from active focus context into the current run.",
     promptBlock: ATTACHMENT_PROMPT_BLOCK,
-    tools: [createRestoreAttachmentContextTool(deps)],
+    tools: [
+      createRestoreAttachmentContextTool(deps),
+      createRestoreAttachmentContextTool(deps, "restore_attachment_context"),
+    ],
   };
+}
+
+function buildRestoreOutput(restored: RestoredAttachmentContext): Record<string, unknown> {
+  if (restored.attachmentKind === "file") {
+    return {
+      restored: restored.restored,
+      attachmentKind: restored.attachmentKind,
+      attachmentId: restored.fileId,
+      fileId: restored.fileId,
+      displayName: restored.displayName,
+      kind: restored.kind,
+      mode: "file",
+    };
+  }
+  if (restored.attachmentKind === "directory") {
+    return {
+      restored: restored.restored,
+      attachmentKind: restored.attachmentKind,
+      attachmentId: restored.directoryId,
+      directoryId: restored.directoryId,
+      displayName: restored.displayName,
+      kind: restored.kind,
+      mode: "directory",
+    };
+  }
+  return {
+    restored: restored.restored,
+    attachmentKind: restored.attachmentKind,
+    attachmentId: restored.summary.preparedInputId,
+    preparedInputId: restored.summary.preparedInputId,
+    documentId: restored.summary.documentId,
+    displayName: restored.summary.displayName,
+    kind: restored.summary.kind,
+    mode: restored.summary.mode,
+  };
+}
+
+function buildRestoreStateUpdates(restored: RestoredAttachmentContext): Array<Record<string, unknown>> {
+  if (restored.attachmentKind === "file") {
+    return [{ type: "restore_managed_file", fileId: restored.fileId }];
+  }
+  if (restored.attachmentKind === "directory") {
+    return [{ type: "restore_managed_directory", directoryId: restored.directoryId }];
+  }
+  return [{
+    type: "restore_prepared_attachment",
+    manifest: restored.manifest,
+    summary: restored.summary,
+  }];
 }
 
 function readRunId(context: { runId?: string } | undefined): string {

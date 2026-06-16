@@ -5,6 +5,7 @@ import { DatabaseSync, type SQLInputValue } from "node:sqlite";
 import { randomUUID, createHash } from "node:crypto";
 import type {
   FocusArtifactRef,
+  FocusAssetKind,
   FocusAssetRef,
   FocusCard,
   FocusCurrentState,
@@ -851,33 +852,67 @@ function collectFocusAssets(input: FocusUpsertInput): FocusAssetRef[] {
       lastUsedRunId: input.runId,
       lastUsedAt: input.createdAt,
     })),
-    ...(input.activeAttachments ?? []).map((attachment) => {
-      const summary = attachment.summary;
-      const kind = summary?.mode === "structured_data" || attachment.mode === "structured_data" ? "dataset" : "document";
-      const restore = {
-        preparedInputId: attachment.preparedInputId,
-        documentId: attachment.documentId,
-        ...(summary?.artifactPath ? { manifestPath: summary.artifactPath } : {}),
-      };
-      return normalizeFocusAsset({
-        assetId: stableAssetId(kind, attachment.documentId || attachment.preparedInputId),
-        kind,
-        origin: "user_attached",
-        role: "input",
-        displayName: attachment.displayName,
-        documentId: attachment.documentId,
-        preparedInputId: attachment.preparedInputId,
-        manifest: attachment.manifest,
-        summary,
-        detail: attachment.detail,
-        restore,
-        sourceRunId: attachment.runId,
-        sourceRunPath: attachment.runPath,
-        lastUsedRunId: input.runId,
-        lastUsedAt: attachment.lastUsedAt || input.createdAt,
-      });
-    }),
+    ...(input.activeAttachments ?? []).map((attachment) => activeAttachmentToFocusAsset(attachment, input)),
   ].filter((asset): asset is FocusAssetRef => asset !== null);
+}
+
+function activeAttachmentToFocusAsset(
+  attachment: NonNullable<FocusUpsertInput["activeAttachments"]>[number],
+  input: FocusUpsertInput,
+): FocusAssetRef | null {
+  const summary = attachment.summary;
+  const kind = resolveActiveAttachmentAssetKind(attachment);
+  const identity = attachment.documentId
+    ?? attachment.fileId
+    ?? attachment.directoryId
+    ?? attachment.preparedInputId
+    ?? attachment.path
+    ?? attachment.displayName;
+  const restore = {
+    ...(attachment.preparedInputId ? { preparedInputId: attachment.preparedInputId } : {}),
+    ...(attachment.documentId ? { documentId: attachment.documentId } : {}),
+    ...(kind === "file" && attachment.path ? { filePath: attachment.path } : {}),
+    ...(kind === "directory" && attachment.path ? { directoryPath: attachment.path } : {}),
+    ...(summary?.artifactPath ? { manifestPath: summary.artifactPath } : {}),
+  };
+  return normalizeFocusAsset({
+    assetId: stableAssetId(kind, identity),
+    kind,
+    origin: "user_attached",
+    role: "input",
+    displayName: attachment.displayName,
+    ...(attachment.path ? { path: attachment.path } : {}),
+    ...(attachment.documentId ? { documentId: attachment.documentId } : {}),
+    ...(attachment.fileId ? { fileId: attachment.fileId } : {}),
+    ...(attachment.directoryId ? { directoryId: attachment.directoryId } : {}),
+    ...(attachment.preparedInputId ? { preparedInputId: attachment.preparedInputId } : {}),
+    ...(attachment.manifest ? { manifest: attachment.manifest } : {}),
+    ...(summary ? { summary } : {}),
+    ...(attachment.detail ? { detail: attachment.detail } : {}),
+    restore,
+    sourceRunId: attachment.runId,
+    sourceRunPath: attachment.runPath,
+    lastUsedRunId: input.runId,
+    lastUsedAt: attachment.lastUsedAt || input.createdAt,
+    metadata: {
+      action: "active_attachment",
+      mediaKind: attachment.kind,
+      ...(attachment.mode ? { mode: attachment.mode } : {}),
+      ...(attachment.capabilities?.length ? { capabilities: attachment.capabilities } : {}),
+    },
+  });
+}
+
+function resolveActiveAttachmentAssetKind(attachment: NonNullable<FocusUpsertInput["activeAttachments"]>[number]): FocusAssetKind {
+  if (attachment.attachmentKind === "file" || attachment.fileId) {
+    return "file";
+  }
+  if (attachment.attachmentKind === "directory" || attachment.directoryId) {
+    return "directory";
+  }
+  return attachment.summary?.mode === "structured_data" || attachment.mode === "structured_data"
+    ? "dataset"
+    : "document";
 }
 
 function normalizeFocusAsset(value: unknown): FocusAssetRef | null {
@@ -1151,22 +1186,49 @@ function focusCardToUpsertInput(card: FocusCard): FocusUpsertInput {
       .map((artifact) => artifact.displayName ?? artifact.path ?? artifact.documentId)
       .filter((value): value is string => typeof value === "string" && value.trim().length > 0),
     activeAttachments: card.assets
-      .filter((asset) => (asset.kind === "document" || asset.kind === "dataset") && asset.documentId && asset.displayName && asset.preparedInputId)
-      .map((asset) => ({
-        documentId: asset.documentId!,
-        displayName: asset.displayName!,
-        kind: asset.kind,
-        mode: asset.summary?.mode ?? "restored",
-        runId: asset.sourceRunId || latestRunId,
-        runPath: asset.sourceRunPath,
-        preparedInputId: asset.preparedInputId!,
-        lastUsedAt: asset.lastUsedAt || card.lastTouchedAt,
-        ...(asset.manifest ? { manifest: asset.manifest } : {}),
-        ...(asset.summary ? { summary: asset.summary } : {}),
-        ...(asset.detail ? { detail: asset.detail } : {}),
-      })),
+      .map((asset) => focusAssetToActiveAttachment(asset, latestRunId, card.lastTouchedAt))
+      .filter((attachment): attachment is NonNullable<FocusUpsertInput["activeAttachments"]>[number] => attachment !== null),
     createdAt: card.lastTouchedAt,
   };
+}
+
+function focusAssetToActiveAttachment(
+  asset: FocusAssetRef,
+  fallbackRunId: string,
+  fallbackTouchedAt: string,
+): NonNullable<FocusUpsertInput["activeAttachments"]>[number] | null {
+  if (!isActiveAttachmentAsset(asset)) {
+    return null;
+  }
+  return {
+    attachmentKind: asset.kind === "dataset" ? "dataset" : asset.kind === "directory" ? "directory" : asset.kind === "file" ? "file" : "document",
+    assetId: asset.assetId,
+    ...(asset.documentId ? { documentId: asset.documentId } : {}),
+    ...(asset.fileId ? { fileId: asset.fileId } : {}),
+    ...(asset.directoryId ? { directoryId: asset.directoryId } : {}),
+    displayName: asset.displayName ?? asset.path ?? asset.documentId ?? asset.fileId ?? asset.directoryId ?? asset.assetId,
+    kind: readString(asset.metadata?.["kind"]) ?? readString(asset.metadata?.["mediaKind"]) ?? asset.summary?.kind ?? asset.kind,
+    ...(asset.summary?.mode ? { mode: asset.summary.mode } : {}),
+    ...(readStringArray(asset.metadata?.["capabilities"]).length > 0 ? { capabilities: readStringArray(asset.metadata?.["capabilities"]) } : {}),
+    runId: asset.sourceRunId || fallbackRunId,
+    runPath: asset.sourceRunPath,
+    ...(asset.preparedInputId ? { preparedInputId: asset.preparedInputId } : {}),
+    ...(asset.path ? { path: asset.path } : {}),
+    lastUsedAt: asset.lastUsedAt || fallbackTouchedAt,
+    ...(asset.manifest ? { manifest: asset.manifest } : {}),
+    ...(asset.summary ? { summary: asset.summary } : {}),
+    ...(asset.detail ? { detail: asset.detail } : {}),
+  };
+}
+
+function isActiveAttachmentAsset(asset: FocusAssetRef): boolean {
+  if ((asset.kind === "document" || asset.kind === "dataset") && asset.documentId && asset.displayName && asset.preparedInputId) {
+    return true;
+  }
+  if (asset.kind === "file" && asset.fileId) {
+    return true;
+  }
+  return asset.kind === "directory" && !!asset.directoryId;
 }
 
 function shouldPromoteSessionCard(card: FocusCard): boolean {

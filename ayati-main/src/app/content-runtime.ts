@@ -105,6 +105,8 @@ export async function createContentRuntime(options: ContentRuntimeOptions): Prom
     sessionMemory,
     preparedAttachmentRegistry,
     dataDir,
+    fileLibrary,
+    directoryLibrary,
   });
 
   const courseStore = new CourseStore({
