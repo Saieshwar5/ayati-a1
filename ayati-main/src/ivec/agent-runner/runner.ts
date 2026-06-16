@@ -1,6 +1,9 @@
+import { createHash } from "node:crypto";
 import { devLog, devWarn } from "../../shared/index.js";
 import { prepareIncomingAttachments } from "../../documents/attachment-preparer.js";
+import type { PreparedAttachmentRecord } from "../../documents/prepared-attachment-registry.js";
 import type { PreparedAttachmentSummary } from "../../documents/types.js";
+import type { FocusAssetRef } from "../../memory/types.js";
 import type { AgentArtifact } from "../types.js";
 import type {
   ActToolCallRecord,
@@ -86,6 +89,8 @@ export async function runAgentLoop(
     completion?: CompletionDirective;
     responseKind?: AgentLoopResult["type"];
   }): Promise<AgentLoopResult> => {
+    syncPreparedAttachmentsFromRegistry(state, deps);
+    syncTransientMemoryContext(state, deps);
     queueStateSnapshot();
     recordStateSnapshotMetric("final");
     await flushStateWrites(runPath);
@@ -355,6 +360,9 @@ async function executeActionStep(input: ExecuteActionStepInput): Promise<Execute
     }
   }
 
+  applyToolStateUpdates(input.state, input.deps, execution.actOutput.toolCalls);
+  syncPreparedAttachmentsFromRegistry(input.state, input.deps);
+
   const pad = String(input.stepNumber).padStart(3, "0");
   const actMarkdownPath = `steps/${pad}-act.md`;
   const verifyMarkdownPath = `steps/${pad}-verify.md`;
@@ -381,6 +389,65 @@ async function executeActionStep(input: ExecuteActionStepInput): Promise<Execute
     stepRecord,
     fullStepText,
   };
+}
+
+function applyToolStateUpdates(state: LoopState, deps: AgentLoopDeps, calls: ActToolCallRecord[]): void {
+  for (const update of calls.flatMap((call) => readToolStateUpdates(call.meta))) {
+    if (update["type"] === "restore_prepared_attachment") {
+      syncPreparedAttachmentsFromRegistry(state, deps);
+      continue;
+    }
+    if (update["type"] === "mark_document_indexed") {
+      const preparedInputId = readString(update["preparedInputId"]);
+      if (!preparedInputId) continue;
+      deps.preparedAttachmentRegistry?.updateAttachmentSummary(state.runId, preparedInputId, (summary) => ({
+        ...summary,
+        ...(summary.unstructured ? {
+          unstructured: {
+            ...summary.unstructured,
+            indexed: update["indexed"] === true,
+          },
+        } : {}),
+      }));
+      continue;
+    }
+    if (update["type"] === "mark_dataset_staged") {
+      const preparedInputId = readString(update["preparedInputId"]);
+      if (!preparedInputId) continue;
+      deps.preparedAttachmentRegistry?.updateAttachmentSummary(state.runId, preparedInputId, (summary) => ({
+        ...summary,
+        ...(summary.structured ? {
+          structured: {
+            ...summary.structured,
+            staged: update["staged"] === true,
+            ...(readString(update["stagingDbPath"]) ? { stagingDbPath: readString(update["stagingDbPath"])! } : {}),
+            ...(readString(update["stagingTableName"]) ? { stagingTableName: readString(update["stagingTableName"])! } : {}),
+          },
+        } : {}),
+      }));
+    }
+  }
+}
+
+function syncPreparedAttachmentsFromRegistry(state: LoopState, deps: AgentLoopDeps): void {
+  const records = deps.preparedAttachmentRegistry?.getRunAttachments(state.runId) ?? [];
+  if (records.length === 0) {
+    return;
+  }
+  state.preparedAttachmentRecords = records;
+  state.preparedAttachments = records.map((record) => record.summary);
+}
+
+function readToolStateUpdates(meta: Record<string, unknown> | undefined): Array<Record<string, unknown>> {
+  const raw = meta?.["stateUpdates"];
+  if (!Array.isArray(raw)) {
+    return [];
+  }
+  return raw.filter((item): item is Record<string, unknown> => Boolean(item && typeof item === "object" && !Array.isArray(item)));
+}
+
+function readString(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
 }
 
 function mergeRecoveredExecution(
@@ -515,6 +582,7 @@ function buildInitialState(deps: AgentLoopDeps, config: LoopConfig, runPath: str
     attachedDocuments: deps.attachedDocuments ?? [],
     attachmentWarnings: deps.attachmentWarnings ?? [],
     preparedAttachments: [],
+    preparedAttachmentRecords: [],
     managedFiles: deps.managedFiles ?? [],
     managedDirectories: deps.managedDirectories ?? [],
     activeSessionAttachments: [],
@@ -547,6 +615,18 @@ async function prepareAttachmentsForRun(
     registry: deps.preparedAttachmentRegistry,
   });
   state.preparedAttachments = prepared.summaries;
+  state.preparedAttachmentRecords = prepared.records;
+  deps.sessionMemory.recordActiveAttachments?.(deps.clientId, {
+    runId,
+    sessionId: deps.runHandle.sessionId,
+    runPath,
+    action: "prepared",
+    attachments: prepared.records.map((record) => ({
+      manifest: record.manifest,
+      summary: record.summary,
+      detail: record.detail.payload,
+    })),
+  });
 }
 
 function syncTransientMemoryContext(state: LoopState, deps: AgentLoopDeps): void {
@@ -748,6 +828,7 @@ function buildTaskSummaryRecord(
   return {
     runId: state.runId,
     runPath: state.runPath,
+    focusId: selectContinuationFocusId(state),
     status,
     taskStatus: state.workState.status,
     objective: state.userMessage.trim() || undefined,
@@ -771,6 +852,7 @@ function buildTaskSummaryRecord(
     nextAction: deriveNextAction(state),
     stopReason: deriveStopReason(state, status),
     attachmentNames: buildAttachmentNames(state.preparedAttachments),
+    focusAssets: buildFocusAssets(state),
   };
 }
 
@@ -805,6 +887,143 @@ function deriveStopReason(
 
 function buildAttachmentNames(preparedAttachments: PreparedAttachmentSummary[] | undefined): string[] {
   return (preparedAttachments ?? []).map((attachment) => attachment.displayName);
+}
+
+function selectContinuationFocusId(state: LoopState): string | undefined {
+  const active = state.activeFocus ?? [];
+  if (active.length === 0) {
+    return undefined;
+  }
+  return active[0]?.focusId;
+}
+
+function buildFocusAssets(state: LoopState): FocusAssetRef[] {
+  const now = new Date().toISOString();
+  return dedupeFocusAssets([
+    ...(state.preparedAttachmentRecords ?? []).map((record) => attachmentRecordToFocusAsset(record, state.runId, state.runPath, now)),
+    ...(state.managedFiles ?? []).map((file) => ({
+      assetId: stableAssetId("file", file.fileId),
+      kind: "file" as const,
+      origin: file.origin === "generated_artifact"
+        ? "agent_generated" as const
+        : file.origin === "agent_download"
+          ? "tool_result" as const
+          : file.origin === "local_path"
+            ? "user_selected" as const
+            : "user_attached" as const,
+      role: "input" as const,
+      displayName: file.originalName,
+      path: file.storagePath,
+      fileId: file.fileId,
+      restore: { filePath: file.storagePath },
+      sourceRunId: state.runId,
+      sourceRunPath: state.runPath,
+      lastUsedRunId: state.runId,
+      lastUsedAt: file.lastUsedAt ?? now,
+      metadata: {
+        kind: file.kind,
+        sizeBytes: file.sizeBytes,
+        processingStatus: file.processingStatus,
+      },
+    })),
+    ...(state.managedDirectories ?? []).map((directory) => ({
+      assetId: stableAssetId("directory", directory.directoryId),
+      kind: "directory" as const,
+      origin: "user_attached" as const,
+      role: "input" as const,
+      displayName: directory.name,
+      path: directory.rootPath,
+      directoryId: directory.directoryId,
+      restore: { directoryPath: directory.rootPath },
+      sourceRunId: state.runId,
+      sourceRunPath: state.runPath,
+      lastUsedRunId: state.runId,
+      lastUsedAt: directory.lastUsedAt ?? now,
+      metadata: {
+        fileCount: directory.fileCount,
+        directoryCount: directory.directoryCount,
+        truncated: directory.truncated,
+      },
+    })),
+    ...state.completedSteps.flatMap((step) => step.artifacts)
+      .filter((artifact) => isDurableStepArtifact(artifact))
+      .map((artifact) => ({
+        assetId: stableAssetId("artifact", artifact),
+        kind: inferPathAssetKind(artifact),
+        origin: "agent_generated" as const,
+        role: "working_artifact" as const,
+        displayName: artifact.split("/").pop() || artifact,
+        path: artifact,
+        restore: inferPathAssetKind(artifact) === "directory"
+          ? { directoryPath: artifact }
+          : { filePath: artifact },
+        sourceRunId: state.runId,
+        sourceRunPath: state.runPath,
+        lastUsedRunId: state.runId,
+        lastUsedAt: now,
+      })),
+  ]);
+}
+
+function attachmentRecordToFocusAsset(
+  record: PreparedAttachmentRecord,
+  runId: string,
+  runPath: string,
+  now: string,
+): FocusAssetRef {
+  const kind = record.summary.mode === "structured_data" ? "dataset" : "document";
+  return {
+    assetId: stableAssetId(kind, record.summary.documentId),
+    kind,
+    origin: "user_attached",
+    role: "input",
+    displayName: record.summary.displayName,
+    documentId: record.summary.documentId,
+    preparedInputId: record.summary.preparedInputId,
+    manifest: record.manifest,
+    summary: record.summary,
+    detail: record.detail,
+    restore: {
+      documentId: record.summary.documentId,
+      preparedInputId: record.summary.preparedInputId,
+      manifestPath: record.summary.artifactPath,
+    },
+    sourceRunId: runId,
+    sourceRunPath: runPath,
+    lastUsedRunId: runId,
+    lastUsedAt: now,
+    metadata: {
+      action: "prepared",
+      mode: record.summary.mode,
+    },
+  };
+}
+
+function dedupeFocusAssets(assets: FocusAssetRef[]): FocusAssetRef[] {
+  const output = new Map<string, FocusAssetRef>();
+  for (const asset of assets) {
+    output.set(asset.assetId, asset);
+  }
+  return [...output.values()];
+}
+
+function isDurableStepArtifact(artifact: string): boolean {
+  const normalized = artifact.trim();
+  if (!normalized || normalized.startsWith("steps/")) {
+    return false;
+  }
+  return !normalized.includes("/observations/");
+}
+
+function inferPathAssetKind(path: string): FocusAssetRef["kind"] {
+  if (/\.(?:html|css|js|jsx|ts|tsx|json|md|txt|py|sql|csv|pdf|png|jpg|jpeg|svg)$/i.test(path)) {
+    return "file";
+  }
+  return "directory";
+}
+
+function stableAssetId(kind: string, identity: string): string {
+  return `asset_${createHash("sha256").update(`${kind}:${identity}`).digest("hex").slice(0, 20)}`;
 }
 
 function normalizeList(values: string[] | undefined): string[] {

@@ -295,6 +295,7 @@ function createFocusListActiveTool(deps: FocusSkillDeps): ToolDefinition {
 const FOCUS_PROMPT_BLOCK = [
   "The focus tools are built in.",
   "Focus cards track reusable work state: current session focus cards, activeFocus, and cross-session attention shelf cards.",
+  "Context shelves are compact previews; use focus_get or focus_activate to load the full card with runs, assets, and currentState before continuing prior work.",
   "Use focus_search when the user says continue, resume, previous, last issue, last file, or refers to prior tool-based work.",
   "Use focus_activate after finding a relevant card so it appears in activeFocus context for the rest of the session.",
   "Use focus_update when a focus card's open work, verified facts, next step, or summary changes.",
@@ -483,6 +484,9 @@ function serializeFocusCard(card: FocusCard): Record<string, unknown> {
     shelfSummary: card.shelfSummary,
     entities: card.entities,
     artifacts: card.artifacts,
+    assets: card.assets,
+    runs: card.runs,
+    currentState: card.currentState,
     verifiedFacts: card.verifiedFacts,
     openWork: card.openWork,
     nextStep: card.nextStep,

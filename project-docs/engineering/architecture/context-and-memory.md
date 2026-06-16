@@ -105,8 +105,12 @@ Other context sources remain independent from session:
 
 ## Focus Cards
 
-Focus cards are the durable continuation surface for tool-using work. They are
+Focus cards are the durable continuation surface for ongoing work. They are
 stored outside session JSONL in `data/memory/memory.sqlite`.
+
+A focus card is the work thread. Runs are individual execution attempts inside
+that thread. Compact focus shelves help the model choose a thread; the full
+card stores resumable state for later runs.
 
 Tables:
 
@@ -123,19 +127,66 @@ Scopes:
 Lifecycle:
 
 1. The runner completes a task run and builds a task summary from `workState`,
-   open work, blockers, verified facts, evidence, tools used, and artifacts.
+   open work, blockers, verified facts, evidence, tools used, prepared
+   attachments, managed files/directories, and durable artifacts.
 2. `IVecEngine` publishes the summary through `queueTaskSummaryPublication`.
-3. `MemoryManager.queueTaskSummary` creates a session focus card only when the
-   summary has at least one tool in `toolsUsed`.
-4. No-tool direct replies are intentionally skipped.
+3. `MemoryManager.queueTaskSummary` creates or updates a session focus card
+   when the summary has tools, focus assets, attachment names, or an explicit
+   continuation `focusId`.
+4. No-tool direct replies without durable assets or focus continuation are
+   intentionally skipped.
 5. Focus tools can search, get, activate, deactivate, update, and list focus
    cards.
 6. Activated cards are returned as `activeFocus` for the current session.
 7. When a session closes, durable session focus cards are promoted or merged
    into global cards for the attention shelf.
 
-The decision model sees compact shelf items, not full focus rows. Full card
-details can be retrieved through focus tools when needed.
+The decision model sees compact shelf items in the context pack, not full focus
+rows. Full card details can be retrieved through focus tools when needed.
+
+Compact shelf items include:
+
+- `focusId`
+- `scope`
+- `type`
+- `status`
+- `label`
+- `summary`
+- `hints`
+- `topArtifacts`
+- `openWork`
+- `lastTouchedAt`
+- `lastTouchedLabel`
+- `attentionScore`
+- `nextStep`
+- activation metadata when present
+
+Full focus cards include continuation fields:
+
+- `assets`: durable inputs and work products. User-attached documents and
+  datasets use `origin: "user_attached"` and `role: "input"`. Agent-created or
+  modified files use `origin: "agent_generated"` or `"agent_modified"` and
+  usually `role: "working_artifact"`.
+- `runs`: compact run history with run id, run path, status, task status, user
+  message, assistant response, summary, tools used, asset ids, and timestamp.
+- `currentState`: resumable state such as goal, open work, blockers, key
+  facts, evidence, next step, changed files, working directories, and last
+  verification summary.
+
+Activation:
+
+1. The model can call `focus_activate` after matching the current message to a
+   focus shelf item or search result.
+2. Activation sets `activeSessionId`, `activatedAt`, and `activatedReason` on
+   the card and writes a focus event.
+3. The activation tool returns the full card, including `assets`, `runs`, and
+   `currentState`.
+4. Subsequent tool calls in the same action can use that full state. For
+   example, `restore_attachment_context` can restore a user-attached document
+   asset into the current run's prepared attachment registry.
+5. At finalization, the runner uses active focus to set `focusId` on the task
+   summary. The progress reducer then updates the same card with the new run,
+   refreshed assets, and current state.
 
 Boundary:
 

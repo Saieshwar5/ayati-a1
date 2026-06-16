@@ -88,4 +88,99 @@ describe("FocusStore", () => {
       store.stop();
     }
   });
+
+  it("updates the same focus card with later run context and generic assets", () => {
+    let now = new Date("2026-06-12T09:00:00.000Z");
+    const store = new FocusStore({
+      dataDir: tempDataDir(),
+      now: () => now,
+    });
+    store.start();
+    try {
+      const first = store.upsertSessionFromTaskSummary({
+        clientId: "c1",
+        scope: "session",
+        sessionId: "s1",
+        runId: "r1",
+        runPath: "data/runs/r1",
+        status: "completed",
+        taskStatus: "not_done",
+        objective: "Build a product website",
+        summary: "Created the product website in site/index.html.",
+        progressSummary: "Initial website files are written.",
+        openWork: ["improve the hero section"],
+        keyFacts: ["site/index.html exists"],
+        evidence: ["write_files verified"],
+        toolsUsed: ["write_files"],
+        focusAssets: [{
+          assetId: "asset_site_index",
+          kind: "file",
+          origin: "agent_generated",
+          role: "working_artifact",
+          displayName: "index.html",
+          path: "site/index.html",
+          restore: { filePath: "site/index.html" },
+          sourceRunId: "r1",
+          sourceRunPath: "data/runs/r1",
+          lastUsedRunId: "r1",
+          lastUsedAt: now.toISOString(),
+        }],
+        createdAt: now.toISOString(),
+      });
+
+      expect(first.assets).toHaveLength(1);
+      expect(first.runs.map((run) => run.runId)).toEqual(["r1"]);
+      expect(first.currentState.changedFiles).toEqual(["site/index.html"]);
+
+      store.activateFocus({
+        clientId: "c1",
+        focusId: first.focusId,
+        sessionId: "s1",
+        reason: "user asked to continue the website",
+      });
+
+      now = new Date("2026-06-12T09:10:00.000Z");
+      const second = store.upsertSessionFromTaskSummary({
+        clientId: "c1",
+        focusId: first.focusId,
+        scope: "session",
+        sessionId: "s1",
+        runId: "r2",
+        runPath: "data/runs/r2",
+        status: "completed",
+        taskStatus: "done",
+        objective: "Improve the hero section",
+        summary: "Updated the product website hero in site/index.html.",
+        progressSummary: "Hero copy and layout were refined.",
+        keyFacts: ["site/index.html has the revised hero"],
+        evidence: ["edit_file verified"],
+        toolsUsed: ["edit_file"],
+        focusAssets: [{
+          assetId: "asset_site_index",
+          kind: "file",
+          origin: "agent_modified",
+          role: "working_artifact",
+          displayName: "index.html",
+          path: "site/index.html",
+          restore: { filePath: "site/index.html" },
+          sourceRunId: "r1",
+          sourceRunPath: "data/runs/r1",
+          lastUsedRunId: "r2",
+          lastUsedAt: now.toISOString(),
+        }],
+        createdAt: now.toISOString(),
+      });
+
+      expect(second.focusId).toBe(first.focusId);
+      expect(second.runs.map((run) => run.runId)).toEqual(["r1", "r2"]);
+      expect(second.assets).toHaveLength(1);
+      expect(second.assets[0]?.origin).toBe("agent_modified");
+      expect(second.assets[0]?.lastUsedRunId).toBe("r2");
+      expect(second.currentState.changedFiles).toEqual(["site/index.html"]);
+      expect(store.getSessionShelf("c1", "s1", 5)[0]?.topArtifacts).toContain("site/index.html");
+      expect(store.search("c1", "hero index", { scope: "session", sessionId: "s1" })[0]?.focusId).toBe(first.focusId);
+    } finally {
+      store.stop();
+    }
+  });
 });

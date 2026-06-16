@@ -1,5 +1,5 @@
 import type { ManagedDocumentManifest, PreparedAttachmentSummary } from "../documents/types.js";
-import type { FocusShelfItem } from "./focus/types.js";
+import type { FocusAssetRef, FocusShelfItem } from "./focus/types.js";
 import type { PromptPersonalMemory } from "./personal/types.js";
 import type {
   SystemEventCreatedBy,
@@ -8,7 +8,7 @@ import type {
   SystemEventTrustTier,
 } from "../core/contracts/plugin.js";
 
-export type { FocusCard, FocusScope, FocusShelfItem } from "./focus/types.js";
+export type { FocusAssetRef, FocusCard, FocusRunRef, FocusScope, FocusShelfItem } from "./focus/types.js";
 
 export interface ConversationTurn {
   role: "user" | "assistant";
@@ -267,6 +267,7 @@ export interface TaskSummaryRecordInput {
   runId: string;
   sessionId: string;
   runPath: string;
+  focusId?: string;
   status: "completed" | "failed" | "stuck";
   taskStatus?: TaskSummaryTaskStatus;
   objective?: string;
@@ -292,6 +293,7 @@ export interface TaskSummaryRecordInput {
   nextAction?: string;
   stopReason?: TaskSummaryStopReason;
   attachmentNames?: string[];
+  focusAssets?: FocusAssetRef[];
 }
 
 export interface SystemEventRecordInput {

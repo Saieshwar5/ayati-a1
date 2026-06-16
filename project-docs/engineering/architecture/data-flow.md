@@ -27,19 +27,27 @@ Client model:
 Memory and focus flow:
 
 1. User interactions are stored as session turns.
-2. Tool-using task summaries create session focus cards in `memory.sqlite`.
-3. Direct replies and no-tool interactions do not create focus cards.
-4. Focus tools can search, get, activate, deactivate, update, and list focus
+2. Task summaries with tools, focus assets, attachments, or an explicit
+   continuation `focusId` create or update focus cards in `memory.sqlite`.
+3. Direct replies without durable assets or continuation state do not create
+   focus cards.
+4. Focus cards store compact summaries plus full continuation state: assets,
+   run refs, and current resumable state.
+5. Focus tools can search, get, activate, deactivate, update, and list focus
    cards.
-5. Activated cards appear in `activeFocus` for the current session.
-6. Session close promotes durable session focus cards into global attention
+6. Activated cards appear in `activeFocus` for the current session and can be
+   loaded as full cards for continuation.
+7. Focus-card assets can restore user-attached documents/datasets into the
+   current run or point the agent back to files/directories created in earlier
+   runs.
+8. Session close promotes durable session focus cards into global attention
    shelf cards.
-7. The attention shelf selects compact, high-relevance global focus summaries
+9. The attention shelf selects compact, high-relevance global focus summaries
    for future decisions.
-8. Session close can enqueue memory consolidation and episodic indexing.
-9. Personal memory stores stable facts and preferences for personalization.
-10. Episodic memory indexes closed sessions for future recall when embeddings are available.
-11. The context pack renders relevant memory back into future agent runs as bounded JSON.
+10. Session close can enqueue memory consolidation and episodic indexing.
+11. Personal memory stores stable facts and preferences for personalization.
+12. Episodic memory indexes closed sessions for future recall when embeddings are available.
+13. The context pack renders relevant memory back into future agent runs as bounded JSON.
 
 Tool/action flow:
 
@@ -56,6 +64,9 @@ Attachment flow:
 3. The daemon prepares attachments through document/file services.
 4. Structured data can be profiled or queried.
 5. Text documents can be read by section or queried through retrieval when vector indexing is available.
+6. Prepared user attachments are recorded as focus-card assets when they are
+   part of a durable run, with enough manifest/summary/detail data to restore
+   them in later runs.
 
 Learning flow:
 

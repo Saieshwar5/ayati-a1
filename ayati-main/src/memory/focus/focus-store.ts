@@ -5,7 +5,10 @@ import { DatabaseSync, type SQLInputValue } from "node:sqlite";
 import { randomUUID, createHash } from "node:crypto";
 import type {
   FocusArtifactRef,
+  FocusAssetRef,
   FocusCard,
+  FocusCurrentState,
+  FocusRunRef,
   FocusScope,
   FocusShelfItem,
   FocusStatus,
@@ -115,7 +118,13 @@ export class FocusStore {
   }
 
   upsertSessionFromTaskSummary(input: FocusUpsertInput & { sessionId: string }): FocusCard {
-    const card = this.upsertTaskFocus({ ...input, scope: "session" }, { requireAdmission: false });
+    const existing = input.focusId ? this.getFocus(input.focusId) : null;
+    const scope = existing && existing.clientId === input.clientId ? existing.scope : "session";
+    const card = this.upsertTaskFocus({
+      ...input,
+      scope,
+      ...(scope === "session" ? { sessionId: input.sessionId } : {}),
+    }, { requireAdmission: false });
     if (!card) {
       throw new Error("Session focus card creation unexpectedly failed.");
     }
@@ -243,24 +252,35 @@ export class FocusStore {
   }
 
   private upsertTaskFocus(input: FocusUpsertInput, options: { requireAdmission: boolean }): FocusCard | null {
-    const type = inferFocusType(input);
+    const scope = input.scope ?? "global";
+    const sessionId = scope === "session" ? input.sessionId : undefined;
+    const explicitPrevious = this.findExplicitFocus(input, scope, sessionId);
+    const type = explicitPrevious?.type ?? inferFocusType(input);
     const admission = admitFocus(input, type);
     if (options.requireAdmission && !admission.admitted) {
       return null;
     }
 
     const now = new Date(input.createdAt);
-    const scope = input.scope ?? "global";
-    const sessionId = scope === "session" ? input.sessionId : undefined;
-    const label = buildLabel(input, type);
+    const label = explicitPrevious?.label ?? buildLabel(input, type);
     const entities = uniqueStrings([
+      ...(explicitPrevious?.entities ?? []),
       ...tokenizeLabel(label),
       ...(input.entityHints ?? []),
       ...(input.attachmentNames ?? []),
+      ...(input.focusAssets ?? []).flatMap((asset) => [
+        asset.displayName,
+        asset.path,
+        asset.documentId,
+        asset.fileId,
+        asset.directoryId,
+      ]),
     ]).slice(0, 12);
     const artifacts = collectArtifacts(input);
-    const existing = this.findIdentityMatch(input.clientId, scope, sessionId, label, entities, artifacts);
-    const previous = existing ? this.toFocusCard(existing) : null;
+    const existing = explicitPrevious
+      ? null
+      : this.findIdentityMatch(input.clientId, scope, sessionId, label, entities, artifacts);
+    const previous = explicitPrevious ?? (existing ? this.toFocusCard(existing) : null);
     const sourceRunIds = uniqueStrings([...(previous?.sourceRunIds ?? []), input.runId]).slice(-12);
     const openWork = compactList([...(input.openWork ?? []), ...(input.blockers ?? [])], 6, 220);
     const verifiedFacts = compactList([
@@ -287,6 +307,9 @@ export class FocusStore {
     const status = statusFromAttentionScore(attentionScore);
     const focusId = previous?.focusId ?? stableFocusId(input.clientId, label, type, scope, sessionId);
     const details = buildDetails(input, type, previous?.details ?? {});
+    const assets = readFocusAssets(details["assets"]);
+    const runs = readFocusRuns(details["runs"]);
+    const currentState = readFocusCurrentState(details["currentState"]);
     const card: FocusCard = {
       focusId,
       clientId: input.clientId,
@@ -300,6 +323,9 @@ export class FocusStore {
       shelfSummary,
       entities,
       artifacts: mergeArtifacts(previous?.artifacts ?? [], artifacts).slice(0, 16),
+      assets,
+      runs,
+      currentState,
       verifiedFacts,
       openWork,
       ...(input.nextAction ? { nextStep: compactText(input.nextAction, 220) } : previous?.nextStep ? { nextStep: previous.nextStep } : {}),
@@ -583,7 +609,28 @@ export class FocusStore {
     return null;
   }
 
+  private findExplicitFocus(input: FocusUpsertInput, scope: FocusScope, sessionId: string | undefined): FocusCard | null {
+    if (!input.focusId?.trim()) {
+      return null;
+    }
+    const card = this.getFocus(input.focusId);
+    if (!card || card.clientId !== input.clientId) {
+      return null;
+    }
+    if (card.scope !== scope) {
+      return null;
+    }
+    if (scope === "session" && card.sessionId !== sessionId) {
+      return null;
+    }
+    return card;
+  }
+
   private toFocusCard(row: FocusRow): FocusCard {
+    const details = parseJsonObject(row.details_json);
+    const assets = readFocusAssets(details["assets"]);
+    const runs = readFocusRuns(details["runs"]);
+    const currentState = readFocusCurrentState(details["currentState"]);
     return {
       focusId: row.focus_id,
       clientId: row.client_id,
@@ -597,6 +644,9 @@ export class FocusStore {
       shelfSummary: row.shelf_summary,
       entities: parseStringArray(row.entities_json),
       artifacts: parseJsonArray<FocusArtifactRef>(row.artifacts_json),
+      assets,
+      runs,
+      currentState,
       verifiedFacts: parseStringArray(row.verified_facts_json),
       openWork: parseStringArray(row.open_work_json),
       ...(row.next_step ? { nextStep: row.next_step } : {}),
@@ -611,7 +661,7 @@ export class FocusStore {
       ...(row.active_session_id ? { activeSessionId: row.active_session_id } : {}),
       ...(row.activated_at ? { activatedAt: row.activated_at } : {}),
       ...(row.activated_reason ? { activatedReason: row.activated_reason } : {}),
-      details: parseJsonObject(row.details_json),
+      details,
     };
   }
 
@@ -737,9 +787,20 @@ function buildDetails(
   type: FocusType,
   previous: Record<string, unknown>,
 ): Record<string, unknown> {
+  const incomingAssets = collectFocusAssets(input);
+  const assets = mergeFocusAssets(readFocusAssets(previous["assets"]), incomingAssets).slice(-32);
+  const runs = appendFocusRun(readFocusRuns(previous["runs"]), buildFocusRun(input, incomingAssets));
+  const currentState = buildCurrentState(input, readFocusCurrentState(previous["currentState"]), assets);
+  const base: Record<string, unknown> = {
+    ...previous,
+    assets,
+    runs,
+    currentState,
+  };
+
   if (type === "learning") {
     return {
-      ...previous,
+      ...base,
       currentPosition: input.currentFocus ?? previous["currentPosition"],
       knownSoFar: compactList([...(readStringArray(previous["knownSoFar"])), ...(input.completedMilestones ?? []), ...(input.keyFacts ?? [])], 8, 160),
       weakSpots: compactList([...(readStringArray(previous["weakSpots"])), ...(input.blockers ?? [])], 6, 160),
@@ -748,33 +809,29 @@ function buildDetails(
   }
   if (type === "document") {
     return {
-      ...previous,
-      documentNames: uniqueStrings([...(readStringArray(previous["documentNames"])), ...(input.attachmentNames ?? [])]).slice(0, 8),
+      ...base,
+      documentNames: uniqueStrings([
+        ...(readStringArray(previous["documentNames"])),
+        ...(input.attachmentNames ?? []),
+        ...assets
+          .filter((asset) => asset.kind === "document" || asset.kind === "dataset")
+          .map((asset) => asset.displayName ?? asset.path ?? asset.documentId),
+      ]).slice(0, 8),
     };
   }
   if (type === "debug_issue") {
     return {
-      ...previous,
+      ...base,
       symptoms: compactList([...(readStringArray(previous["symptoms"])), ...(input.blockers ?? [])], 6, 180),
       attemptsTried: compactList([...(readStringArray(previous["attemptsTried"])), ...(input.completedMilestones ?? [])], 8, 180),
       nextDiagnosticStep: input.nextAction ?? previous["nextDiagnosticStep"],
     };
   }
-  return previous;
+  return base;
 }
 
 function collectArtifacts(input: FocusUpsertInput): FocusArtifactRef[] {
-  const attachmentArtifacts: FocusArtifactRef[] = (input.activeAttachments ?? []).map((attachment) => ({
-    kind: "document",
-    documentId: attachment.documentId,
-    displayName: attachment.displayName,
-    preparedInputId: attachment.preparedInputId,
-    manifestPath: attachment.manifest?.path,
-    role: "source document",
-    sourceRunId: attachment.runId,
-    sourceRunPath: attachment.runPath,
-    lastUsedAt: attachment.lastUsedAt,
-  }));
+  const assetArtifacts = collectFocusAssets(input).map(assetToArtifact);
 
   const mentioned = extractPathLikeArtifacts([
     input.summary,
@@ -784,7 +841,200 @@ function collectArtifacts(input: FocusUpsertInput): FocusArtifactRef[] {
     ...(input.completedMilestones ?? []),
   ].join("\n"), input.runId, input.runPath);
 
-  return mergeArtifacts(attachmentArtifacts, mentioned);
+  return mergeArtifacts(assetArtifacts, mentioned);
+}
+
+function collectFocusAssets(input: FocusUpsertInput): FocusAssetRef[] {
+  return [
+    ...(input.focusAssets ?? []).map((asset) => normalizeFocusAsset({
+      ...asset,
+      lastUsedRunId: input.runId,
+      lastUsedAt: input.createdAt,
+    })),
+    ...(input.activeAttachments ?? []).map((attachment) => {
+      const summary = attachment.summary;
+      const kind = summary?.mode === "structured_data" || attachment.mode === "structured_data" ? "dataset" : "document";
+      const restore = {
+        preparedInputId: attachment.preparedInputId,
+        documentId: attachment.documentId,
+        ...(summary?.artifactPath ? { manifestPath: summary.artifactPath } : {}),
+      };
+      return normalizeFocusAsset({
+        assetId: stableAssetId(kind, attachment.documentId || attachment.preparedInputId),
+        kind,
+        origin: "user_attached",
+        role: "input",
+        displayName: attachment.displayName,
+        documentId: attachment.documentId,
+        preparedInputId: attachment.preparedInputId,
+        manifest: attachment.manifest,
+        summary,
+        detail: attachment.detail,
+        restore,
+        sourceRunId: attachment.runId,
+        sourceRunPath: attachment.runPath,
+        lastUsedRunId: input.runId,
+        lastUsedAt: attachment.lastUsedAt || input.createdAt,
+      });
+    }),
+  ].filter((asset): asset is FocusAssetRef => asset !== null);
+}
+
+function normalizeFocusAsset(value: unknown): FocusAssetRef | null {
+  if (!isRecord(value)) {
+    return null;
+  }
+  const kind = readFocusAssetKind(value["kind"]);
+  const origin = readFocusAssetOrigin(value["origin"]);
+  const role = readFocusAssetRole(value["role"]);
+  const identity = readString(value["documentId"])
+    ?? readString(value["fileId"])
+    ?? readString(value["directoryId"])
+    ?? readString(value["path"])
+    ?? readString(value["uri"])
+    ?? readString(value["displayName"]);
+  const assetId = readString(value["assetId"]) ?? (identity ? stableAssetId(kind, identity) : undefined);
+  const sourceRunId = readString(value["sourceRunId"]) ?? readString(value["lastUsedRunId"]);
+  const sourceRunPath = readString(value["sourceRunPath"]) ?? "";
+  const lastUsedRunId = readString(value["lastUsedRunId"]) ?? sourceRunId;
+  const lastUsedAt = readString(value["lastUsedAt"]);
+  if (!assetId || !sourceRunId || !lastUsedRunId || !lastUsedAt) {
+    return null;
+  }
+  return {
+    assetId,
+    kind,
+    origin,
+    role,
+    ...(readString(value["displayName"]) ? { displayName: readString(value["displayName"]) } : {}),
+    ...(readString(value["path"]) ? { path: readString(value["path"]) } : {}),
+    ...(readString(value["uri"]) ? { uri: readString(value["uri"]) } : {}),
+    ...(readString(value["documentId"]) ? { documentId: readString(value["documentId"]) } : {}),
+    ...(readString(value["fileId"]) ? { fileId: readString(value["fileId"]) } : {}),
+    ...(readString(value["directoryId"]) ? { directoryId: readString(value["directoryId"]) } : {}),
+    ...(readString(value["preparedInputId"]) ? { preparedInputId: readString(value["preparedInputId"]) } : {}),
+    ...(isRecord(value["manifest"]) ? { manifest: value["manifest"] as unknown as FocusAssetRef["manifest"] } : {}),
+    ...(isRecord(value["summary"]) ? { summary: value["summary"] as unknown as FocusAssetRef["summary"] } : {}),
+    ...(isRecord(value["detail"]) ? { detail: value["detail"] as FocusAssetRef["detail"] } : {}),
+    ...(isRecord(value["restore"]) ? { restore: value["restore"] as FocusAssetRef["restore"] } : {}),
+    sourceRunId,
+    sourceRunPath,
+    lastUsedRunId,
+    lastUsedAt,
+    ...(isRecord(value["metadata"]) ? { metadata: value["metadata"] as Record<string, unknown> } : {}),
+  };
+}
+
+function mergeFocusAssets(left: FocusAssetRef[], right: FocusAssetRef[]): FocusAssetRef[] {
+  const output = new Map<string, FocusAssetRef>();
+  for (const asset of [...left, ...right]) {
+    const key = focusAssetKey(asset);
+    const previous = output.get(key);
+    output.set(key, previous ? {
+      ...previous,
+      ...asset,
+      origin: asset.origin === "unknown" ? previous.origin : asset.origin,
+      role: asset.role === "reference" ? previous.role : asset.role,
+      sourceRunId: previous.sourceRunId,
+      sourceRunPath: previous.sourceRunPath,
+      metadata: {
+        ...(previous.metadata ?? {}),
+        ...(asset.metadata ?? {}),
+      },
+    } : asset);
+  }
+  return [...output.values()];
+}
+
+function buildFocusRun(input: FocusUpsertInput, assets: FocusAssetRef[]): FocusRunRef {
+  return {
+    runId: input.runId,
+    runPath: input.runPath,
+    status: input.status,
+    ...(input.taskStatus ? { taskStatus: input.taskStatus } : {}),
+    ...(input.userMessage ? { userMessage: compactText(input.userMessage, 260) } : {}),
+    ...(input.assistantResponse ? { assistantResponse: compactText(input.assistantResponse, 360) } : {}),
+    summary: compactText(input.progressSummary || input.summary, 360),
+    toolsUsed: uniqueStrings(input.toolsUsed ?? []).slice(0, 12),
+    assetIds: uniqueStrings(assets.map((asset) => asset.assetId)).slice(0, 16),
+    createdAt: input.createdAt,
+  };
+}
+
+function appendFocusRun(previous: FocusRunRef[], run: FocusRunRef): FocusRunRef[] {
+  return [...previous.filter((item) => item.runId !== run.runId), run].slice(-16);
+}
+
+function buildCurrentState(
+  input: FocusUpsertInput,
+  previous: FocusCurrentState,
+  assets: FocusAssetRef[],
+): FocusCurrentState {
+  const previousNextStep = readString(previous["nextStep"]);
+  const verification = input.evidence?.[0] ?? input.progressSummary;
+  const replaceOpenState = input.taskStatus === "done"
+    || input.taskStatus === "likely_done"
+    || (input.openWork?.length ?? 0) > 0
+    || (input.blockers?.length ?? 0) > 0;
+  const openWork = replaceOpenState
+    ? compactList(input.openWork ?? [], 8, 220)
+    : compactList(readStringArray(previous["openWork"]), 8, 220);
+  const blockers = replaceOpenState
+    ? compactList(input.blockers ?? [], 6, 220)
+    : compactList(readStringArray(previous["blockers"]), 6, 220);
+  const changedFiles = uniqueStrings([
+    ...(readStringArray(previous["changedFiles"])),
+    ...assets
+      .filter((asset) => asset.kind === "file" || asset.kind === "website" || asset.kind === "directory")
+      .map((asset) => asset.path ?? asset.restore?.filePath ?? asset.restore?.directoryPath),
+  ]).slice(-24);
+  const workingDirectories = uniqueStrings([
+    ...(readStringArray(previous["workingDirectories"])),
+    ...assets
+      .filter((asset) => asset.kind === "directory")
+      .map((asset) => asset.path ?? asset.restore?.directoryPath),
+  ]).slice(-12);
+  return {
+    ...previous,
+    ...(input.objective?.trim() ? { goal: compactText(input.objective, 220) } : {}),
+    openWork,
+    blockers,
+    keyFacts: compactList([...(readStringArray(previous["keyFacts"])), ...(input.keyFacts ?? [])], 10, 220),
+    evidence: compactList([...(readStringArray(previous["evidence"])), ...(input.evidence ?? [])], 10, 220),
+    ...(input.nextAction?.trim() ? { nextStep: compactText(input.nextAction, 220) } : previousNextStep ? { nextStep: previousNextStep } : {}),
+    ...(changedFiles.length > 0 ? { changedFiles } : {}),
+    ...(workingDirectories.length > 0 ? { workingDirectories } : {}),
+    ...(verification?.trim()
+      ? { lastVerification: compactText(verification, 220) }
+      : {}),
+  };
+}
+
+function assetToArtifact(asset: FocusAssetRef): FocusArtifactRef {
+  return {
+    assetId: asset.assetId,
+    kind: artifactKindForAsset(asset),
+    ...(asset.path ? { path: asset.path } : {}),
+    ...(asset.uri ? { uri: asset.uri } : {}),
+    ...(asset.documentId ? { documentId: asset.documentId } : {}),
+    ...(asset.displayName ? { displayName: asset.displayName } : {}),
+    ...(asset.preparedInputId ? { preparedInputId: asset.preparedInputId } : {}),
+    ...(asset.restore?.manifestPath ? { manifestPath: asset.restore.manifestPath } : {}),
+    origin: asset.origin,
+    role: asset.role,
+    sourceRunId: asset.sourceRunId,
+    sourceRunPath: asset.sourceRunPath,
+    lastUsedAt: asset.lastUsedAt,
+  };
+}
+
+function artifactKindForAsset(asset: FocusAssetRef): FocusArtifactRef["kind"] {
+  if (asset.kind === "dataset") return "document";
+  if (asset.kind === "website") return "directory";
+  if (asset.kind === "file" || asset.kind === "directory" || asset.kind === "document" || asset.kind === "url" || asset.kind === "run") {
+    return asset.kind;
+  }
+  return "other";
 }
 
 function extractPathLikeArtifacts(text: string, runId: string, runPath: string): FocusArtifactRef[] {
@@ -804,7 +1054,7 @@ function mergeArtifacts(left: FocusArtifactRef[], right: FocusArtifactRef[]): Fo
   const seen = new Set<string>();
   const output: FocusArtifactRef[] = [];
   for (const artifact of [...left, ...right]) {
-    const key = artifact.path ?? artifact.documentId ?? artifact.displayName ?? artifact.uri;
+    const key = artifact.assetId ?? artifact.path ?? artifact.documentId ?? artifact.displayName ?? artifact.uri;
     if (!key || seen.has(key)) continue;
     seen.add(key);
     output.push(artifact);
@@ -823,8 +1073,10 @@ function toShelfItem(card: FocusCard, score: number, now: Date): FocusShelfItem 
     label: card.label,
     summary: card.shelfSummary,
     hints: card.entities.slice(0, 8),
-    topArtifacts: card.artifacts
-      .map((artifact) => artifact.path ?? artifact.displayName ?? artifact.documentId ?? artifact.uri ?? "")
+    topArtifacts: [
+      ...card.artifacts.map((artifact) => artifact.path ?? artifact.displayName ?? artifact.documentId ?? artifact.uri ?? ""),
+      ...card.assets.map((asset) => asset.path ?? asset.displayName ?? asset.documentId ?? asset.uri ?? ""),
+    ]
       .filter(Boolean)
       .slice(0, 5),
     openWork: card.openWork.slice(0, 5),
@@ -880,6 +1132,7 @@ function focusCardToUpsertInput(card: FocusCard): FocusUpsertInput {
   const latestArtifact = card.artifacts.find((artifact) => artifact.sourceRunPath);
   return {
     clientId: card.clientId,
+    focusId: card.focusId,
     runId: latestRunId,
     runPath: latestArtifact?.sourceRunPath ?? "",
     status: "completed",
@@ -893,20 +1146,24 @@ function focusCardToUpsertInput(card: FocusCard): FocusUpsertInput {
     evidence: card.verifiedFacts,
     nextAction: card.nextStep,
     entityHints: card.entities,
+    focusAssets: card.assets,
     attachmentNames: card.artifacts
       .map((artifact) => artifact.displayName ?? artifact.path ?? artifact.documentId)
       .filter((value): value is string => typeof value === "string" && value.trim().length > 0),
-    activeAttachments: card.artifacts
-      .filter((artifact) => artifact.kind === "document" && artifact.documentId && artifact.displayName && artifact.preparedInputId)
-      .map((artifact) => ({
-        documentId: artifact.documentId!,
-        displayName: artifact.displayName!,
-        kind: "document",
-        mode: "restored",
-        runId: artifact.sourceRunId ?? latestRunId,
-        runPath: artifact.sourceRunPath ?? "",
-        preparedInputId: artifact.preparedInputId!,
-        lastUsedAt: artifact.lastUsedAt ?? card.lastTouchedAt,
+    activeAttachments: card.assets
+      .filter((asset) => (asset.kind === "document" || asset.kind === "dataset") && asset.documentId && asset.displayName && asset.preparedInputId)
+      .map((asset) => ({
+        documentId: asset.documentId!,
+        displayName: asset.displayName!,
+        kind: asset.kind,
+        mode: asset.summary?.mode ?? "restored",
+        runId: asset.sourceRunId || latestRunId,
+        runPath: asset.sourceRunPath,
+        preparedInputId: asset.preparedInputId!,
+        lastUsedAt: asset.lastUsedAt || card.lastTouchedAt,
+        ...(asset.manifest ? { manifest: asset.manifest } : {}),
+        ...(asset.summary ? { summary: asset.summary } : {}),
+        ...(asset.detail ? { detail: asset.detail } : {}),
       })),
     createdAt: card.lastTouchedAt,
   };
@@ -942,6 +1199,19 @@ function searchableText(card: FocusCard): string {
     ...card.openWork,
     ...card.verifiedFacts,
     ...card.artifacts.map((artifact) => artifact.path ?? artifact.displayName ?? artifact.documentId ?? ""),
+    ...card.assets.flatMap((asset) => [
+      asset.displayName,
+      asset.path,
+      asset.uri,
+      asset.documentId,
+      asset.fileId,
+      asset.directoryId,
+      asset.preparedInputId,
+      asset.origin,
+      asset.role,
+    ]),
+    ...card.runs.map((run) => run.summary),
+    JSON.stringify(card.currentState),
   ].join("\n").toLowerCase();
 }
 
@@ -1012,8 +1282,119 @@ function parseJsonObject(value: string): Record<string, unknown> {
   }
 }
 
+function readFocusAssets(value: unknown): FocusAssetRef[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value
+    .map((item) => normalizeFocusAsset(item))
+    .filter((asset): asset is FocusAssetRef => asset !== null);
+}
+
+function readFocusRuns(value: unknown): FocusRunRef[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  const runs: FocusRunRef[] = [];
+  for (const item of value) {
+    if (!isRecord(item)) continue;
+    const runId = readString(item["runId"]);
+    const runPath = readString(item["runPath"]) ?? "";
+    const status = item["status"] === "failed" || item["status"] === "stuck" ? item["status"] : "completed";
+    const summary = readString(item["summary"]);
+    const createdAt = readString(item["createdAt"]);
+    if (!runId || !summary || !createdAt) continue;
+    runs.push({
+      runId,
+      runPath,
+      status,
+      ...(readString(item["taskStatus"]) ? { taskStatus: readString(item["taskStatus"]) } : {}),
+      ...(readString(item["userMessage"]) ? { userMessage: readString(item["userMessage"]) } : {}),
+      ...(readString(item["assistantResponse"]) ? { assistantResponse: readString(item["assistantResponse"]) } : {}),
+      summary,
+      toolsUsed: readStringArray(item["toolsUsed"]),
+      assetIds: readStringArray(item["assetIds"]),
+      createdAt,
+    });
+  }
+  return runs;
+}
+
+function readFocusCurrentState(value: unknown): FocusCurrentState {
+  return isRecord(value) ? value as FocusCurrentState : {};
+}
+
 function readStringArray(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
+}
+
+function readString(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === "object" && !Array.isArray(value));
+}
+
+function readFocusAssetKind(value: unknown): FocusAssetRef["kind"] {
+  switch (value) {
+    case "file":
+    case "directory":
+    case "document":
+    case "dataset":
+    case "website":
+    case "url":
+    case "run":
+    case "other":
+      return value;
+    default:
+      return "other";
+  }
+}
+
+function readFocusAssetOrigin(value: unknown): FocusAssetRef["origin"] {
+  switch (value) {
+    case "user_attached":
+    case "user_selected":
+    case "agent_generated":
+    case "agent_modified":
+    case "tool_result":
+    case "unknown":
+      return value;
+    default:
+      return "unknown";
+  }
+}
+
+function readFocusAssetRole(value: unknown): FocusAssetRef["role"] {
+  switch (value) {
+    case "input":
+    case "working_artifact":
+    case "output":
+    case "evidence":
+    case "reference":
+      return value;
+    default:
+      return "reference";
+  }
+}
+
+function focusAssetKey(asset: FocusAssetRef): string {
+  return asset.documentId
+    ? `document:${asset.documentId}`
+    : asset.fileId
+      ? `file:${asset.fileId}`
+      : asset.directoryId
+        ? `directory:${asset.directoryId}`
+        : asset.path
+          ? `${asset.kind}:${asset.path}`
+          : asset.uri
+            ? `uri:${asset.uri}`
+            : asset.assetId;
+}
+
+function stableAssetId(kind: string, identity: string): string {
+  return `asset_${createHash("sha256").update(`${kind}:${identity}`).digest("hex").slice(0, 20)}`;
 }
 
 function defaultImportance(type: FocusType): number {

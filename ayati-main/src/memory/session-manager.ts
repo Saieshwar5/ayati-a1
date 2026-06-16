@@ -16,6 +16,7 @@ import type {
   PromptMemoryContext,
   ConversationExchange,
   ConversationTurn,
+  ActiveAttachmentRef,
   ActiveAttachmentRecord,
   SessionLifecycleUpdateInput,
   SystemActivityItem,
@@ -31,7 +32,7 @@ import { SessionPersistence } from "./session-persistence.js";
 import type { ActiveSessionInfo, SessionPersistenceOptions } from "./session-persistence.js";
 import { SqliteSystemEventStore } from "./system-event-store.js";
 import { FocusStore } from "./focus/focus-store.js";
-import type { FocusUpsertInput } from "./focus/types.js";
+import type { FocusAssetRef, FocusCard, FocusUpsertInput } from "./focus/types.js";
 import { devWarn } from "../shared/index.js";
 
 const RECENT_EXCHANGE_LIMIT = 5;
@@ -253,8 +254,31 @@ export class MemoryManager implements SessionMemory {
     return;
   }
 
-  recordActiveAttachments(_clientId: string, _input: ActiveAttachmentsRecordInput): void {
-    return;
+  recordActiveAttachments(clientId: string, input: ActiveAttachmentsRecordInput): void {
+    const session = this.currentSession;
+    if (!session || session.clientId !== clientId) {
+      return;
+    }
+    const active = this.focusStore.getActiveFocus(clientId, session.sessionId, 1)[0];
+    if (!active) {
+      return;
+    }
+    this.focusStore.upsertSessionFromTaskSummary({
+      clientId,
+      focusId: active.focusId,
+      scope: active.scope,
+      sessionId: session.sessionId,
+      runId: input.runId,
+      runPath: input.runPath,
+      status: "completed",
+      objective: active.label,
+      summary: `Updated active assets for ${active.label}.`,
+      currentFocus: active.label,
+      focusAssets: input.attachments.map((attachment) => attachmentToFocusAsset(input, attachment, this.nowIso())),
+      attachmentNames: input.attachments.map((attachment) => attachment.summary.displayName),
+      toolsUsed: [],
+      createdAt: this.nowIso(),
+    });
   }
 
   recordTaskSummary(clientId: string, input: TaskSummaryRecordInput): void {
@@ -262,7 +286,12 @@ export class MemoryManager implements SessionMemory {
   }
 
   queueTaskSummary(clientId: string, input: TaskSummaryRecordInput): void {
-    if ((input.toolsUsed?.length ?? 0) === 0) {
+    if (
+      (input.toolsUsed?.length ?? 0) === 0
+      && !input.focusId
+      && (input.focusAssets?.length ?? 0) === 0
+      && (input.attachmentNames?.length ?? 0) === 0
+    ) {
       return;
     }
     this.focusStore.upsertSessionFromTaskSummary(taskSummaryToFocusInput(clientId, input, this.nowIso()));
@@ -302,12 +331,32 @@ export class MemoryManager implements SessionMemory {
       attentionShelf: this.focusStore.getGlobalShelf(clientId, 5),
       activeSessionPath: session?.sessionPath ?? "",
       recentTaskSummaries: [],
-      activeAttachments: [],
+      activeAttachments: this.getActiveAttachmentRecords().map(activeAttachmentRecordToRef),
     };
   }
 
   getActiveAttachmentRecords(): ActiveAttachmentRecord[] {
-    return [];
+    const session = this.currentSession;
+    if (!session) {
+      return [];
+    }
+    const cards = uniqueFocusCards([
+      ...this.focusStore.getActiveFocus(session.clientId, session.sessionId, 3)
+        .map((item) => this.focusStore.getFocus(item.focusId))
+        .filter((card): card is FocusCard => card !== null),
+      ...this.focusStore.listCards({
+        clientId: session.clientId,
+        scope: "session",
+        sessionId: session.sessionId,
+        limit: 10,
+      }),
+      ...this.focusStore.listCards({
+        clientId: session.clientId,
+        scope: "global",
+        limit: 10,
+      }).filter((card) => card.activeSessionId === session.sessionId),
+    ]);
+    return focusCardsToActiveAttachmentRecords(cards);
   }
 
   getSessionStatus(): SessionStatus | null {
@@ -615,9 +664,110 @@ function extractConversationTurns(events: SessionEvent[], fallbackSessionPath: s
   return turns;
 }
 
+function activeAttachmentRecordToRef(record: ActiveAttachmentRecord): ActiveAttachmentRef {
+  return {
+    documentId: record.documentId,
+    displayName: record.displayName,
+    kind: record.kind,
+    mode: record.mode,
+    runId: record.runId,
+    runPath: record.runPath,
+    preparedInputId: record.preparedInputId,
+    lastUsedAt: record.lastUsedAt,
+    lastAction: record.lastAction,
+  };
+}
+
+function attachmentToFocusAsset(
+  input: ActiveAttachmentsRecordInput,
+  attachment: ActiveAttachmentsRecordInput["attachments"][number],
+  nowIso: string,
+): FocusAssetRef {
+  const kind = attachment.summary.mode === "structured_data" ? "dataset" : "document";
+  return {
+    assetId: `asset_${attachment.summary.documentId}`,
+    kind,
+    origin: "user_attached",
+    role: "input",
+    displayName: attachment.summary.displayName,
+    documentId: attachment.summary.documentId,
+    preparedInputId: attachment.summary.preparedInputId,
+    manifest: attachment.manifest,
+    summary: attachment.summary,
+    detail: attachment.detail ?? {},
+    restore: {
+      documentId: attachment.summary.documentId,
+      preparedInputId: attachment.summary.preparedInputId,
+      manifestPath: attachment.summary.artifactPath,
+    },
+    sourceRunId: input.runId,
+    sourceRunPath: input.runPath,
+    lastUsedRunId: input.runId,
+    lastUsedAt: nowIso,
+    metadata: {
+      sessionId: input.sessionId,
+      action: input.action,
+    },
+  };
+}
+
+function uniqueFocusCards(cards: FocusCard[]): FocusCard[] {
+  const seen = new Set<string>();
+  const output: FocusCard[] = [];
+  for (const card of cards) {
+    if (seen.has(card.focusId)) {
+      continue;
+    }
+    seen.add(card.focusId);
+    output.push(card);
+  }
+  return output;
+}
+
+function focusCardsToActiveAttachmentRecords(cards: FocusCard[]): ActiveAttachmentRecord[] {
+  const records = new Map<string, ActiveAttachmentRecord>();
+  for (const card of cards) {
+    for (const asset of card.assets) {
+      if ((asset.kind !== "document" && asset.kind !== "dataset") || !asset.manifest || !asset.summary) {
+        continue;
+      }
+      const key = asset.documentId ?? asset.summary.documentId;
+      records.set(key, {
+        documentId: asset.summary.documentId,
+        displayName: asset.summary.displayName,
+        kind: asset.summary.kind,
+        mode: asset.summary.mode,
+        runId: asset.lastUsedRunId || asset.sourceRunId,
+        runPath: asset.sourceRunPath,
+        preparedInputId: asset.summary.preparedInputId,
+        lastUsedAt: asset.lastUsedAt,
+        lastAction: String(asset.metadata?.["action"] ?? "focus_asset"),
+        manifest: asset.manifest,
+        summary: asset.summary,
+        detail: normalizeAssetDetail(asset.detail),
+      });
+    }
+  }
+  return [...records.values()]
+    .sort((left, right) => right.lastUsedAt.localeCompare(left.lastUsedAt));
+}
+
+function normalizeAssetDetail(detail: FocusAssetRef["detail"]): Record<string, unknown> {
+  if (!detail || typeof detail !== "object" || Array.isArray(detail)) {
+    return {};
+  }
+  const record = detail as Record<string, unknown>;
+  const payload = record["payload"];
+  if (payload && typeof payload === "object" && !Array.isArray(payload)) {
+    return payload as Record<string, unknown>;
+  }
+  return record;
+}
+
 function taskSummaryToFocusInput(clientId: string, input: TaskSummaryRecordInput, createdAt: string): FocusUpsertInput & { sessionId: string } {
   return {
     clientId,
+    focusId: input.focusId,
     scope: "session",
     sessionId: input.sessionId,
     runId: input.runId,
@@ -641,6 +791,7 @@ function taskSummaryToFocusInput(clientId: string, input: TaskSummaryRecordInput
     toolsUsed: input.toolsUsed,
     nextAction: input.nextAction,
     attachmentNames: input.attachmentNames,
+    focusAssets: input.focusAssets,
     createdAt,
   };
 }
