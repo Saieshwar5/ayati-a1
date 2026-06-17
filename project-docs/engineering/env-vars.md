@@ -33,6 +33,15 @@ AYATI_DOCUMENT_EMBED_BATCH_SIZE=32
 AYATI_DOCUMENT_VECTOR_MIN_CHUNKS=40
 ```
 
+Document extraction:
+
+```env
+TIKA_BIN=tika
+TIKA_JAR_PATH=
+PANDOC_BIN=pandoc
+PDFTOTEXT_BIN=pdftotext
+```
+
 Python tool:
 
 ```env

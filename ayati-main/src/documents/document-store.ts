@@ -4,6 +4,7 @@ import { basename, join, relative, resolve, sep } from "node:path";
 import { buildSourceChunks } from "../subagents/context-extractor/chunk-builder.js";
 import type { SourceChunk } from "../subagents/context-extractor/types.js";
 import { extractTextWithPandoc } from "./cli/pandoc-cli.js";
+import { extractTextWithPdfToText } from "./cli/pdftotext-cli.js";
 import { extractTextWithTika } from "./cli/tika-cli.js";
 import { inferKindFromNameOrMime, inferKindFromPath, sanitizeFileName } from "./document-ingress.js";
 import type {
@@ -49,7 +50,7 @@ export interface DocumentStoreOptions {
   maxChunkTokens?: number;
 }
 
-type ExtractionStrategy = "tika" | "pandoc" | "direct";
+type ExtractionStrategy = "tika" | "pdftotext" | "pandoc" | "direct";
 
 const PREPARED_VERSION = 1;
 const DEFAULT_MAX_CHUNK_TOKENS = 700;
@@ -177,6 +178,8 @@ export class DocumentStore {
     switch (strategy) {
       case "tika":
         return extractTextWithTika({ filePath: manifest.storedPath });
+      case "pdftotext":
+        return extractTextWithPdfToText({ filePath: manifest.storedPath });
       case "pandoc":
         return extractTextWithPandoc({ filePath: manifest.storedPath, to: "gfm" });
       case "direct":
@@ -284,6 +287,8 @@ function selectExtractionStrategies(kind: DocumentKind, preferCli: boolean): Ext
 
   switch (kind) {
     case "pdf":
+      preferred.push("tika", "pdftotext");
+      break;
     case "pptx":
     case "xlsx":
       preferred.push("tika");
@@ -313,7 +318,7 @@ function selectExtractionStrategies(kind: DocumentKind, preferCli: boolean): Ext
 function buildProcessedDocument(
   manifest: ManagedDocumentManifest,
   extractedText: string,
-  extractorUsed: "tika" | "pandoc" | "direct",
+  extractorUsed: ExtractionStrategy,
 ): ProcessedDocument {
   const normalized = normalizeExtractedText(extractedText);
   const segments = extractorUsed === "pandoc"

@@ -10,6 +10,7 @@
     "dev": "nodemon --watch src --ext ts --exec \"pnpm build && pnpm start\"",
     "doctor": "pnpm build && node --env-file=../.env dist/doctor.js",
     "bench:agent": "pnpm build && node dist/benchmarks/agent-benchmark-runner.js",
+    "bench:file": "pnpm build && node dist/benchmarks/agent-benchmark-runner.js --category file_handling",
     "test": "vitest run",
     "test:watch": "vitest"
   },

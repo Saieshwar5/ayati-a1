@@ -1,23 +1,38 @@
+import { createHash } from "node:crypto";
 import { cp, mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { LlmProvider } from "../core/contracts/provider.js";
-import type { LlmTokenUsage } from "../core/contracts/llm-protocol.js";
+import type { LlmTurnInput, LlmTokenUsage } from "../core/contracts/llm-protocol.js";
+import { DocumentContextBackend } from "../documents/document-context-backend.js";
+import { DocumentStore, type PreparedManagedDocument } from "../documents/document-store.js";
+import { PreparedAttachmentRegistry } from "../documents/prepared-attachment-registry.js";
+import { PreparedAttachmentService } from "../documents/prepared-attachment-service.js";
+import type { ManagedDocumentManifest } from "../documents/types.js";
 import { agentLoop } from "../ivec/agent-loop.js";
 import { noopSessionMemory } from "../memory/provider.js";
+import { estimateTextTokens } from "../prompt/token-estimator.js";
+import { createDocumentSkill } from "../skills/builtins/documents/index.js";
 import filesystemSkill from "../skills/builtins/filesystem/index.js";
 import shellSkill from "../skills/builtins/shell/index.js";
 import { createToolExecutor } from "../skills/tool-executor.js";
 import type { ToolDefinition } from "../skills/types.js";
 
 type BenchmarkTier = "smoke" | "multistep" | "context_heavy" | "continuation" | "recovery";
-type BenchmarkCategory = "direct_reply" | "code_search" | "file_edit" | "coding" | "context" | "follow_up" | "recovery";
+type BenchmarkCategory = "direct_reply" | "code_search" | "file_edit" | "coding" | "context" | "follow_up" | "recovery" | "file_handling";
 type EstimatedRuntime = "short" | "medium" | "long";
 
 interface QueuedDecision {
   decision: unknown;
   usage?: Omit<LlmTokenUsage, "provider" | "model" | "exact">;
+}
+
+interface BenchmarkProviderStats {
+  totalCalls: number;
+  agentDecisionCalls: number;
+  retrievalEvidenceCalls: number;
+  retrievalEvidenceEstimatedTokens: number;
 }
 
 interface BenchmarkCheck {
@@ -76,6 +91,7 @@ interface BenchmarkRunSummary {
 
 interface BenchmarkRunContext {
   outputRoot: string;
+  pdfOptions: PdfBenchmarkOptions;
 }
 
 interface BenchmarkCase {
@@ -96,15 +112,26 @@ interface RunCaseInput {
   category: BenchmarkCategory;
   userMessage: string;
   providerResponses: QueuedDecision[];
-  tools: ToolDefinition[];
+  tools?: ToolDefinition[];
+  createTools?: (provider: LlmProvider) => ToolDefinition[];
   workspacePath?: string;
   snapshotWorkspace?: boolean;
+  attachedDocuments?: ManagedDocumentManifest[];
+  documentStore?: DocumentStore;
+  preparedAttachmentRegistry?: PreparedAttachmentRegistry;
   budgets?: BenchmarkBudget;
+  writeExtraReports?: (input: {
+    outputDir: string;
+    result: BenchmarkCaseResult;
+    metrics: Record<string, unknown>;
+    providerStats: BenchmarkProviderStats;
+  }) => Promise<void>;
   checks: (input: {
     result: Awaited<ReturnType<typeof agentLoop>>;
     metrics: Record<string, unknown>;
     outputDir: string;
     workspacePath?: string;
+    providerStats: BenchmarkProviderStats;
   }) => Promise<BenchmarkCheck[]>;
 }
 
@@ -113,7 +140,57 @@ interface CliOptions {
   caseId?: string;
   tier?: BenchmarkTier;
   category?: BenchmarkCategory;
+  pdfPaths: string[];
+  pdfDir?: string;
+  maxPdfs: number;
+  requirePdf: boolean;
   list: boolean;
+}
+
+interface PdfBenchmarkOptions {
+  pdfPaths: string[];
+  pdfDir?: string;
+  maxPdfs: number;
+  requirePdf: boolean;
+}
+
+interface PdfSource {
+  path: string;
+  displayName: string;
+  sizeBytes: number;
+  checksum: string;
+}
+
+interface PdfManifestEntry {
+  sourcePath: string;
+  benchmarkPath: string;
+  displayName: string;
+  sizeBytes: number;
+  checksum: string;
+  documentId?: string;
+  preparedInputId?: string;
+}
+
+interface DocumentPreparationReport {
+  documentId: string;
+  displayName: string;
+  sizeBytes: number;
+  checksum: string;
+  status: "ready" | "failed";
+  latencyMs: number;
+  extractorUsed?: string;
+  sectionCount?: number;
+  chunkCount?: number;
+  warnings: string[];
+  error?: string;
+}
+
+interface PdfBenchmarkFixture {
+  workspacePath: string;
+  documentStore: BenchmarkDocumentStore;
+  preparedAttachmentRegistry: PreparedAttachmentRegistry;
+  attachedDocuments: ManagedDocumentManifest[];
+  pdfManifest: PdfManifestEntry[];
 }
 
 interface StepTraceEntry {
@@ -132,15 +209,61 @@ interface StepTraceEntry {
 const BENCHMARK_MODEL = "benchmark/mock-decision";
 const ALL_TOOLS = [...filesystemSkill.tools, ...shellSkill.tools];
 
+class BenchmarkDocumentStore extends DocumentStore {
+  readonly preparationReports: DocumentPreparationReport[] = [];
+
+  override async prepareDocument(manifest: ManagedDocumentManifest): Promise<PreparedManagedDocument> {
+    const startedAt = Date.now();
+    try {
+      const prepared = await super.prepareDocument(manifest);
+      this.preparationReports.push({
+        documentId: manifest.documentId,
+        displayName: manifest.displayName,
+        sizeBytes: manifest.sizeBytes,
+        checksum: manifest.checksum,
+        status: "ready",
+        latencyMs: Date.now() - startedAt,
+        extractorUsed: prepared.extractorUsed,
+        sectionCount: prepared.document.segments.length,
+        chunkCount: prepared.chunks.length,
+        warnings: [...prepared.document.warnings],
+      });
+      return prepared;
+    } catch (err) {
+      this.preparationReports.push({
+        documentId: manifest.documentId,
+        displayName: manifest.displayName,
+        sizeBytes: manifest.sizeBytes,
+        checksum: manifest.checksum,
+        status: "failed",
+        latencyMs: Date.now() - startedAt,
+        warnings: [],
+        error: err instanceof Error ? err.message : String(err),
+      });
+      throw err;
+    }
+  }
+}
+
 export async function runAgentHarnessBenchmarks(options: {
   outputRoot?: string;
   caseId?: string;
   tier?: BenchmarkTier;
   category?: BenchmarkCategory;
+  pdfPaths?: string[];
+  pdfDir?: string;
+  maxPdfs?: number;
+  requirePdf?: boolean;
 } = {}): Promise<BenchmarkRunSummary> {
   const startedAt = new Date();
   const outputRoot = options.outputRoot ?? resolve("data", "benchmarks", "agent-harness", toRunStamp(startedAt));
   await mkdir(outputRoot, { recursive: true });
+  const pdfOptions: PdfBenchmarkOptions = {
+    pdfPaths: options.pdfPaths ?? [],
+    ...(options.pdfDir ? { pdfDir: options.pdfDir } : {}),
+    maxPdfs: Math.max(1, options.maxPdfs ?? 2),
+    requirePdf: options.requirePdf === true,
+  };
 
   const cases = filterCases(buildCases(), options);
   if (cases.length === 0) {
@@ -149,7 +272,7 @@ export async function runAgentHarnessBenchmarks(options: {
 
   const results: BenchmarkCaseResult[] = [];
   for (const benchmarkCase of cases) {
-    results.push(await benchmarkCase.run({ outputRoot }));
+    results.push(await benchmarkCase.run({ outputRoot, pdfOptions }));
   }
 
   const totalLatencyMs = sum(results.map((result) => result.latencyMs));
@@ -183,6 +306,12 @@ function buildCases(): BenchmarkCase[] {
     directReplyBasicCase(),
     codeSearchContextPackCase(),
     smallFileEditCase(),
+    pdfPrepareSmokeCase(),
+    pdfQuerySingleDocumentCase(),
+    pdfSectionReadExactCase(),
+    pdfMultiDocumentCompareCase(),
+    pdfLargeContextBudgetCase(),
+    pdfBadFileRecoveryCase(),
     multistepBugfixSlugifyCase(),
     featureAddAverageHelperCase(),
     largeContextUpdateRelevantDocCase(),
@@ -360,6 +489,404 @@ function smallFileEditCase(): BenchmarkCase {
           ];
         },
       });
+    },
+  };
+}
+
+function pdfPrepareSmokeCase(): BenchmarkCase {
+  return {
+    id: "pdf_prepare_smoke",
+    title: "Prepare one PDF and list sections",
+    tier: "smoke",
+    category: "file_handling",
+    estimatedRuntime: "medium",
+    budgets: { maxLlmCalls: 2, maxToolCalls: 1, maxTotalTokens: 8_000 },
+    async run(context) {
+      return runPdfBenchmarkCase(context, {
+        caseId: "pdf_prepare_smoke",
+        title: "Prepare one PDF and list sections",
+        requiredPdfCount: 1,
+        userMessage: "List the available sections in the attached PDF.",
+        providerResponses: () => [
+          {
+            decision: {
+              kind: "act",
+              action: {
+                mode: "single",
+                calls: [{
+                  id: "list_pdf_sections",
+                  tool: "document_list_sections",
+                  input: {},
+                  dependsOn: [],
+                  purpose: "List sections from the attached PDF",
+                }],
+                allowedTools: ["document_list_sections"],
+                maxCalls: 1,
+              },
+            },
+            usage: { inputTokens: 2500, outputTokens: 170, totalTokens: 2670 },
+          },
+          {
+            decision: {
+              kind: "reply",
+              status: "completed",
+              message: "Listed the attached PDF sections and confirmed the document was prepared.",
+            },
+            usage: { inputTokens: 3200, outputTokens: 45, totalTokens: 3245 },
+          },
+        ],
+        budgets: { maxLlmCalls: 2, maxToolCalls: 1, maxTotalTokens: 8_000 },
+        checks: async ({ result, metrics, fixture }) => [
+          check("completed", result.status === "completed", result.status),
+          check("one pdf attached", fixture.attachedDocuments.length === 1, String(fixture.attachedDocuments.length)),
+          check("document prepared", fixture.documentStore.preparationReports.some((entry) => entry.status === "ready")),
+          check("sections detected", maxPreparedSectionCount(fixture.documentStore.preparationReports) > 0, String(maxPreparedSectionCount(fixture.documentStore.preparationReports))),
+          check("section list tool used", readMetricNumber(metrics, ["stages", "tool:document_list_sections", "calls"]) === 1),
+        ],
+      });
+    },
+  };
+}
+
+function pdfQuerySingleDocumentCase(): BenchmarkCase {
+  return {
+    id: "pdf_query_single_document",
+    title: "Query one PDF with document retrieval",
+    tier: "smoke",
+    category: "file_handling",
+    estimatedRuntime: "medium",
+    budgets: { maxLlmCalls: 2, maxToolCalls: 1, maxTotalTokens: 10_000 },
+    async run(context) {
+      return runPdfBenchmarkCase(context, {
+        caseId: "pdf_query_single_document",
+        title: "Query one PDF with document retrieval",
+        requiredPdfCount: 1,
+        userMessage: "Summarize the main topic of the attached PDF and mention the document evidence you used.",
+        providerResponses: () => [
+          {
+            decision: {
+              kind: "act",
+              action: {
+                mode: "single",
+                calls: [{
+                  id: "query_pdf_summary",
+                  tool: "document_query",
+                  input: { query: "summarize overview main points" },
+                  dependsOn: [],
+                  purpose: "Retrieve summary evidence from the attached PDF",
+                }],
+                allowedTools: ["document_query"],
+                maxCalls: 1,
+              },
+            },
+            usage: { inputTokens: 3000, outputTokens: 190, totalTokens: 3190 },
+          },
+          {
+            decision: {
+              kind: "reply",
+              status: "completed",
+              message: "Summarized the attached PDF using retrieved document context and source evidence.",
+            },
+            usage: { inputTokens: 4200, outputTokens: 55, totalTokens: 4255 },
+          },
+        ],
+        budgets: { maxLlmCalls: 2, maxToolCalls: 1, maxTotalTokens: 10_000 },
+        checks: async ({ result, metrics, providerStats }) => [
+          check("completed", result.status === "completed", result.status),
+          check("query tool used", readMetricNumber(metrics, ["stages", "tool:document_query", "calls"]) === 1),
+          check("retrieval provider observed", providerStats.retrievalEvidenceCalls >= 1, String(providerStats.retrievalEvidenceCalls)),
+          check("document query returned context", await hasToolOutputContaining(result.runPath, "document_query", "context")),
+          check("final answer mentions document", /pdf|document/i.test(result.content), result.content),
+        ],
+      });
+    },
+  };
+}
+
+function pdfSectionReadExactCase(): BenchmarkCase {
+  return {
+    id: "pdf_section_read_exact",
+    title: "List and read exact PDF sections",
+    tier: "smoke",
+    category: "file_handling",
+    estimatedRuntime: "medium",
+    budgets: { maxLlmCalls: 3, maxToolCalls: 2, maxTotalTokens: 12_000 },
+    async run(context) {
+      return runPdfBenchmarkCase(context, {
+        caseId: "pdf_section_read_exact",
+        title: "List and read exact PDF sections",
+        requiredPdfCount: 1,
+        userMessage: "Find the first readable section in the attached PDF, read it, and explain what it says.",
+        providerResponses: () => [
+          {
+            decision: {
+              kind: "act",
+              action: {
+                mode: "sequential",
+                calls: [
+                  {
+                    id: "list_pdf_sections",
+                    tool: "document_list_sections",
+                    input: {},
+                    dependsOn: [],
+                    purpose: "Find readable section handles",
+                  },
+                  {
+                    id: "read_first_pdf_section",
+                    tool: "document_read_section",
+                    input: { sectionIds: ["segment-1", "page-1"] },
+                    dependsOn: ["list_pdf_sections"],
+                    purpose: "Read the first section or first page",
+                  },
+                ],
+                allowedTools: ["document_list_sections", "document_read_section"],
+                maxCalls: 2,
+              },
+            },
+            usage: { inputTokens: 3400, outputTokens: 260, totalTokens: 3660 },
+          },
+          {
+            decision: {
+              kind: "reply",
+              status: "completed",
+              message: "Read the first available PDF section and summarized its contents.",
+            },
+            usage: { inputTokens: 4700, outputTokens: 55, totalTokens: 4755 },
+          },
+        ],
+        budgets: { maxLlmCalls: 3, maxToolCalls: 2, maxTotalTokens: 12_000 },
+        checks: async ({ result, metrics }) => [
+          check("completed", result.status === "completed", result.status),
+          check("section list used", readMetricNumber(metrics, ["stages", "tool:document_list_sections", "calls"]) === 1),
+          check("section read used", readMetricNumber(metrics, ["stages", "tool:document_read_section", "calls"]) === 1),
+          check("section text returned", await hasToolOutputContaining(result.runPath, "document_read_section", "\"sections\"")),
+          check("final answer mentions section", /section|page|contents/i.test(result.content), result.content),
+        ],
+      });
+    },
+  };
+}
+
+function pdfMultiDocumentCompareCase(): BenchmarkCase {
+  return {
+    id: "pdf_multi_document_compare",
+    title: "Compare two attached PDFs",
+    tier: "context_heavy",
+    category: "file_handling",
+    estimatedRuntime: "long",
+    budgets: { maxLlmCalls: 3, maxToolCalls: 2, maxTotalTokens: 16_000 },
+    async run(context) {
+      return runPdfBenchmarkCase(context, {
+        caseId: "pdf_multi_document_compare",
+        title: "Compare two attached PDFs",
+        tier: "context_heavy",
+        requiredPdfCount: 2,
+        userMessage: "Compare the two attached PDFs. What is each document mainly about, and how are they different?",
+        providerResponses: ({ fixture }) => {
+          const first = preparedInputIdForDocument(fixture.attachedDocuments[0]!, 0);
+          const second = preparedInputIdForDocument(fixture.attachedDocuments[1]!, 1);
+          return [
+            {
+              decision: {
+                kind: "act",
+                action: {
+                  mode: "parallel",
+                  calls: [
+                    {
+                      id: "query_first_pdf",
+                      tool: "document_query",
+                      input: { preparedInputId: first, query: "summarize overview main points" },
+                      dependsOn: [],
+                      purpose: "Summarize the first PDF",
+                    },
+                    {
+                      id: "query_second_pdf",
+                      tool: "document_query",
+                      input: { preparedInputId: second, query: "summarize overview main points" },
+                      dependsOn: [],
+                      purpose: "Summarize the second PDF",
+                    },
+                  ],
+                  allowedTools: ["document_query"],
+                  maxCalls: 2,
+                },
+              },
+              usage: { inputTokens: 4600, outputTokens: 380, totalTokens: 4980 },
+            },
+            {
+              decision: {
+                kind: "reply",
+                status: "completed",
+                message: "Compared both attached PDFs using separate retrieved context for each document.",
+              },
+              usage: { inputTokens: 6500, outputTokens: 80, totalTokens: 6580 },
+            },
+          ];
+        },
+        budgets: { maxLlmCalls: 3, maxToolCalls: 2, maxTotalTokens: 16_000 },
+        checks: async ({ result, metrics, fixture }) => [
+          check("completed", result.status === "completed", result.status),
+          check("two pdfs attached", fixture.attachedDocuments.length === 2, String(fixture.attachedDocuments.length)),
+          check("two document queries", readMetricNumber(metrics, ["stages", "tool:document_query", "calls"]) === 2),
+          check("first document targeted", await hasToolOutputContaining(result.runPath, "document_query", fixture.attachedDocuments[0]!.displayName)),
+          check("second document targeted", await hasToolOutputContaining(result.runPath, "document_query", fixture.attachedDocuments[1]!.displayName)),
+          check("final answer compares", /compar/i.test(result.content), result.content),
+        ],
+      });
+    },
+  };
+}
+
+function pdfLargeContextBudgetCase(): BenchmarkCase {
+  return {
+    id: "pdf_large_context_budget",
+    title: "Summarize the largest available PDF within context budget",
+    tier: "context_heavy",
+    category: "file_handling",
+    estimatedRuntime: "long",
+    budgets: { maxLlmCalls: 2, maxToolCalls: 1, maxTotalTokens: 14_000 },
+    async run(context) {
+      return runPdfBenchmarkCase(context, {
+        caseId: "pdf_large_context_budget",
+        title: "Summarize the largest available PDF within context budget",
+        requiredPdfCount: 1,
+        preferLargest: true,
+        userMessage: "Give a concise summary of the attached PDF. Focus only on the most important ideas.",
+        providerResponses: () => [
+          {
+            decision: {
+              kind: "act",
+              action: {
+                mode: "single",
+                calls: [{
+                  id: "query_large_pdf",
+                  tool: "document_query",
+                  input: { query: "summarize overview main points" },
+                  dependsOn: [],
+                  purpose: "Retrieve bounded context from the large PDF",
+                }],
+                allowedTools: ["document_query"],
+                maxCalls: 1,
+              },
+            },
+            usage: { inputTokens: 4200, outputTokens: 210, totalTokens: 4410 },
+          },
+          {
+            decision: {
+              kind: "reply",
+              status: "completed",
+              message: "Produced a concise summary from bounded retrieved PDF context.",
+            },
+            usage: { inputTokens: 5600, outputTokens: 55, totalTokens: 5655 },
+          },
+        ],
+        budgets: { maxLlmCalls: 2, maxToolCalls: 1, maxTotalTokens: 14_000 },
+        checks: async ({ result, metrics, fixture }) => [
+          check("completed", result.status === "completed", result.status),
+          check("largest pdf selected", fixture.pdfManifest[0]?.sizeBytes === Math.max(...fixture.pdfManifest.map((entry) => entry.sizeBytes)), String(fixture.pdfManifest[0]?.sizeBytes ?? 0)),
+          check("query tool used", readMetricNumber(metrics, ["stages", "tool:document_query", "calls"]) === 1),
+          check("context growth recorded", readAgentDecisionContextGrowth(metrics).maxEstimatedTokens > 0),
+          check("final answer concise", result.content.length <= 240, String(result.content.length)),
+        ],
+      });
+    },
+  };
+}
+
+function pdfBadFileRecoveryCase(): BenchmarkCase {
+  return {
+    id: "pdf_bad_file_recovery",
+    title: "Record extraction failure for an invalid PDF",
+    tier: "recovery",
+    category: "file_handling",
+    estimatedRuntime: "short",
+    budgets: { maxLlmCalls: 0, maxToolCalls: 0, maxTotalTokens: 0 },
+    async run({ outputRoot }) {
+      const caseId = "pdf_bad_file_recovery";
+      const title = "Record extraction failure for an invalid PDF";
+      const outputDir = join(outputRoot, caseId);
+      await mkdir(outputDir, { recursive: true });
+      const workspacePath = await mkdtemp(join(tmpdir(), "ayati-bench-bad-pdf-"));
+      const badPdfPath = join(workspacePath, "invalid.pdf");
+      await writeFile(badPdfPath, "this is not a real pdf\n", "utf-8");
+      const fixture = await createPdfBenchmarkFixture({
+        caseId,
+        pdfSources: [await buildPdfSource(badPdfPath)],
+      });
+
+      try {
+        await runCase({
+          outputRoot,
+          caseId,
+          title,
+          tier: "recovery",
+          category: "file_handling",
+          userMessage: "Read the attached PDF and summarize it.",
+          providerResponses: [{
+            decision: {
+              kind: "act",
+              action: {
+                mode: "single",
+                calls: [{
+                  id: "query_invalid_pdf",
+                  tool: "document_query",
+                  input: { query: "summarize overview" },
+                  dependsOn: [],
+                  purpose: "Attempt to query the invalid PDF",
+                }],
+                allowedTools: ["document_query"],
+                maxCalls: 1,
+              },
+            },
+            usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 },
+          }],
+          workspacePath: fixture.workspacePath,
+          attachedDocuments: fixture.attachedDocuments,
+          documentStore: fixture.documentStore,
+          preparedAttachmentRegistry: fixture.preparedAttachmentRegistry,
+          createTools: (provider) => createPdfBenchmarkTools(fixture, provider),
+          checks: async () => [check("invalid pdf unexpectedly completed", false)],
+          writeExtraReports: async ({ metrics, providerStats }) => {
+            await writePdfReports(outputDir, fixture, metrics, providerStats);
+          },
+        });
+      } catch (err) {
+        const details = err instanceof Error ? err.message : String(err);
+        const result = buildSyntheticCaseResult({
+          caseId,
+          title,
+          tier: "recovery",
+          category: "file_handling",
+          outputDir,
+          workspacePath: fixture.workspacePath,
+          status: "failed",
+          success: true,
+          checks: [
+            check("invalid pdf preparation failed", /failed to prepare|pdf|tika|pandoc/i.test(details), details),
+            check("failure captured in benchmark report", true),
+          ],
+        });
+        await writeSyntheticCaseReports(outputDir, result, {
+          error: details,
+          documentPreparation: fixture.documentStore.preparationReports,
+        });
+        await writePdfReports(outputDir, fixture, {}, emptyProviderStats());
+        return result;
+      }
+
+      const result = buildSyntheticCaseResult({
+        caseId,
+        title,
+        tier: "recovery",
+        category: "file_handling",
+        outputDir,
+        workspacePath: fixture.workspacePath,
+        status: "completed",
+        success: false,
+        checks: [check("invalid pdf should fail preparation", false)],
+      });
+      await writeSyntheticCaseReports(outputDir, result, {});
+      return result;
     },
   };
 }
@@ -937,6 +1464,332 @@ function missingDirectoryRecoveryCase(): BenchmarkCase {
   };
 }
 
+interface PdfCaseInput {
+  caseId: string;
+  title: string;
+  tier?: BenchmarkTier;
+  requiredPdfCount: number;
+  preferLargest?: boolean;
+  userMessage: string;
+  budgets?: BenchmarkBudget;
+  providerResponses: (input: { fixture: PdfBenchmarkFixture }) => QueuedDecision[];
+  checks: (input: {
+    result: Awaited<ReturnType<typeof agentLoop>>;
+    metrics: Record<string, unknown>;
+    outputDir: string;
+    workspacePath?: string;
+    providerStats: BenchmarkProviderStats;
+    fixture: PdfBenchmarkFixture;
+  }) => Promise<BenchmarkCheck[]>;
+}
+
+async function runPdfBenchmarkCase(
+  context: BenchmarkRunContext,
+  input: PdfCaseInput,
+): Promise<BenchmarkCaseResult> {
+  const outputDir = join(context.outputRoot, input.caseId);
+  await mkdir(outputDir, { recursive: true });
+  const pdfSources = await selectPdfSources(context.pdfOptions, {
+    count: input.requiredPdfCount,
+    preferLargest: input.preferLargest === true,
+  });
+
+  if (pdfSources.length < input.requiredPdfCount) {
+    const message = `Needed ${input.requiredPdfCount} PDF(s), found ${pdfSources.length}. Use --pdf <path> or --pdf-dir <dir>.`;
+    if (context.pdfOptions.requirePdf) {
+      throw new Error(message);
+    }
+    const result = buildSyntheticCaseResult({
+      caseId: input.caseId,
+      title: input.title,
+      tier: pdfCaseTier(input),
+      category: "file_handling",
+      outputDir,
+      status: "skipped",
+      success: true,
+      checks: [check("skipped because pdf source is unavailable", true, message)],
+    });
+    await writeSyntheticCaseReports(outputDir, result, { skipped: true, reason: message });
+    return result;
+  }
+
+  const fixture = await createPdfBenchmarkFixture({
+    caseId: input.caseId,
+    pdfSources,
+  });
+
+  try {
+    return await runCase({
+      outputRoot: context.outputRoot,
+      caseId: input.caseId,
+      title: input.title,
+      tier: pdfCaseTier(input),
+      category: "file_handling",
+      userMessage: input.userMessage,
+      workspacePath: fixture.workspacePath,
+      attachedDocuments: fixture.attachedDocuments,
+      documentStore: fixture.documentStore,
+      preparedAttachmentRegistry: fixture.preparedAttachmentRegistry,
+      providerResponses: input.providerResponses({ fixture }),
+      createTools: (provider) => createPdfBenchmarkTools(fixture, provider),
+      budgets: input.budgets,
+      checks: async (checkInput) => input.checks({ ...checkInput, fixture }),
+      writeExtraReports: async ({ metrics, providerStats }) => {
+        await writePdfReports(outputDir, fixture, metrics, providerStats);
+      },
+    });
+  } catch (err) {
+    const details = err instanceof Error ? err.message : String(err);
+    const result = buildSyntheticCaseResult({
+      caseId: input.caseId,
+      title: input.title,
+      tier: pdfCaseTier(input),
+      category: "file_handling",
+      outputDir,
+      workspacePath: fixture.workspacePath,
+      status: "failed",
+      success: false,
+      checks: [
+        check("agent loop completed", false, details),
+        check("document preparation attempted", fixture.documentStore.preparationReports.length > 0, String(fixture.documentStore.preparationReports.length)),
+      ],
+    });
+    await writeSyntheticCaseReports(outputDir, result, {
+      error: details,
+      documentPreparation: fixture.documentStore.preparationReports,
+    });
+    await writePdfReports(outputDir, fixture, {}, emptyProviderStats());
+    return result;
+  }
+}
+
+function pdfCaseTier(input: PdfCaseInput): BenchmarkTier {
+  return input.tier ?? (input.preferLargest ? "context_heavy" : "smoke");
+}
+
+function createPdfBenchmarkTools(fixture: PdfBenchmarkFixture, provider: LlmProvider): ToolDefinition[] {
+  const documentContextBackend = new DocumentContextBackend({
+    store: fixture.documentStore,
+    maxRetrievedChunks: 6,
+    maxEvidenceItems: 4,
+  });
+  const preparedAttachmentService = new PreparedAttachmentService({
+    registry: fixture.preparedAttachmentRegistry,
+    documentStore: fixture.documentStore,
+    provider,
+    documentContextBackend,
+  });
+  return createDocumentSkill({ preparedAttachmentService }).tools;
+}
+
+async function selectPdfSources(options: PdfBenchmarkOptions, input: {
+  count: number;
+  preferLargest: boolean;
+}): Promise<PdfSource[]> {
+  const effectiveCount = Math.min(input.count, options.maxPdfs);
+  if (effectiveCount <= 0) {
+    return [];
+  }
+  const explicit = await Promise.all(options.pdfPaths.map((path) => buildPdfSource(expandHomePath(path))));
+  const discovered = explicit.length >= effectiveCount
+    ? []
+    : await discoverPdfSources(options.pdfDir ? expandHomePath(options.pdfDir) : join(homedir(), "Downloads"));
+  const byPath = new Map<string, PdfSource>();
+  for (const source of [...explicit, ...discovered]) {
+    if (source.path.toLowerCase().endsWith(".pdf")) {
+      byPath.set(source.path, source);
+    }
+  }
+  const sorted = [...byPath.values()].sort((left, right) => {
+    if (input.preferLargest) {
+      return right.sizeBytes - left.sizeBytes || left.displayName.localeCompare(right.displayName);
+    }
+    return left.sizeBytes - right.sizeBytes || left.displayName.localeCompare(right.displayName);
+  });
+  return sorted.slice(0, effectiveCount);
+}
+
+async function discoverPdfSources(pdfDir: string): Promise<PdfSource[]> {
+  try {
+    const entries = await readdir(pdfDir, { withFileTypes: true });
+    const sources: PdfSource[] = [];
+    for (const entry of entries) {
+      if (!entry.isFile() || !entry.name.toLowerCase().endsWith(".pdf")) {
+        continue;
+      }
+      sources.push(await buildPdfSource(join(pdfDir, entry.name)));
+    }
+    return sources;
+  } catch {
+    return [];
+  }
+}
+
+async function buildPdfSource(pdfPath: string): Promise<PdfSource> {
+  const absolutePath = resolve(expandHomePath(pdfPath));
+  const info = await stat(absolutePath);
+  if (!info.isFile()) {
+    throw new Error(`PDF path is not a file: ${absolutePath}`);
+  }
+  if (info.size === 0) {
+    throw new Error(`PDF path is empty: ${absolutePath}`);
+  }
+  return {
+    path: absolutePath,
+    displayName: basename(absolutePath),
+    sizeBytes: info.size,
+    checksum: await hashFile(absolutePath),
+  };
+}
+
+async function createPdfBenchmarkFixture(input: {
+  caseId: string;
+  pdfSources: PdfSource[];
+}): Promise<PdfBenchmarkFixture> {
+  const workspacePath = await mkdtemp(join(tmpdir(), `ayati-bench-${input.caseId}-`));
+  const pdfDir = join(workspacePath, "pdfs");
+  await mkdir(pdfDir, { recursive: true });
+  const pdfManifest: PdfManifestEntry[] = [];
+  const attachmentInputs: Array<{ path: string; name: string }> = [];
+
+  for (const [index, source] of input.pdfSources.entries()) {
+    const safeName = sanitizeBenchmarkFileName(`${index + 1}-${source.displayName}`);
+    const benchmarkPath = join(pdfDir, safeName);
+    await cp(source.path, benchmarkPath);
+    pdfManifest.push({
+      sourcePath: source.path,
+      benchmarkPath,
+      displayName: source.displayName,
+      sizeBytes: source.sizeBytes,
+      checksum: source.checksum,
+    });
+    attachmentInputs.push({ path: benchmarkPath, name: source.displayName });
+  }
+
+  const documentStore = new BenchmarkDocumentStore({
+    dataDir: join(workspacePath, "data", "documents"),
+  });
+  const registered = await documentStore.registerAttachments(attachmentInputs);
+  const preparedAttachmentRegistry = new PreparedAttachmentRegistry();
+  const attachedDocuments = registered.documents;
+  for (const entry of pdfManifest) {
+    const matchedIndex = attachedDocuments.findIndex((document) => document.displayName === entry.displayName && document.sizeBytes === entry.sizeBytes);
+    const matched = matchedIndex >= 0 ? attachedDocuments[matchedIndex] : undefined;
+    if (matched && matchedIndex >= 0) {
+      entry.documentId = matched.documentId;
+      entry.preparedInputId = preparedInputIdForDocument(matched, matchedIndex);
+    }
+  }
+
+  return {
+    workspacePath,
+    documentStore,
+    preparedAttachmentRegistry,
+    attachedDocuments,
+    pdfManifest,
+  };
+}
+
+async function writePdfReports(
+  outputDir: string,
+  fixture: PdfBenchmarkFixture,
+  metrics: Record<string, unknown>,
+  providerStats: BenchmarkProviderStats,
+): Promise<void> {
+  const attachmentRecords = fixture.preparedAttachmentRegistry.getRunAttachments(basename(outputDir));
+  const preparedByDocumentId = new Map(attachmentRecords.map((record) => [record.manifest.documentId, record.summary]));
+  const pdfManifest = fixture.pdfManifest.map((entry) => {
+    const summary = entry.documentId ? preparedByDocumentId.get(entry.documentId) : undefined;
+    return {
+      ...entry,
+      ...(summary ? {
+        preparedInputId: summary.preparedInputId,
+        status: summary.status,
+        mode: summary.mode,
+        extractorUsed: summary.unstructured?.extractorUsed,
+        sectionCount: summary.unstructured?.sectionCount,
+        chunkCount: summary.unstructured?.chunkCount,
+        warnings: summary.warnings,
+      } : {}),
+    };
+  });
+  const documentToolCalls = {
+    listSections: readMetricNumber(metrics, ["stages", "tool:document_list_sections", "calls"]),
+    readSection: readMetricNumber(metrics, ["stages", "tool:document_read_section", "calls"]),
+    query: readMetricNumber(metrics, ["stages", "tool:document_query", "calls"]),
+  };
+  const summary = {
+    documents: pdfManifest,
+    preparation: fixture.documentStore.preparationReports,
+    documentToolCalls,
+    providerStats,
+    promptMetrics: readRecord(metrics, ["optimization", "prompts", "agent_decision"]),
+    contextGrowth: readRecord(metrics, ["optimization", "contextGrowth", "agent_decision"]),
+    privacy: {
+      copiedIntoIgnoredWorkspace: true,
+      fullPdfTextStoredInReport: false,
+      sourcePathsRecordedForLocalDebugging: true,
+    },
+  };
+
+  await writeFile(join(outputDir, "pdf-manifest.json"), `${JSON.stringify(pdfManifest, null, 2)}\n`, "utf-8");
+  await writeFile(join(outputDir, "document-preparation.json"), `${JSON.stringify(fixture.documentStore.preparationReports, null, 2)}\n`, "utf-8");
+  await writeFile(join(outputDir, "document-tool-calls.json"), `${JSON.stringify(documentToolCalls, null, 2)}\n`, "utf-8");
+  await writeFile(join(outputDir, "file-handling-summary.json"), `${JSON.stringify(summary, null, 2)}\n`, "utf-8");
+}
+
+function buildSyntheticCaseResult(input: {
+  caseId: string;
+  title: string;
+  tier: BenchmarkTier;
+  category: BenchmarkCategory;
+  outputDir: string;
+  workspacePath?: string;
+  status: string;
+  success: boolean;
+  checks: BenchmarkCheck[];
+}): BenchmarkCaseResult {
+  return {
+    caseId: input.caseId,
+    title: input.title,
+    tier: input.tier,
+    category: input.category,
+    success: input.success && input.checks.every((entry) => entry.passed),
+    latencyMs: 0,
+    outputDir: input.outputDir,
+    runPath: input.outputDir,
+    ...(input.workspacePath ? { workspacePath: input.workspacePath } : {}),
+    status: input.status,
+    runClass: "task",
+    totalIterations: 0,
+    totalToolCalls: 0,
+    llmCalls: 0,
+    totalTokens: 0,
+    estimatedCostUsd: 0,
+    totalContextGrowthTokens: 0,
+    maxContextDeltaTokens: 0,
+    maxPromptEstimatedTokens: 0,
+    checks: input.checks,
+    budgetResults: [],
+    metrics: {},
+  };
+}
+
+async function writeSyntheticCaseReports(
+  outputDir: string,
+  result: BenchmarkCaseResult,
+  details: Record<string, unknown>,
+): Promise<void> {
+  await writeFile(join(outputDir, "benchmark-result.json"), `${JSON.stringify(result, null, 2)}\n`, "utf-8");
+  await writeFile(join(outputDir, "synthetic-result-details.json"), `${JSON.stringify(details, null, 2)}\n`, "utf-8");
+  await writeFile(join(outputDir, "step-trace.json"), `${JSON.stringify([], null, 2)}\n`, "utf-8");
+  await writeFile(join(outputDir, "step-trace.md"), renderStepTrace(result, []), "utf-8");
+  await writeFile(join(outputDir, "tool-calls.json"), "[]\n", "utf-8");
+  await writeFile(join(outputDir, "provider-usage.json"), "{}\n", "utf-8");
+  await writeFile(join(outputDir, "prompt-metrics.json"), "{}\n", "utf-8");
+  await writeFile(join(outputDir, "context-growth.json"), "{}\n", "utf-8");
+}
+
 async function runCase(input: RunCaseInput): Promise<BenchmarkCaseResult> {
   const outputDir = join(input.outputRoot, input.caseId);
   await mkdir(outputDir, { recursive: true });
@@ -944,8 +1797,10 @@ async function runCase(input: RunCaseInput): Promise<BenchmarkCaseResult> {
     await snapshotDirectory(input.workspacePath, join(outputDir, "fixture-before"));
   }
 
-  const provider = createBenchmarkProvider(input.providerResponses);
-  const toolExecutor = input.tools.length > 0 ? createToolExecutor(input.tools) : undefined;
+  const providerStats = emptyProviderStats();
+  const provider = createBenchmarkProvider(input.providerResponses, providerStats);
+  const tools = input.createTools ? input.createTools(provider) : input.tools ?? [];
+  const toolExecutor = tools.length > 0 ? createToolExecutor(tools) : undefined;
   const startedAt = Date.now();
   const result = await agentLoop({
     provider,
@@ -957,10 +1812,14 @@ async function runCase(input: RunCaseInput): Promise<BenchmarkCaseResult> {
     initialUserMessage: input.userMessage,
     dataDir: outputDir,
     systemContext: "Benchmark run. Follow the agent decision schema exactly.",
+    ...(input.attachedDocuments ? { attachedDocuments: input.attachedDocuments } : {}),
+    ...(input.documentStore ? { documentStore: input.documentStore } : {}),
+    ...(input.preparedAttachmentRegistry ? { preparedAttachmentRegistry: input.preparedAttachmentRegistry } : {}),
   });
   const latencyMs = Date.now() - startedAt;
   const metrics = await readOptimizationSummary(result.runPath);
-  const checks = await input.checks({ result, metrics, outputDir, workspacePath: input.workspacePath });
+  metrics["benchmarkProvider"] = providerStats;
+  const checks = await input.checks({ result, metrics, outputDir, workspacePath: input.workspacePath, providerStats });
   const llmCalls = readMetricNumber(metrics, ["llmCalls"]);
   const totalTokens = readMetricNumber(metrics, ["optimization", "providerUsage", "agent_decision", "totalTokens"]);
   const estimatedCostUsd = readMetricNumber(metrics, ["optimization", "providerUsage", "agent_decision", "estimatedCostUsd"]);
@@ -1001,10 +1860,11 @@ async function runCase(input: RunCaseInput): Promise<BenchmarkCaseResult> {
     await writeDiffPatch(join(outputDir, "fixture-before"), join(outputDir, "fixture-after"), join(outputDir, "diff.patch"));
   }
   await writeCaseReports(outputDir, caseResult, metrics, result.runPath);
+  await input.writeExtraReports?.({ outputDir, result: caseResult, metrics, providerStats });
   return caseResult;
 }
 
-function createBenchmarkProvider(responses: QueuedDecision[]): LlmProvider {
+function createBenchmarkProvider(responses: QueuedDecision[], stats: BenchmarkProviderStats): LlmProvider {
   const queue = [...responses];
   return {
     name: "benchmark",
@@ -1018,7 +1878,21 @@ function createBenchmarkProvider(responses: QueuedDecision[]): LlmProvider {
     },
     start() {},
     stop() {},
-    async generateTurn() {
+    async generateTurn(input: LlmTurnInput) {
+      stats.totalCalls++;
+      if (isRetrievalEvidencePrompt(input)) {
+        stats.retrievalEvidenceCalls++;
+        stats.retrievalEvidenceEstimatedTokens += estimateTextTokens(extractInputText(input));
+        return {
+          type: "assistant",
+          content: JSON.stringify({
+            items: [],
+            dropped_noise_count: 0,
+            insufficient_evidence: true,
+          }),
+        };
+      }
+      stats.agentDecisionCalls++;
       const next = queue.shift();
       if (!next) {
         throw new Error("Benchmark provider has no queued decision.");
@@ -1040,6 +1914,33 @@ function createBenchmarkProvider(responses: QueuedDecision[]): LlmProvider {
       };
     },
   };
+}
+
+function emptyProviderStats(): BenchmarkProviderStats {
+  return {
+    totalCalls: 0,
+    agentDecisionCalls: 0,
+    retrievalEvidenceCalls: 0,
+    retrievalEvidenceEstimatedTokens: 0,
+  };
+}
+
+function isRetrievalEvidencePrompt(input: LlmTurnInput): boolean {
+  return extractInputText(input).includes("You are a retrieval sub-agent.");
+}
+
+function extractInputText(input: LlmTurnInput): string {
+  return input.messages.map((message) => {
+    if (typeof message.content === "string") {
+      return message.content;
+    }
+    if (Array.isArray(message.content)) {
+      return message.content
+        .map((part) => part.type === "text" ? part.text : "")
+        .join("\n");
+    }
+    return "";
+  }).join("\n");
 }
 
 async function writeCaseReports(
@@ -1284,6 +2185,53 @@ function asyncCacheWithTtlSource(): string {
     "}",
     "",
   ].join("\n");
+}
+
+async function hashFile(path: string): Promise<string> {
+  const bytes = await readFile(path);
+  return createHash("sha256").update(bytes).digest("hex");
+}
+
+function expandHomePath(path: string): string {
+  if (path === "~") {
+    return homedir();
+  }
+  if (path.startsWith("~/")) {
+    return join(homedir(), path.slice(2));
+  }
+  return path;
+}
+
+function sanitizeBenchmarkFileName(value: string): string {
+  return value
+    .replace(/[/\\?%*:|"<>]/g, "-")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 180) || "attachment.pdf";
+}
+
+function preparedInputIdForDocument(document: ManagedDocumentManifest, index: number): string {
+  return `att_${index + 1}_${document.documentId.slice(0, 8)}`;
+}
+
+function maxPreparedSectionCount(reports: DocumentPreparationReport[]): number {
+  return reports.reduce((max, report) => Math.max(max, report.sectionCount ?? 0), 0);
+}
+
+async function hasToolOutputContaining(runPath: string, toolName: string, expectedText: string): Promise<boolean> {
+  try {
+    const stepsDir = join(runPath, "steps");
+    const files = (await readdir(stepsDir)).filter((file) => file.endsWith("-act.md"));
+    for (const file of files) {
+      const text = await readFile(join(stepsDir, file), "utf-8");
+      if (text.includes(toolName) && text.includes(expectedText)) {
+        return true;
+      }
+    }
+  } catch {
+    return false;
+  }
+  return false;
 }
 
 async function snapshotDirectory(source: string, destination: string): Promise<void> {
@@ -1541,7 +2489,7 @@ function filterCases(cases: BenchmarkCase[], options: {
 }
 
 function parseCliOptions(args: string[]): CliOptions {
-  const options: CliOptions = { list: false };
+  const options: CliOptions = { list: false, pdfPaths: [], maxPdfs: 2, requirePdf: false };
   for (let index = 0; index < args.length; index++) {
     const arg = args[index];
     if (!arg || arg === "--") {
@@ -1581,6 +2529,32 @@ function parseCliOptions(args: string[]): CliOptions {
       }
     } else if (arg.startsWith("--category=")) {
       options.category = arg.slice("--category=".length) as BenchmarkCategory;
+    } else if (arg === "--pdf") {
+      const value = args[index + 1];
+      if (value) {
+        options.pdfPaths.push(resolve(expandHomePath(value)));
+        index++;
+      }
+    } else if (arg.startsWith("--pdf=")) {
+      options.pdfPaths.push(resolve(expandHomePath(arg.slice("--pdf=".length))));
+    } else if (arg === "--pdf-dir") {
+      const value = args[index + 1];
+      if (value) {
+        options.pdfDir = resolve(expandHomePath(value));
+        index++;
+      }
+    } else if (arg.startsWith("--pdf-dir=")) {
+      options.pdfDir = resolve(expandHomePath(arg.slice("--pdf-dir=".length)));
+    } else if (arg === "--max-pdfs") {
+      const value = args[index + 1];
+      if (value) {
+        options.maxPdfs = parsePositiveInt(value, options.maxPdfs);
+        index++;
+      }
+    } else if (arg.startsWith("--max-pdfs=")) {
+      options.maxPdfs = parsePositiveInt(arg.slice("--max-pdfs=".length), options.maxPdfs);
+    } else if (arg === "--require-pdf") {
+      options.requirePdf = true;
     }
   }
   return options;
@@ -1610,6 +2584,11 @@ function truncate(value: string, maxChars: number): string {
   return `${compact.slice(0, Math.max(0, maxChars - 3)).trimEnd()}...`;
 }
 
+function parsePositiveInt(value: string, fallback: number): number {
+  const parsed = Number.parseInt(value, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -1618,7 +2597,7 @@ async function main(): Promise<void> {
   const options = parseCliOptions(process.argv.slice(2));
   const cases = buildCases();
   if (options.list) {
-    printCaseList(cases);
+    printCaseList(filterCases(cases, options));
     return;
   }
   const summary = await runAgentHarnessBenchmarks(options);
