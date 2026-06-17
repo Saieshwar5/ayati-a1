@@ -168,6 +168,51 @@ describe("Fireworks provider", () => {
     });
   });
 
+  it("should attach exact token usage and estimated cost when Fireworks returns usage", async () => {
+    process.env["FIREWORKS_API_KEY"] = "fw-test-key";
+
+    const mockCreate = vi.fn().mockResolvedValue({
+      choices: [{ message: { content: "Hello from Fireworks" } }],
+      usage: {
+        prompt_tokens: 1000,
+        completion_tokens: 250,
+        total_tokens: 1250,
+        prompt_tokens_details: {
+          cached_tokens: 400,
+        },
+      },
+    });
+
+    mockOpenAIConstructor(mockCreate);
+
+    provider.start();
+    const out = await provider.generateTurn({
+      messages: [{ role: "user", content: "Hi" }],
+    });
+
+    expect(out).toEqual({
+      type: "assistant",
+      content: "Hello from Fireworks",
+      usage: {
+        provider: "fireworks",
+        model: "fireworks/minimax-m2p5",
+        inputTokens: 1000,
+        outputTokens: 250,
+        totalTokens: 1250,
+        cachedInputTokens: 400,
+        exact: true,
+      },
+      cost: {
+        currency: "USD",
+        inputCostUsd: 0.00018,
+        cachedInputCostUsd: 0.000012,
+        outputCostUsd: 0.0003,
+        totalCostUsd: 0.000492,
+        pricingSource: "https://docs.fireworks.ai/serverless/pricing",
+      },
+    });
+  });
+
   it("should return tool calls when Fireworks responds with tool_calls", async () => {
     process.env["FIREWORKS_API_KEY"] = "fw-test-key";
 
@@ -215,6 +260,69 @@ describe("Fireworks provider", () => {
     expect(out).toEqual({
       type: "tool_calls",
       calls: [{ id: "call_1", name: "shell.tool", input: { cmd: "pwd" } }],
+    });
+  });
+
+  it("should attach usage to tool-call turns when present", async () => {
+    process.env["FIREWORKS_API_KEY"] = "fw-test-key";
+
+    const mockCreate = vi.fn().mockImplementation(async (req: any) => {
+      const toolName = req?.tools?.[0]?.function?.name;
+      return {
+        choices: [
+          {
+            message: {
+              content: "I will inspect the file.",
+              tool_calls: [
+                {
+                  id: "call_1",
+                  type: "function",
+                  function: {
+                    name: toolName,
+                    arguments: "{\"path\":\"README.md\"}",
+                  },
+                },
+              ],
+            },
+          },
+        ],
+        usage: {
+          prompt_tokens: 800,
+          completion_tokens: 50,
+          total_tokens: 850,
+        },
+      };
+    });
+
+    mockOpenAIConstructor(mockCreate);
+
+    provider.start();
+    const out = await provider.generateTurn({
+      messages: [{ role: "user", content: "read README" }],
+      tools: [
+        {
+          name: "read_file",
+          description: "Read a file",
+          inputSchema: { type: "object", properties: { path: { type: "string" } } },
+        },
+      ],
+    });
+
+    expect(out).toMatchObject({
+      type: "tool_calls",
+      calls: [{ id: "call_1", name: "read_file", input: { path: "README.md" } }],
+      assistantContent: "I will inspect the file.",
+      usage: {
+        provider: "fireworks",
+        model: "fireworks/minimax-m2p5",
+        inputTokens: 800,
+        outputTokens: 50,
+        totalTokens: 850,
+        exact: true,
+      },
+      cost: {
+        totalCostUsd: 0.0003,
+      },
     });
   });
 

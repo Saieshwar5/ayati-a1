@@ -5,6 +5,7 @@ import type {
   LlmMessage,
   LlmToolCall,
   LlmInputTokenCount,
+  LlmTokenUsage,
   LlmToolSchema,
   LlmTurnInput,
   LlmTurnOutput,
@@ -22,6 +23,7 @@ import {
   toProviderToolName,
   type ToolNameMaps,
 } from "../shared/tool-name-mapping.js";
+import { estimateFireworksCost } from "./pricing.js";
 
 let client: OpenAI | null = null;
 
@@ -145,6 +147,47 @@ function buildEmptyResponseMessage(response: {
   return `Empty response from Fireworks: no usable assistant payload was returned.${finishReason}`;
 }
 
+function readFireworksUsage(model: string, response: Record<string, unknown>): LlmTokenUsage | undefined {
+  const usage = response["usage"];
+  if (!isRecord(usage)) {
+    return undefined;
+  }
+
+  const inputTokens = readNonNegativeInteger(usage["prompt_tokens"]);
+  const outputTokens = readNonNegativeInteger(usage["completion_tokens"]);
+  const totalTokens = readNonNegativeInteger(usage["total_tokens"]);
+  if (inputTokens === undefined || outputTokens === undefined || totalTokens === undefined) {
+    return undefined;
+  }
+
+  const promptDetails = isRecord(usage["prompt_tokens_details"]) ? usage["prompt_tokens_details"] : undefined;
+  const cachedInputTokens = promptDetails
+    ? readNonNegativeInteger(promptDetails["cached_tokens"] ?? promptDetails["cached_prompt_tokens"])
+    : undefined;
+
+  return {
+    provider: "fireworks",
+    model,
+    inputTokens,
+    outputTokens,
+    totalTokens,
+    ...(cachedInputTokens !== undefined ? { cachedInputTokens } : {}),
+    exact: true,
+  };
+}
+
+function readNonNegativeInteger(value: unknown): number | undefined {
+  const numberValue = typeof value === "number" ? value : Number(value);
+  if (!Number.isFinite(numberValue) || numberValue < 0) {
+    return undefined;
+  }
+  return Math.round(numberValue);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
 const provider: LlmProvider = {
   name: "fireworks",
   version: "1.0.0",
@@ -220,6 +263,8 @@ const provider: LlmProvider = {
     };
 
     const response = await client.chat.completions.create(request as any);
+    const usage = readFireworksUsage(model, response as unknown as Record<string, unknown>);
+    const cost = usage ? estimateFireworksCost(model, usage) : undefined;
 
     const message = response.choices?.[0]?.message;
     if (!message) {
@@ -243,6 +288,8 @@ const provider: LlmProvider = {
         type: "tool_calls",
         calls,
         ...(typeof message.content === "string" ? { assistantContent: message.content } : {}),
+        ...(usage ? { usage } : {}),
+        ...(cost ? { cost } : {}),
       };
     }
 
@@ -254,6 +301,8 @@ const provider: LlmProvider = {
     return {
       type: "assistant",
       content: reply,
+      ...(usage ? { usage } : {}),
+      ...(cost ? { cost } : {}),
     };
   },
 };

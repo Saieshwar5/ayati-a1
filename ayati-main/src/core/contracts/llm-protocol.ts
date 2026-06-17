@@ -70,15 +70,38 @@ export interface LlmInputTokenCount {
   exact: boolean;
 }
 
+export interface LlmTokenUsage {
+  provider: string;
+  model: string;
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  cachedInputTokens?: number;
+  exact: boolean;
+}
+
+export interface LlmCostEstimate {
+  currency: "USD";
+  inputCostUsd: number;
+  cachedInputCostUsd: number;
+  outputCostUsd: number;
+  totalCostUsd: number;
+  pricingSource: string;
+}
+
 export type LlmTurnOutput =
   | {
       type: "assistant";
       content: string;
+      usage?: LlmTokenUsage;
+      cost?: LlmCostEstimate;
     }
   | {
       type: "tool_calls";
       calls: LlmToolCall[];
       assistantContent?: string;
+      usage?: LlmTokenUsage;
+      cost?: LlmCostEstimate;
     };
 
 export interface LlmProviderCapabilities {

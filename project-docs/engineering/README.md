@@ -11,6 +11,7 @@ Important paths:
 - `context-priority.md`: what to read first for different task types.
 - `commands.md`: common development commands.
 - `testing.md`: test strategy and commands.
+- `agent-benchmarking.md`: agent harness benchmark metrics, Fireworks token/cost usage, and human eval rubric.
 - `conventions.md`: code organization and style.
 - `security.md`: safety and secret-handling rules.
 

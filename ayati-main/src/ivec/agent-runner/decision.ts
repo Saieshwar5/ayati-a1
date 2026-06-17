@@ -2,7 +2,7 @@ import type { LlmProvider } from "../../core/contracts/provider.js";
 import type { LlmMessage, LlmResponseFormat, LlmTurnOutput } from "../../core/contracts/llm-protocol.js";
 import type { ToolContractAssertion, ToolDefinition } from "../../skills/types.js";
 import type { RunMetrics } from "../metrics.js";
-import { recordPromptMetric, recordRunMetric } from "../metrics.js";
+import { recordPromptMetric, recordProviderUsageMetric, recordRunMetric } from "../metrics.js";
 import type { AgentStateView } from "./state-view.js";
 
 export type AgentDecisionStatus = "completed" | "failed";
@@ -59,6 +59,8 @@ export async function callAgentDecision(input: CallAgentDecisionInput): Promise<
   recordPromptMetric(input.metrics, "agent_decision", {
     systemContext,
     ...promptSections,
+  }, {
+    stateBreakdown: buildStateViewPromptBreakdown(input.stateView),
   });
 
   let messages: LlmMessage[] = [
@@ -81,6 +83,7 @@ export async function callAgentDecision(input: CallAgentDecisionInput): Promise<
         kind: "llm",
         status: "success",
       });
+      recordProviderUsageMetric(input.metrics, metricStage, turn.usage, turn.cost);
     } catch (error) {
       recordRunMetric(input.metrics, metricStage, {
         durationMs: Date.now() - startedAt,
@@ -213,6 +216,36 @@ Response JSON shapes:
 { "kind": "ask_user", "question": "...", "reason": "..." }
 { "kind": "act", "action": { "mode": "single" | "sequential" | "parallel" | "autonomous", "calls": [{ "id": "call_1", "tool": "write_files", "input": {}, "dependsOn": [], "purpose": "..." }], "allowedTools": ["write_files"], "maxCalls": 1 } }`,
   };
+}
+
+function buildStateViewPromptBreakdown(stateView: AgentStateView): Record<string, string | undefined> {
+  return {
+    "state.context": stringifySection(stateView.context),
+    "state.context.currentInput": stringifySection(stateView.context.currentInput),
+    "state.context.recentConversation": stringifySection(stateView.context.recentConversation),
+    "state.context.activeFocus": stringifySection(stateView.context.activeFocus),
+    "state.context.sessionFocusCards": stringifySection(stateView.context.sessionFocusCards),
+    "state.context.attentionShelf": stringifySection(stateView.context.attentionShelf),
+    "state.context.personalMemorySnapshot": stateView.context.personalMemorySnapshot,
+    "state.context.activeLearningContext": stateView.context.activeLearningContext,
+    "state.workState": stringifySection(stateView.workState),
+    "state.toolContext": stringifySection(stateView.toolContext),
+    "state.latestObservation": stringifySection(stateView.latestObservation),
+    "state.lastActions": stringifySection(stateView.lastActions),
+    "state.recentFailures": stringifySection(stateView.recentFailures),
+    "state.attachments": stringifySection(stateView.attachments),
+    "state.systemEvent": stringifySection(stateView.systemEvent),
+  };
+}
+
+function stringifySection(value: unknown): string | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (typeof value === "string") {
+    return value;
+  }
+  return JSON.stringify(value, null, 2);
 }
 
 function formatSelectedTools(toolDefinitions: ToolDefinition[]): string {
