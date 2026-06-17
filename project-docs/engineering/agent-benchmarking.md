@@ -31,6 +31,9 @@ The optimization summary captures:
 - LLM, tool, and local decision call counts.
 - Stage call counts, failures, total latency, and max latency.
 - Prompt characters and estimated tokens by prompt section.
+- Decision prompt cache-layout sections:
+  `system.stableDecisionRules`, `system.runtimeContext`, `user.tools`, and
+  `user.state`.
 - Context growth between decision prompts, including total prompt deltas,
   section deltas, and state-view sub-section deltas.
 - Work state and completed step compaction before/after sizes.
@@ -201,6 +204,13 @@ Per-case reports preserve the agent's work trace:
   `latestObservation`, `lastActions`, `recentFailures`, `attachments`, and
   `systemEvent`.
 - `diff.patch`: text diff between `fixture-before` and `fixture-after`.
+
+Prompt metrics should make cache efficiency visible. The stable decision
+contract belongs in `system.stableDecisionRules`; dynamic runtime context
+belongs in `system.runtimeContext`; selected tool schemas belong in
+`user.tools`; and the model-facing state view belongs in `user.state`. If
+future changes move volatile data into the stable system section, treat that as
+a cache-regression risk even when deterministic benchmark checks still pass.
 
 Useful budgets:
 

@@ -35,6 +35,54 @@ function createProvider(responses: unknown[]): LlmProvider {
   };
 }
 
+function extractStateView(userPrompt: string): any {
+  const marker = "State view:\n";
+  const start = userPrompt.indexOf(marker);
+  if (start < 0) {
+    throw new Error("State view section missing from decision prompt.");
+  }
+  const raw = userPrompt.slice(start + marker.length).trim();
+  try {
+    return JSON.parse(raw);
+  } catch {
+    const objectStart = raw.indexOf("{");
+    if (objectStart < 0) {
+      throw new Error("State view JSON object missing from decision prompt.");
+    }
+    let depth = 0;
+    let inString = false;
+    let escaping = false;
+    for (let index = objectStart; index < raw.length; index++) {
+      const char = raw[index];
+      if (!char) continue;
+      if (escaping) {
+        escaping = false;
+        continue;
+      }
+      if (char === "\\") {
+        escaping = true;
+        continue;
+      }
+      if (char === "\"") {
+        inString = !inString;
+        continue;
+      }
+      if (inString) {
+        continue;
+      }
+      if (char === "{") {
+        depth++;
+      } else if (char === "}") {
+        depth--;
+        if (depth === 0) {
+          return JSON.parse(raw.slice(objectStart, index + 1));
+        }
+      }
+    }
+    throw new Error("State view JSON object was incomplete.");
+  }
+}
+
 describe("agentLoop", () => {
   it("uses the single decision stage for direct replies", async () => {
     const dataDir = makeTmpDir();
@@ -305,12 +353,13 @@ describe("agentLoop", () => {
       });
 
       const callInput = generateTurn.mock.calls[0]?.[0];
+      const systemPrompt = callInput.messages.find((message: { role: string }) => message.role === "system").content as string;
       const userPrompt = callInput.messages.find((message: { role: string }) => message.role === "user").content as string;
-      const stateJson = userPrompt.slice(
-        userPrompt.indexOf("State view:\n") + "State view:\n".length,
-        userPrompt.indexOf("\n\nSelected tools:"),
-      );
-      const stateView = JSON.parse(stateJson);
+      const stateView = extractStateView(userPrompt);
+      expect(systemPrompt).toContain("Decision rules:");
+      expect(systemPrompt).toContain("Response JSON shapes:");
+      expect(userPrompt).not.toContain("Decision rules:");
+      expect(userPrompt.indexOf("Selected tools:\n")).toBeLessThan(userPrompt.indexOf("State view:\n"));
       expect(stateView.userMessage).toBeUndefined();
       expect(stateView.goal).toBeUndefined();
       expect(stateView.progress).toBeUndefined();
@@ -433,11 +482,7 @@ describe("agentLoop", () => {
       expect(generateTurn).toHaveBeenCalledTimes(2);
       const secondCallInput = generateTurn.mock.calls[1]?.[0];
       const userPrompt = secondCallInput.messages.find((message: { role: string }) => message.role === "user").content as string;
-      const stateJson = userPrompt.slice(
-        userPrompt.indexOf("State view:\n") + "State view:\n".length,
-        userPrompt.indexOf("\n\nSelected tools:"),
-      );
-      const stateView = JSON.parse(stateJson);
+      const stateView = extractStateView(userPrompt);
       expect(stateView.toolContext.recent).toHaveLength(2);
       expect(stateView.toolContext.recent[0].purpose).toBe("Get RAM summary");
       expect(stateView.toolContext.recent[0].content).toContain("3.5Gi used");

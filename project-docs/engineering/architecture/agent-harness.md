@@ -34,6 +34,31 @@ uses the current input and context pack directly. `workState` starts minimal and
 only appears in the model-facing state view after real progress, blockers,
 verified facts, evidence, or user-input needs exist.
 
+## Decision Prompt Layout
+
+The decision prompt is split to preserve provider prompt-cache reuse:
+
+```text
+system:
+  stable decision-component role
+  stable harness and tool-use rules
+  stable response JSON shapes
+  truncated runtime system context, when present
+
+user:
+  selected tool definitions for this decision
+  State view JSON
+```
+
+Stable decision rules live in the system message so repeated decisions share a
+cache-friendly prefix. Dynamic state remains in the user message. Do not move
+run ids, tool observations, current input, memory snapshots, learning context,
+or focus-card shelves ahead of the stable decision contract.
+
+Critical decision rules and response shapes must not be placed inside the
+truncatable runtime system-context block. If runtime system context is too
+large, only that runtime block may be truncated.
+
 ## State View And Context
 
 The decision model receives a compact `State view` each iteration. The context

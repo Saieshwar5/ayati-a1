@@ -54,10 +54,12 @@ interface CallAgentDecisionInput {
 export async function callAgentDecision(input: CallAgentDecisionInput): Promise<AgentDecision> {
   const promptSections = buildDecisionPromptSections(input.stateView, input.toolDefinitions);
   const prompt = Object.values(promptSections).filter((section) => section.trim().length > 0).join("\n\n");
-  const systemContext = buildDecisionSystemContext(input.systemContext);
+  const systemSections = buildDecisionSystemSections(input.systemContext);
+  const systemContext = Object.values(systemSections).filter((section) => section.trim().length > 0).join("\n\n");
   const responseFormat = resolveDecisionResponseFormat(input.provider);
   recordPromptMetric(input.metrics, "agent_decision", {
-    systemContext,
+    "system.stableDecisionRules": systemSections.stableDecisionRules,
+    "system.runtimeContext": systemSections.runtimeContext,
     ...promptSections,
   }, {
     stateBreakdown: buildStateViewPromptBreakdown(input.stateView),
@@ -162,30 +164,13 @@ export function parseAgentDecision(text: string): AgentDecision {
   throw new SyntaxError(`Unsupported agent decision kind: ${String(kind)}`);
 }
 
-function buildDecisionSystemContext(systemContext: string | undefined): string {
-  const base = `You are the decision component of an AI agent harness.
+const STABLE_DECISION_SYSTEM_CONTEXT = `You are the decision component of an AI agent harness.
 Choose the next agent decision only. Do not execute tools yourself.
 Prefer deterministic actions with concrete tool inputs.
 Use the structured context pack and optional work state in the state view.
-Return compact JSON only.`;
-  const trimmed = systemContext?.trim();
-  if (!trimmed) {
-    return base;
-  }
-  const compact = trimmed.length > 6_000
-    ? `${trimmed.slice(0, 6_000).trimEnd()}\n[system context truncated for decision budget]`
-    : trimmed;
-  return `${base}\n\nSystem context:\n${compact}`;
-}
+Return compact JSON only.
 
-function buildDecisionPromptSections(
-  stateView: AgentStateView,
-  toolDefinitions: ToolDefinition[],
-): Record<string, string> {
-  return {
-    state: `State view:\n${JSON.stringify(stateView, null, 2)}`,
-    tools: `Selected tools:\n${formatSelectedTools(toolDefinitions)}`,
-    instructions: `Decision rules:
+Decision rules:
 - Pick exactly one decision: reply, ask_user, or act.
 - Treat State view.context as the bounded context pack for this decision.
 - Use context.recentConversation as the latest completed session activity. It contains prior user/assistant exchanges, not the current input or raw unlimited history.
@@ -214,7 +199,32 @@ function buildDecisionPromptSections(
 Response JSON shapes:
 { "kind": "reply", "status": "completed" | "failed", "message": "..." }
 { "kind": "ask_user", "question": "...", "reason": "..." }
-{ "kind": "act", "action": { "mode": "single" | "sequential" | "parallel" | "autonomous", "calls": [{ "id": "call_1", "tool": "write_files", "input": {}, "dependsOn": [], "purpose": "..." }], "allowedTools": ["write_files"], "maxCalls": 1 } }`,
+{ "kind": "act", "action": { "mode": "single" | "sequential" | "parallel" | "autonomous", "calls": [{ "id": "call_1", "tool": "write_files", "input": {}, "dependsOn": [], "purpose": "..." }], "allowedTools": ["write_files"], "maxCalls": 1 } }`;
+
+function buildDecisionSystemSections(systemContext: string | undefined): Record<string, string> {
+  const trimmed = systemContext?.trim();
+  if (!trimmed) {
+    return {
+      stableDecisionRules: STABLE_DECISION_SYSTEM_CONTEXT,
+      runtimeContext: "",
+    };
+  }
+  const compact = trimmed.length > 6_000
+    ? `${trimmed.slice(0, 6_000).trimEnd()}\n[system context truncated for decision budget]`
+    : trimmed;
+  return {
+    stableDecisionRules: STABLE_DECISION_SYSTEM_CONTEXT,
+    runtimeContext: `System context:\n${compact}`,
+  };
+}
+
+function buildDecisionPromptSections(
+  stateView: AgentStateView,
+  toolDefinitions: ToolDefinition[],
+): Record<string, string> {
+  return {
+    "user.tools": `Selected tools:\n${formatSelectedTools(toolDefinitions)}`,
+    "user.state": `State view:\n${JSON.stringify(stateView, null, 2)}`,
   };
 }
 
