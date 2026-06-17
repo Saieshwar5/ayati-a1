@@ -1,5 +1,5 @@
-import type { FocusAssetRef, FocusShelfItem } from "./focus/types.js";
-import type { FocusStore } from "./focus/focus-store.js";
+import type { ActivityAssetRef, ContinuityContext } from "./activity/types.js";
+import type { ActivityStore } from "./activity/activity-store.js";
 import type { PromptPersonalMemory } from "./personal/types.js";
 import type {
   SystemEventCreatedBy,
@@ -8,7 +8,18 @@ import type {
   SystemEventTrustTier,
 } from "../core/contracts/plugin.js";
 
-export type { FocusAssetRef, FocusCard, FocusRunRef, FocusScope, FocusShelfItem } from "./focus/types.js";
+export type {
+  ActivityAlias,
+  ActivityAssetRef,
+  ActivityContext,
+  ActivityIdentity,
+  ActivityKind,
+  ActivityLifecycle,
+  ActivityRunRef,
+  ActivityThread,
+  ActivityUpsertInput,
+  ContinuityContext,
+} from "./activity/types.js";
 
 export interface ConversationTurn {
   role: "user" | "assistant";
@@ -130,7 +141,6 @@ export interface SessionHandoffSnapshot {
   completedWork: string[];
   pendingWork: string[];
   keyFacts: string[];
-  sessionFocusCards: FocusShelfItem[];
   recentDialog: ConversationTurn[];
   nextAction: string;
 }
@@ -148,9 +158,7 @@ export interface PromptMemoryContext {
   conversationTurns: ConversationTurn[];
   personalMemorySnapshot?: string;
   personalMemories?: PromptPersonalMemory[];
-  activeFocus?: FocusShelfItem[];
-  sessionFocusCards?: FocusShelfItem[];
-  attentionShelf?: FocusShelfItem[];
+  continuity?: ContinuityContext;
   activeTopicLabel?: string;
   activeSessionPath?: string;
   recentTaskSummaries?: PromptTaskSummary[];
@@ -234,7 +242,7 @@ export interface TaskSummaryRecordInput {
   runId: string;
   sessionId: string;
   runPath: string;
-  focusId?: string;
+  activityId?: string;
   status: "completed" | "failed" | "stuck";
   taskStatus?: TaskSummaryTaskStatus;
   objective?: string;
@@ -260,7 +268,7 @@ export interface TaskSummaryRecordInput {
   nextAction?: string;
   stopReason?: TaskSummaryStopReason;
   attachmentNames?: string[];
-  focusAssets?: FocusAssetRef[];
+  activityAssets?: ActivityAssetRef[];
 }
 
 export interface SystemEventRecordInput {
@@ -331,7 +339,7 @@ export interface SessionMemory {
   recordSystemEventOutcome?(clientId: string, input: SystemEventOutcomeRecordInput): void;
   recordAssistantNotification?(clientId: string, input: AssistantNotificationRecordInput): void;
   getPromptMemoryContext(): PromptMemoryContext;
-  getFocusStore?(): FocusStore;
+  getActivityStore?(): ActivityStore;
   getSessionStatus?(): SessionStatus | null;
   updateSessionLifecycle?(clientId: string, input: SessionLifecycleUpdateInput): void | Promise<void>;
   flushPersistence?(): Promise<void>;

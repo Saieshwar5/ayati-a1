@@ -11,9 +11,8 @@ import { selectToolsForDecision } from "../ivec/agent-runner/tool-selector.js";
 import type { LoopState } from "../ivec/types.js";
 import { createToolExecutor } from "../skills/tool-executor.js";
 import type { ToolDefinition, ToolResult } from "../skills/types.js";
-import type { FocusShelfItem, ConversationExchange } from "../memory/types.js";
-import { FocusStore } from "../memory/focus/focus-store.js";
-import type { FocusUpsertInput } from "../memory/focus/types.js";
+import type { ActivityUpsertInput, ConversationExchange } from "../memory/types.js";
+import { ActivityStore } from "../memory/activity/activity-store.js";
 import { PersonalMemoryStore } from "../memory/personal/personal-memory-store.js";
 import { DEFAULT_MEMORY_POLICY } from "../memory/personal/memory-policy.js";
 import type { MemoryProposal } from "../memory/personal/types.js";
@@ -30,7 +29,7 @@ type RuntimeScale = "smoke" | "standard" | "stress";
 
 type RuntimeBenchmarkCaseId =
   | "context_tool_selection"
-  | "focus_store"
+  | "activity_store"
   | "personal_memory"
   | "document_vector_fallback"
   | "filesystem_tools"
@@ -41,7 +40,7 @@ type RuntimeBenchmarkCaseId =
 interface RuntimeScaleConfig {
   stateExchanges: number;
   toolCount: number;
-  focusCards: number;
+  activityThreads: number;
   personalCards: number;
   vectorRecords: number;
   filesystemFiles: number;
@@ -125,7 +124,7 @@ const SCALE_CONFIGS: Record<RuntimeScale, RuntimeScaleConfig> = {
   smoke: {
     stateExchanges: 80,
     toolCount: 120,
-    focusCards: 80,
+    activityThreads: 80,
     personalCards: 120,
     vectorRecords: 300,
     filesystemFiles: 120,
@@ -139,7 +138,7 @@ const SCALE_CONFIGS: Record<RuntimeScale, RuntimeScaleConfig> = {
   standard: {
     stateExchanges: 800,
     toolCount: 800,
-    focusCards: 700,
+    activityThreads: 700,
     personalCards: 1_000,
     vectorRecords: 2_500,
     filesystemFiles: 800,
@@ -153,7 +152,7 @@ const SCALE_CONFIGS: Record<RuntimeScale, RuntimeScaleConfig> = {
   stress: {
     stateExchanges: 3_000,
     toolCount: 3_000,
-    focusCards: 5_000,
+    activityThreads: 5_000,
     personalCards: 10_000,
     vectorRecords: 25_000,
     filesystemFiles: 5_000,
@@ -177,9 +176,9 @@ const CASES: Array<{
     run: runContextToolSelectionCase,
   },
   {
-    caseId: "focus_store",
-    title: "Focus Store Retrieval",
-    run: runFocusStoreCase,
+    caseId: "activity_store",
+    title: "Activity Store Retrieval",
+    run: runActivityStoreCase,
   },
   {
     caseId: "personal_memory",
@@ -293,7 +292,7 @@ async function runContextToolSelectionCase(config: RuntimeScaleConfig): Promise<
         throw new Error("state view fixture was empty.");
       }
     }, {
-      description: "Build bounded model-facing state from large recent activity and focus shelves.",
+      description: "Build bounded model-facing state from large recent activity and continuity context.",
       fixture,
       iterations: config.longIterations,
       warnIfP95MsAbove: 20,
@@ -341,56 +340,59 @@ async function runContextToolSelectionCase(config: RuntimeScaleConfig): Promise<
   });
 }
 
-async function runFocusStoreCase(config: RuntimeScaleConfig): Promise<CaseResult> {
-  return withTempDir("ayati-runtime-focus-", async (root) => {
+async function runActivityStoreCase(config: RuntimeScaleConfig): Promise<CaseResult> {
+  return withTempDir("ayati-runtime-activity-", async (root) => {
     const startedAt = performance.now();
-    const store = new FocusStore({ dbPath: join(root, "memory.sqlite"), now: fixedNow });
+    const store = new ActivityStore({ dbPath: join(root, "memory.sqlite"), now: fixedNow });
     store.start();
     try {
       const clientId = "bench-client";
       const sessionId = "bench-session";
-      seedFocusStore(store, clientId, sessionId, config.focusCards);
-      const fixture = { focusCards: config.focusCards, clientCount: 1 };
+      seedActivityStore(store, clientId, sessionId, config.activityThreads);
+      const fixture = { activityThreads: config.activityThreads, clientCount: 1 };
       let upsertIndex = 0;
       const operations = [
-        await measureOperation("focus_session_shelf", async () => {
-          const shelf = store.getSessionShelf(clientId, sessionId, 5);
-          if (shelf.length === 0) {
-            throw new Error("session shelf returned no cards.");
+        await measureOperation("activity_recent_list", async () => {
+          const recent = store.listRecent(clientId, 5);
+          if (recent.length === 0) {
+            throw new Error("recent activity list returned no threads.");
           }
         }, {
-          description: "Build the active session focus shelf from persisted focus cards.",
+          description: "Read the deterministic recent activity list used as a fallback for follow-up phrasing.",
           fixture,
           iterations: config.mediumIterations,
           warnIfP95MsAbove: 40,
         }),
-        await measureOperation("focus_global_shelf", async () => {
-          store.getGlobalShelf(clientId, 5);
+        await measureOperation("activity_identity_lookup", async () => {
+          const activity = store.getActivityByIdentity(clientId, "file_path", "src/module-1.ts");
+          if (!activity) {
+            throw new Error("activity identity lookup returned no thread.");
+          }
         }, {
-          description: "Build the cross-session attention shelf.",
+          description: "Resolve an activity thread by an exact durable identity anchor.",
           fixture,
           iterations: config.mediumIterations,
           warnIfP95MsAbove: 40,
         }),
-        await measureOperation("focus_search", async () => {
-          const matches = store.search(clientId, "project artifact module", 5);
+        await measureOperation("activity_search", async () => {
+          const matches = store.search(clientId, "project artifact module", { limit: 5 });
           if (matches.length === 0) {
-            throw new Error("focus search returned no matches.");
+            throw new Error("activity search returned no matches.");
           }
         }, {
-          description: "Search focus cards through SQLite text filtering and in-memory token scoring.",
+          description: "Search activity threads through SQLite text filtering and deterministic token scoring.",
           fixture,
           iterations: config.mediumIterations,
           warnIfP95MsAbove: 50,
         }),
-        await measureOperation("focus_identity_upsert", async () => {
-          const index = upsertIndex % Math.max(1, config.focusCards);
+        await measureOperation("activity_identity_upsert", async () => {
+          const index = upsertIndex % Math.max(1, config.activityThreads);
           upsertIndex++;
-          store.upsertSessionFromTaskSummary(makeFocusInput(clientId, sessionId, index, "session", {
-            runId: `bench-upsert-${randomUUID()}`,
+          store.upsertFromTaskSummary(makeActivityInput(clientId, sessionId, index, {
+            runId: `activity-upsert-${randomUUID()}`,
             summary: `Follow-up on project-${index} artifact src/module-${index}.ts with more verified context.`,
             currentFocus: `project-${index}`,
-          }) as FocusUpsertInput & { sessionId: string });
+          }));
         }, {
           description: "Upsert follow-up task summaries and find existing identity matches.",
           fixture,
@@ -399,9 +401,9 @@ async function runFocusStoreCase(config: RuntimeScaleConfig): Promise<CaseResult
         }),
       ];
       return buildCaseResult({
-        caseId: "focus_store",
-        title: "Focus Store Retrieval",
-        whyItMatters: "Focus cards are the agent's continuation surface. Slow shelves or searches make follow-up tasks slower and less likely to recover the right task state.",
+        caseId: "activity_store",
+        title: "Activity Store Retrieval",
+        whyItMatters: "Activity threads are the agent's continuation surface. Slow search or identity lookup makes follow-up tasks slower and less likely to recover the right task state.",
         fixture,
         operations,
         startedAt,
@@ -918,7 +920,7 @@ function buildLoopStateFixture(exchangeCount: number): LoopState {
       openWork: ["Measure memory retrieval", "Measure filesystem scan"],
       blockers: [],
       verifiedFacts: ["Benchmark uses deterministic local fixtures."],
-      evidence: ["Synthetic focus and memory stores are seeded."],
+      evidence: ["Synthetic activity and memory stores are seeded."],
       nextStep: "Run non-LLM performance measurements.",
     },
     latestObservation: {
@@ -939,7 +941,7 @@ function buildLoopStateFixture(exchangeCount: number): LoopState {
         tool: index % 2 === 0 ? "find_files" : "search_in_files",
         status: "success",
         mode: "summary",
-        content: `Observation ${index} about focus cards and project artifacts.`,
+        content: `Observation ${index} about activity threads and project artifacts.`,
         hasMore: false,
       })),
     },
@@ -953,7 +955,7 @@ function buildLoopStateFixture(exchangeCount: number): LoopState {
         step: 1,
         outcome: "success",
         summary: "Located benchmark targets.",
-        newFacts: ["Focus store search is a target."],
+        newFacts: ["Activity store search is a target."],
         artifacts: [],
         toolsUsed: ["search_in_files"],
         toolSuccessCount: 1,
@@ -964,9 +966,21 @@ function buildLoopStateFixture(exchangeCount: number): LoopState {
     failureHistory: [],
     activeLearningContext: "Learning context: runtime performance analysis.",
     personalMemorySnapshot: "User prefers detailed reports about agent runtime performance.",
-    activeFocus: buildShelfFixture(8, "active"),
-    sessionFocusCards: buildShelfFixture(16, "session"),
-    attentionShelf: buildShelfFixture(16, "global"),
+    continuity: {
+      mode: "continue",
+      confidence: 0.91,
+      reasons: ["benchmark fixture exact activity anchor"],
+      current: {
+        activityId: "activity-runtime-benchmark",
+        kind: "project",
+        title: "runtime performance analysis",
+        openWork: ["Measure memory retrieval", "Measure filesystem scan"],
+        nextStep: "Run non-LLM performance measurements.",
+        verifiedFacts: ["Benchmark uses deterministic local fixtures."],
+        topAssets: ["reports/runtime-performance.md"],
+        lastTouchedAt: now,
+      },
+    },
     recentExchanges: buildExchangeFixture(exchangeCount, now),
   };
 }
@@ -983,24 +997,6 @@ function buildExchangeFixture(count: number, timestamp: string): ConversationExc
       content: `Assistant response ${index} describing non-LLM agent performance checks.`,
       responseKind: "reply",
     },
-  }));
-}
-
-function buildShelfFixture(count: number, labelPrefix: string): FocusShelfItem[] {
-  return Array.from({ length: count }, (_, index) => ({
-    focusId: `${labelPrefix}-focus-${index}`,
-    scope: labelPrefix === "global" ? "global" : "session",
-    type: index % 3 === 0 ? "debug_issue" : "artifact_work",
-    status: "active",
-    label: `${labelPrefix} project ${index}`,
-    summary: `Runtime performance work for project ${index}.`,
-    hints: ["runtime", "performance", `project-${index}`],
-    topArtifacts: [`src/module-${index}.ts`, `reports/report-${index}.md`],
-    openWork: [`Continue benchmark ${index}`],
-    lastTouchedAt: "2026-06-17T00:00:00.000Z",
-    lastTouchedLabel: "today",
-    attentionScore: 0.9 - (index * 0.01),
-    nextStep: `Measure path ${index}.`,
   }));
 }
 
@@ -1049,39 +1045,31 @@ function buildToolFixture(count: number): ToolDefinition[] {
   });
 }
 
-function seedFocusStore(store: FocusStore, clientId: string, sessionId: string, count: number): void {
+function seedActivityStore(store: ActivityStore, clientId: string, sessionId: string, count: number): void {
   for (let index = 0; index < count; index++) {
-    const scope = index % 2 === 0 ? "session" : "global";
-    const input = makeFocusInput(clientId, sessionId, index, scope);
-    if (scope === "session") {
-      store.upsertSessionFromTaskSummary(input as FocusUpsertInput & { sessionId: string });
-    } else {
-      store.upsertFromTaskSummary(input);
-    }
+    store.upsertFromTaskSummary(makeActivityInput(clientId, sessionId, index));
   }
 }
 
-function makeFocusInput(
+function makeActivityInput(
   clientId: string,
   sessionId: string,
   index: number,
-  scope: "session" | "global",
-  overrides: Partial<FocusUpsertInput> = {},
-): FocusUpsertInput {
+  overrides: Partial<ActivityUpsertInput> = {},
+): ActivityUpsertInput {
   const createdAt = isoFromOffset(index);
   return {
     clientId,
-    scope,
-    ...(scope === "session" ? { sessionId } : {}),
-    runId: `focus-run-${index}`,
-    runPath: `/tmp/runtime-focus/run-${index}`,
+    sessionId,
+    runId: `activity-run-${index}`,
+    runPath: `/tmp/runtime-activity/run-${index}`,
     status: "completed",
     taskStatus: index % 4 === 0 ? "not_done" : "done",
     objective: `Improve runtime performance for project-${index}`,
     summary: `Updated project-${index} artifact src/module-${index}.ts and recorded performance evidence.`,
-    progressSummary: `Measured focus card ${index}.`,
+    progressSummary: `Measured activity thread ${index}.`,
     currentFocus: `project-${index}`,
-    completedMilestones: [`Seeded focus card ${index}`],
+    completedMilestones: [`Seeded activity thread ${index}`],
     openWork: index % 4 === 0 ? [`Follow up on module ${index}`] : [],
     blockers: [],
     keyFacts: [`project-${index} uses artifact src/module-${index}.ts`],
@@ -1093,6 +1081,19 @@ function makeFocusInput(
     toolsUsed: ["search_in_files", "read_file"],
     nextAction: `Check project-${index} retrieval speed.`,
     attachmentNames: [`artifact-${index}.txt`],
+    activityAssets: [{
+      assetId: `asset-module-${index}`,
+      kind: "file",
+      origin: "agent_modified",
+      role: "working_artifact",
+      displayName: `module-${index}.ts`,
+      path: `src/module-${index}.ts`,
+      restore: { filePath: `src/module-${index}.ts` },
+      sourceRunId: `activity-run-${index}`,
+      sourceRunPath: `/tmp/runtime-activity/run-${index}`,
+      lastUsedRunId: `activity-run-${index}`,
+      lastUsedAt: createdAt,
+    }],
     createdAt,
     ...overrides,
   };

@@ -76,10 +76,8 @@ The decision model receives dynamic decision context through
 The context pack is bounded JSON. Session-derived model-facing fields are:
 
 - `recentConversation`: last 5 completed user/assistant exchanges
-- `activeFocus`: focus cards explicitly activated for the current session
-- `sessionFocusCards`: up to 5 current-session focus cards ranked by recency
-  and usefulness
-- `attentionShelf`: up to 5 global focus cards promoted from prior sessions
+- `continuity`: deterministic activity-thread resolution for the current input,
+  with `mode: "new" | "continue" | "ambiguous"`
 
 Outside `State view.context`, the prompt state is intentionally sparse. The
 first decision normally receives no `workState` at all. `workState`,
@@ -103,26 +101,49 @@ Other context sources remain independent from session:
 - document/file stores
 - long-term or semantic memory stores
 
-## Focus Cards
+## Activity Threads
 
-Focus cards are the durable continuation surface for ongoing work. They are
-stored outside session JSONL in `data/memory/memory.sqlite`.
+Activity threads are the durable continuation surface for ongoing work. They
+are stored outside session JSONL in `data/memory/memory.sqlite` by
+`ActivityStore`.
 
-A focus card is the work thread. Runs are individual execution attempts inside
-that thread. Compact focus shelves help the model choose a thread; the full
-card stores resumable state for later runs.
+An activity thread is a work thread. Runs are individual execution attempts
+inside that thread. The runner resolves the current message against activity
+identities before every decision and injects only a compact `continuity` result
+into the context pack.
 
 Tables:
 
-- `focus_items`: current focus card state.
-- `focus_events`: append-only focus-card event history.
-- `focus_search`: compact local search text for card lookup.
+- `activity_threads`: current thread state.
+- `activity_identities`: exact deterministic anchors such as file paths,
+  document ids, file ids, directory ids, prepared input ids, and aliases.
+- `activity_aliases`: user/system/inferred names for search and matching.
+- `activity_assets`: restorable files, directories, documents, datasets, URLs,
+  runs, and other durable references.
+- `activity_runs`: compact run history.
+- `activity_events`: append-only activity event history.
+- `activity_search`: compact local search text.
 
-Scopes:
+The model-facing continuity shape is:
 
-- `session`: cards created from tool-using task summaries in the active
-  session.
-- `global`: cross-session attention shelf cards.
+```ts
+type ContinuityContext =
+  | { mode: "new"; confidence: number; reasons: string[] }
+  | { mode: "continue"; confidence: number; reasons: string[]; current: ActivityContext }
+  | { mode: "ambiguous"; confidence: number; reasons: string[]; candidates: ActivityCandidate[] };
+```
+
+`ActivityContext` includes:
+
+- `activityId`
+- `kind`
+- `title`
+- optional `goal`
+- `openWork`
+- optional `nextStep`
+- `verifiedFacts`
+- `topAssets`
+- `lastTouchedAt`
 
 Lifecycle:
 
@@ -130,69 +151,32 @@ Lifecycle:
    open work, blockers, verified facts, evidence, tools used, prepared
    attachments, managed files/directories, and durable artifacts.
 2. `IVecEngine` publishes the summary through `queueTaskSummaryPublication`.
-3. `MemoryManager.queueTaskSummary` creates or updates a session focus card
-   when the summary has tools, focus assets, attachment names, or an explicit
-   continuation `focusId`.
-4. No-tool direct replies without durable assets or focus continuation are
-   intentionally skipped.
-5. Focus tools can search, get, activate, deactivate, update, and list focus
-   cards.
-6. Activated cards are returned as `activeFocus` for the current session.
-7. When a session closes, durable session focus cards are promoted or merged
-   into global cards for the attention shelf.
+3. `MemoryManager.queueTaskSummary` creates or updates an activity when the
+   summary has tools, activity assets, attachment names, or explicit
+   continuation `activityId`.
+4. No-tool direct replies without durable activity state are intentionally
+   skipped.
+5. `ContinuityResolver` deterministically resolves future inputs by exact
+   identity anchors first, then aliases/search terms, then recent follow-up
+   phrasing.
+6. The resolver returns `continue` only for a strong winner with a clear score
+   gap. Close matches return `ambiguous`; weak matches return `new`.
+7. Activity tools can search, get, select, update, and archive activity threads.
 
-The decision model sees compact shelf items in the context pack, not full focus
-rows. Full card details can be retrieved through focus tools when needed.
+Activity assets:
 
-Compact shelf items include:
-
-- `focusId`
-- `scope`
-- `type`
-- `status`
-- `label`
-- `summary`
-- `hints`
-- `topArtifacts`
-- `openWork`
-- `lastTouchedAt`
-- `lastTouchedLabel`
-- `attentionScore`
-- `nextStep`
-- activation metadata when present
-
-Full focus cards include continuation fields:
-
-- `assets`: durable inputs and work products. User-provided files, directories,
-  documents, and datasets use `origin: "user_attached"` and `role: "input"`.
-  Agent-created or modified files use `origin: "agent_generated"` or
-  `"agent_modified"` and usually `role: "working_artifact"`.
-- `runs`: compact run history with run id, run path, status, task status, user
-  message, assistant response, summary, tools used, asset ids, and timestamp.
-- `currentState`: resumable state such as goal, open work, blockers, key
-  facts, evidence, next step, changed files, working directories, and last
-  verification summary.
-
-Activation:
-
-1. The model can call `focus_activate` after matching the current message to a
-   focus shelf item or search result.
-2. Activation sets `activeSessionId`, `activatedAt`, and `activatedReason` on
-   the card and writes a focus event.
-3. The activation tool returns the full card, including `assets`, `runs`, and
-   `currentState`.
-4. Subsequent tool calls in the same action can use that full state. For
-   example, `attachment_restore` can restore a user-attached document, dataset,
-   file, or directory asset into the current run. `restore_attachment_context`
-   remains as a compatibility alias.
-5. At finalization, the runner uses active focus to set `focusId` on the task
-   summary. The progress reducer then updates the same card with the new run,
-   refreshed assets, and current state.
+- User-provided files, directories, documents, and datasets use durable asset
+  references that can be restored into later runs.
+- Agent-created or modified files are captured as working artifacts when they
+  are durable step artifacts.
+- `attachment_restore` and `activity_restore_assets` restore assets from the
+  current resolved activity or from an explicit `activityId`, `assetId`, or
+  reference.
 
 Boundary:
 
 - Current-run progress belongs in run state and run artifacts.
-- Reusable continuation state belongs in focus cards.
+- Reusable continuation state belongs in activity threads.
 - Raw conversation remains in session JSONL.
 - Personal facts and preferences belong in personal memory.
 
@@ -251,10 +235,10 @@ For each user message:
 2. The session manager creates a new daily session if the local date changed.
 3. The user message is appended to the session JSONL file.
 4. The hot exchange cache is updated.
-5. The runner syncs hot recent activity and focus-card shelves into
+5. The runner syncs hot recent activity and resolves activity continuity into
    `LoopState`.
-6. `context-pack.ts` includes bounded recent conversation and focus context in
-   the decision prompt.
+6. `context-pack.ts` includes bounded recent conversation and compact
+   `continuity` context in the decision prompt.
 7. The assistant response is appended to the session file and completes the hot
    exchange.
 
@@ -272,8 +256,8 @@ These concepts should not be written into session files:
 - tool calls and tool results
 - agent step traces
 - managed attachment payloads
-- focus-card attachment assets
-- focus cards
+- activity attachment assets
+- activity threads
 - handoff summaries
 - context-pressure rotation state
 - personal memory facts

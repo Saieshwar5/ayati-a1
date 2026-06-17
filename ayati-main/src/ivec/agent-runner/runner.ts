@@ -3,7 +3,8 @@ import { devLog, devWarn } from "../../shared/index.js";
 import { prepareIncomingAttachments } from "../../documents/attachment-preparer.js";
 import type { PreparedAttachmentRecord } from "../../documents/prepared-attachment-registry.js";
 import type { PreparedAttachmentSummary } from "../../documents/types.js";
-import type { FocusAssetRef } from "../../memory/types.js";
+import { ContinuityResolver } from "../../memory/activity/continuity-resolver.js";
+import type { ActivityAssetRef } from "../../memory/types.js";
 import type { AgentArtifact } from "../types.js";
 import type {
   ActToolCallRecord,
@@ -120,6 +121,7 @@ export async function runAgentLoop(
 
   syncTransientMemoryContext(state, deps);
   state.userMessage = getPrimaryUserMessage(deps);
+  syncContinuityContext(state, deps);
 
   devLog(
     `[${deps.clientId}] agentLoop start inputKind=${state.inputKind ?? "user_message"} runHandle=${deps.runHandle.runId} message=${state.userMessage.slice(0, 160)}`,
@@ -129,6 +131,7 @@ export async function runAgentLoop(
   recordStateSnapshotMetric("initial");
 
   await prepareAttachmentsForRun(deps, state, runId, runPath);
+  syncContinuityContext(state, deps);
   queueStateSnapshot();
 
   while (state.status === "running" && state.iteration < config.maxIterations) {
@@ -139,6 +142,7 @@ export async function runAgentLoop(
     }
 
     syncTransientMemoryContext(state, deps);
+    syncContinuityContext(state, deps);
     state.iteration++;
     const finalReplyFromVerifiedState = canCompleteFromVerifiedState(state);
 
@@ -319,6 +323,7 @@ interface ExecuteActionStepResult {
 
 async function executeActionStep(input: ExecuteActionStepInput): Promise<ExecuteActionStepResult> {
   input.state.runClass = "task";
+  const currentActivityId = input.state.continuity?.mode === "continue" ? input.state.continuity.current?.activityId : undefined;
   let execution = await executeAgentAction(
     {
       toolExecutor: input.deps.toolExecutor,
@@ -330,6 +335,7 @@ async function executeActionStep(input: ExecuteActionStepInput): Promise<Execute
       runHandle: input.deps.runHandle,
       metrics: input.metrics,
       runPath: input.state.runPath,
+      ...(currentActivityId ? { activityId: currentActivityId } : {}),
     },
     input.decision.action,
     input.stepNumber,
@@ -351,6 +357,7 @@ async function executeActionStep(input: ExecuteActionStepInput): Promise<Execute
           runHandle: input.deps.runHandle,
           metrics: input.metrics,
           runPath: input.state.runPath,
+          ...(currentActivityId ? { activityId: currentActivityId } : {}),
         },
         recovery.action,
         input.stepNumber,
@@ -609,9 +616,7 @@ function buildInitialState(deps: AgentLoopDeps, config: LoopConfig, runPath: str
     managedDirectories: deps.managedDirectories ?? [],
     activeLearningContext: deps.activeLearningContext,
     personalMemorySnapshot: "",
-    activeFocus: [],
-    attentionShelf: [],
-    sessionFocusCards: [],
+    continuity: { mode: "new", confidence: 0, reasons: ["initial state"] },
     recentExchanges: [],
     toolContext: { recent: [] },
   };
@@ -642,10 +647,22 @@ function syncTransientMemoryContext(state: LoopState, deps: AgentLoopDeps): void
   const memCtx = deps.sessionMemory.getPromptMemoryContext();
   state.activeLearningContext = deps.activeLearningContext;
   state.personalMemorySnapshot = memCtx.personalMemorySnapshot ?? "";
-  state.activeFocus = memCtx.activeFocus ?? [];
-  state.attentionShelf = memCtx.attentionShelf ?? [];
-  state.sessionFocusCards = memCtx.sessionFocusCards ?? [];
   state.recentExchanges = memCtx.recentExchanges ?? [];
+}
+
+function syncContinuityContext(state: LoopState, deps: AgentLoopDeps): void {
+  const store = deps.sessionMemory.getActivityStore?.();
+  if (!store) {
+    state.continuity = { mode: "new", confidence: 0, reasons: ["activity store is not configured"] };
+    return;
+  }
+  const resolver = new ContinuityResolver({ store });
+  state.continuity = resolver.resolve({
+    clientId: deps.clientId,
+    sessionId: deps.runHandle.sessionId,
+    userMessage: state.userMessage,
+    currentAssetRefs: buildActivityAssets(state),
+  });
 }
 
 function getPrimaryUserMessage(deps: AgentLoopDeps): string {
@@ -835,7 +852,7 @@ function buildTaskSummaryRecord(
   return {
     runId: state.runId,
     runPath: state.runPath,
-    focusId: selectContinuationFocusId(state),
+    activityId: selectContinuationActivityId(state),
     status,
     taskStatus: state.workState.status,
     objective: state.userMessage.trim() || undefined,
@@ -859,7 +876,7 @@ function buildTaskSummaryRecord(
     nextAction: deriveNextAction(state),
     stopReason: deriveStopReason(state, status),
     attachmentNames: buildAttachmentNames(state.preparedAttachments),
-    focusAssets: buildFocusAssets(state),
+    activityAssets: buildActivityAssets(state),
   };
 }
 
@@ -896,18 +913,14 @@ function buildAttachmentNames(preparedAttachments: PreparedAttachmentSummary[] |
   return (preparedAttachments ?? []).map((attachment) => attachment.displayName);
 }
 
-function selectContinuationFocusId(state: LoopState): string | undefined {
-  const active = state.activeFocus ?? [];
-  if (active.length === 0) {
-    return undefined;
-  }
-  return active[0]?.focusId;
+function selectContinuationActivityId(state: LoopState): string | undefined {
+  return state.continuity?.mode === "continue" ? state.continuity.current?.activityId : undefined;
 }
 
-function buildFocusAssets(state: LoopState): FocusAssetRef[] {
+function buildActivityAssets(state: LoopState): ActivityAssetRef[] {
   const now = new Date().toISOString();
-  return dedupeFocusAssets([
-    ...(state.preparedAttachmentRecords ?? []).map((record) => attachmentRecordToFocusAsset(record, state.runId, state.runPath, now)),
+  return dedupeActivityAssets([
+    ...(state.preparedAttachmentRecords ?? []).map((record) => attachmentRecordToActivityAsset(record, state.runId, state.runPath, now)),
     ...(state.managedFiles ?? []).map((file) => ({
       assetId: stableAssetId("file", file.fileId),
       kind: "file" as const,
@@ -974,12 +987,12 @@ function buildFocusAssets(state: LoopState): FocusAssetRef[] {
   ]);
 }
 
-function attachmentRecordToFocusAsset(
+function attachmentRecordToActivityAsset(
   record: PreparedAttachmentRecord,
   runId: string,
   runPath: string,
   now: string,
-): FocusAssetRef {
+): ActivityAssetRef {
   const kind = record.summary.mode === "structured_data" ? "dataset" : "document";
   return {
     assetId: stableAssetId(kind, record.summary.documentId),
@@ -1008,8 +1021,8 @@ function attachmentRecordToFocusAsset(
   };
 }
 
-function dedupeFocusAssets(assets: FocusAssetRef[]): FocusAssetRef[] {
-  const output = new Map<string, FocusAssetRef>();
+function dedupeActivityAssets(assets: ActivityAssetRef[]): ActivityAssetRef[] {
+  const output = new Map<string, ActivityAssetRef>();
   for (const asset of assets) {
     output.set(asset.assetId, asset);
   }
@@ -1024,7 +1037,7 @@ function isDurableStepArtifact(artifact: string): boolean {
   return !normalized.includes("/observations/");
 }
 
-function inferPathAssetKind(path: string): FocusAssetRef["kind"] {
+function inferPathAssetKind(path: string): ActivityAssetRef["kind"] {
   if (/\.(?:html|css|js|jsx|ts|tsx|json|md|txt|py|sql|csv|pdf|png|jpg|jpeg|svg)$/i.test(path)) {
     return "file";
   }

@@ -148,7 +148,7 @@ export async function main(): Promise<void> {
     projectRoot,
     clientId: CLIENT_ID,
     personalMemoryStore: memory.personalMemoryStore,
-    focusStore: memory.focusStore,
+    activityStore: memory.activityStore,
     memoryRetriever: memory.memoryRetriever,
     episodicMemoryController: memory.episodicMemoryController,
     sessionAttachmentService: content.sessionAttachmentService,

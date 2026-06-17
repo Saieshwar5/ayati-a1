@@ -17,6 +17,7 @@ export interface ToolExecutionContext {
   clientId?: string;
   runId?: string;
   sessionId?: string;
+  activityId?: string;
   stepNumber?: number;
   uiContext?: AgentUiContext;
 }

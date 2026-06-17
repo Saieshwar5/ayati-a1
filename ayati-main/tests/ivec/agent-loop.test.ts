@@ -285,51 +285,21 @@ describe("agentLoop", () => {
             { role: "assistant", content: "Created the todo app.", timestamp: "2026-06-12T09:01:00.000Z", sessionPath: "sessions/s1.md", runId: "old-run" },
           ],
           personalMemorySnapshot: "- Prefers concise implementation notes.",
-          activeFocus: [{
-            focusId: "focus_todo",
-            scope: "global",
-            type: "artifact_work",
-            status: "active",
-            label: "todo app",
-            summary: "Created todo app shell.",
-            hints: ["todo app", "responsive"],
-            topArtifacts: ["todo/index.html"],
-            openWork: ["make responsive"],
-            lastTouchedAt: "2026-06-12T09:01:00.000Z",
-            lastTouchedLabel: "10m ago",
-            attentionScore: 0.92,
-            activatedAt: "2026-06-12T09:09:00.000Z",
-            activatedReason: "current follow-up",
-          }],
-          attentionShelf: [{
-            focusId: "focus_todo",
-            scope: "global",
-            type: "artifact_work",
-            status: "warm",
-            label: "todo app",
-            summary: "Created todo app shell.",
-            hints: ["todo app", "responsive"],
-            topArtifacts: ["todo/index.html"],
-            openWork: ["make responsive"],
-            lastTouchedAt: "2026-06-12T09:01:00.000Z",
-            lastTouchedLabel: "10m ago",
-            attentionScore: 0.82,
-          }],
-          sessionFocusCards: [{
-            focusId: "focus_todo_session",
-            scope: "session",
-            sessionId: "s1",
-            type: "artifact_work",
-            status: "active",
-            label: "todo app",
-            summary: "Wrote initial files.",
-            hints: ["todo app"],
-            topArtifacts: ["todo/index.html"],
-            openWork: ["make responsive"],
-            lastTouchedAt: "2026-06-12T09:01:00.000Z",
-            lastTouchedLabel: "10m ago",
-            attentionScore: 0.88,
-          }],
+          continuity: {
+            mode: "continue",
+            confidence: 0.91,
+            reasons: ["matched durable activity identity anchor"],
+            current: {
+              activityId: "activity_todo",
+              kind: "project",
+              title: "todo app",
+              openWork: ["make responsive"],
+              nextStep: "make responsive",
+              verifiedFacts: ["todo/index.html exists"],
+              topAssets: ["todo/index.html"],
+              lastTouchedAt: "2026-06-12T09:01:00.000Z",
+            },
+          },
         }),
         getSessionStatus: vi.fn().mockReturnValue({
           contextPercent: 12,
@@ -371,15 +341,14 @@ describe("agentLoop", () => {
       expect(stateView.context.runtime).toBeUndefined();
       expect(stateView.context.session).toBeUndefined();
       expect(stateView.context.recentSystemActivity).toBeUndefined();
-      expect(stateView.context.activeFocus[0].focusId).toBe("focus_todo");
-      expect(stateView.context.attentionShelf[0].focusId).toBe("focus_todo");
+      expect(stateView.context.continuity.mode).toBe("new");
+      expect(stateView.context.continuity.reasons).toEqual(["activity store is not configured"]);
       expect(stateView.context.recentConversation).toHaveLength(1);
       expect(stateView.context.recentConversation[0].user.content).toBe("Build a todo app");
       expect(stateView.context.recentConversation[0].runId).toBe("old-run");
       expect(stateView.context.recentActivity).toBeUndefined();
       expect(stateView.context.recentExact).toBeUndefined();
       expect(stateView.context.recentTasks).toBeUndefined();
-      expect(stateView.context.sessionFocusCards[0].openWork).toEqual(["make responsive"]);
       expect(stateView.context.previousSessionSummary).toBeUndefined();
       expect(stateView.context.personalMemorySnapshot).toContain("concise");
     } finally {

@@ -481,24 +481,20 @@ describe("IVecEngine", () => {
         },
       ],
       activeSessionPath: "sessions/s1.md",
-      sessionFocusCards: [
-        {
-          focusId: "focus-latency",
-          scope: "session" as const,
-          sessionId: "s1",
-          type: "investigation" as const,
-          status: "active" as const,
-          label: "Measure the current agent loop",
-          summary: "Profiled decision latency",
-          hints: ["latency", "decision"],
-          topArtifacts: [],
+      continuity: {
+        mode: "continue" as const,
+        confidence: 0.76,
+        reasons: ["matched durable activity identity anchor"],
+        current: {
+          activityId: "activity_latency",
+          kind: "debug" as const,
+          title: "Measure the current agent loop",
           openWork: [],
+          verifiedFacts: ["Profiled decision latency"],
+          topAssets: [],
           lastTouchedAt: "2026-04-18T08:30:00.000Z",
-          lastTouchedLabel: "30m ago",
-          attentionScore: 0.76,
         },
-      ],
-      attentionShelf: [],
+      },
     };
     getPromptMemoryContext.mockImplementation(() => memoryContext);
 

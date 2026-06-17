@@ -85,7 +85,7 @@ describe("SkillActivationManager", () => {
     ]));
   });
 
-  it("auto-activates attachment handling skills for focus continuation artifacts", async () => {
+  it("auto-activates attachment handling skills for activity continuation assets", async () => {
     const catalog = new SkillCatalog([
       createSkillBundle(skill("attachments", [tool("attachment_restore")])),
       createSkillBundle(skill("files", [tool("attachment_query")])),
@@ -96,10 +96,20 @@ describe("SkillActivationManager", () => {
     const manager = new SkillActivationManager({ catalog, toolExecutor: executor });
 
     const activated = await manager.prepareForDecision({
-      sessionFocusCards: [{
-        focusId: "focus_policy",
-        topArtifacts: ["policy.txt"],
-      }],
+      continuity: {
+        mode: "continue",
+        confidence: 0.92,
+        reasons: ["matched durable activity identity anchor"],
+        current: {
+          activityId: "activity_policy",
+          kind: "document",
+          title: "policy review",
+          openWork: [],
+          verifiedFacts: [],
+          topAssets: ["policy.txt"],
+          lastTouchedAt: "2026-06-17T00:00:00.000Z",
+        },
+      },
     }, {
       clientId: "c1",
       runId: "r1",

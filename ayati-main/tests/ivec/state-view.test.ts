@@ -151,6 +151,11 @@ describe("buildAgentStateView", () => {
       ],
       personalMemorySnapshot: "Prefer exact schema contracts.",
       activeLearningContext: "Golden tests should lock model-facing JSON.",
+      continuity: {
+        mode: "new",
+        confidence: 0.86,
+        reasons: ["no matching activity anchors or candidates"],
+      },
       recentExchanges: [
         {
           runId: "run-current",
@@ -190,9 +195,13 @@ describe("buildAgentStateView", () => {
       "{
         "context": {
           "currentInput": "fix prompt drift",
-          "activeFocus": [],
-          "sessionFocusCards": [],
-          "attentionShelf": [],
+          "continuity": {
+            "mode": "new",
+            "confidence": 0.86,
+            "reasons": [
+              "no matching activity anchors or candidates"
+            ]
+          },
           "personalMemorySnapshot": "Prefer exact schema contracts.",
           "activeLearningContext": "Golden tests should lock model-facing JSON.",
           "recentConversation": [

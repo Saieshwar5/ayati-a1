@@ -7,9 +7,7 @@ type PersistedLoopState = Omit<
   LoopState,
   | "activeLearningContext"
   | "personalMemorySnapshot"
-  | "activeFocus"
-  | "attentionShelf"
-  | "sessionFocusCards"
+  | "continuity"
   | "recentExchanges"
 >;
 const runArtifactWriteQueues = new Map<string, Promise<void>>();
@@ -93,15 +91,13 @@ export function readState(runPath: string): Partial<LoopState> | null {
     delete (parsed as Record<string, unknown>)["recentExchanges"];
     delete (parsed as Record<string, unknown>)["recentRunLedgers"];
     delete (parsed as Record<string, unknown>)["recentTaskSummaries"];
-    delete (parsed as Record<string, unknown>)["activeFocus"];
-    delete (parsed as Record<string, unknown>)["sessionFocusCards"];
+    delete (parsed as Record<string, unknown>)["continuity"];
     delete (parsed as Record<string, unknown>)["activeSessionAttachments"];
     delete (parsed as Record<string, unknown>)["recentSystemActivity"];
     delete (parsed as Record<string, unknown>)["runtimeContext"];
     delete (parsed as Record<string, unknown>)["activeLearningContext"];
     delete (parsed as Record<string, unknown>)["previousSessionSummary"];
     delete (parsed as Record<string, unknown>)["personalMemorySnapshot"];
-    delete (parsed as Record<string, unknown>)["attentionShelf"];
     delete (parsed as Record<string, unknown>)["activeSessionPath"];
     delete (parsed as Record<string, unknown>)["sessionStatus"];
   }
@@ -113,9 +109,7 @@ function buildPersistedLoopState(state: LoopState): PersistedLoopState {
     recentExchanges: _recentExchanges,
     activeLearningContext: _activeLearningContext,
     personalMemorySnapshot: _personalMemorySnapshot,
-    activeFocus: _activeFocus,
-    attentionShelf: _attentionShelf,
-    sessionFocusCards: _sessionFocusCards,
+    continuity: _continuity,
     ...persisted
   } = state;
   return {

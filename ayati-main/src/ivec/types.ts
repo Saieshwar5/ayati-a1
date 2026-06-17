@@ -16,7 +16,8 @@ import type {
   SessionMemory,
   MemoryRunHandle,
   ConversationExchange,
-  FocusShelfItem,
+  ContinuityContext,
+  ActivityAssetRef,
   TaskSummaryRecordInput,
 } from "../memory/types.js";
 import type { DocumentStore } from "../documents/document-store.js";
@@ -144,9 +145,7 @@ export interface LoopState {
   managedDirectories?: DirectoryAttachmentRecord[];
   activeLearningContext?: string;
   personalMemorySnapshot?: string;
-  activeFocus?: FocusShelfItem[];
-  attentionShelf?: FocusShelfItem[];
-  sessionFocusCards?: FocusShelfItem[];
+  continuity?: ContinuityContext;
   recentExchanges: ConversationExchange[];
 }
 

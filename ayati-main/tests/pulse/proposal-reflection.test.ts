@@ -55,21 +55,20 @@ const memoryContext: PromptMemoryContext = {
     },
   ],
   personalMemorySnapshot: "User is building Ayati and cares about agent autonomy.",
-  sessionFocusCards: [{
-    focusId: "focus_ai_news",
-    scope: "session",
-    type: "automation",
-    status: "active",
-    label: "Check AI news",
-    summary: "Checked current AI news and summarized important updates.",
-    hints: ["AI news", "daily"],
-    topArtifacts: [],
-    openWork: [],
-    lastTouchedAt: "2026-04-27T10:05:00.000Z",
-    lastTouchedLabel: "5m ago",
-    attentionScore: 0.8,
-  }],
-  attentionShelf: [],
+  continuity: {
+    mode: "continue",
+    confidence: 0.8,
+    reasons: ["matched activity alias"],
+    current: {
+      activityId: "activity_ai_news",
+      kind: "automation",
+      title: "Check AI news",
+      openWork: [],
+      verifiedFacts: ["Checked current AI news and summarized important updates."],
+      topAssets: [],
+      lastTouchedAt: "2026-04-27T10:05:00.000Z",
+    },
+  },
 };
 
 function createInput(provider: LlmProvider, overrides?: Partial<PulseProposalReflectionInput>): PulseProposalReflectionInput {

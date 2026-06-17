@@ -105,7 +105,7 @@ describe("daily session manager", () => {
     await restored.shutdown();
   });
 
-  it("stores tool-using task summaries as session focus cards only", async () => {
+  it("stores tool-using task summaries as activity threads only", async () => {
     let now = new Date("2026-06-12T10:00:00.000Z");
     const dataDir = tempDataDir();
     const memory = manager(dataDir, () => now);
@@ -138,13 +138,14 @@ describe("daily session manager", () => {
     });
 
     const ctx = memory.getPromptMemoryContext();
-    expect(ctx.sessionFocusCards).toHaveLength(1);
-    expect(ctx.sessionFocusCards?.[0]).toMatchObject({
-      scope: "session",
-      sessionId: run.sessionId,
-      label: "Build todo app",
-      openWork: ["make responsive"],
+    const activity = memory.getActivityStore().search("local", "todo responsive")[0];
+    expect(activity).toMatchObject({
+      title: "Build todo app",
+      state: expect.objectContaining({
+        openWork: ["make responsive"],
+      }),
     });
+    expect(ctx.continuity?.mode).toBe("new");
     expect(ctx.recentTaskSummaries).toEqual([]);
 
     await memory.flushPersistence();

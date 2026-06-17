@@ -5,7 +5,7 @@ Runtime output lives under `ayati-main/data/`.
 Known runtime data categories:
 
 - Session data.
-- Focus cards and attention shelf indexes.
+- Activity thread indexes and continuity search metadata.
 - Personal memory.
 - Episodic memory metadata and vector indexes.
 - Document storage and document vectors for prepared document compatibility.

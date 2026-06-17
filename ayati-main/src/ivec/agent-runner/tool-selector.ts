@@ -21,7 +21,7 @@ export const ALWAYS_SELECTED_KERNEL_TOOL_NAMES = new Set([
   "evidence_search",
   "evidence_read_lines",
   "evidence_tail",
-  "focus_activate",
+  "activity_select",
   "attachment_restore",
   "restore_attachment_context",
 ]);
@@ -101,10 +101,8 @@ function buildToolSelectionQuery(state: LoopState): string {
       ref.tool,
       ...ref.access,
     ]),
-    ...focusTerms(state.activeFocus),
-    ...focusTerms(state.sessionFocusCards),
-    ...focusTerms(state.attentionShelf),
-    ...focusContinuationAttachmentTerms(state),
+    ...continuityTerms(state),
+    ...activityContinuationAttachmentTerms(state),
     ...(state.completedSteps.slice(-2).flatMap((step) => [
       step.executionContract,
       step.summary,
@@ -118,24 +116,31 @@ function buildToolSelectionQuery(state: LoopState): string {
   return parts.filter((part): part is string => typeof part === "string" && part.trim().length > 0).join(" ");
 }
 
-function focusTerms(items: LoopState["activeFocus"]): string[] {
-  return (items ?? []).flatMap((item) => [
-    item.label,
-    item.summary,
-    item.nextStep,
-    ...item.openWork,
-    ...item.hints,
-    ...item.topArtifacts,
-  ]).filter((term): term is string => typeof term === "string" && term.trim().length > 0);
+function continuityTerms(state: LoopState): string[] {
+  const continuity = state.continuity;
+  if (!continuity) return [];
+  return [
+    continuity.mode,
+    ...(continuity.reasons ?? []),
+    continuity.current?.title,
+    continuity.current?.goal,
+    continuity.current?.nextStep,
+    ...(continuity.current?.openWork ?? []),
+    ...(continuity.current?.verifiedFacts ?? []),
+    ...(continuity.current?.topAssets ?? []),
+    ...(continuity.candidates ?? []).flatMap((candidate) => [
+      candidate.title,
+      candidate.reason,
+      ...candidate.topAssets,
+    ]),
+  ].filter((term): term is string => typeof term === "string" && term.trim().length > 0);
 }
 
-function focusContinuationAttachmentTerms(state: LoopState): string[] {
-  const focusItems = [
-    ...(state.activeFocus ?? []),
-    ...(state.sessionFocusCards ?? []),
-    ...(state.attentionShelf ?? []),
+function activityContinuationAttachmentTerms(state: LoopState): string[] {
+  const artifactTerms = [
+    ...(state.continuity?.current?.topAssets ?? []),
+    ...(state.continuity?.candidates ?? []).flatMap((candidate) => candidate.topAssets),
   ];
-  const artifactTerms = focusItems.flatMap((item) => item.topArtifacts);
   if (artifactTerms.length === 0) {
     return [];
   }

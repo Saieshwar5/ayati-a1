@@ -1162,7 +1162,7 @@ function largeContextUpdateRelevantDocCase(): BenchmarkCase {
         title: "Find and update the relevant doc in a noisy workspace",
         tier: "context_heavy",
         category: "context",
-        userMessage: `Find where the docs describe context pack limits in ${workspacePath} and update the note to mention activeFocus is capped at 3.`,
+        userMessage: `Find where the docs describe context pack limits in ${workspacePath} and update the note to mention continuity candidates are capped at 3.`,
         workspacePath,
         snapshotWorkspace: true,
         providerResponses: [
@@ -1194,16 +1194,16 @@ function largeContextUpdateRelevantDocCase(): BenchmarkCase {
                       content: [
                         "# Context Pack Limits",
                         "",
-                        "The context pack keeps recent conversation, active focus, session focus cards, and the attention shelf bounded.",
+                        "The context pack keeps recent conversation and continuity context bounded.",
                         "",
                         "- recentConversation is capped at 5 completed exchanges.",
-                        "- activeFocus is capped at 3 activated focus cards.",
-                        "- sessionFocusCards and attentionShelf are each capped at 5 compact cards.",
+                        "- continuity reasons are capped at 4 short reasons.",
+                        "- continuity candidates are capped at 3 compact activity candidates.",
                         "",
                       ].join("\n"),
                     },
                     dependsOn: ["read_context_doc"],
-                    purpose: "Add activeFocus cap note",
+                    purpose: "Add continuity candidate cap note",
                   },
                 ],
                 allowedTools: ["search_in_files", "read_file", "write_file"],
@@ -1216,7 +1216,7 @@ function largeContextUpdateRelevantDocCase(): BenchmarkCase {
             decision: {
               kind: "reply",
               status: "completed",
-              message: "Updated docs/runtime/context-pack.md to mention that activeFocus is capped at 3.",
+              message: "Updated docs/runtime/context-pack.md to mention that continuity candidates are capped at 3.",
             },
             usage: { inputTokens: 3500, outputTokens: 45, totalTokens: 3545 },
           },
@@ -1228,7 +1228,7 @@ function largeContextUpdateRelevantDocCase(): BenchmarkCase {
           const readCalls = readMetricNumber(metrics, ["stages", "tool:read_file", "calls"]);
           return [
             check("completed", result.status === "completed", result.status),
-            check("correct doc updated", content.includes("activeFocus is capped at 3"), content),
+            check("correct doc updated", content.includes("continuity candidates are capped at 3"), content),
             check("search used", readMetricNumber(metrics, ["stages", "tool:search_in_files", "calls"]) === 1),
             check("read calls under budget", readCalls <= 1, String(readCalls)),
             check("final answer names doc", result.content.includes("docs/runtime/context-pack.md"), result.content),
@@ -2076,10 +2076,10 @@ async function createLargeContextFixture(): Promise<string> {
   await writeFile(join(root, "docs", "runtime", "context-pack.md"), [
     "# Context Pack Limits",
     "",
-    "The context pack keeps recent conversation, active focus, session focus cards, and the attention shelf bounded.",
+    "The context pack keeps recent conversation and continuity context bounded.",
     "",
     "- recentConversation is capped at 5 completed exchanges.",
-    "- sessionFocusCards and attentionShelf are each capped at 5 compact cards.",
+    "- continuity reasons are capped at 4 short reasons.",
     "",
   ].join("\n"), "utf-8");
   await writeFile(join(root, "docs", "runtime", "verification.md"), "# Verification\n\nDeterministic verification checks tool-owned contracts.\n", "utf-8");

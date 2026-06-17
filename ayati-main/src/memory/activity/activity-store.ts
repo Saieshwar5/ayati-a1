@@ -1,0 +1,1086 @@
+import { createHash, randomUUID } from "node:crypto";
+import { mkdirSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import { DatabaseSync, type SQLInputValue } from "node:sqlite";
+import {
+  autoLoadUntil,
+  classifyLifecycle,
+  defaultImportance,
+  inferActivityKind,
+  shouldCreateActivity,
+} from "./policy.js";
+import type {
+  ActivityAlias,
+  ActivityAssetKind,
+  ActivityAssetOrigin,
+  ActivityAssetRef,
+  ActivityAssetRole,
+  ActivityIdentity,
+  ActivityIdentityType,
+  ActivityKind,
+  ActivityLifecycle,
+  ActivityRunRef,
+  ActivitySearchOptions,
+  ActivityState,
+  ActivityThread,
+  ActivityUpsertInput,
+} from "./types.js";
+
+const thisDir = dirname(fileURLToPath(import.meta.url));
+const projectRoot = resolve(thisDir, "..", "..", "..");
+const DEFAULT_DATA_DIR = resolve(projectRoot, "data", "memory");
+
+export interface ActivityStoreOptions {
+  dataDir?: string;
+  dbPath?: string;
+  now?: () => Date;
+}
+
+interface ActivityRow {
+  activity_id: string;
+  client_id: string;
+  kind: ActivityKind;
+  title: string;
+  summary: string;
+  lifecycle: ActivityLifecycle;
+  state_json: string;
+  confidence: number;
+  importance: number;
+  reuse_count: number;
+  created_at: string;
+  last_touched_at: string;
+  auto_load_until: string | null;
+  details_json: string;
+}
+
+interface IdentityRow {
+  activity_id: string;
+  type: ActivityIdentityType;
+  value: string;
+  confidence: number;
+  source: ActivityIdentity["source"];
+  last_seen_at: string;
+}
+
+interface AliasRow {
+  activity_id: string;
+  value: string;
+  confidence: number;
+  source: ActivityAlias["source"];
+  last_seen_at: string;
+}
+
+interface AssetRow {
+  activity_id: string;
+  asset_id: string;
+  kind: ActivityAssetKind;
+  origin: ActivityAssetOrigin;
+  role: ActivityAssetRole;
+  display_name: string | null;
+  path: string | null;
+  uri: string | null;
+  document_id: string | null;
+  file_id: string | null;
+  directory_id: string | null;
+  prepared_input_id: string | null;
+  manifest_json: string;
+  summary_json: string;
+  detail_json: string;
+  restore_json: string;
+  source_run_id: string;
+  source_run_path: string;
+  last_used_run_id: string;
+  last_used_at: string;
+  metadata_json: string;
+}
+
+interface RunRow {
+  activity_id: string;
+  run_id: string;
+  session_id: string;
+  run_path: string;
+  status: ActivityRunRef["status"];
+  task_status: string | null;
+  user_message: string | null;
+  assistant_response: string | null;
+  summary: string;
+  tools_used_json: string;
+  asset_ids_json: string;
+  created_at: string;
+}
+
+export class ActivityStore {
+  private readonly dbPath: string;
+  private readonly nowProvider: () => Date;
+  private db: DatabaseSync | null = null;
+
+  constructor(options?: ActivityStoreOptions) {
+    const dataDir = options?.dataDir ?? DEFAULT_DATA_DIR;
+    this.dbPath = options?.dbPath ?? resolve(dataDir, "memory.sqlite");
+    this.nowProvider = options?.now ?? (() => new Date());
+  }
+
+  start(): void {
+    mkdirSync(dirname(this.dbPath), { recursive: true });
+    this.db = new DatabaseSync(this.dbPath);
+    this.db.exec("PRAGMA journal_mode=WAL;");
+    this.db.exec("PRAGMA synchronous=NORMAL;");
+    this.createSchema();
+  }
+
+  stop(): void {
+    this.db?.close();
+    this.db = null;
+  }
+
+  upsertFromTaskSummary(input: ActivityUpsertInput): ActivityThread | null {
+    const kind = inferActivityKind(input);
+    if (!shouldCreateActivity(input, kind)) {
+      return null;
+    }
+
+    const now = this.nowProvider();
+    const existing = this.findActivityForUpsert(input);
+    const previous = existing ? this.getActivity(existing.activityId) : null;
+    const activityId = previous?.activityId ?? stableActivityId(input.clientId, input.sessionId, buildTitle(input, kind), kind);
+    const title = previous?.title ?? buildTitle(input, kind);
+    const summary = buildSummary(input, previous?.summary);
+    const identities = mergeIdentities(previous?.identities ?? [], buildIdentities(input), input.createdAt);
+    const aliases = mergeAliases(previous?.aliases ?? [], buildAliases(input, title), input.createdAt);
+    const assets = mergeAssets(previous?.assets ?? [], collectAssets(input)).slice(-40);
+    const state = buildState(input, previous?.state, assets);
+    const reuseCount = previous ? previous.reuseCount + 1 : 1;
+    const importance = Math.max(previous?.importance ?? defaultImportance(kind), defaultImportance(kind));
+    const lifecycle = classifyLifecycle({
+      kind,
+      lastTouchedAt: input.createdAt,
+      openWorkCount: state.openWork.length,
+      reuseCount,
+      now,
+    });
+    const thread: ActivityThread = {
+      activityId,
+      clientId: input.clientId,
+      kind,
+      title,
+      summary,
+      lifecycle,
+      identities,
+      aliases,
+      assets,
+      runs: appendRun(previous?.runs ?? [], buildRun(input, assets)),
+      state,
+      confidence: previous ? Math.min(0.99, previous.confidence + 0.04) : initialConfidence(input),
+      importance,
+      reuseCount,
+      createdAt: previous?.createdAt ?? input.createdAt,
+      lastTouchedAt: input.createdAt,
+      autoLoadUntil: autoLoadUntil(kind, input.createdAt),
+      details: {
+        ...(previous?.details ?? {}),
+        lastAdmission: {
+          kind,
+          durableAnchors: identities.filter((identity) => identity.type !== "explicit_alias").length,
+          assetCount: assets.length,
+        },
+      },
+    };
+
+    this.writeThread(thread, previous ? "updated" : "created", input.runId);
+    return this.getActivity(activityId);
+  }
+
+  getActivity(activityId: string): ActivityThread | null {
+    const row = this.requireDb()
+      .prepare("SELECT * FROM activity_threads WHERE activity_id = ?")
+      .get(activityId) as ActivityRow | undefined;
+    return row ? this.toActivityThread(row) : null;
+  }
+
+  getActivityByIdentity(clientId: string, type: ActivityIdentityType, value: string): ActivityThread | null {
+    const normalized = normalizeIdentityValue(type, value);
+    if (!normalized) return null;
+    const row = this.requireDb().prepare(`
+      SELECT t.*
+      FROM activity_identities i
+      JOIN activity_threads t ON t.activity_id = i.activity_id
+      WHERE i.client_id = ? AND i.type = ? AND i.value = ? AND t.lifecycle <> 'archived'
+      ORDER BY i.confidence DESC, t.last_touched_at DESC
+      LIMIT 1
+    `).get(clientId, type, normalized) as ActivityRow | undefined;
+    return row ? this.toActivityThread(row) : null;
+  }
+
+  findByIdentities(
+    clientId: string,
+    identities: Array<Pick<ActivityIdentity, "type" | "value">>,
+    limit = 5,
+  ): Array<{ activity: ActivityThread; matches: number }> {
+    const normalized = identities
+      .map((identity) => ({
+        type: identity.type,
+        value: normalizeIdentityValue(identity.type, identity.value),
+      }))
+      .filter((identity): identity is { type: ActivityIdentityType; value: string } => identity.value.length > 0);
+    if (normalized.length === 0) return [];
+
+    const found = new Map<string, { activity: ActivityThread; matches: number }>();
+    for (const identity of normalized) {
+      const rows = this.requireDb().prepare(`
+        SELECT t.*
+        FROM activity_identities i
+        JOIN activity_threads t ON t.activity_id = i.activity_id
+        WHERE i.client_id = ? AND i.type = ? AND i.value = ? AND t.lifecycle <> 'archived'
+        ORDER BY i.confidence DESC, t.last_touched_at DESC
+        LIMIT 5
+      `).all(clientId, identity.type, identity.value) as unknown as ActivityRow[];
+      for (const row of rows) {
+        const activity = this.toActivityThread(row);
+        const previous = found.get(activity.activityId);
+        found.set(activity.activityId, {
+          activity,
+          matches: (previous?.matches ?? 0) + 1,
+        });
+      }
+    }
+    return [...found.values()]
+      .sort((a, b) => b.matches - a.matches || b.activity.lastTouchedAt.localeCompare(a.activity.lastTouchedAt))
+      .slice(0, Math.max(1, Math.min(10, limit)));
+  }
+
+  search(clientId: string, query: string, options?: ActivitySearchOptions): ActivityThread[] {
+    const terms = tokenize(query);
+    if (terms.length === 0) return [];
+    const limit = Math.max(1, Math.min(20, options?.limit ?? 5));
+    const predicates = terms.map(() => "s.searchable_text LIKE ? ESCAPE '\\'").join(" OR ");
+    const params: SQLInputValue[] = [
+      clientId,
+      ...terms.map((term) => `%${escapeLike(term)}%`),
+      limit * 4,
+    ];
+    const rows = this.requireDb().prepare(`
+      SELECT t.*
+      FROM activity_search s
+      JOIN activity_threads t ON t.activity_id = s.activity_id
+      WHERE s.client_id = ? AND (${predicates}) ${options?.includeArchived ? "" : "AND t.lifecycle <> 'archived'"}
+      ORDER BY t.last_touched_at DESC
+      LIMIT ?
+    `).all(...params) as unknown as ActivityRow[];
+    return rows
+      .map((row) => this.toActivityThread(row))
+      .map((activity) => ({
+        activity,
+        score: tokenOverlapScore(terms, searchableText(activity)),
+      }))
+      .filter(({ score }) => score > 0)
+      .sort((a, b) => b.score - a.score || b.activity.lastTouchedAt.localeCompare(a.activity.lastTouchedAt))
+      .slice(0, limit)
+      .map(({ activity }) => activity);
+  }
+
+  listRecent(clientId: string, limit = 5): ActivityThread[] {
+    const rows = this.requireDb().prepare(`
+      SELECT *
+      FROM activity_threads
+      WHERE client_id = ? AND lifecycle <> 'archived'
+      ORDER BY last_touched_at DESC
+      LIMIT ?
+    `).all(clientId, Math.max(1, Math.min(20, limit))) as unknown as ActivityRow[];
+    return rows.map((row) => this.toActivityThread(row));
+  }
+
+  updateActivity(input: {
+    clientId: string;
+    activityId: string;
+    title?: string;
+    summary?: string;
+    openWork?: string[];
+    verifiedFacts?: string[];
+    nextStep?: string;
+  }): ActivityThread | null {
+    const activity = this.getActivity(input.activityId);
+    if (!activity || activity.clientId !== input.clientId) return null;
+    const now = this.nowProvider().toISOString();
+    const state: ActivityState = {
+      ...activity.state,
+      ...(input.openWork ? { openWork: compactList(input.openWork, 8, 220) } : {}),
+      verifiedFacts: compactList([
+        ...activity.state.verifiedFacts,
+        ...(input.verifiedFacts ?? []),
+      ], 12, 220),
+      ...(input.nextStep !== undefined ? { nextStep: input.nextStep.trim() || undefined } : {}),
+    };
+    const next: ActivityThread = {
+      ...activity,
+      ...(input.title?.trim() ? { title: compactText(input.title, 90) } : {}),
+      ...(input.summary?.trim() ? { summary: compactText(input.summary, 900) } : {}),
+      state,
+      lastTouchedAt: now,
+      lifecycle: classifyLifecycle({
+        kind: activity.kind,
+        lastTouchedAt: now,
+        openWorkCount: state.openWork.length,
+        reuseCount: activity.reuseCount,
+        now: this.nowProvider(),
+      }),
+    };
+    this.writeThread(next, "updated_by_tool", input.activityId);
+    return this.getActivity(input.activityId);
+  }
+
+  archiveActivity(clientId: string, activityId: string): boolean {
+    const activity = this.getActivity(activityId);
+    if (!activity || activity.clientId !== clientId) return false;
+    const now = this.nowProvider().toISOString();
+    this.requireDb().prepare(`
+      UPDATE activity_threads
+      SET lifecycle = 'archived', last_touched_at = ?
+      WHERE activity_id = ? AND client_id = ?
+    `).run(now, activityId, clientId);
+    this.writeEvent(activityId, clientId, activityId, "archived", {}, now);
+    return true;
+  }
+
+  private findActivityForUpsert(input: ActivityUpsertInput): ActivityThread | null {
+    if (input.activityId?.trim()) {
+      const explicit = this.getActivity(input.activityId.trim());
+      if (explicit?.clientId === input.clientId) return explicit;
+    }
+    const identityMatches = this.findByIdentities(input.clientId, buildIdentities(input), 1);
+    return identityMatches[0]?.activity ?? null;
+  }
+
+  private writeThread(thread: ActivityThread, eventType: string, runId: string): void {
+    const db = this.requireDb();
+    const tx = db.prepare("SELECT 1");
+    void tx.get();
+    db.prepare(`
+      INSERT INTO activity_threads (
+        activity_id, client_id, kind, title, summary, lifecycle, state_json,
+        confidence, importance, reuse_count, created_at, last_touched_at,
+        auto_load_until, details_json
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(activity_id) DO UPDATE SET
+        kind = excluded.kind,
+        title = excluded.title,
+        summary = excluded.summary,
+        lifecycle = excluded.lifecycle,
+        state_json = excluded.state_json,
+        confidence = excluded.confidence,
+        importance = excluded.importance,
+        reuse_count = excluded.reuse_count,
+        last_touched_at = excluded.last_touched_at,
+        auto_load_until = excluded.auto_load_until,
+        details_json = excluded.details_json
+    `).run(
+      thread.activityId,
+      thread.clientId,
+      thread.kind,
+      thread.title,
+      thread.summary,
+      thread.lifecycle,
+      JSON.stringify(thread.state),
+      thread.confidence,
+      thread.importance,
+      thread.reuseCount,
+      thread.createdAt,
+      thread.lastTouchedAt,
+      thread.autoLoadUntil ?? null,
+      JSON.stringify(thread.details),
+    );
+
+    for (const identity of thread.identities) {
+      db.prepare(`
+        INSERT INTO activity_identities (
+          activity_id, client_id, type, value, confidence, source, last_seen_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(client_id, type, value) DO UPDATE SET
+          activity_id = excluded.activity_id,
+          confidence = MAX(activity_identities.confidence, excluded.confidence),
+          source = excluded.source,
+          last_seen_at = excluded.last_seen_at
+      `).run(thread.activityId, thread.clientId, identity.type, identity.value, identity.confidence, identity.source, identity.lastSeenAt);
+    }
+
+    for (const alias of thread.aliases) {
+      db.prepare(`
+        INSERT INTO activity_aliases (
+          activity_id, client_id, value, confidence, source, last_seen_at
+        ) VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT(client_id, value) DO UPDATE SET
+          activity_id = excluded.activity_id,
+          confidence = MAX(activity_aliases.confidence, excluded.confidence),
+          source = excluded.source,
+          last_seen_at = excluded.last_seen_at
+      `).run(thread.activityId, thread.clientId, alias.value, alias.confidence, alias.source, alias.lastSeenAt);
+    }
+
+    for (const asset of thread.assets) {
+      db.prepare(`
+        INSERT INTO activity_assets (
+          activity_id, asset_id, kind, origin, role, display_name, path, uri,
+          document_id, file_id, directory_id, prepared_input_id, manifest_json,
+          summary_json, detail_json, restore_json, source_run_id, source_run_path,
+          last_used_run_id, last_used_at, metadata_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(activity_id, asset_id) DO UPDATE SET
+          kind = excluded.kind,
+          origin = excluded.origin,
+          role = excluded.role,
+          display_name = excluded.display_name,
+          path = excluded.path,
+          uri = excluded.uri,
+          document_id = excluded.document_id,
+          file_id = excluded.file_id,
+          directory_id = excluded.directory_id,
+          prepared_input_id = excluded.prepared_input_id,
+          manifest_json = excluded.manifest_json,
+          summary_json = excluded.summary_json,
+          detail_json = excluded.detail_json,
+          restore_json = excluded.restore_json,
+          last_used_run_id = excluded.last_used_run_id,
+          last_used_at = excluded.last_used_at,
+          metadata_json = excluded.metadata_json
+      `).run(
+        thread.activityId,
+        asset.assetId,
+        asset.kind,
+        asset.origin,
+        asset.role,
+        asset.displayName ?? null,
+        asset.path ?? null,
+        asset.uri ?? null,
+        asset.documentId ?? null,
+        asset.fileId ?? null,
+        asset.directoryId ?? null,
+        asset.preparedInputId ?? null,
+        JSON.stringify(asset.manifest ?? null),
+        JSON.stringify(asset.summary ?? null),
+        JSON.stringify(asset.detail ?? null),
+        JSON.stringify(asset.restore ?? null),
+        asset.sourceRunId,
+        asset.sourceRunPath,
+        asset.lastUsedRunId,
+        asset.lastUsedAt,
+        JSON.stringify(asset.metadata ?? null),
+      );
+    }
+
+    for (const run of thread.runs) {
+      db.prepare(`
+        INSERT INTO activity_runs (
+          activity_id, run_id, session_id, run_path, status, task_status,
+          user_message, assistant_response, summary, tools_used_json,
+          asset_ids_json, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(activity_id, run_id) DO UPDATE SET
+          session_id = excluded.session_id,
+          run_path = excluded.run_path,
+          status = excluded.status,
+          task_status = excluded.task_status,
+          user_message = excluded.user_message,
+          assistant_response = excluded.assistant_response,
+          summary = excluded.summary,
+          tools_used_json = excluded.tools_used_json,
+          asset_ids_json = excluded.asset_ids_json,
+          created_at = excluded.created_at
+      `).run(
+        thread.activityId,
+        run.runId,
+        run.sessionId,
+        run.runPath,
+        run.status,
+        run.taskStatus ?? null,
+        run.userMessage ?? null,
+        run.assistantResponse ?? null,
+        run.summary,
+        JSON.stringify(run.toolsUsed),
+        JSON.stringify(run.assetIds),
+        run.createdAt,
+      );
+    }
+
+    db.prepare(`
+      INSERT INTO activity_search (activity_id, client_id, searchable_text, updated_at)
+      VALUES (?, ?, ?, ?)
+      ON CONFLICT(activity_id) DO UPDATE SET
+        searchable_text = excluded.searchable_text,
+        updated_at = excluded.updated_at
+    `).run(thread.activityId, thread.clientId, searchableText(thread), thread.lastTouchedAt);
+
+    this.writeEvent(thread.activityId, thread.clientId, runId, eventType, {
+      title: thread.title,
+      kind: thread.kind,
+      lifecycle: thread.lifecycle,
+    }, thread.lastTouchedAt);
+  }
+
+  private writeEvent(
+    activityId: string,
+    clientId: string,
+    runId: string,
+    eventType: string,
+    payload: Record<string, unknown>,
+    createdAt: string,
+  ): void {
+    this.requireDb().prepare(`
+      INSERT INTO activity_events (id, activity_id, client_id, run_id, event_type, payload_json, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run(randomUUID(), activityId, clientId, runId, eventType, JSON.stringify(payload), createdAt);
+  }
+
+  private toActivityThread(row: ActivityRow): ActivityThread {
+    const identities = this.requireDb().prepare(`
+      SELECT * FROM activity_identities WHERE activity_id = ? ORDER BY confidence DESC, last_seen_at DESC
+    `).all(row.activity_id) as unknown as IdentityRow[];
+    const aliases = this.requireDb().prepare(`
+      SELECT * FROM activity_aliases WHERE activity_id = ? ORDER BY confidence DESC, last_seen_at DESC
+    `).all(row.activity_id) as unknown as AliasRow[];
+    const assets = this.requireDb().prepare(`
+      SELECT * FROM activity_assets WHERE activity_id = ? ORDER BY last_used_at DESC
+    `).all(row.activity_id) as unknown as AssetRow[];
+    const runs = this.requireDb().prepare(`
+      SELECT * FROM activity_runs WHERE activity_id = ? ORDER BY created_at ASC
+    `).all(row.activity_id) as unknown as RunRow[];
+    return {
+      activityId: row.activity_id,
+      clientId: row.client_id,
+      kind: row.kind,
+      title: row.title,
+      summary: row.summary,
+      lifecycle: row.lifecycle,
+      identities: identities.map((identity) => ({
+        type: identity.type,
+        value: identity.value,
+        confidence: Number(identity.confidence ?? 0),
+        source: identity.source,
+        lastSeenAt: identity.last_seen_at,
+      })),
+      aliases: aliases.map((alias) => ({
+        value: alias.value,
+        confidence: Number(alias.confidence ?? 0),
+        source: alias.source,
+        lastSeenAt: alias.last_seen_at,
+      })),
+      assets: assets.map(rowToAsset),
+      runs: runs.map(rowToRun),
+      state: normalizeState(parseJsonObject(row.state_json)),
+      confidence: Number(row.confidence ?? 0),
+      importance: Number(row.importance ?? 0),
+      reuseCount: Number(row.reuse_count ?? 0),
+      createdAt: row.created_at,
+      lastTouchedAt: row.last_touched_at,
+      ...(row.auto_load_until ? { autoLoadUntil: row.auto_load_until } : {}),
+      details: parseJsonObject(row.details_json),
+    };
+  }
+
+  private createSchema(): void {
+    const db = this.requireDb();
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS activity_threads (
+        activity_id TEXT PRIMARY KEY,
+        client_id TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        title TEXT NOT NULL,
+        summary TEXT NOT NULL,
+        lifecycle TEXT NOT NULL,
+        state_json TEXT NOT NULL,
+        confidence REAL NOT NULL,
+        importance REAL NOT NULL,
+        reuse_count INTEGER NOT NULL,
+        created_at TEXT NOT NULL,
+        last_touched_at TEXT NOT NULL,
+        auto_load_until TEXT,
+        details_json TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_activity_threads_client_recent
+        ON activity_threads(client_id, lifecycle, last_touched_at DESC);
+
+      CREATE TABLE IF NOT EXISTS activity_identities (
+        activity_id TEXT NOT NULL,
+        client_id TEXT NOT NULL,
+        type TEXT NOT NULL,
+        value TEXT NOT NULL,
+        confidence REAL NOT NULL,
+        source TEXT NOT NULL,
+        last_seen_at TEXT NOT NULL,
+        UNIQUE(client_id, type, value)
+      );
+      CREATE INDEX IF NOT EXISTS idx_activity_identities_activity
+        ON activity_identities(activity_id);
+
+      CREATE TABLE IF NOT EXISTS activity_aliases (
+        activity_id TEXT NOT NULL,
+        client_id TEXT NOT NULL,
+        value TEXT NOT NULL,
+        confidence REAL NOT NULL,
+        source TEXT NOT NULL,
+        last_seen_at TEXT NOT NULL,
+        UNIQUE(client_id, value)
+      );
+      CREATE INDEX IF NOT EXISTS idx_activity_aliases_activity
+        ON activity_aliases(activity_id);
+
+      CREATE TABLE IF NOT EXISTS activity_assets (
+        activity_id TEXT NOT NULL,
+        asset_id TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        origin TEXT NOT NULL,
+        role TEXT NOT NULL,
+        display_name TEXT,
+        path TEXT,
+        uri TEXT,
+        document_id TEXT,
+        file_id TEXT,
+        directory_id TEXT,
+        prepared_input_id TEXT,
+        manifest_json TEXT NOT NULL,
+        summary_json TEXT NOT NULL,
+        detail_json TEXT NOT NULL,
+        restore_json TEXT NOT NULL,
+        source_run_id TEXT NOT NULL,
+        source_run_path TEXT NOT NULL,
+        last_used_run_id TEXT NOT NULL,
+        last_used_at TEXT NOT NULL,
+        metadata_json TEXT NOT NULL,
+        PRIMARY KEY(activity_id, asset_id)
+      );
+
+      CREATE TABLE IF NOT EXISTS activity_runs (
+        activity_id TEXT NOT NULL,
+        run_id TEXT NOT NULL,
+        session_id TEXT NOT NULL,
+        run_path TEXT NOT NULL,
+        status TEXT NOT NULL,
+        task_status TEXT,
+        user_message TEXT,
+        assistant_response TEXT,
+        summary TEXT NOT NULL,
+        tools_used_json TEXT NOT NULL,
+        asset_ids_json TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        PRIMARY KEY(activity_id, run_id)
+      );
+
+      CREATE TABLE IF NOT EXISTS activity_events (
+        id TEXT PRIMARY KEY,
+        activity_id TEXT NOT NULL,
+        client_id TEXT NOT NULL,
+        run_id TEXT NOT NULL,
+        event_type TEXT NOT NULL,
+        payload_json TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_activity_events_activity
+        ON activity_events(activity_id, created_at DESC);
+
+      CREATE TABLE IF NOT EXISTS activity_search (
+        activity_id TEXT PRIMARY KEY,
+        client_id TEXT NOT NULL,
+        searchable_text TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_activity_search_client
+        ON activity_search(client_id);
+    `);
+  }
+
+  private requireDb(): DatabaseSync {
+    if (!this.db) {
+      throw new Error("ActivityStore not started");
+    }
+    return this.db;
+  }
+}
+
+export function buildIdentities(input: ActivityUpsertInput): ActivityIdentity[] {
+  const at = input.createdAt;
+  const identities: ActivityIdentity[] = [];
+  for (const asset of input.activityAssets ?? []) {
+    addIdentity(identities, "asset_id", asset.assetId, 0.99, "asset", at);
+    addIdentity(identities, "prepared_input_id", asset.preparedInputId, 0.98, "asset", at);
+    addIdentity(identities, "document_id", asset.documentId, 0.98, "asset", at);
+    addIdentity(identities, asset.kind === "dataset" ? "dataset_id" : "document_id", asset.summary?.documentId, 0.96, "asset", at);
+    addIdentity(identities, "file_id", asset.fileId, 0.98, "asset", at);
+    addIdentity(identities, "directory_id", asset.directoryId, 0.98, "asset", at);
+    addIdentity(identities, "file_path", asset.path, 0.94, "asset", at);
+    addIdentity(identities, "file_path", asset.restore?.filePath, 0.96, "asset", at);
+    addIdentity(identities, "directory_path", asset.restore?.directoryPath, 0.96, "asset", at);
+    addIdentity(identities, "directory_path", asset.path && asset.kind === "directory" ? asset.path : undefined, 0.94, "asset", at);
+    addIdentity(identities, "explicit_alias", asset.displayName, 0.72, "alias", at);
+  }
+  for (const alias of input.attachmentNames ?? []) {
+    addIdentity(identities, "explicit_alias", alias, 0.7, "alias", at);
+  }
+  for (const path of extractPathLikeValues([
+    input.objective,
+    input.summary,
+    input.progressSummary,
+    ...(input.attachmentNames ?? []),
+    ...(input.activityAssets ?? []).map((asset) => asset.displayName),
+    ...(input.keyFacts ?? []),
+    ...(input.evidence ?? []),
+    ...(input.completedMilestones ?? []),
+    input.userMessage,
+  ].join("\n"))) {
+    addIdentity(identities, path.endsWith("/") ? "directory_path" : "file_path", path, 0.74, "inferred", at);
+  }
+  return dedupeIdentities(identities);
+}
+
+export function extractMessageIdentities(message: string, createdAt: string): ActivityIdentity[] {
+  return dedupeIdentities(extractPathLikeValues(message).map((path) => ({
+    type: path.endsWith("/") ? "directory_path" : "file_path",
+    value: normalizeIdentityValue(path.endsWith("/") ? "directory_path" : "file_path", path),
+    confidence: 0.78,
+    source: "explicit",
+    lastSeenAt: createdAt,
+  })));
+}
+
+export function normalizeIdentityValue(type: ActivityIdentityType, value: string | undefined): string {
+  const trimmed = value?.replace(/\s+/g, " ").trim() ?? "";
+  if (!trimmed) return "";
+  if (type === "explicit_alias") return normalizeAlias(trimmed);
+  if (type === "file_path" || type === "directory_path" || type === "workspace_root" || type === "repo_root") {
+    return trimmed.replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
+  }
+  return trimmed.toLowerCase();
+}
+
+function buildTitle(input: ActivityUpsertInput, kind: ActivityKind): string {
+  const candidates = [
+    input.currentFocus,
+    input.objective,
+    input.entityHints?.[0],
+    input.attachmentNames?.[0],
+    input.userMessage,
+    input.summary,
+  ];
+  return compactText(candidates.find((candidate) => candidate?.trim()) ?? kind, 90);
+}
+
+function buildSummary(input: ActivityUpsertInput, previousSummary?: string): string {
+  return compactText(uniqueStrings([
+    previousSummary,
+    input.progressSummary,
+    input.summary,
+    ...(input.completedMilestones ?? []),
+  ]).join(" "), 900);
+}
+
+function buildAliases(input: ActivityUpsertInput, title: string): ActivityAlias[] {
+  const values = uniqueStrings([
+    title,
+    ...(input.entityHints ?? []),
+    ...(input.attachmentNames ?? []),
+  ]).slice(0, 12);
+  return values.map((value) => ({
+    value: normalizeAlias(value),
+    confidence: value === title ? 0.86 : 0.72,
+    source: "inferred",
+    lastSeenAt: input.createdAt,
+  }));
+}
+
+function collectAssets(input: ActivityUpsertInput): ActivityAssetRef[] {
+  return (input.activityAssets ?? []).map((asset) => ({
+    ...asset,
+    lastUsedRunId: input.runId,
+    lastUsedAt: input.createdAt,
+  }));
+}
+
+function buildState(input: ActivityUpsertInput, previous: ActivityState | undefined, assets: ActivityAssetRef[]): ActivityState {
+  return {
+    goal: input.objective ?? previous?.goal,
+    openWork: compactList([...(input.openWork ?? []), ...(input.blockers ?? [])], 8, 220),
+    blockers: compactList(input.blockers ?? [], 6, 220),
+    ...(input.nextAction ? { nextStep: compactText(input.nextAction, 260) } : previous?.nextStep ? { nextStep: previous.nextStep } : {}),
+    verifiedFacts: compactList([
+      ...(previous?.verifiedFacts ?? []),
+      ...(input.keyFacts ?? []),
+      ...(input.evidence ?? []),
+      ...(input.completedMilestones ?? []),
+    ], 14, 220),
+    decisions: compactList(previous?.decisions ?? [], 8, 220),
+    changedFiles: compactList([
+      ...(previous?.changedFiles ?? []),
+      ...assets.map((asset) => asset.path ?? asset.restore?.filePath).filter((path): path is string => Boolean(path)),
+    ], 16, 220),
+    workingDirectories: compactList([
+      ...(previous?.workingDirectories ?? []),
+      ...assets.map((asset) => asset.restore?.directoryPath).filter((path): path is string => Boolean(path)),
+    ], 10, 220),
+    lastVerification: (input.evidence?.[0] ?? input.keyFacts?.[0] ?? previous?.lastVerification) ? compactText(input.evidence?.[0] ?? input.keyFacts?.[0] ?? previous!.lastVerification!, 260) : undefined,
+  };
+}
+
+function buildRun(input: ActivityUpsertInput, assets: ActivityAssetRef[]): ActivityRunRef {
+  return {
+    runId: input.runId,
+    sessionId: input.sessionId,
+    runPath: input.runPath,
+    status: input.status,
+    ...(input.taskStatus ? { taskStatus: input.taskStatus } : {}),
+    ...(input.userMessage ? { userMessage: compactText(input.userMessage, 260) } : {}),
+    ...(input.assistantResponse ? { assistantResponse: compactText(input.assistantResponse, 360) } : {}),
+    summary: compactText(input.progressSummary || input.summary, 420),
+    toolsUsed: uniqueStrings(input.toolsUsed ?? []).slice(0, 12),
+    assetIds: uniqueStrings(assets.map((asset) => asset.assetId)).slice(0, 20),
+    createdAt: input.createdAt,
+  };
+}
+
+function appendRun(runs: ActivityRunRef[], run: ActivityRunRef): ActivityRunRef[] {
+  return [...runs.filter((item) => item.runId !== run.runId), run].slice(-20);
+}
+
+function mergeIdentities(left: ActivityIdentity[], right: ActivityIdentity[], seenAt: string): ActivityIdentity[] {
+  return dedupeIdentities([...left, ...right]).map((identity) => ({
+    ...identity,
+    lastSeenAt: right.some((candidate) => candidate.type === identity.type && candidate.value === identity.value) ? seenAt : identity.lastSeenAt,
+  })).slice(0, 32);
+}
+
+function dedupeIdentities(values: ActivityIdentity[]): ActivityIdentity[] {
+  const output = new Map<string, ActivityIdentity>();
+  for (const identity of values) {
+    const normalized = normalizeIdentityValue(identity.type, identity.value);
+    if (!normalized) continue;
+    const key = `${identity.type}:${normalized}`;
+    const previous = output.get(key);
+    output.set(key, previous && previous.confidence > identity.confidence ? previous : {
+      ...identity,
+      value: normalized,
+    });
+  }
+  return [...output.values()];
+}
+
+function mergeAliases(left: ActivityAlias[], right: ActivityAlias[], seenAt: string): ActivityAlias[] {
+  const output = new Map<string, ActivityAlias>();
+  for (const alias of [...left, ...right]) {
+    const value = normalizeAlias(alias.value);
+    if (!value) continue;
+    const previous = output.get(value);
+    output.set(value, previous ? {
+      ...previous,
+      confidence: Math.max(previous.confidence, alias.confidence),
+      lastSeenAt: right.some((candidate) => normalizeAlias(candidate.value) === value) ? seenAt : previous.lastSeenAt,
+    } : { ...alias, value });
+  }
+  return [...output.values()].slice(0, 20);
+}
+
+function mergeAssets(left: ActivityAssetRef[], right: ActivityAssetRef[]): ActivityAssetRef[] {
+  const output = new Map<string, ActivityAssetRef>();
+  for (const asset of [...left, ...right]) {
+    const key = asset.assetId || asset.fileId || asset.directoryId || asset.documentId || asset.path || asset.displayName;
+    if (!key) continue;
+    const previous = output.get(key);
+    output.set(key, previous ? {
+      ...previous,
+      ...asset,
+      sourceRunId: previous.sourceRunId,
+      sourceRunPath: previous.sourceRunPath,
+      metadata: {
+        ...(previous.metadata ?? {}),
+        ...(asset.metadata ?? {}),
+      },
+    } : asset);
+  }
+  return [...output.values()];
+}
+
+function rowToAsset(row: AssetRow): ActivityAssetRef {
+  return {
+    assetId: row.asset_id,
+    kind: row.kind,
+    origin: row.origin,
+    role: row.role,
+    ...(row.display_name ? { displayName: row.display_name } : {}),
+    ...(row.path ? { path: row.path } : {}),
+    ...(row.uri ? { uri: row.uri } : {}),
+    ...(row.document_id ? { documentId: row.document_id } : {}),
+    ...(row.file_id ? { fileId: row.file_id } : {}),
+    ...(row.directory_id ? { directoryId: row.directory_id } : {}),
+    ...(row.prepared_input_id ? { preparedInputId: row.prepared_input_id } : {}),
+    ...(parseJsonMaybe(row.manifest_json) ? { manifest: parseJsonMaybe(row.manifest_json) as ActivityAssetRef["manifest"] } : {}),
+    ...(parseJsonMaybe(row.summary_json) ? { summary: parseJsonMaybe(row.summary_json) as ActivityAssetRef["summary"] } : {}),
+    ...(parseJsonMaybe(row.detail_json) ? { detail: parseJsonMaybe(row.detail_json) as ActivityAssetRef["detail"] } : {}),
+    ...(parseJsonMaybe(row.restore_json) ? { restore: parseJsonMaybe(row.restore_json) as ActivityAssetRef["restore"] } : {}),
+    sourceRunId: row.source_run_id,
+    sourceRunPath: row.source_run_path,
+    lastUsedRunId: row.last_used_run_id,
+    lastUsedAt: row.last_used_at,
+    ...(parseJsonMaybe(row.metadata_json) ? { metadata: parseJsonMaybe(row.metadata_json) as Record<string, unknown> } : {}),
+  };
+}
+
+function rowToRun(row: RunRow): ActivityRunRef {
+  return {
+    runId: row.run_id,
+    sessionId: row.session_id,
+    runPath: row.run_path,
+    status: row.status,
+    ...(row.task_status ? { taskStatus: row.task_status } : {}),
+    ...(row.user_message ? { userMessage: row.user_message } : {}),
+    ...(row.assistant_response ? { assistantResponse: row.assistant_response } : {}),
+    summary: row.summary,
+    toolsUsed: parseJsonArray<string>(row.tools_used_json),
+    assetIds: parseJsonArray<string>(row.asset_ids_json),
+    createdAt: row.created_at,
+  };
+}
+
+function initialConfidence(input: ActivityUpsertInput): number {
+  if ((input.activityAssets?.length ?? 0) > 0) return 0.86;
+  if ((input.openWork?.length ?? 0) > 0) return 0.78;
+  if ((input.keyFacts?.length ?? 0) > 0) return 0.72;
+  return 0.62;
+}
+
+function stableActivityId(clientId: string, sessionId: string, title: string, kind: ActivityKind): string {
+  const hash = createHash("sha256")
+    .update(`${clientId}:${sessionId}:${kind}:${normalizeAlias(title)}`)
+    .digest("hex")
+    .slice(0, 20);
+  return `activity_${hash}`;
+}
+
+function addIdentity(
+  identities: ActivityIdentity[],
+  type: ActivityIdentityType,
+  value: string | undefined,
+  confidence: number,
+  source: ActivityIdentity["source"],
+  lastSeenAt: string,
+): void {
+  const normalized = normalizeIdentityValue(type, value);
+  if (!normalized) return;
+  identities.push({ type, value: normalized, confidence, source, lastSeenAt });
+}
+
+function normalizeAlias(value: string): string {
+  return value.replace(/\s+/g, " ").trim().toLowerCase();
+}
+
+function searchableText(activity: ActivityThread): string {
+  return [
+    activity.kind,
+    activity.title,
+    activity.summary,
+    activity.state.goal,
+    activity.state.nextStep,
+    ...activity.state.openWork,
+    ...activity.state.blockers,
+    ...activity.state.verifiedFacts,
+    ...activity.state.changedFiles,
+    ...activity.state.workingDirectories,
+    ...activity.aliases.map((alias) => alias.value),
+    ...activity.identities.map((identity) => identity.value),
+    ...activity.assets.flatMap((asset) => [
+      asset.displayName,
+      asset.path,
+      asset.uri,
+      asset.documentId,
+      asset.fileId,
+      asset.directoryId,
+      asset.preparedInputId,
+      asset.origin,
+      asset.role,
+    ]),
+    ...activity.runs.map((run) => run.summary),
+  ].filter(Boolean).join("\n").toLowerCase();
+}
+
+function tokenOverlapScore(terms: string[], haystack: string): number {
+  const uniqueTerms = [...new Set(terms)];
+  if (uniqueTerms.length === 0) return 0;
+  const matched = uniqueTerms.filter((term) => haystack.includes(term)).length;
+  return matched / uniqueTerms.length;
+}
+
+function tokenize(value: string): string[] {
+  return value.toLowerCase()
+    .split(/[^a-z0-9_.\/-]+/g)
+    .map((token) => token.trim())
+    .filter((token) => token.length >= 2)
+    .slice(0, 24);
+}
+
+function extractPathLikeValues(text: string): string[] {
+  const matches = text.match(/(?:[./~\w-]+\/[\w./~-]+|[\w.-]+\.(?:ts|tsx|js|jsx|json|md|html|css|txt|csv|pdf|docx|xlsx|py|sql))/gi) ?? [];
+  return uniqueStrings(matches.map((value) => value.replace(/[),.;:]+$/g, ""))).slice(0, 24);
+}
+
+function compactList(values: string[], count: number, chars: number): string[] {
+  return uniqueStrings(values)
+    .map((value) => compactText(value, chars))
+    .filter(Boolean)
+    .slice(0, count);
+}
+
+function compactText(value: string, maxChars: number): string {
+  const compact = value.replace(/\s+/g, " ").trim();
+  if (compact.length <= maxChars) return compact;
+  return `${compact.slice(0, Math.max(0, maxChars - 3)).trimEnd()}...`;
+}
+
+function uniqueStrings(values: Array<string | undefined | null>): string[] {
+  const seen = new Set<string>();
+  const output: string[] = [];
+  for (const value of values) {
+    const compact = typeof value === "string" ? value.replace(/\s+/g, " ").trim() : "";
+    if (!compact) continue;
+    const key = compact.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    output.push(compact);
+  }
+  return output;
+}
+
+function normalizeState(value: Record<string, unknown>): ActivityState {
+  return {
+    ...(typeof value["goal"] === "string" ? { goal: value["goal"] } : {}),
+    openWork: readStringArray(value["openWork"]),
+    blockers: readStringArray(value["blockers"]),
+    ...(typeof value["nextStep"] === "string" ? { nextStep: value["nextStep"] } : {}),
+    verifiedFacts: readStringArray(value["verifiedFacts"]),
+    decisions: readStringArray(value["decisions"]),
+    changedFiles: readStringArray(value["changedFiles"]),
+    workingDirectories: readStringArray(value["workingDirectories"]),
+    ...(typeof value["lastVerification"] === "string" ? { lastVerification: value["lastVerification"] } : {}),
+  };
+}
+
+function readStringArray(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
+}
+
+function parseJsonObject(value: string): Record<string, unknown> {
+  const parsed = parseJsonMaybe(value);
+  return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed as Record<string, unknown> : {};
+}
+
+function parseJsonArray<T>(value: string): T[] {
+  const parsed = parseJsonMaybe(value);
+  return Array.isArray(parsed) ? parsed as T[] : [];
+}
+
+function parseJsonMaybe(value: string): unknown {
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    return parsed === null ? undefined : parsed;
+  } catch {
+    return undefined;
+  }
+}
+
+function escapeLike(value: string): string {
+  return value.replace(/[%_]/g, (match) => `\\${match}`);
+}

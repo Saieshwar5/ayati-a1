@@ -26,7 +26,7 @@ Product rules:
 - Do not assume Ayati is CLI-only.
 - Keep core intelligence, memory, tools, provider access, permissions, and background event processing in the daemon.
 - Memory is product-critical because it gives continuity and personalization.
-- Focus cards and the attention shelf are part of runtime continuity; do not hide important dynamic context only in a large prompt string.
+- Activity threads and deterministic continuity resolution are part of runtime continuity; do not hide important dynamic context only in a large prompt string.
 - Tool access is high privilege because the daemon can affect the user's computer.
 - Tool results should become verified facts through contracts/assertions whenever deterministic verification is possible.
 - Future communication channels should connect to the daemon instead of duplicating core runtime logic.

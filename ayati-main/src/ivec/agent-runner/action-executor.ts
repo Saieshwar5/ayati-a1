@@ -30,6 +30,7 @@ export interface AgentActionExecutionDeps {
   sessionMemory: SessionMemory;
   runHandle: MemoryRunHandle;
   runPath: string;
+  activityId?: string;
   metrics?: RunMetrics;
 }
 
@@ -232,6 +233,7 @@ async function executeToolCall(
     clientId: deps.clientId,
     runId: deps.runHandle.runId,
     sessionId: deps.runHandle.sessionId,
+    ...(deps.activityId ? { activityId: deps.activityId } : {}),
     stepNumber,
     ...(deps.uiContext ? { uiContext: deps.uiContext } : {}),
   };

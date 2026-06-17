@@ -7,10 +7,10 @@ export interface AttachmentSkillDeps {
 
 const ATTACHMENT_PROMPT_BLOCK = [
   "Unified attachment restoration is built in.",
-  "Use attachment_restore when the user refers to a file, document, dataset, or directory stored on a focus card.",
-  "For follow-up work, call focus_activate first, then call attachment_restore with no input when the focus has exactly one restorable asset, or with assetId/reference when it has multiple.",
+  "Use attachment_restore when the user refers to a file, document, dataset, or directory stored on the current activity.",
+  "For follow-up work, call attachment_restore with no input when continuity.current has exactly one restorable asset, or with activityId/assetId/reference when it has multiple.",
   "If the current run already has attached files, do not restore an older attachment unless the user explicitly asks for the earlier one.",
-  "Inputs accept focusId, assetId, or a reference such as preparedInputId, fileId, directoryId, display name, or path.",
+  "Inputs accept activityId, assetId, or a reference such as preparedInputId, fileId, directoryId, display name, or path.",
 ].join("\n");
 
 function buildSuccessResult(output: Record<string, unknown>, meta?: Record<string, unknown>): ToolResult {
@@ -35,17 +35,17 @@ function createRestoreAttachmentContextTool(deps: AttachmentSkillDeps, name = "a
     inputSchema: {
       type: "object",
       properties: {
-        focusId: {
+        activityId: {
           type: "string",
-          description: "Optional focus card id to restore from. If omitted, the currently activated focus card for this session is used.",
+          description: "Optional activity id to restore from. If omitted, the current resolved activity is used.",
         },
         assetId: {
           type: "string",
-          description: "Optional focus asset id to restore.",
+          description: "Optional activity asset id to restore.",
         },
         reference: {
           type: "string",
-          description: "Optional focus asset reference. Use display name, preparedInputId, fileId, directoryId, documentId, assetId, or path when known.",
+          description: "Optional activity asset reference. Use display name, preparedInputId, fileId, directoryId, documentId, assetId, or path when known.",
         },
       },
       additionalProperties: false,
@@ -53,13 +53,13 @@ function createRestoreAttachmentContextTool(deps: AttachmentSkillDeps, name = "a
     selectionHints: {
       tags: ["attachments", "restore", "followup"],
       domain: "attachments",
-      priority: name === "attachment_restore" ? 100 : 85,
+      priority: name === "activity_restore_assets" || name === "attachment_restore" ? 100 : 85,
     },
     async execute(input, context): Promise<ToolResult> {
       const runId = readRunId(context);
       const clientId = readContextString(context, "clientId");
       const sessionId = readContextString(context, "sessionId");
-      const focusId = readOptionalString(input, "focusId");
+      const activityId = readOptionalString(input, "activityId") ?? readContextString(context, "activityId");
       const assetId = readOptionalString(input, "assetId");
       const reference = readOptionalString(input, "reference");
       try {
@@ -67,7 +67,7 @@ function createRestoreAttachmentContextTool(deps: AttachmentSkillDeps, name = "a
           runId,
           clientId,
           sessionId,
-          focusId,
+          activityId,
           assetId,
           reference,
         });
@@ -84,9 +84,10 @@ export function createAttachmentSkill(deps: AttachmentSkillDeps): SkillDefinitio
   return {
     id: "attachments",
     version: "1.0.0",
-    description: "Restore previously used attachments from active focus context into the current run.",
+    description: "Restore previously used attachments from current activity context into the current run.",
     promptBlock: ATTACHMENT_PROMPT_BLOCK,
     tools: [
+      createRestoreAttachmentContextTool(deps, "activity_restore_assets"),
       createRestoreAttachmentContextTool(deps),
       createRestoreAttachmentContextTool(deps, "restore_attachment_context"),
     ],
@@ -98,7 +99,7 @@ function buildRestoreOutput(restored: RestoredAttachmentContext): Record<string,
     return {
       restored: restored.restored,
       attachmentKind: restored.attachmentKind,
-      focusId: restored.focusId,
+      activityId: restored.activityId,
       assetId: restored.assetId,
       attachmentId: restored.fileId,
       fileId: restored.fileId,
@@ -111,7 +112,7 @@ function buildRestoreOutput(restored: RestoredAttachmentContext): Record<string,
     return {
       restored: restored.restored,
       attachmentKind: restored.attachmentKind,
-      focusId: restored.focusId,
+      activityId: restored.activityId,
       assetId: restored.assetId,
       attachmentId: restored.directoryId,
       directoryId: restored.directoryId,
@@ -123,7 +124,7 @@ function buildRestoreOutput(restored: RestoredAttachmentContext): Record<string,
   return {
     restored: restored.restored,
     attachmentKind: restored.attachmentKind,
-    focusId: restored.focusId,
+    activityId: restored.activityId,
     assetId: restored.assetId,
     attachmentId: restored.summary.preparedInputId,
     preparedInputId: restored.summary.preparedInputId,
@@ -156,8 +157,8 @@ function readRunId(context: { runId?: string } | undefined): string {
 }
 
 function readContextString(
-  context: { clientId?: string; sessionId?: string } | undefined,
-  field: "clientId" | "sessionId",
+  context: { clientId?: string; sessionId?: string; activityId?: string } | undefined,
+  field: "clientId" | "sessionId" | "activityId",
 ): string | undefined {
   const value = context?.[field];
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;

@@ -6,10 +6,9 @@ Daemon communication flow:
 2. Current CLI path: `ayati-cli` sends `{ type: "chat", content, attachments? }` to `ws://localhost:8080`.
 3. `WsServer` parses JSON and forwards payloads to `IVecEngine.handleMessage`.
 4. `IVecEngine` parses chat input, stores session turns, builds static decision context, and enters the agent runner.
-5. The runner builds a structured context pack from session memory, active focus
-   cards, session focus cards, attention shelf, personal memory, and learning
-   context. Current-run attachments appear separately in the sparse state view
-   only when present.
+5. The runner builds a structured context pack from session memory, resolved
+   activity continuity, personal memory, and learning context. Current-run
+   attachments appear separately in the sparse state view only when present.
 6. The decision model chooses `reply`, `ask_user`, or `act`.
 7. If tool calls are requested, the action executor validates the plan and dispatches through registered tool definitions.
 8. Tool contracts/assertions turn results into verified facts and evidence.
@@ -25,34 +24,35 @@ Client model:
 2. Clients should not own agent intelligence, memory, tool policy, provider selection, or long-running state.
 3. New clients should send normalized messages/events to the daemon and render replies/notifications.
 
-Memory and focus flow:
+Memory and activity flow:
 
 1. User interactions are stored as session turns.
-2. Task summaries with tools, focus assets, attachments, or an explicit
-   continuation `focusId` create or update focus cards in `memory.sqlite`.
+2. Task summaries with tools, activity assets, attachments, or an explicit
+   continuation `activityId` create or update activity threads in
+   `memory.sqlite`.
 3. Direct replies without durable assets or continuation state do not create
-   focus cards.
-4. Focus cards store compact summaries plus full continuation state: assets,
-   run refs, and current resumable state.
-5. Focus tools can search, get, activate, deactivate, update, and list focus
-   cards.
-6. Activated cards appear in `activeFocus` for the current session and can be
-   loaded as full cards for continuation.
-7. Focus-card assets can restore user-attached documents, datasets, files, and
-   directories into the current run through `attachment_restore`.
-8. Session close promotes durable session focus cards into global attention
-   shelf cards.
-9. The attention shelf selects compact, high-relevance global focus summaries
-   for future decisions.
-10. Session close can enqueue memory consolidation and episodic indexing.
-11. Personal memory stores stable facts and preferences for personalization.
-12. Episodic memory indexes closed sessions for future recall when embeddings are available.
-13. The context pack renders relevant memory back into future agent runs as bounded JSON.
+   activity threads.
+4. Activity threads store compact summaries plus full continuation state:
+   identities, assets, run refs, and resumable state.
+5. `ContinuityResolver` resolves the current user message deterministically
+   before decisions by exact identities, aliases/search terms, and recent
+   follow-up wording.
+6. The context pack exposes `continuity.mode` as `new`, `continue`, or
+   `ambiguous`; the model does not receive shelves of unrelated work.
+7. Activity tools can search, get, select, update, and archive activity threads.
+8. Activity assets can restore user-attached documents, datasets, files, and
+   directories into the current run through `attachment_restore` or
+   `activity_restore_assets`.
+9. Session close can enqueue memory consolidation and episodic indexing.
+10. Personal memory stores stable facts and preferences for personalization.
+11. Episodic memory indexes closed sessions for future recall when embeddings are available.
+12. The context pack renders relevant memory back into future agent runs as bounded JSON.
 
 Tool/action flow:
 
 1. The daemon exposes kernel tools by default and can dynamically activate additional built-in skills.
-2. The decision model selects tool calls only when needed for the current input or active focus.
+2. The decision model selects tool calls only when needed for the current input
+   or resolved activity continuity.
 3. The action executor validates plan shape, selected tools, dependencies, and unsafe parallel filesystem overlap.
 4. The tool executor validates and executes requests.
 5. Results become artifacts, verified facts, evidence, and optional `workState` updates for continuation or final response.
@@ -78,10 +78,10 @@ Attachment flow:
    Directories are searched by manifest/path and optionally by UTF-8 file
    contents; individual files can be registered/queryable when deeper parsing is
    needed.
-6. Focus cards store restorable attachment assets, not full file contents. Later
-   follow-up runs activate the card and call `attachment_restore`, which touches
-   the stored file or directory into the current run or restores prepared
-   document/dataset metadata.
+6. Activity threads store restorable attachment assets, not full file contents.
+   Later follow-up runs resolve the activity and call `attachment_restore` or
+   `activity_restore_assets`, which touches the stored file or directory into
+   the current run or restores prepared document/dataset metadata.
 
 Learning flow:
 

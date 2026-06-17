@@ -11,7 +11,7 @@ Avoid these:
 - Assuming every interaction is synchronous chat; system events and background work are part of the product.
 - Coupling provider-specific behavior into the core loop when provider abstraction should handle it.
 - Adding a new tool without validation and tests.
-- Changing prompt context without considering token budget, the structured context pack, and attention shelf behavior.
+- Changing prompt context without considering token budget, the structured context pack, and deterministic continuity behavior.
 - Writing runtime state into source-controlled docs.
 - Ignoring `context/system-event-policy.json`.
 - Breaking CLI/server message contracts.

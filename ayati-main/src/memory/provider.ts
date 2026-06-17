@@ -71,9 +71,7 @@ export const noopSessionMemory: SessionMemory = {
       conversationTurns: [],
       personalMemorySnapshot: "",
       personalMemories: [],
-      activeFocus: [],
-      sessionFocusCards: [],
-      attentionShelf: [],
+      continuity: { mode: "new", confidence: 0, reasons: ["noop memory provider"] },
       recentTaskSummaries: [],
     };
   },

@@ -47,9 +47,7 @@ export interface ActivationRouterState {
   preparedAttachments?: unknown[];
   managedFiles?: unknown[];
   managedDirectories?: unknown[];
-  activeFocus?: unknown[];
-  sessionFocusCards?: unknown[];
-  attentionShelf?: unknown[];
+  continuity?: unknown;
 }
 
 const DEFAULT_MAX_ACTIVE_BUILT_IN_SKILLS = 4;
@@ -212,7 +210,7 @@ export class SkillActivationManager {
       const result = await this.activate({
         skillId,
         scope: "run",
-        reason: hasCurrentRunAttachments(state) ? "incoming attachment" : "focus continuation attachment",
+        reason: hasCurrentRunAttachments(state) ? "incoming attachment" : "activity continuation attachment",
       }, context);
       if (!result.ok) {
         continue;
@@ -295,20 +293,23 @@ function hasCurrentRunAttachments(state: ActivationRouterState): boolean {
 }
 
 function hasFocusArtifactContext(state: ActivationRouterState): boolean {
-  return [
-    state.activeFocus,
-    state.sessionFocusCards,
-    state.attentionShelf,
-  ].some((items) => Array.isArray(items) && items.some(hasTopArtifacts));
+  const continuity = state.continuity;
+  if (!continuity || typeof continuity !== "object" || Array.isArray(continuity)) {
+    return false;
+  }
+  const current = (continuity as { current?: unknown }).current;
+  const candidates = (continuity as { candidates?: unknown }).candidates;
+  return hasTopAssets(current)
+    || (Array.isArray(candidates) && candidates.some(hasTopAssets));
 }
 
-function hasTopArtifacts(item: unknown): boolean {
+function hasTopAssets(item: unknown): boolean {
   return Boolean(
     item
       && typeof item === "object"
       && !Array.isArray(item)
-      && Array.isArray((item as { topArtifacts?: unknown[] }).topArtifacts)
-      && ((item as { topArtifacts: unknown[] }).topArtifacts).length > 0,
+      && Array.isArray((item as { topAssets?: unknown[] }).topAssets)
+      && ((item as { topAssets: unknown[] }).topAssets).length > 0,
   );
 }
 

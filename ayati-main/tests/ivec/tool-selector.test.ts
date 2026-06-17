@@ -42,9 +42,7 @@ function state(userMessage: string): LoopState {
     runPath: "/tmp/run-1",
     failureHistory: [],
     recentExchanges: [],
-    activeFocus: [],
-    sessionFocusCards: [],
-    attentionShelf: [],
+    continuity: { mode: "new", confidence: 0, reasons: [] },
   };
 }
 

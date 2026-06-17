@@ -49,7 +49,7 @@ describe("SessionAttachmentService", () => {
       });
 
       const service = new SessionAttachmentService({
-        focusStore: sessionMemory.getFocusStore(),
+        activityStore: sessionMemory.getActivityStore(),
         preparedAttachmentRegistry: registry,
         dataDir,
       });

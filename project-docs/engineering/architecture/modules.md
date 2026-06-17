@@ -9,7 +9,7 @@ Backend package: `ayati-main`
 - `src/core`: provider/plugin contracts, registries, system ingress, inbound queue, and plugin loading.
 - `src/providers`: provider adapters for OpenRouter, OpenAI, Anthropic, and Fireworks.
 - `src/skills`: built-in tools, tool executor, dynamic skill activation, and skill broker.
-- `src/memory`: session memory, focus cards, attention shelf, personal memory, episodic memory, embeddings, and recall support.
+- `src/memory`: session memory, activity threads, deterministic continuity resolution, personal memory, episodic memory, embeddings, and recall support.
 - `src/documents`: legacy prepared document/dataset compatibility, extraction, indexing, and retrieval support.
 - `src/files`: primary managed attachment substrate for files, directories, metadata, storage layout, and processors.
 - `src/pulse`: reminders, scheduled tasks, parser, scheduler, and proposal reflection.
