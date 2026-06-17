@@ -1,7 +1,10 @@
 node_modules
 dist
 .env
+
+# Runtime data and generated benchmark reports
 data
+
 *.log
 *.tmp
 .DS_Store

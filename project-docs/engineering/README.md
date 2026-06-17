@@ -12,6 +12,7 @@ Important paths:
 - `commands.md`: common development commands.
 - `testing.md`: test strategy and commands.
 - `agent-benchmarking.md`: agent harness benchmark metrics, Fireworks token/cost usage, and human eval rubric.
+- `runtime-performance-benchmarking.md`: non-LLM runtime performance benchmark design, commands, report interpretation, and subsystem improvement signals.
 - `conventions.md`: code organization and style.
 - `security.md`: safety and secret-handling rules.
 
