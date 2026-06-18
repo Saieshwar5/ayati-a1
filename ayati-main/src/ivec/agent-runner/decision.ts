@@ -174,6 +174,7 @@ Decision rules:
 - Pick exactly one decision: reply, ask_user, or act.
 - Treat State view.context as the bounded context pack for this decision.
 - Use context.recentConversation as the latest completed session activity. It contains prior user/assistant exchanges, not the current input or raw unlimited history.
+- If the latest recentConversation assistant response has expectsUserResponse=true, interpret the current input as the user's answer to that response unless the user clearly starts unrelated work.
 - Treat State view.workState as sparse run progress. It may be absent on the first decision.
 - Use State view.lastActions and recentFailures only when present.
 - Use State view.toolContext.recent as the latest real tool output cards. If these cards answer the user, reply instead of rerunning equivalent tools.

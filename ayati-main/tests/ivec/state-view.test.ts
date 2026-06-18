@@ -3,6 +3,48 @@ import { buildAgentStateView } from "../../src/ivec/agent-runner/state-view.js";
 import type { LoopState } from "../../src/ivec/types.js";
 
 describe("buildAgentStateView", () => {
+  it("marks feedback responses in recent conversation as expecting user response", () => {
+    const state: LoopState = {
+      runId: "run-current",
+      runClass: "interaction",
+      userMessage: "yes",
+      workState: {
+        status: "not_done",
+        openWork: [],
+        blockers: [],
+        summary: "",
+        verifiedFacts: [],
+        evidence: [],
+      },
+      status: "running",
+      finalOutput: "",
+      iteration: 0,
+      maxIterations: 15,
+      consecutiveFailures: 0,
+      completedSteps: [],
+      runPath: "/tmp/ayati/run-current",
+      failureHistory: [],
+      continuity: { mode: "new", confidence: 0, reasons: [] },
+      recentExchanges: [{
+        runId: "run-feedback",
+        user: {
+          timestamp: "2026-06-16T08:55:00.000Z",
+          content: "build a dashboard",
+        },
+        assistant: {
+          timestamp: "2026-06-16T08:56:00.000Z",
+          content: "Should I use React for this dashboard?",
+          responseKind: "feedback",
+        },
+      }],
+    };
+
+    expect(buildAgentStateView(state).context.recentConversation[0]?.assistant).toMatchObject({
+      responseKind: "feedback",
+      expectsUserResponse: true,
+    });
+  });
+
   it("builds the exact model-facing State view shape", () => {
     const state: LoopState = {
       runId: "run-current",

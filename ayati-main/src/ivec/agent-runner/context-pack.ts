@@ -21,6 +21,7 @@ export interface AgentContextPack {
       timestamp: string;
       content: string;
       responseKind?: string;
+      expectsUserResponse?: boolean;
     };
   }>;
   continuity: ContinuityContext;
@@ -92,9 +93,14 @@ function compactRecentConversation(exchanges: ConversationExchange[], currentRun
           timestamp: exchange.assistant.timestamp,
           content: truncate(exchange.assistant.content, LIMITS.textChars),
           ...(exchange.assistant.responseKind ? { responseKind: exchange.assistant.responseKind } : {}),
+          ...(assistantExpectsUserResponse(exchange.assistant.responseKind) ? { expectsUserResponse: true } : {}),
         },
       } : {}),
     }));
+}
+
+function assistantExpectsUserResponse(responseKind: string | undefined): boolean {
+  return responseKind === "feedback";
 }
 
 function compactList(values: string[], limit: number, maxChars: number): string[] {
