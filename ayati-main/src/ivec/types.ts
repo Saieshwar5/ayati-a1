@@ -1,6 +1,7 @@
 import type { LlmProvider } from "../core/contracts/provider.js";
 import type { ToolExecutor } from "../skills/tool-executor.js";
 import type { SkillActivationManager } from "../skills/activation-manager.js";
+import type { ToolWorkingSetManager } from "./agent-runner/tool-working-set.js";
 import type {
   ArtifactRef,
   AssertionResult,
@@ -295,6 +296,7 @@ export interface AgentLoopDeps {
   provider: LlmProvider;
   toolExecutor?: ToolExecutor;
   skillActivationManager?: SkillActivationManager;
+  toolWorkingSetManager?: ToolWorkingSetManager;
   toolDefinitions: ToolDefinition[];
   sessionMemory: SessionMemory;
   runHandle: MemoryRunHandle;

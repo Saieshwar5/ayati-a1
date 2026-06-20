@@ -28,9 +28,10 @@ import { createDocumentSkill } from "../skills/builtins/documents/index.js";
 import { createFilesSkill } from "../skills/builtins/files/index.js";
 import { createLearningFileSkill } from "../skills/builtins/learning-v2/index.js";
 import { createUiSkill } from "../skills/builtins/ui/index.js";
-import { createSkillBrokerSkill } from "../skills/builtins/skill-broker/index.js";
 import { SkillActivationManager } from "../skills/activation-manager.js";
 import { createSkillBundle, SkillCatalog } from "../skills/skill-catalog.js";
+import { ToolCatalog } from "../ivec/agent-runner/tool-catalog.js";
+import { ToolWorkingSetManager } from "../ivec/agent-runner/tool-working-set.js";
 
 export interface SkillRuntimeOptions {
   projectRoot: string;
@@ -53,6 +54,8 @@ export interface SkillRuntimeOptions {
 export interface SkillRuntime {
   toolExecutor: ToolExecutor;
   skillActivationManager: SkillActivationManager;
+  toolWorkingSetManager: ToolWorkingSetManager;
+  toolCatalog: ToolCatalog;
   dynamicSkillCatalog: SkillCatalog;
   staticSkillsProvider: SkillsProvider;
   baseToolDefs: ToolDefinition[];
@@ -63,7 +66,6 @@ export interface SkillRuntime {
 export async function createSkillRuntime(options: SkillRuntimeOptions): Promise<SkillRuntime> {
   const builtInSkills = await builtInSkillsProvider.getAllSkills();
   const kernelSkillIds = new Set(["shell", "filesystem"]);
-  const kernelSkills = builtInSkills.filter((skill) => kernelSkillIds.has(skill.id));
   const dynamicBuiltInSkills = builtInSkills.filter((skill) => !kernelSkillIds.has(skill.id));
 
   const runtimeSkills: SkillDefinition[] = [
@@ -106,30 +108,36 @@ export async function createSkillRuntime(options: SkillRuntimeOptions): Promise<
     ...runtimeSkills,
   ].map((skill) => createSkillBundle(skill)));
 
-  const baseToolDefs = kernelSkills.flatMap((skill) => skill.tools);
+  const allRuntimeSkills = [
+    ...builtInSkills,
+    ...runtimeSkills,
+  ];
+  const baseToolDefs: ToolDefinition[] = [];
   const toolExecutor = createToolExecutor(baseToolDefs);
+  const toolCatalog = new ToolCatalog(allRuntimeSkills);
+  const toolWorkingSetManager = new ToolWorkingSetManager({
+    catalog: toolCatalog,
+    toolExecutor,
+    maxVisibleTools: options.config.agent.loopConfig.maxSelectedTools,
+  });
 
   const skillActivationManager = new SkillActivationManager({
     catalog: dynamicSkillCatalog,
     toolExecutor,
   });
 
-  const skillBrokerSkill = createSkillBrokerSkill(skillActivationManager);
-  toolExecutor.mount?.("static:skill-broker", skillBrokerSkill.tools, {
-    scope: "static",
-    description: skillBrokerSkill.description,
-  });
-
-  const staticSkillsProvider = createStaticSkillsProvider([...kernelSkills, skillBrokerSkill]);
+  const staticSkillsProvider = createStaticSkillsProvider([]);
   const additionalSkills: SkillDefinition[] = [];
 
   return {
     toolExecutor,
     skillActivationManager,
+    toolWorkingSetManager,
+    toolCatalog,
     dynamicSkillCatalog,
     staticSkillsProvider,
     baseToolDefs,
-    runtimeToolDefs: [...baseToolDefs, ...skillBrokerSkill.tools],
+    runtimeToolDefs: [],
     additionalSkills,
   };
 }

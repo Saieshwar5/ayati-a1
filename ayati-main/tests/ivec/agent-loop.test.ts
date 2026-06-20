@@ -8,6 +8,8 @@ import { noopSessionMemory } from "../../src/memory/provider.js";
 import { writeFilesTool } from "../../src/skills/builtins/filesystem/write-files.js";
 import { createToolExecutor } from "../../src/skills/tool-executor.js";
 import type { ToolDefinition } from "../../src/skills/types.js";
+import { ToolCatalog } from "../../src/ivec/agent-runner/tool-catalog.js";
+import { ToolWorkingSetManager } from "../../src/ivec/agent-runner/tool-working-set.js";
 
 function makeTmpDir(): string {
   return mkdtempSync(join(tmpdir(), "ayati-agent-loop-"));
@@ -150,7 +152,7 @@ describe("agentLoop", () => {
         sessionMemory: noopSessionMemory,
         runHandle: { sessionId: "s1", runId: "r2" },
         clientId: "c1",
-        initialUserMessage: `Create ${outputPath}`,
+        initialUserMessage: `Please handle ${outputPath}`,
         dataDir,
         systemContext: "full system context with memory",
       });
@@ -164,6 +166,79 @@ describe("agentLoop", () => {
       expect(result.content).not.toContain("Done -");
       expect(result.content).not.toContain("deterministic verification");
       expect(result.content).not.toContain("Evidence:");
+    } finally {
+      cleanup(dataDir);
+    }
+  });
+
+  it("loads tools through a load_tools decision before executing them", async () => {
+    const dataDir = makeTmpDir();
+    const outputPath = join(dataDir, "loaded-tool.txt");
+    try {
+      const toolExecutor = createToolExecutor([]);
+      const toolWorkingSetManager = new ToolWorkingSetManager({
+        catalog: new ToolCatalog([{
+          id: "filesystem",
+          version: "1.0.0",
+          description: "Filesystem tools",
+          promptBlock: "",
+          tools: [writeFilesTool],
+        }]),
+        toolExecutor,
+        maxVisibleTools: 12,
+      });
+      const provider = createProvider([
+        {
+          kind: "load_tools",
+          request: {
+            toolNames: ["write_files"],
+            reason: "Need to create the requested file",
+          },
+        },
+        {
+          kind: "act",
+          action: {
+            mode: "single",
+            calls: [{
+              id: "call_1",
+              tool: "write_files",
+              input: {
+                files: [{ path: outputPath, content: "loaded tool wrote this" }],
+              },
+              dependsOn: [],
+              purpose: "Create the requested file",
+            }],
+            allowedTools: ["write_files"],
+            maxCalls: 1,
+          },
+        },
+        {
+          kind: "reply",
+          status: "completed",
+          message: `I created ${outputPath}.`,
+        },
+      ]);
+
+      const result = await agentLoop({
+        provider,
+        toolExecutor,
+        toolWorkingSetManager,
+        toolDefinitions: [],
+        sessionMemory: noopSessionMemory,
+        runHandle: { sessionId: "s1", runId: "r-load-tools" },
+        clientId: "c1",
+        initialUserMessage: `Please handle ${outputPath}`,
+        dataDir,
+        systemContext: "static decision context",
+      });
+
+      expect(result.status).toBe("completed");
+      expect(provider.generateTurn).toHaveBeenCalledTimes(3);
+      const firstPrompt = (provider.generateTurn as any).mock.calls[0]?.[0].messages.find((message: { role: string }) => message.role === "user").content as string;
+      const secondPrompt = (provider.generateTurn as any).mock.calls[1]?.[0].messages.find((message: { role: string }) => message.role === "user").content as string;
+      expect(firstPrompt).toContain("Selected tools:\n(none)");
+      expect(secondPrompt).toContain("write_files");
+      expect(readFileSync(outputPath, "utf-8")).toBe("loaded tool wrote this");
     } finally {
       cleanup(dataDir);
     }

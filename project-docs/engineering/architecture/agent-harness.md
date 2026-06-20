@@ -6,7 +6,7 @@ controller stack is removed.
 Current loop:
 
 ```text
-context pack -> decision -> action executor -> deterministic verification -> progress reducer
+context pack -> deterministic tool preload -> decision -> action executor -> deterministic follow-up tool loading -> deterministic verification -> progress reducer
 ```
 
 Primary code paths:
@@ -15,6 +15,8 @@ Primary code paths:
 - `ayati-main/src/ivec/agent-runner/runner.ts`: loop orchestration, run persistence, local completion, and failure history.
 - `ayati-main/src/ivec/agent-runner/state-view.ts`: structured state view sent to the decision model.
 - `ayati-main/src/ivec/agent-runner/context-pack.ts`: bounded decision context pack.
+- `ayati-main/src/ivec/agent-runner/tool-catalog.ts`: hidden tool index, groups, aliases, and deterministic follow-up metadata.
+- `ayati-main/src/ivec/agent-runner/tool-working-set.ts`: run-scoped visible tool schema cap, preload, loading, and deactivation.
 - `ayati-main/src/ivec/agent-runner/decision.ts`: model-facing decision schema and prompt.
 - `ayati-main/src/ivec/agent-runner/action-executor.ts`: validates and executes tool actions.
 - `ayati-main/src/ivec/verification-contracts/progress-reducer.ts`: reduces verified facts into the current run `workState`.
@@ -26,6 +28,7 @@ The decision model returns exactly one of:
 ```json
 { "kind": "reply", "status": "completed", "message": "..." }
 { "kind": "ask_user", "question": "...", "reason": "..." }
+{ "kind": "load_tools", "request": { "query": "...", "toolNames": [], "groups": [], "reason": "..." } }
 { "kind": "act", "action": { "mode": "single", "calls": [], "allowedTools": [], "assertions": [] } }
 ```
 
@@ -47,6 +50,7 @@ system:
 
 user:
   selected tool definitions for this decision
+  compact hidden tool loading map
   State view JSON
 ```
 
@@ -58,6 +62,24 @@ or continuity context ahead of the stable decision contract.
 Critical decision rules and response shapes must not be placed inside the
 truncatable runtime system-context block. If runtime system context is too
 large, only that runtime block may be truncated.
+
+## Tool Visibility
+
+Normal action tools are no longer always visible as kernel tools. The runtime
+keeps a hidden catalog of available tools and exposes a run-scoped working set
+of at most `maxSelectedTools` schemas, currently 12 by default.
+
+Before each decision, the runner deterministically preloads likely tools from
+the current input, attachments, continuity, work state, evidence refs, and
+recent failures. If the model needs a missing capability, it returns
+`load_tools` with exact tool names, groups, or a search query. Tool execution can
+also deterministically load likely next tools, for example `find_files` loading
+`read_file` and `edit_file`. Some tools deactivate automatically after success
+or after one step.
+
+The working set is cleared at task finalization. Legacy direct tool-definition
+callers are still supported, but the app runtime should use the hidden catalog
+and working-set manager.
 
 ## State View And Context
 

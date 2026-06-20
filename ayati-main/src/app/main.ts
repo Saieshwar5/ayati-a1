@@ -192,6 +192,7 @@ export async function main(): Promise<void> {
     staticContext,
     toolExecutor: skills.toolExecutor,
     skillActivationManager: skills.skillActivationManager,
+    toolWorkingSetManager: skills.toolWorkingSetManager,
     sessionMemory: memory.sessionMemory,
     dataDir: resolve(projectRoot, "data"),
     documentStore: content.documentStore,

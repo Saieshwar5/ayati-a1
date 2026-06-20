@@ -1,31 +1,6 @@
 import type { ToolDefinition } from "../../skills/types.js";
 import type { LoopState } from "../types.js";
 
-export const ALWAYS_SELECTED_KERNEL_TOOL_NAMES = new Set([
-  "shell",
-  "shell_run_script",
-  "shell_session_start",
-  "shell_session_write",
-  "shell_session_close",
-  "read_file",
-  "write_file",
-  "write_files",
-  "edit_file",
-  "delete",
-  "list_directory",
-  "create_directory",
-  "move",
-  "find_files",
-  "search_in_files",
-  "evidence_next_chunk",
-  "evidence_search",
-  "evidence_read_lines",
-  "evidence_tail",
-  "activity_select",
-  "attachment_restore",
-  "restore_attachment_context",
-]);
-
 export function selectToolsForDecision(
   state: LoopState,
   toolDefinitions: ToolDefinition[],
@@ -35,16 +10,14 @@ export function selectToolsForDecision(
     return [...toolDefinitions];
   }
 
-  const alwaysSelected = toolDefinitions.filter((tool) => ALWAYS_SELECTED_KERNEL_TOOL_NAMES.has(tool.name));
-  const optionalTools = toolDefinitions.filter((tool) => !ALWAYS_SELECTED_KERNEL_TOOL_NAMES.has(tool.name));
-  const optionalLimit = Math.max(0, Math.floor(limit));
-  if (optionalTools.length === 0 || optionalLimit === 0) {
-    return alwaysSelected;
+  const normalizedLimit = Math.max(0, Math.floor(limit));
+  if (normalizedLimit === 0) {
+    return [];
   }
 
   const query = buildToolSelectionQuery(state);
   const tokens = tokenize(query);
-  const scored = optionalTools.map((tool, index) => ({
+  const scored = toolDefinitions.map((tool, index) => ({
     tool,
     index,
     score: scoreTool(tool, tokens, query),
@@ -54,21 +27,15 @@ export function selectToolsForDecision(
     .sort((left, right) => right.score - left.score || left.index - right.index);
 
   if (matches.length > 0) {
-    return [
-      ...alwaysSelected,
-      ...matches
-        .slice(0, optionalLimit)
-        .map((entry) => entry.tool),
-    ];
+    return matches
+      .slice(0, normalizedLimit)
+      .map((entry) => entry.tool);
   }
 
-  return [
-    ...alwaysSelected,
-    ...scored
-      .sort((left, right) => right.score - left.score || left.index - right.index)
-      .slice(0, optionalLimit)
-      .map((entry) => entry.tool),
-  ];
+  return scored
+    .sort((left, right) => right.score - left.score || left.index - right.index)
+    .slice(0, normalizedLimit)
+    .map((entry) => entry.tool);
 }
 
 function buildToolSelectionQuery(state: LoopState): string {

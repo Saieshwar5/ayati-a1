@@ -50,7 +50,7 @@ Memory and activity flow:
 
 Tool/action flow:
 
-1. The daemon exposes kernel tools by default and can dynamically activate additional built-in skills.
+1. The daemon keeps a hidden tool catalog, deterministically preloads a capped working set, and can load more tools through `load_tools`.
 2. The decision model selects tool calls only when needed for the current input
    or resolved activity continuity.
 3. The action executor validates plan shape, selected tools, dependencies, and unsafe parallel filesystem overlap.

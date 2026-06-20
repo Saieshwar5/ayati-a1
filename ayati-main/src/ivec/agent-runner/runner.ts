@@ -107,6 +107,13 @@ export async function runAgentLoop(
       stepNumber: state.iteration,
       ...(deps.uiContext ? { uiContext: deps.uiContext } : {}),
     });
+    deps.toolWorkingSetManager?.resetRun({
+      clientId: deps.clientId,
+      runId: deps.runHandle.runId,
+      sessionId: deps.runHandle.sessionId,
+      stepNumber: state.iteration,
+      ...(deps.uiContext ? { uiContext: deps.uiContext } : {}),
+    });
     deps.toolExecutor?.unmount?.(evidenceToolGroupId(deps.runHandle.runId));
     devLog(`[${deps.clientId}] [metrics:agent_loop] ${formatRunMetrics(metrics)}`);
     return buildLoopResult(state, deps.dataDir, {
@@ -153,12 +160,18 @@ export async function runAgentLoop(
       stepNumber: state.iteration,
       ...(deps.uiContext ? { uiContext: deps.uiContext } : {}),
     };
-    await deps.skillActivationManager?.prepareForDecision(state, toolContext);
+    if (deps.toolWorkingSetManager) {
+      deps.toolWorkingSetManager.prepareForDecision(state, toolContext);
+    } else {
+      await deps.skillActivationManager?.prepareForDecision(state, toolContext);
+    }
     syncEvidenceTools(deps, state, toolContext);
 
-    const visibleTools = deps.toolExecutor?.definitions({
-      ...toolContext,
-    }) ?? deps.toolDefinitions;
+    const visibleTools = deps.toolWorkingSetManager
+      ? deps.toolWorkingSetManager.visibleToolDefinitions(toolContext)
+      : deps.toolExecutor?.definitions({
+        ...toolContext,
+      }) ?? deps.toolDefinitions;
     const selectedTools = finalReplyFromVerifiedState
       ? []
       : selectToolsForDecision(state, visibleTools, config.maxSelectedTools);
@@ -166,6 +179,7 @@ export async function runAgentLoop(
       provider: deps.provider,
       stateView: buildAgentStateView(state),
       toolDefinitions: selectedTools,
+      toolRoutingSummary: deps.toolWorkingSetManager?.getPromptSummary(),
       systemContext: deps.systemContext,
       metrics,
     });
@@ -210,6 +224,16 @@ export async function runAgentLoop(
           feedback_kind: "clarification",
         },
       });
+    }
+
+    if (decision.kind === "load_tools") {
+      deps.toolWorkingSetManager?.load(decision.request, toolContext);
+      queueStateSnapshot();
+      recordRunMetric(metrics, "tool_load_decision", {
+        kind: "local",
+        status: deps.toolWorkingSetManager ? "success" : "failed",
+      });
+      continue;
     }
 
     const stepResult = await executeActionStep({
@@ -258,6 +282,17 @@ export async function runAgentLoop(
       stepNumber: state.iteration,
       ...(deps.uiContext ? { uiContext: deps.uiContext } : {}),
     });
+    if (deps.toolWorkingSetManager) {
+      const cleanupContext = {
+        clientId: deps.clientId,
+        runId: deps.runHandle.runId,
+        sessionId: deps.runHandle.sessionId,
+        stepNumber: state.iteration,
+        ...(deps.uiContext ? { uiContext: deps.uiContext } : {}),
+      };
+      deps.toolWorkingSetManager.afterExecution(stepResult.execution.actOutput.toolCalls, cleanupContext);
+      deps.toolWorkingSetManager.cleanupAfterStep(cleanupContext);
+    }
 
     if (stepResult.stepSummary.outcome === "failed") {
       state.consecutiveFailures++;

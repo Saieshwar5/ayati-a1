@@ -24,6 +24,13 @@ export interface AgentAction {
   assertions: ToolContractAssertion[];
 }
 
+export interface AgentToolLoadRequest {
+  query?: string;
+  toolNames: string[];
+  groups: string[];
+  reason: string;
+}
+
 export type AgentDecision =
   | {
       kind: "reply";
@@ -41,18 +48,24 @@ export type AgentDecision =
       kind: "act";
       action: AgentAction;
       workingNotes?: string[];
+    }
+  | {
+      kind: "load_tools";
+      request: AgentToolLoadRequest;
+      workingNotes?: string[];
     };
 
 interface CallAgentDecisionInput {
   provider: LlmProvider;
   stateView: AgentStateView;
   toolDefinitions: ToolDefinition[];
+  toolRoutingSummary?: string;
   systemContext?: string;
   metrics?: RunMetrics;
 }
 
 export async function callAgentDecision(input: CallAgentDecisionInput): Promise<AgentDecision> {
-  const promptSections = buildDecisionPromptSections(input.stateView, input.toolDefinitions);
+  const promptSections = buildDecisionPromptSections(input.stateView, input.toolDefinitions, input.toolRoutingSummary);
   const prompt = Object.values(promptSections).filter((section) => section.trim().length > 0).join("\n\n");
   const systemSections = buildDecisionSystemSections(input.systemContext);
   const systemContext = Object.values(systemSections).filter((section) => section.trim().length > 0).join("\n\n");
@@ -153,6 +166,14 @@ export function parseAgentDecision(text: string): AgentDecision {
     };
   }
 
+  if (kind === "load_tools") {
+    return {
+      kind: "load_tools",
+      request: normalizeToolLoadRequest(parsed["request"] ?? parsed),
+      workingNotes: normalizeWorkingNotes(parsed["workingNotes"] ?? parsed["working_notes"]),
+    };
+  }
+
   if (isPlainObject(parsed["action"])) {
     return {
       kind: "act",
@@ -171,7 +192,7 @@ Use the structured context pack and optional work state in the state view.
 Return compact JSON only.
 
 Decision rules:
-- Pick exactly one decision: reply, ask_user, or act.
+- Pick exactly one decision: reply, ask_user, act, or load_tools.
 - Treat State view.context as the bounded context pack for this decision.
 - Use context.recentConversation as the latest completed session activity. It contains prior user/assistant exchanges, not the current input or raw unlimited history.
 - If the latest recentConversation assistant response has expectsUserResponse=true, interpret the current input as the user's answer to that response unless the user clearly starts unrelated work.
@@ -188,18 +209,20 @@ Decision rules:
 - Use user-visible results from tool context and last actions, such as created paths, changed files, command results, document findings, or next steps.
 - Use ask_user only when a missing decision prevents safe progress.
 - Use act for tool work.
+- Use load_tools when the visible selected tools are not enough for the next action.
+- Return load_tools with exact toolNames when known, groups when a group fits, or query when uncertain.
 - For deterministic tool tasks, use concrete single/sequential/parallel actions.
 - Use autonomous only when exact tool inputs cannot be known yet.
 - Keep actions to one phase.
 - Use only tools listed in Selected tools.
-- Shell and filesystem tools are kernel tools when listed; use them directly without skill_search or skill_activate.
 - Prefer write_files for generated websites, apps, and multi-file file creation.
-- Use skill_search or skill_activate only for non-kernel capabilities that are not already listed.
+- Hidden tools are loaded by load_tools, not by calling skill_search or skill_activate.
 - Do not include assertions. Tool-owned contracts provide deterministic verification.
 
 Response JSON shapes:
 { "kind": "reply", "status": "completed" | "failed", "message": "..." }
 { "kind": "ask_user", "question": "...", "reason": "..." }
+{ "kind": "load_tools", "request": { "query": "...", "toolNames": ["read_file"], "groups": ["workflow:code_edit"], "reason": "..." } }
 { "kind": "act", "action": { "mode": "single" | "sequential" | "parallel" | "autonomous", "calls": [{ "id": "call_1", "tool": "write_files", "input": {}, "dependsOn": [], "purpose": "..." }], "allowedTools": ["write_files"], "maxCalls": 1 } }`;
 
 function buildDecisionSystemSections(systemContext: string | undefined): Record<string, string> {
@@ -222,9 +245,13 @@ function buildDecisionSystemSections(systemContext: string | undefined): Record<
 function buildDecisionPromptSections(
   stateView: AgentStateView,
   toolDefinitions: ToolDefinition[],
+  toolRoutingSummary: string | undefined,
 ): Record<string, string> {
   return {
     "user.tools": `Selected tools:\n${formatSelectedTools(toolDefinitions)}`,
+    "user.toolRouting": toolRoutingSummary?.trim()
+      ? `Tool loading map:\n${toolRoutingSummary.trim()}`
+      : "",
     "user.state": `State view:\n${JSON.stringify(stateView, null, 2)}`,
   };
 }
@@ -304,6 +331,18 @@ function normalizeAgentAction(value: unknown): AgentAction {
   };
 }
 
+function normalizeToolLoadRequest(value: unknown): AgentToolLoadRequest {
+  const record = isPlainObject(value) ? value : {};
+  return {
+    query: typeof record["query"] === "string" ? record["query"] : undefined,
+    toolNames: normalizeStringArray(record["toolNames"] ?? record["tool_names"]),
+    groups: normalizeStringArray(record["groups"]),
+    reason: typeof record["reason"] === "string" && record["reason"].trim().length > 0
+      ? record["reason"].trim()
+      : "model requested tool loading",
+  };
+}
+
 function normalizeWorkingNotes(value: unknown): string[] | undefined {
   if (!Array.isArray(value)) {
     return undefined;
@@ -313,6 +352,12 @@ function normalizeWorkingNotes(value: unknown): string[] | undefined {
     .filter((note) => note.length > 0)
     .slice(0, 12);
   return notes.length > 0 ? notes : [];
+}
+
+function normalizeStringArray(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value.map(String).map((item) => item.trim()).filter((item) => item.length > 0)
+    : [];
 }
 
 function normalizeActionMode(value: unknown): AgentActionMode {

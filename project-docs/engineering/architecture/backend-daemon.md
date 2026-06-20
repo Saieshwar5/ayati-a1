@@ -13,7 +13,7 @@ Core responsibilities:
 - Start HTTP upload/artifact/Pulse API.
 - Start plugins and system-event worker.
 - Manage session memory, personal memory, and episodic memory.
-- Register kernel tools and dynamically activate additional built-in tools.
+- Register a hidden tool catalog and expose only a capped run-scoped working set of tool schemas.
 - Execute the IVec decision-action-reducer agent loop.
 - Preserve daemon-owned runtime state under `ayati-main/data/`.
 - Provide replies, feedback, notifications, and background event handling to client transports.

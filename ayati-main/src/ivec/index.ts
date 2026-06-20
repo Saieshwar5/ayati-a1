@@ -15,6 +15,7 @@ import {
 import type { ToolExecutor } from "../skills/tool-executor.js";
 import type { ToolDefinition } from "../skills/types.js";
 import type { SkillActivationManager } from "../skills/activation-manager.js";
+import type { ToolWorkingSetManager } from "./agent-runner/tool-working-set.js";
 import { devLog, devWarn, devError } from "../shared/index.js";
 import type { ManagedDocumentManifest } from "../documents/types.js";
 import type { DocumentStore } from "../documents/document-store.js";
@@ -87,6 +88,7 @@ export interface IVecEngineOptions {
   sessionMemory?: SessionMemory;
   toolExecutor?: ToolExecutor;
   skillActivationManager?: SkillActivationManager;
+  toolWorkingSetManager?: ToolWorkingSetManager;
   loopConfig?: Partial<LoopConfig>;
   rotationPolicyConfig?: Partial<RotationPolicyConfig>;
   now?: () => Date;
@@ -107,6 +109,7 @@ export class IVecEngine {
   private readonly staticContext?: StaticContext;
   private readonly toolExecutor?: ToolExecutor;
   private readonly skillActivationManager?: SkillActivationManager;
+  private readonly toolWorkingSetManager?: ToolWorkingSetManager;
   private sessionMemory: SessionMemory;
   private readonly loopConfig?: Partial<LoopConfig>;
   private readonly rotationPolicyConfig?: Partial<RotationPolicyConfig>;
@@ -131,6 +134,7 @@ export class IVecEngine {
     this.staticContext = options?.staticContext;
     this.toolExecutor = options?.toolExecutor;
     this.skillActivationManager = options?.skillActivationManager;
+    this.toolWorkingSetManager = options?.toolWorkingSetManager;
     this.sessionMemory = options?.sessionMemory ?? noopSessionMemory;
     this.loopConfig = options?.loopConfig;
     this.rotationPolicyConfig = options?.rotationPolicyConfig;
@@ -223,6 +227,7 @@ export class IVecEngine {
           provider: this.provider,
           toolExecutor: this.toolExecutor,
           skillActivationManager: this.skillActivationManager,
+          toolWorkingSetManager: this.toolWorkingSetManager,
           toolDefinitions: toolDefs,
           sessionMemory: this.sessionMemory,
           runHandle,
@@ -376,6 +381,7 @@ export class IVecEngine {
         provider: this.provider,
         toolExecutor: this.toolExecutor,
         skillActivationManager: this.skillActivationManager,
+        toolWorkingSetManager: this.toolWorkingSetManager,
         toolDefinitions: toolDefs,
         sessionMemory: this.sessionMemory,
         runHandle,
