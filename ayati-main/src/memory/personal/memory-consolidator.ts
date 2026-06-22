@@ -321,7 +321,7 @@ export class MemoryConsolidator {
         content: turn.content,
         timestamp: turn.timestamp,
         sessionPath: turn.sessionPath,
-        runId: turn.runId,
+        workRunId: turn.workRunId,
       }))
       .join("\n\n");
 

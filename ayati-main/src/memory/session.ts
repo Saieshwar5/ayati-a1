@@ -48,8 +48,8 @@ export class InMemorySession {
     for (const entry of this.timeline) {
       if (entry.type === "user_message") {
         exchanges.push({
-          runId: entry.runId,
           user: {
+            seq: entry.seq,
             timestamp: entry.ts,
             content: entry.content,
           },
@@ -58,9 +58,10 @@ export class InMemorySession {
       }
 
       if (entry.type === "assistant_response") {
-        const exchange = exchanges.find((item) => item.runId === entry.runId);
+        const exchange = [...exchanges].reverse().find((item) => item.assistant === undefined);
         if (exchange) {
           exchange.assistant = {
+            seq: entry.seq,
             timestamp: entry.ts,
             content: entry.content,
             responseKind: entry.responseKind,
@@ -96,7 +97,7 @@ function flattenExchanges(exchanges: ConversationExchange[], sessionPath: string
       content: exchange.user.content,
       timestamp: exchange.user.timestamp,
       sessionPath,
-      runId: exchange.runId,
+      seq: exchange.user.seq,
     });
     if (exchange.assistant) {
       turns.push({
@@ -104,7 +105,7 @@ function flattenExchanges(exchanges: ConversationExchange[], sessionPath: string
         content: exchange.assistant.content,
         timestamp: exchange.assistant.timestamp,
         sessionPath,
-        runId: exchange.runId,
+        seq: exchange.assistant.seq,
         assistantResponseKind: exchange.assistant.responseKind,
       });
     }

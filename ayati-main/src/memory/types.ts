@@ -12,10 +12,13 @@ export type {
   ActivityAlias,
   ActivityAssetRef,
   ActivityContext,
+  ActivityDiscussionRange,
   ActivityIdentity,
   ActivityKind,
   ActivityLifecycle,
   ActivityRunRef,
+  ActivityStatus,
+  ActivityTaskBoundary,
   ActivityThread,
   ActivityUpsertInput,
   ContinuityContext,
@@ -26,17 +29,19 @@ export interface ConversationTurn {
   content: string;
   timestamp: string;
   sessionPath: string;
-  runId?: string;
+  seq?: number;
+  workRunId?: string;
   assistantResponseKind?: AssistantResponseKind;
 }
 
 export interface ConversationExchange {
-  runId: string;
   user: {
+    seq?: number;
     timestamp: string;
     content: string;
   };
   assistant?: {
+    seq?: number;
     timestamp: string;
     content: string;
     responseKind?: AssistantResponseKind;
@@ -49,6 +54,7 @@ export type AssistantResponseKind = Exclude<AgentResponseKind, "none">;
 export type FeedbackKind = "approval" | "confirmation" | "clarification";
 
 export interface SystemActivityItem {
+  seq?: number;
   timestamp: string;
   source: string;
   event: string;
@@ -58,6 +64,31 @@ export interface SystemActivityItem {
   responseKind?: AgentResponseKind;
   userVisible: boolean;
 }
+
+export type PromptSessionEvent =
+  | {
+      type: "user_message";
+      seq: number;
+      timestamp: string;
+      content: string;
+    }
+  | {
+      type: "assistant_response";
+      seq: number;
+      timestamp: string;
+      workRunId?: string;
+      content: string;
+      responseKind?: AssistantResponseKind;
+    }
+  | {
+      type: "system_event";
+      seq: number;
+      timestamp: string;
+      source: string;
+      event: string;
+      eventId: string;
+      summary: string;
+    };
 
 export type ToolEventStatus = "success" | "failed";
 
@@ -111,6 +142,8 @@ export interface PromptTaskSummary {
   progressSummary?: string;
   currentFocus?: string;
   completedMilestones: string[];
+  assumptions?: string[];
+  constraints?: string[];
   openWork: string[];
   blockers: string[];
   keyFacts: string[];
@@ -128,6 +161,22 @@ export interface PromptTaskSummary {
   nextAction?: string;
   stopReason?: TaskSummaryStopReason;
   attachmentNames: string[];
+}
+
+export interface SessionWorkActivitySummary {
+  activityId: string;
+  title: string;
+  status?: string;
+  lastTouchedAt: string;
+  lastTouchedSeq?: number;
+  openWork: string[];
+  topAssets: string[];
+  workRunIds: string[];
+}
+
+export interface SessionWorkContext {
+  activeContextStartSeq: number;
+  recentActivities: SessionWorkActivitySummary[];
 }
 
 export interface SessionHandoffSnapshot {
@@ -154,6 +203,9 @@ export interface SessionHandoffArtifact {
 
 export interface PromptMemoryContext {
   recentExchanges: ConversationExchange[];
+  sessionEvents?: PromptSessionEvent[];
+  activeContextStartSeq?: number;
+  sessionWork?: SessionWorkContext;
   recentSystemEvents: SystemActivityItem[];
   conversationTurns: ConversationTurn[];
   personalMemorySnapshot?: string;
@@ -167,6 +219,12 @@ export interface PromptMemoryContext {
 export interface MemoryRunHandle {
   sessionId: string;
   runId: string;
+  triggerSeq?: number;
+}
+
+export interface SessionInputHandle {
+  sessionId: string;
+  seq: number;
 }
 
 export interface SessionLifecycleUpdateInput {
@@ -243,6 +301,9 @@ export interface TaskSummaryRecordInput {
   sessionId: string;
   runPath: string;
   activityId?: string;
+  triggerSeq?: number;
+  discussionStartSeq?: number;
+  discussionEndSeq?: number;
   status: "completed" | "failed" | "stuck";
   taskStatus?: TaskSummaryTaskStatus;
   objective?: string;
@@ -250,6 +311,8 @@ export interface TaskSummaryRecordInput {
   progressSummary?: string;
   currentFocus?: string;
   completedMilestones?: string[];
+  assumptions?: string[];
+  constraints?: string[];
   openWork?: string[];
   blockers?: string[];
   keyFacts?: string[];
@@ -292,7 +355,7 @@ export interface SystemEventRecordInput {
 }
 
 export interface SystemEventOutcomeRecordInput {
-  runId: string;
+  workRunId?: string;
   eventId: string;
   source: string;
   event: string;
@@ -304,7 +367,7 @@ export interface SystemEventOutcomeRecordInput {
 }
 
 export interface AssistantNotificationRecordInput {
-  runId: string;
+  workRunId?: string;
   sessionId: string;
   message: string;
   source?: string;
@@ -312,15 +375,23 @@ export interface AssistantNotificationRecordInput {
   eventId?: string;
 }
 
+export interface AssistantMessageMetadata {
+  responseKind?: AssistantResponseKind;
+}
+
 export interface AssistantMessageRecordInput {
+  sessionId: string;
+  workRunId?: string;
+  content: string;
   responseKind?: AssistantResponseKind;
 }
 
 export interface SessionMemory {
   initialize(clientId: string): void;
   shutdown(): void | Promise<void>;
-  beginRun(clientId: string, userMessage: string): MemoryRunHandle;
-  beginSystemRun?(clientId: string, input: SystemEventRecordInput): MemoryRunHandle;
+  recordUserMessage(clientId: string, userMessage: string): SessionInputHandle;
+  recordSystemEvent?(clientId: string, input: SystemEventRecordInput): SessionInputHandle;
+  createWorkRun?(clientId: string, input: SessionInputHandle): MemoryRunHandle;
   recordTurnStatus?(clientId: string, input: TurnStatusRecordInput): void;
   createSession?(clientId: string, input: CreateSessionInput): CreateSessionResult;
   recordToolCall(clientId: string, input: ToolCallRecordInput): void;
@@ -330,8 +401,9 @@ export interface SessionMemory {
     runId: string,
     sessionId: string,
     content: string,
-    metadata?: AssistantMessageRecordInput,
+    metadata?: AssistantMessageMetadata,
   ): void;
+  recordAssistantMessage(clientId: string, input: AssistantMessageRecordInput): void;
   recordRunFailure(clientId: string, runId: string, sessionId: string, message: string): void;
   recordAgentStep(clientId: string, input: AgentStepRecordInput): void;
   recordTaskSummary?(clientId: string, input: TaskSummaryRecordInput): void;

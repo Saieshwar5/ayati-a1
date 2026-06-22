@@ -1,8 +1,17 @@
 import type { PreparedAttachmentDetailRecord } from "../../documents/prepared-attachment-registry.js";
 import type { ManagedDocumentManifest, PreparedAttachmentSummary } from "../../documents/types.js";
 
-export type ActivityKind = "project" | "document" | "learning" | "automation" | "debug" | "research" | "generic";
+export type ActivityKind =
+  | "project"
+  | "learning"
+  | "debug"
+  | "document"
+  | "research"
+  | "automation"
+  | "ephemeral"
+  | "generic";
 export type ActivityLifecycle = "active" | "warm" | "cold" | "archived";
+export type ActivityStatus = "open" | "done" | "blocked" | "needs_user" | "archived";
 export type ActivityIdentityType =
   | "asset_id"
   | "file_path"
@@ -80,6 +89,9 @@ export interface ActivityRunRef {
   runId: string;
   sessionId: string;
   runPath: string;
+  triggerSeq?: number;
+  discussionStartSeq?: number;
+  discussionEndSeq?: number;
   status: "completed" | "failed" | "stuck";
   taskStatus?: string;
   userMessage?: string;
@@ -90,16 +102,49 @@ export interface ActivityRunRef {
   createdAt: string;
 }
 
+export type ActivityDiscussionRangeReason =
+  | "initial_discussion"
+  | "follow_up"
+  | "clarification"
+  | "confirmation";
+
+export interface ActivityDiscussionRange {
+  sessionId: string;
+  startSeq: number;
+  endSeq: number;
+  reason: ActivityDiscussionRangeReason;
+}
+
+export interface ActivityStateRunSummary {
+  runId: string;
+  status: ActivityRunRef["status"];
+  taskStatus?: string;
+  summary: string;
+  toolsUsed: string[];
+  createdAt: string;
+}
+
 export interface ActivityState {
+  objective?: string;
   goal?: string;
+  status?: ActivityStatus;
+  summary?: string;
+  userIntent?: string;
+  assumptions: string[];
+  constraints: string[];
+  completedWork: string[];
   openWork: string[];
   blockers: string[];
   nextStep?: string;
   verifiedFacts: string[];
+  evidence: string[];
+  assets: string[];
   decisions: string[];
   changedFiles: string[];
   workingDirectories: string[];
   lastVerification?: string;
+  lastAssistantResponse?: string;
+  runHistory: ActivityStateRunSummary[];
 }
 
 export interface ActivityThread {
@@ -113,6 +158,7 @@ export interface ActivityThread {
   aliases: ActivityAlias[];
   assets: ActivityAssetRef[];
   runs: ActivityRunRef[];
+  discussionRanges: ActivityDiscussionRange[];
   state: ActivityState;
   confidence: number;
   importance: number;
@@ -137,12 +183,36 @@ export interface ActivityContext {
   activityId: string;
   kind: ActivityKind;
   title: string;
+  status?: ActivityStatus;
+  summary?: string;
+  userIntent?: string;
   goal?: string;
+  objective?: string;
+  assumptions?: string[];
+  constraints?: string[];
+  completedWork?: string[];
   openWork: string[];
+  blockers?: string[];
   nextStep?: string;
   verifiedFacts: string[];
+  evidence?: string[];
+  assets?: string[];
   topAssets: string[];
+  lastAssistantResponse?: string;
+  recentRuns?: ActivityStateRunSummary[];
+  discussionRanges?: ActivityDiscussionRange[];
   lastTouchedAt: string;
+}
+
+export interface ActivityTaskBoundary {
+  activityId: string;
+  runId: string;
+  sessionId: string;
+  kind: ActivityKind;
+  createdAt: string;
+  startSeq?: number;
+  endSeq?: number;
+  status?: ActivityStatus;
 }
 
 export interface ContinuityContext {
@@ -159,6 +229,9 @@ export interface ActivityUpsertInput {
   activityId?: string;
   runId: string;
   runPath: string;
+  triggerSeq?: number;
+  discussionStartSeq?: number;
+  discussionEndSeq?: number;
   status: "completed" | "failed" | "stuck";
   taskStatus?: string;
   objective?: string;
@@ -166,6 +239,8 @@ export interface ActivityUpsertInput {
   progressSummary?: string;
   currentFocus?: string;
   completedMilestones?: string[];
+  assumptions?: string[];
+  constraints?: string[];
   openWork?: string[];
   blockers?: string[];
   keyFacts?: string[];

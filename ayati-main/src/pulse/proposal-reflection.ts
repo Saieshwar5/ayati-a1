@@ -177,7 +177,7 @@ function buildReflectionUserPrompt(input: PulseProposalReflectionInput): string 
     taskSummary: compactReflectionTaskSummary(input.taskSummary),
     continuity: compactContinuity(memoryContext.continuity),
     personalMemorySnapshot: truncateText(memoryContext.personalMemorySnapshot ?? ""),
-    recentConversation: compactConversation(memoryContext.conversationTurns ?? []),
+    recentTurns: compactConversation(memoryContext.conversationTurns ?? []),
     availableCapabilities: summarizeCapabilities(input.toolDefinitions),
   };
 

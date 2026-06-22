@@ -8,6 +8,7 @@ export type SessionEventType =
 
 interface BaseEvent {
   v: 1;
+  seq?: number;
   ts: string;
   type: SessionEventType;
   sessionId: string;
@@ -22,20 +23,18 @@ export interface SessionOpenEvent extends BaseEvent {
 
 export interface UserMessageEvent extends BaseEvent {
   type: "user_message";
-  runId: string;
   content: string;
 }
 
 export interface AssistantResponseEvent extends BaseEvent {
   type: "assistant_response";
-  runId: string;
+  workRunId?: string;
   content: string;
   responseKind?: AssistantResponseKind;
 }
 
 export interface SystemEventEntry extends BaseEvent {
   type: "system_event";
-  runId: string;
   source: string;
   event: string;
   eventId: string;

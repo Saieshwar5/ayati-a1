@@ -84,7 +84,7 @@ function extractConversationExchanges(
       continue;
     }
 
-    const assistant = findFollowingAssistant(events, idx + 1, event.runId);
+    const assistant = findFollowingAssistant(events, idx + 1);
     if (!assistant) {
       continue;
     }
@@ -103,7 +103,7 @@ function extractConversationExchanges(
     episodes.push(buildEpisode(payload, {
       episodeType: "conversation_exchange",
       createdAt: assistant.event.ts,
-      runId: event.runId,
+      runId: assistant.event.workRunId,
       eventStartIndex: idx,
       eventEndIndex: assistant.index,
       summary: summarizeExchange(userText, assistantText),
@@ -162,7 +162,6 @@ function extractSessionSummary(
 function findFollowingAssistant(
   events: SessionEvent[],
   startIndex: number,
-  runId: string,
 ): { event: AssistantResponseEvent; index: number } | null {
   for (let idx = startIndex; idx < events.length; idx++) {
     const event = events[idx];
@@ -172,7 +171,7 @@ function findFollowingAssistant(
     if (event.type === "user_message") {
       return null;
     }
-    if (event.type === "assistant_response" && event.runId === runId) {
+    if (event.type === "assistant_response") {
       return { event, index: idx };
     }
   }

@@ -3,6 +3,8 @@ import type {
   SessionMemory,
   SessionStatus,
   MemoryRunHandle,
+  SessionInputHandle,
+  AssistantMessageMetadata,
   AssistantMessageRecordInput,
   TurnStatusRecordInput,
   ToolCallRecordInput,
@@ -13,10 +15,12 @@ import type {
   SystemEventOutcomeRecordInput,
   AssistantNotificationRecordInput,
   PromptMemoryContext,
+  PromptSessionEvent,
   ConversationExchange,
   ConversationTurn,
   SessionLifecycleUpdateInput,
   SystemActivityItem,
+  SessionWorkActivitySummary,
 } from "./types.js";
 import type {
   SessionEvent,
@@ -32,7 +36,6 @@ import { ActivityStore } from "./activity/activity-store.js";
 import type { ActivityUpsertInput } from "./activity/types.js";
 import { devWarn } from "../shared/index.js";
 
-const RECENT_EXCHANGE_LIMIT = 5;
 const RECENT_SYSTEM_EVENT_LIMIT = 5;
 const DEFAULT_SESSION_TIMEZONE = "Asia/Kolkata";
 
@@ -60,6 +63,9 @@ interface HotSessionState {
   sessionDate: string;
   sessionPath: string;
   startedAt: string;
+  nextSeq: number;
+  timeline: TimelineEvent[];
+  workRunTriggerSeq: Map<string, number>;
   recentExchanges: ConversationExchange[];
   recentSystemEvents: SystemActivityItem[];
 }
@@ -126,47 +132,45 @@ export class MemoryManager implements SessionMemory {
     this.currentSession = null;
   }
 
-  beginRun(clientId: string, userMessage: string): MemoryRunHandle {
+  recordUserMessage(clientId: string, userMessage: string): SessionInputHandle {
     const nowIso = this.nowIso();
     const session = this.ensureTodaySession(clientId, nowIso);
-    const runId = randomUUID();
+    const seq = nextSessionSeq(session);
     const event: UserMessageEvent = {
       v: 1,
+      seq,
       ts: nowIso,
       type: "user_message",
       sessionId: session.sessionId,
       sessionPath: session.sessionPath,
       sessionDate: session.sessionDate,
-      runId,
       content: userMessage,
     };
 
     this.appendTimelineEvent(event);
     session.recentExchanges.push({
-      runId,
       user: {
+        seq,
         timestamp: nowIso,
         content: userMessage,
       },
     });
-    trimTail(session.recentExchanges, RECENT_EXCHANGE_LIMIT);
-
-    return { sessionId: session.sessionId, runId };
+    return { sessionId: session.sessionId, seq };
   }
 
-  beginSystemRun(clientId: string, input: SystemEventRecordInput): MemoryRunHandle {
+  recordSystemEvent(clientId: string, input: SystemEventRecordInput): SessionInputHandle {
     const nowIso = this.nowIso();
     const session = this.ensureTodaySession(clientId, nowIso);
-    const runId = randomUUID();
+    const seq = nextSessionSeq(session);
     const summary = input.summary?.trim() || `${input.source}:${input.event}`;
     const event: SystemEventEntry = {
       v: 1,
+      seq,
       ts: nowIso,
       type: "system_event",
       sessionId: session.sessionId,
       sessionPath: session.sessionPath,
       sessionDate: session.sessionDate,
-      runId,
       source: input.source,
       event: input.event,
       eventId: input.eventId,
@@ -179,7 +183,7 @@ export class MemoryManager implements SessionMemory {
     this.systemEventStore.recordReceived({
       clientId,
       sessionId: session.sessionId,
-      runId,
+      workRunId: null,
       eventId: input.eventId,
       source: input.source,
       eventName: input.event,
@@ -195,7 +199,21 @@ export class MemoryManager implements SessionMemory {
       receivedAt: input.triggeredAt ?? nowIso,
     });
 
-    return { sessionId: session.sessionId, runId };
+    return { sessionId: session.sessionId, seq };
+  }
+
+  createWorkRun(clientId: string, input: SessionInputHandle): MemoryRunHandle {
+    const session = this.currentSession;
+    if (!session || session.clientId !== clientId || session.sessionId !== input.sessionId) {
+      throw new Error("Cannot create work run without a matching active session input.");
+    }
+    const run = {
+      sessionId: session.sessionId,
+      runId: randomUUID(),
+      triggerSeq: input.seq,
+    };
+    session.workRunTriggerSeq.set(run.runId, input.seq);
+    return run;
   }
 
   recordTurnStatus(_clientId: string, _input: TurnStatusRecordInput): void {
@@ -213,33 +231,47 @@ export class MemoryManager implements SessionMemory {
   recordAssistantFinal(
     clientId: string,
     runId: string,
-    _sessionId: string,
+    sessionId: string,
     content: string,
-    metadata?: AssistantMessageRecordInput,
+    metadata?: AssistantMessageMetadata,
+  ): void {
+    this.recordAssistantMessage(clientId, {
+      sessionId,
+      workRunId: runId,
+      content,
+      responseKind: metadata?.responseKind,
+    });
+  }
+
+  recordAssistantMessage(
+    clientId: string,
+    input: AssistantMessageRecordInput,
   ): void {
     const nowIso = this.nowIso();
     const session = this.ensureTodaySession(clientId, nowIso);
+    const seq = nextSessionSeq(session);
     const event: AssistantResponseEvent = {
       v: 1,
+      seq,
       ts: nowIso,
       type: "assistant_response",
       sessionId: session.sessionId,
       sessionPath: session.sessionPath,
       sessionDate: session.sessionDate,
-      runId,
-      content,
-      responseKind: metadata?.responseKind,
+      ...(input.workRunId ? { workRunId: input.workRunId } : {}),
+      content: input.content,
+      responseKind: input.responseKind,
     };
 
     this.appendTimelineEvent(event);
-    const exchange = session.recentExchanges.find((item) => item.runId === runId);
+    const exchange = [...session.recentExchanges].reverse().find((item) => item.assistant === undefined);
     if (exchange) {
       exchange.assistant = {
+        seq,
         timestamp: nowIso,
-        content,
-        responseKind: metadata?.responseKind,
+        content: input.content,
+        responseKind: input.responseKind,
       };
-      trimTail(session.recentExchanges, RECENT_EXCHANGE_LIMIT);
     }
   }
 
@@ -256,20 +288,13 @@ export class MemoryManager implements SessionMemory {
   }
 
   queueTaskSummary(clientId: string, input: TaskSummaryRecordInput): void {
-    if (
-      (input.toolsUsed?.length ?? 0) === 0
-      && !input.activityId
-      && (input.activityAssets?.length ?? 0) === 0
-      && (input.attachmentNames?.length ?? 0) === 0
-    ) {
-      return;
-    }
-    this.activityStore.upsertFromTaskSummary(taskSummaryToActivityInput(clientId, input, this.nowIso()));
+    const enriched = this.enrichTaskSummaryWithSessionRange(clientId, input);
+    this.activityStore.upsertFromTaskSummary(taskSummaryToActivityInput(clientId, enriched, this.nowIso()));
   }
 
   recordSystemEventOutcome(_clientId: string, input: SystemEventOutcomeRecordInput): void {
     this.systemEventStore.recordOutcome({
-      runId: input.runId,
+      workRunId: input.workRunId ?? null,
       eventId: input.eventId,
       status: input.status,
       processedAt: this.nowIso(),
@@ -288,9 +313,16 @@ export class MemoryManager implements SessionMemory {
     const clientId = session?.clientId ?? this.activeClientId;
     const recentExchanges = cloneExchanges(session?.recentExchanges ?? []);
     const recentSystemEvents = cloneSystemEvents(session?.recentSystemEvents ?? []);
+    const activeContextStartSeq = this.resolveActiveContextStartSeq(clientId, session);
 
     return {
       recentExchanges,
+      sessionEvents: buildPromptSessionEvents(session?.timeline ?? []),
+      activeContextStartSeq,
+      sessionWork: {
+        activeContextStartSeq,
+        recentActivities: this.buildSessionWorkActivities(clientId, session),
+      },
       recentSystemEvents,
       conversationTurns: flattenExchanges(recentExchanges, session?.sessionPath ?? ""),
       personalMemorySnapshot: this.personalMemorySnapshotProvider?.(clientId) ?? "",
@@ -341,6 +373,62 @@ export class MemoryManager implements SessionMemory {
     return this.activityStore;
   }
 
+  private enrichTaskSummaryWithSessionRange(
+    clientId: string,
+    input: TaskSummaryRecordInput,
+  ): TaskSummaryRecordInput {
+    const session = this.currentSession;
+    if (!session || session.clientId !== clientId || session.sessionId !== input.sessionId) {
+      return input;
+    }
+    const triggerSeq = input.triggerSeq ?? session.workRunTriggerSeq.get(input.runId);
+    const activeContextStartSeq = this.resolveActiveContextStartSeq(clientId, session);
+    const discussionEndSeq = input.discussionEndSeq ?? triggerSeq;
+    const discussionStartSeq = input.discussionStartSeq
+      ?? (discussionEndSeq ? Math.min(activeContextStartSeq, discussionEndSeq) : undefined);
+    return {
+      ...input,
+      ...(triggerSeq ? { triggerSeq } : {}),
+      ...(discussionStartSeq ? { discussionStartSeq } : {}),
+      ...(discussionEndSeq ? { discussionEndSeq } : {}),
+    };
+  }
+
+  private resolveActiveContextStartSeq(clientId: string, session: HotSessionState | null): number {
+    if (!session) return 1;
+    const boundary = this.activityStore.findLatestDurableTaskBoundary(clientId, session.sessionId);
+    return boundary?.endSeq ? boundary.endSeq + 1 : 1;
+  }
+
+  private buildSessionWorkActivities(
+    clientId: string,
+    session: HotSessionState | null,
+  ): SessionWorkActivitySummary[] {
+    if (!session) return [];
+    return this.activityStore.listRecentForSession(clientId, session.sessionId, 5).map((activity) => {
+      const sessionRanges = activity.discussionRanges.filter((range) => range.sessionId === session.sessionId);
+      const lastTouchedSeq = sessionRanges.length > 0
+        ? Math.max(...sessionRanges.map((range) => range.endSeq))
+        : undefined;
+      return {
+        activityId: activity.activityId,
+        title: activity.title,
+        ...(activity.state.status ? { status: activity.state.status } : {}),
+        lastTouchedAt: activity.lastTouchedAt,
+        ...(lastTouchedSeq ? { lastTouchedSeq } : {}),
+        openWork: activity.state.openWork.slice(0, 5),
+        topAssets: activity.assets
+          .map((asset) => asset.path ?? asset.displayName ?? asset.documentId ?? asset.fileId ?? asset.directoryId ?? asset.uri ?? "")
+          .filter(Boolean)
+          .slice(0, 8),
+        workRunIds: activity.runs
+          .filter((run) => run.sessionId === session.sessionId)
+          .slice(-5)
+          .map((run) => run.runId),
+      };
+    });
+  }
+
   private ensureTodaySession(clientId: string, nowIso: string): HotSessionState {
     const sessionDate = this.getSessionDate(new Date(nowIso));
     if (this.currentSession?.clientId === clientId && this.currentSession.sessionDate === sessionDate) {
@@ -363,6 +451,9 @@ export class MemoryManager implements SessionMemory {
       sessionDate,
       sessionPath,
       startedAt: nowIso,
+      nextSeq: 1,
+      timeline: [],
+      workRunTriggerSeq: new Map(),
       recentExchanges: [],
       recentSystemEvents: [],
     };
@@ -416,37 +507,46 @@ export class MemoryManager implements SessionMemory {
       sessionDate: open.sessionDate,
       sessionPath: open.sessionPath,
       startedAt: open.ts,
+      nextSeq: 1,
+      timeline: [],
+      workRunTriggerSeq: new Map(),
       recentExchanges: [],
       recentSystemEvents: [],
     };
 
     for (const event of events) {
-      if (event.type === "user_message") {
+      if (event.type === "session_open") {
+        continue;
+      }
+      const sequenced = ensureEventSeq(event, session);
+      session.timeline.push(sequenced);
+
+      if (sequenced.type === "user_message") {
         session.recentExchanges.push({
-          runId: event.runId,
           user: {
-            timestamp: event.ts,
-            content: event.content,
+            seq: sequenced.seq,
+            timestamp: sequenced.ts,
+            content: sequenced.content,
           },
         });
-        trimTail(session.recentExchanges, RECENT_EXCHANGE_LIMIT);
         continue;
       }
 
-      if (event.type === "assistant_response") {
-        const exchange = session.recentExchanges.find((item) => item.runId === event.runId);
+      if (sequenced.type === "assistant_response") {
+        const exchange = [...session.recentExchanges].reverse().find((item) => item.assistant === undefined);
         if (exchange) {
           exchange.assistant = {
-            timestamp: event.ts,
-            content: event.content,
-            responseKind: event.responseKind,
+            seq: sequenced.seq,
+            timestamp: sequenced.ts,
+            content: sequenced.content,
+            responseKind: sequenced.responseKind,
           };
         }
         continue;
       }
 
-      if (event.type === "system_event") {
-        this.pushSystemEvent(session, event);
+      if (sequenced.type === "system_event") {
+        this.pushSystemEvent(session, sequenced);
       }
     }
 
@@ -454,6 +554,9 @@ export class MemoryManager implements SessionMemory {
   }
 
   private appendTimelineEvent(event: TimelineEvent): void {
+    if (this.currentSession?.sessionId === event.sessionId) {
+      this.currentSession.timeline.push(event);
+    }
     this.enqueuePersistenceTask(() => this.persistence.appendEventAsync(event));
   }
 
@@ -510,6 +613,7 @@ export class MemoryManager implements SessionMemory {
 
   private pushSystemEvent(session: HotSessionState, event: SystemEventEntry): void {
     session.recentSystemEvents.push({
+      seq: event.seq,
       timestamp: event.ts,
       source: event.source,
       event: event.event,
@@ -541,9 +645,60 @@ function trimTail<T>(items: T[], limit: number): void {
   items.splice(0, items.length - limit);
 }
 
+function nextSessionSeq(session: HotSessionState): number {
+  const seq = session.nextSeq;
+  session.nextSeq += 1;
+  return seq;
+}
+
+function ensureEventSeq<T extends TimelineEvent>(event: T, session: HotSessionState): T {
+  if (typeof event.seq === "number" && Number.isInteger(event.seq) && event.seq > 0) {
+    session.nextSeq = Math.max(session.nextSeq, event.seq + 1);
+    return event;
+  }
+  return {
+    ...event,
+    seq: nextSessionSeq(session),
+  };
+}
+
+function buildPromptSessionEvents(events: TimelineEvent[]): PromptSessionEvent[] {
+  return events.flatMap((event): PromptSessionEvent[] => {
+    if (!event.seq) {
+      return [];
+    }
+    if (event.type === "user_message") {
+      return [{
+        type: event.type,
+        seq: event.seq,
+        timestamp: event.ts,
+        content: event.content,
+      }];
+    }
+    if (event.type === "assistant_response") {
+      return [{
+        type: event.type,
+        seq: event.seq,
+        timestamp: event.ts,
+        ...(event.workRunId ? { workRunId: event.workRunId } : {}),
+        content: event.content,
+        ...(event.responseKind ? { responseKind: event.responseKind } : {}),
+      }];
+    }
+    return [{
+      type: event.type,
+      seq: event.seq,
+      timestamp: event.ts,
+      source: event.source,
+      event: event.event,
+      eventId: event.eventId,
+      summary: event.summary,
+    }];
+  });
+}
+
 function cloneExchanges(exchanges: ConversationExchange[]): ConversationExchange[] {
   return exchanges.map((exchange) => ({
-    runId: exchange.runId,
     user: { ...exchange.user },
     ...(exchange.assistant ? { assistant: { ...exchange.assistant } } : {}),
   }));
@@ -561,7 +716,7 @@ function flattenExchanges(exchanges: ConversationExchange[], sessionPath: string
       content: exchange.user.content,
       timestamp: exchange.user.timestamp,
       sessionPath,
-      runId: exchange.runId,
+      seq: exchange.user.seq,
     });
     if (exchange.assistant) {
       turns.push({
@@ -569,7 +724,7 @@ function flattenExchanges(exchanges: ConversationExchange[], sessionPath: string
         content: exchange.assistant.content,
         timestamp: exchange.assistant.timestamp,
         sessionPath,
-        runId: exchange.runId,
+        seq: exchange.assistant.seq,
         assistantResponseKind: exchange.assistant.responseKind,
       });
     }
@@ -586,7 +741,7 @@ function extractConversationTurns(events: SessionEvent[], fallbackSessionPath: s
         content: event.content,
         timestamp: event.ts,
         sessionPath: event.sessionPath || fallbackSessionPath,
-        runId: event.runId,
+        seq: event.seq,
       });
       continue;
     }
@@ -597,7 +752,8 @@ function extractConversationTurns(events: SessionEvent[], fallbackSessionPath: s
         content: event.content,
         timestamp: event.ts,
         sessionPath: event.sessionPath || fallbackSessionPath,
-        runId: event.runId,
+        seq: event.seq,
+        workRunId: event.workRunId,
         assistantResponseKind: event.responseKind,
       });
     }
@@ -612,6 +768,9 @@ function taskSummaryToActivityInput(clientId: string, input: TaskSummaryRecordIn
     sessionId: input.sessionId,
     runId: input.runId,
     runPath: input.runPath,
+    triggerSeq: input.triggerSeq,
+    discussionStartSeq: input.discussionStartSeq,
+    discussionEndSeq: input.discussionEndSeq,
     status: input.status,
     taskStatus: input.taskStatus,
     objective: input.objective,
@@ -619,6 +778,8 @@ function taskSummaryToActivityInput(clientId: string, input: TaskSummaryRecordIn
     progressSummary: input.progressSummary,
     currentFocus: input.currentFocus,
     completedMilestones: input.completedMilestones,
+    assumptions: input.assumptions,
+    constraints: input.constraints,
     openWork: input.openWork,
     blockers: input.blockers,
     keyFacts: input.keyFacts,

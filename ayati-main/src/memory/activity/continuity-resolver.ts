@@ -1,4 +1,4 @@
-import { deterministicScore, hasExplicitNewTaskSignal, isFollowUpMessage } from "./policy.js";
+import { deterministicScore, hasExplicitNewTaskSignal, isFollowUpMessage, shouldUseEphemeralHistory } from "./policy.js";
 import {
   extractMessageIdentities,
   normalizeIdentityValue,
@@ -47,6 +47,7 @@ export class ContinuityResolver {
       ? this.store.findByIdentities(input.clientId, identities, 5)
       : [];
     const followUp = isFollowUpMessage(message);
+    const allowEphemeral = shouldUseEphemeralHistory(message);
     const textMatches = this.store.search(input.clientId, message, { limit: 5 });
     const recent = this.store.listRecent(input.clientId, 3);
     const scored = scoreActivities({
@@ -54,7 +55,7 @@ export class ContinuityResolver {
         ...identityMatches.map((match) => match.activity),
         ...textMatches,
         ...(followUp ? recent.slice(0, 1) : []),
-      ]),
+      ]).filter((activity) => allowEphemeral || activity.kind !== "ephemeral"),
       identityMatches,
       message,
       identities,
@@ -113,11 +114,24 @@ export function toActivityContext(activity: ActivityThread): ActivityContext {
     activityId: activity.activityId,
     kind: activity.kind,
     title: activity.title,
+    ...(activity.state.status ? { status: activity.state.status } : {}),
+    ...(activity.state.summary ? { summary: activity.state.summary } : {}),
+    ...(activity.state.userIntent ? { userIntent: activity.state.userIntent } : {}),
     ...(activity.state.goal ? { goal: activity.state.goal } : {}),
+    ...(activity.state.objective ? { objective: activity.state.objective } : {}),
+    assumptions: activity.state.assumptions.slice(0, 5),
+    constraints: activity.state.constraints.slice(0, 5),
+    completedWork: activity.state.completedWork.slice(-5),
     openWork: activity.state.openWork.slice(0, 5),
+    blockers: activity.state.blockers.slice(0, 5),
     ...(activity.state.nextStep ? { nextStep: activity.state.nextStep } : {}),
-    verifiedFacts: activity.state.verifiedFacts.slice(-6),
+    verifiedFacts: activity.state.verifiedFacts.slice(-10),
+    evidence: activity.state.evidence.slice(-8),
+    assets: activity.state.assets.slice(0, 8),
     topAssets: topAssetLabels(activity),
+    ...(activity.state.lastAssistantResponse ? { lastAssistantResponse: activity.state.lastAssistantResponse } : {}),
+    recentRuns: activity.state.runHistory.slice(-3),
+    discussionRanges: activity.discussionRanges.slice(-3),
     lastTouchedAt: activity.lastTouchedAt,
   };
 }
@@ -185,7 +199,7 @@ function topAssetLabels(activity: ActivityThread): string[] {
   return activity.assets
     .map((asset) => asset.path ?? asset.displayName ?? asset.documentId ?? asset.fileId ?? asset.directoryId ?? asset.uri ?? "")
     .filter(Boolean)
-    .slice(0, 5);
+    .slice(0, 8);
 }
 
 function assetIdentities(assets: ActivityAssetRef[], at: string): ActivityIdentity[] {
@@ -259,10 +273,19 @@ function searchableActivityText(activity: ActivityThread): string {
     activity.title,
     activity.summary,
     activity.kind,
+    activity.state.objective,
     activity.state.goal,
+    activity.state.summary,
+    activity.state.userIntent,
     activity.state.nextStep,
+    ...activity.state.assumptions,
+    ...activity.state.constraints,
+    ...activity.state.completedWork,
     ...activity.state.openWork,
+    ...activity.state.blockers,
     ...activity.state.verifiedFacts,
+    ...activity.state.evidence,
+    ...activity.state.assets,
     ...activity.state.changedFiles,
     ...activity.state.workingDirectories,
     ...activity.aliases.map((alias) => alias.value),

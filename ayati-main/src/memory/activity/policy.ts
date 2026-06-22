@@ -20,6 +20,10 @@ export function inferActivityKind(input: ActivityUpsertInput): ActivityKind {
     ]),
   ].filter(Boolean).join(" ").toLowerCase();
 
+  const hasDurableAnchor = (input.activityAssets?.length ?? 0) > 0 || (input.attachmentNames?.length ?? 0) > 0;
+  if (!hasDurableAnchor && isEphemeralText(text)) {
+    return "ephemeral";
+  }
   if ((input.activityAssets ?? []).some((asset) => asset.kind === "document" || asset.kind === "dataset")
     || /\b(pdf|document|attachment|contract|policy|paper|dataset|spreadsheet|csv)\b/.test(text)) {
     return "document";
@@ -44,11 +48,9 @@ export function inferActivityKind(input: ActivityUpsertInput): ActivityKind {
 
 export function shouldCreateActivity(input: ActivityUpsertInput, kind: ActivityKind): boolean {
   if (input.activityId?.trim()) return true;
+  if ((input.toolsUsed?.length ?? 0) > 0) return true;
   if ((input.activityAssets?.length ?? 0) > 0 || (input.attachmentNames?.length ?? 0) > 0) return true;
-  if ((input.openWork?.length ?? 0) > 0 || input.userInputNeeded?.trim()) return true;
-  if (kind === "automation" || kind === "learning") return true;
-  if (hasArtifactEvidence(input)) return true;
-  if ((input.keyFacts?.length ?? 0) > 0 && (input.toolsUsed?.length ?? 0) > 0) return true;
+  if ((kind === "automation" || kind === "learning") && hasArtifactEvidence(input)) return true;
   return false;
 }
 
@@ -91,6 +93,8 @@ export function defaultImportance(kind: ActivityKind): number {
       return 0.68;
     case "research":
       return 0.66;
+    case "ephemeral":
+      return 0.22;
     case "generic":
       return 0.45;
   }
@@ -120,6 +124,10 @@ export function hasExplicitNewTaskSignal(message: string): boolean {
   return /\b(new|different|start over|from scratch|unrelated|another)\b/i.test(message);
 }
 
+export function shouldUseEphemeralHistory(message: string): boolean {
+  return /\b(history|historical|trend|compare|comparison|previous|last time|earlier|before)\b/i.test(message);
+}
+
 function hasArtifactEvidence(input: ActivityUpsertInput): boolean {
   const text = [
     input.summary,
@@ -129,6 +137,11 @@ function hasArtifactEvidence(input: ActivityUpsertInput): boolean {
     ...(input.completedMilestones ?? []),
   ].join(" ").toLowerCase();
   return /\b(file|files|directory|folder|created|written|edited|modified|verified|hash|artifact|app|component|build|test|path)\b/.test(text);
+}
+
+function isEphemeralText(text: string): boolean {
+  return /\b(machine|system|computer|laptop|device|health|status|diagnostic|diagnostics|ram|memory|cpu|disk|storage|battery|network|process|processes|programs|usage|load|uptime|date|time|weather now|current weather)\b/.test(text)
+    && /\b(check|show|what|which|current|now|today|usage|using|health|status|diagnose|diagnostic)\b/.test(text);
 }
 
 function activeDays(kind: ActivityKind): number {
@@ -145,6 +158,8 @@ function activeDays(kind: ActivityKind): number {
       return 5;
     case "research":
       return 7;
+    case "ephemeral":
+      return 0;
     case "generic":
       return 2;
   }
@@ -164,6 +179,8 @@ function warmDays(kind: ActivityKind): number {
       return 21;
     case "research":
       return 30;
+    case "ephemeral":
+      return 1;
     case "generic":
       return 7;
   }
@@ -183,6 +200,8 @@ function coldDays(kind: ActivityKind): number {
       return 90;
     case "research":
       return 120;
+    case "ephemeral":
+      return 7;
     case "generic":
       return 30;
   }

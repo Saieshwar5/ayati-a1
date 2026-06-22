@@ -7,6 +7,7 @@ import {
   autoLoadUntil,
   classifyLifecycle,
   defaultImportance,
+  hasExplicitNewTaskSignal,
   inferActivityKind,
   shouldCreateActivity,
 } from "./policy.js";
@@ -16,6 +17,7 @@ import type {
   ActivityAssetOrigin,
   ActivityAssetRef,
   ActivityAssetRole,
+  ActivityDiscussionRange,
   ActivityIdentity,
   ActivityIdentityType,
   ActivityKind,
@@ -23,6 +25,9 @@ import type {
   ActivityRunRef,
   ActivitySearchOptions,
   ActivityState,
+  ActivityStateRunSummary,
+  ActivityStatus,
+  ActivityTaskBoundary,
   ActivityThread,
   ActivityUpsertInput,
 } from "./types.js";
@@ -100,6 +105,9 @@ interface RunRow {
   run_id: string;
   session_id: string;
   run_path: string;
+  trigger_seq: number | null;
+  discussion_start_seq: number | null;
+  discussion_end_seq: number | null;
   status: ActivityRunRef["status"];
   task_status: string | null;
   user_message: string | null;
@@ -108,6 +116,18 @@ interface RunRow {
   tools_used_json: string;
   asset_ids_json: string;
   created_at: string;
+}
+
+interface BoundaryRow {
+  activity_id: string;
+  run_id: string;
+  session_id: string;
+  kind: ActivityKind;
+  state_json: string;
+  created_at: string;
+  trigger_seq: number | null;
+  discussion_start_seq: number | null;
+  discussion_end_seq: number | null;
 }
 
 export class ActivityStore {
@@ -141,14 +161,23 @@ export class ActivityStore {
     }
 
     const now = this.nowProvider();
-    const existing = this.findActivityForUpsert(input);
+    const existing = this.findActivityForUpsert(input, kind);
     const previous = existing ? this.getActivity(existing.activityId) : null;
-    const activityId = previous?.activityId ?? stableActivityId(input.clientId, input.sessionId, buildTitle(input, kind), kind);
     const title = previous?.title ?? buildTitle(input, kind);
+    const activityId = previous?.activityId ?? stableActivityId(
+      input.clientId,
+      input.sessionId,
+      kind === "ephemeral" ? `${title}:${input.runId}` : title,
+      kind,
+    );
     const summary = buildSummary(input, previous?.summary);
     const identities = mergeIdentities(previous?.identities ?? [], buildIdentities(input), input.createdAt);
     const aliases = mergeAliases(previous?.aliases ?? [], buildAliases(input, title), input.createdAt);
     const assets = mergeAssets(previous?.assets ?? [], collectAssets(input)).slice(-40);
+    const discussionRanges = mergeDiscussionRanges(
+      previous?.discussionRanges ?? [],
+      buildDiscussionRange(input, previous !== null),
+    );
     const state = buildState(input, previous?.state, assets);
     const reuseCount = previous ? previous.reuseCount + 1 : 1;
     const importance = Math.max(previous?.importance ?? defaultImportance(kind), defaultImportance(kind));
@@ -170,6 +199,7 @@ export class ActivityStore {
       aliases,
       assets,
       runs: appendRun(previous?.runs ?? [], buildRun(input, assets)),
+      discussionRanges,
       state,
       confidence: previous ? Math.min(0.99, previous.confidence + 0.04) : initialConfidence(input),
       importance,
@@ -179,6 +209,7 @@ export class ActivityStore {
       autoLoadUntil: autoLoadUntil(kind, input.createdAt),
       details: {
         ...(previous?.details ?? {}),
+        discussionRanges,
         lastAdmission: {
           kind,
           durableAnchors: identities.filter((identity) => identity.type !== "explicit_alias").length,
@@ -290,6 +321,50 @@ export class ActivityStore {
     return rows.map((row) => this.toActivityThread(row));
   }
 
+  listRecentForSession(clientId: string, sessionId: string, limit = 5): ActivityThread[] {
+    const rows = this.requireDb().prepare(`
+      SELECT DISTINCT t.*
+      FROM activity_threads t
+      JOIN activity_runs r ON r.activity_id = t.activity_id
+      WHERE t.client_id = ? AND r.session_id = ? AND t.lifecycle <> 'archived'
+      ORDER BY t.last_touched_at DESC
+      LIMIT ?
+    `).all(clientId, sessionId, Math.max(1, Math.min(20, limit))) as unknown as ActivityRow[];
+    return rows.map((row) => this.toActivityThread(row));
+  }
+
+  findLatestDurableTaskBoundary(clientId: string, sessionId: string): ActivityTaskBoundary | null {
+    const row = this.requireDb().prepare(`
+      SELECT
+        t.activity_id,
+        r.run_id,
+        r.session_id,
+        t.kind,
+        t.state_json,
+        r.created_at,
+        r.trigger_seq,
+        r.discussion_start_seq,
+        r.discussion_end_seq
+      FROM activity_runs r
+      JOIN activity_threads t ON t.activity_id = r.activity_id
+      WHERE t.client_id = ? AND r.session_id = ? AND t.lifecycle <> 'archived'
+      ORDER BY r.created_at DESC
+      LIMIT 1
+    `).get(clientId, sessionId) as BoundaryRow | undefined;
+    if (!row) return null;
+    const state = normalizeState(parseJsonObject(row.state_json));
+    return {
+      activityId: row.activity_id,
+      runId: row.run_id,
+      sessionId: row.session_id,
+      kind: row.kind,
+      createdAt: row.created_at,
+      ...(typeof row.discussion_start_seq === "number" ? { startSeq: row.discussion_start_seq } : {}),
+      ...(typeof row.discussion_end_seq === "number" ? { endSeq: row.discussion_end_seq } : {}),
+      ...(state.status ? { status: state.status } : {}),
+    };
+  }
+
   updateActivity(input: {
     clientId: string;
     activityId: string;
@@ -342,10 +417,13 @@ export class ActivityStore {
     return true;
   }
 
-  private findActivityForUpsert(input: ActivityUpsertInput): ActivityThread | null {
+  private findActivityForUpsert(input: ActivityUpsertInput, kind: ActivityKind): ActivityThread | null {
     if (input.activityId?.trim()) {
       const explicit = this.getActivity(input.activityId.trim());
       if (explicit?.clientId === input.clientId) return explicit;
+    }
+    if (kind === "ephemeral" || hasExplicitNewTaskSignal(input.userMessage ?? input.objective ?? "")) {
+      return null;
     }
     const identityMatches = this.findByIdentities(input.clientId, buildIdentities(input), 1);
     return identityMatches[0]?.activity ?? null;
@@ -470,13 +548,17 @@ export class ActivityStore {
     for (const run of thread.runs) {
       db.prepare(`
         INSERT INTO activity_runs (
-          activity_id, run_id, session_id, run_path, status, task_status,
+          activity_id, run_id, session_id, run_path, trigger_seq,
+          discussion_start_seq, discussion_end_seq, status, task_status,
           user_message, assistant_response, summary, tools_used_json,
           asset_ids_json, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(activity_id, run_id) DO UPDATE SET
           session_id = excluded.session_id,
           run_path = excluded.run_path,
+          trigger_seq = excluded.trigger_seq,
+          discussion_start_seq = excluded.discussion_start_seq,
+          discussion_end_seq = excluded.discussion_end_seq,
           status = excluded.status,
           task_status = excluded.task_status,
           user_message = excluded.user_message,
@@ -490,6 +572,9 @@ export class ActivityStore {
         run.runId,
         run.sessionId,
         run.runPath,
+        run.triggerSeq ?? null,
+        run.discussionStartSeq ?? null,
+        run.discussionEndSeq ?? null,
         run.status,
         run.taskStatus ?? null,
         run.userMessage ?? null,
@@ -531,6 +616,7 @@ export class ActivityStore {
   }
 
   private toActivityThread(row: ActivityRow): ActivityThread {
+    const details = parseJsonObject(row.details_json);
     const identities = this.requireDb().prepare(`
       SELECT * FROM activity_identities WHERE activity_id = ? ORDER BY confidence DESC, last_seen_at DESC
     `).all(row.activity_id) as unknown as IdentityRow[];
@@ -565,6 +651,7 @@ export class ActivityStore {
       })),
       assets: assets.map(rowToAsset),
       runs: runs.map(rowToRun),
+      discussionRanges: readDiscussionRanges(details["discussionRanges"]),
       state: normalizeState(parseJsonObject(row.state_json)),
       confidence: Number(row.confidence ?? 0),
       importance: Number(row.importance ?? 0),
@@ -572,7 +659,7 @@ export class ActivityStore {
       createdAt: row.created_at,
       lastTouchedAt: row.last_touched_at,
       ...(row.auto_load_until ? { autoLoadUntil: row.auto_load_until } : {}),
-      details: parseJsonObject(row.details_json),
+      details,
     };
   }
 
@@ -653,6 +740,9 @@ export class ActivityStore {
         run_id TEXT NOT NULL,
         session_id TEXT NOT NULL,
         run_path TEXT NOT NULL,
+        trigger_seq INTEGER,
+        discussion_start_seq INTEGER,
+        discussion_end_seq INTEGER,
         status TEXT NOT NULL,
         task_status TEXT,
         user_message TEXT,
@@ -685,6 +775,7 @@ export class ActivityStore {
       CREATE INDEX IF NOT EXISTS idx_activity_search_client
         ON activity_search(client_id);
     `);
+    this.ensureActivityRunSeqColumns(db);
   }
 
   private requireDb(): DatabaseSync {
@@ -692,6 +783,22 @@ export class ActivityStore {
       throw new Error("ActivityStore not started");
     }
     return this.db;
+  }
+
+  private ensureActivityRunSeqColumns(db: DatabaseSync): void {
+    const columns = new Set(
+      (db.prepare("PRAGMA table_info(activity_runs)").all() as Array<Record<string, unknown>>)
+        .map((row) => String(row["name"])),
+    );
+    for (const [name, type] of [
+      ["trigger_seq", "INTEGER"],
+      ["discussion_start_seq", "INTEGER"],
+      ["discussion_end_seq", "INTEGER"],
+    ] as const) {
+      if (!columns.has(name)) {
+        db.exec(`ALTER TABLE activity_runs ADD COLUMN ${name} ${type};`);
+      }
+    }
   }
 }
 
@@ -793,9 +900,81 @@ function collectAssets(input: ActivityUpsertInput): ActivityAssetRef[] {
   }));
 }
 
-function buildState(input: ActivityUpsertInput, previous: ActivityState | undefined, assets: ActivityAssetRef[]): ActivityState {
+function buildDiscussionRange(input: ActivityUpsertInput, isExistingActivity: boolean): ActivityDiscussionRange | null {
+  if (!validSeq(input.discussionStartSeq) || !validSeq(input.discussionEndSeq)) {
+    return null;
+  }
+  if (input.discussionStartSeq > input.discussionEndSeq) {
+    return null;
+  }
   return {
-    goal: input.objective ?? previous?.goal,
+    sessionId: input.sessionId,
+    startSeq: input.discussionStartSeq,
+    endSeq: input.discussionEndSeq,
+    reason: isExistingActivity ? "follow_up" : "initial_discussion",
+  };
+}
+
+function mergeDiscussionRanges(
+  existing: ActivityDiscussionRange[],
+  next: ActivityDiscussionRange | null,
+): ActivityDiscussionRange[] {
+  const output = new Map<string, ActivityDiscussionRange>();
+  for (const range of [...existing, ...(next ? [next] : [])]) {
+    if (!validSeq(range.startSeq) || !validSeq(range.endSeq) || range.startSeq > range.endSeq) {
+      continue;
+    }
+    const key = `${range.sessionId}:${range.startSeq}:${range.endSeq}:${range.reason}`;
+    output.set(key, range);
+  }
+  return [...output.values()]
+    .sort((a, b) => a.sessionId.localeCompare(b.sessionId) || a.startSeq - b.startSeq || a.endSeq - b.endSeq)
+    .slice(-20);
+}
+
+function buildState(input: ActivityUpsertInput, previous: ActivityState | undefined, assets: ActivityAssetRef[]): ActivityState {
+  const objective = compactOptional(input.objective) ?? previous?.objective ?? previous?.goal;
+  const summary = compactOptional(input.progressSummary ?? input.summary, 700) ?? previous?.summary;
+  const evidence = compactList([
+    ...(previous?.evidence ?? []),
+    ...(input.evidence ?? []),
+  ], 12, 220);
+  const completedWork = compactList([
+    ...(previous?.completedWork ?? []),
+    ...(input.completedMilestones ?? []),
+    ...(isDoneTask(input) && input.progressSummary ? [input.progressSummary] : []),
+  ], 12, 220);
+  const assetLabels = compactList([
+    ...(previous?.assets ?? []),
+    ...assets.map(assetLabel),
+  ], 16, 220);
+  const changedFiles = compactList([
+    ...(previous?.changedFiles ?? []),
+    ...assets.map((asset) => asset.path ?? asset.restore?.filePath).filter((path): path is string => Boolean(path)),
+  ], 16, 220);
+  const workingDirectories = compactList([
+    ...(previous?.workingDirectories ?? []),
+    ...assets.map((asset) => asset.restore?.directoryPath).filter((path): path is string => Boolean(path)),
+  ], 10, 220);
+  const lastVerification = compactOptional(input.evidence?.[0] ?? input.keyFacts?.[0] ?? previous?.lastVerification, 260);
+  const userIntent = compactOptional(input.userMessage ?? input.objective ?? previous?.userIntent, 360);
+  const lastAssistantResponse = compactOptional(input.assistantResponse ?? previous?.lastAssistantResponse, 360);
+  const runHistory = appendStateRun(previous?.runHistory ?? [], buildStateRun(input));
+
+  return {
+    ...(objective ? { objective, goal: objective } : {}),
+    status: deriveActivityStatus(input) ?? previous?.status ?? "open",
+    ...(summary ? { summary } : {}),
+    ...(userIntent ? { userIntent } : {}),
+    assumptions: compactList([
+      ...(previous?.assumptions ?? []),
+      ...(input.assumptions ?? []),
+    ], 8, 220),
+    constraints: compactList([
+      ...(previous?.constraints ?? []),
+      ...(input.constraints ?? []),
+    ], 8, 220),
+    completedWork,
     openWork: compactList([...(input.openWork ?? []), ...(input.blockers ?? [])], 8, 220),
     blockers: compactList(input.blockers ?? [], 6, 220),
     ...(input.nextAction ? { nextStep: compactText(input.nextAction, 260) } : previous?.nextStep ? { nextStep: previous.nextStep } : {}),
@@ -805,16 +984,14 @@ function buildState(input: ActivityUpsertInput, previous: ActivityState | undefi
       ...(input.evidence ?? []),
       ...(input.completedMilestones ?? []),
     ], 14, 220),
+    evidence,
+    assets: assetLabels,
     decisions: compactList(previous?.decisions ?? [], 8, 220),
-    changedFiles: compactList([
-      ...(previous?.changedFiles ?? []),
-      ...assets.map((asset) => asset.path ?? asset.restore?.filePath).filter((path): path is string => Boolean(path)),
-    ], 16, 220),
-    workingDirectories: compactList([
-      ...(previous?.workingDirectories ?? []),
-      ...assets.map((asset) => asset.restore?.directoryPath).filter((path): path is string => Boolean(path)),
-    ], 10, 220),
-    lastVerification: (input.evidence?.[0] ?? input.keyFacts?.[0] ?? previous?.lastVerification) ? compactText(input.evidence?.[0] ?? input.keyFacts?.[0] ?? previous!.lastVerification!, 260) : undefined,
+    changedFiles,
+    workingDirectories,
+    ...(lastVerification ? { lastVerification } : {}),
+    ...(lastAssistantResponse ? { lastAssistantResponse } : {}),
+    runHistory,
   };
 }
 
@@ -823,6 +1000,9 @@ function buildRun(input: ActivityUpsertInput, assets: ActivityAssetRef[]): Activ
     runId: input.runId,
     sessionId: input.sessionId,
     runPath: input.runPath,
+    ...(validSeq(input.triggerSeq) ? { triggerSeq: input.triggerSeq } : {}),
+    ...(validSeq(input.discussionStartSeq) ? { discussionStartSeq: input.discussionStartSeq } : {}),
+    ...(validSeq(input.discussionEndSeq) ? { discussionEndSeq: input.discussionEndSeq } : {}),
     status: input.status,
     ...(input.taskStatus ? { taskStatus: input.taskStatus } : {}),
     ...(input.userMessage ? { userMessage: compactText(input.userMessage, 260) } : {}),
@@ -832,6 +1012,45 @@ function buildRun(input: ActivityUpsertInput, assets: ActivityAssetRef[]): Activ
     assetIds: uniqueStrings(assets.map((asset) => asset.assetId)).slice(0, 20),
     createdAt: input.createdAt,
   };
+}
+
+function buildStateRun(input: ActivityUpsertInput): ActivityStateRunSummary {
+  return {
+    runId: input.runId,
+    status: input.status,
+    ...(input.taskStatus ? { taskStatus: input.taskStatus } : {}),
+    summary: compactText(input.progressSummary || input.summary, 260),
+    toolsUsed: uniqueStrings(input.toolsUsed ?? []).slice(0, 8),
+    createdAt: input.createdAt,
+  };
+}
+
+function appendStateRun(runs: ActivityStateRunSummary[], run: ActivityStateRunSummary): ActivityStateRunSummary[] {
+  return [...runs.filter((item) => item.runId !== run.runId), run].slice(-10);
+}
+
+function deriveActivityStatus(input: ActivityUpsertInput): ActivityStatus | undefined {
+  if (input.userInputNeeded?.trim() || input.taskStatus === "needs_user_input") return "needs_user";
+  if (input.taskStatus === "blocked" || input.status === "failed" || input.status === "stuck") return "blocked";
+  if (input.taskStatus === "done" || input.taskStatus === "likely_done") return "done";
+  if ((input.openWork?.length ?? 0) > 0 || (input.blockers?.length ?? 0) > 0) return "open";
+  if ((input.toolsUsed?.length ?? 0) > 0) return "done";
+  return undefined;
+}
+
+function isDoneTask(input: ActivityUpsertInput): boolean {
+  return input.taskStatus === "done" || input.taskStatus === "likely_done";
+}
+
+function assetLabel(asset: ActivityAssetRef): string {
+  return asset.path
+    ?? asset.displayName
+    ?? asset.uri
+    ?? asset.documentId
+    ?? asset.fileId
+    ?? asset.directoryId
+    ?? asset.preparedInputId
+    ?? asset.assetId;
 }
 
 function appendRun(runs: ActivityRunRef[], run: ActivityRunRef): ActivityRunRef[] {
@@ -925,6 +1144,9 @@ function rowToRun(row: RunRow): ActivityRunRef {
     runId: row.run_id,
     sessionId: row.session_id,
     runPath: row.run_path,
+    ...(typeof row.trigger_seq === "number" ? { triggerSeq: row.trigger_seq } : {}),
+    ...(typeof row.discussion_start_seq === "number" ? { discussionStartSeq: row.discussion_start_seq } : {}),
+    ...(typeof row.discussion_end_seq === "number" ? { discussionEndSeq: row.discussion_end_seq } : {}),
     status: row.status,
     ...(row.task_status ? { taskStatus: row.task_status } : {}),
     ...(row.user_message ? { userMessage: row.user_message } : {}),
@@ -973,11 +1195,20 @@ function searchableText(activity: ActivityThread): string {
     activity.kind,
     activity.title,
     activity.summary,
+    activity.state.objective,
     activity.state.goal,
+    activity.state.status,
+    activity.state.summary,
+    activity.state.userIntent,
     activity.state.nextStep,
+    ...activity.state.assumptions,
+    ...activity.state.constraints,
+    ...activity.state.completedWork,
     ...activity.state.openWork,
     ...activity.state.blockers,
     ...activity.state.verifiedFacts,
+    ...activity.state.evidence,
+    ...activity.state.assets,
     ...activity.state.changedFiles,
     ...activity.state.workingDirectories,
     ...activity.aliases.map((alias) => alias.value),
@@ -993,6 +1224,7 @@ function searchableText(activity: ActivityThread): string {
       asset.origin,
       asset.role,
     ]),
+    ...activity.state.runHistory.map((run) => run.summary),
     ...activity.runs.map((run) => run.summary),
   ].filter(Boolean).join("\n").toLowerCase();
 }
@@ -1030,6 +1262,11 @@ function compactText(value: string, maxChars: number): string {
   return `${compact.slice(0, Math.max(0, maxChars - 3)).trimEnd()}...`;
 }
 
+function compactOptional(value: string | undefined, maxChars = 260): string | undefined {
+  const compact = value?.replace(/\s+/g, " ").trim() ?? "";
+  return compact ? compactText(compact, maxChars) : undefined;
+}
+
 function uniqueStrings(values: Array<string | undefined | null>): string[] {
   const seen = new Set<string>();
   const output: string[] = [];
@@ -1046,20 +1283,91 @@ function uniqueStrings(values: Array<string | undefined | null>): string[] {
 
 function normalizeState(value: Record<string, unknown>): ActivityState {
   return {
+    ...(typeof value["objective"] === "string" ? { objective: value["objective"] } : {}),
     ...(typeof value["goal"] === "string" ? { goal: value["goal"] } : {}),
+    ...(readActivityStatus(value["status"]) ? { status: readActivityStatus(value["status"]) } : {}),
+    ...(typeof value["summary"] === "string" ? { summary: value["summary"] } : {}),
+    ...(typeof value["userIntent"] === "string" ? { userIntent: value["userIntent"] } : {}),
+    assumptions: readStringArray(value["assumptions"]),
+    constraints: readStringArray(value["constraints"]),
+    completedWork: readStringArray(value["completedWork"]),
     openWork: readStringArray(value["openWork"]),
     blockers: readStringArray(value["blockers"]),
     ...(typeof value["nextStep"] === "string" ? { nextStep: value["nextStep"] } : {}),
     verifiedFacts: readStringArray(value["verifiedFacts"]),
+    evidence: readStringArray(value["evidence"]),
+    assets: readStringArray(value["assets"]),
     decisions: readStringArray(value["decisions"]),
     changedFiles: readStringArray(value["changedFiles"]),
     workingDirectories: readStringArray(value["workingDirectories"]),
     ...(typeof value["lastVerification"] === "string" ? { lastVerification: value["lastVerification"] } : {}),
+    ...(typeof value["lastAssistantResponse"] === "string" ? { lastAssistantResponse: value["lastAssistantResponse"] } : {}),
+    runHistory: readRunHistory(value["runHistory"]),
   };
 }
 
 function readStringArray(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
+}
+
+function readActivityStatus(value: unknown): ActivityStatus | undefined {
+  return value === "open" || value === "done" || value === "blocked" || value === "needs_user" || value === "archived"
+    ? value
+    : undefined;
+}
+
+function readRunHistory(value: unknown): ActivityStateRunSummary[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((item): ActivityStateRunSummary[] => {
+    if (!item || typeof item !== "object" || Array.isArray(item)) return [];
+    const record = item as Record<string, unknown>;
+    if (typeof record["runId"] !== "string" || typeof record["summary"] !== "string" || typeof record["createdAt"] !== "string") {
+      return [];
+    }
+    const status = record["status"];
+    if (status !== "completed" && status !== "failed" && status !== "stuck") {
+      return [];
+    }
+    return [{
+      runId: record["runId"],
+      status,
+      ...(typeof record["taskStatus"] === "string" ? { taskStatus: record["taskStatus"] } : {}),
+      summary: record["summary"],
+      toolsUsed: readStringArray(record["toolsUsed"]),
+      createdAt: record["createdAt"],
+    }];
+  });
+}
+
+function readDiscussionRanges(value: unknown): ActivityDiscussionRange[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((item): ActivityDiscussionRange[] => {
+    if (!item || typeof item !== "object" || Array.isArray(item)) return [];
+    const record = item as Record<string, unknown>;
+    const sessionId = typeof record["sessionId"] === "string" ? record["sessionId"].trim() : "";
+    const startSeq = readSeq(record["startSeq"]);
+    const endSeq = readSeq(record["endSeq"]);
+    const reason = record["reason"];
+    if (!sessionId || startSeq === undefined || endSeq === undefined || startSeq > endSeq) {
+      return [];
+    }
+    return [{
+      sessionId,
+      startSeq,
+      endSeq,
+      reason: reason === "follow_up" || reason === "clarification" || reason === "confirmation"
+        ? reason
+        : "initial_discussion",
+    }];
+  });
+}
+
+function readSeq(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isInteger(value) && value > 0 ? value : undefined;
+}
+
+function validSeq(value: number | undefined): value is number {
+  return typeof value === "number" && Number.isInteger(value) && value > 0;
 }
 
 function parseJsonObject(value: string): Record<string, unknown> {

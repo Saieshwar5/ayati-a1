@@ -114,7 +114,7 @@ export async function createMemoryRuntime(options: MemoryRuntimeOptions): Promis
           content: turn.content,
           timestamp: turn.timestamp,
           sessionPath: turn.sessionPath,
-          ...(turn.runId ? { runId: turn.runId } : {}),
+          ...(turn.workRunId ? { workRunId: turn.workRunId } : {}),
         })),
       });
       void memoryIndexer.enqueueClosedSession({

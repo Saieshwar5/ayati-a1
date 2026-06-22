@@ -23,7 +23,7 @@ export interface SqliteSystemEventStoreOptions {
 export interface SystemEventLedgerReceivedInput {
   clientId: string;
   sessionId: string;
-  runId: string;
+  workRunId: string | null;
   eventId: string;
   source: string;
   eventName: string;
@@ -40,7 +40,7 @@ export interface SystemEventLedgerReceivedInput {
 }
 
 export interface SystemEventLedgerOutcomeInput {
-  runId: string;
+  workRunId: string | null;
   eventId: string;
   status: "completed" | "failed";
   processedAt: string;
@@ -78,7 +78,7 @@ export class SqliteSystemEventStore {
         event_id,
         client_id,
         session_id,
-        run_id,
+        work_run_id,
         source,
         event_name,
         event_class,
@@ -99,7 +99,7 @@ export class SqliteSystemEventStore {
       ON CONFLICT(event_id) DO UPDATE SET
         client_id = excluded.client_id,
         session_id = excluded.session_id,
-        run_id = excluded.run_id,
+        work_run_id = excluded.work_run_id,
         source = excluded.source,
         event_name = excluded.event_name,
         event_class = excluded.event_class,
@@ -116,7 +116,7 @@ export class SqliteSystemEventStore {
       input.eventId,
       input.clientId,
       input.sessionId,
-      input.runId,
+      input.workRunId,
       input.source,
       input.eventName,
       input.eventClass,
@@ -142,14 +142,15 @@ export class SqliteSystemEventStore {
         response_kind = ?,
         approval_state = COALESCE(?, approval_state),
         note = ?
-      WHERE run_id = ? OR event_id = ?
+      WHERE (? IS NOT NULL AND work_run_id = ?) OR event_id = ?
     `).run(
       input.status,
       input.processedAt,
       input.responseKind ?? null,
       input.approvalState ?? null,
       input.note ?? null,
-      input.runId,
+      input.workRunId,
+      input.workRunId,
       input.eventId,
     );
   }
@@ -169,7 +170,7 @@ export class SqliteSystemEventStore {
           event_id TEXT PRIMARY KEY,
           client_id TEXT NOT NULL,
           session_id TEXT NOT NULL,
-          run_id TEXT NOT NULL,
+          work_run_id TEXT,
           source TEXT NOT NULL,
           event_name TEXT NOT NULL,
           event_class TEXT NOT NULL,
@@ -197,8 +198,8 @@ export class SqliteSystemEventStore {
         CREATE INDEX IF NOT EXISTS idx_system_events_source_recent
           ON system_events(source, received_at DESC);
 
-        CREATE UNIQUE INDEX IF NOT EXISTS idx_system_events_run_id
-          ON system_events(run_id);
+        CREATE INDEX IF NOT EXISTS idx_system_events_work_run_id
+          ON system_events(work_run_id);
       `);
     } catch (err) {
       devWarn(

@@ -186,7 +186,7 @@ export interface MemoryConsolidationJobPayload {
     content: string;
     timestamp: string;
     sessionPath: string;
-    runId?: string;
+    workRunId?: string;
   }>;
 }
 

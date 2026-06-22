@@ -39,10 +39,14 @@ describe("daily session manager", () => {
     const memory = manager(tempDataDir(), () => now);
     memory.initialize("local");
 
-    const run = memory.beginRun("local", "hello");
+    const input = memory.recordUserMessage("local", "hello");
     now = new Date("2026-06-12T09:00:01.000Z");
-    memory.recordAssistantFinal("local", run.runId, run.sessionId, "hi", { responseKind: "reply" });
-    const systemRun = memory.beginSystemRun("local", {
+    memory.recordAssistantMessage("local", {
+      sessionId: input.sessionId,
+      content: "hi",
+      responseKind: "reply",
+    });
+    const systemInput = memory.recordSystemEvent("local", {
       source: "pulse",
       event: "reminder_due",
       eventId: "evt-1",
@@ -54,10 +58,33 @@ describe("daily session manager", () => {
 
     expect(ctx.recentExchanges).toHaveLength(1);
     expect(ctx.recentExchanges[0]).toMatchObject({
-      runId: run.runId,
-      user: { content: "hello" },
-      assistant: { content: "hi", responseKind: "reply" },
+      user: { seq: 1, content: "hello" },
+      assistant: { seq: 2, content: "hi", responseKind: "reply" },
     });
+    expect(ctx.sessionEvents).toEqual([
+      {
+        type: "user_message",
+        seq: 1,
+        timestamp: "2026-06-12T09:00:00.000Z",
+        content: "hello",
+      },
+      {
+        type: "assistant_response",
+        seq: 2,
+        timestamp: "2026-06-12T09:00:01.000Z",
+        content: "hi",
+        responseKind: "reply",
+      },
+      {
+        type: "system_event",
+        seq: 3,
+        timestamp: "2026-06-12T09:00:01.000Z",
+        source: "pulse",
+        event: "reminder_due",
+        eventId: "evt-1",
+        summary: "Reminder due: standup",
+      },
+    ]);
     expect(ctx.recentSystemEvents).toHaveLength(1);
     expect(ctx.recentSystemEvents[0]).toMatchObject({
       source: "pulse",
@@ -65,19 +92,22 @@ describe("daily session manager", () => {
       eventId: "evt-1",
       summary: "Reminder due: standup",
     });
-    expect(systemRun.sessionId).toBe(run.sessionId);
+    expect(systemInput.sessionId).toBe(input.sessionId);
     expect(ctx.activeSessionPath).toMatch(/^sessions\/2026-06-12\/.+\.jsonl$/);
 
     const sessionFile = join(memoryDataDirFromContext(ctx.activeSessionPath), "");
     const content = readFileSync(sessionFile, "utf8");
     expect(content).toContain("\"type\":\"user_message\"");
+    expect(content).toContain("\"seq\":1");
     expect(content).toContain("\"type\":\"assistant_response\"");
+    expect(content).toContain("\"seq\":2");
     expect(content).toContain("\"type\":\"system_event\"");
+    expect(content).toContain("\"seq\":3");
     expect(content).not.toContain("task_summary");
     expect(content).not.toContain("tool_call");
   });
 
-  it("keeps only the last 5 hot exchanges and rebuilds them after restart", async () => {
+  it("keeps the full daily raw exchange log available after restart", async () => {
     let now = new Date("2026-06-12T10:00:00.000Z");
     const dataDir = tempDataDir();
     const memory = manager(dataDir, () => now);
@@ -85,8 +115,12 @@ describe("daily session manager", () => {
 
     for (let index = 0; index < 7; index++) {
       now = new Date(`2026-06-12T10:00:0${index}.000Z`);
-      const run = memory.beginRun("local", `user ${index}`);
-      memory.recordAssistantFinal("local", run.runId, run.sessionId, `assistant ${index}`, { responseKind: "reply" });
+      const input = memory.recordUserMessage("local", `user ${index}`);
+      memory.recordAssistantMessage("local", {
+        sessionId: input.sessionId,
+        content: `assistant ${index}`,
+        responseKind: "reply",
+      });
     }
     await memory.shutdown();
 
@@ -95,6 +129,8 @@ describe("daily session manager", () => {
     const ctx = restored.getPromptMemoryContext();
 
     expect(ctx.recentExchanges.map((exchange) => exchange.user.content)).toEqual([
+      "user 0",
+      "user 1",
       "user 2",
       "user 3",
       "user 4",
@@ -102,6 +138,7 @@ describe("daily session manager", () => {
       "user 6",
     ]);
     expect(ctx.recentExchanges.at(-1)?.assistant?.content).toBe("assistant 6");
+    expect(ctx.sessionEvents?.map((event) => event.seq)).toEqual(Array.from({ length: 14 }, (_, index) => index + 1));
     await restored.shutdown();
   });
 
@@ -111,7 +148,8 @@ describe("daily session manager", () => {
     const memory = manager(dataDir, () => now);
     memory.initialize("local");
 
-    const run = memory.beginRun("local", "build the todo app");
+    const input = memory.recordUserMessage("local", "build the todo app");
+    const run = memory.createWorkRun("local", input);
     memory.queueTaskSummary("local", {
       runId: "no-tools",
       sessionId: run.sessionId,
@@ -145,6 +183,25 @@ describe("daily session manager", () => {
         openWork: ["make responsive"],
       }),
     });
+    expect(activity?.discussionRanges).toEqual([{
+      sessionId: run.sessionId,
+      startSeq: 1,
+      endSeq: 1,
+      reason: "initial_discussion",
+    }]);
+    expect(activity?.runs[0]).toMatchObject({
+      triggerSeq: 1,
+      discussionStartSeq: 1,
+      discussionEndSeq: 1,
+    });
+    const afterActivityContext = memory.getPromptMemoryContext();
+    expect(afterActivityContext.activeContextStartSeq).toBe(2);
+    expect(afterActivityContext.sessionWork?.recentActivities[0]).toMatchObject({
+      activityId: activity?.activityId,
+      title: "Build todo app",
+      lastTouchedSeq: 1,
+      workRunIds: [run.runId],
+    });
     expect(ctx.continuity?.mode).toBe("new");
     expect(ctx.recentTaskSummaries).toEqual([]);
 
@@ -161,9 +218,9 @@ describe("daily session manager", () => {
     const memory = manager(dataDir, () => now);
     memory.initialize("local");
 
-    const first = memory.beginRun("local", "before midnight");
+    const first = memory.recordUserMessage("local", "before midnight");
     now = new Date("2026-06-13T00:01:00.000Z");
-    const second = memory.beginRun("local", "after midnight");
+    const second = memory.recordUserMessage("local", "after midnight");
 
     expect(second.sessionId).not.toBe(first.sessionId);
     expect(memory.getPromptMemoryContext().activeSessionPath).toContain("sessions/2026-06-13/");
@@ -184,15 +241,17 @@ describe("daily session manager", () => {
     let firstSessionId = "";
     for (let index = 0; index < 7; index++) {
       now = new Date(`2026-06-12T23:50:0${index}.000Z`);
-      const run = memory.beginRun("local", `old user ${index}`);
-      firstSessionId ||= run.sessionId;
-      memory.recordAssistantFinal("local", run.runId, run.sessionId, `old assistant ${index}`, {
+      const input = memory.recordUserMessage("local", `old user ${index}`);
+      firstSessionId ||= input.sessionId;
+      memory.recordAssistantMessage("local", {
+        sessionId: input.sessionId,
+        content: `old assistant ${index}`,
         responseKind: "reply",
       });
     }
 
     now = new Date("2026-06-13T00:01:00.000Z");
-    const next = memory.beginRun("local", "new day user");
+    const next = memory.recordUserMessage("local", "new day user");
 
     expect(next.sessionId).not.toBe(firstSessionId);
     expect(memory.getPromptMemoryContext().recentExchanges.map((exchange) => exchange.user.content)).toEqual([
@@ -251,10 +310,14 @@ describe("daily session manager", () => {
     });
     memory.initialize("local");
 
-    const first = memory.beginRun("local", "before midnight");
-    memory.recordAssistantFinal("local", first.runId, first.sessionId, "before reply", { responseKind: "reply" });
+    const first = memory.recordUserMessage("local", "before midnight");
+    memory.recordAssistantMessage("local", {
+      sessionId: first.sessionId,
+      content: "before reply",
+      responseKind: "reply",
+    });
     now = new Date("2026-06-13T00:01:00.000Z");
-    const second = memory.beginRun("local", "after midnight");
+    const second = memory.recordUserMessage("local", "after midnight");
 
     expect(second.sessionId).not.toBe(first.sessionId);
     expect(memory.getPromptMemoryContext().recentExchanges[0]?.user.content).toBe("after midnight");
@@ -272,7 +335,7 @@ describe("daily session manager", () => {
     const dataDir = tempDataDir();
     const memory = manager(dataDir, () => new Date("2026-06-12T09:00:00.000Z"));
     memory.initialize("local");
-    memory.beginRun("local", "hello");
+    memory.recordUserMessage("local", "hello");
     await memory.shutdown();
 
     const db = new DatabaseSync(join(dataDir, "memory.sqlite"));

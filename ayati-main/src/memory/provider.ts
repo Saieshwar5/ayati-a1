@@ -1,8 +1,10 @@
 import type {
+  AssistantMessageMetadata,
   AssistantMessageRecordInput,
   SessionMemory,
   SessionStatus,
   MemoryRunHandle,
+  SessionInputHandle,
   ToolCallRecordInput,
   ToolCallResultRecordInput,
   AgentStepRecordInput,
@@ -13,6 +15,12 @@ import type {
 const EMPTY_RUN: MemoryRunHandle = {
   sessionId: "noop-session",
   runId: "noop-run",
+  triggerSeq: 1,
+};
+
+const EMPTY_INPUT: SessionInputHandle = {
+  sessionId: "noop-session",
+  seq: 1,
 };
 
 export const noopSessionMemory: SessionMemory = {
@@ -22,7 +30,13 @@ export const noopSessionMemory: SessionMemory = {
   shutdown(): void {
     return;
   },
-  beginRun(): MemoryRunHandle {
+  recordUserMessage(): SessionInputHandle {
+    return EMPTY_INPUT;
+  },
+  recordSystemEvent(): SessionInputHandle {
+    return EMPTY_INPUT;
+  },
+  createWorkRun(): MemoryRunHandle {
     return EMPTY_RUN;
   },
   recordToolCall(_clientId: string, _input: ToolCallRecordInput): void {
@@ -36,8 +50,11 @@ export const noopSessionMemory: SessionMemory = {
     _runId?: string,
     _sessionId?: string,
     _content?: string,
-    _metadata?: AssistantMessageRecordInput,
+    _metadata?: AssistantMessageMetadata,
   ): void {
+    return;
+  },
+  recordAssistantMessage(_clientId: string, _input: AssistantMessageRecordInput): void {
     return;
   },
   recordRunFailure(): void {
@@ -67,6 +84,12 @@ export const noopSessionMemory: SessionMemory = {
   getPromptMemoryContext(): PromptMemoryContext {
     return {
       recentExchanges: [],
+      sessionEvents: [],
+      activeContextStartSeq: 1,
+      sessionWork: {
+        activeContextStartSeq: 1,
+        recentActivities: [],
+      },
       recentSystemEvents: [],
       conversationTurns: [],
       personalMemorySnapshot: "",
