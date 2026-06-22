@@ -1194,9 +1194,10 @@ function largeContextUpdateRelevantDocCase(): BenchmarkCase {
                       content: [
                         "# Context Pack Limits",
                         "",
-                        "The context pack keeps recent conversation and continuity context bounded.",
+                        "The context pack keeps timeline, continuity, and session work context bounded.",
                         "",
-                        "- recentConversation is capped at 5 completed exchanges.",
+                        "- timeline contains chronological session events ending with the current input.",
+                        "- sessionWork contains compact same-session activity summaries.",
                         "- continuity reasons are capped at 4 short reasons.",
                         "- continuity candidates are capped at 3 compact activity candidates.",
                         "",
@@ -2076,9 +2077,10 @@ async function createLargeContextFixture(): Promise<string> {
   await writeFile(join(root, "docs", "runtime", "context-pack.md"), [
     "# Context Pack Limits",
     "",
-    "The context pack keeps recent conversation and continuity context bounded.",
+    "The context pack keeps timeline, continuity, and session work context bounded.",
     "",
-    "- recentConversation is capped at 5 completed exchanges.",
+    "- timeline contains chronological session events ending with the current input.",
+    "- sessionWork contains compact same-session activity summaries.",
     "- continuity reasons are capped at 4 short reasons.",
     "",
   ].join("\n"), "utf-8");

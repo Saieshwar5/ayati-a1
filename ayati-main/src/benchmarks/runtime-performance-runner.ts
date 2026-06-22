@@ -288,7 +288,7 @@ async function runContextToolSelectionCase(config: RuntimeScaleConfig): Promise<
   const operations = [
     await measureOperation("build_state_view", async () => {
       const view = buildAgentStateView(state);
-      if (view.context.currentInput.length === 0) {
+      if (!view.context.timeline.some((event) => event.current)) {
         throw new Error("state view fixture was empty.");
       }
     }, {
@@ -911,6 +911,7 @@ function buildLoopStateFixture(exchangeCount: number): LoopState {
   const now = "2026-06-17T00:00:00.000Z";
   return {
     runId: "runtime-state-view",
+    currentSeq: exchangeCount * 2 + 1,
     runClass: "task",
     inputKind: "user_message",
     userMessage: "Find the project artifact memory report and continue the performance analysis.",
@@ -922,16 +923,6 @@ function buildLoopStateFixture(exchangeCount: number): LoopState {
       verifiedFacts: ["Benchmark uses deterministic local fixtures."],
       evidence: ["Synthetic activity and memory stores are seeded."],
       nextStep: "Run non-LLM performance measurements.",
-    },
-    latestObservation: {
-      id: "obs-latest",
-      step: 1,
-      callId: "call-1",
-      tool: "search_in_files",
-      status: "success",
-      mode: "summary",
-      content: "Found runtime benchmark targets in memory and document modules.",
-      hasMore: false,
     },
     toolContext: {
       recent: Array.from({ length: 5 }, (_, index) => ({
