@@ -27,8 +27,10 @@ Each session has a unique `sessionId` and stores only:
 - `assistant_response`
 - `system_event`
 
-Each message/event entry keeps `runId`, so deeper debugging can jump from the
-daily activity log to the full run artifacts under `data/runs/<runId>/`.
+Each user, assistant, and system event has a monotonically increasing session
+`seq`. User and system events do not carry run ids. Assistant responses may
+optionally carry `workRunId` when they came from an execution run, so debugging
+can jump from the session log to artifacts under `data/runs/<workRunId>/`.
 
 SQLite stores only session lookup metadata in `data/memory/memory.sqlite`:
 
@@ -51,19 +53,21 @@ they live in the daily JSONL session file.
 
 ## Hot Session Memory
 
-The active session keeps a small in-memory cache:
+The active session keeps an in-memory replay of today's ordered session events:
 
-- last 5 user/assistant exchanges
+- flat user/assistant/system-event timeline with `seq`
+- full daily user/assistant exchange log derived from chronological events
 - last 5 system events
+- `activeContextStartSeq`, derived from the latest saved activity discussion
+  range in the session
 
 This cache is the fast path used by the agent loop. On startup, the memory
 manager replays today's active session file and rebuilds the cache. Old session
-files are not migrated into the new schema.
+files without `seq` are assigned in-memory sequence numbers during replay.
 
 When a new daily session starts, the hot cache starts fresh for that session.
-The old session's recent exchanges are not carried into `recentConversation`; they
-remain in the old JSONL file and may later influence the compact
-`personalMemorySnapshot` through background memory evolution.
+The old session's events remain in the old JSONL file and may later influence
+the compact `personalMemorySnapshot` through background memory evolution.
 
 ## Context Pack
 
@@ -75,15 +79,18 @@ The decision model receives dynamic decision context through
 
 The context pack is bounded JSON. Session-derived model-facing fields are:
 
-- `recentConversation`: last 5 completed user/assistant exchanges
+- `timeline`: chronological bounded event stream ending with the current input.
+  Events use simple session `seq` numbers instead of run ids.
 - `continuity`: deterministic activity-thread resolution for the current input,
   with `mode: "new" | "continue" | "ambiguous"`
+- `sessionWork`: compact same-session activity summaries and the current
+  `activeContextStartSeq`
 
 Outside `State view.context`, the prompt state is intentionally sparse. The
-first decision normally receives no `workState` at all. `workState`,
-`lastActions`, `recentFailures`, `attachments`, and `systemEvent` are included
-only when they carry useful data. This keeps early decisions fast and prevents
-empty or synthetic state from steering the model.
+first decision normally receives no progress state at all. `progress`,
+`observations`, `trace`, `attachments`, and `systemEvent` are included only
+when they carry useful data. This keeps early decisions fast and prevents empty
+or synthetic state from steering the model.
 
 Session metadata such as session id, path, age, turn count, and handoff state
 stays internal to the backend for persistence, debugging, rotation policy, and
@@ -97,7 +104,7 @@ Other context sources remain independent from session:
 
 - `personalMemorySnapshot`
 - `activeLearningContext`
-- task/run details in `data/runs/<runId>/`
+- task/work-run details in `data/runs/<workRunId>/`
 - document/file stores
 - long-term or semantic memory stores
 
@@ -120,7 +127,8 @@ Tables:
 - `activity_aliases`: user/system/inferred names for search and matching.
 - `activity_assets`: restorable files, directories, documents, datasets, URLs,
   runs, and other durable references.
-- `activity_runs`: compact run history.
+- `activity_runs`: compact run history, including trigger and discussion `seq`
+  ranges when known.
 - `activity_events`: append-only activity event history.
 - `activity_search`: compact local search text.
 
@@ -143,6 +151,7 @@ type ContinuityContext =
 - optional `nextStep`
 - `verifiedFacts`
 - `topAssets`
+- optional compact `discussionRanges`
 - `lastTouchedAt`
 
 Lifecycle:
@@ -151,17 +160,21 @@ Lifecycle:
    open work, blockers, verified facts, evidence, tools used, prepared
    attachments, managed files/directories, and durable artifacts.
 2. `IVecEngine` publishes the summary through `queueTaskSummaryPublication`.
-3. `MemoryManager.queueTaskSummary` creates or updates an activity when the
-   summary has tools, activity assets, attachment names, or explicit
-   continuation `activityId`.
-4. No-tool direct replies without durable activity state are intentionally
+3. `MemoryManager.queueTaskSummary` enriches the summary with the trigger
+   `seq` and active discussion range.
+4. `MemoryManager.queueTaskSummary` creates or updates an activity only when
+   the summary has evidence-backed work: tools, activity assets, attachment
+   anchors, or explicit continuation `activityId`.
+5. No-tool direct replies without durable activity state are intentionally
    skipped.
-5. `ContinuityResolver` deterministically resolves future inputs by exact
+6. Activity `discussionRanges` point back to the exact session JSONL event
+   ranges that led to the work. The raw transcript is not duplicated in SQLite.
+7. `ContinuityResolver` deterministically resolves future inputs by exact
    identity anchors first, then aliases/search terms, then recent follow-up
    phrasing.
-6. The resolver returns `continue` only for a strong winner with a clear score
+8. The resolver returns `continue` only for a strong winner with a clear score
    gap. Close matches return `ambiguous`; weak matches return `new`.
-7. Activity tools can search, get, select, update, and archive activity threads.
+9. Activity tools can search, get, select, update, and archive activity threads.
 
 Activity assets:
 

@@ -243,9 +243,8 @@ Per-case reports preserve the agent's work trace:
 - `provider-usage.json`: provider usage totals captured from the run metrics.
 - `prompt-metrics.json`: prompt section size and estimated token data.
 - `context-growth.json`: per-decision prompt growth, context deltas, and
-  state-view growth by `context`, `workState`, `toolContext`,
-  `latestObservation`, `lastActions`, `recentFailures`, `attachments`, and
-  `systemEvent`.
+  state-view growth by `context`, `workState`, `toolContext`, `lastActions`,
+  `recentFailures`, `attachments`, and `systemEvent`.
 - `diff.patch`: text diff between `fixture-before` and `fixture-after`.
 
 Prompt metrics should make cache efficiency visible. The stable decision

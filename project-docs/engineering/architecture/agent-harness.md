@@ -56,8 +56,8 @@ user:
 
 Stable decision rules live in the system message so repeated decisions share a
 cache-friendly prefix. Dynamic state remains in the user message. Do not move
-run ids, tool observations, current input, memory snapshots, learning context,
-or continuity context ahead of the stable decision contract.
+work-run ids, tool observations, current input, memory snapshots, learning
+context, or continuity context ahead of the stable decision contract.
 
 Critical decision rules and response shapes must not be placed inside the
 truncatable runtime system-context block. If runtime system context is too
@@ -86,11 +86,11 @@ and working-set manager.
 The decision model receives a compact `State view` each iteration. The context
 portion is built by `context-pack.ts` and currently includes:
 
-- `currentInput`
-- `recentConversation`
+- `timeline`: chronological bounded user/assistant/system events ending with
+  the current input
 - `continuity`
+- `sessionWork`: compact same-session activity summaries
 - optional `personalMemorySnapshot`
-- optional `activeLearningContext`
 
 `recentTasks` is no longer a model-facing field. Tool-using task outcomes are
 converted into activity threads after the run. Future runs resolve those
@@ -100,10 +100,10 @@ threads deterministically into `continuity.mode` of `new`, `continue`, or
 The rest of the state view is sparse. Empty sections are omitted. When present,
 it can include:
 
-- `workState`: current-run status, summary, open work, blockers, verified facts,
+- `progress`: current-run status, summary, open work, blockers, verified facts,
   evidence, next step, or user input needed.
-- `lastActions`: the last one or two tool actions, not full step history.
-- `recentFailures`: recent deterministic failures only when failures exist.
+- `observations`: recent real tool-output context cards.
+- `trace`: compact recent execution steps and deterministic failures.
 - `attachments`: incoming/prepared/managed attachments only when present.
 - `systemEvent`: the current system event only for system-event runs.
 
