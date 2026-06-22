@@ -16,9 +16,13 @@ import type {
   FeedbackKind,
   SessionMemory,
   MemoryRunHandle,
+  SessionInputHandle,
   ConversationExchange,
   ContinuityContext,
   ActivityAssetRef,
+  ActivityTaskBoundary,
+  PromptSessionEvent,
+  SessionWorkContext,
   TaskSummaryRecordInput,
 } from "../memory/types.js";
 import type { DocumentStore } from "../documents/document-store.js";
@@ -112,6 +116,7 @@ export interface FailureRecord {
 
 export interface LoopState {
   runId: string;
+  currentSeq: number;
   runClass: RunClass;
   inputKind?: "user_message" | "system_event";
   userMessage: string;
@@ -126,8 +131,6 @@ export interface LoopState {
   contextVisibility?: SystemEventContextVisibility;
   preferredResponseKind?: AgentResponseKind;
   workState: WorkState;
-  latestObservation?: ToolObservation;
-  latestObservations?: ToolObservation[];
   toolContext?: ToolContextState;
   workingNotes?: string[];
   status: "running" | "completed" | "failed" | "stuck";
@@ -147,7 +150,11 @@ export interface LoopState {
   activeLearningContext?: string;
   personalMemorySnapshot?: string;
   continuity?: ContinuityContext;
+  durableTaskBoundary?: ActivityTaskBoundary;
   recentExchanges: ConversationExchange[];
+  sessionEvents?: PromptSessionEvent[];
+  activeContextStartSeq?: number;
+  sessionWork?: SessionWorkContext;
 }
 
 export type StepVerificationPolicy = "deterministic" | "llm" | "script" | "hybrid";
@@ -284,6 +291,7 @@ export interface AgentLoopResult {
   totalIterations: number;
   totalToolCalls: number;
   runPath: string;
+  workRunId?: string;
   taskSummary?: AgentTaskSummaryRecord;
   artifacts?: AgentArtifact[];
 }
@@ -299,7 +307,9 @@ export interface AgentLoopDeps {
   toolWorkingSetManager?: ToolWorkingSetManager;
   toolDefinitions: ToolDefinition[];
   sessionMemory: SessionMemory;
-  runHandle: MemoryRunHandle;
+  inputHandle?: SessionInputHandle;
+  runHandle?: MemoryRunHandle;
+  onWorkRunCreated?: (runHandle: MemoryRunHandle) => void;
   clientId: string;
   inputKind?: "user_message" | "system_event";
   systemEvent?: AyatiSystemEvent;

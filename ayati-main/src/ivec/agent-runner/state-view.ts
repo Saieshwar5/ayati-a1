@@ -2,7 +2,7 @@ import type { LoopState, ToolContextState, ToolObservation, WorkEvidenceRef, Wor
 import { buildAgentContextPack } from "./context-pack.js";
 import type { AgentContextPack } from "./context-pack.js";
 
-export interface PromptWorkState {
+export interface PromptProgressState {
   status: WorkState["status"];
   summary?: string;
   openWork?: string[];
@@ -14,27 +14,39 @@ export interface PromptWorkState {
   userInputNeeded?: string;
 }
 
+export interface PromptObservations {
+  latest: ToolObservation[];
+}
+
+export interface PromptTraceStep {
+  step: number;
+  mode?: "single" | "sequential" | "parallel" | "autonomous";
+  outcome: "success" | "failed";
+  summary: string;
+  toolCalls?: {
+    success: number;
+    failed: number;
+  };
+  artifacts?: string[];
+}
+
+export interface PromptTraceFailure {
+  step: number;
+  failureType: string;
+  reason: string;
+  blockedTargets: string[];
+}
+
+export interface PromptTrace {
+  recentSteps?: PromptTraceStep[];
+  recentFailures?: PromptTraceFailure[];
+}
+
 export interface AgentStateView {
   context: AgentContextPack;
-  workState?: PromptWorkState;
-  toolContext?: ToolContextState;
-  latestObservation?: ToolObservation;
-  lastActions?: Array<{
-    step: number;
-    status: "success" | "failed";
-    summary: string;
-    toolsUsed: string[];
-    evidence?: string[];
-    artifacts?: string[];
-    failureType?: string;
-    blockedTargets?: string[];
-  }>;
-  recentFailures?: Array<{
-    step: number;
-    failureType: string;
-    reason: string;
-    blockedTargets: string[];
-  }>;
+  progress?: PromptProgressState;
+  observations?: PromptObservations;
+  trace?: PromptTrace;
   attachments?: {
     incoming?: Array<{ id: string; name: string; kind: string; source: string; mimeType?: string; status: string }>;
     prepared?: Array<{ id: string; name: string; mode: string; status: string }>;
@@ -53,26 +65,16 @@ export interface AgentStateView {
 }
 
 export function buildAgentStateView(state: LoopState): AgentStateView {
-  const workState = buildPromptWorkState(state.workState);
-  const lastActions = buildLastActions(state);
+  const progress = buildProgressView(state.workState);
+  const observations = buildObservationsView(state.toolContext);
+  const trace = buildTraceView(state);
   const attachments = buildAttachmentState(state);
-  const toolContext = buildPromptToolContext(state.toolContext);
-  const latestObservation = buildPromptObservation(state.latestObservation);
 
   return {
     context: buildAgentContextPack(state),
-    ...(workState ? { workState } : {}),
-    ...(toolContext ? { toolContext } : {}),
-    ...(latestObservation ? { latestObservation } : {}),
-    ...(lastActions.length > 0 ? { lastActions } : {}),
-    ...(state.failureHistory.length > 0 ? {
-      recentFailures: state.failureHistory.slice(-3).map((failure) => ({
-        step: failure.step,
-        failureType: failure.failureType,
-        reason: truncate(failure.reason, 300),
-        blockedTargets: failure.blockedTargets,
-      })),
-    } : {}),
+    ...(progress ? { progress } : {}),
+    ...(observations ? { observations } : {}),
+    ...(trace ? { trace } : {}),
     ...(attachments ? { attachments } : {}),
     ...(state.systemEvent ? {
       systemEvent: {
@@ -87,7 +89,7 @@ export function buildAgentStateView(state: LoopState): AgentStateView {
   };
 }
 
-function buildPromptWorkState(workState: WorkState): PromptWorkState | undefined {
+function buildProgressView(workState: WorkState): PromptProgressState | undefined {
   const summary = truncate(workState.summary, 500);
   const openWork = compactList(workState.openWork, 5, 180);
   const blockers = compactList(workState.blockers, 4, 180);
@@ -123,16 +125,6 @@ function buildPromptWorkState(workState: WorkState): PromptWorkState | undefined
   };
 }
 
-function buildPromptObservation(observation: ToolObservation | undefined): ToolObservation | undefined {
-  if (!observation) {
-    return undefined;
-  }
-  return {
-    ...observation,
-    content: truncatePreserveLines(observation.content, 8_000),
-  };
-}
-
 function buildPromptObservations(observations: ToolObservation[] | undefined): ToolObservation[] {
   return (observations ?? [])
     .slice(-5)
@@ -142,25 +134,59 @@ function buildPromptObservations(observations: ToolObservation[] | undefined): T
     }));
 }
 
-function buildPromptToolContext(toolContext: ToolContextState | undefined): ToolContextState | undefined {
-  const recent = buildPromptObservations(toolContext?.recent);
-  return recent.length > 0 ? { recent } : undefined;
+function buildObservationsView(toolContext: ToolContextState | undefined): PromptObservations | undefined {
+  const latest = buildPromptObservations(toolContext?.recent);
+  return latest.length > 0 ? { latest } : undefined;
 }
 
-function buildLastActions(state: LoopState): NonNullable<AgentStateView["lastActions"]> {
+function buildTraceView(state: LoopState): PromptTrace | undefined {
+  const recentSteps = buildRecentStepTrace(state);
+  const recentFailures = buildRecentFailureTrace(state);
+  if (recentSteps.length === 0 && recentFailures.length === 0) {
+    return undefined;
+  }
+  return {
+    ...(recentSteps.length > 0 ? { recentSteps } : {}),
+    ...(recentFailures.length > 0 ? { recentFailures } : {}),
+  };
+}
+
+function buildRecentStepTrace(state: LoopState): PromptTraceStep[] {
   return state.completedSteps.slice(-2).map((step) => {
-    const blockedTargets = step.blockedTargets ?? [];
+    const toolSuccessCount = step.toolSuccessCount ?? 0;
+    const toolFailureCount = step.toolFailureCount ?? 0;
+    const mode = readActionMode(step.executionContract);
     return {
       step: step.step,
-      status: step.outcome === "success" ? "success" : "failed",
+      ...(mode ? { mode } : {}),
+      outcome: step.outcome === "success" ? "success" : "failed",
       summary: truncate(step.summary, 360),
-      toolsUsed: step.toolsUsed ?? [],
-      ...((step.evidenceItems ?? []).length > 0 ? { evidence: compactList(step.evidenceItems, 3, 180) } : {}),
+      ...(toolSuccessCount > 0 || toolFailureCount > 0 ? {
+        toolCalls: {
+          success: toolSuccessCount,
+          failed: toolFailureCount,
+        },
+      } : {}),
       ...(step.artifacts.length > 0 ? { artifacts: compactList(step.artifacts, 4, 180) } : {}),
-      ...(step.failureType ? { failureType: step.failureType } : {}),
-      ...(blockedTargets.length > 0 ? { blockedTargets: blockedTargets.slice(0, 4) } : {}),
     };
   });
+}
+
+function buildRecentFailureTrace(state: LoopState): PromptTraceFailure[] {
+  return state.failureHistory.slice(-3).map((failure) => ({
+    step: failure.step,
+    failureType: failure.failureType,
+    reason: truncate(failure.reason, 300),
+    blockedTargets: failure.blockedTargets,
+  }));
+}
+
+function readActionMode(executionContract: string | undefined): PromptTraceStep["mode"] | undefined {
+  const mode = executionContract?.match(/^(single|sequential|parallel|autonomous) action:/)?.[1];
+  if (mode === "single" || mode === "sequential" || mode === "parallel" || mode === "autonomous") {
+    return mode;
+  }
+  return undefined;
 }
 
 function buildAttachmentState(state: LoopState): AgentStateView["attachments"] | undefined {

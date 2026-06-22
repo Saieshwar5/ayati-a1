@@ -4,7 +4,7 @@ import { prepareIncomingAttachments } from "../../documents/attachment-preparer.
 import type { PreparedAttachmentRecord } from "../../documents/prepared-attachment-registry.js";
 import type { PreparedAttachmentSummary } from "../../documents/types.js";
 import { ContinuityResolver } from "../../memory/activity/continuity-resolver.js";
-import type { ActivityAssetRef } from "../../memory/types.js";
+import type { ActivityAssetRef, MemoryRunHandle, SessionInputHandle } from "../../memory/types.js";
 import type { AgentArtifact } from "../types.js";
 import type {
   ActToolCallRecord,
@@ -15,6 +15,7 @@ import type {
   LoopConfig,
   LoopState,
   StepSummary,
+  ToolObservation,
   WorkState,
 } from "../types.js";
 import {
@@ -42,8 +43,6 @@ import {
 } from "../metrics.js";
 import {
   buildLoopStateSizeBreakdown,
-  compactLatestObservation,
-  compactLatestObservations,
   compactStepSummaryForState,
   compactToolContext,
   compactWorkState,
@@ -60,21 +59,53 @@ import { planLocalRecovery } from "./failure-policy.js";
 import { createEvidenceTools } from "./evidence-tools.js";
 import { isEvidenceToolName } from "./observation-builder.js";
 
+interface MemoryRunContext {
+  runHandle: MemoryRunHandle;
+  runPath: string;
+  runStateManager: RunStateManager;
+}
+
 export async function runAgentLoop(
   deps: AgentLoopDeps,
   resolvedConfig?: LoopConfig,
 ): Promise<AgentLoopResult> {
   const config: LoopConfig = resolvedConfig ?? { ...DEFAULT_LOOP_CONFIG, ...deps.config };
-  const runId = deps.runHandle.runId;
-  const runPath = initRunDirectory(deps.dataDir, runId);
-  const runStateManager = new RunStateManager(runPath);
-  await runStateManager.ready();
+  const inputHandle = resolveInputHandle(deps);
+  let workRunHandle = deps.runHandle;
+  let runPath = workRunHandle ? initRunDirectory(deps.dataDir, workRunHandle.runId) : "";
+  let runStateManager: RunStateManager | null = runPath ? new RunStateManager(runPath) : null;
+  if (runStateManager) {
+    await runStateManager.ready();
+  }
   const metrics = createRunMetrics();
 
   let totalToolCalls = 0;
-  const state = buildInitialState(deps, config, runPath);
+  const state = buildInitialState(deps, config, inputHandle, runPath, workRunHandle);
+
+  const ensureWorkRun = async (): Promise<MemoryRunContext> => {
+    if (!workRunHandle) {
+      const createWorkRun = deps.sessionMemory.createWorkRun;
+      if (!createWorkRun) {
+        throw new Error("Session memory does not support work run creation.");
+      }
+      workRunHandle = createWorkRun.call(deps.sessionMemory, deps.clientId, inputHandle);
+      deps.runHandle = workRunHandle;
+      deps.onWorkRunCreated?.(workRunHandle);
+    }
+    if (!runPath) {
+      runPath = initRunDirectory(deps.dataDir, workRunHandle.runId);
+      runStateManager = new RunStateManager(runPath);
+      await runStateManager.ready();
+      state.runId = workRunHandle.runId;
+      state.runPath = runPath;
+    }
+    return { runHandle: workRunHandle, runPath, runStateManager: runStateManager! };
+  };
 
   const queueStateSnapshot = (): void => {
+    if (!runPath) {
+      return;
+    }
     void queueStateWrite(runPath, state).catch((error) => {
       devWarn(
         `[${deps.clientId}] failed to persist run state snapshot: ${error instanceof Error ? error.message : String(error)}`,
@@ -94,27 +125,30 @@ export async function runAgentLoop(
     syncTransientMemoryContext(state, deps);
     queueStateSnapshot();
     recordStateSnapshotMetric("final");
-    await flushStateWrites(runPath);
-    await writeOptimizationMetrics(runPath, metrics).catch((error) => {
-      devWarn(
-        `[${deps.clientId}] failed to persist optimization metrics: ${error instanceof Error ? error.message : String(error)}`,
-      );
-    });
+    if (runPath) {
+      await flushStateWrites(runPath);
+      await writeOptimizationMetrics(runPath, metrics).catch((error) => {
+        devWarn(
+          `[${deps.clientId}] failed to persist optimization metrics: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      });
+    }
+    const cleanupRunId = state.runId || decisionScopeId(inputHandle);
     deps.skillActivationManager?.deactivateRun({
       clientId: deps.clientId,
-      runId: deps.runHandle.runId,
-      sessionId: deps.runHandle.sessionId,
+      runId: cleanupRunId,
+      sessionId: inputHandle.sessionId,
       stepNumber: state.iteration,
       ...(deps.uiContext ? { uiContext: deps.uiContext } : {}),
     });
     deps.toolWorkingSetManager?.resetRun({
       clientId: deps.clientId,
-      runId: deps.runHandle.runId,
-      sessionId: deps.runHandle.sessionId,
+      runId: cleanupRunId,
+      sessionId: inputHandle.sessionId,
       stepNumber: state.iteration,
       ...(deps.uiContext ? { uiContext: deps.uiContext } : {}),
     });
-    deps.toolExecutor?.unmount?.(evidenceToolGroupId(deps.runHandle.runId));
+    deps.toolExecutor?.unmount?.(evidenceToolGroupId(cleanupRunId));
     devLog(`[${deps.clientId}] [metrics:agent_loop] ${formatRunMetrics(metrics)}`);
     return buildLoopResult(state, deps.dataDir, {
       status: input.status,
@@ -128,18 +162,21 @@ export async function runAgentLoop(
 
   syncTransientMemoryContext(state, deps);
   state.userMessage = getPrimaryUserMessage(deps);
-  syncContinuityContext(state, deps);
+  syncContinuityContext(state, deps, inputHandle);
 
   devLog(
-    `[${deps.clientId}] agentLoop start inputKind=${state.inputKind ?? "user_message"} runHandle=${deps.runHandle.runId} message=${state.userMessage.slice(0, 160)}`,
+    `[${deps.clientId}] agentLoop start inputKind=${state.inputKind ?? "user_message"} seq=${inputHandle.seq} workRun=${state.runId || "none"} message=${state.userMessage.slice(0, 160)}`,
   );
 
   queueStateSnapshot();
   recordStateSnapshotMetric("initial");
 
-  await prepareAttachmentsForRun(deps, state, runId, runPath);
-  syncContinuityContext(state, deps);
-  queueStateSnapshot();
+  if ((state.attachedDocuments ?? []).some((document) => document.kind !== "image")) {
+    const work = await ensureWorkRun();
+    await prepareAttachmentsForRun(deps, state, work.runHandle.runId, work.runPath);
+    syncContinuityContext(state, deps, inputHandle);
+    queueStateSnapshot();
+  }
 
   while (state.status === "running" && state.iteration < config.maxIterations) {
     if (deps.signal?.aborted) {
@@ -149,14 +186,14 @@ export async function runAgentLoop(
     }
 
     syncTransientMemoryContext(state, deps);
-    syncContinuityContext(state, deps);
+    syncContinuityContext(state, deps, inputHandle);
     state.iteration++;
     const finalReplyFromVerifiedState = canCompleteFromVerifiedState(state);
 
     const toolContext = {
       clientId: deps.clientId,
-      runId: deps.runHandle.runId,
-      sessionId: deps.runHandle.sessionId,
+      runId: state.runId || decisionScopeId(inputHandle),
+      sessionId: inputHandle.sessionId,
       stepNumber: state.iteration,
       ...(deps.uiContext ? { uiContext: deps.uiContext } : {}),
     };
@@ -227,7 +264,9 @@ export async function runAgentLoop(
     }
 
     if (decision.kind === "load_tools") {
-      deps.toolWorkingSetManager?.load(decision.request, toolContext);
+      const work = await ensureWorkRun();
+      const workToolContext = { ...toolContext, runId: work.runHandle.runId };
+      deps.toolWorkingSetManager?.load(decision.request, workToolContext);
       queueStateSnapshot();
       recordRunMetric(metrics, "tool_load_decision", {
         kind: "local",
@@ -236,6 +275,14 @@ export async function runAgentLoop(
       continue;
     }
 
+    const work = await ensureWorkRun();
+    const workToolContext = { ...toolContext, runId: work.runHandle.runId };
+    if (deps.toolWorkingSetManager) {
+      deps.toolWorkingSetManager.prepareForDecision(state, workToolContext);
+    } else {
+      await deps.skillActivationManager?.prepareForDecision(state, workToolContext);
+    }
+    syncEvidenceTools(deps, state, workToolContext);
     const stepResult = await executeActionStep({
       deps,
       state,
@@ -251,10 +298,7 @@ export async function runAgentLoop(
     const compactedWorkState = compactWorkState(stepResult.execution.nextWorkState);
     recordCompactionMetric(metrics, "workState", beforeWorkStateChars, measureJson(compactedWorkState), { step: state.iteration });
     state.workState = compactedWorkState;
-    const latestObservations = compactLatestObservations(getLatestObservations(stepResult.execution));
-    state.latestObservations = latestObservations;
-    state.latestObservation = compactLatestObservation(latestObservations?.at(-1));
-    state.toolContext = compactToolContext(latestObservations ? { recent: latestObservations } : undefined);
+    state.toolContext = compactToolContext({ recent: getLatestObservations(stepResult.execution) });
     stepResult.stepSummary.workState = compactedWorkState;
     stepResult.stepRecord.workState = compactedWorkState;
 
@@ -263,7 +307,7 @@ export async function runAgentLoop(
     const evidenceReviewAction = isEvidenceReviewAction(decision.action);
     if (!evidenceReviewAction) {
       state.completedSteps.push(compactedStep);
-      await runStateManager.appendStepRecord(stepResult.stepRecord, stepResult.fullStepText);
+      await work.runStateManager.appendStepRecord(stepResult.stepRecord, stepResult.fullStepText);
     }
 
     recordPlanModeMetric(metrics, decision.action.mode, {
@@ -277,16 +321,16 @@ export async function runAgentLoop(
     });
     deps.skillActivationManager?.cleanupAfterStep(stepResult.stepSummary.toolsUsed ?? [], {
       clientId: deps.clientId,
-      runId: deps.runHandle.runId,
-      sessionId: deps.runHandle.sessionId,
+      runId: work.runHandle.runId,
+      sessionId: inputHandle.sessionId,
       stepNumber: state.iteration,
       ...(deps.uiContext ? { uiContext: deps.uiContext } : {}),
     });
     if (deps.toolWorkingSetManager) {
       const cleanupContext = {
         clientId: deps.clientId,
-        runId: deps.runHandle.runId,
-        sessionId: deps.runHandle.sessionId,
+        runId: work.runHandle.runId,
+        sessionId: inputHandle.sessionId,
         stepNumber: state.iteration,
         ...(deps.uiContext ? { uiContext: deps.uiContext } : {}),
       };
@@ -358,6 +402,7 @@ interface ExecuteActionStepResult {
 
 async function executeActionStep(input: ExecuteActionStepInput): Promise<ExecuteActionStepResult> {
   input.state.runClass = "task";
+  const runHandle = requireWorkRunHandle(input.deps);
   const currentActivityId = input.state.continuity?.mode === "continue" ? input.state.continuity.current?.activityId : undefined;
   let execution = await executeAgentAction(
     {
@@ -367,7 +412,7 @@ async function executeActionStep(input: ExecuteActionStepInput): Promise<Execute
       clientId: input.deps.clientId,
       ...(input.deps.uiContext ? { uiContext: input.deps.uiContext } : {}),
       sessionMemory: input.deps.sessionMemory,
-      runHandle: input.deps.runHandle,
+      runHandle,
       metrics: input.metrics,
       runPath: input.state.runPath,
       ...(currentActivityId ? { activityId: currentActivityId } : {}),
@@ -389,7 +434,7 @@ async function executeActionStep(input: ExecuteActionStepInput): Promise<Execute
           clientId: input.deps.clientId,
           ...(input.deps.uiContext ? { uiContext: input.deps.uiContext } : {}),
           sessionMemory: input.deps.sessionMemory,
-          runHandle: input.deps.runHandle,
+          runHandle,
           metrics: input.metrics,
           runPath: input.state.runPath,
           ...(currentActivityId ? { activityId: currentActivityId } : {}),
@@ -618,9 +663,16 @@ function buildStepRecord(step: StepSummary, execution: AgentActionExecutionResul
   };
 }
 
-function buildInitialState(deps: AgentLoopDeps, config: LoopConfig, runPath: string): LoopState {
+function buildInitialState(
+  deps: AgentLoopDeps,
+  config: LoopConfig,
+  inputHandle: SessionInputHandle,
+  runPath: string,
+  runHandle: MemoryRunHandle | undefined,
+): LoopState {
   return {
-    runId: deps.runHandle.runId,
+    runId: runHandle?.runId ?? "",
+    currentSeq: inputHandle.seq,
     runClass: "interaction",
     inputKind: deps.inputKind ?? (deps.systemEvent ? "system_event" : "user_message"),
     userMessage: "",
@@ -653,8 +705,38 @@ function buildInitialState(deps: AgentLoopDeps, config: LoopConfig, runPath: str
     personalMemorySnapshot: "",
     continuity: { mode: "new", confidence: 0, reasons: ["initial state"] },
     recentExchanges: [],
+    sessionEvents: [],
+    activeContextStartSeq: 1,
+    sessionWork: {
+      activeContextStartSeq: 1,
+      recentActivities: [],
+    },
     toolContext: { recent: [] },
   };
+}
+
+function resolveInputHandle(deps: AgentLoopDeps): SessionInputHandle {
+  if (deps.inputHandle) {
+    return deps.inputHandle;
+  }
+  if (deps.runHandle) {
+    return {
+      sessionId: deps.runHandle.sessionId,
+      seq: deps.runHandle.triggerSeq ?? 1,
+    };
+  }
+  throw new Error("Agent loop requires a session input handle.");
+}
+
+function decisionScopeId(inputHandle: SessionInputHandle): string {
+  return `decision:${inputHandle.sessionId}:${inputHandle.seq}`;
+}
+
+function requireWorkRunHandle(deps: AgentLoopDeps): MemoryRunHandle {
+  if (!deps.runHandle) {
+    throw new Error("Action execution requires a work run.");
+  }
+  return deps.runHandle;
 }
 
 async function prepareAttachmentsForRun(
@@ -680,12 +762,18 @@ async function prepareAttachmentsForRun(
 
 function syncTransientMemoryContext(state: LoopState, deps: AgentLoopDeps): void {
   const memCtx = deps.sessionMemory.getPromptMemoryContext();
+  const store = deps.sessionMemory.getActivityStore?.();
   state.activeLearningContext = deps.activeLearningContext;
   state.personalMemorySnapshot = memCtx.personalMemorySnapshot ?? "";
   state.recentExchanges = memCtx.recentExchanges ?? [];
+  state.sessionEvents = memCtx.sessionEvents ?? [];
+  state.activeContextStartSeq = memCtx.activeContextStartSeq ?? 1;
+  state.sessionWork = memCtx.sessionWork ?? { activeContextStartSeq: state.activeContextStartSeq, recentActivities: [] };
+  const sessionId = deps.inputHandle?.sessionId ?? deps.runHandle?.sessionId;
+  state.durableTaskBoundary = sessionId ? store?.findLatestDurableTaskBoundary(deps.clientId, sessionId) ?? undefined : undefined;
 }
 
-function syncContinuityContext(state: LoopState, deps: AgentLoopDeps): void {
+function syncContinuityContext(state: LoopState, deps: AgentLoopDeps, inputHandle: SessionInputHandle): void {
   const store = deps.sessionMemory.getActivityStore?.();
   if (!store) {
     state.continuity = { mode: "new", confidence: 0, reasons: ["activity store is not configured"] };
@@ -694,7 +782,7 @@ function syncContinuityContext(state: LoopState, deps: AgentLoopDeps): void {
   const resolver = new ContinuityResolver({ store });
   state.continuity = resolver.resolve({
     clientId: deps.clientId,
-    sessionId: deps.runHandle.sessionId,
+    sessionId: inputHandle.sessionId,
     userMessage: state.userMessage,
     currentAssetRefs: buildActivityAssets(state),
   });
@@ -733,7 +821,7 @@ function discardModelWorkingNotes(decision: AgentDecision): void {
   void decision.workingNotes;
 }
 
-function getLatestObservations(execution: AgentActionExecutionResult): NonNullable<LoopState["latestObservations"]> {
+function getLatestObservations(execution: AgentActionExecutionResult): ToolObservation[] {
   return execution.actOutput.toolCalls
     .map((call) => call.observation)
     .filter((observation): observation is NonNullable<ActToolCallRecord["observation"]> => observation !== undefined);
@@ -751,7 +839,7 @@ function syncEvidenceTools(
   if (!deps.toolExecutor?.mount || !deps.toolExecutor.unmount) {
     return;
   }
-  const groupId = evidenceToolGroupId(deps.runHandle.runId);
+  const groupId = evidenceToolGroupId(toolContext.runId);
   const evidenceRefs = state.workState.evidenceRefs ?? [];
   if (evidenceRefs.length === 0) {
     deps.toolExecutor.unmount(groupId);
@@ -862,13 +950,16 @@ function buildLoopResult(
     totalIterations: input.totalIterations,
     totalToolCalls: input.totalToolCalls,
     runPath: state.runPath,
+    ...(state.runId ? { workRunId: state.runId } : {}),
   };
 
   if (state.runClass === "task") {
     result.taskSummary = buildTaskSummaryRecord(state, content, input.status, responseKind, input.completion);
   }
 
-  const artifacts = collectAgentArtifacts(state.runId, state.runPath, dataDir, state.completedSteps) as AgentArtifact[];
+  const artifacts = state.runId && state.runPath
+    ? collectAgentArtifacts(state.runId, state.runPath, dataDir, state.completedSteps) as AgentArtifact[]
+    : [];
   if (artifacts.length > 0) {
     result.artifacts = artifacts;
   }
@@ -888,6 +979,9 @@ function buildTaskSummaryRecord(
     runId: state.runId,
     runPath: state.runPath,
     activityId: selectContinuationActivityId(state),
+    triggerSeq: state.currentSeq,
+    discussionStartSeq: findDiscussionStartSeq(state),
+    discussionEndSeq: state.currentSeq,
     status,
     taskStatus: state.workState.status,
     objective: state.userMessage.trim() || undefined,
@@ -931,6 +1025,13 @@ function deriveNextAction(state: LoopState): string | undefined {
     return blockers[0];
   }
   return undefined;
+}
+
+function findDiscussionStartSeq(state: LoopState): number | undefined {
+  if (!state.currentSeq) {
+    return undefined;
+  }
+  return Math.min(Math.max(1, state.activeContextStartSeq || 1), state.currentSeq);
 }
 
 function deriveStopReason(

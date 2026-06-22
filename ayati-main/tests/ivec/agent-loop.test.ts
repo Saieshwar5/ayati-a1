@@ -355,9 +355,35 @@ describe("agentLoop", () => {
               content: "make it responsive too",
             },
           }],
+          sessionEvents: [
+            {
+              type: "user_message",
+              seq: 1,
+              timestamp: "2026-06-12T09:00:00.000Z",
+              content: "Build a todo app",
+            },
+            {
+              type: "assistant_response",
+              seq: 2,
+              timestamp: "2026-06-12T09:01:00.000Z",
+              workRunId: "old-run",
+              content: "Created the todo app.",
+            },
+            {
+              type: "user_message",
+              seq: 3,
+              timestamp: "2026-06-12T09:10:00.000Z",
+              content: "make it responsive too",
+            },
+          ],
+          activeContextStartSeq: 1,
+          sessionWork: {
+            activeContextStartSeq: 1,
+            recentActivities: [],
+          },
           conversationTurns: [
-            { role: "user", content: "Build a todo app", timestamp: "2026-06-12T09:00:00.000Z", sessionPath: "sessions/s1.md", runId: "old-run" },
-            { role: "assistant", content: "Created the todo app.", timestamp: "2026-06-12T09:01:00.000Z", sessionPath: "sessions/s1.md", runId: "old-run" },
+            { role: "user", content: "Build a todo app", timestamp: "2026-06-12T09:00:00.000Z", sessionPath: "sessions/s1.md" },
+            { role: "assistant", content: "Created the todo app.", timestamp: "2026-06-12T09:01:00.000Z", sessionPath: "sessions/s1.md", workRunId: "old-run" },
           ],
           personalMemorySnapshot: "- Prefers concise implementation notes.",
           continuity: {
@@ -390,7 +416,8 @@ describe("agentLoop", () => {
         provider,
         toolDefinitions: [],
         sessionMemory,
-        runHandle: { sessionId: "s1", runId: "r-context" },
+        inputHandle: { sessionId: "s1", seq: 3 },
+        runHandle: { sessionId: "s1", runId: "r-context", triggerSeq: 3 },
         clientId: "c1",
         initialUserMessage: "make it responsive too",
         dataDir,
@@ -407,20 +434,22 @@ describe("agentLoop", () => {
       expect(userPrompt.indexOf("Selected tools:\n")).toBeLessThan(userPrompt.indexOf("State view:\n"));
       expect(stateView.userMessage).toBeUndefined();
       expect(stateView.goal).toBeUndefined();
-      expect(stateView.progress).toBeUndefined();
       expect(stateView.workState).toBeUndefined();
+      expect(stateView.progress).toBeUndefined();
+      expect(stateView.toolContext).toBeUndefined();
       expect(stateView.lastActions).toBeUndefined();
+      expect(stateView.trace).toBeUndefined();
       expect(stateView.attachments).toBeUndefined();
       expect(stateView.runPath).toBeUndefined();
-      expect(stateView.context.currentInput).toBe("make it responsive too");
       expect(stateView.context.runtime).toBeUndefined();
       expect(stateView.context.session).toBeUndefined();
       expect(stateView.context.recentSystemActivity).toBeUndefined();
       expect(stateView.context.continuity.mode).toBe("new");
       expect(stateView.context.continuity.reasons).toEqual(["activity store is not configured"]);
-      expect(stateView.context.recentConversation).toHaveLength(1);
-      expect(stateView.context.recentConversation[0].user.content).toBe("Build a todo app");
-      expect(stateView.context.recentConversation[0].runId).toBe("old-run");
+      expect(stateView.context.timeline).toHaveLength(3);
+      expect(stateView.context.timeline[0]).toMatchObject({ seq: 1, kind: "user", content: "Build a todo app" });
+      expect(stateView.context.timeline[2]).toMatchObject({ seq: 3, kind: "user", content: "make it responsive too", current: true });
+      expect(stateView.context.sessionWork).toEqual({ activeContextStartSeq: 1, recentActivities: [] });
       expect(stateView.context.recentActivity).toBeUndefined();
       expect(stateView.context.recentExact).toBeUndefined();
       expect(stateView.context.recentTasks).toBeUndefined();
@@ -527,16 +556,18 @@ describe("agentLoop", () => {
       const secondCallInput = generateTurn.mock.calls[1]?.[0];
       const userPrompt = secondCallInput.messages.find((message: { role: string }) => message.role === "user").content as string;
       const stateView = extractStateView(userPrompt);
-      expect(stateView.toolContext.recent).toHaveLength(2);
-      expect(stateView.toolContext.recent[0].purpose).toBe("Get RAM summary");
-      expect(stateView.toolContext.recent[0].content).toContain("3.5Gi used");
-      expect(stateView.toolContext.recent[0].evidenceRef).toBe("evidence://ev_001_call_1");
-      expect(stateView.toolContext.recent[1].purpose).toBe("List top RAM processes");
-      expect(stateView.toolContext.recent[1].content).toContain("chromium");
-      expect(stateView.toolContext.recent[1].evidenceRef).toBe("evidence://ev_001_call_2");
-      expect(stateView.latestObservation.evidenceRef).toBe("evidence://ev_001_call_2");
-      expect(stateView.workState.evidenceRefs[0].ref).toBe("evidence://ev_001_call_1");
-      expect(stateView.workState.evidenceRefs[1].ref).toBe("evidence://ev_001_call_2");
+      expect(stateView.observations.latest).toHaveLength(2);
+      expect(stateView.observations.latest[0].purpose).toBe("Get RAM summary");
+      expect(stateView.observations.latest[0].content).toContain("3.5Gi used");
+      expect(stateView.observations.latest[0].evidenceRef).toBe("evidence://ev_001_call_1");
+      expect(stateView.observations.latest[1].purpose).toBe("List top RAM processes");
+      expect(stateView.observations.latest[1].content).toContain("chromium");
+      expect(stateView.observations.latest[1].evidenceRef).toBe("evidence://ev_001_call_2");
+      expect(stateView.latestObservation).toBeUndefined();
+      expect(userPrompt).not.toContain("\"latestObservation\"");
+      expect(stateView.toolContext).toBeUndefined();
+      expect(stateView.progress.evidenceRefs[0].ref).toBe("evidence://ev_001_call_1");
+      expect(stateView.progress.evidenceRefs[1].ref).toBe("evidence://ev_001_call_2");
       expect(stateView.workingNotes).toBeUndefined();
       expect(userPrompt).toContain("evidence_search");
       expect(existsSync(join(dataDir, "runs", "r-observation", "raw", "001-call_1-shell-output.txt"))).toBe(true);

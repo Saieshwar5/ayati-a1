@@ -36,11 +36,13 @@ function createSessionMemory(): SessionMemory {
   return {
     initialize: vi.fn(),
     shutdown: vi.fn(),
-    beginRun: vi.fn().mockReturnValue({ sessionId: "s1", runId: "r1" }),
-    beginSystemRun: vi.fn().mockReturnValue({ sessionId: "s1", runId: "sys-r1" }),
+    recordUserMessage: vi.fn().mockReturnValue({ sessionId: "s1", seq: 1 }),
+    recordSystemEvent: vi.fn().mockReturnValue({ sessionId: "s1", seq: 1 }),
+    createWorkRun: vi.fn().mockReturnValue({ sessionId: "s1", runId: "r1", triggerSeq: 1 }),
     recordToolCall: vi.fn(),
     recordToolResult: vi.fn(),
     recordAssistantFinal: vi.fn(),
+    recordAssistantMessage: vi.fn(),
     recordRunFailure: vi.fn(),
     recordAgentStep: vi.fn(),
     recordTaskSummary: vi.fn(),
@@ -545,7 +547,7 @@ describe("IVecEngine", () => {
     expect(second.dynamicSystemTokens).toBe(0);
   });
 
-  it("processes pulse system_event through beginSystemRun", async () => {
+  it("processes pulse system_event through recordSystemEvent", async () => {
     const dataDir = mkdtempSync(join(tmpdir(), "ayati-eng-system-event-"));
     try {
       const provider = createMockProvider();
@@ -579,21 +581,23 @@ describe("IVecEngine", () => {
         },
       });
 
-      expect(sessionMemory.beginSystemRun as ReturnType<typeof vi.fn>).toHaveBeenCalledWith(
+      expect(sessionMemory.recordSystemEvent as ReturnType<typeof vi.fn>).toHaveBeenCalledWith(
         "c1",
         expect.objectContaining({ source: "pulse", event: "reminder_due", eventId: "evt-1" }),
       );
+      expect(sessionMemory.createWorkRun as ReturnType<typeof vi.fn>).not.toHaveBeenCalled();
       expect(onReply).toHaveBeenCalledWith("c1", {
         type: "notification",
         content: "mock reply",
         final: true,
       });
-      expect(sessionMemory.recordAssistantFinal as ReturnType<typeof vi.fn>).toHaveBeenCalledWith(
+      expect(sessionMemory.recordAssistantMessage as ReturnType<typeof vi.fn>).toHaveBeenCalledWith(
         "c1",
-        "sys-r1",
-        "s1",
-        "mock reply",
-        { responseKind: "notification" },
+        expect.objectContaining({
+          sessionId: "s1",
+          content: "mock reply",
+          responseKind: "notification",
+        }),
       );
       expect(sessionMemory.recordAssistantNotification as ReturnType<typeof vi.fn>).toHaveBeenCalledWith(
         "c1",
@@ -681,7 +685,7 @@ describe("IVecEngine", () => {
       expect(onReply).toHaveBeenCalledWith("c1", {
         type: "progress",
         content: expect.stringContaining("Step 1"),
-        runId: "sys-r1",
+        runId: "r1",
       });
       expect(onReply).toHaveBeenCalledWith("c1", {
         type: "notification",
@@ -694,7 +698,7 @@ describe("IVecEngine", () => {
     }
   });
 
-  it("processes pulse scheduled task system_event through beginSystemRun", async () => {
+  it("processes pulse scheduled task system_event through recordSystemEvent", async () => {
     const dataDir = mkdtempSync(join(tmpdir(), "ayati-eng-system-task-event-"));
     try {
       const provider = createMockProvider();
@@ -736,21 +740,23 @@ describe("IVecEngine", () => {
         },
       });
 
-      expect(sessionMemory.beginSystemRun as ReturnType<typeof vi.fn>).toHaveBeenCalledWith(
+      expect(sessionMemory.recordSystemEvent as ReturnType<typeof vi.fn>).toHaveBeenCalledWith(
         "c1",
         expect.objectContaining({ source: "pulse", event: "task_due", eventId: "evt-task-1" }),
       );
+      expect(sessionMemory.createWorkRun as ReturnType<typeof vi.fn>).not.toHaveBeenCalled();
       expect(onReply).toHaveBeenCalledWith("c1", {
         type: "notification",
         content: "mock reply",
         final: true,
       });
-      expect(sessionMemory.recordAssistantFinal as ReturnType<typeof vi.fn>).toHaveBeenCalledWith(
+      expect(sessionMemory.recordAssistantMessage as ReturnType<typeof vi.fn>).toHaveBeenCalledWith(
         "c1",
-        "sys-r1",
-        "s1",
-        "mock reply",
-        { responseKind: "notification" },
+        expect.objectContaining({
+          sessionId: "s1",
+          content: "mock reply",
+          responseKind: "notification",
+        }),
       );
       expect(sessionMemory.recordAssistantNotification as ReturnType<typeof vi.fn>).toHaveBeenCalledWith(
         "c1",
@@ -809,7 +815,7 @@ describe("IVecEngine", () => {
       });
 
       await vi.waitFor(() => {
-        expect(sessionMemory.beginSystemRun as ReturnType<typeof vi.fn>).toHaveBeenCalledWith(
+        expect(sessionMemory.recordSystemEvent as ReturnType<typeof vi.fn>).toHaveBeenCalledWith(
           "c1",
           expect.objectContaining({ source: "custom-system", event: "task.requested", eventId: "evt-approval-1" }),
         );
@@ -818,12 +824,13 @@ describe("IVecEngine", () => {
           content: "mock reply",
         });
       });
-      expect(sessionMemory.recordAssistantFinal as ReturnType<typeof vi.fn>).toHaveBeenCalledWith(
+      expect(sessionMemory.recordAssistantMessage as ReturnType<typeof vi.fn>).toHaveBeenCalledWith(
         "c1",
-        "sys-r1",
-        "s1",
-        "mock reply",
-        { responseKind: "feedback" },
+        expect.objectContaining({
+          sessionId: "s1",
+          content: "mock reply",
+          responseKind: "feedback",
+        }),
       );
       expect(sessionMemory.recordSystemEventOutcome as ReturnType<typeof vi.fn>).toHaveBeenCalledWith(
         "c1",
@@ -839,13 +846,13 @@ describe("IVecEngine", () => {
     }
   });
 
-  it("rotates session before beginRun when pre-turn policy requires it", async () => {
+  it("rotates session before recording user input when pre-turn policy requires it", async () => {
     const dataDir = mkdtempSync(join(tmpdir(), "ayati-eng-rotate-"));
     try {
       const provider = createMockProvider();
       const onReply = vi.fn();
 
-      const beginRun = vi.fn().mockReturnValue({ sessionId: "s2", runId: "r2" });
+      const recordUserMessage = vi.fn().mockReturnValue({ sessionId: "s2", seq: 1 });
       const createSession = vi.fn().mockReturnValue({
         previousSessionId: "s1",
         sessionId: "s2",
@@ -855,11 +862,13 @@ describe("IVecEngine", () => {
       const sessionMemory: SessionMemory = {
         initialize: vi.fn(),
         shutdown: vi.fn(),
-        beginRun,
+        recordUserMessage,
+        createWorkRun: vi.fn().mockReturnValue({ sessionId: "s2", runId: "r2", triggerSeq: 1 }),
         createSession,
         recordToolCall: vi.fn(),
         recordToolResult: vi.fn(),
         recordAssistantFinal: vi.fn(),
+        recordAssistantMessage: vi.fn(),
         recordRunFailure: vi.fn(),
         recordAgentStep: vi.fn(),
         recordTaskSummary: vi.fn(),
@@ -894,7 +903,7 @@ describe("IVecEngine", () => {
 
       await vi.waitFor(() => {
         expect(createSession).toHaveBeenCalledTimes(1);
-        expect(beginRun).toHaveBeenCalledTimes(1);
+        expect(recordUserMessage).toHaveBeenCalledTimes(1);
         expect(onReply).toHaveBeenCalledWith("c1", {
           type: "reply",
           content: "mock reply",
@@ -902,10 +911,10 @@ describe("IVecEngine", () => {
       });
 
       const rotateOrder = (createSession.mock.invocationCallOrder[0] ?? 0) as number;
-      const beginRunOrder = (beginRun.mock.invocationCallOrder[0] ?? 0) as number;
+      const recordInputOrder = (recordUserMessage.mock.invocationCallOrder[0] ?? 0) as number;
       expect(rotateOrder).toBeGreaterThan(0);
-      expect(beginRunOrder).toBeGreaterThan(0);
-      expect(rotateOrder).toBeLessThan(beginRunOrder);
+      expect(recordInputOrder).toBeGreaterThan(0);
+      expect(rotateOrder).toBeLessThan(recordInputOrder);
     } finally {
       rmSync(dataDir, { recursive: true, force: true });
     }

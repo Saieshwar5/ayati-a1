@@ -23,7 +23,7 @@ export function createEvidenceTools(state: LoopState): ToolDefinition[] {
         const ref = findEvidenceRef(state, parsed.evidenceRef);
         if (!ref) return missingEvidenceResult(parsed.evidenceRef);
         const text = await readEvidenceText(state.runPath, ref);
-        const startLine = parsed.offset ?? nextOffsetForLatestObservation(state, ref) ?? 1;
+        const startLine = parsed.offset ?? nextOffsetForRecentObservation(state, ref) ?? 1;
         const slice = sliceLinesByCharBudget(text, startLine, CHUNK_CHARS);
         return successResult("EVIDENCE_CHUNK_READ", `Read evidence chunk ${ref.ref}.`, slice.content, {
           evidenceRef: ref.ref,
@@ -224,11 +224,15 @@ async function readEvidenceText(runPath: string, ref: WorkEvidenceRef): Promise<
   return await readFile(join(runPath, ref.rawOutputPath), "utf-8");
 }
 
-function nextOffsetForLatestObservation(state: LoopState, ref: WorkEvidenceRef): number | undefined {
-  if (state.latestObservation?.evidenceRef !== ref.ref) {
-    return undefined;
+function nextOffsetForRecentObservation(state: LoopState, ref: WorkEvidenceRef): number | undefined {
+  const recent = state.toolContext?.recent ?? [];
+  for (let index = recent.length - 1; index >= 0; index--) {
+    const observation = recent[index];
+    if (observation?.evidenceRef === ref.ref) {
+      return observation.cursor?.nextOffset;
+    }
   }
-  return state.latestObservation.cursor?.nextOffset;
+  return undefined;
 }
 
 function sliceLinesByCharBudget(output: string, startLine: number, maxChars: number): { content: string; startLine: number; endLine: number; nextOffset?: number } {

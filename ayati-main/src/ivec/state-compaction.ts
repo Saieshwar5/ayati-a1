@@ -13,7 +13,6 @@ const WORK_STATE_LIMITS = {
 
 const LOOP_STATE_LIMITS = {
   workingNotes: { count: 12, chars: 420 },
-  latestObservationChars: 8_000,
   toolContextCards: 5,
   toolContextCardChars: 4_000,
 };
@@ -78,8 +77,6 @@ export function buildLoopStateSizeBreakdown(state: LoopState): Record<string, nu
     completedSteps: measureJson(state.completedSteps),
     completedStepsWorkState: completedStepWorkStateChars,
     failureHistory: measureJson(state.failureHistory),
-    latestObservation: measureJson(state.latestObservation),
-    latestObservations: measureJson(state.latestObservations),
     toolContext: measureJson(state.toolContext),
     workingNotes: measureJson(state.workingNotes),
   };
@@ -91,9 +88,15 @@ function buildPersistedLikeStateView(state: LoopState): Omit<
   | "personalMemorySnapshot"
   | "continuity"
   | "recentExchanges"
+  | "sessionEvents"
+  | "activeContextStartSeq"
+  | "sessionWork"
 > {
   const {
     recentExchanges: _recentExchanges,
+    sessionEvents: _sessionEvents,
+    activeContextStartSeq: _activeContextStartSeq,
+    sessionWork: _sessionWork,
     activeLearningContext: _activeLearningContext,
     personalMemorySnapshot: _personalMemorySnapshot,
     continuity: _continuity,
@@ -126,14 +129,7 @@ export function compactOptionalText(value: unknown, maxChars: number): string | 
   return text.length > 0 ? text : undefined;
 }
 
-export function compactLatestObservation(observation: ToolObservation | undefined): ToolObservation | undefined {
-  if (!observation) {
-    return undefined;
-  }
-  return compactToolObservation(observation, LOOP_STATE_LIMITS.latestObservationChars);
-}
-
-export function compactLatestObservations(observations: ToolObservation[] | undefined): ToolObservation[] | undefined {
+export function compactRecentObservations(observations: ToolObservation[] | undefined): ToolObservation[] | undefined {
   const compacted = (observations ?? [])
     .slice(-LOOP_STATE_LIMITS.toolContextCards)
     .map((observation) => compactToolObservation(observation, LOOP_STATE_LIMITS.toolContextCardChars));
@@ -141,7 +137,7 @@ export function compactLatestObservations(observations: ToolObservation[] | unde
 }
 
 export function compactToolContext(toolContext: ToolContextState | undefined): ToolContextState | undefined {
-  const recent = compactLatestObservations(toolContext?.recent);
+  const recent = compactRecentObservations(toolContext?.recent);
   return recent ? { recent } : undefined;
 }
 

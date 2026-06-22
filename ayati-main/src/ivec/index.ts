@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import type { LlmProvider } from "../core/contracts/provider.js";
 import { noopSessionMemory } from "../memory/provider.js";
-import type { SessionMemory, MemoryRunHandle } from "../memory/types.js";
+import type { SessionMemory, MemoryRunHandle, SessionInputHandle } from "../memory/types.js";
 import type { StaticContext } from "../context/static-context-cache.js";
 import { renderBasePromptSection } from "../prompt/sections/base.js";
 import { renderSkillsSection } from "../prompt/sections/skills.js";
@@ -208,19 +208,25 @@ export class IVecEngine {
     attachments: ChatAttachmentInput[],
     uiContext?: ChatInboundMessage["uiContext"],
   ): Promise<void> {
+    let inputHandle: SessionInputHandle | null = null;
     let runHandle: MemoryRunHandle | null = null;
     let runStatus: "completed" | "failed" | "stuck" | null = null;
     try {
       this.rotateSessionBeforeRunIfNeeded(clientId, content);
-      runHandle = this.sessionMemory.beginRun(clientId, content);
-      this.recordTurnStatus(clientId, runHandle, "processing_started");
+      inputHandle = this.sessionMemory.recordUserMessage(clientId, content);
 
       if (this.provider) {
-        const registeredAttachments = await this.registerIncomingDocuments(attachments, runHandle.runId);
+        if (attachments.length > 0) {
+          runHandle = this.createWorkRun(clientId, inputHandle);
+          this.recordTurnStatus(clientId, runHandle, "processing_started");
+        }
+        const registeredAttachments = runHandle
+          ? await this.registerIncomingDocuments(attachments, runHandle.runId)
+          : { documents: [], warnings: [], managedFiles: [], managedDirectories: [] };
         const toolDefs = this.toolExecutor?.definitions({
           clientId,
-          runId: runHandle.runId,
-          sessionId: runHandle.sessionId,
+          runId: runHandle?.runId ?? this.inputScopeId(inputHandle),
+          sessionId: inputHandle.sessionId,
         }) ?? [];
         const system = await this.buildSystemContext(clientId, content);
         let result = await agentLoop({
@@ -230,7 +236,12 @@ export class IVecEngine {
           toolWorkingSetManager: this.toolWorkingSetManager,
           toolDefinitions: toolDefs,
           sessionMemory: this.sessionMemory,
-          runHandle,
+          inputHandle,
+          ...(runHandle ? { runHandle } : {}),
+          onWorkRunCreated: (created) => {
+            runHandle = created;
+            this.recordTurnStatus(clientId, created, "processing_started");
+          },
           clientId,
           uiContext,
           initialUserMessage: content,
@@ -248,22 +259,24 @@ export class IVecEngine {
           preparedAttachmentRegistry: this.preparedAttachmentRegistry,
           onProgress: (log, runPath) => {
             devLog(`[${clientId}] ${log}`);
-            this.sessionMemory.recordAgentStep(clientId, {
-              runId: runHandle!.runId,
-              sessionId: runHandle!.sessionId,
-              step: 0,
-              phase: "progress",
-              summary: `${log} | runPath: ${runPath}`,
-            });
-            this.sendProgress(clientId, runHandle!, log);
+            if (runHandle) {
+              this.sessionMemory.recordAgentStep(clientId, {
+                runId: runHandle.runId,
+                sessionId: runHandle.sessionId,
+                step: 0,
+                phase: "progress",
+                summary: `${log} | runPath: ${runPath}`,
+              });
+              this.sendProgress(clientId, runHandle, log);
+            }
           },
         });
         result = await this.applyPulseProposalReflection(clientId, content, result, toolDefs);
-        this.dispatchAgentResponse(clientId, runHandle, result);
-        this.queueTaskSummaryPublication(clientId, runHandle, result.taskSummary);
+        this.dispatchAgentResponse(clientId, inputHandle, runHandle, result);
+        this.queueTaskSummaryPublication(clientId, inputHandle, result.taskSummary);
         runStatus = result.status;
       } else {
-        this.dispatchAgentResponse(clientId, runHandle, {
+        this.dispatchAgentResponse(clientId, inputHandle, null, {
           type: "reply",
           content: `Received: "${content}"`,
         });
@@ -292,6 +305,7 @@ export class IVecEngine {
   }
 
   private async processSystemEvent(clientId: string, event: AyatiSystemEvent): Promise<void> {
+    let inputHandle: SessionInputHandle | null = null;
     let runHandle: MemoryRunHandle | null = null;
     let runStatus: "completed" | "failed" | "stuck" | null = null;
     const incomingMessage = event.summary;
@@ -303,7 +317,7 @@ export class IVecEngine {
         `[${clientId}] system_event start source=${event.source} eventName=${event.eventName} eventId=${event.eventId} summary=${event.summary}`,
       );
       this.rotateSessionBeforeRunIfNeeded(clientId, incomingMessage);
-      runHandle = this.sessionMemory.beginSystemRun?.(clientId, {
+      inputHandle = this.sessionMemory.recordSystemEvent?.(clientId, {
         source: event.source,
         event: event.eventName,
         eventId: event.eventId,
@@ -321,18 +335,10 @@ export class IVecEngine {
         scheduledFor: asOptionalString(event.payload["scheduledFor"]),
         triggeredAt: event.receivedAt,
         payload: event.payload,
-      }) ?? this.sessionMemory.beginRun(clientId, incomingMessage);
-
-      this.recordTurnStatus(
-        clientId,
-        runHandle,
-        "processing_started",
-        `system_event:${event.source}/${event.eventName} mode=${systemEventPlan.policy.mode}`,
-      );
+      }) ?? this.sessionMemory.recordUserMessage(clientId, incomingMessage);
 
       if (systemEventPlan.policy.mode === "log_only") {
         this.sessionMemory.recordSystemEventOutcome?.(clientId, {
-          runId: runHandle.runId,
           eventId: event.eventId,
           source: event.source,
           event: event.eventName,
@@ -342,14 +348,13 @@ export class IVecEngine {
           status: "completed",
           note: this.buildSystemEventOutcomeNote(systemEventPlan, event.summary, "none", "log_only"),
         });
-        this.recordTurnStatus(clientId, runHandle, "response_completed", "delivery=none");
         runStatus = "completed";
         return;
       }
 
       if (!this.provider) {
         devLog(`[${clientId}] system_event echo_mode eventId=${event.eventId}`);
-        this.dispatchAgentResponse(clientId, runHandle, {
+        this.dispatchAgentResponse(clientId, inputHandle, null, {
           type: preferredResponseKind,
           content: event.summary,
         }, {
@@ -358,7 +363,6 @@ export class IVecEngine {
           eventId: event.eventId,
         });
         this.sessionMemory.recordSystemEventOutcome?.(clientId, {
-          runId: runHandle.runId,
           eventId: event.eventId,
           source: event.source,
           event: event.eventName,
@@ -373,6 +377,15 @@ export class IVecEngine {
       }
 
       const toolDefs = systemEventPlan.toolDefinitions;
+      if (toolDefs.length > 0) {
+        runHandle = this.createWorkRun(clientId, inputHandle);
+        this.recordTurnStatus(
+          clientId,
+          runHandle,
+          "processing_started",
+          `system_event:${event.source}/${event.eventName} mode=${systemEventPlan.policy.mode}`,
+        );
+      }
       const system = await this.buildSystemContext(clientId, event.summary);
       devLog(
         `[${clientId}] system_event entering agentLoop eventId=${event.eventId} mode=${systemEventPlan.policy.mode} intent=${systemEventPlan.classification.intentKind} approval=${systemEventPlan.policy.approvalRequired ? "required" : "not_required"} tools=${toolDefs.length} payloadKeys=${Object.keys(event.payload).join(",") || "none"}`,
@@ -384,7 +397,17 @@ export class IVecEngine {
         toolWorkingSetManager: this.toolWorkingSetManager,
         toolDefinitions: toolDefs,
         sessionMemory: this.sessionMemory,
-        runHandle,
+        inputHandle,
+        ...(runHandle ? { runHandle } : {}),
+        onWorkRunCreated: (created) => {
+          runHandle = created;
+          this.recordTurnStatus(
+            clientId,
+            created,
+            "processing_started",
+            `system_event:${event.source}/${event.eventName} mode=${systemEventPlan.policy.mode}`,
+          );
+        },
         clientId,
         inputKind: "system_event",
         systemEvent: event,
@@ -407,19 +430,21 @@ export class IVecEngine {
         preparedAttachmentRegistry: this.preparedAttachmentRegistry,
         onProgress: (log, runPath) => {
           devLog(`[${clientId}] ${log}`);
-          this.sessionMemory.recordAgentStep(clientId, {
-            runId: runHandle!.runId,
-            sessionId: runHandle!.sessionId,
-            step: 0,
-            phase: "progress",
-            summary: `${log} | runPath: ${runPath}`,
-          });
-          this.sendProgress(clientId, runHandle!, log);
+          if (runHandle) {
+            this.sessionMemory.recordAgentStep(clientId, {
+              runId: runHandle.runId,
+              sessionId: runHandle.sessionId,
+              step: 0,
+              phase: "progress",
+              summary: `${log} | runPath: ${runPath}`,
+            });
+            this.sendProgress(clientId, runHandle, log);
+          }
         },
       });
 
       this.sessionMemory.recordSystemEventOutcome?.(clientId, {
-        runId: runHandle.runId,
+        ...(runHandle ? { workRunId: runHandle.runId } : {}),
         eventId: event.eventId,
         source: event.source,
         event: event.eventName,
@@ -432,12 +457,12 @@ export class IVecEngine {
       devLog(
         `[${clientId}] system_event agentLoop completed eventId=${event.eventId} status=${result.status} runPath=${result.runPath}`,
       );
-      this.dispatchAgentResponse(clientId, runHandle, result, {
+      this.dispatchAgentResponse(clientId, inputHandle, runHandle, result, {
         source: event.source,
         event: event.eventName,
         eventId: event.eventId,
       });
-      this.queueTaskSummaryPublication(clientId, runHandle, result.taskSummary);
+      this.queueTaskSummaryPublication(clientId, inputHandle, result.taskSummary);
       runStatus = result.status;
     } catch (err) {
       devError("System event processing error:", err);
@@ -451,7 +476,7 @@ export class IVecEngine {
         );
         this.recordTurnStatus(clientId, runHandle, "response_failed", message);
         this.sessionMemory.recordSystemEventOutcome?.(clientId, {
-          runId: runHandle.runId,
+          workRunId: runHandle.runId,
           eventId: event.eventId,
           source: event.source,
           event: event.eventName,
@@ -585,6 +610,18 @@ export class IVecEngine {
     } catch (err) {
       devWarn("Session lifecycle update failed:", err instanceof Error ? err.message : String(err));
     }
+  }
+
+  private createWorkRun(clientId: string, inputHandle: SessionInputHandle): MemoryRunHandle {
+    const createWorkRun = this.sessionMemory.createWorkRun;
+    if (!createWorkRun) {
+      throw new Error("Session memory does not support work run creation.");
+    }
+    return createWorkRun.call(this.sessionMemory, clientId, inputHandle);
+  }
+
+  private inputScopeId(inputHandle: SessionInputHandle): string {
+    return `input:${inputHandle.sessionId}:${inputHandle.seq}`;
   }
 
   private async renderActiveLearningContextSection(clientId: string, userMessage: string): Promise<string> {
@@ -867,7 +904,7 @@ export class IVecEngine {
 
   private queueTaskSummaryPublication(
     clientId: string,
-    runHandle: MemoryRunHandle,
+    inputHandle: SessionInputHandle,
     taskSummary: AgentLoopResult["taskSummary"] | undefined,
   ): void {
     if (!taskSummary) {
@@ -876,7 +913,7 @@ export class IVecEngine {
 
     const payload = {
       ...taskSummary,
-      sessionId: runHandle.sessionId,
+      sessionId: inputHandle.sessionId,
     };
 
     if (this.sessionMemory.queueTaskSummary) {
@@ -943,20 +980,24 @@ export class IVecEngine {
 
   private sendAssistantReply(
     clientId: string,
-    runHandle: MemoryRunHandle,
+    inputHandle: SessionInputHandle,
+    runHandle: MemoryRunHandle | null,
     content: string,
     artifacts?: AgentArtifact[],
   ): void {
-    this.recordTurnStatus(clientId, runHandle, "response_started");
-    this.sessionMemory.recordAssistantFinal(
-      clientId,
-      runHandle.runId,
-      runHandle.sessionId,
+    if (runHandle) {
+      this.recordTurnStatus(clientId, runHandle, "response_started");
+    }
+    this.sessionMemory.recordAssistantMessage(clientId, {
+      sessionId: inputHandle.sessionId,
+      ...(runHandle ? { workRunId: runHandle.runId } : {}),
       content,
-      { responseKind: "reply" },
-    );
-    this.recordTurnStatus(clientId, runHandle, "response_completed");
-    const artifactPayload = artifacts && artifacts.length > 0
+      responseKind: "reply",
+    });
+    if (runHandle) {
+      this.recordTurnStatus(clientId, runHandle, "response_completed");
+    }
+    const artifactPayload = artifacts && artifacts.length > 0 && runHandle
       ? { artifacts, runId: runHandle.runId }
       : {};
     this.onReply?.(clientId, {
@@ -968,20 +1009,24 @@ export class IVecEngine {
 
   private sendAssistantFeedback(
     clientId: string,
-    runHandle: MemoryRunHandle,
+    inputHandle: SessionInputHandle,
+    runHandle: MemoryRunHandle | null,
     content: string,
     artifacts?: AgentArtifact[],
   ): void {
-    this.recordTurnStatus(clientId, runHandle, "response_started");
-    this.sessionMemory.recordAssistantFinal(
-      clientId,
-      runHandle.runId,
-      runHandle.sessionId,
+    if (runHandle) {
+      this.recordTurnStatus(clientId, runHandle, "response_started");
+    }
+    this.sessionMemory.recordAssistantMessage(clientId, {
+      sessionId: inputHandle.sessionId,
+      ...(runHandle ? { workRunId: runHandle.runId } : {}),
       content,
-      { responseKind: "feedback" },
-    );
-    this.recordTurnStatus(clientId, runHandle, "response_completed");
-    const artifactPayload = artifacts && artifacts.length > 0
+      responseKind: "feedback",
+    });
+    if (runHandle) {
+      this.recordTurnStatus(clientId, runHandle, "response_completed");
+    }
+    const artifactPayload = artifacts && artifacts.length > 0 && runHandle
       ? { artifacts, runId: runHandle.runId }
       : {};
     this.onReply?.(clientId, {
@@ -993,7 +1038,8 @@ export class IVecEngine {
 
   private sendAssistantNotification(
     clientId: string,
-    runHandle: MemoryRunHandle,
+    inputHandle: SessionInputHandle,
+    runHandle: MemoryRunHandle | null,
     content: string,
     artifacts?: AgentArtifact[],
     meta?: {
@@ -1002,24 +1048,27 @@ export class IVecEngine {
       eventId?: string;
     },
   ): void {
-    this.recordTurnStatus(clientId, runHandle, "response_started");
-    this.sessionMemory.recordAssistantFinal(
-      clientId,
-      runHandle.runId,
-      runHandle.sessionId,
+    if (runHandle) {
+      this.recordTurnStatus(clientId, runHandle, "response_started");
+    }
+    this.sessionMemory.recordAssistantMessage(clientId, {
+      sessionId: inputHandle.sessionId,
+      ...(runHandle ? { workRunId: runHandle.runId } : {}),
       content,
-      { responseKind: "notification" },
-    );
+      responseKind: "notification",
+    });
     this.sessionMemory.recordAssistantNotification?.(clientId, {
-      runId: runHandle.runId,
-      sessionId: runHandle.sessionId,
+      ...(runHandle ? { workRunId: runHandle.runId } : {}),
+      sessionId: inputHandle.sessionId,
       message: content,
       source: meta?.source,
       event: meta?.event,
       eventId: meta?.eventId,
     });
-    this.recordTurnStatus(clientId, runHandle, "response_completed");
-    const artifactPayload = artifacts && artifacts.length > 0
+    if (runHandle) {
+      this.recordTurnStatus(clientId, runHandle, "response_completed");
+    }
+    const artifactPayload = artifacts && artifacts.length > 0 && runHandle
       ? { artifacts, runId: runHandle.runId }
       : {};
     this.onReply?.(clientId, {
@@ -1032,7 +1081,8 @@ export class IVecEngine {
 
   private dispatchAgentResponse(
     clientId: string,
-    runHandle: MemoryRunHandle,
+    inputHandle: SessionInputHandle,
+    runHandle: MemoryRunHandle | null,
     result: {
       type: AgentResponseKind;
       content: string;
@@ -1046,16 +1096,18 @@ export class IVecEngine {
   ): void {
     switch (result.type) {
       case "reply":
-        this.sendAssistantReply(clientId, runHandle, result.content, result.artifacts);
+        this.sendAssistantReply(clientId, inputHandle, runHandle, result.content, result.artifacts);
         return;
       case "feedback":
-        this.sendAssistantFeedback(clientId, runHandle, result.content, result.artifacts);
+        this.sendAssistantFeedback(clientId, inputHandle, runHandle, result.content, result.artifacts);
         return;
       case "notification":
-        this.sendAssistantNotification(clientId, runHandle, result.content, result.artifacts, meta);
+        this.sendAssistantNotification(clientId, inputHandle, runHandle, result.content, result.artifacts, meta);
         return;
       case "none":
-        this.recordTurnStatus(clientId, runHandle, "response_completed", "delivery=none");
+        if (runHandle) {
+          this.recordTurnStatus(clientId, runHandle, "response_completed", "delivery=none");
+        }
         return;
     }
   }

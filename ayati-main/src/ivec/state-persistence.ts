@@ -9,6 +9,9 @@ type PersistedLoopState = Omit<
   | "personalMemorySnapshot"
   | "continuity"
   | "recentExchanges"
+  | "sessionEvents"
+  | "activeContextStartSeq"
+  | "sessionWork"
 >;
 const runArtifactWriteQueues = new Map<string, Promise<void>>();
 const runStateWriteQueues = new Map<string, RunStateWriteQueue>();
@@ -89,6 +92,9 @@ export function readState(runPath: string): Partial<LoopState> | null {
   if (parsed && typeof parsed === "object") {
     delete (parsed as Record<string, unknown>)["sessionHistory"];
     delete (parsed as Record<string, unknown>)["recentExchanges"];
+    delete (parsed as Record<string, unknown>)["sessionEvents"];
+    delete (parsed as Record<string, unknown>)["activeContextStartSeq"];
+    delete (parsed as Record<string, unknown>)["sessionWork"];
     delete (parsed as Record<string, unknown>)["recentRunLedgers"];
     delete (parsed as Record<string, unknown>)["recentTaskSummaries"];
     delete (parsed as Record<string, unknown>)["continuity"];
@@ -107,6 +113,9 @@ export function readState(runPath: string): Partial<LoopState> | null {
 function buildPersistedLoopState(state: LoopState): PersistedLoopState {
   const {
     recentExchanges: _recentExchanges,
+    sessionEvents: _sessionEvents,
+    activeContextStartSeq: _activeContextStartSeq,
+    sessionWork: _sessionWork,
     activeLearningContext: _activeLearningContext,
     personalMemorySnapshot: _personalMemorySnapshot,
     continuity: _continuity,

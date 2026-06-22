@@ -52,15 +52,6 @@ function buildToolSelectionQuery(state: LoopState): string {
       card.evidenceRef,
       card.sourceEvidenceRef,
     ]),
-    ...(state.latestObservations ?? []).flatMap((observation) => [
-      observation.tool,
-      observation.purpose,
-      observation.content,
-      observation.evidenceRef,
-      observation.sourceEvidenceRef,
-    ]),
-    state.latestObservation?.content,
-    state.latestObservation?.evidenceRef,
     ...(state.workState.evidenceRefs ?? []).flatMap((ref) => [
       ref.id,
       ref.ref,

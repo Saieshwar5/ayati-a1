@@ -194,19 +194,22 @@ Return compact JSON only.
 Decision rules:
 - Pick exactly one decision: reply, ask_user, act, or load_tools.
 - Treat State view.context as the bounded context pack for this decision.
-- Use context.recentConversation as the latest completed session activity. It contains prior user/assistant exchanges, not the current input or raw unlimited history.
-- If the latest recentConversation assistant response has expectsUserResponse=true, interpret the current input as the user's answer to that response unless the user clearly starts unrelated work.
-- Treat State view.workState as sparse run progress. It may be absent on the first decision.
-- Use State view.lastActions and recentFailures only when present.
-- Use State view.toolContext.recent as the latest real tool output cards. If these cards answer the user, reply instead of rerunning equivalent tools.
-- State view.latestObservation is a compatibility view of the last recent tool output. Prefer toolContext.recent when present.
+- Use context.timeline as chronological conversation context. The item with current=true is the current input.
+- Use the immediately preceding assistant item in context.timeline to interpret short replies like yes, no, do it, go ahead, continue, or stop.
+- Use context.continuity.current as compact durable task state when present.
+- Use context.sessionWork only as compact same-session work awareness; do not treat it as raw conversation.
+- Use context.continuity for durable task/project state, not as a replacement for immediate dialogue context.
+- Treat State view.progress as the authoritative current task progress. It may be absent on the first decision.
+- Use State view.observations.latest as the latest real tool output cards. If these cards answer the user, reply instead of rerunning equivalent tools.
+- Use State view.trace.recentSteps only as compact execution history, not as evidence.
+- Use State view.trace.recentFailures to avoid repeating failed paths.
 - Do not use workingNotes as factual memory; the harness owns tool-output context.
 - Use evidence tools for truncated or chunked evidence before rerunning the original output-producing tool.
-- If State view.workState.status is "done", return a reply. Do not call more tools.
+- If State view.progress.status is "done", return a reply. Do not call more tools.
 - Use reply only when no tool action is needed or the task has failed/finished.
 - Final replies must answer the user's request in natural, human-readable language.
 - Do not mention internal execution details in final replies: tool calls, deterministic verification, evidence contracts, assertions, reducers, work state, or harness steps.
-- Use user-visible results from tool context and last actions, such as created paths, changed files, command results, document findings, or next steps.
+- Use user-visible results from observations and trace summaries, such as created paths, changed files, command results, document findings, or next steps.
 - Use ask_user only when a missing decision prevents safe progress.
 - Use act for tool work.
 - Use load_tools when the visible selected tools are not enough for the next action.
@@ -259,16 +262,13 @@ function buildDecisionPromptSections(
 function buildStateViewPromptBreakdown(stateView: AgentStateView): Record<string, string | undefined> {
   return {
     "state.context": stringifySection(stateView.context),
-    "state.context.currentInput": stringifySection(stateView.context.currentInput),
-    "state.context.recentConversation": stringifySection(stateView.context.recentConversation),
+    "state.context.timeline": stringifySection(stateView.context.timeline),
     "state.context.continuity": stringifySection(stateView.context.continuity),
+    "state.context.sessionWork": stringifySection(stateView.context.sessionWork),
     "state.context.personalMemorySnapshot": stateView.context.personalMemorySnapshot,
-    "state.context.activeLearningContext": stateView.context.activeLearningContext,
-    "state.workState": stringifySection(stateView.workState),
-    "state.toolContext": stringifySection(stateView.toolContext),
-    "state.latestObservation": stringifySection(stateView.latestObservation),
-    "state.lastActions": stringifySection(stateView.lastActions),
-    "state.recentFailures": stringifySection(stateView.recentFailures),
+    "state.progress": stringifySection(stateView.progress),
+    "state.observations": stringifySection(stateView.observations),
+    "state.trace": stringifySection(stateView.trace),
     "state.attachments": stringifySection(stateView.attachments),
     "state.systemEvent": stringifySection(stateView.systemEvent),
   };

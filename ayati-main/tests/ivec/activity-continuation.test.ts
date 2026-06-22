@@ -90,7 +90,8 @@ describe("activity continuation in the agent loop", () => {
       const toolExecutor = createToolExecutor(tools);
       const registered = await documentStore.registerAttachments([{ path: policyPath, name: "policy.txt" }]);
 
-      const run1 = memory.beginRun("c1", "What does the policy say about termination?");
+      const input1 = memory.recordUserMessage("c1", "What does the policy say about termination?");
+      const run1 = memory.createWorkRun("c1", input1);
       const firstResult = await agentLoop({
         provider: createProvider([
           {
@@ -118,6 +119,7 @@ describe("activity continuation in the agent loop", () => {
         toolExecutor,
         toolDefinitions: toolExecutor.definitions(),
         sessionMemory: memory,
+        inputHandle: input1,
         runHandle: run1,
         clientId: "c1",
         initialUserMessage: "What does the policy say about termination?",
@@ -148,7 +150,8 @@ describe("activity continuation in the agent loop", () => {
       });
 
       now = new Date("2026-06-12T09:05:00.000Z");
-      const run2 = memory.beginRun("c1", "What about renewal in policy.txt?");
+      const input2 = memory.recordUserMessage("c1", "What about renewal in policy.txt?");
+      const run2 = memory.createWorkRun("c1", input2);
       const secondResult = await agentLoop({
         provider: createProvider([
           {
@@ -185,6 +188,7 @@ describe("activity continuation in the agent loop", () => {
         toolExecutor,
         toolDefinitions: toolExecutor.definitions(),
         sessionMemory: memory,
+        inputHandle: input2,
         runHandle: run2,
         clientId: "c1",
         initialUserMessage: "What about renewal in policy.txt?",
