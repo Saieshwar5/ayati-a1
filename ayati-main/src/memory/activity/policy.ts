@@ -102,6 +102,8 @@ export function defaultImportance(kind: ActivityKind): number {
 
 export function deterministicScore(input: {
   identityMatches: number;
+  cueMatches?: number;
+  entityMatches?: number;
   aliasMatches: number;
   textScore: number;
   recencyScore: number;
@@ -109,11 +111,13 @@ export function deterministicScore(input: {
   hasDurableAnchor: boolean;
 }): number {
   const exact = input.identityMatches > 0 ? 0.72 + Math.min(0.16, input.identityMatches * 0.04) : 0;
+  const cue = (input.cueMatches ?? 0) > 0 ? 0.62 + Math.min(0.14, (input.cueMatches ?? 0) * 0.04) : 0;
+  const entity = (input.entityMatches ?? 0) > 0 ? 0.56 + Math.min(0.12, (input.entityMatches ?? 0) * 0.04) : 0;
   const alias = input.aliasMatches > 0 ? 0.42 + Math.min(0.16, input.aliasMatches * 0.04) : 0;
   const text = Math.min(0.62, input.textScore * 0.62);
   const followUpBoost = input.followUp ? 0.12 : 0;
   const anchorBoost = input.hasDurableAnchor ? 0.08 : 0;
-  return round3(Math.min(0.99, Math.max(exact, alias, text) + input.recencyScore + followUpBoost + anchorBoost));
+  return round3(Math.min(0.99, Math.max(exact, cue, entity, alias, text) + input.recencyScore + followUpBoost + anchorBoost));
 }
 
 export function isFollowUpMessage(message: string): boolean {

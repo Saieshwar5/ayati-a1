@@ -2,7 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { DatabaseSync, type SQLInputValue } from "node:sqlite";
+import { DatabaseSync } from "node:sqlite";
 import {
   autoLoadUntil,
   classifyLifecycle,
@@ -17,7 +17,11 @@ import type {
   ActivityAssetOrigin,
   ActivityAssetRef,
   ActivityAssetRole,
+  ActivityCue,
+  ActivityCueType,
   ActivityDiscussionRange,
+  ActivityEntity,
+  ActivityEntityType,
   ActivityIdentity,
   ActivityIdentityType,
   ActivityKind,
@@ -73,6 +77,27 @@ interface AliasRow {
   value: string;
   confidence: number;
   source: ActivityAlias["source"];
+  last_seen_at: string;
+}
+
+interface CueRow {
+  activity_id: string;
+  cue_type: ActivityCueType;
+  cue_text: string;
+  normalized_cue: string;
+  weight: number;
+  source: ActivityCue["source"];
+  last_seen_at: string;
+}
+
+interface EntityRow {
+  activity_id: string;
+  entity_type: ActivityEntityType;
+  name: string;
+  normalized_name: string;
+  role: ActivityEntity["role"];
+  confidence: number;
+  source: ActivityEntity["source"];
   last_seen_at: string;
 }
 
@@ -144,6 +169,7 @@ export class ActivityStore {
   start(): void {
     mkdirSync(dirname(this.dbPath), { recursive: true });
     this.db = new DatabaseSync(this.dbPath);
+    this.db.exec("PRAGMA foreign_keys=ON;");
     this.db.exec("PRAGMA journal_mode=WAL;");
     this.db.exec("PRAGMA synchronous=NORMAL;");
     this.createSchema();
@@ -179,6 +205,8 @@ export class ActivityStore {
       buildDiscussionRange(input, previous !== null),
     );
     const state = buildState(input, previous?.state, assets);
+    const cues = mergeCues(previous?.cues ?? [], buildCues(input, title, summary, state, assets), input.createdAt);
+    const entities = mergeEntities(previous?.entities ?? [], buildEntities(input, kind, assets), input.createdAt);
     const reuseCount = previous ? previous.reuseCount + 1 : 1;
     const importance = Math.max(previous?.importance ?? defaultImportance(kind), defaultImportance(kind));
     const lifecycle = classifyLifecycle({
@@ -197,6 +225,8 @@ export class ActivityStore {
       lifecycle,
       identities,
       aliases,
+      cues,
+      entities,
       assets,
       runs: appendRun(previous?.runs ?? [], buildRun(input, assets)),
       discussionRanges,
@@ -214,6 +244,8 @@ export class ActivityStore {
           kind,
           durableAnchors: identities.filter((identity) => identity.type !== "explicit_alias").length,
           assetCount: assets.length,
+          cueCount: cues.length,
+          entityCount: entities.length,
         },
       },
     };
@@ -284,25 +316,68 @@ export class ActivityStore {
     const terms = tokenize(query);
     if (terms.length === 0) return [];
     const limit = Math.max(1, Math.min(20, options?.limit ?? 5));
-    const predicates = terms.map(() => "s.searchable_text LIKE ? ESCAPE '\\'").join(" OR ");
-    const params: SQLInputValue[] = [
-      clientId,
-      ...terms.map((term) => `%${escapeLike(term)}%`),
-      limit * 4,
-    ];
-    const rows = this.requireDb().prepare(`
-      SELECT t.*
-      FROM activity_search s
-      JOIN activity_threads t ON t.activity_id = s.activity_id
-      WHERE s.client_id = ? AND (${predicates}) ${options?.includeArchived ? "" : "AND t.lifecycle <> 'archived'"}
-      ORDER BY t.last_touched_at DESC
-      LIMIT ?
-    `).all(...params) as unknown as ActivityRow[];
-    return rows
-      .map((row) => this.toActivityThread(row))
-      .map((activity) => ({
+    const candidates = new Map<string, { activity: ActivityThread; score: number }>();
+    const includeArchivedSql = options?.includeArchived ? "" : "AND t.lifecycle <> 'archived'";
+    const addRows = (rows: ActivityRow[], score: number): void => {
+      for (const row of rows) {
+        const activity = this.toActivityThread(row);
+        const previous = candidates.get(activity.activityId);
+        candidates.set(activity.activityId, {
+          activity,
+          score: (previous?.score ?? 0) + score,
+        });
+      }
+    };
+
+    const normalizedQuery = normalizeAlias(query);
+    if (normalizedQuery) {
+      addRows(this.requireDb().prepare(`
+        SELECT DISTINCT t.*
+        FROM activity_cues c
+        JOIN activity_threads t ON t.activity_id = c.activity_id
+        WHERE c.client_id = ? AND c.normalized_cue = ? ${includeArchivedSql}
+        ORDER BY c.weight DESC, t.last_touched_at DESC
+        LIMIT ?
+      `).all(clientId, normalizedQuery, limit * 2) as unknown as ActivityRow[], 8);
+
+      addRows(this.requireDb().prepare(`
+        SELECT DISTINCT t.*
+        FROM activity_entities e
+        JOIN activity_threads t ON t.activity_id = e.activity_id
+        WHERE e.client_id = ? AND e.normalized_name = ? ${includeArchivedSql}
+        ORDER BY e.confidence DESC, t.last_touched_at DESC
+        LIMIT ?
+      `).all(clientId, normalizedQuery, limit * 2) as unknown as ActivityRow[], 7);
+
+      addRows(this.requireDb().prepare(`
+        SELECT DISTINCT t.*
+        FROM activity_aliases a
+        JOIN activity_threads t ON t.activity_id = a.activity_id
+        WHERE a.client_id = ? AND a.value = ? ${includeArchivedSql}
+        ORDER BY a.confidence DESC, t.last_touched_at DESC
+        LIMIT ?
+      `).all(clientId, normalizedQuery, limit * 2) as unknown as ActivityRow[], 6);
+    }
+
+    const ftsQuery = toFtsQuery(query);
+    if (ftsQuery) {
+      const rows = this.requireDb().prepare(`
+        SELECT t.*
+        FROM activity_search_fts
+        JOIN activity_threads t ON t.activity_id = activity_search_fts.activity_id
+        WHERE activity_search_fts.client_id = ?
+          AND activity_search_fts MATCH ?
+          ${includeArchivedSql}
+        ORDER BY bm25(activity_search_fts, 8.0, 5.0, 3.0, 5.0, 5.0, 3.0, 3.0, 3.0), t.last_touched_at DESC
+        LIMIT ?
+      `).all(clientId, ftsQuery, limit * 4) as unknown as ActivityRow[];
+      rows.forEach((row, index) => addRows([row], Math.max(1, 5 - index * 0.2)));
+    }
+
+    return [...candidates.values()]
+      .map(({ activity, score }) => ({
         activity,
-        score: tokenOverlapScore(terms, searchableText(activity)),
+        score: score + tokenOverlapScore(terms, searchableText(activity)) + recencySearchBoost(activity, this.nowProvider()),
       }))
       .filter(({ score }) => score > 0)
       .sort((a, b) => b.score - a.score || b.activity.lastTouchedAt.localeCompare(a.activity.lastTouchedAt))
@@ -391,6 +466,15 @@ export class ActivityStore {
       ...(input.title?.trim() ? { title: compactText(input.title, 90) } : {}),
       ...(input.summary?.trim() ? { summary: compactText(input.summary, 900) } : {}),
       state,
+      cues: mergeCues(activity.cues, buildManualUpdateCues({
+        title: input.title ?? activity.title,
+        summary: input.summary ?? activity.summary,
+        openWork: state.openWork,
+        verifiedFacts: state.verifiedFacts,
+        nextStep: state.nextStep,
+        now,
+      }), now),
+      entities: activity.entities,
       lastTouchedAt: now,
       lifecycle: classifyLifecycle({
         kind: activity.kind,
@@ -431,9 +515,9 @@ export class ActivityStore {
 
   private writeThread(thread: ActivityThread, eventType: string, runId: string): void {
     const db = this.requireDb();
-    const tx = db.prepare("SELECT 1");
-    void tx.get();
-    db.prepare(`
+    db.exec("BEGIN IMMEDIATE;");
+    try {
+      db.prepare(`
       INSERT INTO activity_threads (
         activity_id, client_id, kind, title, summary, lifecycle, state_json,
         confidence, importance, reuse_count, created_at, last_touched_at,
@@ -468,8 +552,8 @@ export class ActivityStore {
       JSON.stringify(thread.details),
     );
 
-    for (const identity of thread.identities) {
-      db.prepare(`
+      for (const identity of thread.identities) {
+        db.prepare(`
         INSERT INTO activity_identities (
           activity_id, client_id, type, value, confidence, source, last_seen_at
         ) VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -479,10 +563,10 @@ export class ActivityStore {
           source = excluded.source,
           last_seen_at = excluded.last_seen_at
       `).run(thread.activityId, thread.clientId, identity.type, identity.value, identity.confidence, identity.source, identity.lastSeenAt);
-    }
+      }
 
-    for (const alias of thread.aliases) {
-      db.prepare(`
+      for (const alias of thread.aliases) {
+        db.prepare(`
         INSERT INTO activity_aliases (
           activity_id, client_id, value, confidence, source, last_seen_at
         ) VALUES (?, ?, ?, ?, ?, ?)
@@ -492,10 +576,55 @@ export class ActivityStore {
           source = excluded.source,
           last_seen_at = excluded.last_seen_at
       `).run(thread.activityId, thread.clientId, alias.value, alias.confidence, alias.source, alias.lastSeenAt);
-    }
+      }
 
-    for (const asset of thread.assets) {
-      db.prepare(`
+      for (const cue of thread.cues) {
+        db.prepare(`
+        INSERT INTO activity_cues (
+          activity_id, client_id, cue_type, cue_text, normalized_cue, weight, source, last_seen_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(activity_id, cue_type, normalized_cue) DO UPDATE SET
+          cue_text = excluded.cue_text,
+          weight = MAX(activity_cues.weight, excluded.weight),
+          source = excluded.source,
+          last_seen_at = excluded.last_seen_at
+      `).run(
+          thread.activityId,
+          thread.clientId,
+          cue.cueType,
+          cue.text,
+          cue.normalizedText,
+          cue.weight,
+          cue.source,
+          cue.lastSeenAt,
+        );
+      }
+
+      for (const entity of thread.entities) {
+        db.prepare(`
+        INSERT INTO activity_entities (
+          activity_id, client_id, entity_type, name, normalized_name, role, confidence, source, last_seen_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(activity_id, entity_type, normalized_name, role) DO UPDATE SET
+          name = excluded.name,
+          confidence = MAX(activity_entities.confidence, excluded.confidence),
+          source = excluded.source,
+          last_seen_at = excluded.last_seen_at
+      `).run(
+          thread.activityId,
+          thread.clientId,
+          entity.entityType,
+          entity.name,
+          entity.normalizedName,
+          entity.role,
+          entity.confidence,
+          entity.source,
+          entity.lastSeenAt,
+        );
+      }
+
+      for (const asset of thread.assets) {
+        db.prepare(`
         INSERT INTO activity_assets (
           activity_id, asset_id, kind, origin, role, display_name, path, uri,
           document_id, file_id, directory_id, prepared_input_id, manifest_json,
@@ -543,10 +672,10 @@ export class ActivityStore {
         asset.lastUsedAt,
         JSON.stringify(asset.metadata ?? null),
       );
-    }
+      }
 
-    for (const run of thread.runs) {
-      db.prepare(`
+      for (const run of thread.runs) {
+        db.prepare(`
         INSERT INTO activity_runs (
           activity_id, run_id, session_id, run_path, trigger_seq,
           discussion_start_seq, discussion_end_seq, status, task_status,
@@ -584,21 +713,35 @@ export class ActivityStore {
         JSON.stringify(run.assetIds),
         run.createdAt,
       );
+      }
+
+      db.prepare("DELETE FROM activity_search_fts WHERE activity_id = ?").run(thread.activityId);
+      db.prepare(`
+        INSERT INTO activity_search_fts (
+          activity_id, client_id, title, summary, state, cues, entities, aliases, assets
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        thread.activityId,
+        thread.clientId,
+        thread.title,
+        thread.summary,
+        activityStateSearchText(thread),
+        thread.cues.map((cue) => cue.text).join("\n"),
+        thread.entities.map((entity) => `${entity.entityType} ${entity.name}`).join("\n"),
+        thread.aliases.map((alias) => alias.value).join("\n"),
+        thread.assets.map(assetLabel).join("\n"),
+      );
+
+      this.writeEvent(thread.activityId, thread.clientId, runId, eventType, {
+        title: thread.title,
+        kind: thread.kind,
+        lifecycle: thread.lifecycle,
+      }, thread.lastTouchedAt);
+      db.exec("COMMIT;");
+    } catch (error) {
+      db.exec("ROLLBACK;");
+      throw error;
     }
-
-    db.prepare(`
-      INSERT INTO activity_search (activity_id, client_id, searchable_text, updated_at)
-      VALUES (?, ?, ?, ?)
-      ON CONFLICT(activity_id) DO UPDATE SET
-        searchable_text = excluded.searchable_text,
-        updated_at = excluded.updated_at
-    `).run(thread.activityId, thread.clientId, searchableText(thread), thread.lastTouchedAt);
-
-    this.writeEvent(thread.activityId, thread.clientId, runId, eventType, {
-      title: thread.title,
-      kind: thread.kind,
-      lifecycle: thread.lifecycle,
-    }, thread.lastTouchedAt);
   }
 
   private writeEvent(
@@ -623,6 +766,12 @@ export class ActivityStore {
     const aliases = this.requireDb().prepare(`
       SELECT * FROM activity_aliases WHERE activity_id = ? ORDER BY confidence DESC, last_seen_at DESC
     `).all(row.activity_id) as unknown as AliasRow[];
+    const cues = this.requireDb().prepare(`
+      SELECT * FROM activity_cues WHERE activity_id = ? ORDER BY weight DESC, last_seen_at DESC
+    `).all(row.activity_id) as unknown as CueRow[];
+    const entities = this.requireDb().prepare(`
+      SELECT * FROM activity_entities WHERE activity_id = ? ORDER BY confidence DESC, last_seen_at DESC
+    `).all(row.activity_id) as unknown as EntityRow[];
     const assets = this.requireDb().prepare(`
       SELECT * FROM activity_assets WHERE activity_id = ? ORDER BY last_used_at DESC
     `).all(row.activity_id) as unknown as AssetRow[];
@@ -648,6 +797,23 @@ export class ActivityStore {
         confidence: Number(alias.confidence ?? 0),
         source: alias.source,
         lastSeenAt: alias.last_seen_at,
+      })),
+      cues: cues.map((cue) => ({
+        cueType: cue.cue_type,
+        text: cue.cue_text,
+        normalizedText: cue.normalized_cue,
+        weight: Number(cue.weight ?? 0),
+        source: cue.source,
+        lastSeenAt: cue.last_seen_at,
+      })),
+      entities: entities.map((entity) => ({
+        entityType: entity.entity_type,
+        name: entity.name,
+        normalizedName: entity.normalized_name,
+        role: entity.role,
+        confidence: Number(entity.confidence ?? 0),
+        source: entity.source,
+        lastSeenAt: entity.last_seen_at,
       })),
       assets: assets.map(rowToAsset),
       runs: runs.map(rowToRun),
@@ -710,6 +876,39 @@ export class ActivityStore {
       CREATE INDEX IF NOT EXISTS idx_activity_aliases_activity
         ON activity_aliases(activity_id);
 
+      CREATE TABLE IF NOT EXISTS activity_cues (
+        activity_id TEXT NOT NULL REFERENCES activity_threads(activity_id) ON DELETE CASCADE,
+        client_id TEXT NOT NULL,
+        cue_type TEXT NOT NULL,
+        cue_text TEXT NOT NULL,
+        normalized_cue TEXT NOT NULL,
+        weight INTEGER NOT NULL,
+        source TEXT NOT NULL,
+        last_seen_at TEXT NOT NULL,
+        PRIMARY KEY(activity_id, cue_type, normalized_cue)
+      );
+      CREATE INDEX IF NOT EXISTS idx_activity_cues_lookup
+        ON activity_cues(client_id, normalized_cue, cue_type);
+      CREATE INDEX IF NOT EXISTS idx_activity_cues_activity
+        ON activity_cues(activity_id);
+
+      CREATE TABLE IF NOT EXISTS activity_entities (
+        activity_id TEXT NOT NULL REFERENCES activity_threads(activity_id) ON DELETE CASCADE,
+        client_id TEXT NOT NULL,
+        entity_type TEXT NOT NULL,
+        name TEXT NOT NULL,
+        normalized_name TEXT NOT NULL,
+        role TEXT NOT NULL,
+        confidence REAL NOT NULL,
+        source TEXT NOT NULL,
+        last_seen_at TEXT NOT NULL,
+        PRIMARY KEY(activity_id, entity_type, normalized_name, role)
+      );
+      CREATE INDEX IF NOT EXISTS idx_activity_entities_lookup
+        ON activity_entities(client_id, normalized_name, entity_type);
+      CREATE INDEX IF NOT EXISTS idx_activity_entities_activity
+        ON activity_entities(activity_id);
+
       CREATE TABLE IF NOT EXISTS activity_assets (
         activity_id TEXT NOT NULL,
         asset_id TEXT NOT NULL,
@@ -766,16 +965,19 @@ export class ActivityStore {
       CREATE INDEX IF NOT EXISTS idx_activity_events_activity
         ON activity_events(activity_id, created_at DESC);
 
-      CREATE TABLE IF NOT EXISTS activity_search (
-        activity_id TEXT PRIMARY KEY,
-        client_id TEXT NOT NULL,
-        searchable_text TEXT NOT NULL,
-        updated_at TEXT NOT NULL
+      CREATE VIRTUAL TABLE IF NOT EXISTS activity_search_fts USING fts5(
+        activity_id UNINDEXED,
+        client_id UNINDEXED,
+        title,
+        summary,
+        state,
+        cues,
+        entities,
+        aliases,
+        assets,
+        tokenize = 'unicode61'
       );
-      CREATE INDEX IF NOT EXISTS idx_activity_search_client
-        ON activity_search(client_id);
     `);
-    this.ensureActivityRunSeqColumns(db);
   }
 
   private requireDb(): DatabaseSync {
@@ -785,21 +987,6 @@ export class ActivityStore {
     return this.db;
   }
 
-  private ensureActivityRunSeqColumns(db: DatabaseSync): void {
-    const columns = new Set(
-      (db.prepare("PRAGMA table_info(activity_runs)").all() as Array<Record<string, unknown>>)
-        .map((row) => String(row["name"])),
-    );
-    for (const [name, type] of [
-      ["trigger_seq", "INTEGER"],
-      ["discussion_start_seq", "INTEGER"],
-      ["discussion_end_seq", "INTEGER"],
-    ] as const) {
-      if (!columns.has(name)) {
-        db.exec(`ALTER TABLE activity_runs ADD COLUMN ${name} ${type};`);
-      }
-    }
-  }
 }
 
 export function buildIdentities(input: ActivityUpsertInput): ActivityIdentity[] {
@@ -890,6 +1077,71 @@ function buildAliases(input: ActivityUpsertInput, title: string): ActivityAlias[
     source: "inferred",
     lastSeenAt: input.createdAt,
   }));
+}
+
+function buildCues(
+  input: ActivityUpsertInput,
+  title: string,
+  summary: string,
+  state: ActivityState,
+  assets: ActivityAssetRef[],
+): ActivityCue[] {
+  const at = input.createdAt;
+  const cues: ActivityCue[] = [];
+  addCue(cues, "goal", input.objective ?? state.objective ?? title, 92, "system", at);
+  addCue(cues, "topic", title, 86, "system", at);
+  addCue(cues, "action", input.progressSummary ?? input.summary, 82, "system", at);
+  addCue(cues, "next_step", input.nextAction ?? state.nextStep, 86, "system", at);
+  addCue(cues, "question", `continue ${title}`, 78, "inferred", at);
+  addCue(cues, "question", `what is next for ${title}`, 72, "inferred", at);
+  addCue(cues, "question", `what did we decide about ${title}`, 66, "inferred", at);
+  for (const value of input.openWork ?? []) addCue(cues, "next_step", value, 78, "system", at);
+  for (const value of input.blockers ?? []) addCue(cues, "blocker", value, 82, "system", at);
+  for (const value of input.keyFacts ?? []) addCue(cues, "fact", value, 72, "system", at);
+  for (const value of input.evidence ?? []) addCue(cues, "fact", value, 64, "system", at);
+  for (const value of input.entityHints ?? []) addCue(cues, "keyword", value, 70, "inferred", at);
+  for (const value of input.attachmentNames ?? []) addCue(cues, "asset", value, 76, "inferred", at);
+  for (const asset of assets) {
+    addCue(cues, "asset", assetLabel(asset), 82, "system", at);
+    addCue(cues, "question", `where is ${assetLabel(asset)}`, 62, "inferred", at);
+  }
+  addCue(cues, "keyword", summary, 54, "system", at);
+  return dedupeCues(cues).slice(0, 48);
+}
+
+function buildManualUpdateCues(input: {
+  title: string;
+  summary: string;
+  openWork: string[];
+  verifiedFacts: string[];
+  nextStep: string | undefined;
+  now: string;
+}): ActivityCue[] {
+  const cues: ActivityCue[] = [];
+  addCue(cues, "topic", input.title, 80, "system", input.now);
+  addCue(cues, "keyword", input.summary, 58, "system", input.now);
+  addCue(cues, "next_step", input.nextStep, 82, "system", input.now);
+  for (const value of input.openWork) addCue(cues, "next_step", value, 76, "system", input.now);
+  for (const value of input.verifiedFacts) addCue(cues, "fact", value, 68, "system", input.now);
+  return dedupeCues(cues).slice(0, 24);
+}
+
+function buildEntities(input: ActivityUpsertInput, kind: ActivityKind, assets: ActivityAssetRef[]): ActivityEntity[] {
+  const at = input.createdAt;
+  const entities: ActivityEntity[] = [];
+  addEntity(entities, "activity_kind", kind, "context", 0.62, "system", at);
+  for (const value of input.entityHints ?? []) addEntity(entities, "topic", value, "subject", 0.76, "inferred", at);
+  for (const tool of input.toolsUsed ?? []) addEntity(entities, "tool", tool, "tool", 0.84, "system", at);
+  for (const asset of assets) {
+    if (asset.path) addEntity(entities, asset.kind === "directory" ? "directory" : "file", asset.path, "asset", 0.92, "asset", at);
+    if (asset.displayName) addEntity(entities, asset.kind === "dataset" ? "dataset" : asset.kind === "document" ? "document" : "other", asset.displayName, "asset", 0.72, "asset", at);
+    if (asset.documentId) addEntity(entities, "document", asset.documentId, "asset", 0.94, "asset", at);
+    if (asset.fileId) addEntity(entities, "file", asset.fileId, "asset", 0.94, "asset", at);
+    if (asset.directoryId) addEntity(entities, "directory", asset.directoryId, "asset", 0.94, "asset", at);
+    if (asset.preparedInputId) addEntity(entities, "document", asset.preparedInputId, "source", 0.9, "asset", at);
+    if (asset.uri) addEntity(entities, "url", asset.uri, "asset", 0.84, "asset", at);
+  }
+  return dedupeEntities(entities).slice(0, 48);
 }
 
 function collectAssets(input: ActivityUpsertInput): ActivityAssetRef[] {
@@ -1094,6 +1346,50 @@ function mergeAliases(left: ActivityAlias[], right: ActivityAlias[], seenAt: str
   return [...output.values()].slice(0, 20);
 }
 
+function mergeCues(left: ActivityCue[], right: ActivityCue[], seenAt: string): ActivityCue[] {
+  const output = new Map<string, ActivityCue>();
+  for (const cue of [...left, ...right]) {
+    const normalizedText = normalizeCue(cue.text);
+    if (!normalizedText) continue;
+    const key = `${cue.cueType}:${normalizedText}`;
+    const previous = output.get(key);
+    output.set(key, previous ? {
+      ...previous,
+      text: cue.text,
+      weight: Math.max(previous.weight, cue.weight),
+      lastSeenAt: right.some((candidate) => candidate.cueType === cue.cueType && normalizeCue(candidate.text) === normalizedText)
+        ? seenAt
+        : previous.lastSeenAt,
+    } : { ...cue, normalizedText });
+  }
+  return [...output.values()]
+    .sort((a, b) => b.weight - a.weight || b.lastSeenAt.localeCompare(a.lastSeenAt))
+    .slice(0, 72);
+}
+
+function mergeEntities(left: ActivityEntity[], right: ActivityEntity[], seenAt: string): ActivityEntity[] {
+  const output = new Map<string, ActivityEntity>();
+  for (const entity of [...left, ...right]) {
+    const normalizedName = normalizeEntityName(entity.name);
+    if (!normalizedName) continue;
+    const key = `${entity.entityType}:${normalizedName}:${entity.role}`;
+    const previous = output.get(key);
+    output.set(key, previous ? {
+      ...previous,
+      name: entity.name,
+      confidence: Math.max(previous.confidence, entity.confidence),
+      lastSeenAt: right.some((candidate) => (
+        candidate.entityType === entity.entityType
+        && normalizeEntityName(candidate.name) === normalizedName
+        && candidate.role === entity.role
+      )) ? seenAt : previous.lastSeenAt,
+    } : { ...entity, normalizedName });
+  }
+  return [...output.values()]
+    .sort((a, b) => b.confidence - a.confidence || b.lastSeenAt.localeCompare(a.lastSeenAt))
+    .slice(0, 72);
+}
+
 function mergeAssets(left: ActivityAssetRef[], right: ActivityAssetRef[]): ActivityAssetRef[] {
   const output = new Map<string, ActivityAssetRef>();
   for (const asset of [...left, ...right]) {
@@ -1186,8 +1482,89 @@ function addIdentity(
   identities.push({ type, value: normalized, confidence, source, lastSeenAt });
 }
 
+function addCue(
+  cues: ActivityCue[],
+  cueType: ActivityCueType,
+  text: string | undefined,
+  weight: number,
+  source: ActivityCue["source"],
+  lastSeenAt: string,
+): void {
+  const normalizedText = normalizeCue(text ?? "");
+  if (!normalizedText) return;
+  cues.push({
+    cueType,
+    text: compactText(text ?? "", 220),
+    normalizedText,
+    weight: Math.max(0, Math.min(100, Math.round(weight))),
+    source,
+    lastSeenAt,
+  });
+}
+
+function addEntity(
+  entities: ActivityEntity[],
+  entityType: ActivityEntityType,
+  name: string | undefined,
+  role: ActivityEntity["role"],
+  confidence: number,
+  source: ActivityEntity["source"],
+  lastSeenAt: string,
+): void {
+  const normalizedName = normalizeEntityName(name ?? "");
+  if (!normalizedName) return;
+  entities.push({
+    entityType,
+    name: compactText(name ?? "", 180),
+    normalizedName,
+    role,
+    confidence: Math.max(0, Math.min(1, confidence)),
+    source,
+    lastSeenAt,
+  });
+}
+
+function dedupeCues(values: ActivityCue[]): ActivityCue[] {
+  const output = new Map<string, ActivityCue>();
+  for (const cue of values) {
+    const normalizedText = normalizeCue(cue.text);
+    if (!normalizedText) continue;
+    const key = `${cue.cueType}:${normalizedText}`;
+    const previous = output.get(key);
+    output.set(key, previous && previous.weight > cue.weight ? previous : { ...cue, normalizedText });
+  }
+  return [...output.values()];
+}
+
+function dedupeEntities(values: ActivityEntity[]): ActivityEntity[] {
+  const output = new Map<string, ActivityEntity>();
+  for (const entity of values) {
+    const normalizedName = normalizeEntityName(entity.name);
+    if (!normalizedName) continue;
+    const key = `${entity.entityType}:${normalizedName}:${entity.role}`;
+    const previous = output.get(key);
+    output.set(key, previous && previous.confidence > entity.confidence ? previous : { ...entity, normalizedName });
+  }
+  return [...output.values()];
+}
+
 function normalizeAlias(value: string): string {
   return value.replace(/\s+/g, " ").trim().toLowerCase();
+}
+
+function normalizeCue(value: string): string {
+  return value
+    .normalize("NFKC")
+    .toLowerCase()
+    .replace(/['’]s\b/g, "")
+    .replace(/[_/.-]+/g, " ")
+    .replace(/[^\p{L}\p{N}\s]+/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function normalizeEntityName(value: string): string {
+  return normalizeCue(value);
 }
 
 function searchableText(activity: ActivityThread): string {
@@ -1209,8 +1586,11 @@ function searchableText(activity: ActivityThread): string {
     ...activity.state.verifiedFacts,
     ...activity.state.evidence,
     ...activity.state.assets,
+    ...activity.state.decisions,
     ...activity.state.changedFiles,
     ...activity.state.workingDirectories,
+    ...activity.cues.map((cue) => cue.text),
+    ...activity.entities.flatMap((entity) => [entity.entityType, entity.name]),
     ...activity.aliases.map((alias) => alias.value),
     ...activity.identities.map((identity) => identity.value),
     ...activity.assets.flatMap((asset) => [
@@ -1229,11 +1609,52 @@ function searchableText(activity: ActivityThread): string {
   ].filter(Boolean).join("\n").toLowerCase();
 }
 
+function activityStateSearchText(activity: ActivityThread): string {
+  return [
+    activity.state.objective,
+    activity.state.goal,
+    activity.state.status,
+    activity.state.summary,
+    activity.state.userIntent,
+    activity.state.nextStep,
+    ...activity.state.assumptions,
+    ...activity.state.constraints,
+    ...activity.state.completedWork,
+    ...activity.state.openWork,
+    ...activity.state.blockers,
+    ...activity.state.verifiedFacts,
+    ...activity.state.evidence,
+    ...activity.state.decisions,
+    ...activity.state.changedFiles,
+    ...activity.state.workingDirectories,
+    ...activity.state.runHistory.map((run) => run.summary),
+  ].filter(Boolean).join("\n");
+}
+
+function recencySearchBoost(activity: ActivityThread, now: Date): number {
+  const ageDays = Math.max(0, (now.getTime() - Date.parse(activity.lastTouchedAt)) / 86_400_000);
+  if (activity.state.openWork.length > 0 && ageDays <= 14) return 0.5;
+  if (ageDays <= 1) return 0.35;
+  if (ageDays <= 7) return 0.2;
+  return 0;
+}
+
 function tokenOverlapScore(terms: string[], haystack: string): number {
   const uniqueTerms = [...new Set(terms)];
   if (uniqueTerms.length === 0) return 0;
   const matched = uniqueTerms.filter((term) => haystack.includes(term)).length;
   return matched / uniqueTerms.length;
+}
+
+function toFtsQuery(value: string): string {
+  const terms = value.toLowerCase()
+    .split(/[^a-z0-9]+/g)
+    .map((term) => term.trim())
+    .filter((term) => term.length >= 2)
+    .slice(0, 12);
+  return [...new Set(terms)]
+    .map((term) => `${term.replace(/"/g, "")}*`)
+    .join(" OR ");
 }
 
 function tokenize(value: string): string[] {
@@ -1387,8 +1808,4 @@ function parseJsonMaybe(value: string): unknown {
   } catch {
     return undefined;
   }
-}
-
-function escapeLike(value: string): string {
-  return value.replace(/[%_]/g, (match) => `\\${match}`);
 }

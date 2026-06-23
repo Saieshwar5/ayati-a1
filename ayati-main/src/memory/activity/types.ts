@@ -53,6 +53,51 @@ export interface ActivityAlias {
   lastSeenAt: string;
 }
 
+export type ActivityCueType =
+  | "goal"
+  | "topic"
+  | "action"
+  | "asset"
+  | "question"
+  | "blocker"
+  | "fact"
+  | "decision"
+  | "lesson"
+  | "next_step"
+  | "keyword";
+
+export interface ActivityCue {
+  cueType: ActivityCueType;
+  text: string;
+  normalizedText: string;
+  weight: number;
+  source: "system" | "user" | "inferred";
+  lastSeenAt: string;
+}
+
+export type ActivityEntityType =
+  | "project"
+  | "topic"
+  | "file"
+  | "directory"
+  | "document"
+  | "dataset"
+  | "tool"
+  | "url"
+  | "run"
+  | "activity_kind"
+  | "other";
+
+export interface ActivityEntity {
+  entityType: ActivityEntityType;
+  name: string;
+  normalizedName: string;
+  role: "subject" | "asset" | "tool" | "source" | "context";
+  confidence: number;
+  source: "system" | "asset" | "inferred" | "user";
+  lastSeenAt: string;
+}
+
 export interface ActivityAssetRestoreRef {
   preparedInputId?: string;
   documentId?: string;
@@ -156,6 +201,8 @@ export interface ActivityThread {
   lifecycle: ActivityLifecycle;
   identities: ActivityIdentity[];
   aliases: ActivityAlias[];
+  cues: ActivityCue[];
+  entities: ActivityEntity[];
   assets: ActivityAssetRef[];
   runs: ActivityRunRef[];
   discussionRanges: ActivityDiscussionRange[];

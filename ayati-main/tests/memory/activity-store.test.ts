@@ -46,6 +46,7 @@ describe("ActivityStore", () => {
         keyFacts: ["site/index.html exists"],
         evidence: ["write_files verified"],
         assistantResponse: "Built the first version.",
+        entityHints: ["product website"],
         toolsUsed: ["write_files"],
         activityAssets: [{
           assetId: "asset_site_index",
@@ -65,6 +66,8 @@ describe("ActivityStore", () => {
 
       expect(activity?.activityId).toBeTruthy();
       expect(activity?.assets).toHaveLength(1);
+      expect(activity?.cues.some((cue) => cue.normalizedText === "what is next for build a product website")).toBe(true);
+      expect(activity?.entities.some((entity) => entity.normalizedName === "product website")).toBe(true);
       expect(activity?.runs.map((run) => run.runId)).toEqual(["r1"]);
       expect(activity?.runs[0]).toMatchObject({
         triggerSeq: 5,
@@ -100,6 +103,8 @@ describe("ActivityStore", () => {
 
       const byPath = store.getActivityByIdentity("c1", "file_path", "site/index.html");
       expect(byPath?.activityId).toBe(activity?.activityId);
+      expect(store.search("c1", "what is next for Build a product website")[0]?.activityId).toBe(activity?.activityId);
+      expect(store.search("c1", "product website")[0]?.activityId).toBe(activity?.activityId);
 
       const resolver = new ContinuityResolver({ store, now: () => now });
       const resolved = resolver.resolve({

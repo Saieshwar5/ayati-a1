@@ -125,12 +125,17 @@ Tables:
 - `activity_identities`: exact deterministic anchors such as file paths,
   document ids, file ids, directory ids, prepared input ids, and aliases.
 - `activity_aliases`: user/system/inferred names for search and matching.
+- `activity_cues`: normalized recall cues generated from goals, actions,
+  blockers, facts, next steps, assets, and likely future questions.
+- `activity_entities`: normalized structured entities such as topics, tools,
+  files, directories, documents, datasets, URLs, and activity kinds.
 - `activity_assets`: restorable files, directories, documents, datasets, URLs,
   runs, and other durable references.
 - `activity_runs`: compact run history, including trigger and discussion `seq`
   ranges when known.
 - `activity_events`: append-only activity event history.
-- `activity_search`: compact local search text.
+- `activity_search_fts`: SQLite FTS5 index over activity title, summary, state,
+  cues, entities, aliases, and assets.
 
 The model-facing continuity shape is:
 
@@ -170,11 +175,15 @@ Lifecycle:
 6. Activity `discussionRanges` point back to the exact session JSONL event
    ranges that led to the work. The raw transcript is not duplicated in SQLite.
 7. `ContinuityResolver` deterministically resolves future inputs by exact
-   identity anchors first, then aliases/search terms, then recent follow-up
-   phrasing.
+   identity anchors first, then recall cues, entities, aliases, FTS search
+   terms, and recent follow-up phrasing.
 8. The resolver returns `continue` only for a strong winner with a clear score
    gap. Close matches return `ambiguous`; weak matches return `new`.
 9. Activity tools can search, get, select, update, and archive activity threads.
+
+Activity writes are atomic. `ActivityStore` upserts the thread, identities,
+aliases, cues, entities, assets, runs, FTS row, and event in one SQLite
+transaction so a partial update does not leave an activity in a mixed state.
 
 Activity assets:
 

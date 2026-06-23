@@ -148,12 +148,16 @@ function scoreActivities(input: {
   return input.activities
     .map((activity) => {
       const identityMatchCount = input.identityMatches.find((match) => match.activity.activityId === activity.activityId)?.matches ?? 0;
+      const cueMatches = countCueMatches(activity, input.message);
+      const entityMatches = countEntityMatches(activity, input.message);
       const aliasMatches = countAliasMatches(activity, input.message);
       const textScore = tokenOverlapScore(terms, searchableActivityText(activity));
       const recencyScore = recencyScoreFor(activity, input.now);
       const hasDurableAnchor = input.identities.length > 0 || activity.identities.length > 0 || activity.assets.length > 0;
       const score = deterministicScore({
         identityMatches: identityMatchCount,
+        cueMatches,
+        entityMatches,
         aliasMatches,
         textScore,
         recencyScore,
@@ -163,7 +167,7 @@ function scoreActivities(input: {
       return {
         activity,
         score,
-        reason: reasonFor({ identityMatchCount, aliasMatches, textScore, recencyScore, followUp: input.followUp }),
+        reason: reasonFor({ identityMatchCount, cueMatches, entityMatches, aliasMatches, textScore, recencyScore, followUp: input.followUp }),
       };
     })
     .filter(({ score }) => score > 0)
@@ -172,12 +176,16 @@ function scoreActivities(input: {
 
 function reasonFor(input: {
   identityMatchCount: number;
+  cueMatches: number;
+  entityMatches: number;
   aliasMatches: number;
   textScore: number;
   recencyScore: number;
   followUp: boolean;
 }): string {
   if (input.identityMatchCount > 0) return `matched ${input.identityMatchCount} durable activity identity anchor(s)`;
+  if (input.cueMatches > 0) return `matched ${input.cueMatches} activity recall cue(s)`;
+  if (input.entityMatches > 0) return `matched ${input.entityMatches} activity entity/entities`;
   if (input.aliasMatches > 0) return `matched ${input.aliasMatches} activity alias(es)`;
   if (input.followUp && input.recencyScore > 0) return "follow-up phrasing matched the latest recent activity";
   return `matched activity search terms (${Math.round(input.textScore * 100)}%)`;
@@ -260,6 +268,18 @@ function countAliasMatches(activity: ActivityThread, message: string): number {
   return activity.aliases.filter((alias) => normalized.includes(alias.value)).length;
 }
 
+function countCueMatches(activity: ActivityThread, message: string): number {
+  const normalized = normalizeRecallText(message);
+  if (!normalized) return 0;
+  return activity.cues.filter((cue) => normalized.includes(cue.normalizedText) || cue.normalizedText.includes(normalized)).length;
+}
+
+function countEntityMatches(activity: ActivityThread, message: string): number {
+  const normalized = normalizeRecallText(message);
+  if (!normalized) return 0;
+  return activity.entities.filter((entity) => normalized.includes(entity.normalizedName)).length;
+}
+
 function recencyScoreFor(activity: ActivityThread, now: Date): number {
   const ageDays = Math.max(0, (now.getTime() - Date.parse(activity.lastTouchedAt)) / 86_400_000);
   if (ageDays <= 1) return 0.1;
@@ -286,8 +306,11 @@ function searchableActivityText(activity: ActivityThread): string {
     ...activity.state.verifiedFacts,
     ...activity.state.evidence,
     ...activity.state.assets,
+    ...activity.state.decisions,
     ...activity.state.changedFiles,
     ...activity.state.workingDirectories,
+    ...activity.cues.map((cue) => cue.text),
+    ...activity.entities.flatMap((entity) => [entity.entityType, entity.name]),
     ...activity.aliases.map((alias) => alias.value),
     ...activity.assets.flatMap((asset) => [
       asset.displayName,
@@ -311,4 +334,15 @@ function tokenize(value: string): string[] {
     .map((token) => token.trim())
     .filter((token) => token.length >= 2)
     .slice(0, 24);
+}
+
+function normalizeRecallText(value: string): string {
+  return value
+    .normalize("NFKC")
+    .toLowerCase()
+    .replace(/['’]s\b/g, "")
+    .replace(/[_/.-]+/g, " ")
+    .replace(/[^\p{L}\p{N}\s]+/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
 }

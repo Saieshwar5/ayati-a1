@@ -273,6 +273,8 @@ function serializeActivity(activity: ActivityThread): Record<string, unknown> {
     lifecycle: activity.lifecycle,
     identities: activity.identities,
     aliases: activity.aliases,
+    cues: activity.cues,
+    entities: activity.entities,
     assets: activity.assets,
     runs: activity.runs,
     state: activity.state,
