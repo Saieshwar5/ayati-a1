@@ -7,8 +7,9 @@ export interface ToolLoadRequest {
   query?: string;
   toolNames?: string[];
   groups?: string[];
-  reason?: string;
 }
+
+export type ToolLoadStatus = "loaded" | "partial" | "already_active" | "no_match" | "invalid_request" | "failed" | "not_needed";
 
 export interface ToolWorkingSetManagerOptions {
   catalog: ToolCatalog;
@@ -17,11 +18,17 @@ export interface ToolWorkingSetManagerOptions {
 }
 
 export interface ToolLoadResult {
+  status: ToolLoadStatus;
+  requested: {
+    query?: string;
+    toolNames: string[];
+    groups: string[];
+  };
   loaded: string[];
   alreadyActive: string[];
   evicted: string[];
   missing: string[];
-  reason: string;
+  message: string;
 }
 
 interface RunToolState {
@@ -71,7 +78,34 @@ export class ToolWorkingSetManager {
 
   load(request: ToolLoadRequest, context: ToolExecutionContext): ToolLoadResult {
     const state = this.getRunState(context);
-    const resolved = this.resolveRequest(request);
+    const normalized = normalizeRequest(request);
+    if (normalized.toolNames.length === 0 && normalized.groups.length === 0 && !normalized.query) {
+      return {
+        status: "invalid_request",
+        requested: normalized,
+        loaded: [],
+        alreadyActive: [],
+        evicted: [],
+        missing: [],
+        message: "load_tools requires at least one non-empty selector: groups, toolNames, or query.",
+      };
+    }
+
+    let resolved: { entries: ToolCatalogEntry[]; missing: string[] };
+    try {
+      resolved = this.resolveRequest(normalized);
+    } catch (error) {
+      return {
+        status: "failed",
+        requested: normalized,
+        loaded: [],
+        alreadyActive: [],
+        evicted: [],
+        missing: [],
+        message: `Failed to resolve tool load request: ${error instanceof Error ? error.message : String(error)}`,
+      };
+    }
+
     const loaded: string[] = [];
     const alreadyActive: string[] = [];
     const evicted: string[] = [];
@@ -95,12 +129,15 @@ export class ToolWorkingSetManager {
     }
 
     this.syncMount(context);
+    const status = summarizeLoadStatus(loaded, alreadyActive, missing, resolved.entries.length);
     return {
+      status,
+      requested: normalized,
       loaded,
       alreadyActive,
       evicted,
       missing,
-      reason: request.reason ?? request.query ?? "tool load",
+      message: summarizeLoadMessage(status, loaded, alreadyActive, missing),
     };
   }
 
@@ -121,10 +158,17 @@ export class ToolWorkingSetManager {
       }
     }
 
-    const result = this.load({
-      toolNames: nextTools,
-      reason: "deterministic follow-up tools from executed tool results",
-    }, context);
+    const result = nextTools.length > 0
+      ? this.load({ toolNames: nextTools }, context)
+      : {
+        status: "not_needed" as const,
+        requested: { toolNames: [], groups: [] },
+        loaded: [],
+        alreadyActive: [],
+        evicted: [],
+        missing: [],
+        message: "No deterministic follow-up tools were needed.",
+      };
 
     if (removeAfterUse.size > 0) {
       const keep = new Set(result.loaded);
@@ -163,11 +207,11 @@ export class ToolWorkingSetManager {
     return removed;
   }
 
-  private resolveRequest(request: ToolLoadRequest): { entries: ToolCatalogEntry[]; missing: string[] } {
+  private resolveRequest(request: Required<Pick<ToolLoadRequest, "toolNames" | "groups">> & Pick<ToolLoadRequest, "query">): { entries: ToolCatalogEntry[]; missing: string[] } {
     const entries = new Map<string, ToolCatalogEntry>();
     const missing: string[] = [];
 
-    for (const name of request.toolNames ?? []) {
+    for (const name of request.toolNames) {
       const entry = this.catalog.get(name);
       if (entry) {
         entries.set(entry.name, entry);
@@ -176,8 +220,12 @@ export class ToolWorkingSetManager {
       }
     }
 
-    for (const group of request.groups ?? []) {
-      for (const entry of this.catalog.toolsForGroup(group)) {
+    for (const group of request.groups) {
+      const groupEntries = this.catalog.toolsForGroup(group);
+      if (groupEntries.length === 0) {
+        missing.push(`group:${group}`);
+      }
+      for (const entry of groupEntries) {
         entries.set(entry.name, entry);
       }
     }
@@ -301,9 +349,64 @@ function buildDeterministicLoadRequest(state: LoopState): ToolLoadRequest {
   return {
     toolNames: [...toolNames],
     groups: [...groups],
-    query: text,
-    reason: "deterministic preload from task state",
+    ...(text.trim() ? { query: text } : {}),
   };
+}
+
+function normalizeRequest(request: ToolLoadRequest): Required<Pick<ToolLoadRequest, "toolNames" | "groups">> & Pick<ToolLoadRequest, "query"> {
+  const query = request.query?.trim();
+  return {
+    toolNames: normalizeStrings(request.toolNames),
+    groups: normalizeStrings(request.groups),
+    ...(query ? { query } : {}),
+  };
+}
+
+function normalizeStrings(values: string[] | undefined): string[] {
+  return [...new Set((values ?? []).map((value) => value.trim()).filter((value) => value.length > 0))];
+}
+
+function summarizeLoadStatus(
+  loaded: string[],
+  alreadyActive: string[],
+  missing: string[],
+  matchedCount: number,
+): ToolLoadStatus {
+  if ((loaded.length > 0 || alreadyActive.length > 0) && missing.length > 0) return "partial";
+  if (loaded.length > 0) return "loaded";
+  if (alreadyActive.length > 0 && missing.length === 0) return "already_active";
+  if (matchedCount === 0) return "no_match";
+  return missing.length > 0 ? "no_match" : "loaded";
+}
+
+function summarizeLoadMessage(
+  status: ToolLoadStatus,
+  loaded: string[],
+  alreadyActive: string[],
+  missing: string[],
+): string {
+  switch (status) {
+    case "loaded":
+      return `Loaded tools: ${loaded.join(", ")}.`;
+    case "partial":
+      return [
+        loaded.length > 0 ? `Loaded tools: ${loaded.join(", ")}.` : "",
+        alreadyActive.length > 0 ? `Already active tools: ${alreadyActive.join(", ")}.` : "",
+        `Missing selectors: ${missing.join(", ")}.`,
+      ].filter((part) => part.length > 0).join(" ");
+    case "already_active":
+      return `Requested tools were already active: ${alreadyActive.join(", ")}.`;
+    case "no_match":
+      return missing.length > 0
+        ? `No new tools matched the request. Missing selectors: ${missing.join(", ")}.`
+        : "No tools matched the request.";
+    case "invalid_request":
+      return "load_tools requires at least one non-empty selector: groups, toolNames, or query.";
+    case "failed":
+      return "Tool loading failed.";
+    case "not_needed":
+      return "No tool loading was needed.";
+  }
 }
 
 function hasAttachmentWork(state: LoopState): boolean {

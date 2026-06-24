@@ -1,4 +1,5 @@
 import type { LoopState, ToolContextState, ToolObservation, WorkEvidenceRef, WorkState } from "../types.js";
+import type { ToolLoadResult } from "./tool-working-set.js";
 import { buildAgentContextPack } from "./context-pack.js";
 import type { AgentContextPack } from "./context-pack.js";
 
@@ -16,6 +17,16 @@ export interface PromptProgressState {
 
 export interface PromptObservations {
   latest: ToolObservation[];
+}
+
+export interface PromptToolLoadState {
+  status: ToolLoadResult["status"];
+  requested: ToolLoadResult["requested"];
+  loaded: string[];
+  alreadyActive: string[];
+  evicted: string[];
+  missing: string[];
+  message: string;
 }
 
 export interface PromptTraceStep {
@@ -45,6 +56,7 @@ export interface PromptTrace {
 export interface AgentStateView {
   context: AgentContextPack;
   progress?: PromptProgressState;
+  toolLoad?: PromptToolLoadState;
   observations?: PromptObservations;
   trace?: PromptTrace;
   attachments?: {
@@ -66,6 +78,7 @@ export interface AgentStateView {
 
 export function buildAgentStateView(state: LoopState): AgentStateView {
   const progress = buildProgressView(state.workState);
+  const toolLoad = buildToolLoadView(state.lastToolLoad);
   const observations = buildObservationsView(state.toolContext);
   const trace = buildTraceView(state);
   const attachments = buildAttachmentState(state);
@@ -73,6 +86,7 @@ export function buildAgentStateView(state: LoopState): AgentStateView {
   return {
     context: buildAgentContextPack(state),
     ...(progress ? { progress } : {}),
+    ...(toolLoad ? { toolLoad } : {}),
     ...(observations ? { observations } : {}),
     ...(trace ? { trace } : {}),
     ...(attachments ? { attachments } : {}),
@@ -86,6 +100,25 @@ export function buildAgentStateView(state: LoopState): AgentStateView {
         approvalState: state.approvalState,
       },
     } : {}),
+  };
+}
+
+function buildToolLoadView(result: ToolLoadResult | undefined): PromptToolLoadState | undefined {
+  if (!result) {
+    return undefined;
+  }
+  return {
+    status: result.status,
+    requested: {
+      ...(result.requested.query ? { query: truncate(result.requested.query, 240) } : {}),
+      toolNames: compactList(result.requested.toolNames, 12, 120),
+      groups: compactList(result.requested.groups, 12, 120),
+    },
+    loaded: compactList(result.loaded, 12, 120),
+    alreadyActive: compactList(result.alreadyActive, 12, 120),
+    evicted: compactList(result.evicted, 12, 120),
+    missing: compactList(result.missing, 12, 120),
+    message: truncate(result.message, 360),
   };
 }
 

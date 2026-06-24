@@ -79,9 +79,19 @@ export class ToolCatalog {
       .slice(0, 80);
     const skills = [...this.skillSummaries.entries()]
       .slice(0, maxSkills)
-      .map(([id, description]) => `- ${id}: ${description}`);
+      .map(([id, description]) => {
+        const representativeTools = this.list()
+          .filter((entry) => entry.skillId === id)
+          .slice(0, 5)
+          .map((entry) => entry.name);
+        const toolText = representativeTools.length > 0
+          ? ` Representative tools: ${representativeTools.join(", ")}.`
+          : "";
+        return `- ${id}: ${description}${toolText}`;
+      });
     return [
       "Hidden tools are loaded by returning load_tools when selected tools are insufficient.",
+      "load_tools must include at least one selector: groups, toolNames, or query.",
       `Loadable groups: ${groups.join(", ") || "(none)"}.`,
       "Skill summaries:",
       ...skills,

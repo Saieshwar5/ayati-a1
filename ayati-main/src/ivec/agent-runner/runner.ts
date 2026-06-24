@@ -300,15 +300,29 @@ export async function runAgentLoop(
       recordFeedback(deps, inputHandle, work.runHandle.runId, "tool_load", "requested", {
         request: decision.request,
       });
-      deps.toolWorkingSetManager?.load(decision.request, workToolContext);
+      const loadResult = deps.toolWorkingSetManager?.load(decision.request, workToolContext) ?? {
+        status: "failed" as const,
+        requested: {
+          ...(decision.request.query ? { query: decision.request.query } : {}),
+          toolNames: decision.request.toolNames ?? [],
+          groups: decision.request.groups ?? [],
+        },
+        loaded: [],
+        alreadyActive: [],
+        evicted: [],
+        missing: [],
+        message: "No tool working-set manager is available.",
+      };
+      state.lastToolLoad = loadResult;
       recordFeedback(deps, inputHandle, work.runHandle.runId, "tool_load", "completed", {
         request: decision.request,
-        status: deps.toolWorkingSetManager ? "success" : "failed",
+        result: loadResult,
+        status: loadResult.status,
       });
       queueStateSnapshot();
       recordRunMetric(metrics, "tool_load_decision", {
         kind: "local",
-        status: deps.toolWorkingSetManager ? "success" : "failed",
+        status: ["loaded", "partial", "already_active"].includes(loadResult.status) ? "success" : "failed",
       });
       continue;
     }
@@ -384,7 +398,7 @@ export async function runAgentLoop(
         stepNumber: state.iteration,
         ...(deps.uiContext ? { uiContext: deps.uiContext } : {}),
       };
-      deps.toolWorkingSetManager.afterExecution(stepResult.execution.actOutput.toolCalls, cleanupContext);
+      state.lastToolLoad = deps.toolWorkingSetManager.afterExecution(stepResult.execution.actOutput.toolCalls, cleanupContext);
       deps.toolWorkingSetManager.cleanupAfterStep(cleanupContext);
     }
 

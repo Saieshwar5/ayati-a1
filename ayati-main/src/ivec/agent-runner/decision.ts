@@ -3,6 +3,7 @@ import type { LlmMessage, LlmResponseFormat, LlmTurnOutput } from "../../core/co
 import { agentTrace, isAgentTracePromptEnabled, tracePreview } from "../../shared/index.js";
 import type { ToolContractAssertion, ToolDefinition } from "../../skills/types.js";
 import type { AgentFeedbackLedger } from "../feedback-ledger.js";
+import type { LlmToolSchema } from "../../core/contracts/llm-protocol.js";
 import type { RunMetrics } from "../metrics.js";
 import { recordPromptMetric, recordProviderUsageMetric, recordRunMetric } from "../metrics.js";
 import type { AgentStateView } from "./state-view.js";
@@ -29,7 +30,6 @@ export interface AgentToolLoadRequest {
   query?: string;
   toolNames: string[];
   groups: string[];
-  reason: string;
 }
 
 export type DecisionFailureKind =
@@ -117,8 +117,12 @@ export async function callAgentDecision(input: CallAgentDecisionInput): Promise<
     let turn: LlmTurnOutput;
     traceDecisionProviderRequest(input.provider, responseFormat, messages, attempt);
     try {
+      const nativeTools = input.provider.capabilities.nativeToolCalling
+        ? input.toolDefinitions.map(toNativeToolSchema)
+        : undefined;
       turn = await input.provider.generateTurn({
         messages,
+        ...(nativeTools && nativeTools.length > 0 ? { tools: nativeTools } : {}),
         ...(responseFormat ? { responseFormat } : {}),
       });
       recordRunMetric(input.metrics, metricStage, {
@@ -139,11 +143,7 @@ export async function callAgentDecision(input: CallAgentDecisionInput): Promise<
 
     rawText = turn.type === "assistant"
       ? turn.content
-      : JSON.stringify({
-          kind: "reply",
-          status: "failed",
-          message: "The decision model returned tool calls instead of a decision JSON object.",
-        });
+      : JSON.stringify(nativeToolCallsToDecision(turn.calls));
     agentTrace("agent_decision", `attempt=${attempt + 1} raw_response=${tracePreview(rawText)}`);
     recordDecisionFeedback(input, "raw_response", {
       attempt: attempt + 1,
@@ -283,11 +283,27 @@ function validateToolProtocol(
   decision: AgentDecision,
   selectedToolDefinitions: ToolDefinition[],
 ): ToolProtocolViolation | null {
+  const selectedTools = selectedToolDefinitions.map((tool) => tool.name);
+  if (decision.kind === "load_tools") {
+    const hasSelector = Boolean(decision.request.query?.trim())
+      || decision.request.toolNames.length > 0
+      || decision.request.groups.length > 0;
+    if (hasSelector) {
+      return null;
+    }
+    return {
+      kind: "tool_protocol_violation",
+      reason: "load_tools request must include at least one non-empty selector: groups, toolNames, or query",
+      invalidTools: [],
+      selectedTools,
+      loadToolsUsedAsAction: false,
+    };
+  }
+
   if (decision.kind !== "act") {
     return null;
   }
 
-  const selectedTools = selectedToolDefinitions.map((tool) => tool.name);
   const selectedToolSet = new Set(selectedTools);
   const invalidCallTools = decision.action.calls
     .map((call) => call.tool)
@@ -447,7 +463,7 @@ Decision rules:
 - Do not ask_user for style, wording, organization, or preference choices when reasonable defaults can satisfy the request.
 - Use act for tool work.
 - Use load_tools when the visible selected tools are not enough for the next action. Do not tell the user tools are missing.
-- Return load_tools with exact toolNames when known, groups when a group fits, or query when uncertain.
+- Return load_tools only with a non-empty selector: exact toolNames when known, groups when a group fits, or query when uncertain.
 - Tool protocol has two separate phases: load_tools only changes the visible tool set for a later decision; act executes selected tools.
 - load_tools is a decision kind, not a callable tool. Never put "load_tools" inside action.calls.
 - If Selected tools is "(none)", act is invalid. Return reply, ask_user, or load_tools.
@@ -468,14 +484,14 @@ Decision rules:
 Response JSON shapes:
 { "kind": "reply", "status": "completed" | "failed", "message": "..." }
 { "kind": "ask_user", "question": "...", "reason": "..." }
-{ "kind": "load_tools", "request": { "query": "...", "toolNames": ["read_file"], "groups": ["workflow:code_edit"], "reason": "..." } }
+{ "kind": "load_tools", "request": { "query": "...", "toolNames": ["read_file"], "groups": ["workflow:code_edit"] } }
 { "kind": "act", "action": { "mode": "single" | "sequential" | "parallel", "calls": [{ "id": "call_1", "tool": "write_files", "input": {}, "dependsOn": [], "purpose": "..." }], "allowedTools": ["write_files"] } }
 
 Tool protocol examples:
 Bad when shell is not selected:
 { "kind": "act", "action": { "mode": "sequential", "calls": [{ "id": "call_1", "tool": "shell", "input": {}, "dependsOn": [] }, { "id": "call_2", "tool": "load_tools", "input": {}, "dependsOn": [] }], "allowedTools": ["shell", "load_tools"] } }
 Good instead:
-{ "kind": "load_tools", "request": { "groups": ["skill:shell"], "reason": "Need shell to run a command." } }
+{ "kind": "load_tools", "request": { "groups": ["skill:shell"] } }
 Good after shell appears in Selected tools:
 { "kind": "act", "action": { "mode": "single", "calls": [{ "id": "call_1", "tool": "shell", "input": { "command": "pwd" }, "dependsOn": [] }], "allowedTools": ["shell"] } }`;
 
@@ -590,16 +606,17 @@ const AGENT_DECISION_RESPONSE_SCHEMA: Record<string, unknown> = {
           type: "array",
           items: { type: "string" },
         },
-        tool_names: {
-          type: "array",
-          items: { type: "string" },
-        },
         groups: {
           type: "array",
           items: { type: "string" },
         },
-        reason: { type: "string" },
       },
+      anyOf: [
+        { required: ["query"] },
+        { required: ["toolNames"] },
+        { required: ["groups"] },
+      ],
+      additionalProperties: false,
     },
     action: {
       type: "object",
@@ -679,11 +696,8 @@ function normalizeToolLoadRequest(value: unknown): AgentToolLoadRequest {
   const record = isPlainObject(value) ? value : {};
   return {
     query: typeof record["query"] === "string" ? record["query"] : undefined,
-    toolNames: normalizeStringArray(record["toolNames"] ?? record["tool_names"]),
+    toolNames: normalizeStringArray(record["toolNames"]),
     groups: normalizeStringArray(record["groups"]),
-    reason: typeof record["reason"] === "string" && record["reason"].trim().length > 0
-      ? record["reason"].trim()
-      : "model requested tool loading",
   };
 }
 
@@ -813,4 +827,50 @@ function unwrapDecisionEnvelope(record: Record<string, unknown>): Record<string,
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function toNativeToolSchema(tool: ToolDefinition): LlmToolSchema {
+  return {
+    name: tool.name,
+    description: tool.description,
+    inputSchema: normalizeNativeInputSchema(tool.inputSchema),
+  };
+}
+
+function normalizeNativeInputSchema(schema: ToolDefinition["inputSchema"]): Record<string, unknown> {
+  if (schema && typeof schema === "object") {
+    return schema;
+  }
+  return {
+    type: "object",
+    properties: {},
+    additionalProperties: false,
+  };
+}
+
+function nativeToolCallsToDecision(calls: Array<{ id: string; name: string; input: unknown }>): AgentDecision {
+  if (calls.length === 0) {
+    return {
+      kind: "reply",
+      status: "failed",
+      message: "The provider returned an empty native tool call set.",
+    };
+  }
+
+  const allowedTools = uniqueStrings(calls.map((call) => call.name));
+  return {
+    kind: "act",
+    action: {
+      mode: calls.length === 1 ? "single" : "sequential",
+      allowedTools,
+      assertions: [],
+      calls: calls.map((call, index) => ({
+        id: call.id.trim() || `native-tool-${index + 1}`,
+        tool: call.name,
+        input: call.input ?? {},
+        purpose: "Provider-native tool call.",
+        dependsOn: [],
+      })),
+    },
+  };
 }

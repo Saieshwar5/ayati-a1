@@ -28,9 +28,20 @@ The decision model returns exactly one of:
 ```json
 { "kind": "reply", "status": "completed", "message": "..." }
 { "kind": "ask_user", "question": "...", "reason": "..." }
-{ "kind": "load_tools", "request": { "query": "...", "toolNames": [], "groups": [], "reason": "..." } }
+{ "kind": "load_tools", "request": { "query": "...", "toolNames": [], "groups": [] } }
 { "kind": "act", "action": { "mode": "single", "calls": [], "allowedTools": [] } }
 ```
+
+`load_tools` is a decision kind, not an action tool. Its request must include
+at least one non-empty selector:
+
+- `groups`: exact group names from the compact loading map, such as
+  `skill:filesystem` or `workflow:code_edit`
+- `toolNames`: exact tool names when already known
+- `query`: search text when the model is unsure which hidden tool should load
+
+`reason` is intentionally not part of `load_tools`. The loader does not infer
+selectors from explanation text.
 
 There is no separate required model call to create a goal. The first decision
 uses the current input and context pack directly. `workState` starts minimal and
@@ -50,7 +61,7 @@ system:
 
 user:
   selected tool definitions for this decision
-  compact hidden tool loading map
+  compact hidden tool loading map with loadable groups and representative tool names
   State view JSON
 ```
 
@@ -69,6 +80,11 @@ Normal action tools are no longer always visible as kernel tools. The runtime
 keeps a hidden catalog of available tools and exposes a run-scoped working set
 of at most `maxSelectedTools` schemas, currently 12 by default.
 
+The hidden catalog prompt summary is compact by design. It lists loadable groups
+and representative tool names per skill so the model can request tools by group
+first and exact name when obvious, without injecting every full tool schema into
+every decision.
+
 Before each decision, the runner deterministically preloads likely tools from
 the current input, attachments, continuity, work state, evidence refs, and
 recent failures. If the model needs a missing capability, it returns
@@ -76,6 +92,29 @@ recent failures. If the model needs a missing capability, it returns
 also deterministically load likely next tools, for example `find_files` loading
 `read_file` and `edit_file`. Some tools deactivate automatically after success
 or after one step.
+
+Tool loading has explicit outcomes:
+
+- `loaded`: new tools were mounted for the current run
+- `already_active`: requested tools were already visible
+- `partial`: some selectors matched and some did not
+- `no_match`: selectors were valid but matched no tools
+- `invalid_request`: no non-empty selector was provided
+- `failed`: an internal load failure occurred
+- `not_needed`: deterministic follow-up loading had nothing to add
+
+The latest load outcome is stored in transient run state and appears in the next
+decision state view as `toolLoad`. It includes the requested selectors, loaded
+tools, already-active tools, evictions, missing selectors, status, and a short
+message. This lets the model recover from bad selectors instead of assuming a
+no-op load succeeded. Historical load outcomes are not accumulated in prompt
+context.
+
+When the active provider supports native tool calling, Ayati passes the mounted
+selected tools as provider-native function/tool schemas for that decision.
+Provider-native tool calls are converted back into Ayati `act` decisions so the
+local action executor still validates selected-tool membership, input schemas,
+execution, verification, and progress reduction.
 
 The working set is cleared at task finalization. Legacy direct tool-definition
 callers are still supported, but the app runtime should use the hidden catalog
@@ -102,6 +141,8 @@ it can include:
 
 - `progress`: current-run status, summary, open work, blockers, verified facts,
   evidence, next step, or user input needed.
+- `toolLoad`: the most recent tool-loading outcome, only when a load was tried
+  or deterministic follow-up loading had a result.
 - `observations`: recent real tool-output context cards.
 - `trace`: compact recent execution steps and deterministic failures.
 - `attachments`: incoming/prepared/managed attachments only when present.

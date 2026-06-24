@@ -1,7 +1,7 @@
 import type { LlmProvider } from "../core/contracts/provider.js";
 import type { ToolExecutor } from "../skills/tool-executor.js";
 import type { SkillActivationManager } from "../skills/activation-manager.js";
-import type { ToolWorkingSetManager } from "./agent-runner/tool-working-set.js";
+import type { ToolLoadResult, ToolWorkingSetManager } from "./agent-runner/tool-working-set.js";
 import type {
   ArtifactRef,
   AssertionResult,
@@ -133,6 +133,7 @@ export interface LoopState {
   preferredResponseKind?: AgentResponseKind;
   workState: WorkState;
   toolContext?: ToolContextState;
+  lastToolLoad?: ToolLoadResult;
   workingNotes?: string[];
   status: "running" | "completed" | "failed" | "stuck";
   finalOutput: string;

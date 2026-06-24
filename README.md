@@ -24,7 +24,7 @@ At a high level, Ayati provides:
 
 - A runtime-selectable LLM provider layer for OpenRouter, OpenAI, Anthropic, and Fireworks
 - Stable decision rules plus a structured context pack containing runtime time, recent conversation, attention shelf, recent tasks, attachments, memory, and system activity
-- A decision-action-reducer agent loop that chooses `reply`, `ask_user`, or `act`, then verifies tool work deterministically
+- A decision-action-reducer agent loop that chooses `reply`, `ask_user`, `load_tools`, or `act`, then verifies tool work deterministically
 - Built-in skills for shell, filesystem, calculator, SQLite database work, Python execution, documents, datasets, files, memory, recall, identity, and Pulse scheduling
 - Focus cards, attention shelf, personal memory, and episodic recall for continuity and personalization
 - Episodic recall for searching past sessions and run history
@@ -51,13 +51,14 @@ The backend runtime is centered on `ayati-main/src/app/main.ts` and
 Ayati runs work through a decision-action-reducer loop:
 
 ```text
-context pack -> decision -> action executor -> deterministic verification -> progress reducer
+context pack -> deterministic tool preload -> decision -> action executor -> deterministic follow-up tool loading -> deterministic verification -> progress reducer
 ```
 
 The decision model chooses one next outcome:
 
 - `reply`: answer or finish without tool work.
 - `ask_user`: request missing information before safe progress.
+- `load_tools`: request hidden tools by exact group, exact tool name, or search query.
 - `act`: run explicit tool calls through the action executor.
 
 Tool work is validated, executed, checked through tool contracts/assertions, and
@@ -70,11 +71,12 @@ reminders enter the same harness with event-policy constraints.
 2. `ayati-main` receives the message through WebSocket, HTTP, or a plugin event adapter.
 3. The backend loads static decision rules, session state, focus summaries, memory snapshots, available tools, active skills, and the configured LLM provider.
 4. `IVecEngine` builds a bounded context pack and enters the agent runner.
-5. The decision model returns `reply`, `ask_user`, or `act`.
-6. If tools are needed, Ayati validates the action, executes it through the tool executor, verifies results with contracts/assertions, and updates progress from verified facts.
-7. Files, documents, datasets, Python outputs, and other generated files are stored as managed runtime data or run artifacts.
-8. Session history, focus cards, personal memory candidates, episodic memory indexes, system activity, and task state are persisted under `ayati-main/data/`.
-9. The final reply and any artifact metadata are returned to the active client.
+5. The decision model returns `reply`, `ask_user`, `load_tools`, or `act`.
+6. If more tools are needed, Ayati loads a run-scoped working set from strict selectors and reports the load result into the next decision state.
+7. If tools are called, Ayati validates the action, executes it through the tool executor, verifies results with contracts/assertions, and updates progress from verified facts.
+8. Files, documents, datasets, Python outputs, and other generated files are stored as managed runtime data or run artifacts.
+9. Session history, focus cards, personal memory candidates, episodic memory indexes, system activity, and task state are persisted under `ayati-main/data/`.
+10. The final reply and any artifact metadata are returned to the active client.
 
 ## Runtime Capabilities
 
@@ -166,7 +168,7 @@ retrieval when vector indexing is enabled.
 
 ### Built-In Skills and Tools
 
-The backend starts with a broad built-in tool set:
+The backend registers a hidden catalog of built-in skills and tools:
 
 - Shell and filesystem tools for local workspace work
 - Calculator tools for deterministic arithmetic
@@ -178,8 +180,13 @@ The backend starts with a broad built-in tool set:
 - Identity tools for updating agent identity context
 - Pulse tools for reminders, notifications, scheduled tasks, previews, snoozing, and health checks
 
-Additional built-in skills can be mounted for the current run through the skill
-broker.
+The decision prompt receives a compact routing map with loadable groups and
+representative tool names. Full schemas are exposed only through a capped
+run-scoped working set. `load_tools` must request tools with at least one real
+selector: `groups`, `toolNames`, or `query`. When a provider supports native
+tool calling, Ayati sends the mounted selected tools as native function/tool
+schemas for that decision while keeping local validation and deterministic
+verification as the source of truth.
 
 ### Events and Plugins
 
