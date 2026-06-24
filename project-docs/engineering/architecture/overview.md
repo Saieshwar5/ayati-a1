@@ -16,8 +16,11 @@ Main runtime flow:
 2. `ayati-main` receives the message/event through WebSocket, HTTP/Pulse ingress, or plugin adapters.
 3. The backend loads static decision rules, session state, memory, tools, dynamic built-in skill cards, document/file context, and provider configuration.
 4. `IVecEngine` builds static decision context and enters the decision-action-reducer runner.
-5. The decision model chooses exactly one outcome: `reply`, `ask_user`, or `act`.
-6. Actions run through the shared tool executor and are verified through tool contracts, assertions, and local failure policy.
+5. The decision model chooses exactly one native tool call: a control tool
+   (`decision_reply`, `decision_ask_user`, or `decision_load_tools`) or one
+   selected executable tool.
+6. Executable tool calls run through the shared action executor and are verified
+   through tool contracts, assertions, and local failure policy.
 7. Verified facts update progress state; run records, memory, files, uploads, documents, and artifacts are stored under `ayati-main/data/`.
 8. Replies, feedback, notifications, or actions are sent back through the appropriate transport.
 

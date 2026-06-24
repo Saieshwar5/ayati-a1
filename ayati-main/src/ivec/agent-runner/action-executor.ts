@@ -216,6 +216,13 @@ function validateActionPlan(deps: AgentActionExecutionDeps, action: AgentAction)
 
   const selectedToolNames = new Set(deps.selectedTools.map((tool) => tool.name));
   const allowedToolNames = new Set(action.allowedTools);
+  const validationContext = {
+    clientId: deps.clientId,
+    runId: deps.runHandle.runId,
+    sessionId: deps.runHandle.sessionId,
+    ...(deps.activityId ? { activityId: deps.activityId } : {}),
+    ...(deps.uiContext ? { uiContext: deps.uiContext } : {}),
+  };
   for (const tool of action.allowedTools) {
     if (!selectedToolNames.has(tool)) {
       return `Allowed tool '${tool}' was not selected for this decision.`;
@@ -227,6 +234,16 @@ function validateActionPlan(deps: AgentActionExecutionDeps, action: AgentAction)
     }
     if (!allowedToolNames.has(call.tool)) {
       return `Tool '${call.tool}' was not listed in action.allowedTools.`;
+    }
+    const validation = deps.toolExecutor.validate(call.tool, call.input, validationContext);
+    if (!validation.valid) {
+      const inputKeys = call.input && typeof call.input === "object" && !Array.isArray(call.input)
+        ? Object.keys(call.input as Record<string, unknown>)
+        : [];
+      return [
+        `Tool input preflight failed for '${call.tool}': ${validation.error}`,
+        `received input keys: ${inputKeys.length > 0 ? inputKeys.join(", ") : "(none)"}`,
+      ].join("; ");
     }
   }
 

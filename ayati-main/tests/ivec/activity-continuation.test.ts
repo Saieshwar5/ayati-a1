@@ -33,7 +33,7 @@ function createProvider(responses: unknown[]): LlmProvider {
   return {
     name: "mock",
     version: "1.0.0",
-    capabilities: { structuredOutput: { jsonObject: true } },
+    capabilities: { nativeToolCalling: true, structuredOutput: { jsonObject: true } },
     start: vi.fn(),
     stop: vi.fn(),
     generateTurn: vi.fn().mockImplementation(async () => {

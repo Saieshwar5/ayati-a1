@@ -1,47 +1,86 @@
 # Agent Harness
 
-Ayati now uses a single decision-action-reducer harness. The old multi-stage
-controller stack is removed.
+Ayati uses a single decision-action-reducer harness. The old multi-stage
+controller stack is removed, and executable tools are exposed directly through
+native provider tool calling.
 
 Current loop:
 
 ```text
-context pack -> deterministic tool preload -> decision -> action executor -> deterministic follow-up tool loading -> deterministic verification -> progress reducer
+context pack -> decision -> action executor -> deterministic verification -> progress reducer
 ```
 
 Primary code paths:
 
 - `ayati-main/src/ivec/agent-loop.ts`: thin entry wrapper that resolves loop config and calls the runner.
-- `ayati-main/src/ivec/agent-runner/runner.ts`: loop orchestration, run persistence, local completion, and failure history.
-- `ayati-main/src/ivec/agent-runner/state-view.ts`: structured state view sent to the decision model.
+- `ayati-main/src/ivec/agent-runner/runner.ts`: loop orchestration, run persistence, local completion, feedback recording, and failure history.
+- `ayati-main/src/ivec/agent-runner/state-view.ts`: structured state view sent to the decision model, including compact working feedback.
 - `ayati-main/src/ivec/agent-runner/context-pack.ts`: bounded decision context pack.
 - `ayati-main/src/ivec/agent-runner/tool-catalog.ts`: hidden tool index, groups, aliases, and deterministic follow-up metadata.
-- `ayati-main/src/ivec/agent-runner/tool-working-set.ts`: run-scoped visible tool schema cap, preload, loading, and deactivation.
-- `ayati-main/src/ivec/agent-runner/decision.ts`: model-facing decision schema and prompt.
-- `ayati-main/src/ivec/agent-runner/action-executor.ts`: validates and executes tool actions.
-- `ayati-main/src/ivec/verification-contracts/progress-reducer.ts`: reduces verified facts into the current run `workState`.
+- `ayati-main/src/ivec/agent-runner/tool-working-set.ts`: run-scoped visible tool schema cap, loading, and deactivation.
+- `ayati-main/src/ivec/agent-runner/decision.ts`: model-facing native tool surface and decision prompt.
+- `ayati-main/src/ivec/agent-runner/action-executor.ts`: validates and executes internal action records.
+- `ayati-main/src/ivec/verification-contracts/progress-reducer.ts`: reduces verified facts into current-run `workState`.
 
-## Decision Shape
+## Design Principle
 
-The decision model must call exactly one native decision tool. These are
-meta-tools, not executable runtime tools:
+Executable tool inputs must be generated under the executable tool's own native
+schema. Do not hide executable calls inside a generic wrapper with an untyped
+`input` object.
+
+This means the model does not call a generic `decision_act` tool. It either
+calls a control tool or one selected executable tool directly.
+
+## Native Tool Surface
+
+Each decision call exposes two classes of native provider tools:
 
 ```text
-decision_reply({ status, message })
-decision_ask_user({ question, reason })
-decision_load_tools({ query?, toolNames?, groups? })
-decision_act({ mode, allowedTools, calls, assertions? })
+control tools:
+  decision_reply({ status, message })
+  decision_ask_user({ question, reason })
+  decision_load_tools({ query?, toolNames?, groups? })
+
+selected executable tools:
+  write_files({ files, createDirs? })
+  read_file({ path, ... })
+  shell({ cmd, ... })
+  ...
 ```
 
-The native decision tool call is converted into the internal `AgentDecision`
-union:
+The selected executable tool list is bounded by the current working set. For
+example, when `write_files` is selected, the provider receives the real
+`write_files.inputSchema`, including its required `files` field. The provider
+can then enforce the actual executable schema instead of only enforcing a
+generic action wrapper.
+
+The provider call requires exactly one native tool call and disables parallel
+provider tool calls where supported. A model response can be:
+
+- `decision_reply`: terminal user-facing answer.
+- `decision_ask_user`: clarification or approval when progress is genuinely blocked.
+- `decision_load_tools`: request missing tools for a later decision.
+- a selected executable tool: concrete work to run through the action executor.
+
+Unknown native tools, multiple native tool calls, missing executable tools, and
+invalid tool inputs are rejected deterministically and repaired when possible.
+
+## Internal Decision Shape
+
+The decision layer normalizes native tool calls into the existing internal
+`AgentDecision` union:
 
 ```text
 decision_reply      -> { kind: "reply", ... }
 decision_ask_user   -> { kind: "ask_user", ... }
 decision_load_tools -> { kind: "load_tools", ... }
-decision_act        -> { kind: "act", ... }
+write_files(...)    -> { kind: "act", action: single call to write_files }
+read_file(...)      -> { kind: "act", action: single call to read_file }
 ```
+
+The action executor still receives `AgentAction` records. This preserves the
+existing execution, verification, artifact, memory, and progress-reducer code
+while removing the model-facing nested action wrapper.
 
 `decision_load_tools` must include at least one non-empty selector:
 
@@ -53,16 +92,6 @@ decision_act        -> { kind: "act", ... }
 `reason` is intentionally not part of `decision_load_tools`. The loader does
 not infer selectors from explanation text.
 
-Executable tools such as `read_file`, `shell`, `list_directory`, or `pulse` are
-not exposed as native provider tools during the decision call. If execution is
-needed, the model calls `decision_act` with an action plan. Ayati then validates
-and executes that plan locally through the action executor.
-
-There is no separate required model call to create a goal. The first decision
-uses the current input and context pack directly. `workState` starts minimal and
-only appears in the model-facing state view after real progress, blockers,
-verified facts, evidence, or user-input needs exist.
-
 ## Decision Prompt Layout
 
 The decision prompt is split to preserve provider prompt-cache reuse:
@@ -70,8 +99,8 @@ The decision prompt is split to preserve provider prompt-cache reuse:
 ```text
 system:
   stable decision-component role
-  stable harness and tool-use rules
-  stable response JSON shapes
+  stable harness and native tool-use rules
+  stable control tool shapes
   truncated runtime system context, when present
 
 user:
@@ -83,30 +112,31 @@ user:
 Stable decision rules live in the system message so repeated decisions share a
 cache-friendly prefix. Dynamic state remains in the user message. Do not move
 work-run ids, tool observations, current input, memory snapshots, learning
-context, or continuity context ahead of the stable decision contract.
+context, continuity context, or working feedback ahead of the stable decision
+contract.
 
-Critical decision rules and response shapes must not be placed inside the
+Critical decision rules and control tool shapes must not be placed inside the
 truncatable runtime system-context block. If runtime system context is too
 large, only that runtime block may be truncated.
 
 ## Tool Visibility
 
-Normal action tools are no longer always visible as kernel tools. The runtime
-keeps a hidden catalog of available tools and exposes a run-scoped working set
-of at most `maxSelectedTools` schemas, currently 12 by default.
+The runtime keeps a hidden catalog of available tools and exposes a run-scoped
+working set of at most `maxSelectedTools` executable schemas, currently 12 by
+default.
 
 The hidden catalog prompt summary is compact by design. It lists loadable groups
 and representative tool names per skill so the model can request tools by group
 first and exact name when obvious, without injecting every full tool schema into
 every decision.
 
-Before each decision, the runner deterministically preloads likely tools from
+Before each decision, the runner deterministically prepares likely tools from
 the current input, attachments, continuity, work state, evidence refs, and
-recent failures. If the model needs a missing capability, it returns
-`load_tools` with exact tool names, groups, or a search query. Tool execution can
-also deterministically load likely next tools, for example `find_files` loading
-`read_file` and `edit_file`. Some tools deactivate automatically after success
-or after one step.
+recent failures. If the model needs a missing capability, it calls
+`decision_load_tools` with exact tool names, groups, or a search query. Tool
+execution can also deterministically load likely next tools, for example
+`find_files` loading `read_file` and `edit_file`. Some tools deactivate
+automatically after success or after one step.
 
 Tool loading has explicit outcomes:
 
@@ -119,24 +149,15 @@ Tool loading has explicit outcomes:
 - `not_needed`: deterministic follow-up loading had nothing to add
 
 The latest load outcome is stored in transient run state and appears in the next
-decision state view as `toolLoad`. It includes the requested selectors, loaded
+decision state view as `toolLoad`. It includes requested selectors, loaded
 tools, already-active tools, evictions, missing selectors, status, and a short
-message. This lets the model recover from bad selectors instead of assuming a
-no-op load succeeded. Historical load outcomes are not accumulated in prompt
-context.
+message. Historical load outcomes are not accumulated in prompt context.
 
-The provider call receives only the four native decision tools. Ayati requires
-exactly one decision tool call and disables parallel provider tool calls where
-the provider supports that control. If the provider returns text, zero decision
-tool calls, multiple decision tool calls, or an unknown tool call, the decision
-is rejected and the runner performs one native decision repair attempt before
-failing deterministically.
+The working set is cleared at task finalization. Legacy JSON decision parsing is
+kept for tests and migration resilience, but the app runtime should use native
+control tools plus selected native executable tools.
 
-The working set is cleared at task finalization. Legacy direct tool-definition
-callers are still supported, but the app runtime should use the hidden catalog
-and working-set manager.
-
-## State View And Context
+## State View And Working Feedback
 
 The decision model receives a compact `State view` each iteration. The context
 portion is built by `context-pack.ts` and currently includes:
@@ -147,65 +168,52 @@ portion is built by `context-pack.ts` and currently includes:
 - `sessionWork`: compact same-session activity summaries
 - optional `personalMemorySnapshot`
 
-`recentTasks` is no longer a model-facing field. Tool-using task outcomes are
-converted into activity threads after the run. Future runs resolve those
-threads deterministically into `continuity.mode` of `new`, `continue`, or
-`ambiguous`.
-
 The rest of the state view is sparse. Empty sections are omitted. When present,
 it can include:
 
 - `progress`: current-run status, summary, open work, blockers, verified facts,
   evidence, next step, or user input needed.
-- `toolLoad`: the most recent tool-loading outcome, only when a load was tried
-  or deterministic follow-up loading had a result.
+- `workingFeedback`: compact harness feedback for the next decision, including
+  tool-load problems, tool validation errors, execution failures, verification
+  failures, and retry hints.
+- `toolLoad`: the most recent tool-loading outcome.
 - `observations`: recent real tool-output context cards.
 - `trace`: compact recent execution steps and deterministic failures.
 - `attachments`: incoming/prepared/managed attachments only when present.
 - `systemEvent`: the current system event only for system-event runs.
 
+Working feedback is model-facing. Feedback ledger events are operator-facing.
+Both should describe the same harness reality:
+
+- what native tools were visible
+- which tool the model selected
+- whether the input satisfied the executable schema
+- what failed and how the model should recover
+
 The decision model does not receive the internal run path, generated goal
-contract, or empty progress scaffolding.
+contract, empty progress scaffolding, or unrelated activity shelves.
 
 ## Action Execution
 
-Actions are explicit tool-call plans. Supported modes are:
+The model-facing executable step is one native executable tool call. Internally,
+Ayati adapts that call into a single-call `AgentAction` so existing executor and
+verification behavior remains stable.
 
-- `single`: exactly one tool call.
-- `sequential`: ordered calls, up to four per step, with dependency skipping
-  when a prior call fails.
-- `parallel`: concurrent calls, up to three per step, only for independent
-  read-only tools that pass deterministic parallel-safety checks.
+The action executor rejects invalid internal action records before any tool
+runs. It validates:
 
-There is no `autonomous` action mode. The model may choose whether to reply,
-ask, load tools, or act, but every `act` decision must contain a concrete
-single, sequential, or parallel call plan.
-
-The action executor rejects invalid plans before any tool runs. It validates:
-
-- selected-tool membership and `allowedTools`
+- selected-tool membership and allowed tool membership
 - non-empty unique call ids
 - mode-specific call counts
 - dependencies, including earlier-call-only dependencies for sequential mode
 - exact planned-call coverage after execution
-- deny-by-default parallel safety
+- deny-by-default parallel safety for legacy or local recovery actions
+- tool input through the selected tool's actual schema
 
-Parallel execution is intentionally narrow. A parallel call is accepted only
-when every tool is annotated, allowlisted, read-only, retry-safe,
-non-destructive, non-long-running, and does not mutate workspace or external
-state. The initial allowlist is:
-
-- `calculator`
-- `read_file`
-- `list_directory`
-- `search_in_files`
-- evidence read tools: `evidence_next_chunk`, `evidence_read_lines`,
-  `evidence_tail`, and `evidence_search`
-
-Shell, Python, UI/workspace tools, Pulse, skill activation, database mutation,
-memory/activity mutation, and all filesystem create/write/edit/move/delete
-tools are sequential-only unless a future design adds a stronger deterministic
-parallel contract for them. Missing annotations mean sequential-only.
+Parallel execution is intentionally narrow and should remain a local executor
+concern. Model-facing provider calls should remain one native tool call per
+decision. The harness can continue the loop for follow-up calls after observing
+the result.
 
 Tool execution records:
 
@@ -222,7 +230,7 @@ Tool execution records:
 
 The default verification path is deterministic:
 
-1. Tool input is validated.
+1. Tool input is validated against the executable tool schema.
 2. Tool executes.
 3. Tool result contracts and assertions run through the tool executor.
 4. The action executor applies execution gates before reducing progress:
@@ -233,13 +241,30 @@ The default verification path is deterministic:
 7. Evidence, artifacts, and verified facts are extracted.
 8. Progress reducer updates `workState`.
 
-Use semantic/LLM verification only for work that cannot be proven with tool
+Use semantic or LLM verification only for work that cannot be proven with tool
 contracts, assertions, file checks, process exits, database state, or artifacts.
 
 Successful tool transport alone is not proof of completed work. Tools without
 deterministic gates or contract-backed verification can execute successfully,
 but their validation status remains skipped unless another verifier proves the
 result. This keeps `workState` grounded in machine-checkable evidence.
+
+## Feedback Ledger
+
+Feedback events are written for debugging and operator inspection. The decision
+stage records:
+
+- `prompt_summary`: selected tools, visible tool count, working feedback count,
+  work status, and compact input state.
+- `native_tool_surface`: control tools, selected executable tools, required
+  fields, and total native tool count.
+- `raw_response`: native tool call summary and raw normalized response.
+- `parsed`: normalized `AgentDecision`.
+- protocol or input-schema violations and repair requests.
+
+The action stage records starts, completions, individual tool results,
+artifacts, and failures. Final feedback records the summary used by
+`latest-summary.json`.
 
 ## Completion
 
@@ -257,9 +282,12 @@ mentioning harness internals.
 
 ## Failure Handling
 
-Failures are stored in `failureHistory`. The local failure policy can retry
-deterministic recoveries, such as retrying file writes with `createDirs=true`
-when a parent directory is missing.
+Failures are stored in `failureHistory` and compacted into `workingFeedback`.
+The local failure policy can retry deterministic recoveries, such as retrying
+file writes with `createDirs=true` when a parent directory is missing.
+
+Repeated identical validation failures should stop with a clear reason instead
+of running endless repair loops.
 
 Future work should use `strategyReviewFailureThreshold` for a targeted
 strategy-review model call only after repeated unclassified failures.
@@ -268,6 +296,8 @@ strategy-review model call only after repeated unclassified failures.
 
 Do not re-add these removed concepts:
 
+- model-facing `decision_act` for executable work
+- generic nested executable input objects
 - separate `understand`, `direct`, or `reeval` stages
 - controller prompt files
 - context scout controller path

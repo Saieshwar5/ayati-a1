@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { LlmProvider } from "../../src/core/contracts/provider.js";
+import type { LlmTurnOutput } from "../../src/core/contracts/llm-protocol.js";
 import { callAgentDecision, parseAgentDecision } from "../../src/ivec/agent-runner/decision.js";
 import type { AgentStateView } from "../../src/ivec/agent-runner/state-view.js";
 import type { ToolDefinition } from "../../src/skills/types.js";
@@ -102,11 +103,14 @@ describe("parseAgentDecision", () => {
     const messages = generateTurn.mock.calls[0]?.[0]?.messages ?? [];
     const systemPrompt = messages.find((message) => message.role === "system")?.content ?? "";
     expect(systemPrompt).toContain("Autonomous execution policy: for actionable user requests, prefer progress over discussion.");
+    expect(systemPrompt).toContain("Call exactly one native tool");
     expect(systemPrompt).toContain("Use reply only as a terminal decision");
-    expect(systemPrompt).toContain("Do not use reply to say you will do future work.");
+    expect(systemPrompt).toContain("Do not use decision_reply to say you will do future work.");
+    expect(systemPrompt).toContain("call the selected executable tool directly");
     expect(systemPrompt).toContain("Use ask_user only for hard blockers");
     expect(systemPrompt).toContain("Do not ask_user for style, wording, organization, or preference choices");
     expect(systemPrompt).toContain("Do not tell the user tools are missing.");
+    expect(systemPrompt).not.toContain("decision_act");
   });
 
   it("repairs act decisions that reference unselected tools into load_tools", async () => {
@@ -184,7 +188,7 @@ describe("parseAgentDecision", () => {
     expect(decision).toEqual({
       kind: "reply",
       status: "failed",
-      message: "I could not form a valid tool decision for this request.",
+      message: "I could not form a valid tool call for this request.",
     });
   });
 
@@ -215,7 +219,7 @@ describe("parseAgentDecision", () => {
     expect(decision.kind).toBe("act");
   });
 
-  it("prefers json_schema response format when supported", async () => {
+  it("uses native decision tools when supported", async () => {
     const { provider, generateTurn } = createProvider([
       JSON.stringify({ kind: "reply", status: "completed", message: "Hi!" }),
     ], { jsonSchema: true });
@@ -226,10 +230,187 @@ describe("parseAgentDecision", () => {
       toolDefinitions: [],
     });
 
-    expect(generateTurn.mock.calls[0]?.[0]?.responseFormat).toMatchObject({
-      type: "json_schema",
-      name: "agent_decision_response",
+    expect(generateTurn.mock.calls[0]?.[0]?.tools.map((tool: { name: string }) => tool.name)).toEqual([
+      "decision_reply",
+      "decision_ask_user",
+      "decision_load_tools",
+    ]);
+    expect(generateTurn.mock.calls[0]?.[0]?.toolChoice).toBe("required");
+    expect(generateTurn.mock.calls[0]?.[0]?.parallelToolCalls).toBe(false);
+  });
+
+  it("exposes selected executable tools as native tools", async () => {
+    const { provider, generateTurn } = createProvider([
+      JSON.stringify({ kind: "reply", status: "completed", message: "Hi!" }),
+    ], { jsonObject: true, jsonSchema: true });
+
+    await callAgentDecision({
+      provider,
+      stateView: createStateView(),
+      toolDefinitions: [createTool("write_files", {
+        type: "object",
+        required: ["files"],
+        properties: {
+          files: { type: "array" },
+        },
+        additionalProperties: false,
+      })],
     });
+
+    const tools = generateTurn.mock.calls[0]?.[0]?.tools ?? [];
+    expect(tools.map((tool: { name: string }) => tool.name)).toEqual([
+      "decision_reply",
+      "decision_ask_user",
+      "decision_load_tools",
+      "write_files",
+    ]);
+    expect(tools.find((tool: { name: string }) => tool.name === "write_files")?.inputSchema).toMatchObject({
+      required: ["files"],
+    });
+  });
+
+  it("converts a selected native executable tool call into an internal act decision", async () => {
+    const { provider, generateTurn } = createNativeToolProvider([
+      {
+        type: "tool_calls",
+        calls: [{
+          id: "call_1",
+          name: "write_files",
+          input: {
+            files: [{ path: "site/index.html", content: "ok" }],
+            createDirs: true,
+          },
+        }],
+      },
+    ]);
+
+    const decision = await callAgentDecision({
+      provider,
+      stateView: createStateView(),
+      toolDefinitions: [createTool("write_files", {
+        type: "object",
+        required: ["files"],
+        properties: {
+          files: { type: "array" },
+          createDirs: { type: "boolean" },
+        },
+      })],
+    });
+
+    expect(generateTurn).toHaveBeenCalledTimes(1);
+    expect(decision.kind).toBe("act");
+    if (decision.kind !== "act") {
+      throw new Error("Expected act decision.");
+    }
+    expect(decision.action).toMatchObject({
+      mode: "single",
+      allowedTools: ["write_files"],
+      calls: [{
+        id: "call_1",
+        tool: "write_files",
+        input: {
+          files: [{ path: "site/index.html", content: "ok" }],
+          createDirs: true,
+        },
+        dependsOn: [],
+      }],
+    });
+  });
+
+  it("repairs selected native executable calls with invalid input", async () => {
+    const { provider, generateTurn } = createNativeToolProvider([
+      {
+        type: "tool_calls",
+        calls: [{
+          id: "call_1",
+          name: "write_files",
+          input: {},
+        }],
+      },
+      {
+        type: "tool_calls",
+        calls: [{
+          id: "call_1",
+          name: "write_files",
+          input: { files: [{ path: "site/index.html", content: "ok" }] },
+        }],
+      },
+    ]);
+
+    const decision = await callAgentDecision({
+      provider,
+      stateView: createStateView(),
+      toolDefinitions: [createTool("write_files", {
+        type: "object",
+        required: ["files"],
+        properties: {
+          files: { type: "array" },
+        },
+      })],
+    });
+
+    expect(generateTurn).toHaveBeenCalledTimes(2);
+    expect(decision.kind).toBe("act");
+    const repairMessages = generateTurn.mock.calls[1]?.[0]?.messages ?? [];
+    const repairPrompt = repairMessages.at(-1)?.content;
+    expect(repairPrompt).toContain("invalid tool input");
+    expect(repairPrompt).toContain("missing required field 'files'");
+    expect(repairPrompt).toContain("call the selected executable tool directly");
+  });
+
+  it("repairs act decisions with invalid selected tool input", async () => {
+    const badAction = {
+      kind: "act",
+      action: {
+        mode: "single",
+        calls: [{
+          id: "call_1",
+          tool: "write_files",
+          input: {},
+          dependsOn: [],
+          purpose: "Create files",
+        }],
+        allowedTools: ["write_files"],
+      },
+    };
+    const repairedAction = {
+      kind: "act",
+      action: {
+        mode: "single",
+        calls: [{
+          id: "call_1",
+          tool: "write_files",
+          input: { files: [{ path: "site/index.html", content: "ok" }] },
+          dependsOn: [],
+          purpose: "Create files",
+        }],
+        allowedTools: ["write_files"],
+      },
+    };
+    const { provider, generateTurn } = createProvider([
+      JSON.stringify(badAction),
+      JSON.stringify(repairedAction),
+    ]);
+
+    const decision = await callAgentDecision({
+      provider,
+      stateView: createStateView(),
+      toolDefinitions: [createTool("write_files", {
+        type: "object",
+        required: ["files"],
+        properties: {
+          files: { type: "array" },
+        },
+      })],
+    });
+
+    expect(generateTurn).toHaveBeenCalledTimes(2);
+    expect(decision.kind).toBe("act");
+    const repairMessages = generateTurn.mock.calls[1]?.[0]?.messages ?? [];
+    const repairPrompt = repairMessages.at(-1)?.content;
+    expect(repairPrompt).toContain("invalid tool input");
+    expect(repairPrompt).toContain("missing required field 'files'");
+    expect(repairPrompt).toContain("call the selected executable tool directly");
   });
 });
 
@@ -248,7 +429,7 @@ function createProvider(
       name: "fake-provider",
       version: "test-model",
       capabilities: {
-        nativeToolCalling: false,
+        nativeToolCalling: true,
         structuredOutput,
       },
       start() {},
@@ -259,10 +440,40 @@ function createProvider(
   };
 }
 
-function createTool(name: string): ToolDefinition {
+function createNativeToolProvider(
+  responses: LlmTurnOutput[],
+  structuredOutput: { jsonObject: boolean; jsonSchema: boolean } = { jsonObject: true, jsonSchema: false },
+): { provider: LlmProvider; generateTurn: ReturnType<typeof vi.fn> } {
+  let index = 0;
+  const generateTurn = vi.fn(async () => {
+    const response = responses[Math.min(index, responses.length - 1)];
+    index++;
+    if (!response) {
+      throw new Error("No queued provider response.");
+    }
+    return response;
+  });
+  return {
+    provider: {
+      name: "fake-provider",
+      version: "test-model",
+      capabilities: {
+        nativeToolCalling: true,
+        structuredOutput,
+      },
+      start() {},
+      stop() {},
+      generateTurn,
+    },
+    generateTurn,
+  };
+}
+
+function createTool(name: string, inputSchema?: Record<string, unknown>): ToolDefinition {
   return {
     name,
     description: `${name} test tool`,
+    ...(inputSchema ? { inputSchema } : {}),
     execute: async () => ({
       ok: true,
       content: "",

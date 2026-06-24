@@ -266,12 +266,15 @@ export async function runAgentLoop(
     const stateView = buildAgentStateView(state);
     recordFeedback(deps, inputHandle, state.runId || workRunHandle?.runId, "decision", "prompt_summary", {
       iteration: state.iteration,
+      nativeControlTools: ["decision_reply", "decision_ask_user", "decision_load_tools"],
       selectedTools: selectedTools.map((tool) => tool.name),
       selectedToolCount: selectedTools.length,
       visibleToolCount: visibleTools.length,
+      executableToolsVisibleNatively: true,
       toolRoutingAvailable: Boolean(deps.toolWorkingSetManager?.getPromptSummary().trim()),
       workStatus: state.workState.status,
       progressSummary: state.workState.summary,
+      workingFeedbackCount: stateView.workingFeedback?.latest.length ?? 0,
       recentFailureCount: state.failureHistory.length,
       consecutiveFailures: state.consecutiveFailures,
       finalReplyFromVerifiedState,
@@ -391,6 +394,7 @@ export async function runAgentLoop(
       calls: decision.action.calls.map((call) => ({
         id: call.id,
         tool: call.tool,
+        input: summarizeActionInput(call.input),
         dependsOn: call.dependsOn,
         purpose: call.purpose,
       })),
@@ -463,9 +467,14 @@ export async function runAgentLoop(
         step: stepResult.stepSummary.step,
         executionContract: stepResult.stepSummary.executionContract,
         failureType: stepResult.stepSummary.failureType ?? "verify_failed",
-        reason: stepResult.stepSummary.summary,
+        reason: buildFailureHistoryReason(stepResult.stepSummary),
         blockedTargets: stepResult.stepSummary.blockedTargets ?? [],
       });
+      if (hasRepeatedToolInputValidationFailure(state.failureHistory)) {
+        state.status = "failed";
+        state.finalOutput = buildFailureReply(state);
+        return finalize({ status: "failed", content: state.finalOutput });
+      }
       if (state.consecutiveFailures >= config.maxConsecutiveFailures) {
         state.status = "failed";
         state.finalOutput = buildFailureReply(state);
@@ -1191,6 +1200,51 @@ function buildFailureReply(state: LoopState): string {
     return "I couldn't complete the task.";
   }
   return `I couldn't complete the task. Latest failure: ${latest.reason}`;
+}
+
+function hasRepeatedToolInputValidationFailure(history: LoopState["failureHistory"]): boolean {
+  if (history.length < 2) {
+    return false;
+  }
+  const latest = history[history.length - 1];
+  const previous = history[history.length - 2];
+  if (!latest || !previous || latest.reason !== previous.reason) {
+    return false;
+  }
+  return latest.reason.includes("Invalid input for")
+    || latest.reason.includes("Tool input preflight failed");
+}
+
+function buildFailureHistoryReason(step: StepSummary): string {
+  const primaryEvidence = step.evidenceItems?.find((item) => item.trim().length > 0);
+  if (
+    primaryEvidence
+    && (
+      step.summary === "Step failed during tool execution before output validation could run."
+      || step.summary === "Step produced no output to validate."
+    )
+  ) {
+    return `${step.summary}: ${primaryEvidence}`;
+  }
+  return step.summary;
+}
+
+function summarizeActionInput(input: Record<string, unknown>): Record<string, unknown> {
+  const keys = Object.keys(input);
+  return {
+    keys,
+    empty: keys.length === 0,
+    summary: keys.length === 0
+      ? "empty object"
+      : keys.map((key) => `${key}:${describeActionInputValue(input[key])}`).join(", "),
+  };
+}
+
+function describeActionInputValue(value: unknown): string {
+  if (Array.isArray(value)) return `array(${value.length})`;
+  if (value === null) return "null";
+  if (typeof value === "object") return "object";
+  return typeof value;
 }
 
 function buildActionExecutionContract(action: AgentAction): string {

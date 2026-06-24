@@ -127,6 +127,22 @@ describe("executeAgentAction verification gates", () => {
     }
   });
 
+  it("rejects invalid selected tool input during preflight before execution", async () => {
+    const runPath = makeTmpDir();
+    try {
+      const result = await runAction([writeFilesTool], actionFor("write_files", {}), runPath);
+
+      expect(result.verifyOutput.passed).toBe(false);
+      expect(result.verifyOutput.summary).toContain("Tool input preflight failed for 'write_files'");
+      expect(result.verifyOutput.summary).toContain("missing required field 'files'");
+      expect(result.actOutput.toolCalls).toHaveLength(1);
+      expect(result.actOutput.toolCalls[0]?.tool).toBe("execution_plan");
+      expect(result.actOutput.toolCalls[0]?.error).toContain("received input keys: (none)");
+    } finally {
+      cleanup(runPath);
+    }
+  });
+
   it("records skipped sequential calls after a prior call fails", async () => {
     const runPath = makeTmpDir();
     let secondToolExecuted = false;

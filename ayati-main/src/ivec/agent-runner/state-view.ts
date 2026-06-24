@@ -53,9 +53,21 @@ export interface PromptTrace {
   recentFailures?: PromptTraceFailure[];
 }
 
+export interface PromptWorkingFeedbackItem {
+  severity: "info" | "warning" | "error";
+  source: "tool_load" | "tool_validation" | "tool_execution" | "verification";
+  message: string;
+  retryHint?: string;
+}
+
+export interface PromptWorkingFeedback {
+  latest: PromptWorkingFeedbackItem[];
+}
+
 export interface AgentStateView {
   context: AgentContextPack;
   progress?: PromptProgressState;
+  workingFeedback?: PromptWorkingFeedback;
   toolLoad?: PromptToolLoadState;
   observations?: PromptObservations;
   trace?: PromptTrace;
@@ -79,6 +91,7 @@ export interface AgentStateView {
 export function buildAgentStateView(state: LoopState): AgentStateView {
   const progress = buildProgressView(state.workState);
   const toolLoad = buildToolLoadView(state.lastToolLoad);
+  const workingFeedback = buildWorkingFeedbackView(state);
   const observations = buildObservationsView(state.toolContext);
   const trace = buildTraceView(state);
   const attachments = buildAttachmentState(state);
@@ -86,6 +99,7 @@ export function buildAgentStateView(state: LoopState): AgentStateView {
   return {
     context: buildAgentContextPack(state),
     ...(progress ? { progress } : {}),
+    ...(workingFeedback ? { workingFeedback } : {}),
     ...(toolLoad ? { toolLoad } : {}),
     ...(observations ? { observations } : {}),
     ...(trace ? { trace } : {}),
@@ -101,6 +115,65 @@ export function buildAgentStateView(state: LoopState): AgentStateView {
       },
     } : {}),
   };
+}
+
+function buildWorkingFeedbackView(state: LoopState): PromptWorkingFeedback | undefined {
+  const latest: PromptWorkingFeedbackItem[] = [];
+  const toolLoadFeedback = buildToolLoadWorkingFeedback(state.lastToolLoad);
+  if (toolLoadFeedback) {
+    latest.push(toolLoadFeedback);
+  }
+
+  for (const failure of state.failureHistory.slice(-3)) {
+    latest.push({
+      severity: "error",
+      source: failure.failureType === "validation_error" || isToolValidationReason(failure.reason)
+        ? "tool_validation"
+        : failure.failureType === "verify_failed" || failure.failureType === "no_progress"
+          ? "verification"
+          : "tool_execution",
+      message: truncate(failure.reason, 360),
+      retryHint: buildFailureRetryHint(failure.failureType, failure.reason),
+    });
+  }
+
+  return latest.length > 0 ? { latest: latest.slice(-4) } : undefined;
+}
+
+function buildToolLoadWorkingFeedback(result: ToolLoadResult | undefined): PromptWorkingFeedbackItem | undefined {
+  if (!result || ["loaded", "already_active"].includes(result.status)) {
+    return undefined;
+  }
+  return {
+    severity: result.status === "failed" ? "error" : "warning",
+    source: "tool_load",
+    message: truncate(result.message, 360),
+    retryHint: result.missing.length > 0
+      ? `Requested tools were not available: ${compactList(result.missing, 5, 80).join(", ")}. Use another selected tool or request a broader group/query.`
+      : "If tools are still needed, request exact tool names, groups, or a clearer search query with decision_load_tools.",
+  };
+}
+
+function isToolValidationReason(reason: string): boolean {
+  return reason.includes("Invalid input for")
+    || reason.includes("Tool input preflight failed")
+    || reason.includes("missing required field");
+}
+
+function buildFailureRetryHint(failureType: LoopState["failureHistory"][number]["failureType"], reason: string): string | undefined {
+  if (failureType === "validation_error" || isToolValidationReason(reason)) {
+    return "Retry the selected executable tool with all required schema fields. Do not use an empty input object.";
+  }
+  if (reason.includes("Unknown tool") || reason.includes("was not selected")) {
+    return "Request the missing tool with decision_load_tools, then call the selected executable tool directly.";
+  }
+  if (reason.includes("permission")) {
+    return "Ask the user only if the action requires permission or an irreversible change.";
+  }
+  if (reason.includes("verification") || reason.includes("validate")) {
+    return "Use the latest observations and evidence to correct the next concrete tool call.";
+  }
+  return undefined;
 }
 
 function buildToolLoadView(result: ToolLoadResult | undefined): PromptToolLoadState | undefined {

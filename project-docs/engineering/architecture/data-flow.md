@@ -9,8 +9,11 @@ Daemon communication flow:
 5. The runner builds a structured context pack from session memory, resolved
    activity continuity, personal memory, and learning context. Current-run
    attachments appear separately in the sparse state view only when present.
-6. The decision model chooses `reply`, `ask_user`, or `act`.
-7. If tool calls are requested, the action executor validates the plan and dispatches through registered tool definitions.
+6. The decision model chooses a control tool (`decision_reply`,
+   `decision_ask_user`, or `decision_load_tools`) or directly calls one
+   selected executable tool.
+7. If an executable tool is called, the action executor validates the selected
+   tool input and dispatches through registered tool definitions.
 8. Tool contracts/assertions turn results into verified facts and evidence.
 9. The progress reducer updates sparse `workState`; verified local work can mark
    `workState.status` as `done`.
@@ -50,14 +53,17 @@ Memory and activity flow:
 
 Tool/action flow:
 
-1. The daemon keeps a hidden tool catalog, deterministically preloads a capped working set, and can load more tools through `load_tools`.
-2. The decision model selects tool calls only when needed for the current input
-   or resolved activity continuity.
-3. The action executor validates plan shape, selected tools, dependencies,
-   planned-call coverage, mode-specific call limits, and deny-by-default
-   parallel safety.
-4. The tool executor validates and executes requests.
-5. Results become artifacts, verified facts, evidence, and optional `workState` updates for continuation or final response.
+1. The daemon keeps a hidden tool catalog, prepares a capped working set, and
+   can load more tools through `decision_load_tools`.
+2. The decision model sees native control tools plus the selected executable
+   tool schemas for the current turn.
+3. The model calls one selected executable tool directly only when tool work is
+   needed for the current input or resolved activity continuity.
+4. The action executor adapts the native tool call into an internal action
+   record, validates selected-tool membership and the executable input schema,
+   and dispatches through the tool executor.
+5. Results become artifacts, verified facts, evidence, and optional `workState`
+   updates for continuation or final response.
 
 Attachment flow:
 

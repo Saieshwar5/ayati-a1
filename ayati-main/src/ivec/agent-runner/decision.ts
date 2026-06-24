@@ -80,6 +80,19 @@ interface ToolProtocolViolation {
   loadToolsUsedAsAction: boolean;
 }
 
+interface ToolInputSchemaViolation {
+  kind: Extract<DecisionFailureKind, "tool_input_schema_violation">;
+  reason: string;
+  selectedTools: string[];
+  failures: Array<{
+    callId: string;
+    tool: string;
+    error: string;
+    inputKeys: string[];
+    schema: Record<string, unknown>;
+  }>;
+}
+
 interface AgentDecisionFeedbackContext {
   clientId: string;
   sessionId: string;
@@ -88,7 +101,7 @@ interface AgentDecisionFeedbackContext {
 }
 
 const MAX_DECISION_ATTEMPTS = 3;
-const TOOL_PROTOCOL_FAILURE_REPLY = "I could not form a valid tool decision for this request.";
+const TOOL_PROTOCOL_FAILURE_REPLY = "I could not form a valid tool call for this request.";
 
 export async function callAgentDecision(input: CallAgentDecisionInput): Promise<AgentDecision> {
   const promptSections = buildDecisionPromptSections(input.stateView, input.toolDefinitions, input.toolRoutingSummary);
@@ -119,6 +132,16 @@ export async function callAgentDecision(input: CallAgentDecisionInput): Promise<
         throw new Error(`Provider ${input.provider.name} does not support native decision tools.`);
       }
       const decisionTools = buildNativeDecisionTools(input.toolDefinitions);
+      recordDecisionFeedback(input, "native_tool_surface", {
+        attempt: attempt + 1,
+        controlTools: [...DECISION_TOOL_NAMES],
+        executableTools: input.toolDefinitions.map((tool) => ({
+          name: tool.name,
+          hasInputSchema: Boolean(tool.inputSchema),
+          requiredFields: readSchemaRequiredFields(tool.inputSchema),
+        })),
+        nativeToolCount: decisionTools.length,
+      });
       turn = await input.provider.generateTurn({
         messages,
         tools: decisionTools,
@@ -143,12 +166,13 @@ export async function callAgentDecision(input: CallAgentDecisionInput): Promise<
 
     rawText = turn.type === "assistant"
       ? turn.content
-      : serializeNativeDecisionToolCalls(turn.calls);
+      : serializeNativeDecisionToolCalls(turn.calls, input.toolDefinitions);
     agentTrace("agent_decision", `attempt=${attempt + 1} raw_response=${tracePreview(rawText)}`);
     recordDecisionFeedback(input, "raw_response", {
       attempt: attempt + 1,
       turnType: turn.type,
       rawResponse: rawText,
+      ...(turn.type === "tool_calls" ? { toolCalls: summarizeNativeToolCalls(turn.calls, input.toolDefinitions) } : {}),
     });
 
     try {
@@ -159,36 +183,69 @@ export async function callAgentDecision(input: CallAgentDecisionInput): Promise<
         decision: summarizeDecisionForFeedback(decision),
       });
       const violation = validateToolProtocol(decision, input.toolDefinitions);
-      if (!violation) {
+      if (violation) {
+        agentTrace(
+          "agent_decision",
+          `attempt=${attempt + 1} tool_protocol_violation reason=${violation.reason} invalidTools=${violation.invalidTools.join(",") || "(none)"}`,
+        );
+        recordDecisionFeedback(input, "protocol_violation", {
+          attempt: attempt + 1,
+          ...violation,
+        });
+        if (attempt >= MAX_DECISION_ATTEMPTS - 1) {
+          agentTrace("agent_decision", `attempt=${attempt + 1} tool_protocol_failed_fallback`);
+          recordDecisionFeedback(input, "failed_fallback", {
+            attempt: attempt + 1,
+            reason: violation.reason,
+          });
+          return {
+            kind: "reply",
+            status: "failed",
+            message: TOOL_PROTOCOL_FAILURE_REPLY,
+          };
+        }
+        agentTrace("agent_decision", `attempt=${attempt + 1} repair_request reason=tool_protocol_violation`);
+        recordDecisionFeedback(input, "repair_requested", {
+          attempt: attempt + 1,
+          reason: "tool_protocol_violation",
+          violation,
+        });
+        messages = buildRepairMessages(messages, rawText, buildToolProtocolRepairPrompt(violation));
+        continue;
+      }
+
+      const inputViolation = validateToolInputSchemas(decision, input.toolDefinitions);
+      if (!inputViolation) {
         return decision;
       }
+
       agentTrace(
         "agent_decision",
-        `attempt=${attempt + 1} tool_protocol_violation reason=${violation.reason} invalidTools=${violation.invalidTools.join(",") || "(none)"}`,
+        `attempt=${attempt + 1} tool_input_schema_violation reason=${inputViolation.reason}`,
       );
-      recordDecisionFeedback(input, "protocol_violation", {
+      recordDecisionFeedback(input, "input_schema_violation", {
         attempt: attempt + 1,
-        ...violation,
+        ...inputViolation,
       });
       if (attempt >= MAX_DECISION_ATTEMPTS - 1) {
-        agentTrace("agent_decision", `attempt=${attempt + 1} tool_protocol_failed_fallback`);
+        agentTrace("agent_decision", `attempt=${attempt + 1} tool_input_schema_failed_fallback`);
         recordDecisionFeedback(input, "failed_fallback", {
           attempt: attempt + 1,
-          reason: violation.reason,
+          reason: inputViolation.reason,
         });
         return {
           kind: "reply",
           status: "failed",
-          message: TOOL_PROTOCOL_FAILURE_REPLY,
+          message: `I could not form a valid tool call for this request. ${inputViolation.reason}`,
         };
       }
-      agentTrace("agent_decision", `attempt=${attempt + 1} repair_request reason=tool_protocol_violation`);
+      agentTrace("agent_decision", `attempt=${attempt + 1} repair_request reason=tool_input_schema_violation`);
       recordDecisionFeedback(input, "repair_requested", {
         attempt: attempt + 1,
-        reason: "tool_protocol_violation",
-        violation,
+        reason: "tool_input_schema_violation",
+        violation: inputViolation,
       });
-      messages = buildRepairMessages(messages, rawText, buildToolProtocolRepairPrompt(violation));
+      messages = buildRepairMessages(messages, rawText, buildToolInputSchemaRepairPrompt(inputViolation));
       continue;
     } catch (error) {
       agentTrace(
@@ -210,7 +267,7 @@ export async function callAgentDecision(input: CallAgentDecisionInput): Promise<
       messages = buildRepairMessages(
         messages,
         rawText,
-        "Repair the previous response. Call exactly one native decision tool. Do not answer with text, JSON, or markdown.",
+        "Repair the previous response. Call exactly one native tool. Do not answer with text, JSON, or markdown.",
       );
     }
   }
@@ -261,6 +318,7 @@ function summarizeDecisionForFeedback(decision: AgentDecision): Record<string, u
     calls: decision.action.calls.map((call) => ({
       id: call.id,
       tool: call.tool,
+      input: summarizeToolInput(call.input),
       dependsOn: call.dependsOn,
       purpose: call.purpose,
     })),
@@ -337,6 +395,91 @@ function validateToolProtocol(
   };
 }
 
+function validateToolInputSchemas(
+  decision: AgentDecision,
+  selectedToolDefinitions: ToolDefinition[],
+): ToolInputSchemaViolation | null {
+  if (decision.kind !== "act") {
+    return null;
+  }
+
+  const selectedTools = selectedToolDefinitions.map((tool) => tool.name);
+  const byName = new Map(selectedToolDefinitions.map((tool) => [tool.name, tool]));
+  const failures: ToolInputSchemaViolation["failures"] = [];
+
+  for (const call of decision.action.calls) {
+    const tool = byName.get(call.tool);
+    if (!tool?.inputSchema) {
+      continue;
+    }
+    const validationError = validateInputAgainstSchema(call.tool, call.input, tool.inputSchema);
+    if (validationError) {
+      failures.push({
+        callId: call.id,
+        tool: call.tool,
+        error: validationError,
+        inputKeys: Object.keys(call.input),
+        schema: tool.inputSchema,
+      });
+    }
+  }
+
+  if (failures.length === 0) {
+    return null;
+  }
+
+  return {
+    kind: "tool_input_schema_violation",
+    reason: failures.map((failure) => `${failure.tool}.${failure.callId}: ${failure.error}`).join("; "),
+    selectedTools,
+    failures,
+  };
+}
+
+function validateInputAgainstSchema(
+  toolName: string,
+  input: Record<string, unknown>,
+  schema: Record<string, unknown>,
+): string | null {
+  const required = Array.isArray(schema["required"]) ? schema["required"].map(String) : [];
+  const properties = isPlainObject(schema["properties"])
+    ? schema["properties"] as Record<string, Record<string, unknown>>
+    : {};
+
+  for (const field of required) {
+    if (input[field] === undefined || input[field] === null) {
+      return `Invalid input for '${toolName}': missing required field '${field}'`;
+    }
+  }
+
+  for (const [field, value] of Object.entries(input)) {
+    const property = properties[field];
+    const expectedType = typeof property?.["type"] === "string" ? property["type"] : undefined;
+    if (expectedType && !matchesJsonSchemaType(value, expectedType)) {
+      return `Invalid input for '${toolName}': field '${field}' expected type '${expectedType}', got '${describeJsonType(value)}'`;
+    }
+  }
+
+  return null;
+}
+
+function matchesJsonSchemaType(value: unknown, expectedType: string): boolean {
+  if (expectedType === "array") return Array.isArray(value);
+  if (expectedType === "integer") return typeof value === "number" && Number.isInteger(value);
+  if (expectedType === "number") return typeof value === "number" && Number.isFinite(value);
+  if (expectedType === "object") return isPlainObject(value);
+  if (expectedType === "string") return typeof value === "string";
+  if (expectedType === "boolean") return typeof value === "boolean";
+  return true;
+}
+
+function describeJsonType(value: unknown): string {
+  if (Array.isArray(value)) return "array";
+  if (value === null) return "null";
+  if (Number.isInteger(value)) return "integer";
+  return typeof value;
+}
+
 function buildToolProtocolRepairPrompt(violation: ToolProtocolViolation): string {
   const selected = violation.selectedTools.length > 0 ? violation.selectedTools.join(", ") : "(none)";
   const invalid = violation.invalidTools.length > 0 ? violation.invalidTools.join(", ") : "(none)";
@@ -349,14 +492,46 @@ function buildToolProtocolRepairPrompt(violation: ToolProtocolViolation): string
       ? "Also invalid: load_tools was used as an action tool. Use decision_load_tools instead of putting load_tools in action.calls."
       : "",
     "",
-    "Call exactly one native decision tool:",
+    "Call exactly one native tool:",
     "- reply only for terminal outcomes: pure conversation, completed work, failed task, or impossible task.",
     "- ask_user only for hard blockers that prevent safe progress and have no reasonable default.",
     "- decision_load_tools when the next useful action needs tools that are not selected yet.",
-    "- act only when every action.calls[].tool is listed in Selected tools.",
+    "- executable work must call one of the selected executable tools directly.",
     "",
-    "Do not call unselected tools. Do not put load_tools inside action.calls. Do not reply to promise future tool work.",
+    "Do not call unselected tools. Do not use decision_load_tools as executable work. Do not reply to promise future tool work.",
   ].filter((line) => line.length > 0).join("\n");
+}
+
+function buildToolInputSchemaRepairPrompt(violation: ToolInputSchemaViolation): string {
+  const selected = violation.selectedTools.length > 0 ? violation.selectedTools.join(", ") : "(none)";
+  const failureLines = violation.failures.flatMap((failure) => [
+    `- ${failure.tool} call ${failure.callId}: ${failure.error}`,
+    `  received input keys: ${failure.inputKeys.length > 0 ? failure.inputKeys.join(", ") : "(none)"}`,
+    `  required schema: ${JSON.stringify(failure.schema)}`,
+  ]);
+  return [
+    "Your previous decision selected valid tools but used invalid tool input.",
+    "",
+    `Selected tools: ${selected}`,
+    "Input validation failures:",
+    ...failureLines,
+    "",
+    "Repair the decision by calling exactly one native tool.",
+    "If you still need tool execution, call the selected executable tool directly with inputs that satisfy its inputSchema.",
+    "Do not use empty input objects for tools with required fields.",
+    "Do not answer with prose, JSON text, or markdown.",
+  ].join("\n");
+}
+
+function summarizeToolInput(input: Record<string, unknown>): Record<string, unknown> {
+  const keys = Object.keys(input);
+  return {
+    keys,
+    empty: keys.length === 0,
+    summary: keys.length === 0
+      ? "empty object"
+      : keys.map((key) => `${key}:${describeJsonType(input[key])}`).join(", "),
+  };
 }
 
 function traceDecisionProviderRequest(
@@ -422,13 +597,13 @@ export function parseAgentDecision(text: string): AgentDecision {
 }
 
 const STABLE_DECISION_SYSTEM_CONTEXT = `You are the decision component of an AI agent harness.
-Choose the next agent decision only. Do not execute tools yourself.
+Choose the next agent decision only. Use native tool calls; the harness executes tools locally.
 Prefer deterministic actions with concrete tool inputs.
 Use the structured context pack and optional work state in the state view.
-Call exactly one native decision tool. Do not answer directly with prose, markdown, or JSON text.
+Call exactly one native tool. Do not answer directly with prose, markdown, or JSON text.
 
 Decision rules:
-- Call exactly one native decision tool: decision_reply, decision_ask_user, decision_load_tools, or decision_act.
+- Call exactly one native tool: decision_reply, decision_ask_user, decision_load_tools, or one selected executable tool.
 - Treat State view.context as the bounded context pack for this decision.
 - Use context.timeline as chronological conversation context. The item with current=true is the current input.
 - Use the immediately preceding assistant item in context.timeline to interpret short replies like yes, no, do it, go ahead, continue, or stop.
@@ -436,6 +611,7 @@ Decision rules:
 - Use context.sessionWork only as compact same-session work awareness; do not treat it as raw conversation.
 - Use context.continuity for durable task/project state, not as a replacement for immediate dialogue context.
 - Treat State view.progress as the authoritative current task progress. It may be absent on the first decision.
+- Use State view.workingFeedback as the latest harness feedback. Correct the specific failed tool call or protocol issue before trying a different path.
 - Use State view.observations.latest as the latest real tool output cards. If these cards answer the user, reply instead of rerunning equivalent tools.
 - Use State view.trace.recentSteps only as compact execution history, not as evidence.
 - Use State view.trace.recentFailures to avoid repeating failed paths.
@@ -446,42 +622,35 @@ Decision rules:
 - Treat preference gaps as assumptions, not blockers, when reasonable safe defaults exist.
 - Treat short confirmations or delegation like "yes", "go ahead", "continue", "do it", "whatever feels right", and "surprise me" as permission to proceed with reasonable defaults.
 - Use reply only as a terminal decision: pure conversation, final answer after completed work, failed task, or impossible task.
-- Do not use decision_reply to say you will do future work. If work remains, call decision_act or decision_load_tools.
+- Do not use decision_reply to say you will do future work. If work remains, call a selected executable tool or decision_load_tools.
 - Final replies must answer the user's request in natural, human-readable language.
 - Do not mention internal execution details in final replies: tool calls, deterministic verification, evidence contracts, assertions, reducers, work state, or harness steps.
 - Use user-visible results from observations and trace summaries, such as created paths, changed files, command results, document findings, or next steps.
 - Use ask_user only for hard blockers: missing target with no safe default, destructive or irreversible action, credentials or approval required, external cost/account action, or true ambiguity where the wrong choice would likely waste substantial work.
 - Do not ask_user for style, wording, organization, or preference choices when reasonable defaults can satisfy the request.
-- Use decision_act for tool work.
+- For tool work, call the selected executable tool directly. Never wrap executable calls inside another tool.
 - Use decision_load_tools when the visible selected tools are not enough for the next action. Do not tell the user tools are missing.
 - decision_load_tools must include a non-empty selector: exact toolNames when known, groups when a group fits, or query when uncertain.
-- Tool protocol has two separate phases: decision_load_tools only changes the visible tool set for a later decision; decision_act executes selected tools.
-- decision_load_tools is a meta decision tool, not an executable tool. Never put "load_tools" inside action.calls.
-- If Selected tools is "(none)", decision_act is invalid. Call decision_reply, decision_ask_user, or decision_load_tools.
-- action.calls may contain only tool names listed under Selected tools.
-- action.allowedTools may contain only tool names listed under Selected tools.
-- For deterministic tool tasks, use concrete single/sequential/parallel actions.
-- Use single for exactly one tool call.
-- Use sequential for dependent tool calls, up to 4 calls. If a later call depends on an earlier result or path, use sequential.
-- Use parallel only for independent tool calls, up to 3 calls. Do not use parallel for dependent filesystem writes.
-- Parallel is deny-by-default. Use it only for clearly read-only, retry-safe, non-long-running tools such as calculator, evidence reads, and read-only filesystem inspection.
-- Do not use parallel for shell, python, UI/workspace, memory mutation, pulse, database mutation, skill activation, or any file write/create/edit/move/delete task.
-- Keep actions to one phase.
+- Tool protocol has two separate phases: decision_load_tools only changes the visible tool set for a later decision; selected executable tools perform work.
+- decision_load_tools is a meta decision tool, not an executable tool.
+- If Selected tools is "(none)" and work remains, call decision_load_tools instead of replying that you will do work later.
+- Executable tool calls may use only tool names listed under Selected tools.
+- Keep each model decision to one executable tool call. The harness will continue the loop for follow-up calls after observing the result.
 - Use only tools listed in Selected tools.
 - Prefer write_files for generated websites, apps, and multi-file file creation.
-- Hidden tools are loaded by decision_load_tools, not by calling skill_search or skill_activate.
+- Hidden tools are loaded by decision_load_tools, not by calling skill_search or skill_activate unless those are explicitly selected executable tools.
 - Do not include assertions. Tool-owned contracts provide deterministic verification.
 
-Decision tool shapes:
+Control tool shapes:
 - decision_reply({ "status": "completed" | "failed", "message": "..." })
 - decision_ask_user({ "question": "...", "reason": "..." })
 - decision_load_tools({ "query": "...", "toolNames": ["read_file"], "groups": ["workflow:code_edit"] })
-- decision_act({ "mode": "single" | "sequential" | "parallel", "calls": [{ "id": "call_1", "tool": "write_files", "input": {}, "dependsOn": [], "purpose": "..." }], "allowedTools": ["write_files"] })
 
 Tool protocol examples:
-- Bad when shell is not selected: decision_act with action.calls using "shell" or "load_tools".
+- Bad when shell is not selected: calling shell or trying to use load_tools as executable work.
 - Good instead: decision_load_tools({ "groups": ["skill:shell"] }).
-- Good after shell appears in Selected tools: decision_act with one selected "shell" call.`;
+- Good after shell appears in Selected tools: call shell directly with its required input schema.
+- Good when write_files is selected: call write_files directly with files and createDirs.`;
 
 function buildDecisionSystemSections(systemContext: string | undefined): Record<string, string> {
   const trimmed = systemContext?.trim();
@@ -522,6 +691,7 @@ function buildStateViewPromptBreakdown(stateView: AgentStateView): Record<string
     "state.context.sessionWork": stringifySection(stateView.context.sessionWork),
     "state.context.personalMemorySnapshot": stateView.context.personalMemorySnapshot,
     "state.progress": stringifySection(stateView.progress),
+    "state.workingFeedback": stringifySection(stateView.workingFeedback),
     "state.observations": stringifySection(stateView.observations),
     "state.trace": stringifySection(stateView.trace),
     "state.attachments": stringifySection(stateView.attachments),
@@ -709,11 +879,10 @@ const DECISION_TOOL_NAMES = new Set([
   "decision_reply",
   "decision_ask_user",
   "decision_load_tools",
-  "decision_act",
 ]);
 
 function buildNativeDecisionTools(selectedTools: ToolDefinition[]): LlmToolSchema[] {
-  return [
+  const controlTools: LlmToolSchema[] = [
     {
       name: "decision_reply",
       description: "Finish this decision with a user-facing reply. Use when no tool loading or tool execution is needed.",
@@ -778,69 +947,19 @@ function buildNativeDecisionTools(selectedTools: ToolDefinition[]): LlmToolSchem
         ],
       },
     },
-    {
-      name: "decision_act",
-      description: "Plan execution using only the selected executable tools listed in the prompt. Ayati validates and executes the plan locally.",
-      inputSchema: buildNativeDecisionActSchema(selectedTools),
-    },
   ];
+  const executableTools = selectedTools
+    .filter((tool) => !DECISION_TOOL_NAMES.has(tool.name))
+    .map(toNativeExecutableToolSchema);
+  return [...controlTools, ...executableTools];
 }
 
-function buildNativeDecisionActSchema(selectedTools: ToolDefinition[]): Record<string, unknown> {
-  const selectedToolNames = selectedTools.map((tool) => tool.name);
-  const toolEnum = selectedToolNames.length > 0 ? selectedToolNames : ["__no_selected_tools__"];
-  return objectSchema({
-    mode: {
-      type: "string",
-      enum: ["single", "sequential", "parallel"],
-    },
-    allowedTools: {
-      type: "array",
-      items: {
-        type: "string",
-        enum: toolEnum,
-      },
-      minItems: 1,
-      maxItems: 12,
-    },
-    calls: {
-      type: "array",
-      minItems: 1,
-      maxItems: 4,
-      items: objectSchema({
-        id: {
-          type: "string",
-          minLength: 1,
-        },
-        tool: {
-          type: "string",
-          enum: toolEnum,
-        },
-        input: {
-          type: "object",
-        },
-        purpose: {
-          type: "string",
-          minLength: 1,
-        },
-        dependsOn: {
-          type: "array",
-          items: {
-            type: "string",
-          },
-          maxItems: 4,
-        },
-      }, ["id", "tool", "input", "purpose", "dependsOn"]),
-    },
-    assertions: {
-      type: "array",
-      items: {
-        type: "object",
-      },
-      maxItems: 8,
-    },
-    workingNotes: workingNotesSchema(),
-  }, ["mode", "allowedTools", "calls"]);
+function toNativeExecutableToolSchema(tool: ToolDefinition): LlmToolSchema {
+  return {
+    name: tool.name,
+    description: tool.description,
+    inputSchema: tool.inputSchema ?? objectSchema({}, []),
+  };
 }
 
 function objectSchema(properties: Record<string, unknown>, required: string[]): Record<string, unknown> {
@@ -862,18 +981,23 @@ function workingNotesSchema(): Record<string, unknown> {
   };
 }
 
-function serializeNativeDecisionToolCalls(calls: LlmToolCall[]): string {
+function serializeNativeDecisionToolCalls(calls: LlmToolCall[], selectedTools: ToolDefinition[]): string {
   if (calls.length !== 1) {
-    return `native_decision_error: expected exactly one decision tool call, received ${calls.length}.`;
+    return `native_decision_error: expected exactly one native tool call, received ${calls.length}.`;
   }
 
   const call = calls[0]!;
-  if (!DECISION_TOOL_NAMES.has(call.name)) {
-    return `native_decision_error: unknown decision tool '${call.name}'. Executable tools must be requested through decision_act.`;
+  const input = isPlainObject(call.input) ? call.input : {};
+  if (DECISION_TOOL_NAMES.has(call.name)) {
+    return JSON.stringify(nativeDecisionToolCallToPayload(call.name, input));
   }
 
-  const input = isPlainObject(call.input) ? call.input : {};
-  return JSON.stringify(nativeDecisionToolCallToPayload(call.name, input));
+  const selected = selectedTools.find((tool) => tool.name === call.name);
+  if (!selected) {
+    return `native_decision_error: unknown or unselected native tool '${call.name}'. Request tools with decision_load_tools before executable work.`;
+  }
+
+  return JSON.stringify(nativeExecutableToolCallToPayload(call, input));
 }
 
 function nativeDecisionToolCallToPayload(toolName: string, input: Record<string, unknown>): Record<string, unknown> {
@@ -902,22 +1026,47 @@ function nativeDecisionToolCallToPayload(toolName: string, input: Record<string,
         },
         ...(input["workingNotes"] ? { workingNotes: input["workingNotes"] } : {}),
       };
-    case "decision_act":
-      return {
-        kind: "act",
-        action: {
-          mode: input["mode"],
-          allowedTools: input["allowedTools"],
-          calls: input["calls"],
-          assertions: input["assertions"] ?? [],
-        },
-        ...(input["workingNotes"] ? { workingNotes: input["workingNotes"] } : {}),
-      };
     default:
       return {
         kind: "reply",
         status: "failed",
-        message: `Unknown native decision tool: ${toolName}`,
+        message: `Unknown native control tool: ${toolName}`,
       };
   }
+}
+
+function nativeExecutableToolCallToPayload(call: LlmToolCall, input: Record<string, unknown>): Record<string, unknown> {
+  return {
+    kind: "act",
+    action: {
+      mode: "single",
+      allowedTools: [call.name],
+      calls: [{
+        id: call.id || `${call.name}_call`,
+        tool: call.name,
+        input,
+        dependsOn: [],
+        purpose: `Execute ${call.name}`,
+      }],
+      assertions: [],
+    },
+  };
+}
+
+function summarizeNativeToolCalls(calls: LlmToolCall[], selectedTools: ToolDefinition[]): Array<Record<string, unknown>> {
+  const selectedToolNames = new Set(selectedTools.map((tool) => tool.name));
+  return calls.map((call) => ({
+    id: call.id,
+    name: call.name,
+    kind: DECISION_TOOL_NAMES.has(call.name)
+      ? "control"
+      : selectedToolNames.has(call.name)
+        ? "executable"
+        : "unknown",
+    input: summarizeToolInput(isPlainObject(call.input) ? call.input : {}),
+  }));
+}
+
+function readSchemaRequiredFields(schema: Record<string, unknown> | undefined): string[] {
+  return Array.isArray(schema?.["required"]) ? schema["required"].map(String) : [];
 }

@@ -519,6 +519,23 @@ describe("buildAgentStateView", () => {
       summary: "Prompt contract mentions old state fields.",
     });
     expect(stateView.observations?.latest).toHaveLength(2);
+    expect(stateView.workingFeedback?.latest).toHaveLength(3);
+    expect(stateView.workingFeedback?.latest[0]).toMatchObject({
+      severity: "error",
+      source: "tool_validation",
+      message: "Prompt contract and state view disagree.",
+    });
+    expect(stateView.workingFeedback?.latest[0]?.retryHint).toContain("required schema fields");
+    expect(stateView.workingFeedback?.latest[1]).toMatchObject({
+      severity: "error",
+      source: "tool_execution",
+      message: "User approval required before editing.",
+    });
+    expect(stateView.workingFeedback?.latest[2]).toMatchObject({
+      severity: "error",
+      source: "verification",
+      message: "Regression test missing.",
+    });
     expect(stateView.trace?.recentSteps?.map((step) => step.step)).toEqual([2, 3]);
     expect(stateView.trace?.recentFailures?.map((failure) => failure.step)).toEqual([2, 3, 4]);
   });

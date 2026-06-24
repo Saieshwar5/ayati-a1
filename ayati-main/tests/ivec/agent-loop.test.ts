@@ -24,7 +24,7 @@ function createProvider(responses: unknown[]): LlmProvider {
   return {
     name: "mock",
     version: "1.0.0",
-    capabilities: { structuredOutput: { jsonObject: true } },
+    capabilities: { nativeToolCalling: true, structuredOutput: { jsonObject: true } },
     start: vi.fn(),
     stop: vi.fn(),
     generateTurn: vi.fn().mockImplementation(async () => {
@@ -165,6 +165,75 @@ describe("agentLoop", () => {
       expect(result.content).not.toContain("Done -");
       expect(result.content).not.toContain("deterministic verification");
       expect(result.content).not.toContain("Evidence:");
+    } finally {
+      cleanup(dataDir);
+    }
+  });
+
+  it("repairs invalid selected tool input before executing an action", async () => {
+    const dataDir = makeTmpDir();
+    const outputPath = join(dataDir, "repaired-site", "index.html");
+    try {
+      const toolExecutor = createToolExecutor([writeFilesTool]);
+      const provider = createProvider([
+        {
+          kind: "act",
+          action: {
+            mode: "single",
+            calls: [{
+              id: "call_1",
+              tool: "write_files",
+              input: {},
+              dependsOn: [],
+              purpose: "Create the requested website",
+            }],
+            allowedTools: ["write_files"],
+            assertions: [],
+          },
+        },
+        {
+          kind: "act",
+          action: {
+            mode: "single",
+            calls: [{
+              id: "call_1",
+              tool: "write_files",
+              input: {
+                createDirs: true,
+                files: [{ path: outputPath, content: "<!doctype html><title>Repaired</title>" }],
+              },
+              dependsOn: [],
+              purpose: "Create the requested website",
+            }],
+            allowedTools: ["write_files"],
+            assertions: [],
+          },
+        },
+        {
+          kind: "reply",
+          status: "completed",
+          message: `I created the requested website at ${outputPath}.`,
+        },
+      ]);
+
+      const result = await agentLoop({
+        provider,
+        toolExecutor,
+        toolDefinitions: toolExecutor.definitions(),
+        sessionMemory: noopSessionMemory,
+        runHandle: { sessionId: "s1", runId: "r-repair-input" },
+        clientId: "c1",
+        initialUserMessage: "Create a small website",
+        dataDir,
+        systemContext: "full system context with memory",
+      });
+
+      expect(result.status).toBe("completed");
+      expect(provider.generateTurn).toHaveBeenCalledTimes(3);
+      expect(readFileSync(outputPath, "utf-8")).toBe("<!doctype html><title>Repaired</title>");
+      const repairPrompt = (provider.generateTurn as any).mock.calls[1]?.[0].messages.at(-1).content as string;
+      expect(repairPrompt).toContain("invalid tool input");
+      expect(repairPrompt).toContain("missing required field 'files'");
     } finally {
       cleanup(dataDir);
     }
@@ -327,7 +396,7 @@ describe("agentLoop", () => {
       const provider: LlmProvider = {
         name: "mock",
         version: "1.0.0",
-        capabilities: { structuredOutput: { jsonObject: true } },
+        capabilities: { nativeToolCalling: true, structuredOutput: { jsonObject: true } },
         start: vi.fn(),
         stop: vi.fn(),
         generateTurn,
@@ -426,7 +495,8 @@ describe("agentLoop", () => {
       const userPrompt = callInput.messages.find((message: { role: string }) => message.role === "user").content as string;
       const stateView = extractStateView(userPrompt);
       expect(systemPrompt).toContain("Decision rules:");
-      expect(systemPrompt).toContain("Response JSON shapes:");
+      expect(systemPrompt).toContain("Control tool shapes:");
+      expect(systemPrompt).toContain("call the selected executable tool directly");
       expect(userPrompt).not.toContain("Decision rules:");
       expect(userPrompt.indexOf("Selected tools:\n")).toBeLessThan(userPrompt.indexOf("State view:\n"));
       expect(stateView.userMessage).toBeUndefined();
@@ -540,7 +610,7 @@ describe("agentLoop", () => {
       const provider: LlmProvider = {
         name: "mock",
         version: "1.0.0",
-        capabilities: { structuredOutput: { jsonObject: true } },
+        capabilities: { nativeToolCalling: true, structuredOutput: { jsonObject: true } },
         start: vi.fn(),
         stop: vi.fn(),
         generateTurn,
