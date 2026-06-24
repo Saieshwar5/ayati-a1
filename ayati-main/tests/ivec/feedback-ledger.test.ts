@@ -91,6 +91,107 @@ describe("AsyncAgentFeedbackLedger", () => {
     expect(latest.path).toBe("feedback/2026-06-23/session-session-1.jsonl");
   });
 
+  it("writes a compact latest summary when final feedback summary data is present", async () => {
+    const ledger = new AsyncAgentFeedbackLedger({
+      dataDir: tempDir,
+      enabled: true,
+      now: () => new Date("2026-06-23T10:00:00.000Z"),
+    });
+
+    ledger.record({
+      clientId: "local",
+      sessionId: "session-1",
+      seq: 2,
+      runId: "run-2",
+      stage: "final",
+      event: "reply",
+      data: {
+        feedbackSummary: {
+          status: "completed",
+          responseKind: "reply",
+          iterations: 3,
+          toolCalls: 2,
+          toolLoadDecisions: 1,
+          actionSteps: 1,
+          verificationPassed: true,
+          basedOnVerifiedFacts: true,
+          warnings: [],
+        },
+      },
+    });
+    await ledger.flush();
+
+    const summary = JSON.parse(await readFile(join(tempDir, "feedback", "latest-summary.json"), "utf-8")) as {
+      status?: string;
+      responseKind?: string;
+      iterations?: number;
+      toolCalls?: number;
+      toolLoadDecisions?: number;
+      actionSteps?: number;
+      verificationPassed?: boolean;
+      basedOnVerifiedFacts?: boolean;
+      warnings?: string[];
+      rawPath?: string;
+    };
+
+    expect(summary.status).toBe("completed");
+    expect(summary.responseKind).toBe("reply");
+    expect(summary.iterations).toBe(3);
+    expect(summary.toolCalls).toBe(2);
+    expect(summary.toolLoadDecisions).toBe(1);
+    expect(summary.actionSteps).toBe(1);
+    expect(summary.verificationPassed).toBe(true);
+    expect(summary.basedOnVerifiedFacts).toBe(true);
+    expect(summary.warnings).toEqual([]);
+    expect(summary.rawPath).toBe("feedback/2026-06-23/session-session-1.jsonl");
+  });
+
+  it("merges decision repair signals into the latest summary warnings", async () => {
+    const times = [
+      new Date("2026-06-23T10:00:00.000Z"),
+      new Date("2026-06-23T10:00:01.000Z"),
+    ];
+    let index = 0;
+    const ledger = new AsyncAgentFeedbackLedger({
+      dataDir: tempDir,
+      enabled: true,
+      now: () => times[index++] ?? times[times.length - 1]!,
+    });
+
+    ledger.record({
+      clientId: "local",
+      sessionId: "session-1",
+      seq: 2,
+      stage: "decision",
+      event: "parse_failed",
+      data: { attempt: 1, error: "Expected JSON object" },
+    });
+    ledger.record({
+      clientId: "local",
+      sessionId: "session-1",
+      seq: 2,
+      runId: "run-2",
+      stage: "final",
+      event: "reply",
+      data: {
+        feedbackSummary: {
+          status: "completed",
+          responseKind: "reply",
+          iterations: 1,
+          toolCalls: 0,
+          warnings: ["completed_without_tool_calls"],
+        },
+      },
+    });
+    await ledger.flush();
+
+    const summary = JSON.parse(await readFile(join(tempDir, "feedback", "latest-summary.json"), "utf-8")) as {
+      warnings?: string[];
+    };
+
+    expect(summary.warnings).toEqual(["completed_without_tool_calls", "parse_repair_needed"]);
+  });
+
   it("drops oldest events when the queue is full", async () => {
     const ledger = new AsyncAgentFeedbackLedger({
       dataDir: tempDir,

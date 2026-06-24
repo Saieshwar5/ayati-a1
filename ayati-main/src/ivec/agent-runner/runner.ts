@@ -49,7 +49,7 @@ import {
   measureJson,
 } from "../state-compaction.js";
 import { collectAgentArtifacts } from "../agent-artifacts.js";
-import { buildAgentStateView } from "./state-view.js";
+import { buildAgentStateView, type AgentStateView } from "./state-view.js";
 import { selectToolsForDecision } from "./tool-selector.js";
 import { callAgentDecision } from "./decision.js";
 import type { AgentAction, AgentDecision } from "./decision.js";
@@ -80,6 +80,10 @@ export async function runAgentLoop(
   const metrics = createRunMetrics();
 
   let totalToolCalls = 0;
+  let toolLoadDecisionCount = 0;
+  let actionStepCount = 0;
+  let failedVerificationCount = 0;
+  let lastVerificationPassed: boolean | undefined;
   const state = buildInitialState(deps, config, inputHandle, runPath, workRunHandle);
   recordFeedback(deps, inputHandle, workRunHandle?.runId, "loop", "started", {
     inputKind: state.inputKind ?? "user_message",
@@ -157,13 +161,45 @@ export async function runAgentLoop(
     });
     deps.toolExecutor?.unmount?.(evidenceToolGroupId(cleanupRunId));
     devLog(`[${deps.clientId}] [metrics:agent_loop] ${formatRunMetrics(metrics)}`);
+    const responseKind = input.responseKind ?? input.completion?.response_kind ?? state.preferredResponseKind ?? "reply";
+    const finalContent = input.content ?? state.finalOutput;
+    const taskSummary = state.runClass === "task"
+      ? buildTaskSummaryRecord(state, finalContent, input.status, responseKind, input.completion)
+      : undefined;
+    const warningFlags = buildFinalFeedbackWarnings({
+      status: input.status,
+      totalToolCalls,
+      toolLoadDecisionCount,
+      actionStepCount,
+      failedVerificationCount,
+      runPath,
+      state,
+    });
     recordFeedback(deps, inputHandle, state.runId || workRunHandle?.runId, "final", "reply", {
       status: input.status,
-      responseKind: input.responseKind ?? input.completion?.response_kind ?? state.preferredResponseKind ?? "reply",
-      content: input.content ?? state.finalOutput,
+      responseKind,
+      content: finalContent,
       totalIterations: state.iteration,
       totalToolCalls,
+      toolLoadDecisionCount,
+      actionStepCount,
+      failedVerificationCount,
+      verificationPassed: lastVerificationPassed,
+      basedOnVerifiedFacts: state.workState.verifiedFacts.length > 0 || lastVerificationPassed === true,
+      warnings: warningFlags,
       runPath,
+      taskSummary: summarizeTaskSummary(taskSummary),
+      feedbackSummary: {
+        status: input.status,
+        responseKind,
+        iterations: state.iteration,
+        toolCalls: totalToolCalls,
+        toolLoadDecisions: toolLoadDecisionCount,
+        actionSteps: actionStepCount,
+        verificationPassed: lastVerificationPassed ?? false,
+        basedOnVerifiedFacts: state.workState.verifiedFacts.length > 0 || lastVerificationPassed === true,
+        warnings: warningFlags,
+      },
     });
     return buildLoopResult(state, deps.dataDir, {
       status: input.status,
@@ -227,6 +263,7 @@ export async function runAgentLoop(
     const selectedTools = finalReplyFromVerifiedState
       ? []
       : selectToolsForDecision(state, visibleTools, config.maxSelectedTools);
+    const stateView = buildAgentStateView(state);
     recordFeedback(deps, inputHandle, state.runId || workRunHandle?.runId, "decision", "prompt_summary", {
       iteration: state.iteration,
       selectedTools: selectedTools.map((tool) => tool.name),
@@ -235,10 +272,14 @@ export async function runAgentLoop(
       toolRoutingAvailable: Boolean(deps.toolWorkingSetManager?.getPromptSummary().trim()),
       workStatus: state.workState.status,
       progressSummary: state.workState.summary,
+      recentFailureCount: state.failureHistory.length,
+      consecutiveFailures: state.consecutiveFailures,
+      finalReplyFromVerifiedState,
+      inputState: summarizeDecisionInputState(stateView),
     });
     const decision = await callAgentDecision({
       provider: deps.provider,
-      stateView: buildAgentStateView(state),
+      stateView,
       toolDefinitions: selectedTools,
       toolRoutingSummary: deps.toolWorkingSetManager?.getPromptSummary(),
       systemContext: deps.systemContext,
@@ -295,9 +336,11 @@ export async function runAgentLoop(
     }
 
     if (decision.kind === "load_tools") {
+      toolLoadDecisionCount++;
       const work = await ensureWorkRun();
       const workToolContext = { ...toolContext, runId: work.runHandle.runId };
       recordFeedback(deps, inputHandle, work.runHandle.runId, "tool_load", "requested", {
+        iteration: state.iteration,
         request: decision.request,
       });
       const loadResult = deps.toolWorkingSetManager?.load(decision.request, workToolContext) ?? {
@@ -315,9 +358,15 @@ export async function runAgentLoop(
       };
       state.lastToolLoad = loadResult;
       recordFeedback(deps, inputHandle, work.runHandle.runId, "tool_load", "completed", {
+        iteration: state.iteration,
         request: decision.request,
         result: loadResult,
         status: loadResult.status,
+        loaded: loadResult.loaded,
+        alreadyActive: loadResult.alreadyActive,
+        missing: loadResult.missing,
+        evicted: loadResult.evicted,
+        message: loadResult.message,
       });
       queueStateSnapshot();
       recordRunMetric(metrics, "tool_load_decision", {
@@ -338,6 +387,7 @@ export async function runAgentLoop(
     recordFeedback(deps, inputHandle, work.runHandle.runId, "action", "started", {
       iteration: state.iteration,
       mode: decision.action.mode,
+      plannedCallCount: decision.action.calls.length,
       calls: decision.action.calls.map((call) => ({
         id: call.id,
         tool: call.tool,
@@ -355,8 +405,13 @@ export async function runAgentLoop(
       decision,
       stepNumber: state.iteration,
     });
+    actionStepCount++;
+    lastVerificationPassed = stepResult.execution.verifyOutput.passed;
+    if (!stepResult.execution.verifyOutput.passed) {
+      failedVerificationCount++;
+    }
     totalToolCalls += stepResult.stepSummary.toolSuccessCount + stepResult.stepSummary.toolFailureCount;
-    recordActionFeedback(deps, inputHandle, work.runHandle.runId, stepResult);
+    recordActionFeedback(deps, inputHandle, work.runHandle.runId, decision.action, stepResult);
 
     const beforeWorkStateChars = measureJson(stepResult.execution.nextWorkState);
     const compactedWorkState = compactWorkState(stepResult.execution.nextWorkState);
@@ -487,25 +542,49 @@ function recordActionFeedback(
   deps: AgentLoopDeps,
   inputHandle: SessionInputHandle,
   runId: string,
+  action: AgentAction,
   stepResult: ExecuteActionStepResult,
 ): void {
+  const skippedCalls = stepResult.execution.actOutput.toolCalls.filter((call) => call.meta?.["skipped"] === true);
+  const assertionFailures = stepResult.execution.actOutput.toolCalls.flatMap((call) => call.assertionResults ?? [])
+    .filter((assertion) => assertion.status === "failed");
   recordFeedback(deps, inputHandle, runId, "action", "completed", {
     step: stepResult.stepSummary.step,
+    mode: action.mode,
+    plannedCallCount: action.calls.length,
+    recordedCallCount: stepResult.execution.actOutput.toolCalls.length,
+    skippedCallCount: skippedCalls.length,
     outcome: stepResult.stepSummary.outcome,
     summary: stepResult.stepSummary.summary,
     toolSuccessCount: stepResult.stepSummary.toolSuccessCount,
     toolFailureCount: stepResult.stepSummary.toolFailureCount,
     executionStatus: stepResult.stepSummary.executionStatus,
     validationStatus: stepResult.stepSummary.validationStatus,
+    verificationMethod: stepResult.stepSummary.verificationMethod,
+    verificationPassed: stepResult.execution.verifyOutput.passed,
+    assertionFailureCount: assertionFailures.length,
+    newFactsCount: stepResult.stepSummary.newFacts.length,
+    evidenceItemCount: stepResult.stepSummary.evidenceItems?.length ?? 0,
+    artifactCount: stepResult.stepSummary.artifacts.length,
+    nextWorkStatus: stepResult.execution.nextWorkState.status,
+    stoppedEarlyReason: stepResult.stepSummary.stoppedEarlyReason,
   });
   for (const call of stepResult.execution.actOutput.toolCalls) {
     recordFeedback(deps, inputHandle, runId, "action", "tool_result", {
       step: stepResult.stepSummary.step,
       callId: call.callId,
       tool: call.tool,
+      skipped: call.meta?.["skipped"] === true,
       operationStatus: call.operationStatus,
       code: call.code,
       error: call.error,
+      assertionResults: call.assertionResults?.map((assertion) => ({
+        id: assertion.id,
+        status: assertion.status,
+        severity: assertion.severity,
+        message: assertion.message,
+      })),
+      verifiedFactCount: call.verifiedFacts?.length ?? 0,
       outputPreview: call.output,
       outputStorage: call.outputStorage,
       rawOutputPath: call.rawOutputPath,
@@ -527,6 +606,86 @@ function recordActionFeedback(
       artifact,
     });
   }
+}
+
+function summarizeDecisionInputState(stateView: AgentStateView): Record<string, unknown> {
+  const latestUser = [...stateView.context.timeline].reverse().find((event) => event.kind === "user");
+  const latestAssistantQuestion = [...stateView.context.timeline].reverse()
+    .find((event) => event.kind === "assistant" && event.expectsUserResponse);
+  const attachmentCount = Object.values(stateView.attachments ?? {})
+    .reduce((count, value) => count + (Array.isArray(value) ? value.length : 0), 0);
+
+  return {
+    timelineEventCount: stateView.context.timeline.length,
+    latestUserInput: latestUser && "content" in latestUser ? latestUser.content : undefined,
+    pendingAssistantQuestion: latestAssistantQuestion && "content" in latestAssistantQuestion
+      ? latestAssistantQuestion.content
+      : undefined,
+    continuityMode: stateView.context.continuity.mode,
+    continuityConfidence: stateView.context.continuity.confidence,
+    activeActivityId: stateView.context.continuity.current?.activityId,
+    activeActivityTitle: stateView.context.continuity.current?.title,
+    sessionActivityCount: stateView.context.sessionWork.recentActivities.length,
+    workStatus: stateView.progress?.status,
+    blockerCount: stateView.progress?.blockers?.length ?? 0,
+    verifiedFactCount: stateView.progress?.verifiedFacts?.length ?? 0,
+    evidenceRefCount: stateView.progress?.evidenceRefs?.length ?? 0,
+    recentObservationCount: stateView.observations?.latest.length ?? 0,
+    recentTraceStepCount: stateView.trace?.recentSteps?.length ?? 0,
+    recentFailureCount: stateView.trace?.recentFailures?.length ?? 0,
+    attachmentCount,
+    toolLoadStatus: stateView.toolLoad?.status,
+    systemEventName: stateView.systemEvent?.eventName,
+  };
+}
+
+function buildFinalFeedbackWarnings(input: {
+  status: AgentLoopResult["status"];
+  totalToolCalls: number;
+  toolLoadDecisionCount: number;
+  actionStepCount: number;
+  failedVerificationCount: number;
+  runPath: string;
+  state: LoopState;
+}): string[] {
+  const warnings: string[] = [];
+  if (input.status !== "completed") {
+    warnings.push("stuck_or_failed");
+  }
+  if (
+    input.status === "completed"
+    && input.totalToolCalls === 0
+    && (input.toolLoadDecisionCount > 0 || input.actionStepCount > 0 || input.state.runClass === "task" || input.runPath.length > 0)
+  ) {
+    warnings.push("completed_without_tool_calls");
+  }
+  if (input.toolLoadDecisionCount > 0 && input.actionStepCount === 0) {
+    warnings.push("tool_load_no_action");
+  }
+  if (input.toolLoadDecisionCount > 2) {
+    warnings.push("repeated_tool_load");
+  }
+  if (input.failedVerificationCount > 0) {
+    warnings.push("verification_failed");
+  }
+  return warnings;
+}
+
+function summarizeTaskSummary(taskSummary: AgentTaskSummaryRecord | undefined): Record<string, unknown> | undefined {
+  if (!taskSummary) {
+    return undefined;
+  }
+  return {
+    runId: taskSummary.runId,
+    status: taskSummary.status,
+    taskStatus: taskSummary.taskStatus,
+    summary: taskSummary.summary,
+    objective: taskSummary.objective,
+    openWorkCount: taskSummary.openWork?.length ?? 0,
+    blockerCount: taskSummary.blockers?.length ?? 0,
+    keyFactCount: taskSummary.keyFacts?.length ?? 0,
+    evidenceCount: taskSummary.evidence?.length ?? 0,
+  };
 }
 
 async function executeActionStep(input: ExecuteActionStepInput): Promise<ExecuteActionStepResult> {

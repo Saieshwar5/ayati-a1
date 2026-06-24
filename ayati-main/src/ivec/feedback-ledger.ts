@@ -17,6 +17,24 @@ export interface AgentFeedbackEvent extends AgentFeedbackEventInput {
   tsMs: number;
 }
 
+export interface AgentFeedbackLatestSummary {
+  updatedAt: string;
+  tsMs: number;
+  sessionId?: string;
+  seq?: number;
+  runId?: string;
+  status?: string;
+  responseKind?: string;
+  iterations?: number;
+  toolCalls?: number;
+  toolLoadDecisions?: number;
+  actionSteps?: number;
+  verificationPassed?: boolean;
+  basedOnVerifiedFacts?: boolean;
+  warnings: string[];
+  rawPath: string;
+}
+
 export interface AgentFeedbackLedger {
   readonly enabled: boolean;
   record(event: AgentFeedbackEventInput): void;
@@ -65,6 +83,7 @@ export class AsyncAgentFeedbackLedger implements AgentFeedbackLedger {
   private drainScheduled = false;
   private draining: Promise<void> | null = null;
   private droppedEvents = 0;
+  private readonly feedbackSignals = new Map<string, Set<string>>();
 
   constructor(options: AgentFeedbackLedgerOptions) {
     this.enabled = options.enabled === true;
@@ -87,6 +106,7 @@ export class AsyncAgentFeedbackLedger implements AgentFeedbackLedger {
       tsMs: now.getTime(),
       ...(input.data ? { data: compactFeedbackValue(input.data, this.fullPayloads) as Record<string, unknown> } : {}),
     };
+    this.recordFeedbackSignals(event);
 
     if (this.queue.length >= this.maxQueueSize) {
       this.queue.shift();
@@ -193,7 +213,80 @@ export class AsyncAgentFeedbackLedger implements AgentFeedbackLedger {
         path: feedbackRelativePath(latest).replace(/\\/g, "/"),
       }, null, 2)}\n`, "utf-8");
     }
+
+    const summaryEvent = [...batch].reverse().find((event) => readFeedbackSummary(event) !== undefined);
+    if (summaryEvent) {
+      const summary = this.buildLatestSummary(summaryEvent);
+      const summaryPath = join(this.dataDir, "feedback", "latest-summary.json");
+      await mkdir(dirname(summaryPath), { recursive: true });
+      await writeFile(summaryPath, `${JSON.stringify(summary, null, 2)}\n`, "utf-8");
+    }
   }
+
+  private recordFeedbackSignals(event: AgentFeedbackEvent): void {
+    const key = feedbackScopeKey(event);
+    if (!key) {
+      return;
+    }
+    const signals = this.feedbackSignals.get(key) ?? new Set<string>();
+    if (event.stage === "decision" && (event.event === "parse_failed" || event.event === "repair_requested")) {
+      signals.add("parse_repair_needed");
+    }
+    if (event.stage === "decision" && event.event === "protocol_violation") {
+      signals.add("tool_protocol_violation");
+    }
+    if (event.stage === "action" && event.event === "failed") {
+      signals.add("action_failed");
+    }
+    if (event.stage === "final" && event.event === "error") {
+      signals.add("runtime_error");
+    }
+    if (signals.size > 0) {
+      this.feedbackSignals.set(key, signals);
+    }
+  }
+
+  private buildLatestSummary(event: AgentFeedbackEvent): AgentFeedbackLatestSummary {
+    const feedbackSummary = readFeedbackSummary(event) ?? {};
+    const rawWarnings = Array.isArray(feedbackSummary["warnings"]) ? feedbackSummary["warnings"] : [];
+    const signalWarnings = this.feedbackSignals.get(feedbackScopeKey(event) ?? "") ?? new Set<string>();
+    const warnings = uniqueStrings([
+      ...rawWarnings.filter((warning): warning is string => typeof warning === "string" && warning.length > 0),
+      ...signalWarnings,
+    ]);
+
+    return {
+      updatedAt: event.ts,
+      tsMs: event.tsMs,
+      ...(event.sessionId ? { sessionId: event.sessionId } : {}),
+      ...(event.seq !== undefined ? { seq: event.seq } : {}),
+      ...(event.runId ? { runId: event.runId } : {}),
+      ...(typeof feedbackSummary["status"] === "string" ? { status: feedbackSummary["status"] } : {}),
+      ...(typeof feedbackSummary["responseKind"] === "string" ? { responseKind: feedbackSummary["responseKind"] } : {}),
+      ...(typeof feedbackSummary["iterations"] === "number" ? { iterations: feedbackSummary["iterations"] } : {}),
+      ...(typeof feedbackSummary["toolCalls"] === "number" ? { toolCalls: feedbackSummary["toolCalls"] } : {}),
+      ...(typeof feedbackSummary["toolLoadDecisions"] === "number" ? { toolLoadDecisions: feedbackSummary["toolLoadDecisions"] } : {}),
+      ...(typeof feedbackSummary["actionSteps"] === "number" ? { actionSteps: feedbackSummary["actionSteps"] } : {}),
+      ...(typeof feedbackSummary["verificationPassed"] === "boolean" ? { verificationPassed: feedbackSummary["verificationPassed"] } : {}),
+      ...(typeof feedbackSummary["basedOnVerifiedFacts"] === "boolean" ? { basedOnVerifiedFacts: feedbackSummary["basedOnVerifiedFacts"] } : {}),
+      warnings,
+      rawPath: feedbackRelativePath(event).replace(/\\/g, "/"),
+    };
+  }
+}
+
+function readFeedbackSummary(event: AgentFeedbackEvent): Record<string, unknown> | undefined {
+  const summary = event.data?.["feedbackSummary"];
+  return summary && typeof summary === "object" && !Array.isArray(summary)
+    ? summary as Record<string, unknown>
+    : undefined;
+}
+
+function feedbackScopeKey(event: AgentFeedbackEvent): string | undefined {
+  if (!event.sessionId || event.seq === undefined) {
+    return undefined;
+  }
+  return `${event.sessionId}:${event.seq}`;
 }
 
 function feedbackRelativePath(event: AgentFeedbackEvent): string {
@@ -220,6 +313,10 @@ function logFeedbackEvent(event: AgentFeedbackEvent): void {
 
 function parseEnvFlag(value: string | undefined): boolean {
   return value !== undefined && TRUE_VALUES.has(value.trim().toLowerCase());
+}
+
+function uniqueStrings(values: string[]): string[] {
+  return [...new Set(values)];
 }
 
 function compactFeedbackValue(value: unknown, fullPayloads: boolean, depth = 0): unknown {
