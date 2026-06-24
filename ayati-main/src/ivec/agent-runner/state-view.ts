@@ -20,7 +20,7 @@ export interface PromptObservations {
 
 export interface PromptTraceStep {
   step: number;
-  mode?: "single" | "sequential" | "parallel" | "autonomous";
+  mode?: "single" | "sequential" | "parallel";
   outcome: "success" | "failed";
   summary: string;
   toolCalls?: {
@@ -182,8 +182,8 @@ function buildRecentFailureTrace(state: LoopState): PromptTraceFailure[] {
 }
 
 function readActionMode(executionContract: string | undefined): PromptTraceStep["mode"] | undefined {
-  const mode = executionContract?.match(/^(single|sequential|parallel|autonomous) action:/)?.[1];
-  if (mode === "single" || mode === "sequential" || mode === "parallel" || mode === "autonomous") {
+  const mode = executionContract?.match(/^(single|sequential|parallel) action:/)?.[1];
+  if (mode === "single" || mode === "sequential" || mode === "parallel") {
     return mode;
   }
   return undefined;

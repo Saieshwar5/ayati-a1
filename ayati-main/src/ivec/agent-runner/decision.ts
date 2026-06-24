@@ -1,12 +1,14 @@
 import type { LlmProvider } from "../../core/contracts/provider.js";
 import type { LlmMessage, LlmResponseFormat, LlmTurnOutput } from "../../core/contracts/llm-protocol.js";
+import { agentTrace, isAgentTracePromptEnabled, tracePreview } from "../../shared/index.js";
 import type { ToolContractAssertion, ToolDefinition } from "../../skills/types.js";
+import type { AgentFeedbackLedger } from "../feedback-ledger.js";
 import type { RunMetrics } from "../metrics.js";
 import { recordPromptMetric, recordProviderUsageMetric, recordRunMetric } from "../metrics.js";
 import type { AgentStateView } from "./state-view.js";
 
 export type AgentDecisionStatus = "completed" | "failed";
-export type AgentActionMode = "single" | "sequential" | "parallel" | "autonomous";
+export type AgentActionMode = "single" | "sequential" | "parallel";
 
 export interface AgentToolCallSpec {
   id: string;
@@ -20,7 +22,6 @@ export interface AgentAction {
   mode: AgentActionMode;
   calls: AgentToolCallSpec[];
   allowedTools: string[];
-  maxCalls?: number;
   assertions: ToolContractAssertion[];
 }
 
@@ -30,6 +31,12 @@ export interface AgentToolLoadRequest {
   groups: string[];
   reason: string;
 }
+
+export type DecisionFailureKind =
+  | "invalid_json"
+  | "unsupported_decision_kind"
+  | "tool_protocol_violation"
+  | "tool_input_schema_violation";
 
 export type AgentDecision =
   | {
@@ -62,7 +69,27 @@ interface CallAgentDecisionInput {
   toolRoutingSummary?: string;
   systemContext?: string;
   metrics?: RunMetrics;
+  feedbackLedger?: AgentFeedbackLedger;
+  feedbackContext?: AgentDecisionFeedbackContext;
 }
+
+interface ToolProtocolViolation {
+  kind: Extract<DecisionFailureKind, "tool_protocol_violation">;
+  reason: string;
+  invalidTools: string[];
+  selectedTools: string[];
+  loadToolsUsedAsAction: boolean;
+}
+
+interface AgentDecisionFeedbackContext {
+  clientId: string;
+  sessionId: string;
+  seq: number;
+  runId?: string;
+}
+
+const MAX_DECISION_ATTEMPTS = 3;
+const TOOL_PROTOCOL_FAILURE_REPLY = "I could not form a valid tool decision for this request.";
 
 export async function callAgentDecision(input: CallAgentDecisionInput): Promise<AgentDecision> {
   const promptSections = buildDecisionPromptSections(input.stateView, input.toolDefinitions, input.toolRoutingSummary);
@@ -84,10 +111,11 @@ export async function callAgentDecision(input: CallAgentDecisionInput): Promise<
   ];
 
   let rawText = "";
-  for (let attempt = 0; attempt < 2; attempt++) {
+  for (let attempt = 0; attempt < MAX_DECISION_ATTEMPTS; attempt++) {
     const metricStage = attempt === 0 ? "agent_decision" : "agent_decision_repair";
     const startedAt = Date.now();
     let turn: LlmTurnOutput;
+    traceDecisionProviderRequest(input.provider, responseFormat, messages, attempt);
     try {
       turn = await input.provider.generateTurn({
         messages,
@@ -107,6 +135,7 @@ export async function callAgentDecision(input: CallAgentDecisionInput): Promise<
       });
       throw error;
     }
+    traceDecisionProviderResponse(turn, attempt);
 
     rawText = turn.type === "assistant"
       ? turn.content
@@ -115,25 +144,225 @@ export async function callAgentDecision(input: CallAgentDecisionInput): Promise<
           status: "failed",
           message: "The decision model returned tool calls instead of a decision JSON object.",
         });
+    agentTrace("agent_decision", `attempt=${attempt + 1} raw_response=${tracePreview(rawText)}`);
+    recordDecisionFeedback(input, "raw_response", {
+      attempt: attempt + 1,
+      turnType: turn.type,
+      rawResponse: rawText,
+    });
 
     try {
-      return parseAgentDecision(rawText);
+      const decision = parseAgentDecision(rawText);
+      agentTrace("agent_decision", `attempt=${attempt + 1} parsed_decision kind=${decision.kind}`);
+      recordDecisionFeedback(input, "parsed", {
+        attempt: attempt + 1,
+        decision: summarizeDecisionForFeedback(decision),
+      });
+      const violation = validateToolProtocol(decision, input.toolDefinitions);
+      if (!violation) {
+        return decision;
+      }
+      agentTrace(
+        "agent_decision",
+        `attempt=${attempt + 1} tool_protocol_violation reason=${violation.reason} invalidTools=${violation.invalidTools.join(",") || "(none)"}`,
+      );
+      recordDecisionFeedback(input, "protocol_violation", {
+        attempt: attempt + 1,
+        ...violation,
+      });
+      if (attempt >= MAX_DECISION_ATTEMPTS - 1) {
+        agentTrace("agent_decision", `attempt=${attempt + 1} tool_protocol_failed_fallback`);
+        recordDecisionFeedback(input, "failed_fallback", {
+          attempt: attempt + 1,
+          reason: violation.reason,
+        });
+        return {
+          kind: "reply",
+          status: "failed",
+          message: TOOL_PROTOCOL_FAILURE_REPLY,
+        };
+      }
+      agentTrace("agent_decision", `attempt=${attempt + 1} repair_request reason=tool_protocol_violation`);
+      recordDecisionFeedback(input, "repair_requested", {
+        attempt: attempt + 1,
+        reason: "tool_protocol_violation",
+        violation,
+      });
+      messages = buildRepairMessages(messages, rawText, buildToolProtocolRepairPrompt(violation));
+      continue;
     } catch (error) {
-      if (attempt > 0) {
+      agentTrace(
+        "agent_decision",
+        `attempt=${attempt + 1} parse_failed error=${error instanceof Error ? error.message : String(error)}`,
+      );
+      recordDecisionFeedback(input, "parse_failed", {
+        attempt: attempt + 1,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      if (attempt >= 1) {
         throw error;
       }
-      messages = [
-        ...messages,
-        { role: "assistant", content: rawText },
-        {
-          role: "user",
-          content: "Repair the previous response. Return one valid JSON object only, using exactly one of the documented agent decision shapes.",
-        },
-      ];
+      agentTrace("agent_decision", `attempt=${attempt + 1} repair_request reason=parse_failed`);
+      recordDecisionFeedback(input, "repair_requested", {
+        attempt: attempt + 1,
+        reason: "parse_failed",
+      });
+      messages = buildRepairMessages(
+        messages,
+        rawText,
+        "Repair the previous response. Return one valid JSON object only, using exactly one of the documented agent decision shapes.",
+      );
     }
   }
 
   return parseAgentDecision(rawText);
+}
+
+function recordDecisionFeedback(
+  input: CallAgentDecisionInput,
+  event: string,
+  data: Record<string, unknown>,
+): void {
+  if (!input.feedbackLedger || !input.feedbackContext) {
+    return;
+  }
+  input.feedbackLedger.record({
+    ...input.feedbackContext,
+    stage: "decision",
+    event,
+    data,
+  });
+}
+
+function summarizeDecisionForFeedback(decision: AgentDecision): Record<string, unknown> {
+  if (decision.kind === "reply") {
+    return {
+      kind: decision.kind,
+      status: decision.status,
+      message: decision.message,
+    };
+  }
+  if (decision.kind === "ask_user") {
+    return {
+      kind: decision.kind,
+      question: decision.question,
+      reason: decision.reason,
+    };
+  }
+  if (decision.kind === "load_tools") {
+    return {
+      kind: decision.kind,
+      request: decision.request,
+    };
+  }
+  return {
+    kind: decision.kind,
+    mode: decision.action.mode,
+    calls: decision.action.calls.map((call) => ({
+      id: call.id,
+      tool: call.tool,
+      dependsOn: call.dependsOn,
+      purpose: call.purpose,
+    })),
+    allowedTools: decision.action.allowedTools,
+  };
+}
+
+function buildRepairMessages(messages: LlmMessage[], rawText: string, prompt: string): LlmMessage[] {
+  return [
+    ...messages,
+    { role: "assistant", content: rawText },
+    {
+      role: "user",
+      content: prompt,
+    },
+  ];
+}
+
+function validateToolProtocol(
+  decision: AgentDecision,
+  selectedToolDefinitions: ToolDefinition[],
+): ToolProtocolViolation | null {
+  if (decision.kind !== "act") {
+    return null;
+  }
+
+  const selectedTools = selectedToolDefinitions.map((tool) => tool.name);
+  const selectedToolSet = new Set(selectedTools);
+  const invalidCallTools = decision.action.calls
+    .map((call) => call.tool)
+    .filter((tool) => tool === "load_tools" || !selectedToolSet.has(tool));
+  const invalidAllowedTools = decision.action.allowedTools.filter((tool) => tool === "load_tools" || !selectedToolSet.has(tool));
+  const invalidTools = uniqueStrings([...invalidCallTools, ...invalidAllowedTools]);
+  const loadToolsUsedAsAction = decision.action.calls.some((call) => call.tool === "load_tools");
+
+  if (decision.action.calls.length === 0) {
+    return {
+      kind: "tool_protocol_violation",
+      reason: "act decision contained no tool calls",
+      invalidTools,
+      selectedTools,
+      loadToolsUsedAsAction,
+    };
+  }
+
+  if (invalidTools.length === 0 && !loadToolsUsedAsAction) {
+    return null;
+  }
+
+  return {
+    kind: "tool_protocol_violation",
+    reason: loadToolsUsedAsAction
+      ? "load_tools was used as an action tool"
+      : "act decision referenced tools not listed in Selected tools",
+    invalidTools,
+    selectedTools,
+    loadToolsUsedAsAction,
+  };
+}
+
+function buildToolProtocolRepairPrompt(violation: ToolProtocolViolation): string {
+  const selected = violation.selectedTools.length > 0 ? violation.selectedTools.join(", ") : "(none)";
+  const invalid = violation.invalidTools.length > 0 ? violation.invalidTools.join(", ") : "(none)";
+  return [
+    "Your previous decision violates the Ayati tool protocol.",
+    "",
+    `Selected tools: ${selected}`,
+    `Invalid tools in action.calls or allowedTools: ${invalid}`,
+    violation.loadToolsUsedAsAction
+      ? "Also invalid: load_tools was used as an action tool. load_tools is a decision kind only."
+      : "",
+    "",
+    "Return one valid JSON decision:",
+    "- reply only for terminal outcomes: pure conversation, completed work, failed task, or impossible task.",
+    "- ask_user only for hard blockers that prevent safe progress and have no reasonable default.",
+    "- load_tools when the next useful action needs tools that are not selected yet.",
+    "- act only when every action.calls[].tool is listed in Selected tools.",
+    "",
+    "Do not call unselected tools. Do not put load_tools inside action.calls. Do not reply to promise future tool work.",
+  ].filter((line) => line.length > 0).join("\n");
+}
+
+function traceDecisionProviderRequest(
+  provider: LlmProvider,
+  responseFormat: LlmResponseFormat | undefined,
+  messages: LlmMessage[],
+  attempt: number,
+): void {
+  agentTrace(
+    "agent_decision",
+    `attempt=${attempt + 1} provider_request provider=${provider.name} version=${provider.version} responseFormat=${responseFormat?.type ?? "none"} messages=${messages.length}`,
+  );
+  if (isAgentTracePromptEnabled()) {
+    agentTrace("agent_decision", `attempt=${attempt + 1} prompt=${tracePreview(messages)}`);
+  }
+}
+
+function traceDecisionProviderResponse(turn: LlmTurnOutput, attempt: number): void {
+  const usage = turn.usage
+    ? ` usage=${turn.usage.provider}:${turn.usage.model} input=${turn.usage.inputTokens} output=${turn.usage.outputTokens} total=${turn.usage.totalTokens}`
+    : "";
+  agentTrace("agent_decision", `attempt=${attempt + 1} provider_response type=${turn.type}${usage}`);
 }
 
 export function parseAgentDecision(text: string): AgentDecision {
@@ -206,16 +435,30 @@ Decision rules:
 - Do not use workingNotes as factual memory; the harness owns tool-output context.
 - Use evidence tools for truncated or chunked evidence before rerunning the original output-producing tool.
 - If State view.progress.status is "done", return a reply. Do not call more tools.
-- Use reply only when no tool action is needed or the task has failed/finished.
+- Autonomous execution policy: for actionable user requests, prefer progress over discussion.
+- Treat preference gaps as assumptions, not blockers, when reasonable safe defaults exist.
+- Treat short confirmations or delegation like "yes", "go ahead", "continue", "do it", "whatever feels right", and "surprise me" as permission to proceed with reasonable defaults.
+- Use reply only as a terminal decision: pure conversation, final answer after completed work, failed task, or impossible task.
+- Do not use reply to say you will do future work. If work remains, return act or load_tools.
 - Final replies must answer the user's request in natural, human-readable language.
 - Do not mention internal execution details in final replies: tool calls, deterministic verification, evidence contracts, assertions, reducers, work state, or harness steps.
 - Use user-visible results from observations and trace summaries, such as created paths, changed files, command results, document findings, or next steps.
-- Use ask_user only when a missing decision prevents safe progress.
+- Use ask_user only for hard blockers: missing target with no safe default, destructive or irreversible action, credentials or approval required, external cost/account action, or true ambiguity where the wrong choice would likely waste substantial work.
+- Do not ask_user for style, wording, organization, or preference choices when reasonable defaults can satisfy the request.
 - Use act for tool work.
-- Use load_tools when the visible selected tools are not enough for the next action.
+- Use load_tools when the visible selected tools are not enough for the next action. Do not tell the user tools are missing.
 - Return load_tools with exact toolNames when known, groups when a group fits, or query when uncertain.
+- Tool protocol has two separate phases: load_tools only changes the visible tool set for a later decision; act executes selected tools.
+- load_tools is a decision kind, not a callable tool. Never put "load_tools" inside action.calls.
+- If Selected tools is "(none)", act is invalid. Return reply, ask_user, or load_tools.
+- action.calls may contain only tool names listed under Selected tools.
+- action.allowedTools may contain only tool names listed under Selected tools.
 - For deterministic tool tasks, use concrete single/sequential/parallel actions.
-- Use autonomous only when exact tool inputs cannot be known yet.
+- Use single for exactly one tool call.
+- Use sequential for dependent tool calls, up to 4 calls. If a later call depends on an earlier result or path, use sequential.
+- Use parallel only for independent tool calls, up to 3 calls. Do not use parallel for dependent filesystem writes.
+- Parallel is deny-by-default. Use it only for clearly read-only, retry-safe, non-long-running tools such as calculator, evidence reads, and read-only filesystem inspection.
+- Do not use parallel for shell, python, UI/workspace, memory mutation, pulse, database mutation, skill activation, or any file write/create/edit/move/delete task.
 - Keep actions to one phase.
 - Use only tools listed in Selected tools.
 - Prefer write_files for generated websites, apps, and multi-file file creation.
@@ -226,7 +469,15 @@ Response JSON shapes:
 { "kind": "reply", "status": "completed" | "failed", "message": "..." }
 { "kind": "ask_user", "question": "...", "reason": "..." }
 { "kind": "load_tools", "request": { "query": "...", "toolNames": ["read_file"], "groups": ["workflow:code_edit"], "reason": "..." } }
-{ "kind": "act", "action": { "mode": "single" | "sequential" | "parallel" | "autonomous", "calls": [{ "id": "call_1", "tool": "write_files", "input": {}, "dependsOn": [], "purpose": "..." }], "allowedTools": ["write_files"], "maxCalls": 1 } }`;
+{ "kind": "act", "action": { "mode": "single" | "sequential" | "parallel", "calls": [{ "id": "call_1", "tool": "write_files", "input": {}, "dependsOn": [], "purpose": "..." }], "allowedTools": ["write_files"] } }
+
+Tool protocol examples:
+Bad when shell is not selected:
+{ "kind": "act", "action": { "mode": "sequential", "calls": [{ "id": "call_1", "tool": "shell", "input": {}, "dependsOn": [] }, { "id": "call_2", "tool": "load_tools", "input": {}, "dependsOn": [] }], "allowedTools": ["shell", "load_tools"] } }
+Good instead:
+{ "kind": "load_tools", "request": { "groups": ["skill:shell"], "reason": "Need shell to run a command." } }
+Good after shell appears in Selected tools:
+{ "kind": "act", "action": { "mode": "single", "calls": [{ "id": "call_1", "tool": "shell", "input": { "command": "pwd" }, "dependsOn": [] }], "allowedTools": ["shell"] } }`;
 
 function buildDecisionSystemSections(systemContext: string | undefined): Record<string, string> {
   const trimmed = systemContext?.trim();
@@ -253,7 +504,7 @@ function buildDecisionPromptSections(
   return {
     "user.tools": `Selected tools:\n${formatSelectedTools(toolDefinitions)}`,
     "user.toolRouting": toolRoutingSummary?.trim()
-      ? `Tool loading map:\n${toolRoutingSummary.trim()}`
+      ? `Tool loading map (request these with a load_tools decision, not action.calls):\n${toolRoutingSummary.trim()}`
       : "",
     "user.state": `State view:\n${JSON.stringify(stateView, null, 2)}`,
   };
@@ -302,11 +553,106 @@ function formatSelectedTools(toolDefinitions: ToolDefinition[]): string {
 }
 
 function resolveDecisionResponseFormat(provider: LlmProvider): LlmResponseFormat | undefined {
+  if (provider.capabilities.structuredOutput?.jsonSchema) {
+    return {
+      type: "json_schema",
+      name: "agent_decision_response",
+      strict: false,
+      schema: AGENT_DECISION_RESPONSE_SCHEMA,
+    };
+  }
   if (provider.capabilities.structuredOutput?.jsonObject) {
     return { type: "json_object" };
   }
   return undefined;
 }
+
+const AGENT_DECISION_RESPONSE_SCHEMA: Record<string, unknown> = {
+  type: "object",
+  properties: {
+    kind: {
+      type: "string",
+      enum: ["reply", "ask_user", "act", "load_tools"],
+    },
+    status: {
+      type: "string",
+      enum: ["completed", "failed"],
+    },
+    message: { type: "string" },
+    summary: { type: "string" },
+    question: { type: "string" },
+    reason: { type: "string" },
+    request: {
+      type: "object",
+      properties: {
+        query: { type: "string" },
+        toolNames: {
+          type: "array",
+          items: { type: "string" },
+        },
+        tool_names: {
+          type: "array",
+          items: { type: "string" },
+        },
+        groups: {
+          type: "array",
+          items: { type: "string" },
+        },
+        reason: { type: "string" },
+      },
+    },
+    action: {
+      type: "object",
+      properties: {
+        mode: {
+          type: "string",
+          enum: ["single", "sequential", "parallel"],
+        },
+        calls: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              id: { type: "string" },
+              tool: { type: "string" },
+              input: {
+                type: "object",
+                additionalProperties: true,
+              },
+              dependsOn: {
+                type: "array",
+                items: { type: "string" },
+              },
+              depends_on: {
+                type: "array",
+                items: { type: "string" },
+              },
+              purpose: { type: "string" },
+            },
+          },
+        },
+        allowedTools: {
+          type: "array",
+          items: { type: "string" },
+        },
+        allowed_tools: {
+          type: "array",
+          items: { type: "string" },
+        },
+      },
+    },
+    workingNotes: {
+      type: "array",
+      items: { type: "string" },
+    },
+    working_notes: {
+      type: "array",
+      items: { type: "string" },
+    },
+  },
+  required: ["kind"],
+  additionalProperties: true,
+};
 
 function normalizeAgentAction(value: unknown): AgentAction {
   const record = isPlainObject(value) ? value : {};
@@ -319,14 +665,12 @@ function normalizeAgentAction(value: unknown): AgentAction {
     : Array.isArray(record["allowed_tools"])
       ? record["allowed_tools"].map(String).filter((tool) => tool.trim().length > 0)
       : [];
-  const maxCalls = normalizePositiveInteger(record["maxCalls"] ?? record["max_calls"]);
   const assertions: ToolContractAssertion[] = [];
 
   return {
     mode,
     calls,
     allowedTools,
-    ...(maxCalls ? { maxCalls } : {}),
     assertions,
   };
 }
@@ -360,8 +704,12 @@ function normalizeStringArray(value: unknown): string[] {
     : [];
 }
 
+function uniqueStrings(values: string[]): string[] {
+  return [...new Set(values.map((value) => value.trim()).filter((value) => value.length > 0))];
+}
+
 function normalizeActionMode(value: unknown): AgentActionMode {
-  return value === "single" || value === "sequential" || value === "parallel" || value === "autonomous"
+  return value === "single" || value === "sequential" || value === "parallel"
     ? value
     : "single";
 }
@@ -386,11 +734,6 @@ function normalizeToolCallSpec(value: unknown): AgentToolCallSpec | null {
       : [],
     purpose: typeof value["purpose"] === "string" ? value["purpose"] : undefined,
   };
-}
-
-function normalizePositiveInteger(value: unknown): number | undefined {
-  const numberValue = typeof value === "number" ? value : Number(value);
-  return Number.isInteger(numberValue) && numberValue > 0 ? numberValue : undefined;
 }
 
 function extractJsonObject(text: string): Record<string, unknown> {

@@ -59,7 +59,12 @@ describe("listDirectoryTool", () => {
   it("returns empty directory message", async () => {
     const result = await listDirectoryTool.execute({ path: tmp });
     expect(result.ok).toBe(true);
-    expect(result.output).toBe("(empty directory)");
+    expect(result.output).toContain("0 files");
+    expect(result.v2?.structuredContent).toMatchObject({
+      dirPath: tmp,
+      counts: { files: 0, dirs: 0, other: 0 },
+      entries: [],
+    });
   });
 
   it("returns error for non-existent path", async () => {

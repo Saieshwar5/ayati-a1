@@ -25,6 +25,9 @@ or question-shaped follow-ups.
 - Made activity writes atomic with one SQLite transaction covering thread state,
   identities, aliases, cues, entities, assets, runs, FTS refresh, and event
   insertion.
+- Added an activity-store schema upgrade path that adds missing activity run
+  discussion-range columns to older development databases, removes the retired
+  compact search table, and backfills missing FTS rows.
 - Exposed cues and entities through `activity_get`.
 - Removed legacy compatibility code for the old activity search table and
   activity-run column migration.

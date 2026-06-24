@@ -3,6 +3,16 @@ import { stat } from "node:fs/promises";
 import { resolve as resolvePath } from "node:path";
 import { promisify } from "node:util";
 import type { SkillDefinition, ToolDefinition, ToolResult } from "../../types.js";
+import {
+  headTailBlocks,
+  importantLineBlocks,
+  makeBlock,
+  renderContextObservation,
+  splitLines,
+  truncatePreserveLines,
+  type ToolContextBlock,
+  type ToolContextObservation,
+} from "../../observations/context-observation.js";
 import { resolveWorkspaceCwd } from "../../workspace-paths.js";
 import { commonAnnotations, errorResult, failureV2, genericObjectOutputSchema, okResult, succeededContract, successV2 } from "../contract-helpers.js";
 
@@ -152,43 +162,58 @@ function execErrorTimedOut(err: unknown, message: string): boolean {
 }
 
 function shellCommandResult(input: ShellCommandResultInput): ToolResult {
+  const rawOutput = input.output;
+  const observation = buildShellObservation(input);
+  const compactOutput = renderContextObservation({
+    tool: "shell",
+    status: input.ok ? "success" : "failed",
+    message: input.message,
+    observation,
+  });
   const meta = {
     durationMs: input.durationMs,
     exitCode: input.exitCode,
     signal: input.signal,
     timedOut: input.timedOut,
     truncated: input.truncated,
+    rawOutputChars: rawOutput.length,
   };
   const structuredContent = {
     command: input.command,
     ...(input.cwd ? { cwd: input.cwd } : {}),
     exitCode: input.exitCode,
     signal: input.signal,
-    stdout: input.stdout,
-    stderr: input.stderr,
-    output: input.output,
+    stdoutPreview: truncatePreserveLines(input.stdout, 4_000),
+    stderrPreview: truncatePreserveLines(input.stderr, 4_000),
+    outputPreview: compactOutput,
+    observation,
     timedOut: input.timedOut,
     durationMs: input.durationMs,
     truncated: input.truncated,
+    rawOutputChars: rawOutput.length,
   };
 
   if (input.ok) {
-    return okResult({
-      output: input.output,
-      meta,
-      v2: successV2({
-        code: input.code,
-        message: input.message,
-        structuredContent,
-        diagnostics: meta,
+    return {
+      ...okResult({
+        output: compactOutput,
+        meta,
+        v2: successV2({
+          code: input.code,
+          message: input.message,
+          structuredContent,
+          diagnostics: meta,
+        }),
       }),
-    });
+      rawOutput,
+    };
   }
 
   return {
     ok: false,
     error: input.message,
-    output: input.output,
+    output: compactOutput,
+    rawOutput,
     meta,
     v2: failureV2({
       code: input.code,
@@ -203,6 +228,190 @@ function shellCommandResult(input: ShellCommandResultInput): ToolResult {
       diagnostics: meta,
     }),
   };
+}
+
+function buildShellObservation(input: ShellCommandResultInput): ToolContextObservation {
+  const rawOutput = input.output;
+  const lines = splitLines(rawOutput);
+  const commandKind = classifyCommand(input.command);
+  const specializedBlocks = buildSpecializedShellBlocks(commandKind, lines);
+  const importantBlocks = importantLineBlocks({
+    lines,
+    pattern: /error|warn|fail|failed|failure|exception|traceback|typeerror|referenceerror|assertion|stderr|ERR!|ELIFECYCLE|TS\d{3,5}/i,
+    maxMatches: 8,
+    contextLines: 2,
+    maxBlockChars: 1_600,
+  });
+  const fallbackBlocks = headTailBlocks({
+    lines,
+    headLines: input.ok ? 20 : 12,
+    tailLines: input.ok ? 40 : 60,
+    maxBlockChars: 2_400,
+  });
+  const blocks = dedupeBlocks([
+    ...specializedBlocks,
+    ...importantBlocks,
+    ...fallbackBlocks,
+  ]).slice(0, 8);
+  return {
+    mode: rawOutput.length > 12_000 || input.truncated ? "large_ref" : "focused",
+    summary: buildShellSummary(input, commandKind, lines),
+    stats: {
+      command: input.command,
+      ...(input.cwd ? { cwd: input.cwd } : {}),
+      commandKind,
+      exitCode: input.exitCode,
+      signal: input.signal,
+      durationMs: input.durationMs,
+      timedOut: input.timedOut,
+      truncated: input.truncated,
+      rawOutputChars: rawOutput.length,
+      lineCount: lines.length,
+      stdoutChars: input.stdout.length,
+      stderrChars: input.stderr.length,
+    },
+    highlights: buildShellHighlights(input, commandKind, lines),
+    blocks,
+    hasMore: input.truncated || rawOutput.length > 12_000,
+    suggestedReads: [
+      { kind: "search", reason: "Search raw command output for another error, file path, or test name.", input: {} },
+      { kind: "tail", reason: "Read the latest command output lines.", input: { lineCount: 120 } },
+      { kind: "read_lines", reason: "Read exact output lines around a reported issue.", input: {} },
+    ],
+  };
+}
+
+function classifyCommand(command: string): string {
+  const text = command.toLowerCase();
+  if (/\b(vitest|jest|mocha|playwright|test)\b/.test(text)) return "test";
+  if (/\b(tsc|typescript|eslint|biome|lint)\b/.test(text)) return "diagnostics";
+  if (/\b(pnpm|npm|yarn|bun)\b/.test(text)) return "package-script";
+  if (/\b(rg|grep|find)\b/.test(text)) return "search";
+  if (/\b(git)\b/.test(text)) return "git";
+  return "generic";
+}
+
+function buildSpecializedShellBlocks(commandKind: string, lines: string[]): ToolContextBlock[] {
+  if (commandKind === "test") {
+    return importantLineBlocks({
+      lines,
+      pattern: /FAIL|failed|AssertionError|expected|received|Test Files|Tests|Duration|Error:/i,
+      maxMatches: 8,
+      contextLines: 3,
+      maxBlockChars: 1_800,
+      title: "Test output",
+    });
+  }
+  if (commandKind === "diagnostics") {
+    return importantLineBlocks({
+      lines,
+      pattern: /error TS\d{3,5}|:\d+:\d+\s+-\s+error|warning|eslint|biome|lint/i,
+      maxMatches: 10,
+      contextLines: 2,
+      maxBlockChars: 1_600,
+      title: "Diagnostic",
+    });
+  }
+  if (commandKind === "package-script") {
+    return importantLineBlocks({
+      lines,
+      pattern: /ERR!|ELIFECYCLE|failed|error|missing|not found|Cannot find module/i,
+      maxMatches: 8,
+      contextLines: 2,
+      maxBlockChars: 1_600,
+      title: "Package manager output",
+    });
+  }
+  if (commandKind === "search") {
+    const matches = lines
+      .map((line, index) => ({ line, number: index + 1 }))
+      .filter(({ line }) => /\S+:\d+(:\d+)?:/.test(line) || line.trim().length > 0)
+      .slice(0, 40)
+      .map(({ line, number }) => `${number}: ${line}`);
+    return matches.length > 0
+      ? [makeBlock({ title: "Search results", lines: matches, maxChars: 3_000 })]
+      : [];
+  }
+  return [];
+}
+
+function buildShellHighlights(input: ShellCommandResultInput, commandKind: string, lines: string[]): string[] {
+  const highlights: string[] = [];
+  highlights.push(`exitCode=${input.exitCode ?? "unknown"}`);
+  if (input.timedOut) highlights.push("command timed out");
+  if (input.signal) highlights.push(`signal=${input.signal}`);
+  if (input.truncated) highlights.push("output was truncated by the tool cap");
+
+  const summaryPatterns = commandKind === "test"
+    ? [/Test Files.+/i, /Tests.+/i, /Duration.+/i, /FAIL.+/i]
+    : commandKind === "diagnostics"
+      ? [/Found \d+ errors?/i, /error TS\d{3,5}.+/i]
+      : [/error.+/i, /failed.+/i, /warning.+/i];
+
+  for (const pattern of summaryPatterns) {
+    const match = lines.find((line) => pattern.test(line));
+    if (match) highlights.push(match.trim());
+  }
+  return [...new Set(highlights)].slice(0, 12);
+}
+
+function buildShellSummary(input: ShellCommandResultInput, commandKind: string, lines: string[]): string {
+  const status = input.ok ? "succeeded" : input.timedOut ? "timed out" : "failed";
+  const base = `Command ${status} with exitCode=${input.exitCode ?? "unknown"} in ${input.durationMs}ms.`;
+  const stderrLineCount = input.stderr.length > 0 ? splitLines(input.stderr).length : 0;
+  const detail = [
+    `kind=${commandKind}`,
+    `${lines.length} output line${lines.length === 1 ? "" : "s"}`,
+    stderrLineCount > 0 ? `${stderrLineCount} stderr line${stderrLineCount === 1 ? "" : "s"}` : "",
+    input.truncated ? "captured output was truncated" : "",
+  ].filter((item) => item.length > 0).join(", ");
+  return `${base} ${detail}.`;
+}
+
+function dedupeBlocks(blocks: ToolContextBlock[]): ToolContextBlock[] {
+  const seen = new Set<string>();
+  const out: ToolContextBlock[] = [];
+  for (const block of blocks) {
+    const key = `${block.title}:${block.startLine ?? ""}:${block.content}`;
+    if (seen.has(key) || block.content.trim().length === 0) {
+      continue;
+    }
+    seen.add(key);
+    out.push(block);
+  }
+  return out;
+}
+
+function compactSessionOutput(input: {
+  code: string;
+  message: string;
+  command: string;
+  output: string;
+  exitCode: number | null;
+  signal: string | null;
+  running: boolean;
+}): { outputPreview: string; observation: ToolContextObservation; rawOutput: string } {
+  const observation = buildShellObservation({
+    ok: true,
+    code: input.code,
+    message: input.message,
+    command: input.command,
+    stdout: input.output,
+    stderr: "",
+    output: input.output,
+    truncated: false,
+    durationMs: 0,
+    exitCode: input.exitCode,
+    signal: input.signal,
+    timedOut: false,
+  });
+  const outputPreview = renderContextObservation({
+    tool: "shell_session",
+    status: "success",
+    message: input.running ? `${input.message}; session is still running.` : input.message,
+    observation,
+  });
+  return { outputPreview, observation, rawOutput: input.output };
 }
 
 function capWithDefault(inputCap: number | undefined, defaultCap: number): number {
@@ -561,18 +770,20 @@ function preflightShellCommand(
 
 const shellCommandOutputSchema = {
   type: "object",
-  required: ["command", "exitCode", "stdout", "stderr", "output", "timedOut", "durationMs", "truncated"],
+  required: ["command", "exitCode", "stdoutPreview", "stderrPreview", "outputPreview", "observation", "timedOut", "durationMs", "truncated"],
   properties: {
     command: { type: "string" },
     cwd: { type: "string" },
     exitCode: { type: ["integer", "null"] },
     signal: { type: ["string", "null"] },
-    stdout: { type: "string" },
-    stderr: { type: "string" },
-    output: { type: "string" },
+    stdoutPreview: { type: "string" },
+    stderrPreview: { type: "string" },
+    outputPreview: { type: "string" },
+    observation: { type: "object" },
     timedOut: { type: "boolean" },
     durationMs: { type: "integer" },
     truncated: { type: "boolean" },
+    rawOutputChars: { type: "integer" },
   },
 };
 
@@ -819,31 +1030,45 @@ export const shellSessionStartTool: ToolDefinition = {
     shellSessions.set(sessionId, session);
     await sleep(waitToPolicy(parsed.waitMs, 150));
     const output = consumePendingOutput(session);
+    const compact = compactSessionOutput({
+      code: "SHELL_SESSION_STARTED",
+      message: `Started shell session: ${sessionId}`,
+      command: parsed.cmd,
+      output,
+      exitCode: session.exitCode,
+      signal: session.signal,
+      running: !session.exited,
+    });
     const structuredContent = {
       sessionId,
       command: parsed.cmd,
       ...(preflight.resolvedCwd ? { cwd: preflight.resolvedCwd } : {}),
-      output,
+      outputPreview: compact.outputPreview,
+      observation: compact.observation,
       running: !session.exited,
       createdAt: session.createdAt,
       exitCode: session.exitCode,
       signal: session.signal,
+      rawOutputChars: output.length,
     };
     const meta = {
       sessionId,
       running: !session.exited,
       createdAt: session.createdAt,
     };
-    return okResult({
-      output,
-      meta,
-      v2: successV2({
-        code: "SHELL_SESSION_STARTED",
-        message: `Started shell session: ${sessionId}`,
-        structuredContent,
-        diagnostics: meta,
+    return {
+      ...okResult({
+        output: compact.outputPreview,
+        meta,
+        v2: successV2({
+          code: "SHELL_SESSION_STARTED",
+          message: `Started shell session: ${sessionId}`,
+          structuredContent,
+          diagnostics: meta,
+        }),
       }),
-    });
+      rawOutput: compact.rawOutput,
+    };
   },
 };
 
@@ -910,16 +1135,27 @@ export const shellSessionWriteTool: ToolDefinition = {
     session.lastActiveAt = Date.now();
     await sleep(waitToPolicy(parsed.waitMs, 120));
     const output = consumePendingOutput(session);
+    const compact = compactSessionOutput({
+      code: "SHELL_SESSION_WRITTEN",
+      message: `Updated shell session: ${session.id}`,
+      command: `shell_session_write ${session.id}`,
+      output,
+      exitCode: session.exitCode,
+      signal: session.signal,
+      running: !session.exited,
+    });
 
     const structuredContent = {
       sessionId: session.id,
-      output,
+      outputPreview: compact.outputPreview,
+      observation: compact.observation,
       running: !session.exited,
       exitCode: session.exitCode,
       signal: session.signal,
       inputSent: parsed.input !== undefined,
       closeStdin: parsed.closeStdin === true,
       signalSent: parsed.signal ?? null,
+      rawOutputChars: output.length,
     };
     const meta = {
       sessionId: session.id,
@@ -927,16 +1163,19 @@ export const shellSessionWriteTool: ToolDefinition = {
       exitCode: session.exitCode,
       signal: session.signal,
     };
-    return okResult({
-      output,
-      meta,
-      v2: successV2({
-        code: "SHELL_SESSION_WRITTEN",
-        message: `Updated shell session: ${session.id}`,
-        structuredContent,
-        diagnostics: meta,
+    return {
+      ...okResult({
+        output: compact.outputPreview,
+        meta,
+        v2: successV2({
+          code: "SHELL_SESSION_WRITTEN",
+          message: `Updated shell session: ${session.id}`,
+          structuredContent,
+          diagnostics: meta,
+        }),
       }),
-    });
+      rawOutput: compact.rawOutput,
+    };
   },
 };
 
@@ -1005,14 +1244,25 @@ export const shellSessionCloseTool: ToolDefinition = {
 
     const output = consumePendingOutput(session);
     shellSessions.delete(session.id);
-
-    const structuredContent = {
-      sessionId: session.id,
+    const compact = compactSessionOutput({
+      code: "SHELL_SESSION_CLOSED",
+      message: `Closed shell session: ${session.id}`,
+      command: `shell_session_close ${session.id}`,
       output,
       exitCode: session.exitCode,
       signal: session.signal,
       running: false,
+    });
+
+    const structuredContent = {
+      sessionId: session.id,
+      outputPreview: compact.outputPreview,
+      observation: compact.observation,
+      exitCode: session.exitCode,
+      signal: session.signal,
+      running: false,
       force: parsed.force === true,
+      rawOutputChars: output.length,
     };
     const meta = {
       sessionId: session.id,
@@ -1020,16 +1270,19 @@ export const shellSessionCloseTool: ToolDefinition = {
       signal: session.signal,
       running: false,
     };
-    return okResult({
-      output,
-      meta,
-      v2: successV2({
-        code: "SHELL_SESSION_CLOSED",
-        message: `Closed shell session: ${session.id}`,
-        structuredContent,
-        diagnostics: meta,
+    return {
+      ...okResult({
+        output: compact.outputPreview,
+        meta,
+        v2: successV2({
+          code: "SHELL_SESSION_CLOSED",
+          message: `Closed shell session: ${session.id}`,
+          structuredContent,
+          diagnostics: meta,
+        }),
       }),
-    });
+      rawOutput: compact.rawOutput,
+    };
   },
 };
 

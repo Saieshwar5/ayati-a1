@@ -51,6 +51,7 @@ import {
   type SystemEventHandlingMode,
   type SystemEventPolicyConfig,
 } from "./system-event-policy.js";
+import type { AgentFeedbackLedger } from "./feedback-ledger.js";
 import type {
   AgentLoopResult,
   AgentArtifact,
@@ -101,6 +102,7 @@ export interface IVecEngineOptions {
   courseStore?: CourseStore;
   learningFileStore?: LearningFileStore;
   systemEventPolicy?: SystemEventPolicyConfig;
+  feedbackLedger?: AgentFeedbackLedger;
 }
 
 export class IVecEngine {
@@ -123,6 +125,7 @@ export class IVecEngine {
   private readonly courseStore?: CourseStore;
   private readonly learningFileStore?: LearningFileStore;
   private readonly systemEventPolicy?: SystemEventPolicyConfig;
+  private readonly feedbackLedger?: AgentFeedbackLedger;
   private readonly pulseProposalReflectionService = new PulseProposalReflectionService();
   private staticSystemTokens = 0;
   private staticTokensReady = false;
@@ -149,6 +152,7 @@ export class IVecEngine {
     this.courseStore = options?.courseStore;
     this.learningFileStore = options?.learningFileStore;
     this.systemEventPolicy = options?.systemEventPolicy;
+    this.feedbackLedger = options?.feedbackLedger;
   }
 
   async start(): Promise<void> {
@@ -214,6 +218,19 @@ export class IVecEngine {
     try {
       this.rotateSessionBeforeRunIfNeeded(clientId, content);
       inputHandle = this.sessionMemory.recordUserMessage(clientId, content);
+      this.feedbackLedger?.record({
+        clientId,
+        sessionId: inputHandle.sessionId,
+        seq: inputHandle.seq,
+        stage: "message",
+        event: "received",
+        data: {
+          kind: "chat",
+          content,
+          attachments: attachments.map((attachment) => summarizeChatAttachment(attachment)),
+          uiContext,
+        },
+      });
 
       if (this.provider) {
         if (attachments.length > 0) {
@@ -241,6 +258,17 @@ export class IVecEngine {
           onWorkRunCreated: (created) => {
             runHandle = created;
             this.recordTurnStatus(clientId, created, "processing_started");
+            this.feedbackLedger?.record({
+              clientId,
+              sessionId: created.sessionId,
+              seq: inputHandle?.seq,
+              runId: created.runId,
+              stage: "run",
+              event: "created",
+              data: {
+                source: "engine",
+              },
+            });
           },
           clientId,
           uiContext,
@@ -249,6 +277,7 @@ export class IVecEngine {
           dataDir: this.dataDir ?? "data",
           systemContext: system.decisionSystemContext || system.systemContext || undefined,
           activeLearningContext: system.activeLearningContext,
+          feedbackLedger: this.feedbackLedger,
           attachedDocuments: registeredAttachments.documents,
           attachmentWarnings: registeredAttachments.warnings,
           managedFiles: registeredAttachments.managedFiles,
@@ -273,6 +302,21 @@ export class IVecEngine {
         });
         result = await this.applyPulseProposalReflection(clientId, content, result, toolDefs);
         this.dispatchAgentResponse(clientId, inputHandle, runHandle, result);
+        this.feedbackLedger?.record({
+          clientId,
+          sessionId: inputHandle.sessionId,
+          seq: inputHandle.seq,
+          ...(runHandle ? { runId: runHandle.runId } : {}),
+          stage: "final",
+          event: "dispatched",
+          data: {
+            type: result.type,
+            status: result.status,
+            content: result.content,
+            artifacts: result.artifacts,
+            runPath: result.runPath,
+          },
+        });
         this.queueTaskSummaryPublication(clientId, inputHandle, result.taskSummary);
         runStatus = result.status;
       } else {
@@ -284,6 +328,16 @@ export class IVecEngine {
       }
     } catch (err) {
       devError("Provider error:", err);
+      this.feedbackLedger?.record({
+        clientId,
+        ...(inputHandle ? { sessionId: inputHandle.sessionId, seq: inputHandle.seq } : {}),
+        ...(runHandle ? { runId: runHandle.runId } : {}),
+        stage: "final",
+        event: "error",
+        data: {
+          message: err instanceof Error ? err.message : String(err),
+        },
+      });
       if (runHandle) {
         const message = err instanceof Error ? err.message : "Unknown runtime failure";
         this.sessionMemory.recordRunFailure(
@@ -336,6 +390,21 @@ export class IVecEngine {
         triggeredAt: event.receivedAt,
         payload: event.payload,
       }) ?? this.sessionMemory.recordUserMessage(clientId, incomingMessage);
+      this.feedbackLedger?.record({
+        clientId,
+        sessionId: inputHandle.sessionId,
+        seq: inputHandle.seq,
+        stage: "message",
+        event: "received",
+        data: {
+          kind: "system_event",
+          source: event.source,
+          eventName: event.eventName,
+          eventId: event.eventId,
+          summary: event.summary,
+          policyMode: systemEventPlan.policy.mode,
+        },
+      });
 
       if (systemEventPlan.policy.mode === "log_only") {
         this.sessionMemory.recordSystemEventOutcome?.(clientId, {
@@ -407,6 +476,19 @@ export class IVecEngine {
             "processing_started",
             `system_event:${event.source}/${event.eventName} mode=${systemEventPlan.policy.mode}`,
           );
+          this.feedbackLedger?.record({
+            clientId,
+            sessionId: created.sessionId,
+            seq: inputHandle?.seq,
+            runId: created.runId,
+            stage: "run",
+            event: "created",
+            data: {
+              source: "system_event",
+              eventSource: event.source,
+              eventName: event.eventName,
+            },
+          });
         },
         clientId,
         inputKind: "system_event",
@@ -424,6 +506,7 @@ export class IVecEngine {
         dataDir: this.dataDir ?? "data",
         systemContext: system.decisionSystemContext || system.systemContext || undefined,
         activeLearningContext: system.activeLearningContext,
+        feedbackLedger: this.feedbackLedger,
         fileLibrary: this.fileLibrary,
         directoryLibrary: this.directoryLibrary,
         documentStore: this.documentStore,
@@ -910,6 +993,22 @@ export class IVecEngine {
     if (!taskSummary) {
       return;
     }
+
+    this.feedbackLedger?.record({
+      clientId,
+      sessionId: inputHandle.sessionId,
+      seq: inputHandle.seq,
+      runId: taskSummary.runId,
+      stage: "memory",
+      event: "task_summary_queued",
+      data: {
+        status: taskSummary.status,
+        taskStatus: taskSummary.taskStatus,
+        summary: taskSummary.summary,
+        assistantResponseKind: taskSummary.assistantResponseKind,
+        attachmentNames: taskSummary.attachmentNames,
+      },
+    });
 
     const payload = {
       ...taskSummary,
@@ -1556,6 +1655,42 @@ function renderToolDirectorySection(toolDirectory: string | undefined, includeTo
   if (!includeToolDirectory) return "";
   if (!toolDirectory || toolDirectory.trim().length === 0) return "";
   return `# Available Tools\n\n${toolDirectory}`;
+}
+
+function summarizeChatAttachment(attachment: ChatAttachmentInput): Record<string, unknown> {
+  if ("uploadedPath" in attachment) {
+    return {
+      type: attachment.type ?? "upload",
+      source: attachment.source,
+      originalName: attachment.originalName,
+      mimeType: attachment.mimeType,
+      sizeBytes: attachment.sizeBytes,
+      fileId: attachment.fileId,
+    };
+  }
+  if ("fileId" in attachment) {
+    return {
+      type: attachment.type ?? "managed_file",
+      source: attachment.source,
+      fileId: attachment.fileId,
+    };
+  }
+  if (attachment.type === "directory") {
+    return {
+      type: attachment.type,
+      source: attachment.source,
+      path: attachment.path,
+      name: attachment.name,
+      maxDepth: attachment.maxDepth,
+      maxFiles: attachment.maxFiles,
+    };
+  }
+  return {
+    type: attachment.type ?? "file",
+    source: attachment.source,
+    path: attachment.path,
+    name: attachment.name,
+  };
 }
 
 export { IVecEngine as AgentEngine };

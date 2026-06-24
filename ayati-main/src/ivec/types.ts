@@ -41,6 +41,7 @@ import type {
   SystemEventHandlingMode,
 } from "./system-event-policy.js";
 import type { RunMetrics } from "./metrics.js";
+import type { AgentFeedbackLedger } from "./feedback-ledger.js";
 
 export type SystemEventApprovalState = "not_needed" | "pending" | "granted" | "rejected";
 export type RunClass = "interaction" | "task";
@@ -51,7 +52,7 @@ export type AgentTaskSummaryRecord = Omit<TaskSummaryRecordInput, "sessionId">;
 export type WorkStatus = "not_done" | "done" | "blocked" | "needs_user_input";
 
 export type EvidenceAccessMode = "full" | "next_chunk" | "search" | "read_lines" | "tail";
-export type ToolObservationMode = "full" | "chunk" | "large_ref" | "summary";
+export type ToolObservationMode = "full" | "focused" | "chunk" | "large_ref" | "summary";
 export type ToolObservationStatus = "success" | "failed";
 
 export interface WorkEvidenceRef {
@@ -265,6 +266,8 @@ export interface LoopConfig {
   maxIterations: number;
   maxConsecutiveFailures: number;
   maxTotalToolCallsPerStep: number;
+  maxSequentialToolCallsPerStep: number;
+  maxParallelToolCallsPerStep: number;
   maxInlineActOutputChars: number;
   maxVerifyArtifactChars: number;
   maxSelectedTools: number;
@@ -274,7 +277,9 @@ export interface LoopConfig {
 export const DEFAULT_LOOP_CONFIG: LoopConfig = {
   maxIterations: 15,
   maxConsecutiveFailures: 5,
-  maxTotalToolCallsPerStep: 6,
+  maxTotalToolCallsPerStep: 4,
+  maxSequentialToolCallsPerStep: 4,
+  maxParallelToolCallsPerStep: 3,
   maxInlineActOutputChars: 8_000,
   maxVerifyArtifactChars: 20_000,
   maxSelectedTools: 12,
@@ -324,6 +329,7 @@ export interface AgentLoopDeps {
   initialUserMessage?: string;
   uiContext?: AgentUiContext;
   onProgress?: OnProgressCallback;
+  feedbackLedger?: AgentFeedbackLedger;
   config?: Partial<LoopConfig>;
   dataDir: string;
   systemContext?: string;

@@ -3,10 +3,12 @@
 Current product features:
 
 - Runtime-selectable LLM providers: OpenRouter, OpenAI, Anthropic, and Fireworks.
-- Decision-action-reducer IVec harness with `reply`, `ask_user`, and `act` decisions.
+- Decision-action-reducer IVec harness with `reply`, `ask_user`, `load_tools`, and `act` decisions.
 - Structured context pack with recent conversation, resolved continuity,
   personal memory, and active learning context.
 - Deterministic tool verification through tool contracts, assertions, verified facts, and progress reduction.
+- Deterministic action-plan validation with bounded sequential execution and
+  deny-by-default parallel execution for explicitly safe read-only tools.
 - Built-in skills for shell, filesystem, calculator, SQLite database work, Python execution, documents, datasets, files, memory, recall, identity, Pulse, and dynamic built-in skill activation.
 - Activity threads and deterministic continuity resolution for ongoing projects, documents, learning, automations, investigations, and debugging.
 - Activity assets for restoring user-attached documents, datasets, files, and directories into later follow-up runs.

@@ -199,6 +199,7 @@ export interface ToolErrorContract {
 export interface ToolResult {
   ok: boolean;
   output?: string;
+  rawOutput?: string;
   error?: string;
   meta?: Record<string, unknown>;
   v2?: ToolResultV2;

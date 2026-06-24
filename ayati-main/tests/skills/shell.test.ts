@@ -15,6 +15,14 @@ describe("shell tool", () => {
     const result = await shellExecTool.execute({ cmd: "echo hello" });
     expect(result.ok).toBe(true);
     expect(result.output).toContain("hello");
+    expect(result.rawOutput).toContain("hello");
+    expect(result.v2?.structuredContent).toMatchObject({
+      exitCode: 0,
+      timedOut: false,
+      observation: {
+        mode: "focused",
+      },
+    });
   });
 
   it("returns stdout and stderr when a command fails", async () => {
@@ -30,7 +38,8 @@ describe("shell tool", () => {
   it("defaults cwd to work_space", async () => {
     const result = await shellExecTool.execute({ cmd: "pwd" });
     expect(result.ok).toBe(true);
-    expect(String(result.output ?? "").trim()).toBe(workspaceRoot);
+    expect(String(result.output ?? "")).toContain(workspaceRoot);
+    expect(String(result.rawOutput ?? "").trim()).toBe(workspaceRoot);
   });
 
   it("runs a script", async () => {

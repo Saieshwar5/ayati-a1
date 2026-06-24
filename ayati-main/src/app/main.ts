@@ -29,6 +29,7 @@ import embeddingProvider from "../embeddings/runtime/index.js";
 import imageGenerationProvider from "../image-generation/runtime/index.js";
 import type { AgentUiContext } from "../ui/context.js";
 import type { WorkspaceInteractionEvent } from "../ui/workspace-orchestrator.js";
+import { createAgentFeedbackLedgerFromEnv } from "../ivec/feedback-ledger.js";
 
 const thisDir = dirname(fileURLToPath(import.meta.url));
 const projectRoot = resolve(thisDir, "..", "..");
@@ -40,6 +41,9 @@ export async function main(): Promise<void> {
   const runtimeConfig = loadAyatiRuntimeConfig(process.env);
   const provider = await loadProvider(providerFactory);
   const systemEventPolicy = loadSystemEventPolicy(projectRoot);
+  const feedbackLedger = createAgentFeedbackLedgerFromEnv({
+    dataDir: resolve(projectRoot, "data"),
+  });
   let engine: IVecEngine | null = null;
   let staticContext: StaticContext | null = null;
   const workspaceSessionsByTransport = new Map<string, string>();
@@ -204,6 +208,7 @@ export async function main(): Promise<void> {
     learningFileStore: content.learningFileStore,
     systemEventPolicy,
     loopConfig: runtimeConfig.agent.loopConfig,
+    feedbackLedger,
   });
   const systemEventWorker = new SystemEventWorker({
     queueStore: inboundQueueStore,
@@ -265,6 +270,7 @@ export async function main(): Promise<void> {
     await embeddingProvider.stop();
     await imageGenerationProvider.stop();
     await engine.stop();
+    await feedbackLedger.close();
   };
 
   process.on("SIGINT", () => void shutdown());

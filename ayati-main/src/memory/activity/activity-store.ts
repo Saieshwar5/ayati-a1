@@ -978,6 +978,8 @@ export class ActivityStore {
         tokenize = 'unicode61'
       );
     `);
+    this.upgradeSchema(db);
+    this.rebuildMissingSearchRows(db);
   }
 
   private requireDb(): DatabaseSync {
@@ -987,6 +989,47 @@ export class ActivityStore {
     return this.db;
   }
 
+  private upgradeSchema(db: DatabaseSync): void {
+    for (const [name, type] of [
+      ["trigger_seq", "INTEGER"],
+      ["discussion_start_seq", "INTEGER"],
+      ["discussion_end_seq", "INTEGER"],
+    ] as const) {
+      if (!tableHasColumn(db, "activity_runs", name)) {
+        db.exec(`ALTER TABLE activity_runs ADD COLUMN ${name} ${type};`);
+      }
+    }
+    if (tableExists(db, "activity_search")) {
+      db.exec("DROP TABLE activity_search;");
+    }
+  }
+
+  private rebuildMissingSearchRows(db: DatabaseSync): void {
+    const rows = db.prepare(`
+      SELECT t.*
+      FROM activity_threads t
+      LEFT JOIN activity_search_fts f ON f.activity_id = t.activity_id
+      WHERE f.activity_id IS NULL
+    `).all() as unknown as ActivityRow[];
+    for (const row of rows) {
+      const activity = this.toActivityThread(row);
+      db.prepare(`
+        INSERT INTO activity_search_fts (
+          activity_id, client_id, title, summary, state, cues, entities, aliases, assets
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        activity.activityId,
+        activity.clientId,
+        activity.title,
+        activity.summary,
+        activityStateSearchText(activity),
+        activity.cues.map((cue) => cue.text).join("\n"),
+        activity.entities.map((entity) => `${entity.entityType} ${entity.name}`).join("\n"),
+        activity.aliases.map((alias) => alias.value).join("\n"),
+        activity.assets.map(assetLabel).join("\n"),
+      );
+    }
+  }
 }
 
 export function buildIdentities(input: ActivityUpsertInput): ActivityIdentity[] {
@@ -1808,4 +1851,19 @@ function parseJsonMaybe(value: string): unknown {
   } catch {
     return undefined;
   }
+}
+
+function tableExists(db: DatabaseSync, tableName: string): boolean {
+  const row = db.prepare(`
+    SELECT 1 AS found
+    FROM sqlite_master
+    WHERE type IN ('table', 'virtual table') AND name = ?
+    LIMIT 1
+  `).get(tableName) as Record<string, unknown> | undefined;
+  return Boolean(row);
+}
+
+function tableHasColumn(db: DatabaseSync, tableName: string, columnName: string): boolean {
+  return (db.prepare(`PRAGMA table_info(${tableName})`).all() as Array<Record<string, unknown>>)
+    .some((row) => row["name"] === columnName);
 }

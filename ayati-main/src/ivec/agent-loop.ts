@@ -18,6 +18,12 @@ function validateLoopConfig(config: LoopConfig): void {
   if (config.maxTotalToolCallsPerStep <= 0) {
     throw new Error("maxTotalToolCallsPerStep must be positive");
   }
+  if (config.maxSequentialToolCallsPerStep <= 0) {
+    throw new Error("maxSequentialToolCallsPerStep must be positive");
+  }
+  if (config.maxParallelToolCallsPerStep <= 0) {
+    throw new Error("maxParallelToolCallsPerStep must be positive");
+  }
   if (config.maxInlineActOutputChars <= 0) {
     throw new Error("maxInlineActOutputChars must be positive");
   }

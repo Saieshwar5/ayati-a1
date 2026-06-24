@@ -81,6 +81,10 @@ export async function runAgentLoop(
 
   let totalToolCalls = 0;
   const state = buildInitialState(deps, config, inputHandle, runPath, workRunHandle);
+  recordFeedback(deps, inputHandle, workRunHandle?.runId, "loop", "started", {
+    inputKind: state.inputKind ?? "user_message",
+    userMessage: state.userMessage,
+  });
 
   const ensureWorkRun = async (): Promise<MemoryRunContext> => {
     if (!workRunHandle) {
@@ -91,6 +95,9 @@ export async function runAgentLoop(
       workRunHandle = createWorkRun.call(deps.sessionMemory, deps.clientId, inputHandle);
       deps.runHandle = workRunHandle;
       deps.onWorkRunCreated?.(workRunHandle);
+      recordFeedback(deps, inputHandle, workRunHandle.runId, "run", "created", {
+        reason: "agent_action_or_tool_load",
+      });
     }
     if (!runPath) {
       runPath = initRunDirectory(deps.dataDir, workRunHandle.runId);
@@ -150,6 +157,14 @@ export async function runAgentLoop(
     });
     deps.toolExecutor?.unmount?.(evidenceToolGroupId(cleanupRunId));
     devLog(`[${deps.clientId}] [metrics:agent_loop] ${formatRunMetrics(metrics)}`);
+    recordFeedback(deps, inputHandle, state.runId || workRunHandle?.runId, "final", "reply", {
+      status: input.status,
+      responseKind: input.responseKind ?? input.completion?.response_kind ?? state.preferredResponseKind ?? "reply",
+      content: input.content ?? state.finalOutput,
+      totalIterations: state.iteration,
+      totalToolCalls,
+      runPath,
+    });
     return buildLoopResult(state, deps.dataDir, {
       status: input.status,
       totalIterations: state.iteration,
@@ -212,6 +227,15 @@ export async function runAgentLoop(
     const selectedTools = finalReplyFromVerifiedState
       ? []
       : selectToolsForDecision(state, visibleTools, config.maxSelectedTools);
+    recordFeedback(deps, inputHandle, state.runId || workRunHandle?.runId, "decision", "prompt_summary", {
+      iteration: state.iteration,
+      selectedTools: selectedTools.map((tool) => tool.name),
+      selectedToolCount: selectedTools.length,
+      visibleToolCount: visibleTools.length,
+      toolRoutingAvailable: Boolean(deps.toolWorkingSetManager?.getPromptSummary().trim()),
+      workStatus: state.workState.status,
+      progressSummary: state.workState.summary,
+    });
     const decision = await callAgentDecision({
       provider: deps.provider,
       stateView: buildAgentStateView(state),
@@ -219,6 +243,13 @@ export async function runAgentLoop(
       toolRoutingSummary: deps.toolWorkingSetManager?.getPromptSummary(),
       systemContext: deps.systemContext,
       metrics,
+      feedbackLedger: deps.feedbackLedger,
+      feedbackContext: {
+        clientId: deps.clientId,
+        sessionId: inputHandle.sessionId,
+        seq: inputHandle.seq,
+        ...(state.runId || workRunHandle?.runId ? { runId: state.runId || workRunHandle?.runId } : {}),
+      },
     });
     discardModelWorkingNotes(decision);
 
@@ -266,7 +297,14 @@ export async function runAgentLoop(
     if (decision.kind === "load_tools") {
       const work = await ensureWorkRun();
       const workToolContext = { ...toolContext, runId: work.runHandle.runId };
+      recordFeedback(deps, inputHandle, work.runHandle.runId, "tool_load", "requested", {
+        request: decision.request,
+      });
       deps.toolWorkingSetManager?.load(decision.request, workToolContext);
+      recordFeedback(deps, inputHandle, work.runHandle.runId, "tool_load", "completed", {
+        request: decision.request,
+        status: deps.toolWorkingSetManager ? "success" : "failed",
+      });
       queueStateSnapshot();
       recordRunMetric(metrics, "tool_load_decision", {
         kind: "local",
@@ -283,6 +321,17 @@ export async function runAgentLoop(
       await deps.skillActivationManager?.prepareForDecision(state, workToolContext);
     }
     syncEvidenceTools(deps, state, workToolContext);
+    recordFeedback(deps, inputHandle, work.runHandle.runId, "action", "started", {
+      iteration: state.iteration,
+      mode: decision.action.mode,
+      calls: decision.action.calls.map((call) => ({
+        id: call.id,
+        tool: call.tool,
+        dependsOn: call.dependsOn,
+        purpose: call.purpose,
+      })),
+      allowedTools: decision.action.allowedTools,
+    });
     const stepResult = await executeActionStep({
       deps,
       state,
@@ -293,6 +342,7 @@ export async function runAgentLoop(
       stepNumber: state.iteration,
     });
     totalToolCalls += stepResult.stepSummary.toolSuccessCount + stepResult.stepSummary.toolFailureCount;
+    recordActionFeedback(deps, inputHandle, work.runHandle.runId, stepResult);
 
     const beforeWorkStateChars = measureJson(stepResult.execution.nextWorkState);
     const compactedWorkState = compactWorkState(stepResult.execution.nextWorkState);
@@ -398,6 +448,71 @@ interface ExecuteActionStepResult {
   stepSummary: StepSummary;
   stepRecord: StepRecord;
   fullStepText: string;
+}
+
+function recordFeedback(
+  deps: AgentLoopDeps,
+  inputHandle: SessionInputHandle,
+  runId: string | undefined,
+  stage: string,
+  event: string,
+  data?: Record<string, unknown>,
+): void {
+  deps.feedbackLedger?.record({
+    clientId: deps.clientId,
+    sessionId: inputHandle.sessionId,
+    seq: inputHandle.seq,
+    ...(runId ? { runId } : {}),
+    stage,
+    event,
+    ...(data ? { data } : {}),
+  });
+}
+
+function recordActionFeedback(
+  deps: AgentLoopDeps,
+  inputHandle: SessionInputHandle,
+  runId: string,
+  stepResult: ExecuteActionStepResult,
+): void {
+  recordFeedback(deps, inputHandle, runId, "action", "completed", {
+    step: stepResult.stepSummary.step,
+    outcome: stepResult.stepSummary.outcome,
+    summary: stepResult.stepSummary.summary,
+    toolSuccessCount: stepResult.stepSummary.toolSuccessCount,
+    toolFailureCount: stepResult.stepSummary.toolFailureCount,
+    executionStatus: stepResult.stepSummary.executionStatus,
+    validationStatus: stepResult.stepSummary.validationStatus,
+  });
+  for (const call of stepResult.execution.actOutput.toolCalls) {
+    recordFeedback(deps, inputHandle, runId, "action", "tool_result", {
+      step: stepResult.stepSummary.step,
+      callId: call.callId,
+      tool: call.tool,
+      operationStatus: call.operationStatus,
+      code: call.code,
+      error: call.error,
+      outputPreview: call.output,
+      outputStorage: call.outputStorage,
+      rawOutputPath: call.rawOutputPath,
+      artifacts: call.artifacts,
+      evidenceRef: call.evidenceRef,
+    });
+  }
+  if (stepResult.stepSummary.outcome === "failed") {
+    recordFeedback(deps, inputHandle, runId, "action", "failed", {
+      step: stepResult.stepSummary.step,
+      failureType: stepResult.stepSummary.failureType,
+      summary: stepResult.stepSummary.summary,
+      blockedTargets: stepResult.stepSummary.blockedTargets,
+    });
+  }
+  for (const artifact of stepResult.stepSummary.artifacts) {
+    recordFeedback(deps, inputHandle, runId, "artifact", "created", {
+      step: stepResult.stepSummary.step,
+      artifact,
+    });
+  }
 }
 
 async function executeActionStep(input: ExecuteActionStepInput): Promise<ExecuteActionStepResult> {
@@ -864,8 +979,16 @@ function canCompleteFromVerifiedState(state: LoopState): boolean {
   return state.workState.status === "done" && state.workState.userInputNeeded === undefined;
 }
 
-const LOCAL_COMPLETION_TOOLS = new Set([
+const LOCAL_COMPLETION_SUPPORT_TOOLS = new Set([
   "create_directory",
+  "write_file",
+  "write_files",
+  "edit_file",
+  "move",
+  "delete",
+]);
+
+const LOCAL_COMPLETION_REQUIRED_TOOLS = new Set([
   "write_file",
   "write_files",
   "edit_file",
@@ -881,9 +1004,11 @@ function canCompleteLocallyAfterAction(
   if (step.outcome !== "success") {
     return false;
   }
-  const tools = action.calls.map((call) => call.tool);
+  const tools = step.toolsUsed ?? action.calls.map((call) => call.tool);
   return tools.length > 0
-    && tools.every((tool) => LOCAL_COMPLETION_TOOLS.has(tool))
+    && step.toolFailureCount === 0
+    && tools.every((tool) => LOCAL_COMPLETION_SUPPORT_TOOLS.has(tool))
+    && tools.some((tool) => LOCAL_COMPLETION_REQUIRED_TOOLS.has(tool))
     && !(workState.userInputNeeded?.trim());
 }
 

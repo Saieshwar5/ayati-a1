@@ -1,6 +1,10 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { ToolDefinition, ToolObservationPolicy } from "../../skills/types.js";
+import {
+  readContextObservation,
+  renderContextObservation,
+} from "../../skills/observations/context-observation.js";
 import type { AgentToolCallSpec } from "./decision.js";
 import type { ActToolCallRecord, EvidenceAccessMode, ToolObservation, WorkEvidenceRef } from "../types.js";
 
@@ -31,6 +35,7 @@ export interface ToolObservationBuildInput {
   stepNumber: number;
   call: AgentToolCallSpec;
   record: ActToolCallRecord;
+  rawOutput?: string;
   toolDefinition?: ToolDefinition;
 }
 
@@ -55,7 +60,9 @@ export async function buildToolObservation(input: ToolObservationBuildInput): Pr
     return {};
   }
 
-  const rawOutput = input.record.output ?? "";
+  const rawOutput = input.rawOutput !== undefined && input.rawOutput.length > 0
+    ? input.rawOutput
+    : input.record.output ?? "";
   const fallbackContent = input.record.error ? `${input.call.tool} failed: ${input.record.error}` : "";
   const output = rawOutput.length > 0 ? rawOutput : fallbackContent;
   if (output.trim().length === 0) {
@@ -84,24 +91,34 @@ export async function buildToolObservation(input: ToolObservationBuildInput): Pr
   const externallyTruncated = readStructuredBoolean(input.record.result?.structuredContent, "truncated")
     ?? readMetaBoolean(input.record.meta, "truncated")
     ?? false;
+  const contextObservation = readContextObservation(input.record.result?.structuredContent);
   const structuredMode = readStructuredMode(input.record.result?.structuredContent);
-  const mode = structuredMode ?? resolveObservationMode(output.length);
+  const mode = contextObservation?.mode ?? structuredMode ?? resolveObservationMode(output.length);
   const slice = mode === "chunk"
     ? readStructuredSlice(input.record.result?.structuredContent, output) ?? sliceLinesByCharBudget(output, 1, maxObservationChars)
     : undefined;
-  const content = buildObservationContent({
-    tool: input.call.tool,
-    record: input.record,
-    output,
-    mode,
-    slice,
-    maxChars: maxObservationChars,
-  });
+  const content = contextObservation
+    ? renderContextObservation({
+        tool: input.call.tool,
+        status: input.record.error ? "failed" : "success",
+        message: input.record.result?.message,
+        observation: contextObservation,
+        maxChars: maxObservationChars,
+      })
+    : buildObservationContent({
+        tool: input.call.tool,
+        record: input.record,
+        output,
+        mode,
+        slice,
+        maxChars: maxObservationChars,
+      });
   const structuredHasMore = readStructuredBoolean(input.record.result?.structuredContent, "hasMore");
   const hasMore = structuredHasMore ?? (mode === "chunk"
     ? slice?.nextOffset !== undefined
-    : mode === "large_ref");
+    : (contextObservation?.hasMore ?? mode === "large_ref"));
   const access = resolveAccess(mode, shouldWriteRaw || existingEvidenceRef !== undefined);
+  const observationEvidenceRef = sourceEvidenceRef ?? contextObservation?.evidenceRef ?? (shouldWriteRaw && rawOutputPath ? `evidence://${evidenceId}` : undefined);
   const observation: ToolObservation = {
     id: buildObservationId(input.stepNumber, input.call.id),
     step: input.stepNumber,
@@ -112,7 +129,7 @@ export async function buildToolObservation(input: ToolObservationBuildInput): Pr
     mode,
     content,
     ...(rawOutputPath ? { rawOutputPath } : {}),
-    ...(sourceEvidenceRef || (shouldWriteRaw && rawOutputPath) ? { evidenceRef: sourceEvidenceRef ?? `evidence://${evidenceId}` } : {}),
+    ...(observationEvidenceRef ? { evidenceRef: observationEvidenceRef } : {}),
     ...(sourceEvidenceRef ? { sourceEvidenceRef } : {}),
     rawOutputChars,
     lineCount,
@@ -196,7 +213,7 @@ function resolveAccess(mode: ToolObservation["mode"], hasRawOutput: boolean): Ev
   if (mode === "chunk") {
     return ["next_chunk", "search", "read_lines", "tail"];
   }
-  if (mode === "large_ref") {
+  if (mode === "large_ref" || mode === "summary" || mode === "focused") {
     return ["search", "read_lines", "tail"];
   }
   return ["full", "search", "read_lines", "tail"];
@@ -341,7 +358,7 @@ function readMetaBoolean(value: Record<string, unknown> | undefined, key: string
 
 function readStructuredMode(value: unknown): ToolObservation["mode"] | undefined {
   const raw = readStructuredString(value, "mode");
-  return raw === "full" || raw === "chunk" || raw === "large_ref" || raw === "summary" ? raw : undefined;
+  return raw === "full" || raw === "focused" || raw === "chunk" || raw === "large_ref" || raw === "summary" ? raw : undefined;
 }
 
 function readStructuredSlice(value: unknown, content: string): OutputSlice | undefined {

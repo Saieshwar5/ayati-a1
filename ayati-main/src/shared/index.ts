@@ -2,4 +2,12 @@ export function createId(): string {
   return crypto.randomUUID();
 }
 
-export { devLog, devWarn, devError } from "./debug-log.js";
+export {
+  agentTrace,
+  devError,
+  devLog,
+  devWarn,
+  isAgentTraceEnabled,
+  isAgentTracePromptEnabled,
+  tracePreview,
+} from "./debug-log.js";

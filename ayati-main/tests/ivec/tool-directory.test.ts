@@ -20,7 +20,8 @@ describe("buildToolDirectory", () => {
         type: "object",
         properties: {
           path: { type: "string" },
-          offset: { type: "number" },
+          mode: { type: "string" },
+          startLine: { type: "number" },
         },
         required: ["path"],
       }),
@@ -28,7 +29,7 @@ describe("buildToolDirectory", () => {
 
     const result = buildToolDirectory(tools);
     expect(result).toContain("| Tool | Description | Parameters |");
-    expect(result).toContain("| read_file | Read text file | path* (string), offset (number) |");
+    expect(result).toContain("| read_file | Read text file | path* (string), mode (string), startLine (number) |");
   });
 
   it("marks required params with asterisk", () => {

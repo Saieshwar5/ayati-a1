@@ -134,7 +134,6 @@ describe("agentLoop", () => {
               purpose: "Create the requested file",
             }],
             allowedTools: ["write_files"],
-            maxCalls: 1,
             assertions: [],
           },
         },
@@ -209,7 +208,6 @@ describe("agentLoop", () => {
               purpose: "Create the requested file",
             }],
             allowedTools: ["write_files"],
-            maxCalls: 1,
           },
         },
         {
@@ -284,7 +282,6 @@ describe("agentLoop", () => {
               purpose: "Create the requested kids story website",
             }],
             allowedTools: ["write_files"],
-            maxCalls: 1,
             assertions: [],
           },
         },
@@ -463,11 +460,11 @@ describe("agentLoop", () => {
   it("feeds recent output context cards and evidence refs into the next decision", async () => {
     const dataDir = makeTmpDir();
     try {
-      const shellTool: ToolDefinition = {
-        name: "shell",
-        description: "Run shell command",
+      const ramSummaryTool: ToolDefinition = {
+        name: "read_file",
+        description: "Read RAM summary fixture",
         annotations: {
-          domain: "shell",
+          domain: "filesystem",
           readOnly: true,
           mutatesWorkspace: false,
           mutatesExternalWorld: false,
@@ -476,23 +473,34 @@ describe("agentLoop", () => {
           retrySafe: true,
           longRunning: false,
         },
-        async execute(input) {
-          const cmd = typeof input === "object" && input !== null
-            ? String((input as Record<string, unknown>)["cmd"] ?? "")
-            : "";
-          if (cmd.includes("ps")) {
-            return {
-              ok: true,
-              output: "PID USER %MEM RSS COMMAND\n100 sai 5.3 416820 chromium\n200 sai 5.2 407288 code\n300 sai 3.0 239548 node",
-            };
-          }
+        async execute() {
           return {
             ok: true,
             output: "Mem: 7.4Gi total, 3.5Gi used, 3.8Gi available",
           };
         },
       };
-      const toolExecutor = createToolExecutor([shellTool]);
+      const processSummaryTool: ToolDefinition = {
+        name: "search_in_files",
+        description: "Search process summary fixture",
+        annotations: {
+          domain: "filesystem",
+          readOnly: true,
+          mutatesWorkspace: false,
+          mutatesExternalWorld: false,
+          destructive: false,
+          idempotent: true,
+          retrySafe: true,
+          longRunning: false,
+        },
+        async execute() {
+          return {
+            ok: true,
+            output: "PID USER %MEM RSS COMMAND\n100 sai 5.3 416820 chromium\n200 sai 5.2 407288 code\n300 sai 3.0 239548 node",
+          };
+        },
+      };
+      const toolExecutor = createToolExecutor([ramSummaryTool, processSummaryTool]);
       const generateTurn = vi.fn()
         .mockResolvedValueOnce({
           type: "assistant",
@@ -503,21 +511,20 @@ describe("agentLoop", () => {
               calls: [
                 {
                   id: "call_1",
-                  tool: "shell",
-                  input: { cmd: "free -h" },
+                  tool: "read_file",
+                  input: { path: "/proc/meminfo" },
                   dependsOn: [],
                   purpose: "Get RAM summary",
                 },
                 {
                   id: "call_2",
-                  tool: "shell",
-                  input: { cmd: "ps axo pid,user,%mem,rss,comm --sort=-%mem | head -n 20" },
+                  tool: "search_in_files",
+                  input: { path: "/proc", query: "memory" },
                   dependsOn: [],
                   purpose: "List top RAM processes",
                 },
               ],
-              allowedTools: ["shell"],
-              maxCalls: 2,
+              allowedTools: ["read_file", "search_in_files"],
             },
           }),
         })
@@ -570,8 +577,8 @@ describe("agentLoop", () => {
       expect(stateView.progress.evidenceRefs[1].ref).toBe("evidence://ev_001_call_2");
       expect(stateView.workingNotes).toBeUndefined();
       expect(userPrompt).toContain("evidence_search");
-      expect(existsSync(join(dataDir, "runs", "r-observation", "raw", "001-call_1-shell-output.txt"))).toBe(true);
-      expect(existsSync(join(dataDir, "runs", "r-observation", "raw", "001-call_2-shell-output.txt"))).toBe(true);
+      expect(existsSync(join(dataDir, "runs", "r-observation", "raw", "001-call_1-read_file-output.txt"))).toBe(true);
+      expect(existsSync(join(dataDir, "runs", "r-observation", "raw", "001-call_2-search_in_files-output.txt"))).toBe(true);
       const persisted = JSON.parse(readFileSync(join(dataDir, "runs", "r-observation", "state.json"), "utf-8"));
       expect(persisted.toolContext.recent).toHaveLength(2);
       expect(persisted.workingNotes).toBeUndefined();

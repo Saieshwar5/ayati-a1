@@ -19,14 +19,15 @@ const FS_PROMPT_BLOCK = [
   "Prefer find_files and search_in_files for discovery tasks.",
   "Use list_directory only when folder listing is explicitly needed.",
   "Tools: read_file, write_file, write_files, edit_file, delete, list_directory, create_directory, move, find_files, search_in_files.",
-  "read_file supports offset/limit for large files; output is capped at 100K characters.",
+  "read_file defaults to mode=auto and returns a compact profile/focused context card instead of dumping full file text.",
+  "Use read_file mode=search with query for relevant blocks, mode=slice with startLine/lineCount for exact ranges, mode=profile for metadata/outline, and mode=full only when explicitly needed.",
   "write_file can create parent directories with createDirs=true.",
   "write_files serializes a validated multi-file batch with temp-file writes and renames; prefer it over separate writes for generated files that belong together.",
   "edit_file performs find-and-replace; use replaceAll=true for global replacement.",
   "delete requires recursive=true to remove directories and may require confirmation.",
-  "list_directory supports recursive and showHidden options; caps are guardrail-controlled.",
+  "list_directory returns grouped counts plus bounded entries; use find_files/search_in_files to narrow large trees.",
   "move handles cross-device moves automatically via copy+delete fallback.",
-  "find_files and search_in_files support roots, depth limits, and result caps.",
+  "find_files and search_in_files support roots, depth limits, and result caps; search_in_files returns structured line-context matches.",
 ].join("\n");
 
 const filesystemSkill: SkillDefinition = {

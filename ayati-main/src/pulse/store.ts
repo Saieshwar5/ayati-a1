@@ -1438,7 +1438,7 @@ function buildEventStatusLookup(
   }
   const placeholders = eventIds.map(() => "?").join(", ");
   const rows = db.prepare(`
-    SELECT event_id, status, processed_at, run_id, note
+    SELECT event_id, status, processed_at, work_run_id AS run_id, note
     FROM system_events
     WHERE event_id IN (${placeholders})
       AND status IN ('completed', 'failed')

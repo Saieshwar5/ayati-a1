@@ -1,5 +1,13 @@
-import { describe, expect, it } from "vitest";
-import { parseAgentDecision } from "../../src/ivec/agent-runner/decision.js";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import type { LlmProvider } from "../../src/core/contracts/provider.js";
+import { callAgentDecision, parseAgentDecision } from "../../src/ivec/agent-runner/decision.js";
+import type { AgentStateView } from "../../src/ivec/agent-runner/state-view.js";
+import type { ToolDefinition } from "../../src/skills/types.js";
+
+afterEach(() => {
+  vi.restoreAllMocks();
+  vi.unstubAllEnvs();
+});
 
 describe("parseAgentDecision", () => {
   it("ignores model-provided action assertions", () => {
@@ -15,7 +23,6 @@ describe("parseAgentDecision", () => {
           purpose: "Create files",
         }],
         allowedTools: ["write_files"],
-        maxCalls: 1,
         assertions: [{
           id: "model_invented_check",
           kind: "html_contains",
@@ -42,4 +49,246 @@ describe("parseAgentDecision", () => {
     expect(decision.kind).toBe("reply");
     expect(decision.workingNotes).toEqual(["RAM used is 3.5Gi."]);
   });
+
+  it("logs malformed decision responses to the daemon trace when enabled", async () => {
+    vi.stubEnv("AYATI_AGENT_TRACE", "1");
+    const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    const { provider, generateTurn } = createProvider([
+      JSON.stringify({ message: "Hi!" }),
+      JSON.stringify({ message: "Still missing kind" }),
+    ]);
+
+    await expect(callAgentDecision({
+      provider,
+      stateView: createStateView(),
+      toolDefinitions: [],
+    })).rejects.toThrow("Unsupported agent decision kind: undefined");
+
+    const traceOutput = log.mock.calls.map((call) => call.map(String).join(" ")).join("\n");
+    expect(generateTurn).toHaveBeenCalledTimes(2);
+    expect(traceOutput).toContain("provider_request provider=fake-provider");
+    expect(traceOutput).toContain("raw_response={\"message\":\"Hi!\"}");
+    expect(traceOutput).toContain("parse_failed error=Unsupported agent decision kind: undefined");
+    expect(traceOutput).toContain("repair_request reason=parse_failed");
+  });
+
+  it("does not log decision traces by default", async () => {
+    const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    const { provider } = createProvider([
+      JSON.stringify({ kind: "reply", status: "completed", message: "Hi!" }),
+    ]);
+
+    const decision = await callAgentDecision({
+      provider,
+      stateView: createStateView(),
+      toolDefinitions: [],
+    });
+
+    expect(decision.kind).toBe("reply");
+    expect(log).not.toHaveBeenCalled();
+  });
+
+  it("keeps action-first semantics in the stable decision prompt", async () => {
+    const { provider, generateTurn } = createProvider([
+      JSON.stringify({ kind: "reply", status: "completed", message: "Hi!" }),
+    ]);
+
+    await callAgentDecision({
+      provider,
+      stateView: createStateView(),
+      toolDefinitions: [],
+    });
+
+    const messages = generateTurn.mock.calls[0]?.[0]?.messages ?? [];
+    const systemPrompt = messages.find((message) => message.role === "system")?.content ?? "";
+    expect(systemPrompt).toContain("Autonomous execution policy: for actionable user requests, prefer progress over discussion.");
+    expect(systemPrompt).toContain("Use reply only as a terminal decision");
+    expect(systemPrompt).toContain("Do not use reply to say you will do future work.");
+    expect(systemPrompt).toContain("Use ask_user only for hard blockers");
+    expect(systemPrompt).toContain("Do not ask_user for style, wording, organization, or preference choices");
+    expect(systemPrompt).toContain("Do not tell the user tools are missing.");
+  });
+
+  it("repairs act decisions that reference unselected tools into load_tools", async () => {
+    const badAction = {
+      kind: "act",
+      action: {
+        mode: "sequential",
+        calls: [
+          {
+            id: "call_1",
+            tool: "shell",
+            input: { command: "pwd" },
+            dependsOn: [],
+          },
+          {
+            id: "call_2",
+            tool: "load_tools",
+            input: { groups: ["skill:shell"] },
+            dependsOn: [],
+          },
+        ],
+        allowedTools: ["shell", "load_tools"],
+      },
+    };
+    const repaired = {
+      kind: "load_tools",
+      request: {
+        groups: ["skill:shell"],
+        reason: "Need shell to run a command.",
+      },
+    };
+    const { provider, generateTurn } = createProvider([
+      JSON.stringify(badAction),
+      JSON.stringify(repaired),
+    ]);
+
+    const decision = await callAgentDecision({
+      provider,
+      stateView: createStateView(),
+      toolDefinitions: [],
+    });
+
+    expect(decision.kind).toBe("load_tools");
+    expect(generateTurn).toHaveBeenCalledTimes(2);
+    const repairMessages = generateTurn.mock.calls[1]?.[0]?.messages ?? [];
+    const repairPrompt = repairMessages.at(-1)?.content;
+    expect(repairPrompt).toContain("violates the Ayati tool protocol");
+    expect(repairPrompt).toContain("Selected tools: (none)");
+    expect(repairPrompt).toContain("Invalid tools in action.calls or allowedTools: shell, load_tools");
+  });
+
+  it("returns a failed reply after repeated tool protocol violations", async () => {
+    const badAction = JSON.stringify({
+      kind: "act",
+      action: {
+        mode: "single",
+        calls: [{
+          id: "call_1",
+          tool: "shell",
+          input: { command: "pwd" },
+          dependsOn: [],
+        }],
+        allowedTools: ["shell"],
+      },
+    });
+    const { provider, generateTurn } = createProvider([badAction, badAction, badAction]);
+
+    const decision = await callAgentDecision({
+      provider,
+      stateView: createStateView(),
+      toolDefinitions: [],
+    });
+
+    expect(generateTurn).toHaveBeenCalledTimes(3);
+    expect(decision).toEqual({
+      kind: "reply",
+      status: "failed",
+      message: "I could not form a valid tool decision for this request.",
+    });
+  });
+
+  it("allows act decisions that use selected tools", async () => {
+    const { provider, generateTurn } = createProvider([
+      JSON.stringify({
+        kind: "act",
+        action: {
+          mode: "single",
+          calls: [{
+            id: "call_1",
+            tool: "shell",
+            input: { command: "pwd" },
+            dependsOn: [],
+          }],
+          allowedTools: ["shell"],
+        },
+      }),
+    ]);
+
+    const decision = await callAgentDecision({
+      provider,
+      stateView: createStateView(),
+      toolDefinitions: [createTool("shell")],
+    });
+
+    expect(generateTurn).toHaveBeenCalledTimes(1);
+    expect(decision.kind).toBe("act");
+  });
+
+  it("prefers json_schema response format when supported", async () => {
+    const { provider, generateTurn } = createProvider([
+      JSON.stringify({ kind: "reply", status: "completed", message: "Hi!" }),
+    ], { jsonSchema: true });
+
+    await callAgentDecision({
+      provider,
+      stateView: createStateView(),
+      toolDefinitions: [],
+    });
+
+    expect(generateTurn.mock.calls[0]?.[0]?.responseFormat).toMatchObject({
+      type: "json_schema",
+      name: "agent_decision_response",
+    });
+  });
 });
+
+function createProvider(
+  responses: string[],
+  structuredOutput: { jsonObject: boolean; jsonSchema: boolean } = { jsonObject: true, jsonSchema: false },
+): { provider: LlmProvider; generateTurn: ReturnType<typeof vi.fn> } {
+  let index = 0;
+  const generateTurn = vi.fn(async () => {
+    const content = responses[Math.min(index, responses.length - 1)] ?? "";
+    index++;
+    return { type: "assistant" as const, content };
+  });
+  return {
+    provider: {
+      name: "fake-provider",
+      version: "test-model",
+      capabilities: {
+        nativeToolCalling: false,
+        structuredOutput,
+      },
+      start() {},
+      stop() {},
+      generateTurn,
+    },
+    generateTurn,
+  };
+}
+
+function createTool(name: string): ToolDefinition {
+  return {
+    name,
+    description: `${name} test tool`,
+    execute: async () => ({
+      ok: true,
+      content: "",
+    }),
+  };
+}
+
+function createStateView(): AgentStateView {
+  return {
+    context: {
+      timeline: [{
+        kind: "user",
+        seq: 1,
+        timestamp: new Date(0).toISOString(),
+        content: "Hii",
+        current: true,
+      }],
+      continuity: {
+        mode: "new",
+        confidence: 0,
+        reasons: ["test"],
+      },
+      sessionWork: {
+        activeContextStartSeq: 1,
+        recentActivities: [],
+      },
+    },
+  };
+}

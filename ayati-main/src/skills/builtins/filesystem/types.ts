@@ -1,7 +1,11 @@
 export interface ReadFileInput {
   path: string;
-  offset?: number;
-  limit?: number;
+  mode?: "auto" | "profile" | "search" | "slice" | "full";
+  query?: string;
+  startLine?: number;
+  lineCount?: number;
+  contextLines?: number;
+  maxBlocks?: number;
 }
 
 export interface WriteFileInput {
@@ -70,4 +74,5 @@ export interface SearchInFilesInput {
   maxResults?: number;
   includeHidden?: boolean;
   caseSensitive?: boolean;
+  contextLines?: number;
 }

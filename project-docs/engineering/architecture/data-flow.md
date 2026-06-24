@@ -53,7 +53,9 @@ Tool/action flow:
 1. The daemon keeps a hidden tool catalog, deterministically preloads a capped working set, and can load more tools through `load_tools`.
 2. The decision model selects tool calls only when needed for the current input
    or resolved activity continuity.
-3. The action executor validates plan shape, selected tools, dependencies, and unsafe parallel filesystem overlap.
+3. The action executor validates plan shape, selected tools, dependencies,
+   planned-call coverage, mode-specific call limits, and deny-by-default
+   parallel safety.
 4. The tool executor validates and executes requests.
 5. Results become artifacts, verified facts, evidence, and optional `workState` updates for continuation or final response.
 

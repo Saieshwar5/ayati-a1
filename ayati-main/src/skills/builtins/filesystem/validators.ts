@@ -29,6 +29,10 @@ function isPositiveInt(val: unknown): val is number {
   return typeof val === "number" && Number.isFinite(val) && val > 0 && Number.isInteger(val);
 }
 
+function isNonNegativeInt(val: unknown): val is number {
+  return typeof val === "number" && Number.isFinite(val) && val >= 0 && Number.isInteger(val);
+}
+
 function validateConfirmationToken(token: unknown): ToolResult | null {
   if (token === undefined) return null;
   if (typeof token !== "string") return fail("confirmationToken must be a string.");
@@ -39,13 +43,40 @@ export function validateReadFileInput(input: unknown): ReadFileInput | ToolResul
   if (!isObject(input)) return fail("expected object.");
   const v = input as Partial<ReadFileInput>;
   if (!isNonEmptyString(v.path)) return fail("path must be a non-empty string.");
-  if (v.offset !== undefined && (!Number.isFinite(v.offset) || v.offset < 0)) {
-    return fail("offset must be a non-negative number.");
+  if (
+    v.mode !== undefined
+    && v.mode !== "auto"
+    && v.mode !== "profile"
+    && v.mode !== "search"
+    && v.mode !== "slice"
+    && v.mode !== "full"
+  ) {
+    return fail("mode must be one of auto, profile, search, slice, or full.");
   }
-  if (v.limit !== undefined && !isPositiveInt(v.limit)) {
-    return fail("limit must be a positive integer.");
+  if (v.query !== undefined && typeof v.query !== "string") {
+    return fail("query must be a string when provided.");
   }
-  return { path: v.path, offset: v.offset, limit: v.limit };
+  if (v.startLine !== undefined && !isNonNegativeInt(v.startLine)) {
+    return fail("startLine must be a non-negative integer.");
+  }
+  if (v.lineCount !== undefined && !isPositiveInt(v.lineCount)) {
+    return fail("lineCount must be a positive integer.");
+  }
+  if (v.contextLines !== undefined && !isNonNegativeInt(v.contextLines)) {
+    return fail("contextLines must be a non-negative integer.");
+  }
+  if (v.maxBlocks !== undefined && !isPositiveInt(v.maxBlocks)) {
+    return fail("maxBlocks must be a positive integer.");
+  }
+  return {
+    path: v.path,
+    mode: v.mode,
+    query: v.query,
+    startLine: v.startLine,
+    lineCount: v.lineCount,
+    contextLines: v.contextLines,
+    maxBlocks: v.maxBlocks,
+  };
 }
 
 export function validateWriteFileInput(input: unknown): WriteFileInput | ToolResult {
@@ -207,6 +238,9 @@ export function validateSearchInFilesInput(input: unknown): SearchInFilesInput |
   if (v.caseSensitive !== undefined && typeof v.caseSensitive !== "boolean") {
     return fail("caseSensitive must be a boolean.");
   }
+  if (v.contextLines !== undefined && !isNonNegativeInt(v.contextLines)) {
+    return fail("contextLines must be a non-negative integer.");
+  }
 
-  return { ...base, caseSensitive: v.caseSensitive };
+  return { ...base, caseSensitive: v.caseSensitive, contextLines: v.contextLines };
 }

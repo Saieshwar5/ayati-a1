@@ -188,7 +188,22 @@ export class SqliteSystemEventStore {
           approval_state TEXT,
           note TEXT
         );
+      `);
 
+      if (!columnExists(db, "system_events", "work_run_id")) {
+        db.exec("ALTER TABLE system_events ADD COLUMN work_run_id TEXT;");
+      }
+
+      if (columnExists(db, "system_events", "run_id")) {
+        db.exec(`
+          UPDATE system_events
+          SET work_run_id = run_id
+          WHERE work_run_id IS NULL
+            AND run_id IS NOT NULL;
+        `);
+      }
+
+      db.exec(`
         CREATE INDEX IF NOT EXISTS idx_system_events_session_recent
           ON system_events(session_id, received_at DESC);
 
@@ -221,4 +236,9 @@ function serializePayload(payload: Record<string, unknown> | undefined): string 
   } catch {
     return JSON.stringify({ error: "payload_serialization_failed" });
   }
+}
+
+function columnExists(db: DatabaseSync, tableName: string, columnName: string): boolean {
+  const rows = db.prepare(`PRAGMA table_info(${tableName})`).all() as Array<{ name: string }>;
+  return rows.some((row) => row.name === columnName);
 }

@@ -1,6 +1,7 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { afterEach, describe, expect, it } from "vitest";
 import { ActivityStore, ContinuityResolver } from "../../src/memory/activity/index.js";
 
@@ -19,6 +20,56 @@ afterEach(() => {
 });
 
 describe("ActivityStore", () => {
+  it("upgrades older activity run tables before querying boundaries", () => {
+    const dataDir = tempDataDir();
+    const dbPath = join(dataDir, "memory.sqlite");
+    const legacy = new DatabaseSync(dbPath);
+    legacy.exec(`
+      CREATE TABLE activity_runs (
+        activity_id TEXT NOT NULL,
+        run_id TEXT NOT NULL,
+        session_id TEXT NOT NULL,
+        run_path TEXT NOT NULL,
+        status TEXT NOT NULL,
+        task_status TEXT,
+        user_message TEXT,
+        assistant_response TEXT,
+        summary TEXT NOT NULL,
+        tools_used_json TEXT NOT NULL,
+        asset_ids_json TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        PRIMARY KEY(activity_id, run_id)
+      );
+      CREATE TABLE activity_search (
+        activity_id TEXT PRIMARY KEY,
+        client_id TEXT NOT NULL,
+        searchable_text TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+    `);
+    legacy.close();
+
+    const store = new ActivityStore({ dbPath });
+    store.start();
+    try {
+      expect(store.findLatestDurableTaskBoundary("c1", "s1")).toBeNull();
+    } finally {
+      store.stop();
+    }
+
+    const upgraded = new DatabaseSync(dbPath);
+    try {
+      const columns = new Set((upgraded.prepare("PRAGMA table_info(activity_runs)").all() as Array<Record<string, unknown>>)
+        .map((row) => row["name"]));
+      expect(columns.has("trigger_seq")).toBe(true);
+      expect(columns.has("discussion_start_seq")).toBe(true);
+      expect(columns.has("discussion_end_seq")).toBe(true);
+      expect(upgraded.prepare("SELECT 1 FROM sqlite_master WHERE name = 'activity_search'").get()).toBeUndefined();
+    } finally {
+      upgraded.close();
+    }
+  });
+
   it("creates activity threads with durable identities and resolves exact continuation", () => {
     let now = new Date("2026-06-12T09:00:00.000Z");
     const store = new ActivityStore({

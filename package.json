@@ -6,9 +6,11 @@
     "build": "pnpm -r build",
     "test": "pnpm -r test",
     "dev:main": "pnpm --filter ayati-main dev",
+    "dev:main:feedback": "AYATI_TEST_AGENT=1 AYATI_FEEDBACK_TRACE=1 pnpm --filter ayati-main dev",
     "dev:cli": "pnpm --filter ayati-cli dev",
     "dev:learning-ui": "pnpm --filter ayati-learning-ui tauri:dev",
     "start:main": "pnpm --filter ayati-main start",
+    "start:main:feedback": "AYATI_TEST_AGENT=1 AYATI_FEEDBACK_TRACE=1 pnpm --filter ayati-main start",
     "start:cli": "pnpm --filter ayati-cli start",
     "doctor:main": "pnpm --filter ayati-main run doctor",
     "build:learning-ui": "pnpm --filter ayati-learning-ui build"

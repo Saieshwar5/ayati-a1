@@ -27,15 +27,53 @@ describe("readFileTool", () => {
     expect(result.ok).toBe(true);
     expect(result.output).toContain("hello");
     expect(result.output).toContain("world");
+    expect(result.v2?.structuredContent).toMatchObject({
+      filePath: file,
+      mode: "auto",
+      lineCountKnown: true,
+      observation: {
+        mode: "focused",
+      },
+    });
+    expect(result.rawOutput).toContain("hello\nworld");
   });
 
-  it("supports offset and limit", async () => {
+  it("supports slice mode", async () => {
     const file = join(tmp, "lines.txt");
     await writeFile(file, "a\nb\nc\nd\ne\n", "utf-8");
 
-    const result = await readFileTool.execute({ path: file, offset: 1, limit: 2 });
+    const result = await readFileTool.execute({ path: file, mode: "slice", startLine: 2, lineCount: 2 });
     expect(result.ok).toBe(true);
-    expect(result.output).toBe("b\nc");
+    expect(result.output).toContain("2: b");
+    expect(result.output).toContain("3: c");
+    expect(result.v2?.structuredContent).toMatchObject({
+      mode: "slice",
+      startLine: 2,
+      endLine: 3,
+    });
+  });
+
+  it("supports search mode with focused blocks", async () => {
+    const file = join(tmp, "search.txt");
+    await writeFile(file, "alpha\nneedle here\nomega\n", "utf-8");
+
+    const result = await readFileTool.execute({ path: file, mode: "search", query: "needle", contextLines: 1 });
+    expect(result.ok).toBe(true);
+    expect(result.output).toContain("needle here");
+    expect(result.v2?.structuredContent).toMatchObject({
+      mode: "search",
+      query: "needle",
+      matchCount: 1,
+    });
+  });
+
+  it("requires query for search mode", async () => {
+    const file = join(tmp, "search-missing-query.txt");
+    await writeFile(file, "content", "utf-8");
+
+    const result = await readFileTool.execute({ path: file, mode: "search" });
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain("requires a non-empty query");
   });
 
   it("returns error for missing file", async () => {

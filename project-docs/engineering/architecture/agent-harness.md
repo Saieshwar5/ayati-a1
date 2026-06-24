@@ -29,7 +29,7 @@ The decision model returns exactly one of:
 { "kind": "reply", "status": "completed", "message": "..." }
 { "kind": "ask_user", "question": "...", "reason": "..." }
 { "kind": "load_tools", "request": { "query": "...", "toolNames": [], "groups": [], "reason": "..." } }
-{ "kind": "act", "action": { "mode": "single", "calls": [], "allowedTools": [], "assertions": [] } }
+{ "kind": "act", "action": { "mode": "single", "calls": [], "allowedTools": [] } }
 ```
 
 There is no separate required model call to create a goal. The first decision
@@ -115,9 +115,40 @@ contract, or empty progress scaffolding.
 Actions are explicit tool-call plans. Supported modes are:
 
 - `single`: exactly one tool call.
-- `sequential`: ordered calls, with dependency skipping when a prior call fails.
-- `parallel`: concurrent calls, with filesystem overlap safety checks.
-- `autonomous`: schema placeholder only; currently rejected until a concrete action model is implemented.
+- `sequential`: ordered calls, up to four per step, with dependency skipping
+  when a prior call fails.
+- `parallel`: concurrent calls, up to three per step, only for independent
+  read-only tools that pass deterministic parallel-safety checks.
+
+There is no `autonomous` action mode. The model may choose whether to reply,
+ask, load tools, or act, but every `act` decision must contain a concrete
+single, sequential, or parallel call plan.
+
+The action executor rejects invalid plans before any tool runs. It validates:
+
+- selected-tool membership and `allowedTools`
+- non-empty unique call ids
+- mode-specific call counts
+- dependencies, including earlier-call-only dependencies for sequential mode
+- exact planned-call coverage after execution
+- deny-by-default parallel safety
+
+Parallel execution is intentionally narrow. A parallel call is accepted only
+when every tool is annotated, allowlisted, read-only, retry-safe,
+non-destructive, non-long-running, and does not mutate workspace or external
+state. The initial allowlist is:
+
+- `calculator`
+- `read_file`
+- `list_directory`
+- `search_in_files`
+- evidence read tools: `evidence_next_chunk`, `evidence_read_lines`,
+  `evidence_tail`, and `evidence_search`
+
+Shell, Python, UI/workspace tools, Pulse, skill activation, database mutation,
+memory/activity mutation, and all filesystem create/write/edit/move/delete
+tools are sequential-only unless a future design adds a stronger deterministic
+parallel contract for them. Missing annotations mean sequential-only.
 
 Tool execution records:
 

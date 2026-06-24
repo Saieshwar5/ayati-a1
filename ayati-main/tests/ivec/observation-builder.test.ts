@@ -73,6 +73,55 @@ describe("tool output observations", () => {
     }
   });
 
+  it("prefers structured compact observations over raw output", async () => {
+    const runPath = makeTmpDir();
+    try {
+      const hugeOutput = Array.from({ length: 200 }, (_, index) => `raw line ${index + 1}`).join("\n");
+      const result = await buildToolObservation({
+        runPath,
+        stepNumber: 2,
+        call: {
+          id: "call_2",
+          tool: "read_file",
+          input: {},
+          dependsOn: [],
+        },
+        record: {
+          callId: "call_2",
+          tool: "read_file",
+          input: {},
+          output: "compact tool output",
+          result: {
+            transportOk: true,
+            operationStatus: "succeeded",
+            code: "FILE_INSPECTED",
+            message: "Inspected file.",
+            structuredContent: {
+              observation: {
+                mode: "focused",
+                summary: "Useful compact summary.",
+                stats: { lineCount: 200 },
+                highlights: ["important symbol"],
+                blocks: [{ title: "Relevant block", content: "only useful context", startLine: 10, endLine: 12 }],
+                hasMore: true,
+              },
+            },
+          },
+        },
+        rawOutput: hugeOutput,
+      });
+
+      expect(result.observation?.mode).toBe("focused");
+      expect(result.observation?.content).toContain("Useful compact summary");
+      expect(result.observation?.content).toContain("only useful context");
+      expect(result.observation?.content).not.toContain("raw line 199");
+      expect(result.rawOutputChars).toBe(hugeOutput.length);
+      expect(readFileSync(join(runPath, "raw", "002-call_2-read_file-output.txt"), "utf-8")).toContain("raw line 199");
+    } finally {
+      cleanup(runPath);
+    }
+  });
+
   it("creates evidence-tool observations without replacing the source evidence ref", async () => {
     const runPath = makeTmpDir();
     try {
