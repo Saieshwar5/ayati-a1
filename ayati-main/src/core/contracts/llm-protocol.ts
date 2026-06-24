@@ -4,6 +4,8 @@ export interface LlmToolSchema {
   inputSchema: Record<string, unknown>;
 }
 
+export type LlmToolChoice = "auto" | "required" | { name: string };
+
 export type LlmResponseFormat =
   | {
       type: "json_object";
@@ -60,6 +62,8 @@ export type LlmMessage =
 export interface LlmTurnInput {
   messages: LlmMessage[];
   tools?: LlmToolSchema[];
+  toolChoice?: LlmToolChoice;
+  parallelToolCalls?: boolean;
   responseFormat?: LlmResponseFormat;
 }
 

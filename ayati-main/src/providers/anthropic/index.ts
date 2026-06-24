@@ -3,6 +3,7 @@ import type { LlmProvider } from "../../core/contracts/provider.js";
 import { getModelForProvider } from "../../config/llm-runtime-config.js";
 import type {
   LlmMessage,
+  LlmToolChoice,
   LlmToolCall,
   LlmToolSchema,
   LlmInputTokenCount,
@@ -102,6 +103,19 @@ function toAnthropicTools(
   }));
 }
 
+function toAnthropicToolChoice(
+  choice: LlmToolChoice | undefined,
+  maps: ToolNameMaps,
+): Record<string, unknown> | undefined {
+  if (!choice) return undefined;
+  if (choice === "auto") return { type: "auto" };
+  if (choice === "required") return { type: "any" };
+  return {
+    type: "tool",
+    name: toProviderToolName(choice.name, maps),
+  };
+}
+
 const provider: LlmProvider = {
   name: "anthropic",
   version: "1.0.0",
@@ -138,12 +152,15 @@ const provider: LlmProvider = {
     const nameMaps = buildToolNameMapsForProvider(provider.name, input.tools);
     const payload = await toAnthropicPayload(input.messages, nameMaps);
     const tools = toAnthropicTools(input.tools, nameMaps);
+    const toolChoice = toAnthropicToolChoice(input.toolChoice, nameMaps);
 
     const count = await client.messages.countTokens({
       model,
       ...(payload.system ? { system: payload.system } : {}),
       messages: payload.messages as any,
       ...(tools ? { tools: tools as any } : {}),
+      ...(toolChoice ? { tool_choice: toolChoice as any } : {}),
+      ...(typeof input.parallelToolCalls === "boolean" ? { disable_parallel_tool_use: !input.parallelToolCalls } : {}),
     } as any);
 
     return {

@@ -3,6 +3,7 @@ import type { LlmProvider } from "../../core/contracts/provider.js";
 import { getModelForProvider } from "../../config/llm-runtime-config.js";
 import type {
   LlmMessage,
+  LlmToolChoice,
   LlmToolCall,
   LlmInputTokenCount,
   LlmToolSchema,
@@ -96,6 +97,20 @@ function parseToolArguments(raw: string): unknown {
   }
 }
 
+function toOpenRouterToolChoice(
+  choice: LlmToolChoice | undefined,
+  maps: ToolNameMaps,
+): "auto" | "required" | { type: "function"; function: { name: string } } | undefined {
+  if (!choice) return undefined;
+  if (choice === "auto" || choice === "required") return choice;
+  return {
+    type: "function",
+    function: {
+      name: toProviderToolName(choice.name, maps),
+    },
+  };
+}
+
 const provider: LlmProvider = {
   name: "openrouter",
   version: "1.0.0",
@@ -154,6 +169,7 @@ const provider: LlmProvider = {
     const nameMaps = buildToolNameMapsForProvider(provider.name, input.tools);
     const messages = await toOpenRouterMessages(input.messages, nameMaps);
     const responseTools = toOpenRouterResponseTools(input.tools, nameMaps);
+    const toolChoice = toOpenRouterToolChoice(input.toolChoice, nameMaps);
     const responseFormat = toOpenAiResponseFormat(
       compileResponseFormatForProvider(provider.name, provider.capabilities, input.responseFormat),
     );
@@ -172,7 +188,8 @@ const provider: LlmProvider = {
                 parameters: (tool["parameters"] as Record<string, unknown>) ?? {},
               },
             })),
-            tool_choice: "auto",
+            tool_choice: toolChoice ?? "auto",
+            ...(typeof input.parallelToolCalls === "boolean" ? { parallel_tool_calls: input.parallelToolCalls } : {}),
           }
         : {}),
     });

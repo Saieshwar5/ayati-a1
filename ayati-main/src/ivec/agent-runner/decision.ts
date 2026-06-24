@@ -1,9 +1,8 @@
 import type { LlmProvider } from "../../core/contracts/provider.js";
-import type { LlmMessage, LlmResponseFormat, LlmTurnOutput } from "../../core/contracts/llm-protocol.js";
+import type { LlmMessage, LlmToolCall, LlmToolSchema, LlmTurnOutput } from "../../core/contracts/llm-protocol.js";
 import { agentTrace, isAgentTracePromptEnabled, tracePreview } from "../../shared/index.js";
 import type { ToolContractAssertion, ToolDefinition } from "../../skills/types.js";
 import type { AgentFeedbackLedger } from "../feedback-ledger.js";
-import type { LlmToolSchema } from "../../core/contracts/llm-protocol.js";
 import type { RunMetrics } from "../metrics.js";
 import { recordPromptMetric, recordProviderUsageMetric, recordRunMetric } from "../metrics.js";
 import type { AgentStateView } from "./state-view.js";
@@ -96,7 +95,6 @@ export async function callAgentDecision(input: CallAgentDecisionInput): Promise<
   const prompt = Object.values(promptSections).filter((section) => section.trim().length > 0).join("\n\n");
   const systemSections = buildDecisionSystemSections(input.systemContext);
   const systemContext = Object.values(systemSections).filter((section) => section.trim().length > 0).join("\n\n");
-  const responseFormat = resolveDecisionResponseFormat(input.provider);
   recordPromptMetric(input.metrics, "agent_decision", {
     "system.stableDecisionRules": systemSections.stableDecisionRules,
     "system.runtimeContext": systemSections.runtimeContext,
@@ -115,15 +113,17 @@ export async function callAgentDecision(input: CallAgentDecisionInput): Promise<
     const metricStage = attempt === 0 ? "agent_decision" : "agent_decision_repair";
     const startedAt = Date.now();
     let turn: LlmTurnOutput;
-    traceDecisionProviderRequest(input.provider, responseFormat, messages, attempt);
+    traceDecisionProviderRequest(input.provider, messages, attempt);
     try {
-      const nativeTools = input.provider.capabilities.nativeToolCalling
-        ? input.toolDefinitions.map(toNativeToolSchema)
-        : undefined;
+      if (!input.provider.capabilities.nativeToolCalling) {
+        throw new Error(`Provider ${input.provider.name} does not support native decision tools.`);
+      }
+      const decisionTools = buildNativeDecisionTools(input.toolDefinitions);
       turn = await input.provider.generateTurn({
         messages,
-        ...(nativeTools && nativeTools.length > 0 ? { tools: nativeTools } : {}),
-        ...(responseFormat ? { responseFormat } : {}),
+        tools: decisionTools,
+        toolChoice: "required",
+        parallelToolCalls: false,
       });
       recordRunMetric(input.metrics, metricStage, {
         durationMs: Date.now() - startedAt,
@@ -143,7 +143,7 @@ export async function callAgentDecision(input: CallAgentDecisionInput): Promise<
 
     rawText = turn.type === "assistant"
       ? turn.content
-      : JSON.stringify(nativeToolCallsToDecision(turn.calls));
+      : serializeNativeDecisionToolCalls(turn.calls);
     agentTrace("agent_decision", `attempt=${attempt + 1} raw_response=${tracePreview(rawText)}`);
     recordDecisionFeedback(input, "raw_response", {
       attempt: attempt + 1,
@@ -210,7 +210,7 @@ export async function callAgentDecision(input: CallAgentDecisionInput): Promise<
       messages = buildRepairMessages(
         messages,
         rawText,
-        "Repair the previous response. Return one valid JSON object only, using exactly one of the documented agent decision shapes.",
+        "Repair the previous response. Call exactly one native decision tool. Do not answer with text, JSON, or markdown.",
       );
     }
   }
@@ -346,13 +346,13 @@ function buildToolProtocolRepairPrompt(violation: ToolProtocolViolation): string
     `Selected tools: ${selected}`,
     `Invalid tools in action.calls or allowedTools: ${invalid}`,
     violation.loadToolsUsedAsAction
-      ? "Also invalid: load_tools was used as an action tool. load_tools is a decision kind only."
+      ? "Also invalid: load_tools was used as an action tool. Use decision_load_tools instead of putting load_tools in action.calls."
       : "",
     "",
-    "Return one valid JSON decision:",
+    "Call exactly one native decision tool:",
     "- reply only for terminal outcomes: pure conversation, completed work, failed task, or impossible task.",
     "- ask_user only for hard blockers that prevent safe progress and have no reasonable default.",
-    "- load_tools when the next useful action needs tools that are not selected yet.",
+    "- decision_load_tools when the next useful action needs tools that are not selected yet.",
     "- act only when every action.calls[].tool is listed in Selected tools.",
     "",
     "Do not call unselected tools. Do not put load_tools inside action.calls. Do not reply to promise future tool work.",
@@ -361,13 +361,12 @@ function buildToolProtocolRepairPrompt(violation: ToolProtocolViolation): string
 
 function traceDecisionProviderRequest(
   provider: LlmProvider,
-  responseFormat: LlmResponseFormat | undefined,
   messages: LlmMessage[],
   attempt: number,
 ): void {
   agentTrace(
     "agent_decision",
-    `attempt=${attempt + 1} provider_request provider=${provider.name} version=${provider.version} responseFormat=${responseFormat?.type ?? "none"} messages=${messages.length}`,
+    `attempt=${attempt + 1} provider_request provider=${provider.name} version=${provider.version} nativeDecisionTools=required messages=${messages.length}`,
   );
   if (isAgentTracePromptEnabled()) {
     agentTrace("agent_decision", `attempt=${attempt + 1} prompt=${tracePreview(messages)}`);
@@ -382,15 +381,15 @@ function traceDecisionProviderResponse(turn: LlmTurnOutput, attempt: number): vo
 }
 
 export function parseAgentDecision(text: string): AgentDecision {
-  const parsed = unwrapDecisionEnvelope(extractJsonObject(text));
+  const parsed = extractJsonObject(text);
   const kind = parsed["kind"];
 
   if (kind === "reply") {
     return {
       kind: "reply",
-      message: String(parsed["message"] ?? parsed["summary"] ?? ""),
+      message: String(parsed["message"] ?? ""),
       status: parsed["status"] === "failed" ? "failed" : "completed",
-      workingNotes: normalizeWorkingNotes(parsed["workingNotes"] ?? parsed["working_notes"]),
+      workingNotes: normalizeWorkingNotes(parsed["workingNotes"]),
     };
   }
 
@@ -399,7 +398,7 @@ export function parseAgentDecision(text: string): AgentDecision {
       kind: "ask_user",
       question: String(parsed["question"] ?? ""),
       reason: String(parsed["reason"] ?? ""),
-      workingNotes: normalizeWorkingNotes(parsed["workingNotes"] ?? parsed["working_notes"]),
+      workingNotes: normalizeWorkingNotes(parsed["workingNotes"]),
     };
   }
 
@@ -407,7 +406,7 @@ export function parseAgentDecision(text: string): AgentDecision {
     return {
       kind: "act",
       action: normalizeAgentAction(parsed["action"]),
-      workingNotes: normalizeWorkingNotes(parsed["workingNotes"] ?? parsed["working_notes"]),
+      workingNotes: normalizeWorkingNotes(parsed["workingNotes"]),
     };
   }
 
@@ -415,15 +414,7 @@ export function parseAgentDecision(text: string): AgentDecision {
     return {
       kind: "load_tools",
       request: normalizeToolLoadRequest(parsed["request"] ?? parsed),
-      workingNotes: normalizeWorkingNotes(parsed["workingNotes"] ?? parsed["working_notes"]),
-    };
-  }
-
-  if (isPlainObject(parsed["action"])) {
-    return {
-      kind: "act",
-      action: normalizeAgentAction(parsed["action"]),
-      workingNotes: normalizeWorkingNotes(parsed["workingNotes"] ?? parsed["working_notes"]),
+      workingNotes: normalizeWorkingNotes(parsed["workingNotes"]),
     };
   }
 
@@ -434,10 +425,10 @@ const STABLE_DECISION_SYSTEM_CONTEXT = `You are the decision component of an AI 
 Choose the next agent decision only. Do not execute tools yourself.
 Prefer deterministic actions with concrete tool inputs.
 Use the structured context pack and optional work state in the state view.
-Return compact JSON only.
+Call exactly one native decision tool. Do not answer directly with prose, markdown, or JSON text.
 
 Decision rules:
-- Pick exactly one decision: reply, ask_user, act, or load_tools.
+- Call exactly one native decision tool: decision_reply, decision_ask_user, decision_load_tools, or decision_act.
 - Treat State view.context as the bounded context pack for this decision.
 - Use context.timeline as chronological conversation context. The item with current=true is the current input.
 - Use the immediately preceding assistant item in context.timeline to interpret short replies like yes, no, do it, go ahead, continue, or stop.
@@ -455,18 +446,18 @@ Decision rules:
 - Treat preference gaps as assumptions, not blockers, when reasonable safe defaults exist.
 - Treat short confirmations or delegation like "yes", "go ahead", "continue", "do it", "whatever feels right", and "surprise me" as permission to proceed with reasonable defaults.
 - Use reply only as a terminal decision: pure conversation, final answer after completed work, failed task, or impossible task.
-- Do not use reply to say you will do future work. If work remains, return act or load_tools.
+- Do not use decision_reply to say you will do future work. If work remains, call decision_act or decision_load_tools.
 - Final replies must answer the user's request in natural, human-readable language.
 - Do not mention internal execution details in final replies: tool calls, deterministic verification, evidence contracts, assertions, reducers, work state, or harness steps.
 - Use user-visible results from observations and trace summaries, such as created paths, changed files, command results, document findings, or next steps.
 - Use ask_user only for hard blockers: missing target with no safe default, destructive or irreversible action, credentials or approval required, external cost/account action, or true ambiguity where the wrong choice would likely waste substantial work.
 - Do not ask_user for style, wording, organization, or preference choices when reasonable defaults can satisfy the request.
-- Use act for tool work.
-- Use load_tools when the visible selected tools are not enough for the next action. Do not tell the user tools are missing.
-- Return load_tools only with a non-empty selector: exact toolNames when known, groups when a group fits, or query when uncertain.
-- Tool protocol has two separate phases: load_tools only changes the visible tool set for a later decision; act executes selected tools.
-- load_tools is a decision kind, not a callable tool. Never put "load_tools" inside action.calls.
-- If Selected tools is "(none)", act is invalid. Return reply, ask_user, or load_tools.
+- Use decision_act for tool work.
+- Use decision_load_tools when the visible selected tools are not enough for the next action. Do not tell the user tools are missing.
+- decision_load_tools must include a non-empty selector: exact toolNames when known, groups when a group fits, or query when uncertain.
+- Tool protocol has two separate phases: decision_load_tools only changes the visible tool set for a later decision; decision_act executes selected tools.
+- decision_load_tools is a meta decision tool, not an executable tool. Never put "load_tools" inside action.calls.
+- If Selected tools is "(none)", decision_act is invalid. Call decision_reply, decision_ask_user, or decision_load_tools.
 - action.calls may contain only tool names listed under Selected tools.
 - action.allowedTools may contain only tool names listed under Selected tools.
 - For deterministic tool tasks, use concrete single/sequential/parallel actions.
@@ -478,22 +469,19 @@ Decision rules:
 - Keep actions to one phase.
 - Use only tools listed in Selected tools.
 - Prefer write_files for generated websites, apps, and multi-file file creation.
-- Hidden tools are loaded by load_tools, not by calling skill_search or skill_activate.
+- Hidden tools are loaded by decision_load_tools, not by calling skill_search or skill_activate.
 - Do not include assertions. Tool-owned contracts provide deterministic verification.
 
-Response JSON shapes:
-{ "kind": "reply", "status": "completed" | "failed", "message": "..." }
-{ "kind": "ask_user", "question": "...", "reason": "..." }
-{ "kind": "load_tools", "request": { "query": "...", "toolNames": ["read_file"], "groups": ["workflow:code_edit"] } }
-{ "kind": "act", "action": { "mode": "single" | "sequential" | "parallel", "calls": [{ "id": "call_1", "tool": "write_files", "input": {}, "dependsOn": [], "purpose": "..." }], "allowedTools": ["write_files"] } }
+Decision tool shapes:
+- decision_reply({ "status": "completed" | "failed", "message": "..." })
+- decision_ask_user({ "question": "...", "reason": "..." })
+- decision_load_tools({ "query": "...", "toolNames": ["read_file"], "groups": ["workflow:code_edit"] })
+- decision_act({ "mode": "single" | "sequential" | "parallel", "calls": [{ "id": "call_1", "tool": "write_files", "input": {}, "dependsOn": [], "purpose": "..." }], "allowedTools": ["write_files"] })
 
 Tool protocol examples:
-Bad when shell is not selected:
-{ "kind": "act", "action": { "mode": "sequential", "calls": [{ "id": "call_1", "tool": "shell", "input": {}, "dependsOn": [] }, { "id": "call_2", "tool": "load_tools", "input": {}, "dependsOn": [] }], "allowedTools": ["shell", "load_tools"] } }
-Good instead:
-{ "kind": "load_tools", "request": { "groups": ["skill:shell"] } }
-Good after shell appears in Selected tools:
-{ "kind": "act", "action": { "mode": "single", "calls": [{ "id": "call_1", "tool": "shell", "input": { "command": "pwd" }, "dependsOn": [] }], "allowedTools": ["shell"] } }`;
+- Bad when shell is not selected: decision_act with action.calls using "shell" or "load_tools".
+- Good instead: decision_load_tools({ "groups": ["skill:shell"] }).
+- Good after shell appears in Selected tools: decision_act with one selected "shell" call.`;
 
 function buildDecisionSystemSections(systemContext: string | undefined): Record<string, string> {
   const trimmed = systemContext?.trim();
@@ -520,7 +508,7 @@ function buildDecisionPromptSections(
   return {
     "user.tools": `Selected tools:\n${formatSelectedTools(toolDefinitions)}`,
     "user.toolRouting": toolRoutingSummary?.trim()
-      ? `Tool loading map (request these with a load_tools decision, not action.calls):\n${toolRoutingSummary.trim()}`
+      ? `Tool loading map (request these with decision_load_tools, not action.calls):\n${toolRoutingSummary.trim()}`
       : "",
     "user.state": `State view:\n${JSON.stringify(stateView, null, 2)}`,
   };
@@ -568,109 +556,6 @@ function formatSelectedTools(toolDefinitions: ToolDefinition[]): string {
   }).join("\n");
 }
 
-function resolveDecisionResponseFormat(provider: LlmProvider): LlmResponseFormat | undefined {
-  if (provider.capabilities.structuredOutput?.jsonSchema) {
-    return {
-      type: "json_schema",
-      name: "agent_decision_response",
-      strict: false,
-      schema: AGENT_DECISION_RESPONSE_SCHEMA,
-    };
-  }
-  if (provider.capabilities.structuredOutput?.jsonObject) {
-    return { type: "json_object" };
-  }
-  return undefined;
-}
-
-const AGENT_DECISION_RESPONSE_SCHEMA: Record<string, unknown> = {
-  type: "object",
-  properties: {
-    kind: {
-      type: "string",
-      enum: ["reply", "ask_user", "act", "load_tools"],
-    },
-    status: {
-      type: "string",
-      enum: ["completed", "failed"],
-    },
-    message: { type: "string" },
-    summary: { type: "string" },
-    question: { type: "string" },
-    reason: { type: "string" },
-    request: {
-      type: "object",
-      properties: {
-        query: { type: "string" },
-        toolNames: {
-          type: "array",
-          items: { type: "string" },
-        },
-        groups: {
-          type: "array",
-          items: { type: "string" },
-        },
-      },
-      anyOf: [
-        { required: ["query"] },
-        { required: ["toolNames"] },
-        { required: ["groups"] },
-      ],
-      additionalProperties: false,
-    },
-    action: {
-      type: "object",
-      properties: {
-        mode: {
-          type: "string",
-          enum: ["single", "sequential", "parallel"],
-        },
-        calls: {
-          type: "array",
-          items: {
-            type: "object",
-            properties: {
-              id: { type: "string" },
-              tool: { type: "string" },
-              input: {
-                type: "object",
-                additionalProperties: true,
-              },
-              dependsOn: {
-                type: "array",
-                items: { type: "string" },
-              },
-              depends_on: {
-                type: "array",
-                items: { type: "string" },
-              },
-              purpose: { type: "string" },
-            },
-          },
-        },
-        allowedTools: {
-          type: "array",
-          items: { type: "string" },
-        },
-        allowed_tools: {
-          type: "array",
-          items: { type: "string" },
-        },
-      },
-    },
-    workingNotes: {
-      type: "array",
-      items: { type: "string" },
-    },
-    working_notes: {
-      type: "array",
-      items: { type: "string" },
-    },
-  },
-  required: ["kind"],
-  additionalProperties: true,
-};
-
 function normalizeAgentAction(value: unknown): AgentAction {
   const record = isPlainObject(value) ? value : {};
   const mode = normalizeActionMode(record["mode"]);
@@ -679,9 +564,7 @@ function normalizeAgentAction(value: unknown): AgentAction {
     : [];
   const allowedTools = Array.isArray(record["allowedTools"])
     ? record["allowedTools"].map(String).filter((tool) => tool.trim().length > 0)
-    : Array.isArray(record["allowed_tools"])
-      ? record["allowed_tools"].map(String).filter((tool) => tool.trim().length > 0)
-      : [];
+    : [];
   const assertions: ToolContractAssertion[] = [];
 
   return {
@@ -738,7 +621,7 @@ function normalizeToolCallSpec(value: unknown): AgentToolCallSpec | null {
   }
   const rawInput = value["input"];
   const input = isPlainObject(rawInput) ? { ...rawInput } : {};
-  const rawDependsOn = value["dependsOn"] ?? value["depends_on"];
+  const rawDependsOn = value["dependsOn"];
   return {
     id: String(value["id"] ?? tool).trim() || tool,
     tool,
@@ -818,59 +701,223 @@ function parseJsonRecord(text: string): Record<string, unknown> | null {
   }
 }
 
-function unwrapDecisionEnvelope(record: Record<string, unknown>): Record<string, unknown> {
-  if (typeof record["kind"] === "string" && isPlainObject(record["payload"])) {
-    return { kind: record["kind"], ...record["payload"] };
-  }
-  return record;
-}
-
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function toNativeToolSchema(tool: ToolDefinition): LlmToolSchema {
-  return {
-    name: tool.name,
-    description: tool.description,
-    inputSchema: normalizeNativeInputSchema(tool.inputSchema),
-  };
+const DECISION_TOOL_NAMES = new Set([
+  "decision_reply",
+  "decision_ask_user",
+  "decision_load_tools",
+  "decision_act",
+]);
+
+function buildNativeDecisionTools(selectedTools: ToolDefinition[]): LlmToolSchema[] {
+  return [
+    {
+      name: "decision_reply",
+      description: "Finish this decision with a user-facing reply. Use when no tool loading or tool execution is needed.",
+      inputSchema: objectSchema({
+        status: {
+          type: "string",
+          enum: ["completed", "failed"],
+        },
+        message: {
+          type: "string",
+          minLength: 1,
+        },
+        workingNotes: workingNotesSchema(),
+      }, ["status", "message"]),
+    },
+    {
+      name: "decision_ask_user",
+      description: "Ask the user for required information only when progress is blocked and no safe default exists.",
+      inputSchema: objectSchema({
+        question: {
+          type: "string",
+          minLength: 1,
+        },
+        reason: {
+          type: "string",
+          minLength: 1,
+        },
+        workingNotes: workingNotesSchema(),
+      }, ["question", "reason"]),
+    },
+    {
+      name: "decision_load_tools",
+      description: "Request hidden tools by exact group, exact tool name, or search query when selected tools are insufficient.",
+      inputSchema: {
+        ...objectSchema({
+          query: {
+            type: "string",
+            minLength: 1,
+          },
+          toolNames: {
+            type: "array",
+            items: {
+              type: "string",
+              minLength: 1,
+            },
+            maxItems: 12,
+          },
+          groups: {
+            type: "array",
+            items: {
+              type: "string",
+              minLength: 1,
+            },
+            maxItems: 12,
+          },
+          workingNotes: workingNotesSchema(),
+        }, []),
+        anyOf: [
+          { required: ["query"] },
+          { required: ["toolNames"] },
+          { required: ["groups"] },
+        ],
+      },
+    },
+    {
+      name: "decision_act",
+      description: "Plan execution using only the selected executable tools listed in the prompt. Ayati validates and executes the plan locally.",
+      inputSchema: buildNativeDecisionActSchema(selectedTools),
+    },
+  ];
 }
 
-function normalizeNativeInputSchema(schema: ToolDefinition["inputSchema"]): Record<string, unknown> {
-  if (schema && typeof schema === "object") {
-    return schema;
-  }
+function buildNativeDecisionActSchema(selectedTools: ToolDefinition[]): Record<string, unknown> {
+  const selectedToolNames = selectedTools.map((tool) => tool.name);
+  const toolEnum = selectedToolNames.length > 0 ? selectedToolNames : ["__no_selected_tools__"];
+  return objectSchema({
+    mode: {
+      type: "string",
+      enum: ["single", "sequential", "parallel"],
+    },
+    allowedTools: {
+      type: "array",
+      items: {
+        type: "string",
+        enum: toolEnum,
+      },
+      minItems: 1,
+      maxItems: 12,
+    },
+    calls: {
+      type: "array",
+      minItems: 1,
+      maxItems: 4,
+      items: objectSchema({
+        id: {
+          type: "string",
+          minLength: 1,
+        },
+        tool: {
+          type: "string",
+          enum: toolEnum,
+        },
+        input: {
+          type: "object",
+        },
+        purpose: {
+          type: "string",
+          minLength: 1,
+        },
+        dependsOn: {
+          type: "array",
+          items: {
+            type: "string",
+          },
+          maxItems: 4,
+        },
+      }, ["id", "tool", "input", "purpose", "dependsOn"]),
+    },
+    assertions: {
+      type: "array",
+      items: {
+        type: "object",
+      },
+      maxItems: 8,
+    },
+    workingNotes: workingNotesSchema(),
+  }, ["mode", "allowedTools", "calls"]);
+}
+
+function objectSchema(properties: Record<string, unknown>, required: string[]): Record<string, unknown> {
   return {
     type: "object",
-    properties: {},
+    properties,
+    required,
     additionalProperties: false,
   };
 }
 
-function nativeToolCallsToDecision(calls: Array<{ id: string; name: string; input: unknown }>): AgentDecision {
-  if (calls.length === 0) {
-    return {
-      kind: "reply",
-      status: "failed",
-      message: "The provider returned an empty native tool call set.",
-    };
+function workingNotesSchema(): Record<string, unknown> {
+  return {
+    type: "array",
+    items: {
+      type: "string",
+    },
+    maxItems: 5,
+  };
+}
+
+function serializeNativeDecisionToolCalls(calls: LlmToolCall[]): string {
+  if (calls.length !== 1) {
+    return `native_decision_error: expected exactly one decision tool call, received ${calls.length}.`;
   }
 
-  const allowedTools = uniqueStrings(calls.map((call) => call.name));
-  return {
-    kind: "act",
-    action: {
-      mode: calls.length === 1 ? "single" : "sequential",
-      allowedTools,
-      assertions: [],
-      calls: calls.map((call, index) => ({
-        id: call.id.trim() || `native-tool-${index + 1}`,
-        tool: call.name,
-        input: call.input ?? {},
-        purpose: "Provider-native tool call.",
-        dependsOn: [],
-      })),
-    },
-  };
+  const call = calls[0]!;
+  if (!DECISION_TOOL_NAMES.has(call.name)) {
+    return `native_decision_error: unknown decision tool '${call.name}'. Executable tools must be requested through decision_act.`;
+  }
+
+  const input = isPlainObject(call.input) ? call.input : {};
+  return JSON.stringify(nativeDecisionToolCallToPayload(call.name, input));
+}
+
+function nativeDecisionToolCallToPayload(toolName: string, input: Record<string, unknown>): Record<string, unknown> {
+  switch (toolName) {
+    case "decision_reply":
+      return {
+        kind: "reply",
+        status: input["status"],
+        message: input["message"],
+        ...(input["workingNotes"] ? { workingNotes: input["workingNotes"] } : {}),
+      };
+    case "decision_ask_user":
+      return {
+        kind: "ask_user",
+        question: input["question"],
+        reason: input["reason"],
+        ...(input["workingNotes"] ? { workingNotes: input["workingNotes"] } : {}),
+      };
+    case "decision_load_tools":
+      return {
+        kind: "load_tools",
+        request: {
+          ...(input["query"] ? { query: input["query"] } : {}),
+          ...(input["toolNames"] ? { toolNames: input["toolNames"] } : {}),
+          ...(input["groups"] ? { groups: input["groups"] } : {}),
+        },
+        ...(input["workingNotes"] ? { workingNotes: input["workingNotes"] } : {}),
+      };
+    case "decision_act":
+      return {
+        kind: "act",
+        action: {
+          mode: input["mode"],
+          allowedTools: input["allowedTools"],
+          calls: input["calls"],
+          assertions: input["assertions"] ?? [],
+        },
+        ...(input["workingNotes"] ? { workingNotes: input["workingNotes"] } : {}),
+      };
+    default:
+      return {
+        kind: "reply",
+        status: "failed",
+        message: `Unknown native decision tool: ${toolName}`,
+      };
+  }
 }

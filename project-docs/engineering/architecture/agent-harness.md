@@ -23,25 +23,40 @@ Primary code paths:
 
 ## Decision Shape
 
-The decision model returns exactly one of:
+The decision model must call exactly one native decision tool. These are
+meta-tools, not executable runtime tools:
 
-```json
-{ "kind": "reply", "status": "completed", "message": "..." }
-{ "kind": "ask_user", "question": "...", "reason": "..." }
-{ "kind": "load_tools", "request": { "query": "...", "toolNames": [], "groups": [] } }
-{ "kind": "act", "action": { "mode": "single", "calls": [], "allowedTools": [] } }
+```text
+decision_reply({ status, message })
+decision_ask_user({ question, reason })
+decision_load_tools({ query?, toolNames?, groups? })
+decision_act({ mode, allowedTools, calls, assertions? })
 ```
 
-`load_tools` is a decision kind, not an action tool. Its request must include
-at least one non-empty selector:
+The native decision tool call is converted into the internal `AgentDecision`
+union:
+
+```text
+decision_reply      -> { kind: "reply", ... }
+decision_ask_user   -> { kind: "ask_user", ... }
+decision_load_tools -> { kind: "load_tools", ... }
+decision_act        -> { kind: "act", ... }
+```
+
+`decision_load_tools` must include at least one non-empty selector:
 
 - `groups`: exact group names from the compact loading map, such as
   `skill:filesystem` or `workflow:code_edit`
 - `toolNames`: exact tool names when already known
 - `query`: search text when the model is unsure which hidden tool should load
 
-`reason` is intentionally not part of `load_tools`. The loader does not infer
-selectors from explanation text.
+`reason` is intentionally not part of `decision_load_tools`. The loader does
+not infer selectors from explanation text.
+
+Executable tools such as `read_file`, `shell`, `list_directory`, or `pulse` are
+not exposed as native provider tools during the decision call. If execution is
+needed, the model calls `decision_act` with an action plan. Ayati then validates
+and executes that plan locally through the action executor.
 
 There is no separate required model call to create a goal. The first decision
 uses the current input and context pack directly. `workState` starts minimal and
@@ -60,7 +75,7 @@ system:
   truncated runtime system context, when present
 
 user:
-  selected tool definitions for this decision
+  selected executable tool definitions for this decision
   compact hidden tool loading map with loadable groups and representative tool names
   State view JSON
 ```
@@ -110,11 +125,12 @@ message. This lets the model recover from bad selectors instead of assuming a
 no-op load succeeded. Historical load outcomes are not accumulated in prompt
 context.
 
-When the active provider supports native tool calling, Ayati passes the mounted
-selected tools as provider-native function/tool schemas for that decision.
-Provider-native tool calls are converted back into Ayati `act` decisions so the
-local action executor still validates selected-tool membership, input schemas,
-execution, verification, and progress reduction.
+The provider call receives only the four native decision tools. Ayati requires
+exactly one decision tool call and disables parallel provider tool calls where
+the provider supports that control. If the provider returns text, zero decision
+tool calls, multiple decision tool calls, or an unknown tool call, the decision
+is rejected and the runner performs one native decision repair attempt before
+failing deterministically.
 
 The working set is cleared at task finalization. Legacy direct tool-definition
 callers are still supported, but the app runtime should use the hidden catalog
