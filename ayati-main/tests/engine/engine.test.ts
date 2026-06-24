@@ -324,7 +324,7 @@ describe("IVecEngine", () => {
       expect(sessionMemory.queueTaskSummary as ReturnType<typeof vi.fn>).toHaveBeenCalledWith(
         "c1",
         expect.objectContaining({
-          status: "completed",
+          runStatus: "completed",
           taskStatus: "done",
           objective: "find config files",
           summary: expect.stringContaining(outputPath),

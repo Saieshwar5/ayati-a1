@@ -12,6 +12,7 @@ type PersistedLoopState = Omit<
   | "sessionEvents"
   | "activeContextStartSeq"
   | "sessionWork"
+  | "taskThreadContext"
 >;
 const runArtifactWriteQueues = new Map<string, Promise<void>>();
 const runStateWriteQueues = new Map<string, RunStateWriteQueue>();
@@ -95,6 +96,7 @@ export function readState(runPath: string): Partial<LoopState> | null {
     delete (parsed as Record<string, unknown>)["sessionEvents"];
     delete (parsed as Record<string, unknown>)["activeContextStartSeq"];
     delete (parsed as Record<string, unknown>)["sessionWork"];
+    delete (parsed as Record<string, unknown>)["taskThreadContext"];
     delete (parsed as Record<string, unknown>)["recentRunLedgers"];
     delete (parsed as Record<string, unknown>)["recentTaskSummaries"];
     delete (parsed as Record<string, unknown>)["continuity"];
@@ -116,6 +118,7 @@ function buildPersistedLoopState(state: LoopState): PersistedLoopState {
     sessionEvents: _sessionEvents,
     activeContextStartSeq: _activeContextStartSeq,
     sessionWork: _sessionWork,
+    taskThreadContext: _taskThreadContext,
     activeLearningContext: _activeLearningContext,
     personalMemorySnapshot: _personalMemorySnapshot,
     continuity: _continuity,
@@ -310,6 +313,9 @@ export function formatVerifyMarkdown(data: VerifyOutput, toolCalls: ActToolCallR
     }
     if (data.workState.evidence.length > 0) {
       lines.push(`- Evidence: ${data.workState.evidence.map((evidence) => summarizeValue(evidence, 180)).join(" | ")}`);
+    }
+    if ((data.workState.taskNotes ?? []).length > 0) {
+      lines.push(`- Task Notes: ${(data.workState.taskNotes ?? []).map((note) => summarizeValue(note.text, 180)).join(" | ")}`);
     }
     if (data.workState.nextStep?.trim()) {
       lines.push(`- Next Step: ${summarizeValue(data.workState.nextStep, 220)}`);

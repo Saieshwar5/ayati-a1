@@ -165,6 +165,8 @@ portion is built by `context-pack.ts` and currently includes:
 - `timeline`: chronological bounded user/assistant/system events ending with
   the current input
 - `continuity`
+- `taskThreadContext`: active and suspended same-session open tasks plus the
+  suggested continue/switch/new/ambiguous binding for the current input
 - `sessionWork`: compact same-session activity summaries
 - optional `personalMemorySnapshot`
 
@@ -191,7 +193,11 @@ Both should describe the same harness reality:
 - what failed and how the model should recover
 
 The decision model does not receive the internal run path, generated goal
-contract, empty progress scaffolding, or unrelated activity shelves.
+contract, empty progress scaffolding, or unrelated activity shelves. Open task
+continuation stays inside the existing decision stage: `taskThreadContext`
+gives the model enough structured state to continue the active task, switch to
+a named suspended task, start a new task, or ask the user when multiple open
+tasks match.
 
 ## Action Execution
 

@@ -20,17 +20,21 @@ Session files are date-partitioned:
 data/memory/sessions/YYYY-MM-DD/<sessionId>.jsonl
 ```
 
-Each session has a unique `sessionId` and stores only:
+Each session has a unique `sessionId` and stores:
 
 - `session_open`
 - `user_message`
 - `assistant_response`
 - `system_event`
+- `task_thread_update`
 
 Each user, assistant, and system event has a monotonically increasing session
 `seq`. User and system events do not carry run ids. Assistant responses may
 optionally carry `workRunId` when they came from an execution run, so debugging
 can jump from the session log to artifacts under `data/runs/<workRunId>/`.
+`task_thread_update` records are session-memory state records. They rebuild
+open-task continuity after restart but are not part of the user-visible
+conversation timeline.
 
 SQLite stores only session lookup metadata in `data/memory/memory.sqlite`:
 
@@ -58,6 +62,7 @@ The active session keeps an in-memory replay of today's ordered session events:
 - flat user/assistant/system-event timeline with `seq`
 - full daily user/assistant exchange log derived from chronological events
 - last 5 system events
+- active and suspended same-session task threads
 - `activeContextStartSeq`, derived from the latest saved activity discussion
   range in the session
 
@@ -83,6 +88,8 @@ The context pack is bounded JSON. Session-derived model-facing fields are:
   Events use simple session `seq` numbers instead of run ids.
 - `continuity`: deterministic activity-thread resolution for the current input,
   with `mode: "new" | "continue" | "ambiguous"`
+- `taskThreadContext`: active and suspended same-session open tasks, recent
+  continuation signals, and a suggested task binding for the decision stage
 - `sessionWork`: compact same-session activity summaries and the current
   `activeContextStartSeq`
 
@@ -107,6 +114,99 @@ Other context sources remain independent from session:
 - task/work-run details in `data/runs/<workRunId>/`
 - document/file stores
 - long-term or semantic memory stores
+
+## Task Threads
+
+Task threads are the session-level continuation surface for unfinished user
+tasks. They sit between immutable task summaries and durable activity threads.
+
+The purpose is to support this common state:
+
+```text
+runStatus: "completed"
+taskStatus: "open"
+```
+
+That means the run ended normally, but the user's task still has remaining
+work. In that case, Ayati should not immediately create a long-term Activity
+for every partial run. It should keep a mutable same-session `TaskThread` so a
+later run can continue comfortably.
+
+The three layers are:
+
+- `TaskSummary`: immutable receipt for one run.
+- `TaskThread`: mutable same-session aggregate for one unfinished task across
+  one or more runs.
+- `Activity`: durable long-term memory created from a completed or abandoned
+  task thread, or from explicit activity continuation.
+
+A task thread tracks:
+
+- `taskThreadId`
+- objective and compact summary
+- active/suspended/closed/promoted status
+- run ids and compact run history
+- completed work, open work, blockers, next action, facts, and evidence
+- tools used
+- useful activity assets only: user attachments and meaningful agent-generated
+  files/directories
+- discussion `seq` ranges that point back to the session JSONL file
+
+Only one task should normally be `active_in_session`. Other open tasks are
+`suspended_in_session`.
+
+`MemoryManager.queueTaskSummary` applies task summaries to task threads:
+
+1. If a task summary carries an explicit `activityId`, it updates Activity
+   memory directly for backward-compatible durable continuation.
+2. Otherwise, evidence-backed or open task summaries update the active task
+   thread, a selected `taskThreadId`, or a new task thread.
+3. Open summaries stay in session task-thread state and do not advance the
+   durable activity boundary.
+4. Done summaries close the task thread and promote the whole thread aggregate
+   into an Activity.
+5. Session close promotes remaining open task threads into Activity memory so
+   unfinished work remains recoverable after the user leaves the session.
+
+The context pack exposes `taskThreadContext` before each decision. Its shape is
+intentionally compact:
+
+```ts
+interface TaskThreadContext {
+  activeTask?: TaskThreadContextTask;
+  suspendedTasks: TaskThreadContextTask[];
+  recentSignals: {
+    latestUserMessage: string;
+    previousAssistantExpectedAnswer: boolean;
+    hasFollowUpSignal: boolean;
+    hasExplicitNewTaskSignal: boolean;
+    mentionedAssetNames: string[];
+    mentionedAssetPaths: string[];
+  };
+  suggestedBinding: {
+    mode: "continue_task" | "switch_task" | "new_task" | "ambiguous";
+    taskThreadId?: string;
+    confidence?: number;
+    reason?: string;
+  };
+}
+```
+
+The decision stage uses this context instead of a separate continuation stage:
+
+- `continue`, `finish it`, `do the rest`, or short answers after a feedback
+  question continue the active task.
+- A message that names a suspended task objective, file, directory, document,
+  or generated asset switches to that task.
+- Clear new-task language starts a new task and leaves existing open work
+  suspended.
+- Ambiguous matches use `decision_ask_user` with concrete choices.
+
+This preserves the harness model:
+
+```text
+context pack -> decision -> action executor -> deterministic verification -> progress reducer
+```
 
 ## Activity Threads
 
@@ -167,19 +267,23 @@ Lifecycle:
 2. `IVecEngine` publishes the summary through `queueTaskSummaryPublication`.
 3. `MemoryManager.queueTaskSummary` enriches the summary with the trigger
    `seq` and active discussion range.
-4. `MemoryManager.queueTaskSummary` creates or updates an activity only when
-   the summary has evidence-backed work: tools, activity assets, attachment
-   anchors, or explicit continuation `activityId`.
-5. No-tool direct replies without durable activity state are intentionally
-   skipped.
-6. Activity `discussionRanges` point back to the exact session JSONL event
+4. If the summary carries explicit `activityId`, Activity memory is updated
+   directly.
+5. Otherwise, open or evidence-backed summaries update a same-session
+   TaskThread first.
+6. Activity memory is created from the whole TaskThread when the task is done,
+   when open work is promoted on session close, or when durable continuation is
+   explicitly requested.
+7. No-tool direct replies without durable task state are intentionally skipped.
+8. Activity `discussionRanges` point back to the exact session JSONL event
    ranges that led to the work. The raw transcript is not duplicated in SQLite.
-7. `ContinuityResolver` deterministically resolves future inputs by exact
+9. `ContinuityResolver` deterministically resolves future inputs by exact
    identity anchors first, then recall cues, entities, aliases, FTS search
    terms, and recent follow-up phrasing.
-8. The resolver returns `continue` only for a strong winner with a clear score
+10. The resolver returns `continue` only for a strong winner with a clear score
    gap. Close matches return `ambiguous`; weak matches return `new`.
-9. Activity tools can search, get, select, update, and archive activity threads.
+11. Activity tools can search, get, select, update, and archive activity
+    threads.
 
 Activity writes are atomic. `ActivityStore` upserts the thread, identities,
 aliases, cues, entities, assets, runs, FTS row, and event in one SQLite
@@ -198,7 +302,8 @@ Activity assets:
 Boundary:
 
 - Current-run progress belongs in run state and run artifacts.
-- Reusable continuation state belongs in activity threads.
+- Same-session unfinished work belongs in task threads.
+- Durable reusable continuation state belongs in activity threads.
 - Raw conversation remains in session JSONL.
 - Personal facts and preferences belong in personal memory.
 

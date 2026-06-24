@@ -40,6 +40,8 @@ const REFLECTION_SYSTEM_PROMPT = [
 ].join("\n");
 
 export interface PulseProposalReflectionTaskSummary {
+  runStatus?: "completed" | "failed" | "stuck";
+  /** @deprecated Use runStatus. */
   status?: "completed" | "failed" | "stuck";
   taskStatus?: TaskSummaryTaskStatus;
   objective?: string;
@@ -141,7 +143,8 @@ export function shouldRunReflection(input: PulseProposalReflectionInput): boolea
   if (!hasPulseTool(input.toolDefinitions)) {
     return false;
   }
-  if (input.taskSummary.status && input.taskSummary.status !== "completed") {
+  const runStatus = input.taskSummary.runStatus ?? input.taskSummary.status;
+  if (runStatus && runStatus !== "completed") {
     return false;
   }
   if (input.taskSummary.taskStatus && !isCompletedTaskStatus(input.taskSummary.taskStatus)) {
@@ -246,7 +249,7 @@ function summarizeCapabilities(tools: ToolDefinition[]): Record<string, unknown>
 }
 
 function isCompletedTaskStatus(status: TaskSummaryTaskStatus): boolean {
-  return status === "done" || status === "likely_done";
+  return status === "done";
 }
 
 function hasPulseTool(tools: ToolDefinition[]): boolean {

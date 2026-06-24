@@ -87,7 +87,7 @@ describe("ActivityStore", () => {
         discussionStartSeq: 1,
         discussionEndSeq: 5,
         status: "completed",
-        taskStatus: "not_done",
+        taskStatus: "open",
         objective: "Build a product website",
         summary: "Created the product website in site/index.html.",
         progressSummary: "Initial website files are written.",

@@ -1002,7 +1002,7 @@ export class IVecEngine {
       stage: "memory",
       event: "task_summary_queued",
       data: {
-        status: taskSummary.status,
+        runStatus: taskSummary.runStatus,
         taskStatus: taskSummary.taskStatus,
         summary: taskSummary.summary,
         assistantResponseKind: taskSummary.assistantResponseKind,

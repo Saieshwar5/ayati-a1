@@ -14,8 +14,9 @@ context pack -> decision -> action executor -> deterministic verification -> pro
 
 The product intent is that Ayati should feel continuous and alive without
 requiring the user to manage sessions manually. Recent work should stay vivid
-through session memory and deterministic activity-thread continuity, while
-older work fades into compact summaries or recallable memories.
+through session memory, same-session task threads, and deterministic
+activity-thread continuity, while older work fades into compact summaries or
+recallable memories.
 
 Current packages:
 
@@ -26,9 +27,10 @@ Primary value:
 
 - A local-first autonomous agent daemon with composable capabilities.
 - A stable backend loop that can use different model providers.
-- Persistent session, activity, personal, and episodic memory for personalization and continuity.
+- Persistent session, task-thread, activity, personal, and episodic memory for personalization and continuity.
 - Structured context packs that keep recent conversation, resolved continuity,
-  personal memory, and active learning context available to the decision model.
+  same-session open tasks, personal memory, and active learning context
+  available to the decision model.
 - Activity assets keep user-attached documents, datasets, files, and directories
   resumable across later runs.
 - Broad computer-access tools for local workspace work, files, documents, datasets, Python, SQLite, reminders, and recall.

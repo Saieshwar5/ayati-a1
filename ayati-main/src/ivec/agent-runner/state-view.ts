@@ -1,4 +1,4 @@
-import type { LoopState, ToolContextState, ToolObservation, WorkEvidenceRef, WorkState } from "../types.js";
+import type { LoopState, TaskNote, ToolContextState, ToolObservation, WorkEvidenceRef, WorkState } from "../types.js";
 import type { ToolLoadResult } from "./tool-working-set.js";
 import { buildAgentContextPack } from "./context-pack.js";
 import type { AgentContextPack } from "./context-pack.js";
@@ -11,6 +11,7 @@ export interface PromptProgressState {
   verifiedFacts?: string[];
   evidence?: string[];
   evidenceRefs?: WorkEvidenceRef[];
+  taskNotes?: TaskNote[];
   nextStep?: string;
   userInputNeeded?: string;
 }
@@ -202,6 +203,7 @@ function buildProgressView(workState: WorkState): PromptProgressState | undefine
   const verifiedFacts = compactList(workState.verifiedFacts, 6, 180);
   const evidence = compactList(workState.evidence, 5, 180);
   const evidenceRefs = (workState.evidenceRefs ?? []).slice(-5);
+  const taskNotes = compactTaskNotes(workState.taskNotes);
   const nextStep = workState.nextStep?.trim() ? truncate(workState.nextStep, 220) : undefined;
   const userInputNeeded = workState.userInputNeeded?.trim() ? truncate(workState.userInputNeeded, 220) : undefined;
   const hasUsefulState = workState.status !== "not_done"
@@ -211,6 +213,7 @@ function buildProgressView(workState: WorkState): PromptProgressState | undefine
     || verifiedFacts.length > 0
     || evidence.length > 0
     || evidenceRefs.length > 0
+    || taskNotes.length > 0
     || nextStep !== undefined
     || userInputNeeded !== undefined;
 
@@ -226,9 +229,22 @@ function buildProgressView(workState: WorkState): PromptProgressState | undefine
     ...(verifiedFacts.length > 0 ? { verifiedFacts } : {}),
     ...(evidence.length > 0 ? { evidence } : {}),
     ...(evidenceRefs.length > 0 ? { evidenceRefs } : {}),
+    ...(taskNotes.length > 0 ? { taskNotes } : {}),
     ...(nextStep ? { nextStep } : {}),
     ...(userInputNeeded ? { userInputNeeded } : {}),
   };
+}
+
+function compactTaskNotes(notes: TaskNote[] | undefined): TaskNote[] {
+  return (notes ?? [])
+    .filter((note) => note.id.trim().length > 0 && note.text.trim().length > 0)
+    .slice(-6)
+    .map((note) => ({
+      id: truncate(note.id, 120),
+      text: truncate(note.text, 300),
+      source: truncate(note.source, 140),
+      expires: note.expires,
+    }));
 }
 
 function buildPromptObservations(observations: ToolObservation[] | undefined): ToolObservation[] {

@@ -608,6 +608,11 @@ Decision rules:
 - Use context.timeline as chronological conversation context. The item with current=true is the current input.
 - Use the immediately preceding assistant item in context.timeline to interpret short replies like yes, no, do it, go ahead, continue, or stop.
 - Use context.continuity.current as compact durable task state when present.
+- Use context.taskThreadContext for same-session open tasks. It is the primary source for active/suspended open task continuation before durable Activity memory.
+- If context.taskThreadContext.suggestedBinding.mode is continue_task, continue that task unless the current input clearly says to start unrelated work.
+- If suggestedBinding.mode is switch_task, treat the named suspended task as the current task.
+- If suggestedBinding.mode is new_task, do not reuse the active open task unless the user explicitly refers back to it.
+- If suggestedBinding.mode is ambiguous, call decision_ask_user with the concrete matching task choices instead of guessing.
 - Use context.sessionWork only as compact same-session work awareness; do not treat it as raw conversation.
 - Use context.continuity for durable task/project state, not as a replacement for immediate dialogue context.
 - Treat State view.progress as the authoritative current task progress. It may be absent on the first decision.
@@ -688,6 +693,7 @@ function buildStateViewPromptBreakdown(stateView: AgentStateView): Record<string
     "state.context": stringifySection(stateView.context),
     "state.context.timeline": stringifySection(stateView.context.timeline),
     "state.context.continuity": stringifySection(stateView.context.continuity),
+    "state.context.taskThreadContext": stringifySection(stateView.context.taskThreadContext),
     "state.context.sessionWork": stringifySection(stateView.context.sessionWork),
     "state.context.personalMemorySnapshot": stateView.context.personalMemorySnapshot,
     "state.progress": stringifySection(stateView.progress),

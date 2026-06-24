@@ -23,6 +23,7 @@ import type {
   ActivityTaskBoundary,
   PromptSessionEvent,
   SessionWorkContext,
+  TaskThreadContext,
   TaskSummaryRecordInput,
 } from "../memory/types.js";
 import type { DocumentStore } from "../documents/document-store.js";
@@ -95,6 +96,13 @@ export interface ToolContextState {
   recent: ToolObservation[];
 }
 
+export interface TaskNote {
+  id: string;
+  text: string;
+  source: string;
+  expires: "next_step" | "task";
+}
+
 export interface WorkState {
   status: WorkStatus;
   summary: string;
@@ -103,6 +111,7 @@ export interface WorkState {
   verifiedFacts: string[];
   evidence: string[];
   evidenceRefs?: WorkEvidenceRef[];
+  taskNotes?: TaskNote[];
   nextStep?: string;
   userInputNeeded?: string;
 }
@@ -157,6 +166,7 @@ export interface LoopState {
   sessionEvents?: PromptSessionEvent[];
   activeContextStartSeq?: number;
   sessionWork?: SessionWorkContext;
+  taskThreadContext?: TaskThreadContext;
 }
 
 export type StepVerificationPolicy = "deterministic" | "llm" | "script" | "hybrid";

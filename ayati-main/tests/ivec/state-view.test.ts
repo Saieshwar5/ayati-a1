@@ -240,7 +240,7 @@ describe("buildAgentStateView", () => {
           recentRuns: Array.from({ length: 4 }, (_, index) => ({
             runId: `run-${index}`,
             status: "completed" as const,
-            taskStatus: "not_done",
+            taskStatus: "open",
             summary: `summary ${index}`,
             toolsUsed: ["write_files"],
             createdAt: `2026-06-16T09:0${index}:00.000Z`,
@@ -308,6 +308,12 @@ describe("buildAgentStateView", () => {
           lineCount: 4,
           truncated: false,
           access: ["search", "read_lines", "tail"],
+        }],
+        taskNotes: [{
+          id: "note:state-view",
+          text: "state-view.ts emits progress, observations.latest, and trace.",
+          source: "read_file:ayati-main/src/ivec/agent-runner/state-view.ts",
+          expires: "task",
         }],
         nextStep: "Patch the prompt and add a regression test.",
         userInputNeeded: "Approval is needed before editing files.",
@@ -517,6 +523,12 @@ describe("buildAgentStateView", () => {
     expect(stateView.progress).toMatchObject({
       status: "needs_user_input",
       summary: "Prompt contract mentions old state fields.",
+      taskNotes: [{
+        id: "note:state-view",
+        text: "state-view.ts emits progress, observations.latest, and trace.",
+        source: "read_file:ayati-main/src/ivec/agent-runner/state-view.ts",
+        expires: "task",
+      }],
     });
     expect(stateView.observations?.latest).toHaveLength(2);
     expect(stateView.workingFeedback?.latest).toHaveLength(3);

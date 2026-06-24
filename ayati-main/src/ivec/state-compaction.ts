@@ -1,4 +1,4 @@
-import type { LoopState, StepSummary, ToolContextState, ToolObservation, WorkEvidenceRef, WorkState } from "./types.js";
+import type { LoopState, StepSummary, TaskNote, ToolContextState, ToolObservation, WorkEvidenceRef, WorkState } from "./types.js";
 
 const WORK_STATE_LIMITS = {
   summaryChars: 900,
@@ -9,6 +9,7 @@ const WORK_STATE_LIMITS = {
   verifiedFacts: { count: 8, chars: 220 },
   evidence: { count: 6, chars: 240 },
   evidenceRefs: 8,
+  taskNotes: { count: 8, textChars: 320, sourceChars: 160 },
 };
 
 const LOOP_STATE_LIMITS = {
@@ -39,6 +40,7 @@ export function compactWorkState(workState: WorkState): WorkState {
     verifiedFacts: compactStringList(workState.verifiedFacts, WORK_STATE_LIMITS.verifiedFacts),
     evidence: compactStringList(workState.evidence, WORK_STATE_LIMITS.evidence),
     evidenceRefs: compactEvidenceRefs(workState.evidenceRefs, WORK_STATE_LIMITS.evidenceRefs),
+    taskNotes: compactTaskNotes(workState.taskNotes, WORK_STATE_LIMITS.taskNotes),
     nextStep: compactOptionalText(workState.nextStep, WORK_STATE_LIMITS.nextStepChars),
     userInputNeeded: compactOptionalText(workState.userInputNeeded, WORK_STATE_LIMITS.userInputNeededChars),
   };
@@ -91,12 +93,14 @@ function buildPersistedLikeStateView(state: LoopState): Omit<
   | "sessionEvents"
   | "activeContextStartSeq"
   | "sessionWork"
+  | "taskThreadContext"
 > {
   const {
     recentExchanges: _recentExchanges,
     sessionEvents: _sessionEvents,
     activeContextStartSeq: _activeContextStartSeq,
     sessionWork: _sessionWork,
+    taskThreadContext: _taskThreadContext,
     activeLearningContext: _activeLearningContext,
     personalMemorySnapshot: _personalMemorySnapshot,
     continuity: _continuity,
@@ -181,6 +185,28 @@ function compactEvidenceRefs(values: WorkEvidenceRef[] | undefined, limit: numbe
     .filter((ref) => ref.id.trim().length > 0 && ref.ref.trim().length > 0)
     .slice(-limit);
   return refs.length > 0 ? refs : undefined;
+}
+
+function compactTaskNotes(
+  values: TaskNote[] | undefined,
+  limits: { count: number; textChars: number; sourceChars: number },
+): TaskNote[] | undefined {
+  const byId = new Map<string, TaskNote>();
+  for (const note of values ?? []) {
+    const id = compactText(note.id, 120);
+    const text = compactText(note.text, limits.textChars);
+    if (!id || !text) {
+      continue;
+    }
+    byId.set(id, {
+      id,
+      text,
+      source: compactText(note.source, limits.sourceChars),
+      expires: note.expires,
+    });
+  }
+  const notes = [...byId.values()].slice(-limits.count);
+  return notes.length > 0 ? notes : undefined;
 }
 
 function normalizeText(value: string): string {

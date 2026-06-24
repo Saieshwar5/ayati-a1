@@ -1,10 +1,11 @@
 import { createHash } from "node:crypto";
+import { dirname, isAbsolute, resolve } from "node:path";
 import { devLog, devWarn } from "../../shared/index.js";
 import { prepareIncomingAttachments } from "../../documents/attachment-preparer.js";
 import type { PreparedAttachmentRecord } from "../../documents/prepared-attachment-registry.js";
 import type { PreparedAttachmentSummary } from "../../documents/types.js";
 import { ContinuityResolver } from "../../memory/activity/continuity-resolver.js";
-import type { ActivityAssetRef, MemoryRunHandle, SessionInputHandle } from "../../memory/types.js";
+import type { ActivityAssetRef, MemoryRunHandle, SessionInputHandle, TaskSummaryFailureSummary } from "../../memory/types.js";
 import type { AgentArtifact } from "../types.js";
 import type {
   ActToolCallRecord,
@@ -300,6 +301,13 @@ export async function runAgentLoop(
     if (decision.kind === "reply") {
       state.status = decision.status === "failed" ? "failed" : "completed";
       state.finalOutput = decision.message;
+      if (decision.status === "completed" && canMarkTerminalReplyDone(state)) {
+        state.workState = {
+          ...state.workState,
+          status: "done",
+          summary: state.workState.summary || decision.message,
+        };
+      }
       const responseKind = state.preferredResponseKind ?? "reply";
       return finalize({
         status: state.status,
@@ -686,7 +694,9 @@ function summarizeTaskSummary(taskSummary: AgentTaskSummaryRecord | undefined): 
   }
   return {
     runId: taskSummary.runId,
-    status: taskSummary.status,
+    taskThreadId: taskSummary.taskThreadId,
+    taskBindingMode: taskSummary.taskBindingMode,
+    runStatus: taskSummary.runStatus,
     taskStatus: taskSummary.taskStatus,
     summary: taskSummary.summary,
     objective: taskSummary.objective,
@@ -1008,6 +1018,7 @@ function buildInitialState(
       activeContextStartSeq: 1,
       recentActivities: [],
     },
+    taskThreadContext: undefined,
     toolContext: { recent: [] },
   };
 }
@@ -1066,6 +1077,7 @@ function syncTransientMemoryContext(state: LoopState, deps: AgentLoopDeps): void
   state.sessionEvents = memCtx.sessionEvents ?? [];
   state.activeContextStartSeq = memCtx.activeContextStartSeq ?? 1;
   state.sessionWork = memCtx.sessionWork ?? { activeContextStartSeq: state.activeContextStartSeq, recentActivities: [] };
+  state.taskThreadContext = memCtx.taskThreadContext;
   const sessionId = deps.inputHandle?.sessionId ?? deps.runHandle?.sessionId;
   state.durableTaskBoundary = sessionId ? store?.findLatestDurableTaskBoundary(deps.clientId, sessionId) ?? undefined : undefined;
 }
@@ -1081,7 +1093,7 @@ function syncContinuityContext(state: LoopState, deps: AgentLoopDeps, inputHandl
     clientId: deps.clientId,
     sessionId: inputHandle.sessionId,
     userMessage: state.userMessage,
-    currentAssetRefs: buildActivityAssets(state),
+    currentAssetRefs: buildActivityAssets(state, state.runPath ? absolutePath(state.runPath) : ""),
   });
 }
 
@@ -1112,6 +1124,13 @@ function emptyWorkState(): WorkState {
     verifiedFacts: [],
     evidence: [],
   };
+}
+
+function canMarkTerminalReplyDone(state: LoopState): boolean {
+  return state.workState.status === "not_done"
+    && (state.workState.openWork?.length ?? 0) === 0
+    && (state.workState.blockers?.length ?? 0) === 0
+    && !state.workState.userInputNeeded?.trim();
 }
 
 function discardModelWorkingNotes(decision: AgentDecision): void {
@@ -1321,28 +1340,35 @@ function buildLoopResult(
 function buildTaskSummaryRecord(
   state: LoopState,
   assistantResponse: string,
-  status: AgentLoopResult["status"],
+  runStatus: AgentLoopResult["status"],
   responseKind: AgentLoopResult["type"],
   completion?: CompletionDirective,
 ): AgentTaskSummaryRecord {
   const userFacingSummary = completion?.summary?.trim() || assistantResponse.trim();
   const progressSummary = state.workState.summary.trim();
+  const taskStatus = toTaskSummaryTaskStatus(state.workState.status);
+  const failureSummary = buildFailureSummary(state);
+  const openWork = buildTaskSummaryOpenWork(state, taskStatus, failureSummary);
+  const blockers = buildTaskSummaryBlockers(state, taskStatus, failureSummary);
+  const absoluteRunPath = state.runPath ? absolutePath(state.runPath) : "";
   return {
     runId: state.runId,
-    runPath: state.runPath,
+    runPath: absoluteRunPath,
     activityId: selectContinuationActivityId(state),
+    taskThreadId: selectContinuationTaskThreadId(state),
+    taskBindingMode: state.taskThreadContext?.suggestedBinding.mode,
     triggerSeq: state.currentSeq,
     discussionStartSeq: findDiscussionStartSeq(state),
     discussionEndSeq: state.currentSeq,
-    status,
-    taskStatus: state.workState.status,
+    runStatus,
+    taskStatus,
     objective: state.userMessage.trim() || undefined,
     summary: userFacingSummary || progressSummary,
     progressSummary: progressSummary || undefined,
     currentFocus: state.workState.nextStep?.trim() || undefined,
     completedMilestones: [],
-    openWork: normalizeList(state.workState.openWork),
-    blockers: normalizeList(state.workState.blockers),
+    openWork,
+    blockers,
     keyFacts: normalizeList(state.workState.verifiedFacts),
     evidence: normalizeList(state.workState.evidence),
     userInputNeeded: state.workState.userInputNeeded?.trim() || undefined,
@@ -1355,10 +1381,49 @@ function buildTaskSummaryRecord(
     entityHints: completion?.entity_hints,
     toolsUsed: normalizeList(state.completedSteps.flatMap((step) => step.toolsUsed ?? [])),
     nextAction: deriveNextAction(state),
-    stopReason: deriveStopReason(state, status),
+    stopReason: deriveStopReason(state, runStatus),
+    failureSummary,
     attachmentNames: buildAttachmentNames(state.preparedAttachments),
-    activityAssets: buildActivityAssets(state),
+    activityAssets: buildActivityAssets(state, absoluteRunPath),
   };
+}
+
+function toTaskSummaryTaskStatus(status: WorkState["status"]): AgentTaskSummaryRecord["taskStatus"] {
+  return status === "not_done" ? "open" : status;
+}
+
+function buildTaskSummaryOpenWork(
+  state: LoopState,
+  taskStatus: AgentTaskSummaryRecord["taskStatus"],
+  failureSummary: TaskSummaryFailureSummary | undefined,
+): string[] {
+  const openWork = normalizeList(state.workState.openWork);
+  if (taskStatus !== "open" || openWork.length > 0) {
+    return openWork;
+  }
+  const nextAction = deriveNextAction(state);
+  if (nextAction) {
+    return [nextAction];
+  }
+  if (failureSummary?.suggestedRecovery) {
+    return [failureSummary.suggestedRecovery];
+  }
+  return ["Continue the requested task."];
+}
+
+function buildTaskSummaryBlockers(
+  state: LoopState,
+  taskStatus: AgentTaskSummaryRecord["taskStatus"],
+  failureSummary: TaskSummaryFailureSummary | undefined,
+): string[] {
+  const blockers = normalizeList(state.workState.blockers);
+  if (taskStatus !== "blocked" || blockers.length > 0) {
+    return blockers;
+  }
+  if (failureSummary?.error) {
+    return [failureSummary.error];
+  }
+  return ["Task is blocked."];
 }
 
 function deriveNextAction(state: LoopState): string | undefined {
@@ -1397,6 +1462,57 @@ function deriveStopReason(
   return "completed";
 }
 
+function buildFailureSummary(state: LoopState): TaskSummaryFailureSummary | undefined {
+  if (state.workState.status !== "blocked" && state.status !== "failed" && state.status !== "stuck") {
+    return undefined;
+  }
+  const failedStep = [...state.completedSteps].reverse().find((step) => step.outcome === "failed");
+  const latestFailure = state.failureHistory[state.failureHistory.length - 1];
+  const error = latestFailure?.reason
+    || failedStep?.evidenceSummary
+    || failedStep?.summary
+    || state.workState.blockers?.[0]
+    || state.workState.summary;
+  const failedTool = failedStep?.toolsUsed?.[0];
+  const failureType = failedStep?.failureType ?? latestFailure?.failureType;
+  const suggestedRecovery = suggestFailureRecovery(failedTool, failureType, error);
+  return {
+    ...(failedStep?.step ? { failedStep: failedStep.step } : {}),
+    ...(failedTool ? { failedTool } : {}),
+    ...(failureType ? { failureType } : {}),
+    error,
+    retryable: isRetryableFailure(failureType, error),
+    ...(suggestedRecovery ? { suggestedRecovery } : {}),
+  };
+}
+
+function isRetryableFailure(failureType: string | undefined, error: string): boolean {
+  if (failureType === "permission") {
+    return false;
+  }
+  return !/\b(destructive|irreversible|unauthorized)\b/i.test(error);
+}
+
+function suggestFailureRecovery(
+  failedTool: string | undefined,
+  failureType: string | undefined,
+  error: string,
+): string | undefined {
+  if (failedTool === "directory_search" && /No managed directories are available/i.test(error)) {
+    return "Restore the relevant activity asset or use the absolute project path directly before searching.";
+  }
+  if (failureType === "missing_path") {
+    return "Restore or verify the absolute path before retrying.";
+  }
+  if (failureType === "validation_error") {
+    return "Retry with input that matches the tool schema.";
+  }
+  if (failureType === "tool_error") {
+    return "Retry with the relevant durable asset restored and verify the target path first.";
+  }
+  return undefined;
+}
+
 function buildAttachmentNames(preparedAttachments: PreparedAttachmentSummary[] | undefined): string[] {
   return (preparedAttachments ?? []).map((attachment) => attachment.displayName);
 }
@@ -1405,10 +1521,19 @@ function selectContinuationActivityId(state: LoopState): string | undefined {
   return state.continuity?.mode === "continue" ? state.continuity.current?.activityId : undefined;
 }
 
-function buildActivityAssets(state: LoopState): ActivityAssetRef[] {
+function selectContinuationTaskThreadId(state: LoopState): string | undefined {
+  const binding = state.taskThreadContext?.suggestedBinding;
+  if (binding?.mode === "continue_task" || binding?.mode === "switch_task") {
+    return binding.taskThreadId;
+  }
+  return undefined;
+}
+
+function buildActivityAssets(state: LoopState, runPath: string): ActivityAssetRef[] {
   const now = new Date().toISOString();
+  const generatedArtifacts = buildGeneratedArtifactAssets(state, runPath, now);
   return dedupeActivityAssets([
-    ...(state.preparedAttachmentRecords ?? []).map((record) => attachmentRecordToActivityAsset(record, state.runId, state.runPath, now)),
+    ...(state.preparedAttachmentRecords ?? []).map((record) => attachmentRecordToActivityAsset(record, state.runId, runPath, now)),
     ...(state.managedFiles ?? []).map((file) => ({
       assetId: stableAssetId("file", file.fileId),
       kind: "file" as const,
@@ -1421,11 +1546,11 @@ function buildActivityAssets(state: LoopState): ActivityAssetRef[] {
             : "user_attached" as const,
       role: "input" as const,
       displayName: file.originalName,
-      path: file.storagePath,
+      path: absolutePath(file.storagePath),
       fileId: file.fileId,
-      restore: { filePath: file.storagePath },
+      restore: { filePath: absolutePath(file.storagePath) },
       sourceRunId: state.runId,
-      sourceRunPath: state.runPath,
+      sourceRunPath: runPath,
       lastUsedRunId: state.runId,
       lastUsedAt: file.lastUsedAt ?? now,
       metadata: {
@@ -1441,11 +1566,11 @@ function buildActivityAssets(state: LoopState): ActivityAssetRef[] {
       origin: "user_attached" as const,
       role: "input" as const,
       displayName: directory.name,
-      path: directory.rootPath,
+      path: absolutePath(directory.rootPath),
       directoryId: directory.directoryId,
-      restore: { directoryPath: directory.rootPath },
+      restore: { directoryPath: absolutePath(directory.rootPath) },
       sourceRunId: state.runId,
-      sourceRunPath: state.runPath,
+      sourceRunPath: runPath,
       lastUsedRunId: state.runId,
       lastUsedAt: directory.lastUsedAt ?? now,
       metadata: {
@@ -1455,24 +1580,66 @@ function buildActivityAssets(state: LoopState): ActivityAssetRef[] {
         truncated: directory.truncated,
       },
     })),
-    ...state.completedSteps.flatMap((step) => step.artifacts)
-      .filter((artifact) => isDurableStepArtifact(artifact))
-      .map((artifact) => ({
-        assetId: stableAssetId("artifact", artifact),
-        kind: inferPathAssetKind(artifact),
-        origin: "agent_generated" as const,
-        role: "working_artifact" as const,
-        displayName: artifact.split("/").pop() || artifact,
-        path: artifact,
-        restore: inferPathAssetKind(artifact) === "directory"
-          ? { directoryPath: artifact }
-          : { filePath: artifact },
-        sourceRunId: state.runId,
-        sourceRunPath: state.runPath,
-        lastUsedRunId: state.runId,
-        lastUsedAt: now,
-      })),
+    ...generatedArtifacts,
   ]);
+}
+
+function buildGeneratedArtifactAssets(state: LoopState, runPath: string, now: string): ActivityAssetRef[] {
+  const artifacts = normalizeList(state.completedSteps.flatMap((step) => step.artifacts))
+    .filter((artifact) => isDurableStepArtifact(artifact))
+    .map((artifact) => absolutePath(artifact));
+  const assets: ActivityAssetRef[] = [];
+  const directoryCounts = new Map<string, number>();
+  const generatedBy = normalizeList(state.completedSteps.flatMap((step) => step.toolsUsed ?? []));
+
+  for (const artifact of artifacts) {
+    const kind = inferPathAssetKind(artifact);
+    if (kind === "file") {
+      const parent = dirname(artifact);
+      directoryCounts.set(parent, (directoryCounts.get(parent) ?? 0) + 1);
+    }
+    assets.push({
+      assetId: stableAssetId(kind, artifact),
+      kind,
+      origin: "agent_generated",
+      role: "working_artifact",
+      displayName: artifact.split("/").pop() || artifact,
+      path: artifact,
+      restore: kind === "directory"
+        ? { directoryPath: artifact }
+        : { filePath: artifact },
+      sourceRunId: state.runId,
+      sourceRunPath: runPath,
+      lastUsedRunId: state.runId,
+      lastUsedAt: now,
+      ...(generatedBy.length > 0 ? { metadata: { generatedBy } } : {}),
+    });
+  }
+
+  for (const [directoryPath, count] of directoryCounts.entries()) {
+    if (count < 2) {
+      continue;
+    }
+    assets.push({
+      assetId: stableAssetId("directory", directoryPath),
+      kind: "directory",
+      origin: "agent_generated",
+      role: "working_artifact",
+      displayName: directoryPath.split("/").pop() || directoryPath,
+      path: directoryPath,
+      restore: { directoryPath },
+      sourceRunId: state.runId,
+      sourceRunPath: runPath,
+      lastUsedRunId: state.runId,
+      lastUsedAt: now,
+      metadata: {
+        fileCount: count,
+        ...(generatedBy.length > 0 ? { generatedBy } : {}),
+      },
+    });
+  }
+
+  return assets;
 }
 
 function attachmentRecordToActivityAsset(
@@ -1496,7 +1663,7 @@ function attachmentRecordToActivityAsset(
     restore: {
       documentId: record.summary.documentId,
       preparedInputId: record.summary.preparedInputId,
-      manifestPath: record.summary.artifactPath,
+      manifestPath: absolutePath(record.summary.artifactPath),
     },
     sourceRunId: runId,
     sourceRunPath: runPath,
@@ -1530,6 +1697,10 @@ function inferPathAssetKind(path: string): ActivityAssetRef["kind"] {
     return "file";
   }
   return "directory";
+}
+
+function absolutePath(path: string): string {
+  return isAbsolute(path) ? path : resolve(path);
 }
 
 function stableAssetId(kind: string, identity: string): string {

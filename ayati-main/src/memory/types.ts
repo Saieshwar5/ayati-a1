@@ -1,4 +1,9 @@
-import type { ActivityAssetRef, ContinuityContext } from "./activity/types.js";
+import type {
+  ActivityAssetRef,
+  ActivityDiscussionRange,
+  ActivityFailureSummary,
+  ContinuityContext,
+} from "./activity/types.js";
 import type { ActivityStore } from "./activity/activity-store.js";
 import type { PromptPersonalMemory } from "./personal/types.js";
 import type {
@@ -11,6 +16,7 @@ import type {
 export type {
   ActivityAlias,
   ActivityAssetRef,
+  ActivityFailureSummary,
   ActivityContext,
   ActivityDiscussionRange,
   ActivityIdentity,
@@ -128,14 +134,109 @@ export interface SessionStatus {
   pendingRotationReason: SessionRotationReason | null;
 }
 
-export type TaskSummaryTaskStatus = "not_done" | "likely_done" | "done" | "blocked" | "needs_user_input";
+export type TaskSummaryRunStatus = "completed" | "failed" | "stuck";
+export type TaskSummaryTaskStatus = "open" | "done" | "blocked" | "needs_user_input";
 export type TaskSummaryStopReason = "completed" | "needs_user_input" | "blocked" | "failed" | "stuck";
+
+export type TaskSummaryFailureSummary = ActivityFailureSummary;
+
+export type TaskThreadStatus =
+  | "active_in_session"
+  | "suspended_in_session"
+  | "closed_done"
+  | "closed_abandoned"
+  | "promoted_to_activity";
+
+export type TaskThreadBindingMode =
+  | "continue_task"
+  | "switch_task"
+  | "new_task"
+  | "ambiguous";
+
+export interface TaskThreadBinding {
+  mode: TaskThreadBindingMode;
+  taskThreadId?: string;
+  confidence?: number;
+  reason?: string;
+}
+
+export interface TaskThreadRunSummary {
+  runId: string;
+  runPath: string;
+  runStatus: TaskSummaryRunStatus;
+  taskStatus?: TaskSummaryTaskStatus;
+  summary: string;
+  toolsUsed: string[];
+  createdAt: string;
+}
+
+export interface TaskThread {
+  taskThreadId: string;
+  clientId: string;
+  sessionId: string;
+  status: TaskThreadStatus;
+  taskStatus?: TaskSummaryTaskStatus;
+  objective: string;
+  summary?: string;
+  completedWork: string[];
+  openWork: string[];
+  blockers: string[];
+  keyFacts: string[];
+  evidence: string[];
+  toolsUsed: string[];
+  activityAssets: ActivityAssetRef[];
+  runIds: string[];
+  runHistory: TaskThreadRunSummary[];
+  discussionRanges: ActivityDiscussionRange[];
+  nextAction?: string;
+  lastAssistantQuestion?: string;
+  promotedActivityId?: string;
+  createdAt: string;
+  lastTouchedAt: string;
+}
+
+export interface TaskThreadContextTask {
+  taskThreadId: string;
+  status: TaskThreadStatus;
+  taskStatus?: TaskSummaryTaskStatus;
+  objective: string;
+  summary?: string;
+  completedWork: string[];
+  openWork: string[];
+  blockers: string[];
+  keyFacts: string[];
+  evidence: string[];
+  toolsUsed: string[];
+  activityAssets: ActivityAssetRef[];
+  topAssets: string[];
+  runIds: string[];
+  discussionRanges: ActivityDiscussionRange[];
+  nextAction?: string;
+  lastAssistantQuestion?: string;
+  lastTouchedAt: string;
+}
+
+export interface TaskThreadRecentSignals {
+  latestUserMessage: string;
+  previousAssistantExpectedAnswer: boolean;
+  hasFollowUpSignal: boolean;
+  hasExplicitNewTaskSignal: boolean;
+  mentionedAssetNames: string[];
+  mentionedAssetPaths: string[];
+}
+
+export interface TaskThreadContext {
+  activeTask?: TaskThreadContextTask;
+  suspendedTasks: TaskThreadContextTask[];
+  recentSignals: TaskThreadRecentSignals;
+  suggestedBinding: TaskThreadBinding;
+}
 
 export interface PromptTaskSummary {
   timestamp: string;
   runId: string;
   runPath: string;
-  runStatus: "completed" | "failed" | "stuck";
+  runStatus: TaskSummaryRunStatus;
   taskStatus: TaskSummaryTaskStatus;
   objective?: string;
   summary: string;
@@ -160,6 +261,7 @@ export interface PromptTaskSummary {
   goalRequiredEvidence?: string[];
   nextAction?: string;
   stopReason?: TaskSummaryStopReason;
+  failureSummary?: TaskSummaryFailureSummary;
   attachmentNames: string[];
 }
 
@@ -206,6 +308,7 @@ export interface PromptMemoryContext {
   sessionEvents?: PromptSessionEvent[];
   activeContextStartSeq?: number;
   sessionWork?: SessionWorkContext;
+  taskThreadContext?: TaskThreadContext;
   recentSystemEvents: SystemActivityItem[];
   conversationTurns: ConversationTurn[];
   personalMemorySnapshot?: string;
@@ -301,10 +404,14 @@ export interface TaskSummaryRecordInput {
   sessionId: string;
   runPath: string;
   activityId?: string;
+  taskThreadId?: string;
+  taskBindingMode?: TaskThreadBindingMode;
   triggerSeq?: number;
   discussionStartSeq?: number;
   discussionEndSeq?: number;
-  status: "completed" | "failed" | "stuck";
+  runStatus: TaskSummaryRunStatus;
+  /** @deprecated Use runStatus. Kept only for legacy callers during migration. */
+  status?: TaskSummaryRunStatus;
   taskStatus?: TaskSummaryTaskStatus;
   objective?: string;
   summary: string;
@@ -330,6 +437,7 @@ export interface TaskSummaryRecordInput {
   goalRequiredEvidence?: string[];
   nextAction?: string;
   stopReason?: TaskSummaryStopReason;
+  failureSummary?: TaskSummaryFailureSummary;
   attachmentNames?: string[];
   activityAssets?: ActivityAssetRef[];
 }

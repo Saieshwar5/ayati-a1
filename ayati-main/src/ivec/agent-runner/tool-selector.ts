@@ -45,6 +45,10 @@ function buildToolSelectionQuery(state: LoopState): string {
     state.workState.nextStep,
     ...(state.workState.openWork ?? []),
     ...(state.workState.blockers ?? []),
+    ...(state.workState.taskNotes ?? []).flatMap((note) => [
+      note.text,
+      note.source,
+    ]),
     ...(state.toolContext?.recent ?? []).flatMap((card) => [
       card.tool,
       card.purpose,
@@ -60,6 +64,7 @@ function buildToolSelectionQuery(state: LoopState): string {
       ...ref.access,
     ]),
     ...continuityTerms(state),
+    ...taskThreadTerms(state),
     ...activityContinuationAttachmentTerms(state),
     ...(state.completedSteps.slice(-2).flatMap((step) => [
       step.executionContract,
@@ -72,6 +77,30 @@ function buildToolSelectionQuery(state: LoopState): string {
     ])),
   ];
   return parts.filter((part): part is string => typeof part === "string" && part.trim().length > 0).join(" ");
+}
+
+function taskThreadTerms(state: LoopState): string[] {
+  const context = state.taskThreadContext;
+  if (!context) return [];
+  return [
+    context.suggestedBinding.mode,
+    context.suggestedBinding.reason,
+    context.activeTask?.objective,
+    context.activeTask?.summary,
+    context.activeTask?.nextAction,
+    context.activeTask?.lastAssistantQuestion,
+    ...(context.activeTask?.openWork ?? []),
+    ...(context.activeTask?.blockers ?? []),
+    ...(context.activeTask?.keyFacts ?? []),
+    ...(context.activeTask?.topAssets ?? []),
+    ...context.suspendedTasks.flatMap((task) => [
+      task.objective,
+      task.summary,
+      task.nextAction,
+      ...task.openWork,
+      ...task.topAssets,
+    ]),
+  ].filter((term): term is string => typeof term === "string" && term.trim().length > 0);
 }
 
 function continuityTerms(state: LoopState): string[] {
@@ -98,6 +127,8 @@ function activityContinuationAttachmentTerms(state: LoopState): string[] {
   const artifactTerms = [
     ...(state.continuity?.current?.topAssets ?? []),
     ...(state.continuity?.candidates ?? []).flatMap((candidate) => candidate.topAssets),
+    ...(state.taskThreadContext?.activeTask?.topAssets ?? []),
+    ...(state.taskThreadContext?.suspendedTasks ?? []).flatMap((task) => task.topAssets),
   ];
   if (artifactTerms.length === 0) {
     return [];

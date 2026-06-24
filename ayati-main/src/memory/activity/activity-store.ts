@@ -239,6 +239,7 @@ export class ActivityStore {
       autoLoadUntil: autoLoadUntil(kind, input.createdAt),
       details: {
         ...(previous?.details ?? {}),
+        ...(input.failureSummary ? { lastFailureSummary: input.failureSummary } : {}),
         discussionRanges,
         lastAdmission: {
           kind,

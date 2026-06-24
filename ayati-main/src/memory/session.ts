@@ -34,6 +34,10 @@ export class InMemorySession {
 
   addEntry(entry: SessionEvent): void {
     if (entry.type === "session_open") return;
+    if (entry.type === "task_thread_update") {
+      this.lastActivityAt = entry.ts;
+      return;
+    }
     this.timeline.push(entry);
     this.lastActivityAt = entry.ts;
   }

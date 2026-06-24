@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
 import { tmpdir } from "node:os";
 import { agentLoop } from "../../src/ivec/agent-loop.js";
 import type { LlmProvider } from "../../src/core/contracts/provider.js";
@@ -165,6 +165,86 @@ describe("agentLoop", () => {
       expect(result.content).not.toContain("Done -");
       expect(result.content).not.toContain("deterministic verification");
       expect(result.content).not.toContain("Evidence:");
+    } finally {
+      cleanup(dataDir);
+    }
+  });
+
+  it("publishes absolute generated file and parent directory assets for multi-file outputs", async () => {
+    const dataDir = makeTmpDir();
+    const outputDir = join(dataDir, "generated-project");
+    const indexPath = join(outputDir, "index.html");
+    const stylePath = join(outputDir, "styles.css");
+    try {
+      const toolExecutor = createToolExecutor([writeFilesTool]);
+      const provider = createProvider([
+        {
+          kind: "act",
+          action: {
+            mode: "single",
+            calls: [{
+              id: "call_1",
+              tool: "write_files",
+              input: {
+                createDirs: true,
+                files: [
+                  { path: indexPath, content: "<!doctype html><title>Generated</title>" },
+                  { path: stylePath, content: "body { margin: 0; }" },
+                ],
+              },
+              dependsOn: [],
+              purpose: "Create generated project files",
+            }],
+            allowedTools: ["write_files"],
+            assertions: [],
+          },
+        },
+        {
+          kind: "reply",
+          status: "completed",
+          message: "I created the generated project files.",
+        },
+      ]);
+
+      const result = await agentLoop({
+        provider,
+        toolExecutor,
+        toolDefinitions: toolExecutor.definitions(),
+        sessionMemory: noopSessionMemory,
+        runHandle: { sessionId: "s1", runId: "r-generated-assets" },
+        clientId: "c1",
+        initialUserMessage: "Create a small generated project",
+        dataDir,
+        systemContext: "full system context with memory",
+      });
+
+      expect(result.taskSummary).toMatchObject({
+        runStatus: "completed",
+        taskStatus: "done",
+        toolsUsed: ["write_files"],
+      });
+      const assets = result.taskSummary?.activityAssets ?? [];
+      expect(assets).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          kind: "directory",
+          origin: "agent_generated",
+          role: "working_artifact",
+          path: outputDir,
+          restore: { directoryPath: outputDir },
+        }),
+        expect.objectContaining({
+          kind: "file",
+          origin: "agent_generated",
+          role: "working_artifact",
+          path: indexPath,
+          restore: { filePath: indexPath },
+        }),
+      ]));
+      expect(assets.every((asset) => !asset.path || isAbsolute(asset.path))).toBe(true);
+      expect(assets.every((asset) => {
+        const restorePath = asset.restore?.filePath ?? asset.restore?.directoryPath;
+        return !restorePath || isAbsolute(restorePath);
+      })).toBe(true);
     } finally {
       cleanup(dataDir);
     }

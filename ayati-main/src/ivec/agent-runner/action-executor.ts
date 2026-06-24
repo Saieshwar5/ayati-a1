@@ -20,6 +20,7 @@ import {
   checkVerificationGates,
   deriveExecutionStatus,
 } from "../verification-gates.js";
+import { buildTaskNotesFromActOutput } from "./task-notes.js";
 
 export interface AgentActionExecutionDeps {
   toolExecutor?: ToolExecutor;
@@ -73,11 +74,13 @@ export async function executeAgentAction(
 
   const actOutput = await executeCalls(deps, action, action.calls, stepNumber);
   const verifyOutput = verifyActOutput(action, actOutput);
+  const taskNotes = buildTaskNotesFromActOutput(actOutput);
   const reducedWorkState = reduceVerifiedWorkState(previousWorkState, {
     passed: verifyOutput.passed,
     summary: verifyOutput.summary,
     evidenceItems: verifyOutput.evidenceItems,
     newFacts: verifyOutput.newFacts,
+    taskNotes,
   });
 
   return {

@@ -130,6 +130,15 @@ export interface ActivityAssetRef {
   metadata?: Record<string, unknown>;
 }
 
+export interface ActivityFailureSummary {
+  failedStep?: number;
+  failedTool?: string;
+  failureType?: string;
+  error: string;
+  retryable: boolean;
+  suggestedRecovery?: string;
+}
+
 export interface ActivityRunRef {
   runId: string;
   sessionId: string;
@@ -299,6 +308,7 @@ export interface ActivityUpsertInput {
   entityHints?: string[];
   toolsUsed?: string[];
   nextAction?: string;
+  failureSummary?: ActivityFailureSummary;
   attachmentNames?: string[];
   activityAssets?: ActivityAssetRef[];
   createdAt: string;

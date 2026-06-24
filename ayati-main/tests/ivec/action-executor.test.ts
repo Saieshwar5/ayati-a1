@@ -473,6 +473,47 @@ describe("executeAgentAction verification gates", () => {
     }
   });
 
+  it("promotes successful decision-context observations into task notes", async () => {
+    const runPath = makeTmpDir();
+    try {
+      const readLikeTool: ToolDefinition = {
+        name: "read_file",
+        description: "Return bounded file context.",
+        inputSchema: {
+          type: "object",
+          required: ["path"],
+          properties: {
+            path: { type: "string" },
+          },
+        },
+        observationPolicy: { outputImportance: "decision_context", rawStorage: "never", maxObservationChars: 4_000 },
+        async execute() {
+          return {
+            ok: true,
+            output: "index.html contains 10 river cards inside .river-grid. Add new rivers using the existing .river-card pattern.",
+          };
+        },
+      };
+
+      const result = await runAction(
+        [readLikeTool],
+        actionFor("read_file", { path: "rivers-website/index.html" }, "Inspect current site structure"),
+        runPath,
+      );
+
+      expect(result.nextWorkState.taskNotes).toHaveLength(1);
+      expect(result.nextWorkState.taskNotes?.[0]).toMatchObject({
+        id: "note:read_file:rivers-website/index.html",
+        source: "read_file:rivers-website/index.html",
+        expires: "task",
+      });
+      expect(result.nextWorkState.taskNotes?.[0]?.text).toContain("10 river cards");
+      expect(result.nextWorkState.taskNotes?.[0]?.text).toContain("Inspect current site structure");
+    } finally {
+      cleanup(runPath);
+    }
+  });
+
   it("preserves contract-backed facts when deterministic filesystem work succeeds", async () => {
     const runPath = makeTmpDir();
     const outputPath = join(runPath, "created.txt");

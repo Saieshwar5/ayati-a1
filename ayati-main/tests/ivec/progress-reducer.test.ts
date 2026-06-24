@@ -27,4 +27,45 @@ describe("reduceVerifiedWorkState", () => {
     expect(next.verifiedFacts).toContain("Read-back hash verified for /tmp/a.txt.");
     expect(next.evidence).toContain("write_files.written_hashes_match: Verified read-back hashes for 2 written file(s).");
   });
+
+  it("keeps task notes while expiring next-step notes after one reduction", () => {
+    const previous: WorkState = {
+      status: "not_done",
+      summary: "",
+      verifiedFacts: [],
+      evidence: [],
+      taskNotes: [
+        {
+          id: "note:stale-next-step",
+          text: "Use this only for the immediate next decision.",
+          source: "shell",
+          expires: "next_step",
+        },
+        {
+          id: "note:site-structure",
+          text: "index.html has river cards inside .river-grid.",
+          source: "read_file:index.html",
+          expires: "task",
+        },
+      ],
+    };
+
+    const next = reduceVerifiedWorkState(previous, {
+      passed: true,
+      summary: "Executed read_file successfully.",
+      evidenceItems: [],
+      newFacts: [],
+      taskNotes: [{
+        id: "note:styles",
+        text: "styles.css already has .river-card rules.",
+        source: "read_file:styles.css",
+        expires: "task",
+      }],
+    });
+
+    expect(next.taskNotes?.map((note) => note.id)).toEqual([
+      "note:site-structure",
+      "note:styles",
+    ]);
+  });
 });

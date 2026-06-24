@@ -2,6 +2,7 @@ import type {
   ContinuityContext,
   PromptSessionEvent,
   SessionWorkContext,
+  TaskThreadContext,
 } from "../../memory/types.js";
 import type { LoopState } from "../types.js";
 
@@ -43,6 +44,7 @@ export interface AgentContextPack {
   timeline: TimelineEvent[];
   continuity: ContinuityContext;
   sessionWork: SessionWorkContext;
+  taskThreadContext?: TaskThreadContext;
   personalMemorySnapshot?: string;
 }
 
@@ -52,6 +54,7 @@ export function buildAgentContextPack(state: LoopState): AgentContextPack {
     timeline: sessionContext.timeline(),
     continuity: compactContinuity(state.continuity),
     sessionWork: compactSessionWork(state.sessionWork, state.activeContextStartSeq),
+    ...(state.taskThreadContext ? { taskThreadContext: compactTaskThreadContext(state.taskThreadContext) } : {}),
     ...(state.personalMemorySnapshot?.trim()
       ? { personalMemorySnapshot: truncate(state.personalMemorySnapshot, LIMITS.memoryChars) }
       : {}),
@@ -112,6 +115,58 @@ function compactContinuity(continuity: ContinuityContext | undefined): Continuit
         lastTouchedAt: candidate.lastTouchedAt,
       })),
     } : {}),
+  };
+}
+
+function compactTaskThreadContext(context: TaskThreadContext): TaskThreadContext {
+  return {
+    ...(context.activeTask ? { activeTask: {
+      ...context.activeTask,
+      summary: context.activeTask.summary ? truncate(context.activeTask.summary, LIMITS.summaryChars) : undefined,
+      completedWork: compactList(context.activeTask.completedWork, 5, 180),
+      openWork: compactList(context.activeTask.openWork, 6, 180),
+      blockers: compactList(context.activeTask.blockers, 4, 180),
+      keyFacts: compactList(context.activeTask.keyFacts, 8, 180),
+      evidence: compactList(context.activeTask.evidence, 6, 180),
+      toolsUsed: compactList(context.activeTask.toolsUsed, 10, 80),
+      activityAssets: context.activeTask.activityAssets.slice(0, 8),
+      topAssets: compactList(context.activeTask.topAssets, 8, 160),
+      runIds: context.activeTask.runIds.slice(-5),
+      discussionRanges: context.activeTask.discussionRanges.slice(-3),
+      nextAction: context.activeTask.nextAction ? truncate(context.activeTask.nextAction, LIMITS.summaryChars) : undefined,
+      lastAssistantQuestion: context.activeTask.lastAssistantQuestion
+        ? truncate(context.activeTask.lastAssistantQuestion, LIMITS.summaryChars)
+        : undefined,
+    } } : {}),
+    suspendedTasks: context.suspendedTasks.slice(0, 5).map((task) => ({
+      ...task,
+      summary: task.summary ? truncate(task.summary, LIMITS.summaryChars) : undefined,
+      completedWork: compactList(task.completedWork, 3, 160),
+      openWork: compactList(task.openWork, 4, 160),
+      blockers: compactList(task.blockers, 3, 160),
+      keyFacts: compactList(task.keyFacts, 4, 160),
+      evidence: compactList(task.evidence, 3, 160),
+      toolsUsed: compactList(task.toolsUsed, 8, 80),
+      activityAssets: task.activityAssets.slice(0, 5),
+      topAssets: compactList(task.topAssets, 5, 160),
+      runIds: task.runIds.slice(-4),
+      discussionRanges: task.discussionRanges.slice(-2),
+      nextAction: task.nextAction ? truncate(task.nextAction, LIMITS.summaryChars) : undefined,
+      lastAssistantQuestion: task.lastAssistantQuestion ? truncate(task.lastAssistantQuestion, LIMITS.summaryChars) : undefined,
+    })),
+    recentSignals: {
+      ...context.recentSignals,
+      latestUserMessage: truncate(context.recentSignals.latestUserMessage, LIMITS.textChars),
+      mentionedAssetNames: compactList(context.recentSignals.mentionedAssetNames, 6, 120),
+      mentionedAssetPaths: compactList(context.recentSignals.mentionedAssetPaths, 6, 160),
+    },
+    suggestedBinding: {
+      ...context.suggestedBinding,
+      confidence: context.suggestedBinding.confidence !== undefined
+        ? Math.round(context.suggestedBinding.confidence * 1000) / 1000
+        : undefined,
+      reason: context.suggestedBinding.reason ? truncate(context.suggestedBinding.reason, 180) : undefined,
+    },
   };
 }
 

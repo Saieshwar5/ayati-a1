@@ -1,10 +1,12 @@
 import type { AssistantResponseKind } from "./types.js";
+import type { TaskThread } from "./types.js";
 
 export type SessionEventType =
   | "session_open"
   | "user_message"
   | "assistant_response"
-  | "system_event";
+  | "system_event"
+  | "task_thread_update";
 
 interface BaseEvent {
   v: 1;
@@ -42,11 +44,17 @@ export interface SystemEventEntry extends BaseEvent {
   payload?: Record<string, unknown>;
 }
 
+export interface TaskThreadUpdateEvent extends BaseEvent {
+  type: "task_thread_update";
+  taskThread: TaskThread;
+}
+
 export type SessionEvent =
   | SessionOpenEvent
   | UserMessageEvent
   | AssistantResponseEvent
-  | SystemEventEntry;
+  | SystemEventEntry
+  | TaskThreadUpdateEvent;
 
 export function serializeEvent(event: SessionEvent): string {
   return JSON.stringify(event);
