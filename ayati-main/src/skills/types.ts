@@ -29,7 +29,6 @@ export type ToolDomain =
   | "filesystem"
   | "shell"
   | "calculator"
-  | "learning"
   | "ui"
   | "memory"
   | "database"

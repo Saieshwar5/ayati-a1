@@ -24,9 +24,6 @@ import { PreparedAttachmentRegistry } from "../documents/prepared-attachment-reg
 import type { DirectoryLibrary } from "../files/directory-library.js";
 import type { FileLibrary } from "../files/file-library.js";
 import type { DirectoryAttachmentRecord, ManagedFileRecord } from "../files/types.js";
-import type { CourseStore } from "../learning/course-store.js";
-import { LearningFileStore, shouldLoadLearningContext } from "../learning/file-store.js";
-import type { ActiveLearningContext } from "../learning/types.js";
 import {
   normalizeSystemEvent,
   type AyatiSystemEvent,
@@ -66,7 +63,6 @@ interface SystemContextBuildResult {
   systemContext: string;
   decisionSystemContext: string;
   dynamicSystemTokens: number;
-  activeLearningContext?: string;
 }
 
 interface StaticPromptSectionsCache {
@@ -99,8 +95,6 @@ export interface IVecEngineOptions {
   documentContextBackend?: DocumentContextBackend;
   fileLibrary?: FileLibrary;
   directoryLibrary?: DirectoryLibrary;
-  courseStore?: CourseStore;
-  learningFileStore?: LearningFileStore;
   systemEventPolicy?: SystemEventPolicyConfig;
   feedbackLedger?: AgentFeedbackLedger;
 }
@@ -122,8 +116,6 @@ export class IVecEngine {
   private readonly documentContextBackend?: DocumentContextBackend;
   private readonly fileLibrary?: FileLibrary;
   private readonly directoryLibrary?: DirectoryLibrary;
-  private readonly courseStore?: CourseStore;
-  private readonly learningFileStore?: LearningFileStore;
   private readonly systemEventPolicy?: SystemEventPolicyConfig;
   private readonly feedbackLedger?: AgentFeedbackLedger;
   private readonly pulseProposalReflectionService = new PulseProposalReflectionService();
@@ -149,8 +141,6 @@ export class IVecEngine {
     this.documentContextBackend = options?.documentContextBackend;
     this.fileLibrary = options?.fileLibrary;
     this.directoryLibrary = options?.directoryLibrary;
-    this.courseStore = options?.courseStore;
-    this.learningFileStore = options?.learningFileStore;
     this.systemEventPolicy = options?.systemEventPolicy;
     this.feedbackLedger = options?.feedbackLedger;
   }
@@ -245,7 +235,7 @@ export class IVecEngine {
           runId: runHandle?.runId ?? this.inputScopeId(inputHandle),
           sessionId: inputHandle.sessionId,
         }) ?? [];
-        const system = await this.buildSystemContext(clientId, content);
+        const system = await this.buildSystemContext(clientId);
         let result = await agentLoop({
           provider: this.provider,
           toolExecutor: this.toolExecutor,
@@ -276,7 +266,6 @@ export class IVecEngine {
           config: this.loopConfig,
           dataDir: this.dataDir ?? "data",
           systemContext: system.decisionSystemContext || system.systemContext || undefined,
-          activeLearningContext: system.activeLearningContext,
           feedbackLedger: this.feedbackLedger,
           attachedDocuments: registeredAttachments.documents,
           attachmentWarnings: registeredAttachments.warnings,
@@ -455,7 +444,7 @@ export class IVecEngine {
           `system_event:${event.source}/${event.eventName} mode=${systemEventPlan.policy.mode}`,
         );
       }
-      const system = await this.buildSystemContext(clientId, event.summary);
+      const system = await this.buildSystemContext(clientId);
       devLog(
         `[${clientId}] system_event entering agentLoop eventId=${event.eventId} mode=${systemEventPlan.policy.mode} intent=${systemEventPlan.classification.intentKind} approval=${systemEventPlan.policy.approvalRequired ? "required" : "not_required"} tools=${toolDefs.length} payloadKeys=${Object.keys(event.payload).join(",") || "none"}`,
       );
@@ -505,7 +494,6 @@ export class IVecEngine {
         config: this.loopConfig,
         dataDir: this.dataDir ?? "data",
         systemContext: system.decisionSystemContext || system.systemContext || undefined,
-        activeLearningContext: system.activeLearningContext,
         feedbackLedger: this.feedbackLedger,
         fileLibrary: this.fileLibrary,
         directoryLibrary: this.directoryLibrary,
@@ -581,7 +569,7 @@ export class IVecEngine {
     }
   }
 
-  private async buildSystemContext(clientId: string, userMessage = ""): Promise<SystemContextBuildResult> {
+  private async buildSystemContext(_clientId: string): Promise<SystemContextBuildResult> {
     if (!this.staticContext) {
       return { systemContext: "", decisionSystemContext: "", dynamicSystemTokens: 0 };
     }
@@ -589,7 +577,6 @@ export class IVecEngine {
     this.ensureStaticTokenCache();
 
     const staticSections = this.getStaticPromptSections();
-    const activeLearningSection = await this.renderActiveLearningContextSection(clientId, userMessage);
     const decisionSystemContext = joinPromptSections([
       staticSections.head,
       staticSections.tail,
@@ -599,7 +586,6 @@ export class IVecEngine {
       systemContext: decisionSystemContext,
       decisionSystemContext,
       dynamicSystemTokens: 0,
-      activeLearningContext: activeLearningSection || undefined,
     };
   }
 
@@ -705,77 +691,6 @@ export class IVecEngine {
 
   private inputScopeId(inputHandle: SessionInputHandle): string {
     return `input:${inputHandle.sessionId}:${inputHandle.seq}`;
-  }
-
-  private async renderActiveLearningContextSection(clientId: string, userMessage: string): Promise<string> {
-    if (this.learningFileStore) {
-      try {
-        const context = await this.learningFileStore.renderPromptContext(userMessage);
-        if (context.included) {
-          return context.context;
-        }
-      } catch (err) {
-        devWarn("Learning V2 context unavailable:", err instanceof Error ? err.message : String(err));
-      }
-    }
-
-    if (!this.courseStore) {
-      return "";
-    }
-    try {
-      const activeCourse = await this.courseStore.getActiveCourse(clientId);
-      if (!activeCourse) {
-        return "";
-      }
-      const fallbackStatus = {
-        schemaVersion: 2 as const,
-        rootPath: "",
-        systemDir: "",
-        interestsDir: "",
-        protocolPath: "",
-        preferencesPath: "",
-        activePath: "",
-        activeState: {
-          schemaVersion: 2 as const,
-          activeInterestId: activeCourse.courseId,
-          learningMode: "inactive" as const,
-          updatedAt: activeCourse.updatedAt,
-        },
-        interests: [{
-          interestId: activeCourse.courseId,
-          title: activeCourse.title,
-          rootPath: "",
-          coursePath: "",
-          indexPath: "",
-          feedbackPath: "",
-          logPath: "",
-          lessonsDir: "",
-          lessons: [],
-        }],
-        activeInterest: {
-          interestId: activeCourse.courseId,
-          title: activeCourse.title,
-          rootPath: "",
-          coursePath: "",
-          indexPath: "",
-          feedbackPath: "",
-          logPath: "",
-          lessonsDir: "",
-          lessons: [],
-        },
-      };
-      if (!shouldLoadLearningContext(fallbackStatus, userMessage).load) {
-        return "";
-      }
-      const context = await this.courseStore.getActiveLearningContext(clientId);
-      if (!context) {
-        return "";
-      }
-      return renderActiveLearningContext(context);
-    } catch (err) {
-      devWarn("Active learning context unavailable:", err instanceof Error ? err.message : String(err));
-      return "";
-    }
   }
 
   private ensureStaticTokenCache(): void {
@@ -1594,61 +1509,6 @@ function parseAgentUiContext(raw: unknown): ChatInboundMessage["uiContext"] | un
 
 function joinPromptSections(sections: string[]): string {
   return sections.filter((section) => section.trim().length > 0).join("\n\n").trim();
-}
-
-function renderActiveLearningContext(context: ActiveLearningContext): string {
-  const lesson = context.activeLesson;
-  const lines = [
-    "# Active Learning Context",
-    "Use this section when the user is learning, continuing a course, or asking a doubt about the visible lesson. Do not generate duplicate core lessons; plan the next step from the course map and learning index.",
-    `- active_course: ${context.course.title} (${context.course.courseId})`,
-    `- topic: ${context.course.topic}`,
-    `- status: ${context.course.status}`,
-    ...(context.course.purpose ? [`- purpose: ${context.course.purpose}`] : []),
-    ...(context.course.targetOutcome ? [`- target_outcome: ${context.course.targetOutcome}`] : []),
-    ...(context.learnerProfile ? [`- learner_profile: ${formatInlineObject(context.learnerProfile)}`] : []),
-    `- preferences: ${formatInlineObject(context.preferences)}`,
-    ...(context.currentPosition ? [`- current_position: ${context.currentPosition}`] : []),
-    `- learned_concepts: ${formatPromptValues(context.learnedConcepts)}`,
-    `- weak_concepts: ${formatPromptValues(context.weakConcepts)}`,
-    `- open_questions: ${formatPromptValues(context.openQuestions)}`,
-    `- next_likely_topics: ${formatPromptValues(context.nextLikelyTopics)}`,
-    `- course_next_candidates: ${formatPromptValues(context.courseMap.nextCandidates)}`,
-    `- avoid_for_now: ${formatPromptValues(context.courseMap.avoidForNow)}`,
-    `- direction_warnings: ${formatPromptValues(context.courseMap.wrongDirectionWarnings)}`,
-    ...(lesson
-      ? [
-        "## Visible Lesson",
-        `- lesson: ${lesson.title} (${lesson.lessonId})`,
-        ...(lesson.purpose ? [`- lesson_purpose: ${lesson.purpose}`] : []),
-        `- summary_for_agent: ${lesson.summaryForAgent}`,
-        `- primitives: ${formatPromptValues(lesson.primitiveIdeas)}`,
-        `- first_principles: ${formatPromptValues(lesson.firstPrinciples)}`,
-        `- concepts_introduced: ${formatPromptValues(lesson.conceptsIntroduced)}`,
-        `- concepts_practiced: ${formatPromptValues(lesson.conceptsPracticed)}`,
-        `- examples_used: ${formatPromptValues(lesson.examplesUsed)}`,
-        `- common_doubts: ${formatPromptValues(lesson.commonDoubts)}`,
-        `- next_suggested_concepts: ${formatPromptValues(lesson.nextSuggestedConcepts)}`,
-      ]
-      : []),
-  ];
-  return lines.join("\n");
-}
-
-function formatPromptValues(values: string[]): string {
-  return values.length > 0 ? values.join("; ") : "(none)";
-}
-
-function formatInlineObject(value: object): string {
-  const entries = Object.entries(value)
-    .filter(([, entry]) => {
-      if (Array.isArray(entry)) {
-        return entry.length > 0;
-      }
-      return entry !== undefined && entry !== null && String(entry).trim().length > 0;
-    })
-    .map(([key, entry]) => `${key}=${Array.isArray(entry) ? entry.join("|") : String(entry)}`);
-  return entries.length > 0 ? entries.join("; ") : "(none)";
 }
 
 function renderToolDirectorySection(toolDirectory: string | undefined, includeToolDirectory: boolean): string {

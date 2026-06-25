@@ -265,7 +265,17 @@ describe("parseAgentDecision", () => {
       "write_files",
     ]);
     expect(tools.find((tool: { name: string }) => tool.name === "write_files")?.inputSchema).toMatchObject({
-      required: ["files"],
+      required: expect.arrayContaining(["files", "taskCompletion"]),
+      properties: {
+        taskCompletion: {
+          required: ["intent", "reason"],
+          properties: {
+            intent: {
+              enum: ["not_completion", "completion_candidate"],
+            },
+          },
+        },
+      },
     });
   });
 
@@ -279,6 +289,11 @@ describe("parseAgentDecision", () => {
           input: {
             files: [{ path: "site/index.html", content: "ok" }],
             createDirs: true,
+            taskCompletion: {
+              intent: "completion_candidate",
+              reason: "This writes the requested site file.",
+              expectedEvidence: ["site/index.html written"],
+            },
           },
         }],
       },
@@ -314,6 +329,11 @@ describe("parseAgentDecision", () => {
         },
         dependsOn: [],
       }],
+      completion: {
+        intent: "completion_candidate",
+        reason: "This writes the requested site file.",
+        expectedEvidence: ["site/index.html written"],
+      },
     });
   });
 

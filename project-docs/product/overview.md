@@ -29,7 +29,7 @@ Primary value:
 - A stable backend loop that can use different model providers.
 - Persistent session, task-thread, activity, personal, and episodic memory for personalization and continuity.
 - Structured context packs that keep recent conversation, resolved continuity,
-  same-session open tasks, personal memory, and active learning context
+  same-session open tasks, personal memory, and task context
   available to the decision model.
 - Activity assets keep user-attached documents, datasets, files, and directories
   resumable across later runs.

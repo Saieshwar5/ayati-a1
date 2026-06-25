@@ -3,17 +3,14 @@ import { builtInSkillsProvider } from "../../src/skills/provider.js";
 import { createAttachmentSkill } from "../../src/skills/builtins/attachments/index.js";
 import { createDatasetSkill } from "../../src/skills/builtins/datasets/index.js";
 import { createDocumentSkill } from "../../src/skills/builtins/documents/index.js";
-import { createLearningFileSkill } from "../../src/skills/builtins/learning-v2/index.js";
 import { createPythonSkill } from "../../src/skills/builtins/python/index.js";
 import { createRecallSkill } from "../../src/skills/builtins/recall/index.js";
 import { createUiSkill } from "../../src/skills/builtins/ui/index.js";
-import { LearningFileStore } from "../../src/learning/file-store.js";
-import { LearningWorkspaceController } from "../../src/ui/learning-workspace.js";
-import { WorkspaceOrchestrator } from "../../src/ui/workspace-orchestrator.js";
 import type { PreparedAttachmentService } from "../../src/documents/prepared-attachment-service.js";
 import type { SessionAttachmentService } from "../../src/documents/session-attachment-service.js";
 import type { RecallRetriever } from "../../src/skills/builtins/recall/index.js";
 import type { ToolDefinition } from "../../src/skills/types.js";
+import { WorkspaceOrchestrator } from "../../src/ui/workspace-orchestrator.js";
 
 function findMissingArrayItems(schema: unknown, path = "inputSchema"): string[] {
   if (!schema || typeof schema !== "object") {
@@ -69,21 +66,11 @@ async function buildRuntimeTools(): Promise<ToolDefinition[]> {
     ...createDocumentSkill({
       preparedAttachmentService,
     }).tools,
-    ...createLearningFileSkill({
-      learningFileStore: new LearningFileStore({ dataDir: "/tmp/ayati-test-data" }),
-    }).tools,
     ...createUiSkill({
-      learningWorkspace: new LearningWorkspaceController({
-        projectRoot: "/tmp/ayati-test-data",
-        dataDir: "/tmp/ayati-test-data",
-        httpBaseUrl: "http://127.0.0.1:8081",
-        hyprlandEnabled: false,
-      }),
       workspaceOrchestrator: new WorkspaceOrchestrator({
         dataDir: "/tmp/ayati-test-data",
         hyprlandEnabled: false,
       }),
-      includeLearningTools: false,
     }).tools,
   ];
 }
@@ -99,10 +86,8 @@ describe("runtime tool schemas", () => {
 
     expect(tools.some((tool) => tool.name === "db_create_table")).toBe(true);
     expect(tools.some((tool) => tool.name === "python_execute")).toBe(true);
-    expect(tools.some((tool) => tool.name === "learning_status")).toBe(true);
-    expect(tools.some((tool) => tool.name === "learning_workspace_show")).toBe(true);
-    expect(tools.some((tool) => tool.name === "learning_create_course")).toBe(false);
-    expect(tools.some((tool) => tool.name === "ui_open_learning_workspace")).toBe(false);
+    expect(tools.some((tool) => tool.name.startsWith("learning_"))).toBe(false);
+    expect(tools.some((tool) => tool.name.startsWith("ui_open_learning_"))).toBe(false);
     expect(issues).toEqual([]);
   });
 });

@@ -334,9 +334,6 @@ function buildDeterministicLoadRequest(state: LoopState): ToolLoadRequest {
   if (/\b(window|workspace|browser|preview|show|focus|layout)\b/.test(text)) {
     groups.add("workflow:ui_workspace");
   }
-  if (/\b(course|lesson|study|learning)\b/.test(text)) {
-    groups.add("workflow:learning");
-  }
   if ((state.workState.evidenceRefs ?? []).length > 0) {
     toolNames.add("evidence_search");
     toolNames.add("evidence_read_lines");

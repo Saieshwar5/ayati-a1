@@ -486,7 +486,15 @@ describe("buildAgentStateView", () => {
     expect(stateView).not.toHaveProperty("runPath");
     expect(stateView).not.toHaveProperty("workingNotes");
     expect(stateView).not.toHaveProperty("latestObservation");
+    expect(stateView.context).not.toHaveProperty("currentInput");
+    expect(stateView.context).not.toHaveProperty("recentConversation");
     expect(JSON.stringify(stateView)).not.toContain("activeLearningContext");
+    expect(Object.keys(stateView.context).sort()).toEqual([
+      "continuity",
+      "personalMemorySnapshot",
+      "sessionWork",
+      "timeline",
+    ]);
     expect(stateView.context.timeline).toEqual([
       {
         kind: "user",

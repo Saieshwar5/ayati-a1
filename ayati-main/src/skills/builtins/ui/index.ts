@@ -1,47 +1,28 @@
-import type { LearningWorkspaceController } from "../../../ui/learning-workspace.js";
 import type { WorkspaceLayout, WorkspaceOrchestrator, WorkspaceWindowRole } from "../../../ui/workspace-orchestrator.js";
 import type { SkillDefinition, ToolDefinition, ToolExecutionContext, ToolResult } from "../../types.js";
 
 export interface UiSkillDeps {
-  learningWorkspace: LearningWorkspaceController;
   workspaceOrchestrator: WorkspaceOrchestrator;
-  includeLearningTools?: boolean;
 }
 
 const UI_PROMPT_LINES = [
   "UI workspace tools are built in for the current Omarchy/Hyprland workspace anchored by the user's Ayati CLI window.",
-  "Use general workspace tools for learning, coding, browsing, app previews, references, scratch explanations, and other visual work.",
+  "Use general workspace tools for coding, browsing, app previews, references, scratch explanations, and other visual work.",
   "The current CLI window is the protected anchor. You may focus, resize, and arrange it, but do not close it unless the user explicitly asks.",
   "The workspace has a hard maximum of five windows, including the CLI. Reuse same-role windows when possible; when capacity is reached, cleanup closes the least useful unpinned non-CLI window first.",
   "Prefer role-based control over raw window addresses: cli, primary, secondary, browser, code, preview, terminal, reference, scratch.",
-  "Use layout presets instead of improvising geometry: 50-50 for discussion, 30-70 as the default work/learning layout, 20-80 for visual-heavy work, grid for several supporting windows, focus for one dominant surface.",
+  "Use layout presets instead of improvising geometry: 50-50 for discussion, 30-70 as the default work layout, 20-80 for visual-heavy work, grid for several supporting windows, focus for one dominant surface.",
   "After calling workspace_set_layout, inspect lastActionStatus and layoutVerification. Tell the user the layout is done only when the status is applied; if it is failed, explain the measured ratio or failure reason. The 30-70 layout is the reliable agent workspace mode: protected CLI on the left and primary visual surface on the right.",
   "Do not recover from a failed workspace_set_layout by issuing raw shell hyprctl resize or move commands unless the user explicitly asks for diagnosis; the workspace tool owns layout retries and verification.",
 ];
 
-const LEARNING_UI_PROMPT_LINE = "Learning workspace tools still control the native Ayati Learning Workspace Tauri window. For learning tasks, show generated lessons visually instead of leaving the user in CLI-only mode.";
-
 export function createUiSkill(deps: UiSkillDeps): SkillDefinition {
-  const includeLearningTools = deps.includeLearningTools !== false;
   return {
     id: "ui-workspace",
     version: "1.0.0",
     description: "Scoped OS/window control for Ayati-owned visual workspaces.",
-    promptBlock: [
-      ...UI_PROMPT_LINES,
-      ...(includeLearningTools ? [LEARNING_UI_PROMPT_LINE] : []),
-    ].join("\n"),
+    promptBlock: UI_PROMPT_LINES.join("\n"),
     tools: [
-      ...(includeLearningTools
-        ? [
-          createOpenLearningWorkspaceTool(deps),
-          createFocusLearningWorkspaceTool(deps),
-          createShowLearningCourseTool(deps),
-          createShowLearningLessonTool(deps),
-          createGetLearningWorkspaceStateTool(deps),
-          createCloseLearningWorkspaceTool(deps),
-        ]
-        : []),
       createWorkspaceGetStateTool(deps),
       createWorkspaceSetLayoutTool(deps),
       createWorkspaceFocusWindowTool(deps),
@@ -50,159 +31,6 @@ export function createUiSkill(deps: UiSkillDeps): SkillDefinition {
       createWorkspaceCloseWindowTool(deps),
       createWorkspaceCleanupUnusedTool(deps),
     ],
-  };
-}
-
-function createOpenLearningWorkspaceTool(deps: UiSkillDeps): ToolDefinition {
-  return {
-    name: "ui_open_learning_workspace",
-    description: "Open the Ayati Learning Workspace Tauri window and optionally show a course or lesson.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        courseId: { type: "string", description: "Optional course id to show." },
-        lessonId: { type: "string", description: "Optional lesson id to show." },
-      },
-      additionalProperties: false,
-    },
-    selectionHints: {
-      tags: ["ui", "window", "learning", "open"],
-      domain: "ui",
-      priority: 100,
-    },
-    async execute(input, context): Promise<ToolResult> {
-      return withJsonResult(async () => {
-        const value = asRecord(input);
-        return deps.learningWorkspace.open({
-          clientId: clientIdFromContext(context),
-          courseId: readOptionalString(value, "courseId"),
-          lessonId: readOptionalString(value, "lessonId"),
-          uiContext: context?.uiContext,
-        });
-      });
-    },
-  };
-}
-
-function createFocusLearningWorkspaceTool(deps: UiSkillDeps): ToolDefinition {
-  return {
-    name: "ui_focus_learning_workspace",
-    description: "Ask the Ayati Learning Workspace window to focus itself.",
-    inputSchema: {
-      type: "object",
-      properties: {},
-      additionalProperties: false,
-    },
-    selectionHints: {
-      tags: ["ui", "window", "learning", "focus"],
-      domain: "ui",
-      priority: 90,
-    },
-    async execute(_input, context): Promise<ToolResult> {
-      return withJsonResult(async () => deps.learningWorkspace.focus(clientIdFromContext(context), context?.uiContext));
-    },
-  };
-}
-
-function createShowLearningCourseTool(deps: UiSkillDeps): ToolDefinition {
-  return {
-    name: "ui_show_learning_course",
-    description: "Show a course dashboard in the Ayati Learning Workspace window.",
-    inputSchema: {
-      type: "object",
-      required: ["courseId"],
-      properties: {
-        courseId: { type: "string", description: "Course id to show." },
-      },
-      additionalProperties: false,
-    },
-    selectionHints: {
-      tags: ["ui", "window", "learning", "course"],
-      domain: "ui",
-      priority: 95,
-    },
-    async execute(input, context): Promise<ToolResult> {
-      return withJsonResult(async () => {
-        const value = asRecord(input);
-        return deps.learningWorkspace.showCourse({
-          clientId: clientIdFromContext(context),
-          courseId: readRequiredString(value, "courseId"),
-          uiContext: context?.uiContext,
-        });
-      });
-    },
-  };
-}
-
-function createShowLearningLessonTool(deps: UiSkillDeps): ToolDefinition {
-  return {
-    name: "ui_show_learning_lesson",
-    description: "Show a specific course lesson in the Ayati Learning Workspace window.",
-    inputSchema: {
-      type: "object",
-      required: ["courseId", "lessonId"],
-      properties: {
-        courseId: { type: "string", description: "Course id to show." },
-        lessonId: { type: "string", description: "Lesson id to show." },
-      },
-      additionalProperties: false,
-    },
-    selectionHints: {
-      tags: ["ui", "window", "learning", "lesson"],
-      domain: "ui",
-      priority: 100,
-    },
-    async execute(input, context): Promise<ToolResult> {
-      return withJsonResult(async () => {
-        const value = asRecord(input);
-        return deps.learningWorkspace.showLesson({
-          clientId: clientIdFromContext(context),
-          courseId: readRequiredString(value, "courseId"),
-          lessonId: readRequiredString(value, "lessonId"),
-          uiContext: context?.uiContext,
-        });
-      });
-    },
-  };
-}
-
-function createGetLearningWorkspaceStateTool(deps: UiSkillDeps): ToolDefinition {
-  return {
-    name: "ui_get_learning_workspace_state",
-    description: "Read the current Ayati Learning Workspace state.",
-    inputSchema: {
-      type: "object",
-      properties: {},
-      additionalProperties: false,
-    },
-    selectionHints: {
-      tags: ["ui", "window", "learning", "state"],
-      domain: "ui",
-      priority: 80,
-    },
-    async execute(_input, context): Promise<ToolResult> {
-      return withJsonResult(async () => deps.learningWorkspace.getState(clientIdFromContext(context)));
-    },
-  };
-}
-
-function createCloseLearningWorkspaceTool(deps: UiSkillDeps): ToolDefinition {
-  return {
-    name: "ui_close_learning_workspace",
-    description: "Close the Ayati Learning Workspace window when it was launched by the backend.",
-    inputSchema: {
-      type: "object",
-      properties: {},
-      additionalProperties: false,
-    },
-    selectionHints: {
-      tags: ["ui", "window", "learning", "close"],
-      domain: "ui",
-      priority: 75,
-    },
-    async execute(_input, context): Promise<ToolResult> {
-      return withJsonResult(async () => deps.learningWorkspace.close(clientIdFromContext(context)));
-    },
   };
 }
 

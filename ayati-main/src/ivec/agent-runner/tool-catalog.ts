@@ -225,9 +225,6 @@ function workflowGroups(skillId: string, domain?: ToolDomain | string): string[]
   if (values.has("ui") || values.has("ui-workspace")) {
     groups.push("workflow:ui_workspace");
   }
-  if (values.has("learning") || values.has("learning-v2")) {
-    groups.push("workflow:learning");
-  }
   return groups;
 }
 

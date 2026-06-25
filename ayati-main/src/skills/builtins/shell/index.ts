@@ -1289,7 +1289,8 @@ export const shellSessionCloseTool: ToolDefinition = {
 const SHELL_PROMPT_BLOCK = [
   "Shell tools are built in.",
   "Use them directly for terminal execution, developer workflows, and orchestrating system tools.",
-  "Default shell work to work_space/ unless the user or task clearly points to another directory.",
+  "Default shell work to the configured workspace root unless the user or task clearly points to another directory.",
+  "Do not prefix cwd values with workspace/ or work_space/; relative cwd values are already workspace-relative.",
   "Use shell_run_script to execute project scripts.",
   "Use shell_session_start/shell_session_write/shell_session_close for interactive commands.",
   "Prefer concise commands and summarize results clearly.",

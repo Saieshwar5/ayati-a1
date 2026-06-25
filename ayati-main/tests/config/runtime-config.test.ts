@@ -7,8 +7,10 @@ import {
   DEFAULT_HTTP_HOST,
   DEFAULT_HTTP_PORT,
   DEFAULT_UPLOAD_MAX_BYTES,
+  DEFAULT_WORKSPACE_DIR,
   loadAyatiRuntimeConfig,
   parsePositiveInt,
+  resolveWorkspaceDir,
 } from "../../src/config/runtime-config.js";
 
 describe("ayati runtime config", () => {
@@ -28,18 +30,18 @@ describe("ayati runtime config", () => {
         vectorMinChunks: DEFAULT_DOCUMENT_VECTOR_MIN_CHUNKS,
       },
       python: {},
-      learning: {
-        apiBaseUrl: `http://${DEFAULT_HTTP_HOST}:${DEFAULT_HTTP_PORT}`,
-      },
       agent: {
         loopConfig: {
           maxSelectedTools: DEFAULT_AGENT_MAX_SELECTED_TOOLS,
         },
       },
+      workspace: {
+        root: DEFAULT_WORKSPACE_DIR,
+      },
     });
   });
 
-  it("loads explicit HTTP, document, Python, learning, and agent overrides", () => {
+  it("loads explicit HTTP, document, Python, agent, and workspace overrides", () => {
     const config = loadAyatiRuntimeConfig({
       AYATI_HTTP_HOST: " 0.0.0.0 ",
       AYATI_HTTP_PORT: "9090",
@@ -50,8 +52,8 @@ describe("ayati runtime config", () => {
       AYATI_DOCUMENT_EMBED_BATCH_SIZE: "64",
       AYATI_DOCUMENT_VECTOR_MIN_CHUNKS: "12",
       AYATI_PYTHON_INTERPRETER: " /usr/bin/python3 ",
-      AYATI_LEARNING_API_BASE: " http://learning.local:8081 ",
       AYATI_AGENT_MAX_SELECTED_TOOLS: "5",
+      AYATI_WORKSPACE_DIR: " /tmp/ayati-workspace ",
     });
 
     expect(config).toEqual({
@@ -70,15 +72,19 @@ describe("ayati runtime config", () => {
       python: {
         interpreterPath: "/usr/bin/python3",
       },
-      learning: {
-        apiBaseUrl: "http://learning.local:8081",
-      },
       agent: {
         loopConfig: {
           maxSelectedTools: 5,
         },
       },
+      workspace: {
+        root: "/tmp/ayati-workspace",
+      },
     });
+  });
+
+  it("resolves relative workspace overrides from the project root", () => {
+    expect(resolveWorkspaceDir("custom-workspace")).toMatch(/\/ayati-main\/custom-workspace$/);
   });
 
   it("preserves legacy upload host, port, and CORS fallbacks", () => {
@@ -91,14 +97,6 @@ describe("ayati runtime config", () => {
     expect(config.http.host).toBe("192.168.1.25");
     expect(config.http.port).toBe(9091);
     expect(config.http.allowOrigin).toBe("https://legacy.example");
-    expect(config.learning.apiBaseUrl).toBe("http://192.168.1.25:9091");
-  });
-
-  it("uses local client host for wildcard HTTP hosts in the default learning API URL", () => {
-    expect(loadAyatiRuntimeConfig({ AYATI_HTTP_HOST: "0.0.0.0" }).learning.apiBaseUrl)
-      .toBe(`http://127.0.0.1:${DEFAULT_HTTP_PORT}`);
-    expect(loadAyatiRuntimeConfig({ AYATI_HTTP_HOST: "::" }).learning.apiBaseUrl)
-      .toBe(`http://127.0.0.1:${DEFAULT_HTTP_PORT}`);
   });
 
   it("falls back for invalid positive integer values", () => {

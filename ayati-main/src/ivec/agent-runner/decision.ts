@@ -9,6 +9,13 @@ import type { AgentStateView } from "./state-view.js";
 
 export type AgentDecisionStatus = "completed" | "failed";
 export type AgentActionMode = "single" | "sequential" | "parallel";
+export type TaskCompletionIntent = "not_completion" | "completion_candidate";
+
+export interface AgentActionCompletion {
+  intent: TaskCompletionIntent;
+  reason?: string;
+  expectedEvidence?: string[];
+}
 
 export interface AgentToolCallSpec {
   id: string;
@@ -23,6 +30,7 @@ export interface AgentAction {
   calls: AgentToolCallSpec[];
   allowedTools: string[];
   assertions: ToolContractAssertion[];
+  completion?: AgentActionCompletion;
 }
 
 export interface AgentToolLoadRequest {
@@ -645,6 +653,11 @@ Decision rules:
 - Prefer write_files for generated websites, apps, and multi-file file creation.
 - Hidden tools are loaded by decision_load_tools, not by calling skill_search or skill_activate unless those are explicitly selected executable tools.
 - Do not include assertions. Tool-owned contracts provide deterministic verification.
+- Every executable tool call must include taskCompletion.
+- Set taskCompletion.intent to "not_completion" for preparation, inspection, context gathering, partial edits, setup, or actions that still require later verification.
+- Set taskCompletion.intent to "completion_candidate" only when that exact tool call should satisfy the current user request if it succeeds.
+- For read-only analysis tasks, gather evidence with tools and finish with decision_reply when the answer is ready.
+- For UI/layout fixes, use "not_completion" when an edit still needs screenshot, build, or test verification.
 
 Control tool shapes:
 - decision_reply({ "status": "completed" | "failed", "message": "..." })
@@ -655,7 +668,7 @@ Tool protocol examples:
 - Bad when shell is not selected: calling shell or trying to use load_tools as executable work.
 - Good instead: decision_load_tools({ "groups": ["skill:shell"] }).
 - Good after shell appears in Selected tools: call shell directly with its required input schema.
-- Good when write_files is selected: call write_files directly with files and createDirs.`;
+- Good when write_files is selected: call write_files directly with files, createDirs, and taskCompletion.`;
 
 function buildDecisionSystemSections(systemContext: string | undefined): Record<string, string> {
   const trimmed = systemContext?.trim();
@@ -748,6 +761,7 @@ function normalizeAgentAction(value: unknown): AgentAction {
     calls,
     allowedTools,
     assertions,
+    completion: normalizeActionCompletion(record["completion"] ?? record["taskCompletion"]),
   };
 }
 
@@ -806,6 +820,24 @@ function normalizeToolCallSpec(value: unknown): AgentToolCallSpec | null {
       ? rawDependsOn.map(String).filter((dep) => dep.trim().length > 0)
       : [],
     purpose: typeof value["purpose"] === "string" ? value["purpose"] : undefined,
+  };
+}
+
+function normalizeActionCompletion(value: unknown): AgentActionCompletion {
+  if (!isPlainObject(value)) {
+    return { intent: "not_completion" };
+  }
+  const intent = value["intent"] === "completion_candidate"
+    ? "completion_candidate"
+    : "not_completion";
+  const reason = typeof value["reason"] === "string" && value["reason"].trim().length > 0
+    ? value["reason"].trim()
+    : undefined;
+  const expectedEvidence = normalizeStringArray(value["expectedEvidence"]).slice(0, 8);
+  return {
+    intent,
+    ...(reason ? { reason } : {}),
+    ...(expectedEvidence.length > 0 ? { expectedEvidence } : {}),
   };
 }
 
@@ -964,8 +996,49 @@ function toNativeExecutableToolSchema(tool: ToolDefinition): LlmToolSchema {
   return {
     name: tool.name,
     description: tool.description,
-    inputSchema: tool.inputSchema ?? objectSchema({}, []),
+    inputSchema: withTaskCompletionSchema(tool.inputSchema ?? objectSchema({}, [])),
   };
+}
+
+function withTaskCompletionSchema(schema: Record<string, unknown>): Record<string, unknown> {
+  const properties = isPlainObject(schema["properties"])
+    ? { ...(schema["properties"] as Record<string, unknown>) }
+    : {};
+  const required = Array.isArray(schema["required"])
+    ? schema["required"].map(String)
+    : [];
+  return {
+    ...schema,
+    type: "object",
+    properties: {
+      ...properties,
+      taskCompletion: taskCompletionSchema(),
+    },
+    required: uniqueStrings([...required, "taskCompletion"]),
+    additionalProperties: schema["additionalProperties"] ?? false,
+  };
+}
+
+function taskCompletionSchema(): Record<string, unknown> {
+  return objectSchema({
+    intent: {
+      type: "string",
+      enum: ["not_completion", "completion_candidate"],
+      description: "Whether this exact tool call is expected to complete the user's current task if verification passes.",
+    },
+    reason: {
+      type: "string",
+      minLength: 1,
+    },
+    expectedEvidence: {
+      type: "array",
+      items: {
+        type: "string",
+        minLength: 1,
+      },
+      maxItems: 8,
+    },
+  }, ["intent", "reason"]);
 }
 
 function objectSchema(properties: Record<string, unknown>, required: string[]): Record<string, unknown> {
@@ -1042,6 +1115,7 @@ function nativeDecisionToolCallToPayload(toolName: string, input: Record<string,
 }
 
 function nativeExecutableToolCallToPayload(call: LlmToolCall, input: Record<string, unknown>): Record<string, unknown> {
+  const { cleanInput, completion } = extractTaskCompletion(input);
   return {
     kind: "act",
     action: {
@@ -1050,12 +1124,24 @@ function nativeExecutableToolCallToPayload(call: LlmToolCall, input: Record<stri
       calls: [{
         id: call.id || `${call.name}_call`,
         tool: call.name,
-        input,
+        input: cleanInput,
         dependsOn: [],
         purpose: `Execute ${call.name}`,
       }],
       assertions: [],
+      completion,
     },
+  };
+}
+
+function extractTaskCompletion(input: Record<string, unknown>): {
+  cleanInput: Record<string, unknown>;
+  completion: AgentActionCompletion;
+} {
+  const { taskCompletion, ...cleanInput } = input;
+  return {
+    cleanInput,
+    completion: normalizeActionCompletion(taskCompletion),
   };
 }
 

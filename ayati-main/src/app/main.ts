@@ -159,9 +159,6 @@ export async function main(): Promise<void> {
     preparedAttachmentService: content.preparedAttachmentService,
     fileLibrary: content.fileLibrary,
     directoryLibrary: content.directoryLibrary,
-    courseStore: content.courseStore,
-    learningFileStore: content.learningFileStore,
-    learningWorkspace: content.learningWorkspace,
     workspaceOrchestrator: content.workspaceOrchestrator,
     config: runtimeConfig,
   });
@@ -183,10 +180,6 @@ export async function main(): Promise<void> {
     pulseClientId: CLIENT_ID,
     pulseApiToken: runtimeConfig.http.apiToken,
     fileLibrary: content.fileLibrary,
-    courseStore: content.courseStore,
-    learningFileStore: content.learningFileStore,
-    learningWorkspace: content.learningWorkspace,
-    learningClientId: CLIENT_ID,
   });
   engine = new IVecEngine({
     onReply: (clientId, data) => {
@@ -204,8 +197,6 @@ export async function main(): Promise<void> {
     documentContextBackend: content.documentContextBackend,
     fileLibrary: content.fileLibrary,
     directoryLibrary: content.directoryLibrary,
-    courseStore: content.courseStore,
-    learningFileStore: content.learningFileStore,
     systemEventPolicy,
     loopConfig: runtimeConfig.agent.loopConfig,
     feedbackLedger,

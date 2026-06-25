@@ -3,7 +3,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { AsyncAgentFeedbackLedger } from "../../src/ivec/feedback-ledger.js";
+import { AsyncAgentFeedbackLedger, buildFeedbackTriageSummary } from "../../src/ivec/feedback-ledger.js";
 
 let tempDir = "";
 
@@ -144,6 +144,15 @@ describe("AsyncAgentFeedbackLedger", () => {
     expect(summary.basedOnVerifiedFacts).toBe(true);
     expect(summary.warnings).toEqual([]);
     expect(summary.rawPath).toBe("feedback/2026-06-23/session-session-1.jsonl");
+
+    const triage = JSON.parse(await readFile(join(tempDir, "feedback", "triage-summary.json"), "utf-8")) as {
+      outcome?: string;
+      findings?: Array<{ code?: string; severity?: string }>;
+      rawSummaryPath?: string;
+    };
+    expect(triage.outcome).toBe("healthy");
+    expect(triage.findings?.[0]).toMatchObject({ code: "healthy_run", severity: "info" });
+    expect(triage.rawSummaryPath).toBe("feedback/latest-summary.json");
   });
 
   it("merges decision repair signals into the latest summary warnings", async () => {
@@ -190,6 +199,47 @@ describe("AsyncAgentFeedbackLedger", () => {
     };
 
     expect(summary.warnings).toEqual(["completed_without_tool_calls", "parse_repair_needed"]);
+
+    const triage = JSON.parse(await readFile(join(tempDir, "feedback", "triage-summary.json"), "utf-8")) as {
+      outcome?: string;
+      findings?: Array<{ code?: string; severity?: string }>;
+    };
+    expect(triage.outcome).toBe("needs_review");
+    expect(triage.findings?.map((finding) => finding.code)).toEqual([
+      "decision_repair_needed",
+      "completed_without_tool_calls",
+    ]);
+  });
+
+  it("builds operator triage findings from final feedback warning signals", () => {
+    const triage = buildFeedbackTriageSummary({
+      updatedAt: "2026-06-23T10:00:00.000Z",
+      tsMs: 1,
+      sessionId: "session-1",
+      seq: 2,
+      runId: "run-2",
+      status: "failed",
+      responseKind: "reply",
+      iterations: 12,
+      toolCalls: 1,
+      toolLoadDecisions: 3,
+      actionSteps: 1,
+      verificationPassed: false,
+      basedOnVerifiedFacts: false,
+      warnings: ["runtime_error", "repeated_tool_load", "verification_failed"],
+      rawPath: "feedback/2026-06-23/session-session-1.jsonl",
+    });
+
+    expect(triage.outcome).toBe("failed");
+    expect(triage.findings.map((finding) => finding.code)).toEqual([
+      "run_not_completed",
+      "runtime_error",
+      "verification_failed",
+      "ungrounded_final_reply",
+      "repeated_tool_load",
+      "many_iterations",
+    ]);
+    expect(triage.topRecommendation).toContain("raw feedback log");
   });
 
   it("drops oldest events when the queue is full", async () => {

@@ -10,9 +10,6 @@ import type { PreparedAttachmentService } from "../documents/prepared-attachment
 import type { SessionAttachmentService } from "../documents/session-attachment-service.js";
 import type { DirectoryLibrary } from "../files/directory-library.js";
 import type { FileLibrary } from "../files/file-library.js";
-import type { CourseStore } from "../learning/course-store.js";
-import type { LearningFileStore } from "../learning/file-store.js";
-import type { LearningWorkspaceController } from "../ui/learning-workspace.js";
 import type { WorkspaceOrchestrator } from "../ui/workspace-orchestrator.js";
 import type { AyatiRuntimeConfig } from "../config/runtime-config.js";
 import { builtInSkillsProvider } from "../skills/provider.js";
@@ -26,7 +23,6 @@ import { createAttachmentSkill } from "../skills/builtins/attachments/index.js";
 import { createDatasetSkill } from "../skills/builtins/datasets/index.js";
 import { createDocumentSkill } from "../skills/builtins/documents/index.js";
 import { createFilesSkill } from "../skills/builtins/files/index.js";
-import { createLearningFileSkill } from "../skills/builtins/learning-v2/index.js";
 import { createUiSkill } from "../skills/builtins/ui/index.js";
 import { SkillActivationManager } from "../skills/activation-manager.js";
 import { createSkillBundle, SkillCatalog } from "../skills/skill-catalog.js";
@@ -44,9 +40,6 @@ export interface SkillRuntimeOptions {
   preparedAttachmentService: PreparedAttachmentService;
   fileLibrary: FileLibrary;
   directoryLibrary: DirectoryLibrary;
-  courseStore: CourseStore;
-  learningFileStore: LearningFileStore;
-  learningWorkspace: LearningWorkspaceController;
   workspaceOrchestrator: WorkspaceOrchestrator;
   config: AyatiRuntimeConfig;
 }
@@ -92,14 +85,8 @@ export async function createSkillRuntime(options: SkillRuntimeOptions): Promise<
       fileLibrary: options.fileLibrary,
       directoryLibrary: options.directoryLibrary,
     }),
-    createLearningFileSkill({
-      learningFileStore: options.learningFileStore,
-      learningWorkspace: options.learningWorkspace,
-    }),
     createUiSkill({
-      learningWorkspace: options.learningWorkspace,
       workspaceOrchestrator: options.workspaceOrchestrator,
-      includeLearningTools: false,
     }),
   ];
 

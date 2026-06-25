@@ -10,19 +10,18 @@ Current product features:
   names, or search queries, with tool-load and failure feedback fed back into
   the next decision.
 - Structured context pack with recent conversation, resolved continuity,
-  personal memory, and active learning context.
+  personal memory, and task-context state.
 - Deterministic tool verification through tool contracts, assertions, verified facts, and progress reduction.
 - Deterministic executable-tool input validation, action execution, and
   deny-by-default parallel execution for explicitly safe read-only local flows.
 - Built-in skills for shell, filesystem, calculator, SQLite database work, Python execution, documents, datasets, files, memory, recall, identity, Pulse, and dynamic built-in skill activation.
-- Activity threads and deterministic continuity resolution for ongoing projects, documents, learning, automations, investigations, and debugging.
+- Activity threads and deterministic continuity resolution for ongoing projects, documents, automations, investigations, and debugging.
 - Activity assets for restoring user-attached documents, datasets, files, and directories into later follow-up runs.
 - Personal memory for stable user facts, time-based facts, and evolving preferences.
 - Episodic memory for semantic recall over closed sessions when embeddings are available.
 - Managed file registration and upload processing.
 - Document extraction, section reads, and optional vector retrieval.
 - Structured data profiling and query workflows.
-- Durable first-principles learning courses with one active course per user, structured course maps, learning indexes, lesson metadata, doubt tracking, and Tauri-rendered visual lessons.
 - CLI-anchored Omarchy/Hyprland workspace orchestration with role-based windows, layout presets, protected CLI anchor, and max-five-window cleanup.
 - Generated run artifacts served over HTTP.
 - Terminal chat UI with attachment queue commands.
@@ -33,8 +32,7 @@ Core product capabilities:
 - Persistent daemon runtime that can keep agent state alive across user interactions.
 - Multi-channel communication model where clients connect to the daemon.
 - Long-term personalization and continuation through session memory, activity threads, personal memory, and episodic recall.
-- Learning continuity through active-course context capsules, duplicate-aware lesson planning, and scoped search over the active course map, lesson metadata, notes, and doubts.
-- General visual workbench control for learning, coding, browsing, references, previews, scratch explanations, and other workspace-heavy tasks.
+- General visual workbench control for coding, browsing, references, previews, scratch explanations, and other workspace-heavy tasks.
 - Computer-access layer for useful work across files, shell, Python, SQLite, documents, datasets, and generated artifacts.
 - Event-driven and proactive behavior through system events, plugins, and Pulse scheduling.
 - Provider abstraction so model choice can change without rewriting the agent loop.

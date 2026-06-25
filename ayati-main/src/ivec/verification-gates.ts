@@ -93,7 +93,6 @@ const DETERMINISTIC_SUCCESS_TOOLS = new Set([
   "document_list_sections",
   "document_read_section",
   "document_query",
-  "learning_workspace_show",
 ]);
 
 export function checkDeterministicSuccessGate(
@@ -197,8 +196,6 @@ function isDeterministicSuccessCall(call: ActOutput["toolCalls"][number]): boole
       return Array.isArray(payload?.["sections"]) && payload["sections"].length > 0;
     case "document_query":
       return isGroundedDocumentQueryPayload(payload);
-    case "learning_workspace_show":
-      return isLearningWorkspaceShown(payload);
     default:
       return true;
   }
@@ -229,14 +226,6 @@ function isGroundedDocumentQueryPayload(payload: Record<string, unknown> | null)
     && sources.length > 0
     && confidence > 0
     && documentState["insufficientEvidence"] !== true;
-}
-
-function isLearningWorkspaceShown(payload: Record<string, unknown> | null): boolean {
-  const workspace = payload?.["workspace"];
-  return !!workspace
-    && typeof workspace === "object"
-    && !Array.isArray(workspace)
-    && (workspace as Record<string, unknown>)["opened"] === true;
 }
 
 function isDeterministicCriteriaCompatible(actOutput: ActOutput, successCriteria: string): boolean {

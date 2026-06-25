@@ -51,22 +51,6 @@ importers:
         specifier: ^4.0.18
         version: 4.1.8(@types/node@25.9.1)(vite@8.0.16(@types/node@25.9.1)(esbuild@0.28.0)(tsx@4.22.4))
 
-  ayati-learning-ui:
-    dependencies:
-      '@tauri-apps/api':
-        specifier: ^2.8.0
-        version: 2.11.0
-    devDependencies:
-      '@tauri-apps/cli':
-        specifier: ^2.8.0
-        version: 2.11.2
-      typescript:
-        specifier: ^5.9.3
-        version: 5.9.3
-      vite:
-        specifier: ^7.2.0
-        version: 7.3.5(@types/node@25.9.1)(lightningcss@1.32.0)(tsx@4.22.4)
-
   ayati-main:
     dependencies:
       '@anthropic-ai/sdk':

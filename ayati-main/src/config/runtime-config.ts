@@ -1,4 +1,10 @@
+import { homedir } from "node:os";
+import { dirname, isAbsolute, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import type { LoopConfig } from "../ivec/types.js";
+
+const thisDir = dirname(fileURLToPath(import.meta.url));
+const projectRoot = resolve(thisDir, "..", "..");
 
 export const DEFAULT_HTTP_HOST = "127.0.0.1";
 export const DEFAULT_HTTP_PORT = 8081;
@@ -7,6 +13,7 @@ export const DEFAULT_UPLOAD_MAX_BYTES = 25 * 1024 * 1024;
 export const DEFAULT_DOCUMENT_EMBED_BATCH_SIZE = 32;
 export const DEFAULT_DOCUMENT_VECTOR_MIN_CHUNKS = 40;
 export const DEFAULT_AGENT_MAX_SELECTED_TOOLS = 12;
+export const DEFAULT_WORKSPACE_DIR = resolve(projectRoot, "work_space");
 
 export interface HttpRuntimeConfig {
   host: string;
@@ -26,20 +33,20 @@ export interface PythonRuntimeConfig {
   interpreterPath?: string;
 }
 
-export interface LearningRuntimeConfig {
-  apiBaseUrl: string;
-}
-
 export interface AgentRuntimeConfig {
   loopConfig: Partial<LoopConfig>;
+}
+
+export interface WorkspaceRuntimeConfig {
+  root: string;
 }
 
 export interface AyatiRuntimeConfig {
   http: HttpRuntimeConfig;
   documents: DocumentRuntimeConfig;
   python: PythonRuntimeConfig;
-  learning: LearningRuntimeConfig;
   agent: AgentRuntimeConfig;
+  workspace: WorkspaceRuntimeConfig;
 }
 
 export function loadAyatiRuntimeConfig(env: NodeJS.ProcessEnv = process.env): AyatiRuntimeConfig {
@@ -49,8 +56,8 @@ export function loadAyatiRuntimeConfig(env: NodeJS.ProcessEnv = process.env): Ay
     http,
     documents: loadDocumentRuntimeConfig(env),
     python: loadPythonRuntimeConfig(env),
-    learning: loadLearningRuntimeConfig(env, http),
     agent: loadAgentRuntimeConfig(env),
+    workspace: loadWorkspaceRuntimeConfig(env),
   };
 }
 
@@ -88,13 +95,6 @@ function loadPythonRuntimeConfig(env: NodeJS.ProcessEnv): PythonRuntimeConfig {
   };
 }
 
-function loadLearningRuntimeConfig(env: NodeJS.ProcessEnv, http: HttpRuntimeConfig): LearningRuntimeConfig {
-  return {
-    apiBaseUrl: trimOptional(env["AYATI_LEARNING_API_BASE"])
-      ?? `http://${hostForLocalClient(http.host)}:${http.port}`,
-  };
-}
-
 function loadAgentRuntimeConfig(env: NodeJS.ProcessEnv): AgentRuntimeConfig {
   const maxSelectedTools = parsePositiveInt(
     env["AYATI_AGENT_MAX_SELECTED_TOOLS"],
@@ -108,15 +108,35 @@ function loadAgentRuntimeConfig(env: NodeJS.ProcessEnv): AgentRuntimeConfig {
   };
 }
 
-function isEnvFalse(rawValue: string | undefined): boolean {
-  return /^(?:0|false|no|off)$/i.test(rawValue ?? "");
+function loadWorkspaceRuntimeConfig(env: NodeJS.ProcessEnv): WorkspaceRuntimeConfig {
+  return {
+    root: resolveWorkspaceDir(env["AYATI_WORKSPACE_DIR"]),
+  };
 }
 
-function hostForLocalClient(host: string): string {
-  return host === "0.0.0.0" || host === "::" ? "127.0.0.1" : host;
+export function resolveWorkspaceDir(rawValue: string | undefined): string {
+  const normalized = normalizeSpecialPath(rawValue ?? "");
+  if (normalized.length === 0) {
+    return DEFAULT_WORKSPACE_DIR;
+  }
+  if (isAbsolute(normalized)) {
+    return resolve(normalized);
+  }
+  return resolve(projectRoot, normalized);
+}
+
+function isEnvFalse(rawValue: string | undefined): boolean {
+  return /^(?:0|false|no|off)$/i.test(rawValue ?? "");
 }
 
 function trimOptional(value: string | undefined): string | undefined {
   const trimmed = value?.trim();
   return trimmed && trimmed.length > 0 ? trimmed : undefined;
+}
+
+function normalizeSpecialPath(pathValue: string): string {
+  const trimmed = pathValue.trim();
+  if (trimmed === "~") return homedir();
+  if (trimmed.startsWith("~/")) return join(homedir(), trimmed.slice(2));
+  return trimmed;
 }

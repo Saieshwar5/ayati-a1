@@ -4,7 +4,7 @@ import { homedir, tmpdir } from "node:os";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { LlmProvider } from "../core/contracts/provider.js";
-import type { LlmTurnInput, LlmTokenUsage } from "../core/contracts/llm-protocol.js";
+import type { LlmToolCall, LlmToolSchema, LlmTurnInput, LlmTurnOutput, LlmTokenUsage } from "../core/contracts/llm-protocol.js";
 import { DocumentContextBackend } from "../documents/document-context-backend.js";
 import { DocumentStore, type PreparedManagedDocument } from "../documents/document-store.js";
 import { PreparedAttachmentRegistry } from "../documents/prepared-attachment-registry.js";
@@ -1855,7 +1855,7 @@ function createBenchmarkProvider(responses: QueuedDecision[], stats: BenchmarkPr
     name: "benchmark",
     version: "1.0.0",
     capabilities: {
-      nativeToolCalling: false,
+      nativeToolCalling: true,
       structuredOutput: {
         jsonObject: true,
         jsonSchema: false,
@@ -1882,22 +1882,110 @@ function createBenchmarkProvider(responses: QueuedDecision[], stats: BenchmarkPr
       if (!next) {
         throw new Error("Benchmark provider has no queued decision.");
       }
-      return {
-        type: "assistant",
-        content: JSON.stringify(next.decision),
-        ...(next.usage ? {
-          usage: {
-            provider: "benchmark",
-            model: BENCHMARK_MODEL,
-            inputTokens: next.usage.inputTokens,
-            outputTokens: next.usage.outputTokens,
-            totalTokens: next.usage.totalTokens,
-            ...(next.usage.cachedInputTokens !== undefined ? { cachedInputTokens: next.usage.cachedInputTokens } : {}),
-            exact: true,
-          },
-        } : {}),
-      };
+      return withBenchmarkUsage(nativeTurnForQueuedDecision(next.decision, input.tools), next.usage);
     },
+  };
+}
+
+function withBenchmarkUsage(
+  turn: LlmTurnOutput,
+  usage: QueuedDecision["usage"] | undefined,
+): LlmTurnOutput {
+  if (!usage) {
+    return turn;
+  }
+  return {
+    ...turn,
+    usage: {
+      provider: "benchmark",
+      model: BENCHMARK_MODEL,
+      inputTokens: usage.inputTokens,
+      outputTokens: usage.outputTokens,
+      totalTokens: usage.totalTokens,
+      ...(usage.cachedInputTokens !== undefined ? { cachedInputTokens: usage.cachedInputTokens } : {}),
+      exact: true,
+    },
+  };
+}
+
+function nativeTurnForQueuedDecision(decision: unknown, visibleTools: LlmToolSchema[] | undefined): LlmTurnOutput {
+  const nativeCall = nativeToolCallForQueuedDecision(decision, visibleTools ?? []);
+  if (nativeCall) {
+    return {
+      type: "tool_calls",
+      calls: [nativeCall],
+    };
+  }
+  return {
+    type: "assistant",
+    content: JSON.stringify(decision),
+  };
+}
+
+function nativeToolCallForQueuedDecision(decision: unknown, visibleTools: LlmToolSchema[]): LlmToolCall | null {
+  if (!isRecord(decision)) {
+    return null;
+  }
+
+  const kind = decision["kind"];
+  if (kind === "reply") {
+    return {
+      id: "benchmark_decision_reply",
+      name: "decision_reply",
+      input: {
+        status: decision["status"] === "failed" ? "failed" : "completed",
+        message: typeof decision["message"] === "string" ? decision["message"] : "",
+        ...(Array.isArray(decision["workingNotes"]) ? { workingNotes: decision["workingNotes"] } : {}),
+      },
+    };
+  }
+
+  if (kind === "ask_user") {
+    return {
+      id: "benchmark_decision_ask_user",
+      name: "decision_ask_user",
+      input: {
+        question: typeof decision["question"] === "string" ? decision["question"] : "",
+        reason: typeof decision["reason"] === "string" ? decision["reason"] : "",
+        ...(Array.isArray(decision["workingNotes"]) ? { workingNotes: decision["workingNotes"] } : {}),
+      },
+    };
+  }
+
+  if (kind === "load_tools") {
+    const request = isRecord(decision["request"]) ? decision["request"] : decision;
+    return {
+      id: "benchmark_decision_load_tools",
+      name: "decision_load_tools",
+      input: {
+        ...(typeof request["query"] === "string" ? { query: request["query"] } : {}),
+        ...(Array.isArray(request["toolNames"]) ? { toolNames: request["toolNames"] } : {}),
+        ...(Array.isArray(request["groups"]) ? { groups: request["groups"] } : {}),
+        ...(Array.isArray(decision["workingNotes"]) ? { workingNotes: decision["workingNotes"] } : {}),
+      },
+    };
+  }
+
+  if (kind !== "act" || !isRecord(decision["action"])) {
+    return null;
+  }
+
+  const action = decision["action"];
+  const calls = Array.isArray(action["calls"]) ? action["calls"] : [];
+  if (calls.length !== 1 || !isRecord(calls[0])) {
+    return null;
+  }
+
+  const call = calls[0];
+  const toolName = typeof call["tool"] === "string" ? call["tool"] : "";
+  if (!visibleTools.some((tool) => tool.name === toolName)) {
+    return null;
+  }
+
+  return {
+    id: typeof call["id"] === "string" && call["id"].trim().length > 0 ? call["id"] : `benchmark_${toolName}`,
+    name: toolName,
+    input: isRecord(call["input"]) ? call["input"] : {},
   };
 }
 

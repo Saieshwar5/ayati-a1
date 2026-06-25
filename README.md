@@ -23,13 +23,13 @@ Intelligence Variable Execution Core.
 At a high level, Ayati provides:
 
 - A runtime-selectable LLM provider layer for OpenRouter, OpenAI, Anthropic, and Fireworks
-- Stable decision rules plus a structured context pack containing runtime time, recent conversation, attention shelf, recent tasks, attachments, memory, and system activity
-- A decision-action-reducer agent loop that chooses `reply`, `ask_user`, `load_tools`, or `act`, then verifies tool work deterministically
+- Stable decision rules plus a structured state view containing bounded timeline context, continuity, same-session work, optional task-thread context, attachments, memory snapshots, progress, observations, and system activity
+- A native-tool decision loop that chooses a control tool or one selected executable tool, then verifies tool work deterministically
 - Built-in skills for shell, filesystem, calculator, SQLite database work, Python execution, documents, datasets, files, memory, recall, identity, and Pulse scheduling
 - Focus cards, attention shelf, personal memory, and episodic recall for continuity and personalization
 - Episodic recall for searching past sessions and run history
 - Managed file registration, upload processing, document extraction, structured data profiling, and artifact serving
-- Dynamic activation for built-in skills
+- Run-scoped tool working sets for built-in skills
 - Pulse scheduling and system-event processing
 - A terminal client that talks to the backend runtime
 
@@ -48,19 +48,20 @@ At a high level, Ayati provides:
 The backend runtime is centered on `ayati-main/src/app/main.ts` and
 `ayati-main/src/ivec/index.ts`.
 
-Ayati runs work through a decision-action-reducer loop:
+Ayati runs work through the current harness loop:
 
 ```text
-context pack -> deterministic tool preload -> decision -> action executor -> deterministic follow-up tool loading -> deterministic verification -> progress reducer
+context pack -> decision -> action executor -> deterministic verification -> progress reducer
 ```
 
-The decision model chooses one next outcome by calling exactly one native
-decision tool:
+Before each decision, the runner may deterministically preload likely tools into
+a bounded working set. The decision model then chooses one next outcome by
+calling exactly one native provider tool:
 
 - `decision_reply`: answer or finish without tool work.
 - `decision_ask_user`: request missing information before safe progress.
 - `decision_load_tools`: request hidden tools by exact group, exact tool name, or search query.
-- `decision_act`: plan explicit executable tool calls for the action executor.
+- one selected executable tool, such as `read_file`, `write_files`, `edit_file`, or `shell`.
 
 Tool work is validated, executed, checked through tool contracts/assertions, and
 reduced into task progress before the next decision. System events such as
@@ -70,11 +71,11 @@ reminders enter the same harness with event-policy constraints.
 
 1. A user sends a message from the CLI or another runtime input.
 2. `ayati-main` receives the message through WebSocket, HTTP, or a plugin event adapter.
-3. The backend loads static decision rules, session state, focus summaries, memory snapshots, available tools, active skills, and the configured LLM provider.
+3. The backend loads static decision rules, session state, continuity summaries, memory snapshots, the hidden tool catalog, and the configured LLM provider.
 4. `IVecEngine` builds a bounded context pack and enters the agent runner.
-5. The decision model calls one native decision tool: `decision_reply`, `decision_ask_user`, `decision_load_tools`, or `decision_act`.
+5. The decision model calls one native provider tool: `decision_reply`, `decision_ask_user`, `decision_load_tools`, or one selected executable tool.
 6. If more tools are needed, Ayati loads a run-scoped working set from strict selectors and reports the load result into the next decision state.
-7. If tools are called, Ayati validates the action, executes it through the tool executor, verifies results with contracts/assertions, and updates progress from verified facts.
+7. If an executable tool is called, Ayati adapts that native call into an internal action record, validates it, executes it through the tool executor, verifies results with contracts/assertions, and updates progress from verified facts.
 8. Files, documents, datasets, Python outputs, and other generated files are stored as managed runtime data or run artifacts.
 9. Session history, focus cards, personal memory candidates, episodic memory indexes, system activity, and task state are persisted under `ayati-main/data/`.
 10. The final reply and any artifact metadata are returned to the active client.
@@ -116,18 +117,13 @@ Stable system context can include:
 - Available tool definitions
 
 Dynamic context is sent to the decision model as structured JSON in the context
-pack:
+pack and sparse state view:
 
-- Runtime date, time, weekday, and timezone
-- Session status and context pressure
-- Attention shelf / focus summaries
-- Recent exact conversation
-- Recent task summaries
-- Active attachments
-- Previous session summary
-- Personal memory snapshot
-- Active learning context
-- Recent system activity
+- Bounded `context.timeline` events, ending with the current input
+- Durable `context.continuity` for selected activity or project state
+- Same-session `context.taskThreadContext` and `context.sessionWork`
+- Optional `context.personalMemorySnapshot`
+- Current `progress`, `workingFeedback`, `toolLoad`, `observations`, `trace`, `attachments`, and `systemEvent` sections when present
 
 This keeps memory and continuation visible without hiding important facts inside
 a large truncatable prompt string.
@@ -137,7 +133,7 @@ a large truncatable prompt string.
 Ayati has several memory paths:
 
 - Session memory stores active conversation state and handoff summaries.
-- Focus cards track meaningful ongoing work such as projects, documents, learning, automations, investigations, and debugging.
+- Focus cards track meaningful ongoing work such as projects, documents, automations, investigations, and debugging.
 - The attention shelf injects compact high-relevance focus summaries into each decision.
 - Personal memory stores canonical facts in sections such as `user_facts`, `time_based`, and `evolving_memory`.
 - Episodic memory indexes closed sessions for later semantic recall when embeddings are available.

@@ -11,9 +11,6 @@ import { PreparedAttachmentService } from "../documents/prepared-attachment-serv
 import { SessionAttachmentService } from "../documents/session-attachment-service.js";
 import { DirectoryLibrary } from "../files/directory-library.js";
 import { FileLibrary } from "../files/file-library.js";
-import { CourseStore } from "../learning/course-store.js";
-import { LearningFileStore } from "../learning/file-store.js";
-import { LearningWorkspaceController } from "../ui/learning-workspace.js";
 import { WorkspaceFocusWatcher } from "../ui/workspace-focus-watcher.js";
 import { WorkspaceOrchestrator } from "../ui/workspace-orchestrator.js";
 import { devLog, devWarn } from "../shared/index.js";
@@ -37,9 +34,6 @@ export interface ContentRuntime {
   sessionAttachmentService: SessionAttachmentService;
   fileLibrary: FileLibrary;
   directoryLibrary: DirectoryLibrary;
-  courseStore: CourseStore;
-  learningFileStore: LearningFileStore;
-  learningWorkspace: LearningWorkspaceController;
   workspaceOrchestrator: WorkspaceOrchestrator;
   workspaceFocusWatcher: WorkspaceFocusWatcher;
   httpHost: string;
@@ -108,26 +102,12 @@ export async function createContentRuntime(options: ContentRuntimeOptions): Prom
     fileLibrary,
     directoryLibrary,
   });
-
-  const courseStore = new CourseStore({
-    dataDir,
-  });
-  const learningFileStore = new LearningFileStore({
-    dataDir,
-  });
-  await learningFileStore.ensureBase();
   const workspaceOrchestrator = new WorkspaceOrchestrator({
     dataDir,
   });
   const workspaceFocusWatcher = new WorkspaceFocusWatcher({
     clientId: options.clientId,
     orchestrator: workspaceOrchestrator,
-  });
-  const learningWorkspace = new LearningWorkspaceController({
-    projectRoot,
-    dataDir,
-    httpBaseUrl: config.learning.apiBaseUrl,
-    workspaceOrchestrator,
   });
 
   return {
@@ -138,9 +118,6 @@ export async function createContentRuntime(options: ContentRuntimeOptions): Prom
     sessionAttachmentService,
     fileLibrary,
     directoryLibrary,
-    courseStore,
-    learningFileStore,
-    learningWorkspace,
     workspaceOrchestrator,
     workspaceFocusWatcher,
     httpHost: config.http.host,

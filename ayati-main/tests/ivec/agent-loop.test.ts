@@ -170,6 +170,64 @@ describe("agentLoop", () => {
     }
   });
 
+  it("finalizes immediately when a verified action is marked as a completion candidate", async () => {
+    const dataDir = makeTmpDir();
+    const outputPath = join(dataDir, "completion-site", "index.html");
+    try {
+      const toolExecutor = createToolExecutor([writeFilesTool]);
+      const provider = createProvider([
+        {
+          kind: "act",
+          action: {
+            mode: "single",
+            calls: [{
+              id: "call_1",
+              tool: "write_files",
+              input: {
+                createDirs: true,
+                files: [{ path: outputPath, content: "<!doctype html><title>Done</title>" }],
+              },
+              dependsOn: [],
+              purpose: "Create the requested website",
+            }],
+            allowedTools: ["write_files"],
+            assertions: [],
+            completion: {
+              intent: "completion_candidate",
+              reason: `I created the requested website at ${outputPath}.`,
+              expectedEvidence: ["index.html written"],
+            },
+          },
+        },
+      ]);
+
+      const result = await agentLoop({
+        provider,
+        toolExecutor,
+        toolDefinitions: toolExecutor.definitions(),
+        sessionMemory: noopSessionMemory,
+        runHandle: { sessionId: "s1", runId: "r-completion-candidate" },
+        clientId: "c1",
+        initialUserMessage: "Create a small website",
+        dataDir,
+        systemContext: "full system context with memory",
+      });
+
+      expect(result.status).toBe("completed");
+      expect(result.totalIterations).toBe(1);
+      expect(provider.generateTurn).toHaveBeenCalledTimes(1);
+      expect(readFileSync(outputPath, "utf-8")).toBe("<!doctype html><title>Done</title>");
+      expect(result.content).toBe(`I created the requested website at ${outputPath}.`);
+      expect(result.taskSummary).toMatchObject({
+        runStatus: "completed",
+        taskStatus: "done",
+        toolsUsed: ["write_files"],
+      });
+    } finally {
+      cleanup(dataDir);
+    }
+  });
+
   it("publishes absolute generated file and parent directory assets for multi-file outputs", async () => {
     const dataDir = makeTmpDir();
     const outputDir = join(dataDir, "generated-project");

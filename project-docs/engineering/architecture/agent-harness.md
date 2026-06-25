@@ -111,8 +111,7 @@ user:
 
 Stable decision rules live in the system message so repeated decisions share a
 cache-friendly prefix. Dynamic state remains in the user message. Do not move
-work-run ids, tool observations, current input, memory snapshots, learning
-context, continuity context, or working feedback ahead of the stable decision
+work-run ids, tool observations, current input, memory snapshots, continuity context, or working feedback ahead of the stable decision
 contract.
 
 Critical decision rules and control tool shapes must not be placed inside the
@@ -198,6 +197,29 @@ continuation stays inside the existing decision stage: `taskThreadContext`
 gives the model enough structured state to continue the active task, switch to
 a named suspended task, start a new task, or ask the user when multiple open
 tasks match.
+
+## Feedback Triage
+
+The feedback ledger writes compact operator-facing summaries under
+`feedback/latest-summary.json` and `feedback/triage-summary.json` when feedback
+tracing is enabled. The latest summary preserves the raw run signals:
+
+- final status and response kind
+- iteration, tool-load, action-step, and tool-call counts
+- verification and verified-fact flags
+- warning signals such as protocol repair, failed actions, repeated tool loads,
+  or completed work without tool calls
+
+The triage summary converts those signals into a small review outcome:
+
+- `healthy`: no warning or error findings were recorded for the latest run
+- `needs_review`: the run completed but produced warning-level signals
+- `failed`: the run ended with a non-completed status, runtime error, or failed
+  action signal
+
+This triage file is not model-facing context. It exists to make benchmark and
+live-feedback data actionable for developers by turning raw trace facts into
+concrete improvement categories.
 
 ## Action Execution
 

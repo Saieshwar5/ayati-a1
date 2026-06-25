@@ -241,6 +241,21 @@ export async function runAgentLoop(
     syncContinuityContext(state, deps, inputHandle);
     state.iteration++;
     const finalReplyFromVerifiedState = canCompleteFromVerifiedState(state);
+    if (finalReplyFromVerifiedState) {
+      state.status = "completed";
+      state.finalOutput = buildVerifiedCompletionReply(state);
+      return finalize({
+        status: "completed",
+        content: state.finalOutput,
+        responseKind: state.preferredResponseKind ?? "reply",
+        completion: {
+          done: true,
+          summary: state.finalOutput,
+          status: "completed",
+          response_kind: state.preferredResponseKind ?? "reply",
+        },
+      });
+    }
 
     const toolContext = {
       clientId: deps.clientId,
@@ -505,12 +520,19 @@ export async function runAgentLoop(
         status: "done",
       });
       recordRunMetric(metrics, "verified_completion", { kind: "local" });
-      if (state.iteration >= config.maxIterations) {
-        state.status = "completed";
-        state.finalOutput = "I completed the task.";
-        return finalize({ status: "completed", content: state.finalOutput });
-      }
-      continue;
+      state.status = "completed";
+      state.finalOutput = buildVerifiedCompletionReply(state, decision.action);
+      return finalize({
+        status: "completed",
+        content: state.finalOutput,
+        responseKind: state.preferredResponseKind ?? "reply",
+        completion: {
+          done: true,
+          summary: state.finalOutput,
+          status: "completed",
+          response_kind: state.preferredResponseKind ?? "reply",
+        },
+      });
     }
   }
 
@@ -1180,37 +1202,28 @@ function canCompleteFromVerifiedState(state: LoopState): boolean {
   return state.workState.status === "done" && state.workState.userInputNeeded === undefined;
 }
 
-const LOCAL_COMPLETION_SUPPORT_TOOLS = new Set([
-  "create_directory",
-  "write_file",
-  "write_files",
-  "edit_file",
-  "move",
-  "delete",
-]);
-
-const LOCAL_COMPLETION_REQUIRED_TOOLS = new Set([
-  "write_file",
-  "write_files",
-  "edit_file",
-  "move",
-  "delete",
-]);
-
 function canCompleteLocallyAfterAction(
   action: AgentAction,
   step: StepSummary,
   workState: WorkState,
 ): boolean {
-  if (step.outcome !== "success") {
-    return false;
-  }
-  const tools = step.toolsUsed ?? action.calls.map((call) => call.tool);
-  return tools.length > 0
+  return action.completion?.intent === "completion_candidate"
+    && step.outcome === "success"
     && step.toolFailureCount === 0
-    && tools.every((tool) => LOCAL_COMPLETION_SUPPORT_TOOLS.has(tool))
-    && tools.some((tool) => LOCAL_COMPLETION_REQUIRED_TOOLS.has(tool))
-    && !(workState.userInputNeeded?.trim());
+    && !(workState.userInputNeeded?.trim())
+    && (workState.blockers?.length ?? 0) === 0;
+}
+
+function buildVerifiedCompletionReply(state: LoopState, action?: AgentAction): string {
+  const reason = action?.completion?.reason?.trim();
+  if (reason) {
+    return reason;
+  }
+  const summary = state.workState.summary?.trim();
+  if (summary) {
+    return summary;
+  }
+  return "I completed the task.";
 }
 
 function buildFailureReply(state: LoopState): string {

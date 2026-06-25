@@ -135,16 +135,6 @@ const DEFAULT_SKILL_CARDS: Record<string, Partial<SkillCard>> = {
     risk: "workspace_mutating",
     defaultScope: "run",
   },
-  "learning-v2": {
-    title: "Learning Filesystem",
-    summary: "Inspect filesystem-native learning status and show lesson workspaces.",
-    domains: ["learning"],
-    triggers: ["lesson", "course", "study", "learning workspace"],
-    whenToUse: "Use when the task involves Ayati learning files, lessons, or course workspace state.",
-    notFor: ["Do not use for generic document summaries."],
-    risk: "read_only",
-    defaultScope: "run",
-  },
   "ui-workspace": {
     title: "UI Workspace",
     summary: "Control the current CLI-anchored workspace and visual windows.",

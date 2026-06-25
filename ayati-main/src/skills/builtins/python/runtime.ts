@@ -3,7 +3,7 @@ import { constants as fsConstants } from "node:fs";
 import { spawn } from "node:child_process";
 import { resolve as resolvePath } from "node:path";
 import type { ToolExecutionContext } from "../../types.js";
-import { workspaceRoot, resolveWorkspaceCwd } from "../../workspace-paths.js";
+import { resolveWorkspaceCwd } from "../../workspace-paths.js";
 import {
   createPythonArtifactPaths,
   listFilesRecursive,
@@ -79,7 +79,7 @@ export async function allocatePythonArtifacts(
 
 export function resolvePythonCwd(deps: PythonSkillRuntimeDeps, cwd?: string): string {
   if (!cwd || cwd.trim().length === 0) {
-    return deps.defaultCwd ?? workspaceRoot;
+    return deps.defaultCwd ?? resolveWorkspaceCwd();
   }
   return resolveWorkspaceCwd(cwd);
 }

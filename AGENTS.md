@@ -6,7 +6,6 @@ Ayati is a pnpm monorepo. Main packages:
 
 - `ayati-main/`: backend agent daemon, provider adapters, memory, tools, plugins, WebSocket/HTTP servers, and tests.
 - `ayati-cli/`: Ink/React terminal client.
-- `ayati-learning-ui/`: learning UI/Tauri surface.
 - `project-docs/`: stable product and engineering documentation. Start with `project-docs/README.md`.
 
 Backend source lives in `ayati-main/src/`; tests mirror domains under `ayati-main/tests/` such as `tests/ivec`, `tests/engine`, `tests/skills`, and `tests/memory`.

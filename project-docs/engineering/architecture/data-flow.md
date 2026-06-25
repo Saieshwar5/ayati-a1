@@ -7,9 +7,9 @@ Daemon communication flow:
 3. `WsServer` parses JSON and forwards payloads to `IVecEngine.handleMessage`.
 4. `IVecEngine` parses chat input, stores session turns, builds static decision context, and enters the agent runner.
 5. The runner builds a structured context pack from session memory,
-   same-session task-thread context, resolved activity continuity, personal
-   memory, and learning context. Current-run attachments appear separately in
-   the sparse state view only when present.
+   same-session task-thread context, resolved activity continuity, and personal
+   memory. Current-run attachments appear separately in the sparse state view
+   only when present.
 6. The decision model chooses a control tool (`decision_reply`,
    `decision_ask_user`, or `decision_load_tools`) or directly calls one
    selected executable tool.
@@ -101,16 +101,6 @@ Attachment flow:
    `activity_restore_assets`, which touches the stored file or directory into
    the current run or restores prepared document/dataset metadata.
 
-Learning flow:
-
-1. The agent detects a learning intent and uses personal memory plus direct questions to gather missing learner context such as purpose, background, level, and preferred style.
-2. `CourseStore` keeps one active course per client and persists structured state under `data/learning/courses/<courseId>/`.
-3. Course state is split into `course.json`, `context.json`, `course-map.json`, `learning-index.json`, `doubts.json`, and per-lesson HTML plus per-lesson JSON metadata.
-4. The engine injects only a compact active-course context capsule into prompts. Full lesson HTML is not prompt context.
-5. Before continuing a course, the learning planner reads the course map and learning index to avoid duplicate topics, respect prerequisites, and keep the course aligned with the learner's purpose.
-6. Lesson generation writes visual HTML/CSS/JS for Tauri and a sidecar lesson JSON record for future agent reasoning.
-7. User doubts are recorded against the active course/lesson, update weak concepts or open questions, and can be searched with the active-course context tools.
-
 Workspace orchestration flow:
 
 1. `ayati-cli` includes UI context for the current terminal window when available.
@@ -118,7 +108,7 @@ Workspace orchestration flow:
 3. The orchestrator reads Hyprland clients with `hyprctl`, assigns role-based window records, and persists compact workspace state under `data/ui/workspace-orchestrator.json`.
 4. Workspace tools let the agent read state, apply layout presets, focus windows, register roles, reuse or open role windows, close windows, and clean up unused windows.
 5. The initial policy is single-workspace only, maximum five windows including the CLI, with automatic cleanup of least-useful unpinned non-CLI windows when capacity is exceeded.
-6. Learning, coding, browsing, previews, references, and scratch explanations should use this general workspace layer instead of adding one-off window-control logic.
+6. Coding, browsing, previews, references, and scratch explanations should use this general workspace layer instead of adding one-off window-control logic.
 
 System-event flow:
 

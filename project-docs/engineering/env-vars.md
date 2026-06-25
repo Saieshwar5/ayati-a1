@@ -48,6 +48,18 @@ Python tool:
 AYATI_PYTHON_INTERPRETER=
 ```
 
+Workspace defaults:
+
+```env
+AYATI_WORKSPACE_DIR=
+```
+
+`AYATI_WORKSPACE_DIR` sets the default directory for generated files, scratch
+work, filesystem tools, shell cwd, and other ad-hoc agent work when the user
+does not specify a directory. When unset, Ayati uses `ayati-main/work_space`.
+Relative tool paths are already resolved inside this workspace root, so agents
+should pass `report.md` instead of `work_space/report.md`.
+
 Agent harness:
 
 ```env

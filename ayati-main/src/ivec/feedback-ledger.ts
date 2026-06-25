@@ -35,6 +35,30 @@ export interface AgentFeedbackLatestSummary {
   rawPath: string;
 }
 
+export type AgentFeedbackTriageOutcome = "healthy" | "needs_review" | "failed";
+export type AgentFeedbackTriageSeverity = "info" | "warning" | "error";
+
+export interface AgentFeedbackTriageFinding {
+  code: string;
+  severity: AgentFeedbackTriageSeverity;
+  title: string;
+  details: string;
+  recommendation: string;
+}
+
+export interface AgentFeedbackTriageSummary {
+  updatedAt: string;
+  tsMs: number;
+  sessionId?: string;
+  seq?: number;
+  runId?: string;
+  outcome: AgentFeedbackTriageOutcome;
+  findings: AgentFeedbackTriageFinding[];
+  topRecommendation?: string;
+  rawPath: string;
+  rawSummaryPath: string;
+}
+
 export interface AgentFeedbackLedger {
   readonly enabled: boolean;
   record(event: AgentFeedbackEventInput): void;
@@ -220,6 +244,10 @@ export class AsyncAgentFeedbackLedger implements AgentFeedbackLedger {
       const summaryPath = join(this.dataDir, "feedback", "latest-summary.json");
       await mkdir(dirname(summaryPath), { recursive: true });
       await writeFile(summaryPath, `${JSON.stringify(summary, null, 2)}\n`, "utf-8");
+
+      const triage = buildFeedbackTriageSummary(summary);
+      const triagePath = join(this.dataDir, "feedback", "triage-summary.json");
+      await writeFile(triagePath, `${JSON.stringify(triage, null, 2)}\n`, "utf-8");
     }
   }
 
@@ -273,6 +301,150 @@ export class AsyncAgentFeedbackLedger implements AgentFeedbackLedger {
       rawPath: feedbackRelativePath(event).replace(/\\/g, "/"),
     };
   }
+}
+
+export function buildFeedbackTriageSummary(summary: AgentFeedbackLatestSummary): AgentFeedbackTriageSummary {
+  const findings: AgentFeedbackTriageFinding[] = [];
+  const warningSet = new Set(summary.warnings);
+
+  if (summary.status && summary.status !== "completed") {
+    findings.push({
+      code: "run_not_completed",
+      severity: "error",
+      title: "Run did not complete",
+      details: `Final status was '${summary.status}'.`,
+      recommendation: "Inspect the raw feedback log and final error path before changing prompts or tools.",
+    });
+  }
+
+  if (warningSet.has("runtime_error")) {
+    findings.push({
+      code: "runtime_error",
+      severity: "error",
+      title: "Runtime error observed",
+      details: "The harness recorded a final runtime error during this request.",
+      recommendation: "Fix the runtime failure first; model behavior is not meaningful until the run is stable.",
+    });
+  }
+
+  if (warningSet.has("action_failed")) {
+    findings.push({
+      code: "action_failed",
+      severity: "error",
+      title: "Action execution failed",
+      details: "At least one tool action failed before the final response.",
+      recommendation: "Review the failed tool call, input schema, and retry hint in the raw feedback log.",
+    });
+  }
+
+  if (warningSet.has("verification_failed") || summary.verificationPassed === false && (summary.actionSteps ?? 0) > 0) {
+    findings.push({
+      code: "verification_failed",
+      severity: "warning",
+      title: "Verification did not pass",
+      details: "The run attempted executable work without a successful verification signal.",
+      recommendation: "Check whether the tool contract is too weak, the reducer missed valid evidence, or the model stopped too early.",
+    });
+  }
+
+  if (summary.basedOnVerifiedFacts === false && (summary.actionSteps ?? 0) > 0) {
+    findings.push({
+      code: "ungrounded_final_reply",
+      severity: "warning",
+      title: "Final reply was not grounded in verified facts",
+      details: "The final response followed executable work but no verified facts were recorded.",
+      recommendation: "Improve tool contracts or progress reduction so useful evidence becomes visible before the final reply.",
+    });
+  }
+
+  if (warningSet.has("tool_protocol_violation")) {
+    findings.push({
+      code: "tool_protocol_violation",
+      severity: "warning",
+      title: "Decision violated the native tool protocol",
+      details: "The model selected an unavailable tool, used tool loading as executable work, or produced an invalid action shape.",
+      recommendation: "Tighten the decision prompt or add a benchmark case for the failed tool-loading pattern.",
+    });
+  }
+
+  if (warningSet.has("parse_repair_needed")) {
+    findings.push({
+      code: "decision_repair_needed",
+      severity: "warning",
+      title: "Decision required repair",
+      details: "The first decision response could not be parsed or needed repair.",
+      recommendation: "Inspect the provider response and keep contract tests around the native decision tool surface.",
+    });
+  }
+
+  if (warningSet.has("tool_load_no_action")) {
+    findings.push({
+      code: "tool_load_no_action",
+      severity: "warning",
+      title: "Tools were loaded but no action ran",
+      details: "The model requested tools, but the run ended before executable work used them.",
+      recommendation: "Check whether selected tools were missing, the load result confused the model, or the final reply stopped early.",
+    });
+  }
+
+  if (warningSet.has("repeated_tool_load")) {
+    findings.push({
+      code: "repeated_tool_load",
+      severity: "warning",
+      title: "Repeated tool loading",
+      details: `The run made ${summary.toolLoadDecisions ?? 0} tool-load decisions.`,
+      recommendation: "Improve tool routing groups or deterministic preload hints for this request class.",
+    });
+  }
+
+  if (warningSet.has("completed_without_tool_calls")) {
+    findings.push({
+      code: "completed_without_tool_calls",
+      severity: "warning",
+      title: "Completed without tool calls",
+      details: "The run completed without executable tool calls even though the harness classified it as work.",
+      recommendation: "Check whether the run should have been conversational, or whether the decision prompt allowed a premature reply.",
+    });
+  }
+
+  if ((summary.iterations ?? 0) >= 10) {
+    findings.push({
+      code: "many_iterations",
+      severity: "warning",
+      title: "High iteration count",
+      details: `The run took ${summary.iterations ?? 0} decision iterations.`,
+      recommendation: "Review whether tool routing, context state, or verification feedback caused avoidable loops.",
+    });
+  }
+
+  if (findings.length === 0) {
+    findings.push({
+      code: "healthy_run",
+      severity: "info",
+      title: "No triage findings",
+      details: "The latest run completed without recorded warning signals.",
+      recommendation: "Use benchmark and live feedback aggregates to find broader recurring issues.",
+    });
+  }
+
+  const outcome = findings.some((finding) => finding.severity === "error")
+    ? "failed"
+    : findings.some((finding) => finding.severity === "warning")
+      ? "needs_review"
+      : "healthy";
+
+  return {
+    updatedAt: summary.updatedAt,
+    tsMs: summary.tsMs,
+    ...(summary.sessionId ? { sessionId: summary.sessionId } : {}),
+    ...(summary.seq !== undefined ? { seq: summary.seq } : {}),
+    ...(summary.runId ? { runId: summary.runId } : {}),
+    outcome,
+    findings,
+    topRecommendation: findings[0]?.recommendation,
+    rawPath: summary.rawPath,
+    rawSummaryPath: "feedback/latest-summary.json",
+  };
 }
 
 function readFeedbackSummary(event: AgentFeedbackEvent): Record<string, unknown> | undefined {
