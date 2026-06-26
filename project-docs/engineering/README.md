@@ -15,6 +15,8 @@ Important paths:
 - `runtime-performance-benchmarking.md`: non-LLM runtime performance benchmark design, commands, report interpretation, and subsystem improvement signals.
 - `conventions.md`: code organization and style.
 - `security.md`: safety and secret-handling rules.
+- `history/references/reference-projects.md`: local external projects to consult
+  only when relevant for comparison, inspiration, or design research.
 
 Current backend mental model:
 
