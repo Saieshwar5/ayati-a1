@@ -15,6 +15,15 @@ artifacts/
 ayati-main/work_space/
 *.log
 *.tmp
+coverage/
+tmp/
+*.swp
+*.swo
+
+# Local non-source workspace folders
+agent-ideas/
+agent-notes/
+reference-projects/
 
 # Local editor and OS files
 .DS_Store
