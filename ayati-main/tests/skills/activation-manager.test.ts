@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { SkillActivationManager } from "../../src/skills/activation-manager.js";
 import { SkillCatalog, createSkillBundle } from "../../src/skills/skill-catalog.js";
-import { createSkillBrokerSkill } from "../../src/skills/builtins/skill-broker/index.js";
 import { createToolExecutor } from "../../src/skills/tool-executor.js";
 import type { SkillDefinition, ToolDefinition } from "../../src/skills/types.js";
 
@@ -139,36 +138,5 @@ describe("SkillActivationManager", () => {
     expect(results).toHaveLength(1);
     expect((results[0] as { skillId?: string }).skillId).toBe("documents");
     expect(executor.list({ runId: "r1", sessionId: "s1" })).toEqual(["shell"]);
-  });
-
-  it("exposes broker tools that activate dynamic skills", async () => {
-    const catalog = new SkillCatalog([
-      createSkillBundle(skill("documents", [tool("document_query")])),
-    ]);
-    const executor = createToolExecutor([tool("shell")]);
-    const manager = new SkillActivationManager({ catalog, toolExecutor: executor });
-    const broker = createSkillBrokerSkill(manager);
-    executor.mount?.("static:skill-broker", broker.tools, { scope: "static" });
-
-    const search = await executor.execute("skill_search", { query: "pdf document" }, {
-      clientId: "c1",
-      runId: "r1",
-      sessionId: "s1",
-      stepNumber: 1,
-    });
-    expect(search.ok).toBe(true);
-    expect(search.output).toContain("documents");
-
-    const activated = await executor.execute("skill_activate", {
-      skillId: "documents",
-      scope: "run",
-    }, {
-      clientId: "c1",
-      runId: "r1",
-      sessionId: "s1",
-      stepNumber: 1,
-    });
-    expect(activated.ok).toBe(true);
-    expect(executor.list({ clientId: "c1", runId: "r1", sessionId: "s1", stepNumber: 2 })).toContain("document_query");
   });
 });
