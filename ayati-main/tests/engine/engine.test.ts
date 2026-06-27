@@ -2,7 +2,8 @@ import { describe, it, expect, vi } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { IVecEngine } from "../../src/ivec/index.js";
+import { IVecEngine, type IVecEngineOptions } from "../../src/ivec/index.js";
+import { createChatTurnRuntime } from "../../src/app/chat-turn-runtime.js";
 import type { LlmProvider } from "../../src/core/contracts/provider.js";
 import type { LlmTurnInput, LlmTurnOutput } from "../../src/core/contracts/llm-protocol.js";
 import type { SessionMemory } from "../../src/memory/types.js";
@@ -143,6 +144,38 @@ function createChatContextRuntime(turn: ChatContextPreparedTurn): ChatContextRun
   };
 }
 
+type TestEngineOptions = Omit<IVecEngineOptions, "chatTurnRuntime"> & {
+  chatContextRuntime?: ChatContextRuntime;
+};
+
+function createEngine(options: TestEngineOptions = {}): IVecEngine {
+  const sessionMemory = options.sessionMemory ?? createSessionMemory();
+  const chatTurnRuntime = createChatTurnRuntime({
+    onReply: options.onReply,
+    provider: options.provider,
+    staticContext: options.staticContext,
+    sessionMemory,
+    toolExecutor: options.toolExecutor,
+    skillActivationManager: options.skillActivationManager,
+    toolWorkingSetManager: options.toolWorkingSetManager,
+    loopConfig: options.loopConfig,
+    rotationPolicyConfig: options.rotationPolicyConfig,
+    now: options.now,
+    dataDir: options.dataDir,
+    documentStore: options.documentStore,
+    preparedAttachmentRegistry: options.preparedAttachmentRegistry,
+    fileLibrary: options.fileLibrary,
+    directoryLibrary: options.directoryLibrary,
+    feedbackLedger: options.feedbackLedger,
+    chatContextRuntime: options.chatContextRuntime,
+  });
+  return new IVecEngine({
+    ...options,
+    sessionMemory,
+    chatTurnRuntime,
+  });
+}
+
 function readyChatContextTurn(): ChatContextPreparedTurn {
   const context = {
     session: {
@@ -213,19 +246,19 @@ function extractStateViewFromProvider(provider: LlmProvider): any {
 
 describe("IVecEngine", () => {
   it("is constructible without options", () => {
-    const engine = new IVecEngine();
+    const engine = createEngine();
     expect(engine).toBeInstanceOf(IVecEngine);
   });
 
   it("starts and stops without provider", async () => {
-    const engine = new IVecEngine();
+    const engine = createEngine();
     await engine.start();
     await engine.stop();
   });
 
   it("echoes chat without provider", async () => {
     const onReply = vi.fn();
-    const engine = new IVecEngine({ onReply });
+    const engine = createEngine({ onReply });
 
     engine.handleMessage("c1", { type: "chat", content: "hello" });
 
@@ -243,7 +276,7 @@ describe("IVecEngine", () => {
       const provider = createMockProvider();
       const onReply = vi.fn();
       const sessionMemory = createSessionMemory();
-      const engine = new IVecEngine({
+      const engine = createEngine({
         onReply,
         provider,
         sessionMemory,
@@ -271,7 +304,7 @@ describe("IVecEngine", () => {
     const provider = createMockProvider();
     const onReply = vi.fn();
     const chatContextRuntime = createChatContextRuntime(ambiguousChatContextTurn());
-    const engine = new IVecEngine({
+    const engine = createEngine({
       onReply,
       provider,
       sessionMemory: createSessionMemory(),
@@ -305,7 +338,7 @@ describe("IVecEngine", () => {
     try {
       const provider = createMockProvider();
       const chatContextRuntime = createChatContextRuntime(readyChatContextTurn());
-      const engine = new IVecEngine({
+      const engine = createEngine({
         onReply: vi.fn(),
         provider,
         sessionMemory: createSessionMemory(),
@@ -378,7 +411,7 @@ describe("IVecEngine", () => {
       const toolExecutor = createToolExecutor([writeFilesTool]);
       const onReply = vi.fn();
       const sessionMemory = createSessionMemory();
-      const engine = new IVecEngine({
+      const engine = createEngine({
         onReply,
         provider,
         sessionMemory,
@@ -456,7 +489,7 @@ describe("IVecEngine", () => {
       const toolExecutor = createToolExecutor([writeFilesTool]);
       const onReply = vi.fn();
       const sessionMemory = createSessionMemory();
-      const engine = new IVecEngine({
+      const engine = createEngine({
         onReply,
         provider,
         sessionMemory,
@@ -540,7 +573,7 @@ describe("IVecEngine", () => {
         }),
       );
 
-      const engine = new IVecEngine({
+      const engine = createEngine({
         onReply,
         provider,
         sessionMemory,
@@ -568,7 +601,7 @@ describe("IVecEngine", () => {
 
   it("ignores non-chat messages", () => {
     const onReply = vi.fn();
-    const engine = new IVecEngine({ onReply });
+    const engine = createEngine({ onReply });
 
     engine.handleMessage("c1", { type: "ping" });
     engine.handleMessage("c1", { foo: "bar" });
@@ -584,7 +617,7 @@ describe("IVecEngine", () => {
         generateTurn: vi.fn().mockRejectedValue(new Error("API down")),
       });
       const onReply = vi.fn();
-      const engine = new IVecEngine({ onReply, provider, dataDir });
+      const engine = createEngine({ onReply, provider, dataDir });
 
       await engine.start();
       engine.handleMessage("c1", { type: "chat", content: "hello" });
@@ -604,7 +637,7 @@ describe("IVecEngine", () => {
     const provider = createMockProvider();
     const sessionMemory = createSessionMemory();
 
-    const engine = new IVecEngine({ provider, sessionMemory });
+    const engine = createEngine({ provider, sessionMemory });
     await engine.start();
 
     expect(sessionMemory.setStaticTokenBudget).toHaveBeenCalledWith(expect.any(Number));
@@ -657,7 +690,7 @@ describe("IVecEngine", () => {
     getPromptMemoryContext.mockImplementation(() => memoryContext);
 
     const fixedNow = new Date("2026-04-18T03:30:00.000Z");
-    const engine = new IVecEngine({ provider, sessionMemory, staticContext, now: () => fixedNow });
+    const engine = createEngine({ provider, sessionMemory, staticContext, now: () => fixedNow });
     const buildSystemContext = async () => {
       const privateEngine = engine as unknown as {
         buildSystemContext(): Promise<{
@@ -709,7 +742,7 @@ describe("IVecEngine", () => {
       const provider = createMockProvider();
       const onReply = vi.fn();
       const sessionMemory = createSessionMemory();
-      const engine = new IVecEngine({
+      const engine = createEngine({
         onReply,
         provider,
         sessionMemory,
@@ -809,7 +842,7 @@ describe("IVecEngine", () => {
       const toolExecutor = createToolExecutor([writeFilesTool]);
       const onReply = vi.fn();
       const sessionMemory = createSessionMemory();
-      const engine = new IVecEngine({
+      const engine = createEngine({
         onReply,
         provider,
         sessionMemory,
@@ -859,7 +892,7 @@ describe("IVecEngine", () => {
       const provider = createMockProvider();
       const onReply = vi.fn();
       const sessionMemory = createSessionMemory();
-      const engine = new IVecEngine({
+      const engine = createEngine({
         onReply,
         provider,
         sessionMemory,
@@ -946,7 +979,7 @@ describe("IVecEngine", () => {
       });
       const onReply = vi.fn();
       const sessionMemory = createSessionMemory();
-      const engine = new IVecEngine({
+      const engine = createEngine({
         onReply,
         provider,
         sessionMemory,
@@ -1051,7 +1084,7 @@ describe("IVecEngine", () => {
         setStaticTokenBudget: vi.fn(),
       };
 
-      const engine = new IVecEngine({ onReply, provider, sessionMemory, dataDir });
+      const engine = createEngine({ onReply, provider, sessionMemory, dataDir });
       await engine.start();
 
       engine.handleMessage("c1", { type: "chat", content: "continue" });
