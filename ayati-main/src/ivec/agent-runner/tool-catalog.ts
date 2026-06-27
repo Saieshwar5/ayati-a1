@@ -255,9 +255,8 @@ function inferNextTools(toolName: string): { success: string[]; failure: string[
     write_files: { success: ["read_file", "shell_run_script"], failure: ["create_directory", "write_files"] },
     shell: { success: ["search_in_files", "read_file"], failure: ["search_in_files", "read_file"] },
     shell_run_script: { success: ["search_in_files", "read_file"], failure: ["search_in_files", "read_file"] },
-    attachment_restore: { success: ["attachment_list", "attachment_read", "document_query", "dataset_profile"], failure: ["activity_search", "attachment_list"] },
-    restore_attachment_context: { success: ["attachment_list", "attachment_read", "document_query", "dataset_profile"], failure: ["activity_search", "attachment_list"] },
-    activity_restore_assets: { success: ["attachment_list", "attachment_read", "document_query", "dataset_profile"], failure: ["activity_search", "attachment_list"] },
+    attachment_restore: { success: ["attachment_list", "attachment_read", "document_query", "dataset_profile"], failure: ["attachment_list"] },
+    restore_attachment_context: { success: ["attachment_list", "attachment_read", "document_query", "dataset_profile"], failure: ["attachment_list"] },
     document_query: { success: ["document_read_section"], failure: ["document_list_sections", "attachment_query"] },
     document_list_sections: { success: ["document_read_section", "document_query"], failure: ["attachment_query"] },
     dataset_profile: { success: ["dataset_query", "python_execute"], failure: ["attachment_query_table", "file_profile_table"] },
@@ -269,7 +268,7 @@ function inferNextTools(toolName: string): { success: string[]; failure: string[
 
 function inferDeactivationPolicy(tool: ToolDefinition): ToolDeactivationPolicy {
   const name = tool.name;
-  if (name === "find_files" || name === "attachment_restore" || name === "restore_attachment_context" || name === "activity_restore_assets") {
+  if (name === "find_files" || name === "attachment_restore" || name === "restore_attachment_context") {
     return "success";
   }
   if (tool.annotations?.destructive || /^db_drop_|^delete$/.test(name)) {

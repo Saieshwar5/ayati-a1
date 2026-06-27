@@ -4,7 +4,8 @@ import { devLog, devWarn } from "../../shared/index.js";
 import { prepareIncomingAttachments } from "../../documents/attachment-preparer.js";
 import type { PreparedAttachmentRecord } from "../../documents/prepared-attachment-registry.js";
 import type { PreparedAttachmentSummary } from "../../documents/types.js";
-import type { ActivityAssetRef, MemoryRunHandle, SessionInputHandle, TaskSummaryFailureSummary } from "../../memory/types.js";
+import type { MemoryRunHandle, SessionInputHandle } from "../../memory/types.js";
+import type { TaskAssetRecord } from "../../context-engine/index.js";
 import type { AgentArtifact } from "../types.js";
 import type {
   ActToolCallRecord,
@@ -15,6 +16,7 @@ import type {
   LoopConfig,
   LoopState,
   StepSummary,
+  TaskSummaryFailureSummary,
   ToolObservation,
   WorkState,
 } from "../types.js";
@@ -663,11 +665,10 @@ function summarizeDecisionInputState(stateView: AgentStateView): Record<string, 
     pendingAssistantQuestion: latestAssistantQuestion && "content" in latestAssistantQuestion
       ? latestAssistantQuestion.content
       : undefined,
-    continuityMode: stateView.context.continuity.mode,
-    continuityConfidence: stateView.context.continuity.confidence,
-    activeActivityId: stateView.context.continuity.current?.activityId,
-    activeActivityTitle: stateView.context.continuity.current?.title,
-    sessionActivityCount: stateView.context.sessionWork.recentActivities.length,
+    gitSessionId: stateView.context.gitContext?.session.sessionId,
+    gitWorkId: stateView.context.gitContext?.task?.workId,
+    gitWorkTitle: stateView.context.gitContext?.task?.title,
+    gitOpenWorkCount: stateView.context.gitContext?.task?.open.length ?? 0,
     workStatus: stateView.progress?.status,
     blockerCount: stateView.progress?.blockers?.length ?? 0,
     verifiedFactCount: stateView.progress?.verifiedFacts?.length ?? 0,
@@ -719,8 +720,6 @@ function summarizeTaskSummary(taskSummary: AgentTaskSummaryRecord | undefined): 
   }
   return {
     runId: taskSummary.runId,
-    taskThreadId: taskSummary.taskThreadId,
-    taskBindingMode: taskSummary.taskBindingMode,
     runStatus: taskSummary.runStatus,
     taskStatus: taskSummary.taskStatus,
     summary: taskSummary.summary,
@@ -735,9 +734,6 @@ function summarizeTaskSummary(taskSummary: AgentTaskSummaryRecord | undefined): 
 async function executeActionStep(input: ExecuteActionStepInput): Promise<ExecuteActionStepResult> {
   input.state.runClass = "task";
   const runHandle = requireWorkRunHandle(input.deps);
-  const currentActivityId = input.state.harnessContext.continuity.mode === "continue"
-    ? input.state.harnessContext.continuity.current?.activityId
-    : undefined;
   let execution = await executeAgentAction(
     {
       toolExecutor: input.deps.toolExecutor,
@@ -745,11 +741,11 @@ async function executeActionStep(input: ExecuteActionStepInput): Promise<Execute
       config: input.config,
       clientId: input.deps.clientId,
       ...(input.deps.uiContext ? { uiContext: input.deps.uiContext } : {}),
-      sessionMemory: input.deps.sessionMemory,
+      runRecorder: input.deps.runRecorder ?? input.deps.sessionMemory,
       runHandle,
       metrics: input.metrics,
       runPath: input.state.runPath,
-      ...(currentActivityId ? { activityId: currentActivityId } : {}),
+      taskAssets: input.state.harnessContext.contextEngine?.task?.assets,
     },
     input.decision.action,
     input.stepNumber,
@@ -767,11 +763,11 @@ async function executeActionStep(input: ExecuteActionStepInput): Promise<Execute
           config: input.config,
           clientId: input.deps.clientId,
           ...(input.deps.uiContext ? { uiContext: input.deps.uiContext } : {}),
-          sessionMemory: input.deps.sessionMemory,
+          runRecorder: input.deps.runRecorder ?? input.deps.sessionMemory,
           runHandle,
           metrics: input.metrics,
           runPath: input.state.runPath,
-          ...(currentActivityId ? { activityId: currentActivityId } : {}),
+          taskAssets: input.state.harnessContext.contextEngine?.task?.assets,
         },
         recovery.action,
         input.stepNumber,
@@ -1092,7 +1088,6 @@ function syncHarnessContext(state: LoopState, deps: AgentLoopDeps, inputHandle: 
     clientId: deps.clientId,
     sessionId: inputHandle.sessionId,
     userMessage: state.userMessage,
-    currentAssetRefs: buildActivityAssets(state, state.runPath ? absolutePath(state.runPath) : ""),
     input: harnessContextInputFromDeps(deps),
   }));
 }
@@ -1323,6 +1318,7 @@ function buildLoopResult(
 
   if (state.runClass === "task") {
     result.taskSummary = buildTaskSummaryRecord(state, content, input.status, responseKind, input.completion);
+    result.taskAssets = buildTaskAssets(state);
   }
 
   const artifacts = state.runId && state.runPath
@@ -1347,13 +1343,9 @@ function buildTaskSummaryRecord(
   const failureSummary = buildFailureSummary(state);
   const openWork = buildTaskSummaryOpenWork(state, taskStatus, failureSummary);
   const blockers = buildTaskSummaryBlockers(state, taskStatus, failureSummary);
-  const absoluteRunPath = state.runPath ? absolutePath(state.runPath) : "";
   return {
     runId: state.runId,
-    runPath: absoluteRunPath,
-    activityId: selectContinuationActivityId(state),
-    taskThreadId: selectContinuationTaskThreadId(state),
-    taskBindingMode: state.harnessContext.taskThreadContext?.suggestedBinding.mode,
+    runPath: state.runPath ? absolutePath(state.runPath) : "",
     triggerSeq: state.currentSeq,
     discussionStartSeq: findDiscussionStartSeq(state),
     discussionEndSeq: state.currentSeq,
@@ -1381,7 +1373,6 @@ function buildTaskSummaryRecord(
     stopReason: deriveStopReason(state, runStatus),
     failureSummary,
     attachmentNames: buildAttachmentNames(state.preparedAttachments),
-    activityAssets: buildActivityAssets(state, absoluteRunPath),
   };
 }
 
@@ -1445,7 +1436,7 @@ function findDiscussionStartSeq(state: LoopState): number | undefined {
   if (!state.currentSeq) {
     return undefined;
   }
-  return Math.min(Math.max(1, state.harnessContext.activeContextStartSeq || 1), state.currentSeq);
+  return state.currentSeq;
 }
 
 function deriveStopReason(
@@ -1496,7 +1487,7 @@ function suggestFailureRecovery(
   error: string,
 ): string | undefined {
   if (failedTool === "directory_search" && /No managed directories are available/i.test(error)) {
-    return "Restore the relevant activity asset or use the absolute project path directly before searching.";
+    return "Restore the relevant task asset or use the absolute project path directly before searching.";
   }
   if (failureType === "missing_path") {
     return "Restore or verify the absolute path before retrying.";
@@ -1514,82 +1505,33 @@ function buildAttachmentNames(preparedAttachments: PreparedAttachmentSummary[] |
   return (preparedAttachments ?? []).map((attachment) => attachment.displayName);
 }
 
-function selectContinuationActivityId(state: LoopState): string | undefined {
-  return state.harnessContext.continuity.mode === "continue"
-    ? state.harnessContext.continuity.current?.activityId
-    : undefined;
-}
-
-function selectContinuationTaskThreadId(state: LoopState): string | undefined {
-  const binding = state.harnessContext.taskThreadContext?.suggestedBinding;
-  if (binding?.mode === "continue_task" || binding?.mode === "switch_task") {
-    return binding.taskThreadId;
-  }
-  return undefined;
-}
-
-function buildActivityAssets(state: LoopState, runPath: string): ActivityAssetRef[] {
-  const now = new Date().toISOString();
-  const generatedArtifacts = buildGeneratedArtifactAssets(state, runPath, now);
-  return dedupeActivityAssets([
-    ...(state.preparedAttachmentRecords ?? []).map((record) => attachmentRecordToActivityAsset(record, state.runId, runPath, now)),
-    ...(state.managedFiles ?? []).map((file) => ({
+function buildTaskAssets(state: LoopState): TaskAssetRecord[] {
+  return dedupeTaskAssets([
+    ...(state.preparedAttachmentRecords ?? []).map(attachmentRecordToTaskAsset),
+    ...(state.managedFiles ?? []).map((file): TaskAssetRecord => ({
       assetId: stableAssetId("file", file.fileId),
-      kind: "file" as const,
-      origin: file.origin === "generated_artifact"
-        ? "agent_generated" as const
-        : file.origin === "agent_download"
-          ? "tool_result" as const
-          : file.origin === "local_path"
-            ? "user_selected" as const
-            : "user_attached" as const,
-      role: "input" as const,
-      displayName: file.originalName,
+      role: "input",
+      kind: "file",
+      name: file.originalName,
       path: absolutePath(file.storagePath),
-      fileId: file.fileId,
-      restore: { filePath: absolutePath(file.storagePath) },
-      sourceRunId: state.runId,
-      sourceRunPath: runPath,
-      lastUsedRunId: state.runId,
-      lastUsedAt: file.lastUsedAt ?? now,
-      metadata: {
-        kind: file.kind,
-        capabilities: file.capabilities,
-        sizeBytes: file.sizeBytes,
-        processingStatus: file.processingStatus,
-      },
     })),
-    ...(state.managedDirectories ?? []).map((directory) => ({
+    ...(state.managedDirectories ?? []).map((directory): TaskAssetRecord => ({
       assetId: stableAssetId("directory", directory.directoryId),
-      kind: "directory" as const,
-      origin: "user_attached" as const,
-      role: "input" as const,
-      displayName: directory.name,
+      role: "input",
+      kind: "directory",
+      name: directory.name,
       path: absolutePath(directory.rootPath),
-      directoryId: directory.directoryId,
-      restore: { directoryPath: absolutePath(directory.rootPath) },
-      sourceRunId: state.runId,
-      sourceRunPath: runPath,
-      lastUsedRunId: state.runId,
-      lastUsedAt: directory.lastUsedAt ?? now,
-      metadata: {
-        capabilities: directory.capabilities,
-        fileCount: directory.fileCount,
-        directoryCount: directory.directoryCount,
-        truncated: directory.truncated,
-      },
     })),
-    ...generatedArtifacts,
+    ...buildGeneratedArtifactAssets(state),
   ]);
 }
 
-function buildGeneratedArtifactAssets(state: LoopState, runPath: string, now: string): ActivityAssetRef[] {
+function buildGeneratedArtifactAssets(state: LoopState): TaskAssetRecord[] {
   const artifacts = normalizeList(state.completedSteps.flatMap((step) => step.artifacts))
     .filter((artifact) => isDurableStepArtifact(artifact))
     .map((artifact) => absolutePath(artifact));
-  const assets: ActivityAssetRef[] = [];
+  const assets: TaskAssetRecord[] = [];
   const directoryCounts = new Map<string, number>();
-  const generatedBy = normalizeList(state.completedSteps.flatMap((step) => step.toolsUsed ?? []));
 
   for (const artifact of artifacts) {
     const kind = inferPathAssetKind(artifact);
@@ -1599,19 +1541,10 @@ function buildGeneratedArtifactAssets(state: LoopState, runPath: string, now: st
     }
     assets.push({
       assetId: stableAssetId(kind, artifact),
+      role: "generated",
       kind,
-      origin: "agent_generated",
-      role: "working_artifact",
-      displayName: artifact.split("/").pop() || artifact,
+      name: artifact.split("/").pop() || artifact,
       path: artifact,
-      restore: kind === "directory"
-        ? { directoryPath: artifact }
-        : { filePath: artifact },
-      sourceRunId: state.runId,
-      sourceRunPath: runPath,
-      lastUsedRunId: state.runId,
-      lastUsedAt: now,
-      ...(generatedBy.length > 0 ? { metadata: { generatedBy } } : {}),
     });
   }
 
@@ -1621,62 +1554,31 @@ function buildGeneratedArtifactAssets(state: LoopState, runPath: string, now: st
     }
     assets.push({
       assetId: stableAssetId("directory", directoryPath),
+      role: "generated",
       kind: "directory",
-      origin: "agent_generated",
-      role: "working_artifact",
-      displayName: directoryPath.split("/").pop() || directoryPath,
+      name: directoryPath.split("/").pop() || directoryPath,
       path: directoryPath,
-      restore: { directoryPath },
-      sourceRunId: state.runId,
-      sourceRunPath: runPath,
-      lastUsedRunId: state.runId,
-      lastUsedAt: now,
-      metadata: {
-        fileCount: count,
-        ...(generatedBy.length > 0 ? { generatedBy } : {}),
-      },
     });
   }
 
   return assets;
 }
 
-function attachmentRecordToActivityAsset(
+function attachmentRecordToTaskAsset(
   record: PreparedAttachmentRecord,
-  runId: string,
-  runPath: string,
-  now: string,
-): ActivityAssetRef {
+): TaskAssetRecord {
   const kind = record.summary.mode === "structured_data" ? "dataset" : "document";
   return {
     assetId: stableAssetId(kind, record.summary.documentId),
-    kind,
-    origin: "user_attached",
     role: "input",
-    displayName: record.summary.displayName,
-    documentId: record.summary.documentId,
-    preparedInputId: record.summary.preparedInputId,
-    manifest: record.manifest,
-    summary: record.summary,
-    detail: record.detail,
-    restore: {
-      documentId: record.summary.documentId,
-      preparedInputId: record.summary.preparedInputId,
-      manifestPath: absolutePath(record.summary.artifactPath),
-    },
-    sourceRunId: runId,
-    sourceRunPath: runPath,
-    lastUsedRunId: runId,
-    lastUsedAt: now,
-    metadata: {
-      action: "prepared",
-      mode: record.summary.mode,
-    },
+    kind,
+    name: record.summary.displayName,
+    path: absolutePath(record.manifest.originalPath || record.summary.artifactPath),
   };
 }
 
-function dedupeActivityAssets(assets: ActivityAssetRef[]): ActivityAssetRef[] {
-  const output = new Map<string, ActivityAssetRef>();
+function dedupeTaskAssets(assets: TaskAssetRecord[]): TaskAssetRecord[] {
+  const output = new Map<string, TaskAssetRecord>();
   for (const asset of assets) {
     output.set(asset.assetId, asset);
   }
@@ -1691,7 +1593,7 @@ function isDurableStepArtifact(artifact: string): boolean {
   return !normalized.includes("/observations/");
 }
 
-function inferPathAssetKind(path: string): ActivityAssetRef["kind"] {
+function inferPathAssetKind(path: string): string {
   if (/\.(?:html|css|js|jsx|ts|tsx|json|md|txt|py|sql|csv|pdf|png|jpg|jpeg|svg)$/i.test(path)) {
     return "file";
   }

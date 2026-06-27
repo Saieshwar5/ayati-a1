@@ -413,8 +413,7 @@ function hasAttachmentWork(state: LoopState): boolean {
     || (state.preparedAttachmentRecords?.length ?? 0) > 0
     || (state.managedFiles?.length ?? 0) > 0
     || (state.managedDirectories?.length ?? 0) > 0
-    || (state.harnessContext.continuity.current?.topAssets?.length ?? 0) > 0
-    || (state.harnessContext.continuity.candidates ?? []).some((candidate) => candidate.topAssets.length > 0);
+    || (state.harnessContext.contextEngine?.task?.assets.length ?? 0) > 0;
 }
 
 function hasPreparedDocument(state: LoopState): boolean {

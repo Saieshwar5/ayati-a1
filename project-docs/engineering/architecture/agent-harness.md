@@ -111,7 +111,8 @@ user:
 
 Stable decision rules live in the system message so repeated decisions share a
 cache-friendly prefix. Dynamic state remains in the user message. Do not move
-work-run ids, tool observations, current input, memory snapshots, continuity context, or working feedback ahead of the stable decision
+work-run ids, tool observations, current input, personal memory snapshots, git
+context, or working feedback ahead of the stable decision
 contract.
 
 Critical decision rules and control tool shapes must not be placed inside the
@@ -130,7 +131,7 @@ first and exact name when obvious, without injecting every full tool schema into
 every decision.
 
 Before each decision, the runner deterministically prepares likely tools from
-the current input, attachments, continuity, work state, evidence refs, and
+the current input, attachments, git task context, work state, evidence refs, and
 recent failures. If the model needs a missing capability, it calls
 `decision_load_tools` with exact tool names, groups, or a search query. Tool
 execution can also deterministically load likely next tools, for example
@@ -163,10 +164,9 @@ portion is built by `context-pack.ts` and currently includes:
 
 - `timeline`: chronological bounded user/assistant/system events ending with
   the current input
-- `continuity`
-- `taskThreadContext`: active and suspended same-session open tasks plus the
-  suggested continue/switch/new/ambiguous binding for the current input
-- `sessionWork`: compact same-session activity summaries
+- `gitContext`: durable daily-session git context, including focus, selected
+  task state, task assets, recent runs, recent commits, facts, open work, and
+  next step
 - optional `personalMemorySnapshot`
 
 The rest of the state view is sparse. Empty sections are omitted. When present,
@@ -192,11 +192,11 @@ Both should describe the same harness reality:
 - what failed and how the model should recover
 
 The decision model does not receive the internal run path, generated goal
-contract, empty progress scaffolding, or unrelated activity shelves. Open task
-continuation stays inside the existing decision stage: `taskThreadContext`
-gives the model enough structured state to continue the active task, switch to
-a named suspended task, start a new task, or ask the user when multiple open
-tasks match.
+contract, empty progress scaffolding, or old activity/task-thread shelves. Open
+task continuation stays inside the existing decision stage through
+`gitContext.task`: it gives the model enough structured state to continue the
+focused work branch, use task assets, start new work, or ask the user when
+runtime task resolution is ambiguous.
 
 ## Feedback Triage
 

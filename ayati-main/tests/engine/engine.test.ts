@@ -2,8 +2,15 @@ import { describe, it, expect, vi } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { IVecEngine, type IVecEngineOptions } from "../../src/ivec/index.js";
-import { createChatTurnRuntime } from "../../src/app/chat-turn-runtime.js";
+import { IVecEngine } from "../../src/ivec/index.js";
+import {
+  createChatTurnRuntime,
+  type CreateChatTurnRuntimeOptions,
+} from "../../src/app/chat-turn-runtime.js";
+import {
+  createSystemEventRuntime,
+  type CreateSystemEventRuntimeOptions,
+} from "../../src/app/system-event-runtime.js";
 import type { LlmProvider } from "../../src/core/contracts/provider.js";
 import type { LlmTurnInput, LlmTurnOutput } from "../../src/core/contracts/llm-protocol.js";
 import type { SessionMemory } from "../../src/memory/types.js";
@@ -50,8 +57,6 @@ function createSessionMemory(): SessionMemory {
     recordAssistantMessage: vi.fn(),
     recordRunFailure: vi.fn(),
     recordAgentStep: vi.fn(),
-    recordTaskSummary: vi.fn(),
-    queueTaskSummary: vi.fn(),
     recordSystemEventOutcome: vi.fn(),
     recordAssistantNotification: vi.fn(),
     getPromptMemoryContext: vi.fn().mockReturnValue({
@@ -144,9 +149,12 @@ function createChatContextRuntime(turn: ChatContextPreparedTurn): ChatContextRun
   };
 }
 
-type TestEngineOptions = Omit<IVecEngineOptions, "chatTurnRuntime"> & {
-  chatContextRuntime?: ChatContextRuntime;
-};
+type TestEngineOptions =
+  & Omit<Partial<CreateChatTurnRuntimeOptions & CreateSystemEventRuntimeOptions>, "sessionMemory" | "chatContextRuntime">
+  & {
+    sessionMemory?: SessionMemory;
+    chatContextRuntime?: ChatContextRuntime;
+  };
 
 function createEngine(options: TestEngineOptions = {}): IVecEngine {
   const sessionMemory = options.sessionMemory ?? createSessionMemory();
@@ -169,10 +177,32 @@ function createEngine(options: TestEngineOptions = {}): IVecEngine {
     feedbackLedger: options.feedbackLedger,
     chatContextRuntime: options.chatContextRuntime,
   });
-  return new IVecEngine({
-    ...options,
+  const systemEventRuntime = createSystemEventRuntime({
+    onReply: options.onReply,
+    provider: options.provider,
+    staticContext: options.staticContext,
     sessionMemory,
+    toolExecutor: options.toolExecutor,
+    skillActivationManager: options.skillActivationManager,
+    toolWorkingSetManager: options.toolWorkingSetManager,
+    loopConfig: options.loopConfig,
+    rotationPolicyConfig: options.rotationPolicyConfig,
+    now: options.now,
+    dataDir: options.dataDir,
+    documentStore: options.documentStore,
+    preparedAttachmentRegistry: options.preparedAttachmentRegistry,
+    fileLibrary: options.fileLibrary,
+    directoryLibrary: options.directoryLibrary,
+    systemEventPolicy: options.systemEventPolicy,
+    feedbackLedger: options.feedbackLedger,
+  });
+  return new IVecEngine({
+    provider: options.provider,
+    staticContext: options.staticContext,
+    sessionMemory,
+    now: options.now,
     chatTurnRuntime,
+    systemEventRuntime,
   });
 }
 
@@ -294,7 +324,6 @@ describe("IVecEngine", () => {
           content: "mock reply",
         });
       });
-      expect(sessionMemory.queueTaskSummary as ReturnType<typeof vi.fn>).not.toHaveBeenCalled();
     } finally {
       rmSync(dataDir, { recursive: true, force: true });
     }
@@ -354,7 +383,7 @@ describe("IVecEngine", () => {
         expect(chatContextRuntime.completePreparedRun).toHaveBeenCalled();
       });
       const stateView = extractStateViewFromProvider(provider);
-      expect(stateView.context.contextEngine.task).toMatchObject({
+      expect(stateView.context.gitContext.task).toMatchObject({
         workId: "W-20260627-0001",
         open: ["Read invoice"],
       });
@@ -453,7 +482,7 @@ describe("IVecEngine", () => {
     }
   });
 
-  it("records an enriched task summary only for runs that execute actions", async () => {
+  it("does not publish completed task summaries to old session task memory", async () => {
     const dataDir = mkdtempSync(join(tmpdir(), "ayati-eng-task-"));
     try {
       const outputPath = join(dataDir, "config.txt");
@@ -513,24 +542,12 @@ describe("IVecEngine", () => {
       expect(replyContent).not.toContain("Evidence:");
       expect(provider.generateTurn).toHaveBeenCalledTimes(2);
 
-      expect(sessionMemory.queueTaskSummary as ReturnType<typeof vi.fn>).toHaveBeenCalledWith(
-        "c1",
-        expect.objectContaining({
-          runStatus: "completed",
-          taskStatus: "done",
-          objective: "find config files",
-          summary: expect.stringContaining(outputPath),
-          sessionId: "s1",
-          assistantResponseKind: "reply",
-          evidence: expect.arrayContaining([expect.stringContaining("write_files")]),
-        }),
-      );
     } finally {
       rmSync(dataDir, { recursive: true, force: true });
     }
   });
 
-  it("does not await task summary queueing before sending the user response", async () => {
+  it("sends the user response without old task summary queueing", async () => {
     const dataDir = mkdtempSync(join(tmpdir(), "ayati-eng-task-async-"));
     try {
       const outputPath = join(dataDir, "notes.txt");
@@ -566,12 +583,6 @@ describe("IVecEngine", () => {
       const toolExecutor = createToolExecutor([writeFilesTool]);
       const onReply = vi.fn();
       const sessionMemory = createSessionMemory();
-      let releaseQueue: (() => void) | null = null;
-      (sessionMemory.queueTaskSummary as ReturnType<typeof vi.fn>).mockImplementation(
-        () => new Promise<void>((resolve) => {
-          releaseQueue = resolve;
-        }),
-      );
 
       const engine = createEngine({
         onReply,
@@ -592,8 +603,6 @@ describe("IVecEngine", () => {
         });
       });
 
-      expect(sessionMemory.queueTaskSummary as ReturnType<typeof vi.fn>).toHaveBeenCalledTimes(1);
-      releaseQueue?.();
     } finally {
       rmSync(dataDir, { recursive: true, force: true });
     }
@@ -645,95 +654,6 @@ describe("IVecEngine", () => {
     expect(budget).toBe(0);
 
     await engine.stop();
-  });
-
-  it("keeps decision system context static and returns dynamic context separately", async () => {
-    const staticContext = createStaticContext();
-    const provider = createMockProvider();
-    const sessionMemory = createSessionMemory();
-    const getPromptMemoryContext = sessionMemory.getPromptMemoryContext as ReturnType<typeof vi.fn>;
-    const getSessionStatus = vi.fn().mockReturnValue({
-      contextPercent: 42,
-      turns: 4,
-      sessionAgeMinutes: 12,
-      startedAt: "2026-04-18T09:00:00.000Z",
-      handoffPhase: "inactive",
-      pendingRotationReason: null,
-    });
-    sessionMemory.getSessionStatus = getSessionStatus;
-
-    let memoryContext = {
-      conversationTurns: [
-        {
-          role: "user" as const,
-          content: "first question",
-          timestamp: "2026-04-18T09:00:00.000Z",
-          sessionPath: "sessions/s1.md",
-        },
-      ],
-      activeSessionPath: "sessions/s1.md",
-      continuity: {
-        mode: "continue" as const,
-        confidence: 0.76,
-        reasons: ["matched durable activity identity anchor"],
-        current: {
-          activityId: "activity_latency",
-          kind: "debug" as const,
-          title: "Measure the current agent loop",
-          openWork: [],
-          verifiedFacts: ["Profiled decision latency"],
-          topAssets: [],
-          lastTouchedAt: "2026-04-18T08:30:00.000Z",
-        },
-      },
-    };
-    getPromptMemoryContext.mockImplementation(() => memoryContext);
-
-    const fixedNow = new Date("2026-04-18T03:30:00.000Z");
-    const engine = createEngine({ provider, sessionMemory, staticContext, now: () => fixedNow });
-    const buildSystemContext = async () => {
-      const privateEngine = engine as unknown as {
-        buildSystemContext(): Promise<{
-          systemContext: string;
-          decisionSystemContext: string;
-          dynamicSystemTokens: number;
-        }>;
-      };
-      return privateEngine.buildSystemContext();
-    };
-
-    const first = await buildSystemContext();
-    expect(first.systemContext).toBe(first.decisionSystemContext);
-    expect(first.systemContext).toContain("# Base System Prompt");
-    expect(first.systemContext).toContain("# Skills");
-    expect(first.systemContext).not.toContain("# Runtime Context");
-    expect(first.systemContext).not.toContain("# Previous Conversation");
-    expect(first.systemContext).not.toContain("first question");
-    expect(first.dynamicSystemTokens).toBe(0);
-
-    memoryContext = {
-      ...memoryContext,
-      conversationTurns: [
-        ...memoryContext.conversationTurns,
-        {
-          role: "assistant" as const,
-          content: "Here is the first answer.",
-          timestamp: "2026-04-18T09:01:00.000Z",
-          sessionPath: "sessions/s1.md",
-        },
-        {
-          role: "user" as const,
-          content: "follow up question",
-          timestamp: "2026-04-18T09:02:00.000Z",
-          sessionPath: "sessions/s1.md",
-        },
-      ],
-    };
-
-    const second = await buildSystemContext();
-    expect(second.systemContext).toBe(first.systemContext);
-    expect(second.systemContext).not.toContain("follow up question");
-    expect(second.dynamicSystemTokens).toBe(0);
   });
 
   it("processes pulse system_event through recordSystemEvent", async () => {
@@ -1059,7 +979,6 @@ describe("IVecEngine", () => {
         recordAssistantMessage: vi.fn(),
         recordRunFailure: vi.fn(),
         recordAgentStep: vi.fn(),
-        recordTaskSummary: vi.fn(),
         recordAssistantNotification: vi.fn(),
         getPromptMemoryContext: vi.fn().mockReturnValue({
           conversationTurns: [

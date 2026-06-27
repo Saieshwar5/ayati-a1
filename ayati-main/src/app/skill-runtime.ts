@@ -5,7 +5,6 @@ import type {
   EpisodicMemoryRetriever,
 } from "../memory/episodic/index.js";
 import type { PersonalMemoryStore } from "../memory/personal/personal-memory-store.js";
-import type { ActivityStore } from "../memory/activity/index.js";
 import type { PreparedAttachmentService } from "../documents/prepared-attachment-service.js";
 import type { SessionAttachmentService } from "../documents/session-attachment-service.js";
 import type { DirectoryLibrary } from "../files/directory-library.js";
@@ -17,7 +16,6 @@ import { createToolExecutor, type ToolExecutor } from "../skills/tool-executor.j
 import type { SkillDefinition, SkillsProvider, SkillPromptBlock, ToolDefinition } from "../skills/types.js";
 import { createRecallSkill } from "../skills/builtins/recall/index.js";
 import { createMemorySkill } from "../skills/builtins/memory/index.js";
-import { createActivitySkill } from "../skills/builtins/activity/index.js";
 import { createPythonSkill } from "../skills/builtins/python/index.js";
 import { createAttachmentSkill } from "../skills/builtins/attachments/index.js";
 import { createDatasetSkill } from "../skills/builtins/datasets/index.js";
@@ -33,7 +31,6 @@ export interface SkillRuntimeOptions {
   projectRoot: string;
   clientId: string;
   personalMemoryStore: PersonalMemoryStore;
-  activityStore: ActivityStore;
   memoryRetriever: EpisodicMemoryRetriever;
   episodicMemoryController: EpisodicMemoryController;
   sessionAttachmentService: SessionAttachmentService;
@@ -69,10 +66,6 @@ export async function createSkillRuntime(options: SkillRuntimeOptions): Promise<
     createMemorySkill({
       store: options.personalMemoryStore,
       defaultUserId: options.clientId,
-    }),
-    createActivitySkill({
-      store: options.activityStore,
-      defaultClientId: options.clientId,
     }),
     createPythonSkill({
       dataDir: resolve(options.projectRoot, "data"),

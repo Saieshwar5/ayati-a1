@@ -63,9 +63,8 @@ function buildToolSelectionQuery(state: LoopState): string {
       ref.tool,
       ...ref.access,
     ]),
-    ...continuityTerms(state),
-    ...taskThreadTerms(state),
-    ...activityContinuationAttachmentTerms(state),
+    ...gitContextTerms(state),
+    ...gitContextAttachmentTerms(state),
     ...(state.completedSteps.slice(-2).flatMap((step) => [
       step.executionContract,
       step.summary,
@@ -79,56 +78,42 @@ function buildToolSelectionQuery(state: LoopState): string {
   return parts.filter((part): part is string => typeof part === "string" && part.trim().length > 0).join(" ");
 }
 
-function taskThreadTerms(state: LoopState): string[] {
-  const context = state.harnessContext.taskThreadContext;
-  if (!context) return [];
+function gitContextTerms(state: LoopState): string[] {
+  const task = state.harnessContext.contextEngine?.task;
+  const focus = state.harnessContext.contextEngine?.focus;
+  if (!task && !focus) return [];
   return [
-    context.suggestedBinding.mode,
-    context.suggestedBinding.reason,
-    context.activeTask?.objective,
-    context.activeTask?.summary,
-    context.activeTask?.nextAction,
-    context.activeTask?.lastAssistantQuestion,
-    ...(context.activeTask?.openWork ?? []),
-    ...(context.activeTask?.blockers ?? []),
-    ...(context.activeTask?.keyFacts ?? []),
-    ...(context.activeTask?.topAssets ?? []),
-    ...context.suspendedTasks.flatMap((task) => [
-      task.objective,
-      task.summary,
-      task.nextAction,
-      ...task.openWork,
-      ...task.topAssets,
+    focus && "ref" in focus ? focus.ref : undefined,
+    focus && "reason" in focus ? focus.reason : undefined,
+    task?.workId,
+    task?.title,
+    task?.objective,
+    task?.status,
+    task?.next,
+    ...(task?.completed ?? []),
+    ...(task?.open ?? []),
+    ...(task?.blockers ?? []),
+    ...(task?.facts ?? []).map((fact) => fact.text),
+    ...(task?.assets ?? []).flatMap((asset) => [
+      asset.name,
+      asset.path,
+      asset.kind,
+    ]),
+    ...(task?.recentRuns ?? []).flatMap((run) => [
+      run.summary,
+      run.status,
+      ...run.completed,
+      ...run.open,
     ]),
   ].filter((term): term is string => typeof term === "string" && term.trim().length > 0);
 }
 
-function continuityTerms(state: LoopState): string[] {
-  const continuity = state.harnessContext.continuity;
-  return [
-    continuity.mode,
-    ...(continuity.reasons ?? []),
-    continuity.current?.title,
-    continuity.current?.goal,
-    continuity.current?.nextStep,
-    ...(continuity.current?.openWork ?? []),
-    ...(continuity.current?.verifiedFacts ?? []),
-    ...(continuity.current?.topAssets ?? []),
-    ...(continuity.candidates ?? []).flatMap((candidate) => [
-      candidate.title,
-      candidate.reason,
-      ...candidate.topAssets,
-    ]),
-  ].filter((term): term is string => typeof term === "string" && term.trim().length > 0);
-}
-
-function activityContinuationAttachmentTerms(state: LoopState): string[] {
-  const artifactTerms = [
-    ...(state.harnessContext.continuity.current?.topAssets ?? []),
-    ...(state.harnessContext.continuity.candidates ?? []).flatMap((candidate) => candidate.topAssets),
-    ...(state.harnessContext.taskThreadContext?.activeTask?.topAssets ?? []),
-    ...(state.harnessContext.taskThreadContext?.suspendedTasks ?? []).flatMap((task) => task.topAssets),
-  ];
+function gitContextAttachmentTerms(state: LoopState): string[] {
+  const artifactTerms = (state.harnessContext.contextEngine?.task?.assets ?? []).flatMap((asset) => [
+    asset.name,
+    asset.path,
+    asset.kind,
+  ]);
   if (artifactTerms.length === 0) {
     return [];
   }

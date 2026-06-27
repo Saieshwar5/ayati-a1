@@ -1,4 +1,5 @@
 import type { AgentUiContext } from "../ui/context.js";
+import type { TaskAssetRecord } from "../context-engine/index.js";
 
 export interface SkillPromptBlock {
   id: string;
@@ -17,7 +18,7 @@ export interface ToolExecutionContext {
   clientId?: string;
   runId?: string;
   sessionId?: string;
-  activityId?: string;
+  taskAssets?: TaskAssetRecord[];
   stepNumber?: number;
   uiContext?: AgentUiContext;
 }

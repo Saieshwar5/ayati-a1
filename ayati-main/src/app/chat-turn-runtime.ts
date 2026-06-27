@@ -8,9 +8,6 @@ import type { DirectoryLibrary } from "../files/directory-library.js";
 import type { FileLibrary } from "../files/file-library.js";
 import type { DirectoryAttachmentRecord, ManagedFileRecord } from "../files/types.js";
 import type { SessionMemory, MemoryRunHandle, SessionInputHandle, AgentResponseKind } from "../memory/types.js";
-import { renderBasePromptSection } from "../prompt/sections/base.js";
-import { renderSkillsSection } from "../prompt/sections/skills.js";
-import { renderSoulSection } from "../prompt/sections/soul.js";
 import {
   appendPulseProposalQuestion,
   PulseProposalReflectionService,
@@ -23,10 +20,7 @@ import { agentLoop } from "../ivec/agent-loop.js";
 import type { AgentFeedbackLedger } from "../ivec/feedback-ledger.js";
 import type { ChatContextPreparedTurn, ChatContextRuntime } from "../ivec/chat-context-runtime.js";
 import type { ChatTurnRuntime, ChatTurnRuntimeInput } from "../ivec/chat-turn-runtime.js";
-import {
-  evaluateSessionRotation,
-  type RotationPolicyConfig,
-} from "../ivec/session-rotation-policy.js";
+import type { RotationPolicyConfig } from "../ivec/session-rotation-policy.js";
 import type { ToolWorkingSetManager } from "../ivec/agent-runner/tool-working-set.js";
 import type {
   AgentArtifact,
@@ -35,6 +29,9 @@ import type {
   DirectoryChatAttachmentInput,
   LoopConfig,
 } from "../ivec/types.js";
+import { buildStaticSystemContext } from "./static-prompt.js";
+import { rotateSessionBeforeRunIfNeeded } from "./session-rotation.js";
+import { completeSessionLifecycle } from "./session-lifecycle.js";
 
 export interface CreateChatTurnRuntimeOptions {
   onReply?: (clientId: string, data: unknown) => void;
@@ -180,7 +177,7 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
           initialUserMessage: input.content,
           config: this.loopConfig,
           dataDir: this.dataDir ?? "data",
-          systemContext: this.buildSystemContext(),
+          systemContext: buildStaticSystemContext(this.staticContext),
           ...(chatContextTurn?.context ? { harnessContext: { contextEngine: chatContextTurn.context } } : {}),
           feedbackLedger: this.feedbackLedger,
           attachedDocuments: registeredAttachments.documents,
@@ -223,7 +220,6 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
             runPath: result.runPath,
           },
         });
-        this.queueTaskSummaryPublication(input.clientId, inputHandle, result.taskSummary);
         runStatus = result.status;
       } else {
         const echoContent = `Received: "${input.content}"`;
@@ -262,23 +258,13 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
         content: "Failed to generate a response.",
       });
     } finally {
-      await this.completeSessionLifecycle(input.clientId, runHandle, runStatus);
+      await completeSessionLifecycle({
+        clientId: input.clientId,
+        sessionMemory: this.sessionMemory,
+        runHandle,
+        status: runStatus,
+      });
     }
-  }
-
-  private buildSystemContext(): string | undefined {
-    if (!this.staticContext) {
-      return undefined;
-    }
-    return joinPromptSections([
-      renderBasePromptSection(this.staticContext.basePrompt),
-      renderSoulSection(this.staticContext.soul),
-      renderSkillsSection(this.staticContext.skillBlocks),
-      renderToolDirectorySection(
-        this.staticContext.toolDirectory,
-        process.env["PROMPT_INCLUDE_TOOL_DIRECTORY"] === "1",
-      ),
-    ]);
   }
 
   private async prepareChatContextTurn(
@@ -379,61 +365,12 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
   }
 
   private rotateSessionBeforeRunIfNeeded(clientId: string): void {
-    const createSession = this.sessionMemory.createSession;
-    if (!createSession) {
-      return;
-    }
-
-    const sessionStatus = this.sessionMemory.getSessionStatus?.() ?? null;
-    if (!sessionStatus) {
-      return;
-    }
-
-    const rotationDecision = evaluateSessionRotation({
-      now: this.nowProvider(),
-      contextPercent: sessionStatus.contextPercent,
-      sessionStartedAt: sessionStatus.startedAt,
-      timezone: null,
-      pendingRotationReason: sessionStatus.pendingRotationReason,
-      config: this.rotationPolicyConfig,
+    rotateSessionBeforeRunIfNeeded({
+      clientId,
+      sessionMemory: this.sessionMemory,
+      now: this.nowProvider,
+      rotationPolicyConfig: this.rotationPolicyConfig,
     });
-
-    if (!rotationDecision.rotate) {
-      return;
-    }
-
-    createSession.call(this.sessionMemory, clientId, {
-      runId: `pre-run-rotation-${Date.now()}`,
-      reason: rotationDecision.reason ?? "policy_rotation",
-      source: "system",
-      timezone: rotationDecision.timezone,
-    });
-
-    devWarn(
-      `Pre-run session rotation triggered (${rotationDecision.reason ?? "unknown"}) at ${Math.round(sessionStatus.contextPercent)}% context`,
-    );
-  }
-
-  private async completeSessionLifecycle(
-    clientId: string,
-    runHandle: MemoryRunHandle | null,
-    status: "completed" | "failed" | "stuck" | null,
-  ): Promise<void> {
-    if (!runHandle || !status) {
-      return;
-    }
-
-    try {
-      await this.sessionMemory.updateSessionLifecycle?.(clientId, {
-        runId: runHandle.runId,
-        sessionId: runHandle.sessionId,
-        timezone: null,
-        status,
-      });
-      await this.sessionMemory.flushPersistence?.();
-    } catch (err) {
-      devWarn("Session lifecycle update failed:", err instanceof Error ? err.message : String(err));
-    }
   }
 
   private createWorkRun(clientId: string, inputHandle: SessionInputHandle): MemoryRunHandle {
@@ -446,46 +383,6 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
 
   private inputScopeId(inputHandle: SessionInputHandle): string {
     return `input:${inputHandle.sessionId}:${inputHandle.seq}`;
-  }
-
-  private queueTaskSummaryPublication(
-    clientId: string,
-    inputHandle: SessionInputHandle,
-    taskSummary: AgentLoopResult["taskSummary"] | undefined,
-  ): void {
-    if (!taskSummary) {
-      return;
-    }
-
-    this.feedbackLedger?.record({
-      clientId,
-      sessionId: inputHandle.sessionId,
-      seq: inputHandle.seq,
-      runId: taskSummary.runId,
-      stage: "memory",
-      event: "task_summary_queued",
-      data: {
-        runStatus: taskSummary.runStatus,
-        taskStatus: taskSummary.taskStatus,
-        summary: taskSummary.summary,
-        assistantResponseKind: taskSummary.assistantResponseKind,
-        attachmentNames: taskSummary.attachmentNames,
-      },
-    });
-
-    const payload = {
-      ...taskSummary,
-      sessionId: inputHandle.sessionId,
-    };
-
-    if (this.sessionMemory.queueTaskSummary) {
-      void Promise.resolve(this.sessionMemory.queueTaskSummary(clientId, payload)).catch((err) => {
-        devWarn(`Task summary queue failed: ${err instanceof Error ? err.message : String(err)}`);
-      });
-      return;
-    }
-
-    this.sessionMemory.recordTaskSummary?.(clientId, payload);
   }
 
   private async applyPulseProposalReflection(
@@ -844,17 +741,4 @@ function formatAttachmentLabel(attachment: ChatAttachmentInput): string {
     return attachment.path;
   }
   return "path" in attachment ? attachment.path : "attachment";
-}
-
-function joinPromptSections(sections: Array<string | undefined>): string {
-  return sections
-    .filter((section): section is string => typeof section === "string" && section.trim().length > 0)
-    .join("\n\n")
-    .trim();
-}
-
-function renderToolDirectorySection(toolDirectory: string | undefined, includeToolDirectory: boolean): string {
-  if (!includeToolDirectory) return "";
-  if (!toolDirectory || toolDirectory.trim().length === 0) return "";
-  return `# Available Tools\n\n${toolDirectory}`;
 }

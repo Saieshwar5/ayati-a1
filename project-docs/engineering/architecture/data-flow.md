@@ -5,11 +5,11 @@ Daemon communication flow:
 1. A communication channel sends a user message or event into the daemon.
 2. Current CLI path: `ayati-cli` sends `{ type: "chat", content, attachments? }` to `ws://localhost:8080`.
 3. `WsServer` parses JSON and forwards payloads to `IVecEngine.handleMessage`.
-4. `IVecEngine` parses chat input, stores session turns, builds static decision context, and enters the agent runner.
-5. The runner builds a structured context pack from session memory,
-   same-session task-thread context, resolved activity continuity, and personal
-   memory. Current-run attachments appear separately in the sparse state view
-   only when present.
+4. The chat runtime records the user message, prepares git context, builds
+   static decision context, and enters the agent runner.
+5. The runner builds a structured context pack from daily git context and
+   personal memory. Current-run attachments appear separately in the sparse
+   state view only when present.
 6. The decision model chooses a control tool (`decision_reply`,
    `decision_ask_user`, or `decision_load_tools`) or directly calls one
    selected executable tool.
@@ -28,38 +28,29 @@ Client model:
 2. Clients should not own agent intelligence, memory, tool policy, provider selection, or long-running state.
 3. New clients should send normalized messages/events to the daemon and render replies/notifications.
 
-Memory, task-thread, and activity flow:
+Git context and memory flow:
 
-1. User interactions are stored as session turns.
-2. Every task run can produce an immutable TaskSummary describing run status,
-   task status, open work, blockers, evidence, tools, and useful assets.
-3. Open task summaries without explicit `activityId` update a same-session
-   TaskThread first. This keeps unfinished work available to the next run
-   without prematurely creating durable Activity memory.
-4. The context pack exposes compact `taskThreadContext` with the active open
-   task, suspended open tasks, recent continuation signals, and a suggested
-   binding for the existing decision stage.
-5. Done task summaries close the TaskThread and promote the whole thread
-   aggregate to an Activity. Session close also promotes remaining open task
-   threads so unfinished work is recoverable later.
-6. Direct replies without durable assets, tools, or continuation state do not
-   create task threads or activity threads.
-7. Activity threads store compact summaries plus full continuation state:
-   identities, assets, run refs, and resumable state.
-8. `ContinuityResolver` resolves the current user message deterministically
-   before decisions by exact identities, aliases/search terms, and recent
-   follow-up wording.
-9. The context pack exposes `continuity.mode` as `new`, `continue`, or
-   `ambiguous`; the model does not receive shelves of unrelated work.
-10. Activity tools can search, get, select, update, and archive activity
-   threads.
-11. Activity assets can restore user-attached documents, datasets, files, and
-   directories into the current run through `attachment_restore` or
-   `activity_restore_assets`.
-12. Session close can enqueue memory consolidation and episodic indexing.
-13. Personal memory stores stable facts and preferences for personalization.
-14. Episodic memory indexes closed sessions for future recall when embeddings are available.
-15. The context pack renders relevant memory back into future agent runs as bounded JSON.
+1. User interactions are recorded in the daily git session conversation on the
+   main branch.
+2. The context engine resolves the message to a work branch, creates a new
+   task branch when needed, or returns an ambiguous result before tool work
+   starts.
+3. The agent loop receives `gitContext` with conversation tail, focus, task
+   state, task assets, recent runs, recent commits, facts, open work, and next
+   step.
+4. Every completed task run writes machine-readable state, run summary,
+   actions, action outputs, final output, and task assets to the work branch.
+5. Run commits include Ayati commit metadata so the branch history itself is a
+   retrieval surface.
+6. Attachment restore reads git task assets from tool execution context. It
+   does not use Activity memory.
+7. Session close can still enqueue personal-memory consolidation and episodic
+   indexing when those services are enabled.
+8. Personal memory stores stable facts and preferences for personalization.
+9. Episodic memory indexes closed sessions for future recall when embeddings
+   are available.
+10. The context pack renders relevant git context and personal memory back into
+    future agent runs as bounded JSON.
 
 Tool/action flow:
 
@@ -68,7 +59,7 @@ Tool/action flow:
 2. The decision model sees native control tools plus the selected executable
    tool schemas for the current turn.
 3. The model calls one selected executable tool directly only when tool work is
-   needed for the current input or resolved activity continuity.
+   needed for the current input or selected git task context.
 4. The action executor adapts the native tool call into an internal action
    record, validates selected-tool membership and the executable input schema,
    and dispatches through the tool executor.
@@ -96,10 +87,10 @@ Attachment flow:
    Directories are searched by manifest/path and optionally by UTF-8 file
    contents; individual files can be registered/queryable when deeper parsing is
    needed.
-6. Activity threads store restorable attachment assets, not full file contents.
-   Later follow-up runs resolve the activity and call `attachment_restore` or
-   `activity_restore_assets`, which touches the stored file or directory into
-   the current run or restores prepared document/dataset metadata.
+6. Git task branches store restorable task asset references, not full file
+   contents. Later follow-up runs resolve the work branch and call
+   `attachment_restore`, which reads `context.taskAssets` and restores a path,
+   file, directory, document, or dataset into the current run.
 
 Workspace orchestration flow:
 

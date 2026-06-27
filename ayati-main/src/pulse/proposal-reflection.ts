@@ -1,16 +1,14 @@
 import type { LlmProvider } from "../core/contracts/provider.js";
 import type { LlmResponseFormat } from "../core/contracts/llm-protocol.js";
-import type {
-  ConversationTurn,
-  PromptMemoryContext,
-  TaskSummaryTaskStatus,
-} from "../memory/types.js";
+import type { ConversationTurn, PromptMemoryContext } from "../memory/types.js";
 import type { ToolDefinition } from "../skills/types.js";
 
 const MIN_ASK_CONFIDENCE = 0.75;
 const MAX_TEXT_CHARS = 1_200;
 const MAX_RESPONSE_CHARS = 3_000;
 const MAX_CONVERSATION_TURNS = 8;
+
+type ReflectionTaskStatus = "open" | "done" | "blocked" | "needs_user_input";
 
 const REFLECTION_RESPONSE_FORMAT: LlmResponseFormat = {
   type: "json_object",
@@ -43,7 +41,7 @@ export interface PulseProposalReflectionTaskSummary {
   runStatus?: "completed" | "failed" | "stuck";
   /** @deprecated Use runStatus. */
   status?: "completed" | "failed" | "stuck";
-  taskStatus?: TaskSummaryTaskStatus;
+  taskStatus?: ReflectionTaskStatus;
   objective?: string;
   summary?: string;
   progressSummary?: string;
@@ -178,7 +176,6 @@ function buildReflectionUserPrompt(input: PulseProposalReflectionInput): string 
     currentUserMessage: truncateText(input.currentUserMessage),
     finalAssistantResponse: truncateText(input.assistantResponse, MAX_RESPONSE_CHARS),
     taskSummary: compactReflectionTaskSummary(input.taskSummary),
-    continuity: compactContinuity(memoryContext.continuity),
     personalMemorySnapshot: truncateText(memoryContext.personalMemorySnapshot ?? ""),
     recentTurns: compactConversation(memoryContext.conversationTurns ?? []),
     availableCapabilities: summarizeCapabilities(input.toolDefinitions),
@@ -206,33 +203,6 @@ function compactReflectionTaskSummary(summary: PulseProposalReflectionTaskSummar
   };
 }
 
-function compactContinuity(continuity: PromptMemoryContext["continuity"]): Record<string, unknown> {
-  if (!continuity) {
-    return { mode: "new", confidence: 0, reasons: [] };
-  }
-  return {
-    mode: continuity.mode,
-    confidence: continuity.confidence,
-    reasons: continuity.reasons.slice(0, 4).map((reason) => truncateText(reason, 240)),
-    current: continuity.current ? {
-      activityId: continuity.current.activityId,
-      kind: continuity.current.kind,
-      title: truncateText(continuity.current.title),
-      openWork: continuity.current.openWork.slice(0, 5).map((item) => truncateText(item, 240)),
-      nextStep: truncateText(continuity.current.nextStep ?? "", 240),
-      topAssets: continuity.current.topAssets.slice(0, 5),
-    } : undefined,
-    candidates: continuity.candidates?.slice(0, 3).map((candidate) => ({
-      activityId: candidate.activityId,
-      kind: candidate.kind,
-      title: truncateText(candidate.title),
-      reason: truncateText(candidate.reason, 240),
-      score: candidate.score,
-      topAssets: candidate.topAssets.slice(0, 5),
-    })),
-  };
-}
-
 function compactConversation(turns: ConversationTurn[]): Array<Record<string, unknown>> {
   return turns.slice(-MAX_CONVERSATION_TURNS).map((turn) => ({
     role: turn.role,
@@ -248,7 +218,7 @@ function summarizeCapabilities(tools: ToolDefinition[]): Record<string, unknown>
   };
 }
 
-function isCompletedTaskStatus(status: TaskSummaryTaskStatus): boolean {
+function isCompletedTaskStatus(status: ReflectionTaskStatus): boolean {
   return status === "done";
 }
 

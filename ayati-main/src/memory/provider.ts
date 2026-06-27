@@ -2,13 +2,11 @@ import type {
   AssistantMessageMetadata,
   AssistantMessageRecordInput,
   SessionMemory,
-  SessionStatus,
   MemoryRunHandle,
   SessionInputHandle,
   ToolCallRecordInput,
   ToolCallResultRecordInput,
   AgentStepRecordInput,
-  TaskSummaryRecordInput,
   PromptMemoryContext,
 } from "./types.js";
 
@@ -63,12 +61,6 @@ export const noopSessionMemory: SessionMemory = {
   recordAgentStep(_clientId: string, _input: AgentStepRecordInput): void {
     return;
   },
-  recordTaskSummary(_clientId: string, _input: TaskSummaryRecordInput): void {
-    return;
-  },
-  queueTaskSummary(_clientId: string, _input: TaskSummaryRecordInput): void {
-    return;
-  },
   recordAssistantNotification(): void {
     return;
   },
@@ -85,17 +77,10 @@ export const noopSessionMemory: SessionMemory = {
     return {
       recentExchanges: [],
       sessionEvents: [],
-      activeContextStartSeq: 1,
-      sessionWork: {
-        activeContextStartSeq: 1,
-        recentActivities: [],
-      },
       recentSystemEvents: [],
       conversationTurns: [],
       personalMemorySnapshot: "",
       personalMemories: [],
-      continuity: { mode: "new", confidence: 0, reasons: ["noop memory provider"] },
-      recentTaskSummaries: [],
     };
   },
   setStaticTokenBudget(): void {

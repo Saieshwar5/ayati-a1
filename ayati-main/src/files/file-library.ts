@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
+import { readFile, stat, writeFile } from "node:fs/promises";
 import { basename } from "node:path";
 import { executeSql } from "../database/sqlite-runtime.js";
 import { detectFileKind, capabilitiesForKind, normalizeMimeType, sanitizeFileName } from "./file-detector.js";

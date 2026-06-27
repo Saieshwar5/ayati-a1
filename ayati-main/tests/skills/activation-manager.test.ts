@@ -84,7 +84,7 @@ describe("SkillActivationManager", () => {
     ]));
   });
 
-  it("auto-activates attachment handling skills for activity continuation assets", async () => {
+  it("auto-activates attachment handling skills for git task assets", async () => {
     const catalog = new SkillCatalog([
       createSkillBundle(skill("attachments", [tool("attachment_restore")])),
       createSkillBundle(skill("files", [tool("attachment_query")])),
@@ -96,18 +96,37 @@ describe("SkillActivationManager", () => {
 
     const activated = await manager.prepareForDecision({
       harnessContext: {
-        continuity: {
-          mode: "continue",
-          confidence: 0.92,
-          reasons: ["matched durable activity identity anchor"],
-          current: {
-            activityId: "activity_policy",
-            kind: "document",
-            title: "policy review",
-            openWork: [],
-            verifiedFacts: [],
-            topAssets: ["policy.txt"],
-            lastTouchedAt: "2026-06-17T00:00:00.000Z",
+        contextEngine: {
+          session: {
+            sessionId: "2026-06-17",
+            conversationTail: [],
+            eventTail: [],
+            assetCount: 1,
+          },
+          focus: {
+            status: "active",
+            ref: "refs/heads/work/W-20260617-0001-policy-review",
+            workId: "W-20260617-0001",
+          },
+          task: {
+            ref: "refs/heads/work/W-20260617-0001-policy-review",
+            workId: "W-20260617-0001",
+            title: "Policy review",
+            objective: "Review policy document",
+            status: "active",
+            completed: [],
+            open: ["Review policy.txt"],
+            blockers: [],
+            facts: [],
+            assets: [{
+              assetId: "A-20260617-0001",
+              role: "input",
+              kind: "document",
+              name: "policy.txt",
+              path: "policy.txt",
+            }],
+            recentRuns: [],
+            recentCommits: [],
           },
         },
       },

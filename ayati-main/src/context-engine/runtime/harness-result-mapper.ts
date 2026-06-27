@@ -42,6 +42,7 @@ export function buildContextEngineRunCommitInput(input: BuildContextEngineRunCom
     state,
     runSummary,
     actions,
+    taskAssets: input.result.taskAssets,
     finalOutput: {
       schemaVersion: 1,
       runId: input.runId,

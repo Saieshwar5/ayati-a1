@@ -4,6 +4,7 @@ import type {
   DailySessionMachineContextPack,
   RunId,
   SessionId,
+  TaskAssetRecord,
   WorkId,
 } from "./daily-session/index.js";
 
@@ -100,4 +101,5 @@ export interface HarnessRunResultForContext {
   taskSummary?: HarnessTaskSummaryForContext;
   workState?: HarnessWorkStateForContext;
   completedSteps?: HarnessStepSummaryForContext[];
+  taskAssets?: TaskAssetRecord[];
 }

@@ -8,7 +8,7 @@ import {
   resolveScrollTopAfterContentChange,
   scrollByLines,
   scrollByPages,
-} from "./message-list-scroll.js";
+} from "../../../src/app/components/message-list-scroll.js";
 
 describe("message-list-scroll", () => {
   it("clamps scroll positions inside the valid range", () => {

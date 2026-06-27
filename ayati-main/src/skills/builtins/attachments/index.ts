@@ -7,10 +7,10 @@ export interface AttachmentSkillDeps {
 
 const ATTACHMENT_PROMPT_BLOCK = [
   "Unified attachment restoration is built in.",
-  "Use attachment_restore when the user refers to a file, document, dataset, or directory stored on the current activity.",
-  "For follow-up work, call attachment_restore with no input when continuity.current has exactly one restorable asset, or with activityId/assetId/reference when it has multiple.",
+  "Use attachment_restore when the user refers to a file, document, dataset, or directory listed in the current git task assets.",
+  "For follow-up work, use the asset name, path, file id, directory id, document id, prepared input id, or asset id from context.gitContext.task.assets.",
   "If the current run already has attached files, do not restore an older attachment unless the user explicitly asks for the earlier one.",
-  "Inputs accept activityId, assetId, or a reference such as preparedInputId, fileId, directoryId, display name, or path.",
+  "Inputs accept assetId or a reference such as preparedInputId, fileId, directoryId, display name, or path.",
 ].join("\n");
 
 function buildSuccessResult(output: Record<string, unknown>, meta?: Record<string, unknown>): ToolResult {
@@ -35,17 +35,13 @@ function createRestoreAttachmentContextTool(deps: AttachmentSkillDeps, name = "a
     inputSchema: {
       type: "object",
       properties: {
-        activityId: {
-          type: "string",
-          description: "Optional activity id to restore from. If omitted, the current resolved activity is used.",
-        },
         assetId: {
           type: "string",
-          description: "Optional activity asset id to restore.",
+          description: "Optional git task asset id to restore.",
         },
         reference: {
           type: "string",
-          description: "Optional activity asset reference. Use display name, preparedInputId, fileId, directoryId, documentId, assetId, or path when known.",
+          description: "Optional git task asset reference. Use display name, asset id, session asset id, file path, or directory path when known.",
         },
       },
       additionalProperties: false,
@@ -53,23 +49,18 @@ function createRestoreAttachmentContextTool(deps: AttachmentSkillDeps, name = "a
     selectionHints: {
       tags: ["attachments", "restore", "followup"],
       domain: "attachments",
-      priority: name === "activity_restore_assets" || name === "attachment_restore" ? 100 : 85,
+      priority: name === "attachment_restore" ? 100 : 85,
     },
     async execute(input, context): Promise<ToolResult> {
       const runId = readRunId(context);
-      const clientId = readContextString(context, "clientId");
-      const sessionId = readContextString(context, "sessionId");
-      const activityId = readOptionalString(input, "activityId") ?? readContextString(context, "activityId");
       const assetId = readOptionalString(input, "assetId");
       const reference = readOptionalString(input, "reference");
       try {
         const restored = await deps.sessionAttachmentService.restoreAttachmentContext({
           runId,
-          clientId,
-          sessionId,
-          activityId,
           assetId,
           reference,
+          taskAssets: context?.taskAssets,
         });
         const stateUpdates = buildRestoreStateUpdates(restored);
         return buildSuccessResult(buildRestoreOutput(restored), stateUpdates.length > 0 ? { stateUpdates } : undefined);
@@ -84,10 +75,9 @@ export function createAttachmentSkill(deps: AttachmentSkillDeps): SkillDefinitio
   return {
     id: "attachments",
     version: "1.0.0",
-    description: "Restore previously used attachments from current activity context into the current run.",
+    description: "Restore previously used attachments from current git task assets into the current run.",
     promptBlock: ATTACHMENT_PROMPT_BLOCK,
     tools: [
-      createRestoreAttachmentContextTool(deps, "activity_restore_assets"),
       createRestoreAttachmentContextTool(deps),
       createRestoreAttachmentContextTool(deps, "restore_attachment_context"),
     ],
@@ -99,10 +89,10 @@ function buildRestoreOutput(restored: RestoredAttachmentContext): Record<string,
     return {
       restored: restored.restored,
       attachmentKind: restored.attachmentKind,
-      activityId: restored.activityId,
       assetId: restored.assetId,
-      attachmentId: restored.fileId,
-      fileId: restored.fileId,
+      attachmentId: restored.fileId ?? restored.path,
+      ...(restored.fileId ? { fileId: restored.fileId } : {}),
+      path: restored.path,
       displayName: restored.displayName,
       kind: restored.kind,
       mode: "file",
@@ -112,10 +102,10 @@ function buildRestoreOutput(restored: RestoredAttachmentContext): Record<string,
     return {
       restored: restored.restored,
       attachmentKind: restored.attachmentKind,
-      activityId: restored.activityId,
       assetId: restored.assetId,
-      attachmentId: restored.directoryId,
-      directoryId: restored.directoryId,
+      attachmentId: restored.directoryId ?? restored.path,
+      ...(restored.directoryId ? { directoryId: restored.directoryId } : {}),
+      path: restored.path,
       displayName: restored.displayName,
       kind: restored.kind,
       mode: "directory",
@@ -124,7 +114,6 @@ function buildRestoreOutput(restored: RestoredAttachmentContext): Record<string,
   return {
     restored: restored.restored,
     attachmentKind: restored.attachmentKind,
-    activityId: restored.activityId,
     assetId: restored.assetId,
     attachmentId: restored.summary.preparedInputId,
     preparedInputId: restored.summary.preparedInputId,
@@ -137,10 +126,10 @@ function buildRestoreOutput(restored: RestoredAttachmentContext): Record<string,
 
 function buildRestoreStateUpdates(restored: RestoredAttachmentContext): Array<Record<string, unknown>> {
   if (restored.attachmentKind === "file") {
-    return [{ type: "restore_managed_file", fileId: restored.fileId }];
+    return restored.fileId ? [{ type: "restore_managed_file", fileId: restored.fileId }] : [];
   }
   if (restored.attachmentKind === "directory") {
-    return [{ type: "restore_managed_directory", directoryId: restored.directoryId }];
+    return restored.directoryId ? [{ type: "restore_managed_directory", directoryId: restored.directoryId }] : [];
   }
   return [{
     type: "restore_prepared_attachment",
@@ -154,14 +143,6 @@ function readRunId(context: { runId?: string } | undefined): string {
     throw new Error("attachment restore requires a runId in tool execution context.");
   }
   return context.runId;
-}
-
-function readContextString(
-  context: { clientId?: string; sessionId?: string; activityId?: string } | undefined,
-  field: "clientId" | "sessionId" | "activityId",
-): string | undefined {
-  const value = context?.[field];
-  return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
 }
 
 function readOptionalString(input: unknown, field: string): string | undefined {

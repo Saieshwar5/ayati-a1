@@ -13,13 +13,14 @@ import type {
 import type { AgentUiContext } from "../ui/context.js";
 import type {
   AgentResponseKind,
+  AssistantResponseKind,
   FeedbackKind,
   SessionMemory,
   MemoryRunHandle,
+  RunRecorder,
   SessionInputHandle,
-  ActivityAssetRef,
-  TaskSummaryRecordInput,
 } from "../memory/types.js";
+import type { TaskAssetRecord } from "../context-engine/index.js";
 import type { DocumentStore } from "../documents/document-store.js";
 import type { PreparedAttachmentRecord, PreparedAttachmentRegistry } from "../documents/prepared-attachment-registry.js";
 import type { ManagedDocumentManifest, PreparedAttachmentSummary } from "../documents/types.js";
@@ -35,13 +36,59 @@ import type {
   SystemEventContextVisibility,
   SystemEventHandlingMode,
 } from "./system-event-policy.js";
-import type { RunMetrics } from "./metrics.js";
 import type { AgentFeedbackLedger } from "./feedback-ledger.js";
 import type { HarnessContext, HarnessContextInput } from "./harness-context.js";
 
 export type SystemEventApprovalState = "not_needed" | "pending" | "granted" | "rejected";
 export type RunClass = "interaction" | "task";
-export type AgentTaskSummaryRecord = Omit<TaskSummaryRecordInput, "sessionId">;
+export type TaskSummaryRunStatus = "completed" | "failed" | "stuck";
+export type TaskSummaryTaskStatus = "open" | "done" | "blocked" | "needs_user_input";
+export type TaskSummaryStopReason = "completed" | "needs_user_input" | "blocked" | "failed" | "stuck";
+
+export interface TaskSummaryFailureSummary {
+  failedStep?: number;
+  failedTool?: string;
+  failureType?: string;
+  error: string;
+  retryable: boolean;
+  suggestedRecovery?: string;
+}
+
+export interface AgentTaskSummaryRecord {
+  runId: string;
+  runPath: string;
+  triggerSeq?: number;
+  discussionStartSeq?: number;
+  discussionEndSeq?: number;
+  runStatus: TaskSummaryRunStatus;
+  taskStatus?: TaskSummaryTaskStatus;
+  objective?: string;
+  summary: string;
+  progressSummary?: string;
+  currentFocus?: string;
+  completedMilestones?: string[];
+  assumptions?: string[];
+  constraints?: string[];
+  openWork?: string[];
+  blockers?: string[];
+  keyFacts?: string[];
+  evidence?: string[];
+  userInputNeeded?: string;
+  userMessage?: string;
+  assistantResponse?: string;
+  assistantResponseKind?: AssistantResponseKind;
+  feedbackKind?: FeedbackKind;
+  feedbackLabel?: string;
+  actionType?: string;
+  entityHints?: string[];
+  toolsUsed?: string[];
+  goalDoneWhen?: string[];
+  goalRequiredEvidence?: string[];
+  nextAction?: string;
+  stopReason?: TaskSummaryStopReason;
+  failureSummary?: TaskSummaryFailureSummary;
+  attachmentNames?: string[];
+}
 
 // --- State ---
 
@@ -296,6 +343,7 @@ export interface AgentLoopResult {
   runPath: string;
   workRunId?: string;
   taskSummary?: AgentTaskSummaryRecord;
+  taskAssets?: TaskAssetRecord[];
   artifacts?: AgentArtifact[];
   workState?: WorkState;
   completedSteps?: StepSummary[];
@@ -312,6 +360,7 @@ export interface AgentLoopDeps {
   toolWorkingSetManager?: ToolWorkingSetManager;
   toolDefinitions: ToolDefinition[];
   sessionMemory: SessionMemory;
+  runRecorder?: RunRecorder;
   inputHandle?: SessionInputHandle;
   runHandle?: MemoryRunHandle;
   onWorkRunCreated?: (runHandle: MemoryRunHandle) => void;

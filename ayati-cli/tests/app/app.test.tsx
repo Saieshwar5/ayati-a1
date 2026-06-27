@@ -4,7 +4,7 @@ import { join } from "node:path";
 import React, { act } from "react";
 import { render } from "ink-testing-library";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { ServerMessage } from "./types.js";
+import type { ServerMessage } from "../../src/app/types.js";
 
 (
   globalThis as typeof globalThis & {
@@ -17,7 +17,7 @@ const websocketState = vi.hoisted(() => ({
   send: vi.fn(),
 }));
 
-vi.mock("./hooks/use-websocket.js", () => ({
+vi.mock("../../src/app/hooks/use-websocket.js", () => ({
   useWebSocket: ({
     onMessage,
   }: {
@@ -31,11 +31,11 @@ vi.mock("./hooks/use-websocket.js", () => ({
   },
 }));
 
-vi.mock("./ui-context.js", () => ({
+vi.mock("../../src/app/ui-context.js", () => ({
   detectAgentCliUiContext: vi.fn().mockResolvedValue(null),
 }));
 
-import { App } from "./app.js";
+import { App } from "../../src/app/app.js";
 
 type RenderedApp = ReturnType<typeof render>;
 let tempDir: string | null = null;

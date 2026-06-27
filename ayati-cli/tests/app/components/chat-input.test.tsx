@@ -1,7 +1,7 @@
 import React, { act, useEffect, useState } from "react";
 import { render } from "ink-testing-library";
 import { describe, expect, it, vi } from "vitest";
-import { ChatInput } from "./chat-input.js";
+import { ChatInput } from "../../../src/app/components/chat-input.js";
 
 (
   globalThis as typeof globalThis & {

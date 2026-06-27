@@ -6,7 +6,6 @@ import { prepareIncomingAttachments } from "../../src/documents/attachment-prepa
 import { DocumentStore } from "../../src/documents/document-store.js";
 import { PreparedAttachmentRegistry } from "../../src/documents/prepared-attachment-registry.js";
 import { SessionAttachmentService } from "../../src/documents/session-attachment-service.js";
-import { MemoryManager } from "../../src/memory/session-manager.js";
 
 function makeTmpDir(): string {
   return mkdtempSync(join(tmpdir(), "ayati-session-attachments-"));
@@ -15,8 +14,6 @@ function makeTmpDir(): string {
 describe("SessionAttachmentService", () => {
   it("does not auto-restore an older session attachment when the current run already has attachments", async () => {
     const dataDir = makeTmpDir();
-    const sessionMemory = new MemoryManager({ dataDir: join(dataDir, "memory") });
-    sessionMemory.initialize("c1");
 
     try {
       const oldCsvPath = join(dataDir, "chat_states_1k.csv");
@@ -49,16 +46,57 @@ describe("SessionAttachmentService", () => {
       });
 
       const service = new SessionAttachmentService({
-        activityStore: sessionMemory.getActivityStore(),
         preparedAttachmentRegistry: registry,
         dataDir,
+        documentStore,
       });
 
       await expect(service.restoreAttachmentContext({ runId: "run-2" })).rejects.toThrow(
         "Current run already has attachments. Use the current attachment, or specify the earlier file to restore.",
       );
     } finally {
-      await sessionMemory.shutdown();
+      rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it("restores a document from git task assets without activity memory", async () => {
+    const dataDir = makeTmpDir();
+
+    try {
+      const policyPath = join(dataDir, "policy.txt");
+      writeFileSync(policyPath, "Renewal happens automatically unless cancelled in writing.", "utf-8");
+
+      const documentStore = new DocumentStore({
+        dataDir: join(dataDir, "documents"),
+        preferCli: false,
+      });
+      const registry = new PreparedAttachmentRegistry();
+      const service = new SessionAttachmentService({
+        preparedAttachmentRegistry: registry,
+        dataDir,
+        documentStore,
+      });
+
+      const restored = await service.restoreAttachmentContext({
+        runId: "run-git-assets",
+        reference: "policy.txt",
+        taskAssets: [{
+          assetId: "A-20260627-0001",
+          role: "input",
+          kind: "document",
+          name: "policy.txt",
+          path: policyPath,
+        }],
+      });
+
+      expect(restored).toMatchObject({
+        source: "task_asset",
+        assetId: "A-20260627-0001",
+        restored: true,
+        attachmentKind: "document",
+      });
+      expect(registry.getRunAttachments("run-git-assets")[0]?.summary.displayName).toBe("policy.txt");
+    } finally {
       rmSync(dataDir, { recursive: true, force: true });
     }
   });

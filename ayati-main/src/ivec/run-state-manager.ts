@@ -77,14 +77,12 @@ export interface StepRecord {
 }
 
 export class RunStateManager {
-  private readonly runPath: string;
   private readonly stepRecordsPath: string;
   private readonly stepRecords = new Map<number, StepRecord>();
   private readonly fullStepTextCache = new Map<number, string>();
   private readyPromise: Promise<void>;
 
   constructor(runPath: string) {
-    this.runPath = runPath;
     this.stepRecordsPath = join(runPath, STEP_RECORDS_FILENAME);
     this.readyPromise = this.loadFromDisk();
   }

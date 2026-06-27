@@ -104,6 +104,7 @@ describe("daily session manager", () => {
     expect(content).toContain("\"type\":\"system_event\"");
     expect(content).toContain("\"seq\":3");
     expect(content).not.toContain("task_summary");
+    expect(content).not.toContain("task_thread_update");
     expect(content).not.toContain("tool_call");
   });
 
@@ -140,135 +141,6 @@ describe("daily session manager", () => {
     expect(ctx.recentExchanges.at(-1)?.assistant?.content).toBe("assistant 6");
     expect(ctx.sessionEvents?.map((event) => event.seq)).toEqual(Array.from({ length: 14 }, (_, index) => index + 1));
     await restored.shutdown();
-  });
-
-  it("restores open task threads after restart without promoting them to activities", async () => {
-    let now = new Date("2026-06-12T10:30:00.000Z");
-    const dataDir = tempDataDir();
-    const memory = manager(dataDir, () => now);
-    memory.initialize("local");
-
-    const input = memory.recordUserMessage("local", "build the notes app");
-    const run = memory.createWorkRun("local", input);
-    memory.queueTaskSummary("local", {
-      runId: run.runId,
-      sessionId: run.sessionId,
-      runPath: "data/runs/notes-open",
-      runStatus: "completed",
-      taskStatus: "open",
-      objective: "Build notes app",
-      summary: "Created the initial notes app files.",
-      openWork: ["add search"],
-      toolsUsed: ["write_files"],
-    });
-    await memory.shutdown();
-
-    now = new Date("2026-06-12T10:35:00.000Z");
-    const restored = manager(dataDir, () => now);
-    restored.initialize("local");
-    const ctx = restored.getPromptMemoryContext();
-
-    expect(ctx.taskThreadContext?.activeTask).toMatchObject({
-      objective: "Build notes app",
-      status: "active_in_session",
-      taskStatus: "open",
-      openWork: ["add search"],
-      runIds: [run.runId],
-    });
-    expect(restored.getActivityStore().search("local", "notes search")[0]).toBeUndefined();
-    await restored.shutdown();
-  });
-
-  it("stores open task summaries as task threads before promoting completed work to activity", async () => {
-    let now = new Date("2026-06-12T10:00:00.000Z");
-    const dataDir = tempDataDir();
-    const memory = manager(dataDir, () => now);
-    memory.initialize("local");
-
-    const input = memory.recordUserMessage("local", "build the todo app");
-    const run = memory.createWorkRun("local", input);
-    memory.queueTaskSummary("local", {
-      runId: "no-tools",
-      sessionId: run.sessionId,
-      runPath: "data/runs/no-tools",
-      runStatus: "completed",
-      objective: "Answer a simple question",
-      summary: "Answered directly without tools.",
-      toolsUsed: [],
-    });
-    now = new Date("2026-06-12T10:01:00.000Z");
-    memory.queueTaskSummary("local", {
-      runId: run.runId,
-      sessionId: run.sessionId,
-      runPath: "data/runs/tool-run",
-      runStatus: "completed",
-      taskStatus: "open",
-      objective: "Build todo app",
-      summary: "Created todo app shell in todo/index.html.",
-      progressSummary: "Initial files are written.",
-      openWork: ["make responsive"],
-      keyFacts: ["todo/index.html exists"],
-      evidence: ["write_files verified"],
-      toolsUsed: ["write_files"],
-    });
-
-    const ctx = memory.getPromptMemoryContext();
-    const activeTask = ctx.taskThreadContext?.activeTask;
-    expect(activeTask).toMatchObject({
-      objective: "Build todo app",
-      status: "active_in_session",
-      taskStatus: "open",
-      openWork: ["make responsive"],
-      runIds: [run.runId],
-    });
-    expect(activeTask?.discussionRanges).toEqual([{
-      sessionId: run.sessionId,
-      startSeq: 1,
-      endSeq: 1,
-      reason: "initial_discussion",
-    }]);
-    expect(memory.getActivityStore().search("local", "todo responsive")[0]).toBeUndefined();
-    const afterActivityContext = memory.getPromptMemoryContext();
-    expect(afterActivityContext.activeContextStartSeq).toBe(1);
-    expect(afterActivityContext.sessionWork?.recentActivities).toEqual([]);
-    expect(afterActivityContext.taskThreadContext?.suggestedBinding).toMatchObject({
-      mode: "continue_task",
-      taskThreadId: activeTask?.taskThreadId,
-    });
-    expect(ctx.continuity?.mode).toBe("new");
-    expect(ctx.recentTaskSummaries).toEqual([]);
-
-    now = new Date("2026-06-12T10:02:00.000Z");
-    memory.queueTaskSummary("local", {
-      runId: "done-run",
-      sessionId: run.sessionId,
-      runPath: "data/runs/done-run",
-      taskThreadId: activeTask?.taskThreadId,
-      runStatus: "completed",
-      taskStatus: "done",
-      objective: "Build todo app",
-      summary: "Finished the todo app.",
-      completedMilestones: ["made responsive"],
-      keyFacts: ["todo/index.html exists"],
-      evidence: ["final files verified"],
-      toolsUsed: ["write_files"],
-    });
-
-    const activity = memory.getActivityStore().search("local", "todo responsive")[0];
-    expect(activity).toMatchObject({
-      title: "Build todo app",
-      state: expect.objectContaining({
-        completedWork: expect.arrayContaining(["made responsive"]),
-        openWork: [],
-      }),
-    });
-
-    await memory.flushPersistence();
-    const sessionFile = join(memoryDataDirFromContext(ctx.activeSessionPath), "");
-    const content = readFileSync(sessionFile, "utf8");
-    expect(content).not.toContain("task_summary");
-    expect(content).toContain("task_thread_update");
-    await memory.shutdown();
   });
 
   it("creates a new session when the local date changes", async () => {
