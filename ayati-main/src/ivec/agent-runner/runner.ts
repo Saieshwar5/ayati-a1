@@ -4,7 +4,6 @@ import { devLog, devWarn } from "../../shared/index.js";
 import { prepareIncomingAttachments } from "../../documents/attachment-preparer.js";
 import type { PreparedAttachmentRecord } from "../../documents/prepared-attachment-registry.js";
 import type { PreparedAttachmentSummary } from "../../documents/types.js";
-import { ContinuityResolver } from "../../memory/activity/continuity-resolver.js";
 import type { ActivityAssetRef, MemoryRunHandle, SessionInputHandle, TaskSummaryFailureSummary } from "../../memory/types.js";
 import type { AgentArtifact } from "../types.js";
 import type {
@@ -50,6 +49,12 @@ import {
   measureJson,
 } from "../state-compaction.js";
 import { collectAgentArtifacts } from "../agent-artifacts.js";
+import {
+  applyHarnessContextToState,
+  buildHarnessContextFromSources,
+  createInitialHarnessContext,
+  type HarnessContextInput,
+} from "../harness-context.js";
 import { buildAgentStateView, type AgentStateView } from "./state-view.js";
 import { selectToolsForDecision } from "./tool-selector.js";
 import { callAgentDecision } from "./decision.js";
@@ -134,7 +139,7 @@ export async function runAgentLoop(
     responseKind?: AgentLoopResult["type"];
   }): Promise<AgentLoopResult> => {
     syncPreparedAttachmentsFromRegistry(state, deps);
-    syncTransientMemoryContext(state, deps);
+    syncHarnessContext(state, deps, inputHandle);
     queueStateSnapshot();
     recordStateSnapshotMetric("final");
     if (runPath) {
@@ -212,9 +217,8 @@ export async function runAgentLoop(
     });
   };
 
-  syncTransientMemoryContext(state, deps);
   state.userMessage = getPrimaryUserMessage(deps);
-  syncContinuityContext(state, deps, inputHandle);
+  syncHarnessContext(state, deps, inputHandle);
 
   devLog(
     `[${deps.clientId}] agentLoop start inputKind=${state.inputKind ?? "user_message"} seq=${inputHandle.seq} workRun=${state.runId || "none"} message=${state.userMessage.slice(0, 160)}`,
@@ -226,7 +230,7 @@ export async function runAgentLoop(
   if ((state.attachedDocuments ?? []).some((document) => document.kind !== "image")) {
     const work = await ensureWorkRun();
     await prepareAttachmentsForRun(deps, state, work.runHandle.runId, work.runPath);
-    syncContinuityContext(state, deps, inputHandle);
+    syncHarnessContext(state, deps, inputHandle);
     queueStateSnapshot();
   }
 
@@ -237,8 +241,7 @@ export async function runAgentLoop(
       return finalize({ status: "failed", content: state.finalOutput });
     }
 
-    syncTransientMemoryContext(state, deps);
-    syncContinuityContext(state, deps, inputHandle);
+    syncHarnessContext(state, deps, inputHandle);
     state.iteration++;
     const finalReplyFromVerifiedState = canCompleteFromVerifiedState(state);
     if (finalReplyFromVerifiedState) {
@@ -999,6 +1002,7 @@ function buildInitialState(
   runPath: string,
   runHandle: MemoryRunHandle | undefined,
 ): LoopState {
+  const harnessContext = createInitialHarnessContext(harnessContextInputFromDeps(deps));
   return {
     runId: runHandle?.runId ?? "",
     currentSeq: inputHandle.seq,
@@ -1030,18 +1034,15 @@ function buildInitialState(
     preparedAttachmentRecords: [],
     managedFiles: deps.managedFiles ?? [],
     managedDirectories: deps.managedDirectories ?? [],
-    activeLearningContext: deps.activeLearningContext,
-    personalMemorySnapshot: "",
-    continuity: { mode: "new", confidence: 0, reasons: ["initial state"] },
-    recentExchanges: [],
-    sessionEvents: [],
-    activeContextStartSeq: 1,
-    sessionWork: {
-      activeContextStartSeq: 1,
-      recentActivities: [],
-    },
-    taskThreadContext: undefined,
-    contextEngineContext: deps.contextEngineContext,
+    activeLearningContext: harnessContext.activeLearningContext,
+    personalMemorySnapshot: harnessContext.personalMemorySnapshot,
+    continuity: harnessContext.continuity,
+    recentExchanges: harnessContext.recentExchanges,
+    sessionEvents: harnessContext.sessionEvents,
+    activeContextStartSeq: harnessContext.activeContextStartSeq,
+    sessionWork: harnessContext.sessionWork,
+    taskThreadContext: harnessContext.taskThreadContext,
+    contextEngineContext: harnessContext.contextEngine,
     toolContext: { recent: [] },
   };
 }
@@ -1091,33 +1092,22 @@ async function prepareAttachmentsForRun(
   state.preparedAttachmentRecords = prepared.records;
 }
 
-function syncTransientMemoryContext(state: LoopState, deps: AgentLoopDeps): void {
-  const memCtx = deps.sessionMemory.getPromptMemoryContext();
-  const store = deps.sessionMemory.getActivityStore?.();
-  state.activeLearningContext = deps.activeLearningContext;
-  state.personalMemorySnapshot = memCtx.personalMemorySnapshot ?? "";
-  state.recentExchanges = memCtx.recentExchanges ?? [];
-  state.sessionEvents = memCtx.sessionEvents ?? [];
-  state.activeContextStartSeq = memCtx.activeContextStartSeq ?? 1;
-  state.sessionWork = memCtx.sessionWork ?? { activeContextStartSeq: state.activeContextStartSeq, recentActivities: [] };
-  state.taskThreadContext = memCtx.taskThreadContext;
-  const sessionId = deps.inputHandle?.sessionId ?? deps.runHandle?.sessionId;
-  state.durableTaskBoundary = sessionId ? store?.findLatestDurableTaskBoundary(deps.clientId, sessionId) ?? undefined : undefined;
-}
-
-function syncContinuityContext(state: LoopState, deps: AgentLoopDeps, inputHandle: SessionInputHandle): void {
-  const store = deps.sessionMemory.getActivityStore?.();
-  if (!store) {
-    state.continuity = { mode: "new", confidence: 0, reasons: ["activity store is not configured"] };
-    return;
-  }
-  const resolver = new ContinuityResolver({ store });
-  state.continuity = resolver.resolve({
+function syncHarnessContext(state: LoopState, deps: AgentLoopDeps, inputHandle: SessionInputHandle): void {
+  applyHarnessContextToState(state, buildHarnessContextFromSources({
+    sessionMemory: deps.sessionMemory,
     clientId: deps.clientId,
     sessionId: inputHandle.sessionId,
     userMessage: state.userMessage,
     currentAssetRefs: buildActivityAssets(state, state.runPath ? absolutePath(state.runPath) : ""),
-  });
+    input: harnessContextInputFromDeps(deps),
+  }));
+}
+
+function harnessContextInputFromDeps(deps: AgentLoopDeps): HarnessContextInput {
+  return {
+    activeLearningContext: deps.activeLearningContext,
+    ...deps.harnessContext,
+  };
 }
 
 function getPrimaryUserMessage(deps: AgentLoopDeps): string {

@@ -281,7 +281,7 @@ export class IVecEngine {
           config: this.loopConfig,
           dataDir: this.dataDir ?? "data",
           systemContext: system.decisionSystemContext || system.systemContext || undefined,
-          contextEngineContext: contextEngineTurn?.context,
+          ...(contextEngineTurn?.context ? { harnessContext: { contextEngine: contextEngineTurn.context } } : {}),
           feedbackLedger: this.feedbackLedger,
           attachedDocuments: registeredAttachments.documents,
           attachmentWarnings: registeredAttachments.warnings,

@@ -34,6 +34,10 @@ describe("architecture boundaries", () => {
         if (sourcePath.startsWith("context-engine/") && target.startsWith("server/")) {
           violations.push(`${sourcePath} imports server code through ${target}`);
         }
+
+        if (sourcePath.startsWith("ivec/agent-runner/") && target === "memory/activity/continuity-resolver") {
+          violations.push(`${sourcePath} imports continuity resolver directly instead of using ivec/harness-context`);
+        }
       }
     }
 

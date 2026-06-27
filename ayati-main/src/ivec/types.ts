@@ -44,6 +44,7 @@ import type {
 import type { RunMetrics } from "./metrics.js";
 import type { AgentFeedbackLedger } from "./feedback-ledger.js";
 import type { ContextEngineMachineContext } from "../context-engine/index.js";
+import type { HarnessContextInput } from "./harness-context.js";
 
 export type SystemEventApprovalState = "not_needed" | "pending" | "granted" | "rejected";
 export type RunClass = "interaction" | "task";
@@ -349,7 +350,7 @@ export interface AgentLoopDeps {
   dataDir: string;
   systemContext?: string;
   activeLearningContext?: string;
-  contextEngineContext?: ContextEngineMachineContext;
+  harnessContext?: HarnessContextInput;
   userMessageOverride?: string;
   attachedDocuments?: ManagedDocumentManifest[];
   attachmentWarnings?: string[];
