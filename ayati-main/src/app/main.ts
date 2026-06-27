@@ -33,6 +33,7 @@ import { createAgentFeedbackLedgerFromEnv } from "../ivec/feedback-ledger.js";
 import { createContextEngineRuntime } from "./context-runtime.js";
 import { createChatContextRuntime } from "./chat-context-runtime.js";
 import { createChatTurnRuntime } from "./chat-turn-runtime.js";
+import { createSystemEventRuntime } from "./system-event-runtime.js";
 
 const thisDir = dirname(fileURLToPath(import.meta.url));
 const projectRoot = resolve(thisDir, "..", "..");
@@ -196,6 +197,25 @@ export async function main(): Promise<void> {
     feedbackLedger,
     chatContextRuntime,
   });
+  const systemEventRuntime = createSystemEventRuntime({
+    onReply: (clientId, data) => {
+      wsServer.send(clientId, data);
+    },
+    provider,
+    staticContext,
+    toolExecutor: skills.toolExecutor,
+    skillActivationManager: skills.skillActivationManager,
+    toolWorkingSetManager: skills.toolWorkingSetManager,
+    sessionMemory: memory.sessionMemory,
+    dataDir: resolve(projectRoot, "data"),
+    documentStore: content.documentStore,
+    preparedAttachmentRegistry: content.preparedAttachmentRegistry,
+    fileLibrary: content.fileLibrary,
+    directoryLibrary: content.directoryLibrary,
+    systemEventPolicy,
+    loopConfig: runtimeConfig.agent.loopConfig,
+    feedbackLedger,
+  });
 
   const uploadServer = new UploadServer({
     uploadsDir: content.documentStore.uploadsDir,
@@ -210,25 +230,11 @@ export async function main(): Promise<void> {
     fileLibrary: content.fileLibrary,
   });
   engine = new IVecEngine({
-    onReply: (clientId, data) => {
-      wsServer.send(clientId, data);
-    },
     provider,
     staticContext,
-    toolExecutor: skills.toolExecutor,
-    skillActivationManager: skills.skillActivationManager,
-    toolWorkingSetManager: skills.toolWorkingSetManager,
     sessionMemory: memory.sessionMemory,
-    dataDir: resolve(projectRoot, "data"),
-    documentStore: content.documentStore,
-    preparedAttachmentRegistry: content.preparedAttachmentRegistry,
-    documentContextBackend: content.documentContextBackend,
-    fileLibrary: content.fileLibrary,
-    directoryLibrary: content.directoryLibrary,
-    systemEventPolicy,
-    loopConfig: runtimeConfig.agent.loopConfig,
-    feedbackLedger,
     chatTurnRuntime,
+    systemEventRuntime,
   });
   const systemEventWorker = new SystemEventWorker({
     queueStore: inboundQueueStore,

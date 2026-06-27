@@ -1,22 +1,13 @@
 import { randomUUID } from "node:crypto";
 import type { LlmProvider } from "../core/contracts/provider.js";
 import { noopSessionMemory } from "../memory/provider.js";
-import type { SessionMemory, MemoryRunHandle, SessionInputHandle } from "../memory/types.js";
+import type { SessionMemory } from "../memory/types.js";
 import type { StaticContext } from "../context/static-context-cache.js";
 import { renderBasePromptSection } from "../prompt/sections/base.js";
 import { renderSkillsSection } from "../prompt/sections/skills.js";
 import { renderSoulSection } from "../prompt/sections/soul.js";
 import { estimateTextTokens } from "../prompt/token-estimator.js";
-import type { ToolExecutor } from "../skills/tool-executor.js";
-import type { ToolDefinition } from "../skills/types.js";
-import type { SkillActivationManager } from "../skills/activation-manager.js";
-import type { ToolWorkingSetManager } from "./agent-runner/tool-working-set.js";
 import { devLog, devWarn, devError } from "../shared/index.js";
-import type { DocumentStore } from "../documents/document-store.js";
-import type { DocumentContextBackend } from "../documents/document-context-backend.js";
-import { PreparedAttachmentRegistry } from "../documents/prepared-attachment-registry.js";
-import type { DirectoryLibrary } from "../files/directory-library.js";
-import type { FileLibrary } from "../files/file-library.js";
 import {
   normalizeSystemEvent,
   type AyatiSystemEvent,
@@ -27,30 +18,12 @@ import {
   type SystemEventIntentMetadata,
   type SystemEventTrustTier,
 } from "../core/contracts/plugin.js";
-import type { AgentResponseKind } from "../memory/types.js";
-import { agentLoop } from "./agent-loop.js";
-import {
-  evaluateSessionRotation,
-  type RotationPolicyConfig,
-} from "./session-rotation-policy.js";
-import {
-  classifySystemEvent,
-  resolveSystemEventPolicy,
-  type ResolvedSystemEventPolicy,
-  type SystemEventClassification,
-  type SystemEventHandlingMode,
-  type SystemEventPolicyConfig,
-} from "./system-event-policy.js";
-import type { AgentFeedbackLedger } from "./feedback-ledger.js";
 import type { ChatTurnRuntime } from "./chat-turn-runtime.js";
+import type { SystemEventRuntime } from "./system-event-runtime.js";
 import type {
-  AgentLoopResult,
-  AgentArtifact,
   ChatAttachmentInput,
   ChatInboundMessage,
   DirectoryChatAttachmentInput,
-  LoopConfig,
-  SystemEventApprovalState,
 } from "./types.js";
 
 interface SystemContextBuildResult {
@@ -64,81 +37,33 @@ interface StaticPromptSectionsCache {
   tail: string;
 }
 
-interface SystemEventExecutionPlan {
-  classification: SystemEventClassification;
-  policy: ResolvedSystemEventPolicy;
-  preferredResponseKind: AgentResponseKind;
-  approvalState: SystemEventApprovalState;
-  toolDefinitions: ToolDefinition[];
-}
-
 export interface IVecEngineOptions {
-  onReply?: (clientId: string, data: unknown) => void;
   provider?: LlmProvider;
   staticContext?: StaticContext;
   sessionMemory?: SessionMemory;
-  toolExecutor?: ToolExecutor;
-  skillActivationManager?: SkillActivationManager;
-  toolWorkingSetManager?: ToolWorkingSetManager;
-  loopConfig?: Partial<LoopConfig>;
-  rotationPolicyConfig?: Partial<RotationPolicyConfig>;
   now?: () => Date;
-  dataDir?: string;
-  documentStore?: DocumentStore;
-  preparedAttachmentRegistry?: PreparedAttachmentRegistry;
-  documentContextBackend?: DocumentContextBackend;
-  fileLibrary?: FileLibrary;
-  directoryLibrary?: DirectoryLibrary;
-  systemEventPolicy?: SystemEventPolicyConfig;
-  feedbackLedger?: AgentFeedbackLedger;
   chatTurnRuntime?: ChatTurnRuntime;
+  systemEventRuntime?: SystemEventRuntime;
 }
 
 export class IVecEngine {
-  private readonly onReply?: (clientId: string, data: unknown) => void;
   private readonly provider?: LlmProvider;
   private readonly staticContext?: StaticContext;
-  private readonly toolExecutor?: ToolExecutor;
-  private readonly skillActivationManager?: SkillActivationManager;
-  private readonly toolWorkingSetManager?: ToolWorkingSetManager;
   private sessionMemory: SessionMemory;
-  private readonly loopConfig?: Partial<LoopConfig>;
-  private readonly rotationPolicyConfig?: Partial<RotationPolicyConfig>;
   private readonly nowProvider: () => Date;
-  private readonly dataDir?: string;
-  private readonly documentStore?: DocumentStore;
-  private readonly preparedAttachmentRegistry?: PreparedAttachmentRegistry;
-  private readonly documentContextBackend?: DocumentContextBackend;
-  private readonly fileLibrary?: FileLibrary;
-  private readonly directoryLibrary?: DirectoryLibrary;
-  private readonly systemEventPolicy?: SystemEventPolicyConfig;
-  private readonly feedbackLedger?: AgentFeedbackLedger;
   private readonly chatTurnRuntime?: ChatTurnRuntime;
+  private readonly systemEventRuntime?: SystemEventRuntime;
   private staticSystemTokens = 0;
   private staticTokensReady = false;
   private staticPromptSections?: StaticPromptSectionsCache;
 
   constructor(options?: IVecEngineOptions) {
-    this.onReply = options?.onReply;
     this.provider = options?.provider;
     this.staticContext = options?.staticContext;
-    this.toolExecutor = options?.toolExecutor;
-    this.skillActivationManager = options?.skillActivationManager;
-    this.toolWorkingSetManager = options?.toolWorkingSetManager;
     this.sessionMemory = options?.sessionMemory ?? noopSessionMemory;
-    this.loopConfig = options?.loopConfig;
-    this.rotationPolicyConfig = options?.rotationPolicyConfig;
     this.nowProvider = options?.now ?? (() => new Date());
-    this.dataDir = options?.dataDir;
-    this.documentStore = options?.documentStore;
-    this.preparedAttachmentRegistry = options?.preparedAttachmentRegistry
-      ?? (this.documentStore ? new PreparedAttachmentRegistry() : undefined);
-    this.documentContextBackend = options?.documentContextBackend;
-    this.fileLibrary = options?.fileLibrary;
-    this.directoryLibrary = options?.directoryLibrary;
-    this.systemEventPolicy = options?.systemEventPolicy;
-    this.feedbackLedger = options?.feedbackLedger;
     this.chatTurnRuntime = options?.chatTurnRuntime;
+    this.systemEventRuntime = options?.systemEventRuntime;
   }
 
   async start(): Promise<void> {
@@ -176,7 +101,11 @@ export class IVecEngine {
         devWarn("Ignored invalid system_event payload");
         return;
       }
-      void this.processSystemEvent(clientId, systemEvent).catch((err) => {
+      if (!this.systemEventRuntime) {
+        devWarn("Ignored system_event because no system event runtime is configured.");
+        return;
+      }
+      void this.systemEventRuntime.processSystemEvent({ clientId, event: systemEvent }).catch((err) => {
         devError("Unhandled system_event processing failure:", err);
       });
       return;
@@ -201,229 +130,11 @@ export class IVecEngine {
   }
 
   async handleSystemEvent(clientId: string, event: AyatiSystemEvent): Promise<void> {
-    await this.processSystemEvent(clientId, event);
-  }
-
-  private async processSystemEvent(clientId: string, event: AyatiSystemEvent): Promise<void> {
-    let inputHandle: SessionInputHandle | null = null;
-    let runHandle: MemoryRunHandle | null = null;
-    let runStatus: "completed" | "failed" | "stuck" | null = null;
-    const incomingMessage = event.summary;
-    const systemEventPlan = this.buildSystemEventExecutionPlan(event);
-    const preferredResponseKind = systemEventPlan.preferredResponseKind;
-
-    try {
-      devLog(
-        `[${clientId}] system_event start source=${event.source} eventName=${event.eventName} eventId=${event.eventId} summary=${event.summary}`,
-      );
-      this.rotateSessionBeforeRunIfNeeded(clientId, incomingMessage);
-      inputHandle = this.sessionMemory.recordSystemEvent?.(clientId, {
-        source: event.source,
-        event: event.eventName,
-        eventId: event.eventId,
-        summary: event.summary,
-        eventClass: systemEventPlan.classification.eventClass,
-        trustTier: systemEventPlan.classification.trustTier,
-        effectLevel: systemEventPlan.classification.effectLevel,
-        createdBy: systemEventPlan.classification.createdBy,
-        requestedAction: systemEventPlan.classification.requestedAction,
-        modeApplied: systemEventPlan.policy.mode,
-        approvalState: systemEventPlan.approvalState,
-        occurrenceId: asOptionalString(event.payload["occurrenceId"]),
-        reminderId: asOptionalString(event.payload["reminderId"]),
-        instruction: asOptionalString(event.payload["instruction"]),
-        scheduledFor: asOptionalString(event.payload["scheduledFor"]),
-        triggeredAt: event.receivedAt,
-        payload: event.payload,
-      }) ?? this.sessionMemory.recordUserMessage(clientId, incomingMessage);
-      this.feedbackLedger?.record({
-        clientId,
-        sessionId: inputHandle.sessionId,
-        seq: inputHandle.seq,
-        stage: "message",
-        event: "received",
-        data: {
-          kind: "system_event",
-          source: event.source,
-          eventName: event.eventName,
-          eventId: event.eventId,
-          summary: event.summary,
-          policyMode: systemEventPlan.policy.mode,
-        },
-      });
-
-      if (systemEventPlan.policy.mode === "log_only") {
-        this.sessionMemory.recordSystemEventOutcome?.(clientId, {
-          eventId: event.eventId,
-          source: event.source,
-          event: event.eventName,
-          summary: event.summary,
-          responseKind: "none",
-          approvalState: systemEventPlan.approvalState,
-          status: "completed",
-          note: this.buildSystemEventOutcomeNote(systemEventPlan, event.summary, "none", "log_only"),
-        });
-        runStatus = "completed";
-        return;
-      }
-
-      if (!this.provider) {
-        devLog(`[${clientId}] system_event echo_mode eventId=${event.eventId}`);
-        this.dispatchAgentResponse(clientId, inputHandle, null, {
-          type: preferredResponseKind,
-          content: event.summary,
-        }, {
-          source: event.source,
-          event: event.eventName,
-          eventId: event.eventId,
-        });
-        this.sessionMemory.recordSystemEventOutcome?.(clientId, {
-          eventId: event.eventId,
-          source: event.source,
-          event: event.eventName,
-          summary: event.summary,
-          responseKind: preferredResponseKind,
-          approvalState: systemEventPlan.approvalState,
-          status: "completed",
-          note: this.buildSystemEventOutcomeNote(systemEventPlan, event.summary, preferredResponseKind, "echo_mode"),
-        });
-        runStatus = "completed";
-        return;
-      }
-
-      const toolDefs = systemEventPlan.toolDefinitions;
-      if (toolDefs.length > 0) {
-        runHandle = this.createWorkRun(clientId, inputHandle);
-        this.recordTurnStatus(
-          clientId,
-          runHandle,
-          "processing_started",
-          `system_event:${event.source}/${event.eventName} mode=${systemEventPlan.policy.mode}`,
-        );
-      }
-      const system = await this.buildSystemContext(clientId);
-      devLog(
-        `[${clientId}] system_event entering agentLoop eventId=${event.eventId} mode=${systemEventPlan.policy.mode} intent=${systemEventPlan.classification.intentKind} approval=${systemEventPlan.policy.approvalRequired ? "required" : "not_required"} tools=${toolDefs.length} payloadKeys=${Object.keys(event.payload).join(",") || "none"}`,
-      );
-      const result = await agentLoop({
-        provider: this.provider,
-        toolExecutor: this.toolExecutor,
-        skillActivationManager: this.skillActivationManager,
-        toolWorkingSetManager: this.toolWorkingSetManager,
-        toolDefinitions: toolDefs,
-        sessionMemory: this.sessionMemory,
-        inputHandle,
-        ...(runHandle ? { runHandle } : {}),
-        onWorkRunCreated: (created) => {
-          runHandle = created;
-          this.recordTurnStatus(
-            clientId,
-            created,
-            "processing_started",
-            `system_event:${event.source}/${event.eventName} mode=${systemEventPlan.policy.mode}`,
-          );
-          this.feedbackLedger?.record({
-            clientId,
-            sessionId: created.sessionId,
-            seq: inputHandle?.seq,
-            runId: created.runId,
-            stage: "run",
-            event: "created",
-            data: {
-              source: "system_event",
-              eventSource: event.source,
-              eventName: event.eventName,
-            },
-          });
-        },
-        clientId,
-        inputKind: "system_event",
-        systemEvent: event,
-        systemEventIntentKind: systemEventPlan.classification.intentKind,
-        systemEventRequestedAction: systemEventPlan.classification.requestedAction,
-        systemEventCreatedBy: systemEventPlan.classification.createdBy,
-        systemEventHandlingMode: systemEventPlan.policy.mode,
-        systemEventApprovalRequired: systemEventPlan.policy.approvalRequired,
-        systemEventApprovalState: systemEventPlan.approvalState,
-        systemEventContextVisibility: systemEventPlan.policy.contextVisibility,
-        preferredResponseKind,
-        initialUserMessage: incomingMessage,
-        config: this.loopConfig,
-        dataDir: this.dataDir ?? "data",
-        systemContext: system.decisionSystemContext || system.systemContext || undefined,
-        feedbackLedger: this.feedbackLedger,
-        fileLibrary: this.fileLibrary,
-        directoryLibrary: this.directoryLibrary,
-        documentStore: this.documentStore,
-        preparedAttachmentRegistry: this.preparedAttachmentRegistry,
-        onProgress: (log, runPath) => {
-          devLog(`[${clientId}] ${log}`);
-          if (runHandle) {
-            this.sessionMemory.recordAgentStep(clientId, {
-              runId: runHandle.runId,
-              sessionId: runHandle.sessionId,
-              step: 0,
-              phase: "progress",
-              summary: `${log} | runPath: ${runPath}`,
-            });
-            this.sendProgress(clientId, runHandle, log);
-          }
-        },
-      });
-
-      this.sessionMemory.recordSystemEventOutcome?.(clientId, {
-        ...(runHandle ? { workRunId: runHandle.runId } : {}),
-        eventId: event.eventId,
-        source: event.source,
-        event: event.eventName,
-        summary: event.summary,
-        responseKind: result.type,
-        approvalState: systemEventPlan.approvalState,
-        status: result.status === "completed" ? "completed" : "failed",
-        note: this.buildSystemEventOutcomeNote(systemEventPlan, result.content, result.type),
-      });
-      devLog(
-        `[${clientId}] system_event agentLoop completed eventId=${event.eventId} status=${result.status} runPath=${result.runPath}`,
-      );
-      this.dispatchAgentResponse(clientId, inputHandle, runHandle, result, {
-        source: event.source,
-        event: event.eventName,
-        eventId: event.eventId,
-      });
-      this.queueTaskSummaryPublication(clientId, inputHandle, result.taskSummary);
-      runStatus = result.status;
-    } catch (err) {
-      devError("System event processing error:", err);
-      if (runHandle) {
-        const message = err instanceof Error ? err.message : "Unknown runtime failure";
-        this.sessionMemory.recordRunFailure(
-          clientId,
-          runHandle.runId,
-          runHandle.sessionId,
-          message,
-        );
-        this.recordTurnStatus(clientId, runHandle, "response_failed", message);
-        this.sessionMemory.recordSystemEventOutcome?.(clientId, {
-          workRunId: runHandle.runId,
-          eventId: event.eventId,
-          source: event.source,
-          event: event.eventName,
-          summary: event.summary,
-          responseKind: preferredResponseKind,
-          approvalState: systemEventPlan.approvalState,
-          status: "failed",
-          note: this.buildSystemEventOutcomeNote(systemEventPlan, message, preferredResponseKind, "failed_before_dispatch"),
-        });
-        runStatus = "failed";
-      }
-      this.onReply?.(clientId, {
-        type: "error",
-        content: "Failed to process system event.",
-      });
-      throw err;
-    } finally {
-      await this.completeSessionLifecycle(clientId, runHandle, runStatus);
+    if (!this.systemEventRuntime) {
+      devWarn("Ignored system event because no system event runtime is configured.");
+      return;
     }
+    await this.systemEventRuntime.processSystemEvent({ clientId, event });
   }
 
   private async buildSystemContext(_clientId: string): Promise<SystemContextBuildResult> {
@@ -478,76 +189,6 @@ export class IVecEngine {
       payload,
       ...(intent ? { intent } : {}),
     });
-  }
-
-  private rotateSessionBeforeRunIfNeeded(clientId: string, _incomingMessage: string): void {
-    const createSession = this.sessionMemory.createSession;
-    if (!createSession) {
-      return;
-    }
-
-    const sessionStatus = this.sessionMemory.getSessionStatus?.() ?? null;
-    if (!sessionStatus) {
-      return;
-    }
-
-    const rotationDecision = evaluateSessionRotation({
-      now: this.nowProvider(),
-      contextPercent: sessionStatus.contextPercent,
-      sessionStartedAt: sessionStatus.startedAt,
-      timezone: null,
-      pendingRotationReason: sessionStatus.pendingRotationReason,
-      config: this.rotationPolicyConfig,
-    });
-
-    if (!rotationDecision.rotate) {
-      return;
-    }
-
-    createSession.call(this.sessionMemory, clientId, {
-      runId: `pre-run-rotation-${Date.now()}`,
-      reason: rotationDecision.reason ?? "policy_rotation",
-      source: "system",
-      timezone: rotationDecision.timezone,
-    });
-
-    devWarn(
-      `Pre-run session rotation triggered (${rotationDecision.reason ?? "unknown"}) at ${Math.round(sessionStatus.contextPercent)}% context`,
-    );
-  }
-
-  private async completeSessionLifecycle(
-    clientId: string,
-    runHandle: MemoryRunHandle | null,
-    status: "completed" | "failed" | "stuck" | null,
-  ): Promise<void> {
-    if (!runHandle || !status) {
-      return;
-    }
-
-    try {
-      await this.sessionMemory.updateSessionLifecycle?.(clientId, {
-        runId: runHandle.runId,
-        sessionId: runHandle.sessionId,
-        timezone: null,
-        status,
-      });
-      await this.sessionMemory.flushPersistence?.();
-    } catch (err) {
-      devWarn("Session lifecycle update failed:", err instanceof Error ? err.message : String(err));
-    }
-  }
-
-  private createWorkRun(clientId: string, inputHandle: SessionInputHandle): MemoryRunHandle {
-    const createWorkRun = this.sessionMemory.createWorkRun;
-    if (!createWorkRun) {
-      throw new Error("Session memory does not support work run creation.");
-    }
-    return createWorkRun.call(this.sessionMemory, clientId, inputHandle);
-  }
-
-  private inputScopeId(inputHandle: SessionInputHandle): string {
-    return `input:${inputHandle.sessionId}:${inputHandle.seq}`;
   }
 
   private ensureStaticTokenCache(): void {
@@ -705,258 +346,9 @@ export class IVecEngine {
     };
   }
 
-  private buildSystemEventExecutionPlan(event: AyatiSystemEvent): SystemEventExecutionPlan {
-    const classification = classifySystemEvent(event);
-    const policy = resolveSystemEventPolicy(this.systemEventPolicy, event, classification);
-
-    return {
-      classification,
-      policy,
-      preferredResponseKind: policy.delivery,
-      approvalState: policy.approvalRequired ? "pending" : "not_needed",
-      toolDefinitions: this.resolveSystemEventToolDefinitions(policy.mode),
-    };
-  }
-
-  private resolveSystemEventToolDefinitions(mode: SystemEventHandlingMode): ToolDefinition[] {
-    const allToolDefinitions = this.toolExecutor?.definitions() ?? [];
-    switch (mode) {
-      case "auto_execute_notify":
-      case "auto_execute_silent":
-        return allToolDefinitions;
-      case "log_only":
-      case "analyze_notify":
-      case "analyze_ask":
-      case "draft_then_approve":
-      case "approve_then_execute":
-        return [];
-    }
-  }
-
-  private buildSystemEventOutcomeNote(
-    plan: SystemEventExecutionPlan,
-    content: string,
-    responseKind: AgentResponseKind,
-    prefix?: string,
-  ): string {
-    const parts = [
-      prefix,
-      `mode=${plan.policy.mode}`,
-      `delivery=${plan.policy.delivery}`,
-      `intent=${plan.classification.intentKind}`,
-      `eventClass=${plan.classification.eventClass}`,
-      `trustTier=${plan.classification.trustTier}`,
-      `effectLevel=${plan.classification.effectLevel}`,
-      `createdBy=${plan.classification.createdBy}`,
-      `approvalRequired=${plan.policy.approvalRequired ? "yes" : "no"}`,
-      `response=${responseKind}`,
-      `tools=${plan.toolDefinitions.length}`,
-      plan.classification.requestedAction ? `requestedAction=${plan.classification.requestedAction}` : undefined,
-      content ? `summary=${content}` : undefined,
-    ].filter((part) => typeof part === "string" && part.length > 0);
-    return parts.join(" | ");
-  }
-
-  private queueTaskSummaryPublication(
-    clientId: string,
-    inputHandle: SessionInputHandle,
-    taskSummary: AgentLoopResult["taskSummary"] | undefined,
-  ): void {
-    if (!taskSummary) {
-      return;
-    }
-
-    this.feedbackLedger?.record({
-      clientId,
-      sessionId: inputHandle.sessionId,
-      seq: inputHandle.seq,
-      runId: taskSummary.runId,
-      stage: "memory",
-      event: "task_summary_queued",
-      data: {
-        runStatus: taskSummary.runStatus,
-        taskStatus: taskSummary.taskStatus,
-        summary: taskSummary.summary,
-        assistantResponseKind: taskSummary.assistantResponseKind,
-        attachmentNames: taskSummary.attachmentNames,
-      },
-    });
-
-    const payload = {
-      ...taskSummary,
-      sessionId: inputHandle.sessionId,
-    };
-
-    if (this.sessionMemory.queueTaskSummary) {
-      void Promise.resolve(this.sessionMemory.queueTaskSummary(clientId, payload)).catch((err) => {
-        devWarn(`Task summary queue failed: ${err instanceof Error ? err.message : String(err)}`);
-      });
-      return;
-    }
-
-    this.sessionMemory.recordTaskSummary?.(clientId, payload);
-  }
-
   private shouldIncludeToolDirectoryInPrompt(): boolean {
     return process.env["PROMPT_INCLUDE_TOOL_DIRECTORY"] === "1";
   }
-
-  private sendAssistantReply(
-    clientId: string,
-    inputHandle: SessionInputHandle,
-    runHandle: MemoryRunHandle | null,
-    content: string,
-    artifacts?: AgentArtifact[],
-  ): void {
-    if (runHandle) {
-      this.recordTurnStatus(clientId, runHandle, "response_started");
-    }
-    this.sessionMemory.recordAssistantMessage(clientId, {
-      sessionId: inputHandle.sessionId,
-      ...(runHandle ? { workRunId: runHandle.runId } : {}),
-      content,
-      responseKind: "reply",
-    });
-    if (runHandle) {
-      this.recordTurnStatus(clientId, runHandle, "response_completed");
-    }
-    const artifactPayload = artifacts && artifacts.length > 0 && runHandle
-      ? { artifacts, runId: runHandle.runId }
-      : {};
-    this.onReply?.(clientId, {
-      type: "reply",
-      content,
-      ...artifactPayload,
-    });
-  }
-
-  private sendAssistantFeedback(
-    clientId: string,
-    inputHandle: SessionInputHandle,
-    runHandle: MemoryRunHandle | null,
-    content: string,
-    artifacts?: AgentArtifact[],
-  ): void {
-    if (runHandle) {
-      this.recordTurnStatus(clientId, runHandle, "response_started");
-    }
-    this.sessionMemory.recordAssistantMessage(clientId, {
-      sessionId: inputHandle.sessionId,
-      ...(runHandle ? { workRunId: runHandle.runId } : {}),
-      content,
-      responseKind: "feedback",
-    });
-    if (runHandle) {
-      this.recordTurnStatus(clientId, runHandle, "response_completed");
-    }
-    const artifactPayload = artifacts && artifacts.length > 0 && runHandle
-      ? { artifacts, runId: runHandle.runId }
-      : {};
-    this.onReply?.(clientId, {
-      type: "feedback",
-      content,
-      ...artifactPayload,
-    });
-  }
-
-  private sendAssistantNotification(
-    clientId: string,
-    inputHandle: SessionInputHandle,
-    runHandle: MemoryRunHandle | null,
-    content: string,
-    artifacts?: AgentArtifact[],
-    meta?: {
-      source?: string;
-      event?: string;
-      eventId?: string;
-    },
-  ): void {
-    if (runHandle) {
-      this.recordTurnStatus(clientId, runHandle, "response_started");
-    }
-    this.sessionMemory.recordAssistantMessage(clientId, {
-      sessionId: inputHandle.sessionId,
-      ...(runHandle ? { workRunId: runHandle.runId } : {}),
-      content,
-      responseKind: "notification",
-    });
-    this.sessionMemory.recordAssistantNotification?.(clientId, {
-      ...(runHandle ? { workRunId: runHandle.runId } : {}),
-      sessionId: inputHandle.sessionId,
-      message: content,
-      source: meta?.source,
-      event: meta?.event,
-      eventId: meta?.eventId,
-    });
-    if (runHandle) {
-      this.recordTurnStatus(clientId, runHandle, "response_completed");
-    }
-    const artifactPayload = artifacts && artifacts.length > 0 && runHandle
-      ? { artifacts, runId: runHandle.runId }
-      : {};
-    this.onReply?.(clientId, {
-      type: "notification",
-      content,
-      final: true,
-      ...artifactPayload,
-    });
-  }
-
-  private dispatchAgentResponse(
-    clientId: string,
-    inputHandle: SessionInputHandle,
-    runHandle: MemoryRunHandle | null,
-    result: {
-      type: AgentResponseKind;
-      content: string;
-      artifacts?: AgentArtifact[];
-    },
-    meta?: {
-      source?: string;
-      event?: string;
-      eventId?: string;
-    },
-  ): void {
-    switch (result.type) {
-      case "reply":
-        this.sendAssistantReply(clientId, inputHandle, runHandle, result.content, result.artifacts);
-        return;
-      case "feedback":
-        this.sendAssistantFeedback(clientId, inputHandle, runHandle, result.content, result.artifacts);
-        return;
-      case "notification":
-        this.sendAssistantNotification(clientId, inputHandle, runHandle, result.content, result.artifacts, meta);
-        return;
-      case "none":
-        if (runHandle) {
-          this.recordTurnStatus(clientId, runHandle, "response_completed", "delivery=none");
-        }
-        return;
-    }
-  }
-
-  private sendProgress(clientId: string, runHandle: MemoryRunHandle, content: string): void {
-    this.onReply?.(clientId, {
-      type: "progress",
-      content,
-      runId: runHandle.runId,
-    });
-  }
-
-  private recordTurnStatus(
-    clientId: string,
-    runHandle: MemoryRunHandle,
-    status: "processing_started" | "response_started" | "response_completed" | "response_failed",
-    note?: string,
-  ): void {
-    this.sessionMemory.recordTurnStatus?.(clientId, {
-      runId: runHandle.runId,
-      sessionId: runHandle.sessionId,
-      status,
-      note,
-    });
-  }
-
 }
 
 function asOptionalString(value: unknown): string | undefined {

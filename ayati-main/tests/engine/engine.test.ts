@@ -2,8 +2,15 @@ import { describe, it, expect, vi } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { IVecEngine, type IVecEngineOptions } from "../../src/ivec/index.js";
-import { createChatTurnRuntime } from "../../src/app/chat-turn-runtime.js";
+import { IVecEngine } from "../../src/ivec/index.js";
+import {
+  createChatTurnRuntime,
+  type CreateChatTurnRuntimeOptions,
+} from "../../src/app/chat-turn-runtime.js";
+import {
+  createSystemEventRuntime,
+  type CreateSystemEventRuntimeOptions,
+} from "../../src/app/system-event-runtime.js";
 import type { LlmProvider } from "../../src/core/contracts/provider.js";
 import type { LlmTurnInput, LlmTurnOutput } from "../../src/core/contracts/llm-protocol.js";
 import type { SessionMemory } from "../../src/memory/types.js";
@@ -144,9 +151,12 @@ function createChatContextRuntime(turn: ChatContextPreparedTurn): ChatContextRun
   };
 }
 
-type TestEngineOptions = Omit<IVecEngineOptions, "chatTurnRuntime"> & {
-  chatContextRuntime?: ChatContextRuntime;
-};
+type TestEngineOptions =
+  & Omit<Partial<CreateChatTurnRuntimeOptions & CreateSystemEventRuntimeOptions>, "sessionMemory" | "chatContextRuntime">
+  & {
+    sessionMemory?: SessionMemory;
+    chatContextRuntime?: ChatContextRuntime;
+  };
 
 function createEngine(options: TestEngineOptions = {}): IVecEngine {
   const sessionMemory = options.sessionMemory ?? createSessionMemory();
@@ -169,10 +179,32 @@ function createEngine(options: TestEngineOptions = {}): IVecEngine {
     feedbackLedger: options.feedbackLedger,
     chatContextRuntime: options.chatContextRuntime,
   });
-  return new IVecEngine({
-    ...options,
+  const systemEventRuntime = createSystemEventRuntime({
+    onReply: options.onReply,
+    provider: options.provider,
+    staticContext: options.staticContext,
     sessionMemory,
+    toolExecutor: options.toolExecutor,
+    skillActivationManager: options.skillActivationManager,
+    toolWorkingSetManager: options.toolWorkingSetManager,
+    loopConfig: options.loopConfig,
+    rotationPolicyConfig: options.rotationPolicyConfig,
+    now: options.now,
+    dataDir: options.dataDir,
+    documentStore: options.documentStore,
+    preparedAttachmentRegistry: options.preparedAttachmentRegistry,
+    fileLibrary: options.fileLibrary,
+    directoryLibrary: options.directoryLibrary,
+    systemEventPolicy: options.systemEventPolicy,
+    feedbackLedger: options.feedbackLedger,
+  });
+  return new IVecEngine({
+    provider: options.provider,
+    staticContext: options.staticContext,
+    sessionMemory,
+    now: options.now,
     chatTurnRuntime,
+    systemEventRuntime,
   });
 }
 

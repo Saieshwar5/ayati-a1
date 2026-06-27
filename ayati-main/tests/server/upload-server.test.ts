@@ -7,7 +7,6 @@ import { UploadServer, WsServer } from "../../src/server/index.js";
 import { IVecEngine } from "../../src/ivec/index.js";
 import { createChatTurnRuntime } from "../../src/app/chat-turn-runtime.js";
 import { DocumentStore } from "../../src/documents/document-store.js";
-import { DocumentContextBackend } from "../../src/documents/document-context-backend.js";
 import { noopSessionMemory } from "../../src/memory/provider.js";
 import { pulseTool } from "../../src/skills/builtins/pulse/index.js";
 import type { LlmProvider } from "../../src/core/contracts/provider.js";
@@ -337,26 +336,25 @@ describe("UploadServer", () => {
       dataDir: join(dataDir, "documents"),
       preferCli: false,
     });
-    const documentContextBackend = new DocumentContextBackend({ store: documentStore });
-      const provider: LlmProvider = {
-        name: "mock",
-        version: "1.0.0",
-        capabilities: { nativeToolCalling: true },
-        start: vi.fn(),
-        stop: vi.fn(),
+    const provider: LlmProvider = {
+      name: "mock",
+      version: "1.0.0",
+      capabilities: { nativeToolCalling: true },
+      start: vi.fn(),
+      stop: vi.fn(),
       generateTurn: vi.fn().mockImplementation(async (input: LlmTurnInput) => {
         const prompt = input.messages.map((message) => messageContentToText(message.content)).join("\n");
-          expect(prompt).toContain('"prepared"');
-          expect(prompt).toContain("policy.txt");
-          return {
-            type: "assistant",
-            content: JSON.stringify({
-              kind: "reply",
-              message: "I can see the attached policy document.",
-              status: "completed",
-            }),
-          };
-        }),
+        expect(prompt).toContain('"prepared"');
+        expect(prompt).toContain("policy.txt");
+        return {
+          type: "assistant",
+          content: JSON.stringify({
+            kind: "reply",
+            message: "I can see the attached policy document.",
+            status: "completed",
+          }),
+        };
+      }),
     };
 
     let wsServer: WsServer | null = null;
@@ -373,13 +371,9 @@ describe("UploadServer", () => {
         documentStore,
       });
       engine = new IVecEngine({
-        onReply: (clientId, data) => wsServer?.send(clientId, data),
         provider,
         sessionMemory: noopSessionMemory,
         chatTurnRuntime,
-        dataDir,
-        documentStore,
-        documentContextBackend,
       });
       wsServer = new WsServer({
         port: wsPort,
@@ -456,7 +450,6 @@ describe("UploadServer", () => {
       dataDir: join(dataDir, "documents"),
       preferCli: false,
     });
-    const documentContextBackend = new DocumentContextBackend({ store: documentStore });
     const provider: LlmProvider = {
       name: "mock",
       version: "1.0.0",
@@ -493,13 +486,9 @@ describe("UploadServer", () => {
         documentStore,
       });
       engine = new IVecEngine({
-        onReply: (clientId, data) => wsServer?.send(clientId, data),
         provider,
         sessionMemory: noopSessionMemory,
         chatTurnRuntime,
-        dataDir,
-        documentStore,
-        documentContextBackend,
       });
       wsServer = new WsServer({
         port: wsPort,
