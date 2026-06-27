@@ -50,4 +50,8 @@ Preserve the current harness model: `context pack -> decision -> action executor
 
 For local external reference projects that may help with architecture, memory,
 agent harness, plugin, CLI, or developer-tool comparisons, see
-`project-docs/engineering/history/references/reference-projects.md`.
+`reference-projects/`.
+
+For user ideas, plans, decisions, and next-action notes that should guide what
+the agent works on next, check `agent-notes/`. Keep `project-docs/` for stable
+project knowledge about what Ayati is and how it works.

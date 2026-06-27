@@ -33,8 +33,11 @@ Read these first before major code changes:
 5. `engineering/architecture/context-and-memory.md`
 6. `engineering/testing.md`
 
-When external comparison or inspiration is useful, see
-`engineering/history/references/reference-projects.md`.
+For user ideas, plans, decisions, and next-action notes that should guide what
+an agent works on next, use `../agent-notes/` instead of `project-docs/`.
+
+For external projects that may help with inspiration or comparison, use
+`../reference-projects/` instead of `project-docs/`.
 
 Use this directory for stable project context. Do not place secrets, API keys,
 generated runtime data, large build outputs, or scratch notes here.
