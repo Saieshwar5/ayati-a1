@@ -1,5 +1,4 @@
 import { randomUUID } from "node:crypto";
-import { readFile } from "node:fs/promises";
 import type { LlmProvider } from "../core/contracts/provider.js";
 import { noopSessionMemory } from "../memory/provider.js";
 import type { SessionMemory, MemoryRunHandle, SessionInputHandle } from "../memory/types.js";
@@ -8,22 +7,16 @@ import { renderBasePromptSection } from "../prompt/sections/base.js";
 import { renderSkillsSection } from "../prompt/sections/skills.js";
 import { renderSoulSection } from "../prompt/sections/soul.js";
 import { estimateTextTokens } from "../prompt/token-estimator.js";
-import {
-  appendPulseProposalQuestion,
-  PulseProposalReflectionService,
-} from "../pulse/proposal-reflection.js";
 import type { ToolExecutor } from "../skills/tool-executor.js";
 import type { ToolDefinition } from "../skills/types.js";
 import type { SkillActivationManager } from "../skills/activation-manager.js";
 import type { ToolWorkingSetManager } from "./agent-runner/tool-working-set.js";
 import { devLog, devWarn, devError } from "../shared/index.js";
-import type { ManagedDocumentManifest } from "../documents/types.js";
 import type { DocumentStore } from "../documents/document-store.js";
 import type { DocumentContextBackend } from "../documents/document-context-backend.js";
 import { PreparedAttachmentRegistry } from "../documents/prepared-attachment-registry.js";
 import type { DirectoryLibrary } from "../files/directory-library.js";
 import type { FileLibrary } from "../files/file-library.js";
-import type { DirectoryAttachmentRecord, ManagedFileRecord } from "../files/types.js";
 import {
   normalizeSystemEvent,
   type AyatiSystemEvent,
@@ -49,7 +42,7 @@ import {
   type SystemEventPolicyConfig,
 } from "./system-event-policy.js";
 import type { AgentFeedbackLedger } from "./feedback-ledger.js";
-import type { ChatContextPreparedTurn, ChatContextRuntime } from "./chat-context-runtime.js";
+import type { ChatTurnRuntime } from "./chat-turn-runtime.js";
 import type {
   AgentLoopResult,
   AgentArtifact,
@@ -98,7 +91,7 @@ export interface IVecEngineOptions {
   directoryLibrary?: DirectoryLibrary;
   systemEventPolicy?: SystemEventPolicyConfig;
   feedbackLedger?: AgentFeedbackLedger;
-  chatContextRuntime?: ChatContextRuntime;
+  chatTurnRuntime?: ChatTurnRuntime;
 }
 
 export class IVecEngine {
@@ -120,8 +113,7 @@ export class IVecEngine {
   private readonly directoryLibrary?: DirectoryLibrary;
   private readonly systemEventPolicy?: SystemEventPolicyConfig;
   private readonly feedbackLedger?: AgentFeedbackLedger;
-  private readonly chatContextRuntime?: ChatContextRuntime;
-  private readonly pulseProposalReflectionService = new PulseProposalReflectionService();
+  private readonly chatTurnRuntime?: ChatTurnRuntime;
   private staticSystemTokens = 0;
   private staticTokensReady = false;
   private staticPromptSections?: StaticPromptSectionsCache;
@@ -146,7 +138,7 @@ export class IVecEngine {
     this.directoryLibrary = options?.directoryLibrary;
     this.systemEventPolicy = options?.systemEventPolicy;
     this.feedbackLedger = options?.feedbackLedger;
-    this.chatContextRuntime = options?.chatContextRuntime;
+    this.chatTurnRuntime = options?.chatTurnRuntime;
   }
 
   async start(): Promise<void> {
@@ -193,270 +185,23 @@ export class IVecEngine {
     const msg = parseChatInboundMessage(data);
     if (!msg) return;
 
-    void this.processChat(clientId, msg.content, msg.attachments ?? [], msg.uiContext);
+    if (!this.chatTurnRuntime) {
+      devWarn("Ignored chat message because no chat turn runtime is configured.");
+      return;
+    }
+
+    void this.chatTurnRuntime.processChat({
+      clientId,
+      content: msg.content,
+      attachments: msg.attachments ?? [],
+      uiContext: msg.uiContext,
+    }).catch((err) => {
+      devError("Unhandled chat processing failure:", err);
+    });
   }
 
   async handleSystemEvent(clientId: string, event: AyatiSystemEvent): Promise<void> {
     await this.processSystemEvent(clientId, event);
-  }
-
-  private async processChat(
-    clientId: string,
-    content: string,
-    attachments: ChatAttachmentInput[],
-    uiContext?: ChatInboundMessage["uiContext"],
-  ): Promise<void> {
-    let inputHandle: SessionInputHandle | null = null;
-    let runHandle: MemoryRunHandle | null = null;
-    let chatContextTurn: ChatContextPreparedTurn | null = null;
-    let runStatus: "completed" | "failed" | "stuck" | null = null;
-    try {
-      this.rotateSessionBeforeRunIfNeeded(clientId, content);
-      inputHandle = this.sessionMemory.recordUserMessage(clientId, content);
-      this.feedbackLedger?.record({
-        clientId,
-        sessionId: inputHandle.sessionId,
-        seq: inputHandle.seq,
-        stage: "message",
-        event: "received",
-        data: {
-          kind: "chat",
-          content,
-          attachments: attachments.map((attachment) => summarizeChatAttachment(attachment)),
-          uiContext,
-        },
-      });
-      chatContextTurn = await this.prepareChatContextTurn(clientId, content);
-      if (chatContextTurn?.status === "ambiguous") {
-        await this.dispatchChatContextAmbiguity(clientId, inputHandle, chatContextTurn);
-        runStatus = "completed";
-        return;
-      }
-
-      if (this.provider) {
-        if (attachments.length > 0) {
-          runHandle = this.createWorkRun(clientId, inputHandle);
-          this.recordTurnStatus(clientId, runHandle, "processing_started");
-        }
-        const registeredAttachments = runHandle
-          ? await this.registerIncomingDocuments(attachments, runHandle.runId)
-          : { documents: [], warnings: [], managedFiles: [], managedDirectories: [] };
-        const toolDefs = this.toolExecutor?.definitions({
-          clientId,
-          runId: runHandle?.runId ?? this.inputScopeId(inputHandle),
-          sessionId: inputHandle.sessionId,
-        }) ?? [];
-        const system = await this.buildSystemContext(clientId);
-        let result = await agentLoop({
-          provider: this.provider,
-          toolExecutor: this.toolExecutor,
-          skillActivationManager: this.skillActivationManager,
-          toolWorkingSetManager: this.toolWorkingSetManager,
-          toolDefinitions: toolDefs,
-          sessionMemory: this.sessionMemory,
-          inputHandle,
-          ...(runHandle ? { runHandle } : {}),
-          onWorkRunCreated: (created) => {
-            runHandle = created;
-            this.recordTurnStatus(clientId, created, "processing_started");
-            this.feedbackLedger?.record({
-              clientId,
-              sessionId: created.sessionId,
-              seq: inputHandle?.seq,
-              runId: created.runId,
-              stage: "run",
-              event: "created",
-              data: {
-                source: "engine",
-              },
-            });
-          },
-          clientId,
-          uiContext,
-          initialUserMessage: content,
-          config: this.loopConfig,
-          dataDir: this.dataDir ?? "data",
-          systemContext: system.decisionSystemContext || system.systemContext || undefined,
-          ...(chatContextTurn?.context ? { harnessContext: { contextEngine: chatContextTurn.context } } : {}),
-          feedbackLedger: this.feedbackLedger,
-          attachedDocuments: registeredAttachments.documents,
-          attachmentWarnings: registeredAttachments.warnings,
-          managedFiles: registeredAttachments.managedFiles,
-          managedDirectories: registeredAttachments.managedDirectories,
-          fileLibrary: this.fileLibrary,
-          directoryLibrary: this.directoryLibrary,
-          documentStore: this.documentStore,
-          preparedAttachmentRegistry: this.preparedAttachmentRegistry,
-          onProgress: (log, runPath) => {
-            devLog(`[${clientId}] ${log}`);
-            if (runHandle) {
-              this.sessionMemory.recordAgentStep(clientId, {
-                runId: runHandle.runId,
-                sessionId: runHandle.sessionId,
-                step: 0,
-                phase: "progress",
-                summary: `${log} | runPath: ${runPath}`,
-              });
-              this.sendProgress(clientId, runHandle, log);
-            }
-          },
-        });
-        result = await this.applyPulseProposalReflection(clientId, content, result, toolDefs);
-        this.dispatchAgentResponse(clientId, inputHandle, runHandle, result);
-        await this.completeChatContextRun(clientId, chatContextTurn, result);
-        this.feedbackLedger?.record({
-          clientId,
-          sessionId: inputHandle.sessionId,
-          seq: inputHandle.seq,
-          ...(runHandle ? { runId: runHandle.runId } : {}),
-          stage: "final",
-          event: "dispatched",
-          data: {
-            type: result.type,
-            status: result.status,
-            content: result.content,
-            artifacts: result.artifacts,
-            runPath: result.runPath,
-          },
-        });
-        this.queueTaskSummaryPublication(clientId, inputHandle, result.taskSummary);
-        runStatus = result.status;
-      } else {
-        const echoContent = `Received: "${content}"`;
-        this.dispatchAgentResponse(clientId, inputHandle, null, {
-          type: "reply",
-          content: echoContent,
-        });
-        await this.recordChatContextAssistantMessage(clientId, chatContextTurn, echoContent);
-        runStatus = "completed";
-      }
-    } catch (err) {
-      devError("Provider error:", err);
-      this.feedbackLedger?.record({
-        clientId,
-        ...(inputHandle ? { sessionId: inputHandle.sessionId, seq: inputHandle.seq } : {}),
-        ...(runHandle ? { runId: runHandle.runId } : {}),
-        stage: "final",
-        event: "error",
-        data: {
-          message: err instanceof Error ? err.message : String(err),
-        },
-      });
-      if (runHandle) {
-        const message = err instanceof Error ? err.message : "Unknown runtime failure";
-        this.sessionMemory.recordRunFailure(
-          clientId,
-          runHandle.runId,
-          runHandle.sessionId,
-          message,
-        );
-        this.recordTurnStatus(clientId, runHandle, "response_failed", message);
-        runStatus = "failed";
-      }
-      this.onReply?.(clientId, {
-        type: "error",
-        content: "Failed to generate a response.",
-      });
-    } finally {
-      await this.completeSessionLifecycle(clientId, runHandle, runStatus);
-    }
-  }
-
-  private async prepareChatContextTurn(
-    clientId: string,
-    userMessage: string,
-  ): Promise<ChatContextPreparedTurn | null> {
-    if (!this.chatContextRuntime) {
-      return null;
-    }
-
-    const turn = await this.chatContextRuntime.prepareUserTurn({
-      clientId,
-      userMessage,
-      at: this.nowProvider().toISOString(),
-    });
-    if (!turn) {
-      return null;
-    }
-
-    this.feedbackLedger?.record({
-      clientId,
-      sessionId: turn.sessionId,
-      ...(turn.status === "ready" ? { runId: turn.runId } : {}),
-      stage: "context_engine",
-      event: "prepared",
-      data: {
-        status: turn.status,
-        ...(turn.status === "ready" ? {
-          workId: turn.workId,
-          ref: turn.ref,
-        } : {
-          candidateCount: turn.candidateCount,
-        }),
-      },
-    });
-    return turn;
-  }
-
-  private async dispatchChatContextAmbiguity(
-    clientId: string,
-    inputHandle: SessionInputHandle,
-    turn: Extract<ChatContextPreparedTurn, { status: "ambiguous" }>,
-  ): Promise<void> {
-    await this.recordChatContextAssistantMessage(clientId, turn, turn.message);
-    this.dispatchAgentResponse(clientId, inputHandle, null, {
-      type: "feedback",
-      content: turn.message,
-    });
-  }
-
-  private async completeChatContextRun(
-    clientId: string,
-    turn: ChatContextPreparedTurn | null,
-    result: AgentLoopResult,
-  ): Promise<void> {
-    if (!this.chatContextRuntime || turn?.status !== "ready") {
-      return;
-    }
-
-    const completed = await this.chatContextRuntime.completePreparedRun({
-      clientId,
-      turn,
-      result,
-      at: this.nowProvider().toISOString(),
-    });
-    if (!completed) {
-      return;
-    }
-
-    this.feedbackLedger?.record({
-      clientId,
-      sessionId: turn.sessionId,
-      runId: turn.runId,
-      stage: "context_engine",
-      event: "committed",
-      data: {
-        workId: completed.workId,
-        workCommit: completed.workCommit,
-        runRef: completed.runRef,
-      },
-    });
-  }
-
-  private async recordChatContextAssistantMessage(
-    clientId: string,
-    turn: ChatContextPreparedTurn | null,
-    message: string,
-  ): Promise<void> {
-    if (!this.chatContextRuntime || !turn) {
-      return;
-    }
-    await this.chatContextRuntime.recordAssistantMessage({
-      clientId,
-      turn,
-      message,
-      at: this.nowProvider().toISOString(),
-    });
   }
 
   private async processSystemEvent(clientId: string, event: AyatiSystemEvent): Promise<void> {
@@ -1052,54 +797,6 @@ export class IVecEngine {
     this.sessionMemory.recordTaskSummary?.(clientId, payload);
   }
 
-  private async applyPulseProposalReflection(
-    clientId: string,
-    userMessage: string,
-    result: AgentLoopResult,
-    toolDefinitions: ToolDefinition[],
-  ): Promise<AgentLoopResult> {
-    if (!this.provider || result.type !== "reply" || result.status !== "completed" || result.runClass !== "task" || !result.taskSummary) {
-      return result;
-    }
-
-    try {
-      const reflection = await this.pulseProposalReflectionService.reflect({
-        provider: this.provider,
-        currentUserMessage: userMessage,
-        assistantResponse: result.content,
-        taskSummary: result.taskSummary,
-        memoryContext: this.sessionMemory.getPromptMemoryContext(),
-        toolDefinitions,
-        now: this.nowProvider(),
-      });
-
-      if (reflection.action !== "ask_user") {
-        if (reflection.reason) {
-          devLog(`[${clientId}] pulse proposal reflection skipped: ${reflection.reason}`);
-        }
-        return result;
-      }
-
-      devLog(
-        `[${clientId}] pulse proposal reflection asking confidence=${reflection.confidence.toFixed(2)} reason=${reflection.reason}`,
-      );
-      const content = appendPulseProposalQuestion(result.content, reflection.question);
-      return {
-        ...result,
-        type: "feedback",
-        content,
-        taskSummary: {
-          ...result.taskSummary,
-          assistantResponse: content,
-          assistantResponseKind: "feedback",
-        },
-      };
-    } catch (err) {
-      devWarn("Pulse proposal reflection failed:", err instanceof Error ? err.message : String(err));
-      return result;
-    }
-  }
-
   private shouldIncludeToolDirectoryInPrompt(): boolean {
     return process.env["PROMPT_INCLUDE_TOOL_DIRECTORY"] === "1";
   }
@@ -1260,140 +957,6 @@ export class IVecEngine {
     });
   }
 
-  private async registerIncomingDocuments(
-    attachments: ChatAttachmentInput[],
-    runId: string,
-  ): Promise<{
-    documents: ManagedDocumentManifest[];
-    warnings: string[];
-    managedFiles: ManagedFileRecord[];
-    managedDirectories: DirectoryAttachmentRecord[];
-  }> {
-    if (attachments.length === 0) {
-      return { documents: [], warnings: [], managedFiles: [], managedDirectories: [] };
-    }
-
-    if (this.fileLibrary) {
-      const managedFiles: ManagedFileRecord[] = [];
-      const managedDirectories: DirectoryAttachmentRecord[] = [];
-      const warnings: string[] = [];
-      for (const attachment of attachments) {
-        try {
-          if (isDirectoryChatAttachment(attachment)) {
-            if (!this.directoryLibrary) {
-              warnings.push(`${formatAttachmentLabel(attachment)}: Directory attachments are not configured.`);
-              continue;
-            }
-            managedDirectories.push(await this.directoryLibrary.registerPath({
-              path: attachment.path,
-              name: attachment.name,
-              runId,
-              include: attachment.include,
-              exclude: attachment.exclude,
-              maxDepth: attachment.maxDepth,
-              maxFiles: attachment.maxFiles,
-            }));
-            continue;
-          }
-
-          managedFiles.push(await this.registerIncomingManagedFile(attachment, runId));
-        } catch (err) {
-          warnings.push(`${formatAttachmentLabel(attachment)}: ${err instanceof Error ? err.message : String(err)}`);
-        }
-      }
-
-      return {
-        documents: managedFiles.map(managedFileToDocumentManifest),
-        warnings,
-        managedFiles,
-        managedDirectories,
-      };
-    }
-
-    if (!this.documentStore) {
-      return {
-        documents: [],
-        warnings: ["Attachments were provided but no document store is configured."],
-        managedFiles: [],
-        managedDirectories: [],
-      };
-    }
-
-    const registered = await this.documentStore.registerAttachments(attachments.filter(isLegacyDocumentAttachment));
-    return { ...registered, managedFiles: [], managedDirectories: [] };
-  }
-
-  private async registerIncomingManagedFile(
-    attachment: ChatAttachmentInput,
-    runId: string,
-  ): Promise<ManagedFileRecord> {
-    if ("fileId" in attachment && typeof attachment.fileId === "string" && attachment.fileId.trim().length > 0) {
-      await this.fileLibrary!.touchRunFile(runId, attachment.fileId, "attached");
-      return this.fileLibrary!.getFile(attachment.fileId);
-    }
-
-    if (attachment.source === "upload") {
-      const bytes = await readFile(attachment.uploadedPath);
-      return this.fileLibrary!.registerUpload({
-        originalName: attachment.originalName,
-        bytes,
-        origin: "user_upload",
-        mimeType: attachment.mimeType,
-        runId,
-        runRole: "attached",
-        originalPath: attachment.uploadedPath,
-      });
-    }
-
-    if ("path" in attachment) {
-      return this.fileLibrary!.registerPath({
-        path: attachment.path,
-        name: attachment.name,
-        runId,
-        runRole: "attached",
-      });
-    }
-
-    throw new Error("Attachment is missing a usable fileId or path.");
-  }
-}
-
-function managedFileToDocumentManifest(file: ManagedFileRecord): ManagedDocumentManifest {
-  return {
-    documentId: file.sha256.slice(0, 16),
-    name: file.safeName,
-    displayName: file.originalName,
-    source: file.origin === "local_path" ? "cli" : "upload",
-    originalPath: file.originalPath ?? file.sourceUri ?? file.storagePath,
-    storedPath: file.storagePath,
-    kind: file.kind,
-    ...(file.mimeType ? { mimeType: file.mimeType } : {}),
-    sizeBytes: file.sizeBytes,
-    checksum: file.sha256,
-  };
-}
-
-function isDirectoryChatAttachment(attachment: ChatAttachmentInput): attachment is DirectoryChatAttachmentInput {
-  return attachment.type === "directory";
-}
-
-function isLegacyDocumentAttachment(
-  attachment: ChatAttachmentInput,
-): attachment is Exclude<ChatAttachmentInput, { fileId: string } | DirectoryChatAttachmentInput> {
-  return !("fileId" in attachment) && !isDirectoryChatAttachment(attachment);
-}
-
-function formatAttachmentLabel(attachment: ChatAttachmentInput): string {
-  if ("fileId" in attachment && typeof attachment.fileId === "string") {
-    return attachment.fileId;
-  }
-  if (attachment.source === "upload") {
-    return attachment.uploadedPath;
-  }
-  if (isDirectoryChatAttachment(attachment)) {
-    return attachment.path;
-  }
-  return "path" in attachment ? attachment.path : "attachment";
 }
 
 function asOptionalString(value: unknown): string | undefined {
@@ -1627,42 +1190,6 @@ function renderToolDirectorySection(toolDirectory: string | undefined, includeTo
   if (!includeToolDirectory) return "";
   if (!toolDirectory || toolDirectory.trim().length === 0) return "";
   return `# Available Tools\n\n${toolDirectory}`;
-}
-
-function summarizeChatAttachment(attachment: ChatAttachmentInput): Record<string, unknown> {
-  if ("uploadedPath" in attachment) {
-    return {
-      type: attachment.type ?? "upload",
-      source: attachment.source,
-      originalName: attachment.originalName,
-      mimeType: attachment.mimeType,
-      sizeBytes: attachment.sizeBytes,
-      fileId: attachment.fileId,
-    };
-  }
-  if ("fileId" in attachment) {
-    return {
-      type: attachment.type ?? "managed_file",
-      source: attachment.source,
-      fileId: attachment.fileId,
-    };
-  }
-  if (attachment.type === "directory") {
-    return {
-      type: attachment.type,
-      source: attachment.source,
-      path: attachment.path,
-      name: attachment.name,
-      maxDepth: attachment.maxDepth,
-      maxFiles: attachment.maxFiles,
-    };
-  }
-  return {
-    type: attachment.type ?? "file",
-    source: attachment.source,
-    path: attachment.path,
-    name: attachment.name,
-  };
 }
 
 export { IVecEngine as AgentEngine };
