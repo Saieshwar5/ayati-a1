@@ -735,7 +735,9 @@ function summarizeTaskSummary(taskSummary: AgentTaskSummaryRecord | undefined): 
 async function executeActionStep(input: ExecuteActionStepInput): Promise<ExecuteActionStepResult> {
   input.state.runClass = "task";
   const runHandle = requireWorkRunHandle(input.deps);
-  const currentActivityId = input.state.continuity?.mode === "continue" ? input.state.continuity.current?.activityId : undefined;
+  const currentActivityId = input.state.harnessContext.continuity.mode === "continue"
+    ? input.state.harnessContext.continuity.current?.activityId
+    : undefined;
   let execution = await executeAgentAction(
     {
       toolExecutor: input.deps.toolExecutor,
@@ -1035,15 +1037,6 @@ function buildInitialState(
     managedFiles: deps.managedFiles ?? [],
     managedDirectories: deps.managedDirectories ?? [],
     harnessContext,
-    activeLearningContext: harnessContext.activeLearningContext,
-    personalMemorySnapshot: harnessContext.personalMemorySnapshot,
-    continuity: harnessContext.continuity,
-    recentExchanges: harnessContext.recentExchanges,
-    sessionEvents: harnessContext.sessionEvents,
-    activeContextStartSeq: harnessContext.activeContextStartSeq,
-    sessionWork: harnessContext.sessionWork,
-    taskThreadContext: harnessContext.taskThreadContext,
-    contextEngineContext: harnessContext.contextEngine,
     toolContext: { recent: [] },
   };
 }
@@ -1105,10 +1098,7 @@ function syncHarnessContext(state: LoopState, deps: AgentLoopDeps, inputHandle: 
 }
 
 function harnessContextInputFromDeps(deps: AgentLoopDeps): HarnessContextInput {
-  return {
-    activeLearningContext: deps.activeLearningContext,
-    ...deps.harnessContext,
-  };
+  return deps.harnessContext ?? {};
 }
 
 function getPrimaryUserMessage(deps: AgentLoopDeps): string {
@@ -1363,7 +1353,7 @@ function buildTaskSummaryRecord(
     runPath: absoluteRunPath,
     activityId: selectContinuationActivityId(state),
     taskThreadId: selectContinuationTaskThreadId(state),
-    taskBindingMode: state.taskThreadContext?.suggestedBinding.mode,
+    taskBindingMode: state.harnessContext.taskThreadContext?.suggestedBinding.mode,
     triggerSeq: state.currentSeq,
     discussionStartSeq: findDiscussionStartSeq(state),
     discussionEndSeq: state.currentSeq,
@@ -1455,7 +1445,7 @@ function findDiscussionStartSeq(state: LoopState): number | undefined {
   if (!state.currentSeq) {
     return undefined;
   }
-  return Math.min(Math.max(1, state.activeContextStartSeq || 1), state.currentSeq);
+  return Math.min(Math.max(1, state.harnessContext.activeContextStartSeq || 1), state.currentSeq);
 }
 
 function deriveStopReason(
@@ -1525,11 +1515,13 @@ function buildAttachmentNames(preparedAttachments: PreparedAttachmentSummary[] |
 }
 
 function selectContinuationActivityId(state: LoopState): string | undefined {
-  return state.continuity?.mode === "continue" ? state.continuity.current?.activityId : undefined;
+  return state.harnessContext.continuity.mode === "continue"
+    ? state.harnessContext.continuity.current?.activityId
+    : undefined;
 }
 
 function selectContinuationTaskThreadId(state: LoopState): string | undefined {
-  const binding = state.taskThreadContext?.suggestedBinding;
+  const binding = state.harnessContext.taskThreadContext?.suggestedBinding;
   if (binding?.mode === "continue_task" || binding?.mode === "switch_task") {
     return binding.taskThreadId;
   }

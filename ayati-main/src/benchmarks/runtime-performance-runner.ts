@@ -955,24 +955,32 @@ function buildLoopStateFixture(exchangeCount: number): LoopState {
     ],
     runPath: "/tmp/runtime-state-view",
     failureHistory: [],
-    activeLearningContext: "Learning context: runtime performance analysis.",
-    personalMemorySnapshot: "User prefers detailed reports about agent runtime performance.",
-    continuity: {
-      mode: "continue",
-      confidence: 0.91,
-      reasons: ["benchmark fixture exact activity anchor"],
-      current: {
-        activityId: "activity-runtime-benchmark",
-        kind: "project",
-        title: "runtime performance analysis",
-        openWork: ["Measure memory retrieval", "Measure filesystem scan"],
-        nextStep: "Run non-LLM performance measurements.",
-        verifiedFacts: ["Benchmark uses deterministic local fixtures."],
-        topAssets: ["reports/runtime-performance.md"],
-        lastTouchedAt: now,
+    harnessContext: {
+      activeLearningContext: "Learning context: runtime performance analysis.",
+      personalMemorySnapshot: "User prefers detailed reports about agent runtime performance.",
+      continuity: {
+        mode: "continue",
+        confidence: 0.91,
+        reasons: ["benchmark fixture exact activity anchor"],
+        current: {
+          activityId: "activity-runtime-benchmark",
+          kind: "project",
+          title: "runtime performance analysis",
+          openWork: ["Measure memory retrieval", "Measure filesystem scan"],
+          nextStep: "Run non-LLM performance measurements.",
+          verifiedFacts: ["Benchmark uses deterministic local fixtures."],
+          topAssets: ["reports/runtime-performance.md"],
+          lastTouchedAt: now,
+        },
+      },
+      recentExchanges: buildExchangeFixture(exchangeCount, now),
+      sessionEvents: [],
+      activeContextStartSeq: 1,
+      sessionWork: {
+        activeContextStartSeq: 1,
+        recentActivities: [],
       },
     },
-    recentExchanges: buildExchangeFixture(exchangeCount, now),
   };
 }
 

@@ -68,17 +68,13 @@ describe("state-persistence", () => {
           activeContextStartSeq: 1,
           sessionWork: { activeContextStartSeq: 1, recentActivities: [] },
         },
-        continuity: { mode: "new", confidence: 0, reasons: [] },
       };
       writeState(runPath, state);
       const loaded = readState(runPath);
       expect(loaded).not.toBeNull();
       expect(loaded!.runId).toBe("run-456");
       expect(loaded!.finalOutput).toBe("");
-      expect(loaded).not.toHaveProperty("recentRunLedgers");
-      expect(loaded).not.toHaveProperty("recentTaskSummaries");
       expect(loaded).not.toHaveProperty("harnessContext");
-      expect(loaded).not.toHaveProperty("continuity");
     } finally {
       cleanup();
     }
@@ -114,7 +110,6 @@ describe("state-persistence", () => {
           activeContextStartSeq: 1,
           sessionWork: { activeContextStartSeq: 1, recentActivities: [] },
         },
-        continuity: { mode: "new", confidence: 0, reasons: [] },
       };
 
       const firstWrite = queueStateWrite(runPath, state);
@@ -130,17 +125,11 @@ describe("state-persistence", () => {
       const persisted = JSON.parse(readFileSync(join(runPath, "state.json"), "utf-8")) as {
         finalOutput?: string;
         iteration?: number;
-        recentRunLedgers?: unknown;
-        recentTaskSummaries?: unknown;
         harnessContext?: unknown;
-        continuity?: unknown;
       };
       expect(persisted.finalOutput).toBe("latest");
       expect(persisted.iteration).toBe(2);
-      expect(persisted).not.toHaveProperty("recentRunLedgers");
-      expect(persisted).not.toHaveProperty("recentTaskSummaries");
       expect(persisted).not.toHaveProperty("harnessContext");
-      expect(persisted).not.toHaveProperty("continuity");
     } finally {
       cleanup();
     }
@@ -168,9 +157,6 @@ describe("state-persistence", () => {
         completedSteps: [],
         runPath,
         failureHistory: [],
-        sessionHistory: [{ role: "user", content: "hi", timestamp: "2026-03-07T00:00:00.000Z", sessionPath: "sessions/x.md" }],
-        recentRunLedgers: [{ timestamp: "2026-03-07T00:00:00.000Z", runId: "r-1", runPath: "/tmp/r-1", state: "completed", status: "completed", summary: "done" }],
-        recentTaskSummaries: [],
         harnessContext: {
           personalMemorySnapshot: "transient memory",
           continuity: { mode: "continue", confidence: 0.9, reasons: ["transient context"] },
@@ -179,19 +165,13 @@ describe("state-persistence", () => {
           activeContextStartSeq: 1,
           sessionWork: { activeContextStartSeq: 1, recentActivities: [] },
         },
-        continuity: { mode: "continue", confidence: 0.9, reasons: ["transient context"] },
-        recentSystemActivity: [],
       };
 
       writeJSON(runPath, "state.json", persistedState);
       const loaded = readState(runPath);
       expect(loaded).not.toBeNull();
       expect(loaded!.runId).toBe("run-current");
-      expect(loaded).not.toHaveProperty("sessionHistory");
-      expect(loaded).not.toHaveProperty("recentRunLedgers");
-      expect(loaded).not.toHaveProperty("recentTaskSummaries");
       expect(loaded).not.toHaveProperty("harnessContext");
-      expect(loaded).not.toHaveProperty("continuity");
     } finally {
       cleanup();
     }

@@ -1,6 +1,19 @@
 import { describe, expect, it } from "vitest";
 import { buildAgentStateView } from "../../src/ivec/agent-runner/state-view.js";
 import type { LoopState } from "../../src/ivec/types.js";
+import type { HarnessContext } from "../../src/ivec/harness-context.js";
+
+function createHarnessContext(overrides: Partial<HarnessContext> = {}): HarnessContext {
+  return {
+    personalMemorySnapshot: "",
+    continuity: { mode: "new", confidence: 0, reasons: [] },
+    recentExchanges: [],
+    sessionEvents: [],
+    activeContextStartSeq: 1,
+    sessionWork: { activeContextStartSeq: 1, recentActivities: [] },
+    ...overrides,
+  };
+}
 
 describe("buildAgentStateView", () => {
   it("marks feedback responses in timeline as expecting user response", () => {
@@ -25,9 +38,8 @@ describe("buildAgentStateView", () => {
       completedSteps: [],
       runPath: "/tmp/ayati/run-current",
       failureHistory: [],
-      continuity: { mode: "new", confidence: 0, reasons: [] },
-      recentExchanges: [],
-      sessionEvents: [
+      harnessContext: createHarnessContext({
+        sessionEvents: [
         {
           type: "assistant_response",
           seq: 1,
@@ -41,9 +53,8 @@ describe("buildAgentStateView", () => {
           timestamp: "2026-06-16T08:57:00.000Z",
           content: "yes",
         },
-      ],
-      activeContextStartSeq: 1,
-      sessionWork: { activeContextStartSeq: 1, recentActivities: [] },
+        ],
+      }),
     };
 
     expect(buildAgentStateView(state).context.timeline[0]).toMatchObject({
@@ -95,11 +106,12 @@ describe("buildAgentStateView", () => {
       completedSteps: [],
       runPath: "/tmp/ayati/run-current",
       failureHistory: [],
-      continuity: { mode: "new", confidence: 0.86, reasons: ["no matching activity anchors or candidates"] },
-      activeContextStartSeq: 13,
-      sessionWork: { activeContextStartSeq: 13, recentActivities: [] },
-      recentExchanges: [],
-      sessionEvents,
+      harnessContext: createHarnessContext({
+        continuity: { mode: "new", confidence: 0.86, reasons: ["no matching activity anchors or candidates"] },
+        activeContextStartSeq: 13,
+        sessionWork: { activeContextStartSeq: 13, recentActivities: [] },
+        sessionEvents,
+      }),
     };
 
     const timeline = buildAgentStateView(state).context.timeline;
@@ -130,12 +142,8 @@ describe("buildAgentStateView", () => {
       completedSteps: [],
       runPath: "/tmp/ayati/run-current",
       failureHistory: [],
-      continuity: { mode: "new", confidence: 0, reasons: [] },
-      recentExchanges: [],
-      sessionEvents: [],
-      activeContextStartSeq: 1,
-      sessionWork: { activeContextStartSeq: 1, recentActivities: [] },
-      contextEngineContext: {
+      harnessContext: createHarnessContext({
+        contextEngine: {
         session: {
           sessionId: "2026-06-27",
           conversationTail: [],
@@ -162,6 +170,7 @@ describe("buildAgentStateView", () => {
           recentCommits: [],
         },
       },
+      }),
     };
 
     expect(buildAgentStateView(state).context.contextEngine?.task).toMatchObject({
@@ -192,15 +201,9 @@ describe("buildAgentStateView", () => {
       completedSteps: [],
       runPath: "/tmp/ayati/run-current",
       failureHistory: [],
-      continuity: { mode: "new", confidence: 0, reasons: ["legacy context"] },
-      recentExchanges: [],
-      sessionEvents: [],
-      activeContextStartSeq: 1,
-      sessionWork: { activeContextStartSeq: 1, recentActivities: [] },
-      harnessContext: {
+      harnessContext: createHarnessContext({
         personalMemorySnapshot: "- Prefers concise answers.",
         continuity: { mode: "new", confidence: 0.5, reasons: ["from harness context"] },
-        recentExchanges: [],
         sessionEvents: [{
           type: "user_message",
           seq: 3,
@@ -212,7 +215,7 @@ describe("buildAgentStateView", () => {
           activeContextStartSeq: 3,
           recentActivities: [],
         },
-      },
+      }),
     };
 
     const context = buildAgentStateView(state).context;
@@ -248,10 +251,10 @@ describe("buildAgentStateView", () => {
       completedSteps: [],
       runPath: "/tmp/ayati/run-current",
       failureHistory: [],
-      recentExchanges: [],
-      activeContextStartSeq: 8,
-      sessionWork: { activeContextStartSeq: 8, recentActivities: [] },
-      sessionEvents: [
+      harnessContext: createHarnessContext({
+        activeContextStartSeq: 8,
+        sessionWork: { activeContextStartSeq: 8, recentActivities: [] },
+        sessionEvents: [
         {
           type: "assistant_response",
           seq: 8,
@@ -265,8 +268,8 @@ describe("buildAgentStateView", () => {
           timestamp: "2026-06-16T09:09:00.000Z",
           content: "yes",
         },
-      ],
-      continuity: {
+        ],
+        continuity: {
         mode: "continue",
         confidence: 0.91,
         reasons: ["matched durable activity identity anchor"],
@@ -281,6 +284,7 @@ describe("buildAgentStateView", () => {
           lastTouchedAt: "2026-06-16T09:00:30.000Z",
         },
       },
+      }),
     };
 
     const context = buildAgentStateView(state).context;
@@ -312,8 +316,9 @@ describe("buildAgentStateView", () => {
       completedSteps: [],
       runPath: "/tmp/ayati/run-current",
       failureHistory: [],
-      activeContextStartSeq: 20,
-      sessionWork: {
+      harnessContext: createHarnessContext({
+        activeContextStartSeq: 20,
+        sessionWork: {
         activeContextStartSeq: 20,
         recentActivities: [{
           activityId: "activity-site",
@@ -326,13 +331,13 @@ describe("buildAgentStateView", () => {
           workRunIds: ["run-1"],
         }],
       },
-      sessionEvents: [{
+        sessionEvents: [{
         type: "user_message",
         seq: 20,
         timestamp: "2026-06-16T09:10:00.000Z",
         content: "continue the website",
       }],
-      continuity: {
+        continuity: {
         mode: "continue",
         confidence: 0.91,
         reasons: ["matched durable activity identity anchor"],
@@ -372,7 +377,7 @@ describe("buildAgentStateView", () => {
           lastTouchedAt: "2026-06-16T09:00:30.000Z",
         },
       },
-      recentExchanges: [],
+      }),
     };
 
     const context = buildAgentStateView(state).context;
@@ -540,56 +545,57 @@ describe("buildAgentStateView", () => {
           blockedTargets: ["ayati-main/tests/ivec/state-view.test.ts"],
         },
       ],
-      personalMemorySnapshot: "Prefer exact schema contracts.",
-      activeLearningContext: "Golden tests should lock model-facing JSON.",
-      continuity: {
-        mode: "new",
-        confidence: 0.86,
-        reasons: ["no matching activity anchors or candidates"],
-      },
-      activeContextStartSeq: 3,
-      sessionWork: {
+      harnessContext: createHarnessContext({
+        personalMemorySnapshot: "Prefer exact schema contracts.",
+        activeLearningContext: "Golden tests should lock model-facing JSON.",
+        continuity: {
+          mode: "new",
+          confidence: 0.86,
+          reasons: ["no matching activity anchors or candidates"],
+        },
         activeContextStartSeq: 3,
-        recentActivities: [{
-          activityId: "activity-docs",
-          title: "Update prompt contract docs",
-          status: "open",
-          lastTouchedAt: "2026-06-16T08:50:00.000Z",
-          lastTouchedSeq: 2,
-          openWork: ["update base prompt"],
-          topAssets: ["ayati-main/src/ivec/agent-runner/state-view.ts"],
-          workRunIds: ["run-prior"],
-        }],
-      },
-      sessionEvents: [
-        {
-          type: "user_message",
-          seq: 1,
-          timestamp: "2026-06-16T08:54:00.000Z",
-          content: "older task conversation should be outside active context",
+        sessionWork: {
+          activeContextStartSeq: 3,
+          recentActivities: [{
+            activityId: "activity-docs",
+            title: "Update prompt contract docs",
+            status: "open",
+            lastTouchedAt: "2026-06-16T08:50:00.000Z",
+            lastTouchedSeq: 2,
+            openWork: ["update base prompt"],
+            topAssets: ["ayati-main/src/ivec/agent-runner/state-view.ts"],
+            workRunIds: ["run-prior"],
+          }],
         },
-        {
-          type: "user_message",
-          seq: 3,
-          timestamp: "2026-06-16T08:55:00.000Z",
-          content: "inspect the drift",
-        },
-        {
-          type: "assistant_response",
-          seq: 4,
-          timestamp: "2026-06-16T08:56:00.000Z",
-          workRunId: "run-prior",
-          content: "State view builder uses workState.",
-          responseKind: "reply",
-        },
-        {
-          type: "user_message",
-          seq: 5,
-          timestamp: "2026-06-16T09:00:00.000Z",
-          content: "fix prompt drift",
-        },
-      ],
-      recentExchanges: [],
+        sessionEvents: [
+          {
+            type: "user_message",
+            seq: 1,
+            timestamp: "2026-06-16T08:54:00.000Z",
+            content: "older task conversation should be outside active context",
+          },
+          {
+            type: "user_message",
+            seq: 3,
+            timestamp: "2026-06-16T08:55:00.000Z",
+            content: "inspect the drift",
+          },
+          {
+            type: "assistant_response",
+            seq: 4,
+            timestamp: "2026-06-16T08:56:00.000Z",
+            workRunId: "run-prior",
+            content: "State view builder uses workState.",
+            responseKind: "reply",
+          },
+          {
+            type: "user_message",
+            seq: 5,
+            timestamp: "2026-06-16T09:00:00.000Z",
+            content: "fix prompt drift",
+          },
+        ],
+      }),
     };
 
     const stateView = buildAgentStateView(state);

@@ -94,9 +94,9 @@ describe("harness context", () => {
     expect(context.contextEngine).toBe(contextEngine);
   });
 
-  it("applies harness context to runner state fields", () => {
+  it("applies harness context to runner state", () => {
     const target: HarnessContextTarget = {
-      recentExchanges: [],
+      harnessContext: createInitialHarnessContext(),
     };
     const context = createInitialHarnessContext({
       activeLearningContext: "Keep it direct.",
@@ -106,10 +106,6 @@ describe("harness context", () => {
     applyHarnessContextToState(target, context);
 
     expect(target.harnessContext).toBe(context);
-    expect(target.activeLearningContext).toBe("Keep it direct.");
-    expect(target.continuity).toMatchObject({ mode: "new" });
-    expect(target.sessionWork?.recentActivities).toEqual([]);
-    expect(target.contextEngineContext).toBe(context.contextEngine);
   });
 });
 

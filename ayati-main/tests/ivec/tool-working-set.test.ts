@@ -4,6 +4,7 @@ import { ToolWorkingSetManager } from "../../src/ivec/agent-runner/tool-working-
 import { createToolExecutor } from "../../src/skills/tool-executor.js";
 import type { SkillDefinition, ToolDefinition } from "../../src/skills/types.js";
 import type { LoopState } from "../../src/ivec/types.js";
+import { createInitialHarnessContext } from "../../src/ivec/harness-context.js";
 
 function tool(name: string, description = name): ToolDefinition {
   return {
@@ -45,7 +46,7 @@ function state(userMessage: string): LoopState {
     completedSteps: [],
     runPath: "/tmp/r1",
     failureHistory: [],
-    recentExchanges: [],
+    harnessContext: createInitialHarnessContext(),
   };
 }
 
