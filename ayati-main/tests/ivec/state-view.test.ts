@@ -170,6 +170,62 @@ describe("buildAgentStateView", () => {
     });
   });
 
+  it("uses harnessContext as the canonical context-pack source", () => {
+    const state: LoopState = {
+      runId: "run-current",
+      currentSeq: 3,
+      runClass: "task",
+      userMessage: "continue invoice",
+      workState: {
+        status: "not_done",
+        openWork: [],
+        blockers: [],
+        summary: "",
+        verifiedFacts: [],
+        evidence: [],
+      },
+      status: "running",
+      finalOutput: "",
+      iteration: 0,
+      maxIterations: 15,
+      consecutiveFailures: 0,
+      completedSteps: [],
+      runPath: "/tmp/ayati/run-current",
+      failureHistory: [],
+      continuity: { mode: "new", confidence: 0, reasons: ["legacy context"] },
+      recentExchanges: [],
+      sessionEvents: [],
+      activeContextStartSeq: 1,
+      sessionWork: { activeContextStartSeq: 1, recentActivities: [] },
+      harnessContext: {
+        personalMemorySnapshot: "- Prefers concise answers.",
+        continuity: { mode: "new", confidence: 0.5, reasons: ["from harness context"] },
+        recentExchanges: [],
+        sessionEvents: [{
+          type: "user_message",
+          seq: 3,
+          timestamp: "2026-06-27T10:00:00.000Z",
+          content: "continue invoice",
+        }],
+        activeContextStartSeq: 3,
+        sessionWork: {
+          activeContextStartSeq: 3,
+          recentActivities: [],
+        },
+      },
+    };
+
+    const context = buildAgentStateView(state).context;
+    expect(context.continuity.reasons).toEqual(["from harness context"]);
+    expect(context.timeline).toEqual([expect.objectContaining({
+      seq: 3,
+      kind: "user",
+      content: "continue invoice",
+      current: true,
+    })]);
+    expect(context.personalMemorySnapshot).toContain("concise");
+  });
+
   it("keeps immediate timeline when durable continuity is selected", () => {
     const state: LoopState = {
       runId: "run-current",

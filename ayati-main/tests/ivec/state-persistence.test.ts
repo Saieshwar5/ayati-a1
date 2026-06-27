@@ -60,6 +60,14 @@ describe("state-persistence", () => {
         completedSteps: [],
         runPath,
         failureHistory: [],
+        harnessContext: {
+          personalMemorySnapshot: "transient memory",
+          continuity: { mode: "new", confidence: 0, reasons: ["transient context"] },
+          recentExchanges: [],
+          sessionEvents: [],
+          activeContextStartSeq: 1,
+          sessionWork: { activeContextStartSeq: 1, recentActivities: [] },
+        },
         continuity: { mode: "new", confidence: 0, reasons: [] },
       };
       writeState(runPath, state);
@@ -69,6 +77,7 @@ describe("state-persistence", () => {
       expect(loaded!.finalOutput).toBe("");
       expect(loaded).not.toHaveProperty("recentRunLedgers");
       expect(loaded).not.toHaveProperty("recentTaskSummaries");
+      expect(loaded).not.toHaveProperty("harnessContext");
       expect(loaded).not.toHaveProperty("continuity");
     } finally {
       cleanup();
@@ -97,6 +106,14 @@ describe("state-persistence", () => {
         completedSteps: [],
         runPath,
         failureHistory: [],
+        harnessContext: {
+          personalMemorySnapshot: "transient memory",
+          continuity: { mode: "new", confidence: 0, reasons: ["transient context"] },
+          recentExchanges: [],
+          sessionEvents: [],
+          activeContextStartSeq: 1,
+          sessionWork: { activeContextStartSeq: 1, recentActivities: [] },
+        },
         continuity: { mode: "new", confidence: 0, reasons: [] },
       };
 
@@ -115,12 +132,14 @@ describe("state-persistence", () => {
         iteration?: number;
         recentRunLedgers?: unknown;
         recentTaskSummaries?: unknown;
+        harnessContext?: unknown;
         continuity?: unknown;
       };
       expect(persisted.finalOutput).toBe("latest");
       expect(persisted.iteration).toBe(2);
       expect(persisted).not.toHaveProperty("recentRunLedgers");
       expect(persisted).not.toHaveProperty("recentTaskSummaries");
+      expect(persisted).not.toHaveProperty("harnessContext");
       expect(persisted).not.toHaveProperty("continuity");
     } finally {
       cleanup();
@@ -152,6 +171,14 @@ describe("state-persistence", () => {
         sessionHistory: [{ role: "user", content: "hi", timestamp: "2026-03-07T00:00:00.000Z", sessionPath: "sessions/x.md" }],
         recentRunLedgers: [{ timestamp: "2026-03-07T00:00:00.000Z", runId: "r-1", runPath: "/tmp/r-1", state: "completed", status: "completed", summary: "done" }],
         recentTaskSummaries: [],
+        harnessContext: {
+          personalMemorySnapshot: "transient memory",
+          continuity: { mode: "continue", confidence: 0.9, reasons: ["transient context"] },
+          recentExchanges: [],
+          sessionEvents: [],
+          activeContextStartSeq: 1,
+          sessionWork: { activeContextStartSeq: 1, recentActivities: [] },
+        },
         continuity: { mode: "continue", confidence: 0.9, reasons: ["transient context"] },
         recentSystemActivity: [],
       };
@@ -163,6 +190,7 @@ describe("state-persistence", () => {
       expect(loaded).not.toHaveProperty("sessionHistory");
       expect(loaded).not.toHaveProperty("recentRunLedgers");
       expect(loaded).not.toHaveProperty("recentTaskSummaries");
+      expect(loaded).not.toHaveProperty("harnessContext");
       expect(loaded).not.toHaveProperty("continuity");
     } finally {
       cleanup();

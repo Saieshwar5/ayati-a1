@@ -86,16 +86,20 @@ export function buildLoopStateSizeBreakdown(state: LoopState): Record<string, nu
 
 function buildPersistedLikeStateView(state: LoopState): Omit<
   LoopState,
+  | "harnessContext"
   | "activeLearningContext"
   | "personalMemorySnapshot"
   | "continuity"
+  | "durableTaskBoundary"
   | "recentExchanges"
   | "sessionEvents"
   | "activeContextStartSeq"
   | "sessionWork"
   | "taskThreadContext"
+  | "contextEngineContext"
 > {
   const {
+    harnessContext: _harnessContext,
     recentExchanges: _recentExchanges,
     sessionEvents: _sessionEvents,
     activeContextStartSeq: _activeContextStartSeq,
@@ -104,6 +108,8 @@ function buildPersistedLikeStateView(state: LoopState): Omit<
     activeLearningContext: _activeLearningContext,
     personalMemorySnapshot: _personalMemorySnapshot,
     continuity: _continuity,
+    durableTaskBoundary: _durableTaskBoundary,
+    contextEngineContext: _contextEngineContext,
     ...persistedLikeState
   } = state;
   return persistedLikeState;

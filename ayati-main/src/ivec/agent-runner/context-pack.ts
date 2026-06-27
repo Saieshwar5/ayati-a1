@@ -6,6 +6,10 @@ import type {
 } from "../../memory/types.js";
 import type { LoopState } from "../types.js";
 import type { ContextEngineMachineContext } from "../../context-engine/index.js";
+import {
+  harnessContextFromState,
+  type HarnessContext,
+} from "../harness-context.js";
 
 const LIMITS = {
   timelineEvents: 12,
@@ -51,15 +55,16 @@ export interface AgentContextPack {
 }
 
 export function buildAgentContextPack(state: LoopState): AgentContextPack {
-  const sessionContext = new TimelineContextBuilder(state);
+  const harnessContext = harnessContextFromState(state);
+  const sessionContext = new TimelineContextBuilder(state, harnessContext);
   return {
     timeline: sessionContext.timeline(),
-    continuity: compactContinuity(state.continuity),
-    sessionWork: compactSessionWork(state.sessionWork, state.activeContextStartSeq),
-    ...(state.taskThreadContext ? { taskThreadContext: compactTaskThreadContext(state.taskThreadContext) } : {}),
-    ...(state.contextEngineContext ? { contextEngine: state.contextEngineContext } : {}),
-    ...(state.personalMemorySnapshot?.trim()
-      ? { personalMemorySnapshot: truncate(state.personalMemorySnapshot, LIMITS.memoryChars) }
+    continuity: compactContinuity(harnessContext.continuity),
+    sessionWork: compactSessionWork(harnessContext.sessionWork, harnessContext.activeContextStartSeq),
+    ...(harnessContext.taskThreadContext ? { taskThreadContext: compactTaskThreadContext(harnessContext.taskThreadContext) } : {}),
+    ...(harnessContext.contextEngine ? { contextEngine: harnessContext.contextEngine } : {}),
+    ...(harnessContext.personalMemorySnapshot.trim()
+      ? { personalMemorySnapshot: truncate(harnessContext.personalMemorySnapshot, LIMITS.memoryChars) }
       : {}),
   };
 }
@@ -193,11 +198,14 @@ function compactSessionWork(
 }
 
 class TimelineContextBuilder {
-  constructor(private readonly state: LoopState) {}
+  constructor(
+    private readonly state: LoopState,
+    private readonly harnessContext: HarnessContext,
+  ) {}
 
   timeline(): TimelineEvent[] {
-    const activeStart = Math.max(1, this.state.activeContextStartSeq || 1);
-    const fromSession = (this.state.sessionEvents ?? [])
+    const activeStart = Math.max(1, this.harnessContext.activeContextStartSeq || 1);
+    const fromSession = this.harnessContext.sessionEvents
       .filter((event) => event.seq >= activeStart)
       .map((event) => this.toTimelineEvent(event))
       .filter((event): event is TimelineEvent => event !== null);
@@ -246,7 +254,7 @@ class TimelineContextBuilder {
     if (events.some((event) => event.current)) {
       return events;
     }
-    const seq = this.state.currentSeq || Math.max(1, ...events.map((event) => event.seq), this.state.activeContextStartSeq || 1);
+    const seq = this.state.currentSeq || Math.max(1, ...events.map((event) => event.seq), this.harnessContext.activeContextStartSeq || 1);
     if (this.state.inputKind === "system_event" && this.state.systemEvent) {
       return [
         ...events,

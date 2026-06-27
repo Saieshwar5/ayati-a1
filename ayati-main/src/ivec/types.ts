@@ -44,7 +44,7 @@ import type {
 import type { RunMetrics } from "./metrics.js";
 import type { AgentFeedbackLedger } from "./feedback-ledger.js";
 import type { ContextEngineMachineContext } from "../context-engine/index.js";
-import type { HarnessContextInput } from "./harness-context.js";
+import type { HarnessContext, HarnessContextInput } from "./harness-context.js";
 
 export type SystemEventApprovalState = "not_needed" | "pending" | "granted" | "rejected";
 export type RunClass = "interaction" | "task";
@@ -160,6 +160,7 @@ export interface LoopState {
   preparedAttachmentRecords?: PreparedAttachmentRecord[];
   managedFiles?: ManagedFileRecord[];
   managedDirectories?: DirectoryAttachmentRecord[];
+  harnessContext?: HarnessContext;
   activeLearningContext?: string;
   personalMemorySnapshot?: string;
   continuity?: ContinuityContext;
