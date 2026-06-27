@@ -30,10 +30,7 @@ import imageGenerationProvider from "../image-generation/runtime/index.js";
 import type { AgentUiContext } from "../ui/context.js";
 import type { WorkspaceInteractionEvent } from "../ui/workspace-orchestrator.js";
 import { createAgentFeedbackLedgerFromEnv } from "../ivec/feedback-ledger.js";
-import {
-  DailySessionGitStore,
-  DailySessionRuntimeBridge,
-} from "../context-engine/index.js";
+import { createContextEngineRuntime } from "./context-runtime.js";
 
 const thisDir = dirname(fileURLToPath(import.meta.url));
 const projectRoot = resolve(thisDir, "..", "..");
@@ -172,14 +169,9 @@ export async function main(): Promise<void> {
     toolDefinitions: skills.runtimeToolDefs,
   });
   appendSkillBlocks(staticContext, skills.additionalSkills);
-  const dailySessionRuntime = runtimeConfig.gitContext.enabled
-    ? new DailySessionRuntimeBridge({
-        store: new DailySessionGitStore({
-          contextStoreDir: runtimeConfig.gitContext.storeDir,
-        }),
-        timezone: runtimeConfig.gitContext.timezone,
-      })
-    : undefined;
+  const contextEngineRuntime = createContextEngineRuntime({
+    config: runtimeConfig,
+  });
 
   const uploadServer = new UploadServer({
     uploadsDir: content.documentStore.uploadsDir,
@@ -212,7 +204,7 @@ export async function main(): Promise<void> {
     systemEventPolicy,
     loopConfig: runtimeConfig.agent.loopConfig,
     feedbackLedger,
-    dailySessionRuntime,
+    contextEngineRuntime,
   });
   const systemEventWorker = new SystemEventWorker({
     queueStore: inboundQueueStore,

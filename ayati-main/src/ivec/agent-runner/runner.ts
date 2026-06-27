@@ -1041,7 +1041,7 @@ function buildInitialState(
       recentActivities: [],
     },
     taskThreadContext: undefined,
-    dailySessionContext: deps.dailySessionContext,
+    contextEngineContext: deps.contextEngineContext,
     toolContext: { recent: [] },
   };
 }

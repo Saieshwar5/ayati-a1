@@ -168,7 +168,7 @@ export interface LoopState {
   activeContextStartSeq?: number;
   sessionWork?: SessionWorkContext;
   taskThreadContext?: TaskThreadContext;
-  dailySessionContext?: ContextEngineMachineContext;
+  contextEngineContext?: ContextEngineMachineContext;
 }
 
 export type StepVerificationPolicy = "deterministic" | "llm" | "script" | "hybrid";
@@ -349,7 +349,7 @@ export interface AgentLoopDeps {
   dataDir: string;
   systemContext?: string;
   activeLearningContext?: string;
-  dailySessionContext?: ContextEngineMachineContext;
+  contextEngineContext?: ContextEngineMachineContext;
   userMessageOverride?: string;
   attachedDocuments?: ManagedDocumentManifest[];
   attachmentWarnings?: string[];
