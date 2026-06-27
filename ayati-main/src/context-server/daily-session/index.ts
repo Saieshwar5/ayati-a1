@@ -8,4 +8,6 @@ export * from "./ids.js";
 export * from "./refs.js";
 export * from "./session-files.js";
 export * from "./task-files.js";
+export * from "./task-resolver.js";
+export * from "./text-match.js";
 export * from "./validation.js";
