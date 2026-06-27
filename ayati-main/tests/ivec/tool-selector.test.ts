@@ -4,6 +4,7 @@ import type { LoopState } from "../../src/ivec/types.js";
 import {
   selectToolsForDecision,
 } from "../../src/ivec/agent-runner/tool-selector.js";
+import { createInitialHarnessContext } from "../../src/ivec/harness-context.js";
 
 function tool(name: string, priority = 0): ToolDefinition {
   return {
@@ -40,8 +41,7 @@ function state(userMessage: string): LoopState {
     completedSteps: [],
     runPath: "/tmp/run-1",
     failureHistory: [],
-    recentExchanges: [],
-    continuity: { mode: "new", confidence: 0, reasons: [] },
+    harnessContext: createInitialHarnessContext(),
   };
 }
 

@@ -95,18 +95,20 @@ describe("SkillActivationManager", () => {
     const manager = new SkillActivationManager({ catalog, toolExecutor: executor });
 
     const activated = await manager.prepareForDecision({
-      continuity: {
-        mode: "continue",
-        confidence: 0.92,
-        reasons: ["matched durable activity identity anchor"],
-        current: {
-          activityId: "activity_policy",
-          kind: "document",
-          title: "policy review",
-          openWork: [],
-          verifiedFacts: [],
-          topAssets: ["policy.txt"],
-          lastTouchedAt: "2026-06-17T00:00:00.000Z",
+      harnessContext: {
+        continuity: {
+          mode: "continue",
+          confidence: 0.92,
+          reasons: ["matched durable activity identity anchor"],
+          current: {
+            activityId: "activity_policy",
+            kind: "document",
+            title: "policy review",
+            openWork: [],
+            verifiedFacts: [],
+            topAssets: ["policy.txt"],
+            lastTouchedAt: "2026-06-17T00:00:00.000Z",
+          },
         },
       },
     }, {

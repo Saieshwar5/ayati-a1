@@ -47,7 +47,9 @@ export interface ActivationRouterState {
   preparedAttachments?: unknown[];
   managedFiles?: unknown[];
   managedDirectories?: unknown[];
-  continuity?: unknown;
+  harnessContext?: {
+    continuity?: unknown;
+  };
 }
 
 const DEFAULT_MAX_ACTIVE_BUILT_IN_SKILLS = 4;
@@ -293,7 +295,7 @@ function hasCurrentRunAttachments(state: ActivationRouterState): boolean {
 }
 
 function hasFocusArtifactContext(state: ActivationRouterState): boolean {
-  const continuity = state.continuity;
+  const continuity = state.harnessContext?.continuity;
   if (!continuity || typeof continuity !== "object" || Array.isArray(continuity)) {
     return false;
   }

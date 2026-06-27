@@ -86,49 +86,15 @@ export function buildHarnessContextFromSources(input: BuildHarnessContextInput):
 }
 
 export interface HarnessContextTarget {
-  harnessContext?: HarnessContext;
-  activeLearningContext?: string;
-  personalMemorySnapshot?: string;
-  continuity?: ContinuityContext;
-  durableTaskBoundary?: ActivityTaskBoundary;
-  recentExchanges: ConversationExchange[];
-  sessionEvents?: PromptSessionEvent[];
-  activeContextStartSeq?: number;
-  sessionWork?: SessionWorkContext;
-  taskThreadContext?: TaskThreadContext;
-  contextEngineContext?: ContextEngineMachineContext;
+  harnessContext: HarnessContext;
 }
 
 export function applyHarnessContextToState(target: HarnessContextTarget, context: HarnessContext): void {
   target.harnessContext = context;
-  target.activeLearningContext = context.activeLearningContext;
-  target.personalMemorySnapshot = context.personalMemorySnapshot;
-  target.continuity = context.continuity;
-  target.durableTaskBoundary = context.durableTaskBoundary;
-  target.recentExchanges = context.recentExchanges;
-  target.sessionEvents = context.sessionEvents;
-  target.activeContextStartSeq = context.activeContextStartSeq;
-  target.sessionWork = context.sessionWork;
-  target.taskThreadContext = context.taskThreadContext;
-  target.contextEngineContext = context.contextEngine;
 }
 
 export function harnessContextFromState(target: HarnessContextTarget): HarnessContext {
-  return target.harnessContext ?? {
-    activeLearningContext: target.activeLearningContext,
-    personalMemorySnapshot: target.personalMemorySnapshot ?? "",
-    continuity: target.continuity ?? { mode: "new", confidence: 0, reasons: ["no continuity resolver result"] },
-    durableTaskBoundary: target.durableTaskBoundary,
-    recentExchanges: target.recentExchanges,
-    sessionEvents: target.sessionEvents ?? [],
-    activeContextStartSeq: target.activeContextStartSeq ?? 1,
-    sessionWork: target.sessionWork ?? {
-      activeContextStartSeq: target.activeContextStartSeq ?? 1,
-      recentActivities: [],
-    },
-    taskThreadContext: target.taskThreadContext,
-    contextEngine: target.contextEngineContext,
-  };
+  return target.harnessContext;
 }
 
 function resolveContinuity(input: {

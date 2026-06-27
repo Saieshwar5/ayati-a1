@@ -17,13 +17,7 @@ import type {
   SessionMemory,
   MemoryRunHandle,
   SessionInputHandle,
-  ConversationExchange,
-  ContinuityContext,
   ActivityAssetRef,
-  ActivityTaskBoundary,
-  PromptSessionEvent,
-  SessionWorkContext,
-  TaskThreadContext,
   TaskSummaryRecordInput,
 } from "../memory/types.js";
 import type { DocumentStore } from "../documents/document-store.js";
@@ -43,7 +37,6 @@ import type {
 } from "./system-event-policy.js";
 import type { RunMetrics } from "./metrics.js";
 import type { AgentFeedbackLedger } from "./feedback-ledger.js";
-import type { ContextEngineMachineContext } from "../context-engine/index.js";
 import type { HarnessContext, HarnessContextInput } from "./harness-context.js";
 
 export type SystemEventApprovalState = "not_needed" | "pending" | "granted" | "rejected";
@@ -160,17 +153,7 @@ export interface LoopState {
   preparedAttachmentRecords?: PreparedAttachmentRecord[];
   managedFiles?: ManagedFileRecord[];
   managedDirectories?: DirectoryAttachmentRecord[];
-  harnessContext?: HarnessContext;
-  activeLearningContext?: string;
-  personalMemorySnapshot?: string;
-  continuity?: ContinuityContext;
-  durableTaskBoundary?: ActivityTaskBoundary;
-  recentExchanges: ConversationExchange[];
-  sessionEvents?: PromptSessionEvent[];
-  activeContextStartSeq?: number;
-  sessionWork?: SessionWorkContext;
-  taskThreadContext?: TaskThreadContext;
-  contextEngineContext?: ContextEngineMachineContext;
+  harnessContext: HarnessContext;
 }
 
 export type StepVerificationPolicy = "deterministic" | "llm" | "script" | "hybrid";
@@ -350,7 +333,6 @@ export interface AgentLoopDeps {
   config?: Partial<LoopConfig>;
   dataDir: string;
   systemContext?: string;
-  activeLearningContext?: string;
   harnessContext?: HarnessContextInput;
   userMessageOverride?: string;
   attachedDocuments?: ManagedDocumentManifest[];

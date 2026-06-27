@@ -6,16 +6,6 @@ import type { LoopState, ActOutput, ActToolCallRecord, VerifyOutput } from "./ty
 type PersistedLoopState = Omit<
   LoopState,
   | "harnessContext"
-  | "activeLearningContext"
-  | "personalMemorySnapshot"
-  | "continuity"
-  | "durableTaskBoundary"
-  | "recentExchanges"
-  | "sessionEvents"
-  | "activeContextStartSeq"
-  | "sessionWork"
-  | "taskThreadContext"
-  | "contextEngineContext"
 >;
 const runArtifactWriteQueues = new Map<string, Promise<void>>();
 const runStateWriteQueues = new Map<string, RunStateWriteQueue>();
@@ -94,26 +84,7 @@ export function readState(runPath: string): Partial<LoopState> | null {
   const raw = readFileSync(filePath, "utf-8");
   const parsed = JSON.parse(raw) as Partial<LoopState>;
   if (parsed && typeof parsed === "object") {
-    delete (parsed as Record<string, unknown>)["sessionHistory"];
-    delete (parsed as Record<string, unknown>)["recentExchanges"];
-    delete (parsed as Record<string, unknown>)["sessionEvents"];
-    delete (parsed as Record<string, unknown>)["activeContextStartSeq"];
-    delete (parsed as Record<string, unknown>)["sessionWork"];
-    delete (parsed as Record<string, unknown>)["taskThreadContext"];
-    delete (parsed as Record<string, unknown>)["recentRunLedgers"];
-    delete (parsed as Record<string, unknown>)["recentTaskSummaries"];
-    delete (parsed as Record<string, unknown>)["continuity"];
-    delete (parsed as Record<string, unknown>)["durableTaskBoundary"];
-    delete (parsed as Record<string, unknown>)["activeSessionAttachments"];
-    delete (parsed as Record<string, unknown>)["recentSystemActivity"];
-    delete (parsed as Record<string, unknown>)["runtimeContext"];
     delete (parsed as Record<string, unknown>)["harnessContext"];
-    delete (parsed as Record<string, unknown>)["contextEngineContext"];
-    delete (parsed as Record<string, unknown>)["activeLearningContext"];
-    delete (parsed as Record<string, unknown>)["previousSessionSummary"];
-    delete (parsed as Record<string, unknown>)["personalMemorySnapshot"];
-    delete (parsed as Record<string, unknown>)["activeSessionPath"];
-    delete (parsed as Record<string, unknown>)["sessionStatus"];
   }
   return parsed;
 }
@@ -121,16 +92,6 @@ export function readState(runPath: string): Partial<LoopState> | null {
 function buildPersistedLoopState(state: LoopState): PersistedLoopState {
   const {
     harnessContext: _harnessContext,
-    recentExchanges: _recentExchanges,
-    sessionEvents: _sessionEvents,
-    activeContextStartSeq: _activeContextStartSeq,
-    sessionWork: _sessionWork,
-    taskThreadContext: _taskThreadContext,
-    activeLearningContext: _activeLearningContext,
-    personalMemorySnapshot: _personalMemorySnapshot,
-    continuity: _continuity,
-    durableTaskBoundary: _durableTaskBoundary,
-    contextEngineContext: _contextEngineContext,
     ...persisted
   } = state;
   return {

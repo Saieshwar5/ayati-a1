@@ -80,7 +80,7 @@ function buildToolSelectionQuery(state: LoopState): string {
 }
 
 function taskThreadTerms(state: LoopState): string[] {
-  const context = state.taskThreadContext;
+  const context = state.harnessContext.taskThreadContext;
   if (!context) return [];
   return [
     context.suggestedBinding.mode,
@@ -104,8 +104,7 @@ function taskThreadTerms(state: LoopState): string[] {
 }
 
 function continuityTerms(state: LoopState): string[] {
-  const continuity = state.continuity;
-  if (!continuity) return [];
+  const continuity = state.harnessContext.continuity;
   return [
     continuity.mode,
     ...(continuity.reasons ?? []),
@@ -125,10 +124,10 @@ function continuityTerms(state: LoopState): string[] {
 
 function activityContinuationAttachmentTerms(state: LoopState): string[] {
   const artifactTerms = [
-    ...(state.continuity?.current?.topAssets ?? []),
-    ...(state.continuity?.candidates ?? []).flatMap((candidate) => candidate.topAssets),
-    ...(state.taskThreadContext?.activeTask?.topAssets ?? []),
-    ...(state.taskThreadContext?.suspendedTasks ?? []).flatMap((task) => task.topAssets),
+    ...(state.harnessContext.continuity.current?.topAssets ?? []),
+    ...(state.harnessContext.continuity.candidates ?? []).flatMap((candidate) => candidate.topAssets),
+    ...(state.harnessContext.taskThreadContext?.activeTask?.topAssets ?? []),
+    ...(state.harnessContext.taskThreadContext?.suspendedTasks ?? []).flatMap((task) => task.topAssets),
   ];
   if (artifactTerms.length === 0) {
     return [];
