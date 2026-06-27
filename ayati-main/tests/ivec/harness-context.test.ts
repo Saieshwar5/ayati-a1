@@ -105,6 +105,7 @@ describe("harness context", () => {
 
     applyHarnessContextToState(target, context);
 
+    expect(target.harnessContext).toBe(context);
     expect(target.activeLearningContext).toBe("Keep it direct.");
     expect(target.continuity).toMatchObject({ mode: "new" });
     expect(target.sessionWork?.recentActivities).toEqual([]);

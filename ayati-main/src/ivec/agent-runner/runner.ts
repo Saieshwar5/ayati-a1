@@ -1034,6 +1034,7 @@ function buildInitialState(
     preparedAttachmentRecords: [],
     managedFiles: deps.managedFiles ?? [],
     managedDirectories: deps.managedDirectories ?? [],
+    harnessContext,
     activeLearningContext: harnessContext.activeLearningContext,
     personalMemorySnapshot: harnessContext.personalMemorySnapshot,
     continuity: harnessContext.continuity,
