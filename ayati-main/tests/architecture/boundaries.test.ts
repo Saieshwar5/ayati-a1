@@ -19,14 +19,16 @@ describe("architecture boundaries", () => {
         .map((specifier) => normalizeImportTarget(file, specifier));
 
       for (const target of imports) {
-        if (sourcePath.startsWith("ivec/") || sourcePath.startsWith("app/")) {
-          if (target.startsWith("context-engine/daily-session/") || target.startsWith("context-server/daily-session/")) {
-            violations.push(`${sourcePath} imports daily-session internals through ${target}`);
-          }
+        if (target.startsWith("context-server/")) {
+          violations.push(`${sourcePath} imports removed context-server surface through ${target}`);
+        }
+
+        if (!sourcePath.startsWith("context-engine/") && isContextEngineInternalImport(target)) {
+          violations.push(`${sourcePath} imports context-engine internals through ${target}`);
         }
 
         if (sourcePath.startsWith("server/")) {
-          if (target.startsWith("ivec/agent-runner/") || target.startsWith("context-engine/daily-session/")) {
+          if (target.startsWith("ivec/agent-runner/") || isContextEngineInternalImport(target)) {
             violations.push(`${sourcePath} imports runtime internals through ${target}`);
           }
         }
@@ -76,6 +78,11 @@ function normalizeImportTarget(sourceFile: string, specifier: string): string {
   const withoutExtension = specifier.replace(/\.(?:js|ts)$/, "");
   const absoluteTarget = join(dirname(sourceFile), withoutExtension);
   return normalizePath(relative(srcRoot, absoluteTarget));
+}
+
+function isContextEngineInternalImport(target: string): boolean {
+  return target.startsWith("context-engine/daily-session/")
+    || target.startsWith("context-engine/runtime/");
 }
 
 function normalizePath(path: string): string {

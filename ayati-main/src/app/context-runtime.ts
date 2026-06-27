@@ -1,7 +1,6 @@
 import type { AyatiRuntimeConfig } from "../config/runtime-config.js";
 import {
-  DailySessionGitStore,
-  DailySessionRuntimeBridge,
+  createDailySessionContextEngineRuntime,
   type ContextEngineRuntime,
 } from "../context-engine/index.js";
 
@@ -15,10 +14,8 @@ export function createContextEngineRuntime(options: ContextRuntimeOptions): Cont
     return undefined;
   }
 
-  return new DailySessionRuntimeBridge({
-    store: new DailySessionGitStore({
-      contextStoreDir: gitContext.storeDir,
-    }),
+  return createDailySessionContextEngineRuntime({
+    contextStoreDir: gitContext.storeDir,
     timezone: gitContext.timezone,
   });
 }
