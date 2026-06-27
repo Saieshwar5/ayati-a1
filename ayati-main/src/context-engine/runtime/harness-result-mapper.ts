@@ -14,7 +14,7 @@ import type {
   HarnessWorkStateForContext,
 } from "../contracts.js";
 
-export interface BuildDailySessionRunCommitInput {
+export interface BuildContextEngineRunCommitInput {
   sessionId: string;
   workId: WorkId;
   runId: RunId;
@@ -22,7 +22,7 @@ export interface BuildDailySessionRunCommitInput {
   at: string;
 }
 
-export function buildDailySessionRunCommitInput(input: BuildDailySessionRunCommitInput): CompletePreparedRunInput {
+export function buildContextEngineRunCommitInput(input: BuildContextEngineRunCommitInput): CompletePreparedRunInput {
   const workState = input.result.workState ?? fallbackWorkState(input.result);
   const state = buildTaskState(input.workId, workState, input.result);
   const actions = buildRunActions(input.workId, input.runId, input.result.completedSteps ?? [], input.at);

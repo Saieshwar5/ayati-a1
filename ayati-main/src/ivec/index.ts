@@ -50,7 +50,7 @@ import {
 } from "./system-event-policy.js";
 import type { AgentFeedbackLedger } from "./feedback-ledger.js";
 import {
-  buildDailySessionRunCommitInput,
+  buildContextEngineRunCommitInput,
   type ContextEnginePreparedTurn,
   type ContextEngineRuntime,
 } from "../context-engine/index.js";
@@ -102,7 +102,7 @@ export interface IVecEngineOptions {
   directoryLibrary?: DirectoryLibrary;
   systemEventPolicy?: SystemEventPolicyConfig;
   feedbackLedger?: AgentFeedbackLedger;
-  dailySessionRuntime?: ContextEngineRuntime;
+  contextEngineRuntime?: ContextEngineRuntime;
 }
 
 export class IVecEngine {
@@ -124,7 +124,7 @@ export class IVecEngine {
   private readonly directoryLibrary?: DirectoryLibrary;
   private readonly systemEventPolicy?: SystemEventPolicyConfig;
   private readonly feedbackLedger?: AgentFeedbackLedger;
-  private readonly dailySessionRuntime?: ContextEngineRuntime;
+  private readonly contextEngineRuntime?: ContextEngineRuntime;
   private readonly pulseProposalReflectionService = new PulseProposalReflectionService();
   private staticSystemTokens = 0;
   private staticTokensReady = false;
@@ -150,7 +150,7 @@ export class IVecEngine {
     this.directoryLibrary = options?.directoryLibrary;
     this.systemEventPolicy = options?.systemEventPolicy;
     this.feedbackLedger = options?.feedbackLedger;
-    this.dailySessionRuntime = options?.dailySessionRuntime;
+    this.contextEngineRuntime = options?.contextEngineRuntime;
   }
 
   async start(): Promise<void> {
@@ -212,7 +212,7 @@ export class IVecEngine {
   ): Promise<void> {
     let inputHandle: SessionInputHandle | null = null;
     let runHandle: MemoryRunHandle | null = null;
-    let dailySessionTurn: ContextEnginePreparedTurn | null = null;
+    let contextEngineTurn: ContextEnginePreparedTurn | null = null;
     let runStatus: "completed" | "failed" | "stuck" | null = null;
     try {
       this.rotateSessionBeforeRunIfNeeded(clientId, content);
@@ -230,9 +230,9 @@ export class IVecEngine {
           uiContext,
         },
       });
-      dailySessionTurn = await this.prepareDailySessionTurn(clientId, content);
-      if (dailySessionTurn?.status === "ambiguous") {
-        await this.dispatchDailySessionAmbiguity(clientId, inputHandle, dailySessionTurn);
+      contextEngineTurn = await this.prepareContextEngineTurn(clientId, content);
+      if (contextEngineTurn?.status === "ambiguous") {
+        await this.dispatchContextEngineAmbiguity(clientId, inputHandle, contextEngineTurn);
         runStatus = "completed";
         return;
       }
@@ -281,7 +281,7 @@ export class IVecEngine {
           config: this.loopConfig,
           dataDir: this.dataDir ?? "data",
           systemContext: system.decisionSystemContext || system.systemContext || undefined,
-          dailySessionContext: dailySessionTurn?.context,
+          contextEngineContext: contextEngineTurn?.context,
           feedbackLedger: this.feedbackLedger,
           attachedDocuments: registeredAttachments.documents,
           attachmentWarnings: registeredAttachments.warnings,
@@ -307,7 +307,7 @@ export class IVecEngine {
         });
         result = await this.applyPulseProposalReflection(clientId, content, result, toolDefs);
         this.dispatchAgentResponse(clientId, inputHandle, runHandle, result);
-        await this.completeDailySessionRun(clientId, dailySessionTurn, result);
+        await this.completeContextEngineRun(clientId, contextEngineTurn, result);
         this.feedbackLedger?.record({
           clientId,
           sessionId: inputHandle.sessionId,
@@ -331,7 +331,7 @@ export class IVecEngine {
           type: "reply",
           content: echoContent,
         });
-        await this.recordDailySessionAssistantMessage(clientId, dailySessionTurn, echoContent);
+        await this.recordContextEngineAssistantMessage(clientId, contextEngineTurn, echoContent);
         runStatus = "completed";
       }
     } catch (err) {
@@ -366,15 +366,15 @@ export class IVecEngine {
     }
   }
 
-  private async prepareDailySessionTurn(
+  private async prepareContextEngineTurn(
     clientId: string,
     userMessage: string,
   ): Promise<ContextEnginePreparedTurn | null> {
-    if (!this.dailySessionRuntime) {
+    if (!this.contextEngineRuntime) {
       return null;
     }
     try {
-      const turn = await this.dailySessionRuntime.prepareUserTurn({
+      const turn = await this.contextEngineRuntime.prepareUserTurn({
         userMessage,
         at: this.nowProvider().toISOString(),
       });
@@ -382,7 +382,7 @@ export class IVecEngine {
         clientId,
         sessionId: turn.sessionId,
         ...(turn.status === "ready" ? { runId: turn.runId } : {}),
-        stage: "git_context",
+        stage: "context_engine",
         event: "prepared",
         data: {
           status: turn.status,
@@ -396,33 +396,33 @@ export class IVecEngine {
       });
       return turn;
     } catch (err) {
-      devWarn("Daily session git context preparation failed:", err instanceof Error ? err.message : String(err));
+      devWarn("Context engine preparation failed:", err instanceof Error ? err.message : String(err));
       return null;
     }
   }
 
-  private async dispatchDailySessionAmbiguity(
+  private async dispatchContextEngineAmbiguity(
     clientId: string,
     inputHandle: SessionInputHandle,
     turn: Extract<ContextEnginePreparedTurn, { status: "ambiguous" }>,
   ): Promise<void> {
-    await this.recordDailySessionAssistantMessage(clientId, turn, turn.message);
+    await this.recordContextEngineAssistantMessage(clientId, turn, turn.message);
     this.dispatchAgentResponse(clientId, inputHandle, null, {
       type: "feedback",
       content: turn.message,
     });
   }
 
-  private async completeDailySessionRun(
+  private async completeContextEngineRun(
     clientId: string,
     turn: ContextEnginePreparedTurn | null,
     result: AgentLoopResult,
   ): Promise<void> {
-    if (!this.dailySessionRuntime || turn?.status !== "ready") {
+    if (!this.contextEngineRuntime || turn?.status !== "ready") {
       return;
     }
     try {
-      const completed = await this.dailySessionRuntime.completePreparedRun(buildDailySessionRunCommitInput({
+      const completed = await this.contextEngineRuntime.completePreparedRun(buildContextEngineRunCommitInput({
         sessionId: turn.sessionId,
         workId: turn.workId,
         runId: turn.runId,
@@ -433,7 +433,7 @@ export class IVecEngine {
         clientId,
         sessionId: turn.sessionId,
         runId: turn.runId,
-        stage: "git_context",
+        stage: "context_engine",
         event: "committed",
         data: {
           workId: turn.workId,
@@ -442,27 +442,27 @@ export class IVecEngine {
         },
       });
     } catch (err) {
-      devWarn("Daily session git context write-back failed:", err instanceof Error ? err.message : String(err));
+      devWarn("Context engine write-back failed:", err instanceof Error ? err.message : String(err));
     }
   }
 
-  private async recordDailySessionAssistantMessage(
+  private async recordContextEngineAssistantMessage(
     clientId: string,
     turn: ContextEnginePreparedTurn | null,
     message: string,
   ): Promise<void> {
-    if (!this.dailySessionRuntime || !turn) {
+    if (!this.contextEngineRuntime || !turn) {
       return;
     }
     try {
-      await this.dailySessionRuntime.recordAssistantMessage({
+      await this.contextEngineRuntime.recordAssistantMessage({
         sessionId: turn.sessionId,
         text: message,
         at: this.nowProvider().toISOString(),
       });
     } catch (err) {
       devWarn(
-        `[${clientId}] daily session assistant conversation write failed: ${err instanceof Error ? err.message : String(err)}`,
+        `[${clientId}] context engine assistant conversation write failed: ${err instanceof Error ? err.message : String(err)}`,
       );
     }
   }

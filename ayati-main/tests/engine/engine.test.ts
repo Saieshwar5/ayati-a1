@@ -131,7 +131,7 @@ function findReplyContent(onReply: ReturnType<typeof vi.fn>, type = "reply"): st
   return typeof message?.content === "string" ? message.content : "";
 }
 
-function createDailySessionRuntime(turn: ContextEnginePreparedTurn): ContextEngineRuntime {
+function createContextEngineRuntime(turn: ContextEnginePreparedTurn): ContextEngineRuntime {
   return {
     prepareUserTurn: vi.fn().mockResolvedValue(turn),
     completePreparedRun: vi.fn().mockResolvedValue({
@@ -146,7 +146,7 @@ function createDailySessionRuntime(turn: ContextEnginePreparedTurn): ContextEngi
   };
 }
 
-function readyDailySessionTurn(): ContextEnginePreparedTurn {
+function readyContextEngineTurn(): ContextEnginePreparedTurn {
   const context = {
     session: {
       sessionId: "2026-06-27",
@@ -184,7 +184,7 @@ function readyDailySessionTurn(): ContextEnginePreparedTurn {
   };
 }
 
-function ambiguousDailySessionTurn(): ContextEnginePreparedTurn {
+function ambiguousContextEngineTurn(): ContextEnginePreparedTurn {
   const context = {
     session: {
       sessionId: "2026-06-27",
@@ -270,15 +270,15 @@ describe("IVecEngine", () => {
     }
   });
 
-  it("asks the user when daily session task resolution is ambiguous", async () => {
+  it("asks the user when context engine task resolution is ambiguous", async () => {
     const provider = createMockProvider();
     const onReply = vi.fn();
-    const dailySessionRuntime = createDailySessionRuntime(ambiguousDailySessionTurn());
+    const contextEngineRuntime = createContextEngineRuntime(ambiguousContextEngineTurn());
     const engine = new IVecEngine({
       onReply,
       provider,
       sessionMemory: createSessionMemory(),
-      dailySessionRuntime,
+      contextEngineRuntime,
       systemEventPolicy: createSystemEventPolicy(),
     });
 
@@ -292,25 +292,25 @@ describe("IVecEngine", () => {
       });
     });
     expect(provider.generateTurn).not.toHaveBeenCalled();
-    expect(dailySessionRuntime.recordAssistantMessage).toHaveBeenCalledWith({
+    expect(contextEngineRuntime.recordAssistantMessage).toHaveBeenCalledWith({
       sessionId: "2026-06-27",
       text: expect.stringContaining("W-20260627-0001"),
       at: expect.any(String),
     });
-    expect(dailySessionRuntime.completePreparedRun).not.toHaveBeenCalled();
+    expect(contextEngineRuntime.completePreparedRun).not.toHaveBeenCalled();
   });
 
-  it("passes ready daily session context into the loop and commits the completed run", async () => {
+  it("passes ready context engine context into the loop and commits the completed run", async () => {
     const dataDir = mkdtempSync(join(tmpdir(), "ayati-eng-git-context-"));
     try {
       const provider = createMockProvider();
-      const dailySessionRuntime = createDailySessionRuntime(readyDailySessionTurn());
+      const contextEngineRuntime = createContextEngineRuntime(readyContextEngineTurn());
       const engine = new IVecEngine({
         onReply: vi.fn(),
         provider,
         sessionMemory: createSessionMemory(),
         dataDir,
-        dailySessionRuntime,
+        contextEngineRuntime,
         systemEventPolicy: createSystemEventPolicy(),
       });
 
@@ -318,14 +318,14 @@ describe("IVecEngine", () => {
       engine.handleMessage("c1", { type: "chat", content: "Analyze invoice" });
 
       await vi.waitFor(() => {
-        expect(dailySessionRuntime.completePreparedRun).toHaveBeenCalled();
+        expect(contextEngineRuntime.completePreparedRun).toHaveBeenCalled();
       });
       const stateView = extractStateViewFromProvider(provider);
-      expect(stateView.context.dailySession.task).toMatchObject({
+      expect(stateView.context.contextEngine.task).toMatchObject({
         workId: "W-20260627-0001",
         open: ["Read invoice"],
       });
-      expect(dailySessionRuntime.completePreparedRun).toHaveBeenCalledWith(expect.objectContaining({
+      expect(contextEngineRuntime.completePreparedRun).toHaveBeenCalledWith(expect.objectContaining({
         sessionId: "2026-06-27",
         workId: "W-20260627-0001",
         runId: "R-20260627-0001",

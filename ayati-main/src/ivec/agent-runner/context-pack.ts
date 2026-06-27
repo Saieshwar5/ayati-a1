@@ -46,7 +46,7 @@ export interface AgentContextPack {
   continuity: ContinuityContext;
   sessionWork: SessionWorkContext;
   taskThreadContext?: TaskThreadContext;
-  dailySession?: ContextEngineMachineContext;
+  contextEngine?: ContextEngineMachineContext;
   personalMemorySnapshot?: string;
 }
 
@@ -57,7 +57,7 @@ export function buildAgentContextPack(state: LoopState): AgentContextPack {
     continuity: compactContinuity(state.continuity),
     sessionWork: compactSessionWork(state.sessionWork, state.activeContextStartSeq),
     ...(state.taskThreadContext ? { taskThreadContext: compactTaskThreadContext(state.taskThreadContext) } : {}),
-    ...(state.dailySessionContext ? { dailySession: state.dailySessionContext } : {}),
+    ...(state.contextEngineContext ? { contextEngine: state.contextEngineContext } : {}),
     ...(state.personalMemorySnapshot?.trim()
       ? { personalMemorySnapshot: truncate(state.personalMemorySnapshot, LIMITS.memoryChars) }
       : {}),

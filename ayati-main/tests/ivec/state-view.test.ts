@@ -108,7 +108,7 @@ describe("buildAgentStateView", () => {
     expect(timeline).toHaveLength(12);
   });
 
-  it("includes daily session git context when provided", () => {
+  it("includes context engine context when provided", () => {
     const state: LoopState = {
       runId: "run-current",
       currentSeq: 1,
@@ -135,7 +135,7 @@ describe("buildAgentStateView", () => {
       sessionEvents: [],
       activeContextStartSeq: 1,
       sessionWork: { activeContextStartSeq: 1, recentActivities: [] },
-      dailySessionContext: {
+      contextEngineContext: {
         session: {
           sessionId: "2026-06-27",
           conversationTail: [],
@@ -164,7 +164,7 @@ describe("buildAgentStateView", () => {
       },
     };
 
-    expect(buildAgentStateView(state).context.dailySession?.task).toMatchObject({
+    expect(buildAgentStateView(state).context.contextEngine?.task).toMatchObject({
       workId: "W-20260627-0001",
       open: ["Summarize invoice"],
     });
