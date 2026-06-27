@@ -108,6 +108,68 @@ describe("buildAgentStateView", () => {
     expect(timeline).toHaveLength(12);
   });
 
+  it("includes daily session git context when provided", () => {
+    const state: LoopState = {
+      runId: "run-current",
+      currentSeq: 1,
+      runClass: "task",
+      userMessage: "continue invoice",
+      workState: {
+        status: "not_done",
+        openWork: [],
+        blockers: [],
+        summary: "",
+        verifiedFacts: [],
+        evidence: [],
+      },
+      status: "running",
+      finalOutput: "",
+      iteration: 0,
+      maxIterations: 15,
+      consecutiveFailures: 0,
+      completedSteps: [],
+      runPath: "/tmp/ayati/run-current",
+      failureHistory: [],
+      continuity: { mode: "new", confidence: 0, reasons: [] },
+      recentExchanges: [],
+      sessionEvents: [],
+      activeContextStartSeq: 1,
+      sessionWork: { activeContextStartSeq: 1, recentActivities: [] },
+      dailySessionContext: {
+        session: {
+          sessionId: "2026-06-27",
+          conversationTail: [],
+          eventTail: [],
+          assetCount: 0,
+        },
+        focus: {
+          status: "active",
+          ref: "refs/heads/work/W-20260627-0001-analyze-invoice",
+          workId: "W-20260627-0001",
+        },
+        task: {
+          ref: "refs/heads/work/W-20260627-0001-analyze-invoice",
+          workId: "W-20260627-0001",
+          title: "Analyze invoice",
+          objective: "Analyze invoice",
+          status: "active",
+          completed: ["Read invoice"],
+          open: ["Summarize invoice"],
+          blockers: [],
+          facts: [],
+          assets: [],
+          recentRuns: [],
+          recentCommits: [],
+        },
+      },
+    };
+
+    expect(buildAgentStateView(state).context.dailySession?.task).toMatchObject({
+      workId: "W-20260627-0001",
+      open: ["Summarize invoice"],
+    });
+  });
+
   it("keeps immediate timeline when durable continuity is selected", () => {
     const state: LoopState = {
       runId: "run-current",

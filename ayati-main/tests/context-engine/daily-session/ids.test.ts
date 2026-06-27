@@ -11,7 +11,7 @@ import {
   isWorkId,
   sessionIdFromCompactDate,
   slugifyTitle,
-} from "../../../src/context-server/daily-session/index.js";
+} from "../../../src/context-engine/daily-session/index.js";
 
 describe("daily session ids", () => {
   it("uses date based session ids and derived sequence ids", () => {

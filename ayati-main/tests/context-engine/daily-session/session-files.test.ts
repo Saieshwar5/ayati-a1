@@ -8,7 +8,7 @@ import {
   validateSessionAssetRecord,
   validateSessionEventRecord,
   validateSessionMetaFile,
-} from "../../../src/context-server/daily-session/index.js";
+} from "../../../src/context-engine/daily-session/index.js";
 
 describe("daily session main files", () => {
   it("keeps daily main files small and machine-readable", () => {

@@ -14,6 +14,8 @@ export const DEFAULT_DOCUMENT_EMBED_BATCH_SIZE = 32;
 export const DEFAULT_DOCUMENT_VECTOR_MIN_CHUNKS = 40;
 export const DEFAULT_AGENT_MAX_SELECTED_TOOLS = 12;
 export const DEFAULT_WORKSPACE_DIR = resolve(projectRoot, "work_space");
+export const DEFAULT_GIT_CONTEXT_STORE_DIR = resolve(projectRoot, "data", "context-engine");
+export const DEFAULT_GIT_CONTEXT_TIMEZONE = "Asia/Kolkata";
 
 export interface HttpRuntimeConfig {
   host: string;
@@ -41,12 +43,19 @@ export interface WorkspaceRuntimeConfig {
   root: string;
 }
 
+export interface GitContextRuntimeConfig {
+  enabled: boolean;
+  storeDir: string;
+  timezone: string;
+}
+
 export interface AyatiRuntimeConfig {
   http: HttpRuntimeConfig;
   documents: DocumentRuntimeConfig;
   python: PythonRuntimeConfig;
   agent: AgentRuntimeConfig;
   workspace: WorkspaceRuntimeConfig;
+  gitContext: GitContextRuntimeConfig;
 }
 
 export function loadAyatiRuntimeConfig(env: NodeJS.ProcessEnv = process.env): AyatiRuntimeConfig {
@@ -58,6 +67,7 @@ export function loadAyatiRuntimeConfig(env: NodeJS.ProcessEnv = process.env): Ay
     python: loadPythonRuntimeConfig(env),
     agent: loadAgentRuntimeConfig(env),
     workspace: loadWorkspaceRuntimeConfig(env),
+    gitContext: loadGitContextRuntimeConfig(env),
   };
 }
 
@@ -114,6 +124,14 @@ function loadWorkspaceRuntimeConfig(env: NodeJS.ProcessEnv): WorkspaceRuntimeCon
   };
 }
 
+function loadGitContextRuntimeConfig(env: NodeJS.ProcessEnv): GitContextRuntimeConfig {
+  return {
+    enabled: isEnvTrue(env["AYATI_GIT_CONTEXT_ENABLED"]),
+    storeDir: resolveGitContextStoreDir(env["AYATI_GIT_CONTEXT_STORE_DIR"]),
+    timezone: trimOptional(env["AYATI_GIT_CONTEXT_TIMEZONE"]) ?? DEFAULT_GIT_CONTEXT_TIMEZONE,
+  };
+}
+
 export function resolveWorkspaceDir(rawValue: string | undefined): string {
   const normalized = normalizeSpecialPath(rawValue ?? "");
   if (normalized.length === 0) {
@@ -125,8 +143,23 @@ export function resolveWorkspaceDir(rawValue: string | undefined): string {
   return resolve(projectRoot, normalized);
 }
 
+export function resolveGitContextStoreDir(rawValue: string | undefined): string {
+  const normalized = normalizeSpecialPath(rawValue ?? "");
+  if (normalized.length === 0) {
+    return DEFAULT_GIT_CONTEXT_STORE_DIR;
+  }
+  if (isAbsolute(normalized)) {
+    return resolve(normalized);
+  }
+  return resolve(projectRoot, normalized);
+}
+
 function isEnvFalse(rawValue: string | undefined): boolean {
   return /^(?:0|false|no|off)$/i.test(rawValue ?? "");
+}
+
+function isEnvTrue(rawValue: string | undefined): boolean {
+  return /^(?:1|true|yes|on)$/i.test(rawValue ?? "");
 }
 
 function trimOptional(value: string | undefined): string | undefined {

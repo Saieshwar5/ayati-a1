@@ -10,6 +10,10 @@ import type { StaticContext } from "../../src/context/static-context-cache.js";
 import type { SystemEventPolicyConfig } from "../../src/ivec/system-event-policy.js";
 import { writeFilesTool } from "../../src/skills/builtins/filesystem/write-files.js";
 import { createToolExecutor } from "../../src/skills/tool-executor.js";
+import type {
+  DailySessionRuntime,
+  DailySessionRuntimePreparedTurn,
+} from "../../src/context-engine/daily-session/index.js";
 
 function createMockProvider(overrides?: Partial<LlmProvider>): LlmProvider {
   return {
@@ -127,6 +131,139 @@ function findReplyContent(onReply: ReturnType<typeof vi.fn>, type = "reply"): st
   return typeof message?.content === "string" ? message.content : "";
 }
 
+function createDailySessionRuntime(turn: DailySessionRuntimePreparedTurn): DailySessionRuntime {
+  return {
+    prepareUserTurn: vi.fn().mockResolvedValue(turn),
+    completePreparedRun: vi.fn().mockResolvedValue({
+      run: {
+        workCommit: "work-commit",
+        sessionCommit: "session-commit",
+        runRef: "refs/ayati/runs/R-20260627-0001",
+      },
+      context: turn.context,
+    }),
+    recordAssistantMessage: vi.fn().mockResolvedValue(undefined),
+  };
+}
+
+function readyDailySessionTurn(): DailySessionRuntimePreparedTurn {
+  const context = {
+    session: {
+      sessionId: "2026-06-27",
+      conversationTail: [],
+      eventTail: [],
+      assetCount: 0,
+    },
+    focus: {
+      status: "active" as const,
+      ref: "refs/heads/work/W-20260627-0001-analyze-invoice",
+      workId: "W-20260627-0001",
+    },
+    task: {
+      ref: "refs/heads/work/W-20260627-0001-analyze-invoice",
+      workId: "W-20260627-0001",
+      title: "Analyze invoice",
+      objective: "Analyze invoice",
+      status: "active",
+      completed: [],
+      open: ["Read invoice"],
+      blockers: [],
+      facts: [],
+      assets: [],
+      recentRuns: [],
+      recentCommits: [],
+    },
+  };
+  return {
+    status: "ready",
+    sessionId: "2026-06-27",
+    runId: "R-20260627-0001",
+    workId: "W-20260627-0001",
+    ref: "refs/heads/work/W-20260627-0001-analyze-invoice",
+    context,
+    prepared: {
+      status: "ready",
+      conversation: {
+        seq: 1,
+        role: "user",
+        at: "2026-06-27T10:00:00+05:30",
+        text: "Analyze invoice",
+      },
+      resolution: {
+        mode: "create_new",
+        title: "Analyze invoice",
+        objective: "Analyze invoice",
+        confidence: "deterministic",
+        reason: "no existing task matched deterministically",
+      },
+      selected: {
+        workId: "W-20260627-0001",
+        ref: "refs/heads/work/W-20260627-0001-analyze-invoice",
+      },
+      context,
+    },
+  };
+}
+
+function ambiguousDailySessionTurn(): DailySessionRuntimePreparedTurn {
+  const context = {
+    session: {
+      sessionId: "2026-06-27",
+      conversationTail: [],
+      eventTail: [],
+      assetCount: 0,
+    },
+    focus: { status: "none" as const },
+  };
+  return {
+    status: "ambiguous",
+    sessionId: "2026-06-27",
+    context,
+    message: "I found multiple matching tasks.\n- W-20260627-0001: Upload bug\n- W-20260627-0002: Upload UI",
+    prepared: {
+      status: "ambiguous",
+      conversation: {
+        seq: 1,
+        role: "user",
+        at: "2026-06-27T10:00:00+05:30",
+        text: "upload",
+      },
+      resolution: {
+        mode: "ambiguous",
+        reason: "multiple existing tasks matched partially",
+        candidates: [
+          {
+            workId: "W-20260627-0001",
+            ref: "refs/heads/work/W-20260627-0001-upload-bug",
+            title: "Upload bug",
+            score: 55,
+            reasons: ["task title token matched: upload"],
+          },
+          {
+            workId: "W-20260627-0002",
+            ref: "refs/heads/work/W-20260627-0002-upload-ui",
+            title: "Upload UI",
+            score: 55,
+            reasons: ["task title token matched: upload"],
+          },
+        ],
+      },
+      context,
+    },
+  };
+}
+
+function extractStateViewFromProvider(provider: LlmProvider): any {
+  const callInput = (provider.generateTurn as any).mock.calls[0]?.[0];
+  const userPrompt = callInput.messages.find((message: { role: string }) => message.role === "user").content as string;
+  const marker = "State view:\n";
+  const start = userPrompt.indexOf(marker);
+  if (start < 0) {
+    throw new Error("State view section missing from decision prompt.");
+  }
+  return JSON.parse(userPrompt.slice(start + marker.length).trim());
+}
+
 describe("IVecEngine", () => {
   it("is constructible without options", () => {
     const engine = new IVecEngine();
@@ -178,6 +315,72 @@ describe("IVecEngine", () => {
         });
       });
       expect(sessionMemory.queueTaskSummary as ReturnType<typeof vi.fn>).not.toHaveBeenCalled();
+    } finally {
+      rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it("asks the user when daily session task resolution is ambiguous", async () => {
+    const provider = createMockProvider();
+    const onReply = vi.fn();
+    const dailySessionRuntime = createDailySessionRuntime(ambiguousDailySessionTurn());
+    const engine = new IVecEngine({
+      onReply,
+      provider,
+      sessionMemory: createSessionMemory(),
+      dailySessionRuntime,
+      systemEventPolicy: createSystemEventPolicy(),
+    });
+
+    await engine.start();
+    engine.handleMessage("c1", { type: "chat", content: "upload" });
+
+    await vi.waitFor(() => {
+      expect(onReply).toHaveBeenCalledWith("c1", {
+        type: "feedback",
+        content: expect.stringContaining("I found multiple matching tasks"),
+      });
+    });
+    expect(provider.generateTurn).not.toHaveBeenCalled();
+    expect(dailySessionRuntime.recordAssistantMessage).toHaveBeenCalledWith({
+      sessionId: "2026-06-27",
+      text: expect.stringContaining("W-20260627-0001"),
+      at: expect.any(String),
+    });
+    expect(dailySessionRuntime.completePreparedRun).not.toHaveBeenCalled();
+  });
+
+  it("passes ready daily session context into the loop and commits the completed run", async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "ayati-eng-git-context-"));
+    try {
+      const provider = createMockProvider();
+      const dailySessionRuntime = createDailySessionRuntime(readyDailySessionTurn());
+      const engine = new IVecEngine({
+        onReply: vi.fn(),
+        provider,
+        sessionMemory: createSessionMemory(),
+        dataDir,
+        dailySessionRuntime,
+        systemEventPolicy: createSystemEventPolicy(),
+      });
+
+      await engine.start();
+      engine.handleMessage("c1", { type: "chat", content: "Analyze invoice" });
+
+      await vi.waitFor(() => {
+        expect(dailySessionRuntime.completePreparedRun).toHaveBeenCalled();
+      });
+      const stateView = extractStateViewFromProvider(provider);
+      expect(stateView.context.dailySession.task).toMatchObject({
+        workId: "W-20260627-0001",
+        open: ["Read invoice"],
+      });
+      expect(dailySessionRuntime.completePreparedRun).toHaveBeenCalledWith(expect.objectContaining({
+        sessionId: "2026-06-27",
+        workId: "W-20260627-0001",
+        runId: "R-20260627-0001",
+        assistantMessage: "mock reply",
+      }));
     } finally {
       rmSync(dataDir, { recursive: true, force: true });
     }

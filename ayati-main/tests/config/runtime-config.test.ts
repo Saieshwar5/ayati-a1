@@ -3,6 +3,8 @@ import {
   DEFAULT_DOCUMENT_EMBED_BATCH_SIZE,
   DEFAULT_DOCUMENT_VECTOR_MIN_CHUNKS,
   DEFAULT_AGENT_MAX_SELECTED_TOOLS,
+  DEFAULT_GIT_CONTEXT_STORE_DIR,
+  DEFAULT_GIT_CONTEXT_TIMEZONE,
   DEFAULT_HTTP_ALLOW_ORIGIN,
   DEFAULT_HTTP_HOST,
   DEFAULT_HTTP_PORT,
@@ -10,6 +12,7 @@ import {
   DEFAULT_WORKSPACE_DIR,
   loadAyatiRuntimeConfig,
   parsePositiveInt,
+  resolveGitContextStoreDir,
   resolveWorkspaceDir,
 } from "../../src/config/runtime-config.js";
 
@@ -38,10 +41,15 @@ describe("ayati runtime config", () => {
       workspace: {
         root: DEFAULT_WORKSPACE_DIR,
       },
+      gitContext: {
+        enabled: false,
+        storeDir: DEFAULT_GIT_CONTEXT_STORE_DIR,
+        timezone: DEFAULT_GIT_CONTEXT_TIMEZONE,
+      },
     });
   });
 
-  it("loads explicit HTTP, document, Python, agent, and workspace overrides", () => {
+  it("loads explicit HTTP, document, Python, agent, workspace, and git context overrides", () => {
     const config = loadAyatiRuntimeConfig({
       AYATI_HTTP_HOST: " 0.0.0.0 ",
       AYATI_HTTP_PORT: "9090",
@@ -54,6 +62,9 @@ describe("ayati runtime config", () => {
       AYATI_PYTHON_INTERPRETER: " /usr/bin/python3 ",
       AYATI_AGENT_MAX_SELECTED_TOOLS: "5",
       AYATI_WORKSPACE_DIR: " /tmp/ayati-workspace ",
+      AYATI_GIT_CONTEXT_ENABLED: "true",
+      AYATI_GIT_CONTEXT_STORE_DIR: " /tmp/ayati-context-engine ",
+      AYATI_GIT_CONTEXT_TIMEZONE: " UTC ",
     });
 
     expect(config).toEqual({
@@ -80,11 +91,20 @@ describe("ayati runtime config", () => {
       workspace: {
         root: "/tmp/ayati-workspace",
       },
+      gitContext: {
+        enabled: true,
+        storeDir: "/tmp/ayati-context-engine",
+        timezone: "UTC",
+      },
     });
   });
 
   it("resolves relative workspace overrides from the project root", () => {
     expect(resolveWorkspaceDir("custom-workspace")).toMatch(/\/ayati-main\/custom-workspace$/);
+  });
+
+  it("resolves relative git context store overrides from the project root", () => {
+    expect(resolveGitContextStoreDir("custom-context")).toMatch(/\/ayati-main\/custom-context$/);
   });
 
   it("preserves legacy upload host, port, and CORS fallbacks", () => {

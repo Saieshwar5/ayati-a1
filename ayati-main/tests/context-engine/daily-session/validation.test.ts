@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   validateSessionEventRecord,
   validateTaskStateFile,
-} from "../../../src/context-server/daily-session/index.js";
+} from "../../../src/context-engine/daily-session/index.js";
 
 describe("daily session validation", () => {
   it("returns explicit errors instead of throwing on invalid task state", () => {

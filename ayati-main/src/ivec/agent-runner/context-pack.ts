@@ -5,6 +5,7 @@ import type {
   TaskThreadContext,
 } from "../../memory/types.js";
 import type { LoopState } from "../types.js";
+import type { DailySessionMachineContextPack } from "../../context-engine/daily-session/index.js";
 
 const LIMITS = {
   timelineEvents: 12,
@@ -45,6 +46,7 @@ export interface AgentContextPack {
   continuity: ContinuityContext;
   sessionWork: SessionWorkContext;
   taskThreadContext?: TaskThreadContext;
+  dailySession?: DailySessionMachineContextPack;
   personalMemorySnapshot?: string;
 }
 
@@ -55,6 +57,7 @@ export function buildAgentContextPack(state: LoopState): AgentContextPack {
     continuity: compactContinuity(state.continuity),
     sessionWork: compactSessionWork(state.sessionWork, state.activeContextStartSeq),
     ...(state.taskThreadContext ? { taskThreadContext: compactTaskThreadContext(state.taskThreadContext) } : {}),
+    ...(state.dailySessionContext ? { dailySession: state.dailySessionContext } : {}),
     ...(state.personalMemorySnapshot?.trim()
       ? { personalMemorySnapshot: truncate(state.personalMemorySnapshot, LIMITS.memoryChars) }
       : {}),

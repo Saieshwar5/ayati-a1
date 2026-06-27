@@ -6,7 +6,7 @@ import {
   DailySessionCoordinator,
   DailySessionGitStore,
   type PreparedUserTurn,
-} from "../../../src/context-server/daily-session/index.js";
+} from "../../../src/context-engine/daily-session/index.js";
 
 describe("DailySessionCoordinator", () => {
   it("opens the session, records the user turn, creates the first task, and focuses it", async () => {

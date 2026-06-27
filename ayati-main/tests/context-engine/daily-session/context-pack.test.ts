@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   buildDailySessionMachineContextPack,
   type DailySessionContext,
-} from "../../../src/context-server/daily-session/index.js";
+} from "../../../src/context-engine/daily-session/index.js";
 
 describe("buildDailySessionMachineContextPack", () => {
   it("renders a compact machine-readable active task context", () => {
