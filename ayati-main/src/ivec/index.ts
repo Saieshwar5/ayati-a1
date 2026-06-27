@@ -49,11 +49,11 @@ import {
   type SystemEventPolicyConfig,
 } from "./system-event-policy.js";
 import type { AgentFeedbackLedger } from "./feedback-ledger.js";
-import type {
-  DailySessionRuntime,
-  DailySessionRuntimePreparedTurn,
-} from "../context-engine/daily-session/index.js";
-import { buildDailySessionRunCommitInput } from "./git-context-mappers.js";
+import {
+  buildDailySessionRunCommitInput,
+  type ContextEnginePreparedTurn,
+  type ContextEngineRuntime,
+} from "../context-engine/index.js";
 import type {
   AgentLoopResult,
   AgentArtifact,
@@ -102,7 +102,7 @@ export interface IVecEngineOptions {
   directoryLibrary?: DirectoryLibrary;
   systemEventPolicy?: SystemEventPolicyConfig;
   feedbackLedger?: AgentFeedbackLedger;
-  dailySessionRuntime?: DailySessionRuntime;
+  dailySessionRuntime?: ContextEngineRuntime;
 }
 
 export class IVecEngine {
@@ -124,7 +124,7 @@ export class IVecEngine {
   private readonly directoryLibrary?: DirectoryLibrary;
   private readonly systemEventPolicy?: SystemEventPolicyConfig;
   private readonly feedbackLedger?: AgentFeedbackLedger;
-  private readonly dailySessionRuntime?: DailySessionRuntime;
+  private readonly dailySessionRuntime?: ContextEngineRuntime;
   private readonly pulseProposalReflectionService = new PulseProposalReflectionService();
   private staticSystemTokens = 0;
   private staticTokensReady = false;
@@ -212,7 +212,7 @@ export class IVecEngine {
   ): Promise<void> {
     let inputHandle: SessionInputHandle | null = null;
     let runHandle: MemoryRunHandle | null = null;
-    let dailySessionTurn: DailySessionRuntimePreparedTurn | null = null;
+    let dailySessionTurn: ContextEnginePreparedTurn | null = null;
     let runStatus: "completed" | "failed" | "stuck" | null = null;
     try {
       this.rotateSessionBeforeRunIfNeeded(clientId, content);
@@ -369,7 +369,7 @@ export class IVecEngine {
   private async prepareDailySessionTurn(
     clientId: string,
     userMessage: string,
-  ): Promise<DailySessionRuntimePreparedTurn | null> {
+  ): Promise<ContextEnginePreparedTurn | null> {
     if (!this.dailySessionRuntime) {
       return null;
     }
@@ -390,7 +390,7 @@ export class IVecEngine {
             workId: turn.workId,
             ref: turn.ref,
           } : {
-            candidateCount: turn.prepared.resolution.candidates.length,
+            candidateCount: turn.candidateCount,
           }),
         },
       });
@@ -404,7 +404,7 @@ export class IVecEngine {
   private async dispatchDailySessionAmbiguity(
     clientId: string,
     inputHandle: SessionInputHandle,
-    turn: Extract<DailySessionRuntimePreparedTurn, { status: "ambiguous" }>,
+    turn: Extract<ContextEnginePreparedTurn, { status: "ambiguous" }>,
   ): Promise<void> {
     await this.recordDailySessionAssistantMessage(clientId, turn, turn.message);
     this.dispatchAgentResponse(clientId, inputHandle, null, {
@@ -415,7 +415,7 @@ export class IVecEngine {
 
   private async completeDailySessionRun(
     clientId: string,
-    turn: DailySessionRuntimePreparedTurn | null,
+    turn: ContextEnginePreparedTurn | null,
     result: AgentLoopResult,
   ): Promise<void> {
     if (!this.dailySessionRuntime || turn?.status !== "ready") {
@@ -448,7 +448,7 @@ export class IVecEngine {
 
   private async recordDailySessionAssistantMessage(
     clientId: string,
-    turn: DailySessionRuntimePreparedTurn | null,
+    turn: ContextEnginePreparedTurn | null,
     message: string,
   ): Promise<void> {
     if (!this.dailySessionRuntime || !turn) {

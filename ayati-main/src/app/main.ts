@@ -33,7 +33,7 @@ import { createAgentFeedbackLedgerFromEnv } from "../ivec/feedback-ledger.js";
 import {
   DailySessionGitStore,
   DailySessionRuntimeBridge,
-} from "../context-engine/daily-session/index.js";
+} from "../context-engine/index.js";
 
 const thisDir = dirname(fileURLToPath(import.meta.url));
 const projectRoot = resolve(thisDir, "..", "..");

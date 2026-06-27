@@ -5,7 +5,7 @@ import type {
   TaskThreadContext,
 } from "../../memory/types.js";
 import type { LoopState } from "../types.js";
-import type { DailySessionMachineContextPack } from "../../context-engine/daily-session/index.js";
+import type { ContextEngineMachineContext } from "../../context-engine/index.js";
 
 const LIMITS = {
   timelineEvents: 12,
@@ -46,7 +46,7 @@ export interface AgentContextPack {
   continuity: ContinuityContext;
   sessionWork: SessionWorkContext;
   taskThreadContext?: TaskThreadContext;
-  dailySession?: DailySessionMachineContextPack;
+  dailySession?: ContextEngineMachineContext;
   personalMemorySnapshot?: string;
 }
 

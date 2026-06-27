@@ -1,6 +1,13 @@
 import {
   type DailySessionMachineContextPack,
 } from "./context-pack.js";
+import type {
+  ContextEngineAmbiguousTurn,
+  ContextEngineReadyTurn,
+  ContextEngineRuntime,
+  PrepareContextUserTurnInput,
+  RecordContextAssistantMessageInput,
+} from "../contracts.js";
 import { GitDriver } from "./git-driver.js";
 import type { CompletePreparedRunInput, CompletedPreparedRun } from "./session-coordinator.js";
 import {
@@ -23,14 +30,9 @@ export interface DailySessionRuntimeOptions {
   coordinator?: DailySessionCoordinator;
 }
 
-export interface PrepareDailySessionUserTurnInput {
-  userMessage: string;
-  at?: string;
-  sessionId?: SessionId;
-  timezone?: string;
-}
+export interface PrepareDailySessionUserTurnInput extends PrepareContextUserTurnInput {}
 
-export interface DailySessionRuntimeReadyTurn {
+export interface DailySessionRuntimeReadyTurn extends ContextEngineReadyTurn {
   status: "ready";
   sessionId: SessionId;
   runId: RunId;
@@ -40,7 +42,7 @@ export interface DailySessionRuntimeReadyTurn {
   context: DailySessionMachineContextPack;
 }
 
-export interface DailySessionRuntimeAmbiguousTurn {
+export interface DailySessionRuntimeAmbiguousTurn extends ContextEngineAmbiguousTurn {
   status: "ambiguous";
   sessionId: SessionId;
   prepared: Extract<PreparedUserTurn, { status: "ambiguous" }>;
@@ -52,13 +54,9 @@ export type DailySessionRuntimePreparedTurn =
   | DailySessionRuntimeReadyTurn
   | DailySessionRuntimeAmbiguousTurn;
 
-export interface RecordDailySessionAssistantMessageInput {
-  sessionId: SessionId;
-  text: string;
-  at?: string;
-}
+export interface RecordDailySessionAssistantMessageInput extends RecordContextAssistantMessageInput {}
 
-export interface DailySessionRuntime {
+export interface DailySessionRuntime extends ContextEngineRuntime {
   prepareUserTurn(input: PrepareDailySessionUserTurnInput): Promise<DailySessionRuntimePreparedTurn>;
   completePreparedRun(input: CompletePreparedRunInput): Promise<CompletedPreparedRun>;
   recordAssistantMessage(input: RecordDailySessionAssistantMessageInput): Promise<void>;
@@ -95,6 +93,7 @@ export class DailySessionRuntimeBridge implements DailySessionRuntime {
         prepared,
         context: prepared.context,
         message: buildAmbiguousWorkMessage(prepared),
+        candidateCount: prepared.resolution.candidates.length,
       };
     }
 
