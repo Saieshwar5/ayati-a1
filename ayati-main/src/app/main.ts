@@ -31,6 +31,7 @@ import type { AgentUiContext } from "../ui/context.js";
 import type { WorkspaceInteractionEvent } from "../ui/workspace-orchestrator.js";
 import { createAgentFeedbackLedgerFromEnv } from "../ivec/feedback-ledger.js";
 import { createContextEngineRuntime } from "./context-runtime.js";
+import { createChatContextRuntime } from "./chat-context-runtime.js";
 
 const thisDir = dirname(fileURLToPath(import.meta.url));
 const projectRoot = resolve(thisDir, "..", "..");
@@ -172,6 +173,9 @@ export async function main(): Promise<void> {
   const contextEngineRuntime = createContextEngineRuntime({
     config: runtimeConfig,
   });
+  const chatContextRuntime = createChatContextRuntime({
+    contextEngineRuntime,
+  });
 
   const uploadServer = new UploadServer({
     uploadsDir: content.documentStore.uploadsDir,
@@ -204,7 +208,7 @@ export async function main(): Promise<void> {
     systemEventPolicy,
     loopConfig: runtimeConfig.agent.loopConfig,
     feedbackLedger,
-    contextEngineRuntime,
+    chatContextRuntime,
   });
   const systemEventWorker = new SystemEventWorker({
     queueStore: inboundQueueStore,

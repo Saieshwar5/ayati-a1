@@ -49,11 +49,7 @@ import {
   type SystemEventPolicyConfig,
 } from "./system-event-policy.js";
 import type { AgentFeedbackLedger } from "./feedback-ledger.js";
-import {
-  buildContextEngineRunCommitInput,
-  type ContextEnginePreparedTurn,
-  type ContextEngineRuntime,
-} from "../context-engine/index.js";
+import type { ChatContextPreparedTurn, ChatContextRuntime } from "./chat-context-runtime.js";
 import type {
   AgentLoopResult,
   AgentArtifact,
@@ -102,7 +98,7 @@ export interface IVecEngineOptions {
   directoryLibrary?: DirectoryLibrary;
   systemEventPolicy?: SystemEventPolicyConfig;
   feedbackLedger?: AgentFeedbackLedger;
-  contextEngineRuntime?: ContextEngineRuntime;
+  chatContextRuntime?: ChatContextRuntime;
 }
 
 export class IVecEngine {
@@ -124,7 +120,7 @@ export class IVecEngine {
   private readonly directoryLibrary?: DirectoryLibrary;
   private readonly systemEventPolicy?: SystemEventPolicyConfig;
   private readonly feedbackLedger?: AgentFeedbackLedger;
-  private readonly contextEngineRuntime?: ContextEngineRuntime;
+  private readonly chatContextRuntime?: ChatContextRuntime;
   private readonly pulseProposalReflectionService = new PulseProposalReflectionService();
   private staticSystemTokens = 0;
   private staticTokensReady = false;
@@ -150,7 +146,7 @@ export class IVecEngine {
     this.directoryLibrary = options?.directoryLibrary;
     this.systemEventPolicy = options?.systemEventPolicy;
     this.feedbackLedger = options?.feedbackLedger;
-    this.contextEngineRuntime = options?.contextEngineRuntime;
+    this.chatContextRuntime = options?.chatContextRuntime;
   }
 
   async start(): Promise<void> {
@@ -212,7 +208,7 @@ export class IVecEngine {
   ): Promise<void> {
     let inputHandle: SessionInputHandle | null = null;
     let runHandle: MemoryRunHandle | null = null;
-    let contextEngineTurn: ContextEnginePreparedTurn | null = null;
+    let chatContextTurn: ChatContextPreparedTurn | null = null;
     let runStatus: "completed" | "failed" | "stuck" | null = null;
     try {
       this.rotateSessionBeforeRunIfNeeded(clientId, content);
@@ -230,9 +226,9 @@ export class IVecEngine {
           uiContext,
         },
       });
-      contextEngineTurn = await this.prepareContextEngineTurn(clientId, content);
-      if (contextEngineTurn?.status === "ambiguous") {
-        await this.dispatchContextEngineAmbiguity(clientId, inputHandle, contextEngineTurn);
+      chatContextTurn = await this.prepareChatContextTurn(clientId, content);
+      if (chatContextTurn?.status === "ambiguous") {
+        await this.dispatchChatContextAmbiguity(clientId, inputHandle, chatContextTurn);
         runStatus = "completed";
         return;
       }
@@ -281,7 +277,7 @@ export class IVecEngine {
           config: this.loopConfig,
           dataDir: this.dataDir ?? "data",
           systemContext: system.decisionSystemContext || system.systemContext || undefined,
-          ...(contextEngineTurn?.context ? { harnessContext: { contextEngine: contextEngineTurn.context } } : {}),
+          ...(chatContextTurn?.context ? { harnessContext: { contextEngine: chatContextTurn.context } } : {}),
           feedbackLedger: this.feedbackLedger,
           attachedDocuments: registeredAttachments.documents,
           attachmentWarnings: registeredAttachments.warnings,
@@ -307,7 +303,7 @@ export class IVecEngine {
         });
         result = await this.applyPulseProposalReflection(clientId, content, result, toolDefs);
         this.dispatchAgentResponse(clientId, inputHandle, runHandle, result);
-        await this.completeContextEngineRun(clientId, contextEngineTurn, result);
+        await this.completeChatContextRun(clientId, chatContextTurn, result);
         this.feedbackLedger?.record({
           clientId,
           sessionId: inputHandle.sessionId,
@@ -331,7 +327,7 @@ export class IVecEngine {
           type: "reply",
           content: echoContent,
         });
-        await this.recordContextEngineAssistantMessage(clientId, contextEngineTurn, echoContent);
+        await this.recordChatContextAssistantMessage(clientId, chatContextTurn, echoContent);
         runStatus = "completed";
       }
     } catch (err) {
@@ -366,105 +362,101 @@ export class IVecEngine {
     }
   }
 
-  private async prepareContextEngineTurn(
+  private async prepareChatContextTurn(
     clientId: string,
     userMessage: string,
-  ): Promise<ContextEnginePreparedTurn | null> {
-    if (!this.contextEngineRuntime) {
+  ): Promise<ChatContextPreparedTurn | null> {
+    if (!this.chatContextRuntime) {
       return null;
     }
-    try {
-      const turn = await this.contextEngineRuntime.prepareUserTurn({
-        userMessage,
-        at: this.nowProvider().toISOString(),
-      });
-      this.feedbackLedger?.record({
-        clientId,
-        sessionId: turn.sessionId,
-        ...(turn.status === "ready" ? { runId: turn.runId } : {}),
-        stage: "context_engine",
-        event: "prepared",
-        data: {
-          status: turn.status,
-          ...(turn.status === "ready" ? {
-            workId: turn.workId,
-            ref: turn.ref,
-          } : {
-            candidateCount: turn.candidateCount,
-          }),
-        },
-      });
-      return turn;
-    } catch (err) {
-      devWarn("Context engine preparation failed:", err instanceof Error ? err.message : String(err));
+
+    const turn = await this.chatContextRuntime.prepareUserTurn({
+      clientId,
+      userMessage,
+      at: this.nowProvider().toISOString(),
+    });
+    if (!turn) {
       return null;
     }
+
+    this.feedbackLedger?.record({
+      clientId,
+      sessionId: turn.sessionId,
+      ...(turn.status === "ready" ? { runId: turn.runId } : {}),
+      stage: "context_engine",
+      event: "prepared",
+      data: {
+        status: turn.status,
+        ...(turn.status === "ready" ? {
+          workId: turn.workId,
+          ref: turn.ref,
+        } : {
+          candidateCount: turn.candidateCount,
+        }),
+      },
+    });
+    return turn;
   }
 
-  private async dispatchContextEngineAmbiguity(
+  private async dispatchChatContextAmbiguity(
     clientId: string,
     inputHandle: SessionInputHandle,
-    turn: Extract<ContextEnginePreparedTurn, { status: "ambiguous" }>,
+    turn: Extract<ChatContextPreparedTurn, { status: "ambiguous" }>,
   ): Promise<void> {
-    await this.recordContextEngineAssistantMessage(clientId, turn, turn.message);
+    await this.recordChatContextAssistantMessage(clientId, turn, turn.message);
     this.dispatchAgentResponse(clientId, inputHandle, null, {
       type: "feedback",
       content: turn.message,
     });
   }
 
-  private async completeContextEngineRun(
+  private async completeChatContextRun(
     clientId: string,
-    turn: ContextEnginePreparedTurn | null,
+    turn: ChatContextPreparedTurn | null,
     result: AgentLoopResult,
   ): Promise<void> {
-    if (!this.contextEngineRuntime || turn?.status !== "ready") {
+    if (!this.chatContextRuntime || turn?.status !== "ready") {
       return;
     }
-    try {
-      const completed = await this.contextEngineRuntime.completePreparedRun(buildContextEngineRunCommitInput({
-        sessionId: turn.sessionId,
-        workId: turn.workId,
-        runId: turn.runId,
-        result,
-        at: this.nowProvider().toISOString(),
-      }));
-      this.feedbackLedger?.record({
-        clientId,
-        sessionId: turn.sessionId,
-        runId: turn.runId,
-        stage: "context_engine",
-        event: "committed",
-        data: {
-          workId: turn.workId,
-          workCommit: completed.run.workCommit,
-          runRef: completed.run.runRef,
-        },
-      });
-    } catch (err) {
-      devWarn("Context engine write-back failed:", err instanceof Error ? err.message : String(err));
+
+    const completed = await this.chatContextRuntime.completePreparedRun({
+      clientId,
+      turn,
+      result,
+      at: this.nowProvider().toISOString(),
+    });
+    if (!completed) {
+      return;
     }
+
+    this.feedbackLedger?.record({
+      clientId,
+      sessionId: turn.sessionId,
+      runId: turn.runId,
+      stage: "context_engine",
+      event: "committed",
+      data: {
+        workId: completed.workId,
+        workCommit: completed.workCommit,
+        runRef: completed.runRef,
+      },
+    });
   }
 
-  private async recordContextEngineAssistantMessage(
+  private async recordChatContextAssistantMessage(
     clientId: string,
-    turn: ContextEnginePreparedTurn | null,
+    turn: ChatContextPreparedTurn | null,
     message: string,
   ): Promise<void> {
-    if (!this.contextEngineRuntime || !turn) {
+    if (!this.chatContextRuntime || !turn) {
       return;
     }
-    try {
-      await this.contextEngineRuntime.recordAssistantMessage({
-        sessionId: turn.sessionId,
-        text: message,
-        at: this.nowProvider().toISOString(),
-      });
-    } catch (err) {
-      devWarn(
-        `[${clientId}] context engine assistant conversation write failed: ${err instanceof Error ? err.message : String(err)}`,
-      );
-    }
+    await this.chatContextRuntime.recordAssistantMessage({
+      clientId,
+      turn,
+      message,
+      at: this.nowProvider().toISOString(),
+    });
   }
 
   private async processSystemEvent(clientId: string, event: AyatiSystemEvent): Promise<void> {

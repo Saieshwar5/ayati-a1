@@ -11,9 +11,9 @@ import type { SystemEventPolicyConfig } from "../../src/ivec/system-event-policy
 import { writeFilesTool } from "../../src/skills/builtins/filesystem/write-files.js";
 import { createToolExecutor } from "../../src/skills/tool-executor.js";
 import type {
-  ContextEnginePreparedTurn,
-  ContextEngineRuntime,
-} from "../../src/context-engine/index.js";
+  ChatContextPreparedTurn,
+  ChatContextRuntime,
+} from "../../src/ivec/chat-context-runtime.js";
 
 function createMockProvider(overrides?: Partial<LlmProvider>): LlmProvider {
   return {
@@ -131,22 +131,19 @@ function findReplyContent(onReply: ReturnType<typeof vi.fn>, type = "reply"): st
   return typeof message?.content === "string" ? message.content : "";
 }
 
-function createContextEngineRuntime(turn: ContextEnginePreparedTurn): ContextEngineRuntime {
+function createChatContextRuntime(turn: ChatContextPreparedTurn): ChatContextRuntime {
   return {
     prepareUserTurn: vi.fn().mockResolvedValue(turn),
     completePreparedRun: vi.fn().mockResolvedValue({
-      run: {
-        workCommit: "work-commit",
-        sessionCommit: "session-commit",
-        runRef: "refs/ayati/runs/R-20260627-0001",
-      },
-      context: turn.context,
+      workId: turn.status === "ready" ? turn.workId : "W-20260627-0001",
+      workCommit: "work-commit",
+      runRef: "refs/ayati/runs/R-20260627-0001",
     }),
     recordAssistantMessage: vi.fn().mockResolvedValue(undefined),
   };
 }
 
-function readyContextEngineTurn(): ContextEnginePreparedTurn {
+function readyChatContextTurn(): ChatContextPreparedTurn {
   const context = {
     session: {
       sessionId: "2026-06-27",
@@ -184,7 +181,7 @@ function readyContextEngineTurn(): ContextEnginePreparedTurn {
   };
 }
 
-function ambiguousContextEngineTurn(): ContextEnginePreparedTurn {
+function ambiguousChatContextTurn(): ChatContextPreparedTurn {
   const context = {
     session: {
       sessionId: "2026-06-27",
@@ -273,12 +270,12 @@ describe("IVecEngine", () => {
   it("asks the user when context engine task resolution is ambiguous", async () => {
     const provider = createMockProvider();
     const onReply = vi.fn();
-    const contextEngineRuntime = createContextEngineRuntime(ambiguousContextEngineTurn());
+    const chatContextRuntime = createChatContextRuntime(ambiguousChatContextTurn());
     const engine = new IVecEngine({
       onReply,
       provider,
       sessionMemory: createSessionMemory(),
-      contextEngineRuntime,
+      chatContextRuntime,
       systemEventPolicy: createSystemEventPolicy(),
     });
 
@@ -292,25 +289,28 @@ describe("IVecEngine", () => {
       });
     });
     expect(provider.generateTurn).not.toHaveBeenCalled();
-    expect(contextEngineRuntime.recordAssistantMessage).toHaveBeenCalledWith({
-      sessionId: "2026-06-27",
-      text: expect.stringContaining("W-20260627-0001"),
+    expect(chatContextRuntime.recordAssistantMessage).toHaveBeenCalledWith({
+      clientId: "c1",
+      turn: expect.objectContaining({
+        sessionId: "2026-06-27",
+      }),
+      message: expect.stringContaining("W-20260627-0001"),
       at: expect.any(String),
     });
-    expect(contextEngineRuntime.completePreparedRun).not.toHaveBeenCalled();
+    expect(chatContextRuntime.completePreparedRun).not.toHaveBeenCalled();
   });
 
   it("passes ready context engine context into the loop and commits the completed run", async () => {
     const dataDir = mkdtempSync(join(tmpdir(), "ayati-eng-git-context-"));
     try {
       const provider = createMockProvider();
-      const contextEngineRuntime = createContextEngineRuntime(readyContextEngineTurn());
+      const chatContextRuntime = createChatContextRuntime(readyChatContextTurn());
       const engine = new IVecEngine({
         onReply: vi.fn(),
         provider,
         sessionMemory: createSessionMemory(),
         dataDir,
-        contextEngineRuntime,
+        chatContextRuntime,
         systemEventPolicy: createSystemEventPolicy(),
       });
 
@@ -318,18 +318,24 @@ describe("IVecEngine", () => {
       engine.handleMessage("c1", { type: "chat", content: "Analyze invoice" });
 
       await vi.waitFor(() => {
-        expect(contextEngineRuntime.completePreparedRun).toHaveBeenCalled();
+        expect(chatContextRuntime.completePreparedRun).toHaveBeenCalled();
       });
       const stateView = extractStateViewFromProvider(provider);
       expect(stateView.context.contextEngine.task).toMatchObject({
         workId: "W-20260627-0001",
         open: ["Read invoice"],
       });
-      expect(contextEngineRuntime.completePreparedRun).toHaveBeenCalledWith(expect.objectContaining({
-        sessionId: "2026-06-27",
-        workId: "W-20260627-0001",
-        runId: "R-20260627-0001",
-        assistantMessage: "mock reply",
+      expect(chatContextRuntime.completePreparedRun).toHaveBeenCalledWith(expect.objectContaining({
+        clientId: "c1",
+        turn: expect.objectContaining({
+          sessionId: "2026-06-27",
+          workId: "W-20260627-0001",
+          runId: "R-20260627-0001",
+        }),
+        result: expect.objectContaining({
+          content: "mock reply",
+        }),
+        at: expect.any(String),
       }));
     } finally {
       rmSync(dataDir, { recursive: true, force: true });
