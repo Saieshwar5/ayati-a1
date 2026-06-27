@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { cp, mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
-import { basename, dirname, join, relative, resolve } from "node:path";
+import { basename, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { LlmProvider } from "../core/contracts/provider.js";
 import type { LlmToolCall, LlmToolSchema, LlmTurnInput, LlmTurnOutput, LlmTokenUsage } from "../core/contracts/llm-protocol.js";
@@ -1150,7 +1150,7 @@ function largeContextUpdateRelevantDocCase(): BenchmarkCase {
         title: "Find and update the relevant doc in a noisy workspace",
         tier: "context_heavy",
         category: "context",
-        userMessage: `Find where the docs describe context pack limits in ${workspacePath} and update the note to mention continuity candidates are capped at 3.`,
+        userMessage: `Find where the docs describe context pack limits in ${workspacePath} and update the note to mention git task assets are capped in the model-facing pack.`,
         workspacePath,
         snapshotWorkspace: true,
         providerResponses: [
@@ -1182,17 +1182,16 @@ function largeContextUpdateRelevantDocCase(): BenchmarkCase {
                       content: [
                         "# Context Pack Limits",
                         "",
-                        "The context pack keeps timeline, continuity, and session work context bounded.",
+                        "The context pack keeps timeline, git task context, and personal memory bounded.",
                         "",
                         "- timeline contains chronological session events ending with the current input.",
-                        "- sessionWork contains compact same-session activity summaries.",
-                        "- continuity reasons are capped at 4 short reasons.",
-                        "- continuity candidates are capped at 3 compact activity candidates.",
+                        "- gitContext.task contains compact task state, assets, recent runs, and facts.",
+                        "- git task assets are capped in the model-facing pack.",
                         "",
                       ].join("\n"),
                     },
                     dependsOn: ["read_context_doc"],
-                    purpose: "Add continuity candidate cap note",
+                    purpose: "Add git task asset cap note",
                   },
                 ],
                 allowedTools: ["search_in_files", "read_file", "write_file"],
@@ -1204,7 +1203,7 @@ function largeContextUpdateRelevantDocCase(): BenchmarkCase {
             decision: {
               kind: "reply",
               status: "completed",
-              message: "Updated docs/runtime/context-pack.md to mention that continuity candidates are capped at 3.",
+              message: "Updated docs/runtime/context-pack.md to mention that git task assets are capped in the model-facing pack.",
             },
             usage: { inputTokens: 3500, outputTokens: 45, totalTokens: 3545 },
           },
@@ -1216,7 +1215,7 @@ function largeContextUpdateRelevantDocCase(): BenchmarkCase {
           const readCalls = readMetricNumber(metrics, ["stages", "tool:read_file", "calls"]);
           return [
             check("completed", result.status === "completed", result.status),
-            check("correct doc updated", content.includes("continuity candidates are capped at 3"), content),
+            check("correct doc updated", content.includes("git task assets are capped in the model-facing pack"), content),
             check("search used", readMetricNumber(metrics, ["stages", "tool:search_in_files", "calls"]) === 1),
             check("read calls under budget", readCalls <= 1, String(readCalls)),
             check("final answer names doc", result.content.includes("docs/runtime/context-pack.md"), result.content),
@@ -2149,11 +2148,10 @@ async function createLargeContextFixture(): Promise<string> {
   await writeFile(join(root, "docs", "runtime", "context-pack.md"), [
     "# Context Pack Limits",
     "",
-    "The context pack keeps timeline, continuity, and session work context bounded.",
+    "The context pack keeps timeline, git task context, and personal memory bounded.",
     "",
     "- timeline contains chronological session events ending with the current input.",
-    "- sessionWork contains compact same-session activity summaries.",
-    "- continuity reasons are capped at 4 short reasons.",
+    "- gitContext.task contains compact task state, assets, recent runs, and facts.",
     "",
   ].join("\n"), "utf-8");
   await writeFile(join(root, "docs", "runtime", "verification.md"), "# Verification\n\nDeterministic verification checks tool-owned contracts.\n", "utf-8");

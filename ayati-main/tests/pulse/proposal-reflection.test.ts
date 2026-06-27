@@ -55,20 +55,6 @@ const memoryContext: PromptMemoryContext = {
     },
   ],
   personalMemorySnapshot: "User is building Ayati and cares about agent autonomy.",
-  continuity: {
-    mode: "continue",
-    confidence: 0.8,
-    reasons: ["matched activity alias"],
-    current: {
-      activityId: "activity_ai_news",
-      kind: "automation",
-      title: "Check AI news",
-      openWork: [],
-      verifiedFacts: ["Checked current AI news and summarized important updates."],
-      topAssets: [],
-      lastTouchedAt: "2026-04-27T10:05:00.000Z",
-    },
-  },
 };
 
 function createInput(provider: LlmProvider, overrides?: Partial<PulseProposalReflectionInput>): PulseProposalReflectionInput {

@@ -2,7 +2,7 @@ import { execFile } from "node:child_process";
 import { createRequire } from "node:module";
 import { access, mkdir, rm, stat, writeFile } from "node:fs/promises";
 import { constants as fsConstants } from "node:fs";
-import { join, resolve } from "node:path";
+import { resolve } from "node:path";
 import { promisify } from "node:util";
 import { executeSql } from "../database/sqlite-runtime.js";
 import { loadAyatiRuntimeConfig } from "../config/runtime-config.js";

@@ -1,7 +1,5 @@
 import { join } from "node:path";
 import type {
-  ActionId,
-  AssetId,
   RunId,
   SessionId,
   WorkId,

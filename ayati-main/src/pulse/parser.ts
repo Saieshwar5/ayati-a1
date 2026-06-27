@@ -13,7 +13,6 @@ import type {
 import {
   addDaysInTimeZone,
   addMonthsToLocalDate,
-  addYearsToLocalDate,
   daysInMonth,
   getZonedDateParts,
   resolveTimeZone,

@@ -23,14 +23,7 @@ import type { SystemEventRuntime } from "./system-event-runtime.js";
 import type {
   ChatAttachmentInput,
   ChatInboundMessage,
-  DirectoryChatAttachmentInput,
 } from "./types.js";
-
-interface SystemContextBuildResult {
-  systemContext: string;
-  decisionSystemContext: string;
-  dynamicSystemTokens: number;
-}
 
 interface StaticPromptSectionsCache {
   head: string;
@@ -135,26 +128,6 @@ export class IVecEngine {
       return;
     }
     await this.systemEventRuntime.processSystemEvent({ clientId, event });
-  }
-
-  private async buildSystemContext(_clientId: string): Promise<SystemContextBuildResult> {
-    if (!this.staticContext) {
-      return { systemContext: "", decisionSystemContext: "", dynamicSystemTokens: 0 };
-    }
-
-    this.ensureStaticTokenCache();
-
-    const staticSections = this.getStaticPromptSections();
-    const decisionSystemContext = joinPromptSections([
-      staticSections.head,
-      staticSections.tail,
-    ]);
-
-    return {
-      systemContext: decisionSystemContext,
-      decisionSystemContext,
-      dynamicSystemTokens: 0,
-    };
   }
 
   private toSystemEvent(data: unknown): AyatiSystemEvent | null {

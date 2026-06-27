@@ -1,5 +1,4 @@
 import { execFile, spawn, type ChildProcess } from "node:child_process";
-import { existsSync } from "node:fs";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { promisify } from "node:util";

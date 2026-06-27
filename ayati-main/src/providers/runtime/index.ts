@@ -5,7 +5,6 @@ import {
 import type { LlmProvider } from "../../core/contracts/provider.js";
 import type {
   LlmInputTokenCount,
-  LlmProviderCapabilities,
   LlmTurnInput,
   LlmTurnOutput,
 } from "../../core/contracts/llm-protocol.js";

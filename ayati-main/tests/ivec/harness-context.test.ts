@@ -19,11 +19,11 @@ describe("harness context", () => {
     expect(context).toMatchObject({
       activeLearningContext: "Prefer concise implementation notes.",
       personalMemorySnapshot: "",
-      continuity: { mode: "new", reasons: ["initial state"] },
-      recentExchanges: [],
-      activeContextStartSeq: 1,
       contextEngine,
     });
+    expect(context).not.toHaveProperty("continuity");
+    expect(context).not.toHaveProperty("sessionWork");
+    expect(context).not.toHaveProperty("taskThreadContext");
   });
 
   it("builds harness context from session memory and context-engine input", () => {
@@ -38,28 +38,6 @@ describe("harness context", () => {
           timestamp: "2026-06-27T10:00:00.000Z",
           content: "continue invoice",
         }],
-        activeContextStartSeq: 7,
-        sessionWork: {
-          activeContextStartSeq: 7,
-          recentActivities: [],
-        },
-        taskThreadContext: {
-          suspendedTasks: [],
-          recentSignals: {
-            latestUserMessage: "continue invoice",
-            previousAssistantExpectedAnswer: false,
-            hasFollowUpSignal: true,
-            hasExplicitNewTaskSignal: false,
-            mentionedAssetNames: [],
-            mentionedAssetPaths: [],
-          },
-          suggestedBinding: {
-            mode: "continue_task" as const,
-            taskThreadId: "task-thread-1",
-            confidence: 0.9,
-            reason: "follow-up signal",
-          },
-        },
         conversationTurns: [],
         recentSystemEvents: [],
         personalMemorySnapshot: "- Likes short plans.",
@@ -71,7 +49,6 @@ describe("harness context", () => {
       clientId: "local",
       sessionId: "s1",
       userMessage: "continue invoice",
-      currentAssetRefs: [],
       input: {
         activeLearningContext: "Use focused tests first.",
         contextEngine,
@@ -79,19 +56,12 @@ describe("harness context", () => {
     });
 
     expect(context.personalMemorySnapshot).toBe("- Likes short plans.");
-    expect(context.sessionEvents).toHaveLength(1);
-    expect(context.activeContextStartSeq).toBe(7);
-    expect(context.sessionWork.activeContextStartSeq).toBe(7);
-    expect(context.taskThreadContext?.suggestedBinding).toMatchObject({
-      mode: "continue_task",
-      taskThreadId: "task-thread-1",
-    });
-    expect(context.continuity).toMatchObject({
-      mode: "new",
-      reasons: ["activity store is not configured"],
-    });
     expect(context.activeLearningContext).toBe("Use focused tests first.");
     expect(context.contextEngine).toBe(contextEngine);
+    expect(context).not.toHaveProperty("sessionEvents");
+    expect(context).not.toHaveProperty("sessionWork");
+    expect(context).not.toHaveProperty("taskThreadContext");
+    expect(context).not.toHaveProperty("continuity");
   });
 
   it("applies harness context to runner state", () => {

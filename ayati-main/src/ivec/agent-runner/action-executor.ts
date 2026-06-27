@@ -1,5 +1,5 @@
 import type { AgentUiContext } from "../../ui/context.js";
-import type { MemoryRunHandle, SessionMemory } from "../../memory/types.js";
+import type { MemoryRunHandle, RunRecorder } from "../../memory/types.js";
 import type {
   ActOutput,
   ActToolCallRecord,
@@ -8,6 +8,7 @@ import type {
 } from "../types.js";
 import type { ToolExecutor } from "../../skills/tool-executor.js";
 import type { ToolDefinition, ToolResult } from "../../skills/types.js";
+import type { TaskAssetRecord } from "../../context-engine/index.js";
 import type { RunMetrics } from "../metrics.js";
 import { recordRunMetric } from "../metrics.js";
 import { uniqueArtifacts } from "../../verification/artifact-assertions.js";
@@ -28,10 +29,10 @@ export interface AgentActionExecutionDeps {
   config: LoopConfig;
   clientId: string;
   uiContext?: AgentUiContext;
-  sessionMemory: SessionMemory;
+  runRecorder: RunRecorder;
   runHandle: MemoryRunHandle;
   runPath: string;
-  activityId?: string;
+  taskAssets?: TaskAssetRecord[];
   metrics?: RunMetrics;
 }
 
@@ -223,7 +224,7 @@ function validateActionPlan(deps: AgentActionExecutionDeps, action: AgentAction)
     clientId: deps.clientId,
     runId: deps.runHandle.runId,
     sessionId: deps.runHandle.sessionId,
-    ...(deps.activityId ? { activityId: deps.activityId } : {}),
+    ...(deps.taskAssets?.length ? { taskAssets: deps.taskAssets } : {}),
     ...(deps.uiContext ? { uiContext: deps.uiContext } : {}),
   };
   for (const tool of action.allowedTools) {
@@ -312,7 +313,7 @@ async function executeToolCall(
     clientId: deps.clientId,
     runId: deps.runHandle.runId,
     sessionId: deps.runHandle.sessionId,
-    ...(deps.activityId ? { activityId: deps.activityId } : {}),
+    ...(deps.taskAssets?.length ? { taskAssets: deps.taskAssets } : {}),
     stepNumber,
     ...(deps.uiContext ? { uiContext: deps.uiContext } : {}),
   };
@@ -327,7 +328,7 @@ async function executeToolCall(
     };
   }
 
-  deps.sessionMemory.recordToolCall(deps.clientId, {
+  deps.runRecorder.recordToolCall(deps.clientId, {
     runId: deps.runHandle.runId,
     sessionId: deps.runHandle.sessionId,
     stepId: stepNumber,
@@ -352,7 +353,7 @@ async function executeToolCall(
       kind: "tool",
       status: "failed",
     });
-    deps.sessionMemory.recordToolResult(deps.clientId, {
+    deps.runRecorder.recordToolResult(deps.clientId, {
       runId: deps.runHandle.runId,
       sessionId: deps.runHandle.sessionId,
       stepId: stepNumber,
@@ -417,7 +418,7 @@ async function executeToolCall(
     };
   }
 
-  deps.sessionMemory.recordToolResult(deps.clientId, {
+  deps.runRecorder.recordToolResult(deps.clientId, {
     runId: deps.runHandle.runId,
     sessionId: deps.runHandle.sessionId,
     stepId: stepNumber,

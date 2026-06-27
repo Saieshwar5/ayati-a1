@@ -1,6 +1,6 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { createReadStream } from "node:fs";
-import { readFile, stat } from "node:fs/promises";
+import { stat } from "node:fs/promises";
 import { join, resolve, sep } from "node:path";
 import { devError, devLog, devWarn } from "../shared/index.js";
 import type { ToolDefinition, ToolResult } from "../skills/types.js";

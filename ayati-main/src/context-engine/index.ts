@@ -25,3 +25,6 @@ export type {
 export type {
   BuildContextEngineRunCommitInput,
 } from "./runtime/harness-result-mapper.js";
+export type {
+  TaskAssetRecord,
+} from "./daily-session/index.js";

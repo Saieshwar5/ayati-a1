@@ -3,11 +3,9 @@ import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { DatabaseSync } from "node:sqlite";
-import type { StatementSync } from "node:sqlite";
 import {
   computeLatestDueAtOrBefore,
   computeNextOccurrenceAfter,
-  computeNextTriggerForSchedule,
   previewPulseOccurrences,
   pulseDurationToMillis,
   pulseIntervalMsToValueUnit,
@@ -37,7 +35,6 @@ import type {
   PulsePreviewOptions,
   PulseReminder,
   PulseReminderSchedule,
-  PulseScheduledItemIntentKind,
   PulseSchedule,
   PulseStoreDocument,
   PulseTaskSpec,
@@ -47,7 +44,6 @@ import type {
 const thisDir = dirname(fileURLToPath(import.meta.url));
 const projectRoot = resolve(thisDir, "..", "..");
 const DEFAULT_DATA_DIR = resolve(projectRoot, "data", "memory");
-const DEFAULT_DB_PATH = resolve(DEFAULT_DATA_DIR, "memory.sqlite");
 const DEFAULT_LEGACY_STORE_FILE_PATH = resolve(projectRoot, "data", "pulse", "reminders.json");
 
 const PULSE_STORE_PATH_ENV = "PULSE_STORE_FILE_PATH";

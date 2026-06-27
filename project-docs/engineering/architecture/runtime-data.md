@@ -4,8 +4,8 @@ Runtime output lives under `ayati-main/data/`.
 
 Known runtime data categories:
 
-- Session data.
-- Activity thread indexes and continuity search metadata.
+- Daily git context repositories and task work branches.
+- Run/session recorder data.
 - Personal memory.
 - Episodic memory metadata and vector indexes.
 - Document storage and document vectors for prepared document compatibility.

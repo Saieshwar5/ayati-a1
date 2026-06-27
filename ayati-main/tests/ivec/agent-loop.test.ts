@@ -281,28 +281,22 @@ describe("agentLoop", () => {
         taskStatus: "done",
         toolsUsed: ["write_files"],
       });
-      const assets = result.taskSummary?.activityAssets ?? [];
+      const assets = result.taskAssets ?? [];
       expect(assets).toEqual(expect.arrayContaining([
         expect.objectContaining({
           kind: "directory",
-          origin: "agent_generated",
-          role: "working_artifact",
+          role: "generated",
+          name: "generated-project",
           path: outputDir,
-          restore: { directoryPath: outputDir },
         }),
         expect.objectContaining({
           kind: "file",
-          origin: "agent_generated",
-          role: "working_artifact",
+          role: "generated",
+          name: "index.html",
           path: indexPath,
-          restore: { filePath: indexPath },
         }),
       ]));
       expect(assets.every((asset) => !asset.path || isAbsolute(asset.path))).toBe(true);
-      expect(assets.every((asset) => {
-        const restorePath = asset.restore?.filePath ?? asset.restore?.directoryPath;
-        return !restorePath || isAbsolute(restorePath);
-      })).toBe(true);
     } finally {
       cleanup(dataDir);
     }
@@ -524,7 +518,7 @@ describe("agentLoop", () => {
     }
   });
 
-  it("feeds bounded session memory through the structured context pack", async () => {
+  it("feeds git context through the structured context pack without old session continuity", async () => {
     const dataDir = makeTmpDir();
     try {
       const generateTurn = vi.fn().mockResolvedValue({
@@ -580,31 +574,11 @@ describe("agentLoop", () => {
               content: "make it responsive too",
             },
           ],
-          activeContextStartSeq: 1,
-          sessionWork: {
-            activeContextStartSeq: 1,
-            recentActivities: [],
-          },
           conversationTurns: [
             { role: "user", content: "Build a todo app", timestamp: "2026-06-12T09:00:00.000Z", sessionPath: "sessions/s1.md" },
             { role: "assistant", content: "Created the todo app.", timestamp: "2026-06-12T09:01:00.000Z", sessionPath: "sessions/s1.md", workRunId: "old-run" },
           ],
           personalMemorySnapshot: "- Prefers concise implementation notes.",
-          continuity: {
-            mode: "continue",
-            confidence: 0.91,
-            reasons: ["matched durable activity identity anchor"],
-            current: {
-              activityId: "activity_todo",
-              kind: "project",
-              title: "todo app",
-              openWork: ["make responsive"],
-              nextStep: "make responsive",
-              verifiedFacts: ["todo/index.html exists"],
-              topAssets: ["todo/index.html"],
-              lastTouchedAt: "2026-06-12T09:01:00.000Z",
-            },
-          },
         }),
         getSessionStatus: vi.fn().mockReturnValue({
           contextPercent: 12,
@@ -626,6 +600,61 @@ describe("agentLoop", () => {
         initialUserMessage: "make it responsive too",
         dataDir,
         systemContext: "static decision context",
+        harnessContext: {
+          contextEngine: {
+            session: {
+              sessionId: "2026-06-12",
+              eventTail: [],
+              assetCount: 1,
+              conversationTail: [
+                {
+                  seq: 1,
+                  role: "user",
+                  at: "2026-06-12T09:00:00.000Z",
+                  text: "Build a todo app",
+                },
+                {
+                  seq: 2,
+                  role: "assistant",
+                  at: "2026-06-12T09:01:00.000Z",
+                  text: "Created the todo app.",
+                },
+                {
+                  seq: 3,
+                  role: "user",
+                  at: "2026-06-12T09:10:00.000Z",
+                  text: "make it responsive too",
+                },
+              ],
+            },
+            focus: {
+              status: "active",
+              ref: "refs/heads/work/W-20260612-0001-todo-app",
+              workId: "W-20260612-0001",
+            },
+            task: {
+              ref: "refs/heads/work/W-20260612-0001-todo-app",
+              workId: "W-20260612-0001",
+              title: "Todo app",
+              objective: "Build a todo app",
+              status: "active",
+              completed: ["Created the todo app."],
+              open: ["make responsive"],
+              blockers: [],
+              facts: [{ text: "todo/index.html exists", source: "fixture" }],
+              next: "make responsive",
+              assets: [{
+                assetId: "A-20260612-0001",
+                role: "output",
+                kind: "file",
+                name: "index.html",
+                path: "todo/index.html",
+              }],
+              recentRuns: [],
+              recentCommits: [],
+            },
+          },
+        },
       });
 
       const callInput = generateTurn.mock.calls[0]?.[0];
@@ -649,12 +678,17 @@ describe("agentLoop", () => {
       expect(stateView.context.runtime).toBeUndefined();
       expect(stateView.context.session).toBeUndefined();
       expect(stateView.context.recentSystemActivity).toBeUndefined();
-      expect(stateView.context.continuity.mode).toBe("new");
-      expect(stateView.context.continuity.reasons).toEqual(["activity store is not configured"]);
+      expect(stateView.context.continuity).toBeUndefined();
+      expect(stateView.context.sessionWork).toBeUndefined();
+      expect(stateView.context.taskThreadContext).toBeUndefined();
+      expect(stateView.context.gitContext.task).toMatchObject({
+        workId: "W-20260612-0001",
+        open: ["make responsive"],
+        next: "make responsive",
+      });
       expect(stateView.context.timeline).toHaveLength(3);
       expect(stateView.context.timeline[0]).toMatchObject({ seq: 1, kind: "user", content: "Build a todo app" });
       expect(stateView.context.timeline[2]).toMatchObject({ seq: 3, kind: "user", content: "make it responsive too", current: true });
-      expect(stateView.context.sessionWork).toEqual({ activeContextStartSeq: 1, recentActivities: [] });
       expect(stateView.context.recentActivity).toBeUndefined();
       expect(stateView.context.recentExact).toBeUndefined();
       expect(stateView.context.recentTasks).toBeUndefined();

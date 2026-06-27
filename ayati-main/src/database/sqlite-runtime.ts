@@ -184,7 +184,7 @@ export function listTables(dbPath?: string): DatabaseResult<{
 }
 
 export function describeTable(input: { dbPath?: string; table: string; sampleLimit?: number }): DatabaseResult<DatabaseTableDescription> {
-  return withDatabase(input.dbPath, (db, resolvedPath) => {
+  return withDatabase(input.dbPath, (db) => {
     const tableName = requireIdentifier(input.table, "table");
     ensureTableExists(db, tableName);
     const sampleLimit = clampRows(input.sampleLimit);

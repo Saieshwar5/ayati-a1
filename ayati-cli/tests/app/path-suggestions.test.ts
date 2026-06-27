@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   applyPathSuggestion,
   getPathSuggestions,
-} from "./path-suggestions.js";
+} from "../../src/app/path-suggestions.js";
 
 let tempDir: string | null = null;
 

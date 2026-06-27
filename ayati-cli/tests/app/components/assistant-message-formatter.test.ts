@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { formatAssistantMessage } from "./assistant-message-formatter.js";
+import { formatAssistantMessage } from "../../../src/app/components/assistant-message-formatter.js";
 
 function lineText(index: number, lines: ReturnType<typeof formatAssistantMessage>): string {
   return lines[index]?.segments.map((segment) => segment.text).join("") ?? "";

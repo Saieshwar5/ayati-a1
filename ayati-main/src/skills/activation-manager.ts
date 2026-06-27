@@ -2,10 +2,9 @@ import type {
   MountedToolGroup,
   ToolExecutor,
   ToolGroupScope,
-  ToolRegistryContext,
 } from "./tool-executor.js";
 import type { ToolDefinition, ToolExecutionContext } from "./types.js";
-import type { SkillActivationScope, SkillBundle, SkillCatalog } from "./skill-catalog.js";
+import type { SkillActivationScope, SkillCatalog } from "./skill-catalog.js";
 
 export interface ActiveSkillRecord {
   skillId: string;
@@ -48,7 +47,7 @@ export interface ActivationRouterState {
   managedFiles?: unknown[];
   managedDirectories?: unknown[];
   harnessContext?: {
-    continuity?: unknown;
+    contextEngine?: unknown;
   };
 }
 
@@ -295,23 +294,17 @@ function hasCurrentRunAttachments(state: ActivationRouterState): boolean {
 }
 
 function hasFocusArtifactContext(state: ActivationRouterState): boolean {
-  const continuity = state.harnessContext?.continuity;
-  if (!continuity || typeof continuity !== "object" || Array.isArray(continuity)) {
+  const contextEngine = state.harnessContext?.contextEngine;
+  if (!contextEngine || typeof contextEngine !== "object" || Array.isArray(contextEngine)) {
     return false;
   }
-  const current = (continuity as { current?: unknown }).current;
-  const candidates = (continuity as { candidates?: unknown }).candidates;
-  return hasTopAssets(current)
-    || (Array.isArray(candidates) && candidates.some(hasTopAssets));
-}
-
-function hasTopAssets(item: unknown): boolean {
+  const task = (contextEngine as { task?: unknown }).task;
   return Boolean(
-    item
-      && typeof item === "object"
-      && !Array.isArray(item)
-      && Array.isArray((item as { topAssets?: unknown[] }).topAssets)
-      && ((item as { topAssets: unknown[] }).topAssets).length > 0,
+    task
+      && typeof task === "object"
+      && !Array.isArray(task)
+      && Array.isArray((task as { assets?: unknown[] }).assets)
+      && ((task as { assets: unknown[] }).assets).length > 0,
   );
 }
 

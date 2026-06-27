@@ -62,11 +62,8 @@ describe("state-persistence", () => {
         failureHistory: [],
         harnessContext: {
           personalMemorySnapshot: "transient memory",
-          continuity: { mode: "new", confidence: 0, reasons: ["transient context"] },
           recentExchanges: [],
           sessionEvents: [],
-          activeContextStartSeq: 1,
-          sessionWork: { activeContextStartSeq: 1, recentActivities: [] },
         },
       };
       writeState(runPath, state);
@@ -104,11 +101,8 @@ describe("state-persistence", () => {
         failureHistory: [],
         harnessContext: {
           personalMemorySnapshot: "transient memory",
-          continuity: { mode: "new", confidence: 0, reasons: ["transient context"] },
           recentExchanges: [],
           sessionEvents: [],
-          activeContextStartSeq: 1,
-          sessionWork: { activeContextStartSeq: 1, recentActivities: [] },
         },
       };
 
@@ -159,11 +153,8 @@ describe("state-persistence", () => {
         failureHistory: [],
         harnessContext: {
           personalMemorySnapshot: "transient memory",
-          continuity: { mode: "continue", confidence: 0.9, reasons: ["transient context"] },
           recentExchanges: [],
           sessionEvents: [],
-          activeContextStartSeq: 1,
-          sessionWork: { activeContextStartSeq: 1, recentActivities: [] },
         },
       };
 

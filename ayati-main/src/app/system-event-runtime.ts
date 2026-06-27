@@ -6,20 +6,14 @@ import type { PreparedAttachmentRegistry } from "../documents/prepared-attachmen
 import type { DirectoryLibrary } from "../files/directory-library.js";
 import type { FileLibrary } from "../files/file-library.js";
 import type { AgentResponseKind, MemoryRunHandle, SessionInputHandle, SessionMemory } from "../memory/types.js";
-import { renderBasePromptSection } from "../prompt/sections/base.js";
-import { renderSkillsSection } from "../prompt/sections/skills.js";
-import { renderSoulSection } from "../prompt/sections/soul.js";
 import type { SkillActivationManager } from "../skills/activation-manager.js";
 import type { ToolExecutor } from "../skills/tool-executor.js";
 import type { ToolDefinition } from "../skills/types.js";
-import { devError, devLog, devWarn } from "../shared/index.js";
+import { devError, devLog } from "../shared/index.js";
 import { agentLoop } from "../ivec/agent-loop.js";
 import type { ToolWorkingSetManager } from "../ivec/agent-runner/tool-working-set.js";
 import type { AgentFeedbackLedger } from "../ivec/feedback-ledger.js";
-import {
-  evaluateSessionRotation,
-  type RotationPolicyConfig,
-} from "../ivec/session-rotation-policy.js";
+import type { RotationPolicyConfig } from "../ivec/session-rotation-policy.js";
 import {
   classifySystemEvent,
   resolveSystemEventPolicy,
@@ -31,10 +25,12 @@ import {
 import type { SystemEventRuntime, SystemEventRuntimeInput } from "../ivec/system-event-runtime.js";
 import type {
   AgentArtifact,
-  AgentLoopResult,
   LoopConfig,
   SystemEventApprovalState,
 } from "../ivec/types.js";
+import { buildStaticSystemContext } from "./static-prompt.js";
+import { rotateSessionBeforeRunIfNeeded } from "./session-rotation.js";
+import { completeSessionLifecycle } from "./session-lifecycle.js";
 
 export interface CreateSystemEventRuntimeOptions {
   onReply?: (clientId: string, data: unknown) => void;
@@ -253,7 +249,7 @@ class AppSystemEventRuntime implements SystemEventRuntime {
         initialUserMessage: incomingMessage,
         config: this.loopConfig,
         dataDir: this.dataDir ?? "data",
-        systemContext: this.buildSystemContext(),
+        systemContext: buildStaticSystemContext(this.staticContext),
         feedbackLedger: this.feedbackLedger,
         fileLibrary: this.fileLibrary,
         directoryLibrary: this.directoryLibrary,
@@ -293,7 +289,6 @@ class AppSystemEventRuntime implements SystemEventRuntime {
         event: event.eventName,
         eventId: event.eventId,
       });
-      this.queueTaskSummaryPublication(clientId, inputHandle, result.taskSummary);
       runStatus = result.status;
     } catch (err) {
       devError("System event processing error:", err);
@@ -325,81 +320,22 @@ class AppSystemEventRuntime implements SystemEventRuntime {
       });
       throw err;
     } finally {
-      await this.completeSessionLifecycle(clientId, runHandle, runStatus);
+      await completeSessionLifecycle({
+        clientId,
+        sessionMemory: this.sessionMemory,
+        runHandle,
+        status: runStatus,
+      });
     }
-  }
-
-  private buildSystemContext(): string | undefined {
-    if (!this.staticContext) {
-      return undefined;
-    }
-    return joinPromptSections([
-      renderBasePromptSection(this.staticContext.basePrompt),
-      renderSoulSection(this.staticContext.soul),
-      renderSkillsSection(this.staticContext.skillBlocks),
-      renderToolDirectorySection(
-        this.staticContext.toolDirectory,
-        process.env["PROMPT_INCLUDE_TOOL_DIRECTORY"] === "1",
-      ),
-    ]);
   }
 
   private rotateSessionBeforeRunIfNeeded(clientId: string): void {
-    const createSession = this.sessionMemory.createSession;
-    if (!createSession) {
-      return;
-    }
-
-    const sessionStatus = this.sessionMemory.getSessionStatus?.() ?? null;
-    if (!sessionStatus) {
-      return;
-    }
-
-    const rotationDecision = evaluateSessionRotation({
-      now: this.nowProvider(),
-      contextPercent: sessionStatus.contextPercent,
-      sessionStartedAt: sessionStatus.startedAt,
-      timezone: null,
-      pendingRotationReason: sessionStatus.pendingRotationReason,
-      config: this.rotationPolicyConfig,
+    rotateSessionBeforeRunIfNeeded({
+      clientId,
+      sessionMemory: this.sessionMemory,
+      now: this.nowProvider,
+      rotationPolicyConfig: this.rotationPolicyConfig,
     });
-
-    if (!rotationDecision.rotate) {
-      return;
-    }
-
-    createSession.call(this.sessionMemory, clientId, {
-      runId: `pre-run-rotation-${Date.now()}`,
-      reason: rotationDecision.reason ?? "policy_rotation",
-      source: "system",
-      timezone: rotationDecision.timezone,
-    });
-
-    devWarn(
-      `Pre-run session rotation triggered (${rotationDecision.reason ?? "unknown"}) at ${Math.round(sessionStatus.contextPercent)}% context`,
-    );
-  }
-
-  private async completeSessionLifecycle(
-    clientId: string,
-    runHandle: MemoryRunHandle | null,
-    status: "completed" | "failed" | "stuck" | null,
-  ): Promise<void> {
-    if (!runHandle || !status) {
-      return;
-    }
-
-    try {
-      await this.sessionMemory.updateSessionLifecycle?.(clientId, {
-        runId: runHandle.runId,
-        sessionId: runHandle.sessionId,
-        timezone: null,
-        status,
-      });
-      await this.sessionMemory.flushPersistence?.();
-    } catch (err) {
-      devWarn("Session lifecycle update failed:", err instanceof Error ? err.message : String(err));
-    }
   }
 
   private createWorkRun(clientId: string, inputHandle: SessionInputHandle): MemoryRunHandle {
@@ -408,46 +344,6 @@ class AppSystemEventRuntime implements SystemEventRuntime {
       throw new Error("Session memory does not support work run creation.");
     }
     return createWorkRun.call(this.sessionMemory, clientId, inputHandle);
-  }
-
-  private queueTaskSummaryPublication(
-    clientId: string,
-    inputHandle: SessionInputHandle,
-    taskSummary: AgentLoopResult["taskSummary"] | undefined,
-  ): void {
-    if (!taskSummary) {
-      return;
-    }
-
-    this.feedbackLedger?.record({
-      clientId,
-      sessionId: inputHandle.sessionId,
-      seq: inputHandle.seq,
-      runId: taskSummary.runId,
-      stage: "memory",
-      event: "task_summary_queued",
-      data: {
-        runStatus: taskSummary.runStatus,
-        taskStatus: taskSummary.taskStatus,
-        summary: taskSummary.summary,
-        assistantResponseKind: taskSummary.assistantResponseKind,
-        attachmentNames: taskSummary.attachmentNames,
-      },
-    });
-
-    const payload = {
-      ...taskSummary,
-      sessionId: inputHandle.sessionId,
-    };
-
-    if (this.sessionMemory.queueTaskSummary) {
-      void Promise.resolve(this.sessionMemory.queueTaskSummary(clientId, payload)).catch((err) => {
-        devWarn(`Task summary queue failed: ${err instanceof Error ? err.message : String(err)}`);
-      });
-      return;
-    }
-
-    this.sessionMemory.recordTaskSummary?.(clientId, payload);
   }
 
   private buildSystemEventExecutionPlan(event: AyatiSystemEvent): SystemEventExecutionPlan {
@@ -661,17 +557,4 @@ class AppSystemEventRuntime implements SystemEventRuntime {
 
 function asOptionalString(value: unknown): string | undefined {
   return typeof value === "string" && value.trim().length > 0 ? value : undefined;
-}
-
-function joinPromptSections(sections: Array<string | undefined>): string {
-  return sections
-    .filter((section): section is string => typeof section === "string" && section.trim().length > 0)
-    .join("\n\n")
-    .trim();
-}
-
-function renderToolDirectorySection(toolDirectory: string | undefined, includeToolDirectory: boolean): string {
-  if (!includeToolDirectory) return "";
-  if (!toolDirectory || toolDirectory.trim().length === 0) return "";
-  return `# Available Tools\n\n${toolDirectory}`;
 }

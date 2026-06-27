@@ -1,6 +1,5 @@
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
-import { randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -9,10 +8,9 @@ import { performance } from "node:perf_hooks";
 import { buildAgentStateView } from "../ivec/agent-runner/state-view.js";
 import { selectToolsForDecision } from "../ivec/agent-runner/tool-selector.js";
 import type { LoopState } from "../ivec/types.js";
+import type { ContextEngineMachineContext } from "../context-engine/index.js";
 import { createToolExecutor } from "../skills/tool-executor.js";
 import type { ToolDefinition, ToolResult } from "../skills/types.js";
-import type { ActivityUpsertInput, ConversationExchange } from "../memory/types.js";
-import { ActivityStore } from "../memory/activity/activity-store.js";
 import { PersonalMemoryStore } from "../memory/personal/personal-memory-store.js";
 import { DEFAULT_MEMORY_POLICY } from "../memory/personal/memory-policy.js";
 import type { MemoryProposal } from "../memory/personal/types.js";
@@ -29,7 +27,6 @@ type RuntimeScale = "smoke" | "standard" | "stress";
 
 type RuntimeBenchmarkCaseId =
   | "context_tool_selection"
-  | "activity_store"
   | "personal_memory"
   | "document_vector_fallback"
   | "filesystem_tools"
@@ -40,7 +37,6 @@ type RuntimeBenchmarkCaseId =
 interface RuntimeScaleConfig {
   stateExchanges: number;
   toolCount: number;
-  activityThreads: number;
   personalCards: number;
   vectorRecords: number;
   filesystemFiles: number;
@@ -124,7 +120,6 @@ const SCALE_CONFIGS: Record<RuntimeScale, RuntimeScaleConfig> = {
   smoke: {
     stateExchanges: 80,
     toolCount: 120,
-    activityThreads: 80,
     personalCards: 120,
     vectorRecords: 300,
     filesystemFiles: 120,
@@ -138,7 +133,6 @@ const SCALE_CONFIGS: Record<RuntimeScale, RuntimeScaleConfig> = {
   standard: {
     stateExchanges: 800,
     toolCount: 800,
-    activityThreads: 700,
     personalCards: 1_000,
     vectorRecords: 2_500,
     filesystemFiles: 800,
@@ -152,7 +146,6 @@ const SCALE_CONFIGS: Record<RuntimeScale, RuntimeScaleConfig> = {
   stress: {
     stateExchanges: 3_000,
     toolCount: 3_000,
-    activityThreads: 5_000,
     personalCards: 10_000,
     vectorRecords: 25_000,
     filesystemFiles: 5_000,
@@ -174,11 +167,6 @@ const CASES: Array<{
     caseId: "context_tool_selection",
     title: "Context Pack, State View, And Tool Selection",
     run: runContextToolSelectionCase,
-  },
-  {
-    caseId: "activity_store",
-    title: "Activity Store Retrieval",
-    run: runActivityStoreCase,
   },
   {
     caseId: "personal_memory",
@@ -292,7 +280,7 @@ async function runContextToolSelectionCase(config: RuntimeScaleConfig): Promise<
         throw new Error("state view fixture was empty.");
       }
     }, {
-      description: "Build bounded model-facing state from large recent activity and continuity context.",
+      description: "Build bounded model-facing state from large git context and personal memory context.",
       fixture,
       iterations: config.longIterations,
       warnIfP95MsAbove: 20,
@@ -337,80 +325,6 @@ async function runContextToolSelectionCase(config: RuntimeScaleConfig): Promise<
     fixture,
     operations,
     startedAt,
-  });
-}
-
-async function runActivityStoreCase(config: RuntimeScaleConfig): Promise<CaseResult> {
-  return withTempDir("ayati-runtime-activity-", async (root) => {
-    const startedAt = performance.now();
-    const store = new ActivityStore({ dbPath: join(root, "memory.sqlite"), now: fixedNow });
-    store.start();
-    try {
-      const clientId = "bench-client";
-      const sessionId = "bench-session";
-      seedActivityStore(store, clientId, sessionId, config.activityThreads);
-      const fixture = { activityThreads: config.activityThreads, clientCount: 1 };
-      let upsertIndex = 0;
-      const operations = [
-        await measureOperation("activity_recent_list", async () => {
-          const recent = store.listRecent(clientId, 5);
-          if (recent.length === 0) {
-            throw new Error("recent activity list returned no threads.");
-          }
-        }, {
-          description: "Read the deterministic recent activity list used as a fallback for follow-up phrasing.",
-          fixture,
-          iterations: config.mediumIterations,
-          warnIfP95MsAbove: 40,
-        }),
-        await measureOperation("activity_identity_lookup", async () => {
-          const activity = store.getActivityByIdentity(clientId, "file_path", "src/module-1.ts");
-          if (!activity) {
-            throw new Error("activity identity lookup returned no thread.");
-          }
-        }, {
-          description: "Resolve an activity thread by an exact durable identity anchor.",
-          fixture,
-          iterations: config.mediumIterations,
-          warnIfP95MsAbove: 40,
-        }),
-        await measureOperation("activity_search", async () => {
-          const matches = store.search(clientId, "project artifact module", { limit: 5 });
-          if (matches.length === 0) {
-            throw new Error("activity search returned no matches.");
-          }
-        }, {
-          description: "Search activity threads through SQLite text filtering and deterministic token scoring.",
-          fixture,
-          iterations: config.mediumIterations,
-          warnIfP95MsAbove: 50,
-        }),
-        await measureOperation("activity_identity_upsert", async () => {
-          const index = upsertIndex % Math.max(1, config.activityThreads);
-          upsertIndex++;
-          store.upsertFromTaskSummary(makeActivityInput(clientId, sessionId, index, {
-            runId: `activity-upsert-${randomUUID()}`,
-            summary: `Follow-up on project-${index} artifact src/module-${index}.ts with more verified context.`,
-            currentFocus: `project-${index}`,
-          }));
-        }, {
-          description: "Upsert follow-up task summaries and find existing identity matches.",
-          fixture,
-          iterations: config.shortIterations,
-          warnIfP95MsAbove: 80,
-        }),
-      ];
-      return buildCaseResult({
-        caseId: "activity_store",
-        title: "Activity Store Retrieval",
-        whyItMatters: "Activity threads are the agent's continuation surface. Slow search or identity lookup makes follow-up tasks slower and less likely to recover the right task state.",
-        fixture,
-        operations,
-        startedAt,
-      });
-    } finally {
-      store.stop();
-    }
   });
 }
 
@@ -921,7 +835,7 @@ function buildLoopStateFixture(exchangeCount: number): LoopState {
       openWork: ["Measure memory retrieval", "Measure filesystem scan"],
       blockers: [],
       verifiedFacts: ["Benchmark uses deterministic local fixtures."],
-      evidence: ["Synthetic activity and memory stores are seeded."],
+      evidence: ["Synthetic git context and personal memory stores are seeded."],
       nextStep: "Run non-LLM performance measurements.",
     },
     toolContext: {
@@ -932,7 +846,7 @@ function buildLoopStateFixture(exchangeCount: number): LoopState {
         tool: index % 2 === 0 ? "find_files" : "search_in_files",
         status: "success",
         mode: "summary",
-        content: `Observation ${index} about activity threads and project artifacts.`,
+        content: `Observation ${index} about git task assets and project artifacts.`,
         hasMore: false,
       })),
     },
@@ -946,7 +860,7 @@ function buildLoopStateFixture(exchangeCount: number): LoopState {
         step: 1,
         outcome: "success",
         summary: "Located benchmark targets.",
-        newFacts: ["Activity store search is a target."],
+        newFacts: ["Git task asset retrieval is a target."],
         artifacts: [],
         toolsUsed: ["search_in_files"],
         toolSuccessCount: 1,
@@ -958,45 +872,69 @@ function buildLoopStateFixture(exchangeCount: number): LoopState {
     harnessContext: {
       activeLearningContext: "Learning context: runtime performance analysis.",
       personalMemorySnapshot: "User prefers detailed reports about agent runtime performance.",
-      continuity: {
-        mode: "continue",
-        confidence: 0.91,
-        reasons: ["benchmark fixture exact activity anchor"],
-        current: {
-          activityId: "activity-runtime-benchmark",
-          kind: "project",
-          title: "runtime performance analysis",
-          openWork: ["Measure memory retrieval", "Measure filesystem scan"],
-          nextStep: "Run non-LLM performance measurements.",
-          verifiedFacts: ["Benchmark uses deterministic local fixtures."],
-          topAssets: ["reports/runtime-performance.md"],
-          lastTouchedAt: now,
-        },
-      },
-      recentExchanges: buildExchangeFixture(exchangeCount, now),
-      sessionEvents: [],
-      activeContextStartSeq: 1,
-      sessionWork: {
-        activeContextStartSeq: 1,
-        recentActivities: [],
-      },
+      contextEngine: buildGitContextFixture(exchangeCount, now),
     },
   };
 }
 
-function buildExchangeFixture(count: number, timestamp: string): ConversationExchange[] {
-  return Array.from({ length: count }, (_, index) => ({
-    runId: `exchange-${index}`,
-    user: {
-      timestamp,
-      content: `User message ${index} asking about runtime performance, project artifacts, and memory retrieval.`,
+function buildGitContextFixture(count: number, timestamp: string): ContextEngineMachineContext {
+  return {
+    session: {
+      sessionId: "2026-06-17",
+      conversationTail: Array.from({ length: count }, (_, index) => ([
+        {
+          seq: index * 2 + 1,
+          role: "user" as const,
+          at: timestamp,
+          text: `User message ${index} asking about runtime performance, project artifacts, and memory retrieval.`,
+        },
+        {
+          seq: index * 2 + 2,
+          role: "assistant" as const,
+          at: timestamp,
+          text: `Assistant response ${index} describing non-LLM agent performance checks.`,
+        },
+      ])).flat(),
+      eventTail: [],
+      assetCount: 1,
     },
-    assistant: {
-      timestamp,
-      content: `Assistant response ${index} describing non-LLM agent performance checks.`,
-      responseKind: "reply",
+    focus: {
+      status: "active",
+      ref: "refs/heads/work/W-20260617-0001-runtime-performance-analysis",
+      workId: "W-20260617-0001",
     },
-  }));
+    task: {
+      ref: "refs/heads/work/W-20260617-0001-runtime-performance-analysis",
+      workId: "W-20260617-0001",
+      title: "Runtime performance analysis",
+      objective: "Measure non-LLM runtime performance paths.",
+      status: "active",
+      completed: ["Located benchmark targets."],
+      open: ["Measure memory retrieval", "Measure filesystem scan"],
+      blockers: [],
+      facts: [{ text: "Benchmark uses deterministic local fixtures.", source: "fixture" }],
+      next: "Run non-LLM performance measurements.",
+      assets: [{
+        assetId: "A-20260617-0001",
+        role: "reference",
+        kind: "document",
+        name: "runtime-performance.md",
+        path: "reports/runtime-performance.md",
+      }],
+      recentRuns: [{
+        schemaVersion: 1,
+        runId: "R-20260617-0001",
+        workId: "W-20260617-0001",
+        status: "completed",
+        summary: "Located benchmark targets.",
+        completed: ["Located benchmark targets."],
+        open: ["Measure memory retrieval", "Measure filesystem scan"],
+        actions: ["action-0001"],
+        createdAt: timestamp,
+      }],
+      recentCommits: [],
+    },
+  };
 }
 
 function buildToolFixture(count: number): ToolDefinition[] {
@@ -1042,60 +980,6 @@ function buildToolFixture(count: number): ToolDefinition[] {
       },
     };
   });
-}
-
-function seedActivityStore(store: ActivityStore, clientId: string, sessionId: string, count: number): void {
-  for (let index = 0; index < count; index++) {
-    store.upsertFromTaskSummary(makeActivityInput(clientId, sessionId, index));
-  }
-}
-
-function makeActivityInput(
-  clientId: string,
-  sessionId: string,
-  index: number,
-  overrides: Partial<ActivityUpsertInput> = {},
-): ActivityUpsertInput {
-  const createdAt = isoFromOffset(index);
-  return {
-    clientId,
-    sessionId,
-    runId: `activity-run-${index}`,
-    runPath: `/tmp/runtime-activity/run-${index}`,
-    status: "completed",
-    taskStatus: index % 4 === 0 ? "not_done" : "done",
-    objective: `Improve runtime performance for project-${index}`,
-    summary: `Updated project-${index} artifact src/module-${index}.ts and recorded performance evidence.`,
-    progressSummary: `Measured activity thread ${index}.`,
-    currentFocus: `project-${index}`,
-    completedMilestones: [`Seeded activity thread ${index}`],
-    openWork: index % 4 === 0 ? [`Follow up on module ${index}`] : [],
-    blockers: [],
-    keyFacts: [`project-${index} uses artifact src/module-${index}.ts`],
-    evidence: [`src/module-${index}.ts verified`],
-    userMessage: `Continue project-${index}`,
-    assistantResponse: `Recorded project-${index}.`,
-    actionType: "runtime_benchmark",
-    entityHints: [`project-${index}`, `module-${index}`],
-    toolsUsed: ["search_in_files", "read_file"],
-    nextAction: `Check project-${index} retrieval speed.`,
-    attachmentNames: [`artifact-${index}.txt`],
-    activityAssets: [{
-      assetId: `asset-module-${index}`,
-      kind: "file",
-      origin: "agent_modified",
-      role: "working_artifact",
-      displayName: `module-${index}.ts`,
-      path: `src/module-${index}.ts`,
-      restore: { filePath: `src/module-${index}.ts` },
-      sourceRunId: `activity-run-${index}`,
-      sourceRunPath: `/tmp/runtime-activity/run-${index}`,
-      lastUsedRunId: `activity-run-${index}`,
-      lastUsedAt: createdAt,
-    }],
-    createdAt,
-    ...overrides,
-  };
 }
 
 function seedPersonalMemoryStore(store: PersonalMemoryStore, userId: string, count: number): void {

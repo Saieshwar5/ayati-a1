@@ -5,7 +5,7 @@ import {
   extractMouseScrollEvents,
   MOUSE_SCROLL_EVENT,
   type MouseScrollEvent,
-} from "./terminal-mouse.js";
+} from "../../../src/app/input/terminal-mouse.js";
 
 class MockReadStream extends PassThrough {
   readonly isTTY = true;

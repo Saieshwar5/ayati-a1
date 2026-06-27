@@ -10,7 +10,7 @@ import type {
   ExternalSystemRequest,
   InboundQueueEventReceipt,
 } from "../contracts/system-ingress.js";
-import { devLog, devWarn } from "../../shared/index.js";
+import { devLog } from "../../shared/index.js";
 import { AdapterRegistry } from "./adapter-registry.js";
 import { InboundQueueStore } from "./inbound-queue-store.js";
 

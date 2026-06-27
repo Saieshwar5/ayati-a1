@@ -1,6 +1,5 @@
 import { resolve } from "node:path";
 import type { LlmProvider } from "../core/index.js";
-import type { SessionMemory } from "../memory/types.js";
 import { DocumentStore } from "../documents/document-store.js";
 import { DocumentContextBackend } from "../documents/document-context-backend.js";
 import { LanceDocumentVectorStore } from "../documents/document-vector-store.js";
@@ -21,7 +20,6 @@ export interface ContentRuntimeOptions {
   projectRoot: string;
   clientId: string;
   provider: LlmProvider;
-  sessionMemory: SessionMemory;
   config: AyatiRuntimeConfig;
   embeddingProvider?: EmbeddingProvider;
 }
@@ -41,7 +39,7 @@ export interface ContentRuntime {
 }
 
 export async function createContentRuntime(options: ContentRuntimeOptions): Promise<ContentRuntime> {
-  const { projectRoot, provider, sessionMemory, config } = options;
+  const { projectRoot, provider, config } = options;
   const dataDir = resolve(projectRoot, "data");
 
   const documentStore = new DocumentStore({
@@ -96,9 +94,9 @@ export async function createContentRuntime(options: ContentRuntimeOptions): Prom
     documentContextBackend,
   });
   const sessionAttachmentService = new SessionAttachmentService({
-    activityStore: sessionMemory.getActivityStore?.(),
     preparedAttachmentRegistry,
     dataDir,
+    documentStore,
     fileLibrary,
     directoryLibrary,
   });

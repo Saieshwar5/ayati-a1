@@ -511,15 +511,6 @@ function createStateView(): AgentStateView {
         content: "Hii",
         current: true,
       }],
-      continuity: {
-        mode: "new",
-        confidence: 0,
-        reasons: ["test"],
-      },
-      sessionWork: {
-        activeContextStartSeq: 1,
-        recentActivities: [],
-      },
     },
   };
 }

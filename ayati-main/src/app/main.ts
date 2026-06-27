@@ -146,7 +146,6 @@ export async function main(): Promise<void> {
     projectRoot,
     clientId: CLIENT_ID,
     provider,
-    sessionMemory: memory.sessionMemory,
     config: runtimeConfig,
     embeddingProvider,
   });
@@ -156,7 +155,6 @@ export async function main(): Promise<void> {
     projectRoot,
     clientId: CLIENT_ID,
     personalMemoryStore: memory.personalMemoryStore,
-    activityStore: memory.activityStore,
     memoryRetriever: memory.memoryRetriever,
     episodicMemoryController: memory.episodicMemoryController,
     sessionAttachmentService: content.sessionAttachmentService,

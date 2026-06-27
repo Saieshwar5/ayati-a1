@@ -7,7 +7,7 @@ import {
   replacePathMentionsWithResolvedPaths,
   resolvePathMentions,
   stripPathMentions,
-} from "./path-mentions.js";
+} from "../../src/app/path-mentions.js";
 
 let tempDir: string | null = null;
 

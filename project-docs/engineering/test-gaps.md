@@ -3,7 +3,7 @@
 Areas that deserve careful test coverage when changed:
 
 - IVec decision-action-reducer runner behavior.
-- Context pack, activity-thread continuity resolution, and attachment restore behavior.
+- Context pack, git context task resolution, task asset persistence, and attachment restore behavior.
 - Daemon lifecycle and long-running service assumptions.
 - Tool call validation and execution.
 - Session rotation and memory persistence.
