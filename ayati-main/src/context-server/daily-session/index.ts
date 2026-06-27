@@ -7,6 +7,7 @@ export * from "./git-store.js";
 export * from "./ids.js";
 export * from "./refs.js";
 export * from "./session-files.js";
+export * from "./session-coordinator.js";
 export * from "./task-files.js";
 export * from "./task-resolver.js";
 export * from "./text-match.js";
