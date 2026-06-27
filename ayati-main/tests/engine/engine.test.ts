@@ -11,9 +11,9 @@ import type { SystemEventPolicyConfig } from "../../src/ivec/system-event-policy
 import { writeFilesTool } from "../../src/skills/builtins/filesystem/write-files.js";
 import { createToolExecutor } from "../../src/skills/tool-executor.js";
 import type {
-  DailySessionRuntime,
-  DailySessionRuntimePreparedTurn,
-} from "../../src/context-engine/daily-session/index.js";
+  ContextEnginePreparedTurn,
+  ContextEngineRuntime,
+} from "../../src/context-engine/index.js";
 
 function createMockProvider(overrides?: Partial<LlmProvider>): LlmProvider {
   return {
@@ -131,7 +131,7 @@ function findReplyContent(onReply: ReturnType<typeof vi.fn>, type = "reply"): st
   return typeof message?.content === "string" ? message.content : "";
 }
 
-function createDailySessionRuntime(turn: DailySessionRuntimePreparedTurn): DailySessionRuntime {
+function createDailySessionRuntime(turn: ContextEnginePreparedTurn): ContextEngineRuntime {
   return {
     prepareUserTurn: vi.fn().mockResolvedValue(turn),
     completePreparedRun: vi.fn().mockResolvedValue({
@@ -146,7 +146,7 @@ function createDailySessionRuntime(turn: DailySessionRuntimePreparedTurn): Daily
   };
 }
 
-function readyDailySessionTurn(): DailySessionRuntimePreparedTurn {
+function readyDailySessionTurn(): ContextEnginePreparedTurn {
   const context = {
     session: {
       sessionId: "2026-06-27",
@@ -181,31 +181,10 @@ function readyDailySessionTurn(): DailySessionRuntimePreparedTurn {
     workId: "W-20260627-0001",
     ref: "refs/heads/work/W-20260627-0001-analyze-invoice",
     context,
-    prepared: {
-      status: "ready",
-      conversation: {
-        seq: 1,
-        role: "user",
-        at: "2026-06-27T10:00:00+05:30",
-        text: "Analyze invoice",
-      },
-      resolution: {
-        mode: "create_new",
-        title: "Analyze invoice",
-        objective: "Analyze invoice",
-        confidence: "deterministic",
-        reason: "no existing task matched deterministically",
-      },
-      selected: {
-        workId: "W-20260627-0001",
-        ref: "refs/heads/work/W-20260627-0001-analyze-invoice",
-      },
-      context,
-    },
   };
 }
 
-function ambiguousDailySessionTurn(): DailySessionRuntimePreparedTurn {
+function ambiguousDailySessionTurn(): ContextEnginePreparedTurn {
   const context = {
     session: {
       sessionId: "2026-06-27",
@@ -220,36 +199,7 @@ function ambiguousDailySessionTurn(): DailySessionRuntimePreparedTurn {
     sessionId: "2026-06-27",
     context,
     message: "I found multiple matching tasks.\n- W-20260627-0001: Upload bug\n- W-20260627-0002: Upload UI",
-    prepared: {
-      status: "ambiguous",
-      conversation: {
-        seq: 1,
-        role: "user",
-        at: "2026-06-27T10:00:00+05:30",
-        text: "upload",
-      },
-      resolution: {
-        mode: "ambiguous",
-        reason: "multiple existing tasks matched partially",
-        candidates: [
-          {
-            workId: "W-20260627-0001",
-            ref: "refs/heads/work/W-20260627-0001-upload-bug",
-            title: "Upload bug",
-            score: 55,
-            reasons: ["task title token matched: upload"],
-          },
-          {
-            workId: "W-20260627-0002",
-            ref: "refs/heads/work/W-20260627-0002-upload-ui",
-            title: "Upload UI",
-            score: 55,
-            reasons: ["task title token matched: upload"],
-          },
-        ],
-      },
-      context,
-    },
+    candidateCount: 2,
   };
 }
 

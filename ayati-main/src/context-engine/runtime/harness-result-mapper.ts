@@ -7,14 +7,18 @@ import {
   type TaskStateFile,
   type TaskStatus,
   type WorkId,
-} from "../context-engine/daily-session/index.js";
-import type { AgentLoopResult, StepSummary, WorkState } from "./types.js";
+} from "../daily-session/index.js";
+import type {
+  HarnessRunResultForContext,
+  HarnessStepSummaryForContext,
+  HarnessWorkStateForContext,
+} from "../contracts.js";
 
 export interface BuildDailySessionRunCommitInput {
   sessionId: string;
   workId: WorkId;
   runId: RunId;
-  result: AgentLoopResult;
+  result: HarnessRunResultForContext;
   at: string;
 }
 
@@ -63,7 +67,11 @@ export function buildDailySessionRunCommitInput(input: BuildDailySessionRunCommi
   };
 }
 
-function buildTaskState(workId: WorkId, workState: WorkState, result: AgentLoopResult): TaskStateFile {
+function buildTaskState(
+  workId: WorkId,
+  workState: HarnessWorkStateForContext,
+  result: HarnessRunResultForContext,
+): TaskStateFile {
   const status = toTaskStatus(workState, result);
   const next = workState.nextStep?.trim() || result.taskSummary?.nextAction;
   const open = status === "done" || status === "failed"
@@ -93,7 +101,12 @@ function buildTaskState(workId: WorkId, workState: WorkState, result: AgentLoopR
   };
 }
 
-function buildRunActions(workId: WorkId, runId: RunId, steps: StepSummary[], at: string): RunActionWrite[] {
+function buildRunActions(
+  workId: WorkId,
+  runId: RunId,
+  steps: HarnessStepSummaryForContext[],
+  at: string,
+): RunActionWrite[] {
   return steps.map((step, index) => {
     const actionId = createActionId(index + 1);
     return {
@@ -129,7 +142,7 @@ function buildRunActions(workId: WorkId, runId: RunId, steps: StepSummary[], at:
 function buildRunSummary(input: {
   runId: RunId;
   workId: WorkId;
-  result: AgentLoopResult;
+  result: HarnessRunResultForContext;
   state: TaskStateFile;
   actions: RunActionWrite[];
   at: string;
@@ -147,7 +160,7 @@ function buildRunSummary(input: {
   };
 }
 
-function toTaskStatus(workState: WorkState, result: AgentLoopResult): TaskStatus {
+function toTaskStatus(workState: HarnessWorkStateForContext, result: HarnessRunResultForContext): TaskStatus {
   if (result.status === "failed") {
     return "failed";
   }
@@ -163,7 +176,7 @@ function toTaskStatus(workState: WorkState, result: AgentLoopResult): TaskStatus
   return "active";
 }
 
-function toRunSummaryStatus(result: AgentLoopResult): TaskRunSummaryFile["status"] {
+function toRunSummaryStatus(result: HarnessRunResultForContext): TaskRunSummaryFile["status"] {
   if (result.status === "failed") {
     return "failed";
   }
@@ -176,7 +189,7 @@ function toRunSummaryStatus(result: AgentLoopResult): TaskRunSummaryFile["status
   return "completed";
 }
 
-function fallbackWorkState(result: AgentLoopResult): WorkState {
+function fallbackWorkState(result: HarnessRunResultForContext): HarnessWorkStateForContext {
   return {
     status: result.status === "completed" ? "done" : "blocked",
     summary: result.content,

@@ -43,7 +43,7 @@ import type {
 } from "./system-event-policy.js";
 import type { RunMetrics } from "./metrics.js";
 import type { AgentFeedbackLedger } from "./feedback-ledger.js";
-import type { DailySessionMachineContextPack } from "../context-engine/daily-session/index.js";
+import type { ContextEngineMachineContext } from "../context-engine/index.js";
 
 export type SystemEventApprovalState = "not_needed" | "pending" | "granted" | "rejected";
 export type RunClass = "interaction" | "task";
@@ -168,7 +168,7 @@ export interface LoopState {
   activeContextStartSeq?: number;
   sessionWork?: SessionWorkContext;
   taskThreadContext?: TaskThreadContext;
-  dailySessionContext?: DailySessionMachineContextPack;
+  dailySessionContext?: ContextEngineMachineContext;
 }
 
 export type StepVerificationPolicy = "deterministic" | "llm" | "script" | "hybrid";
@@ -349,7 +349,7 @@ export interface AgentLoopDeps {
   dataDir: string;
   systemContext?: string;
   activeLearningContext?: string;
-  dailySessionContext?: DailySessionMachineContextPack;
+  dailySessionContext?: ContextEngineMachineContext;
   userMessageOverride?: string;
   attachedDocuments?: ManagedDocumentManifest[];
   attachmentWarnings?: string[];
