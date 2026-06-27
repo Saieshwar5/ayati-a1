@@ -1041,6 +1041,7 @@ function buildInitialState(
       recentActivities: [],
     },
     taskThreadContext: undefined,
+    dailySessionContext: deps.dailySessionContext,
     toolContext: { recent: [] },
   };
 }
@@ -1335,6 +1336,8 @@ function buildLoopResult(
     totalToolCalls: input.totalToolCalls,
     runPath: state.runPath,
     ...(state.runId ? { workRunId: state.runId } : {}),
+    workState: state.workState,
+    completedSteps: state.completedSteps,
   };
 
   if (state.runClass === "task") {

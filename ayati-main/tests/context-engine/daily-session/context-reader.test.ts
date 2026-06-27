@@ -9,7 +9,7 @@ import {
   FOCUS_CURRENT_REF,
   buildWorkBranchRef,
   SESSION_CONVERSATION_PATH,
-} from "../../../src/context-server/daily-session/index.js";
+} from "../../../src/context-engine/daily-session/index.js";
 
 describe("DailySessionContextReader", () => {
   it("builds active context from main conversation and focused task branch", async () => {

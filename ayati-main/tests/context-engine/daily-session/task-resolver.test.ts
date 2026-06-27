@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest";
 import {
   DailySessionGitStore,
   DailySessionTaskResolver,
-} from "../../../src/context-server/daily-session/index.js";
+} from "../../../src/context-engine/daily-session/index.js";
 
 describe("DailySessionTaskResolver", () => {
   it("continues the focused task when an explicit work id matches focus", async () => {

@@ -13,7 +13,7 @@ import {
   validateTaskFile,
   validateTaskRunSummaryFile,
   validateTaskStateFile,
-} from "../../../src/context-server/daily-session/index.js";
+} from "../../../src/context-engine/daily-session/index.js";
 
 describe("daily session task branch files", () => {
   it("uses one unique task directory per work id", () => {

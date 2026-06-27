@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   parseAyatiCommitTrailers,
   renderAyatiCommitMessage,
-} from "../../../src/context-server/daily-session/index.js";
+} from "../../../src/context-engine/daily-session/index.js";
 
 describe("daily session commit messages", () => {
   it("renders run checkpoints as compact memory plus machine trailers", () => {

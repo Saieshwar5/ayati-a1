@@ -10,7 +10,7 @@ import {
   buildWorkBranchRef,
   taskFilePath,
   taskStatePath,
-} from "../../../src/context-server/daily-session/index.js";
+} from "../../../src/context-engine/daily-session/index.js";
 
 describe("DailySessionGitStore", () => {
   it("creates a daily bare repo and commits initial main session files idempotently", async () => {

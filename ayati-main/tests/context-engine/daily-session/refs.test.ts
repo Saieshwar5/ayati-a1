@@ -7,7 +7,7 @@ import {
   buildWorkBranchName,
   buildWorkBranchRef,
   parseWorkBranchRef,
-} from "../../../src/context-server/daily-session/index.js";
+} from "../../../src/context-engine/daily-session/index.js";
 
 describe("daily session refs", () => {
   it("builds Git-native refs for focus, runs, scratch, and work branches", () => {

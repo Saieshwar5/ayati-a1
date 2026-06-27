@@ -616,6 +616,8 @@ Decision rules:
 - Use context.timeline as chronological conversation context. The item with current=true is the current input.
 - Use the immediately preceding assistant item in context.timeline to interpret short replies like yes, no, do it, go ahead, continue, or stop.
 - Use context.continuity.current as compact durable task state when present.
+- Use context.dailySession.task as durable git-context task state when present. Continue from its open, completed, facts, next, assets, recentRuns, and recentCommits fields.
+- Do not mention git branches, commits, refs, or context-engine mechanics to the user unless they explicitly ask about the implementation.
 - Use context.taskThreadContext for same-session open tasks. It is the primary source for active/suspended open task continuation before durable Activity memory.
 - If context.taskThreadContext.suggestedBinding.mode is continue_task, continue that task unless the current input clearly says to start unrelated work.
 - If suggestedBinding.mode is switch_task, treat the named suspended task as the current task.

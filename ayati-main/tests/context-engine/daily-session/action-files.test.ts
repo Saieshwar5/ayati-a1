@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { validateToolActionFile } from "../../../src/context-server/daily-session/index.js";
+import { validateToolActionFile } from "../../../src/context-engine/daily-session/index.js";
 
 describe("daily session action files", () => {
   it("stores tool outputs as action records with optional external output refs", () => {
