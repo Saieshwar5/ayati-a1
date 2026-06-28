@@ -2,11 +2,16 @@ import { join } from "node:path";
 import { GitMemoryWorktreeGitDriver } from "./git-driver.js";
 import { renderGitMemoryCommitMessage } from "./commit-message.js";
 import type {
+  GitMemoryConversationRecord,
+  GitMemoryConversationRole,
   GitMemoryFocusFile,
+  GitMemoryRunId,
   GitMemorySessionEventRecord,
   GitMemorySessionId,
   GitMemorySessionMetaFile,
+  GitMemoryTaskId,
   GitMemoryTaskIndexFile,
+  GitMemoryTurnId,
 } from "./schema.js";
 import {
   GIT_MEMORY_SESSION_CONVERSATION_PATH,
@@ -17,7 +22,10 @@ import {
   GIT_MEMORY_SESSION_TASKS_PATH,
   GIT_MEMORY_SESSION_TASK_MESSAGE_LINKS_PATH,
   createGitMemoryEventId,
+  createGitMemoryMessageId,
   createGitMemorySessionId,
+  createGitMemoryTurnId,
+  gitMemoryDateFromSessionId,
 } from "./schema.js";
 
 export const GIT_MEMORY_MAIN_REF = "refs/heads/main";
@@ -40,6 +48,16 @@ export interface GitMemoryDailySessionHandle {
   repoPath: string;
   initialized: boolean;
   initialCommit?: string;
+}
+
+export interface AppendGitMemoryConversationInput {
+  sessionId: GitMemorySessionId;
+  role: GitMemoryConversationRole;
+  text: string;
+  at?: string;
+  turnId?: GitMemoryTurnId;
+  taskId?: GitMemoryTaskId;
+  runId?: GitMemoryRunId;
 }
 
 export class GitMemoryDailySessionStore {
@@ -86,6 +104,34 @@ export class GitMemoryDailySessionStore {
     });
 
     return { sessionId, repoPath, initialized: true, initialCommit };
+  }
+
+  async appendConversationMessage(input: AppendGitMemoryConversationInput): Promise<GitMemoryConversationRecord> {
+    const driver = await GitMemoryWorktreeGitDriver.init(this.repoPath(input.sessionId));
+    const date = gitMemoryDateFromSessionId(input.sessionId);
+    const existing = parseJsonl<GitMemoryConversationRecord>(
+      await driver.readWorkingFile(GIT_MEMORY_SESSION_CONVERSATION_PATH),
+    );
+    const seq = nextSeq(existing);
+    const record: GitMemoryConversationRecord = {
+      v: 1,
+      seq,
+      messageId: createGitMemoryMessageId(date, seq),
+      turnId: input.turnId ?? createGitMemoryTurnId(date, seq),
+      role: input.role,
+      at: input.at ?? this.nowIso(),
+      text: input.text,
+      ...(input.taskId ? { taskId: input.taskId } : {}),
+      ...(input.runId ? { runId: input.runId } : {}),
+    };
+    await driver.writeWorkingFiles({
+      [GIT_MEMORY_SESSION_CONVERSATION_PATH]: jsonl([...existing, record]),
+    });
+    return record;
+  }
+
+  private nowIso(): string {
+    return this.nowProvider().toISOString();
   }
 }
 
@@ -148,4 +194,21 @@ function prettyJson(value: unknown): string {
 
 function jsonl<T>(records: T[]): string {
   return records.map((record) => JSON.stringify(record)).join("\n") + (records.length > 0 ? "\n" : "");
+}
+
+function parseJsonl<T>(value: string | null): T[] {
+  if (!value?.trim()) {
+    return [];
+  }
+  return value
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => JSON.parse(line) as T);
+}
+
+function nextSeq(records: Array<{ seq?: unknown }>): number {
+  return records.reduce((max, record) => (
+    typeof record.seq === "number" && Number.isInteger(record.seq) ? Math.max(max, record.seq) : max
+  ), 0) + 1;
 }

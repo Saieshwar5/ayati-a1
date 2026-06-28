@@ -220,6 +220,28 @@ export function createGitMemoryEventId(date: string, sequence: number): GitMemor
   return `E-${date.replace(/-/g, "")}-${formatSequence(sequence, 6)}`;
 }
 
+export function createGitMemoryMessageId(date: string, sequence: number): GitMemoryMessageId {
+  if (!isValidCalendarDate(date)) {
+    throw new Error(`Invalid git-memory message date: ${date}`);
+  }
+  return `M-${date.replace(/-/g, "")}-${formatSequence(sequence, 6)}`;
+}
+
+export function createGitMemoryTurnId(date: string, sequence: number): GitMemoryTurnId {
+  if (!isValidCalendarDate(date)) {
+    throw new Error(`Invalid git-memory turn date: ${date}`);
+  }
+  return `T-${date.replace(/-/g, "")}-${formatSequence(sequence, 6)}`;
+}
+
+export function gitMemoryDateFromSessionId(sessionId: GitMemorySessionId): string {
+  if (!isGitMemorySessionId(sessionId)) {
+    throw new Error(`Invalid git-memory session id: ${sessionId}`);
+  }
+  const compactDate = sessionId.slice(2, 10);
+  return `${compactDate.slice(0, 4)}-${compactDate.slice(4, 6)}-${compactDate.slice(6, 8)}`;
+}
+
 export function isGitMemorySessionId(value: unknown): value is GitMemorySessionId {
   return typeof value === "string"
     && /^S-\d{8}-[a-z0-9][a-z0-9-]{0,39}$/.test(value)

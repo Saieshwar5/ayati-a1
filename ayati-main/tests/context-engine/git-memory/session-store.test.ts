@@ -82,6 +82,56 @@ describe("GitMemoryDailySessionStore", () => {
     expect(JSON.parse(await driver.readFile(GIT_MEMORY_MAIN_REF, GIT_MEMORY_SESSION_SCHEMA_PATH) ?? "{}"))
       .toMatchObject({ schemaVersion: 1, kind: "git_memory_session" });
   });
+
+  it("appends conversation to the worktree without creating per-message commits", async () => {
+    const contextStoreDir = await mkdtemp(join(tmpdir(), "ayati-git-memory-"));
+    const store = new GitMemoryDailySessionStore({ contextStoreDir });
+    const session = await store.openOrCreateDailySession({
+      date: "2026-06-28",
+      timezone: "Asia/Kolkata",
+      agentId: "local",
+      createdAt: "2026-06-28T00:00:00+05:30",
+    });
+
+    const user = await store.appendConversationMessage({
+      sessionId: session.sessionId,
+      role: "user",
+      text: "Fix upload handling",
+      at: "2026-06-28T09:00:00+05:30",
+    });
+    const assistant = await store.appendConversationMessage({
+      sessionId: session.sessionId,
+      role: "assistant",
+      text: "I will inspect the upload path.",
+      turnId: user.turnId,
+      taskId: "W-20260628-0001",
+      runId: "R-20260628-0001",
+      at: "2026-06-28T09:00:05+05:30",
+    });
+
+    expect(user).toMatchObject({
+      seq: 1,
+      messageId: "M-20260628-000001",
+      turnId: "T-20260628-000001",
+      role: "user",
+    });
+    expect(assistant).toMatchObject({
+      seq: 2,
+      messageId: "M-20260628-000002",
+      turnId: user.turnId,
+      role: "assistant",
+      taskId: "W-20260628-0001",
+      runId: "R-20260628-0001",
+    });
+
+    const driver = new GitMemoryWorktreeGitDriver(session.repoPath);
+    expect(await driver.readFile(GIT_MEMORY_MAIN_REF, GIT_MEMORY_SESSION_CONVERSATION_PATH)).toBe("");
+    expect(parseJsonl(await driver.readWorkingFile(GIT_MEMORY_SESSION_CONVERSATION_PATH))).toMatchObject([
+      { seq: 1, role: "user", text: "Fix upload handling" },
+      { seq: 2, role: "assistant", text: "I will inspect the upload path." },
+    ]);
+    expect(await driver.log(GIT_MEMORY_MAIN_REF, 5)).toHaveLength(1);
+  });
 });
 
 function parseJsonl(value: string | null): unknown[] {
