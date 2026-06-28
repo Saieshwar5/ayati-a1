@@ -1,0 +1,161 @@
+import { spawn } from "node:child_process";
+import { access, mkdir, readFile, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
+
+export interface GitMemoryLogEntry {
+  commit: string;
+  message: string;
+}
+
+export interface GitMemoryCommitFilesInput {
+  files: Record<string, string>;
+  message: string;
+}
+
+interface RunGitOptions {
+  input?: string;
+  env?: NodeJS.ProcessEnv;
+  allowFailure?: boolean;
+}
+
+export class GitMemoryGitError extends Error {
+  constructor(
+    message: string,
+    readonly args: string[],
+    readonly exitCode: number | null,
+    readonly stderr: string,
+  ) {
+    super(message);
+  }
+}
+
+export class GitMemoryWorktreeGitDriver {
+  constructor(readonly repoPath: string) {}
+
+  static async init(repoPath: string): Promise<GitMemoryWorktreeGitDriver> {
+    await mkdir(repoPath, { recursive: true });
+    const driver = new GitMemoryWorktreeGitDriver(repoPath);
+    if (!(await pathExists(join(repoPath, ".git")))) {
+      await runGit(["init", repoPath]);
+      await driver.mustRun(["symbolic-ref", "HEAD", "refs/heads/main"]);
+    }
+    return driver;
+  }
+
+  async hasRef(ref: string): Promise<boolean> {
+    const result = await this.run(["rev-parse", "--verify", `${ref}^{commit}`], { allowFailure: true });
+    return result.exitCode === 0;
+  }
+
+  async readFile(ref: string, path: string): Promise<string | null> {
+    const result = await this.run(["show", `${ref}:${path}`], { allowFailure: true });
+    return result.exitCode === 0 ? result.stdout : null;
+  }
+
+  async readWorkingFile(path: string): Promise<string | null> {
+    try {
+      return await readFile(join(this.repoPath, path), "utf-8");
+    } catch {
+      return null;
+    }
+  }
+
+  async writeWorkingFiles(files: Record<string, string>): Promise<void> {
+    for (const [path, content] of Object.entries(files)) {
+      const absolutePath = join(this.repoPath, path);
+      await mkdir(dirname(absolutePath), { recursive: true });
+      await writeFile(absolutePath, content, "utf-8");
+    }
+  }
+
+  async commitFiles(input: GitMemoryCommitFilesInput): Promise<string> {
+    await this.writeWorkingFiles(input.files);
+    await this.mustRun(["add", "--", ...Object.keys(input.files)]);
+    await this.mustRun(["commit", "--file", "-"], { input: input.message });
+    return (await this.mustRun(["rev-parse", "HEAD"])).trim();
+  }
+
+  async log(ref: string, limit: number): Promise<GitMemoryLogEntry[]> {
+    const safeLimit = Math.max(1, Math.floor(limit));
+    const result = await this.run(["log", "-n", String(safeLimit), "--format=%H%x1f%B%x1e", ref], {
+      allowFailure: true,
+    });
+    if (result.exitCode !== 0) {
+      return [];
+    }
+    return result.stdout
+      .split("\x1e")
+      .map((entry) => entry.trim())
+      .filter(Boolean)
+      .map((entry) => {
+        const separator = entry.indexOf("\x1f");
+        if (separator < 0) {
+          return null;
+        }
+        return {
+          commit: entry.slice(0, separator).trim(),
+          message: entry.slice(separator + 1).trimEnd(),
+        };
+      })
+      .filter((entry): entry is GitMemoryLogEntry => entry !== null);
+  }
+
+  private async mustRun(args: string[], options?: Omit<RunGitOptions, "allowFailure">): Promise<string> {
+    const result = await this.run(args, options);
+    return result.stdout;
+  }
+
+  private async run(
+    args: string[],
+    options?: RunGitOptions,
+  ): Promise<{ stdout: string; stderr: string; exitCode: number | null }> {
+    return await runGit(["-C", this.repoPath, ...args], options);
+  }
+}
+
+async function pathExists(path: string): Promise<boolean> {
+  try {
+    await access(path);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function runGit(
+  args: string[],
+  options?: RunGitOptions,
+): Promise<{ stdout: string; stderr: string; exitCode: number | null }> {
+  return new Promise((resolve, reject) => {
+    const child = spawn("git", args, {
+      env: {
+        ...process.env,
+        GIT_AUTHOR_NAME: "Ayati",
+        GIT_AUTHOR_EMAIL: "ayati@example.local",
+        GIT_COMMITTER_NAME: "Ayati",
+        GIT_COMMITTER_EMAIL: "ayati@example.local",
+        ...options?.env,
+      },
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk;
+    });
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk;
+    });
+    child.on("error", reject);
+    child.on("close", (exitCode) => {
+      if (exitCode === 0 || options?.allowFailure) {
+        resolve({ stdout, stderr, exitCode });
+        return;
+      }
+      reject(new GitMemoryGitError(`git ${args.join(" ")} failed`, args, exitCode, stderr));
+    });
+    child.stdin.end(options?.input ?? "");
+  });
+}

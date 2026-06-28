@@ -1,5 +1,5 @@
 import { join } from "node:path";
-import { GitDriver } from "../daily-session/git-driver.js";
+import { GitMemoryWorktreeGitDriver } from "./git-driver.js";
 import { renderGitMemoryCommitMessage } from "./commit-message.js";
 import type {
   GitMemoryFocusFile,
@@ -52,13 +52,13 @@ export class GitMemoryDailySessionStore {
   }
 
   repoPath(sessionId: GitMemorySessionId): string {
-    return join(this.contextStoreDir, "sessions", `${sessionId}.git`);
+    return join(this.contextStoreDir, "sessions", sessionId);
   }
 
   async openOrCreateDailySession(input: OpenGitMemoryDailySessionInput): Promise<GitMemoryDailySessionHandle> {
     const sessionId = input.sessionId ?? createGitMemorySessionId(input.date, input.agentId);
     const repoPath = this.repoPath(sessionId);
-    const driver = await GitDriver.initBare(repoPath);
+    const driver = await GitMemoryWorktreeGitDriver.init(repoPath);
     if (await driver.hasRef(GIT_MEMORY_MAIN_REF)) {
       return { sessionId, repoPath, initialized: false };
     }
@@ -72,7 +72,6 @@ export class GitMemoryDailySessionStore {
       createdAt,
     });
     const initialCommit = await driver.commitFiles({
-      ref: GIT_MEMORY_MAIN_REF,
       files,
       message: renderGitMemoryCommitMessage({
         subject: `ayati: initialize session ${sessionId}`,

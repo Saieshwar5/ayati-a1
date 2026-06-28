@@ -2,7 +2,6 @@ import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { GitDriver } from "../../../src/context-engine/daily-session/index.js";
 import {
   GIT_MEMORY_MAIN_REF,
   GIT_MEMORY_SESSION_CONVERSATION_PATH,
@@ -12,6 +11,7 @@ import {
   GIT_MEMORY_SESSION_SCHEMA_PATH,
   GIT_MEMORY_SESSION_TASKS_PATH,
   GIT_MEMORY_SESSION_TASK_MESSAGE_LINKS_PATH,
+  GitMemoryWorktreeGitDriver,
   GitMemoryDailySessionStore,
   parseGitMemoryCommitTrailers,
 } from "../../../src/context-engine/git-memory/index.js";
@@ -38,6 +38,7 @@ describe("GitMemoryDailySessionStore", () => {
       sessionId: "S-20260628-local",
       initialized: true,
     });
+    expect(first.repoPath.endsWith(".git")).toBe(false);
     expect(first.initialCommit).toBeTruthy();
     expect(second).toMatchObject({
       sessionId: "S-20260628-local",
@@ -45,7 +46,7 @@ describe("GitMemoryDailySessionStore", () => {
       initialized: false,
     });
 
-    const driver = new GitDriver(first.repoPath);
+    const driver = new GitMemoryWorktreeGitDriver(first.repoPath);
     const log = await driver.log(GIT_MEMORY_MAIN_REF, 5);
     expect(log).toHaveLength(1);
     expect(log[0]?.message).toContain("ayati: initialize session S-20260628-local");
