@@ -110,6 +110,27 @@ export interface GitMemoryTaskConversationSegment {
   messages: GitMemoryConversationRecord[];
 }
 
+export interface GitMemoryTaskRoutingSnapshotTask {
+  taskId: GitMemoryTaskId;
+  branch: string;
+  ref: string;
+  title: string;
+  objective: string;
+  status: GitMemoryTaskStatus;
+  summary: string;
+  open: string[];
+  blockers: string[];
+  facts: string[];
+  next: string;
+  missing?: boolean;
+}
+
+export interface GitMemoryTaskRoutingSnapshot {
+  sessionId: GitMemorySessionId;
+  focus: GitMemoryFocusFile | null;
+  tasks: GitMemoryTaskRoutingSnapshotTask[];
+}
+
 export interface CreateGitMemoryTaskBranchInput extends GitMemoryConversationSeqRange {
   sessionId: GitMemorySessionId;
   title: string;
@@ -128,6 +149,24 @@ export interface CreateGitMemoryTaskBranchResult {
   ref: string;
   taskCommit: string;
   link: GitMemoryTaskMessageLinkRecord;
+}
+
+export interface SelectGitMemoryTaskForTurnInput extends GitMemoryConversationSeqRange {
+  sessionId: GitMemorySessionId;
+  taskId: GitMemoryTaskId;
+  reason: Exclude<GitMemoryTaskLinkReason, "task_created" | "task_reference">;
+  at?: string;
+  turnIds?: GitMemoryTurnId[];
+  runId?: GitMemoryRunId;
+  summary?: string;
+}
+
+export interface SelectGitMemoryTaskForTurnResult {
+  taskId: GitMemoryTaskId;
+  branch: string;
+  ref: string;
+  link: GitMemoryTaskMessageLinkRecord;
+  focusEvent?: GitMemorySessionEventRecord;
 }
 
 export interface CommitGitMemoryTaskRunActionInput {
@@ -285,6 +324,69 @@ export class GitMemoryDailySessionStore {
       }));
   }
 
+  async readTaskRoutingSnapshot(sessionId: GitMemorySessionId): Promise<GitMemoryTaskRoutingSnapshot> {
+    const driver = await GitMemoryWorktreeGitDriver.init(this.repoPath(sessionId));
+    const [tasks, focus] = await Promise.all([
+      parseJson<GitMemoryTaskIndexFile>(
+        await driver.readWorkingFile(GIT_MEMORY_SESSION_TASKS_PATH),
+      ) ?? { schemaVersion: 1, tasks: [] },
+      parseJson<GitMemoryFocusFile>(
+        await driver.readWorkingFile(GIT_MEMORY_SESSION_FOCUS_PATH),
+      ),
+    ]);
+
+    const snapshotTasks: GitMemoryTaskRoutingSnapshotTask[] = [];
+    for (const taskEntry of tasks.tasks) {
+      const ref = `refs/heads/${taskEntry.branch}`;
+      if (!(await driver.hasRef(ref))) {
+        snapshotTasks.push({
+          taskId: taskEntry.taskId,
+          branch: taskEntry.branch,
+          ref,
+          title: taskEntry.title,
+          objective: taskEntry.title,
+          status: taskEntry.status,
+          summary: taskEntry.title,
+          open: [],
+          blockers: [],
+          facts: [],
+          next: taskEntry.title,
+          missing: true,
+        });
+        continue;
+      }
+
+      const [task, state] = await Promise.all([
+        parseJson<GitMemoryTaskFile>(
+          await driver.readFile(ref, gitMemoryTaskFilePath(taskEntry.taskId)),
+        ),
+        parseJson<GitMemoryTaskStateFile>(
+          await driver.readFile(ref, gitMemoryTaskStatePath(taskEntry.taskId)),
+        ),
+      ]);
+      snapshotTasks.push({
+        taskId: taskEntry.taskId,
+        branch: taskEntry.branch,
+        ref,
+        title: task?.title ?? taskEntry.title,
+        objective: task?.objective ?? taskEntry.title,
+        status: state?.status ?? taskEntry.status,
+        summary: state?.summary ?? task?.objective ?? taskEntry.title,
+        open: state?.open ?? [],
+        blockers: state?.blockers ?? [],
+        facts: state?.facts ?? [],
+        next: state?.next ?? task?.objective ?? taskEntry.title,
+        ...(!task || !state ? { missing: true } : {}),
+      });
+    }
+
+    return {
+      sessionId,
+      focus,
+      tasks: snapshotTasks,
+    };
+  }
+
   async createTaskBranch(input: CreateGitMemoryTaskBranchInput): Promise<CreateGitMemoryTaskBranchResult> {
     const driver = await GitMemoryWorktreeGitDriver.init(this.repoPath(input.sessionId));
     const date = gitMemoryDateFromSessionId(input.sessionId);
@@ -417,6 +519,77 @@ export class GitMemoryDailySessionStore {
     });
 
     return { taskId, branch, ref, taskCommit, link };
+  }
+
+  async selectTaskForTurn(input: SelectGitMemoryTaskForTurnInput): Promise<SelectGitMemoryTaskForTurnResult> {
+    const driver = await GitMemoryWorktreeGitDriver.init(this.repoPath(input.sessionId));
+    const date = gitMemoryDateFromSessionId(input.sessionId);
+    const tasks = parseJson<GitMemoryTaskIndexFile>(
+      await driver.readWorkingFile(GIT_MEMORY_SESSION_TASKS_PATH),
+    ) ?? { schemaVersion: 1, tasks: [] };
+    const taskEntry = tasks.tasks.find((task) => task.taskId === input.taskId);
+    if (!taskEntry) {
+      throw new Error(`Git memory task not found: ${input.taskId}`);
+    }
+    const ref = `refs/heads/${taskEntry.branch}`;
+    if (!(await driver.hasRef(ref))) {
+      throw new Error(`Git memory task branch missing: ${ref}`);
+    }
+
+    const at = input.at ?? this.nowIso();
+    const focus = parseJson<GitMemoryFocusFile>(
+      await driver.readWorkingFile(GIT_MEMORY_SESSION_FOCUS_PATH),
+    );
+    const focusChanged = focus?.activeTaskId !== taskEntry.taskId || focus?.activeBranch !== taskEntry.branch;
+    let focusEvent: GitMemorySessionEventRecord | undefined;
+    if (focusChanged) {
+      const existingEvents = parseJsonl<GitMemorySessionEventRecord>(
+        await driver.readWorkingFile(GIT_MEMORY_SESSION_EVENTS_PATH),
+      );
+      const eventSeq = nextSeq(existingEvents);
+      focusEvent = {
+        v: 1,
+        seq: eventSeq,
+        eventId: createGitMemoryEventId(date, eventSeq),
+        type: "focus_changed",
+        at,
+        fromTaskId: focus?.activeTaskId ?? null,
+        toTaskId: taskEntry.taskId,
+        branch: taskEntry.branch,
+        reason: input.reason,
+      };
+      await driver.writeWorkingFiles({
+        [GIT_MEMORY_SESSION_FOCUS_PATH]: prettyJson({
+          schemaVersion: 1,
+          activeTaskId: taskEntry.taskId,
+          activeBranch: taskEntry.branch,
+          updatedAt: at,
+          reason: input.reason,
+        } satisfies GitMemoryFocusFile),
+        [GIT_MEMORY_SESSION_EVENTS_PATH]: jsonl([...existingEvents, focusEvent]),
+      });
+    }
+
+    const link = await this.linkTaskMessages({
+      sessionId: input.sessionId,
+      taskId: input.taskId,
+      branch: taskEntry.branch,
+      reason: input.reason,
+      fromSeq: input.fromSeq,
+      toSeq: input.toSeq,
+      at,
+      turnIds: input.turnIds,
+      runId: input.runId,
+      summary: input.summary,
+    });
+
+    return {
+      taskId: input.taskId,
+      branch: taskEntry.branch,
+      ref,
+      link,
+      ...(focusEvent ? { focusEvent } : {}),
+    };
   }
 
   async commitTaskRun(input: CommitGitMemoryTaskRunInput): Promise<CommitGitMemoryTaskRunResult> {

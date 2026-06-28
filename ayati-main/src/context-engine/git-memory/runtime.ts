@@ -5,9 +5,17 @@ import type {
   CreateGitMemoryTaskBranchResult,
   GitMemoryDailySessionHandle,
   GitMemorySessionCheckpoint,
+  GitMemoryTaskRoutingSnapshot,
 } from "./session-store.js";
 import { GitMemoryDailySessionStore } from "./session-store.js";
 import { GitMemoryContextReader, type GitMemoryMachineContextPack } from "./context-pack.js";
+import {
+  GitMemoryTaskRouter,
+  type AppliedGitMemoryTaskRoute,
+  type ApplyGitMemoryTaskRouteInput,
+  type GitMemoryTaskRouteResolution,
+  type ResolveGitMemoryTaskRouteInput,
+} from "./task-router.js";
 import type {
   GitMemoryConversationRecord,
   GitMemoryRunId,
@@ -23,6 +31,7 @@ export interface GitMemoryRuntimeOptions {
   now?: () => Date;
   store?: GitMemoryDailySessionStore;
   contextReader?: GitMemoryContextReader;
+  taskRouter?: GitMemoryTaskRouter;
 }
 
 export interface OpenGitMemoryRuntimeSessionInput {
@@ -58,12 +67,17 @@ export interface CheckpointGitMemoryRuntimeSessionInput {
   at?: string;
 }
 
+export type RoutedGitMemoryUserTurn = AppliedGitMemoryTaskRoute & {
+  context: GitMemoryMachineContextPack;
+};
+
 export class GitMemoryRuntime {
   private readonly timezone: string;
   private readonly agentId: string;
   private readonly nowProvider: () => Date;
   private readonly store: GitMemoryDailySessionStore;
   private readonly contextReader: GitMemoryContextReader;
+  private readonly taskRouter: GitMemoryTaskRouter;
 
   constructor(options: GitMemoryRuntimeOptions) {
     this.timezone = options.timezone;
@@ -74,6 +88,7 @@ export class GitMemoryRuntime {
       now: this.nowProvider,
     });
     this.contextReader = options.contextReader ?? new GitMemoryContextReader(this.store);
+    this.taskRouter = options.taskRouter ?? new GitMemoryTaskRouter(this.store);
   }
 
   async openDailySession(input: OpenGitMemoryRuntimeSessionInput = {}): Promise<GitMemoryDailySessionHandle> {
@@ -121,6 +136,22 @@ export class GitMemoryRuntime {
 
   async createTaskBranch(input: CreateGitMemoryTaskBranchInput): Promise<CreateGitMemoryTaskBranchResult> {
     return await this.store.createTaskBranch(input);
+  }
+
+  async readTaskRoutingSnapshot(sessionId: GitMemorySessionId): Promise<GitMemoryTaskRoutingSnapshot> {
+    return await this.store.readTaskRoutingSnapshot(sessionId);
+  }
+
+  async resolveTaskRoute(input: ResolveGitMemoryTaskRouteInput): Promise<GitMemoryTaskRouteResolution> {
+    return await this.taskRouter.resolve(input);
+  }
+
+  async routeUserTurn(input: ApplyGitMemoryTaskRouteInput): Promise<RoutedGitMemoryUserTurn> {
+    const route = await this.taskRouter.route(input);
+    return {
+      ...route,
+      context: await this.contextReader.buildActiveContext({ sessionId: input.sessionId }),
+    };
   }
 
   async commitTaskRun(input: CommitGitMemoryTaskRunInput): Promise<CommitGitMemoryTaskRunResult> {

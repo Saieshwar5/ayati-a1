@@ -135,6 +135,73 @@ describe("createGitMemoryChatContextRuntime", () => {
     }
   });
 
+  it("routes prepared user turns to git-memory task branches", async () => {
+    const storeDir = mkdtempSync(join(tmpdir(), "ayati-git-memory-chat-context-"));
+    try {
+      const runtime = createGitMemoryChatContextRuntime({
+        gitMemoryRuntime: createGitMemoryRuntime({
+          contextStoreDir: storeDir,
+          timezone: "Asia/Kolkata",
+          agentId: "local",
+        }),
+      });
+      const first = await runtime.prepareUserTurn({
+        clientId: "local",
+        userMessage: "Fix upload handling",
+        at: "2026-06-28T09:00:00+05:30",
+      });
+
+      const created = await runtime.routeTaskTurn({
+        clientId: "local",
+        turn: first,
+        userMessage: "Fix upload handling",
+        at: "2026-06-28T09:00:01+05:30",
+      });
+
+      expect(created).toMatchObject({
+        status: "ready",
+        mode: "create_new_task",
+        taskId: "W-20260628-0001",
+        conversationRefs: [{ fromSeq: 1, toSeq: 1 }],
+        context: {
+          focus: {
+            status: "active",
+            taskId: "W-20260628-0001",
+          },
+        },
+      });
+
+      const second = await runtime.prepareUserTurn({
+        clientId: "local",
+        userMessage: "finish it",
+        at: "2026-06-28T09:05:00+05:30",
+      });
+      const continued = await runtime.routeTaskTurn({
+        clientId: "local",
+        turn: second,
+        userMessage: "finish it",
+        at: "2026-06-28T09:05:01+05:30",
+      });
+
+      expect(continued).toMatchObject({
+        status: "ready",
+        mode: "continue_active_task",
+        taskId: "W-20260628-0001",
+        conversationRefs: [{ fromSeq: 2, toSeq: 2 }],
+        context: {
+          task: {
+            conversation: [
+              { link: { reason: "task_created", fromSeq: 1, toSeq: 1 } },
+              { link: { reason: "task_continued", fromSeq: 2, toSeq: 2 } },
+            ],
+          },
+        },
+      });
+    } finally {
+      rmSync(storeDir, { recursive: true, force: true });
+    }
+  });
+
   it("commits completed task runs through the git-memory bridge", async () => {
     const storeDir = mkdtempSync(join(tmpdir(), "ayati-git-memory-chat-context-"));
     try {
