@@ -78,8 +78,7 @@ function normalizeImportTarget(sourceFile: string, specifier: string): string {
 }
 
 function isContextEngineInternalImport(target: string): boolean {
-  return target.startsWith("context-engine/daily-session/")
-    || target.startsWith("context-engine/runtime/");
+  return target.startsWith("context-engine/runtime/");
 }
 
 function normalizePath(path: string): string {

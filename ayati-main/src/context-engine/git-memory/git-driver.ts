@@ -213,14 +213,29 @@ function runGit(
     child.stderr.on("data", (chunk) => {
       stderr += chunk;
     });
+    let stdinError: Error | undefined;
+    child.stdin.on("error", (err: NodeJS.ErrnoException) => {
+      if (err.code === "EPIPE") {
+        return;
+      }
+      stdinError = err;
+    });
     child.on("error", reject);
     child.on("close", (exitCode) => {
+      if (stdinError && exitCode === 0 && !options?.allowFailure) {
+        reject(stdinError);
+        return;
+      }
       if (exitCode === 0 || options?.allowFailure) {
         resolve({ stdout, stderr, exitCode });
         return;
       }
       reject(new GitMemoryGitError(`git ${args.join(" ")} failed`, args, exitCode, stderr));
     });
-    child.stdin.end(options?.input ?? "");
+    try {
+      child.stdin.end(options?.input ?? "");
+    } catch (err) {
+      stdinError = err instanceof Error ? err : new Error(String(err));
+    }
   });
 }

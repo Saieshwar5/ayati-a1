@@ -1,55 +1,141 @@
-import type {
-  CompletePreparedRunInput,
-  CompletedPreparedRun,
-  DailySessionMachineContextPack,
-  RunId,
-  SessionId,
-  TaskAssetRecord,
-  WorkId,
-} from "./daily-session/index.js";
+export type ContextConversationRole = "user" | "assistant" | "system";
 
-export type ContextEngineMachineContext = DailySessionMachineContextPack;
-export type CommitContextRunInput = CompletePreparedRunInput;
-export type CommittedContextRun = CompletedPreparedRun;
-
-export interface PrepareContextUserTurnInput {
-  userMessage: string;
-  at?: string;
-  sessionId?: SessionId;
-  timezone?: string;
-}
-
-export interface ContextEngineReadyTurn {
-  status: "ready";
-  sessionId: SessionId;
-  runId: RunId;
-  workId: WorkId;
-  ref: string;
-  context: ContextEngineMachineContext;
-}
-
-export interface ContextEngineAmbiguousTurn {
-  status: "ambiguous";
-  sessionId: SessionId;
-  context: ContextEngineMachineContext;
-  message: string;
-  candidateCount?: number;
-}
-
-export type ContextEnginePreparedTurn =
-  | ContextEngineReadyTurn
-  | ContextEngineAmbiguousTurn;
-
-export interface RecordContextAssistantMessageInput {
-  sessionId: SessionId;
+export interface ContextConversationRecord {
+  seq: number;
+  role: ContextConversationRole;
+  at: string;
   text: string;
-  at?: string;
 }
 
-export interface ContextEngineRuntime {
-  prepareUserTurn(input: PrepareContextUserTurnInput): Promise<ContextEnginePreparedTurn>;
-  completePreparedRun(input: CommitContextRunInput): Promise<CommittedContextRun>;
-  recordAssistantMessage(input: RecordContextAssistantMessageInput): Promise<void>;
+export type ContextSessionEventRecord =
+  | {
+      seq: number;
+      type: "session_started";
+      at: string;
+      sessionId: string;
+    }
+  | {
+      seq: number;
+      type: "asset_registered";
+      at: string;
+      assetId: string;
+    }
+  | {
+      seq: number;
+      type: "task_branch_created";
+      at: string;
+      workId: string;
+      branch: string;
+      ref: string;
+    }
+  | {
+      seq: number;
+      type: "focus_changed";
+      at: string;
+      to: string;
+      from?: string;
+    }
+  | {
+      seq: number;
+      type: "run_started";
+      at: string;
+      runId: string;
+      workId: string;
+    }
+  | {
+      seq: number;
+      type: "run_committed";
+      at: string;
+      runId: string;
+      workId: string;
+      commit: string;
+    }
+  | {
+      seq: number;
+      type: "session_closed";
+      at: string;
+      reason?: string;
+    };
+
+export type ContextFocus =
+  | {
+      status: "none";
+    }
+  | {
+      status: "active";
+      ref: string;
+      workId: string;
+    }
+  | {
+      status: "missing";
+      ref: string;
+      workId?: string;
+      reason: string;
+    }
+  | {
+      status: "unresolved";
+      ref: string;
+      reason: string;
+    };
+
+export type TaskAssetRole = "input" | "output" | "generated" | "reference";
+
+export interface TaskAssetRecord {
+  assetId: string;
+  role: TaskAssetRole;
+  kind: string;
+  name: string;
+  sessionAssetId?: string;
+  path?: string;
+}
+
+export interface ContextTaskFact {
+  text: string;
+  source: string;
+}
+
+export interface ContextTaskRunSummary {
+  schemaVersion: 1;
+  runId: string;
+  workId: string;
+  status: "completed" | "failed" | "blocked" | "needs_user_input";
+  summary: string;
+  completed: string[];
+  open: string[];
+  actions: string[];
+  createdAt: string;
+}
+
+export interface ContextCommitSummary {
+  commit: string;
+  subject: string;
+  summary?: string;
+  trailers: unknown;
+}
+
+export interface ContextEngineMachineContext {
+  session: {
+    sessionId: string;
+    conversationTail: ContextConversationRecord[];
+    eventTail: ContextSessionEventRecord[];
+    assetCount: number;
+  };
+  focus: ContextFocus;
+  task?: {
+    ref: string;
+    workId: string;
+    title: string;
+    objective: string;
+    status: string;
+    completed: string[];
+    open: string[];
+    blockers: string[];
+    facts: ContextTaskFact[];
+    next?: string;
+    assets: TaskAssetRecord[];
+    recentRuns: ContextTaskRunSummary[];
+    recentCommits: ContextCommitSummary[];
+  };
 }
 
 export type HarnessRunStatus = "completed" | "failed" | "stuck";

@@ -1,14 +1,12 @@
-import type { ContextEngineMachineContext } from "../contracts.js";
 import type {
-  ConversationRecord,
-  SessionEventRecord,
-} from "../daily-session/session-files.js";
-import type {
+  ContextCommitSummary,
+  ContextConversationRecord,
+  ContextEngineMachineContext,
+  ContextSessionEventRecord,
+  ContextTaskFact,
+  ContextTaskRunSummary,
   TaskAssetRecord,
-  TaskFact,
-  TaskRunSummaryFile,
-} from "../daily-session/task-files.js";
-import type { CompactCommitSummary } from "../daily-session/context-reader.js";
+} from "../contracts.js";
 import type {
   GitMemoryConversationRecord,
   GitMemoryRunFile,
@@ -54,7 +52,7 @@ export function buildGitMemoryHarnessContextPack(
   };
 }
 
-function toConversationRecord(record: GitMemoryConversationRecord): ConversationRecord {
+function toConversationRecord(record: GitMemoryConversationRecord): ContextConversationRecord {
   return {
     seq: record.seq,
     role: record.role,
@@ -66,7 +64,7 @@ function toConversationRecord(record: GitMemoryConversationRecord): Conversation
 function toSessionEventRecord(
   sessionId: string,
   event: GitMemorySessionEventRecord,
-): SessionEventRecord | null {
+): ContextSessionEventRecord | null {
   if (event.type === "session_initialized") {
     return {
       seq: event.seq,
@@ -123,7 +121,7 @@ function toSessionEventRecord(
   return null;
 }
 
-function isSessionEventRecord(event: SessionEventRecord | null): event is SessionEventRecord {
+function isSessionEventRecord(event: ContextSessionEventRecord | null): event is ContextSessionEventRecord {
   return event !== null;
 }
 
@@ -146,14 +144,14 @@ function toFocusContext(focus: GitMemoryFocusContext): ContextEngineMachineConte
   };
 }
 
-function toTaskFact(fact: string): TaskFact {
+function toTaskFact(fact: string): ContextTaskFact {
   return {
     text: fact,
     source: "git-memory/task-state",
   };
 }
 
-function toTaskRunSummary(run: GitMemoryRunFile, taskId: GitMemoryTaskId): TaskRunSummaryFile {
+function toTaskRunSummary(run: GitMemoryRunFile, taskId: GitMemoryTaskId): ContextTaskRunSummary {
   return {
     schemaVersion: 1,
     runId: run.runId,
@@ -167,12 +165,12 @@ function toTaskRunSummary(run: GitMemoryRunFile, taskId: GitMemoryTaskId): TaskR
   };
 }
 
-function toCompactCommitSummary(commit: CompactGitMemoryCommitSummary): CompactCommitSummary {
+function toCompactCommitSummary(commit: CompactGitMemoryCommitSummary): ContextCommitSummary {
   return {
     commit: commit.commit,
     subject: commit.subject,
     ...(commit.summary ? { summary: commit.summary } : {}),
-    trailers: commit.trailers as unknown as CompactCommitSummary["trailers"],
+    trailers: commit.trailers,
   };
 }
 
