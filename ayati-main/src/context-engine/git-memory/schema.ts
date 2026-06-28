@@ -205,6 +205,21 @@ export function gitMemoryTaskContextPath(taskId: GitMemoryTaskId): string {
   return `${gitMemoryTaskDir(taskId)}/context.md`;
 }
 
+export function createGitMemorySessionId(date: string, agentId: string): GitMemorySessionId {
+  if (!isValidCalendarDate(date)) {
+    throw new Error(`Invalid git-memory session date: ${date}`);
+  }
+  const normalizedAgentId = slugifyIdPart(agentId, "local");
+  return `S-${date.replace(/-/g, "")}-${normalizedAgentId}`;
+}
+
+export function createGitMemoryEventId(date: string, sequence: number): GitMemoryEventId {
+  if (!isValidCalendarDate(date)) {
+    throw new Error(`Invalid git-memory event date: ${date}`);
+  }
+  return `E-${date.replace(/-/g, "")}-${formatSequence(sequence, 6)}`;
+}
+
 export function isGitMemorySessionId(value: unknown): value is GitMemorySessionId {
   return typeof value === "string"
     && /^S-\d{8}-[a-z0-9][a-z0-9-]{0,39}$/.test(value)
@@ -738,6 +753,25 @@ function requireOptionalTaskBranch(record: Record<string, unknown>, field: strin
 function isTaskBranch(value: string): boolean {
   return /^task\/W-\d{8}-\d{4}(-[a-z0-9][a-z0-9-]{0,79})?$/.test(value)
     && isValidCompactDate(value.slice(7, 15));
+}
+
+function slugifyIdPart(value: string, fallback: string): string {
+  const normalized = value
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 40)
+    .replace(/-+$/g, "");
+  return normalized || fallback;
+}
+
+function formatSequence(sequence: number, width: number): string {
+  if (!Number.isInteger(sequence) || sequence < 1) {
+    throw new Error(`Sequence must be a positive integer: ${String(sequence)}`);
+  }
+  return String(sequence).padStart(width, "0");
 }
 
 function isValidCompactDate(value: string): boolean {
