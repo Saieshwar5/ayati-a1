@@ -12,11 +12,13 @@ import type {
   RoutedGitMemoryUserTurn,
 } from "../context-engine/index.js";
 import {
+  buildGitMemoryHarnessContextPack,
   buildGitMemoryTaskRunCommitInput,
 } from "../context-engine/index.js";
 import type {
   ChatContextRuntimePrepareInput,
 } from "../ivec/chat-context-runtime.js";
+import type { HarnessContextInput } from "../ivec/harness-context.js";
 import { devWarn } from "../shared/index.js";
 
 export interface CreateGitMemoryChatContextRuntimeOptions {
@@ -64,9 +66,13 @@ export interface GitMemoryChatContextRouteTaskTurnInput {
   objective?: string;
 }
 
+export type GitMemoryChatContextRoutedTurn = RoutedGitMemoryUserTurn & {
+  harnessContext: HarnessContextInput;
+};
+
 export interface GitMemoryChatContextRuntime {
   prepareUserTurn(input: ChatContextRuntimePrepareInput): Promise<GitMemoryChatContextPreparedTurn>;
-  routeTaskTurn(input: GitMemoryChatContextRouteTaskTurnInput): Promise<RoutedGitMemoryUserTurn | null>;
+  routeTaskTurn(input: GitMemoryChatContextRouteTaskTurnInput): Promise<GitMemoryChatContextRoutedTurn | null>;
   completeTaskRun(input: GitMemoryChatContextCompleteTaskRunInput): Promise<CommitGitMemoryTaskRunResult | null>;
   recordAssistantMessage(input: GitMemoryChatContextAssistantMessageInput): Promise<GitMemoryConversationRecord | null>;
   buildActiveContext(sessionId: GitMemorySessionId): Promise<GitMemoryMachineContextPack>;
@@ -100,12 +106,12 @@ class AppGitMemoryChatContextRuntime implements GitMemoryChatContextRuntime {
 
   async routeTaskTurn(
     input: GitMemoryChatContextRouteTaskTurnInput,
-  ): Promise<RoutedGitMemoryUserTurn | null> {
+  ): Promise<GitMemoryChatContextRoutedTurn | null> {
     if (!input.turn) {
       return null;
     }
     try {
-      return await this.gitMemoryRuntime.routeUserTurn({
+      const route = await this.gitMemoryRuntime.routeUserTurn({
         sessionId: input.turn.sessionId,
         userMessage: input.userMessage,
         fromSeq: input.turn.messageSeq,
@@ -115,6 +121,12 @@ class AppGitMemoryChatContextRuntime implements GitMemoryChatContextRuntime {
         title: input.title,
         objective: input.objective,
       });
+      return {
+        ...route,
+        harnessContext: {
+          contextEngine: buildGitMemoryHarnessContextPack(route.context),
+        },
+      };
     } catch (err) {
       devWarn(`[${input.clientId}] git memory task routing failed: ${errorMessage(err)}`);
       return null;

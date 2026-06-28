@@ -163,6 +163,21 @@ describe("createGitMemoryChatContextRuntime", () => {
         mode: "create_new_task",
         taskId: "W-20260628-0001",
         conversationRefs: [{ fromSeq: 1, toSeq: 1 }],
+        harnessContext: {
+          contextEngine: {
+            focus: {
+              status: "active",
+              workId: "W-20260628-0001",
+            },
+            task: {
+              workId: "W-20260628-0001",
+              title: "Fix upload handling",
+              open: ["Fix upload handling"],
+              facts: [],
+              assets: [],
+            },
+          },
+        },
         context: {
           focus: {
             status: "active",
@@ -188,6 +203,20 @@ describe("createGitMemoryChatContextRuntime", () => {
         mode: "continue_active_task",
         taskId: "W-20260628-0001",
         conversationRefs: [{ fromSeq: 2, toSeq: 2 }],
+        harnessContext: {
+          contextEngine: {
+            session: {
+              conversationTail: [
+                { seq: 1, role: "user", text: "Fix upload handling" },
+                { seq: 2, role: "user", text: "finish it" },
+              ],
+            },
+            task: {
+              workId: "W-20260628-0001",
+              assets: [],
+            },
+          },
+        },
         context: {
           task: {
             conversation: [
