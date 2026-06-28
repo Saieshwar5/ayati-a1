@@ -30,8 +30,8 @@ import imageGenerationProvider from "../image-generation/runtime/index.js";
 import type { AgentUiContext } from "../ui/context.js";
 import type { WorkspaceInteractionEvent } from "../ui/workspace-orchestrator.js";
 import { createAgentFeedbackLedgerFromEnv } from "../ivec/feedback-ledger.js";
-import { createContextEngineRuntime } from "./context-runtime.js";
-import { createChatContextRuntime } from "./chat-context-runtime.js";
+import { createGitMemoryRuntime } from "../context-engine/index.js";
+import { createGitMemoryChatContextRuntime } from "./git-memory-chat-context-runtime.js";
 import { createChatTurnRuntime } from "./chat-turn-runtime.js";
 import { createSystemEventRuntime } from "./system-event-runtime.js";
 
@@ -170,12 +170,13 @@ export async function main(): Promise<void> {
     toolDefinitions: skills.runtimeToolDefs,
   });
   appendSkillBlocks(staticContext, skills.additionalSkills);
-  const contextEngineRuntime = createContextEngineRuntime({
-    config: runtimeConfig,
+  const gitMemoryRuntime = createGitMemoryRuntime({
+    contextStoreDir: runtimeConfig.gitContext.storeDir,
+    timezone: runtimeConfig.gitContext.timezone,
+    agentId: runtimeConfig.gitContext.agentId,
   });
-  const chatContextRuntime = createChatContextRuntime({
-    contextEngineRuntime,
-  });
+  await gitMemoryRuntime.openDailySession();
+  const chatContextRuntime = createGitMemoryChatContextRuntime({ gitMemoryRuntime });
   const chatTurnRuntime = createChatTurnRuntime({
     onReply: (clientId, data) => {
       wsServer.send(clientId, data);

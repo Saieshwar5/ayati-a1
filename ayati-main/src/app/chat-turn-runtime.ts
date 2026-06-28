@@ -18,7 +18,6 @@ import type { ToolDefinition } from "../skills/types.js";
 import { devError, devLog, devWarn } from "../shared/index.js";
 import { agentLoop } from "../ivec/agent-loop.js";
 import type { AgentFeedbackLedger } from "../ivec/feedback-ledger.js";
-import type { ChatContextPreparedTurn, ChatContextRuntime } from "../ivec/chat-context-runtime.js";
 import type { ChatTurnRuntime, ChatTurnRuntimeInput } from "../ivec/chat-turn-runtime.js";
 import type { RotationPolicyConfig } from "../ivec/session-rotation-policy.js";
 import type { ToolWorkingSetManager } from "../ivec/agent-runner/tool-working-set.js";
@@ -32,6 +31,11 @@ import type {
 import { buildStaticSystemContext } from "./static-prompt.js";
 import { rotateSessionBeforeRunIfNeeded } from "./session-rotation.js";
 import { completeSessionLifecycle } from "./session-lifecycle.js";
+import type {
+  GitMemoryChatContextPreparedTurn,
+  GitMemoryChatContextRoutedTurn,
+  GitMemoryChatContextRuntime,
+} from "./git-memory-chat-context-runtime.js";
 
 export interface CreateChatTurnRuntimeOptions {
   onReply?: (clientId: string, data: unknown) => void;
@@ -41,7 +45,7 @@ export interface CreateChatTurnRuntimeOptions {
   toolExecutor?: ToolExecutor;
   skillActivationManager?: SkillActivationManager;
   toolWorkingSetManager?: ToolWorkingSetManager;
-  chatContextRuntime: ChatContextRuntime;
+  chatContextRuntime: GitMemoryChatContextRuntime;
   loopConfig?: Partial<LoopConfig>;
   rotationPolicyConfig?: Partial<RotationPolicyConfig>;
   now?: () => Date;
@@ -81,7 +85,7 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
   private readonly fileLibrary?: FileLibrary;
   private readonly directoryLibrary?: DirectoryLibrary;
   private readonly feedbackLedger?: AgentFeedbackLedger;
-  private readonly chatContextRuntime: ChatContextRuntime;
+  private readonly chatContextRuntime: GitMemoryChatContextRuntime;
   private readonly pulseProposalReflectionService = new PulseProposalReflectionService();
 
   constructor(options: CreateChatTurnRuntimeOptions) {
@@ -108,7 +112,8 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
   async processChat(input: ChatTurnRuntimeInput): Promise<void> {
     let inputHandle: SessionInputHandle | null = null;
     let runHandle: MemoryRunHandle | null = null;
-    let chatContextTurn: ChatContextPreparedTurn | null = null;
+    let chatContextTurn: GitMemoryChatContextPreparedTurn | null = null;
+    let routedContextTurn: GitMemoryChatContextRoutedTurn | null = null;
     let runStatus: "completed" | "failed" | "stuck" | null = null;
 
     try {
@@ -129,8 +134,9 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
       });
 
       chatContextTurn = await this.prepareChatContextTurn(input.clientId, input.content);
-      if (chatContextTurn?.status === "ambiguous") {
-        await this.dispatchChatContextAmbiguity(input.clientId, inputHandle, chatContextTurn);
+      routedContextTurn = await this.routeChatContextTurn(input.clientId, chatContextTurn, input.content);
+      if (routedContextTurn?.status === "ambiguous") {
+        await this.dispatchChatContextAmbiguity(input.clientId, inputHandle, chatContextTurn, routedContextTurn);
         runStatus = "completed";
         return;
       }
@@ -178,7 +184,7 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
           config: this.loopConfig,
           dataDir: this.dataDir ?? "data",
           systemContext: buildStaticSystemContext(this.staticContext),
-          ...(chatContextTurn?.context ? { harnessContext: { contextEngine: chatContextTurn.context } } : {}),
+          ...(routedContextTurn?.status === "ready" ? { harnessContext: routedContextTurn.harnessContext } : {}),
           feedbackLedger: this.feedbackLedger,
           attachedDocuments: registeredAttachments.documents,
           attachmentWarnings: registeredAttachments.warnings,
@@ -204,7 +210,7 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
         });
         result = await this.applyPulseProposalReflection(input.clientId, input.content, result, toolDefinitions);
         this.dispatchAgentResponse(input.clientId, inputHandle, runHandle, result);
-        await this.completeChatContextRun(input.clientId, chatContextTurn, result);
+        await this.completeChatContextRun(input.clientId, chatContextTurn, routedContextTurn, result);
         this.feedbackLedger?.record({
           clientId: input.clientId,
           sessionId: inputHandle.sessionId,
@@ -227,7 +233,9 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
           type: "reply",
           content: echoContent,
         });
-        await this.recordChatContextAssistantMessage(input.clientId, chatContextTurn, echoContent);
+        await this.recordChatContextAssistantMessage(input.clientId, chatContextTurn, echoContent, {
+          taskId: routedContextTurn?.status === "ready" ? routedContextTurn.taskId : undefined,
+        });
         runStatus = "completed";
       }
     } catch (err) {
@@ -270,7 +278,7 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
   private async prepareChatContextTurn(
     clientId: string,
     userMessage: string,
-  ): Promise<ChatContextPreparedTurn> {
+  ): Promise<GitMemoryChatContextPreparedTurn> {
     const turn = await this.chatContextRuntime.prepareUserTurn({
       clientId,
       userMessage,
@@ -280,71 +288,122 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
     this.feedbackLedger?.record({
       clientId,
       sessionId: turn.sessionId,
-      ...(turn.status === "ready" ? { runId: turn.runId } : {}),
       stage: "context_engine",
       event: "prepared",
       data: {
         status: turn.status,
-        ...(turn.status === "ready" ? {
-          workId: turn.workId,
-          ref: turn.ref,
-        } : {
-          candidateCount: turn.candidateCount,
-        }),
+        messageSeq: turn.messageSeq,
+        messageId: turn.messageId,
+        turnId: turn.turnId,
       },
     });
     return turn;
   }
 
+  private async routeChatContextTurn(
+    clientId: string,
+    turn: GitMemoryChatContextPreparedTurn | null,
+    userMessage: string,
+  ): Promise<GitMemoryChatContextRoutedTurn | null> {
+    if (!turn) {
+      return null;
+    }
+    const routed = await this.chatContextRuntime.routeTaskTurn({
+      clientId,
+      turn,
+      userMessage,
+      at: this.nowProvider().toISOString(),
+    });
+    if (!routed) {
+      return null;
+    }
+
+    this.feedbackLedger?.record({
+      clientId,
+      sessionId: turn.sessionId,
+      stage: "context_engine",
+      event: "routed",
+      data: routed.status === "ready"
+        ? {
+            status: routed.status,
+            mode: routed.mode,
+            taskId: routed.taskId,
+            branch: routed.branch,
+            ref: routed.ref,
+            conversationRefs: routed.conversationRefs,
+          }
+        : {
+            status: routed.status,
+            reason: routed.reason,
+            candidateCount: routed.candidates.length,
+          },
+    });
+    return routed;
+  }
+
   private async dispatchChatContextAmbiguity(
     clientId: string,
     inputHandle: SessionInputHandle,
-    turn: Extract<ChatContextPreparedTurn, { status: "ambiguous" }>,
+    prepared: GitMemoryChatContextPreparedTurn | null,
+    routed: Extract<GitMemoryChatContextRoutedTurn, { status: "ambiguous" }>,
   ): Promise<void> {
-    await this.recordChatContextAssistantMessage(clientId, turn, turn.message);
+    const message = formatGitMemoryAmbiguityMessage(routed);
+    await this.recordChatContextAssistantMessage(clientId, prepared, message);
     this.dispatchAgentResponse(clientId, inputHandle, null, {
       type: "feedback",
-      content: turn.message,
+      content: message,
     });
   }
 
   private async completeChatContextRun(
     clientId: string,
-    turn: ChatContextPreparedTurn | null,
+    prepared: GitMemoryChatContextPreparedTurn | null,
+    routed: GitMemoryChatContextRoutedTurn | null,
     result: AgentLoopResult,
   ): Promise<void> {
-    if (turn?.status !== "ready") {
+    if (!prepared || routed?.status !== "ready") {
       return;
     }
 
-    const completed = await this.chatContextRuntime.completePreparedRun({
+    const completed = await this.chatContextRuntime.completeTaskRun({
       clientId,
-      turn,
+      turn: prepared,
+      taskId: routed.taskId,
       result,
+      conversationRefs: routed.conversationRefs,
       at: this.nowProvider().toISOString(),
     });
     if (!completed) {
       return;
     }
 
+    await this.recordChatContextAssistantMessage(clientId, prepared, result.content, {
+      taskId: completed.taskId,
+      runId: completed.runId,
+    });
+
     this.feedbackLedger?.record({
       clientId,
-      sessionId: turn.sessionId,
-      runId: turn.runId,
+      sessionId: prepared.sessionId,
+      runId: completed.runId,
       stage: "context_engine",
       event: "committed",
       data: {
-        workId: completed.workId,
-        workCommit: completed.workCommit,
-        runRef: completed.runRef,
+        taskId: completed.taskId,
+        taskCommit: completed.taskCommit,
+        ref: completed.ref,
       },
     });
   }
 
   private async recordChatContextAssistantMessage(
     clientId: string,
-    turn: ChatContextPreparedTurn | null,
+    turn: GitMemoryChatContextPreparedTurn | null,
     message: string,
+    ids: {
+      taskId?: string;
+      runId?: string;
+    } = {},
   ): Promise<void> {
     if (!turn) {
       return;
@@ -354,6 +413,8 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
       turn,
       message,
       at: this.nowProvider().toISOString(),
+      taskId: ids.taskId,
+      runId: ids.runId,
     });
   }
 
@@ -734,4 +795,17 @@ function formatAttachmentLabel(attachment: ChatAttachmentInput): string {
     return attachment.path;
   }
   return "path" in attachment ? attachment.path : "attachment";
+}
+
+function formatGitMemoryAmbiguityMessage(
+  routed: Extract<GitMemoryChatContextRoutedTurn, { status: "ambiguous" }>,
+): string {
+  if (routed.candidates.length === 0) {
+    return `I could not find the task you referenced. ${routed.reason}. Please mention the task id or describe the task again.`;
+  }
+  const candidates = routed.candidates
+    .slice(0, 5)
+    .map((candidate) => `- ${candidate.taskId}: ${candidate.title}`)
+    .join("\n");
+  return `I found multiple matching tasks. Please mention the task id you want to continue.\n${candidates}`;
 }

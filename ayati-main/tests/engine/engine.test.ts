@@ -19,9 +19,10 @@ import type { SystemEventPolicyConfig } from "../../src/ivec/system-event-policy
 import { writeFilesTool } from "../../src/skills/builtins/filesystem/write-files.js";
 import { createToolExecutor } from "../../src/skills/tool-executor.js";
 import type {
-  ChatContextPreparedTurn,
-  ChatContextRuntime,
-} from "../../src/ivec/chat-context-runtime.js";
+  GitMemoryChatContextPreparedTurn,
+  GitMemoryChatContextRoutedTurn,
+  GitMemoryChatContextRuntime,
+} from "../../src/app/git-memory-chat-context-runtime.js";
 
 function createMockProvider(overrides?: Partial<LlmProvider>): LlmProvider {
   return {
@@ -137,15 +138,41 @@ function findReplyContent(onReply: ReturnType<typeof vi.fn>, type = "reply"): st
   return typeof message?.content === "string" ? message.content : "";
 }
 
-function createChatContextRuntime(turn: ChatContextPreparedTurn): ChatContextRuntime {
+function createChatContextRuntime(
+  routedTurn: GitMemoryChatContextRoutedTurn = readyGitMemoryRoutedTurn(),
+): GitMemoryChatContextRuntime {
+  const prepared = readyGitMemoryPreparedTurn();
   return {
-    prepareUserTurn: vi.fn().mockResolvedValue(turn),
-    completePreparedRun: vi.fn().mockResolvedValue({
-      workId: turn.status === "ready" ? turn.workId : "W-20260627-0001",
-      workCommit: "work-commit",
-      runRef: "refs/ayati/runs/R-20260627-0001",
+    prepareUserTurn: vi.fn().mockResolvedValue(prepared),
+    routeTaskTurn: vi.fn().mockResolvedValue(routedTurn),
+    completeTaskRun: vi.fn().mockResolvedValue({
+      taskId: routedTurn.status === "ready" ? routedTurn.taskId : "W-20260627-0001",
+      branch: routedTurn.status === "ready" ? routedTurn.branch : "task/W-20260627-0001-analyze-invoice",
+      ref: routedTurn.status === "ready" ? routedTurn.ref : "refs/heads/task/W-20260627-0001-analyze-invoice",
+      runId: "R-20260627-0001",
+      taskCommit: "task-commit",
+      event: {
+        v: 1,
+        seq: 1,
+        eventId: "E-20260627-000001",
+        type: "run_completed",
+        at: "2026-06-27T10:05:00+05:30",
+        taskId: routedTurn.status === "ready" ? routedTurn.taskId : "W-20260627-0001",
+        runId: "R-20260627-0001",
+        branch: routedTurn.status === "ready" ? routedTurn.branch : "task/W-20260627-0001-analyze-invoice",
+        commit: "task-commit",
+      },
     }),
-    recordAssistantMessage: vi.fn().mockResolvedValue(undefined),
+    recordAssistantMessage: vi.fn().mockResolvedValue({
+      v: 1,
+      seq: 2,
+      messageId: "M-20260627-000002",
+      turnId: prepared.turnId,
+      role: "assistant",
+      at: "2026-06-27T10:05:01+05:30",
+      text: "mock reply",
+    }),
+    buildActiveContext: vi.fn().mockResolvedValue(routedTurn.context),
   };
 }
 
@@ -153,12 +180,12 @@ type TestEngineOptions =
   & Omit<Partial<CreateChatTurnRuntimeOptions & CreateSystemEventRuntimeOptions>, "sessionMemory" | "chatContextRuntime">
   & {
     sessionMemory?: SessionMemory;
-    chatContextRuntime?: ChatContextRuntime;
+    chatContextRuntime?: GitMemoryChatContextRuntime;
   };
 
 function createEngine(options: TestEngineOptions = {}): IVecEngine {
   const sessionMemory = options.sessionMemory ?? createSessionMemory();
-  const chatContextRuntime = options.chatContextRuntime ?? createChatContextRuntime(readyChatContextTurn());
+  const chatContextRuntime = options.chatContextRuntime ?? createChatContextRuntime();
   const chatTurnRuntime = createChatTurnRuntime({
     onReply: options.onReply,
     provider: options.provider,
@@ -207,60 +234,164 @@ function createEngine(options: TestEngineOptions = {}): IVecEngine {
   });
 }
 
-function readyChatContextTurn(): ChatContextPreparedTurn {
+function readyGitMemoryPreparedTurn(): GitMemoryChatContextPreparedTurn {
+  return {
+    status: "ready",
+    sessionId: "S-20260627-local",
+    repoPath: "/tmp/ayati-git-memory/S-20260627-local",
+    initialized: false,
+    messageSeq: 1,
+    messageId: "M-20260627-000001",
+    turnId: "T-20260627-000001",
+    context: {
+      session: {
+        sessionId: "S-20260627-local",
+        conversationTail: [],
+        eventTail: [],
+        taskMessageLinkTail: [],
+        taskCount: 1,
+      },
+      focus: { status: "none" },
+    },
+  };
+}
+
+function readyGitMemoryRoutedTurn(): Extract<GitMemoryChatContextRoutedTurn, { status: "ready" }> {
   const context = {
     session: {
-      sessionId: "2026-06-27",
-      conversationTail: [],
+      sessionId: "S-20260627-local",
+      conversationTail: [{
+        v: 1,
+        seq: 1,
+        messageId: "M-20260627-000001",
+        turnId: "T-20260627-000001",
+        role: "user" as const,
+        at: "2026-06-27T10:00:00+05:30",
+        text: "Analyze invoice",
+      }],
       eventTail: [],
-      assetCount: 0,
+      taskMessageLinkTail: [],
+      taskCount: 1,
     },
     focus: {
       status: "active" as const,
-      ref: "refs/heads/work/W-20260627-0001-analyze-invoice",
-      workId: "W-20260627-0001",
+      taskId: "W-20260627-0001",
+      branch: "task/W-20260627-0001-analyze-invoice",
+      ref: "refs/heads/task/W-20260627-0001-analyze-invoice",
     },
     task: {
-      ref: "refs/heads/work/W-20260627-0001-analyze-invoice",
-      workId: "W-20260627-0001",
+      ref: "refs/heads/task/W-20260627-0001-analyze-invoice",
+      taskId: "W-20260627-0001",
+      branch: "task/W-20260627-0001-analyze-invoice",
       title: "Analyze invoice",
       objective: "Analyze invoice",
-      status: "active",
+      status: "in_progress",
+      summary: "Analyze invoice",
       completed: [],
       open: ["Read invoice"],
       blockers: [],
       facts: [],
-      assets: [],
+      next: "Read invoice",
+      conversation: [],
       recentRuns: [],
       recentCommits: [],
     },
   };
   return {
     status: "ready",
-    sessionId: "2026-06-27",
-    runId: "R-20260627-0001",
-    workId: "W-20260627-0001",
-    ref: "refs/heads/work/W-20260627-0001-analyze-invoice",
+    mode: "continue_active_task",
+    sessionId: "S-20260627-local",
+    taskId: "W-20260627-0001",
+    branch: "task/W-20260627-0001-analyze-invoice",
+    ref: "refs/heads/task/W-20260627-0001-analyze-invoice",
+    conversationRefs: [{ fromSeq: 1, toSeq: 1 }],
+    confidence: "deterministic",
+    reason: "test fixture",
     context,
+    harnessContext: {
+      contextEngine: {
+        session: {
+          sessionId: "S-20260627-local",
+          conversationTail: [{
+            seq: 1,
+            role: "user",
+            at: "2026-06-27T10:00:00+05:30",
+            text: "Analyze invoice",
+          }],
+          eventTail: [],
+          assetCount: 0,
+        },
+        focus: {
+          status: "active",
+          ref: "refs/heads/task/W-20260627-0001-analyze-invoice",
+          workId: "W-20260627-0001",
+        },
+        task: {
+          ref: "refs/heads/task/W-20260627-0001-analyze-invoice",
+          workId: "W-20260627-0001",
+          title: "Analyze invoice",
+          objective: "Analyze invoice",
+          status: "in_progress",
+          completed: [],
+          open: ["Read invoice"],
+          blockers: [],
+          facts: [],
+          assets: [],
+          recentRuns: [],
+          recentCommits: [],
+        },
+      },
+    },
   };
 }
 
-function ambiguousChatContextTurn(): ChatContextPreparedTurn {
+function ambiguousGitMemoryRoutedTurn(): Extract<GitMemoryChatContextRoutedTurn, { status: "ambiguous" }> {
   const context = {
     session: {
-      sessionId: "2026-06-27",
+      sessionId: "S-20260627-local",
       conversationTail: [],
       eventTail: [],
-      assetCount: 0,
+      taskMessageLinkTail: [],
+      taskCount: 2,
     },
     focus: { status: "none" as const },
   };
   return {
     status: "ambiguous",
-    sessionId: "2026-06-27",
+    sessionId: "S-20260627-local",
+    candidates: [
+      {
+        taskId: "W-20260627-0001",
+        branch: "task/W-20260627-0001-upload-bug",
+        ref: "refs/heads/task/W-20260627-0001-upload-bug",
+        title: "Upload bug",
+        status: "in_progress",
+        score: 55,
+        reasons: ["task title token matched: upload"],
+      },
+      {
+        taskId: "W-20260627-0002",
+        branch: "task/W-20260627-0002-upload-ui",
+        ref: "refs/heads/task/W-20260627-0002-upload-ui",
+        title: "Upload UI",
+        status: "in_progress",
+        score: 55,
+        reasons: ["task title token matched: upload"],
+      },
+    ],
+    reason: "multiple existing tasks matched partially",
     context,
-    message: "I found multiple matching tasks.\n- W-20260627-0001: Upload bug\n- W-20260627-0002: Upload UI",
-    candidateCount: 2,
+    harnessContext: {
+      contextEngine: {
+        session: {
+          sessionId: "S-20260627-local",
+          conversationTail: [],
+          eventTail: [],
+          assetCount: 0,
+        },
+        focus: { status: "none" },
+      },
+    },
   };
 }
 
@@ -333,7 +464,7 @@ describe("IVecEngine", () => {
   it("asks the user when context engine task resolution is ambiguous", async () => {
     const provider = createMockProvider();
     const onReply = vi.fn();
-    const chatContextRuntime = createChatContextRuntime(ambiguousChatContextTurn());
+    const chatContextRuntime = createChatContextRuntime(ambiguousGitMemoryRoutedTurn());
     const engine = createEngine({
       onReply,
       provider,
@@ -355,19 +486,19 @@ describe("IVecEngine", () => {
     expect(chatContextRuntime.recordAssistantMessage).toHaveBeenCalledWith({
       clientId: "c1",
       turn: expect.objectContaining({
-        sessionId: "2026-06-27",
+        sessionId: "S-20260627-local",
       }),
       message: expect.stringContaining("W-20260627-0001"),
       at: expect.any(String),
     });
-    expect(chatContextRuntime.completePreparedRun).not.toHaveBeenCalled();
+    expect(chatContextRuntime.completeTaskRun).not.toHaveBeenCalled();
   });
 
   it("passes ready context engine context into the loop and commits the completed run", async () => {
     const dataDir = mkdtempSync(join(tmpdir(), "ayati-eng-git-context-"));
     try {
       const provider = createMockProvider();
-      const chatContextRuntime = createChatContextRuntime(readyChatContextTurn());
+      const chatContextRuntime = createChatContextRuntime();
       const engine = createEngine({
         onReply: vi.fn(),
         provider,
@@ -381,20 +512,21 @@ describe("IVecEngine", () => {
       engine.handleMessage("c1", { type: "chat", content: "Analyze invoice" });
 
       await vi.waitFor(() => {
-        expect(chatContextRuntime.completePreparedRun).toHaveBeenCalled();
+        expect(chatContextRuntime.completeTaskRun).toHaveBeenCalled();
       });
       const stateView = extractStateViewFromProvider(provider);
       expect(stateView.context.gitContext.task).toMatchObject({
         workId: "W-20260627-0001",
         open: ["Read invoice"],
       });
-      expect(chatContextRuntime.completePreparedRun).toHaveBeenCalledWith(expect.objectContaining({
+      expect(chatContextRuntime.completeTaskRun).toHaveBeenCalledWith(expect.objectContaining({
         clientId: "c1",
         turn: expect.objectContaining({
-          sessionId: "2026-06-27",
-          workId: "W-20260627-0001",
-          runId: "R-20260627-0001",
+          sessionId: "S-20260627-local",
+          messageSeq: 1,
         }),
+        taskId: "W-20260627-0001",
+        conversationRefs: [{ fromSeq: 1, toSeq: 1 }],
         result: expect.objectContaining({
           content: "mock reply",
         }),

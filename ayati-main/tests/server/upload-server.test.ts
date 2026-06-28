@@ -11,7 +11,11 @@ import { noopSessionMemory } from "../../src/memory/provider.js";
 import { pulseTool } from "../../src/skills/builtins/pulse/index.js";
 import type { LlmProvider } from "../../src/core/contracts/provider.js";
 import type { LlmTurnInput } from "../../src/core/contracts/llm-protocol.js";
-import type { ChatContextPreparedTurn, ChatContextRuntime } from "../../src/ivec/chat-context-runtime.js";
+import type {
+  GitMemoryChatContextPreparedTurn,
+  GitMemoryChatContextRoutedTurn,
+  GitMemoryChatContextRuntime,
+} from "../../src/app/git-memory-chat-context-runtime.js";
 
 let nextPort = 9200;
 
@@ -98,51 +102,136 @@ function messageContentToText(content: unknown): string {
     .join("\n");
 }
 
-function createReadyChatContextRuntime(): ChatContextRuntime {
-  const turn = readyChatContextTurn();
+function createReadyChatContextRuntime(): GitMemoryChatContextRuntime {
+  const prepared = readyGitMemoryPreparedTurn();
+  const routed = readyGitMemoryRoutedTurn();
   return {
-    prepareUserTurn: vi.fn().mockResolvedValue(turn),
-    completePreparedRun: vi.fn().mockResolvedValue({
-      workId: turn.workId,
-      workCommit: "work-commit",
-      runRef: "refs/ayati/runs/R-20260627-0001",
+    prepareUserTurn: vi.fn().mockResolvedValue(prepared),
+    routeTaskTurn: vi.fn().mockResolvedValue(routed),
+    completeTaskRun: vi.fn().mockResolvedValue({
+      taskId: routed.taskId,
+      branch: routed.branch,
+      ref: routed.ref,
+      runId: "R-20260627-0001",
+      taskCommit: "task-commit",
+      event: {
+        v: 1,
+        seq: 1,
+        eventId: "E-20260627-000001",
+        type: "run_completed",
+        at: "2026-06-27T10:05:00+05:30",
+        taskId: routed.taskId,
+        runId: "R-20260627-0001",
+        branch: routed.branch,
+        commit: "task-commit",
+      },
     }),
-    recordAssistantMessage: vi.fn().mockResolvedValue(undefined),
+    recordAssistantMessage: vi.fn().mockResolvedValue({
+      v: 1,
+      seq: 2,
+      messageId: "M-20260627-000002",
+      turnId: prepared.turnId,
+      role: "assistant",
+      at: "2026-06-27T10:05:01+05:30",
+      text: "mock reply",
+    }),
+    buildActiveContext: vi.fn().mockResolvedValue(routed.context),
   };
 }
 
-function readyChatContextTurn(): Extract<ChatContextPreparedTurn, { status: "ready" }> {
+function readyGitMemoryPreparedTurn(): GitMemoryChatContextPreparedTurn {
   return {
     status: "ready",
-    sessionId: "2026-06-27",
-    runId: "R-20260627-0001",
-    workId: "W-20260627-0001",
-    ref: "refs/heads/work/W-20260627-0001-upload-test",
+    sessionId: "S-20260627-local",
+    repoPath: "/tmp/ayati-git-memory/S-20260627-local",
+    initialized: false,
+    messageSeq: 1,
+    messageId: "M-20260627-000001",
+    turnId: "T-20260627-000001",
     context: {
       session: {
-        sessionId: "2026-06-27",
+        sessionId: "S-20260627-local",
         conversationTail: [],
         eventTail: [],
-        assetCount: 0,
+        taskMessageLinkTail: [],
+        taskCount: 1,
       },
-      focus: {
-        status: "active",
-        ref: "refs/heads/work/W-20260627-0001-upload-test",
-        workId: "W-20260627-0001",
-      },
-      task: {
-        ref: "refs/heads/work/W-20260627-0001-upload-test",
-        workId: "W-20260627-0001",
-        title: "Upload test",
-        objective: "Handle uploaded attachment",
-        status: "active",
-        completed: [],
-        open: ["Handle uploaded attachment"],
-        blockers: [],
-        facts: [],
-        assets: [],
-        recentRuns: [],
-        recentCommits: [],
+      focus: { status: "none" },
+    },
+  };
+}
+
+function readyGitMemoryRoutedTurn(): Extract<GitMemoryChatContextRoutedTurn, { status: "ready" }> {
+  const context = {
+    session: {
+      sessionId: "S-20260627-local",
+      conversationTail: [],
+      eventTail: [],
+      taskMessageLinkTail: [],
+      taskCount: 1,
+    },
+    focus: {
+      status: "active" as const,
+      taskId: "W-20260627-0001",
+      branch: "task/W-20260627-0001-upload-test",
+      ref: "refs/heads/task/W-20260627-0001-upload-test",
+    },
+    task: {
+      ref: "refs/heads/task/W-20260627-0001-upload-test",
+      taskId: "W-20260627-0001",
+      branch: "task/W-20260627-0001-upload-test",
+      title: "Upload test",
+      objective: "Handle uploaded attachment",
+      status: "in_progress",
+      summary: "Handle uploaded attachment",
+      completed: [],
+      open: ["Handle uploaded attachment"],
+      blockers: [],
+      facts: [],
+      next: "Handle uploaded attachment",
+      conversation: [],
+      recentRuns: [],
+      recentCommits: [],
+    },
+  };
+  return {
+    status: "ready",
+    mode: "continue_active_task",
+    sessionId: "S-20260627-local",
+    taskId: "W-20260627-0001",
+    branch: "task/W-20260627-0001-upload-test",
+    ref: "refs/heads/task/W-20260627-0001-upload-test",
+    conversationRefs: [{ fromSeq: 1, toSeq: 1 }],
+    confidence: "deterministic",
+    reason: "test fixture",
+    context,
+    harnessContext: {
+      contextEngine: {
+        session: {
+          sessionId: "S-20260627-local",
+          conversationTail: [],
+          eventTail: [],
+          assetCount: 0,
+        },
+        focus: {
+          status: "active",
+          ref: "refs/heads/task/W-20260627-0001-upload-test",
+          workId: "W-20260627-0001",
+        },
+        task: {
+          ref: "refs/heads/task/W-20260627-0001-upload-test",
+          workId: "W-20260627-0001",
+          title: "Upload test",
+          objective: "Handle uploaded attachment",
+          status: "in_progress",
+          completed: [],
+          open: ["Handle uploaded attachment"],
+          blockers: [],
+          facts: [],
+          assets: [],
+          recentRuns: [],
+          recentCommits: [],
+        },
       },
     },
   };

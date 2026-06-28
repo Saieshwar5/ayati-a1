@@ -15,14 +15,17 @@ import {
   buildGitMemoryHarnessContextPack,
   buildGitMemoryTaskRunCommitInput,
 } from "../context-engine/index.js";
-import type {
-  ChatContextRuntimePrepareInput,
-} from "../ivec/chat-context-runtime.js";
 import type { HarnessContextInput } from "../ivec/harness-context.js";
 import { devWarn } from "../shared/index.js";
 
 export interface CreateGitMemoryChatContextRuntimeOptions {
   gitMemoryRuntime: GitMemoryRuntime;
+}
+
+export interface GitMemoryChatContextPrepareInput {
+  clientId: string;
+  userMessage: string;
+  at: string;
 }
 
 export interface GitMemoryChatContextPreparedTurn {
@@ -71,7 +74,7 @@ export type GitMemoryChatContextRoutedTurn = RoutedGitMemoryUserTurn & {
 };
 
 export interface GitMemoryChatContextRuntime {
-  prepareUserTurn(input: ChatContextRuntimePrepareInput): Promise<GitMemoryChatContextPreparedTurn>;
+  prepareUserTurn(input: GitMemoryChatContextPrepareInput): Promise<GitMemoryChatContextPreparedTurn>;
   routeTaskTurn(input: GitMemoryChatContextRouteTaskTurnInput): Promise<GitMemoryChatContextRoutedTurn | null>;
   completeTaskRun(input: GitMemoryChatContextCompleteTaskRunInput): Promise<CommitGitMemoryTaskRunResult | null>;
   recordAssistantMessage(input: GitMemoryChatContextAssistantMessageInput): Promise<GitMemoryConversationRecord | null>;
@@ -87,7 +90,7 @@ export function createGitMemoryChatContextRuntime(
 class AppGitMemoryChatContextRuntime implements GitMemoryChatContextRuntime {
   constructor(private readonly gitMemoryRuntime: GitMemoryRuntime) {}
 
-  async prepareUserTurn(input: ChatContextRuntimePrepareInput): Promise<GitMemoryChatContextPreparedTurn> {
+  async prepareUserTurn(input: GitMemoryChatContextPrepareInput): Promise<GitMemoryChatContextPreparedTurn> {
     const prepared = await this.gitMemoryRuntime.prepareUserTurn({
       userMessage: input.userMessage,
       at: input.at,
