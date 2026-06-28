@@ -32,7 +32,7 @@ function recordSystemEventOutcome(
       event_id TEXT PRIMARY KEY,
       status TEXT NOT NULL,
       processed_at TEXT,
-      run_id TEXT,
+      work_run_id TEXT,
       note TEXT
     );
   `);
@@ -41,13 +41,13 @@ function recordSystemEventOutcome(
       event_id,
       status,
       processed_at,
-      run_id,
+      work_run_id,
       note
     ) VALUES (?, ?, ?, ?, ?)
     ON CONFLICT(event_id) DO UPDATE SET
       status = excluded.status,
       processed_at = excluded.processed_at,
-      run_id = excluded.run_id,
+      work_run_id = excluded.work_run_id,
       note = excluded.note
   `).run(
     eventId,

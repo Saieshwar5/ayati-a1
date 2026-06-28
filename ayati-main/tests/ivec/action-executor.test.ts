@@ -60,7 +60,7 @@ async function runAction(tools: ToolDefinition[], action: AgentAction, runPath: 
       selectedTools: toolExecutor.definitions(),
       config: DEFAULT_LOOP_CONFIG,
       clientId: "c1",
-      sessionMemory: noopSessionMemory,
+      runRecorder: noopSessionMemory,
       runHandle: { sessionId: "s1", runId: "r1" },
       runPath,
     },
