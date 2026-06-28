@@ -205,6 +205,13 @@ export function gitMemoryTaskContextPath(taskId: GitMemoryTaskId): string {
   return `${gitMemoryTaskDir(taskId)}/context.md`;
 }
 
+export function createGitMemoryTaskId(date: string, sequence: number): GitMemoryTaskId {
+  if (!isValidCalendarDate(date)) {
+    throw new Error(`Invalid git-memory task date: ${date}`);
+  }
+  return `W-${date.replace(/-/g, "")}-${formatSequence(sequence, 4)}`;
+}
+
 export function createGitMemorySessionId(date: string, agentId: string): GitMemorySessionId {
   if (!isValidCalendarDate(date)) {
     throw new Error(`Invalid git-memory session date: ${date}`);
@@ -247,6 +254,17 @@ export function gitMemoryDateFromSessionId(sessionId: GitMemorySessionId): strin
   }
   const compactDate = sessionId.slice(2, 10);
   return `${compactDate.slice(0, 4)}-${compactDate.slice(4, 6)}-${compactDate.slice(6, 8)}`;
+}
+
+export function buildGitMemoryTaskBranchName(taskId: GitMemoryTaskId, title: string): string {
+  if (!isGitMemoryTaskId(taskId)) {
+    throw new Error(`Invalid git-memory task id: ${taskId}`);
+  }
+  return `task/${taskId}-${slugifyIdPart(title, "task")}`;
+}
+
+export function buildGitMemoryTaskBranchRef(taskId: GitMemoryTaskId, title: string): string {
+  return `refs/heads/${buildGitMemoryTaskBranchName(taskId, title)}`;
 }
 
 export function isGitMemorySessionId(value: unknown): value is GitMemorySessionId {
@@ -295,6 +313,12 @@ export function isGitMemoryLinkId(value: unknown): value is GitMemoryLinkId {
   return typeof value === "string"
     && /^L-\d{8}-\d{6}$/.test(value)
     && isValidCompactDate(value.slice(2, 10));
+}
+
+export function isGitMemoryTaskBranchName(value: unknown): value is string {
+  return typeof value === "string"
+    && /^task\/W-\d{8}-\d{4}(-[a-z0-9][a-z0-9-]{0,79})?$/.test(value)
+    && isValidCompactDate(value.slice(7, 15));
 }
 
 export function validateGitMemorySessionMetaFile(value: unknown): ValidationResult<GitMemorySessionMetaFile> {
@@ -780,8 +804,7 @@ function requireOptionalTaskBranch(record: Record<string, unknown>, field: strin
 }
 
 function isTaskBranch(value: string): boolean {
-  return /^task\/W-\d{8}-\d{4}(-[a-z0-9][a-z0-9-]{0,79})?$/.test(value)
-    && isValidCompactDate(value.slice(7, 15));
+  return isGitMemoryTaskBranchName(value);
 }
 
 function slugifyIdPart(value: string, fallback: string): string {

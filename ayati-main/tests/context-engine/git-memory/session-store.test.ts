@@ -13,6 +13,8 @@ import {
   GIT_MEMORY_SESSION_TASK_MESSAGE_LINKS_PATH,
   GitMemoryWorktreeGitDriver,
   GitMemoryDailySessionStore,
+  gitMemoryTaskFilePath,
+  gitMemoryTaskStatePath,
   parseGitMemoryCommitTrailers,
 } from "../../../src/context-engine/git-memory/index.js";
 
@@ -286,6 +288,146 @@ describe("GitMemoryDailySessionStore", () => {
         fromSeq: 1,
         toSeq: 1,
       }]);
+  });
+
+  it("creates task branches without copying session conversation into the task branch", async () => {
+    const contextStoreDir = await mkdtemp(join(tmpdir(), "ayati-git-memory-"));
+    const store = new GitMemoryDailySessionStore({ contextStoreDir });
+    const session = await store.openOrCreateDailySession({
+      date: "2026-06-28",
+      timezone: "Asia/Kolkata",
+      agentId: "local",
+      createdAt: "2026-06-28T00:00:00+05:30",
+    });
+    const user = await store.appendConversationMessage({
+      sessionId: session.sessionId,
+      role: "user",
+      text: "Fix upload handling",
+      at: "2026-06-28T09:00:00+05:30",
+    });
+    await store.appendConversationMessage({
+      sessionId: session.sessionId,
+      role: "assistant",
+      text: "I will inspect upload handling.",
+      turnId: user.turnId,
+      at: "2026-06-28T09:00:05+05:30",
+    });
+
+    const task = await store.createTaskBranch({
+      sessionId: session.sessionId,
+      title: "Fix upload handling",
+      objective: "Find and fix upload handling failures.",
+      fromSeq: 1,
+      toSeq: 2,
+      at: "2026-06-28T09:01:00+05:30",
+    });
+
+    expect(task).toMatchObject({
+      taskId: "W-20260628-0001",
+      branch: "task/W-20260628-0001-fix-upload-handling",
+      ref: "refs/heads/task/W-20260628-0001-fix-upload-handling",
+      link: {
+        linkId: "L-20260628-000001",
+        fromSeq: 1,
+        toSeq: 2,
+      },
+    });
+
+    const driver = new GitMemoryWorktreeGitDriver(session.repoPath);
+    expect(await driver.readFile(task.ref, GIT_MEMORY_SESSION_CONVERSATION_PATH)).toBeNull();
+    expect(JSON.parse(await driver.readFile(task.ref, gitMemoryTaskFilePath(task.taskId)) ?? "{}"))
+      .toMatchObject({
+        taskId: "W-20260628-0001",
+        title: "Fix upload handling",
+        createdFrom: {
+          sessionId: "S-20260628-local",
+          fromSeq: 1,
+          toSeq: 2,
+        },
+      });
+    expect(JSON.parse(await driver.readFile(task.ref, gitMemoryTaskStatePath(task.taskId)) ?? "{}"))
+      .toMatchObject({
+        status: "open",
+        summary: "Find and fix upload handling failures.",
+        open: ["Find and fix upload handling failures."],
+      });
+
+    const taskLog = await driver.log(task.ref, 3);
+    expect(taskLog).toHaveLength(1);
+    expect(parseGitMemoryCommitTrailers(taskLog[0]?.message ?? "")).toMatchObject({
+      sessionId: "S-20260628-local",
+      taskId: "W-20260628-0001",
+      event: "task_created",
+      branch: "task/W-20260628-0001-fix-upload-handling",
+      conversationSeq: { fromSeq: 1, toSeq: 2 },
+    });
+
+    expect(JSON.parse(await driver.readWorkingFile(GIT_MEMORY_SESSION_TASKS_PATH) ?? "{}"))
+      .toMatchObject({
+        tasks: [{
+          taskId: "W-20260628-0001",
+          branch: "task/W-20260628-0001-fix-upload-handling",
+          title: "Fix upload handling",
+        }],
+      });
+    expect(JSON.parse(await driver.readWorkingFile(GIT_MEMORY_SESSION_FOCUS_PATH) ?? "{}"))
+      .toMatchObject({
+        activeTaskId: "W-20260628-0001",
+        activeBranch: "task/W-20260628-0001-fix-upload-handling",
+      });
+    expect(parseJsonl(await driver.readWorkingFile(GIT_MEMORY_SESSION_EVENTS_PATH)))
+      .toMatchObject([
+        { seq: 1, type: "session_initialized" },
+        { seq: 2, type: "task_created", taskId: "W-20260628-0001" },
+        { seq: 3, type: "focus_changed", toTaskId: "W-20260628-0001" },
+      ]);
+    expect(await driver.log(GIT_MEMORY_MAIN_REF, 5)).toHaveLength(1);
+  });
+
+  it("checkpoints session task index, focus, and links after task creation", async () => {
+    const contextStoreDir = await mkdtemp(join(tmpdir(), "ayati-git-memory-"));
+    const store = new GitMemoryDailySessionStore({ contextStoreDir });
+    const session = await store.openOrCreateDailySession({
+      date: "2026-06-28",
+      timezone: "Asia/Kolkata",
+      agentId: "local",
+      createdAt: "2026-06-28T00:00:00+05:30",
+    });
+    await store.appendConversationMessage({
+      sessionId: session.sessionId,
+      role: "user",
+      text: "Fix upload handling",
+      at: "2026-06-28T09:00:00+05:30",
+    });
+    const task = await store.createTaskBranch({
+      sessionId: session.sessionId,
+      title: "Fix upload handling",
+      objective: "Find and fix upload handling failures.",
+      fromSeq: 1,
+      toSeq: 1,
+      at: "2026-06-28T09:01:00+05:30",
+    });
+
+    await store.checkpointSession({
+      sessionId: session.sessionId,
+      summary: "Checkpoint task creation metadata.",
+      at: "2026-06-28T09:02:00+05:30",
+    });
+
+    const driver = new GitMemoryWorktreeGitDriver(session.repoPath);
+    expect(JSON.parse(await driver.readFile(GIT_MEMORY_MAIN_REF, GIT_MEMORY_SESSION_TASKS_PATH) ?? "{}"))
+      .toMatchObject({ tasks: [{ taskId: task.taskId, branch: task.branch }] });
+    expect(JSON.parse(await driver.readFile(GIT_MEMORY_MAIN_REF, GIT_MEMORY_SESSION_FOCUS_PATH) ?? "{}"))
+      .toMatchObject({ activeTaskId: task.taskId, activeBranch: task.branch });
+    expect(parseJsonl(await driver.readFile(GIT_MEMORY_MAIN_REF, GIT_MEMORY_SESSION_TASK_MESSAGE_LINKS_PATH)))
+      .toMatchObject([{ taskId: task.taskId, branch: task.branch, fromSeq: 1, toSeq: 1 }]);
+    expect(parseJsonl(await driver.readFile(GIT_MEMORY_MAIN_REF, GIT_MEMORY_SESSION_EVENTS_PATH)))
+      .toMatchObject([
+        { seq: 1, type: "session_initialized" },
+        { seq: 2, type: "task_created" },
+        { seq: 3, type: "focus_changed" },
+        { seq: 4, type: "session_checkpointed" },
+      ]);
   });
 });
 

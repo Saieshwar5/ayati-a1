@@ -11,9 +11,12 @@ import type {
   GitMemorySessionId,
   GitMemorySessionMetaFile,
   GitMemoryTaskId,
+  GitMemoryTaskFile,
   GitMemoryTaskIndexFile,
+  GitMemoryTaskStateFile,
   GitMemoryTaskLinkReason,
   GitMemoryTaskMessageLinkRecord,
+  GitMemoryTaskStatus,
   GitMemoryTurnId,
 } from "./schema.js";
 import {
@@ -24,12 +27,20 @@ import {
   GIT_MEMORY_SESSION_SCHEMA_PATH,
   GIT_MEMORY_SESSION_TASKS_PATH,
   GIT_MEMORY_SESSION_TASK_MESSAGE_LINKS_PATH,
+  buildGitMemoryTaskBranchName,
+  buildGitMemoryTaskBranchRef,
   createGitMemoryEventId,
   createGitMemoryLinkId,
   createGitMemoryMessageId,
   createGitMemorySessionId,
+  createGitMemoryTaskId,
   createGitMemoryTurnId,
   gitMemoryDateFromSessionId,
+  gitMemoryTaskAssetsPath,
+  gitMemoryTaskContextPath,
+  gitMemoryTaskFilePath,
+  gitMemoryTaskNotesPath,
+  gitMemoryTaskStatePath,
 } from "./schema.js";
 
 export const GIT_MEMORY_MAIN_REF = "refs/heads/main";
@@ -89,6 +100,26 @@ export interface LinkGitMemoryTaskMessagesInput extends GitMemoryConversationSeq
 export interface GitMemoryTaskConversationSegment {
   link: GitMemoryTaskMessageLinkRecord;
   messages: GitMemoryConversationRecord[];
+}
+
+export interface CreateGitMemoryTaskBranchInput extends GitMemoryConversationSeqRange {
+  sessionId: GitMemorySessionId;
+  title: string;
+  objective: string;
+  taskId?: GitMemoryTaskId;
+  status?: GitMemoryTaskStatus;
+  at?: string;
+  state?: Partial<Omit<GitMemoryTaskStateFile, "schemaVersion" | "status" | "updatedAt">> & {
+    status?: GitMemoryTaskStatus;
+  };
+}
+
+export interface CreateGitMemoryTaskBranchResult {
+  taskId: GitMemoryTaskId;
+  branch: string;
+  ref: string;
+  taskCommit: string;
+  link: GitMemoryTaskMessageLinkRecord;
 }
 
 export class GitMemoryDailySessionStore {
@@ -209,6 +240,140 @@ export class GitMemoryDailySessionStore {
       }));
   }
 
+  async createTaskBranch(input: CreateGitMemoryTaskBranchInput): Promise<CreateGitMemoryTaskBranchResult> {
+    const driver = await GitMemoryWorktreeGitDriver.init(this.repoPath(input.sessionId));
+    const date = gitMemoryDateFromSessionId(input.sessionId);
+    const tasks = parseJson<GitMemoryTaskIndexFile>(
+      await driver.readWorkingFile(GIT_MEMORY_SESSION_TASKS_PATH),
+    ) ?? { schemaVersion: 1, tasks: [] };
+    const taskId = input.taskId ?? createGitMemoryTaskId(date, tasks.tasks.length + 1);
+    if (tasks.tasks.some((task) => task.taskId === taskId)) {
+      throw new Error(`Git memory task already exists: ${taskId}`);
+    }
+    const branch = buildGitMemoryTaskBranchName(taskId, input.title);
+    const ref = buildGitMemoryTaskBranchRef(taskId, input.title);
+    if (await driver.hasRef(ref)) {
+      throw new Error(`Git memory task branch already exists: ${ref}`);
+    }
+
+    const at = input.at ?? this.nowIso();
+    const status = input.status ?? "open";
+    const task: GitMemoryTaskFile = {
+      schemaVersion: 1,
+      taskId,
+      title: input.title,
+      objective: input.objective,
+      status,
+      createdAt: at,
+      updatedAt: at,
+      createdFrom: {
+        sessionId: input.sessionId,
+        fromSeq: input.fromSeq,
+        toSeq: input.toSeq,
+      },
+    };
+    const state: GitMemoryTaskStateFile = {
+      schemaVersion: 1,
+      status: input.state?.status ?? status,
+      summary: input.state?.summary ?? input.objective,
+      completed: input.state?.completed ?? [],
+      open: input.state?.open ?? [input.objective],
+      blockers: input.state?.blockers ?? [],
+      facts: input.state?.facts ?? [],
+      next: input.state?.next ?? input.objective,
+      updatedAt: at,
+    };
+
+    const taskCommit = await driver.commitSyntheticFiles({
+      ref,
+      files: {
+        [gitMemoryTaskFilePath(taskId)]: prettyJson(task),
+        [gitMemoryTaskStatePath(taskId)]: prettyJson(state),
+        [gitMemoryTaskAssetsPath(taskId)]: "",
+        [gitMemoryTaskNotesPath(taskId)]: `# ${input.title}\n`,
+        [gitMemoryTaskContextPath(taskId)]: "",
+      },
+      message: renderGitMemoryCommitMessage({
+        subject: `ayati: create task ${taskId}`,
+        summary: input.objective,
+        trailers: {
+          sessionId: input.sessionId,
+          taskId,
+          event: "task_created",
+          status,
+          at,
+          branch,
+          conversationSeq: { fromSeq: input.fromSeq, toSeq: input.toSeq },
+          schemaVersion: 1,
+        },
+      }),
+    });
+
+    const previousFocus = parseJson<GitMemoryFocusFile>(
+      await driver.readWorkingFile(GIT_MEMORY_SESSION_FOCUS_PATH),
+    );
+    const existingEvents = parseJsonl<GitMemorySessionEventRecord>(
+      await driver.readWorkingFile(GIT_MEMORY_SESSION_EVENTS_PATH),
+    );
+    const taskEventSeq = nextSeq(existingEvents);
+    const focusEventSeq = taskEventSeq + 1;
+    const taskCreated: GitMemorySessionEventRecord = {
+      v: 1,
+      seq: taskEventSeq,
+      eventId: createGitMemoryEventId(date, taskEventSeq),
+      type: "task_created",
+      at,
+      taskId,
+      branch,
+      conversationSeq: { fromSeq: input.fromSeq, toSeq: input.toSeq },
+    };
+    const focusChanged: GitMemorySessionEventRecord = {
+      v: 1,
+      seq: focusEventSeq,
+      eventId: createGitMemoryEventId(date, focusEventSeq),
+      type: "focus_changed",
+      at,
+      fromTaskId: previousFocus?.activeTaskId ?? null,
+      toTaskId: taskId,
+      branch,
+      reason: "task_created",
+    };
+    await driver.writeWorkingFiles({
+      [GIT_MEMORY_SESSION_TASKS_PATH]: prettyJson({
+        schemaVersion: 1,
+        tasks: [...tasks.tasks, {
+          taskId,
+          branch,
+          title: input.title,
+          status,
+          createdAt: at,
+          updatedAt: at,
+        }],
+      } satisfies GitMemoryTaskIndexFile),
+      [GIT_MEMORY_SESSION_FOCUS_PATH]: prettyJson({
+        schemaVersion: 1,
+        activeTaskId: taskId,
+        activeBranch: branch,
+        updatedAt: at,
+        reason: "task_created",
+      } satisfies GitMemoryFocusFile),
+      [GIT_MEMORY_SESSION_EVENTS_PATH]: jsonl([...existingEvents, taskCreated, focusChanged]),
+    });
+
+    const link = await this.linkTaskMessages({
+      sessionId: input.sessionId,
+      taskId,
+      branch,
+      reason: "task_created",
+      fromSeq: input.fromSeq,
+      toSeq: input.toSeq,
+      at,
+      summary: input.objective,
+    });
+
+    return { taskId, branch, ref, taskCommit, link };
+  }
+
   async checkpointSession(input: GitMemorySessionCheckpointInput): Promise<GitMemorySessionCheckpoint> {
     const driver = await GitMemoryWorktreeGitDriver.init(this.repoPath(input.sessionId));
     const date = gitMemoryDateFromSessionId(input.sessionId);
@@ -325,6 +490,13 @@ function parseJsonl<T>(value: string | null): T[] {
     .map((line) => line.trim())
     .filter(Boolean)
     .map((line) => JSON.parse(line) as T);
+}
+
+function parseJson<T>(value: string | null): T | null {
+  if (!value?.trim()) {
+    return null;
+  }
+  return JSON.parse(value) as T;
 }
 
 function conversationInRange(

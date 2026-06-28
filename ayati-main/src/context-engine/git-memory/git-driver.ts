@@ -1,6 +1,8 @@
+import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
-import { access, mkdir, readFile, writeFile } from "node:fs/promises";
+import { access, mkdir, readFile, unlink, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import { tmpdir } from "node:os";
 
 export interface GitMemoryLogEntry {
   commit: string;
@@ -10,6 +12,13 @@ export interface GitMemoryLogEntry {
 export interface GitMemoryCommitFilesInput {
   files: Record<string, string>;
   message: string;
+}
+
+export interface GitMemorySyntheticCommitInput {
+  ref: string;
+  files: Record<string, string>;
+  message: string;
+  parentRef?: string;
 }
 
 interface RunGitOptions {
@@ -88,6 +97,39 @@ export class GitMemoryWorktreeGitDriver {
     }
     await this.mustRun(["commit", "--file", "-"], { input: message });
     return (await this.mustRun(["rev-parse", "HEAD"])).trim();
+  }
+
+  async commitSyntheticFiles(input: GitMemorySyntheticCommitInput): Promise<string> {
+    const parent = input.parentRef
+      ? await this.resolveRef(input.parentRef)
+      : await this.resolveRef(input.ref);
+    const indexPath = join(tmpdir(), `ayati-git-memory-index-${randomUUID()}`);
+    const env = { GIT_INDEX_FILE: indexPath };
+    try {
+      if (parent) {
+        await this.mustRun(["read-tree", parent], { env });
+      } else {
+        await this.mustRun(["read-tree", "--empty"], { env });
+      }
+      for (const [path, content] of Object.entries(input.files)) {
+        const blob = (await this.mustRun(["hash-object", "-w", "--stdin"], { input: content })).trim();
+        await this.mustRun(["update-index", "--add", "--cacheinfo", `100644,${blob},${path}`], { env });
+      }
+      const tree = (await this.mustRun(["write-tree"], { env })).trim();
+      const commitArgs = parent
+        ? ["commit-tree", tree, "-p", parent]
+        : ["commit-tree", tree];
+      const commit = (await this.mustRun(commitArgs, { input: input.message })).trim();
+      await this.mustRun(["update-ref", input.ref, commit]);
+      return commit;
+    } finally {
+      await unlink(indexPath).catch(() => undefined);
+    }
+  }
+
+  async resolveRef(ref: string): Promise<string | null> {
+    const result = await this.run(["rev-parse", "--verify", `${ref}^{commit}`], { allowFailure: true });
+    return result.exitCode === 0 ? result.stdout.trim() : null;
   }
 
   async log(ref: string, limit: number): Promise<GitMemoryLogEntry[]> {
