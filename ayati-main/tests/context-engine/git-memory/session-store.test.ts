@@ -132,6 +132,52 @@ describe("GitMemoryDailySessionStore", () => {
     ]);
     expect(await driver.log(GIT_MEMORY_MAIN_REF, 5)).toHaveLength(1);
   });
+
+  it("checkpoints accumulated session changes with a parseable commit", async () => {
+    const contextStoreDir = await mkdtemp(join(tmpdir(), "ayati-git-memory-"));
+    const store = new GitMemoryDailySessionStore({ contextStoreDir });
+    const session = await store.openOrCreateDailySession({
+      date: "2026-06-28",
+      timezone: "Asia/Kolkata",
+      agentId: "local",
+      createdAt: "2026-06-28T00:00:00+05:30",
+    });
+    await store.appendConversationMessage({
+      sessionId: session.sessionId,
+      role: "user",
+      text: "Keep this session change until checkpoint.",
+      at: "2026-06-28T09:00:00+05:30",
+    });
+
+    const checkpoint = await store.checkpointSession({
+      sessionId: session.sessionId,
+      summary: "Checkpoint conversation after the first user turn.",
+      at: "2026-06-28T09:01:00+05:30",
+    });
+
+    expect(checkpoint.event).toMatchObject({
+      seq: 2,
+      eventId: "E-20260628-000002",
+      type: "session_checkpointed",
+    });
+
+    const driver = new GitMemoryWorktreeGitDriver(session.repoPath);
+    const log = await driver.log(GIT_MEMORY_MAIN_REF, 5);
+    expect(log).toHaveLength(2);
+    expect(log[0]?.commit).toBe(checkpoint.commit);
+    expect(parseGitMemoryCommitTrailers(log[0]?.message ?? "")).toMatchObject({
+      sessionId: "S-20260628-local",
+      event: "session_checkpointed",
+      at: "2026-06-28T09:01:00+05:30",
+    });
+    expect(parseJsonl(await driver.readFile(GIT_MEMORY_MAIN_REF, GIT_MEMORY_SESSION_CONVERSATION_PATH)))
+      .toMatchObject([{ seq: 1, role: "user", text: "Keep this session change until checkpoint." }]);
+    expect(parseJsonl(await driver.readFile(GIT_MEMORY_MAIN_REF, GIT_MEMORY_SESSION_EVENTS_PATH)))
+      .toMatchObject([
+        { seq: 1, type: "session_initialized" },
+        { seq: 2, type: "session_checkpointed" },
+      ]);
+  });
 });
 
 function parseJsonl(value: string | null): unknown[] {

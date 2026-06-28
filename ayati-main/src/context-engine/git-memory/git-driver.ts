@@ -70,8 +70,23 @@ export class GitMemoryWorktreeGitDriver {
 
   async commitFiles(input: GitMemoryCommitFilesInput): Promise<string> {
     await this.writeWorkingFiles(input.files);
-    await this.mustRun(["add", "--", ...Object.keys(input.files)]);
-    await this.mustRun(["commit", "--file", "-"], { input: input.message });
+    const commit = await this.commitPaths(Object.keys(input.files), input.message);
+    if (!commit) {
+      throw new Error("No changes to commit.");
+    }
+    return commit;
+  }
+
+  async commitPaths(paths: string[], message: string): Promise<string | null> {
+    if (paths.length === 0) {
+      return null;
+    }
+    await this.mustRun(["add", "--", ...paths]);
+    const diff = await this.run(["diff", "--cached", "--quiet"], { allowFailure: true });
+    if (diff.exitCode === 0) {
+      return null;
+    }
+    await this.mustRun(["commit", "--file", "-"], { input: message });
     return (await this.mustRun(["rev-parse", "HEAD"])).trim();
   }
 

@@ -50,6 +50,17 @@ export interface GitMemoryDailySessionHandle {
   initialCommit?: string;
 }
 
+export interface GitMemorySessionCheckpointInput {
+  sessionId: GitMemorySessionId;
+  summary?: string;
+  at?: string;
+}
+
+export interface GitMemorySessionCheckpoint {
+  event: GitMemorySessionEventRecord;
+  commit: string;
+}
+
 export interface AppendGitMemoryConversationInput {
   sessionId: GitMemorySessionId;
   role: GitMemoryConversationRole;
@@ -128,6 +139,47 @@ export class GitMemoryDailySessionStore {
       [GIT_MEMORY_SESSION_CONVERSATION_PATH]: jsonl([...existing, record]),
     });
     return record;
+  }
+
+  async checkpointSession(input: GitMemorySessionCheckpointInput): Promise<GitMemorySessionCheckpoint> {
+    const driver = await GitMemoryWorktreeGitDriver.init(this.repoPath(input.sessionId));
+    const date = gitMemoryDateFromSessionId(input.sessionId);
+    const at = input.at ?? this.nowIso();
+    const existingEvents = parseJsonl<GitMemorySessionEventRecord>(
+      await driver.readWorkingFile(GIT_MEMORY_SESSION_EVENTS_PATH),
+    );
+    const eventSeq = nextSeq(existingEvents);
+    const event: GitMemorySessionEventRecord = {
+      v: 1,
+      seq: eventSeq,
+      eventId: createGitMemoryEventId(date, eventSeq),
+      type: "session_checkpointed",
+      at,
+    };
+    await driver.writeWorkingFiles({
+      [GIT_MEMORY_SESSION_EVENTS_PATH]: jsonl([...existingEvents, event]),
+    });
+
+    const commit = await driver.commitPaths([
+      GIT_MEMORY_SESSION_CONVERSATION_PATH,
+      GIT_MEMORY_SESSION_EVENTS_PATH,
+      GIT_MEMORY_SESSION_FOCUS_PATH,
+      GIT_MEMORY_SESSION_TASKS_PATH,
+      GIT_MEMORY_SESSION_TASK_MESSAGE_LINKS_PATH,
+    ], renderGitMemoryCommitMessage({
+      subject: `ayati: checkpoint session ${input.sessionId}`,
+      summary: input.summary ?? "Commit accumulated session memory changes.",
+      trailers: {
+        sessionId: input.sessionId,
+        event: "session_checkpointed",
+        at,
+        schemaVersion: 1,
+      },
+    }));
+    if (!commit) {
+      throw new Error("Session checkpoint did not contain changes.");
+    }
+    return { event, commit };
   }
 
   private nowIso(): string {
