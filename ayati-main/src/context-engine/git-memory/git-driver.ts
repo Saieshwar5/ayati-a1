@@ -61,6 +61,14 @@ export class GitMemoryWorktreeGitDriver {
     return result.exitCode === 0 ? result.stdout : null;
   }
 
+  async listTreePaths(ref: string, prefix: string): Promise<string[]> {
+    const result = await this.run(["ls-tree", "-r", "--name-only", ref, prefix], { allowFailure: true });
+    if (result.exitCode !== 0) {
+      return [];
+    }
+    return result.stdout.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  }
+
   async readWorkingFile(path: string): Promise<string | null> {
     try {
       return await readFile(join(this.repoPath, path), "utf-8");
