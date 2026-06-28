@@ -136,6 +136,7 @@ export interface CreateGitMemoryTaskBranchInput extends GitMemoryConversationSeq
   title: string;
   objective: string;
   taskId?: GitMemoryTaskId;
+  runId?: GitMemoryRunId;
   status?: GitMemoryTaskStatus;
   at?: string;
   state?: Partial<Omit<GitMemoryTaskStateFile, "schemaVersion" | "status" | "updatedAt">> & {
@@ -203,6 +204,19 @@ export interface CommitGitMemoryTaskRunResult {
   ref: string;
   runId: GitMemoryRunId;
   taskCommit: string;
+  event: GitMemorySessionEventRecord;
+}
+
+export interface StartGitMemoryTaskRunInput extends GitMemoryConversationSeqRange {
+  sessionId: GitMemorySessionId;
+  taskId: GitMemoryTaskId;
+  branch: string;
+  runId: GitMemoryRunId;
+  at?: string;
+}
+
+export interface StartGitMemoryTaskRunResult {
+  runId: GitMemoryRunId;
   event: GitMemorySessionEventRecord;
 }
 
@@ -303,6 +317,44 @@ export class GitMemoryDailySessionStore {
       [GIT_MEMORY_SESSION_TASK_MESSAGE_LINKS_PATH]: jsonl([...existingLinks, link]),
     });
     return link;
+  }
+
+  async allocateTaskRunId(sessionId: GitMemorySessionId): Promise<GitMemoryRunId> {
+    const driver = await GitMemoryWorktreeGitDriver.init(this.repoPath(sessionId));
+    const date = gitMemoryDateFromSessionId(sessionId);
+    const existingEvents = parseJsonl<GitMemorySessionEventRecord>(
+      await driver.readWorkingFile(GIT_MEMORY_SESSION_EVENTS_PATH),
+    );
+    return createGitMemoryRunId(date, nextRunSequence(existingEvents));
+  }
+
+  async startTaskRun(input: StartGitMemoryTaskRunInput): Promise<StartGitMemoryTaskRunResult> {
+    const driver = await GitMemoryWorktreeGitDriver.init(this.repoPath(input.sessionId));
+    const date = gitMemoryDateFromSessionId(input.sessionId);
+    const existingEvents = parseJsonl<GitMemorySessionEventRecord>(
+      await driver.readWorkingFile(GIT_MEMORY_SESSION_EVENTS_PATH),
+    );
+    const existing = existingEvents.find((event) => event.type === "run_started" && event.runId === input.runId);
+    if (existing) {
+      return { runId: input.runId, event: existing };
+    }
+
+    const eventSeq = nextSeq(existingEvents);
+    const event: GitMemorySessionEventRecord = {
+      v: 1,
+      seq: eventSeq,
+      eventId: createGitMemoryEventId(date, eventSeq),
+      type: "run_started",
+      at: input.at ?? this.nowIso(),
+      taskId: input.taskId,
+      runId: input.runId,
+      branch: input.branch,
+      conversationSeq: { fromSeq: input.fromSeq, toSeq: input.toSeq },
+    };
+    await driver.writeWorkingFiles({
+      [GIT_MEMORY_SESSION_EVENTS_PATH]: jsonl([...existingEvents, event]),
+    });
+    return { runId: input.runId, event };
   }
 
   async readTaskConversationSegments(
@@ -515,6 +567,7 @@ export class GitMemoryDailySessionStore {
       fromSeq: input.fromSeq,
       toSeq: input.toSeq,
       at,
+      runId: input.runId,
       summary: input.objective,
     });
 
@@ -614,10 +667,7 @@ export class GitMemoryDailySessionStore {
     const existingEvents = parseJsonl<GitMemorySessionEventRecord>(
       await driver.readWorkingFile(GIT_MEMORY_SESSION_EVENTS_PATH),
     );
-    const runId = input.runId ?? createGitMemoryRunId(
-      date,
-      existingEvents.filter((event) => event.type === "run_completed" || event.type === "run_failed").length + 1,
-    );
+    const runId = input.runId ?? createGitMemoryRunId(date, nextRunSequence(existingEvents));
     const completedAt = input.completedAt ?? this.nowIso();
     const startedAt = input.startedAt ?? completedAt;
     const previousState = parseJson<GitMemoryTaskStateFile>(
@@ -873,6 +923,15 @@ function nextSeq(records: Array<{ seq?: unknown }>): number {
   return records.reduce((max, record) => (
     typeof record.seq === "number" && Number.isInteger(record.seq) ? Math.max(max, record.seq) : max
   ), 0) + 1;
+}
+
+function nextRunSequence(events: GitMemorySessionEventRecord[]): number {
+  const sequences = events
+    .map((event) => event.runId)
+    .filter((runId): runId is GitMemoryRunId => typeof runId === "string" && runId.length > 0)
+    .map((runId) => Number(runId.split("-")[2] ?? "0"))
+    .filter((sequence) => Number.isInteger(sequence) && sequence > 0);
+  return Math.max(0, ...sequences) + 1;
 }
 
 function actionSequenceForRun(runId: GitMemoryRunId, actionIndex: number): number {

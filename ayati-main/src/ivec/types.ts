@@ -363,6 +363,7 @@ export interface AgentLoopDeps {
   runRecorder?: RunRecorder;
   inputHandle?: SessionInputHandle;
   runHandle?: MemoryRunHandle;
+  createWorkRun?: (inputHandle: SessionInputHandle) => MemoryRunHandle;
   onWorkRunCreated?: (runHandle: MemoryRunHandle) => void;
   clientId: string;
   inputKind?: "user_message" | "system_event";

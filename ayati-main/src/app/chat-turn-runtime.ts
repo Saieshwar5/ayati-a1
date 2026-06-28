@@ -7,7 +7,7 @@ import { PreparedAttachmentRegistry } from "../documents/prepared-attachment-reg
 import type { DirectoryLibrary } from "../files/directory-library.js";
 import type { FileLibrary } from "../files/file-library.js";
 import type { DirectoryAttachmentRecord, ManagedFileRecord } from "../files/types.js";
-import type { SessionMemory, MemoryRunHandle, SessionInputHandle, AgentResponseKind } from "../memory/types.js";
+import type { SessionMemory, MemoryRunHandle, SessionInputHandle, AgentResponseKind, RunRecorder } from "../memory/types.js";
 import {
   appendPulseProposalQuestion,
   PulseProposalReflectionService,
@@ -19,7 +19,6 @@ import { devError, devLog, devWarn } from "../shared/index.js";
 import { agentLoop } from "../ivec/agent-loop.js";
 import type { AgentFeedbackLedger } from "../ivec/feedback-ledger.js";
 import type { ChatTurnRuntime, ChatTurnRuntimeInput } from "../ivec/chat-turn-runtime.js";
-import type { RotationPolicyConfig } from "../ivec/session-rotation-policy.js";
 import type { ToolWorkingSetManager } from "../ivec/agent-runner/tool-working-set.js";
 import type {
   AgentArtifact,
@@ -29,8 +28,6 @@ import type {
   LoopConfig,
 } from "../ivec/types.js";
 import { buildStaticSystemContext } from "./static-prompt.js";
-import { rotateSessionBeforeRunIfNeeded } from "./session-rotation.js";
-import { completeSessionLifecycle } from "./session-lifecycle.js";
 import type {
   GitMemoryChatContextPreparedTurn,
   GitMemoryChatContextRoutedTurn,
@@ -47,7 +44,6 @@ export interface CreateChatTurnRuntimeOptions {
   toolWorkingSetManager?: ToolWorkingSetManager;
   chatContextRuntime: GitMemoryChatContextRuntime;
   loopConfig?: Partial<LoopConfig>;
-  rotationPolicyConfig?: Partial<RotationPolicyConfig>;
   now?: () => Date;
   dataDir?: string;
   documentStore?: DocumentStore;
@@ -64,6 +60,24 @@ interface RegisteredChatAttachments {
   managedDirectories: DirectoryAttachmentRecord[];
 }
 
+const chatRunRecorder: RunRecorder = {
+  recordToolCall(): void {
+    return;
+  },
+  recordToolResult(): void {
+    return;
+  },
+  recordAssistantFinal(): void {
+    return;
+  },
+  recordRunFailure(): void {
+    return;
+  },
+  recordAgentStep(): void {
+    return;
+  },
+};
+
 export function createChatTurnRuntime(options: CreateChatTurnRuntimeOptions): ChatTurnRuntime {
   return new AppChatTurnRuntime(options);
 }
@@ -77,7 +91,6 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
   private readonly skillActivationManager?: SkillActivationManager;
   private readonly toolWorkingSetManager?: ToolWorkingSetManager;
   private readonly loopConfig?: Partial<LoopConfig>;
-  private readonly rotationPolicyConfig?: Partial<RotationPolicyConfig>;
   private readonly nowProvider: () => Date;
   private readonly dataDir?: string;
   private readonly documentStore?: DocumentStore;
@@ -97,7 +110,6 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
     this.skillActivationManager = options.skillActivationManager;
     this.toolWorkingSetManager = options.toolWorkingSetManager;
     this.loopConfig = options.loopConfig;
-    this.rotationPolicyConfig = options.rotationPolicyConfig;
     this.nowProvider = options.now ?? (() => new Date());
     this.dataDir = options.dataDir;
     this.documentStore = options.documentStore;
@@ -114,11 +126,10 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
     let runHandle: MemoryRunHandle | null = null;
     let chatContextTurn: GitMemoryChatContextPreparedTurn | null = null;
     let routedContextTurn: GitMemoryChatContextRoutedTurn | null = null;
-    let runStatus: "completed" | "failed" | "stuck" | null = null;
 
     try {
-      this.rotateSessionBeforeRunIfNeeded(input.clientId);
-      inputHandle = this.sessionMemory.recordUserMessage(input.clientId, input.content);
+      chatContextTurn = await this.prepareChatContextTurn(input.clientId, input.content);
+      inputHandle = this.inputHandleFromChatContextTurn(chatContextTurn);
       this.feedbackLedger?.record({
         clientId: input.clientId,
         sessionId: inputHandle.sessionId,
@@ -133,19 +144,16 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
         },
       });
 
-      chatContextTurn = await this.prepareChatContextTurn(input.clientId, input.content);
       routedContextTurn = await this.routeChatContextTurn(input.clientId, chatContextTurn, input.content);
       if (routedContextTurn?.status === "ambiguous") {
-        await this.dispatchChatContextAmbiguity(input.clientId, inputHandle, chatContextTurn, routedContextTurn);
-        runStatus = "completed";
+        await this.dispatchChatContextAmbiguity(input.clientId, chatContextTurn, routedContextTurn);
         return;
       }
 
       if (this.provider) {
-        if (input.attachments.length > 0) {
-          runHandle = this.createWorkRun(input.clientId, inputHandle);
-          this.recordTurnStatus(input.clientId, runHandle, "processing_started");
-        }
+        runHandle = routedContextTurn?.status === "ready"
+          ? this.runHandleFromRoutedTurn(inputHandle, routedContextTurn)
+          : null;
         const registeredAttachments = runHandle
           ? await this.registerIncomingDocuments(input.attachments, runHandle.runId)
           : { documents: [], warnings: [], managedFiles: [], managedDirectories: [] };
@@ -161,23 +169,10 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
           toolWorkingSetManager: this.toolWorkingSetManager,
           toolDefinitions,
           sessionMemory: this.sessionMemory,
+          runRecorder: chatRunRecorder,
           inputHandle,
           ...(runHandle ? { runHandle } : {}),
-          onWorkRunCreated: (created) => {
-            runHandle = created;
-            this.recordTurnStatus(input.clientId, created, "processing_started");
-            this.feedbackLedger?.record({
-              clientId: input.clientId,
-              sessionId: created.sessionId,
-              seq: inputHandle?.seq,
-              runId: created.runId,
-              stage: "run",
-              event: "created",
-              data: {
-                source: "engine",
-              },
-            });
-          },
+          createWorkRun: this.failMissingGitMemoryRun,
           clientId: input.clientId,
           uiContext: input.uiContext,
           initialUserMessage: input.content,
@@ -194,22 +189,15 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
           directoryLibrary: this.directoryLibrary,
           documentStore: this.documentStore,
           preparedAttachmentRegistry: this.preparedAttachmentRegistry,
-          onProgress: (log, runPath) => {
+          onProgress: (log, _runPath) => {
             devLog(`[${input.clientId}] ${log}`);
             if (runHandle) {
-              this.sessionMemory.recordAgentStep(input.clientId, {
-                runId: runHandle.runId,
-                sessionId: runHandle.sessionId,
-                step: 0,
-                phase: "progress",
-                summary: `${log} | runPath: ${runPath}`,
-              });
               this.sendProgress(input.clientId, runHandle, log);
             }
           },
         });
         result = await this.applyPulseProposalReflection(input.clientId, input.content, result, toolDefinitions);
-        this.dispatchAgentResponse(input.clientId, inputHandle, runHandle, result);
+        this.dispatchAgentResponse(input.clientId, runHandle, result);
         await this.completeChatContextRun(input.clientId, chatContextTurn, routedContextTurn, result);
         this.feedbackLedger?.record({
           clientId: input.clientId,
@@ -226,17 +214,15 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
             runPath: result.runPath,
           },
         });
-        runStatus = result.status;
       } else {
         const echoContent = `Received: "${input.content}"`;
-        this.dispatchAgentResponse(input.clientId, inputHandle, null, {
+        this.dispatchAgentResponse(input.clientId, null, {
           type: "reply",
           content: echoContent,
         });
         await this.recordChatContextAssistantMessage(input.clientId, chatContextTurn, echoContent, {
           taskId: routedContextTurn?.status === "ready" ? routedContextTurn.taskId : undefined,
         });
-        runStatus = "completed";
       }
     } catch (err) {
       devError("Provider error:", err);
@@ -252,25 +238,18 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
       });
       if (runHandle) {
         const message = err instanceof Error ? err.message : "Unknown runtime failure";
-        this.sessionMemory.recordRunFailure(
-          input.clientId,
-          runHandle.runId,
-          runHandle.sessionId,
-          message,
-        );
-        this.recordTurnStatus(input.clientId, runHandle, "response_failed", message);
-        runStatus = "failed";
+        this.feedbackLedger?.record({
+          clientId: input.clientId,
+          sessionId: runHandle.sessionId,
+          runId: runHandle.runId,
+          stage: "run",
+          event: "failed",
+          data: { message },
+        });
       }
       this.onReply?.(input.clientId, {
         type: "error",
         content: "Failed to generate a response.",
-      });
-    } finally {
-      await completeSessionLifecycle({
-        clientId: input.clientId,
-        sessionMemory: this.sessionMemory,
-        runHandle,
-        status: runStatus,
       });
     }
   }
@@ -343,13 +322,12 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
 
   private async dispatchChatContextAmbiguity(
     clientId: string,
-    inputHandle: SessionInputHandle,
     prepared: GitMemoryChatContextPreparedTurn | null,
     routed: Extract<GitMemoryChatContextRoutedTurn, { status: "ambiguous" }>,
   ): Promise<void> {
     const message = formatGitMemoryAmbiguityMessage(routed);
     await this.recordChatContextAssistantMessage(clientId, prepared, message);
-    this.dispatchAgentResponse(clientId, inputHandle, null, {
+    this.dispatchAgentResponse(clientId, null, {
       type: "feedback",
       content: message,
     });
@@ -369,6 +347,7 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
       clientId,
       turn: prepared,
       taskId: routed.taskId,
+      runId: routed.runId,
       result,
       conversationRefs: routed.conversationRefs,
       at: this.nowProvider().toISOString(),
@@ -418,25 +397,30 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
     });
   }
 
-  private rotateSessionBeforeRunIfNeeded(clientId: string): void {
-    rotateSessionBeforeRunIfNeeded({
-      clientId,
-      sessionMemory: this.sessionMemory,
-      now: this.nowProvider,
-      rotationPolicyConfig: this.rotationPolicyConfig,
-    });
+  private inputHandleFromChatContextTurn(turn: GitMemoryChatContextPreparedTurn): SessionInputHandle {
+    return {
+      sessionId: turn.sessionId,
+      seq: turn.messageSeq,
+    };
   }
 
-  private createWorkRun(clientId: string, inputHandle: SessionInputHandle): MemoryRunHandle {
-    const createWorkRun = this.sessionMemory.createWorkRun;
-    if (!createWorkRun) {
-      throw new Error("Session memory does not support work run creation.");
-    }
-    return createWorkRun.call(this.sessionMemory, clientId, inputHandle);
+  private runHandleFromRoutedTurn(
+    inputHandle: SessionInputHandle,
+    turn: Extract<GitMemoryChatContextRoutedTurn, { status: "ready" }>,
+  ): MemoryRunHandle {
+    return {
+      sessionId: inputHandle.sessionId,
+      runId: turn.runId,
+      triggerSeq: inputHandle.seq,
+    };
   }
 
   private inputScopeId(inputHandle: SessionInputHandle): string {
     return `input:${inputHandle.sessionId}:${inputHandle.seq}`;
+  }
+
+  private failMissingGitMemoryRun(_inputHandle: SessionInputHandle): MemoryRunHandle {
+    throw new Error("Git-memory routed run is required before chat tool execution.");
   }
 
   private async applyPulseProposalReflection(
@@ -489,7 +473,6 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
 
   private dispatchAgentResponse(
     clientId: string,
-    inputHandle: SessionInputHandle,
     runHandle: MemoryRunHandle | null,
     result: {
       type: AgentResponseKind;
@@ -499,41 +482,25 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
   ): void {
     switch (result.type) {
       case "reply":
-        this.sendAssistantReply(clientId, inputHandle, runHandle, result.content, result.artifacts);
+        this.sendAssistantReply(clientId, runHandle, result.content, result.artifacts);
         return;
       case "feedback":
-        this.sendAssistantFeedback(clientId, inputHandle, runHandle, result.content, result.artifacts);
+        this.sendAssistantFeedback(clientId, runHandle, result.content, result.artifacts);
         return;
       case "notification":
-        this.sendAssistantNotification(clientId, inputHandle, runHandle, result.content, result.artifacts);
+        this.sendAssistantNotification(clientId, runHandle, result.content, result.artifacts);
         return;
       case "none":
-        if (runHandle) {
-          this.recordTurnStatus(clientId, runHandle, "response_completed", "delivery=none");
-        }
         return;
     }
   }
 
   private sendAssistantReply(
     clientId: string,
-    inputHandle: SessionInputHandle,
     runHandle: MemoryRunHandle | null,
     content: string,
     artifacts?: AgentArtifact[],
   ): void {
-    if (runHandle) {
-      this.recordTurnStatus(clientId, runHandle, "response_started");
-    }
-    this.sessionMemory.recordAssistantMessage(clientId, {
-      sessionId: inputHandle.sessionId,
-      ...(runHandle ? { workRunId: runHandle.runId } : {}),
-      content,
-      responseKind: "reply",
-    });
-    if (runHandle) {
-      this.recordTurnStatus(clientId, runHandle, "response_completed");
-    }
     const artifactPayload = artifacts && artifacts.length > 0 && runHandle
       ? { artifacts, runId: runHandle.runId }
       : {};
@@ -546,23 +513,10 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
 
   private sendAssistantFeedback(
     clientId: string,
-    inputHandle: SessionInputHandle,
     runHandle: MemoryRunHandle | null,
     content: string,
     artifacts?: AgentArtifact[],
   ): void {
-    if (runHandle) {
-      this.recordTurnStatus(clientId, runHandle, "response_started");
-    }
-    this.sessionMemory.recordAssistantMessage(clientId, {
-      sessionId: inputHandle.sessionId,
-      ...(runHandle ? { workRunId: runHandle.runId } : {}),
-      content,
-      responseKind: "feedback",
-    });
-    if (runHandle) {
-      this.recordTurnStatus(clientId, runHandle, "response_completed");
-    }
     const artifactPayload = artifacts && artifacts.length > 0 && runHandle
       ? { artifacts, runId: runHandle.runId }
       : {};
@@ -575,28 +529,10 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
 
   private sendAssistantNotification(
     clientId: string,
-    inputHandle: SessionInputHandle,
     runHandle: MemoryRunHandle | null,
     content: string,
     artifacts?: AgentArtifact[],
   ): void {
-    if (runHandle) {
-      this.recordTurnStatus(clientId, runHandle, "response_started");
-    }
-    this.sessionMemory.recordAssistantMessage(clientId, {
-      sessionId: inputHandle.sessionId,
-      ...(runHandle ? { workRunId: runHandle.runId } : {}),
-      content,
-      responseKind: "notification",
-    });
-    this.sessionMemory.recordAssistantNotification?.(clientId, {
-      ...(runHandle ? { workRunId: runHandle.runId } : {}),
-      sessionId: inputHandle.sessionId,
-      message: content,
-    });
-    if (runHandle) {
-      this.recordTurnStatus(clientId, runHandle, "response_completed");
-    }
     const artifactPayload = artifacts && artifacts.length > 0 && runHandle
       ? { artifacts, runId: runHandle.runId }
       : {};
@@ -613,20 +549,6 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
       type: "progress",
       content,
       runId: runHandle.runId,
-    });
-  }
-
-  private recordTurnStatus(
-    clientId: string,
-    runHandle: MemoryRunHandle,
-    status: "processing_started" | "response_started" | "response_completed" | "response_failed",
-    note?: string,
-  ): void {
-    this.sessionMemory.recordTurnStatus?.(clientId, {
-      runId: runHandle.runId,
-      sessionId: runHandle.sessionId,
-      status,
-      note,
     });
   }
 

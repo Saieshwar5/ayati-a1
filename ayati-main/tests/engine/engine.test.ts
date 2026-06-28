@@ -195,7 +195,6 @@ function createEngine(options: TestEngineOptions = {}): IVecEngine {
     skillActivationManager: options.skillActivationManager,
     toolWorkingSetManager: options.toolWorkingSetManager,
     loopConfig: options.loopConfig,
-    rotationPolicyConfig: options.rotationPolicyConfig,
     now: options.now,
     dataDir: options.dataDir,
     documentStore: options.documentStore,
@@ -302,6 +301,7 @@ function readyGitMemoryRoutedTurn(): Extract<GitMemoryChatContextRoutedTurn, { s
     mode: "continue_active_task",
     sessionId: "S-20260627-local",
     taskId: "W-20260627-0001",
+    runId: "R-20260627-0001",
     branch: "task/W-20260627-0001-analyze-invoice",
     ref: "refs/heads/task/W-20260627-0001-analyze-invoice",
     conversationRefs: [{ fromSeq: 1, toSeq: 1 }],
@@ -456,6 +456,9 @@ describe("IVecEngine", () => {
           content: "mock reply",
         });
       });
+      expect(sessionMemory.recordUserMessage as ReturnType<typeof vi.fn>).not.toHaveBeenCalled();
+      expect(sessionMemory.recordAssistantMessage as ReturnType<typeof vi.fn>).not.toHaveBeenCalled();
+      expect(sessionMemory.createWorkRun as ReturnType<typeof vi.fn>).not.toHaveBeenCalled();
     } finally {
       rmSync(dataDir, { recursive: true, force: true });
     }
@@ -526,6 +529,7 @@ describe("IVecEngine", () => {
           messageSeq: 1,
         }),
         taskId: "W-20260627-0001",
+        runId: "R-20260627-0001",
         conversationRefs: [{ fromSeq: 1, toSeq: 1 }],
         result: expect.objectContaining({
           content: "mock reply",
@@ -600,16 +604,9 @@ describe("IVecEngine", () => {
       expect(onReply).toHaveBeenCalledWith("c1", {
         type: "progress",
         content: expect.stringContaining("Step 1"),
-        runId: "r1",
+        runId: "R-20260627-0001",
       });
-      expect(sessionMemory.recordAgentStep as ReturnType<typeof vi.fn>).toHaveBeenCalledWith(
-        "c1",
-        expect.objectContaining({
-          runId: "r1",
-          phase: "progress",
-          summary: expect.stringContaining("Step 1"),
-        }),
-      );
+      expect(sessionMemory.recordAgentStep as ReturnType<typeof vi.fn>).not.toHaveBeenCalled();
     } finally {
       rmSync(dataDir, { recursive: true, force: true });
     }
@@ -1087,7 +1084,7 @@ describe("IVecEngine", () => {
     }
   });
 
-  it("rotates session before recording user input when pre-turn policy requires it", async () => {
+  it("does not rotate or record chat input through SessionMemory", async () => {
     const dataDir = mkdtempSync(join(tmpdir(), "ayati-eng-rotate-"));
     try {
       const provider = createMockProvider();
@@ -1142,19 +1139,14 @@ describe("IVecEngine", () => {
       engine.handleMessage("c1", { type: "chat", content: "continue" });
 
       await vi.waitFor(() => {
-        expect(createSession).toHaveBeenCalledTimes(1);
-        expect(recordUserMessage).toHaveBeenCalledTimes(1);
         expect(onReply).toHaveBeenCalledWith("c1", {
           type: "reply",
           content: "mock reply",
         });
       });
 
-      const rotateOrder = (createSession.mock.invocationCallOrder[0] ?? 0) as number;
-      const recordInputOrder = (recordUserMessage.mock.invocationCallOrder[0] ?? 0) as number;
-      expect(rotateOrder).toBeGreaterThan(0);
-      expect(recordInputOrder).toBeGreaterThan(0);
-      expect(rotateOrder).toBeLessThan(recordInputOrder);
+      expect(createSession).not.toHaveBeenCalled();
+      expect(recordUserMessage).not.toHaveBeenCalled();
     } finally {
       rmSync(dataDir, { recursive: true, force: true });
     }

@@ -6,6 +6,7 @@ import type {
 } from "./session-store.js";
 import type {
   GitMemoryConversationSeqRange,
+  GitMemoryRunId,
   GitMemorySessionId,
   GitMemoryTaskId,
   GitMemoryTaskLinkReason,
@@ -25,6 +26,7 @@ export interface ResolveGitMemoryTaskRouteInput {
 export interface ApplyGitMemoryTaskRouteInput extends ResolveGitMemoryTaskRouteInput, GitMemoryConversationSeqRange {
   at?: string;
   turnIds?: GitMemoryTurnId[];
+  runId?: GitMemoryRunId;
   title?: string;
   objective?: string;
 }
@@ -192,6 +194,7 @@ export class GitMemoryTaskRouter {
         objective,
         fromSeq: input.fromSeq,
         toSeq: input.toSeq,
+        runId: input.runId,
         at: input.at,
         state: {
           status: "open",
@@ -225,6 +228,7 @@ export class GitMemoryTaskRouter {
       toSeq: input.toSeq,
       at: input.at,
       turnIds: input.turnIds,
+      runId: input.runId,
       summary: resolution.reason,
     });
     return {

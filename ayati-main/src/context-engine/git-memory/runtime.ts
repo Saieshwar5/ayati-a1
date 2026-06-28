@@ -67,9 +67,14 @@ export interface CheckpointGitMemoryRuntimeSessionInput {
   at?: string;
 }
 
-export type RoutedGitMemoryUserTurn = AppliedGitMemoryTaskRoute & {
-  context: GitMemoryMachineContextPack;
-};
+export type RoutedGitMemoryUserTurn =
+  | (Extract<AppliedGitMemoryTaskRoute, { status: "ready" }> & {
+      runId: GitMemoryRunId;
+      context: GitMemoryMachineContextPack;
+    })
+  | (Extract<AppliedGitMemoryTaskRoute, { status: "ambiguous" }> & {
+      context: GitMemoryMachineContextPack;
+    });
 
 export class GitMemoryRuntime {
   private readonly timezone: string;
@@ -147,9 +152,26 @@ export class GitMemoryRuntime {
   }
 
   async routeUserTurn(input: ApplyGitMemoryTaskRouteInput): Promise<RoutedGitMemoryUserTurn> {
-    const route = await this.taskRouter.route(input);
+    const runId = await this.store.allocateTaskRunId(input.sessionId);
+    const route = await this.taskRouter.route({ ...input, runId });
+    if (route.status === "ambiguous") {
+      return {
+        ...route,
+        context: await this.contextReader.buildActiveContext({ sessionId: input.sessionId }),
+      };
+    }
+    await this.store.startTaskRun({
+      sessionId: input.sessionId,
+      taskId: route.taskId,
+      branch: route.branch,
+      runId,
+      fromSeq: input.fromSeq,
+      toSeq: input.toSeq,
+      at: input.at,
+    });
     return {
       ...route,
+      runId,
       context: await this.contextReader.buildActiveContext({ sessionId: input.sessionId }),
     };
   }

@@ -162,6 +162,7 @@ describe("createGitMemoryChatContextRuntime", () => {
         status: "ready",
         mode: "create_new_task",
         taskId: "W-20260628-0001",
+        runId: "R-20260628-0001",
         conversationRefs: [{ fromSeq: 1, toSeq: 1 }],
         harnessContext: {
           contextEngine: {
@@ -202,6 +203,7 @@ describe("createGitMemoryChatContextRuntime", () => {
         status: "ready",
         mode: "continue_active_task",
         taskId: "W-20260628-0001",
+        runId: "R-20260628-0002",
         conversationRefs: [{ fromSeq: 2, toSeq: 2 }],
         harnessContext: {
           contextEngine: {
@@ -221,7 +223,7 @@ describe("createGitMemoryChatContextRuntime", () => {
           task: {
             conversation: [
               { link: { reason: "task_created", fromSeq: 1, toSeq: 1 } },
-              { link: { reason: "task_continued", fromSeq: 2, toSeq: 2 } },
+              { link: { reason: "task_continued", fromSeq: 2, toSeq: 2, runId: "R-20260628-0002" } },
             ],
           },
         },

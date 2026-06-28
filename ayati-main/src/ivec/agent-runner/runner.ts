@@ -100,11 +100,14 @@ export async function runAgentLoop(
 
   const ensureWorkRun = async (): Promise<MemoryRunContext> => {
     if (!workRunHandle) {
-      const createWorkRun = deps.sessionMemory.createWorkRun;
-      if (!createWorkRun) {
-        throw new Error("Session memory does not support work run creation.");
-      }
-      workRunHandle = createWorkRun.call(deps.sessionMemory, deps.clientId, inputHandle);
+      const createWorkRun = deps.createWorkRun ?? ((handle: SessionInputHandle): MemoryRunHandle => {
+        const sessionCreateWorkRun = deps.sessionMemory.createWorkRun;
+        if (!sessionCreateWorkRun) {
+          throw new Error("Session memory does not support work run creation.");
+        }
+        return sessionCreateWorkRun.call(deps.sessionMemory, deps.clientId, handle);
+      });
+      workRunHandle = createWorkRun(inputHandle);
       deps.runHandle = workRunHandle;
       deps.onWorkRunCreated?.(workRunHandle);
       recordFeedback(deps, inputHandle, workRunHandle.runId, "run", "created", {

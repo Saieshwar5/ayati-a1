@@ -199,6 +199,7 @@ function readyGitMemoryRoutedTurn(): Extract<GitMemoryChatContextRoutedTurn, { s
     mode: "continue_active_task",
     sessionId: "S-20260627-local",
     taskId: "W-20260627-0001",
+    runId: "R-20260627-0001",
     branch: "task/W-20260627-0001-upload-test",
     ref: "refs/heads/task/W-20260627-0001-upload-test",
     conversationRefs: [{ fromSeq: 1, toSeq: 1 }],
