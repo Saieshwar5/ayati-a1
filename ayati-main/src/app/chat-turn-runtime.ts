@@ -7,7 +7,14 @@ import { PreparedAttachmentRegistry } from "../documents/prepared-attachment-reg
 import type { DirectoryLibrary } from "../files/directory-library.js";
 import type { FileLibrary } from "../files/file-library.js";
 import type { DirectoryAttachmentRecord, ManagedFileRecord } from "../files/types.js";
-import type { SessionMemory, MemoryRunHandle, SessionInputHandle, AgentResponseKind, RunRecorder } from "../memory/types.js";
+import type {
+  AgentResponseKind,
+  ConversationTurn,
+  MemoryRunHandle,
+  PromptMemoryContext,
+  RunRecorder,
+  SessionInputHandle,
+} from "../memory/types.js";
 import {
   appendPulseProposalQuestion,
   PulseProposalReflectionService,
@@ -38,7 +45,6 @@ export interface CreateChatTurnRuntimeOptions {
   onReply?: (clientId: string, data: unknown) => void;
   provider?: LlmProvider;
   staticContext?: StaticContext;
-  sessionMemory: SessionMemory;
   toolExecutor?: ToolExecutor;
   skillActivationManager?: SkillActivationManager;
   toolWorkingSetManager?: ToolWorkingSetManager;
@@ -86,7 +92,6 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
   private readonly onReply?: (clientId: string, data: unknown) => void;
   private readonly provider?: LlmProvider;
   private readonly staticContext?: StaticContext;
-  private readonly sessionMemory: SessionMemory;
   private readonly toolExecutor?: ToolExecutor;
   private readonly skillActivationManager?: SkillActivationManager;
   private readonly toolWorkingSetManager?: ToolWorkingSetManager;
@@ -105,7 +110,6 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
     this.onReply = options.onReply;
     this.provider = options.provider;
     this.staticContext = options.staticContext;
-    this.sessionMemory = options.sessionMemory;
     this.toolExecutor = options.toolExecutor;
     this.skillActivationManager = options.skillActivationManager;
     this.toolWorkingSetManager = options.toolWorkingSetManager;
@@ -168,7 +172,6 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
           skillActivationManager: this.skillActivationManager,
           toolWorkingSetManager: this.toolWorkingSetManager,
           toolDefinitions,
-          sessionMemory: this.sessionMemory,
           runRecorder: chatRunRecorder,
           inputHandle,
           ...(runHandle ? { runHandle } : {}),
@@ -196,7 +199,13 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
             }
           },
         });
-        result = await this.applyPulseProposalReflection(input.clientId, input.content, result, toolDefinitions);
+        result = await this.applyPulseProposalReflection(
+          input.clientId,
+          input.content,
+          result,
+          toolDefinitions,
+          routedContextTurn,
+        );
         this.dispatchAgentResponse(input.clientId, runHandle, result);
         await this.completeChatContextRun(input.clientId, chatContextTurn, routedContextTurn, result);
         this.feedbackLedger?.record({
@@ -428,6 +437,7 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
     userMessage: string,
     result: AgentLoopResult,
     toolDefinitions: ToolDefinition[],
+    routedContextTurn: GitMemoryChatContextRoutedTurn | null,
   ): Promise<AgentLoopResult> {
     if (!this.provider || result.type !== "reply" || result.status !== "completed" || result.runClass !== "task" || !result.taskSummary) {
       return result;
@@ -439,7 +449,7 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
         currentUserMessage: userMessage,
         assistantResponse: result.content,
         taskSummary: result.taskSummary,
-        memoryContext: this.sessionMemory.getPromptMemoryContext(),
+        memoryContext: promptMemoryContextFromGitMemory(routedContextTurn),
         toolDefinitions,
         now: this.nowProvider(),
       });
@@ -717,6 +727,37 @@ function formatAttachmentLabel(attachment: ChatAttachmentInput): string {
     return attachment.path;
   }
   return "path" in attachment ? attachment.path : "attachment";
+}
+
+function promptMemoryContextFromGitMemory(
+  routed: GitMemoryChatContextRoutedTurn | null,
+): PromptMemoryContext {
+  const conversationTurns: ConversationTurn[] = (routed?.context.session.conversationTail ?? [])
+    .filter(isUserAssistantGitMemoryMessage)
+    .map((message) => ({
+      role: message.role,
+      content: message.text ?? "",
+      timestamp: message.at,
+      sessionPath: `git-memory:${routed?.context.session.sessionId ?? ""}`,
+      seq: message.seq,
+      ...(message.runId ? { workRunId: message.runId } : {}),
+    }));
+
+  return {
+    recentExchanges: [],
+    recentSystemEvents: [],
+    conversationTurns,
+    personalMemorySnapshot: "",
+    personalMemories: [],
+  };
+}
+
+function isUserAssistantGitMemoryMessage(
+  message: NonNullable<GitMemoryChatContextRoutedTurn["context"]["session"]["conversationTail"]>[number],
+): message is NonNullable<GitMemoryChatContextRoutedTurn["context"]["session"]["conversationTail"]>[number] & {
+  role: "user" | "assistant";
+} {
+  return message.role === "user" || message.role === "assistant";
 }
 
 function formatGitMemoryAmbiguityMessage(

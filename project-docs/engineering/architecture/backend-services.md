@@ -2,12 +2,11 @@
 
 Major backend services and stores:
 
-- `IVecEngine`: coordinates user messages, system events, context building, provider calls, tool execution, replies, notifications, and session rotation.
-- `MemoryManager`: active session persistence and session close handling.
+- `IVecEngine`: coordinates user messages, system events, context building, provider calls, tool execution, replies, and notifications.
+- `GitMemoryRuntime`: daily git context store for conversation, task routing, run identity, task branches, assistant responses, and run commits.
 - `PersonalMemoryStore`: canonical user memory storage for personalization.
 - `PersonalMemorySnapshotCache`: prompt-ready personal memory snapshots.
-- `MemoryConsolidator`: post-session personal memory evolution.
-- `EpisodicMemoryIndexer`: indexes closed sessions when embeddings are available.
+- `EpisodicMemoryIndexer`: indexes episodic records when embeddings are available.
 - `EpisodicMemoryRetriever`: semantic recall for past sessions.
 - `ToolCatalog`: hidden catalog of available built-in/runtime tools, groups, aliases, and deterministic follow-up metadata.
 - `ToolWorkingSetManager`: mounts a bounded run-scoped set of visible executable tool schemas for each decision.
@@ -24,7 +23,7 @@ Major backend services and stores:
 
 Daemon-specific responsibilities:
 
-- Keep memory and runtime state available across client sessions.
+- Keep git context and runtime state available across client sessions.
 - Accept inputs from multiple future communication channels.
 - Use the tool executor as the computer-access layer.
 - Process background events even when no CLI is actively connected.

@@ -7,7 +7,6 @@ import { UploadServer, WsServer } from "../../src/server/index.js";
 import { IVecEngine } from "../../src/ivec/index.js";
 import { createChatTurnRuntime } from "../../src/app/chat-turn-runtime.js";
 import { DocumentStore } from "../../src/documents/document-store.js";
-import { noopSessionMemory } from "../../src/memory/provider.js";
 import { pulseTool } from "../../src/skills/builtins/pulse/index.js";
 import type { LlmProvider } from "../../src/core/contracts/provider.js";
 import type { LlmTurnInput } from "../../src/core/contracts/llm-protocol.js";
@@ -507,14 +506,12 @@ describe("UploadServer", () => {
       const chatTurnRuntime = createChatTurnRuntime({
         onReply: (clientId, data) => wsServer?.send(clientId, data),
         provider,
-        sessionMemory: noopSessionMemory,
         chatContextRuntime: createReadyChatContextRuntime(),
         dataDir,
         documentStore,
       });
       engine = new IVecEngine({
         provider,
-        sessionMemory: noopSessionMemory,
         chatTurnRuntime,
       });
       wsServer = new WsServer({
@@ -623,14 +620,12 @@ describe("UploadServer", () => {
       const chatTurnRuntime = createChatTurnRuntime({
         onReply: (clientId, data) => wsServer?.send(clientId, data),
         provider,
-        sessionMemory: noopSessionMemory,
         chatContextRuntime: createReadyChatContextRuntime(),
         dataDir,
         documentStore,
       });
       engine = new IVecEngine({
         provider,
-        sessionMemory: noopSessionMemory,
         chatTurnRuntime,
       });
       wsServer = new WsServer({

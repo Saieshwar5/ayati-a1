@@ -52,6 +52,20 @@ export interface PreparedGitMemoryUserTurn {
   context: GitMemoryMachineContextPack;
 }
 
+export interface PrepareGitMemorySystemTurnInput {
+  systemMessage: string;
+  at?: string;
+}
+
+export interface PreparedGitMemorySystemTurn {
+  status: "ready";
+  sessionId: GitMemorySessionId;
+  repoPath: string;
+  initialized: boolean;
+  systemMessage: GitMemoryConversationRecord;
+  context: GitMemoryMachineContextPack;
+}
+
 export interface RecordGitMemoryAssistantMessageInput {
   sessionId: GitMemorySessionId;
   text: string;
@@ -121,6 +135,25 @@ export class GitMemoryRuntime {
       repoPath: session.repoPath,
       initialized: session.initialized,
       userMessage,
+      context: await this.contextReader.buildActiveContext({ sessionId: session.sessionId }),
+    };
+  }
+
+  async prepareSystemTurn(input: PrepareGitMemorySystemTurnInput): Promise<PreparedGitMemorySystemTurn> {
+    const at = input.at ?? this.nowProvider().toISOString();
+    const session = await this.openDailySession({ at });
+    const systemMessage = await this.store.appendConversationMessage({
+      sessionId: session.sessionId,
+      role: "system",
+      text: input.systemMessage,
+      at,
+    });
+    return {
+      status: "ready",
+      sessionId: session.sessionId,
+      repoPath: session.repoPath,
+      initialized: session.initialized,
+      systemMessage,
       context: await this.contextReader.buildActiveContext({ sessionId: session.sessionId }),
     };
   }

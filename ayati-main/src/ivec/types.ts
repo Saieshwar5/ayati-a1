@@ -15,7 +15,6 @@ import type {
   AgentResponseKind,
   AssistantResponseKind,
   FeedbackKind,
-  SessionMemory,
   MemoryRunHandle,
   RunRecorder,
   SessionInputHandle,
@@ -359,7 +358,6 @@ export interface AgentLoopDeps {
   skillActivationManager?: SkillActivationManager;
   toolWorkingSetManager?: ToolWorkingSetManager;
   toolDefinitions: ToolDefinition[];
-  sessionMemory: SessionMemory;
   runRecorder?: RunRecorder;
   inputHandle?: SessionInputHandle;
   runHandle?: MemoryRunHandle;

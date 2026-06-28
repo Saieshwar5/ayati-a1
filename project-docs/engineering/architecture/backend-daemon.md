@@ -12,7 +12,7 @@ Core responsibilities:
 - Start WebSocket chat transport.
 - Start HTTP upload/artifact/Pulse API.
 - Start plugins and system-event worker.
-- Manage session memory, personal memory, and episodic memory.
+- Manage daily git context, personal memory stores, and episodic recall services.
 - Register a hidden tool catalog and expose only a capped run-scoped working set of tool schemas.
 - Execute the IVec decision-action-reducer agent loop.
 - Preserve daemon-owned runtime state under `ayati-main/data/`.

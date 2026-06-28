@@ -4,7 +4,7 @@ import { isAbsolute, join } from "node:path";
 import { tmpdir } from "node:os";
 import { agentLoop } from "../../src/ivec/agent-loop.js";
 import type { LlmProvider } from "../../src/core/contracts/provider.js";
-import { noopSessionMemory } from "../../src/memory/provider.js";
+import { noopRunRecorder } from "../../src/ivec/noop-run-recorder.js";
 import { writeFilesTool } from "../../src/skills/builtins/filesystem/write-files.js";
 import { createToolExecutor } from "../../src/skills/tool-executor.js";
 import type { ToolDefinition } from "../../src/skills/types.js";
@@ -96,7 +96,7 @@ describe("agentLoop", () => {
       const result = await agentLoop({
         provider,
         toolDefinitions: [],
-        sessionMemory: noopSessionMemory,
+        runRecorder: noopRunRecorder,
         runHandle: { sessionId: "s1", runId: "r1" },
         clientId: "c1",
         initialUserMessage: "hello",
@@ -148,7 +148,7 @@ describe("agentLoop", () => {
         provider,
         toolExecutor,
         toolDefinitions: toolExecutor.definitions(),
-        sessionMemory: noopSessionMemory,
+        runRecorder: noopRunRecorder,
         runHandle: { sessionId: "s1", runId: "r2" },
         clientId: "c1",
         initialUserMessage: `Please handle ${outputPath}`,
@@ -205,7 +205,7 @@ describe("agentLoop", () => {
         provider,
         toolExecutor,
         toolDefinitions: toolExecutor.definitions(),
-        sessionMemory: noopSessionMemory,
+        runRecorder: noopRunRecorder,
         runHandle: { sessionId: "s1", runId: "r-completion-candidate" },
         clientId: "c1",
         initialUserMessage: "Create a small website",
@@ -268,7 +268,7 @@ describe("agentLoop", () => {
         provider,
         toolExecutor,
         toolDefinitions: toolExecutor.definitions(),
-        sessionMemory: noopSessionMemory,
+        runRecorder: noopRunRecorder,
         runHandle: { sessionId: "s1", runId: "r-generated-assets" },
         clientId: "c1",
         initialUserMessage: "Create a small generated project",
@@ -352,7 +352,7 @@ describe("agentLoop", () => {
         provider,
         toolExecutor,
         toolDefinitions: toolExecutor.definitions(),
-        sessionMemory: noopSessionMemory,
+        runRecorder: noopRunRecorder,
         runHandle: { sessionId: "s1", runId: "r-repair-input" },
         clientId: "c1",
         initialUserMessage: "Create a small website",
@@ -423,7 +423,7 @@ describe("agentLoop", () => {
         toolExecutor,
         toolWorkingSetManager,
         toolDefinitions: [],
-        sessionMemory: noopSessionMemory,
+        runRecorder: noopRunRecorder,
         runHandle: { sessionId: "s1", runId: "r-load-tools" },
         clientId: "c1",
         initialUserMessage: `Please handle ${outputPath}`,
@@ -497,7 +497,7 @@ describe("agentLoop", () => {
         provider,
         toolExecutor,
         toolDefinitions: toolExecutor.definitions(),
-        sessionMemory: noopSessionMemory,
+        runRecorder: noopRunRecorder,
         runHandle: { sessionId: "s1", runId: "r-story" },
         clientId: "c1",
         initialUserMessage: "Can you create a small website which will have small story for kids",
@@ -533,67 +533,10 @@ describe("agentLoop", () => {
         stop: vi.fn(),
         generateTurn,
       };
-      const sessionMemory = {
-        ...noopSessionMemory,
-        getPromptMemoryContext: vi.fn().mockReturnValue({
-          recentExchanges: [{
-            runId: "old-run",
-            user: {
-              timestamp: "2026-06-12T09:00:00.000Z",
-              content: "Build a todo app",
-            },
-            assistant: {
-              timestamp: "2026-06-12T09:01:00.000Z",
-              content: "Created the todo app.",
-            },
-          }, {
-            runId: "r-context",
-            user: {
-              timestamp: "2026-06-12T09:10:00.000Z",
-              content: "make it responsive too",
-            },
-          }],
-          sessionEvents: [
-            {
-              type: "user_message",
-              seq: 1,
-              timestamp: "2026-06-12T09:00:00.000Z",
-              content: "Build a todo app",
-            },
-            {
-              type: "assistant_response",
-              seq: 2,
-              timestamp: "2026-06-12T09:01:00.000Z",
-              workRunId: "old-run",
-              content: "Created the todo app.",
-            },
-            {
-              type: "user_message",
-              seq: 3,
-              timestamp: "2026-06-12T09:10:00.000Z",
-              content: "make it responsive too",
-            },
-          ],
-          conversationTurns: [
-            { role: "user", content: "Build a todo app", timestamp: "2026-06-12T09:00:00.000Z", sessionPath: "sessions/s1.md" },
-            { role: "assistant", content: "Created the todo app.", timestamp: "2026-06-12T09:01:00.000Z", sessionPath: "sessions/s1.md", workRunId: "old-run" },
-          ],
-          personalMemorySnapshot: "- Prefers concise implementation notes.",
-        }),
-        getSessionStatus: vi.fn().mockReturnValue({
-          contextPercent: 12,
-          turns: 2,
-          sessionAgeMinutes: 10,
-          startedAt: "2026-06-12T09:00:00.000Z",
-          handoffPhase: "inactive",
-          pendingRotationReason: null,
-        }),
-      };
-
       await agentLoop({
         provider,
         toolDefinitions: [],
-        sessionMemory,
+        runRecorder: noopRunRecorder,
         inputHandle: { sessionId: "s1", seq: 3 },
         runHandle: { sessionId: "s1", runId: "r-context", triggerSeq: 3 },
         clientId: "c1",
@@ -601,6 +544,7 @@ describe("agentLoop", () => {
         dataDir,
         systemContext: "static decision context",
         harnessContext: {
+          personalMemorySnapshot: "- Prefers concise implementation notes.",
           contextEngine: {
             session: {
               sessionId: "2026-06-12",
@@ -792,7 +736,7 @@ describe("agentLoop", () => {
         provider,
         toolExecutor,
         toolDefinitions: toolExecutor.definitions(),
-        sessionMemory: noopSessionMemory,
+        runRecorder: noopRunRecorder,
         runHandle: { sessionId: "s1", runId: "r-observation" },
         clientId: "c1",
         initialUserMessage: "what is my ram usage and what programs are using it?",

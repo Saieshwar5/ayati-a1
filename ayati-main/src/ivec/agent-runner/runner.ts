@@ -4,7 +4,7 @@ import { devLog, devWarn } from "../../shared/index.js";
 import { prepareIncomingAttachments } from "../../documents/attachment-preparer.js";
 import type { PreparedAttachmentRecord } from "../../documents/prepared-attachment-registry.js";
 import type { PreparedAttachmentSummary } from "../../documents/types.js";
-import type { MemoryRunHandle, SessionInputHandle } from "../../memory/types.js";
+import type { MemoryRunHandle, RunRecorder, SessionInputHandle } from "../../memory/types.js";
 import type { TaskAssetRecord } from "../../context-engine/index.js";
 import type { AgentArtifact } from "../types.js";
 import type {
@@ -73,6 +73,24 @@ interface MemoryRunContext {
   runStateManager: RunStateManager;
 }
 
+const noopRunRecorder: RunRecorder = {
+  recordToolCall(): void {
+    return;
+  },
+  recordToolResult(): void {
+    return;
+  },
+  recordAssistantFinal(): void {
+    return;
+  },
+  recordRunFailure(): void {
+    return;
+  },
+  recordAgentStep(): void {
+    return;
+  },
+};
+
 export async function runAgentLoop(
   deps: AgentLoopDeps,
   resolvedConfig?: LoopConfig,
@@ -100,13 +118,10 @@ export async function runAgentLoop(
 
   const ensureWorkRun = async (): Promise<MemoryRunContext> => {
     if (!workRunHandle) {
-      const createWorkRun = deps.createWorkRun ?? ((handle: SessionInputHandle): MemoryRunHandle => {
-        const sessionCreateWorkRun = deps.sessionMemory.createWorkRun;
-        if (!sessionCreateWorkRun) {
-          throw new Error("Session memory does not support work run creation.");
-        }
-        return sessionCreateWorkRun.call(deps.sessionMemory, deps.clientId, handle);
-      });
+      const createWorkRun = deps.createWorkRun;
+      if (!createWorkRun) {
+        throw new Error("Git-memory run handle is required before agent action execution.");
+      }
       workRunHandle = createWorkRun(inputHandle);
       deps.runHandle = workRunHandle;
       deps.onWorkRunCreated?.(workRunHandle);
@@ -744,7 +759,7 @@ async function executeActionStep(input: ExecuteActionStepInput): Promise<Execute
       config: input.config,
       clientId: input.deps.clientId,
       ...(input.deps.uiContext ? { uiContext: input.deps.uiContext } : {}),
-      runRecorder: input.deps.runRecorder ?? input.deps.sessionMemory,
+      runRecorder: input.deps.runRecorder ?? noopRunRecorder,
       runHandle,
       metrics: input.metrics,
       runPath: input.state.runPath,
@@ -766,7 +781,7 @@ async function executeActionStep(input: ExecuteActionStepInput): Promise<Execute
           config: input.config,
           clientId: input.deps.clientId,
           ...(input.deps.uiContext ? { uiContext: input.deps.uiContext } : {}),
-          runRecorder: input.deps.runRecorder ?? input.deps.sessionMemory,
+          runRecorder: input.deps.runRecorder ?? noopRunRecorder,
           runHandle,
           metrics: input.metrics,
           runPath: input.state.runPath,
@@ -1085,12 +1100,8 @@ async function prepareAttachmentsForRun(
   state.preparedAttachmentRecords = prepared.records;
 }
 
-function syncHarnessContext(state: LoopState, deps: AgentLoopDeps, inputHandle: SessionInputHandle): void {
+function syncHarnessContext(state: LoopState, deps: AgentLoopDeps, _inputHandle: SessionInputHandle): void {
   applyHarnessContextToState(state, buildHarnessContextFromSources({
-    sessionMemory: deps.sessionMemory,
-    clientId: deps.clientId,
-    sessionId: inputHandle.sessionId,
-    userMessage: state.userMessage,
     input: harnessContextInputFromDeps(deps),
   }));
 }
@@ -1112,9 +1123,7 @@ function getPrimaryUserMessage(deps: AgentLoopDeps): string {
   if (initial) {
     return initial;
   }
-  const context = deps.sessionMemory.getPromptMemoryContext();
-  const lastUser = [...(context.conversationTurns ?? [])].reverse().find((turn) => turn.role === "user");
-  return lastUser?.content ?? "";
+  return "";
 }
 
 function emptyWorkState(): WorkState {

@@ -119,10 +119,9 @@ Personal memory enters the model only as optional `personalMemorySnapshot`.
 
 ## Run Recorder
 
-The live run recording contract is separated from the broader session memory
-interface through `RunRecorder`. Agent action execution depends on
-`RunRecorder`, so tool logging and progress logging do not need access to the
-full memory/session service.
+The live run recording contract is narrow and explicit through `RunRecorder`.
+Agent action execution depends on `RunRecorder`, so tool logging and progress
+logging do not need access to any session-memory service.
 
 `RunRecorder` handles:
 
@@ -130,14 +129,11 @@ full memory/session service.
 - agent progress steps
 - run failures
 
-`SessionMemory` still extends `RunRecorder` while the runtime finishes moving
-message/session lifecycle concerns into app-level services. It is no longer the
-durable task-continuation source. Task state and task assets belong to git
-context.
-
-`MemoryManager` is now limited to daily message/session persistence, run handles,
-system-event outcomes, personal memory snapshots, and lifecycle hooks. The old
-task-thread and Activity internals have been removed from it.
+`SessionMemory` and the old `MemoryManager` runtime have been removed from the
+app path. Chat and system-event turns use git context for message recording,
+run identity, task routing, assistant response recording, and task-run commits.
+Agent action execution receives only the narrow `RunRecorder` contract, with
+git-memory run ids supplied before tool execution.
 
 ## Removed Current Path
 

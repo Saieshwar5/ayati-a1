@@ -1,5 +1,4 @@
 import { describe, expect, it } from "vitest";
-import { noopSessionMemory } from "../../src/memory/provider.js";
 import {
   applyHarnessContextToState,
   buildHarnessContextFromSources,
@@ -24,30 +23,12 @@ describe("harness context", () => {
     expect(context).not.toHaveProperty("taskThreadContext");
   });
 
-  it("builds harness context from session memory and context-engine input", () => {
+  it("builds harness context from explicit personal memory and context-engine input", () => {
     const contextEngine = contextEngineFixture();
-    const sessionMemory = {
-      ...noopSessionMemory,
-      getPromptMemoryContext: () => ({
-        recentExchanges: [],
-        sessionEvents: [{
-          type: "user_message" as const,
-          seq: 7,
-          timestamp: "2026-06-27T10:00:00.000Z",
-          content: "continue invoice",
-        }],
-        conversationTurns: [],
-        recentSystemEvents: [],
-        personalMemorySnapshot: "- Likes short plans.",
-      }),
-    };
 
     const context = buildHarnessContextFromSources({
-      sessionMemory,
-      clientId: "local",
-      sessionId: "s1",
-      userMessage: "continue invoice",
       input: {
+        personalMemorySnapshot: "- Likes short plans.",
         contextEngine,
       },
     });

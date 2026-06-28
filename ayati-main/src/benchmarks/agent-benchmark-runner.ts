@@ -11,7 +11,7 @@ import { PreparedAttachmentRegistry } from "../documents/prepared-attachment-reg
 import { PreparedAttachmentService } from "../documents/prepared-attachment-service.js";
 import type { ManagedDocumentManifest } from "../documents/types.js";
 import { agentLoop } from "../ivec/agent-loop.js";
-import { noopSessionMemory } from "../memory/provider.js";
+import { noopRunRecorder } from "../ivec/noop-run-recorder.js";
 import { estimateTextTokens } from "../prompt/token-estimator.js";
 import { createDocumentSkill } from "../skills/builtins/documents/index.js";
 import filesystemSkill from "../skills/builtins/filesystem/index.js";
@@ -1790,7 +1790,7 @@ async function runCase(input: RunCaseInput): Promise<BenchmarkCaseResult> {
     provider,
     ...(toolExecutor ? { toolExecutor } : {}),
     toolDefinitions: toolExecutor?.definitions() ?? [],
-    sessionMemory: noopSessionMemory,
+    runRecorder: noopRunRecorder,
     runHandle: { sessionId: "bench-session", runId: input.caseId },
     clientId: "bench-client",
     initialUserMessage: input.userMessage,

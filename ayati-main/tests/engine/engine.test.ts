@@ -13,7 +13,6 @@ import {
 } from "../../src/app/system-event-runtime.js";
 import type { LlmProvider } from "../../src/core/contracts/provider.js";
 import type { LlmTurnInput, LlmTurnOutput } from "../../src/core/contracts/llm-protocol.js";
-import type { SessionMemory } from "../../src/memory/types.js";
 import type { StaticContext } from "../../src/context/static-context-cache.js";
 import type { SystemEventPolicyConfig } from "../../src/ivec/system-event-policy.js";
 import { writeFilesTool } from "../../src/skills/builtins/filesystem/write-files.js";
@@ -23,6 +22,11 @@ import type {
   GitMemoryChatContextRoutedTurn,
   GitMemoryChatContextRuntime,
 } from "../../src/app/git-memory-chat-context-runtime.js";
+import type {
+  GitMemorySystemEventContextPreparedTurn,
+  GitMemorySystemEventContextRoutedTurn,
+  GitMemorySystemEventContextRuntime,
+} from "../../src/app/git-memory-system-event-context-runtime.js";
 
 function createMockProvider(overrides?: Partial<LlmProvider>): LlmProvider {
   return {
@@ -42,28 +46,6 @@ function createMockProvider(overrides?: Partial<LlmProvider>): LlmProvider {
         }),
       }),
     ...overrides,
-  };
-}
-
-function createSessionMemory(): SessionMemory {
-  return {
-    initialize: vi.fn(),
-    shutdown: vi.fn(),
-    recordUserMessage: vi.fn().mockReturnValue({ sessionId: "s1", seq: 1 }),
-    recordSystemEvent: vi.fn().mockReturnValue({ sessionId: "s1", seq: 1 }),
-    createWorkRun: vi.fn().mockReturnValue({ sessionId: "s1", runId: "r1", triggerSeq: 1 }),
-    recordToolCall: vi.fn(),
-    recordToolResult: vi.fn(),
-    recordAssistantFinal: vi.fn(),
-    recordAssistantMessage: vi.fn(),
-    recordRunFailure: vi.fn(),
-    recordAgentStep: vi.fn(),
-    recordSystemEventOutcome: vi.fn(),
-    recordAssistantNotification: vi.fn(),
-    getPromptMemoryContext: vi.fn().mockReturnValue({
-      conversationTurns: [],
-    }),
-    setStaticTokenBudget: vi.fn(),
   };
 }
 
@@ -176,21 +158,61 @@ function createChatContextRuntime(
   };
 }
 
+function createSystemEventContextRuntime(
+  routedTurn: GitMemorySystemEventContextRoutedTurn = readyGitMemorySystemEventRoutedTurn(),
+): GitMemorySystemEventContextRuntime {
+  const prepared = readyGitMemorySystemEventPreparedTurn();
+  return {
+    prepareSystemEventTurn: vi.fn().mockResolvedValue(prepared),
+    routeTaskTurn: vi.fn().mockResolvedValue(routedTurn),
+    completeTaskRun: vi.fn().mockResolvedValue({
+      taskId: routedTurn.status === "ready" ? routedTurn.taskId : "W-20260627-0001",
+      branch: routedTurn.status === "ready" ? routedTurn.branch : "task/W-20260627-0001-analyze-invoice",
+      ref: routedTurn.status === "ready" ? routedTurn.ref : "refs/heads/task/W-20260627-0001-analyze-invoice",
+      runId: "R-20260627-0001",
+      taskCommit: "task-commit",
+      event: {
+        v: 1,
+        seq: 1,
+        eventId: "E-20260627-000001",
+        type: "run_completed",
+        at: "2026-06-27T10:05:00+05:30",
+        taskId: routedTurn.status === "ready" ? routedTurn.taskId : "W-20260627-0001",
+        runId: "R-20260627-0001",
+        branch: routedTurn.status === "ready" ? routedTurn.branch : "task/W-20260627-0001-analyze-invoice",
+        commit: "task-commit",
+      },
+    }),
+    recordAssistantMessage: vi.fn().mockResolvedValue({
+      v: 1,
+      seq: 2,
+      messageId: "M-20260627-000002",
+      turnId: prepared.turnId,
+      role: "assistant",
+      at: "2026-06-27T10:05:01+05:30",
+      text: "mock reply",
+    }),
+    buildActiveContext: vi.fn().mockResolvedValue(routedTurn.context),
+  };
+}
+
 type TestEngineOptions =
-  & Omit<Partial<CreateChatTurnRuntimeOptions & CreateSystemEventRuntimeOptions>, "sessionMemory" | "chatContextRuntime">
+  & Omit<
+    Partial<CreateChatTurnRuntimeOptions & CreateSystemEventRuntimeOptions>,
+    "chatContextRuntime" | "systemEventContextRuntime"
+  >
   & {
-    sessionMemory?: SessionMemory;
     chatContextRuntime?: GitMemoryChatContextRuntime;
+    systemEventContextRuntime?: GitMemorySystemEventContextRuntime;
   };
 
 function createEngine(options: TestEngineOptions = {}): IVecEngine {
-  const sessionMemory = options.sessionMemory ?? createSessionMemory();
   const chatContextRuntime = options.chatContextRuntime ?? createChatContextRuntime();
+  const systemEventContextRuntime = options.systemEventContextRuntime ?? createSystemEventContextRuntime();
   const chatTurnRuntime = createChatTurnRuntime({
     onReply: options.onReply,
     provider: options.provider,
     staticContext: options.staticContext,
-    sessionMemory,
     toolExecutor: options.toolExecutor,
     skillActivationManager: options.skillActivationManager,
     toolWorkingSetManager: options.toolWorkingSetManager,
@@ -208,12 +230,11 @@ function createEngine(options: TestEngineOptions = {}): IVecEngine {
     onReply: options.onReply,
     provider: options.provider,
     staticContext: options.staticContext,
-    sessionMemory,
+    systemEventContextRuntime,
     toolExecutor: options.toolExecutor,
     skillActivationManager: options.skillActivationManager,
     toolWorkingSetManager: options.toolWorkingSetManager,
     loopConfig: options.loopConfig,
-    rotationPolicyConfig: options.rotationPolicyConfig,
     now: options.now,
     dataDir: options.dataDir,
     documentStore: options.documentStore,
@@ -226,7 +247,6 @@ function createEngine(options: TestEngineOptions = {}): IVecEngine {
   return new IVecEngine({
     provider: options.provider,
     staticContext: options.staticContext,
-    sessionMemory,
     now: options.now,
     chatTurnRuntime,
     systemEventRuntime,
@@ -234,6 +254,28 @@ function createEngine(options: TestEngineOptions = {}): IVecEngine {
 }
 
 function readyGitMemoryPreparedTurn(): GitMemoryChatContextPreparedTurn {
+  return {
+    status: "ready",
+    sessionId: "S-20260627-local",
+    repoPath: "/tmp/ayati-git-memory/S-20260627-local",
+    initialized: false,
+    messageSeq: 1,
+    messageId: "M-20260627-000001",
+    turnId: "T-20260627-000001",
+    context: {
+      session: {
+        sessionId: "S-20260627-local",
+        conversationTail: [],
+        eventTail: [],
+        taskMessageLinkTail: [],
+        taskCount: 1,
+      },
+      focus: { status: "none" },
+    },
+  };
+}
+
+function readyGitMemorySystemEventPreparedTurn(): GitMemorySystemEventContextPreparedTurn {
   return {
     status: "ready",
     sessionId: "S-20260627-local",
@@ -345,6 +387,10 @@ function readyGitMemoryRoutedTurn(): Extract<GitMemoryChatContextRoutedTurn, { s
   };
 }
 
+function readyGitMemorySystemEventRoutedTurn(): Extract<GitMemorySystemEventContextRoutedTurn, { status: "ready" }> {
+  return readyGitMemoryRoutedTurn();
+}
+
 function ambiguousGitMemoryRoutedTurn(): Extract<GitMemoryChatContextRoutedTurn, { status: "ambiguous" }> {
   const context = {
     session: {
@@ -433,15 +479,13 @@ describe("IVecEngine", () => {
   });
 
   it("calls provider.generateTurn and returns reply", async () => {
-    const dataDir = mkdtempSync(join(tmpdir(), "ayati-eng-"));
+      const dataDir = mkdtempSync(join(tmpdir(), "ayati-eng-"));
     try {
       const provider = createMockProvider();
       const onReply = vi.fn();
-      const sessionMemory = createSessionMemory();
       const engine = createEngine({
         onReply,
         provider,
-        sessionMemory,
         dataDir,
         systemEventPolicy: createSystemEventPolicy(),
       });
@@ -456,9 +500,6 @@ describe("IVecEngine", () => {
           content: "mock reply",
         });
       });
-      expect(sessionMemory.recordUserMessage as ReturnType<typeof vi.fn>).not.toHaveBeenCalled();
-      expect(sessionMemory.recordAssistantMessage as ReturnType<typeof vi.fn>).not.toHaveBeenCalled();
-      expect(sessionMemory.createWorkRun as ReturnType<typeof vi.fn>).not.toHaveBeenCalled();
     } finally {
       rmSync(dataDir, { recursive: true, force: true });
     }
@@ -471,7 +512,6 @@ describe("IVecEngine", () => {
     const engine = createEngine({
       onReply,
       provider,
-      sessionMemory: createSessionMemory(),
       chatContextRuntime,
       systemEventPolicy: createSystemEventPolicy(),
     });
@@ -505,7 +545,6 @@ describe("IVecEngine", () => {
       const engine = createEngine({
         onReply: vi.fn(),
         provider,
-        sessionMemory: createSessionMemory(),
         dataDir,
         chatContextRuntime,
         systemEventPolicy: createSystemEventPolicy(),
@@ -576,11 +615,9 @@ describe("IVecEngine", () => {
       });
       const toolExecutor = createToolExecutor([writeFilesTool]);
       const onReply = vi.fn();
-      const sessionMemory = createSessionMemory();
       const engine = createEngine({
         onReply,
         provider,
-        sessionMemory,
         toolExecutor,
         dataDir,
         systemEventPolicy: createSystemEventPolicy(),
@@ -606,7 +643,6 @@ describe("IVecEngine", () => {
         content: expect.stringContaining("Step 1"),
         runId: "R-20260627-0001",
       });
-      expect(sessionMemory.recordAgentStep as ReturnType<typeof vi.fn>).not.toHaveBeenCalled();
     } finally {
       rmSync(dataDir, { recursive: true, force: true });
     }
@@ -647,11 +683,9 @@ describe("IVecEngine", () => {
       });
       const toolExecutor = createToolExecutor([writeFilesTool]);
       const onReply = vi.fn();
-      const sessionMemory = createSessionMemory();
       const engine = createEngine({
         onReply,
         provider,
-        sessionMemory,
         toolExecutor,
         dataDir,
         systemEventPolicy: createSystemEventPolicy(),
@@ -712,12 +746,10 @@ describe("IVecEngine", () => {
       });
       const toolExecutor = createToolExecutor([writeFilesTool]);
       const onReply = vi.fn();
-      const sessionMemory = createSessionMemory();
 
       const engine = createEngine({
         onReply,
         provider,
-        sessionMemory,
         toolExecutor,
         dataDir,
         systemEventPolicy: createSystemEventPolicy(),
@@ -772,30 +804,16 @@ describe("IVecEngine", () => {
     }
   });
 
-  it("passes static token budget to session memory on start", async () => {
-    const provider = createMockProvider();
-    const sessionMemory = createSessionMemory();
-
-    const engine = createEngine({ provider, sessionMemory });
-    await engine.start();
-
-    expect(sessionMemory.setStaticTokenBudget).toHaveBeenCalledWith(expect.any(Number));
-    const budget = (sessionMemory.setStaticTokenBudget as ReturnType<typeof vi.fn>).mock.calls[0]![0] as number;
-    expect(budget).toBe(0);
-
-    await engine.stop();
-  });
-
-  it("processes pulse system_event through recordSystemEvent", async () => {
+  it("processes pulse system_event through git-memory system context", async () => {
     const dataDir = mkdtempSync(join(tmpdir(), "ayati-eng-system-event-"));
     try {
       const provider = createMockProvider();
       const onReply = vi.fn();
-      const sessionMemory = createSessionMemory();
+      const systemEventContextRuntime = createSystemEventContextRuntime();
       const engine = createEngine({
         onReply,
         provider,
-        sessionMemory,
+        systemEventContextRuntime,
         dataDir,
         systemEventPolicy: createSystemEventPolicy(),
       });
@@ -820,37 +838,32 @@ describe("IVecEngine", () => {
         },
       });
 
-      expect(sessionMemory.recordSystemEvent as ReturnType<typeof vi.fn>).toHaveBeenCalledWith(
-        "c1",
-        expect.objectContaining({ source: "pulse", event: "reminder_due", eventId: "evt-1" }),
-      );
-      expect(sessionMemory.createWorkRun as ReturnType<typeof vi.fn>).not.toHaveBeenCalled();
+      expect(systemEventContextRuntime.prepareSystemEventTurn).toHaveBeenCalledWith(expect.objectContaining({
+        clientId: "c1",
+        systemMessage: expect.stringContaining("System event: pulse/reminder_due"),
+        at: "2026-03-01T10:00:05.000Z",
+      }));
+      expect(systemEventContextRuntime.routeTaskTurn).toHaveBeenCalledWith(expect.objectContaining({
+        clientId: "c1",
+        userMessage: expect.stringContaining("Reminder due: Health"),
+      }));
       expect(onReply).toHaveBeenCalledWith("c1", {
         type: "notification",
         content: "mock reply",
         final: true,
       });
-      expect(sessionMemory.recordAssistantMessage as ReturnType<typeof vi.fn>).toHaveBeenCalledWith(
-        "c1",
-        expect.objectContaining({
-          sessionId: "s1",
-          content: "mock reply",
-          responseKind: "notification",
-        }),
-      );
-      expect(sessionMemory.recordAssistantNotification as ReturnType<typeof vi.fn>).toHaveBeenCalledWith(
-        "c1",
-        expect.objectContaining({ message: "mock reply", source: "pulse", event: "reminder_due", eventId: "evt-1" }),
-      );
-      expect(sessionMemory.recordSystemEventOutcome as ReturnType<typeof vi.fn>).toHaveBeenCalledWith(
-        "c1",
-        expect.objectContaining({
-          eventId: "evt-1",
-          status: "completed",
-          responseKind: "notification",
-          note: expect.stringContaining("mode=auto_execute_notify"),
-        }),
-      );
+      expect(systemEventContextRuntime.completeTaskRun).toHaveBeenCalledWith(expect.objectContaining({
+        clientId: "c1",
+        taskId: "W-20260627-0001",
+        runId: "R-20260627-0001",
+        result: expect.objectContaining({ content: "mock reply" }),
+      }));
+      expect(systemEventContextRuntime.recordAssistantMessage).toHaveBeenCalledWith(expect.objectContaining({
+        clientId: "c1",
+        message: "mock reply",
+        taskId: "W-20260627-0001",
+        runId: "R-20260627-0001",
+      }));
     } finally {
       rmSync(dataDir, { recursive: true, force: true });
     }
@@ -891,11 +904,9 @@ describe("IVecEngine", () => {
       });
       const toolExecutor = createToolExecutor([writeFilesTool]);
       const onReply = vi.fn();
-      const sessionMemory = createSessionMemory();
       const engine = createEngine({
         onReply,
         provider,
-        sessionMemory,
         toolExecutor,
         dataDir,
         systemEventPolicy: createSystemEventPolicy(),
@@ -923,7 +934,7 @@ describe("IVecEngine", () => {
       expect(onReply).toHaveBeenCalledWith("c1", {
         type: "progress",
         content: expect.stringContaining("Step 1"),
-        runId: "r1",
+        runId: "R-20260627-0001",
       });
       expect(onReply).toHaveBeenCalledWith("c1", {
         type: "notification",
@@ -936,16 +947,16 @@ describe("IVecEngine", () => {
     }
   });
 
-  it("processes pulse scheduled task system_event through recordSystemEvent", async () => {
+  it("processes pulse scheduled task system_event through git-memory system context", async () => {
     const dataDir = mkdtempSync(join(tmpdir(), "ayati-eng-system-task-event-"));
     try {
       const provider = createMockProvider();
       const onReply = vi.fn();
-      const sessionMemory = createSessionMemory();
+      const systemEventContextRuntime = createSystemEventContextRuntime();
       const engine = createEngine({
         onReply,
         provider,
-        sessionMemory,
+        systemEventContextRuntime,
         dataDir,
         systemEventPolicy: createSystemEventPolicy(),
       });
@@ -978,37 +989,31 @@ describe("IVecEngine", () => {
         },
       });
 
-      expect(sessionMemory.recordSystemEvent as ReturnType<typeof vi.fn>).toHaveBeenCalledWith(
-        "c1",
-        expect.objectContaining({ source: "pulse", event: "task_due", eventId: "evt-task-1" }),
-      );
-      expect(sessionMemory.createWorkRun as ReturnType<typeof vi.fn>).not.toHaveBeenCalled();
+      expect(systemEventContextRuntime.prepareSystemEventTurn).toHaveBeenCalledWith(expect.objectContaining({
+        clientId: "c1",
+        systemMessage: expect.stringContaining("System event: pulse/task_due"),
+      }));
+      expect(systemEventContextRuntime.routeTaskTurn).toHaveBeenCalledWith(expect.objectContaining({
+        clientId: "c1",
+        userMessage: expect.stringContaining("check_system_health"),
+      }));
       expect(onReply).toHaveBeenCalledWith("c1", {
         type: "notification",
         content: "mock reply",
         final: true,
       });
-      expect(sessionMemory.recordAssistantMessage as ReturnType<typeof vi.fn>).toHaveBeenCalledWith(
-        "c1",
-        expect.objectContaining({
-          sessionId: "s1",
-          content: "mock reply",
-          responseKind: "notification",
-        }),
-      );
-      expect(sessionMemory.recordAssistantNotification as ReturnType<typeof vi.fn>).toHaveBeenCalledWith(
-        "c1",
-        expect.objectContaining({ message: "mock reply", source: "pulse", event: "task_due", eventId: "evt-task-1" }),
-      );
-      expect(sessionMemory.recordSystemEventOutcome as ReturnType<typeof vi.fn>).toHaveBeenCalledWith(
-        "c1",
-        expect.objectContaining({
-          eventId: "evt-task-1",
-          status: "completed",
-          responseKind: "notification",
-          note: expect.stringContaining("requestedAction=check_system_health"),
-        }),
-      );
+      expect(systemEventContextRuntime.completeTaskRun).toHaveBeenCalledWith(expect.objectContaining({
+        clientId: "c1",
+        taskId: "W-20260627-0001",
+        runId: "R-20260627-0001",
+        result: expect.objectContaining({ content: "mock reply" }),
+      }));
+      expect(systemEventContextRuntime.recordAssistantMessage).toHaveBeenCalledWith(expect.objectContaining({
+        clientId: "c1",
+        message: "mock reply",
+        taskId: "W-20260627-0001",
+        runId: "R-20260627-0001",
+      }));
     } finally {
       rmSync(dataDir, { recursive: true, force: true });
     }
@@ -1028,11 +1033,11 @@ describe("IVecEngine", () => {
         }),
       });
       const onReply = vi.fn();
-      const sessionMemory = createSessionMemory();
+      const systemEventContextRuntime = createSystemEventContextRuntime();
       const engine = createEngine({
         onReply,
         provider,
-        sessionMemory,
+        systemEventContextRuntime,
         dataDir,
         systemEventPolicy: createSystemEventPolicy(),
       });
@@ -1053,100 +1058,25 @@ describe("IVecEngine", () => {
       });
 
       await vi.waitFor(() => {
-        expect(sessionMemory.recordSystemEvent as ReturnType<typeof vi.fn>).toHaveBeenCalledWith(
-          "c1",
-          expect.objectContaining({ source: "custom-system", event: "task.requested", eventId: "evt-approval-1" }),
-        );
         expect(onReply).toHaveBeenCalledWith("c1", {
           type: "feedback",
           content: "mock reply",
         });
       });
-      expect(sessionMemory.recordAssistantMessage as ReturnType<typeof vi.fn>).toHaveBeenCalledWith(
-        "c1",
-        expect.objectContaining({
-          sessionId: "s1",
-          content: "mock reply",
-          responseKind: "feedback",
-        }),
-      );
-      expect(sessionMemory.recordSystemEventOutcome as ReturnType<typeof vi.fn>).toHaveBeenCalledWith(
-        "c1",
-        expect.objectContaining({
-          eventId: "evt-approval-1",
-          status: "completed",
-          responseKind: "feedback",
-          note: expect.stringContaining("requestedAction=send_report"),
-        }),
-      );
-    } finally {
-      rmSync(dataDir, { recursive: true, force: true });
-    }
-  });
-
-  it("does not rotate or record chat input through SessionMemory", async () => {
-    const dataDir = mkdtempSync(join(tmpdir(), "ayati-eng-rotate-"));
-    try {
-      const provider = createMockProvider();
-      const onReply = vi.fn();
-
-      const recordUserMessage = vi.fn().mockReturnValue({ sessionId: "s2", seq: 1 });
-      const createSession = vi.fn().mockReturnValue({
-        previousSessionId: "s1",
-        sessionId: "s2",
-        sessionPath: "sessions/s2.md",
-      });
-
-      const sessionMemory: SessionMemory = {
-        initialize: vi.fn(),
-        shutdown: vi.fn(),
-        recordUserMessage,
-        createWorkRun: vi.fn().mockReturnValue({ sessionId: "s2", runId: "r2", triggerSeq: 1 }),
-        createSession,
-        recordToolCall: vi.fn(),
-        recordToolResult: vi.fn(),
-        recordAssistantFinal: vi.fn(),
-        recordAssistantMessage: vi.fn(),
-        recordRunFailure: vi.fn(),
-        recordAgentStep: vi.fn(),
-        recordAssistantNotification: vi.fn(),
-        getPromptMemoryContext: vi.fn().mockReturnValue({
-          conversationTurns: [
-            {
-              role: "user",
-              content: "long task context",
-              timestamp: new Date(Date.UTC(2026, 1, 20, 10, 0, 0)).toISOString(),
-              sessionPath: "sessions/s1.md",
-            },
-          ],
-        }),
-        getSessionStatus: vi.fn().mockReturnValue({
-          contextPercent: 96,
-          turns: 10,
-          sessionAgeMinutes: 20,
-          startedAt: new Date(Date.UTC(2026, 1, 20, 8, 0, 0)).toISOString(),
-          handoffPhase: "finalized",
-          pendingRotationReason: "context_threshold",
-        }),
-        updateSessionLifecycle: vi.fn(),
-        flushPersistence: vi.fn().mockResolvedValue(undefined),
-        setStaticTokenBudget: vi.fn(),
-      };
-
-      const engine = createEngine({ onReply, provider, sessionMemory, dataDir });
-      await engine.start();
-
-      engine.handleMessage("c1", { type: "chat", content: "continue" });
-
-      await vi.waitFor(() => {
-        expect(onReply).toHaveBeenCalledWith("c1", {
-          type: "reply",
-          content: "mock reply",
-        });
-      });
-
-      expect(createSession).not.toHaveBeenCalled();
-      expect(recordUserMessage).not.toHaveBeenCalled();
+      expect(systemEventContextRuntime.prepareSystemEventTurn).toHaveBeenCalledWith(expect.objectContaining({
+        clientId: "c1",
+        systemMessage: expect.stringContaining("System event: custom-system/task.requested"),
+      }));
+      expect(systemEventContextRuntime.routeTaskTurn).toHaveBeenCalledWith(expect.objectContaining({
+        clientId: "c1",
+        userMessage: expect.stringContaining("send_report"),
+      }));
+      expect(systemEventContextRuntime.recordAssistantMessage).toHaveBeenCalledWith(expect.objectContaining({
+        clientId: "c1",
+        message: "mock reply",
+        taskId: "W-20260627-0001",
+        runId: "R-20260627-0001",
+      }));
     } finally {
       rmSync(dataDir, { recursive: true, force: true });
     }

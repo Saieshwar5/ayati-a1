@@ -1,10 +1,7 @@
 import { resolve } from "node:path";
-import type { LlmProvider } from "../core/index.js";
-import { MemoryManager } from "../memory/session-manager.js";
 import { loadMemoryPolicy } from "../memory/personal/memory-policy.js";
 import { PersonalMemoryStore } from "../memory/personal/personal-memory-store.js";
 import { PersonalMemorySnapshotCache } from "../memory/personal/personal-memory-snapshot-cache.js";
-import { MemoryConsolidator } from "../memory/personal/memory-consolidator.js";
 import type { SummaryEmbeddingProvider } from "../memory/embedding-provider.js";
 import {
   EpisodicMemoryController,
@@ -20,15 +17,12 @@ import type { EmbeddingProvider } from "../embeddings/contracts.js";
 export interface MemoryRuntimeOptions {
   projectRoot: string;
   clientId: string;
-  provider: LlmProvider;
   embeddingProvider?: EmbeddingProvider;
 }
 
 export interface MemoryRuntime {
-  sessionMemory: MemoryManager;
   personalMemoryStore: PersonalMemoryStore;
   personalMemorySnapshotCache: PersonalMemorySnapshotCache;
-  personalMemoryConsolidator: MemoryConsolidator;
   memoryIndexer: EpisodicMemoryIndexer;
   memoryRetriever: EpisodicMemoryRetriever;
   episodicMemoryController: EpisodicMemoryController;
@@ -36,7 +30,7 @@ export interface MemoryRuntime {
 }
 
 export async function createMemoryRuntime(options: MemoryRuntimeOptions): Promise<MemoryRuntime> {
-  const { projectRoot, clientId, provider } = options;
+  const { projectRoot, clientId } = options;
   const memoryDataDir = resolve(projectRoot, "data", "memory");
   const episodicDataDir = resolve(memoryDataDir, "episodic");
 
@@ -92,57 +86,13 @@ export async function createMemoryRuntime(options: MemoryRuntimeOptions): Promis
     embeddingModel: () => memoryEmbedder?.modelName ?? episodicSettingsStore.get(clientId).embeddingModel,
   });
 
-  let personalMemoryConsolidator: MemoryConsolidator | null = null;
-  const sessionMemory = new MemoryManager({
-    personalMemorySnapshotProvider: (snapshotClientId) => personalMemorySnapshotCache.getSnapshot(snapshotClientId),
-    onSessionClose: (data) => {
-      personalMemoryConsolidator?.enqueueSession({
-        userId: data.clientId,
-        sessionId: data.sessionId,
-        sessionPath: data.sessionPath,
-        handoffSummary: data.handoffSummary,
-        reason: data.reason,
-        turns: data.turns.map((turn) => ({
-          role: turn.role,
-          content: turn.content,
-          timestamp: turn.timestamp,
-          sessionPath: turn.sessionPath,
-          ...(turn.workRunId ? { workRunId: turn.workRunId } : {}),
-        })),
-      });
-      void memoryIndexer.enqueueClosedSession({
-        clientId: data.clientId,
-        sessionId: data.sessionId,
-        sessionPath: data.sessionPath,
-        sessionFilePath: data.sessionFilePath,
-        reason: data.reason,
-        handoffSummary: data.handoffSummary,
-      });
-    },
-  });
-  sessionMemory.initialize(clientId);
-
-  personalMemoryConsolidator = new MemoryConsolidator({
-    provider,
-    store: personalMemoryStore,
-    projectRoot,
-    onSnapshotRegenerated: (userId, snapshot, result) => {
-      personalMemorySnapshotCache.setSnapshot(userId, snapshot, "evolution", result);
-    },
-  });
-  personalMemoryConsolidator.scheduleProcessing();
-
   return {
-    sessionMemory,
     personalMemoryStore,
     personalMemorySnapshotCache,
-    personalMemoryConsolidator,
     memoryIndexer,
     memoryRetriever,
     episodicMemoryController,
     async stop(): Promise<void> {
-      await sessionMemory.shutdown();
-      await personalMemoryConsolidator?.shutdown();
       personalMemoryStore.stop();
       await memoryIndexer.shutdown();
     },

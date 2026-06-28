@@ -6,7 +6,7 @@ import { executeAgentAction } from "../../src/ivec/agent-runner/action-executor.
 import type { AgentAction } from "../../src/ivec/agent-runner/decision.js";
 import { DEFAULT_LOOP_CONFIG } from "../../src/ivec/types.js";
 import type { WorkState } from "../../src/ivec/types.js";
-import { noopSessionMemory } from "../../src/memory/provider.js";
+import { noopRunRecorder } from "../../src/ivec/noop-run-recorder.js";
 import { writeFilesTool } from "../../src/skills/builtins/filesystem/write-files.js";
 import { createToolExecutor } from "../../src/skills/tool-executor.js";
 import type { ToolDefinition } from "../../src/skills/types.js";
@@ -60,7 +60,7 @@ async function runAction(tools: ToolDefinition[], action: AgentAction, runPath: 
       selectedTools: toolExecutor.definitions(),
       config: DEFAULT_LOOP_CONFIG,
       clientId: "c1",
-      runRecorder: noopSessionMemory,
+      runRecorder: noopRunRecorder,
       runHandle: { sessionId: "s1", runId: "r1" },
       runPath,
     },

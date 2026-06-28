@@ -32,6 +32,7 @@ import type { WorkspaceInteractionEvent } from "../ui/workspace-orchestrator.js"
 import { createAgentFeedbackLedgerFromEnv } from "../ivec/feedback-ledger.js";
 import { createGitMemoryRuntime } from "../context-engine/index.js";
 import { createGitMemoryChatContextRuntime } from "./git-memory-chat-context-runtime.js";
+import { createGitMemorySystemEventContextRuntime } from "./git-memory-system-event-context-runtime.js";
 import { createChatTurnRuntime } from "./chat-turn-runtime.js";
 import { createSystemEventRuntime } from "./system-event-runtime.js";
 
@@ -55,7 +56,6 @@ export async function main(): Promise<void> {
   const memory = await createMemoryRuntime({
     projectRoot,
     clientId: CLIENT_ID,
-    provider,
     embeddingProvider,
   });
 
@@ -177,6 +177,7 @@ export async function main(): Promise<void> {
   });
   await gitMemoryRuntime.openDailySession();
   const chatContextRuntime = createGitMemoryChatContextRuntime({ gitMemoryRuntime });
+  const systemEventContextRuntime = createGitMemorySystemEventContextRuntime({ gitMemoryRuntime });
   const chatTurnRuntime = createChatTurnRuntime({
     onReply: (clientId, data) => {
       wsServer.send(clientId, data);
@@ -186,7 +187,6 @@ export async function main(): Promise<void> {
     toolExecutor: skills.toolExecutor,
     skillActivationManager: skills.skillActivationManager,
     toolWorkingSetManager: skills.toolWorkingSetManager,
-    sessionMemory: memory.sessionMemory,
     dataDir: resolve(projectRoot, "data"),
     documentStore: content.documentStore,
     preparedAttachmentRegistry: content.preparedAttachmentRegistry,
@@ -205,7 +205,7 @@ export async function main(): Promise<void> {
     toolExecutor: skills.toolExecutor,
     skillActivationManager: skills.skillActivationManager,
     toolWorkingSetManager: skills.toolWorkingSetManager,
-    sessionMemory: memory.sessionMemory,
+    systemEventContextRuntime,
     dataDir: resolve(projectRoot, "data"),
     documentStore: content.documentStore,
     preparedAttachmentRegistry: content.preparedAttachmentRegistry,
@@ -231,7 +231,6 @@ export async function main(): Promise<void> {
   engine = new IVecEngine({
     provider,
     staticContext,
-    sessionMemory: memory.sessionMemory,
     chatTurnRuntime,
     systemEventRuntime,
   });

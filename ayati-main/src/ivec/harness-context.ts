@@ -1,7 +1,7 @@
-import type { SessionMemory } from "../memory/types.js";
 import type { ContextEngineMachineContext } from "../context-engine/index.js";
 
 export interface HarnessContextInput {
+  personalMemorySnapshot?: string;
   contextEngine?: ContextEngineMachineContext;
 }
 
@@ -11,25 +11,19 @@ export interface HarnessContext {
 }
 
 export interface BuildHarnessContextInput {
-  sessionMemory: SessionMemory;
-  clientId: string;
-  sessionId?: string;
-  userMessage: string;
   input?: HarnessContextInput;
 }
 
 export function createInitialHarnessContext(input?: HarnessContextInput): HarnessContext {
   return {
-    personalMemorySnapshot: "",
+    personalMemorySnapshot: input?.personalMemorySnapshot ?? "",
     contextEngine: input?.contextEngine,
   };
 }
 
 export function buildHarnessContextFromSources(input: BuildHarnessContextInput): HarnessContext {
-  const memoryContext = input.sessionMemory.getPromptMemoryContext();
-
   return {
-    personalMemorySnapshot: memoryContext.personalMemorySnapshot ?? "",
+    personalMemorySnapshot: input.input?.personalMemorySnapshot ?? "",
     contextEngine: input.input?.contextEngine,
   };
 }

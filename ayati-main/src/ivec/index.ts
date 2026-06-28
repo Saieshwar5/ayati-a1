@@ -1,7 +1,5 @@
 import { randomUUID } from "node:crypto";
 import type { LlmProvider } from "../core/contracts/provider.js";
-import { noopSessionMemory } from "../memory/provider.js";
-import type { SessionMemory } from "../memory/types.js";
 import type { StaticContext } from "../context/static-context-cache.js";
 import { renderBasePromptSection } from "../prompt/sections/base.js";
 import { renderSkillsSection } from "../prompt/sections/skills.js";
@@ -33,7 +31,6 @@ interface StaticPromptSectionsCache {
 export interface IVecEngineOptions {
   provider?: LlmProvider;
   staticContext?: StaticContext;
-  sessionMemory?: SessionMemory;
   now?: () => Date;
   chatTurnRuntime?: ChatTurnRuntime;
   systemEventRuntime?: SystemEventRuntime;
@@ -42,7 +39,6 @@ export interface IVecEngineOptions {
 export class IVecEngine {
   private readonly provider?: LlmProvider;
   private readonly staticContext?: StaticContext;
-  private sessionMemory: SessionMemory;
   private readonly nowProvider: () => Date;
   private readonly chatTurnRuntime?: ChatTurnRuntime;
   private readonly systemEventRuntime?: SystemEventRuntime;
@@ -53,7 +49,6 @@ export class IVecEngine {
   constructor(options?: IVecEngineOptions) {
     this.provider = options?.provider;
     this.staticContext = options?.staticContext;
-    this.sessionMemory = options?.sessionMemory ?? noopSessionMemory;
     this.nowProvider = options?.now ?? (() => new Date());
     this.chatTurnRuntime = options?.chatTurnRuntime;
     this.systemEventRuntime = options?.systemEventRuntime;
@@ -169,7 +164,6 @@ export class IVecEngine {
     if (!this.staticContext) {
       this.staticSystemTokens = 0;
       this.staticTokensReady = true;
-      this.sessionMemory.setStaticTokenBudget(0);
       return;
     }
 
@@ -179,7 +173,6 @@ export class IVecEngine {
 
     this.staticSystemTokens = promptTokens;
     this.staticTokensReady = true;
-    this.sessionMemory.setStaticTokenBudget(this.staticSystemTokens);
     devLog(`Static context tokens cached: ${this.staticSystemTokens} (prompt=${promptTokens})`);
   }
 

@@ -810,7 +810,7 @@ export class GitMemoryDailySessionStore {
       GIT_MEMORY_SESSION_TASK_MESSAGE_LINKS_PATH,
     ], renderGitMemoryCommitMessage({
       subject: `ayati: checkpoint session ${input.sessionId}`,
-      summary: input.summary ?? "Commit accumulated session memory changes.",
+      summary: input.summary ?? "Commit accumulated session git-context changes.",
       trailers: {
         sessionId: input.sessionId,
         event: "session_checkpointed",
