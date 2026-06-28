@@ -16,6 +16,8 @@ export const DEFAULT_AGENT_MAX_SELECTED_TOOLS = 12;
 export const DEFAULT_WORKSPACE_DIR = resolve(projectRoot, "work_space");
 export const DEFAULT_GIT_CONTEXT_STORE_DIR = resolve(projectRoot, "data", "context-engine");
 export const DEFAULT_GIT_CONTEXT_TIMEZONE = "Asia/Kolkata";
+export const DEFAULT_GIT_CONTEXT_ENGINE = "daily_session";
+export const DEFAULT_GIT_CONTEXT_AGENT_ID = "local";
 
 export interface HttpRuntimeConfig {
   host: string;
@@ -43,9 +45,13 @@ export interface WorkspaceRuntimeConfig {
   root: string;
 }
 
+export type GitContextEngineMode = "daily_session" | "git_memory";
+
 export interface GitContextRuntimeConfig {
   storeDir: string;
   timezone: string;
+  engine: GitContextEngineMode;
+  agentId: string;
 }
 
 export interface AyatiRuntimeConfig {
@@ -127,6 +133,8 @@ function loadGitContextRuntimeConfig(env: NodeJS.ProcessEnv): GitContextRuntimeC
   return {
     storeDir: resolveGitContextStoreDir(env["AYATI_GIT_CONTEXT_STORE_DIR"]),
     timezone: trimOptional(env["AYATI_GIT_CONTEXT_TIMEZONE"]) ?? DEFAULT_GIT_CONTEXT_TIMEZONE,
+    engine: parseGitContextEngine(env["AYATI_GIT_CONTEXT_ENGINE"]),
+    agentId: trimOptional(env["AYATI_GIT_CONTEXT_AGENT_ID"]) ?? DEFAULT_GIT_CONTEXT_AGENT_ID,
   };
 }
 
@@ -154,6 +162,14 @@ export function resolveGitContextStoreDir(rawValue: string | undefined): string 
 
 function isEnvFalse(rawValue: string | undefined): boolean {
   return /^(?:0|false|no|off)$/i.test(rawValue ?? "");
+}
+
+function parseGitContextEngine(rawValue: string | undefined): GitContextEngineMode {
+  const normalized = trimOptional(rawValue);
+  if (normalized === "git_memory") {
+    return "git_memory";
+  }
+  return DEFAULT_GIT_CONTEXT_ENGINE;
 }
 
 function trimOptional(value: string | undefined): string | undefined {

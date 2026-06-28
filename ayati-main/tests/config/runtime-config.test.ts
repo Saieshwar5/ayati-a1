@@ -3,6 +3,8 @@ import {
   DEFAULT_DOCUMENT_EMBED_BATCH_SIZE,
   DEFAULT_DOCUMENT_VECTOR_MIN_CHUNKS,
   DEFAULT_AGENT_MAX_SELECTED_TOOLS,
+  DEFAULT_GIT_CONTEXT_AGENT_ID,
+  DEFAULT_GIT_CONTEXT_ENGINE,
   DEFAULT_GIT_CONTEXT_STORE_DIR,
   DEFAULT_GIT_CONTEXT_TIMEZONE,
   DEFAULT_HTTP_ALLOW_ORIGIN,
@@ -44,6 +46,8 @@ describe("ayati runtime config", () => {
       gitContext: {
         storeDir: DEFAULT_GIT_CONTEXT_STORE_DIR,
         timezone: DEFAULT_GIT_CONTEXT_TIMEZONE,
+        engine: DEFAULT_GIT_CONTEXT_ENGINE,
+        agentId: DEFAULT_GIT_CONTEXT_AGENT_ID,
       },
     });
   });
@@ -63,6 +67,8 @@ describe("ayati runtime config", () => {
       AYATI_WORKSPACE_DIR: " /tmp/ayati-workspace ",
       AYATI_GIT_CONTEXT_STORE_DIR: " /tmp/ayati-context-engine ",
       AYATI_GIT_CONTEXT_TIMEZONE: " UTC ",
+      AYATI_GIT_CONTEXT_ENGINE: "git_memory",
+      AYATI_GIT_CONTEXT_AGENT_ID: " local-agent ",
     });
 
     expect(config).toEqual({
@@ -92,8 +98,18 @@ describe("ayati runtime config", () => {
       gitContext: {
         storeDir: "/tmp/ayati-context-engine",
         timezone: "UTC",
+        engine: "git_memory",
+        agentId: "local-agent",
       },
     });
+  });
+
+  it("falls back to the daily-session git context engine for unknown engine values", () => {
+    const config = loadAyatiRuntimeConfig({
+      AYATI_GIT_CONTEXT_ENGINE: "unknown",
+    });
+
+    expect(config.gitContext.engine).toBe(DEFAULT_GIT_CONTEXT_ENGINE);
   });
 
   it("resolves relative workspace overrides from the project root", () => {
