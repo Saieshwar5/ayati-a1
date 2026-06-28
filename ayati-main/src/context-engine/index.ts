@@ -1,6 +1,7 @@
 export {
   createDailySessionContextEngineRuntime,
 } from "./runtime/daily-session-runtime.js";
+export * from "./git-memory/index.js";
 export {
   buildContextEngineRunCommitInput,
 } from "./runtime/harness-result-mapper.js";
