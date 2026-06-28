@@ -212,6 +212,20 @@ export function createGitMemoryTaskId(date: string, sequence: number): GitMemory
   return `W-${date.replace(/-/g, "")}-${formatSequence(sequence, 4)}`;
 }
 
+export function createGitMemoryRunId(date: string, sequence: number): GitMemoryRunId {
+  if (!isValidCalendarDate(date)) {
+    throw new Error(`Invalid git-memory run date: ${date}`);
+  }
+  return `R-${date.replace(/-/g, "")}-${formatSequence(sequence, 4)}`;
+}
+
+export function createGitMemoryActionId(date: string, sequence: number): GitMemoryActionId {
+  if (!isValidCalendarDate(date)) {
+    throw new Error(`Invalid git-memory action date: ${date}`);
+  }
+  return `ACT-${date.replace(/-/g, "")}-${formatSequence(sequence, 6)}`;
+}
+
 export function createGitMemorySessionId(date: string, agentId: string): GitMemorySessionId {
   if (!isValidCalendarDate(date)) {
     throw new Error(`Invalid git-memory session date: ${date}`);
