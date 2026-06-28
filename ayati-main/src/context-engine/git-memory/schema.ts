@@ -234,6 +234,13 @@ export function createGitMemoryTurnId(date: string, sequence: number): GitMemory
   return `T-${date.replace(/-/g, "")}-${formatSequence(sequence, 6)}`;
 }
 
+export function createGitMemoryLinkId(date: string, sequence: number): GitMemoryLinkId {
+  if (!isValidCalendarDate(date)) {
+    throw new Error(`Invalid git-memory link date: ${date}`);
+  }
+  return `L-${date.replace(/-/g, "")}-${formatSequence(sequence, 6)}`;
+}
+
 export function gitMemoryDateFromSessionId(sessionId: GitMemorySessionId): string {
   if (!isGitMemorySessionId(sessionId)) {
     throw new Error(`Invalid git-memory session id: ${sessionId}`);

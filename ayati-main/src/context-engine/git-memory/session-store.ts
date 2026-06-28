@@ -4,6 +4,7 @@ import { renderGitMemoryCommitMessage } from "./commit-message.js";
 import type {
   GitMemoryConversationRecord,
   GitMemoryConversationRole,
+  GitMemoryConversationSeqRange,
   GitMemoryFocusFile,
   GitMemoryRunId,
   GitMemorySessionEventRecord,
@@ -11,6 +12,8 @@ import type {
   GitMemorySessionMetaFile,
   GitMemoryTaskId,
   GitMemoryTaskIndexFile,
+  GitMemoryTaskLinkReason,
+  GitMemoryTaskMessageLinkRecord,
   GitMemoryTurnId,
 } from "./schema.js";
 import {
@@ -22,6 +25,7 @@ import {
   GIT_MEMORY_SESSION_TASKS_PATH,
   GIT_MEMORY_SESSION_TASK_MESSAGE_LINKS_PATH,
   createGitMemoryEventId,
+  createGitMemoryLinkId,
   createGitMemoryMessageId,
   createGitMemorySessionId,
   createGitMemoryTurnId,
@@ -69,6 +73,22 @@ export interface AppendGitMemoryConversationInput {
   turnId?: GitMemoryTurnId;
   taskId?: GitMemoryTaskId;
   runId?: GitMemoryRunId;
+}
+
+export interface LinkGitMemoryTaskMessagesInput extends GitMemoryConversationSeqRange {
+  sessionId: GitMemorySessionId;
+  taskId: GitMemoryTaskId;
+  branch: string;
+  reason: GitMemoryTaskLinkReason;
+  at?: string;
+  turnIds?: GitMemoryTurnId[];
+  runId?: GitMemoryRunId;
+  summary?: string;
+}
+
+export interface GitMemoryTaskConversationSegment {
+  link: GitMemoryTaskMessageLinkRecord;
+  messages: GitMemoryConversationRecord[];
 }
 
 export class GitMemoryDailySessionStore {
@@ -139,6 +159,54 @@ export class GitMemoryDailySessionStore {
       [GIT_MEMORY_SESSION_CONVERSATION_PATH]: jsonl([...existing, record]),
     });
     return record;
+  }
+
+  async linkTaskMessages(input: LinkGitMemoryTaskMessagesInput): Promise<GitMemoryTaskMessageLinkRecord> {
+    const driver = await GitMemoryWorktreeGitDriver.init(this.repoPath(input.sessionId));
+    const date = gitMemoryDateFromSessionId(input.sessionId);
+    const existingLinks = parseJsonl<GitMemoryTaskMessageLinkRecord>(
+      await driver.readWorkingFile(GIT_MEMORY_SESSION_TASK_MESSAGE_LINKS_PATH),
+    );
+    const conversation = parseJsonl<GitMemoryConversationRecord>(
+      await driver.readWorkingFile(GIT_MEMORY_SESSION_CONVERSATION_PATH),
+    );
+    const messages = conversationInRange(conversation, input);
+    const link: GitMemoryTaskMessageLinkRecord = {
+      v: 1,
+      linkId: createGitMemoryLinkId(date, existingLinks.length + 1),
+      taskId: input.taskId,
+      branch: input.branch,
+      reason: input.reason,
+      at: input.at ?? this.nowIso(),
+      fromSeq: input.fromSeq,
+      toSeq: input.toSeq,
+      turnIds: input.turnIds ?? unique(messages.map((message) => message.turnId)),
+      ...(input.runId ? { runId: input.runId } : {}),
+      ...(input.summary ? { summary: input.summary } : {}),
+    };
+    await driver.writeWorkingFiles({
+      [GIT_MEMORY_SESSION_TASK_MESSAGE_LINKS_PATH]: jsonl([...existingLinks, link]),
+    });
+    return link;
+  }
+
+  async readTaskConversationSegments(
+    sessionId: GitMemorySessionId,
+    taskId: GitMemoryTaskId,
+  ): Promise<GitMemoryTaskConversationSegment[]> {
+    const driver = await GitMemoryWorktreeGitDriver.init(this.repoPath(sessionId));
+    const conversation = parseJsonl<GitMemoryConversationRecord>(
+      await driver.readWorkingFile(GIT_MEMORY_SESSION_CONVERSATION_PATH),
+    );
+    const links = parseJsonl<GitMemoryTaskMessageLinkRecord>(
+      await driver.readWorkingFile(GIT_MEMORY_SESSION_TASK_MESSAGE_LINKS_PATH),
+    );
+    return links
+      .filter((link) => link.taskId === taskId)
+      .map((link) => ({
+        link,
+        messages: conversationInRange(conversation, link),
+      }));
   }
 
   async checkpointSession(input: GitMemorySessionCheckpointInput): Promise<GitMemorySessionCheckpoint> {
@@ -257,6 +325,17 @@ function parseJsonl<T>(value: string | null): T[] {
     .map((line) => line.trim())
     .filter(Boolean)
     .map((line) => JSON.parse(line) as T);
+}
+
+function conversationInRange(
+  conversation: GitMemoryConversationRecord[],
+  range: GitMemoryConversationSeqRange,
+): GitMemoryConversationRecord[] {
+  return conversation.filter((message) => message.seq >= range.fromSeq && message.seq <= range.toSeq);
+}
+
+function unique<T>(values: T[]): T[] {
+  return [...new Set(values)];
 }
 
 function nextSeq(records: Array<{ seq?: unknown }>): number {
