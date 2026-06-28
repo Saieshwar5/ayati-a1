@@ -13,9 +13,9 @@ context pack -> decision -> action executor -> deterministic verification -> pro
 ```
 
 The product intent is that Ayati should feel continuous and alive without
-requiring the user to manage sessions manually. Recent work should stay vivid
-through daily git context, focused work branches, task files, assets, and run
-commits, while personal facts and preferences remain in personal memory.
+requiring the user to manage sessions manually. Daily git context is default
+and keeps recent work vivid through focused work branches, task files, assets,
+and run commits, while personal facts and preferences remain in personal memory.
 
 Current packages:
 
@@ -26,11 +26,11 @@ Primary value:
 
 - A local-first autonomous agent daemon with composable capabilities.
 - A stable backend loop that can use different model providers.
-- Daily git context for task/work continuity, including conversation, focus,
-  work branches, task state, assets, actions, outputs, and commit metadata.
+- Default daily git context for task/work continuity, including conversation,
+  focus, work branches, task state, assets, actions, outputs, and commit metadata.
 - Personal and episodic memory for personalization and recall.
-- Structured context packs that keep recent conversation, selected git task
-  context, task assets, and personal memory available to the decision model.
+- Structured context packs that keep recent conversation, selected git
+  task context, task assets, and personal memory available to the decision model.
 - Broad computer-access tools for local workspace work, files, documents, datasets, Python, SQLite, reminders, and recall.
 - Multi-channel user communication, with CLI current and other clients intended.
 - Proactive and event-driven assistance through Pulse, plugins, and system events.

@@ -7,16 +7,12 @@ import type {
 import type { AgentLoopResult } from "../../src/ivec/types.js";
 
 describe("createChatContextRuntime", () => {
-  it("returns undefined when no context engine runtime is available", () => {
-    expect(createChatContextRuntime({})).toBeUndefined();
-  });
-
   it("maps ready turns and completed agent runs through the context engine runtime", async () => {
     const turn = readyContextEngineTurn();
     const contextEngineRuntime = createContextEngineRuntime(turn);
     const runtime = createChatContextRuntime({ contextEngineRuntime });
 
-    const prepared = await runtime?.prepareUserTurn({
+    const prepared = await runtime.prepareUserTurn({
       clientId: "c1",
       userMessage: "Analyze invoice",
       at: "2026-06-27T10:00:00+05:30",
@@ -36,7 +32,7 @@ describe("createChatContextRuntime", () => {
       throw new Error("Expected ready prepared turn.");
     }
 
-    const committed = await runtime?.completePreparedRun({
+    const committed = await runtime.completePreparedRun({
       clientId: "c1",
       turn: prepared,
       result: agentLoopResult(),
@@ -62,7 +58,7 @@ describe("createChatContextRuntime", () => {
     const contextEngineRuntime = createContextEngineRuntime(turn);
     const runtime = createChatContextRuntime({ contextEngineRuntime });
 
-    await runtime?.recordAssistantMessage({
+    await runtime.recordAssistantMessage({
       clientId: "c1",
       turn,
       message: "Which upload task do you mean?",

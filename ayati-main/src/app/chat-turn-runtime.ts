@@ -41,6 +41,7 @@ export interface CreateChatTurnRuntimeOptions {
   toolExecutor?: ToolExecutor;
   skillActivationManager?: SkillActivationManager;
   toolWorkingSetManager?: ToolWorkingSetManager;
+  chatContextRuntime: ChatContextRuntime;
   loopConfig?: Partial<LoopConfig>;
   rotationPolicyConfig?: Partial<RotationPolicyConfig>;
   now?: () => Date;
@@ -50,7 +51,6 @@ export interface CreateChatTurnRuntimeOptions {
   fileLibrary?: FileLibrary;
   directoryLibrary?: DirectoryLibrary;
   feedbackLedger?: AgentFeedbackLedger;
-  chatContextRuntime?: ChatContextRuntime;
 }
 
 interface RegisteredChatAttachments {
@@ -81,7 +81,7 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
   private readonly fileLibrary?: FileLibrary;
   private readonly directoryLibrary?: DirectoryLibrary;
   private readonly feedbackLedger?: AgentFeedbackLedger;
-  private readonly chatContextRuntime?: ChatContextRuntime;
+  private readonly chatContextRuntime: ChatContextRuntime;
   private readonly pulseProposalReflectionService = new PulseProposalReflectionService();
 
   constructor(options: CreateChatTurnRuntimeOptions) {
@@ -270,19 +270,12 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
   private async prepareChatContextTurn(
     clientId: string,
     userMessage: string,
-  ): Promise<ChatContextPreparedTurn | null> {
-    if (!this.chatContextRuntime) {
-      return null;
-    }
-
+  ): Promise<ChatContextPreparedTurn> {
     const turn = await this.chatContextRuntime.prepareUserTurn({
       clientId,
       userMessage,
       at: this.nowProvider().toISOString(),
     });
-    if (!turn) {
-      return null;
-    }
 
     this.feedbackLedger?.record({
       clientId,
@@ -320,7 +313,7 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
     turn: ChatContextPreparedTurn | null,
     result: AgentLoopResult,
   ): Promise<void> {
-    if (!this.chatContextRuntime || turn?.status !== "ready") {
+    if (turn?.status !== "ready") {
       return;
     }
 
@@ -353,7 +346,7 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
     turn: ChatContextPreparedTurn | null,
     message: string,
   ): Promise<void> {
-    if (!this.chatContextRuntime || !turn) {
+    if (!turn) {
       return;
     }
     await this.chatContextRuntime.recordAssistantMessage({

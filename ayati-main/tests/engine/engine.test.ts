@@ -158,6 +158,7 @@ type TestEngineOptions =
 
 function createEngine(options: TestEngineOptions = {}): IVecEngine {
   const sessionMemory = options.sessionMemory ?? createSessionMemory();
+  const chatContextRuntime = options.chatContextRuntime ?? createChatContextRuntime(readyChatContextTurn());
   const chatTurnRuntime = createChatTurnRuntime({
     onReply: options.onReply,
     provider: options.provider,
@@ -175,7 +176,7 @@ function createEngine(options: TestEngineOptions = {}): IVecEngine {
     fileLibrary: options.fileLibrary,
     directoryLibrary: options.directoryLibrary,
     feedbackLedger: options.feedbackLedger,
-    chatContextRuntime: options.chatContextRuntime,
+    chatContextRuntime,
   });
   const systemEventRuntime = createSystemEventRuntime({
     onReply: options.onReply,

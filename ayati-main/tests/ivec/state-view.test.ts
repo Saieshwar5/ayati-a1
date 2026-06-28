@@ -167,10 +167,9 @@ describe("buildAgentStateView", () => {
     }]);
   });
 
-  it("keeps personal memory but omits active learning and old session state", () => {
+  it("keeps personal memory but omits old session state", () => {
     const state = createLoopState({
       harnessContext: createHarnessContext({
-        activeLearningContext: "This must not be model-facing context.",
         personalMemorySnapshot: "Prefer exact schema contracts.",
         contextEngine: createGitContext(),
       }),
@@ -178,7 +177,6 @@ describe("buildAgentStateView", () => {
 
     const stateView = buildAgentStateView(state);
     expect(stateView.context.personalMemorySnapshot).toBe("Prefer exact schema contracts.");
-    expect(JSON.stringify(stateView)).not.toContain("activeLearningContext");
     expect(Object.keys(stateView.context).sort()).toEqual([
       "gitContext",
       "personalMemorySnapshot",

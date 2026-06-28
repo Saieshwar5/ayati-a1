@@ -3,14 +3,14 @@
 Backend package: `ayati-main`
 
 - `src/app`: bootstrap and runtime wiring.
-- `src/ivec`: `IVecEngine`, decision-action-reducer runner, state view, context pack, tool selection, progress reduction, session rotation, context pressure, and system-event policy.
+- `src/ivec`: `IVecEngine`, decision-action-reducer runner, state view, context pack, tool selection, progress reduction, session rotation, and system-event policy.
 - `src/context-engine`: daily git context engine for conversation, focus,
   work branches, task files, run commits, and machine context packs.
 - `src/context`: base prompt, soul, static context, and policy loading.
 - `src/prompt`: static prompt section helpers and token estimation.
 - `src/core`: provider/plugin contracts, registries, system ingress, inbound queue, and plugin loading.
 - `src/providers`: provider adapters for OpenRouter, OpenAI, Anthropic, and Fireworks.
-- `src/skills`: built-in tools, tool executor, dynamic skill activation, and skill broker.
+- `src/skills`: built-in/runtime tool definitions, tool executor, contracts, and optional skill activation support.
 - `src/memory`: run/session recording, personal memory, episodic memory,
   embeddings, and recall support. Task continuation belongs to
   `src/context-engine`.

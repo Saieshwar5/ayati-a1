@@ -870,7 +870,6 @@ function buildLoopStateFixture(exchangeCount: number): LoopState {
     runPath: "/tmp/runtime-state-view",
     failureHistory: [],
     harnessContext: {
-      activeLearningContext: "Learning context: runtime performance analysis.",
       personalMemorySnapshot: "User prefers detailed reports about agent runtime performance.",
       contextEngine: buildGitContextFixture(exchangeCount, now),
     },

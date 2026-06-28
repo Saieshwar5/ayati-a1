@@ -54,6 +54,12 @@ example, when `write_files` is selected, the provider receives the real
 can then enforce the actual executable schema instead of only enforcing a
 generic action wrapper.
 
+The harness adds a required `taskCompletion` metadata object to each selected
+executable schema before exposing it to the provider. The metadata tells the
+runner whether the model believes this exact tool call is a completion
+candidate if deterministic verification passes. The metadata is removed before
+the local tool executes.
+
 The provider call requires exactly one native tool call and disables parallel
 provider tool calls where supported. A model response can be:
 
@@ -301,10 +307,10 @@ The runner can mark work complete when:
 - `workState.status` is already `done`, or
 - a deterministic local action succeeded and no user input is needed.
 
-Completion does not mean the deterministic verifier writes the user-facing
-answer. Verified local work sets `workState.status` to `done`, keeps evidence
-and contract details internal, and then routes through a final decision-model
-reply. The final reply should answer the user naturally using user-visible
+Completion does not mean the deterministic verifier writes a tool transcript to
+the user. Verified local work sets `workState.status` to `done`, keeps evidence
+and contract details internal, and produces a user-facing completion reply from
+verified state. The final reply should answer naturally using user-visible
 results such as paths, changed files, command findings, or next steps, without
 mentioning harness internals.
 

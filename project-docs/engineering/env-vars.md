@@ -60,14 +60,31 @@ does not specify a directory. When unset, Ayati uses `ayati-main/work_space`.
 Relative tool paths are already resolved inside this workspace root, so agents
 should pass `report.md` instead of `work_space/report.md`.
 
+Git context:
+
+```env
+AYATI_GIT_CONTEXT_STORE_DIR=
+AYATI_GIT_CONTEXT_TIMEZONE=Asia/Kolkata
+```
+
+Daily git context is always on. It records conversation, focus, task branches,
+task assets, run summaries, and commit metadata, and adds `context.gitContext`
+to the decision state view.
+
+`AYATI_GIT_CONTEXT_STORE_DIR` overrides the context-engine storage directory.
+When unset, Ayati uses `ayati-main/data/context-engine`. Relative paths resolve
+from the backend package root.
+
+`AYATI_GIT_CONTEXT_TIMEZONE` controls daily session dating for git context.
+
 Agent harness:
 
 ```env
 AYATI_AGENT_MAX_SELECTED_TOOLS=12
 ```
 
-`AYATI_AGENT_MAX_SELECTED_TOOLS` bounds how many tool definitions are shown to
-the decision model for one decision.
+`AYATI_AGENT_MAX_SELECTED_TOOLS` bounds how many selected executable tool
+schemas are shown to the decision model for one decision.
 
 Feedback tracing:
 

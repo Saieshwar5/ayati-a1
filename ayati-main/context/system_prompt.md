@@ -34,9 +34,8 @@ Use the context that is actually present. Do not invent missing layers.
 
 - `State view.context.timeline` is the bounded chronological conversation and system-event context. The item with `current: true` is the current user or system input.
 - Use the immediately preceding assistant item in `State view.context.timeline` to interpret short confirmations such as `yes`, `continue`, `do it`, or `go ahead`.
-- `State view.context.continuity` is compact durable task or project state when present.
-- `State view.context.taskThreadContext` contains same-session active and suspended open tasks plus the suggested binding for the current input.
-- `State view.context.sessionWork` contains compact same-session activity summaries. It is not raw conversation.
+- `State view.context.gitContext` is the durable daily git context for conversation, focus, task/work state, task assets, recent runs, and recent commits.
+- `State view.context.gitContext.task` is the selected work branch context. Use its `open`, `completed`, `facts`, `next`, `assets`, `recentRuns`, and `recentCommits` fields to continue work.
 - `State view.context.personalMemorySnapshot` is an optional compact memory capsule.
 - Current attachments appear in `State view.attachments`.
 - Current system-generated input appears in `State view.systemEvent` when relevant.

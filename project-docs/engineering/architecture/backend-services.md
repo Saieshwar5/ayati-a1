@@ -9,6 +9,8 @@ Major backend services and stores:
 - `MemoryConsolidator`: post-session personal memory evolution.
 - `EpisodicMemoryIndexer`: indexes closed sessions when embeddings are available.
 - `EpisodicMemoryRetriever`: semantic recall for past sessions.
+- `ToolCatalog`: hidden catalog of available built-in/runtime tools, groups, aliases, and deterministic follow-up metadata.
+- `ToolWorkingSetManager`: mounts a bounded run-scoped set of visible executable tool schemas for each decision.
 - `DocumentStore`: prepared-document compatibility storage.
 - `DocumentContextBackend`: document reads and retrieval for prepared text attachments.
 - `PreparedAttachmentService`: compatibility layer for document/dataset workflows.
@@ -18,7 +20,7 @@ Major backend services and stores:
 - `SystemIngressService`: normalizes and queues internal/external system events for daemon processing.
 - `SystemEventWorker`: processes queued system events through the engine.
 - `PluginRegistry`: starts and stops plugins.
-- `SkillActivationManager`: mounts dynamic built-in skills into the tool executor when needed.
+- `SkillActivationManager`: optional support for mounting skill-provided tools into the executor.
 
 Daemon-specific responsibilities:
 

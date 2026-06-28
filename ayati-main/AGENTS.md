@@ -14,8 +14,8 @@ agent architecture, start with:
   - `src/app`: bootstrap/startup wiring.
   - `src/ivec`: `IVecEngine`, decision-action-reducer runner, context pack, state view, tool selection, progress reduction, and system-event policy.
   - `src/ivec/agent-runner`: current harness implementation.
-  - `src/memory`: session persistence, focus cards, attention shelf, personal memory, episodic memory, and recall.
-  - `src/skills`: built-in and external tools, contracts, guardrails, and skill broker.
+  - `src/memory`: session persistence, personal memory, episodic memory, and recall.
+  - `src/skills`: built-in/runtime tools, contracts, guardrails, and tool execution.
   - `src/providers`: LLM provider adapters.
   - `src/server`: WebSocket, HTTP upload/artifact, and integration transport surfaces.
 - `tests/` mirrors runtime domains (`tests/engine`, `tests/ivec`, `tests/skills`, etc.).
@@ -35,7 +35,7 @@ agent architecture, start with:
 - Preserve the current loop: `context pack -> decision -> action executor -> deterministic verification -> progress reducer`.
 - Do not reintroduce separate controller stages or harness version switches.
 - Put dynamic runtime context in the structured state/context pack when possible.
-- Treat focus cards and attention shelf as continuity mechanisms, not proof.
+- Treat optional git context as task continuity, not proof.
 - Prefer deterministic tool contracts/assertions over extra model verification.
 
 ## Coding Style & Naming Conventions

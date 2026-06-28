@@ -49,7 +49,7 @@ export interface ChatContextRuntimeAssistantMessageInput {
 }
 
 export interface ChatContextRuntime {
-  prepareUserTurn(input: ChatContextRuntimePrepareInput): Promise<ChatContextPreparedTurn | null>;
+  prepareUserTurn(input: ChatContextRuntimePrepareInput): Promise<ChatContextPreparedTurn>;
   completePreparedRun(input: ChatContextRuntimeCompleteInput): Promise<ChatContextCommittedRun | null>;
   recordAssistantMessage(input: ChatContextRuntimeAssistantMessageInput): Promise<void>;
 }

@@ -23,10 +23,10 @@ Intelligence Variable Execution Core.
 At a high level, Ayati provides:
 
 - A runtime-selectable LLM provider layer for OpenRouter, OpenAI, Anthropic, and Fireworks
-- Stable decision rules plus a structured state view containing bounded timeline context, continuity, same-session work, optional task-thread context, attachments, memory snapshots, progress, observations, and system activity
+- Stable decision rules plus a structured state view containing bounded timeline context, optional git task context, attachments, memory snapshots, progress, observations, and system activity
 - A native-tool decision loop that chooses a control tool or one selected executable tool, then verifies tool work deterministically
-- Built-in skills for shell, filesystem, calculator, SQLite database work, Python execution, documents, datasets, files, memory, recall, identity, and Pulse scheduling
-- Focus cards, attention shelf, personal memory, and episodic recall for continuity and personalization
+- Built-in skills for shell, filesystem, calculator, SQLite database work, Python execution, documents, datasets, files, memory, recall, UI workspace control, and Pulse scheduling
+- Optional daily git context for task/work continuity, plus personal memory and episodic recall for personalization
 - Episodic recall for searching past sessions and run history
 - Managed file registration, upload processing, document extraction, structured data profiling, and artifact serving
 - Run-scoped tool working sets for built-in skills
@@ -71,13 +71,13 @@ reminders enter the same harness with event-policy constraints.
 
 1. A user sends a message from the CLI or another runtime input.
 2. `ayati-main` receives the message through WebSocket, HTTP, or a plugin event adapter.
-3. The backend loads static decision rules, session state, continuity summaries, memory snapshots, the hidden tool catalog, and the configured LLM provider.
+3. The backend loads static decision rules, session state, memory snapshots, optional git task context, the hidden tool catalog, and the configured LLM provider.
 4. `IVecEngine` builds a bounded context pack and enters the agent runner.
 5. The decision model calls one native provider tool: `decision_reply`, `decision_ask_user`, `decision_load_tools`, or one selected executable tool.
 6. If more tools are needed, Ayati loads a run-scoped working set from strict selectors and reports the load result into the next decision state.
 7. If an executable tool is called, Ayati adapts that native call into an internal action record, validates it, executes it through the tool executor, verifies results with contracts/assertions, and updates progress from verified facts.
 8. Files, documents, datasets, Python outputs, and other generated files are stored as managed runtime data or run artifacts.
-9. Session history, focus cards, personal memory candidates, episodic memory indexes, system activity, and task state are persisted under `ayati-main/data/`.
+9. Session history, personal memory candidates, episodic memory indexes, system activity, run records, managed files, and optional git task state are persisted under `ayati-main/data/`.
 10. The final reply and any artifact metadata are returned to the active client.
 
 ## Runtime Capabilities
@@ -120,12 +120,11 @@ Dynamic context is sent to the decision model as structured JSON in the context
 pack and sparse state view:
 
 - Bounded `context.timeline` events, ending with the current input
-- Durable `context.continuity` for selected activity or project state
-- Same-session `context.taskThreadContext` and `context.sessionWork`
+- Optional `context.gitContext` for daily-session conversation, focus, selected task state, task assets, recent runs, and recent commits
 - Optional `context.personalMemorySnapshot`
 - Current `progress`, `workingFeedback`, `toolLoad`, `observations`, `trace`, `attachments`, and `systemEvent` sections when present
 
-This keeps memory and continuation visible without hiding important facts inside
+This keeps memory and task context visible without hiding important facts inside
 a large truncatable prompt string.
 
 ### Memory and Continuity
@@ -133,8 +132,7 @@ a large truncatable prompt string.
 Ayati has several memory paths:
 
 - Session memory stores active conversation state and handoff summaries.
-- Focus cards track meaningful ongoing work such as projects, documents, automations, investigations, and debugging.
-- The attention shelf injects compact high-relevance focus summaries into each decision.
+- Optional daily git context stores task/work continuity through conversation, focus, work branches, task state, assets, run summaries, and commit metadata.
 - Personal memory stores canonical facts in sections such as `user_facts`, `time_based`, and `evolving_memory`.
 - Episodic memory indexes closed sessions for later semantic recall when embeddings are available.
 - The built-in recall tools can search past work by query, date range, or episode type.
@@ -174,17 +172,18 @@ The backend registers a hidden catalog of built-in skills and tools:
 - Document and dataset tools for prepared attachments
 - Managed file tools for upload registration, URL fetches, text reads, table profiling, and file queries
 - Memory and recall tools for personal facts and episodic history
-- Identity tools for updating agent identity context
+- UI workspace tools for reading and coordinating local workspace/window state
 - Pulse tools for reminders, notifications, scheduled tasks, previews, snoozing, and health checks
 
 The decision prompt receives a compact routing map with loadable groups and
 representative tool names. Full executable schemas are exposed only through a
-capped run-scoped working set as prompt context. The provider-native tools for
-the decision call are meta-tools only: `decision_reply`, `decision_ask_user`,
-`decision_load_tools`, and `decision_act`. `decision_load_tools` must request
-tools with at least one real selector: `groups`, `toolNames`, or `query`.
-Executable tools still run only through Ayati's local validation and
-deterministic verification path.
+capped run-scoped working set as prompt context. The provider-native decision
+surface contains three control tools, `decision_reply`, `decision_ask_user`, and
+`decision_load_tools`, plus the selected executable tools directly under their
+own schemas. Executable schemas include harness-owned `taskCompletion` metadata,
+and `decision_load_tools` must request tools with at least one real selector:
+`groups`, `toolNames`, or `query`. Executable tools still run only through
+Ayati's local validation and deterministic verification path.
 
 ### Events and Plugins
 
@@ -209,8 +208,8 @@ The backend service. It is responsible for:
 - Accepting chat messages over WebSocket
 - Accepting uploaded files over HTTP
 - Serving generated run artifacts
-- Registering and executing built-in tools
-- Dynamically activating built-in skills
+- Registering built-in tools in the hidden catalog
+- Exposing a bounded run-scoped working set of executable tool schemas
 - Starting plugins and system-event workers
 
 Default runtime ports:
@@ -361,6 +360,6 @@ If you want to go deeper into the architecture, start with:
 Ayati is structured as a modular agent system with separate backend and CLI
 packages. The backend supports runtime provider selection, the
 decision-action-reducer harness, built-in skills,
-focus/session/personal/episodic memory,
+session/personal/episodic memory, optional git task context,
 document/data workflows, generated artifacts, scheduled Pulse work, and
 optional event-driven integrations.

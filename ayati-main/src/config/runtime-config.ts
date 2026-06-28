@@ -44,7 +44,6 @@ export interface WorkspaceRuntimeConfig {
 }
 
 export interface GitContextRuntimeConfig {
-  enabled: boolean;
   storeDir: string;
   timezone: string;
 }
@@ -126,7 +125,6 @@ function loadWorkspaceRuntimeConfig(env: NodeJS.ProcessEnv): WorkspaceRuntimeCon
 
 function loadGitContextRuntimeConfig(env: NodeJS.ProcessEnv): GitContextRuntimeConfig {
   return {
-    enabled: isEnvTrue(env["AYATI_GIT_CONTEXT_ENABLED"]),
     storeDir: resolveGitContextStoreDir(env["AYATI_GIT_CONTEXT_STORE_DIR"]),
     timezone: trimOptional(env["AYATI_GIT_CONTEXT_TIMEZONE"]) ?? DEFAULT_GIT_CONTEXT_TIMEZONE,
   };
@@ -156,10 +154,6 @@ export function resolveGitContextStoreDir(rawValue: string | undefined): string 
 
 function isEnvFalse(rawValue: string | undefined): boolean {
   return /^(?:0|false|no|off)$/i.test(rawValue ?? "");
-}
-
-function isEnvTrue(rawValue: string | undefined): boolean {
-  return /^(?:1|true|yes|on)$/i.test(rawValue ?? "");
 }
 
 function trimOptional(value: string | undefined): string | undefined {

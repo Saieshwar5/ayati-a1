@@ -8,12 +8,8 @@ export interface ContextRuntimeOptions {
   config: AyatiRuntimeConfig;
 }
 
-export function createContextEngineRuntime(options: ContextRuntimeOptions): ContextEngineRuntime | undefined {
+export function createContextEngineRuntime(options: ContextRuntimeOptions): ContextEngineRuntime {
   const gitContext = options.config.gitContext;
-  if (!gitContext.enabled) {
-    return undefined;
-  }
-
   return createDailySessionContextEngineRuntime({
     contextStoreDir: gitContext.storeDir,
     timezone: gitContext.timezone,

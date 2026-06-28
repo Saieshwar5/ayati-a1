@@ -42,7 +42,6 @@ describe("ayati runtime config", () => {
         root: DEFAULT_WORKSPACE_DIR,
       },
       gitContext: {
-        enabled: false,
         storeDir: DEFAULT_GIT_CONTEXT_STORE_DIR,
         timezone: DEFAULT_GIT_CONTEXT_TIMEZONE,
       },
@@ -62,7 +61,6 @@ describe("ayati runtime config", () => {
       AYATI_PYTHON_INTERPRETER: " /usr/bin/python3 ",
       AYATI_AGENT_MAX_SELECTED_TOOLS: "5",
       AYATI_WORKSPACE_DIR: " /tmp/ayati-workspace ",
-      AYATI_GIT_CONTEXT_ENABLED: "true",
       AYATI_GIT_CONTEXT_STORE_DIR: " /tmp/ayati-context-engine ",
       AYATI_GIT_CONTEXT_TIMEZONE: " UTC ",
     });
@@ -92,7 +90,6 @@ describe("ayati runtime config", () => {
         root: "/tmp/ayati-workspace",
       },
       gitContext: {
-        enabled: true,
         storeDir: "/tmp/ayati-context-engine",
         timezone: "UTC",
       },

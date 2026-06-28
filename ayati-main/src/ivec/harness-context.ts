@@ -2,12 +2,10 @@ import type { SessionMemory } from "../memory/types.js";
 import type { ContextEngineMachineContext } from "../context-engine/index.js";
 
 export interface HarnessContextInput {
-  activeLearningContext?: string;
   contextEngine?: ContextEngineMachineContext;
 }
 
 export interface HarnessContext {
-  activeLearningContext?: string;
   personalMemorySnapshot: string;
   contextEngine?: ContextEngineMachineContext;
 }
@@ -22,7 +20,6 @@ export interface BuildHarnessContextInput {
 
 export function createInitialHarnessContext(input?: HarnessContextInput): HarnessContext {
   return {
-    activeLearningContext: input?.activeLearningContext,
     personalMemorySnapshot: "",
     contextEngine: input?.contextEngine,
   };
@@ -32,7 +29,6 @@ export function buildHarnessContextFromSources(input: BuildHarnessContextInput):
   const memoryContext = input.sessionMemory.getPromptMemoryContext();
 
   return {
-    activeLearningContext: input.input?.activeLearningContext,
     personalMemorySnapshot: memoryContext.personalMemorySnapshot ?? "",
     contextEngine: input.input?.contextEngine,
   };

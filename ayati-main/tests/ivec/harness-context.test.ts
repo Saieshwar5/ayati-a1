@@ -12,12 +12,10 @@ describe("harness context", () => {
     const contextEngine = contextEngineFixture();
 
     const context = createInitialHarnessContext({
-      activeLearningContext: "Prefer concise implementation notes.",
       contextEngine,
     });
 
     expect(context).toMatchObject({
-      activeLearningContext: "Prefer concise implementation notes.",
       personalMemorySnapshot: "",
       contextEngine,
     });
@@ -50,13 +48,11 @@ describe("harness context", () => {
       sessionId: "s1",
       userMessage: "continue invoice",
       input: {
-        activeLearningContext: "Use focused tests first.",
         contextEngine,
       },
     });
 
     expect(context.personalMemorySnapshot).toBe("- Likes short plans.");
-    expect(context.activeLearningContext).toBe("Use focused tests first.");
     expect(context.contextEngine).toBe(contextEngine);
     expect(context).not.toHaveProperty("sessionEvents");
     expect(context).not.toHaveProperty("sessionWork");
@@ -69,7 +65,6 @@ describe("harness context", () => {
       harnessContext: createInitialHarnessContext(),
     };
     const context = createInitialHarnessContext({
-      activeLearningContext: "Keep it direct.",
       contextEngine: contextEngineFixture(),
     });
 

@@ -16,32 +16,24 @@ import type {
 import { devWarn } from "../shared/index.js";
 
 export interface CreateChatContextRuntimeOptions {
-  contextEngineRuntime?: ContextEngineRuntime;
+  contextEngineRuntime: ContextEngineRuntime;
 }
 
 export function createChatContextRuntime(
   options: CreateChatContextRuntimeOptions,
-): ChatContextRuntime | undefined {
-  if (!options.contextEngineRuntime) {
-    return undefined;
-  }
+): ChatContextRuntime {
   return new ContextEngineChatContextRuntime(options.contextEngineRuntime);
 }
 
 class ContextEngineChatContextRuntime implements ChatContextRuntime {
   constructor(private readonly contextEngineRuntime: ContextEngineRuntime) {}
 
-  async prepareUserTurn(input: ChatContextRuntimePrepareInput): Promise<ChatContextPreparedTurn | null> {
-    try {
-      const turn = await this.contextEngineRuntime.prepareUserTurn({
-        userMessage: input.userMessage,
-        at: input.at,
-      });
-      return toChatContextPreparedTurn(turn);
-    } catch (err) {
-      devWarn(`[${input.clientId}] context engine preparation failed: ${errorMessage(err)}`);
-      return null;
-    }
+  async prepareUserTurn(input: ChatContextRuntimePrepareInput): Promise<ChatContextPreparedTurn> {
+    const turn = await this.contextEngineRuntime.prepareUserTurn({
+      userMessage: input.userMessage,
+      at: input.at,
+    });
+    return toChatContextPreparedTurn(turn);
   }
 
   async completePreparedRun(input: ChatContextRuntimeCompleteInput): Promise<ChatContextCommittedRun | null> {

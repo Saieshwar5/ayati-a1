@@ -11,6 +11,7 @@ import { noopSessionMemory } from "../../src/memory/provider.js";
 import { pulseTool } from "../../src/skills/builtins/pulse/index.js";
 import type { LlmProvider } from "../../src/core/contracts/provider.js";
 import type { LlmTurnInput } from "../../src/core/contracts/llm-protocol.js";
+import type { ChatContextPreparedTurn, ChatContextRuntime } from "../../src/ivec/chat-context-runtime.js";
 
 let nextPort = 9200;
 
@@ -95,6 +96,56 @@ function messageContentToText(content: unknown): string {
       return "";
     })
     .join("\n");
+}
+
+function createReadyChatContextRuntime(): ChatContextRuntime {
+  const turn = readyChatContextTurn();
+  return {
+    prepareUserTurn: vi.fn().mockResolvedValue(turn),
+    completePreparedRun: vi.fn().mockResolvedValue({
+      workId: turn.workId,
+      workCommit: "work-commit",
+      runRef: "refs/ayati/runs/R-20260627-0001",
+    }),
+    recordAssistantMessage: vi.fn().mockResolvedValue(undefined),
+  };
+}
+
+function readyChatContextTurn(): Extract<ChatContextPreparedTurn, { status: "ready" }> {
+  return {
+    status: "ready",
+    sessionId: "2026-06-27",
+    runId: "R-20260627-0001",
+    workId: "W-20260627-0001",
+    ref: "refs/heads/work/W-20260627-0001-upload-test",
+    context: {
+      session: {
+        sessionId: "2026-06-27",
+        conversationTail: [],
+        eventTail: [],
+        assetCount: 0,
+      },
+      focus: {
+        status: "active",
+        ref: "refs/heads/work/W-20260627-0001-upload-test",
+        workId: "W-20260627-0001",
+      },
+      task: {
+        ref: "refs/heads/work/W-20260627-0001-upload-test",
+        workId: "W-20260627-0001",
+        title: "Upload test",
+        objective: "Handle uploaded attachment",
+        status: "active",
+        completed: [],
+        open: ["Handle uploaded attachment"],
+        blockers: [],
+        facts: [],
+        assets: [],
+        recentRuns: [],
+        recentCommits: [],
+      },
+    },
+  };
 }
 
 describe("UploadServer", () => {
@@ -367,6 +418,7 @@ describe("UploadServer", () => {
         onReply: (clientId, data) => wsServer?.send(clientId, data),
         provider,
         sessionMemory: noopSessionMemory,
+        chatContextRuntime: createReadyChatContextRuntime(),
         dataDir,
         documentStore,
       });
@@ -482,6 +534,7 @@ describe("UploadServer", () => {
         onReply: (clientId, data) => wsServer?.send(clientId, data),
         provider,
         sessionMemory: noopSessionMemory,
+        chatContextRuntime: createReadyChatContextRuntime(),
         dataDir,
         documentStore,
       });

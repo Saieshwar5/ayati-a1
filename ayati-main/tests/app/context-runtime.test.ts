@@ -6,23 +6,17 @@ import { createContextEngineRuntime } from "../../src/app/context-runtime.js";
 import type { AyatiRuntimeConfig } from "../../src/config/runtime-config.js";
 
 describe("createContextEngineRuntime", () => {
-  it("returns undefined when git context is disabled", () => {
-    expect(createContextEngineRuntime({
-      config: createConfig({ enabled: false }),
-    })).toBeUndefined();
-  });
-
-  it("creates a context engine runtime when git context is enabled", () => {
+  it("creates a context engine runtime by default", () => {
     const storeDir = mkdtempSync(join(tmpdir(), "ayati-context-runtime-"));
     try {
       const runtime = createContextEngineRuntime({
-        config: createConfig({ enabled: true, storeDir }),
+        config: createConfig({ storeDir }),
       });
 
       expect(runtime).toBeDefined();
-      expect(typeof runtime?.prepareUserTurn).toBe("function");
-      expect(typeof runtime?.completePreparedRun).toBe("function");
-      expect(typeof runtime?.recordAssistantMessage).toBe("function");
+      expect(typeof runtime.prepareUserTurn).toBe("function");
+      expect(typeof runtime.completePreparedRun).toBe("function");
+      expect(typeof runtime.recordAssistantMessage).toBe("function");
     } finally {
       rmSync(storeDir, { recursive: true, force: true });
     }
@@ -50,7 +44,6 @@ function createConfig(gitContext: Partial<AyatiRuntimeConfig["gitContext"]>): Ay
       root: "/tmp/ayati-workspace",
     },
     gitContext: {
-      enabled: false,
       storeDir: "/tmp/ayati-context",
       timezone: "Asia/Kolkata",
       ...gitContext,
