@@ -8,6 +8,7 @@ import {
   GIT_MEMORY_MAIN_REF,
   GIT_MEMORY_SESSION_CONVERSATION_PATH,
   GitMemoryWorktreeGitDriver,
+  gitMemoryTaskRunPath,
 } from "../../src/context-engine/index.js";
 
 describe("createGitMemoryChatContextRuntime", () => {
@@ -129,6 +130,126 @@ describe("createGitMemoryChatContextRuntime", () => {
         taskId: "W-20260628-0001",
         runId: "R-20260628-0001",
       });
+    } finally {
+      rmSync(storeDir, { recursive: true, force: true });
+    }
+  });
+
+  it("commits completed task runs through the git-memory bridge", async () => {
+    const storeDir = mkdtempSync(join(tmpdir(), "ayati-git-memory-chat-context-"));
+    try {
+      const gitMemoryRuntime = createGitMemoryRuntime({
+        contextStoreDir: storeDir,
+        timezone: "Asia/Kolkata",
+        agentId: "local",
+      });
+      const runtime = createGitMemoryChatContextRuntime({ gitMemoryRuntime });
+      const prepared = await runtime.prepareUserTurn({
+        clientId: "local",
+        userMessage: "Fix upload handling",
+        at: "2026-06-28T09:00:00+05:30",
+      });
+      const task = await gitMemoryRuntime.createTaskBranch({
+        sessionId: prepared.sessionId,
+        title: "Fix upload handling",
+        objective: "Find and fix upload handling failures.",
+        fromSeq: prepared.messageSeq,
+        toSeq: prepared.messageSeq,
+        at: "2026-06-28T09:01:00+05:30",
+      });
+
+      const committed = await runtime.completeTaskRun({
+        clientId: "local",
+        turn: prepared,
+        taskId: task.taskId,
+        result: {
+          type: "reply",
+          status: "completed",
+          content: "I inspected upload handling and found the next patch.",
+          totalIterations: 2,
+          totalToolCalls: 2,
+          runPath: "data/runs/r1",
+          taskSummary: {
+            taskStatus: "open",
+            summary: "Inspected upload handling.",
+            openWork: ["Patch upload validation handling."],
+            nextAction: "Patch upload validation handling.",
+          },
+          workState: {
+            status: "not_done",
+            summary: "Upload handling inspection is complete.",
+            openWork: ["Patch upload validation handling."],
+            blockers: [],
+            verifiedFacts: ["Upload route validates MIME type."],
+            evidence: ["upload-server.ts"],
+            nextStep: "Patch upload validation handling.",
+          },
+          completedSteps: [{
+            step: 1,
+            outcome: "success",
+            summary: "Read upload server implementation.",
+            newFacts: ["Upload route validates MIME type."],
+            artifacts: ["ayati-main/src/server/upload-server.ts"],
+            toolsUsed: ["read_file"],
+          }],
+        },
+        startedAt: "2026-06-28T09:02:00+05:30",
+        at: "2026-06-28T09:10:00+05:30",
+      });
+
+      expect(committed).toMatchObject({
+        taskId: "W-20260628-0001",
+        branch: "task/W-20260628-0001-fix-upload-handling",
+        runId: "R-20260628-0001",
+        event: {
+          type: "run_completed",
+          conversationSeq: { fromSeq: prepared.messageSeq, toSeq: prepared.messageSeq },
+        },
+      });
+      if (!committed) {
+        throw new Error("Expected git-memory bridge to commit the task run.");
+      }
+
+      const runId = committed.runId;
+      const assistant = await runtime.recordAssistantMessage({
+        clientId: "local",
+        turn: prepared,
+        message: "I inspected upload handling and found the next patch.",
+        taskId: task.taskId,
+        runId,
+        at: "2026-06-28T09:10:05+05:30",
+      });
+      expect(assistant).toMatchObject({
+        seq: 2,
+        taskId: task.taskId,
+        runId,
+      });
+
+      const context = await runtime.buildActiveContext(prepared.sessionId);
+      expect(context.task).toMatchObject({
+        taskId: "W-20260628-0001",
+        status: "in_progress",
+        summary: "Upload handling inspection is complete.",
+        completed: ["Read upload server implementation."],
+        open: ["Patch upload validation handling."],
+        recentRuns: [{
+          runId: "R-20260628-0001",
+          status: "completed",
+          summary: "Inspected upload handling.",
+          toolCallCount: 2,
+        }],
+      });
+
+      const driver = new GitMemoryWorktreeGitDriver(prepared.repoPath);
+      expect(JSON.parse(await driver.readFile(task.ref, gitMemoryTaskRunPath(task.taskId, runId)) ?? "{}"))
+        .toMatchObject({
+          runId,
+          toolCallCount: 2,
+          conversationRefs: [{ fromSeq: prepared.messageSeq, toSeq: prepared.messageSeq }],
+          changedFiles: ["ayati-main/src/server/upload-server.ts"],
+          newFacts: ["Upload route validates MIME type."],
+        });
+      expect(await driver.log(GIT_MEMORY_MAIN_REF, 5)).toHaveLength(1);
     } finally {
       rmSync(storeDir, { recursive: true, force: true });
     }

@@ -1,11 +1,17 @@
 import type {
+  CommitGitMemoryTaskRunResult,
   GitMemoryConversationRecord,
+  GitMemoryConversationSeqRange,
+  GitMemoryHarnessRunResultForContext,
   GitMemoryMachineContextPack,
   GitMemoryRunId,
   GitMemoryRuntime,
   GitMemorySessionId,
   GitMemoryTaskId,
   GitMemoryTurnId,
+} from "../context-engine/index.js";
+import {
+  buildGitMemoryTaskRunCommitInput,
 } from "../context-engine/index.js";
 import type {
   ChatContextRuntimePrepareInput,
@@ -36,8 +42,21 @@ export interface GitMemoryChatContextAssistantMessageInput {
   runId?: GitMemoryRunId;
 }
 
+export interface GitMemoryChatContextCompleteTaskRunInput {
+  clientId: string;
+  turn: GitMemoryChatContextPreparedTurn | null;
+  taskId: GitMemoryTaskId;
+  runId?: GitMemoryRunId;
+  result: GitMemoryHarnessRunResultForContext;
+  at: string;
+  startedAt?: string;
+  conversationRefs?: GitMemoryConversationSeqRange[];
+  changedFiles?: string[];
+}
+
 export interface GitMemoryChatContextRuntime {
   prepareUserTurn(input: ChatContextRuntimePrepareInput): Promise<GitMemoryChatContextPreparedTurn>;
+  completeTaskRun(input: GitMemoryChatContextCompleteTaskRunInput): Promise<CommitGitMemoryTaskRunResult | null>;
   recordAssistantMessage(input: GitMemoryChatContextAssistantMessageInput): Promise<GitMemoryConversationRecord | null>;
   buildActiveContext(sessionId: GitMemorySessionId): Promise<GitMemoryMachineContextPack>;
 }
@@ -66,6 +85,32 @@ class AppGitMemoryChatContextRuntime implements GitMemoryChatContextRuntime {
       turnId: prepared.userMessage.turnId,
       context: prepared.context,
     };
+  }
+
+  async completeTaskRun(
+    input: GitMemoryChatContextCompleteTaskRunInput,
+  ): Promise<CommitGitMemoryTaskRunResult | null> {
+    if (!input.turn) {
+      return null;
+    }
+    try {
+      return await this.gitMemoryRuntime.commitTaskRun(buildGitMemoryTaskRunCommitInput({
+        sessionId: input.turn.sessionId,
+        taskId: input.taskId,
+        runId: input.runId,
+        result: input.result,
+        conversationRefs: input.conversationRefs ?? [{
+          fromSeq: input.turn.messageSeq,
+          toSeq: input.turn.messageSeq,
+        }],
+        at: input.at,
+        startedAt: input.startedAt,
+        changedFiles: input.changedFiles,
+      }));
+    } catch (err) {
+      devWarn(`[${input.clientId}] git memory task run commit failed: ${errorMessage(err)}`);
+      return null;
+    }
   }
 
   async recordAssistantMessage(

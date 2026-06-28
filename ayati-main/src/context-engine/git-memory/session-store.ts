@@ -151,6 +151,7 @@ export interface CommitGitMemoryTaskRunInput {
   summary: string;
   assistantResponse?: string;
   actions?: CommitGitMemoryTaskRunActionInput[];
+  toolCallCount?: number;
   changedFiles?: string[];
   newFacts?: string[];
   next?: string;
@@ -486,7 +487,7 @@ export class GitMemoryDailySessionStore {
       conversationRefs: input.conversationRefs,
       summary: input.summary,
       ...(input.assistantResponse ? { assistantResponse: input.assistantResponse } : {}),
-      toolCallCount: actions.length,
+      toolCallCount: input.toolCallCount ?? actions.length,
       changedFiles: input.changedFiles ?? [],
       newFacts,
       ...(input.next ? { next: input.next } : {}),
