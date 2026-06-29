@@ -9,6 +9,7 @@ import {
   GIT_MEMORY_SESSION_CONVERSATION_MARKDOWN_PATH,
   GitMemoryDailySessionStore,
   GitMemoryWorktreeGitDriver,
+  type GitMemoryWriteQueueRunner,
   parseGitMemoryCommitTrailers,
   sessionDateForAt,
 } from "../../../src/context-engine/git-memory/index.js";
@@ -137,6 +138,44 @@ describe("GitMemoryRuntime", () => {
     ]);
 
     expect(context).toEqual(buildGitMemoryContextPackFromMemoryState(memoryState));
+  });
+
+  it("routes git-mutating runtime operations through the write queue", async () => {
+    const contextStoreDir = await mkdtemp(join(tmpdir(), "ayati-git-memory-runtime-"));
+    const queued: Array<{ sessionId: string; label: string }> = [];
+    const writeQueue: GitMemoryWriteQueueRunner = {
+      async enqueue<T>(sessionId: string, label: string, run: () => Promise<T>): Promise<T> {
+        queued.push({ sessionId, label });
+        return await run();
+      },
+    };
+    const runtime = createGitMemoryRuntime({
+      contextStoreDir,
+      timezone: "Asia/Kolkata",
+      agentId: "local",
+      writeQueue,
+    });
+
+    const prepared = await runtime.prepareUserTurn({
+      userMessage: "Fix upload handling",
+      at: "2026-06-28T09:00:00+05:30",
+    });
+    await runtime.recordAssistantMessage({
+      sessionId: prepared.sessionId,
+      text: "I will inspect upload handling.",
+      at: "2026-06-28T09:00:05+05:30",
+    });
+    await runtime.checkpointSession({
+      sessionId: prepared.sessionId,
+      summary: "Checkpoint after assistant response.",
+      at: "2026-06-28T09:01:00+05:30",
+    });
+
+    expect(queued).toMatchObject([
+      { sessionId: "S-20260628-local", label: "prepare_user_turn" },
+      { sessionId: "S-20260628-local", label: "record_assistant_message" },
+      { sessionId: "S-20260628-local", label: "checkpoint_session" },
+    ]);
   });
 
   it("uses timezone-aware dates when choosing the daily session repo", async () => {
