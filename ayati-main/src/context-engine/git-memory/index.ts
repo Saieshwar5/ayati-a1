@@ -1,4 +1,5 @@
 export * from "./commit-message.js";
+export * from "./conversation-markdown.js";
 export * from "./context-pack.js";
 export * from "./git-driver.js";
 export * from "./harness-context.js";

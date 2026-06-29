@@ -3,6 +3,7 @@ import { join } from "node:path";
 import type { TaskAssetRecord } from "../contracts.js";
 import { GitMemoryWorktreeGitDriver } from "./git-driver.js";
 import { parseGitMemoryCommitTrailers, renderGitMemoryCommitMessage, type ParsedGitMemoryCommitTrailers } from "./commit-message.js";
+import { readGitMemoryConversationFromMarkdownOrJsonl } from "./conversation-markdown.js";
 import type {
   GitMemoryActionId,
   GitMemoryActionRecord,
@@ -526,9 +527,7 @@ export class GitMemoryDailySessionStore {
 
   async appendConversationMessage(input: AppendGitMemoryConversationInput): Promise<GitMemoryConversationRecord> {
     const driver = await GitMemoryWorktreeGitDriver.init(this.repoPath(input.sessionId));
-    const existing = parseJsonl<GitMemoryConversationRecord>(
-      await driver.readWorkingFile(GIT_MEMORY_SESSION_CONVERSATION_PATH),
-    );
+    const existing = await readWorkingConversation(driver);
     const branch = await driver.currentBranch();
     const seq = nextSeq(existing);
     const record: GitMemoryConversationRecord = {
@@ -542,7 +541,10 @@ export class GitMemoryDailySessionStore {
     };
     const existingMarkdown = await driver.readWorkingFile(GIT_MEMORY_SESSION_CONVERSATION_MARKDOWN_PATH);
     await driver.writeWorkingFiles({
-      [GIT_MEMORY_SESSION_CONVERSATION_PATH]: jsonl([...existing, toConversationDebugRecord(record, branch ?? "main")]),
+      [GIT_MEMORY_SESSION_CONVERSATION_PATH]: jsonl([
+        ...existing.map((entry) => toConversationDebugRecord(entry, entry.branch ?? "main")),
+        toConversationDebugRecord(record, branch ?? "main"),
+      ]),
       [GIT_MEMORY_SESSION_CONVERSATION_MARKDOWN_PATH]: appendConversationMarkdown(existingMarkdown, record),
     });
     await this.commitMainConversationAppend(driver, {
@@ -554,10 +556,7 @@ export class GitMemoryDailySessionStore {
 
   async appendMainConversationMessage(input: AppendGitMemoryConversationInput): Promise<GitMemoryConversationRecord> {
     const driver = await GitMemoryWorktreeGitDriver.init(this.repoPath(input.sessionId));
-    const existing = parseJsonl<GitMemoryConversationRecord>(
-      await driver.readWorkingFile(GIT_MEMORY_SESSION_CONVERSATION_PATH)
-        ?? await driver.readFile(GIT_MEMORY_MAIN_REF, GIT_MEMORY_SESSION_CONVERSATION_PATH),
-    );
+    const existing = await readWorkingConversation(driver);
     const seq = nextSeq(existing);
     const record: GitMemoryConversationRecord = {
       seq,
@@ -570,7 +569,10 @@ export class GitMemoryDailySessionStore {
     const existingMarkdown = await driver.readWorkingFile(GIT_MEMORY_SESSION_CONVERSATION_MARKDOWN_PATH)
       ?? await driver.readFile(GIT_MEMORY_MAIN_REF, GIT_MEMORY_SESSION_CONVERSATION_MARKDOWN_PATH);
     await driver.writeWorkingFiles({
-      [GIT_MEMORY_SESSION_CONVERSATION_PATH]: jsonl([...existing, toConversationDebugRecord(record, "main")]),
+      [GIT_MEMORY_SESSION_CONVERSATION_PATH]: jsonl([
+        ...existing.map((entry) => toConversationDebugRecord(entry, entry.branch ?? "main")),
+        toConversationDebugRecord(record, "main"),
+      ]),
       [GIT_MEMORY_SESSION_CONVERSATION_MARKDOWN_PATH]: appendConversationMarkdown(existingMarkdown, record),
     });
     await this.commitMainConversationAppend(driver, {
@@ -628,9 +630,7 @@ export class GitMemoryDailySessionStore {
       throw new Error(`Git memory task branch missing: ${ref}`);
     }
     const at = input.at ?? this.nowIso();
-    const conversation = parseJsonl<GitMemoryConversationRecord>(
-      await driver.readWorkingFile(GIT_MEMORY_SESSION_CONVERSATION_PATH),
-    );
+    const conversation = await readWorkingConversation(driver);
     const taskConversation = conversationInRange(conversation, input);
     const existingMarkdown = await driver.readFile(ref, GIT_MEMORY_SESSION_CONVERSATION_MARKDOWN_PATH);
     const nextMarkdown = appendConversationMarkdownRecords(existingMarkdown, taskConversation, {
@@ -995,9 +995,7 @@ export class GitMemoryDailySessionStore {
       next: input.state?.next ?? input.objective,
       updatedAt: at,
     };
-    const conversation = parseJsonl<GitMemoryConversationRecord>(
-      await driver.readWorkingFile(GIT_MEMORY_SESSION_CONVERSATION_PATH),
-    );
+    const conversation = await readWorkingConversation(driver);
     const taskConversation = conversationInRange(conversation, input);
 
     const taskCommit = await driver.commitSyntheticFiles({
@@ -1452,6 +1450,21 @@ function parseJson<T>(value: string | null): T | null {
     return null;
   }
   return JSON.parse(value) as T;
+}
+
+async function readWorkingConversation(
+  driver: GitMemoryWorktreeGitDriver,
+): Promise<GitMemoryConversationRecord[]> {
+  const [markdown, jsonl] = await Promise.all([
+    driver.readWorkingFile(GIT_MEMORY_SESSION_CONVERSATION_MARKDOWN_PATH)
+      ?? driver.readFile(GIT_MEMORY_MAIN_REF, GIT_MEMORY_SESSION_CONVERSATION_MARKDOWN_PATH),
+    driver.readWorkingFile(GIT_MEMORY_SESSION_CONVERSATION_PATH)
+      ?? driver.readFile(GIT_MEMORY_MAIN_REF, GIT_MEMORY_SESSION_CONVERSATION_PATH),
+  ]);
+  return readGitMemoryConversationFromMarkdownOrJsonl(
+    markdown,
+    parseJsonl<GitMemoryConversationRecord>(jsonl),
+  );
 }
 
 async function readRefJson<T>(driver: GitMemoryWorktreeGitDriver, ref: string, path: string): Promise<T | null> {

@@ -1,4 +1,5 @@
 import { parseGitMemoryCommitTrailers, type ParsedGitMemoryCommitTrailers } from "./commit-message.js";
+import { readGitMemoryConversationFromMarkdownOrJsonl } from "./conversation-markdown.js";
 import type { TaskAssetRecord } from "../contracts.js";
 import { GitMemoryWorktreeGitDriver, type GitMemoryLogEntry } from "./git-driver.js";
 import type { GitMemoryDailySessionStore } from "./session-store.js";
@@ -145,7 +146,7 @@ export class GitMemoryContextReader {
       driver.currentBranch(),
       readRecentCommits(driver, GIT_MEMORY_MAIN_REF, limits.commitLogLimit),
     ]);
-    const conversation = readConversationFromMarkdownOrJsonl(
+    const conversation = readGitMemoryConversationFromMarkdownOrJsonl(
       conversationMarkdownDocument,
       conversationJsonl,
     );
@@ -463,86 +464,6 @@ function parseJsonl<T>(value: string | null): T[] {
     .map((line) => line.trim())
     .filter(Boolean)
     .map((line) => JSON.parse(line) as T);
-}
-
-function readConversationFromMarkdownOrJsonl(
-  markdown: string | null,
-  jsonl: GitMemoryConversationRecord[],
-): GitMemoryConversationRecord[] {
-  const parsed = parseConversationMarkdown(markdown);
-  if (parsed.length === 0) {
-    return jsonl;
-  }
-  return parsed;
-}
-
-function parseConversationMarkdown(
-  value: string | null,
-): GitMemoryConversationRecord[] {
-  if (!value?.trim() || value.trim() === "# Conversation") {
-    return [];
-  }
-  const records: GitMemoryConversationRecord[] = [];
-  const lines = value.split(/\r?\n/);
-  let current: {
-    at: string;
-    role: GitMemoryConversationRecord["role"];
-    body: string[];
-    taskId?: GitMemoryTaskId;
-    runId?: string;
-    branch?: string;
-  } | null = null;
-
-  const flush = () => {
-    if (!current) {
-      return;
-    }
-    const body = current.body.join("\n").trim();
-    const seq = records.length + 1;
-    records.push({
-      seq,
-      role: current.role,
-      at: current.at,
-      text: body,
-      ...(current.taskId ? { taskId: current.taskId } : {}),
-      ...(current.runId ? { runId: current.runId } : {}),
-      ...(current.branch ? { branch: current.branch } : {}),
-    });
-  };
-
-  for (const line of lines) {
-    const heading = /^##\s+(.+?)\s+(User|Assistant|System)\s*$/.exec(line);
-    if (heading) {
-      flush();
-      current = {
-        at: heading[1]?.trim() ?? "",
-        role: heading[2]?.toLowerCase() as GitMemoryConversationRecord["role"],
-        body: [],
-      };
-      continue;
-    }
-    if (!current) {
-      continue;
-    }
-    const task = /^Task:\s*(\S+)\s*$/.exec(line);
-    if (task && current.body.every((entry) => entry.trim() === "")) {
-      current.taskId = task[1];
-      continue;
-    }
-    const run = /^Run:\s*(\S+)\s*$/.exec(line);
-    if (run && current.body.every((entry) => entry.trim() === "")) {
-      current.runId = run[1];
-      continue;
-    }
-    const branch = /^Branch:\s*(\S+)\s*$/.exec(line);
-    if (branch && current.body.every((entry) => entry.trim() === "")) {
-      current.branch = branch[1];
-      continue;
-    }
-    current.body.push(line);
-  }
-  flush();
-  return records;
 }
 
 function resolveActiveFocus(
