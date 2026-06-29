@@ -540,6 +540,7 @@ export class GitMemoryDailySessionStore {
       role: input.role,
       at: input.at ?? this.nowIso(),
       text: input.text,
+      ...(branch && branch !== "main" ? { branch } : {}),
       ...(input.taskId ? { taskId: input.taskId } : {}),
       ...(input.runId ? { runId: input.runId } : {}),
     };
@@ -1397,6 +1398,7 @@ function toConversationDebugRecord(
 interface ConversationMarkdownMetadata {
   taskId?: GitMemoryTaskId;
   runId?: GitMemoryRunId;
+  branch?: string;
 }
 
 function renderConversationMarkdownDocument(
@@ -1428,6 +1430,7 @@ function renderConversationMarkdownBlock(
 ): string {
   const taskId = metadata.taskId ?? record.taskId ?? undefined;
   const runId = metadata.runId ?? record.runId ?? undefined;
+  const branch = metadata.branch ?? record.branch ?? undefined;
   const lines = [
     `## ${record.at} ${capitalizeRole(record.role)}`,
     "",
@@ -1438,7 +1441,10 @@ function renderConversationMarkdownBlock(
   if (runId) {
     lines.push(`Run: ${runId}`);
   }
-  if (taskId || runId) {
+  if (branch && branch !== "main") {
+    lines.push(`Branch: ${branch}`);
+  }
+  if (taskId || runId || (branch && branch !== "main")) {
     lines.push("");
   }
   lines.push(record.text?.trim() || `[content: ${record.contentRef ?? "unavailable"}]`);

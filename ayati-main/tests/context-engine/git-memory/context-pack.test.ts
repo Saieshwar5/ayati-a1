@@ -138,6 +138,9 @@ describe("GitMemoryContextReader", () => {
         "",
         "## 2026-06-28T09:15:00+05:30 User",
         "",
+        "Task: W-20260628-0001",
+        "Branch: task/W-20260628-0001-fix-upload-handling",
+        "",
         "Only Markdown exists.",
         "",
       ].join("\n"),
@@ -148,7 +151,13 @@ describe("GitMemoryContextReader", () => {
     });
 
     expect(pack.session.conversationTail).toMatchObject([
-      { seq: 1, role: "user", text: "Only Markdown exists." },
+      {
+        seq: 1,
+        role: "user",
+        text: "Only Markdown exists.",
+        taskId: "W-20260628-0001",
+        branch: "task/W-20260628-0001-fix-upload-handling",
+      },
     ]);
   });
 
@@ -229,8 +238,8 @@ describe("GitMemoryContextReader", () => {
       { seq: 2, role: "assistant", text: "I will inspect upload handling." },
       { seq: 3, role: "user", text: "Continue from there." },
     ]);
-    expect(pack.session.conversationMarkdownTail).toContain("Fix upload handling");
     expect(pack.session.conversationMarkdownTail).toContain("Continue from there.");
+    expect(pack.session.conversationMarkdownTail).toContain("Branch: task/W-20260628-0001-fix-upload-handling");
     expect(pack.session.eventTail).toMatchObject([
       { seq: 1, type: "task_created" },
       { seq: 2, type: "focus_changed" },

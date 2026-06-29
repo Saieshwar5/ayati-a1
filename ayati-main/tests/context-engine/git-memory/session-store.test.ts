@@ -279,6 +279,9 @@ describe("GitMemoryDailySessionStore", () => {
     });
     expect(conversation[1]).not.toHaveProperty("messageId");
     expect(conversation[1]).not.toHaveProperty("v");
+    expect(await driver.readWorkingFile(GIT_MEMORY_SESSION_CONVERSATION_MARKDOWN_PATH)).toContain(
+      "Branch: task/W-20260628-0001-fix-upload-handling",
+    );
     expect(await driver.currentBranch()).toBe("task/W-20260628-0001-fix-upload-handling");
   });
 

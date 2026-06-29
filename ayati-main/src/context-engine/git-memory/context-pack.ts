@@ -454,6 +454,7 @@ function parseConversationMarkdown(
     body: string[];
     taskId?: GitMemoryTaskId;
     runId?: string;
+    branch?: string;
   } | null = null;
 
   const flush = () => {
@@ -472,6 +473,7 @@ function parseConversationMarkdown(
       text: body,
       ...(current.taskId ? { taskId: current.taskId } : {}),
       ...(current.runId ? { runId: current.runId } : {}),
+      ...(current.branch ? { branch: current.branch } : {}),
     });
   };
 
@@ -497,6 +499,11 @@ function parseConversationMarkdown(
     const run = /^Run:\s*(\S+)\s*$/.exec(line);
     if (run && current.body.every((entry) => entry.trim() === "")) {
       current.runId = run[1];
+      continue;
+    }
+    const branch = /^Branch:\s*(\S+)\s*$/.exec(line);
+    if (branch && current.body.every((entry) => entry.trim() === "")) {
+      current.branch = branch[1];
       continue;
     }
     current.body.push(line);
