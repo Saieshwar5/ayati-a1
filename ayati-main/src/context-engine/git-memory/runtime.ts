@@ -9,6 +9,7 @@ import type {
   GitMemoryDailySessionHandle,
   GitMemorySessionCheckpoint,
   GitMemoryTaskRoutingSnapshot,
+  SelectGitMemoryTaskForTurnResult,
 } from "./session-store.js";
 import { GitMemoryDailySessionStore } from "./session-store.js";
 import {
@@ -106,6 +107,18 @@ export interface CheckpointGitMemoryRuntimeSessionInput {
   sessionId: GitMemorySessionId;
   summary?: string;
   at?: string;
+}
+
+export interface SwitchGitMemoryTaskInput {
+  sessionId: GitMemorySessionId;
+  taskId: GitMemoryTaskId;
+  reason?: string;
+  at?: string;
+}
+
+export interface SwitchGitMemoryTaskResult extends SelectGitMemoryTaskForTurnResult {
+  context: GitMemoryMachineContextPack;
+  memoryState: GitContextMemoryState;
 }
 
 export type RoutedGitMemoryUserTurn =
@@ -293,6 +306,33 @@ export class GitMemoryRuntime {
 
   async resolveTaskRoute(input: ResolveGitMemoryTaskRouteInput): Promise<GitMemoryTaskRouteResolution> {
     return await this.taskRouter.resolve(input);
+  }
+
+  async switchTask(input: SwitchGitMemoryTaskInput): Promise<SwitchGitMemoryTaskResult> {
+    const result = await this.writeQueue.enqueue({
+      sessionId: input.sessionId,
+      type: "task_switched",
+      label: "switch_task",
+      createdAt: input.at,
+    }, async () => {
+      return await this.store.selectTaskForTurn({
+        sessionId: input.sessionId,
+        taskId: input.taskId,
+        fromSeq: 0,
+        toSeq: 0,
+        reason: "task_switched",
+        at: input.at,
+        summary: input.reason,
+      });
+    });
+    this.invalidateSessionMemory(input.sessionId);
+    const memoryState = await this.hydrateMemoryState(input.sessionId);
+    const context = buildGitMemoryContextPackFromMemoryState(memoryState);
+    return {
+      ...result,
+      context,
+      memoryState,
+    };
   }
 
   async routeUserTurn(input: ApplyGitMemoryTaskRouteInput): Promise<RoutedGitMemoryUserTurn> {

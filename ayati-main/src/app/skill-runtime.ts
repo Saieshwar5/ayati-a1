@@ -11,6 +11,7 @@ import type { DirectoryLibrary } from "../files/directory-library.js";
 import type { FileLibrary } from "../files/file-library.js";
 import type { WorkspaceOrchestrator } from "../ui/workspace-orchestrator.js";
 import type { AyatiRuntimeConfig } from "../config/runtime-config.js";
+import type { GitMemoryRuntime } from "../context-engine/index.js";
 import { builtInSkillsProvider } from "../skills/provider.js";
 import { createToolExecutor, type ToolExecutor } from "../skills/tool-executor.js";
 import type { SkillDefinition, SkillsProvider, SkillPromptBlock, ToolDefinition } from "../skills/types.js";
@@ -40,6 +41,7 @@ export interface SkillRuntimeOptions {
   directoryLibrary: DirectoryLibrary;
   workspaceOrchestrator: WorkspaceOrchestrator;
   config: AyatiRuntimeConfig;
+  gitMemoryRuntime: GitMemoryRuntime;
 }
 
 export interface SkillRuntime {
@@ -81,6 +83,7 @@ export async function createSkillRuntime(options: SkillRuntimeOptions): Promise<
     }),
     createGitContextSkill({
       contextStoreDir: options.config.gitContext.storeDir,
+      gitMemoryRuntime: options.gitMemoryRuntime,
     }),
     createUiSkill({
       workspaceOrchestrator: options.workspaceOrchestrator,

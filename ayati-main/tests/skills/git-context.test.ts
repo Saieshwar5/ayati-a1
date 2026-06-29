@@ -3,10 +3,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
+  createGitMemoryRuntime,
   GIT_MEMORY_MAIN_REF,
   GitMemoryDailySessionStore,
   GitMemoryWorktreeGitDriver,
   gitMemoryTaskAssetsPath,
+  gitMemoryTaskStatePath,
   renderGitMemoryCommitMessage,
 } from "../../src/context-engine/git-memory/index.js";
 import { createGitContextSkill } from "../../src/skills/builtins/git-context/index.js";
@@ -298,6 +300,57 @@ describe("git-context skill", () => {
     });
   });
 
+  it("creates git-context tasks through the runtime when provided", async () => {
+    const prepared = await prepareMultiTaskGitContextSession();
+    const runtime = createGitMemoryRuntime({
+      contextStoreDir: prepared.contextStoreDir,
+      timezone: "Asia/Kolkata",
+      agentId: "local",
+    });
+    const skill = createGitContextSkill({
+      contextStoreDir: prepared.contextStoreDir,
+      gitMemoryRuntime: runtime,
+    });
+    const tool = requiredTool(skill, "git_context_create_task");
+
+    const result = await tool.execute({
+      sessionId: prepared.session.sessionId,
+      title: "Fix notification digest",
+      objective: "Investigate missing notification digest delivery.",
+      reason: "User started a new durable notification task.",
+    });
+
+    expect(result.ok).toBe(true);
+    const created = result.v2?.structuredContent as { taskId: string; branch: string; ref: string };
+    const driver = new GitMemoryWorktreeGitDriver(prepared.session.repoPath);
+    await driver.commitSyntheticFiles({
+      ref: created.ref,
+      files: {
+        [gitMemoryTaskStatePath(created.taskId)]: "{ invalid json",
+      },
+      message: "damage task state",
+    });
+    const memoryState = await runtime.buildMemoryState(prepared.session.sessionId);
+
+    expect(memoryState.focus).toMatchObject({
+      status: "active",
+      taskId: created.taskId,
+      branch: created.branch,
+    });
+    expect(memoryState.activeTask).toMatchObject({
+      taskId: created.taskId,
+      title: "Fix notification digest",
+      summary: "Investigate missing notification digest delivery.",
+    });
+    expect(runtime.getSessionWrites(prepared.session.sessionId)).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        type: "task_created",
+        label: "create_task_branch",
+        status: "committed",
+      }),
+    ]));
+  });
+
   it("switches the active git-context task branch by task id", async () => {
     const prepared = await prepareMultiTaskGitContextSession();
     const driver = new GitMemoryWorktreeGitDriver(prepared.session.repoPath);
@@ -358,6 +411,55 @@ describe("git-context skill", () => {
       branch: prepared.uploadTask.branch,
       ref: prepared.uploadTask.ref,
     });
+  });
+
+  it("switches git-context tasks through the runtime when provided", async () => {
+    const prepared = await prepareMultiTaskGitContextSession();
+    const runtime = createGitMemoryRuntime({
+      contextStoreDir: prepared.contextStoreDir,
+      timezone: "Asia/Kolkata",
+      agentId: "local",
+    });
+    const skill = createGitContextSkill({
+      contextStoreDir: prepared.contextStoreDir,
+      gitMemoryRuntime: runtime,
+    });
+    const tool = requiredTool(skill, "git_context_switch_task");
+
+    const result = await tool.execute({
+      sessionId: prepared.session.sessionId,
+      taskId: prepared.uploadTask.taskId,
+      reason: "User asked to continue upload validation work.",
+    });
+
+    expect(result.ok).toBe(true);
+    const driver = new GitMemoryWorktreeGitDriver(prepared.session.repoPath);
+    await driver.commitSyntheticFiles({
+      ref: prepared.uploadTask.ref,
+      files: {
+        [gitMemoryTaskStatePath(prepared.uploadTask.taskId)]: "{ invalid json",
+      },
+      message: "damage task state",
+    });
+    const memoryState = await runtime.buildMemoryState(prepared.session.sessionId);
+
+    expect(memoryState.focus).toMatchObject({
+      status: "active",
+      taskId: prepared.uploadTask.taskId,
+      branch: prepared.uploadTask.branch,
+    });
+    expect(memoryState.activeTask).toMatchObject({
+      taskId: prepared.uploadTask.taskId,
+      title: "Fix upload handling",
+      status: "in_progress",
+    });
+    expect(runtime.getSessionWrites(prepared.session.sessionId)).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        type: "task_switched",
+        label: "switch_task",
+        status: "committed",
+      }),
+    ]));
   });
 
   it("rejects invalid git-context task switch requests", async () => {

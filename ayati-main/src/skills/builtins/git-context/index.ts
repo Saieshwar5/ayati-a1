@@ -2,6 +2,7 @@ import {
   buildGitMemoryContextPackFromMemoryState,
   GitContextMemoryStateHydrator,
   GitMemoryDailySessionStore,
+  type GitMemoryRuntime,
   type GitMemoryContextLimits,
   type ReadGitMemoryEvidenceInput,
   type SearchGitMemoryEvidenceInput,
@@ -14,6 +15,7 @@ import { commonAnnotations, errorResult, genericObjectOutputSchema, okJsonResult
 
 export interface GitContextSkillDeps {
   contextStoreDir: string;
+  gitMemoryRuntime?: GitMemoryRuntime;
 }
 
 interface SessionScopedInput {
@@ -109,6 +111,7 @@ const GIT_CONTEXT_PROMPT_BLOCK = [
 export function createGitContextSkill(deps: GitContextSkillDeps): SkillDefinition {
   const store = new GitMemoryDailySessionStore({ contextStoreDir: deps.contextStoreDir });
   const memoryStateHydrator = new GitContextMemoryStateHydrator(store);
+  const runtime = deps.gitMemoryRuntime;
 
   return {
     id: "git-context",
@@ -117,15 +120,15 @@ export function createGitContextSkill(deps: GitContextSkillDeps): SkillDefinitio
     promptBlock: GIT_CONTEXT_PROMPT_BLOCK,
     tools: [
       createListSessionsTool(store),
-      createActiveContextTool(memoryStateHydrator),
+      createActiveContextTool(memoryStateHydrator, runtime),
       createListTasksTool(store),
       createSearchTasksTool(store),
       createReadTaskTool(store),
       createReadEvidenceTool(store),
       createSearchEvidenceTool(store),
       createLogTool(store),
-      createCreateTaskTool(store),
-      createSwitchTaskTool(store),
+      createCreateTaskTool(store, runtime),
+      createSwitchTaskTool(store, runtime),
     ],
   };
 }
@@ -166,7 +169,10 @@ function createListSessionsTool(store: GitMemoryDailySessionStore): ToolDefiniti
   };
 }
 
-function createActiveContextTool(memoryStateHydrator: GitContextMemoryStateHydrator): ToolDefinition {
+function createActiveContextTool(
+  memoryStateHydrator: GitContextMemoryStateHydrator,
+  runtime: GitMemoryRuntime | undefined,
+): ToolDefinition {
   return {
     name: "git_context_active",
     description: "Read the compact active git context for an Ayati daily session.",
@@ -197,10 +203,12 @@ function createActiveContextTool(memoryStateHydrator: GitContextMemoryStateHydra
       if ("ok" in parsed) {
         return parsed;
       }
-      const memoryState = await memoryStateHydrator.hydrate({
-        sessionId: parsed.sessionId,
-        limits: parsed.limits,
-      });
+      const memoryState = runtime && !parsed.limits
+        ? await runtime.buildMemoryState(parsed.sessionId)
+        : await memoryStateHydrator.hydrate({
+          sessionId: parsed.sessionId,
+          limits: parsed.limits,
+        });
       const activeContext = buildGitMemoryContextPackFromMemoryState(memoryState);
       return okJsonResult({
         code: "GIT_CONTEXT_ACTIVE_READ",
@@ -499,7 +507,10 @@ function createLogTool(store: GitMemoryDailySessionStore): ToolDefinition {
   };
 }
 
-function createSwitchTaskTool(store: GitMemoryDailySessionStore): ToolDefinition {
+function createSwitchTaskTool(
+  store: GitMemoryDailySessionStore,
+  runtime: GitMemoryRuntime | undefined,
+): ToolDefinition {
   return {
     name: "git_context_switch_task",
     description: "Switch the active git-context session worktree to an existing task branch.",
@@ -534,14 +545,20 @@ function createSwitchTaskTool(store: GitMemoryDailySessionStore): ToolDefinition
       try {
         const before = await store.readTaskRoutingSnapshot(parsed.sessionId);
         const taskId = await resolveTaskIdFromSelector(store, parsed);
-        const selected = await store.selectTaskForTurn({
-          sessionId: parsed.sessionId,
-          taskId,
-          fromSeq: 0,
-          toSeq: 0,
-          reason: "task_switched",
-          summary: parsed.reason,
-        });
+        const selected = runtime
+          ? await runtime.switchTask({
+            sessionId: parsed.sessionId,
+            taskId,
+            reason: parsed.reason,
+          })
+          : await store.selectTaskForTurn({
+            sessionId: parsed.sessionId,
+            taskId,
+            fromSeq: 0,
+            toSeq: 0,
+            reason: "task_switched",
+            summary: parsed.reason,
+          });
         return okJsonResult({
           code: "GIT_CONTEXT_TASK_SWITCHED",
           message: "Git-context active task switched.",
@@ -562,7 +579,10 @@ function createSwitchTaskTool(store: GitMemoryDailySessionStore): ToolDefinition
   };
 }
 
-function createCreateTaskTool(store: GitMemoryDailySessionStore): ToolDefinition {
+function createCreateTaskTool(
+  store: GitMemoryDailySessionStore,
+  runtime: GitMemoryRuntime | undefined,
+): ToolDefinition {
   return {
     name: "git_context_create_task",
     description: "Create and activate a new git-context task branch.",
@@ -596,7 +616,7 @@ function createCreateTaskTool(store: GitMemoryDailySessionStore): ToolDefinition
       }
       try {
         const before = await store.readTaskRoutingSnapshot(parsed.sessionId);
-        const created = await store.createTaskBranch({
+        const created = await (runtime ?? store).createTaskBranch({
           sessionId: parsed.sessionId,
           title: parsed.title,
           objective: parsed.objective,

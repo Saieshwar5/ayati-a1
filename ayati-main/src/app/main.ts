@@ -151,6 +151,13 @@ export async function main(): Promise<void> {
   });
   content.workspaceFocusWatcher.start();
 
+  const gitMemoryRuntime = createGitMemoryRuntime({
+    contextStoreDir: runtimeConfig.gitContext.storeDir,
+    timezone: runtimeConfig.gitContext.timezone,
+    agentId: runtimeConfig.gitContext.agentId,
+  });
+  await gitMemoryRuntime.openDailySession();
+
   const skills = await createSkillRuntime({
     projectRoot,
     clientId: CLIENT_ID,
@@ -163,6 +170,7 @@ export async function main(): Promise<void> {
     directoryLibrary: content.directoryLibrary,
     workspaceOrchestrator: content.workspaceOrchestrator,
     config: runtimeConfig,
+    gitMemoryRuntime,
   });
 
   staticContext = await loadStaticContext({
@@ -170,12 +178,6 @@ export async function main(): Promise<void> {
     toolDefinitions: skills.runtimeToolDefs,
   });
   appendSkillBlocks(staticContext, skills.additionalSkills);
-  const gitMemoryRuntime = createGitMemoryRuntime({
-    contextStoreDir: runtimeConfig.gitContext.storeDir,
-    timezone: runtimeConfig.gitContext.timezone,
-    agentId: runtimeConfig.gitContext.agentId,
-  });
-  await gitMemoryRuntime.openDailySession();
   const chatContextRuntime = createGitMemoryChatContextRuntime({ gitMemoryRuntime });
   const systemEventContextRuntime = createGitMemorySystemEventContextRuntime({ gitMemoryRuntime });
   const chatTurnRuntime = createChatTurnRuntime({
