@@ -6,6 +6,7 @@ import { parseGitMemoryCommitTrailers, renderGitMemoryCommitMessage, type Parsed
 import type {
   GitMemoryActionId,
   GitMemoryActionRecord,
+  GitMemoryConversationAppendRecord,
   GitMemoryConversationRecord,
   GitMemoryConversationRole,
   GitMemoryConversationSeqRange,
@@ -505,7 +506,7 @@ export class GitMemoryDailySessionStore {
     return { sessionId, repoPath, initialized: true, initialCommit };
   }
 
-  async appendConversationMessage(input: AppendGitMemoryConversationInput): Promise<GitMemoryConversationRecord> {
+  async appendConversationMessage(input: AppendGitMemoryConversationInput): Promise<GitMemoryConversationAppendRecord> {
     const driver = await GitMemoryWorktreeGitDriver.init(this.repoPath(input.sessionId));
     const date = gitMemoryDateFromSessionId(input.sessionId);
     const existing = parseJsonl<GitMemoryConversationRecord>(
@@ -513,8 +514,7 @@ export class GitMemoryDailySessionStore {
     );
     const branch = await driver.currentBranch();
     const seq = nextSeq(existing);
-    const record: GitMemoryConversationRecord = {
-      v: 1,
+    const record: GitMemoryConversationAppendRecord = {
       seq,
       messageId: createGitMemoryMessageId(date, seq),
       turnId: input.turnId ?? createGitMemoryTurnId(date, seq),

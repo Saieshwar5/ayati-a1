@@ -74,10 +74,7 @@ describe("git memory schema", () => {
     }).ok).toBe(true);
 
     expect(validateGitMemoryConversationRecord({
-      v: 1,
       seq: 2,
-      messageId: "M-20260628-000002",
-      turnId: "T-20260628-000001",
       role: "assistant",
       at: "2026-06-28T09:00:05+05:30",
       text: null,
@@ -88,10 +85,7 @@ describe("git memory schema", () => {
     }).ok).toBe(true);
 
     const result = validateGitMemoryConversationRecord({
-      v: 1,
       seq: 3,
-      messageId: "M-20260628-000003",
-      turnId: "T-20260628-000002",
       role: "user",
       at: "2026-06-28T09:02:00+05:30",
       text: "",
@@ -101,6 +95,22 @@ describe("git memory schema", () => {
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.errors).toContain("conversation record must include non-empty text or contentRef.");
+    }
+
+    const legacy = validateGitMemoryConversationRecord({
+      v: 1,
+      seq: 4,
+      messageId: "M-20260628-000004",
+      turnId: "T-20260628-000004",
+      role: "user",
+      at: "2026-06-28T09:03:00+05:30",
+      text: "Legacy ids should not be persisted.",
+    });
+    expect(legacy.ok).toBe(false);
+    if (!legacy.ok) {
+      expect(legacy.errors).toContain("v is not supported in conversation debug records.");
+      expect(legacy.errors).toContain("messageId is not supported in conversation debug records.");
+      expect(legacy.errors).toContain("turnId is not supported in conversation debug records.");
     }
   });
 

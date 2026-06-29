@@ -144,7 +144,6 @@ export class GitMemoryContextReader {
     const conversation = readConversationFromMarkdownOrJsonl(
       conversationMarkdownDocument,
       conversationJsonl,
-      input.sessionId,
     );
     const conversationMarkdown = markdownTail(conversationMarkdownDocument, limits.conversationMarkdownCharLimit);
     const session = {
@@ -451,33 +450,20 @@ function parseJsonl<T>(value: string | null): T[] {
 function readConversationFromMarkdownOrJsonl(
   markdown: string | null,
   jsonl: GitMemoryConversationRecord[],
-  sessionId: GitMemorySessionId,
 ): GitMemoryConversationRecord[] {
-  const parsed = parseConversationMarkdown(markdown, sessionId);
+  const parsed = parseConversationMarkdown(markdown);
   if (parsed.length === 0) {
     return jsonl;
   }
-  return parsed.map((record) => {
-    const existing = jsonl.find((candidate) => candidate.seq === record.seq);
-    if (!existing) {
-      return record;
-    }
-    return {
-      ...record,
-      ...(existing.turnId ? { turnId: existing.turnId } : {}),
-      ...(existing.messageId ? { messageId: existing.messageId } : {}),
-    };
-  });
+  return parsed;
 }
 
 function parseConversationMarkdown(
   value: string | null,
-  sessionId: GitMemorySessionId,
 ): GitMemoryConversationRecord[] {
   if (!value?.trim() || value.trim() === "# Conversation") {
     return [];
   }
-  const date = sessionId.match(/^S-(\d{8})-/)?.[1] ?? "unknown";
   const records: GitMemoryConversationRecord[] = [];
   const lines = value.split(/\r?\n/);
   let current: {
@@ -496,10 +482,7 @@ function parseConversationMarkdown(
     const body = current.body.join("\n").trim();
     const seq = records.length + 1;
     records.push({
-      v: 1,
       seq,
-      messageId: `M-${date}-markdown-${seq.toString().padStart(6, "0")}`,
-      turnId: `T-${date}-markdown-${seq.toString().padStart(6, "0")}`,
       role: current.role,
       at: current.at,
       text: body,

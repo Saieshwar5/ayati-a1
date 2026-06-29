@@ -40,10 +40,7 @@ export interface GitMemorySessionMetaFile {
 }
 
 export interface GitMemoryConversationRecord {
-  v?: 1;
   seq: number;
-  messageId?: GitMemoryMessageId;
-  turnId?: GitMemoryTurnId;
   role: GitMemoryConversationRole;
   at: string;
   text?: string | null;
@@ -52,6 +49,11 @@ export interface GitMemoryConversationRecord {
   taskId?: GitMemoryTaskId | null;
   runId?: GitMemoryRunId | null;
   branch?: string | null;
+}
+
+export interface GitMemoryConversationAppendRecord extends GitMemoryConversationRecord {
+  messageId: GitMemoryMessageId;
+  turnId: GitMemoryTurnId;
 }
 
 export interface GitMemoryTaskIndexEntry {
@@ -266,18 +268,6 @@ export function isGitMemorySessionId(value: unknown): value is GitMemorySessionI
     && isValidCompactDate(value.slice(2, 10));
 }
 
-export function isGitMemoryMessageId(value: unknown): value is GitMemoryMessageId {
-  return typeof value === "string"
-    && /^M-\d{8}-\d{6}$/.test(value)
-    && isValidCompactDate(value.slice(2, 10));
-}
-
-export function isGitMemoryTurnId(value: unknown): value is GitMemoryTurnId {
-  return typeof value === "string"
-    && /^T-\d{8}-\d{6}$/.test(value)
-    && isValidCompactDate(value.slice(2, 10));
-}
-
 export function isGitMemoryTaskId(value: unknown): value is GitMemoryTaskId {
   return typeof value === "string"
     && /^W-\d{8}-\d{4}$/.test(value)
@@ -322,15 +312,7 @@ export function validateGitMemoryConversationRecord(value: unknown): ValidationR
   const record = requireRecord(value, "conversation record", errors);
   if (record) {
     requirePositiveInteger(record, "seq", errors);
-    if ("v" in record) {
-      requireVersion(record, errors);
-    }
-    if ("messageId" in record) {
-      requireMessageId(record, "messageId", errors);
-    }
-    if ("turnId" in record) {
-      requireTurnId(record, "turnId", errors);
-    }
+    rejectFields(record, ["v", "messageId", "turnId"], errors);
     requireOneOf(record, "role", ["user", "assistant", "system"], errors);
     requireNonEmptyString(record, "at", errors);
     requireInlineOrReferencedContent(record, errors);
@@ -517,6 +499,14 @@ function requireNonEmptyString(record: Record<string, unknown>, field: string, e
   return value;
 }
 
+function rejectFields(record: Record<string, unknown>, fields: string[], errors: string[]): void {
+  for (const field of fields) {
+    if (field in record) {
+      errors.push(`${field} is not supported in conversation debug records.`);
+    }
+  }
+}
+
 function requireOptionalNonEmptyString(record: Record<string, unknown>, field: string, errors: string[]): void {
   const value = record[field];
   if (value === undefined || value === null) {
@@ -674,20 +664,6 @@ function requireSessionId(record: Record<string, unknown>, field: string, errors
   const value = requireNonEmptyString(record, field, errors);
   if (value && !isGitMemorySessionId(value)) {
     errors.push(`${field} must be a valid git-memory session id.`);
-  }
-}
-
-function requireMessageId(record: Record<string, unknown>, field: string, errors: string[]): void {
-  const value = requireNonEmptyString(record, field, errors);
-  if (value && !isGitMemoryMessageId(value)) {
-    errors.push(`${field} must be a valid git-memory message id.`);
-  }
-}
-
-function requireTurnId(record: Record<string, unknown>, field: string, errors: string[]): void {
-  const value = requireNonEmptyString(record, field, errors);
-  if (value && !isGitMemoryTurnId(value)) {
-    errors.push(`${field} must be a valid git-memory turn id.`);
   }
 }
 
