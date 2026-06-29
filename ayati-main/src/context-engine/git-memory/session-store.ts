@@ -528,6 +528,34 @@ export class GitMemoryDailySessionStore {
     return record;
   }
 
+  async appendMainConversationMessage(input: AppendGitMemoryConversationInput): Promise<GitMemoryConversationRecord> {
+    const driver = await GitMemoryWorktreeGitDriver.init(this.repoPath(input.sessionId));
+    const existing = parseJsonl<GitMemoryConversationRecord>(
+      await driver.readWorkingFile(GIT_MEMORY_SESSION_CONVERSATION_PATH)
+        ?? await driver.readFile(GIT_MEMORY_MAIN_REF, GIT_MEMORY_SESSION_CONVERSATION_PATH),
+    );
+    const seq = nextSeq(existing);
+    const record: GitMemoryConversationRecord = {
+      seq,
+      role: input.role,
+      at: input.at ?? this.nowIso(),
+      text: input.text,
+      ...(input.taskId ? { taskId: input.taskId } : {}),
+      ...(input.runId ? { runId: input.runId } : {}),
+    };
+    const existingMarkdown = await driver.readWorkingFile(GIT_MEMORY_SESSION_CONVERSATION_MARKDOWN_PATH)
+      ?? await driver.readFile(GIT_MEMORY_MAIN_REF, GIT_MEMORY_SESSION_CONVERSATION_MARKDOWN_PATH);
+    await driver.writeWorkingFiles({
+      [GIT_MEMORY_SESSION_CONVERSATION_PATH]: jsonl([...existing, toConversationDebugRecord(record, "main")]),
+      [GIT_MEMORY_SESSION_CONVERSATION_MARKDOWN_PATH]: appendConversationMarkdown(existingMarkdown, record),
+    });
+    await this.commitMainConversationAppend(driver, {
+      sessionId: input.sessionId,
+      record,
+    });
+    return record;
+  }
+
   private async commitMainConversationAppend(
     driver: GitMemoryWorktreeGitDriver,
     input: {

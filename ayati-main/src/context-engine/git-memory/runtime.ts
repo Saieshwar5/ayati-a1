@@ -128,7 +128,7 @@ export class GitMemoryRuntime {
   async prepareUserTurn(input: PrepareGitMemoryUserTurnInput): Promise<PreparedGitMemoryUserTurn> {
     const at = input.at ?? this.nowProvider().toISOString();
     const session = await this.openDailySession({ at });
-    const userMessage = await this.store.appendConversationMessage({
+    const userMessage = await this.store.appendMainConversationMessage({
       sessionId: session.sessionId,
       role: "user",
       text: input.userMessage,
@@ -152,7 +152,7 @@ export class GitMemoryRuntime {
   async prepareSystemTurn(input: PrepareGitMemorySystemTurnInput): Promise<PreparedGitMemorySystemTurn> {
     const at = input.at ?? this.nowProvider().toISOString();
     const session = await this.openDailySession({ at });
-    const systemMessage = await this.store.appendConversationMessage({
+    const systemMessage = await this.store.appendMainConversationMessage({
       sessionId: session.sessionId,
       role: "system",
       text: input.systemMessage,

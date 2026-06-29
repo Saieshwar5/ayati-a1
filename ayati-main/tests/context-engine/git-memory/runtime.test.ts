@@ -263,6 +263,69 @@ describe("GitMemoryRuntime", () => {
     });
   });
 
+  it("keeps inbound user messages on main until routing selects the task branch", async () => {
+    const contextStoreDir = await mkdtemp(join(tmpdir(), "ayati-git-memory-runtime-"));
+    const runtime = createGitMemoryRuntime({
+      contextStoreDir,
+      timezone: "Asia/Kolkata",
+      agentId: "local",
+    });
+    const first = await runtime.prepareUserTurn({
+      userMessage: "Fix upload bug",
+      at: "2026-06-28T09:00:00+05:30",
+    });
+    const firstRoute = await runtime.routeUserTurn({
+      sessionId: first.sessionId,
+      userMessage: "Fix upload bug",
+      fromSeq: first.userMessage.seq,
+      toSeq: first.userMessage.seq,
+      at: "2026-06-28T09:00:01+05:30",
+    });
+    if (firstRoute.status !== "ready") {
+      throw new Error(`Expected ready task route, got ${firstRoute.status}.`);
+    }
+
+    const second = await runtime.prepareUserTurn({
+      userMessage: "Analyze contract risk",
+      at: "2026-06-28T09:05:00+05:30",
+    });
+    const driver = new GitMemoryWorktreeGitDriver(second.repoPath);
+    const firstTaskBeforeRouting = await driver.readFile(
+      firstRoute.ref,
+      GIT_MEMORY_SESSION_CONVERSATION_MARKDOWN_PATH,
+    ) ?? "";
+    const mainBeforeRouting = await driver.readFile(
+      GIT_MEMORY_MAIN_REF,
+      GIT_MEMORY_SESSION_CONVERSATION_MARKDOWN_PATH,
+    ) ?? "";
+
+    expect(mainBeforeRouting).toContain("Analyze contract risk");
+    expect(firstTaskBeforeRouting).not.toContain("Analyze contract risk");
+
+    const secondRoute = await runtime.routeUserTurn({
+      sessionId: second.sessionId,
+      userMessage: "Analyze contract risk",
+      fromSeq: second.userMessage.seq,
+      toSeq: second.userMessage.seq,
+      at: "2026-06-28T09:05:01+05:30",
+    });
+    if (secondRoute.status !== "ready") {
+      throw new Error(`Expected ready task route, got ${secondRoute.status}.`);
+    }
+
+    const firstTaskAfterRouting = await driver.readFile(
+      firstRoute.ref,
+      GIT_MEMORY_SESSION_CONVERSATION_MARKDOWN_PATH,
+    ) ?? "";
+    const secondTaskAfterRouting = await driver.readFile(
+      secondRoute.ref,
+      GIT_MEMORY_SESSION_CONVERSATION_MARKDOWN_PATH,
+    ) ?? "";
+    expect(secondRoute.taskId).not.toBe(firstRoute.taskId);
+    expect(firstTaskAfterRouting).not.toContain("Analyze contract risk");
+    expect(secondTaskAfterRouting).toContain("Analyze contract risk");
+  });
+
   it("does not allocate a task run id when routing is ambiguous", async () => {
     const contextStoreDir = await mkdtemp(join(tmpdir(), "ayati-git-memory-runtime-"));
     const store = new GitMemoryDailySessionStore({ contextStoreDir });
