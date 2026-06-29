@@ -40,6 +40,27 @@ Tests use Vitest. Add or update tests in the matching package/domain folder. Nam
 
 Use short, lowercase, imperative commit subjects, for example `update context pack docs`. Pull requests should explain what changed, why, affected paths, and test evidence. Include screenshots or logs when UI, protocol, or artifact behavior changes.
 
+## Branching Guidance
+
+Before editing, check `git status --short` and decide whether the work belongs on
+the current branch or a new one.
+
+- Use the current branch for small, low-risk follow-ups:
+  - typo fixes
+  - wording-only docs changes
+  - comment cleanup
+  - formatting-only updates
+  - continuation work already scoped to the active task
+- Use a new branch for higher-risk or behavior-changing work:
+  - code changes
+  - dependency changes
+  - config, policy, or state changes
+  - schema or API changes
+  - multi-file refactors
+- Branch names should be short and lowercase, using a prefix such as `fix/`,
+  `feat/`, `docs/`, `chore/`, `refactor/`, or `test/`.
+- State the branch decision before editing when it matters for the task.
+
 ## Security & Configuration Tips
 
 Never commit secrets, `.env`, runtime data, generated artifacts, logs, or `dist/`. Treat shell, filesystem, Python, database, and external HTTP tools as high-privilege capabilities. Respect policies under `ayati-main/context/`.
