@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  GIT_MEMORY_SESSION_CONVERSATION_MARKDOWN_PATH,
   GIT_MEMORY_SESSION_CONVERSATION_PATH,
   GIT_MEMORY_SESSION_EVENTS_PATH,
   GIT_MEMORY_SESSION_FOCUS_PATH,
@@ -31,6 +32,7 @@ describe("git memory schema", () => {
   it("defines the canonical daily repo paths", () => {
     expect(GIT_MEMORY_SESSION_META_PATH).toBe("session/meta.json");
     expect(GIT_MEMORY_SESSION_CONVERSATION_PATH).toBe("session/conversation.jsonl");
+    expect(GIT_MEMORY_SESSION_CONVERSATION_MARKDOWN_PATH).toBe("session/conversation.md");
     expect(GIT_MEMORY_SESSION_EVENTS_PATH).toBe("session/events.jsonl");
     expect(GIT_MEMORY_SESSION_FOCUS_PATH).toBe("session/focus.json");
     expect(GIT_MEMORY_SESSION_TASKS_PATH).toBe("session/tasks.json");

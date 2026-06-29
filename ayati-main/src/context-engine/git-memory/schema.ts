@@ -2,6 +2,7 @@ export const GIT_MEMORY_SCHEMA_VERSION = 1;
 
 export const GIT_MEMORY_SESSION_META_PATH = "session/meta.json";
 export const GIT_MEMORY_SESSION_CONVERSATION_PATH = "session/conversation.jsonl";
+export const GIT_MEMORY_SESSION_CONVERSATION_MARKDOWN_PATH = "session/conversation.md";
 export const GIT_MEMORY_SESSION_EVENTS_PATH = "session/events.jsonl";
 export const GIT_MEMORY_SESSION_FOCUS_PATH = "session/focus.json";
 export const GIT_MEMORY_SESSION_TASKS_PATH = "session/tasks.json";

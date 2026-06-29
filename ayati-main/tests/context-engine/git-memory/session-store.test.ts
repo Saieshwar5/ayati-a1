@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   GIT_MEMORY_MAIN_REF,
+  GIT_MEMORY_SESSION_CONVERSATION_MARKDOWN_PATH,
   GIT_MEMORY_SESSION_CONVERSATION_PATH,
   GIT_MEMORY_SESSION_EVENTS_PATH,
   GIT_MEMORY_SESSION_FOCUS_PATH,
@@ -70,6 +71,8 @@ describe("GitMemoryDailySessionStore", () => {
       agentId: "local",
     });
     expect(await driver.readFile(GIT_MEMORY_MAIN_REF, GIT_MEMORY_SESSION_CONVERSATION_PATH)).toBe("");
+    expect(await driver.readFile(GIT_MEMORY_MAIN_REF, GIT_MEMORY_SESSION_CONVERSATION_MARKDOWN_PATH))
+      .toBe("# Conversation\n");
     expect(await driver.readFile(GIT_MEMORY_MAIN_REF, GIT_MEMORY_SESSION_TASK_MESSAGE_LINKS_PATH)).toBe("");
 
     const events = parseJsonl(await driver.readFile(GIT_MEMORY_MAIN_REF, GIT_MEMORY_SESSION_EVENTS_PATH));
@@ -131,10 +134,27 @@ describe("GitMemoryDailySessionStore", () => {
 
     const driver = new GitMemoryWorktreeGitDriver(session.repoPath);
     expect(await driver.readFile(GIT_MEMORY_MAIN_REF, GIT_MEMORY_SESSION_CONVERSATION_PATH)).toBe("");
+    expect(await driver.readFile(GIT_MEMORY_MAIN_REF, GIT_MEMORY_SESSION_CONVERSATION_MARKDOWN_PATH))
+      .toBe("# Conversation\n");
     expect(parseJsonl(await driver.readWorkingFile(GIT_MEMORY_SESSION_CONVERSATION_PATH))).toMatchObject([
       { seq: 1, role: "user", text: "Fix upload handling" },
       { seq: 2, role: "assistant", text: "I will inspect the upload path." },
     ]);
+    expect(await driver.readWorkingFile(GIT_MEMORY_SESSION_CONVERSATION_MARKDOWN_PATH)).toBe([
+      "# Conversation",
+      "",
+      "## 2026-06-28T09:00:00+05:30 User",
+      "",
+      "Fix upload handling",
+      "",
+      "## 2026-06-28T09:00:05+05:30 Assistant",
+      "",
+      "Task: W-20260628-0001",
+      "Run: R-20260628-0001",
+      "",
+      "I will inspect the upload path.",
+      "",
+    ].join("\n"));
     expect(await driver.log(GIT_MEMORY_MAIN_REF, 5)).toHaveLength(1);
   });
 
@@ -177,6 +197,8 @@ describe("GitMemoryDailySessionStore", () => {
     });
     expect(parseJsonl(await driver.readFile(GIT_MEMORY_MAIN_REF, GIT_MEMORY_SESSION_CONVERSATION_PATH)))
       .toMatchObject([{ seq: 1, role: "user", text: "Keep this session change until checkpoint." }]);
+    expect(await driver.readFile(GIT_MEMORY_MAIN_REF, GIT_MEMORY_SESSION_CONVERSATION_MARKDOWN_PATH))
+      .toContain("Keep this session change until checkpoint.");
     expect(parseJsonl(await driver.readFile(GIT_MEMORY_MAIN_REF, GIT_MEMORY_SESSION_EVENTS_PATH)))
       .toMatchObject([
         { seq: 1, type: "session_initialized" },

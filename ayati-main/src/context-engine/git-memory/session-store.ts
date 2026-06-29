@@ -27,6 +27,7 @@ import type {
 } from "./schema.js";
 import {
   GIT_MEMORY_SESSION_CONVERSATION_PATH,
+  GIT_MEMORY_SESSION_CONVERSATION_MARKDOWN_PATH,
   GIT_MEMORY_SESSION_EVENTS_PATH,
   GIT_MEMORY_SESSION_FOCUS_PATH,
   GIT_MEMORY_SESSION_META_PATH,
@@ -510,8 +511,10 @@ export class GitMemoryDailySessionStore {
       ...(input.taskId ? { taskId: input.taskId } : {}),
       ...(input.runId ? { runId: input.runId } : {}),
     };
+    const existingMarkdown = await driver.readWorkingFile(GIT_MEMORY_SESSION_CONVERSATION_MARKDOWN_PATH);
     await driver.writeWorkingFiles({
       [GIT_MEMORY_SESSION_CONVERSATION_PATH]: jsonl([...existing, record]),
+      [GIT_MEMORY_SESSION_CONVERSATION_MARKDOWN_PATH]: appendConversationMarkdown(existingMarkdown, record),
     });
     return record;
   }
@@ -1181,6 +1184,7 @@ export class GitMemoryDailySessionStore {
 
     const commit = await driver.commitPaths([
       GIT_MEMORY_SESSION_CONVERSATION_PATH,
+      GIT_MEMORY_SESSION_CONVERSATION_MARKDOWN_PATH,
       GIT_MEMORY_SESSION_EVENTS_PATH,
       GIT_MEMORY_SESSION_FOCUS_PATH,
       GIT_MEMORY_SESSION_TASKS_PATH,
@@ -1246,6 +1250,7 @@ function buildInitialSessionFiles(input: BuildInitialSessionFilesInput): Record<
   return {
     [GIT_MEMORY_SESSION_META_PATH]: prettyJson(meta),
     [GIT_MEMORY_SESSION_CONVERSATION_PATH]: "",
+    [GIT_MEMORY_SESSION_CONVERSATION_MARKDOWN_PATH]: "# Conversation\n",
     [GIT_MEMORY_SESSION_EVENTS_PATH]: jsonl([initialized]),
     [GIT_MEMORY_SESSION_FOCUS_PATH]: prettyJson(focus),
     [GIT_MEMORY_SESSION_TASKS_PATH]: prettyJson(tasks),
@@ -1265,6 +1270,36 @@ function prettyJson(value: unknown): string {
 
 function jsonl<T>(records: T[]): string {
   return records.map((record) => JSON.stringify(record)).join("\n") + (records.length > 0 ? "\n" : "");
+}
+
+function appendConversationMarkdown(
+  existing: string | null,
+  record: GitMemoryConversationRecord,
+): string {
+  const base = existing?.trimEnd() || "# Conversation";
+  return `${base}\n\n${renderConversationMarkdownBlock(record)}`;
+}
+
+function renderConversationMarkdownBlock(record: GitMemoryConversationRecord): string {
+  const lines = [
+    `## ${record.at} ${capitalizeRole(record.role)}`,
+    "",
+  ];
+  if (record.taskId) {
+    lines.push(`Task: ${record.taskId}`);
+  }
+  if (record.runId) {
+    lines.push(`Run: ${record.runId}`);
+  }
+  if (record.taskId || record.runId) {
+    lines.push("");
+  }
+  lines.push(record.text?.trim() || `[content: ${record.contentRef ?? "unavailable"}]`);
+  return `${lines.join("\n")}\n`;
+}
+
+function capitalizeRole(role: GitMemoryConversationRole): string {
+  return role.charAt(0).toUpperCase() + role.slice(1);
 }
 
 function parseJsonl<T>(value: string | null): T[] {
