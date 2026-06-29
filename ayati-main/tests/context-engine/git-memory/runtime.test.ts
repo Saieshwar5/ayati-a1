@@ -5,8 +5,10 @@ import { describe, expect, it } from "vitest";
 import {
   createGitMemoryRuntime,
   GIT_MEMORY_MAIN_REF,
+  GIT_MEMORY_SESSION_CONVERSATION_MARKDOWN_PATH,
   GIT_MEMORY_SESSION_CONVERSATION_PATH,
   GitMemoryWorktreeGitDriver,
+  parseGitMemoryCommitTrailers,
   sessionDateForAt,
 } from "../../../src/context-engine/git-memory/index.js";
 
@@ -214,6 +216,56 @@ describe("GitMemoryRuntime", () => {
 
     const driver = new GitMemoryWorktreeGitDriver(prepared.repoPath);
     expect(await driver.log(GIT_MEMORY_MAIN_REF, 5)).toHaveLength(2);
+  });
+
+  it("appends routed follow-up messages to the selected task branch before run start", async () => {
+    const contextStoreDir = await mkdtemp(join(tmpdir(), "ayati-git-memory-runtime-"));
+    const runtime = createGitMemoryRuntime({
+      contextStoreDir,
+      timezone: "Asia/Kolkata",
+      agentId: "local",
+    });
+    const first = await runtime.prepareUserTurn({
+      userMessage: "Fix upload handling",
+      at: "2026-06-28T09:00:00+05:30",
+    });
+    const created = await runtime.routeUserTurn({
+      sessionId: first.sessionId,
+      userMessage: "Fix upload handling",
+      fromSeq: first.userMessage.seq,
+      toSeq: first.userMessage.seq,
+      at: "2026-06-28T09:00:01+05:30",
+      turnIds: [first.userMessage.turnId],
+    });
+    if (created.status !== "ready") {
+      throw new Error(`Expected ready task route, got ${created.status}.`);
+    }
+    const second = await runtime.prepareUserTurn({
+      userMessage: "finish it",
+      at: "2026-06-28T09:05:00+05:30",
+    });
+    const continued = await runtime.routeUserTurn({
+      sessionId: second.sessionId,
+      userMessage: "finish it",
+      fromSeq: second.userMessage.seq,
+      toSeq: second.userMessage.seq,
+      at: "2026-06-28T09:05:01+05:30",
+      turnIds: [second.userMessage.turnId],
+    });
+    if (continued.status !== "ready") {
+      throw new Error(`Expected ready task route, got ${continued.status}.`);
+    }
+
+    const driver = new GitMemoryWorktreeGitDriver(second.repoPath);
+    const markdown = await driver.readFile(continued.ref, GIT_MEMORY_SESSION_CONVERSATION_MARKDOWN_PATH) ?? "";
+    expect(markdown).toContain("finish it");
+    expect(markdown.match(/finish it/g)).toHaveLength(1);
+    const taskLog = await driver.log(continued.ref, 5);
+    expect(parseGitMemoryCommitTrailers(taskLog[0]?.message ?? "")).toMatchObject({
+      event: "conversation_appended",
+      runId: continued.runId,
+      conversationSeq: { fromSeq: second.userMessage.seq, toSeq: second.userMessage.seq },
+    });
   });
 });
 

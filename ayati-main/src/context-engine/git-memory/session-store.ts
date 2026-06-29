@@ -401,6 +401,24 @@ export interface StartGitMemoryTaskRunResult {
   taskCommit?: string;
 }
 
+export interface AppendGitMemoryTaskConversationRangeInput extends GitMemoryConversationSeqRange {
+  sessionId: GitMemorySessionId;
+  taskId: GitMemoryTaskId;
+  branch: string;
+  runId?: GitMemoryRunId;
+  at?: string;
+  reason: "task_routed" | "run_started";
+}
+
+export interface AppendGitMemoryTaskConversationRangeResult {
+  taskId: GitMemoryTaskId;
+  branch: string;
+  ref: string;
+  fromSeq: number;
+  toSeq: number;
+  taskCommit?: string;
+}
+
 export class GitMemoryDailySessionStore {
   private readonly contextStoreDir: string;
   private readonly nowProvider: () => Date;
@@ -567,7 +585,9 @@ export class GitMemoryDailySessionStore {
     return createGitMemoryRunId(date, await nextRunSequenceFromTasks(driver));
   }
 
-  async startTaskRun(input: StartGitMemoryTaskRunInput): Promise<StartGitMemoryTaskRunResult> {
+  async appendTaskConversationRange(
+    input: AppendGitMemoryTaskConversationRangeInput,
+  ): Promise<AppendGitMemoryTaskConversationRangeResult> {
     const driver = await GitMemoryWorktreeGitDriver.init(this.repoPath(input.sessionId));
     const ref = `refs/heads/${input.branch}`;
     if (!(await driver.hasRef(ref))) {
@@ -591,13 +611,17 @@ export class GitMemoryDailySessionStore {
           [GIT_MEMORY_SESSION_CONVERSATION_MARKDOWN_PATH]: nextMarkdown,
         },
         message: renderGitMemoryCommitMessage({
-          subject: `ayati: start run ${input.runId}`,
-          summary: `Record task conversation for run ${input.runId}.`,
+          subject: input.reason === "run_started"
+            ? `ayati: start run ${input.runId ?? "unknown"}`
+            : `ayati: append task conversation ${input.taskId}`,
+          summary: input.reason === "run_started"
+            ? `Record task conversation for run ${input.runId ?? "unknown"}.`
+            : `Record routed conversation ${input.fromSeq}-${input.toSeq} on ${input.branch}.`,
           trailers: {
             sessionId: input.sessionId,
             taskId: input.taskId,
-            runId: input.runId,
-            event: "run_started",
+            ...(input.runId ? { runId: input.runId } : {}),
+            event: input.reason === "run_started" ? "run_started" : "conversation_appended",
             at,
             branch: input.branch,
             conversationSeq: { fromSeq: input.fromSeq, toSeq: input.toSeq },
@@ -606,7 +630,28 @@ export class GitMemoryDailySessionStore {
         }),
       });
     }
-    return { runId: input.runId, ...(taskCommit ? { taskCommit } : {}) };
+    return {
+      taskId: input.taskId,
+      branch: input.branch,
+      ref,
+      fromSeq: input.fromSeq,
+      toSeq: input.toSeq,
+      ...(taskCommit ? { taskCommit } : {}),
+    };
+  }
+
+  async startTaskRun(input: StartGitMemoryTaskRunInput): Promise<StartGitMemoryTaskRunResult> {
+    const result = await this.appendTaskConversationRange({
+      sessionId: input.sessionId,
+      taskId: input.taskId,
+      branch: input.branch,
+      runId: input.runId,
+      fromSeq: input.fromSeq,
+      toSeq: input.toSeq,
+      at: input.at,
+      reason: "run_started",
+    });
+    return { runId: input.runId, ...(result.taskCommit ? { taskCommit: result.taskCommit } : {}) };
   }
 
   async readTaskConversationSegments(

@@ -30,6 +30,7 @@ export type GitMemoryTaskLinkReason =
 export type GitMemorySessionEventType =
   | "session_initialized"
   | "session_checkpointed"
+  | "conversation_appended"
   | "task_created"
   | "focus_changed"
   | "run_started"
@@ -400,6 +401,7 @@ export function validateGitMemorySessionEventRecord(value: unknown): ValidationR
     const type = requireOneOf(record, "type", [
       "session_initialized",
       "session_checkpointed",
+      "conversation_appended",
       "task_created",
       "focus_changed",
       "run_started",

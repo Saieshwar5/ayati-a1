@@ -451,6 +451,16 @@ describe("GitMemoryDailySessionStore", () => {
       text: "finish it",
       at: "2026-06-28T09:05:00+05:30",
     });
+    const appended = await store.appendTaskConversationRange({
+      sessionId: session.sessionId,
+      taskId: task.taskId,
+      branch: task.branch,
+      runId: "R-20260628-0002",
+      fromSeq: followUp.seq,
+      toSeq: followUp.seq,
+      at: "2026-06-28T09:05:00+05:30",
+      reason: "task_routed",
+    });
     await store.startTaskRun({
       sessionId: session.sessionId,
       taskId: task.taskId,
@@ -468,6 +478,12 @@ describe("GitMemoryDailySessionStore", () => {
     expect(markdown).toContain("finish it");
     expect(markdown).toContain("Run: R-20260628-0002");
     expect(await driver.log(task.ref, 5)).toHaveLength(2);
+    const taskLog = await driver.log(task.ref, 5);
+    expect(taskLog[0]?.commit).toBe(appended.taskCommit);
+    expect(parseGitMemoryCommitTrailers(taskLog[0]?.message ?? "")).toMatchObject({
+      event: "conversation_appended",
+      conversationSeq: { fromSeq: followUp.seq, toSeq: followUp.seq },
+    });
   });
 
   it("checkpoints session task index, focus, and links after task creation", async () => {

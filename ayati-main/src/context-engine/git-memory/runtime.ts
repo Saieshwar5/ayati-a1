@@ -215,6 +215,18 @@ export class GitMemoryRuntime {
         memoryState,
       };
     }
+    if (!route.createdTask) {
+      await this.store.appendTaskConversationRange({
+        sessionId: input.sessionId,
+        taskId: route.taskId,
+        branch: route.branch,
+        runId,
+        fromSeq: input.fromSeq,
+        toSeq: input.toSeq,
+        at: input.at,
+        reason: "task_routed",
+      });
+    }
     await this.store.startTaskRun({
       sessionId: input.sessionId,
       taskId: route.taskId,
