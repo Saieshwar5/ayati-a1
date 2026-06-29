@@ -677,9 +677,20 @@ describe("GitMemoryDailySessionStore", () => {
     await expect(store.readTaskDetail({
       sessionId: session.sessionId,
       taskId: task.taskId,
-      include: ["evidence"],
-      limits: { evidenceLimit: 1 },
+      include: ["evidence", "markdown"],
+      limits: {
+        evidenceLimit: 1,
+        runLimit: 1,
+        taskMarkdownCharLimit: 2_000,
+        runMarkdownCharLimit: 2_000,
+      },
     })).resolves.toMatchObject({
+      taskMarkdown: expect.stringContaining("# Fix upload handling"),
+      recentRunMarkdown: [{
+        runId: "R-20260628-0001",
+        path: "tasks/W-20260628-0001/runs/R-20260628-0001.md",
+        markdown: expect.stringContaining("Inspected upload handling and found validation mismatch."),
+      }],
       recentEvidence: [{
         runId: "R-20260628-0001",
         taskId: "W-20260628-0001",

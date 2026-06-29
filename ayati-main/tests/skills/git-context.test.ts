@@ -219,7 +219,7 @@ describe("git-context skill", () => {
     const result = await tool.execute({
       sessionId: prepared.session.sessionId,
       taskId: prepared.task.taskId,
-      include: ["task", "state", "runs", "actions", "assets", "commits", "evidence", "conversation"],
+      include: ["task", "state", "runs", "markdown", "actions", "assets", "commits", "evidence", "conversation"],
       limits: {
         runLimit: 1,
         actionRunLimit: 1,
@@ -228,6 +228,8 @@ describe("git-context skill", () => {
         evidenceLimit: 1,
         conversationSegmentLimit: 1,
         conversationMarkdownCharLimit: 200,
+        taskMarkdownCharLimit: 2_000,
+        runMarkdownCharLimit: 2_000,
       },
     });
 
@@ -253,6 +255,12 @@ describe("git-context skill", () => {
       recentRuns: [{
         runId: "R-20260628-0002",
         summary: "Patched upload validation handling.",
+      }],
+      taskMarkdown: expect.stringContaining("# Fix upload handling"),
+      recentRunMarkdown: [{
+        runId: "R-20260628-0002",
+        path: "tasks/W-20260628-0001/runs/R-20260628-0002.md",
+        markdown: expect.stringContaining("Patched upload validation handling."),
       }],
       recentActions: [{
         runId: "R-20260628-0002",

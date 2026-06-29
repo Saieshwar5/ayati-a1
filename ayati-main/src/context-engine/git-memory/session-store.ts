@@ -98,6 +98,7 @@ export type GitMemoryTaskDetailInclude =
   | "task"
   | "state"
   | "runs"
+  | "markdown"
   | "actions"
   | "assets"
   | "commits"
@@ -112,6 +113,8 @@ export interface GitMemoryTaskDetailLimits {
   evidenceLimit: number;
   conversationSegmentLimit: number;
   conversationMarkdownCharLimit: number;
+  taskMarkdownCharLimit: number;
+  runMarkdownCharLimit: number;
 }
 
 export interface ReadGitMemoryTaskDetailInput {
@@ -128,6 +131,12 @@ export interface GitMemoryTaskActionGroup {
   actions: GitMemoryActionRecord[];
 }
 
+export interface GitMemoryTaskRunMarkdown {
+  runId: GitMemoryRunId;
+  path: string;
+  markdown: string;
+}
+
 export interface CompactGitMemoryStoreCommitSummary {
   commit: string;
   subject: string;
@@ -141,9 +150,11 @@ export interface GitMemoryTaskDetail {
   branch: string;
   ref: string;
   task?: GitMemoryTaskFile;
+  taskMarkdown?: string;
   state?: GitMemoryTaskStateFile;
   assets?: unknown[];
   recentRuns?: GitMemoryRunFile[];
+  recentRunMarkdown?: GitMemoryTaskRunMarkdown[];
   recentActions?: GitMemoryTaskActionGroup[];
   recentCommits?: CompactGitMemoryStoreCommitSummary[];
   recentEvidence?: GitMemoryEvidenceManifestRecord[];
@@ -669,6 +680,9 @@ export class GitMemoryDailySessionStore {
     const readTask = include.has("task")
       ? readRefJson<GitMemoryTaskFile>(driver, ref, gitMemoryTaskFilePath(taskEntry.taskId))
       : Promise.resolve(null);
+    const readTaskMarkdown = include.has("markdown")
+      ? readRefMarkdownTail(driver, ref, gitMemoryTaskMarkdownPath(taskEntry.taskId), limits.taskMarkdownCharLimit)
+      : Promise.resolve("");
     const readState = include.has("state")
       ? readRefJson<GitMemoryTaskStateFile>(driver, ref, gitMemoryTaskStatePath(taskEntry.taskId))
       : Promise.resolve(null);
@@ -677,6 +691,9 @@ export class GitMemoryDailySessionStore {
       : Promise.resolve([]);
     const readRuns = include.has("runs")
       ? readRecentTaskRuns(driver, ref, taskEntry.taskId, limits.runLimit)
+      : Promise.resolve([]);
+    const readRunMarkdown = include.has("markdown")
+      ? readRecentTaskRunMarkdown(driver, ref, taskEntry.taskId, limits.runLimit, limits.runMarkdownCharLimit)
       : Promise.resolve([]);
     const readActions = include.has("actions")
       ? readRecentTaskActions(driver, ref, taskEntry.taskId, limits.actionRunLimit, limits.actionLimit)
@@ -694,11 +711,13 @@ export class GitMemoryDailySessionStore {
       ? readRefMarkdownTail(driver, ref, GIT_MEMORY_SESSION_CONVERSATION_MARKDOWN_PATH, limits.conversationMarkdownCharLimit)
       : Promise.resolve("");
 
-    const [task, state, assets, recentRuns, recentActions, recentCommits, recentEvidence, conversation, conversationMarkdownTail] = await Promise.all([
+    const [task, taskMarkdown, state, assets, recentRuns, recentRunMarkdown, recentActions, recentCommits, recentEvidence, conversation, conversationMarkdownTail] = await Promise.all([
       readTask,
+      readTaskMarkdown,
       readState,
       readAssets,
       readRuns,
+      readRunMarkdown,
       readActions,
       readCommits,
       readEvidence,
@@ -708,6 +727,10 @@ export class GitMemoryDailySessionStore {
 
     if (include.has("task") && task) {
       detail.task = task;
+    }
+    if (include.has("markdown")) {
+      detail.taskMarkdown = taskMarkdown;
+      detail.recentRunMarkdown = recentRunMarkdown;
     }
     if (include.has("state") && state) {
       detail.state = state;
@@ -1618,7 +1641,7 @@ async function readTaskEntries(driver: GitMemoryWorktreeGitDriver): Promise<GitM
 function normalizeTaskDetailInclude(input: GitMemoryTaskDetailInclude[] | undefined): Set<GitMemoryTaskDetailInclude> {
   return new Set(input && input.length > 0
     ? input
-    : ["task", "state", "runs", "actions", "assets", "commits", "evidence", "conversation"]);
+    : ["task", "state", "runs", "markdown", "actions", "assets", "commits", "evidence", "conversation"]);
 }
 
 function normalizeTaskDetailLimits(input: Partial<GitMemoryTaskDetailLimits> | undefined): GitMemoryTaskDetailLimits {
@@ -1629,7 +1652,9 @@ function normalizeTaskDetailLimits(input: Partial<GitMemoryTaskDetailLimits> | u
     commitLogLimit: normalizeReadLimit(input?.commitLogLimit, 10),
     evidenceLimit: normalizeReadLimit(input?.evidenceLimit, 20),
     conversationSegmentLimit: normalizeReadLimit(input?.conversationSegmentLimit, 5),
-    conversationMarkdownCharLimit: normalizeReadLimit(input?.conversationMarkdownCharLimit, 12_000),
+    conversationMarkdownCharLimit: normalizeMarkdownCharLimit(input?.conversationMarkdownCharLimit, 12_000),
+    taskMarkdownCharLimit: normalizeMarkdownCharLimit(input?.taskMarkdownCharLimit, 12_000),
+    runMarkdownCharLimit: normalizeMarkdownCharLimit(input?.runMarkdownCharLimit, 12_000),
   };
 }
 
@@ -1651,6 +1676,28 @@ async function readRecentTaskRuns(
     }
   }
   return runs;
+}
+
+async function readRecentTaskRunMarkdown(
+  driver: GitMemoryWorktreeGitDriver,
+  ref: string,
+  taskId: GitMemoryTaskId,
+  limit: number,
+  markdownLimit: number,
+): Promise<GitMemoryTaskRunMarkdown[]> {
+  const prefix = `${gitMemoryTaskDir(taskId)}/runs`;
+  const paths = tail((await driver.listTreePaths(ref, prefix))
+    .filter((path) => path.endsWith(".md"))
+    .sort(), limit);
+  const records: GitMemoryTaskRunMarkdown[] = [];
+  for (const path of paths) {
+    records.push({
+      runId: runIdFromRunMarkdownPath(path),
+      path,
+      markdown: await readRefMarkdownTail(driver, ref, path, markdownLimit),
+    });
+  }
+  return records;
 }
 
 async function readRecentTaskActions(
@@ -1952,6 +1999,13 @@ function normalizeReadLimit(value: number | undefined, fallback: number): number
   return Math.min(value, 100);
 }
 
+function normalizeMarkdownCharLimit(value: number | undefined, fallback: number): number {
+  if (!Number.isInteger(value) || value === undefined || value < 1) {
+    return fallback;
+  }
+  return Math.min(value, 50_000);
+}
+
 async function pathExists(path: string): Promise<boolean> {
   try {
     await access(path);
@@ -1964,6 +2018,11 @@ async function pathExists(path: string): Promise<boolean> {
 function runIdFromActionPath(path: string): GitMemoryRunId {
   const fileName = path.split("/").pop() ?? "";
   return fileName.replace(/\.jsonl$/, "");
+}
+
+function runIdFromRunMarkdownPath(path: string): GitMemoryRunId {
+  const fileName = path.split("/").pop() ?? "";
+  return fileName.replace(/\.md$/, "");
 }
 
 function nextRunSequence(events: GitMemorySessionEventRecord[]): number {
