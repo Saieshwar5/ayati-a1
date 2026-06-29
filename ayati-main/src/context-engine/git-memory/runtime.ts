@@ -8,7 +8,7 @@ import type {
   GitMemoryTaskRoutingSnapshot,
 } from "./session-store.js";
 import { GitMemoryDailySessionStore } from "./session-store.js";
-import { GitMemoryContextReader, type GitMemoryMachineContextPack } from "./context-pack.js";
+import type { GitMemoryMachineContextPack } from "./context-pack.js";
 import {
   buildGitMemoryContextPackFromMemoryState,
   GitContextMemoryStateHydrator,
@@ -34,7 +34,6 @@ export interface GitMemoryRuntimeOptions {
   agentId: string;
   now?: () => Date;
   store?: GitMemoryDailySessionStore;
-  contextReader?: GitMemoryContextReader;
   taskRouter?: GitMemoryTaskRouter;
 }
 
@@ -102,7 +101,6 @@ export class GitMemoryRuntime {
   private readonly agentId: string;
   private readonly nowProvider: () => Date;
   private readonly store: GitMemoryDailySessionStore;
-  private readonly contextReader: GitMemoryContextReader;
   private readonly memoryStateHydrator: GitContextMemoryStateHydrator;
   private readonly taskRouter: GitMemoryTaskRouter;
 
@@ -114,7 +112,6 @@ export class GitMemoryRuntime {
       contextStoreDir: options.contextStoreDir,
       now: this.nowProvider,
     });
-    this.contextReader = options.contextReader ?? new GitMemoryContextReader(this.store);
     this.memoryStateHydrator = new GitContextMemoryStateHydrator(this.store);
     this.taskRouter = options.taskRouter ?? new GitMemoryTaskRouter(this.store);
   }
@@ -266,7 +263,9 @@ export class GitMemoryRuntime {
   }
 
   async buildActiveContext(sessionId: GitMemorySessionId): Promise<GitMemoryMachineContextPack> {
-    return await this.contextReader.buildActiveContext({ sessionId });
+    return buildGitMemoryContextPackFromMemoryState(
+      await this.memoryStateHydrator.hydrate({ sessionId }),
+    );
   }
 
   async buildMemoryState(sessionId: GitMemorySessionId): Promise<GitContextMemoryState> {

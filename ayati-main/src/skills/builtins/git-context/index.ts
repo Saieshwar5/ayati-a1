@@ -1,5 +1,6 @@
 import {
-  GitMemoryContextReader,
+  buildGitMemoryContextPackFromMemoryState,
+  GitContextMemoryStateHydrator,
   GitMemoryDailySessionStore,
   type GitMemoryContextLimits,
   type ReadGitMemoryEvidenceInput,
@@ -107,7 +108,7 @@ const GIT_CONTEXT_PROMPT_BLOCK = [
 
 export function createGitContextSkill(deps: GitContextSkillDeps): SkillDefinition {
   const store = new GitMemoryDailySessionStore({ contextStoreDir: deps.contextStoreDir });
-  const contextReader = new GitMemoryContextReader(store);
+  const memoryStateHydrator = new GitContextMemoryStateHydrator(store);
 
   return {
     id: "git-context",
@@ -116,7 +117,7 @@ export function createGitContextSkill(deps: GitContextSkillDeps): SkillDefinitio
     promptBlock: GIT_CONTEXT_PROMPT_BLOCK,
     tools: [
       createListSessionsTool(store),
-      createActiveContextTool(contextReader),
+      createActiveContextTool(memoryStateHydrator),
       createListTasksTool(store),
       createSearchTasksTool(store),
       createReadTaskTool(store),
@@ -165,7 +166,7 @@ function createListSessionsTool(store: GitMemoryDailySessionStore): ToolDefiniti
   };
 }
 
-function createActiveContextTool(contextReader: GitMemoryContextReader): ToolDefinition {
+function createActiveContextTool(memoryStateHydrator: GitContextMemoryStateHydrator): ToolDefinition {
   return {
     name: "git_context_active",
     description: "Read the compact active git context for an Ayati daily session.",
@@ -196,10 +197,11 @@ function createActiveContextTool(contextReader: GitMemoryContextReader): ToolDef
       if ("ok" in parsed) {
         return parsed;
       }
-      const activeContext = await contextReader.buildActiveContext({
+      const memoryState = await memoryStateHydrator.hydrate({
         sessionId: parsed.sessionId,
         limits: parsed.limits,
       });
+      const activeContext = buildGitMemoryContextPackFromMemoryState(memoryState);
       return okJsonResult({
         code: "GIT_CONTEXT_ACTIVE_READ",
         message: "Active git context read.",
