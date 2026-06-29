@@ -1,5 +1,6 @@
 import { access, readdir } from "node:fs/promises";
 import { join } from "node:path";
+import type { TaskAssetRecord } from "../contracts.js";
 import { GitMemoryWorktreeGitDriver } from "./git-driver.js";
 import { parseGitMemoryCommitTrailers, renderGitMemoryCommitMessage, type ParsedGitMemoryCommitTrailers } from "./commit-message.js";
 import type {
@@ -148,7 +149,7 @@ export interface GitMemoryTaskDetail {
   task?: GitMemoryTaskFile;
   taskMarkdown?: string;
   state?: GitMemoryTaskStateFile;
-  assets?: unknown[];
+  assets?: TaskAssetRecord[];
   recentRuns?: GitMemoryRunFile[];
   recentRunMarkdown?: GitMemoryTaskRunMarkdown[];
   recentActions?: GitMemoryTaskActionGroup[];
@@ -379,6 +380,7 @@ export interface CommitGitMemoryTaskRunInput {
   next?: string;
   state?: Partial<Omit<GitMemoryTaskStateFile, "schemaVersion" | "updatedAt">>;
   evidence?: CommitGitMemoryTaskRunEvidenceInput[];
+  assets?: TaskAssetRecord[];
 }
 
 export interface CommitGitMemoryTaskRunResult {
@@ -1107,6 +1109,8 @@ export class GitMemoryDailySessionStore {
       actions,
       evidence: input.evidence,
     });
+    const existingAssets = await readTaskAssets(driver, ref, input.taskId);
+    const mergedAssets = mergeTaskAssets(existingAssets, input.assets ?? []);
     const newFacts = input.newFacts ?? [];
     const updatedState: GitMemoryTaskStateFile = {
       schemaVersion: 1,
@@ -1135,15 +1139,22 @@ export class GitMemoryDailySessionStore {
       ...(input.next ? { next: input.next } : {}),
     };
     const firstConversationRef = input.conversationRefs[0];
+    const files: Record<string, string> = {
+      [gitMemoryTaskStatePath(input.taskId)]: prettyJson(updatedState),
+      [gitMemoryTaskRunPath(input.taskId, runId)]: prettyJson(run),
+      [gitMemoryTaskRunMarkdownPath(input.taskId, runId)]: renderTaskRunMarkdown(run, actions, evidence),
+      [gitMemoryTaskActionsPath(input.taskId, runId)]: jsonl(actions),
+      [gitMemoryTaskEvidenceManifestPath(input.taskId, runId)]: jsonl(evidence),
+    };
+    if (!sameTaskAssets(existingAssets, mergedAssets)) {
+      files[gitMemoryTaskAssetsPath(input.taskId)] = prettyJson({
+        schemaVersion: 1,
+        assets: mergedAssets,
+      } satisfies GitMemoryTaskAssetsFile);
+    }
     const taskCommit = await driver.commitSyntheticFiles({
       ref,
-      files: {
-        [gitMemoryTaskStatePath(input.taskId)]: prettyJson(updatedState),
-        [gitMemoryTaskRunPath(input.taskId, runId)]: prettyJson(run),
-        [gitMemoryTaskRunMarkdownPath(input.taskId, runId)]: renderTaskRunMarkdown(run, actions, evidence),
-        [gitMemoryTaskActionsPath(input.taskId, runId)]: jsonl(actions),
-        [gitMemoryTaskEvidenceManifestPath(input.taskId, runId)]: jsonl(evidence),
-      },
+      files,
       message: renderGitMemoryCommitMessage({
         subject: `ayati: complete run ${runId}`,
         summary: input.summary,
@@ -1485,16 +1496,50 @@ async function readTaskAssets(
   driver: GitMemoryWorktreeGitDriver,
   ref: string,
   taskId: GitMemoryTaskId,
-): Promise<unknown[]> {
+): Promise<TaskAssetRecord[]> {
   const current = await readRefJson<GitMemoryTaskAssetsFile>(driver, ref, gitMemoryTaskAssetsPath(taskId));
   if (current) {
-    return Array.isArray(current.assets) ? current.assets : [];
+    return Array.isArray(current.assets) ? current.assets.filter(isTaskAssetRecord) : [];
   }
-  return readRefJsonl<unknown>(driver, ref, gitMemoryTaskLegacyAssetsPath(taskId));
+  return (await readRefJsonl<unknown>(driver, ref, gitMemoryTaskLegacyAssetsPath(taskId)))
+    .filter(isTaskAssetRecord);
 }
 
 function gitMemoryTaskLegacyAssetsPath(taskId: GitMemoryTaskId): string {
   return `${gitMemoryTaskDir(taskId)}/assets.jsonl`;
+}
+
+function mergeTaskAssets(
+  existing: TaskAssetRecord[],
+  incoming: TaskAssetRecord[],
+): TaskAssetRecord[] {
+  const assets = new Map<string, TaskAssetRecord>();
+  for (const asset of [...existing, ...incoming]) {
+    assets.set(taskAssetKey(asset), asset);
+  }
+  return [...assets.values()];
+}
+
+function sameTaskAssets(left: TaskAssetRecord[], right: TaskAssetRecord[]): boolean {
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
+function taskAssetKey(asset: TaskAssetRecord): string {
+  return asset.assetId
+    || asset.sessionAssetId
+    || asset.path
+    || `${asset.role}:${asset.kind}:${asset.name}`;
+}
+
+function isTaskAssetRecord(value: unknown): value is TaskAssetRecord {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+  const record = value as Record<string, unknown>;
+  return typeof record.assetId === "string"
+    && typeof record.role === "string"
+    && typeof record.kind === "string"
+    && typeof record.name === "string";
 }
 
 async function readRefMarkdownTail(

@@ -671,6 +671,13 @@ describe("GitMemoryDailySessionStore", () => {
         completedAt: "2026-06-28T09:02:01+05:30",
         evidenceRef: "evidence/ACT-20260628-000001.txt",
       }],
+      assets: [{
+        assetId: "asset-upload-log",
+        role: "reference",
+        kind: "file",
+        name: "upload.log",
+        path: "/tmp/upload.log",
+      }],
       changedFiles: ["ayati-main/src/server/upload-server.ts"],
       newFacts: ["UploadServer validates multipart uploads."],
       next: "Patch upload validation handling.",
@@ -740,6 +747,17 @@ describe("GitMemoryDailySessionStore", () => {
         facts: [],
         accessModes: ["summary"],
       }]);
+    expect(JSON.parse(await driver.readFile(task.ref, gitMemoryTaskAssetsPath(task.taskId)) ?? "{}"))
+      .toEqual({
+        schemaVersion: 1,
+        assets: [{
+          assetId: "asset-upload-log",
+          role: "reference",
+          kind: "file",
+          name: "upload.log",
+          path: "/tmp/upload.log",
+        }],
+      });
     await expect(store.readTaskDetail({
       sessionId: session.sessionId,
       taskId: task.taskId,

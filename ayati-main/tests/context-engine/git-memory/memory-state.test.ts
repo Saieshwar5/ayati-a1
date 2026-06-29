@@ -93,6 +93,13 @@ describe("GitContextMemoryStateHydrator", () => {
       summary: "Patched upload validation handling.",
       completed: ["Inspected upload server", "Patched upload validation handling"],
       open: ["Verify upload validation patch."],
+      assets: [{
+        assetId: "asset-upload-log",
+        role: "reference",
+        kind: "file",
+        name: "upload.log",
+        path: "/tmp/upload.log",
+      }],
       facts: [
         "Upload route validates MIME type.",
         "Upload validation handles multipart MIME metadata.",
@@ -244,6 +251,13 @@ async function prepareMemoryStateSession(): Promise<{
     summary: "Patched upload validation handling.",
     newFacts: ["Upload validation handles multipart MIME metadata."],
     next: "Verify upload validation patch.",
+    assets: [{
+      assetId: "asset-upload-log",
+      role: "reference",
+      kind: "file",
+      name: "upload.log",
+      path: "/tmp/upload.log",
+    }],
     evidence: [{
       step: 2,
       tool: "edit_file",

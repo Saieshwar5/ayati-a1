@@ -1,4 +1,5 @@
 import { parseGitMemoryCommitTrailers, type ParsedGitMemoryCommitTrailers } from "./commit-message.js";
+import type { TaskAssetRecord } from "../contracts.js";
 import { GitMemoryWorktreeGitDriver, type GitMemoryLogEntry } from "./git-driver.js";
 import type { GitMemoryDailySessionStore } from "./session-store.js";
 import type {
@@ -6,6 +7,7 @@ import type {
   GitMemoryRunFile,
   GitMemorySessionEventRecord,
   GitMemorySessionId,
+  GitMemoryTaskAssetsFile,
   GitMemoryTaskFile,
   GitMemoryTaskId,
   GitMemoryTaskIndexFile,
@@ -17,6 +19,7 @@ import {
   GIT_MEMORY_SESSION_CONVERSATION_PATH,
   GIT_MEMORY_SESSION_TASKS_PATH,
   gitMemoryTaskDir,
+  gitMemoryTaskAssetsPath,
   gitMemoryTaskFilePath,
   gitMemoryTaskStatePath,
 } from "./schema.js";
@@ -115,6 +118,7 @@ export interface GitMemoryMachineContextPack {
     blockers: string[];
     facts: string[];
     next: string;
+    assets: TaskAssetRecord[];
     conversationMarkdownTail: string;
     conversation: GitMemoryContextTaskConversationSegment[];
     recentRuns: GitMemoryRunFile[];
@@ -200,9 +204,10 @@ export class GitMemoryContextReader {
       };
     }
 
-    const [task, state, conversationMarkdownTail, recentRuns, recentCommits] = await Promise.all([
+    const [task, state, assets, conversationMarkdownTail, recentRuns, recentCommits] = await Promise.all([
       readRefJson<GitMemoryTaskFile>(driver, ref, gitMemoryTaskFilePath(taskEntry.taskId)),
       readRefJson<GitMemoryTaskStateFile>(driver, ref, gitMemoryTaskStatePath(taskEntry.taskId)),
+      readTaskAssets(driver, ref, taskEntry.taskId),
       readRefMarkdownTail(driver, ref, GIT_MEMORY_SESSION_CONVERSATION_MARKDOWN_PATH, limits.conversationMarkdownCharLimit),
       readRecentRuns(driver, ref, taskEntry.taskId, limits.runLimit),
       readRecentCommits(driver, ref, limits.commitLogLimit),
@@ -247,6 +252,7 @@ export class GitMemoryContextReader {
         blockers: state.blockers,
         facts: state.facts,
         next: state.next,
+        assets,
         conversationMarkdownTail,
         conversation: [],
         recentRuns,
@@ -387,6 +393,34 @@ async function readWorkingJsonl<T>(driver: GitMemoryWorktreeGitDriver, path: str
 
 async function readRefJson<T>(driver: GitMemoryWorktreeGitDriver, ref: string, path: string): Promise<T | null> {
   return parseJson<T>(await driver.readFile(ref, path));
+}
+
+async function readTaskAssets(
+  driver: GitMemoryWorktreeGitDriver,
+  ref: string,
+  taskId: GitMemoryTaskId,
+): Promise<TaskAssetRecord[]> {
+  const current = await readRefJson<GitMemoryTaskAssetsFile>(driver, ref, gitMemoryTaskAssetsPath(taskId));
+  if (current) {
+    return Array.isArray(current.assets) ? current.assets.filter(isTaskAssetRecord) : [];
+  }
+  return parseJsonl<unknown>(await driver.readFile(ref, gitMemoryTaskLegacyAssetsPath(taskId)))
+    .filter(isTaskAssetRecord);
+}
+
+function gitMemoryTaskLegacyAssetsPath(taskId: GitMemoryTaskId): string {
+  return `${gitMemoryTaskDir(taskId)}/assets.jsonl`;
+}
+
+function isTaskAssetRecord(value: unknown): value is TaskAssetRecord {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+  const record = value as Record<string, unknown>;
+  return typeof record.assetId === "string"
+    && typeof record.role === "string"
+    && typeof record.kind === "string"
+    && typeof record.name === "string";
 }
 
 async function readRefMarkdownTail(

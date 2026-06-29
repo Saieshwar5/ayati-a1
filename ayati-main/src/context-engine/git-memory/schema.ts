@@ -1,3 +1,5 @@
+import type { TaskAssetRecord } from "../contracts.js";
+
 export const GIT_MEMORY_SCHEMA_VERSION = 1;
 
 export const GIT_MEMORY_SESSION_META_PATH = "session/meta.json";
@@ -137,7 +139,7 @@ export interface GitMemoryTaskStateFile {
 
 export interface GitMemoryTaskAssetsFile {
   schemaVersion: 1;
-  assets: unknown[];
+  assets: TaskAssetRecord[];
 }
 
 export interface GitMemoryRunFile {

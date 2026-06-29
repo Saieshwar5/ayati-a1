@@ -205,6 +205,13 @@ describe("GitMemoryContextReader", () => {
         status: "completed",
         summary: "Read upload server implementation.",
       }],
+      assets: [{
+        assetId: "asset-upload-log",
+        role: "reference",
+        kind: "file",
+        name: "upload.log",
+        path: "/tmp/upload.log",
+      }],
       newFacts: ["UploadServer validates multipart uploads."],
       next: "Patch upload validation handling.",
       state: {
@@ -269,6 +276,13 @@ describe("GitMemoryContextReader", () => {
       open: ["Patch upload validation handling"],
       facts: ["UploadServer validates multipart uploads."],
       next: "Patch upload validation handling.",
+      assets: [{
+        assetId: "asset-upload-log",
+        role: "reference",
+        kind: "file",
+        name: "upload.log",
+        path: "/tmp/upload.log",
+      }],
     });
     expect(pack.task?.conversationMarkdownTail).toContain("Fix upload handling");
     expect(pack.task?.conversationMarkdownTail).toContain("I will inspect upload handling.");

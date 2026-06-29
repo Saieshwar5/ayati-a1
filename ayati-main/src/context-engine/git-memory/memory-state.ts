@@ -3,6 +3,7 @@ import type {
   GitMemoryContextLimits,
   GitMemoryFocusContext,
 } from "./context-pack.js";
+import type { TaskAssetRecord } from "../contracts.js";
 import { GitMemoryContextReader } from "./context-pack.js";
 import type {
   GitMemoryDailySessionStore,
@@ -38,6 +39,7 @@ export interface GitContextMemoryKnownTask {
 
 export interface GitContextMemoryActiveTask extends GitContextMemoryKnownTask {
   completed: string[];
+  assets: TaskAssetRecord[];
   conversationMarkdownTail: string;
   recentRuns: GitMemoryRunFile[];
   recentCommits: CompactGitMemoryCommitSummary[];
@@ -125,6 +127,7 @@ function toActiveTask(
     status: task.status,
     summary: task.summary,
     completed: task.completed,
+    assets: task.assets,
     conversationMarkdownTail: task.conversationMarkdownTail,
     open: task.open,
     blockers: task.blockers,

@@ -75,6 +75,7 @@ export function buildGitMemoryTaskRunCommitInput(
     ...(input.result.content.trim() ? { assistantResponse: input.result.content } : {}),
     actions: buildRunActions(input.result.completedSteps ?? [], input.at),
     evidence: buildRunEvidence(input.result.completedSteps ?? []),
+    ...(input.result.taskAssets?.length ? { assets: input.result.taskAssets } : {}),
     toolCallCount: input.result.totalToolCalls,
     changedFiles: input.changedFiles ?? buildChangedFiles(input.result),
     newFacts: buildNewFacts(workState, input.result),

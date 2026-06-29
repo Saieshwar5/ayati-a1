@@ -47,6 +47,13 @@ describe("buildGitMemoryTaskRunCommitInput", () => {
         artifacts: [],
         toolsUsed: ["read_file"],
       }],
+      taskAssets: [{
+        assetId: "asset-upload-log",
+        role: "reference",
+        kind: "file",
+        name: "upload.log",
+        path: "/tmp/upload.log",
+      }],
     };
 
     const mapped = buildGitMemoryTaskRunCommitInput({
@@ -71,6 +78,13 @@ describe("buildGitMemoryTaskRunCommitInput", () => {
       assistantResponse: "I fixed the upload validation mismatch.",
       toolCallCount: 3,
       changedFiles: ["ayati-main/src/server/upload-server.ts"],
+      assets: [{
+        assetId: "asset-upload-log",
+        role: "reference",
+        kind: "file",
+        name: "upload.log",
+        path: "/tmp/upload.log",
+      }],
       newFacts: [
         "Upload route validates MIME type.",
         "Uploads pass through the multipart parser.",

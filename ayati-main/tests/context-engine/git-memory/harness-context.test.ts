@@ -81,6 +81,13 @@ describe("buildGitMemoryHarnessContextPack", () => {
       completedAt: "2026-06-28T09:10:00+05:30",
       conversationRefs: [{ fromSeq: user.seq, toSeq: user.seq }],
       summary: "Inspected upload handling.",
+      assets: [{
+        assetId: "asset-upload-log",
+        role: "reference",
+        kind: "file",
+        name: "upload.log",
+        path: "/tmp/upload.log",
+      }],
       newFacts: ["Upload route validates MIME type."],
       next: "Patch upload validation handling.",
       state: {
@@ -130,7 +137,13 @@ describe("buildGitMemoryHarnessContextPack", () => {
         }],
         next: "Patch upload validation handling.",
         conversationMarkdownTail: expect.stringContaining("Fix upload handling"),
-        assets: [],
+        assets: [{
+          assetId: "asset-upload-log",
+          role: "reference",
+          kind: "file",
+          name: "upload.log",
+          path: "/tmp/upload.log",
+        }],
         recentRuns: [{
           runId: "R-20260628-0001",
           workId: task.taskId,

@@ -6,7 +6,6 @@ import type {
   ContextTaskFact,
   ContextTaskEvidenceSummary,
   ContextTaskRunSummary,
-  TaskAssetRecord,
 } from "../contracts.js";
 import type {
   GitMemoryConversationRecord,
@@ -50,7 +49,7 @@ export function buildGitMemoryHarnessContextPack(
         facts: context.task.facts.map(toTaskFact),
         next: context.task.next,
         ...(context.task.conversationMarkdownTail ? { conversationMarkdownTail: context.task.conversationMarkdownTail } : {}),
-        assets: [] satisfies TaskAssetRecord[],
+        assets: context.task.assets,
         recentRuns: context.task.recentRuns.map((run) => toTaskRunSummary(run, context.task!.taskId)),
         recentCommits: context.task.recentCommits.map(toCompactCommitSummary),
         recentEvidence: [],
@@ -87,7 +86,7 @@ export function buildGitMemoryHarnessContextFromMemoryState(
         facts: state.activeTask.facts.map(toTaskFact),
         next: state.activeTask.next,
         ...(state.activeTask.conversationMarkdownTail ? { conversationMarkdownTail: state.activeTask.conversationMarkdownTail } : {}),
-        assets: [] satisfies TaskAssetRecord[],
+        assets: state.activeTask.assets,
         recentRuns: state.activeTask.recentRuns.map((run) => toTaskRunSummary(run, state.activeTask!.taskId)),
         recentCommits: state.activeTask.recentCommits.map(toCompactCommitSummary),
         recentEvidence: state.activeTask.recentEvidence.map(toEvidenceSummary),
