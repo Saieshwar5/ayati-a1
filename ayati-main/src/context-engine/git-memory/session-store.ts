@@ -313,7 +313,6 @@ export interface CreateGitMemoryTaskBranchResult {
   branch: string;
   ref: string;
   taskCommit: string;
-  link: GitMemoryTaskMessageLinkRecord;
 }
 
 export interface SelectGitMemoryTaskForTurnInput extends GitMemoryConversationSeqRange {
@@ -330,7 +329,6 @@ export interface SelectGitMemoryTaskForTurnResult {
   taskId: GitMemoryTaskId;
   branch: string;
   ref: string;
-  link: GitMemoryTaskMessageLinkRecord;
 }
 
 export interface CommitGitMemoryTaskRunActionInput {
@@ -948,19 +946,7 @@ export class GitMemoryDailySessionStore {
       } satisfies GitMemoryFocusFile),
     });
 
-    const link = await this.linkTaskMessages({
-      sessionId: input.sessionId,
-      taskId,
-      branch,
-      reason: "task_created",
-      fromSeq: input.fromSeq,
-      toSeq: input.toSeq,
-      at,
-      runId: input.runId,
-      summary: input.objective,
-    });
-
-    return { taskId, branch, ref, taskCommit, link };
+    return { taskId, branch, ref, taskCommit };
   }
 
   async selectTaskForTurn(input: SelectGitMemoryTaskForTurnInput): Promise<SelectGitMemoryTaskForTurnResult> {
@@ -994,24 +980,10 @@ export class GitMemoryDailySessionStore {
       });
     }
 
-    const link = await this.linkTaskMessages({
-      sessionId: input.sessionId,
-      taskId: input.taskId,
-      branch: taskEntry.branch,
-      reason: input.reason,
-      fromSeq: input.fromSeq,
-      toSeq: input.toSeq,
-      at,
-      turnIds: input.turnIds,
-      runId: input.runId,
-      summary: input.summary,
-    });
-
     return {
       taskId: input.taskId,
       branch: taskEntry.branch,
       ref,
-      link,
     };
   }
 
@@ -1147,13 +1119,14 @@ export class GitMemoryDailySessionStore {
     const driver = await GitMemoryWorktreeGitDriver.init(this.repoPath(input.sessionId));
     const at = input.at ?? this.nowIso();
 
-    const commit = await driver.commitPaths([
+    const commitPaths = await existingWorkingPaths(driver, [
       GIT_MEMORY_SESSION_CONVERSATION_PATH,
       GIT_MEMORY_SESSION_CONVERSATION_MARKDOWN_PATH,
       GIT_MEMORY_SESSION_FOCUS_PATH,
       GIT_MEMORY_SESSION_TASKS_PATH,
       GIT_MEMORY_SESSION_TASK_MESSAGE_LINKS_PATH,
-    ], renderGitMemoryCommitMessage({
+    ]);
+    const commit = await driver.commitPaths(commitPaths, renderGitMemoryCommitMessage({
       subject: `ayati: checkpoint session ${input.sessionId}`,
       summary: input.summary ?? "Commit accumulated session git-context changes.",
       trailers: {
@@ -1210,7 +1183,6 @@ function buildInitialSessionFiles(input: BuildInitialSessionFilesInput): Record<
     [GIT_MEMORY_SESSION_CONVERSATION_MARKDOWN_PATH]: "# Conversation\n",
     [GIT_MEMORY_SESSION_FOCUS_PATH]: prettyJson(focus),
     [GIT_MEMORY_SESSION_TASKS_PATH]: prettyJson(tasks),
-    [GIT_MEMORY_SESSION_TASK_MESSAGE_LINKS_PATH]: "",
     [GIT_MEMORY_SESSION_SCHEMA_PATH]: prettyJson({
       schemaVersion: 1,
       kind: "git_memory_session",
@@ -1515,6 +1487,19 @@ async function readTaskEntries(driver: GitMemoryWorktreeGitDriver): Promise<GitM
   return (parseJson<GitMemoryTaskIndexFile>(
     await driver.readWorkingFile(GIT_MEMORY_SESSION_TASKS_PATH),
   ) ?? { schemaVersion: 1, tasks: [] }).tasks;
+}
+
+async function existingWorkingPaths(
+  driver: GitMemoryWorktreeGitDriver,
+  paths: string[],
+): Promise<string[]> {
+  const existing: string[] = [];
+  for (const path of paths) {
+    if (await driver.readWorkingFile(path) !== null) {
+      existing.push(path);
+    }
+  }
+  return existing;
 }
 
 async function nextRunSequenceFromTasks(driver: GitMemoryWorktreeGitDriver): Promise<number> {

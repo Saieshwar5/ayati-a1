@@ -32,12 +32,6 @@ describe("GitMemoryTaskRouter", () => {
       taskId: "W-20260628-0001",
       branch: "task/W-20260628-0001-fix-upload-handling",
       conversationRefs: [{ fromSeq: 1, toSeq: 1 }],
-      createdTask: {
-        link: {
-          reason: "task_created",
-          turnIds: [user.turnId],
-        },
-      },
     });
 
     const snapshot = await store.readTaskRoutingSnapshot(sessionId);
@@ -75,17 +69,12 @@ describe("GitMemoryTaskRouter", () => {
       status: "ready",
       mode: "continue_active_task",
       taskId: "W-20260628-0001",
-      selectedTask: {
-        link: {
-          reason: "task_continued",
-          fromSeq: 2,
-          toSeq: 2,
-          turnIds: [followUp.turnId],
-        },
-      },
     });
     if (route.status === "ready") {
-      expect(route.selectedTask?.focusEvent).toBeUndefined();
+      expect(route.selectedTask).toMatchObject({
+        taskId: "W-20260628-0001",
+        branch: "task/W-20260628-0001-fix-upload-handling",
+      });
     }
   });
 
@@ -113,13 +102,6 @@ describe("GitMemoryTaskRouter", () => {
       status: "ready",
       mode: "switch_to_existing_task",
       taskId: uploadTask.taskId,
-      selectedTask: {
-        link: {
-          reason: "task_switched",
-          fromSeq: 3,
-          toSeq: 3,
-        },
-      },
     });
 
     const snapshot = await store.readTaskRoutingSnapshot(sessionId);
@@ -166,13 +148,6 @@ describe("GitMemoryTaskRouter", () => {
       status: "ready",
       mode: "reopen_existing_task",
       taskId: uploadTask.taskId,
-      selectedTask: {
-        link: {
-          reason: "task_reopened",
-          fromSeq: 3,
-          toSeq: 3,
-        },
-      },
     });
   });
 
@@ -204,8 +179,8 @@ describe("GitMemoryTaskRouter", () => {
         "W-20260628-0002",
       ]);
     }
-    expect(await store.readTaskConversationSegments(sessionId, "W-20260628-0001")).toHaveLength(1);
-    expect(await store.readTaskConversationSegments(sessionId, "W-20260628-0002")).toHaveLength(1);
+    expect(await store.readTaskConversationSegments(sessionId, "W-20260628-0001")).toHaveLength(0);
+    expect(await store.readTaskConversationSegments(sessionId, "W-20260628-0002")).toHaveLength(0);
   });
 });
 

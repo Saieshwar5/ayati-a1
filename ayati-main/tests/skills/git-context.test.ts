@@ -277,13 +277,7 @@ describe("git-context skill", () => {
         summary: "Patched upload validation branch.",
         evidenceRef: "evidence/ACT-20260628-000101.txt",
       }],
-      conversation: [{
-        messages: [{
-          seq: 1,
-          role: "user",
-          text: "Fix upload handling",
-        }],
-      }],
+      conversation: [],
       conversationMarkdownTail: expect.stringContaining("Fix upload handling"),
     });
     expect((result.v2?.structuredContent as { recentRuns?: unknown[] }).recentRuns).toHaveLength(1);
