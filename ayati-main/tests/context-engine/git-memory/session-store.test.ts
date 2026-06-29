@@ -845,6 +845,80 @@ describe("GitMemoryDailySessionStore", () => {
     expect(await driver.log(GIT_MEMORY_MAIN_REF, 5)).toHaveLength(3);
   });
 
+  it("rejects duplicate task run commits for the same run id", async () => {
+    const contextStoreDir = await mkdtemp(join(tmpdir(), "ayati-git-memory-"));
+    const store = new GitMemoryDailySessionStore({ contextStoreDir });
+    const session = await store.openOrCreateDailySession({
+      date: "2026-06-28",
+      timezone: "Asia/Kolkata",
+      agentId: "local",
+      createdAt: "2026-06-28T00:00:00+05:30",
+    });
+    await store.appendConversationMessage({
+      sessionId: session.sessionId,
+      role: "user",
+      text: "Fix upload handling",
+      at: "2026-06-28T09:00:00+05:30",
+    });
+    const task = await store.createTaskBranch({
+      sessionId: session.sessionId,
+      title: "Fix upload handling",
+      objective: "Find and fix upload handling failures.",
+      fromSeq: 1,
+      toSeq: 1,
+      at: "2026-06-28T09:01:00+05:30",
+    });
+
+    await store.commitTaskRun({
+      sessionId: session.sessionId,
+      taskId: task.taskId,
+      runId: "R-20260628-0007",
+      status: "completed",
+      completedAt: "2026-06-28T09:10:00+05:30",
+      conversationRefs: [{ fromSeq: 1, toSeq: 1 }],
+      summary: "Finished the first upload run.",
+      state: {
+        status: "in_progress",
+        completed: ["Finished the first upload run"],
+        open: ["Continue upload validation"],
+        next: "Continue upload validation.",
+      },
+    });
+
+    const driver = new GitMemoryWorktreeGitDriver(session.repoPath);
+    const logAfterFirstCommit = await driver.log(task.ref, 5);
+
+    await expect(store.commitTaskRun({
+      sessionId: session.sessionId,
+      taskId: task.taskId,
+      runId: "R-20260628-0007",
+      status: "failed",
+      completedAt: "2026-06-28T09:12:00+05:30",
+      conversationRefs: [{ fromSeq: 1, toSeq: 1 }],
+      summary: "Tried to commit the same run again.",
+      state: {
+        status: "blocked",
+        completed: ["Finished the first upload run"],
+        open: ["Resolve duplicate run"],
+        blockers: ["Duplicate run id."],
+        next: "Resolve duplicate run.",
+      },
+    })).rejects.toThrow("Git memory task run already committed: R-20260628-0007");
+
+    expect(await driver.log(task.ref, 5)).toEqual(logAfterFirstCommit);
+    expect(JSON.parse(await driver.readFile(task.ref, gitMemoryTaskRunPath(task.taskId, "R-20260628-0007")) ?? "{}"))
+      .toMatchObject({
+        runId: "R-20260628-0007",
+        status: "completed",
+        summary: "Finished the first upload run.",
+      });
+    expect(JSON.parse(await driver.readFile(task.ref, gitMemoryTaskStatePath(task.taskId)) ?? "{}"))
+      .toMatchObject({
+        status: "in_progress",
+        next: "Continue upload validation.",
+      });
+  });
+
   it("checkpoints session metadata after a task run commit", async () => {
     const contextStoreDir = await mkdtemp(join(tmpdir(), "ayati-git-memory-"));
     const store = new GitMemoryDailySessionStore({ contextStoreDir });

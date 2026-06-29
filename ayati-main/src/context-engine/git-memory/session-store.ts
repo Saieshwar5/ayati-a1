@@ -1083,6 +1083,10 @@ export class GitMemoryDailySessionStore {
     }
 
     const runId = input.runId ?? createGitMemoryRunId(date, await nextRunSequenceFromTasks(driver));
+    const existingRun = await driver.readFile(ref, gitMemoryTaskRunPath(input.taskId, runId));
+    if (existingRun !== null) {
+      throw new Error(`Git memory task run already committed: ${runId}`);
+    }
     const completedAt = input.completedAt ?? this.nowIso();
     const startedAt = input.startedAt ?? completedAt;
     const previousState = parseJson<GitMemoryTaskStateFile>(

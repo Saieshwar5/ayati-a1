@@ -385,6 +385,68 @@ describe("createGitMemoryChatContextRuntime", () => {
     }
   });
 
+  it("surfaces duplicate task run commit failures from the git-memory bridge", async () => {
+    const storeDir = mkdtempSync(join(tmpdir(), "ayati-git-memory-chat-context-"));
+    try {
+      const gitMemoryRuntime = createGitMemoryRuntime({
+        contextStoreDir: storeDir,
+        timezone: "Asia/Kolkata",
+        agentId: "local",
+      });
+      const runtime = createGitMemoryChatContextRuntime({ gitMemoryRuntime });
+      const prepared = await runtime.prepareUserTurn({
+        clientId: "local",
+        userMessage: "Fix upload handling",
+        at: "2026-06-28T09:00:00+05:30",
+      });
+      const task = await gitMemoryRuntime.createTaskBranch({
+        sessionId: prepared.sessionId,
+        title: "Fix upload handling",
+        objective: "Find and fix upload handling failures.",
+        fromSeq: prepared.messageSeq,
+        toSeq: prepared.messageSeq,
+        at: "2026-06-28T09:01:00+05:30",
+      });
+      const result = {
+        type: "reply" as const,
+        status: "completed" as const,
+        content: "I inspected upload handling.",
+        totalIterations: 1,
+        totalToolCalls: 0,
+        runPath: "data/runs/r1",
+        workState: {
+          status: "not_done" as const,
+          summary: "Upload handling inspection is complete.",
+          openWork: ["Patch upload validation handling."],
+          blockers: [],
+          verifiedFacts: [],
+          evidence: [],
+          nextStep: "Patch upload validation handling.",
+        },
+      };
+
+      await runtime.completeTaskRun({
+        clientId: "local",
+        turn: prepared,
+        taskId: task.taskId,
+        runId: "R-20260628-0007",
+        result,
+        at: "2026-06-28T09:10:00+05:30",
+      });
+
+      await expect(runtime.completeTaskRun({
+        clientId: "local",
+        turn: prepared,
+        taskId: task.taskId,
+        runId: "R-20260628-0007",
+        result,
+        at: "2026-06-28T09:11:00+05:30",
+      })).rejects.toThrow("Git memory task run already committed: R-20260628-0007");
+    } finally {
+      rmSync(storeDir, { recursive: true, force: true });
+    }
+  });
+
   it("ignores assistant recording when no prepared turn exists", async () => {
     const storeDir = mkdtempSync(join(tmpdir(), "ayati-git-memory-chat-context-"));
     try {

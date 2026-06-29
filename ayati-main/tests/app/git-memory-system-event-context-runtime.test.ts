@@ -109,4 +109,67 @@ describe("createGitMemorySystemEventContextRuntime", () => {
       rmSync(storeDir, { recursive: true, force: true });
     }
   });
+
+  it("surfaces duplicate task run commit failures from the git-memory bridge", async () => {
+    const storeDir = mkdtempSync(join(tmpdir(), "ayati-git-memory-system-context-"));
+    try {
+      const runtime = createGitMemorySystemEventContextRuntime({
+        gitMemoryRuntime: createGitMemoryRuntime({
+          contextStoreDir: storeDir,
+          timezone: "Asia/Kolkata",
+          agentId: "local",
+        }),
+      });
+
+      const prepared = await runtime.prepareSystemEventTurn({
+        clientId: "local",
+        systemMessage: "System event: pulse/task_due\nSummary: Check health",
+        at: "2026-06-28T09:00:00+05:30",
+      });
+      const routed = await runtime.routeTaskTurn({
+        clientId: "local",
+        turn: prepared,
+        userMessage: "Check health",
+        title: "Check health",
+        objective: "Handle scheduled health check.",
+        at: "2026-06-28T09:00:01+05:30",
+      });
+      if (routed?.status !== "ready") {
+        throw new Error("Expected ready route.");
+      }
+
+      const result = {
+        type: "notification" as const,
+        content: "Health checked.",
+        status: "completed" as const,
+        totalIterations: 1,
+        totalToolCalls: 0,
+        runPath: "/tmp/run",
+        workRunId: routed.runId,
+        completedSteps: [],
+      };
+
+      await runtime.completeTaskRun({
+        clientId: "local",
+        turn: prepared,
+        taskId: routed.taskId,
+        runId: routed.runId,
+        result,
+        conversationRefs: routed.conversationRefs,
+        at: "2026-06-28T09:05:00+05:30",
+      });
+
+      await expect(runtime.completeTaskRun({
+        clientId: "local",
+        turn: prepared,
+        taskId: routed.taskId,
+        runId: routed.runId,
+        result,
+        conversationRefs: routed.conversationRefs,
+        at: "2026-06-28T09:06:00+05:30",
+      })).rejects.toThrow(`Git memory task run already committed: ${routed.runId}`);
+    } finally {
+      rmSync(storeDir, { recursive: true, force: true });
+    }
+  });
 });

@@ -195,4 +195,79 @@ describe("buildGitMemoryTaskRunCommitInput", () => {
       },
     });
   });
+
+  it("maps failed runs to failed run status and blocked task state", () => {
+    const mapped = buildGitMemoryTaskRunCommitInput({
+      sessionId: "S-20260628-local",
+      taskId: "W-20260628-0001",
+      result: {
+        type: "reply",
+        status: "failed",
+        content: "The upload test command failed.",
+        totalIterations: 2,
+        totalToolCalls: 1,
+        runPath: "data/runs/r3",
+        workState: {
+          status: "blocked",
+          summary: "Upload verification failed.",
+          openWork: ["Debug the failing upload test."],
+          blockers: ["Upload test command exited non-zero."],
+          verifiedFacts: ["The upload test command was attempted."],
+          evidence: ["pnpm upload test output"],
+          nextStep: "Inspect the failing upload test output.",
+        },
+      },
+      conversationRefs: [{ fromSeq: 6, toSeq: 6 }],
+      at: "2026-06-28T10:10:00+05:30",
+    });
+
+    expect(mapped).toMatchObject({
+      status: "failed",
+      newFacts: ["The upload test command was attempted."],
+      next: "Inspect the failing upload test output.",
+      state: {
+        status: "blocked",
+        summary: "Upload verification failed.",
+        open: ["Debug the failing upload test."],
+        blockers: ["Upload test command exited non-zero."],
+        next: "Inspect the failing upload test output.",
+      },
+    });
+  });
+
+  it("maps stuck runs to blocked run status and blocked task state", () => {
+    const mapped = buildGitMemoryTaskRunCommitInput({
+      sessionId: "S-20260628-local",
+      taskId: "W-20260628-0001",
+      result: {
+        type: "reply",
+        status: "stuck",
+        content: "I could not make more progress without resolving the branch state.",
+        totalIterations: 3,
+        totalToolCalls: 2,
+        runPath: "data/runs/r4",
+        taskSummary: {
+          taskStatus: "blocked",
+          summary: "Branch state needs cleanup before continuing.",
+          openWork: ["Resolve the branch state."],
+          blockers: ["The branch has conflicting task ownership."],
+          nextAction: "Decide which task branch should own this work.",
+        },
+      },
+      conversationRefs: [{ fromSeq: 7, toSeq: 7 }],
+      at: "2026-06-28T10:20:00+05:30",
+    });
+
+    expect(mapped).toMatchObject({
+      status: "blocked",
+      next: "Decide which task branch should own this work.",
+      state: {
+        status: "blocked",
+        summary: "Branch state needs cleanup before continuing.",
+        open: ["Resolve the branch state."],
+        blockers: ["The branch has conflicting task ownership."],
+        next: "Decide which task branch should own this work.",
+      },
+    });
+  });
 });

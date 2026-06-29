@@ -153,24 +153,19 @@ class AppGitMemoryChatContextRuntime implements GitMemoryChatContextRuntime {
     if (!input.turn) {
       return null;
     }
-    try {
-      return await this.gitMemoryRuntime.commitTaskRun(buildGitMemoryTaskRunCommitInput({
-        sessionId: input.turn.sessionId,
-        taskId: input.taskId,
-        runId: input.runId,
-        result: input.result,
-        conversationRefs: input.conversationRefs ?? [{
-          fromSeq: input.turn.messageSeq,
-          toSeq: input.turn.messageSeq,
-        }],
-        at: input.at,
-        startedAt: input.startedAt,
-        changedFiles: input.changedFiles,
-      }));
-    } catch (err) {
-      devWarn(`[${input.clientId}] git memory task run commit failed: ${errorMessage(err)}`);
-      return null;
-    }
+    return await this.gitMemoryRuntime.commitTaskRun(buildGitMemoryTaskRunCommitInput({
+      sessionId: input.turn.sessionId,
+      taskId: input.taskId,
+      runId: input.runId,
+      result: input.result,
+      conversationRefs: input.conversationRefs ?? [{
+        fromSeq: input.turn.messageSeq,
+        toSeq: input.turn.messageSeq,
+      }],
+      at: input.at,
+      startedAt: input.startedAt,
+      changedFiles: input.changedFiles,
+    }));
   }
 
   async recordAssistantMessage(
