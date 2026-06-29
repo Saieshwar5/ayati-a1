@@ -125,6 +125,10 @@ export interface ContextTaskEvidenceSummary {
   artifacts: string[];
   facts: string[];
   accessModes: string[];
+  outputSize?: number;
+  lineCount?: number;
+  truncated?: boolean;
+  source?: Record<string, unknown>;
 }
 
 export interface ContextEngineMachineContext {

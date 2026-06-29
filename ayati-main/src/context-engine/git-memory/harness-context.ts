@@ -230,6 +230,10 @@ function toEvidenceSummary(record: GitMemoryEvidenceManifestRecord): ContextTask
     artifacts: record.artifacts,
     facts: record.facts,
     accessModes: record.accessModes,
+    ...(record.outputSize !== undefined ? { outputSize: record.outputSize } : {}),
+    ...(record.lineCount !== undefined ? { lineCount: record.lineCount } : {}),
+    ...(record.truncated !== undefined ? { truncated: record.truncated } : {}),
+    ...(record.source ? { source: record.source } : {}),
   };
 }
 

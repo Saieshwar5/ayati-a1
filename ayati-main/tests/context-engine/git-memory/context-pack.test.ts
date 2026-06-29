@@ -215,7 +215,19 @@ describe("GitMemoryContextReader", () => {
         artifacts: ["ayati-main/src/server/upload-server.ts"],
         facts: ["Upload server implementation was inspected."],
         accessModes: ["summary"],
-        source: { kind: "test" },
+        outputSize: 1200,
+        lineCount: 80,
+        truncated: false,
+        source: {
+          kind: "tool-output",
+          toolCalls: [{
+            kind: "tool-output",
+            tool: "read_file",
+            callId: "call-read-upload",
+            filePath: "ayati-main/src/server/upload-server.ts",
+            rawOutputPath: "raw/001-call-read-upload-read_file.txt",
+          }],
+        },
       }],
       assets: [{
         assetId: "asset-upload-log",
@@ -316,6 +328,19 @@ describe("GitMemoryContextReader", () => {
       evidenceRef: "evidence/ACT-20260628-000001.txt",
       artifacts: ["ayati-main/src/server/upload-server.ts"],
       facts: ["Upload server implementation was inspected."],
+      outputSize: 1200,
+      lineCount: 80,
+      truncated: false,
+      source: {
+        kind: "tool-output",
+        toolCalls: [{
+          kind: "tool-output",
+          tool: "read_file",
+          callId: "call-read-upload",
+          filePath: "ayati-main/src/server/upload-server.ts",
+          rawOutputPath: "raw/001-call-read-upload-read_file.txt",
+        }],
+      },
     }]);
     expect(pack.task?.recentCommits[0]).toMatchObject({
       subject: "ayati: complete run R-20260628-0001",

@@ -90,7 +90,19 @@ describe("buildGitMemoryHarnessContextPack", () => {
         artifacts: ["ayati-main/src/server/upload-server.ts"],
         facts: ["Upload route validates MIME type."],
         accessModes: ["summary"],
-        source: { kind: "test" },
+        outputSize: 1200,
+        lineCount: 80,
+        truncated: false,
+        source: {
+          kind: "tool-output",
+          toolCalls: [{
+            kind: "tool-output",
+            tool: "read_file",
+            callId: "call-read-upload",
+            filePath: "ayati-main/src/server/upload-server.ts",
+            rawOutputPath: "raw/001-call-read-upload-read_file.txt",
+          }],
+        },
       }],
       assets: [{
         assetId: "asset-upload-log",
@@ -175,6 +187,19 @@ describe("buildGitMemoryHarnessContextPack", () => {
           artifacts: ["ayati-main/src/server/upload-server.ts"],
           facts: ["Upload route validates MIME type."],
           accessModes: ["summary"],
+          outputSize: 1200,
+          lineCount: 80,
+          truncated: false,
+          source: {
+            kind: "tool-output",
+            toolCalls: [{
+              kind: "tool-output",
+              tool: "read_file",
+              callId: "call-read-upload",
+              filePath: "ayati-main/src/server/upload-server.ts",
+              rawOutputPath: "raw/001-call-read-upload-read_file.txt",
+            }],
+          },
         }],
       },
     });
