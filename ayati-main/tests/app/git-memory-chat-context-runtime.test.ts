@@ -7,6 +7,7 @@ import {
   createGitMemoryRuntime,
   GIT_MEMORY_MAIN_REF,
   GitMemoryWorktreeGitDriver,
+  type GitMemoryWriteBatchSnapshot,
   gitMemoryTaskRunPath,
 } from "../../src/context-engine/index.js";
 
@@ -14,12 +15,13 @@ describe("createGitMemoryChatContextRuntime", () => {
   it("prepares user turns from the git-memory runtime without allocating task ids", async () => {
     const storeDir = mkdtempSync(join(tmpdir(), "ayati-git-memory-chat-context-"));
     try {
+      const gitMemoryRuntime = createGitMemoryRuntime({
+        contextStoreDir: storeDir,
+        timezone: "Asia/Kolkata",
+        agentId: "local",
+      });
       const runtime = createGitMemoryChatContextRuntime({
-        gitMemoryRuntime: createGitMemoryRuntime({
-          contextStoreDir: storeDir,
-          timezone: "Asia/Kolkata",
-          agentId: "local",
-        }),
+        gitMemoryRuntime,
       });
 
       const prepared = await runtime.prepareUserTurn({
@@ -58,6 +60,7 @@ describe("createGitMemoryChatContextRuntime", () => {
       });
       expect(prepared.context.task).toBeUndefined();
       expect(prepared.memoryState.activeTask).toBeUndefined();
+      await waitForCommittedWrites(gitMemoryRuntime, prepared.sessionId, 1);
       expect(await new GitMemoryWorktreeGitDriver(prepared.repoPath).log(GIT_MEMORY_MAIN_REF, 5))
         .toHaveLength(2);
     } finally {
@@ -68,12 +71,13 @@ describe("createGitMemoryChatContextRuntime", () => {
   it("records assistant replies against the prepared turn in canonical conversation", async () => {
     const storeDir = mkdtempSync(join(tmpdir(), "ayati-git-memory-chat-context-"));
     try {
+      const gitMemoryRuntime = createGitMemoryRuntime({
+        contextStoreDir: storeDir,
+        timezone: "Asia/Kolkata",
+        agentId: "local",
+      });
       const runtime = createGitMemoryChatContextRuntime({
-        gitMemoryRuntime: createGitMemoryRuntime({
-          contextStoreDir: storeDir,
-          timezone: "Asia/Kolkata",
-          agentId: "local",
-        }),
+        gitMemoryRuntime,
       });
       const prepared = await runtime.prepareUserTurn({
         clientId: "local",
@@ -101,6 +105,7 @@ describe("createGitMemoryChatContextRuntime", () => {
 
       const driver = new GitMemoryWorktreeGitDriver(prepared.repoPath);
       expect(await driver.readWorkingFile("session/conversation.jsonl")).toBeNull();
+      await waitForCommittedWrites(gitMemoryRuntime, prepared.sessionId, 2);
       expect(await driver.log(GIT_MEMORY_MAIN_REF, 5)).toHaveLength(3);
     } finally {
       rmSync(storeDir, { recursive: true, force: true });
@@ -472,3 +477,22 @@ describe("createGitMemoryChatContextRuntime", () => {
     }
   });
 });
+
+async function waitForCommittedWrites(
+  runtime: { getSessionWrites(sessionId: string): GitMemoryWriteBatchSnapshot[] },
+  sessionId: string,
+  count: number,
+): Promise<void> {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    const writes = runtime.getSessionWrites(sessionId);
+    if (writes.length >= count && writes.slice(0, count).every((write) => write.status === "committed")) {
+      return;
+    }
+    await delay(10);
+  }
+  throw new Error(`Timed out waiting for git memory writes: ${JSON.stringify(runtime.getSessionWrites(sessionId))}`);
+}
+
+async function delay(ms: number): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, ms));
+}

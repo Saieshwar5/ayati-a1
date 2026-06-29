@@ -36,6 +36,7 @@ import type {
 import { createGitMemorySessionId } from "./schema.js";
 import {
   GitMemoryWriteQueue,
+  type GitMemoryWriteBatchRequest,
   type GitMemoryWriteBatchSnapshot,
   type GitMemoryWriteQueueRunner,
 } from "./write-queue.js";
@@ -157,36 +158,27 @@ export class GitMemoryRuntime {
   async prepareUserTurn(input: PrepareGitMemoryUserTurnInput): Promise<PreparedGitMemoryUserTurn> {
     const at = input.at ?? this.nowProvider().toISOString();
     const sessionId = this.sessionIdForAt(at);
-    const prepared = await this.writeQueue.enqueue({
-      sessionId,
-      type: "main_conversation_appended",
-      label: "prepare_user_turn",
-      createdAt: at,
-    }, async () => {
-      const session = await this.openDailySessionUnqueued(at);
-      const cachedState = await this.getOrHydrateCachedMemoryState(session.sessionId);
-      const userMessage = this.createCachedConversationRecord(cachedState, {
-        role: "user",
-        text: input.userMessage,
-        at,
-      });
-      await this.store.appendMainConversationRecord({
-        sessionId: session.sessionId,
-        record: userMessage,
-      });
-      this.updateCachedSessionConversation(cachedState, userMessage);
-      return {
-        sessionId: session.sessionId,
-        repoPath: session.repoPath,
-        initialized: session.initialized,
-        userMessage,
-      };
+    const session = await this.openDailySessionUnqueued(at);
+    const userMessage = await this.createAndCacheConversationRecord(session.sessionId, {
+      role: "user",
+      text: input.userMessage,
+      at,
     });
-    const memoryState = await this.hydrateMemoryState(prepared.sessionId);
+    this.enqueueGlobalConversationPersistence({
+      sessionId,
+      label: "prepare_user_turn",
+      type: "main_conversation_appended",
+      createdAt: at,
+      record: userMessage,
+    });
+    const memoryState = await this.hydrateMemoryState(session.sessionId);
     const context = buildGitMemoryContextPackFromMemoryState(memoryState);
     return {
       status: "ready",
-      ...prepared,
+      sessionId: session.sessionId,
+      repoPath: session.repoPath,
+      initialized: session.initialized,
+      userMessage,
       context,
       memoryState,
     };
@@ -195,36 +187,27 @@ export class GitMemoryRuntime {
   async prepareSystemTurn(input: PrepareGitMemorySystemTurnInput): Promise<PreparedGitMemorySystemTurn> {
     const at = input.at ?? this.nowProvider().toISOString();
     const sessionId = this.sessionIdForAt(at);
-    const prepared = await this.writeQueue.enqueue({
-      sessionId,
-      type: "main_conversation_appended",
-      label: "prepare_system_turn",
-      createdAt: at,
-    }, async () => {
-      const session = await this.openDailySessionUnqueued(at);
-      const cachedState = await this.getOrHydrateCachedMemoryState(session.sessionId);
-      const systemMessage = this.createCachedConversationRecord(cachedState, {
-        role: "system",
-        text: input.systemMessage,
-        at,
-      });
-      await this.store.appendMainConversationRecord({
-        sessionId: session.sessionId,
-        record: systemMessage,
-      });
-      this.updateCachedSessionConversation(cachedState, systemMessage);
-      return {
-        sessionId: session.sessionId,
-        repoPath: session.repoPath,
-        initialized: session.initialized,
-        systemMessage,
-      };
+    const session = await this.openDailySessionUnqueued(at);
+    const systemMessage = await this.createAndCacheConversationRecord(session.sessionId, {
+      role: "system",
+      text: input.systemMessage,
+      at,
     });
-    const memoryState = await this.hydrateMemoryState(prepared.sessionId);
+    this.enqueueGlobalConversationPersistence({
+      sessionId,
+      label: "prepare_system_turn",
+      type: "main_conversation_appended",
+      createdAt: at,
+      record: systemMessage,
+    });
+    const memoryState = await this.hydrateMemoryState(session.sessionId);
     const context = buildGitMemoryContextPackFromMemoryState(memoryState);
     return {
       status: "ready",
-      ...prepared,
+      sessionId: session.sessionId,
+      repoPath: session.repoPath,
+      initialized: session.initialized,
+      systemMessage,
       context,
       memoryState,
     };
@@ -237,25 +220,27 @@ export class GitMemoryRuntime {
     const cachedState = input.taskId
       ? null
       : await this.getOrHydrateCachedMemoryState(input.sessionId);
-    const globalRecord = cachedState
-      ? this.createCachedConversationRecord(cachedState, {
+    if (cachedState) {
+      const record = await this.createAndCacheConversationRecord(input.sessionId, {
         role: "assistant",
         text: input.text,
         at,
-      })
-      : null;
+      });
+      this.enqueueGlobalConversationPersistence({
+        sessionId: input.sessionId,
+        label: "record_assistant_message",
+        type: "assistant_message_recorded",
+        createdAt: at,
+        record,
+      });
+      return record;
+    }
     const record = await this.writeQueue.enqueue({
       sessionId: input.sessionId,
       type: "assistant_message_recorded",
       label: "record_assistant_message",
       createdAt: at,
     }, async () => {
-      if (globalRecord) {
-        return await this.store.appendMainConversationRecord({
-          sessionId: input.sessionId,
-          record: globalRecord,
-        });
-      }
       const record = await this.store.appendConversationMessage({
         sessionId: input.sessionId,
         role: "assistant",
@@ -274,11 +259,7 @@ export class GitMemoryRuntime {
       }
       return record;
     });
-    if (cachedState) {
-      this.updateCachedSessionConversation(cachedState, record);
-    } else {
-      this.invalidateSessionMemory(input.sessionId);
-    }
+    this.invalidateSessionMemory(input.sessionId);
     return record;
   }
 
@@ -444,6 +425,21 @@ export class GitMemoryRuntime {
     this.sessionMemoryCache.set(state.session.sessionId, nextState);
   }
 
+  private async createAndCacheConversationRecord(
+    sessionId: GitMemorySessionId,
+    input: {
+      role: GitMemoryConversationRole;
+      text: string;
+      at: string;
+    },
+  ): Promise<GitMemoryConversationRecord> {
+    const hydrated = await this.getOrHydrateCachedMemoryState(sessionId);
+    const latest = this.sessionMemoryCache.get(sessionId) ?? hydrated;
+    const record = this.createCachedConversationRecord(latest, input);
+    this.updateCachedSessionConversation(latest, record);
+    return record;
+  }
+
   private createCachedConversationRecord(
     state: GitContextMemoryState,
     input: {
@@ -458,6 +454,27 @@ export class GitMemoryRuntime {
       at: input.at,
       text: input.text,
     };
+  }
+
+  private enqueueGlobalConversationPersistence(input: {
+    sessionId: GitMemorySessionId;
+    type: GitMemoryWriteBatchRequest["type"];
+    label: string;
+    createdAt: string;
+    record: GitMemoryConversationRecord;
+  }): void {
+    const persistence = this.writeQueue.enqueue({
+      sessionId: input.sessionId,
+      type: input.type,
+      label: input.label,
+      createdAt: input.createdAt,
+    }, async () => {
+      await this.store.appendMainConversationRecord({
+        sessionId: input.sessionId,
+        record: input.record,
+      });
+    });
+    void persistence.catch(() => undefined);
   }
 
   private invalidateSessionMemory(sessionId: GitMemorySessionId): void {

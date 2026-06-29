@@ -64,6 +64,7 @@ describe("GitMemoryRuntime", () => {
       text: "I will inspect upload handling.",
       at: "2026-06-28T09:00:05+05:30",
     });
+    await waitForCommittedWrites(runtime, prepared.sessionId, 2);
 
     expect(prepared).toMatchObject({
       status: "ready",
@@ -147,6 +148,7 @@ describe("GitMemoryRuntime", () => {
       text: "I will inspect upload handling.",
       at: "2026-06-28T09:00:10+05:30",
     });
+    await waitForCommittedWrites(runtime, prepared.sessionId, 3);
 
     expect(store.generatedMessageCalls).toBe(0);
     expect(store.prebuiltRecords).toMatchObject([
@@ -176,6 +178,72 @@ describe("GitMemoryRuntime", () => {
     });
   });
 
+  it("returns prepared user turns before global conversation persistence resolves", async () => {
+    const contextStoreDir = await mkdtemp(join(tmpdir(), "ayati-git-memory-runtime-"));
+    const gate = deferred<void>();
+    const store = new BlockingConversationStore({ contextStoreDir }, gate.promise);
+    const runtime = createGitMemoryRuntime({
+      contextStoreDir,
+      timezone: "Asia/Kolkata",
+      agentId: "local",
+      store,
+    });
+
+    const prepared = await runtime.prepareUserTurn({
+      userMessage: "Fix upload handling",
+      at: "2026-06-28T09:00:00+05:30",
+    });
+
+    expect(prepared.userMessage).toMatchObject({
+      seq: 1,
+      role: "user",
+      text: "Fix upload handling",
+    });
+    expect(prepared.context.session.conversationTail).toMatchObject([{
+      seq: 1,
+      role: "user",
+      text: "Fix upload handling",
+    }]);
+    expect(prepared.context.pendingWrites).toMatchObject([{
+      type: "main_conversation_appended",
+      label: "prepare_user_turn",
+    }]);
+
+    gate.resolve();
+    await waitForCommittedWrites(runtime, prepared.sessionId, 1);
+    expect((await runtime.buildActiveContext(prepared.sessionId)).pendingWrites).toBeUndefined();
+  });
+
+  it("keeps memory updated when async global conversation persistence fails", async () => {
+    const contextStoreDir = await mkdtemp(join(tmpdir(), "ayati-git-memory-runtime-"));
+    const store = new FailingConversationStore({ contextStoreDir });
+    const runtime = createGitMemoryRuntime({
+      contextStoreDir,
+      timezone: "Asia/Kolkata",
+      agentId: "local",
+      store,
+    });
+
+    const prepared = await runtime.prepareUserTurn({
+      userMessage: "Fix upload handling",
+      at: "2026-06-28T09:00:00+05:30",
+    });
+    await waitForFailedWrites(runtime, prepared.sessionId, 1);
+    const context = await runtime.buildActiveContext(prepared.sessionId);
+
+    expect(context.session.conversationTail).toMatchObject([{
+      seq: 1,
+      role: "user",
+      text: "Fix upload handling",
+    }]);
+    expect(context.pendingWrites).toMatchObject([{
+      type: "main_conversation_appended",
+      label: "prepare_user_turn",
+      status: "failed",
+      error: "async persistence failed",
+    }]);
+  });
+
   it("derives explicit active context reads from memory state", async () => {
     const contextStoreDir = await mkdtemp(join(tmpdir(), "ayati-git-memory-runtime-"));
     const runtime = createGitMemoryRuntime({
@@ -187,6 +255,7 @@ describe("GitMemoryRuntime", () => {
       userMessage: "Fix upload handling",
       at: "2026-06-28T09:00:00+05:30",
     });
+    await waitForCommittedWrites(runtime, prepared.sessionId, 1);
 
     const [context, memoryState] = await Promise.all([
       runtime.buildActiveContext(prepared.sessionId),
@@ -454,10 +523,16 @@ describe("GitMemoryRuntime", () => {
   it("routes git-mutating runtime operations through the write queue", async () => {
     const contextStoreDir = await mkdtemp(join(tmpdir(), "ayati-git-memory-runtime-"));
     const queued: GitMemoryWriteBatchRequest[] = [];
+    let tail = Promise.resolve();
     const writeQueue: GitMemoryWriteQueueRunner = {
       async enqueue<T>(batch: GitMemoryWriteBatchRequest, run: () => Promise<T>): Promise<T> {
         queued.push(batch);
-        return await run();
+        const current = tail.then(run);
+        tail = current.then(
+          () => undefined,
+          () => undefined,
+        );
+        return await current;
       },
       getSessionWrites() {
         return [];
@@ -521,6 +596,7 @@ describe("GitMemoryRuntime", () => {
       text: "I will inspect upload handling.",
       at: "2026-06-28T09:00:05+05:30",
     });
+    await waitForCommittedWrites(runtime, prepared.sessionId, 2);
 
     expect(runtime.getSessionWrites(prepared.sessionId)).toMatchObject([
       {
@@ -723,6 +799,7 @@ describe("GitMemoryRuntime", () => {
       userMessage: "Analyze contract risk",
       at: "2026-06-28T09:05:00+05:30",
     });
+    await waitForCommittedWrites(runtime, second.sessionId, 3);
     const driver = new GitMemoryWorktreeGitDriver(second.repoPath);
     const firstTaskBeforeRouting = await driver.readFile(
       firstRoute.ref,
@@ -851,6 +928,7 @@ describe("GitMemoryRuntime", () => {
       text: "This is a global assistant note.",
       at: "2026-06-28T09:02:00+05:30",
     });
+    await waitForCommittedWrites(runtime, prepared.sessionId, 3);
 
     const driver = new GitMemoryWorktreeGitDriver(prepared.repoPath);
     const mainConversation = await driver.readFile(
@@ -946,4 +1024,82 @@ class TrackingConversationStore extends GitMemoryDailySessionStore {
     this.prebuiltRecords.push(input.record);
     return await super.appendMainConversationRecord(input);
   }
+}
+
+class BlockingConversationStore extends TrackingConversationStore {
+  constructor(
+    options: ConstructorParameters<typeof GitMemoryDailySessionStore>[0],
+    private readonly gate: Promise<void>,
+  ) {
+    super(options);
+  }
+
+  override async appendMainConversationRecord(
+    input: AppendGitMemoryConversationRecordInput,
+  ): Promise<AppendGitMemoryConversationRecordInput["record"]> {
+    this.prebuiltRecords.push(input.record);
+    await this.gate;
+    return await GitMemoryDailySessionStore.prototype.appendMainConversationRecord.call(this, input);
+  }
+}
+
+class FailingConversationStore extends TrackingConversationStore {
+  override async appendMainConversationRecord(
+    input: AppendGitMemoryConversationRecordInput,
+  ): Promise<AppendGitMemoryConversationRecordInput["record"]> {
+    this.prebuiltRecords.push(input.record);
+    throw new Error("async persistence failed");
+  }
+}
+
+async function waitForCommittedWrites(
+  runtime: { getSessionWrites(sessionId: string): GitMemoryWriteBatchSnapshot[] },
+  sessionId: string,
+  count: number,
+): Promise<void> {
+  await waitForWrites(runtime, sessionId, (writes) => (
+    writes.length >= count && writes.slice(0, count).every((write) => write.status === "committed")
+  ));
+}
+
+async function waitForFailedWrites(
+  runtime: { getSessionWrites(sessionId: string): GitMemoryWriteBatchSnapshot[] },
+  sessionId: string,
+  count: number,
+): Promise<void> {
+  await waitForWrites(runtime, sessionId, (writes) => (
+    writes.filter((write) => write.status === "failed").length >= count
+  ));
+}
+
+async function waitForWrites(
+  runtime: { getSessionWrites(sessionId: string): GitMemoryWriteBatchSnapshot[] },
+  sessionId: string,
+  predicate: (writes: GitMemoryWriteBatchSnapshot[]) => boolean,
+): Promise<void> {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    if (predicate(runtime.getSessionWrites(sessionId))) {
+      return;
+    }
+    await delay(10);
+  }
+  throw new Error(`Timed out waiting for git memory writes: ${JSON.stringify(runtime.getSessionWrites(sessionId))}`);
+}
+
+function deferred<T>(): {
+  promise: Promise<T>;
+  resolve: (value: T | PromiseLike<T>) => void;
+  reject: (reason?: unknown) => void;
+} {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((innerResolve, innerReject) => {
+    resolve = innerResolve;
+    reject = innerReject;
+  });
+  return { promise, resolve, reject };
+}
+
+async function delay(ms: number): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, ms));
 }
