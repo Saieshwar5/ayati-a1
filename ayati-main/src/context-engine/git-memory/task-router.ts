@@ -9,7 +9,6 @@ import type {
   GitMemoryRunId,
   GitMemorySessionId,
   GitMemoryTaskId,
-  GitMemoryTaskLinkReason,
   GitMemoryTurnId,
 } from "./schema.js";
 
@@ -223,7 +222,7 @@ export class GitMemoryTaskRouter {
     const selectedTask = await this.store.selectTaskForTurn({
       sessionId: input.sessionId,
       taskId: resolution.taskId,
-      reason: linkReasonForMode(resolution.mode),
+      reason: routeReasonForMode(resolution.mode),
       fromSeq: input.fromSeq,
       toSeq: input.toSeq,
       at: input.at,
@@ -389,10 +388,9 @@ function toRouteCandidate(candidate: GitMemoryTaskRouteCandidate): GitMemoryTask
   };
 }
 
-function linkReasonForMode(mode: Exclude<GitMemoryTaskRouteResolution["mode"], "ambiguous" | "create_new_task">): Exclude<
-  GitMemoryTaskLinkReason,
-  "task_created" | "task_reference"
-> {
+function routeReasonForMode(
+  mode: Exclude<GitMemoryTaskRouteResolution["mode"], "ambiguous" | "create_new_task">,
+): "task_continued" | "task_switched" | "task_reopened" {
   if (mode === "continue_active_task") {
     return "task_continued";
   }

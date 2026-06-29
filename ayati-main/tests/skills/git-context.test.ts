@@ -57,7 +57,6 @@ describe("git-context skill", () => {
       limits: {
         conversationTailLimit: 2,
         eventTailLimit: 5,
-        taskMessageLinkLimit: 2,
         runLimit: 2,
         evidenceLimit: 1,
         commitLogLimit: 2,
@@ -415,7 +414,6 @@ describe("git-context skill", () => {
         actionLimit: 1,
         commitLogLimit: 2,
         evidenceLimit: 1,
-        conversationSegmentLimit: 1,
         conversationMarkdownCharLimit: 200,
         taskMarkdownCharLimit: 2_000,
         runMarkdownCharLimit: 2_000,
@@ -466,7 +464,6 @@ describe("git-context skill", () => {
         summary: "Patched upload validation branch.",
         evidenceRef: "evidence/ACT-20260628-000101.txt",
       }],
-      conversation: [],
       conversationMarkdownTail: expect.stringContaining("Fix upload handling"),
     });
     expect((result.v2?.structuredContent as { recentRuns?: unknown[] }).recentRuns).toHaveLength(1);

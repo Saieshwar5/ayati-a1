@@ -12,7 +12,6 @@ import type {
   GitMemoryTaskFile,
   GitMemoryTaskId,
   GitMemoryTaskIndexFile,
-  GitMemoryTaskMessageLinkRecord,
   GitMemoryTaskStateFile,
 } from "./schema.js";
 import {
@@ -29,7 +28,6 @@ import { GIT_MEMORY_MAIN_REF } from "./session-store.js";
 export interface GitMemoryContextLimits {
   conversationTailLimit: number;
   eventTailLimit: number;
-  taskMessageLinkLimit: number;
   runLimit: number;
   evidenceLimit: number;
   commitLogLimit: number;
@@ -39,7 +37,6 @@ export interface GitMemoryContextLimits {
 export const DEFAULT_GIT_MEMORY_CONTEXT_LIMITS: GitMemoryContextLimits = {
   conversationTailLimit: 20,
   eventTailLimit: 30,
-  taskMessageLinkLimit: 10,
   runLimit: 5,
   evidenceLimit: 5,
   commitLogLimit: 10,
@@ -80,16 +77,6 @@ type GitMemoryResolvedFocus =
       reason: string;
     };
 
-export interface GitMemoryContextTaskConversationSegment {
-  link: {
-    taskId: GitMemoryTaskId;
-    branch: string;
-    fromSeq: number;
-    toSeq: number;
-  };
-  messages: GitMemoryConversationRecord[];
-}
-
 export interface CompactGitMemoryCommitSummary {
   commit: string;
   subject: string;
@@ -103,7 +90,6 @@ export interface GitMemoryMachineContextPack {
     conversationTail: GitMemoryConversationRecord[];
     conversationMarkdownTail: string;
     eventTail: GitMemorySessionEventRecord[];
-    taskMessageLinkTail: GitMemoryTaskMessageLinkRecord[];
     recentCommits: CompactGitMemoryCommitSummary[];
     taskCount: number;
   };
@@ -123,7 +109,6 @@ export interface GitMemoryMachineContextPack {
     next: string;
     assets: TaskAssetRecord[];
     conversationMarkdownTail: string;
-    conversation: GitMemoryContextTaskConversationSegment[];
     recentRuns: GitMemoryRunFile[];
     recentEvidence: GitMemoryEvidenceManifestRecord[];
     recentCommits: CompactGitMemoryCommitSummary[];
@@ -157,7 +142,6 @@ export class GitMemoryContextReader {
       conversationTail: tail(conversation, limits.conversationTailLimit),
       conversationMarkdownTail: conversationMarkdown,
       eventTail: deriveSessionEventTailFromCommits(sessionCommits, limits.eventTailLimit),
-      taskMessageLinkTail: [],
       recentCommits: sessionCommits,
       taskCount: tasks?.tasks.length ?? 0,
     };
@@ -259,7 +243,6 @@ export class GitMemoryContextReader {
         next: state.next,
         assets,
         conversationMarkdownTail,
-        conversation: [],
         recentRuns,
         recentEvidence,
         recentCommits,
@@ -600,7 +583,6 @@ function normalizeLimits(input: Partial<GitMemoryContextLimits> | undefined): Gi
   return {
     conversationTailLimit: positiveLimit(input?.conversationTailLimit, DEFAULT_GIT_MEMORY_CONTEXT_LIMITS.conversationTailLimit),
     eventTailLimit: positiveLimit(input?.eventTailLimit, DEFAULT_GIT_MEMORY_CONTEXT_LIMITS.eventTailLimit),
-    taskMessageLinkLimit: positiveLimit(input?.taskMessageLinkLimit, DEFAULT_GIT_MEMORY_CONTEXT_LIMITS.taskMessageLinkLimit),
     runLimit: positiveLimit(input?.runLimit, DEFAULT_GIT_MEMORY_CONTEXT_LIMITS.runLimit),
     evidenceLimit: positiveLimit(input?.evidenceLimit, DEFAULT_GIT_MEMORY_CONTEXT_LIMITS.evidenceLimit),
     commitLogLimit: positiveLimit(input?.commitLogLimit, DEFAULT_GIT_MEMORY_CONTEXT_LIMITS.commitLogLimit),

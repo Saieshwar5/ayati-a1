@@ -152,7 +152,6 @@ function readyGitMemoryPreparedTurn(): GitMemoryChatContextPreparedTurn {
         sessionId: "S-20260627-local",
         conversationTail: [],
         eventTail: [],
-        taskMessageLinkTail: [],
         taskCount: 1,
       },
       focus: { status: "none" },
@@ -166,7 +165,6 @@ function readyGitMemoryRoutedTurn(): Extract<GitMemoryChatContextRoutedTurn, { s
       sessionId: "S-20260627-local",
       conversationTail: [],
       eventTail: [],
-      taskMessageLinkTail: [],
       taskCount: 1,
     },
     focus: {
@@ -188,7 +186,6 @@ function readyGitMemoryRoutedTurn(): Extract<GitMemoryChatContextRoutedTurn, { s
       blockers: [],
       facts: [],
       next: "Handle uploaded attachment",
-      conversation: [],
       recentRuns: [],
       recentCommits: [],
     },

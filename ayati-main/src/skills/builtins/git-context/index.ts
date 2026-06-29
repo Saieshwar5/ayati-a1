@@ -176,7 +176,6 @@ function createActiveContextTool(contextReader: GitMemoryContextReader): ToolDef
         properties: {
           conversationTailLimit: { type: "number" },
           eventTailLimit: { type: "number" },
-          taskMessageLinkLimit: { type: "number" },
           runLimit: { type: "number" },
           evidenceLimit: { type: "number" },
           commitLogLimit: { type: "number" },
@@ -315,7 +314,6 @@ function createReadTaskTool(store: GitMemoryDailySessionStore): ToolDefinition {
           actionLimit: { type: "number" },
           commitLogLimit: { type: "number" },
           evidenceLimit: { type: "number" },
-          conversationSegmentLimit: { type: "number" },
           conversationMarkdownCharLimit: { type: "number" },
           taskMarkdownCharLimit: { type: "number" },
           runMarkdownCharLimit: { type: "number" },
@@ -970,7 +968,7 @@ function parseTaskDetailLimits(input: Partial<GitMemoryTaskDetailLimits> | undef
     return invalidInput("limits must be an object when provided.");
   }
   const output: Partial<GitMemoryTaskDetailLimits> = {};
-  for (const key of ["runLimit", "actionRunLimit", "actionLimit", "commitLogLimit", "evidenceLimit", "conversationSegmentLimit", "conversationMarkdownCharLimit", "taskMarkdownCharLimit", "runMarkdownCharLimit"] as const) {
+  for (const key of ["runLimit", "actionRunLimit", "actionLimit", "commitLogLimit", "evidenceLimit", "conversationMarkdownCharLimit", "taskMarkdownCharLimit", "runMarkdownCharLimit"] as const) {
     const value = input[key];
     if (value === undefined) {
       continue;

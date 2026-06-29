@@ -7,7 +7,6 @@ export const GIT_MEMORY_SESSION_CONVERSATION_PATH = "session/conversation.jsonl"
 export const GIT_MEMORY_SESSION_CONVERSATION_MARKDOWN_PATH = "session/conversation.md";
 export const GIT_MEMORY_SESSION_EVENTS_PATH = "session/events.jsonl";
 export const GIT_MEMORY_SESSION_TASKS_PATH = "session/tasks.json";
-export const GIT_MEMORY_SESSION_TASK_MESSAGE_LINKS_PATH = "session/task-message-links.jsonl";
 export const GIT_MEMORY_SESSION_SCHEMA_PATH = "session/schema.json";
 
 export type GitMemorySessionId = string;
@@ -17,18 +16,11 @@ export type GitMemoryEventId = string;
 export type GitMemoryTaskId = string;
 export type GitMemoryRunId = string;
 export type GitMemoryActionId = string;
-export type GitMemoryLinkId = string;
 
 export type GitMemoryConversationRole = "user" | "assistant" | "system";
 export type GitMemoryTaskStatus = "open" | "in_progress" | "blocked" | "done" | "abandoned";
 export type GitMemoryRunStatus = "completed" | "failed" | "blocked" | "needs_user_input";
 export type GitMemoryActionStatus = "completed" | "failed" | "skipped";
-export type GitMemoryTaskLinkReason =
-  | "task_created"
-  | "task_continued"
-  | "task_switched"
-  | "task_reopened"
-  | "task_reference";
 export type GitMemorySessionEventType =
   | "session_initialized"
   | "session_checkpointed"
@@ -97,18 +89,6 @@ export interface GitMemoryTaskIndexFile {
 export interface GitMemoryConversationSeqRange {
   fromSeq: number;
   toSeq: number;
-}
-
-export interface GitMemoryTaskMessageLinkRecord extends GitMemoryConversationSeqRange {
-  v: 1;
-  linkId: GitMemoryLinkId;
-  taskId: GitMemoryTaskId;
-  branch: string;
-  reason: GitMemoryTaskLinkReason;
-  at: string;
-  turnIds: GitMemoryTurnId[];
-  runId?: GitMemoryRunId;
-  summary?: string;
 }
 
 export interface GitMemoryTaskFile {
@@ -286,13 +266,6 @@ export function createGitMemoryTurnId(date: string, sequence: number): GitMemory
   return `T-${date.replace(/-/g, "")}-${formatSequence(sequence, 6)}`;
 }
 
-export function createGitMemoryLinkId(date: string, sequence: number): GitMemoryLinkId {
-  if (!isValidCalendarDate(date)) {
-    throw new Error(`Invalid git-memory link date: ${date}`);
-  }
-  return `L-${date.replace(/-/g, "")}-${formatSequence(sequence, 6)}`;
-}
-
 export function gitMemoryDateFromSessionId(sessionId: GitMemorySessionId): string {
   if (!isGitMemorySessionId(sessionId)) {
     throw new Error(`Invalid git-memory session id: ${sessionId}`);
@@ -352,12 +325,6 @@ export function isGitMemoryActionId(value: unknown): value is GitMemoryActionId 
   return typeof value === "string"
     && /^ACT-\d{8}-\d{6}$/.test(value)
     && isValidCompactDate(value.slice(4, 12));
-}
-
-export function isGitMemoryLinkId(value: unknown): value is GitMemoryLinkId {
-  return typeof value === "string"
-    && /^L-\d{8}-\d{6}$/.test(value)
-    && isValidCompactDate(value.slice(2, 10));
 }
 
 export function isGitMemoryTaskBranchName(value: unknown): value is string {
@@ -453,32 +420,6 @@ export function validateGitMemoryTaskIndexFile(value: unknown): ValidationResult
     if (tasks) {
       tasks.forEach((task, index) => validateTaskIndexEntry(task, `tasks[${index}]`, errors));
     }
-  }
-  return validationResult(value, errors);
-}
-
-export function validateGitMemoryTaskMessageLinkRecord(
-  value: unknown,
-): ValidationResult<GitMemoryTaskMessageLinkRecord> {
-  const errors: string[] = [];
-  const record = requireRecord(value, "task message link", errors);
-  if (record) {
-    requireVersion(record, errors);
-    requireLinkId(record, "linkId", errors);
-    requireTaskId(record, "taskId", errors);
-    requireTaskBranch(record, "branch", errors);
-    requireOneOf(record, "reason", [
-      "task_created",
-      "task_continued",
-      "task_switched",
-      "task_reopened",
-      "task_reference",
-    ], errors);
-    requireNonEmptyString(record, "at", errors);
-    requireConversationSeqRange(record, errors);
-    requireStringArray(record, "turnIds", errors);
-    requireOptionalRunId(record, "runId", errors);
-    requireOptionalNonEmptyString(record, "summary", errors);
   }
   return validationResult(value, errors);
 }
@@ -860,13 +801,6 @@ function requireActionId(record: Record<string, unknown>, field: string, errors:
   const value = requireNonEmptyString(record, field, errors);
   if (value && !isGitMemoryActionId(value)) {
     errors.push(`${field} must be a valid git-memory action id.`);
-  }
-}
-
-function requireLinkId(record: Record<string, unknown>, field: string, errors: string[]): void {
-  const value = requireNonEmptyString(record, field, errors);
-  if (value && !isGitMemoryLinkId(value)) {
-    errors.push(`${field} must be a valid git-memory link id.`);
   }
 }
 

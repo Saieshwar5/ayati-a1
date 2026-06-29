@@ -34,7 +34,6 @@ describe("GitMemoryContextReader", () => {
       session: {
         sessionId: "S-20260628-local",
         conversationTail: [],
-        taskMessageLinkTail: [],
         recentCommits: [{
           subject: "ayati: initialize session S-20260628-local",
         }],
@@ -257,7 +256,6 @@ describe("GitMemoryContextReader", () => {
       limits: {
         conversationTailLimit: 3,
         eventTailLimit: 4,
-        taskMessageLinkLimit: 3,
         runLimit: 3,
         evidenceLimit: 3,
         commitLogLimit: 3,
@@ -283,7 +281,6 @@ describe("GitMemoryContextReader", () => {
         event: "conversation_appended",
       },
     });
-    expect(pack.session.taskMessageLinkTail).toEqual([]);
     expect(pack.focus).toMatchObject({
       status: "active",
       taskId: "W-20260628-0001",
@@ -311,7 +308,6 @@ describe("GitMemoryContextReader", () => {
     expect(pack.task?.conversationMarkdownTail).toContain("Fix upload handling");
     expect(pack.task?.conversationMarkdownTail).toContain("I will inspect upload handling.");
     expect(pack.task?.conversationMarkdownTail).not.toContain("Continue from there.");
-    expect(pack.task?.conversation).toEqual([]);
     expect(pack.task?.recentRuns).toMatchObject([{
       runId: "R-20260628-0001",
       status: "completed",

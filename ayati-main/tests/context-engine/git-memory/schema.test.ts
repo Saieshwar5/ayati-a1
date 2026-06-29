@@ -4,7 +4,6 @@ import {
   GIT_MEMORY_SESSION_CONVERSATION_PATH,
   GIT_MEMORY_SESSION_EVENTS_PATH,
   GIT_MEMORY_SESSION_META_PATH,
-  GIT_MEMORY_SESSION_TASK_MESSAGE_LINKS_PATH,
   GIT_MEMORY_SESSION_TASKS_PATH,
   gitMemoryTaskActionsPath,
   gitMemoryTaskAssetsPath,
@@ -24,7 +23,6 @@ import {
   validateGitMemorySessionMetaFile,
   validateGitMemoryTaskFile,
   validateGitMemoryTaskIndexFile,
-  validateGitMemoryTaskMessageLinkRecord,
   validateGitMemoryTaskStateFile,
 } from "../../../src/context-engine/git-memory/index.js";
 
@@ -35,7 +33,6 @@ describe("git memory schema", () => {
     expect(GIT_MEMORY_SESSION_CONVERSATION_MARKDOWN_PATH).toBe("session/conversation.md");
     expect(GIT_MEMORY_SESSION_EVENTS_PATH).toBe("session/events.jsonl");
     expect(GIT_MEMORY_SESSION_TASKS_PATH).toBe("session/tasks.json");
-    expect(GIT_MEMORY_SESSION_TASK_MESSAGE_LINKS_PATH).toBe("session/task-message-links.jsonl");
 
     expect(gitMemoryTaskFilePath("W-20260628-0001")).toBe("tasks/W-20260628-0001/task.json");
     expect(gitMemoryTaskMarkdownPath("W-20260628-0001")).toBe("tasks/W-20260628-0001/task.md");
@@ -115,40 +112,6 @@ describe("git memory schema", () => {
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.errors).toContain("conversation record must include non-empty text or contentRef.");
-    }
-  });
-
-  it("validates task-message links as the retrieval map for conversation ranges", () => {
-    expect(validateGitMemoryTaskMessageLinkRecord({
-      v: 1,
-      linkId: "L-20260628-000001",
-      taskId: "W-20260628-0001",
-      branch: "task/W-20260628-0001-fix-upload-handling",
-      reason: "task_created",
-      at: "2026-06-28T09:01:00+05:30",
-      fromSeq: 1,
-      toSeq: 2,
-      turnIds: ["T-20260628-000001"],
-      runId: "R-20260628-0001",
-      summary: "User started upload handling work.",
-    }).ok).toBe(true);
-
-    const result = validateGitMemoryTaskMessageLinkRecord({
-      v: 1,
-      linkId: "L-20260628-000002",
-      taskId: "W-20260628-0001",
-      branch: "work/W-20260628-0001-old-branch-prefix",
-      reason: "task_continued",
-      at: "2026-06-28T09:02:00+05:30",
-      fromSeq: 5,
-      toSeq: 4,
-      turnIds: [],
-    });
-
-    expect(result.ok).toBe(false);
-    if (!result.ok) {
-      expect(result.errors).toContain("branch must be a valid task branch.");
-      expect(result.errors).toContain("toSeq must be greater than or equal to fromSeq.");
     }
   });
 

@@ -1,4 +1,4 @@
-import { access, mkdtemp } from "node:fs/promises";
+import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -10,7 +10,6 @@ import {
   GIT_MEMORY_SESSION_META_PATH,
   GIT_MEMORY_SESSION_SCHEMA_PATH,
   GIT_MEMORY_SESSION_TASKS_PATH,
-  GIT_MEMORY_SESSION_TASK_MESSAGE_LINKS_PATH,
   GitMemoryWorktreeGitDriver,
   GitMemoryDailySessionStore,
   gitMemoryTaskActionsPath,
@@ -75,8 +74,6 @@ describe("GitMemoryDailySessionStore", () => {
     expect(await driver.readFile(GIT_MEMORY_MAIN_REF, GIT_MEMORY_SESSION_CONVERSATION_PATH)).toBe("");
     expect(await driver.readFile(GIT_MEMORY_MAIN_REF, GIT_MEMORY_SESSION_CONVERSATION_MARKDOWN_PATH))
       .toBe("# Conversation\n");
-    expect(await driver.readFile(GIT_MEMORY_MAIN_REF, GIT_MEMORY_SESSION_TASK_MESSAGE_LINKS_PATH)).toBeNull();
-
     expect(await driver.readFile(GIT_MEMORY_MAIN_REF, GIT_MEMORY_SESSION_EVENTS_PATH)).toBeNull();
     expect(JSON.parse(await driver.readFile(GIT_MEMORY_MAIN_REF, GIT_MEMORY_SESSION_TASKS_PATH) ?? "{}"))
       .toEqual({ schemaVersion: 1, tasks: [] });
@@ -283,125 +280,6 @@ describe("GitMemoryDailySessionStore", () => {
     expect(await driver.currentBranch()).toBe("task/W-20260628-0001-fix-upload-handling");
   });
 
-  it("links task conversation ranges without copying conversation records", async () => {
-    const contextStoreDir = await mkdtemp(join(tmpdir(), "ayati-git-memory-"));
-    const store = new GitMemoryDailySessionStore({ contextStoreDir });
-    const session = await store.openOrCreateDailySession({
-      date: "2026-06-28",
-      timezone: "Asia/Kolkata",
-      agentId: "local",
-      createdAt: "2026-06-28T00:00:00+05:30",
-    });
-    const user = await store.appendConversationMessage({
-      sessionId: session.sessionId,
-      role: "user",
-      text: "Fix upload handling",
-      at: "2026-06-28T09:00:00+05:30",
-    });
-    await store.appendConversationMessage({
-      sessionId: session.sessionId,
-      role: "assistant",
-      text: "I will inspect the upload path.",
-      turnId: user.turnId,
-      at: "2026-06-28T09:00:05+05:30",
-    });
-    await store.appendConversationMessage({
-      sessionId: session.sessionId,
-      role: "user",
-      text: "Also check image uploads later.",
-      at: "2026-06-28T09:05:00+05:30",
-    });
-
-    const link = await store.linkTaskMessages({
-      sessionId: session.sessionId,
-      taskId: "W-20260628-0001",
-      branch: "task/W-20260628-0001-fix-upload-handling",
-      reason: "task_created",
-      fromSeq: 1,
-      toSeq: 2,
-      runId: "R-20260628-0001",
-      summary: "Initial upload handling task conversation.",
-      at: "2026-06-28T09:01:00+05:30",
-    });
-
-    expect(link).toMatchObject({
-      v: 1,
-      linkId: "L-20260628-000001",
-      taskId: "W-20260628-0001",
-      branch: "task/W-20260628-0001-fix-upload-handling",
-      reason: "task_created",
-      fromSeq: 1,
-      toSeq: 2,
-      turnIds: [],
-      runId: "R-20260628-0001",
-    });
-
-    const segments = await store.readTaskConversationSegments(session.sessionId, "W-20260628-0001");
-    expect(segments).toHaveLength(1);
-    expect(segments[0]?.link).toMatchObject({ linkId: "L-20260628-000001" });
-    expect(segments[0]?.messages).toMatchObject([
-      { seq: 1, role: "user", text: "Fix upload handling" },
-      { seq: 2, role: "assistant", text: "I will inspect the upload path." },
-    ]);
-
-    const driver = new GitMemoryWorktreeGitDriver(session.repoPath);
-    expect(parseJsonl(await driver.readWorkingFile(GIT_MEMORY_SESSION_TASK_MESSAGE_LINKS_PATH)))
-      .toMatchObject([{ linkId: "L-20260628-000001", fromSeq: 1, toSeq: 2 }]);
-    expect(await driver.log(GIT_MEMORY_MAIN_REF, 5)).toHaveLength(4);
-  });
-
-  it("does not create a repo when reading task conversation for a missing session", async () => {
-    const contextStoreDir = await mkdtemp(join(tmpdir(), "ayati-git-memory-"));
-    const store = new GitMemoryDailySessionStore({ contextStoreDir });
-    const sessionId = "S-20260628-local";
-
-    await expect(store.readTaskConversationSegments(sessionId, "W-20260628-0001"))
-      .rejects.toThrow("Git memory session not found");
-    await expect(access(join(contextStoreDir, "sessions", sessionId, ".git"))).rejects.toThrow();
-  });
-
-  it("checkpoints task-message links with the session checkpoint", async () => {
-    const contextStoreDir = await mkdtemp(join(tmpdir(), "ayati-git-memory-"));
-    const store = new GitMemoryDailySessionStore({ contextStoreDir });
-    const session = await store.openOrCreateDailySession({
-      date: "2026-06-28",
-      timezone: "Asia/Kolkata",
-      agentId: "local",
-      createdAt: "2026-06-28T00:00:00+05:30",
-    });
-    await store.appendConversationMessage({
-      sessionId: session.sessionId,
-      role: "user",
-      text: "Continue upload handling.",
-      at: "2026-06-28T10:00:00+05:30",
-    });
-    await store.linkTaskMessages({
-      sessionId: session.sessionId,
-      taskId: "W-20260628-0001",
-      branch: "task/W-20260628-0001-fix-upload-handling",
-      reason: "task_continued",
-      fromSeq: 1,
-      toSeq: 1,
-      at: "2026-06-28T10:00:10+05:30",
-    });
-
-    await store.checkpointSession({
-      sessionId: session.sessionId,
-      summary: "Checkpoint task-message link.",
-      at: "2026-06-28T10:01:00+05:30",
-    });
-
-    const driver = new GitMemoryWorktreeGitDriver(session.repoPath);
-    expect(parseJsonl(await driver.readFile(GIT_MEMORY_MAIN_REF, GIT_MEMORY_SESSION_TASK_MESSAGE_LINKS_PATH)))
-      .toMatchObject([{
-        linkId: "L-20260628-000001",
-        taskId: "W-20260628-0001",
-        reason: "task_continued",
-        fromSeq: 1,
-        toSeq: 1,
-      }]);
-  });
-
   it("creates task branches without copying session conversation into the task branch", async () => {
     const contextStoreDir = await mkdtemp(join(tmpdir(), "ayati-git-memory-"));
     const store = new GitMemoryDailySessionStore({ contextStoreDir });
@@ -504,7 +382,6 @@ describe("GitMemoryDailySessionStore", () => {
         }],
       });
     expect(await driver.currentBranch()).toBe("task/W-20260628-0001-fix-upload-handling");
-    expect(await driver.readWorkingFile(GIT_MEMORY_SESSION_TASK_MESSAGE_LINKS_PATH)).toBeNull();
     expect(await driver.readWorkingFile(GIT_MEMORY_SESSION_EVENTS_PATH)).toBeNull();
     expect(await driver.log(GIT_MEMORY_MAIN_REF, 5)).toHaveLength(3);
   });
@@ -584,7 +461,7 @@ describe("GitMemoryDailySessionStore", () => {
     });
   });
 
-  it("checkpoints session task index, focus, and links after task creation", async () => {
+  it("checkpoints session task index after task creation", async () => {
     const contextStoreDir = await mkdtemp(join(tmpdir(), "ayati-git-memory-"));
     const store = new GitMemoryDailySessionStore({ contextStoreDir });
     const session = await store.openOrCreateDailySession({
@@ -618,7 +495,6 @@ describe("GitMemoryDailySessionStore", () => {
     expect(JSON.parse(await driver.readFile(GIT_MEMORY_MAIN_REF, GIT_MEMORY_SESSION_TASKS_PATH) ?? "{}"))
       .toMatchObject({ tasks: [{ taskId: task.taskId, branch: task.branch }] });
     expect(await driver.currentBranch()).toBe(task.branch);
-    expect(await driver.readFile(GIT_MEMORY_MAIN_REF, GIT_MEMORY_SESSION_TASK_MESSAGE_LINKS_PATH)).toBeNull();
     expect(await driver.readFile(GIT_MEMORY_MAIN_REF, GIT_MEMORY_SESSION_EVENTS_PATH)).toBeNull();
   });
 

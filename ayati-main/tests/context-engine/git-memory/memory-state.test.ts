@@ -28,7 +28,6 @@ describe("GitContextMemoryStateHydrator", () => {
       session: {
         sessionId: "S-20260628-local",
         conversationTail: [],
-        taskMessageLinkTail: [],
         recentCommits: [{
           subject: "ayati: initialize session S-20260628-local",
         }],
@@ -52,7 +51,6 @@ describe("GitContextMemoryStateHydrator", () => {
       limits: {
         conversationTailLimit: 1,
         eventTailLimit: 2,
-        taskMessageLinkLimit: 1,
         runLimit: 1,
         commitLogLimit: 1,
         evidenceLimit: 1,
@@ -69,7 +67,6 @@ describe("GitContextMemoryStateHydrator", () => {
         role: "assistant",
         text: "I will inspect upload handling.",
       }],
-      taskMessageLinkTail: [],
     });
     expect(state.session.recentCommits[0]).toMatchObject({
       subject: "ayati: record assistant message",

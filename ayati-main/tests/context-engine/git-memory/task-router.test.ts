@@ -179,8 +179,6 @@ describe("GitMemoryTaskRouter", () => {
         "W-20260628-0002",
       ]);
     }
-    expect(await store.readTaskConversationSegments(sessionId, "W-20260628-0001")).toHaveLength(0);
-    expect(await store.readTaskConversationSegments(sessionId, "W-20260628-0002")).toHaveLength(0);
   });
 });
 

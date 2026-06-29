@@ -249,7 +249,6 @@ describe("createGitMemoryChatContextRuntime", () => {
         },
         context: {
           task: {
-            conversation: [],
             conversationMarkdownTail: expect.stringContaining("finish it"),
           },
         },

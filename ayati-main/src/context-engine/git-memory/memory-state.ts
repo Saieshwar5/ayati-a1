@@ -15,7 +15,6 @@ import type {
   GitMemoryRunFile,
   GitMemorySessionEventRecord,
   GitMemorySessionId,
-  GitMemoryTaskMessageLinkRecord,
 } from "./schema.js";
 
 export type GitContextMemoryStateLimits = GitMemoryContextLimits;
@@ -50,7 +49,6 @@ export interface GitContextMemoryState {
     conversationTail: GitMemoryConversationRecord[];
     conversationMarkdownTail: string;
     eventTail: GitMemorySessionEventRecord[];
-    taskMessageLinkTail: GitMemoryTaskMessageLinkRecord[];
     recentCommits: CompactGitMemoryCommitSummary[];
     taskCount: number;
     currentBranch?: string;
@@ -85,7 +83,6 @@ export class GitContextMemoryStateHydrator {
         conversationTail: context.session.conversationTail,
         conversationMarkdownTail: context.session.conversationMarkdownTail,
         eventTail: context.session.eventTail,
-        taskMessageLinkTail: context.session.taskMessageLinkTail,
         recentCommits: context.session.recentCommits,
         taskCount: context.session.taskCount,
         ...(context.focus.status === "active" ? { currentBranch: context.focus.branch } : {}),
