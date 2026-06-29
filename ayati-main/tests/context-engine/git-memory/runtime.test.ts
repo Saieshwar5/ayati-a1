@@ -505,6 +505,56 @@ describe("GitMemoryRuntime", () => {
     });
   });
 
+  it("serves route-created active task context from the runtime memory cache", async () => {
+    const contextStoreDir = await mkdtemp(join(tmpdir(), "ayati-git-memory-runtime-"));
+    const store = new GitMemoryDailySessionStore({ contextStoreDir });
+    const runtime = createGitMemoryRuntime({
+      contextStoreDir,
+      timezone: "Asia/Kolkata",
+      agentId: "local",
+      store,
+    });
+    const prepared = await runtime.prepareUserTurn({
+      userMessage: "Fix upload handling",
+      at: "2026-06-28T09:00:00+05:30",
+    });
+    const readSnapshot = vi.spyOn(store, "readTaskRoutingSnapshot");
+
+    const route = await runtime.routeUserTurn({
+      sessionId: prepared.sessionId,
+      userMessage: "Fix upload handling",
+      fromSeq: prepared.userMessage.seq,
+      toSeq: prepared.userMessage.seq,
+      at: "2026-06-28T09:00:01+05:30",
+    });
+    if (route.status !== "ready") {
+      throw new Error(`Expected ready task route, got ${route.status}.`);
+    }
+
+    expect(readSnapshot).toHaveBeenCalledTimes(1);
+    const driver = new GitMemoryWorktreeGitDriver(prepared.repoPath);
+    await driver.commitSyntheticFiles({
+      ref: route.ref,
+      files: {
+        [gitMemoryTaskStatePath(route.taskId)]: "{ invalid json",
+      },
+      message: "damage task state",
+    });
+    const memoryState = await runtime.buildMemoryState(prepared.sessionId);
+
+    expect(readSnapshot).toHaveBeenCalledTimes(1);
+    expect(memoryState.focus).toMatchObject({
+      status: "active",
+      taskId: route.taskId,
+    });
+    expect(memoryState.activeTask).toMatchObject({
+      taskId: route.taskId,
+      title: "Fix upload handling",
+      summary: "Fix upload handling",
+      open: ["Fix upload handling"],
+    });
+  });
+
   it("updates cached active task state after task run commits", async () => {
     const contextStoreDir = await mkdtemp(join(tmpdir(), "ayati-git-memory-runtime-"));
     const runtime = createGitMemoryRuntime({
@@ -933,6 +983,66 @@ describe("GitMemoryRuntime", () => {
       runId: continued.runId,
       conversationSeq: { fromSeq: second.userMessage.seq, toSeq: second.userMessage.seq },
     });
+  });
+
+  it("serves routed follow-up active task context from the runtime memory cache", async () => {
+    const contextStoreDir = await mkdtemp(join(tmpdir(), "ayati-git-memory-runtime-"));
+    const store = new GitMemoryDailySessionStore({ contextStoreDir });
+    const runtime = createGitMemoryRuntime({
+      contextStoreDir,
+      timezone: "Asia/Kolkata",
+      agentId: "local",
+      store,
+    });
+    const first = await runtime.prepareUserTurn({
+      userMessage: "Fix upload handling",
+      at: "2026-06-28T09:00:00+05:30",
+    });
+    const created = await runtime.routeUserTurn({
+      sessionId: first.sessionId,
+      userMessage: "Fix upload handling",
+      fromSeq: first.userMessage.seq,
+      toSeq: first.userMessage.seq,
+      at: "2026-06-28T09:00:01+05:30",
+    });
+    if (created.status !== "ready") {
+      throw new Error(`Expected ready task route, got ${created.status}.`);
+    }
+    const second = await runtime.prepareUserTurn({
+      userMessage: "finish it",
+      at: "2026-06-28T09:05:00+05:30",
+    });
+    const readSnapshot = vi.spyOn(store, "readTaskRoutingSnapshot");
+
+    const continued = await runtime.routeUserTurn({
+      sessionId: second.sessionId,
+      userMessage: "finish it",
+      fromSeq: second.userMessage.seq,
+      toSeq: second.userMessage.seq,
+      at: "2026-06-28T09:05:01+05:30",
+    });
+    if (continued.status !== "ready") {
+      throw new Error(`Expected ready task route, got ${continued.status}.`);
+    }
+
+    expect(readSnapshot).toHaveBeenCalledTimes(1);
+    const driver = new GitMemoryWorktreeGitDriver(second.repoPath);
+    await driver.commitSyntheticFiles({
+      ref: continued.ref,
+      files: {
+        [gitMemoryTaskStatePath(continued.taskId)]: "{ invalid json",
+      },
+      message: "damage task state",
+    });
+    const memoryState = await runtime.buildMemoryState(second.sessionId);
+
+    expect(readSnapshot).toHaveBeenCalledTimes(1);
+    expect(memoryState.focus).toMatchObject({
+      status: "active",
+      taskId: continued.taskId,
+    });
+    expect(memoryState.activeTask?.conversationMarkdownTail).toContain("finish it");
+    expect(memoryState.activeTask?.conversationMarkdownTail).toContain(`Run: ${continued.runId}`);
   });
 
   it("keeps inbound user messages on main until routing selects the task branch", async () => {

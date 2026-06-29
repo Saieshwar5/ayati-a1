@@ -17,6 +17,7 @@ import {
 } from "./context-pack.js";
 import {
   appendGitMemoryConversationMarkdown,
+  appendGitMemoryConversationMarkdownRecords,
   renderGitMemoryConversationMarkdownDocument,
 } from "./conversation-markdown.js";
 import {
@@ -341,7 +342,11 @@ export class GitMemoryRuntime {
         runId,
       };
     });
-    this.invalidateSessionMemory(input.sessionId);
+    if (routed.status === "ready") {
+      if (!await this.cacheRoutedTaskTurn(input, routed)) {
+        this.invalidateSessionMemory(input.sessionId);
+      }
+    }
     const memoryState = await this.hydrateMemoryState(input.sessionId);
     const context = buildGitMemoryContextPackFromMemoryState(memoryState);
     return {
@@ -540,6 +545,67 @@ export class GitMemoryRuntime {
           DEFAULT_GIT_MEMORY_CONTEXT_LIMITS.conversationMarkdownCharLimit,
         ),
       },
+    });
+    return true;
+  }
+
+  private async cacheRoutedTaskTurn(
+    input: ApplyGitMemoryTaskRouteInput,
+    routed: Extract<AppliedGitMemoryTaskRoute, { status: "ready" }> & { runId: GitMemoryRunId },
+  ): Promise<boolean> {
+    if (routed.createdTask) {
+      await this.cacheCreatedTask({
+        sessionId: input.sessionId,
+        title: routed.createdTask.title,
+        objective: routed.createdTask.objective,
+        fromSeq: input.fromSeq,
+        toSeq: input.toSeq,
+        runId: routed.runId,
+        at: input.at,
+        status: routed.createdTask.status,
+        state: routed.createdTask.state,
+      }, routed.createdTask);
+      return true;
+    }
+
+    const state = this.sessionMemoryCache.get(input.sessionId);
+    if (!state?.activeTask || state.activeTask.taskId !== routed.taskId) {
+      return false;
+    }
+
+    const conversation = conversationRecordsInRange(state.session.conversationTail, input);
+    const activeTask: GitContextMemoryActiveTask = {
+      ...state.activeTask,
+      branch: routed.branch,
+      ref: routed.ref,
+      conversationMarkdownTail: markdownTail(
+        appendGitMemoryConversationMarkdownRecords(state.activeTask.conversationMarkdownTail, conversation, {
+          taskId: routed.taskId,
+          runId: routed.runId,
+        }),
+        DEFAULT_GIT_MEMORY_CONTEXT_LIMITS.conversationMarkdownCharLimit,
+      ),
+    };
+    this.sessionMemoryCache.set(input.sessionId, {
+      ...state,
+      session: {
+        ...state.session,
+        currentBranch: routed.branch,
+      },
+      focus: {
+        status: "active",
+        taskId: routed.taskId,
+        branch: routed.branch,
+        ref: routed.ref,
+      },
+      activeTask,
+      knownTasks: state.knownTasks.map((task) => task.taskId === routed.taskId
+        ? {
+          ...task,
+          branch: routed.branch,
+          ref: routed.ref,
+        }
+        : task),
     });
     return true;
   }

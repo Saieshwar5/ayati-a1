@@ -308,6 +308,10 @@ export interface CreateGitMemoryTaskBranchResult {
   taskId: GitMemoryTaskId;
   branch: string;
   ref: string;
+  title: string;
+  objective: string;
+  status: GitMemoryTaskStatus;
+  state: GitMemoryTaskStateFile;
   taskCommit: string;
 }
 
@@ -1033,7 +1037,7 @@ export class GitMemoryDailySessionStore {
 
     await driver.checkoutBranch(ref);
 
-    return { taskId, branch, ref, taskCommit };
+    return { taskId, branch, ref, title: task.title, objective: task.objective, status, state, taskCommit };
   }
 
   async selectTaskForTurn(input: SelectGitMemoryTaskForTurnInput): Promise<SelectGitMemoryTaskForTurnResult> {
