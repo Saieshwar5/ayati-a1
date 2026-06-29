@@ -201,12 +201,20 @@ export function gitMemoryTaskFilePath(taskId: GitMemoryTaskId): string {
   return `${gitMemoryTaskDir(taskId)}/task.json`;
 }
 
+export function gitMemoryTaskMarkdownPath(taskId: GitMemoryTaskId): string {
+  return `${gitMemoryTaskDir(taskId)}/task.md`;
+}
+
 export function gitMemoryTaskStatePath(taskId: GitMemoryTaskId): string {
   return `${gitMemoryTaskDir(taskId)}/state.json`;
 }
 
 export function gitMemoryTaskRunPath(taskId: GitMemoryTaskId, runId: GitMemoryRunId): string {
   return `${gitMemoryTaskDir(taskId)}/runs/${runId}.json`;
+}
+
+export function gitMemoryTaskRunMarkdownPath(taskId: GitMemoryTaskId, runId: GitMemoryRunId): string {
+  return `${gitMemoryTaskDir(taskId)}/runs/${runId}.md`;
 }
 
 export function gitMemoryTaskActionsPath(taskId: GitMemoryTaskId, runId: GitMemoryRunId): string {

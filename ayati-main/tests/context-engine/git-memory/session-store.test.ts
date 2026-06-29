@@ -17,6 +17,8 @@ import {
   gitMemoryTaskActionsPath,
   gitMemoryTaskEvidenceManifestPath,
   gitMemoryTaskFilePath,
+  gitMemoryTaskMarkdownPath,
+  gitMemoryTaskRunMarkdownPath,
   gitMemoryTaskRunPath,
   gitMemoryTaskStatePath,
   parseGitMemoryCommitTrailers,
@@ -396,6 +398,13 @@ describe("GitMemoryDailySessionStore", () => {
           toSeq: 2,
         },
       });
+    const taskMarkdown = await driver.readFile(task.ref, gitMemoryTaskMarkdownPath(task.taskId)) ?? "";
+    expect(taskMarkdown).toContain("# Fix upload handling");
+    expect(taskMarkdown).toContain("Task: W-20260628-0001");
+    expect(taskMarkdown).toContain("Status: open");
+    expect(taskMarkdown).toContain("## Objective");
+    expect(taskMarkdown).toContain("Find and fix upload handling failures.");
+    expect(taskMarkdown).toContain("## Open");
     expect(JSON.parse(await driver.readFile(task.ref, gitMemoryTaskStatePath(task.taskId)) ?? "{}"))
       .toMatchObject({
         status: "open",
@@ -635,6 +644,16 @@ describe("GitMemoryDailySessionStore", () => {
         changedFiles: ["ayati-main/src/server/upload-server.ts"],
         newFacts: ["UploadServer validates multipart uploads."],
       });
+    const runMarkdown = await driver.readFile(task.ref, gitMemoryTaskRunMarkdownPath(task.taskId, run.runId)) ?? "";
+    expect(runMarkdown).toContain("# Run R-20260628-0001");
+    expect(runMarkdown).toContain("Task: W-20260628-0001");
+    expect(runMarkdown).toContain("Status: completed");
+    expect(runMarkdown).toContain("## Summary");
+    expect(runMarkdown).toContain("Inspected upload handling and found validation mismatch.");
+    expect(runMarkdown).toContain("- ayati-main/src/server/upload-server.ts");
+    expect(runMarkdown).toContain("- UploadServer validates multipart uploads.");
+    expect(runMarkdown).toContain("- ACT-20260628-000001 read_file completed: Read upload server implementation.");
+    expect(runMarkdown).toContain("Evidence: evidence/ACT-20260628-000001.txt");
     expect(parseJsonl(await driver.readFile(task.ref, gitMemoryTaskActionsPath(task.taskId, run.runId))))
       .toMatchObject([{
         actionId: "ACT-20260628-000001",

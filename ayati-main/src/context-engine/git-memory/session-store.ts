@@ -51,7 +51,9 @@ import {
   gitMemoryTaskContextPath,
   gitMemoryTaskEvidenceManifestPath,
   gitMemoryTaskFilePath,
+  gitMemoryTaskMarkdownPath,
   gitMemoryTaskNotesPath,
+  gitMemoryTaskRunMarkdownPath,
   gitMemoryTaskRunPath,
   gitMemoryTaskStatePath,
 } from "./schema.js";
@@ -910,6 +912,7 @@ export class GitMemoryDailySessionStore {
           runId: input.runId,
         }),
         [gitMemoryTaskFilePath(taskId)]: prettyJson(task),
+        [gitMemoryTaskMarkdownPath(taskId)]: renderTaskMarkdown(task, state),
         [gitMemoryTaskStatePath(taskId)]: prettyJson(state),
         [gitMemoryTaskAssetsPath(taskId)]: "",
         [gitMemoryTaskNotesPath(taskId)]: `# ${input.title}\n`,
@@ -1150,6 +1153,7 @@ export class GitMemoryDailySessionStore {
       files: {
         [gitMemoryTaskStatePath(input.taskId)]: prettyJson(updatedState),
         [gitMemoryTaskRunPath(input.taskId, runId)]: prettyJson(run),
+        [gitMemoryTaskRunMarkdownPath(input.taskId, runId)]: renderTaskRunMarkdown(run, actions, evidence),
         [gitMemoryTaskActionsPath(input.taskId, runId)]: jsonl(actions),
         [gitMemoryTaskEvidenceManifestPath(input.taskId, runId)]: jsonl(evidence),
       },
@@ -1320,6 +1324,103 @@ function prettyJson(value: unknown): string {
 
 function jsonl<T>(records: T[]): string {
   return records.map((record) => JSON.stringify(record)).join("\n") + (records.length > 0 ? "\n" : "");
+}
+
+function renderTaskMarkdown(task: GitMemoryTaskFile, state: GitMemoryTaskStateFile): string {
+  return [
+    `# ${task.title}`,
+    "",
+    `Task: ${task.taskId}`,
+    `Status: ${state.status}`,
+    `Created: ${task.createdAt}`,
+    `Updated: ${state.updatedAt}`,
+    "",
+    "## Objective",
+    "",
+    task.objective,
+    "",
+    "## Summary",
+    "",
+    state.summary,
+    "",
+    renderMarkdownList("Completed", state.completed),
+    renderMarkdownList("Open", state.open),
+    renderMarkdownList("Blockers", state.blockers),
+    renderMarkdownList("Facts", state.facts),
+    "## Next",
+    "",
+    state.next,
+    "",
+  ].join("\n");
+}
+
+function renderTaskRunMarkdown(
+  run: GitMemoryRunFile,
+  actions: GitMemoryActionRecord[],
+  evidence: GitMemoryEvidenceManifestRecord[],
+): string {
+  return [
+    `# Run ${run.runId}`,
+    "",
+    `Task: ${run.taskId}`,
+    `Status: ${run.status}`,
+    `Started: ${run.startedAt}`,
+    ...(run.completedAt ? [`Completed: ${run.completedAt}`] : []),
+    "",
+    "## Summary",
+    "",
+    run.summary,
+    "",
+    renderMarkdownList("Changed Files", run.changedFiles),
+    renderMarkdownList("New Facts", run.newFacts),
+    ...(run.next ? ["## Next", "", run.next, ""] : []),
+    renderActionMarkdown(actions),
+    renderEvidenceMarkdown(evidence),
+  ].join("\n");
+}
+
+function renderActionMarkdown(actions: GitMemoryActionRecord[]): string {
+  if (actions.length === 0) {
+    return "## Actions\n\nNone.\n";
+  }
+  return [
+    "## Actions",
+    "",
+    ...actions.map((action) => [
+      `- ${action.actionId} ${action.tool} ${action.status}: ${action.summary}`,
+      ...(action.evidenceRef ? [`  Evidence: ${action.evidenceRef}`] : []),
+    ].join("\n")),
+    "",
+  ].join("\n");
+}
+
+function renderEvidenceMarkdown(evidence: GitMemoryEvidenceManifestRecord[]): string {
+  if (evidence.length === 0) {
+    return "## Evidence\n\nNone.\n";
+  }
+  return [
+    "## Evidence",
+    "",
+    ...evidence.map((record) => [
+      `- ${record.tool}: ${record.summary}`,
+      ...(record.evidenceRef ? [`  Ref: ${record.evidenceRef}`] : []),
+      ...(record.artifacts.length > 0 ? [`  Artifacts: ${record.artifacts.join(", ")}`] : []),
+      ...(record.facts.length > 0 ? [`  Facts: ${record.facts.join("; ")}`] : []),
+    ].join("\n")),
+    "",
+  ].join("\n");
+}
+
+function renderMarkdownList(title: string, items: string[]): string {
+  if (items.length === 0) {
+    return `## ${title}\n\nNone.\n`;
+  }
+  return [
+    `## ${title}`,
+    "",
+    ...items.map((item) => `- ${item}`),
+    "",
+  ].join("\n");
 }
 
 function appendConversationMarkdown(

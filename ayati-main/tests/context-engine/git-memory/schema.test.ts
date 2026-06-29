@@ -12,7 +12,9 @@ import {
   gitMemoryTaskContextPath,
   gitMemoryTaskEvidenceManifestPath,
   gitMemoryTaskFilePath,
+  gitMemoryTaskMarkdownPath,
   gitMemoryTaskNotesPath,
+  gitMemoryTaskRunMarkdownPath,
   gitMemoryTaskRunPath,
   gitMemoryTaskStatePath,
   validateGitMemoryActionRecord,
@@ -39,9 +41,12 @@ describe("git memory schema", () => {
     expect(GIT_MEMORY_SESSION_TASK_MESSAGE_LINKS_PATH).toBe("session/task-message-links.jsonl");
 
     expect(gitMemoryTaskFilePath("W-20260628-0001")).toBe("tasks/W-20260628-0001/task.json");
+    expect(gitMemoryTaskMarkdownPath("W-20260628-0001")).toBe("tasks/W-20260628-0001/task.md");
     expect(gitMemoryTaskStatePath("W-20260628-0001")).toBe("tasks/W-20260628-0001/state.json");
     expect(gitMemoryTaskRunPath("W-20260628-0001", "R-20260628-0001"))
       .toBe("tasks/W-20260628-0001/runs/R-20260628-0001.json");
+    expect(gitMemoryTaskRunMarkdownPath("W-20260628-0001", "R-20260628-0001"))
+      .toBe("tasks/W-20260628-0001/runs/R-20260628-0001.md");
     expect(gitMemoryTaskActionsPath("W-20260628-0001", "R-20260628-0001"))
       .toBe("tasks/W-20260628-0001/actions/R-20260628-0001.jsonl");
     expect(gitMemoryTaskEvidenceManifestPath("W-20260628-0001", "R-20260628-0001"))
