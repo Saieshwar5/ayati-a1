@@ -7,7 +7,6 @@ import {
   GIT_MEMORY_SESSION_CONVERSATION_MARKDOWN_PATH,
   GIT_MEMORY_SESSION_CONVERSATION_PATH,
   GIT_MEMORY_SESSION_EVENTS_PATH,
-  GIT_MEMORY_SESSION_FOCUS_PATH,
   GIT_MEMORY_SESSION_META_PATH,
   GIT_MEMORY_SESSION_SCHEMA_PATH,
   GIT_MEMORY_SESSION_TASKS_PATH,
@@ -78,8 +77,6 @@ describe("GitMemoryDailySessionStore", () => {
     expect(await driver.readFile(GIT_MEMORY_MAIN_REF, GIT_MEMORY_SESSION_TASK_MESSAGE_LINKS_PATH)).toBeNull();
 
     expect(await driver.readFile(GIT_MEMORY_MAIN_REF, GIT_MEMORY_SESSION_EVENTS_PATH)).toBeNull();
-    expect(JSON.parse(await driver.readFile(GIT_MEMORY_MAIN_REF, GIT_MEMORY_SESSION_FOCUS_PATH) ?? "{}"))
-      .toMatchObject({ activeTaskId: null, activeBranch: null, reason: "session_initialized" });
     expect(JSON.parse(await driver.readFile(GIT_MEMORY_MAIN_REF, GIT_MEMORY_SESSION_TASKS_PATH) ?? "{}"))
       .toEqual({ schemaVersion: 1, tasks: [] });
     expect(JSON.parse(await driver.readFile(GIT_MEMORY_MAIN_REF, GIT_MEMORY_SESSION_SCHEMA_PATH) ?? "{}"))
@@ -408,11 +405,7 @@ describe("GitMemoryDailySessionStore", () => {
           title: "Fix upload handling",
         }],
       });
-    expect(JSON.parse(await driver.readWorkingFile(GIT_MEMORY_SESSION_FOCUS_PATH) ?? "{}"))
-      .toMatchObject({
-        activeTaskId: "W-20260628-0001",
-        activeBranch: "task/W-20260628-0001-fix-upload-handling",
-      });
+    expect(await driver.currentBranch()).toBe("task/W-20260628-0001-fix-upload-handling");
     expect(await driver.readWorkingFile(GIT_MEMORY_SESSION_TASK_MESSAGE_LINKS_PATH)).toBeNull();
     expect(await driver.readWorkingFile(GIT_MEMORY_SESSION_EVENTS_PATH)).toBeNull();
     expect(await driver.log(GIT_MEMORY_MAIN_REF, 5)).toHaveLength(1);
@@ -510,8 +503,7 @@ describe("GitMemoryDailySessionStore", () => {
     const driver = new GitMemoryWorktreeGitDriver(session.repoPath);
     expect(JSON.parse(await driver.readFile(GIT_MEMORY_MAIN_REF, GIT_MEMORY_SESSION_TASKS_PATH) ?? "{}"))
       .toMatchObject({ tasks: [{ taskId: task.taskId, branch: task.branch }] });
-    expect(JSON.parse(await driver.readFile(GIT_MEMORY_MAIN_REF, GIT_MEMORY_SESSION_FOCUS_PATH) ?? "{}"))
-      .toMatchObject({ activeTaskId: task.taskId, activeBranch: task.branch });
+    expect(await driver.currentBranch()).toBe(task.branch);
     expect(await driver.readFile(GIT_MEMORY_MAIN_REF, GIT_MEMORY_SESSION_TASK_MESSAGE_LINKS_PATH)).toBeNull();
     expect(await driver.readFile(GIT_MEMORY_MAIN_REF, GIT_MEMORY_SESSION_EVENTS_PATH)).toBeNull();
   });

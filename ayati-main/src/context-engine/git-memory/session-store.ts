@@ -9,7 +9,6 @@ import type {
   GitMemoryConversationRole,
   GitMemoryConversationSeqRange,
   GitMemoryEvidenceManifestRecord,
-  GitMemoryFocusFile,
   GitMemoryRunId,
   GitMemoryRunFile,
   GitMemoryRunStatus,
@@ -27,7 +26,6 @@ import type {
 import {
   GIT_MEMORY_SESSION_CONVERSATION_PATH,
   GIT_MEMORY_SESSION_CONVERSATION_MARKDOWN_PATH,
-  GIT_MEMORY_SESSION_FOCUS_PATH,
   GIT_MEMORY_SESSION_META_PATH,
   GIT_MEMORY_SESSION_SCHEMA_PATH,
   GIT_MEMORY_SESSION_TASKS_PATH,
@@ -289,9 +287,15 @@ export interface GitMemoryTaskRoutingSnapshotTask {
   missing?: boolean;
 }
 
+export interface GitMemoryTaskRoutingFocus {
+  activeTaskId: GitMemoryTaskId;
+  activeBranch: string;
+  reason: "current_branch";
+}
+
 export interface GitMemoryTaskRoutingSnapshot {
   sessionId: GitMemorySessionId;
-  focus: GitMemoryFocusFile | null;
+  focus: GitMemoryTaskRoutingFocus | null;
   tasks: GitMemoryTaskRoutingSnapshotTask[];
 }
 
@@ -439,15 +443,17 @@ export class GitMemoryDailySessionStore {
       }
 
       const driver = new GitMemoryWorktreeGitDriver(repoPath);
-      const [hasMainRef, metaRaw, tasksRaw, focusRaw] = await Promise.all([
+      const [hasMainRef, metaRaw, tasksRaw, currentBranch] = await Promise.all([
         driver.hasRef(GIT_MEMORY_MAIN_REF),
         driver.readFile(GIT_MEMORY_MAIN_REF, GIT_MEMORY_SESSION_META_PATH),
         driver.readWorkingFile(GIT_MEMORY_SESSION_TASKS_PATH),
-        driver.readWorkingFile(GIT_MEMORY_SESSION_FOCUS_PATH),
+        driver.currentBranch(),
       ]);
       const meta = parseJson<GitMemorySessionMetaFile>(metaRaw);
       const tasks = parseJson<GitMemoryTaskIndexFile>(tasksRaw);
-      const focus = parseJson<GitMemoryFocusFile>(focusRaw);
+      const activeTask = currentBranch?.startsWith("task/")
+        ? tasks?.tasks.find((task) => task.branch === currentBranch)
+        : undefined;
 
       sessions.push({
         sessionId: meta?.sessionId ?? entry,
@@ -457,8 +463,8 @@ export class GitMemoryDailySessionStore {
         ...(meta?.agentId ? { agentId: meta.agentId } : {}),
         ...(meta?.createdAt ? { createdAt: meta.createdAt } : {}),
         taskCount: tasks?.tasks.length ?? 0,
-        ...(focus?.activeTaskId ? { activeTaskId: focus.activeTaskId } : {}),
-        ...(focus?.activeBranch ? { activeBranch: focus.activeBranch } : {}),
+        ...(activeTask ? { activeTaskId: activeTask.taskId } : {}),
+        ...(activeTask ? { activeBranch: activeTask.branch } : {}),
         ...(!hasMainRef ? { missingMainRef: true } : {}),
         ...(!meta ? { missingMeta: true } : {}),
       });
@@ -937,13 +943,6 @@ export class GitMemoryDailySessionStore {
           updatedAt: at,
         }],
       } satisfies GitMemoryTaskIndexFile),
-      [GIT_MEMORY_SESSION_FOCUS_PATH]: prettyJson({
-        schemaVersion: 1,
-        activeTaskId: taskId,
-        activeBranch: branch,
-        updatedAt: at,
-        reason: "task_created",
-      } satisfies GitMemoryFocusFile),
     });
     await driver.checkoutBranch(ref);
 
@@ -964,19 +963,9 @@ export class GitMemoryDailySessionStore {
       throw new Error(`Git memory task branch missing: ${ref}`);
     }
 
-    const at = input.at ?? this.nowIso();
     const currentBranch = await driver.currentBranch();
     const focusChanged = currentBranch !== taskEntry.branch;
     if (focusChanged) {
-      await driver.writeWorkingFiles({
-        [GIT_MEMORY_SESSION_FOCUS_PATH]: prettyJson({
-          schemaVersion: 1,
-          activeTaskId: taskEntry.taskId,
-          activeBranch: taskEntry.branch,
-          updatedAt: at,
-          reason: input.reason,
-        } satisfies GitMemoryFocusFile),
-      });
       await driver.checkoutBranch(ref);
     }
 
@@ -1123,7 +1112,6 @@ export class GitMemoryDailySessionStore {
     const commitPaths = await existingWorkingPaths(driver, [
       GIT_MEMORY_SESSION_CONVERSATION_PATH,
       GIT_MEMORY_SESSION_CONVERSATION_MARKDOWN_PATH,
-      GIT_MEMORY_SESSION_FOCUS_PATH,
       GIT_MEMORY_SESSION_TASKS_PATH,
       GIT_MEMORY_SESSION_TASK_MESSAGE_LINKS_PATH,
     ]);
@@ -1174,13 +1162,6 @@ function buildInitialSessionFiles(input: BuildInitialSessionFilesInput): Record<
     repoKind: "daily_session",
     agentId: input.agentId,
   };
-  const focus: GitMemoryFocusFile = {
-    schemaVersion: 1,
-    activeTaskId: null,
-    activeBranch: null,
-    updatedAt: input.createdAt,
-    reason: "session_initialized",
-  };
   const tasks: GitMemoryTaskIndexFile = {
     schemaVersion: 1,
     tasks: [],
@@ -1190,7 +1171,6 @@ function buildInitialSessionFiles(input: BuildInitialSessionFilesInput): Record<
     [GIT_MEMORY_SESSION_META_PATH]: prettyJson(meta),
     [GIT_MEMORY_SESSION_CONVERSATION_PATH]: "",
     [GIT_MEMORY_SESSION_CONVERSATION_MARKDOWN_PATH]: "# Conversation\n",
-    [GIT_MEMORY_SESSION_FOCUS_PATH]: prettyJson(focus),
     [GIT_MEMORY_SESSION_TASKS_PATH]: prettyJson(tasks),
     [GIT_MEMORY_SESSION_SCHEMA_PATH]: prettyJson({
       schemaVersion: 1,
@@ -1416,12 +1396,10 @@ async function readTaskRoutingSnapshotFromDriver(
   const currentTask = currentBranch?.startsWith("task/")
     ? tasks.tasks.find((task) => task.branch === currentBranch)
     : undefined;
-  const focus: GitMemoryFocusFile | null = currentTask
+  const focus: GitMemoryTaskRoutingFocus | null = currentTask
     ? {
-        schemaVersion: 1,
         activeTaskId: currentTask.taskId,
         activeBranch: currentTask.branch,
-        updatedAt: "",
         reason: "current_branch",
       }
     : null;

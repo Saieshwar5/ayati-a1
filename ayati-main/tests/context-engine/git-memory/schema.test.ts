@@ -3,7 +3,6 @@ import {
   GIT_MEMORY_SESSION_CONVERSATION_MARKDOWN_PATH,
   GIT_MEMORY_SESSION_CONVERSATION_PATH,
   GIT_MEMORY_SESSION_EVENTS_PATH,
-  GIT_MEMORY_SESSION_FOCUS_PATH,
   GIT_MEMORY_SESSION_META_PATH,
   GIT_MEMORY_SESSION_TASK_MESSAGE_LINKS_PATH,
   GIT_MEMORY_SESSION_TASKS_PATH,
@@ -20,7 +19,6 @@ import {
   validateGitMemoryActionRecord,
   validateGitMemoryConversationRecord,
   validateGitMemoryEvidenceManifestRecord,
-  validateGitMemoryFocusFile,
   validateGitMemoryRunFile,
   validateGitMemorySessionEventRecord,
   validateGitMemorySessionMetaFile,
@@ -36,7 +34,6 @@ describe("git memory schema", () => {
     expect(GIT_MEMORY_SESSION_CONVERSATION_PATH).toBe("session/conversation.jsonl");
     expect(GIT_MEMORY_SESSION_CONVERSATION_MARKDOWN_PATH).toBe("session/conversation.md");
     expect(GIT_MEMORY_SESSION_EVENTS_PATH).toBe("session/events.jsonl");
-    expect(GIT_MEMORY_SESSION_FOCUS_PATH).toBe("session/focus.json");
     expect(GIT_MEMORY_SESSION_TASKS_PATH).toBe("session/tasks.json");
     expect(GIT_MEMORY_SESSION_TASK_MESSAGE_LINKS_PATH).toBe("session/task-message-links.jsonl");
 
@@ -73,14 +70,6 @@ describe("git memory schema", () => {
       eventId: "E-20260628-000001",
       type: "session_initialized",
       at: "2026-06-28T00:00:00+05:30",
-    }).ok).toBe(true);
-
-    expect(validateGitMemoryFocusFile({
-      schemaVersion: 1,
-      activeTaskId: null,
-      activeBranch: null,
-      updatedAt: "2026-06-28T00:00:00+05:30",
-      reason: "session_initialized",
     }).ok).toBe(true);
 
     expect(validateGitMemoryTaskIndexFile({

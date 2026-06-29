@@ -4,7 +4,6 @@ export const GIT_MEMORY_SESSION_META_PATH = "session/meta.json";
 export const GIT_MEMORY_SESSION_CONVERSATION_PATH = "session/conversation.jsonl";
 export const GIT_MEMORY_SESSION_CONVERSATION_MARKDOWN_PATH = "session/conversation.md";
 export const GIT_MEMORY_SESSION_EVENTS_PATH = "session/events.jsonl";
-export const GIT_MEMORY_SESSION_FOCUS_PATH = "session/focus.json";
 export const GIT_MEMORY_SESSION_TASKS_PATH = "session/tasks.json";
 export const GIT_MEMORY_SESSION_TASK_MESSAGE_LINKS_PATH = "session/task-message-links.jsonl";
 export const GIT_MEMORY_SESSION_SCHEMA_PATH = "session/schema.json";
@@ -76,14 +75,6 @@ export interface GitMemorySessionEventRecord {
   reason?: string;
   commit?: string;
   conversationSeq?: GitMemoryConversationSeqRange;
-}
-
-export interface GitMemoryFocusFile {
-  schemaVersion: 1;
-  activeTaskId: GitMemoryTaskId | null;
-  activeBranch: string | null;
-  updatedAt: string;
-  reason: string;
 }
 
 export interface GitMemoryTaskIndexEntry {
@@ -434,19 +425,6 @@ export function validateGitMemorySessionEventRecord(value: unknown): ValidationR
       requireTaskId(record, "taskId", errors);
       requireRunId(record, "runId", errors);
     }
-  }
-  return validationResult(value, errors);
-}
-
-export function validateGitMemoryFocusFile(value: unknown): ValidationResult<GitMemoryFocusFile> {
-  const errors: string[] = [];
-  const record = requireRecord(value, "focus file", errors);
-  if (record) {
-    requireSchemaVersion(record, errors);
-    requireOptionalTaskId(record, "activeTaskId", errors);
-    requireOptionalTaskBranch(record, "activeBranch", errors);
-    requireNonEmptyString(record, "updatedAt", errors);
-    requireNonEmptyString(record, "reason", errors);
   }
   return validationResult(value, errors);
 }
@@ -926,20 +904,6 @@ function requireTaskStatus(record: Record<string, unknown>, errors: string[]): v
 function requireTaskBranch(record: Record<string, unknown>, field: string, errors: string[]): void {
   const value = requireNonEmptyString(record, field, errors);
   if (value && !isTaskBranch(value)) {
-    errors.push(`${field} must be a valid task branch.`);
-  }
-}
-
-function requireOptionalTaskBranch(record: Record<string, unknown>, field: string, errors: string[]): void {
-  const value = record[field];
-  if (value === undefined || value === null) {
-    return;
-  }
-  if (typeof value !== "string") {
-    errors.push(`${field} must be a string.`);
-    return;
-  }
-  if (!isTaskBranch(value)) {
     errors.push(`${field} must be a valid task branch.`);
   }
 }
