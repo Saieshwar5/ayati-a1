@@ -34,8 +34,6 @@ describe("createGitMemoryChatContextRuntime", () => {
         sessionId: "S-20260628-local",
         initialized: true,
         messageSeq: 1,
-        messageId: "M-20260628-000001",
-        turnId: "T-20260628-000001",
         context: {
           session: {
             conversationTail: [{
@@ -94,7 +92,6 @@ describe("createGitMemoryChatContextRuntime", () => {
       expect(assistant).toMatchObject({
         seq: 2,
         role: "assistant",
-        turnId: prepared.turnId,
         text: "I will inspect upload handling.",
       });
       const context = await runtime.buildActiveContext(prepared.sessionId);

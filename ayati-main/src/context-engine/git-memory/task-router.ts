@@ -9,7 +9,6 @@ import type {
   GitMemoryRunId,
   GitMemorySessionId,
   GitMemoryTaskId,
-  GitMemoryTurnId,
 } from "./schema.js";
 
 export interface GitMemoryTaskRouterOptions {
@@ -24,7 +23,6 @@ export interface ResolveGitMemoryTaskRouteInput {
 
 export interface ApplyGitMemoryTaskRouteInput extends ResolveGitMemoryTaskRouteInput, GitMemoryConversationSeqRange {
   at?: string;
-  turnIds?: GitMemoryTurnId[];
   runId?: GitMemoryRunId;
   title?: string;
   objective?: string;
@@ -226,7 +224,6 @@ export class GitMemoryTaskRouter {
       fromSeq: input.fromSeq,
       toSeq: input.toSeq,
       at: input.at,
-      turnIds: input.turnIds,
       runId: input.runId,
       summary: resolution.reason,
     });

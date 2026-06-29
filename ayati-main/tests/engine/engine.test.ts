@@ -148,8 +148,6 @@ function createChatContextRuntime(
     recordAssistantMessage: vi.fn().mockResolvedValue({
       v: 1,
       seq: 2,
-      messageId: "M-20260627-000002",
-      turnId: prepared.turnId,
       role: "assistant",
       at: "2026-06-27T10:05:01+05:30",
       text: "mock reply",
@@ -186,8 +184,6 @@ function createSystemEventContextRuntime(
     recordAssistantMessage: vi.fn().mockResolvedValue({
       v: 1,
       seq: 2,
-      messageId: "M-20260627-000002",
-      turnId: prepared.turnId,
       role: "assistant",
       at: "2026-06-27T10:05:01+05:30",
       text: "mock reply",
@@ -260,8 +256,6 @@ function readyGitMemoryPreparedTurn(): GitMemoryChatContextPreparedTurn {
     repoPath: "/tmp/ayati-git-memory/S-20260627-local",
     initialized: false,
     messageSeq: 1,
-    messageId: "M-20260627-000001",
-    turnId: "T-20260627-000001",
     context: {
       session: {
         sessionId: "S-20260627-local",
@@ -281,8 +275,6 @@ function readyGitMemorySystemEventPreparedTurn(): GitMemorySystemEventContextPre
     repoPath: "/tmp/ayati-git-memory/S-20260627-local",
     initialized: false,
     messageSeq: 1,
-    messageId: "M-20260627-000001",
-    turnId: "T-20260627-000001",
     context: {
       session: {
         sessionId: "S-20260627-local",
@@ -302,8 +294,6 @@ function readyGitMemoryRoutedTurn(): Extract<GitMemoryChatContextRoutedTurn, { s
       conversationTail: [{
         v: 1,
         seq: 1,
-        messageId: "M-20260627-000001",
-        turnId: "T-20260627-000001",
         role: "user" as const,
         at: "2026-06-27T10:00:00+05:30",
         text: "Analyze invoice",

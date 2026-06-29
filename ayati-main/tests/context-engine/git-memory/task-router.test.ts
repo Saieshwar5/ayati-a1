@@ -22,7 +22,6 @@ describe("GitMemoryTaskRouter", () => {
       userMessage: user.text ?? "",
       fromSeq: user.seq,
       toSeq: user.seq,
-      turnIds: [user.turnId],
       at: "2026-06-28T09:00:01+05:30",
     });
 
@@ -61,7 +60,6 @@ describe("GitMemoryTaskRouter", () => {
       userMessage: followUp.text ?? "",
       fromSeq: followUp.seq,
       toSeq: followUp.seq,
-      turnIds: [followUp.turnId],
       at: "2026-06-28T09:05:01+05:30",
     });
 
@@ -94,7 +92,6 @@ describe("GitMemoryTaskRouter", () => {
       userMessage: switchMessage.text ?? "",
       fromSeq: switchMessage.seq,
       toSeq: switchMessage.seq,
-      turnIds: [switchMessage.turnId],
       at: "2026-06-28T09:10:01+05:30",
     });
 
@@ -140,7 +137,6 @@ describe("GitMemoryTaskRouter", () => {
       userMessage: reopenMessage.text ?? "",
       fromSeq: reopenMessage.seq,
       toSeq: reopenMessage.seq,
-      turnIds: [reopenMessage.turnId],
       at: "2026-06-28T09:15:01+05:30",
     });
 
@@ -167,7 +163,6 @@ describe("GitMemoryTaskRouter", () => {
       userMessage: ambiguous.text ?? "",
       fromSeq: ambiguous.seq,
       toSeq: ambiguous.seq,
-      turnIds: [ambiguous.turnId],
       at: "2026-06-28T09:20:01+05:30",
     });
 
@@ -221,7 +216,6 @@ async function createTaskFromMessage(
     userMessage: message,
     fromSeq: user.seq,
     toSeq: user.seq,
-    turnIds: [user.turnId],
     at: "2026-06-28T09:00:01+05:30",
   });
   if (route.status !== "ready") {

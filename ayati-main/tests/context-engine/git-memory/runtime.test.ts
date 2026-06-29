@@ -55,7 +55,6 @@ describe("GitMemoryRuntime", () => {
     });
     await runtime.recordAssistantMessage({
       sessionId: prepared.sessionId,
-      turnId: prepared.userMessage.turnId,
       text: "I will inspect upload handling.",
       at: "2026-06-28T09:00:05+05:30",
     });
@@ -65,8 +64,6 @@ describe("GitMemoryRuntime", () => {
       sessionId: "S-20260628-local",
       userMessage: {
         seq: 1,
-        messageId: "M-20260628-000001",
-        turnId: "T-20260628-000001",
         role: "user",
       },
       context: {
@@ -159,7 +156,6 @@ describe("GitMemoryRuntime", () => {
     });
     await runtime.recordAssistantMessage({
       sessionId: prepared.sessionId,
-      turnId: prepared.userMessage.turnId,
       taskId: task.taskId,
       runId: run.runId,
       text: "Finished upload handling inspection.",
@@ -235,7 +231,6 @@ describe("GitMemoryRuntime", () => {
       fromSeq: first.userMessage.seq,
       toSeq: first.userMessage.seq,
       at: "2026-06-28T09:00:01+05:30",
-      turnIds: [first.userMessage.turnId],
     });
     if (created.status !== "ready") {
       throw new Error(`Expected ready task route, got ${created.status}.`);
@@ -250,7 +245,6 @@ describe("GitMemoryRuntime", () => {
       fromSeq: second.userMessage.seq,
       toSeq: second.userMessage.seq,
       at: "2026-06-28T09:05:01+05:30",
-      turnIds: [second.userMessage.turnId],
     });
     if (continued.status !== "ready") {
       throw new Error(`Expected ready task route, got ${continued.status}.`);

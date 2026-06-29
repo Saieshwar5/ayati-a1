@@ -18,11 +18,10 @@ import {
   type ResolveGitMemoryTaskRouteInput,
 } from "./task-router.js";
 import type {
-  GitMemoryConversationAppendRecord,
+  GitMemoryConversationRecord,
   GitMemoryRunId,
   GitMemorySessionId,
   GitMemoryTaskId,
-  GitMemoryTurnId,
 } from "./schema.js";
 
 export interface GitMemoryRuntimeOptions {
@@ -49,7 +48,7 @@ export interface PreparedGitMemoryUserTurn {
   sessionId: GitMemorySessionId;
   repoPath: string;
   initialized: boolean;
-  userMessage: GitMemoryConversationAppendRecord;
+  userMessage: GitMemoryConversationRecord;
   context: GitMemoryMachineContextPack;
   memoryState: GitContextMemoryState;
 }
@@ -64,7 +63,7 @@ export interface PreparedGitMemorySystemTurn {
   sessionId: GitMemorySessionId;
   repoPath: string;
   initialized: boolean;
-  systemMessage: GitMemoryConversationAppendRecord;
+  systemMessage: GitMemoryConversationRecord;
   context: GitMemoryMachineContextPack;
   memoryState: GitContextMemoryState;
 }
@@ -73,7 +72,6 @@ export interface RecordGitMemoryAssistantMessageInput {
   sessionId: GitMemorySessionId;
   text: string;
   at?: string;
-  turnId?: GitMemoryTurnId;
   taskId?: GitMemoryTaskId;
   runId?: GitMemoryRunId;
 }
@@ -177,13 +175,12 @@ export class GitMemoryRuntime {
 
   async recordAssistantMessage(
     input: RecordGitMemoryAssistantMessageInput,
-  ): Promise<GitMemoryConversationAppendRecord> {
+  ): Promise<GitMemoryConversationRecord> {
     return await this.store.appendConversationMessage({
       sessionId: input.sessionId,
       role: "assistant",
       text: input.text,
       at: input.at,
-      turnId: input.turnId,
       taskId: input.taskId,
       runId: input.runId,
     });

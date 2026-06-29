@@ -6,7 +6,6 @@ import { parseGitMemoryCommitTrailers, renderGitMemoryCommitMessage, type Parsed
 import type {
   GitMemoryActionId,
   GitMemoryActionRecord,
-  GitMemoryConversationAppendRecord,
   GitMemoryConversationRecord,
   GitMemoryConversationRole,
   GitMemoryConversationSeqRange,
@@ -22,7 +21,6 @@ import type {
   GitMemoryTaskIndexFile,
   GitMemoryTaskStateFile,
   GitMemoryTaskStatus,
-  GitMemoryTurnId,
 } from "./schema.js";
 import {
   GIT_MEMORY_SESSION_CONVERSATION_PATH,
@@ -33,11 +31,9 @@ import {
   buildGitMemoryTaskBranchName,
   buildGitMemoryTaskBranchRef,
   createGitMemoryActionId,
-  createGitMemoryMessageId,
   createGitMemoryRunId,
   createGitMemorySessionId,
   createGitMemoryTaskId,
-  createGitMemoryTurnId,
   gitMemoryDateFromSessionId,
   gitMemoryTaskDir,
   gitMemoryTaskAssetsPath,
@@ -248,7 +244,6 @@ export interface AppendGitMemoryConversationInput {
   role: GitMemoryConversationRole;
   text: string;
   at?: string;
-  turnId?: GitMemoryTurnId;
   taskId?: GitMemoryTaskId;
   runId?: GitMemoryRunId;
 }
@@ -305,7 +300,6 @@ export interface SelectGitMemoryTaskForTurnInput extends GitMemoryConversationSe
   taskId: GitMemoryTaskId;
   reason: "task_continued" | "task_switched" | "task_reopened";
   at?: string;
-  turnIds?: GitMemoryTurnId[];
   runId?: GitMemoryRunId;
   summary?: string;
 }
@@ -506,18 +500,15 @@ export class GitMemoryDailySessionStore {
     return { sessionId, repoPath, initialized: true, initialCommit };
   }
 
-  async appendConversationMessage(input: AppendGitMemoryConversationInput): Promise<GitMemoryConversationAppendRecord> {
+  async appendConversationMessage(input: AppendGitMemoryConversationInput): Promise<GitMemoryConversationRecord> {
     const driver = await GitMemoryWorktreeGitDriver.init(this.repoPath(input.sessionId));
-    const date = gitMemoryDateFromSessionId(input.sessionId);
     const existing = parseJsonl<GitMemoryConversationRecord>(
       await driver.readWorkingFile(GIT_MEMORY_SESSION_CONVERSATION_PATH),
     );
     const branch = await driver.currentBranch();
     const seq = nextSeq(existing);
-    const record: GitMemoryConversationAppendRecord = {
+    const record: GitMemoryConversationRecord = {
       seq,
-      messageId: createGitMemoryMessageId(date, seq),
-      turnId: input.turnId ?? createGitMemoryTurnId(date, seq),
       role: input.role,
       at: input.at ?? this.nowIso(),
       text: input.text,

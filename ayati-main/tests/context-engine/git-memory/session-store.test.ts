@@ -99,7 +99,6 @@ describe("GitMemoryDailySessionStore", () => {
       sessionId: session.sessionId,
       role: "assistant",
       text: "I will inspect the upload path.",
-      turnId: user.turnId,
       taskId: "W-20260628-0001",
       runId: "R-20260628-0001",
       at: "2026-06-28T09:00:05+05:30",
@@ -107,14 +106,10 @@ describe("GitMemoryDailySessionStore", () => {
 
     expect(user).toMatchObject({
       seq: 1,
-      messageId: "M-20260628-000001",
-      turnId: "T-20260628-000001",
       role: "user",
     });
     expect(assistant).toMatchObject({
       seq: 2,
-      messageId: "M-20260628-000002",
-      turnId: user.turnId,
       role: "assistant",
       taskId: "W-20260628-0001",
       runId: "R-20260628-0001",
@@ -254,7 +249,6 @@ describe("GitMemoryDailySessionStore", () => {
     await store.appendConversationMessage({
       sessionId: session.sessionId,
       role: "assistant",
-      turnId: user.turnId,
       taskId: task.taskId,
       text: "I will inspect upload handling on the task branch.",
       at: "2026-06-28T09:02:00+05:30",
@@ -296,7 +290,6 @@ describe("GitMemoryDailySessionStore", () => {
       sessionId: session.sessionId,
       role: "assistant",
       text: "I will inspect upload handling.",
-      turnId: user.turnId,
       at: "2026-06-28T09:00:05+05:30",
     });
 
@@ -512,7 +505,6 @@ describe("GitMemoryDailySessionStore", () => {
       sessionId: session.sessionId,
       role: "assistant",
       text: "I will inspect upload handling.",
-      turnId: user.turnId,
       at: "2026-06-28T09:00:05+05:30",
     });
     const task = await store.createTaskBranch({

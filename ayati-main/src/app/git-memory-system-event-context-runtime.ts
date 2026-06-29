@@ -9,7 +9,6 @@ import type {
   GitMemoryRuntime,
   GitMemorySessionId,
   GitMemoryTaskId,
-  GitMemoryTurnId,
   RoutedGitMemoryUserTurn,
 } from "../context-engine/index.js";
 import {
@@ -35,8 +34,6 @@ export interface GitMemorySystemEventContextPreparedTurn {
   repoPath: string;
   initialized: boolean;
   messageSeq: number;
-  messageId: string;
-  turnId: GitMemoryTurnId;
   context: GitMemoryMachineContextPack;
   memoryState: GitContextMemoryState;
 }
@@ -105,22 +102,12 @@ class AppGitMemorySystemEventContextRuntime implements GitMemorySystemEventConte
       systemMessage: input.systemMessage,
       at: input.at,
     });
-    if (!prepared.systemMessage.messageId) {
-      throw new Error("Git memory prepared system message is missing messageId");
-    }
-    if (!prepared.systemMessage.turnId) {
-      throw new Error("Git memory prepared system message is missing turnId");
-    }
-    const messageId = prepared.systemMessage.messageId;
-    const turnId = prepared.systemMessage.turnId;
     return {
       status: "ready",
       sessionId: prepared.sessionId,
       repoPath: prepared.repoPath,
       initialized: prepared.initialized,
       messageSeq: prepared.systemMessage.seq,
-      messageId,
-      turnId,
       context: prepared.context,
       memoryState: prepared.memoryState,
     };
@@ -139,7 +126,6 @@ class AppGitMemorySystemEventContextRuntime implements GitMemorySystemEventConte
         fromSeq: input.turn.messageSeq,
         toSeq: input.turn.messageSeq,
         at: input.at,
-        turnIds: [input.turn.turnId],
         title: input.title,
         objective: input.objective,
       });
@@ -185,7 +171,6 @@ class AppGitMemorySystemEventContextRuntime implements GitMemorySystemEventConte
     try {
       return await this.gitMemoryRuntime.recordAssistantMessage({
         sessionId: input.turn.sessionId,
-        turnId: input.turn.turnId,
         text: input.message,
         at: input.at,
         taskId: input.taskId,

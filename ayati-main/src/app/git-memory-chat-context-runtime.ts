@@ -9,7 +9,6 @@ import type {
   GitMemoryRuntime,
   GitMemorySessionId,
   GitMemoryTaskId,
-  GitMemoryTurnId,
   RoutedGitMemoryUserTurn,
 } from "../context-engine/index.js";
 import {
@@ -35,8 +34,6 @@ export interface GitMemoryChatContextPreparedTurn {
   repoPath: string;
   initialized: boolean;
   messageSeq: number;
-  messageId: string;
-  turnId: GitMemoryTurnId;
   context: GitMemoryMachineContextPack;
   memoryState: GitContextMemoryState;
 }
@@ -97,22 +94,12 @@ class AppGitMemoryChatContextRuntime implements GitMemoryChatContextRuntime {
       userMessage: input.userMessage,
       at: input.at,
     });
-    if (!prepared.userMessage.messageId) {
-      throw new Error("Git memory prepared user message is missing messageId");
-    }
-    if (!prepared.userMessage.turnId) {
-      throw new Error("Git memory prepared user message is missing turnId");
-    }
-    const messageId = prepared.userMessage.messageId;
-    const turnId = prepared.userMessage.turnId;
     return {
       status: "ready",
       sessionId: prepared.sessionId,
       repoPath: prepared.repoPath,
       initialized: prepared.initialized,
       messageSeq: prepared.userMessage.seq,
-      messageId,
-      turnId,
       context: prepared.context,
       memoryState: prepared.memoryState,
     };
@@ -131,7 +118,6 @@ class AppGitMemoryChatContextRuntime implements GitMemoryChatContextRuntime {
         fromSeq: input.turn.messageSeq,
         toSeq: input.turn.messageSeq,
         at: input.at,
-        turnIds: [input.turn.turnId],
         title: input.title,
         objective: input.objective,
       });
@@ -177,7 +163,6 @@ class AppGitMemoryChatContextRuntime implements GitMemoryChatContextRuntime {
     try {
       return await this.gitMemoryRuntime.recordAssistantMessage({
         sessionId: input.turn.sessionId,
-        turnId: input.turn.turnId,
         text: input.message,
         at: input.at,
         taskId: input.taskId,

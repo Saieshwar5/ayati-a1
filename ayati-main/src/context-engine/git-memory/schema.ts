@@ -9,8 +9,6 @@ export const GIT_MEMORY_SESSION_TASKS_PATH = "session/tasks.json";
 export const GIT_MEMORY_SESSION_SCHEMA_PATH = "session/schema.json";
 
 export type GitMemorySessionId = string;
-export type GitMemoryMessageId = string;
-export type GitMemoryTurnId = string;
 export type GitMemoryTaskId = string;
 export type GitMemoryRunId = string;
 export type GitMemoryActionId = string;
@@ -49,11 +47,6 @@ export interface GitMemoryConversationRecord {
   taskId?: GitMemoryTaskId | null;
   runId?: GitMemoryRunId | null;
   branch?: string | null;
-}
-
-export interface GitMemoryConversationAppendRecord extends GitMemoryConversationRecord {
-  messageId: GitMemoryMessageId;
-  turnId: GitMemoryTurnId;
 }
 
 export interface GitMemoryTaskIndexEntry {
@@ -227,20 +220,6 @@ export function createGitMemorySessionId(date: string, agentId: string): GitMemo
   }
   const normalizedAgentId = slugifyIdPart(agentId, "local");
   return `S-${date.replace(/-/g, "")}-${normalizedAgentId}`;
-}
-
-export function createGitMemoryMessageId(date: string, sequence: number): GitMemoryMessageId {
-  if (!isValidCalendarDate(date)) {
-    throw new Error(`Invalid git-memory message date: ${date}`);
-  }
-  return `M-${date.replace(/-/g, "")}-${formatSequence(sequence, 6)}`;
-}
-
-export function createGitMemoryTurnId(date: string, sequence: number): GitMemoryTurnId {
-  if (!isValidCalendarDate(date)) {
-    throw new Error(`Invalid git-memory turn date: ${date}`);
-  }
-  return `T-${date.replace(/-/g, "")}-${formatSequence(sequence, 6)}`;
 }
 
 export function gitMemoryDateFromSessionId(sessionId: GitMemorySessionId): string {

@@ -210,7 +210,6 @@ async function prepareMemoryStateSession(): Promise<{
     sessionId: session.sessionId,
     role: "assistant",
     text: "I will inspect upload handling.",
-    turnId: user.turnId,
     at: "2026-06-28T09:00:05+05:30",
   });
   const task = await store.createTaskBranch({

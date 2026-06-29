@@ -281,8 +281,6 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
       data: {
         status: turn.status,
         messageSeq: turn.messageSeq,
-        messageId: turn.messageId,
-        turnId: turn.turnId,
       },
     });
     return turn;
