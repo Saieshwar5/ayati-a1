@@ -36,6 +36,9 @@ describe("buildGitMemoryHarnessContextPack", () => {
           type: "session_started",
           sessionId: "S-20260628-local",
         }],
+        recentCommits: [{
+          subject: "ayati: initialize session S-20260628-local",
+        }],
       },
       focus: { status: "none" },
     });
@@ -107,6 +110,9 @@ describe("buildGitMemoryHarnessContextPack", () => {
           text: "Fix upload handling",
         }],
         conversationMarkdownTail: expect.stringContaining("Fix upload handling"),
+        recentCommits: [{
+          subject: "ayati: initialize session S-20260628-local",
+        }],
       },
       focus: {
         status: "active",

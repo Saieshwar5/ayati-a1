@@ -30,6 +30,9 @@ describe("GitContextMemoryStateHydrator", () => {
         sessionId: "S-20260628-local",
         conversationTail: [],
         taskMessageLinkTail: [],
+        recentCommits: [{
+          subject: "ayati: initialize session S-20260628-local",
+        }],
         taskCount: 0,
       },
       focus: { status: "none" },
@@ -68,6 +71,9 @@ describe("GitContextMemoryStateHydrator", () => {
         text: "I will inspect upload handling.",
       }],
       taskMessageLinkTail: [],
+      recentCommits: [{
+        subject: "ayati: initialize session S-20260628-local",
+      }],
     });
     expect(state.session.conversationMarkdownTail).toContain("Fix upload handling");
     expect(state.session.conversationMarkdownTail).toContain("I will inspect upload handling.");

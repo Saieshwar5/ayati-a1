@@ -51,6 +51,7 @@ export interface GitContextMemoryState {
     conversationMarkdownTail: string;
     eventTail: GitMemorySessionEventRecord[];
     taskMessageLinkTail: GitMemoryTaskMessageLinkRecord[];
+    recentCommits: CompactGitMemoryCommitSummary[];
     taskCount: number;
     currentBranch?: string;
   };
@@ -94,6 +95,7 @@ export class GitContextMemoryStateHydrator {
         conversationMarkdownTail: context.session.conversationMarkdownTail,
         eventTail: context.session.eventTail,
         taskMessageLinkTail: context.session.taskMessageLinkTail,
+        recentCommits: context.session.recentCommits,
         taskCount: context.session.taskCount,
         ...(context.focus.status === "active" ? { currentBranch: context.focus.branch } : {}),
       },

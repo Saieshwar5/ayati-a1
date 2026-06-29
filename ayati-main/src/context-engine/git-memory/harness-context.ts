@@ -33,6 +33,7 @@ export function buildGitMemoryHarnessContextPack(
       eventTail: context.session.eventTail
         .map((event) => toSessionEventRecord(context.session.sessionId, event))
         .filter(isSessionEventRecord),
+      recentCommits: context.session.recentCommits.map(toCompactCommitSummary),
       assetCount: 0,
     },
     focus: toFocusContext(context.focus),
@@ -69,6 +70,7 @@ export function buildGitMemoryHarnessContextFromMemoryState(
       eventTail: state.session.eventTail
         .map((event) => toSessionEventRecord(state.session.sessionId, event))
         .filter(isSessionEventRecord),
+      recentCommits: state.session.recentCommits.map(toCompactCommitSummary),
       assetCount: 0,
     },
     focus: toFocusContext(state.focus),

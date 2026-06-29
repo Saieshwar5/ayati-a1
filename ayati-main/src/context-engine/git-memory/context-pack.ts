@@ -23,6 +23,7 @@ import {
   gitMemoryTaskFilePath,
   gitMemoryTaskStatePath,
 } from "./schema.js";
+import { GIT_MEMORY_MAIN_REF } from "./session-store.js";
 
 export interface GitMemoryContextLimits {
   conversationTailLimit: number;
@@ -100,6 +101,7 @@ export interface GitMemoryMachineContextPack {
     conversationMarkdownTail: string;
     eventTail: GitMemorySessionEventRecord[];
     taskMessageLinkTail: GitMemoryTaskMessageLinkRecord[];
+    recentCommits: CompactGitMemoryCommitSummary[];
     taskCount: number;
   };
   focus: GitMemoryFocusContext;
@@ -132,13 +134,14 @@ export class GitMemoryContextReader {
   }): Promise<GitMemoryMachineContextPack> {
     const limits = normalizeLimits(input.limits);
     const driver = await this.store.openExistingDriver(input.sessionId);
-    const [conversation, conversationMarkdown, events, tasks, focus, currentBranch] = await Promise.all([
+    const [conversation, conversationMarkdown, events, tasks, focus, currentBranch, sessionCommits] = await Promise.all([
       readWorkingJsonl<GitMemoryConversationRecord>(driver, GIT_MEMORY_SESSION_CONVERSATION_PATH),
       readWorkingMarkdownTail(driver, GIT_MEMORY_SESSION_CONVERSATION_MARKDOWN_PATH, limits.conversationMarkdownCharLimit),
       readWorkingJsonl<GitMemorySessionEventRecord>(driver, GIT_MEMORY_SESSION_EVENTS_PATH),
       readWorkingJson<GitMemoryTaskIndexFile>(driver, GIT_MEMORY_SESSION_TASKS_PATH),
       readWorkingJson<GitMemoryFocusFile>(driver, GIT_MEMORY_SESSION_FOCUS_PATH),
       driver.currentBranch(),
+      readRecentCommits(driver, GIT_MEMORY_MAIN_REF, limits.commitLogLimit),
     ]);
     const session = {
       sessionId: input.sessionId,
@@ -146,6 +149,7 @@ export class GitMemoryContextReader {
       conversationMarkdownTail: conversationMarkdown,
       eventTail: tail(events, limits.eventTailLimit),
       taskMessageLinkTail: [],
+      recentCommits: sessionCommits,
       taskCount: tasks?.tasks.length ?? 0,
     };
     const resolvedFocus = resolveActiveFocus(currentBranch, tasks, focus);

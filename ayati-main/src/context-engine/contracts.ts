@@ -133,6 +133,7 @@ export interface ContextEngineMachineContext {
     conversationTail: ContextConversationRecord[];
     conversationMarkdownTail?: string;
     eventTail: ContextSessionEventRecord[];
+    recentCommits?: ContextCommitSummary[];
     assetCount: number;
   };
   focus: ContextFocus;

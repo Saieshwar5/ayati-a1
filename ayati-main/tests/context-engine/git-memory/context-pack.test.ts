@@ -33,6 +33,9 @@ describe("GitMemoryContextReader", () => {
         sessionId: "S-20260628-local",
         conversationTail: [],
         taskMessageLinkTail: [],
+        recentCommits: [{
+          subject: "ayati: initialize session S-20260628-local",
+        }],
         taskCount: 0,
       },
       focus: { status: "none" },
@@ -128,6 +131,13 @@ describe("GitMemoryContextReader", () => {
       { seq: 3, type: "focus_changed" },
       { seq: 4, type: "run_completed" },
     ]);
+    expect(pack.session.recentCommits).toMatchObject([{
+      subject: "ayati: initialize session S-20260628-local",
+      trailers: {
+        sessionId: "S-20260628-local",
+        event: "session_initialized",
+      },
+    }]);
     expect(pack.session.taskMessageLinkTail).toEqual([]);
     expect(pack.focus).toMatchObject({
       status: "active",
