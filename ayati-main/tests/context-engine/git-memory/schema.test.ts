@@ -6,18 +6,18 @@ import {
   gitMemoryTaskAssetsPath,
   gitMemoryTaskContextPath,
   gitMemoryTaskEvidenceManifestPath,
-  gitMemoryTaskFilePath,
   gitMemoryTaskMarkdownPath,
   gitMemoryTaskNotesPath,
   gitMemoryTaskRunMarkdownPath,
   gitMemoryTaskRunPath,
   gitMemoryTaskStatePath,
+  parseGitMemoryTaskMarkdown,
+  renderGitMemoryTaskMarkdown,
   validateGitMemoryActionRecord,
   validateGitMemoryConversationRecord,
   validateGitMemoryEvidenceManifestRecord,
   validateGitMemoryRunFile,
   validateGitMemorySessionMetaFile,
-  validateGitMemoryTaskFile,
   validateGitMemoryTaskStateFile,
 } from "../../../src/context-engine/git-memory/index.js";
 
@@ -26,7 +26,6 @@ describe("git memory schema", () => {
     expect(GIT_MEMORY_SESSION_META_PATH).toBe("session/meta.json");
     expect(GIT_MEMORY_SESSION_CONVERSATION_MARKDOWN_PATH).toBe("session/conversation.md");
 
-    expect(gitMemoryTaskFilePath("W-20260628-0001")).toBe("tasks/W-20260628-0001/task.json");
     expect(gitMemoryTaskMarkdownPath("W-20260628-0001")).toBe("tasks/W-20260628-0001/task.md");
     expect(gitMemoryTaskStatePath("W-20260628-0001")).toBe("tasks/W-20260628-0001/state.json");
     expect(gitMemoryTaskRunPath("W-20260628-0001", "R-20260628-0001"))
@@ -106,21 +105,6 @@ describe("git memory schema", () => {
   });
 
   it("validates task branch state, run files, and action records", () => {
-    expect(validateGitMemoryTaskFile({
-      schemaVersion: 1,
-      taskId: "W-20260628-0001",
-      title: "Fix upload handling",
-      objective: "Find and fix the upload handling issue.",
-      status: "open",
-      createdAt: "2026-06-28T09:01:00+05:30",
-      updatedAt: "2026-06-28T09:01:00+05:30",
-      createdFrom: {
-        sessionId: "S-20260628-local",
-        fromSeq: 1,
-        toSeq: 2,
-      },
-    }).ok).toBe(true);
-
     expect(validateGitMemoryTaskStateFile({
       schemaVersion: 1,
       status: "in_progress",
@@ -179,5 +163,28 @@ describe("git memory schema", () => {
       truncated: false,
       source: { kind: "harness-step" },
     }).ok).toBe(true);
+  });
+
+  it("renders and parses canonical task markdown identity", () => {
+    const markdown = renderGitMemoryTaskMarkdown({
+      taskId: "W-20260628-0001",
+      title: "Fix upload handling",
+      objective: "Find and fix the upload handling issue.",
+      status: "open",
+      createdAt: "2026-06-28T09:01:00+05:30",
+      updatedAt: "2026-06-28T09:01:00+05:30",
+    });
+
+    expect(markdown).toContain("# Fix upload handling");
+    expect(markdown).toContain("Task: W-20260628-0001");
+    expect(markdown).toContain("## Objective");
+    expect(parseGitMemoryTaskMarkdown(markdown)).toEqual({
+      taskId: "W-20260628-0001",
+      title: "Fix upload handling",
+      objective: "Find and fix the upload handling issue.",
+      status: "open",
+      createdAt: "2026-06-28T09:01:00+05:30",
+      updatedAt: "2026-06-28T09:01:00+05:30",
+    });
   });
 });

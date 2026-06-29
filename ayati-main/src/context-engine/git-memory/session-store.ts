@@ -9,6 +9,11 @@ import {
   readGitMemoryTaskEntries,
   resolveGitMemoryTaskEntry,
 } from "./task-refs.js";
+import {
+  parseGitMemoryTaskMarkdown,
+  renderGitMemoryTaskMarkdown,
+  type GitMemoryTaskMarkdownFile,
+} from "./task-markdown.js";
 import type {
   GitMemoryActionId,
   GitMemoryActionRecord,
@@ -23,7 +28,6 @@ import type {
   GitMemorySessionMetaFile,
   GitMemoryTaskId,
   GitMemoryTaskAssetsFile,
-  GitMemoryTaskFile,
   GitMemoryTaskStateFile,
   GitMemoryTaskStatus,
 } from "./schema.js";
@@ -43,7 +47,6 @@ import {
   gitMemoryTaskActionsPath,
   gitMemoryTaskContextPath,
   gitMemoryTaskEvidenceManifestPath,
-  gitMemoryTaskFilePath,
   gitMemoryTaskMarkdownPath,
   gitMemoryTaskNotesPath,
   gitMemoryTaskRunMarkdownPath,
@@ -141,7 +144,7 @@ export interface GitMemoryTaskDetail {
   taskId: GitMemoryTaskId;
   branch: string;
   ref: string;
-  task?: GitMemoryTaskFile;
+  task?: GitMemoryTaskMarkdownFile;
   taskMarkdown?: string;
   state?: GitMemoryTaskStateFile;
   assets?: TaskAssetRecord[];
@@ -740,12 +743,9 @@ export class GitMemoryDailySessionStore {
       ref,
     };
 
-    const readTask = include.has("task")
-      ? readRefJson<GitMemoryTaskFile>(driver, ref, gitMemoryTaskFilePath(taskEntry.taskId))
+    const readTaskMarkdown = include.has("task") || include.has("markdown")
+      ? driver.readFile(ref, gitMemoryTaskMarkdownPath(taskEntry.taskId))
       : Promise.resolve(null);
-    const readTaskMarkdown = include.has("markdown")
-      ? readRefMarkdownTail(driver, ref, gitMemoryTaskMarkdownPath(taskEntry.taskId), limits.taskMarkdownCharLimit)
-      : Promise.resolve("");
     const readState = include.has("state")
       ? readRefJson<GitMemoryTaskStateFile>(driver, ref, gitMemoryTaskStatePath(taskEntry.taskId))
       : Promise.resolve(null);
@@ -771,8 +771,7 @@ export class GitMemoryDailySessionStore {
       ? readRefMarkdownTail(driver, ref, GIT_MEMORY_SESSION_CONVERSATION_MARKDOWN_PATH, limits.conversationMarkdownCharLimit)
       : Promise.resolve("");
 
-    const [task, taskMarkdown, state, assets, recentRuns, recentRunMarkdown, recentActions, recentCommits, recentEvidence, conversationMarkdownTail] = await Promise.all([
-      readTask,
+    const [taskMarkdown, state, assets, recentRuns, recentRunMarkdown, recentActions, recentCommits, recentEvidence, conversationMarkdownTail] = await Promise.all([
       readTaskMarkdown,
       readState,
       readAssets,
@@ -784,11 +783,12 @@ export class GitMemoryDailySessionStore {
       readConversationMarkdown,
     ]);
 
+    const task = parseGitMemoryTaskMarkdown(taskMarkdown);
     if (include.has("task") && task) {
       detail.task = task;
     }
     if (include.has("markdown")) {
-      detail.taskMarkdown = taskMarkdown;
+      detail.taskMarkdown = markdownTail(taskMarkdown, limits.taskMarkdownCharLimit);
       detail.recentRunMarkdown = recentRunMarkdown;
     }
     if (include.has("state") && state) {
@@ -953,19 +953,13 @@ export class GitMemoryDailySessionStore {
 
     const at = input.at ?? this.nowIso();
     const status = input.status ?? "open";
-    const task: GitMemoryTaskFile = {
-      schemaVersion: 1,
+    const task: GitMemoryTaskMarkdownFile = {
       taskId,
       title: input.title,
       objective: input.objective,
       status,
       createdAt: at,
       updatedAt: at,
-      createdFrom: {
-        sessionId: input.sessionId,
-        fromSeq: input.fromSeq,
-        toSeq: input.toSeq,
-      },
     };
     const state: GitMemoryTaskStateFile = {
       schemaVersion: 1,
@@ -988,8 +982,7 @@ export class GitMemoryDailySessionStore {
           taskId,
           runId: input.runId,
         }),
-        [gitMemoryTaskFilePath(taskId)]: prettyJson(task),
-        [gitMemoryTaskMarkdownPath(taskId)]: renderTaskMarkdown(task, state),
+        [gitMemoryTaskMarkdownPath(taskId)]: renderGitMemoryTaskMarkdown(task),
         [gitMemoryTaskStatePath(taskId)]: prettyJson(state),
         [gitMemoryTaskAssetsPath(taskId)]: prettyJson({ schemaVersion: 1, assets: [] } satisfies GitMemoryTaskAssetsFile),
         [gitMemoryTaskNotesPath(taskId)]: `# ${input.title}\n`,
@@ -1232,34 +1225,6 @@ function prettyJson(value: unknown): string {
 
 function jsonl<T>(records: T[]): string {
   return records.map((record) => JSON.stringify(record)).join("\n") + (records.length > 0 ? "\n" : "");
-}
-
-function renderTaskMarkdown(task: GitMemoryTaskFile, state: GitMemoryTaskStateFile): string {
-  return [
-    `# ${task.title}`,
-    "",
-    `Task: ${task.taskId}`,
-    `Status: ${state.status}`,
-    `Created: ${task.createdAt}`,
-    `Updated: ${state.updatedAt}`,
-    "",
-    "## Objective",
-    "",
-    task.objective,
-    "",
-    "## Summary",
-    "",
-    state.summary,
-    "",
-    renderMarkdownList("Completed", state.completed),
-    renderMarkdownList("Open", state.open),
-    renderMarkdownList("Blockers", state.blockers),
-    renderMarkdownList("Facts", state.facts),
-    "## Next",
-    "",
-    state.next,
-    "",
-  ].join("\n");
 }
 
 function renderTaskRunMarkdown(
@@ -1523,14 +1488,13 @@ async function readTaskRoutingSnapshotFromDriver(
       continue;
     }
 
-    const [task, state] = await Promise.all([
-      parseJson<GitMemoryTaskFile>(
-        await driver.readFile(ref, gitMemoryTaskFilePath(taskEntry.taskId)),
-      ),
+    const [taskMarkdown, state] = await Promise.all([
+      driver.readFile(ref, gitMemoryTaskMarkdownPath(taskEntry.taskId)),
       parseJson<GitMemoryTaskStateFile>(
         await driver.readFile(ref, gitMemoryTaskStatePath(taskEntry.taskId)),
       ),
     ]);
+    const task = parseGitMemoryTaskMarkdown(taskMarkdown);
     snapshotTasks.push({
       taskId: taskEntry.taskId,
       branch: taskEntry.branch,

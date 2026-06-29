@@ -4,6 +4,7 @@ import {
   type GitMemoryDerivedTaskEntry,
   readGitMemoryTaskEntries,
 } from "./task-refs.js";
+import { parseGitMemoryTaskMarkdown } from "./task-markdown.js";
 import type { TaskAssetRecord } from "../contracts.js";
 import { GitMemoryWorktreeGitDriver, type GitMemoryLogEntry } from "./git-driver.js";
 import type { GitMemoryDailySessionStore } from "./session-store.js";
@@ -13,7 +14,6 @@ import type {
   GitMemoryRunFile,
   GitMemorySessionId,
   GitMemoryTaskAssetsFile,
-  GitMemoryTaskFile,
   GitMemoryTaskId,
   GitMemoryTaskStateFile,
 } from "./schema.js";
@@ -21,7 +21,7 @@ import {
   GIT_MEMORY_SESSION_CONVERSATION_MARKDOWN_PATH,
   gitMemoryTaskDir,
   gitMemoryTaskAssetsPath,
-  gitMemoryTaskFilePath,
+  gitMemoryTaskMarkdownPath,
   gitMemoryTaskStatePath,
 } from "./schema.js";
 import { GIT_MEMORY_MAIN_REF } from "./session-store.js";
@@ -211,8 +211,8 @@ export class GitMemoryContextReader {
       };
     }
 
-    const [task, state, assets, conversationMarkdownTail, recentRuns, recentEvidence, recentCommits] = await Promise.all([
-      readRefJson<GitMemoryTaskFile>(driver, ref, gitMemoryTaskFilePath(taskEntry.taskId)),
+    const [taskMarkdown, state, assets, conversationMarkdownTail, recentRuns, recentEvidence, recentCommits] = await Promise.all([
+      driver.readFile(ref, gitMemoryTaskMarkdownPath(taskEntry.taskId)),
       readRefJson<GitMemoryTaskStateFile>(driver, ref, gitMemoryTaskStatePath(taskEntry.taskId)),
       readTaskAssets(driver, ref, taskEntry.taskId),
       readRefMarkdownTail(driver, ref, GIT_MEMORY_SESSION_CONVERSATION_MARKDOWN_PATH, limits.conversationMarkdownCharLimit),
@@ -220,6 +220,7 @@ export class GitMemoryContextReader {
       readRecentEvidence(driver, ref, taskEntry.taskId, limits.evidenceLimit),
       readRecentCommits(driver, ref, limits.commitLogLimit),
     ]);
+    const task = parseGitMemoryTaskMarkdown(taskMarkdown);
     if (!task || !state) {
       return {
         session,
@@ -228,7 +229,7 @@ export class GitMemoryContextReader {
           taskId: taskEntry.taskId,
           branch: taskEntry.branch,
           ref,
-          reason: "focused task branch is missing task.json or state.json",
+          reason: "focused task branch is missing task.md or state.json",
         },
       };
     }

@@ -150,7 +150,7 @@ describe("GitContextMemoryStateHydrator", () => {
       },
       message: renderGitMemoryCommitMessage({
         subject: "ayati: create incomplete task W-20260628-0001",
-        summary: "Create a task branch without task.json or state.json.",
+        summary: "Create a task branch without task.md or state.json.",
         trailers: {
           sessionId: session.sessionId,
           taskId: "W-20260628-0001",
@@ -171,7 +171,7 @@ describe("GitContextMemoryStateHydrator", () => {
       status: "missing",
       taskId: "W-20260628-0001",
       branch: "task/W-20260628-0001-missing",
-      reason: "focused task branch is missing task.json or state.json",
+      reason: "focused task branch is missing task.md or state.json",
     });
     expect(state.activeTask).toBeUndefined();
     expect(state.knownTasks).toMatchObject([{

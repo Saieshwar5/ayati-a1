@@ -1,12 +1,14 @@
 import type { GitMemoryWorktreeGitDriver } from "./git-driver.js";
+import {
+  parseGitMemoryTaskMarkdown,
+} from "./task-markdown.js";
 import type {
-  GitMemoryTaskFile,
   GitMemoryTaskId,
   GitMemoryTaskStateFile,
   GitMemoryTaskStatus,
 } from "./schema.js";
 import {
-  gitMemoryTaskFilePath,
+  gitMemoryTaskMarkdownPath,
   gitMemoryTaskStatePath,
 } from "./schema.js";
 
@@ -33,10 +35,11 @@ export async function readGitMemoryTaskEntries(
     if (!taskId) {
       continue;
     }
-    const [task, state] = await Promise.all([
-      readRefJson<GitMemoryTaskFile>(driver, ref, gitMemoryTaskFilePath(taskId)),
+    const [taskMarkdown, state] = await Promise.all([
+      driver.readFile(ref, gitMemoryTaskMarkdownPath(taskId)),
       readRefJson<GitMemoryTaskStateFile>(driver, ref, gitMemoryTaskStatePath(taskId)),
     ]);
+    const task = parseGitMemoryTaskMarkdown(taskMarkdown);
     entries.push({
       taskId,
       branch,

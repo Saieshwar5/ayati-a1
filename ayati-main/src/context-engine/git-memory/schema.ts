@@ -52,19 +52,6 @@ export interface GitMemoryConversationSeqRange {
   toSeq: number;
 }
 
-export interface GitMemoryTaskFile {
-  schemaVersion: 1;
-  taskId: GitMemoryTaskId;
-  title: string;
-  objective: string;
-  status: GitMemoryTaskStatus;
-  createdAt: string;
-  updatedAt: string;
-  createdFrom: GitMemoryConversationSeqRange & {
-    sessionId: GitMemorySessionId;
-  };
-}
-
 export interface GitMemoryTaskStateFile {
   schemaVersion: 1;
   status: GitMemoryTaskStatus;
@@ -135,10 +122,6 @@ export type ValidationResult<T> =
 
 export function gitMemoryTaskDir(taskId: GitMemoryTaskId): string {
   return `tasks/${taskId}`;
-}
-
-export function gitMemoryTaskFilePath(taskId: GitMemoryTaskId): string {
-  return `${gitMemoryTaskDir(taskId)}/task.json`;
 }
 
 export function gitMemoryTaskMarkdownPath(taskId: GitMemoryTaskId): string {
@@ -282,26 +265,6 @@ export function validateGitMemoryConversationRecord(value: unknown): ValidationR
     requireOptionalTaskId(record, "taskId", errors);
     requireOptionalRunId(record, "runId", errors);
     requireOptionalNonEmptyString(record, "branch", errors);
-  }
-  return validationResult(value, errors);
-}
-
-export function validateGitMemoryTaskFile(value: unknown): ValidationResult<GitMemoryTaskFile> {
-  const errors: string[] = [];
-  const record = requireRecord(value, "task file", errors);
-  if (record) {
-    requireSchemaVersion(record, errors);
-    requireTaskId(record, "taskId", errors);
-    requireNonEmptyString(record, "title", errors);
-    requireNonEmptyString(record, "objective", errors);
-    requireTaskStatus(record, errors);
-    requireNonEmptyString(record, "createdAt", errors);
-    requireNonEmptyString(record, "updatedAt", errors);
-    const createdFrom = requireRecord(record["createdFrom"], "createdFrom", errors);
-    if (createdFrom) {
-      requireSessionId(createdFrom, "sessionId", errors);
-      requireConversationSeqRange(createdFrom, errors);
-    }
   }
   return validationResult(value, errors);
 }
