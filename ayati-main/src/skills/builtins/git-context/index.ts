@@ -68,6 +68,13 @@ interface SwitchTaskInput extends TaskSelectorInput {
   reason: string;
 }
 
+interface CreateTaskInput extends SessionScopedInput {
+  sessionId: string;
+  title: string;
+  objective: string;
+  reason: string;
+}
+
 const TASK_DETAIL_INCLUDES: GitMemoryTaskDetailInclude[] = [
   "task",
   "state",
@@ -83,7 +90,7 @@ const TASK_DETAIL_INCLUDES: GitMemoryTaskDetailInclude[] = [
 const TASK_STATUSES: GitMemoryTaskStatus[] = ["open", "in_progress", "blocked", "done", "abandoned"];
 
 const GIT_CONTEXT_PROMPT_BLOCK = [
-  "Most git-context tools are read-only. git_context_switch_task mutates only the active git-context task branch.",
+  "Most git-context tools are read-only. git_context_create_task and git_context_switch_task mutate only git-context task branch state.",
   "Use git-context tools to inspect Ayati's daily git context sessions, active context, and task routing snapshots.",
   "Prefer git_context_list_sessions to discover available daily sessions.",
   "Use git_context_active to inspect the current compact git context for a session.",
@@ -93,8 +100,9 @@ const GIT_CONTEXT_PROMPT_BLOCK = [
   "Use git_context_read_evidence to read compact durable evidence records for a task or run.",
   "Use git_context_search_evidence to find compact durable evidence records by summary, tool, fact, artifact, run id, action id, or evidence ref.",
   "Use git_context_log to inspect compact commit history for main or one task branch.",
+  "Use git_context_create_task only when the user clearly starts new durable task work.",
   "Use git_context_switch_task only when the user is clearly continuing an existing task branch.",
-  "Do not use git-context tools to commit, edit files, merge, reset, push, pull, or mutate external state.",
+  "Do not use git-context tools to edit project files, merge, reset, push, pull, or mutate external state.",
 ].join("\n");
 
 export function createGitContextSkill(deps: GitContextSkillDeps): SkillDefinition {
@@ -104,7 +112,7 @@ export function createGitContextSkill(deps: GitContextSkillDeps): SkillDefinitio
   return {
     id: "git-context",
     version: "1.0.0",
-    description: "Read-only inspection of Ayati daily git context sessions and task branches.",
+    description: "Inspection and controlled task-branch routing for Ayati daily git context sessions.",
     promptBlock: GIT_CONTEXT_PROMPT_BLOCK,
     tools: [
       createListSessionsTool(store),
@@ -115,6 +123,7 @@ export function createGitContextSkill(deps: GitContextSkillDeps): SkillDefinitio
       createReadEvidenceTool(store),
       createSearchEvidenceTool(store),
       createLogTool(store),
+      createCreateTaskTool(store),
       createSwitchTaskTool(store),
     ],
   };
@@ -553,6 +562,75 @@ function createSwitchTaskTool(store: GitMemoryDailySessionStore): ToolDefinition
   };
 }
 
+function createCreateTaskTool(store: GitMemoryDailySessionStore): ToolDefinition {
+  return {
+    name: "git_context_create_task",
+    description: "Create and activate a new git-context task branch.",
+    inputSchema: sessionScopedInputSchema({
+      title: {
+        type: "string",
+        description: "Short task title.",
+      },
+      objective: {
+        type: "string",
+        description: "Durable task objective.",
+      },
+      reason: {
+        type: "string",
+        description: "Short reason for creating a new task branch.",
+      },
+    }),
+    outputSchema: genericObjectOutputSchema,
+    annotations: gitContextMutatingAnnotations(),
+    resultContract: gitContextSucceededContract("task_created"),
+    selectionHints: {
+      tags: ["git-context", "task", "branch", "create", "routing", "mutating"],
+      aliases: ["create git context task", "start task branch", "new work branch"],
+      domain: "git_context",
+      priority: 5,
+    },
+    async execute(input, context): Promise<ToolResult> {
+      const parsed = parseCreateTaskInput(input, context);
+      if ("ok" in parsed) {
+        return parsed;
+      }
+      try {
+        const before = await store.readTaskRoutingSnapshot(parsed.sessionId);
+        const created = await store.createTaskBranch({
+          sessionId: parsed.sessionId,
+          title: parsed.title,
+          objective: parsed.objective,
+          fromSeq: 0,
+          toSeq: 0,
+          state: {
+            summary: parsed.objective,
+            open: [parsed.objective],
+            next: parsed.objective,
+          },
+        });
+        return okJsonResult({
+          code: "GIT_CONTEXT_TASK_CREATED",
+          message: "Git-context task branch created.",
+          structuredContent: {
+            sessionId: parsed.sessionId,
+            taskId: created.taskId,
+            branch: created.branch,
+            ref: created.ref,
+            taskCommit: created.taskCommit,
+            previousBranch: before.focus?.activeBranch ?? "main",
+            previousTaskId: before.focus?.activeTaskId,
+            title: parsed.title,
+            objective: parsed.objective,
+            reason: parsed.reason,
+          },
+        });
+      } catch (err) {
+        return gitContextMutationFailed(err);
+      }
+    },
+  };
+}
+
 function parseListSessionsInput(input: unknown): ListSessionsInput | ToolResult {
   if (input === undefined || input === null) {
     return {};
@@ -616,6 +694,34 @@ function parseSearchTasksInput(input: unknown, context?: ToolExecutionContext): 
     query: value.query.trim(),
     ...(typeof value.limit === "number" ? { limit: Math.floor(value.limit) } : {}),
     ...(value.status ? { status: value.status } : {}),
+  };
+}
+
+function parseCreateTaskInput(input: unknown, context?: ToolExecutionContext): CreateTaskInput | ToolResult {
+  const scoped = parseSessionScopedInput(input, context);
+  if ("ok" in scoped) {
+    return scoped;
+  }
+  const value = input && typeof input === "object" && !Array.isArray(input)
+    ? input as Partial<CreateTaskInput>
+    : {};
+  const title = trimRequired(value.title, "title");
+  if (typeof title !== "string") {
+    return title;
+  }
+  const objective = trimRequired(value.objective, "objective");
+  if (typeof objective !== "string") {
+    return objective;
+  }
+  const reason = trimRequired(value.reason, "reason");
+  if (typeof reason !== "string") {
+    return reason;
+  }
+  return {
+    sessionId: scoped.sessionId,
+    title,
+    objective,
+    reason,
   };
 }
 
@@ -963,4 +1069,11 @@ function isValidLimit(value: unknown): value is number {
 function trimOptional(value: string | undefined): string | undefined {
   const trimmed = value?.trim();
   return trimmed && trimmed.length > 0 ? trimmed : undefined;
+}
+
+function trimRequired(value: unknown, name: string): string | ToolResult {
+  if (typeof value !== "string" || value.trim().length === 0) {
+    return invalidInput(`${name} must be a non-empty string.`);
+  }
+  return value.trim();
 }

@@ -198,6 +198,98 @@ describe("git-context skill", () => {
     });
   });
 
+  it("creates and activates a new git-context task branch", async () => {
+    const prepared = await prepareMultiTaskGitContextSession();
+    const driver = new GitMemoryWorktreeGitDriver(prepared.session.repoPath);
+    const mainLogBefore = await driver.log(GIT_MEMORY_MAIN_REF, 10);
+    const reminderLogBefore = await driver.log(prepared.reminderTask.ref, 10);
+    expect(await driver.currentBranch()).toBe(prepared.reminderTask.branch);
+
+    const skill = createGitContextSkill({ contextStoreDir: prepared.contextStoreDir });
+    const tool = requiredTool(skill, "git_context_create_task");
+
+    expect(tool.annotations).toMatchObject({
+      domain: "git_context",
+      readOnly: false,
+      mutatesWorkspace: true,
+      mutatesExternalWorld: false,
+      destructive: false,
+      idempotent: true,
+      retrySafe: true,
+    });
+
+    const result = await tool.execute({
+      sessionId: prepared.session.sessionId,
+      title: "Fix notification digest",
+      objective: "Investigate missing notification digest delivery.",
+      reason: "User started a new durable notification task.",
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.v2?.structuredContent).toMatchObject({
+      sessionId: prepared.session.sessionId,
+      taskId: "W-20260628-0003",
+      branch: "task/W-20260628-0003-fix-notification-digest",
+      ref: "refs/heads/task/W-20260628-0003-fix-notification-digest",
+      previousBranch: prepared.reminderTask.branch,
+      previousTaskId: prepared.reminderTask.taskId,
+      title: "Fix notification digest",
+      objective: "Investigate missing notification digest delivery.",
+      reason: "User started a new durable notification task.",
+    });
+    const created = result.v2?.structuredContent as { taskId: string; branch: string; ref: string };
+    expect(await driver.currentBranch()).toBe(created.branch);
+    expect(await driver.hasRef(created.ref)).toBe(true);
+
+    const snapshot = await prepared.store.readTaskRoutingSnapshot(prepared.session.sessionId);
+    expect(snapshot.focus).toMatchObject({
+      activeTaskId: created.taskId,
+      activeBranch: created.branch,
+    });
+    expect(snapshot.tasks).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        taskId: created.taskId,
+        branch: created.branch,
+        title: "Fix notification digest",
+        objective: "Investigate missing notification digest delivery.",
+        status: "open",
+        summary: "Investigate missing notification digest delivery.",
+        next: "Investigate missing notification digest delivery.",
+      }),
+    ]));
+    expect(await driver.log(GIT_MEMORY_MAIN_REF, 10)).toEqual(mainLogBefore);
+    expect(await driver.log(prepared.reminderTask.ref, 10)).toEqual(reminderLogBefore);
+  });
+
+  it("rejects invalid git-context task create requests", async () => {
+    const prepared = await prepareMultiTaskGitContextSession();
+    const skill = createGitContextSkill({ contextStoreDir: prepared.contextStoreDir });
+    const tool = requiredTool(skill, "git_context_create_task");
+
+    await expect(tool.execute({
+      sessionId: prepared.session.sessionId,
+      title: " ",
+      objective: "Investigate missing notification digest delivery.",
+      reason: "User started a new durable notification task.",
+    })).resolves.toMatchObject({
+      ok: false,
+      v2: {
+        code: "GIT_CONTEXT_INVALID_INPUT",
+      },
+    });
+
+    await expect(tool.execute({
+      sessionId: prepared.session.sessionId,
+      title: "Fix notification digest",
+      objective: "Investigate missing notification digest delivery.",
+    })).resolves.toMatchObject({
+      ok: false,
+      v2: {
+        code: "GIT_CONTEXT_INVALID_INPUT",
+      },
+    });
+  });
+
   it("switches the active git-context task branch by task id", async () => {
     const prepared = await prepareMultiTaskGitContextSession();
     const driver = new GitMemoryWorktreeGitDriver(prepared.session.repoPath);
