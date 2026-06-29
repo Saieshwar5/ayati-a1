@@ -175,6 +175,39 @@ describe("GitMemoryDailySessionStore", () => {
     expect(await driver.readWorkingFile("session/conversation.jsonl")).toBeNull();
   });
 
+  it("persists prebuilt main conversation records without allocating identity", async () => {
+    const contextStoreDir = await mkdtemp(join(tmpdir(), "ayati-git-memory-"));
+    const store = new GitMemoryDailySessionStore({ contextStoreDir });
+    const session = await store.openOrCreateDailySession({
+      date: "2026-06-28",
+      timezone: "Asia/Kolkata",
+      agentId: "local",
+      createdAt: "2026-06-28T00:00:00+05:30",
+    });
+    const record = {
+      seq: 1,
+      role: "assistant" as const,
+      at: "2026-06-28T09:00:00+05:30",
+      text: "I will inspect upload handling.",
+    };
+
+    const persisted = await store.appendMainConversationRecord({
+      sessionId: session.sessionId,
+      record,
+    });
+
+    expect(persisted).toEqual(record);
+    const driver = new GitMemoryWorktreeGitDriver(session.repoPath);
+    expect(await driver.readFile(GIT_MEMORY_MAIN_REF, GIT_MEMORY_SESSION_CONVERSATION_MARKDOWN_PATH))
+      .toContain("I will inspect upload handling.");
+    const log = await driver.log(GIT_MEMORY_MAIN_REF, 5);
+    expect(parseGitMemoryCommitTrailers(log[0]?.message ?? "")).toMatchObject({
+      event: "conversation_appended",
+      at: "2026-06-28T09:00:00+05:30",
+      conversationSeq: { fromSeq: 1, toSeq: 1 },
+    });
+  });
+
   it("checkpoints accumulated session changes with a parseable commit", async () => {
     const contextStoreDir = await mkdtemp(join(tmpdir(), "ayati-git-memory-"));
     const store = new GitMemoryDailySessionStore({ contextStoreDir });

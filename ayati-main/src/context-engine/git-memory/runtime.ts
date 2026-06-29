@@ -28,6 +28,7 @@ import {
 } from "./task-router.js";
 import type {
   GitMemoryConversationRecord,
+  GitMemoryConversationRole,
   GitMemoryRunId,
   GitMemorySessionId,
   GitMemoryTaskId,
@@ -164,11 +165,14 @@ export class GitMemoryRuntime {
     }, async () => {
       const session = await this.openDailySessionUnqueued(at);
       const cachedState = await this.getOrHydrateCachedMemoryState(session.sessionId);
-      const userMessage = await this.store.appendMainConversationMessage({
-        sessionId: session.sessionId,
+      const userMessage = this.createCachedConversationRecord(cachedState, {
         role: "user",
         text: input.userMessage,
         at,
+      });
+      await this.store.appendMainConversationRecord({
+        sessionId: session.sessionId,
+        record: userMessage,
       });
       this.updateCachedSessionConversation(cachedState, userMessage);
       return {
@@ -199,11 +203,14 @@ export class GitMemoryRuntime {
     }, async () => {
       const session = await this.openDailySessionUnqueued(at);
       const cachedState = await this.getOrHydrateCachedMemoryState(session.sessionId);
-      const systemMessage = await this.store.appendMainConversationMessage({
-        sessionId: session.sessionId,
+      const systemMessage = this.createCachedConversationRecord(cachedState, {
         role: "system",
         text: input.systemMessage,
         at,
+      });
+      await this.store.appendMainConversationRecord({
+        sessionId: session.sessionId,
+        record: systemMessage,
       });
       this.updateCachedSessionConversation(cachedState, systemMessage);
       return {
@@ -226,20 +233,34 @@ export class GitMemoryRuntime {
   async recordAssistantMessage(
     input: RecordGitMemoryAssistantMessageInput,
   ): Promise<GitMemoryConversationRecord> {
+    const at = input.at ?? this.nowProvider().toISOString();
     const cachedState = input.taskId
       ? null
       : await this.getOrHydrateCachedMemoryState(input.sessionId);
+    const globalRecord = cachedState
+      ? this.createCachedConversationRecord(cachedState, {
+        role: "assistant",
+        text: input.text,
+        at,
+      })
+      : null;
     const record = await this.writeQueue.enqueue({
       sessionId: input.sessionId,
       type: "assistant_message_recorded",
       label: "record_assistant_message",
-      createdAt: input.at,
+      createdAt: at,
     }, async () => {
+      if (globalRecord) {
+        return await this.store.appendMainConversationRecord({
+          sessionId: input.sessionId,
+          record: globalRecord,
+        });
+      }
       const record = await this.store.appendConversationMessage({
         sessionId: input.sessionId,
         role: "assistant",
         text: input.text,
-        at: input.at,
+        at,
         taskId: input.taskId,
         runId: input.runId,
       });
@@ -248,7 +269,7 @@ export class GitMemoryRuntime {
           sessionId: input.sessionId,
           taskId: input.taskId,
           record,
-          at: input.at,
+          at,
         });
       }
       return record;
@@ -423,6 +444,22 @@ export class GitMemoryRuntime {
     this.sessionMemoryCache.set(state.session.sessionId, nextState);
   }
 
+  private createCachedConversationRecord(
+    state: GitContextMemoryState,
+    input: {
+      role: GitMemoryConversationRole;
+      text: string;
+      at: string;
+    },
+  ): GitMemoryConversationRecord {
+    return {
+      seq: nextConversationSeq(state.session.conversationTail),
+      role: input.role,
+      at: input.at,
+      text: input.text,
+    };
+  }
+
   private invalidateSessionMemory(sessionId: GitMemorySessionId): void {
     this.sessionMemoryCache.delete(sessionId);
   }
@@ -466,4 +503,10 @@ function markdownTail(value: string, limit: number): string {
     return value;
   }
   return value.slice(value.length - limit);
+}
+
+function nextConversationSeq(records: Array<{ seq?: unknown }>): number {
+  return records.reduce((max, record) => (
+    typeof record.seq === "number" && Number.isInteger(record.seq) ? Math.max(max, record.seq) : max
+  ), 0) + 1;
 }

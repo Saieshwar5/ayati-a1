@@ -259,6 +259,11 @@ export interface AppendGitMemoryConversationInput {
   runId?: GitMemoryRunId;
 }
 
+export interface AppendGitMemoryConversationRecordInput {
+  sessionId: GitMemorySessionId;
+  record: GitMemoryConversationRecord;
+}
+
 export interface GitMemoryTaskRoutingSnapshotTask {
   taskId: GitMemoryTaskId;
   branch: string;
@@ -572,6 +577,22 @@ export class GitMemoryDailySessionStore {
       record,
     });
     return record;
+  }
+
+  async appendMainConversationRecord(
+    input: AppendGitMemoryConversationRecordInput,
+  ): Promise<GitMemoryConversationRecord> {
+    const driver = await GitMemoryWorktreeGitDriver.init(this.repoPath(input.sessionId));
+    const existingMarkdown = await driver.readWorkingFile(GIT_MEMORY_SESSION_CONVERSATION_MARKDOWN_PATH)
+      ?? await driver.readFile(GIT_MEMORY_MAIN_REF, GIT_MEMORY_SESSION_CONVERSATION_MARKDOWN_PATH);
+    await driver.writeWorkingFiles({
+      [GIT_MEMORY_SESSION_CONVERSATION_MARKDOWN_PATH]: appendGitMemoryConversationMarkdown(existingMarkdown, input.record),
+    });
+    await this.commitMainConversationAppend(driver, {
+      sessionId: input.sessionId,
+      record: input.record,
+    });
+    return input.record;
   }
 
   private async commitMainConversationAppend(

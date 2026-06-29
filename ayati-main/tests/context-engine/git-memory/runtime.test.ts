@@ -3,6 +3,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import {
+  type AppendGitMemoryConversationInput,
+  type AppendGitMemoryConversationRecordInput,
   buildGitMemoryContextPackFromMemoryState,
   createGitMemoryRuntime,
   GIT_MEMORY_MAIN_REF,
@@ -120,6 +122,58 @@ describe("GitMemoryRuntime", () => {
     });
 
     expect(prepared.context).toEqual(buildGitMemoryContextPackFromMemoryState(prepared.memoryState));
+  });
+
+  it("creates deterministic global conversation records before persistence", async () => {
+    const contextStoreDir = await mkdtemp(join(tmpdir(), "ayati-git-memory-runtime-"));
+    const store = new TrackingConversationStore({ contextStoreDir });
+    const runtime = createGitMemoryRuntime({
+      contextStoreDir,
+      timezone: "Asia/Kolkata",
+      agentId: "local",
+      store,
+    });
+
+    const prepared = await runtime.prepareUserTurn({
+      userMessage: "Fix upload handling",
+      at: "2026-06-28T09:00:00+05:30",
+    });
+    await runtime.prepareSystemTurn({
+      systemMessage: "System noted upload handling context.",
+      at: "2026-06-28T09:00:05+05:30",
+    });
+    const assistant = await runtime.recordAssistantMessage({
+      sessionId: prepared.sessionId,
+      text: "I will inspect upload handling.",
+      at: "2026-06-28T09:00:10+05:30",
+    });
+
+    expect(store.generatedMessageCalls).toBe(0);
+    expect(store.prebuiltRecords).toMatchObject([
+      {
+        seq: 1,
+        role: "user",
+        at: "2026-06-28T09:00:00+05:30",
+        text: "Fix upload handling",
+      },
+      {
+        seq: 2,
+        role: "system",
+        at: "2026-06-28T09:00:05+05:30",
+        text: "System noted upload handling context.",
+      },
+      {
+        seq: 3,
+        role: "assistant",
+        at: "2026-06-28T09:00:10+05:30",
+        text: "I will inspect upload handling.",
+      },
+    ]);
+    expect(assistant).toMatchObject({
+      seq: 3,
+      role: "assistant",
+      text: "I will inspect upload handling.",
+    });
   });
 
   it("derives explicit active context reads from memory state", async () => {
@@ -867,3 +921,29 @@ describe("GitMemoryRuntime", () => {
     expect(allocateRunId).not.toHaveBeenCalled();
   });
 });
+
+class TrackingConversationStore extends GitMemoryDailySessionStore {
+  readonly prebuiltRecords: Array<AppendGitMemoryConversationRecordInput["record"]> = [];
+  generatedMessageCalls = 0;
+
+  override async appendMainConversationMessage(
+    input: AppendGitMemoryConversationInput,
+  ): Promise<AppendGitMemoryConversationRecordInput["record"]> {
+    this.generatedMessageCalls += 1;
+    return await super.appendMainConversationMessage(input);
+  }
+
+  override async appendConversationMessage(
+    input: AppendGitMemoryConversationInput,
+  ): Promise<AppendGitMemoryConversationRecordInput["record"]> {
+    this.generatedMessageCalls += 1;
+    return await super.appendConversationMessage(input);
+  }
+
+  override async appendMainConversationRecord(
+    input: AppendGitMemoryConversationRecordInput,
+  ): Promise<AppendGitMemoryConversationRecordInput["record"]> {
+    this.prebuiltRecords.push(input.record);
+    return await super.appendMainConversationRecord(input);
+  }
+}
