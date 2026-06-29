@@ -11,6 +11,7 @@ import {
   GIT_MEMORY_SESSION_CONVERSATION_MARKDOWN_PATH,
   GitMemoryDailySessionStore,
   GitMemoryWorktreeGitDriver,
+  gitMemoryTaskStatePath,
   type GitMemoryWriteBatchRequest,
   type GitMemoryWriteBatchSnapshot,
   type GitMemoryWriteQueueRunner,
@@ -367,7 +368,7 @@ describe("GitMemoryRuntime", () => {
     ]);
   });
 
-  it("keeps task-linked assistant messages on the git-backed rehydrate path", async () => {
+  it("keeps task-linked assistant messages in the active task cache", async () => {
     const contextStoreDir = await mkdtemp(join(tmpdir(), "ayati-git-memory-runtime-"));
     const runtime = createGitMemoryRuntime({
       contextStoreDir,
@@ -415,7 +416,18 @@ describe("GitMemoryRuntime", () => {
     );
     const memoryState = await runtime.buildMemoryState(prepared.sessionId);
 
-    expect(memoryState.session.conversationTail).toEqual([]);
+    expect(memoryState.session.conversationTail).toMatchObject([
+      { seq: 1, role: "user", text: "Fix upload handling" },
+      {
+        seq: 2,
+        role: "assistant",
+        text: "Finished upload handling inspection.",
+        taskId: task.taskId,
+        runId: run.runId,
+      },
+    ]);
+    expect(memoryState.activeTask?.conversationMarkdownTail)
+      .toContain("Finished upload handling inspection.");
   });
 
   it("invalidates cached session memory after task creation", async () => {
@@ -449,6 +461,156 @@ describe("GitMemoryRuntime", () => {
       taskId: task.taskId,
       title: "Fix upload handling",
     });
+  });
+
+  it("serves created active task context from the runtime memory cache", async () => {
+    const contextStoreDir = await mkdtemp(join(tmpdir(), "ayati-git-memory-runtime-"));
+    const runtime = createGitMemoryRuntime({
+      contextStoreDir,
+      timezone: "Asia/Kolkata",
+      agentId: "local",
+    });
+    const prepared = await runtime.prepareUserTurn({
+      userMessage: "Fix upload handling",
+      at: "2026-06-28T09:00:00+05:30",
+    });
+
+    const task = await runtime.createTaskBranch({
+      sessionId: prepared.sessionId,
+      title: "Fix upload handling",
+      objective: "Find and fix upload handling failures.",
+      fromSeq: prepared.userMessage.seq,
+      toSeq: prepared.userMessage.seq,
+      at: "2026-06-28T09:01:00+05:30",
+    });
+    const driver = new GitMemoryWorktreeGitDriver(prepared.repoPath);
+    await driver.commitSyntheticFiles({
+      ref: task.ref,
+      files: {
+        [gitMemoryTaskStatePath(task.taskId)]: "{ invalid json",
+      },
+      message: "damage task state",
+    });
+    const memoryState = await runtime.buildMemoryState(prepared.sessionId);
+
+    expect(memoryState.focus).toMatchObject({
+      status: "active",
+      taskId: task.taskId,
+    });
+    expect(memoryState.activeTask).toMatchObject({
+      taskId: task.taskId,
+      title: "Fix upload handling",
+      summary: "Find and fix upload handling failures.",
+      open: ["Find and fix upload handling failures."],
+    });
+  });
+
+  it("updates cached active task state after task run commits", async () => {
+    const contextStoreDir = await mkdtemp(join(tmpdir(), "ayati-git-memory-runtime-"));
+    const runtime = createGitMemoryRuntime({
+      contextStoreDir,
+      timezone: "Asia/Kolkata",
+      agentId: "local",
+    });
+    const prepared = await runtime.prepareUserTurn({
+      userMessage: "Fix upload handling",
+      at: "2026-06-28T09:00:00+05:30",
+    });
+    const task = await runtime.createTaskBranch({
+      sessionId: prepared.sessionId,
+      title: "Fix upload handling",
+      objective: "Find and fix upload handling failures.",
+      fromSeq: prepared.userMessage.seq,
+      toSeq: prepared.userMessage.seq,
+      at: "2026-06-28T09:01:00+05:30",
+    });
+
+    const run = await runtime.commitTaskRun({
+      sessionId: prepared.sessionId,
+      taskId: task.taskId,
+      runId: "R-20260628-0001",
+      status: "completed",
+      startedAt: "2026-06-28T09:02:00+05:30",
+      completedAt: "2026-06-28T09:10:00+05:30",
+      conversationRefs: [{ fromSeq: prepared.userMessage.seq, toSeq: prepared.userMessage.seq }],
+      summary: "Inspected upload handling.",
+      newFacts: ["Upload route validates MIME type."],
+      next: "Patch upload validation handling.",
+      state: {
+        status: "in_progress",
+        completed: ["Inspected upload server"],
+        open: ["Patch upload validation handling."],
+        next: "Patch upload validation handling.",
+      },
+    });
+    const driver = new GitMemoryWorktreeGitDriver(prepared.repoPath);
+    await driver.commitSyntheticFiles({
+      ref: task.ref,
+      files: {
+        [gitMemoryTaskStatePath(task.taskId)]: "{ invalid json",
+      },
+      message: "damage task state",
+    });
+    const memoryState = await runtime.buildMemoryState(prepared.sessionId);
+
+    expect(run.runId).toBe("R-20260628-0001");
+    expect(memoryState.activeTask).toMatchObject({
+      taskId: task.taskId,
+      status: "in_progress",
+      summary: "Inspected upload handling.",
+      completed: ["Inspected upload server"],
+      open: ["Patch upload validation handling."],
+      facts: ["Upload route validates MIME type."],
+      next: "Patch upload validation handling.",
+      recentRuns: [{
+        runId: "R-20260628-0001",
+        status: "completed",
+        summary: "Inspected upload handling.",
+      }],
+    });
+  });
+
+  it("updates cached active task conversation for task-linked assistant messages", async () => {
+    const contextStoreDir = await mkdtemp(join(tmpdir(), "ayati-git-memory-runtime-"));
+    const runtime = createGitMemoryRuntime({
+      contextStoreDir,
+      timezone: "Asia/Kolkata",
+      agentId: "local",
+    });
+    const prepared = await runtime.prepareUserTurn({
+      userMessage: "Fix upload handling",
+      at: "2026-06-28T09:00:00+05:30",
+    });
+    const task = await runtime.createTaskBranch({
+      sessionId: prepared.sessionId,
+      title: "Fix upload handling",
+      objective: "Find and fix upload handling failures.",
+      fromSeq: prepared.userMessage.seq,
+      toSeq: prepared.userMessage.seq,
+      at: "2026-06-28T09:01:00+05:30",
+    });
+
+    await runtime.recordAssistantMessage({
+      sessionId: prepared.sessionId,
+      taskId: task.taskId,
+      text: "I will patch upload validation.",
+      at: "2026-06-28T09:02:00+05:30",
+    });
+    const driver = new GitMemoryWorktreeGitDriver(prepared.repoPath);
+    await driver.commitSyntheticFiles({
+      ref: task.ref,
+      files: {
+        [gitMemoryTaskStatePath(task.taskId)]: "{ invalid json",
+      },
+      message: "damage task state",
+    });
+    const memoryState = await runtime.buildMemoryState(prepared.sessionId);
+
+    expect(memoryState.session.conversationTail).toMatchObject([
+      { seq: 1, role: "user", text: "Fix upload handling" },
+      { seq: 2, role: "assistant", text: "I will patch upload validation." },
+    ]);
+    expect(memoryState.activeTask?.conversationMarkdownTail).toContain("I will patch upload validation.");
   });
 
   it("surfaces unresolved git-memory writes in memory and active context", async () => {

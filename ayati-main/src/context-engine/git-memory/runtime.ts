@@ -1,4 +1,7 @@
 import type {
+  TaskAssetRecord,
+} from "../contracts.js";
+import type {
   CommitGitMemoryTaskRunInput,
   CommitGitMemoryTaskRunResult,
   CreateGitMemoryTaskBranchInput,
@@ -12,11 +15,15 @@ import {
   DEFAULT_GIT_MEMORY_CONTEXT_LIMITS,
   type GitMemoryMachineContextPack,
 } from "./context-pack.js";
-import { appendGitMemoryConversationMarkdown } from "./conversation-markdown.js";
+import {
+  appendGitMemoryConversationMarkdown,
+  renderGitMemoryConversationMarkdownDocument,
+} from "./conversation-markdown.js";
 import {
   buildGitMemoryContextPackFromMemoryState,
   buildGitContextPendingWrites,
   GitContextMemoryStateHydrator,
+  type GitContextMemoryActiveTask,
   type GitContextMemoryState,
 } from "./memory-state.js";
 import {
@@ -29,6 +36,7 @@ import {
 import type {
   GitMemoryConversationRecord,
   GitMemoryConversationRole,
+  GitMemoryRunFile,
   GitMemoryRunId,
   GitMemorySessionId,
   GitMemoryTaskId,
@@ -259,7 +267,9 @@ export class GitMemoryRuntime {
       }
       return record;
     });
-    this.invalidateSessionMemory(input.sessionId);
+    if (!this.updateCachedTaskConversation(input.sessionId, input.taskId, record)) {
+      this.invalidateSessionMemory(input.sessionId);
+    }
     return record;
   }
 
@@ -272,7 +282,7 @@ export class GitMemoryRuntime {
     }, async () => {
       return await this.store.createTaskBranch(input);
     });
-    this.invalidateSessionMemory(input.sessionId);
+    await this.cacheCreatedTask(input, result);
     return result;
   }
 
@@ -350,7 +360,9 @@ export class GitMemoryRuntime {
     }, async () => {
       return await this.store.commitTaskRun(input);
     });
-    this.invalidateSessionMemory(input.sessionId);
+    if (!await this.cacheCommittedTaskRun(input, result)) {
+      this.invalidateSessionMemory(input.sessionId);
+    }
     return result;
   }
 
@@ -423,6 +435,169 @@ export class GitMemoryRuntime {
       },
     };
     this.sessionMemoryCache.set(state.session.sessionId, nextState);
+  }
+
+  private async cacheCreatedTask(
+    input: CreateGitMemoryTaskBranchInput,
+    result: CreateGitMemoryTaskBranchResult,
+  ): Promise<void> {
+    const state = await this.getOrHydrateCachedMemoryState(input.sessionId);
+    const status = input.state?.status ?? input.status ?? "open";
+    const summary = input.state?.summary ?? input.objective;
+    const completed = input.state?.completed ?? [];
+    const open = input.state?.open ?? [input.objective];
+    const blockers = input.state?.blockers ?? [];
+    const facts = input.state?.facts ?? [];
+    const next = input.state?.next ?? input.objective;
+    const conversation = conversationRecordsInRange(state.session.conversationTail, input);
+    const activeTask: GitContextMemoryActiveTask = {
+      taskId: result.taskId,
+      branch: result.branch,
+      ref: result.ref,
+      title: input.title,
+      objective: input.objective,
+      status,
+      summary,
+      completed,
+      open,
+      blockers,
+      facts,
+      next,
+      assets: [],
+      conversationMarkdownTail: markdownTail(
+        renderGitMemoryConversationMarkdownDocument(conversation, {
+          taskId: result.taskId,
+          ...(input.runId ? { runId: input.runId } : {}),
+        }),
+        DEFAULT_GIT_MEMORY_CONTEXT_LIMITS.conversationMarkdownCharLimit,
+      ),
+      recentRuns: [],
+      recentCommits: [],
+      recentEvidence: [],
+    };
+    const knownTask = {
+      taskId: activeTask.taskId,
+      branch: activeTask.branch,
+      ref: activeTask.ref,
+      title: activeTask.title,
+      objective: activeTask.objective,
+      status: activeTask.status,
+      summary: activeTask.summary,
+      open: activeTask.open,
+      blockers: activeTask.blockers,
+      facts: activeTask.facts,
+      next: activeTask.next,
+    };
+    this.sessionMemoryCache.set(input.sessionId, {
+      ...state,
+      session: {
+        ...state.session,
+        taskCount: state.knownTasks.some((task) => task.taskId === result.taskId)
+          ? state.session.taskCount
+          : state.session.taskCount + 1,
+        currentBranch: result.branch,
+      },
+      focus: {
+        status: "active",
+        taskId: result.taskId,
+        branch: result.branch,
+        ref: result.ref,
+      },
+      activeTask,
+      knownTasks: [
+        knownTask,
+        ...state.knownTasks.filter((task) => task.taskId !== result.taskId),
+      ],
+    });
+  }
+
+  private updateCachedTaskConversation(
+    sessionId: GitMemorySessionId,
+    taskId: GitMemoryTaskId | undefined,
+    record: GitMemoryConversationRecord,
+  ): boolean {
+    const state = this.sessionMemoryCache.get(sessionId);
+    if (!state || !taskId || state.activeTask?.taskId !== taskId) {
+      return false;
+    }
+    this.sessionMemoryCache.set(sessionId, {
+      ...state,
+      session: {
+        ...state.session,
+        conversationTail: tail(
+          [...state.session.conversationTail, record],
+          DEFAULT_GIT_MEMORY_CONTEXT_LIMITS.conversationTailLimit,
+        ),
+        conversationMarkdownTail: markdownTail(
+          appendGitMemoryConversationMarkdown(state.session.conversationMarkdownTail, record),
+          DEFAULT_GIT_MEMORY_CONTEXT_LIMITS.conversationMarkdownCharLimit,
+        ),
+      },
+      activeTask: {
+        ...state.activeTask,
+        conversationMarkdownTail: markdownTail(
+          appendGitMemoryConversationMarkdown(state.activeTask.conversationMarkdownTail, record),
+          DEFAULT_GIT_MEMORY_CONTEXT_LIMITS.conversationMarkdownCharLimit,
+        ),
+      },
+    });
+    return true;
+  }
+
+  private async cacheCommittedTaskRun(
+    input: CommitGitMemoryTaskRunInput,
+    result: CommitGitMemoryTaskRunResult,
+  ): Promise<boolean> {
+    const state = this.sessionMemoryCache.get(input.sessionId);
+    if (!state?.activeTask || state.activeTask.taskId !== result.taskId) {
+      return false;
+    }
+    const completedAt = input.completedAt ?? this.nowProvider().toISOString();
+    const startedAt = input.startedAt ?? completedAt;
+    const previous = state.activeTask;
+    const newFacts = input.newFacts ?? [];
+    const facts = input.state?.facts ?? unique([...previous.facts, ...newFacts]);
+    const updatedTask: GitContextMemoryActiveTask = {
+      ...previous,
+      status: input.state?.status ?? previous.status,
+      summary: input.state?.summary ?? input.summary,
+      completed: input.state?.completed ?? previous.completed,
+      open: input.state?.open ?? previous.open,
+      blockers: input.state?.blockers ?? previous.blockers,
+      facts,
+      next: input.state?.next ?? input.next ?? previous.next,
+      assets: mergeCachedAssets(previous.assets, input.assets ?? []),
+      recentRuns: [
+        buildCachedRunFile(input, result.runId, startedAt, completedAt),
+        ...previous.recentRuns.filter((run) => run.runId !== result.runId),
+      ].slice(0, DEFAULT_GIT_MEMORY_CONTEXT_LIMITS.runLimit),
+    };
+    this.sessionMemoryCache.set(input.sessionId, {
+      ...state,
+      session: {
+        ...state.session,
+        currentBranch: result.branch,
+      },
+      focus: {
+        status: "active",
+        taskId: result.taskId,
+        branch: result.branch,
+        ref: result.ref,
+      },
+      activeTask: updatedTask,
+      knownTasks: state.knownTasks.map((task) => task.taskId === result.taskId
+        ? {
+          ...task,
+          status: updatedTask.status,
+          summary: updatedTask.summary,
+          open: updatedTask.open,
+          blockers: updatedTask.blockers,
+          facts: updatedTask.facts,
+          next: updatedTask.next,
+        }
+        : task),
+    });
+    return true;
   }
 
   private async createAndCacheConversationRecord(
@@ -526,4 +701,49 @@ function nextConversationSeq(records: Array<{ seq?: unknown }>): number {
   return records.reduce((max, record) => (
     typeof record.seq === "number" && Number.isInteger(record.seq) ? Math.max(max, record.seq) : max
   ), 0) + 1;
+}
+
+function conversationRecordsInRange(
+  records: GitMemoryConversationRecord[],
+  range: { fromSeq: number; toSeq: number },
+): GitMemoryConversationRecord[] {
+  return records.filter((record) => record.seq >= range.fromSeq && record.seq <= range.toSeq);
+}
+
+function buildCachedRunFile(
+  input: CommitGitMemoryTaskRunInput,
+  runId: GitMemoryRunId,
+  startedAt: string,
+  completedAt: string,
+): GitMemoryRunFile {
+  return {
+    schemaVersion: 1,
+    runId,
+    taskId: input.taskId,
+    status: input.status,
+    startedAt,
+    completedAt,
+    conversationRefs: input.conversationRefs,
+    summary: input.summary,
+    ...(input.assistantResponse ? { assistantResponse: input.assistantResponse } : {}),
+    toolCallCount: input.toolCallCount ?? input.actions?.length ?? 0,
+    changedFiles: input.changedFiles ?? [],
+    newFacts: input.newFacts ?? [],
+    ...(input.next ? { next: input.next } : {}),
+  };
+}
+
+function mergeCachedAssets(
+  existing: TaskAssetRecord[],
+  incoming: TaskAssetRecord[],
+): TaskAssetRecord[] {
+  const byId = new Map(existing.map((asset) => [asset.assetId, asset]));
+  for (const asset of incoming) {
+    byId.set(asset.assetId, asset);
+  }
+  return [...byId.values()];
+}
+
+function unique<T>(values: T[]): T[] {
+  return [...new Set(values)];
 }
