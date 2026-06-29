@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
+  buildGitMemoryContextPackFromMemoryState,
   createGitContextMemoryStateHydrator,
   GitMemoryDailySessionStore,
   GitMemoryWorktreeGitDriver,
@@ -131,6 +132,25 @@ describe("GitContextMemoryStateHydrator", () => {
       summary: "Patched upload validation handling.",
       next: "Verify upload validation patch.",
     }]);
+
+    const context = buildGitMemoryContextPackFromMemoryState(state);
+    expect(context).toMatchObject({
+      session: {
+        sessionId: "S-20260628-local",
+        taskCount: 1,
+      },
+      focus: {
+        status: "active",
+        taskId: prepared.task.taskId,
+      },
+      task: {
+        taskId: prepared.task.taskId,
+        branch: prepared.task.branch,
+        title: "Fix upload handling",
+        status: "in_progress",
+        summary: "Patched upload validation handling.",
+      },
+    });
   });
 
   it("marks a current task branch missing when HEAD points at a branch without task files", async () => {

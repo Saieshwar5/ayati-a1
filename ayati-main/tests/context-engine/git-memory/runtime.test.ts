@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import {
+  buildGitMemoryContextPackFromMemoryState,
   createGitMemoryRuntime,
   GIT_MEMORY_MAIN_REF,
   GIT_MEMORY_SESSION_CONVERSATION_MARKDOWN_PATH,
@@ -100,6 +101,27 @@ describe("GitMemoryRuntime", () => {
     const driver = new GitMemoryWorktreeGitDriver(prepared.repoPath);
     expect(await driver.readWorkingFile("session/conversation.jsonl")).toBeNull();
     expect(await driver.log(GIT_MEMORY_MAIN_REF, 5)).toHaveLength(3);
+  });
+
+  it("derives prepared turn context from memory state instead of direct context reads", async () => {
+    const contextStoreDir = await mkdtemp(join(tmpdir(), "ayati-git-memory-runtime-"));
+    const contextReader = {
+      buildActiveContext: vi.fn().mockRejectedValue(new Error("direct context reader should not be used")),
+    };
+    const runtime = createGitMemoryRuntime({
+      contextStoreDir,
+      timezone: "Asia/Kolkata",
+      agentId: "local",
+      contextReader: contextReader as never,
+    });
+
+    const prepared = await runtime.prepareUserTurn({
+      userMessage: "Fix upload handling",
+      at: "2026-06-28T09:00:00+05:30",
+    });
+
+    expect(contextReader.buildActiveContext).not.toHaveBeenCalled();
+    expect(prepared.context).toEqual(buildGitMemoryContextPackFromMemoryState(prepared.memoryState));
   });
 
   it("uses timezone-aware dates when choosing the daily session repo", async () => {

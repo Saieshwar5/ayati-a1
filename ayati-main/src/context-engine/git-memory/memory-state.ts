@@ -2,6 +2,7 @@ import type {
   GitMemoryContextLimits,
   GitMemoryCommitActivityRecord,
   GitMemoryFocusContext,
+  GitMemoryMachineContextPack,
   GitMemoryModelCommitSummary,
 } from "./context-pack.js";
 import type { TaskAssetRecord } from "../contracts.js";
@@ -98,6 +99,43 @@ export function createGitContextMemoryStateHydrator(
   store: GitMemoryDailySessionStore,
 ): GitContextMemoryStateHydrator {
   return new GitContextMemoryStateHydrator(store);
+}
+
+export function buildGitMemoryContextPackFromMemoryState(
+  state: GitContextMemoryState,
+): GitMemoryMachineContextPack {
+  return {
+    session: {
+      sessionId: state.session.sessionId,
+      conversationTail: state.session.conversationTail,
+      conversationMarkdownTail: state.session.conversationMarkdownTail,
+      activityTail: state.session.activityTail,
+      recentCommits: state.session.recentCommits,
+      taskCount: state.session.taskCount,
+    },
+    focus: state.focus,
+    ...(state.activeTask ? {
+      task: {
+        ref: state.activeTask.ref,
+        taskId: state.activeTask.taskId,
+        branch: state.activeTask.branch,
+        title: state.activeTask.title,
+        objective: state.activeTask.objective,
+        status: state.activeTask.status,
+        summary: state.activeTask.summary,
+        completed: state.activeTask.completed,
+        open: state.activeTask.open,
+        blockers: state.activeTask.blockers,
+        facts: state.activeTask.facts,
+        next: state.activeTask.next,
+        assets: state.activeTask.assets,
+        conversationMarkdownTail: state.activeTask.conversationMarkdownTail,
+        recentRuns: state.activeTask.recentRuns,
+        recentEvidence: state.activeTask.recentEvidence,
+        recentCommits: state.activeTask.recentCommits,
+      },
+    } : {}),
+  };
 }
 
 function toActiveTask(
