@@ -207,6 +207,94 @@ describe("GitMemoryRuntime", () => {
     ]);
   });
 
+  it("updates cached session conversation for global assistant messages", async () => {
+    const contextStoreDir = await mkdtemp(join(tmpdir(), "ayati-git-memory-runtime-"));
+    const runtime = createGitMemoryRuntime({
+      contextStoreDir,
+      timezone: "Asia/Kolkata",
+      agentId: "local",
+    });
+    const prepared = await runtime.prepareUserTurn({
+      userMessage: "Fix upload handling",
+      at: "2026-06-28T09:00:00+05:30",
+    });
+
+    await runtime.recordAssistantMessage({
+      sessionId: prepared.sessionId,
+      text: "I will inspect upload handling.",
+      at: "2026-06-28T09:00:05+05:30",
+    });
+    await writeFile(
+      join(prepared.repoPath, GIT_MEMORY_SESSION_CONVERSATION_MARKDOWN_PATH),
+      "# Conversation\n",
+    );
+    const memoryState = await runtime.buildMemoryState(prepared.sessionId);
+
+    expect(memoryState.session.conversationTail).toMatchObject([
+      {
+        seq: 1,
+        role: "user",
+        text: "Fix upload handling",
+      },
+      {
+        seq: 2,
+        role: "assistant",
+        text: "I will inspect upload handling.",
+      },
+    ]);
+  });
+
+  it("keeps task-linked assistant messages on the git-backed rehydrate path", async () => {
+    const contextStoreDir = await mkdtemp(join(tmpdir(), "ayati-git-memory-runtime-"));
+    const runtime = createGitMemoryRuntime({
+      contextStoreDir,
+      timezone: "Asia/Kolkata",
+      agentId: "local",
+    });
+    const prepared = await runtime.prepareUserTurn({
+      userMessage: "Fix upload handling",
+      at: "2026-06-28T09:00:00+05:30",
+    });
+    const task = await runtime.createTaskBranch({
+      sessionId: prepared.sessionId,
+      title: "Fix upload handling",
+      objective: "Find and fix upload handling failures.",
+      fromSeq: prepared.userMessage.seq,
+      toSeq: prepared.userMessage.seq,
+      at: "2026-06-28T09:01:00+05:30",
+    });
+    const run = await runtime.commitTaskRun({
+      sessionId: prepared.sessionId,
+      taskId: task.taskId,
+      status: "completed",
+      completedAt: "2026-06-28T09:10:00+05:30",
+      conversationRefs: [{ fromSeq: prepared.userMessage.seq, toSeq: prepared.userMessage.seq }],
+      summary: "Finished upload handling inspection.",
+      state: {
+        status: "done",
+        completed: ["Finished upload handling inspection"],
+        open: [],
+        next: "No next step.",
+      },
+    });
+    await runtime.buildMemoryState(prepared.sessionId);
+
+    await runtime.recordAssistantMessage({
+      sessionId: prepared.sessionId,
+      taskId: task.taskId,
+      runId: run.runId,
+      text: "Finished upload handling inspection.",
+      at: "2026-06-28T09:10:05+05:30",
+    });
+    await writeFile(
+      join(prepared.repoPath, GIT_MEMORY_SESSION_CONVERSATION_MARKDOWN_PATH),
+      "# Conversation\n",
+    );
+    const memoryState = await runtime.buildMemoryState(prepared.sessionId);
+
+    expect(memoryState.session.conversationTail).toEqual([]);
+  });
+
   it("invalidates cached session memory after task creation", async () => {
     const contextStoreDir = await mkdtemp(join(tmpdir(), "ayati-git-memory-runtime-"));
     const runtime = createGitMemoryRuntime({

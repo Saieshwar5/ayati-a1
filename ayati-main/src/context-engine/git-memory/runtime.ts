@@ -226,6 +226,9 @@ export class GitMemoryRuntime {
   async recordAssistantMessage(
     input: RecordGitMemoryAssistantMessageInput,
   ): Promise<GitMemoryConversationRecord> {
+    const cachedState = input.taskId
+      ? null
+      : await this.getOrHydrateCachedMemoryState(input.sessionId);
     const record = await this.writeQueue.enqueue({
       sessionId: input.sessionId,
       type: "assistant_message_recorded",
@@ -250,7 +253,11 @@ export class GitMemoryRuntime {
       }
       return record;
     });
-    this.invalidateSessionMemory(input.sessionId);
+    if (cachedState) {
+      this.updateCachedSessionConversation(cachedState, record);
+    } else {
+      this.invalidateSessionMemory(input.sessionId);
+    }
     return record;
   }
 
