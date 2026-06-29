@@ -7,7 +7,7 @@ session task-thread or Activity continuation path.
 Current runtime model:
 
 ```text
-daily git context + run recorder + personal memory -> context pack -> decision state view
+daily git context + run recorder + personal memory -> git context pack -> decision state view
 ```
 
 ## Git Context
@@ -19,27 +19,29 @@ The runtime flow is:
 
 ```text
 user message
--> context engine records conversation on main
--> task resolver creates/selects a work branch
+-> context engine records the global conversation on main
+-> task resolver creates/selects a task branch when task work is needed
 -> agent loop receives compact git context
--> completed run writes state, actions, output, assets, and commit metadata
+-> completed run writes task state, run summaries, evidence, and commit metadata
 ```
 
 The model-facing state uses `State view.context.gitContext`. It contains:
 
-- `session.conversationTail`: bounded user/assistant/system conversation from
-  the daily session.
-- `session.eventTail`: bounded session events such as task creation, focus
-  changes, and run commits.
-- `focus`: the current git focus ref.
+- `session.conversationTail`: bounded user/assistant/system conversation
+  parsed from `session/conversation.md`.
+- `session.conversationMarkdownTail`: the model-facing Markdown conversation
+  tail.
+- `session.eventTail`: bounded session events derived from git commit trailers.
+- `session.recentCommits`: compact main-branch commit summaries.
+- `focus`: the current git branch interpreted as active focus.
 - `task`: selected work branch context when a task is resolved.
 
 `gitContext.task` includes:
 
 - work id, title, objective, status, and branch ref
 - completed work, open work, blockers, facts, and next step
-- `assets`: task assets from `tasks/<workId>/assets.jsonl`
-- recent run summaries and compact commit summaries
+- task-local Markdown conversation tail from the task branch
+- recent run summaries, compact commit summaries, and evidence summaries
 
 Ambiguous task resolution is handled before the agent loop runs. The app asks
 the user to choose rather than asking the model to guess from multiple possible
@@ -47,43 +49,92 @@ tasks.
 
 ## Conversation
 
-Conversation is recorded in the daily git session on the main branch:
+Conversation is canonical as Markdown:
 
 ```text
-session/conversation.jsonl
+main:session/conversation.md
+task/W-...:session/conversation.md
 ```
 
-The context pack reads only a bounded tail for the model. Task-specific
-conversation can be recovered later by filtering the main conversation and git
-events/commits that resolved to a work id or branch.
+The `main` branch stores the global daily conversation. Task branches store the
+conversation blocks that belong to that task. Normal task conversation is
+append-only synced to both:
+
+```text
+active task branch:session/conversation.md
+main:session/conversation.md
+```
+
+Ayati does not use a normal full branch merge for this sync. Only the
+conversation block is copied to `main`, so task-local state, run files, action
+traces, and intermediate files remain on the task branch.
+
+Conversation blocks may include task, run, and branch metadata:
+
+```md
+## 2026-06-28T09:00:05+05:30 Assistant
+
+Task: W-20260628-0001
+Run: R-20260628-0001
+Branch: task/W-20260628-0001-fix-upload-handling
+
+I inspected the upload path.
+```
+
+`session/conversation.jsonl` remains only as a compact debug log. It is not the
+canonical model context. New rows are intentionally small:
+
+```json
+{"seq":1,"role":"user","at":"2026-06-28T09:00:00+05:30","text":"Fix upload handling","branch":"main"}
+```
+
+Message ids, turn ids, schema row versions, task-message link ids, and event
+ids should not be treated as conversation identity. Runtime APIs may still use
+turn ids in memory to correlate a prepared user turn with an assistant response.
+
+## Focus And Events
+
+The active git branch is the focus source.
+
+```text
+main = no active task
+task/W-... = active task branch
+```
+
+`session/focus.json` is not canonical state. Git commit history and Ayati
+commit trailers are the durable event log. Context readers derive session event
+tails from commits such as task creation and run completion.
+
+Debug/event JSONL files may exist in historical sessions or tests, but current
+model-facing context should not depend on them.
 
 ## Task Branch Files
 
 Each work branch owns task files under:
 
 ```text
-tasks/<workId>/
+tasks/<taskId>/
 ```
 
 Core files:
 
-- `task.json`: stable identity and metadata.
+- `task.md`: human/model-readable task identity and objective.
+- `task.json`: stable machine-readable identity and metadata.
 - `state.json`: current machine-readable task state.
-- `assets.jsonl`: user, agent, document, directory, generated, and reference
-  assets that belong to the task.
-- `summaries/<runId>.json`: one summary per completed run.
-- `actions/<runId>/<actionId>.json`: compact tool/action metadata.
-- `actions/<runId>/<actionId>-output.*`: bounded action output evidence.
-- `outputs/final.json`: latest final answer/output for the task.
+- `runs/<runId>.md`: human/model-readable run summary.
+- `runs/<runId>.json`: machine-readable run summary.
+- `actions/<runId>.jsonl`: compact tool/action metadata for a run.
+- `evidence/<runId>/manifest.jsonl`: durable compact evidence records.
+- `assets.json` or equivalent asset index when task assets are present.
 
-Run commits carry useful Ayati commit trailers such as session id, work id,
-run id, event, status, and action ids. The commit message is part of the
-machine-readable retrieval surface.
+Run commits carry useful Ayati commit trailers such as session id, task id, run
+id, event, status, branch, conversation sequence, and action ids. The commit
+message is part of the machine-readable retrieval surface.
 
 ## Assets
 
-The agent loop returns `taskAssets` separately from old task summaries. The
-context engine persists them to the task branch.
+Attachments and task assets are separate from conversation text but should be
+represented in git context when they belong to task continuity.
 
 Current asset shape:
 
@@ -102,6 +153,11 @@ Attachment restore uses `context.taskAssets` from tool execution context. It
 does not use Activity memory. Document and dataset assets are re-prepared from
 their path through `DocumentStore`; file and directory assets return path-based
 restore output for follow-up file tools.
+
+Future attachment work should make assets visible in both:
+
+- conversation Markdown when the user attaches files
+- task asset state for exact ids, paths, checksums, and restore metadata
 
 ## Personal Memory
 
