@@ -8,4 +8,5 @@ export * from "./memory-state.js";
 export * from "./runtime.js";
 export * from "./schema.js";
 export * from "./session-store.js";
+export * from "./task-refs.js";
 export * from "./task-router.js";

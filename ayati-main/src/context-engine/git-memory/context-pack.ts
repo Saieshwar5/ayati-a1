@@ -1,5 +1,9 @@
 import { parseGitMemoryCommitTrailers, type ParsedGitMemoryCommitTrailers } from "./commit-message.js";
 import { parseGitMemoryConversationMarkdown } from "./conversation-markdown.js";
+import {
+  type GitMemoryDerivedTaskEntry,
+  readGitMemoryTaskEntries,
+} from "./task-refs.js";
 import type { TaskAssetRecord } from "../contracts.js";
 import { GitMemoryWorktreeGitDriver, type GitMemoryLogEntry } from "./git-driver.js";
 import type { GitMemoryDailySessionStore } from "./session-store.js";
@@ -92,12 +96,6 @@ export interface GitMemoryCommitActivityRecord {
   commit?: string;
 }
 
-interface GitMemoryDerivedTaskEntry {
-  taskId: GitMemoryTaskId;
-  branch: string;
-  ref: string;
-}
-
 export interface GitMemoryMachineContextPack {
   session: {
     sessionId: GitMemorySessionId;
@@ -140,7 +138,7 @@ export class GitMemoryContextReader {
     const driver = await this.store.openExistingDriver(input.sessionId);
     const [conversationMarkdownDocument, taskEntries, currentBranch, sessionCommits] = await Promise.all([
       driver.readWorkingFile(GIT_MEMORY_SESSION_CONVERSATION_MARKDOWN_PATH),
-      readTaskEntries(driver),
+      readGitMemoryTaskEntries(driver),
       driver.currentBranch(),
       readRecentCommits(driver, GIT_MEMORY_MAIN_REF, limits.commitLogLimit),
     ]);
@@ -378,24 +376,6 @@ function commitToSessionActivity(
     };
   }
   return null;
-}
-
-async function readTaskEntries(driver: GitMemoryWorktreeGitDriver): Promise<GitMemoryDerivedTaskEntry[]> {
-  const refs = (await driver.listRefs("refs/heads/task/")).sort();
-  const entries: GitMemoryDerivedTaskEntry[] = [];
-  for (const ref of refs) {
-    const branch = ref.replace(/^refs\/heads\//, "");
-    const taskId = taskIdFromTaskBranch(branch);
-    if (taskId) {
-      entries.push({ taskId, branch, ref });
-    }
-  }
-  return entries.sort((left, right) => left.taskId.localeCompare(right.taskId));
-}
-
-function taskIdFromTaskBranch(branch: string): GitMemoryTaskId | null {
-  const match = /^task\/(W-\d{8}-\d{4})(?:-|$)/.exec(branch);
-  return match?.[1] ?? null;
 }
 
 async function readRefJson<T>(driver: GitMemoryWorktreeGitDriver, ref: string, path: string): Promise<T | null> {
