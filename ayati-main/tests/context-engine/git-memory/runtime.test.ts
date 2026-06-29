@@ -1,12 +1,13 @@
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   createGitMemoryRuntime,
   GIT_MEMORY_MAIN_REF,
   GIT_MEMORY_SESSION_CONVERSATION_MARKDOWN_PATH,
   GIT_MEMORY_SESSION_CONVERSATION_PATH,
+  GitMemoryDailySessionStore,
   GitMemoryWorktreeGitDriver,
   parseGitMemoryCommitTrailers,
   sessionDateForAt,
@@ -260,6 +261,61 @@ describe("GitMemoryRuntime", () => {
       runId: continued.runId,
       conversationSeq: { fromSeq: second.userMessage.seq, toSeq: second.userMessage.seq },
     });
+  });
+
+  it("does not allocate a task run id when routing is ambiguous", async () => {
+    const contextStoreDir = await mkdtemp(join(tmpdir(), "ayati-git-memory-runtime-"));
+    const store = new GitMemoryDailySessionStore({ contextStoreDir });
+    const runtime = createGitMemoryRuntime({
+      contextStoreDir,
+      timezone: "Asia/Kolkata",
+      agentId: "local",
+      store,
+    });
+    const first = await runtime.prepareUserTurn({
+      userMessage: "Fix upload bug",
+      at: "2026-06-28T09:00:00+05:30",
+    });
+    const firstRoute = await runtime.routeUserTurn({
+      sessionId: first.sessionId,
+      userMessage: "Fix upload bug",
+      fromSeq: first.userMessage.seq,
+      toSeq: first.userMessage.seq,
+      at: "2026-06-28T09:00:01+05:30",
+    });
+    if (firstRoute.status !== "ready") {
+      throw new Error(`Expected ready task route, got ${firstRoute.status}.`);
+    }
+    const second = await runtime.prepareUserTurn({
+      userMessage: "Upload UI redesign",
+      at: "2026-06-28T09:05:00+05:30",
+    });
+    const secondRoute = await runtime.routeUserTurn({
+      sessionId: second.sessionId,
+      userMessage: "Upload UI redesign",
+      fromSeq: second.userMessage.seq,
+      toSeq: second.userMessage.seq,
+      at: "2026-06-28T09:05:01+05:30",
+    });
+    if (secondRoute.status !== "ready") {
+      throw new Error(`Expected ready task route, got ${secondRoute.status}.`);
+    }
+    const allocateRunId = vi.spyOn(store, "allocateTaskRunId");
+
+    const ambiguous = await runtime.prepareUserTurn({
+      userMessage: "upload",
+      at: "2026-06-28T09:10:00+05:30",
+    });
+    const ambiguousRoute = await runtime.routeUserTurn({
+      sessionId: ambiguous.sessionId,
+      userMessage: "upload",
+      fromSeq: ambiguous.userMessage.seq,
+      toSeq: ambiguous.userMessage.seq,
+      at: "2026-06-28T09:10:01+05:30",
+    });
+
+    expect(ambiguousRoute.status).toBe("ambiguous");
+    expect(allocateRunId).not.toHaveBeenCalled();
   });
 });
 

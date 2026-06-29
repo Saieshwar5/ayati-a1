@@ -199,18 +199,25 @@ export class GitMemoryRuntime {
   }
 
   async routeUserTurn(input: ApplyGitMemoryTaskRouteInput): Promise<RoutedGitMemoryUserTurn> {
-    const runId = await this.store.allocateTaskRunId(input.sessionId);
-    const route = await this.taskRouter.route({ ...input, runId });
-    if (route.status === "ambiguous") {
+    const resolution = await this.taskRouter.resolve(input);
+    if (resolution.mode === "ambiguous") {
       const [context, memoryState] = await Promise.all([
         this.contextReader.buildActiveContext({ sessionId: input.sessionId }),
         this.memoryStateHydrator.hydrate({ sessionId: input.sessionId }),
       ]);
       return {
-        ...route,
+        status: "ambiguous",
+        sessionId: input.sessionId,
+        candidates: resolution.candidates,
+        reason: resolution.reason,
         context,
         memoryState,
       };
+    }
+    const runId = await this.store.allocateTaskRunId(input.sessionId);
+    const route = await this.taskRouter.applyResolution({ ...input, runId }, resolution);
+    if (route.status === "ambiguous") {
+      throw new Error("Git memory task route unexpectedly became ambiguous after run allocation.");
     }
     if (!route.createdTask) {
       await this.store.appendTaskConversationRange({

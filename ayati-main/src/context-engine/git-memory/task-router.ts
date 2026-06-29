@@ -172,6 +172,13 @@ export class GitMemoryTaskRouter {
 
   async route(input: ApplyGitMemoryTaskRouteInput): Promise<AppliedGitMemoryTaskRoute> {
     const resolution = await this.resolve(input);
+    return await this.applyResolution(input, resolution);
+  }
+
+  async applyResolution(
+    input: ApplyGitMemoryTaskRouteInput,
+    resolution: GitMemoryTaskRouteResolution,
+  ): Promise<AppliedGitMemoryTaskRoute> {
     if (resolution.mode === "ambiguous") {
       return {
         status: "ambiguous",
