@@ -8,7 +8,6 @@ import {
   GIT_MEMORY_SESSION_CONVERSATION_PATH,
   GIT_MEMORY_SESSION_META_PATH,
   GIT_MEMORY_SESSION_SCHEMA_PATH,
-  GIT_MEMORY_SESSION_TASKS_PATH,
   GitMemoryWorktreeGitDriver,
   GitMemoryDailySessionStore,
   gitMemoryTaskActionsPath,
@@ -73,8 +72,7 @@ describe("GitMemoryDailySessionStore", () => {
     expect(await driver.readFile(GIT_MEMORY_MAIN_REF, GIT_MEMORY_SESSION_CONVERSATION_PATH)).toBe("");
     expect(await driver.readFile(GIT_MEMORY_MAIN_REF, GIT_MEMORY_SESSION_CONVERSATION_MARKDOWN_PATH))
       .toBe("# Conversation\n");
-    expect(JSON.parse(await driver.readFile(GIT_MEMORY_MAIN_REF, GIT_MEMORY_SESSION_TASKS_PATH) ?? "{}"))
-      .toEqual({ schemaVersion: 1, tasks: [] });
+    expect(await driver.readFile(GIT_MEMORY_MAIN_REF, "session/tasks.json")).toBeNull();
     expect(JSON.parse(await driver.readFile(GIT_MEMORY_MAIN_REF, GIT_MEMORY_SESSION_SCHEMA_PATH) ?? "{}"))
       .toMatchObject({ schemaVersion: 1, kind: "git_memory_session" });
   });
@@ -209,12 +207,12 @@ describe("GitMemoryDailySessionStore", () => {
 
     const driver = new GitMemoryWorktreeGitDriver(session.repoPath);
     const log = await driver.log(GIT_MEMORY_MAIN_REF, 5);
-    expect(log).toHaveLength(3);
+    expect(log).toHaveLength(2);
     expect(log[0]?.commit).toBe(checkpoint.commit);
     expect(parseGitMemoryCommitTrailers(log[0]?.message ?? "")).toMatchObject({
       sessionId: "S-20260628-local",
-      event: "session_checkpointed",
-      at: "2026-06-28T09:01:00+05:30",
+      event: "conversation_appended",
+      conversationSeq: { fromSeq: 1, toSeq: 1 },
     });
     expect(parseJsonl(await driver.readFile(GIT_MEMORY_MAIN_REF, GIT_MEMORY_SESSION_CONVERSATION_PATH)))
       .toMatchObject([{ seq: 1, role: "user", text: "Keep this session change until checkpoint." }]);
@@ -363,14 +361,7 @@ describe("GitMemoryDailySessionStore", () => {
       conversationSeq: { fromSeq: 1, toSeq: 2 },
     });
 
-    expect(JSON.parse(await driver.readWorkingFile(GIT_MEMORY_SESSION_TASKS_PATH) ?? "{}"))
-      .toMatchObject({
-        tasks: [{
-          taskId: "W-20260628-0001",
-          branch: "task/W-20260628-0001-fix-upload-handling",
-          title: "Fix upload handling",
-        }],
-      });
+    expect(await driver.readWorkingFile("session/tasks.json")).toBeNull();
     expect(await driver.currentBranch()).toBe("task/W-20260628-0001-fix-upload-handling");
     expect(await driver.log(GIT_MEMORY_MAIN_REF, 5)).toHaveLength(3);
   });
@@ -481,8 +472,7 @@ describe("GitMemoryDailySessionStore", () => {
     });
 
     const driver = new GitMemoryWorktreeGitDriver(session.repoPath);
-    expect(JSON.parse(await driver.readFile(GIT_MEMORY_MAIN_REF, GIT_MEMORY_SESSION_TASKS_PATH) ?? "{}"))
-      .toMatchObject({ tasks: [{ taskId: task.taskId, branch: task.branch }] });
+    expect(await driver.readFile(GIT_MEMORY_MAIN_REF, "session/tasks.json")).toBeNull();
     expect(await driver.currentBranch()).toBe(task.branch);
   });
 
@@ -696,14 +686,7 @@ describe("GitMemoryDailySessionStore", () => {
     expect(parseGitMemoryCommitTrailers(taskLog[0]?.message ?? "").raw["Ayati-Action-Id"])
       .toEqual(["ACT-20260628-000001"]);
 
-    expect(JSON.parse(await driver.readWorkingFile(GIT_MEMORY_SESSION_TASKS_PATH) ?? "{}"))
-      .toMatchObject({
-        tasks: [{
-          taskId: "W-20260628-0001",
-          status: "in_progress",
-          updatedAt: "2026-06-28T09:10:00+05:30",
-        }],
-      });
+    expect(await driver.readWorkingFile("session/tasks.json")).toBeNull();
     expect(await driver.log(GIT_MEMORY_MAIN_REF, 5)).toHaveLength(3);
   });
 
@@ -826,8 +809,7 @@ describe("GitMemoryDailySessionStore", () => {
     });
 
     const driver = new GitMemoryWorktreeGitDriver(session.repoPath);
-    expect(JSON.parse(await driver.readFile(GIT_MEMORY_MAIN_REF, GIT_MEMORY_SESSION_TASKS_PATH) ?? "{}"))
-      .toMatchObject({ tasks: [{ taskId: task.taskId, status: "done" }] });
+    expect(await driver.readFile(GIT_MEMORY_MAIN_REF, "session/tasks.json")).toBeNull();
   });
 });
 

@@ -18,7 +18,6 @@ import type {
   GitMemoryTaskId,
   GitMemoryTaskAssetsFile,
   GitMemoryTaskFile,
-  GitMemoryTaskIndexFile,
   GitMemoryTaskStateFile,
   GitMemoryTaskStatus,
 } from "./schema.js";
@@ -27,7 +26,6 @@ import {
   GIT_MEMORY_SESSION_CONVERSATION_MARKDOWN_PATH,
   GIT_MEMORY_SESSION_META_PATH,
   GIT_MEMORY_SESSION_SCHEMA_PATH,
-  GIT_MEMORY_SESSION_TASKS_PATH,
   buildGitMemoryTaskBranchName,
   buildGitMemoryTaskBranchRef,
   createGitMemoryActionId,
@@ -275,6 +273,18 @@ export interface GitMemoryTaskRoutingSnapshot {
   tasks: GitMemoryTaskRoutingSnapshotTask[];
 }
 
+interface GitMemoryDerivedTaskEntry {
+  taskId: GitMemoryTaskId;
+  branch: string;
+  ref: string;
+  title: string;
+  objective: string;
+  status: GitMemoryTaskStatus;
+  createdAt: string;
+  updatedAt: string;
+  missing?: boolean;
+}
+
 export interface CreateGitMemoryTaskBranchInput extends GitMemoryConversationSeqRange {
   sessionId: GitMemorySessionId;
   title: string;
@@ -452,16 +462,15 @@ export class GitMemoryDailySessionStore {
       }
 
       const driver = new GitMemoryWorktreeGitDriver(repoPath);
-      const [hasMainRef, metaRaw, tasksRaw, currentBranch] = await Promise.all([
+      const [hasMainRef, metaRaw, tasks, currentBranch] = await Promise.all([
         driver.hasRef(GIT_MEMORY_MAIN_REF),
         driver.readFile(GIT_MEMORY_MAIN_REF, GIT_MEMORY_SESSION_META_PATH),
-        driver.readWorkingFile(GIT_MEMORY_SESSION_TASKS_PATH),
+        readTaskEntries(driver),
         driver.currentBranch(),
       ]);
       const meta = parseJson<GitMemorySessionMetaFile>(metaRaw);
-      const tasks = parseJson<GitMemoryTaskIndexFile>(tasksRaw);
       const activeTask = currentBranch?.startsWith("task/")
-        ? tasks?.tasks.find((task) => task.branch === currentBranch)
+        ? tasks.find((task) => task.branch === currentBranch)
         : undefined;
 
       sessions.push({
@@ -471,7 +480,7 @@ export class GitMemoryDailySessionStore {
         ...(meta?.timezone ? { timezone: meta.timezone } : {}),
         ...(meta?.agentId ? { agentId: meta.agentId } : {}),
         ...(meta?.createdAt ? { createdAt: meta.createdAt } : {}),
-        taskCount: tasks?.tasks.length ?? 0,
+        taskCount: tasks.length,
         ...(activeTask ? { activeTaskId: activeTask.taskId } : {}),
         ...(activeTask ? { activeBranch: activeTask.branch } : {}),
         ...(!hasMainRef ? { missingMainRef: true } : {}),
@@ -948,11 +957,9 @@ export class GitMemoryDailySessionStore {
   async createTaskBranch(input: CreateGitMemoryTaskBranchInput): Promise<CreateGitMemoryTaskBranchResult> {
     const driver = await GitMemoryWorktreeGitDriver.init(this.repoPath(input.sessionId));
     const date = gitMemoryDateFromSessionId(input.sessionId);
-    const tasks = parseJson<GitMemoryTaskIndexFile>(
-      await driver.readWorkingFile(GIT_MEMORY_SESSION_TASKS_PATH),
-    ) ?? { schemaVersion: 1, tasks: [] };
-    const taskId = input.taskId ?? createGitMemoryTaskId(date, tasks.tasks.length + 1);
-    if (tasks.tasks.some((task) => task.taskId === taskId)) {
+    const tasks = await readTaskEntries(driver);
+    const taskId = input.taskId ?? createGitMemoryTaskId(date, nextTaskSequence(tasks));
+    if (tasks.some((task) => task.taskId === taskId)) {
       throw new Error(`Git memory task already exists: ${taskId}`);
     }
     const branch = buildGitMemoryTaskBranchName(taskId, input.title);
@@ -1024,19 +1031,6 @@ export class GitMemoryDailySessionStore {
       }),
     });
 
-    await driver.writeWorkingFiles({
-      [GIT_MEMORY_SESSION_TASKS_PATH]: prettyJson({
-        schemaVersion: 1,
-        tasks: [...tasks.tasks, {
-          taskId,
-          branch,
-          title: input.title,
-          status,
-          createdAt: at,
-          updatedAt: at,
-        }],
-      } satisfies GitMemoryTaskIndexFile),
-    });
     await driver.checkoutBranch(ref);
 
     return { taskId, branch, ref, taskCommit };
@@ -1044,13 +1038,7 @@ export class GitMemoryDailySessionStore {
 
   async selectTaskForTurn(input: SelectGitMemoryTaskForTurnInput): Promise<SelectGitMemoryTaskForTurnResult> {
     const driver = await GitMemoryWorktreeGitDriver.init(this.repoPath(input.sessionId));
-    const tasks = parseJson<GitMemoryTaskIndexFile>(
-      await driver.readWorkingFile(GIT_MEMORY_SESSION_TASKS_PATH),
-    ) ?? { schemaVersion: 1, tasks: [] };
-    const taskEntry = tasks.tasks.find((task) => task.taskId === input.taskId);
-    if (!taskEntry) {
-      throw new Error(`Git memory task not found: ${input.taskId}`);
-    }
+    const taskEntry = await resolveTaskEntry(driver, { taskId: input.taskId });
     const ref = `refs/heads/${taskEntry.branch}`;
     if (!(await driver.hasRef(ref))) {
       throw new Error(`Git memory task branch missing: ${ref}`);
@@ -1072,17 +1060,7 @@ export class GitMemoryDailySessionStore {
   async commitTaskRun(input: CommitGitMemoryTaskRunInput): Promise<CommitGitMemoryTaskRunResult> {
     const driver = await GitMemoryWorktreeGitDriver.init(this.repoPath(input.sessionId));
     const date = gitMemoryDateFromSessionId(input.sessionId);
-    const tasks = parseJson<GitMemoryTaskIndexFile>(
-      await driver.readWorkingFile(GIT_MEMORY_SESSION_TASKS_PATH),
-    ) ?? { schemaVersion: 1, tasks: [] };
-    const taskIndex = tasks.tasks.findIndex((task) => task.taskId === input.taskId);
-    if (taskIndex < 0) {
-      throw new Error(`Git memory task not found: ${input.taskId}`);
-    }
-    const taskEntry = tasks.tasks[taskIndex];
-    if (!taskEntry) {
-      throw new Error(`Git memory task not found: ${input.taskId}`);
-    }
+    const taskEntry = await resolveTaskEntry(driver, { taskId: input.taskId });
     const ref = `refs/heads/${taskEntry.branch}`;
     if (!(await driver.hasRef(ref))) {
       throw new Error(`Git memory task branch missing: ${ref}`);
@@ -1187,20 +1165,6 @@ export class GitMemoryDailySessionStore {
       }),
     });
 
-    const updatedTasks = tasks.tasks.map((task, index) => index === taskIndex
-      ? {
-          ...task,
-          status: updatedState.status,
-          updatedAt: completedAt,
-        }
-      : task);
-    await driver.writeWorkingFiles({
-      [GIT_MEMORY_SESSION_TASKS_PATH]: prettyJson({
-        schemaVersion: 1,
-        tasks: updatedTasks,
-      } satisfies GitMemoryTaskIndexFile),
-    });
-
     return {
       taskId: input.taskId,
       branch: taskEntry.branch,
@@ -1218,7 +1182,6 @@ export class GitMemoryDailySessionStore {
     const commitPaths = await existingWorkingPaths(driver, [
       GIT_MEMORY_SESSION_CONVERSATION_PATH,
       GIT_MEMORY_SESSION_CONVERSATION_MARKDOWN_PATH,
-      GIT_MEMORY_SESSION_TASKS_PATH,
     ]);
     await driver.checkoutBranch(GIT_MEMORY_MAIN_REF);
     let commit: string | null;
@@ -1239,7 +1202,11 @@ export class GitMemoryDailySessionStore {
       }
     }
     if (!commit) {
-      throw new Error("Session checkpoint did not contain changes.");
+      const currentMain = await driver.resolveRef(GIT_MEMORY_MAIN_REF);
+      if (!currentMain) {
+        throw new Error("Session checkpoint did not contain changes.");
+      }
+      return { commit: currentMain };
     }
     return { commit };
   }
@@ -1267,16 +1234,10 @@ function buildInitialSessionFiles(input: BuildInitialSessionFilesInput): Record<
     repoKind: "daily_session",
     agentId: input.agentId,
   };
-  const tasks: GitMemoryTaskIndexFile = {
-    schemaVersion: 1,
-    tasks: [],
-  };
-
   return {
     [GIT_MEMORY_SESSION_META_PATH]: prettyJson(meta),
     [GIT_MEMORY_SESSION_CONVERSATION_PATH]: "",
     [GIT_MEMORY_SESSION_CONVERSATION_MARKDOWN_PATH]: "# Conversation\n",
-    [GIT_MEMORY_SESSION_TASKS_PATH]: prettyJson(tasks),
     [GIT_MEMORY_SESSION_SCHEMA_PATH]: prettyJson({
       schemaVersion: 1,
       kind: "git_memory_session",
@@ -1565,13 +1526,11 @@ async function readTaskRoutingSnapshotFromDriver(
   sessionId: GitMemorySessionId,
 ): Promise<GitMemoryTaskRoutingSnapshot> {
   const [tasks, currentBranch] = await Promise.all([
-    parseJson<GitMemoryTaskIndexFile>(
-      await driver.readWorkingFile(GIT_MEMORY_SESSION_TASKS_PATH),
-    ) ?? { schemaVersion: 1, tasks: [] },
+    readTaskEntries(driver),
     driver.currentBranch(),
   ]);
   const currentTask = currentBranch?.startsWith("task/")
-    ? tasks.tasks.find((task) => task.branch === currentBranch)
+    ? tasks.find((task) => task.branch === currentBranch)
     : undefined;
   const focus: GitMemoryTaskRoutingFocus | null = currentTask
     ? {
@@ -1582,8 +1541,8 @@ async function readTaskRoutingSnapshotFromDriver(
     : null;
 
   const snapshotTasks: GitMemoryTaskRoutingSnapshotTask[] = [];
-  for (const taskEntry of tasks.tasks) {
-    const ref = `refs/heads/${taskEntry.branch}`;
+  for (const taskEntry of tasks) {
+    const ref = taskEntry.ref;
     if (!(await driver.hasRef(ref))) {
       snapshotTasks.push({
         taskId: taskEntry.taskId,
@@ -1636,19 +1595,17 @@ async function readTaskRoutingSnapshotFromDriver(
 async function resolveTaskEntry(
   driver: GitMemoryWorktreeGitDriver,
   input: { taskId?: GitMemoryTaskId; branch?: string },
-): Promise<GitMemoryTaskIndexFile["tasks"][number]> {
+): Promise<GitMemoryDerivedTaskEntry> {
   const hasTaskId = Boolean(input.taskId?.trim());
   const hasBranch = Boolean(input.branch?.trim());
   if (hasTaskId === hasBranch) {
     throw new Error("Provide exactly one task selector: taskId or branch.");
   }
 
-  const tasks = parseJson<GitMemoryTaskIndexFile>(
-    await driver.readWorkingFile(GIT_MEMORY_SESSION_TASKS_PATH),
-  ) ?? { schemaVersion: 1, tasks: [] };
+  const tasks = await readTaskEntries(driver);
   const entry = hasTaskId
-    ? tasks.tasks.find((task) => task.taskId === input.taskId)
-    : tasks.tasks.find((task) => task.branch === input.branch);
+    ? tasks.find((task) => task.taskId === input.taskId)
+    : tasks.find((task) => task.branch === input.branch);
   if (!entry) {
     throw new Error(hasTaskId
       ? `Git memory task not found: ${input.taskId}`
@@ -1657,10 +1614,32 @@ async function resolveTaskEntry(
   return entry;
 }
 
-async function readTaskEntries(driver: GitMemoryWorktreeGitDriver): Promise<GitMemoryTaskIndexFile["tasks"]> {
-  return (parseJson<GitMemoryTaskIndexFile>(
-    await driver.readWorkingFile(GIT_MEMORY_SESSION_TASKS_PATH),
-  ) ?? { schemaVersion: 1, tasks: [] }).tasks;
+async function readTaskEntries(driver: GitMemoryWorktreeGitDriver): Promise<GitMemoryDerivedTaskEntry[]> {
+  const refs = (await driver.listRefs("refs/heads/task/")).sort();
+  const entries: GitMemoryDerivedTaskEntry[] = [];
+  for (const ref of refs) {
+    const branch = ref.replace(/^refs\/heads\//, "");
+    const taskId = taskIdFromTaskBranch(branch);
+    if (!taskId) {
+      continue;
+    }
+    const [task, state] = await Promise.all([
+      parseJson<GitMemoryTaskFile>(await driver.readFile(ref, gitMemoryTaskFilePath(taskId))),
+      parseJson<GitMemoryTaskStateFile>(await driver.readFile(ref, gitMemoryTaskStatePath(taskId))),
+    ]);
+    entries.push({
+      taskId,
+      branch,
+      ref,
+      title: task?.title ?? taskId,
+      objective: task?.objective ?? task?.title ?? taskId,
+      status: state?.status ?? task?.status ?? "open",
+      createdAt: task?.createdAt ?? "",
+      updatedAt: state?.updatedAt ?? task?.updatedAt ?? "",
+      ...(!task || !state ? { missing: true } : {}),
+    });
+  }
+  return entries.sort((left, right) => left.taskId.localeCompare(right.taskId));
 }
 
 async function existingWorkingPaths(
@@ -1674,6 +1653,19 @@ async function existingWorkingPaths(
     }
   }
   return existing;
+}
+
+function taskIdFromTaskBranch(branch: string): GitMemoryTaskId | null {
+  const match = /^task\/(W-\d{8}-\d{4})(?:-|$)/.exec(branch);
+  return match?.[1] ?? null;
+}
+
+function nextTaskSequence(tasks: GitMemoryDerivedTaskEntry[]): number {
+  const maxSequence = tasks.reduce((max, task) => {
+    const match = /^W-\d{8}-(\d{4})$/.exec(task.taskId);
+    return Math.max(max, match ? Number(match[1]) : 0);
+  }, 0);
+  return maxSequence + 1;
 }
 
 async function nextRunSequenceFromTasks(driver: GitMemoryWorktreeGitDriver): Promise<number> {

@@ -3,7 +3,6 @@ import {
   GIT_MEMORY_SESSION_CONVERSATION_MARKDOWN_PATH,
   GIT_MEMORY_SESSION_CONVERSATION_PATH,
   GIT_MEMORY_SESSION_META_PATH,
-  GIT_MEMORY_SESSION_TASKS_PATH,
   gitMemoryTaskActionsPath,
   gitMemoryTaskAssetsPath,
   gitMemoryTaskContextPath,
@@ -20,7 +19,6 @@ import {
   validateGitMemoryRunFile,
   validateGitMemorySessionMetaFile,
   validateGitMemoryTaskFile,
-  validateGitMemoryTaskIndexFile,
   validateGitMemoryTaskStateFile,
 } from "../../../src/context-engine/git-memory/index.js";
 
@@ -29,7 +27,6 @@ describe("git memory schema", () => {
     expect(GIT_MEMORY_SESSION_META_PATH).toBe("session/meta.json");
     expect(GIT_MEMORY_SESSION_CONVERSATION_PATH).toBe("session/conversation.jsonl");
     expect(GIT_MEMORY_SESSION_CONVERSATION_MARKDOWN_PATH).toBe("session/conversation.md");
-    expect(GIT_MEMORY_SESSION_TASKS_PATH).toBe("session/tasks.json");
 
     expect(gitMemoryTaskFilePath("W-20260628-0001")).toBe("tasks/W-20260628-0001/task.json");
     expect(gitMemoryTaskMarkdownPath("W-20260628-0001")).toBe("tasks/W-20260628-0001/task.md");
@@ -58,10 +55,6 @@ describe("git memory schema", () => {
       agentId: "local",
     }).ok).toBe(true);
 
-    expect(validateGitMemoryTaskIndexFile({
-      schemaVersion: 1,
-      tasks: [],
-    }).ok).toBe(true);
   });
 
   it("validates compact debug and legacy conversation records", () => {

@@ -5,7 +5,6 @@ export const GIT_MEMORY_SCHEMA_VERSION = 1;
 export const GIT_MEMORY_SESSION_META_PATH = "session/meta.json";
 export const GIT_MEMORY_SESSION_CONVERSATION_PATH = "session/conversation.jsonl";
 export const GIT_MEMORY_SESSION_CONVERSATION_MARKDOWN_PATH = "session/conversation.md";
-export const GIT_MEMORY_SESSION_TASKS_PATH = "session/tasks.json";
 export const GIT_MEMORY_SESSION_SCHEMA_PATH = "session/schema.json";
 
 export type GitMemorySessionId = string;
@@ -47,20 +46,6 @@ export interface GitMemoryConversationRecord {
   taskId?: GitMemoryTaskId | null;
   runId?: GitMemoryRunId | null;
   branch?: string | null;
-}
-
-export interface GitMemoryTaskIndexEntry {
-  taskId: GitMemoryTaskId;
-  branch: string;
-  title: string;
-  status: GitMemoryTaskStatus;
-  createdAt: string;
-  updatedAt: string;
-}
-
-export interface GitMemoryTaskIndexFile {
-  schemaVersion: 1;
-  tasks: GitMemoryTaskIndexEntry[];
 }
 
 export interface GitMemoryConversationSeqRange {
@@ -302,19 +287,6 @@ export function validateGitMemoryConversationRecord(value: unknown): ValidationR
   return validationResult(value, errors);
 }
 
-export function validateGitMemoryTaskIndexFile(value: unknown): ValidationResult<GitMemoryTaskIndexFile> {
-  const errors: string[] = [];
-  const record = requireRecord(value, "task index", errors);
-  if (record) {
-    requireSchemaVersion(record, errors);
-    const tasks = requireArray(record, "tasks", errors);
-    if (tasks) {
-      tasks.forEach((task, index) => validateTaskIndexEntry(task, `tasks[${index}]`, errors));
-    }
-  }
-  return validationResult(value, errors);
-}
-
 export function validateGitMemoryTaskFile(value: unknown): ValidationResult<GitMemoryTaskFile> {
   const errors: string[] = [];
   const record = requireRecord(value, "task file", errors);
@@ -420,19 +392,6 @@ export function validateGitMemoryEvidenceManifestRecord(
     requireOptionalRecord(record, "source", errors);
   }
   return validationResult(value, errors);
-}
-
-function validateTaskIndexEntry(value: unknown, label: string, errors: string[]): void {
-  const record = requireRecord(value, label, errors);
-  if (!record) {
-    return;
-  }
-  requireTaskId(record, "taskId", errors);
-  requireTaskBranch(record, "branch", errors);
-  requireNonEmptyString(record, "title", errors);
-  requireTaskStatus(record, errors);
-  requireNonEmptyString(record, "createdAt", errors);
-  requireNonEmptyString(record, "updatedAt", errors);
 }
 
 function validationResult<T>(value: unknown, errors: string[]): ValidationResult<T> {
@@ -711,17 +670,6 @@ function requireOptionalActionId(record: Record<string, unknown>, field: string,
 
 function requireTaskStatus(record: Record<string, unknown>, errors: string[]): void {
   requireOneOf(record, "status", ["open", "in_progress", "blocked", "done", "abandoned"], errors);
-}
-
-function requireTaskBranch(record: Record<string, unknown>, field: string, errors: string[]): void {
-  const value = requireNonEmptyString(record, field, errors);
-  if (value && !isTaskBranch(value)) {
-    errors.push(`${field} must be a valid task branch.`);
-  }
-}
-
-function isTaskBranch(value: string): boolean {
-  return isGitMemoryTaskBranchName(value);
 }
 
 function slugifyIdPart(value: string, fallback: string): string {

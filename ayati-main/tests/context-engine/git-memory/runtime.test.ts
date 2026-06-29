@@ -212,7 +212,7 @@ describe("GitMemoryRuntime", () => {
     });
 
     const driver = new GitMemoryWorktreeGitDriver(prepared.repoPath);
-    expect(await driver.log(GIT_MEMORY_MAIN_REF, 5)).toHaveLength(4);
+    expect(await driver.log(GIT_MEMORY_MAIN_REF, 5)).toHaveLength(3);
   });
 
   it("appends routed follow-up messages to the selected task branch before run start", async () => {

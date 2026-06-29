@@ -4,9 +4,9 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   createGitContextMemoryStateHydrator,
-  GIT_MEMORY_SESSION_TASKS_PATH,
   GitMemoryDailySessionStore,
   GitMemoryWorktreeGitDriver,
+  renderGitMemoryCommitMessage,
 } from "../../../src/context-engine/git-memory/index.js";
 
 describe("GitContextMemoryStateHydrator", () => {
@@ -133,7 +133,7 @@ describe("GitContextMemoryStateHydrator", () => {
     }]);
   });
 
-  it("marks a current task branch missing when HEAD points at an indexed branch without files", async () => {
+  it("marks a current task branch missing when HEAD points at a branch without task files", async () => {
     const contextStoreDir = await mkdtemp(join(tmpdir(), "ayati-git-memory-state-"));
     const store = new GitMemoryDailySessionStore({ contextStoreDir });
     const session = await store.openOrCreateDailySession({
@@ -143,18 +143,23 @@ describe("GitContextMemoryStateHydrator", () => {
       createdAt: "2026-06-28T00:00:00+05:30",
     });
     const driver = new GitMemoryWorktreeGitDriver(session.repoPath);
-    await driver.writeWorkingFiles({
-      [GIT_MEMORY_SESSION_TASKS_PATH]: `${JSON.stringify({
-        schemaVersion: 1,
-        tasks: [{
+    await driver.commitSyntheticFiles({
+      ref: "refs/heads/task/W-20260628-0001-missing",
+      files: {
+        "tasks/W-20260628-0001/notes.md": "# Missing branch task\n",
+      },
+      message: renderGitMemoryCommitMessage({
+        subject: "ayati: create incomplete task W-20260628-0001",
+        summary: "Create a task branch without task.json or state.json.",
+        trailers: {
+          sessionId: session.sessionId,
           taskId: "W-20260628-0001",
+          event: "task_created",
+          at: "2026-06-28T09:00:00+05:30",
           branch: "task/W-20260628-0001-missing",
-          title: "Missing branch task",
-          status: "open",
-          createdAt: "2026-06-28T09:00:00+05:30",
-          updatedAt: "2026-06-28T09:00:00+05:30",
-        }],
-      }, null, 2)}\n`,
+          schemaVersion: 1,
+        },
+      }),
     });
     await driver.checkoutBranch("refs/heads/task/W-20260628-0001-missing");
 
@@ -164,8 +169,9 @@ describe("GitContextMemoryStateHydrator", () => {
 
     expect(state.focus).toMatchObject({
       status: "missing",
+      taskId: "W-20260628-0001",
       branch: "task/W-20260628-0001-missing",
-      reason: "focused task branch is missing",
+      reason: "focused task branch is missing task.json or state.json",
     });
     expect(state.activeTask).toBeUndefined();
     expect(state.knownTasks).toMatchObject([{
