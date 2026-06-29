@@ -19,7 +19,6 @@ import {
   GIT_MEMORY_SESSION_EVENTS_PATH,
   GIT_MEMORY_SESSION_FOCUS_PATH,
   GIT_MEMORY_SESSION_TASKS_PATH,
-  GIT_MEMORY_SESSION_TASK_MESSAGE_LINKS_PATH,
   gitMemoryTaskDir,
   gitMemoryTaskFilePath,
   gitMemoryTaskStatePath,
@@ -78,7 +77,12 @@ type GitMemoryResolvedFocus =
     };
 
 export interface GitMemoryContextTaskConversationSegment {
-  link: GitMemoryTaskMessageLinkRecord;
+  link: {
+    taskId: GitMemoryTaskId;
+    branch: string;
+    fromSeq: number;
+    toSeq: number;
+  };
   messages: GitMemoryConversationRecord[];
 }
 
@@ -128,11 +132,10 @@ export class GitMemoryContextReader {
   }): Promise<GitMemoryMachineContextPack> {
     const limits = normalizeLimits(input.limits);
     const driver = await this.store.openExistingDriver(input.sessionId);
-    const [conversation, conversationMarkdown, events, links, tasks, focus, currentBranch] = await Promise.all([
+    const [conversation, conversationMarkdown, events, tasks, focus, currentBranch] = await Promise.all([
       readWorkingJsonl<GitMemoryConversationRecord>(driver, GIT_MEMORY_SESSION_CONVERSATION_PATH),
       readWorkingMarkdownTail(driver, GIT_MEMORY_SESSION_CONVERSATION_MARKDOWN_PATH, limits.conversationMarkdownCharLimit),
       readWorkingJsonl<GitMemorySessionEventRecord>(driver, GIT_MEMORY_SESSION_EVENTS_PATH),
-      readWorkingJsonl<GitMemoryTaskMessageLinkRecord>(driver, GIT_MEMORY_SESSION_TASK_MESSAGE_LINKS_PATH),
       readWorkingJson<GitMemoryTaskIndexFile>(driver, GIT_MEMORY_SESSION_TASKS_PATH),
       readWorkingJson<GitMemoryFocusFile>(driver, GIT_MEMORY_SESSION_FOCUS_PATH),
       driver.currentBranch(),
@@ -142,7 +145,7 @@ export class GitMemoryContextReader {
       conversationTail: tail(conversation, limits.conversationTailLimit),
       conversationMarkdownTail: conversationMarkdown,
       eventTail: tail(events, limits.eventTailLimit),
-      taskMessageLinkTail: tail(links, limits.taskMessageLinkLimit),
+      taskMessageLinkTail: [],
       taskCount: tasks?.tasks.length ?? 0,
     };
     const resolvedFocus = resolveActiveFocus(currentBranch, tasks, focus);
@@ -212,7 +215,6 @@ export class GitMemoryContextReader {
       };
     }
 
-    const taskLinks = tail(links.filter((link) => link.taskId === taskEntry.taskId), limits.taskMessageLinkLimit);
     return {
       session,
       focus: {
@@ -235,10 +237,7 @@ export class GitMemoryContextReader {
         facts: state.facts,
         next: state.next,
         conversationMarkdownTail,
-        conversation: taskLinks.map((link) => ({
-          link,
-          messages: conversationInRange(conversation, link),
-        })),
+        conversation: [],
         recentRuns,
         recentCommits,
       },
@@ -335,13 +334,6 @@ function parseJsonl<T>(value: string | null): T[] {
     .map((line) => line.trim())
     .filter(Boolean)
     .map((line) => JSON.parse(line) as T);
-}
-
-function conversationInRange(
-  conversation: GitMemoryConversationRecord[],
-  range: { fromSeq: number; toSeq: number },
-): GitMemoryConversationRecord[] {
-  return conversation.filter((message) => message.seq >= range.fromSeq && message.seq <= range.toSeq);
 }
 
 function resolveActiveFocus(

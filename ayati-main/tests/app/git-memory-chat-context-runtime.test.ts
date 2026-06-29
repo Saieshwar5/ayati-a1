@@ -249,10 +249,8 @@ describe("createGitMemoryChatContextRuntime", () => {
         },
         context: {
           task: {
-            conversation: [
-              { link: { reason: "task_created", fromSeq: 1, toSeq: 1 } },
-              { link: { reason: "task_continued", fromSeq: 2, toSeq: 2, runId: "R-20260628-0002" } },
-            ],
+            conversation: [],
+            conversationMarkdownTail: expect.stringContaining("finish it"),
           },
         },
         memoryState: {

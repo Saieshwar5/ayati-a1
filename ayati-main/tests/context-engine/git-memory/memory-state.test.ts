@@ -67,11 +67,7 @@ describe("GitContextMemoryStateHydrator", () => {
         role: "assistant",
         text: "I will inspect upload handling.",
       }],
-      taskMessageLinkTail: [{
-        taskId: prepared.task.taskId,
-        fromSeq: 1,
-        toSeq: 2,
-      }],
+      taskMessageLinkTail: [],
     });
     expect(state.session.conversationMarkdownTail).toContain("Fix upload handling");
     expect(state.session.conversationMarkdownTail).toContain("I will inspect upload handling.");

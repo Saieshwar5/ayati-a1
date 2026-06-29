@@ -128,9 +128,7 @@ describe("GitMemoryContextReader", () => {
       { seq: 3, type: "focus_changed" },
       { seq: 4, type: "run_completed" },
     ]);
-    expect(pack.session.taskMessageLinkTail).toMatchObject([
-      { linkId: "L-20260628-000001", taskId: "W-20260628-0001", fromSeq: 1, toSeq: 2 },
-    ]);
+    expect(pack.session.taskMessageLinkTail).toEqual([]);
     expect(pack.focus).toMatchObject({
       status: "active",
       taskId: "W-20260628-0001",
@@ -151,13 +149,7 @@ describe("GitMemoryContextReader", () => {
     expect(pack.task?.conversationMarkdownTail).toContain("Fix upload handling");
     expect(pack.task?.conversationMarkdownTail).toContain("I will inspect upload handling.");
     expect(pack.task?.conversationMarkdownTail).not.toContain("Continue from there.");
-    expect(pack.task?.conversation).toMatchObject([{
-      link: { fromSeq: 1, toSeq: 2 },
-      messages: [
-        { seq: 1, role: "user", text: "Fix upload handling" },
-        { seq: 2, role: "assistant", text: "I will inspect upload handling." },
-      ],
-    }]);
+    expect(pack.task?.conversation).toEqual([]);
     expect(pack.task?.recentRuns).toMatchObject([{
       runId: "R-20260628-0001",
       status: "completed",
