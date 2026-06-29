@@ -9,6 +9,7 @@ import {
   GIT_MEMORY_SESSION_CONVERSATION_MARKDOWN_PATH,
   GitMemoryDailySessionStore,
   GitMemoryWorktreeGitDriver,
+  type GitMemoryWriteBatchRequest,
   type GitMemoryWriteQueueRunner,
   parseGitMemoryCommitTrailers,
   sessionDateForAt,
@@ -142,11 +143,14 @@ describe("GitMemoryRuntime", () => {
 
   it("routes git-mutating runtime operations through the write queue", async () => {
     const contextStoreDir = await mkdtemp(join(tmpdir(), "ayati-git-memory-runtime-"));
-    const queued: Array<{ sessionId: string; label: string }> = [];
+    const queued: GitMemoryWriteBatchRequest[] = [];
     const writeQueue: GitMemoryWriteQueueRunner = {
-      async enqueue<T>(sessionId: string, label: string, run: () => Promise<T>): Promise<T> {
-        queued.push({ sessionId, label });
+      async enqueue<T>(batch: GitMemoryWriteBatchRequest, run: () => Promise<T>): Promise<T> {
+        queued.push(batch);
         return await run();
+      },
+      getSessionWrites() {
+        return [];
       },
     };
     const runtime = createGitMemoryRuntime({
@@ -172,9 +176,55 @@ describe("GitMemoryRuntime", () => {
     });
 
     expect(queued).toMatchObject([
-      { sessionId: "S-20260628-local", label: "prepare_user_turn" },
-      { sessionId: "S-20260628-local", label: "record_assistant_message" },
-      { sessionId: "S-20260628-local", label: "checkpoint_session" },
+      {
+        sessionId: "S-20260628-local",
+        type: "main_conversation_appended",
+        label: "prepare_user_turn",
+      },
+      {
+        sessionId: "S-20260628-local",
+        type: "assistant_message_recorded",
+        label: "record_assistant_message",
+      },
+      {
+        sessionId: "S-20260628-local",
+        type: "session_checkpointed",
+        label: "checkpoint_session",
+      },
+    ]);
+  });
+
+  it("exposes git-memory write batches through the runtime facade", async () => {
+    const contextStoreDir = await mkdtemp(join(tmpdir(), "ayati-git-memory-runtime-"));
+    const runtime = createGitMemoryRuntime({
+      contextStoreDir,
+      timezone: "Asia/Kolkata",
+      agentId: "local",
+    });
+
+    const prepared = await runtime.prepareUserTurn({
+      userMessage: "Fix upload handling",
+      at: "2026-06-28T09:00:00+05:30",
+    });
+    await runtime.recordAssistantMessage({
+      sessionId: prepared.sessionId,
+      text: "I will inspect upload handling.",
+      at: "2026-06-28T09:00:05+05:30",
+    });
+
+    expect(runtime.getSessionWrites(prepared.sessionId)).toMatchObject([
+      {
+        sessionId: "S-20260628-local",
+        type: "main_conversation_appended",
+        label: "prepare_user_turn",
+        status: "committed",
+      },
+      {
+        sessionId: "S-20260628-local",
+        type: "assistant_message_recorded",
+        label: "record_assistant_message",
+        status: "committed",
+      },
     ]);
   });
 

@@ -30,6 +30,7 @@ import type {
 import { createGitMemorySessionId } from "./schema.js";
 import {
   GitMemoryWriteQueue,
+  type GitMemoryWriteBatchSnapshot,
   type GitMemoryWriteQueueRunner,
 } from "./write-queue.js";
 
@@ -127,7 +128,12 @@ export class GitMemoryRuntime {
   async openDailySession(input: OpenGitMemoryRuntimeSessionInput = {}): Promise<GitMemoryDailySessionHandle> {
     const at = input.at ?? this.nowProvider().toISOString();
     const sessionId = this.sessionIdForAt(at);
-    return await this.writeQueue.enqueue(sessionId, "open_daily_session", async () => {
+    return await this.writeQueue.enqueue({
+      sessionId,
+      type: "session_opened",
+      label: "open_daily_session",
+      createdAt: at,
+    }, async () => {
       return await this.openDailySessionUnqueued(at);
     });
   }
@@ -144,7 +150,12 @@ export class GitMemoryRuntime {
   async prepareUserTurn(input: PrepareGitMemoryUserTurnInput): Promise<PreparedGitMemoryUserTurn> {
     const at = input.at ?? this.nowProvider().toISOString();
     const sessionId = this.sessionIdForAt(at);
-    return await this.writeQueue.enqueue(sessionId, "prepare_user_turn", async () => {
+    return await this.writeQueue.enqueue({
+      sessionId,
+      type: "main_conversation_appended",
+      label: "prepare_user_turn",
+      createdAt: at,
+    }, async () => {
       const session = await this.openDailySessionUnqueued(at);
       const userMessage = await this.store.appendMainConversationMessage({
         sessionId: session.sessionId,
@@ -169,7 +180,12 @@ export class GitMemoryRuntime {
   async prepareSystemTurn(input: PrepareGitMemorySystemTurnInput): Promise<PreparedGitMemorySystemTurn> {
     const at = input.at ?? this.nowProvider().toISOString();
     const sessionId = this.sessionIdForAt(at);
-    return await this.writeQueue.enqueue(sessionId, "prepare_system_turn", async () => {
+    return await this.writeQueue.enqueue({
+      sessionId,
+      type: "main_conversation_appended",
+      label: "prepare_system_turn",
+      createdAt: at,
+    }, async () => {
       const session = await this.openDailySessionUnqueued(at);
       const systemMessage = await this.store.appendMainConversationMessage({
         sessionId: session.sessionId,
@@ -194,7 +210,12 @@ export class GitMemoryRuntime {
   async recordAssistantMessage(
     input: RecordGitMemoryAssistantMessageInput,
   ): Promise<GitMemoryConversationRecord> {
-    return await this.writeQueue.enqueue(input.sessionId, "record_assistant_message", async () => {
+    return await this.writeQueue.enqueue({
+      sessionId: input.sessionId,
+      type: "assistant_message_recorded",
+      label: "record_assistant_message",
+      createdAt: input.at,
+    }, async () => {
       const record = await this.store.appendConversationMessage({
         sessionId: input.sessionId,
         role: "assistant",
@@ -216,7 +237,12 @@ export class GitMemoryRuntime {
   }
 
   async createTaskBranch(input: CreateGitMemoryTaskBranchInput): Promise<CreateGitMemoryTaskBranchResult> {
-    return await this.writeQueue.enqueue(input.sessionId, "create_task_branch", async () => {
+    return await this.writeQueue.enqueue({
+      sessionId: input.sessionId,
+      type: "task_created",
+      label: "create_task_branch",
+      createdAt: input.at,
+    }, async () => {
       return await this.store.createTaskBranch(input);
     });
   }
@@ -230,7 +256,12 @@ export class GitMemoryRuntime {
   }
 
   async routeUserTurn(input: ApplyGitMemoryTaskRouteInput): Promise<RoutedGitMemoryUserTurn> {
-    return await this.writeQueue.enqueue(input.sessionId, "route_user_turn", async () => {
+    return await this.writeQueue.enqueue({
+      sessionId: input.sessionId,
+      type: "task_routed",
+      label: "route_user_turn",
+      createdAt: input.at,
+    }, async () => {
       const resolution = await this.taskRouter.resolve(input);
       if (resolution.mode === "ambiguous") {
         const memoryState = await this.memoryStateHydrator.hydrate({ sessionId: input.sessionId });
@@ -282,13 +313,23 @@ export class GitMemoryRuntime {
   }
 
   async commitTaskRun(input: CommitGitMemoryTaskRunInput): Promise<CommitGitMemoryTaskRunResult> {
-    return await this.writeQueue.enqueue(input.sessionId, "commit_task_run", async () => {
+    return await this.writeQueue.enqueue({
+      sessionId: input.sessionId,
+      type: "task_run_committed",
+      label: "commit_task_run",
+      createdAt: input.completedAt,
+    }, async () => {
       return await this.store.commitTaskRun(input);
     });
   }
 
   async checkpointSession(input: CheckpointGitMemoryRuntimeSessionInput): Promise<GitMemorySessionCheckpoint> {
-    return await this.writeQueue.enqueue(input.sessionId, "checkpoint_session", async () => {
+    return await this.writeQueue.enqueue({
+      sessionId: input.sessionId,
+      type: "session_checkpointed",
+      label: "checkpoint_session",
+      createdAt: input.at,
+    }, async () => {
       return await this.store.checkpointSession(input);
     });
   }
@@ -301,6 +342,10 @@ export class GitMemoryRuntime {
 
   async buildMemoryState(sessionId: GitMemorySessionId): Promise<GitContextMemoryState> {
     return await this.memoryStateHydrator.hydrate({ sessionId });
+  }
+
+  getSessionWrites(sessionId: GitMemorySessionId): GitMemoryWriteBatchSnapshot[] {
+    return this.writeQueue.getSessionWrites(sessionId);
   }
 
   private sessionIdForAt(at: string): GitMemorySessionId {
