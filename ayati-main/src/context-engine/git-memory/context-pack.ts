@@ -131,13 +131,19 @@ export class GitMemoryContextReader {
   }): Promise<GitMemoryMachineContextPack> {
     const limits = normalizeLimits(input.limits);
     const driver = await this.store.openExistingDriver(input.sessionId);
-    const [conversation, conversationMarkdown, tasks, currentBranch, sessionCommits] = await Promise.all([
+    const [conversationMarkdownDocument, conversationJsonl, tasks, currentBranch, sessionCommits] = await Promise.all([
+      driver.readWorkingFile(GIT_MEMORY_SESSION_CONVERSATION_MARKDOWN_PATH),
       readWorkingJsonl<GitMemoryConversationRecord>(driver, GIT_MEMORY_SESSION_CONVERSATION_PATH),
-      readWorkingMarkdownTail(driver, GIT_MEMORY_SESSION_CONVERSATION_MARKDOWN_PATH, limits.conversationMarkdownCharLimit),
       readWorkingJson<GitMemoryTaskIndexFile>(driver, GIT_MEMORY_SESSION_TASKS_PATH),
       driver.currentBranch(),
       readRecentCommits(driver, GIT_MEMORY_MAIN_REF, limits.commitLogLimit),
     ]);
+    const conversation = readConversationFromMarkdownOrJsonl(
+      conversationMarkdownDocument,
+      conversationJsonl,
+      input.sessionId,
+    );
+    const conversationMarkdown = markdownTail(conversationMarkdownDocument, limits.conversationMarkdownCharLimit);
     const session = {
       sessionId: input.sessionId,
       conversationTail: tail(conversation, limits.conversationTailLimit),
@@ -379,14 +385,6 @@ async function readWorkingJsonl<T>(driver: GitMemoryWorktreeGitDriver, path: str
   return parseJsonl<T>(await driver.readWorkingFile(path));
 }
 
-async function readWorkingMarkdownTail(
-  driver: GitMemoryWorktreeGitDriver,
-  path: string,
-  limit: number,
-): Promise<string> {
-  return markdownTail(await driver.readWorkingFile(path), limit);
-}
-
 async function readRefJson<T>(driver: GitMemoryWorktreeGitDriver, ref: string, path: string): Promise<T | null> {
   return parseJson<T>(await driver.readFile(ref, path));
 }
@@ -416,6 +414,95 @@ function parseJsonl<T>(value: string | null): T[] {
     .map((line) => line.trim())
     .filter(Boolean)
     .map((line) => JSON.parse(line) as T);
+}
+
+function readConversationFromMarkdownOrJsonl(
+  markdown: string | null,
+  jsonl: GitMemoryConversationRecord[],
+  sessionId: GitMemorySessionId,
+): GitMemoryConversationRecord[] {
+  const parsed = parseConversationMarkdown(markdown, sessionId);
+  if (parsed.length === 0) {
+    return jsonl;
+  }
+  return parsed.map((record) => {
+    const existing = jsonl.find((candidate) => candidate.seq === record.seq);
+    if (!existing) {
+      return record;
+    }
+    return {
+      ...record,
+      messageId: existing.messageId,
+      turnId: existing.turnId,
+    };
+  });
+}
+
+function parseConversationMarkdown(
+  value: string | null,
+  sessionId: GitMemorySessionId,
+): GitMemoryConversationRecord[] {
+  if (!value?.trim() || value.trim() === "# Conversation") {
+    return [];
+  }
+  const date = sessionId.match(/^S-(\d{8})-/)?.[1] ?? "unknown";
+  const records: GitMemoryConversationRecord[] = [];
+  const lines = value.split(/\r?\n/);
+  let current: {
+    at: string;
+    role: GitMemoryConversationRecord["role"];
+    body: string[];
+    taskId?: GitMemoryTaskId;
+    runId?: string;
+  } | null = null;
+
+  const flush = () => {
+    if (!current) {
+      return;
+    }
+    const body = current.body.join("\n").trim();
+    const seq = records.length + 1;
+    records.push({
+      v: 1,
+      seq,
+      messageId: `M-${date}-markdown-${seq.toString().padStart(6, "0")}`,
+      turnId: `T-${date}-markdown-${seq.toString().padStart(6, "0")}`,
+      role: current.role,
+      at: current.at,
+      text: body,
+      ...(current.taskId ? { taskId: current.taskId } : {}),
+      ...(current.runId ? { runId: current.runId } : {}),
+    });
+  };
+
+  for (const line of lines) {
+    const heading = /^##\s+(.+?)\s+(User|Assistant|System)\s*$/.exec(line);
+    if (heading) {
+      flush();
+      current = {
+        at: heading[1]?.trim() ?? "",
+        role: heading[2]?.toLowerCase() as GitMemoryConversationRecord["role"],
+        body: [],
+      };
+      continue;
+    }
+    if (!current) {
+      continue;
+    }
+    const task = /^Task:\s*(\S+)\s*$/.exec(line);
+    if (task && current.body.every((entry) => entry.trim() === "")) {
+      current.taskId = task[1];
+      continue;
+    }
+    const run = /^Run:\s*(\S+)\s*$/.exec(line);
+    if (run && current.body.every((entry) => entry.trim() === "")) {
+      current.runId = run[1];
+      continue;
+    }
+    current.body.push(line);
+  }
+  flush();
+  return records;
 }
 
 function resolveActiveFocus(

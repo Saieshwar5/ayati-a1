@@ -5,6 +5,8 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 import { describe, expect, it } from "vitest";
 import {
+  GIT_MEMORY_SESSION_CONVERSATION_MARKDOWN_PATH,
+  GIT_MEMORY_SESSION_CONVERSATION_PATH,
   GIT_MEMORY_MAIN_REF,
   GitMemoryContextReader,
   GitMemoryDailySessionStore,
@@ -44,6 +46,110 @@ describe("GitMemoryContextReader", () => {
       { seq: 1, type: "session_initialized" },
     ]);
     expect(pack.task).toBeUndefined();
+  });
+
+  it("prefers markdown conversation over jsonl for model-facing session context", async () => {
+    const contextStoreDir = await mkdtemp(join(tmpdir(), "ayati-git-memory-context-"));
+    const store = new GitMemoryDailySessionStore({ contextStoreDir });
+    const session = await store.openOrCreateDailySession({
+      date: "2026-06-28",
+      timezone: "Asia/Kolkata",
+      agentId: "local",
+      createdAt: "2026-06-28T00:00:00+05:30",
+    });
+    await store.appendConversationMessage({
+      sessionId: session.sessionId,
+      role: "user",
+      text: "This jsonl text should not be used",
+      at: "2026-06-28T09:00:00+05:30",
+    });
+
+    const driver = new GitMemoryWorktreeGitDriver(session.repoPath);
+    await driver.writeWorkingFiles({
+      [GIT_MEMORY_SESSION_CONVERSATION_MARKDOWN_PATH]: [
+        "# Conversation",
+        "",
+        "## 2026-06-28T09:15:00+05:30 User",
+        "",
+        "Read this from Markdown.",
+        "",
+        "## 2026-06-28T09:16:00+05:30 Assistant",
+        "",
+        "Markdown is canonical for context.",
+        "",
+      ].join("\n"),
+    });
+
+    const pack = await new GitMemoryContextReader(store).buildActiveContext({
+      sessionId: session.sessionId,
+    });
+
+    expect(pack.session.conversationTail).toMatchObject([
+      { seq: 1, role: "user", text: "Read this from Markdown." },
+      { seq: 2, role: "assistant", text: "Markdown is canonical for context." },
+    ]);
+  });
+
+  it("falls back to jsonl conversation when markdown has no conversation blocks", async () => {
+    const contextStoreDir = await mkdtemp(join(tmpdir(), "ayati-git-memory-context-"));
+    const store = new GitMemoryDailySessionStore({ contextStoreDir });
+    const session = await store.openOrCreateDailySession({
+      date: "2026-06-28",
+      timezone: "Asia/Kolkata",
+      agentId: "local",
+      createdAt: "2026-06-28T00:00:00+05:30",
+    });
+    await store.appendConversationMessage({
+      sessionId: session.sessionId,
+      role: "user",
+      text: "Fallback from jsonl.",
+      at: "2026-06-28T09:00:00+05:30",
+    });
+
+    const driver = new GitMemoryWorktreeGitDriver(session.repoPath);
+    await driver.writeWorkingFiles({
+      [GIT_MEMORY_SESSION_CONVERSATION_MARKDOWN_PATH]: "# Conversation\n",
+    });
+
+    const pack = await new GitMemoryContextReader(store).buildActiveContext({
+      sessionId: session.sessionId,
+    });
+
+    expect(pack.session.conversationTail).toMatchObject([
+      { seq: 1, role: "user", text: "Fallback from jsonl." },
+    ]);
+  });
+
+  it("can build session conversation context when jsonl is empty", async () => {
+    const contextStoreDir = await mkdtemp(join(tmpdir(), "ayati-git-memory-context-"));
+    const store = new GitMemoryDailySessionStore({ contextStoreDir });
+    const session = await store.openOrCreateDailySession({
+      date: "2026-06-28",
+      timezone: "Asia/Kolkata",
+      agentId: "local",
+      createdAt: "2026-06-28T00:00:00+05:30",
+    });
+
+    const driver = new GitMemoryWorktreeGitDriver(session.repoPath);
+    await driver.writeWorkingFiles({
+      [GIT_MEMORY_SESSION_CONVERSATION_PATH]: "",
+      [GIT_MEMORY_SESSION_CONVERSATION_MARKDOWN_PATH]: [
+        "# Conversation",
+        "",
+        "## 2026-06-28T09:15:00+05:30 User",
+        "",
+        "Only Markdown exists.",
+        "",
+      ].join("\n"),
+    });
+
+    const pack = await new GitMemoryContextReader(store).buildActiveContext({
+      sessionId: session.sessionId,
+    });
+
+    expect(pack.session.conversationTail).toMatchObject([
+      { seq: 1, role: "user", text: "Only Markdown exists." },
+    ]);
   });
 
   it("builds an active task context from working session files and committed task branch files", async () => {
