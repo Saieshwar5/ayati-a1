@@ -310,6 +310,21 @@ export interface SelectGitMemoryTaskForTurnResult {
   ref: string;
 }
 
+export interface AppendGitMemoryTaskConversationMessageInput {
+  sessionId: GitMemorySessionId;
+  taskId: GitMemoryTaskId;
+  record: GitMemoryConversationRecord;
+  at?: string;
+}
+
+export interface AppendGitMemoryTaskConversationMessageResult {
+  taskId: GitMemoryTaskId;
+  branch: string;
+  ref: string;
+  seq: number;
+  taskCommit?: string;
+}
+
 export interface CommitGitMemoryTaskRunActionInput {
   actionId?: GitMemoryActionId;
   tool: string;
@@ -662,6 +677,53 @@ export class GitMemoryDailySessionStore {
       reason: "run_started",
     });
     return { runId: input.runId, ...(result.taskCommit ? { taskCommit: result.taskCommit } : {}) };
+  }
+
+  async appendTaskConversationMessage(
+    input: AppendGitMemoryTaskConversationMessageInput,
+  ): Promise<AppendGitMemoryTaskConversationMessageResult> {
+    const driver = await GitMemoryWorktreeGitDriver.init(this.repoPath(input.sessionId));
+    const taskEntry = await resolveTaskEntry(driver, { taskId: input.taskId });
+    const ref = `refs/heads/${taskEntry.branch}`;
+    if (!(await driver.hasRef(ref))) {
+      throw new Error(`Git memory task branch missing: ${ref}`);
+    }
+    const existingMarkdown = await driver.readFile(ref, GIT_MEMORY_SESSION_CONVERSATION_MARKDOWN_PATH);
+    const nextMarkdown = appendConversationMarkdownRecords(existingMarkdown, [input.record], {
+      taskId: input.taskId,
+      ...(input.record.runId ? { runId: input.record.runId } : {}),
+    });
+    let taskCommit: string | undefined;
+    if (nextMarkdown !== existingMarkdown) {
+      const at = input.at ?? input.record.at;
+      taskCommit = await driver.commitSyntheticFiles({
+        ref,
+        files: {
+          [GIT_MEMORY_SESSION_CONVERSATION_MARKDOWN_PATH]: nextMarkdown,
+        },
+        message: renderGitMemoryCommitMessage({
+          subject: `ayati: append task conversation ${input.taskId}`,
+          summary: `Append conversation message ${input.record.seq} on ${taskEntry.branch}.`,
+          trailers: {
+            sessionId: input.sessionId,
+            taskId: input.taskId,
+            ...(input.record.runId ? { runId: input.record.runId } : {}),
+            event: "conversation_appended",
+            at,
+            branch: taskEntry.branch,
+            conversationSeq: { fromSeq: input.record.seq, toSeq: input.record.seq },
+            schemaVersion: 1,
+          },
+        }),
+      });
+    }
+    return {
+      taskId: input.taskId,
+      branch: taskEntry.branch,
+      ref,
+      seq: input.record.seq,
+      ...(taskCommit ? { taskCommit } : {}),
+    };
   }
 
   async readTaskRoutingSnapshot(sessionId: GitMemorySessionId): Promise<GitMemoryTaskRoutingSnapshot> {

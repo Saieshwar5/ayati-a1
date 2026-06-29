@@ -176,7 +176,7 @@ export class GitMemoryRuntime {
   async recordAssistantMessage(
     input: RecordGitMemoryAssistantMessageInput,
   ): Promise<GitMemoryConversationRecord> {
-    return await this.store.appendConversationMessage({
+    const record = await this.store.appendConversationMessage({
       sessionId: input.sessionId,
       role: "assistant",
       text: input.text,
@@ -184,6 +184,15 @@ export class GitMemoryRuntime {
       taskId: input.taskId,
       runId: input.runId,
     });
+    if (input.taskId) {
+      await this.store.appendTaskConversationMessage({
+        sessionId: input.sessionId,
+        taskId: input.taskId,
+        record,
+        at: input.at,
+      });
+    }
+    return record;
   }
 
   async createTaskBranch(input: CreateGitMemoryTaskBranchInput): Promise<CreateGitMemoryTaskBranchResult> {

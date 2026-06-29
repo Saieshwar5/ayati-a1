@@ -124,21 +124,30 @@ describe("createGitMemoryChatContextRuntime", () => {
         userMessage: "Fix upload handling",
         at: "2026-06-28T09:00:00+05:30",
       });
+      const routed = await runtime.routeTaskTurn({
+        clientId: "local",
+        turn: prepared,
+        userMessage: "Fix upload handling",
+        at: "2026-06-28T09:00:01+05:30",
+      });
+      if (routed?.status !== "ready") {
+        throw new Error(`Expected ready route, got ${routed?.status}.`);
+      }
 
       const assistant = await runtime.recordAssistantMessage({
         clientId: "local",
         turn: prepared,
         message: "Finished upload handling inspection.",
-        taskId: "W-20260628-0001",
-        runId: "R-20260628-0001",
+        taskId: routed.taskId,
+        runId: routed.runId,
         at: "2026-06-28T09:10:00+05:30",
       });
 
       expect(assistant).toMatchObject({
         seq: 2,
         role: "assistant",
-        taskId: "W-20260628-0001",
-        runId: "R-20260628-0001",
+        taskId: routed.taskId,
+        runId: routed.runId,
       });
     } finally {
       rmSync(storeDir, { recursive: true, force: true });

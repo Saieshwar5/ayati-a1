@@ -326,6 +326,112 @@ describe("GitMemoryRuntime", () => {
     expect(secondTaskAfterRouting).toContain("Analyze contract risk");
   });
 
+  it("syncs task-owned assistant messages to the selected task branch conversation", async () => {
+    const contextStoreDir = await mkdtemp(join(tmpdir(), "ayati-git-memory-runtime-"));
+    const runtime = createGitMemoryRuntime({
+      contextStoreDir,
+      timezone: "Asia/Kolkata",
+      agentId: "local",
+    });
+    const first = await runtime.prepareUserTurn({
+      userMessage: "Fix upload bug",
+      at: "2026-06-28T09:00:00+05:30",
+    });
+    const firstRoute = await runtime.routeUserTurn({
+      sessionId: first.sessionId,
+      userMessage: "Fix upload bug",
+      fromSeq: first.userMessage.seq,
+      toSeq: first.userMessage.seq,
+      at: "2026-06-28T09:00:01+05:30",
+    });
+    if (firstRoute.status !== "ready") {
+      throw new Error(`Expected ready task route, got ${firstRoute.status}.`);
+    }
+    const second = await runtime.prepareUserTurn({
+      userMessage: "Analyze contract risk",
+      at: "2026-06-28T09:05:00+05:30",
+    });
+    const secondRoute = await runtime.routeUserTurn({
+      sessionId: second.sessionId,
+      userMessage: "Analyze contract risk",
+      fromSeq: second.userMessage.seq,
+      toSeq: second.userMessage.seq,
+      at: "2026-06-28T09:05:01+05:30",
+    });
+    if (secondRoute.status !== "ready") {
+      throw new Error(`Expected ready task route, got ${secondRoute.status}.`);
+    }
+
+    await runtime.recordAssistantMessage({
+      sessionId: second.sessionId,
+      taskId: secondRoute.taskId,
+      runId: secondRoute.runId,
+      text: "I reviewed the contract risk and found one blocker.",
+      at: "2026-06-28T09:06:00+05:30",
+    });
+
+    const driver = new GitMemoryWorktreeGitDriver(second.repoPath);
+    const mainConversation = await driver.readFile(
+      GIT_MEMORY_MAIN_REF,
+      GIT_MEMORY_SESSION_CONVERSATION_MARKDOWN_PATH,
+    ) ?? "";
+    const firstTaskConversation = await driver.readFile(
+      firstRoute.ref,
+      GIT_MEMORY_SESSION_CONVERSATION_MARKDOWN_PATH,
+    ) ?? "";
+    const secondTaskConversation = await driver.readFile(
+      secondRoute.ref,
+      GIT_MEMORY_SESSION_CONVERSATION_MARKDOWN_PATH,
+    ) ?? "";
+
+    expect(mainConversation).toContain("I reviewed the contract risk and found one blocker.");
+    expect(secondTaskConversation).toContain("I reviewed the contract risk and found one blocker.");
+    expect(secondTaskConversation).toContain(`Run: ${secondRoute.runId}`);
+    expect(firstTaskConversation).not.toContain("I reviewed the contract risk and found one blocker.");
+  });
+
+  it("keeps assistant messages without task ownership only in the main conversation", async () => {
+    const contextStoreDir = await mkdtemp(join(tmpdir(), "ayati-git-memory-runtime-"));
+    const runtime = createGitMemoryRuntime({
+      contextStoreDir,
+      timezone: "Asia/Kolkata",
+      agentId: "local",
+    });
+    const prepared = await runtime.prepareUserTurn({
+      userMessage: "Fix upload bug",
+      at: "2026-06-28T09:00:00+05:30",
+    });
+    const route = await runtime.routeUserTurn({
+      sessionId: prepared.sessionId,
+      userMessage: "Fix upload bug",
+      fromSeq: prepared.userMessage.seq,
+      toSeq: prepared.userMessage.seq,
+      at: "2026-06-28T09:00:01+05:30",
+    });
+    if (route.status !== "ready") {
+      throw new Error(`Expected ready task route, got ${route.status}.`);
+    }
+
+    await runtime.recordAssistantMessage({
+      sessionId: prepared.sessionId,
+      text: "This is a global assistant note.",
+      at: "2026-06-28T09:02:00+05:30",
+    });
+
+    const driver = new GitMemoryWorktreeGitDriver(prepared.repoPath);
+    const mainConversation = await driver.readFile(
+      GIT_MEMORY_MAIN_REF,
+      GIT_MEMORY_SESSION_CONVERSATION_MARKDOWN_PATH,
+    ) ?? "";
+    const taskConversation = await driver.readFile(
+      route.ref,
+      GIT_MEMORY_SESSION_CONVERSATION_MARKDOWN_PATH,
+    ) ?? "";
+
+    expect(mainConversation).toContain("This is a global assistant note.");
+    expect(taskConversation).not.toContain("This is a global assistant note.");
+  });
+
   it("does not allocate a task run id when routing is ambiguous", async () => {
     const contextStoreDir = await mkdtemp(join(tmpdir(), "ayati-git-memory-runtime-"));
     const store = new GitMemoryDailySessionStore({ contextStoreDir });
