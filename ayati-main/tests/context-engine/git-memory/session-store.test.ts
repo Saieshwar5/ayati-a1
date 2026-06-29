@@ -125,15 +125,47 @@ describe("GitMemoryDailySessionStore", () => {
     });
 
     const driver = new GitMemoryWorktreeGitDriver(session.repoPath);
-    expect(parseJsonl(await driver.readFile(GIT_MEMORY_MAIN_REF, GIT_MEMORY_SESSION_CONVERSATION_PATH))).toMatchObject([
-      { seq: 1, role: "user", text: "Fix upload handling" },
-      { seq: 2, role: "assistant", text: "I will inspect the upload path." },
+    expect(parseJsonl(await driver.readFile(GIT_MEMORY_MAIN_REF, GIT_MEMORY_SESSION_CONVERSATION_PATH))).toEqual([
+      {
+        seq: 1,
+        turnId: "T-20260628-000001",
+        role: "user",
+        at: "2026-06-28T09:00:00+05:30",
+        text: "Fix upload handling",
+        branch: "main",
+      },
+      {
+        seq: 2,
+        turnId: "T-20260628-000001",
+        role: "assistant",
+        at: "2026-06-28T09:00:05+05:30",
+        text: "I will inspect the upload path.",
+        branch: "main",
+        taskId: "W-20260628-0001",
+        runId: "R-20260628-0001",
+      },
     ]);
     expect(await driver.readFile(GIT_MEMORY_MAIN_REF, GIT_MEMORY_SESSION_CONVERSATION_MARKDOWN_PATH))
       .toContain("I will inspect the upload path.");
-    expect(parseJsonl(await driver.readWorkingFile(GIT_MEMORY_SESSION_CONVERSATION_PATH))).toMatchObject([
-      { seq: 1, role: "user", text: "Fix upload handling" },
-      { seq: 2, role: "assistant", text: "I will inspect the upload path." },
+    expect(parseJsonl(await driver.readWorkingFile(GIT_MEMORY_SESSION_CONVERSATION_PATH))).toEqual([
+      {
+        seq: 1,
+        turnId: "T-20260628-000001",
+        role: "user",
+        at: "2026-06-28T09:00:00+05:30",
+        text: "Fix upload handling",
+        branch: "main",
+      },
+      {
+        seq: 2,
+        turnId: "T-20260628-000001",
+        role: "assistant",
+        at: "2026-06-28T09:00:05+05:30",
+        text: "I will inspect the upload path.",
+        branch: "main",
+        taskId: "W-20260628-0001",
+        runId: "R-20260628-0001",
+      },
     ]);
     expect(await driver.readWorkingFile(GIT_MEMORY_SESSION_CONVERSATION_MARKDOWN_PATH)).toBe([
       "# Conversation",
@@ -202,6 +234,52 @@ describe("GitMemoryDailySessionStore", () => {
     expect(await driver.readFile(GIT_MEMORY_MAIN_REF, GIT_MEMORY_SESSION_CONVERSATION_MARKDOWN_PATH))
       .toContain("Keep this session change until checkpoint.");
     expect(await driver.readFile(GIT_MEMORY_MAIN_REF, GIT_MEMORY_SESSION_EVENTS_PATH)).toBeNull();
+  });
+
+  it("records the checked out branch in the conversation debug log", async () => {
+    const contextStoreDir = await mkdtemp(join(tmpdir(), "ayati-git-memory-"));
+    const store = new GitMemoryDailySessionStore({ contextStoreDir });
+    const session = await store.openOrCreateDailySession({
+      date: "2026-06-28",
+      timezone: "Asia/Kolkata",
+      agentId: "local",
+      createdAt: "2026-06-28T00:00:00+05:30",
+    });
+    const user = await store.appendConversationMessage({
+      sessionId: session.sessionId,
+      role: "user",
+      text: "Fix upload handling",
+      at: "2026-06-28T09:00:00+05:30",
+    });
+    const task = await store.createTaskBranch({
+      sessionId: session.sessionId,
+      title: "Fix upload handling",
+      objective: "Find and fix upload handling failures.",
+      fromSeq: user.seq,
+      toSeq: user.seq,
+      at: "2026-06-28T09:01:00+05:30",
+    });
+
+    await store.appendConversationMessage({
+      sessionId: session.sessionId,
+      role: "assistant",
+      turnId: user.turnId,
+      taskId: task.taskId,
+      text: "I will inspect upload handling on the task branch.",
+      at: "2026-06-28T09:02:00+05:30",
+    });
+
+    const driver = new GitMemoryWorktreeGitDriver(session.repoPath);
+    const conversation = parseJsonl(await driver.readWorkingFile(GIT_MEMORY_SESSION_CONVERSATION_PATH));
+    expect(conversation[1]).toMatchObject({
+      seq: 2,
+      role: "assistant",
+      branch: "task/W-20260628-0001-fix-upload-handling",
+      taskId: task.taskId,
+    });
+    expect(conversation[1]).not.toHaveProperty("messageId");
+    expect(conversation[1]).not.toHaveProperty("v");
+    expect(await driver.currentBranch()).toBe("task/W-20260628-0001-fix-upload-handling");
   });
 
   it("links task conversation ranges without copying conversation records", async () => {

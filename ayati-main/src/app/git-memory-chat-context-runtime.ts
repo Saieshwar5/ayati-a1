@@ -97,6 +97,9 @@ class AppGitMemoryChatContextRuntime implements GitMemoryChatContextRuntime {
       userMessage: input.userMessage,
       at: input.at,
     });
+    if (!prepared.userMessage.messageId) {
+      throw new Error("Git memory prepared user message is missing messageId");
+    }
     return {
       status: "ready",
       sessionId: prepared.sessionId,

@@ -78,15 +78,14 @@ describe("git memory schema", () => {
     }).ok).toBe(true);
   });
 
-  it("validates inline and referenced conversation records", () => {
+  it("validates compact debug and legacy conversation records", () => {
     expect(validateGitMemoryConversationRecord({
-      v: 1,
       seq: 1,
-      messageId: "M-20260628-000001",
       turnId: "T-20260628-000001",
       role: "user",
       at: "2026-06-28T09:00:00+05:30",
       text: "Fix upload handling",
+      branch: "main",
     }).ok).toBe(true);
 
     expect(validateGitMemoryConversationRecord({

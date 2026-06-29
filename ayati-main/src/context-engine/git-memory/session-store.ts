@@ -530,6 +530,7 @@ export class GitMemoryDailySessionStore {
     const existing = parseJsonl<GitMemoryConversationRecord>(
       await driver.readWorkingFile(GIT_MEMORY_SESSION_CONVERSATION_PATH),
     );
+    const branch = await driver.currentBranch();
     const seq = nextSeq(existing);
     const record: GitMemoryConversationRecord = {
       v: 1,
@@ -544,7 +545,7 @@ export class GitMemoryDailySessionStore {
     };
     const existingMarkdown = await driver.readWorkingFile(GIT_MEMORY_SESSION_CONVERSATION_MARKDOWN_PATH);
     await driver.writeWorkingFiles({
-      [GIT_MEMORY_SESSION_CONVERSATION_PATH]: jsonl([...existing, record]),
+      [GIT_MEMORY_SESSION_CONVERSATION_PATH]: jsonl([...existing, toConversationDebugRecord(record, branch ?? "main")]),
       [GIT_MEMORY_SESSION_CONVERSATION_MARKDOWN_PATH]: appendConversationMarkdown(existingMarkdown, record),
     });
     await this.commitMainConversationAppend(driver, {
@@ -1373,6 +1374,24 @@ function appendConversationMarkdown(
   record: GitMemoryConversationRecord,
 ): string {
   return appendConversationMarkdownRecords(existing, [record]);
+}
+
+function toConversationDebugRecord(
+  record: GitMemoryConversationRecord,
+  branch: string,
+): GitMemoryConversationRecord {
+  return {
+    seq: record.seq,
+    turnId: record.turnId,
+    role: record.role,
+    at: record.at,
+    text: record.text,
+    branch,
+    ...(record.contentRef ? { contentRef: record.contentRef } : {}),
+    ...(record.sha256 ? { sha256: record.sha256 } : {}),
+    ...(record.taskId ? { taskId: record.taskId } : {}),
+    ...(record.runId ? { runId: record.runId } : {}),
+  };
 }
 
 interface ConversationMarkdownMetadata {

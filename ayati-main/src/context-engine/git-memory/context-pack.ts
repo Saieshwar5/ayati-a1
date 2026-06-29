@@ -432,8 +432,8 @@ function readConversationFromMarkdownOrJsonl(
     }
     return {
       ...record,
-      messageId: existing.messageId,
       turnId: existing.turnId,
+      ...(existing.messageId ? { messageId: existing.messageId } : {}),
     };
   });
 }

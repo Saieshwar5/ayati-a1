@@ -49,9 +49,9 @@ export interface GitMemorySessionMetaFile {
 }
 
 export interface GitMemoryConversationRecord {
-  v: 1;
+  v?: 1;
   seq: number;
-  messageId: GitMemoryMessageId;
+  messageId?: GitMemoryMessageId;
   turnId: GitMemoryTurnId;
   role: GitMemoryConversationRole;
   at: string;
@@ -60,6 +60,7 @@ export interface GitMemoryConversationRecord {
   sha256?: string;
   taskId?: GitMemoryTaskId | null;
   runId?: GitMemoryRunId | null;
+  branch?: string | null;
 }
 
 export interface GitMemorySessionEventRecord {
@@ -378,15 +379,20 @@ export function validateGitMemoryConversationRecord(value: unknown): ValidationR
   const errors: string[] = [];
   const record = requireRecord(value, "conversation record", errors);
   if (record) {
-    requireVersion(record, errors);
     requirePositiveInteger(record, "seq", errors);
-    requireMessageId(record, "messageId", errors);
+    if ("v" in record) {
+      requireVersion(record, errors);
+    }
+    if ("messageId" in record) {
+      requireMessageId(record, "messageId", errors);
+    }
     requireTurnId(record, "turnId", errors);
     requireOneOf(record, "role", ["user", "assistant", "system"], errors);
     requireNonEmptyString(record, "at", errors);
     requireInlineOrReferencedContent(record, errors);
     requireOptionalTaskId(record, "taskId", errors);
     requireOptionalRunId(record, "runId", errors);
+    requireOptionalNonEmptyString(record, "branch", errors);
   }
   return validationResult(value, errors);
 }
