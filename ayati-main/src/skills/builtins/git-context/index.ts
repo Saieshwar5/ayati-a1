@@ -64,6 +64,10 @@ interface SearchEvidenceInput extends SessionScopedInput {
   limit?: number;
 }
 
+interface SwitchTaskInput extends TaskSelectorInput {
+  reason: string;
+}
+
 const TASK_DETAIL_INCLUDES: GitMemoryTaskDetailInclude[] = [
   "task",
   "state",
@@ -79,8 +83,8 @@ const TASK_DETAIL_INCLUDES: GitMemoryTaskDetailInclude[] = [
 const TASK_STATUSES: GitMemoryTaskStatus[] = ["open", "in_progress", "blocked", "done", "abandoned"];
 
 const GIT_CONTEXT_PROMPT_BLOCK = [
-  "The git-context tools are read-only.",
-  "Use them to inspect Ayati's daily git context sessions, active context, and task routing snapshots.",
+  "Most git-context tools are read-only. git_context_switch_task mutates only the active git-context task branch.",
+  "Use git-context tools to inspect Ayati's daily git context sessions, active context, and task routing snapshots.",
   "Prefer git_context_list_sessions to discover available daily sessions.",
   "Use git_context_active to inspect the current compact git context for a session.",
   "Use git_context_list_tasks to compare known task branches before deciding whether prior task context matters.",
@@ -89,7 +93,8 @@ const GIT_CONTEXT_PROMPT_BLOCK = [
   "Use git_context_read_evidence to read compact durable evidence records for a task or run.",
   "Use git_context_search_evidence to find compact durable evidence records by summary, tool, fact, artifact, run id, action id, or evidence ref.",
   "Use git_context_log to inspect compact commit history for main or one task branch.",
-  "These tools do not switch branches, commit, checkout, mutate refs, or edit files.",
+  "Use git_context_switch_task only when the user is clearly continuing an existing task branch.",
+  "Do not use git-context tools to commit, edit files, merge, reset, push, pull, or mutate external state.",
 ].join("\n");
 
 export function createGitContextSkill(deps: GitContextSkillDeps): SkillDefinition {
@@ -110,6 +115,7 @@ export function createGitContextSkill(deps: GitContextSkillDeps): SkillDefinitio
       createReadEvidenceTool(store),
       createSearchEvidenceTool(store),
       createLogTool(store),
+      createSwitchTaskTool(store),
     ],
   };
 }
@@ -484,6 +490,69 @@ function createLogTool(store: GitMemoryDailySessionStore): ToolDefinition {
   };
 }
 
+function createSwitchTaskTool(store: GitMemoryDailySessionStore): ToolDefinition {
+  return {
+    name: "git_context_switch_task",
+    description: "Switch the active git-context session worktree to an existing task branch.",
+    inputSchema: sessionScopedInputSchema({
+      taskId: {
+        type: "string",
+        description: "Task id to switch to. Provide exactly one of taskId or branch.",
+      },
+      branch: {
+        type: "string",
+        description: "Task branch to switch to. Provide exactly one of taskId or branch.",
+      },
+      reason: {
+        type: "string",
+        description: "Short reason for switching task focus.",
+      },
+    }),
+    outputSchema: genericObjectOutputSchema,
+    annotations: gitContextMutatingAnnotations(),
+    resultContract: gitContextSucceededContract("task_switched"),
+    selectionHints: {
+      tags: ["git-context", "task", "branch", "switch", "routing", "mutating"],
+      aliases: ["switch git context task", "activate task branch", "change work branch"],
+      domain: "git_context",
+      priority: 5,
+    },
+    async execute(input, context): Promise<ToolResult> {
+      const parsed = parseSwitchTaskInput(input, context);
+      if ("ok" in parsed) {
+        return parsed;
+      }
+      try {
+        const before = await store.readTaskRoutingSnapshot(parsed.sessionId);
+        const taskId = await resolveTaskIdFromSelector(store, parsed);
+        const selected = await store.selectTaskForTurn({
+          sessionId: parsed.sessionId,
+          taskId,
+          fromSeq: 0,
+          toSeq: 0,
+          reason: "task_switched",
+          summary: parsed.reason,
+        });
+        return okJsonResult({
+          code: "GIT_CONTEXT_TASK_SWITCHED",
+          message: "Git-context active task switched.",
+          structuredContent: {
+            sessionId: parsed.sessionId,
+            taskId: selected.taskId,
+            branch: selected.branch,
+            ref: selected.ref,
+            previousBranch: before.focus?.activeBranch ?? "main",
+            previousTaskId: before.focus?.activeTaskId,
+            reason: parsed.reason,
+          },
+        });
+      } catch (err) {
+        return gitContextMutationFailed(err);
+      }
+    },
+  };
+}
+
 function parseListSessionsInput(input: unknown): ListSessionsInput | ToolResult {
   if (input === undefined || input === null) {
     return {};
@@ -547,6 +616,38 @@ function parseSearchTasksInput(input: unknown, context?: ToolExecutionContext): 
     query: value.query.trim(),
     ...(typeof value.limit === "number" ? { limit: Math.floor(value.limit) } : {}),
     ...(value.status ? { status: value.status } : {}),
+  };
+}
+
+async function resolveTaskIdFromSelector(
+  store: GitMemoryDailySessionStore,
+  input: TaskSelectorInput,
+): Promise<string> {
+  if (input.taskId) {
+    return input.taskId;
+  }
+  const snapshot = await store.readTaskRoutingSnapshot(input.sessionId);
+  const match = snapshot.tasks.find((task) => task.branch === input.branch);
+  if (!match) {
+    throw new Error(`Git memory task branch not found: ${input.branch}`);
+  }
+  return match.taskId;
+}
+
+function parseSwitchTaskInput(input: unknown, context?: ToolExecutionContext): SwitchTaskInput | ToolResult {
+  const scoped = parseTaskSelectorInput(input, context);
+  if ("ok" in scoped) {
+    return scoped;
+  }
+  const value = input && typeof input === "object" && !Array.isArray(input)
+    ? input as Partial<SwitchTaskInput>
+    : {};
+  if (typeof value.reason !== "string" || value.reason.trim().length === 0) {
+    return invalidInput("reason must be a non-empty string.");
+  }
+  return {
+    ...scoped,
+    reason: value.reason.trim(),
   };
 }
 
@@ -798,12 +899,24 @@ function gitContextReadOnlyAnnotations(): ToolDefinition["annotations"] {
   });
 }
 
+function gitContextMutatingAnnotations(): ToolDefinition["annotations"] {
+  return commonAnnotations({
+    domain: "git_context",
+    readOnly: false,
+    mutatesWorkspace: true,
+    mutatesExternalWorld: false,
+    destructive: false,
+    idempotent: true,
+    retrySafe: true,
+  });
+}
+
 function gitContextSucceededContract(kind: string): ToolDefinition["resultContract"] {
   return succeededContract({
     progressFacts: [{
       kind,
       path: "$.result.structuredContent",
-      message: "Git-context read-only query completed.",
+      message: "Git-context operation completed.",
     }],
   });
 }
@@ -817,6 +930,18 @@ function gitContextReadFailed(err: unknown): ToolResult {
     retryable: true,
     recoverable: true,
     suggestedNextActions: ["List git-context sessions and tasks, then retry with a valid session id and task selector."],
+  });
+}
+
+function gitContextMutationFailed(err: unknown): ToolResult {
+  const message = err instanceof Error ? err.message : String(err);
+  return errorResult({
+    code: "GIT_CONTEXT_MUTATION_FAILED",
+    message,
+    category: "semantic",
+    retryable: true,
+    recoverable: true,
+    suggestedNextActions: ["List git-context tasks, then retry with an existing task id or branch selector."],
   });
 }
 
