@@ -21,6 +21,7 @@ import { createAttachmentSkill } from "../skills/builtins/attachments/index.js";
 import { createDatasetSkill } from "../skills/builtins/datasets/index.js";
 import { createDocumentSkill } from "../skills/builtins/documents/index.js";
 import { createFilesSkill } from "../skills/builtins/files/index.js";
+import { createGitContextSkill } from "../skills/builtins/git-context/index.js";
 import { createUiSkill } from "../skills/builtins/ui/index.js";
 import { SkillActivationManager } from "../skills/activation-manager.js";
 import { createSkillBundle, SkillCatalog } from "../skills/skill-catalog.js";
@@ -77,6 +78,9 @@ export async function createSkillRuntime(options: SkillRuntimeOptions): Promise<
     createFilesSkill({
       fileLibrary: options.fileLibrary,
       directoryLibrary: options.directoryLibrary,
+    }),
+    createGitContextSkill({
+      contextStoreDir: options.config.gitContext.storeDir,
     }),
     createUiSkill({
       workspaceOrchestrator: options.workspaceOrchestrator,

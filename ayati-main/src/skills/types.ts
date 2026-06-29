@@ -39,6 +39,7 @@ export type ToolDomain =
   | "attachments"
   | "datasets"
   | "recall"
+  | "git_context"
   | "files";
 
 export interface ToolAnnotations {

@@ -3,6 +3,7 @@ export type {
   ContextCommitSummary,
   ContextConversationRecord,
   ContextEngineMachineContext,
+  ContextTaskEvidenceSummary,
   ContextFocus,
   ContextSessionEventRecord,
   ContextTaskFact,

@@ -113,6 +113,20 @@ export interface ContextCommitSummary {
   trailers: unknown;
 }
 
+export interface ContextTaskEvidenceSummary {
+  runId: string;
+  workId: string;
+  step?: number;
+  actionId?: string;
+  tool: string;
+  status?: string;
+  summary: string;
+  evidenceRef?: string;
+  artifacts: string[];
+  facts: string[];
+  accessModes: string[];
+}
+
 export interface ContextEngineMachineContext {
   session: {
     sessionId: string;
@@ -135,6 +149,7 @@ export interface ContextEngineMachineContext {
     assets: TaskAssetRecord[];
     recentRuns: ContextTaskRunSummary[];
     recentCommits: ContextCommitSummary[];
+    recentEvidence: ContextTaskEvidenceSummary[];
   };
 }
 

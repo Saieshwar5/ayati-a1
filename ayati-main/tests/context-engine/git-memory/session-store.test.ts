@@ -1,4 +1,4 @@
-import { mkdtemp } from "node:fs/promises";
+import { access, mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -14,6 +14,7 @@ import {
   GitMemoryWorktreeGitDriver,
   GitMemoryDailySessionStore,
   gitMemoryTaskActionsPath,
+  gitMemoryTaskEvidenceManifestPath,
   gitMemoryTaskFilePath,
   gitMemoryTaskRunPath,
   gitMemoryTaskStatePath,
@@ -248,6 +249,16 @@ describe("GitMemoryDailySessionStore", () => {
     expect(parseJsonl(await driver.readWorkingFile(GIT_MEMORY_SESSION_TASK_MESSAGE_LINKS_PATH)))
       .toMatchObject([{ linkId: "L-20260628-000001", fromSeq: 1, toSeq: 2 }]);
     expect(await driver.log(GIT_MEMORY_MAIN_REF, 5)).toHaveLength(1);
+  });
+
+  it("does not create a repo when reading task conversation for a missing session", async () => {
+    const contextStoreDir = await mkdtemp(join(tmpdir(), "ayati-git-memory-"));
+    const store = new GitMemoryDailySessionStore({ contextStoreDir });
+    const sessionId = "S-20260628-local";
+
+    await expect(store.readTaskConversationSegments(sessionId, "W-20260628-0001"))
+      .rejects.toThrow("Git memory session not found");
+    await expect(access(join(contextStoreDir, "sessions", sessionId, ".git"))).rejects.toThrow();
   });
 
   it("checkpoints task-message links with the session checkpoint", async () => {
@@ -534,6 +545,31 @@ describe("GitMemoryDailySessionStore", () => {
         tool: "read_file",
         status: "completed",
       }]);
+    expect(parseJsonl(await driver.readFile(task.ref, gitMemoryTaskEvidenceManifestPath(task.taskId, run.runId))))
+      .toMatchObject([{
+        actionId: "ACT-20260628-000001",
+        runId: "R-20260628-0001",
+        taskId: "W-20260628-0001",
+        tool: "read_file",
+        status: "completed",
+        summary: "Read upload server implementation.",
+        evidenceRef: "evidence/ACT-20260628-000001.txt",
+        artifacts: [],
+        facts: [],
+        accessModes: ["summary"],
+      }]);
+    await expect(store.readTaskDetail({
+      sessionId: session.sessionId,
+      taskId: task.taskId,
+      include: ["evidence"],
+      limits: { evidenceLimit: 1 },
+    })).resolves.toMatchObject({
+      recentEvidence: [{
+        runId: "R-20260628-0001",
+        taskId: "W-20260628-0001",
+        evidenceRef: "evidence/ACT-20260628-000001.txt",
+      }],
+    });
 
     const taskLog = await driver.log(task.ref, 5);
     expect(taskLog).toHaveLength(2);

@@ -2,6 +2,7 @@ import type {
   CommitGitMemoryTaskRunResult,
   GitMemoryConversationRecord,
   GitMemoryConversationSeqRange,
+  GitContextMemoryState,
   GitMemoryHarnessRunResultForContext,
   GitMemoryMachineContextPack,
   GitMemoryRunId,
@@ -12,7 +13,7 @@ import type {
   RoutedGitMemoryUserTurn,
 } from "../context-engine/index.js";
 import {
-  buildGitMemoryHarnessContextPack,
+  buildGitMemoryHarnessContextFromMemoryState,
   buildGitMemoryTaskRunCommitInput,
 } from "../context-engine/index.js";
 import type { HarnessContextInput } from "../ivec/harness-context.js";
@@ -37,6 +38,7 @@ export interface GitMemorySystemEventContextPreparedTurn {
   messageId: string;
   turnId: GitMemoryTurnId;
   context: GitMemoryMachineContextPack;
+  memoryState: GitContextMemoryState;
 }
 
 export interface GitMemorySystemEventContextAssistantMessageInput {
@@ -112,6 +114,7 @@ class AppGitMemorySystemEventContextRuntime implements GitMemorySystemEventConte
       messageId: prepared.systemMessage.messageId,
       turnId: prepared.systemMessage.turnId,
       context: prepared.context,
+      memoryState: prepared.memoryState,
     };
   }
 
@@ -135,7 +138,7 @@ class AppGitMemorySystemEventContextRuntime implements GitMemorySystemEventConte
       return {
         ...route,
         harnessContext: {
-          contextEngine: buildGitMemoryHarnessContextPack(route.context),
+          contextEngine: buildGitMemoryHarnessContextFromMemoryState(route.memoryState),
         },
       };
     } catch (err) {

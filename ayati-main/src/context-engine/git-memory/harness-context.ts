@@ -4,11 +4,13 @@ import type {
   ContextEngineMachineContext,
   ContextSessionEventRecord,
   ContextTaskFact,
+  ContextTaskEvidenceSummary,
   ContextTaskRunSummary,
   TaskAssetRecord,
 } from "../contracts.js";
 import type {
   GitMemoryConversationRecord,
+  GitMemoryEvidenceManifestRecord,
   GitMemoryRunFile,
   GitMemorySessionEventRecord,
   GitMemoryTaskId,
@@ -18,6 +20,7 @@ import type {
   GitMemoryFocusContext,
   GitMemoryMachineContextPack,
 } from "./context-pack.js";
+import type { GitContextMemoryState } from "./memory-state.js";
 
 export function buildGitMemoryHarnessContextPack(
   context: GitMemoryMachineContextPack,
@@ -47,6 +50,41 @@ export function buildGitMemoryHarnessContextPack(
         assets: [] satisfies TaskAssetRecord[],
         recentRuns: context.task.recentRuns.map((run) => toTaskRunSummary(run, context.task!.taskId)),
         recentCommits: context.task.recentCommits.map(toCompactCommitSummary),
+        recentEvidence: [],
+      },
+    } : {}),
+  };
+}
+
+export function buildGitMemoryHarnessContextFromMemoryState(
+  state: GitContextMemoryState,
+): ContextEngineMachineContext {
+  return {
+    session: {
+      sessionId: state.session.sessionId,
+      conversationTail: state.session.conversationTail.map(toConversationRecord),
+      eventTail: state.session.eventTail
+        .map((event) => toSessionEventRecord(state.session.sessionId, event))
+        .filter(isSessionEventRecord),
+      assetCount: 0,
+    },
+    focus: toFocusContext(state.focus),
+    ...(state.activeTask ? {
+      task: {
+        ref: state.activeTask.ref,
+        workId: state.activeTask.taskId,
+        title: state.activeTask.title,
+        objective: state.activeTask.objective,
+        status: state.activeTask.status,
+        completed: state.activeTask.completed,
+        open: state.activeTask.open,
+        blockers: state.activeTask.blockers,
+        facts: state.activeTask.facts.map(toTaskFact),
+        next: state.activeTask.next,
+        assets: [] satisfies TaskAssetRecord[],
+        recentRuns: state.activeTask.recentRuns.map((run) => toTaskRunSummary(run, state.activeTask!.taskId)),
+        recentCommits: state.activeTask.recentCommits.map(toCompactCommitSummary),
+        recentEvidence: state.activeTask.recentEvidence.map(toEvidenceSummary),
       },
     } : {}),
   };
@@ -171,6 +209,22 @@ function toCompactCommitSummary(commit: CompactGitMemoryCommitSummary): ContextC
     subject: commit.subject,
     ...(commit.summary ? { summary: commit.summary } : {}),
     trailers: commit.trailers,
+  };
+}
+
+function toEvidenceSummary(record: GitMemoryEvidenceManifestRecord): ContextTaskEvidenceSummary {
+  return {
+    runId: record.runId,
+    workId: record.taskId,
+    ...(record.step ? { step: record.step } : {}),
+    ...(record.actionId ? { actionId: record.actionId } : {}),
+    tool: record.tool,
+    ...(record.status ? { status: record.status } : {}),
+    summary: record.summary,
+    ...(record.evidenceRef ? { evidenceRef: record.evidenceRef } : {}),
+    artifacts: record.artifacts,
+    facts: record.facts,
+    accessModes: record.accessModes,
   };
 }
 

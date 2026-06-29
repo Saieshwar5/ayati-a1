@@ -169,6 +169,25 @@ export interface GitMemoryActionRecord {
   evidenceRef?: string;
 }
 
+export interface GitMemoryEvidenceManifestRecord {
+  v: 1;
+  runId: GitMemoryRunId;
+  taskId: GitMemoryTaskId;
+  step?: number;
+  actionId?: GitMemoryActionId;
+  tool: string;
+  status?: GitMemoryActionStatus;
+  summary: string;
+  evidenceRef?: string;
+  artifacts: string[];
+  facts: string[];
+  accessModes: string[];
+  outputSize?: number;
+  lineCount?: number;
+  truncated?: boolean;
+  source?: Record<string, unknown>;
+}
+
 export type ValidationResult<T> =
   | { ok: true; value: T }
   | { ok: false; errors: string[] };
@@ -191,6 +210,10 @@ export function gitMemoryTaskRunPath(taskId: GitMemoryTaskId, runId: GitMemoryRu
 
 export function gitMemoryTaskActionsPath(taskId: GitMemoryTaskId, runId: GitMemoryRunId): string {
   return `${gitMemoryTaskDir(taskId)}/actions/${runId}.jsonl`;
+}
+
+export function gitMemoryTaskEvidenceManifestPath(taskId: GitMemoryTaskId, runId: GitMemoryRunId): string {
+  return `${gitMemoryTaskDir(taskId)}/evidence/${runId}/manifest.jsonl`;
 }
 
 export function gitMemoryTaskAssetsPath(taskId: GitMemoryTaskId): string {
@@ -539,6 +562,32 @@ export function validateGitMemoryActionRecord(value: unknown): ValidationResult<
   return validationResult(value, errors);
 }
 
+export function validateGitMemoryEvidenceManifestRecord(
+  value: unknown,
+): ValidationResult<GitMemoryEvidenceManifestRecord> {
+  const errors: string[] = [];
+  const record = requireRecord(value, "evidence manifest record", errors);
+  if (record) {
+    requireVersion(record, errors);
+    requireRunId(record, "runId", errors);
+    requireTaskId(record, "taskId", errors);
+    requireOptionalPositiveInteger(record, "step", errors);
+    requireOptionalActionId(record, "actionId", errors);
+    requireNonEmptyString(record, "tool", errors);
+    requireOptionalOneOf(record, "status", ["completed", "failed", "skipped"], errors);
+    requireNonEmptyString(record, "summary", errors);
+    requireOptionalNonEmptyString(record, "evidenceRef", errors);
+    requireStringArray(record, "artifacts", errors);
+    requireStringArray(record, "facts", errors);
+    requireStringArray(record, "accessModes", errors);
+    requireOptionalNonNegativeInteger(record, "outputSize", errors);
+    requireOptionalNonNegativeInteger(record, "lineCount", errors);
+    requireOptionalBoolean(record, "truncated", errors);
+    requireOptionalRecord(record, "source", errors);
+  }
+  return validationResult(value, errors);
+}
+
 function validateTaskIndexEntry(value: unknown, label: string, errors: string[]): void {
   const record = requireRecord(value, label, errors);
   if (!record) {
@@ -609,6 +658,26 @@ function requireOptionalNonEmptyString(record: Record<string, unknown>, field: s
   }
 }
 
+function requireOptionalBoolean(record: Record<string, unknown>, field: string, errors: string[]): void {
+  const value = record[field];
+  if (value === undefined || value === null) {
+    return;
+  }
+  if (typeof value !== "boolean") {
+    errors.push(`${field} must be a boolean.`);
+  }
+}
+
+function requireOptionalRecord(record: Record<string, unknown>, field: string, errors: string[]): void {
+  const value = record[field];
+  if (value === undefined || value === null) {
+    return;
+  }
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    errors.push(`${field} must be an object.`);
+  }
+}
+
 function requirePositiveInteger(record: Record<string, unknown>, field: string, errors: string[]): number | undefined {
   const value = record[field];
   if (typeof value !== "number" || !Number.isInteger(value) || value < 1) {
@@ -618,8 +687,28 @@ function requirePositiveInteger(record: Record<string, unknown>, field: string, 
   return value;
 }
 
+function requireOptionalPositiveInteger(record: Record<string, unknown>, field: string, errors: string[]): void {
+  const value = record[field];
+  if (value === undefined || value === null) {
+    return;
+  }
+  if (typeof value !== "number" || !Number.isInteger(value) || value < 1) {
+    errors.push(`${field} must be a positive integer.`);
+  }
+}
+
 function requireNonNegativeInteger(record: Record<string, unknown>, field: string, errors: string[]): void {
   const value = record[field];
+  if (typeof value !== "number" || !Number.isInteger(value) || value < 0) {
+    errors.push(`${field} must be a non-negative integer.`);
+  }
+}
+
+function requireOptionalNonNegativeInteger(record: Record<string, unknown>, field: string, errors: string[]): void {
+  const value = record[field];
+  if (value === undefined || value === null) {
+    return;
+  }
   if (typeof value !== "number" || !Number.isInteger(value) || value < 0) {
     errors.push(`${field} must be a non-negative integer.`);
   }
@@ -637,6 +726,21 @@ function requireOneOf<T extends string>(
     return undefined;
   }
   return value as T;
+}
+
+function requireOptionalOneOf<T extends string>(
+  record: Record<string, unknown>,
+  field: string,
+  allowed: readonly T[],
+  errors: string[],
+): void {
+  const value = record[field];
+  if (value === undefined || value === null) {
+    return;
+  }
+  if (typeof value !== "string" || !allowed.includes(value as T)) {
+    errors.push(`${field} must be one of: ${allowed.join(", ")}.`);
+  }
 }
 
 function requireArray(record: Record<string, unknown>, field: string, errors: string[]): unknown[] | undefined {
@@ -789,6 +893,20 @@ function requireOptionalRunId(record: Record<string, unknown>, field: string, er
   }
   if (!isGitMemoryRunId(value)) {
     errors.push(`${field} must be a valid git-memory run id.`);
+  }
+}
+
+function requireOptionalActionId(record: Record<string, unknown>, field: string, errors: string[]): void {
+  const value = record[field];
+  if (value === undefined || value === null) {
+    return;
+  }
+  if (typeof value !== "string") {
+    errors.push(`${field} must be a string.`);
+    return;
+  }
+  if (!isGitMemoryActionId(value)) {
+    errors.push(`${field} must be a valid git-memory action id.`);
   }
 }
 

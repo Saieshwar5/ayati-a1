@@ -46,8 +46,21 @@ describe("createGitMemoryChatContextRuntime", () => {
           },
           focus: { status: "none" },
         },
+        memoryState: {
+          session: {
+            conversationTail: [{
+              seq: 1,
+              role: "user",
+              text: "Fix upload handling",
+            }],
+            taskCount: 0,
+          },
+          focus: { status: "none" },
+          knownTasks: [],
+        },
       });
       expect(prepared.context.task).toBeUndefined();
+      expect(prepared.memoryState.activeTask).toBeUndefined();
       expect(await new GitMemoryWorktreeGitDriver(prepared.repoPath).log(GIT_MEMORY_MAIN_REF, 5))
         .toHaveLength(1);
     } finally {
@@ -185,6 +198,21 @@ describe("createGitMemoryChatContextRuntime", () => {
             taskId: "W-20260628-0001",
           },
         },
+        memoryState: {
+          focus: {
+            status: "active",
+            taskId: "W-20260628-0001",
+          },
+          activeTask: {
+            taskId: "W-20260628-0001",
+            title: "Fix upload handling",
+            open: ["Fix upload handling"],
+          },
+          knownTasks: [{
+            taskId: "W-20260628-0001",
+            title: "Fix upload handling",
+          }],
+        },
       });
 
       const second = await runtime.prepareUserTurn({
@@ -227,7 +255,17 @@ describe("createGitMemoryChatContextRuntime", () => {
             ],
           },
         },
+        memoryState: {
+          activeTask: {
+            taskId: "W-20260628-0001",
+          },
+          knownTasks: [{
+            taskId: "W-20260628-0001",
+          }],
+        },
       });
+      expect(continued?.harnessContext.contextEngine.task?.workId)
+        .toBe(continued?.memoryState.activeTask?.taskId);
     } finally {
       rmSync(storeDir, { recursive: true, force: true });
     }

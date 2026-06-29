@@ -6,6 +6,7 @@ import type {
 } from "../contracts.js";
 import type {
   CommitGitMemoryTaskRunActionInput,
+  CommitGitMemoryTaskRunEvidenceInput,
   CommitGitMemoryTaskRunInput,
 } from "./session-store.js";
 import type {
@@ -73,6 +74,7 @@ export function buildGitMemoryTaskRunCommitInput(
     summary,
     ...(input.result.content.trim() ? { assistantResponse: input.result.content } : {}),
     actions: buildRunActions(input.result.completedSteps ?? [], input.at),
+    evidence: buildRunEvidence(input.result.completedSteps ?? []),
     toolCallCount: input.result.totalToolCalls,
     changedFiles: input.changedFiles ?? buildChangedFiles(input.result),
     newFacts: buildNewFacts(workState, input.result),
@@ -86,6 +88,25 @@ export function buildGitMemoryTaskRunCommitInput(
       next: next || "No next step.",
     },
   };
+}
+
+function buildRunEvidence(
+  steps: HarnessStepSummaryForContext[],
+): CommitGitMemoryTaskRunEvidenceInput[] {
+  return steps.map((step) => ({
+    step: step.step,
+    tool: normalizeList(step.toolsUsed).join(",") || "agent_step",
+    status: toActionStatus(step.outcome),
+    summary: step.summary,
+    ...(step.evidenceSummary ? { evidenceRef: step.evidenceSummary } : {}),
+    artifacts: normalizeList(step.artifacts),
+    facts: normalizeList([
+      ...step.newFacts,
+      ...(step.evidenceItems ?? []),
+    ]),
+    accessModes: step.evidenceSummary || (step.evidenceItems ?? []).length > 0 ? ["summary"] : [],
+    source: { kind: "harness-step" },
+  }));
 }
 
 function buildRunActions(

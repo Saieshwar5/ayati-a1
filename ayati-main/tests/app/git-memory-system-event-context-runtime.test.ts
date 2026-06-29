@@ -36,6 +36,10 @@ describe("createGitMemorySystemEventContextRuntime", () => {
       expect(prepared).toMatchObject({
         sessionId: "S-20260628-local",
         messageSeq: 1,
+        memoryState: {
+          focus: { status: "none" },
+          knownTasks: [],
+        },
       });
       expect(routed).toMatchObject({
         status: "ready",
@@ -43,7 +47,19 @@ describe("createGitMemorySystemEventContextRuntime", () => {
         taskId: "W-20260628-0001",
         runId: "R-20260628-0001",
         conversationRefs: [{ fromSeq: 1, toSeq: 1 }],
+        memoryState: {
+          focus: {
+            status: "active",
+            taskId: "W-20260628-0001",
+          },
+          activeTask: {
+            taskId: "W-20260628-0001",
+            title: "Check health",
+          },
+        },
       });
+      expect(routed?.harnessContext.contextEngine.task?.workId)
+        .toBe(routed?.memoryState.activeTask?.taskId);
 
       if (routed?.status !== "ready") {
         throw new Error("Expected ready route.");

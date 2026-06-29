@@ -932,6 +932,7 @@ function buildGitContextFixture(count: number, timestamp: string): ContextEngine
         createdAt: timestamp,
       }],
       recentCommits: [],
+      recentEvidence: [],
     },
   };
 }

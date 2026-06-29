@@ -77,7 +77,20 @@ describe("GitMemoryRuntime", () => {
         },
         focus: { status: "none" },
       },
+      memoryState: {
+        session: {
+          conversationTail: [{
+            seq: 1,
+            role: "user",
+            text: "Fix upload handling",
+          }],
+          taskCount: 0,
+        },
+        focus: { status: "none" },
+        knownTasks: [],
+      },
     });
+    expect(prepared.memoryState.activeTask).toBeUndefined();
 
     const context = await runtime.buildActiveContext(prepared.sessionId);
     expect(context.session.conversationTail).toMatchObject([
@@ -175,6 +188,23 @@ describe("GitMemoryRuntime", () => {
         runId: "R-20260628-0001",
       },
     ]);
+
+    const memoryState = await runtime.buildMemoryState(prepared.sessionId);
+    expect(memoryState).toMatchObject({
+      focus: {
+        status: "active",
+        taskId: "W-20260628-0001",
+      },
+      activeTask: {
+        taskId: "W-20260628-0001",
+        status: "done",
+        completed: ["Finished upload handling inspection"],
+      },
+      knownTasks: [{
+        taskId: "W-20260628-0001",
+        status: "done",
+      }],
+    });
 
     await runtime.checkpointSession({
       sessionId: prepared.sessionId,

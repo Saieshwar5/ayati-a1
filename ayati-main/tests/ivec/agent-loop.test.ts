@@ -596,6 +596,7 @@ describe("agentLoop", () => {
               }],
               recentRuns: [],
               recentCommits: [],
+              recentEvidence: [],
             },
           },
         },

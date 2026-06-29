@@ -615,7 +615,7 @@ Decision rules:
 - Treat State view.context as the bounded context pack for this decision.
 - Use context.timeline as chronological conversation context. The item with current=true is the current input.
 - Use the immediately preceding assistant item in context.timeline to interpret short replies like yes, no, do it, go ahead, continue, or stop.
-- Use context.gitContext.task as the durable task/work state when present. Continue from its open, completed, facts, next, assets, recentRuns, and recentCommits fields.
+- Use context.gitContext.task as the durable task/work state when present. Continue from its open, completed, facts, next, assets, recentRuns, recentCommits, and recentEvidence fields.
 - Use context.gitContext.focus to understand whether the runtime selected an existing work branch or created/kept current work.
 - Do not mention git branches, commits, refs, or context-engine mechanics to the user unless they explicitly ask about the implementation.
 - If git context is ambiguous, the app runtime should ask the user before this decision runs; do not guess between multiple possible tasks.

@@ -54,6 +54,7 @@ function createGitContext(overrides: Partial<ContextEngineMachineContext> = {}):
         createdAt: "2026-06-27T10:00:00.000Z",
       }],
       recentCommits: [],
+      recentEvidence: [],
     },
     ...overrides,
   };

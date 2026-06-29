@@ -9,12 +9,14 @@ import {
   gitMemoryTaskActionsPath,
   gitMemoryTaskAssetsPath,
   gitMemoryTaskContextPath,
+  gitMemoryTaskEvidenceManifestPath,
   gitMemoryTaskFilePath,
   gitMemoryTaskNotesPath,
   gitMemoryTaskRunPath,
   gitMemoryTaskStatePath,
   validateGitMemoryActionRecord,
   validateGitMemoryConversationRecord,
+  validateGitMemoryEvidenceManifestRecord,
   validateGitMemoryFocusFile,
   validateGitMemoryRunFile,
   validateGitMemorySessionEventRecord,
@@ -40,6 +42,8 @@ describe("git memory schema", () => {
       .toBe("tasks/W-20260628-0001/runs/R-20260628-0001.json");
     expect(gitMemoryTaskActionsPath("W-20260628-0001", "R-20260628-0001"))
       .toBe("tasks/W-20260628-0001/actions/R-20260628-0001.jsonl");
+    expect(gitMemoryTaskEvidenceManifestPath("W-20260628-0001", "R-20260628-0001"))
+      .toBe("tasks/W-20260628-0001/evidence/R-20260628-0001/manifest.jsonl");
     expect(gitMemoryTaskAssetsPath("W-20260628-0001")).toBe("tasks/W-20260628-0001/assets.jsonl");
     expect(gitMemoryTaskNotesPath("W-20260628-0001")).toBe("tasks/W-20260628-0001/notes.md");
     expect(gitMemoryTaskContextPath("W-20260628-0001")).toBe("tasks/W-20260628-0001/context.md");
@@ -208,6 +212,25 @@ describe("git memory schema", () => {
       startedAt: "2026-06-28T09:02:00+05:30",
       completedAt: "2026-06-28T09:02:01+05:30",
       evidenceRef: "evidence/ACT-20260628-000001.txt",
+    }).ok).toBe(true);
+
+    expect(validateGitMemoryEvidenceManifestRecord({
+      v: 1,
+      runId: "R-20260628-0001",
+      taskId: "W-20260628-0001",
+      step: 1,
+      actionId: "ACT-20260628-000001",
+      tool: "read_file",
+      status: "completed",
+      summary: "Read upload server implementation.",
+      evidenceRef: "read upload-server.ts lines 1-80",
+      artifacts: ["ayati-main/src/server/upload-server.ts"],
+      facts: ["UploadServer owns upload request handling."],
+      accessModes: ["summary"],
+      outputSize: 1200,
+      lineCount: 80,
+      truncated: false,
+      source: { kind: "harness-step" },
     }).ok).toBe(true);
   });
 });

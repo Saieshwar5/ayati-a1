@@ -127,6 +127,7 @@ describe("SkillActivationManager", () => {
             }],
             recentRuns: [],
             recentCommits: [],
+            recentEvidence: [],
           },
         },
       },

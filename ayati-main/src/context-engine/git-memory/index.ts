@@ -3,6 +3,7 @@ export * from "./context-pack.js";
 export * from "./git-driver.js";
 export * from "./harness-context.js";
 export * from "./harness-result-mapper.js";
+export * from "./memory-state.js";
 export * from "./runtime.js";
 export * from "./schema.js";
 export * from "./session-store.js";

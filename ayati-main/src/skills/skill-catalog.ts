@@ -125,6 +125,16 @@ const DEFAULT_SKILL_CARDS: Record<string, Partial<SkillCard>> = {
     risk: "read_only",
     defaultScope: "run",
   },
+  "git-context": {
+    title: "Git Context",
+    summary: "Read Ayati daily git context sessions, active context, and task branch snapshots.",
+    domains: ["git_context"],
+    triggers: ["git context", "task branch", "work branch", "active task", "session context", "previous task"],
+    whenToUse: "Use when the agent needs to inspect Ayati's durable git context, active focus, known tasks, or prior task branches.",
+    notFor: ["Do not use for mutating branches, switching tasks, committing, merging, or editing user files."],
+    risk: "read_only",
+    defaultScope: "run",
+  },
   files: {
     title: "Managed Files",
     summary: "Inspect, register, read, query, and profile managed attached files/directories.",

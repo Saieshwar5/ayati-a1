@@ -3,7 +3,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
+  buildGitMemoryHarnessContextFromMemoryState,
   buildGitMemoryHarnessContextPack,
+  createGitContextMemoryStateHydrator,
   GitMemoryContextReader,
   GitMemoryDailySessionStore,
 } from "../../../src/context-engine/git-memory/index.js";
@@ -38,6 +40,11 @@ describe("buildGitMemoryHarnessContextPack", () => {
       focus: { status: "none" },
     });
     expect(harness.task).toBeUndefined();
+
+    const memory = await createGitContextMemoryStateHydrator(store).hydrate({
+      sessionId: session.sessionId,
+    });
+    expect(buildGitMemoryHarnessContextFromMemoryState(memory)).toEqual(harness);
   });
 
   it("maps active task context into the harness context shape expected by the agent", async () => {
@@ -85,6 +92,10 @@ describe("buildGitMemoryHarnessContextPack", () => {
       sessionId: session.sessionId,
     });
     const harness = buildGitMemoryHarnessContextPack(raw);
+    const memory = await createGitContextMemoryStateHydrator(store).hydrate({
+      sessionId: session.sessionId,
+    });
+    const memoryHarness = buildGitMemoryHarnessContextFromMemoryState(memory);
 
     expect(harness).toMatchObject({
       session: {
@@ -124,7 +135,9 @@ describe("buildGitMemoryHarnessContextPack", () => {
           actions: [],
           createdAt: "2026-06-28T09:10:00+05:30",
         }],
+        recentEvidence: [],
       },
     });
+    expect(memoryHarness).toEqual(harness);
   });
 });

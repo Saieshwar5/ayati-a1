@@ -231,6 +231,7 @@ function readyGitMemoryRoutedTurn(): Extract<GitMemoryChatContextRoutedTurn, { s
           assets: [],
           recentRuns: [],
           recentCommits: [],
+          recentEvidence: [],
         },
       },
     },

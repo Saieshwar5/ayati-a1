@@ -37,6 +37,8 @@ describe("buildGitMemoryTaskRunCommitInput", () => {
         newFacts: ["Upload route validates MIME type."],
         artifacts: ["ayati-main/src/server/upload-server.ts"],
         toolsUsed: ["read_file"],
+        evidenceSummary: "read upload-server.ts lines 1-80",
+        evidenceItems: ["upload-server.ts: validates MIME type"],
       }, {
         step: 2,
         outcome: "failed",
@@ -94,6 +96,29 @@ describe("buildGitMemoryTaskRunCommitInput", () => {
       tool: "read_file",
       status: "failed",
       summary: "Tried a missing upload test path.",
+    }]);
+    expect(mapped.evidence).toMatchObject([{
+      step: 1,
+      tool: "read_file",
+      status: "completed",
+      summary: "Read upload server implementation.",
+      evidenceRef: "read upload-server.ts lines 1-80",
+      artifacts: ["ayati-main/src/server/upload-server.ts"],
+      facts: [
+        "Upload route validates MIME type.",
+        "upload-server.ts: validates MIME type",
+      ],
+      accessModes: ["summary"],
+      source: { kind: "harness-step" },
+    }, {
+      step: 2,
+      tool: "read_file",
+      status: "failed",
+      summary: "Tried a missing upload test path.",
+      artifacts: [],
+      facts: [],
+      accessModes: [],
+      source: { kind: "harness-step" },
     }]);
   });
 

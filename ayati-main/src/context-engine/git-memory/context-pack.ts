@@ -106,7 +106,7 @@ export class GitMemoryContextReader {
     limits?: Partial<GitMemoryContextLimits>;
   }): Promise<GitMemoryMachineContextPack> {
     const limits = normalizeLimits(input.limits);
-    const driver = await GitMemoryWorktreeGitDriver.init(this.store.repoPath(input.sessionId));
+    const driver = await this.store.openExistingDriver(input.sessionId);
     const [conversation, events, links, tasks, focus] = await Promise.all([
       readWorkingJsonl<GitMemoryConversationRecord>(driver, GIT_MEMORY_SESSION_CONVERSATION_PATH),
       readWorkingJsonl<GitMemorySessionEventRecord>(driver, GIT_MEMORY_SESSION_EVENTS_PATH),

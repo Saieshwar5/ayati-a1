@@ -9,6 +9,7 @@ import type {
 } from "./session-store.js";
 import { GitMemoryDailySessionStore } from "./session-store.js";
 import { GitMemoryContextReader, type GitMemoryMachineContextPack } from "./context-pack.js";
+import { GitContextMemoryStateHydrator, type GitContextMemoryState } from "./memory-state.js";
 import {
   GitMemoryTaskRouter,
   type AppliedGitMemoryTaskRoute,
@@ -50,6 +51,7 @@ export interface PreparedGitMemoryUserTurn {
   initialized: boolean;
   userMessage: GitMemoryConversationRecord;
   context: GitMemoryMachineContextPack;
+  memoryState: GitContextMemoryState;
 }
 
 export interface PrepareGitMemorySystemTurnInput {
@@ -64,6 +66,7 @@ export interface PreparedGitMemorySystemTurn {
   initialized: boolean;
   systemMessage: GitMemoryConversationRecord;
   context: GitMemoryMachineContextPack;
+  memoryState: GitContextMemoryState;
 }
 
 export interface RecordGitMemoryAssistantMessageInput {
@@ -85,9 +88,11 @@ export type RoutedGitMemoryUserTurn =
   | (Extract<AppliedGitMemoryTaskRoute, { status: "ready" }> & {
       runId: GitMemoryRunId;
       context: GitMemoryMachineContextPack;
+      memoryState: GitContextMemoryState;
     })
   | (Extract<AppliedGitMemoryTaskRoute, { status: "ambiguous" }> & {
       context: GitMemoryMachineContextPack;
+      memoryState: GitContextMemoryState;
     });
 
 export class GitMemoryRuntime {
@@ -96,6 +101,7 @@ export class GitMemoryRuntime {
   private readonly nowProvider: () => Date;
   private readonly store: GitMemoryDailySessionStore;
   private readonly contextReader: GitMemoryContextReader;
+  private readonly memoryStateHydrator: GitContextMemoryStateHydrator;
   private readonly taskRouter: GitMemoryTaskRouter;
 
   constructor(options: GitMemoryRuntimeOptions) {
@@ -107,6 +113,7 @@ export class GitMemoryRuntime {
       now: this.nowProvider,
     });
     this.contextReader = options.contextReader ?? new GitMemoryContextReader(this.store);
+    this.memoryStateHydrator = new GitContextMemoryStateHydrator(this.store);
     this.taskRouter = options.taskRouter ?? new GitMemoryTaskRouter(this.store);
   }
 
@@ -129,13 +136,18 @@ export class GitMemoryRuntime {
       text: input.userMessage,
       at,
     });
+    const [context, memoryState] = await Promise.all([
+      this.contextReader.buildActiveContext({ sessionId: session.sessionId }),
+      this.memoryStateHydrator.hydrate({ sessionId: session.sessionId }),
+    ]);
     return {
       status: "ready",
       sessionId: session.sessionId,
       repoPath: session.repoPath,
       initialized: session.initialized,
       userMessage,
-      context: await this.contextReader.buildActiveContext({ sessionId: session.sessionId }),
+      context,
+      memoryState,
     };
   }
 
@@ -148,13 +160,18 @@ export class GitMemoryRuntime {
       text: input.systemMessage,
       at,
     });
+    const [context, memoryState] = await Promise.all([
+      this.contextReader.buildActiveContext({ sessionId: session.sessionId }),
+      this.memoryStateHydrator.hydrate({ sessionId: session.sessionId }),
+    ]);
     return {
       status: "ready",
       sessionId: session.sessionId,
       repoPath: session.repoPath,
       initialized: session.initialized,
       systemMessage,
-      context: await this.contextReader.buildActiveContext({ sessionId: session.sessionId }),
+      context,
+      memoryState,
     };
   }
 
@@ -188,9 +205,14 @@ export class GitMemoryRuntime {
     const runId = await this.store.allocateTaskRunId(input.sessionId);
     const route = await this.taskRouter.route({ ...input, runId });
     if (route.status === "ambiguous") {
+      const [context, memoryState] = await Promise.all([
+        this.contextReader.buildActiveContext({ sessionId: input.sessionId }),
+        this.memoryStateHydrator.hydrate({ sessionId: input.sessionId }),
+      ]);
       return {
         ...route,
-        context: await this.contextReader.buildActiveContext({ sessionId: input.sessionId }),
+        context,
+        memoryState,
       };
     }
     await this.store.startTaskRun({
@@ -202,10 +224,15 @@ export class GitMemoryRuntime {
       toSeq: input.toSeq,
       at: input.at,
     });
+    const [context, memoryState] = await Promise.all([
+      this.contextReader.buildActiveContext({ sessionId: input.sessionId }),
+      this.memoryStateHydrator.hydrate({ sessionId: input.sessionId }),
+    ]);
     return {
       ...route,
       runId,
-      context: await this.contextReader.buildActiveContext({ sessionId: input.sessionId }),
+      context,
+      memoryState,
     };
   }
 
@@ -219,6 +246,10 @@ export class GitMemoryRuntime {
 
   async buildActiveContext(sessionId: GitMemorySessionId): Promise<GitMemoryMachineContextPack> {
     return await this.contextReader.buildActiveContext({ sessionId });
+  }
+
+  async buildMemoryState(sessionId: GitMemorySessionId): Promise<GitContextMemoryState> {
+    return await this.memoryStateHydrator.hydrate({ sessionId });
   }
 }
 
