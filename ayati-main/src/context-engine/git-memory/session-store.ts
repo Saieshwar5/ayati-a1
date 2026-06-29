@@ -109,6 +109,7 @@ export interface GitMemoryTaskDetailLimits {
   commitLogLimit: number;
   evidenceLimit: number;
   conversationSegmentLimit: number;
+  conversationMarkdownCharLimit: number;
 }
 
 export interface ReadGitMemoryTaskDetailInput {
@@ -145,6 +146,7 @@ export interface GitMemoryTaskDetail {
   recentCommits?: CompactGitMemoryStoreCommitSummary[];
   recentEvidence?: GitMemoryEvidenceManifestRecord[];
   conversation?: GitMemoryTaskConversationSegment[];
+  conversationMarkdownTail?: string;
 }
 
 export interface ReadGitMemorySessionLogInput {
@@ -686,8 +688,11 @@ export class GitMemoryDailySessionStore {
     const readConversation = include.has("conversation")
       ? readTaskConversationSegmentsFromDriver(driver, taskEntry.taskId)
       : Promise.resolve([]);
+    const readConversationMarkdown = include.has("conversation")
+      ? readRefMarkdownTail(driver, ref, GIT_MEMORY_SESSION_CONVERSATION_MARKDOWN_PATH, limits.conversationMarkdownCharLimit)
+      : Promise.resolve("");
 
-    const [task, state, assets, recentRuns, recentActions, recentCommits, recentEvidence, conversation] = await Promise.all([
+    const [task, state, assets, recentRuns, recentActions, recentCommits, recentEvidence, conversation, conversationMarkdownTail] = await Promise.all([
       readTask,
       readState,
       readAssets,
@@ -696,6 +701,7 @@ export class GitMemoryDailySessionStore {
       readCommits,
       readEvidence,
       readConversation,
+      readConversationMarkdown,
     ]);
 
     if (include.has("task") && task) {
@@ -721,6 +727,7 @@ export class GitMemoryDailySessionStore {
     }
     if (include.has("conversation")) {
       detail.conversation = tail(conversation, limits.conversationSegmentLimit);
+      detail.conversationMarkdownTail = conversationMarkdownTail;
     }
 
     return detail;
@@ -1403,6 +1410,15 @@ async function readRefJsonl<T>(driver: GitMemoryWorktreeGitDriver, ref: string, 
   return parseJsonl<T>(await driver.readFile(ref, path));
 }
 
+async function readRefMarkdownTail(
+  driver: GitMemoryWorktreeGitDriver,
+  ref: string,
+  path: string,
+  limit: number,
+): Promise<string> {
+  return markdownTail(await driver.readFile(ref, path), limit);
+}
+
 async function readTaskRoutingSnapshotFromDriver(
   driver: GitMemoryWorktreeGitDriver,
   sessionId: GitMemorySessionId,
@@ -1512,6 +1528,7 @@ function normalizeTaskDetailLimits(input: Partial<GitMemoryTaskDetailLimits> | u
     commitLogLimit: normalizeReadLimit(input?.commitLogLimit, 10),
     evidenceLimit: normalizeReadLimit(input?.evidenceLimit, 20),
     conversationSegmentLimit: normalizeReadLimit(input?.conversationSegmentLimit, 5),
+    conversationMarkdownCharLimit: normalizeReadLimit(input?.conversationMarkdownCharLimit, 12_000),
   };
 }
 
@@ -1802,6 +1819,19 @@ function conversationInRange(
 
 function tail<T>(values: T[], limit: number): T[] {
   return values.slice(-limit);
+}
+
+function markdownTail(value: string | null, limit: number): string {
+  const trimmed = value?.trimEnd();
+  if (!trimmed || trimmed === "# Conversation") {
+    return "";
+  }
+  if (trimmed.length <= limit) {
+    return `${trimmed}\n`;
+  }
+  const sliced = trimmed.slice(-limit);
+  const headingIndex = sliced.search(/\n##\s/);
+  return `${(headingIndex >= 0 ? sliced.slice(headingIndex + 1) : sliced).trimStart()}\n`;
 }
 
 function unique<T>(values: T[]): T[] {

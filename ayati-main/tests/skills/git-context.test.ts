@@ -60,6 +60,7 @@ describe("git-context skill", () => {
         taskMessageLinkLimit: 2,
         runLimit: 2,
         commitLogLimit: 2,
+        conversationMarkdownCharLimit: 200,
       },
     }, { sessionId: prepared.session.sessionId });
 
@@ -70,6 +71,7 @@ describe("git-context skill", () => {
         conversationTail: [
           { seq: 1, role: "user", text: "Fix upload handling" },
         ],
+        conversationMarkdownTail: expect.stringContaining("Fix upload handling"),
         taskCount: 1,
       },
       focus: {
@@ -225,6 +227,7 @@ describe("git-context skill", () => {
         commitLogLimit: 2,
         evidenceLimit: 1,
         conversationSegmentLimit: 1,
+        conversationMarkdownCharLimit: 200,
       },
     });
 
@@ -273,6 +276,7 @@ describe("git-context skill", () => {
           text: "Fix upload handling",
         }],
       }],
+      conversationMarkdownTail: expect.stringContaining("Fix upload handling"),
     });
     expect((result.v2?.structuredContent as { recentRuns?: unknown[] }).recentRuns).toHaveLength(1);
     expect((result.v2?.structuredContent as { recentActions?: unknown[] }).recentActions).toHaveLength(1);

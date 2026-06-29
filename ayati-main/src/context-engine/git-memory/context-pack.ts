@@ -14,6 +14,7 @@ import type {
   GitMemoryTaskStateFile,
 } from "./schema.js";
 import {
+  GIT_MEMORY_SESSION_CONVERSATION_MARKDOWN_PATH,
   GIT_MEMORY_SESSION_CONVERSATION_PATH,
   GIT_MEMORY_SESSION_EVENTS_PATH,
   GIT_MEMORY_SESSION_FOCUS_PATH,
@@ -30,6 +31,7 @@ export interface GitMemoryContextLimits {
   taskMessageLinkLimit: number;
   runLimit: number;
   commitLogLimit: number;
+  conversationMarkdownCharLimit: number;
 }
 
 export const DEFAULT_GIT_MEMORY_CONTEXT_LIMITS: GitMemoryContextLimits = {
@@ -38,6 +40,7 @@ export const DEFAULT_GIT_MEMORY_CONTEXT_LIMITS: GitMemoryContextLimits = {
   taskMessageLinkLimit: 10,
   runLimit: 5,
   commitLogLimit: 10,
+  conversationMarkdownCharLimit: 12_000,
 };
 
 export type GitMemoryFocusContext =
@@ -74,6 +77,7 @@ export interface GitMemoryMachineContextPack {
   session: {
     sessionId: GitMemorySessionId;
     conversationTail: GitMemoryConversationRecord[];
+    conversationMarkdownTail: string;
     eventTail: GitMemorySessionEventRecord[];
     taskMessageLinkTail: GitMemoryTaskMessageLinkRecord[];
     taskCount: number;
@@ -92,6 +96,7 @@ export interface GitMemoryMachineContextPack {
     blockers: string[];
     facts: string[];
     next: string;
+    conversationMarkdownTail: string;
     conversation: GitMemoryContextTaskConversationSegment[];
     recentRuns: GitMemoryRunFile[];
     recentCommits: CompactGitMemoryCommitSummary[];
@@ -107,8 +112,9 @@ export class GitMemoryContextReader {
   }): Promise<GitMemoryMachineContextPack> {
     const limits = normalizeLimits(input.limits);
     const driver = await this.store.openExistingDriver(input.sessionId);
-    const [conversation, events, links, tasks, focus] = await Promise.all([
+    const [conversation, conversationMarkdown, events, links, tasks, focus] = await Promise.all([
       readWorkingJsonl<GitMemoryConversationRecord>(driver, GIT_MEMORY_SESSION_CONVERSATION_PATH),
+      readWorkingMarkdownTail(driver, GIT_MEMORY_SESSION_CONVERSATION_MARKDOWN_PATH, limits.conversationMarkdownCharLimit),
       readWorkingJsonl<GitMemorySessionEventRecord>(driver, GIT_MEMORY_SESSION_EVENTS_PATH),
       readWorkingJsonl<GitMemoryTaskMessageLinkRecord>(driver, GIT_MEMORY_SESSION_TASK_MESSAGE_LINKS_PATH),
       readWorkingJson<GitMemoryTaskIndexFile>(driver, GIT_MEMORY_SESSION_TASKS_PATH),
@@ -117,6 +123,7 @@ export class GitMemoryContextReader {
     const session = {
       sessionId: input.sessionId,
       conversationTail: tail(conversation, limits.conversationTailLimit),
+      conversationMarkdownTail: conversationMarkdown,
       eventTail: tail(events, limits.eventTailLimit),
       taskMessageLinkTail: tail(links, limits.taskMessageLinkLimit),
       taskCount: tasks?.tasks.length ?? 0,
@@ -155,9 +162,10 @@ export class GitMemoryContextReader {
       };
     }
 
-    const [task, state, recentRuns, recentCommits] = await Promise.all([
+    const [task, state, conversationMarkdownTail, recentRuns, recentCommits] = await Promise.all([
       readRefJson<GitMemoryTaskFile>(driver, ref, gitMemoryTaskFilePath(taskEntry.taskId)),
       readRefJson<GitMemoryTaskStateFile>(driver, ref, gitMemoryTaskStatePath(taskEntry.taskId)),
+      readRefMarkdownTail(driver, ref, GIT_MEMORY_SESSION_CONVERSATION_MARKDOWN_PATH, limits.conversationMarkdownCharLimit),
       readRecentRuns(driver, ref, taskEntry.taskId, limits.runLimit),
       readRecentCommits(driver, ref, limits.commitLogLimit),
     ]);
@@ -196,6 +204,7 @@ export class GitMemoryContextReader {
         blockers: state.blockers,
         facts: state.facts,
         next: state.next,
+        conversationMarkdownTail,
         conversation: taskLinks.map((link) => ({
           link,
           messages: conversationInRange(conversation, link),
@@ -259,8 +268,25 @@ async function readWorkingJsonl<T>(driver: GitMemoryWorktreeGitDriver, path: str
   return parseJsonl<T>(await driver.readWorkingFile(path));
 }
 
+async function readWorkingMarkdownTail(
+  driver: GitMemoryWorktreeGitDriver,
+  path: string,
+  limit: number,
+): Promise<string> {
+  return markdownTail(await driver.readWorkingFile(path), limit);
+}
+
 async function readRefJson<T>(driver: GitMemoryWorktreeGitDriver, ref: string, path: string): Promise<T | null> {
   return parseJson<T>(await driver.readFile(ref, path));
+}
+
+async function readRefMarkdownTail(
+  driver: GitMemoryWorktreeGitDriver,
+  ref: string,
+  path: string,
+  limit: number,
+): Promise<string> {
+  return markdownTail(await driver.readFile(ref, path), limit);
 }
 
 function parseJson<T>(value: string | null): T | null {
@@ -292,6 +318,19 @@ function tail<T>(values: T[], limit: number): T[] {
   return values.slice(-limit);
 }
 
+function markdownTail(value: string | null, limit: number): string {
+  const trimmed = value?.trimEnd();
+  if (!trimmed || trimmed === "# Conversation") {
+    return "";
+  }
+  if (trimmed.length <= limit) {
+    return `${trimmed}\n`;
+  }
+  const sliced = trimmed.slice(-limit);
+  const headingIndex = sliced.search(/\n##\s/);
+  return `${(headingIndex >= 0 ? sliced.slice(headingIndex + 1) : sliced).trimStart()}\n`;
+}
+
 function normalizeLimits(input: Partial<GitMemoryContextLimits> | undefined): GitMemoryContextLimits {
   return {
     conversationTailLimit: positiveLimit(input?.conversationTailLimit, DEFAULT_GIT_MEMORY_CONTEXT_LIMITS.conversationTailLimit),
@@ -299,6 +338,7 @@ function normalizeLimits(input: Partial<GitMemoryContextLimits> | undefined): Gi
     taskMessageLinkLimit: positiveLimit(input?.taskMessageLinkLimit, DEFAULT_GIT_MEMORY_CONTEXT_LIMITS.taskMessageLinkLimit),
     runLimit: positiveLimit(input?.runLimit, DEFAULT_GIT_MEMORY_CONTEXT_LIMITS.runLimit),
     commitLogLimit: positiveLimit(input?.commitLogLimit, DEFAULT_GIT_MEMORY_CONTEXT_LIMITS.commitLogLimit),
+    conversationMarkdownCharLimit: positiveLimit(input?.conversationMarkdownCharLimit, DEFAULT_GIT_MEMORY_CONTEXT_LIMITS.conversationMarkdownCharLimit),
   };
 }
 

@@ -84,7 +84,7 @@ const GIT_CONTEXT_PROMPT_BLOCK = [
   "Use git_context_active to inspect the current compact git context for a session.",
   "Use git_context_list_tasks to compare known task branches before deciding whether prior task context matters.",
   "Use git_context_search_tasks to find likely matching prior tasks by title, summary, facts, open work, blockers, next step, branch, or status.",
-  "Use git_context_read_task to inspect one task branch deeply with bounded runs, actions, assets, commits, and conversation.",
+  "Use git_context_read_task to inspect one task branch deeply with bounded runs, actions, assets, commits, evidence, and Markdown conversation.",
   "Use git_context_read_evidence to read compact durable evidence records for a task or run.",
   "Use git_context_search_evidence to find compact durable evidence records by summary, tool, fact, artifact, run id, action id, or evidence ref.",
   "Use git_context_log to inspect compact commit history for main or one task branch.",
@@ -163,6 +163,7 @@ function createActiveContextTool(contextReader: GitMemoryContextReader): ToolDef
           taskMessageLinkLimit: { type: "number" },
           runLimit: { type: "number" },
           commitLogLimit: { type: "number" },
+          conversationMarkdownCharLimit: { type: "number" },
         },
       },
     }),
@@ -298,6 +299,7 @@ function createReadTaskTool(store: GitMemoryDailySessionStore): ToolDefinition {
           commitLogLimit: { type: "number" },
           evidenceLimit: { type: "number" },
           conversationSegmentLimit: { type: "number" },
+          conversationMarkdownCharLimit: { type: "number" },
         },
       },
     }),
@@ -757,7 +759,7 @@ function parseTaskDetailLimits(input: Partial<GitMemoryTaskDetailLimits> | undef
     return invalidInput("limits must be an object when provided.");
   }
   const output: Partial<GitMemoryTaskDetailLimits> = {};
-  for (const key of ["runLimit", "actionRunLimit", "actionLimit", "commitLogLimit", "evidenceLimit", "conversationSegmentLimit"] as const) {
+  for (const key of ["runLimit", "actionRunLimit", "actionLimit", "commitLogLimit", "evidenceLimit", "conversationSegmentLimit", "conversationMarkdownCharLimit"] as const) {
     const value = input[key];
     if (value === undefined) {
       continue;

@@ -105,6 +105,7 @@ describe("GitMemoryContextReader", () => {
         taskMessageLinkLimit: 3,
         runLimit: 3,
         commitLogLimit: 3,
+        conversationMarkdownCharLimit: 200,
       },
     });
 
@@ -113,6 +114,8 @@ describe("GitMemoryContextReader", () => {
       { seq: 2, role: "assistant", text: "I will inspect upload handling." },
       { seq: 3, role: "user", text: "Continue from there." },
     ]);
+    expect(pack.session.conversationMarkdownTail).toContain("Fix upload handling");
+    expect(pack.session.conversationMarkdownTail).toContain("Continue from there.");
     expect(pack.session.eventTail).toMatchObject([
       { seq: 1, type: "session_initialized" },
       { seq: 2, type: "task_created" },
@@ -139,6 +142,9 @@ describe("GitMemoryContextReader", () => {
       facts: ["UploadServer validates multipart uploads."],
       next: "Patch upload validation handling.",
     });
+    expect(pack.task?.conversationMarkdownTail).toContain("Fix upload handling");
+    expect(pack.task?.conversationMarkdownTail).toContain("I will inspect upload handling.");
+    expect(pack.task?.conversationMarkdownTail).not.toContain("Continue from there.");
     expect(pack.task?.conversation).toMatchObject([{
       link: { fromSeq: 1, toSeq: 2 },
       messages: [

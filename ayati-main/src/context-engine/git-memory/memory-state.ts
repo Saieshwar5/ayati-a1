@@ -38,6 +38,7 @@ export interface GitContextMemoryKnownTask {
 
 export interface GitContextMemoryActiveTask extends GitContextMemoryKnownTask {
   completed: string[];
+  conversationMarkdownTail: string;
   recentRuns: GitMemoryRunFile[];
   recentCommits: CompactGitMemoryCommitSummary[];
   recentEvidence: GitMemoryEvidenceManifestRecord[];
@@ -47,6 +48,7 @@ export interface GitContextMemoryState {
   session: {
     sessionId: GitMemorySessionId;
     conversationTail: GitMemoryConversationRecord[];
+    conversationMarkdownTail: string;
     eventTail: GitMemorySessionEventRecord[];
     taskMessageLinkTail: GitMemoryTaskMessageLinkRecord[];
     taskCount: number;
@@ -89,6 +91,7 @@ export class GitContextMemoryStateHydrator {
       session: {
         sessionId: context.session.sessionId,
         conversationTail: context.session.conversationTail,
+        conversationMarkdownTail: context.session.conversationMarkdownTail,
         eventTail: context.session.eventTail,
         taskMessageLinkTail: context.session.taskMessageLinkTail,
         taskCount: context.session.taskCount,
@@ -120,6 +123,7 @@ function toActiveTask(
     status: task.status,
     summary: task.summary,
     completed: task.completed,
+    conversationMarkdownTail: task.conversationMarkdownTail,
     open: task.open,
     blockers: task.blockers,
     facts: task.facts,

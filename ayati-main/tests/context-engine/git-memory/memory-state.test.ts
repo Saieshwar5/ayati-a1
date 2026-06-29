@@ -54,6 +54,7 @@ describe("GitContextMemoryStateHydrator", () => {
         runLimit: 1,
         commitLogLimit: 1,
         evidenceLimit: 1,
+        conversationMarkdownCharLimit: 200,
       },
     });
 
@@ -72,6 +73,8 @@ describe("GitContextMemoryStateHydrator", () => {
         toSeq: 2,
       }],
     });
+    expect(state.session.conversationMarkdownTail).toContain("Fix upload handling");
+    expect(state.session.conversationMarkdownTail).toContain("I will inspect upload handling.");
     expect(state.session.eventTail).toHaveLength(2);
     expect(state.focus).toMatchObject({
       status: "active",
@@ -107,6 +110,8 @@ describe("GitContextMemoryStateHydrator", () => {
         facts: ["Upload validation handles multipart MIME metadata."],
       }],
     });
+    expect(state.activeTask?.conversationMarkdownTail).toContain("Fix upload handling");
+    expect(state.activeTask?.conversationMarkdownTail).toContain("I will inspect upload handling.");
     expect(state.activeTask?.recentRuns).toHaveLength(1);
     expect(state.activeTask?.recentCommits).toHaveLength(1);
     expect(state.activeTask?.recentEvidence).toHaveLength(1);

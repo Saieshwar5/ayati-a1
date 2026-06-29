@@ -29,6 +29,7 @@ export function buildGitMemoryHarnessContextPack(
     session: {
       sessionId: context.session.sessionId,
       conversationTail: context.session.conversationTail.map(toConversationRecord),
+      ...(context.session.conversationMarkdownTail ? { conversationMarkdownTail: context.session.conversationMarkdownTail } : {}),
       eventTail: context.session.eventTail
         .map((event) => toSessionEventRecord(context.session.sessionId, event))
         .filter(isSessionEventRecord),
@@ -47,6 +48,7 @@ export function buildGitMemoryHarnessContextPack(
         blockers: context.task.blockers,
         facts: context.task.facts.map(toTaskFact),
         next: context.task.next,
+        ...(context.task.conversationMarkdownTail ? { conversationMarkdownTail: context.task.conversationMarkdownTail } : {}),
         assets: [] satisfies TaskAssetRecord[],
         recentRuns: context.task.recentRuns.map((run) => toTaskRunSummary(run, context.task!.taskId)),
         recentCommits: context.task.recentCommits.map(toCompactCommitSummary),
@@ -63,6 +65,7 @@ export function buildGitMemoryHarnessContextFromMemoryState(
     session: {
       sessionId: state.session.sessionId,
       conversationTail: state.session.conversationTail.map(toConversationRecord),
+      ...(state.session.conversationMarkdownTail ? { conversationMarkdownTail: state.session.conversationMarkdownTail } : {}),
       eventTail: state.session.eventTail
         .map((event) => toSessionEventRecord(state.session.sessionId, event))
         .filter(isSessionEventRecord),
@@ -81,6 +84,7 @@ export function buildGitMemoryHarnessContextFromMemoryState(
         blockers: state.activeTask.blockers,
         facts: state.activeTask.facts.map(toTaskFact),
         next: state.activeTask.next,
+        ...(state.activeTask.conversationMarkdownTail ? { conversationMarkdownTail: state.activeTask.conversationMarkdownTail } : {}),
         assets: [] satisfies TaskAssetRecord[],
         recentRuns: state.activeTask.recentRuns.map((run) => toTaskRunSummary(run, state.activeTask!.taskId)),
         recentCommits: state.activeTask.recentCommits.map(toCompactCommitSummary),

@@ -106,6 +106,7 @@ describe("buildGitMemoryHarnessContextPack", () => {
           role: "user",
           text: "Fix upload handling",
         }],
+        conversationMarkdownTail: expect.stringContaining("Fix upload handling"),
       },
       focus: {
         status: "active",
@@ -125,6 +126,7 @@ describe("buildGitMemoryHarnessContextPack", () => {
           source: "git-memory/task-state",
         }],
         next: "Patch upload validation handling.",
+        conversationMarkdownTail: expect.stringContaining("Fix upload handling"),
         assets: [],
         recentRuns: [{
           runId: "R-20260628-0001",

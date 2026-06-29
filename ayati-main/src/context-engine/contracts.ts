@@ -131,6 +131,7 @@ export interface ContextEngineMachineContext {
   session: {
     sessionId: string;
     conversationTail: ContextConversationRecord[];
+    conversationMarkdownTail?: string;
     eventTail: ContextSessionEventRecord[];
     assetCount: number;
   };
@@ -146,6 +147,7 @@ export interface ContextEngineMachineContext {
     blockers: string[];
     facts: ContextTaskFact[];
     next?: string;
+    conversationMarkdownTail?: string;
     assets: TaskAssetRecord[];
     recentRuns: ContextTaskRunSummary[];
     recentCommits: ContextCommitSummary[];
