@@ -1438,15 +1438,7 @@ async function readTaskAssets(
   taskId: GitMemoryTaskId,
 ): Promise<TaskAssetRecord[]> {
   const current = await readRefJson<GitMemoryTaskAssetsFile>(driver, ref, gitMemoryTaskAssetsPath(taskId));
-  if (current) {
-    return Array.isArray(current.assets) ? current.assets.filter(isTaskAssetRecord) : [];
-  }
-  return (await readRefJsonl<unknown>(driver, ref, gitMemoryTaskLegacyAssetsPath(taskId)))
-    .filter(isTaskAssetRecord);
-}
-
-function gitMemoryTaskLegacyAssetsPath(taskId: GitMemoryTaskId): string {
-  return `${gitMemoryTaskDir(taskId)}/assets.jsonl`;
+  return Array.isArray(current?.assets) ? current.assets.filter(isTaskAssetRecord) : [];
 }
 
 function mergeTaskAssets(

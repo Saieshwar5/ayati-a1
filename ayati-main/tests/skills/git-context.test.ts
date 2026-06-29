@@ -476,7 +476,7 @@ describe("git-context skill", () => {
     expect(await driver.log(prepared.task.ref, 10)).toEqual(taskLogBefore);
   });
 
-  it("reads legacy jsonl task assets when assets json is missing", async () => {
+  it("ignores legacy jsonl task assets when assets json is missing", async () => {
     const prepared = await prepareGitContextSession();
     const driver = new GitMemoryWorktreeGitDriver(prepared.session.repoPath);
     await driver.commitSyntheticFiles({
@@ -512,14 +512,7 @@ describe("git-context skill", () => {
     });
 
     expect(result.ok).toBe(true);
-    expect(result.v2?.structuredContent).toMatchObject({
-      assets: [{
-        assetId: "asset-legacy-log",
-        role: "reference",
-        kind: "file",
-        name: "legacy.log",
-      }],
-    });
+    expect(result.v2?.structuredContent).toMatchObject({ assets: [] });
   });
 
   it("reads compact evidence for a task run without mutating git-memory repos", async () => {

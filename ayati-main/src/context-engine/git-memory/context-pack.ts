@@ -388,15 +388,7 @@ async function readTaskAssets(
   taskId: GitMemoryTaskId,
 ): Promise<TaskAssetRecord[]> {
   const current = await readRefJson<GitMemoryTaskAssetsFile>(driver, ref, gitMemoryTaskAssetsPath(taskId));
-  if (current) {
-    return Array.isArray(current.assets) ? current.assets.filter(isTaskAssetRecord) : [];
-  }
-  return parseJsonl<unknown>(await driver.readFile(ref, gitMemoryTaskLegacyAssetsPath(taskId)))
-    .filter(isTaskAssetRecord);
-}
-
-function gitMemoryTaskLegacyAssetsPath(taskId: GitMemoryTaskId): string {
-  return `${gitMemoryTaskDir(taskId)}/assets.jsonl`;
+  return Array.isArray(current?.assets) ? current.assets.filter(isTaskAssetRecord) : [];
 }
 
 function isTaskAssetRecord(value: unknown): value is TaskAssetRecord {
