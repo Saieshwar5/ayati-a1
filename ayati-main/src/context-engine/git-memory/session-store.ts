@@ -13,7 +13,6 @@ import type {
   GitMemoryRunId,
   GitMemoryRunFile,
   GitMemoryRunStatus,
-  GitMemorySessionEventRecord,
   GitMemorySessionId,
   GitMemorySessionMetaFile,
   GitMemoryTaskId,
@@ -28,7 +27,6 @@ import type {
 import {
   GIT_MEMORY_SESSION_CONVERSATION_PATH,
   GIT_MEMORY_SESSION_CONVERSATION_MARKDOWN_PATH,
-  GIT_MEMORY_SESSION_EVENTS_PATH,
   GIT_MEMORY_SESSION_FOCUS_PATH,
   GIT_MEMORY_SESSION_META_PATH,
   GIT_MEMORY_SESSION_SCHEMA_PATH,
@@ -37,7 +35,6 @@ import {
   buildGitMemoryTaskBranchName,
   buildGitMemoryTaskBranchRef,
   createGitMemoryActionId,
-  createGitMemoryEventId,
   createGitMemoryLinkId,
   createGitMemoryMessageId,
   createGitMemoryRunId,
@@ -248,7 +245,6 @@ export interface GitMemorySessionCheckpointInput {
 }
 
 export interface GitMemorySessionCheckpoint {
-  event: GitMemorySessionEventRecord;
   commit: string;
 }
 
@@ -335,7 +331,6 @@ export interface SelectGitMemoryTaskForTurnResult {
   branch: string;
   ref: string;
   link: GitMemoryTaskMessageLinkRecord;
-  focusEvent?: GitMemorySessionEventRecord;
 }
 
 export interface CommitGitMemoryTaskRunActionInput {
@@ -389,7 +384,6 @@ export interface CommitGitMemoryTaskRunResult {
   ref: string;
   runId: GitMemoryRunId;
   taskCommit: string;
-  event: GitMemorySessionEventRecord;
 }
 
 export interface StartGitMemoryTaskRunInput extends GitMemoryConversationSeqRange {
@@ -402,7 +396,7 @@ export interface StartGitMemoryTaskRunInput extends GitMemoryConversationSeqRang
 
 export interface StartGitMemoryTaskRunResult {
   runId: GitMemoryRunId;
-  event: GitMemorySessionEventRecord;
+  taskCommit?: string;
 }
 
 export class GitMemoryDailySessionStore {
@@ -566,42 +560,16 @@ export class GitMemoryDailySessionStore {
   async allocateTaskRunId(sessionId: GitMemorySessionId): Promise<GitMemoryRunId> {
     const driver = await GitMemoryWorktreeGitDriver.init(this.repoPath(sessionId));
     const date = gitMemoryDateFromSessionId(sessionId);
-    const existingEvents = parseJsonl<GitMemorySessionEventRecord>(
-      await driver.readWorkingFile(GIT_MEMORY_SESSION_EVENTS_PATH),
-    );
-    return createGitMemoryRunId(date, nextRunSequence(existingEvents));
+    return createGitMemoryRunId(date, await nextRunSequenceFromTasks(driver));
   }
 
   async startTaskRun(input: StartGitMemoryTaskRunInput): Promise<StartGitMemoryTaskRunResult> {
     const driver = await GitMemoryWorktreeGitDriver.init(this.repoPath(input.sessionId));
-    const date = gitMemoryDateFromSessionId(input.sessionId);
     const ref = `refs/heads/${input.branch}`;
     if (!(await driver.hasRef(ref))) {
       throw new Error(`Git memory task branch missing: ${ref}`);
     }
-    const existingEvents = parseJsonl<GitMemorySessionEventRecord>(
-      await driver.readWorkingFile(GIT_MEMORY_SESSION_EVENTS_PATH),
-    );
-    const existing = existingEvents.find((event) => event.type === "run_started" && event.runId === input.runId);
-    if (existing) {
-      return { runId: input.runId, event: existing };
-    }
-
-    const eventSeq = nextSeq(existingEvents);
-    const event: GitMemorySessionEventRecord = {
-      v: 1,
-      seq: eventSeq,
-      eventId: createGitMemoryEventId(date, eventSeq),
-      type: "run_started",
-      at: input.at ?? this.nowIso(),
-      taskId: input.taskId,
-      runId: input.runId,
-      branch: input.branch,
-      conversationSeq: { fromSeq: input.fromSeq, toSeq: input.toSeq },
-    };
-    await driver.writeWorkingFiles({
-      [GIT_MEMORY_SESSION_EVENTS_PATH]: jsonl([...existingEvents, event]),
-    });
+    const at = input.at ?? this.nowIso();
     const conversation = parseJsonl<GitMemoryConversationRecord>(
       await driver.readWorkingFile(GIT_MEMORY_SESSION_CONVERSATION_PATH),
     );
@@ -611,8 +579,9 @@ export class GitMemoryDailySessionStore {
       taskId: input.taskId,
       runId: input.runId,
     });
+    let taskCommit: string | undefined;
     if (nextMarkdown !== existingMarkdown) {
-      await driver.commitSyntheticFiles({
+      taskCommit = await driver.commitSyntheticFiles({
         ref,
         files: {
           [GIT_MEMORY_SESSION_CONVERSATION_MARKDOWN_PATH]: nextMarkdown,
@@ -625,7 +594,7 @@ export class GitMemoryDailySessionStore {
             taskId: input.taskId,
             runId: input.runId,
             event: "run_started",
-            at: event.at,
+            at,
             branch: input.branch,
             conversationSeq: { fromSeq: input.fromSeq, toSeq: input.toSeq },
             schemaVersion: 1,
@@ -633,7 +602,7 @@ export class GitMemoryDailySessionStore {
         }),
       });
     }
-    return { runId: input.runId, event };
+    return { runId: input.runId, ...(taskCommit ? { taskCommit } : {}) };
   }
 
   async readTaskConversationSegments(
@@ -947,6 +916,7 @@ export class GitMemoryDailySessionStore {
         trailers: {
           sessionId: input.sessionId,
           taskId,
+          ...(input.runId ? { runId: input.runId } : {}),
           event: "task_created",
           status,
           at,
@@ -957,35 +927,6 @@ export class GitMemoryDailySessionStore {
       }),
     });
 
-    const previousFocus = parseJson<GitMemoryFocusFile>(
-      await driver.readWorkingFile(GIT_MEMORY_SESSION_FOCUS_PATH),
-    );
-    const existingEvents = parseJsonl<GitMemorySessionEventRecord>(
-      await driver.readWorkingFile(GIT_MEMORY_SESSION_EVENTS_PATH),
-    );
-    const taskEventSeq = nextSeq(existingEvents);
-    const focusEventSeq = taskEventSeq + 1;
-    const taskCreated: GitMemorySessionEventRecord = {
-      v: 1,
-      seq: taskEventSeq,
-      eventId: createGitMemoryEventId(date, taskEventSeq),
-      type: "task_created",
-      at,
-      taskId,
-      branch,
-      conversationSeq: { fromSeq: input.fromSeq, toSeq: input.toSeq },
-    };
-    const focusChanged: GitMemorySessionEventRecord = {
-      v: 1,
-      seq: focusEventSeq,
-      eventId: createGitMemoryEventId(date, focusEventSeq),
-      type: "focus_changed",
-      at,
-      fromTaskId: previousFocus?.activeTaskId ?? null,
-      toTaskId: taskId,
-      branch,
-      reason: "task_created",
-    };
     await driver.writeWorkingFiles({
       [GIT_MEMORY_SESSION_TASKS_PATH]: prettyJson({
         schemaVersion: 1,
@@ -1005,7 +946,6 @@ export class GitMemoryDailySessionStore {
         updatedAt: at,
         reason: "task_created",
       } satisfies GitMemoryFocusFile),
-      [GIT_MEMORY_SESSION_EVENTS_PATH]: jsonl([...existingEvents, taskCreated, focusChanged]),
     });
 
     const link = await this.linkTaskMessages({
@@ -1025,7 +965,6 @@ export class GitMemoryDailySessionStore {
 
   async selectTaskForTurn(input: SelectGitMemoryTaskForTurnInput): Promise<SelectGitMemoryTaskForTurnResult> {
     const driver = await GitMemoryWorktreeGitDriver.init(this.repoPath(input.sessionId));
-    const date = gitMemoryDateFromSessionId(input.sessionId);
     const tasks = parseJson<GitMemoryTaskIndexFile>(
       await driver.readWorkingFile(GIT_MEMORY_SESSION_TASKS_PATH),
     ) ?? { schemaVersion: 1, tasks: [] };
@@ -1043,23 +982,7 @@ export class GitMemoryDailySessionStore {
       await driver.readWorkingFile(GIT_MEMORY_SESSION_FOCUS_PATH),
     );
     const focusChanged = focus?.activeTaskId !== taskEntry.taskId || focus?.activeBranch !== taskEntry.branch;
-    let focusEvent: GitMemorySessionEventRecord | undefined;
     if (focusChanged) {
-      const existingEvents = parseJsonl<GitMemorySessionEventRecord>(
-        await driver.readWorkingFile(GIT_MEMORY_SESSION_EVENTS_PATH),
-      );
-      const eventSeq = nextSeq(existingEvents);
-      focusEvent = {
-        v: 1,
-        seq: eventSeq,
-        eventId: createGitMemoryEventId(date, eventSeq),
-        type: "focus_changed",
-        at,
-        fromTaskId: focus?.activeTaskId ?? null,
-        toTaskId: taskEntry.taskId,
-        branch: taskEntry.branch,
-        reason: input.reason,
-      };
       await driver.writeWorkingFiles({
         [GIT_MEMORY_SESSION_FOCUS_PATH]: prettyJson({
           schemaVersion: 1,
@@ -1068,7 +991,6 @@ export class GitMemoryDailySessionStore {
           updatedAt: at,
           reason: input.reason,
         } satisfies GitMemoryFocusFile),
-        [GIT_MEMORY_SESSION_EVENTS_PATH]: jsonl([...existingEvents, focusEvent]),
       });
     }
 
@@ -1090,7 +1012,6 @@ export class GitMemoryDailySessionStore {
       branch: taskEntry.branch,
       ref,
       link,
-      ...(focusEvent ? { focusEvent } : {}),
     };
   }
 
@@ -1113,10 +1034,7 @@ export class GitMemoryDailySessionStore {
       throw new Error(`Git memory task branch missing: ${ref}`);
     }
 
-    const existingEvents = parseJsonl<GitMemorySessionEventRecord>(
-      await driver.readWorkingFile(GIT_MEMORY_SESSION_EVENTS_PATH),
-    );
-    const runId = input.runId ?? createGitMemoryRunId(date, nextRunSequence(existingEvents));
+    const runId = input.runId ?? createGitMemoryRunId(date, await nextRunSequenceFromTasks(driver));
     const completedAt = input.completedAt ?? this.nowIso();
     const startedAt = input.startedAt ?? completedAt;
     const previousState = parseJson<GitMemoryTaskStateFile>(
@@ -1202,19 +1120,6 @@ export class GitMemoryDailySessionStore {
       }),
     });
 
-    const eventSeq = nextSeq(existingEvents);
-    const event: GitMemorySessionEventRecord = {
-      v: 1,
-      seq: eventSeq,
-      eventId: createGitMemoryEventId(date, eventSeq),
-      type: input.status === "failed" ? "run_failed" : "run_completed",
-      at: completedAt,
-      taskId: input.taskId,
-      runId,
-      branch: taskEntry.branch,
-      commit: taskCommit,
-      ...(firstConversationRef ? { conversationSeq: firstConversationRef } : {}),
-    };
     const updatedTasks = tasks.tasks.map((task, index) => index === taskIndex
       ? {
           ...task,
@@ -1223,7 +1128,6 @@ export class GitMemoryDailySessionStore {
         }
       : task);
     await driver.writeWorkingFiles({
-      [GIT_MEMORY_SESSION_EVENTS_PATH]: jsonl([...existingEvents, event]),
       [GIT_MEMORY_SESSION_TASKS_PATH]: prettyJson({
         schemaVersion: 1,
         tasks: updatedTasks,
@@ -1236,33 +1140,16 @@ export class GitMemoryDailySessionStore {
       ref,
       runId,
       taskCommit,
-      event,
     };
   }
 
   async checkpointSession(input: GitMemorySessionCheckpointInput): Promise<GitMemorySessionCheckpoint> {
     const driver = await GitMemoryWorktreeGitDriver.init(this.repoPath(input.sessionId));
-    const date = gitMemoryDateFromSessionId(input.sessionId);
     const at = input.at ?? this.nowIso();
-    const existingEvents = parseJsonl<GitMemorySessionEventRecord>(
-      await driver.readWorkingFile(GIT_MEMORY_SESSION_EVENTS_PATH),
-    );
-    const eventSeq = nextSeq(existingEvents);
-    const event: GitMemorySessionEventRecord = {
-      v: 1,
-      seq: eventSeq,
-      eventId: createGitMemoryEventId(date, eventSeq),
-      type: "session_checkpointed",
-      at,
-    };
-    await driver.writeWorkingFiles({
-      [GIT_MEMORY_SESSION_EVENTS_PATH]: jsonl([...existingEvents, event]),
-    });
 
     const commit = await driver.commitPaths([
       GIT_MEMORY_SESSION_CONVERSATION_PATH,
       GIT_MEMORY_SESSION_CONVERSATION_MARKDOWN_PATH,
-      GIT_MEMORY_SESSION_EVENTS_PATH,
       GIT_MEMORY_SESSION_FOCUS_PATH,
       GIT_MEMORY_SESSION_TASKS_PATH,
       GIT_MEMORY_SESSION_TASK_MESSAGE_LINKS_PATH,
@@ -1279,7 +1166,7 @@ export class GitMemoryDailySessionStore {
     if (!commit) {
       throw new Error("Session checkpoint did not contain changes.");
     }
-    return { event, commit };
+    return { commit };
   }
 
   private nowIso(): string {
@@ -1305,13 +1192,6 @@ function buildInitialSessionFiles(input: BuildInitialSessionFilesInput): Record<
     repoKind: "daily_session",
     agentId: input.agentId,
   };
-  const initialized: GitMemorySessionEventRecord = {
-    v: 1,
-    seq: 1,
-    eventId: createGitMemoryEventId(input.date, 1),
-    type: "session_initialized",
-    at: input.createdAt,
-  };
   const focus: GitMemoryFocusFile = {
     schemaVersion: 1,
     activeTaskId: null,
@@ -1328,7 +1208,6 @@ function buildInitialSessionFiles(input: BuildInitialSessionFilesInput): Record<
     [GIT_MEMORY_SESSION_META_PATH]: prettyJson(meta),
     [GIT_MEMORY_SESSION_CONVERSATION_PATH]: "",
     [GIT_MEMORY_SESSION_CONVERSATION_MARKDOWN_PATH]: "# Conversation\n",
-    [GIT_MEMORY_SESSION_EVENTS_PATH]: jsonl([initialized]),
     [GIT_MEMORY_SESSION_FOCUS_PATH]: prettyJson(focus),
     [GIT_MEMORY_SESSION_TASKS_PATH]: prettyJson(tasks),
     [GIT_MEMORY_SESSION_TASK_MESSAGE_LINKS_PATH]: "",
@@ -1636,6 +1515,33 @@ async function readTaskEntries(driver: GitMemoryWorktreeGitDriver): Promise<GitM
   return (parseJson<GitMemoryTaskIndexFile>(
     await driver.readWorkingFile(GIT_MEMORY_SESSION_TASKS_PATH),
   ) ?? { schemaVersion: 1, tasks: [] }).tasks;
+}
+
+async function nextRunSequenceFromTasks(driver: GitMemoryWorktreeGitDriver): Promise<number> {
+  const sequences: number[] = [];
+  for (const task of await readTaskEntries(driver)) {
+    const ref = `refs/heads/${task.branch}`;
+    if (!(await driver.hasRef(ref))) {
+      continue;
+    }
+    const prefix = `${gitMemoryTaskDir(task.taskId)}/runs`;
+    const paths = (await driver.listTreePaths(ref, prefix))
+      .filter((path) => path.endsWith(".json"));
+    for (const path of paths) {
+      const sequence = runSequenceFromRunId(runIdFromRunPath(path));
+      if (sequence > 0) {
+        sequences.push(sequence);
+      }
+    }
+    for (const commit of await driver.log(ref, 200)) {
+      const runId = parseGitMemoryCommitTrailers(commit.message).runId;
+      const sequence = runId ? runSequenceFromRunId(runId) : 0;
+      if (sequence > 0) {
+        sequences.push(sequence);
+      }
+    }
+  }
+  return Math.max(0, ...sequences) + 1;
 }
 
 function normalizeTaskDetailInclude(input: GitMemoryTaskDetailInclude[] | undefined): Set<GitMemoryTaskDetailInclude> {
@@ -2025,16 +1931,17 @@ function runIdFromRunMarkdownPath(path: string): GitMemoryRunId {
   return fileName.replace(/\.md$/, "");
 }
 
-function nextRunSequence(events: GitMemorySessionEventRecord[]): number {
-  const sequences = events
-    .map((event) => event.runId)
-    .filter((runId): runId is GitMemoryRunId => typeof runId === "string" && runId.length > 0)
-    .map((runId) => Number(runId.split("-")[2] ?? "0"))
-    .filter((sequence) => Number.isInteger(sequence) && sequence > 0);
-  return Math.max(0, ...sequences) + 1;
+function runIdFromRunPath(path: string): GitMemoryRunId {
+  const fileName = path.split("/").pop() ?? "";
+  return fileName.replace(/\.json$/, "");
+}
+
+function runSequenceFromRunId(runId: GitMemoryRunId): number {
+  const sequence = Number(runId.split("-")[2] ?? "0");
+  return Number.isInteger(sequence) && sequence > 0 ? sequence : 0;
 }
 
 function actionSequenceForRun(runId: GitMemoryRunId, actionIndex: number): number {
-  const runSequence = Number(runId.split("-")[2] ?? "0");
+  const runSequence = runSequenceFromRunId(runId);
   return runSequence * 100 + actionIndex + 1;
 }

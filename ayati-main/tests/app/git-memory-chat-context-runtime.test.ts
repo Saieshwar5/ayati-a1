@@ -335,10 +335,6 @@ describe("createGitMemoryChatContextRuntime", () => {
         taskId: "W-20260628-0001",
         branch: "task/W-20260628-0001-fix-upload-handling",
         runId: "R-20260628-0001",
-        event: {
-          type: "run_completed",
-          conversationSeq: { fromSeq: prepared.messageSeq, toSeq: prepared.messageSeq },
-        },
       });
       if (!committed) {
         throw new Error("Expected git-memory bridge to commit the task run.");

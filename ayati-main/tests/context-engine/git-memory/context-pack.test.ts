@@ -1,4 +1,4 @@
-import { mkdtemp, unlink } from "node:fs/promises";
+import { mkdtemp } from "node:fs/promises";
 import { execFile } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -6,7 +6,6 @@ import { promisify } from "node:util";
 import { describe, expect, it } from "vitest";
 import {
   GIT_MEMORY_MAIN_REF,
-  GIT_MEMORY_SESSION_EVENTS_PATH,
   GitMemoryContextReader,
   GitMemoryDailySessionStore,
   GitMemoryWorktreeGitDriver,
@@ -181,7 +180,7 @@ describe("GitMemoryContextReader", () => {
     });
   });
 
-  it("derives active session event context from commit history without the events file", async () => {
+  it("derives active session event context from commit history without an events file", async () => {
     const contextStoreDir = await mkdtemp(join(tmpdir(), "ayati-git-memory-context-"));
     const store = new GitMemoryDailySessionStore({ contextStoreDir });
     const session = await store.openOrCreateDailySession({
@@ -219,8 +218,6 @@ describe("GitMemoryContextReader", () => {
         next: "Patch upload validation handling.",
       },
     });
-    await unlink(join(session.repoPath, GIT_MEMORY_SESSION_EVENTS_PATH));
-
     const pack = await new GitMemoryContextReader(store).buildActiveContext({
       sessionId: session.sessionId,
     });

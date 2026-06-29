@@ -119,12 +119,6 @@ describe("GitMemoryTaskRouter", () => {
           fromSeq: 3,
           toSeq: 3,
         },
-        focusEvent: {
-          type: "focus_changed",
-          fromTaskId: "W-20260628-0002",
-          toTaskId: uploadTask.taskId,
-          reason: "task_switched",
-        },
       },
     });
 
@@ -177,10 +171,6 @@ describe("GitMemoryTaskRouter", () => {
           reason: "task_reopened",
           fromSeq: 3,
           toSeq: 3,
-        },
-        focusEvent: {
-          reason: "task_reopened",
-          toTaskId: uploadTask.taskId,
         },
       },
     });

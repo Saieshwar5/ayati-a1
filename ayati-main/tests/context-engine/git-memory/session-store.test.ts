@@ -77,14 +77,7 @@ describe("GitMemoryDailySessionStore", () => {
       .toBe("# Conversation\n");
     expect(await driver.readFile(GIT_MEMORY_MAIN_REF, GIT_MEMORY_SESSION_TASK_MESSAGE_LINKS_PATH)).toBe("");
 
-    const events = parseJsonl(await driver.readFile(GIT_MEMORY_MAIN_REF, GIT_MEMORY_SESSION_EVENTS_PATH));
-    expect(events).toEqual([{
-      v: 1,
-      seq: 1,
-      eventId: "E-20260628-000001",
-      type: "session_initialized",
-      at: "2026-06-28T00:00:00+05:30",
-    }]);
+    expect(await driver.readFile(GIT_MEMORY_MAIN_REF, GIT_MEMORY_SESSION_EVENTS_PATH)).toBeNull();
     expect(JSON.parse(await driver.readFile(GIT_MEMORY_MAIN_REF, GIT_MEMORY_SESSION_FOCUS_PATH) ?? "{}"))
       .toMatchObject({ activeTaskId: null, activeBranch: null, reason: "session_initialized" });
     expect(JSON.parse(await driver.readFile(GIT_MEMORY_MAIN_REF, GIT_MEMORY_SESSION_TASKS_PATH) ?? "{}"))
@@ -182,12 +175,6 @@ describe("GitMemoryDailySessionStore", () => {
       at: "2026-06-28T09:01:00+05:30",
     });
 
-    expect(checkpoint.event).toMatchObject({
-      seq: 2,
-      eventId: "E-20260628-000002",
-      type: "session_checkpointed",
-    });
-
     const driver = new GitMemoryWorktreeGitDriver(session.repoPath);
     const log = await driver.log(GIT_MEMORY_MAIN_REF, 5);
     expect(log).toHaveLength(2);
@@ -201,11 +188,7 @@ describe("GitMemoryDailySessionStore", () => {
       .toMatchObject([{ seq: 1, role: "user", text: "Keep this session change until checkpoint." }]);
     expect(await driver.readFile(GIT_MEMORY_MAIN_REF, GIT_MEMORY_SESSION_CONVERSATION_MARKDOWN_PATH))
       .toContain("Keep this session change until checkpoint.");
-    expect(parseJsonl(await driver.readFile(GIT_MEMORY_MAIN_REF, GIT_MEMORY_SESSION_EVENTS_PATH)))
-      .toMatchObject([
-        { seq: 1, type: "session_initialized" },
-        { seq: 2, type: "session_checkpointed" },
-      ]);
+    expect(await driver.readFile(GIT_MEMORY_MAIN_REF, GIT_MEMORY_SESSION_EVENTS_PATH)).toBeNull();
   });
 
   it("links task conversation ranges without copying conversation records", async () => {
@@ -435,12 +418,7 @@ describe("GitMemoryDailySessionStore", () => {
         activeTaskId: "W-20260628-0001",
         activeBranch: "task/W-20260628-0001-fix-upload-handling",
       });
-    expect(parseJsonl(await driver.readWorkingFile(GIT_MEMORY_SESSION_EVENTS_PATH)))
-      .toMatchObject([
-        { seq: 1, type: "session_initialized" },
-        { seq: 2, type: "task_created", taskId: "W-20260628-0001" },
-        { seq: 3, type: "focus_changed", toTaskId: "W-20260628-0001" },
-      ]);
+    expect(await driver.readWorkingFile(GIT_MEMORY_SESSION_EVENTS_PATH)).toBeNull();
     expect(await driver.log(GIT_MEMORY_MAIN_REF, 5)).toHaveLength(1);
   });
 
@@ -540,13 +518,7 @@ describe("GitMemoryDailySessionStore", () => {
       .toMatchObject({ activeTaskId: task.taskId, activeBranch: task.branch });
     expect(parseJsonl(await driver.readFile(GIT_MEMORY_MAIN_REF, GIT_MEMORY_SESSION_TASK_MESSAGE_LINKS_PATH)))
       .toMatchObject([{ taskId: task.taskId, branch: task.branch, fromSeq: 1, toSeq: 1 }]);
-    expect(parseJsonl(await driver.readFile(GIT_MEMORY_MAIN_REF, GIT_MEMORY_SESSION_EVENTS_PATH)))
-      .toMatchObject([
-        { seq: 1, type: "session_initialized" },
-        { seq: 2, type: "task_created" },
-        { seq: 3, type: "focus_changed" },
-        { seq: 4, type: "session_checkpointed" },
-      ]);
+    expect(await driver.readFile(GIT_MEMORY_MAIN_REF, GIT_MEMORY_SESSION_EVENTS_PATH)).toBeNull();
   });
 
   it("commits task runs to the task branch and records session run metadata in the worktree", async () => {
@@ -614,13 +586,6 @@ describe("GitMemoryDailySessionStore", () => {
       branch: "task/W-20260628-0001-fix-upload-handling",
       ref: task.ref,
       runId: "R-20260628-0001",
-      event: {
-        seq: 4,
-        type: "run_completed",
-        taskId: "W-20260628-0001",
-        runId: "R-20260628-0001",
-        conversationSeq: { fromSeq: 1, toSeq: 2 },
-      },
     });
 
     const driver = new GitMemoryWorktreeGitDriver(session.repoPath);
@@ -720,13 +685,7 @@ describe("GitMemoryDailySessionStore", () => {
           updatedAt: "2026-06-28T09:10:00+05:30",
         }],
       });
-    expect(parseJsonl(await driver.readWorkingFile(GIT_MEMORY_SESSION_EVENTS_PATH)))
-      .toMatchObject([
-        { seq: 1, type: "session_initialized" },
-        { seq: 2, type: "task_created" },
-        { seq: 3, type: "focus_changed" },
-        { seq: 4, type: "run_completed", runId: "R-20260628-0001", commit: run.taskCommit },
-      ]);
+    expect(await driver.readWorkingFile(GIT_MEMORY_SESSION_EVENTS_PATH)).toBeNull();
     expect(await driver.log(GIT_MEMORY_MAIN_REF, 5)).toHaveLength(1);
   });
 
@@ -777,14 +736,7 @@ describe("GitMemoryDailySessionStore", () => {
     const driver = new GitMemoryWorktreeGitDriver(session.repoPath);
     expect(JSON.parse(await driver.readFile(GIT_MEMORY_MAIN_REF, GIT_MEMORY_SESSION_TASKS_PATH) ?? "{}"))
       .toMatchObject({ tasks: [{ taskId: task.taskId, status: "done" }] });
-    expect(parseJsonl(await driver.readFile(GIT_MEMORY_MAIN_REF, GIT_MEMORY_SESSION_EVENTS_PATH)))
-      .toMatchObject([
-        { seq: 1, type: "session_initialized" },
-        { seq: 2, type: "task_created" },
-        { seq: 3, type: "focus_changed" },
-        { seq: 4, type: "run_completed", runId: run.runId, commit: run.taskCommit },
-        { seq: 5, type: "session_checkpointed" },
-      ]);
+    expect(await driver.readFile(GIT_MEMORY_MAIN_REF, GIT_MEMORY_SESSION_EVENTS_PATH)).toBeNull();
   });
 });
 
