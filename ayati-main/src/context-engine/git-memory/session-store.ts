@@ -945,6 +945,7 @@ export class GitMemoryDailySessionStore {
         reason: "task_created",
       } satisfies GitMemoryFocusFile),
     });
+    await driver.checkoutBranch(ref);
 
     return { taskId, branch, ref, taskCommit };
   }
@@ -964,10 +965,8 @@ export class GitMemoryDailySessionStore {
     }
 
     const at = input.at ?? this.nowIso();
-    const focus = parseJson<GitMemoryFocusFile>(
-      await driver.readWorkingFile(GIT_MEMORY_SESSION_FOCUS_PATH),
-    );
-    const focusChanged = focus?.activeTaskId !== taskEntry.taskId || focus?.activeBranch !== taskEntry.branch;
+    const currentBranch = await driver.currentBranch();
+    const focusChanged = currentBranch !== taskEntry.branch;
     if (focusChanged) {
       await driver.writeWorkingFiles({
         [GIT_MEMORY_SESSION_FOCUS_PATH]: prettyJson({
@@ -978,6 +977,7 @@ export class GitMemoryDailySessionStore {
           reason: input.reason,
         } satisfies GitMemoryFocusFile),
       });
+      await driver.checkoutBranch(ref);
     }
 
     return {
@@ -1118,6 +1118,7 @@ export class GitMemoryDailySessionStore {
   async checkpointSession(input: GitMemorySessionCheckpointInput): Promise<GitMemorySessionCheckpoint> {
     const driver = await GitMemoryWorktreeGitDriver.init(this.repoPath(input.sessionId));
     const at = input.at ?? this.nowIso();
+    const previousBranch = await driver.currentBranch();
 
     const commitPaths = await existingWorkingPaths(driver, [
       GIT_MEMORY_SESSION_CONVERSATION_PATH,
@@ -1126,16 +1127,24 @@ export class GitMemoryDailySessionStore {
       GIT_MEMORY_SESSION_TASKS_PATH,
       GIT_MEMORY_SESSION_TASK_MESSAGE_LINKS_PATH,
     ]);
-    const commit = await driver.commitPaths(commitPaths, renderGitMemoryCommitMessage({
-      subject: `ayati: checkpoint session ${input.sessionId}`,
-      summary: input.summary ?? "Commit accumulated session git-context changes.",
-      trailers: {
-        sessionId: input.sessionId,
-        event: "session_checkpointed",
-        at,
-        schemaVersion: 1,
-      },
-    }));
+    await driver.checkoutBranch(GIT_MEMORY_MAIN_REF);
+    let commit: string | null;
+    try {
+      commit = await driver.commitPaths(commitPaths, renderGitMemoryCommitMessage({
+        subject: `ayati: checkpoint session ${input.sessionId}`,
+        summary: input.summary ?? "Commit accumulated session git-context changes.",
+        trailers: {
+          sessionId: input.sessionId,
+          event: "session_checkpointed",
+          at,
+          schemaVersion: 1,
+        },
+      }));
+    } finally {
+      if (previousBranch && previousBranch !== "main") {
+        await driver.checkoutBranch(`refs/heads/${previousBranch}`);
+      }
+    }
     if (!commit) {
       throw new Error("Session checkpoint did not contain changes.");
     }
@@ -1398,14 +1407,24 @@ async function readTaskRoutingSnapshotFromDriver(
   driver: GitMemoryWorktreeGitDriver,
   sessionId: GitMemorySessionId,
 ): Promise<GitMemoryTaskRoutingSnapshot> {
-  const [tasks, focus] = await Promise.all([
+  const [tasks, currentBranch] = await Promise.all([
     parseJson<GitMemoryTaskIndexFile>(
       await driver.readWorkingFile(GIT_MEMORY_SESSION_TASKS_PATH),
     ) ?? { schemaVersion: 1, tasks: [] },
-    parseJson<GitMemoryFocusFile>(
-      await driver.readWorkingFile(GIT_MEMORY_SESSION_FOCUS_PATH),
-    ),
+    driver.currentBranch(),
   ]);
+  const currentTask = currentBranch?.startsWith("task/")
+    ? tasks.tasks.find((task) => task.branch === currentBranch)
+    : undefined;
+  const focus: GitMemoryFocusFile | null = currentTask
+    ? {
+        schemaVersion: 1,
+        activeTaskId: currentTask.taskId,
+        activeBranch: currentTask.branch,
+        updatedAt: "",
+        reason: "current_branch",
+      }
+    : null;
 
   const snapshotTasks: GitMemoryTaskRoutingSnapshotTask[] = [];
   for (const taskEntry of tasks.tasks) {

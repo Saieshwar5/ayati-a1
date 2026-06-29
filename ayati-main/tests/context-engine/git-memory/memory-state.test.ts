@@ -127,7 +127,7 @@ describe("GitContextMemoryStateHydrator", () => {
     }]);
   });
 
-  it("keeps missing task branches in known tasks without active task state", async () => {
+  it("ignores stale focus files while keeping missing task branches in known tasks", async () => {
     const contextStoreDir = await mkdtemp(join(tmpdir(), "ayati-git-memory-state-"));
     const store = new GitMemoryDailySessionStore({ contextStoreDir });
     const session = await store.openOrCreateDailySession({
@@ -162,12 +162,7 @@ describe("GitContextMemoryStateHydrator", () => {
       sessionId: session.sessionId,
     });
 
-    expect(state.focus).toMatchObject({
-      status: "missing",
-      taskId: "W-20260628-0001",
-      branch: "task/W-20260628-0001-missing",
-      reason: "focused task branch is missing",
-    });
+    expect(state.focus).toEqual({ status: "none" });
     expect(state.activeTask).toBeUndefined();
     expect(state.knownTasks).toMatchObject([{
       taskId: "W-20260628-0001",

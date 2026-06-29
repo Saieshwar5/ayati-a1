@@ -3,7 +3,6 @@ import { GitMemoryWorktreeGitDriver, type GitMemoryLogEntry } from "./git-driver
 import type { GitMemoryDailySessionStore } from "./session-store.js";
 import type {
   GitMemoryConversationRecord,
-  GitMemoryFocusFile,
   GitMemoryRunFile,
   GitMemorySessionEventRecord,
   GitMemorySessionId,
@@ -16,7 +15,6 @@ import type {
 import {
   GIT_MEMORY_SESSION_CONVERSATION_MARKDOWN_PATH,
   GIT_MEMORY_SESSION_CONVERSATION_PATH,
-  GIT_MEMORY_SESSION_FOCUS_PATH,
   GIT_MEMORY_SESSION_TASKS_PATH,
   gitMemoryTaskDir,
   gitMemoryTaskFilePath,
@@ -133,11 +131,10 @@ export class GitMemoryContextReader {
   }): Promise<GitMemoryMachineContextPack> {
     const limits = normalizeLimits(input.limits);
     const driver = await this.store.openExistingDriver(input.sessionId);
-    const [conversation, conversationMarkdown, tasks, focus, currentBranch, sessionCommits] = await Promise.all([
+    const [conversation, conversationMarkdown, tasks, currentBranch, sessionCommits] = await Promise.all([
       readWorkingJsonl<GitMemoryConversationRecord>(driver, GIT_MEMORY_SESSION_CONVERSATION_PATH),
       readWorkingMarkdownTail(driver, GIT_MEMORY_SESSION_CONVERSATION_MARKDOWN_PATH, limits.conversationMarkdownCharLimit),
       readWorkingJson<GitMemoryTaskIndexFile>(driver, GIT_MEMORY_SESSION_TASKS_PATH),
-      readWorkingJson<GitMemoryFocusFile>(driver, GIT_MEMORY_SESSION_FOCUS_PATH),
       driver.currentBranch(),
       readRecentCommits(driver, GIT_MEMORY_MAIN_REF, limits.commitLogLimit),
     ]);
@@ -150,7 +147,7 @@ export class GitMemoryContextReader {
       recentCommits: sessionCommits,
       taskCount: tasks?.tasks.length ?? 0,
     };
-    const resolvedFocus = resolveActiveFocus(currentBranch, tasks, focus);
+    const resolvedFocus = resolveActiveFocus(currentBranch, tasks);
     if (resolvedFocus.status === "none") {
       return {
         session,
@@ -424,7 +421,6 @@ function parseJsonl<T>(value: string | null): T[] {
 function resolveActiveFocus(
   currentBranch: string | null,
   tasks: GitMemoryTaskIndexFile | null,
-  focus: GitMemoryFocusFile | null,
 ): GitMemoryResolvedFocus {
   if (currentBranch?.startsWith("task/")) {
     const taskEntry = tasks?.tasks.find((task) => task.branch === currentBranch);
@@ -435,15 +431,13 @@ function resolveActiveFocus(
         branch: taskEntry.branch,
       };
     }
+    return {
+      status: "missing",
+      branch: currentBranch,
+      reason: "current task branch is missing from session task index",
+    };
   }
-  if (!focus?.activeTaskId || !focus.activeBranch) {
-    return { status: "none" };
-  }
-  return {
-    status: "active",
-    taskId: focus.activeTaskId,
-    branch: focus.activeBranch,
-  };
+  return { status: "none" };
 }
 
 function tail<T>(values: T[], limit: number): T[] {
