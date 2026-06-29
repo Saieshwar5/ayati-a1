@@ -560,6 +560,10 @@ export class GitMemoryDailySessionStore {
   async startTaskRun(input: StartGitMemoryTaskRunInput): Promise<StartGitMemoryTaskRunResult> {
     const driver = await GitMemoryWorktreeGitDriver.init(this.repoPath(input.sessionId));
     const date = gitMemoryDateFromSessionId(input.sessionId);
+    const ref = `refs/heads/${input.branch}`;
+    if (!(await driver.hasRef(ref))) {
+      throw new Error(`Git memory task branch missing: ${ref}`);
+    }
     const existingEvents = parseJsonl<GitMemorySessionEventRecord>(
       await driver.readWorkingFile(GIT_MEMORY_SESSION_EVENTS_PATH),
     );
@@ -583,6 +587,37 @@ export class GitMemoryDailySessionStore {
     await driver.writeWorkingFiles({
       [GIT_MEMORY_SESSION_EVENTS_PATH]: jsonl([...existingEvents, event]),
     });
+    const conversation = parseJsonl<GitMemoryConversationRecord>(
+      await driver.readWorkingFile(GIT_MEMORY_SESSION_CONVERSATION_PATH),
+    );
+    const taskConversation = conversationInRange(conversation, input);
+    const existingMarkdown = await driver.readFile(ref, GIT_MEMORY_SESSION_CONVERSATION_MARKDOWN_PATH);
+    const nextMarkdown = appendConversationMarkdownRecords(existingMarkdown, taskConversation, {
+      taskId: input.taskId,
+      runId: input.runId,
+    });
+    if (nextMarkdown !== existingMarkdown) {
+      await driver.commitSyntheticFiles({
+        ref,
+        files: {
+          [GIT_MEMORY_SESSION_CONVERSATION_MARKDOWN_PATH]: nextMarkdown,
+        },
+        message: renderGitMemoryCommitMessage({
+          subject: `ayati: start run ${input.runId}`,
+          summary: `Record task conversation for run ${input.runId}.`,
+          trailers: {
+            sessionId: input.sessionId,
+            taskId: input.taskId,
+            runId: input.runId,
+            event: "run_started",
+            at: event.at,
+            branch: input.branch,
+            conversationSeq: { fromSeq: input.fromSeq, toSeq: input.toSeq },
+            schemaVersion: 1,
+          },
+        }),
+      });
+    }
     return { runId: input.runId, event };
   }
 
@@ -855,10 +890,18 @@ export class GitMemoryDailySessionStore {
       next: input.state?.next ?? input.objective,
       updatedAt: at,
     };
+    const conversation = parseJsonl<GitMemoryConversationRecord>(
+      await driver.readWorkingFile(GIT_MEMORY_SESSION_CONVERSATION_PATH),
+    );
+    const taskConversation = conversationInRange(conversation, input);
 
     const taskCommit = await driver.commitSyntheticFiles({
       ref,
       files: {
+        [GIT_MEMORY_SESSION_CONVERSATION_MARKDOWN_PATH]: renderConversationMarkdownDocument(taskConversation, {
+          taskId,
+          runId: input.runId,
+        }),
         [gitMemoryTaskFilePath(taskId)]: prettyJson(task),
         [gitMemoryTaskStatePath(taskId)]: prettyJson(state),
         [gitMemoryTaskAssetsPath(taskId)]: "",
@@ -1276,22 +1319,54 @@ function appendConversationMarkdown(
   existing: string | null,
   record: GitMemoryConversationRecord,
 ): string {
-  const base = existing?.trimEnd() || "# Conversation";
-  return `${base}\n\n${renderConversationMarkdownBlock(record)}`;
+  return appendConversationMarkdownRecords(existing, [record]);
 }
 
-function renderConversationMarkdownBlock(record: GitMemoryConversationRecord): string {
+interface ConversationMarkdownMetadata {
+  taskId?: GitMemoryTaskId;
+  runId?: GitMemoryRunId;
+}
+
+function renderConversationMarkdownDocument(
+  records: GitMemoryConversationRecord[],
+  metadata: ConversationMarkdownMetadata = {},
+): string {
+  return appendConversationMarkdownRecords("# Conversation\n", records, metadata);
+}
+
+function appendConversationMarkdownRecords(
+  existing: string | null,
+  records: GitMemoryConversationRecord[],
+  metadata: ConversationMarkdownMetadata = {},
+): string {
+  const base = existing?.trimEnd() || "# Conversation";
+  let output = base;
+  for (const record of records) {
+    const block = renderConversationMarkdownBlock(record, metadata).trimEnd();
+    if (!output.includes(block)) {
+      output = `${output}\n\n${block}`;
+    }
+  }
+  return `${output.trimEnd()}\n`;
+}
+
+function renderConversationMarkdownBlock(
+  record: GitMemoryConversationRecord,
+  metadata: ConversationMarkdownMetadata = {},
+): string {
+  const taskId = metadata.taskId ?? record.taskId ?? undefined;
+  const runId = metadata.runId ?? record.runId ?? undefined;
   const lines = [
     `## ${record.at} ${capitalizeRole(record.role)}`,
     "",
   ];
-  if (record.taskId) {
-    lines.push(`Task: ${record.taskId}`);
+  if (taskId) {
+    lines.push(`Task: ${taskId}`);
   }
-  if (record.runId) {
-    lines.push(`Run: ${record.runId}`);
+  if (runId) {
+    lines.push(`Run: ${runId}`);
   }
-  if (record.taskId || record.runId) {
+  if (taskId || runId) {
     lines.push("");
   }
   lines.push(record.text?.trim() || `[content: ${record.contentRef ?? "unavailable"}]`);

@@ -370,6 +370,22 @@ describe("GitMemoryDailySessionStore", () => {
 
     const driver = new GitMemoryWorktreeGitDriver(session.repoPath);
     expect(await driver.readFile(task.ref, GIT_MEMORY_SESSION_CONVERSATION_PATH)).toBeNull();
+    expect(await driver.readFile(task.ref, GIT_MEMORY_SESSION_CONVERSATION_MARKDOWN_PATH)).toBe([
+      "# Conversation",
+      "",
+      "## 2026-06-28T09:00:00+05:30 User",
+      "",
+      "Task: W-20260628-0001",
+      "",
+      "Fix upload handling",
+      "",
+      "## 2026-06-28T09:00:05+05:30 Assistant",
+      "",
+      "Task: W-20260628-0001",
+      "",
+      "I will inspect upload handling.",
+      "",
+    ].join("\n"));
     expect(JSON.parse(await driver.readFile(task.ref, gitMemoryTaskFilePath(task.taskId)) ?? "{}"))
       .toMatchObject({
         taskId: "W-20260628-0001",
@@ -417,6 +433,65 @@ describe("GitMemoryDailySessionStore", () => {
         { seq: 3, type: "focus_changed", toTaskId: "W-20260628-0001" },
       ]);
     expect(await driver.log(GIT_MEMORY_MAIN_REF, 5)).toHaveLength(1);
+  });
+
+  it("appends task run conversation ranges to task branch markdown without duplicating existing blocks", async () => {
+    const contextStoreDir = await mkdtemp(join(tmpdir(), "ayati-git-memory-"));
+    const store = new GitMemoryDailySessionStore({ contextStoreDir });
+    const session = await store.openOrCreateDailySession({
+      date: "2026-06-28",
+      timezone: "Asia/Kolkata",
+      agentId: "local",
+      createdAt: "2026-06-28T00:00:00+05:30",
+    });
+    const user = await store.appendConversationMessage({
+      sessionId: session.sessionId,
+      role: "user",
+      text: "Fix upload handling",
+      at: "2026-06-28T09:00:00+05:30",
+    });
+    const task = await store.createTaskBranch({
+      sessionId: session.sessionId,
+      title: "Fix upload handling",
+      objective: "Find and fix upload handling failures.",
+      fromSeq: user.seq,
+      toSeq: user.seq,
+      runId: "R-20260628-0001",
+      at: "2026-06-28T09:01:00+05:30",
+    });
+
+    await store.startTaskRun({
+      sessionId: session.sessionId,
+      taskId: task.taskId,
+      branch: task.branch,
+      runId: "R-20260628-0001",
+      fromSeq: user.seq,
+      toSeq: user.seq,
+      at: "2026-06-28T09:01:30+05:30",
+    });
+    const followUp = await store.appendConversationMessage({
+      sessionId: session.sessionId,
+      role: "user",
+      text: "finish it",
+      at: "2026-06-28T09:05:00+05:30",
+    });
+    await store.startTaskRun({
+      sessionId: session.sessionId,
+      taskId: task.taskId,
+      branch: task.branch,
+      runId: "R-20260628-0002",
+      fromSeq: followUp.seq,
+      toSeq: followUp.seq,
+      at: "2026-06-28T09:05:01+05:30",
+    });
+
+    const driver = new GitMemoryWorktreeGitDriver(session.repoPath);
+    const markdown = await driver.readFile(task.ref, GIT_MEMORY_SESSION_CONVERSATION_MARKDOWN_PATH) ?? "";
+    expect(markdown.match(/Fix upload handling/g)).toHaveLength(1);
+    expect(markdown).toContain("Run: R-20260628-0001");
+    expect(markdown).toContain("finish it");
+    expect(markdown).toContain("Run: R-20260628-0002");
+    expect(await driver.log(task.ref, 5)).toHaveLength(2);
   });
 
   it("checkpoints session task index, focus, and links after task creation", async () => {
