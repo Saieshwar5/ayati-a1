@@ -56,6 +56,11 @@ export class GitMemoryWorktreeGitDriver {
     return result.exitCode === 0;
   }
 
+  async currentBranch(): Promise<string | null> {
+    const result = await this.run(["symbolic-ref", "--quiet", "--short", "HEAD"], { allowFailure: true });
+    return result.exitCode === 0 ? result.stdout.trim() || null : null;
+  }
+
   async readFile(ref: string, path: string): Promise<string | null> {
     const result = await this.run(["show", `${ref}:${path}`], { allowFailure: true });
     return result.exitCode === 0 ? result.stdout : null;

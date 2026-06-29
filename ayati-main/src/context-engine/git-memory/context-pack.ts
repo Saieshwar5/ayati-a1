@@ -61,6 +61,22 @@ export type GitMemoryFocusContext =
       reason: string;
     };
 
+type GitMemoryResolvedFocus =
+  | {
+      status: "none";
+    }
+  | {
+      status: "active";
+      taskId: GitMemoryTaskId;
+      branch: string;
+    }
+  | {
+      status: "missing";
+      taskId?: GitMemoryTaskId;
+      branch?: string;
+      reason: string;
+    };
+
 export interface GitMemoryContextTaskConversationSegment {
   link: GitMemoryTaskMessageLinkRecord;
   messages: GitMemoryConversationRecord[];
@@ -112,13 +128,14 @@ export class GitMemoryContextReader {
   }): Promise<GitMemoryMachineContextPack> {
     const limits = normalizeLimits(input.limits);
     const driver = await this.store.openExistingDriver(input.sessionId);
-    const [conversation, conversationMarkdown, events, links, tasks, focus] = await Promise.all([
+    const [conversation, conversationMarkdown, events, links, tasks, focus, currentBranch] = await Promise.all([
       readWorkingJsonl<GitMemoryConversationRecord>(driver, GIT_MEMORY_SESSION_CONVERSATION_PATH),
       readWorkingMarkdownTail(driver, GIT_MEMORY_SESSION_CONVERSATION_MARKDOWN_PATH, limits.conversationMarkdownCharLimit),
       readWorkingJsonl<GitMemorySessionEventRecord>(driver, GIT_MEMORY_SESSION_EVENTS_PATH),
       readWorkingJsonl<GitMemoryTaskMessageLinkRecord>(driver, GIT_MEMORY_SESSION_TASK_MESSAGE_LINKS_PATH),
       readWorkingJson<GitMemoryTaskIndexFile>(driver, GIT_MEMORY_SESSION_TASKS_PATH),
       readWorkingJson<GitMemoryFocusFile>(driver, GIT_MEMORY_SESSION_FOCUS_PATH),
+      driver.currentBranch(),
     ]);
     const session = {
       sessionId: input.sessionId,
@@ -128,21 +145,34 @@ export class GitMemoryContextReader {
       taskMessageLinkTail: tail(links, limits.taskMessageLinkLimit),
       taskCount: tasks?.tasks.length ?? 0,
     };
-    if (!focus?.activeTaskId || !focus.activeBranch) {
+    const resolvedFocus = resolveActiveFocus(currentBranch, tasks, focus);
+    if (resolvedFocus.status === "none") {
       return {
         session,
         focus: { status: "none" },
       };
     }
+    if (resolvedFocus.status === "missing") {
+      return {
+        session,
+        focus: {
+          status: "missing",
+          ...(resolvedFocus.taskId ? { taskId: resolvedFocus.taskId } : {}),
+          ...(resolvedFocus.branch ? { branch: resolvedFocus.branch } : {}),
+          ...(resolvedFocus.branch ? { ref: `refs/heads/${resolvedFocus.branch}` } : {}),
+          reason: resolvedFocus.reason,
+        },
+      };
+    }
 
-    const taskEntry = tasks?.tasks.find((task) => task.taskId === focus.activeTaskId);
+    const taskEntry = tasks?.tasks.find((task) => task.taskId === resolvedFocus.taskId);
     if (!taskEntry) {
       return {
         session,
         focus: {
           status: "missing",
-          taskId: focus.activeTaskId,
-          branch: focus.activeBranch,
+          taskId: resolvedFocus.taskId,
+          branch: resolvedFocus.branch,
           reason: "focused task is missing from session task index",
         },
       };
@@ -312,6 +342,31 @@ function conversationInRange(
   range: { fromSeq: number; toSeq: number },
 ): GitMemoryConversationRecord[] {
   return conversation.filter((message) => message.seq >= range.fromSeq && message.seq <= range.toSeq);
+}
+
+function resolveActiveFocus(
+  currentBranch: string | null,
+  tasks: GitMemoryTaskIndexFile | null,
+  focus: GitMemoryFocusFile | null,
+): GitMemoryResolvedFocus {
+  if (currentBranch?.startsWith("task/")) {
+    const taskEntry = tasks?.tasks.find((task) => task.branch === currentBranch);
+    if (taskEntry) {
+      return {
+        status: "active",
+        taskId: taskEntry.taskId,
+        branch: taskEntry.branch,
+      };
+    }
+  }
+  if (!focus?.activeTaskId || !focus.activeBranch) {
+    return { status: "none" };
+  }
+  return {
+    status: "active",
+    taskId: focus.activeTaskId,
+    branch: focus.activeBranch,
+  };
 }
 
 function tail<T>(values: T[], limit: number): T[] {
