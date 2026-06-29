@@ -1,5 +1,5 @@
 import { parseGitMemoryCommitTrailers, type ParsedGitMemoryCommitTrailers } from "./commit-message.js";
-import { readGitMemoryConversationFromMarkdownOrJsonl } from "./conversation-markdown.js";
+import { parseGitMemoryConversationMarkdown } from "./conversation-markdown.js";
 import type { TaskAssetRecord } from "../contracts.js";
 import { GitMemoryWorktreeGitDriver, type GitMemoryLogEntry } from "./git-driver.js";
 import type { GitMemoryDailySessionStore } from "./session-store.js";
@@ -15,7 +15,6 @@ import type {
 } from "./schema.js";
 import {
   GIT_MEMORY_SESSION_CONVERSATION_MARKDOWN_PATH,
-  GIT_MEMORY_SESSION_CONVERSATION_PATH,
   gitMemoryTaskDir,
   gitMemoryTaskAssetsPath,
   gitMemoryTaskFilePath,
@@ -139,17 +138,13 @@ export class GitMemoryContextReader {
   }): Promise<GitMemoryMachineContextPack> {
     const limits = normalizeLimits(input.limits);
     const driver = await this.store.openExistingDriver(input.sessionId);
-    const [conversationMarkdownDocument, conversationJsonl, taskEntries, currentBranch, sessionCommits] = await Promise.all([
+    const [conversationMarkdownDocument, taskEntries, currentBranch, sessionCommits] = await Promise.all([
       driver.readWorkingFile(GIT_MEMORY_SESSION_CONVERSATION_MARKDOWN_PATH),
-      readWorkingJsonl<GitMemoryConversationRecord>(driver, GIT_MEMORY_SESSION_CONVERSATION_PATH),
       readTaskEntries(driver),
       driver.currentBranch(),
       readRecentCommits(driver, GIT_MEMORY_MAIN_REF, limits.commitLogLimit),
     ]);
-    const conversation = readGitMemoryConversationFromMarkdownOrJsonl(
-      conversationMarkdownDocument,
-      conversationJsonl,
-    );
+    const conversation = parseGitMemoryConversationMarkdown(conversationMarkdownDocument);
     const conversationMarkdown = markdownTail(conversationMarkdownDocument, limits.conversationMarkdownCharLimit);
     const session = {
       sessionId: input.sessionId,
@@ -383,10 +378,6 @@ function commitToSessionActivity(
     };
   }
   return null;
-}
-
-async function readWorkingJsonl<T>(driver: GitMemoryWorktreeGitDriver, path: string): Promise<T[]> {
-  return parseJsonl<T>(await driver.readWorkingFile(path));
 }
 
 async function readTaskEntries(driver: GitMemoryWorktreeGitDriver): Promise<GitMemoryDerivedTaskEntry[]> {

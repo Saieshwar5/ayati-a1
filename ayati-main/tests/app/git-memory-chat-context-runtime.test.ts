@@ -6,7 +6,6 @@ import { createGitMemoryChatContextRuntime } from "../../src/app/git-memory-chat
 import {
   createGitMemoryRuntime,
   GIT_MEMORY_MAIN_REF,
-  GIT_MEMORY_SESSION_CONVERSATION_PATH,
   GitMemoryWorktreeGitDriver,
   gitMemoryTaskRunPath,
 } from "../../src/context-engine/index.js";
@@ -101,8 +100,7 @@ describe("createGitMemoryChatContextRuntime", () => {
       ]);
 
       const driver = new GitMemoryWorktreeGitDriver(prepared.repoPath);
-      expect(parseJsonl(await driver.readWorkingFile(GIT_MEMORY_SESSION_CONVERSATION_PATH)))
-        .toHaveLength(2);
+      expect(await driver.readWorkingFile("session/conversation.jsonl")).toBeNull();
       expect(await driver.log(GIT_MEMORY_MAIN_REF, 5)).toHaveLength(3);
     } finally {
       rmSync(storeDir, { recursive: true, force: true });
@@ -474,10 +472,3 @@ describe("createGitMemoryChatContextRuntime", () => {
     }
   });
 });
-
-function parseJsonl(value: string | null): unknown[] {
-  if (!value?.trim()) {
-    return [];
-  }
-  return value.trim().split(/\r?\n/).map((line) => JSON.parse(line) as unknown);
-}

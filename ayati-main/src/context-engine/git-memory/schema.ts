@@ -3,7 +3,6 @@ import type { TaskAssetRecord } from "../contracts.js";
 export const GIT_MEMORY_SCHEMA_VERSION = 1;
 
 export const GIT_MEMORY_SESSION_META_PATH = "session/meta.json";
-export const GIT_MEMORY_SESSION_CONVERSATION_PATH = "session/conversation.jsonl";
 export const GIT_MEMORY_SESSION_CONVERSATION_MARKDOWN_PATH = "session/conversation.md";
 export const GIT_MEMORY_SESSION_SCHEMA_PATH = "session/schema.json";
 

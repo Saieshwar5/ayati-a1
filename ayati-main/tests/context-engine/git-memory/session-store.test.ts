@@ -5,7 +5,6 @@ import { describe, expect, it } from "vitest";
 import {
   GIT_MEMORY_MAIN_REF,
   GIT_MEMORY_SESSION_CONVERSATION_MARKDOWN_PATH,
-  GIT_MEMORY_SESSION_CONVERSATION_PATH,
   GIT_MEMORY_SESSION_META_PATH,
   GIT_MEMORY_SESSION_SCHEMA_PATH,
   GitMemoryWorktreeGitDriver,
@@ -69,7 +68,7 @@ describe("GitMemoryDailySessionStore", () => {
       repoKind: "daily_session",
       agentId: "local",
     });
-    expect(await driver.readFile(GIT_MEMORY_MAIN_REF, GIT_MEMORY_SESSION_CONVERSATION_PATH)).toBe("");
+    expect(await driver.readFile(GIT_MEMORY_MAIN_REF, "session/conversation.jsonl")).toBeNull();
     expect(await driver.readFile(GIT_MEMORY_MAIN_REF, GIT_MEMORY_SESSION_CONVERSATION_MARKDOWN_PATH))
       .toBe("# Conversation\n");
     expect(await driver.readFile(GIT_MEMORY_MAIN_REF, "session/tasks.json")).toBeNull();
@@ -114,44 +113,9 @@ describe("GitMemoryDailySessionStore", () => {
     });
 
     const driver = new GitMemoryWorktreeGitDriver(session.repoPath);
-    expect(parseJsonl(await driver.readFile(GIT_MEMORY_MAIN_REF, GIT_MEMORY_SESSION_CONVERSATION_PATH))).toEqual([
-      {
-        seq: 1,
-        role: "user",
-        at: "2026-06-28T09:00:00+05:30",
-        text: "Fix upload handling",
-        branch: "main",
-      },
-      {
-        seq: 2,
-        role: "assistant",
-        at: "2026-06-28T09:00:05+05:30",
-        text: "I will inspect the upload path.",
-        branch: "main",
-        taskId: "W-20260628-0001",
-        runId: "R-20260628-0001",
-      },
-    ]);
     expect(await driver.readFile(GIT_MEMORY_MAIN_REF, GIT_MEMORY_SESSION_CONVERSATION_MARKDOWN_PATH))
       .toContain("I will inspect the upload path.");
-    expect(parseJsonl(await driver.readWorkingFile(GIT_MEMORY_SESSION_CONVERSATION_PATH))).toEqual([
-      {
-        seq: 1,
-        role: "user",
-        at: "2026-06-28T09:00:00+05:30",
-        text: "Fix upload handling",
-        branch: "main",
-      },
-      {
-        seq: 2,
-        role: "assistant",
-        at: "2026-06-28T09:00:05+05:30",
-        text: "I will inspect the upload path.",
-        branch: "main",
-        taskId: "W-20260628-0001",
-        runId: "R-20260628-0001",
-      },
-    ]);
+    expect(await driver.readWorkingFile("session/conversation.jsonl")).toBeNull();
     expect(await driver.readWorkingFile(GIT_MEMORY_SESSION_CONVERSATION_MARKDOWN_PATH)).toBe([
       "# Conversation",
       "",
@@ -175,7 +139,7 @@ describe("GitMemoryDailySessionStore", () => {
     });
   });
 
-  it("allocates conversation sequence from markdown when debug jsonl is stale", async () => {
+  it("allocates conversation sequence from markdown without a debug jsonl file", async () => {
     const contextStoreDir = await mkdtemp(join(tmpdir(), "ayati-git-memory-"));
     const store = new GitMemoryDailySessionStore({ contextStoreDir });
     const session = await store.openOrCreateDailySession({
@@ -199,15 +163,7 @@ describe("GitMemoryDailySessionStore", () => {
     });
 
     const driver = new GitMemoryWorktreeGitDriver(session.repoPath);
-    await driver.writeWorkingFiles({
-      [GIT_MEMORY_SESSION_CONVERSATION_PATH]: `${JSON.stringify({
-        seq: 1,
-        role: "user",
-        at: "2026-06-28T09:00:00+05:30",
-        text: "Fix upload handling",
-        branch: "main",
-      })}\n`,
-    });
+    expect(await driver.readWorkingFile("session/conversation.jsonl")).toBeNull();
 
     const followUp = await store.appendConversationMessage({
       sessionId: session.sessionId,
@@ -217,8 +173,7 @@ describe("GitMemoryDailySessionStore", () => {
     });
 
     expect(followUp.seq).toBe(3);
-    expect(parseJsonl(await driver.readWorkingFile(GIT_MEMORY_SESSION_CONVERSATION_PATH)))
-      .toHaveLength(3);
+    expect(await driver.readWorkingFile("session/conversation.jsonl")).toBeNull();
   });
 
   it("checkpoints accumulated session changes with a parseable commit", async () => {
@@ -260,13 +215,11 @@ describe("GitMemoryDailySessionStore", () => {
       event: "conversation_appended",
       conversationSeq: { fromSeq: 1, toSeq: 1 },
     });
-    expect(parseJsonl(await driver.readFile(GIT_MEMORY_MAIN_REF, GIT_MEMORY_SESSION_CONVERSATION_PATH)))
-      .toMatchObject([{ seq: 1, role: "user", text: "Keep this session change until checkpoint." }]);
     expect(await driver.readFile(GIT_MEMORY_MAIN_REF, GIT_MEMORY_SESSION_CONVERSATION_MARKDOWN_PATH))
       .toContain("Keep this session change until checkpoint.");
   });
 
-  it("records the checked out branch in the conversation debug log", async () => {
+  it("records the checked out branch in the conversation markdown", async () => {
     const contextStoreDir = await mkdtemp(join(tmpdir(), "ayati-git-memory-"));
     const store = new GitMemoryDailySessionStore({ contextStoreDir });
     const session = await store.openOrCreateDailySession({
@@ -299,19 +252,10 @@ describe("GitMemoryDailySessionStore", () => {
     });
 
     const driver = new GitMemoryWorktreeGitDriver(session.repoPath);
-    const conversation = parseJsonl(await driver.readWorkingFile(GIT_MEMORY_SESSION_CONVERSATION_PATH));
-    expect(conversation[1]).toMatchObject({
-      seq: 2,
-      role: "assistant",
-      branch: "task/W-20260628-0001-fix-upload-handling",
-      taskId: task.taskId,
-    });
-    expect(conversation[1]).not.toHaveProperty("messageId");
-    expect(conversation[1]).not.toHaveProperty("turnId");
-    expect(conversation[1]).not.toHaveProperty("v");
     expect(await driver.readWorkingFile(GIT_MEMORY_SESSION_CONVERSATION_MARKDOWN_PATH)).toContain(
       "Branch: task/W-20260628-0001-fix-upload-handling",
     );
+    expect(await driver.readWorkingFile("session/conversation.jsonl")).toBeNull();
     expect(await driver.currentBranch()).toBe("task/W-20260628-0001-fix-upload-handling");
   });
 
@@ -353,7 +297,7 @@ describe("GitMemoryDailySessionStore", () => {
     });
 
     const driver = new GitMemoryWorktreeGitDriver(session.repoPath);
-    expect(await driver.readFile(task.ref, GIT_MEMORY_SESSION_CONVERSATION_PATH)).toBeNull();
+    expect(await driver.readFile(task.ref, "session/conversation.jsonl")).toBeNull();
     expect(await driver.readFile(task.ref, GIT_MEMORY_SESSION_CONVERSATION_MARKDOWN_PATH)).toBe([
       "# Conversation",
       "",
@@ -412,7 +356,7 @@ describe("GitMemoryDailySessionStore", () => {
     expect(await driver.log(GIT_MEMORY_MAIN_REF, 5)).toHaveLength(3);
   });
 
-  it("creates task branch conversation ranges from markdown when debug jsonl is stale", async () => {
+  it("creates task branch conversation ranges from markdown without a debug jsonl file", async () => {
     const contextStoreDir = await mkdtemp(join(tmpdir(), "ayati-git-memory-"));
     const store = new GitMemoryDailySessionStore({ contextStoreDir });
     const session = await store.openOrCreateDailySession({
@@ -433,17 +377,8 @@ describe("GitMemoryDailySessionStore", () => {
       text: "I will inspect upload handling.",
       at: "2026-06-28T09:00:05+05:30",
     });
-
     const driver = new GitMemoryWorktreeGitDriver(session.repoPath);
-    await driver.writeWorkingFiles({
-      [GIT_MEMORY_SESSION_CONVERSATION_PATH]: `${JSON.stringify({
-        seq: 1,
-        role: "user",
-        at: "2026-06-28T09:00:00+05:30",
-        text: "Fix upload handling",
-        branch: "main",
-      })}\n`,
-    });
+    expect(await driver.readWorkingFile("session/conversation.jsonl")).toBeNull();
 
     const task = await store.createTaskBranch({
       sessionId: session.sessionId,

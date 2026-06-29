@@ -6,7 +6,6 @@ import {
   createGitMemoryRuntime,
   GIT_MEMORY_MAIN_REF,
   GIT_MEMORY_SESSION_CONVERSATION_MARKDOWN_PATH,
-  GIT_MEMORY_SESSION_CONVERSATION_PATH,
   GitMemoryDailySessionStore,
   GitMemoryWorktreeGitDriver,
   parseGitMemoryCommitTrailers,
@@ -99,8 +98,7 @@ describe("GitMemoryRuntime", () => {
     ]);
 
     const driver = new GitMemoryWorktreeGitDriver(prepared.repoPath);
-    expect(parseJsonl(await driver.readWorkingFile(GIT_MEMORY_SESSION_CONVERSATION_PATH)))
-      .toHaveLength(2);
+    expect(await driver.readWorkingFile("session/conversation.jsonl")).toBeNull();
     expect(await driver.log(GIT_MEMORY_MAIN_REF, 5)).toHaveLength(3);
   });
 
@@ -487,10 +485,3 @@ describe("GitMemoryRuntime", () => {
     expect(allocateRunId).not.toHaveBeenCalled();
   });
 });
-
-function parseJsonl(value: string | null): unknown[] {
-  if (!value?.trim()) {
-    return [];
-  }
-  return value.trim().split(/\r?\n/).map((line) => JSON.parse(line) as unknown);
-}

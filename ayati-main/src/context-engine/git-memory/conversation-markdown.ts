@@ -1,18 +1,4 @@
-import type {
-  GitMemoryConversationRecord,
-  GitMemoryTaskId,
-} from "./schema.js";
-
-export function readGitMemoryConversationFromMarkdownOrJsonl(
-  markdown: string | null,
-  jsonl: GitMemoryConversationRecord[],
-): GitMemoryConversationRecord[] {
-  const parsed = parseGitMemoryConversationMarkdown(markdown);
-  if (parsed.length === 0) {
-    return jsonl;
-  }
-  return parsed;
-}
+import type { GitMemoryConversationRecord, GitMemoryTaskId } from "./schema.js";
 
 export function parseGitMemoryConversationMarkdown(
   value: string | null,

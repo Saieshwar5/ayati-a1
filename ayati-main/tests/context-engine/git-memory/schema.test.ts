@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
   GIT_MEMORY_SESSION_CONVERSATION_MARKDOWN_PATH,
-  GIT_MEMORY_SESSION_CONVERSATION_PATH,
   GIT_MEMORY_SESSION_META_PATH,
   gitMemoryTaskActionsPath,
   gitMemoryTaskAssetsPath,
@@ -25,7 +24,6 @@ import {
 describe("git memory schema", () => {
   it("defines the canonical daily repo paths", () => {
     expect(GIT_MEMORY_SESSION_META_PATH).toBe("session/meta.json");
-    expect(GIT_MEMORY_SESSION_CONVERSATION_PATH).toBe("session/conversation.jsonl");
     expect(GIT_MEMORY_SESSION_CONVERSATION_MARKDOWN_PATH).toBe("session/conversation.md");
 
     expect(gitMemoryTaskFilePath("W-20260628-0001")).toBe("tasks/W-20260628-0001/task.json");
