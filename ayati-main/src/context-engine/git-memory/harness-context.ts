@@ -14,10 +14,10 @@ import type {
   GitMemoryTaskId,
 } from "./schema.js";
 import type {
-  CompactGitMemoryCommitSummary,
   GitMemoryCommitActivityRecord,
   GitMemoryFocusContext,
   GitMemoryMachineContextPack,
+  GitMemoryModelCommitSummary,
 } from "./context-pack.js";
 import type { GitContextMemoryState } from "./memory-state.js";
 
@@ -202,12 +202,17 @@ function toTaskRunSummary(run: GitMemoryRunFile, taskId: GitMemoryTaskId): Conte
   };
 }
 
-function toCompactCommitSummary(commit: CompactGitMemoryCommitSummary): ContextCommitSummary {
+function toCompactCommitSummary(commit: GitMemoryModelCommitSummary): ContextCommitSummary {
   return {
     commit: commit.commit,
     subject: commit.subject,
     ...(commit.summary ? { summary: commit.summary } : {}),
-    trailers: commit.trailers,
+    ...(commit.event ? { event: commit.event } : {}),
+    ...(commit.status ? { status: commit.status } : {}),
+    ...(commit.at ? { at: commit.at } : {}),
+    ...(commit.taskId ? { workId: commit.taskId } : {}),
+    ...(commit.runId ? { runId: commit.runId } : {}),
+    ...(commit.branch ? { branch: commit.branch } : {}),
   };
 }
 

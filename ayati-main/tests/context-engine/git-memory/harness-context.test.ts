@@ -206,9 +206,9 @@ describe("buildGitMemoryHarnessContextPack", () => {
     expect(memoryHarness).toEqual(harness);
     expect(harness.session.recentCommits[0]).toMatchObject({
       subject: "ayati: record user message",
-      trailers: {
-        event: "conversation_appended",
-      },
+      event: "conversation_appended",
     });
+    expect(harness.session.recentCommits[0]).not.toHaveProperty("trailers");
+    expect(harness.session.recentCommits[0]).not.toHaveProperty("conversationSeq");
   });
 });

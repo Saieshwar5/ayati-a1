@@ -103,7 +103,12 @@ export interface ContextCommitSummary {
   commit: string;
   subject: string;
   summary?: string;
-  trailers: unknown;
+  event?: string;
+  status?: string;
+  at?: string;
+  workId?: string;
+  runId?: string;
+  branch?: string;
 }
 
 export interface ContextTaskEvidenceSummary {

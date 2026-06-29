@@ -70,10 +70,10 @@ describe("GitContextMemoryStateHydrator", () => {
     });
     expect(state.session.recentCommits[0]).toMatchObject({
       subject: "ayati: record assistant message",
-      trailers: {
-        event: "conversation_appended",
-      },
+      event: "conversation_appended",
     });
+    expect(state.session.recentCommits[0]).not.toHaveProperty("trailers");
+    expect(state.session.recentCommits[0]).not.toHaveProperty("conversationSeq");
     expect(state.session.conversationMarkdownTail).toContain("Fix upload handling");
     expect(state.session.conversationMarkdownTail).toContain("I will inspect upload handling.");
     expect(state.session.activityTail).toHaveLength(1);

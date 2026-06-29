@@ -1,8 +1,8 @@
 import type {
-  CompactGitMemoryCommitSummary,
   GitMemoryContextLimits,
   GitMemoryCommitActivityRecord,
   GitMemoryFocusContext,
+  GitMemoryModelCommitSummary,
 } from "./context-pack.js";
 import type { TaskAssetRecord } from "../contracts.js";
 import { GitMemoryContextReader } from "./context-pack.js";
@@ -39,7 +39,7 @@ export interface GitContextMemoryActiveTask extends GitContextMemoryKnownTask {
   assets: TaskAssetRecord[];
   conversationMarkdownTail: string;
   recentRuns: GitMemoryRunFile[];
-  recentCommits: CompactGitMemoryCommitSummary[];
+  recentCommits: GitMemoryModelCommitSummary[];
   recentEvidence: GitMemoryEvidenceManifestRecord[];
 }
 
@@ -49,7 +49,7 @@ export interface GitContextMemoryState {
     conversationTail: GitMemoryConversationRecord[];
     conversationMarkdownTail: string;
     activityTail: GitMemoryCommitActivityRecord[];
-    recentCommits: CompactGitMemoryCommitSummary[];
+    recentCommits: GitMemoryModelCommitSummary[];
     taskCount: number;
     currentBranch?: string;
   };

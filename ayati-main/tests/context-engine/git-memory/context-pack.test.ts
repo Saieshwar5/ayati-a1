@@ -243,11 +243,11 @@ describe("GitMemoryContextReader", () => {
     ]);
     expect(pack.session.recentCommits[0]).toMatchObject({
       subject: "ayati: record user message",
-      trailers: {
-        sessionId: "S-20260628-local",
-        event: "conversation_appended",
-      },
+      event: "conversation_appended",
     });
+    expect(pack.session.recentCommits[0]).not.toHaveProperty("trailers");
+    expect(pack.session.recentCommits[0]).not.toHaveProperty("conversationSeq");
+    expect(pack.session.recentCommits[0]).not.toHaveProperty("schemaVersion");
     expect(pack.focus).toMatchObject({
       status: "active",
       taskId: "W-20260628-0001",
@@ -306,13 +306,11 @@ describe("GitMemoryContextReader", () => {
     }]);
     expect(pack.task?.recentCommits[0]).toMatchObject({
       subject: "ayati: complete run R-20260628-0001",
-      trailers: {
-        sessionId: "S-20260628-local",
-        taskId: "W-20260628-0001",
-        runId: "R-20260628-0001",
-        event: "run_completed",
-      },
+      taskId: "W-20260628-0001",
+      runId: "R-20260628-0001",
+      event: "run_completed",
     });
+    expect(pack.task?.recentCommits[0]).not.toHaveProperty("trailers");
     expect(pack.task?.recentCommits[1]).toMatchObject({
       subject: "ayati: create task W-20260628-0001",
     });

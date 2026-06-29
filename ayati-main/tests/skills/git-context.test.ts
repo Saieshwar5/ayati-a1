@@ -97,6 +97,15 @@ describe("git-context skill", () => {
         }],
       },
     });
+    const sessionRecentCommits = (result.v2?.structuredContent as {
+      session?: { recentCommits?: Array<Record<string, unknown>> };
+    }).session?.recentCommits ?? [];
+    expect(sessionRecentCommits[0]).toMatchObject({
+      subject: "ayati: record user message",
+      event: "conversation_appended",
+    });
+    expect(sessionRecentCommits[0]).not.toHaveProperty("trailers");
+    expect(sessionRecentCommits[0]).not.toHaveProperty("conversationSeq");
   });
 
   it("lists task routing snapshots for a session", async () => {

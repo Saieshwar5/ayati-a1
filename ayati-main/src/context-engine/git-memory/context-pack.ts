@@ -85,6 +85,18 @@ export interface CompactGitMemoryCommitSummary {
   trailers: ParsedGitMemoryCommitTrailers;
 }
 
+export interface GitMemoryModelCommitSummary {
+  commit: string;
+  subject: string;
+  summary?: string;
+  event?: string;
+  status?: string;
+  at?: string;
+  taskId?: string;
+  runId?: string;
+  branch?: string;
+}
+
 export interface GitMemoryCommitActivityRecord {
   seq: number;
   type: string;
@@ -102,7 +114,7 @@ export interface GitMemoryMachineContextPack {
     conversationTail: GitMemoryConversationRecord[];
     conversationMarkdownTail: string;
     activityTail: GitMemoryCommitActivityRecord[];
-    recentCommits: CompactGitMemoryCommitSummary[];
+    recentCommits: GitMemoryModelCommitSummary[];
     taskCount: number;
   };
   focus: GitMemoryFocusContext;
@@ -123,7 +135,7 @@ export interface GitMemoryMachineContextPack {
     conversationMarkdownTail: string;
     recentRuns: GitMemoryRunFile[];
     recentEvidence: GitMemoryEvidenceManifestRecord[];
-    recentCommits: CompactGitMemoryCommitSummary[];
+    recentCommits: GitMemoryModelCommitSummary[];
   };
 }
 
@@ -149,7 +161,7 @@ export class GitMemoryContextReader {
       conversationTail: tail(conversation, limits.conversationTailLimit),
       conversationMarkdownTail: conversationMarkdown,
       activityTail: deriveSessionActivityTailFromCommits(sessionCommits, limits.activityTailLimit),
-      recentCommits: sessionCommits,
+      recentCommits: sessionCommits.map(toModelCommitSummary),
       taskCount: taskEntries.length,
     };
     const resolvedFocus = resolveActiveFocus(currentBranch, taskEntries);
@@ -252,7 +264,7 @@ export class GitMemoryContextReader {
         conversationMarkdownTail,
         recentRuns,
         recentEvidence,
-        recentCommits,
+        recentCommits: recentCommits.map(toModelCommitSummary),
       },
     };
   }
@@ -360,7 +372,6 @@ function commitToSessionActivity(
     ...(commit.trailers.taskId ? { taskId: commit.trailers.taskId } : {}),
     ...(commit.trailers.runId ? { runId: commit.trailers.runId } : {}),
     ...(commit.trailers.branch ? { branch: commit.trailers.branch } : {}),
-    ...(commit.trailers.conversationSeq ? { conversationSeq: commit.trailers.conversationSeq } : {}),
   };
   if (event === "run_completed" || event === "run_failed") {
     return {
@@ -376,6 +387,20 @@ function commitToSessionActivity(
     };
   }
   return null;
+}
+
+function toModelCommitSummary(commit: CompactGitMemoryCommitSummary): GitMemoryModelCommitSummary {
+  return {
+    commit: commit.commit,
+    subject: commit.subject,
+    ...(commit.summary ? { summary: commit.summary } : {}),
+    ...(commit.trailers.event ? { event: commit.trailers.event } : {}),
+    ...(commit.trailers.status ? { status: commit.trailers.status } : {}),
+    ...(commit.trailers.at ? { at: commit.trailers.at } : {}),
+    ...(commit.trailers.taskId ? { taskId: commit.trailers.taskId } : {}),
+    ...(commit.trailers.runId ? { runId: commit.trailers.runId } : {}),
+    ...(commit.trailers.branch ? { branch: commit.trailers.branch } : {}),
+  };
 }
 
 async function readRefJson<T>(driver: GitMemoryWorktreeGitDriver, ref: string, path: string): Promise<T | null> {
