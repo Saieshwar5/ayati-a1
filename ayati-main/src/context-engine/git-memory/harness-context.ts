@@ -2,6 +2,7 @@ import type {
   ContextCommitSummary,
   ContextConversationRecord,
   ContextEngineMachineContext,
+  ContextPendingWrite,
   ContextSessionActivityRecord,
   ContextTaskFact,
   ContextTaskEvidenceSummary,
@@ -18,6 +19,7 @@ import type {
   GitMemoryFocusContext,
   GitMemoryMachineContextPack,
   GitMemoryModelCommitSummary,
+  GitMemoryPendingWriteContext,
 } from "./context-pack.js";
 import type { GitContextMemoryState } from "./memory-state.js";
 
@@ -35,6 +37,9 @@ export function buildGitMemoryHarnessContextPack(
       recentCommits: context.session.recentCommits.map(toCompactCommitSummary),
       assetCount: 0,
     },
+    ...(context.pendingWrites && context.pendingWrites.length > 0 ? {
+      pendingWrites: context.pendingWrites.map(toPendingWrite),
+    } : {}),
     focus: toFocusContext(context.focus),
     ...(context.task ? {
       task: {
@@ -72,6 +77,9 @@ export function buildGitMemoryHarnessContextFromMemoryState(
       recentCommits: state.session.recentCommits.map(toCompactCommitSummary),
       assetCount: 0,
     },
+    ...(state.pendingWrites.length > 0 ? {
+      pendingWrites: state.pendingWrites.map(toPendingWrite),
+    } : {}),
     focus: toFocusContext(state.focus),
     ...(state.activeTask ? {
       task: {
@@ -92,6 +100,19 @@ export function buildGitMemoryHarnessContextFromMemoryState(
         recentEvidence: state.activeTask.recentEvidence.map(toEvidenceSummary),
       },
     } : {}),
+  };
+}
+
+function toPendingWrite(write: GitMemoryPendingWriteContext): ContextPendingWrite {
+  return {
+    id: write.id,
+    type: write.type,
+    label: write.label,
+    status: write.status,
+    createdAt: write.createdAt,
+    ...(write.startedAt ? { startedAt: write.startedAt } : {}),
+    ...(write.failedAt ? { failedAt: write.failedAt } : {}),
+    ...(write.error ? { error: write.error } : {}),
   };
 }
 

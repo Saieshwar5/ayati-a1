@@ -34,6 +34,7 @@ describe("GitContextMemoryStateHydrator", () => {
         }],
         taskCount: 0,
       },
+      pendingWrites: [],
       focus: { status: "none" },
       knownTasks: [],
     });
@@ -134,6 +135,7 @@ describe("GitContextMemoryStateHydrator", () => {
     }]);
 
     const context = buildGitMemoryContextPackFromMemoryState(state);
+    expect(context.pendingWrites).toBeUndefined();
     expect(context).toMatchObject({
       session: {
         sessionId: "S-20260628-local",

@@ -10,6 +10,7 @@ import {
   GitMemoryDailySessionStore,
   GitMemoryWorktreeGitDriver,
   type GitMemoryWriteBatchRequest,
+  type GitMemoryWriteBatchSnapshot,
   type GitMemoryWriteQueueRunner,
   parseGitMemoryCommitTrailers,
   sessionDateForAt,
@@ -139,6 +140,77 @@ describe("GitMemoryRuntime", () => {
     ]);
 
     expect(context).toEqual(buildGitMemoryContextPackFromMemoryState(memoryState));
+    expect(memoryState.pendingWrites).toEqual([]);
+    expect(context.pendingWrites).toBeUndefined();
+  });
+
+  it("surfaces unresolved git-memory writes in memory and active context", async () => {
+    const contextStoreDir = await mkdtemp(join(tmpdir(), "ayati-git-memory-runtime-"));
+    const writes: GitMemoryWriteBatchSnapshot[] = [{
+      id: "GMW-000001",
+      sessionId: "S-20260628-local",
+      type: "main_conversation_appended",
+      label: "committed-write",
+      createdAt: "2026-06-28T09:00:00+05:30",
+      status: "committed",
+      completedAt: "2026-06-28T09:00:01+05:30",
+    }, {
+      id: "GMW-000002",
+      sessionId: "S-20260628-local",
+      type: "task_routed",
+      label: "pending-route",
+      createdAt: "2026-06-28T09:00:02+05:30",
+      status: "pending",
+    }, {
+      id: "GMW-000003",
+      sessionId: "S-20260628-local",
+      type: "task_run_committed",
+      label: "failed-run",
+      createdAt: "2026-06-28T09:00:03+05:30",
+      startedAt: "2026-06-28T09:00:04+05:30",
+      failedAt: "2026-06-28T09:00:05+05:30",
+      status: "failed",
+      error: "git commit failed",
+    }];
+    const writeQueue: GitMemoryWriteQueueRunner = {
+      async enqueue<T>(_batch: GitMemoryWriteBatchRequest, run: () => Promise<T>): Promise<T> {
+        return await run();
+      },
+      getSessionWrites(sessionId: string) {
+        return sessionId === "S-20260628-local" ? writes : [];
+      },
+    };
+    const runtime = createGitMemoryRuntime({
+      contextStoreDir,
+      timezone: "Asia/Kolkata",
+      agentId: "local",
+      writeQueue,
+    });
+
+    const prepared = await runtime.prepareUserTurn({
+      userMessage: "Fix upload handling",
+      at: "2026-06-28T09:00:00+05:30",
+    });
+    const memoryState = await runtime.buildMemoryState(prepared.sessionId);
+    const context = await runtime.buildActiveContext(prepared.sessionId);
+
+    expect(memoryState.pendingWrites).toMatchObject([
+      {
+        id: "GMW-000002",
+        type: "task_routed",
+        label: "pending-route",
+        status: "pending",
+      },
+      {
+        id: "GMW-000003",
+        type: "task_run_committed",
+        label: "failed-run",
+        status: "failed",
+        error: "git commit failed",
+      },
+    ]);
+    expect(memoryState.pendingWrites).toHaveLength(2);
+    expect(context.pendingWrites).toEqual(memoryState.pendingWrites);
   });
 
   it("routes git-mutating runtime operations through the write queue", async () => {

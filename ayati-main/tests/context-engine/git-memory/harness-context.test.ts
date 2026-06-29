@@ -48,6 +48,57 @@ describe("buildGitMemoryHarnessContextPack", () => {
       sessionId: session.sessionId,
     });
     expect(buildGitMemoryHarnessContextFromMemoryState(memory)).toEqual(harness);
+    expect(harness.pendingWrites).toBeUndefined();
+  });
+
+  it("maps unresolved git-memory writes into the harness context shape", async () => {
+    const contextStoreDir = await mkdtemp(join(tmpdir(), "ayati-git-memory-harness-"));
+    const store = new GitMemoryDailySessionStore({ contextStoreDir });
+    const session = await store.openOrCreateDailySession({
+      date: "2026-06-28",
+      timezone: "Asia/Kolkata",
+      agentId: "local",
+      createdAt: "2026-06-28T00:00:00+05:30",
+    });
+    const memory = await createGitContextMemoryStateHydrator(store).hydrate({
+      sessionId: session.sessionId,
+    });
+
+    const harness = buildGitMemoryHarnessContextFromMemoryState({
+      ...memory,
+      pendingWrites: [{
+        id: "GMW-000002",
+        type: "task_routed",
+        label: "pending-route",
+        status: "pending",
+        createdAt: "2026-06-28T09:00:00+05:30",
+      }, {
+        id: "GMW-000003",
+        type: "task_run_committed",
+        label: "failed-run",
+        status: "failed",
+        createdAt: "2026-06-28T09:00:01+05:30",
+        startedAt: "2026-06-28T09:00:02+05:30",
+        failedAt: "2026-06-28T09:00:03+05:30",
+        error: "git commit failed",
+      }],
+    });
+
+    expect(harness.pendingWrites).toMatchObject([
+      {
+        id: "GMW-000002",
+        type: "task_routed",
+        label: "pending-route",
+        status: "pending",
+      },
+      {
+        id: "GMW-000003",
+        type: "task_run_committed",
+        label: "failed-run",
+        status: "failed",
+        error: "git commit failed",
+      },
+    ]);
   });
 
   it("maps active task context into the harness context shape expected by the agent", async () => {

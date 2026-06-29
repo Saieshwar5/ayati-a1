@@ -4,6 +4,7 @@ import type {
   GitMemoryFocusContext,
   GitMemoryMachineContextPack,
   GitMemoryModelCommitSummary,
+  GitMemoryPendingWriteContext,
 } from "./context-pack.js";
 import type { TaskAssetRecord } from "../contracts.js";
 import { GitMemoryContextReader } from "./context-pack.js";
@@ -17,6 +18,7 @@ import type {
   GitMemoryRunFile,
   GitMemorySessionId,
 } from "./schema.js";
+import type { GitMemoryWriteBatchSnapshot } from "./write-queue.js";
 
 export type GitContextMemoryStateLimits = GitMemoryContextLimits;
 
@@ -54,6 +56,7 @@ export interface GitContextMemoryState {
     taskCount: number;
     currentBranch?: string;
   };
+  pendingWrites: GitMemoryPendingWriteContext[];
   focus: GitMemoryFocusContext;
   activeTask?: GitContextMemoryActiveTask;
   knownTasks: GitContextMemoryKnownTask[];
@@ -88,6 +91,7 @@ export class GitContextMemoryStateHydrator {
         taskCount: context.session.taskCount,
         ...(context.focus.status === "active" ? { currentBranch: context.focus.branch } : {}),
       },
+      pendingWrites: [],
       focus: context.focus,
       ...(context.task ? { activeTask: toActiveTask(context.task) } : {}),
       knownTasks: routing.tasks.map(toKnownTask),
@@ -113,6 +117,7 @@ export function buildGitMemoryContextPackFromMemoryState(
       recentCommits: state.session.recentCommits,
       taskCount: state.session.taskCount,
     },
+    ...(state.pendingWrites.length > 0 ? { pendingWrites: state.pendingWrites } : {}),
     focus: state.focus,
     ...(state.activeTask ? {
       task: {
@@ -136,6 +141,29 @@ export function buildGitMemoryContextPackFromMemoryState(
       },
     } : {}),
   };
+}
+
+export function buildGitContextPendingWrites(
+  writes: GitMemoryWriteBatchSnapshot[],
+): GitMemoryPendingWriteContext[] {
+  return writes
+    .filter(isPendingWrite)
+    .map((write) => ({
+      id: write.id,
+      type: write.type,
+      label: write.label,
+      status: write.status,
+      createdAt: write.createdAt,
+      ...(write.startedAt ? { startedAt: write.startedAt } : {}),
+      ...(write.failedAt ? { failedAt: write.failedAt } : {}),
+      ...(write.error ? { error: write.error } : {}),
+    }));
+}
+
+function isPendingWrite(
+  write: GitMemoryWriteBatchSnapshot,
+): write is GitMemoryWriteBatchSnapshot & { status: GitMemoryPendingWriteContext["status"] } {
+  return write.status !== "committed";
 }
 
 function toActiveTask(

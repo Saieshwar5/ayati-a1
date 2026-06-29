@@ -11,6 +11,7 @@ import { GitMemoryDailySessionStore } from "./session-store.js";
 import type { GitMemoryMachineContextPack } from "./context-pack.js";
 import {
   buildGitMemoryContextPackFromMemoryState,
+  buildGitContextPendingWrites,
   GitContextMemoryStateHydrator,
   type GitContextMemoryState,
 } from "./memory-state.js";
@@ -150,7 +151,7 @@ export class GitMemoryRuntime {
   async prepareUserTurn(input: PrepareGitMemoryUserTurnInput): Promise<PreparedGitMemoryUserTurn> {
     const at = input.at ?? this.nowProvider().toISOString();
     const sessionId = this.sessionIdForAt(at);
-    return await this.writeQueue.enqueue({
+    const prepared = await this.writeQueue.enqueue({
       sessionId,
       type: "main_conversation_appended",
       label: "prepare_user_turn",
@@ -163,24 +164,27 @@ export class GitMemoryRuntime {
         text: input.userMessage,
         at,
       });
-      const memoryState = await this.memoryStateHydrator.hydrate({ sessionId: session.sessionId });
-      const context = buildGitMemoryContextPackFromMemoryState(memoryState);
       return {
-        status: "ready",
         sessionId: session.sessionId,
         repoPath: session.repoPath,
         initialized: session.initialized,
         userMessage,
-        context,
-        memoryState,
       };
     });
+    const memoryState = await this.hydrateMemoryState(prepared.sessionId);
+    const context = buildGitMemoryContextPackFromMemoryState(memoryState);
+    return {
+      status: "ready",
+      ...prepared,
+      context,
+      memoryState,
+    };
   }
 
   async prepareSystemTurn(input: PrepareGitMemorySystemTurnInput): Promise<PreparedGitMemorySystemTurn> {
     const at = input.at ?? this.nowProvider().toISOString();
     const sessionId = this.sessionIdForAt(at);
-    return await this.writeQueue.enqueue({
+    const prepared = await this.writeQueue.enqueue({
       sessionId,
       type: "main_conversation_appended",
       label: "prepare_system_turn",
@@ -193,18 +197,21 @@ export class GitMemoryRuntime {
         text: input.systemMessage,
         at,
       });
-      const memoryState = await this.memoryStateHydrator.hydrate({ sessionId: session.sessionId });
-      const context = buildGitMemoryContextPackFromMemoryState(memoryState);
       return {
-        status: "ready",
         sessionId: session.sessionId,
         repoPath: session.repoPath,
         initialized: session.initialized,
         systemMessage,
-        context,
-        memoryState,
       };
     });
+    const memoryState = await this.hydrateMemoryState(prepared.sessionId);
+    const context = buildGitMemoryContextPackFromMemoryState(memoryState);
+    return {
+      status: "ready",
+      ...prepared,
+      context,
+      memoryState,
+    };
   }
 
   async recordAssistantMessage(
@@ -256,7 +263,7 @@ export class GitMemoryRuntime {
   }
 
   async routeUserTurn(input: ApplyGitMemoryTaskRouteInput): Promise<RoutedGitMemoryUserTurn> {
-    return await this.writeQueue.enqueue({
+    const routed = await this.writeQueue.enqueue({
       sessionId: input.sessionId,
       type: "task_routed",
       label: "route_user_turn",
@@ -264,16 +271,12 @@ export class GitMemoryRuntime {
     }, async () => {
       const resolution = await this.taskRouter.resolve(input);
       if (resolution.mode === "ambiguous") {
-        const memoryState = await this.memoryStateHydrator.hydrate({ sessionId: input.sessionId });
-        const context = buildGitMemoryContextPackFromMemoryState(memoryState);
         return {
           status: "ambiguous",
           sessionId: input.sessionId,
           candidates: resolution.candidates,
           reason: resolution.reason,
-          context,
-          memoryState,
-        };
+        } as const;
       }
       const runId = await this.store.allocateTaskRunId(input.sessionId);
       const route = await this.taskRouter.applyResolution({ ...input, runId }, resolution);
@@ -301,15 +304,18 @@ export class GitMemoryRuntime {
         toSeq: input.toSeq,
         at: input.at,
       });
-      const memoryState = await this.memoryStateHydrator.hydrate({ sessionId: input.sessionId });
-      const context = buildGitMemoryContextPackFromMemoryState(memoryState);
       return {
         ...route,
         runId,
-        context,
-        memoryState,
       };
     });
+    const memoryState = await this.hydrateMemoryState(input.sessionId);
+    const context = buildGitMemoryContextPackFromMemoryState(memoryState);
+    return {
+      ...routed,
+      context,
+      memoryState,
+    };
   }
 
   async commitTaskRun(input: CommitGitMemoryTaskRunInput): Promise<CommitGitMemoryTaskRunResult> {
@@ -336,12 +342,12 @@ export class GitMemoryRuntime {
 
   async buildActiveContext(sessionId: GitMemorySessionId): Promise<GitMemoryMachineContextPack> {
     return buildGitMemoryContextPackFromMemoryState(
-      await this.memoryStateHydrator.hydrate({ sessionId }),
+      await this.hydrateMemoryState(sessionId),
     );
   }
 
   async buildMemoryState(sessionId: GitMemorySessionId): Promise<GitContextMemoryState> {
-    return await this.memoryStateHydrator.hydrate({ sessionId });
+    return await this.hydrateMemoryState(sessionId);
   }
 
   getSessionWrites(sessionId: GitMemorySessionId): GitMemoryWriteBatchSnapshot[] {
@@ -350,6 +356,14 @@ export class GitMemoryRuntime {
 
   private sessionIdForAt(at: string): GitMemorySessionId {
     return createGitMemorySessionId(sessionDateForAt(at, this.timezone), this.agentId);
+  }
+
+  private async hydrateMemoryState(sessionId: GitMemorySessionId): Promise<GitContextMemoryState> {
+    const state = await this.memoryStateHydrator.hydrate({ sessionId });
+    return {
+      ...state,
+      pendingWrites: buildGitContextPendingWrites(this.writeQueue.getSessionWrites(sessionId)),
+    };
   }
 }
 

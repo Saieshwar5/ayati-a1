@@ -129,6 +129,17 @@ export interface ContextTaskEvidenceSummary {
   source?: Record<string, unknown>;
 }
 
+export interface ContextPendingWrite {
+  id: string;
+  type: string;
+  label: string;
+  status: "pending" | "writing" | "failed";
+  createdAt: string;
+  startedAt?: string;
+  failedAt?: string;
+  error?: string;
+}
+
 export interface ContextEngineMachineContext {
   session: {
     sessionId: string;
@@ -138,6 +149,7 @@ export interface ContextEngineMachineContext {
     recentCommits?: ContextCommitSummary[];
     assetCount: number;
   };
+  pendingWrites?: ContextPendingWrite[];
   focus: ContextFocus;
   task?: {
     ref: string;

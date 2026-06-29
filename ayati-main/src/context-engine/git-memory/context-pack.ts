@@ -108,6 +108,17 @@ export interface GitMemoryCommitActivityRecord {
   commit?: string;
 }
 
+export interface GitMemoryPendingWriteContext {
+  id: string;
+  type: string;
+  label: string;
+  status: "pending" | "writing" | "failed";
+  createdAt: string;
+  startedAt?: string;
+  failedAt?: string;
+  error?: string;
+}
+
 export interface GitMemoryMachineContextPack {
   session: {
     sessionId: GitMemorySessionId;
@@ -117,6 +128,7 @@ export interface GitMemoryMachineContextPack {
     recentCommits: GitMemoryModelCommitSummary[];
     taskCount: number;
   };
+  pendingWrites?: GitMemoryPendingWriteContext[];
   focus: GitMemoryFocusContext;
   task?: {
     ref: string;
