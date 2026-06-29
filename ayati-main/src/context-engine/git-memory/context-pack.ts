@@ -347,18 +347,6 @@ function deriveSessionEventTailFromCommits(
       continue;
     }
     events.push(event);
-    if (event.type === "task_created" && event.taskId && event.branch) {
-      events.push({
-        v: 1,
-        seq: events.length + 1,
-        eventId: derivedCommitEventId(commit.commit, events.length + 1, "focus"),
-        type: "focus_changed",
-        at: event.at,
-        toTaskId: event.taskId,
-        branch: event.branch,
-        reason: "task_created",
-      });
-    }
   }
   return tail(events, limit);
 }

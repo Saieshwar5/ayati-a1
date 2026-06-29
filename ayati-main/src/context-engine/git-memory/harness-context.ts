@@ -126,14 +126,6 @@ function toSessionEventRecord(
       ref: branchRef(event.branch),
     };
   }
-  if (event.type === "focus_changed" && event.branch) {
-    return {
-      seq: event.seq,
-      type: "focus_changed",
-      at: event.at,
-      to: branchRef(event.branch),
-    };
-  }
   if (event.type === "run_started" && event.runId && event.taskId) {
     return {
       seq: event.seq,

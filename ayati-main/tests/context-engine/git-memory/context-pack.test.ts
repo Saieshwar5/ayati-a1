@@ -274,8 +274,7 @@ describe("GitMemoryContextReader", () => {
     expect(pack.session.conversationMarkdownTail).toContain("Branch: task/W-20260628-0001-fix-upload-handling");
     expect(pack.session.eventTail).toMatchObject([
       { seq: 1, type: "task_created" },
-      { seq: 2, type: "focus_changed" },
-      { seq: 3, type: "run_completed" },
+      { seq: 2, type: "run_completed" },
     ]);
     expect(pack.session.recentCommits[0]).toMatchObject({
       subject: "ayati: record user message",
@@ -408,12 +407,6 @@ describe("GitMemoryContextReader", () => {
       },
       {
         seq: 3,
-        type: "focus_changed",
-        toTaskId: task.taskId,
-        branch: task.branch,
-      },
-      {
-        seq: 4,
         type: "run_completed",
         taskId: task.taskId,
         runId: run.runId,

@@ -34,7 +34,6 @@ export type GitMemorySessionEventType =
   | "session_checkpointed"
   | "conversation_appended"
   | "task_created"
-  | "focus_changed"
   | "run_started"
   | "run_completed"
   | "run_failed"
@@ -418,7 +417,6 @@ export function validateGitMemorySessionEventRecord(value: unknown): ValidationR
       "session_checkpointed",
       "conversation_appended",
       "task_created",
-      "focus_changed",
       "run_started",
       "run_completed",
       "run_failed",

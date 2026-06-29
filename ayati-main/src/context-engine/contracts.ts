@@ -30,13 +30,6 @@ export type ContextSessionEventRecord =
     }
   | {
       seq: number;
-      type: "focus_changed";
-      at: string;
-      to: string;
-      from?: string;
-    }
-  | {
-      seq: number;
       type: "run_started";
       at: string;
       runId: string;
