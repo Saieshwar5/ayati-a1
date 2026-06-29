@@ -6,7 +6,6 @@ import {
   GIT_MEMORY_MAIN_REF,
   GIT_MEMORY_SESSION_CONVERSATION_MARKDOWN_PATH,
   GIT_MEMORY_SESSION_CONVERSATION_PATH,
-  GIT_MEMORY_SESSION_EVENTS_PATH,
   GIT_MEMORY_SESSION_META_PATH,
   GIT_MEMORY_SESSION_SCHEMA_PATH,
   GIT_MEMORY_SESSION_TASKS_PATH,
@@ -74,7 +73,6 @@ describe("GitMemoryDailySessionStore", () => {
     expect(await driver.readFile(GIT_MEMORY_MAIN_REF, GIT_MEMORY_SESSION_CONVERSATION_PATH)).toBe("");
     expect(await driver.readFile(GIT_MEMORY_MAIN_REF, GIT_MEMORY_SESSION_CONVERSATION_MARKDOWN_PATH))
       .toBe("# Conversation\n");
-    expect(await driver.readFile(GIT_MEMORY_MAIN_REF, GIT_MEMORY_SESSION_EVENTS_PATH)).toBeNull();
     expect(JSON.parse(await driver.readFile(GIT_MEMORY_MAIN_REF, GIT_MEMORY_SESSION_TASKS_PATH) ?? "{}"))
       .toEqual({ schemaVersion: 1, tasks: [] });
     expect(JSON.parse(await driver.readFile(GIT_MEMORY_MAIN_REF, GIT_MEMORY_SESSION_SCHEMA_PATH) ?? "{}"))
@@ -227,7 +225,6 @@ describe("GitMemoryDailySessionStore", () => {
       .toMatchObject([{ seq: 1, role: "user", text: "Keep this session change until checkpoint." }]);
     expect(await driver.readFile(GIT_MEMORY_MAIN_REF, GIT_MEMORY_SESSION_CONVERSATION_MARKDOWN_PATH))
       .toContain("Keep this session change until checkpoint.");
-    expect(await driver.readFile(GIT_MEMORY_MAIN_REF, GIT_MEMORY_SESSION_EVENTS_PATH)).toBeNull();
   });
 
   it("records the checked out branch in the conversation debug log", async () => {
@@ -382,7 +379,6 @@ describe("GitMemoryDailySessionStore", () => {
         }],
       });
     expect(await driver.currentBranch()).toBe("task/W-20260628-0001-fix-upload-handling");
-    expect(await driver.readWorkingFile(GIT_MEMORY_SESSION_EVENTS_PATH)).toBeNull();
     expect(await driver.log(GIT_MEMORY_MAIN_REF, 5)).toHaveLength(3);
   });
 
@@ -495,7 +491,6 @@ describe("GitMemoryDailySessionStore", () => {
     expect(JSON.parse(await driver.readFile(GIT_MEMORY_MAIN_REF, GIT_MEMORY_SESSION_TASKS_PATH) ?? "{}"))
       .toMatchObject({ tasks: [{ taskId: task.taskId, branch: task.branch }] });
     expect(await driver.currentBranch()).toBe(task.branch);
-    expect(await driver.readFile(GIT_MEMORY_MAIN_REF, GIT_MEMORY_SESSION_EVENTS_PATH)).toBeNull();
   });
 
   it("commits task runs to the task branch and records session run metadata in the worktree", async () => {
@@ -717,7 +712,6 @@ describe("GitMemoryDailySessionStore", () => {
           updatedAt: "2026-06-28T09:10:00+05:30",
         }],
       });
-    expect(await driver.readWorkingFile(GIT_MEMORY_SESSION_EVENTS_PATH)).toBeNull();
     expect(await driver.log(GIT_MEMORY_MAIN_REF, 5)).toHaveLength(3);
   });
 
@@ -842,7 +836,6 @@ describe("GitMemoryDailySessionStore", () => {
     const driver = new GitMemoryWorktreeGitDriver(session.repoPath);
     expect(JSON.parse(await driver.readFile(GIT_MEMORY_MAIN_REF, GIT_MEMORY_SESSION_TASKS_PATH) ?? "{}"))
       .toMatchObject({ tasks: [{ taskId: task.taskId, status: "done" }] });
-    expect(await driver.readFile(GIT_MEMORY_MAIN_REF, GIT_MEMORY_SESSION_EVENTS_PATH)).toBeNull();
   });
 });
 

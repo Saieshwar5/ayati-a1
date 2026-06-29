@@ -6,7 +6,6 @@ import type {
   GitMemoryConversationRecord,
   GitMemoryEvidenceManifestRecord,
   GitMemoryRunFile,
-  GitMemorySessionEventRecord,
   GitMemorySessionId,
   GitMemoryTaskAssetsFile,
   GitMemoryTaskFile,
@@ -27,7 +26,7 @@ import { GIT_MEMORY_MAIN_REF } from "./session-store.js";
 
 export interface GitMemoryContextLimits {
   conversationTailLimit: number;
-  eventTailLimit: number;
+  activityTailLimit: number;
   runLimit: number;
   evidenceLimit: number;
   commitLogLimit: number;
@@ -36,7 +35,7 @@ export interface GitMemoryContextLimits {
 
 export const DEFAULT_GIT_MEMORY_CONTEXT_LIMITS: GitMemoryContextLimits = {
   conversationTailLimit: 20,
-  eventTailLimit: 30,
+  activityTailLimit: 30,
   runLimit: 5,
   evidenceLimit: 5,
   commitLogLimit: 10,
@@ -84,12 +83,23 @@ export interface CompactGitMemoryCommitSummary {
   trailers: ParsedGitMemoryCommitTrailers;
 }
 
+export interface GitMemoryCommitActivityRecord {
+  seq: number;
+  type: string;
+  at: string;
+  taskId?: GitMemoryTaskId;
+  runId?: string;
+  branch?: string;
+  reason?: string;
+  commit?: string;
+}
+
 export interface GitMemoryMachineContextPack {
   session: {
     sessionId: GitMemorySessionId;
     conversationTail: GitMemoryConversationRecord[];
     conversationMarkdownTail: string;
-    eventTail: GitMemorySessionEventRecord[];
+    activityTail: GitMemoryCommitActivityRecord[];
     recentCommits: CompactGitMemoryCommitSummary[];
     taskCount: number;
   };
@@ -141,7 +151,7 @@ export class GitMemoryContextReader {
       sessionId: input.sessionId,
       conversationTail: tail(conversation, limits.conversationTailLimit),
       conversationMarkdownTail: conversationMarkdown,
-      eventTail: deriveSessionEventTailFromCommits(sessionCommits, limits.eventTailLimit),
+      activityTail: deriveSessionActivityTailFromCommits(sessionCommits, limits.activityTailLimit),
       recentCommits: sessionCommits,
       taskCount: tasks?.tasks.length ?? 0,
     };
@@ -217,9 +227,9 @@ export class GitMemoryContextReader {
     return {
       session: {
         ...session,
-        eventTail: deriveSessionEventTailFromCommits(
+        activityTail: deriveSessionActivityTailFromCommits(
           [...sessionCommits, ...recentCommits],
-          limits.eventTailLimit,
+          limits.activityTailLimit,
         ),
       },
       focus: {
@@ -312,10 +322,10 @@ async function readRecentCommits(
   return (await driver.log(ref, limit)).map(compactGitMemoryCommit);
 }
 
-function deriveSessionEventTailFromCommits(
+function deriveSessionActivityTailFromCommits(
   commits: CompactGitMemoryCommitSummary[],
   limit: number,
-): GitMemorySessionEventRecord[] {
+): GitMemoryCommitActivityRecord[] {
   const sorted = commits
     .map((commit, index) => ({ commit, index }))
     .filter(({ commit }) => Boolean(commit.trailers.event && commit.trailers.at))
@@ -323,21 +333,21 @@ function deriveSessionEventTailFromCommits(
       const atCompare = (left.commit.trailers.at ?? "").localeCompare(right.commit.trailers.at ?? "");
       return atCompare === 0 ? left.index - right.index : atCompare;
     });
-  const events: GitMemorySessionEventRecord[] = [];
+  const activities: GitMemoryCommitActivityRecord[] = [];
   for (const { commit } of sorted) {
-    const event = commitToSessionEvent(commit, events.length + 1);
-    if (!event) {
+    const activity = commitToSessionActivity(commit, activities.length + 1);
+    if (!activity) {
       continue;
     }
-    events.push(event);
+    activities.push(activity);
   }
-  return tail(events, limit);
+  return tail(activities, limit);
 }
 
-function commitToSessionEvent(
+function commitToSessionActivity(
   commit: CompactGitMemoryCommitSummary,
   seq: number,
-): GitMemorySessionEventRecord | null {
+): GitMemoryCommitActivityRecord | null {
   const event = commit.trailers.event;
   const at = commit.trailers.at;
   if (!event || !at) {
@@ -347,9 +357,7 @@ function commitToSessionEvent(
     return null;
   }
   const base = {
-    v: 1 as const,
     seq,
-    eventId: derivedCommitEventId(commit.commit, seq),
     type: event,
     at,
     ...(commit.trailers.taskId ? { taskId: commit.trailers.taskId } : {}),
@@ -371,10 +379,6 @@ function commitToSessionEvent(
     };
   }
   return null;
-}
-
-function derivedCommitEventId(commit: string, seq: number, suffix?: string): string {
-  return `E-COMMIT-${commit.slice(0, 12)}-${seq}${suffix ? `-${suffix}` : ""}`;
 }
 
 async function readWorkingJson<T>(driver: GitMemoryWorktreeGitDriver, path: string): Promise<T | null> {
@@ -582,7 +586,7 @@ function markdownTail(value: string | null, limit: number): string {
 function normalizeLimits(input: Partial<GitMemoryContextLimits> | undefined): GitMemoryContextLimits {
   return {
     conversationTailLimit: positiveLimit(input?.conversationTailLimit, DEFAULT_GIT_MEMORY_CONTEXT_LIMITS.conversationTailLimit),
-    eventTailLimit: positiveLimit(input?.eventTailLimit, DEFAULT_GIT_MEMORY_CONTEXT_LIMITS.eventTailLimit),
+    activityTailLimit: positiveLimit(input?.activityTailLimit, DEFAULT_GIT_MEMORY_CONTEXT_LIMITS.activityTailLimit),
     runLimit: positiveLimit(input?.runLimit, DEFAULT_GIT_MEMORY_CONTEXT_LIMITS.runLimit),
     evidenceLimit: positiveLimit(input?.evidenceLimit, DEFAULT_GIT_MEMORY_CONTEXT_LIMITS.evidenceLimit),
     commitLogLimit: positiveLimit(input?.commitLogLimit, DEFAULT_GIT_MEMORY_CONTEXT_LIMITS.commitLogLimit),

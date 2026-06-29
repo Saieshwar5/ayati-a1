@@ -2,7 +2,7 @@ import type {
   ContextCommitSummary,
   ContextConversationRecord,
   ContextEngineMachineContext,
-  ContextSessionEventRecord,
+  ContextSessionActivityRecord,
   ContextTaskFact,
   ContextTaskEvidenceSummary,
   ContextTaskRunSummary,
@@ -11,11 +11,11 @@ import type {
   GitMemoryConversationRecord,
   GitMemoryEvidenceManifestRecord,
   GitMemoryRunFile,
-  GitMemorySessionEventRecord,
   GitMemoryTaskId,
 } from "./schema.js";
 import type {
   CompactGitMemoryCommitSummary,
+  GitMemoryCommitActivityRecord,
   GitMemoryFocusContext,
   GitMemoryMachineContextPack,
 } from "./context-pack.js";
@@ -29,9 +29,9 @@ export function buildGitMemoryHarnessContextPack(
       sessionId: context.session.sessionId,
       conversationTail: context.session.conversationTail.map(toConversationRecord),
       ...(context.session.conversationMarkdownTail ? { conversationMarkdownTail: context.session.conversationMarkdownTail } : {}),
-      eventTail: context.session.eventTail
-        .map((event) => toSessionEventRecord(context.session.sessionId, event))
-        .filter(isSessionEventRecord),
+      activityTail: context.session.activityTail
+        .map((activity) => toSessionActivityRecord(context.session.sessionId, activity))
+        .filter(isSessionActivityRecord),
       recentCommits: context.session.recentCommits.map(toCompactCommitSummary),
       assetCount: 0,
     },
@@ -66,9 +66,9 @@ export function buildGitMemoryHarnessContextFromMemoryState(
       sessionId: state.session.sessionId,
       conversationTail: state.session.conversationTail.map(toConversationRecord),
       ...(state.session.conversationMarkdownTail ? { conversationMarkdownTail: state.session.conversationMarkdownTail } : {}),
-      eventTail: state.session.eventTail
-        .map((event) => toSessionEventRecord(state.session.sessionId, event))
-        .filter(isSessionEventRecord),
+      activityTail: state.session.activityTail
+        .map((activity) => toSessionActivityRecord(state.session.sessionId, activity))
+        .filter(isSessionActivityRecord),
       recentCommits: state.session.recentCommits.map(toCompactCommitSummary),
       assetCount: 0,
     },
@@ -104,60 +104,62 @@ function toConversationRecord(record: GitMemoryConversationRecord): ContextConve
   };
 }
 
-function toSessionEventRecord(
+function toSessionActivityRecord(
   sessionId: string,
-  event: GitMemorySessionEventRecord,
-): ContextSessionEventRecord | null {
-  if (event.type === "session_initialized") {
+  activity: GitMemoryCommitActivityRecord,
+): ContextSessionActivityRecord | null {
+  if (activity.type === "session_initialized") {
     return {
-      seq: event.seq,
+      seq: activity.seq,
       type: "session_started",
-      at: event.at,
+      at: activity.at,
       sessionId,
     };
   }
-  if (event.type === "task_created" && event.taskId && event.branch) {
+  if (activity.type === "task_created" && activity.taskId && activity.branch) {
     return {
-      seq: event.seq,
+      seq: activity.seq,
       type: "task_branch_created",
-      at: event.at,
-      workId: event.taskId,
-      branch: event.branch,
-      ref: branchRef(event.branch),
+      at: activity.at,
+      workId: activity.taskId,
+      branch: activity.branch,
+      ref: branchRef(activity.branch),
     };
   }
-  if (event.type === "run_started" && event.runId && event.taskId) {
+  if (activity.type === "run_started" && activity.runId && activity.taskId) {
     return {
-      seq: event.seq,
+      seq: activity.seq,
       type: "run_started",
-      at: event.at,
-      runId: event.runId,
-      workId: event.taskId,
+      at: activity.at,
+      runId: activity.runId,
+      workId: activity.taskId,
     };
   }
-  if ((event.type === "run_completed" || event.type === "run_failed") && event.runId && event.taskId) {
+  if ((activity.type === "run_completed" || activity.type === "run_failed") && activity.runId && activity.taskId) {
     return {
-      seq: event.seq,
+      seq: activity.seq,
       type: "run_committed",
-      at: event.at,
-      runId: event.runId,
-      workId: event.taskId,
-      commit: event.commit ?? "",
+      at: activity.at,
+      runId: activity.runId,
+      workId: activity.taskId,
+      commit: activity.commit ?? "",
     };
   }
-  if (event.type === "session_closed") {
+  if (activity.type === "session_closed") {
     return {
-      seq: event.seq,
+      seq: activity.seq,
       type: "session_closed",
-      at: event.at,
-      reason: event.reason,
+      at: activity.at,
+      reason: activity.reason,
     };
   }
   return null;
 }
 
-function isSessionEventRecord(event: ContextSessionEventRecord | null): event is ContextSessionEventRecord {
-  return event !== null;
+function isSessionActivityRecord(
+  activity: ContextSessionActivityRecord | null,
+): activity is ContextSessionActivityRecord {
+  return activity !== null;
 }
 
 function toFocusContext(focus: GitMemoryFocusContext): ContextEngineMachineContext["focus"] {

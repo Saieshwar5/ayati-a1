@@ -175,7 +175,7 @@ function createActiveContextTool(contextReader: GitMemoryContextReader): ToolDef
         description: "Optional context reader limits.",
         properties: {
           conversationTailLimit: { type: "number" },
-          eventTailLimit: { type: "number" },
+          activityTailLimit: { type: "number" },
           runLimit: { type: "number" },
           evidenceLimit: { type: "number" },
           commitLogLimit: { type: "number" },

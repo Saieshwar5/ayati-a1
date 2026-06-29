@@ -1,8 +1,8 @@
 import type {
   GitMemoryConversationSeqRange,
+  GitMemoryCommitEventType,
   GitMemoryRunId,
   GitMemoryRunStatus,
-  GitMemorySessionEventType,
   GitMemorySessionId,
   GitMemoryTaskId,
 } from "./schema.js";
@@ -11,7 +11,7 @@ export interface GitMemoryCommitTrailers {
   sessionId?: GitMemorySessionId;
   taskId?: GitMemoryTaskId;
   runId?: GitMemoryRunId;
-  event?: GitMemorySessionEventType;
+  event?: GitMemoryCommitEventType;
   status?: GitMemoryRunStatus | string;
   at?: string;
   branch?: string;

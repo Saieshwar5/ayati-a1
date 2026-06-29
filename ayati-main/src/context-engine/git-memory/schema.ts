@@ -5,14 +5,12 @@ export const GIT_MEMORY_SCHEMA_VERSION = 1;
 export const GIT_MEMORY_SESSION_META_PATH = "session/meta.json";
 export const GIT_MEMORY_SESSION_CONVERSATION_PATH = "session/conversation.jsonl";
 export const GIT_MEMORY_SESSION_CONVERSATION_MARKDOWN_PATH = "session/conversation.md";
-export const GIT_MEMORY_SESSION_EVENTS_PATH = "session/events.jsonl";
 export const GIT_MEMORY_SESSION_TASKS_PATH = "session/tasks.json";
 export const GIT_MEMORY_SESSION_SCHEMA_PATH = "session/schema.json";
 
 export type GitMemorySessionId = string;
 export type GitMemoryMessageId = string;
 export type GitMemoryTurnId = string;
-export type GitMemoryEventId = string;
 export type GitMemoryTaskId = string;
 export type GitMemoryRunId = string;
 export type GitMemoryActionId = string;
@@ -21,7 +19,7 @@ export type GitMemoryConversationRole = "user" | "assistant" | "system";
 export type GitMemoryTaskStatus = "open" | "in_progress" | "blocked" | "done" | "abandoned";
 export type GitMemoryRunStatus = "completed" | "failed" | "blocked" | "needs_user_input";
 export type GitMemoryActionStatus = "completed" | "failed" | "skipped";
-export type GitMemorySessionEventType =
+export type GitMemoryCommitEventType =
   | "session_initialized"
   | "session_checkpointed"
   | "conversation_appended"
@@ -54,22 +52,6 @@ export interface GitMemoryConversationRecord {
   taskId?: GitMemoryTaskId | null;
   runId?: GitMemoryRunId | null;
   branch?: string | null;
-}
-
-export interface GitMemorySessionEventRecord {
-  v: 1;
-  seq: number;
-  eventId: GitMemoryEventId;
-  type: GitMemorySessionEventType;
-  at: string;
-  taskId?: GitMemoryTaskId;
-  runId?: GitMemoryRunId;
-  branch?: string;
-  fromTaskId?: GitMemoryTaskId | null;
-  toTaskId?: GitMemoryTaskId | null;
-  reason?: string;
-  commit?: string;
-  conversationSeq?: GitMemoryConversationSeqRange;
 }
 
 export interface GitMemoryTaskIndexEntry {
@@ -245,13 +227,6 @@ export function createGitMemorySessionId(date: string, agentId: string): GitMemo
   return `S-${date.replace(/-/g, "")}-${normalizedAgentId}`;
 }
 
-export function createGitMemoryEventId(date: string, sequence: number): GitMemoryEventId {
-  if (!isValidCalendarDate(date)) {
-    throw new Error(`Invalid git-memory event date: ${date}`);
-  }
-  return `E-${date.replace(/-/g, "")}-${formatSequence(sequence, 6)}`;
-}
-
 export function createGitMemoryMessageId(date: string, sequence: number): GitMemoryMessageId {
   if (!isValidCalendarDate(date)) {
     throw new Error(`Invalid git-memory message date: ${date}`);
@@ -300,12 +275,6 @@ export function isGitMemoryMessageId(value: unknown): value is GitMemoryMessageI
 export function isGitMemoryTurnId(value: unknown): value is GitMemoryTurnId {
   return typeof value === "string"
     && /^T-\d{8}-\d{6}$/.test(value)
-    && isValidCompactDate(value.slice(2, 10));
-}
-
-export function isGitMemoryEventId(value: unknown): value is GitMemoryEventId {
-  return typeof value === "string"
-    && /^E-\d{8}-\d{6}$/.test(value)
     && isValidCompactDate(value.slice(2, 10));
 }
 
@@ -368,45 +337,6 @@ export function validateGitMemoryConversationRecord(value: unknown): ValidationR
     requireOptionalTaskId(record, "taskId", errors);
     requireOptionalRunId(record, "runId", errors);
     requireOptionalNonEmptyString(record, "branch", errors);
-  }
-  return validationResult(value, errors);
-}
-
-export function validateGitMemorySessionEventRecord(value: unknown): ValidationResult<GitMemorySessionEventRecord> {
-  const errors: string[] = [];
-  const record = requireRecord(value, "session event", errors);
-  if (record) {
-    requireVersion(record, errors);
-    requirePositiveInteger(record, "seq", errors);
-    requireEventId(record, "eventId", errors);
-    const type = requireOneOf(record, "type", [
-      "session_initialized",
-      "session_checkpointed",
-      "conversation_appended",
-      "task_created",
-      "run_started",
-      "run_completed",
-      "run_failed",
-      "session_closed",
-    ], errors);
-    requireNonEmptyString(record, "at", errors);
-    requireOptionalTaskId(record, "taskId", errors);
-    requireOptionalRunId(record, "runId", errors);
-    requireOptionalNonEmptyString(record, "branch", errors);
-    requireOptionalTaskId(record, "fromTaskId", errors);
-    requireOptionalTaskId(record, "toTaskId", errors);
-    requireOptionalNonEmptyString(record, "reason", errors);
-    requireOptionalNonEmptyString(record, "commit", errors);
-    requireOptionalConversationSeqRange(record, "conversationSeq", errors);
-    if (type === "task_created") {
-      requireTaskId(record, "taskId", errors);
-      requireNonEmptyString(record, "branch", errors);
-      requireTaskBranch(record, "branch", errors);
-    }
-    if (type === "run_started" || type === "run_completed" || type === "run_failed") {
-      requireTaskId(record, "taskId", errors);
-      requireRunId(record, "runId", errors);
-    }
   }
   return validationResult(value, errors);
 }
@@ -740,21 +670,6 @@ function requireConversationSeqRange(record: Record<string, unknown>, errors: st
   }
 }
 
-function requireOptionalConversationSeqRange(
-  record: Record<string, unknown>,
-  field: string,
-  errors: string[],
-): void {
-  const value = record[field];
-  if (value === undefined || value === null) {
-    return;
-  }
-  const range = requireRecord(value, field, errors);
-  if (range) {
-    requireConversationSeqRange(range, errors);
-  }
-}
-
 function requireSessionId(record: Record<string, unknown>, field: string, errors: string[]): void {
   const value = requireNonEmptyString(record, field, errors);
   if (value && !isGitMemorySessionId(value)) {
@@ -773,13 +688,6 @@ function requireTurnId(record: Record<string, unknown>, field: string, errors: s
   const value = requireNonEmptyString(record, field, errors);
   if (value && !isGitMemoryTurnId(value)) {
     errors.push(`${field} must be a valid git-memory turn id.`);
-  }
-}
-
-function requireEventId(record: Record<string, unknown>, field: string, errors: string[]): void {
-  const value = requireNonEmptyString(record, field, errors);
-  if (value && !isGitMemoryEventId(value)) {
-    errors.push(`${field} must be a valid git-memory event id.`);
   }
 }
 

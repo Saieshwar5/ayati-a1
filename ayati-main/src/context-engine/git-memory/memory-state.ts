@@ -1,6 +1,7 @@
 import type {
   CompactGitMemoryCommitSummary,
   GitMemoryContextLimits,
+  GitMemoryCommitActivityRecord,
   GitMemoryFocusContext,
 } from "./context-pack.js";
 import type { TaskAssetRecord } from "../contracts.js";
@@ -13,7 +14,6 @@ import type {
   GitMemoryConversationRecord,
   GitMemoryEvidenceManifestRecord,
   GitMemoryRunFile,
-  GitMemorySessionEventRecord,
   GitMemorySessionId,
 } from "./schema.js";
 
@@ -48,7 +48,7 @@ export interface GitContextMemoryState {
     sessionId: GitMemorySessionId;
     conversationTail: GitMemoryConversationRecord[];
     conversationMarkdownTail: string;
-    eventTail: GitMemorySessionEventRecord[];
+    activityTail: GitMemoryCommitActivityRecord[];
     recentCommits: CompactGitMemoryCommitSummary[];
     taskCount: number;
     currentBranch?: string;
@@ -82,7 +82,7 @@ export class GitContextMemoryStateHydrator {
         sessionId: context.session.sessionId,
         conversationTail: context.session.conversationTail,
         conversationMarkdownTail: context.session.conversationMarkdownTail,
-        eventTail: context.session.eventTail,
+        activityTail: context.session.activityTail,
         recentCommits: context.session.recentCommits,
         taskCount: context.session.taskCount,
         ...(context.focus.status === "active" ? { currentBranch: context.focus.branch } : {}),

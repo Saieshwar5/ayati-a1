@@ -894,7 +894,7 @@ function buildGitContextFixture(count: number, timestamp: string): ContextEngine
           text: `Assistant response ${index} describing non-LLM agent performance checks.`,
         },
       ])).flat(),
-      eventTail: [],
+      activityTail: [],
       assetCount: 1,
     },
     focus: {

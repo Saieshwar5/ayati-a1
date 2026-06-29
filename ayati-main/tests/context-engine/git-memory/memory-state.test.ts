@@ -36,7 +36,7 @@ describe("GitContextMemoryStateHydrator", () => {
       focus: { status: "none" },
       knownTasks: [],
     });
-    expect(state.session.eventTail).toMatchObject([
+    expect(state.session.activityTail).toMatchObject([
       { seq: 1, type: "session_initialized" },
     ]);
     expect(state.activeTask).toBeUndefined();
@@ -50,7 +50,7 @@ describe("GitContextMemoryStateHydrator", () => {
       sessionId: prepared.session.sessionId,
       limits: {
         conversationTailLimit: 1,
-        eventTailLimit: 2,
+        activityTailLimit: 2,
         runLimit: 1,
         commitLogLimit: 1,
         evidenceLimit: 1,
@@ -76,7 +76,7 @@ describe("GitContextMemoryStateHydrator", () => {
     });
     expect(state.session.conversationMarkdownTail).toContain("Fix upload handling");
     expect(state.session.conversationMarkdownTail).toContain("I will inspect upload handling.");
-    expect(state.session.eventTail).toHaveLength(1);
+    expect(state.session.activityTail).toHaveLength(1);
     expect(state.focus).toMatchObject({
       status: "active",
       taskId: prepared.task.taskId,

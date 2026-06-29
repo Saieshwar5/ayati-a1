@@ -266,7 +266,7 @@ function readyGitMemoryPreparedTurn(): GitMemoryChatContextPreparedTurn {
       session: {
         sessionId: "S-20260627-local",
         conversationTail: [],
-        eventTail: [],
+        activityTail: [],
         taskCount: 1,
       },
       focus: { status: "none" },
@@ -287,7 +287,7 @@ function readyGitMemorySystemEventPreparedTurn(): GitMemorySystemEventContextPre
       session: {
         sessionId: "S-20260627-local",
         conversationTail: [],
-        eventTail: [],
+        activityTail: [],
         taskCount: 1,
       },
       focus: { status: "none" },
@@ -308,7 +308,7 @@ function readyGitMemoryRoutedTurn(): Extract<GitMemoryChatContextRoutedTurn, { s
         at: "2026-06-27T10:00:00+05:30",
         text: "Analyze invoice",
       }],
-      eventTail: [],
+      activityTail: [],
       taskCount: 1,
     },
     focus: {
@@ -356,7 +356,7 @@ function readyGitMemoryRoutedTurn(): Extract<GitMemoryChatContextRoutedTurn, { s
             at: "2026-06-27T10:00:00+05:30",
             text: "Analyze invoice",
           }],
-          eventTail: [],
+          activityTail: [],
           assetCount: 0,
         },
         focus: {
@@ -393,7 +393,7 @@ function ambiguousGitMemoryRoutedTurn(): Extract<GitMemoryChatContextRoutedTurn,
     session: {
       sessionId: "S-20260627-local",
       conversationTail: [],
-      eventTail: [],
+      activityTail: [],
       taskCount: 2,
     },
     focus: { status: "none" as const },
@@ -428,7 +428,7 @@ function ambiguousGitMemoryRoutedTurn(): Extract<GitMemoryChatContextRoutedTurn,
         session: {
           sessionId: "S-20260627-local",
           conversationTail: [],
-          eventTail: [],
+          activityTail: [],
           assetCount: 0,
         },
         focus: { status: "none" },

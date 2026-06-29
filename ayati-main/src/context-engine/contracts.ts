@@ -7,7 +7,7 @@ export interface ContextConversationRecord {
   text: string;
 }
 
-export type ContextSessionEventRecord =
+export type ContextSessionActivityRecord =
   | {
       seq: number;
       type: "session_started";
@@ -129,7 +129,7 @@ export interface ContextEngineMachineContext {
     sessionId: string;
     conversationTail: ContextConversationRecord[];
     conversationMarkdownTail?: string;
-    eventTail: ContextSessionEventRecord[];
+    activityTail: ContextSessionActivityRecord[];
     recentCommits?: ContextCommitSummary[];
     assetCount: number;
   };

@@ -60,7 +60,7 @@ function contextEngineFixture() {
     session: {
       sessionId: "2026-06-27",
       conversationTail: [],
-      eventTail: [],
+      activityTail: [],
       assetCount: 0,
     },
     focus: {

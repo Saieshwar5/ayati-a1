@@ -5,7 +5,7 @@ export type {
   ContextEngineMachineContext,
   ContextTaskEvidenceSummary,
   ContextFocus,
-  ContextSessionEventRecord,
+  ContextSessionActivityRecord,
   ContextTaskFact,
   ContextTaskRunSummary,
   HarnessResponseKind,

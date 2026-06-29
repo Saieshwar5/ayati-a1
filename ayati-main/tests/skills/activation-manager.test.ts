@@ -100,7 +100,7 @@ describe("SkillActivationManager", () => {
           session: {
             sessionId: "2026-06-17",
             conversationTail: [],
-            eventTail: [],
+            activityTail: [],
             assetCount: 1,
           },
           focus: {

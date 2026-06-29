@@ -41,7 +41,7 @@ describe("GitMemoryContextReader", () => {
       },
       focus: { status: "none" },
     });
-    expect(pack.session.eventTail).toMatchObject([
+    expect(pack.session.activityTail).toMatchObject([
       { seq: 1, type: "session_initialized" },
     ]);
     expect(pack.task).toBeUndefined();
@@ -255,7 +255,7 @@ describe("GitMemoryContextReader", () => {
       sessionId: session.sessionId,
       limits: {
         conversationTailLimit: 3,
-        eventTailLimit: 4,
+        activityTailLimit: 4,
         runLimit: 3,
         evidenceLimit: 3,
         commitLogLimit: 3,
@@ -270,7 +270,7 @@ describe("GitMemoryContextReader", () => {
     ]);
     expect(pack.session.conversationMarkdownTail).toContain("Continue from there.");
     expect(pack.session.conversationMarkdownTail).toContain("Branch: task/W-20260628-0001-fix-upload-handling");
-    expect(pack.session.eventTail).toMatchObject([
+    expect(pack.session.activityTail).toMatchObject([
       { seq: 1, type: "task_created" },
       { seq: 2, type: "run_completed" },
     ]);
@@ -393,7 +393,7 @@ describe("GitMemoryContextReader", () => {
       sessionId: session.sessionId,
     });
 
-    expect(pack.session.eventTail).toMatchObject([
+    expect(pack.session.activityTail).toMatchObject([
       { seq: 1, type: "session_initialized" },
       {
         seq: 2,

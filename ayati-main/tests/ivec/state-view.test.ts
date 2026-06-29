@@ -16,7 +16,7 @@ function createGitContext(overrides: Partial<ContextEngineMachineContext> = {}):
     session: {
       sessionId: "2026-06-27",
       conversationTail: [],
-      eventTail: [],
+      activityTail: [],
       assetCount: 0,
     },
     focus: {
@@ -114,7 +114,7 @@ describe("buildAgentStateView", () => {
         contextEngine: createGitContext({
           session: {
             sessionId: "2026-06-27",
-            eventTail: [],
+            activityTail: [],
             assetCount: 0,
             conversationTail: [
               {

@@ -31,7 +31,7 @@ describe("buildGitMemoryHarnessContextPack", () => {
         sessionId: "S-20260628-local",
         assetCount: 0,
         conversationTail: [],
-        eventTail: [{
+        activityTail: [{
           seq: 1,
           type: "session_started",
           sessionId: "S-20260628-local",

@@ -2,7 +2,6 @@ import { describe, expect, it } from "vitest";
 import {
   GIT_MEMORY_SESSION_CONVERSATION_MARKDOWN_PATH,
   GIT_MEMORY_SESSION_CONVERSATION_PATH,
-  GIT_MEMORY_SESSION_EVENTS_PATH,
   GIT_MEMORY_SESSION_META_PATH,
   GIT_MEMORY_SESSION_TASKS_PATH,
   gitMemoryTaskActionsPath,
@@ -19,7 +18,6 @@ import {
   validateGitMemoryConversationRecord,
   validateGitMemoryEvidenceManifestRecord,
   validateGitMemoryRunFile,
-  validateGitMemorySessionEventRecord,
   validateGitMemorySessionMetaFile,
   validateGitMemoryTaskFile,
   validateGitMemoryTaskIndexFile,
@@ -31,7 +29,6 @@ describe("git memory schema", () => {
     expect(GIT_MEMORY_SESSION_META_PATH).toBe("session/meta.json");
     expect(GIT_MEMORY_SESSION_CONVERSATION_PATH).toBe("session/conversation.jsonl");
     expect(GIT_MEMORY_SESSION_CONVERSATION_MARKDOWN_PATH).toBe("session/conversation.md");
-    expect(GIT_MEMORY_SESSION_EVENTS_PATH).toBe("session/events.jsonl");
     expect(GIT_MEMORY_SESSION_TASKS_PATH).toBe("session/tasks.json");
 
     expect(gitMemoryTaskFilePath("W-20260628-0001")).toBe("tasks/W-20260628-0001/task.json");
@@ -59,14 +56,6 @@ describe("git memory schema", () => {
       createdAt: "2026-06-28T00:00:00+05:30",
       repoKind: "daily_session",
       agentId: "local",
-    }).ok).toBe(true);
-
-    expect(validateGitMemorySessionEventRecord({
-      v: 1,
-      seq: 1,
-      eventId: "E-20260628-000001",
-      type: "session_initialized",
-      at: "2026-06-28T00:00:00+05:30",
     }).ok).toBe(true);
 
     expect(validateGitMemoryTaskIndexFile({
