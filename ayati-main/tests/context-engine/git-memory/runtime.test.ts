@@ -1,4 +1,4 @@
-import { mkdtemp } from "node:fs/promises";
+import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
@@ -142,6 +142,102 @@ describe("GitMemoryRuntime", () => {
     expect(context).toEqual(buildGitMemoryContextPackFromMemoryState(memoryState));
     expect(memoryState.pendingWrites).toEqual([]);
     expect(context.pendingWrites).toBeUndefined();
+  });
+
+  it("serves prepared session conversation from the runtime memory cache", async () => {
+    const contextStoreDir = await mkdtemp(join(tmpdir(), "ayati-git-memory-runtime-"));
+    const runtime = createGitMemoryRuntime({
+      contextStoreDir,
+      timezone: "Asia/Kolkata",
+      agentId: "local",
+    });
+    const prepared = await runtime.prepareUserTurn({
+      userMessage: "Fix upload handling",
+      at: "2026-06-28T09:00:00+05:30",
+    });
+    await writeFile(
+      join(prepared.repoPath, GIT_MEMORY_SESSION_CONVERSATION_MARKDOWN_PATH),
+      "# Conversation\n",
+    );
+
+    const memoryState = await runtime.buildMemoryState(prepared.sessionId);
+    const context = await runtime.buildActiveContext(prepared.sessionId);
+
+    expect(memoryState.session.conversationTail).toMatchObject([{
+      seq: 1,
+      role: "user",
+      text: "Fix upload handling",
+    }]);
+    expect(context.session.conversationTail).toMatchObject([{
+      seq: 1,
+      role: "user",
+      text: "Fix upload handling",
+    }]);
+  });
+
+  it("updates cached session conversation for system turns", async () => {
+    const contextStoreDir = await mkdtemp(join(tmpdir(), "ayati-git-memory-runtime-"));
+    const runtime = createGitMemoryRuntime({
+      contextStoreDir,
+      timezone: "Asia/Kolkata",
+      agentId: "local",
+    });
+    const prepared = await runtime.prepareUserTurn({
+      userMessage: "Fix upload handling",
+      at: "2026-06-28T09:00:00+05:30",
+    });
+
+    const system = await runtime.prepareSystemTurn({
+      systemMessage: "System noted upload handling context.",
+      at: "2026-06-28T09:00:05+05:30",
+    });
+
+    expect(system.sessionId).toBe(prepared.sessionId);
+    expect(system.memoryState.session.conversationTail).toMatchObject([
+      {
+        seq: 1,
+        role: "user",
+        text: "Fix upload handling",
+      },
+      {
+        seq: 2,
+        role: "system",
+        text: "System noted upload handling context.",
+      },
+    ]);
+  });
+
+  it("invalidates cached session memory after task creation", async () => {
+    const contextStoreDir = await mkdtemp(join(tmpdir(), "ayati-git-memory-runtime-"));
+    const runtime = createGitMemoryRuntime({
+      contextStoreDir,
+      timezone: "Asia/Kolkata",
+      agentId: "local",
+    });
+    const prepared = await runtime.prepareUserTurn({
+      userMessage: "Fix upload handling",
+      at: "2026-06-28T09:00:00+05:30",
+    });
+
+    const task = await runtime.createTaskBranch({
+      sessionId: prepared.sessionId,
+      title: "Fix upload handling",
+      objective: "Find and fix upload handling failures.",
+      fromSeq: prepared.userMessage.seq,
+      toSeq: prepared.userMessage.seq,
+      at: "2026-06-28T09:01:00+05:30",
+    });
+    const memoryState = await runtime.buildMemoryState(prepared.sessionId);
+
+    expect(memoryState.session.taskCount).toBe(1);
+    expect(memoryState.focus).toMatchObject({
+      status: "active",
+      taskId: task.taskId,
+    });
+    expect(memoryState.activeTask).toMatchObject({
+      taskId: task.taskId,
+      title: "Fix upload handling",
+    });
   });
 
   it("surfaces unresolved git-memory writes in memory and active context", async () => {

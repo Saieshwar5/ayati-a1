@@ -8,7 +8,11 @@ import type {
   GitMemoryTaskRoutingSnapshot,
 } from "./session-store.js";
 import { GitMemoryDailySessionStore } from "./session-store.js";
-import type { GitMemoryMachineContextPack } from "./context-pack.js";
+import {
+  DEFAULT_GIT_MEMORY_CONTEXT_LIMITS,
+  type GitMemoryMachineContextPack,
+} from "./context-pack.js";
+import { appendGitMemoryConversationMarkdown } from "./conversation-markdown.js";
 import {
   buildGitMemoryContextPackFromMemoryState,
   buildGitContextPendingWrites,
@@ -112,6 +116,7 @@ export class GitMemoryRuntime {
   private readonly memoryStateHydrator: GitContextMemoryStateHydrator;
   private readonly taskRouter: GitMemoryTaskRouter;
   private readonly writeQueue: GitMemoryWriteQueueRunner;
+  private readonly sessionMemoryCache = new Map<GitMemorySessionId, GitContextMemoryState>();
 
   constructor(options: GitMemoryRuntimeOptions) {
     this.timezone = options.timezone;
@@ -158,12 +163,14 @@ export class GitMemoryRuntime {
       createdAt: at,
     }, async () => {
       const session = await this.openDailySessionUnqueued(at);
+      const cachedState = await this.getOrHydrateCachedMemoryState(session.sessionId);
       const userMessage = await this.store.appendMainConversationMessage({
         sessionId: session.sessionId,
         role: "user",
         text: input.userMessage,
         at,
       });
+      this.updateCachedSessionConversation(cachedState, userMessage);
       return {
         sessionId: session.sessionId,
         repoPath: session.repoPath,
@@ -191,12 +198,14 @@ export class GitMemoryRuntime {
       createdAt: at,
     }, async () => {
       const session = await this.openDailySessionUnqueued(at);
+      const cachedState = await this.getOrHydrateCachedMemoryState(session.sessionId);
       const systemMessage = await this.store.appendMainConversationMessage({
         sessionId: session.sessionId,
         role: "system",
         text: input.systemMessage,
         at,
       });
+      this.updateCachedSessionConversation(cachedState, systemMessage);
       return {
         sessionId: session.sessionId,
         repoPath: session.repoPath,
@@ -217,7 +226,7 @@ export class GitMemoryRuntime {
   async recordAssistantMessage(
     input: RecordGitMemoryAssistantMessageInput,
   ): Promise<GitMemoryConversationRecord> {
-    return await this.writeQueue.enqueue({
+    const record = await this.writeQueue.enqueue({
       sessionId: input.sessionId,
       type: "assistant_message_recorded",
       label: "record_assistant_message",
@@ -241,10 +250,12 @@ export class GitMemoryRuntime {
       }
       return record;
     });
+    this.invalidateSessionMemory(input.sessionId);
+    return record;
   }
 
   async createTaskBranch(input: CreateGitMemoryTaskBranchInput): Promise<CreateGitMemoryTaskBranchResult> {
-    return await this.writeQueue.enqueue({
+    const result = await this.writeQueue.enqueue({
       sessionId: input.sessionId,
       type: "task_created",
       label: "create_task_branch",
@@ -252,6 +263,8 @@ export class GitMemoryRuntime {
     }, async () => {
       return await this.store.createTaskBranch(input);
     });
+    this.invalidateSessionMemory(input.sessionId);
+    return result;
   }
 
   async readTaskRoutingSnapshot(sessionId: GitMemorySessionId): Promise<GitMemoryTaskRoutingSnapshot> {
@@ -309,6 +322,7 @@ export class GitMemoryRuntime {
         runId,
       };
     });
+    this.invalidateSessionMemory(input.sessionId);
     const memoryState = await this.hydrateMemoryState(input.sessionId);
     const context = buildGitMemoryContextPackFromMemoryState(memoryState);
     return {
@@ -319,7 +333,7 @@ export class GitMemoryRuntime {
   }
 
   async commitTaskRun(input: CommitGitMemoryTaskRunInput): Promise<CommitGitMemoryTaskRunResult> {
-    return await this.writeQueue.enqueue({
+    const result = await this.writeQueue.enqueue({
       sessionId: input.sessionId,
       type: "task_run_committed",
       label: "commit_task_run",
@@ -327,10 +341,12 @@ export class GitMemoryRuntime {
     }, async () => {
       return await this.store.commitTaskRun(input);
     });
+    this.invalidateSessionMemory(input.sessionId);
+    return result;
   }
 
   async checkpointSession(input: CheckpointGitMemoryRuntimeSessionInput): Promise<GitMemorySessionCheckpoint> {
-    return await this.writeQueue.enqueue({
+    const result = await this.writeQueue.enqueue({
       sessionId: input.sessionId,
       type: "session_checkpointed",
       label: "checkpoint_session",
@@ -338,6 +354,8 @@ export class GitMemoryRuntime {
     }, async () => {
       return await this.store.checkpointSession(input);
     });
+    this.invalidateSessionMemory(input.sessionId);
+    return result;
   }
 
   async buildActiveContext(sessionId: GitMemorySessionId): Promise<GitMemoryMachineContextPack> {
@@ -359,11 +377,47 @@ export class GitMemoryRuntime {
   }
 
   private async hydrateMemoryState(sessionId: GitMemorySessionId): Promise<GitContextMemoryState> {
-    const state = await this.memoryStateHydrator.hydrate({ sessionId });
+    const state = await this.getOrHydrateCachedMemoryState(sessionId);
     return {
       ...state,
       pendingWrites: buildGitContextPendingWrites(this.writeQueue.getSessionWrites(sessionId)),
     };
+  }
+
+  private async getOrHydrateCachedMemoryState(sessionId: GitMemorySessionId): Promise<GitContextMemoryState> {
+    const cached = this.sessionMemoryCache.get(sessionId);
+    if (cached) {
+      return cached;
+    }
+    const state = await this.memoryStateHydrator.hydrate({ sessionId });
+    this.sessionMemoryCache.set(sessionId, state);
+    return state;
+  }
+
+  private updateCachedSessionConversation(
+    state: GitContextMemoryState,
+    record: GitMemoryConversationRecord,
+  ): void {
+    const nextState: GitContextMemoryState = {
+      ...state,
+      pendingWrites: [],
+      session: {
+        ...state.session,
+        conversationTail: tail(
+          [...state.session.conversationTail, record],
+          DEFAULT_GIT_MEMORY_CONTEXT_LIMITS.conversationTailLimit,
+        ),
+        conversationMarkdownTail: markdownTail(
+          appendGitMemoryConversationMarkdown(state.session.conversationMarkdownTail, record),
+          DEFAULT_GIT_MEMORY_CONTEXT_LIMITS.conversationMarkdownCharLimit,
+        ),
+      },
+    };
+    this.sessionMemoryCache.set(state.session.sessionId, nextState);
+  }
+
+  private invalidateSessionMemory(sessionId: GitMemorySessionId): void {
+    this.sessionMemoryCache.delete(sessionId);
   }
 }
 
@@ -394,4 +448,15 @@ function partValue(parts: Intl.DateTimeFormatPart[], type: Intl.DateTimeFormatPa
     throw new Error(`Could not resolve ${type} for git-memory runtime date.`);
   }
   return value;
+}
+
+function tail<T>(items: T[], limit: number): T[] {
+  return items.slice(Math.max(0, items.length - limit));
+}
+
+function markdownTail(value: string, limit: number): string {
+  if (value.length <= limit) {
+    return value;
+  }
+  return value.slice(value.length - limit);
 }

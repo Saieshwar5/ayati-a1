@@ -1,4 +1,15 @@
-import type { GitMemoryConversationRecord, GitMemoryTaskId } from "./schema.js";
+import type {
+  GitMemoryConversationRecord,
+  GitMemoryConversationRole,
+  GitMemoryRunId,
+  GitMemoryTaskId,
+} from "./schema.js";
+
+export interface ConversationMarkdownMetadata {
+  taskId?: GitMemoryTaskId;
+  runId?: GitMemoryRunId;
+  branch?: string;
+}
 
 export function parseGitMemoryConversationMarkdown(
   value: string | null,
@@ -67,4 +78,65 @@ export function parseGitMemoryConversationMarkdown(
   }
   flush();
   return records;
+}
+
+export function appendGitMemoryConversationMarkdown(
+  existing: string | null,
+  record: GitMemoryConversationRecord,
+): string {
+  return appendGitMemoryConversationMarkdownRecords(existing, [record]);
+}
+
+export function renderGitMemoryConversationMarkdownDocument(
+  records: GitMemoryConversationRecord[],
+  metadata: ConversationMarkdownMetadata = {},
+): string {
+  return appendGitMemoryConversationMarkdownRecords("# Conversation\n", records, metadata);
+}
+
+export function appendGitMemoryConversationMarkdownRecords(
+  existing: string | null,
+  records: GitMemoryConversationRecord[],
+  metadata: ConversationMarkdownMetadata = {},
+): string {
+  const base = existing?.trimEnd() || "# Conversation";
+  let output = base;
+  for (const record of records) {
+    const block = renderGitMemoryConversationMarkdownBlock(record, metadata).trimEnd();
+    if (!output.includes(block)) {
+      output = `${output}\n\n${block}`;
+    }
+  }
+  return `${output.trimEnd()}\n`;
+}
+
+export function renderGitMemoryConversationMarkdownBlock(
+  record: GitMemoryConversationRecord,
+  metadata: ConversationMarkdownMetadata = {},
+): string {
+  const taskId = metadata.taskId ?? record.taskId ?? undefined;
+  const runId = metadata.runId ?? record.runId ?? undefined;
+  const branch = metadata.branch ?? record.branch ?? undefined;
+  const lines = [
+    `## ${record.at} ${capitalizeRole(record.role)}`,
+    "",
+  ];
+  if (taskId) {
+    lines.push(`Task: ${taskId}`);
+  }
+  if (runId) {
+    lines.push(`Run: ${runId}`);
+  }
+  if (branch && branch !== "main") {
+    lines.push(`Branch: ${branch}`);
+  }
+  if (taskId || runId || (branch && branch !== "main")) {
+    lines.push("");
+  }
+  lines.push(record.text?.trim() || `[content: ${record.contentRef ?? "unavailable"}]`);
+  return `${lines.join("\n")}\n`;
+}
+
+function capitalizeRole(role: GitMemoryConversationRole): string {
+  return role.charAt(0).toUpperCase() + role.slice(1);
 }
