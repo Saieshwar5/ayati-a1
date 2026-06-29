@@ -52,7 +52,7 @@ export interface GitMemoryConversationRecord {
   v?: 1;
   seq: number;
   messageId?: GitMemoryMessageId;
-  turnId: GitMemoryTurnId;
+  turnId?: GitMemoryTurnId;
   role: GitMemoryConversationRole;
   at: string;
   text?: string | null;
@@ -386,7 +386,9 @@ export function validateGitMemoryConversationRecord(value: unknown): ValidationR
     if ("messageId" in record) {
       requireMessageId(record, "messageId", errors);
     }
-    requireTurnId(record, "turnId", errors);
+    if ("turnId" in record) {
+      requireTurnId(record, "turnId", errors);
+    }
     requireOneOf(record, "role", ["user", "assistant", "system"], errors);
     requireNonEmptyString(record, "at", errors);
     requireInlineOrReferencedContent(record, errors);

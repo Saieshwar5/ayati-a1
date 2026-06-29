@@ -128,7 +128,6 @@ describe("GitMemoryDailySessionStore", () => {
     expect(parseJsonl(await driver.readFile(GIT_MEMORY_MAIN_REF, GIT_MEMORY_SESSION_CONVERSATION_PATH))).toEqual([
       {
         seq: 1,
-        turnId: "T-20260628-000001",
         role: "user",
         at: "2026-06-28T09:00:00+05:30",
         text: "Fix upload handling",
@@ -136,7 +135,6 @@ describe("GitMemoryDailySessionStore", () => {
       },
       {
         seq: 2,
-        turnId: "T-20260628-000001",
         role: "assistant",
         at: "2026-06-28T09:00:05+05:30",
         text: "I will inspect the upload path.",
@@ -150,7 +148,6 @@ describe("GitMemoryDailySessionStore", () => {
     expect(parseJsonl(await driver.readWorkingFile(GIT_MEMORY_SESSION_CONVERSATION_PATH))).toEqual([
       {
         seq: 1,
-        turnId: "T-20260628-000001",
         role: "user",
         at: "2026-06-28T09:00:00+05:30",
         text: "Fix upload handling",
@@ -158,7 +155,6 @@ describe("GitMemoryDailySessionStore", () => {
       },
       {
         seq: 2,
-        turnId: "T-20260628-000001",
         role: "assistant",
         at: "2026-06-28T09:00:05+05:30",
         text: "I will inspect the upload path.",
@@ -278,6 +274,7 @@ describe("GitMemoryDailySessionStore", () => {
       taskId: task.taskId,
     });
     expect(conversation[1]).not.toHaveProperty("messageId");
+    expect(conversation[1]).not.toHaveProperty("turnId");
     expect(conversation[1]).not.toHaveProperty("v");
     expect(await driver.readWorkingFile(GIT_MEMORY_SESSION_CONVERSATION_MARKDOWN_PATH)).toContain(
       "Branch: task/W-20260628-0001-fix-upload-handling",
@@ -334,7 +331,7 @@ describe("GitMemoryDailySessionStore", () => {
       reason: "task_created",
       fromSeq: 1,
       toSeq: 2,
-      turnIds: [user.turnId],
+      turnIds: [],
       runId: "R-20260628-0001",
     });
 

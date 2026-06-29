@@ -100,7 +100,7 @@ describe("createGitMemoryChatContextRuntime", () => {
       const context = await runtime.buildActiveContext(prepared.sessionId);
       expect(context.session.conversationTail).toMatchObject([
         { seq: 1, role: "user", text: "Fix upload handling" },
-        { seq: 2, role: "assistant", text: "I will inspect upload handling.", turnId: prepared.turnId },
+        { seq: 2, role: "assistant", text: "I will inspect upload handling." },
       ]);
 
       const driver = new GitMemoryWorktreeGitDriver(prepared.repoPath);

@@ -81,7 +81,6 @@ describe("git memory schema", () => {
   it("validates compact debug and legacy conversation records", () => {
     expect(validateGitMemoryConversationRecord({
       seq: 1,
-      turnId: "T-20260628-000001",
       role: "user",
       at: "2026-06-28T09:00:00+05:30",
       text: "Fix upload handling",

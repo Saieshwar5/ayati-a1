@@ -108,14 +108,19 @@ class AppGitMemorySystemEventContextRuntime implements GitMemorySystemEventConte
     if (!prepared.systemMessage.messageId) {
       throw new Error("Git memory prepared system message is missing messageId");
     }
+    if (!prepared.systemMessage.turnId) {
+      throw new Error("Git memory prepared system message is missing turnId");
+    }
+    const messageId = prepared.systemMessage.messageId;
+    const turnId = prepared.systemMessage.turnId;
     return {
       status: "ready",
       sessionId: prepared.sessionId,
       repoPath: prepared.repoPath,
       initialized: prepared.initialized,
       messageSeq: prepared.systemMessage.seq,
-      messageId: prepared.systemMessage.messageId,
-      turnId: prepared.systemMessage.turnId,
+      messageId,
+      turnId,
       context: prepared.context,
       memoryState: prepared.memoryState,
     };

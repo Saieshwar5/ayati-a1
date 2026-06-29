@@ -608,7 +608,7 @@ export class GitMemoryDailySessionStore {
       at: input.at ?? this.nowIso(),
       fromSeq: input.fromSeq,
       toSeq: input.toSeq,
-      turnIds: input.turnIds ?? unique(messages.map((message) => message.turnId)),
+      turnIds: input.turnIds ?? unique(messages.map((message) => message.turnId).filter(isDefined)),
       ...(input.runId ? { runId: input.runId } : {}),
       ...(input.summary ? { summary: input.summary } : {}),
     };
@@ -1383,7 +1383,6 @@ function toConversationDebugRecord(
 ): GitMemoryConversationRecord {
   return {
     seq: record.seq,
-    turnId: record.turnId,
     role: record.role,
     at: record.at,
     text: record.text,
@@ -1979,6 +1978,10 @@ function markdownTail(value: string | null, limit: number): string {
 
 function unique<T>(values: T[]): T[] {
   return [...new Set(values)];
+}
+
+function isDefined<T>(value: T | undefined): value is T {
+  return value !== undefined;
 }
 
 function nextSeq(records: Array<{ seq?: unknown }>): number {

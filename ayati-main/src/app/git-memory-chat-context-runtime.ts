@@ -100,14 +100,19 @@ class AppGitMemoryChatContextRuntime implements GitMemoryChatContextRuntime {
     if (!prepared.userMessage.messageId) {
       throw new Error("Git memory prepared user message is missing messageId");
     }
+    if (!prepared.userMessage.turnId) {
+      throw new Error("Git memory prepared user message is missing turnId");
+    }
+    const messageId = prepared.userMessage.messageId;
+    const turnId = prepared.userMessage.turnId;
     return {
       status: "ready",
       sessionId: prepared.sessionId,
       repoPath: prepared.repoPath,
       initialized: prepared.initialized,
       messageSeq: prepared.userMessage.seq,
-      messageId: prepared.userMessage.messageId,
-      turnId: prepared.userMessage.turnId,
+      messageId,
+      turnId,
       context: prepared.context,
       memoryState: prepared.memoryState,
     };
