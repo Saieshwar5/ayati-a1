@@ -191,6 +191,10 @@ export interface HarnessStepSummaryForContext {
   executionContract?: string;
   evidenceSummary?: string;
   evidenceItems?: string[];
+  evidenceSource?: Record<string, unknown>;
+  outputSize?: number;
+  lineCount?: number;
+  truncated?: boolean;
   workState?: HarnessWorkStateForContext;
 }
 

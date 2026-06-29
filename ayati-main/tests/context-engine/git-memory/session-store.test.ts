@@ -671,6 +671,30 @@ describe("GitMemoryDailySessionStore", () => {
         completedAt: "2026-06-28T09:02:01+05:30",
         evidenceRef: "evidence/ACT-20260628-000001.txt",
       }],
+      evidence: [{
+        step: 1,
+        actionId: "ACT-20260628-000001",
+        tool: "read_file",
+        status: "completed",
+        summary: "Read upload server implementation.",
+        evidenceRef: "evidence/ACT-20260628-000001.txt",
+        artifacts: ["ayati-main/src/server/upload-server.ts"],
+        facts: ["Upload server implementation was inspected."],
+        accessModes: ["summary", "read_lines"],
+        outputSize: 1200,
+        lineCount: 80,
+        truncated: false,
+        source: {
+          kind: "tool-output",
+          toolCalls: [{
+            kind: "tool-output",
+            tool: "read_file",
+            callId: "call-read-upload",
+            filePath: "ayati-main/src/server/upload-server.ts",
+            rawOutputPath: "raw/001-call-read-upload-read_file.txt",
+          }],
+        },
+      }],
       assets: [{
         assetId: "asset-upload-log",
         role: "reference",
@@ -743,9 +767,22 @@ describe("GitMemoryDailySessionStore", () => {
         status: "completed",
         summary: "Read upload server implementation.",
         evidenceRef: "evidence/ACT-20260628-000001.txt",
-        artifacts: [],
-        facts: [],
-        accessModes: ["summary"],
+        artifacts: ["ayati-main/src/server/upload-server.ts"],
+        facts: ["Upload server implementation was inspected."],
+        accessModes: ["summary", "read_lines"],
+        outputSize: 1200,
+        lineCount: 80,
+        truncated: false,
+        source: {
+          kind: "tool-output",
+          toolCalls: [{
+            kind: "tool-output",
+            tool: "read_file",
+            callId: "call-read-upload",
+            filePath: "ayati-main/src/server/upload-server.ts",
+            rawOutputPath: "raw/001-call-read-upload-read_file.txt",
+          }],
+        },
       }]);
     expect(JSON.parse(await driver.readFile(task.ref, gitMemoryTaskAssetsPath(task.taskId)) ?? "{}"))
       .toEqual({

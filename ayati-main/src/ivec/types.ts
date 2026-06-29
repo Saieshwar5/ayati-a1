@@ -228,6 +228,10 @@ export interface StepSummary {
   validationStatus?: VerificationValidationStatus;
   evidenceSummary?: string;
   evidenceItems?: string[];
+  evidenceSource?: Record<string, unknown>;
+  outputSize?: number;
+  lineCount?: number;
+  truncated?: boolean;
   usedRawArtifacts?: string[];
   workState?: WorkState;
   stoppedEarlyReason?: "assistant_returned" | "max_act_turns_reached" | "max_total_tool_calls_reached" | "repeated_identical_failure" | "no_valid_tool_calls" | "planned_call_failed";

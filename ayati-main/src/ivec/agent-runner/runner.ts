@@ -945,6 +945,7 @@ function buildStepSummary(input: {
     ...input.execution.verifyOutput.artifacts,
   ].filter((artifact) => artifact.trim().length > 0);
   const failure = classifyFailure(input.execution);
+  const evidenceMetadata = buildStepEvidenceMetadata(input.execution.actOutput.toolCalls);
 
   return {
     step: input.stepNumber,
@@ -969,6 +970,7 @@ function buildStepSummary(input: {
     validationStatus: input.execution.verifyOutput.validationStatus,
     evidenceSummary: input.execution.verifyOutput.evidenceSummary,
     evidenceItems: input.execution.verifyOutput.evidenceItems,
+    ...evidenceMetadata,
     usedRawArtifacts: input.execution.verifyOutput.usedRawArtifacts,
     workState: input.execution.nextWorkState,
     stoppedEarlyReason: input.execution.actOutput.stoppedEarlyReason,
@@ -1000,6 +1002,10 @@ function buildStepRecord(step: StepSummary, execution: AgentActionExecutionResul
     validationStatus: step.validationStatus,
     evidenceSummary: step.evidenceSummary,
     evidenceItems: step.evidenceItems ?? [],
+    evidenceSource: step.evidenceSource,
+    outputSize: step.outputSize,
+    lineCount: step.lineCount,
+    truncated: step.truncated,
     workState: step.workState,
     stoppedEarlyReason: step.stoppedEarlyReason,
     failureType: step.failureType,
@@ -1009,6 +1015,82 @@ function buildStepRecord(step: StepSummary, execution: AgentActionExecutionResul
       finalText: execution.actOutput.finalText,
     },
   };
+}
+
+function buildStepEvidenceMetadata(calls: ActToolCallRecord[]): Pick<StepSummary, "evidenceSource" | "outputSize" | "lineCount" | "truncated"> {
+  const sources = calls.map(buildToolEvidenceSource);
+  const outputSize = sumNumbers(calls.map((call) => call.rawOutputChars ?? call.evidenceRef?.rawOutputChars));
+  const lineCount = sumNumbers(calls.map((call) => call.evidenceRef?.lineCount ?? call.observation?.lineCount));
+  const truncated = calls.some((call) => call.outputTruncated === true || call.evidenceRef?.truncated === true || call.observation?.hasMore === true);
+  return {
+    ...(sources.length > 0 ? { evidenceSource: { kind: "tool-output", toolCalls: sources } } : {}),
+    ...(outputSize !== undefined ? { outputSize } : {}),
+    ...(lineCount !== undefined ? { lineCount } : {}),
+    ...(calls.length > 0 ? { truncated } : {}),
+  };
+}
+
+function buildToolEvidenceSource(call: ActToolCallRecord): Record<string, unknown> {
+  return pruneUndefined({
+    kind: "tool-output",
+    tool: call.tool,
+    callId: call.callId,
+    status: call.error ? "failed" : "success",
+    operationStatus: call.operationStatus,
+    code: call.code,
+    rawOutputPath: call.rawOutputPath ?? call.evidenceRef?.rawOutputPath ?? call.observation?.rawOutputPath,
+    evidenceRef: call.evidenceRef?.ref ?? call.observation?.evidenceRef,
+    rawOutputChars: call.rawOutputChars ?? call.evidenceRef?.rawOutputChars ?? call.observation?.rawOutputChars,
+    lineCount: call.evidenceRef?.lineCount ?? call.observation?.lineCount,
+    truncated: call.outputTruncated ?? call.evidenceRef?.truncated,
+    ...selectedSourceFields(call.input),
+    ...selectedSourceFields(call.result?.structuredContent),
+  });
+}
+
+function selectedSourceFields(value: unknown): Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return {};
+  }
+  const record = value as Record<string, unknown>;
+  const output: Record<string, unknown> = {};
+  for (const key of ["path", "filePath", "dirPath", "cwd", "query", "pattern", "cmd", "command", "scriptPath", "exitCode", "timedOut", "matchCount"] as const) {
+    const selected = compactSourceValue(record[key]);
+    if (selected !== undefined) {
+      output[key] = selected;
+    }
+  }
+  return output;
+}
+
+function compactSourceValue(value: unknown): string | number | boolean | string[] | undefined {
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    return trimmed.length > 0 ? trimmed.slice(0, 500) : undefined;
+  }
+  if (typeof value === "number" || typeof value === "boolean") {
+    return value;
+  }
+  if (Array.isArray(value)) {
+    const items = value
+      .filter((item): item is string => typeof item === "string" && item.trim().length > 0)
+      .slice(0, 10)
+      .map((item) => item.trim().slice(0, 200));
+    return items.length > 0 ? items : undefined;
+  }
+  return undefined;
+}
+
+function sumNumbers(values: Array<number | undefined>): number | undefined {
+  const numbers = values.filter((value): value is number => typeof value === "number" && Number.isFinite(value));
+  if (numbers.length === 0) {
+    return undefined;
+  }
+  return numbers.reduce((sum, value) => sum + value, 0);
+}
+
+function pruneUndefined(input: Record<string, unknown>): Record<string, unknown> {
+  return Object.fromEntries(Object.entries(input).filter(([, value]) => value !== undefined));
 }
 
 function buildInitialState(

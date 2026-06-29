@@ -106,7 +106,10 @@ function buildRunEvidence(
       ...(step.evidenceItems ?? []),
     ]),
     accessModes: step.evidenceSummary || (step.evidenceItems ?? []).length > 0 ? ["summary"] : [],
-    source: { kind: "harness-step" },
+    ...(step.outputSize !== undefined ? { outputSize: step.outputSize } : {}),
+    ...(step.lineCount !== undefined ? { lineCount: step.lineCount } : {}),
+    ...(step.truncated !== undefined ? { truncated: step.truncated } : {}),
+    source: step.evidenceSource ?? { kind: "harness-step" },
   }));
 }
 

@@ -39,6 +39,19 @@ describe("buildGitMemoryTaskRunCommitInput", () => {
         toolsUsed: ["read_file"],
         evidenceSummary: "read upload-server.ts lines 1-80",
         evidenceItems: ["upload-server.ts: validates MIME type"],
+        evidenceSource: {
+          kind: "tool-output",
+          toolCalls: [{
+            kind: "tool-output",
+            tool: "read_file",
+            callId: "call-read-upload",
+            filePath: "ayati-main/src/server/upload-server.ts",
+            rawOutputPath: "raw/001-call-read-upload-read_file.txt",
+          }],
+        },
+        outputSize: 1200,
+        lineCount: 80,
+        truncated: false,
       }, {
         step: 2,
         outcome: "failed",
@@ -123,7 +136,19 @@ describe("buildGitMemoryTaskRunCommitInput", () => {
         "upload-server.ts: validates MIME type",
       ],
       accessModes: ["summary"],
-      source: { kind: "harness-step" },
+      outputSize: 1200,
+      lineCount: 80,
+      truncated: false,
+      source: {
+        kind: "tool-output",
+        toolCalls: [{
+          kind: "tool-output",
+          tool: "read_file",
+          callId: "call-read-upload",
+          filePath: "ayati-main/src/server/upload-server.ts",
+          rawOutputPath: "raw/001-call-read-upload-read_file.txt",
+        }],
+      },
     }, {
       step: 2,
       tool: "read_file",
