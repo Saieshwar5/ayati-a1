@@ -18,9 +18,7 @@ import type {
   GitMemoryTaskMessageLinkRecord,
 } from "./schema.js";
 
-export interface GitContextMemoryStateLimits extends GitMemoryContextLimits {
-  evidenceLimit: number;
-}
+export type GitContextMemoryStateLimits = GitMemoryContextLimits;
 
 export interface GitContextMemoryKnownTask {
   taskId: string;
@@ -81,15 +79,6 @@ export class GitContextMemoryStateHydrator {
       this.store.readTaskRoutingSnapshot(input.sessionId),
     ]);
 
-    const recentEvidence = context.task
-      ? (await this.store.readTaskDetail({
-          sessionId: input.sessionId,
-          taskId: context.task.taskId,
-          include: ["evidence"],
-          limits: input.limits?.evidenceLimit ? { evidenceLimit: input.limits.evidenceLimit } : undefined,
-        })).recentEvidence ?? []
-      : [];
-
     return {
       session: {
         sessionId: context.session.sessionId,
@@ -102,7 +91,7 @@ export class GitContextMemoryStateHydrator {
         ...(context.focus.status === "active" ? { currentBranch: context.focus.branch } : {}),
       },
       focus: context.focus,
-      ...(context.task ? { activeTask: toActiveTask(context.task, recentEvidence) } : {}),
+      ...(context.task ? { activeTask: toActiveTask(context.task) } : {}),
       knownTasks: routing.tasks.map(toKnownTask),
     };
   }
@@ -116,7 +105,6 @@ export function createGitContextMemoryStateHydrator(
 
 function toActiveTask(
   task: NonNullable<Awaited<ReturnType<GitMemoryContextReader["buildActiveContext"]>>["task"]>,
-  recentEvidence: GitMemoryEvidenceManifestRecord[],
 ): GitContextMemoryActiveTask {
   return {
     taskId: task.taskId,
@@ -135,7 +123,7 @@ function toActiveTask(
     next: task.next,
     recentRuns: task.recentRuns,
     recentCommits: task.recentCommits,
-    recentEvidence,
+    recentEvidence: task.recentEvidence,
   };
 }
 

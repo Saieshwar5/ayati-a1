@@ -81,6 +81,17 @@ describe("buildGitMemoryHarnessContextPack", () => {
       completedAt: "2026-06-28T09:10:00+05:30",
       conversationRefs: [{ fromSeq: user.seq, toSeq: user.seq }],
       summary: "Inspected upload handling.",
+      evidence: [{
+        step: 1,
+        tool: "read_file",
+        status: "completed",
+        summary: "Read upload server implementation.",
+        evidenceRef: "evidence/read-upload-server.txt",
+        artifacts: ["ayati-main/src/server/upload-server.ts"],
+        facts: ["Upload route validates MIME type."],
+        accessModes: ["summary"],
+        source: { kind: "test" },
+      }],
       assets: [{
         assetId: "asset-upload-log",
         role: "reference",
@@ -153,7 +164,18 @@ describe("buildGitMemoryHarnessContextPack", () => {
           actions: [],
           createdAt: "2026-06-28T09:10:00+05:30",
         }],
-        recentEvidence: [],
+        recentEvidence: [{
+          runId: "R-20260628-0001",
+          workId: task.taskId,
+          step: 1,
+          tool: "read_file",
+          status: "completed",
+          summary: "Read upload server implementation.",
+          evidenceRef: "evidence/read-upload-server.txt",
+          artifacts: ["ayati-main/src/server/upload-server.ts"],
+          facts: ["Upload route validates MIME type."],
+          accessModes: ["summary"],
+        }],
       },
     });
     expect(memoryHarness).toEqual(harness);

@@ -205,6 +205,18 @@ describe("GitMemoryContextReader", () => {
         status: "completed",
         summary: "Read upload server implementation.",
       }],
+      evidence: [{
+        step: 1,
+        actionId: "ACT-20260628-000001",
+        tool: "read_file",
+        status: "completed",
+        summary: "Read upload server implementation.",
+        evidenceRef: "evidence/ACT-20260628-000001.txt",
+        artifacts: ["ayati-main/src/server/upload-server.ts"],
+        facts: ["Upload server implementation was inspected."],
+        accessModes: ["summary"],
+        source: { kind: "test" },
+      }],
       assets: [{
         assetId: "asset-upload-log",
         role: "reference",
@@ -235,6 +247,7 @@ describe("GitMemoryContextReader", () => {
         eventTailLimit: 4,
         taskMessageLinkLimit: 3,
         runLimit: 3,
+        evidenceLimit: 3,
         commitLogLimit: 3,
         conversationMarkdownCharLimit: 200,
       },
@@ -293,6 +306,16 @@ describe("GitMemoryContextReader", () => {
       status: "completed",
       summary: "Inspected upload handling and found validation mismatch.",
       toolCallCount: 1,
+    }]);
+    expect(pack.task?.recentEvidence).toMatchObject([{
+      runId: "R-20260628-0001",
+      taskId: "W-20260628-0001",
+      actionId: "ACT-20260628-000001",
+      tool: "read_file",
+      summary: "Read upload server implementation.",
+      evidenceRef: "evidence/ACT-20260628-000001.txt",
+      artifacts: ["ayati-main/src/server/upload-server.ts"],
+      facts: ["Upload server implementation was inspected."],
     }]);
     expect(pack.task?.recentCommits[0]).toMatchObject({
       subject: "ayati: complete run R-20260628-0001",

@@ -52,7 +52,7 @@ export function buildGitMemoryHarnessContextPack(
         assets: context.task.assets,
         recentRuns: context.task.recentRuns.map((run) => toTaskRunSummary(run, context.task!.taskId)),
         recentCommits: context.task.recentCommits.map(toCompactCommitSummary),
-        recentEvidence: [],
+        recentEvidence: context.task.recentEvidence.map(toEvidenceSummary),
       },
     } : {}),
   };

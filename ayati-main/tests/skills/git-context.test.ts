@@ -59,6 +59,7 @@ describe("git-context skill", () => {
         eventTailLimit: 5,
         taskMessageLinkLimit: 2,
         runLimit: 2,
+        evidenceLimit: 1,
         commitLogLimit: 2,
         conversationMarkdownCharLimit: 200,
       },
@@ -88,6 +89,13 @@ describe("git-context skill", () => {
           "Upload validation handles multipart MIME metadata.",
         ],
         next: "Verify upload validation patch.",
+        recentEvidence: [{
+          runId: "R-20260628-0002",
+          taskId: "W-20260628-0001",
+          tool: "edit_file",
+          summary: "Patched upload validation branch.",
+          evidenceRef: "evidence/ACT-20260628-000101.txt",
+        }],
       },
     });
   });

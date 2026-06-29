@@ -163,6 +163,7 @@ function createActiveContextTool(contextReader: GitMemoryContextReader): ToolDef
           eventTailLimit: { type: "number" },
           taskMessageLinkLimit: { type: "number" },
           runLimit: { type: "number" },
+          evidenceLimit: { type: "number" },
           commitLogLimit: { type: "number" },
           conversationMarkdownCharLimit: { type: "number" },
         },
