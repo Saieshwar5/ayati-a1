@@ -70,13 +70,16 @@ describe("GitContextMemoryStateHydrator", () => {
         text: "I will inspect upload handling.",
       }],
       taskMessageLinkTail: [],
-      recentCommits: [{
-        subject: "ayati: initialize session S-20260628-local",
-      }],
+    });
+    expect(state.session.recentCommits[0]).toMatchObject({
+      subject: "ayati: record assistant message",
+      trailers: {
+        event: "conversation_appended",
+      },
     });
     expect(state.session.conversationMarkdownTail).toContain("Fix upload handling");
     expect(state.session.conversationMarkdownTail).toContain("I will inspect upload handling.");
-    expect(state.session.eventTail).toHaveLength(2);
+    expect(state.session.eventTail).toHaveLength(1);
     expect(state.focus).toMatchObject({
       status: "active",
       taskId: prepared.task.taskId,

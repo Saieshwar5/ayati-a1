@@ -62,7 +62,7 @@ describe("createGitMemoryChatContextRuntime", () => {
       expect(prepared.context.task).toBeUndefined();
       expect(prepared.memoryState.activeTask).toBeUndefined();
       expect(await new GitMemoryWorktreeGitDriver(prepared.repoPath).log(GIT_MEMORY_MAIN_REF, 5))
-        .toHaveLength(1);
+        .toHaveLength(2);
     } finally {
       rmSync(storeDir, { recursive: true, force: true });
     }
@@ -106,7 +106,7 @@ describe("createGitMemoryChatContextRuntime", () => {
       const driver = new GitMemoryWorktreeGitDriver(prepared.repoPath);
       expect(parseJsonl(await driver.readWorkingFile(GIT_MEMORY_SESSION_CONVERSATION_PATH)))
         .toHaveLength(2);
-      expect(await driver.log(GIT_MEMORY_MAIN_REF, 5)).toHaveLength(1);
+      expect(await driver.log(GIT_MEMORY_MAIN_REF, 5)).toHaveLength(3);
     } finally {
       rmSync(storeDir, { recursive: true, force: true });
     }
@@ -379,7 +379,7 @@ describe("createGitMemoryChatContextRuntime", () => {
           changedFiles: ["ayati-main/src/server/upload-server.ts"],
           newFacts: ["Upload route validates MIME type."],
         });
-      expect(await driver.log(GIT_MEMORY_MAIN_REF, 5)).toHaveLength(1);
+      expect(await driver.log(GIT_MEMORY_MAIN_REF, 5)).toHaveLength(3);
     } finally {
       rmSync(storeDir, { recursive: true, force: true });
     }

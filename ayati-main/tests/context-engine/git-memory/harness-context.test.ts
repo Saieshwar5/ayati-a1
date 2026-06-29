@@ -110,9 +110,6 @@ describe("buildGitMemoryHarnessContextPack", () => {
           text: "Fix upload handling",
         }],
         conversationMarkdownTail: expect.stringContaining("Fix upload handling"),
-        recentCommits: [{
-          subject: "ayati: initialize session S-20260628-local",
-        }],
       },
       focus: {
         status: "active",
@@ -147,5 +144,11 @@ describe("buildGitMemoryHarnessContextPack", () => {
       },
     });
     expect(memoryHarness).toEqual(harness);
+    expect(harness.session.recentCommits[0]).toMatchObject({
+      subject: "ayati: record user message",
+      trailers: {
+        event: "conversation_appended",
+      },
+    });
   });
 });

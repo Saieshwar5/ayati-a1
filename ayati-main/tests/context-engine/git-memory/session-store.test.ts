@@ -83,7 +83,7 @@ describe("GitMemoryDailySessionStore", () => {
       .toMatchObject({ schemaVersion: 1, kind: "git_memory_session" });
   });
 
-  it("appends conversation to the worktree without creating per-message commits", async () => {
+  it("commits conversation appends to main without moving the active branch", async () => {
     const contextStoreDir = await mkdtemp(join(tmpdir(), "ayati-git-memory-"));
     const store = new GitMemoryDailySessionStore({ contextStoreDir });
     const session = await store.openOrCreateDailySession({
@@ -125,9 +125,12 @@ describe("GitMemoryDailySessionStore", () => {
     });
 
     const driver = new GitMemoryWorktreeGitDriver(session.repoPath);
-    expect(await driver.readFile(GIT_MEMORY_MAIN_REF, GIT_MEMORY_SESSION_CONVERSATION_PATH)).toBe("");
+    expect(parseJsonl(await driver.readFile(GIT_MEMORY_MAIN_REF, GIT_MEMORY_SESSION_CONVERSATION_PATH))).toMatchObject([
+      { seq: 1, role: "user", text: "Fix upload handling" },
+      { seq: 2, role: "assistant", text: "I will inspect the upload path." },
+    ]);
     expect(await driver.readFile(GIT_MEMORY_MAIN_REF, GIT_MEMORY_SESSION_CONVERSATION_MARKDOWN_PATH))
-      .toBe("# Conversation\n");
+      .toContain("I will inspect the upload path.");
     expect(parseJsonl(await driver.readWorkingFile(GIT_MEMORY_SESSION_CONVERSATION_PATH))).toMatchObject([
       { seq: 1, role: "user", text: "Fix upload handling" },
       { seq: 2, role: "assistant", text: "I will inspect the upload path." },
@@ -147,7 +150,12 @@ describe("GitMemoryDailySessionStore", () => {
       "I will inspect the upload path.",
       "",
     ].join("\n"));
-    expect(await driver.log(GIT_MEMORY_MAIN_REF, 5)).toHaveLength(1);
+    const log = await driver.log(GIT_MEMORY_MAIN_REF, 5);
+    expect(log).toHaveLength(3);
+    expect(parseGitMemoryCommitTrailers(log[0]?.message ?? "")).toMatchObject({
+      event: "conversation_appended",
+      conversationSeq: { fromSeq: 2, toSeq: 2 },
+    });
   });
 
   it("checkpoints accumulated session changes with a parseable commit", async () => {
@@ -166,15 +174,23 @@ describe("GitMemoryDailySessionStore", () => {
       at: "2026-06-28T09:00:00+05:30",
     });
 
+    await store.createTaskBranch({
+      sessionId: session.sessionId,
+      title: "Keep checkpoint metadata",
+      objective: "Create session metadata that checkpoint can commit.",
+      fromSeq: 1,
+      toSeq: 1,
+      at: "2026-06-28T09:00:30+05:30",
+    });
     const checkpoint = await store.checkpointSession({
       sessionId: session.sessionId,
-      summary: "Checkpoint conversation after the first user turn.",
+      summary: "Checkpoint task metadata after the first user turn.",
       at: "2026-06-28T09:01:00+05:30",
     });
 
     const driver = new GitMemoryWorktreeGitDriver(session.repoPath);
     const log = await driver.log(GIT_MEMORY_MAIN_REF, 5);
-    expect(log).toHaveLength(2);
+    expect(log).toHaveLength(3);
     expect(log[0]?.commit).toBe(checkpoint.commit);
     expect(parseGitMemoryCommitTrailers(log[0]?.message ?? "")).toMatchObject({
       sessionId: "S-20260628-local",
@@ -252,7 +268,7 @@ describe("GitMemoryDailySessionStore", () => {
     const driver = new GitMemoryWorktreeGitDriver(session.repoPath);
     expect(parseJsonl(await driver.readWorkingFile(GIT_MEMORY_SESSION_TASK_MESSAGE_LINKS_PATH)))
       .toMatchObject([{ linkId: "L-20260628-000001", fromSeq: 1, toSeq: 2 }]);
-    expect(await driver.log(GIT_MEMORY_MAIN_REF, 5)).toHaveLength(1);
+    expect(await driver.log(GIT_MEMORY_MAIN_REF, 5)).toHaveLength(4);
   });
 
   it("does not create a repo when reading task conversation for a missing session", async () => {
@@ -408,7 +424,7 @@ describe("GitMemoryDailySessionStore", () => {
     expect(await driver.currentBranch()).toBe("task/W-20260628-0001-fix-upload-handling");
     expect(await driver.readWorkingFile(GIT_MEMORY_SESSION_TASK_MESSAGE_LINKS_PATH)).toBeNull();
     expect(await driver.readWorkingFile(GIT_MEMORY_SESSION_EVENTS_PATH)).toBeNull();
-    expect(await driver.log(GIT_MEMORY_MAIN_REF, 5)).toHaveLength(1);
+    expect(await driver.log(GIT_MEMORY_MAIN_REF, 5)).toHaveLength(3);
   });
 
   it("appends task run conversation ranges to task branch markdown without duplicating existing blocks", async () => {
@@ -689,7 +705,7 @@ describe("GitMemoryDailySessionStore", () => {
         }],
       });
     expect(await driver.readWorkingFile(GIT_MEMORY_SESSION_EVENTS_PATH)).toBeNull();
-    expect(await driver.log(GIT_MEMORY_MAIN_REF, 5)).toHaveLength(1);
+    expect(await driver.log(GIT_MEMORY_MAIN_REF, 5)).toHaveLength(3);
   });
 
   it("checkpoints session metadata after a task run commit", async () => {

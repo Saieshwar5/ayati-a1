@@ -547,7 +547,44 @@ export class GitMemoryDailySessionStore {
       [GIT_MEMORY_SESSION_CONVERSATION_PATH]: jsonl([...existing, record]),
       [GIT_MEMORY_SESSION_CONVERSATION_MARKDOWN_PATH]: appendConversationMarkdown(existingMarkdown, record),
     });
+    await this.commitMainConversationAppend(driver, {
+      sessionId: input.sessionId,
+      record,
+    });
     return record;
+  }
+
+  private async commitMainConversationAppend(
+    driver: GitMemoryWorktreeGitDriver,
+    input: {
+      sessionId: GitMemorySessionId;
+      record: GitMemoryConversationRecord;
+    },
+  ): Promise<void> {
+    const previousBranch = await driver.currentBranch();
+    await driver.checkoutBranch(GIT_MEMORY_MAIN_REF);
+    try {
+      await driver.commitPaths([
+        GIT_MEMORY_SESSION_CONVERSATION_PATH,
+        GIT_MEMORY_SESSION_CONVERSATION_MARKDOWN_PATH,
+      ], renderGitMemoryCommitMessage({
+        subject: `ayati: record ${input.record.role} message`,
+        summary: `Append conversation message ${input.record.seq}.`,
+        trailers: {
+          sessionId: input.sessionId,
+          event: "conversation_appended",
+          at: input.record.at,
+          ...(input.record.taskId ? { taskId: input.record.taskId } : {}),
+          ...(input.record.runId ? { runId: input.record.runId } : {}),
+          conversationSeq: { fromSeq: input.record.seq, toSeq: input.record.seq },
+          schemaVersion: 1,
+        },
+      }));
+    } finally {
+      if (previousBranch && previousBranch !== "main") {
+        await driver.checkoutBranch(`refs/heads/${previousBranch}`);
+      }
+    }
   }
 
   async linkTaskMessages(input: LinkGitMemoryTaskMessagesInput): Promise<GitMemoryTaskMessageLinkRecord> {

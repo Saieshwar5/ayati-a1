@@ -126,18 +126,17 @@ describe("GitMemoryContextReader", () => {
     expect(pack.session.conversationMarkdownTail).toContain("Fix upload handling");
     expect(pack.session.conversationMarkdownTail).toContain("Continue from there.");
     expect(pack.session.eventTail).toMatchObject([
-      { seq: 1, type: "session_initialized" },
-      { seq: 2, type: "task_created" },
-      { seq: 3, type: "focus_changed" },
-      { seq: 4, type: "run_completed" },
+      { seq: 1, type: "task_created" },
+      { seq: 2, type: "focus_changed" },
+      { seq: 3, type: "run_completed" },
     ]);
-    expect(pack.session.recentCommits).toMatchObject([{
-      subject: "ayati: initialize session S-20260628-local",
+    expect(pack.session.recentCommits[0]).toMatchObject({
+      subject: "ayati: record user message",
       trailers: {
         sessionId: "S-20260628-local",
-        event: "session_initialized",
+        event: "conversation_appended",
       },
-    }]);
+    });
     expect(pack.session.taskMessageLinkTail).toEqual([]);
     expect(pack.focus).toMatchObject({
       status: "active",

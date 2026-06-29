@@ -103,7 +103,7 @@ describe("GitMemoryRuntime", () => {
     const driver = new GitMemoryWorktreeGitDriver(prepared.repoPath);
     expect(parseJsonl(await driver.readWorkingFile(GIT_MEMORY_SESSION_CONVERSATION_PATH)))
       .toHaveLength(2);
-    expect(await driver.log(GIT_MEMORY_MAIN_REF, 5)).toHaveLength(1);
+    expect(await driver.log(GIT_MEMORY_MAIN_REF, 5)).toHaveLength(3);
   });
 
   it("uses timezone-aware dates when choosing the daily session repo", async () => {
@@ -215,7 +215,7 @@ describe("GitMemoryRuntime", () => {
     });
 
     const driver = new GitMemoryWorktreeGitDriver(prepared.repoPath);
-    expect(await driver.log(GIT_MEMORY_MAIN_REF, 5)).toHaveLength(2);
+    expect(await driver.log(GIT_MEMORY_MAIN_REF, 5)).toHaveLength(4);
   });
 
   it("appends routed follow-up messages to the selected task branch before run start", async () => {

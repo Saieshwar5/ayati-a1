@@ -427,13 +427,14 @@ describe("git-context skill", () => {
       sessionId: "S-20260628-local",
       target: "main",
       ref: GIT_MEMORY_MAIN_REF,
-      commits: [{
-        subject: "ayati: initialize session S-20260628-local",
-        trailers: {
-          sessionId: "S-20260628-local",
-          event: "session_initialized",
-        },
-      }],
+    });
+    const mainCommits = (mainResult.v2?.structuredContent as { commits?: Array<{ subject?: string; trailers?: unknown }> }).commits ?? [];
+    expect(mainCommits[0]).toMatchObject({
+      subject: "ayati: record user message",
+      trailers: {
+        sessionId: "S-20260628-local",
+        event: "conversation_appended",
+      },
     });
     expect(taskResult.ok).toBe(true);
     expect(taskResult.v2?.structuredContent).toMatchObject({
