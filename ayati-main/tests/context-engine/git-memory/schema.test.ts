@@ -48,7 +48,7 @@ describe("git memory schema", () => {
       .toBe("tasks/W-20260628-0001/actions/R-20260628-0001.jsonl");
     expect(gitMemoryTaskEvidenceManifestPath("W-20260628-0001", "R-20260628-0001"))
       .toBe("tasks/W-20260628-0001/evidence/R-20260628-0001/manifest.jsonl");
-    expect(gitMemoryTaskAssetsPath("W-20260628-0001")).toBe("tasks/W-20260628-0001/assets.jsonl");
+    expect(gitMemoryTaskAssetsPath("W-20260628-0001")).toBe("tasks/W-20260628-0001/assets.json");
     expect(gitMemoryTaskNotesPath("W-20260628-0001")).toBe("tasks/W-20260628-0001/notes.md");
     expect(gitMemoryTaskContextPath("W-20260628-0001")).toBe("tasks/W-20260628-0001/context.md");
   });

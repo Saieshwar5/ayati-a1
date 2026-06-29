@@ -14,6 +14,7 @@ import {
   GitMemoryWorktreeGitDriver,
   GitMemoryDailySessionStore,
   gitMemoryTaskActionsPath,
+  gitMemoryTaskAssetsPath,
   gitMemoryTaskEvidenceManifestPath,
   gitMemoryTaskFilePath,
   gitMemoryTaskMarkdownPath,
@@ -480,6 +481,9 @@ describe("GitMemoryDailySessionStore", () => {
         summary: "Find and fix upload handling failures.",
         open: ["Find and fix upload handling failures."],
       });
+    expect(JSON.parse(await driver.readFile(task.ref, gitMemoryTaskAssetsPath(task.taskId)) ?? "{}"))
+      .toEqual({ schemaVersion: 1, assets: [] });
+    expect(await driver.readFile(task.ref, `tasks/${task.taskId}/assets.jsonl`)).toBeNull();
 
     const taskLog = await driver.log(task.ref, 3);
     expect(taskLog).toHaveLength(1);

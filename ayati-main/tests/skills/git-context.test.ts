@@ -290,6 +290,52 @@ describe("git-context skill", () => {
     expect(await driver.log(prepared.task.ref, 10)).toEqual(taskLogBefore);
   });
 
+  it("reads legacy jsonl task assets when assets json is missing", async () => {
+    const prepared = await prepareGitContextSession();
+    const driver = new GitMemoryWorktreeGitDriver(prepared.session.repoPath);
+    await driver.commitSyntheticFiles({
+      ref: prepared.task.ref,
+      files: {
+        [gitMemoryTaskAssetsPath(prepared.task.taskId)]: "",
+        [`tasks/${prepared.task.taskId}/assets.jsonl`]: `${JSON.stringify({
+          assetId: "asset-legacy-log",
+          role: "reference",
+          kind: "file",
+          name: "legacy.log",
+        })}\n`,
+      },
+      message: renderGitMemoryCommitMessage({
+        subject: "ayati: attach legacy asset log",
+        summary: "Register legacy asset jsonl fixture.",
+        trailers: {
+          sessionId: prepared.session.sessionId,
+          taskId: prepared.task.taskId,
+          event: "asset_registered",
+          at: "2026-06-28T09:17:00+05:30",
+          schemaVersion: 1,
+        },
+      }),
+    });
+    const skill = createGitContextSkill({ contextStoreDir: prepared.contextStoreDir });
+    const tool = requiredTool(skill, "git_context_read_task");
+
+    const result = await tool.execute({
+      sessionId: prepared.session.sessionId,
+      taskId: prepared.task.taskId,
+      include: ["assets"],
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.v2?.structuredContent).toMatchObject({
+      assets: [{
+        assetId: "asset-legacy-log",
+        role: "reference",
+        kind: "file",
+        name: "legacy.log",
+      }],
+    });
+  });
+
   it("reads compact evidence for a task run without mutating git-memory repos", async () => {
     const prepared = await prepareGitContextSession();
     const driver = new GitMemoryWorktreeGitDriver(prepared.session.repoPath);
@@ -616,11 +662,14 @@ async function prepareGitContextSession(): Promise<{
     ref: task.ref,
     files: {
       [gitMemoryTaskAssetsPath(task.taskId)]: `${JSON.stringify({
-        assetId: "asset-upload-log",
-        role: "reference",
-        kind: "file",
-        name: "upload.log",
-        path: "/tmp/upload.log",
+        schemaVersion: 1,
+        assets: [{
+          assetId: "asset-upload-log",
+          role: "reference",
+          kind: "file",
+          name: "upload.log",
+          path: "/tmp/upload.log",
+        }],
       })}\n`,
     },
     message: renderGitMemoryCommitMessage({

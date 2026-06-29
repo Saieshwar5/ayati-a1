@@ -15,6 +15,7 @@ import type {
   GitMemorySessionId,
   GitMemorySessionMetaFile,
   GitMemoryTaskId,
+  GitMemoryTaskAssetsFile,
   GitMemoryTaskFile,
   GitMemoryTaskIndexFile,
   GitMemoryTaskStateFile,
@@ -744,7 +745,7 @@ export class GitMemoryDailySessionStore {
       ? readRefJson<GitMemoryTaskStateFile>(driver, ref, gitMemoryTaskStatePath(taskEntry.taskId))
       : Promise.resolve(null);
     const readAssets = include.has("assets")
-      ? readRefJsonl<unknown>(driver, ref, gitMemoryTaskAssetsPath(taskEntry.taskId))
+      ? readTaskAssets(driver, ref, taskEntry.taskId)
       : Promise.resolve([]);
     const readRuns = include.has("runs")
       ? readRecentTaskRuns(driver, ref, taskEntry.taskId, limits.runLimit)
@@ -994,7 +995,7 @@ export class GitMemoryDailySessionStore {
         [gitMemoryTaskFilePath(taskId)]: prettyJson(task),
         [gitMemoryTaskMarkdownPath(taskId)]: renderTaskMarkdown(task, state),
         [gitMemoryTaskStatePath(taskId)]: prettyJson(state),
-        [gitMemoryTaskAssetsPath(taskId)]: "",
+        [gitMemoryTaskAssetsPath(taskId)]: prettyJson({ schemaVersion: 1, assets: [] } satisfies GitMemoryTaskAssetsFile),
         [gitMemoryTaskNotesPath(taskId)]: `# ${input.title}\n`,
         [gitMemoryTaskContextPath(taskId)]: "",
       },
@@ -1478,6 +1479,22 @@ async function readRefJson<T>(driver: GitMemoryWorktreeGitDriver, ref: string, p
 
 async function readRefJsonl<T>(driver: GitMemoryWorktreeGitDriver, ref: string, path: string): Promise<T[]> {
   return parseJsonl<T>(await driver.readFile(ref, path));
+}
+
+async function readTaskAssets(
+  driver: GitMemoryWorktreeGitDriver,
+  ref: string,
+  taskId: GitMemoryTaskId,
+): Promise<unknown[]> {
+  const current = await readRefJson<GitMemoryTaskAssetsFile>(driver, ref, gitMemoryTaskAssetsPath(taskId));
+  if (current) {
+    return Array.isArray(current.assets) ? current.assets : [];
+  }
+  return readRefJsonl<unknown>(driver, ref, gitMemoryTaskLegacyAssetsPath(taskId));
+}
+
+function gitMemoryTaskLegacyAssetsPath(taskId: GitMemoryTaskId): string {
+  return `${gitMemoryTaskDir(taskId)}/assets.jsonl`;
 }
 
 async function readRefMarkdownTail(

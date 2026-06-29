@@ -135,6 +135,11 @@ export interface GitMemoryTaskStateFile {
   updatedAt: string;
 }
 
+export interface GitMemoryTaskAssetsFile {
+  schemaVersion: 1;
+  assets: unknown[];
+}
+
 export interface GitMemoryRunFile {
   schemaVersion: 1;
   runId: GitMemoryRunId;
@@ -219,7 +224,7 @@ export function gitMemoryTaskEvidenceManifestPath(taskId: GitMemoryTaskId, runId
 }
 
 export function gitMemoryTaskAssetsPath(taskId: GitMemoryTaskId): string {
-  return `${gitMemoryTaskDir(taskId)}/assets.jsonl`;
+  return `${gitMemoryTaskDir(taskId)}/assets.json`;
 }
 
 export function gitMemoryTaskNotesPath(taskId: GitMemoryTaskId): string {
