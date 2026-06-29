@@ -16,7 +16,6 @@ import type {
 import {
   GIT_MEMORY_SESSION_CONVERSATION_MARKDOWN_PATH,
   GIT_MEMORY_SESSION_CONVERSATION_PATH,
-  GIT_MEMORY_SESSION_EVENTS_PATH,
   GIT_MEMORY_SESSION_FOCUS_PATH,
   GIT_MEMORY_SESSION_TASKS_PATH,
   gitMemoryTaskDir,
@@ -134,10 +133,9 @@ export class GitMemoryContextReader {
   }): Promise<GitMemoryMachineContextPack> {
     const limits = normalizeLimits(input.limits);
     const driver = await this.store.openExistingDriver(input.sessionId);
-    const [conversation, conversationMarkdown, events, tasks, focus, currentBranch, sessionCommits] = await Promise.all([
+    const [conversation, conversationMarkdown, tasks, focus, currentBranch, sessionCommits] = await Promise.all([
       readWorkingJsonl<GitMemoryConversationRecord>(driver, GIT_MEMORY_SESSION_CONVERSATION_PATH),
       readWorkingMarkdownTail(driver, GIT_MEMORY_SESSION_CONVERSATION_MARKDOWN_PATH, limits.conversationMarkdownCharLimit),
-      readWorkingJsonl<GitMemorySessionEventRecord>(driver, GIT_MEMORY_SESSION_EVENTS_PATH),
       readWorkingJson<GitMemoryTaskIndexFile>(driver, GIT_MEMORY_SESSION_TASKS_PATH),
       readWorkingJson<GitMemoryFocusFile>(driver, GIT_MEMORY_SESSION_FOCUS_PATH),
       driver.currentBranch(),
@@ -147,7 +145,7 @@ export class GitMemoryContextReader {
       sessionId: input.sessionId,
       conversationTail: tail(conversation, limits.conversationTailLimit),
       conversationMarkdownTail: conversationMarkdown,
-      eventTail: tail(events, limits.eventTailLimit),
+      eventTail: deriveSessionEventTailFromCommits(sessionCommits, limits.eventTailLimit),
       taskMessageLinkTail: [],
       recentCommits: sessionCommits,
       taskCount: tasks?.tasks.length ?? 0,
@@ -220,7 +218,13 @@ export class GitMemoryContextReader {
     }
 
     return {
-      session,
+      session: {
+        ...session,
+        eventTail: deriveSessionEventTailFromCommits(
+          [...sessionCommits, ...recentCommits],
+          limits.eventTailLimit,
+        ),
+      },
       focus: {
         status: "active",
         taskId: taskEntry.taskId,
@@ -291,6 +295,83 @@ async function readRecentCommits(
   limit: number,
 ): Promise<CompactGitMemoryCommitSummary[]> {
   return (await driver.log(ref, limit)).map(compactGitMemoryCommit);
+}
+
+function deriveSessionEventTailFromCommits(
+  commits: CompactGitMemoryCommitSummary[],
+  limit: number,
+): GitMemorySessionEventRecord[] {
+  const sorted = commits
+    .map((commit, index) => ({ commit, index }))
+    .filter(({ commit }) => Boolean(commit.trailers.event && commit.trailers.at))
+    .sort((left, right) => {
+      const atCompare = (left.commit.trailers.at ?? "").localeCompare(right.commit.trailers.at ?? "");
+      return atCompare === 0 ? left.index - right.index : atCompare;
+    });
+  const events: GitMemorySessionEventRecord[] = [];
+  for (const { commit } of sorted) {
+    const event = commitToSessionEvent(commit, events.length + 1);
+    if (!event) {
+      continue;
+    }
+    events.push(event);
+    if (event.type === "task_created" && event.taskId && event.branch) {
+      events.push({
+        v: 1,
+        seq: events.length + 1,
+        eventId: derivedCommitEventId(commit.commit, events.length + 1, "focus"),
+        type: "focus_changed",
+        at: event.at,
+        toTaskId: event.taskId,
+        branch: event.branch,
+        reason: "task_created",
+      });
+    }
+  }
+  return tail(events, limit);
+}
+
+function commitToSessionEvent(
+  commit: CompactGitMemoryCommitSummary,
+  seq: number,
+): GitMemorySessionEventRecord | null {
+  const event = commit.trailers.event;
+  const at = commit.trailers.at;
+  if (!event || !at) {
+    return null;
+  }
+  if (event === "session_checkpointed") {
+    return null;
+  }
+  const base = {
+    v: 1 as const,
+    seq,
+    eventId: derivedCommitEventId(commit.commit, seq),
+    type: event,
+    at,
+    ...(commit.trailers.taskId ? { taskId: commit.trailers.taskId } : {}),
+    ...(commit.trailers.runId ? { runId: commit.trailers.runId } : {}),
+    ...(commit.trailers.branch ? { branch: commit.trailers.branch } : {}),
+    ...(commit.trailers.conversationSeq ? { conversationSeq: commit.trailers.conversationSeq } : {}),
+  };
+  if (event === "run_completed" || event === "run_failed") {
+    return {
+      ...base,
+      type: event,
+      commit: commit.commit,
+    };
+  }
+  if (event === "session_initialized" || event === "task_created" || event === "run_started" || event === "session_closed") {
+    return {
+      ...base,
+      type: event,
+    };
+  }
+  return null;
+}
+
+function derivedCommitEventId(commit: string, seq: number, suffix?: string): string {
+  return `E-COMMIT-${commit.slice(0, 12)}-${seq}${suffix ? `-${suffix}` : ""}`;
 }
 
 async function readWorkingJson<T>(driver: GitMemoryWorktreeGitDriver, path: string): Promise<T | null> {

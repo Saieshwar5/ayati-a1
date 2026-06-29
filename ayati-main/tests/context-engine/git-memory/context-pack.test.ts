@@ -1,4 +1,4 @@
-import { mkdtemp } from "node:fs/promises";
+import { mkdtemp, unlink } from "node:fs/promises";
 import { execFile } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -6,6 +6,7 @@ import { promisify } from "node:util";
 import { describe, expect, it } from "vitest";
 import {
   GIT_MEMORY_MAIN_REF,
+  GIT_MEMORY_SESSION_EVENTS_PATH,
   GitMemoryContextReader,
   GitMemoryDailySessionStore,
   GitMemoryWorktreeGitDriver,
@@ -178,6 +179,74 @@ describe("GitMemoryContextReader", () => {
     expect(pack.task?.recentCommits[1]).toMatchObject({
       subject: "ayati: create task W-20260628-0001",
     });
+  });
+
+  it("derives active session event context from commit history without the events file", async () => {
+    const contextStoreDir = await mkdtemp(join(tmpdir(), "ayati-git-memory-context-"));
+    const store = new GitMemoryDailySessionStore({ contextStoreDir });
+    const session = await store.openOrCreateDailySession({
+      date: "2026-06-28",
+      timezone: "Asia/Kolkata",
+      agentId: "local",
+      createdAt: "2026-06-28T00:00:00+05:30",
+    });
+    const user = await store.appendConversationMessage({
+      sessionId: session.sessionId,
+      role: "user",
+      text: "Fix upload handling",
+      at: "2026-06-28T09:00:00+05:30",
+    });
+    const task = await store.createTaskBranch({
+      sessionId: session.sessionId,
+      title: "Fix upload handling",
+      objective: "Find and fix upload handling failures.",
+      fromSeq: user.seq,
+      toSeq: user.seq,
+      at: "2026-06-28T09:01:00+05:30",
+    });
+    const run = await store.commitTaskRun({
+      sessionId: session.sessionId,
+      taskId: task.taskId,
+      status: "completed",
+      startedAt: "2026-06-28T09:02:00+05:30",
+      completedAt: "2026-06-28T09:10:00+05:30",
+      conversationRefs: [{ fromSeq: user.seq, toSeq: user.seq }],
+      summary: "Inspected upload handling.",
+      state: {
+        status: "in_progress",
+        completed: ["Inspected upload server"],
+        open: ["Patch upload validation handling."],
+        next: "Patch upload validation handling.",
+      },
+    });
+    await unlink(join(session.repoPath, GIT_MEMORY_SESSION_EVENTS_PATH));
+
+    const pack = await new GitMemoryContextReader(store).buildActiveContext({
+      sessionId: session.sessionId,
+    });
+
+    expect(pack.session.eventTail).toMatchObject([
+      { seq: 1, type: "session_initialized" },
+      {
+        seq: 2,
+        type: "task_created",
+        taskId: task.taskId,
+        branch: task.branch,
+      },
+      {
+        seq: 3,
+        type: "focus_changed",
+        toTaskId: task.taskId,
+        branch: task.branch,
+      },
+      {
+        seq: 4,
+        type: "run_completed",
+        taskId: task.taskId,
+        runId: run.runId,
+        commit: run.taskCommit,
+      },
+    ]);
   });
 
   it("prefers the current task branch over a stale focus file", async () => {
