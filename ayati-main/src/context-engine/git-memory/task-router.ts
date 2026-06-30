@@ -130,7 +130,7 @@ export class GitMemoryTaskRouter {
     const focused = focusTaskId
       ? candidates.find((candidate) => candidate.taskId === focusTaskId)
       : undefined;
-    if (isPureFollowUp(userMessage)) {
+    if (isGitMemoryPureFollowUpMessage(userMessage)) {
       if (focused) {
         return selectedTaskResolution(focused, focusTaskId, isReopenStatus(focused.status)
           ? "follow-up phrase with completed active focus"
@@ -408,7 +408,7 @@ function extractExplicitTaskIds(message: string): GitMemoryTaskId[] {
   return [...new Set(normalizeText(message).toUpperCase().match(TASK_ID_PATTERN) ?? [])];
 }
 
-function isPureFollowUp(message: string): boolean {
+export function isGitMemoryPureFollowUpMessage(message: string): boolean {
   const normalized = normalizeText(message);
   return [
     "continue",
@@ -417,11 +417,14 @@ function isPureFollowUp(message: string): boolean {
     "do the rest",
     "finish",
     "finish it",
+    "go on",
     "go ahead",
+    "implement it",
     "next",
     "ok",
     "okay",
     "resume",
+    "work on it",
     "yes",
   ].includes(normalized);
 }

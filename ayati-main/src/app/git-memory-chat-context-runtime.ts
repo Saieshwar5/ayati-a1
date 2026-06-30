@@ -112,7 +112,7 @@ class AppGitMemoryChatContextRuntime implements GitMemoryChatContextRuntime {
       return null;
     }
     try {
-      const route = await this.gitMemoryRuntime.routeUserTurn({
+      const routeInput = {
         sessionId: input.turn.sessionId,
         userMessage: input.userMessage,
         fromSeq: input.turn.messageSeq,
@@ -120,7 +120,9 @@ class AppGitMemoryChatContextRuntime implements GitMemoryChatContextRuntime {
         at: input.at,
         title: input.title,
         objective: input.objective,
-      });
+      };
+      const route = await this.gitMemoryRuntime.continueActiveTurn(routeInput)
+        ?? await this.gitMemoryRuntime.routeUserTurn(routeInput);
       return {
         ...route,
         harnessContext: {

@@ -1,11 +1,12 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { createGitMemoryChatContextRuntime } from "../../src/app/git-memory-chat-context-runtime.js";
 import {
   createGitMemoryRuntime,
   GIT_MEMORY_MAIN_REF,
+  GitMemoryDailySessionStore,
   GitMemoryWorktreeGitDriver,
   type GitMemoryWriteBatchSnapshot,
   gitMemoryTaskRunPath,
@@ -160,11 +161,15 @@ describe("createGitMemoryChatContextRuntime", () => {
   it("routes prepared user turns to git-memory task branches", async () => {
     const storeDir = mkdtempSync(join(tmpdir(), "ayati-git-memory-chat-context-"));
     try {
+      const store = new GitMemoryDailySessionStore({
+        contextStoreDir: storeDir,
+      });
       const runtime = createGitMemoryChatContextRuntime({
         gitMemoryRuntime: createGitMemoryRuntime({
           contextStoreDir: storeDir,
           timezone: "Asia/Kolkata",
           agentId: "local",
+          store,
         }),
       });
       const first = await runtime.prepareUserTurn({
@@ -226,16 +231,18 @@ describe("createGitMemoryChatContextRuntime", () => {
 
       const second = await runtime.prepareUserTurn({
         clientId: "local",
-        userMessage: "finish it",
+        userMessage: "implement it",
         at: "2026-06-28T09:05:00+05:30",
       });
+      const readSnapshot = vi.spyOn(store, "readTaskRoutingSnapshot");
       const continued = await runtime.routeTaskTurn({
         clientId: "local",
         turn: second,
-        userMessage: "finish it",
+        userMessage: "implement it",
         at: "2026-06-28T09:05:01+05:30",
       });
 
+      expect(readSnapshot).not.toHaveBeenCalled();
       expect(continued).toMatchObject({
         status: "ready",
         mode: "continue_active_task",
@@ -247,7 +254,7 @@ describe("createGitMemoryChatContextRuntime", () => {
             session: {
               conversationTail: [
                 { seq: 1, role: "user", text: "Fix upload handling" },
-                { seq: 2, role: "user", text: "finish it" },
+                { seq: 2, role: "user", text: "implement it" },
               ],
             },
             task: {
@@ -258,7 +265,7 @@ describe("createGitMemoryChatContextRuntime", () => {
         },
         context: {
           task: {
-            conversationMarkdownTail: expect.stringContaining("finish it"),
+            conversationMarkdownTail: expect.stringContaining("implement it"),
           },
         },
         memoryState: {

@@ -1084,6 +1084,92 @@ describe("GitMemoryRuntime", () => {
     });
   });
 
+  it("continues obvious active-task follow-ups without reading the task routing snapshot", async () => {
+    const contextStoreDir = await mkdtemp(join(tmpdir(), "ayati-git-memory-runtime-"));
+    const store = new GitMemoryDailySessionStore({ contextStoreDir });
+    const runtime = createGitMemoryRuntime({
+      contextStoreDir,
+      timezone: "Asia/Kolkata",
+      agentId: "local",
+      store,
+    });
+    const first = await runtime.prepareUserTurn({
+      userMessage: "Fix upload handling",
+      at: "2026-06-28T09:00:00+05:30",
+    });
+    const created = await runtime.routeUserTurn({
+      sessionId: first.sessionId,
+      userMessage: "Fix upload handling",
+      fromSeq: first.userMessage.seq,
+      toSeq: first.userMessage.seq,
+      at: "2026-06-28T09:00:01+05:30",
+    });
+    if (created.status !== "ready") {
+      throw new Error(`Expected ready task route, got ${created.status}.`);
+    }
+    const second = await runtime.prepareUserTurn({
+      userMessage: "implement it",
+      at: "2026-06-28T09:05:00+05:30",
+    });
+    const readSnapshot = vi.spyOn(store, "readTaskRoutingSnapshot");
+
+    const continued = await runtime.continueActiveTurn({
+      sessionId: second.sessionId,
+      userMessage: "implement it",
+      fromSeq: second.userMessage.seq,
+      toSeq: second.userMessage.seq,
+      at: "2026-06-28T09:05:01+05:30",
+    });
+
+    expect(readSnapshot).not.toHaveBeenCalled();
+    expect(continued).toMatchObject({
+      status: "ready",
+      mode: "continue_active_task",
+      taskId: created.taskId,
+      runId: "R-20260628-0002",
+      conversationRefs: [{ fromSeq: second.userMessage.seq, toSeq: second.userMessage.seq }],
+      memoryState: {
+        pendingTurn: {
+          fromSeq: second.userMessage.seq,
+          toSeq: second.userMessage.seq,
+          text: "implement it",
+          routingStatus: "bound",
+          taskId: created.taskId,
+          runId: "R-20260628-0002",
+        },
+      },
+    });
+    expect(continued?.memoryState.activeTask?.conversationMarkdownTail).toContain("implement it");
+    expect(continued?.memoryState.activeTask?.conversationMarkdownTail).toContain("Run: R-20260628-0002");
+  });
+
+  it("does not auto-bind follow-up messages when no active task exists", async () => {
+    const contextStoreDir = await mkdtemp(join(tmpdir(), "ayati-git-memory-runtime-"));
+    const store = new GitMemoryDailySessionStore({ contextStoreDir });
+    const runtime = createGitMemoryRuntime({
+      contextStoreDir,
+      timezone: "Asia/Kolkata",
+      agentId: "local",
+      store,
+    });
+    const prepared = await runtime.prepareUserTurn({
+      userMessage: "go on",
+      at: "2026-06-28T09:00:00+05:30",
+    });
+    const allocateRunId = vi.spyOn(store, "allocateTaskRunId");
+
+    const continued = await runtime.continueActiveTurn({
+      sessionId: prepared.sessionId,
+      userMessage: "go on",
+      fromSeq: prepared.userMessage.seq,
+      toSeq: prepared.userMessage.seq,
+      at: "2026-06-28T09:00:01+05:30",
+    });
+
+    expect(continued).toBeNull();
+    expect(allocateRunId).not.toHaveBeenCalled();
+  });
+
   it("serves routed follow-up active task context from the runtime memory cache", async () => {
     const contextStoreDir = await mkdtemp(join(tmpdir(), "ayati-git-memory-runtime-"));
     const store = new GitMemoryDailySessionStore({ contextStoreDir });

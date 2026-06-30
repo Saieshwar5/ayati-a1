@@ -35,6 +35,7 @@ import {
   type ApplyGitMemoryTaskRouteInput,
   type GitMemoryTaskRouteResolution,
   type ResolveGitMemoryTaskRouteInput,
+  isGitMemoryPureFollowUpMessage,
 } from "./task-router.js";
 import type {
   GitMemoryConversationRecord,
@@ -320,6 +321,104 @@ export class GitMemoryRuntime {
 
   async resolveTaskRoute(input: ResolveGitMemoryTaskRouteInput): Promise<GitMemoryTaskRouteResolution> {
     return await this.taskRouter.resolve(input);
+  }
+
+  async continueActiveTurn(input: ApplyGitMemoryTaskRouteInput): Promise<RoutedGitMemoryUserTurn | null> {
+    if (!isGitMemoryPureFollowUpMessage(input.userMessage)) {
+      return null;
+    }
+
+    const pendingTurn = this.pendingTurns.get(input.sessionId);
+    if (
+      !pendingTurn
+      || pendingTurn.routingStatus !== "unbound"
+      || !sameConversationRange(pendingTurn, input)
+    ) {
+      return null;
+    }
+
+    const state = await this.getOrHydrateCachedMemoryState(input.sessionId);
+    if (state.focus.status !== "active" || !state.activeTask) {
+      return null;
+    }
+
+    const activeTask = state.activeTask;
+    const mode: "continue_active_task" | "reopen_existing_task" = isReopenTaskStatus(activeTask.status)
+      ? "reopen_existing_task"
+      : "continue_active_task";
+    const selectedReason: "task_continued" | "task_reopened" = mode === "reopen_existing_task"
+      ? "task_reopened"
+      : "task_continued";
+    const reason = mode === "reopen_existing_task"
+      ? "obvious follow-up to completed active task"
+      : "obvious follow-up to active task";
+    const routed = await this.writeQueue.enqueue({
+      sessionId: input.sessionId,
+      type: "task_routed",
+      label: "continue_active_turn",
+      createdAt: input.at,
+    }, async () => {
+      const runId = await this.store.allocateTaskRunId(input.sessionId);
+      const selectedTask = await this.store.selectTaskForTurn({
+        sessionId: input.sessionId,
+        taskId: activeTask.taskId,
+        reason: selectedReason,
+        fromSeq: input.fromSeq,
+        toSeq: input.toSeq,
+        at: input.at,
+        runId,
+        summary: reason,
+      });
+      await this.store.appendTaskConversationRange({
+        sessionId: input.sessionId,
+        taskId: selectedTask.taskId,
+        branch: selectedTask.branch,
+        runId,
+        fromSeq: input.fromSeq,
+        toSeq: input.toSeq,
+        at: input.at,
+        reason: "task_routed",
+      });
+      await this.store.startTaskRun({
+        sessionId: input.sessionId,
+        taskId: selectedTask.taskId,
+        branch: selectedTask.branch,
+        runId,
+        fromSeq: input.fromSeq,
+        toSeq: input.toSeq,
+        at: input.at,
+      });
+      return {
+        status: "ready" as const,
+        mode,
+        sessionId: input.sessionId,
+        taskId: selectedTask.taskId,
+        branch: selectedTask.branch,
+        ref: selectedTask.ref,
+        conversationRefs: [{ fromSeq: input.fromSeq, toSeq: input.toSeq }],
+        confidence: "deterministic" as const,
+        reason,
+        selectedTask,
+        runId,
+      };
+    });
+    this.bindPendingTurn(input.sessionId, {
+      fromSeq: input.fromSeq,
+      toSeq: input.toSeq,
+      taskId: routed.taskId,
+      branch: routed.branch,
+      runId: routed.runId,
+    });
+    if (!await this.cacheRoutedTaskTurn(input, routed)) {
+      this.invalidateSessionMemory(input.sessionId);
+    }
+    const memoryState = await this.hydrateMemoryState(input.sessionId);
+    const context = buildGitMemoryContextPackFromMemoryState(memoryState);
+    return {
+      ...routed,
+      context,
+      memoryState,
+    };
   }
 
   async switchTask(input: SwitchGitMemoryTaskInput): Promise<SwitchGitMemoryTaskResult> {
@@ -901,6 +1000,10 @@ function sameConversationRange(
   right: { fromSeq: number; toSeq: number },
 ): boolean {
   return left.fromSeq === right.fromSeq && left.toSeq === right.toSeq;
+}
+
+function isReopenTaskStatus(status: string): boolean {
+  return status === "done" || status === "abandoned";
 }
 
 function toPendingTurnContext(turn: PendingGitMemoryTurnEnvelope): GitMemoryPendingTurnContext {
