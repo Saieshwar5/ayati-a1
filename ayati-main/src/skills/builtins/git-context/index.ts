@@ -3,6 +3,7 @@ import {
   buildGitMemoryHarnessContextFromMemoryState,
   GitContextMemoryStateHydrator,
   GitMemoryDailySessionStore,
+  type GitContextMemoryState,
   type GitMemoryRuntime,
   type GitMemoryContextLimits,
   type ReadGitMemoryEvidenceInput,
@@ -1102,13 +1103,16 @@ function gitContextTurnMutationAnnotations(): ToolDefinition["annotations"] {
   });
 }
 
-function withHarnessContext<T extends { memoryState: Parameters<typeof buildGitMemoryHarnessContextFromMemoryState>[0] }>(
+function withHarnessContext<T extends { memoryState: GitContextMemoryState; context?: unknown }>(
   route: T,
-): T & { harnessContext: { contextEngine: ReturnType<typeof buildGitMemoryHarnessContextFromMemoryState> } } {
+): Omit<T, "memoryState" | "context"> & {
+  harnessContext: { contextEngine: ReturnType<typeof buildGitMemoryHarnessContextFromMemoryState> };
+} {
+  const { memoryState, context: _context, ...publicRoute } = route;
   return {
-    ...route,
+    ...publicRoute,
     harnessContext: {
-      contextEngine: buildGitMemoryHarnessContextFromMemoryState(route.memoryState),
+      contextEngine: buildGitMemoryHarnessContextFromMemoryState(memoryState),
     },
   };
 }

@@ -111,6 +111,9 @@ describe("git-context skill", () => {
     });
     expect(sessionRecentCommits[0]).not.toHaveProperty("trailers");
     expect(sessionRecentCommits[0]).not.toHaveProperty("conversationSeq");
+    expect(result.v2?.structuredContent).not.toHaveProperty("knownTasks");
+    expect(result.v2?.structuredContent).not.toHaveProperty("tasks");
+    expect(result.v2?.structuredContent).not.toHaveProperty("memoryState");
   });
 
   it("lists task routing snapshots for a session", async () => {
@@ -268,19 +271,35 @@ describe("git-context skill", () => {
       runId: "R-20260628-0003",
       conversationRefs: [{ fromSeq: pending.userMessage.seq, toSeq: pending.userMessage.seq }],
       reason: "User is asking to continue previous upload UI work.",
-      memoryState: {
-        focus: {
-          status: "active",
-          taskId: prepared.uploadTask.taskId,
-        },
-        pendingTurn: {
-          text: "continue upload UI redesign",
-          routingStatus: "bound",
-          taskId: prepared.uploadTask.taskId,
-          runId: "R-20260628-0003",
+      harnessContext: {
+        contextEngine: {
+          focus: {
+            status: "active",
+            workId: prepared.uploadTask.taskId,
+          },
+          pendingTurn: {
+            text: "continue upload UI redesign",
+            routingStatus: "bound",
+            workId: prepared.uploadTask.taskId,
+            runId: "R-20260628-0003",
+          },
+          task: {
+            workId: prepared.uploadTask.taskId,
+            title: "Fix upload handling",
+            open: ["Verify upload validation patch."],
+          },
         },
       },
     });
+    expect(result.v2?.structuredContent).not.toHaveProperty("memoryState");
+    expect(result.v2?.structuredContent).not.toHaveProperty("context");
+    expect(result.v2?.structuredContent).not.toHaveProperty("knownTasks");
+    expect((result.v2?.structuredContent as {
+      harnessContext?: { contextEngine?: { task?: { recentRuns?: unknown[] } } };
+    }).harnessContext?.contextEngine?.task?.recentRuns).toEqual(expect.arrayContaining([expect.objectContaining({
+      runId: "R-20260628-0002",
+      summary: "Patched upload validation handling.",
+    })]));
 
     const driver = new GitMemoryWorktreeGitDriver(prepared.session.repoPath);
     const taskConversation = await driver.readFile(
@@ -289,6 +308,51 @@ describe("git-context skill", () => {
     ) ?? "";
     expect(taskConversation).toContain("continue upload UI redesign");
     expect(taskConversation).toContain("Run: R-20260628-0003");
+  });
+
+  it("keeps deeper task lists retrievable on demand after route activation", async () => {
+    const prepared = await prepareMultiTaskGitContextSession();
+    const runtime = createGitMemoryRuntime({
+      contextStoreDir: prepared.contextStoreDir,
+      timezone: "Asia/Kolkata",
+      agentId: "local",
+      store: prepared.store,
+    });
+    await runtime.prepareUserTurn({
+      userMessage: "continue upload UI redesign",
+      at: "2026-06-28T11:05:00+05:30",
+    });
+    const skill = createGitContextSkill({
+      contextStoreDir: prepared.contextStoreDir,
+      gitMemoryRuntime: runtime,
+    });
+    const activateTool = requiredTool(skill, "git_context_activate_task_for_turn");
+    const listTool = requiredTool(skill, "git_context_list_tasks");
+
+    const activated = await activateTool.execute({
+      sessionId: prepared.session.sessionId,
+      taskId: prepared.uploadTask.taskId,
+      reason: "User is asking to continue previous upload UI work.",
+    });
+    const listed = await listTool.execute({
+      sessionId: prepared.session.sessionId,
+    });
+
+    expect(activated.ok).toBe(true);
+    expect(activated.v2?.structuredContent).not.toHaveProperty("memoryState");
+    expect(listed.ok).toBe(true);
+    expect(listed.v2?.structuredContent).toMatchObject({
+      tasks: [
+        {
+          taskId: prepared.uploadTask.taskId,
+          title: "Fix upload handling",
+        },
+        {
+          taskId: prepared.reminderTask.taskId,
+          title: "Fix reminder scheduling",
+        },
+      ],
+    });
   });
 
   it("creates a new task for the current pending turn through the runtime", async () => {
@@ -330,19 +394,30 @@ describe("git-context skill", () => {
         title: "Fix notification digest",
         objective: "Investigate missing notification digest delivery.",
       },
-      memoryState: {
-        focus: {
-          status: "active",
-          taskId: "W-20260628-0003",
-        },
-        pendingTurn: {
-          text: "start notification digest investigation",
-          routingStatus: "bound",
-          taskId: "W-20260628-0003",
-          runId: "R-20260628-0003",
+      harnessContext: {
+        contextEngine: {
+          focus: {
+            status: "active",
+            workId: "W-20260628-0003",
+          },
+          pendingTurn: {
+            text: "start notification digest investigation",
+            routingStatus: "bound",
+            workId: "W-20260628-0003",
+            runId: "R-20260628-0003",
+          },
+          task: {
+            workId: "W-20260628-0003",
+            title: "Fix notification digest",
+            objective: "Investigate missing notification digest delivery.",
+            open: ["Investigate missing notification digest delivery."],
+          },
         },
       },
     });
+    expect(result.v2?.structuredContent).not.toHaveProperty("memoryState");
+    expect(result.v2?.structuredContent).not.toHaveProperty("context");
+    expect(result.v2?.structuredContent).not.toHaveProperty("knownTasks");
 
     const created = result.v2?.structuredContent as { ref: string };
     const driver = new GitMemoryWorktreeGitDriver(prepared.session.repoPath);
@@ -386,15 +461,20 @@ describe("git-context skill", () => {
         { taskId: prepared.uploadTask.taskId },
         { taskId: prepared.reminderTask.taskId },
       ],
-      memoryState: {
-        pendingTurn: {
-          fromSeq: pending.userMessage.seq,
-          toSeq: pending.userMessage.seq,
-          text: "upload",
-          routingStatus: "clarifying",
+      harnessContext: {
+        contextEngine: {
+          pendingTurn: {
+            fromSeq: pending.userMessage.seq,
+            toSeq: pending.userMessage.seq,
+            text: "upload",
+            routingStatus: "clarifying",
+          },
         },
       },
     });
+    expect(result.v2?.structuredContent).not.toHaveProperty("memoryState");
+    expect(result.v2?.structuredContent).not.toHaveProperty("context");
+    expect(result.v2?.structuredContent).not.toHaveProperty("knownTasks");
     expect(result.v2?.structuredContent).not.toHaveProperty("runId");
     expect(runtime.getSessionWrites(prepared.session.sessionId)).not.toEqual(expect.arrayContaining([
       expect.objectContaining({

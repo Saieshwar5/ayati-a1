@@ -20,7 +20,9 @@ The runtime flow is:
 ```text
 user message
 -> context engine records the global conversation on main
--> task resolver creates/selects a task branch when task work is needed
+-> runtime auto-binds obvious same-task continuation, or the agent uses
+   git-context read/search and turn-aware routing tools when ownership is
+   semantic or ambiguous
 -> agent loop receives compact git context
 -> completed run writes task state, run summaries, evidence, and commit metadata
 ```
@@ -43,9 +45,25 @@ The model-facing state uses `State view.context.gitContext`. It contains:
 - task-local Markdown conversation tail from the task branch
 - recent run summaries, compact commit summaries, and evidence summaries
 
-Ambiguous task resolution is handled before the agent loop runs. The app asks
-the user to choose rather than asking the model to guess from multiple possible
-tasks.
+The default harness context is intentionally compact. It should include the
+pending turn, active task identity/state, active task conversation tail, recent
+active-task runs, recent evidence summaries, assets, a small global
+conversation tail, and pending/degraded git writes.
+
+It should not include every task branch, every old conversation, full git logs,
+full run/action histories, raw evidence, or old session data. Those are
+retrieved on demand through structured git-context read/search tools such as
+`git_context_search_tasks`, `git_context_read_task`, `git_context_log`,
+`git_context_read_evidence`, and `git_context_search_evidence`.
+
+Turn-aware routing tools may update the active harness context, but their
+model-facing result should not expose the runtime's full internal memory cache.
+They return route identifiers plus refreshed harness context; task lists and
+deep history remain explicit retrieval operations.
+
+Ambiguous task ownership can be marked through the turn-aware clarification
+path. The runtime does not allocate a run id or append the pending turn to a
+task branch until ownership is clear.
 
 ## Conversation
 
@@ -94,7 +112,8 @@ turn ids in memory to correlate a prepared user turn with an assistant response.
 
 ## Focus And Events
 
-The active git branch is the focus source.
+The active task custom ref is the preferred focus source, with the current git
+branch as a fallback.
 
 ```text
 main = no active task
