@@ -616,6 +616,93 @@ function activateTaskForTurnFixtureTool(): ToolDefinition {
   };
 }
 
+function askClarificationForTurnFixtureTool(): ToolDefinition {
+  return {
+    name: "git_context_ask_clarification_for_turn",
+    description: "Fixture pending-turn task clarification tool.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        sessionId: { type: "string" },
+        reason: { type: "string" },
+        candidateTaskIds: {
+          type: "array",
+          items: { type: "string" },
+        },
+      },
+    },
+    outputSchema: { type: "object" },
+    annotations: {
+      domain: "git_context",
+      readOnly: false,
+      mutatesWorkspace: true,
+      mutatesExternalWorld: false,
+      destructive: false,
+      idempotent: false,
+      retrySafe: false,
+      longRunning: false,
+    },
+    async execute() {
+      const harnessContext = {
+        contextEngine: {
+          session: {
+            sessionId: "S-20260627-local",
+            conversationTail: [{
+              seq: 3,
+              role: "user",
+              at: "2026-06-27T10:10:00+05:30",
+              text: "continue upload",
+            }],
+            activityTail: [],
+            assetCount: 0,
+          },
+          pendingTurn: {
+            fromSeq: 3,
+            toSeq: 3,
+            text: "continue upload",
+            at: "2026-06-27T10:10:00+05:30",
+            routingStatus: "clarifying",
+          },
+          focus: {
+            status: "active",
+            ref: "refs/heads/task/W-20260627-0001-reminders",
+            workId: "W-20260627-0001",
+          },
+          task: {
+            ref: "refs/heads/task/W-20260627-0001-reminders",
+            workId: "W-20260627-0001",
+            title: "Fix reminders",
+            objective: "Fix reminders",
+            status: "in_progress",
+            completed: [],
+            open: ["Inspect reminder drift"],
+            blockers: [],
+            facts: [],
+            assets: [],
+            recentRuns: [],
+            recentCommits: [],
+            recentEvidence: [],
+          },
+        },
+      };
+      return {
+        ok: true,
+        output: "Pending turn marked as needing task clarification.",
+        v2: {
+          transportOk: true,
+          operationStatus: "succeeded",
+          code: "GIT_CONTEXT_TURN_CLARIFICATION_REQUESTED",
+          message: "Pending turn marked as needing task clarification.",
+          structuredContent: {
+            status: "ambiguous",
+            harnessContext,
+          },
+        },
+      };
+    },
+  };
+}
+
 describe("IVecEngine", () => {
   it("is constructible without options", () => {
     const engine = createEngine();
@@ -814,6 +901,79 @@ describe("IVecEngine", () => {
         workId: "W-20260627-0002",
         title: "Upload UI redesign",
       });
+    } finally {
+      rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it("lets the agent mark an unbound pending turn as clarifying without committing task work", async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "ayati-eng-git-clarify-"));
+    try {
+      const provider = createMockProvider({
+        generateTurn: vi.fn<(input: LlmTurnInput) => Promise<LlmTurnOutput>>()
+          .mockResolvedValueOnce({
+            type: "assistant",
+            content: JSON.stringify({
+              kind: "act",
+              action: {
+                mode: "single",
+                calls: [{
+                  id: "clarify_upload",
+                  tool: "git_context_ask_clarification_for_turn",
+                  input: {
+                    sessionId: "S-20260627-local",
+                    reason: "The phrase upload could refer to multiple existing tasks.",
+                    candidateTaskIds: ["W-20260627-0002", "W-20260627-0003"],
+                  },
+                  dependsOn: [],
+                  purpose: "Hold the pending turn until the user chooses the upload task.",
+                }],
+                allowedTools: ["git_context_ask_clarification_for_turn"],
+                assertions: [],
+              },
+            }),
+          })
+          .mockResolvedValueOnce({
+            type: "assistant",
+            content: JSON.stringify({
+              kind: "ask_user",
+              question: "Which upload task do you mean: upload API or upload UI redesign?",
+              reason: "Task ownership is ambiguous.",
+            }),
+          }),
+      });
+      const onReply = vi.fn();
+      const chatContextRuntime = createUnboundChatContextRuntime();
+      const toolExecutor = createToolExecutor([askClarificationForTurnFixtureTool()]);
+      const engine = createEngine({
+        onReply,
+        provider,
+        toolExecutor,
+        dataDir,
+        chatContextRuntime,
+        systemEventPolicy: createSystemEventPolicy(),
+      });
+
+      await engine.start();
+      engine.handleMessage("c1", { type: "chat", content: "continue upload" });
+
+      await vi.waitFor(() => {
+        expect(onReply).toHaveBeenCalledWith("c1", {
+          type: "feedback",
+          content: "Which upload task do you mean: upload API or upload UI redesign?",
+        });
+      });
+      expect(chatContextRuntime.routeTaskTurn).toHaveBeenCalledWith(expect.objectContaining({
+        autoOnly: true,
+      }));
+      expect(chatContextRuntime.completeTaskRun).not.toHaveBeenCalled();
+      expect(provider.generateTurn).toHaveBeenCalledTimes(2);
+      const secondStateView = extractStateViewFromProviderCall(provider, 1);
+      expect(secondStateView.context.gitContext.pendingTurn).toMatchObject({
+        routingStatus: "clarifying",
+      });
+      expect(secondStateView.context.gitContext.pendingTurn).not.toHaveProperty("workId");
+      expect(secondStateView.context.gitContext.pendingTurn).not.toHaveProperty("runId");
     } finally {
       rmSync(dataDir, { recursive: true, force: true });
     }

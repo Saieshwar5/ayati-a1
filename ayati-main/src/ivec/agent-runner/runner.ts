@@ -796,7 +796,7 @@ function validatePendingRoutingAction(input: ExecutePendingRoutingActionInput): 
     }
     if (!isGitContextAllowedDuringPendingRouting(call.tool)) {
       return [
-        `Tool '${call.tool}' cannot run while the current git-memory pending turn is unbound.`,
+        `Tool '${call.tool}' cannot run while the current git-memory pending turn is unbound or clarifying.`,
         "Use git-context read/search tools and then git_context_activate_task_for_turn, git_context_create_task_for_turn, or git_context_ask_clarification_for_turn before task execution.",
       ].join(" ");
     }
