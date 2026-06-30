@@ -1,0 +1,29 @@
+import { describe, expect, it } from "vitest";
+import {
+  GIT_CONTEXT_READ_ONLY_TOOL_NAMES,
+  GIT_CONTEXT_TURN_ROUTING_TOOL_NAMES,
+  isGitContextAllowedDuringPendingRouting,
+  isGitContextReadOnlyToolName,
+  isGitContextTurnRoutingToolName,
+} from "../../src/skills/builtins/git-context/tool-policy.js";
+
+describe("git-context tool policy", () => {
+  it("allows read-only and turn-aware routing tools during pending-turn routing", () => {
+    for (const toolName of GIT_CONTEXT_READ_ONLY_TOOL_NAMES) {
+      expect(isGitContextReadOnlyToolName(toolName)).toBe(true);
+      expect(isGitContextAllowedDuringPendingRouting(toolName)).toBe(true);
+    }
+
+    for (const toolName of GIT_CONTEXT_TURN_ROUTING_TOOL_NAMES) {
+      expect(isGitContextTurnRoutingToolName(toolName)).toBe(true);
+      expect(isGitContextAllowedDuringPendingRouting(toolName)).toBe(true);
+    }
+  });
+
+  it("blocks low-level branch and normal work tools during pending-turn routing", () => {
+    expect(isGitContextAllowedDuringPendingRouting("git_context_create_task")).toBe(false);
+    expect(isGitContextAllowedDuringPendingRouting("git_context_switch_task")).toBe(false);
+    expect(isGitContextAllowedDuringPendingRouting("shell")).toBe(false);
+    expect(isGitContextAllowedDuringPendingRouting("edit_file")).toBe(false);
+  });
+});

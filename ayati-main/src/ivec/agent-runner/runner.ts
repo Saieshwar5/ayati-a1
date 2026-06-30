@@ -68,7 +68,8 @@ import { planLocalRecovery } from "./failure-policy.js";
 import { createEvidenceTools } from "./evidence-tools.js";
 import { isEvidenceToolName } from "./observation-builder.js";
 import { deriveExecutionStatus } from "../verification-gates.js";
-import type { ToolDefinition, ToolResult } from "../../skills/types.js";
+import type { ToolResult } from "../../skills/types.js";
+import { isGitContextAllowedDuringPendingRouting } from "../../skills/builtins/git-context/tool-policy.js";
 
 interface MemoryRunContext {
   runHandle: MemoryRunHandle;
@@ -93,12 +94,6 @@ const noopRunRecorder: RunRecorder = {
     return;
   },
 };
-
-const TURN_ROUTING_TOOL_NAMES = new Set([
-  "git_context_activate_task_for_turn",
-  "git_context_create_task_for_turn",
-  "git_context_ask_clarification_for_turn",
-]);
 
 export async function runAgentLoop(
   deps: AgentLoopDeps,
@@ -799,7 +794,7 @@ function validatePendingRoutingAction(input: ExecutePendingRoutingActionInput): 
     if (!allowed.has(call.tool)) {
       return `Tool '${call.tool}' was not listed in action.allowedTools.`;
     }
-    if (!isPendingRoutingAllowedTool(input.selectedTools, call.tool)) {
+    if (!isGitContextAllowedDuringPendingRouting(call.tool)) {
       return [
         `Tool '${call.tool}' cannot run while the current git-memory pending turn is unbound.`,
         "Use git-context read/search tools and then git_context_activate_task_for_turn, git_context_create_task_for_turn, or git_context_ask_clarification_for_turn before task execution.",
@@ -932,14 +927,6 @@ function buildPendingRoutingVerifyOutput(actOutput: ActOutput): AgentActionExecu
     artifacts: [],
     usedRawArtifacts: [],
   };
-}
-
-function isPendingRoutingAllowedTool(selectedTools: ToolDefinition[], toolName: string): boolean {
-  if (TURN_ROUTING_TOOL_NAMES.has(toolName)) {
-    return true;
-  }
-  const tool = selectedTools.find((candidate) => candidate.name === toolName);
-  return tool?.annotations?.domain === "git_context" && tool.annotations.readOnly === true;
 }
 
 function extractTurnRoutingUpdate(calls: ActToolCallRecord[]): TurnRoutingUpdate | null {

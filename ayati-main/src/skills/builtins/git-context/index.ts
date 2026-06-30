@@ -114,7 +114,7 @@ const GIT_CONTEXT_PROMPT_BLOCK = [
   "Use git_context_create_task_for_turn when the current pending user turn starts new durable task work.",
   "Use git_context_ask_clarification_for_turn when the current pending user turn has ambiguous task ownership.",
   "Do not call a tool just to continue the already-active task; obvious same-task continuation is automatic.",
-  "Use git_context_create_task and git_context_switch_task only for controlled/manual routing outside a pending live turn.",
+  "Do not switch or create task branches with low-level branch tools during normal live turns; route pending turns through the turn-aware tools.",
   "Do not use git-context tools to edit project files, merge, reset, push, pull, or mutate external state.",
 ].join("\n");
 
@@ -140,8 +140,6 @@ export function createGitContextSkill(deps: GitContextSkillDeps): SkillDefinitio
       createActivateTaskForTurnTool(store, runtime),
       createCreateTaskForTurnTool(runtime),
       createAskClarificationForTurnTool(runtime),
-      createCreateTaskTool(store, runtime),
-      createSwitchTaskTool(store, runtime),
     ],
   };
 }
@@ -520,78 +518,6 @@ function createLogTool(store: GitMemoryDailySessionStore): ToolDefinition {
   };
 }
 
-function createSwitchTaskTool(
-  store: GitMemoryDailySessionStore,
-  runtime: GitMemoryRuntime | undefined,
-): ToolDefinition {
-  return {
-    name: "git_context_switch_task",
-    description: "Switch the active git-context session worktree to an existing task branch.",
-    inputSchema: sessionScopedInputSchema({
-      taskId: {
-        type: "string",
-        description: "Task id to switch to. Provide exactly one of taskId or branch.",
-      },
-      branch: {
-        type: "string",
-        description: "Task branch to switch to. Provide exactly one of taskId or branch.",
-      },
-      reason: {
-        type: "string",
-        description: "Short reason for switching task focus.",
-      },
-    }),
-    outputSchema: genericObjectOutputSchema,
-    annotations: gitContextMutatingAnnotations(),
-    resultContract: gitContextSucceededContract("task_switched"),
-    selectionHints: {
-      tags: ["git-context", "task", "branch", "switch", "routing", "mutating"],
-      aliases: ["switch git context task", "activate task branch", "change work branch"],
-      domain: "git_context",
-      priority: 5,
-    },
-    async execute(input, context): Promise<ToolResult> {
-      const parsed = parseSwitchTaskInput(input, context);
-      if ("ok" in parsed) {
-        return parsed;
-      }
-      try {
-        const before = await store.readTaskRoutingSnapshot(parsed.sessionId);
-        const taskId = await resolveTaskIdFromSelector(store, parsed);
-        const selected = runtime
-          ? await runtime.switchTask({
-            sessionId: parsed.sessionId,
-            taskId,
-            reason: parsed.reason,
-          })
-          : await store.selectTaskForTurn({
-            sessionId: parsed.sessionId,
-            taskId,
-            fromSeq: 0,
-            toSeq: 0,
-            reason: "task_switched",
-            summary: parsed.reason,
-          });
-        return okJsonResult({
-          code: "GIT_CONTEXT_TASK_SWITCHED",
-          message: "Git-context active task switched.",
-          structuredContent: {
-            sessionId: parsed.sessionId,
-            taskId: selected.taskId,
-            branch: selected.branch,
-            ref: selected.ref,
-            previousBranch: before.focus?.activeBranch ?? "main",
-            previousTaskId: before.focus?.activeTaskId,
-            reason: parsed.reason,
-          },
-        });
-      } catch (err) {
-        return gitContextMutationFailed(err);
-      }
-    },
-  };
-}
-
 function createActivateTaskForTurnTool(
   store: GitMemoryDailySessionStore,
   runtime: GitMemoryRuntime | undefined,
@@ -747,78 +673,6 @@ function createAskClarificationForTurnTool(runtime: GitMemoryRuntime | undefined
           code: "GIT_CONTEXT_TURN_CLARIFICATION_REQUESTED",
           message: "Pending turn marked as needing task clarification.",
           structuredContent: withHarnessContext(route),
-        });
-      } catch (err) {
-        return gitContextMutationFailed(err);
-      }
-    },
-  };
-}
-
-function createCreateTaskTool(
-  store: GitMemoryDailySessionStore,
-  runtime: GitMemoryRuntime | undefined,
-): ToolDefinition {
-  return {
-    name: "git_context_create_task",
-    description: "Create and activate a new git-context task branch.",
-    inputSchema: sessionScopedInputSchema({
-      title: {
-        type: "string",
-        description: "Short task title.",
-      },
-      objective: {
-        type: "string",
-        description: "Durable task objective.",
-      },
-      reason: {
-        type: "string",
-        description: "Short reason for creating a new task branch.",
-      },
-    }),
-    outputSchema: genericObjectOutputSchema,
-    annotations: gitContextMutatingAnnotations(),
-    resultContract: gitContextSucceededContract("task_created"),
-    selectionHints: {
-      tags: ["git-context", "task", "branch", "create", "routing", "mutating"],
-      aliases: ["create git context task", "start task branch", "new work branch"],
-      domain: "git_context",
-      priority: 5,
-    },
-    async execute(input, context): Promise<ToolResult> {
-      const parsed = parseCreateTaskInput(input, context);
-      if ("ok" in parsed) {
-        return parsed;
-      }
-      try {
-        const before = await store.readTaskRoutingSnapshot(parsed.sessionId);
-        const created = await (runtime ?? store).createTaskBranch({
-          sessionId: parsed.sessionId,
-          title: parsed.title,
-          objective: parsed.objective,
-          fromSeq: 0,
-          toSeq: 0,
-          state: {
-            summary: parsed.objective,
-            open: [parsed.objective],
-            next: parsed.objective,
-          },
-        });
-        return okJsonResult({
-          code: "GIT_CONTEXT_TASK_CREATED",
-          message: "Git-context task branch created.",
-          structuredContent: {
-            sessionId: parsed.sessionId,
-            taskId: created.taskId,
-            branch: created.branch,
-            ref: created.ref,
-            taskCommit: created.taskCommit,
-            previousBranch: before.focus?.activeBranch ?? "main",
-            previousTaskId: before.focus?.activeTaskId,
-            title: parsed.title,
-            objective: parsed.objective,
-            reason: parsed.reason,
-          },
         });
       } catch (err) {
         return gitContextMutationFailed(err);
@@ -1231,18 +1085,6 @@ function gitContextReadOnlyAnnotations(): ToolDefinition["annotations"] {
   return commonAnnotations({
     domain: "git_context",
     readOnly: true,
-    idempotent: true,
-    retrySafe: true,
-  });
-}
-
-function gitContextMutatingAnnotations(): ToolDefinition["annotations"] {
-  return commonAnnotations({
-    domain: "git_context",
-    readOnly: false,
-    mutatesWorkspace: true,
-    mutatesExternalWorld: false,
-    destructive: false,
     idempotent: true,
     retrySafe: true,
   });

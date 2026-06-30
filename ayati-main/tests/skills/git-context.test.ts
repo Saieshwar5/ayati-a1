@@ -8,10 +8,13 @@ import {
   GitMemoryDailySessionStore,
   GitMemoryWorktreeGitDriver,
   gitMemoryTaskAssetsPath,
-  gitMemoryTaskStatePath,
   renderGitMemoryCommitMessage,
 } from "../../src/context-engine/git-memory/index.js";
 import { createGitContextSkill } from "../../src/skills/builtins/git-context/index.js";
+import {
+  GIT_CONTEXT_READ_ONLY_TOOL_NAMES,
+  GIT_CONTEXT_TURN_ROUTING_TOOL_NAMES,
+} from "../../src/skills/builtins/git-context/tool-policy.js";
 
 describe("git-context skill", () => {
   it("lists known sessions without mutating git-memory repos", async () => {
@@ -208,258 +211,17 @@ describe("git-context skill", () => {
     });
   });
 
-  it("creates and activates a new git-context task branch", async () => {
-    const prepared = await prepareMultiTaskGitContextSession();
-    const driver = new GitMemoryWorktreeGitDriver(prepared.session.repoPath);
-    const mainLogBefore = await driver.log(GIT_MEMORY_MAIN_REF, 10);
-    const reminderLogBefore = await driver.log(prepared.reminderTask.ref, 10);
-    expect(await driver.currentBranch()).toBe(prepared.reminderTask.branch);
-
-    const skill = createGitContextSkill({ contextStoreDir: prepared.contextStoreDir });
-    const tool = requiredTool(skill, "git_context_create_task");
-
-    expect(tool.annotations).toMatchObject({
-      domain: "git_context",
-      readOnly: false,
-      mutatesWorkspace: true,
-      mutatesExternalWorld: false,
-      destructive: false,
-      idempotent: true,
-      retrySafe: true,
-    });
-
-    const result = await tool.execute({
-      sessionId: prepared.session.sessionId,
-      title: "Fix notification digest",
-      objective: "Investigate missing notification digest delivery.",
-      reason: "User started a new durable notification task.",
-    });
-
-    expect(result.ok).toBe(true);
-    expect(result.v2?.structuredContent).toMatchObject({
-      sessionId: prepared.session.sessionId,
-      taskId: "W-20260628-0003",
-      branch: "task/W-20260628-0003-fix-notification-digest",
-      ref: "refs/heads/task/W-20260628-0003-fix-notification-digest",
-      previousBranch: prepared.reminderTask.branch,
-      previousTaskId: prepared.reminderTask.taskId,
-      title: "Fix notification digest",
-      objective: "Investigate missing notification digest delivery.",
-      reason: "User started a new durable notification task.",
-    });
-    const created = result.v2?.structuredContent as { taskId: string; branch: string; ref: string };
-    expect(await driver.currentBranch()).toBe(created.branch);
-    expect(await driver.hasRef(created.ref)).toBe(true);
-
-    const snapshot = await prepared.store.readTaskRoutingSnapshot(prepared.session.sessionId);
-    expect(snapshot.focus).toMatchObject({
-      activeTaskId: created.taskId,
-      activeBranch: created.branch,
-    });
-    expect(snapshot.tasks).toEqual(expect.arrayContaining([
-      expect.objectContaining({
-        taskId: created.taskId,
-        branch: created.branch,
-        title: "Fix notification digest",
-        objective: "Investigate missing notification digest delivery.",
-        status: "open",
-        summary: "Investigate missing notification digest delivery.",
-        next: "Investigate missing notification digest delivery.",
-      }),
-    ]));
-    expect(await driver.log(GIT_MEMORY_MAIN_REF, 10)).toEqual(mainLogBefore);
-    expect(await driver.log(prepared.reminderTask.ref, 10)).toEqual(reminderLogBefore);
-  });
-
-  it("rejects invalid git-context task create requests", async () => {
+  it("does not expose low-level branch mutation tools to the agent", async () => {
     const prepared = await prepareMultiTaskGitContextSession();
     const skill = createGitContextSkill({ contextStoreDir: prepared.contextStoreDir });
-    const tool = requiredTool(skill, "git_context_create_task");
+    const toolNames = skill.tools.map((tool) => tool.name);
 
-    await expect(tool.execute({
-      sessionId: prepared.session.sessionId,
-      title: " ",
-      objective: "Investigate missing notification digest delivery.",
-      reason: "User started a new durable notification task.",
-    })).resolves.toMatchObject({
-      ok: false,
-      v2: {
-        code: "GIT_CONTEXT_INVALID_INPUT",
-      },
-    });
-
-    await expect(tool.execute({
-      sessionId: prepared.session.sessionId,
-      title: "Fix notification digest",
-      objective: "Investigate missing notification digest delivery.",
-    })).resolves.toMatchObject({
-      ok: false,
-      v2: {
-        code: "GIT_CONTEXT_INVALID_INPUT",
-      },
-    });
-  });
-
-  it("creates git-context tasks through the runtime when provided", async () => {
-    const prepared = await prepareMultiTaskGitContextSession();
-    const runtime = createGitMemoryRuntime({
-      contextStoreDir: prepared.contextStoreDir,
-      timezone: "Asia/Kolkata",
-      agentId: "local",
-    });
-    const skill = createGitContextSkill({
-      contextStoreDir: prepared.contextStoreDir,
-      gitMemoryRuntime: runtime,
-    });
-    const tool = requiredTool(skill, "git_context_create_task");
-
-    const result = await tool.execute({
-      sessionId: prepared.session.sessionId,
-      title: "Fix notification digest",
-      objective: "Investigate missing notification digest delivery.",
-      reason: "User started a new durable notification task.",
-    });
-
-    expect(result.ok).toBe(true);
-    const created = result.v2?.structuredContent as { taskId: string; branch: string; ref: string };
-    const driver = new GitMemoryWorktreeGitDriver(prepared.session.repoPath);
-    await driver.commitSyntheticFiles({
-      ref: created.ref,
-      files: {
-        [gitMemoryTaskStatePath(created.taskId)]: "{ invalid json",
-      },
-      message: "damage task state",
-    });
-    const memoryState = await runtime.buildMemoryState(prepared.session.sessionId);
-
-    expect(memoryState.focus).toMatchObject({
-      status: "active",
-      taskId: created.taskId,
-      branch: created.branch,
-    });
-    expect(memoryState.activeTask).toMatchObject({
-      taskId: created.taskId,
-      title: "Fix notification digest",
-      summary: "Investigate missing notification digest delivery.",
-    });
-    expect(runtime.getSessionWrites(prepared.session.sessionId)).toEqual(expect.arrayContaining([
-      expect.objectContaining({
-        type: "task_created",
-        label: "create_task_branch",
-        status: "committed",
-      }),
-    ]));
-  });
-
-  it("switches the active git-context task branch by task id", async () => {
-    const prepared = await prepareMultiTaskGitContextSession();
-    const driver = new GitMemoryWorktreeGitDriver(prepared.session.repoPath);
-    const mainLogBefore = await driver.log(GIT_MEMORY_MAIN_REF, 10);
-    const uploadLogBefore = await driver.log(prepared.uploadTask.ref, 10);
-    const reminderLogBefore = await driver.log(prepared.reminderTask.ref, 10);
-    expect(await driver.currentBranch()).toBe(prepared.reminderTask.branch);
-
-    const skill = createGitContextSkill({ contextStoreDir: prepared.contextStoreDir });
-    const tool = requiredTool(skill, "git_context_switch_task");
-
-    expect(tool.annotations).toMatchObject({
-      domain: "git_context",
-      readOnly: false,
-      mutatesWorkspace: true,
-      mutatesExternalWorld: false,
-      destructive: false,
-      idempotent: true,
-      retrySafe: true,
-    });
-
-    const result = await tool.execute({
-      sessionId: prepared.session.sessionId,
-      taskId: prepared.uploadTask.taskId,
-      reason: "User asked to continue upload validation work.",
-    });
-
-    expect(result.ok).toBe(true);
-    expect(result.v2?.structuredContent).toMatchObject({
-      sessionId: prepared.session.sessionId,
-      taskId: prepared.uploadTask.taskId,
-      branch: prepared.uploadTask.branch,
-      ref: prepared.uploadTask.ref,
-      previousBranch: prepared.reminderTask.branch,
-      previousTaskId: prepared.reminderTask.taskId,
-      reason: "User asked to continue upload validation work.",
-    });
-    expect(await driver.currentBranch()).toBe(prepared.uploadTask.branch);
-    expect(await driver.log(GIT_MEMORY_MAIN_REF, 10)).toEqual(mainLogBefore);
-    expect(await driver.log(prepared.uploadTask.ref, 10)).toEqual(uploadLogBefore);
-    expect(await driver.log(prepared.reminderTask.ref, 10)).toEqual(reminderLogBefore);
-  });
-
-  it("switches the active git-context task branch by branch selector", async () => {
-    const prepared = await prepareMultiTaskGitContextSession();
-    const skill = createGitContextSkill({ contextStoreDir: prepared.contextStoreDir });
-    const tool = requiredTool(skill, "git_context_switch_task");
-
-    const result = await tool.execute({
-      sessionId: prepared.session.sessionId,
-      branch: prepared.uploadTask.branch,
-      reason: "The user referenced the old upload branch.",
-    });
-
-    expect(result.ok).toBe(true);
-    expect(result.v2?.structuredContent).toMatchObject({
-      taskId: prepared.uploadTask.taskId,
-      branch: prepared.uploadTask.branch,
-      ref: prepared.uploadTask.ref,
-    });
-  });
-
-  it("switches git-context tasks through the runtime when provided", async () => {
-    const prepared = await prepareMultiTaskGitContextSession();
-    const runtime = createGitMemoryRuntime({
-      contextStoreDir: prepared.contextStoreDir,
-      timezone: "Asia/Kolkata",
-      agentId: "local",
-    });
-    const skill = createGitContextSkill({
-      contextStoreDir: prepared.contextStoreDir,
-      gitMemoryRuntime: runtime,
-    });
-    const tool = requiredTool(skill, "git_context_switch_task");
-
-    const result = await tool.execute({
-      sessionId: prepared.session.sessionId,
-      taskId: prepared.uploadTask.taskId,
-      reason: "User asked to continue upload validation work.",
-    });
-
-    expect(result.ok).toBe(true);
-    const driver = new GitMemoryWorktreeGitDriver(prepared.session.repoPath);
-    await driver.commitSyntheticFiles({
-      ref: prepared.uploadTask.ref,
-      files: {
-        [gitMemoryTaskStatePath(prepared.uploadTask.taskId)]: "{ invalid json",
-      },
-      message: "damage task state",
-    });
-    const memoryState = await runtime.buildMemoryState(prepared.session.sessionId);
-
-    expect(memoryState.focus).toMatchObject({
-      status: "active",
-      taskId: prepared.uploadTask.taskId,
-      branch: prepared.uploadTask.branch,
-    });
-    expect(memoryState.activeTask).toMatchObject({
-      taskId: prepared.uploadTask.taskId,
-      title: "Fix upload handling",
-      status: "in_progress",
-    });
-    expect(runtime.getSessionWrites(prepared.session.sessionId)).toEqual(expect.arrayContaining([
-      expect.objectContaining({
-        type: "task_switched",
-        label: "switch_task",
-        status: "committed",
-      }),
-    ]));
+    expect(toolNames).toEqual([
+      ...GIT_CONTEXT_READ_ONLY_TOOL_NAMES,
+      ...GIT_CONTEXT_TURN_ROUTING_TOOL_NAMES,
+    ]);
+    expect(toolNames).not.toContain("git_context_create_task");
+    expect(toolNames).not.toContain("git_context_switch_task");
   });
 
   it("activates an existing task for the current pending turn through the runtime", async () => {
@@ -641,10 +403,22 @@ describe("git-context skill", () => {
     ]));
   });
 
-  it("rejects invalid git-context task switch requests", async () => {
+  it("rejects invalid turn-aware task activation requests", async () => {
     const prepared = await prepareMultiTaskGitContextSession();
-    const skill = createGitContextSkill({ contextStoreDir: prepared.contextStoreDir });
-    const tool = requiredTool(skill, "git_context_switch_task");
+    const runtime = createGitMemoryRuntime({
+      contextStoreDir: prepared.contextStoreDir,
+      timezone: "Asia/Kolkata",
+      agentId: "local",
+    });
+    await runtime.prepareUserTurn({
+      userMessage: "continue upload work",
+      at: "2026-06-28T11:40:00+05:30",
+    });
+    const skill = createGitContextSkill({
+      contextStoreDir: prepared.contextStoreDir,
+      gitMemoryRuntime: runtime,
+    });
+    const tool = requiredTool(skill, "git_context_activate_task_for_turn");
 
     await expect(tool.execute({
       sessionId: prepared.session.sessionId,
