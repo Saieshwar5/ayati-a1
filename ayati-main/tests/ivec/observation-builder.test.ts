@@ -36,6 +36,7 @@ describe("tool output observations", () => {
       });
 
       expect(result.observation?.mode).toBe("full");
+      expect(result.observation?.retention).toBe("next_step");
       expect(result.observation?.content).toContain("3.5Gi used");
       expect(result.evidenceRef?.ref).toBe("evidence://ev_001_call_1");
       expect(result.rawOutputPath).toBe("raw/001-call_1-shell-output.txt");
@@ -112,6 +113,7 @@ describe("tool output observations", () => {
       });
 
       expect(result.observation?.mode).toBe("focused");
+      expect(result.observation?.retention).toBe("while_relevant");
       expect(result.observation?.content).toContain("Useful compact summary");
       expect(result.observation?.content).toContain("only useful context");
       expect(result.observation?.content).not.toContain("raw line 199");
@@ -160,6 +162,7 @@ describe("tool output observations", () => {
 
       expect(result.observation?.id).toBe("ctx_003_call_1");
       expect(result.observation?.purpose).toBe("Read saved process list lines");
+      expect(result.observation?.retention).toBe("next_step");
       expect(result.observation?.evidenceRef).toBe("evidence://ev_001_call_2");
       expect(result.observation?.sourceEvidenceRef).toBe("evidence://ev_001_call_2");
       expect(result.observation?.rawOutputPath).toBe("raw/001-call_2-shell-output.txt");
@@ -216,6 +219,37 @@ describe("tool output observations", () => {
         evidenceRef: "evidence://ev_001_call_1",
         matchCount: 1,
       });
+    } finally {
+      cleanup(runPath);
+    }
+  });
+
+  it("marks very large previews as evidence-only hot context", async () => {
+    const runPath = makeTmpDir();
+    try {
+      const hugeOutput = Array.from({ length: 30_000 }, (_, index) => `line ${index + 1}`).join("\n");
+      const result = await buildToolObservation({
+        runPath,
+        stepNumber: 4,
+        call: {
+          id: "call_1",
+          tool: "shell",
+          input: {},
+          dependsOn: [],
+        },
+        record: {
+          callId: "call_1",
+          tool: "shell",
+          input: {},
+          output: hugeOutput,
+        },
+      });
+
+      expect(result.observation?.mode).toBe("large_ref");
+      expect(result.observation?.retention).toBe("evidence_only");
+      expect(result.observation?.availableActions).toEqual(["search", "read_lines", "tail"]);
+      expect(result.evidenceRef?.truncated).toBe(true);
+      expect(result.evidenceRef?.access).toEqual(["search", "read_lines", "tail"]);
     } finally {
       cleanup(runPath);
     }

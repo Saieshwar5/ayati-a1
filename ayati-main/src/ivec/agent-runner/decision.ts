@@ -622,10 +622,11 @@ Decision rules:
 - Treat State view.progress as the authoritative current task progress. It may be absent on the first decision.
 - Use State view.workingFeedback as the latest harness feedback. Correct the specific failed tool call or protocol issue before trying a different path.
 - Use State view.observations.latest as the latest real tool output cards. If these cards answer the user, reply instead of rerunning equivalent tools.
+- Treat observations as hot bounded context. Respect each card's retention: next_step is temporary, while_relevant can guide nearby work, and evidence_only means use evidence tools before relying on the preview.
 - Use State view.trace.recentSteps only as compact execution history, not as evidence.
 - Use State view.trace.recentFailures to avoid repeating failed paths.
 - Do not use workingNotes as factual memory; the harness owns tool-output context.
-- Use evidence tools for truncated or chunked evidence before rerunning the original output-producing tool.
+- Use evidence tools for truncated, chunked, or evidence_only output before rerunning the original output-producing tool.
 - If State view.progress.status is "done", return a reply. Do not call more tools.
 - Autonomous execution policy: for actionable user requests, prefer progress over discussion.
 - Treat preference gaps as assumptions, not blockers, when reasonable safe defaults exist.

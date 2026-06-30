@@ -65,6 +65,30 @@ Ambiguous task ownership can be marked through the turn-aware clarification
 path. The runtime does not allocate a run id or append the pending turn to a
 task branch until ownership is clear.
 
+## Hot Tool Context
+
+Tool output shown to the model is hot, bounded context, not durable task
+memory. The agent should see enough raw context to make the next decision, but
+large files, command logs, and evidence slices should not remain in every prompt
+for the whole run.
+
+The runtime exposes recent tool cards in `State view.observations.latest`.
+Each card has deterministic retention metadata:
+
+- `next_step`: temporary output for the next decision, such as command output
+  or a saved-evidence reread.
+- `while_relevant`: compact file/search/list context that can guide nearby
+  work.
+- `evidence_only`: a preview of very large output; use evidence tools before
+  relying on the preview.
+
+Raw output is still available through run-scoped evidence refs and evidence
+tools (`evidence_search`, `evidence_read_lines`, `evidence_tail`, and
+`evidence_next_chunk`). Evidence rereads can help the next decision, but they
+should not become durable task notes by default. Durable task facts should come
+from verification and progress reduction, not from keeping arbitrary raw slices
+in long-lived context.
+
 ## Conversation
 
 Conversation is canonical as Markdown:

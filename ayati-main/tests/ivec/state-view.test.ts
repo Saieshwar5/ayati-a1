@@ -204,6 +204,7 @@ describe("buildAgentStateView", () => {
           tool: "read_file",
           status: "success",
           mode: "summary",
+          retention: "while_relevant",
           content: "Read state-view.ts.",
           hasMore: false,
         }],
@@ -233,6 +234,7 @@ describe("buildAgentStateView", () => {
       userInputNeeded: "Can I edit the prompt?",
     });
     expect(stateView.observations?.latest).toHaveLength(1);
+    expect(stateView.observations?.latest[0]?.retention).toBe("while_relevant");
     expect(stateView.trace?.recentSteps?.map((step) => step.step)).toEqual([1]);
     expect(stateView.workingFeedback?.latest[0]).toMatchObject({
       source: "tool_execution",
