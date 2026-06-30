@@ -106,6 +106,52 @@ describe("buildAgentStateView", () => {
     expect(context).not.toHaveProperty("sessionWork");
   });
 
+  it("adds routing feedback for an unbound pending turn", () => {
+    const state = createLoopState({
+      harnessContext: createHarnessContext({
+        contextEngine: createGitContext({
+          pendingTurn: {
+            fromSeq: 4,
+            toSeq: 4,
+            text: "add another story",
+            at: "2026-06-27T10:02:00.000Z",
+            routingStatus: "unbound",
+          },
+        }),
+      }),
+    });
+
+    expect(buildAgentStateView(state).workingFeedback?.latest[0]).toMatchObject({
+      severity: "warning",
+      source: "tool_validation",
+      message: expect.stringContaining("pending turn is unbound"),
+      retryHint: expect.stringContaining("git_context_activate_task_for_turn"),
+    });
+  });
+
+  it("adds ask-user feedback for a clarifying pending turn", () => {
+    const state = createLoopState({
+      harnessContext: createHarnessContext({
+        contextEngine: createGitContext({
+          pendingTurn: {
+            fromSeq: 4,
+            toSeq: 4,
+            text: "build it",
+            at: "2026-06-27T10:02:00.000Z",
+            routingStatus: "clarifying",
+          },
+        }),
+      }),
+    });
+
+    expect(buildAgentStateView(state).workingFeedback?.latest[0]).toMatchObject({
+      severity: "warning",
+      source: "tool_validation",
+      message: expect.stringContaining("pending turn is clarifying"),
+      retryHint: expect.stringContaining("decision_ask_user"),
+    });
+  });
+
   it("builds timeline from git conversation tail", () => {
     const state = createLoopState({
       currentSeq: 3,

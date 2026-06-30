@@ -120,6 +120,11 @@ export function buildAgentStateView(state: LoopState): AgentStateView {
 
 function buildWorkingFeedbackView(state: LoopState): PromptWorkingFeedback | undefined {
   const latest: PromptWorkingFeedbackItem[] = [];
+  const pendingTurnFeedback = buildPendingTurnWorkingFeedback(state);
+  if (pendingTurnFeedback) {
+    latest.push(pendingTurnFeedback);
+  }
+
   const toolLoadFeedback = buildToolLoadWorkingFeedback(state.lastToolLoad);
   if (toolLoadFeedback) {
     latest.push(toolLoadFeedback);
@@ -139,6 +144,27 @@ function buildWorkingFeedbackView(state: LoopState): PromptWorkingFeedback | und
   }
 
   return latest.length > 0 ? { latest: latest.slice(-4) } : undefined;
+}
+
+function buildPendingTurnWorkingFeedback(state: LoopState): PromptWorkingFeedbackItem | undefined {
+  const pendingTurn = state.harnessContext.contextEngine?.pendingTurn;
+  if (pendingTurn?.routingStatus === "unbound") {
+    return {
+      severity: "warning",
+      source: "tool_validation",
+      message: "The current git-context pending turn is unbound. Normal task tools are not valid until this turn is routed to an existing task, a new task, or clarification.",
+      retryHint: "Use git-context read/search tools if needed, then call git_context_activate_task_for_turn, git_context_create_task_for_turn, or git_context_ask_clarification_for_turn.",
+    };
+  }
+  if (pendingTurn?.routingStatus === "clarifying") {
+    return {
+      severity: "warning",
+      source: "tool_validation",
+      message: "The current git-context pending turn is clarifying. Do not call executable tools while task ownership is unresolved.",
+      retryHint: "Ask the user which task or target they mean with decision_ask_user.",
+    };
+  }
+  return undefined;
 }
 
 function buildToolLoadWorkingFeedback(result: ToolLoadResult | undefined): PromptWorkingFeedbackItem | undefined {

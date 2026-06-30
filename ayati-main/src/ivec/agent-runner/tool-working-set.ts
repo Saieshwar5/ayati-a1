@@ -2,6 +2,10 @@ import type { ToolExecutionContext, ToolDefinition } from "../../skills/types.js
 import type { ToolExecutor } from "../../skills/tool-executor.js";
 import type { ActToolCallRecord, LoopState } from "../types.js";
 import type { ToolCatalog, ToolCatalogEntry } from "./tool-catalog.js";
+import {
+  GIT_CONTEXT_READ_ONLY_TOOL_NAMES,
+  GIT_CONTEXT_TURN_ROUTING_TOOL_NAMES,
+} from "../../skills/builtins/git-context/tool-policy.js";
 
 export interface ToolLoadRequest {
   query?: string;
@@ -277,6 +281,19 @@ export class ToolWorkingSetManager {
 }
 
 function buildDeterministicLoadRequest(state: LoopState): ToolLoadRequest {
+  const pendingTurnStatus = state.harnessContext.contextEngine?.pendingTurn?.routingStatus;
+  if (pendingTurnStatus === "unbound") {
+    return {
+      toolNames: [
+        ...GIT_CONTEXT_READ_ONLY_TOOL_NAMES,
+        ...GIT_CONTEXT_TURN_ROUTING_TOOL_NAMES,
+      ],
+    };
+  }
+  if (pendingTurnStatus === "clarifying") {
+    return {};
+  }
+
   const text = [
     state.userMessage,
     state.workState.summary,

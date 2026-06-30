@@ -1,4 +1,7 @@
 import type { ToolDefinition } from "../../skills/types.js";
+import {
+  isGitContextAllowedDuringPendingRouting,
+} from "../../skills/builtins/git-context/tool-policy.js";
 import type { LoopState } from "../types.js";
 
 export function selectToolsForDecision(
@@ -6,8 +9,17 @@ export function selectToolsForDecision(
   toolDefinitions: ToolDefinition[],
   limit: number,
 ): ToolDefinition[] {
-  if (toolDefinitions.length <= limit) {
-    return [...toolDefinitions];
+  const pendingTurnStatus = state.harnessContext.contextEngine?.pendingTurn?.routingStatus;
+  if (pendingTurnStatus === "clarifying") {
+    return [];
+  }
+
+  const candidateTools = pendingTurnStatus === "unbound"
+    ? toolDefinitions.filter((tool) => isGitContextAllowedDuringPendingRouting(tool.name))
+    : toolDefinitions;
+
+  if (candidateTools.length <= limit) {
+    return [...candidateTools];
   }
 
   const normalizedLimit = Math.max(0, Math.floor(limit));
@@ -17,7 +29,7 @@ export function selectToolsForDecision(
 
   const query = buildToolSelectionQuery(state);
   const tokens = tokenize(query);
-  const scored = toolDefinitions.map((tool, index) => ({
+  const scored = candidateTools.map((tool, index) => ({
     tool,
     index,
     score: scoreTool(tool, tokens, query),

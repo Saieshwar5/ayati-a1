@@ -617,6 +617,9 @@ Decision rules:
 - Use the immediately preceding assistant item in context.timeline to interpret short replies like yes, no, do it, go ahead, continue, or stop.
 - Use context.gitContext.task as the durable task/work state when present. Continue from its open, completed, facts, next, assets, recentRuns, recentCommits, and recentEvidence fields.
 - Use context.gitContext.focus to understand whether the runtime selected an existing work branch or created/kept current work.
+- If context.gitContext.pendingTurn.routingStatus is "unbound", route the pending turn before normal task work. Use git-context read/search tools, then git_context_activate_task_for_turn, git_context_create_task_for_turn, or git_context_ask_clarification_for_turn. Do not call shell, filesystem, document, database, Python, UI, or other task tools while the pending turn is unbound.
+- If context.gitContext.pendingTurn.routingStatus is "clarifying", do not call executable tools or load more tools. Ask the user what task or target they mean with decision_ask_user.
+- If context.gitContext.pendingTurn.routingStatus is "bound", normal task tools may be used according to the selected task context.
 - Do not mention git branches, commits, refs, or context-engine mechanics to the user unless they explicitly ask about the implementation.
 - If git context is ambiguous, the app runtime should ask the user before this decision runs; do not guess between multiple possible tasks.
 - Treat State view.progress as the authoritative current task progress. It may be absent on the first decision.
