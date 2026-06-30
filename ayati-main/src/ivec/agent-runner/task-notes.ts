@@ -7,15 +7,11 @@ import type { ActOutput, ActToolCallRecord, TaskNote, ToolObservation } from "..
 const MAX_NEW_NOTES_PER_ACTION = 3;
 const NOTE_TEXT_CHARS = 420;
 
-const TASK_EXPIRY_TOOLS = new Set([
+const DURABLE_NOTE_TOOLS = new Set([
   "read_file",
   "search_in_files",
   "find_files",
   "list_directory",
-  "evidence_next_chunk",
-  "evidence_search",
-  "evidence_read_lines",
-  "evidence_tail",
   "dataset_query",
   "document_query",
 ]);
@@ -44,7 +40,7 @@ function buildTaskNote(call: ActToolCallRecord): TaskNote | undefined {
     id: buildNoteId(call, source),
     text: truncate(`${source}: ${detail}`, NOTE_TEXT_CHARS),
     source,
-    expires: TASK_EXPIRY_TOOLS.has(call.tool) ? "task" : "next_step",
+    expires: DURABLE_NOTE_TOOLS.has(call.tool) ? "task" : "next_step",
   };
 }
 

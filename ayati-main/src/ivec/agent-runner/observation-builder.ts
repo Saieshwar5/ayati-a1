@@ -6,7 +6,13 @@ import {
   renderContextObservation,
 } from "../../skills/observations/context-observation.js";
 import type { AgentToolCallSpec } from "./decision.js";
-import type { ActToolCallRecord, EvidenceAccessMode, ToolObservation, WorkEvidenceRef } from "../types.js";
+import type {
+  ActToolCallRecord,
+  EvidenceAccessMode,
+  ToolObservation,
+  ToolObservationRetention,
+  WorkEvidenceRef,
+} from "../types.js";
 
 const SMALL_OUTPUT_CHARS = 12_000;
 const MEDIUM_OUTPUT_CHARS = 120_000;
@@ -127,6 +133,7 @@ export async function buildToolObservation(input: ToolObservationBuildInput): Pr
     ...(input.call.purpose ? { purpose: input.call.purpose } : {}),
     status: input.record.error ? "failed" : "success",
     mode,
+    retention: resolveRetention(input.call.tool, mode),
     content,
     ...(rawOutputPath ? { rawOutputPath } : {}),
     ...(observationEvidenceRef ? { evidenceRef: observationEvidenceRef } : {}),
@@ -217,6 +224,19 @@ function resolveAccess(mode: ToolObservation["mode"], hasRawOutput: boolean): Ev
     return ["search", "read_lines", "tail"];
   }
   return ["full", "search", "read_lines", "tail"];
+}
+
+function resolveRetention(toolName: string, mode: ToolObservation["mode"]): ToolObservationRetention {
+  if (EVIDENCE_TOOLS.has(toolName)) {
+    return "next_step";
+  }
+  if (mode === "large_ref") {
+    return "evidence_only";
+  }
+  if (toolName === "read_file" || toolName === "search_in_files" || toolName === "find_files" || toolName === "list_directory") {
+    return "while_relevant";
+  }
+  return "next_step";
 }
 
 function buildObservationContent(input: {

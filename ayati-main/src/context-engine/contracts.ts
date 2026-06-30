@@ -7,7 +7,7 @@ export interface ContextConversationRecord {
   text: string;
 }
 
-export type ContextSessionEventRecord =
+export type ContextSessionActivityRecord =
   | {
       seq: number;
       type: "session_started";
@@ -27,13 +27,6 @@ export type ContextSessionEventRecord =
       workId: string;
       branch: string;
       ref: string;
-    }
-  | {
-      seq: number;
-      type: "focus_changed";
-      at: string;
-      to: string;
-      from?: string;
     }
   | {
       seq: number;
@@ -110,16 +103,65 @@ export interface ContextCommitSummary {
   commit: string;
   subject: string;
   summary?: string;
-  trailers: unknown;
+  event?: string;
+  status?: string;
+  at?: string;
+  workId?: string;
+  runId?: string;
+  branch?: string;
+}
+
+export interface ContextTaskEvidenceSummary {
+  runId: string;
+  workId: string;
+  step?: number;
+  actionId?: string;
+  tool: string;
+  status?: string;
+  summary: string;
+  evidenceRef?: string;
+  artifacts: string[];
+  facts: string[];
+  accessModes: string[];
+  outputSize?: number;
+  lineCount?: number;
+  truncated?: boolean;
+  source?: Record<string, unknown>;
+}
+
+export interface ContextPendingWrite {
+  id: string;
+  type: string;
+  label: string;
+  status: "pending" | "writing" | "failed";
+  createdAt: string;
+  startedAt?: string;
+  failedAt?: string;
+  error?: string;
+}
+
+export interface ContextPendingTurn {
+  fromSeq: number;
+  toSeq: number;
+  text: string;
+  at: string;
+  routingStatus: "unbound" | "bound" | "clarifying";
+  workId?: string;
+  branch?: string;
+  runId?: string;
 }
 
 export interface ContextEngineMachineContext {
   session: {
     sessionId: string;
     conversationTail: ContextConversationRecord[];
-    eventTail: ContextSessionEventRecord[];
+    conversationMarkdownTail?: string;
+    activityTail: ContextSessionActivityRecord[];
+    recentCommits?: ContextCommitSummary[];
     assetCount: number;
   };
+  pendingWrites?: ContextPendingWrite[];
+  pendingTurn?: ContextPendingTurn;
   focus: ContextFocus;
   task?: {
     ref: string;
@@ -132,9 +174,11 @@ export interface ContextEngineMachineContext {
     blockers: string[];
     facts: ContextTaskFact[];
     next?: string;
+    conversationMarkdownTail?: string;
     assets: TaskAssetRecord[];
     recentRuns: ContextTaskRunSummary[];
     recentCommits: ContextCommitSummary[];
+    recentEvidence: ContextTaskEvidenceSummary[];
   };
 }
 
@@ -173,6 +217,10 @@ export interface HarnessStepSummaryForContext {
   executionContract?: string;
   evidenceSummary?: string;
   evidenceItems?: string[];
+  evidenceSource?: Record<string, unknown>;
+  outputSize?: number;
+  lineCount?: number;
+  truncated?: boolean;
   workState?: HarnessWorkStateForContext;
 }
 

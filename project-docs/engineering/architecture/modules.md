@@ -4,8 +4,9 @@ Backend package: `ayati-main`
 
 - `src/app`: bootstrap and runtime wiring.
 - `src/ivec`: `IVecEngine`, decision-action-reducer runner, state view, context pack, tool selection, progress reduction, session rotation, and system-event policy.
-- `src/context-engine`: daily git context engine for conversation, focus,
-  work branches, task files, run commits, and machine context packs.
+- `src/context-engine`: daily git context engine for global conversation,
+  pending-turn routing, active-task refs, work branches, task files, evidence,
+  run commits, and machine context packs.
 - `src/context`: base prompt, soul, static context, and policy loading.
 - `src/prompt`: static prompt section helpers and token estimation.
 - `src/core`: provider/plugin contracts, registries, system ingress, inbound queue, and plugin loading.

@@ -9,10 +9,14 @@ import type { AgentResponseKind, MemoryRunHandle, RunRecorder, SessionInputHandl
 import type { SkillActivationManager } from "../skills/activation-manager.js";
 import type { ToolExecutor } from "../skills/tool-executor.js";
 import type { ToolDefinition } from "../skills/types.js";
+import { buildGitMemoryHarnessContextPack } from "../context-engine/index.js";
 import { devError, devLog } from "../shared/index.js";
 import { agentLoop } from "../ivec/agent-loop.js";
 import type { ToolWorkingSetManager } from "../ivec/agent-runner/tool-working-set.js";
-import type { AgentFeedbackLedger } from "../ivec/feedback-ledger.js";
+import {
+  buildContextEngineFeedbackSummary,
+  type AgentFeedbackLedger,
+} from "../ivec/feedback-ledger.js";
 import {
   classifySystemEvent,
   resolveSystemEventPolicy,
@@ -263,11 +267,28 @@ class AppSystemEventRuntime implements SystemEventRuntime {
     event: AyatiSystemEvent,
     plan: SystemEventExecutionPlan,
   ): Promise<GitMemorySystemEventContextPreparedTurn> {
-    return await this.systemEventContextRuntime.prepareSystemEventTurn({
+    const turn = await this.systemEventContextRuntime.prepareSystemEventTurn({
       clientId,
       systemMessage: this.formatSystemEventConversationMessage(event, plan),
       at: event.receivedAt,
     });
+    this.feedbackLedger?.record({
+      clientId,
+      sessionId: turn.sessionId,
+      seq: turn.messageSeq,
+      stage: "context_engine",
+      event: "prepared",
+      data: {
+        status: turn.status,
+        messageSeq: turn.messageSeq,
+        contextEngine: buildContextEngineFeedbackSummary({
+          context: buildGitMemoryHarnessContextPack(turn.context),
+          routeSource: "runtime",
+          pendingTurnStatus: "unbound",
+        }),
+      },
+    });
+    return turn;
   }
 
   private async routeSystemEventContextTurn(
@@ -290,6 +311,8 @@ class AppSystemEventRuntime implements SystemEventRuntime {
     this.feedbackLedger?.record({
       clientId,
       sessionId: turn.sessionId,
+      seq: turn.messageSeq,
+      ...(routed.status === "ready" ? { runId: routed.runId } : {}),
       stage: "context_engine",
       event: "routed",
       data: routed.status === "ready"
@@ -299,12 +322,30 @@ class AppSystemEventRuntime implements SystemEventRuntime {
             taskId: routed.taskId,
             branch: routed.branch,
             ref: routed.ref,
+            runId: routed.runId,
             conversationRefs: routed.conversationRefs,
+            contextEngine: buildContextEngineFeedbackSummary({
+              context: routed.harnessContext.contextEngine,
+              routeStatus: routed.status,
+              routeMode: routed.mode,
+              routeSource: "deterministic_router",
+              taskId: routed.taskId,
+              branch: routed.branch,
+              ref: routed.ref,
+              runId: routed.runId,
+              conversationRefs: routed.conversationRefs,
+            }),
           }
         : {
             status: routed.status,
             reason: routed.reason,
             candidateCount: routed.candidates.length,
+            contextEngine: buildContextEngineFeedbackSummary({
+              context: routed.harnessContext.contextEngine,
+              routeStatus: routed.status,
+              routeSource: "deterministic_router",
+              pendingTurnStatus: "clarifying",
+            }),
           },
     });
     return routed;
@@ -330,9 +371,27 @@ class AppSystemEventRuntime implements SystemEventRuntime {
     result: AgentLoopResult,
   ): Promise<void> {
     if (!prepared || routed?.status !== "ready") {
+      if (prepared) {
+        this.feedbackLedger?.record({
+          clientId,
+          sessionId: prepared.sessionId,
+          seq: prepared.messageSeq,
+          stage: "context_engine",
+          event: "finalization_skipped",
+          data: {
+            reason: routed?.status === "ambiguous" ? "ambiguous_route" : "no_ready_route",
+            contextEngine: buildContextEngineFeedbackSummary({
+              context: result.harnessContext?.contextEngine,
+              finalizationStatus: "skipped",
+              committed: false,
+            }),
+          },
+        });
+      }
       return;
     }
 
+    const completedAt = this.nowProvider().toISOString();
     const completed = await this.systemEventContextRuntime.completeTaskRun({
       clientId,
       turn: prepared,
@@ -340,20 +399,38 @@ class AppSystemEventRuntime implements SystemEventRuntime {
       runId: routed.runId,
       result,
       conversationRefs: routed.conversationRefs,
-      at: this.nowProvider().toISOString(),
+      at: completedAt,
+      assistantMessage: result.content,
+      assistantAt: this.nowProvider().toISOString(),
     });
     if (!completed) {
+      this.feedbackLedger?.record({
+        clientId,
+        sessionId: prepared.sessionId,
+        seq: prepared.messageSeq,
+        runId: routed.runId,
+        stage: "context_engine",
+        event: "finalization_failed",
+        data: {
+          taskId: routed.taskId,
+          reason: "complete_task_run_returned_null",
+          contextEngine: buildContextEngineFeedbackSummary({
+            context: result.harnessContext?.contextEngine,
+            finalizationStatus: "failed",
+            committed: false,
+            taskId: routed.taskId,
+            runId: routed.runId,
+            conversationRefs: routed.conversationRefs,
+          }),
+        },
+      });
       return;
     }
-
-    await this.recordSystemEventAssistantMessage(clientId, prepared, result.content, {
-      taskId: completed.taskId,
-      runId: completed.runId,
-    });
 
     this.feedbackLedger?.record({
       clientId,
       sessionId: prepared.sessionId,
+      seq: prepared.messageSeq,
       runId: completed.runId,
       stage: "context_engine",
       event: "committed",
@@ -361,6 +438,16 @@ class AppSystemEventRuntime implements SystemEventRuntime {
         taskId: completed.taskId,
         taskCommit: completed.taskCommit,
         ref: completed.ref,
+        contextEngine: buildContextEngineFeedbackSummary({
+          context: result.harnessContext?.contextEngine,
+          finalizationStatus: "committed",
+          committed: true,
+          taskId: completed.taskId,
+          runId: completed.runId,
+          ref: completed.ref,
+          commit: completed.taskCommit,
+          conversationRefs: routed.conversationRefs,
+        }),
       },
     });
   }

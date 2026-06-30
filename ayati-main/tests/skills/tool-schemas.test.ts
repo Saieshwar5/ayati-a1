@@ -3,6 +3,7 @@ import { builtInSkillsProvider } from "../../src/skills/provider.js";
 import { createAttachmentSkill } from "../../src/skills/builtins/attachments/index.js";
 import { createDatasetSkill } from "../../src/skills/builtins/datasets/index.js";
 import { createDocumentSkill } from "../../src/skills/builtins/documents/index.js";
+import { createGitContextSkill } from "../../src/skills/builtins/git-context/index.js";
 import { createPythonSkill } from "../../src/skills/builtins/python/index.js";
 import { createRecallSkill } from "../../src/skills/builtins/recall/index.js";
 import { createUiSkill } from "../../src/skills/builtins/ui/index.js";
@@ -66,6 +67,9 @@ async function buildRuntimeTools(): Promise<ToolDefinition[]> {
     ...createDocumentSkill({
       preparedAttachmentService,
     }).tools,
+    ...createGitContextSkill({
+      contextStoreDir: "/tmp/ayati-test-context-engine",
+    }).tools,
     ...createUiSkill({
       workspaceOrchestrator: new WorkspaceOrchestrator({
         dataDir: "/tmp/ayati-test-data",
@@ -85,6 +89,13 @@ describe("runtime tool schemas", () => {
     });
 
     expect(tools.some((tool) => tool.name === "db_create_table")).toBe(true);
+    expect(tools.some((tool) => tool.name === "git_context_active")).toBe(true);
+    expect(tools.some((tool) => tool.name === "git_context_search_evidence")).toBe(true);
+    expect(tools.some((tool) => tool.name === "git_context_activate_task_for_turn")).toBe(true);
+    expect(tools.some((tool) => tool.name === "git_context_create_task_for_turn")).toBe(true);
+    expect(tools.some((tool) => tool.name === "git_context_ask_clarification_for_turn")).toBe(true);
+    expect(tools.some((tool) => tool.name === "git_context_create_task")).toBe(false);
+    expect(tools.some((tool) => tool.name === "git_context_switch_task")).toBe(false);
     expect(tools.some((tool) => tool.name === "python_execute")).toBe(true);
     expect(tools.some((tool) => tool.name.startsWith("learning_"))).toBe(false);
     expect(tools.some((tool) => tool.name.startsWith("ui_open_learning_"))).toBe(false);

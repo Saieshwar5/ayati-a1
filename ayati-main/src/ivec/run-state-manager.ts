@@ -66,6 +66,10 @@ export interface StepRecord {
   validationStatus?: VerificationValidationStatus;
   evidenceSummary?: string;
   evidenceItems: string[];
+  evidenceSource?: Record<string, unknown>;
+  outputSize?: number;
+  lineCount?: number;
+  truncated?: boolean;
   workState?: WorkState;
   stoppedEarlyReason?: StepSummary["stoppedEarlyReason"];
   failureType?: StepSummary["failureType"];

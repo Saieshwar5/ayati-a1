@@ -548,7 +548,7 @@ describe("agentLoop", () => {
           contextEngine: {
             session: {
               sessionId: "2026-06-12",
-              eventTail: [],
+              activityTail: [],
               assetCount: 1,
               conversationTail: [
                 {
@@ -596,6 +596,7 @@ describe("agentLoop", () => {
               }],
               recentRuns: [],
               recentCommits: [],
+              recentEvidence: [],
             },
           },
         },

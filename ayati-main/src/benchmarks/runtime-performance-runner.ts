@@ -846,6 +846,7 @@ function buildLoopStateFixture(exchangeCount: number): LoopState {
         tool: index % 2 === 0 ? "find_files" : "search_in_files",
         status: "success",
         mode: "summary",
+        retention: "while_relevant",
         content: `Observation ${index} about git task assets and project artifacts.`,
         hasMore: false,
       })),
@@ -894,7 +895,7 @@ function buildGitContextFixture(count: number, timestamp: string): ContextEngine
           text: `Assistant response ${index} describing non-LLM agent performance checks.`,
         },
       ])).flat(),
-      eventTail: [],
+      activityTail: [],
       assetCount: 1,
     },
     focus: {
@@ -932,6 +933,7 @@ function buildGitContextFixture(count: number, timestamp: string): ContextEngine
         createdAt: timestamp,
       }],
       recentCommits: [],
+      recentEvidence: [],
     },
   };
 }

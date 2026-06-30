@@ -6,6 +6,7 @@ import type {
 } from "../contracts.js";
 import type {
   CommitGitMemoryTaskRunActionInput,
+  CommitGitMemoryTaskRunEvidenceInput,
   CommitGitMemoryTaskRunInput,
 } from "./session-store.js";
 import type {
@@ -71,8 +72,21 @@ export function buildGitMemoryTaskRunCommitInput(
     completedAt: input.at,
     conversationRefs: input.conversationRefs,
     summary,
+    intent: firstNonEmpty([
+      input.result.taskSummary?.summary,
+      workState.summary,
+      input.result.content,
+      summary,
+    ]),
+    routing: formatConversationRefs(input.conversationRefs),
+    outcome: buildOutcome(runStatus, summary),
+    workPerformed: completed,
+    verification: buildVerification(input.result.completedSteps ?? []),
+    blockers,
     ...(input.result.content.trim() ? { assistantResponse: input.result.content } : {}),
     actions: buildRunActions(input.result.completedSteps ?? [], input.at),
+    evidence: buildRunEvidence(input.result.completedSteps ?? []),
+    ...(input.result.taskAssets?.length ? { assets: input.result.taskAssets } : {}),
     toolCallCount: input.result.totalToolCalls,
     changedFiles: input.changedFiles ?? buildChangedFiles(input.result),
     newFacts: buildNewFacts(workState, input.result),
@@ -86,6 +100,28 @@ export function buildGitMemoryTaskRunCommitInput(
       next: next || "No next step.",
     },
   };
+}
+
+function buildRunEvidence(
+  steps: HarnessStepSummaryForContext[],
+): CommitGitMemoryTaskRunEvidenceInput[] {
+  return steps.map((step) => ({
+    step: step.step,
+    tool: normalizeList(step.toolsUsed).join(",") || "agent_step",
+    status: toActionStatus(step.outcome),
+    summary: step.summary,
+    ...(step.evidenceSummary ? { evidenceRef: step.evidenceSummary } : {}),
+    artifacts: normalizeList(step.artifacts),
+    facts: normalizeList([
+      ...step.newFacts,
+      ...(step.evidenceItems ?? []),
+    ]),
+    accessModes: step.evidenceSummary || (step.evidenceItems ?? []).length > 0 ? ["summary"] : [],
+    ...(step.outputSize !== undefined ? { outputSize: step.outputSize } : {}),
+    ...(step.lineCount !== undefined ? { lineCount: step.lineCount } : {}),
+    ...(step.truncated !== undefined ? { truncated: step.truncated } : {}),
+    source: step.evidenceSource ?? { kind: "harness-step" },
+  }));
 }
 
 function buildRunActions(
@@ -221,6 +257,35 @@ function buildChangedFiles(result: GitMemoryHarnessRunResultForContext): string[
   return normalizeList([
     ...(result.completedSteps ?? []).flatMap((step) => step.artifacts),
   ]);
+}
+
+function buildVerification(steps: HarnessStepSummaryForContext[]): string[] {
+  return normalizeList([
+    ...steps.flatMap((step) => [
+      step.evidenceSummary,
+      ...(step.evidenceItems ?? []),
+    ]),
+  ]);
+}
+
+function buildOutcome(status: GitMemoryRunStatus, summary: string): string {
+  if (status === "completed") {
+    return summary;
+  }
+  if (status === "failed") {
+    return `Run failed: ${summary}`;
+  }
+  if (status === "blocked") {
+    return `Run blocked: ${summary}`;
+  }
+  return `Needs user input: ${summary}`;
+}
+
+function formatConversationRefs(refs: GitMemoryConversationSeqRange[]): string {
+  if (refs.length === 0) {
+    return "No conversation range recorded.";
+  }
+  return refs.map((ref) => `conversation ${ref.fromSeq}-${ref.toSeq}`).join(", ");
 }
 
 function firstNonEmpty(values: Array<string | undefined>): string {

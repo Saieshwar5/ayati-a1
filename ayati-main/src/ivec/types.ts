@@ -95,6 +95,7 @@ export type WorkStatus = "not_done" | "done" | "blocked" | "needs_user_input";
 
 export type EvidenceAccessMode = "full" | "next_chunk" | "search" | "read_lines" | "tail";
 export type ToolObservationMode = "full" | "focused" | "chunk" | "large_ref" | "summary";
+export type ToolObservationRetention = "next_step" | "while_relevant" | "evidence_only";
 export type ToolObservationStatus = "success" | "failed";
 
 export interface WorkEvidenceRef {
@@ -119,6 +120,7 @@ export interface ToolObservation {
   purpose?: string;
   status: ToolObservationStatus;
   mode: ToolObservationMode;
+  retention: ToolObservationRetention;
   content: string;
   evidenceRef?: string;
   sourceEvidenceRef?: string;
@@ -228,6 +230,10 @@ export interface StepSummary {
   validationStatus?: VerificationValidationStatus;
   evidenceSummary?: string;
   evidenceItems?: string[];
+  evidenceSource?: Record<string, unknown>;
+  outputSize?: number;
+  lineCount?: number;
+  truncated?: boolean;
   usedRawArtifacts?: string[];
   workState?: WorkState;
   stoppedEarlyReason?: "assistant_returned" | "max_act_turns_reached" | "max_total_tool_calls_reached" | "repeated_identical_failure" | "no_valid_tool_calls" | "planned_call_failed";
@@ -346,6 +352,7 @@ export interface AgentLoopResult {
   artifacts?: AgentArtifact[];
   workState?: WorkState;
   completedSteps?: StepSummary[];
+  harnessContext?: HarnessContext;
 }
 
 export type OnProgressCallback = (log: string, runPath: string) => void;

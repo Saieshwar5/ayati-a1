@@ -28,6 +28,10 @@ Product rules:
 - Memory is product-critical because it gives continuity and personalization.
 - Git context work branches are the runtime task-continuity source; do not hide
   important dynamic task context only in a large prompt string.
+- Preserve the git-native ownership boundary: the agent may search/read context
+  and express routing intent through turn-aware tools, but runtime owns
+  pending-turn binding, run allocation, task state reduction, finalization, and
+  commits.
 - Tool access is high privilege because the daemon can affect the user's computer.
 - Tool results should become verified facts through contracts/assertions whenever deterministic verification is possible.
 - Future communication channels should connect to the daemon instead of duplicating core runtime logic.

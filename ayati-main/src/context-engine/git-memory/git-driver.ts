@@ -56,6 +56,19 @@ export class GitMemoryWorktreeGitDriver {
     return result.exitCode === 0;
   }
 
+  async currentBranch(): Promise<string | null> {
+    const result = await this.run(["symbolic-ref", "--quiet", "--short", "HEAD"], { allowFailure: true });
+    return result.exitCode === 0 ? result.stdout.trim() || null : null;
+  }
+
+  async checkoutBranch(ref: string): Promise<void> {
+    await this.mustRun(["symbolic-ref", "HEAD", ref]);
+  }
+
+  async updateRef(ref: string, commit: string): Promise<void> {
+    await this.mustRun(["update-ref", ref, commit]);
+  }
+
   async readFile(ref: string, path: string): Promise<string | null> {
     const result = await this.run(["show", `${ref}:${path}`], { allowFailure: true });
     return result.exitCode === 0 ? result.stdout : null;
@@ -63,6 +76,14 @@ export class GitMemoryWorktreeGitDriver {
 
   async listTreePaths(ref: string, prefix: string): Promise<string[]> {
     const result = await this.run(["ls-tree", "-r", "--name-only", ref, prefix], { allowFailure: true });
+    if (result.exitCode !== 0) {
+      return [];
+    }
+    return result.stdout.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  }
+
+  async listRefs(prefix: string): Promise<string[]> {
+    const result = await this.run(["for-each-ref", "--format=%(refname)", prefix], { allowFailure: true });
     if (result.exitCode !== 0) {
       return [];
     }

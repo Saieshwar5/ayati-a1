@@ -1,19 +1,18 @@
 import type {
-  CommitGitMemoryTaskRunResult,
+  FinalizeGitMemoryTaskRunResult,
   GitMemoryConversationRecord,
   GitMemoryConversationSeqRange,
+  GitContextMemoryState,
   GitMemoryHarnessRunResultForContext,
   GitMemoryMachineContextPack,
   GitMemoryRunId,
   GitMemoryRuntime,
   GitMemorySessionId,
   GitMemoryTaskId,
-  GitMemoryTurnId,
   RoutedGitMemoryUserTurn,
 } from "../context-engine/index.js";
 import {
-  buildGitMemoryHarnessContextPack,
-  buildGitMemoryTaskRunCommitInput,
+  buildGitMemoryHarnessContextFromMemoryState,
 } from "../context-engine/index.js";
 import type { HarnessContextInput } from "../ivec/harness-context.js";
 import { devWarn } from "../shared/index.js";
@@ -34,9 +33,8 @@ export interface GitMemoryChatContextPreparedTurn {
   repoPath: string;
   initialized: boolean;
   messageSeq: number;
-  messageId: string;
-  turnId: GitMemoryTurnId;
   context: GitMemoryMachineContextPack;
+  memoryState: GitContextMemoryState;
 }
 
 export interface GitMemoryChatContextAssistantMessageInput {
@@ -58,6 +56,8 @@ export interface GitMemoryChatContextCompleteTaskRunInput {
   startedAt?: string;
   conversationRefs?: GitMemoryConversationSeqRange[];
   changedFiles?: string[];
+  assistantMessage?: string;
+  assistantAt?: string;
 }
 
 export interface GitMemoryChatContextRouteTaskTurnInput {
@@ -67,6 +67,7 @@ export interface GitMemoryChatContextRouteTaskTurnInput {
   at: string;
   title?: string;
   objective?: string;
+  autoOnly?: boolean;
 }
 
 export type GitMemoryChatContextRoutedTurn = RoutedGitMemoryUserTurn & {
@@ -76,7 +77,7 @@ export type GitMemoryChatContextRoutedTurn = RoutedGitMemoryUserTurn & {
 export interface GitMemoryChatContextRuntime {
   prepareUserTurn(input: GitMemoryChatContextPrepareInput): Promise<GitMemoryChatContextPreparedTurn>;
   routeTaskTurn(input: GitMemoryChatContextRouteTaskTurnInput): Promise<GitMemoryChatContextRoutedTurn | null>;
-  completeTaskRun(input: GitMemoryChatContextCompleteTaskRunInput): Promise<CommitGitMemoryTaskRunResult | null>;
+  completeTaskRun(input: GitMemoryChatContextCompleteTaskRunInput): Promise<FinalizeGitMemoryTaskRunResult | null>;
   recordAssistantMessage(input: GitMemoryChatContextAssistantMessageInput): Promise<GitMemoryConversationRecord | null>;
   buildActiveContext(sessionId: GitMemorySessionId): Promise<GitMemoryMachineContextPack>;
 }
@@ -101,9 +102,8 @@ class AppGitMemoryChatContextRuntime implements GitMemoryChatContextRuntime {
       repoPath: prepared.repoPath,
       initialized: prepared.initialized,
       messageSeq: prepared.userMessage.seq,
-      messageId: prepared.userMessage.messageId,
-      turnId: prepared.userMessage.turnId,
       context: prepared.context,
+      memoryState: prepared.memoryState,
     };
   }
 
@@ -114,20 +114,24 @@ class AppGitMemoryChatContextRuntime implements GitMemoryChatContextRuntime {
       return null;
     }
     try {
-      const route = await this.gitMemoryRuntime.routeUserTurn({
+      const routeInput = {
         sessionId: input.turn.sessionId,
         userMessage: input.userMessage,
         fromSeq: input.turn.messageSeq,
         toSeq: input.turn.messageSeq,
         at: input.at,
-        turnIds: [input.turn.turnId],
         title: input.title,
         objective: input.objective,
-      });
+      };
+      const route = await this.gitMemoryRuntime.continueActiveTurn(routeInput)
+        ?? (input.autoOnly ? null : await this.gitMemoryRuntime.routeUserTurn(routeInput));
+      if (!route) {
+        return null;
+      }
       return {
         ...route,
         harnessContext: {
-          contextEngine: buildGitMemoryHarnessContextPack(route.context),
+          contextEngine: buildGitMemoryHarnessContextFromMemoryState(route.memoryState),
         },
       };
     } catch (err) {
@@ -138,28 +142,25 @@ class AppGitMemoryChatContextRuntime implements GitMemoryChatContextRuntime {
 
   async completeTaskRun(
     input: GitMemoryChatContextCompleteTaskRunInput,
-  ): Promise<CommitGitMemoryTaskRunResult | null> {
+  ): Promise<FinalizeGitMemoryTaskRunResult | null> {
     if (!input.turn) {
       return null;
     }
-    try {
-      return await this.gitMemoryRuntime.commitTaskRun(buildGitMemoryTaskRunCommitInput({
-        sessionId: input.turn.sessionId,
-        taskId: input.taskId,
-        runId: input.runId,
-        result: input.result,
-        conversationRefs: input.conversationRefs ?? [{
-          fromSeq: input.turn.messageSeq,
-          toSeq: input.turn.messageSeq,
-        }],
-        at: input.at,
-        startedAt: input.startedAt,
-        changedFiles: input.changedFiles,
-      }));
-    } catch (err) {
-      devWarn(`[${input.clientId}] git memory task run commit failed: ${errorMessage(err)}`);
-      return null;
-    }
+    return await this.gitMemoryRuntime.finalizeTaskRun({
+      sessionId: input.turn.sessionId,
+      taskId: input.taskId,
+      runId: input.runId,
+      result: input.result,
+      conversationRefs: input.conversationRefs ?? [{
+        fromSeq: input.turn.messageSeq,
+        toSeq: input.turn.messageSeq,
+      }],
+      at: input.at,
+      startedAt: input.startedAt,
+      changedFiles: input.changedFiles,
+      assistantMessage: input.assistantMessage,
+      assistantAt: input.assistantAt,
+    });
   }
 
   async recordAssistantMessage(
@@ -171,7 +172,6 @@ class AppGitMemoryChatContextRuntime implements GitMemoryChatContextRuntime {
     try {
       return await this.gitMemoryRuntime.recordAssistantMessage({
         sessionId: input.turn.sessionId,
-        turnId: input.turn.turnId,
         text: input.message,
         at: input.at,
         taskId: input.taskId,

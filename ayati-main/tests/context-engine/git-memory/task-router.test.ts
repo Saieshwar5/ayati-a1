@@ -22,7 +22,6 @@ describe("GitMemoryTaskRouter", () => {
       userMessage: user.text ?? "",
       fromSeq: user.seq,
       toSeq: user.seq,
-      turnIds: [user.turnId],
       at: "2026-06-28T09:00:01+05:30",
     });
 
@@ -32,12 +31,6 @@ describe("GitMemoryTaskRouter", () => {
       taskId: "W-20260628-0001",
       branch: "task/W-20260628-0001-fix-upload-handling",
       conversationRefs: [{ fromSeq: 1, toSeq: 1 }],
-      createdTask: {
-        link: {
-          reason: "task_created",
-          turnIds: [user.turnId],
-        },
-      },
     });
 
     const snapshot = await store.readTaskRoutingSnapshot(sessionId);
@@ -67,7 +60,6 @@ describe("GitMemoryTaskRouter", () => {
       userMessage: followUp.text ?? "",
       fromSeq: followUp.seq,
       toSeq: followUp.seq,
-      turnIds: [followUp.turnId],
       at: "2026-06-28T09:05:01+05:30",
     });
 
@@ -75,17 +67,12 @@ describe("GitMemoryTaskRouter", () => {
       status: "ready",
       mode: "continue_active_task",
       taskId: "W-20260628-0001",
-      selectedTask: {
-        link: {
-          reason: "task_continued",
-          fromSeq: 2,
-          toSeq: 2,
-          turnIds: [followUp.turnId],
-        },
-      },
     });
     if (route.status === "ready") {
-      expect(route.selectedTask?.focusEvent).toBeUndefined();
+      expect(route.selectedTask).toMatchObject({
+        taskId: "W-20260628-0001",
+        branch: "task/W-20260628-0001-fix-upload-handling",
+      });
     }
   });
 
@@ -105,7 +92,6 @@ describe("GitMemoryTaskRouter", () => {
       userMessage: switchMessage.text ?? "",
       fromSeq: switchMessage.seq,
       toSeq: switchMessage.seq,
-      turnIds: [switchMessage.turnId],
       at: "2026-06-28T09:10:01+05:30",
     });
 
@@ -113,19 +99,6 @@ describe("GitMemoryTaskRouter", () => {
       status: "ready",
       mode: "switch_to_existing_task",
       taskId: uploadTask.taskId,
-      selectedTask: {
-        link: {
-          reason: "task_switched",
-          fromSeq: 3,
-          toSeq: 3,
-        },
-        focusEvent: {
-          type: "focus_changed",
-          fromTaskId: "W-20260628-0002",
-          toTaskId: uploadTask.taskId,
-          reason: "task_switched",
-        },
-      },
     });
 
     const snapshot = await store.readTaskRoutingSnapshot(sessionId);
@@ -164,7 +137,6 @@ describe("GitMemoryTaskRouter", () => {
       userMessage: reopenMessage.text ?? "",
       fromSeq: reopenMessage.seq,
       toSeq: reopenMessage.seq,
-      turnIds: [reopenMessage.turnId],
       at: "2026-06-28T09:15:01+05:30",
     });
 
@@ -172,17 +144,6 @@ describe("GitMemoryTaskRouter", () => {
       status: "ready",
       mode: "reopen_existing_task",
       taskId: uploadTask.taskId,
-      selectedTask: {
-        link: {
-          reason: "task_reopened",
-          fromSeq: 3,
-          toSeq: 3,
-        },
-        focusEvent: {
-          reason: "task_reopened",
-          toTaskId: uploadTask.taskId,
-        },
-      },
     });
   });
 
@@ -202,7 +163,6 @@ describe("GitMemoryTaskRouter", () => {
       userMessage: ambiguous.text ?? "",
       fromSeq: ambiguous.seq,
       toSeq: ambiguous.seq,
-      turnIds: [ambiguous.turnId],
       at: "2026-06-28T09:20:01+05:30",
     });
 
@@ -214,8 +174,6 @@ describe("GitMemoryTaskRouter", () => {
         "W-20260628-0002",
       ]);
     }
-    expect(await store.readTaskConversationSegments(sessionId, "W-20260628-0001")).toHaveLength(1);
-    expect(await store.readTaskConversationSegments(sessionId, "W-20260628-0002")).toHaveLength(1);
   });
 });
 
@@ -258,7 +216,6 @@ async function createTaskFromMessage(
     userMessage: message,
     fromSeq: user.seq,
     toSeq: user.seq,
-    turnIds: [user.turnId],
     at: "2026-06-28T09:00:01+05:30",
   });
   if (route.status !== "ready") {

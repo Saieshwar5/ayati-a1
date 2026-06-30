@@ -16,7 +16,7 @@ function createGitContext(overrides: Partial<ContextEngineMachineContext> = {}):
     session: {
       sessionId: "2026-06-27",
       conversationTail: [],
-      eventTail: [],
+      activityTail: [],
       assetCount: 0,
     },
     focus: {
@@ -54,6 +54,7 @@ function createGitContext(overrides: Partial<ContextEngineMachineContext> = {}):
         createdAt: "2026-06-27T10:00:00.000Z",
       }],
       recentCommits: [],
+      recentEvidence: [],
     },
     ...overrides,
   };
@@ -113,7 +114,7 @@ describe("buildAgentStateView", () => {
         contextEngine: createGitContext({
           session: {
             sessionId: "2026-06-27",
-            eventTail: [],
+            activityTail: [],
             assetCount: 0,
             conversationTail: [
               {
@@ -203,6 +204,7 @@ describe("buildAgentStateView", () => {
           tool: "read_file",
           status: "success",
           mode: "summary",
+          retention: "while_relevant",
           content: "Read state-view.ts.",
           hasMore: false,
         }],
@@ -232,6 +234,7 @@ describe("buildAgentStateView", () => {
       userInputNeeded: "Can I edit the prompt?",
     });
     expect(stateView.observations?.latest).toHaveLength(1);
+    expect(stateView.observations?.latest[0]?.retention).toBe("while_relevant");
     expect(stateView.trace?.recentSteps?.map((step) => step.step)).toEqual([1]);
     expect(stateView.workingFeedback?.latest[0]).toMatchObject({
       source: "tool_execution",

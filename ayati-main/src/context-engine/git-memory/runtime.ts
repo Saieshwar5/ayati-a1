@@ -1,4 +1,7 @@
 import type {
+  TaskAssetRecord,
+} from "../contracts.js";
+import type {
   CommitGitMemoryTaskRunInput,
   CommitGitMemoryTaskRunResult,
   CreateGitMemoryTaskBranchInput,
@@ -6,23 +9,54 @@ import type {
   GitMemoryDailySessionHandle,
   GitMemorySessionCheckpoint,
   GitMemoryTaskRoutingSnapshot,
+  SelectGitMemoryTaskForTurnResult,
 } from "./session-store.js";
 import { GitMemoryDailySessionStore } from "./session-store.js";
-import { GitMemoryContextReader, type GitMemoryMachineContextPack } from "./context-pack.js";
+import {
+  buildGitMemoryTaskRunCommitInput,
+  type BuildGitMemoryTaskRunCommitInput,
+} from "./harness-result-mapper.js";
+import {
+  DEFAULT_GIT_MEMORY_CONTEXT_LIMITS,
+  type GitMemoryPendingTurnContext,
+  type GitMemoryMachineContextPack,
+} from "./context-pack.js";
+import {
+  appendGitMemoryConversationMarkdown,
+  appendGitMemoryConversationMarkdownRecords,
+  renderGitMemoryConversationMarkdownDocument,
+} from "./conversation-markdown.js";
+import {
+  buildGitMemoryContextPackFromMemoryState,
+  buildGitContextPendingWrites,
+  GitContextMemoryStateHydrator,
+  type GitContextMemoryActiveTask,
+  type GitContextMemoryState,
+} from "./memory-state.js";
 import {
   GitMemoryTaskRouter,
   type AppliedGitMemoryTaskRoute,
   type ApplyGitMemoryTaskRouteInput,
+  type GitMemoryTaskRouteCandidate,
   type GitMemoryTaskRouteResolution,
   type ResolveGitMemoryTaskRouteInput,
+  isGitMemoryPureFollowUpMessage,
 } from "./task-router.js";
 import type {
   GitMemoryConversationRecord,
+  GitMemoryConversationRole,
+  GitMemoryRunFile,
   GitMemoryRunId,
   GitMemorySessionId,
   GitMemoryTaskId,
-  GitMemoryTurnId,
 } from "./schema.js";
+import { createGitMemorySessionId } from "./schema.js";
+import {
+  GitMemoryWriteQueue,
+  type GitMemoryWriteBatchRequest,
+  type GitMemoryWriteBatchSnapshot,
+  type GitMemoryWriteQueueRunner,
+} from "./write-queue.js";
 
 export interface GitMemoryRuntimeOptions {
   contextStoreDir: string;
@@ -30,8 +64,8 @@ export interface GitMemoryRuntimeOptions {
   agentId: string;
   now?: () => Date;
   store?: GitMemoryDailySessionStore;
-  contextReader?: GitMemoryContextReader;
   taskRouter?: GitMemoryTaskRouter;
+  writeQueue?: GitMemoryWriteQueueRunner;
 }
 
 export interface OpenGitMemoryRuntimeSessionInput {
@@ -50,6 +84,7 @@ export interface PreparedGitMemoryUserTurn {
   initialized: boolean;
   userMessage: GitMemoryConversationRecord;
   context: GitMemoryMachineContextPack;
+  memoryState: GitContextMemoryState;
 }
 
 export interface PrepareGitMemorySystemTurnInput {
@@ -64,13 +99,17 @@ export interface PreparedGitMemorySystemTurn {
   initialized: boolean;
   systemMessage: GitMemoryConversationRecord;
   context: GitMemoryMachineContextPack;
+  memoryState: GitContextMemoryState;
+}
+
+export interface PendingGitMemoryTurnEnvelope extends GitMemoryPendingTurnContext {
+  sessionId: GitMemorySessionId;
 }
 
 export interface RecordGitMemoryAssistantMessageInput {
   sessionId: GitMemorySessionId;
   text: string;
   at?: string;
-  turnId?: GitMemoryTurnId;
   taskId?: GitMemoryTaskId;
   runId?: GitMemoryRunId;
 }
@@ -81,13 +120,59 @@ export interface CheckpointGitMemoryRuntimeSessionInput {
   at?: string;
 }
 
+export interface FinalizeGitMemoryTaskRunInput extends BuildGitMemoryTaskRunCommitInput {
+  assistantMessage?: string;
+  assistantAt?: string;
+}
+
+export interface FinalizeGitMemoryTaskRunResult extends CommitGitMemoryTaskRunResult {
+  alreadyFinalized: boolean;
+  assistantMessage?: GitMemoryConversationRecord;
+}
+
+export interface SwitchGitMemoryTaskInput {
+  sessionId: GitMemorySessionId;
+  taskId: GitMemoryTaskId;
+  reason?: string;
+  at?: string;
+}
+
+export interface SwitchGitMemoryTaskResult extends SelectGitMemoryTaskForTurnResult {
+  context: GitMemoryMachineContextPack;
+  memoryState: GitContextMemoryState;
+}
+
+export interface ActivateGitMemoryTaskForTurnInput {
+  sessionId: GitMemorySessionId;
+  taskId: GitMemoryTaskId;
+  reason: string;
+  at?: string;
+}
+
+export interface CreateGitMemoryTaskForTurnInput {
+  sessionId: GitMemorySessionId;
+  title: string;
+  objective: string;
+  reason: string;
+  at?: string;
+}
+
+export interface AskGitMemoryTaskClarificationForTurnInput {
+  sessionId: GitMemorySessionId;
+  reason: string;
+  candidateTaskIds?: GitMemoryTaskId[];
+  at?: string;
+}
+
 export type RoutedGitMemoryUserTurn =
   | (Extract<AppliedGitMemoryTaskRoute, { status: "ready" }> & {
       runId: GitMemoryRunId;
       context: GitMemoryMachineContextPack;
+      memoryState: GitContextMemoryState;
     })
   | (Extract<AppliedGitMemoryTaskRoute, { status: "ambiguous" }> & {
       context: GitMemoryMachineContextPack;
+      memoryState: GitContextMemoryState;
     });
 
 export class GitMemoryRuntime {
@@ -95,8 +180,11 @@ export class GitMemoryRuntime {
   private readonly agentId: string;
   private readonly nowProvider: () => Date;
   private readonly store: GitMemoryDailySessionStore;
-  private readonly contextReader: GitMemoryContextReader;
+  private readonly memoryStateHydrator: GitContextMemoryStateHydrator;
   private readonly taskRouter: GitMemoryTaskRouter;
+  private readonly writeQueue: GitMemoryWriteQueueRunner;
+  private readonly sessionMemoryCache = new Map<GitMemorySessionId, GitContextMemoryState>();
+  private readonly pendingTurns = new Map<GitMemorySessionId, PendingGitMemoryTurnEnvelope>();
 
   constructor(options: GitMemoryRuntimeOptions) {
     this.timezone = options.timezone;
@@ -106,12 +194,25 @@ export class GitMemoryRuntime {
       contextStoreDir: options.contextStoreDir,
       now: this.nowProvider,
     });
-    this.contextReader = options.contextReader ?? new GitMemoryContextReader(this.store);
+    this.memoryStateHydrator = new GitContextMemoryStateHydrator(this.store);
     this.taskRouter = options.taskRouter ?? new GitMemoryTaskRouter(this.store);
+    this.writeQueue = options.writeQueue ?? new GitMemoryWriteQueue();
   }
 
   async openDailySession(input: OpenGitMemoryRuntimeSessionInput = {}): Promise<GitMemoryDailySessionHandle> {
     const at = input.at ?? this.nowProvider().toISOString();
+    const sessionId = this.sessionIdForAt(at);
+    return await this.writeQueue.enqueue({
+      sessionId,
+      type: "session_opened",
+      label: "open_daily_session",
+      createdAt: at,
+    }, async () => {
+      return await this.openDailySessionUnqueued(at);
+    });
+  }
+
+  private async openDailySessionUnqueued(at: string): Promise<GitMemoryDailySessionHandle> {
     return await this.store.openOrCreateDailySession({
       date: sessionDateForAt(at, this.timezone),
       timezone: this.timezone,
@@ -122,58 +223,133 @@ export class GitMemoryRuntime {
 
   async prepareUserTurn(input: PrepareGitMemoryUserTurnInput): Promise<PreparedGitMemoryUserTurn> {
     const at = input.at ?? this.nowProvider().toISOString();
-    const session = await this.openDailySession({ at });
-    const userMessage = await this.store.appendConversationMessage({
-      sessionId: session.sessionId,
+    const sessionId = this.sessionIdForAt(at);
+    const session = await this.openDailySessionUnqueued(at);
+    const userMessage = await this.createAndCacheConversationRecord(session.sessionId, {
       role: "user",
       text: input.userMessage,
       at,
     });
+    this.enqueueGlobalConversationPersistence({
+      sessionId,
+      label: "prepare_user_turn",
+      type: "main_conversation_appended",
+      createdAt: at,
+      record: userMessage,
+    });
+    this.setPendingTurn({
+      sessionId: session.sessionId,
+      fromSeq: userMessage.seq,
+      toSeq: userMessage.seq,
+      text: userMessage.text ?? "",
+      at: userMessage.at,
+      routingStatus: "unbound",
+    });
+    const memoryState = await this.hydrateMemoryState(session.sessionId);
+    const context = buildGitMemoryContextPackFromMemoryState(memoryState);
     return {
       status: "ready",
       sessionId: session.sessionId,
       repoPath: session.repoPath,
       initialized: session.initialized,
       userMessage,
-      context: await this.contextReader.buildActiveContext({ sessionId: session.sessionId }),
+      context,
+      memoryState,
     };
   }
 
   async prepareSystemTurn(input: PrepareGitMemorySystemTurnInput): Promise<PreparedGitMemorySystemTurn> {
     const at = input.at ?? this.nowProvider().toISOString();
-    const session = await this.openDailySession({ at });
-    const systemMessage = await this.store.appendConversationMessage({
-      sessionId: session.sessionId,
+    const sessionId = this.sessionIdForAt(at);
+    const session = await this.openDailySessionUnqueued(at);
+    const systemMessage = await this.createAndCacheConversationRecord(session.sessionId, {
       role: "system",
       text: input.systemMessage,
       at,
     });
+    this.enqueueGlobalConversationPersistence({
+      sessionId,
+      label: "prepare_system_turn",
+      type: "main_conversation_appended",
+      createdAt: at,
+      record: systemMessage,
+    });
+    const memoryState = await this.hydrateMemoryState(session.sessionId);
+    const context = buildGitMemoryContextPackFromMemoryState(memoryState);
     return {
       status: "ready",
       sessionId: session.sessionId,
       repoPath: session.repoPath,
       initialized: session.initialized,
       systemMessage,
-      context: await this.contextReader.buildActiveContext({ sessionId: session.sessionId }),
+      context,
+      memoryState,
     };
   }
 
   async recordAssistantMessage(
     input: RecordGitMemoryAssistantMessageInput,
   ): Promise<GitMemoryConversationRecord> {
-    return await this.store.appendConversationMessage({
+    const at = input.at ?? this.nowProvider().toISOString();
+    const cachedState = input.taskId
+      ? null
+      : await this.getOrHydrateCachedMemoryState(input.sessionId);
+    if (cachedState) {
+      const record = await this.createAndCacheConversationRecord(input.sessionId, {
+        role: "assistant",
+        text: input.text,
+        at,
+      });
+      this.enqueueGlobalConversationPersistence({
+        sessionId: input.sessionId,
+        label: "record_assistant_message",
+        type: "assistant_message_recorded",
+        createdAt: at,
+        record,
+      });
+      return record;
+    }
+    const record = await this.writeQueue.enqueue({
       sessionId: input.sessionId,
-      role: "assistant",
-      text: input.text,
-      at: input.at,
-      turnId: input.turnId,
-      taskId: input.taskId,
-      runId: input.runId,
+      type: "assistant_message_recorded",
+      label: "record_assistant_message",
+      createdAt: at,
+    }, async () => {
+      const record = await this.store.appendConversationMessage({
+        sessionId: input.sessionId,
+        role: "assistant",
+        text: input.text,
+        at,
+        taskId: input.taskId,
+        runId: input.runId,
+      });
+      if (input.taskId) {
+        await this.store.appendTaskConversationMessage({
+          sessionId: input.sessionId,
+          taskId: input.taskId,
+          record,
+          at,
+        });
+      }
+      return record;
     });
+    if (!this.updateCachedTaskConversation(input.sessionId, input.taskId, record)) {
+      this.invalidateSessionMemory(input.sessionId);
+    }
+    return record;
   }
 
   async createTaskBranch(input: CreateGitMemoryTaskBranchInput): Promise<CreateGitMemoryTaskBranchResult> {
-    return await this.store.createTaskBranch(input);
+    const result = await this.writeQueue.enqueue({
+      sessionId: input.sessionId,
+      type: "task_created",
+      label: "create_task_branch",
+      createdAt: input.at,
+    }, async () => {
+      return await this.store.createTaskBranch(input);
+    });
+    await this.cacheCreatedTask(input, result);
+    return result;
   }
 
   async readTaskRoutingSnapshot(sessionId: GitMemorySessionId): Promise<GitMemoryTaskRoutingSnapshot> {
@@ -184,41 +360,900 @@ export class GitMemoryRuntime {
     return await this.taskRouter.resolve(input);
   }
 
-  async routeUserTurn(input: ApplyGitMemoryTaskRouteInput): Promise<RoutedGitMemoryUserTurn> {
-    const runId = await this.store.allocateTaskRunId(input.sessionId);
-    const route = await this.taskRouter.route({ ...input, runId });
-    if (route.status === "ambiguous") {
-      return {
-        ...route,
-        context: await this.contextReader.buildActiveContext({ sessionId: input.sessionId }),
-      };
+  async continueActiveTurn(input: ApplyGitMemoryTaskRouteInput): Promise<RoutedGitMemoryUserTurn | null> {
+    if (!isGitMemoryPureFollowUpMessage(input.userMessage)) {
+      return null;
     }
-    await this.store.startTaskRun({
+
+    const pendingTurn = this.pendingTurns.get(input.sessionId);
+    if (
+      !pendingTurn
+      || pendingTurn.routingStatus !== "unbound"
+      || !sameConversationRange(pendingTurn, input)
+    ) {
+      return null;
+    }
+
+    const state = await this.getOrHydrateCachedMemoryState(input.sessionId);
+    if (state.focus.status !== "active" || !state.activeTask) {
+      return null;
+    }
+
+    const activeTask = state.activeTask;
+    const mode: "continue_active_task" | "reopen_existing_task" = isReopenTaskStatus(activeTask.status)
+      ? "reopen_existing_task"
+      : "continue_active_task";
+    const selectedReason: "task_continued" | "task_reopened" = mode === "reopen_existing_task"
+      ? "task_reopened"
+      : "task_continued";
+    const reason = mode === "reopen_existing_task"
+      ? "obvious follow-up to completed active task"
+      : "obvious follow-up to active task";
+    const routed = await this.writeQueue.enqueue({
       sessionId: input.sessionId,
-      taskId: route.taskId,
-      branch: route.branch,
-      runId,
+      type: "task_routed",
+      label: "continue_active_turn",
+      createdAt: input.at,
+    }, async () => {
+      const runId = await this.store.allocateTaskRunId(input.sessionId);
+      const selectedTask = await this.store.selectTaskForTurn({
+        sessionId: input.sessionId,
+        taskId: activeTask.taskId,
+        reason: selectedReason,
+        fromSeq: input.fromSeq,
+        toSeq: input.toSeq,
+        at: input.at,
+        runId,
+        summary: reason,
+      });
+      await this.store.appendTaskConversationRange({
+        sessionId: input.sessionId,
+        taskId: selectedTask.taskId,
+        branch: selectedTask.branch,
+        runId,
+        fromSeq: input.fromSeq,
+        toSeq: input.toSeq,
+        at: input.at,
+        reason: "task_routed",
+      });
+      await this.store.startTaskRun({
+        sessionId: input.sessionId,
+        taskId: selectedTask.taskId,
+        branch: selectedTask.branch,
+        runId,
+        fromSeq: input.fromSeq,
+        toSeq: input.toSeq,
+        at: input.at,
+      });
+      return {
+        status: "ready" as const,
+        mode,
+        sessionId: input.sessionId,
+        taskId: selectedTask.taskId,
+        branch: selectedTask.branch,
+        ref: selectedTask.ref,
+        conversationRefs: [{ fromSeq: input.fromSeq, toSeq: input.toSeq }],
+        confidence: "deterministic" as const,
+        reason,
+        selectedTask,
+        runId,
+      };
+    });
+    this.bindPendingTurn(input.sessionId, {
       fromSeq: input.fromSeq,
       toSeq: input.toSeq,
-      at: input.at,
+      taskId: routed.taskId,
+      branch: routed.branch,
+      runId: routed.runId,
     });
+    if (!await this.cacheRoutedTaskTurn(input, routed)) {
+      this.invalidateSessionMemory(input.sessionId);
+    }
+    const memoryState = await this.hydrateMemoryState(input.sessionId);
+    const context = buildGitMemoryContextPackFromMemoryState(memoryState);
     return {
-      ...route,
-      runId,
-      context: await this.contextReader.buildActiveContext({ sessionId: input.sessionId }),
+      ...routed,
+      context,
+      memoryState,
+    };
+  }
+
+  async activateTaskForTurn(input: ActivateGitMemoryTaskForTurnInput): Promise<RoutedGitMemoryUserTurn> {
+    const pendingTurn = this.requireUnboundPendingTurn(input.sessionId);
+    const state = await this.getOrHydrateCachedMemoryState(input.sessionId);
+    const knownTask = state.knownTasks.find((task) => task.taskId === input.taskId);
+    const mode: "continue_active_task" | "switch_to_existing_task" | "reopen_existing_task" =
+      knownTask && isReopenTaskStatus(knownTask.status)
+        ? "reopen_existing_task"
+        : state.focus.status === "active" && state.focus.taskId === input.taskId
+          ? "continue_active_task"
+          : "switch_to_existing_task";
+    const selectedReason: "task_continued" | "task_switched" | "task_reopened" =
+      mode === "reopen_existing_task"
+        ? "task_reopened"
+        : mode === "continue_active_task"
+          ? "task_continued"
+          : "task_switched";
+    const at = input.at ?? pendingTurn.at;
+    const routed = await this.writeQueue.enqueue({
+      sessionId: input.sessionId,
+      type: "task_routed",
+      label: "activate_task_for_turn",
+      createdAt: at,
+    }, async () => {
+      const runId = await this.store.allocateTaskRunId(input.sessionId);
+      const selectedTask = await this.store.selectTaskForTurn({
+        sessionId: input.sessionId,
+        taskId: input.taskId,
+        reason: selectedReason,
+        fromSeq: pendingTurn.fromSeq,
+        toSeq: pendingTurn.toSeq,
+        at,
+        runId,
+        summary: input.reason,
+      });
+      await this.store.appendTaskConversationRange({
+        sessionId: input.sessionId,
+        taskId: selectedTask.taskId,
+        branch: selectedTask.branch,
+        runId,
+        fromSeq: pendingTurn.fromSeq,
+        toSeq: pendingTurn.toSeq,
+        at,
+        reason: "task_routed",
+      });
+      await this.store.startTaskRun({
+        sessionId: input.sessionId,
+        taskId: selectedTask.taskId,
+        branch: selectedTask.branch,
+        runId,
+        fromSeq: pendingTurn.fromSeq,
+        toSeq: pendingTurn.toSeq,
+        at,
+      });
+      return {
+        status: "ready" as const,
+        mode,
+        sessionId: input.sessionId,
+        taskId: selectedTask.taskId,
+        branch: selectedTask.branch,
+        ref: selectedTask.ref,
+        conversationRefs: [{ fromSeq: pendingTurn.fromSeq, toSeq: pendingTurn.toSeq }],
+        confidence: "deterministic" as const,
+        reason: input.reason,
+        selectedTask,
+        runId,
+      };
+    });
+    this.bindPendingTurn(input.sessionId, {
+      fromSeq: pendingTurn.fromSeq,
+      toSeq: pendingTurn.toSeq,
+      taskId: routed.taskId,
+      branch: routed.branch,
+      runId: routed.runId,
+    });
+    if (!await this.cacheRoutedTaskTurn({
+      sessionId: input.sessionId,
+      userMessage: pendingTurn.text,
+      fromSeq: pendingTurn.fromSeq,
+      toSeq: pendingTurn.toSeq,
+      at,
+    }, routed)) {
+      this.invalidateSessionMemory(input.sessionId);
+    }
+    const memoryState = await this.hydrateMemoryState(input.sessionId);
+    const context = buildGitMemoryContextPackFromMemoryState(memoryState);
+    return {
+      ...routed,
+      context,
+      memoryState,
+    };
+  }
+
+  async createTaskForTurn(input: CreateGitMemoryTaskForTurnInput): Promise<RoutedGitMemoryUserTurn> {
+    const pendingTurn = this.requireUnboundPendingTurn(input.sessionId);
+    const at = input.at ?? pendingTurn.at;
+    const routed = await this.writeQueue.enqueue({
+      sessionId: input.sessionId,
+      type: "task_routed",
+      label: "create_task_for_turn",
+      createdAt: at,
+    }, async () => {
+      const runId = await this.store.allocateTaskRunId(input.sessionId);
+      const createdTask = await this.store.createTaskBranch({
+        sessionId: input.sessionId,
+        title: input.title,
+        objective: input.objective,
+        fromSeq: pendingTurn.fromSeq,
+        toSeq: pendingTurn.toSeq,
+        at,
+        runId,
+        state: {
+          status: "open",
+          summary: input.objective,
+          completed: [],
+          open: [input.objective],
+          blockers: [],
+          facts: [],
+          next: input.objective,
+        },
+      });
+      await this.store.startTaskRun({
+        sessionId: input.sessionId,
+        taskId: createdTask.taskId,
+        branch: createdTask.branch,
+        runId,
+        fromSeq: pendingTurn.fromSeq,
+        toSeq: pendingTurn.toSeq,
+        at,
+      });
+      return {
+        status: "ready" as const,
+        mode: "create_new_task" as const,
+        sessionId: input.sessionId,
+        taskId: createdTask.taskId,
+        branch: createdTask.branch,
+        ref: createdTask.ref,
+        conversationRefs: [{ fromSeq: pendingTurn.fromSeq, toSeq: pendingTurn.toSeq }],
+        confidence: "deterministic" as const,
+        reason: input.reason,
+        createdTask,
+        runId,
+      };
+    });
+    this.bindPendingTurn(input.sessionId, {
+      fromSeq: pendingTurn.fromSeq,
+      toSeq: pendingTurn.toSeq,
+      taskId: routed.taskId,
+      branch: routed.branch,
+      runId: routed.runId,
+    });
+    if (!await this.cacheRoutedTaskTurn({
+      sessionId: input.sessionId,
+      userMessage: pendingTurn.text,
+      fromSeq: pendingTurn.fromSeq,
+      toSeq: pendingTurn.toSeq,
+      at,
+      title: input.title,
+      objective: input.objective,
+    }, routed)) {
+      this.invalidateSessionMemory(input.sessionId);
+    }
+    const memoryState = await this.hydrateMemoryState(input.sessionId);
+    const context = buildGitMemoryContextPackFromMemoryState(memoryState);
+    return {
+      ...routed,
+      context,
+      memoryState,
+    };
+  }
+
+  async askClarificationForTurn(
+    input: AskGitMemoryTaskClarificationForTurnInput,
+  ): Promise<Extract<RoutedGitMemoryUserTurn, { status: "ambiguous" }>> {
+    const pendingTurn = this.requireUnboundPendingTurn(input.sessionId);
+    const candidates = await this.taskRouteCandidatesForIds(
+      input.sessionId,
+      input.candidateTaskIds ?? [],
+      input.reason,
+    );
+    this.markPendingTurnClarifying(input.sessionId, {
+      fromSeq: pendingTurn.fromSeq,
+      toSeq: pendingTurn.toSeq,
+    });
+    const memoryState = await this.hydrateMemoryState(input.sessionId);
+    const context = buildGitMemoryContextPackFromMemoryState(memoryState);
+    return {
+      status: "ambiguous",
+      sessionId: input.sessionId,
+      candidates,
+      reason: input.reason,
+      context,
+      memoryState,
+    };
+  }
+
+  async switchTask(input: SwitchGitMemoryTaskInput): Promise<SwitchGitMemoryTaskResult> {
+    const result = await this.writeQueue.enqueue({
+      sessionId: input.sessionId,
+      type: "task_switched",
+      label: "switch_task",
+      createdAt: input.at,
+    }, async () => {
+      return await this.store.selectTaskForTurn({
+        sessionId: input.sessionId,
+        taskId: input.taskId,
+        fromSeq: 0,
+        toSeq: 0,
+        reason: "task_switched",
+        at: input.at,
+        summary: input.reason,
+      });
+    });
+    this.invalidateSessionMemory(input.sessionId);
+    const memoryState = await this.hydrateMemoryState(input.sessionId);
+    const context = buildGitMemoryContextPackFromMemoryState(memoryState);
+    return {
+      ...result,
+      context,
+      memoryState,
+    };
+  }
+
+  async routeUserTurn(input: ApplyGitMemoryTaskRouteInput): Promise<RoutedGitMemoryUserTurn> {
+    const routed = await this.writeQueue.enqueue({
+      sessionId: input.sessionId,
+      type: "task_routed",
+      label: "route_user_turn",
+      createdAt: input.at,
+    }, async () => {
+      const resolution = await this.taskRouter.resolve(input);
+      if (resolution.mode === "ambiguous") {
+        return {
+          status: "ambiguous",
+          sessionId: input.sessionId,
+          candidates: resolution.candidates,
+          reason: resolution.reason,
+        } as const;
+      }
+      const runId = await this.store.allocateTaskRunId(input.sessionId);
+      const route = await this.taskRouter.applyResolution({ ...input, runId }, resolution);
+      if (route.status === "ambiguous") {
+        throw new Error("Git memory task route unexpectedly became ambiguous after run allocation.");
+      }
+      if (!route.createdTask) {
+        await this.store.appendTaskConversationRange({
+          sessionId: input.sessionId,
+          taskId: route.taskId,
+          branch: route.branch,
+          runId,
+          fromSeq: input.fromSeq,
+          toSeq: input.toSeq,
+          at: input.at,
+          reason: "task_routed",
+        });
+      }
+      await this.store.startTaskRun({
+        sessionId: input.sessionId,
+        taskId: route.taskId,
+        branch: route.branch,
+        runId,
+        fromSeq: input.fromSeq,
+        toSeq: input.toSeq,
+        at: input.at,
+      });
+      return {
+        ...route,
+        runId,
+      };
+    });
+    if (routed.status === "ready") {
+      this.bindPendingTurn(input.sessionId, {
+        fromSeq: input.fromSeq,
+        toSeq: input.toSeq,
+        taskId: routed.taskId,
+        branch: routed.branch,
+        runId: routed.runId,
+      });
+      if (!await this.cacheRoutedTaskTurn(input, routed)) {
+        this.invalidateSessionMemory(input.sessionId);
+      }
+    } else {
+      this.markPendingTurnClarifying(input.sessionId, {
+        fromSeq: input.fromSeq,
+        toSeq: input.toSeq,
+      });
+    }
+    const memoryState = await this.hydrateMemoryState(input.sessionId);
+    const context = buildGitMemoryContextPackFromMemoryState(memoryState);
+    return {
+      ...routed,
+      context,
+      memoryState,
     };
   }
 
   async commitTaskRun(input: CommitGitMemoryTaskRunInput): Promise<CommitGitMemoryTaskRunResult> {
-    return await this.store.commitTaskRun(input);
+    const result = await this.writeQueue.enqueue({
+      sessionId: input.sessionId,
+      type: "task_run_committed",
+      label: "commit_task_run",
+      createdAt: input.completedAt,
+    }, async () => {
+      return await this.store.commitTaskRun(input);
+    });
+    if (!await this.cacheCommittedTaskRun(input, result)) {
+      this.invalidateSessionMemory(input.sessionId);
+    }
+    this.clearCommittedPendingTurn(input.sessionId, result.runId);
+    return result;
+  }
+
+  async finalizeTaskRun(input: FinalizeGitMemoryTaskRunInput): Promise<FinalizeGitMemoryTaskRunResult> {
+    const commitInput = buildGitMemoryTaskRunCommitInput(input);
+    const finalized = await this.writeQueue.enqueue({
+      sessionId: commitInput.sessionId,
+      type: "task_run_committed",
+      label: "finalize_task_run",
+      createdAt: commitInput.completedAt,
+    }, async () => {
+      const existing = commitInput.runId
+        ? await this.store.readCommittedTaskRun({
+          sessionId: commitInput.sessionId,
+          taskId: commitInput.taskId,
+          runId: commitInput.runId,
+        })
+        : null;
+      if (existing) {
+        return {
+          result: existing,
+          alreadyFinalized: true,
+        };
+      }
+      return {
+        result: await this.store.commitTaskRun(commitInput),
+        alreadyFinalized: false,
+      };
+    });
+    if (!finalized.alreadyFinalized && !await this.cacheCommittedTaskRun(commitInput, finalized.result)) {
+      this.invalidateSessionMemory(commitInput.sessionId);
+    }
+    this.clearCommittedPendingTurn(commitInput.sessionId, finalized.result.runId);
+
+    let assistantMessage: GitMemoryConversationRecord | undefined;
+    if (!finalized.alreadyFinalized && input.assistantMessage?.trim()) {
+      assistantMessage = await this.recordAssistantMessage({
+        sessionId: commitInput.sessionId,
+        text: input.assistantMessage,
+        at: input.assistantAt ?? input.at,
+        taskId: finalized.result.taskId,
+        runId: finalized.result.runId,
+      });
+    }
+
+    return {
+      ...finalized.result,
+      alreadyFinalized: finalized.alreadyFinalized,
+      ...(assistantMessage ? { assistantMessage } : {}),
+    };
   }
 
   async checkpointSession(input: CheckpointGitMemoryRuntimeSessionInput): Promise<GitMemorySessionCheckpoint> {
-    return await this.store.checkpointSession(input);
+    const result = await this.writeQueue.enqueue({
+      sessionId: input.sessionId,
+      type: "session_checkpointed",
+      label: "checkpoint_session",
+      createdAt: input.at,
+    }, async () => {
+      return await this.store.checkpointSession(input);
+    });
+    this.invalidateSessionMemory(input.sessionId);
+    return result;
   }
 
   async buildActiveContext(sessionId: GitMemorySessionId): Promise<GitMemoryMachineContextPack> {
-    return await this.contextReader.buildActiveContext({ sessionId });
+    return buildGitMemoryContextPackFromMemoryState(
+      await this.hydrateMemoryState(sessionId),
+    );
+  }
+
+  async buildMemoryState(sessionId: GitMemorySessionId): Promise<GitContextMemoryState> {
+    return await this.hydrateMemoryState(sessionId);
+  }
+
+  getSessionWrites(sessionId: GitMemorySessionId): GitMemoryWriteBatchSnapshot[] {
+    return this.writeQueue.getSessionWrites(sessionId);
+  }
+
+  private sessionIdForAt(at: string): GitMemorySessionId {
+    return createGitMemorySessionId(sessionDateForAt(at, this.timezone), this.agentId);
+  }
+
+  private async hydrateMemoryState(sessionId: GitMemorySessionId): Promise<GitContextMemoryState> {
+    const state = await this.getOrHydrateCachedMemoryState(sessionId);
+    const pendingTurn = this.pendingTurns.get(sessionId);
+    return {
+      ...state,
+      pendingWrites: buildGitContextPendingWrites(this.writeQueue.getSessionWrites(sessionId)),
+      ...(pendingTurn ? { pendingTurn: toPendingTurnContext(pendingTurn) } : {}),
+    };
+  }
+
+  private async getOrHydrateCachedMemoryState(sessionId: GitMemorySessionId): Promise<GitContextMemoryState> {
+    const cached = this.sessionMemoryCache.get(sessionId);
+    if (cached) {
+      return cached;
+    }
+    const state = await this.memoryStateHydrator.hydrate({ sessionId });
+    this.sessionMemoryCache.set(sessionId, state);
+    return state;
+  }
+
+  private updateCachedSessionConversation(
+    state: GitContextMemoryState,
+    record: GitMemoryConversationRecord,
+  ): void {
+    const nextState: GitContextMemoryState = {
+      ...state,
+      pendingWrites: [],
+      session: {
+        ...state.session,
+        conversationTail: tail(
+          [...state.session.conversationTail, record],
+          DEFAULT_GIT_MEMORY_CONTEXT_LIMITS.conversationTailLimit,
+        ),
+        conversationMarkdownTail: markdownTail(
+          appendGitMemoryConversationMarkdown(state.session.conversationMarkdownTail, record),
+          DEFAULT_GIT_MEMORY_CONTEXT_LIMITS.conversationMarkdownCharLimit,
+        ),
+      },
+    };
+    this.sessionMemoryCache.set(state.session.sessionId, nextState);
+  }
+
+  private setPendingTurn(turn: PendingGitMemoryTurnEnvelope): void {
+    this.pendingTurns.set(turn.sessionId, turn);
+  }
+
+  private bindPendingTurn(
+    sessionId: GitMemorySessionId,
+    input: {
+      fromSeq: number;
+      toSeq: number;
+      taskId: GitMemoryTaskId;
+      branch: string;
+      runId: GitMemoryRunId;
+    },
+  ): void {
+    const existing = this.pendingTurns.get(sessionId);
+    if (!existing || !sameConversationRange(existing, input)) {
+      return;
+    }
+    this.pendingTurns.set(sessionId, {
+      ...existing,
+      routingStatus: "bound",
+      taskId: input.taskId,
+      branch: input.branch,
+      runId: input.runId,
+    });
+  }
+
+  private markPendingTurnClarifying(
+    sessionId: GitMemorySessionId,
+    input: {
+      fromSeq: number;
+      toSeq: number;
+    },
+  ): void {
+    const existing = this.pendingTurns.get(sessionId);
+    if (!existing || !sameConversationRange(existing, input)) {
+      return;
+    }
+    this.pendingTurns.set(sessionId, {
+      ...existing,
+      routingStatus: "clarifying",
+    });
+  }
+
+  private clearCommittedPendingTurn(sessionId: GitMemorySessionId, runId: GitMemoryRunId): void {
+    const existing = this.pendingTurns.get(sessionId);
+    if (existing?.runId === runId) {
+      this.pendingTurns.delete(sessionId);
+    }
+  }
+
+  private requireUnboundPendingTurn(sessionId: GitMemorySessionId): PendingGitMemoryTurnEnvelope {
+    const pendingTurn = this.pendingTurns.get(sessionId);
+    if (!pendingTurn) {
+      throw new Error(`Git memory pending turn not found for session: ${sessionId}`);
+    }
+    if (pendingTurn.routingStatus !== "unbound") {
+      throw new Error(`Git memory pending turn is not unbound: ${pendingTurn.routingStatus}`);
+    }
+    return pendingTurn;
+  }
+
+  private async taskRouteCandidatesForIds(
+    sessionId: GitMemorySessionId,
+    taskIds: GitMemoryTaskId[],
+    reason: string,
+  ): Promise<GitMemoryTaskRouteCandidate[]> {
+    if (taskIds.length === 0) {
+      return [];
+    }
+    const requested = new Set(taskIds);
+    const snapshot = await this.store.readTaskRoutingSnapshot(sessionId);
+    return snapshot.tasks
+      .filter((task) => requested.has(task.taskId))
+      .map((task) => ({
+        taskId: task.taskId,
+        branch: task.branch,
+        ref: task.ref,
+        title: task.title,
+        status: task.status,
+        score: 100,
+        reasons: [reason],
+      }));
+  }
+
+  private async cacheCreatedTask(
+    input: CreateGitMemoryTaskBranchInput,
+    result: CreateGitMemoryTaskBranchResult,
+  ): Promise<void> {
+    const state = await this.getOrHydrateCachedMemoryState(input.sessionId);
+    const status = input.state?.status ?? input.status ?? "open";
+    const summary = input.state?.summary ?? input.objective;
+    const completed = input.state?.completed ?? [];
+    const open = input.state?.open ?? [input.objective];
+    const blockers = input.state?.blockers ?? [];
+    const facts = input.state?.facts ?? [];
+    const next = input.state?.next ?? input.objective;
+    const conversation = conversationRecordsInRange(state.session.conversationTail, input);
+    const activeTask: GitContextMemoryActiveTask = {
+      taskId: result.taskId,
+      branch: result.branch,
+      ref: result.ref,
+      title: input.title,
+      objective: input.objective,
+      status,
+      summary,
+      completed,
+      open,
+      blockers,
+      facts,
+      next,
+      assets: [],
+      conversationMarkdownTail: markdownTail(
+        renderGitMemoryConversationMarkdownDocument(conversation, {
+          taskId: result.taskId,
+          ...(input.runId ? { runId: input.runId } : {}),
+        }),
+        DEFAULT_GIT_MEMORY_CONTEXT_LIMITS.conversationMarkdownCharLimit,
+      ),
+      recentRuns: [],
+      recentCommits: [],
+      recentEvidence: [],
+    };
+    const knownTask = {
+      taskId: activeTask.taskId,
+      branch: activeTask.branch,
+      ref: activeTask.ref,
+      title: activeTask.title,
+      objective: activeTask.objective,
+      status: activeTask.status,
+      summary: activeTask.summary,
+      open: activeTask.open,
+      blockers: activeTask.blockers,
+      facts: activeTask.facts,
+      next: activeTask.next,
+    };
+    this.sessionMemoryCache.set(input.sessionId, {
+      ...state,
+      session: {
+        ...state.session,
+        taskCount: state.knownTasks.some((task) => task.taskId === result.taskId)
+          ? state.session.taskCount
+          : state.session.taskCount + 1,
+        currentBranch: result.branch,
+      },
+      focus: {
+        status: "active",
+        taskId: result.taskId,
+        branch: result.branch,
+        ref: result.ref,
+      },
+      activeTask,
+      knownTasks: [
+        knownTask,
+        ...state.knownTasks.filter((task) => task.taskId !== result.taskId),
+      ],
+    });
+  }
+
+  private updateCachedTaskConversation(
+    sessionId: GitMemorySessionId,
+    taskId: GitMemoryTaskId | undefined,
+    record: GitMemoryConversationRecord,
+  ): boolean {
+    const state = this.sessionMemoryCache.get(sessionId);
+    if (!state || !taskId || state.activeTask?.taskId !== taskId) {
+      return false;
+    }
+    this.sessionMemoryCache.set(sessionId, {
+      ...state,
+      session: {
+        ...state.session,
+        conversationTail: tail(
+          [...state.session.conversationTail, record],
+          DEFAULT_GIT_MEMORY_CONTEXT_LIMITS.conversationTailLimit,
+        ),
+        conversationMarkdownTail: markdownTail(
+          appendGitMemoryConversationMarkdown(state.session.conversationMarkdownTail, record),
+          DEFAULT_GIT_MEMORY_CONTEXT_LIMITS.conversationMarkdownCharLimit,
+        ),
+      },
+      activeTask: {
+        ...state.activeTask,
+        conversationMarkdownTail: markdownTail(
+          appendGitMemoryConversationMarkdown(state.activeTask.conversationMarkdownTail, record),
+          DEFAULT_GIT_MEMORY_CONTEXT_LIMITS.conversationMarkdownCharLimit,
+        ),
+      },
+    });
+    return true;
+  }
+
+  private async cacheRoutedTaskTurn(
+    input: ApplyGitMemoryTaskRouteInput,
+    routed: Extract<AppliedGitMemoryTaskRoute, { status: "ready" }> & { runId: GitMemoryRunId },
+  ): Promise<boolean> {
+    if (routed.createdTask) {
+      await this.cacheCreatedTask({
+        sessionId: input.sessionId,
+        title: routed.createdTask.title,
+        objective: routed.createdTask.objective,
+        fromSeq: input.fromSeq,
+        toSeq: input.toSeq,
+        runId: routed.runId,
+        at: input.at,
+        status: routed.createdTask.status,
+        state: routed.createdTask.state,
+      }, routed.createdTask);
+      return true;
+    }
+
+    const state = this.sessionMemoryCache.get(input.sessionId);
+    if (!state?.activeTask || state.activeTask.taskId !== routed.taskId) {
+      return false;
+    }
+
+    const conversation = conversationRecordsInRange(state.session.conversationTail, input);
+    const activeTask: GitContextMemoryActiveTask = {
+      ...state.activeTask,
+      branch: routed.branch,
+      ref: routed.ref,
+      conversationMarkdownTail: markdownTail(
+        appendGitMemoryConversationMarkdownRecords(state.activeTask.conversationMarkdownTail, conversation, {
+          taskId: routed.taskId,
+          runId: routed.runId,
+        }),
+        DEFAULT_GIT_MEMORY_CONTEXT_LIMITS.conversationMarkdownCharLimit,
+      ),
+    };
+    this.sessionMemoryCache.set(input.sessionId, {
+      ...state,
+      session: {
+        ...state.session,
+        currentBranch: routed.branch,
+      },
+      focus: {
+        status: "active",
+        taskId: routed.taskId,
+        branch: routed.branch,
+        ref: routed.ref,
+      },
+      activeTask,
+      knownTasks: state.knownTasks.map((task) => task.taskId === routed.taskId
+        ? {
+          ...task,
+          branch: routed.branch,
+          ref: routed.ref,
+        }
+        : task),
+    });
+    return true;
+  }
+
+  private async cacheCommittedTaskRun(
+    input: CommitGitMemoryTaskRunInput,
+    result: CommitGitMemoryTaskRunResult,
+  ): Promise<boolean> {
+    const state = this.sessionMemoryCache.get(input.sessionId);
+    if (!state?.activeTask || state.activeTask.taskId !== result.taskId) {
+      return false;
+    }
+    const completedAt = input.completedAt ?? this.nowProvider().toISOString();
+    const startedAt = input.startedAt ?? completedAt;
+    const previous = state.activeTask;
+    const newFacts = input.newFacts ?? [];
+    const facts = input.state?.facts ?? unique([...previous.facts, ...newFacts]);
+    const updatedTask: GitContextMemoryActiveTask = {
+      ...previous,
+      status: input.state?.status ?? previous.status,
+      summary: input.state?.summary ?? input.summary,
+      completed: input.state?.completed ?? previous.completed,
+      open: input.state?.open ?? previous.open,
+      blockers: input.state?.blockers ?? previous.blockers,
+      facts,
+      next: input.state?.next ?? input.next ?? previous.next,
+      assets: mergeCachedAssets(previous.assets, input.assets ?? []),
+      recentRuns: [
+        buildCachedRunFile(input, result.runId, startedAt, completedAt),
+        ...previous.recentRuns.filter((run) => run.runId !== result.runId),
+      ].slice(0, DEFAULT_GIT_MEMORY_CONTEXT_LIMITS.runLimit),
+    };
+    this.sessionMemoryCache.set(input.sessionId, {
+      ...state,
+      session: {
+        ...state.session,
+        currentBranch: result.branch,
+      },
+      focus: {
+        status: "active",
+        taskId: result.taskId,
+        branch: result.branch,
+        ref: result.ref,
+      },
+      activeTask: updatedTask,
+      knownTasks: state.knownTasks.map((task) => task.taskId === result.taskId
+        ? {
+          ...task,
+          status: updatedTask.status,
+          summary: updatedTask.summary,
+          open: updatedTask.open,
+          blockers: updatedTask.blockers,
+          facts: updatedTask.facts,
+          next: updatedTask.next,
+        }
+        : task),
+    });
+    return true;
+  }
+
+  private async createAndCacheConversationRecord(
+    sessionId: GitMemorySessionId,
+    input: {
+      role: GitMemoryConversationRole;
+      text: string;
+      at: string;
+    },
+  ): Promise<GitMemoryConversationRecord> {
+    const hydrated = await this.getOrHydrateCachedMemoryState(sessionId);
+    const latest = this.sessionMemoryCache.get(sessionId) ?? hydrated;
+    const record = this.createCachedConversationRecord(latest, input);
+    this.updateCachedSessionConversation(latest, record);
+    return record;
+  }
+
+  private createCachedConversationRecord(
+    state: GitContextMemoryState,
+    input: {
+      role: GitMemoryConversationRole;
+      text: string;
+      at: string;
+    },
+  ): GitMemoryConversationRecord {
+    return {
+      seq: nextConversationSeq(state.session.conversationTail),
+      role: input.role,
+      at: input.at,
+      text: input.text,
+    };
+  }
+
+  private enqueueGlobalConversationPersistence(input: {
+    sessionId: GitMemorySessionId;
+    type: GitMemoryWriteBatchRequest["type"];
+    label: string;
+    createdAt: string;
+    record: GitMemoryConversationRecord;
+  }): void {
+    const persistence = this.writeQueue.enqueue({
+      sessionId: input.sessionId,
+      type: input.type,
+      label: input.label,
+      createdAt: input.createdAt,
+    }, async () => {
+      await this.store.appendMainConversationRecord({
+        sessionId: input.sessionId,
+        record: input.record,
+      });
+    });
+    void persistence.catch(() => undefined);
+  }
+
+  private invalidateSessionMemory(sessionId: GitMemorySessionId): void {
+    this.sessionMemoryCache.delete(sessionId);
   }
 }
 
@@ -249,4 +1284,97 @@ function partValue(parts: Intl.DateTimeFormatPart[], type: Intl.DateTimeFormatPa
     throw new Error(`Could not resolve ${type} for git-memory runtime date.`);
   }
   return value;
+}
+
+function tail<T>(items: T[], limit: number): T[] {
+  return items.slice(Math.max(0, items.length - limit));
+}
+
+function markdownTail(value: string, limit: number): string {
+  if (value.length <= limit) {
+    return value;
+  }
+  return value.slice(value.length - limit);
+}
+
+function nextConversationSeq(records: Array<{ seq?: unknown }>): number {
+  return records.reduce((max, record) => (
+    typeof record.seq === "number" && Number.isInteger(record.seq) ? Math.max(max, record.seq) : max
+  ), 0) + 1;
+}
+
+function conversationRecordsInRange(
+  records: GitMemoryConversationRecord[],
+  range: { fromSeq: number; toSeq: number },
+): GitMemoryConversationRecord[] {
+  return records.filter((record) => record.seq >= range.fromSeq && record.seq <= range.toSeq);
+}
+
+function sameConversationRange(
+  left: { fromSeq: number; toSeq: number },
+  right: { fromSeq: number; toSeq: number },
+): boolean {
+  return left.fromSeq === right.fromSeq && left.toSeq === right.toSeq;
+}
+
+function isReopenTaskStatus(status: string): boolean {
+  return status === "done" || status === "abandoned";
+}
+
+function toPendingTurnContext(turn: PendingGitMemoryTurnEnvelope): GitMemoryPendingTurnContext {
+  return {
+    fromSeq: turn.fromSeq,
+    toSeq: turn.toSeq,
+    text: turn.text,
+    at: turn.at,
+    routingStatus: turn.routingStatus,
+    ...(turn.taskId ? { taskId: turn.taskId } : {}),
+    ...(turn.branch ? { branch: turn.branch } : {}),
+    ...(turn.runId ? { runId: turn.runId } : {}),
+  };
+}
+
+function buildCachedRunFile(
+  input: CommitGitMemoryTaskRunInput,
+  runId: GitMemoryRunId,
+  startedAt: string,
+  completedAt: string,
+): GitMemoryRunFile {
+  return {
+    schemaVersion: 1,
+    runId,
+    taskId: input.taskId,
+    status: input.status,
+    startedAt,
+    completedAt,
+    conversationRefs: input.conversationRefs,
+    summary: input.summary,
+    ...(input.intent ? { intent: input.intent } : {}),
+    ...(input.routing ? { routing: input.routing } : {}),
+    ...(input.outcome ? { outcome: input.outcome } : {}),
+    ...(input.workPerformed?.length ? { workPerformed: input.workPerformed } : {}),
+    ...(input.verification?.length ? { verification: input.verification } : {}),
+    ...(input.decisions?.length ? { decisions: input.decisions } : {}),
+    ...(input.blockers?.length ? { blockers: input.blockers } : {}),
+    ...(input.assistantResponse ? { assistantResponse: input.assistantResponse } : {}),
+    toolCallCount: input.toolCallCount ?? input.actions?.length ?? 0,
+    changedFiles: input.changedFiles ?? [],
+    newFacts: input.newFacts ?? [],
+    ...(input.next ? { next: input.next } : {}),
+  };
+}
+
+function mergeCachedAssets(
+  existing: TaskAssetRecord[],
+  incoming: TaskAssetRecord[],
+): TaskAssetRecord[] {
+  const byId = new Map(existing.map((asset) => [asset.assetId, asset]));
+  for (const asset of incoming) {
+    byId.set(asset.assetId, asset);
+  }
+  return [...byId.values()];
+}
+
+function unique<T>(values: T[]): T[] {
+  return [...new Set(values)];
 }

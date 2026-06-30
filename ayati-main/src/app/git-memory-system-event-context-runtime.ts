@@ -1,19 +1,18 @@
 import type {
-  CommitGitMemoryTaskRunResult,
+  FinalizeGitMemoryTaskRunResult,
   GitMemoryConversationRecord,
   GitMemoryConversationSeqRange,
+  GitContextMemoryState,
   GitMemoryHarnessRunResultForContext,
   GitMemoryMachineContextPack,
   GitMemoryRunId,
   GitMemoryRuntime,
   GitMemorySessionId,
   GitMemoryTaskId,
-  GitMemoryTurnId,
   RoutedGitMemoryUserTurn,
 } from "../context-engine/index.js";
 import {
-  buildGitMemoryHarnessContextPack,
-  buildGitMemoryTaskRunCommitInput,
+  buildGitMemoryHarnessContextFromMemoryState,
 } from "../context-engine/index.js";
 import type { HarnessContextInput } from "../ivec/harness-context.js";
 import { devWarn } from "../shared/index.js";
@@ -34,9 +33,8 @@ export interface GitMemorySystemEventContextPreparedTurn {
   repoPath: string;
   initialized: boolean;
   messageSeq: number;
-  messageId: string;
-  turnId: GitMemoryTurnId;
   context: GitMemoryMachineContextPack;
+  memoryState: GitContextMemoryState;
 }
 
 export interface GitMemorySystemEventContextAssistantMessageInput {
@@ -58,6 +56,8 @@ export interface GitMemorySystemEventContextCompleteTaskRunInput {
   startedAt?: string;
   conversationRefs?: GitMemoryConversationSeqRange[];
   changedFiles?: string[];
+  assistantMessage?: string;
+  assistantAt?: string;
 }
 
 export interface GitMemorySystemEventContextRouteTaskTurnInput {
@@ -80,7 +80,7 @@ export interface GitMemorySystemEventContextRuntime {
   routeTaskTurn(
     input: GitMemorySystemEventContextRouteTaskTurnInput,
   ): Promise<GitMemorySystemEventContextRoutedTurn | null>;
-  completeTaskRun(input: GitMemorySystemEventContextCompleteTaskRunInput): Promise<CommitGitMemoryTaskRunResult | null>;
+  completeTaskRun(input: GitMemorySystemEventContextCompleteTaskRunInput): Promise<FinalizeGitMemoryTaskRunResult | null>;
   recordAssistantMessage(
     input: GitMemorySystemEventContextAssistantMessageInput,
   ): Promise<GitMemoryConversationRecord | null>;
@@ -109,9 +109,8 @@ class AppGitMemorySystemEventContextRuntime implements GitMemorySystemEventConte
       repoPath: prepared.repoPath,
       initialized: prepared.initialized,
       messageSeq: prepared.systemMessage.seq,
-      messageId: prepared.systemMessage.messageId,
-      turnId: prepared.systemMessage.turnId,
       context: prepared.context,
+      memoryState: prepared.memoryState,
     };
   }
 
@@ -128,14 +127,13 @@ class AppGitMemorySystemEventContextRuntime implements GitMemorySystemEventConte
         fromSeq: input.turn.messageSeq,
         toSeq: input.turn.messageSeq,
         at: input.at,
-        turnIds: [input.turn.turnId],
         title: input.title,
         objective: input.objective,
       });
       return {
         ...route,
         harnessContext: {
-          contextEngine: buildGitMemoryHarnessContextPack(route.context),
+          contextEngine: buildGitMemoryHarnessContextFromMemoryState(route.memoryState),
         },
       };
     } catch (err) {
@@ -146,28 +144,25 @@ class AppGitMemorySystemEventContextRuntime implements GitMemorySystemEventConte
 
   async completeTaskRun(
     input: GitMemorySystemEventContextCompleteTaskRunInput,
-  ): Promise<CommitGitMemoryTaskRunResult | null> {
+  ): Promise<FinalizeGitMemoryTaskRunResult | null> {
     if (!input.turn) {
       return null;
     }
-    try {
-      return await this.gitMemoryRuntime.commitTaskRun(buildGitMemoryTaskRunCommitInput({
-        sessionId: input.turn.sessionId,
-        taskId: input.taskId,
-        runId: input.runId,
-        result: input.result,
-        conversationRefs: input.conversationRefs ?? [{
-          fromSeq: input.turn.messageSeq,
-          toSeq: input.turn.messageSeq,
-        }],
-        at: input.at,
-        startedAt: input.startedAt,
-        changedFiles: input.changedFiles,
-      }));
-    } catch (err) {
-      devWarn(`[${input.clientId}] git memory system-event task run commit failed: ${errorMessage(err)}`);
-      return null;
-    }
+    return await this.gitMemoryRuntime.finalizeTaskRun({
+      sessionId: input.turn.sessionId,
+      taskId: input.taskId,
+      runId: input.runId,
+      result: input.result,
+      conversationRefs: input.conversationRefs ?? [{
+        fromSeq: input.turn.messageSeq,
+        toSeq: input.turn.messageSeq,
+      }],
+      at: input.at,
+      startedAt: input.startedAt,
+      changedFiles: input.changedFiles,
+      assistantMessage: input.assistantMessage,
+      assistantAt: input.assistantAt,
+    });
   }
 
   async recordAssistantMessage(
@@ -179,7 +174,6 @@ class AppGitMemorySystemEventContextRuntime implements GitMemorySystemEventConte
     try {
       return await this.gitMemoryRuntime.recordAssistantMessage({
         sessionId: input.turn.sessionId,
-        turnId: input.turn.turnId,
         text: input.message,
         at: input.at,
         taskId: input.taskId,

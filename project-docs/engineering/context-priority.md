@@ -43,6 +43,10 @@ For context and memory tasks, prioritize:
 
 - `ayati-main/src/ivec/agent-runner/context-pack.ts`
 - `ayati-main/src/ivec/agent-runner/state-view.ts`
+- `ayati-main/src/context-engine/git-memory`
+- `ayati-main/src/skills/builtins/git-context`
+- `ayati-main/tests/context-engine/git-memory`
+- `ayati-main/tests/skills/git-context.test.ts`
 - `ayati-main/src/memory`
 - `ayati-main/tests/memory`
 

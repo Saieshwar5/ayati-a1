@@ -9,8 +9,12 @@ describe("git memory commit messages", () => {
     const message = renderGitMemoryCommitMessage({
       subject: "ayati: complete run R-20260628-0001",
       summary: "Inspected upload handling and found a validation mismatch.",
+      outcome: "Upload handling inspection completed.",
+      workPerformed: ["Read upload server implementation"],
+      verification: ["Confirmed validation mismatch from source inspection"],
       completed: ["Read upload server implementation"],
       open: ["Patch validation handling"],
+      next: "Patch validation handling.",
       notes: ["Conversation remains canonical on the session main branch."],
       trailers: {
         sessionId: "S-20260628-local",
@@ -25,7 +29,11 @@ describe("git memory commit messages", () => {
     });
 
     expect(message).toContain("Summary:\nInspected upload handling and found a validation mismatch.");
+    expect(message).toContain("Outcome:\nUpload handling inspection completed.");
+    expect(message).toContain("Work Performed:\n- Read upload server implementation");
+    expect(message).toContain("Verification:\n- Confirmed validation mismatch from source inspection");
     expect(message).toContain("Completed:\n- Read upload server implementation");
+    expect(message).toContain("Next:\nPatch validation handling.");
     expect(message).toContain("Ayati-Schema-Version: 1");
     expect(message).toContain("Ayati-Session-Id: S-20260628-local");
     expect(message).toContain("Ayati-Task-Id: W-20260628-0001");

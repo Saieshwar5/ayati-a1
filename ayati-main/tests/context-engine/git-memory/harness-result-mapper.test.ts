@@ -37,6 +37,21 @@ describe("buildGitMemoryTaskRunCommitInput", () => {
         newFacts: ["Upload route validates MIME type."],
         artifacts: ["ayati-main/src/server/upload-server.ts"],
         toolsUsed: ["read_file"],
+        evidenceSummary: "read upload-server.ts lines 1-80",
+        evidenceItems: ["upload-server.ts: validates MIME type"],
+        evidenceSource: {
+          kind: "tool-output",
+          toolCalls: [{
+            kind: "tool-output",
+            tool: "read_file",
+            callId: "call-read-upload",
+            filePath: "ayati-main/src/server/upload-server.ts",
+            rawOutputPath: "raw/001-call-read-upload-read_file.txt",
+          }],
+        },
+        outputSize: 1200,
+        lineCount: 80,
+        truncated: false,
       }, {
         step: 2,
         outcome: "failed",
@@ -44,6 +59,13 @@ describe("buildGitMemoryTaskRunCommitInput", () => {
         newFacts: [],
         artifacts: [],
         toolsUsed: ["read_file"],
+      }],
+      taskAssets: [{
+        assetId: "asset-upload-log",
+        role: "reference",
+        kind: "file",
+        name: "upload.log",
+        path: "/tmp/upload.log",
       }],
     };
 
@@ -69,6 +91,13 @@ describe("buildGitMemoryTaskRunCommitInput", () => {
       assistantResponse: "I fixed the upload validation mismatch.",
       toolCallCount: 3,
       changedFiles: ["ayati-main/src/server/upload-server.ts"],
+      assets: [{
+        assetId: "asset-upload-log",
+        role: "reference",
+        kind: "file",
+        name: "upload.log",
+        path: "/tmp/upload.log",
+      }],
       newFacts: [
         "Upload route validates MIME type.",
         "Uploads pass through the multipart parser.",
@@ -94,6 +123,41 @@ describe("buildGitMemoryTaskRunCommitInput", () => {
       tool: "read_file",
       status: "failed",
       summary: "Tried a missing upload test path.",
+    }]);
+    expect(mapped.evidence).toMatchObject([{
+      step: 1,
+      tool: "read_file",
+      status: "completed",
+      summary: "Read upload server implementation.",
+      evidenceRef: "read upload-server.ts lines 1-80",
+      artifacts: ["ayati-main/src/server/upload-server.ts"],
+      facts: [
+        "Upload route validates MIME type.",
+        "upload-server.ts: validates MIME type",
+      ],
+      accessModes: ["summary"],
+      outputSize: 1200,
+      lineCount: 80,
+      truncated: false,
+      source: {
+        kind: "tool-output",
+        toolCalls: [{
+          kind: "tool-output",
+          tool: "read_file",
+          callId: "call-read-upload",
+          filePath: "ayati-main/src/server/upload-server.ts",
+          rawOutputPath: "raw/001-call-read-upload-read_file.txt",
+        }],
+      },
+    }, {
+      step: 2,
+      tool: "read_file",
+      status: "failed",
+      summary: "Tried a missing upload test path.",
+      artifacts: [],
+      facts: [],
+      accessModes: [],
+      source: { kind: "harness-step" },
     }]);
   });
 
@@ -128,6 +192,81 @@ describe("buildGitMemoryTaskRunCommitInput", () => {
         status: "blocked",
         blockers: ["Choose the first upload format to support."],
         open: ["Wait for upload format priority."],
+      },
+    });
+  });
+
+  it("maps failed runs to failed run status and blocked task state", () => {
+    const mapped = buildGitMemoryTaskRunCommitInput({
+      sessionId: "S-20260628-local",
+      taskId: "W-20260628-0001",
+      result: {
+        type: "reply",
+        status: "failed",
+        content: "The upload test command failed.",
+        totalIterations: 2,
+        totalToolCalls: 1,
+        runPath: "data/runs/r3",
+        workState: {
+          status: "blocked",
+          summary: "Upload verification failed.",
+          openWork: ["Debug the failing upload test."],
+          blockers: ["Upload test command exited non-zero."],
+          verifiedFacts: ["The upload test command was attempted."],
+          evidence: ["pnpm upload test output"],
+          nextStep: "Inspect the failing upload test output.",
+        },
+      },
+      conversationRefs: [{ fromSeq: 6, toSeq: 6 }],
+      at: "2026-06-28T10:10:00+05:30",
+    });
+
+    expect(mapped).toMatchObject({
+      status: "failed",
+      newFacts: ["The upload test command was attempted."],
+      next: "Inspect the failing upload test output.",
+      state: {
+        status: "blocked",
+        summary: "Upload verification failed.",
+        open: ["Debug the failing upload test."],
+        blockers: ["Upload test command exited non-zero."],
+        next: "Inspect the failing upload test output.",
+      },
+    });
+  });
+
+  it("maps stuck runs to blocked run status and blocked task state", () => {
+    const mapped = buildGitMemoryTaskRunCommitInput({
+      sessionId: "S-20260628-local",
+      taskId: "W-20260628-0001",
+      result: {
+        type: "reply",
+        status: "stuck",
+        content: "I could not make more progress without resolving the branch state.",
+        totalIterations: 3,
+        totalToolCalls: 2,
+        runPath: "data/runs/r4",
+        taskSummary: {
+          taskStatus: "blocked",
+          summary: "Branch state needs cleanup before continuing.",
+          openWork: ["Resolve the branch state."],
+          blockers: ["The branch has conflicting task ownership."],
+          nextAction: "Decide which task branch should own this work.",
+        },
+      },
+      conversationRefs: [{ fromSeq: 7, toSeq: 7 }],
+      at: "2026-06-28T10:20:00+05:30",
+    });
+
+    expect(mapped).toMatchObject({
+      status: "blocked",
+      next: "Decide which task branch should own this work.",
+      state: {
+        status: "blocked",
+        summary: "Branch state needs cleanup before continuing.",
+        open: ["Resolve the branch state."],
+        blockers: ["The branch has conflicting task ownership."],
+        next: "Decide which task branch should own this work.",
       },
     });
   });

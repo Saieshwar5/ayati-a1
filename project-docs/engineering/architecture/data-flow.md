@@ -5,22 +5,28 @@ Daemon communication flow:
 1. A communication channel sends a user message or event into the daemon.
 2. Current CLI path: `ayati-cli` sends `{ type: "chat", content, attachments? }` to `ws://localhost:8080`.
 3. `WsServer` parses JSON and forwards payloads to `IVecEngine.handleMessage`.
-4. The chat runtime records the user message, prepares git context, builds
-   static decision context, and enters the agent runner.
-5. The runner builds a structured context pack from daily git context and
+4. The chat runtime records the user message in daily git context and prepares
+   pending-turn ownership state.
+5. Runtime auto-binds obvious same-task follow-ups. If task ownership is
+   semantic or ambiguous, the agent can search/read git context and use
+   turn-aware activate/create/clarify tools before normal task work runs.
+6. The runner builds a structured context pack from daily git context and
    personal memory. Current-run attachments appear separately in the sparse
    state view only when present.
-6. The decision model chooses a control tool (`decision_reply`,
+7. The decision model chooses a control tool (`decision_reply`,
    `decision_ask_user`, or `decision_load_tools`) or directly calls one
    selected executable tool.
-7. If an executable tool is called, the action executor validates the selected
+8. If an executable tool is called, the action executor validates the selected
    tool input and dispatches through registered tool definitions.
-8. Tool contracts/assertions turn results into verified facts and evidence.
-9. The progress reducer updates sparse `workState`; verified local work can mark
+9. Tool contracts/assertions turn results into verified facts and evidence.
+10. The progress reducer updates sparse `workState`; verified local work can mark
    `workState.status` as `done`.
-10. Completed tool work routes through a final decision-model reply so the user
+11. Completed tool work routes through a final decision-model reply so the user
    sees a natural answer while verification details stay internal.
-11. The engine replies through `onReply`; local replies go back through `WsServer.send`.
+12. Runtime finalization commits task state, run summaries, actions, evidence,
+   assets, assistant response metadata, and git commit trailers exactly once for
+   the task run when a run exists.
+13. The engine replies through `onReply`; local replies go back through `WsServer.send`.
 
 Client model:
 
@@ -32,24 +38,28 @@ Git context and memory flow:
 
 1. User interactions are recorded in the daily git session conversation on the
    main branch.
-2. The context engine resolves the message to a work branch, creates a new
-   task branch when needed, or returns an ambiguous result before tool work
-   starts.
-3. The agent loop receives `gitContext` with conversation tail, focus, task
-   state, task assets, recent runs, recent commits, facts, open work, and next
-   step.
-4. Every completed task run writes machine-readable state, run summary,
-   actions, action outputs, final output, and task assets to the work branch.
-5. Run commits include Ayati commit metadata so the branch history itself is a
+2. The context engine creates a pending turn. Obvious same-task follow-ups bind
+   automatically; semantic ownership uses git-context read/search plus
+   turn-aware activate/create/clarify tools.
+3. While a pending turn is unbound or clarifying, normal task tools are blocked.
+   No task branch receives the conversation and no run id is allocated until
+   ownership is clear.
+4. The agent loop receives `gitContext` with conversation tail, pending-turn
+   state, focus, task state, task assets, recent runs, recent commits, recent
+   evidence, facts, open work, and next step.
+5. Every completed task run writes machine-readable state, run summary,
+   actions, evidence manifests, final output, and task assets to the work
+   branch.
+6. Run commits include Ayati commit metadata so the branch history itself is a
    retrieval surface.
-6. Attachment restore reads git task assets from tool execution context. It
+7. Attachment restore reads git task assets from tool execution context. It
    does not use Activity memory.
-7. Session close can still enqueue personal-memory consolidation and episodic
+8. Session close can still enqueue personal-memory consolidation and episodic
    indexing when those services are enabled.
-8. Personal memory stores stable facts and preferences for personalization.
-9. Episodic memory indexes closed sessions for future recall when embeddings
+9. Personal memory stores stable facts and preferences for personalization.
+10. Episodic memory indexes closed sessions for future recall when embeddings
    are available.
-10. The context pack renders relevant git context and personal memory back into
+11. The context pack renders relevant git context and personal memory back into
     future agent runs as bounded JSON.
 
 Tool/action flow:

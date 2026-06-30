@@ -2,22 +2,28 @@ import type {
   ContextCommitSummary,
   ContextConversationRecord,
   ContextEngineMachineContext,
-  ContextSessionEventRecord,
+  ContextPendingTurn,
+  ContextPendingWrite,
+  ContextSessionActivityRecord,
   ContextTaskFact,
+  ContextTaskEvidenceSummary,
   ContextTaskRunSummary,
-  TaskAssetRecord,
 } from "../contracts.js";
 import type {
   GitMemoryConversationRecord,
+  GitMemoryEvidenceManifestRecord,
   GitMemoryRunFile,
-  GitMemorySessionEventRecord,
   GitMemoryTaskId,
 } from "./schema.js";
 import type {
-  CompactGitMemoryCommitSummary,
+  GitMemoryCommitActivityRecord,
   GitMemoryFocusContext,
   GitMemoryMachineContextPack,
+  GitMemoryModelCommitSummary,
+  GitMemoryPendingTurnContext,
+  GitMemoryPendingWriteContext,
 } from "./context-pack.js";
+import type { GitContextMemoryState } from "./memory-state.js";
 
 export function buildGitMemoryHarnessContextPack(
   context: GitMemoryMachineContextPack,
@@ -26,11 +32,17 @@ export function buildGitMemoryHarnessContextPack(
     session: {
       sessionId: context.session.sessionId,
       conversationTail: context.session.conversationTail.map(toConversationRecord),
-      eventTail: context.session.eventTail
-        .map((event) => toSessionEventRecord(context.session.sessionId, event))
-        .filter(isSessionEventRecord),
+      ...(context.session.conversationMarkdownTail ? { conversationMarkdownTail: context.session.conversationMarkdownTail } : {}),
+      activityTail: context.session.activityTail
+        .map((activity) => toSessionActivityRecord(context.session.sessionId, activity))
+        .filter(isSessionActivityRecord),
+      recentCommits: context.session.recentCommits.map(toCompactCommitSummary),
       assetCount: 0,
     },
+    ...(context.pendingWrites && context.pendingWrites.length > 0 ? {
+      pendingWrites: context.pendingWrites.map(toPendingWrite),
+    } : {}),
+    ...(context.pendingTurn ? { pendingTurn: toPendingTurn(context.pendingTurn) } : {}),
     focus: toFocusContext(context.focus),
     ...(context.task ? {
       task: {
@@ -44,11 +56,80 @@ export function buildGitMemoryHarnessContextPack(
         blockers: context.task.blockers,
         facts: context.task.facts.map(toTaskFact),
         next: context.task.next,
-        assets: [] satisfies TaskAssetRecord[],
+        ...(context.task.conversationMarkdownTail ? { conversationMarkdownTail: context.task.conversationMarkdownTail } : {}),
+        assets: context.task.assets,
         recentRuns: context.task.recentRuns.map((run) => toTaskRunSummary(run, context.task!.taskId)),
         recentCommits: context.task.recentCommits.map(toCompactCommitSummary),
+        recentEvidence: context.task.recentEvidence.map(toEvidenceSummary),
       },
     } : {}),
+  };
+}
+
+export function buildGitMemoryHarnessContextFromMemoryState(
+  state: GitContextMemoryState,
+): ContextEngineMachineContext {
+  return {
+    session: {
+      sessionId: state.session.sessionId,
+      conversationTail: state.session.conversationTail.map(toConversationRecord),
+      ...(state.session.conversationMarkdownTail ? { conversationMarkdownTail: state.session.conversationMarkdownTail } : {}),
+      activityTail: state.session.activityTail
+        .map((activity) => toSessionActivityRecord(state.session.sessionId, activity))
+        .filter(isSessionActivityRecord),
+      recentCommits: state.session.recentCommits.map(toCompactCommitSummary),
+      assetCount: 0,
+    },
+    ...(state.pendingWrites.length > 0 ? {
+      pendingWrites: state.pendingWrites.map(toPendingWrite),
+    } : {}),
+    ...(state.pendingTurn ? { pendingTurn: toPendingTurn(state.pendingTurn) } : {}),
+    focus: toFocusContext(state.focus),
+    ...(state.activeTask ? {
+      task: {
+        ref: state.activeTask.ref,
+        workId: state.activeTask.taskId,
+        title: state.activeTask.title,
+        objective: state.activeTask.objective,
+        status: state.activeTask.status,
+        completed: state.activeTask.completed,
+        open: state.activeTask.open,
+        blockers: state.activeTask.blockers,
+        facts: state.activeTask.facts.map(toTaskFact),
+        next: state.activeTask.next,
+        ...(state.activeTask.conversationMarkdownTail ? { conversationMarkdownTail: state.activeTask.conversationMarkdownTail } : {}),
+        assets: state.activeTask.assets,
+        recentRuns: state.activeTask.recentRuns.map((run) => toTaskRunSummary(run, state.activeTask!.taskId)),
+        recentCommits: state.activeTask.recentCommits.map(toCompactCommitSummary),
+        recentEvidence: state.activeTask.recentEvidence.map(toEvidenceSummary),
+      },
+    } : {}),
+  };
+}
+
+function toPendingWrite(write: GitMemoryPendingWriteContext): ContextPendingWrite {
+  return {
+    id: write.id,
+    type: write.type,
+    label: write.label,
+    status: write.status,
+    createdAt: write.createdAt,
+    ...(write.startedAt ? { startedAt: write.startedAt } : {}),
+    ...(write.failedAt ? { failedAt: write.failedAt } : {}),
+    ...(write.error ? { error: write.error } : {}),
+  };
+}
+
+function toPendingTurn(turn: GitMemoryPendingTurnContext): ContextPendingTurn {
+  return {
+    fromSeq: turn.fromSeq,
+    toSeq: turn.toSeq,
+    text: turn.text,
+    at: turn.at,
+    routingStatus: turn.routingStatus,
+    ...(turn.taskId ? { workId: turn.taskId } : {}),
+    ...(turn.branch ? { branch: turn.branch } : {}),
+    ...(turn.runId ? { runId: turn.runId } : {}),
   };
 }
 
@@ -61,68 +142,62 @@ function toConversationRecord(record: GitMemoryConversationRecord): ContextConve
   };
 }
 
-function toSessionEventRecord(
+function toSessionActivityRecord(
   sessionId: string,
-  event: GitMemorySessionEventRecord,
-): ContextSessionEventRecord | null {
-  if (event.type === "session_initialized") {
+  activity: GitMemoryCommitActivityRecord,
+): ContextSessionActivityRecord | null {
+  if (activity.type === "session_initialized") {
     return {
-      seq: event.seq,
+      seq: activity.seq,
       type: "session_started",
-      at: event.at,
+      at: activity.at,
       sessionId,
     };
   }
-  if (event.type === "task_created" && event.taskId && event.branch) {
+  if (activity.type === "task_created" && activity.taskId && activity.branch) {
     return {
-      seq: event.seq,
+      seq: activity.seq,
       type: "task_branch_created",
-      at: event.at,
-      workId: event.taskId,
-      branch: event.branch,
-      ref: branchRef(event.branch),
+      at: activity.at,
+      workId: activity.taskId,
+      branch: activity.branch,
+      ref: branchRef(activity.branch),
     };
   }
-  if (event.type === "focus_changed" && event.branch) {
+  if (activity.type === "run_started" && activity.runId && activity.taskId) {
     return {
-      seq: event.seq,
-      type: "focus_changed",
-      at: event.at,
-      to: branchRef(event.branch),
-    };
-  }
-  if (event.type === "run_started" && event.runId && event.taskId) {
-    return {
-      seq: event.seq,
+      seq: activity.seq,
       type: "run_started",
-      at: event.at,
-      runId: event.runId,
-      workId: event.taskId,
+      at: activity.at,
+      runId: activity.runId,
+      workId: activity.taskId,
     };
   }
-  if ((event.type === "run_completed" || event.type === "run_failed") && event.runId && event.taskId) {
+  if ((activity.type === "run_completed" || activity.type === "run_failed") && activity.runId && activity.taskId) {
     return {
-      seq: event.seq,
+      seq: activity.seq,
       type: "run_committed",
-      at: event.at,
-      runId: event.runId,
-      workId: event.taskId,
-      commit: event.commit ?? "",
+      at: activity.at,
+      runId: activity.runId,
+      workId: activity.taskId,
+      commit: activity.commit ?? "",
     };
   }
-  if (event.type === "session_closed") {
+  if (activity.type === "session_closed") {
     return {
-      seq: event.seq,
+      seq: activity.seq,
       type: "session_closed",
-      at: event.at,
-      reason: event.reason,
+      at: activity.at,
+      reason: activity.reason,
     };
   }
   return null;
 }
 
-function isSessionEventRecord(event: ContextSessionEventRecord | null): event is ContextSessionEventRecord {
-  return event !== null;
+function isSessionActivityRecord(
+  activity: ContextSessionActivityRecord | null,
+): activity is ContextSessionActivityRecord {
+  return activity !== null;
 }
 
 function toFocusContext(focus: GitMemoryFocusContext): ContextEngineMachineContext["focus"] {
@@ -165,12 +240,37 @@ function toTaskRunSummary(run: GitMemoryRunFile, taskId: GitMemoryTaskId): Conte
   };
 }
 
-function toCompactCommitSummary(commit: CompactGitMemoryCommitSummary): ContextCommitSummary {
+function toCompactCommitSummary(commit: GitMemoryModelCommitSummary): ContextCommitSummary {
   return {
     commit: commit.commit,
     subject: commit.subject,
     ...(commit.summary ? { summary: commit.summary } : {}),
-    trailers: commit.trailers,
+    ...(commit.event ? { event: commit.event } : {}),
+    ...(commit.status ? { status: commit.status } : {}),
+    ...(commit.at ? { at: commit.at } : {}),
+    ...(commit.taskId ? { workId: commit.taskId } : {}),
+    ...(commit.runId ? { runId: commit.runId } : {}),
+    ...(commit.branch ? { branch: commit.branch } : {}),
+  };
+}
+
+function toEvidenceSummary(record: GitMemoryEvidenceManifestRecord): ContextTaskEvidenceSummary {
+  return {
+    runId: record.runId,
+    workId: record.taskId,
+    ...(record.step ? { step: record.step } : {}),
+    ...(record.actionId ? { actionId: record.actionId } : {}),
+    tool: record.tool,
+    ...(record.status ? { status: record.status } : {}),
+    summary: record.summary,
+    ...(record.evidenceRef ? { evidenceRef: record.evidenceRef } : {}),
+    artifacts: record.artifacts,
+    facts: record.facts,
+    accessModes: record.accessModes,
+    ...(record.outputSize !== undefined ? { outputSize: record.outputSize } : {}),
+    ...(record.lineCount !== undefined ? { lineCount: record.lineCount } : {}),
+    ...(record.truncated !== undefined ? { truncated: record.truncated } : {}),
+    ...(record.source ? { source: record.source } : {}),
   };
 }
 

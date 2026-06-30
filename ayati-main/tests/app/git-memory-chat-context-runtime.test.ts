@@ -1,26 +1,29 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { createGitMemoryChatContextRuntime } from "../../src/app/git-memory-chat-context-runtime.js";
 import {
   createGitMemoryRuntime,
   GIT_MEMORY_MAIN_REF,
-  GIT_MEMORY_SESSION_CONVERSATION_PATH,
+  GitMemoryDailySessionStore,
   GitMemoryWorktreeGitDriver,
+  type GitMemoryWriteBatchSnapshot,
   gitMemoryTaskRunPath,
+  parseGitMemoryCommitTrailers,
 } from "../../src/context-engine/index.js";
 
 describe("createGitMemoryChatContextRuntime", () => {
   it("prepares user turns from the git-memory runtime without allocating task ids", async () => {
     const storeDir = mkdtempSync(join(tmpdir(), "ayati-git-memory-chat-context-"));
     try {
+      const gitMemoryRuntime = createGitMemoryRuntime({
+        contextStoreDir: storeDir,
+        timezone: "Asia/Kolkata",
+        agentId: "local",
+      });
       const runtime = createGitMemoryChatContextRuntime({
-        gitMemoryRuntime: createGitMemoryRuntime({
-          contextStoreDir: storeDir,
-          timezone: "Asia/Kolkata",
-          agentId: "local",
-        }),
+        gitMemoryRuntime,
       });
 
       const prepared = await runtime.prepareUserTurn({
@@ -34,8 +37,6 @@ describe("createGitMemoryChatContextRuntime", () => {
         sessionId: "S-20260628-local",
         initialized: true,
         messageSeq: 1,
-        messageId: "M-20260628-000001",
-        turnId: "T-20260628-000001",
         context: {
           session: {
             conversationTail: [{
@@ -46,10 +47,24 @@ describe("createGitMemoryChatContextRuntime", () => {
           },
           focus: { status: "none" },
         },
+        memoryState: {
+          session: {
+            conversationTail: [{
+              seq: 1,
+              role: "user",
+              text: "Fix upload handling",
+            }],
+            taskCount: 0,
+          },
+          focus: { status: "none" },
+          knownTasks: [],
+        },
       });
       expect(prepared.context.task).toBeUndefined();
+      expect(prepared.memoryState.activeTask).toBeUndefined();
+      await waitForCommittedWrites(gitMemoryRuntime, prepared.sessionId, 1);
       expect(await new GitMemoryWorktreeGitDriver(prepared.repoPath).log(GIT_MEMORY_MAIN_REF, 5))
-        .toHaveLength(1);
+        .toHaveLength(2);
     } finally {
       rmSync(storeDir, { recursive: true, force: true });
     }
@@ -58,12 +73,13 @@ describe("createGitMemoryChatContextRuntime", () => {
   it("records assistant replies against the prepared turn in canonical conversation", async () => {
     const storeDir = mkdtempSync(join(tmpdir(), "ayati-git-memory-chat-context-"));
     try {
+      const gitMemoryRuntime = createGitMemoryRuntime({
+        contextStoreDir: storeDir,
+        timezone: "Asia/Kolkata",
+        agentId: "local",
+      });
       const runtime = createGitMemoryChatContextRuntime({
-        gitMemoryRuntime: createGitMemoryRuntime({
-          contextStoreDir: storeDir,
-          timezone: "Asia/Kolkata",
-          agentId: "local",
-        }),
+        gitMemoryRuntime,
       });
       const prepared = await runtime.prepareUserTurn({
         clientId: "local",
@@ -81,19 +97,18 @@ describe("createGitMemoryChatContextRuntime", () => {
       expect(assistant).toMatchObject({
         seq: 2,
         role: "assistant",
-        turnId: prepared.turnId,
         text: "I will inspect upload handling.",
       });
       const context = await runtime.buildActiveContext(prepared.sessionId);
       expect(context.session.conversationTail).toMatchObject([
         { seq: 1, role: "user", text: "Fix upload handling" },
-        { seq: 2, role: "assistant", text: "I will inspect upload handling.", turnId: prepared.turnId },
+        { seq: 2, role: "assistant", text: "I will inspect upload handling." },
       ]);
 
       const driver = new GitMemoryWorktreeGitDriver(prepared.repoPath);
-      expect(parseJsonl(await driver.readWorkingFile(GIT_MEMORY_SESSION_CONVERSATION_PATH)))
-        .toHaveLength(2);
-      expect(await driver.log(GIT_MEMORY_MAIN_REF, 5)).toHaveLength(1);
+      expect(await driver.readWorkingFile("session/conversation.jsonl")).toBeNull();
+      await waitForCommittedWrites(gitMemoryRuntime, prepared.sessionId, 2);
+      expect(await driver.log(GIT_MEMORY_MAIN_REF, 5)).toHaveLength(3);
     } finally {
       rmSync(storeDir, { recursive: true, force: true });
     }
@@ -114,21 +129,30 @@ describe("createGitMemoryChatContextRuntime", () => {
         userMessage: "Fix upload handling",
         at: "2026-06-28T09:00:00+05:30",
       });
+      const routed = await runtime.routeTaskTurn({
+        clientId: "local",
+        turn: prepared,
+        userMessage: "Fix upload handling",
+        at: "2026-06-28T09:00:01+05:30",
+      });
+      if (routed?.status !== "ready") {
+        throw new Error(`Expected ready route, got ${routed?.status}.`);
+      }
 
       const assistant = await runtime.recordAssistantMessage({
         clientId: "local",
         turn: prepared,
         message: "Finished upload handling inspection.",
-        taskId: "W-20260628-0001",
-        runId: "R-20260628-0001",
+        taskId: routed.taskId,
+        runId: routed.runId,
         at: "2026-06-28T09:10:00+05:30",
       });
 
       expect(assistant).toMatchObject({
         seq: 2,
         role: "assistant",
-        taskId: "W-20260628-0001",
-        runId: "R-20260628-0001",
+        taskId: routed.taskId,
+        runId: routed.runId,
       });
     } finally {
       rmSync(storeDir, { recursive: true, force: true });
@@ -138,11 +162,15 @@ describe("createGitMemoryChatContextRuntime", () => {
   it("routes prepared user turns to git-memory task branches", async () => {
     const storeDir = mkdtempSync(join(tmpdir(), "ayati-git-memory-chat-context-"));
     try {
+      const store = new GitMemoryDailySessionStore({
+        contextStoreDir: storeDir,
+      });
       const runtime = createGitMemoryChatContextRuntime({
         gitMemoryRuntime: createGitMemoryRuntime({
           contextStoreDir: storeDir,
           timezone: "Asia/Kolkata",
           agentId: "local",
+          store,
         }),
       });
       const first = await runtime.prepareUserTurn({
@@ -185,20 +213,37 @@ describe("createGitMemoryChatContextRuntime", () => {
             taskId: "W-20260628-0001",
           },
         },
+        memoryState: {
+          focus: {
+            status: "active",
+            taskId: "W-20260628-0001",
+          },
+          activeTask: {
+            taskId: "W-20260628-0001",
+            title: "Fix upload handling",
+            open: ["Fix upload handling"],
+          },
+          knownTasks: [{
+            taskId: "W-20260628-0001",
+            title: "Fix upload handling",
+          }],
+        },
       });
 
       const second = await runtime.prepareUserTurn({
         clientId: "local",
-        userMessage: "finish it",
+        userMessage: "implement it",
         at: "2026-06-28T09:05:00+05:30",
       });
+      const readSnapshot = vi.spyOn(store, "readTaskRoutingSnapshot");
       const continued = await runtime.routeTaskTurn({
         clientId: "local",
         turn: second,
-        userMessage: "finish it",
+        userMessage: "implement it",
         at: "2026-06-28T09:05:01+05:30",
       });
 
+      expect(readSnapshot).not.toHaveBeenCalled();
       expect(continued).toMatchObject({
         status: "ready",
         mode: "continue_active_task",
@@ -210,7 +255,7 @@ describe("createGitMemoryChatContextRuntime", () => {
             session: {
               conversationTail: [
                 { seq: 1, role: "user", text: "Fix upload handling" },
-                { seq: 2, role: "user", text: "finish it" },
+                { seq: 2, role: "user", text: "implement it" },
               ],
             },
             task: {
@@ -221,12 +266,73 @@ describe("createGitMemoryChatContextRuntime", () => {
         },
         context: {
           task: {
-            conversation: [
-              { link: { reason: "task_created", fromSeq: 1, toSeq: 1 } },
-              { link: { reason: "task_continued", fromSeq: 2, toSeq: 2, runId: "R-20260628-0002" } },
-            ],
+            conversationMarkdownTail: expect.stringContaining("implement it"),
           },
         },
+        memoryState: {
+          activeTask: {
+            taskId: "W-20260628-0001",
+          },
+          knownTasks: [{
+            taskId: "W-20260628-0001",
+          }],
+        },
+      });
+      expect(continued?.harnessContext.contextEngine.task?.workId)
+        .toBe(continued?.memoryState.activeTask?.taskId);
+    } finally {
+      rmSync(storeDir, { recursive: true, force: true });
+    }
+  });
+
+  it("returns null for auto-only routing when the user turn is not an obvious active-task follow-up", async () => {
+    const storeDir = mkdtempSync(join(tmpdir(), "ayati-git-memory-chat-context-"));
+    try {
+      const store = new GitMemoryDailySessionStore({
+        contextStoreDir: storeDir,
+      });
+      const gitMemoryRuntime = createGitMemoryRuntime({
+        contextStoreDir: storeDir,
+        timezone: "Asia/Kolkata",
+        agentId: "local",
+        store,
+      });
+      const runtime = createGitMemoryChatContextRuntime({ gitMemoryRuntime });
+      const first = await runtime.prepareUserTurn({
+        clientId: "local",
+        userMessage: "Fix upload handling",
+        at: "2026-06-28T09:00:00+05:30",
+      });
+      const created = await runtime.routeTaskTurn({
+        clientId: "local",
+        turn: first,
+        userMessage: "Fix upload handling",
+        at: "2026-06-28T09:00:01+05:30",
+      });
+      if (created?.status !== "ready") {
+        throw new Error(`Expected ready route, got ${created?.status}.`);
+      }
+      const second = await runtime.prepareUserTurn({
+        clientId: "local",
+        userMessage: "continue upload UI redesign",
+        at: "2026-06-28T09:05:00+05:30",
+      });
+      const readSnapshot = vi.spyOn(store, "readTaskRoutingSnapshot");
+
+      const routed = await runtime.routeTaskTurn({
+        clientId: "local",
+        turn: second,
+        userMessage: "continue upload UI redesign",
+        at: "2026-06-28T09:05:01+05:30",
+        autoOnly: true,
+      });
+
+      expect(routed).toBeNull();
+      expect(readSnapshot).not.toHaveBeenCalled();
+      const memoryState = await gitMemoryRuntime.buildMemoryState(second.sessionId);
+      expect(memoryState.pendingTurn).toMatchObject({
+        text: "continue upload UI redesign",
+        routingStatus: "unbound",
       });
     } finally {
       rmSync(storeDir, { recursive: true, force: true });
@@ -299,10 +405,6 @@ describe("createGitMemoryChatContextRuntime", () => {
         taskId: "W-20260628-0001",
         branch: "task/W-20260628-0001-fix-upload-handling",
         runId: "R-20260628-0001",
-        event: {
-          type: "run_completed",
-          conversationSeq: { fromSeq: prepared.messageSeq, toSeq: prepared.messageSeq },
-        },
       });
       if (!committed) {
         throw new Error("Expected git-memory bridge to commit the task run.");
@@ -347,7 +449,86 @@ describe("createGitMemoryChatContextRuntime", () => {
           changedFiles: ["ayati-main/src/server/upload-server.ts"],
           newFacts: ["Upload route validates MIME type."],
         });
-      expect(await driver.log(GIT_MEMORY_MAIN_REF, 5)).toHaveLength(1);
+      expect(await driver.log(GIT_MEMORY_MAIN_REF, 5)).toHaveLength(3);
+    } finally {
+      rmSync(storeDir, { recursive: true, force: true });
+    }
+  });
+
+  it("treats duplicate task run finalization as an idempotent app-level result", async () => {
+    const storeDir = mkdtempSync(join(tmpdir(), "ayati-git-memory-chat-context-"));
+    try {
+      const gitMemoryRuntime = createGitMemoryRuntime({
+        contextStoreDir: storeDir,
+        timezone: "Asia/Kolkata",
+        agentId: "local",
+      });
+      const runtime = createGitMemoryChatContextRuntime({ gitMemoryRuntime });
+      const prepared = await runtime.prepareUserTurn({
+        clientId: "local",
+        userMessage: "Fix upload handling",
+        at: "2026-06-28T09:00:00+05:30",
+      });
+      const task = await gitMemoryRuntime.createTaskBranch({
+        sessionId: prepared.sessionId,
+        title: "Fix upload handling",
+        objective: "Find and fix upload handling failures.",
+        fromSeq: prepared.messageSeq,
+        toSeq: prepared.messageSeq,
+        at: "2026-06-28T09:01:00+05:30",
+      });
+      const result = {
+        type: "reply" as const,
+        status: "completed" as const,
+        content: "I inspected upload handling.",
+        totalIterations: 1,
+        totalToolCalls: 0,
+        runPath: "data/runs/r1",
+        workState: {
+          status: "not_done" as const,
+          summary: "Upload handling inspection is complete.",
+          openWork: ["Patch upload validation handling."],
+          blockers: [],
+          verifiedFacts: [],
+          evidence: [],
+          nextStep: "Patch upload validation handling.",
+        },
+      };
+
+      const first = await runtime.completeTaskRun({
+        clientId: "local",
+        turn: prepared,
+        taskId: task.taskId,
+        runId: "R-20260628-0007",
+        result,
+        at: "2026-06-28T09:10:00+05:30",
+      });
+
+      const second = await runtime.completeTaskRun({
+        clientId: "local",
+        turn: prepared,
+        taskId: task.taskId,
+        runId: "R-20260628-0007",
+        result,
+        at: "2026-06-28T09:11:00+05:30",
+      });
+
+      expect(first).toMatchObject({
+        runId: "R-20260628-0007",
+        alreadyFinalized: false,
+      });
+      expect(second).toMatchObject({
+        runId: "R-20260628-0007",
+        taskCommit: first?.taskCommit,
+        alreadyFinalized: true,
+      });
+      const driver = new GitMemoryWorktreeGitDriver(prepared.repoPath);
+      const taskLog = await driver.log(task.ref, 10);
+      expect(taskLog.filter((entry) => {
+        const trailers = parseGitMemoryCommitTrailers(entry.message);
+        return trailers.runId === "R-20260628-0007"
+          && (trailers.event === "run_completed" || trailers.event === "run_failed");
+      })).toHaveLength(1);
     } finally {
       rmSync(storeDir, { recursive: true, force: true });
     }
@@ -376,9 +557,21 @@ describe("createGitMemoryChatContextRuntime", () => {
   });
 });
 
-function parseJsonl(value: string | null): unknown[] {
-  if (!value?.trim()) {
-    return [];
+async function waitForCommittedWrites(
+  runtime: { getSessionWrites(sessionId: string): GitMemoryWriteBatchSnapshot[] },
+  sessionId: string,
+  count: number,
+): Promise<void> {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    const writes = runtime.getSessionWrites(sessionId);
+    if (writes.length >= count && writes.slice(0, count).every((write) => write.status === "committed")) {
+      return;
+    }
+    await delay(10);
   }
-  return value.trim().split(/\r?\n/).map((line) => JSON.parse(line) as unknown);
+  throw new Error(`Timed out waiting for git memory writes: ${JSON.stringify(runtime.getSessionWrites(sessionId))}`);
+}
+
+async function delay(ms: number): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, ms));
 }

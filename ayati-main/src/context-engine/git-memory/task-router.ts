@@ -9,8 +9,6 @@ import type {
   GitMemoryRunId,
   GitMemorySessionId,
   GitMemoryTaskId,
-  GitMemoryTaskLinkReason,
-  GitMemoryTurnId,
 } from "./schema.js";
 
 export interface GitMemoryTaskRouterOptions {
@@ -25,7 +23,6 @@ export interface ResolveGitMemoryTaskRouteInput {
 
 export interface ApplyGitMemoryTaskRouteInput extends ResolveGitMemoryTaskRouteInput, GitMemoryConversationSeqRange {
   at?: string;
-  turnIds?: GitMemoryTurnId[];
   runId?: GitMemoryRunId;
   title?: string;
   objective?: string;
@@ -133,7 +130,7 @@ export class GitMemoryTaskRouter {
     const focused = focusTaskId
       ? candidates.find((candidate) => candidate.taskId === focusTaskId)
       : undefined;
-    if (isPureFollowUp(userMessage)) {
+    if (isGitMemoryPureFollowUpMessage(userMessage)) {
       if (focused) {
         return selectedTaskResolution(focused, focusTaskId, isReopenStatus(focused.status)
           ? "follow-up phrase with completed active focus"
@@ -175,6 +172,13 @@ export class GitMemoryTaskRouter {
 
   async route(input: ApplyGitMemoryTaskRouteInput): Promise<AppliedGitMemoryTaskRoute> {
     const resolution = await this.resolve(input);
+    return await this.applyResolution(input, resolution);
+  }
+
+  async applyResolution(
+    input: ApplyGitMemoryTaskRouteInput,
+    resolution: GitMemoryTaskRouteResolution,
+  ): Promise<AppliedGitMemoryTaskRoute> {
     if (resolution.mode === "ambiguous") {
       return {
         status: "ambiguous",
@@ -223,11 +227,10 @@ export class GitMemoryTaskRouter {
     const selectedTask = await this.store.selectTaskForTurn({
       sessionId: input.sessionId,
       taskId: resolution.taskId,
-      reason: linkReasonForMode(resolution.mode),
+      reason: routeReasonForMode(resolution.mode),
       fromSeq: input.fromSeq,
       toSeq: input.toSeq,
       at: input.at,
-      turnIds: input.turnIds,
       runId: input.runId,
       summary: resolution.reason,
     });
@@ -389,10 +392,9 @@ function toRouteCandidate(candidate: GitMemoryTaskRouteCandidate): GitMemoryTask
   };
 }
 
-function linkReasonForMode(mode: Exclude<GitMemoryTaskRouteResolution["mode"], "ambiguous" | "create_new_task">): Exclude<
-  GitMemoryTaskLinkReason,
-  "task_created" | "task_reference"
-> {
+function routeReasonForMode(
+  mode: Exclude<GitMemoryTaskRouteResolution["mode"], "ambiguous" | "create_new_task">,
+): "task_continued" | "task_switched" | "task_reopened" {
   if (mode === "continue_active_task") {
     return "task_continued";
   }
@@ -406,7 +408,7 @@ function extractExplicitTaskIds(message: string): GitMemoryTaskId[] {
   return [...new Set(normalizeText(message).toUpperCase().match(TASK_ID_PATTERN) ?? [])];
 }
 
-function isPureFollowUp(message: string): boolean {
+export function isGitMemoryPureFollowUpMessage(message: string): boolean {
   const normalized = normalizeText(message);
   return [
     "continue",
@@ -415,11 +417,14 @@ function isPureFollowUp(message: string): boolean {
     "do the rest",
     "finish",
     "finish it",
+    "go on",
     "go ahead",
+    "implement it",
     "next",
     "ok",
     "okay",
     "resume",
+    "work on it",
     "yes",
   ].includes(normalized);
 }

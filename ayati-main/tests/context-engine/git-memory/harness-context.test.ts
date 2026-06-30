@@ -3,7 +3,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
+  buildGitMemoryHarnessContextFromMemoryState,
   buildGitMemoryHarnessContextPack,
+  createGitContextMemoryStateHydrator,
   GitMemoryContextReader,
   GitMemoryDailySessionStore,
 } from "../../../src/context-engine/git-memory/index.js";
@@ -29,15 +31,113 @@ describe("buildGitMemoryHarnessContextPack", () => {
         sessionId: "S-20260628-local",
         assetCount: 0,
         conversationTail: [],
-        eventTail: [{
+        activityTail: [{
           seq: 1,
           type: "session_started",
           sessionId: "S-20260628-local",
+        }],
+        recentCommits: [{
+          subject: "ayati: initialize session S-20260628-local",
         }],
       },
       focus: { status: "none" },
     });
     expect(harness.task).toBeUndefined();
+
+    const memory = await createGitContextMemoryStateHydrator(store).hydrate({
+      sessionId: session.sessionId,
+    });
+    expect(buildGitMemoryHarnessContextFromMemoryState(memory)).toEqual(harness);
+    expect(harness.pendingWrites).toBeUndefined();
+  });
+
+  it("maps unresolved git-memory writes into the harness context shape", async () => {
+    const contextStoreDir = await mkdtemp(join(tmpdir(), "ayati-git-memory-harness-"));
+    const store = new GitMemoryDailySessionStore({ contextStoreDir });
+    const session = await store.openOrCreateDailySession({
+      date: "2026-06-28",
+      timezone: "Asia/Kolkata",
+      agentId: "local",
+      createdAt: "2026-06-28T00:00:00+05:30",
+    });
+    const memory = await createGitContextMemoryStateHydrator(store).hydrate({
+      sessionId: session.sessionId,
+    });
+
+    const harness = buildGitMemoryHarnessContextFromMemoryState({
+      ...memory,
+      pendingWrites: [{
+        id: "GMW-000002",
+        type: "task_routed",
+        label: "pending-route",
+        status: "pending",
+        createdAt: "2026-06-28T09:00:00+05:30",
+      }, {
+        id: "GMW-000003",
+        type: "task_run_committed",
+        label: "failed-run",
+        status: "failed",
+        createdAt: "2026-06-28T09:00:01+05:30",
+        startedAt: "2026-06-28T09:00:02+05:30",
+        failedAt: "2026-06-28T09:00:03+05:30",
+        error: "git commit failed",
+      }],
+    });
+
+    expect(harness.pendingWrites).toMatchObject([
+      {
+        id: "GMW-000002",
+        type: "task_routed",
+        label: "pending-route",
+        status: "pending",
+      },
+      {
+        id: "GMW-000003",
+        type: "task_run_committed",
+        label: "failed-run",
+        status: "failed",
+        error: "git commit failed",
+      },
+    ]);
+  });
+
+  it("maps pending turns into the harness context shape", async () => {
+    const contextStoreDir = await mkdtemp(join(tmpdir(), "ayati-git-memory-harness-"));
+    const store = new GitMemoryDailySessionStore({ contextStoreDir });
+    const session = await store.openOrCreateDailySession({
+      date: "2026-06-28",
+      timezone: "Asia/Kolkata",
+      agentId: "local",
+      createdAt: "2026-06-28T00:00:00+05:30",
+    });
+    const memory = await createGitContextMemoryStateHydrator(store).hydrate({
+      sessionId: session.sessionId,
+    });
+
+    const harness = buildGitMemoryHarnessContextFromMemoryState({
+      ...memory,
+      pendingTurn: {
+        fromSeq: 3,
+        toSeq: 3,
+        text: "continue upload UI redesign",
+        at: "2026-06-28T09:00:00+05:30",
+        routingStatus: "bound",
+        taskId: "W-20260628-0002",
+        branch: "task/W-20260628-0002-upload-ui-redesign",
+        runId: "R-20260628-0001",
+      },
+    });
+
+    expect(harness.pendingTurn).toEqual({
+      fromSeq: 3,
+      toSeq: 3,
+      text: "continue upload UI redesign",
+      at: "2026-06-28T09:00:00+05:30",
+      routingStatus: "bound",
+      workId: "W-20260628-0002",
+      branch: "task/W-20260628-0002-upload-ui-redesign",
+      runId: "R-20260628-0001",
+    });
   });
 
   it("maps active task context into the harness context shape expected by the agent", async () => {
@@ -71,6 +171,36 @@ describe("buildGitMemoryHarnessContextPack", () => {
       completedAt: "2026-06-28T09:10:00+05:30",
       conversationRefs: [{ fromSeq: user.seq, toSeq: user.seq }],
       summary: "Inspected upload handling.",
+      evidence: [{
+        step: 1,
+        tool: "read_file",
+        status: "completed",
+        summary: "Read upload server implementation.",
+        evidenceRef: "evidence/read-upload-server.txt",
+        artifacts: ["ayati-main/src/server/upload-server.ts"],
+        facts: ["Upload route validates MIME type."],
+        accessModes: ["summary"],
+        outputSize: 1200,
+        lineCount: 80,
+        truncated: false,
+        source: {
+          kind: "tool-output",
+          toolCalls: [{
+            kind: "tool-output",
+            tool: "read_file",
+            callId: "call-read-upload",
+            filePath: "ayati-main/src/server/upload-server.ts",
+            rawOutputPath: "raw/001-call-read-upload-read_file.txt",
+          }],
+        },
+      }],
+      assets: [{
+        assetId: "asset-upload-log",
+        role: "reference",
+        kind: "file",
+        name: "upload.log",
+        path: "/tmp/upload.log",
+      }],
       newFacts: ["Upload route validates MIME type."],
       next: "Patch upload validation handling.",
       state: {
@@ -85,6 +215,10 @@ describe("buildGitMemoryHarnessContextPack", () => {
       sessionId: session.sessionId,
     });
     const harness = buildGitMemoryHarnessContextPack(raw);
+    const memory = await createGitContextMemoryStateHydrator(store).hydrate({
+      sessionId: session.sessionId,
+    });
+    const memoryHarness = buildGitMemoryHarnessContextFromMemoryState(memory);
 
     expect(harness).toMatchObject({
       session: {
@@ -95,6 +229,7 @@ describe("buildGitMemoryHarnessContextPack", () => {
           role: "user",
           text: "Fix upload handling",
         }],
+        conversationMarkdownTail: expect.stringContaining("Fix upload handling"),
       },
       focus: {
         status: "active",
@@ -114,7 +249,14 @@ describe("buildGitMemoryHarnessContextPack", () => {
           source: "git-memory/task-state",
         }],
         next: "Patch upload validation handling.",
-        assets: [],
+        conversationMarkdownTail: expect.stringContaining("Fix upload handling"),
+        assets: [{
+          assetId: "asset-upload-log",
+          role: "reference",
+          kind: "file",
+          name: "upload.log",
+          path: "/tmp/upload.log",
+        }],
         recentRuns: [{
           runId: "R-20260628-0001",
           workId: task.taskId,
@@ -124,7 +266,39 @@ describe("buildGitMemoryHarnessContextPack", () => {
           actions: [],
           createdAt: "2026-06-28T09:10:00+05:30",
         }],
+        recentEvidence: [{
+          runId: "R-20260628-0001",
+          workId: task.taskId,
+          step: 1,
+          tool: "read_file",
+          status: "completed",
+          summary: "Read upload server implementation.",
+          evidenceRef: "evidence/read-upload-server.txt",
+          artifacts: ["ayati-main/src/server/upload-server.ts"],
+          facts: ["Upload route validates MIME type."],
+          accessModes: ["summary"],
+          outputSize: 1200,
+          lineCount: 80,
+          truncated: false,
+          source: {
+            kind: "tool-output",
+            toolCalls: [{
+              kind: "tool-output",
+              tool: "read_file",
+              callId: "call-read-upload",
+              filePath: "ayati-main/src/server/upload-server.ts",
+              rawOutputPath: "raw/001-call-read-upload-read_file.txt",
+            }],
+          },
+        }],
       },
     });
+    expect(memoryHarness).toEqual(harness);
+    expect(harness.session.recentCommits[0]).toMatchObject({
+      subject: "ayati: record user message",
+      event: "conversation_appended",
+    });
+    expect(harness.session.recentCommits[0]).not.toHaveProperty("trailers");
+    expect(harness.session.recentCommits[0]).not.toHaveProperty("conversationSeq");
   });
 });

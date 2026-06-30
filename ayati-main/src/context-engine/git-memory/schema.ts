@@ -1,37 +1,25 @@
+import type { TaskAssetRecord } from "../contracts.js";
+
 export const GIT_MEMORY_SCHEMA_VERSION = 1;
 
 export const GIT_MEMORY_SESSION_META_PATH = "session/meta.json";
-export const GIT_MEMORY_SESSION_CONVERSATION_PATH = "session/conversation.jsonl";
-export const GIT_MEMORY_SESSION_EVENTS_PATH = "session/events.jsonl";
-export const GIT_MEMORY_SESSION_FOCUS_PATH = "session/focus.json";
-export const GIT_MEMORY_SESSION_TASKS_PATH = "session/tasks.json";
-export const GIT_MEMORY_SESSION_TASK_MESSAGE_LINKS_PATH = "session/task-message-links.jsonl";
+export const GIT_MEMORY_SESSION_CONVERSATION_MARKDOWN_PATH = "session/conversation.md";
 export const GIT_MEMORY_SESSION_SCHEMA_PATH = "session/schema.json";
 
 export type GitMemorySessionId = string;
-export type GitMemoryMessageId = string;
-export type GitMemoryTurnId = string;
-export type GitMemoryEventId = string;
 export type GitMemoryTaskId = string;
 export type GitMemoryRunId = string;
 export type GitMemoryActionId = string;
-export type GitMemoryLinkId = string;
 
 export type GitMemoryConversationRole = "user" | "assistant" | "system";
 export type GitMemoryTaskStatus = "open" | "in_progress" | "blocked" | "done" | "abandoned";
 export type GitMemoryRunStatus = "completed" | "failed" | "blocked" | "needs_user_input";
 export type GitMemoryActionStatus = "completed" | "failed" | "skipped";
-export type GitMemoryTaskLinkReason =
-  | "task_created"
-  | "task_continued"
-  | "task_switched"
-  | "task_reopened"
-  | "task_reference";
-export type GitMemorySessionEventType =
+export type GitMemoryCommitEventType =
   | "session_initialized"
   | "session_checkpointed"
+  | "conversation_appended"
   | "task_created"
-  | "focus_changed"
   | "run_started"
   | "run_completed"
   | "run_failed"
@@ -48,10 +36,7 @@ export interface GitMemorySessionMetaFile {
 }
 
 export interface GitMemoryConversationRecord {
-  v: 1;
   seq: number;
-  messageId: GitMemoryMessageId;
-  turnId: GitMemoryTurnId;
   role: GitMemoryConversationRole;
   at: string;
   text?: string | null;
@@ -59,74 +44,12 @@ export interface GitMemoryConversationRecord {
   sha256?: string;
   taskId?: GitMemoryTaskId | null;
   runId?: GitMemoryRunId | null;
-}
-
-export interface GitMemorySessionEventRecord {
-  v: 1;
-  seq: number;
-  eventId: GitMemoryEventId;
-  type: GitMemorySessionEventType;
-  at: string;
-  taskId?: GitMemoryTaskId;
-  runId?: GitMemoryRunId;
-  branch?: string;
-  fromTaskId?: GitMemoryTaskId | null;
-  toTaskId?: GitMemoryTaskId | null;
-  reason?: string;
-  commit?: string;
-  conversationSeq?: GitMemoryConversationSeqRange;
-}
-
-export interface GitMemoryFocusFile {
-  schemaVersion: 1;
-  activeTaskId: GitMemoryTaskId | null;
-  activeBranch: string | null;
-  updatedAt: string;
-  reason: string;
-}
-
-export interface GitMemoryTaskIndexEntry {
-  taskId: GitMemoryTaskId;
-  branch: string;
-  title: string;
-  status: GitMemoryTaskStatus;
-  createdAt: string;
-  updatedAt: string;
-}
-
-export interface GitMemoryTaskIndexFile {
-  schemaVersion: 1;
-  tasks: GitMemoryTaskIndexEntry[];
+  branch?: string | null;
 }
 
 export interface GitMemoryConversationSeqRange {
   fromSeq: number;
   toSeq: number;
-}
-
-export interface GitMemoryTaskMessageLinkRecord extends GitMemoryConversationSeqRange {
-  v: 1;
-  linkId: GitMemoryLinkId;
-  taskId: GitMemoryTaskId;
-  branch: string;
-  reason: GitMemoryTaskLinkReason;
-  at: string;
-  turnIds: GitMemoryTurnId[];
-  runId?: GitMemoryRunId;
-  summary?: string;
-}
-
-export interface GitMemoryTaskFile {
-  schemaVersion: 1;
-  taskId: GitMemoryTaskId;
-  title: string;
-  objective: string;
-  status: GitMemoryTaskStatus;
-  createdAt: string;
-  updatedAt: string;
-  createdFrom: GitMemoryConversationSeqRange & {
-    sessionId: GitMemorySessionId;
-  };
 }
 
 export interface GitMemoryTaskStateFile {
@@ -141,6 +64,11 @@ export interface GitMemoryTaskStateFile {
   updatedAt: string;
 }
 
+export interface GitMemoryTaskAssetsFile {
+  schemaVersion: 1;
+  assets: TaskAssetRecord[];
+}
+
 export interface GitMemoryRunFile {
   schemaVersion: 1;
   runId: GitMemoryRunId;
@@ -150,6 +78,13 @@ export interface GitMemoryRunFile {
   completedAt?: string;
   conversationRefs: GitMemoryConversationSeqRange[];
   summary: string;
+  intent?: string;
+  routing?: string;
+  outcome?: string;
+  workPerformed?: string[];
+  verification?: string[];
+  decisions?: string[];
+  blockers?: string[];
   assistantResponse?: string;
   toolCallCount: number;
   changedFiles: string[];
@@ -169,6 +104,25 @@ export interface GitMemoryActionRecord {
   evidenceRef?: string;
 }
 
+export interface GitMemoryEvidenceManifestRecord {
+  v: 1;
+  runId: GitMemoryRunId;
+  taskId: GitMemoryTaskId;
+  step?: number;
+  actionId?: GitMemoryActionId;
+  tool: string;
+  status?: GitMemoryActionStatus;
+  summary: string;
+  evidenceRef?: string;
+  artifacts: string[];
+  facts: string[];
+  accessModes: string[];
+  outputSize?: number;
+  lineCount?: number;
+  truncated?: boolean;
+  source?: Record<string, unknown>;
+}
+
 export type ValidationResult<T> =
   | { ok: true; value: T }
   | { ok: false; errors: string[] };
@@ -177,8 +131,8 @@ export function gitMemoryTaskDir(taskId: GitMemoryTaskId): string {
   return `tasks/${taskId}`;
 }
 
-export function gitMemoryTaskFilePath(taskId: GitMemoryTaskId): string {
-  return `${gitMemoryTaskDir(taskId)}/task.json`;
+export function gitMemoryTaskMarkdownPath(taskId: GitMemoryTaskId): string {
+  return `${gitMemoryTaskDir(taskId)}/task.md`;
 }
 
 export function gitMemoryTaskStatePath(taskId: GitMemoryTaskId): string {
@@ -189,12 +143,20 @@ export function gitMemoryTaskRunPath(taskId: GitMemoryTaskId, runId: GitMemoryRu
   return `${gitMemoryTaskDir(taskId)}/runs/${runId}.json`;
 }
 
+export function gitMemoryTaskRunMarkdownPath(taskId: GitMemoryTaskId, runId: GitMemoryRunId): string {
+  return `${gitMemoryTaskDir(taskId)}/runs/${runId}.md`;
+}
+
 export function gitMemoryTaskActionsPath(taskId: GitMemoryTaskId, runId: GitMemoryRunId): string {
   return `${gitMemoryTaskDir(taskId)}/actions/${runId}.jsonl`;
 }
 
+export function gitMemoryTaskEvidenceManifestPath(taskId: GitMemoryTaskId, runId: GitMemoryRunId): string {
+  return `${gitMemoryTaskDir(taskId)}/evidence/${runId}/manifest.jsonl`;
+}
+
 export function gitMemoryTaskAssetsPath(taskId: GitMemoryTaskId): string {
-  return `${gitMemoryTaskDir(taskId)}/assets.jsonl`;
+  return `${gitMemoryTaskDir(taskId)}/assets.json`;
 }
 
 export function gitMemoryTaskNotesPath(taskId: GitMemoryTaskId): string {
@@ -234,34 +196,6 @@ export function createGitMemorySessionId(date: string, agentId: string): GitMemo
   return `S-${date.replace(/-/g, "")}-${normalizedAgentId}`;
 }
 
-export function createGitMemoryEventId(date: string, sequence: number): GitMemoryEventId {
-  if (!isValidCalendarDate(date)) {
-    throw new Error(`Invalid git-memory event date: ${date}`);
-  }
-  return `E-${date.replace(/-/g, "")}-${formatSequence(sequence, 6)}`;
-}
-
-export function createGitMemoryMessageId(date: string, sequence: number): GitMemoryMessageId {
-  if (!isValidCalendarDate(date)) {
-    throw new Error(`Invalid git-memory message date: ${date}`);
-  }
-  return `M-${date.replace(/-/g, "")}-${formatSequence(sequence, 6)}`;
-}
-
-export function createGitMemoryTurnId(date: string, sequence: number): GitMemoryTurnId {
-  if (!isValidCalendarDate(date)) {
-    throw new Error(`Invalid git-memory turn date: ${date}`);
-  }
-  return `T-${date.replace(/-/g, "")}-${formatSequence(sequence, 6)}`;
-}
-
-export function createGitMemoryLinkId(date: string, sequence: number): GitMemoryLinkId {
-  if (!isValidCalendarDate(date)) {
-    throw new Error(`Invalid git-memory link date: ${date}`);
-  }
-  return `L-${date.replace(/-/g, "")}-${formatSequence(sequence, 6)}`;
-}
-
 export function gitMemoryDateFromSessionId(sessionId: GitMemorySessionId): string {
   if (!isGitMemorySessionId(sessionId)) {
     throw new Error(`Invalid git-memory session id: ${sessionId}`);
@@ -287,24 +221,6 @@ export function isGitMemorySessionId(value: unknown): value is GitMemorySessionI
     && isValidCompactDate(value.slice(2, 10));
 }
 
-export function isGitMemoryMessageId(value: unknown): value is GitMemoryMessageId {
-  return typeof value === "string"
-    && /^M-\d{8}-\d{6}$/.test(value)
-    && isValidCompactDate(value.slice(2, 10));
-}
-
-export function isGitMemoryTurnId(value: unknown): value is GitMemoryTurnId {
-  return typeof value === "string"
-    && /^T-\d{8}-\d{6}$/.test(value)
-    && isValidCompactDate(value.slice(2, 10));
-}
-
-export function isGitMemoryEventId(value: unknown): value is GitMemoryEventId {
-  return typeof value === "string"
-    && /^E-\d{8}-\d{6}$/.test(value)
-    && isValidCompactDate(value.slice(2, 10));
-}
-
 export function isGitMemoryTaskId(value: unknown): value is GitMemoryTaskId {
   return typeof value === "string"
     && /^W-\d{8}-\d{4}$/.test(value)
@@ -321,12 +237,6 @@ export function isGitMemoryActionId(value: unknown): value is GitMemoryActionId 
   return typeof value === "string"
     && /^ACT-\d{8}-\d{6}$/.test(value)
     && isValidCompactDate(value.slice(4, 12));
-}
-
-export function isGitMemoryLinkId(value: unknown): value is GitMemoryLinkId {
-  return typeof value === "string"
-    && /^L-\d{8}-\d{6}$/.test(value)
-    && isValidCompactDate(value.slice(2, 10));
 }
 
 export function isGitMemoryTaskBranchName(value: unknown): value is string {
@@ -354,126 +264,14 @@ export function validateGitMemoryConversationRecord(value: unknown): ValidationR
   const errors: string[] = [];
   const record = requireRecord(value, "conversation record", errors);
   if (record) {
-    requireVersion(record, errors);
     requirePositiveInteger(record, "seq", errors);
-    requireMessageId(record, "messageId", errors);
-    requireTurnId(record, "turnId", errors);
+    rejectFields(record, ["v", "messageId", "turnId"], errors);
     requireOneOf(record, "role", ["user", "assistant", "system"], errors);
     requireNonEmptyString(record, "at", errors);
     requireInlineOrReferencedContent(record, errors);
     requireOptionalTaskId(record, "taskId", errors);
     requireOptionalRunId(record, "runId", errors);
-  }
-  return validationResult(value, errors);
-}
-
-export function validateGitMemorySessionEventRecord(value: unknown): ValidationResult<GitMemorySessionEventRecord> {
-  const errors: string[] = [];
-  const record = requireRecord(value, "session event", errors);
-  if (record) {
-    requireVersion(record, errors);
-    requirePositiveInteger(record, "seq", errors);
-    requireEventId(record, "eventId", errors);
-    const type = requireOneOf(record, "type", [
-      "session_initialized",
-      "session_checkpointed",
-      "task_created",
-      "focus_changed",
-      "run_started",
-      "run_completed",
-      "run_failed",
-      "session_closed",
-    ], errors);
-    requireNonEmptyString(record, "at", errors);
-    requireOptionalTaskId(record, "taskId", errors);
-    requireOptionalRunId(record, "runId", errors);
     requireOptionalNonEmptyString(record, "branch", errors);
-    requireOptionalTaskId(record, "fromTaskId", errors);
-    requireOptionalTaskId(record, "toTaskId", errors);
-    requireOptionalNonEmptyString(record, "reason", errors);
-    requireOptionalNonEmptyString(record, "commit", errors);
-    requireOptionalConversationSeqRange(record, "conversationSeq", errors);
-    if (type === "task_created") {
-      requireTaskId(record, "taskId", errors);
-      requireNonEmptyString(record, "branch", errors);
-      requireTaskBranch(record, "branch", errors);
-    }
-    if (type === "run_started" || type === "run_completed" || type === "run_failed") {
-      requireTaskId(record, "taskId", errors);
-      requireRunId(record, "runId", errors);
-    }
-  }
-  return validationResult(value, errors);
-}
-
-export function validateGitMemoryFocusFile(value: unknown): ValidationResult<GitMemoryFocusFile> {
-  const errors: string[] = [];
-  const record = requireRecord(value, "focus file", errors);
-  if (record) {
-    requireSchemaVersion(record, errors);
-    requireOptionalTaskId(record, "activeTaskId", errors);
-    requireOptionalTaskBranch(record, "activeBranch", errors);
-    requireNonEmptyString(record, "updatedAt", errors);
-    requireNonEmptyString(record, "reason", errors);
-  }
-  return validationResult(value, errors);
-}
-
-export function validateGitMemoryTaskIndexFile(value: unknown): ValidationResult<GitMemoryTaskIndexFile> {
-  const errors: string[] = [];
-  const record = requireRecord(value, "task index", errors);
-  if (record) {
-    requireSchemaVersion(record, errors);
-    const tasks = requireArray(record, "tasks", errors);
-    if (tasks) {
-      tasks.forEach((task, index) => validateTaskIndexEntry(task, `tasks[${index}]`, errors));
-    }
-  }
-  return validationResult(value, errors);
-}
-
-export function validateGitMemoryTaskMessageLinkRecord(
-  value: unknown,
-): ValidationResult<GitMemoryTaskMessageLinkRecord> {
-  const errors: string[] = [];
-  const record = requireRecord(value, "task message link", errors);
-  if (record) {
-    requireVersion(record, errors);
-    requireLinkId(record, "linkId", errors);
-    requireTaskId(record, "taskId", errors);
-    requireTaskBranch(record, "branch", errors);
-    requireOneOf(record, "reason", [
-      "task_created",
-      "task_continued",
-      "task_switched",
-      "task_reopened",
-      "task_reference",
-    ], errors);
-    requireNonEmptyString(record, "at", errors);
-    requireConversationSeqRange(record, errors);
-    requireStringArray(record, "turnIds", errors);
-    requireOptionalRunId(record, "runId", errors);
-    requireOptionalNonEmptyString(record, "summary", errors);
-  }
-  return validationResult(value, errors);
-}
-
-export function validateGitMemoryTaskFile(value: unknown): ValidationResult<GitMemoryTaskFile> {
-  const errors: string[] = [];
-  const record = requireRecord(value, "task file", errors);
-  if (record) {
-    requireSchemaVersion(record, errors);
-    requireTaskId(record, "taskId", errors);
-    requireNonEmptyString(record, "title", errors);
-    requireNonEmptyString(record, "objective", errors);
-    requireTaskStatus(record, errors);
-    requireNonEmptyString(record, "createdAt", errors);
-    requireNonEmptyString(record, "updatedAt", errors);
-    const createdFrom = requireRecord(record["createdFrom"], "createdFrom", errors);
-    if (createdFrom) {
-      requireSessionId(createdFrom, "sessionId", errors);
-      requireConversationSeqRange(createdFrom, errors);
-    }
   }
   return validationResult(value, errors);
 }
@@ -513,6 +311,13 @@ export function validateGitMemoryRunFile(value: unknown): ValidationResult<GitMe
       });
     }
     requireNonEmptyString(record, "summary", errors);
+    requireOptionalNonEmptyString(record, "intent", errors);
+    requireOptionalNonEmptyString(record, "routing", errors);
+    requireOptionalNonEmptyString(record, "outcome", errors);
+    requireOptionalStringArray(record, "workPerformed", errors);
+    requireOptionalStringArray(record, "verification", errors);
+    requireOptionalStringArray(record, "decisions", errors);
+    requireOptionalStringArray(record, "blockers", errors);
     requireOptionalNonEmptyString(record, "assistantResponse", errors);
     requireNonNegativeInteger(record, "toolCallCount", errors);
     requireStringArray(record, "changedFiles", errors);
@@ -539,17 +344,30 @@ export function validateGitMemoryActionRecord(value: unknown): ValidationResult<
   return validationResult(value, errors);
 }
 
-function validateTaskIndexEntry(value: unknown, label: string, errors: string[]): void {
-  const record = requireRecord(value, label, errors);
-  if (!record) {
-    return;
+export function validateGitMemoryEvidenceManifestRecord(
+  value: unknown,
+): ValidationResult<GitMemoryEvidenceManifestRecord> {
+  const errors: string[] = [];
+  const record = requireRecord(value, "evidence manifest record", errors);
+  if (record) {
+    requireVersion(record, errors);
+    requireRunId(record, "runId", errors);
+    requireTaskId(record, "taskId", errors);
+    requireOptionalPositiveInteger(record, "step", errors);
+    requireOptionalActionId(record, "actionId", errors);
+    requireNonEmptyString(record, "tool", errors);
+    requireOptionalOneOf(record, "status", ["completed", "failed", "skipped"], errors);
+    requireNonEmptyString(record, "summary", errors);
+    requireOptionalNonEmptyString(record, "evidenceRef", errors);
+    requireStringArray(record, "artifacts", errors);
+    requireStringArray(record, "facts", errors);
+    requireStringArray(record, "accessModes", errors);
+    requireOptionalNonNegativeInteger(record, "outputSize", errors);
+    requireOptionalNonNegativeInteger(record, "lineCount", errors);
+    requireOptionalBoolean(record, "truncated", errors);
+    requireOptionalRecord(record, "source", errors);
   }
-  requireTaskId(record, "taskId", errors);
-  requireTaskBranch(record, "branch", errors);
-  requireNonEmptyString(record, "title", errors);
-  requireTaskStatus(record, errors);
-  requireNonEmptyString(record, "createdAt", errors);
-  requireNonEmptyString(record, "updatedAt", errors);
+  return validationResult(value, errors);
 }
 
 function validationResult<T>(value: unknown, errors: string[]): ValidationResult<T> {
@@ -595,6 +413,14 @@ function requireNonEmptyString(record: Record<string, unknown>, field: string, e
   return value;
 }
 
+function rejectFields(record: Record<string, unknown>, fields: string[], errors: string[]): void {
+  for (const field of fields) {
+    if (field in record) {
+      errors.push(`${field} is not supported in conversation debug records.`);
+    }
+  }
+}
+
 function requireOptionalNonEmptyString(record: Record<string, unknown>, field: string, errors: string[]): void {
   const value = record[field];
   if (value === undefined || value === null) {
@@ -609,6 +435,26 @@ function requireOptionalNonEmptyString(record: Record<string, unknown>, field: s
   }
 }
 
+function requireOptionalBoolean(record: Record<string, unknown>, field: string, errors: string[]): void {
+  const value = record[field];
+  if (value === undefined || value === null) {
+    return;
+  }
+  if (typeof value !== "boolean") {
+    errors.push(`${field} must be a boolean.`);
+  }
+}
+
+function requireOptionalRecord(record: Record<string, unknown>, field: string, errors: string[]): void {
+  const value = record[field];
+  if (value === undefined || value === null) {
+    return;
+  }
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    errors.push(`${field} must be an object.`);
+  }
+}
+
 function requirePositiveInteger(record: Record<string, unknown>, field: string, errors: string[]): number | undefined {
   const value = record[field];
   if (typeof value !== "number" || !Number.isInteger(value) || value < 1) {
@@ -618,8 +464,28 @@ function requirePositiveInteger(record: Record<string, unknown>, field: string, 
   return value;
 }
 
+function requireOptionalPositiveInteger(record: Record<string, unknown>, field: string, errors: string[]): void {
+  const value = record[field];
+  if (value === undefined || value === null) {
+    return;
+  }
+  if (typeof value !== "number" || !Number.isInteger(value) || value < 1) {
+    errors.push(`${field} must be a positive integer.`);
+  }
+}
+
 function requireNonNegativeInteger(record: Record<string, unknown>, field: string, errors: string[]): void {
   const value = record[field];
+  if (typeof value !== "number" || !Number.isInteger(value) || value < 0) {
+    errors.push(`${field} must be a non-negative integer.`);
+  }
+}
+
+function requireOptionalNonNegativeInteger(record: Record<string, unknown>, field: string, errors: string[]): void {
+  const value = record[field];
+  if (value === undefined || value === null) {
+    return;
+  }
   if (typeof value !== "number" || !Number.isInteger(value) || value < 0) {
     errors.push(`${field} must be a non-negative integer.`);
   }
@@ -637,6 +503,21 @@ function requireOneOf<T extends string>(
     return undefined;
   }
   return value as T;
+}
+
+function requireOptionalOneOf<T extends string>(
+  record: Record<string, unknown>,
+  field: string,
+  allowed: readonly T[],
+  errors: string[],
+): void {
+  const value = record[field];
+  if (value === undefined || value === null) {
+    return;
+  }
+  if (typeof value !== "string" || !allowed.includes(value as T)) {
+    errors.push(`${field} must be one of: ${allowed.join(", ")}.`);
+  }
 }
 
 function requireArray(record: Record<string, unknown>, field: string, errors: string[]): unknown[] | undefined {
@@ -658,6 +539,14 @@ function requireStringArray(record: Record<string, unknown>, field: string, erro
       errors.push(`${field}[${index}] must be a non-empty string.`);
     }
   });
+}
+
+function requireOptionalStringArray(record: Record<string, unknown>, field: string, errors: string[]): void {
+  const value = record[field];
+  if (value === undefined || value === null) {
+    return;
+  }
+  requireStringArray(record, field, errors);
 }
 
 function requireDate(record: Record<string, unknown>, field: string, errors: string[]): void {
@@ -693,46 +582,10 @@ function requireConversationSeqRange(record: Record<string, unknown>, errors: st
   }
 }
 
-function requireOptionalConversationSeqRange(
-  record: Record<string, unknown>,
-  field: string,
-  errors: string[],
-): void {
-  const value = record[field];
-  if (value === undefined || value === null) {
-    return;
-  }
-  const range = requireRecord(value, field, errors);
-  if (range) {
-    requireConversationSeqRange(range, errors);
-  }
-}
-
 function requireSessionId(record: Record<string, unknown>, field: string, errors: string[]): void {
   const value = requireNonEmptyString(record, field, errors);
   if (value && !isGitMemorySessionId(value)) {
     errors.push(`${field} must be a valid git-memory session id.`);
-  }
-}
-
-function requireMessageId(record: Record<string, unknown>, field: string, errors: string[]): void {
-  const value = requireNonEmptyString(record, field, errors);
-  if (value && !isGitMemoryMessageId(value)) {
-    errors.push(`${field} must be a valid git-memory message id.`);
-  }
-}
-
-function requireTurnId(record: Record<string, unknown>, field: string, errors: string[]): void {
-  const value = requireNonEmptyString(record, field, errors);
-  if (value && !isGitMemoryTurnId(value)) {
-    errors.push(`${field} must be a valid git-memory turn id.`);
-  }
-}
-
-function requireEventId(record: Record<string, unknown>, field: string, errors: string[]): void {
-  const value = requireNonEmptyString(record, field, errors);
-  if (value && !isGitMemoryEventId(value)) {
-    errors.push(`${field} must be a valid git-memory event id.`);
   }
 }
 
@@ -754,13 +607,6 @@ function requireActionId(record: Record<string, unknown>, field: string, errors:
   const value = requireNonEmptyString(record, field, errors);
   if (value && !isGitMemoryActionId(value)) {
     errors.push(`${field} must be a valid git-memory action id.`);
-  }
-}
-
-function requireLinkId(record: Record<string, unknown>, field: string, errors: string[]): void {
-  const value = requireNonEmptyString(record, field, errors);
-  if (value && !isGitMemoryLinkId(value)) {
-    errors.push(`${field} must be a valid git-memory link id.`);
   }
 }
 
@@ -792,18 +638,7 @@ function requireOptionalRunId(record: Record<string, unknown>, field: string, er
   }
 }
 
-function requireTaskStatus(record: Record<string, unknown>, errors: string[]): void {
-  requireOneOf(record, "status", ["open", "in_progress", "blocked", "done", "abandoned"], errors);
-}
-
-function requireTaskBranch(record: Record<string, unknown>, field: string, errors: string[]): void {
-  const value = requireNonEmptyString(record, field, errors);
-  if (value && !isTaskBranch(value)) {
-    errors.push(`${field} must be a valid task branch.`);
-  }
-}
-
-function requireOptionalTaskBranch(record: Record<string, unknown>, field: string, errors: string[]): void {
+function requireOptionalActionId(record: Record<string, unknown>, field: string, errors: string[]): void {
   const value = record[field];
   if (value === undefined || value === null) {
     return;
@@ -812,13 +647,13 @@ function requireOptionalTaskBranch(record: Record<string, unknown>, field: strin
     errors.push(`${field} must be a string.`);
     return;
   }
-  if (!isTaskBranch(value)) {
-    errors.push(`${field} must be a valid task branch.`);
+  if (!isGitMemoryActionId(value)) {
+    errors.push(`${field} must be a valid git-memory action id.`);
   }
 }
 
-function isTaskBranch(value: string): boolean {
-  return isGitMemoryTaskBranchName(value);
+function requireTaskStatus(record: Record<string, unknown>, errors: string[]): void {
+  requireOneOf(record, "status", ["open", "in_progress", "blocked", "done", "abandoned"], errors);
 }
 
 function slugifyIdPart(value: string, fallback: string): string {

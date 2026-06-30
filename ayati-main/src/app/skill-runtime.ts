@@ -11,6 +11,7 @@ import type { DirectoryLibrary } from "../files/directory-library.js";
 import type { FileLibrary } from "../files/file-library.js";
 import type { WorkspaceOrchestrator } from "../ui/workspace-orchestrator.js";
 import type { AyatiRuntimeConfig } from "../config/runtime-config.js";
+import type { GitMemoryRuntime } from "../context-engine/index.js";
 import { builtInSkillsProvider } from "../skills/provider.js";
 import { createToolExecutor, type ToolExecutor } from "../skills/tool-executor.js";
 import type { SkillDefinition, SkillsProvider, SkillPromptBlock, ToolDefinition } from "../skills/types.js";
@@ -21,6 +22,7 @@ import { createAttachmentSkill } from "../skills/builtins/attachments/index.js";
 import { createDatasetSkill } from "../skills/builtins/datasets/index.js";
 import { createDocumentSkill } from "../skills/builtins/documents/index.js";
 import { createFilesSkill } from "../skills/builtins/files/index.js";
+import { createGitContextSkill } from "../skills/builtins/git-context/index.js";
 import { createUiSkill } from "../skills/builtins/ui/index.js";
 import { SkillActivationManager } from "../skills/activation-manager.js";
 import { createSkillBundle, SkillCatalog } from "../skills/skill-catalog.js";
@@ -39,6 +41,7 @@ export interface SkillRuntimeOptions {
   directoryLibrary: DirectoryLibrary;
   workspaceOrchestrator: WorkspaceOrchestrator;
   config: AyatiRuntimeConfig;
+  gitMemoryRuntime: GitMemoryRuntime;
 }
 
 export interface SkillRuntime {
@@ -77,6 +80,10 @@ export async function createSkillRuntime(options: SkillRuntimeOptions): Promise<
     createFilesSkill({
       fileLibrary: options.fileLibrary,
       directoryLibrary: options.directoryLibrary,
+    }),
+    createGitContextSkill({
+      contextStoreDir: options.config.gitContext.storeDir,
+      gitMemoryRuntime: options.gitMemoryRuntime,
     }),
     createUiSkill({
       workspaceOrchestrator: options.workspaceOrchestrator,

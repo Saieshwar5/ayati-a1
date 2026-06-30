@@ -71,6 +71,19 @@ provider tool calls where supported. A model response can be:
 Unknown native tools, multiple native tool calls, missing executable tools, and
 invalid tool inputs are rejected deterministically and repaired when possible.
 
+When git-memory has an `unbound` or `clarifying` pending turn, normal task tools
+are blocked. The model may use git-context read/search tools and the
+turn-aware routing tools:
+
+- `git_context_activate_task_for_turn`
+- `git_context_create_task_for_turn`
+- `git_context_ask_clarification_for_turn`
+
+The model should not call a tool just to continue the already-active task;
+obvious same-task continuation is automatic. The model must not directly commit
+runs, update task state, or use low-level branch switch/create tools during
+normal live turns.
+
 ## Internal Decision Shape
 
 The decision layer normalizes native tool calls into the existing internal
@@ -170,9 +183,9 @@ portion is built by `context-pack.ts` and currently includes:
 
 - `timeline`: chronological bounded user/assistant/system events ending with
   the current input
-- `gitContext`: durable daily-session git context, including focus, selected
-  task state, task assets, recent runs, recent commits, facts, open work, and
-  next step
+- `gitContext`: durable daily-session git context, including pending-turn
+  routing state, focus, selected task state, task assets, recent runs, recent
+  commits, recent evidence, facts, open work, and next step
 - optional `personalMemorySnapshot`
 
 The rest of the state view is sparse. Empty sections are omitted. When present,
@@ -184,7 +197,8 @@ it can include:
   tool-load problems, tool validation errors, execution failures, verification
   failures, and retry hints.
 - `toolLoad`: the most recent tool-loading outcome.
-- `observations`: recent real tool-output context cards.
+- `observations`: recent real tool-output context cards with retention metadata
+  such as `next_step`, `while_relevant`, or `evidence_only`.
 - `trace`: compact recent execution steps and deterministic failures.
 - `attachments`: incoming/prepared/managed attachments only when present.
 - `systemEvent`: the current system event only for system-event runs.
@@ -204,6 +218,11 @@ task continuation stays inside the existing decision stage through
 focused work branch, use task assets, start new work, or ask the user when
 runtime task resolution is ambiguous.
 
+If observations point to truncated, chunked, or `evidence_only` output, the
+model should use evidence tools before rerunning the original output-producing
+tool. Evidence rereads are hot context and should not become durable task memory
+unless verified progress promotes a fact.
+
 ## Feedback Triage
 
 The feedback ledger writes compact operator-facing summaries under
@@ -213,6 +232,9 @@ tracing is enabled. The latest summary preserves the raw run signals:
 - final status and response kind
 - iteration, tool-load, action-step, and tool-call counts
 - verification and verified-fact flags
+- compact git-context routing and finalization state, including pending-turn
+  status, route source, route mode, task id, branch/ref, run id, commit, and
+  committed/skipped/failed finalization status
 - warning signals such as protocol repair, failed actions, repeated tool loads,
   or completed work without tool calls
 
@@ -299,6 +321,15 @@ stage records:
 The action stage records starts, completions, individual tool results,
 artifacts, and failures. Final feedback records the summary used by
 `latest-summary.json`.
+
+Context-engine feedback events are operator-facing observability, not
+model-facing control. They record compact lifecycle facts such as
+`context_engine.prepared`, `context_engine.routed`,
+`context_engine.agent_routed`, `context_engine.clarification_requested`,
+`context_engine.finalization_skipped`, `context_engine.finalization_failed`,
+and `context_engine.committed`. Developer agents should use those events to
+follow the owning task branch, run id, commit, and evidence pointers when
+debugging Ayati behavior.
 
 ## Completion
 
