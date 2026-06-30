@@ -362,6 +362,7 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
       return;
     }
 
+    const completedAt = this.nowProvider().toISOString();
     const completed = await this.chatContextRuntime.completeTaskRun({
       clientId,
       turn: prepared,
@@ -369,16 +370,13 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
       runId: binding.runId,
       result,
       conversationRefs: binding.conversationRefs,
-      at: this.nowProvider().toISOString(),
+      at: completedAt,
+      assistantMessage: result.content,
+      assistantAt: this.nowProvider().toISOString(),
     });
     if (!completed) {
       return;
     }
-
-    await this.recordChatContextAssistantMessage(clientId, prepared, result.content, {
-      taskId: completed.taskId,
-      runId: completed.runId,
-    });
 
     this.feedbackLedger?.record({
       clientId,

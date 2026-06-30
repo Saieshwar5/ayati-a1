@@ -333,6 +333,7 @@ class AppSystemEventRuntime implements SystemEventRuntime {
       return;
     }
 
+    const completedAt = this.nowProvider().toISOString();
     const completed = await this.systemEventContextRuntime.completeTaskRun({
       clientId,
       turn: prepared,
@@ -340,16 +341,13 @@ class AppSystemEventRuntime implements SystemEventRuntime {
       runId: routed.runId,
       result,
       conversationRefs: routed.conversationRefs,
-      at: this.nowProvider().toISOString(),
+      at: completedAt,
+      assistantMessage: result.content,
+      assistantAt: this.nowProvider().toISOString(),
     });
     if (!completed) {
       return;
     }
-
-    await this.recordSystemEventAssistantMessage(clientId, prepared, result.content, {
-      taskId: completed.taskId,
-      runId: completed.runId,
-    });
 
     this.feedbackLedger?.record({
       clientId,

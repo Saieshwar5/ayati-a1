@@ -1096,13 +1096,9 @@ describe("IVecEngine", () => {
         taskId: "W-20260627-0001",
         runId: "R-20260627-0001",
         result: expect.objectContaining({ content: "mock reply" }),
+        assistantMessage: "mock reply",
       }));
-      expect(systemEventContextRuntime.recordAssistantMessage).toHaveBeenCalledWith(expect.objectContaining({
-        clientId: "c1",
-        message: "mock reply",
-        taskId: "W-20260627-0001",
-        runId: "R-20260627-0001",
-      }));
+      expect(systemEventContextRuntime.recordAssistantMessage).not.toHaveBeenCalled();
     } finally {
       rmSync(dataDir, { recursive: true, force: true });
     }
@@ -1246,13 +1242,9 @@ describe("IVecEngine", () => {
         taskId: "W-20260627-0001",
         runId: "R-20260627-0001",
         result: expect.objectContaining({ content: "mock reply" }),
+        assistantMessage: "mock reply",
       }));
-      expect(systemEventContextRuntime.recordAssistantMessage).toHaveBeenCalledWith(expect.objectContaining({
-        clientId: "c1",
-        message: "mock reply",
-        taskId: "W-20260627-0001",
-        runId: "R-20260627-0001",
-      }));
+      expect(systemEventContextRuntime.recordAssistantMessage).not.toHaveBeenCalled();
     } finally {
       rmSync(dataDir, { recursive: true, force: true });
     }
@@ -1310,12 +1302,14 @@ describe("IVecEngine", () => {
         clientId: "c1",
         userMessage: expect.stringContaining("send_report"),
       }));
-      expect(systemEventContextRuntime.recordAssistantMessage).toHaveBeenCalledWith(expect.objectContaining({
+      expect(systemEventContextRuntime.completeTaskRun).toHaveBeenCalledWith(expect.objectContaining({
         clientId: "c1",
-        message: "mock reply",
         taskId: "W-20260627-0001",
         runId: "R-20260627-0001",
+        result: expect.objectContaining({ content: "mock reply" }),
+        assistantMessage: "mock reply",
       }));
+      expect(systemEventContextRuntime.recordAssistantMessage).not.toHaveBeenCalled();
     } finally {
       rmSync(dataDir, { recursive: true, force: true });
     }

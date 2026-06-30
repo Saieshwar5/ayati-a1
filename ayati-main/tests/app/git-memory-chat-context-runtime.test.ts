@@ -10,6 +10,7 @@ import {
   GitMemoryWorktreeGitDriver,
   type GitMemoryWriteBatchSnapshot,
   gitMemoryTaskRunPath,
+  parseGitMemoryCommitTrailers,
 } from "../../src/context-engine/index.js";
 
 describe("createGitMemoryChatContextRuntime", () => {
@@ -454,7 +455,7 @@ describe("createGitMemoryChatContextRuntime", () => {
     }
   });
 
-  it("surfaces duplicate task run commit failures from the git-memory bridge", async () => {
+  it("treats duplicate task run finalization as an idempotent app-level result", async () => {
     const storeDir = mkdtempSync(join(tmpdir(), "ayati-git-memory-chat-context-"));
     try {
       const gitMemoryRuntime = createGitMemoryRuntime({
@@ -494,7 +495,7 @@ describe("createGitMemoryChatContextRuntime", () => {
         },
       };
 
-      await runtime.completeTaskRun({
+      const first = await runtime.completeTaskRun({
         clientId: "local",
         turn: prepared,
         taskId: task.taskId,
@@ -503,14 +504,31 @@ describe("createGitMemoryChatContextRuntime", () => {
         at: "2026-06-28T09:10:00+05:30",
       });
 
-      await expect(runtime.completeTaskRun({
+      const second = await runtime.completeTaskRun({
         clientId: "local",
         turn: prepared,
         taskId: task.taskId,
         runId: "R-20260628-0007",
         result,
         at: "2026-06-28T09:11:00+05:30",
-      })).rejects.toThrow("Git memory task run already committed: R-20260628-0007");
+      });
+
+      expect(first).toMatchObject({
+        runId: "R-20260628-0007",
+        alreadyFinalized: false,
+      });
+      expect(second).toMatchObject({
+        runId: "R-20260628-0007",
+        taskCommit: first?.taskCommit,
+        alreadyFinalized: true,
+      });
+      const driver = new GitMemoryWorktreeGitDriver(prepared.repoPath);
+      const taskLog = await driver.log(task.ref, 10);
+      expect(taskLog.filter((entry) => {
+        const trailers = parseGitMemoryCommitTrailers(entry.message);
+        return trailers.runId === "R-20260628-0007"
+          && (trailers.event === "run_completed" || trailers.event === "run_failed");
+      })).toHaveLength(1);
     } finally {
       rmSync(storeDir, { recursive: true, force: true });
     }

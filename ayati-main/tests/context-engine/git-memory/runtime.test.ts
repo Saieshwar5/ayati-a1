@@ -11,6 +11,7 @@ import {
   GIT_MEMORY_SESSION_CONVERSATION_MARKDOWN_PATH,
   GitMemoryDailySessionStore,
   GitMemoryWorktreeGitDriver,
+  gitMemoryTaskRunPath,
   gitMemoryTaskStatePath,
   type GitMemoryWriteBatchRequest,
   type GitMemoryWriteBatchSnapshot,
@@ -1034,6 +1035,176 @@ describe("GitMemoryRuntime", () => {
 
     const driver = new GitMemoryWorktreeGitDriver(prepared.repoPath);
     expect(await driver.log(GIT_MEMORY_MAIN_REF, 5)).toHaveLength(3);
+  });
+
+  it("finalizes task runs once and records assistant output after the run commit", async () => {
+    const contextStoreDir = await mkdtemp(join(tmpdir(), "ayati-git-memory-runtime-"));
+    const runtime = createGitMemoryRuntime({
+      contextStoreDir,
+      timezone: "Asia/Kolkata",
+      agentId: "local",
+    });
+    const prepared = await runtime.prepareUserTurn({
+      userMessage: "Fix upload handling",
+      at: "2026-06-28T09:00:00+05:30",
+    });
+    const routed = await runtime.createTaskForTurn({
+      sessionId: prepared.sessionId,
+      title: "Fix upload handling",
+      objective: "Find and fix upload handling failures.",
+      reason: "new upload task",
+      at: "2026-06-28T09:01:00+05:30",
+    });
+    if (routed.status !== "ready") {
+      throw new Error(`Expected ready route, got ${routed.status}.`);
+    }
+
+    const result = {
+      type: "reply" as const,
+      status: "completed" as const,
+      content: "Finished upload handling inspection.",
+      totalIterations: 1,
+      totalToolCalls: 0,
+      runPath: "data/runs/r1",
+      workRunId: routed.runId,
+      completedSteps: [],
+    };
+    const first = await runtime.finalizeTaskRun({
+      sessionId: prepared.sessionId,
+      taskId: routed.taskId,
+      runId: routed.runId,
+      result,
+      conversationRefs: routed.conversationRefs,
+      at: "2026-06-28T09:10:00+05:30",
+      assistantMessage: result.content,
+      assistantAt: "2026-06-28T09:10:05+05:30",
+    });
+    const second = await runtime.finalizeTaskRun({
+      sessionId: prepared.sessionId,
+      taskId: routed.taskId,
+      runId: routed.runId,
+      result,
+      conversationRefs: routed.conversationRefs,
+      at: "2026-06-28T09:11:00+05:30",
+      assistantMessage: result.content,
+      assistantAt: "2026-06-28T09:11:05+05:30",
+    });
+
+    expect(first).toMatchObject({
+      runId: routed.runId,
+      alreadyFinalized: false,
+      assistantMessage: {
+        role: "assistant",
+        taskId: routed.taskId,
+        runId: routed.runId,
+      },
+    });
+    expect(second).toMatchObject({
+      runId: routed.runId,
+      taskCommit: first.taskCommit,
+      alreadyFinalized: true,
+    });
+    expect(second.assistantMessage).toBeUndefined();
+
+    const context = await runtime.buildActiveContext(prepared.sessionId);
+    expect(context.session.conversationTail).toMatchObject([
+      { seq: 1, role: "user", text: "Fix upload handling" },
+      { seq: 2, role: "assistant", taskId: routed.taskId, runId: routed.runId },
+    ]);
+    expect(context.task?.recentRuns).toMatchObject([
+      { runId: routed.runId, status: "completed" },
+    ]);
+
+    const driver = new GitMemoryWorktreeGitDriver(prepared.repoPath);
+    const taskLog = await driver.log(routed.ref, 10);
+    expect(taskLog.filter((entry) => {
+      const trailers = parseGitMemoryCommitTrailers(entry.message);
+      return trailers.runId === routed.runId && trailers.event === "run_completed";
+    })).toHaveLength(1);
+    expect(await driver.log(GIT_MEMORY_MAIN_REF, 10)).toHaveLength(3);
+  });
+
+  it.each([
+    {
+      label: "failed",
+      resultStatus: "failed" as const,
+      resultType: "reply" as const,
+      expectedRunStatus: "failed",
+    },
+    {
+      label: "blocked",
+      resultStatus: "stuck" as const,
+      resultType: "reply" as const,
+      expectedRunStatus: "blocked",
+    },
+    {
+      label: "needs user input",
+      resultStatus: "completed" as const,
+      resultType: "feedback" as const,
+      expectedRunStatus: "needs_user_input",
+    },
+  ])("finalizes $label terminal runs with durable status", async (fixture) => {
+    const contextStoreDir = await mkdtemp(join(tmpdir(), "ayati-git-memory-runtime-"));
+    const runtime = createGitMemoryRuntime({
+      contextStoreDir,
+      timezone: "Asia/Kolkata",
+      agentId: "local",
+    });
+    const prepared = await runtime.prepareUserTurn({
+      userMessage: `Handle ${fixture.label} upload run`,
+      at: "2026-06-28T09:00:00+05:30",
+    });
+    const routed = await runtime.createTaskForTurn({
+      sessionId: prepared.sessionId,
+      title: `Handle ${fixture.label} upload run`,
+      objective: "Exercise terminal run finalization.",
+      reason: "terminal finalizer test",
+      at: "2026-06-28T09:01:00+05:30",
+    });
+    if (routed.status !== "ready") {
+      throw new Error(`Expected ready route, got ${routed.status}.`);
+    }
+
+    const finalized = await runtime.finalizeTaskRun({
+      sessionId: prepared.sessionId,
+      taskId: routed.taskId,
+      runId: routed.runId,
+      result: {
+        type: fixture.resultType,
+        status: fixture.resultStatus,
+        content: `${fixture.label} terminal response.`,
+        totalIterations: 1,
+        totalToolCalls: 0,
+        runPath: "data/runs/terminal",
+        workRunId: routed.runId,
+        workState: {
+          status: fixture.expectedRunStatus === "needs_user_input" ? "needs_user_input" : "blocked",
+          summary: `${fixture.label} terminal summary.`,
+          openWork: [`Resolve ${fixture.label} terminal state.`],
+          blockers: fixture.expectedRunStatus === "needs_user_input" ? [] : [`${fixture.label} terminal blocker.`],
+          verifiedFacts: [],
+          evidence: [],
+          userInputNeeded: fixture.expectedRunStatus === "needs_user_input"
+            ? "Choose the next terminal action."
+            : undefined,
+          nextStep: `Resolve ${fixture.label} terminal state.`,
+        },
+        completedSteps: [],
+      },
+      conversationRefs: routed.conversationRefs,
+      at: "2026-06-28T09:10:00+05:30",
+    });
+
+    expect(finalized).toMatchObject({
+      runId: routed.runId,
+      alreadyFinalized: false,
+    });
+    const driver = new GitMemoryWorktreeGitDriver(prepared.repoPath);
+    expect(JSON.parse(await driver.readFile(routed.ref, gitMemoryTaskRunPath(routed.taskId, routed.runId)) ?? "{}"))
+      .toMatchObject({
+        runId: routed.runId,
+        status: fixture.expectedRunStatus,
+      });
   });
 
   it("appends routed follow-up messages to the selected task branch before run start", async () => {

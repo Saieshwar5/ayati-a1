@@ -13,6 +13,10 @@ import type {
 } from "./session-store.js";
 import { GitMemoryDailySessionStore } from "./session-store.js";
 import {
+  buildGitMemoryTaskRunCommitInput,
+  type BuildGitMemoryTaskRunCommitInput,
+} from "./harness-result-mapper.js";
+import {
   DEFAULT_GIT_MEMORY_CONTEXT_LIMITS,
   type GitMemoryPendingTurnContext,
   type GitMemoryMachineContextPack,
@@ -114,6 +118,16 @@ export interface CheckpointGitMemoryRuntimeSessionInput {
   sessionId: GitMemorySessionId;
   summary?: string;
   at?: string;
+}
+
+export interface FinalizeGitMemoryTaskRunInput extends BuildGitMemoryTaskRunCommitInput {
+  assistantMessage?: string;
+  assistantAt?: string;
+}
+
+export interface FinalizeGitMemoryTaskRunResult extends CommitGitMemoryTaskRunResult {
+  alreadyFinalized: boolean;
+  assistantMessage?: GitMemoryConversationRecord;
 }
 
 export interface SwitchGitMemoryTaskInput {
@@ -753,6 +767,55 @@ export class GitMemoryRuntime {
     }
     this.clearCommittedPendingTurn(input.sessionId, result.runId);
     return result;
+  }
+
+  async finalizeTaskRun(input: FinalizeGitMemoryTaskRunInput): Promise<FinalizeGitMemoryTaskRunResult> {
+    const commitInput = buildGitMemoryTaskRunCommitInput(input);
+    const finalized = await this.writeQueue.enqueue({
+      sessionId: commitInput.sessionId,
+      type: "task_run_committed",
+      label: "finalize_task_run",
+      createdAt: commitInput.completedAt,
+    }, async () => {
+      const existing = commitInput.runId
+        ? await this.store.readCommittedTaskRun({
+          sessionId: commitInput.sessionId,
+          taskId: commitInput.taskId,
+          runId: commitInput.runId,
+        })
+        : null;
+      if (existing) {
+        return {
+          result: existing,
+          alreadyFinalized: true,
+        };
+      }
+      return {
+        result: await this.store.commitTaskRun(commitInput),
+        alreadyFinalized: false,
+      };
+    });
+    if (!finalized.alreadyFinalized && !await this.cacheCommittedTaskRun(commitInput, finalized.result)) {
+      this.invalidateSessionMemory(commitInput.sessionId);
+    }
+    this.clearCommittedPendingTurn(commitInput.sessionId, finalized.result.runId);
+
+    let assistantMessage: GitMemoryConversationRecord | undefined;
+    if (!finalized.alreadyFinalized && input.assistantMessage?.trim()) {
+      assistantMessage = await this.recordAssistantMessage({
+        sessionId: commitInput.sessionId,
+        text: input.assistantMessage,
+        at: input.assistantAt ?? input.at,
+        taskId: finalized.result.taskId,
+        runId: finalized.result.runId,
+      });
+    }
+
+    return {
+      ...finalized.result,
+      alreadyFinalized: finalized.alreadyFinalized,
+      ...(assistantMessage ? { assistantMessage } : {}),
+    };
   }
 
   async checkpointSession(input: CheckpointGitMemoryRuntimeSessionInput): Promise<GitMemorySessionCheckpoint> {

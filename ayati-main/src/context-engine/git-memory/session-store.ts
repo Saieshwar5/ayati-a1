@@ -414,6 +414,12 @@ export interface CommitGitMemoryTaskRunResult {
   taskCommit: string;
 }
 
+export interface ReadCommittedGitMemoryTaskRunInput {
+  sessionId: GitMemorySessionId;
+  taskId: GitMemoryTaskId;
+  runId: GitMemoryRunId;
+}
+
 export interface StartGitMemoryTaskRunInput extends GitMemoryConversationSeqRange {
   sessionId: GitMemorySessionId;
   taskId: GitMemoryTaskId;
@@ -1226,6 +1232,37 @@ export class GitMemoryDailySessionStore {
       ref,
       runId,
       taskCommit,
+    };
+  }
+
+  async readCommittedTaskRun(
+    input: ReadCommittedGitMemoryTaskRunInput,
+  ): Promise<CommitGitMemoryTaskRunResult | null> {
+    const driver = await this.openExistingDriver(input.sessionId);
+    const taskEntry = await resolveGitMemoryTaskEntry(driver, { taskId: input.taskId });
+    const ref = `refs/heads/${taskEntry.branch}`;
+    if (!(await driver.hasRef(ref))) {
+      throw new Error(`Git memory task branch missing: ${ref}`);
+    }
+    const existingRun = await driver.readFile(ref, gitMemoryTaskRunPath(input.taskId, input.runId));
+    if (existingRun === null) {
+      return null;
+    }
+    const commit = (await readCompactLog(driver, ref, 100))
+      .find((entry) =>
+        entry.trailers.taskId === input.taskId
+        && entry.trailers.runId === input.runId
+        && (entry.trailers.event === "run_completed" || entry.trailers.event === "run_failed"))?.commit
+      ?? await driver.resolveRef(ref);
+    if (!commit) {
+      throw new Error(`Git memory committed run is missing a task commit: ${input.runId}`);
+    }
+    return {
+      taskId: input.taskId,
+      branch: taskEntry.branch,
+      ref,
+      runId: input.runId,
+      taskCommit: commit,
     };
   }
 

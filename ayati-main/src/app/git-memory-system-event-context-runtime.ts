@@ -1,5 +1,5 @@
 import type {
-  CommitGitMemoryTaskRunResult,
+  FinalizeGitMemoryTaskRunResult,
   GitMemoryConversationRecord,
   GitMemoryConversationSeqRange,
   GitContextMemoryState,
@@ -13,7 +13,6 @@ import type {
 } from "../context-engine/index.js";
 import {
   buildGitMemoryHarnessContextFromMemoryState,
-  buildGitMemoryTaskRunCommitInput,
 } from "../context-engine/index.js";
 import type { HarnessContextInput } from "../ivec/harness-context.js";
 import { devWarn } from "../shared/index.js";
@@ -57,6 +56,8 @@ export interface GitMemorySystemEventContextCompleteTaskRunInput {
   startedAt?: string;
   conversationRefs?: GitMemoryConversationSeqRange[];
   changedFiles?: string[];
+  assistantMessage?: string;
+  assistantAt?: string;
 }
 
 export interface GitMemorySystemEventContextRouteTaskTurnInput {
@@ -79,7 +80,7 @@ export interface GitMemorySystemEventContextRuntime {
   routeTaskTurn(
     input: GitMemorySystemEventContextRouteTaskTurnInput,
   ): Promise<GitMemorySystemEventContextRoutedTurn | null>;
-  completeTaskRun(input: GitMemorySystemEventContextCompleteTaskRunInput): Promise<CommitGitMemoryTaskRunResult | null>;
+  completeTaskRun(input: GitMemorySystemEventContextCompleteTaskRunInput): Promise<FinalizeGitMemoryTaskRunResult | null>;
   recordAssistantMessage(
     input: GitMemorySystemEventContextAssistantMessageInput,
   ): Promise<GitMemoryConversationRecord | null>;
@@ -143,11 +144,11 @@ class AppGitMemorySystemEventContextRuntime implements GitMemorySystemEventConte
 
   async completeTaskRun(
     input: GitMemorySystemEventContextCompleteTaskRunInput,
-  ): Promise<CommitGitMemoryTaskRunResult | null> {
+  ): Promise<FinalizeGitMemoryTaskRunResult | null> {
     if (!input.turn) {
       return null;
     }
-    return await this.gitMemoryRuntime.commitTaskRun(buildGitMemoryTaskRunCommitInput({
+    return await this.gitMemoryRuntime.finalizeTaskRun({
       sessionId: input.turn.sessionId,
       taskId: input.taskId,
       runId: input.runId,
@@ -159,7 +160,9 @@ class AppGitMemorySystemEventContextRuntime implements GitMemorySystemEventConte
       at: input.at,
       startedAt: input.startedAt,
       changedFiles: input.changedFiles,
-    }));
+      assistantMessage: input.assistantMessage,
+      assistantAt: input.assistantAt,
+    });
   }
 
   async recordAssistantMessage(

@@ -1,5 +1,5 @@
 import type {
-  CommitGitMemoryTaskRunResult,
+  FinalizeGitMemoryTaskRunResult,
   GitMemoryConversationRecord,
   GitMemoryConversationSeqRange,
   GitContextMemoryState,
@@ -13,7 +13,6 @@ import type {
 } from "../context-engine/index.js";
 import {
   buildGitMemoryHarnessContextFromMemoryState,
-  buildGitMemoryTaskRunCommitInput,
 } from "../context-engine/index.js";
 import type { HarnessContextInput } from "../ivec/harness-context.js";
 import { devWarn } from "../shared/index.js";
@@ -57,6 +56,8 @@ export interface GitMemoryChatContextCompleteTaskRunInput {
   startedAt?: string;
   conversationRefs?: GitMemoryConversationSeqRange[];
   changedFiles?: string[];
+  assistantMessage?: string;
+  assistantAt?: string;
 }
 
 export interface GitMemoryChatContextRouteTaskTurnInput {
@@ -76,7 +77,7 @@ export type GitMemoryChatContextRoutedTurn = RoutedGitMemoryUserTurn & {
 export interface GitMemoryChatContextRuntime {
   prepareUserTurn(input: GitMemoryChatContextPrepareInput): Promise<GitMemoryChatContextPreparedTurn>;
   routeTaskTurn(input: GitMemoryChatContextRouteTaskTurnInput): Promise<GitMemoryChatContextRoutedTurn | null>;
-  completeTaskRun(input: GitMemoryChatContextCompleteTaskRunInput): Promise<CommitGitMemoryTaskRunResult | null>;
+  completeTaskRun(input: GitMemoryChatContextCompleteTaskRunInput): Promise<FinalizeGitMemoryTaskRunResult | null>;
   recordAssistantMessage(input: GitMemoryChatContextAssistantMessageInput): Promise<GitMemoryConversationRecord | null>;
   buildActiveContext(sessionId: GitMemorySessionId): Promise<GitMemoryMachineContextPack>;
 }
@@ -141,11 +142,11 @@ class AppGitMemoryChatContextRuntime implements GitMemoryChatContextRuntime {
 
   async completeTaskRun(
     input: GitMemoryChatContextCompleteTaskRunInput,
-  ): Promise<CommitGitMemoryTaskRunResult | null> {
+  ): Promise<FinalizeGitMemoryTaskRunResult | null> {
     if (!input.turn) {
       return null;
     }
-    return await this.gitMemoryRuntime.commitTaskRun(buildGitMemoryTaskRunCommitInput({
+    return await this.gitMemoryRuntime.finalizeTaskRun({
       sessionId: input.turn.sessionId,
       taskId: input.taskId,
       runId: input.runId,
@@ -157,7 +158,9 @@ class AppGitMemoryChatContextRuntime implements GitMemoryChatContextRuntime {
       at: input.at,
       startedAt: input.startedAt,
       changedFiles: input.changedFiles,
-    }));
+      assistantMessage: input.assistantMessage,
+      assistantAt: input.assistantAt,
+    });
   }
 
   async recordAssistantMessage(

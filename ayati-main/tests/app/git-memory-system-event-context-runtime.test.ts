@@ -4,6 +4,8 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   createGitMemoryRuntime,
+  GitMemoryWorktreeGitDriver,
+  parseGitMemoryCommitTrailers,
 } from "../../src/context-engine/index.js";
 import { createGitMemorySystemEventContextRuntime } from "../../src/app/git-memory-system-event-context-runtime.js";
 
@@ -110,15 +112,16 @@ describe("createGitMemorySystemEventContextRuntime", () => {
     }
   });
 
-  it("surfaces duplicate task run commit failures from the git-memory bridge", async () => {
+  it("treats duplicate task run finalization as an idempotent app-level result", async () => {
     const storeDir = mkdtempSync(join(tmpdir(), "ayati-git-memory-system-context-"));
     try {
+      const gitMemoryRuntime = createGitMemoryRuntime({
+        contextStoreDir: storeDir,
+        timezone: "Asia/Kolkata",
+        agentId: "local",
+      });
       const runtime = createGitMemorySystemEventContextRuntime({
-        gitMemoryRuntime: createGitMemoryRuntime({
-          contextStoreDir: storeDir,
-          timezone: "Asia/Kolkata",
-          agentId: "local",
-        }),
+        gitMemoryRuntime,
       });
 
       const prepared = await runtime.prepareSystemEventTurn({
@@ -149,7 +152,7 @@ describe("createGitMemorySystemEventContextRuntime", () => {
         completedSteps: [],
       };
 
-      await runtime.completeTaskRun({
+      const first = await runtime.completeTaskRun({
         clientId: "local",
         turn: prepared,
         taskId: routed.taskId,
@@ -159,7 +162,7 @@ describe("createGitMemorySystemEventContextRuntime", () => {
         at: "2026-06-28T09:05:00+05:30",
       });
 
-      await expect(runtime.completeTaskRun({
+      const second = await runtime.completeTaskRun({
         clientId: "local",
         turn: prepared,
         taskId: routed.taskId,
@@ -167,7 +170,24 @@ describe("createGitMemorySystemEventContextRuntime", () => {
         result,
         conversationRefs: routed.conversationRefs,
         at: "2026-06-28T09:06:00+05:30",
-      })).rejects.toThrow(`Git memory task run already committed: ${routed.runId}`);
+      });
+
+      expect(first).toMatchObject({
+        runId: routed.runId,
+        alreadyFinalized: false,
+      });
+      expect(second).toMatchObject({
+        runId: routed.runId,
+        taskCommit: first?.taskCommit,
+        alreadyFinalized: true,
+      });
+      const driver = new GitMemoryWorktreeGitDriver(prepared.repoPath);
+      const taskLog = await driver.log(routed.ref, 10);
+      expect(taskLog.filter((entry) => {
+        const trailers = parseGitMemoryCommitTrailers(entry.message);
+        return trailers.runId === routed.runId
+          && (trailers.event === "run_completed" || trailers.event === "run_failed");
+      })).toHaveLength(1);
     } finally {
       rmSync(storeDir, { recursive: true, force: true });
     }
