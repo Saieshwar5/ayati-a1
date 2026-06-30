@@ -66,6 +66,7 @@ export interface GitMemoryChatContextRouteTaskTurnInput {
   at: string;
   title?: string;
   objective?: string;
+  autoOnly?: boolean;
 }
 
 export type GitMemoryChatContextRoutedTurn = RoutedGitMemoryUserTurn & {
@@ -122,7 +123,10 @@ class AppGitMemoryChatContextRuntime implements GitMemoryChatContextRuntime {
         objective: input.objective,
       };
       const route = await this.gitMemoryRuntime.continueActiveTurn(routeInput)
-        ?? await this.gitMemoryRuntime.routeUserTurn(routeInput);
+        ?? (input.autoOnly ? null : await this.gitMemoryRuntime.routeUserTurn(routeInput));
+      if (!route) {
+        return null;
+      }
       return {
         ...route,
         harnessContext: {

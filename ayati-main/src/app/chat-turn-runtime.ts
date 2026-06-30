@@ -22,6 +22,11 @@ import {
 import type { SkillActivationManager } from "../skills/activation-manager.js";
 import type { ToolExecutor } from "../skills/tool-executor.js";
 import type { ToolDefinition } from "../skills/types.js";
+import {
+  buildGitMemoryHarnessContextPack,
+  type GitMemoryConversationSeqRange,
+} from "../context-engine/index.js";
+import type { HarnessContextInput } from "../ivec/harness-context.js";
 import { devError, devLog, devWarn } from "../shared/index.js";
 import { agentLoop } from "../ivec/agent-loop.js";
 import type { AgentFeedbackLedger } from "../ivec/feedback-ledger.js";
@@ -175,6 +180,9 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
           runRecorder: chatRunRecorder,
           inputHandle,
           ...(runHandle ? { runHandle } : {}),
+          onWorkRunCreated: (created) => {
+            runHandle = created;
+          },
           createWorkRun: this.failMissingGitMemoryRun,
           clientId: input.clientId,
           uiContext: input.uiContext,
@@ -182,7 +190,9 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
           config: this.loopConfig,
           dataDir: this.dataDir ?? "data",
           systemContext: buildStaticSystemContext(this.staticContext),
-          ...(routedContextTurn?.status === "ready" ? { harnessContext: routedContextTurn.harnessContext } : {}),
+          harnessContext: routedContextTurn?.status === "ready"
+            ? routedContextTurn.harnessContext
+            : this.harnessContextFromPreparedTurn(chatContextTurn),
           feedbackLedger: this.feedbackLedger,
           attachedDocuments: registeredAttachments.documents,
           attachmentWarnings: registeredAttachments.warnings,
@@ -299,6 +309,7 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
       turn,
       userMessage,
       at: this.nowProvider().toISOString(),
+      autoOnly: true,
     });
     if (!routed) {
       return null;
@@ -346,17 +357,18 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
     routed: GitMemoryChatContextRoutedTurn | null,
     result: AgentLoopResult,
   ): Promise<void> {
-    if (!prepared || routed?.status !== "ready") {
+    const binding = this.taskRunBindingFromRoutedOrResult(routed, result);
+    if (!prepared || !binding) {
       return;
     }
 
     const completed = await this.chatContextRuntime.completeTaskRun({
       clientId,
       turn: prepared,
-      taskId: routed.taskId,
-      runId: routed.runId,
+      taskId: binding.taskId,
+      runId: binding.runId,
       result,
-      conversationRefs: routed.conversationRefs,
+      conversationRefs: binding.conversationRefs,
       at: this.nowProvider().toISOString(),
     });
     if (!completed) {
@@ -428,6 +440,46 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
 
   private failMissingGitMemoryRun(_inputHandle: SessionInputHandle): MemoryRunHandle {
     throw new Error("Git-memory routed run is required before chat tool execution.");
+  }
+
+  private harnessContextFromPreparedTurn(
+    turn: GitMemoryChatContextPreparedTurn | null,
+  ): HarnessContextInput {
+    if (!turn) {
+      return {};
+    }
+    return {
+      contextEngine: buildGitMemoryHarnessContextPack(turn.context),
+    };
+  }
+
+  private taskRunBindingFromRoutedOrResult(
+    routed: GitMemoryChatContextRoutedTurn | null,
+    result: AgentLoopResult,
+  ): {
+    taskId: string;
+    runId: string;
+    conversationRefs: GitMemoryConversationSeqRange[];
+  } | null {
+    if (routed?.status === "ready") {
+      return {
+        taskId: routed.taskId,
+        runId: routed.runId,
+        conversationRefs: routed.conversationRefs,
+      };
+    }
+    const pendingTurn = result.harnessContext?.contextEngine?.pendingTurn;
+    if (!pendingTurn?.workId || !pendingTurn.runId || pendingTurn.routingStatus !== "bound") {
+      return null;
+    }
+    return {
+      taskId: pendingTurn.workId,
+      runId: pendingTurn.runId,
+      conversationRefs: [{
+        fromSeq: pendingTurn.fromSeq,
+        toSeq: pendingTurn.toSeq,
+      }],
+    };
   }
 
   private async applyPulseProposalReflection(

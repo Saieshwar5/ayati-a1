@@ -350,6 +350,7 @@ export interface AgentLoopResult {
   artifacts?: AgentArtifact[];
   workState?: WorkState;
   completedSteps?: StepSummary[];
+  harnessContext?: HarnessContext;
 }
 
 export type OnProgressCallback = (log: string, runPath: string) => void;

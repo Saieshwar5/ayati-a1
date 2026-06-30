@@ -1,5 +1,6 @@
 import {
   buildGitMemoryContextPackFromMemoryState,
+  buildGitMemoryHarnessContextFromMemoryState,
   GitContextMemoryStateHydrator,
   GitMemoryDailySessionStore,
   type GitMemoryRuntime,
@@ -639,7 +640,7 @@ function createActivateTaskForTurnTool(
         return okJsonResult({
           code: "GIT_CONTEXT_TURN_TASK_ACTIVATED",
           message: "Pending turn activated on existing git-context task.",
-          structuredContent: route,
+          structuredContent: withHarnessContext(route),
         });
       } catch (err) {
         return gitContextMutationFailed(err);
@@ -693,7 +694,7 @@ function createCreateTaskForTurnTool(runtime: GitMemoryRuntime | undefined): Too
         return okJsonResult({
           code: "GIT_CONTEXT_TURN_TASK_CREATED",
           message: "Pending turn created a new git-context task.",
-          structuredContent: route,
+          structuredContent: withHarnessContext(route),
         });
       } catch (err) {
         return gitContextMutationFailed(err);
@@ -745,7 +746,7 @@ function createAskClarificationForTurnTool(runtime: GitMemoryRuntime | undefined
         return okJsonResult({
           code: "GIT_CONTEXT_TURN_CLARIFICATION_REQUESTED",
           message: "Pending turn marked as needing task clarification.",
-          structuredContent: route,
+          structuredContent: withHarnessContext(route),
         });
       } catch (err) {
         return gitContextMutationFailed(err);
@@ -1257,6 +1258,17 @@ function gitContextTurnMutationAnnotations(): ToolDefinition["annotations"] {
     idempotent: false,
     retrySafe: false,
   });
+}
+
+function withHarnessContext<T extends { memoryState: Parameters<typeof buildGitMemoryHarnessContextFromMemoryState>[0] }>(
+  route: T,
+): T & { harnessContext: { contextEngine: ReturnType<typeof buildGitMemoryHarnessContextFromMemoryState> } } {
+  return {
+    ...route,
+    harnessContext: {
+      contextEngine: buildGitMemoryHarnessContextFromMemoryState(route.memoryState),
+    },
+  };
 }
 
 function gitContextSucceededContract(kind: string): ToolDefinition["resultContract"] {

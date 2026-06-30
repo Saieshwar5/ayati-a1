@@ -284,6 +284,60 @@ describe("createGitMemoryChatContextRuntime", () => {
     }
   });
 
+  it("returns null for auto-only routing when the user turn is not an obvious active-task follow-up", async () => {
+    const storeDir = mkdtempSync(join(tmpdir(), "ayati-git-memory-chat-context-"));
+    try {
+      const store = new GitMemoryDailySessionStore({
+        contextStoreDir: storeDir,
+      });
+      const gitMemoryRuntime = createGitMemoryRuntime({
+        contextStoreDir: storeDir,
+        timezone: "Asia/Kolkata",
+        agentId: "local",
+        store,
+      });
+      const runtime = createGitMemoryChatContextRuntime({ gitMemoryRuntime });
+      const first = await runtime.prepareUserTurn({
+        clientId: "local",
+        userMessage: "Fix upload handling",
+        at: "2026-06-28T09:00:00+05:30",
+      });
+      const created = await runtime.routeTaskTurn({
+        clientId: "local",
+        turn: first,
+        userMessage: "Fix upload handling",
+        at: "2026-06-28T09:00:01+05:30",
+      });
+      if (created?.status !== "ready") {
+        throw new Error(`Expected ready route, got ${created?.status}.`);
+      }
+      const second = await runtime.prepareUserTurn({
+        clientId: "local",
+        userMessage: "continue upload UI redesign",
+        at: "2026-06-28T09:05:00+05:30",
+      });
+      const readSnapshot = vi.spyOn(store, "readTaskRoutingSnapshot");
+
+      const routed = await runtime.routeTaskTurn({
+        clientId: "local",
+        turn: second,
+        userMessage: "continue upload UI redesign",
+        at: "2026-06-28T09:05:01+05:30",
+        autoOnly: true,
+      });
+
+      expect(routed).toBeNull();
+      expect(readSnapshot).not.toHaveBeenCalled();
+      const memoryState = await gitMemoryRuntime.buildMemoryState(second.sessionId);
+      expect(memoryState.pendingTurn).toMatchObject({
+        text: "continue upload UI redesign",
+        routingStatus: "unbound",
+      });
+    } finally {
+      rmSync(storeDir, { recursive: true, force: true });
+    }
+  });
+
   it("commits completed task runs through the git-memory bridge", async () => {
     const storeDir = mkdtempSync(join(tmpdir(), "ayati-git-memory-chat-context-"));
     try {
