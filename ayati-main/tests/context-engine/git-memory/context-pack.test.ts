@@ -10,6 +10,7 @@ import {
   GitMemoryContextReader,
   GitMemoryDailySessionStore,
   GitMemoryWorktreeGitDriver,
+  gitMemorySessionActiveTaskRef,
 } from "../../../src/context-engine/git-memory/index.js";
 
 const execFileAsync = promisify(execFile);
@@ -376,7 +377,7 @@ describe("GitMemoryContextReader", () => {
     ]);
   });
 
-  it("prefers the current task branch over a stale focus file", async () => {
+  it("prefers the active-task custom ref over the current task branch", async () => {
     const contextStoreDir = await mkdtemp(join(tmpdir(), "ayati-git-memory-context-"));
     const store = new GitMemoryDailySessionStore({ contextStoreDir });
     const session = await store.openOrCreateDailySession({
@@ -442,19 +443,139 @@ describe("GitMemoryContextReader", () => {
 
     expect(pack.focus).toMatchObject({
       status: "active",
-      taskId: uploadTask.taskId,
-      branch: uploadTask.branch,
-      ref: uploadTask.ref,
+      taskId: reminderTask.taskId,
+      branch: reminderTask.branch,
+      ref: reminderTask.ref,
     });
     expect(pack.task).toMatchObject({
-      taskId: uploadTask.taskId,
+      taskId: reminderTask.taskId,
+      title: "Fix reminder scheduling",
+      summary: "Investigate reminder scheduling drift.",
+      next: "Investigate reminder scheduling drift.",
+    });
+    expect(pack.task?.taskId).not.toBe(uploadTask.taskId);
+    expect(await driver.log(GIT_MEMORY_MAIN_REF, 10)).toEqual(mainLogBefore);
+    expect(await driver.log(uploadTask.ref, 10)).toEqual(uploadLogBefore);
+    expect(await driver.log(reminderTask.ref, 10)).toEqual(reminderLogBefore);
+  });
+
+  it("uses the session active-task custom ref when HEAD is on main", async () => {
+    const contextStoreDir = await mkdtemp(join(tmpdir(), "ayati-git-memory-context-"));
+    const store = new GitMemoryDailySessionStore({ contextStoreDir });
+    const session = await store.openOrCreateDailySession({
+      date: "2026-06-28",
+      timezone: "Asia/Kolkata",
+      agentId: "local",
+      createdAt: "2026-06-28T00:00:00+05:30",
+    });
+    const user = await store.appendConversationMessage({
+      sessionId: session.sessionId,
+      role: "user",
+      text: "Fix upload handling",
+      at: "2026-06-28T09:00:00+05:30",
+    });
+    const task = await store.createTaskBranch({
+      sessionId: session.sessionId,
+      title: "Fix upload handling",
+      objective: "Find and fix upload handling failures.",
+      fromSeq: user.seq,
+      toSeq: user.seq,
+      at: "2026-06-28T09:01:00+05:30",
+    });
+    await store.commitTaskRun({
+      sessionId: session.sessionId,
+      taskId: task.taskId,
+      status: "completed",
+      startedAt: "2026-06-28T09:02:00+05:30",
+      completedAt: "2026-06-28T09:10:00+05:30",
+      conversationRefs: [{ fromSeq: user.seq, toSeq: user.seq }],
+      summary: "Inspected upload handling.",
+      state: {
+        status: "in_progress",
+        summary: "Inspected upload handling.",
+        completed: ["Inspected upload server"],
+        open: ["Patch upload validation handling."],
+        next: "Patch upload validation handling.",
+      },
+    });
+    const driver = new GitMemoryWorktreeGitDriver(session.repoPath);
+    await execFileAsync("git", ["-C", session.repoPath, "symbolic-ref", "HEAD", GIT_MEMORY_MAIN_REF]);
+
+    const pack = await new GitMemoryContextReader(store).buildActiveContext({
+      sessionId: session.sessionId,
+    });
+
+    expect(await driver.currentBranch()).toBe("main");
+    expect(pack.focus).toMatchObject({
+      status: "active",
+      taskId: task.taskId,
+      branch: task.branch,
+      ref: task.ref,
+    });
+    expect(pack.task).toMatchObject({
+      taskId: task.taskId,
       title: "Fix upload handling",
       summary: "Inspected upload handling.",
       next: "Patch upload validation handling.",
     });
-    expect(pack.task?.taskId).not.toBe(reminderTask.taskId);
-    expect(await driver.log(GIT_MEMORY_MAIN_REF, 10)).toEqual(mainLogBefore);
-    expect(await driver.log(uploadTask.ref, 10)).toEqual(uploadLogBefore);
-    expect(await driver.log(reminderTask.ref, 10)).toEqual(reminderLogBefore);
+  });
+
+  it("falls back to the current branch when the active-task custom ref is stale", async () => {
+    const contextStoreDir = await mkdtemp(join(tmpdir(), "ayati-git-memory-context-"));
+    const store = new GitMemoryDailySessionStore({ contextStoreDir });
+    const session = await store.openOrCreateDailySession({
+      date: "2026-06-28",
+      timezone: "Asia/Kolkata",
+      agentId: "local",
+      createdAt: "2026-06-28T00:00:00+05:30",
+    });
+    const firstUser = await store.appendConversationMessage({
+      sessionId: session.sessionId,
+      role: "user",
+      text: "Fix upload handling",
+      at: "2026-06-28T09:00:00+05:30",
+    });
+    const firstTask = await store.createTaskBranch({
+      sessionId: session.sessionId,
+      title: "Fix upload handling",
+      objective: "Find and fix upload handling failures.",
+      fromSeq: firstUser.seq,
+      toSeq: firstUser.seq,
+      at: "2026-06-28T09:01:00+05:30",
+    });
+    const secondUser = await store.appendConversationMessage({
+      sessionId: session.sessionId,
+      role: "user",
+      text: "Fix reminder scheduling",
+      at: "2026-06-28T10:00:00+05:30",
+    });
+    const secondTask = await store.createTaskBranch({
+      sessionId: session.sessionId,
+      title: "Fix reminder scheduling",
+      objective: "Investigate reminder scheduling drift.",
+      fromSeq: secondUser.seq,
+      toSeq: secondUser.seq,
+      at: "2026-06-28T10:01:00+05:30",
+    });
+    const driver = new GitMemoryWorktreeGitDriver(session.repoPath);
+    const mainCommit = await driver.resolveRef(GIT_MEMORY_MAIN_REF);
+    if (!mainCommit) {
+      throw new Error("Expected main ref.");
+    }
+    await driver.updateRef(gitMemorySessionActiveTaskRef(session.sessionId), mainCommit);
+    await execFileAsync("git", ["-C", session.repoPath, "symbolic-ref", "HEAD", firstTask.ref]);
+
+    const pack = await new GitMemoryContextReader(store).buildActiveContext({
+      sessionId: session.sessionId,
+    });
+
+    expect(pack.focus).toMatchObject({
+      status: "active",
+      taskId: firstTask.taskId,
+      branch: firstTask.branch,
+      ref: firstTask.ref,
+    });
+    expect(pack.task?.taskId).toBe(firstTask.taskId);
+    expect(pack.task?.taskId).not.toBe(secondTask.taskId);
   });
 });

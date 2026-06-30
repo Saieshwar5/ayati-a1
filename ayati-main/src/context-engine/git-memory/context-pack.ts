@@ -1,6 +1,10 @@
 import { parseGitMemoryCommitTrailers, type ParsedGitMemoryCommitTrailers } from "./commit-message.js";
 import { parseGitMemoryConversationMarkdown } from "./conversation-markdown.js";
 import {
+  gitMemorySessionActiveTaskRef,
+  readGitMemoryCustomRef,
+} from "./custom-refs.js";
+import {
   type GitMemoryDerivedTaskEntry,
   readGitMemoryTaskEntries,
 } from "./task-refs.js";
@@ -188,7 +192,7 @@ export class GitMemoryContextReader {
       recentCommits: sessionCommits.map(toModelCommitSummary),
       taskCount: taskEntries.length,
     };
-    const resolvedFocus = resolveActiveFocus(currentBranch, taskEntries);
+    const resolvedFocus = await resolveActiveFocus(driver, input.sessionId, currentBranch, taskEntries);
     if (resolvedFocus.status === "none") {
       return {
         session,
@@ -479,10 +483,16 @@ function parseJsonl<T>(value: string | null): T[] {
     .map((line) => JSON.parse(line) as T);
 }
 
-function resolveActiveFocus(
+async function resolveActiveFocus(
+  driver: GitMemoryWorktreeGitDriver,
+  sessionId: GitMemorySessionId,
   currentBranch: string | null,
   tasks: GitMemoryDerivedTaskEntry[],
-): GitMemoryResolvedFocus {
+): Promise<GitMemoryResolvedFocus> {
+  const customRefFocus = await resolveActiveFocusFromCustomRef(driver, sessionId, tasks);
+  if (customRefFocus) {
+    return customRefFocus;
+  }
   if (currentBranch?.startsWith("task/")) {
     const taskEntry = tasks.find((task) => task.branch === currentBranch);
     if (taskEntry) {
@@ -499,6 +509,33 @@ function resolveActiveFocus(
     };
   }
   return { status: "none" };
+}
+
+async function resolveActiveFocusFromCustomRef(
+  driver: GitMemoryWorktreeGitDriver,
+  sessionId: GitMemorySessionId,
+  tasks: GitMemoryDerivedTaskEntry[],
+): Promise<GitMemoryResolvedFocus | null> {
+  let activeCommit: string | null;
+  try {
+    activeCommit = await readGitMemoryCustomRef(driver, gitMemorySessionActiveTaskRef(sessionId));
+  } catch {
+    return null;
+  }
+  if (!activeCommit) {
+    return null;
+  }
+  for (const task of tasks) {
+    const taskCommit = await driver.resolveRef(task.ref);
+    if (taskCommit === activeCommit) {
+      return {
+        status: "active",
+        taskId: task.taskId,
+        branch: task.branch,
+      };
+    }
+  }
+  return null;
 }
 
 function tail<T>(values: T[], limit: number): T[] {
