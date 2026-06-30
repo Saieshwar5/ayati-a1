@@ -13,6 +13,7 @@ import {
   gitMemoryTaskAssetsPath,
   gitMemoryTaskEvidenceManifestPath,
   gitMemoryTaskMarkdownPath,
+  gitMemoryTaskNotesPath,
   gitMemoryTaskRunMarkdownPath,
   gitMemoryTaskRunPath,
   gitMemoryTaskStatePath,
@@ -354,6 +355,17 @@ describe("GitMemoryDailySessionStore", () => {
     expect(taskMarkdown).toContain("## Objective");
     expect(taskMarkdown).toContain("Find and fix upload handling failures.");
     expect(taskMarkdown).not.toContain("## Open");
+    const taskNotes = await driver.readFile(task.ref, gitMemoryTaskNotesPath(task.taskId)) ?? "";
+    expect(taskNotes).toContain("# Fix upload handling");
+    expect(taskNotes).toContain("Task: W-20260628-0001");
+    expect(taskNotes).toContain("Status: open");
+    expect(taskNotes).toContain("## Objective");
+    expect(taskNotes).toContain("Find and fix upload handling failures.");
+    expect(taskNotes).toContain("## Summary");
+    expect(taskNotes).toContain("## Open Work");
+    expect(taskNotes).toContain("- Find and fix upload handling failures.");
+    expect(taskNotes).toContain("## Blockers\n\nNone.");
+    expect(taskNotes).not.toContain("Latest Run:");
     expect(JSON.parse(await driver.readFile(task.ref, gitMemoryTaskStatePath(task.taskId)) ?? "{}"))
       .toMatchObject({
         status: "open",
@@ -683,6 +695,25 @@ describe("GitMemoryDailySessionStore", () => {
     expect(runMarkdown).toContain("- UploadServer validates multipart uploads.");
     expect(runMarkdown).toContain("- ACT-20260628-000001 read_file completed: Read upload server implementation.");
     expect(runMarkdown).toContain("Evidence: evidence/ACT-20260628-000001.txt");
+    const taskNotes = await driver.readFile(task.ref, gitMemoryTaskNotesPath(task.taskId)) ?? "";
+    expect(taskNotes).toContain("# Fix upload handling");
+    expect(taskNotes).toContain("Task: W-20260628-0001");
+    expect(taskNotes).toContain("Status: in_progress");
+    expect(taskNotes).toContain("Latest Run: R-20260628-0001");
+    expect(taskNotes).toContain("## Summary");
+    expect(taskNotes).toContain("Inspected upload handling and found validation mismatch.");
+    expect(taskNotes).toContain("## Completed");
+    expect(taskNotes).toContain("- Inspected upload server");
+    expect(taskNotes).toContain("## Open Work");
+    expect(taskNotes).toContain("- Patch upload validation handling");
+    expect(taskNotes).toContain("## Facts");
+    expect(taskNotes).toContain("- UploadServer validates multipart uploads.");
+    expect(taskNotes).toContain("## Decisions");
+    expect(taskNotes).toContain("- Patch validation handling in a later run.");
+    expect(taskNotes).toContain("## Next");
+    expect(taskNotes).toContain("Patch upload validation handling.");
+    expect(taskNotes).not.toContain("raw/001-call-read-upload-read_file.txt");
+    expect(taskNotes).not.toContain("evidence/ACT-20260628-000001.txt");
     expect(parseJsonl(await driver.readFile(task.ref, gitMemoryTaskActionsPath(task.taskId, run.runId))))
       .toMatchObject([{
         actionId: "ACT-20260628-000001",
@@ -828,6 +859,16 @@ describe("GitMemoryDailySessionStore", () => {
     expect(runMarkdown).toContain("Run failed: Upload verification failed.");
     expect(runMarkdown).toContain("## Blockers");
     expect(runMarkdown).toContain("- Upload verification failed.");
+    const taskNotes = await driver.readFile(task.ref, gitMemoryTaskNotesPath(task.taskId)) ?? "";
+    expect(taskNotes).toContain("Status: blocked");
+    expect(taskNotes).toContain("Latest Run: R-20260628-0002");
+    expect(taskNotes).toContain("## Summary");
+    expect(taskNotes).toContain("Upload verification failed.");
+    expect(taskNotes).toContain("## Open Work");
+    expect(taskNotes).toContain("- Retry upload verification");
+    expect(taskNotes).toContain("## Blockers");
+    expect(taskNotes).toContain("- Upload verification failed.");
+    expect(taskNotes).toContain("Retry upload verification.");
 
     const taskLog = await driver.log(task.ref, 5);
     expect(taskLog[0]?.message).toContain("Outcome:\nRun failed: Upload verification failed.");

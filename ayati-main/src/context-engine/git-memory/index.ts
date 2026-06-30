@@ -10,6 +10,7 @@ export * from "./runtime.js";
 export * from "./schema.js";
 export * from "./session-store.js";
 export * from "./task-markdown.js";
+export * from "./task-notes.js";
 export * from "./task-refs.js";
 export * from "./task-router.js";
 export * from "./write-queue.js";

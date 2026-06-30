@@ -27,6 +27,7 @@ import {
   renderGitMemoryTaskMarkdown,
   type GitMemoryTaskMarkdownFile,
 } from "./task-markdown.js";
+import { renderGitMemoryTaskNotes } from "./task-notes.js";
 import type {
   GitMemoryActionId,
   GitMemoryActionRecord,
@@ -1044,7 +1045,13 @@ export class GitMemoryDailySessionStore {
         [gitMemoryTaskMarkdownPath(taskId)]: renderGitMemoryTaskMarkdown(task),
         [gitMemoryTaskStatePath(taskId)]: prettyJson(state),
         [gitMemoryTaskAssetsPath(taskId)]: prettyJson({ schemaVersion: 1, assets: [] } satisfies GitMemoryTaskAssetsFile),
-        [gitMemoryTaskNotesPath(taskId)]: `# ${input.title}\n`,
+        [gitMemoryTaskNotesPath(taskId)]: renderGitMemoryTaskNotes({
+          taskId,
+          title: task.title,
+          objective: task.objective,
+          status,
+          state,
+        }),
         [gitMemoryTaskContextPath(taskId)]: "",
       },
       message: renderGitMemoryCommitMessage({
@@ -1187,6 +1194,14 @@ export class GitMemoryDailySessionStore {
       [gitMemoryTaskRunMarkdownPath(input.taskId, runId)]: renderTaskRunMarkdown(run, actions, evidence),
       [gitMemoryTaskActionsPath(input.taskId, runId)]: jsonl(actions),
       [gitMemoryTaskEvidenceManifestPath(input.taskId, runId)]: jsonl(evidence),
+      [gitMemoryTaskNotesPath(input.taskId)]: renderGitMemoryTaskNotes({
+        taskId: input.taskId,
+        title: taskEntry.title,
+        objective: taskEntry.objective,
+        status: taskEntry.status,
+        state: updatedState,
+        latestRun: run,
+      }),
     };
     if (!sameTaskAssets(existingAssets, mergedAssets)) {
       files[gitMemoryTaskAssetsPath(input.taskId)] = prettyJson({
