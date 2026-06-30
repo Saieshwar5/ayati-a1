@@ -1,7 +1,7 @@
 import { access, mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   createGitMemoryRuntime,
   GIT_MEMORY_MAIN_REF,
@@ -458,6 +458,185 @@ describe("git-context skill", () => {
         type: "task_switched",
         label: "switch_task",
         status: "committed",
+      }),
+    ]));
+  });
+
+  it("activates an existing task for the current pending turn through the runtime", async () => {
+    const prepared = await prepareMultiTaskGitContextSession();
+    const runtime = createGitMemoryRuntime({
+      contextStoreDir: prepared.contextStoreDir,
+      timezone: "Asia/Kolkata",
+      agentId: "local",
+      store: prepared.store,
+    });
+    const pending = await runtime.prepareUserTurn({
+      userMessage: "continue upload UI redesign",
+      at: "2026-06-28T11:00:00+05:30",
+    });
+    const skill = createGitContextSkill({
+      contextStoreDir: prepared.contextStoreDir,
+      gitMemoryRuntime: runtime,
+    });
+    const tool = requiredTool(skill, "git_context_activate_task_for_turn");
+
+    expect(tool.annotations).toMatchObject({
+      domain: "git_context",
+      readOnly: false,
+      mutatesWorkspace: true,
+      mutatesExternalWorld: false,
+      destructive: false,
+      idempotent: false,
+      retrySafe: false,
+    });
+
+    const result = await tool.execute({
+      sessionId: prepared.session.sessionId,
+      taskId: prepared.uploadTask.taskId,
+      reason: "User is asking to continue previous upload UI work.",
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.v2?.structuredContent).toMatchObject({
+      status: "ready",
+      mode: "switch_to_existing_task",
+      sessionId: prepared.session.sessionId,
+      taskId: prepared.uploadTask.taskId,
+      branch: prepared.uploadTask.branch,
+      runId: "R-20260628-0003",
+      conversationRefs: [{ fromSeq: pending.userMessage.seq, toSeq: pending.userMessage.seq }],
+      reason: "User is asking to continue previous upload UI work.",
+      memoryState: {
+        focus: {
+          status: "active",
+          taskId: prepared.uploadTask.taskId,
+        },
+        pendingTurn: {
+          text: "continue upload UI redesign",
+          routingStatus: "bound",
+          taskId: prepared.uploadTask.taskId,
+          runId: "R-20260628-0003",
+        },
+      },
+    });
+
+    const driver = new GitMemoryWorktreeGitDriver(prepared.session.repoPath);
+    const taskConversation = await driver.readFile(
+      prepared.uploadTask.ref,
+      "session/conversation.md",
+    ) ?? "";
+    expect(taskConversation).toContain("continue upload UI redesign");
+    expect(taskConversation).toContain("Run: R-20260628-0003");
+  });
+
+  it("creates a new task for the current pending turn through the runtime", async () => {
+    const prepared = await prepareMultiTaskGitContextSession();
+    const runtime = createGitMemoryRuntime({
+      contextStoreDir: prepared.contextStoreDir,
+      timezone: "Asia/Kolkata",
+      agentId: "local",
+      store: prepared.store,
+    });
+    const pending = await runtime.prepareUserTurn({
+      userMessage: "start notification digest investigation",
+      at: "2026-06-28T11:15:00+05:30",
+    });
+    const skill = createGitContextSkill({
+      contextStoreDir: prepared.contextStoreDir,
+      gitMemoryRuntime: runtime,
+    });
+    const tool = requiredTool(skill, "git_context_create_task_for_turn");
+
+    const result = await tool.execute({
+      sessionId: prepared.session.sessionId,
+      title: "Fix notification digest",
+      objective: "Investigate missing notification digest delivery.",
+      reason: "User started a different durable notification task.",
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.v2?.structuredContent).toMatchObject({
+      status: "ready",
+      mode: "create_new_task",
+      sessionId: prepared.session.sessionId,
+      taskId: "W-20260628-0003",
+      branch: "task/W-20260628-0003-fix-notification-digest",
+      runId: "R-20260628-0003",
+      conversationRefs: [{ fromSeq: pending.userMessage.seq, toSeq: pending.userMessage.seq }],
+      reason: "User started a different durable notification task.",
+      createdTask: {
+        title: "Fix notification digest",
+        objective: "Investigate missing notification digest delivery.",
+      },
+      memoryState: {
+        focus: {
+          status: "active",
+          taskId: "W-20260628-0003",
+        },
+        pendingTurn: {
+          text: "start notification digest investigation",
+          routingStatus: "bound",
+          taskId: "W-20260628-0003",
+          runId: "R-20260628-0003",
+        },
+      },
+    });
+
+    const created = result.v2?.structuredContent as { ref: string };
+    const driver = new GitMemoryWorktreeGitDriver(prepared.session.repoPath);
+    const taskConversation = await driver.readFile(created.ref, "session/conversation.md") ?? "";
+    expect(taskConversation).toContain("start notification digest investigation");
+    expect(taskConversation).toContain("Run: R-20260628-0003");
+  });
+
+  it("marks a pending turn as clarifying without allocating a run id", async () => {
+    const prepared = await prepareMultiTaskGitContextSession();
+    const runtime = createGitMemoryRuntime({
+      contextStoreDir: prepared.contextStoreDir,
+      timezone: "Asia/Kolkata",
+      agentId: "local",
+      store: prepared.store,
+    });
+    const pending = await runtime.prepareUserTurn({
+      userMessage: "upload",
+      at: "2026-06-28T11:30:00+05:30",
+    });
+    const allocateRunId = vi.spyOn(prepared.store, "allocateTaskRunId");
+    const skill = createGitContextSkill({
+      contextStoreDir: prepared.contextStoreDir,
+      gitMemoryRuntime: runtime,
+    });
+    const tool = requiredTool(skill, "git_context_ask_clarification_for_turn");
+
+    const result = await tool.execute({
+      sessionId: prepared.session.sessionId,
+      reason: "Multiple existing tasks could own the short upload request.",
+      candidateTaskIds: [prepared.uploadTask.taskId, prepared.reminderTask.taskId],
+    });
+
+    expect(result.ok).toBe(true);
+    expect(allocateRunId).not.toHaveBeenCalled();
+    expect(result.v2?.structuredContent).toMatchObject({
+      status: "ambiguous",
+      sessionId: prepared.session.sessionId,
+      reason: "Multiple existing tasks could own the short upload request.",
+      candidates: [
+        { taskId: prepared.uploadTask.taskId },
+        { taskId: prepared.reminderTask.taskId },
+      ],
+      memoryState: {
+        pendingTurn: {
+          fromSeq: pending.userMessage.seq,
+          toSeq: pending.userMessage.seq,
+          text: "upload",
+          routingStatus: "clarifying",
+        },
+      },
+    });
+    expect(result.v2?.structuredContent).not.toHaveProperty("runId");
+    expect(runtime.getSessionWrites(prepared.session.sessionId)).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        type: "task_routed",
       }),
     ]));
   });

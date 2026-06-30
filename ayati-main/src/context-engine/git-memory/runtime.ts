@@ -33,6 +33,7 @@ import {
   GitMemoryTaskRouter,
   type AppliedGitMemoryTaskRoute,
   type ApplyGitMemoryTaskRouteInput,
+  type GitMemoryTaskRouteCandidate,
   type GitMemoryTaskRouteResolution,
   type ResolveGitMemoryTaskRouteInput,
   isGitMemoryPureFollowUpMessage,
@@ -125,6 +126,28 @@ export interface SwitchGitMemoryTaskInput {
 export interface SwitchGitMemoryTaskResult extends SelectGitMemoryTaskForTurnResult {
   context: GitMemoryMachineContextPack;
   memoryState: GitContextMemoryState;
+}
+
+export interface ActivateGitMemoryTaskForTurnInput {
+  sessionId: GitMemorySessionId;
+  taskId: GitMemoryTaskId;
+  reason: string;
+  at?: string;
+}
+
+export interface CreateGitMemoryTaskForTurnInput {
+  sessionId: GitMemorySessionId;
+  title: string;
+  objective: string;
+  reason: string;
+  at?: string;
+}
+
+export interface AskGitMemoryTaskClarificationForTurnInput {
+  sessionId: GitMemorySessionId;
+  reason: string;
+  candidateTaskIds?: GitMemoryTaskId[];
+  at?: string;
 }
 
 export type RoutedGitMemoryUserTurn =
@@ -421,6 +444,201 @@ export class GitMemoryRuntime {
     };
   }
 
+  async activateTaskForTurn(input: ActivateGitMemoryTaskForTurnInput): Promise<RoutedGitMemoryUserTurn> {
+    const pendingTurn = this.requireUnboundPendingTurn(input.sessionId);
+    const state = await this.getOrHydrateCachedMemoryState(input.sessionId);
+    const knownTask = state.knownTasks.find((task) => task.taskId === input.taskId);
+    const mode: "continue_active_task" | "switch_to_existing_task" | "reopen_existing_task" =
+      knownTask && isReopenTaskStatus(knownTask.status)
+        ? "reopen_existing_task"
+        : state.focus.status === "active" && state.focus.taskId === input.taskId
+          ? "continue_active_task"
+          : "switch_to_existing_task";
+    const selectedReason: "task_continued" | "task_switched" | "task_reopened" =
+      mode === "reopen_existing_task"
+        ? "task_reopened"
+        : mode === "continue_active_task"
+          ? "task_continued"
+          : "task_switched";
+    const at = input.at ?? pendingTurn.at;
+    const routed = await this.writeQueue.enqueue({
+      sessionId: input.sessionId,
+      type: "task_routed",
+      label: "activate_task_for_turn",
+      createdAt: at,
+    }, async () => {
+      const runId = await this.store.allocateTaskRunId(input.sessionId);
+      const selectedTask = await this.store.selectTaskForTurn({
+        sessionId: input.sessionId,
+        taskId: input.taskId,
+        reason: selectedReason,
+        fromSeq: pendingTurn.fromSeq,
+        toSeq: pendingTurn.toSeq,
+        at,
+        runId,
+        summary: input.reason,
+      });
+      await this.store.appendTaskConversationRange({
+        sessionId: input.sessionId,
+        taskId: selectedTask.taskId,
+        branch: selectedTask.branch,
+        runId,
+        fromSeq: pendingTurn.fromSeq,
+        toSeq: pendingTurn.toSeq,
+        at,
+        reason: "task_routed",
+      });
+      await this.store.startTaskRun({
+        sessionId: input.sessionId,
+        taskId: selectedTask.taskId,
+        branch: selectedTask.branch,
+        runId,
+        fromSeq: pendingTurn.fromSeq,
+        toSeq: pendingTurn.toSeq,
+        at,
+      });
+      return {
+        status: "ready" as const,
+        mode,
+        sessionId: input.sessionId,
+        taskId: selectedTask.taskId,
+        branch: selectedTask.branch,
+        ref: selectedTask.ref,
+        conversationRefs: [{ fromSeq: pendingTurn.fromSeq, toSeq: pendingTurn.toSeq }],
+        confidence: "deterministic" as const,
+        reason: input.reason,
+        selectedTask,
+        runId,
+      };
+    });
+    this.bindPendingTurn(input.sessionId, {
+      fromSeq: pendingTurn.fromSeq,
+      toSeq: pendingTurn.toSeq,
+      taskId: routed.taskId,
+      branch: routed.branch,
+      runId: routed.runId,
+    });
+    if (!await this.cacheRoutedTaskTurn({
+      sessionId: input.sessionId,
+      userMessage: pendingTurn.text,
+      fromSeq: pendingTurn.fromSeq,
+      toSeq: pendingTurn.toSeq,
+      at,
+    }, routed)) {
+      this.invalidateSessionMemory(input.sessionId);
+    }
+    const memoryState = await this.hydrateMemoryState(input.sessionId);
+    const context = buildGitMemoryContextPackFromMemoryState(memoryState);
+    return {
+      ...routed,
+      context,
+      memoryState,
+    };
+  }
+
+  async createTaskForTurn(input: CreateGitMemoryTaskForTurnInput): Promise<RoutedGitMemoryUserTurn> {
+    const pendingTurn = this.requireUnboundPendingTurn(input.sessionId);
+    const at = input.at ?? pendingTurn.at;
+    const routed = await this.writeQueue.enqueue({
+      sessionId: input.sessionId,
+      type: "task_routed",
+      label: "create_task_for_turn",
+      createdAt: at,
+    }, async () => {
+      const runId = await this.store.allocateTaskRunId(input.sessionId);
+      const createdTask = await this.store.createTaskBranch({
+        sessionId: input.sessionId,
+        title: input.title,
+        objective: input.objective,
+        fromSeq: pendingTurn.fromSeq,
+        toSeq: pendingTurn.toSeq,
+        at,
+        runId,
+        state: {
+          status: "open",
+          summary: input.objective,
+          completed: [],
+          open: [input.objective],
+          blockers: [],
+          facts: [],
+          next: input.objective,
+        },
+      });
+      await this.store.startTaskRun({
+        sessionId: input.sessionId,
+        taskId: createdTask.taskId,
+        branch: createdTask.branch,
+        runId,
+        fromSeq: pendingTurn.fromSeq,
+        toSeq: pendingTurn.toSeq,
+        at,
+      });
+      return {
+        status: "ready" as const,
+        mode: "create_new_task" as const,
+        sessionId: input.sessionId,
+        taskId: createdTask.taskId,
+        branch: createdTask.branch,
+        ref: createdTask.ref,
+        conversationRefs: [{ fromSeq: pendingTurn.fromSeq, toSeq: pendingTurn.toSeq }],
+        confidence: "deterministic" as const,
+        reason: input.reason,
+        createdTask,
+        runId,
+      };
+    });
+    this.bindPendingTurn(input.sessionId, {
+      fromSeq: pendingTurn.fromSeq,
+      toSeq: pendingTurn.toSeq,
+      taskId: routed.taskId,
+      branch: routed.branch,
+      runId: routed.runId,
+    });
+    if (!await this.cacheRoutedTaskTurn({
+      sessionId: input.sessionId,
+      userMessage: pendingTurn.text,
+      fromSeq: pendingTurn.fromSeq,
+      toSeq: pendingTurn.toSeq,
+      at,
+      title: input.title,
+      objective: input.objective,
+    }, routed)) {
+      this.invalidateSessionMemory(input.sessionId);
+    }
+    const memoryState = await this.hydrateMemoryState(input.sessionId);
+    const context = buildGitMemoryContextPackFromMemoryState(memoryState);
+    return {
+      ...routed,
+      context,
+      memoryState,
+    };
+  }
+
+  async askClarificationForTurn(
+    input: AskGitMemoryTaskClarificationForTurnInput,
+  ): Promise<Extract<RoutedGitMemoryUserTurn, { status: "ambiguous" }>> {
+    const pendingTurn = this.requireUnboundPendingTurn(input.sessionId);
+    const candidates = await this.taskRouteCandidatesForIds(
+      input.sessionId,
+      input.candidateTaskIds ?? [],
+      input.reason,
+    );
+    this.markPendingTurnClarifying(input.sessionId, {
+      fromSeq: pendingTurn.fromSeq,
+      toSeq: pendingTurn.toSeq,
+    });
+    const memoryState = await this.hydrateMemoryState(input.sessionId);
+    const context = buildGitMemoryContextPackFromMemoryState(memoryState);
+    return {
+      status: "ambiguous",
+      sessionId: input.sessionId,
+      candidates,
+      reason: input.reason,
+      context,
+      memoryState,
+    };
+  }
+
   async switchTask(input: SwitchGitMemoryTaskInput): Promise<SwitchGitMemoryTaskResult> {
     const result = await this.writeQueue.enqueue({
       sessionId: input.sessionId,
@@ -659,6 +877,40 @@ export class GitMemoryRuntime {
     if (existing?.runId === runId) {
       this.pendingTurns.delete(sessionId);
     }
+  }
+
+  private requireUnboundPendingTurn(sessionId: GitMemorySessionId): PendingGitMemoryTurnEnvelope {
+    const pendingTurn = this.pendingTurns.get(sessionId);
+    if (!pendingTurn) {
+      throw new Error(`Git memory pending turn not found for session: ${sessionId}`);
+    }
+    if (pendingTurn.routingStatus !== "unbound") {
+      throw new Error(`Git memory pending turn is not unbound: ${pendingTurn.routingStatus}`);
+    }
+    return pendingTurn;
+  }
+
+  private async taskRouteCandidatesForIds(
+    sessionId: GitMemorySessionId,
+    taskIds: GitMemoryTaskId[],
+    reason: string,
+  ): Promise<GitMemoryTaskRouteCandidate[]> {
+    if (taskIds.length === 0) {
+      return [];
+    }
+    const requested = new Set(taskIds);
+    const snapshot = await this.store.readTaskRoutingSnapshot(sessionId);
+    return snapshot.tasks
+      .filter((task) => requested.has(task.taskId))
+      .map((task) => ({
+        taskId: task.taskId,
+        branch: task.branch,
+        ref: task.ref,
+        title: task.title,
+        status: task.status,
+        score: 100,
+        reasons: [reason],
+      }));
   }
 
   private async cacheCreatedTask(
