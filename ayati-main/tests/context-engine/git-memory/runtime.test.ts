@@ -126,6 +126,33 @@ describe("GitMemoryRuntime", () => {
     expect(prepared.context).toEqual(buildGitMemoryContextPackFromMemoryState(prepared.memoryState));
   });
 
+  it("exposes prepared user messages as unbound pending turns", async () => {
+    const contextStoreDir = await mkdtemp(join(tmpdir(), "ayati-git-memory-runtime-"));
+    const runtime = createGitMemoryRuntime({
+      contextStoreDir,
+      timezone: "Asia/Kolkata",
+      agentId: "local",
+    });
+
+    const prepared = await runtime.prepareUserTurn({
+      userMessage: "Continue upload UI redesign",
+      at: "2026-06-28T09:00:00+05:30",
+    });
+    const memoryState = await runtime.buildMemoryState(prepared.sessionId);
+    const context = await runtime.buildActiveContext(prepared.sessionId);
+
+    expect(prepared.memoryState.pendingTurn).toMatchObject({
+      fromSeq: prepared.userMessage.seq,
+      toSeq: prepared.userMessage.seq,
+      text: "Continue upload UI redesign",
+      at: "2026-06-28T09:00:00+05:30",
+      routingStatus: "unbound",
+    });
+    expect(prepared.context.pendingTurn).toEqual(prepared.memoryState.pendingTurn);
+    expect(memoryState.pendingTurn).toEqual(prepared.memoryState.pendingTurn);
+    expect(context.pendingTurn).toEqual(prepared.context.pendingTurn);
+  });
+
   it("creates deterministic global conversation records before persistence", async () => {
     const contextStoreDir = await mkdtemp(join(tmpdir(), "ayati-git-memory-runtime-"));
     const store = new TrackingConversationStore({ contextStoreDir });
@@ -555,6 +582,41 @@ describe("GitMemoryRuntime", () => {
     });
   });
 
+  it("marks pending turns bound after ready task routing", async () => {
+    const contextStoreDir = await mkdtemp(join(tmpdir(), "ayati-git-memory-runtime-"));
+    const runtime = createGitMemoryRuntime({
+      contextStoreDir,
+      timezone: "Asia/Kolkata",
+      agentId: "local",
+    });
+    const prepared = await runtime.prepareUserTurn({
+      userMessage: "Fix upload handling",
+      at: "2026-06-28T09:00:00+05:30",
+    });
+
+    const route = await runtime.routeUserTurn({
+      sessionId: prepared.sessionId,
+      userMessage: "Fix upload handling",
+      fromSeq: prepared.userMessage.seq,
+      toSeq: prepared.userMessage.seq,
+      at: "2026-06-28T09:00:01+05:30",
+    });
+    if (route.status !== "ready") {
+      throw new Error(`Expected ready task route, got ${route.status}.`);
+    }
+
+    expect(route.memoryState.pendingTurn).toMatchObject({
+      fromSeq: prepared.userMessage.seq,
+      toSeq: prepared.userMessage.seq,
+      text: "Fix upload handling",
+      routingStatus: "bound",
+      taskId: route.taskId,
+      branch: route.branch,
+      runId: route.runId,
+    });
+    expect(route.context.pendingTurn).toEqual(route.memoryState.pendingTurn);
+  });
+
   it("updates cached active task state after task run commits", async () => {
     const contextStoreDir = await mkdtemp(join(tmpdir(), "ayati-git-memory-runtime-"));
     const runtime = createGitMemoryRuntime({
@@ -618,6 +680,43 @@ describe("GitMemoryRuntime", () => {
         summary: "Inspected upload handling.",
       }],
     });
+  });
+
+  it("clears bound pending turns after their task run commits", async () => {
+    const contextStoreDir = await mkdtemp(join(tmpdir(), "ayati-git-memory-runtime-"));
+    const runtime = createGitMemoryRuntime({
+      contextStoreDir,
+      timezone: "Asia/Kolkata",
+      agentId: "local",
+    });
+    const prepared = await runtime.prepareUserTurn({
+      userMessage: "Fix upload handling",
+      at: "2026-06-28T09:00:00+05:30",
+    });
+    const route = await runtime.routeUserTurn({
+      sessionId: prepared.sessionId,
+      userMessage: "Fix upload handling",
+      fromSeq: prepared.userMessage.seq,
+      toSeq: prepared.userMessage.seq,
+      at: "2026-06-28T09:00:01+05:30",
+    });
+    if (route.status !== "ready") {
+      throw new Error(`Expected ready task route, got ${route.status}.`);
+    }
+
+    await runtime.commitTaskRun({
+      sessionId: prepared.sessionId,
+      taskId: route.taskId,
+      runId: route.runId,
+      status: "completed",
+      startedAt: "2026-06-28T09:02:00+05:30",
+      completedAt: "2026-06-28T09:10:00+05:30",
+      conversationRefs: [{ fromSeq: prepared.userMessage.seq, toSeq: prepared.userMessage.seq }],
+      summary: "Inspected upload handling.",
+    });
+
+    expect((await runtime.buildMemoryState(prepared.sessionId)).pendingTurn).toBeUndefined();
+    expect((await runtime.buildActiveContext(prepared.sessionId)).pendingTurn).toBeUndefined();
   });
 
   it("updates cached active task conversation for task-linked assistant messages", async () => {
@@ -1269,6 +1368,14 @@ describe("GitMemoryRuntime", () => {
 
     expect(ambiguousRoute.status).toBe("ambiguous");
     expect(allocateRunId).not.toHaveBeenCalled();
+    expect(ambiguousRoute.memoryState.pendingTurn).toMatchObject({
+      fromSeq: ambiguous.userMessage.seq,
+      toSeq: ambiguous.userMessage.seq,
+      text: "upload",
+      routingStatus: "clarifying",
+    });
+    expect(ambiguousRoute.memoryState.pendingTurn).not.toHaveProperty("taskId");
+    expect(ambiguousRoute.memoryState.pendingTurn).not.toHaveProperty("runId");
   });
 });
 

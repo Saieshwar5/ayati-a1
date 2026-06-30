@@ -4,6 +4,7 @@ import type {
   GitMemoryFocusContext,
   GitMemoryMachineContextPack,
   GitMemoryModelCommitSummary,
+  GitMemoryPendingTurnContext,
   GitMemoryPendingWriteContext,
 } from "./context-pack.js";
 import type { TaskAssetRecord } from "../contracts.js";
@@ -57,6 +58,7 @@ export interface GitContextMemoryState {
     currentBranch?: string;
   };
   pendingWrites: GitMemoryPendingWriteContext[];
+  pendingTurn?: GitMemoryPendingTurnContext;
   focus: GitMemoryFocusContext;
   activeTask?: GitContextMemoryActiveTask;
   knownTasks: GitContextMemoryKnownTask[];
@@ -118,6 +120,7 @@ export function buildGitMemoryContextPackFromMemoryState(
       taskCount: state.session.taskCount,
     },
     ...(state.pendingWrites.length > 0 ? { pendingWrites: state.pendingWrites } : {}),
+    ...(state.pendingTurn ? { pendingTurn: state.pendingTurn } : {}),
     focus: state.focus,
     ...(state.activeTask ? {
       task: {

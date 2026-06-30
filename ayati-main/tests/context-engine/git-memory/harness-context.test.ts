@@ -101,6 +101,45 @@ describe("buildGitMemoryHarnessContextPack", () => {
     ]);
   });
 
+  it("maps pending turns into the harness context shape", async () => {
+    const contextStoreDir = await mkdtemp(join(tmpdir(), "ayati-git-memory-harness-"));
+    const store = new GitMemoryDailySessionStore({ contextStoreDir });
+    const session = await store.openOrCreateDailySession({
+      date: "2026-06-28",
+      timezone: "Asia/Kolkata",
+      agentId: "local",
+      createdAt: "2026-06-28T00:00:00+05:30",
+    });
+    const memory = await createGitContextMemoryStateHydrator(store).hydrate({
+      sessionId: session.sessionId,
+    });
+
+    const harness = buildGitMemoryHarnessContextFromMemoryState({
+      ...memory,
+      pendingTurn: {
+        fromSeq: 3,
+        toSeq: 3,
+        text: "continue upload UI redesign",
+        at: "2026-06-28T09:00:00+05:30",
+        routingStatus: "bound",
+        taskId: "W-20260628-0002",
+        branch: "task/W-20260628-0002-upload-ui-redesign",
+        runId: "R-20260628-0001",
+      },
+    });
+
+    expect(harness.pendingTurn).toEqual({
+      fromSeq: 3,
+      toSeq: 3,
+      text: "continue upload UI redesign",
+      at: "2026-06-28T09:00:00+05:30",
+      routingStatus: "bound",
+      workId: "W-20260628-0002",
+      branch: "task/W-20260628-0002-upload-ui-redesign",
+      runId: "R-20260628-0001",
+    });
+  });
+
   it("maps active task context into the harness context shape expected by the agent", async () => {
     const contextStoreDir = await mkdtemp(join(tmpdir(), "ayati-git-memory-harness-"));
     const store = new GitMemoryDailySessionStore({ contextStoreDir });

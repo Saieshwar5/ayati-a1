@@ -2,6 +2,7 @@ import type {
   ContextCommitSummary,
   ContextConversationRecord,
   ContextEngineMachineContext,
+  ContextPendingTurn,
   ContextPendingWrite,
   ContextSessionActivityRecord,
   ContextTaskFact,
@@ -19,6 +20,7 @@ import type {
   GitMemoryFocusContext,
   GitMemoryMachineContextPack,
   GitMemoryModelCommitSummary,
+  GitMemoryPendingTurnContext,
   GitMemoryPendingWriteContext,
 } from "./context-pack.js";
 import type { GitContextMemoryState } from "./memory-state.js";
@@ -40,6 +42,7 @@ export function buildGitMemoryHarnessContextPack(
     ...(context.pendingWrites && context.pendingWrites.length > 0 ? {
       pendingWrites: context.pendingWrites.map(toPendingWrite),
     } : {}),
+    ...(context.pendingTurn ? { pendingTurn: toPendingTurn(context.pendingTurn) } : {}),
     focus: toFocusContext(context.focus),
     ...(context.task ? {
       task: {
@@ -80,6 +83,7 @@ export function buildGitMemoryHarnessContextFromMemoryState(
     ...(state.pendingWrites.length > 0 ? {
       pendingWrites: state.pendingWrites.map(toPendingWrite),
     } : {}),
+    ...(state.pendingTurn ? { pendingTurn: toPendingTurn(state.pendingTurn) } : {}),
     focus: toFocusContext(state.focus),
     ...(state.activeTask ? {
       task: {
@@ -113,6 +117,19 @@ function toPendingWrite(write: GitMemoryPendingWriteContext): ContextPendingWrit
     ...(write.startedAt ? { startedAt: write.startedAt } : {}),
     ...(write.failedAt ? { failedAt: write.failedAt } : {}),
     ...(write.error ? { error: write.error } : {}),
+  };
+}
+
+function toPendingTurn(turn: GitMemoryPendingTurnContext): ContextPendingTurn {
+  return {
+    fromSeq: turn.fromSeq,
+    toSeq: turn.toSeq,
+    text: turn.text,
+    at: turn.at,
+    routingStatus: turn.routingStatus,
+    ...(turn.taskId ? { workId: turn.taskId } : {}),
+    ...(turn.branch ? { branch: turn.branch } : {}),
+    ...(turn.runId ? { runId: turn.runId } : {}),
   };
 }
 

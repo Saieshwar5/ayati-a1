@@ -14,6 +14,7 @@ import type {
 import { GitMemoryDailySessionStore } from "./session-store.js";
 import {
   DEFAULT_GIT_MEMORY_CONTEXT_LIMITS,
+  type GitMemoryPendingTurnContext,
   type GitMemoryMachineContextPack,
 } from "./context-pack.js";
 import {
@@ -95,6 +96,10 @@ export interface PreparedGitMemorySystemTurn {
   memoryState: GitContextMemoryState;
 }
 
+export interface PendingGitMemoryTurnEnvelope extends GitMemoryPendingTurnContext {
+  sessionId: GitMemorySessionId;
+}
+
 export interface RecordGitMemoryAssistantMessageInput {
   sessionId: GitMemorySessionId;
   text: string;
@@ -141,6 +146,7 @@ export class GitMemoryRuntime {
   private readonly taskRouter: GitMemoryTaskRouter;
   private readonly writeQueue: GitMemoryWriteQueueRunner;
   private readonly sessionMemoryCache = new Map<GitMemorySessionId, GitContextMemoryState>();
+  private readonly pendingTurns = new Map<GitMemorySessionId, PendingGitMemoryTurnEnvelope>();
 
   constructor(options: GitMemoryRuntimeOptions) {
     this.timezone = options.timezone;
@@ -192,6 +198,14 @@ export class GitMemoryRuntime {
       type: "main_conversation_appended",
       createdAt: at,
       record: userMessage,
+    });
+    this.setPendingTurn({
+      sessionId: session.sessionId,
+      fromSeq: userMessage.seq,
+      toSeq: userMessage.seq,
+      text: userMessage.text ?? "",
+      at: userMessage.at,
+      routingStatus: "unbound",
     });
     const memoryState = await this.hydrateMemoryState(session.sessionId);
     const context = buildGitMemoryContextPackFromMemoryState(memoryState);
@@ -383,9 +397,21 @@ export class GitMemoryRuntime {
       };
     });
     if (routed.status === "ready") {
+      this.bindPendingTurn(input.sessionId, {
+        fromSeq: input.fromSeq,
+        toSeq: input.toSeq,
+        taskId: routed.taskId,
+        branch: routed.branch,
+        runId: routed.runId,
+      });
       if (!await this.cacheRoutedTaskTurn(input, routed)) {
         this.invalidateSessionMemory(input.sessionId);
       }
+    } else {
+      this.markPendingTurnClarifying(input.sessionId, {
+        fromSeq: input.fromSeq,
+        toSeq: input.toSeq,
+      });
     }
     const memoryState = await this.hydrateMemoryState(input.sessionId);
     const context = buildGitMemoryContextPackFromMemoryState(memoryState);
@@ -408,6 +434,7 @@ export class GitMemoryRuntime {
     if (!await this.cacheCommittedTaskRun(input, result)) {
       this.invalidateSessionMemory(input.sessionId);
     }
+    this.clearCommittedPendingTurn(input.sessionId, result.runId);
     return result;
   }
 
@@ -444,9 +471,11 @@ export class GitMemoryRuntime {
 
   private async hydrateMemoryState(sessionId: GitMemorySessionId): Promise<GitContextMemoryState> {
     const state = await this.getOrHydrateCachedMemoryState(sessionId);
+    const pendingTurn = this.pendingTurns.get(sessionId);
     return {
       ...state,
       pendingWrites: buildGitContextPendingWrites(this.writeQueue.getSessionWrites(sessionId)),
+      ...(pendingTurn ? { pendingTurn: toPendingTurnContext(pendingTurn) } : {}),
     };
   }
 
@@ -480,6 +509,57 @@ export class GitMemoryRuntime {
       },
     };
     this.sessionMemoryCache.set(state.session.sessionId, nextState);
+  }
+
+  private setPendingTurn(turn: PendingGitMemoryTurnEnvelope): void {
+    this.pendingTurns.set(turn.sessionId, turn);
+  }
+
+  private bindPendingTurn(
+    sessionId: GitMemorySessionId,
+    input: {
+      fromSeq: number;
+      toSeq: number;
+      taskId: GitMemoryTaskId;
+      branch: string;
+      runId: GitMemoryRunId;
+    },
+  ): void {
+    const existing = this.pendingTurns.get(sessionId);
+    if (!existing || !sameConversationRange(existing, input)) {
+      return;
+    }
+    this.pendingTurns.set(sessionId, {
+      ...existing,
+      routingStatus: "bound",
+      taskId: input.taskId,
+      branch: input.branch,
+      runId: input.runId,
+    });
+  }
+
+  private markPendingTurnClarifying(
+    sessionId: GitMemorySessionId,
+    input: {
+      fromSeq: number;
+      toSeq: number;
+    },
+  ): void {
+    const existing = this.pendingTurns.get(sessionId);
+    if (!existing || !sameConversationRange(existing, input)) {
+      return;
+    }
+    this.pendingTurns.set(sessionId, {
+      ...existing,
+      routingStatus: "clarifying",
+    });
+  }
+
+  private clearCommittedPendingTurn(sessionId: GitMemorySessionId, runId: GitMemoryRunId): void {
+    const existing = this.pendingTurns.get(sessionId);
+    if (existing?.runId === runId) {
+      this.pendingTurns.delete(sessionId);
+    }
   }
 
   private async cacheCreatedTask(
@@ -814,6 +894,26 @@ function conversationRecordsInRange(
   range: { fromSeq: number; toSeq: number },
 ): GitMemoryConversationRecord[] {
   return records.filter((record) => record.seq >= range.fromSeq && record.seq <= range.toSeq);
+}
+
+function sameConversationRange(
+  left: { fromSeq: number; toSeq: number },
+  right: { fromSeq: number; toSeq: number },
+): boolean {
+  return left.fromSeq === right.fromSeq && left.toSeq === right.toSeq;
+}
+
+function toPendingTurnContext(turn: PendingGitMemoryTurnEnvelope): GitMemoryPendingTurnContext {
+  return {
+    fromSeq: turn.fromSeq,
+    toSeq: turn.toSeq,
+    text: turn.text,
+    at: turn.at,
+    routingStatus: turn.routingStatus,
+    ...(turn.taskId ? { taskId: turn.taskId } : {}),
+    ...(turn.branch ? { branch: turn.branch } : {}),
+    ...(turn.runId ? { runId: turn.runId } : {}),
+  };
 }
 
 function buildCachedRunFile(

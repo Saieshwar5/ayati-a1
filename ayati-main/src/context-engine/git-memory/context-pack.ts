@@ -119,6 +119,17 @@ export interface GitMemoryPendingWriteContext {
   error?: string;
 }
 
+export interface GitMemoryPendingTurnContext {
+  fromSeq: number;
+  toSeq: number;
+  text: string;
+  at: string;
+  routingStatus: "unbound" | "bound" | "clarifying";
+  taskId?: GitMemoryTaskId;
+  branch?: string;
+  runId?: string;
+}
+
 export interface GitMemoryMachineContextPack {
   session: {
     sessionId: GitMemorySessionId;
@@ -129,6 +140,7 @@ export interface GitMemoryMachineContextPack {
     taskCount: number;
   };
   pendingWrites?: GitMemoryPendingWriteContext[];
+  pendingTurn?: GitMemoryPendingTurnContext;
   focus: GitMemoryFocusContext;
   task?: {
     ref: string;

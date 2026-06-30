@@ -140,6 +140,17 @@ export interface ContextPendingWrite {
   error?: string;
 }
 
+export interface ContextPendingTurn {
+  fromSeq: number;
+  toSeq: number;
+  text: string;
+  at: string;
+  routingStatus: "unbound" | "bound" | "clarifying";
+  workId?: string;
+  branch?: string;
+  runId?: string;
+}
+
 export interface ContextEngineMachineContext {
   session: {
     sessionId: string;
@@ -150,6 +161,7 @@ export interface ContextEngineMachineContext {
     assetCount: number;
   };
   pendingWrites?: ContextPendingWrite[];
+  pendingTurn?: ContextPendingTurn;
   focus: ContextFocus;
   task?: {
     ref: string;
