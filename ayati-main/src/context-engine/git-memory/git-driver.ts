@@ -65,6 +65,10 @@ export class GitMemoryWorktreeGitDriver {
     await this.mustRun(["symbolic-ref", "HEAD", ref]);
   }
 
+  async updateRef(ref: string, commit: string): Promise<void> {
+    await this.mustRun(["update-ref", ref, commit]);
+  }
+
   async readFile(ref: string, path: string): Promise<string | null> {
     const result = await this.run(["show", `${ref}:${path}`], { allowFailure: true });
     return result.exitCode === 0 ? result.stdout : null;

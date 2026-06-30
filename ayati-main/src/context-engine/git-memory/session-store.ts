@@ -10,9 +10,17 @@ import {
   renderGitMemoryConversationMarkdownDocument,
 } from "./conversation-markdown.js";
 import {
+  gitMemorySessionActiveTaskRef,
+  gitMemorySessionLatestRunRef,
+  gitMemoryTaskLatestRunRef,
+  readGitMemoryCustomRef,
+  writeGitMemoryCustomRef,
+} from "./custom-refs.js";
+import {
   nextGitMemoryTaskSequence,
   readGitMemoryTaskEntries,
   resolveGitMemoryTaskEntry,
+  type GitMemoryDerivedTaskEntry,
 } from "./task-refs.js";
 import {
   parseGitMemoryTaskMarkdown,
@@ -479,9 +487,11 @@ export class GitMemoryDailySessionStore {
         driver.currentBranch(),
       ]);
       const meta = parseJson<GitMemorySessionMetaFile>(metaRaw);
-      const activeTask = currentBranch?.startsWith("task/")
+      const branchActiveTask = currentBranch?.startsWith("task/")
         ? tasks.find((task) => task.branch === currentBranch)
         : undefined;
+      const activeTask = await activeTaskFromCustomRef(driver, meta?.sessionId ?? entry, tasks)
+        ?? branchActiveTask;
 
       sessions.push({
         sessionId: meta?.sessionId ?? entry,
@@ -680,6 +690,9 @@ export class GitMemoryDailySessionStore {
         }),
       });
     }
+    if (taskCommit) {
+      await writeGitMemoryCustomRef(driver, gitMemorySessionActiveTaskRef(input.sessionId), taskCommit);
+    }
     return {
       taskId: input.taskId,
       branch: input.branch,
@@ -741,6 +754,9 @@ export class GitMemoryDailySessionStore {
           },
         }),
       });
+    }
+    if (taskCommit) {
+      await writeGitMemoryCustomRef(driver, gitMemorySessionActiveTaskRef(input.sessionId), taskCommit);
     }
     return {
       taskId: input.taskId,
@@ -1036,6 +1052,7 @@ export class GitMemoryDailySessionStore {
     });
 
     await driver.checkoutBranch(ref);
+    await writeGitMemoryCustomRef(driver, gitMemorySessionActiveTaskRef(input.sessionId), taskCommit);
 
     return { taskId, branch, ref, title: task.title, objective: task.objective, status, state, taskCommit };
   }
@@ -1053,6 +1070,7 @@ export class GitMemoryDailySessionStore {
     if (focusChanged) {
       await driver.checkoutBranch(ref);
     }
+    await writeGitMemoryCustomRef(driver, gitMemorySessionActiveTaskRef(input.sessionId), ref);
 
     return {
       taskId: input.taskId,
@@ -1168,6 +1186,9 @@ export class GitMemoryDailySessionStore {
         },
       }),
     });
+    await writeGitMemoryCustomRef(driver, gitMemorySessionActiveTaskRef(input.sessionId), taskCommit);
+    await writeGitMemoryCustomRef(driver, gitMemorySessionLatestRunRef(input.sessionId), taskCommit);
+    await writeGitMemoryCustomRef(driver, gitMemoryTaskLatestRunRef(input.taskId), taskCommit);
 
     return {
       taskId: input.taskId,
@@ -1412,6 +1433,29 @@ async function readRefMarkdownTail(
   return markdownTail(await driver.readFile(ref, path), limit);
 }
 
+async function activeTaskFromCustomRef(
+  driver: GitMemoryWorktreeGitDriver,
+  sessionId: GitMemorySessionId,
+  tasks: GitMemoryDerivedTaskEntry[],
+): Promise<GitMemoryDerivedTaskEntry | undefined> {
+  let activeCommit: string | null;
+  try {
+    activeCommit = await readGitMemoryCustomRef(driver, gitMemorySessionActiveTaskRef(sessionId));
+  } catch {
+    return undefined;
+  }
+  if (!activeCommit) {
+    return undefined;
+  }
+  for (const task of tasks) {
+    const taskCommit = await driver.resolveRef(task.ref);
+    if (taskCommit === activeCommit) {
+      return task;
+    }
+  }
+  return undefined;
+}
+
 async function readTaskRoutingSnapshotFromDriver(
   driver: GitMemoryWorktreeGitDriver,
   sessionId: GitMemorySessionId,
@@ -1420,9 +1464,11 @@ async function readTaskRoutingSnapshotFromDriver(
     readGitMemoryTaskEntries(driver),
     driver.currentBranch(),
   ]);
-  const currentTask = currentBranch?.startsWith("task/")
+  const branchTask = currentBranch?.startsWith("task/")
     ? tasks.find((task) => task.branch === currentBranch)
     : undefined;
+  const currentTask = await activeTaskFromCustomRef(driver, sessionId, tasks)
+    ?? branchTask;
   const focus: GitMemoryTaskRoutingFocus | null = currentTask
     ? {
         activeTaskId: currentTask.taskId,
