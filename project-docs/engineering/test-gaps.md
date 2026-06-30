@@ -3,7 +3,15 @@
 Areas that deserve careful test coverage when changed:
 
 - IVec decision-action-reducer runner behavior.
-- Context pack, git context task resolution, task asset persistence, and attachment restore behavior.
+- Context pack, git context task resolution, pending-turn routing, task asset
+  persistence, and attachment restore behavior.
+- Clarification follow-up resolution after `pendingTurn.routingStatus =
+  "clarifying"`.
+- Engine-level create-new-task flow through `git_context_create_task_for_turn`.
+- Attachment preservation while a turn is still unbound or clarifying.
+- App-level task-run finalization for completed, failed, blocked,
+  needs-user-input, stuck/max-iteration, and tool-failure outcomes.
+- System-event parity with chat pending-turn routing and finalization.
 - Daemon lifecycle and long-running service assumptions.
 - Tool call validation and execution.
 - Session rotation and memory persistence.

@@ -23,10 +23,13 @@ Intelligence Variable Execution Core.
 At a high level, Ayati provides:
 
 - A runtime-selectable LLM provider layer for OpenRouter, OpenAI, Anthropic, and Fireworks
-- Stable decision rules plus a structured state view containing bounded timeline context, optional git task context, attachments, memory snapshots, progress, observations, and system activity
+- Stable decision rules plus a structured state view containing bounded timeline
+  context, daily git task context, pending-turn routing state, attachments,
+  memory snapshots, progress, observations, and system activity
 - A native-tool decision loop that chooses a control tool or one selected executable tool, then verifies tool work deterministically
 - Built-in skills for shell, filesystem, calculator, SQLite database work, Python execution, documents, datasets, files, memory, recall, UI workspace control, and Pulse scheduling
-- Optional daily git context for task/work continuity, plus personal memory and episodic recall for personalization
+- Default daily git context for task/work continuity, plus personal memory and
+  episodic recall for personalization
 - Episodic recall for searching past sessions and run history
 - Managed file registration, upload processing, document extraction, structured data profiling, and artifact serving
 - Run-scoped tool working sets for built-in skills
@@ -71,14 +74,22 @@ reminders enter the same harness with event-policy constraints.
 
 1. A user sends a message from the CLI or another runtime input.
 2. `ayati-main` receives the message through WebSocket, HTTP, or a plugin event adapter.
-3. The backend loads static decision rules, session state, memory snapshots, optional git task context, the hidden tool catalog, and the configured LLM provider.
-4. `IVecEngine` builds a bounded context pack and enters the agent runner.
-5. The decision model calls one native provider tool: `decision_reply`, `decision_ask_user`, `decision_load_tools`, or one selected executable tool.
-6. If more tools are needed, Ayati loads a run-scoped working set from strict selectors and reports the load result into the next decision state.
-7. If an executable tool is called, Ayati adapts that native call into an internal action record, validates it, executes it through the tool executor, verifies results with contracts/assertions, and updates progress from verified facts.
-8. Files, documents, datasets, Python outputs, and other generated files are stored as managed runtime data or run artifacts.
-9. Session history, personal memory candidates, episodic memory indexes, system activity, run records, managed files, and optional git task state are persisted under `ayati-main/data/`.
-10. The final reply and any artifact metadata are returned to the active client.
+3. The backend records the message in daily git context, prepares pending-turn
+   ownership state, loads static decision rules, memory snapshots, the hidden
+   tool catalog, and the configured LLM provider.
+4. Runtime auto-binds obvious same-task follow-ups. If task ownership is
+   semantic or ambiguous, the agent can search/read git context and route the
+   pending turn through activate, create, or clarify tools before normal task
+   work runs.
+5. `IVecEngine` builds a bounded context pack and enters the agent runner.
+6. The decision model calls one native provider tool: `decision_reply`, `decision_ask_user`, `decision_load_tools`, or one selected executable tool.
+7. If more tools are needed, Ayati loads a run-scoped working set from strict selectors and reports the load result into the next decision state.
+8. If an executable tool is called, Ayati adapts that native call into an internal action record, validates it, executes it through the tool executor, verifies results with contracts/assertions, and updates progress from verified facts.
+9. Files, documents, datasets, Python outputs, and other generated files are stored as managed runtime data or run artifacts.
+10. Runtime-owned finalization writes task state, run summaries, action records,
+    evidence manifests, assets, assistant responses, and git commit metadata
+    exactly once for each task run.
+11. The final reply and any artifact metadata are returned to the active client.
 
 ## Runtime Capabilities
 
@@ -120,9 +131,12 @@ Dynamic context is sent to the decision model as structured JSON in the context
 pack and sparse state view:
 
 - Bounded `context.timeline` events, ending with the current input
-- Optional `context.gitContext` for daily-session conversation, focus, selected task state, task assets, recent runs, and recent commits
+- `context.gitContext` for daily-session conversation, pending-turn ownership,
+  active task refs, selected task state, task assets, recent runs, recent
+  commits, and recent evidence
 - Optional `context.personalMemorySnapshot`
-- Current `progress`, `workingFeedback`, `toolLoad`, `observations`, `trace`, `attachments`, and `systemEvent` sections when present
+- Current `progress`, `workingFeedback`, `toolLoad`, `observations`, `trace`,
+  `attachments`, and `systemEvent` sections when present
 
 This keeps memory and task context visible without hiding important facts inside
 a large truncatable prompt string.
@@ -132,10 +146,17 @@ a large truncatable prompt string.
 Ayati has several memory paths:
 
 - Session memory stores active conversation state and handoff summaries.
-- Optional daily git context stores task/work continuity through conversation, focus, work branches, task state, assets, run summaries, and commit metadata.
+- Daily git context stores task/work continuity through global conversation,
+  pending-turn routing, active task refs, work branches, task state, assets,
+  evidence manifests, run summaries, and commit metadata.
 - Personal memory stores canonical facts in sections such as `user_facts`, `time_based`, and `evolving_memory`.
 - Episodic memory indexes closed sessions for later semantic recall when embeddings are available.
 - The built-in recall tools can search past work by query, date range, or episode type.
+
+Obvious same-task follow-ups are bound automatically. When task ownership is
+semantic or ambiguous, the agent can search/read git context and route the
+pending turn through turn-aware activate, create, or clarify tools. Runtime owns
+run allocation, task state reduction, finalization, and git commits.
 
 Personal memory is managed through explicit tools such as `memory_search`,
 `memory_remember`, `memory_forget`, `memory_explain`, and `memory_feedback`.
@@ -360,6 +381,6 @@ If you want to go deeper into the architecture, start with:
 Ayati is structured as a modular agent system with separate backend and CLI
 packages. The backend supports runtime provider selection, the
 decision-action-reducer harness, built-in skills,
-session/personal/episodic memory, optional git task context,
+session/personal/episodic memory, default daily git task context,
 document/data workflows, generated artifacts, scheduled Pulse work, and
 optional event-driven integrations.

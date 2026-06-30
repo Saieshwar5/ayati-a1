@@ -7,6 +7,8 @@ Important paths:
 
 - `architecture/`: daemon architecture, agent harness, context/memory, tool contracts, APIs, runtime data, clients, integrations, and trust boundaries.
 - `history/`: architecture decisions, progress notes, and external references.
+- `history/progress/current-state.md`: current implementation state, runtime
+  boundaries, and remaining priorities.
 - `ai-agent-instructions.md`: operating rules for AI coding agents working in this repository.
 - `context-priority.md`: what to read first for different task types.
 - `commands.md`: common development commands.

@@ -67,9 +67,10 @@ AYATI_GIT_CONTEXT_STORE_DIR=
 AYATI_GIT_CONTEXT_TIMEZONE=Asia/Kolkata
 ```
 
-Daily git context is always on. It records conversation, focus, task branches,
-task assets, run summaries, and commit metadata, and adds `context.gitContext`
-to the decision state view.
+Daily git context is always on. It records global conversation, pending-turn
+ownership, active task refs, task branches, task assets, run summaries,
+evidence manifests, and commit metadata, and adds `context.gitContext` to the
+decision state view.
 
 `AYATI_GIT_CONTEXT_STORE_DIR` overrides the context-engine storage directory.
 When unset, Ayati uses `ayati-main/data/context-engine`. Relative paths resolve

@@ -12,6 +12,13 @@ Avoid these:
 - Coupling provider-specific behavior into the core loop when provider abstraction should handle it.
 - Adding a new tool without validation and tests.
 - Changing prompt context without considering token budget, the structured context pack, and deterministic git task resolution behavior.
+- Adding model-callable lifecycle tools for task state updates or run commits
+  instead of keeping those deterministic in runtime finalization.
+- Requiring a model-callable tool just to continue the already-active task when
+  runtime can auto-bind an obvious same-task follow-up.
+- Loading every task branch, old conversation, or raw evidence record into the
+  default prompt instead of using compact active context and on-demand
+  git-context/evidence tools.
 - Writing runtime state into source-controlled docs.
 - Ignoring `context/system-event-policy.json`.
 - Breaking CLI/server message contracts.

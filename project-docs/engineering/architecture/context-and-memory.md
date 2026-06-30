@@ -27,6 +27,19 @@ user message
 -> completed run writes task state, run summaries, evidence, and commit metadata
 ```
 
+Pending-turn routing states are:
+
+- `unbound`: user message is global only; task ownership is not decided.
+- `bound`: runtime has selected/created a task, appended the conversation range
+  to that task branch, and allocated a run id.
+- `clarifying`: ownership is ambiguous; no task branch receives the turn and no
+  run id is allocated until the user answers.
+
+While a pending turn is `unbound` or `clarifying`, normal task tools are blocked.
+The agent may use git-context read/search tools and turn-aware routing tools:
+`git_context_activate_task_for_turn`, `git_context_create_task_for_turn`, and
+`git_context_ask_clarification_for_turn`.
+
 The model-facing state uses `State view.context.gitContext`. It contains:
 
 - `session.conversationTail`: bounded user/assistant/system conversation
@@ -64,6 +77,12 @@ deep history remain explicit retrieval operations.
 Ambiguous task ownership can be marked through the turn-aware clarification
 path. The runtime does not allocate a run id or append the pending turn to a
 task branch until ownership is clear.
+
+Do not expose low-level `git_context_create_task`,
+`git_context_switch_task`, `git_context_commit_run`, or
+`git_context_update_task_state` as normal model-facing tools. The agent may
+express routing intent; runtime owns branch mutation, run allocation, state
+reduction, and commits.
 
 ## Hot Tool Context
 
@@ -172,7 +191,10 @@ Core files:
 
 Run commits carry useful Ayati commit trailers such as session id, task id, run
 id, event, status, branch, conversation sequence, and action ids. The commit
-message is part of the machine-readable retrieval surface.
+message and run Markdown should include compact human-readable summary,
+outcome, work performed, verification, blockers, evidence, and next step. Raw
+tool output stays in evidence files/manifests, not in commit messages or task
+state.
 
 ## Assets
 

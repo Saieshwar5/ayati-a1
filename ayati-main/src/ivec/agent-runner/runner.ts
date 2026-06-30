@@ -68,6 +68,7 @@ import { planLocalRecovery } from "./failure-policy.js";
 import { createEvidenceTools } from "./evidence-tools.js";
 import { isEvidenceToolName } from "./observation-builder.js";
 import { deriveExecutionStatus } from "../verification-gates.js";
+import { buildContextEngineFeedbackSummary } from "../feedback-ledger.js";
 import type { ToolResult } from "../../skills/types.js";
 import { isGitContextAllowedDuringPendingRouting } from "../../skills/builtins/git-context/tool-policy.js";
 
@@ -228,6 +229,14 @@ export async function runAgentLoop(
         actionSteps: actionStepCount,
         verificationPassed: lastVerificationPassed ?? false,
         basedOnVerifiedFacts: state.workState.verifiedFacts.length > 0 || lastVerificationPassed === true,
+        contextEngine: buildContextEngineFeedbackSummary({
+          context: state.harnessContext.contextEngine,
+          finalizationStatus: state.runClass === "task" && (state.runId || workRunHandle?.runId)
+            ? "not_started"
+            : "skipped",
+          committed: false,
+          runId: state.runId || workRunHandle?.runId,
+        }),
         warnings: warningFlags,
       },
     });
@@ -511,9 +520,35 @@ export async function runAgentLoop(
           taskId: routingUpdate.taskId,
           branch: routingUpdate.branch,
         });
+        recordFeedback(deps, inputHandle, routedRunHandle.runId, "context_engine", "agent_routed", {
+          status: routingUpdate.status,
+          mode: routingUpdate.mode,
+          taskId: routingUpdate.taskId,
+          branch: routingUpdate.branch,
+          runId: routingUpdate.runId,
+          contextEngine: buildContextEngineFeedbackSummary({
+            context: routingUpdate.harnessContext.contextEngine,
+            routeStatus: routingUpdate.status,
+            routeMode: routingUpdate.mode,
+            routeSource: "agent_tool",
+            pendingTurnStatus: "bound",
+            taskId: routingUpdate.taskId,
+            branch: routingUpdate.branch,
+            runId: routingUpdate.runId,
+          }),
+        });
       } else if (routingUpdate?.status === "ambiguous") {
         deps.harnessContext = routingUpdate.harnessContext;
         syncHarnessContext(state, deps, inputHandle);
+        recordFeedback(deps, inputHandle, routingRunId, "context_engine", "clarification_requested", {
+          status: routingUpdate.status,
+          contextEngine: buildContextEngineFeedbackSummary({
+            context: routingUpdate.harnessContext.contextEngine,
+            routeStatus: routingUpdate.status,
+            routeSource: "agent_tool",
+            pendingTurnStatus: "clarifying",
+          }),
+        });
       }
 
       if (stepResult.stepSummary.outcome === "failed") {
@@ -720,6 +755,7 @@ type TurnRoutingUpdate =
       sessionId: string;
       taskId: string;
       branch: string;
+      mode?: string;
       runId: string;
       harnessContext: HarnessContextInput;
     }
@@ -947,12 +983,14 @@ function extractTurnRoutingUpdate(calls: ActToolCallRecord[]): TurnRoutingUpdate
       const taskId = readString(record["taskId"]);
       const branch = readString(record["branch"]);
       const runId = readString(record["runId"]);
+      const mode = readString(record["mode"]);
       if (sessionId && taskId && branch && runId) {
         return {
           status: "ready",
           sessionId,
           taskId,
           branch,
+          ...(mode ? { mode } : {}),
           runId,
           harnessContext,
         };

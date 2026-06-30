@@ -40,9 +40,15 @@ ayati-main/data/feedback/latest-summary.json
 
 That summary is intentionally small. It includes final status, response kind,
 iterations, tool-call counts, tool-load/action counts, verification flags,
-warning flags, and the raw JSONL path. The raw trace remains the source of
-truth and includes compact decision input state, tool-load results, action
-verification data, tool-result previews, final response data, and task summary
-counts.
+warning flags, compact git-context routing/finalization state, and the raw
+JSONL path. The context-engine portion can show pending-turn status, route
+source/mode, task id, branch/ref, run id, commit, committed/skipped/failed
+finalization state, and small task evidence/asset counts.
+
+The raw trace remains the source of truth and includes compact decision input
+state, tool-load results, action verification data, tool-result previews, final
+response data, task summary counts, and context-engine lifecycle events such as
+prepared, routed, agent-routed, clarification-requested, finalization-skipped,
+finalization-failed, and committed.
 
 Do not commit runtime data unless a specific fixture is intentionally created for tests.

@@ -3,7 +3,11 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { AsyncAgentFeedbackLedger, buildFeedbackTriageSummary } from "../../src/ivec/feedback-ledger.js";
+import {
+  AsyncAgentFeedbackLedger,
+  buildContextEngineFeedbackSummary,
+  buildFeedbackTriageSummary,
+} from "../../src/ivec/feedback-ledger.js";
 
 let tempDir = "";
 
@@ -153,6 +157,187 @@ describe("AsyncAgentFeedbackLedger", () => {
     expect(triage.outcome).toBe("healthy");
     expect(triage.findings?.[0]).toMatchObject({ code: "healthy_run", severity: "info" });
     expect(triage.rawSummaryPath).toBe("feedback/latest-summary.json");
+  });
+
+  it("includes compact context-engine state in the latest summary", async () => {
+    const ledger = new AsyncAgentFeedbackLedger({
+      dataDir: tempDir,
+      enabled: true,
+      now: () => new Date("2026-06-23T10:00:00.000Z"),
+    });
+
+    ledger.record({
+      clientId: "local",
+      sessionId: "session-1",
+      seq: 3,
+      runId: "run-3",
+      stage: "final",
+      event: "reply",
+      data: {
+        feedbackSummary: {
+          status: "completed",
+          responseKind: "reply",
+          iterations: 2,
+          toolCalls: 1,
+          warnings: [],
+          contextEngine: buildContextEngineFeedbackSummary({
+            context: {
+              session: {
+                sessionId: "session-1",
+                conversationTail: [],
+                activityTail: [],
+                assetCount: 0,
+              },
+              pendingTurn: {
+                fromSeq: 3,
+                toSeq: 3,
+                text: "continue upload UI",
+                at: "2026-06-23T10:00:00.000Z",
+                routingStatus: "bound",
+                workId: "W-1",
+                branch: "task/W-1-upload-ui",
+                runId: "run-3",
+              },
+              focus: {
+                status: "active",
+                ref: "refs/heads/task/W-1-upload-ui",
+                workId: "W-1",
+              },
+              task: {
+                ref: "refs/heads/task/W-1-upload-ui",
+                workId: "W-1",
+                title: "Upload UI",
+                objective: "Improve upload UI",
+                status: "open",
+                completed: [],
+                open: ["Improve upload UI"],
+                blockers: [],
+                facts: [],
+                assets: [{ assetId: "asset-1", role: "input", kind: "file", name: "mock.png" }],
+                recentRuns: [],
+                recentCommits: [],
+                recentEvidence: [{
+                  runId: "run-2",
+                  workId: "W-1",
+                  tool: "shell",
+                  summary: "tests passed",
+                  artifacts: [],
+                  facts: [],
+                  accessModes: ["tail"],
+                }],
+              },
+            },
+            routeStatus: "ready",
+            routeMode: "continue_active_task",
+            routeSource: "auto",
+            finalizationStatus: "not_started",
+            committed: false,
+          }),
+        },
+      },
+    });
+    await ledger.flush();
+
+    const summary = JSON.parse(await readFile(join(tempDir, "feedback", "latest-summary.json"), "utf-8")) as {
+      contextEngine?: {
+        pendingTurnStatus?: string;
+        routeMode?: string;
+        routeSource?: string;
+        taskId?: string;
+        branch?: string;
+        runId?: string;
+        committed?: boolean;
+        taskAssetCount?: number;
+        recentEvidenceCount?: number;
+      };
+    };
+
+    expect(summary.contextEngine).toMatchObject({
+      pendingTurnStatus: "bound",
+      routeMode: "continue_active_task",
+      routeSource: "auto",
+      taskId: "W-1",
+      branch: "task/W-1-upload-ui",
+      runId: "run-3",
+      committed: false,
+      taskAssetCount: 1,
+      recentEvidenceCount: 1,
+    });
+  });
+
+  it("updates the latest summary when context-engine commit feedback arrives after final reply", async () => {
+    const times = [
+      new Date("2026-06-23T10:00:00.000Z"),
+      new Date("2026-06-23T10:00:01.000Z"),
+    ];
+    let index = 0;
+    const ledger = new AsyncAgentFeedbackLedger({
+      dataDir: tempDir,
+      enabled: true,
+      now: () => times[index++] ?? times[times.length - 1]!,
+    });
+
+    ledger.record({
+      clientId: "local",
+      sessionId: "session-1",
+      seq: 4,
+      runId: "run-4",
+      stage: "final",
+      event: "reply",
+      data: {
+        feedbackSummary: {
+          status: "completed",
+          responseKind: "reply",
+          iterations: 1,
+          toolCalls: 1,
+          warnings: [],
+          contextEngine: {
+            taskId: "W-4",
+            runId: "run-4",
+            finalizationStatus: "not_started",
+            committed: false,
+          },
+        },
+      },
+    });
+    await ledger.flush();
+
+    ledger.record({
+      clientId: "local",
+      sessionId: "session-1",
+      seq: 4,
+      runId: "run-4",
+      stage: "context_engine",
+      event: "committed",
+      data: {
+        taskId: "W-4",
+        taskCommit: "abc1234",
+        ref: "refs/heads/task/W-4-example",
+      },
+    });
+    await ledger.flush();
+
+    const summary = JSON.parse(await readFile(join(tempDir, "feedback", "latest-summary.json"), "utf-8")) as {
+      contextEngine?: {
+        finalizationStatus?: string;
+        committed?: boolean;
+        commit?: string;
+        ref?: string;
+      };
+    };
+    expect(summary.contextEngine).toMatchObject({
+      finalizationStatus: "committed",
+      committed: true,
+      commit: "abc1234",
+      ref: "refs/heads/task/W-4-example",
+    });
+
+    const triage = JSON.parse(await readFile(join(tempDir, "feedback", "triage-summary.json"), "utf-8")) as {
+      outcome?: string;
+      findings?: Array<{ code?: string }>;
+    };
+    expect(triage.outcome).toBe("healthy");
+    expect(triage.findings?.map((finding) => finding.code)).toEqual(["healthy_run"]);
   });
 
   it("merges decision repair signals into the latest summary warnings", async () => {

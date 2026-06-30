@@ -29,7 +29,10 @@ import {
 import type { HarnessContextInput } from "../ivec/harness-context.js";
 import { devError, devLog, devWarn } from "../shared/index.js";
 import { agentLoop } from "../ivec/agent-loop.js";
-import type { AgentFeedbackLedger } from "../ivec/feedback-ledger.js";
+import {
+  buildContextEngineFeedbackSummary,
+  type AgentFeedbackLedger,
+} from "../ivec/feedback-ledger.js";
 import type { ChatTurnRuntime, ChatTurnRuntimeInput } from "../ivec/chat-turn-runtime.js";
 import type { ToolWorkingSetManager } from "../ivec/agent-runner/tool-working-set.js";
 import type {
@@ -286,11 +289,17 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
     this.feedbackLedger?.record({
       clientId,
       sessionId: turn.sessionId,
+      seq: turn.messageSeq,
       stage: "context_engine",
       event: "prepared",
       data: {
         status: turn.status,
         messageSeq: turn.messageSeq,
+        contextEngine: buildContextEngineFeedbackSummary({
+          context: buildGitMemoryHarnessContextPack(turn.context),
+          routeSource: "runtime",
+          pendingTurnStatus: "unbound",
+        }),
       },
     });
     return turn;
@@ -318,6 +327,8 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
     this.feedbackLedger?.record({
       clientId,
       sessionId: turn.sessionId,
+      seq: turn.messageSeq,
+      ...(routed.status === "ready" ? { runId: routed.runId } : {}),
       stage: "context_engine",
       event: "routed",
       data: routed.status === "ready"
@@ -327,12 +338,30 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
             taskId: routed.taskId,
             branch: routed.branch,
             ref: routed.ref,
+            runId: routed.runId,
             conversationRefs: routed.conversationRefs,
+            contextEngine: buildContextEngineFeedbackSummary({
+              context: routed.harnessContext.contextEngine,
+              routeStatus: routed.status,
+              routeMode: routed.mode,
+              routeSource: "auto",
+              taskId: routed.taskId,
+              branch: routed.branch,
+              ref: routed.ref,
+              runId: routed.runId,
+              conversationRefs: routed.conversationRefs,
+            }),
           }
         : {
             status: routed.status,
             reason: routed.reason,
             candidateCount: routed.candidates.length,
+            contextEngine: buildContextEngineFeedbackSummary({
+              context: routed.harnessContext.contextEngine,
+              routeStatus: routed.status,
+              routeSource: "deterministic_router",
+              pendingTurnStatus: "clarifying",
+            }),
           },
     });
     return routed;
@@ -359,6 +388,23 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
   ): Promise<void> {
     const binding = this.taskRunBindingFromRoutedOrResult(routed, result);
     if (!prepared || !binding) {
+      if (prepared) {
+        this.feedbackLedger?.record({
+          clientId,
+          sessionId: prepared.sessionId,
+          seq: prepared.messageSeq,
+          stage: "context_engine",
+          event: "finalization_skipped",
+          data: {
+            reason: !binding ? "no_task_run_binding" : "missing_prepared_turn",
+            contextEngine: buildContextEngineFeedbackSummary({
+              context: result.harnessContext?.contextEngine,
+              finalizationStatus: "skipped",
+              committed: false,
+            }),
+          },
+        });
+      }
       return;
     }
 
@@ -375,12 +421,33 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
       assistantAt: this.nowProvider().toISOString(),
     });
     if (!completed) {
+      this.feedbackLedger?.record({
+        clientId,
+        sessionId: prepared.sessionId,
+        seq: prepared.messageSeq,
+        runId: binding.runId,
+        stage: "context_engine",
+        event: "finalization_failed",
+        data: {
+          taskId: binding.taskId,
+          reason: "complete_task_run_returned_null",
+          contextEngine: buildContextEngineFeedbackSummary({
+            context: result.harnessContext?.contextEngine,
+            finalizationStatus: "failed",
+            committed: false,
+            taskId: binding.taskId,
+            runId: binding.runId,
+            conversationRefs: binding.conversationRefs,
+          }),
+        },
+      });
       return;
     }
 
     this.feedbackLedger?.record({
       clientId,
       sessionId: prepared.sessionId,
+      seq: prepared.messageSeq,
       runId: completed.runId,
       stage: "context_engine",
       event: "committed",
@@ -388,6 +455,16 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
         taskId: completed.taskId,
         taskCommit: completed.taskCommit,
         ref: completed.ref,
+        contextEngine: buildContextEngineFeedbackSummary({
+          context: result.harnessContext?.contextEngine,
+          finalizationStatus: "committed",
+          committed: true,
+          taskId: completed.taskId,
+          runId: completed.runId,
+          ref: completed.ref,
+          commit: completed.taskCommit,
+          conversationRefs: binding.conversationRefs,
+        }),
       },
     });
   }

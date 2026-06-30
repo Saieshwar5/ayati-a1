@@ -14,15 +14,23 @@ Main runtime flow:
 
 1. A user communicates through a client or an integration produces a system event.
 2. `ayati-main` receives the message/event through WebSocket, HTTP/Pulse ingress, or plugin adapters.
-3. The backend loads static decision rules, session state, memory, daily git task context, document/file context, the hidden tool catalog, and provider configuration.
-4. `IVecEngine` builds static decision context and enters the decision-action-reducer runner.
-5. The decision model chooses exactly one native tool call: a control tool
+3. The backend records the turn in daily git context, prepares pending-turn
+   ownership state, loads static decision rules, personal memory, document/file
+   context, the hidden tool catalog, and provider configuration.
+4. Runtime auto-binds obvious same-task follow-ups. If task ownership is
+   semantic or ambiguous, the agent can search/read git context and route the
+   pending turn through turn-aware activate/create/clarify tools before task
+   work runs.
+5. `IVecEngine` builds static decision context and enters the decision-action-reducer runner.
+6. The decision model chooses exactly one native tool call: a control tool
    (`decision_reply`, `decision_ask_user`, or `decision_load_tools`) or one
    selected executable tool.
-6. Executable tool calls run through the shared action executor and are verified
+7. Executable tool calls run through the shared action executor and are verified
    through tool contracts, assertions, and local failure policy.
-7. Verified facts update progress state; run records, memory, files, uploads, documents, artifacts, and daily git context are stored under `ayati-main/data/`.
-8. Replies, feedback, notifications, or actions are sent back through the appropriate transport.
+8. Verified facts update progress state. Runtime-owned finalization writes task
+   state, run summaries, action records, evidence manifests, assets, assistant
+   responses, and git commit metadata exactly once for each task run.
+9. Replies, feedback, notifications, or actions are sent back through the appropriate transport.
 
 Current agent harness:
 
