@@ -565,6 +565,13 @@ describe("GitMemoryDailySessionStore", () => {
       completedAt: "2026-06-28T09:10:00+05:30",
       conversationRefs: [{ fromSeq: 1, toSeq: 2 }],
       summary: "Inspected upload handling and found validation mismatch.",
+      intent: "Fix upload handling failures.",
+      routing: "conversation 1-2 routed to the upload handling task.",
+      outcome: "Upload handling inspection completed.",
+      workPerformed: ["Read upload server implementation."],
+      verification: ["Confirmed upload validation mismatch from source inspection."],
+      decisions: ["Patch validation handling in a later run."],
+      blockers: ["Integration verification is still pending."],
       assistantResponse: "I found the upload validation issue.",
       actions: [{
         actionId: "ACT-20260628-000001",
@@ -641,6 +648,13 @@ describe("GitMemoryDailySessionStore", () => {
         status: "completed",
         conversationRefs: [{ fromSeq: 1, toSeq: 2 }],
         summary: "Inspected upload handling and found validation mismatch.",
+        intent: "Fix upload handling failures.",
+        routing: "conversation 1-2 routed to the upload handling task.",
+        outcome: "Upload handling inspection completed.",
+        workPerformed: ["Read upload server implementation."],
+        verification: ["Confirmed upload validation mismatch from source inspection."],
+        decisions: ["Patch validation handling in a later run."],
+        blockers: ["Integration verification is still pending."],
         toolCallCount: 1,
         changedFiles: ["ayati-main/src/server/upload-server.ts"],
         newFacts: ["UploadServer validates multipart uploads."],
@@ -649,8 +663,22 @@ describe("GitMemoryDailySessionStore", () => {
     expect(runMarkdown).toContain("# Run R-20260628-0001");
     expect(runMarkdown).toContain("Task: W-20260628-0001");
     expect(runMarkdown).toContain("Status: completed");
-    expect(runMarkdown).toContain("## Summary");
-    expect(runMarkdown).toContain("Inspected upload handling and found validation mismatch.");
+    expect(runMarkdown).toContain("## Intent");
+    expect(runMarkdown).toContain("Fix upload handling failures.");
+    expect(runMarkdown).toContain("## Routing");
+    expect(runMarkdown).toContain("conversation 1-2 routed to the upload handling task.");
+    expect(runMarkdown).toContain("## Outcome");
+    expect(runMarkdown).toContain("Upload handling inspection completed.");
+    expect(runMarkdown).toContain("## Work Performed");
+    expect(runMarkdown).toContain("- Read upload server implementation.");
+    expect(runMarkdown).toContain("## Verification");
+    expect(runMarkdown).toContain("- Confirmed upload validation mismatch from source inspection.");
+    expect(runMarkdown).toContain("## Decisions");
+    expect(runMarkdown).toContain("- Patch validation handling in a later run.");
+    expect(runMarkdown).toContain("## Blockers");
+    expect(runMarkdown).toContain("- Integration verification is still pending.");
+    expect(runMarkdown).toContain("## Next");
+    expect(runMarkdown).toContain("Patch upload validation handling.");
     expect(runMarkdown).toContain("- ayati-main/src/server/upload-server.ts");
     expect(runMarkdown).toContain("- UploadServer validates multipart uploads.");
     expect(runMarkdown).toContain("- ACT-20260628-000001 read_file completed: Read upload server implementation.");
@@ -714,7 +742,7 @@ describe("GitMemoryDailySessionStore", () => {
       recentRunMarkdown: [{
         runId: "R-20260628-0001",
         path: "tasks/W-20260628-0001/runs/R-20260628-0001.md",
-        markdown: expect.stringContaining("Inspected upload handling and found validation mismatch."),
+        markdown: expect.stringContaining("Upload handling inspection completed."),
       }],
       recentEvidence: [{
         runId: "R-20260628-0001",
@@ -726,6 +754,10 @@ describe("GitMemoryDailySessionStore", () => {
     const taskLog = await driver.log(task.ref, 5);
     expect(taskLog).toHaveLength(2);
     expect(taskLog[0]?.commit).toBe(run.taskCommit);
+    expect(taskLog[0]?.message).toContain("Outcome:\nUpload handling inspection completed.");
+    expect(taskLog[0]?.message).toContain("Work Performed:\n- Read upload server implementation.");
+    expect(taskLog[0]?.message).toContain("Verification:\n- Confirmed upload validation mismatch from source inspection.");
+    expect(taskLog[0]?.message).toContain("Next:\nPatch upload validation handling.");
     expect(parseGitMemoryCommitTrailers(taskLog[0]?.message ?? "")).toMatchObject({
       sessionId: "S-20260628-local",
       taskId: "W-20260628-0001",
@@ -739,6 +771,70 @@ describe("GitMemoryDailySessionStore", () => {
 
     expect(await driver.readWorkingFile("session/tasks.json")).toBeNull();
     expect(await driver.log(GIT_MEMORY_MAIN_REF, 5)).toHaveLength(3);
+  });
+
+  it("renders failed task runs with clear default outcome memory", async () => {
+    const contextStoreDir = await mkdtemp(join(tmpdir(), "ayati-git-memory-"));
+    const store = new GitMemoryDailySessionStore({ contextStoreDir });
+    const session = await store.openOrCreateDailySession({
+      date: "2026-06-28",
+      timezone: "Asia/Kolkata",
+      agentId: "local",
+      createdAt: "2026-06-28T00:00:00+05:30",
+    });
+    await store.appendConversationMessage({
+      sessionId: session.sessionId,
+      role: "user",
+      text: "Fix upload handling",
+      at: "2026-06-28T09:00:00+05:30",
+    });
+    const task = await store.createTaskBranch({
+      sessionId: session.sessionId,
+      title: "Fix upload handling",
+      objective: "Find and fix upload handling failures.",
+      fromSeq: 1,
+      toSeq: 1,
+      at: "2026-06-28T09:01:00+05:30",
+    });
+
+    const run = await store.commitTaskRun({
+      sessionId: session.sessionId,
+      taskId: task.taskId,
+      runId: "R-20260628-0002",
+      status: "failed",
+      completedAt: "2026-06-28T09:10:00+05:30",
+      conversationRefs: [{ fromSeq: 1, toSeq: 1 }],
+      summary: "Upload verification failed.",
+      state: {
+        status: "blocked",
+        summary: "Upload verification failed.",
+        completed: [],
+        open: ["Retry upload verification"],
+        blockers: ["Upload verification failed."],
+        next: "Retry upload verification.",
+      },
+    });
+    const driver = new GitMemoryWorktreeGitDriver(session.repoPath);
+
+    expect(JSON.parse(await driver.readFile(task.ref, gitMemoryTaskRunPath(task.taskId, run.runId)) ?? "{}"))
+      .toMatchObject({
+        runId: "R-20260628-0002",
+        status: "failed",
+        outcome: "Run failed: Upload verification failed.",
+        blockers: ["Upload verification failed."],
+      });
+    const runMarkdown = await driver.readFile(task.ref, gitMemoryTaskRunMarkdownPath(task.taskId, run.runId)) ?? "";
+    expect(runMarkdown).toContain("## Outcome");
+    expect(runMarkdown).toContain("Run failed: Upload verification failed.");
+    expect(runMarkdown).toContain("## Blockers");
+    expect(runMarkdown).toContain("- Upload verification failed.");
+
+    const taskLog = await driver.log(task.ref, 5);
+    expect(taskLog[0]?.message).toContain("Outcome:\nRun failed: Upload verification failed.");
+    expect(parseGitMemoryCommitTrailers(taskLog[0]?.message ?? "")).toMatchObject({
+      event: "run_failed",
+      status: "failed",
+    });
   });
 
   it("rejects duplicate task run commits for the same run id", async () => {

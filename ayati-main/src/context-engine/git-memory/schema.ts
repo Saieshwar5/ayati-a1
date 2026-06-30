@@ -78,6 +78,13 @@ export interface GitMemoryRunFile {
   completedAt?: string;
   conversationRefs: GitMemoryConversationSeqRange[];
   summary: string;
+  intent?: string;
+  routing?: string;
+  outcome?: string;
+  workPerformed?: string[];
+  verification?: string[];
+  decisions?: string[];
+  blockers?: string[];
   assistantResponse?: string;
   toolCallCount: number;
   changedFiles: string[];
@@ -304,6 +311,13 @@ export function validateGitMemoryRunFile(value: unknown): ValidationResult<GitMe
       });
     }
     requireNonEmptyString(record, "summary", errors);
+    requireOptionalNonEmptyString(record, "intent", errors);
+    requireOptionalNonEmptyString(record, "routing", errors);
+    requireOptionalNonEmptyString(record, "outcome", errors);
+    requireOptionalStringArray(record, "workPerformed", errors);
+    requireOptionalStringArray(record, "verification", errors);
+    requireOptionalStringArray(record, "decisions", errors);
+    requireOptionalStringArray(record, "blockers", errors);
     requireOptionalNonEmptyString(record, "assistantResponse", errors);
     requireNonNegativeInteger(record, "toolCallCount", errors);
     requireStringArray(record, "changedFiles", errors);
@@ -525,6 +539,14 @@ function requireStringArray(record: Record<string, unknown>, field: string, erro
       errors.push(`${field}[${index}] must be a non-empty string.`);
     }
   });
+}
+
+function requireOptionalStringArray(record: Record<string, unknown>, field: string, errors: string[]): void {
+  const value = record[field];
+  if (value === undefined || value === null) {
+    return;
+  }
+  requireStringArray(record, field, errors);
 }
 
 function requireDate(record: Record<string, unknown>, field: string, errors: string[]): void {

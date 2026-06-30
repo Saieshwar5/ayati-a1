@@ -72,6 +72,17 @@ export function buildGitMemoryTaskRunCommitInput(
     completedAt: input.at,
     conversationRefs: input.conversationRefs,
     summary,
+    intent: firstNonEmpty([
+      input.result.taskSummary?.summary,
+      workState.summary,
+      input.result.content,
+      summary,
+    ]),
+    routing: formatConversationRefs(input.conversationRefs),
+    outcome: buildOutcome(runStatus, summary),
+    workPerformed: completed,
+    verification: buildVerification(input.result.completedSteps ?? []),
+    blockers,
     ...(input.result.content.trim() ? { assistantResponse: input.result.content } : {}),
     actions: buildRunActions(input.result.completedSteps ?? [], input.at),
     evidence: buildRunEvidence(input.result.completedSteps ?? []),
@@ -246,6 +257,35 @@ function buildChangedFiles(result: GitMemoryHarnessRunResultForContext): string[
   return normalizeList([
     ...(result.completedSteps ?? []).flatMap((step) => step.artifacts),
   ]);
+}
+
+function buildVerification(steps: HarnessStepSummaryForContext[]): string[] {
+  return normalizeList([
+    ...steps.flatMap((step) => [
+      step.evidenceSummary,
+      ...(step.evidenceItems ?? []),
+    ]),
+  ]);
+}
+
+function buildOutcome(status: GitMemoryRunStatus, summary: string): string {
+  if (status === "completed") {
+    return summary;
+  }
+  if (status === "failed") {
+    return `Run failed: ${summary}`;
+  }
+  if (status === "blocked") {
+    return `Run blocked: ${summary}`;
+  }
+  return `Needs user input: ${summary}`;
+}
+
+function formatConversationRefs(refs: GitMemoryConversationSeqRange[]): string {
+  if (refs.length === 0) {
+    return "No conversation range recorded.";
+  }
+  return refs.map((ref) => `conversation ${ref.fromSeq}-${ref.toSeq}`).join(", ");
 }
 
 function firstNonEmpty(values: Array<string | undefined>): string {

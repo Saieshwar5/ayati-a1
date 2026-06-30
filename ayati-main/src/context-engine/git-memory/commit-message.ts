@@ -23,8 +23,12 @@ export interface GitMemoryCommitTrailers {
 export interface GitMemoryCommitMessageInput {
   subject: string;
   summary?: string;
+  outcome?: string;
+  workPerformed?: string[];
+  verification?: string[];
   completed?: string[];
   open?: string[];
+  next?: string;
   notes?: string[];
   trailers: GitMemoryCommitTrailers;
 }
@@ -45,8 +49,12 @@ export interface ParsedGitMemoryCommitTrailers {
 export function renderGitMemoryCommitMessage(input: GitMemoryCommitMessageInput): string {
   const lines = [normalizeSubject(input.subject)];
   appendNamedParagraph(lines, "Summary", input.summary);
+  appendNamedParagraph(lines, "Outcome", input.outcome);
+  appendListSection(lines, "Work Performed", input.workPerformed);
+  appendListSection(lines, "Verification", input.verification);
   appendListSection(lines, "Completed", input.completed);
   appendListSection(lines, "Open", input.open);
+  appendNamedParagraph(lines, "Next", input.next);
   appendListSection(lines, "Notes", input.notes);
   const trailers = renderGitMemoryTrailers(input.trailers);
   if (trailers.length > 0) {

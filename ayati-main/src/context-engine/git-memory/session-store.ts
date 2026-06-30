@@ -388,6 +388,13 @@ export interface CommitGitMemoryTaskRunInput {
   completedAt?: string;
   conversationRefs: GitMemoryConversationSeqRange[];
   summary: string;
+  intent?: string;
+  routing?: string;
+  outcome?: string;
+  workPerformed?: string[];
+  verification?: string[];
+  decisions?: string[];
+  blockers?: string[];
   assistantResponse?: string;
   actions?: CommitGitMemoryTaskRunActionInput[];
   toolCallCount?: number;
@@ -1133,6 +1140,18 @@ export class GitMemoryDailySessionStore {
       next: input.state?.next ?? input.next ?? previousState.next,
       updatedAt: completedAt,
     };
+    const workPerformed = normalizeMemoryList(input.workPerformed)
+      ?? normalizeMemoryList(updatedState.completed)
+      ?? actionSummaries(actions);
+    const verification = normalizeMemoryList(input.verification)
+      ?? evidenceSummaries(evidence)
+      ?? actionVerificationSummaries(actions);
+    const blockers = normalizeMemoryList(input.blockers)
+      ?? normalizeMemoryList(updatedState.blockers)
+      ?? [];
+    const decisions = normalizeMemoryList(input.decisions) ?? [];
+    const next = input.next ?? updatedState.next;
+    const outcome = input.outcome ?? defaultRunOutcome(input.status, input.summary);
     const run: GitMemoryRunFile = {
       schemaVersion: 1,
       runId,
@@ -1142,11 +1161,18 @@ export class GitMemoryDailySessionStore {
       completedAt,
       conversationRefs: input.conversationRefs,
       summary: input.summary,
+      intent: input.intent ?? input.summary,
+      routing: input.routing ?? formatConversationRefs(input.conversationRefs),
+      outcome,
+      ...(workPerformed.length > 0 ? { workPerformed } : {}),
+      ...(verification.length > 0 ? { verification } : {}),
+      ...(decisions.length > 0 ? { decisions } : {}),
+      ...(blockers.length > 0 ? { blockers } : {}),
       ...(input.assistantResponse ? { assistantResponse: input.assistantResponse } : {}),
       toolCallCount: input.toolCallCount ?? actions.length,
       changedFiles: input.changedFiles ?? [],
       newFacts,
-      ...(input.next ? { next: input.next } : {}),
+      ...(next ? { next } : {}),
     };
     const firstConversationRef = input.conversationRefs[0];
     const files: Record<string, string> = {
@@ -1168,8 +1194,12 @@ export class GitMemoryDailySessionStore {
       message: renderGitMemoryCommitMessage({
         subject: `ayati: complete run ${runId}`,
         summary: input.summary,
+        outcome,
+        workPerformed,
+        verification,
         completed: updatedState.completed,
         open: updatedState.open,
+        next,
         trailers: {
           sessionId: input.sessionId,
           taskId: input.taskId,
@@ -1291,15 +1321,18 @@ function renderTaskRunMarkdown(
     `Started: ${run.startedAt}`,
     ...(run.completedAt ? [`Completed: ${run.completedAt}`] : []),
     "",
-    "## Summary",
-    "",
-    run.summary,
-    "",
+    renderMarkdownParagraph("Intent", run.intent ?? run.summary),
+    renderMarkdownParagraph("Routing", run.routing ?? formatConversationRefs(run.conversationRefs)),
+    renderMarkdownParagraph("Outcome", run.outcome ?? defaultRunOutcome(run.status, run.summary)),
+    renderMarkdownList("Work Performed", run.workPerformed ?? []),
     renderMarkdownList("Changed Files", run.changedFiles),
-    renderMarkdownList("New Facts", run.newFacts),
-    ...(run.next ? ["## Next", "", run.next, ""] : []),
-    renderActionMarkdown(actions),
+    renderMarkdownList("Verification", run.verification ?? []),
     renderEvidenceMarkdown(evidence),
+    renderMarkdownList("Decisions", run.decisions ?? []),
+    renderMarkdownList("Blockers", run.blockers ?? []),
+    renderMarkdownParagraph("Next", run.next ?? "No next step."),
+    renderMarkdownList("New Facts", run.newFacts),
+    renderActionMarkdown(actions),
   ].join("\n");
 }
 
@@ -1335,6 +1368,16 @@ function renderEvidenceMarkdown(evidence: GitMemoryEvidenceManifestRecord[]): st
   ].join("\n");
 }
 
+function renderMarkdownParagraph(title: string, value: string): string {
+  const text = value.trim() || "None.";
+  return [
+    `## ${title}`,
+    "",
+    text,
+    "",
+  ].join("\n");
+}
+
 function renderMarkdownList(title: string, items: string[]): string {
   if (items.length === 0) {
     return `## ${title}\n\nNone.\n`;
@@ -1347,6 +1390,52 @@ function renderMarkdownList(title: string, items: string[]): string {
   ].join("\n");
 }
 
+function normalizeMemoryList(values: string[] | undefined): string[] | undefined {
+  const normalized = (values ?? []).map((value) => value.trim()).filter(Boolean);
+  return normalized.length > 0 ? unique(normalized) : undefined;
+}
+
+function actionSummaries(actions: GitMemoryActionRecord[]): string[] {
+  return unique(actions
+    .filter((action) => action.status === "completed")
+    .map((action) => action.summary.trim())
+    .filter(Boolean));
+}
+
+function actionVerificationSummaries(actions: GitMemoryActionRecord[]): string[] {
+  return unique(actions
+    .filter((action) => action.evidenceRef)
+    .map((action) => `${action.tool}: ${action.evidenceRef}`)
+    .filter(Boolean));
+}
+
+function evidenceSummaries(evidence: GitMemoryEvidenceManifestRecord[]): string[] | undefined {
+  const summaries = unique(evidence
+    .map((record) => record.summary.trim())
+    .filter(Boolean));
+  return summaries.length > 0 ? summaries : undefined;
+}
+
+function defaultRunOutcome(status: GitMemoryRunStatus, summary: string): string {
+  const normalizedSummary = summary.trim();
+  if (status === "completed") {
+    return normalizedSummary || "Run completed.";
+  }
+  if (status === "failed") {
+    return normalizedSummary ? `Run failed: ${normalizedSummary}` : "Run failed.";
+  }
+  if (status === "blocked") {
+    return normalizedSummary ? `Run blocked: ${normalizedSummary}` : "Run blocked.";
+  }
+  return normalizedSummary ? `Needs user input: ${normalizedSummary}` : "Needs user input.";
+}
+
+function formatConversationRefs(refs: GitMemoryConversationSeqRange[]): string {
+  if (refs.length === 0) {
+    return "No conversation range recorded.";
+  }
+  return refs.map((ref) => `conversation ${ref.fromSeq}-${ref.toSeq}`).join(", ");
+}
 
 function parseJsonl<T>(value: string | null): T[] {
   if (!value?.trim()) {
