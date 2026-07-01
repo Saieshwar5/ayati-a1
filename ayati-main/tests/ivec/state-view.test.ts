@@ -17,6 +17,11 @@ function createGitContext(overrides: Partial<ContextEngineMachineContext> = {}):
       sessionId: "2026-06-27",
       conversationTail: [],
       activityTail: [],
+      recentCommits: [{
+        commit: "abc123",
+        subject: "ayati: checkpoint session",
+        event: "session_checkpointed",
+      }],
       assetCount: 0,
     },
     focus: {
@@ -53,8 +58,23 @@ function createGitContext(overrides: Partial<ContextEngineMachineContext> = {}):
         actions: ["action-0001"],
         createdAt: "2026-06-27T10:00:00.000Z",
       }],
-      recentCommits: [],
-      recentEvidence: [],
+      recentCommits: [{
+        commit: "def456",
+        subject: "ayati: commit run",
+        event: "run_committed",
+        workId: "W-20260627-0001",
+      }],
+      recentEvidence: [{
+        runId: "R-20260627-0001",
+        workId: "W-20260627-0001",
+        step: 1,
+        tool: "read_file",
+        status: "completed",
+        summary: "Read invoice input.",
+        artifacts: ["uploads/invoice.pdf"],
+        facts: ["Invoice has three line items."],
+        accessModes: ["summary"],
+      }],
     },
     ...overrides,
   };
@@ -101,9 +121,74 @@ describe("buildAgentStateView", () => {
       open: ["Summarize invoice"],
       facts: [{ text: "Invoice has three line items.", source: "ev-001" }],
     });
+    expect(context.git?.current.task).toMatchObject({
+      identity: {
+        workId: "W-20260627-0001",
+        title: "Analyze invoice",
+      },
+      state: {
+        open: ["Summarize invoice"],
+        facts: [{ text: "Invoice has three line items.", source: "ev-001" }],
+      },
+      activity: {
+        recentRuns: [{
+          runId: "R-20260627-0001",
+          summary: "Read invoice.",
+        }],
+        recentEvidence: [{
+          summary: "Read invoice input.",
+        }],
+      },
+    });
+    expect(context.git?.session).toMatchObject({
+      meta: {
+        sessionId: "2026-06-27",
+        assetCount: 0,
+      },
+      activity: {
+        recent: [],
+      },
+    });
+    expect(context.git?.session).not.toHaveProperty("recentCommits");
+    expect(context.git?.session).not.toHaveProperty("conversationTail");
+    expect(context.git?.session).not.toHaveProperty("conversationMarkdownTail");
+    expect(context.git?.session).not.toHaveProperty("summary");
+    expect(context.git?.current).not.toHaveProperty("session");
+    expect(context.git?.current.task).not.toHaveProperty("conversationMarkdownTail");
+    expect(context.git?.current.task).not.toHaveProperty("recentCommits");
+    expect(context.git?.current.task).not.toHaveProperty("recentRuns");
+    expect(context.git?.current.task).not.toHaveProperty("recentEvidence");
+    expect(context.gitContext?.session.recentCommits).toHaveLength(1);
+    expect(context.gitContext?.task?.recentCommits).toHaveLength(1);
     expect(context).not.toHaveProperty("continuity");
     expect(context).not.toHaveProperty("taskThreadContext");
     expect(context).not.toHaveProperty("sessionWork");
+  });
+
+  it("projects a session summary when the context provider supplies one", () => {
+    const gitContext = createGitContext();
+    const state = createLoopState({
+      harnessContext: createHarnessContext({
+        contextEngine: createGitContext({
+          session: {
+            ...gitContext.session,
+            summary: {
+              text: "The session is organizing Ayati prompt context before adding summarization.",
+              updatedAt: "2026-06-27T10:05:00.000Z",
+              coveredUntilSeq: 6,
+            },
+          },
+        }),
+      }),
+    });
+
+    const context = buildAgentStateView(state).context;
+    expect(context.git?.session.summary).toEqual({
+      text: "The session is organizing Ayati prompt context before adding summarization.",
+      updatedAt: "2026-06-27T10:05:00.000Z",
+      coveredUntilSeq: 6,
+    });
+    expect(context.git?.session.summary).not.toHaveProperty("conversationTail");
   });
 
   it("adds routing feedback for an unbound pending turn", () => {
@@ -197,6 +282,9 @@ describe("buildAgentStateView", () => {
         current: true,
       },
     ]);
+    const context = buildAgentStateView(state).context;
+    expect(context.gitContext?.session.conversationTail).toHaveLength(2);
+    expect(context.git?.session).not.toHaveProperty("conversationTail");
   });
 
   it("falls back to the current input when git conversation is unavailable", () => {
@@ -214,7 +302,7 @@ describe("buildAgentStateView", () => {
     }]);
   });
 
-  it("keeps personal memory but omits old session state", () => {
+  it("groups personal memory without mixing it into git, tools, or scratch context", () => {
     const state = createLoopState({
       harnessContext: createHarnessContext({
         personalMemorySnapshot: "Prefer exact schema contracts.",
@@ -224,8 +312,16 @@ describe("buildAgentStateView", () => {
 
     const stateView = buildAgentStateView(state);
     expect(stateView.context.personalMemorySnapshot).toBe("Prefer exact schema contracts.");
+    expect(stateView.context.personal).toEqual({
+      memorySnapshot: "Prefer exact schema contracts.",
+    });
+    expect(stateView.context.git).not.toHaveProperty("personalMemorySnapshot");
+    expect(stateView.context.tools).toBeUndefined();
+    expect(stateView.context.scratch).toBeUndefined();
     expect(Object.keys(stateView.context).sort()).toEqual([
+      "git",
       "gitContext",
+      "personal",
       "personalMemorySnapshot",
       "timeline",
     ]);
@@ -279,12 +375,181 @@ describe("buildAgentStateView", () => {
       summary: "Need approval before editing.",
       userInputNeeded: "Can I edit the prompt?",
     });
+    expect(stateView.context.scratch?.progress).toMatchObject({
+      status: "needs_user_input",
+      summary: "Need approval before editing.",
+      userInputNeeded: "Can I edit the prompt?",
+    });
     expect(stateView.observations?.latest).toHaveLength(1);
+    expect((stateView.context.scratch?.observations as { latest?: unknown[] } | undefined)?.latest).toHaveLength(1);
     expect(stateView.observations?.latest[0]?.retention).toBe("while_relevant");
     expect(stateView.trace?.recentSteps?.map((step) => step.step)).toEqual([1]);
+    expect((stateView.context.scratch?.trace as { recentSteps?: Array<{ step: number }> } | undefined)?.recentSteps?.map((step) => step.step)).toEqual([1]);
     expect(stateView.workingFeedback?.latest[0]).toMatchObject({
       source: "tool_execution",
       message: "Approval required before editing.",
+    });
+    expect((stateView.context.scratch?.feedback as { latest?: Array<{ source: string }> } | undefined)?.latest?.[0])
+      .toMatchObject({ source: "tool_execution" });
+  });
+
+  it("groups tool load, attachments, and system events while keeping top-level aliases", () => {
+    const state = createLoopState({
+      harnessContext: createHarnessContext({
+        contextEngine: createGitContext(),
+      }),
+      lastToolLoad: {
+        status: "partial",
+        requested: {
+          query: "files",
+          toolNames: ["read_file"],
+          groups: ["filesystem"],
+        },
+        loaded: ["read_file"],
+        alreadyActive: [],
+        evicted: [],
+        missing: ["write_file"],
+        message: "Loaded read_file; write_file was unavailable.",
+      },
+      attachedDocuments: [{
+        documentId: "doc-1",
+        name: "invoice.pdf",
+        displayName: "invoice.pdf",
+        source: "cli",
+        originalPath: "/tmp/invoice.pdf",
+        storedPath: "/tmp/ayati/docs/invoice.pdf",
+        kind: "pdf",
+        mimeType: "application/pdf",
+        sizeBytes: 1024,
+        checksum: "sha256-doc",
+      }],
+      preparedAttachments: [{
+        preparedInputId: "prepared-1",
+        documentId: "doc-1",
+        displayName: "invoice.pdf",
+        source: "cli",
+        kind: "pdf",
+        mode: "unstructured_text",
+        sizeBytes: 1024,
+        checksum: "sha256-doc",
+        originalPath: "/tmp/invoice.pdf",
+        status: "ready",
+        warnings: [],
+        artifactPath: "/tmp/ayati/prepared/invoice.json",
+      }],
+      managedFiles: [{
+        fileId: "file-1",
+        sha256: "sha256-file",
+        originalName: "invoice.pdf",
+        safeName: "invoice.pdf",
+        kind: "pdf",
+        mimeType: "application/pdf",
+        sizeBytes: 1024,
+        origin: "user_upload",
+        storagePath: "/tmp/ayati/files/invoice.pdf",
+        metadataPath: "/tmp/ayati/files/invoice.json",
+        derivedDir: "/tmp/ayati/files/invoice",
+        createdAt: "2026-06-27T10:00:00.000Z",
+        updatedAt: "2026-06-27T10:00:00.000Z",
+        capabilities: ["text"],
+        processingStatus: "ready",
+        warnings: [],
+      }],
+      managedDirectories: [{
+        directoryId: "dir-1",
+        name: "workspace",
+        rootPath: "/tmp/workspace",
+        source: "cli",
+        createdAt: "2026-06-27T10:00:00.000Z",
+        updatedAt: "2026-06-27T10:00:00.000Z",
+        status: "ready",
+        capabilities: ["list", "read_files"],
+        include: [],
+        exclude: [],
+        maxDepth: 3,
+        fileCount: 2,
+        directoryCount: 1,
+        totalSizeBytes: 2048,
+        sampleEntries: [],
+        warnings: [],
+      }],
+      attachmentWarnings: ["Skipped one unsupported attachment."],
+      systemEvent: {
+        type: "system_event",
+        eventId: "evt-1",
+        source: "calendar",
+        eventName: "meeting.started",
+        receivedAt: "2026-06-27T10:00:00.000Z",
+        summary: "Meeting started.",
+        payload: {},
+      },
+      systemEventRequestedAction: "Prepare meeting notes.",
+      approvalRequired: true,
+      approvalState: "pending",
+    });
+
+    const stateView = buildAgentStateView(state, {
+      activeTools: ["read_file", "read_file", " search_files "],
+    });
+    expect(stateView.toolLoad).toMatchObject({
+      status: "partial",
+      loaded: ["read_file"],
+      missing: ["write_file"],
+    });
+    expect(stateView.context.tools).toMatchObject({
+      active: ["read_file", "search_files"],
+      lastLoad: {
+        status: "partial",
+        loaded: ["read_file"],
+        missing: ["write_file"],
+      },
+    });
+    expect(stateView.context.tools).not.toHaveProperty("inputSchema");
+    expect(stateView.context.tools).not.toHaveProperty("schemas");
+    expect(stateView.context.scratch?.toolLoad).toMatchObject({
+      status: "partial",
+      loaded: ["read_file"],
+      missing: ["write_file"],
+    });
+    expect(stateView.attachments?.incoming?.[0]).toMatchObject({
+      id: "doc-1",
+      name: "invoice.pdf",
+      status: "registered",
+    });
+    expect(stateView.context.git?.session.attachments).toMatchObject({
+      incoming: [{ id: "doc-1", name: "invoice.pdf", status: "registered" }],
+      prepared: [{ id: "prepared-1", name: "invoice.pdf", status: "ready" }],
+      managedFiles: [{ id: "file-1", name: "invoice.pdf", status: "ready" }],
+      managedDirectories: [{ id: "dir-1", name: "workspace", status: "ready" }],
+      warnings: ["Skipped one unsupported attachment."],
+    });
+    expect(stateView.context.scratch?.attachments).toMatchObject({
+      incoming: [{ id: "doc-1", name: "invoice.pdf", status: "registered" }],
+      prepared: [{ id: "prepared-1", name: "invoice.pdf", status: "ready" }],
+      managedFiles: [{ id: "file-1", name: "invoice.pdf", status: "ready" }],
+      managedDirectories: [{ id: "dir-1", name: "workspace", status: "ready" }],
+      warnings: ["Skipped one unsupported attachment."],
+    });
+    expect(stateView.context.git?.current.task?.assets).toEqual([{
+      assetId: "A-20260627-0001",
+      role: "input",
+      kind: "document",
+      name: "invoice.pdf",
+      path: "uploads/invoice.pdf",
+    }]);
+    expect(stateView.systemEvent).toMatchObject({
+      source: "calendar",
+      eventName: "meeting.started",
+      requestedAction: "Prepare meeting notes.",
+      approvalRequired: true,
+      approvalState: "pending",
+    });
+    expect(stateView.context.scratch?.systemEvent).toMatchObject({
+      source: "calendar",
+      eventName: "meeting.started",
+      requestedAction: "Prepare meeting notes.",
+      approvalRequired: true,
+      approvalState: "pending",
     });
   });
 });

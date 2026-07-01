@@ -300,6 +300,7 @@ export class GitMemoryRuntime {
         type: "assistant_message_recorded",
         createdAt: at,
         record,
+        updateSummary: true,
       });
       return record;
     }
@@ -317,6 +318,7 @@ export class GitMemoryRuntime {
         taskId: input.taskId,
         runId: input.runId,
       });
+      await this.updateSessionSummaryFromConversation(input.sessionId, at);
       return record;
     });
     if (!this.updateCachedTaskConversation(input.sessionId, input.taskId, record)) {
@@ -761,6 +763,9 @@ export class GitMemoryRuntime {
           conversationRefs: includeConversationRecordInRefs(baseCommitInput.conversationRefs, assistantMessage),
         };
       }
+      if (assistantMessage) {
+        await this.updateSessionSummaryFromConversation(commitInput.sessionId, assistantMessage.at);
+      }
       const snapshot = await this.store.commitSessionStoreSnapshot({
         sessionId: commitInput.sessionId,
         at: commitInput.completedAt,
@@ -867,6 +872,50 @@ export class GitMemoryRuntime {
       },
     };
     this.sessionMemoryCache.set(state.session.sessionId, nextState);
+  }
+
+  private async updateSessionSummaryFromConversation(
+    sessionId: GitMemorySessionId,
+    updatedAt: string,
+  ): Promise<void> {
+    const records = await this.store.readSessionConversationRecordsForSummary(sessionId);
+    const summary = buildDeterministicSessionSummary(records);
+    if (!summary) {
+      return;
+    }
+    await this.store.writeSessionSummary({
+      sessionId,
+      text: summary.text,
+      updatedAt,
+      coveredUntilSeq: summary.coveredUntilSeq,
+      messageCount: summary.messageCount,
+    });
+    this.updateCachedSessionSummary(sessionId, {
+      text: summary.text,
+      updatedAt,
+      coveredUntilSeq: summary.coveredUntilSeq,
+    });
+  }
+
+  private updateCachedSessionSummary(
+    sessionId: GitMemorySessionId,
+    summary: {
+      text: string;
+      updatedAt: string;
+      coveredUntilSeq: number;
+    },
+  ): void {
+    const cached = this.sessionMemoryCache.get(sessionId);
+    if (!cached) {
+      return;
+    }
+    this.sessionMemoryCache.set(sessionId, {
+      ...cached,
+      session: {
+        ...cached.session,
+        summary,
+      },
+    });
   }
 
   private setPendingTurn(turn: PendingGitMemoryTurnEnvelope): void {
@@ -1264,6 +1313,7 @@ export class GitMemoryRuntime {
     label: string;
     createdAt: string;
     record: GitMemoryConversationRecord;
+    updateSummary?: boolean;
   }): void {
     const persistence = this.writeQueue.enqueue({
       sessionId: input.sessionId,
@@ -1275,6 +1325,9 @@ export class GitMemoryRuntime {
         sessionId: input.sessionId,
         record: input.record,
       });
+      if (input.updateSummary) {
+        await this.updateSessionSummaryFromConversation(input.sessionId, input.createdAt);
+      }
     });
     void persistence.catch(() => undefined);
   }
@@ -1356,6 +1409,74 @@ function includeConversationRecordInRefs(
   }
   next.push({ fromSeq: record.seq, toSeq: record.seq });
   return next.sort((left, right) => left.fromSeq - right.fromSeq);
+}
+
+function buildDeterministicSessionSummary(records: GitMemoryConversationRecord[]): {
+  text: string;
+  coveredUntilSeq: number;
+  messageCount: number;
+} | null {
+  const textRecords = records.filter((record) => (record.text ?? "").trim().length > 0);
+  if (textRecords.length === 0) {
+    return null;
+  }
+  const recent = tail(textRecords, 8);
+  const currentFocus = [...textRecords].reverse().find((record) => record.role === "user");
+  const decisions = tail(textRecords.filter((record) => isDecisionSummaryCandidate(record.text ?? "")), 5);
+  const openQuestions = tail(textRecords.filter((record) => isOpenQuestionSummaryCandidate(record.text ?? "")), 5);
+  const lines = [
+    "# Session Summary",
+    "",
+    "## Current Focus",
+    currentFocus ? `- ${compactSummaryText(currentFocus.text ?? "")}` : "- None detected.",
+    "",
+    "## Recent Decisions",
+    ...formatSummaryRecordBullets(decisions),
+    "",
+    "## Open Questions",
+    ...formatSummaryRecordBullets(openQuestions),
+    "",
+    "## Recent Messages",
+    ...recent.map((record) => `- ${formatConversationRole(record.role)}: ${compactSummaryText(record.text ?? "")}`),
+  ];
+  return {
+    text: lines.join("\n"),
+    coveredUntilSeq: textRecords.reduce((max, record) => Math.max(max, record.seq), 0),
+    messageCount: textRecords.length,
+  };
+}
+
+function formatSummaryRecordBullets(records: GitMemoryConversationRecord[]): string[] {
+  if (records.length === 0) {
+    return ["- None detected."];
+  }
+  return records.map((record) => `- ${formatConversationRole(record.role)}: ${compactSummaryText(record.text ?? "")}`);
+}
+
+function formatConversationRole(role: GitMemoryConversationRole): string {
+  switch (role) {
+    case "assistant":
+      return "Assistant";
+    case "system":
+      return "System";
+    case "user":
+      return "User";
+  }
+}
+
+function compactSummaryText(value: string): string {
+  const normalized = value.replace(/\s+/g, " ").trim();
+  return normalized.length <= 220 ? normalized : `${normalized.slice(0, 217).trimEnd()}...`;
+}
+
+function isDecisionSummaryCandidate(value: string): boolean {
+  const normalized = value.toLowerCase();
+  return /\b(approved|decided|decision|agreed|accepted|confirmed|implemented|finished|completed)\b/.test(normalized)
+    || /\b(we should|we will|we need to|let'?s|next slice|next step)\b/.test(normalized);
+}
+
+function isOpenQuestionSummaryCandidate(value: string): boolean {
+  return value.includes("?");
 }
 
 function sameConversationRange(

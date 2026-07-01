@@ -9,8 +9,11 @@ import {
   createGitMemoryRuntime,
   GIT_MEMORY_MAIN_REF,
   GIT_MEMORY_SESSION_CONVERSATION_MARKDOWN_PATH,
+  GIT_MEMORY_SESSION_STORE_DIR,
   GitMemoryDailySessionStore,
   GitMemoryWorktreeGitDriver,
+  gitMemorySessionStoreSummaryMarkdownPath,
+  gitMemorySessionStoreSummaryMetaPath,
   gitMemoryTaskRunPath,
   gitMemoryTaskStatePath,
   type GitMemoryWriteBatchRequest,
@@ -105,10 +108,82 @@ describe("GitMemoryRuntime", () => {
       { seq: 1, role: "user", text: "Fix upload handling" },
       { seq: 2, role: "assistant", text: "I will inspect upload handling." },
     ]);
+    expect(context.session.summary).toMatchObject({
+      text: expect.stringContaining("Assistant: I will inspect upload handling."),
+      updatedAt: "2026-06-28T09:00:05+05:30",
+      coveredUntilSeq: 2,
+    });
+    expect(context.session.summary?.text).toContain("## Current Focus");
+    expect(context.session.summary?.text).toContain("- Fix upload handling");
+    expect(context.session.summary?.text).toContain("## Recent Decisions");
+    expect(context.session.summary?.text).toContain("## Open Questions");
+    expect(context.session.summary?.text).toContain("## Recent Messages");
 
     const driver = new GitMemoryWorktreeGitDriver(prepared.repoPath);
     expect(await driver.readWorkingFile("session/conversation.jsonl")).toBeNull();
     expect(await driver.log(GIT_MEMORY_MAIN_REF, 5)).toHaveLength(3);
+    const messageStore = await driver.openSubmoduleRepo(GIT_MEMORY_SESSION_STORE_DIR);
+    const summaryMarkdown = await messageStore.readFile(
+      GIT_MEMORY_MAIN_REF,
+      gitMemorySessionStoreSummaryMarkdownPath(prepared.sessionId),
+    );
+    expect(summaryMarkdown).toContain("## Current Focus");
+    expect(summaryMarkdown).toContain("User: Fix upload handling");
+    expect(JSON.parse(await messageStore.readFile(
+      GIT_MEMORY_MAIN_REF,
+      gitMemorySessionStoreSummaryMetaPath(prepared.sessionId),
+    ) ?? "{}")).toMatchObject({
+      formatVersion: 1,
+      sessionId: prepared.sessionId,
+      coveredUntilSeq: 2,
+      messageCount: 2,
+    });
+  });
+
+  it("builds a structured deterministic session summary from recent conversation", async () => {
+    const contextStoreDir = await mkdtemp(join(tmpdir(), "ayati-git-memory-runtime-"));
+    const runtime = createGitMemoryRuntime({
+      contextStoreDir,
+      timezone: "Asia/Kolkata",
+      agentId: "local",
+    });
+
+    const first = await runtime.prepareUserTurn({
+      userMessage: "Approved. We should keep deterministic summaries for now.",
+      at: "2026-06-28T09:00:00+05:30",
+    });
+    await runtime.recordAssistantMessage({
+      sessionId: first.sessionId,
+      text: "Implemented the deterministic summary writer.",
+      at: "2026-06-28T09:00:05+05:30",
+    });
+    await waitForCommittedWrites(runtime, first.sessionId, 2);
+
+    await runtime.prepareUserTurn({
+      userMessage: "Should we update the prompt next?",
+      at: "2026-06-28T09:01:00+05:30",
+    });
+    await runtime.recordAssistantMessage({
+      sessionId: first.sessionId,
+      text: "We will review the prompt context after this summary slice.",
+      at: "2026-06-28T09:01:05+05:30",
+    });
+    await waitForCommittedWrites(runtime, first.sessionId, 4);
+
+    const context = await runtime.buildActiveContext(first.sessionId);
+    expect(context.session.summary?.text).toContain("## Current Focus");
+    expect(context.session.summary?.text).toContain("- Should we update the prompt next?");
+    expect(context.session.summary?.text).toContain("## Recent Decisions");
+    expect(context.session.summary?.text).toContain("User: Approved. We should keep deterministic summaries for now.");
+    expect(context.session.summary?.text).toContain("Assistant: Implemented the deterministic summary writer.");
+    expect(context.session.summary?.text).toContain("Assistant: We will review the prompt context after this summary slice.");
+    expect(context.session.summary?.text).toContain("## Open Questions");
+    expect(context.session.summary?.text).toContain("User: Should we update the prompt next?");
+    expect(context.session.summary?.text).toContain("## Recent Messages");
+    expect(context.session.summary).toMatchObject({
+      updatedAt: "2026-06-28T09:01:05+05:30",
+      coveredUntilSeq: 4,
+    });
   });
 
   it("derives prepared turn context from memory state", async () => {
@@ -1135,6 +1210,11 @@ describe("GitMemoryRuntime", () => {
       { seq: 1, role: "user", text: "Fix upload handling" },
       { seq: 2, role: "assistant", taskId: routed.taskId, runId: routed.runId },
     ]);
+    expect(context.session.summary).toMatchObject({
+      text: expect.stringContaining("Assistant: Finished upload handling inspection."),
+      updatedAt: "2026-06-28T09:10:05+05:30",
+      coveredUntilSeq: 2,
+    });
     expect(context.task?.recentRuns).toMatchObject([
       { runId: routed.runId, status: "completed" },
     ]);
@@ -1147,6 +1227,20 @@ describe("GitMemoryRuntime", () => {
     })).toHaveLength(1);
     expect(first.sessionStoreCommit).toEqual(expect.any(String));
     expect(await driver.listTreePaths(routed.ref, "session-store")).toEqual(["session-store"]);
+    const messageStore = await driver.openSubmoduleRepo(GIT_MEMORY_SESSION_STORE_DIR);
+    expect(await messageStore.readFile(
+      first.sessionStoreCommit!,
+      gitMemorySessionStoreSummaryMarkdownPath(prepared.sessionId),
+    )).toContain("Assistant: Finished upload handling inspection.");
+    expect(JSON.parse(await messageStore.readFile(
+      first.sessionStoreCommit!,
+      gitMemorySessionStoreSummaryMetaPath(prepared.sessionId),
+    ) ?? "{}")).toMatchObject({
+      formatVersion: 1,
+      sessionId: prepared.sessionId,
+      coveredUntilSeq: 2,
+      messageCount: 2,
+    });
     expect(JSON.parse(await driver.readFile(routed.ref, gitMemoryTaskRunPath(routed.taskId, routed.runId)) ?? "{}"))
       .toMatchObject({
         conversationRefs: [{ fromSeq: 1, toSeq: 2 }],

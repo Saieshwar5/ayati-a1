@@ -8,6 +8,7 @@ export * from "./harness-result-mapper.js";
 export * from "./memory-state.js";
 export * from "./runtime.js";
 export * from "./schema.js";
+export * from "./session-summary.js";
 export * from "./session-store.js";
 export * from "./task-markdown.js";
 export * from "./task-notes.js";

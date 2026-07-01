@@ -1,7 +1,8 @@
 import type { LoopState, TaskNote, ToolContextState, ToolObservation, WorkEvidenceRef, WorkState } from "../types.js";
 import type { ToolLoadResult } from "./tool-working-set.js";
 import { buildAgentContextPack } from "./context-pack.js";
-import type { AgentContextPack } from "./context-pack.js";
+import { projectAgentPromptContext } from "./prompt-context.js";
+import type { AgentPromptContext, PromptScratchContext, PromptToolsContext } from "./prompt-context.js";
 
 export interface PromptProgressState {
   status: WorkState["status"];
@@ -66,7 +67,7 @@ export interface PromptWorkingFeedback {
 }
 
 export interface AgentStateView {
-  context: AgentContextPack;
+  context: AgentPromptContext;
   progress?: PromptProgressState;
   workingFeedback?: PromptWorkingFeedback;
   toolLoad?: PromptToolLoadState;
@@ -89,32 +90,88 @@ export interface AgentStateView {
   };
 }
 
-export function buildAgentStateView(state: LoopState): AgentStateView {
+export interface AgentStateViewOptions {
+  activeTools?: string[];
+}
+
+export function buildAgentStateView(state: LoopState, options: AgentStateViewOptions = {}): AgentStateView {
   const progress = buildProgressView(state.workState);
   const toolLoad = buildToolLoadView(state.lastToolLoad);
   const workingFeedback = buildWorkingFeedbackView(state);
   const observations = buildObservationsView(state.toolContext);
   const trace = buildTraceView(state);
   const attachments = buildAttachmentState(state);
+  const systemEvent = state.systemEvent ? {
+    source: state.systemEvent.source,
+    eventName: state.systemEvent.eventName,
+    summary: state.systemEvent.summary,
+    requestedAction: state.systemEventRequestedAction,
+    approvalRequired: state.approvalRequired,
+    approvalState: state.approvalState,
+  } : undefined;
+  const context = projectAgentPromptContext({
+    context: buildAgentContextPack(state),
+    sessionAttachments: attachments,
+    tools: buildToolsContext({
+      activeTools: options.activeTools,
+      toolLoad,
+    }),
+    scratch: buildScratchContext({
+      progress,
+      workingFeedback,
+      toolLoad,
+      observations,
+      trace,
+      attachments,
+      systemEvent,
+    }),
+  });
 
   return {
-    context: buildAgentContextPack(state),
+    context,
     ...(progress ? { progress } : {}),
     ...(workingFeedback ? { workingFeedback } : {}),
     ...(toolLoad ? { toolLoad } : {}),
     ...(observations ? { observations } : {}),
     ...(trace ? { trace } : {}),
     ...(attachments ? { attachments } : {}),
-    ...(state.systemEvent ? {
-      systemEvent: {
-        source: state.systemEvent.source,
-        eventName: state.systemEvent.eventName,
-        summary: state.systemEvent.summary,
-        requestedAction: state.systemEventRequestedAction,
-        approvalRequired: state.approvalRequired,
-        approvalState: state.approvalState,
-      },
-    } : {}),
+    ...(systemEvent ? { systemEvent } : {}),
+  };
+}
+
+function buildToolsContext(input: {
+  activeTools?: string[];
+  toolLoad?: PromptToolLoadState;
+}): PromptToolsContext | undefined {
+  const active = [...new Set(input.activeTools ?? [])]
+    .map((tool) => tool.trim())
+    .filter((tool) => tool.length > 0);
+  if (active.length === 0 && !input.toolLoad) {
+    return undefined;
+  }
+  return {
+    active,
+    ...(input.toolLoad ? { lastLoad: input.toolLoad } : {}),
+  };
+}
+
+function buildScratchContext(input: {
+  progress?: PromptProgressState;
+  workingFeedback?: PromptWorkingFeedback;
+  toolLoad?: PromptToolLoadState;
+  observations?: PromptObservations;
+  trace?: PromptTrace;
+  attachments?: AgentStateView["attachments"];
+  systemEvent?: AgentStateView["systemEvent"];
+}): PromptScratchContext {
+  return {
+    ...(input.progress ? { progress: input.progress } : {}),
+    ...(input.workingFeedback ? { feedback: input.workingFeedback } : {}),
+    ...(input.toolLoad ? { toolLoad: input.toolLoad } : {}),
+    ...(input.observations ? { observations: input.observations } : {}),
+    ...(input.trace ? { trace: input.trace } : {}),
+    ...(input.attachments ? { attachments: input.attachments } : {}),
+    ...(input.systemEvent ? { systemEvent: input.systemEvent } : {}),
   };
 }
 

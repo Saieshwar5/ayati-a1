@@ -6,12 +6,17 @@ import { promisify } from "node:util";
 import { describe, expect, it } from "vitest";
 import {
   GIT_MEMORY_SESSION_CONVERSATION_MARKDOWN_PATH,
+  GIT_MEMORY_SESSION_STORE_DIR,
   GIT_MEMORY_MAIN_REF,
   GitMemoryContextReader,
   GitMemoryDailySessionStore,
   GitMemoryWorktreeGitDriver,
   gitMemorySessionActiveTaskRef,
+  gitMemorySessionStoreSummaryMarkdownPath,
+  gitMemorySessionStoreSummaryMetaPath,
   gitMemoryTaskConversationMessagePath,
+  renderGitMemorySessionSummaryMarkdown,
+  renderGitMemorySessionSummaryMetadata,
 } from "../../../src/context-engine/git-memory/index.js";
 
 const execFileAsync = promisify(execFile);
@@ -46,6 +51,72 @@ describe("GitMemoryContextReader", () => {
       { seq: 1, type: "session_initialized" },
     ]);
     expect(pack.task).toBeUndefined();
+  });
+
+  it("reads session summary files from the session-store submodule", async () => {
+    const contextStoreDir = await mkdtemp(join(tmpdir(), "ayati-git-memory-context-"));
+    const store = new GitMemoryDailySessionStore({ contextStoreDir });
+    const session = await store.openOrCreateDailySession({
+      date: "2026-06-28",
+      timezone: "Asia/Kolkata",
+      agentId: "local",
+      createdAt: "2026-06-28T00:00:00+05:30",
+    });
+    const driver = new GitMemoryWorktreeGitDriver(session.repoPath);
+    const sessionStore = await driver.openSubmoduleRepo(GIT_MEMORY_SESSION_STORE_DIR);
+    await sessionStore.commitFiles({
+      files: {
+        [gitMemorySessionStoreSummaryMarkdownPath(session.sessionId)]: renderGitMemorySessionSummaryMarkdown(
+          "The session is cleaning prompt context before adding summary updates.",
+        ),
+        [gitMemorySessionStoreSummaryMetaPath(session.sessionId)]: renderGitMemorySessionSummaryMetadata({
+          schemaVersion: 1,
+          sessionId: session.sessionId,
+          updatedAt: "2026-06-28T09:30:00+05:30",
+          coveredUntilSeq: 12,
+          messageCount: 8,
+        }),
+      },
+      message: "test: add session summary",
+    });
+
+    const pack = await new GitMemoryContextReader(store).buildActiveContext({
+      sessionId: session.sessionId,
+    });
+
+    expect(pack.session.summary).toEqual({
+      text: "The session is cleaning prompt context before adding summary updates.",
+      updatedAt: "2026-06-28T09:30:00+05:30",
+      coveredUntilSeq: 12,
+    });
+  });
+
+  it("keeps session summary text when summary metadata is missing or invalid", async () => {
+    const contextStoreDir = await mkdtemp(join(tmpdir(), "ayati-git-memory-context-"));
+    const store = new GitMemoryDailySessionStore({ contextStoreDir });
+    const session = await store.openOrCreateDailySession({
+      date: "2026-06-28",
+      timezone: "Asia/Kolkata",
+      agentId: "local",
+      createdAt: "2026-06-28T00:00:00+05:30",
+    });
+    const driver = new GitMemoryWorktreeGitDriver(session.repoPath);
+    const sessionStore = await driver.openSubmoduleRepo(GIT_MEMORY_SESSION_STORE_DIR);
+    await sessionStore.commitFiles({
+      files: {
+        [gitMemorySessionStoreSummaryMarkdownPath(session.sessionId)]: "Summary text survives bad metadata.\n",
+        [gitMemorySessionStoreSummaryMetaPath(session.sessionId)]: "{not-json",
+      },
+      message: "test: add session summary with invalid metadata",
+    });
+
+    const pack = await new GitMemoryContextReader(store).buildActiveContext({
+      sessionId: session.sessionId,
+    });
+
+    expect(pack.session.summary).toEqual({
+      text: "Summary text survives bad metadata.",
+    });
   });
 
   it("prefers markdown conversation over jsonl for model-facing session context", async () => {

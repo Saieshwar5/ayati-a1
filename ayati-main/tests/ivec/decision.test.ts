@@ -3,6 +3,7 @@ import type { LlmProvider } from "../../src/core/contracts/provider.js";
 import type { LlmTurnOutput } from "../../src/core/contracts/llm-protocol.js";
 import { callAgentDecision, parseAgentDecision } from "../../src/ivec/agent-runner/decision.js";
 import type { AgentStateView } from "../../src/ivec/agent-runner/state-view.js";
+import { createRunMetrics } from "../../src/ivec/metrics.js";
 import type { ToolDefinition } from "../../src/skills/types.js";
 
 afterEach(() => {
@@ -111,6 +112,94 @@ describe("parseAgentDecision", () => {
     expect(systemPrompt).toContain("Do not ask_user for style, wording, organization, or preference choices");
     expect(systemPrompt).toContain("Do not tell the user tools are missing.");
     expect(systemPrompt).not.toContain("decision_act");
+  });
+
+  it("prefers the grouped prompt context paths in the stable decision prompt", async () => {
+    const { provider, generateTurn } = createProvider([
+      JSON.stringify({ kind: "reply", status: "completed", message: "Hi!" }),
+    ]);
+
+    await callAgentDecision({
+      provider,
+      stateView: createStateView(),
+      toolDefinitions: [],
+    });
+
+    const messages = generateTurn.mock.calls[0]?.[0]?.messages ?? [];
+    const systemPrompt = messages.find((message) => message.role === "system")?.content ?? "";
+    expect(systemPrompt).toContain("Prefer the grouped context paths");
+    expect(systemPrompt).toContain("context.git.current.task");
+    expect(systemPrompt).toContain("context.git.session.attachments");
+    expect(systemPrompt).toContain("Use context.git.session.summary as compressed session history");
+    expect(systemPrompt).toContain("Use context.timeline for exact recent messages and current input");
+    expect(systemPrompt).toContain("If summary and exact conversation conflict, trust context.timeline");
+    expect(systemPrompt).toContain("do not infer omitted details from it");
+    expect(systemPrompt).toContain("context.scratch.progress");
+    expect(systemPrompt).toContain("context.scratch.feedback");
+    expect(systemPrompt).toContain("context.scratch.observations.latest");
+    expect(systemPrompt).toContain("context.scratch.trace.recentSteps");
+    expect(systemPrompt).toContain("context.tools.active");
+    expect(systemPrompt).toContain("context.personal.memorySnapshot");
+    expect(systemPrompt).toContain("Legacy fields such as context.gitContext");
+  });
+
+  it("does not promote legacy git context in prompt state breakdown metrics", async () => {
+    const { provider } = createProvider([
+      JSON.stringify({ kind: "reply", status: "completed", message: "Hi!" }),
+    ]);
+    const metrics = createRunMetrics();
+
+    await callAgentDecision({
+      provider,
+      stateView: createStateView({
+        context: {
+          timeline: [{
+            kind: "user",
+            seq: 1,
+            timestamp: new Date(0).toISOString(),
+            content: "continue",
+            current: true,
+          }],
+          git: {
+            session: {
+              meta: {
+                sessionId: "S-20260627-local",
+                assetCount: 0,
+              },
+              summary: {
+                text: "Session summary.",
+              },
+              activity: {
+                recent: [],
+              },
+            },
+            current: {
+              focus: { status: "none" },
+            },
+          },
+          gitContext: {
+            session: {
+              sessionId: "S-20260627-local",
+              conversationTail: [],
+              conversationMarkdownTail: "# Conversation\n\nlegacy",
+              summary: {
+                text: "Session summary.",
+              },
+              activityTail: [],
+              recentCommits: [],
+              assetCount: 0,
+            },
+            focus: { status: "none" },
+          },
+        },
+      }),
+      toolDefinitions: [],
+      metrics,
+    });
+
+    const breakdown = metrics.promptGrowthState.agent_decision?.stateBreakdown ?? {};
+    expect(breakdown["state.context.git"]).toBeGreaterThan(0);
+    expect(breakdown).not.toHaveProperty("state.context.gitContext");
   });
 
   it("repairs act decisions that reference unselected tools into load_tools", async () => {
@@ -501,7 +590,7 @@ function createTool(name: string, inputSchema?: Record<string, unknown>): ToolDe
   };
 }
 
-function createStateView(): AgentStateView {
+function createStateView(overrides: Partial<AgentStateView> = {}): AgentStateView {
   return {
     context: {
       timeline: [{
@@ -512,5 +601,6 @@ function createStateView(): AgentStateView {
         current: true,
       }],
     },
+    ...overrides,
   };
 }

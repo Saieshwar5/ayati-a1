@@ -32,6 +32,10 @@ import {
   type GitMemoryTaskMarkdownFile,
 } from "./task-markdown.js";
 import { renderGitMemoryTaskNotes } from "./task-notes.js";
+import {
+  renderGitMemorySessionSummaryMarkdown,
+  renderGitMemorySessionSummaryMetadata,
+} from "./session-summary.js";
 import type {
   GitMemoryActionId,
   GitMemoryActionRecord,
@@ -44,6 +48,7 @@ import type {
   GitMemoryRunStatus,
   GitMemorySessionId,
   GitMemorySessionMetaFile,
+  GitMemorySessionSummaryMetaFile,
   GitMemoryTaskId,
   GitMemoryTaskAssetsFile,
   GitMemoryTaskStateFile,
@@ -75,6 +80,8 @@ import {
   gitMemorySessionMessagePath,
   gitMemorySessionStoreMessagePath,
   gitMemorySessionStoreMessagesDir,
+  gitMemorySessionStoreSummaryMarkdownPath,
+  gitMemorySessionStoreSummaryMetaPath,
 } from "./schema.js";
 
 export const GIT_MEMORY_MAIN_REF = "refs/heads/main";
@@ -425,6 +432,20 @@ export interface CommitGitMemorySessionStoreSnapshotResult {
   parentCommit: string;
 }
 
+export interface WriteGitMemorySessionSummaryInput {
+  sessionId: GitMemorySessionId;
+  text: string;
+  updatedAt?: string;
+  coveredUntilSeq?: number;
+  messageCount?: number;
+  commitSummary?: string;
+}
+
+export interface WriteGitMemorySessionSummaryResult {
+  sessionStoreCommit: string;
+  metadata: GitMemorySessionSummaryMetaFile;
+}
+
 export interface ReadCommittedGitMemoryTaskRunInput {
   sessionId: GitMemorySessionId;
   taskId: GitMemoryTaskId;
@@ -556,6 +577,11 @@ export class GitMemoryDailySessionStore {
     if (records.length > 0) {
       return records;
     }
+    return await readWorkingConversation(driver);
+  }
+
+  async readSessionConversationRecordsForSummary(sessionId: GitMemorySessionId): Promise<GitMemoryConversationRecord[]> {
+    const driver = await GitMemoryWorktreeGitDriver.init(this.repoPath(sessionId));
     return await readWorkingConversation(driver);
   }
 
@@ -1047,6 +1073,45 @@ export class GitMemoryDailySessionStore {
     return {
       sessionStoreCommit,
       parentCommit,
+    };
+  }
+
+  async writeSessionSummary(
+    input: WriteGitMemorySessionSummaryInput,
+  ): Promise<WriteGitMemorySessionSummaryResult> {
+    const driver = await GitMemoryWorktreeGitDriver.init(this.repoPath(input.sessionId));
+    const messageStore = await driver.openSubmoduleRepo(GIT_MEMORY_SESSION_STORE_DIR);
+    const updatedAt = input.updatedAt ?? this.nowIso();
+    const metadata: GitMemorySessionSummaryMetaFile = {
+      schemaVersion: 1,
+      formatVersion: 1,
+      sessionId: input.sessionId,
+      updatedAt,
+      ...(typeof input.coveredUntilSeq === "number" ? { coveredUntilSeq: input.coveredUntilSeq } : {}),
+      ...(typeof input.messageCount === "number" ? { messageCount: input.messageCount } : {}),
+    };
+    const markdownPath = gitMemorySessionStoreSummaryMarkdownPath(input.sessionId);
+    const metadataPath = gitMemorySessionStoreSummaryMetaPath(input.sessionId);
+    await messageStore.writeWorkingFiles({
+      [markdownPath]: renderGitMemorySessionSummaryMarkdown(input.text),
+      [metadataPath]: renderGitMemorySessionSummaryMetadata(metadata),
+    });
+    const sessionStoreCommit = await messageStore.commitPaths([markdownPath, metadataPath], renderGitMemoryCommitMessage({
+      subject: `ayati: update session summary ${input.sessionId}`,
+      summary: input.commitSummary ?? "Write the compact session summary files.",
+      trailers: {
+        sessionId: input.sessionId,
+        event: "session_checkpointed",
+        at: updatedAt,
+        schemaVersion: 1,
+      },
+    })) ?? await messageStore.resolveRef(GIT_MEMORY_MAIN_REF);
+    if (!sessionStoreCommit) {
+      throw new Error(`Git memory session-store commit is missing after summary update: ${input.sessionId}`);
+    }
+    return {
+      sessionStoreCommit,
+      metadata,
     };
   }
 
