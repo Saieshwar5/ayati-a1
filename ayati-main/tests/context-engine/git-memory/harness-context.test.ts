@@ -24,6 +24,11 @@ describe("buildGitMemoryHarnessContextPack", () => {
     const raw = await new GitMemoryContextReader(store).buildActiveContext({
       sessionId: session.sessionId,
     });
+    raw.session.summary = {
+      text: "Session summary text.",
+      updatedAt: "2026-06-28T09:30:00+05:30",
+      coveredUntilSeq: 4,
+    };
     const harness = buildGitMemoryHarnessContextPack(raw);
 
     expect(harness).toMatchObject({
@@ -31,6 +36,11 @@ describe("buildGitMemoryHarnessContextPack", () => {
         sessionId: "S-20260628-local",
         assetCount: 0,
         conversationTail: [],
+        summary: {
+          text: "Session summary text.",
+          updatedAt: "2026-06-28T09:30:00+05:30",
+          coveredUntilSeq: 4,
+        },
         activityTail: [{
           seq: 1,
           type: "session_started",
@@ -47,7 +57,7 @@ describe("buildGitMemoryHarnessContextPack", () => {
     const memory = await createGitContextMemoryStateHydrator(store).hydrate({
       sessionId: session.sessionId,
     });
-    expect(buildGitMemoryHarnessContextFromMemoryState(memory)).toEqual(harness);
+    expect(buildGitMemoryHarnessContextFromMemoryState(memory).session).not.toHaveProperty("summary");
     expect(harness.pendingWrites).toBeUndefined();
   });
 

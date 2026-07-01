@@ -33,6 +33,7 @@ export function buildGitMemoryHarnessContextPack(
       sessionId: context.session.sessionId,
       conversationTail: context.session.conversationTail.map(toConversationRecord),
       ...(context.session.conversationMarkdownTail ? { conversationMarkdownTail: context.session.conversationMarkdownTail } : {}),
+      ...(context.session.summary ? { summary: context.session.summary } : {}),
       activityTail: context.session.activityTail
         .map((activity) => toSessionActivityRecord(context.session.sessionId, activity))
         .filter(isSessionActivityRecord),

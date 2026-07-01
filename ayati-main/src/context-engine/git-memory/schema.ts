@@ -38,6 +38,14 @@ export interface GitMemorySessionMetaFile {
   agentId: string;
 }
 
+export interface GitMemorySessionSummaryMetaFile {
+  schemaVersion: 1;
+  sessionId: GitMemorySessionId;
+  updatedAt: string;
+  coveredUntilSeq?: number;
+  messageCount?: number;
+}
+
 export interface GitMemoryConversationRecord {
   seq: number;
   role: GitMemoryConversationRole;
@@ -202,6 +210,14 @@ export function gitMemorySessionStoreSessionDir(sessionId: GitMemorySessionId): 
 
 export function gitMemorySessionStoreMessagesDir(sessionId: GitMemorySessionId): string {
   return `${gitMemorySessionStoreSessionDir(sessionId)}/messages`;
+}
+
+export function gitMemorySessionStoreSummaryMarkdownPath(sessionId: GitMemorySessionId): string {
+  return `${gitMemorySessionStoreSessionDir(sessionId)}/summary.md`;
+}
+
+export function gitMemorySessionStoreSummaryMetaPath(sessionId: GitMemorySessionId): string {
+  return `${gitMemorySessionStoreSessionDir(sessionId)}/summary.json`;
 }
 
 export function gitMemorySessionStoreMessagePath(

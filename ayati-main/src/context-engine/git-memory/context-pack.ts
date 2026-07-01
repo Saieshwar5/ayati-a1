@@ -15,7 +15,8 @@ import {
   readGitMemoryTaskEntries,
 } from "./task-refs.js";
 import { parseGitMemoryTaskMarkdown } from "./task-markdown.js";
-import type { TaskAssetRecord } from "../contracts.js";
+import { parseGitMemorySessionSummary } from "./session-summary.js";
+import type { ContextSessionSummary, TaskAssetRecord } from "../contracts.js";
 import { GitMemoryWorktreeGitDriver, type GitMemoryLogEntry } from "./git-driver.js";
 import type { GitMemoryDailySessionStore } from "./session-store.js";
 import type {
@@ -37,6 +38,8 @@ import {
   gitMemoryTaskMarkdownPath,
   gitMemoryTaskStatePath,
   gitMemorySessionStoreMessagesDir,
+  gitMemorySessionStoreSummaryMarkdownPath,
+  gitMemorySessionStoreSummaryMetaPath,
 } from "./schema.js";
 import { GIT_MEMORY_MAIN_REF } from "./session-store.js";
 
@@ -149,6 +152,7 @@ export interface GitMemoryMachineContextPack {
     sessionId: GitMemorySessionId;
     conversationTail: GitMemoryConversationRecord[];
     conversationMarkdownTail: string;
+    summary?: ContextSessionSummary;
     activityTail: GitMemoryCommitActivityRecord[];
     recentCommits: GitMemoryModelCommitSummary[];
     taskCount: number;
@@ -186,12 +190,13 @@ export class GitMemoryContextReader {
   }): Promise<GitMemoryMachineContextPack> {
     const limits = normalizeLimits(input.limits);
     const driver = await this.store.openExistingDriver(input.sessionId);
-    const [conversationMarkdownDocument, conversationRecords, taskEntries, currentBranch, sessionCommits] = await Promise.all([
+    const [conversationMarkdownDocument, conversationRecords, taskEntries, currentBranch, sessionCommits, summary] = await Promise.all([
       driver.readWorkingFile(GIT_MEMORY_SESSION_CONVERSATION_MARKDOWN_PATH),
       this.store.readSessionConversationRecords(input.sessionId),
       readGitMemoryTaskEntries(driver),
       driver.currentBranch(),
       readRecentCommits(driver, GIT_MEMORY_MAIN_REF, limits.commitLogLimit),
+      readSessionSummary(driver, input.sessionId),
     ]);
     const fallbackConversation = parseGitMemoryConversationMarkdown(conversationMarkdownDocument);
     const useMessageStoreConversation = conversationRecords.length > 0
@@ -204,6 +209,7 @@ export class GitMemoryContextReader {
       sessionId: input.sessionId,
       conversationTail: tail(conversation, limits.conversationTailLimit),
       conversationMarkdownTail: conversationMarkdown,
+      ...(summary ? { summary } : {}),
       activityTail: deriveSessionActivityTailFromCommits(sessionCommits, limits.activityTailLimit),
       recentCommits: sessionCommits.map(toModelCommitSummary),
       taskCount: taskEntries.length,
@@ -573,6 +579,25 @@ async function readTaskConversationFromSessionStoreMarkdownTail(
   return records.length > 0
     ? markdownTail(renderGitMemoryConversationMarkdownDocument(records), limit)
     : "";
+}
+
+async function readSessionSummary(
+  driver: GitMemoryWorktreeGitDriver,
+  sessionId: GitMemorySessionId,
+): Promise<ContextSessionSummary | undefined> {
+  const messageStore = await openExistingSessionMessageStoreDriver(driver);
+  if (!messageStore) {
+    return undefined;
+  }
+  const [markdown, metadataJson] = await Promise.all([
+    messageStore.readFile(GIT_MEMORY_MAIN_REF, gitMemorySessionStoreSummaryMarkdownPath(sessionId)),
+    messageStore.readFile(GIT_MEMORY_MAIN_REF, gitMemorySessionStoreSummaryMetaPath(sessionId)),
+  ]);
+  return parseGitMemorySessionSummary({
+    sessionId,
+    markdown,
+    metadataJson,
+  });
 }
 
 async function readTaskRunsForConversation(
