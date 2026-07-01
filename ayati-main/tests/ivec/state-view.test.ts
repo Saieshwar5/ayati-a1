@@ -455,12 +455,24 @@ describe("buildAgentStateView", () => {
       approvalState: "pending",
     });
 
-    const stateView = buildAgentStateView(state);
+    const stateView = buildAgentStateView(state, {
+      activeTools: ["read_file", "read_file", " search_files "],
+    });
     expect(stateView.toolLoad).toMatchObject({
       status: "partial",
       loaded: ["read_file"],
       missing: ["write_file"],
     });
+    expect(stateView.context.tools).toMatchObject({
+      active: ["read_file", "search_files"],
+      lastLoad: {
+        status: "partial",
+        loaded: ["read_file"],
+        missing: ["write_file"],
+      },
+    });
+    expect(stateView.context.tools).not.toHaveProperty("inputSchema");
+    expect(stateView.context.tools).not.toHaveProperty("schemas");
     expect(stateView.context.scratch?.toolLoad).toMatchObject({
       status: "partial",
       loaded: ["read_file"],

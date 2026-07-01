@@ -65,14 +65,21 @@ export interface PromptScratchContext {
   systemEvent?: unknown;
 }
 
+export interface PromptToolsContext {
+  active: string[];
+  lastLoad?: unknown;
+}
+
 export interface AgentPromptContext extends AgentContextPack {
   personal?: PromptPersonalContext;
   git?: PromptGitContext;
+  tools?: PromptToolsContext;
   scratch?: PromptScratchContext;
 }
 
 export interface ProjectAgentPromptContextInput {
   context: AgentContextPack;
+  tools?: PromptToolsContext;
   scratch?: PromptScratchContext;
 }
 
@@ -92,6 +99,7 @@ export function projectAgentPromptContext(input: ProjectAgentPromptContextInput)
         current: projectGitCurrentForPrompt(input.context.gitContext),
       },
     } : {}),
+    ...(input.tools ? { tools: input.tools } : {}),
     ...(scratch ? { scratch } : {}),
   };
 }

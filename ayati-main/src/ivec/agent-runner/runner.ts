@@ -315,7 +315,9 @@ export async function runAgentLoop(
     const selectedTools = finalReplyFromVerifiedState
       ? []
       : selectToolsForDecision(state, visibleTools, config.maxSelectedTools);
-    const stateView = buildAgentStateView(state);
+    const stateView = buildAgentStateView(state, {
+      activeTools: selectedTools.map((tool) => tool.name),
+    });
     recordFeedback(deps, inputHandle, state.runId || workRunHandle?.runId, "decision", "prompt_summary", {
       iteration: state.iteration,
       nativeControlTools: ["decision_reply", "decision_ask_user", "decision_load_tools"],

@@ -2,7 +2,7 @@ import type { LoopState, TaskNote, ToolContextState, ToolObservation, WorkEviden
 import type { ToolLoadResult } from "./tool-working-set.js";
 import { buildAgentContextPack } from "./context-pack.js";
 import { projectAgentPromptContext } from "./prompt-context.js";
-import type { AgentPromptContext, PromptScratchContext } from "./prompt-context.js";
+import type { AgentPromptContext, PromptScratchContext, PromptToolsContext } from "./prompt-context.js";
 
 export interface PromptProgressState {
   status: WorkState["status"];
@@ -90,7 +90,11 @@ export interface AgentStateView {
   };
 }
 
-export function buildAgentStateView(state: LoopState): AgentStateView {
+export interface AgentStateViewOptions {
+  activeTools?: string[];
+}
+
+export function buildAgentStateView(state: LoopState, options: AgentStateViewOptions = {}): AgentStateView {
   const progress = buildProgressView(state.workState);
   const toolLoad = buildToolLoadView(state.lastToolLoad);
   const workingFeedback = buildWorkingFeedbackView(state);
@@ -107,6 +111,10 @@ export function buildAgentStateView(state: LoopState): AgentStateView {
   } : undefined;
   const context = projectAgentPromptContext({
     context: buildAgentContextPack(state),
+    tools: buildToolsContext({
+      activeTools: options.activeTools,
+      toolLoad,
+    }),
     scratch: buildScratchContext({
       progress,
       workingFeedback,
@@ -127,6 +135,22 @@ export function buildAgentStateView(state: LoopState): AgentStateView {
     ...(trace ? { trace } : {}),
     ...(attachments ? { attachments } : {}),
     ...(systemEvent ? { systemEvent } : {}),
+  };
+}
+
+function buildToolsContext(input: {
+  activeTools?: string[];
+  toolLoad?: PromptToolLoadState;
+}): PromptToolsContext | undefined {
+  const active = [...new Set(input.activeTools ?? [])]
+    .map((tool) => tool.trim())
+    .filter((tool) => tool.length > 0);
+  if (active.length === 0 && !input.toolLoad) {
+    return undefined;
+  }
+  return {
+    active,
+    ...(input.toolLoad ? { lastLoad: input.toolLoad } : {}),
   };
 }
 
