@@ -192,6 +192,28 @@ describe("git-context skill", () => {
     expect(matches[0]?.taskId).toBe(prepared.uploadTask.taskId);
   });
 
+  it("searches git-native task notes by changed files and evidence artifacts", async () => {
+    const prepared = await prepareMultiTaskGitContextSession();
+    const skill = createGitContextSkill({ contextStoreDir: prepared.contextStoreDir });
+    const tool = requiredTool(skill, "git_context_search_tasks");
+
+    const result = await tool.execute({
+      sessionId: prepared.session.sessionId,
+      query: "upload-server.ts",
+      limit: 5,
+    });
+
+    expect(result.ok).toBe(true);
+    const matches = (result.v2?.structuredContent as {
+      matches?: Array<{ taskId: string; files?: string[]; matchReasons: string[] }>;
+    }).matches ?? [];
+    expect(matches[0]).toMatchObject({
+      taskId: prepared.uploadTask.taskId,
+      files: ["ayati-main/src/server/upload-server.ts"],
+    });
+    expect(matches[0]?.matchReasons).toEqual(expect.arrayContaining(["files"]));
+  });
+
   it("filters search results by task status", async () => {
     const prepared = await prepareMultiTaskGitContextSession();
     const skill = createGitContextSkill({ contextStoreDir: prepared.contextStoreDir });

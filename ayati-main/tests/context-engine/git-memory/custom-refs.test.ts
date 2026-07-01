@@ -9,6 +9,7 @@ import {
   gitMemorySessionActiveTaskRef,
   gitMemorySessionLatestBaseRef,
   gitMemorySessionLatestRunRef,
+  gitMemorySessionTaskRef,
   gitMemoryTaskLatestRunRef,
   readGitMemoryCustomRef,
   writeGitMemoryCustomRef,
@@ -177,6 +178,10 @@ describe("git memory custom refs", () => {
       toSeq: 1,
       at: "2026-06-28T09:00:00+05:30",
     });
+    const driver = new GitMemoryWorktreeGitDriver(session.repoPath);
+
+    await expect(readGitMemoryCustomRef(driver, gitMemorySessionTaskRef(session.sessionId, task.taskId)))
+      .resolves.toBe(task.taskCommit);
 
     const run = await store.commitTaskRun({
       sessionId: session.sessionId,
@@ -198,11 +203,12 @@ describe("git memory custom refs", () => {
         next: "Verify in integration flow.",
       },
     });
-    const driver = new GitMemoryWorktreeGitDriver(session.repoPath);
 
     await expect(readGitMemoryCustomRef(driver, gitMemorySessionActiveTaskRef(session.sessionId)))
       .resolves.toBe(run.taskCommit);
     await expect(readGitMemoryCustomRef(driver, gitMemorySessionLatestRunRef(session.sessionId)))
+      .resolves.toBe(run.taskCommit);
+    await expect(readGitMemoryCustomRef(driver, gitMemorySessionTaskRef(session.sessionId, task.taskId)))
       .resolves.toBe(run.taskCommit);
     await expect(readGitMemoryCustomRef(driver, gitMemoryTaskLatestRunRef(task.taskId)))
       .resolves.toBe(run.taskCommit);

@@ -8,6 +8,7 @@ import {
   gitMemoryTaskIdFromBranch,
   nextGitMemoryTaskSequence,
   readGitMemoryTaskEntries,
+  readGitMemorySessionTaskEntries,
   renderGitMemoryCommitMessage,
   resolveGitMemoryTaskEntry,
 } from "../../../src/context-engine/git-memory/index.js";
@@ -61,10 +62,41 @@ describe("git memory task refs", () => {
     expect(entries[0]).toMatchObject({
       taskId: first.taskId,
       branch: first.branch,
+      ref: first.ref,
       title: "Fix upload handling",
       status: "open",
     });
     expect(nextGitMemoryTaskSequence(entries)).toBe(3);
+  });
+
+  it("lists session task entries from git-native session task refs", async () => {
+    const contextStoreDir = await mkdtemp(join(tmpdir(), "ayati-git-memory-task-refs-"));
+    const store = new GitMemoryDailySessionStore({ contextStoreDir });
+    const session = await store.openOrCreateDailySession({
+      date: "2026-06-28",
+      timezone: "Asia/Kolkata",
+      agentId: "local",
+      createdAt: "2026-06-28T00:00:00+05:30",
+    });
+    const task = await store.createTaskBranch({
+      sessionId: session.sessionId,
+      title: "Fix upload handling",
+      objective: "Find and fix upload handling failures.",
+      fromSeq: 1,
+      toSeq: 1,
+      at: "2026-06-28T09:00:00+05:30",
+    });
+    const driver = new GitMemoryWorktreeGitDriver(session.repoPath);
+
+    const entries = await readGitMemorySessionTaskEntries(driver, session.sessionId);
+
+    expect(entries).toMatchObject([{
+      taskId: task.taskId,
+      branch: task.branch,
+      ref: `refs/ayati/sessions/${session.sessionId}/tasks/${task.taskId}`,
+      title: "Fix upload handling",
+      status: "open",
+    }]);
   });
 
   it("marks task branches missing when task files are incomplete", async () => {

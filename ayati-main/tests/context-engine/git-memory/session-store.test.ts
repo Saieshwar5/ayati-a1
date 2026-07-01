@@ -389,13 +389,18 @@ describe("GitMemoryDailySessionStore", () => {
     const taskNotes = await driver.readFile(task.ref, gitMemoryTaskNotesPath(task.taskId)) ?? "";
     expect(taskNotes).toContain("# Fix upload handling");
     expect(taskNotes).toContain("Task: W-20260628-0001");
+    expect(taskNotes).toContain("Branch: task/W-20260628-0001-fix-upload-handling");
     expect(taskNotes).toContain("Status: open");
+    expect(taskNotes).toContain("Updated: 2026-06-28T09:01:00+05:30");
     expect(taskNotes).toContain("## Objective");
     expect(taskNotes).toContain("Find and fix upload handling failures.");
     expect(taskNotes).toContain("## Summary");
     expect(taskNotes).toContain("## Open Work");
     expect(taskNotes).toContain("- Find and fix upload handling failures.");
     expect(taskNotes).toContain("## Blockers\n\nNone.");
+    expect(taskNotes).toContain("## Files\n\nNone.");
+    expect(taskNotes).toContain("## Search Terms");
+    expect(taskNotes).toContain("upload");
     expect(taskNotes).not.toContain("Latest Run:");
     expect(JSON.parse(await driver.readFile(task.ref, gitMemoryTaskStatePath(task.taskId)) ?? "{}"))
       .toMatchObject({
@@ -808,7 +813,9 @@ describe("GitMemoryDailySessionStore", () => {
     const taskNotes = await driver.readFile(task.ref, gitMemoryTaskNotesPath(task.taskId)) ?? "";
     expect(taskNotes).toContain("# Fix upload handling");
     expect(taskNotes).toContain("Task: W-20260628-0001");
+    expect(taskNotes).toContain("Branch: task/W-20260628-0001-fix-upload-handling");
     expect(taskNotes).toContain("Status: in_progress");
+    expect(taskNotes).toContain("Updated: 2026-06-28T09:10:00+05:30");
     expect(taskNotes).toContain("Latest Run: R-20260628-0001");
     expect(taskNotes).toContain("## Summary");
     expect(taskNotes).toContain("Inspected upload handling and found validation mismatch.");
@@ -820,6 +827,13 @@ describe("GitMemoryDailySessionStore", () => {
     expect(taskNotes).toContain("- UploadServer validates multipart uploads.");
     expect(taskNotes).toContain("## Decisions");
     expect(taskNotes).toContain("- Patch validation handling in a later run.");
+    expect(taskNotes).toContain("## Files");
+    expect(taskNotes).toContain("- ayati-main/src/server/upload-server.ts");
+    expect(taskNotes).toContain("## Recent Work");
+    expect(taskNotes).toContain("- Read upload server implementation.");
+    expect(taskNotes).toContain("## Search Terms");
+    expect(taskNotes).toContain("upload");
+    expect(taskNotes).toContain("server");
     expect(taskNotes).toContain("## Next");
     expect(taskNotes).toContain("Patch upload validation handling.");
     expect(taskNotes).not.toContain("raw/001-call-read-upload-read_file.txt");

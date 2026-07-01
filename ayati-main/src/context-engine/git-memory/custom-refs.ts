@@ -25,6 +25,17 @@ export function gitMemorySessionLatestBaseRef(sessionId: GitMemorySessionId): st
   return `${GIT_MEMORY_CUSTOM_REF_PREFIX}/sessions/${sessionId}/latest-base`;
 }
 
+export function gitMemorySessionTasksRefPrefix(sessionId: GitMemorySessionId): string {
+  assertGitMemorySessionId(sessionId);
+  return `${GIT_MEMORY_CUSTOM_REF_PREFIX}/sessions/${sessionId}/tasks/`;
+}
+
+export function gitMemorySessionTaskRef(sessionId: GitMemorySessionId, taskId: GitMemoryTaskId): string {
+  assertGitMemorySessionId(sessionId);
+  assertGitMemoryTaskId(taskId);
+  return `${gitMemorySessionTasksRefPrefix(sessionId)}${taskId}`;
+}
+
 export function gitMemoryTaskLatestRunRef(taskId: GitMemoryTaskId): string {
   assertGitMemoryTaskId(taskId);
   return `${GIT_MEMORY_CUSTOM_REF_PREFIX}/tasks/${taskId}/latest-run`;

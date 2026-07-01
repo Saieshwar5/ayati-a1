@@ -1,8 +1,10 @@
 import type { GitMemoryWorktreeGitDriver } from "./git-driver.js";
+import { gitMemorySessionTasksRefPrefix } from "./custom-refs.js";
 import {
   parseGitMemoryTaskMarkdown,
 } from "./task-markdown.js";
 import type {
+  GitMemorySessionId,
   GitMemoryTaskId,
   GitMemoryTaskStateFile,
   GitMemoryTaskStatus,
@@ -10,6 +12,7 @@ import type {
 import {
   gitMemoryTaskMarkdownPath,
   gitMemoryTaskStatePath,
+  isGitMemoryTaskId,
 } from "./schema.js";
 
 export interface GitMemoryDerivedTaskEntry {
@@ -28,24 +31,49 @@ export async function readGitMemoryTaskEntries(
   driver: GitMemoryWorktreeGitDriver,
 ): Promise<GitMemoryDerivedTaskEntry[]> {
   const refs = (await driver.listRefs("refs/heads/task/")).sort();
+  return await readGitMemoryTaskEntriesFromRefs(driver, refs, taskEntryFromTaskBranchRef);
+}
+
+export async function readGitMemorySessionTaskEntries(
+  driver: GitMemoryWorktreeGitDriver,
+  sessionId: GitMemorySessionId,
+): Promise<GitMemoryDerivedTaskEntry[]> {
+  const prefix = gitMemorySessionTasksRefPrefix(sessionId);
+  const refs = (await driver.listRefs(prefix)).sort();
+  if (refs.length === 0) {
+    return await readGitMemoryTaskEntries(driver);
+  }
+  return await readGitMemoryTaskEntriesFromRefs(driver, refs, (ref) => taskEntryFromSessionTaskRef(prefix, ref));
+}
+
+interface ParsedGitMemoryTaskRef {
+  taskId: GitMemoryTaskId;
+  branch?: string;
+}
+
+async function readGitMemoryTaskEntriesFromRefs(
+  driver: GitMemoryWorktreeGitDriver,
+  refs: string[],
+  parseRef: (ref: string) => ParsedGitMemoryTaskRef | null,
+): Promise<GitMemoryDerivedTaskEntry[]> {
   const entries: GitMemoryDerivedTaskEntry[] = [];
   for (const ref of refs) {
-    const branch = ref.replace(/^refs\/heads\//, "");
-    const taskId = gitMemoryTaskIdFromBranch(branch);
-    if (!taskId) {
+    const parsed = parseRef(ref);
+    if (!parsed) {
       continue;
     }
+    const branch = parsed.branch ?? await resolveTaskBranchForTaskId(driver, parsed.taskId);
     const [taskMarkdown, state] = await Promise.all([
-      driver.readFile(ref, gitMemoryTaskMarkdownPath(taskId)),
-      readRefJson<GitMemoryTaskStateFile>(driver, ref, gitMemoryTaskStatePath(taskId)),
+      driver.readFile(ref, gitMemoryTaskMarkdownPath(parsed.taskId)),
+      readRefJson<GitMemoryTaskStateFile>(driver, ref, gitMemoryTaskStatePath(parsed.taskId)),
     ]);
     const task = parseGitMemoryTaskMarkdown(taskMarkdown);
     entries.push({
-      taskId,
+      taskId: parsed.taskId,
       branch,
       ref,
-      title: task?.title ?? taskId,
-      objective: task?.objective ?? task?.title ?? taskId,
+      title: task?.title ?? parsed.taskId,
+      objective: task?.objective ?? task?.title ?? parsed.taskId,
       status: state?.status ?? task?.status ?? "open",
       createdAt: task?.createdAt ?? "",
       updatedAt: state?.updatedAt ?? task?.updatedAt ?? "",
@@ -80,6 +108,29 @@ export async function resolveGitMemoryTaskEntry(
 export function gitMemoryTaskIdFromBranch(branch: string): GitMemoryTaskId | null {
   const match = /^task\/(W-\d{8}-\d{4})(?:-|$)/.exec(branch);
   return match?.[1] ?? null;
+}
+
+function taskEntryFromTaskBranchRef(ref: string): ParsedGitMemoryTaskRef | null {
+  const branch = ref.replace(/^refs\/heads\//, "");
+  const taskId = gitMemoryTaskIdFromBranch(branch);
+  return taskId ? { taskId, branch } : null;
+}
+
+function taskEntryFromSessionTaskRef(prefix: string, ref: string): ParsedGitMemoryTaskRef | null {
+  if (!ref.startsWith(prefix)) {
+    return null;
+  }
+  const taskId = ref.slice(prefix.length);
+  return isGitMemoryTaskId(taskId) ? { taskId } : null;
+}
+
+async function resolveTaskBranchForTaskId(
+  driver: GitMemoryWorktreeGitDriver,
+  taskId: GitMemoryTaskId,
+): Promise<string> {
+  const refs = (await driver.listRefs("refs/heads/task/")).sort();
+  const branchRef = refs.find((ref) => gitMemoryTaskIdFromBranch(ref.replace(/^refs\/heads\//, "")) === taskId);
+  return branchRef?.replace(/^refs\/heads\//, "") ?? `task/${taskId}`;
 }
 
 export function nextGitMemoryTaskSequence(tasks: GitMemoryDerivedTaskEntry[]): number {
