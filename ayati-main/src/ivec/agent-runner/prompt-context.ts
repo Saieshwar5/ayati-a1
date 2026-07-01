@@ -1,5 +1,6 @@
 import type { ContextEngineMachineContext } from "../../context-engine/index.js";
 import type { AgentContextPack } from "./context-pack.js";
+import type { AgentStateView } from "./state-view.js";
 
 export interface PromptPersonalContext {
   memorySnapshot: string;
@@ -86,6 +87,10 @@ export interface ProjectAgentPromptContextInput {
   scratch?: PromptScratchContext;
 }
 
+export interface AgentPromptStateView {
+  context: AgentPromptContext;
+}
+
 export function projectAgentPromptContext(input: ProjectAgentPromptContextInput): AgentPromptContext {
   const personalMemorySnapshot = input.context.personalMemorySnapshot?.trim();
   const scratch = compactScratchContext(input.scratch);
@@ -104,6 +109,12 @@ export function projectAgentPromptContext(input: ProjectAgentPromptContextInput)
     } : {}),
     ...(input.tools ? { tools: input.tools } : {}),
     ...(scratch ? { scratch } : {}),
+  };
+}
+
+export function projectAgentStateViewForPrompt(stateView: AgentStateView): AgentPromptStateView {
+  return {
+    context: compactAgentPromptContext(stateView.context),
   };
 }
 
@@ -160,6 +171,16 @@ function projectGitTaskForPrompt(
       recentRuns: task.recentRuns,
       recentEvidence: task.recentEvidence,
     },
+  };
+}
+
+function compactAgentPromptContext(context: AgentPromptContext): AgentPromptContext {
+  return {
+    timeline: context.timeline,
+    ...(context.git ? { git: context.git } : {}),
+    ...(context.tools ? { tools: context.tools } : {}),
+    ...(context.scratch ? { scratch: context.scratch } : {}),
+    ...(context.personal ? { personal: context.personal } : {}),
   };
 }
 

@@ -202,6 +202,167 @@ describe("parseAgentDecision", () => {
     expect(breakdown).not.toHaveProperty("state.context.gitContext");
   });
 
+  it("sends a deduplicated state view to the model prompt", async () => {
+    const { provider, generateTurn } = createProvider([
+      JSON.stringify({ kind: "reply", status: "completed", message: "Hi!" }),
+    ]);
+
+    await callAgentDecision({
+      provider,
+      stateView: createStateView({
+        context: {
+          timeline: [{
+            kind: "user",
+            seq: 1,
+            timestamp: new Date(0).toISOString(),
+            content: "continue",
+            current: true,
+          }],
+          git: {
+            session: {
+              meta: {
+                sessionId: "S-20260627-local",
+                assetCount: 0,
+              },
+              summary: {
+                text: "Session summary.",
+              },
+              activity: {
+                recent: [],
+              },
+            },
+            current: {
+              focus: { status: "none" },
+            },
+          },
+          tools: {
+            active: ["read_file"],
+          },
+          scratch: {
+            progress: {
+              status: "not_done",
+              summary: "Work in progress.",
+            },
+            feedback: {
+              latest: [{
+                severity: "warning",
+                source: "tool_validation",
+                message: "Fix the next call.",
+              }],
+            },
+          },
+          personal: {
+            memorySnapshot: "Prefer concise answers.",
+          },
+          gitContext: {
+            session: {
+              sessionId: "S-20260627-local",
+              conversationTail: [],
+              conversationMarkdownTail: "# Conversation\n\nlegacy",
+              summary: {
+                text: "Session summary.",
+              },
+              activityTail: [],
+              recentCommits: [],
+              assetCount: 0,
+            },
+            focus: { status: "none" },
+          },
+          personalMemorySnapshot: "Prefer concise answers.",
+        },
+        progress: {
+          status: "not_done",
+          summary: "Work in progress.",
+        },
+        workingFeedback: {
+          latest: [{
+            severity: "warning",
+            source: "tool_validation",
+            message: "Fix the next call.",
+          }],
+        },
+        toolLoad: {
+          status: "success",
+          requested: {
+            query: "files",
+            toolNames: ["read_file"],
+            groups: ["filesystem"],
+          },
+          loaded: ["read_file"],
+          alreadyActive: [],
+          evicted: [],
+          missing: [],
+          message: "Loaded read_file.",
+        },
+        observations: {
+          latest: [],
+        },
+        trace: {
+          recentSteps: [],
+        },
+      }),
+      toolDefinitions: [],
+    });
+
+    const messages = generateTurn.mock.calls[0]?.[0]?.messages ?? [];
+    const userPrompt = messages.find((message) => message.role === "user")?.content ?? "";
+    const promptStateView = parsePromptStateView(userPrompt);
+    expect(promptStateView).toEqual({
+      context: {
+        timeline: [{
+          kind: "user",
+          seq: 1,
+          timestamp: new Date(0).toISOString(),
+          content: "continue",
+          current: true,
+        }],
+        git: {
+          session: {
+            meta: {
+              sessionId: "S-20260627-local",
+              assetCount: 0,
+            },
+            summary: {
+              text: "Session summary.",
+            },
+            activity: {
+              recent: [],
+            },
+          },
+          current: {
+            focus: { status: "none" },
+          },
+        },
+        tools: {
+          active: ["read_file"],
+        },
+        scratch: {
+          progress: {
+            status: "not_done",
+            summary: "Work in progress.",
+          },
+          feedback: {
+            latest: [{
+              severity: "warning",
+              source: "tool_validation",
+              message: "Fix the next call.",
+            }],
+          },
+        },
+        personal: {
+          memorySnapshot: "Prefer concise answers.",
+        },
+      },
+    });
+    expect(promptStateView).not.toHaveProperty("progress");
+    expect(promptStateView).not.toHaveProperty("workingFeedback");
+    expect(promptStateView).not.toHaveProperty("toolLoad");
+    expect(promptStateView).not.toHaveProperty("observations");
+    expect(promptStateView).not.toHaveProperty("trace");
+    expect(promptStateView.context).not.toHaveProperty("gitContext");
+    expect(promptStateView.context).not.toHaveProperty("personalMemorySnapshot");
+  });
+
   it("repairs act decisions that reference unselected tools into load_tools", async () => {
     const badAction = {
       kind: "act",
@@ -588,6 +749,15 @@ function createTool(name: string, inputSchema?: Record<string, unknown>): ToolDe
       content: "",
     }),
   };
+}
+
+function parsePromptStateView(userPrompt: string): Record<string, unknown> {
+  const marker = "State view:\n";
+  const index = userPrompt.indexOf(marker);
+  if (index < 0) {
+    throw new Error("State view marker missing from prompt.");
+  }
+  return JSON.parse(userPrompt.slice(index + marker.length)) as Record<string, unknown>;
 }
 
 function createStateView(overrides: Partial<AgentStateView> = {}): AgentStateView {
