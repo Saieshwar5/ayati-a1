@@ -15,6 +15,7 @@ export interface PromptGitSessionContext {
     sessionId: string;
     assetCount: number;
   };
+  summary?: ContextEngineMachineContext["session"]["summary"];
   attachments?: unknown;
   activity: {
     recent: ContextEngineMachineContext["session"]["activityTail"];
@@ -115,6 +116,7 @@ function projectGitSessionForPrompt(
       sessionId: session.sessionId,
       assetCount: session.assetCount,
     },
+    ...(session.summary ? { summary: session.summary } : {}),
     ...(attachments ? { attachments } : {}),
     activity: {
       recent: session.activityTail,

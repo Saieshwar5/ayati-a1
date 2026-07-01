@@ -152,6 +152,7 @@ describe("buildAgentStateView", () => {
     expect(context.git?.session).not.toHaveProperty("recentCommits");
     expect(context.git?.session).not.toHaveProperty("conversationTail");
     expect(context.git?.session).not.toHaveProperty("conversationMarkdownTail");
+    expect(context.git?.session).not.toHaveProperty("summary");
     expect(context.git?.current).not.toHaveProperty("session");
     expect(context.git?.current.task).not.toHaveProperty("conversationMarkdownTail");
     expect(context.git?.current.task).not.toHaveProperty("recentCommits");
@@ -162,6 +163,32 @@ describe("buildAgentStateView", () => {
     expect(context).not.toHaveProperty("continuity");
     expect(context).not.toHaveProperty("taskThreadContext");
     expect(context).not.toHaveProperty("sessionWork");
+  });
+
+  it("projects a session summary when the context provider supplies one", () => {
+    const gitContext = createGitContext();
+    const state = createLoopState({
+      harnessContext: createHarnessContext({
+        contextEngine: createGitContext({
+          session: {
+            ...gitContext.session,
+            summary: {
+              text: "The session is organizing Ayati prompt context before adding summarization.",
+              updatedAt: "2026-06-27T10:05:00.000Z",
+              coveredUntilSeq: 6,
+            },
+          },
+        }),
+      }),
+    });
+
+    const context = buildAgentStateView(state).context;
+    expect(context.git?.session.summary).toEqual({
+      text: "The session is organizing Ayati prompt context before adding summarization.",
+      updatedAt: "2026-06-27T10:05:00.000Z",
+      coveredUntilSeq: 6,
+    });
+    expect(context.git?.session.summary).not.toHaveProperty("conversationTail");
   });
 
   it("adds routing feedback for an unbound pending turn", () => {

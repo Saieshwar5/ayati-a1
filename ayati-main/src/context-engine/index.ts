@@ -6,6 +6,7 @@ export type {
   ContextTaskEvidenceSummary,
   ContextFocus,
   ContextSessionActivityRecord,
+  ContextSessionSummary,
   ContextTaskFact,
   ContextTaskRunSummary,
   HarnessResponseKind,

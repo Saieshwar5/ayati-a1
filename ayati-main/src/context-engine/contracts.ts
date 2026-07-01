@@ -151,11 +151,18 @@ export interface ContextPendingTurn {
   runId?: string;
 }
 
+export interface ContextSessionSummary {
+  text: string;
+  updatedAt?: string;
+  coveredUntilSeq?: number;
+}
+
 export interface ContextEngineMachineContext {
   session: {
     sessionId: string;
     conversationTail: ContextConversationRecord[];
     conversationMarkdownTail?: string;
+    summary?: ContextSessionSummary;
     activityTail: ContextSessionActivityRecord[];
     recentCommits?: ContextCommitSummary[];
     assetCount: number;
