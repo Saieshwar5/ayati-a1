@@ -43,8 +43,12 @@ export interface GitMemorySessionSummaryMetaFile {
   formatVersion?: 1;
   sessionId: GitMemorySessionId;
   updatedAt: string;
+  strategy?: "deterministic" | "llm";
   coveredUntilSeq?: number;
   messageCount?: number;
+  sourceFromSeq?: number;
+  sourceToSeq?: number;
+  previousCoveredUntilSeq?: number;
 }
 
 export interface GitMemoryConversationRecord {

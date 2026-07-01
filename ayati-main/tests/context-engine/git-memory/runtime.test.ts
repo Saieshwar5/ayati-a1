@@ -134,9 +134,12 @@ describe("GitMemoryRuntime", () => {
       gitMemorySessionStoreSummaryMetaPath(prepared.sessionId),
     ) ?? "{}")).toMatchObject({
       formatVersion: 1,
+      strategy: "deterministic",
       sessionId: prepared.sessionId,
       coveredUntilSeq: 2,
       messageCount: 2,
+      sourceFromSeq: 1,
+      sourceToSeq: 2,
     });
   });
 
@@ -183,6 +186,19 @@ describe("GitMemoryRuntime", () => {
     expect(context.session.summary).toMatchObject({
       updatedAt: "2026-06-28T09:01:05+05:30",
       coveredUntilSeq: 4,
+    });
+    const driver = new GitMemoryWorktreeGitDriver(first.repoPath);
+    const messageStore = await driver.openSubmoduleRepo(GIT_MEMORY_SESSION_STORE_DIR);
+    expect(JSON.parse(await messageStore.readFile(
+      GIT_MEMORY_MAIN_REF,
+      gitMemorySessionStoreSummaryMetaPath(first.sessionId),
+    ) ?? "{}")).toMatchObject({
+      strategy: "deterministic",
+      coveredUntilSeq: 4,
+      messageCount: 4,
+      sourceFromSeq: 1,
+      sourceToSeq: 4,
+      previousCoveredUntilSeq: 2,
     });
   });
 
@@ -1237,9 +1253,12 @@ describe("GitMemoryRuntime", () => {
       gitMemorySessionStoreSummaryMetaPath(prepared.sessionId),
     ) ?? "{}")).toMatchObject({
       formatVersion: 1,
+      strategy: "deterministic",
       sessionId: prepared.sessionId,
       coveredUntilSeq: 2,
       messageCount: 2,
+      sourceFromSeq: 1,
+      sourceToSeq: 2,
     });
     expect(JSON.parse(await driver.readFile(routed.ref, gitMemoryTaskRunPath(routed.taskId, routed.runId)) ?? "{}"))
       .toMatchObject({
