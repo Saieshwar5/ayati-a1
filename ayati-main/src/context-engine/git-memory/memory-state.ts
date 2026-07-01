@@ -7,7 +7,7 @@ import type {
   GitMemoryPendingTurnContext,
   GitMemoryPendingWriteContext,
 } from "./context-pack.js";
-import type { TaskAssetRecord } from "../contracts.js";
+import type { ContextSessionSummary, TaskAssetRecord } from "../contracts.js";
 import { GitMemoryContextReader } from "./context-pack.js";
 import type {
   GitMemoryDailySessionStore,
@@ -52,6 +52,7 @@ export interface GitContextMemoryState {
     sessionId: GitMemorySessionId;
     conversationTail: GitMemoryConversationRecord[];
     conversationMarkdownTail: string;
+    summary?: ContextSessionSummary;
     activityTail: GitMemoryCommitActivityRecord[];
     recentCommits: GitMemoryModelCommitSummary[];
     taskCount: number;
@@ -88,6 +89,7 @@ export class GitContextMemoryStateHydrator {
         sessionId: context.session.sessionId,
         conversationTail: context.session.conversationTail,
         conversationMarkdownTail: context.session.conversationMarkdownTail,
+        ...(context.session.summary ? { summary: context.session.summary } : {}),
         activityTail: context.session.activityTail,
         recentCommits: context.session.recentCommits,
         taskCount: context.session.taskCount,
@@ -115,6 +117,7 @@ export function buildGitMemoryContextPackFromMemoryState(
       sessionId: state.session.sessionId,
       conversationTail: state.session.conversationTail,
       conversationMarkdownTail: state.session.conversationMarkdownTail,
+      ...(state.session.summary ? { summary: state.session.summary } : {}),
       activityTail: state.session.activityTail,
       recentCommits: state.session.recentCommits,
       taskCount: state.session.taskCount,

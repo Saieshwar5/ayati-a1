@@ -580,6 +580,11 @@ export class GitMemoryDailySessionStore {
     return await readWorkingConversation(driver);
   }
 
+  async readSessionConversationRecordsForSummary(sessionId: GitMemorySessionId): Promise<GitMemoryConversationRecord[]> {
+    const driver = await GitMemoryWorktreeGitDriver.init(this.repoPath(sessionId));
+    return await readWorkingConversation(driver);
+  }
+
   async appendConversationMessage(input: AppendGitMemoryConversationInput): Promise<GitMemoryConversationRecord> {
     const driver = await GitMemoryWorktreeGitDriver.init(this.repoPath(input.sessionId));
     const existing = await readSessionConversation(driver, input.sessionId);

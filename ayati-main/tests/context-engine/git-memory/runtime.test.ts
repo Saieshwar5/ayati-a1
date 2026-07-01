@@ -9,8 +9,11 @@ import {
   createGitMemoryRuntime,
   GIT_MEMORY_MAIN_REF,
   GIT_MEMORY_SESSION_CONVERSATION_MARKDOWN_PATH,
+  GIT_MEMORY_SESSION_STORE_DIR,
   GitMemoryDailySessionStore,
   GitMemoryWorktreeGitDriver,
+  gitMemorySessionStoreSummaryMarkdownPath,
+  gitMemorySessionStoreSummaryMetaPath,
   gitMemoryTaskRunPath,
   gitMemoryTaskStatePath,
   type GitMemoryWriteBatchRequest,
@@ -105,10 +108,28 @@ describe("GitMemoryRuntime", () => {
       { seq: 1, role: "user", text: "Fix upload handling" },
       { seq: 2, role: "assistant", text: "I will inspect upload handling." },
     ]);
+    expect(context.session.summary).toMatchObject({
+      text: expect.stringContaining("Assistant: I will inspect upload handling."),
+      updatedAt: "2026-06-28T09:00:05+05:30",
+      coveredUntilSeq: 2,
+    });
 
     const driver = new GitMemoryWorktreeGitDriver(prepared.repoPath);
     expect(await driver.readWorkingFile("session/conversation.jsonl")).toBeNull();
     expect(await driver.log(GIT_MEMORY_MAIN_REF, 5)).toHaveLength(3);
+    const messageStore = await driver.openSubmoduleRepo(GIT_MEMORY_SESSION_STORE_DIR);
+    expect(await messageStore.readFile(
+      GIT_MEMORY_MAIN_REF,
+      gitMemorySessionStoreSummaryMarkdownPath(prepared.sessionId),
+    )).toContain("User: Fix upload handling");
+    expect(JSON.parse(await messageStore.readFile(
+      GIT_MEMORY_MAIN_REF,
+      gitMemorySessionStoreSummaryMetaPath(prepared.sessionId),
+    ) ?? "{}")).toMatchObject({
+      sessionId: prepared.sessionId,
+      coveredUntilSeq: 2,
+      messageCount: 2,
+    });
   });
 
   it("derives prepared turn context from memory state", async () => {
@@ -1135,6 +1156,11 @@ describe("GitMemoryRuntime", () => {
       { seq: 1, role: "user", text: "Fix upload handling" },
       { seq: 2, role: "assistant", taskId: routed.taskId, runId: routed.runId },
     ]);
+    expect(context.session.summary).toMatchObject({
+      text: expect.stringContaining("Assistant: Finished upload handling inspection."),
+      updatedAt: "2026-06-28T09:10:05+05:30",
+      coveredUntilSeq: 2,
+    });
     expect(context.task?.recentRuns).toMatchObject([
       { runId: routed.runId, status: "completed" },
     ]);
@@ -1147,6 +1173,19 @@ describe("GitMemoryRuntime", () => {
     })).toHaveLength(1);
     expect(first.sessionStoreCommit).toEqual(expect.any(String));
     expect(await driver.listTreePaths(routed.ref, "session-store")).toEqual(["session-store"]);
+    const messageStore = await driver.openSubmoduleRepo(GIT_MEMORY_SESSION_STORE_DIR);
+    expect(await messageStore.readFile(
+      first.sessionStoreCommit!,
+      gitMemorySessionStoreSummaryMarkdownPath(prepared.sessionId),
+    )).toContain("Assistant: Finished upload handling inspection.");
+    expect(JSON.parse(await messageStore.readFile(
+      first.sessionStoreCommit!,
+      gitMemorySessionStoreSummaryMetaPath(prepared.sessionId),
+    ) ?? "{}")).toMatchObject({
+      sessionId: prepared.sessionId,
+      coveredUntilSeq: 2,
+      messageCount: 2,
+    });
     expect(JSON.parse(await driver.readFile(routed.ref, gitMemoryTaskRunPath(routed.taskId, routed.runId)) ?? "{}"))
       .toMatchObject({
         conversationRefs: [{ fromSeq: 1, toSeq: 2 }],
