@@ -101,8 +101,12 @@ describe("GitMemoryDailySessionStore", () => {
       sessionId: session.sessionId,
       text: "The session is cleaning prompt context before adding automatic summary updates.",
       updatedAt: "2026-06-28T09:30:00+05:30",
+      strategy: "deterministic",
       coveredUntilSeq: 12,
       messageCount: 8,
+      sourceFromSeq: 5,
+      sourceToSeq: 12,
+      previousCoveredUntilSeq: 4,
     });
 
     expect(result.metadata).toEqual({
@@ -110,8 +114,12 @@ describe("GitMemoryDailySessionStore", () => {
       formatVersion: 1,
       sessionId: session.sessionId,
       updatedAt: "2026-06-28T09:30:00+05:30",
+      strategy: "deterministic",
       coveredUntilSeq: 12,
       messageCount: 8,
+      sourceFromSeq: 5,
+      sourceToSeq: 12,
+      previousCoveredUntilSeq: 4,
     });
     const messageStore = await driver.openSubmoduleRepo(GIT_MEMORY_SESSION_STORE_DIR);
     expect(await messageStore.resolveRef(GIT_MEMORY_MAIN_REF)).toBe(result.sessionStoreCommit);

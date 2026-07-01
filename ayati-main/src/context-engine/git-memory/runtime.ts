@@ -1,6 +1,7 @@
 import type {
   TaskAssetRecord,
 } from "../contracts.js";
+import type { LlmProvider } from "../../core/contracts/provider.js";
 import type {
   CommitGitMemoryTaskRunInput,
   CommitGitMemoryTaskRunResult,
@@ -42,6 +43,11 @@ import {
   type ResolveGitMemoryTaskRouteInput,
   isGitMemoryPureFollowUpMessage,
 } from "./task-router.js";
+import {
+  DeterministicGitMemorySessionSummaryUpdater,
+  LlmGitMemorySessionSummaryUpdater,
+  type GitMemorySessionSummaryUpdater,
+} from "./session-summary.js";
 import type {
   GitMemoryConversationRecord,
   GitMemoryConversationRole,
@@ -67,6 +73,14 @@ export interface GitMemoryRuntimeOptions {
   store?: GitMemoryDailySessionStore;
   taskRouter?: GitMemoryTaskRouter;
   writeQueue?: GitMemoryWriteQueueRunner;
+  sessionSummaryUpdater?: GitMemorySessionSummaryUpdater;
+  sessionSummary?: GitMemoryRuntimeSessionSummaryOptions;
+  sessionSummaryProvider?: LlmProvider;
+}
+
+export interface GitMemoryRuntimeSessionSummaryOptions {
+  mode?: "deterministic" | "llm";
+  maxSummaryChars?: number;
 }
 
 export interface OpenGitMemoryRuntimeSessionInput {
@@ -184,6 +198,7 @@ export class GitMemoryRuntime {
   private readonly memoryStateHydrator: GitContextMemoryStateHydrator;
   private readonly taskRouter: GitMemoryTaskRouter;
   private readonly writeQueue: GitMemoryWriteQueueRunner;
+  private readonly sessionSummaryUpdater: GitMemorySessionSummaryUpdater;
   private readonly sessionMemoryCache = new Map<GitMemorySessionId, GitContextMemoryState>();
   private readonly pendingTurns = new Map<GitMemorySessionId, PendingGitMemoryTurnEnvelope>();
 
@@ -198,6 +213,7 @@ export class GitMemoryRuntime {
     this.memoryStateHydrator = new GitContextMemoryStateHydrator(this.store);
     this.taskRouter = options.taskRouter ?? new GitMemoryTaskRouter(this.store);
     this.writeQueue = options.writeQueue ?? new GitMemoryWriteQueue();
+    this.sessionSummaryUpdater = options.sessionSummaryUpdater ?? createGitMemorySessionSummaryUpdater(options);
   }
 
   async openDailySession(input: OpenGitMemoryRuntimeSessionInput = {}): Promise<GitMemoryDailySessionHandle> {
@@ -879,7 +895,11 @@ export class GitMemoryRuntime {
     updatedAt: string,
   ): Promise<void> {
     const records = await this.store.readSessionConversationRecordsForSummary(sessionId);
-    const summary = buildDeterministicSessionSummary(records);
+    const previousSummary = this.sessionMemoryCache.get(sessionId)?.session.summary;
+    const summary = await this.sessionSummaryUpdater.buildUpdate({
+      records,
+      ...(previousSummary ? { previousSummary } : {}),
+    });
     if (!summary) {
       return;
     }
@@ -887,8 +907,14 @@ export class GitMemoryRuntime {
       sessionId,
       text: summary.text,
       updatedAt,
+      strategy: summary.strategy,
       coveredUntilSeq: summary.coveredUntilSeq,
       messageCount: summary.messageCount,
+      sourceFromSeq: summary.sourceFromSeq,
+      sourceToSeq: summary.sourceToSeq,
+      ...(typeof summary.previousCoveredUntilSeq === "number" ? {
+        previousCoveredUntilSeq: summary.previousCoveredUntilSeq,
+      } : {}),
     });
     this.updateCachedSessionSummary(sessionId, {
       text: summary.text,
@@ -1341,6 +1367,24 @@ export function createGitMemoryRuntime(options: GitMemoryRuntimeOptions): GitMem
   return new GitMemoryRuntime(options);
 }
 
+function createGitMemorySessionSummaryUpdater(
+  options: GitMemoryRuntimeOptions,
+): GitMemorySessionSummaryUpdater {
+  const mode = options.sessionSummary?.mode ?? "deterministic";
+  if (mode === "deterministic") {
+    return new DeterministicGitMemorySessionSummaryUpdater();
+  }
+  if (!options.sessionSummaryProvider) {
+    throw new Error("Git memory session summary mode 'llm' requires sessionSummaryProvider.");
+  }
+  return new LlmGitMemorySessionSummaryUpdater({
+    provider: options.sessionSummaryProvider,
+    ...(typeof options.sessionSummary?.maxSummaryChars === "number" ? {
+      maxSummaryChars: options.sessionSummary.maxSummaryChars,
+    } : {}),
+  });
+}
+
 export function sessionDateForAt(at: string, timezone: string): string {
   const date = new Date(at);
   if (Number.isNaN(date.getTime())) {
@@ -1409,74 +1453,6 @@ function includeConversationRecordInRefs(
   }
   next.push({ fromSeq: record.seq, toSeq: record.seq });
   return next.sort((left, right) => left.fromSeq - right.fromSeq);
-}
-
-function buildDeterministicSessionSummary(records: GitMemoryConversationRecord[]): {
-  text: string;
-  coveredUntilSeq: number;
-  messageCount: number;
-} | null {
-  const textRecords = records.filter((record) => (record.text ?? "").trim().length > 0);
-  if (textRecords.length === 0) {
-    return null;
-  }
-  const recent = tail(textRecords, 8);
-  const currentFocus = [...textRecords].reverse().find((record) => record.role === "user");
-  const decisions = tail(textRecords.filter((record) => isDecisionSummaryCandidate(record.text ?? "")), 5);
-  const openQuestions = tail(textRecords.filter((record) => isOpenQuestionSummaryCandidate(record.text ?? "")), 5);
-  const lines = [
-    "# Session Summary",
-    "",
-    "## Current Focus",
-    currentFocus ? `- ${compactSummaryText(currentFocus.text ?? "")}` : "- None detected.",
-    "",
-    "## Recent Decisions",
-    ...formatSummaryRecordBullets(decisions),
-    "",
-    "## Open Questions",
-    ...formatSummaryRecordBullets(openQuestions),
-    "",
-    "## Recent Messages",
-    ...recent.map((record) => `- ${formatConversationRole(record.role)}: ${compactSummaryText(record.text ?? "")}`),
-  ];
-  return {
-    text: lines.join("\n"),
-    coveredUntilSeq: textRecords.reduce((max, record) => Math.max(max, record.seq), 0),
-    messageCount: textRecords.length,
-  };
-}
-
-function formatSummaryRecordBullets(records: GitMemoryConversationRecord[]): string[] {
-  if (records.length === 0) {
-    return ["- None detected."];
-  }
-  return records.map((record) => `- ${formatConversationRole(record.role)}: ${compactSummaryText(record.text ?? "")}`);
-}
-
-function formatConversationRole(role: GitMemoryConversationRole): string {
-  switch (role) {
-    case "assistant":
-      return "Assistant";
-    case "system":
-      return "System";
-    case "user":
-      return "User";
-  }
-}
-
-function compactSummaryText(value: string): string {
-  const normalized = value.replace(/\s+/g, " ").trim();
-  return normalized.length <= 220 ? normalized : `${normalized.slice(0, 217).trimEnd()}...`;
-}
-
-function isDecisionSummaryCandidate(value: string): boolean {
-  const normalized = value.toLowerCase();
-  return /\b(approved|decided|decision|agreed|accepted|confirmed|implemented|finished|completed)\b/.test(normalized)
-    || /\b(we should|we will|we need to|let'?s|next slice|next step)\b/.test(normalized);
-}
-
-function isOpenQuestionSummaryCandidate(value: string): boolean {
-  return value.includes("?");
 }
 
 function sameConversationRange(

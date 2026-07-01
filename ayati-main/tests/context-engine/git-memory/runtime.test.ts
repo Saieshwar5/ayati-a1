@@ -2,6 +2,8 @@ import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
+import type { LlmProvider } from "../../../src/core/contracts/provider.js";
+import type { LlmTurnInput, LlmTurnOutput } from "../../../src/core/contracts/llm-protocol.js";
 import {
   type AppendGitMemoryConversationInput,
   type AppendGitMemoryConversationRecordInput,
@@ -19,6 +21,7 @@ import {
   type GitMemoryWriteBatchRequest,
   type GitMemoryWriteBatchSnapshot,
   type GitMemoryWriteQueueRunner,
+  type GitMemorySessionSummaryUpdater,
   parseGitMemoryCommitTrailers,
   sessionDateForAt,
 } from "../../../src/context-engine/git-memory/index.js";
@@ -134,9 +137,12 @@ describe("GitMemoryRuntime", () => {
       gitMemorySessionStoreSummaryMetaPath(prepared.sessionId),
     ) ?? "{}")).toMatchObject({
       formatVersion: 1,
+      strategy: "deterministic",
       sessionId: prepared.sessionId,
       coveredUntilSeq: 2,
       messageCount: 2,
+      sourceFromSeq: 1,
+      sourceToSeq: 2,
     });
   });
 
@@ -184,6 +190,202 @@ describe("GitMemoryRuntime", () => {
       updatedAt: "2026-06-28T09:01:05+05:30",
       coveredUntilSeq: 4,
     });
+    const driver = new GitMemoryWorktreeGitDriver(first.repoPath);
+    const messageStore = await driver.openSubmoduleRepo(GIT_MEMORY_SESSION_STORE_DIR);
+    expect(JSON.parse(await messageStore.readFile(
+      GIT_MEMORY_MAIN_REF,
+      gitMemorySessionStoreSummaryMetaPath(first.sessionId),
+    ) ?? "{}")).toMatchObject({
+      strategy: "deterministic",
+      coveredUntilSeq: 4,
+      messageCount: 4,
+      sourceFromSeq: 1,
+      sourceToSeq: 4,
+      previousCoveredUntilSeq: 2,
+    });
+  });
+
+  it("uses deterministic session summaries by default", async () => {
+    const contextStoreDir = await mkdtemp(join(tmpdir(), "ayati-git-memory-runtime-"));
+    const runtime = createGitMemoryRuntime({
+      contextStoreDir,
+      timezone: "Asia/Kolkata",
+      agentId: "local",
+    });
+
+    const prepared = await runtime.prepareUserTurn({
+      userMessage: "Default summary mode should stay deterministic",
+      at: "2026-06-28T09:00:00+05:30",
+    });
+    await runtime.recordAssistantMessage({
+      sessionId: prepared.sessionId,
+      text: "The deterministic summary mode is still default.",
+      at: "2026-06-28T09:00:05+05:30",
+    });
+    await waitForCommittedWrites(runtime, prepared.sessionId, 2);
+
+    const driver = new GitMemoryWorktreeGitDriver(prepared.repoPath);
+    const messageStore = await driver.openSubmoduleRepo(GIT_MEMORY_SESSION_STORE_DIR);
+    expect(JSON.parse(await messageStore.readFile(
+      GIT_MEMORY_MAIN_REF,
+      gitMemorySessionStoreSummaryMetaPath(prepared.sessionId),
+    ) ?? "{}")).toMatchObject({
+      strategy: "deterministic",
+      coveredUntilSeq: 2,
+    });
+  });
+
+  it("uses LLM session summaries when explicitly configured", async () => {
+    const contextStoreDir = await mkdtemp(join(tmpdir(), "ayati-git-memory-runtime-"));
+    const generateTurn = vi.fn(async (_input: LlmTurnInput): Promise<LlmTurnOutput> => ({
+      type: "assistant",
+      content: JSON.stringify({
+        summaryMarkdown: "# Session Summary\n\n## Current Focus\n- LLM summary mode is active.",
+      }),
+    }));
+    const runtime = createGitMemoryRuntime({
+      contextStoreDir,
+      timezone: "Asia/Kolkata",
+      agentId: "local",
+      sessionSummary: {
+        mode: "llm",
+        maxSummaryChars: 800,
+      },
+      sessionSummaryProvider: createLlmProvider(generateTurn),
+    });
+
+    const prepared = await runtime.prepareUserTurn({
+      userMessage: "Use llm summary mode",
+      at: "2026-06-28T09:00:00+05:30",
+    });
+    await runtime.recordAssistantMessage({
+      sessionId: prepared.sessionId,
+      text: "LLM summary mode is active.",
+      at: "2026-06-28T09:00:05+05:30",
+    });
+    await waitForCommittedWrites(runtime, prepared.sessionId, 2);
+
+    expect(generateTurn).toHaveBeenCalledOnce();
+    const context = await runtime.buildActiveContext(prepared.sessionId);
+    expect(context.session.summary).toMatchObject({
+      text: "# Session Summary\n\n## Current Focus\n- LLM summary mode is active.",
+      coveredUntilSeq: 2,
+    });
+    const driver = new GitMemoryWorktreeGitDriver(prepared.repoPath);
+    const messageStore = await driver.openSubmoduleRepo(GIT_MEMORY_SESSION_STORE_DIR);
+    expect(JSON.parse(await messageStore.readFile(
+      GIT_MEMORY_MAIN_REF,
+      gitMemorySessionStoreSummaryMetaPath(prepared.sessionId),
+    ) ?? "{}")).toMatchObject({
+      strategy: "llm",
+      coveredUntilSeq: 2,
+      sourceFromSeq: 1,
+      sourceToSeq: 2,
+    });
+  });
+
+  it("fails clearly when LLM session summaries are configured without a provider", async () => {
+    const contextStoreDir = await mkdtemp(join(tmpdir(), "ayati-git-memory-runtime-"));
+
+    expect(() => createGitMemoryRuntime({
+      contextStoreDir,
+      timezone: "Asia/Kolkata",
+      agentId: "local",
+      sessionSummary: {
+        mode: "llm",
+      },
+    })).toThrow("Git memory session summary mode 'llm' requires sessionSummaryProvider.");
+  });
+
+  it("uses an injected session summary updater", async () => {
+    const contextStoreDir = await mkdtemp(join(tmpdir(), "ayati-git-memory-runtime-"));
+    const buildUpdate = vi.fn<GitMemorySessionSummaryUpdater["buildUpdate"]>(async (input) => ({
+      text: "# Session Summary\n\nInjected summary.",
+      strategy: "llm",
+      coveredUntilSeq: 2,
+      messageCount: input.records.length,
+      sourceFromSeq: 1,
+      sourceToSeq: 2,
+    }));
+    const runtime = createGitMemoryRuntime({
+      contextStoreDir,
+      timezone: "Asia/Kolkata",
+      agentId: "local",
+      sessionSummaryUpdater: { buildUpdate },
+    });
+
+    const prepared = await runtime.prepareUserTurn({
+      userMessage: "Summarize this session with injected updater",
+      at: "2026-06-28T09:00:00+05:30",
+    });
+    await runtime.recordAssistantMessage({
+      sessionId: prepared.sessionId,
+      text: "Using injected updater.",
+      at: "2026-06-28T09:00:05+05:30",
+    });
+    await waitForCommittedWrites(runtime, prepared.sessionId, 2);
+
+    expect(buildUpdate).toHaveBeenCalledOnce();
+    expect(buildUpdate.mock.calls[0]?.[0]).toMatchObject({
+      records: [
+        { seq: 1, role: "user", text: "Summarize this session with injected updater" },
+        { seq: 2, role: "assistant", text: "Using injected updater." },
+      ],
+    });
+    const context = await runtime.buildActiveContext(prepared.sessionId);
+    expect(context.session.summary).toMatchObject({
+      text: "# Session Summary\n\nInjected summary.",
+      updatedAt: "2026-06-28T09:00:05+05:30",
+      coveredUntilSeq: 2,
+    });
+    const driver = new GitMemoryWorktreeGitDriver(prepared.repoPath);
+    const messageStore = await driver.openSubmoduleRepo(GIT_MEMORY_SESSION_STORE_DIR);
+    expect(JSON.parse(await messageStore.readFile(
+      GIT_MEMORY_MAIN_REF,
+      gitMemorySessionStoreSummaryMetaPath(prepared.sessionId),
+    ) ?? "{}")).toMatchObject({
+      strategy: "llm",
+      coveredUntilSeq: 2,
+      messageCount: 2,
+      sourceFromSeq: 1,
+      sourceToSeq: 2,
+    });
+  });
+
+  it("skips session summary writes when the injected updater returns null", async () => {
+    const contextStoreDir = await mkdtemp(join(tmpdir(), "ayati-git-memory-runtime-"));
+    const buildUpdate = vi.fn<GitMemorySessionSummaryUpdater["buildUpdate"]>(async () => null);
+    const runtime = createGitMemoryRuntime({
+      contextStoreDir,
+      timezone: "Asia/Kolkata",
+      agentId: "local",
+      sessionSummaryUpdater: { buildUpdate },
+    });
+
+    const prepared = await runtime.prepareUserTurn({
+      userMessage: "Do not write a summary",
+      at: "2026-06-28T09:00:00+05:30",
+    });
+    await runtime.recordAssistantMessage({
+      sessionId: prepared.sessionId,
+      text: "No summary should be written.",
+      at: "2026-06-28T09:00:05+05:30",
+    });
+    await waitForCommittedWrites(runtime, prepared.sessionId, 2);
+
+    expect(buildUpdate).toHaveBeenCalledOnce();
+    const context = await runtime.buildActiveContext(prepared.sessionId);
+    expect(context.session.summary).toBeUndefined();
+    const driver = new GitMemoryWorktreeGitDriver(prepared.repoPath);
+    const messageStore = await driver.openSubmoduleRepo(GIT_MEMORY_SESSION_STORE_DIR);
+    expect(await messageStore.readFile(
+      GIT_MEMORY_MAIN_REF,
+      gitMemorySessionStoreSummaryMarkdownPath(prepared.sessionId),
+    )).toBeNull();
+    expect(await messageStore.readFile(
+      GIT_MEMORY_MAIN_REF,
+      gitMemorySessionStoreSummaryMetaPath(prepared.sessionId),
+    )).toBeNull();
   });
 
   it("derives prepared turn context from memory state", async () => {
@@ -1237,9 +1439,12 @@ describe("GitMemoryRuntime", () => {
       gitMemorySessionStoreSummaryMetaPath(prepared.sessionId),
     ) ?? "{}")).toMatchObject({
       formatVersion: 1,
+      strategy: "deterministic",
       sessionId: prepared.sessionId,
       coveredUntilSeq: 2,
       messageCount: 2,
+      sourceFromSeq: 1,
+      sourceToSeq: 2,
     });
     expect(JSON.parse(await driver.readFile(routed.ref, gitMemoryTaskRunPath(routed.taskId, routed.runId)) ?? "{}"))
       .toMatchObject({
@@ -1861,6 +2066,23 @@ function deferred<T>(): {
     reject = innerReject;
   });
   return { promise, resolve, reject };
+}
+
+function createLlmProvider(generateTurn: (input: LlmTurnInput) => Promise<LlmTurnOutput>): LlmProvider {
+  return {
+    name: "fake-provider",
+    version: "test-model",
+    capabilities: {
+      nativeToolCalling: false,
+      structuredOutput: {
+        jsonObject: true,
+        jsonSchema: false,
+      },
+    },
+    start() {},
+    stop() {},
+    generateTurn,
+  };
 }
 
 async function delay(ms: number): Promise<void> {

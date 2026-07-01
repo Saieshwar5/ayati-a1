@@ -436,8 +436,12 @@ export interface WriteGitMemorySessionSummaryInput {
   sessionId: GitMemorySessionId;
   text: string;
   updatedAt?: string;
+  strategy?: GitMemorySessionSummaryMetaFile["strategy"];
   coveredUntilSeq?: number;
   messageCount?: number;
+  sourceFromSeq?: number;
+  sourceToSeq?: number;
+  previousCoveredUntilSeq?: number;
   commitSummary?: string;
 }
 
@@ -1087,8 +1091,12 @@ export class GitMemoryDailySessionStore {
       formatVersion: 1,
       sessionId: input.sessionId,
       updatedAt,
+      ...(input.strategy ? { strategy: input.strategy } : {}),
       ...(typeof input.coveredUntilSeq === "number" ? { coveredUntilSeq: input.coveredUntilSeq } : {}),
       ...(typeof input.messageCount === "number" ? { messageCount: input.messageCount } : {}),
+      ...(typeof input.sourceFromSeq === "number" ? { sourceFromSeq: input.sourceFromSeq } : {}),
+      ...(typeof input.sourceToSeq === "number" ? { sourceToSeq: input.sourceToSeq } : {}),
+      ...(typeof input.previousCoveredUntilSeq === "number" ? { previousCoveredUntilSeq: input.previousCoveredUntilSeq } : {}),
     };
     const markdownPath = gitMemorySessionStoreSummaryMarkdownPath(input.sessionId);
     const metadataPath = gitMemorySessionStoreSummaryMetaPath(input.sessionId);
