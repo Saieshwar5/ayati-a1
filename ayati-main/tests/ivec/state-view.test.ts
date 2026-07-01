@@ -101,6 +101,10 @@ describe("buildAgentStateView", () => {
       open: ["Summarize invoice"],
       facts: [{ text: "Invoice has three line items.", source: "ev-001" }],
     });
+    expect(context.git?.current.task).toMatchObject({
+      workId: "W-20260627-0001",
+      open: ["Summarize invoice"],
+    });
     expect(context).not.toHaveProperty("continuity");
     expect(context).not.toHaveProperty("taskThreadContext");
     expect(context).not.toHaveProperty("sessionWork");
@@ -224,8 +228,13 @@ describe("buildAgentStateView", () => {
 
     const stateView = buildAgentStateView(state);
     expect(stateView.context.personalMemorySnapshot).toBe("Prefer exact schema contracts.");
+    expect(stateView.context.personal).toEqual({
+      memorySnapshot: "Prefer exact schema contracts.",
+    });
     expect(Object.keys(stateView.context).sort()).toEqual([
+      "git",
       "gitContext",
+      "personal",
       "personalMemorySnapshot",
       "timeline",
     ]);
@@ -279,12 +288,21 @@ describe("buildAgentStateView", () => {
       summary: "Need approval before editing.",
       userInputNeeded: "Can I edit the prompt?",
     });
+    expect(stateView.context.scratch?.progress).toMatchObject({
+      status: "needs_user_input",
+      summary: "Need approval before editing.",
+      userInputNeeded: "Can I edit the prompt?",
+    });
     expect(stateView.observations?.latest).toHaveLength(1);
+    expect((stateView.context.scratch?.observations as { latest?: unknown[] } | undefined)?.latest).toHaveLength(1);
     expect(stateView.observations?.latest[0]?.retention).toBe("while_relevant");
     expect(stateView.trace?.recentSteps?.map((step) => step.step)).toEqual([1]);
+    expect((stateView.context.scratch?.trace as { recentSteps?: Array<{ step: number }> } | undefined)?.recentSteps?.map((step) => step.step)).toEqual([1]);
     expect(stateView.workingFeedback?.latest[0]).toMatchObject({
       source: "tool_execution",
       message: "Approval required before editing.",
     });
+    expect((stateView.context.scratch?.feedback as { latest?: Array<{ source: string }> } | undefined)?.latest?.[0])
+      .toMatchObject({ source: "tool_execution" });
   });
 });

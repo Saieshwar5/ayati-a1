@@ -1,7 +1,8 @@
 import type { LoopState, TaskNote, ToolContextState, ToolObservation, WorkEvidenceRef, WorkState } from "../types.js";
 import type { ToolLoadResult } from "./tool-working-set.js";
 import { buildAgentContextPack } from "./context-pack.js";
-import type { AgentContextPack } from "./context-pack.js";
+import { projectAgentPromptContext } from "./prompt-context.js";
+import type { AgentPromptContext } from "./prompt-context.js";
 
 export interface PromptProgressState {
   status: WorkState["status"];
@@ -66,7 +67,7 @@ export interface PromptWorkingFeedback {
 }
 
 export interface AgentStateView {
-  context: AgentContextPack;
+  context: AgentPromptContext;
   progress?: PromptProgressState;
   workingFeedback?: PromptWorkingFeedback;
   toolLoad?: PromptToolLoadState;
@@ -96,25 +97,36 @@ export function buildAgentStateView(state: LoopState): AgentStateView {
   const observations = buildObservationsView(state.toolContext);
   const trace = buildTraceView(state);
   const attachments = buildAttachmentState(state);
+  const systemEvent = state.systemEvent ? {
+    source: state.systemEvent.source,
+    eventName: state.systemEvent.eventName,
+    summary: state.systemEvent.summary,
+    requestedAction: state.systemEventRequestedAction,
+    approvalRequired: state.approvalRequired,
+    approvalState: state.approvalState,
+  } : undefined;
+  const context = projectAgentPromptContext({
+    context: buildAgentContextPack(state),
+    scratch: {
+      ...(progress ? { progress } : {}),
+      ...(workingFeedback ? { feedback: workingFeedback } : {}),
+      ...(toolLoad ? { toolLoad } : {}),
+      ...(observations ? { observations } : {}),
+      ...(trace ? { trace } : {}),
+      ...(attachments ? { attachments } : {}),
+      ...(systemEvent ? { systemEvent } : {}),
+    },
+  });
 
   return {
-    context: buildAgentContextPack(state),
+    context,
     ...(progress ? { progress } : {}),
     ...(workingFeedback ? { workingFeedback } : {}),
     ...(toolLoad ? { toolLoad } : {}),
     ...(observations ? { observations } : {}),
     ...(trace ? { trace } : {}),
     ...(attachments ? { attachments } : {}),
-    ...(state.systemEvent ? {
-      systemEvent: {
-        source: state.systemEvent.source,
-        eventName: state.systemEvent.eventName,
-        summary: state.systemEvent.summary,
-        requestedAction: state.systemEventRequestedAction,
-        approvalRequired: state.approvalRequired,
-        approvalState: state.approvalState,
-      },
-    } : {}),
+    ...(systemEvent ? { systemEvent } : {}),
   };
 }
 
