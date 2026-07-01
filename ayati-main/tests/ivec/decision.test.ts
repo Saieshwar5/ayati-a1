@@ -129,6 +129,10 @@ describe("parseAgentDecision", () => {
     expect(systemPrompt).toContain("Prefer the grouped context paths");
     expect(systemPrompt).toContain("context.git.current.task");
     expect(systemPrompt).toContain("context.git.session.attachments");
+    expect(systemPrompt).toContain("Use context.git.session.summary as compressed session history");
+    expect(systemPrompt).toContain("Use context.timeline for exact recent messages and current input");
+    expect(systemPrompt).toContain("If summary and exact conversation conflict, trust context.timeline");
+    expect(systemPrompt).toContain("do not infer omitted details from it");
     expect(systemPrompt).toContain("context.scratch.progress");
     expect(systemPrompt).toContain("context.scratch.feedback");
     expect(systemPrompt).toContain("context.scratch.observations.latest");
