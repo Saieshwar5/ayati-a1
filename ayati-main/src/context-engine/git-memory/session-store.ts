@@ -1084,6 +1084,7 @@ export class GitMemoryDailySessionStore {
     const updatedAt = input.updatedAt ?? this.nowIso();
     const metadata: GitMemorySessionSummaryMetaFile = {
       schemaVersion: 1,
+      formatVersion: 1,
       sessionId: input.sessionId,
       updatedAt,
       ...(typeof input.coveredUntilSeq === "number" ? { coveredUntilSeq: input.coveredUntilSeq } : {}),

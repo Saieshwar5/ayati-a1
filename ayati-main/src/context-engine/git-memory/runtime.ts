@@ -1421,10 +1421,22 @@ function buildDeterministicSessionSummary(records: GitMemoryConversationRecord[]
     return null;
   }
   const recent = tail(textRecords, 8);
+  const currentFocus = [...textRecords].reverse().find((record) => record.role === "user");
+  const decisions = tail(textRecords.filter((record) => isDecisionSummaryCandidate(record.text ?? "")), 5);
+  const openQuestions = tail(textRecords.filter((record) => isOpenQuestionSummaryCandidate(record.text ?? "")), 5);
   const lines = [
     "# Session Summary",
     "",
-    "Recent session activity:",
+    "## Current Focus",
+    currentFocus ? `- ${compactSummaryText(currentFocus.text ?? "")}` : "- None detected.",
+    "",
+    "## Recent Decisions",
+    ...formatSummaryRecordBullets(decisions),
+    "",
+    "## Open Questions",
+    ...formatSummaryRecordBullets(openQuestions),
+    "",
+    "## Recent Messages",
     ...recent.map((record) => `- ${formatConversationRole(record.role)}: ${compactSummaryText(record.text ?? "")}`),
   ];
   return {
@@ -1432,6 +1444,13 @@ function buildDeterministicSessionSummary(records: GitMemoryConversationRecord[]
     coveredUntilSeq: textRecords.reduce((max, record) => Math.max(max, record.seq), 0),
     messageCount: textRecords.length,
   };
+}
+
+function formatSummaryRecordBullets(records: GitMemoryConversationRecord[]): string[] {
+  if (records.length === 0) {
+    return ["- None detected."];
+  }
+  return records.map((record) => `- ${formatConversationRole(record.role)}: ${compactSummaryText(record.text ?? "")}`);
 }
 
 function formatConversationRole(role: GitMemoryConversationRole): string {
@@ -1448,6 +1467,16 @@ function formatConversationRole(role: GitMemoryConversationRole): string {
 function compactSummaryText(value: string): string {
   const normalized = value.replace(/\s+/g, " ").trim();
   return normalized.length <= 220 ? normalized : `${normalized.slice(0, 217).trimEnd()}...`;
+}
+
+function isDecisionSummaryCandidate(value: string): boolean {
+  const normalized = value.toLowerCase();
+  return /\b(approved|decided|decision|agreed|accepted|confirmed|implemented|finished|completed)\b/.test(normalized)
+    || /\b(we should|we will|we need to|let'?s|next slice|next step)\b/.test(normalized);
+}
+
+function isOpenQuestionSummaryCandidate(value: string): boolean {
+  return value.includes("?");
 }
 
 function sameConversationRange(

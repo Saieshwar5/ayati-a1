@@ -40,6 +40,7 @@ export interface GitMemorySessionMetaFile {
 
 export interface GitMemorySessionSummaryMetaFile {
   schemaVersion: 1;
+  formatVersion?: 1;
   sessionId: GitMemorySessionId;
   updatedAt: string;
   coveredUntilSeq?: number;

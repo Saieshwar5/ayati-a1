@@ -113,22 +113,76 @@ describe("GitMemoryRuntime", () => {
       updatedAt: "2026-06-28T09:00:05+05:30",
       coveredUntilSeq: 2,
     });
+    expect(context.session.summary?.text).toContain("## Current Focus");
+    expect(context.session.summary?.text).toContain("- Fix upload handling");
+    expect(context.session.summary?.text).toContain("## Recent Decisions");
+    expect(context.session.summary?.text).toContain("## Open Questions");
+    expect(context.session.summary?.text).toContain("## Recent Messages");
 
     const driver = new GitMemoryWorktreeGitDriver(prepared.repoPath);
     expect(await driver.readWorkingFile("session/conversation.jsonl")).toBeNull();
     expect(await driver.log(GIT_MEMORY_MAIN_REF, 5)).toHaveLength(3);
     const messageStore = await driver.openSubmoduleRepo(GIT_MEMORY_SESSION_STORE_DIR);
-    expect(await messageStore.readFile(
+    const summaryMarkdown = await messageStore.readFile(
       GIT_MEMORY_MAIN_REF,
       gitMemorySessionStoreSummaryMarkdownPath(prepared.sessionId),
-    )).toContain("User: Fix upload handling");
+    );
+    expect(summaryMarkdown).toContain("## Current Focus");
+    expect(summaryMarkdown).toContain("User: Fix upload handling");
     expect(JSON.parse(await messageStore.readFile(
       GIT_MEMORY_MAIN_REF,
       gitMemorySessionStoreSummaryMetaPath(prepared.sessionId),
     ) ?? "{}")).toMatchObject({
+      formatVersion: 1,
       sessionId: prepared.sessionId,
       coveredUntilSeq: 2,
       messageCount: 2,
+    });
+  });
+
+  it("builds a structured deterministic session summary from recent conversation", async () => {
+    const contextStoreDir = await mkdtemp(join(tmpdir(), "ayati-git-memory-runtime-"));
+    const runtime = createGitMemoryRuntime({
+      contextStoreDir,
+      timezone: "Asia/Kolkata",
+      agentId: "local",
+    });
+
+    const first = await runtime.prepareUserTurn({
+      userMessage: "Approved. We should keep deterministic summaries for now.",
+      at: "2026-06-28T09:00:00+05:30",
+    });
+    await runtime.recordAssistantMessage({
+      sessionId: first.sessionId,
+      text: "Implemented the deterministic summary writer.",
+      at: "2026-06-28T09:00:05+05:30",
+    });
+    await waitForCommittedWrites(runtime, first.sessionId, 2);
+
+    await runtime.prepareUserTurn({
+      userMessage: "Should we update the prompt next?",
+      at: "2026-06-28T09:01:00+05:30",
+    });
+    await runtime.recordAssistantMessage({
+      sessionId: first.sessionId,
+      text: "We will review the prompt context after this summary slice.",
+      at: "2026-06-28T09:01:05+05:30",
+    });
+    await waitForCommittedWrites(runtime, first.sessionId, 4);
+
+    const context = await runtime.buildActiveContext(first.sessionId);
+    expect(context.session.summary?.text).toContain("## Current Focus");
+    expect(context.session.summary?.text).toContain("- Should we update the prompt next?");
+    expect(context.session.summary?.text).toContain("## Recent Decisions");
+    expect(context.session.summary?.text).toContain("User: Approved. We should keep deterministic summaries for now.");
+    expect(context.session.summary?.text).toContain("Assistant: Implemented the deterministic summary writer.");
+    expect(context.session.summary?.text).toContain("Assistant: We will review the prompt context after this summary slice.");
+    expect(context.session.summary?.text).toContain("## Open Questions");
+    expect(context.session.summary?.text).toContain("User: Should we update the prompt next?");
+    expect(context.session.summary?.text).toContain("## Recent Messages");
+    expect(context.session.summary).toMatchObject({
+      updatedAt: "2026-06-28T09:01:05+05:30",
+      coveredUntilSeq: 4,
     });
   });
 
@@ -1182,6 +1236,7 @@ describe("GitMemoryRuntime", () => {
       first.sessionStoreCommit!,
       gitMemorySessionStoreSummaryMetaPath(prepared.sessionId),
     ) ?? "{}")).toMatchObject({
+      formatVersion: 1,
       sessionId: prepared.sessionId,
       coveredUntilSeq: 2,
       messageCount: 2,

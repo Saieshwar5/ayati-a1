@@ -107,6 +107,7 @@ describe("GitMemoryDailySessionStore", () => {
 
     expect(result.metadata).toEqual({
       schemaVersion: 1,
+      formatVersion: 1,
       sessionId: session.sessionId,
       updatedAt: "2026-06-28T09:30:00+05:30",
       coveredUntilSeq: 12,

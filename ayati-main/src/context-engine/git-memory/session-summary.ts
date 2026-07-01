@@ -44,6 +44,7 @@ export function parseGitMemorySessionSummaryMetadata(
     }
     return {
       schemaVersion: 1,
+      ...(parsed.formatVersion === 1 ? { formatVersion: 1 } : {}),
       sessionId,
       updatedAt: parsed.updatedAt,
       ...(typeof parsed.coveredUntilSeq === "number" ? { coveredUntilSeq: parsed.coveredUntilSeq } : {}),
