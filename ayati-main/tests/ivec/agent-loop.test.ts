@@ -626,10 +626,15 @@ describe("agentLoop", () => {
       expect(stateView.context.continuity).toBeUndefined();
       expect(stateView.context.sessionWork).toBeUndefined();
       expect(stateView.context.taskThreadContext).toBeUndefined();
-      expect(stateView.context.gitContext.task).toMatchObject({
-        workId: "W-20260612-0001",
-        open: ["make responsive"],
-        next: "make responsive",
+      expect(stateView.context.gitContext).toBeUndefined();
+      expect(stateView.context.git.current.task).toMatchObject({
+        identity: {
+          workId: "W-20260612-0001",
+        },
+        state: {
+          open: ["make responsive"],
+          next: "make responsive",
+        },
       });
       expect(stateView.context.timeline).toHaveLength(3);
       expect(stateView.context.timeline[0]).toMatchObject({ seq: 1, kind: "user", content: "Build a todo app" });
@@ -638,7 +643,8 @@ describe("agentLoop", () => {
       expect(stateView.context.recentExact).toBeUndefined();
       expect(stateView.context.recentTasks).toBeUndefined();
       expect(stateView.context.previousSessionSummary).toBeUndefined();
-      expect(stateView.context.personalMemorySnapshot).toContain("concise");
+      expect(stateView.context.personalMemorySnapshot).toBeUndefined();
+      expect(stateView.context.personal.memorySnapshot).toContain("concise");
     } finally {
       cleanup(dataDir);
     }
@@ -750,18 +756,20 @@ describe("agentLoop", () => {
       const secondCallInput = generateTurn.mock.calls[1]?.[0];
       const userPrompt = secondCallInput.messages.find((message: { role: string }) => message.role === "user").content as string;
       const stateView = extractStateView(userPrompt);
-      expect(stateView.observations.latest).toHaveLength(2);
-      expect(stateView.observations.latest[0].purpose).toBe("Get RAM summary");
-      expect(stateView.observations.latest[0].content).toContain("3.5Gi used");
-      expect(stateView.observations.latest[0].evidenceRef).toBe("evidence://ev_001_call_1");
-      expect(stateView.observations.latest[1].purpose).toBe("List top RAM processes");
-      expect(stateView.observations.latest[1].content).toContain("chromium");
-      expect(stateView.observations.latest[1].evidenceRef).toBe("evidence://ev_001_call_2");
+      expect(stateView.observations).toBeUndefined();
+      expect(stateView.context.scratch.observations.latest).toHaveLength(2);
+      expect(stateView.context.scratch.observations.latest[0].purpose).toBe("Get RAM summary");
+      expect(stateView.context.scratch.observations.latest[0].content).toContain("3.5Gi used");
+      expect(stateView.context.scratch.observations.latest[0].evidenceRef).toBe("evidence://ev_001_call_1");
+      expect(stateView.context.scratch.observations.latest[1].purpose).toBe("List top RAM processes");
+      expect(stateView.context.scratch.observations.latest[1].content).toContain("chromium");
+      expect(stateView.context.scratch.observations.latest[1].evidenceRef).toBe("evidence://ev_001_call_2");
       expect(stateView.latestObservation).toBeUndefined();
       expect(userPrompt).not.toContain("\"latestObservation\"");
       expect(stateView.toolContext).toBeUndefined();
-      expect(stateView.progress.evidenceRefs[0].ref).toBe("evidence://ev_001_call_1");
-      expect(stateView.progress.evidenceRefs[1].ref).toBe("evidence://ev_001_call_2");
+      expect(stateView.progress).toBeUndefined();
+      expect(stateView.context.scratch.progress.evidenceRefs[0].ref).toBe("evidence://ev_001_call_1");
+      expect(stateView.context.scratch.progress.evidenceRefs[1].ref).toBe("evidence://ev_001_call_2");
       expect(stateView.workingNotes).toBeUndefined();
       expect(userPrompt).toContain("evidence_search");
       expect(existsSync(join(dataDir, "runs", "r-observation", "raw", "001-call_1-read_file-output.txt"))).toBe(true);

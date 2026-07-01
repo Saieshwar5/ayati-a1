@@ -5,6 +5,7 @@ import type { ToolContractAssertion, ToolDefinition } from "../../skills/types.j
 import type { AgentFeedbackLedger } from "../feedback-ledger.js";
 import type { RunMetrics } from "../metrics.js";
 import { recordPromptMetric, recordProviderUsageMetric, recordRunMetric } from "../metrics.js";
+import { projectAgentStateViewForPrompt } from "./prompt-context.js";
 import type { AgentStateView } from "./state-view.js";
 
 export type AgentDecisionStatus = "completed" | "failed";
@@ -112,7 +113,8 @@ const MAX_DECISION_ATTEMPTS = 3;
 const TOOL_PROTOCOL_FAILURE_REPLY = "I could not form a valid tool call for this request.";
 
 export async function callAgentDecision(input: CallAgentDecisionInput): Promise<AgentDecision> {
-  const promptSections = buildDecisionPromptSections(input.stateView, input.toolDefinitions, input.toolRoutingSummary);
+  const promptStateView = projectAgentStateViewForPrompt(input.stateView);
+  const promptSections = buildDecisionPromptSections(promptStateView, input.toolDefinitions, input.toolRoutingSummary);
   const prompt = Object.values(promptSections).filter((section) => section.trim().length > 0).join("\n\n");
   const systemSections = buildDecisionSystemSections(input.systemContext);
   const systemContext = Object.values(systemSections).filter((section) => section.trim().length > 0).join("\n\n");
@@ -121,7 +123,7 @@ export async function callAgentDecision(input: CallAgentDecisionInput): Promise<
     "system.runtimeContext": systemSections.runtimeContext,
     ...promptSections,
   }, {
-    stateBreakdown: buildStateViewPromptBreakdown(input.stateView),
+    stateBreakdown: buildStateViewPromptBreakdown(promptStateView),
   });
 
   let messages: LlmMessage[] = [
@@ -700,7 +702,7 @@ function buildDecisionSystemSections(systemContext: string | undefined): Record<
 }
 
 function buildDecisionPromptSections(
-  stateView: AgentStateView,
+  stateView: ReturnType<typeof projectAgentStateViewForPrompt>,
   toolDefinitions: ToolDefinition[],
   toolRoutingSummary: string | undefined,
 ): Record<string, string> {
@@ -713,7 +715,9 @@ function buildDecisionPromptSections(
   };
 }
 
-function buildStateViewPromptBreakdown(stateView: AgentStateView): Record<string, string | undefined> {
+function buildStateViewPromptBreakdown(
+  stateView: ReturnType<typeof projectAgentStateViewForPrompt>,
+): Record<string, string | undefined> {
   return {
     "state.context": stringifySection(stateView.context),
     "state.context.timeline": stringifySection(stateView.context.timeline),
@@ -721,13 +725,6 @@ function buildStateViewPromptBreakdown(stateView: AgentStateView): Record<string
     "state.context.tools": stringifySection(stateView.context.tools),
     "state.context.personal": stringifySection(stateView.context.personal),
     "state.context.scratch": stringifySection(stateView.context.scratch),
-    "state.context.personalMemorySnapshot": stateView.context.personalMemorySnapshot,
-    "state.progress": stringifySection(stateView.progress),
-    "state.workingFeedback": stringifySection(stateView.workingFeedback),
-    "state.observations": stringifySection(stateView.observations),
-    "state.trace": stringifySection(stateView.trace),
-    "state.attachments": stringifySection(stateView.attachments),
-    "state.systemEvent": stringifySection(stateView.systemEvent),
   };
 }
 
