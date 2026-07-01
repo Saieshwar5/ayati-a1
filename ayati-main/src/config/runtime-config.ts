@@ -17,6 +17,8 @@ export const DEFAULT_WORKSPACE_DIR = resolve(projectRoot, "work_space");
 export const DEFAULT_GIT_CONTEXT_STORE_DIR = resolve(projectRoot, "data", "context-engine");
 export const DEFAULT_GIT_CONTEXT_TIMEZONE = "Asia/Kolkata";
 export const DEFAULT_GIT_CONTEXT_AGENT_ID = "local";
+export const DEFAULT_GIT_CONTEXT_SESSION_SUMMARY_MODE = "deterministic";
+export const DEFAULT_GIT_CONTEXT_SESSION_SUMMARY_MAX_CHARS = 2_000;
 
 export interface HttpRuntimeConfig {
   host: string;
@@ -48,6 +50,10 @@ export interface GitContextRuntimeConfig {
   storeDir: string;
   timezone: string;
   agentId: string;
+  sessionSummary: {
+    mode: "deterministic" | "llm";
+    maxSummaryChars: number;
+  };
 }
 
 export interface AyatiRuntimeConfig {
@@ -130,7 +136,19 @@ function loadGitContextRuntimeConfig(env: NodeJS.ProcessEnv): GitContextRuntimeC
     storeDir: resolveGitContextStoreDir(env["AYATI_GIT_CONTEXT_STORE_DIR"]),
     timezone: trimOptional(env["AYATI_GIT_CONTEXT_TIMEZONE"]) ?? DEFAULT_GIT_CONTEXT_TIMEZONE,
     agentId: trimOptional(env["AYATI_GIT_CONTEXT_AGENT_ID"]) ?? DEFAULT_GIT_CONTEXT_AGENT_ID,
+    sessionSummary: {
+      mode: parseGitContextSessionSummaryMode(env["AYATI_GIT_CONTEXT_SESSION_SUMMARY_MODE"]),
+      maxSummaryChars: parsePositiveInt(
+        env["AYATI_GIT_CONTEXT_SESSION_SUMMARY_MAX_CHARS"],
+        DEFAULT_GIT_CONTEXT_SESSION_SUMMARY_MAX_CHARS,
+      ),
+    },
   };
+}
+
+function parseGitContextSessionSummaryMode(rawValue: string | undefined): "deterministic" | "llm" {
+  const normalized = rawValue?.trim().toLowerCase();
+  return normalized === "llm" ? "llm" : DEFAULT_GIT_CONTEXT_SESSION_SUMMARY_MODE;
 }
 
 export function resolveWorkspaceDir(rawValue: string | undefined): string {
