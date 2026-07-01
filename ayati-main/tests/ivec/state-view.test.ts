@@ -58,8 +58,23 @@ function createGitContext(overrides: Partial<ContextEngineMachineContext> = {}):
         actions: ["action-0001"],
         createdAt: "2026-06-27T10:00:00.000Z",
       }],
-      recentCommits: [],
-      recentEvidence: [],
+      recentCommits: [{
+        commit: "def456",
+        subject: "ayati: commit run",
+        event: "run_committed",
+        workId: "W-20260627-0001",
+      }],
+      recentEvidence: [{
+        runId: "R-20260627-0001",
+        workId: "W-20260627-0001",
+        step: 1,
+        tool: "read_file",
+        status: "completed",
+        summary: "Read invoice input.",
+        artifacts: ["uploads/invoice.pdf"],
+        facts: ["Invoice has three line items."],
+        accessModes: ["summary"],
+      }],
     },
     ...overrides,
   };
@@ -107,8 +122,23 @@ describe("buildAgentStateView", () => {
       facts: [{ text: "Invoice has three line items.", source: "ev-001" }],
     });
     expect(context.git?.current.task).toMatchObject({
-      workId: "W-20260627-0001",
-      open: ["Summarize invoice"],
+      identity: {
+        workId: "W-20260627-0001",
+        title: "Analyze invoice",
+      },
+      state: {
+        open: ["Summarize invoice"],
+        facts: [{ text: "Invoice has three line items.", source: "ev-001" }],
+      },
+      activity: {
+        recentRuns: [{
+          runId: "R-20260627-0001",
+          summary: "Read invoice.",
+        }],
+        recentEvidence: [{
+          summary: "Read invoice input.",
+        }],
+      },
     });
     expect(context.git?.session).toMatchObject({
       meta: {
@@ -124,7 +154,11 @@ describe("buildAgentStateView", () => {
     expect(context.git?.session).not.toHaveProperty("conversationMarkdownTail");
     expect(context.git?.current).not.toHaveProperty("session");
     expect(context.git?.current.task).not.toHaveProperty("conversationMarkdownTail");
+    expect(context.git?.current.task).not.toHaveProperty("recentCommits");
+    expect(context.git?.current.task).not.toHaveProperty("recentRuns");
+    expect(context.git?.current.task).not.toHaveProperty("recentEvidence");
     expect(context.gitContext?.session.recentCommits).toHaveLength(1);
+    expect(context.gitContext?.task?.recentCommits).toHaveLength(1);
     expect(context).not.toHaveProperty("continuity");
     expect(context).not.toHaveProperty("taskThreadContext");
     expect(context).not.toHaveProperty("sessionWork");

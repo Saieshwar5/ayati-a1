@@ -20,8 +20,39 @@ export interface PromptGitSessionContext {
   };
 }
 
+type ContextEngineTaskContext = NonNullable<ContextEngineMachineContext["task"]> & {
+  branch?: string;
+  summary?: string;
+  taskId?: string;
+};
+
 export type PromptGitCurrentContext = Omit<ContextEngineMachineContext, "session" | "task"> & {
-  task?: Omit<NonNullable<ContextEngineMachineContext["task"]>, "conversationMarkdownTail">;
+  task?: PromptGitTaskContext;
+};
+
+export interface PromptGitTaskContext {
+  identity: {
+    ref: string;
+    title: string;
+    objective: string;
+    branch?: string;
+    taskId?: string;
+    workId?: string;
+  };
+  state: {
+    status: string;
+    completed: string[];
+    open: string[];
+    blockers: string[];
+    facts: ContextEngineTaskContext["facts"];
+    next?: string;
+    summary?: string;
+  };
+  assets: ContextEngineTaskContext["assets"];
+  activity: {
+    recentRuns: ContextEngineTaskContext["recentRuns"];
+    recentEvidence: ContextEngineTaskContext["recentEvidence"];
+  };
 };
 
 export interface PromptScratchContext {
@@ -88,13 +119,32 @@ function projectGitCurrentForPrompt(gitContext: ContextEngineMachineContext): Pr
 }
 
 function projectGitTaskForPrompt(
-  task: NonNullable<ContextEngineMachineContext["task"]>,
-): NonNullable<PromptGitCurrentContext["task"]> {
-  const {
-    conversationMarkdownTail: _conversationMarkdownTail,
-    ...projected
-  } = task;
-  return projected;
+  task: ContextEngineTaskContext,
+): PromptGitTaskContext {
+  return {
+    identity: {
+      ref: task.ref,
+      title: task.title,
+      objective: task.objective,
+      ...(task.branch ? { branch: task.branch } : {}),
+      ...(task.taskId ? { taskId: task.taskId } : {}),
+      ...(task.workId ? { workId: task.workId } : {}),
+    },
+    state: {
+      status: task.status,
+      completed: task.completed,
+      open: task.open,
+      blockers: task.blockers,
+      facts: task.facts,
+      ...(task.next ? { next: task.next } : {}),
+      ...(task.summary ? { summary: task.summary } : {}),
+    },
+    assets: task.assets,
+    activity: {
+      recentRuns: task.recentRuns,
+      recentEvidence: task.recentEvidence,
+    },
+  };
 }
 
 function compactScratchContext(scratch: PromptScratchContext | undefined): PromptScratchContext | undefined {
