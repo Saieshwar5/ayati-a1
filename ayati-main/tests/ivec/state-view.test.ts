@@ -17,6 +17,11 @@ function createGitContext(overrides: Partial<ContextEngineMachineContext> = {}):
       sessionId: "2026-06-27",
       conversationTail: [],
       activityTail: [],
+      recentCommits: [{
+        commit: "abc123",
+        subject: "ayati: checkpoint session",
+        event: "session_checkpointed",
+      }],
       assetCount: 0,
     },
     focus: {
@@ -105,9 +110,21 @@ describe("buildAgentStateView", () => {
       workId: "W-20260627-0001",
       open: ["Summarize invoice"],
     });
-    expect(context.git?.current.session).not.toHaveProperty("conversationTail");
-    expect(context.git?.current.session).not.toHaveProperty("conversationMarkdownTail");
+    expect(context.git?.session).toMatchObject({
+      meta: {
+        sessionId: "2026-06-27",
+        assetCount: 0,
+      },
+      activity: {
+        recent: [],
+      },
+    });
+    expect(context.git?.session).not.toHaveProperty("recentCommits");
+    expect(context.git?.session).not.toHaveProperty("conversationTail");
+    expect(context.git?.session).not.toHaveProperty("conversationMarkdownTail");
+    expect(context.git?.current).not.toHaveProperty("session");
     expect(context.git?.current.task).not.toHaveProperty("conversationMarkdownTail");
+    expect(context.gitContext?.session.recentCommits).toHaveLength(1);
     expect(context).not.toHaveProperty("continuity");
     expect(context).not.toHaveProperty("taskThreadContext");
     expect(context).not.toHaveProperty("sessionWork");
@@ -206,7 +223,7 @@ describe("buildAgentStateView", () => {
     ]);
     const context = buildAgentStateView(state).context;
     expect(context.gitContext?.session.conversationTail).toHaveLength(2);
-    expect(context.git?.current.session).not.toHaveProperty("conversationTail");
+    expect(context.git?.session).not.toHaveProperty("conversationTail");
   });
 
   it("falls back to the current input when git conversation is unavailable", () => {

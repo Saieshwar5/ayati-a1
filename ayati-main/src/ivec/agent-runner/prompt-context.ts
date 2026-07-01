@@ -6,11 +6,21 @@ export interface PromptPersonalContext {
 }
 
 export interface PromptGitContext {
+  session: PromptGitSessionContext;
   current: PromptGitCurrentContext;
 }
 
+export interface PromptGitSessionContext {
+  meta: {
+    sessionId: string;
+    assetCount: number;
+  };
+  activity: {
+    recent: ContextEngineMachineContext["session"]["activityTail"];
+  };
+}
+
 export type PromptGitCurrentContext = Omit<ContextEngineMachineContext, "session" | "task"> & {
-  session: Omit<ContextEngineMachineContext["session"], "conversationTail" | "conversationMarkdownTail">;
   task?: Omit<NonNullable<ContextEngineMachineContext["task"]>, "conversationMarkdownTail">;
 };
 
@@ -47,24 +57,32 @@ export function projectAgentPromptContext(input: ProjectAgentPromptContextInput)
     } : {}),
     ...(input.context.gitContext ? {
       git: {
-        current: projectGitContextForPrompt(input.context.gitContext),
+        session: projectGitSessionForPrompt(input.context.gitContext.session),
+        current: projectGitCurrentForPrompt(input.context.gitContext),
       },
     } : {}),
     ...(scratch ? { scratch } : {}),
   };
 }
 
-function projectGitContextForPrompt(gitContext: ContextEngineMachineContext): PromptGitCurrentContext {
-  const {
-    conversationTail: _conversationTail,
-    conversationMarkdownTail: _conversationMarkdownTail,
-    ...session
-  } = gitContext.session;
+function projectGitSessionForPrompt(session: ContextEngineMachineContext["session"]): PromptGitSessionContext {
   return {
-    ...gitContext,
-    session,
-    ...(gitContext.task ? {
-      task: projectGitTaskForPrompt(gitContext.task),
+    meta: {
+      sessionId: session.sessionId,
+      assetCount: session.assetCount,
+    },
+    activity: {
+      recent: session.activityTail,
+    },
+  };
+}
+
+function projectGitCurrentForPrompt(gitContext: ContextEngineMachineContext): PromptGitCurrentContext {
+  const { session: _session, task, ...current } = gitContext;
+  return {
+    ...current,
+    ...(task ? {
+      task: projectGitTaskForPrompt(task),
     } : {}),
   };
 }
