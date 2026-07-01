@@ -1,9 +1,16 @@
 import { describe, expect, it } from "vitest";
 import {
   GIT_MEMORY_SESSION_CONVERSATION_MARKDOWN_PATH,
+  GIT_MEMORY_SESSION_MESSAGES_DIR,
   GIT_MEMORY_SESSION_META_PATH,
+  GIT_MEMORY_SESSION_STORE_DIR,
+  gitMemorySessionMessagePath,
+  gitMemorySessionStoreMessagePath,
+  gitMemorySessionStoreMessagesDir,
   gitMemoryTaskActionsPath,
   gitMemoryTaskAssetsPath,
+  gitMemoryTaskConversationDir,
+  gitMemoryTaskConversationMessagePath,
   gitMemoryTaskContextPath,
   gitMemoryTaskEvidenceManifestPath,
   gitMemoryTaskMarkdownPath,
@@ -25,6 +32,14 @@ describe("git memory schema", () => {
   it("defines the canonical daily repo paths", () => {
     expect(GIT_MEMORY_SESSION_META_PATH).toBe("session/meta.json");
     expect(GIT_MEMORY_SESSION_CONVERSATION_MARKDOWN_PATH).toBe("session/conversation.md");
+    expect(GIT_MEMORY_SESSION_MESSAGES_DIR).toBe("session/messages");
+    expect(GIT_MEMORY_SESSION_STORE_DIR).toBe("session-store");
+    expect(gitMemorySessionMessagePath(1, "user")).toBe("session/messages/000001-user.md");
+    expect(gitMemorySessionMessagePath(12, "assistant")).toBe("session/messages/000012-assistant.md");
+    expect(gitMemorySessionStoreMessagesDir("S-20260628-local"))
+      .toBe("sessions/S-20260628-local/messages");
+    expect(gitMemorySessionStoreMessagePath("S-20260628-local", 1, "user"))
+      .toBe("sessions/S-20260628-local/messages/000001-user.md");
 
     expect(gitMemoryTaskMarkdownPath("W-20260628-0001")).toBe("tasks/W-20260628-0001/task.md");
     expect(gitMemoryTaskStatePath("W-20260628-0001")).toBe("tasks/W-20260628-0001/state.json");
@@ -39,6 +54,9 @@ describe("git memory schema", () => {
     expect(gitMemoryTaskAssetsPath("W-20260628-0001")).toBe("tasks/W-20260628-0001/assets.json");
     expect(gitMemoryTaskNotesPath("W-20260628-0001")).toBe("tasks/W-20260628-0001/notes.md");
     expect(gitMemoryTaskContextPath("W-20260628-0001")).toBe("tasks/W-20260628-0001/context.md");
+    expect(gitMemoryTaskConversationDir("W-20260628-0001")).toBe("tasks/W-20260628-0001/conversation");
+    expect(gitMemoryTaskConversationMessagePath("W-20260628-0001", 14, "user"))
+      .toBe("tasks/W-20260628-0001/conversation/000014-user.md");
   });
 
   it("validates startup session files created before the first user message", () => {

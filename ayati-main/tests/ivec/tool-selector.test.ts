@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { ToolDefinition } from "../../src/skills/types.js";
 import type { LoopState } from "../../src/ivec/types.js";
+import type { ContextEngineMachineContext } from "../../src/context-engine/index.js";
 import {
   selectToolsForDecision,
 } from "../../src/ivec/agent-runner/tool-selector.js";
@@ -45,6 +46,29 @@ function state(userMessage: string): LoopState {
   };
 }
 
+function pendingGitContext(
+  routingStatus: "unbound" | "clarifying",
+): ContextEngineMachineContext {
+  return {
+    session: {
+      sessionId: "S-20260630-local",
+      conversationTail: [],
+      activityTail: [],
+      assetCount: 0,
+    },
+    pendingTurn: {
+      fromSeq: 1,
+      toSeq: 1,
+      text: "build a website",
+      at: "2026-06-30T10:00:00.000Z",
+      routingStatus,
+    },
+    focus: {
+      status: "none",
+    },
+  };
+}
+
 describe("selectToolsForDecision", () => {
   it("selects only relevant visible tools within the configured cap", () => {
     const tools = [
@@ -65,5 +89,40 @@ describe("selectToolsForDecision", () => {
     expect(selectedNames).toContain("write_files");
     expect(selectedNames).toHaveLength(3);
     expect(selectedNames).not.toContain("pulse");
+  });
+
+  it("limits selected tools to git-context routing tools for unbound pending turns", () => {
+    const current = state("build a website and run it");
+    current.harnessContext = {
+      ...current.harnessContext,
+      contextEngine: pendingGitContext("unbound"),
+    };
+    const selected = selectToolsForDecision(current, [
+      tool("shell", 100),
+      tool("write_files", 100),
+      tool("git_context_list_tasks", 1),
+      tool("git_context_search_tasks", 1),
+      tool("git_context_create_task_for_turn", 1),
+    ], 12);
+
+    expect(selected.map((entry) => entry.name)).toEqual([
+      "git_context_list_tasks",
+      "git_context_search_tasks",
+      "git_context_create_task_for_turn",
+    ]);
+  });
+
+  it("selects no executable tools while a pending turn is clarifying", () => {
+    const current = state("build a website");
+    current.harnessContext = {
+      ...current.harnessContext,
+      contextEngine: pendingGitContext("clarifying"),
+    };
+
+    expect(selectToolsForDecision(current, [
+      tool("git_context_list_tasks", 1),
+      tool("git_context_create_task_for_turn", 1),
+      tool("shell", 100),
+    ], 12)).toEqual([]);
   });
 });

@@ -1,5 +1,11 @@
+import { access } from "node:fs/promises";
+import { join } from "node:path";
 import { parseGitMemoryCommitTrailers, type ParsedGitMemoryCommitTrailers } from "./commit-message.js";
-import { parseGitMemoryConversationMarkdown } from "./conversation-markdown.js";
+import {
+  parseGitMemoryConversationMarkdown,
+  parseGitMemoryConversationMessageFiles,
+  renderGitMemoryConversationMarkdownDocument,
+} from "./conversation-markdown.js";
 import {
   gitMemorySessionActiveTaskRef,
   readGitMemoryCustomRef,
@@ -14,6 +20,7 @@ import { GitMemoryWorktreeGitDriver, type GitMemoryLogEntry } from "./git-driver
 import type { GitMemoryDailySessionStore } from "./session-store.js";
 import type {
   GitMemoryConversationRecord,
+  GitMemoryConversationSeqRange,
   GitMemoryEvidenceManifestRecord,
   GitMemoryRunFile,
   GitMemorySessionId,
@@ -23,10 +30,13 @@ import type {
 } from "./schema.js";
 import {
   GIT_MEMORY_SESSION_CONVERSATION_MARKDOWN_PATH,
+  GIT_MEMORY_SESSION_STORE_DIR,
   gitMemoryTaskDir,
   gitMemoryTaskAssetsPath,
+  gitMemoryTaskConversationDir,
   gitMemoryTaskMarkdownPath,
   gitMemoryTaskStatePath,
+  gitMemorySessionStoreMessagesDir,
 } from "./schema.js";
 import { GIT_MEMORY_MAIN_REF } from "./session-store.js";
 
@@ -176,14 +186,20 @@ export class GitMemoryContextReader {
   }): Promise<GitMemoryMachineContextPack> {
     const limits = normalizeLimits(input.limits);
     const driver = await this.store.openExistingDriver(input.sessionId);
-    const [conversationMarkdownDocument, taskEntries, currentBranch, sessionCommits] = await Promise.all([
+    const [conversationMarkdownDocument, conversationRecords, taskEntries, currentBranch, sessionCommits] = await Promise.all([
       driver.readWorkingFile(GIT_MEMORY_SESSION_CONVERSATION_MARKDOWN_PATH),
+      this.store.readSessionConversationRecords(input.sessionId),
       readGitMemoryTaskEntries(driver),
       driver.currentBranch(),
       readRecentCommits(driver, GIT_MEMORY_MAIN_REF, limits.commitLogLimit),
     ]);
-    const conversation = parseGitMemoryConversationMarkdown(conversationMarkdownDocument);
-    const conversationMarkdown = markdownTail(conversationMarkdownDocument, limits.conversationMarkdownCharLimit);
+    const fallbackConversation = parseGitMemoryConversationMarkdown(conversationMarkdownDocument);
+    const useMessageStoreConversation = conversationRecords.length > 0
+      && isCompatibleConversationPrefix(fallbackConversation, conversationRecords);
+    const conversation = useMessageStoreConversation ? conversationRecords : fallbackConversation;
+    const conversationMarkdown = useMessageStoreConversation
+      ? markdownTail(renderGitMemoryConversationMarkdownDocument(conversation), limits.conversationMarkdownCharLimit)
+      : markdownTail(conversationMarkdownDocument, limits.conversationMarkdownCharLimit);
     const session = {
       sessionId: input.sessionId,
       conversationTail: tail(conversation, limits.conversationTailLimit),
@@ -243,7 +259,7 @@ export class GitMemoryContextReader {
       driver.readFile(ref, gitMemoryTaskMarkdownPath(taskEntry.taskId)),
       readRefJson<GitMemoryTaskStateFile>(driver, ref, gitMemoryTaskStatePath(taskEntry.taskId)),
       readTaskAssets(driver, ref, taskEntry.taskId),
-      readRefMarkdownTail(driver, ref, GIT_MEMORY_SESSION_CONVERSATION_MARKDOWN_PATH, limits.conversationMarkdownCharLimit),
+      readTaskConversationMarkdownTail(driver, ref, input.sessionId, taskEntry.taskId, limits.conversationMarkdownCharLimit),
       readRecentRuns(driver, ref, taskEntry.taskId, limits.runLimit),
       readRecentEvidence(driver, ref, taskEntry.taskId, limits.evidenceLimit),
       readRecentCommits(driver, ref, limits.commitLogLimit),
@@ -364,8 +380,16 @@ function deriveSessionActivityTailFromCommits(
   commits: CompactGitMemoryCommitSummary[],
   limit: number,
 ): GitMemoryCommitActivityRecord[] {
+  const seenCommits = new Set<string>();
   const sorted = commits
     .map((commit, index) => ({ commit, index }))
+    .filter(({ commit }) => {
+      if (seenCommits.has(commit.commit)) {
+        return false;
+      }
+      seenCommits.add(commit.commit);
+      return true;
+    })
     .filter(({ commit }) => Boolean(commit.trailers.event && commit.trailers.at))
     .sort((left, right) => {
       const atCompare = (left.commit.trailers.at ?? "").localeCompare(right.commit.trailers.at ?? "");
@@ -380,6 +404,31 @@ function deriveSessionActivityTailFromCommits(
     activities.push(activity);
   }
   return tail(activities, limit);
+}
+
+function isCompatibleConversationPrefix(
+  aggregate: GitMemoryConversationRecord[],
+  messageFiles: GitMemoryConversationRecord[],
+): boolean {
+  if (aggregate.length === 0) {
+    return true;
+  }
+  if (aggregate.length > messageFiles.length) {
+    return false;
+  }
+  return aggregate.every((left, index) => {
+    const right = messageFiles[index];
+    if (!right) {
+      return false;
+    }
+    return true
+      && left.seq === right.seq
+      && left.role === right.role
+      && (left.text ?? "") === (right.text ?? "")
+      && (left.taskId ?? null) === (right.taskId ?? null)
+      && (left.runId ?? null) === (right.runId ?? null)
+      && (left.branch ?? null) === (right.branch ?? null);
+  });
 }
 
 function commitToSessionActivity(
@@ -463,6 +512,102 @@ async function readRefMarkdownTail(
   limit: number,
 ): Promise<string> {
   return markdownTail(await driver.readFile(ref, path), limit);
+}
+
+async function readTaskConversationMarkdownTail(
+  driver: GitMemoryWorktreeGitDriver,
+  ref: string,
+  sessionId: GitMemorySessionId,
+  taskId: GitMemoryTaskId,
+  limit: number,
+): Promise<string> {
+  const reconstructed = await readTaskConversationFromSessionStoreMarkdownTail(driver, ref, sessionId, taskId, limit);
+  if (reconstructed) {
+    return reconstructed;
+  }
+  const paths = (await driver.listTreePaths(ref, gitMemoryTaskConversationDir(taskId)))
+    .filter((path) => path.endsWith(".md"))
+    .sort();
+  if (paths.length === 0) {
+    return readRefMarkdownTail(driver, ref, GIT_MEMORY_SESSION_CONVERSATION_MARKDOWN_PATH, limit);
+  }
+  const records = parseGitMemoryConversationMessageFiles(await Promise.all(paths.map(async (path) => ({
+    path,
+    content: await driver.readFile(ref, path),
+  }))));
+  if (records.length === 0) {
+    return readRefMarkdownTail(driver, ref, GIT_MEMORY_SESSION_CONVERSATION_MARKDOWN_PATH, limit);
+  }
+  return markdownTail(renderGitMemoryConversationMarkdownDocument(records), limit);
+}
+
+async function readTaskConversationFromSessionStoreMarkdownTail(
+  driver: GitMemoryWorktreeGitDriver,
+  ref: string,
+  sessionId: GitMemorySessionId,
+  taskId: GitMemoryTaskId,
+  limit: number,
+): Promise<string> {
+  const messageStore = await openExistingSessionMessageStoreDriver(driver);
+  if (!messageStore) {
+    return "";
+  }
+  const runs = await readTaskRunsForConversation(driver, ref, taskId);
+  const recordsBySeq = new Map<number, GitMemoryConversationRecord>();
+  for (const run of runs) {
+    if (!run.sessionStoreCommit) {
+      continue;
+    }
+    const paths = (await messageStore.listTreePaths(run.sessionStoreCommit, gitMemorySessionStoreMessagesDir(sessionId)))
+      .filter((path) => path.endsWith(".md"))
+      .sort();
+    const records = parseGitMemoryConversationMessageFiles(await Promise.all(paths.map(async (path) => ({
+      path,
+      content: await messageStore.readFile(run.sessionStoreCommit!, path),
+    }))));
+    for (const record of records.filter((record) => isConversationSeqInRanges(record.seq, run.conversationRefs))) {
+      recordsBySeq.set(record.seq, record);
+    }
+  }
+  const records = [...recordsBySeq.values()].sort((left, right) => left.seq - right.seq);
+  return records.length > 0
+    ? markdownTail(renderGitMemoryConversationMarkdownDocument(records), limit)
+    : "";
+}
+
+async function readTaskRunsForConversation(
+  driver: GitMemoryWorktreeGitDriver,
+  ref: string,
+  taskId: GitMemoryTaskId,
+): Promise<GitMemoryRunFile[]> {
+  const prefix = `${gitMemoryTaskDir(taskId)}/runs`;
+  const paths = (await driver.listTreePaths(ref, prefix))
+    .filter((path) => path.endsWith(".json"))
+    .sort();
+  const runs: GitMemoryRunFile[] = [];
+  for (const path of paths) {
+    const run = await readRefJson<GitMemoryRunFile>(driver, ref, path);
+    if (run) {
+      runs.push(run);
+    }
+  }
+  return runs;
+}
+
+async function openExistingSessionMessageStoreDriver(
+  driver: GitMemoryWorktreeGitDriver,
+): Promise<GitMemoryWorktreeGitDriver | null> {
+  const repoPath = join(driver.repoPath, GIT_MEMORY_SESSION_STORE_DIR);
+  try {
+    await access(join(repoPath, ".git"));
+    return new GitMemoryWorktreeGitDriver(repoPath);
+  } catch {
+    return null;
+  }
+}
+
+function isConversationSeqInRanges(seq: number, ranges: GitMemoryConversationSeqRange[]): boolean {
+  return ranges.some((range) => seq >= range.fromSeq && seq <= range.toSeq);
 }
 
 function parseJson<T>(value: string | null): T | null {

@@ -302,12 +302,17 @@ describe("git-context skill", () => {
     })]));
 
     const driver = new GitMemoryWorktreeGitDriver(prepared.session.repoPath);
+    const mainConversation = await driver.readFile(
+      GIT_MEMORY_MAIN_REF,
+      "session/conversation.md",
+    ) ?? "";
     const taskConversation = await driver.readFile(
       prepared.uploadTask.ref,
       "session/conversation.md",
     ) ?? "";
-    expect(taskConversation).toContain("continue upload UI redesign");
-    expect(taskConversation).toContain("Run: R-20260628-0003");
+    expect(mainConversation).toContain("continue upload UI redesign");
+    expect(taskConversation).not.toContain("continue upload UI redesign");
+    expect(taskConversation).not.toContain("Run: R-20260628-0003");
   });
 
   it("keeps deeper task lists retrievable on demand after route activation", async () => {
@@ -421,9 +426,11 @@ describe("git-context skill", () => {
 
     const created = result.v2?.structuredContent as { ref: string };
     const driver = new GitMemoryWorktreeGitDriver(prepared.session.repoPath);
+    const mainConversation = await driver.readFile(GIT_MEMORY_MAIN_REF, "session/conversation.md") ?? "";
     const taskConversation = await driver.readFile(created.ref, "session/conversation.md") ?? "";
+    expect(mainConversation).toContain("start notification digest investigation");
     expect(taskConversation).toContain("start notification digest investigation");
-    expect(taskConversation).toContain("Run: R-20260628-0003");
+    expect(taskConversation).not.toContain("Run: R-20260628-0003");
   });
 
   it("marks a pending turn as clarifying without allocating a run id", async () => {

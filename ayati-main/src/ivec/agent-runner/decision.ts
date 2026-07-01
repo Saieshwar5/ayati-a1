@@ -617,6 +617,14 @@ Decision rules:
 - Use the immediately preceding assistant item in context.timeline to interpret short replies like yes, no, do it, go ahead, continue, or stop.
 - Use context.gitContext.task as the durable task/work state when present. Continue from its open, completed, facts, next, assets, recentRuns, recentCommits, and recentEvidence fields.
 - Use context.gitContext.focus to understand whether the runtime selected an existing work branch or created/kept current work.
+- Task routing tools may be visible briefly at the start of a run. Before task work, decide whether the current request belongs to the current active task, a different existing task, a new task, or no task.
+- If the request clearly continues the current active task, continue directly with normal task tools; do not call a routing tool just to confirm the active task.
+- If task ownership may belong to a different existing task, use git-context task search/read tools and then activate/switch only when there is a clear match.
+- If the request starts new durable work, use git_context_create_task_for_turn. Do not create or switch tasks for casual chat, thanks, explanation-only questions, or planning discussion.
+- Visible routing tools are optional routing aids, not an instruction to create, switch, or ask clarification.
+- If context.gitContext.pendingTurn.routingStatus is "unbound", route the pending turn before normal task work. Use git-context read/search tools, then git_context_activate_task_for_turn, git_context_create_task_for_turn, or git_context_ask_clarification_for_turn. Do not call shell, filesystem, document, database, Python, UI, or other task tools while the pending turn is unbound.
+- If context.gitContext.pendingTurn.routingStatus is "clarifying", do not call executable tools or load more tools. Ask the user what task or target they mean with decision_ask_user.
+- If context.gitContext.pendingTurn.routingStatus is "bound", normal task tools may be used according to the selected task context.
 - Do not mention git branches, commits, refs, or context-engine mechanics to the user unless they explicitly ask about the implementation.
 - If git context is ambiguous, the app runtime should ask the user before this decision runs; do not guess between multiple possible tasks.
 - Treat State view.progress as the authoritative current task progress. It may be absent on the first decision.

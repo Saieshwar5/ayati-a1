@@ -7,10 +7,14 @@ import {
   GIT_MEMORY_SESSION_CONVERSATION_MARKDOWN_PATH,
   GIT_MEMORY_SESSION_META_PATH,
   GIT_MEMORY_SESSION_SCHEMA_PATH,
+  GIT_MEMORY_SESSION_STORE_DIR,
   GitMemoryWorktreeGitDriver,
   GitMemoryDailySessionStore,
+  gitMemorySessionMessagePath,
+  gitMemorySessionStoreMessagePath,
   gitMemoryTaskActionsPath,
   gitMemoryTaskAssetsPath,
+  gitMemoryTaskConversationMessagePath,
   gitMemoryTaskEvidenceManifestPath,
   gitMemoryTaskMarkdownPath,
   gitMemoryTaskNotesPath,
@@ -115,6 +119,37 @@ describe("GitMemoryDailySessionStore", () => {
     const driver = new GitMemoryWorktreeGitDriver(session.repoPath);
     expect(await driver.readFile(GIT_MEMORY_MAIN_REF, GIT_MEMORY_SESSION_CONVERSATION_MARKDOWN_PATH))
       .toContain("I will inspect the upload path.");
+    expect(await driver.readFile(GIT_MEMORY_MAIN_REF, gitMemorySessionMessagePath(user.seq, user.role))).toBe([
+      "# Message 000001",
+      "",
+      "Role: User",
+      "At: 2026-06-28T09:00:00+05:30",
+      "Session: S-20260628-local",
+      "",
+      "Fix upload handling",
+      "",
+    ].join("\n"));
+    expect(await driver.readFile(GIT_MEMORY_MAIN_REF, gitMemorySessionMessagePath(assistant.seq, assistant.role))).toBe([
+      "# Message 000002",
+      "",
+      "Role: Assistant",
+      "At: 2026-06-28T09:00:05+05:30",
+      "Session: S-20260628-local",
+      "Task: W-20260628-0001",
+      "Run: R-20260628-0001",
+      "",
+      "I will inspect the upload path.",
+      "",
+    ].join("\n"));
+    const messageStore = new GitMemoryWorktreeGitDriver(join(session.repoPath, GIT_MEMORY_SESSION_STORE_DIR));
+    expect(await messageStore.readWorkingFile(
+      gitMemorySessionStoreMessagePath(session.sessionId, user.seq, user.role),
+    )).toContain("Fix upload handling");
+    expect(await messageStore.readWorkingFile(
+      gitMemorySessionStoreMessagePath(session.sessionId, assistant.seq, assistant.role),
+    )).toContain("I will inspect the upload path.");
+    expect(await driver.listTreePaths(GIT_MEMORY_MAIN_REF, GIT_MEMORY_SESSION_STORE_DIR))
+      .toEqual([]);
     expect(await driver.readWorkingFile("session/conversation.jsonl")).toBeNull();
     expect(await driver.readWorkingFile(GIT_MEMORY_SESSION_CONVERSATION_MARKDOWN_PATH)).toBe([
       "# Conversation",
@@ -201,6 +236,12 @@ describe("GitMemoryDailySessionStore", () => {
     const driver = new GitMemoryWorktreeGitDriver(session.repoPath);
     expect(await driver.readFile(GIT_MEMORY_MAIN_REF, GIT_MEMORY_SESSION_CONVERSATION_MARKDOWN_PATH))
       .toContain("I will inspect upload handling.");
+    expect(await driver.readFile(GIT_MEMORY_MAIN_REF, gitMemorySessionMessagePath(record.seq, record.role))).toContain(
+      "Session: S-20260628-local",
+    );
+    expect(await driver.readFile(GIT_MEMORY_MAIN_REF, gitMemorySessionMessagePath(record.seq, record.role))).toContain(
+      "I will inspect upload handling.",
+    );
     const log = await driver.log(GIT_MEMORY_MAIN_REF, 5);
     expect(parseGitMemoryCommitTrailers(log[0]?.message ?? "")).toMatchObject({
       event: "conversation_appended",
@@ -331,22 +372,12 @@ describe("GitMemoryDailySessionStore", () => {
 
     const driver = new GitMemoryWorktreeGitDriver(session.repoPath);
     expect(await driver.readFile(task.ref, "session/conversation.jsonl")).toBeNull();
-    expect(await driver.readFile(task.ref, GIT_MEMORY_SESSION_CONVERSATION_MARKDOWN_PATH)).toBe([
-      "# Conversation",
-      "",
-      "## 2026-06-28T09:00:00+05:30 User",
-      "",
-      "Task: W-20260628-0001",
-      "",
-      "Fix upload handling",
-      "",
-      "## 2026-06-28T09:00:05+05:30 Assistant",
-      "",
-      "Task: W-20260628-0001",
-      "",
-      "I will inspect upload handling.",
-      "",
-    ].join("\n"));
+    expect(await driver.readFile(task.ref, GIT_MEMORY_SESSION_CONVERSATION_MARKDOWN_PATH)).not.toContain(
+      `Task: ${task.taskId}`,
+    );
+    expect(await driver.readFile(task.ref, gitMemoryTaskConversationMessagePath(task.taskId, 1, "user"))).toBeNull();
+    expect(await driver.readFile(task.ref, gitMemoryTaskConversationMessagePath(task.taskId, 2, "assistant"))).toBeNull();
+    expect(await driver.readFile(task.ref, gitMemoryTaskConversationMessagePath(task.taskId, 3, "user"))).toBeNull();
     expect(await driver.readFile(task.ref, `tasks/${task.taskId}/task.json`)).toBeNull();
     const taskMarkdown = await driver.readFile(task.ref, gitMemoryTaskMarkdownPath(task.taskId)) ?? "";
     expect(taskMarkdown).toContain("# Fix upload handling");
@@ -376,8 +407,8 @@ describe("GitMemoryDailySessionStore", () => {
       .toEqual({ schemaVersion: 1, assets: [] });
     expect(await driver.readFile(task.ref, `tasks/${task.taskId}/assets.jsonl`)).toBeNull();
 
-    const taskLog = await driver.log(task.ref, 3);
-    expect(taskLog).toHaveLength(1);
+    const taskLog = await driver.log(task.ref, 5);
+    expect(taskLog[0]?.commit).toBe(task.taskCommit);
     expect(parseGitMemoryCommitTrailers(taskLog[0]?.message ?? "")).toMatchObject({
       sessionId: "S-20260628-local",
       taskId: "W-20260628-0001",
@@ -429,7 +460,7 @@ describe("GitMemoryDailySessionStore", () => {
     expect(markdown).toContain("I will inspect upload handling.");
   });
 
-  it("appends task run conversation ranges to task branch markdown without duplicating existing blocks", async () => {
+  it("starts task runs without writing task-local conversation files", async () => {
     const contextStoreDir = await mkdtemp(join(tmpdir(), "ayati-git-memory-"));
     const store = new GitMemoryDailySessionStore({ contextStoreDir });
     const session = await store.openOrCreateDailySession({
@@ -454,7 +485,7 @@ describe("GitMemoryDailySessionStore", () => {
       at: "2026-06-28T09:01:00+05:30",
     });
 
-    await store.startTaskRun({
+    const started = await store.startTaskRun({
       sessionId: session.sessionId,
       taskId: task.taskId,
       branch: task.branch,
@@ -463,45 +494,124 @@ describe("GitMemoryDailySessionStore", () => {
       toSeq: user.seq,
       at: "2026-06-28T09:01:30+05:30",
     });
-    const followUp = await store.appendConversationMessage({
-      sessionId: session.sessionId,
-      role: "user",
-      text: "finish it",
-      at: "2026-06-28T09:05:00+05:30",
-    });
-    const appended = await store.appendTaskConversationRange({
-      sessionId: session.sessionId,
-      taskId: task.taskId,
-      branch: task.branch,
-      runId: "R-20260628-0002",
-      fromSeq: followUp.seq,
-      toSeq: followUp.seq,
-      at: "2026-06-28T09:05:00+05:30",
-      reason: "task_routed",
-    });
-    await store.startTaskRun({
-      sessionId: session.sessionId,
-      taskId: task.taskId,
-      branch: task.branch,
-      runId: "R-20260628-0002",
-      fromSeq: followUp.seq,
-      toSeq: followUp.seq,
-      at: "2026-06-28T09:05:01+05:30",
-    });
 
     const driver = new GitMemoryWorktreeGitDriver(session.repoPath);
     const markdown = await driver.readFile(task.ref, GIT_MEMORY_SESSION_CONVERSATION_MARKDOWN_PATH) ?? "";
     expect(markdown.match(/Fix upload handling/g)).toHaveLength(1);
-    expect(markdown).toContain("Run: R-20260628-0001");
-    expect(markdown).toContain("finish it");
-    expect(markdown).toContain("Run: R-20260628-0002");
-    expect(await driver.log(task.ref, 5)).toHaveLength(2);
+    expect(markdown).not.toContain("Run: R-20260628-0001");
+    expect(await driver.readFile(
+      task.ref,
+      gitMemoryTaskConversationMessagePath(task.taskId, user.seq, user.role),
+    )).toBeNull();
     const taskLog = await driver.log(task.ref, 5);
-    expect(taskLog[0]?.commit).toBe(appended.taskCommit);
+    expect(started).toEqual({ runId: "R-20260628-0001" });
     expect(parseGitMemoryCommitTrailers(taskLog[0]?.message ?? "")).toMatchObject({
-      event: "conversation_appended",
-      conversationSeq: { fromSeq: followUp.seq, toSeq: followUp.seq },
+      event: "task_created",
     });
+  });
+
+  it("reads task detail conversation from task-local message files before aggregate markdown", async () => {
+    const contextStoreDir = await mkdtemp(join(tmpdir(), "ayati-git-memory-"));
+    const store = new GitMemoryDailySessionStore({ contextStoreDir });
+    const session = await store.openOrCreateDailySession({
+      date: "2026-06-28",
+      timezone: "Asia/Kolkata",
+      agentId: "local",
+      createdAt: "2026-06-28T00:00:00+05:30",
+    });
+    await store.appendConversationMessage({
+      sessionId: session.sessionId,
+      role: "user",
+      text: "Fix upload handling",
+      at: "2026-06-28T09:00:00+05:30",
+    });
+    await store.appendConversationMessage({
+      sessionId: session.sessionId,
+      role: "assistant",
+      text: "I will inspect upload handling.",
+      at: "2026-06-28T09:00:05+05:30",
+    });
+    const task = await store.createTaskBranch({
+      sessionId: session.sessionId,
+      title: "Fix upload handling",
+      objective: "Find and fix upload handling failures.",
+      fromSeq: 1,
+      toSeq: 2,
+      at: "2026-06-28T09:01:00+05:30",
+    });
+    const driver = new GitMemoryWorktreeGitDriver(session.repoPath);
+    await driver.commitSyntheticFiles({
+      ref: task.ref,
+      files: {
+        [gitMemoryTaskConversationMessagePath(task.taskId, 2, "assistant")]: [
+          "# Message 000002",
+          "",
+          "Role: Assistant",
+          "At: 2026-06-28T09:00:05+05:30",
+          "Session: S-20260628-local",
+          "Task: W-20260628-0001",
+          "",
+          "Task detail local copy.",
+          "",
+        ].join("\n"),
+      },
+      message: "override task-local detail conversation",
+    });
+
+    const detail = await store.readTaskDetail({
+      sessionId: session.sessionId,
+      taskId: task.taskId,
+      include: ["conversation"],
+      limits: { conversationMarkdownCharLimit: 2_000 },
+    });
+
+    expect(detail.conversationMarkdownTail).toContain("Task detail local copy.");
+    expect(detail.conversationMarkdownTail).not.toContain("I will inspect upload handling.");
+  });
+
+  it("falls back to aggregate task conversation when task-local message files are missing", async () => {
+    const contextStoreDir = await mkdtemp(join(tmpdir(), "ayati-git-memory-"));
+    const store = new GitMemoryDailySessionStore({ contextStoreDir });
+    const session = await store.openOrCreateDailySession({
+      date: "2026-06-28",
+      timezone: "Asia/Kolkata",
+      agentId: "local",
+      createdAt: "2026-06-28T00:00:00+05:30",
+    });
+    const task = await store.createTaskBranch({
+      sessionId: session.sessionId,
+      title: "Fix upload handling",
+      objective: "Find and fix upload handling failures.",
+      fromSeq: 99,
+      toSeq: 99,
+      at: "2026-06-28T09:01:00+05:30",
+    });
+    const driver = new GitMemoryWorktreeGitDriver(session.repoPath);
+    await driver.commitSyntheticFiles({
+      ref: task.ref,
+      files: {
+        [GIT_MEMORY_SESSION_CONVERSATION_MARKDOWN_PATH]: [
+          "# Conversation",
+          "",
+          "## 2026-06-28T09:00:00+05:30 User",
+          "",
+          "Task: W-20260628-0001",
+          "",
+          "Legacy aggregate task conversation.",
+          "",
+        ].join("\n"),
+      },
+      message: "add legacy aggregate task conversation",
+    });
+
+    const detail = await store.readTaskDetail({
+      sessionId: session.sessionId,
+      taskId: task.taskId,
+      include: ["conversation"],
+      limits: { conversationMarkdownCharLimit: 2_000 },
+    });
+
+    expect(detail.conversationMarkdownTail).toContain("Legacy aggregate task conversation.");
   });
 
   it("checkpoints session task index after task creation", async () => {
@@ -783,7 +893,6 @@ describe("GitMemoryDailySessionStore", () => {
     });
 
     const taskLog = await driver.log(task.ref, 5);
-    expect(taskLog).toHaveLength(2);
     expect(taskLog[0]?.commit).toBe(run.taskCommit);
     expect(taskLog[0]?.message).toContain("Outcome:\nUpload handling inspection completed.");
     expect(taskLog[0]?.message).toContain("Work Performed:\n- Read upload server implementation.");

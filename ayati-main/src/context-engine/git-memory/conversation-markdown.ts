@@ -6,6 +6,7 @@ import type {
 } from "./schema.js";
 
 export interface ConversationMarkdownMetadata {
+  sessionId?: string;
   taskId?: GitMemoryTaskId;
   runId?: GitMemoryRunId;
   branch?: string;
@@ -137,6 +138,118 @@ export function renderGitMemoryConversationMarkdownBlock(
   return `${lines.join("\n")}\n`;
 }
 
+export function renderGitMemoryConversationMessageFile(
+  record: GitMemoryConversationRecord,
+  metadata: ConversationMarkdownMetadata = {},
+): string {
+  const taskId = metadata.taskId ?? record.taskId ?? undefined;
+  const runId = metadata.runId ?? record.runId ?? undefined;
+  const branch = metadata.branch ?? record.branch ?? undefined;
+  const lines = [
+    `# Message ${formatMessageSeq(record.seq)}`,
+    "",
+    `Role: ${capitalizeRole(record.role)}`,
+    `At: ${record.at}`,
+    ...(metadata.sessionId ? [`Session: ${metadata.sessionId}`] : []),
+    ...(taskId ? [`Task: ${taskId}`] : []),
+    ...(runId ? [`Run: ${runId}`] : []),
+    ...(branch && branch !== "main" ? [`Branch: ${branch}`] : []),
+    "",
+    record.text?.trim() || `[content: ${record.contentRef ?? "unavailable"}]`,
+  ];
+  return `${lines.join("\n").trimEnd()}\n`;
+}
+
+export function parseGitMemoryConversationMessageFile(
+  value: string | null,
+): GitMemoryConversationRecord | null {
+  if (!value?.trim()) {
+    return null;
+  }
+  const lines = value.split(/\r?\n/);
+  const heading = /^#\s+Message\s+(\d+)\s*$/.exec(lines[0] ?? "");
+  if (!heading) {
+    return null;
+  }
+  const seq = Number(heading[1]);
+  if (!Number.isInteger(seq) || seq < 1) {
+    return null;
+  }
+
+  let role: GitMemoryConversationRole | undefined;
+  let at: string | undefined;
+  let taskId: GitMemoryTaskId | undefined;
+  let runId: GitMemoryRunId | undefined;
+  let branch: string | undefined;
+  let bodyStart = -1;
+
+  for (let index = 1; index < lines.length; index++) {
+    const line = lines[index] ?? "";
+    if (line.trim() === "") {
+      if (role && at) {
+        bodyStart = index + 1;
+      }
+      continue;
+    }
+    if (bodyStart >= 0) {
+      break;
+    }
+    const separator = line.indexOf(":");
+    if (separator < 0) {
+      return null;
+    }
+    const key = line.slice(0, separator).trim().toLowerCase();
+    const rawValue = line.slice(separator + 1).trim();
+    if (key === "role") {
+      const normalizedRole = rawValue.toLowerCase();
+      if (normalizedRole === "user" || normalizedRole === "assistant" || normalizedRole === "system") {
+        role = normalizedRole;
+      }
+    } else if (key === "at") {
+      at = rawValue;
+    } else if (key === "task") {
+      taskId = rawValue;
+    } else if (key === "run") {
+      runId = rawValue;
+    } else if (key === "branch") {
+      branch = rawValue;
+    }
+  }
+
+  if (!role || !at || bodyStart < 0) {
+    return null;
+  }
+  const text = lines.slice(bodyStart).join("\n").trim();
+  return {
+    seq,
+    role,
+    at,
+    text,
+    ...(taskId ? { taskId } : {}),
+    ...(runId ? { runId } : {}),
+    ...(branch ? { branch } : {}),
+  };
+}
+
+export function parseGitMemoryConversationMessageFiles(
+  files: Array<{ path: string; content: string | null }>,
+): GitMemoryConversationRecord[] {
+  return files
+    .map((file) => parseGitMemoryConversationMessageFile(file.content))
+    .filter((record): record is GitMemoryConversationRecord => record !== null)
+    .sort((left, right) => left.seq - right.seq || roleOrder(left.role) - roleOrder(right.role));
+}
+
 function capitalizeRole(role: GitMemoryConversationRole): string {
   return role.charAt(0).toUpperCase() + role.slice(1);
+}
+
+function formatMessageSeq(seq: number): string {
+  return String(seq).padStart(6, "0");
+}
+
+function roleOrder(role: GitMemoryConversationRole): number {
+  if (role === "user") return 0;
+  if (role === "assistant") return 1;
+  return 2;
 }

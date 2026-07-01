@@ -45,6 +45,7 @@ import {
 import type {
   GitMemoryConversationRecord,
   GitMemoryConversationRole,
+  GitMemoryConversationSeqRange,
   GitMemoryRunFile,
   GitMemoryRunId,
   GitMemorySessionId,
@@ -237,14 +238,7 @@ export class GitMemoryRuntime {
       createdAt: at,
       record: userMessage,
     });
-    this.setPendingTurn({
-      sessionId: session.sessionId,
-      fromSeq: userMessage.seq,
-      toSeq: userMessage.seq,
-      text: userMessage.text ?? "",
-      at: userMessage.at,
-      routingStatus: "unbound",
-    });
+    this.clearUnboundPendingTurn(session.sessionId);
     const memoryState = await this.hydrateMemoryState(session.sessionId);
     const context = buildGitMemoryContextPackFromMemoryState(memoryState);
     return {
@@ -323,14 +317,6 @@ export class GitMemoryRuntime {
         taskId: input.taskId,
         runId: input.runId,
       });
-      if (input.taskId) {
-        await this.store.appendTaskConversationMessage({
-          sessionId: input.sessionId,
-          taskId: input.taskId,
-          record,
-          at,
-        });
-      }
       return record;
     });
     if (!this.updateCachedTaskConversation(input.sessionId, input.taskId, record)) {
@@ -365,10 +351,9 @@ export class GitMemoryRuntime {
       return null;
     }
 
-    const pendingTurn = this.pendingTurns.get(input.sessionId);
+    const pendingTurn = this.ensureUnboundPendingTurn(input.sessionId, input);
     if (
-      !pendingTurn
-      || pendingTurn.routingStatus !== "unbound"
+      pendingTurn.routingStatus !== "unbound"
       || !sameConversationRange(pendingTurn, input)
     ) {
       return null;
@@ -405,16 +390,6 @@ export class GitMemoryRuntime {
         at: input.at,
         runId,
         summary: reason,
-      });
-      await this.store.appendTaskConversationRange({
-        sessionId: input.sessionId,
-        taskId: selectedTask.taskId,
-        branch: selectedTask.branch,
-        runId,
-        fromSeq: input.fromSeq,
-        toSeq: input.toSeq,
-        at: input.at,
-        reason: "task_routed",
       });
       await this.store.startTaskRun({
         sessionId: input.sessionId,
@@ -459,7 +434,7 @@ export class GitMemoryRuntime {
   }
 
   async activateTaskForTurn(input: ActivateGitMemoryTaskForTurnInput): Promise<RoutedGitMemoryUserTurn> {
-    const pendingTurn = this.requireUnboundPendingTurn(input.sessionId);
+    const pendingTurn = await this.requireOrCreateUnboundPendingTurn(input.sessionId, input.at);
     const state = await this.getOrHydrateCachedMemoryState(input.sessionId);
     const knownTask = state.knownTasks.find((task) => task.taskId === input.taskId);
     const mode: "continue_active_task" | "switch_to_existing_task" | "reopen_existing_task" =
@@ -491,16 +466,6 @@ export class GitMemoryRuntime {
         at,
         runId,
         summary: input.reason,
-      });
-      await this.store.appendTaskConversationRange({
-        sessionId: input.sessionId,
-        taskId: selectedTask.taskId,
-        branch: selectedTask.branch,
-        runId,
-        fromSeq: pendingTurn.fromSeq,
-        toSeq: pendingTurn.toSeq,
-        at,
-        reason: "task_routed",
       });
       await this.store.startTaskRun({
         sessionId: input.sessionId,
@@ -551,7 +516,7 @@ export class GitMemoryRuntime {
   }
 
   async createTaskForTurn(input: CreateGitMemoryTaskForTurnInput): Promise<RoutedGitMemoryUserTurn> {
-    const pendingTurn = this.requireUnboundPendingTurn(input.sessionId);
+    const pendingTurn = await this.requireOrCreateUnboundPendingTurn(input.sessionId, input.at);
     const at = input.at ?? pendingTurn.at;
     const routed = await this.writeQueue.enqueue({
       sessionId: input.sessionId,
@@ -631,7 +596,7 @@ export class GitMemoryRuntime {
   async askClarificationForTurn(
     input: AskGitMemoryTaskClarificationForTurnInput,
   ): Promise<Extract<RoutedGitMemoryUserTurn, { status: "ambiguous" }>> {
-    const pendingTurn = this.requireUnboundPendingTurn(input.sessionId);
+    const pendingTurn = await this.requireOrCreateUnboundPendingTurn(input.sessionId, input.at);
     const candidates = await this.taskRouteCandidatesForIds(
       input.sessionId,
       input.candidateTaskIds ?? [],
@@ -681,6 +646,7 @@ export class GitMemoryRuntime {
   }
 
   async routeUserTurn(input: ApplyGitMemoryTaskRouteInput): Promise<RoutedGitMemoryUserTurn> {
+    this.ensureUnboundPendingTurn(input.sessionId, input);
     const routed = await this.writeQueue.enqueue({
       sessionId: input.sessionId,
       type: "task_routed",
@@ -700,18 +666,6 @@ export class GitMemoryRuntime {
       const route = await this.taskRouter.applyResolution({ ...input, runId }, resolution);
       if (route.status === "ambiguous") {
         throw new Error("Git memory task route unexpectedly became ambiguous after run allocation.");
-      }
-      if (!route.createdTask) {
-        await this.store.appendTaskConversationRange({
-          sessionId: input.sessionId,
-          taskId: route.taskId,
-          branch: route.branch,
-          runId,
-          fromSeq: input.fromSeq,
-          toSeq: input.toSeq,
-          at: input.at,
-          reason: "task_routed",
-        });
       }
       await this.store.startTaskRun({
         sessionId: input.sessionId,
@@ -770,51 +724,75 @@ export class GitMemoryRuntime {
   }
 
   async finalizeTaskRun(input: FinalizeGitMemoryTaskRunInput): Promise<FinalizeGitMemoryTaskRunResult> {
-    const commitInput = buildGitMemoryTaskRunCommitInput(input);
+    const baseCommitInput = buildGitMemoryTaskRunCommitInput(input);
     const finalized = await this.writeQueue.enqueue({
-      sessionId: commitInput.sessionId,
+      sessionId: baseCommitInput.sessionId,
       type: "task_run_committed",
       label: "finalize_task_run",
-      createdAt: commitInput.completedAt,
+      createdAt: baseCommitInput.completedAt,
     }, async () => {
-      const existing = commitInput.runId
+      const existing = baseCommitInput.runId
         ? await this.store.readCommittedTaskRun({
-          sessionId: commitInput.sessionId,
-          taskId: commitInput.taskId,
-          runId: commitInput.runId,
+          sessionId: baseCommitInput.sessionId,
+          taskId: baseCommitInput.taskId,
+          runId: baseCommitInput.runId,
         })
         : null;
       if (existing) {
         return {
           result: existing,
           alreadyFinalized: true,
+          assistantMessage: undefined,
         };
       }
+      let assistantMessage: GitMemoryConversationRecord | undefined;
+      let commitInput = baseCommitInput;
+      if (input.assistantMessage?.trim()) {
+        assistantMessage = await this.store.appendConversationMessage({
+          sessionId: baseCommitInput.sessionId,
+          text: input.assistantMessage,
+          at: input.assistantAt ?? input.at,
+          taskId: baseCommitInput.taskId,
+          ...(baseCommitInput.runId ? { runId: baseCommitInput.runId } : {}),
+          role: "assistant",
+        });
+        commitInput = {
+          ...baseCommitInput,
+          conversationRefs: includeConversationRecordInRefs(baseCommitInput.conversationRefs, assistantMessage),
+        };
+      }
+      const snapshot = await this.store.commitSessionStoreSnapshot({
+        sessionId: commitInput.sessionId,
+        at: commitInput.completedAt,
+        summary: `Snapshot conversation for task run ${commitInput.runId ?? "unknown"}.`,
+      });
       return {
-        result: await this.store.commitTaskRun(commitInput),
+        result: await this.store.commitTaskRun({
+          ...commitInput,
+          sessionStoreCommit: snapshot.sessionStoreCommit,
+        }),
         alreadyFinalized: false,
+        assistantMessage,
       };
     });
-    if (!finalized.alreadyFinalized && !await this.cacheCommittedTaskRun(commitInput, finalized.result)) {
-      this.invalidateSessionMemory(commitInput.sessionId);
+    if (finalized.assistantMessage) {
+      this.invalidateSessionMemory(baseCommitInput.sessionId);
     }
-    this.clearCommittedPendingTurn(commitInput.sessionId, finalized.result.runId);
-
-    let assistantMessage: GitMemoryConversationRecord | undefined;
-    if (!finalized.alreadyFinalized && input.assistantMessage?.trim()) {
-      assistantMessage = await this.recordAssistantMessage({
-        sessionId: commitInput.sessionId,
-        text: input.assistantMessage,
-        at: input.assistantAt ?? input.at,
-        taskId: finalized.result.taskId,
-        runId: finalized.result.runId,
-      });
+    if (!finalized.alreadyFinalized && !await this.cacheCommittedTaskRun({
+      ...baseCommitInput,
+      conversationRefs: finalized.assistantMessage
+        ? includeConversationRecordInRefs(baseCommitInput.conversationRefs, finalized.assistantMessage)
+        : baseCommitInput.conversationRefs,
+      ...(finalized.result.sessionStoreCommit ? { sessionStoreCommit: finalized.result.sessionStoreCommit } : {}),
+    }, finalized.result)) {
+      this.invalidateSessionMemory(baseCommitInput.sessionId);
     }
+    this.clearCommittedPendingTurn(baseCommitInput.sessionId, finalized.result.runId);
 
     return {
       ...finalized.result,
       alreadyFinalized: finalized.alreadyFinalized,
-      ...(assistantMessage ? { assistantMessage } : {}),
+      ...(finalized.assistantMessage ? { assistantMessage: finalized.assistantMessage } : {}),
     };
   }
 
@@ -895,6 +873,26 @@ export class GitMemoryRuntime {
     this.pendingTurns.set(turn.sessionId, turn);
   }
 
+  private ensureUnboundPendingTurn(
+    sessionId: GitMemorySessionId,
+    input: ApplyGitMemoryTaskRouteInput,
+  ): PendingGitMemoryTurnEnvelope {
+    const existing = this.pendingTurns.get(sessionId);
+    if (existing && sameConversationRange(existing, input)) {
+      return existing;
+    }
+    const created: PendingGitMemoryTurnEnvelope = {
+      sessionId,
+      fromSeq: input.fromSeq,
+      toSeq: input.toSeq,
+      text: input.userMessage,
+      at: input.at ?? this.nowProvider().toISOString(),
+      routingStatus: "unbound",
+    };
+    this.setPendingTurn(created);
+    return created;
+  }
+
   private bindPendingTurn(
     sessionId: GitMemorySessionId,
     input: {
@@ -942,15 +940,44 @@ export class GitMemoryRuntime {
     }
   }
 
-  private requireUnboundPendingTurn(sessionId: GitMemorySessionId): PendingGitMemoryTurnEnvelope {
-    const pendingTurn = this.pendingTurns.get(sessionId);
-    if (!pendingTurn) {
+  private clearUnboundPendingTurn(sessionId: GitMemorySessionId): void {
+    const existing = this.pendingTurns.get(sessionId);
+    if (!existing || existing.routingStatus === "unbound") {
+      this.pendingTurns.delete(sessionId);
+    }
+  }
+
+  private async requireOrCreateUnboundPendingTurn(
+    sessionId: GitMemorySessionId,
+    at?: string,
+  ): Promise<PendingGitMemoryTurnEnvelope> {
+    const existing = this.pendingTurns.get(sessionId);
+    if (existing) {
+      if (existing.routingStatus !== "unbound") {
+        throw new Error(`Git memory pending turn is not unbound: ${existing.routingStatus}`);
+      }
+      return existing;
+    }
+    const cachedState = await this.getOrHydrateCachedMemoryState(sessionId);
+    const cachedLatestUserMessage = [...cachedState.session.conversationTail]
+      .reverse()
+      .find((record) => record.role === "user");
+    const latestUserMessage = cachedLatestUserMessage ?? [...await this.store.readSessionConversationRecords(sessionId)]
+      .reverse()
+      .find((record) => record.role === "user");
+    if (!latestUserMessage) {
       throw new Error(`Git memory pending turn not found for session: ${sessionId}`);
     }
-    if (pendingTurn.routingStatus !== "unbound") {
-      throw new Error(`Git memory pending turn is not unbound: ${pendingTurn.routingStatus}`);
-    }
-    return pendingTurn;
+    const created: PendingGitMemoryTurnEnvelope = {
+      sessionId,
+      fromSeq: latestUserMessage.seq,
+      toSeq: latestUserMessage.seq,
+      text: latestUserMessage.text ?? "",
+      at: at ?? latestUserMessage.at,
+      routingStatus: "unbound",
+    };
+    this.setPendingTurn(created);
+    return created;
   }
 
   private async taskRouteCandidatesForIds(
@@ -1310,6 +1337,27 @@ function conversationRecordsInRange(
   return records.filter((record) => record.seq >= range.fromSeq && record.seq <= range.toSeq);
 }
 
+function includeConversationRecordInRefs(
+  refs: GitMemoryConversationSeqRange[],
+  record: GitMemoryConversationRecord,
+): GitMemoryConversationSeqRange[] {
+  if (refs.length === 0) {
+    return [{ fromSeq: record.seq, toSeq: record.seq }];
+  }
+  const next = refs.map((ref) => ({ ...ref }));
+  const containing = next.find((ref) => record.seq >= ref.fromSeq && record.seq <= ref.toSeq);
+  if (containing) {
+    return next;
+  }
+  const last = next[next.length - 1]!;
+  if (record.seq >= last.fromSeq) {
+    last.toSeq = Math.max(last.toSeq, record.seq);
+    return next;
+  }
+  next.push({ fromSeq: record.seq, toSeq: record.seq });
+  return next.sort((left, right) => left.fromSeq - right.fromSeq);
+}
+
 function sameConversationRange(
   left: { fromSeq: number; toSeq: number },
   right: { fromSeq: number; toSeq: number },
@@ -1348,6 +1396,7 @@ function buildCachedRunFile(
     startedAt,
     completedAt,
     conversationRefs: input.conversationRefs,
+    ...(input.sessionStoreCommit ? { sessionStoreCommit: input.sessionStoreCommit } : {}),
     summary: input.summary,
     ...(input.intent ? { intent: input.intent } : {}),
     ...(input.routing ? { routing: input.routing } : {}),

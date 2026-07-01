@@ -11,6 +11,7 @@ import {
   GitMemoryDailySessionStore,
   GitMemoryWorktreeGitDriver,
   gitMemorySessionActiveTaskRef,
+  gitMemoryTaskConversationMessagePath,
 } from "../../../src/context-engine/git-memory/index.js";
 
 const execFileAsync = promisify(execFile);
@@ -375,6 +376,63 @@ describe("GitMemoryContextReader", () => {
         commit: run.taskCommit,
       },
     ]);
+  });
+
+  it("reads active task conversation from task-local message files before aggregate markdown", async () => {
+    const contextStoreDir = await mkdtemp(join(tmpdir(), "ayati-git-memory-context-"));
+    const store = new GitMemoryDailySessionStore({ contextStoreDir });
+    const session = await store.openOrCreateDailySession({
+      date: "2026-06-28",
+      timezone: "Asia/Kolkata",
+      agentId: "local",
+      createdAt: "2026-06-28T00:00:00+05:30",
+    });
+    await store.appendConversationMessage({
+      sessionId: session.sessionId,
+      role: "user",
+      text: "Fix upload handling",
+      at: "2026-06-28T09:00:00+05:30",
+    });
+    await store.appendConversationMessage({
+      sessionId: session.sessionId,
+      role: "assistant",
+      text: "I will inspect upload handling.",
+      at: "2026-06-28T09:00:05+05:30",
+    });
+    const task = await store.createTaskBranch({
+      sessionId: session.sessionId,
+      title: "Fix upload handling",
+      objective: "Find and fix upload handling failures.",
+      fromSeq: 1,
+      toSeq: 2,
+      at: "2026-06-28T09:01:00+05:30",
+    });
+    const driver = new GitMemoryWorktreeGitDriver(session.repoPath);
+    await driver.commitSyntheticFiles({
+      ref: task.ref,
+      files: {
+        [gitMemoryTaskConversationMessagePath(task.taskId, 2, "assistant")]: [
+          "# Message 000002",
+          "",
+          "Role: Assistant",
+          "At: 2026-06-28T09:00:05+05:30",
+          "Session: S-20260628-local",
+          "Task: W-20260628-0001",
+          "",
+          "Task-local assistant copy.",
+          "",
+        ].join("\n"),
+      },
+      message: "override task-local conversation message",
+    });
+
+    const pack = await new GitMemoryContextReader(store).buildActiveContext({
+      sessionId: session.sessionId,
+      limits: { conversationMarkdownCharLimit: 2_000 },
+    });
+
+    expect(pack.task?.conversationMarkdownTail).toContain("Task-local assistant copy.");
+    expect(pack.task?.conversationMarkdownTail).not.toContain("I will inspect upload handling.");
   });
 
   it("prefers the active-task custom ref over the current task branch", async () => {

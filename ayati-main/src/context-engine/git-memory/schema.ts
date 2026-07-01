@@ -4,6 +4,9 @@ export const GIT_MEMORY_SCHEMA_VERSION = 1;
 
 export const GIT_MEMORY_SESSION_META_PATH = "session/meta.json";
 export const GIT_MEMORY_SESSION_CONVERSATION_MARKDOWN_PATH = "session/conversation.md";
+export const GIT_MEMORY_SESSION_MESSAGES_DIR = "session/messages";
+export const GIT_MEMORY_SESSION_STORE_DIR = "session-store";
+export const GIT_MEMORY_SESSION_STORE_SESSIONS_DIR = "sessions";
 export const GIT_MEMORY_SESSION_SCHEMA_PATH = "session/schema.json";
 
 export type GitMemorySessionId = string;
@@ -77,6 +80,7 @@ export interface GitMemoryRunFile {
   startedAt: string;
   completedAt?: string;
   conversationRefs: GitMemoryConversationSeqRange[];
+  sessionStoreCommit?: string;
   summary: string;
   intent?: string;
   routing?: string;
@@ -165,6 +169,50 @@ export function gitMemoryTaskNotesPath(taskId: GitMemoryTaskId): string {
 
 export function gitMemoryTaskContextPath(taskId: GitMemoryTaskId): string {
   return `${gitMemoryTaskDir(taskId)}/context.md`;
+}
+
+export function gitMemoryTaskConversationDir(taskId: GitMemoryTaskId): string {
+  return `${gitMemoryTaskDir(taskId)}/conversation`;
+}
+
+export function gitMemoryTaskConversationMessagePath(
+  taskId: GitMemoryTaskId,
+  seq: number,
+  role: GitMemoryConversationRole,
+): string {
+  if (!Number.isInteger(seq) || seq < 1) {
+    throw new Error(`Invalid git-memory conversation sequence: ${seq}`);
+  }
+  return `${gitMemoryTaskConversationDir(taskId)}/${formatSequence(seq, 6)}-${role}.md`;
+}
+
+export function gitMemorySessionMessagePath(seq: number, role: GitMemoryConversationRole): string {
+  if (!Number.isInteger(seq) || seq < 1) {
+    throw new Error(`Invalid git-memory conversation sequence: ${seq}`);
+  }
+  return `${GIT_MEMORY_SESSION_MESSAGES_DIR}/${formatSequence(seq, 6)}-${role}.md`;
+}
+
+export function gitMemorySessionStoreSessionDir(sessionId: GitMemorySessionId): string {
+  if (!isGitMemorySessionId(sessionId)) {
+    throw new Error(`Invalid git-memory session id: ${sessionId}`);
+  }
+  return `${GIT_MEMORY_SESSION_STORE_SESSIONS_DIR}/${sessionId}`;
+}
+
+export function gitMemorySessionStoreMessagesDir(sessionId: GitMemorySessionId): string {
+  return `${gitMemorySessionStoreSessionDir(sessionId)}/messages`;
+}
+
+export function gitMemorySessionStoreMessagePath(
+  sessionId: GitMemorySessionId,
+  seq: number,
+  role: GitMemoryConversationRole,
+): string {
+  if (!Number.isInteger(seq) || seq < 1) {
+    throw new Error(`Invalid git-memory conversation sequence: ${seq}`);
+  }
+  return `${gitMemorySessionStoreMessagesDir(sessionId)}/${formatSequence(seq, 6)}-${role}.md`;
 }
 
 export function createGitMemoryTaskId(date: string, sequence: number): GitMemoryTaskId {
@@ -283,6 +331,7 @@ export function validateGitMemoryTaskStateFile(value: unknown): ValidationResult
     requireSchemaVersion(record, errors);
     requireTaskStatus(record, errors);
     requireNonEmptyString(record, "summary", errors);
+    requireOptionalNonEmptyString(record, "sessionStoreCommit", errors);
     requireStringArray(record, "completed", errors);
     requireStringArray(record, "open", errors);
     requireStringArray(record, "blockers", errors);
