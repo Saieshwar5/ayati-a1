@@ -155,6 +155,8 @@ export async function main(): Promise<void> {
     contextStoreDir: runtimeConfig.gitContext.storeDir,
     timezone: runtimeConfig.gitContext.timezone,
     agentId: runtimeConfig.gitContext.agentId,
+    sessionSummary: runtimeConfig.gitContext.sessionSummary,
+    ...(runtimeConfig.gitContext.sessionSummary.mode === "llm" ? { sessionSummaryProvider: provider } : {}),
   });
   await gitMemoryRuntime.openDailySession();
 
