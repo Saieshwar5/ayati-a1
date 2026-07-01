@@ -113,6 +113,31 @@ describe("parseAgentDecision", () => {
     expect(systemPrompt).not.toContain("decision_act");
   });
 
+  it("prefers the grouped prompt context paths in the stable decision prompt", async () => {
+    const { provider, generateTurn } = createProvider([
+      JSON.stringify({ kind: "reply", status: "completed", message: "Hi!" }),
+    ]);
+
+    await callAgentDecision({
+      provider,
+      stateView: createStateView(),
+      toolDefinitions: [],
+    });
+
+    const messages = generateTurn.mock.calls[0]?.[0]?.messages ?? [];
+    const systemPrompt = messages.find((message) => message.role === "system")?.content ?? "";
+    expect(systemPrompt).toContain("Prefer the grouped context paths");
+    expect(systemPrompt).toContain("context.git.current.task");
+    expect(systemPrompt).toContain("context.git.session.attachments");
+    expect(systemPrompt).toContain("context.scratch.progress");
+    expect(systemPrompt).toContain("context.scratch.feedback");
+    expect(systemPrompt).toContain("context.scratch.observations.latest");
+    expect(systemPrompt).toContain("context.scratch.trace.recentSteps");
+    expect(systemPrompt).toContain("context.tools.active");
+    expect(systemPrompt).toContain("context.personal.memorySnapshot");
+    expect(systemPrompt).toContain("Legacy fields such as context.gitContext");
+  });
+
   it("repairs act decisions that reference unselected tools into load_tools", async () => {
     const badAction = {
       kind: "act",

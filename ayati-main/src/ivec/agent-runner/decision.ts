@@ -615,27 +615,32 @@ Decision rules:
 - Treat State view.context as the bounded context pack for this decision.
 - Use context.timeline as chronological conversation context. The item with current=true is the current input.
 - Use the immediately preceding assistant item in context.timeline to interpret short replies like yes, no, do it, go ahead, continue, or stop.
-- Use context.gitContext.task as the durable task/work state when present. Continue from its open, completed, facts, next, assets, recentRuns, recentCommits, and recentEvidence fields.
-- Use context.gitContext.focus to understand whether the runtime selected an existing work branch or created/kept current work.
+- Prefer the grouped context paths: context.git for session/task memory, context.scratch for current-run state, context.tools for active tool state, and context.personal for long-lived user memory.
+- Use context.git.current.task as the durable task/work state when present. Continue from task.identity, task.state, task.assets, and task.activity.
+- Use context.git.current.focus to understand whether the runtime selected an existing work branch or created/kept current work.
+- Use context.git.session.meta for session identity, context.git.session.attachments for user-provided session inputs, and context.git.session.activity for recent session activity.
 - Task routing tools may be visible briefly at the start of a run. Before task work, decide whether the current request belongs to the current active task, a different existing task, a new task, or no task.
 - If the request clearly continues the current active task, continue directly with normal task tools; do not call a routing tool just to confirm the active task.
 - If task ownership may belong to a different existing task, use git-context task search/read tools and then activate/switch only when there is a clear match.
 - If the request starts new durable work, use git_context_create_task_for_turn. Do not create or switch tasks for casual chat, thanks, explanation-only questions, or planning discussion.
 - Visible routing tools are optional routing aids, not an instruction to create, switch, or ask clarification.
-- If context.gitContext.pendingTurn.routingStatus is "unbound", route the pending turn before normal task work. Use git-context read/search tools, then git_context_activate_task_for_turn, git_context_create_task_for_turn, or git_context_ask_clarification_for_turn. Do not call shell, filesystem, document, database, Python, UI, or other task tools while the pending turn is unbound.
-- If context.gitContext.pendingTurn.routingStatus is "clarifying", do not call executable tools or load more tools. Ask the user what task or target they mean with decision_ask_user.
-- If context.gitContext.pendingTurn.routingStatus is "bound", normal task tools may be used according to the selected task context.
+- If context.git.current.pendingTurn.routingStatus is "unbound", route the pending turn before normal task work. Use git-context read/search tools, then git_context_activate_task_for_turn, git_context_create_task_for_turn, or git_context_ask_clarification_for_turn. Do not call shell, filesystem, document, database, Python, UI, or other task tools while the pending turn is unbound.
+- If context.git.current.pendingTurn.routingStatus is "clarifying", do not call executable tools or load more tools. Ask the user what task or target they mean with decision_ask_user.
+- If context.git.current.pendingTurn.routingStatus is "bound", normal task tools may be used according to the selected task context.
 - Do not mention git branches, commits, refs, or context-engine mechanics to the user unless they explicitly ask about the implementation.
 - If git context is ambiguous, the app runtime should ask the user before this decision runs; do not guess between multiple possible tasks.
-- Treat State view.progress as the authoritative current task progress. It may be absent on the first decision.
-- Use State view.workingFeedback as the latest harness feedback. Correct the specific failed tool call or protocol issue before trying a different path.
-- Use State view.observations.latest as the latest real tool output cards. If these cards answer the user, reply instead of rerunning equivalent tools.
+- Treat context.scratch.progress as the authoritative current task progress. It may be absent on the first decision.
+- Use context.scratch.feedback as the latest harness feedback. Correct the specific failed tool call or protocol issue before trying a different path.
+- Use context.scratch.observations.latest as the latest real tool output cards. If these cards answer the user, reply instead of rerunning equivalent tools.
 - Treat observations as hot bounded context. Respect each card's retention: next_step is temporary, while_relevant can guide nearby work, and evidence_only means use evidence tools before relying on the preview.
-- Use State view.trace.recentSteps only as compact execution history, not as evidence.
-- Use State view.trace.recentFailures to avoid repeating failed paths.
+- Use context.scratch.trace.recentSteps only as compact execution history, not as evidence.
+- Use context.scratch.trace.recentFailures to avoid repeating failed paths.
+- Use context.tools.active and context.tools.lastLoad as compact tool availability state. Full executable schemas are provided as native tools, not inside context.
+- Use context.personal.memorySnapshot for long-lived user preferences or facts when present.
+- Legacy fields such as context.gitContext, State view.progress, State view.workingFeedback, State view.observations, and State view.trace may still exist for compatibility; prefer the grouped context paths above.
 - Do not use workingNotes as factual memory; the harness owns tool-output context.
 - Use evidence tools for truncated, chunked, or evidence_only output before rerunning the original output-producing tool.
-- If State view.progress.status is "done", return a reply. Do not call more tools.
+- If context.scratch.progress.status is "done", return a reply. Do not call more tools.
 - Autonomous execution policy: for actionable user requests, prefer progress over discussion.
 - Treat preference gaps as assumptions, not blockers, when reasonable safe defaults exist.
 - Treat short confirmations or delegation like "yes", "go ahead", "continue", "do it", "whatever feels right", and "surprise me" as permission to proceed with reasonable defaults.
@@ -710,6 +715,10 @@ function buildStateViewPromptBreakdown(stateView: AgentStateView): Record<string
   return {
     "state.context": stringifySection(stateView.context),
     "state.context.timeline": stringifySection(stateView.context.timeline),
+    "state.context.git": stringifySection(stateView.context.git),
+    "state.context.tools": stringifySection(stateView.context.tools),
+    "state.context.personal": stringifySection(stateView.context.personal),
+    "state.context.scratch": stringifySection(stateView.context.scratch),
     "state.context.gitContext": stringifySection(stateView.context.gitContext),
     "state.context.personalMemorySnapshot": stateView.context.personalMemorySnapshot,
     "state.progress": stringifySection(stateView.progress),
