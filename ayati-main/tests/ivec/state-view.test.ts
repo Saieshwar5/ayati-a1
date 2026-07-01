@@ -275,7 +275,7 @@ describe("buildAgentStateView", () => {
     }]);
   });
 
-  it("keeps personal memory but omits old session state", () => {
+  it("groups personal memory without mixing it into git, tools, or scratch context", () => {
     const state = createLoopState({
       harnessContext: createHarnessContext({
         personalMemorySnapshot: "Prefer exact schema contracts.",
@@ -288,6 +288,9 @@ describe("buildAgentStateView", () => {
     expect(stateView.context.personal).toEqual({
       memorySnapshot: "Prefer exact schema contracts.",
     });
+    expect(stateView.context.git).not.toHaveProperty("personalMemorySnapshot");
+    expect(stateView.context.tools).toBeUndefined();
+    expect(stateView.context.scratch).toBeUndefined();
     expect(Object.keys(stateView.context).sort()).toEqual([
       "git",
       "gitContext",
