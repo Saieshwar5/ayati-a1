@@ -14,6 +14,7 @@ import {
   gitMemorySessionActiveTaskRef,
   gitMemorySessionLatestBaseRef,
   gitMemorySessionLatestRunRef,
+  gitMemorySessionTaskRef,
   gitMemoryTaskLatestRunRef,
   readGitMemoryCustomRef,
   writeGitMemoryCustomRef,
@@ -21,6 +22,7 @@ import {
 import {
   nextGitMemoryTaskSequence,
   readGitMemoryTaskEntries,
+  readGitMemorySessionTaskEntries,
   resolveGitMemoryTaskEntry,
   type GitMemoryDerivedTaskEntry,
 } from "./task-refs.js";
@@ -292,6 +294,9 @@ export interface GitMemoryTaskRoutingSnapshotTask {
   blockers: string[];
   facts: string[];
   next: string;
+  updatedAt?: string;
+  latestRunId?: GitMemoryRunId;
+  files?: string[];
   missing?: boolean;
 }
 
@@ -799,11 +804,11 @@ export class GitMemoryDailySessionStore {
       throw new Error("Git memory task search query is required.");
     }
     const limit = normalizeReadLimit(input.limit, 5);
-    const snapshot = await readTaskRoutingSnapshotFromDriver(driver, input.sessionId);
+    const documents = await readTaskSearchDocumentsFromDriver(driver, input.sessionId);
     const queryTokens = tokenizeSearchText(query);
-    const matches = snapshot.tasks
-      .filter((task) => !input.status || task.status === input.status)
-      .map((task) => scoreTaskSearchMatch(task, query, queryTokens))
+    const matches = documents
+      .filter((document) => !input.status || document.task.status === input.status)
+      .map((document) => scoreTaskSearchMatch(document, query, queryTokens))
       .filter((match) => match.score > 0)
       .sort((left, right) => right.score - left.score || left.taskId.localeCompare(right.taskId))
       .slice(0, limit);
@@ -932,10 +937,12 @@ export class GitMemoryDailySessionStore {
         [gitMemoryTaskAssetsPath(taskId)]: prettyJson({ schemaVersion: 1, assets: [] } satisfies GitMemoryTaskAssetsFile),
         [gitMemoryTaskNotesPath(taskId)]: renderGitMemoryTaskNotes({
           taskId,
+          branch,
           title: task.title,
           objective: task.objective,
           status,
           state,
+          updatedAt: at,
         }),
         [gitMemoryTaskContextPath(taskId)]: "",
       },
@@ -958,6 +965,7 @@ export class GitMemoryDailySessionStore {
 
     await driver.checkoutBranch(ref);
     await writeGitMemoryCustomRef(driver, gitMemorySessionActiveTaskRef(input.sessionId), taskCommit);
+    await writeGitMemoryCustomRef(driver, gitMemorySessionTaskRef(input.sessionId, taskId), taskCommit);
 
     return { taskId, branch, ref, title: task.title, objective: task.objective, status, state, taskCommit };
   }
@@ -976,6 +984,7 @@ export class GitMemoryDailySessionStore {
       await driver.checkoutBranch(ref);
     }
     await writeGitMemoryCustomRef(driver, gitMemorySessionActiveTaskRef(input.sessionId), ref);
+    await writeGitMemoryCustomRef(driver, gitMemorySessionTaskRef(input.sessionId, input.taskId), ref);
 
     return {
       taskId: input.taskId,
@@ -1107,6 +1116,11 @@ export class GitMemoryDailySessionStore {
     const decisions = normalizeMemoryList(input.decisions) ?? [];
     const next = input.next ?? updatedState.next;
     const outcome = input.outcome ?? defaultRunOutcome(input.status, input.summary);
+    const noteFiles = taskNoteFiles(input.changedFiles ?? [], evidence, mergedAssets);
+    const noteRecentWork = unique([
+      ...workPerformed,
+      ...(evidenceSummaries(evidence) ?? []),
+    ]);
     const run: GitMemoryRunFile = {
       schemaVersion: 1,
       runId,
@@ -1139,11 +1153,15 @@ export class GitMemoryDailySessionStore {
       [gitMemoryTaskEvidenceManifestPath(input.taskId, runId)]: jsonl(evidence),
       [gitMemoryTaskNotesPath(input.taskId)]: renderGitMemoryTaskNotes({
         taskId: input.taskId,
+        branch: taskEntry.branch,
         title: taskEntry.title,
         objective: taskEntry.objective,
         status: taskEntry.status,
         state: updatedState,
         latestRun: run,
+        updatedAt: completedAt,
+        files: noteFiles,
+        recentWork: noteRecentWork,
       }),
     };
     if (!sameTaskAssets(existingAssets, mergedAssets)) {
@@ -1183,6 +1201,7 @@ export class GitMemoryDailySessionStore {
     });
     await writeGitMemoryCustomRef(driver, gitMemorySessionActiveTaskRef(input.sessionId), taskCommit);
     await writeGitMemoryCustomRef(driver, gitMemorySessionLatestRunRef(input.sessionId), taskCommit);
+    await writeGitMemoryCustomRef(driver, gitMemorySessionTaskRef(input.sessionId, input.taskId), taskCommit);
     await writeGitMemoryCustomRef(driver, gitMemoryTaskLatestRunRef(input.taskId), taskCommit);
 
     return {
@@ -1417,6 +1436,18 @@ function evidenceSummaries(evidence: GitMemoryEvidenceManifestRecord[]): string[
     .map((record) => record.summary.trim())
     .filter(Boolean));
   return summaries.length > 0 ? summaries : undefined;
+}
+
+function taskNoteFiles(
+  changedFiles: string[],
+  evidence: GitMemoryEvidenceManifestRecord[],
+  assets: TaskAssetRecord[],
+): string[] {
+  return unique([
+    ...changedFiles,
+    ...evidence.flatMap((record) => record.artifacts),
+    ...assets.map((asset) => asset.path ?? asset.name ?? "").filter(Boolean),
+  ].map((value) => value.trim()).filter(Boolean));
 }
 
 function defaultRunOutcome(status: GitMemoryRunStatus, summary: string): string {
@@ -1696,14 +1727,23 @@ async function activeTaskFromCustomRef(
   return undefined;
 }
 
+interface GitMemoryTaskSearchDocument {
+  entry: GitMemoryDerivedTaskEntry;
+  task: GitMemoryTaskRoutingSnapshotTask;
+  notesMarkdown: string;
+  recentWork: string[];
+  searchTerms: string[];
+}
+
 async function readTaskRoutingSnapshotFromDriver(
   driver: GitMemoryWorktreeGitDriver,
   sessionId: GitMemorySessionId,
 ): Promise<GitMemoryTaskRoutingSnapshot> {
-  const [tasks, currentBranch] = await Promise.all([
-    readGitMemoryTaskEntries(driver),
+  const [documents, currentBranch] = await Promise.all([
+    readTaskSearchDocumentsFromDriver(driver, sessionId),
     driver.currentBranch(),
   ]);
+  const tasks = documents.map((document) => document.entry);
   const branchTask = currentBranch?.startsWith("task/")
     ? tasks.find((task) => task.branch === currentBranch)
     : undefined;
@@ -1717,11 +1757,23 @@ async function readTaskRoutingSnapshotFromDriver(
       }
     : null;
 
-  const snapshotTasks: GitMemoryTaskRoutingSnapshotTask[] = [];
-  for (const taskEntry of tasks) {
+  return {
+    sessionId,
+    focus,
+    tasks: documents.map((document) => document.task),
+  };
+}
+
+async function readTaskSearchDocumentsFromDriver(
+  driver: GitMemoryWorktreeGitDriver,
+  sessionId: GitMemorySessionId,
+): Promise<GitMemoryTaskSearchDocument[]> {
+  const taskEntries = await readGitMemorySessionTaskEntries(driver, sessionId);
+  const documents: GitMemoryTaskSearchDocument[] = [];
+  for (const taskEntry of taskEntries) {
     const ref = taskEntry.ref;
     if (!(await driver.hasRef(ref))) {
-      snapshotTasks.push({
+      const task: GitMemoryTaskRoutingSnapshotTask = {
         taskId: taskEntry.taskId,
         branch: taskEntry.branch,
         ref,
@@ -1734,38 +1786,86 @@ async function readTaskRoutingSnapshotFromDriver(
         facts: [],
         next: taskEntry.title,
         missing: true,
+      };
+      documents.push({
+        entry: taskEntry,
+        task,
+        notesMarkdown: "",
+        recentWork: [],
+        searchTerms: [],
       });
       continue;
     }
 
-    const [taskMarkdown, state] = await Promise.all([
+    const [taskMarkdown, state, notesMarkdown] = await Promise.all([
       driver.readFile(ref, gitMemoryTaskMarkdownPath(taskEntry.taskId)),
       parseJson<GitMemoryTaskStateFile>(
         await driver.readFile(ref, gitMemoryTaskStatePath(taskEntry.taskId)),
       ),
+      driver.readFile(ref, gitMemoryTaskNotesPath(taskEntry.taskId)),
     ]);
     const task = parseGitMemoryTaskMarkdown(taskMarkdown);
-    snapshotTasks.push({
-      taskId: taskEntry.taskId,
-      branch: taskEntry.branch,
-      ref,
-      title: task?.title ?? taskEntry.title,
-      objective: task?.objective ?? taskEntry.title,
-      status: state?.status ?? taskEntry.status,
-      summary: state?.summary ?? task?.objective ?? taskEntry.title,
-      open: state?.open ?? [],
-      blockers: state?.blockers ?? [],
-      facts: state?.facts ?? [],
-      next: state?.next ?? task?.objective ?? taskEntry.title,
-      ...(!task || !state ? { missing: true } : {}),
+    const notes = parseTaskNotesSearchFields(notesMarkdown ?? "");
+    documents.push({
+      entry: taskEntry,
+      task: {
+        taskId: taskEntry.taskId,
+        branch: taskEntry.branch,
+        ref,
+        title: task?.title ?? taskEntry.title,
+        objective: task?.objective ?? taskEntry.title,
+        status: state?.status ?? taskEntry.status,
+        summary: state?.summary ?? task?.objective ?? taskEntry.title,
+        open: state?.open ?? [],
+        blockers: state?.blockers ?? [],
+        facts: state?.facts ?? [],
+        next: state?.next ?? task?.objective ?? taskEntry.title,
+        updatedAt: state?.updatedAt ?? taskEntry.updatedAt,
+        ...(notes.latestRunId ? { latestRunId: notes.latestRunId } : {}),
+        ...(notes.files.length > 0 ? { files: notes.files } : {}),
+        ...(!task || !state ? { missing: true } : {}),
+      },
+      notesMarkdown: notesMarkdown ?? "",
+      recentWork: notes.recentWork,
+      searchTerms: notes.searchTerms,
     });
   }
 
+  return documents;
+}
+
+function parseTaskNotesSearchFields(markdown: string): {
+  latestRunId?: GitMemoryRunId;
+  files: string[];
+  recentWork: string[];
+  searchTerms: string[];
+} {
+  const latestRunId = /^Latest Run:\s*(R-\d{8}-\d{4})$/m.exec(markdown)?.[1] as GitMemoryRunId | undefined;
   return {
-    sessionId,
-    focus,
-    tasks: snapshotTasks,
+    ...(latestRunId ? { latestRunId } : {}),
+    files: parseMarkdownListSection(markdown, "Files"),
+    recentWork: parseMarkdownListSection(markdown, "Recent Work"),
+    searchTerms: parseMarkdownTextSection(markdown, "Search Terms")
+      .toLowerCase()
+      .split(/[^a-z0-9._/-]+/g)
+      .map((value) => value.trim())
+      .filter(Boolean),
   };
+}
+
+function parseMarkdownListSection(markdown: string, title: string): string[] {
+  return parseMarkdownTextSection(markdown, title)
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.startsWith("- "))
+    .map((line) => line.slice(2).trim())
+    .filter(Boolean);
+}
+
+function parseMarkdownTextSection(markdown: string, title: string): string {
+  const escapedTitle = title.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const match = new RegExp(`^## ${escapedTitle}\\s*\\n([\\s\\S]*?)(?=^##\\s|(?![\\s\\S]))`, "m").exec(markdown);
+  return match?.[1]?.trim() ?? "";
 }
 
 async function existingWorkingPaths(
@@ -1954,10 +2054,11 @@ async function readCompactLog(
 }
 
 function scoreTaskSearchMatch(
-  task: GitMemoryTaskRoutingSnapshotTask,
+  document: GitMemoryTaskSearchDocument,
   rawQuery: string,
   queryTokens: string[],
 ): GitMemoryTaskSearchMatch {
+  const task = document.task;
   const reasons = new Set<string>();
   let score = 0;
   const normalizedQuery = normalizeSearchText(rawQuery);
@@ -1974,9 +2075,13 @@ function scoreTaskSearchMatch(
     { reason: "summary", weight: 8, values: [task.summary] },
     { reason: "next", weight: 7, values: [task.next] },
     { reason: "facts", weight: 6, values: task.facts },
+    { reason: "files", weight: 11, values: task.files ?? [] },
+    { reason: "recentWork", weight: 8, values: document.recentWork },
+    { reason: "searchTerms", weight: 7, values: document.searchTerms },
     { reason: "open", weight: 5, values: task.open },
     { reason: "blockers", weight: 5, values: task.blockers },
     { reason: "status", weight: 3, values: [task.status] },
+    { reason: "notes", weight: 2, values: [document.notesMarkdown] },
   ];
 
   for (const field of weightedFields) {
