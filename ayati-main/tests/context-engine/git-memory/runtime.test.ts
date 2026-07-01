@@ -19,6 +19,7 @@ import {
   type GitMemoryWriteBatchRequest,
   type GitMemoryWriteBatchSnapshot,
   type GitMemoryWriteQueueRunner,
+  type GitMemorySessionSummaryUpdater,
   parseGitMemoryCommitTrailers,
   sessionDateForAt,
 } from "../../../src/context-engine/git-memory/index.js";
@@ -200,6 +201,97 @@ describe("GitMemoryRuntime", () => {
       sourceToSeq: 4,
       previousCoveredUntilSeq: 2,
     });
+  });
+
+  it("uses an injected session summary updater", async () => {
+    const contextStoreDir = await mkdtemp(join(tmpdir(), "ayati-git-memory-runtime-"));
+    const buildUpdate = vi.fn<GitMemorySessionSummaryUpdater["buildUpdate"]>(async (input) => ({
+      text: "# Session Summary\n\nInjected summary.",
+      strategy: "llm",
+      coveredUntilSeq: 2,
+      messageCount: input.records.length,
+      sourceFromSeq: 1,
+      sourceToSeq: 2,
+    }));
+    const runtime = createGitMemoryRuntime({
+      contextStoreDir,
+      timezone: "Asia/Kolkata",
+      agentId: "local",
+      sessionSummaryUpdater: { buildUpdate },
+    });
+
+    const prepared = await runtime.prepareUserTurn({
+      userMessage: "Summarize this session with injected updater",
+      at: "2026-06-28T09:00:00+05:30",
+    });
+    await runtime.recordAssistantMessage({
+      sessionId: prepared.sessionId,
+      text: "Using injected updater.",
+      at: "2026-06-28T09:00:05+05:30",
+    });
+    await waitForCommittedWrites(runtime, prepared.sessionId, 2);
+
+    expect(buildUpdate).toHaveBeenCalledOnce();
+    expect(buildUpdate.mock.calls[0]?.[0]).toMatchObject({
+      records: [
+        { seq: 1, role: "user", text: "Summarize this session with injected updater" },
+        { seq: 2, role: "assistant", text: "Using injected updater." },
+      ],
+    });
+    const context = await runtime.buildActiveContext(prepared.sessionId);
+    expect(context.session.summary).toMatchObject({
+      text: "# Session Summary\n\nInjected summary.",
+      updatedAt: "2026-06-28T09:00:05+05:30",
+      coveredUntilSeq: 2,
+    });
+    const driver = new GitMemoryWorktreeGitDriver(prepared.repoPath);
+    const messageStore = await driver.openSubmoduleRepo(GIT_MEMORY_SESSION_STORE_DIR);
+    expect(JSON.parse(await messageStore.readFile(
+      GIT_MEMORY_MAIN_REF,
+      gitMemorySessionStoreSummaryMetaPath(prepared.sessionId),
+    ) ?? "{}")).toMatchObject({
+      strategy: "llm",
+      coveredUntilSeq: 2,
+      messageCount: 2,
+      sourceFromSeq: 1,
+      sourceToSeq: 2,
+    });
+  });
+
+  it("skips session summary writes when the injected updater returns null", async () => {
+    const contextStoreDir = await mkdtemp(join(tmpdir(), "ayati-git-memory-runtime-"));
+    const buildUpdate = vi.fn<GitMemorySessionSummaryUpdater["buildUpdate"]>(async () => null);
+    const runtime = createGitMemoryRuntime({
+      contextStoreDir,
+      timezone: "Asia/Kolkata",
+      agentId: "local",
+      sessionSummaryUpdater: { buildUpdate },
+    });
+
+    const prepared = await runtime.prepareUserTurn({
+      userMessage: "Do not write a summary",
+      at: "2026-06-28T09:00:00+05:30",
+    });
+    await runtime.recordAssistantMessage({
+      sessionId: prepared.sessionId,
+      text: "No summary should be written.",
+      at: "2026-06-28T09:00:05+05:30",
+    });
+    await waitForCommittedWrites(runtime, prepared.sessionId, 2);
+
+    expect(buildUpdate).toHaveBeenCalledOnce();
+    const context = await runtime.buildActiveContext(prepared.sessionId);
+    expect(context.session.summary).toBeUndefined();
+    const driver = new GitMemoryWorktreeGitDriver(prepared.repoPath);
+    const messageStore = await driver.openSubmoduleRepo(GIT_MEMORY_SESSION_STORE_DIR);
+    expect(await messageStore.readFile(
+      GIT_MEMORY_MAIN_REF,
+      gitMemorySessionStoreSummaryMarkdownPath(prepared.sessionId),
+    )).toBeNull();
+    expect(await messageStore.readFile(
+      GIT_MEMORY_MAIN_REF,
+      gitMemorySessionStoreSummaryMetaPath(prepared.sessionId),
+    )).toBeNull();
   });
 
   it("derives prepared turn context from memory state", async () => {

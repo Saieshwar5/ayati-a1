@@ -42,7 +42,10 @@ import {
   type ResolveGitMemoryTaskRouteInput,
   isGitMemoryPureFollowUpMessage,
 } from "./task-router.js";
-import { buildGitMemorySessionSummaryUpdate } from "./session-summary.js";
+import {
+  DeterministicGitMemorySessionSummaryUpdater,
+  type GitMemorySessionSummaryUpdater,
+} from "./session-summary.js";
 import type {
   GitMemoryConversationRecord,
   GitMemoryConversationRole,
@@ -68,6 +71,7 @@ export interface GitMemoryRuntimeOptions {
   store?: GitMemoryDailySessionStore;
   taskRouter?: GitMemoryTaskRouter;
   writeQueue?: GitMemoryWriteQueueRunner;
+  sessionSummaryUpdater?: GitMemorySessionSummaryUpdater;
 }
 
 export interface OpenGitMemoryRuntimeSessionInput {
@@ -185,6 +189,7 @@ export class GitMemoryRuntime {
   private readonly memoryStateHydrator: GitContextMemoryStateHydrator;
   private readonly taskRouter: GitMemoryTaskRouter;
   private readonly writeQueue: GitMemoryWriteQueueRunner;
+  private readonly sessionSummaryUpdater: GitMemorySessionSummaryUpdater;
   private readonly sessionMemoryCache = new Map<GitMemorySessionId, GitContextMemoryState>();
   private readonly pendingTurns = new Map<GitMemorySessionId, PendingGitMemoryTurnEnvelope>();
 
@@ -199,6 +204,7 @@ export class GitMemoryRuntime {
     this.memoryStateHydrator = new GitContextMemoryStateHydrator(this.store);
     this.taskRouter = options.taskRouter ?? new GitMemoryTaskRouter(this.store);
     this.writeQueue = options.writeQueue ?? new GitMemoryWriteQueue();
+    this.sessionSummaryUpdater = options.sessionSummaryUpdater ?? new DeterministicGitMemorySessionSummaryUpdater();
   }
 
   async openDailySession(input: OpenGitMemoryRuntimeSessionInput = {}): Promise<GitMemoryDailySessionHandle> {
@@ -881,7 +887,7 @@ export class GitMemoryRuntime {
   ): Promise<void> {
     const records = await this.store.readSessionConversationRecordsForSummary(sessionId);
     const previousSummary = this.sessionMemoryCache.get(sessionId)?.session.summary;
-    const summary = buildGitMemorySessionSummaryUpdate({
+    const summary = await this.sessionSummaryUpdater.buildUpdate({
       records,
       ...(previousSummary ? { previousSummary } : {}),
     });

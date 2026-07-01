@@ -24,6 +24,21 @@ export interface BuiltGitMemorySessionSummaryUpdate {
   previousCoveredUntilSeq?: number;
 }
 
+export interface GitMemorySessionSummaryUpdater {
+  buildUpdate(input: BuildGitMemorySessionSummaryUpdateInput): Promise<BuiltGitMemorySessionSummaryUpdate | null>;
+}
+
+export class DeterministicGitMemorySessionSummaryUpdater implements GitMemorySessionSummaryUpdater {
+  async buildUpdate(
+    input: BuildGitMemorySessionSummaryUpdateInput,
+  ): Promise<BuiltGitMemorySessionSummaryUpdate | null> {
+    return buildGitMemorySessionSummaryUpdate({
+      ...input,
+      strategy: "deterministic",
+    });
+  }
+}
+
 export interface ParseGitMemorySessionSummaryInput {
   sessionId: GitMemorySessionId;
   markdown: string | null;
