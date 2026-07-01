@@ -6,8 +6,13 @@ export interface PromptPersonalContext {
 }
 
 export interface PromptGitContext {
-  current: ContextEngineMachineContext;
+  current: PromptGitCurrentContext;
 }
+
+export type PromptGitCurrentContext = Omit<ContextEngineMachineContext, "session" | "task"> & {
+  session: Omit<ContextEngineMachineContext["session"], "conversationTail" | "conversationMarkdownTail">;
+  task?: Omit<NonNullable<ContextEngineMachineContext["task"]>, "conversationMarkdownTail">;
+};
 
 export interface PromptScratchContext {
   progress?: unknown;
@@ -42,11 +47,36 @@ export function projectAgentPromptContext(input: ProjectAgentPromptContextInput)
     } : {}),
     ...(input.context.gitContext ? {
       git: {
-        current: input.context.gitContext,
+        current: projectGitContextForPrompt(input.context.gitContext),
       },
     } : {}),
     ...(scratch ? { scratch } : {}),
   };
+}
+
+function projectGitContextForPrompt(gitContext: ContextEngineMachineContext): PromptGitCurrentContext {
+  const {
+    conversationTail: _conversationTail,
+    conversationMarkdownTail: _conversationMarkdownTail,
+    ...session
+  } = gitContext.session;
+  return {
+    ...gitContext,
+    session,
+    ...(gitContext.task ? {
+      task: projectGitTaskForPrompt(gitContext.task),
+    } : {}),
+  };
+}
+
+function projectGitTaskForPrompt(
+  task: NonNullable<ContextEngineMachineContext["task"]>,
+): NonNullable<PromptGitCurrentContext["task"]> {
+  const {
+    conversationMarkdownTail: _conversationMarkdownTail,
+    ...projected
+  } = task;
+  return projected;
 }
 
 function compactScratchContext(scratch: PromptScratchContext | undefined): PromptScratchContext | undefined {

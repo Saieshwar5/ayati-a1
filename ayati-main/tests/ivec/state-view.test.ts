@@ -105,6 +105,9 @@ describe("buildAgentStateView", () => {
       workId: "W-20260627-0001",
       open: ["Summarize invoice"],
     });
+    expect(context.git?.current.session).not.toHaveProperty("conversationTail");
+    expect(context.git?.current.session).not.toHaveProperty("conversationMarkdownTail");
+    expect(context.git?.current.task).not.toHaveProperty("conversationMarkdownTail");
     expect(context).not.toHaveProperty("continuity");
     expect(context).not.toHaveProperty("taskThreadContext");
     expect(context).not.toHaveProperty("sessionWork");
@@ -201,6 +204,9 @@ describe("buildAgentStateView", () => {
         current: true,
       },
     ]);
+    const context = buildAgentStateView(state).context;
+    expect(context.gitContext?.session.conversationTail).toHaveLength(2);
+    expect(context.git?.current.session).not.toHaveProperty("conversationTail");
   });
 
   it("falls back to the current input when git conversation is unavailable", () => {
