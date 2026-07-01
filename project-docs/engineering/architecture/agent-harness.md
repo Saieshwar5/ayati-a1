@@ -168,9 +168,10 @@ Tool loading has explicit outcomes:
 - `not_needed`: deterministic follow-up loading had nothing to add
 
 The latest load outcome is stored in transient run state and appears in the next
-decision state view as `toolLoad`. It includes requested selectors, loaded
-tools, already-active tools, evictions, missing selectors, status, and a short
-message. Historical load outcomes are not accumulated in prompt context.
+decision prompt under `context.tools.lastLoad` and `context.scratch.toolLoad`.
+It includes requested selectors, loaded tools, already-active tools, evictions,
+missing selectors, status, and a short message. Historical load outcomes are
+not accumulated in prompt context.
 
 The working set is cleared at task finalization. Legacy JSON decision parsing is
 kept for tests and migration resilience, but the app runtime should use native
@@ -178,30 +179,25 @@ control tools plus selected native executable tools.
 
 ## State View And Working Feedback
 
-The decision model receives a compact `State view` each iteration. The context
-portion is built by `context-pack.ts` and currently includes:
+The decision model receives a compact `State view` each iteration. Runtime code
+may keep compatibility aliases internally, but the model prompt is projected to
+a deduplicated grouped payload:
 
-- `timeline`: chronological bounded user/assistant/system events ending with
-  the current input
-- `gitContext`: durable daily-session git context, including pending-turn
-  routing state, focus, selected task state, task assets, recent runs, recent
-  commits, recent evidence, facts, open work, and next step
-- optional `personalMemorySnapshot`
+- `context.timeline`: chronological bounded user/assistant/system events ending
+  with the current input.
+- `context.git.session`: session metadata, optional compressed session summary,
+  session attachments, and recent session activity.
+- `context.git.current`: focus, pending-turn routing state, and selected task
+  context when a task is resolved.
+- `context.tools`: active tool names and the latest tool-load result.
+- `context.scratch`: current-run progress, working feedback, tool observations,
+  trace, transient attachments, and system-event state.
+- `context.personal`: long-lived user memory snapshot when present.
 
-The rest of the state view is sparse. Empty sections are omitted. When present,
-it can include:
-
-- `progress`: current-run status, summary, open work, blockers, verified facts,
-  evidence, next step, or user input needed.
-- `workingFeedback`: compact harness feedback for the next decision, including
-  tool-load problems, tool validation errors, execution failures, verification
-  failures, and retry hints.
-- `toolLoad`: the most recent tool-loading outcome.
-- `observations`: recent real tool-output context cards with retention metadata
-  such as `next_step`, `while_relevant`, or `evidence_only`.
-- `trace`: compact recent execution steps and deterministic failures.
-- `attachments`: incoming/prepared/managed attachments only when present.
-- `systemEvent`: the current system event only for system-event runs.
+The internal aliases `context.gitContext`, top-level `progress`,
+`workingFeedback`, `toolLoad`, `observations`, `trace`, `attachments`, and
+`systemEvent` may still exist for compatibility inside the runtime state view.
+They should not be treated as the canonical model-facing paths.
 
 Working feedback is model-facing. Feedback ledger events are operator-facing.
 Both should describe the same harness reality:
@@ -214,14 +210,14 @@ Both should describe the same harness reality:
 The decision model does not receive the internal run path, generated goal
 contract, empty progress scaffolding, or old activity/task-thread shelves. Open
 task continuation stays inside the existing decision stage through
-`gitContext.task`: it gives the model enough structured state to continue the
-focused work branch, use task assets, start new work, or ask the user when
-runtime task resolution is ambiguous.
+`context.git.current.task`: it gives the model enough structured state to
+continue the focused work branch, use task assets, start new work, or ask the
+user when runtime task resolution is ambiguous.
 
 If observations point to truncated, chunked, or `evidence_only` output, the
 model should use evidence tools before rerunning the original output-producing
-tool. Evidence rereads are hot context and should not become durable task memory
-unless verified progress promotes a fact.
+tool. Evidence rereads are hot context under `context.scratch.observations` and
+should not become durable task memory unless verified progress promotes a fact.
 
 ## Feedback Triage
 
@@ -347,7 +343,8 @@ mentioning harness internals.
 
 ## Failure Handling
 
-Failures are stored in `failureHistory` and compacted into `workingFeedback`.
+Failures are stored in `failureHistory` and compacted into
+`context.scratch.feedback`.
 The local failure policy can retry deterministic recoveries, such as retrying
 file writes with `createDirs=true` when a parent directory is missing.
 

@@ -1,6 +1,6 @@
 # Current State
 
-Last updated: 2026-06-30
+Last updated: 2026-07-01
 
 Ayati's active task-continuity path is git-native. The old task-thread and
 Activity continuation path is historical and must not be reintroduced into the
@@ -18,6 +18,12 @@ Current task-continuity model:
 daily git context + run recorder + personal memory -> git context pack -> decision state view
 ```
 
+The model prompt receives a deduplicated grouped projection:
+
+```text
+context.timeline + context.git + context.tools + context.scratch + context.personal
+```
+
 ## Implemented
 
 - Daily git context repositories with task branches.
@@ -30,6 +36,8 @@ daily git context + run recorder + personal memory -> git context pack -> decisi
   - `git_context_ask_clarification_for_turn`
 - Git-context read/search tools for explicit retrieval instead of loading every
   branch into the prompt.
+- Grouped prompt context with legacy aliases kept internal for compatibility
+  instead of promoted as duplicate model-facing payload.
 - Pending-routing guard: normal task tools cannot run while a pending turn is
   unbound or clarifying.
 - Active context refresh after activate/create routing.
@@ -37,6 +45,12 @@ daily git context + run recorder + personal memory -> git context pack -> decisi
 - Runtime-owned finalization with duplicate-run protection.
 - Run Markdown, action records, evidence manifests, task notes, task assets,
   commit trailers, and recent commit/evidence context.
+- Session summary files in the session-store submodule, projected at
+  `context.git.session.summary`.
+- Automatic deterministic session summary updates after assistant messages and
+  task finalization.
+- Pluggable session summary updater contract with an LLM updater scaffold,
+  deterministic fallback, and explicit runtime/env opt-in.
 - Compact model-facing git-context tool results that do not expose the full
   internal memory cache.
 - Hot tool-output observation retention: `next_step`, `while_relevant`, and
