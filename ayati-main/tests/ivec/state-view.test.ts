@@ -366,8 +366,11 @@ describe("buildAgentStateView", () => {
       .toMatchObject({ source: "tool_execution" });
   });
 
-  it("groups tool load, attachments, and system events under scratch while keeping top-level aliases", () => {
+  it("groups tool load, attachments, and system events while keeping top-level aliases", () => {
     const state = createLoopState({
+      harnessContext: createHarnessContext({
+        contextEngine: createGitContext(),
+      }),
       lastToolLoad: {
         status: "partial",
         requested: {
@@ -486,6 +489,13 @@ describe("buildAgentStateView", () => {
       name: "invoice.pdf",
       status: "registered",
     });
+    expect(stateView.context.git?.session.attachments).toMatchObject({
+      incoming: [{ id: "doc-1", name: "invoice.pdf", status: "registered" }],
+      prepared: [{ id: "prepared-1", name: "invoice.pdf", status: "ready" }],
+      managedFiles: [{ id: "file-1", name: "invoice.pdf", status: "ready" }],
+      managedDirectories: [{ id: "dir-1", name: "workspace", status: "ready" }],
+      warnings: ["Skipped one unsupported attachment."],
+    });
     expect(stateView.context.scratch?.attachments).toMatchObject({
       incoming: [{ id: "doc-1", name: "invoice.pdf", status: "registered" }],
       prepared: [{ id: "prepared-1", name: "invoice.pdf", status: "ready" }],
@@ -493,6 +503,13 @@ describe("buildAgentStateView", () => {
       managedDirectories: [{ id: "dir-1", name: "workspace", status: "ready" }],
       warnings: ["Skipped one unsupported attachment."],
     });
+    expect(stateView.context.git?.current.task?.assets).toEqual([{
+      assetId: "A-20260627-0001",
+      role: "input",
+      kind: "document",
+      name: "invoice.pdf",
+      path: "uploads/invoice.pdf",
+    }]);
     expect(stateView.systemEvent).toMatchObject({
       source: "calendar",
       eventName: "meeting.started",

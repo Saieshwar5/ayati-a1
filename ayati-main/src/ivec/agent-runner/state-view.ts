@@ -111,6 +111,7 @@ export function buildAgentStateView(state: LoopState, options: AgentStateViewOpt
   } : undefined;
   const context = projectAgentPromptContext({
     context: buildAgentContextPack(state),
+    sessionAttachments: attachments,
     tools: buildToolsContext({
       activeTools: options.activeTools,
       toolLoad,

@@ -15,6 +15,7 @@ export interface PromptGitSessionContext {
     sessionId: string;
     assetCount: number;
   };
+  attachments?: unknown;
   activity: {
     recent: ContextEngineMachineContext["session"]["activityTail"];
   };
@@ -79,6 +80,7 @@ export interface AgentPromptContext extends AgentContextPack {
 
 export interface ProjectAgentPromptContextInput {
   context: AgentContextPack;
+  sessionAttachments?: unknown;
   tools?: PromptToolsContext;
   scratch?: PromptScratchContext;
 }
@@ -95,7 +97,7 @@ export function projectAgentPromptContext(input: ProjectAgentPromptContextInput)
     } : {}),
     ...(input.context.gitContext ? {
       git: {
-        session: projectGitSessionForPrompt(input.context.gitContext.session),
+        session: projectGitSessionForPrompt(input.context.gitContext.session, input.sessionAttachments),
         current: projectGitCurrentForPrompt(input.context.gitContext),
       },
     } : {}),
@@ -104,12 +106,16 @@ export function projectAgentPromptContext(input: ProjectAgentPromptContextInput)
   };
 }
 
-function projectGitSessionForPrompt(session: ContextEngineMachineContext["session"]): PromptGitSessionContext {
+function projectGitSessionForPrompt(
+  session: ContextEngineMachineContext["session"],
+  attachments: unknown,
+): PromptGitSessionContext {
   return {
     meta: {
       sessionId: session.sessionId,
       assetCount: session.assetCount,
     },
+    ...(attachments ? { attachments } : {}),
     activity: {
       recent: session.activityTail,
     },
