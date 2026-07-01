@@ -362,4 +362,135 @@ describe("buildAgentStateView", () => {
     expect((stateView.context.scratch?.feedback as { latest?: Array<{ source: string }> } | undefined)?.latest?.[0])
       .toMatchObject({ source: "tool_execution" });
   });
+
+  it("groups tool load, attachments, and system events under scratch while keeping top-level aliases", () => {
+    const state = createLoopState({
+      lastToolLoad: {
+        status: "partial",
+        requested: {
+          query: "files",
+          toolNames: ["read_file"],
+          groups: ["filesystem"],
+        },
+        loaded: ["read_file"],
+        alreadyActive: [],
+        evicted: [],
+        missing: ["write_file"],
+        message: "Loaded read_file; write_file was unavailable.",
+      },
+      attachedDocuments: [{
+        documentId: "doc-1",
+        name: "invoice.pdf",
+        displayName: "invoice.pdf",
+        source: "cli",
+        originalPath: "/tmp/invoice.pdf",
+        storedPath: "/tmp/ayati/docs/invoice.pdf",
+        kind: "pdf",
+        mimeType: "application/pdf",
+        sizeBytes: 1024,
+        checksum: "sha256-doc",
+      }],
+      preparedAttachments: [{
+        preparedInputId: "prepared-1",
+        documentId: "doc-1",
+        displayName: "invoice.pdf",
+        source: "cli",
+        kind: "pdf",
+        mode: "unstructured_text",
+        sizeBytes: 1024,
+        checksum: "sha256-doc",
+        originalPath: "/tmp/invoice.pdf",
+        status: "ready",
+        warnings: [],
+        artifactPath: "/tmp/ayati/prepared/invoice.json",
+      }],
+      managedFiles: [{
+        fileId: "file-1",
+        sha256: "sha256-file",
+        originalName: "invoice.pdf",
+        safeName: "invoice.pdf",
+        kind: "pdf",
+        mimeType: "application/pdf",
+        sizeBytes: 1024,
+        origin: "user_upload",
+        storagePath: "/tmp/ayati/files/invoice.pdf",
+        metadataPath: "/tmp/ayati/files/invoice.json",
+        derivedDir: "/tmp/ayati/files/invoice",
+        createdAt: "2026-06-27T10:00:00.000Z",
+        updatedAt: "2026-06-27T10:00:00.000Z",
+        capabilities: ["text"],
+        processingStatus: "ready",
+        warnings: [],
+      }],
+      managedDirectories: [{
+        directoryId: "dir-1",
+        name: "workspace",
+        rootPath: "/tmp/workspace",
+        source: "cli",
+        createdAt: "2026-06-27T10:00:00.000Z",
+        updatedAt: "2026-06-27T10:00:00.000Z",
+        status: "ready",
+        capabilities: ["list", "read_files"],
+        include: [],
+        exclude: [],
+        maxDepth: 3,
+        fileCount: 2,
+        directoryCount: 1,
+        totalSizeBytes: 2048,
+        sampleEntries: [],
+        warnings: [],
+      }],
+      attachmentWarnings: ["Skipped one unsupported attachment."],
+      systemEvent: {
+        type: "system_event",
+        eventId: "evt-1",
+        source: "calendar",
+        eventName: "meeting.started",
+        receivedAt: "2026-06-27T10:00:00.000Z",
+        summary: "Meeting started.",
+        payload: {},
+      },
+      systemEventRequestedAction: "Prepare meeting notes.",
+      approvalRequired: true,
+      approvalState: "pending",
+    });
+
+    const stateView = buildAgentStateView(state);
+    expect(stateView.toolLoad).toMatchObject({
+      status: "partial",
+      loaded: ["read_file"],
+      missing: ["write_file"],
+    });
+    expect(stateView.context.scratch?.toolLoad).toMatchObject({
+      status: "partial",
+      loaded: ["read_file"],
+      missing: ["write_file"],
+    });
+    expect(stateView.attachments?.incoming?.[0]).toMatchObject({
+      id: "doc-1",
+      name: "invoice.pdf",
+      status: "registered",
+    });
+    expect(stateView.context.scratch?.attachments).toMatchObject({
+      incoming: [{ id: "doc-1", name: "invoice.pdf", status: "registered" }],
+      prepared: [{ id: "prepared-1", name: "invoice.pdf", status: "ready" }],
+      managedFiles: [{ id: "file-1", name: "invoice.pdf", status: "ready" }],
+      managedDirectories: [{ id: "dir-1", name: "workspace", status: "ready" }],
+      warnings: ["Skipped one unsupported attachment."],
+    });
+    expect(stateView.systemEvent).toMatchObject({
+      source: "calendar",
+      eventName: "meeting.started",
+      requestedAction: "Prepare meeting notes.",
+      approvalRequired: true,
+      approvalState: "pending",
+    });
+    expect(stateView.context.scratch?.systemEvent).toMatchObject({
+      source: "calendar",
+      eventName: "meeting.started",
+      requestedAction: "Prepare meeting notes.",
+      approvalRequired: true,
+      approvalState: "pending",
+    });
+  });
 });
