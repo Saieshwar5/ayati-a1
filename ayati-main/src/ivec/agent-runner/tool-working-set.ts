@@ -5,6 +5,7 @@ import type { ToolCatalog, ToolCatalogEntry } from "./tool-catalog.js";
 import {
   GIT_CONTEXT_READ_ONLY_TOOL_NAMES,
   GIT_CONTEXT_TURN_ROUTING_TOOL_NAMES,
+  isGitContextTurnRoutingToolName,
 } from "../../skills/builtins/git-context/tool-policy.js";
 
 export interface ToolLoadRequest {
@@ -39,9 +40,20 @@ interface RunToolState {
   ordered: string[];
   loadedAtStep: Map<string, number>;
   usedAtStep: Map<string, number>;
+  taskRouting: {
+    resolved: boolean;
+  };
 }
 
 const DEFAULT_MAX_VISIBLE_TOOLS = 12;
+const TASK_ROUTING_WINDOW_STEPS = 2;
+const TASK_ROUTING_WINDOW_TOOL_NAMES = [
+  "git_context_active",
+  "git_context_list_tasks",
+  "git_context_search_tasks",
+  "git_context_read_task",
+  ...GIT_CONTEXT_TURN_ROUTING_TOOL_NAMES,
+] as const;
 
 export class ToolWorkingSetManager {
   private readonly catalog: ToolCatalog;
@@ -74,8 +86,14 @@ export class ToolWorkingSetManager {
   }
 
   prepareForDecision(state: LoopState, context: ToolExecutionContext): ToolLoadResult {
+    const runState = this.getRunState(context);
+    const step = context.stepNumber ?? 0;
+    if (step > TASK_ROUTING_WINDOW_STEPS) {
+      this.removeTaskRoutingTools(runState, []);
+      this.syncMount(context);
+    }
     const request = buildDeterministicLoadRequest(state);
-    const result = this.load(request, context);
+    const result = this.load(this.addTaskRoutingWindowTools(request, state, context), context);
     this.syncMount(context);
     return result;
   }
@@ -156,6 +174,9 @@ export class ToolWorkingSetManager {
         continue;
       }
       state.usedAtStep.set(entry.name, context.stepNumber ?? 0);
+      if (!call.error && isGitContextTurnRoutingToolName(entry.name)) {
+        state.taskRouting.resolved = true;
+      }
       nextTools.push(...(call.error ? entry.nextOnFailure : entry.nextOnSuccess));
       if (!call.error && (entry.deactivationPolicy === "success" || entry.deactivationPolicy === "one_step")) {
         removeAfterUse.add(entry.name);
@@ -184,6 +205,10 @@ export class ToolWorkingSetManager {
       }
       this.syncMount(context);
     }
+    if (state.taskRouting.resolved) {
+      this.removeTaskRoutingTools(state, []);
+      this.syncMount(context);
+    }
 
     return result;
   }
@@ -207,8 +232,48 @@ export class ToolWorkingSetManager {
       }
       return !shouldRemove;
     });
+    if (state.taskRouting.resolved || step >= TASK_ROUTING_WINDOW_STEPS) {
+      this.removeTaskRoutingTools(state, removed);
+    }
     this.syncMount(context);
     return removed;
+  }
+
+  private addTaskRoutingWindowTools(
+    request: ToolLoadRequest,
+    state: LoopState,
+    context: ToolExecutionContext,
+  ): ToolLoadRequest {
+    const runState = this.getRunState(context);
+    if (runState.taskRouting.resolved) {
+      return request;
+    }
+    if (state.harnessContext.contextEngine?.pendingTurn?.routingStatus === "clarifying") {
+      return request;
+    }
+    const step = context.stepNumber ?? 0;
+    if (step < 1 || step > TASK_ROUTING_WINDOW_STEPS) {
+      return request;
+    }
+    return {
+      ...request,
+      toolNames: [
+        ...(request.toolNames ?? []),
+        ...TASK_ROUTING_WINDOW_TOOL_NAMES,
+      ],
+    };
+  }
+
+  private removeTaskRoutingTools(state: RunToolState, removed: string[]): void {
+    const before = state.ordered;
+    state.ordered = state.ordered.filter((tool) => !isTaskRoutingWindowTool(tool));
+    for (const tool of before) {
+      if (!state.ordered.includes(tool) && isTaskRoutingWindowTool(tool)) {
+        state.loadedAtStep.delete(tool);
+        state.usedAtStep.delete(tool);
+        removed.push(tool);
+      }
+    }
   }
 
   private resolveRequest(request: Required<Pick<ToolLoadRequest, "toolNames" | "groups">> & Pick<ToolLoadRequest, "query">): { entries: ToolCatalogEntry[]; missing: string[] } {
@@ -253,6 +318,9 @@ export class ToolWorkingSetManager {
       ordered: [],
       loadedAtStep: new Map(),
       usedAtStep: new Map(),
+      taskRouting: {
+        resolved: false,
+      },
     };
     this.runs.set(runId, created);
     return created;
@@ -379,6 +447,10 @@ function normalizeRequest(request: ToolLoadRequest): Required<Pick<ToolLoadReque
 
 function normalizeStrings(values: string[] | undefined): string[] {
   return [...new Set((values ?? []).map((value) => value.trim()).filter((value) => value.length > 0))];
+}
+
+function isTaskRoutingWindowTool(tool: string): boolean {
+  return (TASK_ROUTING_WINDOW_TOOL_NAMES as readonly string[]).includes(tool);
 }
 
 function summarizeLoadStatus(

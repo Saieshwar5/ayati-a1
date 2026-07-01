@@ -330,9 +330,10 @@ describe("createGitMemoryChatContextRuntime", () => {
       expect(routed).toBeNull();
       expect(readSnapshot).not.toHaveBeenCalled();
       const memoryState = await gitMemoryRuntime.buildMemoryState(second.sessionId);
-      expect(memoryState.pendingTurn).toMatchObject({
+      expect(memoryState.pendingTurn).not.toMatchObject({
+        fromSeq: second.messageSeq,
+        toSeq: second.messageSeq,
         text: "continue upload UI redesign",
-        routingStatus: "unbound",
       });
     } finally {
       rmSync(storeDir, { recursive: true, force: true });
@@ -446,10 +447,14 @@ describe("createGitMemoryChatContextRuntime", () => {
           runId,
           toolCallCount: 2,
           conversationRefs: [{ fromSeq: prepared.messageSeq, toSeq: prepared.messageSeq }],
+          sessionStoreCommit: expect.any(String),
           changedFiles: ["ayati-main/src/server/upload-server.ts"],
           newFacts: ["Upload route validates MIME type."],
         });
-      expect(await driver.log(GIT_MEMORY_MAIN_REF, 5)).toHaveLength(3);
+      expect((await driver.log(GIT_MEMORY_MAIN_REF, 5)).some((entry) => {
+        const trailers = parseGitMemoryCommitTrailers(entry.message);
+        return trailers.event === "session_checkpointed";
+      })).toBe(true);
     } finally {
       rmSync(storeDir, { recursive: true, force: true });
     }

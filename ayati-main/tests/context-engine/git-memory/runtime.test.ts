@@ -127,7 +127,7 @@ describe("GitMemoryRuntime", () => {
     expect(prepared.context).toEqual(buildGitMemoryContextPackFromMemoryState(prepared.memoryState));
   });
 
-  it("exposes prepared user messages as unbound pending turns", async () => {
+  it("keeps prepared user messages session-only before explicit task routing", async () => {
     const contextStoreDir = await mkdtemp(join(tmpdir(), "ayati-git-memory-runtime-"));
     const runtime = createGitMemoryRuntime({
       contextStoreDir,
@@ -142,16 +142,37 @@ describe("GitMemoryRuntime", () => {
     const memoryState = await runtime.buildMemoryState(prepared.sessionId);
     const context = await runtime.buildActiveContext(prepared.sessionId);
 
-    expect(prepared.memoryState.pendingTurn).toMatchObject({
-      fromSeq: prepared.userMessage.seq,
-      toSeq: prepared.userMessage.seq,
-      text: "Continue upload UI redesign",
-      at: "2026-06-28T09:00:00+05:30",
-      routingStatus: "unbound",
+    expect(prepared.memoryState.pendingTurn).toBeUndefined();
+    expect(prepared.context.pendingTurn).toBeUndefined();
+    expect(memoryState.pendingTurn).toBeUndefined();
+    expect(context.pendingTurn).toBeUndefined();
+    expect(prepared.memoryState.session.conversationTail).toMatchObject([
+      { seq: 1, role: "user", text: "Continue upload UI redesign" },
+    ]);
+  });
+
+  it("keeps greetings session-only without pending task routing", async () => {
+    const contextStoreDir = await mkdtemp(join(tmpdir(), "ayati-git-memory-runtime-"));
+    const runtime = createGitMemoryRuntime({
+      contextStoreDir,
+      timezone: "Asia/Kolkata",
+      agentId: "local",
     });
-    expect(prepared.context.pendingTurn).toEqual(prepared.memoryState.pendingTurn);
-    expect(memoryState.pendingTurn).toEqual(prepared.memoryState.pendingTurn);
-    expect(context.pendingTurn).toEqual(prepared.context.pendingTurn);
+
+    const prepared = await runtime.prepareUserTurn({
+      userMessage: "hii",
+      at: "2026-06-28T09:00:00+05:30",
+    });
+    const memoryState = await runtime.buildMemoryState(prepared.sessionId);
+    const context = await runtime.buildActiveContext(prepared.sessionId);
+
+    expect(prepared.memoryState.pendingTurn).toBeUndefined();
+    expect(prepared.context.pendingTurn).toBeUndefined();
+    expect(memoryState.pendingTurn).toBeUndefined();
+    expect(context.pendingTurn).toBeUndefined();
+    expect(prepared.memoryState.session.conversationTail).toMatchObject([
+      { seq: 1, role: "user", text: "hii" },
+    ]);
   });
 
   it("creates deterministic global conversation records before persistence", async () => {
@@ -1048,11 +1069,13 @@ describe("GitMemoryRuntime", () => {
       userMessage: "Fix upload handling",
       at: "2026-06-28T09:00:00+05:30",
     });
-    const routed = await runtime.createTaskForTurn({
+    const routed = await runtime.routeUserTurn({
       sessionId: prepared.sessionId,
+      userMessage: "Fix upload handling",
+      fromSeq: prepared.userMessage.seq,
+      toSeq: prepared.userMessage.seq,
       title: "Fix upload handling",
       objective: "Find and fix upload handling failures.",
-      reason: "new upload task",
       at: "2026-06-28T09:01:00+05:30",
     });
     if (routed.status !== "ready") {
@@ -1102,6 +1125,7 @@ describe("GitMemoryRuntime", () => {
     expect(second).toMatchObject({
       runId: routed.runId,
       taskCommit: first.taskCommit,
+      sessionStoreCommit: first.sessionStoreCommit,
       alreadyFinalized: true,
     });
     expect(second.assistantMessage).toBeUndefined();
@@ -1121,7 +1145,17 @@ describe("GitMemoryRuntime", () => {
       const trailers = parseGitMemoryCommitTrailers(entry.message);
       return trailers.runId === routed.runId && trailers.event === "run_completed";
     })).toHaveLength(1);
-    expect(await driver.log(GIT_MEMORY_MAIN_REF, 10)).toHaveLength(3);
+    expect(first.sessionStoreCommit).toEqual(expect.any(String));
+    expect(await driver.listTreePaths(routed.ref, "session-store")).toEqual(["session-store"]);
+    expect(JSON.parse(await driver.readFile(routed.ref, gitMemoryTaskRunPath(routed.taskId, routed.runId)) ?? "{}"))
+      .toMatchObject({
+        conversationRefs: [{ fromSeq: 1, toSeq: 2 }],
+        sessionStoreCommit: first.sessionStoreCommit,
+      });
+    expect((await driver.log(GIT_MEMORY_MAIN_REF, 10)).some((entry) => {
+      const trailers = parseGitMemoryCommitTrailers(entry.message);
+      return trailers.event === "session_checkpointed";
+    })).toBe(true);
   });
 
   it.each([
@@ -1154,11 +1188,13 @@ describe("GitMemoryRuntime", () => {
       userMessage: `Handle ${fixture.label} upload run`,
       at: "2026-06-28T09:00:00+05:30",
     });
-    const routed = await runtime.createTaskForTurn({
+    const routed = await runtime.routeUserTurn({
       sessionId: prepared.sessionId,
+      userMessage: `Handle ${fixture.label} upload run`,
+      fromSeq: prepared.userMessage.seq,
+      toSeq: prepared.userMessage.seq,
       title: `Handle ${fixture.label} upload run`,
       objective: "Exercise terminal run finalization.",
-      reason: "terminal finalizer test",
       at: "2026-06-28T09:01:00+05:30",
     });
     if (routed.status !== "ready") {
@@ -1207,7 +1243,7 @@ describe("GitMemoryRuntime", () => {
       });
   });
 
-  it("appends routed follow-up messages to the selected task branch before run start", async () => {
+  it("does not append routed follow-up messages to the selected task branch before run finalization", async () => {
     const contextStoreDir = await mkdtemp(join(tmpdir(), "ayati-git-memory-runtime-"));
     const runtime = createGitMemoryRuntime({
       contextStoreDir,
@@ -1245,13 +1281,10 @@ describe("GitMemoryRuntime", () => {
 
     const driver = new GitMemoryWorktreeGitDriver(second.repoPath);
     const markdown = await driver.readFile(continued.ref, GIT_MEMORY_SESSION_CONVERSATION_MARKDOWN_PATH) ?? "";
-    expect(markdown).toContain("finish it");
-    expect(markdown.match(/finish it/g)).toHaveLength(1);
+    expect(markdown).not.toContain("finish it");
     const taskLog = await driver.log(continued.ref, 5);
     expect(parseGitMemoryCommitTrailers(taskLog[0]?.message ?? "")).toMatchObject({
-      event: "conversation_appended",
-      runId: continued.runId,
-      conversationSeq: { fromSeq: second.userMessage.seq, toSeq: second.userMessage.seq },
+      event: "task_created",
     });
   });
 
@@ -1465,7 +1498,7 @@ describe("GitMemoryRuntime", () => {
     expect(secondTaskAfterRouting).toContain("Analyze contract risk");
   });
 
-  it("syncs task-owned assistant messages to the selected task branch conversation", async () => {
+  it("keeps task-owned assistant messages in session conversation before run finalization", async () => {
     const contextStoreDir = await mkdtemp(join(tmpdir(), "ayati-git-memory-runtime-"));
     const runtime = createGitMemoryRuntime({
       contextStoreDir,
@@ -1524,8 +1557,8 @@ describe("GitMemoryRuntime", () => {
     ) ?? "";
 
     expect(mainConversation).toContain("I reviewed the contract risk and found one blocker.");
-    expect(secondTaskConversation).toContain("I reviewed the contract risk and found one blocker.");
-    expect(secondTaskConversation).toContain(`Run: ${secondRoute.runId}`);
+    expect(secondTaskConversation).not.toContain("I reviewed the contract risk and found one blocker.");
+    expect(secondTaskConversation).not.toContain(`Run: ${secondRoute.runId}`);
     expect(firstTaskConversation).not.toContain("I reviewed the contract risk and found one blocker.");
   });
 

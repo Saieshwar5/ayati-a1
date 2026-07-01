@@ -96,4 +96,87 @@ describe("ToolWorkingSetManager", () => {
 
     expect(manager.listActive(context)).toEqual(["read_file", "edit_file", "write_file"]);
   });
+
+  it("exposes git task-routing tools for the first two decision stages and then expires them", () => {
+    const catalog = new ToolCatalog([
+      skill("git-context", [
+        tool("git_context_active"),
+        tool("git_context_list_tasks"),
+        tool("git_context_search_tasks"),
+        tool("git_context_read_task"),
+        tool("git_context_activate_task_for_turn"),
+        tool("git_context_create_task_for_turn"),
+        tool("git_context_ask_clarification_for_turn"),
+      ]),
+    ]);
+    const executor = createToolExecutor([]);
+    const manager = new ToolWorkingSetManager({ catalog, toolExecutor: executor, maxVisibleTools: 12 });
+    const runState = state("hii");
+
+    manager.prepareForDecision(runState, { clientId: "c1", runId: "r1", sessionId: "s1", stepNumber: 1 });
+    expect(manager.listActive({ runId: "r1" })).toEqual([
+      "git_context_active",
+      "git_context_list_tasks",
+      "git_context_search_tasks",
+      "git_context_read_task",
+      "git_context_activate_task_for_turn",
+      "git_context_create_task_for_turn",
+      "git_context_ask_clarification_for_turn",
+    ]);
+
+    manager.prepareForDecision(runState, { clientId: "c1", runId: "r1", sessionId: "s1", stepNumber: 2 });
+    expect(manager.listActive({ runId: "r1" })).toContain("git_context_create_task_for_turn");
+
+    manager.prepareForDecision(runState, { clientId: "c1", runId: "r1", sessionId: "s1", stepNumber: 3 });
+    expect(manager.listActive({ runId: "r1" })).toEqual([]);
+  });
+
+  it("keeps routing tools after read-only task lookup within the routing window", () => {
+    const catalog = new ToolCatalog([
+      skill("git-context", [
+        tool("git_context_search_tasks"),
+        tool("git_context_create_task_for_turn"),
+      ]),
+    ]);
+    const executor = createToolExecutor([]);
+    const manager = new ToolWorkingSetManager({ catalog, toolExecutor: executor, maxVisibleTools: 12 });
+    const context = { clientId: "c1", runId: "r1", sessionId: "s1", stepNumber: 1 };
+
+    manager.prepareForDecision(state("find old upload task"), context);
+    manager.afterExecution([{
+      callId: "call_1",
+      tool: "git_context_search_tasks",
+      input: {},
+      output: "matched upload task",
+    }], context);
+    manager.cleanupAfterStep(context);
+
+    expect(manager.listActive(context)).toEqual([
+      "git_context_search_tasks",
+      "git_context_create_task_for_turn",
+    ]);
+  });
+
+  it("removes routing tools immediately after successful create or switch routing", () => {
+    const catalog = new ToolCatalog([
+      skill("git-context", [
+        tool("git_context_search_tasks"),
+        tool("git_context_create_task_for_turn"),
+        tool("git_context_activate_task_for_turn"),
+      ]),
+    ]);
+    const executor = createToolExecutor([]);
+    const manager = new ToolWorkingSetManager({ catalog, toolExecutor: executor, maxVisibleTools: 12 });
+    const context = { clientId: "c1", runId: "r1", sessionId: "s1", stepNumber: 1 };
+
+    manager.prepareForDecision(state("build a website"), context);
+    manager.afterExecution([{
+      callId: "call_1",
+      tool: "git_context_create_task_for_turn",
+      input: {},
+      output: "created task",
+    }], context);
+
+    expect(manager.listActive(context)).toEqual([]);
+  });
 });

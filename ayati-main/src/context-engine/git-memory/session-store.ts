@@ -5,12 +5,14 @@ import { GitMemoryWorktreeGitDriver } from "./git-driver.js";
 import { parseGitMemoryCommitTrailers, renderGitMemoryCommitMessage, type ParsedGitMemoryCommitTrailers } from "./commit-message.js";
 import {
   appendGitMemoryConversationMarkdown,
-  appendGitMemoryConversationMarkdownRecords,
+  parseGitMemoryConversationMessageFiles,
   parseGitMemoryConversationMarkdown,
+  renderGitMemoryConversationMessageFile,
   renderGitMemoryConversationMarkdownDocument,
 } from "./conversation-markdown.js";
 import {
   gitMemorySessionActiveTaskRef,
+  gitMemorySessionLatestBaseRef,
   gitMemorySessionLatestRunRef,
   gitMemoryTaskLatestRunRef,
   readGitMemoryCustomRef,
@@ -49,6 +51,7 @@ import {
   GIT_MEMORY_SESSION_CONVERSATION_MARKDOWN_PATH,
   GIT_MEMORY_SESSION_META_PATH,
   GIT_MEMORY_SESSION_SCHEMA_PATH,
+  GIT_MEMORY_SESSION_STORE_DIR,
   buildGitMemoryTaskBranchName,
   buildGitMemoryTaskBranchRef,
   createGitMemoryActionId,
@@ -60,12 +63,16 @@ import {
   gitMemoryTaskAssetsPath,
   gitMemoryTaskActionsPath,
   gitMemoryTaskContextPath,
+  gitMemoryTaskConversationDir,
   gitMemoryTaskEvidenceManifestPath,
   gitMemoryTaskMarkdownPath,
   gitMemoryTaskNotesPath,
   gitMemoryTaskRunMarkdownPath,
   gitMemoryTaskRunPath,
   gitMemoryTaskStatePath,
+  gitMemorySessionMessagePath,
+  gitMemorySessionStoreMessagePath,
+  gitMemorySessionStoreMessagesDir,
 } from "./schema.js";
 
 export const GIT_MEMORY_MAIN_REF = "refs/heads/main";
@@ -339,21 +346,6 @@ export interface SelectGitMemoryTaskForTurnResult {
   ref: string;
 }
 
-export interface AppendGitMemoryTaskConversationMessageInput {
-  sessionId: GitMemorySessionId;
-  taskId: GitMemoryTaskId;
-  record: GitMemoryConversationRecord;
-  at?: string;
-}
-
-export interface AppendGitMemoryTaskConversationMessageResult {
-  taskId: GitMemoryTaskId;
-  branch: string;
-  ref: string;
-  seq: number;
-  taskCommit?: string;
-}
-
 export interface CommitGitMemoryTaskRunActionInput {
   actionId?: GitMemoryActionId;
   tool: string;
@@ -388,6 +380,7 @@ export interface CommitGitMemoryTaskRunInput {
   startedAt?: string;
   completedAt?: string;
   conversationRefs: GitMemoryConversationSeqRange[];
+  sessionStoreCommit?: string;
   summary: string;
   intent?: string;
   routing?: string;
@@ -413,6 +406,18 @@ export interface CommitGitMemoryTaskRunResult {
   ref: string;
   runId: GitMemoryRunId;
   taskCommit: string;
+  sessionStoreCommit?: string;
+}
+
+export interface CommitGitMemorySessionStoreSnapshotInput {
+  sessionId: GitMemorySessionId;
+  at?: string;
+  summary?: string;
+}
+
+export interface CommitGitMemorySessionStoreSnapshotResult {
+  sessionStoreCommit: string;
+  parentCommit: string;
 }
 
 export interface ReadCommittedGitMemoryTaskRunInput {
@@ -431,25 +436,6 @@ export interface StartGitMemoryTaskRunInput extends GitMemoryConversationSeqRang
 
 export interface StartGitMemoryTaskRunResult {
   runId: GitMemoryRunId;
-  taskCommit?: string;
-}
-
-export interface AppendGitMemoryTaskConversationRangeInput extends GitMemoryConversationSeqRange {
-  sessionId: GitMemorySessionId;
-  taskId: GitMemoryTaskId;
-  branch: string;
-  runId?: GitMemoryRunId;
-  at?: string;
-  reason: "task_routed" | "run_started";
-}
-
-export interface AppendGitMemoryTaskConversationRangeResult {
-  taskId: GitMemoryTaskId;
-  branch: string;
-  ref: string;
-  fromSeq: number;
-  toSeq: number;
-  taskCommit?: string;
 }
 
 export class GitMemoryDailySessionStore {
@@ -554,13 +540,23 @@ export class GitMemoryDailySessionStore {
         },
       }),
     });
+    await writeGitMemoryCustomRef(driver, gitMemorySessionLatestBaseRef(sessionId), initialCommit);
 
     return { sessionId, repoPath, initialized: true, initialCommit };
   }
 
+  async readSessionConversationRecords(sessionId: GitMemorySessionId): Promise<GitMemoryConversationRecord[]> {
+    const driver = await GitMemoryWorktreeGitDriver.init(this.repoPath(sessionId));
+    const records = await readSessionMessageStoreConversation(driver, sessionId);
+    if (records.length > 0) {
+      return records;
+    }
+    return await readWorkingConversation(driver);
+  }
+
   async appendConversationMessage(input: AppendGitMemoryConversationInput): Promise<GitMemoryConversationRecord> {
     const driver = await GitMemoryWorktreeGitDriver.init(this.repoPath(input.sessionId));
-    const existing = await readWorkingConversation(driver);
+    const existing = await readSessionConversation(driver, input.sessionId);
     const branch = await driver.currentBranch();
     const seq = nextSeq(existing);
     const record: GitMemoryConversationRecord = {
@@ -572,10 +568,9 @@ export class GitMemoryDailySessionStore {
       ...(input.taskId ? { taskId: input.taskId } : {}),
       ...(input.runId ? { runId: input.runId } : {}),
     };
+    await writeSessionMessageStoreWorkingRecord(driver, input.sessionId, record);
     const existingMarkdown = await driver.readWorkingFile(GIT_MEMORY_SESSION_CONVERSATION_MARKDOWN_PATH);
-    await driver.writeWorkingFiles({
-      [GIT_MEMORY_SESSION_CONVERSATION_MARKDOWN_PATH]: appendGitMemoryConversationMarkdown(existingMarkdown, record),
-    });
+    await driver.writeWorkingFiles(buildSessionConversationAppendFiles(input.sessionId, existingMarkdown, record));
     await this.commitMainConversationAppend(driver, {
       sessionId: input.sessionId,
       record,
@@ -585,7 +580,7 @@ export class GitMemoryDailySessionStore {
 
   async appendMainConversationMessage(input: AppendGitMemoryConversationInput): Promise<GitMemoryConversationRecord> {
     const driver = await GitMemoryWorktreeGitDriver.init(this.repoPath(input.sessionId));
-    const existing = await readWorkingConversation(driver);
+    const existing = await readSessionConversation(driver, input.sessionId);
     const seq = nextSeq(existing);
     const record: GitMemoryConversationRecord = {
       seq,
@@ -595,11 +590,10 @@ export class GitMemoryDailySessionStore {
       ...(input.taskId ? { taskId: input.taskId } : {}),
       ...(input.runId ? { runId: input.runId } : {}),
     };
+    await writeSessionMessageStoreWorkingRecord(driver, input.sessionId, record);
     const existingMarkdown = await driver.readWorkingFile(GIT_MEMORY_SESSION_CONVERSATION_MARKDOWN_PATH)
       ?? await driver.readFile(GIT_MEMORY_MAIN_REF, GIT_MEMORY_SESSION_CONVERSATION_MARKDOWN_PATH);
-    await driver.writeWorkingFiles({
-      [GIT_MEMORY_SESSION_CONVERSATION_MARKDOWN_PATH]: appendGitMemoryConversationMarkdown(existingMarkdown, record),
-    });
+    await driver.writeWorkingFiles(buildSessionConversationAppendFiles(input.sessionId, existingMarkdown, record));
     await this.commitMainConversationAppend(driver, {
       sessionId: input.sessionId,
       record,
@@ -611,11 +605,10 @@ export class GitMemoryDailySessionStore {
     input: AppendGitMemoryConversationRecordInput,
   ): Promise<GitMemoryConversationRecord> {
     const driver = await GitMemoryWorktreeGitDriver.init(this.repoPath(input.sessionId));
+    await writeSessionMessageStoreWorkingRecord(driver, input.sessionId, input.record);
     const existingMarkdown = await driver.readWorkingFile(GIT_MEMORY_SESSION_CONVERSATION_MARKDOWN_PATH)
       ?? await driver.readFile(GIT_MEMORY_MAIN_REF, GIT_MEMORY_SESSION_CONVERSATION_MARKDOWN_PATH);
-    await driver.writeWorkingFiles({
-      [GIT_MEMORY_SESSION_CONVERSATION_MARKDOWN_PATH]: appendGitMemoryConversationMarkdown(existingMarkdown, input.record),
-    });
+    await driver.writeWorkingFiles(buildSessionConversationAppendFiles(input.sessionId, existingMarkdown, input.record));
     await this.commitMainConversationAppend(driver, {
       sessionId: input.sessionId,
       record: input.record,
@@ -632,9 +625,11 @@ export class GitMemoryDailySessionStore {
   ): Promise<void> {
     const previousBranch = await driver.currentBranch();
     await driver.checkoutBranch(GIT_MEMORY_MAIN_REF);
+    let commit: string | null;
     try {
-      await driver.commitPaths([
+      commit = await driver.commitPaths([
         GIT_MEMORY_SESSION_CONVERSATION_MARKDOWN_PATH,
+        gitMemorySessionMessagePath(input.record.seq, input.record.role),
       ], renderGitMemoryCommitMessage({
         subject: `ayati: record ${input.record.role} message`,
         summary: `Append conversation message ${input.record.seq}.`,
@@ -648,6 +643,11 @@ export class GitMemoryDailySessionStore {
           schemaVersion: 1,
         },
       }));
+      const latestMain = commit ?? await driver.resolveRef(GIT_MEMORY_MAIN_REF);
+      if (!latestMain) {
+        throw new Error("Git memory main ref is missing after conversation append.");
+      }
+      await writeGitMemoryCustomRef(driver, gitMemorySessionLatestBaseRef(input.sessionId), latestMain);
     } finally {
       if (previousBranch && previousBranch !== "main") {
         await driver.checkoutBranch(`refs/heads/${previousBranch}`);
@@ -661,124 +661,13 @@ export class GitMemoryDailySessionStore {
     return createGitMemoryRunId(date, await nextRunSequenceFromTasks(driver));
   }
 
-  async appendTaskConversationRange(
-    input: AppendGitMemoryTaskConversationRangeInput,
-  ): Promise<AppendGitMemoryTaskConversationRangeResult> {
+  async startTaskRun(input: StartGitMemoryTaskRunInput): Promise<StartGitMemoryTaskRunResult> {
     const driver = await GitMemoryWorktreeGitDriver.init(this.repoPath(input.sessionId));
     const ref = `refs/heads/${input.branch}`;
     if (!(await driver.hasRef(ref))) {
       throw new Error(`Git memory task branch missing: ${ref}`);
     }
-    const at = input.at ?? this.nowIso();
-    const conversation = await readWorkingConversation(driver);
-    const taskConversation = conversationInRange(conversation, input);
-    const existingMarkdown = await driver.readFile(ref, GIT_MEMORY_SESSION_CONVERSATION_MARKDOWN_PATH);
-    const nextMarkdown = appendGitMemoryConversationMarkdownRecords(existingMarkdown, taskConversation, {
-      taskId: input.taskId,
-      runId: input.runId,
-    });
-    let taskCommit: string | undefined;
-    if (nextMarkdown !== existingMarkdown) {
-      taskCommit = await driver.commitSyntheticFiles({
-        ref,
-        files: {
-          [GIT_MEMORY_SESSION_CONVERSATION_MARKDOWN_PATH]: nextMarkdown,
-        },
-        message: renderGitMemoryCommitMessage({
-          subject: input.reason === "run_started"
-            ? `ayati: start run ${input.runId ?? "unknown"}`
-            : `ayati: append task conversation ${input.taskId}`,
-          summary: input.reason === "run_started"
-            ? `Record task conversation for run ${input.runId ?? "unknown"}.`
-            : `Record routed conversation ${input.fromSeq}-${input.toSeq} on ${input.branch}.`,
-          trailers: {
-            sessionId: input.sessionId,
-            taskId: input.taskId,
-            ...(input.runId ? { runId: input.runId } : {}),
-            event: input.reason === "run_started" ? "run_started" : "conversation_appended",
-            at,
-            branch: input.branch,
-            conversationSeq: { fromSeq: input.fromSeq, toSeq: input.toSeq },
-            schemaVersion: 1,
-          },
-        }),
-      });
-    }
-    if (taskCommit) {
-      await writeGitMemoryCustomRef(driver, gitMemorySessionActiveTaskRef(input.sessionId), taskCommit);
-    }
-    return {
-      taskId: input.taskId,
-      branch: input.branch,
-      ref,
-      fromSeq: input.fromSeq,
-      toSeq: input.toSeq,
-      ...(taskCommit ? { taskCommit } : {}),
-    };
-  }
-
-  async startTaskRun(input: StartGitMemoryTaskRunInput): Promise<StartGitMemoryTaskRunResult> {
-    const result = await this.appendTaskConversationRange({
-      sessionId: input.sessionId,
-      taskId: input.taskId,
-      branch: input.branch,
-      runId: input.runId,
-      fromSeq: input.fromSeq,
-      toSeq: input.toSeq,
-      at: input.at,
-      reason: "run_started",
-    });
-    return { runId: input.runId, ...(result.taskCommit ? { taskCommit: result.taskCommit } : {}) };
-  }
-
-  async appendTaskConversationMessage(
-    input: AppendGitMemoryTaskConversationMessageInput,
-  ): Promise<AppendGitMemoryTaskConversationMessageResult> {
-    const driver = await GitMemoryWorktreeGitDriver.init(this.repoPath(input.sessionId));
-    const taskEntry = await resolveGitMemoryTaskEntry(driver, { taskId: input.taskId });
-    const ref = `refs/heads/${taskEntry.branch}`;
-    if (!(await driver.hasRef(ref))) {
-      throw new Error(`Git memory task branch missing: ${ref}`);
-    }
-    const existingMarkdown = await driver.readFile(ref, GIT_MEMORY_SESSION_CONVERSATION_MARKDOWN_PATH);
-    const nextMarkdown = appendGitMemoryConversationMarkdownRecords(existingMarkdown, [input.record], {
-      taskId: input.taskId,
-      ...(input.record.runId ? { runId: input.record.runId } : {}),
-    });
-    let taskCommit: string | undefined;
-    if (nextMarkdown !== existingMarkdown) {
-      const at = input.at ?? input.record.at;
-      taskCommit = await driver.commitSyntheticFiles({
-        ref,
-        files: {
-          [GIT_MEMORY_SESSION_CONVERSATION_MARKDOWN_PATH]: nextMarkdown,
-        },
-        message: renderGitMemoryCommitMessage({
-          subject: `ayati: append task conversation ${input.taskId}`,
-          summary: `Append conversation message ${input.record.seq} on ${taskEntry.branch}.`,
-          trailers: {
-            sessionId: input.sessionId,
-            taskId: input.taskId,
-            ...(input.record.runId ? { runId: input.record.runId } : {}),
-            event: "conversation_appended",
-            at,
-            branch: taskEntry.branch,
-            conversationSeq: { fromSeq: input.record.seq, toSeq: input.record.seq },
-            schemaVersion: 1,
-          },
-        }),
-      });
-    }
-    if (taskCommit) {
-      await writeGitMemoryCustomRef(driver, gitMemorySessionActiveTaskRef(input.sessionId), taskCommit);
-    }
-    return {
-      taskId: input.taskId,
-      branch: taskEntry.branch,
-      ref,
-      seq: input.record.seq,
-      ...(taskCommit ? { taskCommit } : {}),
-    };
+    return { runId: input.runId };
   }
 
   async readTaskRoutingSnapshot(sessionId: GitMemorySessionId): Promise<GitMemoryTaskRoutingSnapshot> {
@@ -828,7 +717,7 @@ export class GitMemoryDailySessionStore {
       ? readRecentTaskEvidence(driver, ref, taskEntry.taskId, limits.evidenceLimit)
       : Promise.resolve([]);
     const readConversationMarkdown = include.has("conversation")
-      ? readRefMarkdownTail(driver, ref, GIT_MEMORY_SESSION_CONVERSATION_MARKDOWN_PATH, limits.conversationMarkdownCharLimit)
+      ? readTaskConversationMarkdownTail(driver, ref, input.sessionId, taskEntry.taskId, limits.conversationMarkdownCharLimit)
       : Promise.resolve("");
 
     const [taskMarkdown, state, assets, recentRuns, recentRunMarkdown, recentActions, recentCommits, recentEvidence, conversationMarkdownTail] = await Promise.all([
@@ -1032,16 +921,12 @@ export class GitMemoryDailySessionStore {
       next: input.state?.next ?? input.objective,
       updatedAt: at,
     };
-    const conversation = await readWorkingConversation(driver);
-    const taskConversation = conversationInRange(conversation, input);
+    const parentRef = await resolveTaskBranchParentRef(driver, input.sessionId);
 
     const taskCommit = await driver.commitSyntheticFiles({
       ref,
+      parentRef,
       files: {
-        [GIT_MEMORY_SESSION_CONVERSATION_MARKDOWN_PATH]: renderGitMemoryConversationMarkdownDocument(taskConversation, {
-          taskId,
-          runId: input.runId,
-        }),
         [gitMemoryTaskMarkdownPath(taskId)]: renderGitMemoryTaskMarkdown(task),
         [gitMemoryTaskStatePath(taskId)]: prettyJson(state),
         [gitMemoryTaskAssetsPath(taskId)]: prettyJson({ schemaVersion: 1, assets: [] } satisfies GitMemoryTaskAssetsFile),
@@ -1096,6 +981,63 @@ export class GitMemoryDailySessionStore {
       taskId: input.taskId,
       branch: taskEntry.branch,
       ref,
+    };
+  }
+
+  async commitSessionStoreSnapshot(
+    input: CommitGitMemorySessionStoreSnapshotInput,
+  ): Promise<CommitGitMemorySessionStoreSnapshotResult> {
+    const driver = await GitMemoryWorktreeGitDriver.init(this.repoPath(input.sessionId));
+    const messageStore = await driver.openSubmoduleRepo(GIT_MEMORY_SESSION_STORE_DIR);
+    const at = input.at ?? this.nowIso();
+    const sessionsPath = join(messageStore.repoPath, "sessions");
+    const existingSessionStoreCommit = await messageStore.resolveRef(GIT_MEMORY_MAIN_REF);
+    const sessionStoreCommit = (await pathExists(sessionsPath)
+      ? await messageStore.commitPaths(["sessions"], renderGitMemoryCommitMessage({
+        subject: `ayati: snapshot session conversation ${input.sessionId}`,
+        summary: input.summary ?? "Commit session conversation messages for task-run snapshot.",
+        trailers: {
+          sessionId: input.sessionId,
+          event: "conversation_appended",
+          at,
+          schemaVersion: 1,
+        },
+      }))
+      : null) ?? existingSessionStoreCommit;
+    if (!sessionStoreCommit) {
+      if (!(await pathExists(sessionsPath))) {
+        throw new Error(`Git memory session-store has no conversation messages for session: ${input.sessionId}`);
+      }
+      throw new Error(`Git memory session-store commit is missing for session: ${input.sessionId}`);
+    }
+
+    const previousBranch = await driver.currentBranch();
+    await driver.checkoutBranch(GIT_MEMORY_MAIN_REF);
+    let parentCommit: string | null;
+    try {
+      parentCommit = await driver.commitSubmoduleGitlink(GIT_MEMORY_SESSION_STORE_DIR, renderGitMemoryCommitMessage({
+        subject: `ayati: update session-store snapshot ${input.sessionId}`,
+        summary: input.summary ?? "Point the parent session repo at the latest session-store conversation snapshot.",
+        trailers: {
+          sessionId: input.sessionId,
+          event: "session_checkpointed",
+          at,
+          schemaVersion: 1,
+        },
+      })) ?? await driver.resolveRef(GIT_MEMORY_MAIN_REF);
+      if (!parentCommit) {
+        throw new Error(`Git memory parent commit is missing after session-store snapshot: ${input.sessionId}`);
+      }
+      await writeGitMemoryCustomRef(driver, gitMemorySessionLatestBaseRef(input.sessionId), parentCommit);
+    } finally {
+      if (previousBranch && previousBranch !== "main") {
+        await driver.checkoutBranch(`refs/heads/${previousBranch}`);
+      }
+    }
+
+    return {
+      sessionStoreCommit,
+      parentCommit,
     };
   }
 
@@ -1173,6 +1115,7 @@ export class GitMemoryDailySessionStore {
       startedAt,
       completedAt,
       conversationRefs: input.conversationRefs,
+      ...(input.sessionStoreCommit ? { sessionStoreCommit: input.sessionStoreCommit } : {}),
       summary: input.summary,
       intent: input.intent ?? input.summary,
       routing: input.routing ?? formatConversationRefs(input.conversationRefs),
@@ -1211,6 +1154,7 @@ export class GitMemoryDailySessionStore {
     }
     const taskCommit = await driver.commitSyntheticFiles({
       ref,
+      ...(input.sessionStoreCommit ? { gitlinks: { [GIT_MEMORY_SESSION_STORE_DIR]: input.sessionStoreCommit } } : {}),
       files,
       message: renderGitMemoryCommitMessage({
         subject: `ayati: complete run ${runId}`,
@@ -1247,6 +1191,7 @@ export class GitMemoryDailySessionStore {
       ref,
       runId,
       taskCommit,
+      ...(input.sessionStoreCommit ? { sessionStoreCommit: input.sessionStoreCommit } : {}),
     };
   }
 
@@ -1263,6 +1208,7 @@ export class GitMemoryDailySessionStore {
     if (existingRun === null) {
       return null;
     }
+    const runFile = parseJson<GitMemoryRunFile>(existingRun);
     const commit = (await readCompactLog(driver, ref, 100))
       .find((entry) =>
         entry.trailers.taskId === input.taskId
@@ -1278,6 +1224,7 @@ export class GitMemoryDailySessionStore {
       ref,
       runId: input.runId,
       taskCommit: commit,
+      ...(runFile?.sessionStoreCommit ? { sessionStoreCommit: runFile.sessionStoreCommit } : {}),
     };
   }
 
@@ -1288,6 +1235,7 @@ export class GitMemoryDailySessionStore {
 
     const commitPaths = await existingWorkingPaths(driver, [
       GIT_MEMORY_SESSION_CONVERSATION_MARKDOWN_PATH,
+      GIT_MEMORY_SESSION_STORE_DIR,
     ]);
     await driver.checkoutBranch(GIT_MEMORY_MAIN_REF);
     let commit: string | null;
@@ -1312,8 +1260,10 @@ export class GitMemoryDailySessionStore {
       if (!currentMain) {
         throw new Error("Session checkpoint did not contain changes.");
       }
+      await writeGitMemoryCustomRef(driver, gitMemorySessionLatestBaseRef(input.sessionId), currentMain);
       return { commit: currentMain };
     }
+    await writeGitMemoryCustomRef(driver, gitMemorySessionLatestBaseRef(input.sessionId), commit);
     return { commit };
   }
 
@@ -1372,6 +1322,7 @@ function renderTaskRunMarkdown(
     `Status: ${run.status}`,
     `Started: ${run.startedAt}`,
     ...(run.completedAt ? [`Completed: ${run.completedAt}`] : []),
+    ...(run.sessionStoreCommit ? [`Session Store Commit: ${run.sessionStoreCommit}`] : []),
     "",
     renderMarkdownParagraph("Intent", run.intent ?? run.summary),
     renderMarkdownParagraph("Routing", run.routing ?? formatConversationRefs(run.conversationRefs)),
@@ -1515,6 +1466,70 @@ async function readWorkingConversation(
   return parseGitMemoryConversationMarkdown(markdown);
 }
 
+async function readSessionConversation(
+  driver: GitMemoryWorktreeGitDriver,
+  sessionId: GitMemorySessionId,
+): Promise<GitMemoryConversationRecord[]> {
+  const records = await readSessionMessageStoreConversation(driver, sessionId);
+  if (records.length > 0) {
+    return records;
+  }
+  return await readWorkingConversation(driver);
+}
+
+async function readSessionMessageStoreConversation(
+  driver: GitMemoryWorktreeGitDriver,
+  sessionId: GitMemorySessionId,
+): Promise<GitMemoryConversationRecord[]> {
+  const messageStore = await openExistingSessionMessageStoreDriver(driver);
+  if (!messageStore) {
+    return [];
+  }
+  const paths = (await messageStore.listTreePaths(GIT_MEMORY_MAIN_REF, gitMemorySessionStoreMessagesDir(sessionId)))
+    .filter((path) => path.endsWith(".md"))
+    .sort();
+  if (paths.length === 0) {
+    return [];
+  }
+  return parseGitMemoryConversationMessageFiles(await Promise.all(paths.map(async (path) => ({
+    path,
+    content: await messageStore.readFile(GIT_MEMORY_MAIN_REF, path),
+  }))));
+}
+
+async function writeSessionMessageStoreWorkingRecord(
+  driver: GitMemoryWorktreeGitDriver,
+  sessionId: GitMemorySessionId,
+  record: GitMemoryConversationRecord,
+): Promise<void> {
+  const messageStore = await driver.openSubmoduleRepo(GIT_MEMORY_SESSION_STORE_DIR);
+  const messagePath = gitMemorySessionStoreMessagePath(sessionId, record.seq, record.role);
+  await messageStore.writeWorkingFiles({
+    [messagePath]: renderGitMemoryConversationMessageFile(record, { sessionId }),
+  });
+}
+
+async function openExistingSessionMessageStoreDriver(
+  driver: GitMemoryWorktreeGitDriver,
+): Promise<GitMemoryWorktreeGitDriver | null> {
+  const repoPath = join(driver.repoPath, GIT_MEMORY_SESSION_STORE_DIR);
+  if (!(await pathExists(join(repoPath, ".git")))) {
+    return null;
+  }
+  return new GitMemoryWorktreeGitDriver(repoPath);
+}
+
+async function resolveTaskBranchParentRef(
+  driver: GitMemoryWorktreeGitDriver,
+  sessionId: GitMemorySessionId,
+): Promise<string> {
+  const latestBaseRef = gitMemorySessionLatestBaseRef(sessionId);
+  if (await driver.resolveRef(latestBaseRef)) {
+    return latestBaseRef;
+  }
+  return GIT_MEMORY_MAIN_REF;
+}
+
 async function readRefJson<T>(driver: GitMemoryWorktreeGitDriver, ref: string, path: string): Promise<T | null> {
   return parseJson<T>(await driver.readFile(ref, path));
 }
@@ -1572,6 +1587,90 @@ async function readRefMarkdownTail(
   limit: number,
 ): Promise<string> {
   return markdownTail(await driver.readFile(ref, path), limit);
+}
+
+async function readTaskConversationMarkdownTail(
+  driver: GitMemoryWorktreeGitDriver,
+  ref: string,
+  sessionId: GitMemorySessionId,
+  taskId: GitMemoryTaskId,
+  limit: number,
+): Promise<string> {
+  const reconstructed = await readTaskConversationFromSessionStoreMarkdownTail(driver, ref, sessionId, taskId, limit);
+  if (reconstructed) {
+    return reconstructed;
+  }
+  const paths = (await driver.listTreePaths(ref, gitMemoryTaskConversationDir(taskId)))
+    .filter((path) => path.endsWith(".md"))
+    .sort();
+  if (paths.length === 0) {
+    return readRefMarkdownTail(driver, ref, GIT_MEMORY_SESSION_CONVERSATION_MARKDOWN_PATH, limit);
+  }
+  const records = parseGitMemoryConversationMessageFiles(await Promise.all(paths.map(async (path) => ({
+    path,
+    content: await driver.readFile(ref, path),
+  }))));
+  if (records.length === 0) {
+    return readRefMarkdownTail(driver, ref, GIT_MEMORY_SESSION_CONVERSATION_MARKDOWN_PATH, limit);
+  }
+  return markdownTail(renderGitMemoryConversationMarkdownDocument(records), limit);
+}
+
+async function readTaskConversationFromSessionStoreMarkdownTail(
+  driver: GitMemoryWorktreeGitDriver,
+  ref: string,
+  sessionId: GitMemorySessionId,
+  taskId: GitMemoryTaskId,
+  limit: number,
+): Promise<string> {
+  const messageStore = await openExistingSessionMessageStoreDriver(driver);
+  if (!messageStore) {
+    return "";
+  }
+  const runs = await readTaskRunsForConversation(driver, ref, taskId);
+  const recordsBySeq = new Map<number, GitMemoryConversationRecord>();
+  for (const run of runs) {
+    if (!run.sessionStoreCommit) {
+      continue;
+    }
+    const paths = (await messageStore.listTreePaths(run.sessionStoreCommit, gitMemorySessionStoreMessagesDir(sessionId)))
+      .filter((path) => path.endsWith(".md"))
+      .sort();
+    const records = parseGitMemoryConversationMessageFiles(await Promise.all(paths.map(async (path) => ({
+      path,
+      content: await messageStore.readFile(run.sessionStoreCommit!, path),
+    }))));
+    for (const record of records.filter((record) => isConversationSeqInRanges(record.seq, run.conversationRefs))) {
+      recordsBySeq.set(record.seq, record);
+    }
+  }
+  const records = [...recordsBySeq.values()].sort((left, right) => left.seq - right.seq);
+  return records.length > 0
+    ? markdownTail(renderGitMemoryConversationMarkdownDocument(records), limit)
+    : "";
+}
+
+async function readTaskRunsForConversation(
+  driver: GitMemoryWorktreeGitDriver,
+  ref: string,
+  taskId: GitMemoryTaskId,
+): Promise<GitMemoryRunFile[]> {
+  const prefix = `${gitMemoryTaskDir(taskId)}/runs`;
+  const paths = (await driver.listTreePaths(ref, prefix))
+    .filter((path) => path.endsWith(".json"))
+    .sort();
+  const runs: GitMemoryRunFile[] = [];
+  for (const path of paths) {
+    const run = await readRefJson<GitMemoryRunFile>(driver, ref, path);
+    if (run) {
+      runs.push(run);
+    }
+  }
+  return runs;
+}
+
+function isConversationSeqInRanges(seq: number, ranges: GitMemoryConversationSeqRange[]): boolean {
+  return ranges.some((range) => seq >= range.fromSeq && seq <= range.toSeq);
 }
 
 async function activeTaskFromCustomRef(
@@ -2008,11 +2107,17 @@ function buildEvidenceManifestRecords(input: {
   }));
 }
 
-function conversationInRange(
-  conversation: GitMemoryConversationRecord[],
-  range: GitMemoryConversationSeqRange,
-): GitMemoryConversationRecord[] {
-  return conversation.filter((message) => message.seq >= range.fromSeq && message.seq <= range.toSeq);
+function buildSessionConversationAppendFiles(
+  sessionId: GitMemorySessionId,
+  existingMarkdown: string | null,
+  record: GitMemoryConversationRecord,
+): Record<string, string> {
+  return {
+    [GIT_MEMORY_SESSION_CONVERSATION_MARKDOWN_PATH]: appendGitMemoryConversationMarkdown(existingMarkdown, record),
+    [gitMemorySessionMessagePath(record.seq, record.role)]: renderGitMemoryConversationMessageFile(record, {
+      sessionId,
+    }),
+  };
 }
 
 function tail<T>(values: T[], limit: number): T[] {

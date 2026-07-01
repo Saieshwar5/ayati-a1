@@ -19,6 +19,7 @@ export interface GitMemorySyntheticCommitInput {
   files: Record<string, string>;
   message: string;
   parentRef?: string;
+  gitlinks?: Record<string, string>;
 }
 
 interface RunGitOptions {
@@ -128,6 +129,14 @@ export class GitMemoryWorktreeGitDriver {
     return (await this.mustRun(["rev-parse", "HEAD"])).trim();
   }
 
+  async openSubmoduleRepo(path: string): Promise<GitMemoryWorktreeGitDriver> {
+    return await GitMemoryWorktreeGitDriver.init(join(this.repoPath, path));
+  }
+
+  async commitSubmoduleGitlink(path: string, message: string): Promise<string | null> {
+    return await this.commitPaths([path], message);
+  }
+
   async commitSyntheticFiles(input: GitMemorySyntheticCommitInput): Promise<string> {
     const parent = input.parentRef
       ? await this.resolveRef(input.parentRef)
@@ -143,6 +152,9 @@ export class GitMemoryWorktreeGitDriver {
       for (const [path, content] of Object.entries(input.files)) {
         const blob = (await this.mustRun(["hash-object", "-w", "--stdin"], { input: content })).trim();
         await this.mustRun(["update-index", "--add", "--cacheinfo", `100644,${blob},${path}`], { env });
+      }
+      for (const [path, commit] of Object.entries(input.gitlinks ?? {})) {
+        await this.mustRun(["update-index", "--add", "--cacheinfo", `160000,${commit},${path}`], { env });
       }
       const tree = (await this.mustRun(["write-tree"], { env })).trim();
       const commitArgs = parent
