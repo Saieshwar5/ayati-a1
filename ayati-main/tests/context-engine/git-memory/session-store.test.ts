@@ -8,10 +8,14 @@ import {
   GIT_MEMORY_SESSION_META_PATH,
   GIT_MEMORY_SESSION_SCHEMA_PATH,
   GIT_MEMORY_SESSION_STORE_DIR,
+  GitMemoryContextReader,
   GitMemoryWorktreeGitDriver,
   GitMemoryDailySessionStore,
   gitMemorySessionMessagePath,
   gitMemorySessionStoreMessagePath,
+  gitMemorySessionStoreMessagesDir,
+  gitMemorySessionStoreSummaryMarkdownPath,
+  gitMemorySessionStoreSummaryMetaPath,
   gitMemoryTaskActionsPath,
   gitMemoryTaskAssetsPath,
   gitMemoryTaskConversationMessagePath,
@@ -78,6 +82,113 @@ describe("GitMemoryDailySessionStore", () => {
     expect(await driver.readFile(GIT_MEMORY_MAIN_REF, "session/tasks.json")).toBeNull();
     expect(JSON.parse(await driver.readFile(GIT_MEMORY_MAIN_REF, GIT_MEMORY_SESSION_SCHEMA_PATH) ?? "{}"))
       .toMatchObject({ schemaVersion: 1, kind: "git_memory_session" });
+  });
+
+  it("writes session summary files into the session-store submodule without changing parent conversation files", async () => {
+    const contextStoreDir = await mkdtemp(join(tmpdir(), "ayati-git-memory-"));
+    const store = new GitMemoryDailySessionStore({ contextStoreDir });
+    const session = await store.openOrCreateDailySession({
+      date: "2026-06-28",
+      timezone: "Asia/Kolkata",
+      agentId: "local",
+      createdAt: "2026-06-28T00:00:00+05:30",
+    });
+    const driver = new GitMemoryWorktreeGitDriver(session.repoPath);
+    const parentMainBefore = await driver.resolveRef(GIT_MEMORY_MAIN_REF);
+    const parentConversationBefore = await driver.readFile(GIT_MEMORY_MAIN_REF, GIT_MEMORY_SESSION_CONVERSATION_MARKDOWN_PATH);
+
+    const result = await store.writeSessionSummary({
+      sessionId: session.sessionId,
+      text: "The session is cleaning prompt context before adding automatic summary updates.",
+      updatedAt: "2026-06-28T09:30:00+05:30",
+      coveredUntilSeq: 12,
+      messageCount: 8,
+    });
+
+    expect(result.metadata).toEqual({
+      schemaVersion: 1,
+      sessionId: session.sessionId,
+      updatedAt: "2026-06-28T09:30:00+05:30",
+      coveredUntilSeq: 12,
+      messageCount: 8,
+    });
+    const messageStore = await driver.openSubmoduleRepo(GIT_MEMORY_SESSION_STORE_DIR);
+    expect(await messageStore.resolveRef(GIT_MEMORY_MAIN_REF)).toBe(result.sessionStoreCommit);
+    expect(await messageStore.readFile(
+      GIT_MEMORY_MAIN_REF,
+      gitMemorySessionStoreSummaryMarkdownPath(session.sessionId),
+    )).toBe("The session is cleaning prompt context before adding automatic summary updates.\n");
+    expect(JSON.parse(await messageStore.readFile(
+      GIT_MEMORY_MAIN_REF,
+      gitMemorySessionStoreSummaryMetaPath(session.sessionId),
+    ) ?? "{}")).toEqual(result.metadata);
+    expect(await messageStore.listTreePaths(
+      GIT_MEMORY_MAIN_REF,
+      gitMemorySessionStoreMessagesDir(session.sessionId),
+    )).toEqual([]);
+    expect(await driver.resolveRef(GIT_MEMORY_MAIN_REF)).toBe(parentMainBefore);
+    expect(await driver.readFile(GIT_MEMORY_MAIN_REF, GIT_MEMORY_SESSION_CONVERSATION_MARKDOWN_PATH))
+      .toBe(parentConversationBefore);
+
+    const pack = await new GitMemoryContextReader(store).buildActiveContext({
+      sessionId: session.sessionId,
+    });
+    expect(pack.session.summary).toEqual({
+      text: "The session is cleaning prompt context before adding automatic summary updates.",
+      updatedAt: "2026-06-28T09:30:00+05:30",
+      coveredUntilSeq: 12,
+    });
+  });
+
+  it("updates existing session summary files without creating conversation messages", async () => {
+    const contextStoreDir = await mkdtemp(join(tmpdir(), "ayati-git-memory-"));
+    const store = new GitMemoryDailySessionStore({ contextStoreDir });
+    const session = await store.openOrCreateDailySession({
+      date: "2026-06-28",
+      timezone: "Asia/Kolkata",
+      agentId: "local",
+      createdAt: "2026-06-28T00:00:00+05:30",
+    });
+
+    const first = await store.writeSessionSummary({
+      sessionId: session.sessionId,
+      text: "First summary.",
+      updatedAt: "2026-06-28T09:30:00+05:30",
+      coveredUntilSeq: 4,
+      messageCount: 2,
+    });
+    const second = await store.writeSessionSummary({
+      sessionId: session.sessionId,
+      text: "Updated summary.",
+      updatedAt: "2026-06-28T10:00:00+05:30",
+      coveredUntilSeq: 8,
+      messageCount: 5,
+    });
+
+    expect(second.sessionStoreCommit).not.toBe(first.sessionStoreCommit);
+    const driver = new GitMemoryWorktreeGitDriver(session.repoPath);
+    const messageStore = await driver.openSubmoduleRepo(GIT_MEMORY_SESSION_STORE_DIR);
+    expect(await messageStore.readFile(
+      GIT_MEMORY_MAIN_REF,
+      gitMemorySessionStoreSummaryMarkdownPath(session.sessionId),
+    )).toBe("Updated summary.\n");
+    expect(JSON.parse(await messageStore.readFile(
+      GIT_MEMORY_MAIN_REF,
+      gitMemorySessionStoreSummaryMetaPath(session.sessionId),
+    ) ?? "{}")).toEqual(second.metadata);
+    expect(await messageStore.listTreePaths(
+      GIT_MEMORY_MAIN_REF,
+      gitMemorySessionStoreMessagesDir(session.sessionId),
+    )).toEqual([]);
+
+    const pack = await new GitMemoryContextReader(store).buildActiveContext({
+      sessionId: session.sessionId,
+    });
+    expect(pack.session.summary).toEqual({
+      text: "Updated summary.",
+      updatedAt: "2026-06-28T10:00:00+05:30",
+      coveredUntilSeq: 8,
+    });
   });
 
   it("commits conversation appends to main without moving the active branch", async () => {
