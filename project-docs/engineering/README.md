@@ -12,6 +12,7 @@ Important paths:
 - `ai-agent-instructions.md`: operating rules for AI coding agents working in this repository.
 - `context-priority.md`: what to read first for different task types.
 - `commands.md`: common development commands.
+- `env-vars.md`: runtime configuration flags and environment defaults.
 - `testing.md`: test strategy and commands.
 - `agent-benchmarking.md`: agent harness benchmark metrics, Fireworks token/cost usage, and human eval rubric.
 - `runtime-performance-benchmarking.md`: non-LLM runtime performance benchmark design, commands, report interpretation, and subsystem improvement signals.

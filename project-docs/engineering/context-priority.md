@@ -41,6 +41,9 @@ For backend runtime tasks, prioritize:
 
 For context and memory tasks, prioritize:
 
+- `project-docs/engineering/architecture/context-and-memory.md`
+- `project-docs/engineering/architecture/agent-harness.md`
+- `project-docs/engineering/env-vars.md` for runtime context configuration
 - `ayati-main/src/ivec/agent-runner/context-pack.ts`
 - `ayati-main/src/ivec/agent-runner/state-view.ts`
 - `ayati-main/src/context-engine/git-memory`
