@@ -1,6 +1,7 @@
 import type {
   TaskAssetRecord,
 } from "../contracts.js";
+import type { LlmProvider } from "../../core/contracts/provider.js";
 import type {
   CommitGitMemoryTaskRunInput,
   CommitGitMemoryTaskRunResult,
@@ -44,6 +45,7 @@ import {
 } from "./task-router.js";
 import {
   DeterministicGitMemorySessionSummaryUpdater,
+  LlmGitMemorySessionSummaryUpdater,
   type GitMemorySessionSummaryUpdater,
 } from "./session-summary.js";
 import type {
@@ -72,6 +74,13 @@ export interface GitMemoryRuntimeOptions {
   taskRouter?: GitMemoryTaskRouter;
   writeQueue?: GitMemoryWriteQueueRunner;
   sessionSummaryUpdater?: GitMemorySessionSummaryUpdater;
+  sessionSummary?: GitMemoryRuntimeSessionSummaryOptions;
+  sessionSummaryProvider?: LlmProvider;
+}
+
+export interface GitMemoryRuntimeSessionSummaryOptions {
+  mode?: "deterministic" | "llm";
+  maxSummaryChars?: number;
 }
 
 export interface OpenGitMemoryRuntimeSessionInput {
@@ -204,7 +213,7 @@ export class GitMemoryRuntime {
     this.memoryStateHydrator = new GitContextMemoryStateHydrator(this.store);
     this.taskRouter = options.taskRouter ?? new GitMemoryTaskRouter(this.store);
     this.writeQueue = options.writeQueue ?? new GitMemoryWriteQueue();
-    this.sessionSummaryUpdater = options.sessionSummaryUpdater ?? new DeterministicGitMemorySessionSummaryUpdater();
+    this.sessionSummaryUpdater = options.sessionSummaryUpdater ?? createGitMemorySessionSummaryUpdater(options);
   }
 
   async openDailySession(input: OpenGitMemoryRuntimeSessionInput = {}): Promise<GitMemoryDailySessionHandle> {
@@ -1356,6 +1365,24 @@ export class GitMemoryRuntime {
 
 export function createGitMemoryRuntime(options: GitMemoryRuntimeOptions): GitMemoryRuntime {
   return new GitMemoryRuntime(options);
+}
+
+function createGitMemorySessionSummaryUpdater(
+  options: GitMemoryRuntimeOptions,
+): GitMemorySessionSummaryUpdater {
+  const mode = options.sessionSummary?.mode ?? "deterministic";
+  if (mode === "deterministic") {
+    return new DeterministicGitMemorySessionSummaryUpdater();
+  }
+  if (!options.sessionSummaryProvider) {
+    throw new Error("Git memory session summary mode 'llm' requires sessionSummaryProvider.");
+  }
+  return new LlmGitMemorySessionSummaryUpdater({
+    provider: options.sessionSummaryProvider,
+    ...(typeof options.sessionSummary?.maxSummaryChars === "number" ? {
+      maxSummaryChars: options.sessionSummary.maxSummaryChars,
+    } : {}),
+  });
 }
 
 export function sessionDateForAt(at: string, timezone: string): string {
