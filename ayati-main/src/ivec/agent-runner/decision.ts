@@ -721,7 +721,6 @@ function buildStateViewPromptBreakdown(stateView: AgentStateView): Record<string
     "state.context.tools": stringifySection(stateView.context.tools),
     "state.context.personal": stringifySection(stateView.context.personal),
     "state.context.scratch": stringifySection(stateView.context.scratch),
-    "state.context.gitContext": stringifySection(stateView.context.gitContext),
     "state.context.personalMemorySnapshot": stateView.context.personalMemorySnapshot,
     "state.progress": stringifySection(stateView.progress),
     "state.workingFeedback": stringifySection(stateView.workingFeedback),
