@@ -1,3 +1,4 @@
+import type { LlmProvider } from "../../core/contracts/provider.js";
 import type { ContextSessionSummary } from "../contracts.js";
 import type {
   GitMemoryConversationRecord,
@@ -28,6 +29,12 @@ export interface GitMemorySessionSummaryUpdater {
   buildUpdate(input: BuildGitMemorySessionSummaryUpdateInput): Promise<BuiltGitMemorySessionSummaryUpdate | null>;
 }
 
+export interface LlmGitMemorySessionSummaryUpdaterOptions {
+  provider: LlmProvider;
+  fallback?: GitMemorySessionSummaryUpdater;
+  maxSummaryChars?: number;
+}
+
 export class DeterministicGitMemorySessionSummaryUpdater implements GitMemorySessionSummaryUpdater {
   async buildUpdate(
     input: BuildGitMemorySessionSummaryUpdateInput,
@@ -36,6 +43,72 @@ export class DeterministicGitMemorySessionSummaryUpdater implements GitMemorySes
       ...input,
       strategy: "deterministic",
     });
+  }
+}
+
+export class LlmGitMemorySessionSummaryUpdater implements GitMemorySessionSummaryUpdater {
+  private readonly provider: LlmProvider;
+  private readonly fallback: GitMemorySessionSummaryUpdater;
+  private readonly maxSummaryChars: number;
+
+  constructor(options: LlmGitMemorySessionSummaryUpdaterOptions) {
+    this.provider = options.provider;
+    this.fallback = options.fallback ?? new DeterministicGitMemorySessionSummaryUpdater();
+    this.maxSummaryChars = options.maxSummaryChars ?? 2_000;
+  }
+
+  async buildUpdate(
+    input: BuildGitMemorySessionSummaryUpdateInput,
+  ): Promise<BuiltGitMemorySessionSummaryUpdate | null> {
+    const coverage = buildSessionSummaryCoverage(input.records, input.previousSummary);
+    if (!coverage) {
+      return null;
+    }
+    try {
+      const response = await this.provider.generateTurn({
+        messages: [
+          {
+            role: "system",
+            content: [
+              "Summarize the session context for an AI agent.",
+              "Use only the previous summary and conversation records provided.",
+              "Do not invent facts.",
+              "Keep the summary compact and structured as Markdown.",
+              "Use sections: Current Focus, Recent Decisions, Open Questions, Important Context, Recent Progress.",
+              `Keep the markdown under ${this.maxSummaryChars} characters.`,
+              "Return JSON with a string field named summaryMarkdown.",
+            ].join("\n"),
+          },
+          {
+            role: "user",
+            content: JSON.stringify({
+              previousSummary: input.previousSummary?.text ?? "",
+              records: input.records.map((record) => ({
+                seq: record.seq,
+                role: record.role,
+                at: record.at,
+                text: record.text,
+              })),
+            }, null, 2),
+          },
+        ],
+        responseFormat: this.provider.capabilities.structuredOutput?.jsonObject ? { type: "json_object" } : undefined,
+      });
+      if (response.type !== "assistant") {
+        return await this.fallback.buildUpdate(input);
+      }
+      const text = parseLlmSummaryMarkdown(response.content, this.maxSummaryChars);
+      if (!text) {
+        return await this.fallback.buildUpdate(input);
+      }
+      return {
+        text,
+        strategy: "llm",
+        ...coverage,
+      };
+    } catch {
+      return await this.fallback.buildUpdate(input);
+    }
   }
 }
 
@@ -120,10 +193,11 @@ function buildDeterministicSessionSummaryUpdate(
   records: GitMemoryConversationRecord[],
   previousSummary: ContextSessionSummary | undefined,
 ): BuiltGitMemorySessionSummaryUpdate | null {
-  const textRecords = records.filter((record) => (record.text ?? "").trim().length > 0);
-  if (textRecords.length === 0) {
+  const coverage = buildSessionSummaryCoverage(records, previousSummary);
+  if (!coverage) {
     return null;
   }
+  const textRecords = records.filter((record) => (record.text ?? "").trim().length > 0);
   const recent = tail(textRecords, 8);
   const currentFocus = [...textRecords].reverse().find((record) => record.role === "user");
   const decisions = tail(textRecords.filter((record) => isDecisionSummaryCandidate(record.text ?? "")), 5);
@@ -143,11 +217,24 @@ function buildDeterministicSessionSummaryUpdate(
     "## Recent Messages",
     ...recent.map((record) => `- ${formatConversationRole(record.role)}: ${compactSummaryText(record.text ?? "")}`),
   ];
-  const sourceFromSeq = textRecords.reduce((min, record) => Math.min(min, record.seq), textRecords[0]!.seq);
-  const sourceToSeq = textRecords.reduce((max, record) => Math.max(max, record.seq), 0);
   return {
     text: lines.join("\n"),
     strategy: "deterministic",
+    ...coverage,
+  };
+}
+
+function buildSessionSummaryCoverage(
+  records: GitMemoryConversationRecord[],
+  previousSummary: ContextSessionSummary | undefined,
+): Omit<BuiltGitMemorySessionSummaryUpdate, "text" | "strategy"> | null {
+  const textRecords = records.filter((record) => (record.text ?? "").trim().length > 0);
+  if (textRecords.length === 0) {
+    return null;
+  }
+  const sourceFromSeq = textRecords.reduce((min, record) => Math.min(min, record.seq), textRecords[0]!.seq);
+  const sourceToSeq = textRecords.reduce((max, record) => Math.max(max, record.seq), 0);
+  return {
     coveredUntilSeq: sourceToSeq,
     messageCount: textRecords.length,
     sourceFromSeq,
@@ -156,6 +243,24 @@ function buildDeterministicSessionSummaryUpdate(
       previousCoveredUntilSeq: previousSummary.coveredUntilSeq,
     } : {}),
   };
+}
+
+function parseLlmSummaryMarkdown(content: string, maxSummaryChars: number): string {
+  try {
+    const parsed = JSON.parse(content) as { summaryMarkdown?: unknown; text?: unknown };
+    const value = typeof parsed.summaryMarkdown === "string"
+      ? parsed.summaryMarkdown
+      : typeof parsed.text === "string"
+        ? parsed.text
+        : "";
+    const normalized = value.trim();
+    if (!normalized) {
+      return "";
+    }
+    return normalized.length <= maxSummaryChars ? normalized : normalized.slice(0, maxSummaryChars).trimEnd();
+  } catch {
+    return "";
+  }
 }
 
 function formatSummaryRecordBullets(records: GitMemoryConversationRecord[]): string[] {
