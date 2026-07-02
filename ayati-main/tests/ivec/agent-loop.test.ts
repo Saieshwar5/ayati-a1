@@ -115,6 +115,73 @@ function fakeCreateTaskForTurnTool(): ToolDefinition {
   };
 }
 
+function fakeActivateTaskForTurnTool(): ToolDefinition {
+  return {
+    name: "git_context_activate_task_for_turn",
+    description: "Activate an existing task for the current turn.",
+    inputSchema: {
+      type: "object",
+      required: ["taskId", "reason"],
+      properties: {
+        taskId: { type: "string" },
+        reason: { type: "string" },
+      },
+    },
+    async execute() {
+      const structuredContent = {
+        status: "ready",
+        mode: "continue_active_task",
+        sessionId: "s1",
+        taskId: "T-20260702-website",
+        branch: "task/T-20260702-website",
+        runId: "R-20260702-website-002",
+        harnessContext: {
+          contextEngine: {
+            session: {
+              sessionId: "s1",
+              conversationTail: [],
+              activityTail: [],
+              assetCount: 1,
+            },
+            focus: {
+              status: "active",
+              ref: "refs/heads/task/T-20260702-website",
+              workId: "T-20260702-website",
+            },
+            task: {
+              ref: "refs/heads/task/T-20260702-website",
+              workId: "T-20260702-website",
+              title: "Website task",
+              objective: "Maintain the website task.",
+              status: "active",
+              completed: ["Created initial website files."],
+              open: ["Add a commands note file."],
+              blockers: [],
+              facts: [],
+              next: "Add a commands note file.",
+              assets: [],
+              recentRuns: [],
+              recentCommits: [],
+              recentEvidence: [],
+            },
+          },
+        },
+      };
+      return {
+        ok: true,
+        output: "Activated task T-20260702-website and run R-20260702-website-002.",
+        v2: {
+          transportOk: true,
+          operationStatus: "succeeded",
+          code: "GIT_CONTEXT_TURN_TASK_ACTIVATED",
+          message: "Pending turn activated on existing git-context task.",
+          structuredContent,
+        },
+      };
+    },
+  };
+}
+
 function extractStateView(userPrompt: string): any {
   const marker = "State view:\n";
   const start = userPrompt.indexOf(marker);
@@ -420,6 +487,167 @@ describe("agentLoop", () => {
       expect(readFileSync(outputPath, "utf-8")).toContain("pwd - show current directory");
       expect(secondStateView.context.git.current.task.identity.workId).toBe("T-20260702-001");
       expect(secondDecisionTools).toContain("write_files");
+      expect(secondDecisionTools).not.toContain("git_context_create_task_for_turn");
+    } finally {
+      cleanup(dataDir);
+    }
+  });
+
+  it("continues with normal tools after activating an existing task for an unbound turn", async () => {
+    const dataDir = makeTmpDir();
+    const outputPath = join(dataDir, "website-notes.txt");
+    try {
+      const gitActivateTaskTool = fakeActivateTaskForTurnTool();
+      const gitCreateTaskTool = fakeCreateTaskForTurnTool();
+      const gitReadOnlyTools = [
+        "git_context_active",
+        "git_context_list_tasks",
+        "git_context_search_tasks",
+        "git_context_read_task",
+        "git_context_ask_clarification_for_turn",
+      ].map((name) => ({
+        name,
+        description: name,
+        inputSchema: { type: "object", properties: {} },
+        async execute() {
+          return { ok: true, output: `${name} ok` };
+        },
+      } satisfies ToolDefinition));
+      const toolExecutor = createToolExecutor([]);
+      const toolWorkingSetManager = new ToolWorkingSetManager({
+        catalog: new ToolCatalog([
+          skill("git-context", [
+            ...gitReadOnlyTools,
+            gitCreateTaskTool,
+            gitActivateTaskTool,
+          ]),
+          skill("filesystem", [writeFilesTool]),
+        ]),
+        toolExecutor,
+        maxVisibleTools: 12,
+      });
+      const provider = createProvider([
+        {
+          kind: "act",
+          action: {
+            mode: "single",
+            calls: [{
+              id: "activate_task",
+              tool: "git_context_activate_task_for_turn",
+              input: {
+                taskId: "T-20260702-website",
+                reason: "The user is continuing the active website task.",
+              },
+              dependsOn: [],
+              purpose: "Bind the pending turn to the existing active task before work tools run.",
+            }],
+            allowedTools: ["git_context_activate_task_for_turn"],
+            assertions: [],
+          },
+        },
+        {
+          kind: "act",
+          action: {
+            mode: "single",
+            calls: [{
+              id: "write_file",
+              tool: "write_files",
+              input: {
+                createDirs: true,
+                files: [{
+                  path: outputPath,
+                  content: "Website note: remember to keep commands visible.",
+                }],
+              },
+              dependsOn: [],
+              purpose: "Write the requested note file after task activation.",
+            }],
+            allowedTools: ["write_files"],
+            assertions: [{ kind: "file_exists", path: "$.files[0].path" }],
+          },
+        },
+        {
+          kind: "reply",
+          status: "completed",
+          message: `I updated the website task note at ${outputPath}.`,
+        },
+      ]);
+
+      const result = await agentLoop({
+        provider,
+        toolExecutor,
+        toolWorkingSetManager,
+        toolDefinitions: [gitActivateTaskTool, gitCreateTaskTool, ...gitReadOnlyTools, writeFilesTool],
+        runRecorder: noopRunRecorder,
+        inputHandle: { sessionId: "s1", seq: 6 },
+        clientId: "c1",
+        initialUserMessage: "Add a note file for this website task",
+        dataDir,
+        systemContext: "full system context with memory",
+        harnessContext: {
+          contextEngine: {
+            session: {
+              sessionId: "s1",
+              conversationTail: [],
+              activityTail: [],
+              assetCount: 1,
+            },
+            focus: {
+              status: "active",
+              ref: "refs/heads/task/T-20260702-website",
+              workId: "T-20260702-website",
+            },
+            pendingTurn: {
+              routingStatus: "unbound",
+              fromSeq: 6,
+              toSeq: 6,
+              text: "Add a note file for this website task",
+            },
+            task: {
+              ref: "refs/heads/task/T-20260702-website",
+              workId: "T-20260702-website",
+              title: "Website task",
+              objective: "Maintain the website task.",
+              status: "active",
+              completed: ["Created initial website files."],
+              open: ["Add a note file."],
+              blockers: [],
+              facts: [],
+              next: "Add a note file.",
+              assets: [],
+              recentRuns: [],
+              recentCommits: [],
+              recentEvidence: [],
+            },
+          },
+        },
+      });
+
+      const firstCallInput = vi.mocked(provider.generateTurn).mock.calls[0]?.[0];
+      const secondCallInput = vi.mocked(provider.generateTurn).mock.calls[1]?.[0];
+      const firstDecisionTools = firstCallInput.tools.map((tool: { name: string }) => tool.name);
+      const secondDecisionTools = secondCallInput.tools.map((tool: { name: string }) => tool.name);
+      const secondUserPrompt = secondCallInput.messages.find((message: { role: string }) => message.role === "user").content as string;
+      const secondStateView = extractStateView(secondUserPrompt);
+      expect(result.status).toBe("completed");
+      expect(result.runClass).toBe("task");
+      expect(result.workRunId).toBe("R-20260702-website-002");
+      expect(result.totalToolCalls).toBe(2);
+      expect(result.content).toBe(`I updated the website task note at ${outputPath}.`);
+      expect(provider.generateTurn).toHaveBeenCalledTimes(3);
+      expect(readFileSync(outputPath, "utf-8")).toContain("Website note");
+      expect(firstDecisionTools).toEqual(expect.arrayContaining([
+        "git_context_active",
+        "git_context_list_tasks",
+        "git_context_search_tasks",
+        "git_context_read_task",
+        "git_context_activate_task_for_turn",
+        "git_context_create_task_for_turn",
+        "git_context_ask_clarification_for_turn",
+      ]));
+      expect(secondStateView.context.git.current.task.identity.workId).toBe("T-20260702-website");
+      expect(secondDecisionTools).toContain("write_files");
+      expect(secondDecisionTools).not.toContain("git_context_activate_task_for_turn");
       expect(secondDecisionTools).not.toContain("git_context_create_task_for_turn");
     } finally {
       cleanup(dataDir);
