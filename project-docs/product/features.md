@@ -3,9 +3,10 @@
 Current product features:
 
 - Runtime-selectable LLM providers: OpenRouter, OpenAI, Anthropic, and Fireworks.
-- Decision-action-reducer IVec harness with native control tools for
-  `decision_reply`, `decision_ask_user`, and `decision_load_tools`, plus
-  selected executable tools exposed directly through their own native schemas.
+- Decision-action-reducer IVec harness with direct assistant text for normal
+  final replies, native `decision_load_tools` for tool working-set changes,
+  task-only `ask_user_feedback` for blocking in-run feedback, and selected
+  executable tools exposed directly through their own native schemas.
 - Strict run-scoped tool loading from hidden tool catalog groups, exact tool
   names, or search queries, with tool-load and failure feedback fed back into
   the next decision.

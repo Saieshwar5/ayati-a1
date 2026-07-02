@@ -194,7 +194,8 @@ const provider: LlmProvider = {
         : {}),
     });
 
-    const message = response.choices[0]?.message;
+    const choices = Array.isArray(response.choices) ? response.choices : [];
+    const message = choices[0]?.message;
     if (!message) {
       throw new Error("Empty response from OpenRouter.");
     }

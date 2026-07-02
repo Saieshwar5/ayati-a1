@@ -29,7 +29,8 @@ schema. Do not hide executable calls inside a generic wrapper with an untyped
 `input` object.
 
 This means the model does not call a generic `decision_act` tool. It either
-calls a control tool or one selected executable tool directly.
+answers directly with assistant text for terminal replies, calls a small
+control tool, or calls one selected executable tool directly.
 
 ## Native Tool Surface
 
@@ -37,9 +38,8 @@ Each decision call exposes two classes of native provider tools:
 
 ```text
 control tools:
-  decision_reply({ status, message })
-  decision_ask_user({ question, reason })
   decision_load_tools({ query?, toolNames?, groups? })
+  ask_user_feedback({ question, reason }) only during an active task run
 
 selected executable tools:
   write_files({ files, createDirs? })
@@ -60,16 +60,19 @@ runner whether the model believes this exact tool call is a completion
 candidate if deterministic verification passes. The metadata is removed before
 the local tool executes.
 
-The provider call requires exactly one native tool call and disables parallel
-provider tool calls where supported. A model response can be:
+The provider call allows direct assistant text for normal terminal replies and
+disables parallel provider tool calls where supported. When a native tool call
+is needed, the model must call exactly one tool. A model response can be:
 
-- `decision_reply`: terminal user-facing answer.
-- `decision_ask_user`: clarification or approval when progress is genuinely blocked.
+- direct assistant text: terminal user-facing answer.
 - `decision_load_tools`: request missing tools for a later decision.
+- `ask_user_feedback`: pause an active task run for required user feedback
+  when progress is genuinely blocked and no safe default exists.
 - a selected executable tool: concrete work to run through the action executor.
 
-Unknown native tools, multiple native tool calls, missing executable tools, and
-invalid tool inputs are rejected deterministically and repaired when possible.
+Unknown native tools, multiple native tool calls, missing executable tools,
+task feedback outside an active task run, and invalid tool inputs are rejected
+deterministically and repaired when possible.
 
 When git-memory has an `unbound` or `clarifying` pending turn, normal task tools
 are blocked. The model may use git-context read/search tools and the
@@ -90,9 +93,9 @@ The decision layer normalizes native tool calls into the existing internal
 `AgentDecision` union:
 
 ```text
-decision_reply      -> { kind: "reply", ... }
-decision_ask_user   -> { kind: "ask_user", ... }
+direct text         -> { kind: "reply", ... }
 decision_load_tools -> { kind: "load_tools", ... }
+ask_user_feedback   -> { kind: "ask_user", ... }
 write_files(...)    -> { kind: "act", action: single call to write_files }
 read_file(...)      -> { kind: "act", action: single call to read_file }
 ```

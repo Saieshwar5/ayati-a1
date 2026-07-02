@@ -43,6 +43,7 @@ export interface GitMemoryChatContextAssistantMessageInput {
   clientId: string;
   turn: GitMemoryChatContextPreparedTurn | null;
   message: string;
+  kind?: GitMemoryConversationRecord["kind"];
   at: string;
   taskId?: GitMemoryTaskId;
   runId?: GitMemoryRunId;
@@ -66,6 +67,7 @@ export interface GitMemoryChatContextCompleteTaskRunInput {
   conversationRefs?: GitMemoryConversationSeqRange[];
   changedFiles?: string[];
   assistantMessage?: string;
+  assistantMessageKind?: GitMemoryConversationRecord["kind"];
   assistantAt?: string;
 }
 
@@ -169,6 +171,7 @@ class AppGitMemoryChatContextRuntime implements GitMemoryChatContextRuntime {
       startedAt: input.startedAt,
       changedFiles: input.changedFiles,
       assistantMessage: input.assistantMessage,
+      assistantMessageKind: input.assistantMessageKind,
       assistantAt: input.assistantAt,
     });
   }
@@ -183,6 +186,7 @@ class AppGitMemoryChatContextRuntime implements GitMemoryChatContextRuntime {
       return await this.gitMemoryRuntime.recordAssistantMessage({
         sessionId: input.turn.sessionId,
         text: input.message,
+        kind: input.kind,
         at: input.at,
         taskId: input.taskId,
         runId: input.runId,

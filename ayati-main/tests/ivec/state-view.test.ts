@@ -233,7 +233,7 @@ describe("buildAgentStateView", () => {
       severity: "warning",
       source: "tool_validation",
       message: expect.stringContaining("pending turn is clarifying"),
-      retryHint: expect.stringContaining("decision_ask_user"),
+      retryHint: expect.stringContaining("Ask the user directly"),
     });
   });
 

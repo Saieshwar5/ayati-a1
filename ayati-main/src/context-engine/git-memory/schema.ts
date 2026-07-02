@@ -15,6 +15,7 @@ export type GitMemoryRunId = string;
 export type GitMemoryActionId = string;
 
 export type GitMemoryConversationRole = "user" | "assistant" | "system";
+export type GitMemoryConversationKind = "message" | "feedback_question";
 export type GitMemoryTaskStatus = "open" | "in_progress" | "blocked" | "done" | "abandoned";
 export type GitMemoryRunStatus = "completed" | "failed" | "blocked" | "needs_user_input";
 export type GitMemoryActionStatus = "completed" | "failed" | "skipped";
@@ -81,6 +82,7 @@ export interface GitMemorySessionAttachmentsFile {
 export interface GitMemoryConversationRecord {
   seq: number;
   role: GitMemoryConversationRole;
+  kind?: GitMemoryConversationKind;
   at: string;
   text?: string | null;
   contentRef?: string | null;
@@ -375,6 +377,7 @@ export function validateGitMemoryConversationRecord(value: unknown): ValidationR
     requirePositiveInteger(record, "seq", errors);
     rejectFields(record, ["v", "messageId", "turnId"], errors);
     requireOneOf(record, "role", ["user", "assistant", "system"], errors);
+    requireOptionalOneOf(record, "kind", ["message", "feedback_question"], errors);
     requireNonEmptyString(record, "at", errors);
     requireInlineOrReferencedContent(record, errors);
     requireOptionalTaskId(record, "taskId", errors);

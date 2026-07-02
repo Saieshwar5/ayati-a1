@@ -141,6 +141,7 @@ function toConversationRecord(record: GitMemoryConversationRecord): ContextConve
   return {
     seq: record.seq,
     role: record.role,
+    ...(record.kind ? { kind: record.kind } : {}),
     at: record.at,
     text: record.text ?? "",
   };

@@ -217,7 +217,7 @@ function buildPendingTurnWorkingFeedback(state: LoopState): PromptWorkingFeedbac
       severity: "warning",
       source: "tool_validation",
       message: "The current git-context pending turn is clarifying. Do not call executable tools while task ownership is unresolved.",
-      retryHint: "Ask the user which task or target they mean with decision_ask_user.",
+      retryHint: "Ask the user directly which task or target they mean.",
     };
   }
   return undefined;

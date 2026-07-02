@@ -546,6 +546,7 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
       conversationRefs: binding.conversationRefs,
       at: completedAt,
       assistantMessage: result.content,
+      assistantMessageKind: result.workState?.status === "needs_user_input" ? "feedback_question" : "message",
       assistantAt: this.nowProvider().toISOString(),
     });
     if (!completed) {
@@ -604,6 +605,7 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
     ids: {
       taskId?: string;
       runId?: string;
+      kind?: "message" | "feedback_question";
     } = {},
   ): Promise<void> {
     if (!turn) {
@@ -613,6 +615,7 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
       clientId,
       turn,
       message,
+      kind: ids.kind,
       at: this.nowProvider().toISOString(),
       taskId: ids.taskId,
       runId: ids.runId,

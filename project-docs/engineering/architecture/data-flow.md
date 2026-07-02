@@ -13,16 +13,17 @@ Daemon communication flow:
 6. The runner builds a structured context pack from daily git context and
    personal memory. Current-run attachments appear separately in the sparse
    state view only when present.
-7. The decision model chooses a control tool (`decision_reply`,
-   `decision_ask_user`, or `decision_load_tools`) or directly calls one
+7. The decision model returns direct assistant text for normal final replies,
+   calls `decision_load_tools` for working-set changes, calls task-only
+   `ask_user_feedback` for blocking in-run feedback, or directly calls one
    selected executable tool.
 8. If an executable tool is called, the action executor validates the selected
    tool input and dispatches through registered tool definitions.
 9. Tool contracts/assertions turn results into verified facts and evidence.
 10. The progress reducer updates sparse `workState`; verified local work can mark
    `workState.status` as `done`.
-11. Completed tool work routes through a final decision-model reply so the user
-   sees a natural answer while verification details stay internal.
+11. Completed tool work routes through a final direct assistant response so the
+   user sees a natural answer while verification details stay internal.
 12. Runtime finalization commits task state, run summaries, actions, evidence,
    assets, assistant response metadata, and git commit trailers exactly once for
    the task run when a run exists.

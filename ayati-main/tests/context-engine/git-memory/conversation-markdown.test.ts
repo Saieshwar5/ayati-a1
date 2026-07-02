@@ -38,4 +38,29 @@ describe("git memory conversation markdown", () => {
       runId: "R-20260701-0001",
     });
   });
+
+  it("renders and parses feedback-question message metadata", () => {
+    const markdown = renderGitMemoryConversationMessageFile({
+      seq: 3,
+      role: "assistant",
+      kind: "feedback_question",
+      at: "2026-07-01T10:20:00+05:30",
+      text: "Which file path should I use?",
+      taskId: "W-20260701-0001",
+      runId: "R-20260701-0001",
+    }, {
+      sessionId: "S-20260701-local",
+    });
+
+    expect(markdown).toContain("Role: Assistant\nKind: Feedback Question\nAt:");
+    expect(parseGitMemoryConversationMessageFile(markdown)).toEqual({
+      seq: 3,
+      role: "assistant",
+      kind: "feedback_question",
+      at: "2026-07-01T10:20:00+05:30",
+      text: "Which file path should I use?",
+      taskId: "W-20260701-0001",
+      runId: "R-20260701-0001",
+    });
+  });
 });

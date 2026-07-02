@@ -938,15 +938,11 @@ describe("IVecEngine", () => {
                 assertions: [],
               },
             }),
-          })
-          .mockResolvedValueOnce({
-            type: "assistant",
-            content: JSON.stringify({
-              kind: "ask_user",
-              question: "Which upload task do you mean: upload API or upload UI redesign?",
-              reason: "Task ownership is ambiguous.",
-            }),
-          }),
+	          })
+	          .mockResolvedValueOnce({
+	            type: "assistant",
+	            content: "Which upload task do you mean: upload API or upload UI redesign?",
+	          }),
       });
       const onReply = vi.fn();
       const chatContextRuntime = createUnboundChatContextRuntime();
@@ -964,10 +960,10 @@ describe("IVecEngine", () => {
       engine.handleMessage("c1", { type: "chat", content: "continue upload" });
 
       await vi.waitFor(() => {
-        expect(onReply).toHaveBeenCalledWith("c1", {
-          type: "feedback",
-          content: "Which upload task do you mean: upload API or upload UI redesign?",
-        });
+	        expect(onReply).toHaveBeenCalledWith("c1", {
+	          type: "reply",
+	          content: "Which upload task do you mean: upload API or upload UI redesign?",
+	        });
       });
       expect(chatContextRuntime.routeTaskTurn).toHaveBeenCalledWith(expect.objectContaining({
         autoOnly: true,
