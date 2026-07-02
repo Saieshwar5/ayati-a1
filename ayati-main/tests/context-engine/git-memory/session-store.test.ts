@@ -1,6 +1,8 @@
+import { execFile } from "node:child_process";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { promisify } from "node:util";
 import { describe, expect, it } from "vitest";
 import {
   GIT_MEMORY_MAIN_REF,
@@ -27,6 +29,8 @@ import {
   gitMemoryTaskStatePath,
   parseGitMemoryCommitTrailers,
 } from "../../../src/context-engine/git-memory/index.js";
+
+const execFileAsync = promisify(execFile);
 
 describe("GitMemoryDailySessionStore", () => {
   it("creates one daily repo with base files and one initialization commit", async () => {
@@ -1209,6 +1213,80 @@ describe("GitMemoryDailySessionStore", () => {
     expect(await driver.log(GIT_MEMORY_MAIN_REF, 5)).toHaveLength(1);
   });
 
+  it("materializes synthetic task commits into a clean parent worktree", async () => {
+    const contextStoreDir = await mkdtemp(join(tmpdir(), "ayati-git-memory-"));
+    const store = new GitMemoryDailySessionStore({ contextStoreDir });
+    const session = await store.openOrCreateDailySession({
+      date: "2026-06-28",
+      timezone: "Asia/Kolkata",
+      agentId: "local",
+      createdAt: "2026-06-28T00:00:00+05:30",
+    });
+    await store.appendConversationMessage({
+      sessionId: session.sessionId,
+      role: "user",
+      text: "Create a Linux commands file.",
+      at: "2026-06-28T09:00:00+05:30",
+    });
+    const task = await store.createTaskBranch({
+      sessionId: session.sessionId,
+      title: "Linux commands file",
+      objective: "Create a text file with ten Linux commands.",
+      fromSeq: 1,
+      toSeq: 1,
+      at: "2026-06-28T09:01:00+05:30",
+    });
+    const driver = new GitMemoryWorktreeGitDriver(session.repoPath);
+
+    expect(await driver.currentBranch()).toBe(task.branch);
+    expect(await driver.readWorkingFile(gitMemoryTaskMarkdownPath(task.taskId)))
+      .toContain("Linux commands file");
+    expect(await driver.readWorkingFile(gitMemoryTaskStatePath(task.taskId)))
+      .toContain("Create a text file with ten Linux commands.");
+
+    await store.appendConversationMessage({
+      sessionId: session.sessionId,
+      role: "assistant",
+      text: "Created the Linux commands file.",
+      taskId: task.taskId,
+      runId: "R-20260628-0001",
+      at: "2026-06-28T09:02:00+05:30",
+    });
+    const snapshot = await store.commitSessionStoreSnapshot({
+      sessionId: session.sessionId,
+      at: "2026-06-28T09:02:01+05:30",
+      summary: "Snapshot conversation for task run R-20260628-0001.",
+    });
+    const run = await store.commitTaskRun({
+      sessionId: session.sessionId,
+      taskId: task.taskId,
+      runId: "R-20260628-0001",
+      status: "completed",
+      completedAt: "2026-06-28T09:03:00+05:30",
+      conversationRefs: [{ fromSeq: 1, toSeq: 2 }],
+      summary: "Created the Linux commands file.",
+      outcome: "Created the Linux commands file.",
+      workPerformed: ["Wrote ten Linux commands to a text file."],
+      verification: ["Confirmed the command file was written."],
+      sessionStoreCommit: snapshot.sessionStoreCommit,
+      state: {
+        status: "done",
+        completed: ["Wrote ten Linux commands to a text file."],
+        open: [],
+        next: "No next step.",
+      },
+    });
+    const messageStore = await driver.openSubmoduleRepo(GIT_MEMORY_SESSION_STORE_DIR);
+
+    expect(run.sessionStoreCommit).toBe(snapshot.sessionStoreCommit);
+    expect(await driver.readWorkingFile(gitMemoryTaskRunPath(task.taskId, run.runId)))
+      .toContain(`"sessionStoreCommit": "${snapshot.sessionStoreCommit}"`);
+    expect(await driver.readWorkingFile(gitMemoryTaskRunMarkdownPath(task.taskId, run.runId)))
+      .toContain(`Session Store Commit: ${snapshot.sessionStoreCommit}`);
+    expect(await gitStatus(session.repoPath)).toBe("");
+    expect(await gitStatus(messageStore.repoPath)).toBe("");
+  });
+
   it("renders failed task runs with clear default outcome memory", async () => {
     const contextStoreDir = await mkdtemp(join(tmpdir(), "ayati-git-memory-"));
     const store = new GitMemoryDailySessionStore({ contextStoreDir });
@@ -1411,4 +1489,9 @@ function parseJsonl(value: string | null): unknown[] {
     return [];
   }
   return value.trim().split(/\r?\n/).map((line) => JSON.parse(line) as unknown);
+}
+
+async function gitStatus(repoPath: string): Promise<string> {
+  const result = await execFileAsync("git", ["-C", repoPath, "status", "--short"]);
+  return result.stdout.trim();
 }

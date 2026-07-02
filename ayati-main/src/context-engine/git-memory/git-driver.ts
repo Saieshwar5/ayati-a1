@@ -64,6 +64,7 @@ export class GitMemoryWorktreeGitDriver {
 
   async checkoutBranch(ref: string): Promise<void> {
     await this.mustRun(["symbolic-ref", "HEAD", ref]);
+    await this.materializeHead();
   }
 
   async updateRef(ref: string, commit: string): Promise<void> {
@@ -162,10 +163,17 @@ export class GitMemoryWorktreeGitDriver {
         : ["commit-tree", tree];
       const commit = (await this.mustRun(commitArgs, { input: input.message })).trim();
       await this.mustRun(["update-ref", input.ref, commit]);
+      if (await this.currentHeadRef() === input.ref) {
+        await this.materializeHead();
+      }
       return commit;
     } finally {
       await unlink(indexPath).catch(() => undefined);
     }
+  }
+
+  async materializeHead(): Promise<void> {
+    await this.mustRun(["reset", "--hard", "HEAD"]);
   }
 
   async resolveRef(ref: string): Promise<string | null> {
@@ -196,6 +204,11 @@ export class GitMemoryWorktreeGitDriver {
         };
       })
       .filter((entry): entry is GitMemoryLogEntry => entry !== null);
+  }
+
+  private async currentHeadRef(): Promise<string | null> {
+    const result = await this.run(["symbolic-ref", "--quiet", "HEAD"], { allowFailure: true });
+    return result.exitCode === 0 ? result.stdout.trim() || null : null;
   }
 
   private async mustRun(args: string[], options?: Omit<RunGitOptions, "allowFailure">): Promise<string> {
