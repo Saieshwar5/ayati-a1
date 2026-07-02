@@ -476,6 +476,9 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
   ): Promise<void> {
     const binding = this.taskRunBindingFromRoutedOrResult(routed, result);
     if (!prepared || !binding) {
+      if (prepared && result.content.trim()) {
+        await this.recordChatContextAssistantMessage(clientId, prepared, result.content);
+      }
       if (prepared) {
         this.feedbackLedger?.record({
           clientId,

@@ -6,9 +6,11 @@ import { createGitMemoryChatContextRuntime } from "../../src/app/git-memory-chat
 import {
   createGitMemoryRuntime,
   GIT_MEMORY_MAIN_REF,
+  GIT_MEMORY_SESSION_STORE_DIR,
   GitMemoryDailySessionStore,
   GitMemoryWorktreeGitDriver,
   type GitMemoryWriteBatchSnapshot,
+  gitMemorySessionStoreMessagePath,
   gitMemoryTaskRunPath,
   parseGitMemoryCommitTrailers,
 } from "../../src/context-engine/index.js";
@@ -63,8 +65,12 @@ describe("createGitMemoryChatContextRuntime", () => {
       expect(prepared.context.task).toBeUndefined();
       expect(prepared.memoryState.activeTask).toBeUndefined();
       await waitForCommittedWrites(gitMemoryRuntime, prepared.sessionId, 1);
-      expect(await new GitMemoryWorktreeGitDriver(prepared.repoPath).log(GIT_MEMORY_MAIN_REF, 5))
-        .toHaveLength(2);
+      const driver = new GitMemoryWorktreeGitDriver(prepared.repoPath);
+      const messageStore = await driver.openSubmoduleRepo(GIT_MEMORY_SESSION_STORE_DIR);
+      expect(await driver.log(GIT_MEMORY_MAIN_REF, 5)).toHaveLength(1);
+      expect(await messageStore.readWorkingFile(
+        gitMemorySessionStoreMessagePath(prepared.sessionId, prepared.messageSeq, "user"),
+      )).toContain("Fix upload handling");
     } finally {
       rmSync(storeDir, { recursive: true, force: true });
     }
@@ -108,7 +114,11 @@ describe("createGitMemoryChatContextRuntime", () => {
       const driver = new GitMemoryWorktreeGitDriver(prepared.repoPath);
       expect(await driver.readWorkingFile("session/conversation.jsonl")).toBeNull();
       await waitForCommittedWrites(gitMemoryRuntime, prepared.sessionId, 2);
-      expect(await driver.log(GIT_MEMORY_MAIN_REF, 5)).toHaveLength(3);
+      const messageStore = await driver.openSubmoduleRepo(GIT_MEMORY_SESSION_STORE_DIR);
+      expect(await driver.log(GIT_MEMORY_MAIN_REF, 5)).toHaveLength(1);
+      expect(await messageStore.readWorkingFile(
+        gitMemorySessionStoreMessagePath(prepared.sessionId, 2, "assistant"),
+      )).toContain("I will inspect upload handling.");
     } finally {
       rmSync(storeDir, { recursive: true, force: true });
     }
@@ -454,7 +464,7 @@ describe("createGitMemoryChatContextRuntime", () => {
       expect((await driver.log(GIT_MEMORY_MAIN_REF, 5)).some((entry) => {
         const trailers = parseGitMemoryCommitTrailers(entry.message);
         return trailers.event === "session_checkpointed";
-      })).toBe(true);
+      })).toBe(false);
     } finally {
       rmSync(storeDir, { recursive: true, force: true });
     }

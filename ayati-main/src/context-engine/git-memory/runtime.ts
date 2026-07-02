@@ -1,7 +1,6 @@
 import type {
   TaskAssetRecord,
 } from "../contracts.js";
-import type { LlmProvider } from "../../core/contracts/provider.js";
 import type {
   CommitGitMemoryTaskRunInput,
   CommitGitMemoryTaskRunResult,
@@ -43,11 +42,6 @@ import {
   type ResolveGitMemoryTaskRouteInput,
   isGitMemoryPureFollowUpMessage,
 } from "./task-router.js";
-import {
-  DeterministicGitMemorySessionSummaryUpdater,
-  LlmGitMemorySessionSummaryUpdater,
-  type GitMemorySessionSummaryUpdater,
-} from "./session-summary.js";
 import type {
   GitMemoryConversationRecord,
   GitMemoryConversationRole,
@@ -73,14 +67,6 @@ export interface GitMemoryRuntimeOptions {
   store?: GitMemoryDailySessionStore;
   taskRouter?: GitMemoryTaskRouter;
   writeQueue?: GitMemoryWriteQueueRunner;
-  sessionSummaryUpdater?: GitMemorySessionSummaryUpdater;
-  sessionSummary?: GitMemoryRuntimeSessionSummaryOptions;
-  sessionSummaryProvider?: LlmProvider;
-}
-
-export interface GitMemoryRuntimeSessionSummaryOptions {
-  mode?: "deterministic" | "llm";
-  maxSummaryChars?: number;
 }
 
 export interface OpenGitMemoryRuntimeSessionInput {
@@ -198,7 +184,6 @@ export class GitMemoryRuntime {
   private readonly memoryStateHydrator: GitContextMemoryStateHydrator;
   private readonly taskRouter: GitMemoryTaskRouter;
   private readonly writeQueue: GitMemoryWriteQueueRunner;
-  private readonly sessionSummaryUpdater: GitMemorySessionSummaryUpdater;
   private readonly sessionMemoryCache = new Map<GitMemorySessionId, GitContextMemoryState>();
   private readonly pendingTurns = new Map<GitMemorySessionId, PendingGitMemoryTurnEnvelope>();
 
@@ -213,7 +198,6 @@ export class GitMemoryRuntime {
     this.memoryStateHydrator = new GitContextMemoryStateHydrator(this.store);
     this.taskRouter = options.taskRouter ?? new GitMemoryTaskRouter(this.store);
     this.writeQueue = options.writeQueue ?? new GitMemoryWriteQueue();
-    this.sessionSummaryUpdater = options.sessionSummaryUpdater ?? createGitMemorySessionSummaryUpdater(options);
   }
 
   async openDailySession(input: OpenGitMemoryRuntimeSessionInput = {}): Promise<GitMemoryDailySessionHandle> {
@@ -316,7 +300,6 @@ export class GitMemoryRuntime {
         type: "assistant_message_recorded",
         createdAt: at,
         record,
-        updateSummary: true,
       });
       return record;
     }
@@ -334,7 +317,6 @@ export class GitMemoryRuntime {
         taskId: input.taskId,
         runId: input.runId,
       });
-      await this.updateSessionSummaryFromConversation(input.sessionId, at);
       return record;
     });
     if (!this.updateCachedTaskConversation(input.sessionId, input.taskId, record)) {
@@ -779,9 +761,6 @@ export class GitMemoryRuntime {
           conversationRefs: includeConversationRecordInRefs(baseCommitInput.conversationRefs, assistantMessage),
         };
       }
-      if (assistantMessage) {
-        await this.updateSessionSummaryFromConversation(commitInput.sessionId, assistantMessage.at);
-      }
       const snapshot = await this.store.commitSessionStoreSnapshot({
         sessionId: commitInput.sessionId,
         at: commitInput.completedAt,
@@ -888,60 +867,6 @@ export class GitMemoryRuntime {
       },
     };
     this.sessionMemoryCache.set(state.session.sessionId, nextState);
-  }
-
-  private async updateSessionSummaryFromConversation(
-    sessionId: GitMemorySessionId,
-    updatedAt: string,
-  ): Promise<void> {
-    const records = await this.store.readSessionConversationRecordsForSummary(sessionId);
-    const previousSummary = this.sessionMemoryCache.get(sessionId)?.session.summary;
-    const summary = await this.sessionSummaryUpdater.buildUpdate({
-      records,
-      ...(previousSummary ? { previousSummary } : {}),
-    });
-    if (!summary) {
-      return;
-    }
-    await this.store.writeSessionSummary({
-      sessionId,
-      text: summary.text,
-      updatedAt,
-      strategy: summary.strategy,
-      coveredUntilSeq: summary.coveredUntilSeq,
-      messageCount: summary.messageCount,
-      sourceFromSeq: summary.sourceFromSeq,
-      sourceToSeq: summary.sourceToSeq,
-      ...(typeof summary.previousCoveredUntilSeq === "number" ? {
-        previousCoveredUntilSeq: summary.previousCoveredUntilSeq,
-      } : {}),
-    });
-    this.updateCachedSessionSummary(sessionId, {
-      text: summary.text,
-      updatedAt,
-      coveredUntilSeq: summary.coveredUntilSeq,
-    });
-  }
-
-  private updateCachedSessionSummary(
-    sessionId: GitMemorySessionId,
-    summary: {
-      text: string;
-      updatedAt: string;
-      coveredUntilSeq: number;
-    },
-  ): void {
-    const cached = this.sessionMemoryCache.get(sessionId);
-    if (!cached) {
-      return;
-    }
-    this.sessionMemoryCache.set(sessionId, {
-      ...cached,
-      session: {
-        ...cached.session,
-        summary,
-      },
-    });
   }
 
   private setPendingTurn(turn: PendingGitMemoryTurnEnvelope): void {
@@ -1339,7 +1264,6 @@ export class GitMemoryRuntime {
     label: string;
     createdAt: string;
     record: GitMemoryConversationRecord;
-    updateSummary?: boolean;
   }): void {
     const persistence = this.writeQueue.enqueue({
       sessionId: input.sessionId,
@@ -1351,9 +1275,6 @@ export class GitMemoryRuntime {
         sessionId: input.sessionId,
         record: input.record,
       });
-      if (input.updateSummary) {
-        await this.updateSessionSummaryFromConversation(input.sessionId, input.createdAt);
-      }
     });
     void persistence.catch(() => undefined);
   }
@@ -1365,24 +1286,6 @@ export class GitMemoryRuntime {
 
 export function createGitMemoryRuntime(options: GitMemoryRuntimeOptions): GitMemoryRuntime {
   return new GitMemoryRuntime(options);
-}
-
-function createGitMemorySessionSummaryUpdater(
-  options: GitMemoryRuntimeOptions,
-): GitMemorySessionSummaryUpdater {
-  const mode = options.sessionSummary?.mode ?? "deterministic";
-  if (mode === "deterministic") {
-    return new DeterministicGitMemorySessionSummaryUpdater();
-  }
-  if (!options.sessionSummaryProvider) {
-    throw new Error("Git memory session summary mode 'llm' requires sessionSummaryProvider.");
-  }
-  return new LlmGitMemorySessionSummaryUpdater({
-    provider: options.sessionSummaryProvider,
-    ...(typeof options.sessionSummary?.maxSummaryChars === "number" ? {
-      maxSummaryChars: options.sessionSummary.maxSummaryChars,
-    } : {}),
-  });
 }
 
 export function sessionDateForAt(at: string, timezone: string): string {

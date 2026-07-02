@@ -173,6 +173,11 @@ describe("buildGitMemoryHarnessContextPack", () => {
       toSeq: user.seq,
       at: "2026-06-28T09:01:00+05:30",
     });
+    const snapshot = await store.commitSessionStoreSnapshot({
+      sessionId: session.sessionId,
+      at: "2026-06-28T09:01:30+05:30",
+      summary: "Snapshot harness-context fixture conversation.",
+    });
     await store.commitTaskRun({
       sessionId: session.sessionId,
       taskId: task.taskId,
@@ -180,6 +185,7 @@ describe("buildGitMemoryHarnessContextPack", () => {
       startedAt: "2026-06-28T09:02:00+05:30",
       completedAt: "2026-06-28T09:10:00+05:30",
       conversationRefs: [{ fromSeq: user.seq, toSeq: user.seq }],
+      sessionStoreCommit: snapshot.sessionStoreCommit,
       summary: "Inspected upload handling.",
       evidence: [{
         step: 1,
@@ -305,8 +311,8 @@ describe("buildGitMemoryHarnessContextPack", () => {
     });
     expect(memoryHarness).toEqual(harness);
     expect(harness.session.recentCommits[0]).toMatchObject({
-      subject: "ayati: record user message",
-      event: "conversation_appended",
+      subject: "ayati: initialize session S-20260628-local",
+      event: "session_initialized",
     });
     expect(harness.session.recentCommits[0]).not.toHaveProperty("trailers");
     expect(harness.session.recentCommits[0]).not.toHaveProperty("conversationSeq");

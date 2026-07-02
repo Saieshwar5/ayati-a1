@@ -106,16 +106,10 @@ compressed aid for session continuity, not a complete source of truth. When the
 summary conflicts with exact conversation, the model should trust
 `context.timeline`.
 
-The default summary updater is deterministic. It writes structured Markdown
-sections such as current focus, recent decisions, open questions, and recent
-messages. The summary metadata records the update strategy, covered sequence
-range, source sequence range, message count, and previous covered sequence when
-known.
-
-LLM session summaries are available only by explicit runtime configuration.
-When enabled, the LLM updater uses the main provider and falls back to the
-deterministic updater on provider errors, invalid output, tool-call responses,
-or empty summaries.
+Summary files are explicit session-store artifacts. Normal user and assistant
+message writes do not automatically generate or commit summaries. Future
+summary generation should run as a deliberate context-engine step and write the
+same session-store files.
 
 ## Hot Tool Context
 
@@ -144,48 +138,60 @@ in long-lived context.
 
 ## Conversation
 
-Conversation is canonical as Markdown:
+Conversation is canonical inside the session-store submodule as per-message
+Markdown files:
 
 ```text
-main:session/conversation.md
-task/W-...:session/conversation.md
+session-store/sessions/<sessionId>/messages/000001-user.md
+session-store/sessions/<sessionId>/messages/000002-assistant.md
 ```
 
-The `main` branch stores the global daily conversation. Task branches store the
-conversation blocks that belong to that task. Normal task conversation is
-append-only synced to both:
+The parent daily-session repository should not store new session conversation
+files. For new sessions, parent `main` contains the `session-store` gitlink and
+task branches contain task metadata/run files. Conversation messages are written
+to the session-store working tree during the live conversation.
 
-```text
-active task branch:session/conversation.md
-main:session/conversation.md
-```
+Ayati does not commit the session-store on every message. The normal flow is:
 
-Ayati does not use a normal full branch merge for this sync. Only the
-conversation block is copied to `main`, so task-local state, run files, action
-traces, and intermediate files remain on the task branch.
+1. Initialize the session-store submodule when the daily session is created.
+2. Write user/system/assistant messages as session-store working files.
+3. When a task run is finalized, append the assistant response if needed.
+4. Commit the session-store snapshot.
+5. Commit the task run with `sessionStoreCommit` and `conversationRefs`.
 
-Conversation blocks may include task, run, and branch metadata:
+Message files may include session, task, and run metadata:
 
 ```md
-## 2026-06-28T09:00:05+05:30 Assistant
+# Message 000002
 
+Role: Assistant
+At: 2026-06-28T09:00:05+05:30
+Session: S-20260628-local
 Task: W-20260628-0001
 Run: R-20260628-0001
-Branch: task/W-20260628-0001-fix-upload-handling
 
 I inspected the upload path.
 ```
 
-`session/conversation.jsonl` remains only as a compact debug log. It is not the
-canonical model context. New rows are intentionally small:
+Task conversation is reconstructed from committed task runs:
 
 ```json
-{"seq":1,"role":"user","at":"2026-06-28T09:00:00+05:30","text":"Fix upload handling","branch":"main"}
+{
+  "sessionStoreCommit": "abc123...",
+  "conversationRefs": [{ "fromSeq": 1, "toSeq": 2 }]
+}
 ```
 
-Message ids, turn ids, schema row versions, task-message link ids, and event
-ids should not be treated as conversation identity. Runtime APIs may still use
-turn ids in memory to correlate a prepared user turn with an assistant response.
+Readers follow the run's `sessionStoreCommit` into the submodule, load the
+message files in the referenced sequence ranges, and render a bounded Markdown
+tail for task context. Old `session/conversation.md` and task-local message
+files may still be read as legacy fallbacks, but new writes should not create
+them.
+
+`session/conversation.jsonl` is not canonical model context. Message ids, turn
+ids, schema row versions, task-message link ids, and event ids should not be
+treated as conversation identity. Runtime APIs may still use turn ids in memory
+to correlate a prepared user turn with an assistant response.
 
 ## Focus And Events
 

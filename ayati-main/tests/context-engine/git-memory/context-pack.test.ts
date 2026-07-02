@@ -230,6 +230,11 @@ describe("GitMemoryContextReader", () => {
       toSeq: 2,
       at: "2026-06-28T09:01:00+05:30",
     });
+    const snapshot = await store.commitSessionStoreSnapshot({
+      sessionId: session.sessionId,
+      at: "2026-06-28T09:09:00+05:30",
+      summary: "Snapshot upload handling conversation.",
+    });
     await store.commitTaskRun({
       sessionId: session.sessionId,
       taskId: task.taskId,
@@ -237,6 +242,7 @@ describe("GitMemoryContextReader", () => {
       startedAt: "2026-06-28T09:02:00+05:30",
       completedAt: "2026-06-28T09:10:00+05:30",
       conversationRefs: [{ fromSeq: 1, toSeq: 2 }],
+      sessionStoreCommit: snapshot.sessionStoreCommit,
       summary: "Inspected upload handling and found validation mismatch.",
       actions: [{
         actionId: "ACT-20260628-000001",
@@ -311,12 +317,13 @@ describe("GitMemoryContextReader", () => {
     expect(pack.session.conversationMarkdownTail).toContain("Continue from there.");
     expect(pack.session.conversationMarkdownTail).toContain("Branch: task/W-20260628-0001-fix-upload-handling");
     expect(pack.session.activityTail).toMatchObject([
-      { seq: 1, type: "task_created" },
-      { seq: 2, type: "run_completed" },
+      { seq: 1, type: "session_initialized" },
+      { seq: 2, type: "task_created" },
+      { seq: 3, type: "run_completed" },
     ]);
     expect(pack.session.recentCommits[0]).toMatchObject({
-      subject: "ayati: record user message",
-      event: "conversation_appended",
+      subject: "ayati: initialize session S-20260628-local",
+      event: "session_initialized",
     });
     expect(pack.session.recentCommits[0]).not.toHaveProperty("trailers");
     expect(pack.session.recentCommits[0]).not.toHaveProperty("conversationSeq");
