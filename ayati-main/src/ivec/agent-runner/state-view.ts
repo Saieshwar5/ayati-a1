@@ -240,10 +240,14 @@ function buildToolLoadWorkingFeedback(result: ToolLoadResult | undefined): Promp
 function isToolValidationReason(reason: string): boolean {
   return reason.includes("Invalid input for")
     || reason.includes("Tool input preflight failed")
-    || reason.includes("missing required field");
+    || reason.includes("missing required field")
+    || reason.includes("No active task exists");
 }
 
 function buildFailureRetryHint(failureType: LoopState["failureHistory"][number]["failureType"], reason: string): string | undefined {
+  if (reason.includes("No active task exists")) {
+    return "Use git_context_create_task_for_turn first, or ask a short clarification if the request is unclear.";
+  }
   if (failureType === "validation_error" || isToolValidationReason(reason)) {
     return "Retry the selected executable tool with all required schema fields. Do not use an empty input object.";
   }

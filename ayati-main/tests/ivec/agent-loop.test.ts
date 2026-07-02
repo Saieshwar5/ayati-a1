@@ -170,6 +170,73 @@ describe("agentLoop", () => {
     }
   });
 
+  it("repairs work tool actions when a fresh session has no active task", async () => {
+    const dataDir = makeTmpDir();
+    const outputPath = join(dataDir, "fresh-session.txt");
+    try {
+      const toolExecutor = createToolExecutor([writeFilesTool]);
+      const provider = createProvider([
+        {
+          kind: "act",
+          action: {
+            mode: "single",
+            calls: [{
+              id: "call_1",
+              tool: "write_files",
+              input: {
+                files: [{ path: outputPath, content: "should not run before task creation" }],
+              },
+              dependsOn: [],
+              purpose: "Create the requested file",
+            }],
+            allowedTools: ["write_files"],
+            assertions: [],
+          },
+        },
+        {
+          kind: "reply",
+          status: "completed",
+          message: "I need to create a task before using work tools.",
+        },
+      ]);
+
+      const result = await agentLoop({
+        provider,
+        toolExecutor,
+        toolDefinitions: toolExecutor.definitions(),
+        runRecorder: noopRunRecorder,
+        inputHandle: { sessionId: "s1", seq: 1 },
+        clientId: "c1",
+        initialUserMessage: "Create a small text file",
+        dataDir,
+        systemContext: "full system context with memory",
+        harnessContext: {
+          contextEngine: {
+            session: {
+              sessionId: "s1",
+              conversationTail: [],
+              activityTail: [],
+              assetCount: 0,
+            },
+            focus: {
+              status: "none",
+            },
+          },
+        },
+      });
+
+      const secondCallInput = vi.mocked(provider.generateTurn).mock.calls[1]?.[0];
+      const secondUserPrompt = secondCallInput.messages.find((message: { role: string }) => message.role === "user").content as string;
+      expect(result.status).toBe("completed");
+      expect(result.content).toBe("I need to create a task before using work tools.");
+      expect(provider.generateTurn).toHaveBeenCalledTimes(2);
+      expect(existsSync(outputPath)).toBe(false);
+      expect(secondUserPrompt).toContain("Use git_context_create_task_for_turn first");
+    } finally {
+      cleanup(dataDir);
+    }
+  });
+
   it("finalizes immediately when a verified action is marked as a completion candidate", async () => {
     const dataDir = makeTmpDir();
     const outputPath = join(dataDir, "completion-site", "index.html");

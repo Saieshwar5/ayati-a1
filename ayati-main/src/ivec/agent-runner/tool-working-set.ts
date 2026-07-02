@@ -3,9 +3,9 @@ import type { ToolExecutor } from "../../skills/tool-executor.js";
 import type { ActToolCallRecord, LoopState } from "../types.js";
 import type { ToolCatalog, ToolCatalogEntry } from "./tool-catalog.js";
 import {
+  GIT_CONTEXT_FRESH_SESSION_ROUTING_TOOL_NAMES,
   GIT_CONTEXT_READ_ONLY_TOOL_NAMES,
   GIT_CONTEXT_TURN_ROUTING_TOOL_NAMES,
-  isGitContextTurnRoutingToolName,
 } from "../../skills/builtins/git-context/tool-policy.js";
 
 export interface ToolLoadRequest {
@@ -93,7 +93,22 @@ export class ToolWorkingSetManager {
       this.syncMount(context);
     }
     const request = buildDeterministicLoadRequest(state);
+    const suppressTaskRoutingTools = hasCompletedTaskRoutingWindowToolUse(state);
     const result = this.load(this.addTaskRoutingWindowTools(request, state, context), context);
+    if (suppressTaskRoutingTools) {
+      const removed: string[] = [];
+      this.removeTaskRoutingTools(runState, removed);
+      if (removed.length > 0) {
+        this.syncMount(context);
+        return {
+          ...result,
+          loaded: result.loaded.filter((tool) => !removed.includes(tool)),
+          alreadyActive: result.alreadyActive.filter((tool) => !removed.includes(tool)),
+          evicted: [...result.evicted, ...removed],
+          message: `${result.message} Removed task routing tools after prior routing use: ${removed.join(", ")}.`,
+        };
+      }
+    }
     this.syncMount(context);
     return result;
   }
@@ -174,7 +189,7 @@ export class ToolWorkingSetManager {
         continue;
       }
       state.usedAtStep.set(entry.name, context.stepNumber ?? 0);
-      if (!call.error && isGitContextTurnRoutingToolName(entry.name)) {
+      if (!call.error && isTaskRoutingWindowTool(entry.name)) {
         state.taskRouting.resolved = true;
       }
       nextTools.push(...(call.error ? entry.nextOnFailure : entry.nextOnSuccess));
@@ -251,15 +266,21 @@ export class ToolWorkingSetManager {
     if (state.harnessContext.contextEngine?.pendingTurn?.routingStatus === "clarifying") {
       return request;
     }
+    if (hasCompletedTaskRoutingWindowToolUse(state)) {
+      return request;
+    }
     const step = context.stepNumber ?? 0;
     if (step < 1 || step > TASK_ROUTING_WINDOW_STEPS) {
       return request;
     }
+    const routingTools = isFreshSessionWithoutActiveTask(state)
+      ? GIT_CONTEXT_FRESH_SESSION_ROUTING_TOOL_NAMES
+      : TASK_ROUTING_WINDOW_TOOL_NAMES;
     return {
       ...request,
       toolNames: [
         ...(request.toolNames ?? []),
-        ...TASK_ROUTING_WINDOW_TOOL_NAMES,
+        ...routingTools,
       ],
     };
   }
@@ -451,6 +472,14 @@ function normalizeStrings(values: string[] | undefined): string[] {
 
 function isTaskRoutingWindowTool(tool: string): boolean {
   return (TASK_ROUTING_WINDOW_TOOL_NAMES as readonly string[]).includes(tool);
+}
+
+function hasCompletedTaskRoutingWindowToolUse(state: LoopState): boolean {
+  return state.completedSteps.some((step) => (step.toolsUsed ?? []).some(isTaskRoutingWindowTool));
+}
+
+function isFreshSessionWithoutActiveTask(state: LoopState): boolean {
+  return state.harnessContext.contextEngine?.focus.status === "none";
 }
 
 function summarizeLoadStatus(

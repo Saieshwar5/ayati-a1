@@ -322,6 +322,9 @@ export class AsyncAgentFeedbackLedger implements AgentFeedbackLedger {
     if (event.stage === "decision" && event.event === "provider_empty_response") {
       signals.add("provider_empty_response");
     }
+    if (event.stage === "guard" && event.event === "fresh_session_tool_repair_requested") {
+      signals.add("fresh_session_tool_repair_requested");
+    }
     if (event.stage === "action" && event.event === "failed") {
       signals.add("action_failed");
     }
@@ -557,6 +560,16 @@ export function buildFeedbackTriageSummary(summary: AgentFeedbackLatestSummary):
       title: "Provider returned an empty response",
       details: "The model provider returned no usable assistant message or tool call before the runtime could parse a decision.",
       recommendation: "Inspect decision.provider_empty_response for model, latency, response shape, native tool count, and retry details.",
+    });
+  }
+
+  if (warningSet.has("fresh_session_tool_repair_requested")) {
+    findings.push({
+      code: "fresh_session_tool_repair_requested",
+      severity: "warning",
+      title: "Fresh session needed first task routing",
+      details: "The model tried to load or call tools before any active task existed.",
+      recommendation: "Use git_context_create_task_for_turn first, or ask a short clarification if the request is unclear.",
     });
   }
 

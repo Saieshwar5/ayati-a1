@@ -15,8 +15,14 @@ export const GIT_CONTEXT_TURN_ROUTING_TOOL_NAMES = [
   "git_context_ask_clarification_for_turn",
 ] as const;
 
+export const GIT_CONTEXT_FRESH_SESSION_ROUTING_TOOL_NAMES = [
+  "git_context_create_task_for_turn",
+  "git_context_ask_clarification_for_turn",
+] as const;
+
 const READ_ONLY_TOOL_NAMES = new Set<string>(GIT_CONTEXT_READ_ONLY_TOOL_NAMES);
 const TURN_ROUTING_TOOL_NAMES = new Set<string>(GIT_CONTEXT_TURN_ROUTING_TOOL_NAMES);
+const FRESH_SESSION_ROUTING_TOOL_NAMES = new Set<string>(GIT_CONTEXT_FRESH_SESSION_ROUTING_TOOL_NAMES);
 
 export function isGitContextReadOnlyToolName(name: string): boolean {
   return READ_ONLY_TOOL_NAMES.has(name);
@@ -24,6 +30,10 @@ export function isGitContextReadOnlyToolName(name: string): boolean {
 
 export function isGitContextTurnRoutingToolName(name: string): boolean {
   return TURN_ROUTING_TOOL_NAMES.has(name);
+}
+
+export function isGitContextFreshSessionRoutingToolName(name: string): boolean {
+  return FRESH_SESSION_ROUTING_TOOL_NAMES.has(name);
 }
 
 export function isGitContextAllowedDuringPendingRouting(name: string): boolean {
