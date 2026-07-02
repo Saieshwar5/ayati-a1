@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import type { LlmProvider } from "../core/contracts/provider.js";
+import { isProviderEmptyResponseError } from "../core/contracts/provider-errors.js";
 import type { StaticContext } from "../context/static-context-cache.js";
 import type { ManagedDocumentManifest } from "../documents/types.js";
 import type { DocumentStore } from "../documents/document-store.js";
@@ -286,7 +287,7 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
       }
       this.onReply?.(input.clientId, {
         type: "error",
-        content: "Failed to generate a response.",
+        content: formatChatRuntimeError(err),
       });
     }
   }
@@ -1161,4 +1162,11 @@ function formatGitMemoryAmbiguityMessage(
     .map((candidate) => `- ${candidate.taskId}: ${candidate.title}`)
     .join("\n");
   return `I found multiple matching tasks. Please mention the task id you want to continue.\n${candidates}`;
+}
+
+function formatChatRuntimeError(error: unknown): string {
+  if (isProviderEmptyResponseError(error)) {
+    return "I could not get a valid response from the model provider. Please retry.";
+  }
+  return "Failed to generate a response.";
 }

@@ -1,4 +1,5 @@
 import type { LlmProvider } from "../../core/contracts/provider.js";
+import { isProviderEmptyResponseError } from "../../core/contracts/provider-errors.js";
 import type { LlmMessage, LlmToolCall, LlmToolSchema, LlmTurnOutput } from "../../core/contracts/llm-protocol.js";
 import { agentTrace, isAgentTracePromptEnabled, tracePreview } from "../../shared/index.js";
 import type { ToolContractAssertion, ToolDefinition } from "../../skills/types.js";
@@ -115,6 +116,8 @@ interface AgentDecisionFeedbackContext {
 }
 
 const MAX_DECISION_ATTEMPTS = 3;
+const MAX_PROVIDER_EMPTY_RESPONSE_RETRIES = 1;
+const PROVIDER_EMPTY_RESPONSE_RETRY_DELAY_MS = 400;
 const TOOL_PROTOCOL_FAILURE_REPLY = "I could not form a valid tool call for this request.";
 const TASK_FEEDBACK_TOOL_NAME = "ask_user_feedback";
 
@@ -168,11 +171,11 @@ export async function callAgentDecision(input: CallAgentDecisionInput): Promise<
         })),
         nativeToolCount: decisionTools.length,
       });
-      turn = await input.provider.generateTurn({
+      turn = await generateTurnWithEmptyResponseRetry(input, {
         messages,
-        tools: decisionTools,
-        toolChoice: "auto",
-        parallelToolCalls: false,
+        decisionTools,
+        decisionAttempt: attempt + 1,
+        requestStartedAt: startedAt,
       });
       recordRunMetric(input.metrics, metricStage, {
         durationMs: Date.now() - startedAt,
@@ -310,6 +313,60 @@ export async function callAgentDecision(input: CallAgentDecisionInput): Promise<
   }
 
   return parseAgentDecision(rawText);
+}
+
+async function generateTurnWithEmptyResponseRetry(
+  input: CallAgentDecisionInput,
+  request: {
+    messages: LlmMessage[];
+    decisionTools: LlmToolSchema[];
+    decisionAttempt: number;
+    requestStartedAt: number;
+  },
+): Promise<LlmTurnOutput> {
+  let providerAttempt = 0;
+
+  for (;;) {
+    providerAttempt++;
+    try {
+      return await input.provider.generateTurn({
+        messages: request.messages,
+        tools: request.decisionTools,
+        toolChoice: "auto",
+        parallelToolCalls: false,
+      });
+    } catch (error) {
+      if (!isProviderEmptyResponseError(error)) {
+        throw error;
+      }
+
+      const willRetry = providerAttempt <= MAX_PROVIDER_EMPTY_RESPONSE_RETRIES;
+      recordDecisionFeedback(input, "provider_empty_response", {
+        attempt: request.decisionAttempt,
+        providerAttempt,
+        provider: error.details.provider,
+        model: error.details.model,
+        latencyMs: Date.now() - request.requestStartedAt,
+        choiceCount: error.details.choiceCount,
+        responseKeys: error.details.responseKeys ?? [],
+        finishReason: error.details.finishReason,
+        toolChoice: "auto",
+        nativeToolCount: request.decisionTools.length,
+        requestMode: request.decisionTools.length > 0 ? "tools" : "text",
+        willRetry,
+        ...(willRetry ? { retryDelayMs: PROVIDER_EMPTY_RESPONSE_RETRY_DELAY_MS } : {}),
+      });
+
+      if (!willRetry) {
+        throw error;
+      }
+      await delay(PROVIDER_EMPTY_RESPONSE_RETRY_DELAY_MS);
+    }
+  }
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function recordDecisionFeedback(

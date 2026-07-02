@@ -11,6 +11,7 @@ vi.mock("openai", () => {
 
 import OpenAI from "openai";
 import type { LlmProvider } from "../../src/core/contracts/provider.js";
+import { isProviderEmptyResponseError } from "../../src/core/contracts/provider-errors.js";
 import {
   type ProviderRuntimeConfigHandle,
   setupProviderRuntimeConfig,
@@ -268,9 +269,22 @@ describe("OpenRouter provider", () => {
     mockOpenAIConstructor(mockCreate);
 
     provider.start();
-    await expect(
-      provider.generateTurn({ messages: [{ role: "user", content: "Hi" }] }),
-    ).rejects.toThrow("Empty response from OpenRouter.");
+    const error = await provider.generateTurn({ messages: [{ role: "user", content: "Hi" }] })
+      .then(() => null, (caught: unknown) => caught);
+
+    expect(error).toBeInstanceOf(Error);
+    expect(error).toMatchObject({ message: "Empty response from OpenRouter." });
+    expect(isProviderEmptyResponseError(error)).toBe(true);
+    if (!isProviderEmptyResponseError(error)) {
+      throw new Error("Expected provider empty response error.");
+    }
+    expect(error.details).toEqual({
+      provider: "openrouter",
+      model: "nvidia/nemotron-3-super-120b-a12b:free",
+      choiceCount: 1,
+      responseKeys: ["choices"],
+      hasMessage: true,
+    });
   });
 
   it("should throw when calling generateTurn before start", async () => {

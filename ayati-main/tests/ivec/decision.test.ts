@@ -1,7 +1,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { LlmProvider } from "../../src/core/contracts/provider.js";
+import { ProviderEmptyResponseError } from "../../src/core/contracts/provider-errors.js";
 import type { LlmTurnOutput } from "../../src/core/contracts/llm-protocol.js";
 import { callAgentDecision, parseAgentDecision } from "../../src/ivec/agent-runner/decision.js";
+import type { AgentFeedbackEventInput, AgentFeedbackLedger } from "../../src/ivec/feedback-ledger.js";
 import type { AgentStateView } from "../../src/ivec/agent-runner/state-view.js";
 import { createRunMetrics } from "../../src/ivec/metrics.js";
 import type { ToolDefinition } from "../../src/skills/types.js";
@@ -490,6 +492,84 @@ describe("parseAgentDecision", () => {
     expect(generateTurn.mock.calls[0]?.[0]?.parallelToolCalls).toBe(false);
   });
 
+  it("records and retries an empty provider response once", async () => {
+    const providerError = new ProviderEmptyResponseError("Empty response from OpenRouter.", {
+      provider: "openrouter",
+      model: "test-model",
+      choiceCount: 0,
+      responseKeys: ["id", "choices"],
+    });
+    const { provider, generateTurn } = createProviderFromMock(
+      vi.fn()
+        .mockRejectedValueOnce(providerError)
+        .mockResolvedValueOnce({ type: "assistant", content: "Hi!" }),
+    );
+    const feedback = createFeedbackLedger();
+
+    const decision = await callAgentDecision({
+      provider,
+      stateView: createStateView(),
+      toolDefinitions: [],
+      feedbackLedger: feedback.ledger,
+      feedbackContext: {
+        clientId: "local",
+        sessionId: "S-test",
+        seq: 1,
+      },
+    });
+
+    expect(generateTurn).toHaveBeenCalledTimes(2);
+    expect(decision).toMatchObject({
+      kind: "reply",
+      status: "completed",
+      message: "Hi!",
+    });
+    const emptyEvents = feedback.events.filter((event) => event.event === "provider_empty_response");
+    expect(emptyEvents).toHaveLength(1);
+    expect(emptyEvents[0]?.data).toMatchObject({
+      attempt: 1,
+      providerAttempt: 1,
+      provider: "openrouter",
+      model: "test-model",
+      choiceCount: 0,
+      responseKeys: ["id", "choices"],
+      toolChoice: "auto",
+      nativeToolCount: 1,
+      requestMode: "tools",
+      willRetry: true,
+      retryDelayMs: 400,
+    });
+  });
+
+  it("records final empty provider response when retry also fails", async () => {
+    const providerError = new ProviderEmptyResponseError("Empty response from OpenRouter.", {
+      provider: "openrouter",
+      model: "test-model",
+      choiceCount: 0,
+      responseKeys: ["choices"],
+    });
+    const { provider, generateTurn } = createProviderFromMock(vi.fn().mockRejectedValue(providerError));
+    const feedback = createFeedbackLedger();
+
+    await expect(callAgentDecision({
+      provider,
+      stateView: createStateView(),
+      toolDefinitions: [],
+      feedbackLedger: feedback.ledger,
+      feedbackContext: {
+        clientId: "local",
+        sessionId: "S-test",
+        seq: 1,
+      },
+    })).rejects.toThrow("Empty response from OpenRouter.");
+
+    expect(generateTurn).toHaveBeenCalledTimes(2);
+    const emptyEvents = feedback.events.filter((event) => event.event === "provider_empty_response");
+    expect(emptyEvents).toHaveLength(2);
+    expect(emptyEvents[0]?.data).toMatchObject({ providerAttempt: 1, willRetry: true });
+    expect(emptyEvents[1]?.data).toMatchObject({ providerAttempt: 2, willRetry: false });
+  });
+
   it("exposes task feedback only when enabled", async () => {
     const { provider, generateTurn } = createProvider([
       JSON.stringify({ kind: "ask_user", question: "Which path?", reason: "Need a target path." }),
@@ -758,6 +838,41 @@ function createNativeToolProvider(
       generateTurn,
     },
     generateTurn,
+  };
+}
+
+function createProviderFromMock(
+  generateTurn: ReturnType<typeof vi.fn>,
+  structuredOutput: { jsonObject: boolean; jsonSchema: boolean } = { jsonObject: true, jsonSchema: false },
+): { provider: LlmProvider; generateTurn: ReturnType<typeof vi.fn> } {
+  return {
+    provider: {
+      name: "fake-provider",
+      version: "test-model",
+      capabilities: {
+        nativeToolCalling: true,
+        structuredOutput,
+      },
+      start() {},
+      stop() {},
+      generateTurn,
+    },
+    generateTurn,
+  };
+}
+
+function createFeedbackLedger(): { ledger: AgentFeedbackLedger; events: AgentFeedbackEventInput[] } {
+  const events: AgentFeedbackEventInput[] = [];
+  return {
+    events,
+    ledger: {
+      enabled: true,
+      record(event: AgentFeedbackEventInput) {
+        events.push(event);
+      },
+      async flush() {},
+      async close() {},
+    },
   };
 }
 
