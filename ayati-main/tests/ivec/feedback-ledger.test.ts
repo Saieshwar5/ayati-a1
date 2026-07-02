@@ -550,6 +550,25 @@ describe("AsyncAgentFeedbackLedger", () => {
     ]);
   });
 
+  it("builds repeated-repair triage from repair code", () => {
+    const triage = buildFeedbackTriageSummary({
+      updatedAt: "2026-06-23T10:00:00.000Z",
+      tsMs: 1,
+      sessionId: "session-1",
+      seq: 8,
+      status: "failed",
+      responseKind: "error",
+      warnings: ["R_REPEATED_REPAIR_FAILURE"],
+      rawPath: "feedback/test.jsonl",
+    });
+
+    expect(triage.outcome).toBe("failed");
+    expect(triage.findings.map((finding) => finding.code)).toEqual([
+      "run_not_completed",
+      "R_REPEATED_REPAIR_FAILURE",
+    ]);
+  });
+
   it("builds operator triage findings from final feedback warning signals", () => {
     const triage = buildFeedbackTriageSummary({
       updatedAt: "2026-06-23T10:00:00.000Z",

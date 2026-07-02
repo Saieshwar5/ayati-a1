@@ -866,6 +866,13 @@ const REPAIR_TRIAGE_FINDINGS: ReadonlyArray<[string, AgentFeedbackTriageFinding]
     details: "The model attempted tool work while task ownership was waiting for user clarification.",
     recommendation: "Ask the user directly which task or target they mean.",
   }],
+  ["R_REPEATED_REPAIR_FAILURE", {
+    code: "R_REPEATED_REPAIR_FAILURE",
+    severity: "error",
+    title: "Same repair failed repeatedly",
+    details: "The harness stopped after the same repair class repeated too many times.",
+    recommendation: "Inspect the previous repair code, blocked targets, and missing or invalid fields before retrying.",
+  }],
 ];
 
 function readFeedbackSummary(event: AgentFeedbackEvent): Record<string, unknown> | undefined {

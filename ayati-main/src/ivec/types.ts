@@ -2,7 +2,7 @@ import type { LlmProvider } from "../core/contracts/provider.js";
 import type { ToolExecutor } from "../skills/tool-executor.js";
 import type { SkillActivationManager } from "../skills/activation-manager.js";
 import type { ToolLoadResult, ToolWorkingSetManager } from "./agent-runner/tool-working-set.js";
-import type { RepairPromptCard } from "./agent-runner/repair-policy.js";
+import type { RepairCode, RepairPromptCard } from "./agent-runner/repair-policy.js";
 import type {
   ArtifactRef,
   AssertionResult,
@@ -166,7 +166,7 @@ export interface FailureRecord {
   failureType: "tool_error" | "permission" | "missing_path" | "verify_failed" | "no_progress" | "validation_error";
   reason: string;
   blockedTargets: string[];
-  repairCode?: string;
+  repairCode?: RepairCode;
   repair?: RepairPromptCard;
 }
 

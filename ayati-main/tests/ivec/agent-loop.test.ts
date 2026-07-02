@@ -1389,4 +1389,68 @@ describe("agentLoop", () => {
       cleanup(dataDir);
     }
   });
+
+  it("stops when the same repair signature repeats too many times", async () => {
+    const dataDir = makeTmpDir();
+    const outputPath = join(dataDir, "repeat-repair.txt");
+    const badAction = {
+      kind: "act",
+      action: {
+        mode: "single",
+        calls: [{
+          id: "call_1",
+          tool: "write_files",
+          input: {
+            createDirs: true,
+            files: [{ path: outputPath, content: "should not be written" }],
+          },
+          dependsOn: [],
+          purpose: "Create the requested file",
+        }],
+        allowedTools: [],
+        assertions: [],
+      },
+    };
+    try {
+      const toolExecutor = createToolExecutor([writeFilesTool]);
+      const feedback = createMemoryFeedbackLedger();
+      const provider = createProvider([badAction, badAction, badAction]);
+
+      const result = await agentLoop({
+        provider,
+        toolExecutor,
+        toolDefinitions: toolExecutor.definitions(),
+        runRecorder: noopRunRecorder,
+        feedbackLedger: feedback.ledger,
+        runHandle: { sessionId: "s1", runId: "r-repeat-repair" },
+        inputHandle: { sessionId: "s1", seq: 1 },
+        clientId: "c1",
+        initialUserMessage: "Create a file",
+        dataDir,
+        systemContext: "full system context with memory",
+      });
+
+      expect(result.status).toBe("failed");
+      expect(result.content).toContain("The same repair class repeated too many times.");
+      expect(provider.generateTurn).toHaveBeenCalledTimes(3);
+      expect(existsSync(outputPath)).toBe(false);
+      expect(feedbackEvents(feedback.events, "guard", "repeated_repair_failure")[0]?.data).toMatchObject({
+        repair: {
+          code: "R_REPEATED_REPAIR_FAILURE",
+          blockedTargets: ["write_files"],
+          operatorDetails: {
+            repeatedThreshold: 3,
+            previousRepairCode: "R_TOOL_NOT_SELECTED",
+          },
+        },
+      });
+      expect(feedbackEvents(feedback.events, "final", "reply")[0]?.data).toMatchObject({
+        feedbackSummary: {
+          status: "failed",
+        },
+      });
+    } finally {
+      cleanup(dataDir);
+    }
+  });
 });
