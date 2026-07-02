@@ -526,20 +526,26 @@ function createActivateTaskForTurnTool(
   return {
     name: "git_context_activate_task_for_turn",
     description: "Bind the current pending user turn to an existing git-context task branch, start a run, and refresh active context.",
-    inputSchema: sessionScopedInputSchema({
-      taskId: {
-        type: "string",
-        description: "Task id to activate for the pending turn. Provide exactly one of taskId or branch.",
-      },
-      branch: {
-        type: "string",
-        description: "Task branch to activate for the pending turn. Provide exactly one of taskId or branch.",
-      },
-      reason: {
-        type: "string",
-        description: "Short reason this pending turn belongs to the selected task.",
-      },
-    }),
+    inputSchema: {
+      ...sessionScopedInputSchema({
+        taskId: {
+          type: "string",
+          description: "Task id to activate for the pending turn. Provide exactly one of taskId or branch.",
+        },
+        branch: {
+          type: "string",
+          description: "Task branch to activate for the pending turn. Provide exactly one of taskId or branch.",
+        },
+        reason: {
+          type: "string",
+          description: "Short reason this pending turn belongs to the selected task.",
+        },
+      }, ["reason"]),
+      oneOf: [
+        { required: ["taskId"] },
+        { required: ["branch"] },
+      ],
+    },
     outputSchema: genericObjectOutputSchema,
     annotations: gitContextTurnMutationAnnotations(),
     resultContract: gitContextSucceededContract("turn_task_activated"),
@@ -593,7 +599,7 @@ function createCreateTaskForTurnTool(runtime: GitMemoryRuntime | undefined): Too
         type: "string",
         description: "Short reason this pending turn should create a new task.",
       },
-    }),
+    }, ["title", "objective", "reason"]),
     outputSchema: genericObjectOutputSchema,
     annotations: gitContextTurnMutationAnnotations(),
     resultContract: gitContextSucceededContract("turn_task_created"),
@@ -646,7 +652,7 @@ function createAskClarificationForTurnTool(runtime: GitMemoryRuntime | undefined
           type: "string",
         },
       },
-    }),
+    }, ["reason"]),
     outputSchema: genericObjectOutputSchema,
     annotations: gitContextTurnMutationAnnotations(),
     resultContract: gitContextSucceededContract("turn_clarification_requested"),
@@ -1069,7 +1075,10 @@ function parseTaskDetailLimits(input: Partial<GitMemoryTaskDetailLimits> | undef
   return output;
 }
 
-function sessionScopedInputSchema(extraProperties: Record<string, unknown> = {}): Record<string, unknown> {
+function sessionScopedInputSchema(
+  extraProperties: Record<string, unknown> = {},
+  required: string[] = [],
+): Record<string, unknown> {
   return {
     type: "object",
     properties: {
@@ -1079,6 +1088,7 @@ function sessionScopedInputSchema(extraProperties: Record<string, unknown> = {})
       },
       ...extraProperties,
     },
+    required,
   };
 }
 

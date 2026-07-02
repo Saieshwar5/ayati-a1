@@ -19,6 +19,27 @@ import {
 } from "../../src/skills/builtins/git-context/tool-policy.js";
 
 describe("git-context skill", () => {
+  it("declares required input fields for turn-routing tools", () => {
+    const skill = createGitContextSkill({ contextStoreDir: "/tmp/ayati-test-context-engine" });
+    const createTask = requiredTool(skill, "git_context_create_task_for_turn");
+    const activateTask = requiredTool(skill, "git_context_activate_task_for_turn");
+    const askClarification = requiredTool(skill, "git_context_ask_clarification_for_turn");
+
+    expect(createTask.inputSchema).toMatchObject({
+      required: ["title", "objective", "reason"],
+    });
+    expect(activateTask.inputSchema).toMatchObject({
+      required: ["reason"],
+      oneOf: [
+        { required: ["taskId"] },
+        { required: ["branch"] },
+      ],
+    });
+    expect(askClarification.inputSchema).toMatchObject({
+      required: ["reason"],
+    });
+  });
+
   it("lists known sessions without mutating git-memory repos", async () => {
     const prepared = await prepareGitContextSession();
     const driver = new GitMemoryWorktreeGitDriver(prepared.session.repoPath);
