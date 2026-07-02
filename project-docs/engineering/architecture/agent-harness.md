@@ -82,6 +82,23 @@ turn-aware routing tools:
 - `git_context_create_task_for_turn`
 - `git_context_ask_clarification_for_turn`
 
+When a fresh session has no active task, the initial routing surface is smaller:
+only `git_context_create_task_for_turn` and
+`git_context_ask_clarification_for_turn` are exposed. There is no task to
+search, read, or activate yet. If the model tries to load or call normal work
+tools before a task exists, the runner records repair feedback instead of
+throwing a missing-run error to the user.
+
+After a routing tool succeeds, the runner refreshes the harness context into
+the returned real task run id, removes routing/search/create/switch tools for
+the rest of that run, and prepares normal work tools for the original user
+message. This allows flows such as:
+
+```text
+fresh request -> git_context_create_task_for_turn -> write_files -> final reply
+existing task -> git_context_activate_task_for_turn -> normal work tool -> final reply
+```
+
 The model should not call a tool just to continue the already-active task;
 obvious same-task continuation is automatic. The model must not directly commit
 runs, update task state, or use low-level branch switch/create tools during
@@ -175,6 +192,12 @@ decision prompt under `context.tools.lastLoad` and `context.scratch.toolLoad`.
 It includes requested selectors, loaded tools, already-active tools, evictions,
 missing selectors, status, and a short message. Historical load outcomes are
 not accumulated in prompt context.
+
+Tool-mode feedback is operator-facing and compact. The runner records
+`tools.tool_mode_selected`, `tools.pre_task_routing_tools_visible`,
+`tools.normal_tools_enabled_for_work_run`, and
+`tools.routing_tools_deactivated` so live logs explain why routing tools or
+normal tools were visible.
 
 The working set is cleared at task finalization. Legacy JSON decision parsing is
 kept for tests and migration resilience, but the app runtime should use native

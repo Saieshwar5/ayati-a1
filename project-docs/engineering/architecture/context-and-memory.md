@@ -40,6 +40,14 @@ The agent may use git-context read/search tools and turn-aware routing tools:
 `git_context_activate_task_for_turn`, `git_context_create_task_for_turn`, and
 `git_context_ask_clarification_for_turn`.
 
+Fresh sessions are stricter. If there is no active task, the runtime treats that
+as "zero tasks in this session" and exposes only create-or-clarify routing
+tools. After `git_context_create_task_for_turn` or
+`git_context_activate_task_for_turn` returns a ready route, the runner switches
+from the synthetic decision context to the real run id, refreshes
+`context.git.current`, removes routing tools for the rest of the run, and then
+allows normal work tools.
+
 The model-facing prompt uses a grouped context projection. The important paths
 are:
 

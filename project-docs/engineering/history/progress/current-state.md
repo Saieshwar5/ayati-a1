@@ -1,6 +1,6 @@
 # Current State
 
-Last updated: 2026-07-01
+Last updated: 2026-07-02
 
 Ayati's active task-continuity path is git-native. The old task-thread and
 Activity continuation path is historical and must not be reintroduced into the
@@ -41,7 +41,13 @@ context.timeline + context.git + context.tools + context.scratch + context.perso
   instead of promoted as duplicate model-facing payload.
 - Pending-routing guard: normal task tools cannot run while a pending turn is
   unbound or clarifying.
+- Fresh-session task gate: when no active task exists, the model sees only
+  create-or-clarify routing tools; normal work tools repair back to task
+  creation instead of crashing with a missing run.
 - Active context refresh after activate/create routing.
+- Same-turn continuation after routing: create/activate tools return a real
+  run id, routing tools are deactivated, normal work tools are prepared, and the
+  agent can complete work in the same user turn.
 - Custom refs for active/latest pointers.
 - Runtime-owned finalization with duplicate-run protection.
 - Run Markdown, action records, evidence manifests, task notes, task assets,
@@ -56,9 +62,10 @@ context.timeline + context.git + context.tools + context.scratch + context.perso
   internal memory cache.
 - Hot tool-output observation retention: `next_step`, `while_relevant`, and
   `evidence_only`.
-- Context-engine feedback observability: feedback summaries and raw feedback
-  events now carry compact pending-turn, route source/mode, task/branch/run,
-  finalization, commit, asset, and evidence counts for developer debugging.
+- Context-engine and tool-mode feedback observability: feedback summaries and
+  raw events carry compact pending-turn, route source/mode, task/branch/run,
+  tool-mode, routing-tool visibility/deactivation, finalization, commit, asset,
+  and evidence counts for developer debugging.
 - Evidence tools for reading/searching/tailing/chunking saved raw output.
 
 ## Runtime Boundary
@@ -80,8 +87,9 @@ is the simple runtime path.
 ## Remaining Priority
 
 1. Clarification follow-up resolution.
-2. Engine-level create-new-task live flow coverage.
-3. Attachment preservation and ownership during pending-turn routing.
+2. Attachment preservation and ownership during pending-turn routing.
+3. Broader app/engine-level live-flow coverage beyond the focused agent-loop
+   routing tests.
 4. App-level finalization coverage for completed, failed, blocked,
    needs-user-input, stuck/max-iteration, and tool-failure outcomes.
 5. System-event parity with chat pending-turn routing and finalization.
