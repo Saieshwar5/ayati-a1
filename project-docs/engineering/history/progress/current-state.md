@@ -27,7 +27,8 @@ context.timeline + context.git + context.tools + context.scratch + context.perso
 ## Implemented
 
 - Daily git context repositories with task branches.
-- Markdown conversation as canonical conversation context.
+- Session-store submodule as the canonical session conversation store, with
+  per-message Markdown files.
 - Pending turn envelope with `unbound`, `bound`, and `clarifying` states.
 - Automatic binding for obvious same-task follow-ups.
 - Turn-aware task routing tools:
@@ -45,12 +46,12 @@ context.timeline + context.git + context.tools + context.scratch + context.perso
 - Runtime-owned finalization with duplicate-run protection.
 - Run Markdown, action records, evidence manifests, task notes, task assets,
   commit trailers, and recent commit/evidence context.
+- Task-run records store `sessionStoreCommit` plus `conversationRefs`, so task
+  conversation is reconstructed from the exact session-store snapshot for the
+  run.
 - Session summary files in the session-store submodule, projected at
-  `context.git.session.summary`.
-- Automatic deterministic session summary updates after assistant messages and
-  task finalization.
-- Pluggable session summary updater contract with an LLM updater scaffold,
-  deterministic fallback, and explicit runtime/env opt-in.
+  `context.git.session.summary` when present. They are explicit artifacts; the
+  runtime does not auto-generate summaries for each message.
 - Compact model-facing git-context tool results that do not expose the full
   internal memory cache.
 - Hot tool-output observation retention: `next_step`, `while_relevant`, and

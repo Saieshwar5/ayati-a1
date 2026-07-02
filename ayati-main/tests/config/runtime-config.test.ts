@@ -4,8 +4,6 @@ import {
   DEFAULT_DOCUMENT_VECTOR_MIN_CHUNKS,
   DEFAULT_AGENT_MAX_SELECTED_TOOLS,
   DEFAULT_GIT_CONTEXT_AGENT_ID,
-  DEFAULT_GIT_CONTEXT_SESSION_SUMMARY_MAX_CHARS,
-  DEFAULT_GIT_CONTEXT_SESSION_SUMMARY_MODE,
   DEFAULT_GIT_CONTEXT_STORE_DIR,
   DEFAULT_GIT_CONTEXT_TIMEZONE,
   DEFAULT_HTTP_ALLOW_ORIGIN,
@@ -48,10 +46,6 @@ describe("ayati runtime config", () => {
         storeDir: DEFAULT_GIT_CONTEXT_STORE_DIR,
         timezone: DEFAULT_GIT_CONTEXT_TIMEZONE,
         agentId: DEFAULT_GIT_CONTEXT_AGENT_ID,
-        sessionSummary: {
-          mode: DEFAULT_GIT_CONTEXT_SESSION_SUMMARY_MODE,
-          maxSummaryChars: DEFAULT_GIT_CONTEXT_SESSION_SUMMARY_MAX_CHARS,
-        },
       },
     });
   });
@@ -72,8 +66,6 @@ describe("ayati runtime config", () => {
       AYATI_GIT_CONTEXT_STORE_DIR: " /tmp/ayati-context-engine ",
       AYATI_GIT_CONTEXT_TIMEZONE: " UTC ",
       AYATI_GIT_CONTEXT_AGENT_ID: " local-agent ",
-      AYATI_GIT_CONTEXT_SESSION_SUMMARY_MODE: " llm ",
-      AYATI_GIT_CONTEXT_SESSION_SUMMARY_MAX_CHARS: "1200",
     });
 
     expect(config).toEqual({
@@ -104,23 +96,7 @@ describe("ayati runtime config", () => {
         storeDir: "/tmp/ayati-context-engine",
         timezone: "UTC",
         agentId: "local-agent",
-        sessionSummary: {
-          mode: "llm",
-          maxSummaryChars: 1200,
-        },
       },
-    });
-  });
-
-  it("keeps git context session summaries deterministic for unknown modes", () => {
-    const config = loadAyatiRuntimeConfig({
-      AYATI_GIT_CONTEXT_SESSION_SUMMARY_MODE: "unknown",
-      AYATI_GIT_CONTEXT_SESSION_SUMMARY_MAX_CHARS: "-1",
-    });
-
-    expect(config.gitContext.sessionSummary).toEqual({
-      mode: "deterministic",
-      maxSummaryChars: DEFAULT_GIT_CONTEXT_SESSION_SUMMARY_MAX_CHARS,
     });
   });
 

@@ -5,8 +5,10 @@ import { describe, expect, it, vi } from "vitest";
 import {
   createGitMemoryRuntime,
   GIT_MEMORY_MAIN_REF,
+  GIT_MEMORY_SESSION_STORE_DIR,
   GitMemoryDailySessionStore,
   GitMemoryWorktreeGitDriver,
+  gitMemorySessionStoreMessagePath,
   gitMemoryTaskAssetsPath,
   renderGitMemoryCommitMessage,
 } from "../../src/context-engine/git-memory/index.js";
@@ -106,8 +108,8 @@ describe("git-context skill", () => {
       session?: { recentCommits?: Array<Record<string, unknown>> };
     }).session?.recentCommits ?? [];
     expect(sessionRecentCommits[0]).toMatchObject({
-      subject: "ayati: record user message",
-      event: "conversation_appended",
+      subject: "ayati: initialize session S-20260628-local",
+      event: "session_initialized",
     });
     expect(sessionRecentCommits[0]).not.toHaveProperty("trailers");
     expect(sessionRecentCommits[0]).not.toHaveProperty("conversationSeq");
@@ -323,16 +325,17 @@ describe("git-context skill", () => {
       summary: "Patched upload validation handling.",
     })]));
 
+    await waitForCommittedWrites(runtime, pending.sessionId, 1);
     const driver = new GitMemoryWorktreeGitDriver(prepared.session.repoPath);
-    const mainConversation = await driver.readFile(
-      GIT_MEMORY_MAIN_REF,
-      "session/conversation.md",
-    ) ?? "";
+    const messageStore = await driver.openSubmoduleRepo(GIT_MEMORY_SESSION_STORE_DIR);
     const taskConversation = await driver.readFile(
       prepared.uploadTask.ref,
       "session/conversation.md",
     ) ?? "";
-    expect(mainConversation).toContain("continue upload UI redesign");
+    expect(await driver.readFile(GIT_MEMORY_MAIN_REF, "session/conversation.md")).toBeNull();
+    expect(await messageStore.readWorkingFile(
+      gitMemorySessionStoreMessagePath(pending.sessionId, pending.userMessage.seq, "user"),
+    )).toContain("continue upload UI redesign");
     expect(taskConversation).not.toContain("continue upload UI redesign");
     expect(taskConversation).not.toContain("Run: R-20260628-0003");
   });
@@ -447,11 +450,15 @@ describe("git-context skill", () => {
     expect(result.v2?.structuredContent).not.toHaveProperty("knownTasks");
 
     const created = result.v2?.structuredContent as { ref: string };
+    await waitForCommittedWrites(runtime, pending.sessionId, 1);
     const driver = new GitMemoryWorktreeGitDriver(prepared.session.repoPath);
-    const mainConversation = await driver.readFile(GIT_MEMORY_MAIN_REF, "session/conversation.md") ?? "";
+    const messageStore = await driver.openSubmoduleRepo(GIT_MEMORY_SESSION_STORE_DIR);
     const taskConversation = await driver.readFile(created.ref, "session/conversation.md") ?? "";
-    expect(mainConversation).toContain("start notification digest investigation");
-    expect(taskConversation).toContain("start notification digest investigation");
+    expect(await driver.readFile(GIT_MEMORY_MAIN_REF, "session/conversation.md")).toBeNull();
+    expect(await messageStore.readWorkingFile(
+      gitMemorySessionStoreMessagePath(pending.sessionId, pending.userMessage.seq, "user"),
+    )).toContain("start notification digest investigation");
+    expect(taskConversation).not.toContain("start notification digest investigation");
     expect(taskConversation).not.toContain("Run: R-20260628-0003");
   });
 
@@ -828,10 +835,10 @@ describe("git-context skill", () => {
     });
     const mainCommits = (mainResult.v2?.structuredContent as { commits?: Array<{ subject?: string; trailers?: unknown }> }).commits ?? [];
     expect(mainCommits[0]).toMatchObject({
-      subject: "ayati: record user message",
+      subject: "ayati: initialize session S-20260628-local",
       trailers: {
         sessionId: "S-20260628-local",
-        event: "conversation_appended",
+        event: "session_initialized",
       },
     });
     expect(taskResult.ok).toBe(true);
@@ -949,6 +956,11 @@ async function prepareGitContextSession(): Promise<{
     toSeq: user.seq,
     at: "2026-06-28T09:01:00+05:30",
   });
+  const snapshot = await store.commitSessionStoreSnapshot({
+    sessionId: session.sessionId,
+    at: "2026-06-28T09:01:30+05:30",
+    summary: "Snapshot upload handling conversation for fixture runs.",
+  });
   await store.commitTaskRun({
     sessionId: session.sessionId,
     taskId: task.taskId,
@@ -956,6 +968,7 @@ async function prepareGitContextSession(): Promise<{
     startedAt: "2026-06-28T09:02:00+05:30",
     completedAt: "2026-06-28T09:10:00+05:30",
     conversationRefs: [{ fromSeq: user.seq, toSeq: user.seq }],
+    sessionStoreCommit: snapshot.sessionStoreCommit,
     summary: "Inspected upload handling.",
     actions: [{
       actionId: "ACT-20260628-000001",
@@ -980,6 +993,7 @@ async function prepareGitContextSession(): Promise<{
     startedAt: "2026-06-28T09:12:00+05:30",
     completedAt: "2026-06-28T09:20:00+05:30",
     conversationRefs: [{ fromSeq: user.seq, toSeq: user.seq }],
+    sessionStoreCommit: snapshot.sessionStoreCommit,
     summary: "Patched upload validation handling.",
     actions: [{
       actionId: "ACT-20260628-000101",
@@ -1086,4 +1100,23 @@ function requiredTool(skill: ReturnType<typeof createGitContextSkill>, name: str
     throw new Error(`Missing tool: ${name}`);
   }
   return tool;
+}
+
+async function waitForCommittedWrites(
+  runtime: { getSessionWrites(sessionId: string): Array<{ status: string }> },
+  sessionId: string,
+  count: number,
+): Promise<void> {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    const writes = runtime.getSessionWrites(sessionId);
+    if (writes.length >= count && writes.slice(0, count).every((write) => write.status === "committed")) {
+      return;
+    }
+    await delay(10);
+  }
+  throw new Error(`Timed out waiting for git memory writes: ${JSON.stringify(runtime.getSessionWrites(sessionId))}`);
+}
+
+async function delay(ms: number): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, ms));
 }

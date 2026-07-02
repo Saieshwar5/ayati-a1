@@ -808,9 +808,13 @@ describe("IVecEngine", () => {
         expect(chatContextRuntime.completeTaskRun).toHaveBeenCalled();
       });
       const stateView = extractStateViewFromProvider(provider);
-      expect(stateView.context.gitContext.task).toMatchObject({
-        workId: "W-20260627-0001",
-        open: ["Read invoice"],
+      expect(stateView.context.git.current.task).toMatchObject({
+        identity: {
+          workId: "W-20260627-0001",
+        },
+        state: {
+          open: ["Read invoice"],
+        },
       });
       expect(chatContextRuntime.completeTaskRun).toHaveBeenCalledWith(expect.objectContaining({
         clientId: "c1",
@@ -892,14 +896,16 @@ describe("IVecEngine", () => {
         autoOnly: true,
       }));
       const secondStateView = extractStateViewFromProviderCall(provider, 1);
-      expect(secondStateView.context.gitContext.pendingTurn).toMatchObject({
+      expect(secondStateView.context.git.current.pendingTurn).toMatchObject({
         routingStatus: "bound",
         workId: "W-20260627-0002",
         runId: "R-20260627-0004",
       });
-      expect(secondStateView.context.gitContext.task).toMatchObject({
-        workId: "W-20260627-0002",
-        title: "Upload UI redesign",
+      expect(secondStateView.context.git.current.task).toMatchObject({
+        identity: {
+          workId: "W-20260627-0002",
+          title: "Upload UI redesign",
+        },
       });
     } finally {
       rmSync(dataDir, { recursive: true, force: true });
@@ -969,11 +975,11 @@ describe("IVecEngine", () => {
       expect(chatContextRuntime.completeTaskRun).not.toHaveBeenCalled();
       expect(provider.generateTurn).toHaveBeenCalledTimes(2);
       const secondStateView = extractStateViewFromProviderCall(provider, 1);
-      expect(secondStateView.context.gitContext.pendingTurn).toMatchObject({
+      expect(secondStateView.context.git.current.pendingTurn).toMatchObject({
         routingStatus: "clarifying",
       });
-      expect(secondStateView.context.gitContext.pendingTurn).not.toHaveProperty("workId");
-      expect(secondStateView.context.gitContext.pendingTurn).not.toHaveProperty("runId");
+      expect(secondStateView.context.git.current.pendingTurn).not.toHaveProperty("workId");
+      expect(secondStateView.context.git.current.pendingTurn).not.toHaveProperty("runId");
     } finally {
       rmSync(dataDir, { recursive: true, force: true });
     }

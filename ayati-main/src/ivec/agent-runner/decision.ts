@@ -7,6 +7,10 @@ import type { RunMetrics } from "../metrics.js";
 import { recordPromptMetric, recordProviderUsageMetric, recordRunMetric } from "../metrics.js";
 import { projectAgentStateViewForPrompt } from "./prompt-context.js";
 import type { AgentStateView } from "./state-view.js";
+import {
+  summarizePromptStateView,
+  summarizeToolDefinitions,
+} from "./feedback-summary.js";
 
 export type AgentDecisionStatus = "completed" | "failed";
 export type AgentActionMode = "single" | "sequential" | "parallel";
@@ -118,6 +122,11 @@ export async function callAgentDecision(input: CallAgentDecisionInput): Promise<
   const prompt = Object.values(promptSections).filter((section) => section.trim().length > 0).join("\n\n");
   const systemSections = buildDecisionSystemSections(input.systemContext);
   const systemContext = Object.values(systemSections).filter((section) => section.trim().length > 0).join("\n\n");
+  recordDecisionFeedback(input, "state_view_projected", {
+    stateView: promptStateView,
+    summary: summarizePromptStateView(promptStateView),
+    selectedTools: summarizeToolDefinitions(input.toolDefinitions),
+  });
   recordPromptMetric(input.metrics, "agent_decision", {
     "system.stableDecisionRules": systemSections.stableDecisionRules,
     "system.runtimeContext": systemSections.runtimeContext,
@@ -145,6 +154,7 @@ export async function callAgentDecision(input: CallAgentDecisionInput): Promise<
       recordDecisionFeedback(input, "native_tool_surface", {
         attempt: attempt + 1,
         controlTools: [...DECISION_TOOL_NAMES],
+        selectedTools: summarizeToolDefinitions(input.toolDefinitions),
         executableTools: input.toolDefinitions.map((tool) => ({
           name: tool.name,
           hasInputSchema: Boolean(tool.inputSchema),

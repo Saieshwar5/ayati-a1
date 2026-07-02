@@ -62,6 +62,7 @@ import { buildAgentStateView, type AgentStateView } from "./state-view.js";
 import { selectToolsForDecision } from "./tool-selector.js";
 import { callAgentDecision } from "./decision.js";
 import type { AgentAction, AgentDecision } from "./decision.js";
+import type { ToolLoadResult } from "./tool-working-set.js";
 import { executeAgentAction } from "./action-executor.js";
 import type { AgentActionExecutionResult } from "./action-executor.js";
 import { planLocalRecovery } from "./failure-policy.js";
@@ -69,8 +70,18 @@ import { createEvidenceTools } from "./evidence-tools.js";
 import { isEvidenceToolName } from "./observation-builder.js";
 import { deriveExecutionStatus } from "../verification-gates.js";
 import { buildContextEngineFeedbackSummary } from "../feedback-ledger.js";
-import type { ToolResult } from "../../skills/types.js";
+import type { ToolDefinition, ToolResult } from "../../skills/types.js";
 import { isGitContextAllowedDuringPendingRouting } from "../../skills/builtins/git-context/tool-policy.js";
+import {
+  summarizeAgentAction,
+  summarizeDecision,
+  summarizeHarnessContext,
+  summarizeStep,
+  summarizeToolDefinitions,
+  summarizeToolLoadResult,
+  summarizeVerification,
+  summarizeWorkState,
+} from "./feedback-summary.js";
 
 interface MemoryRunContext {
   runHandle: MemoryRunHandle;
@@ -121,17 +132,50 @@ export async function runAgentLoop(
     userMessage: state.userMessage,
   });
 
-  const ensureWorkRun = async (): Promise<MemoryRunContext> => {
+  const ensureWorkRun = async (
+    reason = "agent_action_or_tool_load",
+    decision?: AgentDecision,
+  ): Promise<MemoryRunContext> => {
     if (!workRunHandle) {
       const createWorkRun = deps.createWorkRun;
       if (!createWorkRun) {
+        recordFeedback(deps, inputHandle, undefined, "guard", "missing_work_run", {
+          reason,
+          message: "Git-memory run handle is required before agent action execution.",
+          warningCodes: ["missing_work_run_for_action"],
+          pendingTurnStatus: state.harnessContext.contextEngine?.pendingTurn?.routingStatus,
+          ...(decision ? { decision: summarizeDecision(decision) } : {}),
+          contextEngine: buildContextEngineFeedbackSummary({
+            context: state.harnessContext.contextEngine,
+          }),
+          harnessContext: summarizeHarnessContext(state.harnessContext),
+        });
         throw new Error("Git-memory run handle is required before agent action execution.");
       }
-      workRunHandle = createWorkRun(inputHandle);
+      try {
+        workRunHandle = createWorkRun(inputHandle);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        recordFeedback(deps, inputHandle, undefined, "guard", "missing_work_run", {
+          reason,
+          message,
+          warningCodes: [
+            "missing_work_run_for_action",
+            ...missingWorkRunWarningCodes(decision),
+          ],
+          pendingTurnStatus: state.harnessContext.contextEngine?.pendingTurn?.routingStatus,
+          ...(decision ? { decision: summarizeDecision(decision) } : {}),
+          contextEngine: buildContextEngineFeedbackSummary({
+            context: state.harnessContext.contextEngine,
+          }),
+          harnessContext: summarizeHarnessContext(state.harnessContext),
+        });
+        throw error;
+      }
       deps.runHandle = workRunHandle;
       deps.onWorkRunCreated?.(workRunHandle);
       recordFeedback(deps, inputHandle, workRunHandle.runId, "run", "created", {
-        reason: "agent_action_or_tool_load",
+        reason,
       });
     }
     if (!runPath) {
@@ -206,6 +250,23 @@ export async function runAgentLoop(
       runPath,
       state,
     });
+    recordFeedback(deps, inputHandle, state.runId || workRunHandle?.runId, "harness", "result", {
+      status: input.status,
+      responseKind,
+      runClass: state.runClass,
+      totalIterations: state.iteration,
+      totalToolCalls,
+      toolLoadDecisionCount,
+      actionStepCount,
+      failedVerificationCount,
+      verificationPassed: lastVerificationPassed,
+      finalContentPreview: finalContent,
+      runPath,
+      workState: summarizeWorkState(state.workState),
+      completedStepCount: state.completedSteps.length,
+      taskSummary: summarizeTaskSummary(taskSummary),
+      harnessContext: summarizeHarnessContext(state.harnessContext),
+    });
     recordFeedback(deps, inputHandle, state.runId || workRunHandle?.runId, "final", "reply", {
       status: input.status,
       responseKind,
@@ -252,6 +313,13 @@ export async function runAgentLoop(
 
   state.userMessage = getPrimaryUserMessage(deps);
   syncHarnessContext(state, deps, inputHandle);
+  recordFeedback(deps, inputHandle, state.runId || workRunHandle?.runId, "harness", "context_input", {
+    inputKind: state.inputKind ?? "user_message",
+    runId: state.runId || workRunHandle?.runId,
+    userMessage: state.userMessage,
+    summary: summarizeHarnessContext(state.harnessContext),
+    context: state.harnessContext,
+  });
 
   devLog(
     `[${deps.clientId}] agentLoop start inputKind=${state.inputKind ?? "user_message"} seq=${inputHandle.seq} workRun=${state.runId || "none"} message=${state.userMessage.slice(0, 160)}`,
@@ -300,8 +368,9 @@ export async function runAgentLoop(
       stepNumber: state.iteration,
       ...(deps.uiContext ? { uiContext: deps.uiContext } : {}),
     };
+    let deterministicToolLoad: ToolLoadResult | undefined;
     if (deps.toolWorkingSetManager) {
-      deps.toolWorkingSetManager.prepareForDecision(state, toolContext);
+      deterministicToolLoad = deps.toolWorkingSetManager.prepareForDecision(state, toolContext);
     } else {
       await deps.skillActivationManager?.prepareForDecision(state, toolContext);
     }
@@ -315,6 +384,18 @@ export async function runAgentLoop(
     const selectedTools = finalReplyFromVerifiedState
       ? []
       : selectToolsForDecision(state, visibleTools, config.maxSelectedTools);
+    recordToolWorkingSetFeedback({
+      deps,
+      inputHandle,
+      runId: state.runId || workRunHandle?.runId,
+      state,
+      iteration: state.iteration,
+      toolContextRunId: toolContext.runId,
+      deterministicToolLoad,
+      visibleTools,
+      selectedTools,
+      workRunHandle,
+    });
     const stateView = buildAgentStateView(state, {
       activeTools: selectedTools.map((tool) => tool.name),
     });
@@ -332,6 +413,10 @@ export async function runAgentLoop(
       recentFailureCount: state.failureHistory.length,
       consecutiveFailures: state.consecutiveFailures,
       finalReplyFromVerifiedState,
+      contextEngine: buildContextEngineFeedbackSummary({
+        context: state.harnessContext.contextEngine,
+      }),
+      warningCodes: buildToolExposureWarningCodes(state, selectedTools, workRunHandle),
       inputState: summarizeDecisionInputState(stateView),
     });
     const decision = await callAgentDecision({
@@ -350,6 +435,14 @@ export async function runAgentLoop(
       },
     });
     discardModelWorkingNotes(decision);
+    recordFeedback(deps, inputHandle, state.runId || workRunHandle?.runId, "decision", "selected", {
+      iteration: state.iteration,
+      decision: summarizeDecision(decision),
+      pendingTurnStatus: state.harnessContext.contextEngine?.pendingTurn?.routingStatus,
+      contextEngine: buildContextEngineFeedbackSummary({
+        context: state.harnessContext.contextEngine,
+      }),
+    });
 
     if (decision.kind === "reply") {
       state.status = decision.status === "failed" ? "failed" : "completed";
@@ -403,7 +496,7 @@ export async function runAgentLoop(
 
     if (decision.kind === "load_tools") {
       toolLoadDecisionCount++;
-      const work = pendingRouting ? null : await ensureWorkRun();
+      const work = pendingRouting ? null : await ensureWorkRun("tool_load", decision);
       const loadRunId = work?.runHandle.runId ?? decisionScopeId(inputHandle);
       const workToolContext = { ...toolContext, runId: loadRunId };
       recordFeedback(deps, inputHandle, work?.runHandle.runId, "tool_load", "requested", {
@@ -427,7 +520,7 @@ export async function runAgentLoop(
       recordFeedback(deps, inputHandle, work?.runHandle.runId, "tool_load", "completed", {
         iteration: state.iteration,
         request: decision.request,
-        result: loadResult,
+        result: summarizeToolLoadResult(loadResult),
         status: loadResult.status,
         loaded: loadResult.loaded,
         alreadyActive: loadResult.alreadyActive,
@@ -449,6 +542,7 @@ export async function runAgentLoop(
       recordFeedback(deps, inputHandle, undefined, "action", "started", {
         iteration: state.iteration,
         mode: decision.action.mode,
+        action: summarizeAgentAction(decision.action),
         plannedCallCount: decision.action.calls.length,
         calls: decision.action.calls.map((call) => ({
           id: call.id,
@@ -476,6 +570,7 @@ export async function runAgentLoop(
       }
       totalToolCalls += stepResult.stepSummary.toolSuccessCount + stepResult.stepSummary.toolFailureCount;
       recordActionFeedback(deps, inputHandle, routingRunId, decision.action, stepResult);
+      recordStepFeedback(deps, inputHandle, routingRunId, state.iteration, stepResult);
 
       const beforeWorkStateChars = measureJson(stepResult.execution.nextWorkState);
       const compactedWorkState = compactWorkState(stepResult.execution.nextWorkState);
@@ -484,6 +579,11 @@ export async function runAgentLoop(
       state.toolContext = compactToolContext({ recent: getLatestObservations(stepResult.execution) });
       stepResult.stepSummary.workState = compactedWorkState;
       stepResult.stepRecord.workState = compactedWorkState;
+      recordReducerFeedback(deps, inputHandle, routingRunId, state.iteration, {
+        beforeWorkStateChars,
+        compactedWorkState,
+        stepSummary: stepResult.stepSummary,
+      });
 
       const compactedStep = compactStepSummaryForState(stepResult.stepSummary);
       recordCompactionMetric(metrics, "completedStepSummary", measureJson(stepResult.stepSummary), measureJson(compactedStep), { step: state.iteration });
@@ -580,17 +680,25 @@ export async function runAgentLoop(
       continue;
     }
 
-    const work = await ensureWorkRun();
+    const work = await ensureWorkRun("agent_action", decision);
     const workToolContext = { ...toolContext, runId: work.runHandle.runId };
+    let workDeterministicToolLoad: ToolLoadResult | undefined;
     if (deps.toolWorkingSetManager) {
-      deps.toolWorkingSetManager.prepareForDecision(state, workToolContext);
+      workDeterministicToolLoad = deps.toolWorkingSetManager.prepareForDecision(state, workToolContext);
     } else {
       await deps.skillActivationManager?.prepareForDecision(state, workToolContext);
     }
     syncEvidenceTools(deps, state, workToolContext);
+    recordFeedback(deps, inputHandle, work.runHandle.runId, "tools", "working_set_refreshed_for_action", {
+      iteration: state.iteration,
+      toolContextRunId: workToolContext.runId,
+      deterministicLoad: summarizeToolLoadResult(workDeterministicToolLoad),
+      activeTools: deps.toolWorkingSetManager?.listActive(workToolContext),
+    });
     recordFeedback(deps, inputHandle, work.runHandle.runId, "action", "started", {
       iteration: state.iteration,
       mode: decision.action.mode,
+      action: summarizeAgentAction(decision.action),
       plannedCallCount: decision.action.calls.length,
       calls: decision.action.calls.map((call) => ({
         id: call.id,
@@ -617,6 +725,7 @@ export async function runAgentLoop(
     }
     totalToolCalls += stepResult.stepSummary.toolSuccessCount + stepResult.stepSummary.toolFailureCount;
     recordActionFeedback(deps, inputHandle, work.runHandle.runId, decision.action, stepResult);
+    recordStepFeedback(deps, inputHandle, work.runHandle.runId, state.iteration, stepResult);
 
     const beforeWorkStateChars = measureJson(stepResult.execution.nextWorkState);
     const compactedWorkState = compactWorkState(stepResult.execution.nextWorkState);
@@ -625,6 +734,11 @@ export async function runAgentLoop(
     state.toolContext = compactToolContext({ recent: getLatestObservations(stepResult.execution) });
     stepResult.stepSummary.workState = compactedWorkState;
     stepResult.stepRecord.workState = compactedWorkState;
+    recordReducerFeedback(deps, inputHandle, work.runHandle.runId, state.iteration, {
+      beforeWorkStateChars,
+      compactedWorkState,
+      stepSummary: stepResult.stepSummary,
+    });
 
     const compactedStep = compactStepSummaryForState(stepResult.stepSummary);
     recordCompactionMetric(metrics, "completedStepSummary", measureJson(stepResult.stepSummary), measureJson(compactedStep), { step: state.iteration });
@@ -660,6 +774,11 @@ export async function runAgentLoop(
       };
       state.lastToolLoad = deps.toolWorkingSetManager.afterExecution(stepResult.execution.actOutput.toolCalls, cleanupContext);
       deps.toolWorkingSetManager.cleanupAfterStep(cleanupContext);
+      recordFeedback(deps, inputHandle, work.runHandle.runId, "tools", "after_execution", {
+        iteration: state.iteration,
+        result: summarizeToolLoadResult(state.lastToolLoad),
+        activeTools: deps.toolWorkingSetManager.listActive(cleanupContext),
+      });
     }
 
     if (stepResult.stepSummary.outcome === "failed") {
@@ -1037,6 +1156,109 @@ function recordFeedback(
     event,
     ...(data ? { data } : {}),
   });
+}
+
+function recordToolWorkingSetFeedback(input: {
+  deps: AgentLoopDeps;
+  inputHandle: SessionInputHandle;
+  runId: string | undefined;
+  state: LoopState;
+  iteration: number;
+  toolContextRunId: string | undefined;
+  deterministicToolLoad: ToolLoadResult | undefined;
+  visibleTools: ToolDefinition[];
+  selectedTools: ToolDefinition[];
+  workRunHandle: MemoryRunHandle | undefined;
+}): void {
+  const warningCodes = buildToolExposureWarningCodes(input.state, input.selectedTools, input.workRunHandle);
+  recordFeedback(input.deps, input.inputHandle, input.runId, "tools", "working_set_prepared", {
+    iteration: input.iteration,
+    toolContextRunId: input.toolContextRunId,
+    workRunId: input.workRunHandle?.runId,
+    runHandlePresent: Boolean(input.workRunHandle || input.state.runId),
+    pendingTurnStatus: input.state.harnessContext.contextEngine?.pendingTurn?.routingStatus,
+    deterministicLoad: summarizeToolLoadResult(input.deterministicToolLoad),
+    visible: summarizeToolDefinitions(input.visibleTools),
+    selected: summarizeToolDefinitions(input.selectedTools),
+    normalSelectedTools: normalTaskToolNames(input.selectedTools),
+    contextEngine: buildContextEngineFeedbackSummary({
+      context: input.state.harnessContext.contextEngine,
+    }),
+    ...(warningCodes.length > 0 ? { warningCodes } : {}),
+  });
+}
+
+function recordStepFeedback(
+  deps: AgentLoopDeps,
+  inputHandle: SessionInputHandle,
+  runId: string,
+  iteration: number,
+  stepResult: ExecuteActionStepResult,
+): void {
+  recordFeedback(deps, inputHandle, runId, "verification", "completed", {
+    iteration,
+    step: stepResult.stepSummary.step,
+    verification: summarizeVerification(stepResult.execution.verifyOutput),
+    stepSummary: summarizeStep(stepResult.stepSummary),
+  });
+}
+
+function recordReducerFeedback(
+  deps: AgentLoopDeps,
+  inputHandle: SessionInputHandle,
+  runId: string,
+  iteration: number,
+  input: {
+    beforeWorkStateChars: number;
+    compactedWorkState: WorkState;
+    stepSummary: StepSummary;
+  },
+): void {
+  recordFeedback(deps, inputHandle, runId, "reducer", "completed", {
+    iteration,
+    step: input.stepSummary.step,
+    beforeWorkStateChars: input.beforeWorkStateChars,
+    afterWorkStateChars: measureJson(input.compactedWorkState),
+    workState: summarizeWorkState(input.compactedWorkState),
+    stepSummary: summarizeStep(input.stepSummary),
+  });
+}
+
+function buildToolExposureWarningCodes(
+  state: LoopState,
+  selectedTools: ToolDefinition[],
+  workRunHandle: MemoryRunHandle | undefined,
+): string[] {
+  const warningCodes: string[] = [];
+  const pendingTurnStatus = state.harnessContext.contextEngine?.pendingTurn?.routingStatus;
+  const normalTools = normalTaskToolNames(selectedTools);
+  if ((pendingTurnStatus === "unbound" || pendingTurnStatus === "clarifying") && normalTools.length > 0) {
+    warningCodes.push("normal_tool_visible_during_pending_routing", "routing_state_mismatch");
+  }
+  if (!state.runId && !workRunHandle && normalTools.length > 0) {
+    warningCodes.push("normal_tools_selected_without_work_run");
+  }
+  return uniqueStrings(warningCodes);
+}
+
+function missingWorkRunWarningCodes(decision: AgentDecision | undefined): string[] {
+  if (decision?.kind !== "act") {
+    return [];
+  }
+  const normalTools = decision.action.calls
+    .map((call) => call.tool)
+    .filter((tool) => !isGitContextAllowedDuringPendingRouting(tool));
+  return normalTools.length > 0 ? ["normal_tool_before_routing"] : [];
+}
+
+function normalTaskToolNames(tools: ToolDefinition[]): string[] {
+  return tools
+    .map((tool) => tool.name)
+    .filter((tool) => !isGitContextAllowedDuringPendingRouting(tool));
+}
+
+function uniqueStrings(values: string[]): string[] {
+  return [...new Set(values)];
 }
 
 function recordActionFeedback(

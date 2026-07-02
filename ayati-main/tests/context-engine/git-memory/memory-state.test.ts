@@ -71,14 +71,14 @@ describe("GitContextMemoryStateHydrator", () => {
       }],
     });
     expect(state.session.recentCommits[0]).toMatchObject({
-      subject: "ayati: record assistant message",
-      event: "conversation_appended",
+      subject: "ayati: initialize session S-20260628-local",
+      event: "session_initialized",
     });
     expect(state.session.recentCommits[0]).not.toHaveProperty("trailers");
     expect(state.session.recentCommits[0]).not.toHaveProperty("conversationSeq");
     expect(state.session.conversationMarkdownTail).toContain("Fix upload handling");
     expect(state.session.conversationMarkdownTail).toContain("I will inspect upload handling.");
-    expect(state.session.activityTail).toHaveLength(1);
+    expect(state.session.activityTail).toHaveLength(2);
     expect(state.focus).toMatchObject({
       status: "active",
       taskId: prepared.task.taskId,
@@ -248,6 +248,11 @@ async function prepareMemoryStateSession(): Promise<{
     toSeq: 2,
     at: "2026-06-28T09:01:00+05:30",
   });
+  const snapshot = await store.commitSessionStoreSnapshot({
+    sessionId: session.sessionId,
+    at: "2026-06-28T09:01:30+05:30",
+    summary: "Snapshot memory-state fixture conversation.",
+  });
   await store.commitTaskRun({
     sessionId: session.sessionId,
     taskId: task.taskId,
@@ -255,6 +260,7 @@ async function prepareMemoryStateSession(): Promise<{
     startedAt: "2026-06-28T09:02:00+05:30",
     completedAt: "2026-06-28T09:10:00+05:30",
     conversationRefs: [{ fromSeq: 1, toSeq: 2 }],
+    sessionStoreCommit: snapshot.sessionStoreCommit,
     summary: "Inspected upload handling.",
     newFacts: ["Upload route validates MIME type."],
     next: "Patch upload validation handling.",
@@ -272,6 +278,7 @@ async function prepareMemoryStateSession(): Promise<{
     startedAt: "2026-06-28T09:12:00+05:30",
     completedAt: "2026-06-28T09:20:00+05:30",
     conversationRefs: [{ fromSeq: 1, toSeq: 2 }],
+    sessionStoreCommit: snapshot.sessionStoreCommit,
     summary: "Patched upload validation handling.",
     newFacts: ["Upload validation handles multipart MIME metadata."],
     next: "Verify upload validation patch.",

@@ -31,13 +31,13 @@ export function buildGitMemoryHarnessContextPack(
   return {
     session: {
       sessionId: context.session.sessionId,
-      conversationTail: context.session.conversationTail.map(toConversationRecord),
+      conversationTail: (context.session.conversationTail ?? []).map(toConversationRecord),
       ...(context.session.conversationMarkdownTail ? { conversationMarkdownTail: context.session.conversationMarkdownTail } : {}),
       ...(context.session.summary ? { summary: context.session.summary } : {}),
-      activityTail: context.session.activityTail
+      activityTail: (context.session.activityTail ?? [])
         .map((activity) => toSessionActivityRecord(context.session.sessionId, activity))
         .filter(isSessionActivityRecord),
-      recentCommits: context.session.recentCommits.map(toCompactCommitSummary),
+      recentCommits: (context.session.recentCommits ?? []).map(toCompactCommitSummary),
       assetCount: 0,
     },
     ...(context.pendingWrites && context.pendingWrites.length > 0 ? {
@@ -52,16 +52,16 @@ export function buildGitMemoryHarnessContextPack(
         title: context.task.title,
         objective: context.task.objective,
         status: context.task.status,
-        completed: context.task.completed,
-        open: context.task.open,
-        blockers: context.task.blockers,
-        facts: context.task.facts.map(toTaskFact),
+        completed: context.task.completed ?? [],
+        open: context.task.open ?? [],
+        blockers: context.task.blockers ?? [],
+        facts: (context.task.facts ?? []).map(toTaskFact),
         next: context.task.next,
         ...(context.task.conversationMarkdownTail ? { conversationMarkdownTail: context.task.conversationMarkdownTail } : {}),
-        assets: context.task.assets,
-        recentRuns: context.task.recentRuns.map((run) => toTaskRunSummary(run, context.task!.taskId)),
-        recentCommits: context.task.recentCommits.map(toCompactCommitSummary),
-        recentEvidence: context.task.recentEvidence.map(toEvidenceSummary),
+        assets: context.task.assets ?? [],
+        recentRuns: (context.task.recentRuns ?? []).map((run) => toTaskRunSummary(run, context.task!.taskId)),
+        recentCommits: (context.task.recentCommits ?? []).map(toCompactCommitSummary),
+        recentEvidence: (context.task.recentEvidence ?? []).map(toEvidenceSummary),
       },
     } : {}),
   };

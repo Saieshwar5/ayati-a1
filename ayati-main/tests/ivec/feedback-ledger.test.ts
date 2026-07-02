@@ -396,6 +396,71 @@ describe("AsyncAgentFeedbackLedger", () => {
     ]);
   });
 
+  it("turns final runtime errors and guard warning codes into actionable triage", async () => {
+    const times = [
+      new Date("2026-06-23T10:00:00.000Z"),
+      new Date("2026-06-23T10:00:01.000Z"),
+    ];
+    let index = 0;
+    const ledger = new AsyncAgentFeedbackLedger({
+      dataDir: tempDir,
+      enabled: true,
+      now: () => times[index++] ?? times[times.length - 1]!,
+    });
+
+    ledger.record({
+      clientId: "local",
+      sessionId: "session-1",
+      seq: 5,
+      stage: "tools",
+      event: "working_set_prepared",
+      data: {
+        warningCodes: [
+          "normal_tools_selected_without_work_run",
+          "normal_tool_before_routing",
+        ],
+      },
+    });
+    ledger.record({
+      clientId: "local",
+      sessionId: "session-1",
+      seq: 5,
+      stage: "final",
+      event: "error",
+      data: {
+        message: "Git-memory routed run is required before chat tool execution.",
+      },
+    });
+    await ledger.flush();
+
+    const summary = JSON.parse(await readFile(join(tempDir, "feedback", "latest-summary.json"), "utf-8")) as {
+      status?: string;
+      responseKind?: string;
+      warnings?: string[];
+    };
+    expect(summary.status).toBe("failed");
+    expect(summary.responseKind).toBe("error");
+    expect(summary.warnings).toEqual([
+      "runtime_error",
+      "normal_tools_selected_without_work_run",
+      "normal_tool_before_routing",
+      "missing_work_run_for_action",
+    ]);
+
+    const triage = JSON.parse(await readFile(join(tempDir, "feedback", "triage-summary.json"), "utf-8")) as {
+      outcome?: string;
+      findings?: Array<{ code?: string; severity?: string }>;
+    };
+    expect(triage.outcome).toBe("failed");
+    expect(triage.findings?.map((finding) => finding.code)).toEqual([
+      "run_not_completed",
+      "runtime_error",
+      "normal_tools_selected_without_work_run",
+      "missing_work_run_for_action",
+      "normal_tool_before_routing",
+    ]);
+  });
+
   it("builds operator triage findings from final feedback warning signals", () => {
     const triage = buildFeedbackTriageSummary({
       updatedAt: "2026-06-23T10:00:00.000Z",

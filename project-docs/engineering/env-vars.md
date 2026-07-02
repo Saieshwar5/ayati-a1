@@ -66,13 +66,12 @@ Git context:
 AYATI_GIT_CONTEXT_STORE_DIR=
 AYATI_GIT_CONTEXT_TIMEZONE=Asia/Kolkata
 AYATI_GIT_CONTEXT_AGENT_ID=local
-AYATI_GIT_CONTEXT_SESSION_SUMMARY_MODE=deterministic
-AYATI_GIT_CONTEXT_SESSION_SUMMARY_MAX_CHARS=2000
 ```
 
-Daily git context is always on. It records global conversation, pending-turn
-ownership, active task refs, task branches, task assets, run summaries,
-evidence manifests, session summaries, and commit metadata. The model-facing
+Daily git context is always on. It records session conversation in the
+session-store submodule, pending-turn ownership, active task refs, task
+branches, task assets, run summaries, evidence manifests, session summaries
+when present, and commit metadata. The model-facing
 prompt uses grouped paths such as `context.git`, `context.timeline`,
 `context.scratch`, `context.tools`, and `context.personal`.
 
@@ -83,19 +82,6 @@ from the backend package root.
 `AYATI_GIT_CONTEXT_TIMEZONE` controls daily session dating for git context.
 
 `AYATI_GIT_CONTEXT_AGENT_ID` controls the agent id used in daily session ids.
-
-`AYATI_GIT_CONTEXT_SESSION_SUMMARY_MODE` controls how session summaries are
-updated:
-
-- `deterministic`: default. Uses the built-in deterministic summary updater.
-- `llm`: opt-in. Uses the main configured chat provider for session
-  summarization and falls back to deterministic summaries on provider errors or
-  invalid output.
-
-Unknown values fall back to `deterministic`.
-
-`AYATI_GIT_CONTEXT_SESSION_SUMMARY_MAX_CHARS` bounds LLM-generated session
-summary text. Invalid values fall back to `2000`.
 
 Agent harness:
 

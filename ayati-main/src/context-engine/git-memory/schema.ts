@@ -213,6 +213,14 @@ export function gitMemorySessionStoreSessionDir(sessionId: GitMemorySessionId): 
   return `${GIT_MEMORY_SESSION_STORE_SESSIONS_DIR}/${sessionId}`;
 }
 
+export function gitMemorySessionStoreMetaPath(sessionId: GitMemorySessionId): string {
+  return `${gitMemorySessionStoreSessionDir(sessionId)}/meta.json`;
+}
+
+export function gitMemorySessionStoreSchemaPath(sessionId: GitMemorySessionId): string {
+  return `${gitMemorySessionStoreSessionDir(sessionId)}/schema.json`;
+}
+
 export function gitMemorySessionStoreMessagesDir(sessionId: GitMemorySessionId): string {
   return `${gitMemorySessionStoreSessionDir(sessionId)}/messages`;
 }
