@@ -402,20 +402,33 @@ describe("parseAgentDecision", () => {
       JSON.stringify(badAction),
       JSON.stringify(repaired),
     ]);
+    const feedback = createFeedbackLedger();
 
     const decision = await callAgentDecision({
       provider,
       stateView: createStateView(),
       toolDefinitions: [],
+      feedbackLedger: feedback.ledger,
+      feedbackContext: {
+        clientId: "local",
+        sessionId: "S-test",
+        seq: 1,
+      },
     });
 
     expect(decision.kind).toBe("load_tools");
     expect(generateTurn).toHaveBeenCalledTimes(2);
     const repairMessages = generateTurn.mock.calls[1]?.[0]?.messages ?? [];
     const repairPrompt = repairMessages.at(-1)?.content;
-    expect(repairPrompt).toContain("violates the Ayati tool protocol");
-    expect(repairPrompt).toContain("Selected tools: (none)");
-    expect(repairPrompt).toContain("Invalid tools in action.calls or allowedTools: shell, load_tools");
+    expect(repairPrompt).toContain("Repair code: R_LOAD_TOOLS_USED_AS_ACTION");
+    expect(repairPrompt).toContain("Blocked targets: shell, load_tools");
+    expect(repairPrompt).toContain("Use the native decision_load_tools control tool.");
+    expect(feedback.events.find((event) => event.event === "protocol_violation")?.data).toMatchObject({
+      repair: {
+        code: "R_LOAD_TOOLS_USED_AS_ACTION",
+        blockedTargets: ["shell", "load_tools"],
+      },
+    });
   });
 
   it("repairs tool-call JSON returned as assistant text", async () => {
@@ -466,12 +479,28 @@ describe("parseAgentDecision", () => {
     expect(decision.kind).toBe("act");
     expect(generateTurn).toHaveBeenCalledTimes(2);
     const repairPrompt = generateTurn.mock.calls[1]?.[0]?.messages.at(-1)?.content ?? "";
-    expect(repairPrompt).toContain("looked like a tool call written as assistant text");
+    expect(repairPrompt).toContain("Repair code: R_ASSISTANT_TEXT_TOOL_CALL");
+    expect(repairPrompt).toContain("Blocked targets: git_context_create_task_for_turn");
     expect(repairPrompt).toContain("Do not write tool-call JSON in assistant text");
     expect(feedback.events.some((event) => event.event === "direct_reply")).toBe(false);
     expect(feedback.events.find((event) => event.event === "assistant_text_tool_call")?.data).toMatchObject({
       toolName: "git_context_create_task_for_turn",
       selectedTools: ["git_context_create_task_for_turn"],
+      repair: {
+        code: "R_ASSISTANT_TEXT_TOOL_CALL",
+        blockedTargets: ["git_context_create_task_for_turn"],
+        operatorDetails: {
+          attempt: 1,
+          toolName: "git_context_create_task_for_turn",
+          inputKeys: ["taskCompletion"],
+          selectedTools: ["git_context_create_task_for_turn"],
+        },
+      },
+    });
+    expect(feedback.events.find((event) => event.event === "repair_requested")?.data).toMatchObject({
+      repair: {
+        code: "R_ASSISTANT_TEXT_TOOL_CALL",
+      },
     });
   });
 
@@ -528,6 +557,56 @@ describe("parseAgentDecision", () => {
       kind: "reply",
       status: "failed",
       message: "I could not form a valid tool call for this request.",
+    });
+  });
+
+  it("records a repair code when a decision calls an unselected tool", async () => {
+    const badAction = {
+      kind: "act",
+      action: {
+        mode: "single",
+        calls: [{
+          id: "call_1",
+          tool: "shell",
+          input: { command: "pwd" },
+          dependsOn: [],
+        }],
+        allowedTools: ["shell"],
+      },
+    };
+    const repaired = {
+      kind: "load_tools",
+      request: {
+        groups: ["skill:shell"],
+      },
+    };
+    const feedback = createFeedbackLedger();
+    const { provider, generateTurn } = createProvider([
+      JSON.stringify(badAction),
+      JSON.stringify(repaired),
+    ]);
+
+    const decision = await callAgentDecision({
+      provider,
+      stateView: createStateView(),
+      toolDefinitions: [],
+      feedbackLedger: feedback.ledger,
+      feedbackContext: {
+        clientId: "local",
+        sessionId: "S-test",
+        seq: 1,
+      },
+    });
+
+    expect(decision.kind).toBe("load_tools");
+    const repairPrompt = generateTurn.mock.calls[1]?.[0]?.messages.at(-1)?.content ?? "";
+    expect(repairPrompt).toContain("Repair code: R_TOOL_NOT_SELECTED");
+    expect(repairPrompt).toContain("Blocked targets: shell");
+    expect(feedback.events.find((event) => event.event === "protocol_violation")?.data).toMatchObject({
+      repair: {
+        code: "R_TOOL_NOT_SELECTED",
+        blockedTargets: ["shell"],
+      },
     });
   });
 
@@ -622,6 +701,16 @@ describe("parseAgentDecision", () => {
       requestMode: "tools",
       willRetry: true,
       retryDelayMs: 400,
+      repair: {
+        code: "R_PROVIDER_EMPTY_RESPONSE",
+        modelFacing: false,
+        operatorDetails: {
+          provider: "openrouter",
+          model: "test-model",
+          choiceCount: 0,
+          willRetry: true,
+        },
+      },
     });
   });
 
@@ -650,8 +739,23 @@ describe("parseAgentDecision", () => {
     expect(generateTurn).toHaveBeenCalledTimes(2);
     const emptyEvents = feedback.events.filter((event) => event.event === "provider_empty_response");
     expect(emptyEvents).toHaveLength(2);
-    expect(emptyEvents[0]?.data).toMatchObject({ providerAttempt: 1, willRetry: true });
-    expect(emptyEvents[1]?.data).toMatchObject({ providerAttempt: 2, willRetry: false });
+    expect(emptyEvents[0]?.data).toMatchObject({
+      providerAttempt: 1,
+      willRetry: true,
+      repair: {
+        code: "R_PROVIDER_EMPTY_RESPONSE",
+      },
+    });
+    expect(emptyEvents[1]?.data).toMatchObject({
+      providerAttempt: 2,
+      willRetry: false,
+      repair: {
+        code: "R_PROVIDER_EMPTY_RESPONSE",
+        operatorDetails: {
+          willRetry: false,
+        },
+      },
+    });
   });
 
   it("exposes task feedback only when enabled", async () => {
@@ -792,6 +896,7 @@ describe("parseAgentDecision", () => {
         }],
       },
     ]);
+    const feedback = createFeedbackLedger();
 
     const decision = await callAgentDecision({
       provider,
@@ -803,15 +908,28 @@ describe("parseAgentDecision", () => {
           files: { type: "array" },
         },
       })],
+      feedbackLedger: feedback.ledger,
+      feedbackContext: {
+        clientId: "local",
+        sessionId: "S-test",
+        seq: 1,
+      },
     });
 
     expect(generateTurn).toHaveBeenCalledTimes(2);
     expect(decision.kind).toBe("act");
     const repairMessages = generateTurn.mock.calls[1]?.[0]?.messages ?? [];
     const repairPrompt = repairMessages.at(-1)?.content;
-    expect(repairPrompt).toContain("invalid tool input");
-    expect(repairPrompt).toContain("missing required field 'files'");
-    expect(repairPrompt).toContain("call the selected executable tool directly");
+    expect(repairPrompt).toContain("Repair code: R_TOOL_INPUT_MISSING_REQUIRED_FIELD");
+    expect(repairPrompt).toContain("Missing fields: files");
+    expect(repairPrompt).toContain("Call the selected tool again with the missing required fields.");
+    expect(feedback.events.find((event) => event.event === "input_schema_violation")?.data).toMatchObject({
+      repair: {
+        code: "R_TOOL_INPUT_MISSING_REQUIRED_FIELD",
+        blockedTargets: ["write_files"],
+        missingFields: ["files"],
+      },
+    });
   });
 
   it("repairs act decisions with invalid selected tool input", async () => {
@@ -864,9 +982,9 @@ describe("parseAgentDecision", () => {
     expect(decision.kind).toBe("act");
     const repairMessages = generateTurn.mock.calls[1]?.[0]?.messages ?? [];
     const repairPrompt = repairMessages.at(-1)?.content;
-    expect(repairPrompt).toContain("invalid tool input");
-    expect(repairPrompt).toContain("missing required field 'files'");
-    expect(repairPrompt).toContain("call the selected executable tool directly");
+    expect(repairPrompt).toContain("Repair code: R_TOOL_INPUT_MISSING_REQUIRED_FIELD");
+    expect(repairPrompt).toContain("Missing fields: files");
+    expect(repairPrompt).toContain("Call the selected tool again with the missing required fields.");
   });
 });
 
