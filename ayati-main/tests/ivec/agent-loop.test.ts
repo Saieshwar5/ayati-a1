@@ -7,7 +7,7 @@ import type { LlmProvider } from "../../src/core/contracts/provider.js";
 import { noopRunRecorder } from "../../src/ivec/noop-run-recorder.js";
 import { writeFilesTool } from "../../src/skills/builtins/filesystem/write-files.js";
 import { createToolExecutor } from "../../src/skills/tool-executor.js";
-import type { ToolDefinition } from "../../src/skills/types.js";
+import type { SkillDefinition, ToolDefinition } from "../../src/skills/types.js";
 import { ToolCatalog } from "../../src/ivec/agent-runner/tool-catalog.js";
 import { ToolWorkingSetManager } from "../../src/ivec/agent-runner/tool-working-set.js";
 
@@ -34,6 +34,84 @@ function createProvider(responses: unknown[]): LlmProvider {
       }
       return { type: "assistant", content };
     }),
+  };
+}
+
+function skill(id: string, tools: ToolDefinition[]): SkillDefinition {
+  return {
+    id,
+    version: "1.0.0",
+    description: `${id} skill`,
+    promptBlock: "",
+    tools,
+  };
+}
+
+function fakeCreateTaskForTurnTool(): ToolDefinition {
+  return {
+    name: "git_context_create_task_for_turn",
+    description: "Create a task for the current turn.",
+    inputSchema: {
+      type: "object",
+      required: ["title", "objective", "reason"],
+      properties: {
+        title: { type: "string" },
+        objective: { type: "string" },
+        reason: { type: "string" },
+      },
+    },
+    async execute() {
+      const structuredContent = {
+        status: "ready",
+        mode: "create_new_task",
+        sessionId: "s1",
+        taskId: "T-20260702-001",
+        branch: "task/T-20260702-001-linux-commands",
+        runId: "R-20260702-001",
+        harnessContext: {
+          contextEngine: {
+            session: {
+              sessionId: "s1",
+              conversationTail: [],
+              activityTail: [],
+              assetCount: 0,
+            },
+            focus: {
+              status: "active",
+              ref: "refs/heads/task/T-20260702-001-linux-commands",
+              workId: "T-20260702-001",
+            },
+            task: {
+              ref: "refs/heads/task/T-20260702-001-linux-commands",
+              workId: "T-20260702-001",
+              title: "Linux commands file",
+              objective: "Create a text file with important Linux commands.",
+              status: "active",
+              completed: [],
+              open: ["Create a text file with important Linux commands."],
+              blockers: [],
+              facts: [],
+              next: "Create the commands file.",
+              assets: [],
+              recentRuns: [],
+              recentCommits: [],
+              recentEvidence: [],
+            },
+          },
+        },
+      };
+      return {
+        ok: true,
+        output: "Created task T-20260702-001 and run R-20260702-001.",
+        v2: {
+          transportOk: true,
+          operationStatus: "succeeded",
+          code: "GIT_CONTEXT_TURN_TASK_CREATED",
+          message: "Pending turn created a new git-context task.",
+          structuredContent,
+        },
+      };
+    },
   };
 }
 
@@ -232,6 +310,117 @@ describe("agentLoop", () => {
       expect(provider.generateTurn).toHaveBeenCalledTimes(2);
       expect(existsSync(outputPath)).toBe(false);
       expect(secondUserPrompt).toContain("Use git_context_create_task_for_turn first");
+    } finally {
+      cleanup(dataDir);
+    }
+  });
+
+  it("continues with normal tools after creating the first task in a fresh session", async () => {
+    const dataDir = makeTmpDir();
+    const outputPath = join(dataDir, "linux-commands.txt");
+    try {
+      const gitCreateTaskTool = fakeCreateTaskForTurnTool();
+      const toolExecutor = createToolExecutor([]);
+      const toolWorkingSetManager = new ToolWorkingSetManager({
+        catalog: new ToolCatalog([
+          skill("git-context", [gitCreateTaskTool]),
+          skill("filesystem", [writeFilesTool]),
+        ]),
+        toolExecutor,
+        maxVisibleTools: 12,
+      });
+      const provider = createProvider([
+        {
+          kind: "act",
+          action: {
+            mode: "single",
+            calls: [{
+              id: "create_task",
+              tool: "git_context_create_task_for_turn",
+              input: {
+                title: "Linux commands file",
+                objective: "Create a text file with 10 important Linux commands.",
+                reason: "The user asked for durable file creation work.",
+              },
+              dependsOn: [],
+              purpose: "Create and activate the first task before using filesystem tools.",
+            }],
+            allowedTools: ["git_context_create_task_for_turn"],
+            assertions: [],
+          },
+        },
+        {
+          kind: "act",
+          action: {
+            mode: "single",
+            calls: [{
+              id: "write_file",
+              tool: "write_files",
+              input: {
+                createDirs: true,
+                files: [{
+                  path: outputPath,
+                  content: [
+                    "1. pwd - show current directory",
+                    "2. ls - list files",
+                    "3. cd - change directory",
+                  ].join("\n"),
+                }],
+              },
+              dependsOn: [],
+              purpose: "Write the requested commands file after task creation.",
+            }],
+            allowedTools: ["write_files"],
+            assertions: [{ kind: "file_exists", path: "$.files[0].path" }],
+          },
+        },
+        {
+          kind: "reply",
+          status: "completed",
+          message: `I created the Linux commands file at ${outputPath}.`,
+        },
+      ]);
+
+      const result = await agentLoop({
+        provider,
+        toolExecutor,
+        toolWorkingSetManager,
+        toolDefinitions: [gitCreateTaskTool, writeFilesTool],
+        runRecorder: noopRunRecorder,
+        inputHandle: { sessionId: "s1", seq: 1 },
+        clientId: "c1",
+        initialUserMessage: "Create a txt file with 10 Linux commands",
+        dataDir,
+        systemContext: "full system context with memory",
+        harnessContext: {
+          contextEngine: {
+            session: {
+              sessionId: "s1",
+              conversationTail: [],
+              activityTail: [],
+              assetCount: 0,
+            },
+            focus: {
+              status: "none",
+            },
+          },
+        },
+      });
+
+      const secondCallInput = vi.mocked(provider.generateTurn).mock.calls[1]?.[0];
+      const secondUserPrompt = secondCallInput.messages.find((message: { role: string }) => message.role === "user").content as string;
+      const secondDecisionTools = secondCallInput.tools.map((tool: { name: string }) => tool.name);
+      const secondStateView = extractStateView(secondUserPrompt);
+      expect(result.status).toBe("completed");
+      expect(result.runClass).toBe("task");
+      expect(result.workRunId).toBe("R-20260702-001");
+      expect(result.totalToolCalls).toBe(2);
+      expect(result.content).toBe(`I created the Linux commands file at ${outputPath}.`);
+      expect(provider.generateTurn).toHaveBeenCalledTimes(3);
+      expect(readFileSync(outputPath, "utf-8")).toContain("pwd - show current directory");
+      expect(secondStateView.context.git.current.task.identity.workId).toBe("T-20260702-001");
+      expect(secondDecisionTools).toContain("write_files");
+      expect(secondDecisionTools).not.toContain("git_context_create_task_for_turn");
     } finally {
       cleanup(dataDir);
     }
