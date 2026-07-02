@@ -71,7 +71,10 @@ import { isEvidenceToolName } from "./observation-builder.js";
 import { deriveExecutionStatus } from "../verification-gates.js";
 import { buildContextEngineFeedbackSummary } from "../feedback-ledger.js";
 import type { ToolDefinition, ToolResult } from "../../skills/types.js";
-import { isGitContextAllowedDuringPendingRouting } from "../../skills/builtins/git-context/tool-policy.js";
+import {
+  isGitContextAllowedDuringPendingRouting,
+  isGitContextFreshSessionRoutingToolName,
+} from "../../skills/builtins/git-context/tool-policy.js";
 import {
   summarizeAgentAction,
   summarizeDecision,
@@ -88,6 +91,8 @@ interface MemoryRunContext {
   runPath: string;
   runStateManager: RunStateManager;
 }
+
+const FRESH_SESSION_TOOL_REPAIR_MESSAGE = "No active task exists. Create and activate the first task with git_context_create_task_for_turn before using work tools, or ask a short clarification if the request is unclear.";
 
 const noopRunRecorder: RunRecorder = {
   recordToolCall(): void {
@@ -498,6 +503,25 @@ export async function runAgentLoop(
     }
 
     const pendingRouting = hasUnboundOrClarifyingPendingTurn(state);
+    const freshSessionWithoutActiveTask = isFreshSessionWithoutActiveTask(state);
+
+    if (freshSessionWithoutActiveTask && decision.kind === "load_tools") {
+      recordFreshSessionToolRepair({
+        deps,
+        inputHandle,
+        state,
+        config,
+        decision,
+        reason: "fresh_session_tool_load",
+      });
+      if (state.consecutiveFailures >= config.maxConsecutiveFailures) {
+        state.status = "failed";
+        state.finalOutput = buildFailureReply(state);
+        return finalize({ status: "failed", content: state.finalOutput });
+      }
+      queueStateSnapshot();
+      continue;
+    }
 
     if (decision.kind === "load_tools") {
       toolLoadDecisionCount++;
@@ -541,7 +565,26 @@ export async function runAgentLoop(
       continue;
     }
 
-    if (pendingRouting) {
+    const freshSessionRouting = freshSessionWithoutActiveTask && isFreshSessionRoutingDecision(decision);
+    if (freshSessionWithoutActiveTask && !freshSessionRouting) {
+      recordFreshSessionToolRepair({
+        deps,
+        inputHandle,
+        state,
+        config,
+        decision,
+        reason: "fresh_session_wrong_tool",
+      });
+      if (state.consecutiveFailures >= config.maxConsecutiveFailures) {
+        state.status = "failed";
+        state.finalOutput = buildFailureReply(state);
+        return finalize({ status: "failed", content: state.finalOutput });
+      }
+      queueStateSnapshot();
+      continue;
+    }
+
+    if (pendingRouting || freshSessionRouting) {
       const routingRunId = decisionScopeId(inputHandle);
       const routingToolContext = { ...toolContext, runId: routingRunId };
       recordFeedback(deps, inputHandle, undefined, "action", "started", {
@@ -558,6 +601,7 @@ export async function runAgentLoop(
         })),
         allowedTools: decision.action.allowedTools,
         pendingRouting: true,
+        freshSessionRouting,
       });
       const stepResult = await executePendingRoutingAction({
         deps,
@@ -700,6 +744,25 @@ export async function runAgentLoop(
       deterministicLoad: summarizeToolLoadResult(workDeterministicToolLoad),
       activeTools: deps.toolWorkingSetManager?.listActive(workToolContext),
     });
+    const activeToolsForWorkRun = deps.toolWorkingSetManager?.listActive(workToolContext) ?? [];
+    const routingToolsForWorkRun = activeToolsForWorkRun.filter(isGitContextRoutingToolName);
+    recordFeedback(deps, inputHandle, work.runHandle.runId, "tools", "normal_tools_enabled_for_work_run", {
+      iteration: state.iteration,
+      toolContextRunId: workToolContext.runId,
+      workRunId: work.runHandle.runId,
+      activeTools: activeToolsForWorkRun,
+      normalTools: activeToolsForWorkRun.filter((tool) => !isGitContextRoutingToolName(tool)),
+      routingTools: routingToolsForWorkRun,
+    });
+    const completedRoutingTools = latestCompletedTaskRoutingToolNames(state);
+    if (completedRoutingTools.length > 0 && routingToolsForWorkRun.length === 0) {
+      recordFeedback(deps, inputHandle, work.runHandle.runId, "tools", "routing_tools_deactivated", {
+        iteration: state.iteration,
+        workRunId: work.runHandle.runId,
+        completedRoutingTools,
+        activeTools: activeToolsForWorkRun,
+      });
+    }
     recordFeedback(deps, inputHandle, work.runHandle.runId, "action", "started", {
       iteration: state.iteration,
       mode: decision.action.mode,
@@ -1144,6 +1207,66 @@ function hasUnboundOrClarifyingPendingTurn(state: LoopState): boolean {
   return status === "unbound" || status === "clarifying";
 }
 
+function isFreshSessionWithoutActiveTask(state: LoopState): boolean {
+  return state.harnessContext.contextEngine?.focus.status === "none";
+}
+
+function isFreshSessionRoutingDecision(decision: AgentDecision): decision is Extract<AgentDecision, { kind: "act" }> {
+  if (decision.kind !== "act" || decision.action.calls.length === 0) {
+    return false;
+  }
+  return decision.action.calls.every((call) => isGitContextFreshSessionRoutingToolName(call.tool))
+    && decision.action.allowedTools.every((tool) => isGitContextFreshSessionRoutingToolName(tool));
+}
+
+function recordFreshSessionToolRepair(input: {
+  deps: AgentLoopDeps;
+  inputHandle: SessionInputHandle;
+  state: LoopState;
+  config: LoopConfig;
+  decision: AgentDecision;
+  reason: "fresh_session_tool_load" | "fresh_session_wrong_tool";
+}): void {
+  input.state.consecutiveFailures++;
+  const blockedTargets = freshSessionDecisionTargets(input.decision);
+  input.state.failureHistory.push({
+    step: input.state.iteration,
+    failureType: "validation_error",
+    reason: FRESH_SESSION_TOOL_REPAIR_MESSAGE,
+    blockedTargets,
+  });
+  recordFeedback(input.deps, input.inputHandle, undefined, "guard", "fresh_session_tool_repair_requested", {
+    reason: input.reason,
+    message: FRESH_SESSION_TOOL_REPAIR_MESSAGE,
+    warningCodes: ["fresh_session_tool_repair_requested"],
+    consecutiveFailures: input.state.consecutiveFailures,
+    maxConsecutiveFailures: input.config.maxConsecutiveFailures,
+    blockedTargets,
+    decision: summarizeDecision(input.decision),
+    contextEngine: buildContextEngineFeedbackSummary({
+      context: input.state.harnessContext.contextEngine,
+    }),
+    harnessContext: summarizeHarnessContext(input.state.harnessContext),
+  });
+}
+
+function freshSessionDecisionTargets(decision: AgentDecision): string[] {
+  if (decision.kind === "load_tools") {
+    return uniqueStrings([
+      ...decision.request.toolNames,
+      ...decision.request.groups.map((group) => `group:${group}`),
+      ...(decision.request.query ? [`query:${decision.request.query}`] : []),
+    ]);
+  }
+  if (decision.kind === "act") {
+    return uniqueStrings([
+      ...decision.action.calls.map((call) => call.tool),
+      ...decision.action.allowedTools,
+    ]);
+  }
+  return [];
+}
+
 function recordFeedback(
   deps: AgentLoopDeps,
   inputHandle: SessionInputHandle,
@@ -1176,12 +1299,19 @@ function recordToolWorkingSetFeedback(input: {
   workRunHandle: MemoryRunHandle | undefined;
 }): void {
   const warningCodes = buildToolExposureWarningCodes(input.state, input.selectedTools, input.workRunHandle);
+  const toolMode = buildToolModeFeedback({
+    state: input.state,
+    visibleTools: input.visibleTools,
+    selectedTools: input.selectedTools,
+    workRunHandle: input.workRunHandle,
+  });
   recordFeedback(input.deps, input.inputHandle, input.runId, "tools", "working_set_prepared", {
     iteration: input.iteration,
     toolContextRunId: input.toolContextRunId,
     workRunId: input.workRunHandle?.runId,
     runHandlePresent: Boolean(input.workRunHandle || input.state.runId),
     pendingTurnStatus: input.state.harnessContext.contextEngine?.pendingTurn?.routingStatus,
+    toolMode,
     deterministicLoad: summarizeToolLoadResult(input.deterministicToolLoad),
     visible: summarizeToolDefinitions(input.visibleTools),
     selected: summarizeToolDefinitions(input.selectedTools),
@@ -1191,6 +1321,69 @@ function recordToolWorkingSetFeedback(input: {
     }),
     ...(warningCodes.length > 0 ? { warningCodes } : {}),
   });
+  recordFeedback(input.deps, input.inputHandle, input.runId, "tools", "tool_mode_selected", {
+    iteration: input.iteration,
+    toolContextRunId: input.toolContextRunId,
+    ...toolMode,
+    ...(warningCodes.length > 0 ? { warningCodes } : {}),
+  });
+  if (!toolMode.hasWorkRun && toolMode.visibleRoutingTools.length > 0) {
+    recordFeedback(input.deps, input.inputHandle, input.runId, "tools", "pre_task_routing_tools_visible", {
+      iteration: input.iteration,
+      toolContextRunId: input.toolContextRunId,
+      mode: toolMode.mode,
+      visibleRoutingTools: toolMode.visibleRoutingTools,
+      selectedRoutingTools: toolMode.selectedRoutingTools,
+      visibleNormalTools: toolMode.visibleNormalTools,
+      pendingTurnStatus: toolMode.pendingTurnStatus,
+      focusStatus: toolMode.focusStatus,
+    });
+  }
+}
+
+interface ToolModeFeedback {
+  mode: "task_run" | "fresh_session_routing" | "pre_task_routing" | "session_only";
+  hasWorkRun: boolean;
+  focusStatus?: string;
+  pendingTurnStatus?: string;
+  visibleRoutingTools: string[];
+  selectedRoutingTools: string[];
+  visibleNormalTools: string[];
+  selectedNormalTools: string[];
+  visibleToolCount: number;
+  selectedToolCount: number;
+}
+
+function buildToolModeFeedback(input: {
+  state: LoopState;
+  visibleTools: ToolDefinition[];
+  selectedTools: ToolDefinition[];
+  workRunHandle: MemoryRunHandle | undefined;
+}): ToolModeFeedback {
+  const hasWorkRun = Boolean(input.state.runId || input.workRunHandle);
+  const focusStatus = input.state.harnessContext.contextEngine?.focus.status;
+  const pendingTurnStatus = input.state.harnessContext.contextEngine?.pendingTurn?.routingStatus;
+  const visibleToolNames = input.visibleTools.map((tool) => tool.name);
+  const selectedToolNames = input.selectedTools.map((tool) => tool.name);
+  const mode: ToolModeFeedback["mode"] = hasWorkRun
+    ? "task_run"
+    : focusStatus === "none"
+      ? "fresh_session_routing"
+      : pendingTurnStatus === "unbound" || pendingTurnStatus === "clarifying"
+        ? "pre_task_routing"
+        : "session_only";
+  return {
+    mode,
+    hasWorkRun,
+    ...(focusStatus ? { focusStatus } : {}),
+    ...(pendingTurnStatus ? { pendingTurnStatus } : {}),
+    visibleRoutingTools: visibleToolNames.filter(isGitContextRoutingToolName),
+    selectedRoutingTools: selectedToolNames.filter(isGitContextRoutingToolName),
+    visibleNormalTools: visibleToolNames.filter((tool) => !isGitContextRoutingToolName(tool)),
+    selectedNormalTools: selectedToolNames.filter((tool) => !isGitContextRoutingToolName(tool)),
+    visibleToolCount: visibleToolNames.length,
+    selectedToolCount: selectedToolNames.length,
+  };
 }
 
 function recordStepFeedback(
@@ -1260,6 +1453,15 @@ function normalTaskToolNames(tools: ToolDefinition[]): string[] {
   return tools
     .map((tool) => tool.name)
     .filter((tool) => !isGitContextAllowedDuringPendingRouting(tool));
+}
+
+function isGitContextRoutingToolName(tool: string): boolean {
+  return isGitContextAllowedDuringPendingRouting(tool);
+}
+
+function latestCompletedTaskRoutingToolNames(state: LoopState): string[] {
+  const latestStep = state.completedSteps.at(-1);
+  return uniqueStrings((latestStep?.toolsUsed ?? []).filter(isGitContextRoutingToolName));
 }
 
 function uniqueStrings(values: string[]): string[] {

@@ -750,6 +750,7 @@ Decision rules:
 - If task ownership may belong to a different existing task, use git-context task search/read tools and then activate/switch only when there is a clear match.
 - If the request starts new durable work, use git_context_create_task_for_turn. Do not create or switch tasks for casual chat, thanks, explanation-only questions, or planning discussion.
 - Visible routing tools are optional routing aids, not an instruction to create, switch, or ask clarification.
+- Normal work tools require a task run. If no task run exists, reply directly, ask a short clarification, or use git-context routing tools to create or activate the right task first.
 - If context.git.current.pendingTurn.routingStatus is "unbound", route the pending turn before normal task work. Use git-context read/search tools, then git_context_activate_task_for_turn, git_context_create_task_for_turn, or git_context_ask_clarification_for_turn. Do not call shell, filesystem, document, database, Python, UI, or other task tools while the pending turn is unbound.
 - If context.git.current.pendingTurn.routingStatus is "clarifying", do not call executable tools or load more tools. Ask the user directly what task or target they mean.
 - If context.git.current.pendingTurn.routingStatus is "bound", normal task tools may be used according to the selected task context.

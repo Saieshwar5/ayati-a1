@@ -18,9 +18,9 @@ Main runtime flow:
    ownership state, loads static decision rules, personal memory, document/file
    context, the hidden tool catalog, and provider configuration.
 4. Runtime auto-binds obvious same-task follow-ups. If task ownership is
-   semantic or ambiguous, the agent can search/read git context and route the
-   pending turn through turn-aware activate/create/clarify tools before task
-   work runs.
+   semantic, ambiguous, or new durable work, the agent can search/read git
+   context and route the pending turn through turn-aware activate/create/clarify
+   tools before task work runs. Normal work tools require a real task run.
 5. `IVecEngine` builds static decision context and enters the decision-action-reducer runner.
 6. The decision model returns direct assistant text for normal terminal
    replies, or chooses exactly one native tool call for tool loading,

@@ -5,6 +5,7 @@ import { createToolExecutor } from "../../src/skills/tool-executor.js";
 import type { SkillDefinition, ToolDefinition } from "../../src/skills/types.js";
 import type { LoopState } from "../../src/ivec/types.js";
 import { createInitialHarnessContext } from "../../src/ivec/harness-context.js";
+import type { ContextEngineMachineContext } from "../../src/context-engine/index.js";
 
 function tool(name: string, description = name): ToolDefinition {
   return {
@@ -131,7 +132,74 @@ describe("ToolWorkingSetManager", () => {
     expect(manager.listActive({ runId: "r1" })).toEqual([]);
   });
 
-  it("keeps routing tools after read-only task lookup within the routing window", () => {
+  it("limits git routing tools to create and clarify when no active task exists", () => {
+    const catalog = new ToolCatalog([
+      skill("filesystem", [
+        tool("write_file"),
+      ]),
+      skill("git-context", [
+        tool("git_context_active"),
+        tool("git_context_list_tasks"),
+        tool("git_context_search_tasks"),
+        tool("git_context_read_task"),
+        tool("git_context_activate_task_for_turn"),
+        tool("git_context_create_task_for_turn"),
+        tool("git_context_ask_clarification_for_turn"),
+      ]),
+    ]);
+    const executor = createToolExecutor([]);
+    const manager = new ToolWorkingSetManager({ catalog, toolExecutor: executor, maxVisibleTools: 12 });
+    const runState = state("create a linux commands txt file");
+    runState.harnessContext = createInitialHarnessContext({
+      contextEngine: contextEngineWithFocus({ status: "none" }),
+    });
+
+    manager.prepareForDecision(runState, { clientId: "c1", runId: "r1", sessionId: "s1", stepNumber: 1 });
+
+    expect(manager.listActive({ runId: "r1" })).toEqual([
+      "write_file",
+      "git_context_create_task_for_turn",
+      "git_context_ask_clarification_for_turn",
+    ]);
+  });
+
+  it("uses the full routing window when an active task exists", () => {
+    const catalog = new ToolCatalog([
+      skill("git-context", [
+        tool("git_context_active"),
+        tool("git_context_list_tasks"),
+        tool("git_context_search_tasks"),
+        tool("git_context_read_task"),
+        tool("git_context_activate_task_for_turn"),
+        tool("git_context_create_task_for_turn"),
+        tool("git_context_ask_clarification_for_turn"),
+      ]),
+    ]);
+    const executor = createToolExecutor([]);
+    const manager = new ToolWorkingSetManager({ catalog, toolExecutor: executor, maxVisibleTools: 12 });
+    const runState = state("continue the website");
+    runState.harnessContext = createInitialHarnessContext({
+      contextEngine: contextEngineWithFocus({
+        status: "active",
+        ref: "refs/heads/task/T-20260702-001-website",
+        workId: "T-20260702-001",
+      }),
+    });
+
+    manager.prepareForDecision(runState, { clientId: "c1", runId: "r1", sessionId: "s1", stepNumber: 1 });
+
+    expect(manager.listActive({ runId: "r1" })).toEqual([
+      "git_context_active",
+      "git_context_list_tasks",
+      "git_context_search_tasks",
+      "git_context_read_task",
+      "git_context_activate_task_for_turn",
+      "git_context_create_task_for_turn",
+      "git_context_ask_clarification_for_turn",
+    ]);
+  });
+
+  it("removes routing tools after any successful task routing lookup within the routing window", () => {
     const catalog = new ToolCatalog([
       skill("git-context", [
         tool("git_context_search_tasks"),
@@ -151,10 +219,7 @@ describe("ToolWorkingSetManager", () => {
     }], context);
     manager.cleanupAfterStep(context);
 
-    expect(manager.listActive(context)).toEqual([
-      "git_context_search_tasks",
-      "git_context_create_task_for_turn",
-    ]);
+    expect(manager.listActive(context)).toEqual([]);
   });
 
   it("removes routing tools immediately after successful create or switch routing", () => {
@@ -179,4 +244,36 @@ describe("ToolWorkingSetManager", () => {
 
     expect(manager.listActive(context)).toEqual([]);
   });
+
+  it("does not re-add routing tools after a routing tool already ran in the loop", () => {
+    const catalog = new ToolCatalog([
+      skill("git-context", [
+        tool("git_context_search_tasks"),
+        tool("git_context_create_task_for_turn"),
+        tool("git_context_activate_task_for_turn"),
+      ]),
+    ]);
+    const executor = createToolExecutor([]);
+    const manager = new ToolWorkingSetManager({ catalog, toolExecutor: executor, maxVisibleTools: 12 });
+    const runState = state("continue after task creation");
+    runState.completedSteps = [{
+      toolsUsed: ["git_context_create_task_for_turn"],
+    } as LoopState["completedSteps"][number]];
+
+    manager.prepareForDecision(runState, { clientId: "c1", runId: "real-run", sessionId: "s1", stepNumber: 2 });
+
+    expect(manager.listActive({ runId: "real-run" })).toEqual([]);
+  });
 });
+
+function contextEngineWithFocus(focus: ContextEngineMachineContext["focus"]): ContextEngineMachineContext {
+  return {
+    session: {
+      sessionId: "s1",
+      conversationTail: [],
+      activityTail: [],
+      assetCount: 0,
+    },
+    focus,
+  };
+}

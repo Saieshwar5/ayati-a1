@@ -31,8 +31,9 @@ Primary value:
   active task refs, work branches, task state, assets, actions, evidence, and
   commit metadata.
 - Turn-aware task routing: obvious same-task follow-ups are bound
-  automatically, while the agent can search/read tasks and route ambiguous
-  turns through activate, create, or clarify tools.
+  automatically, while the agent can search/read tasks and route ambiguous or
+  new durable work through activate, create, or clarify tools before normal
+  work tools run.
 - Personal and episodic memory for personalization and recall.
 - Structured context packs that keep recent conversation, selected git
   task context, task assets, hot evidence, and personal memory available to the

@@ -13,8 +13,9 @@ Current product features:
 - Structured context pack with recent conversation, selected git task
   context, pending-turn state, task assets, hot evidence, personal memory, and
   current run state.
-- Git-native task routing with automatic active-task continuation and
-  turn-aware activate/create/clarify tools for semantic task ownership.
+- Git-native task routing with automatic active-task continuation,
+  turn-aware activate/create/clarify tools for semantic task ownership, and a
+  deterministic guard that keeps normal work tools behind a real task run.
 - Deterministic tool verification through tool contracts, assertions, verified facts, and progress reduction.
 - Deterministic executable-tool input validation, action execution, and
   deny-by-default parallel execution for explicitly safe read-only local flows.
