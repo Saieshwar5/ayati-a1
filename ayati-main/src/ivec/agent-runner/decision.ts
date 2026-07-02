@@ -552,6 +552,9 @@ function toolProtocolRepairCode(violation: ToolProtocolViolation): RepairCode {
   if (violation.invalidTools.includes(TASK_FEEDBACK_TOOL_NAME)) {
     return "R_TASK_FEEDBACK_UNAVAILABLE";
   }
+  if (violation.reason.includes("no tool calls")) {
+    return "R_NO_PROGRESS";
+  }
   if (violation.loadToolsUsedAsAction) {
     return "R_LOAD_TOOLS_USED_AS_ACTION";
   }

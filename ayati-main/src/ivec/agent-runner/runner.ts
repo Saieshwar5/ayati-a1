@@ -1348,12 +1348,7 @@ function createFailureRecordFromStepSummary(step: StepSummary): LoopState["failu
     ...(step.blockedTargets ?? []),
     ...(step.blockedTargets && step.blockedTargets.length > 0 ? [] : toolsFromExecutionContract(step.executionContract)),
   ]);
-  const repair = createStepFailureRepairSignal({
-    failureType,
-    reason,
-    blockedTargets,
-    step,
-  });
+  const repair = createRepairSignalFromStepSummary(step);
   const promptCard = repair ? repairSignalToPromptCard(repair) : undefined;
   return {
     step: step.step,
@@ -1364,6 +1359,21 @@ function createFailureRecordFromStepSummary(step: StepSummary): LoopState["failu
     ...(repair ? { repairCode: repair.code } : {}),
     ...(promptCard ? { repair: promptCard } : {}),
   };
+}
+
+function createRepairSignalFromStepSummary(step: StepSummary): RepairSignal | undefined {
+  const failureType = step.failureType ?? "verify_failed";
+  const reason = buildFailureHistoryReason(step);
+  const blockedTargets = uniqueStrings([
+    ...(step.blockedTargets ?? []),
+    ...(step.blockedTargets && step.blockedTargets.length > 0 ? [] : toolsFromExecutionContract(step.executionContract)),
+  ]);
+  return createStepFailureRepairSignal({
+    failureType,
+    reason,
+    blockedTargets,
+    step,
+  });
 }
 
 function createStepFailureRepairSignal(input: {
@@ -1656,11 +1666,15 @@ function recordStepFeedback(
   iteration: number,
   stepResult: ExecuteActionStepResult,
 ): void {
+  const repair = stepResult.stepSummary.outcome === "failed"
+    ? createRepairSignalFromStepSummary(stepResult.stepSummary)
+    : undefined;
   recordFeedback(deps, inputHandle, runId, "verification", "completed", {
     iteration,
     step: stepResult.stepSummary.step,
     verification: summarizeVerification(stepResult.execution.verifyOutput),
     stepSummary: summarizeStep(stepResult.stepSummary),
+    ...(repair ? repairSignalToFeedbackData(repair) : {}),
   });
 }
 
@@ -2492,6 +2506,17 @@ function classifyFailure(execution: AgentActionExecutionResult): {
 } {
   if (execution.verifyOutput.passed) {
     return { blockedTargets: [] };
+  }
+
+  if (
+    execution.verifyOutput.executionStatus === "no_tools"
+    || execution.verifyOutput.summary === "Step produced no output to validate."
+    || execution.verifyOutput.summary === "Action contains no tool calls."
+  ) {
+    return {
+      failureType: "no_progress",
+      blockedTargets: [],
+    };
   }
 
   const failedCalls = execution.actOutput.toolCalls.filter((call) => call.error);

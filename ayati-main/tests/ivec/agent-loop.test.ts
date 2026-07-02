@@ -210,6 +210,42 @@ function fakeActivateTaskForTurnTool(): ToolDefinition {
   };
 }
 
+function fakeVerificationFailureTool(): ToolDefinition {
+  return {
+    name: "fake_verify_failure",
+    description: "A test tool that succeeds but reports a failed required assertion.",
+    inputSchema: {
+      type: "object",
+      required: ["path"],
+      properties: {
+        path: { type: "string" },
+      },
+    },
+    async execute(input) {
+      const path = typeof input["path"] === "string" ? input["path"] : "missing.txt";
+      return {
+        ok: true,
+        output: `Wrote ${path}`,
+        v2: {
+          transportOk: true,
+          operationStatus: "succeeded",
+          code: "FAKE_VERIFY_FAILURE",
+          message: "Tool execution succeeded but verification failed.",
+          verification: {
+            assertions: [{
+              id: "expected-file",
+              kind: "file_exists",
+              status: "failed",
+              severity: "required",
+              message: `Expected file was not found: ${path}`,
+            }],
+          },
+        },
+      };
+    },
+  };
+}
+
 function extractStateView(userPrompt: string): any {
   const marker = "State view:\n";
   const start = userPrompt.indexOf(marker);
@@ -974,6 +1010,124 @@ describe("agentLoop", () => {
       const repairPrompt = (provider.generateTurn as any).mock.calls[1]?.[0].messages.at(-1).content as string;
       expect(repairPrompt).toContain("Repair code: R_TOOL_INPUT_MISSING_REQUIRED_FIELD");
       expect(repairPrompt).toContain("Missing fields: files");
+    } finally {
+      cleanup(dataDir);
+    }
+  });
+
+  it("surfaces verification failures as repair-coded feedback", async () => {
+    const dataDir = makeTmpDir();
+    const outputPath = join(dataDir, "verify-failure.txt");
+    try {
+      const verifyFailureTool = fakeVerificationFailureTool();
+      const toolExecutor = createToolExecutor([verifyFailureTool]);
+      const feedback = createMemoryFeedbackLedger();
+      const provider = createProvider([
+        {
+          kind: "act",
+          action: {
+            mode: "single",
+            calls: [{
+              id: "call_1",
+              tool: "fake_verify_failure",
+              input: {
+                path: outputPath,
+              },
+              dependsOn: [],
+              purpose: "Attempt a tool action with tool-owned verification.",
+            }],
+            allowedTools: ["fake_verify_failure"],
+            assertions: [],
+          },
+        },
+        {
+          kind: "reply",
+          status: "failed",
+          message: "I could not verify the requested file.",
+        },
+      ]);
+
+      const result = await agentLoop({
+        provider,
+        toolExecutor,
+        toolDefinitions: toolExecutor.definitions(),
+        runRecorder: noopRunRecorder,
+        feedbackLedger: feedback.ledger,
+        runHandle: { sessionId: "s1", runId: "r-verify-repair" },
+        inputHandle: { sessionId: "s1", seq: 1 },
+        clientId: "c1",
+        initialUserMessage: "Create a file and verify it",
+        dataDir,
+        systemContext: "full system context with memory",
+      });
+
+      expect(result.status).toBe("failed");
+      expect(provider.generateTurn).toHaveBeenCalledTimes(2);
+      const repairPrompt = (provider.generateTurn as any).mock.calls[1]?.[0].messages.at(-1).content as string;
+      expect(repairPrompt).toContain("R_VERIFICATION_FAILED");
+      expect(feedbackEvents(feedback.events, "verification", "completed")[0]?.data).toMatchObject({
+        repair: {
+          code: "R_VERIFICATION_FAILED",
+          blockedTargets: ["fake_verify_failure"],
+          operatorDetails: {
+            failureType: "verify_failed",
+          },
+        },
+      });
+    } finally {
+      cleanup(dataDir);
+    }
+  });
+
+  it("surfaces no-progress failures as repair-coded feedback", async () => {
+    const dataDir = makeTmpDir();
+    try {
+      const toolExecutor = createToolExecutor([writeFilesTool]);
+      const feedback = createMemoryFeedbackLedger();
+      const provider = createProvider([
+        {
+          kind: "act",
+          action: {
+            mode: "single",
+            calls: [],
+            allowedTools: [],
+            assertions: [],
+          },
+        },
+        {
+          kind: "reply",
+          status: "failed",
+          message: "I did not have a concrete tool action to run.",
+        },
+      ]);
+
+      const result = await agentLoop({
+        provider,
+        toolExecutor,
+        toolDefinitions: toolExecutor.definitions(),
+        runRecorder: noopRunRecorder,
+        feedbackLedger: feedback.ledger,
+        runHandle: { sessionId: "s1", runId: "r-no-progress" },
+        inputHandle: { sessionId: "s1", seq: 1 },
+        clientId: "c1",
+        initialUserMessage: "Do the work",
+        dataDir,
+        systemContext: "full system context with memory",
+      });
+
+      expect(result.status).toBe("failed");
+      expect(provider.generateTurn).toHaveBeenCalledTimes(2);
+      const repairPrompt = (provider.generateTurn as any).mock.calls[1]?.[0].messages.at(-1).content as string;
+      expect(repairPrompt).toContain("R_NO_PROGRESS");
+      expect(feedbackEvents(feedback.events, "decision", "repair_requested")[0]?.data).toMatchObject({
+        reason: "tool_protocol_violation",
+        repair: {
+          code: "R_NO_PROGRESS",
+          operatorDetails: {
+            reason: "act decision contained no tool calls",
+          },
+        },
+      });
     } finally {
       cleanup(dataDir);
     }

@@ -838,6 +838,20 @@ const REPAIR_TRIAGE_FINDINGS: ReadonlyArray<[string, AgentFeedbackTriageFinding]
     details: "The model provider returned no usable assistant message or tool call.",
     recommendation: "Inspect provider_empty_response details for model, latency, response shape, native tool count, and retry outcome.",
   }],
+  ["R_VERIFICATION_FAILED", {
+    code: "R_VERIFICATION_FAILED",
+    severity: "warning",
+    title: "Deterministic verification failed",
+    details: "A tool action ran, but the deterministic verification result did not pass.",
+    recommendation: "Inspect verification repair details, evidence items, and failed assertions before retrying.",
+  }],
+  ["R_NO_PROGRESS", {
+    code: "R_NO_PROGRESS",
+    severity: "warning",
+    title: "Step made no useful progress",
+    details: "The run attempted a step that produced no useful tool output or task progress.",
+    recommendation: "Change strategy, choose a concrete tool action, or stop with a clear failure if no useful next action exists.",
+  }],
   ["R_FRESH_SESSION_NEEDS_TASK", {
     code: "R_FRESH_SESSION_NEEDS_TASK",
     severity: "warning",

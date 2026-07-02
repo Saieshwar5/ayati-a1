@@ -569,6 +569,26 @@ describe("AsyncAgentFeedbackLedger", () => {
     ]);
   });
 
+  it("builds verification and no-progress triage from repair codes", () => {
+    const triage = buildFeedbackTriageSummary({
+      updatedAt: "2026-06-23T10:00:00.000Z",
+      tsMs: 1,
+      sessionId: "session-1",
+      seq: 9,
+      status: "failed",
+      responseKind: "error",
+      warnings: ["R_VERIFICATION_FAILED", "R_NO_PROGRESS"],
+      rawPath: "feedback/test.jsonl",
+    });
+
+    expect(triage.outcome).toBe("failed");
+    expect(triage.findings.map((finding) => finding.code)).toEqual([
+      "run_not_completed",
+      "R_VERIFICATION_FAILED",
+      "R_NO_PROGRESS",
+    ]);
+  });
+
   it("builds operator triage findings from final feedback warning signals", () => {
     const triage = buildFeedbackTriageSummary({
       updatedAt: "2026-06-23T10:00:00.000Z",
