@@ -13,6 +13,7 @@ import { buildGitMemoryHarnessContextPack } from "../context-engine/index.js";
 import { devError, devLog } from "../shared/index.js";
 import { agentLoop } from "../ivec/agent-loop.js";
 import type { ToolWorkingSetManager } from "../ivec/agent-runner/tool-working-set.js";
+import { summarizeHarnessContext } from "../ivec/agent-runner/feedback-summary.js";
 import {
   buildContextEngineFeedbackSummary,
   type AgentFeedbackLedger,
@@ -272,6 +273,7 @@ class AppSystemEventRuntime implements SystemEventRuntime {
       systemMessage: this.formatSystemEventConversationMessage(event, plan),
       at: event.receivedAt,
     });
+    const contextEngine = buildGitMemoryHarnessContextPack(turn.context);
     this.feedbackLedger?.record({
       clientId,
       sessionId: turn.sessionId,
@@ -282,9 +284,25 @@ class AppSystemEventRuntime implements SystemEventRuntime {
         status: turn.status,
         messageSeq: turn.messageSeq,
         contextEngine: buildContextEngineFeedbackSummary({
-          context: buildGitMemoryHarnessContextPack(turn.context),
+          context: contextEngine,
           routeSource: "runtime",
-          pendingTurnStatus: "unbound",
+        }),
+        pendingTurnStatus: contextEngine.pendingTurn?.routingStatus ?? "none",
+        context: summarizeHarnessContext({ contextEngine }),
+      },
+    });
+    this.feedbackLedger?.record({
+      clientId,
+      sessionId: turn.sessionId,
+      seq: turn.messageSeq,
+      stage: "context_engine",
+      event: "pending_turn_snapshot",
+      data: {
+        status: contextEngine.pendingTurn?.routingStatus ?? "none",
+        pendingTurn: contextEngine.pendingTurn,
+        contextEngine: buildContextEngineFeedbackSummary({
+          context: contextEngine,
+          routeSource: "runtime",
         }),
       },
     });
@@ -297,6 +315,21 @@ class AppSystemEventRuntime implements SystemEventRuntime {
     event: AyatiSystemEvent,
     plan: SystemEventExecutionPlan,
   ): Promise<GitMemorySystemEventContextRoutedTurn | null> {
+    if (turn) {
+      this.feedbackLedger?.record({
+        clientId,
+        sessionId: turn.sessionId,
+        seq: turn.messageSeq,
+        stage: "context_engine",
+        event: "route_started",
+        data: {
+          source: "system_event",
+          context: summarizeHarnessContext({
+            contextEngine: buildGitMemoryHarnessContextPack(turn.context),
+          }),
+        },
+      });
+    }
     const routed = await this.systemEventContextRuntime.routeTaskTurn({
       clientId,
       turn,
@@ -306,8 +339,68 @@ class AppSystemEventRuntime implements SystemEventRuntime {
       at: this.nowProvider().toISOString(),
     });
     if (!turn || !routed) {
+      if (turn) {
+        this.feedbackLedger?.record({
+          clientId,
+          sessionId: turn.sessionId,
+          seq: turn.messageSeq,
+          stage: "context_engine",
+          event: "route_result",
+          data: {
+            status: "skipped",
+            reason: "no_route",
+            routeSource: "deterministic_router",
+            contextEngine: buildContextEngineFeedbackSummary({
+              context: buildGitMemoryHarnessContextPack(turn.context),
+              routeSource: "deterministic_router",
+            }),
+          },
+        });
+      }
       return routed;
     }
+    this.feedbackLedger?.record({
+      clientId,
+      sessionId: turn.sessionId,
+      seq: turn.messageSeq,
+      ...(routed.status === "ready" ? { runId: routed.runId } : {}),
+      stage: "context_engine",
+      event: "route_result",
+      data: routed.status === "ready"
+        ? {
+            status: routed.status,
+            mode: routed.mode,
+            taskId: routed.taskId,
+            branch: routed.branch,
+            ref: routed.ref,
+            runId: routed.runId,
+            conversationRefs: routed.conversationRefs,
+            routeSource: "deterministic_router",
+            contextEngine: buildContextEngineFeedbackSummary({
+              context: routed.harnessContext.contextEngine,
+              routeStatus: routed.status,
+              routeMode: routed.mode,
+              routeSource: "deterministic_router",
+              taskId: routed.taskId,
+              branch: routed.branch,
+              ref: routed.ref,
+              runId: routed.runId,
+              conversationRefs: routed.conversationRefs,
+            }),
+          }
+        : {
+            status: routed.status,
+            reason: routed.reason,
+            candidateCount: routed.candidates.length,
+            routeSource: "deterministic_router",
+            contextEngine: buildContextEngineFeedbackSummary({
+              context: routed.harnessContext.contextEngine,
+              routeStatus: routed.status,
+              routeSource: "deterministic_router",
+              pendingTurnStatus: "clarifying",
+            }),
+          },
+    });
     this.feedbackLedger?.record({
       clientId,
       sessionId: turn.sessionId,
@@ -392,6 +485,29 @@ class AppSystemEventRuntime implements SystemEventRuntime {
     }
 
     const completedAt = this.nowProvider().toISOString();
+    this.feedbackLedger?.record({
+      clientId,
+      sessionId: prepared.sessionId,
+      seq: prepared.messageSeq,
+      runId: routed.runId,
+      stage: "context_engine",
+      event: "finalization_started",
+      data: {
+        taskId: routed.taskId,
+        runId: routed.runId,
+        conversationRefs: routed.conversationRefs,
+        resultStatus: result.status,
+        resultType: result.type,
+        contextEngine: buildContextEngineFeedbackSummary({
+          context: result.harnessContext?.contextEngine,
+          finalizationStatus: "started",
+          committed: false,
+          taskId: routed.taskId,
+          runId: routed.runId,
+          conversationRefs: routed.conversationRefs,
+        }),
+      },
+    });
     const completed = await this.systemEventContextRuntime.completeTaskRun({
       clientId,
       turn: prepared,

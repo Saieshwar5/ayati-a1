@@ -324,6 +324,17 @@ export class AsyncAgentFeedbackLedger implements AgentFeedbackLedger {
     }
     if (event.stage === "final" && event.event === "error") {
       signals.add("runtime_error");
+      const message = typeof event.data?.["message"] === "string" ? event.data["message"] : "";
+      if (message.includes("Git-memory routed run is required") || message.includes("Git-memory run handle is required")) {
+        signals.add("missing_work_run_for_action");
+      }
+    }
+    for (const warning of readStringArray(event.data?.["warningCodes"])) {
+      signals.add(warning);
+    }
+    const nestedContext = readContextEngineFeedbackSummary(event.data?.["contextEngine"]);
+    for (const warning of nestedContext?.warningCodes ?? []) {
+      signals.add(warning);
     }
     if (signals.size > 0) {
       this.feedbackSignals.set(key, signals);
@@ -566,6 +577,46 @@ export function buildFeedbackTriageSummary(summary: AgentFeedbackLatestSummary):
     });
   }
 
+  if (warningSet.has("normal_tools_selected_without_work_run")) {
+    findings.push({
+      code: "normal_tools_selected_without_work_run",
+      severity: "error",
+      title: "Task tools were selected without a work run",
+      details: "The model saw normal executable tools even though the runtime had no routed git-memory work run.",
+      recommendation: "Inspect tools.working_set_prepared, decision.selected, and guard.missing_work_run. Ensure routing state is represented before normal task tools are exposed.",
+    });
+  }
+
+  if (warningSet.has("missing_work_run_for_action")) {
+    findings.push({
+      code: "missing_work_run_for_action",
+      severity: "error",
+      title: "Action needed a git-memory run",
+      details: "A normal executable action reached the run guard before a git-memory task/run binding existed.",
+      recommendation: "Route the pending turn first, or block normal executable tools until the turn is bound or intentionally session-only.",
+    });
+  }
+
+  if (warningSet.has("normal_tool_before_routing")) {
+    findings.push({
+      code: "normal_tool_before_routing",
+      severity: "error",
+      title: "Normal tool was chosen before routing",
+      details: "The decision selected a non git-context tool before task ownership was resolved.",
+      recommendation: "Check the projected state view and selected tool list; the model should only see/use routing tools until a task run exists.",
+    });
+  }
+
+  if (warningSet.has("normal_tool_visible_during_pending_routing") || warningSet.has("routing_state_mismatch")) {
+    findings.push({
+      code: "routing_state_mismatch",
+      severity: "error",
+      title: "Routing state and tool surface disagreed",
+      details: "Feedback saw pending routing while the selected executable tool surface included normal task tools.",
+      recommendation: "Inspect context.git.current.pendingTurn and tool selector filtering for the same decision iteration.",
+    });
+  }
+
   if (
     contextEngine?.pendingTurnStatus === "unbound"
     && summary.status
@@ -674,9 +725,23 @@ export function buildFeedbackTriageSummary(summary: AgentFeedbackLatestSummary):
 
 function readFeedbackSummary(event: AgentFeedbackEvent): Record<string, unknown> | undefined {
   const summary = event.data?.["feedbackSummary"];
-  return summary && typeof summary === "object" && !Array.isArray(summary)
-    ? summary as Record<string, unknown>
-    : undefined;
+  if (summary && typeof summary === "object" && !Array.isArray(summary)) {
+    return summary as Record<string, unknown>;
+  }
+  if (event.stage === "final" && event.event === "error") {
+    return {
+      status: "failed",
+      responseKind: "error",
+      iterations: 0,
+      toolCalls: 0,
+      toolLoadDecisions: 0,
+      actionSteps: 0,
+      verificationPassed: false,
+      basedOnVerifiedFacts: false,
+      warnings: ["runtime_error"],
+    };
+  }
+  return undefined;
 }
 
 function contextEngineFeedbackFromEvent(event: AgentFeedbackEvent): AgentFeedbackContextEngineSummary | undefined {
@@ -699,8 +764,50 @@ function inferContextEngineFeedbackFromEvent(event: AgentFeedbackEvent): AgentFe
   const data = event.data ?? {};
   if (event.event === "prepared") {
     return compactContextEngineFeedbackSummary({
-      pendingTurnStatus: "unbound",
       routeSource: "runtime",
+    });
+  }
+  if (event.event === "pending_turn_snapshot") {
+    const status = readStringValue(data["status"]);
+    return compactContextEngineFeedbackSummary({
+      ...(status && status !== "none" ? { pendingTurnStatus: status } : {}),
+      routeSource: "runtime",
+    });
+  }
+  if (event.event === "auto_route_started") {
+    return compactContextEngineFeedbackSummary({
+      routeSource: "auto",
+    });
+  }
+  if (event.event === "route_started") {
+    return compactContextEngineFeedbackSummary({
+      routeSource: readRouteSource(data["routeSource"]) ?? "deterministic_router",
+    });
+  }
+  if (event.event === "auto_route_result") {
+    const routeStatus = readStringValue(data["status"]);
+    return compactContextEngineFeedbackSummary({
+      ...(routeStatus && routeStatus !== "skipped" ? { routeStatus } : {}),
+      ...(readStringValue(data["mode"]) ? { routeMode: readStringValue(data["mode"]) } : {}),
+      routeSource: routeStatus === "ambiguous" ? "deterministic_router" : "auto",
+      ...(readStringValue(data["taskId"]) ? { taskId: readStringValue(data["taskId"]) } : {}),
+      ...(readStringValue(data["branch"]) ? { branch: readStringValue(data["branch"]) } : {}),
+      ...(readStringValue(data["ref"]) ? { ref: readStringValue(data["ref"]) } : {}),
+      ...(readStringValue(data["runId"]) ? { runId: readStringValue(data["runId"]) } : {}),
+      ...(readConversationRefs(data["conversationRefs"]) ? { conversationRefs: readConversationRefs(data["conversationRefs"]) } : {}),
+    });
+  }
+  if (event.event === "route_result") {
+    const routeStatus = readStringValue(data["status"]);
+    return compactContextEngineFeedbackSummary({
+      ...(routeStatus && routeStatus !== "skipped" ? { routeStatus } : {}),
+      ...(readStringValue(data["mode"]) ? { routeMode: readStringValue(data["mode"]) } : {}),
+      routeSource: readRouteSource(data["routeSource"]) ?? "deterministic_router",
+      ...(readStringValue(data["taskId"]) ? { taskId: readStringValue(data["taskId"]) } : {}),
+      ...(readStringValue(data["branch"]) ? { branch: readStringValue(data["branch"]) } : {}),
+      ...(readStringValue(data["ref"]) ? { ref: readStringValue(data["ref"]) } : {}),
+      ...(readStringValue(data["runId"]) ? { runId: readStringValue(data["runId"]) } : {}),
+      ...(readConversationRefs(data["conversationRefs"]) ? { conversationRefs: readConversationRefs(data["conversationRefs"]) } : {}),
     });
   }
   if (event.event === "routed") {
@@ -741,6 +848,15 @@ function inferContextEngineFeedbackFromEvent(event: AgentFeedbackEvent): AgentFe
       ...(readStringValue(data["taskCommit"]) ? { commit: readStringValue(data["taskCommit"]) } : {}),
       ...(readStringValue(data["ref"]) ? { ref: readStringValue(data["ref"]) } : {}),
       ...(event.runId ? { runId: event.runId } : {}),
+    });
+  }
+  if (event.event === "finalization_started") {
+    return compactContextEngineFeedbackSummary({
+      finalizationStatus: "started",
+      committed: false,
+      ...(readStringValue(data["taskId"]) ? { taskId: readStringValue(data["taskId"]) } : {}),
+      ...(readStringValue(data["runId"]) ? { runId: readStringValue(data["runId"]) } : {}),
+      ...(readConversationRefs(data["conversationRefs"]) ? { conversationRefs: readConversationRefs(data["conversationRefs"]) } : {}),
     });
   }
   if (event.event === "finalization_skipped") {

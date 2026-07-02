@@ -35,6 +35,7 @@ import {
 } from "../ivec/feedback-ledger.js";
 import type { ChatTurnRuntime, ChatTurnRuntimeInput } from "../ivec/chat-turn-runtime.js";
 import type { ToolWorkingSetManager } from "../ivec/agent-runner/tool-working-set.js";
+import { summarizeHarnessContext } from "../ivec/agent-runner/feedback-summary.js";
 import type {
   AgentArtifact,
   AgentLoopResult,
@@ -285,6 +286,7 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
       userMessage,
       at: this.nowProvider().toISOString(),
     });
+    const contextEngine = buildGitMemoryHarnessContextPack(turn.context);
 
     this.feedbackLedger?.record({
       clientId,
@@ -296,9 +298,25 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
         status: turn.status,
         messageSeq: turn.messageSeq,
         contextEngine: buildContextEngineFeedbackSummary({
-          context: buildGitMemoryHarnessContextPack(turn.context),
+          context: contextEngine,
           routeSource: "runtime",
-          pendingTurnStatus: "unbound",
+        }),
+        pendingTurnStatus: contextEngine.pendingTurn?.routingStatus ?? "none",
+        context: summarizeHarnessContext({ contextEngine }),
+      },
+    });
+    this.feedbackLedger?.record({
+      clientId,
+      sessionId: turn.sessionId,
+      seq: turn.messageSeq,
+      stage: "context_engine",
+      event: "pending_turn_snapshot",
+      data: {
+        status: contextEngine.pendingTurn?.routingStatus ?? "none",
+        pendingTurn: contextEngine.pendingTurn,
+        contextEngine: buildContextEngineFeedbackSummary({
+          context: contextEngine,
+          routeSource: "runtime",
         }),
       },
     });
@@ -313,6 +331,20 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
     if (!turn) {
       return null;
     }
+    this.feedbackLedger?.record({
+      clientId,
+      sessionId: turn.sessionId,
+      seq: turn.messageSeq,
+      stage: "context_engine",
+      event: "auto_route_started",
+      data: {
+        autoOnly: true,
+        messagePreview: userMessage,
+        context: summarizeHarnessContext({
+          contextEngine: buildGitMemoryHarnessContextPack(turn.context),
+        }),
+      },
+    });
     const routed = await this.chatContextRuntime.routeTaskTurn({
       clientId,
       turn,
@@ -321,8 +353,64 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
       autoOnly: true,
     });
     if (!routed) {
+      this.feedbackLedger?.record({
+        clientId,
+        sessionId: turn.sessionId,
+        seq: turn.messageSeq,
+        stage: "context_engine",
+        event: "auto_route_result",
+        data: {
+          status: "skipped",
+          reason: "auto_only_no_route",
+          contextEngine: buildContextEngineFeedbackSummary({
+            context: buildGitMemoryHarnessContextPack(turn.context),
+            routeSource: "auto",
+          }),
+        },
+      });
       return null;
     }
+
+    this.feedbackLedger?.record({
+      clientId,
+      sessionId: turn.sessionId,
+      seq: turn.messageSeq,
+      ...(routed.status === "ready" ? { runId: routed.runId } : {}),
+      stage: "context_engine",
+      event: "auto_route_result",
+      data: routed.status === "ready"
+        ? {
+            status: routed.status,
+            mode: routed.mode,
+            taskId: routed.taskId,
+            branch: routed.branch,
+            ref: routed.ref,
+            runId: routed.runId,
+            conversationRefs: routed.conversationRefs,
+            contextEngine: buildContextEngineFeedbackSummary({
+              context: routed.harnessContext.contextEngine,
+              routeStatus: routed.status,
+              routeMode: routed.mode,
+              routeSource: "auto",
+              taskId: routed.taskId,
+              branch: routed.branch,
+              ref: routed.ref,
+              runId: routed.runId,
+              conversationRefs: routed.conversationRefs,
+            }),
+          }
+        : {
+            status: routed.status,
+            reason: routed.reason,
+            candidateCount: routed.candidates.length,
+            contextEngine: buildContextEngineFeedbackSummary({
+              context: routed.harnessContext.contextEngine,
+              routeStatus: routed.status,
+              routeSource: "deterministic_router",
+              pendingTurnStatus: "clarifying",
+            }),
+          },
+    });
 
     this.feedbackLedger?.record({
       clientId,
@@ -409,6 +497,29 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
     }
 
     const completedAt = this.nowProvider().toISOString();
+    this.feedbackLedger?.record({
+      clientId,
+      sessionId: prepared.sessionId,
+      seq: prepared.messageSeq,
+      runId: binding.runId,
+      stage: "context_engine",
+      event: "finalization_started",
+      data: {
+        taskId: binding.taskId,
+        runId: binding.runId,
+        conversationRefs: binding.conversationRefs,
+        resultStatus: result.status,
+        resultType: result.type,
+        contextEngine: buildContextEngineFeedbackSummary({
+          context: result.harnessContext?.contextEngine,
+          finalizationStatus: "started",
+          committed: false,
+          taskId: binding.taskId,
+          runId: binding.runId,
+          conversationRefs: binding.conversationRefs,
+        }),
+      },
+    });
     const completed = await this.chatContextRuntime.completeTaskRun({
       clientId,
       turn: prepared,
