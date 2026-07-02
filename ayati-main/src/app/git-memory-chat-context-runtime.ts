@@ -6,6 +6,8 @@ import type {
   GitMemoryHarnessRunResultForContext,
   GitMemoryMachineContextPack,
   GitMemoryRunId,
+  GitMemorySessionAttachmentRecord,
+  GitMemorySessionAttachmentsFile,
   GitMemoryRuntime,
   GitMemorySessionId,
   GitMemoryTaskId,
@@ -46,6 +48,13 @@ export interface GitMemoryChatContextAssistantMessageInput {
   runId?: GitMemoryRunId;
 }
 
+export interface GitMemoryChatContextSessionAttachmentsInput {
+  clientId: string;
+  turn: GitMemoryChatContextPreparedTurn | null;
+  attachments: GitMemorySessionAttachmentRecord[];
+  at: string;
+}
+
 export interface GitMemoryChatContextCompleteTaskRunInput {
   clientId: string;
   turn: GitMemoryChatContextPreparedTurn | null;
@@ -79,6 +88,7 @@ export interface GitMemoryChatContextRuntime {
   routeTaskTurn(input: GitMemoryChatContextRouteTaskTurnInput): Promise<GitMemoryChatContextRoutedTurn | null>;
   completeTaskRun(input: GitMemoryChatContextCompleteTaskRunInput): Promise<FinalizeGitMemoryTaskRunResult | null>;
   recordAssistantMessage(input: GitMemoryChatContextAssistantMessageInput): Promise<GitMemoryConversationRecord | null>;
+  recordSessionAttachments(input: GitMemoryChatContextSessionAttachmentsInput): Promise<GitMemorySessionAttachmentsFile | null>;
   buildActiveContext(sessionId: GitMemorySessionId): Promise<GitMemoryMachineContextPack>;
 }
 
@@ -179,6 +189,24 @@ class AppGitMemoryChatContextRuntime implements GitMemoryChatContextRuntime {
       });
     } catch (err) {
       devWarn(`[${input.clientId}] git memory assistant conversation write failed: ${errorMessage(err)}`);
+      return null;
+    }
+  }
+
+  async recordSessionAttachments(
+    input: GitMemoryChatContextSessionAttachmentsInput,
+  ): Promise<GitMemorySessionAttachmentsFile | null> {
+    if (!input.turn || input.attachments.length === 0) {
+      return null;
+    }
+    try {
+      return await this.gitMemoryRuntime.recordSessionAttachments({
+        sessionId: input.turn.sessionId,
+        attachments: input.attachments,
+        at: input.at,
+      });
+    } catch (err) {
+      devWarn(`[${input.clientId}] git memory session attachment write failed: ${errorMessage(err)}`);
       return null;
     }
   }

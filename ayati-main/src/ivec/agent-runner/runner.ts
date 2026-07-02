@@ -2262,13 +2262,15 @@ function buildAttachmentNames(preparedAttachments: PreparedAttachmentSummary[] |
 }
 
 function buildTaskAssets(state: LoopState): TaskAssetRecord[] {
+  const sessionId = state.harnessContext.contextEngine?.session.sessionId;
   return dedupeTaskAssets([
-    ...(state.preparedAttachmentRecords ?? []).map(attachmentRecordToTaskAsset),
+    ...(state.preparedAttachmentRecords ?? []).map((record) => attachmentRecordToTaskAsset(record, sessionId)),
     ...(state.managedFiles ?? []).map((file): TaskAssetRecord => ({
       assetId: stableAssetId("file", file.fileId),
       role: "input",
       kind: "file",
       name: file.originalName,
+      ...(sessionId ? { sessionAssetId: stableSessionAssetId(sessionId, "file", file.fileId) } : {}),
       path: absolutePath(file.storagePath),
     })),
     ...(state.managedDirectories ?? []).map((directory): TaskAssetRecord => ({
@@ -2276,6 +2278,7 @@ function buildTaskAssets(state: LoopState): TaskAssetRecord[] {
       role: "input",
       kind: "directory",
       name: directory.name,
+      ...(sessionId ? { sessionAssetId: stableSessionAssetId(sessionId, "directory", directory.directoryId) } : {}),
       path: absolutePath(directory.rootPath),
     })),
     ...buildGeneratedArtifactAssets(state),
@@ -2322,6 +2325,7 @@ function buildGeneratedArtifactAssets(state: LoopState): TaskAssetRecord[] {
 
 function attachmentRecordToTaskAsset(
   record: PreparedAttachmentRecord,
+  sessionId: string | undefined,
 ): TaskAssetRecord {
   const kind = record.summary.mode === "structured_data" ? "dataset" : "document";
   return {
@@ -2329,6 +2333,7 @@ function attachmentRecordToTaskAsset(
     role: "input",
     kind,
     name: record.summary.displayName,
+    ...(sessionId ? { sessionAssetId: stableSessionAssetId(sessionId, "document", record.summary.documentId) } : {}),
     path: absolutePath(record.manifest.originalPath || record.summary.artifactPath),
   };
 }
@@ -2362,6 +2367,10 @@ function absolutePath(path: string): string {
 
 function stableAssetId(kind: string, identity: string): string {
   return `asset_${createHash("sha256").update(`${kind}:${identity}`).digest("hex").slice(0, 20)}`;
+}
+
+function stableSessionAssetId(sessionId: string, kind: string, identity: string): string {
+  return `SA-${createHash("sha256").update(`${sessionId}\0${kind}\0${identity}`).digest("hex").slice(0, 16)}`;
 }
 
 function normalizeList(values: string[] | undefined): string[] {

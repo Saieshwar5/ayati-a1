@@ -157,12 +157,36 @@ export interface ContextSessionSummary {
   coveredUntilSeq?: number;
 }
 
+export interface ContextSessionAttachmentRecord {
+  sessionAssetId: string;
+  kind: string;
+  name: string;
+  source: string;
+  status: string;
+  documentId?: string;
+  fileId?: string;
+  directoryId?: string;
+  originalPath?: string;
+  storedPath?: string;
+  sizeBytes?: number;
+  mimeType?: string;
+  createdAt: string;
+  lastUsedAt?: string;
+}
+
+export interface ContextSessionAttachments {
+  count: number;
+  recent: ContextSessionAttachmentRecord[];
+  updatedAt?: string;
+}
+
 export interface ContextEngineMachineContext {
   session: {
     sessionId: string;
     conversationTail: ContextConversationRecord[];
     conversationMarkdownTail?: string;
     summary?: ContextSessionSummary;
+    attachments?: ContextSessionAttachments;
     activityTail: ContextSessionActivityRecord[];
     recentCommits?: ContextCommitSummary[];
     assetCount: number;

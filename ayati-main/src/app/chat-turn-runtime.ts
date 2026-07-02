@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import type { LlmProvider } from "../core/contracts/provider.js";
 import type { StaticContext } from "../context/static-context-cache.js";
@@ -24,6 +25,7 @@ import type { ToolExecutor } from "../skills/tool-executor.js";
 import type { ToolDefinition } from "../skills/types.js";
 import {
   buildGitMemoryHarnessContextPack,
+  type GitMemorySessionAttachmentRecord,
   type GitMemoryConversationSeqRange,
 } from "../context-engine/index.js";
 import type { HarnessContextInput } from "../ivec/harness-context.js";
@@ -167,12 +169,26 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
         runHandle = routedContextTurn?.status === "ready"
           ? this.runHandleFromRoutedTurn(inputHandle, routedContextTurn)
           : null;
-        const registeredAttachments = runHandle
-          ? await this.registerIncomingDocuments(input.attachments, runHandle.runId)
-          : { documents: [], warnings: [], managedFiles: [], managedDirectories: [] };
+        const attachmentRunId = runHandle?.runId ?? this.inputScopeId(inputHandle);
+        const registeredAttachments = await this.registerIncomingDocuments(input.attachments, attachmentRunId);
+        let harnessContext = routedContextTurn?.status === "ready"
+          ? routedContextTurn.harnessContext
+          : this.harnessContextFromPreparedTurn(chatContextTurn);
+        const recordedAttachments = await this.recordChatContextSessionAttachments(
+          input.clientId,
+          chatContextTurn,
+          registeredAttachments,
+        );
+        if (recordedAttachments && chatContextTurn) {
+          harnessContext = {
+            contextEngine: buildGitMemoryHarnessContextPack(
+              await this.chatContextRuntime.buildActiveContext(chatContextTurn.sessionId),
+            ),
+          };
+        }
         const toolDefinitions = this.toolExecutor?.definitions({
           clientId: input.clientId,
-          runId: runHandle?.runId ?? this.inputScopeId(inputHandle),
+          runId: attachmentRunId,
           sessionId: inputHandle.sessionId,
         }) ?? [];
         let result = await agentLoop({
@@ -194,11 +210,9 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
           config: this.loopConfig,
           dataDir: this.dataDir ?? "data",
           systemContext: buildStaticSystemContext(this.staticContext),
-          harnessContext: routedContextTurn?.status === "ready"
-            ? routedContextTurn.harnessContext
-            : this.harnessContextFromPreparedTurn(chatContextTurn),
+          harnessContext,
           feedbackLedger: this.feedbackLedger,
-          attachedDocuments: registeredAttachments.documents,
+          attachedDocuments: runHandle ? registeredAttachments.documents : [],
           attachmentWarnings: registeredAttachments.warnings,
           managedFiles: registeredAttachments.managedFiles,
           managedDirectories: registeredAttachments.managedDirectories,
@@ -605,6 +619,43 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
     });
   }
 
+  private async recordChatContextSessionAttachments(
+    clientId: string,
+    turn: GitMemoryChatContextPreparedTurn | null,
+    registered: RegisteredChatAttachments,
+  ): Promise<boolean> {
+    if (!turn) {
+      return false;
+    }
+    const at = this.nowProvider().toISOString();
+    const attachments = buildGitMemorySessionAttachmentRecords(turn.sessionId, registered, at);
+    if (attachments.length === 0) {
+      return false;
+    }
+    if (typeof this.chatContextRuntime.recordSessionAttachments !== "function") {
+      return false;
+    }
+    const file = await this.chatContextRuntime.recordSessionAttachments({
+      clientId,
+      turn,
+      attachments,
+      at,
+    });
+    this.feedbackLedger?.record({
+      clientId,
+      sessionId: turn.sessionId,
+      seq: turn.messageSeq,
+      stage: "context_engine",
+      event: "session_attachments_recorded",
+      data: {
+        recorded: Boolean(file),
+        count: attachments.length,
+        sessionAssetIds: attachments.map((attachment) => attachment.sessionAssetId),
+      },
+    });
+    return Boolean(file);
+  }
+
   private inputHandleFromChatContextTurn(turn: GitMemoryChatContextPreparedTurn): SessionInputHandle {
     return {
       sessionId: turn.sessionId,
@@ -943,6 +994,103 @@ function managedFileToDocumentManifest(file: ManagedFileRecord): ManagedDocument
     sizeBytes: file.sizeBytes,
     checksum: file.sha256,
   };
+}
+
+function buildGitMemorySessionAttachmentRecords(
+  sessionId: string,
+  registered: RegisteredChatAttachments,
+  at: string,
+): GitMemorySessionAttachmentRecord[] {
+  const records: GitMemorySessionAttachmentRecord[] = [
+    ...registered.managedFiles.map((file) => managedFileToSessionAttachment(sessionId, file, at)),
+    ...registered.managedDirectories.map((directory) => managedDirectoryToSessionAttachment(sessionId, directory, at)),
+  ];
+  if (registered.managedFiles.length === 0) {
+    records.push(...registered.documents.map((document) => documentManifestToSessionAttachment(sessionId, document, at)));
+  }
+  return records;
+}
+
+function managedFileToSessionAttachment(
+  sessionId: string,
+  file: ManagedFileRecord,
+  at: string,
+): GitMemorySessionAttachmentRecord {
+  return {
+    sessionAssetId: stableSessionAssetId(sessionId, "file", file.fileId),
+    kind: "file",
+    name: file.originalName,
+    source: file.origin,
+    status: toSessionAttachmentStatus(file.processingStatus),
+    fileId: file.fileId,
+    documentId: file.sha256.slice(0, 16),
+    originalPath: file.originalPath ?? file.sourceUri ?? file.storagePath,
+    storedPath: file.storagePath,
+    ...(file.mimeType ? { mimeType: file.mimeType } : {}),
+    sizeBytes: file.sizeBytes,
+    checksum: file.sha256,
+    createdAt: file.createdAt || at,
+    lastUsedAt: file.lastUsedAt ?? at,
+  };
+}
+
+function managedDirectoryToSessionAttachment(
+  sessionId: string,
+  directory: DirectoryAttachmentRecord,
+  at: string,
+): GitMemorySessionAttachmentRecord {
+  return {
+    sessionAssetId: stableSessionAssetId(sessionId, "directory", directory.directoryId),
+    kind: "directory",
+    name: directory.name,
+    source: directory.source,
+    status: toSessionAttachmentStatus(directory.status),
+    directoryId: directory.directoryId,
+    originalPath: directory.rootPath,
+    storedPath: directory.rootPath,
+    sizeBytes: directory.totalSizeBytes,
+    createdAt: directory.createdAt || at,
+    lastUsedAt: directory.lastUsedAt ?? at,
+  };
+}
+
+function documentManifestToSessionAttachment(
+  sessionId: string,
+  document: ManagedDocumentManifest,
+  at: string,
+): GitMemorySessionAttachmentRecord {
+  return {
+    sessionAssetId: stableSessionAssetId(sessionId, "document", document.documentId),
+    kind: document.kind === "csv" || document.kind === "xlsx" ? "dataset" : "document",
+    name: document.displayName,
+    source: document.source,
+    status: "ready",
+    documentId: document.documentId,
+    originalPath: document.originalPath,
+    storedPath: document.storedPath,
+    ...(document.mimeType ? { mimeType: document.mimeType } : {}),
+    sizeBytes: document.sizeBytes,
+    checksum: document.checksum,
+    createdAt: at,
+    lastUsedAt: at,
+  };
+}
+
+function toSessionAttachmentStatus(
+  status: string,
+): GitMemorySessionAttachmentRecord["status"] {
+  if (status === "partial" || status === "failed" || status === "unsupported") {
+    return status;
+  }
+  return "ready";
+}
+
+function stableSessionAssetId(sessionId: string, kind: string, value: string): string {
+  const digest = createHash("sha256")
+    .update(`${sessionId}\0${kind}\0${value}`)
+    .digest("hex")
+    .slice(0, 16);
+  return `SA-${digest}`;
 }
 
 function isDirectoryChatAttachment(attachment: ChatAttachmentInput): attachment is DirectoryChatAttachmentInput {

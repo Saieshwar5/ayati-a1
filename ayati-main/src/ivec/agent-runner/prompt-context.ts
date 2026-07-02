@@ -128,7 +128,7 @@ function projectGitSessionForPrompt(
       assetCount: session.assetCount,
     },
     ...(session.summary ? { summary: session.summary } : {}),
-    ...(attachments ? { attachments } : {}),
+    ...(attachments ?? session.attachments ? { attachments: attachments ?? session.attachments } : {}),
     activity: {
       recent: session.activityTail,
     },

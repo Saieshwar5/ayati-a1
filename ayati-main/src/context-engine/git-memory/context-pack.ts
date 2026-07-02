@@ -16,7 +16,7 @@ import {
 } from "./task-refs.js";
 import { parseGitMemoryTaskMarkdown } from "./task-markdown.js";
 import { parseGitMemorySessionSummary } from "./session-summary.js";
-import type { ContextSessionSummary, TaskAssetRecord } from "../contracts.js";
+import type { ContextSessionAttachments, ContextSessionSummary, TaskAssetRecord } from "../contracts.js";
 import { GitMemoryWorktreeGitDriver, type GitMemoryLogEntry } from "./git-driver.js";
 import type { GitMemoryDailySessionStore } from "./session-store.js";
 import type {
@@ -24,6 +24,7 @@ import type {
   GitMemoryConversationSeqRange,
   GitMemoryEvidenceManifestRecord,
   GitMemoryRunFile,
+  GitMemorySessionAttachmentRecord,
   GitMemorySessionId,
   GitMemoryTaskAssetsFile,
   GitMemoryTaskId,
@@ -153,6 +154,7 @@ export interface GitMemoryMachineContextPack {
     conversationTail: GitMemoryConversationRecord[];
     conversationMarkdownTail: string;
     summary?: ContextSessionSummary;
+    attachments?: ContextSessionAttachments;
     activityTail: GitMemoryCommitActivityRecord[];
     recentCommits: GitMemoryModelCommitSummary[];
     taskCount: number;
@@ -190,13 +192,14 @@ export class GitMemoryContextReader {
   }): Promise<GitMemoryMachineContextPack> {
     const limits = normalizeLimits(input.limits);
     const driver = await this.store.openExistingDriver(input.sessionId);
-    const [conversationMarkdownDocument, conversationRecords, taskEntries, currentBranch, sessionCommits, summary] = await Promise.all([
+    const [conversationMarkdownDocument, conversationRecords, taskEntries, currentBranch, sessionCommits, summary, attachments] = await Promise.all([
       driver.readWorkingFile(GIT_MEMORY_SESSION_CONVERSATION_MARKDOWN_PATH),
       this.store.readSessionConversationRecords(input.sessionId),
       readGitMemoryTaskEntries(driver),
       driver.currentBranch(),
       readRecentCommits(driver, GIT_MEMORY_MAIN_REF, limits.commitLogLimit),
       readSessionSummary(driver, input.sessionId),
+      this.store.readSessionAttachments(input.sessionId),
     ]);
     const fallbackConversation = parseGitMemoryConversationMarkdown(conversationMarkdownDocument);
     const useMessageStoreConversation = conversationRecords.length > 0
@@ -210,6 +213,7 @@ export class GitMemoryContextReader {
       conversationTail: tail(conversation, limits.conversationTailLimit),
       conversationMarkdownTail: conversationMarkdown,
       ...(summary ? { summary } : {}),
+      ...(attachments ? { attachments: toContextSessionAttachments(attachments) } : {}),
       activityTail: deriveSessionActivityTailFromCommits(sessionCommits, limits.activityTailLimit),
       recentCommits: sessionCommits.map(toModelCommitSummary),
       taskCount: taskEntries.length,
@@ -485,6 +489,46 @@ function toModelCommitSummary(commit: CompactGitMemoryCommitSummary): GitMemoryM
     ...(commit.trailers.runId ? { runId: commit.trailers.runId } : {}),
     ...(commit.trailers.branch ? { branch: commit.trailers.branch } : {}),
   };
+}
+
+function toContextSessionAttachments(input: {
+  updatedAt?: string;
+  attachments: GitMemorySessionAttachmentRecord[];
+}): ContextSessionAttachments {
+  const recent = input.attachments
+    .slice()
+    .sort(compareSessionAttachmentMostRecentFirst)
+    .slice(0, 8)
+    .map((attachment) => ({
+      sessionAssetId: attachment.sessionAssetId,
+      kind: attachment.kind,
+      name: attachment.name,
+      source: attachment.source,
+      status: attachment.status,
+      ...(attachment.documentId ? { documentId: attachment.documentId } : {}),
+      ...(attachment.fileId ? { fileId: attachment.fileId } : {}),
+      ...(attachment.directoryId ? { directoryId: attachment.directoryId } : {}),
+      ...(attachment.originalPath ? { originalPath: attachment.originalPath } : {}),
+      ...(attachment.storedPath ? { storedPath: attachment.storedPath } : {}),
+      ...(typeof attachment.sizeBytes === "number" ? { sizeBytes: attachment.sizeBytes } : {}),
+      ...(attachment.mimeType ? { mimeType: attachment.mimeType } : {}),
+      createdAt: attachment.createdAt,
+      ...(attachment.lastUsedAt ? { lastUsedAt: attachment.lastUsedAt } : {}),
+    }));
+  return {
+    count: input.attachments.length,
+    recent,
+    ...(input.updatedAt ? { updatedAt: input.updatedAt } : {}),
+  };
+}
+
+function compareSessionAttachmentMostRecentFirst(
+  left: GitMemorySessionAttachmentRecord,
+  right: GitMemorySessionAttachmentRecord,
+): number {
+  const leftTime = left.lastUsedAt ?? left.createdAt;
+  const rightTime = right.lastUsedAt ?? right.createdAt;
+  return rightTime.localeCompare(leftTime) || left.sessionAssetId.localeCompare(right.sessionAssetId);
 }
 
 async function readRefJson<T>(driver: GitMemoryWorktreeGitDriver, ref: string, path: string): Promise<T | null> {

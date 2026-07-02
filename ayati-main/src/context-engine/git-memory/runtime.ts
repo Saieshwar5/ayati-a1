@@ -48,6 +48,8 @@ import type {
   GitMemoryConversationSeqRange,
   GitMemoryRunFile,
   GitMemoryRunId,
+  GitMemorySessionAttachmentRecord,
+  GitMemorySessionAttachmentsFile,
   GitMemorySessionId,
   GitMemoryTaskId,
 } from "./schema.js";
@@ -113,6 +115,12 @@ export interface RecordGitMemoryAssistantMessageInput {
   at?: string;
   taskId?: GitMemoryTaskId;
   runId?: GitMemoryRunId;
+}
+
+export interface RecordGitMemorySessionAttachmentsInput {
+  sessionId: GitMemorySessionId;
+  attachments: GitMemorySessionAttachmentRecord[];
+  at?: string;
 }
 
 export interface CheckpointGitMemoryRuntimeSessionInput {
@@ -323,6 +331,26 @@ export class GitMemoryRuntime {
       this.invalidateSessionMemory(input.sessionId);
     }
     return record;
+  }
+
+  async recordSessionAttachments(
+    input: RecordGitMemorySessionAttachmentsInput,
+  ): Promise<GitMemorySessionAttachmentsFile> {
+    const at = input.at ?? this.nowProvider().toISOString();
+    const result = await this.writeQueue.enqueue({
+      sessionId: input.sessionId,
+      type: "session_attachments_recorded",
+      label: "record_session_attachments",
+      createdAt: at,
+    }, async () => {
+      return await this.store.upsertSessionAttachments({
+        sessionId: input.sessionId,
+        attachments: input.attachments,
+        updatedAt: at,
+      });
+    });
+    this.invalidateSessionMemory(input.sessionId);
+    return result;
   }
 
   async createTaskBranch(input: CreateGitMemoryTaskBranchInput): Promise<CreateGitMemoryTaskBranchResult> {
