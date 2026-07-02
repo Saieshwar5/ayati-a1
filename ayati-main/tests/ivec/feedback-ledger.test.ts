@@ -461,6 +461,134 @@ describe("AsyncAgentFeedbackLedger", () => {
     ]);
   });
 
+  it("indexes repair codes from feedback events into summary warnings and triage", async () => {
+    const ledger = new AsyncAgentFeedbackLedger({
+      dataDir: tempDir,
+      enabled: true,
+      now: () => new Date("2026-06-23T10:00:00.000Z"),
+    });
+
+    ledger.record({
+      clientId: "local",
+      sessionId: "session-1",
+      seq: 6,
+      stage: "guard",
+      event: "fresh_session_tool_repair_requested",
+      data: {
+        repair: {
+          code: "R_FRESH_SESSION_NEEDS_TASK",
+          blockedTargets: ["write_files"],
+        },
+      },
+    });
+    ledger.record({
+      clientId: "local",
+      sessionId: "session-1",
+      seq: 6,
+      stage: "decision",
+      event: "assistant_text_tool_call",
+      data: {
+        repair: {
+          code: "R_ASSISTANT_TEXT_TOOL_CALL",
+          blockedTargets: ["git_context_create_task_for_turn"],
+        },
+      },
+    });
+    ledger.record({
+      clientId: "local",
+      sessionId: "session-1",
+      seq: 6,
+      stage: "final",
+      event: "reply",
+      data: {
+        feedbackSummary: {
+          status: "completed",
+          responseKind: "reply",
+          iterations: 2,
+          toolCalls: 0,
+          warnings: [],
+        },
+      },
+    });
+    await ledger.flush();
+
+    const summary = JSON.parse(await readFile(join(tempDir, "feedback", "latest-summary.json"), "utf-8")) as {
+      warnings?: string[];
+    };
+    expect(summary.warnings).toEqual([
+      "fresh_session_tool_repair_requested",
+      "R_FRESH_SESSION_NEEDS_TASK",
+      "R_ASSISTANT_TEXT_TOOL_CALL",
+    ]);
+
+    const triage = JSON.parse(await readFile(join(tempDir, "feedback", "triage-summary.json"), "utf-8")) as {
+      findings?: Array<{ code?: string; severity?: string }>;
+    };
+    expect(triage.findings?.map((finding) => finding.code)).toEqual([
+      "R_ASSISTANT_TEXT_TOOL_CALL",
+      "R_FRESH_SESSION_NEEDS_TASK",
+      "fresh_session_tool_repair_requested",
+    ]);
+  });
+
+  it("builds provider-empty-response triage from repair code without the legacy event name", () => {
+    const triage = buildFeedbackTriageSummary({
+      updatedAt: "2026-06-23T10:00:00.000Z",
+      tsMs: 1,
+      sessionId: "session-1",
+      seq: 7,
+      status: "failed",
+      responseKind: "error",
+      warnings: ["R_PROVIDER_EMPTY_RESPONSE"],
+      rawPath: "feedback/test.jsonl",
+    });
+
+    expect(triage.outcome).toBe("failed");
+    expect(triage.findings.map((finding) => finding.code)).toEqual([
+      "run_not_completed",
+      "R_PROVIDER_EMPTY_RESPONSE",
+    ]);
+  });
+
+  it("builds repeated-repair triage from repair code", () => {
+    const triage = buildFeedbackTriageSummary({
+      updatedAt: "2026-06-23T10:00:00.000Z",
+      tsMs: 1,
+      sessionId: "session-1",
+      seq: 8,
+      status: "failed",
+      responseKind: "error",
+      warnings: ["R_REPEATED_REPAIR_FAILURE"],
+      rawPath: "feedback/test.jsonl",
+    });
+
+    expect(triage.outcome).toBe("failed");
+    expect(triage.findings.map((finding) => finding.code)).toEqual([
+      "run_not_completed",
+      "R_REPEATED_REPAIR_FAILURE",
+    ]);
+  });
+
+  it("builds verification and no-progress triage from repair codes", () => {
+    const triage = buildFeedbackTriageSummary({
+      updatedAt: "2026-06-23T10:00:00.000Z",
+      tsMs: 1,
+      sessionId: "session-1",
+      seq: 9,
+      status: "failed",
+      responseKind: "error",
+      warnings: ["R_VERIFICATION_FAILED", "R_NO_PROGRESS"],
+      rawPath: "feedback/test.jsonl",
+    });
+
+    expect(triage.outcome).toBe("failed");
+    expect(triage.findings.map((finding) => finding.code)).toEqual([
+      "run_not_completed",
+      "R_VERIFICATION_FAILED",
+      "R_NO_PROGRESS",
+    ]);
+  });
+
   it("builds operator triage findings from final feedback warning signals", () => {
     const triage = buildFeedbackTriageSummary({
       updatedAt: "2026-06-23T10:00:00.000Z",

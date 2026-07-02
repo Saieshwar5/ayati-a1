@@ -1,4 +1,5 @@
 import type { LoopState, TaskNote, ToolContextState, ToolObservation, WorkEvidenceRef, WorkState } from "../types.js";
+import type { RepairPromptCard } from "./repair-policy.js";
 import type { ToolLoadResult } from "./tool-working-set.js";
 import { buildAgentContextPack } from "./context-pack.js";
 import { projectAgentPromptContext } from "./prompt-context.js";
@@ -46,6 +47,7 @@ export interface PromptTraceStep {
 export interface PromptTraceFailure {
   step: number;
   failureType: string;
+  code?: string;
   reason: string;
   blockedTargets: string[];
 }
@@ -58,8 +60,10 @@ export interface PromptTrace {
 export interface PromptWorkingFeedbackItem {
   severity: "info" | "warning" | "error";
   source: "tool_load" | "tool_validation" | "tool_execution" | "verification";
+  code?: string;
   message: string;
   retryHint?: string;
+  repair?: RepairPromptCard;
 }
 
 export interface PromptWorkingFeedback {
@@ -187,6 +191,7 @@ function buildWorkingFeedbackView(state: LoopState): PromptWorkingFeedback | und
   }
 
   for (const failure of state.failureHistory.slice(-3)) {
+    const repair = failure.repair;
     latest.push({
       severity: "error",
       source: failure.failureType === "validation_error" || isToolValidationReason(failure.reason)
@@ -194,8 +199,10 @@ function buildWorkingFeedbackView(state: LoopState): PromptWorkingFeedback | und
         : failure.failureType === "verify_failed" || failure.failureType === "no_progress"
           ? "verification"
           : "tool_execution",
-      message: truncate(failure.reason, 360),
-      retryHint: buildFailureRetryHint(failure.failureType, failure.reason),
+      ...(failure.repairCode ? { code: failure.repairCode } : {}),
+      message: truncate(repair?.message ?? failure.reason, 360),
+      retryHint: repair?.allowedNextActions.join(" ") ?? buildFailureRetryHint(failure.failureType, failure.reason),
+      ...(repair ? { repair } : {}),
     });
   }
 
@@ -384,6 +391,7 @@ function buildRecentFailureTrace(state: LoopState): PromptTraceFailure[] {
   return state.failureHistory.slice(-3).map((failure) => ({
     step: failure.step,
     failureType: failure.failureType,
+    ...(failure.repairCode ? { code: failure.repairCode } : {}),
     reason: truncate(failure.reason, 300),
     blockedTargets: failure.blockedTargets,
   }));

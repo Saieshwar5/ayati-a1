@@ -10,6 +10,9 @@ Current product features:
 - Strict run-scoped tool loading from hidden tool catalog groups, exact tool
   names, or search queries, with tool-load and failure feedback fed back into
   the next decision.
+- Stable repair-code feedback for deterministic protocol, tool-input,
+  task-routing, provider-empty-response, verification, no-progress, and
+  repeated-repair failures.
 - Structured context pack with recent conversation, selected git task
   context, pending-turn state, task assets, hot evidence, personal memory, and
   current run state.

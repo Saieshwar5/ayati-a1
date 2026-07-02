@@ -19,6 +19,10 @@ Daemon-specific priorities:
 - Cover git-memory task routing when changes affect pending turns, active-task
   binding, turn-aware activate/create/clarify tools, task assets, context
   refresh, or finalization.
+- Cover harness repair behavior by stable repair code. Tests should assert the
+  code in repair prompts, failure history or working feedback when model-facing,
+  feedback event data when operator-facing, and feedback-ledger triage when the
+  repair should appear in summaries.
 - For task-run lifecycle changes, include both lower-level git-memory runtime
   tests and app/engine-level tests proving the live flow commits exactly once.
 - Cover system-event behavior when changes affect background or proactive workflows.

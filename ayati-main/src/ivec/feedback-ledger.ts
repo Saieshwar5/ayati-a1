@@ -335,6 +335,10 @@ export class AsyncAgentFeedbackLedger implements AgentFeedbackLedger {
         signals.add("missing_work_run_for_action");
       }
     }
+    const repairCode = readRepairCode(event.data?.["repair"]);
+    if (repairCode) {
+      signals.add(repairCode);
+    }
     for (const warning of readStringArray(event.data?.["warningCodes"])) {
       signals.add(warning);
     }
@@ -543,6 +547,10 @@ export function buildFeedbackTriageSummary(summary: AgentFeedbackLatestSummary):
     });
   }
 
+  for (const finding of repairCodeTriageFindings(warningSet)) {
+    findings.push(finding);
+  }
+
   if (warningSet.has("parse_repair_needed")) {
     findings.push({
       code: "decision_repair_needed",
@@ -748,6 +756,138 @@ export function buildFeedbackTriageSummary(summary: AgentFeedbackLatestSummary):
     rawSummaryPath: "feedback/latest-summary.json",
   };
 }
+
+function repairCodeTriageFindings(warningSet: Set<string>): AgentFeedbackTriageFinding[] {
+  const findings: AgentFeedbackTriageFinding[] = [];
+  for (const [code, finding] of REPAIR_TRIAGE_FINDINGS) {
+    if (warningSet.has(code)) {
+      findings.push(finding);
+    }
+  }
+  return findings;
+}
+
+const REPAIR_TRIAGE_FINDINGS: ReadonlyArray<[string, AgentFeedbackTriageFinding]> = [
+  ["R_ASSISTANT_TEXT_TOOL_CALL", {
+    code: "R_ASSISTANT_TEXT_TOOL_CALL",
+    severity: "warning",
+    title: "Tool call was written as assistant text",
+    details: "The model printed tool-call-shaped JSON instead of using native tool calling.",
+    recommendation: "Use provider-native tool calls for tool work; reserve direct assistant text for user-facing replies.",
+  }],
+  ["R_TOOL_NOT_SELECTED", {
+    code: "R_TOOL_NOT_SELECTED",
+    severity: "warning",
+    title: "Decision used an unselected tool",
+    details: "The model tried to call a tool that was not in the selected native tool surface.",
+    recommendation: "Use decision_load_tools before missing capabilities, or call only selected tools.",
+  }],
+  ["R_LOAD_TOOLS_USED_AS_ACTION", {
+    code: "R_LOAD_TOOLS_USED_AS_ACTION",
+    severity: "warning",
+    title: "Tool loading was used as executable work",
+    details: "The model attempted to use tool loading inside an executable action.",
+    recommendation: "Use the native decision_load_tools control tool instead of wrapping tool loading as action work.",
+  }],
+  ["R_EMPTY_TOOL_LOAD_SELECTOR", {
+    code: "R_EMPTY_TOOL_LOAD_SELECTOR",
+    severity: "warning",
+    title: "Tool-load request had no selector",
+    details: "The model requested tool loading without an exact tool name, group, or query.",
+    recommendation: "Retry decision_load_tools with toolNames, groups, or a query.",
+  }],
+  ["R_TOOL_INPUT_INVALID", {
+    code: "R_TOOL_INPUT_INVALID",
+    severity: "warning",
+    title: "Tool input was invalid",
+    details: "The model called a selected tool with input that did not match the tool schema.",
+    recommendation: "Inspect the input_schema_violation feedback and retry with schema-valid input.",
+  }],
+  ["R_TOOL_INPUT_MISSING_REQUIRED_FIELD", {
+    code: "R_TOOL_INPUT_MISSING_REQUIRED_FIELD",
+    severity: "warning",
+    title: "Tool input missed required fields",
+    details: "The model called a selected tool without required input fields.",
+    recommendation: "Inspect missingFields in the repair feedback and retry with all required fields.",
+  }],
+  ["R_TASK_FEEDBACK_UNAVAILABLE", {
+    code: "R_TASK_FEEDBACK_UNAVAILABLE",
+    severity: "warning",
+    title: "Task feedback tool was unavailable",
+    details: "The model attempted to ask task-run feedback when the feedback tool was not exposed.",
+    recommendation: "Use direct assistant text before a task run; use ask_user_feedback only during active task runs.",
+  }],
+  ["R_MULTIPLE_NATIVE_TOOL_CALLS", {
+    code: "R_MULTIPLE_NATIVE_TOOL_CALLS",
+    severity: "warning",
+    title: "Multiple native tool calls were returned",
+    details: "The provider response contained more than one native tool call for a single decision.",
+    recommendation: "Retry with exactly one native tool call.",
+  }],
+  ["R_PARSE_FAILED", {
+    code: "R_PARSE_FAILED",
+    severity: "warning",
+    title: "Decision response could not be parsed",
+    details: "The model response was not valid direct text or a valid native decision.",
+    recommendation: "Use direct assistant text for user replies, otherwise call exactly one available native tool.",
+  }],
+  ["R_PROVIDER_EMPTY_RESPONSE", {
+    code: "R_PROVIDER_EMPTY_RESPONSE",
+    severity: "error",
+    title: "Provider returned an empty response",
+    details: "The model provider returned no usable assistant message or tool call.",
+    recommendation: "Inspect provider_empty_response details for model, latency, response shape, native tool count, and retry outcome.",
+  }],
+  ["R_VERIFICATION_FAILED", {
+    code: "R_VERIFICATION_FAILED",
+    severity: "warning",
+    title: "Deterministic verification failed",
+    details: "A tool action ran, but the deterministic verification result did not pass.",
+    recommendation: "Inspect verification repair details, evidence items, and failed assertions before retrying.",
+  }],
+  ["R_NO_PROGRESS", {
+    code: "R_NO_PROGRESS",
+    severity: "warning",
+    title: "Step made no useful progress",
+    details: "The run attempted a step that produced no useful tool output or task progress.",
+    recommendation: "Change strategy, choose a concrete tool action, or stop with a clear failure if no useful next action exists.",
+  }],
+  ["R_FRESH_SESSION_NEEDS_TASK", {
+    code: "R_FRESH_SESSION_NEEDS_TASK",
+    severity: "warning",
+    title: "Fresh session needs task creation",
+    details: "The model tried to use normal work tools before any active task existed.",
+    recommendation: "Create a task first with git_context_create_task_for_turn, or ask a short clarification.",
+  }],
+  ["R_NORMAL_TOOL_WITHOUT_TASK_RUN", {
+    code: "R_NORMAL_TOOL_WITHOUT_TASK_RUN",
+    severity: "error",
+    title: "Normal tool reached runner without a task run",
+    details: "A normal executable tool reached the runner before a git-memory work run existed.",
+    recommendation: "Route, create, or activate the correct task before normal tool execution.",
+  }],
+  ["R_PENDING_TURN_UNBOUND", {
+    code: "R_PENDING_TURN_UNBOUND",
+    severity: "error",
+    title: "Pending turn was unbound before tool work",
+    details: "The model attempted normal task work while the current turn was not bound to a task.",
+    recommendation: "Use git-context read/search/create/activate/clarify tools before normal task work.",
+  }],
+  ["R_PENDING_TURN_CLARIFYING", {
+    code: "R_PENDING_TURN_CLARIFYING",
+    severity: "warning",
+    title: "Pending turn was still clarifying",
+    details: "The model attempted tool work while task ownership was waiting for user clarification.",
+    recommendation: "Ask the user directly which task or target they mean.",
+  }],
+  ["R_REPEATED_REPAIR_FAILURE", {
+    code: "R_REPEATED_REPAIR_FAILURE",
+    severity: "error",
+    title: "Same repair failed repeatedly",
+    details: "The harness stopped after the same repair class repeated too many times.",
+    recommendation: "Inspect the previous repair code, blocked targets, and missing or invalid fields before retrying.",
+  }],
+];
 
 function readFeedbackSummary(event: AgentFeedbackEvent): Record<string, unknown> | undefined {
   const summary = event.data?.["feedbackSummary"];
@@ -1011,6 +1151,14 @@ function readStringArray(value: unknown): string[] {
     return [];
   }
   return value.filter((item): item is string => typeof item === "string" && item.trim().length > 0);
+}
+
+function readRepairCode(value: unknown): string | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return undefined;
+  }
+  const code = (value as Record<string, unknown>)["code"];
+  return typeof code === "string" && code.startsWith("R_") ? code : undefined;
 }
 
 function readRouteSource(value: unknown): AgentFeedbackContextRouteSource | undefined {

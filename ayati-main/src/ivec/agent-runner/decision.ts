@@ -7,6 +7,12 @@ import type { AgentFeedbackLedger } from "../feedback-ledger.js";
 import type { RunMetrics } from "../metrics.js";
 import { recordPromptMetric, recordProviderUsageMetric, recordRunMetric } from "../metrics.js";
 import { projectAgentStateViewForPrompt } from "./prompt-context.js";
+import type { RepairCode, RepairSignal } from "./repair-policy.js";
+import {
+  createRepairSignal,
+  repairSignalToFeedbackData,
+  repairSignalToPromptText,
+} from "./repair-policy.js";
 import type { AgentStateView } from "./state-view.js";
 import {
   summarizePromptStateView,
@@ -218,6 +224,7 @@ export async function callAgentDecision(input: CallAgentDecisionInput): Promise<
         ? detectAssistantTextToolCall(rawText, input.toolDefinitions)
         : null;
       if (assistantTextToolCallViolation) {
+        const repair = createAssistantTextToolCallRepairSignal(assistantTextToolCallViolation, attempt + 1);
         agentTrace(
           "agent_decision",
           `attempt=${attempt + 1} assistant_text_tool_call reason=${assistantTextToolCallViolation.reason}`,
@@ -225,12 +232,14 @@ export async function callAgentDecision(input: CallAgentDecisionInput): Promise<
         recordDecisionFeedback(input, "assistant_text_tool_call", {
           attempt: attempt + 1,
           ...assistantTextToolCallViolation,
+          ...repairSignalToFeedbackData(repair),
         });
         if (attempt >= MAX_DECISION_ATTEMPTS - 1) {
           agentTrace("agent_decision", `attempt=${attempt + 1} assistant_text_tool_call_failed_fallback`);
           recordDecisionFeedback(input, "failed_fallback", {
             attempt: attempt + 1,
             reason: assistantTextToolCallViolation.reason,
+            ...repairSignalToFeedbackData(repair),
           });
           return {
             kind: "reply",
@@ -243,8 +252,9 @@ export async function callAgentDecision(input: CallAgentDecisionInput): Promise<
           attempt: attempt + 1,
           reason: "assistant_text_tool_call",
           violation: assistantTextToolCallViolation,
+          ...repairSignalToFeedbackData(repair),
         });
-        messages = buildRepairMessages(messages, rawText, buildAssistantTextToolCallRepairPrompt(assistantTextToolCallViolation));
+        messages = buildRepairMessages(messages, rawText, repairPromptText(repair));
         continue;
       }
 
@@ -267,6 +277,7 @@ export async function callAgentDecision(input: CallAgentDecisionInput): Promise<
         taskFeedbackToolAvailable: input.taskFeedbackToolAvailable === true,
       });
       if (violation) {
+        const repair = createToolProtocolRepairSignal(violation, attempt + 1);
         agentTrace(
           "agent_decision",
           `attempt=${attempt + 1} tool_protocol_violation reason=${violation.reason} invalidTools=${violation.invalidTools.join(",") || "(none)"}`,
@@ -274,12 +285,14 @@ export async function callAgentDecision(input: CallAgentDecisionInput): Promise<
         recordDecisionFeedback(input, "protocol_violation", {
           attempt: attempt + 1,
           ...violation,
+          ...repairSignalToFeedbackData(repair),
         });
         if (attempt >= MAX_DECISION_ATTEMPTS - 1) {
           agentTrace("agent_decision", `attempt=${attempt + 1} tool_protocol_failed_fallback`);
           recordDecisionFeedback(input, "failed_fallback", {
             attempt: attempt + 1,
             reason: violation.reason,
+            ...repairSignalToFeedbackData(repair),
           });
           return {
             kind: "reply",
@@ -292,8 +305,9 @@ export async function callAgentDecision(input: CallAgentDecisionInput): Promise<
           attempt: attempt + 1,
           reason: "tool_protocol_violation",
           violation,
+          ...repairSignalToFeedbackData(repair),
         });
-        messages = buildRepairMessages(messages, rawText, buildToolProtocolRepairPrompt(violation));
+        messages = buildRepairMessages(messages, rawText, repairPromptText(repair));
         continue;
       }
 
@@ -306,15 +320,18 @@ export async function callAgentDecision(input: CallAgentDecisionInput): Promise<
         "agent_decision",
         `attempt=${attempt + 1} tool_input_schema_violation reason=${inputViolation.reason}`,
       );
+      const repair = createToolInputSchemaRepairSignal(inputViolation, attempt + 1);
       recordDecisionFeedback(input, "input_schema_violation", {
         attempt: attempt + 1,
         ...inputViolation,
+        ...repairSignalToFeedbackData(repair),
       });
       if (attempt >= MAX_DECISION_ATTEMPTS - 1) {
         agentTrace("agent_decision", `attempt=${attempt + 1} tool_input_schema_failed_fallback`);
         recordDecisionFeedback(input, "failed_fallback", {
           attempt: attempt + 1,
           reason: inputViolation.reason,
+          ...repairSignalToFeedbackData(repair),
         });
         return {
           kind: "reply",
@@ -327,10 +344,12 @@ export async function callAgentDecision(input: CallAgentDecisionInput): Promise<
         attempt: attempt + 1,
         reason: "tool_input_schema_violation",
         violation: inputViolation,
+        ...repairSignalToFeedbackData(repair),
       });
-      messages = buildRepairMessages(messages, rawText, buildToolInputSchemaRepairPrompt(inputViolation));
+      messages = buildRepairMessages(messages, rawText, repairPromptText(repair));
       continue;
     } catch (error) {
+      const repair = createParseFailedRepairSignal(error, attempt + 1);
       agentTrace(
         "agent_decision",
         `attempt=${attempt + 1} parse_failed error=${error instanceof Error ? error.message : String(error)}`,
@@ -338,6 +357,7 @@ export async function callAgentDecision(input: CallAgentDecisionInput): Promise<
       recordDecisionFeedback(input, "parse_failed", {
         attempt: attempt + 1,
         error: error instanceof Error ? error.message : String(error),
+        ...repairSignalToFeedbackData(repair),
       });
       if (attempt >= 1) {
         throw error;
@@ -346,11 +366,12 @@ export async function callAgentDecision(input: CallAgentDecisionInput): Promise<
       recordDecisionFeedback(input, "repair_requested", {
         attempt: attempt + 1,
         reason: "parse_failed",
+        ...repairSignalToFeedbackData(repair),
       });
       messages = buildRepairMessages(
         messages,
         rawText,
-        "Repair the previous response. Use direct assistant text only for a terminal user-facing reply. Otherwise call exactly one available native tool.",
+        repairPromptText(repair),
       );
     }
   }
@@ -384,6 +405,23 @@ async function generateTurnWithEmptyResponseRetry(
       }
 
       const willRetry = providerAttempt <= MAX_PROVIDER_EMPTY_RESPONSE_RETRIES;
+      const repair = createRepairSignal("R_PROVIDER_EMPTY_RESPONSE", {
+        operatorDetails: {
+          attempt: request.decisionAttempt,
+          providerAttempt,
+          provider: error.details.provider,
+          model: error.details.model,
+          latencyMs: Date.now() - request.requestStartedAt,
+          choiceCount: error.details.choiceCount,
+          responseKeys: error.details.responseKeys ?? [],
+          finishReason: error.details.finishReason,
+          toolChoice: "auto",
+          nativeToolCount: request.decisionTools.length,
+          requestMode: request.decisionTools.length > 0 ? "tools" : "text",
+          willRetry,
+          ...(willRetry ? { retryDelayMs: PROVIDER_EMPTY_RESPONSE_RETRY_DELAY_MS } : {}),
+        },
+      });
       recordDecisionFeedback(input, "provider_empty_response", {
         attempt: request.decisionAttempt,
         providerAttempt,
@@ -398,6 +436,7 @@ async function generateTurnWithEmptyResponseRetry(
         requestMode: request.decisionTools.length > 0 ? "tools" : "text",
         willRetry,
         ...(willRetry ? { retryDelayMs: PROVIDER_EMPTY_RESPONSE_RETRY_DELAY_MS } : {}),
+        ...repairSignalToFeedbackData(repair),
       });
 
       if (!willRetry) {
@@ -472,6 +511,103 @@ function buildRepairMessages(messages: LlmMessage[], rawText: string, prompt: st
       content: prompt,
     },
   ];
+}
+
+function repairPromptText(signal: RepairSignal): string {
+  return repairSignalToPromptText(signal)
+    ?? `Repair code: ${signal.code}\nProblem: ${signal.message}`;
+}
+
+function createAssistantTextToolCallRepairSignal(
+  violation: AssistantTextToolCallViolation,
+  attempt: number,
+): RepairSignal {
+  return createRepairSignal("R_ASSISTANT_TEXT_TOOL_CALL", {
+    blockedTargets: violation.toolName ? [violation.toolName] : [],
+    operatorDetails: {
+      attempt,
+      reason: violation.reason,
+      ...(violation.toolName ? { toolName: violation.toolName } : {}),
+      inputKeys: violation.inputKeys,
+      selectedTools: violation.selectedTools,
+    },
+  });
+}
+
+function createToolProtocolRepairSignal(violation: ToolProtocolViolation, attempt: number): RepairSignal {
+  const code = toolProtocolRepairCode(violation);
+  return createRepairSignal(code, {
+    blockedTargets: violation.invalidTools,
+    operatorDetails: {
+      attempt,
+      reason: violation.reason,
+      invalidTools: violation.invalidTools,
+      selectedTools: violation.selectedTools,
+      loadToolsUsedAsAction: violation.loadToolsUsedAsAction,
+    },
+  });
+}
+
+function toolProtocolRepairCode(violation: ToolProtocolViolation): RepairCode {
+  if (violation.invalidTools.includes(TASK_FEEDBACK_TOOL_NAME)) {
+    return "R_TASK_FEEDBACK_UNAVAILABLE";
+  }
+  if (violation.reason.includes("no tool calls")) {
+    return "R_NO_PROGRESS";
+  }
+  if (violation.loadToolsUsedAsAction) {
+    return "R_LOAD_TOOLS_USED_AS_ACTION";
+  }
+  if (violation.reason.includes("load_tools request must include")) {
+    return "R_EMPTY_TOOL_LOAD_SELECTOR";
+  }
+  if (violation.invalidTools.length > 0) {
+    return "R_TOOL_NOT_SELECTED";
+  }
+  return "R_TOOL_INPUT_INVALID";
+}
+
+function createToolInputSchemaRepairSignal(violation: ToolInputSchemaViolation, attempt: number): RepairSignal {
+  const missingFields = uniqueStrings(violation.failures.flatMap((failure) => extractMissingRequiredFields(failure.error)));
+  const code: RepairCode = missingFields.length > 0
+    ? "R_TOOL_INPUT_MISSING_REQUIRED_FIELD"
+    : "R_TOOL_INPUT_INVALID";
+  return createRepairSignal(code, {
+    blockedTargets: violation.failures.map((failure) => failure.tool),
+    missingFields,
+    invalidFields: missingFields.length > 0
+      ? []
+      : uniqueStrings(violation.failures.flatMap((failure) => extractInvalidFields(failure.error))),
+    operatorDetails: {
+      attempt,
+      reason: violation.reason,
+      selectedTools: violation.selectedTools,
+      failures: violation.failures,
+    },
+  });
+}
+
+function createParseFailedRepairSignal(error: unknown, attempt: number): RepairSignal {
+  const message = error instanceof Error ? error.message : String(error);
+  const code: RepairCode = message.includes("expected exactly one native tool call")
+    ? "R_MULTIPLE_NATIVE_TOOL_CALLS"
+    : "R_PARSE_FAILED";
+  return createRepairSignal(code, {
+    operatorDetails: {
+      attempt,
+      error: message,
+    },
+  });
+}
+
+function extractMissingRequiredFields(error: string): string[] {
+  const matches = [...error.matchAll(/missing required field '([^']+)'/g)];
+  return matches.map((match) => match[1]).filter((field): field is string => Boolean(field));
+}
+
+function extractInvalidFields(error: string): string[] {
+  const matches = [...error.matchAll(/field '([^']+)' expected type/g)];
+  return matches.map((match) => match[1]).filter((field): field is string => Boolean(field));
 }
 
 function validateToolProtocol(
@@ -627,64 +763,6 @@ function describeJsonType(value: unknown): string {
   if (value === null) return "null";
   if (Number.isInteger(value)) return "integer";
   return typeof value;
-}
-
-function buildToolProtocolRepairPrompt(violation: ToolProtocolViolation): string {
-  const selected = violation.selectedTools.length > 0 ? violation.selectedTools.join(", ") : "(none)";
-  const invalid = violation.invalidTools.length > 0 ? violation.invalidTools.join(", ") : "(none)";
-  return [
-    "Your previous decision violates the Ayati tool protocol.",
-    "",
-    `Selected tools: ${selected}`,
-    `Invalid tools in action.calls or allowedTools: ${invalid}`,
-    violation.loadToolsUsedAsAction
-      ? "Also invalid: load_tools was used as an action tool. Use decision_load_tools instead of putting load_tools in action.calls."
-      : "",
-    "",
-    "Call exactly one native tool:",
-    "- use direct assistant text, not a tool, for terminal user-facing replies.",
-    "- ask_user_feedback only when it is exposed and a running task is blocked by required user feedback.",
-    "- decision_load_tools when the next useful action needs tools that are not selected yet.",
-    "- executable work must call one of the selected executable tools directly.",
-    "",
-    "Do not call unselected tools. Do not use decision_load_tools as executable work. Do not reply to promise future tool work.",
-  ].filter((line) => line.length > 0).join("\n");
-}
-
-function buildAssistantTextToolCallRepairPrompt(violation: AssistantTextToolCallViolation): string {
-  const selected = violation.selectedTools.length > 0 ? violation.selectedTools.join(", ") : "(none)";
-  return [
-    "Your previous response looked like a tool call written as assistant text.",
-    "",
-    `Selected tools: ${selected}`,
-    violation.toolName ? `Tool-like name: ${violation.toolName}` : "",
-    `Tool-like input keys: ${violation.inputKeys.length > 0 ? violation.inputKeys.join(", ") : "(none)"}`,
-    "",
-    "Do not write tool-call JSON in assistant text.",
-    "If tool work is needed, call exactly one available native tool directly.",
-    "Use direct assistant text only for a final user-facing reply.",
-  ].filter((line) => line.length > 0).join("\n");
-}
-
-function buildToolInputSchemaRepairPrompt(violation: ToolInputSchemaViolation): string {
-  const selected = violation.selectedTools.length > 0 ? violation.selectedTools.join(", ") : "(none)";
-  const failureLines = violation.failures.flatMap((failure) => [
-    `- ${failure.tool} call ${failure.callId}: ${failure.error}`,
-    `  received input keys: ${failure.inputKeys.length > 0 ? failure.inputKeys.join(", ") : "(none)"}`,
-    `  required schema: ${JSON.stringify(failure.schema)}`,
-  ]);
-  return [
-    "Your previous decision selected valid tools but used invalid tool input.",
-    "",
-    `Selected tools: ${selected}`,
-    "Input validation failures:",
-    ...failureLines,
-    "",
-    "Repair the decision by calling exactly one native tool.",
-    "If you still need tool execution, call the selected executable tool directly with inputs that satisfy its inputSchema.",
-    "Do not use empty input objects for tools with required fields.",
-    "Do not answer with prose, JSON text, or markdown.",
-  ].join("\n");
 }
 
 function summarizeToolInput(input: Record<string, unknown>): Record<string, unknown> {

@@ -62,6 +62,12 @@ import { buildAgentStateView, type AgentStateView } from "./state-view.js";
 import { selectToolsForDecision } from "./tool-selector.js";
 import { callAgentDecision } from "./decision.js";
 import type { AgentAction, AgentDecision } from "./decision.js";
+import type { RepairCode, RepairSignal } from "./repair-policy.js";
+import {
+  createRepairSignal,
+  repairSignalToFeedbackData,
+  repairSignalToPromptCard,
+} from "./repair-policy.js";
 import type { ToolLoadResult } from "./tool-working-set.js";
 import { executeAgentAction } from "./action-executor.js";
 import type { AgentActionExecutionResult } from "./action-executor.js";
@@ -93,6 +99,7 @@ interface MemoryRunContext {
 }
 
 const FRESH_SESSION_TOOL_REPAIR_MESSAGE = "No active task exists. Create and activate the first task with git_context_create_task_for_turn before using work tools, or ask a short clarification if the request is unclear.";
+const REPEATED_REPAIR_FAILURE_THRESHOLD = 3;
 
 const noopRunRecorder: RunRecorder = {
   recordToolCall(): void {
@@ -144,6 +151,12 @@ export async function runAgentLoop(
     if (!workRunHandle) {
       const createWorkRun = deps.createWorkRun;
       if (!createWorkRun) {
+        const repair = createMissingWorkRunRepairSignal({
+          reason,
+          message: "Git-memory run handle is required before agent action execution.",
+          decision,
+          pendingTurnStatus: state.harnessContext.contextEngine?.pendingTurn?.routingStatus,
+        });
         recordFeedback(deps, inputHandle, undefined, "guard", "missing_work_run", {
           reason,
           message: "Git-memory run handle is required before agent action execution.",
@@ -154,6 +167,7 @@ export async function runAgentLoop(
             context: state.harnessContext.contextEngine,
           }),
           harnessContext: summarizeHarnessContext(state.harnessContext),
+          ...repairSignalToFeedbackData(repair),
         });
         throw new Error("Git-memory run handle is required before agent action execution.");
       }
@@ -161,6 +175,12 @@ export async function runAgentLoop(
         workRunHandle = createWorkRun(inputHandle);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
+        const repair = createMissingWorkRunRepairSignal({
+          reason,
+          message,
+          decision,
+          pendingTurnStatus: state.harnessContext.contextEngine?.pendingTurn?.routingStatus,
+        });
         recordFeedback(deps, inputHandle, undefined, "guard", "missing_work_run", {
           reason,
           message,
@@ -174,6 +194,7 @@ export async function runAgentLoop(
             context: state.harnessContext.contextEngine,
           }),
           harnessContext: summarizeHarnessContext(state.harnessContext),
+          ...repairSignalToFeedbackData(repair),
         });
         throw error;
       }
@@ -514,6 +535,17 @@ export async function runAgentLoop(
         decision,
         reason: "fresh_session_tool_load",
       });
+      if (hasRepeatedRepairFailure(state.failureHistory)) {
+        recordRepeatedRepairFailure({
+          deps,
+          inputHandle,
+          state,
+          runId: undefined,
+        });
+        state.status = "failed";
+        state.finalOutput = buildFailureReply(state);
+        return finalize({ status: "failed", content: state.finalOutput });
+      }
       if (state.consecutiveFailures >= config.maxConsecutiveFailures) {
         state.status = "failed";
         state.finalOutput = buildFailureReply(state);
@@ -575,6 +607,17 @@ export async function runAgentLoop(
         decision,
         reason: "fresh_session_wrong_tool",
       });
+      if (hasRepeatedRepairFailure(state.failureHistory)) {
+        recordRepeatedRepairFailure({
+          deps,
+          inputHandle,
+          state,
+          runId: undefined,
+        });
+        state.status = "failed";
+        state.finalOutput = buildFailureReply(state);
+        return finalize({ status: "failed", content: state.finalOutput });
+      }
       if (state.consecutiveFailures >= config.maxConsecutiveFailures) {
         state.status = "failed";
         state.finalOutput = buildFailureReply(state);
@@ -704,13 +747,18 @@ export async function runAgentLoop(
 
       if (stepResult.stepSummary.outcome === "failed") {
         state.consecutiveFailures++;
-        state.failureHistory.push({
-          step: stepResult.stepSummary.step,
-          executionContract: stepResult.stepSummary.executionContract,
-          failureType: stepResult.stepSummary.failureType ?? "verify_failed",
-          reason: buildFailureHistoryReason(stepResult.stepSummary),
-          blockedTargets: stepResult.stepSummary.blockedTargets ?? [],
-        });
+        state.failureHistory.push(createFailureRecordFromStepSummary(stepResult.stepSummary));
+        if (hasRepeatedRepairFailure(state.failureHistory)) {
+          recordRepeatedRepairFailure({
+            deps,
+            inputHandle,
+            state,
+            runId: routingRunId,
+          });
+          state.status = "failed";
+          state.finalOutput = buildFailureReply(state);
+          return finalize({ status: "failed", content: state.finalOutput });
+        }
         if (state.consecutiveFailures >= config.maxConsecutiveFailures) {
           state.status = "failed";
           state.finalOutput = buildFailureReply(state);
@@ -851,14 +899,14 @@ export async function runAgentLoop(
 
     if (stepResult.stepSummary.outcome === "failed") {
       state.consecutiveFailures++;
-      state.failureHistory.push({
-        step: stepResult.stepSummary.step,
-        executionContract: stepResult.stepSummary.executionContract,
-        failureType: stepResult.stepSummary.failureType ?? "verify_failed",
-        reason: buildFailureHistoryReason(stepResult.stepSummary),
-        blockedTargets: stepResult.stepSummary.blockedTargets ?? [],
-      });
-      if (hasRepeatedToolInputValidationFailure(state.failureHistory)) {
+      state.failureHistory.push(createFailureRecordFromStepSummary(stepResult.stepSummary));
+      if (hasRepeatedRepairFailure(state.failureHistory) || hasRepeatedToolInputValidationFailure(state.failureHistory)) {
+        recordRepeatedRepairFailure({
+          deps,
+          inputHandle,
+          state,
+          runId: work.runHandle.runId,
+        });
         state.status = "failed";
         state.finalOutput = buildFailureReply(state);
         return finalize({ status: "failed", content: state.finalOutput });
@@ -1229,11 +1277,26 @@ function recordFreshSessionToolRepair(input: {
 }): void {
   input.state.consecutiveFailures++;
   const blockedTargets = freshSessionDecisionTargets(input.decision);
+  const repair = createRepairSignal("R_FRESH_SESSION_NEEDS_TASK", {
+    blockedTargets,
+    operatorDetails: {
+      reason: input.reason,
+      consecutiveFailures: input.state.consecutiveFailures,
+      maxConsecutiveFailures: input.config.maxConsecutiveFailures,
+      decision: summarizeDecision(input.decision),
+      contextEngine: buildContextEngineFeedbackSummary({
+        context: input.state.harnessContext.contextEngine,
+      }),
+      harnessContext: summarizeHarnessContext(input.state.harnessContext),
+    },
+  });
   input.state.failureHistory.push({
     step: input.state.iteration,
     failureType: "validation_error",
     reason: FRESH_SESSION_TOOL_REPAIR_MESSAGE,
     blockedTargets,
+    repairCode: repair.code,
+    repair: repairSignalToPromptCard(repair),
   });
   recordFeedback(input.deps, input.inputHandle, undefined, "guard", "fresh_session_tool_repair_requested", {
     reason: input.reason,
@@ -1247,7 +1310,217 @@ function recordFreshSessionToolRepair(input: {
       context: input.state.harnessContext.contextEngine,
     }),
     harnessContext: summarizeHarnessContext(input.state.harnessContext),
+    ...repairSignalToFeedbackData(repair),
   });
+}
+
+function createMissingWorkRunRepairSignal(input: {
+  reason: string;
+  message: string;
+  decision?: AgentDecision;
+  pendingTurnStatus?: string;
+}): RepairSignal {
+  return createRepairSignal(missingWorkRunRepairCode(input.pendingTurnStatus), {
+    blockedTargets: input.decision ? freshSessionDecisionTargets(input.decision) : [],
+    operatorDetails: {
+      reason: input.reason,
+      message: input.message,
+      pendingTurnStatus: input.pendingTurnStatus,
+      ...(input.decision ? { decision: summarizeDecision(input.decision) } : {}),
+    },
+  });
+}
+
+function missingWorkRunRepairCode(pendingTurnStatus: string | undefined): "R_NORMAL_TOOL_WITHOUT_TASK_RUN" | "R_PENDING_TURN_UNBOUND" | "R_PENDING_TURN_CLARIFYING" {
+  if (pendingTurnStatus === "unbound") {
+    return "R_PENDING_TURN_UNBOUND";
+  }
+  if (pendingTurnStatus === "clarifying") {
+    return "R_PENDING_TURN_CLARIFYING";
+  }
+  return "R_NORMAL_TOOL_WITHOUT_TASK_RUN";
+}
+
+function createFailureRecordFromStepSummary(step: StepSummary): LoopState["failureHistory"][number] {
+  const failureType = step.failureType ?? "verify_failed";
+  const reason = buildFailureHistoryReason(step);
+  const blockedTargets = uniqueStrings([
+    ...(step.blockedTargets ?? []),
+    ...(step.blockedTargets && step.blockedTargets.length > 0 ? [] : toolsFromExecutionContract(step.executionContract)),
+  ]);
+  const repair = createRepairSignalFromStepSummary(step);
+  const promptCard = repair ? repairSignalToPromptCard(repair) : undefined;
+  return {
+    step: step.step,
+    executionContract: step.executionContract,
+    failureType,
+    reason,
+    blockedTargets,
+    ...(repair ? { repairCode: repair.code } : {}),
+    ...(promptCard ? { repair: promptCard } : {}),
+  };
+}
+
+function createRepairSignalFromStepSummary(step: StepSummary): RepairSignal | undefined {
+  const failureType = step.failureType ?? "verify_failed";
+  const reason = buildFailureHistoryReason(step);
+  const blockedTargets = uniqueStrings([
+    ...(step.blockedTargets ?? []),
+    ...(step.blockedTargets && step.blockedTargets.length > 0 ? [] : toolsFromExecutionContract(step.executionContract)),
+  ]);
+  return createStepFailureRepairSignal({
+    failureType,
+    reason,
+    blockedTargets,
+    step,
+  });
+}
+
+function createStepFailureRepairSignal(input: {
+  failureType: LoopState["failureHistory"][number]["failureType"];
+  reason: string;
+  blockedTargets: string[];
+  step: StepSummary;
+}): RepairSignal | undefined {
+  const missingFields = extractMissingRequiredFields(input.reason);
+  const invalidFields = missingFields.length > 0 ? [] : extractInvalidFields(input.reason);
+  const code = stepFailureRepairCode(input.failureType, input.reason, missingFields, invalidFields);
+  if (!code) {
+    return undefined;
+  }
+  return createRepairSignal(code, {
+    blockedTargets: input.blockedTargets,
+    missingFields,
+    invalidFields,
+    operatorDetails: {
+      step: input.step.step,
+      reason: input.reason,
+      failureType: input.failureType,
+      executionContract: input.step.executionContract,
+      toolsUsed: input.step.toolsUsed,
+      evidenceItems: input.step.evidenceItems,
+    },
+  });
+}
+
+function stepFailureRepairCode(
+  failureType: LoopState["failureHistory"][number]["failureType"],
+  reason: string,
+  missingFields: string[],
+  invalidFields: string[],
+): RepairCode | undefined {
+  if (failureType === "validation_error") {
+    return missingFields.length > 0 ? "R_TOOL_INPUT_MISSING_REQUIRED_FIELD" : "R_TOOL_INPUT_INVALID";
+  }
+  if (reason.includes("was not selected") || reason.includes("was not listed in action.allowedTools")) {
+    return "R_TOOL_NOT_SELECTED";
+  }
+  if (failureType === "verify_failed") {
+    return "R_VERIFICATION_FAILED";
+  }
+  if (failureType === "no_progress") {
+    return "R_NO_PROGRESS";
+  }
+  if (reason.includes("missing required field")) {
+    return "R_TOOL_INPUT_MISSING_REQUIRED_FIELD";
+  }
+  if (reason.includes("Invalid input for") || reason.includes("Tool input preflight failed")) {
+    return invalidFields.length > 0 ? "R_TOOL_INPUT_INVALID" : "R_TOOL_INPUT_INVALID";
+  }
+  return undefined;
+}
+
+function toolsFromExecutionContract(value: string | undefined): string[] {
+  const match = value?.match(/^(?:single|sequential|parallel) action: (.+)$/);
+  const calls = match?.[1];
+  if (!calls || calls === "no calls") {
+    return [];
+  }
+  return calls
+    .split(",")
+    .map((call) => call.trim().split(/\s|\(/)[0])
+    .filter((tool): tool is string => Boolean(tool) && tool !== "execution_plan");
+}
+
+function hasRepeatedRepairFailure(history: LoopState["failureHistory"]): boolean {
+  const signature = latestRepairSignature(history);
+  if (!signature) {
+    return false;
+  }
+  let count = 0;
+  for (let index = history.length - 1; index >= 0; index--) {
+    const current = repairFailureSignature(history[index]);
+    if (current !== signature) {
+      break;
+    }
+    count++;
+  }
+  return count >= REPEATED_REPAIR_FAILURE_THRESHOLD;
+}
+
+function latestRepairSignature(history: LoopState["failureHistory"]): string | undefined {
+  return repairFailureSignature(history[history.length - 1]);
+}
+
+function repairFailureSignature(failure: LoopState["failureHistory"][number] | undefined): string | undefined {
+  if (!failure?.repairCode || failure.repairCode === "R_REPEATED_REPAIR_FAILURE") {
+    return undefined;
+  }
+  const repair = failure.repair;
+  return [
+    failure.repairCode,
+    compactSignaturePart(failure.blockedTargets),
+    compactSignaturePart(repair?.missingFields ?? []),
+    compactSignaturePart(repair?.invalidFields ?? []),
+  ].join("|");
+}
+
+function compactSignaturePart(values: string[]): string {
+  return [...new Set(values.map((value) => value.trim()).filter((value) => value.length > 0))]
+    .sort()
+    .join(",");
+}
+
+function recordRepeatedRepairFailure(input: {
+  deps: AgentLoopDeps;
+  inputHandle: SessionInputHandle;
+  state: LoopState;
+  runId: string | undefined;
+}): void {
+  const previous = input.state.failureHistory[input.state.failureHistory.length - 1];
+  const repair = createRepairSignal("R_REPEATED_REPAIR_FAILURE", {
+    blockedTargets: previous?.blockedTargets ?? [],
+    operatorDetails: {
+      repeatedSignature: latestRepairSignature(input.state.failureHistory),
+      repeatedThreshold: REPEATED_REPAIR_FAILURE_THRESHOLD,
+      previousRepairCode: previous?.repairCode,
+      previousReason: previous?.reason,
+    },
+  });
+  input.state.failureHistory.push({
+    step: input.state.iteration,
+    failureType: "validation_error",
+    reason: repair.message,
+    blockedTargets: previous?.blockedTargets ?? [],
+    repairCode: repair.code,
+  });
+  recordFeedback(input.deps, input.inputHandle, input.runId, "guard", "repeated_repair_failure", {
+    message: repair.message,
+    repeatedThreshold: REPEATED_REPAIR_FAILURE_THRESHOLD,
+    previousRepairCode: previous?.repairCode,
+    previousReason: previous?.reason,
+    ...repairSignalToFeedbackData(repair),
+  });
+}
+
+function extractMissingRequiredFields(error: string): string[] {
+  const matches = [...error.matchAll(/missing required field '([^']+)'/g)];
+  return matches.map((match) => match[1]).filter((field): field is string => Boolean(field));
+}
+
+function extractInvalidFields(error: string): string[] {
+  const matches = [...error.matchAll(/field '([^']+)' expected type/g)];
+  return matches.map((match) => match[1]).filter((field): field is string => Boolean(field));
 }
 
 function freshSessionDecisionTargets(decision: AgentDecision): string[] {
@@ -1393,11 +1666,15 @@ function recordStepFeedback(
   iteration: number,
   stepResult: ExecuteActionStepResult,
 ): void {
+  const repair = stepResult.stepSummary.outcome === "failed"
+    ? createRepairSignalFromStepSummary(stepResult.stepSummary)
+    : undefined;
   recordFeedback(deps, inputHandle, runId, "verification", "completed", {
     iteration,
     step: stepResult.stepSummary.step,
     verification: summarizeVerification(stepResult.execution.verifyOutput),
     stepSummary: summarizeStep(stepResult.stepSummary),
+    ...(repair ? repairSignalToFeedbackData(repair) : {}),
   });
 }
 
@@ -2229,6 +2506,17 @@ function classifyFailure(execution: AgentActionExecutionResult): {
 } {
   if (execution.verifyOutput.passed) {
     return { blockedTargets: [] };
+  }
+
+  if (
+    execution.verifyOutput.executionStatus === "no_tools"
+    || execution.verifyOutput.summary === "Step produced no output to validate."
+    || execution.verifyOutput.summary === "Action contains no tool calls."
+  ) {
+    return {
+      failureType: "no_progress",
+      blockedTargets: [],
+    };
   }
 
   const failedCalls = execution.actOutput.toolCalls.filter((call) => call.error);

@@ -210,6 +210,42 @@ function fakeActivateTaskForTurnTool(): ToolDefinition {
   };
 }
 
+function fakeVerificationFailureTool(): ToolDefinition {
+  return {
+    name: "fake_verify_failure",
+    description: "A test tool that succeeds but reports a failed required assertion.",
+    inputSchema: {
+      type: "object",
+      required: ["path"],
+      properties: {
+        path: { type: "string" },
+      },
+    },
+    async execute(input) {
+      const path = typeof input["path"] === "string" ? input["path"] : "missing.txt";
+      return {
+        ok: true,
+        output: `Wrote ${path}`,
+        v2: {
+          transportOk: true,
+          operationStatus: "succeeded",
+          code: "FAKE_VERIFY_FAILURE",
+          message: "Tool execution succeeded but verification failed.",
+          verification: {
+            assertions: [{
+              id: "expected-file",
+              kind: "file_exists",
+              status: "failed",
+              severity: "required",
+              message: `Expected file was not found: ${path}`,
+            }],
+          },
+        },
+      };
+    },
+  };
+}
+
 function extractStateView(userPrompt: string): any {
   const marker = "State view:\n";
   const start = userPrompt.indexOf(marker);
@@ -348,6 +384,7 @@ describe("agentLoop", () => {
     const outputPath = join(dataDir, "fresh-session.txt");
     try {
       const toolExecutor = createToolExecutor([writeFilesTool]);
+      const feedback = createMemoryFeedbackLedger();
       const provider = createProvider([
         {
           kind: "act",
@@ -378,6 +415,7 @@ describe("agentLoop", () => {
         toolExecutor,
         toolDefinitions: toolExecutor.definitions(),
         runRecorder: noopRunRecorder,
+        feedbackLedger: feedback.ledger,
         inputHandle: { sessionId: "s1", seq: 1 },
         clientId: "c1",
         initialUserMessage: "Create a small text file",
@@ -400,11 +438,77 @@ describe("agentLoop", () => {
 
       const secondCallInput = vi.mocked(provider.generateTurn).mock.calls[1]?.[0];
       const secondUserPrompt = secondCallInput.messages.find((message: { role: string }) => message.role === "user").content as string;
+      const secondStateView = extractStateView(secondUserPrompt);
       expect(result.status).toBe("completed");
       expect(result.content).toBe("I need to create a task before using work tools.");
       expect(provider.generateTurn).toHaveBeenCalledTimes(2);
       expect(existsSync(outputPath)).toBe(false);
-      expect(secondUserPrompt).toContain("Use git_context_create_task_for_turn first");
+      expect(secondUserPrompt).toContain("R_FRESH_SESSION_NEEDS_TASK");
+      expect(secondUserPrompt).toContain("Call git_context_create_task_for_turn with title, objective, and reason.");
+      expect(secondStateView.context.scratch.feedback.latest[0]).toMatchObject({
+        code: "R_FRESH_SESSION_NEEDS_TASK",
+        repair: {
+          code: "R_FRESH_SESSION_NEEDS_TASK",
+          blockedTargets: ["write_files"],
+        },
+      });
+      expect(feedbackEvents(feedback.events, "guard", "fresh_session_tool_repair_requested")[0]?.data).toMatchObject({
+        repair: {
+          code: "R_FRESH_SESSION_NEEDS_TASK",
+          blockedTargets: ["write_files"],
+        },
+      });
+    } finally {
+      cleanup(dataDir);
+    }
+  });
+
+  it("records a repair code when normal tools reach the runner without a work run", async () => {
+    const dataDir = makeTmpDir();
+    const outputPath = join(dataDir, "missing-run.txt");
+    try {
+      const toolExecutor = createToolExecutor([writeFilesTool]);
+      const feedback = createMemoryFeedbackLedger();
+      const provider = createProvider([
+        {
+          kind: "act",
+          action: {
+            mode: "single",
+            calls: [{
+              id: "call_1",
+              tool: "write_files",
+              input: {
+                files: [{ path: outputPath, content: "should not run without a work run" }],
+              },
+              dependsOn: [],
+              purpose: "Create a file.",
+            }],
+            allowedTools: ["write_files"],
+            assertions: [],
+          },
+        },
+      ]);
+
+      await expect(agentLoop({
+        provider,
+        toolExecutor,
+        toolDefinitions: toolExecutor.definitions(),
+        runRecorder: noopRunRecorder,
+        feedbackLedger: feedback.ledger,
+        inputHandle: { sessionId: "s1", seq: 1 },
+        clientId: "c1",
+        initialUserMessage: "Create a file",
+        dataDir,
+        systemContext: "full system context with memory",
+      })).rejects.toThrow("Git-memory run handle is required before agent action execution.");
+
+      expect(existsSync(outputPath)).toBe(false);
+      expect(feedbackEvents(feedback.events, "guard", "missing_work_run")[0]?.data).toMatchObject({
+        repair: {
+          code: "R_NORMAL_TOOL_WITHOUT_TASK_RUN",
+          blockedTargets: ["write_files"],
+        },
+      });
     } finally {
       cleanup(dataDir);
     }
@@ -904,8 +1008,126 @@ describe("agentLoop", () => {
       expect(provider.generateTurn).toHaveBeenCalledTimes(3);
       expect(readFileSync(outputPath, "utf-8")).toBe("<!doctype html><title>Repaired</title>");
       const repairPrompt = (provider.generateTurn as any).mock.calls[1]?.[0].messages.at(-1).content as string;
-      expect(repairPrompt).toContain("invalid tool input");
-      expect(repairPrompt).toContain("missing required field 'files'");
+      expect(repairPrompt).toContain("Repair code: R_TOOL_INPUT_MISSING_REQUIRED_FIELD");
+      expect(repairPrompt).toContain("Missing fields: files");
+    } finally {
+      cleanup(dataDir);
+    }
+  });
+
+  it("surfaces verification failures as repair-coded feedback", async () => {
+    const dataDir = makeTmpDir();
+    const outputPath = join(dataDir, "verify-failure.txt");
+    try {
+      const verifyFailureTool = fakeVerificationFailureTool();
+      const toolExecutor = createToolExecutor([verifyFailureTool]);
+      const feedback = createMemoryFeedbackLedger();
+      const provider = createProvider([
+        {
+          kind: "act",
+          action: {
+            mode: "single",
+            calls: [{
+              id: "call_1",
+              tool: "fake_verify_failure",
+              input: {
+                path: outputPath,
+              },
+              dependsOn: [],
+              purpose: "Attempt a tool action with tool-owned verification.",
+            }],
+            allowedTools: ["fake_verify_failure"],
+            assertions: [],
+          },
+        },
+        {
+          kind: "reply",
+          status: "failed",
+          message: "I could not verify the requested file.",
+        },
+      ]);
+
+      const result = await agentLoop({
+        provider,
+        toolExecutor,
+        toolDefinitions: toolExecutor.definitions(),
+        runRecorder: noopRunRecorder,
+        feedbackLedger: feedback.ledger,
+        runHandle: { sessionId: "s1", runId: "r-verify-repair" },
+        inputHandle: { sessionId: "s1", seq: 1 },
+        clientId: "c1",
+        initialUserMessage: "Create a file and verify it",
+        dataDir,
+        systemContext: "full system context with memory",
+      });
+
+      expect(result.status).toBe("failed");
+      expect(provider.generateTurn).toHaveBeenCalledTimes(2);
+      const repairPrompt = (provider.generateTurn as any).mock.calls[1]?.[0].messages.at(-1).content as string;
+      expect(repairPrompt).toContain("R_VERIFICATION_FAILED");
+      expect(feedbackEvents(feedback.events, "verification", "completed")[0]?.data).toMatchObject({
+        repair: {
+          code: "R_VERIFICATION_FAILED",
+          blockedTargets: ["fake_verify_failure"],
+          operatorDetails: {
+            failureType: "verify_failed",
+          },
+        },
+      });
+    } finally {
+      cleanup(dataDir);
+    }
+  });
+
+  it("surfaces no-progress failures as repair-coded feedback", async () => {
+    const dataDir = makeTmpDir();
+    try {
+      const toolExecutor = createToolExecutor([writeFilesTool]);
+      const feedback = createMemoryFeedbackLedger();
+      const provider = createProvider([
+        {
+          kind: "act",
+          action: {
+            mode: "single",
+            calls: [],
+            allowedTools: [],
+            assertions: [],
+          },
+        },
+        {
+          kind: "reply",
+          status: "failed",
+          message: "I did not have a concrete tool action to run.",
+        },
+      ]);
+
+      const result = await agentLoop({
+        provider,
+        toolExecutor,
+        toolDefinitions: toolExecutor.definitions(),
+        runRecorder: noopRunRecorder,
+        feedbackLedger: feedback.ledger,
+        runHandle: { sessionId: "s1", runId: "r-no-progress" },
+        inputHandle: { sessionId: "s1", seq: 1 },
+        clientId: "c1",
+        initialUserMessage: "Do the work",
+        dataDir,
+        systemContext: "full system context with memory",
+      });
+
+      expect(result.status).toBe("failed");
+      expect(provider.generateTurn).toHaveBeenCalledTimes(2);
+      const repairPrompt = (provider.generateTurn as any).mock.calls[1]?.[0].messages.at(-1).content as string;
+      expect(repairPrompt).toContain("R_NO_PROGRESS");
+      expect(feedbackEvents(feedback.events, "decision", "repair_requested")[0]?.data).toMatchObject({
+        reason: "tool_protocol_violation",
+        repair: {
+          code: "R_NO_PROGRESS",
+          operatorDetails: {
+            reason: "act decision contained no tool calls",
+          },
+        },
+      });
     } finally {
       cleanup(dataDir);
     }
@@ -1317,6 +1539,70 @@ describe("agentLoop", () => {
       const persisted = JSON.parse(readFileSync(join(dataDir, "runs", "r-observation", "state.json"), "utf-8"));
       expect(persisted.toolContext.recent).toHaveLength(2);
       expect(persisted.workingNotes).toBeUndefined();
+    } finally {
+      cleanup(dataDir);
+    }
+  });
+
+  it("stops when the same repair signature repeats too many times", async () => {
+    const dataDir = makeTmpDir();
+    const outputPath = join(dataDir, "repeat-repair.txt");
+    const badAction = {
+      kind: "act",
+      action: {
+        mode: "single",
+        calls: [{
+          id: "call_1",
+          tool: "write_files",
+          input: {
+            createDirs: true,
+            files: [{ path: outputPath, content: "should not be written" }],
+          },
+          dependsOn: [],
+          purpose: "Create the requested file",
+        }],
+        allowedTools: [],
+        assertions: [],
+      },
+    };
+    try {
+      const toolExecutor = createToolExecutor([writeFilesTool]);
+      const feedback = createMemoryFeedbackLedger();
+      const provider = createProvider([badAction, badAction, badAction]);
+
+      const result = await agentLoop({
+        provider,
+        toolExecutor,
+        toolDefinitions: toolExecutor.definitions(),
+        runRecorder: noopRunRecorder,
+        feedbackLedger: feedback.ledger,
+        runHandle: { sessionId: "s1", runId: "r-repeat-repair" },
+        inputHandle: { sessionId: "s1", seq: 1 },
+        clientId: "c1",
+        initialUserMessage: "Create a file",
+        dataDir,
+        systemContext: "full system context with memory",
+      });
+
+      expect(result.status).toBe("failed");
+      expect(result.content).toContain("The same repair class repeated too many times.");
+      expect(provider.generateTurn).toHaveBeenCalledTimes(3);
+      expect(existsSync(outputPath)).toBe(false);
+      expect(feedbackEvents(feedback.events, "guard", "repeated_repair_failure")[0]?.data).toMatchObject({
+        repair: {
+          code: "R_REPEATED_REPAIR_FAILURE",
+          blockedTargets: ["write_files"],
+          operatorDetails: {
+            repeatedThreshold: 3,
+            previousRepairCode: "R_TOOL_NOT_SELECTED",
+          },
+        },
+      });
+      expect(feedbackEvents(feedback.events, "final", "reply")[0]?.data).toMatchObject({
+        feedbackSummary: {
+          status: "failed",
+        },
+      });
     } finally {
       cleanup(dataDir);
     }

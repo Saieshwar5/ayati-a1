@@ -19,6 +19,7 @@ Primary code paths:
 - `ayati-main/src/ivec/agent-runner/tool-catalog.ts`: hidden tool index, groups, aliases, and deterministic follow-up metadata.
 - `ayati-main/src/ivec/agent-runner/tool-working-set.ts`: run-scoped visible tool schema cap, loading, and deactivation.
 - `ayati-main/src/ivec/agent-runner/decision.ts`: model-facing native tool surface and decision prompt.
+- `ayati-main/src/ivec/agent-runner/repair-policy.ts`: stable repair-code catalog and formatting helpers for model-facing repair prompts and operator feedback.
 - `ayati-main/src/ivec/agent-runner/action-executor.ts`: validates and executes internal action records.
 - `ayati-main/src/ivec/verification-contracts/progress-reducer.ts`: reduces verified facts into current-run `workState`.
 
@@ -233,6 +234,36 @@ Both should describe the same harness reality:
 - whether the input satisfied the executable schema
 - what failed and how the model should recover
 
+Repair feedback uses stable `R_*` repair codes instead of one-off prompt
+strings. The same repair signal can be projected three ways:
+
+- a compact model-facing repair prompt in `context.scratch.feedback`
+- operator-facing feedback event data under `repair.code`
+- feedback-ledger warning and triage summaries
+
+Current repair codes cover implemented deterministic repairs only:
+
+- `R_ASSISTANT_TEXT_TOOL_CALL`
+- `R_TOOL_NOT_SELECTED`
+- `R_LOAD_TOOLS_USED_AS_ACTION`
+- `R_EMPTY_TOOL_LOAD_SELECTOR`
+- `R_TOOL_INPUT_INVALID`
+- `R_TOOL_INPUT_MISSING_REQUIRED_FIELD`
+- `R_FRESH_SESSION_NEEDS_TASK`
+- `R_NORMAL_TOOL_WITHOUT_TASK_RUN`
+- `R_PENDING_TURN_UNBOUND`
+- `R_PENDING_TURN_CLARIFYING`
+- `R_TASK_FEEDBACK_UNAVAILABLE`
+- `R_MULTIPLE_NATIVE_TOOL_CALLS`
+- `R_PARSE_FAILED`
+- `R_PROVIDER_EMPTY_RESPONSE`
+- `R_VERIFICATION_FAILED`
+- `R_NO_PROGRESS`
+- `R_REPEATED_REPAIR_FAILURE`
+
+Do not add future repair codes to the catalog until a harness guard, decision
+validator, feedback projection, and focused tests use them.
+
 The decision model does not receive the internal run path, generated goal
 contract, empty progress scaffolding, or old activity/task-thread shelves. Open
 task continuation stays inside the existing decision stage through
@@ -259,6 +290,12 @@ tracing is enabled. The latest summary preserves the raw run signals:
   committed/skipped/failed finalization status
 - warning signals such as protocol repair, failed actions, repeated tool loads,
   or completed work without tool calls
+
+When feedback event data contains `repair.code`, the ledger indexes that stable
+code as a warning signal. Triage then reports the repair class directly, for
+example provider empty responses, missing task routing before normal tools,
+verification failures, no-progress decisions, or repeated identical repair
+loops.
 
 The triage summary converts those signals into a small review outcome:
 
@@ -376,6 +413,11 @@ file writes with `createDirs=true` when a parent directory is missing.
 
 Repeated identical validation failures should stop with a clear reason instead
 of running endless repair loops.
+
+Repeated repair stopping is based on the repair signature: repair code plus
+blocked targets and missing or invalid fields. After the same signature repeats
+too many times, the runner records `R_REPEATED_REPAIR_FAILURE` and fails cleanly
+instead of asking the model to retry the same broken move again.
 
 Future work should use `strategyReviewFailureThreshold` for a targeted
 strategy-review model call only after repeated unclassified failures.
