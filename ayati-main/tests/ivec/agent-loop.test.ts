@@ -10,6 +10,7 @@ import { createToolExecutor } from "../../src/skills/tool-executor.js";
 import type { SkillDefinition, ToolDefinition } from "../../src/skills/types.js";
 import { ToolCatalog } from "../../src/ivec/agent-runner/tool-catalog.js";
 import { ToolWorkingSetManager } from "../../src/ivec/agent-runner/tool-working-set.js";
+import type { AgentFeedbackEventInput, AgentFeedbackLedger } from "../../src/ivec/feedback-ledger.js";
 
 function makeTmpDir(): string {
   return mkdtempSync(join(tmpdir(), "ayati-agent-loop-"));
@@ -35,6 +36,33 @@ function createProvider(responses: unknown[]): LlmProvider {
       return { type: "assistant", content };
     }),
   };
+}
+
+function createMemoryFeedbackLedger(): { ledger: AgentFeedbackLedger; events: AgentFeedbackEventInput[] } {
+  const events: AgentFeedbackEventInput[] = [];
+  return {
+    events,
+    ledger: {
+      enabled: true,
+      record(event) {
+        events.push(event);
+      },
+      async flush() {
+        return;
+      },
+      async close() {
+        return;
+      },
+    },
+  };
+}
+
+function feedbackEvents(
+  events: AgentFeedbackEventInput[],
+  stage: string,
+  event: string,
+): AgentFeedbackEventInput[] {
+  return events.filter((entry) => entry.stage === stage && entry.event === event);
 }
 
 function skill(id: string, tools: ToolDefinition[]): SkillDefinition {
@@ -388,6 +416,7 @@ describe("agentLoop", () => {
     try {
       const gitCreateTaskTool = fakeCreateTaskForTurnTool();
       const toolExecutor = createToolExecutor([]);
+      const feedback = createMemoryFeedbackLedger();
       const toolWorkingSetManager = new ToolWorkingSetManager({
         catalog: new ToolCatalog([
           skill("git-context", [gitCreateTaskTool]),
@@ -454,6 +483,7 @@ describe("agentLoop", () => {
         toolWorkingSetManager,
         toolDefinitions: [gitCreateTaskTool, writeFilesTool],
         runRecorder: noopRunRecorder,
+        feedbackLedger: feedback.ledger,
         inputHandle: { sessionId: "s1", seq: 1 },
         clientId: "c1",
         initialUserMessage: "Create a txt file with 10 Linux commands",
@@ -488,6 +518,18 @@ describe("agentLoop", () => {
       expect(secondStateView.context.git.current.task.identity.workId).toBe("T-20260702-001");
       expect(secondDecisionTools).toContain("write_files");
       expect(secondDecisionTools).not.toContain("git_context_create_task_for_turn");
+      expect(feedbackEvents(feedback.events, "tools", "tool_mode_selected").map((event) => event.data?.["mode"])).toContain("fresh_session_routing");
+      expect(feedbackEvents(feedback.events, "tools", "pre_task_routing_tools_visible")[0]?.data).toMatchObject({
+        mode: "fresh_session_routing",
+        visibleRoutingTools: ["git_context_create_task_for_turn"],
+      });
+      expect(feedbackEvents(feedback.events, "tools", "normal_tools_enabled_for_work_run")[0]?.data).toMatchObject({
+        workRunId: "R-20260702-001",
+      });
+      expect(feedbackEvents(feedback.events, "tools", "routing_tools_deactivated")[0]?.data).toMatchObject({
+        workRunId: "R-20260702-001",
+        completedRoutingTools: ["git_context_create_task_for_turn"],
+      });
     } finally {
       cleanup(dataDir);
     }
@@ -514,6 +556,7 @@ describe("agentLoop", () => {
         },
       } satisfies ToolDefinition));
       const toolExecutor = createToolExecutor([]);
+      const feedback = createMemoryFeedbackLedger();
       const toolWorkingSetManager = new ToolWorkingSetManager({
         catalog: new ToolCatalog([
           skill("git-context", [
@@ -579,6 +622,7 @@ describe("agentLoop", () => {
         toolWorkingSetManager,
         toolDefinitions: [gitActivateTaskTool, gitCreateTaskTool, ...gitReadOnlyTools, writeFilesTool],
         runRecorder: noopRunRecorder,
+        feedbackLedger: feedback.ledger,
         inputHandle: { sessionId: "s1", seq: 6 },
         clientId: "c1",
         initialUserMessage: "Add a note file for this website task",
@@ -649,6 +693,18 @@ describe("agentLoop", () => {
       expect(secondDecisionTools).toContain("write_files");
       expect(secondDecisionTools).not.toContain("git_context_activate_task_for_turn");
       expect(secondDecisionTools).not.toContain("git_context_create_task_for_turn");
+      expect(feedbackEvents(feedback.events, "tools", "tool_mode_selected").map((event) => event.data?.["mode"])).toContain("pre_task_routing");
+      expect(feedbackEvents(feedback.events, "tools", "pre_task_routing_tools_visible")[0]?.data).toMatchObject({
+        mode: "pre_task_routing",
+        pendingTurnStatus: "unbound",
+      });
+      expect(feedbackEvents(feedback.events, "tools", "normal_tools_enabled_for_work_run")[0]?.data).toMatchObject({
+        workRunId: "R-20260702-website-002",
+      });
+      expect(feedbackEvents(feedback.events, "tools", "routing_tools_deactivated")[0]?.data).toMatchObject({
+        workRunId: "R-20260702-website-002",
+        completedRoutingTools: ["git_context_activate_task_for_turn"],
+      });
     } finally {
       cleanup(dataDir);
     }

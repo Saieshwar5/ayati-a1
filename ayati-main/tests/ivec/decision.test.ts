@@ -115,6 +115,7 @@ describe("parseAgentDecision", () => {
     expect(systemPrompt).toContain("call the selected executable tool directly");
     expect(systemPrompt).toContain("Use ask_user_feedback only during an active task run");
     expect(systemPrompt).toContain("Do not use ask_user_feedback for final responses");
+    expect(systemPrompt).toContain("Normal work tools require a task run");
     expect(systemPrompt).toContain("Do not tell the user tools are missing.");
     expect(systemPrompt).not.toContain("decision_act");
   });
