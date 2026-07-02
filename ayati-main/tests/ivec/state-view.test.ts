@@ -516,13 +516,7 @@ describe("buildAgentStateView", () => {
       name: "invoice.pdf",
       status: "registered",
     });
-    expect(stateView.context.git?.session.attachments).toMatchObject({
-      incoming: [{ id: "doc-1", name: "invoice.pdf", status: "registered" }],
-      prepared: [{ id: "prepared-1", name: "invoice.pdf", status: "ready" }],
-      managedFiles: [{ id: "file-1", name: "invoice.pdf", status: "ready" }],
-      managedDirectories: [{ id: "dir-1", name: "workspace", status: "ready" }],
-      warnings: ["Skipped one unsupported attachment."],
-    });
+    expect(stateView.context.git?.session.attachments).toBeUndefined();
     expect(stateView.context.scratch?.attachments).toMatchObject({
       incoming: [{ id: "doc-1", name: "invoice.pdf", status: "registered" }],
       prepared: [{ id: "prepared-1", name: "invoice.pdf", status: "ready" }],

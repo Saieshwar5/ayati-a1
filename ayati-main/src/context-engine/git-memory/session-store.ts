@@ -45,6 +45,8 @@ import type {
   GitMemoryRunId,
   GitMemoryRunFile,
   GitMemoryRunStatus,
+  GitMemorySessionAttachmentRecord,
+  GitMemorySessionAttachmentsFile,
   GitMemorySessionId,
   GitMemorySessionMetaFile,
   GitMemorySessionSummaryMetaFile,
@@ -79,6 +81,7 @@ import {
   gitMemorySessionStoreMessagesDir,
   gitMemorySessionStoreMetaPath,
   gitMemorySessionStoreSchemaPath,
+  gitMemorySessionStoreAttachmentsPath,
   gitMemorySessionStoreSummaryMarkdownPath,
   gitMemorySessionStoreSummaryMetaPath,
   isGitMemorySessionId,
@@ -450,6 +453,17 @@ export interface WriteGitMemorySessionSummaryResult {
   metadata: GitMemorySessionSummaryMetaFile;
 }
 
+export interface UpsertGitMemorySessionAttachmentsInput {
+  sessionId: GitMemorySessionId;
+  attachments: GitMemorySessionAttachmentRecord[];
+  updatedAt?: string;
+}
+
+export interface WriteGitMemorySessionAttachmentsInput {
+  sessionId: GitMemorySessionId;
+  file: GitMemorySessionAttachmentsFile;
+}
+
 export interface ReadCommittedGitMemoryTaskRunInput {
   sessionId: GitMemorySessionId;
   taskId: GitMemoryTaskId;
@@ -591,6 +605,52 @@ export class GitMemoryDailySessionStore {
       return records;
     }
     return await readWorkingConversation(driver);
+  }
+
+  async readSessionAttachments(sessionId: GitMemorySessionId): Promise<GitMemorySessionAttachmentsFile | null> {
+    const driver = await GitMemoryWorktreeGitDriver.init(this.repoPath(sessionId));
+    return await readSessionMessageStoreAttachments(driver, sessionId);
+  }
+
+  async writeSessionAttachments(
+    input: WriteGitMemorySessionAttachmentsInput,
+  ): Promise<GitMemorySessionAttachmentsFile> {
+    const driver = await GitMemoryWorktreeGitDriver.init(this.repoPath(input.sessionId));
+    const file = normalizeSessionAttachmentsFile(input.sessionId, input.file);
+    if (!file) {
+      throw new Error(`Invalid git memory session attachments file for session: ${input.sessionId}`);
+    }
+    await writeSessionMessageStoreAttachments(driver, input.sessionId, file);
+    return file;
+  }
+
+  async upsertSessionAttachments(
+    input: UpsertGitMemorySessionAttachmentsInput,
+  ): Promise<GitMemorySessionAttachmentsFile> {
+    const driver = await GitMemoryWorktreeGitDriver.init(this.repoPath(input.sessionId));
+    const existing = await readSessionMessageStoreAttachments(driver, input.sessionId);
+    const updatedAt = input.updatedAt ?? this.nowIso();
+    const attachmentsById = new Map<string, GitMemorySessionAttachmentRecord>();
+    for (const attachment of existing?.attachments ?? []) {
+      attachmentsById.set(attachment.sessionAssetId, attachment);
+    }
+    for (const attachment of input.attachments.filter(isGitMemorySessionAttachmentRecord)) {
+      const previous = attachmentsById.get(attachment.sessionAssetId);
+      attachmentsById.set(attachment.sessionAssetId, {
+        ...previous,
+        ...attachment,
+        createdAt: previous?.createdAt ?? attachment.createdAt,
+        lastUsedAt: attachment.lastUsedAt ?? updatedAt,
+      });
+    }
+    const file: GitMemorySessionAttachmentsFile = {
+      schemaVersion: 1,
+      sessionId: input.sessionId,
+      updatedAt,
+      attachments: [...attachmentsById.values()].sort(compareSessionAttachments),
+    };
+    await writeSessionMessageStoreAttachments(driver, input.sessionId, file);
+    return file;
   }
 
   async appendConversationMessage(input: AppendGitMemoryConversationInput): Promise<GitMemoryConversationRecord> {
@@ -1557,6 +1617,35 @@ async function writeSessionMessageStoreWorkingRecord(
   });
 }
 
+async function readSessionMessageStoreAttachments(
+  driver: GitMemoryWorktreeGitDriver,
+  sessionId: GitMemorySessionId,
+): Promise<GitMemorySessionAttachmentsFile | null> {
+  const messageStore = await openExistingSessionMessageStoreDriver(driver);
+  if (!messageStore) {
+    return null;
+  }
+  const path = gitMemorySessionStoreAttachmentsPath(sessionId);
+  return normalizeSessionAttachmentsFile(
+    sessionId,
+    parseJson<GitMemorySessionAttachmentsFile>(
+      await messageStore.readWorkingFile(path)
+        ?? await messageStore.readFile(GIT_MEMORY_MAIN_REF, path),
+    ),
+  );
+}
+
+async function writeSessionMessageStoreAttachments(
+  driver: GitMemoryWorktreeGitDriver,
+  sessionId: GitMemorySessionId,
+  file: GitMemorySessionAttachmentsFile,
+): Promise<void> {
+  const messageStore = await driver.openSubmoduleRepo(GIT_MEMORY_SESSION_STORE_DIR);
+  await messageStore.writeWorkingFiles({
+    [gitMemorySessionStoreAttachmentsPath(sessionId)]: prettyJson(file),
+  });
+}
+
 async function openExistingSessionMessageStoreDriver(
   driver: GitMemoryWorktreeGitDriver,
 ): Promise<GitMemoryWorktreeGitDriver | null> {
@@ -1645,6 +1734,54 @@ function isTaskAssetRecord(value: unknown): value is TaskAssetRecord {
     && typeof record.role === "string"
     && typeof record.kind === "string"
     && typeof record.name === "string";
+}
+
+function normalizeSessionAttachmentsFile(
+  sessionId: GitMemorySessionId,
+  file: GitMemorySessionAttachmentsFile | null,
+): GitMemorySessionAttachmentsFile | null {
+  if (!file || file.schemaVersion !== 1 || file.sessionId !== sessionId) {
+    return null;
+  }
+  return {
+    schemaVersion: 1,
+    sessionId,
+    updatedAt: typeof file.updatedAt === "string" ? file.updatedAt : "",
+    attachments: Array.isArray(file.attachments)
+      ? file.attachments.filter(isGitMemorySessionAttachmentRecord).sort(compareSessionAttachments)
+      : [],
+  };
+}
+
+function isGitMemorySessionAttachmentRecord(value: unknown): value is GitMemorySessionAttachmentRecord {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+  const record = value as Record<string, unknown>;
+  return typeof record.sessionAssetId === "string"
+    && record.sessionAssetId.trim().length > 0
+    && typeof record.kind === "string"
+    && record.kind.trim().length > 0
+    && typeof record.name === "string"
+    && record.name.trim().length > 0
+    && typeof record.source === "string"
+    && record.source.trim().length > 0
+    && isSessionAttachmentStatus(record.status)
+    && typeof record.createdAt === "string"
+    && record.createdAt.trim().length > 0;
+}
+
+function isSessionAttachmentStatus(value: unknown): value is GitMemorySessionAttachmentRecord["status"] {
+  return value === "ready" || value === "partial" || value === "failed" || value === "unsupported";
+}
+
+function compareSessionAttachments(
+  left: GitMemorySessionAttachmentRecord,
+  right: GitMemorySessionAttachmentRecord,
+): number {
+  const leftTime = left.lastUsedAt ?? left.createdAt;
+  const rightTime = right.lastUsedAt ?? right.createdAt;
+  return leftTime.localeCompare(rightTime) || left.sessionAssetId.localeCompare(right.sessionAssetId);
 }
 
 async function readRefMarkdownTail(

@@ -2,6 +2,7 @@ export type GitMemoryWriteBatchType =
   | "session_opened"
   | "main_conversation_appended"
   | "assistant_message_recorded"
+  | "session_attachments_recorded"
   | "task_created"
   | "task_switched"
   | "task_routed"

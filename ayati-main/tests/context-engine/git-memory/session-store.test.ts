@@ -11,6 +11,7 @@ import {
   GitMemoryDailySessionStore,
   gitMemorySessionStoreMessagePath,
   gitMemorySessionStoreMessagesDir,
+  gitMemorySessionStoreAttachmentsPath,
   gitMemorySessionStoreMetaPath,
   gitMemorySessionStoreSchemaPath,
   gitMemorySessionStoreSummaryMarkdownPath,
@@ -210,6 +211,155 @@ describe("GitMemoryDailySessionStore", () => {
       updatedAt: "2026-06-28T10:00:00+05:30",
       coveredUntilSeq: 8,
     });
+  });
+
+  it("writes session attachment metadata into the session-store working tree without parent commits", async () => {
+    const contextStoreDir = await mkdtemp(join(tmpdir(), "ayati-git-memory-"));
+    const store = new GitMemoryDailySessionStore({ contextStoreDir });
+    const session = await store.openOrCreateDailySession({
+      date: "2026-06-28",
+      timezone: "Asia/Kolkata",
+      agentId: "local",
+      createdAt: "2026-06-28T00:00:00+05:30",
+    });
+    const driver = new GitMemoryWorktreeGitDriver(session.repoPath);
+    const parentMainBefore = await driver.resolveRef(GIT_MEMORY_MAIN_REF);
+    const messageStore = await driver.openSubmoduleRepo(GIT_MEMORY_SESSION_STORE_DIR);
+    const sessionStoreMainBefore = await messageStore.resolveRef(GIT_MEMORY_MAIN_REF);
+
+    const file = await store.upsertSessionAttachments({
+      sessionId: session.sessionId,
+      updatedAt: "2026-06-28T09:30:00+05:30",
+      attachments: [{
+        sessionAssetId: "SA-test-policy",
+        kind: "document",
+        name: "policy.pdf",
+        source: "cli",
+        status: "ready",
+        documentId: "doc-policy",
+        originalPath: "/tmp/policy.pdf",
+        storedPath: "documents/doc-policy/policy.pdf",
+        sizeBytes: 1234,
+        checksum: "abc123",
+        createdAt: "2026-06-28T09:29:00+05:30",
+        lastUsedAt: "2026-06-28T09:30:00+05:30",
+      }],
+    });
+
+    expect(file).toEqual({
+      schemaVersion: 1,
+      sessionId: session.sessionId,
+      updatedAt: "2026-06-28T09:30:00+05:30",
+      attachments: [{
+        sessionAssetId: "SA-test-policy",
+        kind: "document",
+        name: "policy.pdf",
+        source: "cli",
+        status: "ready",
+        documentId: "doc-policy",
+        originalPath: "/tmp/policy.pdf",
+        storedPath: "documents/doc-policy/policy.pdf",
+        sizeBytes: 1234,
+        checksum: "abc123",
+        createdAt: "2026-06-28T09:29:00+05:30",
+        lastUsedAt: "2026-06-28T09:30:00+05:30",
+      }],
+    });
+    expect(JSON.parse(await messageStore.readWorkingFile(
+      gitMemorySessionStoreAttachmentsPath(session.sessionId),
+    ) ?? "{}")).toEqual(file);
+    expect(await messageStore.readFile(
+      GIT_MEMORY_MAIN_REF,
+      gitMemorySessionStoreAttachmentsPath(session.sessionId),
+    )).toBeNull();
+    expect(await driver.resolveRef(GIT_MEMORY_MAIN_REF)).toBe(parentMainBefore);
+    expect(await messageStore.resolveRef(GIT_MEMORY_MAIN_REF)).toBe(sessionStoreMainBefore);
+    expect(await driver.readFile(
+      GIT_MEMORY_MAIN_REF,
+      gitMemorySessionStoreAttachmentsPath(session.sessionId),
+    )).toBeNull();
+
+    const pack = await new GitMemoryContextReader(store).buildActiveContext({
+      sessionId: session.sessionId,
+    });
+    expect(pack.session.attachments).toEqual({
+      count: 1,
+      updatedAt: "2026-06-28T09:30:00+05:30",
+      recent: [{
+        sessionAssetId: "SA-test-policy",
+        kind: "document",
+        name: "policy.pdf",
+        source: "cli",
+        status: "ready",
+        documentId: "doc-policy",
+        originalPath: "/tmp/policy.pdf",
+        storedPath: "documents/doc-policy/policy.pdf",
+        sizeBytes: 1234,
+        createdAt: "2026-06-28T09:29:00+05:30",
+        lastUsedAt: "2026-06-28T09:30:00+05:30",
+      }],
+    });
+  });
+
+  it("upserts session attachment metadata by session asset id", async () => {
+    const contextStoreDir = await mkdtemp(join(tmpdir(), "ayati-git-memory-"));
+    const store = new GitMemoryDailySessionStore({ contextStoreDir });
+    const session = await store.openOrCreateDailySession({
+      date: "2026-06-28",
+      timezone: "Asia/Kolkata",
+      agentId: "local",
+      createdAt: "2026-06-28T00:00:00+05:30",
+    });
+
+    await store.upsertSessionAttachments({
+      sessionId: session.sessionId,
+      updatedAt: "2026-06-28T09:30:00+05:30",
+      attachments: [{
+        sessionAssetId: "SA-test-policy",
+        kind: "document",
+        name: "policy.pdf",
+        source: "cli",
+        status: "ready",
+        createdAt: "2026-06-28T09:29:00+05:30",
+      }],
+    });
+    const updated = await store.upsertSessionAttachments({
+      sessionId: session.sessionId,
+      updatedAt: "2026-06-28T09:45:00+05:30",
+      attachments: [{
+        sessionAssetId: "SA-test-policy",
+        kind: "document",
+        name: "renamed-policy.pdf",
+        source: "cli",
+        status: "partial",
+        createdAt: "2026-06-28T09:40:00+05:30",
+      }, {
+        sessionAssetId: "SA-test-data",
+        kind: "dataset",
+        name: "data.csv",
+        source: "upload",
+        status: "ready",
+        createdAt: "2026-06-28T09:44:00+05:30",
+      }],
+    });
+
+    expect(updated.attachments).toEqual([{
+      sessionAssetId: "SA-test-data",
+      kind: "dataset",
+      name: "data.csv",
+      source: "upload",
+      status: "ready",
+      createdAt: "2026-06-28T09:44:00+05:30",
+      lastUsedAt: "2026-06-28T09:45:00+05:30",
+    }, {
+      sessionAssetId: "SA-test-policy",
+      kind: "document",
+      name: "renamed-policy.pdf",
+      source: "cli",
+      status: "partial",
+      createdAt: "2026-06-28T09:29:00+05:30",
+      lastUsedAt: "2026-06-28T09:45:00+05:30",
+    }]);
   });
 
   it("writes conversation appends to the session-store working tree without parent commits", async () => {

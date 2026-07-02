@@ -51,6 +51,33 @@ export interface GitMemorySessionSummaryMetaFile {
   previousCoveredUntilSeq?: number;
 }
 
+export type GitMemorySessionAttachmentStatus = "ready" | "partial" | "failed" | "unsupported";
+
+export interface GitMemorySessionAttachmentRecord {
+  sessionAssetId: string;
+  kind: string;
+  name: string;
+  source: string;
+  status: GitMemorySessionAttachmentStatus;
+  documentId?: string;
+  fileId?: string;
+  directoryId?: string;
+  originalPath?: string;
+  storedPath?: string;
+  mimeType?: string;
+  sizeBytes?: number;
+  checksum?: string;
+  createdAt: string;
+  lastUsedAt?: string;
+}
+
+export interface GitMemorySessionAttachmentsFile {
+  schemaVersion: 1;
+  sessionId: GitMemorySessionId;
+  updatedAt: string;
+  attachments: GitMemorySessionAttachmentRecord[];
+}
+
 export interface GitMemoryConversationRecord {
   seq: number;
   role: GitMemoryConversationRole;
@@ -231,6 +258,10 @@ export function gitMemorySessionStoreSummaryMarkdownPath(sessionId: GitMemorySes
 
 export function gitMemorySessionStoreSummaryMetaPath(sessionId: GitMemorySessionId): string {
   return `${gitMemorySessionStoreSessionDir(sessionId)}/summary.json`;
+}
+
+export function gitMemorySessionStoreAttachmentsPath(sessionId: GitMemorySessionId): string {
+  return `${gitMemorySessionStoreSessionDir(sessionId)}/attachments/index.json`;
 }
 
 export function gitMemorySessionStoreMessagePath(
