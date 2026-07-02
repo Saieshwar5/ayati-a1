@@ -23,6 +23,7 @@ export function parseGitMemoryConversationMarkdown(
   let current: {
     at: string;
     role: GitMemoryConversationRecord["role"];
+    kind?: GitMemoryConversationRecord["kind"];
     body: string[];
     taskId?: GitMemoryTaskId;
     runId?: string;
@@ -38,6 +39,7 @@ export function parseGitMemoryConversationMarkdown(
     records.push({
       seq,
       role: current.role,
+      ...(current.kind ? { kind: current.kind } : {}),
       at: current.at,
       text: body,
       ...(current.taskId ? { taskId: current.taskId } : {}),
@@ -58,6 +60,11 @@ export function parseGitMemoryConversationMarkdown(
       continue;
     }
     if (!current) {
+      continue;
+    }
+    const kind = /^Kind:\s*(.+?)\s*$/.exec(line);
+    if (kind && current.body.every((entry) => entry.trim() === "")) {
+      current.kind = parseConversationKind(kind[1] ?? "");
       continue;
     }
     const task = /^Task:\s*(\S+)\s*$/.exec(line);
@@ -122,6 +129,9 @@ export function renderGitMemoryConversationMarkdownBlock(
     `## ${record.at} ${capitalizeRole(record.role)}`,
     "",
   ];
+  if (record.kind && record.kind !== "message") {
+    lines.push(`Kind: ${formatConversationKind(record.kind)}`);
+  }
   if (taskId) {
     lines.push(`Task: ${taskId}`);
   }
@@ -131,7 +141,7 @@ export function renderGitMemoryConversationMarkdownBlock(
   if (branch && branch !== "main") {
     lines.push(`Branch: ${branch}`);
   }
-  if (taskId || runId || (branch && branch !== "main")) {
+  if ((record.kind && record.kind !== "message") || taskId || runId || (branch && branch !== "main")) {
     lines.push("");
   }
   lines.push(record.text?.trim() || `[content: ${record.contentRef ?? "unavailable"}]`);
@@ -149,6 +159,7 @@ export function renderGitMemoryConversationMessageFile(
     `# Message ${formatMessageSeq(record.seq)}`,
     "",
     `Role: ${capitalizeRole(record.role)}`,
+    ...(record.kind && record.kind !== "message" ? [`Kind: ${formatConversationKind(record.kind)}`] : []),
     `At: ${record.at}`,
     ...(metadata.sessionId ? [`Session: ${metadata.sessionId}`] : []),
     ...(taskId ? [`Task: ${taskId}`] : []),
@@ -177,6 +188,7 @@ export function parseGitMemoryConversationMessageFile(
   }
 
   let role: GitMemoryConversationRole | undefined;
+  let kind: GitMemoryConversationRecord["kind"];
   let at: string | undefined;
   let taskId: GitMemoryTaskId | undefined;
   let runId: GitMemoryRunId | undefined;
@@ -205,6 +217,8 @@ export function parseGitMemoryConversationMessageFile(
       if (normalizedRole === "user" || normalizedRole === "assistant" || normalizedRole === "system") {
         role = normalizedRole;
       }
+    } else if (key === "kind") {
+      kind = parseConversationKind(rawValue);
     } else if (key === "at") {
       at = rawValue;
     } else if (key === "task") {
@@ -223,6 +237,7 @@ export function parseGitMemoryConversationMessageFile(
   return {
     seq,
     role,
+    ...(kind ? { kind } : {}),
     at,
     text,
     ...(taskId ? { taskId } : {}),
@@ -242,6 +257,24 @@ export function parseGitMemoryConversationMessageFiles(
 
 function capitalizeRole(role: GitMemoryConversationRole): string {
   return role.charAt(0).toUpperCase() + role.slice(1);
+}
+
+function formatConversationKind(kind: NonNullable<GitMemoryConversationRecord["kind"]>): string {
+  if (kind === "feedback_question") {
+    return "Feedback Question";
+  }
+  return "Message";
+}
+
+function parseConversationKind(value: string): GitMemoryConversationRecord["kind"] | undefined {
+  const normalized = value.trim().toLowerCase().replace(/[\s-]+/g, "_");
+  if (normalized === "feedback_question") {
+    return "feedback_question";
+  }
+  if (normalized === "message") {
+    return "message";
+  }
+  return undefined;
 }
 
 function formatMessageSeq(seq: number): string {

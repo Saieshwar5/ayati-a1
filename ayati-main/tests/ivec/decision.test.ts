@@ -1,7 +1,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { LlmProvider } from "../../src/core/contracts/provider.js";
+import { ProviderEmptyResponseError } from "../../src/core/contracts/provider-errors.js";
 import type { LlmTurnOutput } from "../../src/core/contracts/llm-protocol.js";
 import { callAgentDecision, parseAgentDecision } from "../../src/ivec/agent-runner/decision.js";
+import type { AgentFeedbackEventInput, AgentFeedbackLedger } from "../../src/ivec/feedback-ledger.js";
 import type { AgentStateView } from "../../src/ivec/agent-runner/state-view.js";
 import { createRunMetrics } from "../../src/ivec/metrics.js";
 import type { ToolDefinition } from "../../src/skills/types.js";
@@ -52,26 +54,29 @@ describe("parseAgentDecision", () => {
     expect(decision.workingNotes).toEqual(["RAM used is 3.5Gi."]);
   });
 
-  it("logs malformed decision responses to the daemon trace when enabled", async () => {
+  it("accepts direct assistant text as a terminal reply", async () => {
     vi.stubEnv("AYATI_AGENT_TRACE", "1");
     const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
     const { provider, generateTurn } = createProvider([
-      JSON.stringify({ message: "Hi!" }),
-      JSON.stringify({ message: "Still missing kind" }),
+      "Hi!",
     ]);
 
-    await expect(callAgentDecision({
+    const decision = await callAgentDecision({
       provider,
       stateView: createStateView(),
       toolDefinitions: [],
-    })).rejects.toThrow("Unsupported agent decision kind: undefined");
+    });
 
     const traceOutput = log.mock.calls.map((call) => call.map(String).join(" ")).join("\n");
-    expect(generateTurn).toHaveBeenCalledTimes(2);
+    expect(generateTurn).toHaveBeenCalledTimes(1);
+    expect(decision).toMatchObject({
+      kind: "reply",
+      status: "completed",
+      message: "Hi!",
+    });
     expect(traceOutput).toContain("provider_request provider=fake-provider");
-    expect(traceOutput).toContain("raw_response={\"message\":\"Hi!\"}");
-    expect(traceOutput).toContain("parse_failed error=Unsupported agent decision kind: undefined");
-    expect(traceOutput).toContain("repair_request reason=parse_failed");
+    expect(traceOutput).toContain("nativeDecisionTools=auto");
+    expect(traceOutput).toContain("raw_response=Hi!");
   });
 
   it("does not log decision traces by default", async () => {
@@ -104,12 +109,12 @@ describe("parseAgentDecision", () => {
     const messages = generateTurn.mock.calls[0]?.[0]?.messages ?? [];
     const systemPrompt = messages.find((message) => message.role === "system")?.content ?? "";
     expect(systemPrompt).toContain("Autonomous execution policy: for actionable user requests, prefer progress over discussion.");
-    expect(systemPrompt).toContain("Call exactly one native tool");
-    expect(systemPrompt).toContain("Use reply only as a terminal decision");
-    expect(systemPrompt).toContain("Do not use decision_reply to say you will do future work.");
+    expect(systemPrompt).toContain("Use direct assistant text for normal terminal replies.");
+    expect(systemPrompt).toContain("Use direct assistant text only as a terminal response");
+    expect(systemPrompt).toContain("Do not use direct assistant text to say you will do future work.");
     expect(systemPrompt).toContain("call the selected executable tool directly");
-    expect(systemPrompt).toContain("Use ask_user only for hard blockers");
-    expect(systemPrompt).toContain("Do not ask_user for style, wording, organization, or preference choices");
+    expect(systemPrompt).toContain("Use ask_user_feedback only during an active task run");
+    expect(systemPrompt).toContain("Do not use ask_user_feedback for final responses");
     expect(systemPrompt).toContain("Do not tell the user tools are missing.");
     expect(systemPrompt).not.toContain("decision_act");
   });
@@ -481,12 +486,111 @@ describe("parseAgentDecision", () => {
     });
 
     expect(generateTurn.mock.calls[0]?.[0]?.tools.map((tool: { name: string }) => tool.name)).toEqual([
-      "decision_reply",
-      "decision_ask_user",
       "decision_load_tools",
     ]);
-    expect(generateTurn.mock.calls[0]?.[0]?.toolChoice).toBe("required");
+    expect(generateTurn.mock.calls[0]?.[0]?.toolChoice).toBe("auto");
     expect(generateTurn.mock.calls[0]?.[0]?.parallelToolCalls).toBe(false);
+  });
+
+  it("records and retries an empty provider response once", async () => {
+    const providerError = new ProviderEmptyResponseError("Empty response from OpenRouter.", {
+      provider: "openrouter",
+      model: "test-model",
+      choiceCount: 0,
+      responseKeys: ["id", "choices"],
+    });
+    const { provider, generateTurn } = createProviderFromMock(
+      vi.fn()
+        .mockRejectedValueOnce(providerError)
+        .mockResolvedValueOnce({ type: "assistant", content: "Hi!" }),
+    );
+    const feedback = createFeedbackLedger();
+
+    const decision = await callAgentDecision({
+      provider,
+      stateView: createStateView(),
+      toolDefinitions: [],
+      feedbackLedger: feedback.ledger,
+      feedbackContext: {
+        clientId: "local",
+        sessionId: "S-test",
+        seq: 1,
+      },
+    });
+
+    expect(generateTurn).toHaveBeenCalledTimes(2);
+    expect(decision).toMatchObject({
+      kind: "reply",
+      status: "completed",
+      message: "Hi!",
+    });
+    const emptyEvents = feedback.events.filter((event) => event.event === "provider_empty_response");
+    expect(emptyEvents).toHaveLength(1);
+    expect(emptyEvents[0]?.data).toMatchObject({
+      attempt: 1,
+      providerAttempt: 1,
+      provider: "openrouter",
+      model: "test-model",
+      choiceCount: 0,
+      responseKeys: ["id", "choices"],
+      toolChoice: "auto",
+      nativeToolCount: 1,
+      requestMode: "tools",
+      willRetry: true,
+      retryDelayMs: 400,
+    });
+  });
+
+  it("records final empty provider response when retry also fails", async () => {
+    const providerError = new ProviderEmptyResponseError("Empty response from OpenRouter.", {
+      provider: "openrouter",
+      model: "test-model",
+      choiceCount: 0,
+      responseKeys: ["choices"],
+    });
+    const { provider, generateTurn } = createProviderFromMock(vi.fn().mockRejectedValue(providerError));
+    const feedback = createFeedbackLedger();
+
+    await expect(callAgentDecision({
+      provider,
+      stateView: createStateView(),
+      toolDefinitions: [],
+      feedbackLedger: feedback.ledger,
+      feedbackContext: {
+        clientId: "local",
+        sessionId: "S-test",
+        seq: 1,
+      },
+    })).rejects.toThrow("Empty response from OpenRouter.");
+
+    expect(generateTurn).toHaveBeenCalledTimes(2);
+    const emptyEvents = feedback.events.filter((event) => event.event === "provider_empty_response");
+    expect(emptyEvents).toHaveLength(2);
+    expect(emptyEvents[0]?.data).toMatchObject({ providerAttempt: 1, willRetry: true });
+    expect(emptyEvents[1]?.data).toMatchObject({ providerAttempt: 2, willRetry: false });
+  });
+
+  it("exposes task feedback only when enabled", async () => {
+    const { provider, generateTurn } = createProvider([
+      JSON.stringify({ kind: "ask_user", question: "Which path?", reason: "Need a target path." }),
+    ], { jsonSchema: true });
+
+    const decision = await callAgentDecision({
+      provider,
+      stateView: createStateView(),
+      toolDefinitions: [],
+      taskFeedbackToolAvailable: true,
+    });
+
+    expect(generateTurn.mock.calls[0]?.[0]?.tools.map((tool: { name: string }) => tool.name)).toEqual([
+      "decision_load_tools",
+      "ask_user_feedback",
+    ]);
+    expect(decision).toMatchObject({
+      kind: "ask_user",
+      question: "Which path?",
+      reason: "Need a target path.",
+    });
   });
 
   it("exposes selected executable tools as native tools", async () => {
@@ -509,8 +613,6 @@ describe("parseAgentDecision", () => {
 
     const tools = generateTurn.mock.calls[0]?.[0]?.tools ?? [];
     expect(tools.map((tool: { name: string }) => tool.name)).toEqual([
-      "decision_reply",
-      "decision_ask_user",
       "decision_load_tools",
       "write_files",
     ]);
@@ -736,6 +838,41 @@ function createNativeToolProvider(
       generateTurn,
     },
     generateTurn,
+  };
+}
+
+function createProviderFromMock(
+  generateTurn: ReturnType<typeof vi.fn>,
+  structuredOutput: { jsonObject: boolean; jsonSchema: boolean } = { jsonObject: true, jsonSchema: false },
+): { provider: LlmProvider; generateTurn: ReturnType<typeof vi.fn> } {
+  return {
+    provider: {
+      name: "fake-provider",
+      version: "test-model",
+      capabilities: {
+        nativeToolCalling: true,
+        structuredOutput,
+      },
+      start() {},
+      stop() {},
+      generateTurn,
+    },
+    generateTurn,
+  };
+}
+
+function createFeedbackLedger(): { ledger: AgentFeedbackLedger; events: AgentFeedbackEventInput[] } {
+  const events: AgentFeedbackEventInput[] = [];
+  return {
+    events,
+    ledger: {
+      enabled: true,
+      record(event: AgentFeedbackEventInput) {
+        events.push(event);
+      },
+      async flush() {},
+      async close() {},
+    },
   };
 }
 

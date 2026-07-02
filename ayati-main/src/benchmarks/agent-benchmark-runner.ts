@@ -1908,6 +1908,12 @@ function withBenchmarkUsage(
 }
 
 function nativeTurnForQueuedDecision(decision: unknown, visibleTools: LlmToolSchema[] | undefined): LlmTurnOutput {
+  if (isRecord(decision) && decision["kind"] === "reply") {
+    return {
+      type: "assistant",
+      content: typeof decision["message"] === "string" ? decision["message"] : "",
+    };
+  }
   const nativeCall = nativeToolCallForQueuedDecision(decision, visibleTools ?? []);
   if (nativeCall) {
     return {
@@ -1927,22 +1933,13 @@ function nativeToolCallForQueuedDecision(decision: unknown, visibleTools: LlmToo
   }
 
   const kind = decision["kind"];
-  if (kind === "reply") {
-    return {
-      id: "benchmark_decision_reply",
-      name: "decision_reply",
-      input: {
-        status: decision["status"] === "failed" ? "failed" : "completed",
-        message: typeof decision["message"] === "string" ? decision["message"] : "",
-        ...(Array.isArray(decision["workingNotes"]) ? { workingNotes: decision["workingNotes"] } : {}),
-      },
-    };
-  }
-
   if (kind === "ask_user") {
+    if (!visibleTools.some((tool) => tool.name === "ask_user_feedback")) {
+      return null;
+    }
     return {
-      id: "benchmark_decision_ask_user",
-      name: "decision_ask_user",
+      id: "benchmark_ask_user_feedback",
+      name: "ask_user_feedback",
       input: {
         question: typeof decision["question"] === "string" ? decision["question"] : "",
         reason: typeof decision["reason"] === "string" ? decision["reason"] : "",

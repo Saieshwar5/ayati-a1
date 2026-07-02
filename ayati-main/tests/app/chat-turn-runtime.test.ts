@@ -114,15 +114,8 @@ function createReplyProvider(): {
   generateTurn: ReturnType<typeof vi.fn>;
 } {
   const generateTurn = vi.fn(async () => ({
-    type: "tool_calls" as const,
-    calls: [{
-      id: "call_reply",
-      name: "decision_reply",
-      input: {
-        status: "completed",
-        message: "Noted.",
-      },
-    }],
+    type: "assistant" as const,
+    content: "Noted.",
   }));
   return {
     provider: {

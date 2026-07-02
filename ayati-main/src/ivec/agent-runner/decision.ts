@@ -1,4 +1,5 @@
 import type { LlmProvider } from "../../core/contracts/provider.js";
+import { isProviderEmptyResponseError } from "../../core/contracts/provider-errors.js";
 import type { LlmMessage, LlmToolCall, LlmToolSchema, LlmTurnOutput } from "../../core/contracts/llm-protocol.js";
 import { agentTrace, isAgentTracePromptEnabled, tracePreview } from "../../shared/index.js";
 import type { ToolContractAssertion, ToolDefinition } from "../../skills/types.js";
@@ -79,6 +80,7 @@ interface CallAgentDecisionInput {
   stateView: AgentStateView;
   toolDefinitions: ToolDefinition[];
   toolRoutingSummary?: string;
+  taskFeedbackToolAvailable?: boolean;
   systemContext?: string;
   metrics?: RunMetrics;
   feedbackLedger?: AgentFeedbackLedger;
@@ -114,7 +116,10 @@ interface AgentDecisionFeedbackContext {
 }
 
 const MAX_DECISION_ATTEMPTS = 3;
+const MAX_PROVIDER_EMPTY_RESPONSE_RETRIES = 1;
+const PROVIDER_EMPTY_RESPONSE_RETRY_DELAY_MS = 400;
 const TOOL_PROTOCOL_FAILURE_REPLY = "I could not form a valid tool call for this request.";
+const TASK_FEEDBACK_TOOL_NAME = "ask_user_feedback";
 
 export async function callAgentDecision(input: CallAgentDecisionInput): Promise<AgentDecision> {
   const promptStateView = projectAgentStateViewForPrompt(input.stateView);
@@ -150,10 +155,14 @@ export async function callAgentDecision(input: CallAgentDecisionInput): Promise<
       if (!input.provider.capabilities.nativeToolCalling) {
         throw new Error(`Provider ${input.provider.name} does not support native decision tools.`);
       }
-      const decisionTools = buildNativeDecisionTools(input.toolDefinitions);
+      const decisionTools = buildNativeDecisionTools(input.toolDefinitions, {
+        taskFeedbackToolAvailable: input.taskFeedbackToolAvailable === true,
+      });
       recordDecisionFeedback(input, "native_tool_surface", {
         attempt: attempt + 1,
-        controlTools: [...DECISION_TOOL_NAMES],
+        controlTools: decisionTools
+          .filter((tool) => CONTROL_DECISION_TOOL_NAMES.has(tool.name))
+          .map((tool) => tool.name),
         selectedTools: summarizeToolDefinitions(input.toolDefinitions),
         executableTools: input.toolDefinitions.map((tool) => ({
           name: tool.name,
@@ -162,11 +171,11 @@ export async function callAgentDecision(input: CallAgentDecisionInput): Promise<
         })),
         nativeToolCount: decisionTools.length,
       });
-      turn = await input.provider.generateTurn({
+      turn = await generateTurnWithEmptyResponseRetry(input, {
         messages,
-        tools: decisionTools,
-        toolChoice: "required",
-        parallelToolCalls: false,
+        decisionTools,
+        decisionAttempt: attempt + 1,
+        requestStartedAt: startedAt,
       });
       recordRunMetric(input.metrics, metricStage, {
         durationMs: Date.now() - startedAt,
@@ -185,7 +194,7 @@ export async function callAgentDecision(input: CallAgentDecisionInput): Promise<
     traceDecisionProviderResponse(turn, attempt);
 
     rawText = turn.type === "assistant"
-      ? turn.content
+      ? turn.content.trim()
       : serializeNativeDecisionToolCalls(turn.calls, input.toolDefinitions);
     agentTrace("agent_decision", `attempt=${attempt + 1} raw_response=${tracePreview(rawText)}`);
     recordDecisionFeedback(input, "raw_response", {
@@ -196,13 +205,24 @@ export async function callAgentDecision(input: CallAgentDecisionInput): Promise<
     });
 
     try {
+      const directReply = turn.type === "assistant" ? directAssistantReplyDecision(rawText) : null;
+      if (directReply) {
+        agentTrace("agent_decision", `attempt=${attempt + 1} direct_reply`);
+        recordDecisionFeedback(input, "direct_reply", {
+          attempt: attempt + 1,
+          message: directReply.message,
+        });
+        return directReply;
+      }
       const decision = parseAgentDecision(rawText);
       agentTrace("agent_decision", `attempt=${attempt + 1} parsed_decision kind=${decision.kind}`);
       recordDecisionFeedback(input, "parsed", {
         attempt: attempt + 1,
         decision: summarizeDecisionForFeedback(decision),
       });
-      const violation = validateToolProtocol(decision, input.toolDefinitions);
+      const violation = validateToolProtocol(decision, input.toolDefinitions, {
+        taskFeedbackToolAvailable: input.taskFeedbackToolAvailable === true,
+      });
       if (violation) {
         agentTrace(
           "agent_decision",
@@ -287,12 +307,66 @@ export async function callAgentDecision(input: CallAgentDecisionInput): Promise<
       messages = buildRepairMessages(
         messages,
         rawText,
-        "Repair the previous response. Call exactly one native tool. Do not answer with text, JSON, or markdown.",
+        "Repair the previous response. Use direct assistant text only for a terminal user-facing reply. Otherwise call exactly one available native tool.",
       );
     }
   }
 
   return parseAgentDecision(rawText);
+}
+
+async function generateTurnWithEmptyResponseRetry(
+  input: CallAgentDecisionInput,
+  request: {
+    messages: LlmMessage[];
+    decisionTools: LlmToolSchema[];
+    decisionAttempt: number;
+    requestStartedAt: number;
+  },
+): Promise<LlmTurnOutput> {
+  let providerAttempt = 0;
+
+  for (;;) {
+    providerAttempt++;
+    try {
+      return await input.provider.generateTurn({
+        messages: request.messages,
+        tools: request.decisionTools,
+        toolChoice: "auto",
+        parallelToolCalls: false,
+      });
+    } catch (error) {
+      if (!isProviderEmptyResponseError(error)) {
+        throw error;
+      }
+
+      const willRetry = providerAttempt <= MAX_PROVIDER_EMPTY_RESPONSE_RETRIES;
+      recordDecisionFeedback(input, "provider_empty_response", {
+        attempt: request.decisionAttempt,
+        providerAttempt,
+        provider: error.details.provider,
+        model: error.details.model,
+        latencyMs: Date.now() - request.requestStartedAt,
+        choiceCount: error.details.choiceCount,
+        responseKeys: error.details.responseKeys ?? [],
+        finishReason: error.details.finishReason,
+        toolChoice: "auto",
+        nativeToolCount: request.decisionTools.length,
+        requestMode: request.decisionTools.length > 0 ? "tools" : "text",
+        willRetry,
+        ...(willRetry ? { retryDelayMs: PROVIDER_EMPTY_RESPONSE_RETRY_DELAY_MS } : {}),
+      });
+
+      if (!willRetry) {
+        throw error;
+      }
+      await delay(PROVIDER_EMPTY_RESPONSE_RETRY_DELAY_MS);
+    }
+  }
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function recordDecisionFeedback(
@@ -360,8 +434,20 @@ function buildRepairMessages(messages: LlmMessage[], rawText: string, prompt: st
 function validateToolProtocol(
   decision: AgentDecision,
   selectedToolDefinitions: ToolDefinition[],
+  options: {
+    taskFeedbackToolAvailable: boolean;
+  },
 ): ToolProtocolViolation | null {
   const selectedTools = selectedToolDefinitions.map((tool) => tool.name);
+  if (decision.kind === "ask_user" && !options.taskFeedbackToolAvailable) {
+    return {
+      kind: "tool_protocol_violation",
+      reason: "ask_user_feedback is only available during an active task run",
+      invalidTools: [TASK_FEEDBACK_TOOL_NAME],
+      selectedTools,
+      loadToolsUsedAsAction: false,
+    };
+  }
   if (decision.kind === "load_tools") {
     const hasSelector = Boolean(decision.request.query?.trim())
       || decision.request.toolNames.length > 0
@@ -513,8 +599,8 @@ function buildToolProtocolRepairPrompt(violation: ToolProtocolViolation): string
       : "",
     "",
     "Call exactly one native tool:",
-    "- reply only for terminal outcomes: pure conversation, completed work, failed task, or impossible task.",
-    "- ask_user only for hard blockers that prevent safe progress and have no reasonable default.",
+    "- use direct assistant text, not a tool, for terminal user-facing replies.",
+    "- ask_user_feedback only when it is exposed and a running task is blocked by required user feedback.",
     "- decision_load_tools when the next useful action needs tools that are not selected yet.",
     "- executable work must call one of the selected executable tools directly.",
     "",
@@ -561,7 +647,7 @@ function traceDecisionProviderRequest(
 ): void {
   agentTrace(
     "agent_decision",
-    `attempt=${attempt + 1} provider_request provider=${provider.name} version=${provider.version} nativeDecisionTools=required messages=${messages.length}`,
+    `attempt=${attempt + 1} provider_request provider=${provider.name} version=${provider.version} nativeDecisionTools=auto messages=${messages.length}`,
   );
   if (isAgentTracePromptEnabled()) {
     agentTrace("agent_decision", `attempt=${attempt + 1} prompt=${tracePreview(messages)}`);
@@ -573,6 +659,30 @@ function traceDecisionProviderResponse(turn: LlmTurnOutput, attempt: number): vo
     ? ` usage=${turn.usage.provider}:${turn.usage.model} input=${turn.usage.inputTokens} output=${turn.usage.outputTokens} total=${turn.usage.totalTokens}`
     : "";
   agentTrace("agent_decision", `attempt=${attempt + 1} provider_response type=${turn.type}${usage}`);
+}
+
+function directAssistantReplyDecision(text: string): Extract<AgentDecision, { kind: "reply" }> | null {
+  const trimmed = text.trim();
+  if (!trimmed) {
+    return null;
+  }
+  if (looksLikeStructuredDecision(trimmed)) {
+    return null;
+  }
+  return {
+    kind: "reply",
+    status: "completed",
+    message: trimmed,
+  };
+}
+
+function looksLikeStructuredDecision(text: string): boolean {
+  const trimmed = text.trimStart();
+  if (trimmed.startsWith("native_decision_error:")) {
+    return true;
+  }
+  const parsed = parseJsonRecord(trimmed);
+  return typeof parsed?.["kind"] === "string";
 }
 
 export function parseAgentDecision(text: string): AgentDecision {
@@ -620,10 +730,12 @@ const STABLE_DECISION_SYSTEM_CONTEXT = `You are the decision component of an AI 
 Choose the next agent decision only. Use native tool calls; the harness executes tools locally.
 Prefer deterministic actions with concrete tool inputs.
 Use the structured context pack and optional work state in the state view.
-Call exactly one native tool. Do not answer directly with prose, markdown, or JSON text.
+Use direct assistant text for normal terminal replies. Use native tool calls only for tool loading, executable work, or task-run feedback requests.
 
 Decision rules:
-- Call exactly one native tool: decision_reply, decision_ask_user, decision_load_tools, or one selected executable tool.
+- Return direct assistant text for normal user-facing replies, including greetings, explanations, summaries, poems, stories, and final answers after completed work.
+- Call exactly one native tool only when work needs tool loading, executable action, or task-run feedback.
+- Available control tools are decision_load_tools and, only during an active task run, ask_user_feedback.
 - Treat State view.context as the bounded context pack for this decision.
 - Use context.timeline as chronological conversation context. The item with current=true is the current input.
 - Use the immediately preceding assistant item in context.timeline to interpret short replies like yes, no, do it, go ahead, continue, or stop.
@@ -639,7 +751,7 @@ Decision rules:
 - If the request starts new durable work, use git_context_create_task_for_turn. Do not create or switch tasks for casual chat, thanks, explanation-only questions, or planning discussion.
 - Visible routing tools are optional routing aids, not an instruction to create, switch, or ask clarification.
 - If context.git.current.pendingTurn.routingStatus is "unbound", route the pending turn before normal task work. Use git-context read/search tools, then git_context_activate_task_for_turn, git_context_create_task_for_turn, or git_context_ask_clarification_for_turn. Do not call shell, filesystem, document, database, Python, UI, or other task tools while the pending turn is unbound.
-- If context.git.current.pendingTurn.routingStatus is "clarifying", do not call executable tools or load more tools. Ask the user what task or target they mean with decision_ask_user.
+- If context.git.current.pendingTurn.routingStatus is "clarifying", do not call executable tools or load more tools. Ask the user directly what task or target they mean.
 - If context.git.current.pendingTurn.routingStatus is "bound", normal task tools may be used according to the selected task context.
 - Do not mention git branches, commits, refs, or context-engine mechanics to the user unless they explicitly ask about the implementation.
 - If git context is ambiguous, the app runtime should ask the user before this decision runs; do not guess between multiple possible tasks.
@@ -654,17 +766,18 @@ Decision rules:
 - Legacy fields such as context.gitContext, State view.progress, State view.workingFeedback, State view.observations, and State view.trace may still exist for compatibility; prefer the grouped context paths above.
 - Do not use workingNotes as factual memory; the harness owns tool-output context.
 - Use evidence tools for truncated, chunked, or evidence_only output before rerunning the original output-producing tool.
-- If context.scratch.progress.status is "done", return a reply. Do not call more tools.
+- If context.scratch.progress.status is "done", return a direct reply. Do not call more tools.
 - Autonomous execution policy: for actionable user requests, prefer progress over discussion.
 - Treat preference gaps as assumptions, not blockers, when reasonable safe defaults exist.
 - Treat short confirmations or delegation like "yes", "go ahead", "continue", "do it", "whatever feels right", and "surprise me" as permission to proceed with reasonable defaults.
-- Use reply only as a terminal decision: pure conversation, final answer after completed work, failed task, or impossible task.
-- Do not use decision_reply to say you will do future work. If work remains, call a selected executable tool or decision_load_tools.
+- Use direct assistant text only as a terminal response: pure conversation, final answer after completed work, failed task, or impossible task.
+- Do not use direct assistant text to say you will do future work. If work remains, call a selected executable tool or decision_load_tools.
 - Final replies must answer the user's request in natural, human-readable language.
 - Do not mention internal execution details in final replies: tool calls, deterministic verification, evidence contracts, assertions, reducers, work state, or harness steps.
 - Use user-visible results from observations and trace summaries, such as created paths, changed files, command results, document findings, or next steps.
-- Use ask_user only for hard blockers: missing target with no safe default, destructive or irreversible action, credentials or approval required, external cost/account action, or true ambiguity where the wrong choice would likely waste substantial work.
-- Do not ask_user for style, wording, organization, or preference choices when reasonable defaults can satisfy the request.
+- Use ask_user_feedback only during an active task run, and only for hard blockers: missing target with no safe default, destructive or irreversible action, credentials or approval required, external cost/account action, or true ambiguity where the wrong choice would likely waste substantial work.
+- Do not use ask_user_feedback for final responses, casual chat, pre-task planning, style, wording, organization, or preference choices when reasonable defaults can satisfy the request.
+- Before a task run exists, ask planning or context questions directly in assistant text.
 - For tool work, call the selected executable tool directly. Never wrap executable calls inside another tool.
 - Use decision_load_tools when the visible selected tools are not enough for the next action. Do not tell the user tools are missing.
 - decision_load_tools must include a non-empty selector: exact toolNames when known, groups when a group fits, or query when uncertain.
@@ -680,13 +793,12 @@ Decision rules:
 - Every executable tool call must include taskCompletion.
 - Set taskCompletion.intent to "not_completion" for preparation, inspection, context gathering, partial edits, setup, or actions that still require later verification.
 - Set taskCompletion.intent to "completion_candidate" only when that exact tool call should satisfy the current user request if it succeeds.
-- For read-only analysis tasks, gather evidence with tools and finish with decision_reply when the answer is ready.
+- For read-only analysis tasks, gather evidence with tools and finish with direct assistant text when the answer is ready.
 - For UI/layout fixes, use "not_completion" when an edit still needs screenshot, build, or test verification.
 
 Control tool shapes:
-- decision_reply({ "status": "completed" | "failed", "message": "..." })
-- decision_ask_user({ "question": "...", "reason": "..." })
 - decision_load_tools({ "query": "...", "toolNames": ["read_file"], "groups": ["workflow:code_edit"] })
+- ask_user_feedback({ "question": "...", "reason": "..." }) only when exposed during an active task run
 
 Tool protocol examples:
 - Bad when shell is not selected: calling shell or trying to use load_tools as executable work.
@@ -933,44 +1045,20 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-const DECISION_TOOL_NAMES = new Set([
+const CONTROL_DECISION_TOOL_NAMES = new Set([
   "decision_reply",
   "decision_ask_user",
   "decision_load_tools",
+  TASK_FEEDBACK_TOOL_NAME,
 ]);
 
-function buildNativeDecisionTools(selectedTools: ToolDefinition[]): LlmToolSchema[] {
+function buildNativeDecisionTools(
+  selectedTools: ToolDefinition[],
+  options: {
+    taskFeedbackToolAvailable: boolean;
+  },
+): LlmToolSchema[] {
   const controlTools: LlmToolSchema[] = [
-    {
-      name: "decision_reply",
-      description: "Finish this decision with a user-facing reply. Use when no tool loading or tool execution is needed.",
-      inputSchema: objectSchema({
-        status: {
-          type: "string",
-          enum: ["completed", "failed"],
-        },
-        message: {
-          type: "string",
-          minLength: 1,
-        },
-        workingNotes: workingNotesSchema(),
-      }, ["status", "message"]),
-    },
-    {
-      name: "decision_ask_user",
-      description: "Ask the user for required information only when progress is blocked and no safe default exists.",
-      inputSchema: objectSchema({
-        question: {
-          type: "string",
-          minLength: 1,
-        },
-        reason: {
-          type: "string",
-          minLength: 1,
-        },
-        workingNotes: workingNotesSchema(),
-      }, ["question", "reason"]),
-    },
     {
       name: "decision_load_tools",
       description: "Request hidden tools by exact group, exact tool name, or search query when selected tools are insufficient.",
@@ -1006,8 +1094,25 @@ function buildNativeDecisionTools(selectedTools: ToolDefinition[]): LlmToolSchem
       },
     },
   ];
+  if (options.taskFeedbackToolAvailable) {
+    controlTools.push({
+      name: TASK_FEEDBACK_TOOL_NAME,
+      description: "Pause the active task run to ask the user for required feedback when progress is blocked and no safe default exists. Do not use for final responses.",
+      inputSchema: objectSchema({
+        question: {
+          type: "string",
+          minLength: 1,
+        },
+        reason: {
+          type: "string",
+          minLength: 1,
+        },
+        workingNotes: workingNotesSchema(),
+      }, ["question", "reason"]),
+    });
+  }
   const executableTools = selectedTools
-    .filter((tool) => !DECISION_TOOL_NAMES.has(tool.name))
+    .filter((tool) => !CONTROL_DECISION_TOOL_NAMES.has(tool.name))
     .map(toNativeExecutableToolSchema);
   return [...controlTools, ...executableTools];
 }
@@ -1087,7 +1192,7 @@ function serializeNativeDecisionToolCalls(calls: LlmToolCall[], selectedTools: T
 
   const call = calls[0]!;
   const input = isPlainObject(call.input) ? call.input : {};
-  if (DECISION_TOOL_NAMES.has(call.name)) {
+  if (CONTROL_DECISION_TOOL_NAMES.has(call.name)) {
     return JSON.stringify(nativeDecisionToolCallToPayload(call.name, input));
   }
 
@@ -1109,6 +1214,7 @@ function nativeDecisionToolCallToPayload(toolName: string, input: Record<string,
         ...(input["workingNotes"] ? { workingNotes: input["workingNotes"] } : {}),
       };
     case "decision_ask_user":
+    case TASK_FEEDBACK_TOOL_NAME:
       return {
         kind: "ask_user",
         question: input["question"],
@@ -1170,7 +1276,7 @@ function summarizeNativeToolCalls(calls: LlmToolCall[], selectedTools: ToolDefin
   return calls.map((call) => ({
     id: call.id,
     name: call.name,
-    kind: DECISION_TOOL_NAMES.has(call.name)
+    kind: CONTROL_DECISION_TOOL_NAMES.has(call.name)
       ? "control"
       : selectedToolNames.has(call.name)
         ? "executable"

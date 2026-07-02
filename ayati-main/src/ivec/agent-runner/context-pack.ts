@@ -70,11 +70,12 @@ function buildTimeline(
       if (record.role === "assistant") {
         return {
           kind: "assistant",
-          seq: record.seq,
-          timestamp: record.at,
-          content: truncate(record.text, LIMITS.textChars),
-          ...(assistantExpectsUserResponse(record.text) ? { expectsUserResponse: true } : {}),
-          ...(current ? { current: true } : {}),
+	          seq: record.seq,
+	          timestamp: record.at,
+	          content: truncate(record.text, LIMITS.textChars),
+	          ...(record.kind === "feedback_question" ? { responseKind: "feedback", expectsUserResponse: true } : {}),
+	          ...(assistantExpectsUserResponse(record.text) ? { expectsUserResponse: true } : {}),
+	          ...(current ? { current: true } : {}),
         };
       }
       if (record.role === "system") {

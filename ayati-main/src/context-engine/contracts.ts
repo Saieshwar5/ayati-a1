@@ -3,6 +3,7 @@ export type ContextConversationRole = "user" | "assistant" | "system";
 export interface ContextConversationRecord {
   seq: number;
   role: ContextConversationRole;
+  kind?: "message" | "feedback_question";
   at: string;
   text: string;
 }

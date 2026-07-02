@@ -1,5 +1,6 @@
 import OpenAI from "openai";
 import type { LlmProvider } from "../../core/contracts/provider.js";
+import { ProviderEmptyResponseError } from "../../core/contracts/provider-errors.js";
 import { getModelForProvider } from "../../config/llm-runtime-config.js";
 import type {
   LlmMessage,
@@ -27,6 +28,30 @@ import {
 let client: OpenAI | null = null;
 
 const DEFAULT_OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1";
+
+function emptyOpenRouterResponseError(
+  model: string,
+  response: unknown,
+): ProviderEmptyResponseError {
+  const responseRecord = isRecord(response) ? response : {};
+  const choices = Array.isArray(responseRecord["choices"]) ? responseRecord["choices"] : [];
+  const firstChoice = isRecord(choices[0]) ? choices[0] : {};
+  const firstMessage = isRecord(firstChoice["message"]) ? firstChoice["message"] : undefined;
+  const finishReason = typeof firstChoice["finish_reason"] === "string" ? firstChoice["finish_reason"] : undefined;
+
+  return new ProviderEmptyResponseError("Empty response from OpenRouter.", {
+    provider: "openrouter",
+    model,
+    choiceCount: choices.length,
+    responseKeys: Object.keys(responseRecord),
+    ...(finishReason ? { finishReason } : {}),
+    hasMessage: Boolean(firstMessage),
+  });
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
 
 async function toOpenRouterMessages(
   messages: LlmMessage[],
@@ -194,9 +219,10 @@ const provider: LlmProvider = {
         : {}),
     });
 
-    const message = response.choices[0]?.message;
+    const choices = Array.isArray(response.choices) ? response.choices : [];
+    const message = choices[0]?.message;
     if (!message) {
-      throw new Error("Empty response from OpenRouter.");
+      throw emptyOpenRouterResponseError(model, response);
     }
 
     const calls = (message.tool_calls ?? []).map<LlmToolCall>((call) => {
@@ -221,7 +247,7 @@ const provider: LlmProvider = {
 
     const reply = message.content;
     if (!reply) {
-      throw new Error("Empty response from OpenRouter.");
+      throw emptyOpenRouterResponseError(model, response);
     }
 
     return {

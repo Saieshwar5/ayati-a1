@@ -319,6 +319,9 @@ export class AsyncAgentFeedbackLedger implements AgentFeedbackLedger {
     if (event.stage === "decision" && event.event === "protocol_violation") {
       signals.add("tool_protocol_violation");
     }
+    if (event.stage === "decision" && event.event === "provider_empty_response") {
+      signals.add("provider_empty_response");
+    }
     if (event.stage === "action" && event.event === "failed") {
       signals.add("action_failed");
     }
@@ -544,6 +547,16 @@ export function buildFeedbackTriageSummary(summary: AgentFeedbackLatestSummary):
       title: "Decision required repair",
       details: "The first decision response could not be parsed or needed repair.",
       recommendation: "Inspect the provider response and keep contract tests around the native decision tool surface.",
+    });
+  }
+
+  if (warningSet.has("provider_empty_response")) {
+    findings.push({
+      code: "provider_empty_response",
+      severity: "error",
+      title: "Provider returned an empty response",
+      details: "The model provider returned no usable assistant message or tool call before the runtime could parse a decision.",
+      recommendation: "Inspect decision.provider_empty_response for model, latency, response shape, native tool count, and retry details.",
     });
   }
 

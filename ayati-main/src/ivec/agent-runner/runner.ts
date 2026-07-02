@@ -399,9 +399,13 @@ export async function runAgentLoop(
     const stateView = buildAgentStateView(state, {
       activeTools: selectedTools.map((tool) => tool.name),
     });
+    const taskFeedbackToolAvailable = isTaskFeedbackToolAvailable(state, workRunHandle);
     recordFeedback(deps, inputHandle, state.runId || workRunHandle?.runId, "decision", "prompt_summary", {
       iteration: state.iteration,
-      nativeControlTools: ["decision_reply", "decision_ask_user", "decision_load_tools"],
+      nativeControlTools: [
+        "decision_load_tools",
+        ...(taskFeedbackToolAvailable ? ["ask_user_feedback"] : []),
+      ],
       selectedTools: selectedTools.map((tool) => tool.name),
       selectedToolCount: selectedTools.length,
       visibleToolCount: visibleTools.length,
@@ -424,6 +428,7 @@ export async function runAgentLoop(
       stateView,
       toolDefinitions: selectedTools,
       toolRoutingSummary: deps.toolWorkingSetManager?.getPromptSummary(),
+      taskFeedbackToolAvailable,
       systemContext: deps.systemContext,
       metrics,
       feedbackLedger: deps.feedbackLedger,
@@ -2084,6 +2089,17 @@ function buildLoopResult(
     result.artifacts = artifacts;
   }
   return result;
+}
+
+function isTaskFeedbackToolAvailable(
+  state: LoopState,
+  workRunHandle: MemoryRunHandle | undefined,
+): boolean {
+  const hasTaskRun = Boolean(state.runId || workRunHandle?.runId);
+  if (!hasTaskRun) {
+    return false;
+  }
+  return state.workState.status === "not_done";
 }
 
 function buildTaskSummaryRecord(

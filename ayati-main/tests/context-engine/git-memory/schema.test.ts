@@ -84,6 +84,7 @@ describe("git memory schema", () => {
     expect(validateGitMemoryConversationRecord({
       seq: 2,
       role: "assistant",
+      kind: "feedback_question",
       at: "2026-06-28T09:00:05+05:30",
       text: null,
       contentRef: "messages/M-20260628-000002.md",
@@ -105,9 +106,21 @@ describe("git memory schema", () => {
       expect(result.errors).toContain("conversation record must include non-empty text or contentRef.");
     }
 
+    const invalidKind = validateGitMemoryConversationRecord({
+      seq: 4,
+      role: "assistant",
+      kind: "question",
+      at: "2026-06-28T09:02:30+05:30",
+      text: "Which path should I use?",
+    });
+    expect(invalidKind.ok).toBe(false);
+    if (!invalidKind.ok) {
+      expect(invalidKind.errors).toContain("kind must be one of: message, feedback_question.");
+    }
+
     const legacy = validateGitMemoryConversationRecord({
       v: 1,
-      seq: 4,
+      seq: 5,
       messageId: "M-20260628-000004",
       turnId: "T-20260628-000004",
       role: "user",

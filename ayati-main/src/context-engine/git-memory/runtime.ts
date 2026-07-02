@@ -112,6 +112,7 @@ export interface PendingGitMemoryTurnEnvelope extends GitMemoryPendingTurnContex
 export interface RecordGitMemoryAssistantMessageInput {
   sessionId: GitMemorySessionId;
   text: string;
+  kind?: GitMemoryConversationRecord["kind"];
   at?: string;
   taskId?: GitMemoryTaskId;
   runId?: GitMemoryRunId;
@@ -131,6 +132,7 @@ export interface CheckpointGitMemoryRuntimeSessionInput {
 
 export interface FinalizeGitMemoryTaskRunInput extends BuildGitMemoryTaskRunCommitInput {
   assistantMessage?: string;
+  assistantMessageKind?: GitMemoryConversationRecord["kind"];
   assistantAt?: string;
 }
 
@@ -299,6 +301,7 @@ export class GitMemoryRuntime {
     if (cachedState) {
       const record = await this.createAndCacheConversationRecord(input.sessionId, {
         role: "assistant",
+        ...(input.kind ? { kind: input.kind } : {}),
         text: input.text,
         at,
       });
@@ -318,9 +321,10 @@ export class GitMemoryRuntime {
       createdAt: at,
     }, async () => {
       const record = await this.store.appendConversationMessage({
-        sessionId: input.sessionId,
-        role: "assistant",
-        text: input.text,
+	        sessionId: input.sessionId,
+	        role: "assistant",
+	        ...(input.kind ? { kind: input.kind } : {}),
+	        text: input.text,
         at,
         taskId: input.taskId,
         runId: input.runId,
@@ -777,9 +781,10 @@ export class GitMemoryRuntime {
       let commitInput = baseCommitInput;
       if (input.assistantMessage?.trim()) {
         assistantMessage = await this.store.appendConversationMessage({
-          sessionId: baseCommitInput.sessionId,
-          text: input.assistantMessage,
-          at: input.assistantAt ?? input.at,
+	        sessionId: baseCommitInput.sessionId,
+	        text: input.assistantMessage,
+	        ...(input.assistantMessageKind ? { kind: input.assistantMessageKind } : {}),
+	        at: input.assistantAt ?? input.at,
           taskId: baseCommitInput.taskId,
           ...(baseCommitInput.runId ? { runId: baseCommitInput.runId } : {}),
           role: "assistant",
@@ -1257,9 +1262,10 @@ export class GitMemoryRuntime {
 
   private async createAndCacheConversationRecord(
     sessionId: GitMemorySessionId,
-    input: {
-      role: GitMemoryConversationRole;
-      text: string;
+	    input: {
+	      role: GitMemoryConversationRole;
+	      kind?: GitMemoryConversationRecord["kind"];
+	      text: string;
       at: string;
     },
   ): Promise<GitMemoryConversationRecord> {
@@ -1272,16 +1278,18 @@ export class GitMemoryRuntime {
 
   private createCachedConversationRecord(
     state: GitContextMemoryState,
-    input: {
-      role: GitMemoryConversationRole;
-      text: string;
+	    input: {
+	      role: GitMemoryConversationRole;
+	      kind?: GitMemoryConversationRecord["kind"];
+	      text: string;
       at: string;
     },
   ): GitMemoryConversationRecord {
     return {
-      seq: nextConversationSeq(state.session.conversationTail),
-      role: input.role,
-      at: input.at,
+	      seq: nextConversationSeq(state.session.conversationTail),
+	      role: input.role,
+	      ...(input.kind ? { kind: input.kind } : {}),
+	      at: input.at,
       text: input.text,
     };
   }

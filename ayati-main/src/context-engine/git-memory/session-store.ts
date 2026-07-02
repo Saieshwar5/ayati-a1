@@ -281,6 +281,7 @@ export interface GitMemorySessionCheckpoint {
 export interface AppendGitMemoryConversationInput {
   sessionId: GitMemorySessionId;
   role: GitMemoryConversationRole;
+  kind?: GitMemoryConversationRecord["kind"];
   text: string;
   at?: string;
   taskId?: GitMemoryTaskId;
@@ -661,6 +662,7 @@ export class GitMemoryDailySessionStore {
     const record: GitMemoryConversationRecord = {
       seq,
       role: input.role,
+      ...(input.kind ? { kind: input.kind } : {}),
       at: input.at ?? this.nowIso(),
       text: input.text,
       ...(branch && branch !== "main" ? { branch } : {}),
@@ -678,6 +680,7 @@ export class GitMemoryDailySessionStore {
     const record: GitMemoryConversationRecord = {
       seq,
       role: input.role,
+      ...(input.kind ? { kind: input.kind } : {}),
       at: input.at ?? this.nowIso(),
       text: input.text,
       ...(input.taskId ? { taskId: input.taskId } : {}),
