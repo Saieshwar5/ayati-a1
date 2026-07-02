@@ -49,6 +49,7 @@ export type DecisionFailureKind =
   | "invalid_json"
   | "unsupported_decision_kind"
   | "tool_protocol_violation"
+  | "assistant_text_tool_call"
   | "tool_input_schema_violation";
 
 export type AgentDecision =
@@ -106,6 +107,14 @@ interface ToolInputSchemaViolation {
     inputKeys: string[];
     schema: Record<string, unknown>;
   }>;
+}
+
+interface AssistantTextToolCallViolation {
+  kind: Extract<DecisionFailureKind, "assistant_text_tool_call">;
+  reason: string;
+  toolName?: string;
+  inputKeys: string[];
+  selectedTools: string[];
 }
 
 interface AgentDecisionFeedbackContext {
@@ -205,6 +214,40 @@ export async function callAgentDecision(input: CallAgentDecisionInput): Promise<
     });
 
     try {
+      const assistantTextToolCallViolation = turn.type === "assistant"
+        ? detectAssistantTextToolCall(rawText, input.toolDefinitions)
+        : null;
+      if (assistantTextToolCallViolation) {
+        agentTrace(
+          "agent_decision",
+          `attempt=${attempt + 1} assistant_text_tool_call reason=${assistantTextToolCallViolation.reason}`,
+        );
+        recordDecisionFeedback(input, "assistant_text_tool_call", {
+          attempt: attempt + 1,
+          ...assistantTextToolCallViolation,
+        });
+        if (attempt >= MAX_DECISION_ATTEMPTS - 1) {
+          agentTrace("agent_decision", `attempt=${attempt + 1} assistant_text_tool_call_failed_fallback`);
+          recordDecisionFeedback(input, "failed_fallback", {
+            attempt: attempt + 1,
+            reason: assistantTextToolCallViolation.reason,
+          });
+          return {
+            kind: "reply",
+            status: "failed",
+            message: TOOL_PROTOCOL_FAILURE_REPLY,
+          };
+        }
+        agentTrace("agent_decision", `attempt=${attempt + 1} repair_request reason=assistant_text_tool_call`);
+        recordDecisionFeedback(input, "repair_requested", {
+          attempt: attempt + 1,
+          reason: "assistant_text_tool_call",
+          violation: assistantTextToolCallViolation,
+        });
+        messages = buildRepairMessages(messages, rawText, buildAssistantTextToolCallRepairPrompt(assistantTextToolCallViolation));
+        continue;
+      }
+
       const directReply = turn.type === "assistant" ? directAssistantReplyDecision(rawText) : null;
       if (directReply) {
         agentTrace("agent_decision", `attempt=${attempt + 1} direct_reply`);
@@ -608,6 +651,21 @@ function buildToolProtocolRepairPrompt(violation: ToolProtocolViolation): string
   ].filter((line) => line.length > 0).join("\n");
 }
 
+function buildAssistantTextToolCallRepairPrompt(violation: AssistantTextToolCallViolation): string {
+  const selected = violation.selectedTools.length > 0 ? violation.selectedTools.join(", ") : "(none)";
+  return [
+    "Your previous response looked like a tool call written as assistant text.",
+    "",
+    `Selected tools: ${selected}`,
+    violation.toolName ? `Tool-like name: ${violation.toolName}` : "",
+    `Tool-like input keys: ${violation.inputKeys.length > 0 ? violation.inputKeys.join(", ") : "(none)"}`,
+    "",
+    "Do not write tool-call JSON in assistant text.",
+    "If tool work is needed, call exactly one available native tool directly.",
+    "Use direct assistant text only for a final user-facing reply.",
+  ].filter((line) => line.length > 0).join("\n");
+}
+
 function buildToolInputSchemaRepairPrompt(violation: ToolInputSchemaViolation): string {
   const selected = violation.selectedTools.length > 0 ? violation.selectedTools.join(", ") : "(none)";
   const failureLines = violation.failures.flatMap((failure) => [
@@ -682,7 +740,54 @@ function looksLikeStructuredDecision(text: string): boolean {
     return true;
   }
   const parsed = parseJsonRecord(trimmed);
-  return typeof parsed?.["kind"] === "string";
+  return typeof parsed?.["kind"] === "string" || looksLikeToolCallRecord(parsed);
+}
+
+function detectAssistantTextToolCall(
+  text: string,
+  selectedTools: ToolDefinition[],
+): AssistantTextToolCallViolation | null {
+  const parsed = parseJsonRecord(text);
+  if (!looksLikeToolCallRecord(parsed)) {
+    return null;
+  }
+  const record = parsed as Record<string, unknown>;
+  const toolName = readToolLikeName(record);
+  const input = readToolLikeInput(record);
+  return {
+    kind: "assistant_text_tool_call",
+    reason: "Assistant text contained JSON shaped like a tool call. Native tools must be called through provider tool calling, not printed as text.",
+    ...(toolName ? { toolName } : {}),
+    inputKeys: Object.keys(input ?? {}),
+    selectedTools: selectedTools.map((tool) => tool.name),
+  };
+}
+
+function looksLikeToolCallRecord(value: unknown): boolean {
+  if (!isPlainObject(value)) {
+    return false;
+  }
+  if (typeof value["kind"] === "string") {
+    return false;
+  }
+  const hasToolName = typeof value["tool"] === "string" || typeof value["name"] === "string";
+  const hasInput = isPlainObject(value["arguments"]) || isPlainObject(value["input"]);
+  return hasToolName && hasInput;
+}
+
+function readToolLikeName(record: Record<string, unknown>): string | undefined {
+  const name = typeof record["tool"] === "string" ? record["tool"] : record["name"];
+  return typeof name === "string" && name.trim().length > 0 ? name.trim() : undefined;
+}
+
+function readToolLikeInput(record: Record<string, unknown>): Record<string, unknown> | undefined {
+  if (isPlainObject(record["arguments"])) {
+    return record["arguments"];
+  }
+  if (isPlainObject(record["input"])) {
+    return record["input"];
+  }
+  return undefined;
 }
 
 export function parseAgentDecision(text: string): AgentDecision {

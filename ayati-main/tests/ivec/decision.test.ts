@@ -418,6 +418,89 @@ describe("parseAgentDecision", () => {
     expect(repairPrompt).toContain("Invalid tools in action.calls or allowedTools: shell, load_tools");
   });
 
+  it("repairs tool-call JSON returned as assistant text", async () => {
+    const fakeToolJson = JSON.stringify({
+      tool: "git_context_create_task_for_turn",
+      arguments: {
+        taskCompletion: {
+          intent: "not_completion",
+          reason: "Create task for user request to create Linux commands file",
+        },
+      },
+    });
+    const repaired = {
+      kind: "act",
+      action: {
+        mode: "single",
+        calls: [{
+          id: "call_1",
+          tool: "git_context_create_task_for_turn",
+          input: {
+            title: "Linux commands file",
+            objective: "Create a text file with 10 Linux commands.",
+            reason: "The user requested durable file creation.",
+          },
+          dependsOn: [],
+        }],
+        allowedTools: ["git_context_create_task_for_turn"],
+      },
+    };
+    const feedback = createFeedbackLedger();
+    const { provider, generateTurn } = createProvider([
+      fakeToolJson,
+      JSON.stringify(repaired),
+    ]);
+
+    const decision = await callAgentDecision({
+      provider,
+      stateView: createStateView(),
+      toolDefinitions: [createTool("git_context_create_task_for_turn")],
+      feedbackLedger: feedback.ledger,
+      feedbackContext: {
+        clientId: "local",
+        sessionId: "S-test",
+        seq: 1,
+      },
+    });
+
+    expect(decision.kind).toBe("act");
+    expect(generateTurn).toHaveBeenCalledTimes(2);
+    const repairPrompt = generateTurn.mock.calls[1]?.[0]?.messages.at(-1)?.content ?? "";
+    expect(repairPrompt).toContain("looked like a tool call written as assistant text");
+    expect(repairPrompt).toContain("Do not write tool-call JSON in assistant text");
+    expect(feedback.events.some((event) => event.event === "direct_reply")).toBe(false);
+    expect(feedback.events.find((event) => event.event === "assistant_text_tool_call")?.data).toMatchObject({
+      toolName: "git_context_create_task_for_turn",
+      selectedTools: ["git_context_create_task_for_turn"],
+    });
+  });
+
+  it("returns a failed reply after repeated assistant-text tool calls", async () => {
+    const fakeToolJson = JSON.stringify({
+      tool: "git_context_create_task_for_turn",
+      arguments: {
+        taskCompletion: {
+          intent: "not_completion",
+          reason: "Create task for user request",
+        },
+      },
+    });
+    const { provider, generateTurn } = createProvider([fakeToolJson, fakeToolJson, fakeToolJson]);
+
+    const decision = await callAgentDecision({
+      provider,
+      stateView: createStateView(),
+      toolDefinitions: [createTool("git_context_create_task_for_turn")],
+    });
+
+    expect(generateTurn).toHaveBeenCalledTimes(3);
+    expect(decision).toEqual({
+      kind: "reply",
+      status: "failed",
+      message: "I could not form a valid tool call for this request.",
+    });
+  });
+
   it("returns a failed reply after repeated tool protocol violations", async () => {
     const badAction = JSON.stringify({
       kind: "act",
