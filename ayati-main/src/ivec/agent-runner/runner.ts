@@ -62,6 +62,12 @@ import { buildAgentStateView, type AgentStateView } from "./state-view.js";
 import { selectToolsForDecision } from "./tool-selector.js";
 import { callAgentDecision } from "./decision.js";
 import type { AgentAction, AgentDecision } from "./decision.js";
+import type { RepairSignal } from "./repair-policy.js";
+import {
+  createRepairSignal,
+  repairSignalToFeedbackData,
+  repairSignalToPromptCard,
+} from "./repair-policy.js";
 import type { ToolLoadResult } from "./tool-working-set.js";
 import { executeAgentAction } from "./action-executor.js";
 import type { AgentActionExecutionResult } from "./action-executor.js";
@@ -144,6 +150,12 @@ export async function runAgentLoop(
     if (!workRunHandle) {
       const createWorkRun = deps.createWorkRun;
       if (!createWorkRun) {
+        const repair = createMissingWorkRunRepairSignal({
+          reason,
+          message: "Git-memory run handle is required before agent action execution.",
+          decision,
+          pendingTurnStatus: state.harnessContext.contextEngine?.pendingTurn?.routingStatus,
+        });
         recordFeedback(deps, inputHandle, undefined, "guard", "missing_work_run", {
           reason,
           message: "Git-memory run handle is required before agent action execution.",
@@ -154,6 +166,7 @@ export async function runAgentLoop(
             context: state.harnessContext.contextEngine,
           }),
           harnessContext: summarizeHarnessContext(state.harnessContext),
+          ...repairSignalToFeedbackData(repair),
         });
         throw new Error("Git-memory run handle is required before agent action execution.");
       }
@@ -161,6 +174,12 @@ export async function runAgentLoop(
         workRunHandle = createWorkRun(inputHandle);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
+        const repair = createMissingWorkRunRepairSignal({
+          reason,
+          message,
+          decision,
+          pendingTurnStatus: state.harnessContext.contextEngine?.pendingTurn?.routingStatus,
+        });
         recordFeedback(deps, inputHandle, undefined, "guard", "missing_work_run", {
           reason,
           message,
@@ -174,6 +193,7 @@ export async function runAgentLoop(
             context: state.harnessContext.contextEngine,
           }),
           harnessContext: summarizeHarnessContext(state.harnessContext),
+          ...repairSignalToFeedbackData(repair),
         });
         throw error;
       }
@@ -1229,11 +1249,26 @@ function recordFreshSessionToolRepair(input: {
 }): void {
   input.state.consecutiveFailures++;
   const blockedTargets = freshSessionDecisionTargets(input.decision);
+  const repair = createRepairSignal("R_FRESH_SESSION_NEEDS_TASK", {
+    blockedTargets,
+    operatorDetails: {
+      reason: input.reason,
+      consecutiveFailures: input.state.consecutiveFailures,
+      maxConsecutiveFailures: input.config.maxConsecutiveFailures,
+      decision: summarizeDecision(input.decision),
+      contextEngine: buildContextEngineFeedbackSummary({
+        context: input.state.harnessContext.contextEngine,
+      }),
+      harnessContext: summarizeHarnessContext(input.state.harnessContext),
+    },
+  });
   input.state.failureHistory.push({
     step: input.state.iteration,
     failureType: "validation_error",
     reason: FRESH_SESSION_TOOL_REPAIR_MESSAGE,
     blockedTargets,
+    repairCode: repair.code,
+    repair: repairSignalToPromptCard(repair),
   });
   recordFeedback(input.deps, input.inputHandle, undefined, "guard", "fresh_session_tool_repair_requested", {
     reason: input.reason,
@@ -1247,7 +1282,35 @@ function recordFreshSessionToolRepair(input: {
       context: input.state.harnessContext.contextEngine,
     }),
     harnessContext: summarizeHarnessContext(input.state.harnessContext),
+    ...repairSignalToFeedbackData(repair),
   });
+}
+
+function createMissingWorkRunRepairSignal(input: {
+  reason: string;
+  message: string;
+  decision?: AgentDecision;
+  pendingTurnStatus?: string;
+}): RepairSignal {
+  return createRepairSignal(missingWorkRunRepairCode(input.pendingTurnStatus), {
+    blockedTargets: input.decision ? freshSessionDecisionTargets(input.decision) : [],
+    operatorDetails: {
+      reason: input.reason,
+      message: input.message,
+      pendingTurnStatus: input.pendingTurnStatus,
+      ...(input.decision ? { decision: summarizeDecision(input.decision) } : {}),
+    },
+  });
+}
+
+function missingWorkRunRepairCode(pendingTurnStatus: string | undefined): "R_NORMAL_TOOL_WITHOUT_TASK_RUN" | "R_PENDING_TURN_UNBOUND" | "R_PENDING_TURN_CLARIFYING" {
+  if (pendingTurnStatus === "unbound") {
+    return "R_PENDING_TURN_UNBOUND";
+  }
+  if (pendingTurnStatus === "clarifying") {
+    return "R_PENDING_TURN_CLARIFYING";
+  }
+  return "R_NORMAL_TOOL_WITHOUT_TASK_RUN";
 }
 
 function freshSessionDecisionTargets(decision: AgentDecision): string[] {

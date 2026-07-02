@@ -348,6 +348,7 @@ describe("agentLoop", () => {
     const outputPath = join(dataDir, "fresh-session.txt");
     try {
       const toolExecutor = createToolExecutor([writeFilesTool]);
+      const feedback = createMemoryFeedbackLedger();
       const provider = createProvider([
         {
           kind: "act",
@@ -378,6 +379,7 @@ describe("agentLoop", () => {
         toolExecutor,
         toolDefinitions: toolExecutor.definitions(),
         runRecorder: noopRunRecorder,
+        feedbackLedger: feedback.ledger,
         inputHandle: { sessionId: "s1", seq: 1 },
         clientId: "c1",
         initialUserMessage: "Create a small text file",
@@ -400,11 +402,77 @@ describe("agentLoop", () => {
 
       const secondCallInput = vi.mocked(provider.generateTurn).mock.calls[1]?.[0];
       const secondUserPrompt = secondCallInput.messages.find((message: { role: string }) => message.role === "user").content as string;
+      const secondStateView = extractStateView(secondUserPrompt);
       expect(result.status).toBe("completed");
       expect(result.content).toBe("I need to create a task before using work tools.");
       expect(provider.generateTurn).toHaveBeenCalledTimes(2);
       expect(existsSync(outputPath)).toBe(false);
-      expect(secondUserPrompt).toContain("Use git_context_create_task_for_turn first");
+      expect(secondUserPrompt).toContain("R_FRESH_SESSION_NEEDS_TASK");
+      expect(secondUserPrompt).toContain("Call git_context_create_task_for_turn with title, objective, and reason.");
+      expect(secondStateView.context.scratch.feedback.latest[0]).toMatchObject({
+        code: "R_FRESH_SESSION_NEEDS_TASK",
+        repair: {
+          code: "R_FRESH_SESSION_NEEDS_TASK",
+          blockedTargets: ["write_files"],
+        },
+      });
+      expect(feedbackEvents(feedback.events, "guard", "fresh_session_tool_repair_requested")[0]?.data).toMatchObject({
+        repair: {
+          code: "R_FRESH_SESSION_NEEDS_TASK",
+          blockedTargets: ["write_files"],
+        },
+      });
+    } finally {
+      cleanup(dataDir);
+    }
+  });
+
+  it("records a repair code when normal tools reach the runner without a work run", async () => {
+    const dataDir = makeTmpDir();
+    const outputPath = join(dataDir, "missing-run.txt");
+    try {
+      const toolExecutor = createToolExecutor([writeFilesTool]);
+      const feedback = createMemoryFeedbackLedger();
+      const provider = createProvider([
+        {
+          kind: "act",
+          action: {
+            mode: "single",
+            calls: [{
+              id: "call_1",
+              tool: "write_files",
+              input: {
+                files: [{ path: outputPath, content: "should not run without a work run" }],
+              },
+              dependsOn: [],
+              purpose: "Create a file.",
+            }],
+            allowedTools: ["write_files"],
+            assertions: [],
+          },
+        },
+      ]);
+
+      await expect(agentLoop({
+        provider,
+        toolExecutor,
+        toolDefinitions: toolExecutor.definitions(),
+        runRecorder: noopRunRecorder,
+        feedbackLedger: feedback.ledger,
+        inputHandle: { sessionId: "s1", seq: 1 },
+        clientId: "c1",
+        initialUserMessage: "Create a file",
+        dataDir,
+        systemContext: "full system context with memory",
+      })).rejects.toThrow("Git-memory run handle is required before agent action execution.");
+
+      expect(existsSync(outputPath)).toBe(false);
+      expect(feedbackEvents(feedback.events, "guard", "missing_work_run")[0]?.data).toMatchObject({
+        repair: {
+          code: "R_NORMAL_TOOL_WITHOUT_TASK_RUN",
+          blockedTargets: ["write_files"],
+        },
+      });
     } finally {
       cleanup(dataDir);
     }
@@ -904,8 +972,8 @@ describe("agentLoop", () => {
       expect(provider.generateTurn).toHaveBeenCalledTimes(3);
       expect(readFileSync(outputPath, "utf-8")).toBe("<!doctype html><title>Repaired</title>");
       const repairPrompt = (provider.generateTurn as any).mock.calls[1]?.[0].messages.at(-1).content as string;
-      expect(repairPrompt).toContain("invalid tool input");
-      expect(repairPrompt).toContain("missing required field 'files'");
+      expect(repairPrompt).toContain("Repair code: R_TOOL_INPUT_MISSING_REQUIRED_FIELD");
+      expect(repairPrompt).toContain("Missing fields: files");
     } finally {
       cleanup(dataDir);
     }

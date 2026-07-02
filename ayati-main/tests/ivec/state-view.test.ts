@@ -237,6 +237,49 @@ describe("buildAgentStateView", () => {
     });
   });
 
+  it("projects repair-coded failure history into scratch feedback and trace", () => {
+    const state = createLoopState({
+      failureHistory: [{
+        step: 1,
+        failureType: "validation_error",
+        reason: "No active task exists. Create and activate the first task before using work tools.",
+        blockedTargets: ["write_files"],
+        repairCode: "R_FRESH_SESSION_NEEDS_TASK",
+        repair: {
+          code: "R_FRESH_SESSION_NEEDS_TASK",
+          message: "No active task exists yet. Normal work tools cannot run before task creation.",
+          blockedTargets: ["write_files"],
+          allowedNextActions: [
+            "Call git_context_create_task_for_turn with title, objective, and reason.",
+          ],
+        },
+      }],
+    });
+
+    const stateView = buildAgentStateView(state);
+    expect(stateView.workingFeedback?.latest[0]).toMatchObject({
+      severity: "error",
+      source: "tool_validation",
+      code: "R_FRESH_SESSION_NEEDS_TASK",
+      message: "No active task exists yet. Normal work tools cannot run before task creation.",
+      retryHint: "Call git_context_create_task_for_turn with title, objective, and reason.",
+      repair: {
+        code: "R_FRESH_SESSION_NEEDS_TASK",
+        blockedTargets: ["write_files"],
+      },
+    });
+    expect(stateView.context.scratch?.feedback?.latest[0]).toMatchObject({
+      code: "R_FRESH_SESSION_NEEDS_TASK",
+      repair: {
+        code: "R_FRESH_SESSION_NEEDS_TASK",
+      },
+    });
+    expect(stateView.context.scratch?.trace?.recentFailures?.[0]).toMatchObject({
+      code: "R_FRESH_SESSION_NEEDS_TASK",
+      blockedTargets: ["write_files"],
+    });
+  });
+
   it("builds timeline from git conversation tail", () => {
     const state = createLoopState({
       currentSeq: 3,
