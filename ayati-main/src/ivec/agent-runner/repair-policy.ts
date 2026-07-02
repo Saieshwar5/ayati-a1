@@ -5,26 +5,17 @@ export type RepairCode =
   | "R_EMPTY_TOOL_LOAD_SELECTOR"
   | "R_TOOL_INPUT_INVALID"
   | "R_TOOL_INPUT_MISSING_REQUIRED_FIELD"
-  | "R_TASK_COMPLETION_MISSING"
   | "R_FRESH_SESSION_NEEDS_TASK"
   | "R_NORMAL_TOOL_WITHOUT_TASK_RUN"
   | "R_PENDING_TURN_UNBOUND"
   | "R_PENDING_TURN_CLARIFYING"
   | "R_TASK_FEEDBACK_UNAVAILABLE"
-  | "R_ROUTING_TOOL_AFTER_ROUTED"
   | "R_MULTIPLE_NATIVE_TOOL_CALLS"
   | "R_PARSE_FAILED"
   | "R_PROVIDER_EMPTY_RESPONSE"
   | "R_VERIFICATION_FAILED"
   | "R_NO_PROGRESS"
-  | "R_REPEATED_REPAIR_FAILURE"
-  | "R_FINAL_REPLY_NOT_GROUNDED"
-  | "R_FINAL_REPLY_PROMISES_FUTURE_WORK"
-  | "R_INTERNAL_DETAILS_IN_FINAL_REPLY"
-  | "R_DESTRUCTIVE_ACTION_NEEDS_USER_CONFIRMATION"
-  | "R_EXTERNAL_COST_OR_CREDENTIAL_NEEDED"
-  | "R_ATTACHMENT_NOT_READY"
-  | "R_EVIDENCE_REQUIRED";
+  | "R_REPEATED_REPAIR_FAILURE";
 
 export type RepairSeverity = "info" | "repairable" | "warning" | "error" | "fatal";
 
@@ -93,26 +84,17 @@ export const REPAIR_CODES: readonly RepairCode[] = [
   "R_EMPTY_TOOL_LOAD_SELECTOR",
   "R_TOOL_INPUT_INVALID",
   "R_TOOL_INPUT_MISSING_REQUIRED_FIELD",
-  "R_TASK_COMPLETION_MISSING",
   "R_FRESH_SESSION_NEEDS_TASK",
   "R_NORMAL_TOOL_WITHOUT_TASK_RUN",
   "R_PENDING_TURN_UNBOUND",
   "R_PENDING_TURN_CLARIFYING",
   "R_TASK_FEEDBACK_UNAVAILABLE",
-  "R_ROUTING_TOOL_AFTER_ROUTED",
   "R_MULTIPLE_NATIVE_TOOL_CALLS",
   "R_PARSE_FAILED",
   "R_PROVIDER_EMPTY_RESPONSE",
   "R_VERIFICATION_FAILED",
   "R_NO_PROGRESS",
   "R_REPEATED_REPAIR_FAILURE",
-  "R_FINAL_REPLY_NOT_GROUNDED",
-  "R_FINAL_REPLY_PROMISES_FUTURE_WORK",
-  "R_INTERNAL_DETAILS_IN_FINAL_REPLY",
-  "R_DESTRUCTIVE_ACTION_NEEDS_USER_CONFIRMATION",
-  "R_EXTERNAL_COST_OR_CREDENTIAL_NEEDED",
-  "R_ATTACHMENT_NOT_READY",
-  "R_EVIDENCE_REQUIRED",
 ];
 
 export const REPAIR_CODE_CATALOG: Readonly<Record<RepairCode, RepairCatalogEntry>> = {
@@ -181,16 +163,6 @@ export const REPAIR_CODE_CATALOG: Readonly<Record<RepairCode, RepairCatalogEntry
     ],
     modelFacing: true,
   },
-  R_TASK_COMPLETION_MISSING: {
-    code: "R_TASK_COMPLETION_MISSING",
-    severity: "repairable",
-    source: "decision.input_schema",
-    message: "The executable tool call is missing taskCompletion metadata.",
-    allowedNextActions: [
-      "Add taskCompletion.intent and taskCompletion.reason to the executable tool input.",
-    ],
-    modelFacing: true,
-  },
   R_FRESH_SESSION_NEEDS_TASK: {
     code: "R_FRESH_SESSION_NEEDS_TASK",
     severity: "repairable",
@@ -243,17 +215,6 @@ export const REPAIR_CODE_CATALOG: Readonly<Record<RepairCode, RepairCatalogEntry
     allowedNextActions: [
       "Use direct assistant text for pre-task questions and final replies.",
       "Use ask_user_feedback only when it is exposed during an active task run.",
-    ],
-    modelFacing: true,
-  },
-  R_ROUTING_TOOL_AFTER_ROUTED: {
-    code: "R_ROUTING_TOOL_AFTER_ROUTED",
-    severity: "repairable",
-    source: "runner.tool_gating",
-    message: "Task routing tools were used after routing was already resolved for this run.",
-    allowedNextActions: [
-      "Continue normal task work.",
-      "Do not create, search, switch, or activate another task in this run.",
     ],
     modelFacing: true,
   },
@@ -318,78 +279,6 @@ export const REPAIR_CODE_CATALOG: Readonly<Record<RepairCode, RepairCatalogEntry
       "Stop the loop with a clean failure instead of retrying again.",
     ],
     modelFacing: false,
-  },
-  R_FINAL_REPLY_NOT_GROUNDED: {
-    code: "R_FINAL_REPLY_NOT_GROUNDED",
-    severity: "repairable",
-    source: "runner.final_reply",
-    message: "The final reply does not use the verified user-visible result.",
-    allowedNextActions: [
-      "Rewrite the final reply using verified artifacts, paths, changed files, command results, or findings.",
-    ],
-    modelFacing: true,
-  },
-  R_FINAL_REPLY_PROMISES_FUTURE_WORK: {
-    code: "R_FINAL_REPLY_PROMISES_FUTURE_WORK",
-    severity: "repairable",
-    source: "runner.final_reply",
-    message: "The reply promises future work while work still appears to remain.",
-    allowedNextActions: [
-      "Call tools if work remains.",
-      "Otherwise provide a final answer grounded in completed work.",
-    ],
-    modelFacing: true,
-  },
-  R_INTERNAL_DETAILS_IN_FINAL_REPLY: {
-    code: "R_INTERNAL_DETAILS_IN_FINAL_REPLY",
-    severity: "repairable",
-    source: "runner.final_reply",
-    message: "The final reply exposes internal harness details unnecessarily.",
-    allowedNextActions: [
-      "Rewrite the response in natural user-facing language.",
-    ],
-    modelFacing: true,
-  },
-  R_DESTRUCTIVE_ACTION_NEEDS_USER_CONFIRMATION: {
-    code: "R_DESTRUCTIVE_ACTION_NEEDS_USER_CONFIRMATION",
-    severity: "warning",
-    source: "tool.policy",
-    message: "The requested action may be destructive and needs user confirmation.",
-    allowedNextActions: [
-      "Ask for confirmation before taking destructive or irreversible action.",
-    ],
-    modelFacing: true,
-  },
-  R_EXTERNAL_COST_OR_CREDENTIAL_NEEDED: {
-    code: "R_EXTERNAL_COST_OR_CREDENTIAL_NEEDED",
-    severity: "warning",
-    source: "tool.policy",
-    message: "The requested action needs external cost, account access, credentials, or approval.",
-    allowedNextActions: [
-      "Ask the user for the required credential, approval, or account action.",
-    ],
-    modelFacing: true,
-  },
-  R_ATTACHMENT_NOT_READY: {
-    code: "R_ATTACHMENT_NOT_READY",
-    severity: "repairable",
-    source: "attachments",
-    message: "The requested attachment is not ready for tool use.",
-    allowedNextActions: [
-      "Use prepared attachment data when available.",
-      "Ask the user to resend or clarify the attachment if it is missing.",
-    ],
-    modelFacing: true,
-  },
-  R_EVIDENCE_REQUIRED: {
-    code: "R_EVIDENCE_REQUIRED",
-    severity: "repairable",
-    source: "runner.evidence",
-    message: "The available observation is not enough evidence for a final answer.",
-    allowedNextActions: [
-      "Use evidence or read tools before relying on truncated or evidence-only output.",
-    ],
-    modelFacing: true,
   },
 };
 
@@ -465,4 +354,3 @@ function normalizeText(value: string | undefined): string | undefined {
   const normalized = value?.replace(/\s+/g, " ").trim();
   return normalized && normalized.length > 0 ? normalized : undefined;
 }
-
