@@ -232,12 +232,20 @@ function toTaskFact(fact: string): ContextTaskFact {
 }
 
 function toTaskRunSummary(run: GitMemoryRunFile, taskId: GitMemoryTaskId): ContextTaskRunSummary {
+  const blockers = run.blockers ?? [];
+  const changedFiles = run.changedFiles ?? [];
   return {
     schemaVersion: 1,
     runId: run.runId,
     workId: taskId,
     status: run.status,
     summary: run.summary,
+    ...(run.next ? { next: run.next } : {}),
+    ...(blockers[0] ? { firstBlocker: blockers[0] } : {}),
+    blockerCount: blockers.length,
+    changedFileCount: changedFiles.length,
+    changedFilesPreview: changedFiles.slice(0, 3),
+    toolCallCount: run.toolCallCount,
     completed: [],
     open: run.next ? [run.next] : [],
     actions: [],

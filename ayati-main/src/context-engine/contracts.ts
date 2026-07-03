@@ -94,6 +94,12 @@ export interface ContextTaskRunSummary {
   workId: string;
   status: "completed" | "failed" | "blocked" | "needs_user_input";
   summary: string;
+  next?: string;
+  firstBlocker?: string;
+  blockerCount?: number;
+  changedFileCount?: number;
+  changedFilesPreview?: string[];
+  toolCallCount?: number;
   completed: string[];
   open: string[];
   actions: string[];

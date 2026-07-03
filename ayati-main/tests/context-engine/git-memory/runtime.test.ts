@@ -6,6 +6,7 @@ import {
   type AppendGitMemoryConversationInput,
   type AppendGitMemoryConversationRecordInput,
   buildGitMemoryContextPackFromMemoryState,
+  buildGitMemoryHarnessContextFromMemoryState,
   createGitMemoryRuntime,
   GIT_MEMORY_MAIN_REF,
   GIT_MEMORY_SESSION_CONVERSATION_MARKDOWN_PATH,
@@ -1499,6 +1500,18 @@ describe("GitMemoryRuntime", () => {
       },
     });
     expect(continued?.runId).not.toBe(firstRoute.runId);
+    const harnessContext = buildGitMemoryHarnessContextFromMemoryState(continued!.memoryState);
+    expect(harnessContext.task?.recentRuns[0]).toMatchObject({
+      runId: "R-20260628-0001",
+      status: fixture.expectedRunStatus,
+      summary: `${fixture.label} terminal summary.`,
+      next: fixture.expectedTaskStatus === "done" ? "No next step." : `Retry ${fixture.label} focus timer work.`,
+      blockerCount: fixture.expectedTaskStatus === "done" ? 0 : 1,
+      changedFileCount: fixture.expectedTaskStatus === "done" ? 1 : 0,
+      changedFilesPreview: fixture.expectedTaskStatus === "done" ? ["index.html"] : [],
+      toolCallCount: fixture.expectedTaskStatus === "done" ? 1 : 0,
+      ...(fixture.expectedTaskStatus === "done" ? {} : { firstBlocker: `${fixture.label} terminal blocker.` }),
+    });
 
     const driver = new GitMemoryWorktreeGitDriver(second.repoPath);
     expect(JSON.parse(await driver.readFile(firstRoute.ref, gitMemoryTaskRunPath(firstRoute.taskId, firstRoute.runId)) ?? "{}"))
