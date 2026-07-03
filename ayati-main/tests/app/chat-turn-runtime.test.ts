@@ -154,6 +154,78 @@ describe("createChatTurnRuntime", () => {
     }
   });
 
+  it("blocks a routed task run when a direct reply produces no durable evidence", async () => {
+    const rootDir = mkdtempSync(join(tmpdir(), "ayati-chat-runtime-"));
+    const contextStoreDir = join(rootDir, "context");
+    const dataDir = join(rootDir, "data");
+
+    try {
+      const store = new GitMemoryDailySessionStore({
+        contextStoreDir,
+        now: () => new Date("2026-06-28T09:00:00.000Z"),
+      });
+      const gitMemoryRuntime = createGitMemoryRuntime({
+        contextStoreDir,
+        timezone: "Asia/Kolkata",
+        agentId: "local",
+        store,
+        now: () => new Date("2026-06-28T09:00:00.000Z"),
+      });
+      const chatContextRuntime = createGitMemoryChatContextRuntime({ gitMemoryRuntime });
+      const first = await chatContextRuntime.prepareUserTurn({
+        clientId: "local",
+        userMessage: "create a tiny focus timer website",
+        at: "2026-06-28T09:00:00+05:30",
+      });
+      await gitMemoryRuntime.createTaskBranch({
+        sessionId: first.sessionId,
+        title: "Focus Timer Website",
+        objective: "Create a tiny focus timer website.",
+        fromSeq: first.messageSeq,
+        toSeq: first.messageSeq,
+        at: "2026-06-28T09:00:01+05:30",
+      });
+
+      const { provider } = createReplyProvider("I will continue the focus timer website task.");
+      const runtime = createChatTurnRuntime({
+        provider,
+        dataDir,
+        chatContextRuntime,
+        now: () => new Date("2026-06-28T09:05:00.000Z"),
+      });
+
+      await runtime.processChat({
+        clientId: "local",
+        content: "continue",
+        attachments: [],
+      });
+
+      const context = await chatContextRuntime.buildActiveContext(first.sessionId);
+      expect(context.task?.status).toBe("blocked");
+      expect(context.task?.recentRuns[0]).toMatchObject({
+        status: "blocked",
+        summary: "Task run stopped without durable work evidence.",
+        toolCallCount: 0,
+      });
+
+      const blockedRun = context.task?.recentRuns[0];
+      if (!context.task || !blockedRun) {
+        throw new Error("Expected blocked run context.");
+      }
+      const driver = new GitMemoryWorktreeGitDriver(join(contextStoreDir, "sessions", first.sessionId));
+      expect(JSON.parse(await driver.readFile(
+        `refs/heads/${context.task.branch}`,
+        gitMemoryTaskRunPath(context.task.taskId, blockedRun.runId),
+      ) ?? "{}")).toMatchObject({
+        status: "blocked",
+        blockers: ["The run completed without tool calls or durable evidence."],
+        next: "Retry or continue the task with concrete work.",
+      });
+    } finally {
+      rmSync(rootDir, { recursive: true, force: true });
+    }
+  });
+
   it("records session-only attachments in the session-store before the agent decision", async () => {
     const rootDir = mkdtempSync(join(tmpdir(), "ayati-chat-runtime-"));
     const contextStoreDir = join(rootDir, "context");

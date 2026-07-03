@@ -509,10 +509,8 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
     routed: GitMemoryChatContextRoutedTurn | null,
     result: AgentLoopResult,
   ): Promise<void> {
-    const binding = result.runClass === "task"
-      ? this.taskRunBindingFromRoutedOrResult(routed, result)
-      : null;
-    const skipReason = this.chatContextFinalizationSkipReason(prepared, result, binding);
+    const binding = this.taskRunBindingFromRoutedOrResult(routed, result);
+    const skipReason = this.chatContextFinalizationSkipReason(prepared, routed, result, binding);
     if (skipReason) {
       if (prepared && result.content.trim()) {
         await this.recordChatContextAssistantMessage(clientId, prepared, result.content);
@@ -541,6 +539,7 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
       return;
     }
 
+    const finalizationResult = this.normalizeChatContextFinalizationResult(result, routed);
     const completedAt = this.nowProvider().toISOString();
     this.feedbackLedger?.record({
       clientId,
@@ -553,10 +552,11 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
         taskId: binding.taskId,
         runId: binding.runId,
         conversationRefs: binding.conversationRefs,
-        resultStatus: result.status,
-        resultType: result.type,
+        resultStatus: finalizationResult.status,
+        resultType: finalizationResult.type,
+        ...(finalizationResult.status === result.status ? {} : { originalResultStatus: result.status }),
         contextEngine: buildContextEngineFeedbackSummary({
-          context: result.harnessContext?.contextEngine,
+          context: finalizationResult.harnessContext?.contextEngine,
           finalizationStatus: "started",
           committed: false,
           taskId: binding.taskId,
@@ -570,11 +570,11 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
       turn: prepared,
       taskId: binding.taskId,
       runId: binding.runId,
-      result,
+      result: finalizationResult,
       conversationRefs: binding.conversationRefs,
       at: completedAt,
-      assistantMessage: result.content,
-      assistantMessageKind: result.workState?.status === "needs_user_input" ? "feedback_question" : "message",
+      assistantMessage: finalizationResult.content,
+      assistantMessageKind: finalizationResult.workState?.status === "needs_user_input" ? "feedback_question" : "message",
       assistantAt: this.nowProvider().toISOString(),
     });
     if (!completed) {
@@ -589,7 +589,7 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
           taskId: binding.taskId,
           reason: "complete_task_run_returned_null",
           contextEngine: buildContextEngineFeedbackSummary({
-            context: result.harnessContext?.contextEngine,
+            context: finalizationResult.harnessContext?.contextEngine,
             finalizationStatus: "failed",
             committed: false,
             taskId: binding.taskId,
@@ -613,7 +613,7 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
         taskCommit: completed.taskCommit,
         ref: completed.ref,
         contextEngine: buildContextEngineFeedbackSummary({
-          context: result.harnessContext?.contextEngine,
+          context: finalizationResult.harnessContext?.contextEngine,
           finalizationStatus: "committed",
           committed: true,
           taskId: completed.taskId,
@@ -624,6 +624,43 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
         }),
       },
     });
+  }
+
+  private normalizeChatContextFinalizationResult(
+    result: AgentLoopResult,
+    routed: GitMemoryChatContextRoutedTurn | null,
+  ): AgentLoopResult {
+    if (!this.isCompletionWithoutTaskEvidence(result, routed)) {
+      return result;
+    }
+
+    const { taskSummary: _taskSummary, taskAssets: _taskAssets, ...rest } = result;
+    return {
+      ...rest,
+      status: "stuck",
+      workState: {
+        status: "blocked",
+        summary: "Task run stopped without durable work evidence.",
+        openWork: ["Retry or continue the task with concrete work."],
+        blockers: ["The run completed without tool calls or durable evidence."],
+        verifiedFacts: result.workState?.verifiedFacts ?? [],
+        evidence: result.workState?.evidence ?? [],
+        nextStep: "Retry or continue the task with concrete work.",
+      },
+    };
+  }
+
+  private isCompletionWithoutTaskEvidence(
+    result: AgentLoopResult,
+    routed: GitMemoryChatContextRoutedTurn | null,
+  ): boolean {
+    if (routed?.status !== "ready" || result.status !== "completed") {
+      return false;
+    }
+    return result.totalToolCalls === 0
+      && (result.completedSteps ?? []).length === 0
+      && (result.taskAssets ?? []).length === 0
+      && (result.artifacts ?? []).length === 0;
   }
 
   private async completeFailedChatContextRun(
@@ -667,6 +704,7 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
 
   private chatContextFinalizationSkipReason(
     prepared: GitMemoryChatContextPreparedTurn | null,
+    routed: GitMemoryChatContextRoutedTurn | null,
     result: AgentLoopResult,
     binding: {
       taskId: string;
@@ -677,11 +715,11 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
     if (!prepared) {
       return "missing_prepared_turn";
     }
-    if (result.runClass !== "task") {
-      return "non_task_result";
-    }
     if (!binding) {
       return "no_task_run_binding";
+    }
+    if (result.runClass !== "task" && routed?.status !== "ready") {
+      return "non_task_result";
     }
     if (result.workRunId && binding.runId !== result.workRunId) {
       return "binding_run_mismatch";
