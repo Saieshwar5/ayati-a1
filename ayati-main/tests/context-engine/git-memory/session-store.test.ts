@@ -801,6 +801,61 @@ describe("GitMemoryDailySessionStore", () => {
     });
   });
 
+  it("does not start an already finalized task run", async () => {
+    const contextStoreDir = await mkdtemp(join(tmpdir(), "ayati-git-memory-"));
+    const store = new GitMemoryDailySessionStore({ contextStoreDir });
+    const session = await store.openOrCreateDailySession({
+      date: "2026-06-28",
+      timezone: "Asia/Kolkata",
+      agentId: "local",
+      createdAt: "2026-06-28T00:00:00+05:30",
+    });
+    const user = await store.appendConversationMessage({
+      sessionId: session.sessionId,
+      role: "user",
+      text: "Fix upload handling",
+      at: "2026-06-28T09:00:00+05:30",
+    });
+    const task = await store.createTaskBranch({
+      sessionId: session.sessionId,
+      title: "Fix upload handling",
+      objective: "Find and fix upload handling failures.",
+      fromSeq: user.seq,
+      toSeq: user.seq,
+      runId: "R-20260628-0001",
+      at: "2026-06-28T09:01:00+05:30",
+    });
+    await store.commitTaskRun({
+      sessionId: session.sessionId,
+      taskId: task.taskId,
+      runId: "R-20260628-0001",
+      status: "failed",
+      completedAt: "2026-06-28T09:05:00+05:30",
+      conversationRefs: [{ fromSeq: user.seq, toSeq: user.seq }],
+      summary: "Provider failed before work completed.",
+      toolCallCount: 0,
+      changedFiles: [],
+      state: {
+        status: "blocked",
+        summary: "Provider failed before work completed.",
+        completed: [],
+        open: ["Retry upload handling."],
+        blockers: ["Unexpected end of JSON input"],
+        next: "Retry upload handling.",
+      },
+    });
+
+    await expect(store.startTaskRun({
+      sessionId: session.sessionId,
+      taskId: task.taskId,
+      branch: task.branch,
+      runId: "R-20260628-0001",
+      fromSeq: user.seq,
+      toSeq: user.seq,
+      at: "2026-06-28T09:06:00+05:30",
+    })).rejects.toThrow("Git memory task run already finalized: R-20260628-0001");
+  });
+
   it("reads task detail conversation from task-local message files before aggregate markdown", async () => {
     const contextStoreDir = await mkdtemp(join(tmpdir(), "ayati-git-memory-"));
     const store = new GitMemoryDailySessionStore({ contextStoreDir });

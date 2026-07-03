@@ -711,6 +711,10 @@ export class GitMemoryDailySessionStore {
     if (!(await driver.hasRef(ref))) {
       throw new Error(`Git memory task branch missing: ${ref}`);
     }
+    const existingRun = await driver.readFile(ref, gitMemoryTaskRunPath(input.taskId, input.runId));
+    if (existingRun !== null) {
+      throw new Error(`Git memory task run already finalized: ${input.runId}`);
+    }
     return { runId: input.runId };
   }
 

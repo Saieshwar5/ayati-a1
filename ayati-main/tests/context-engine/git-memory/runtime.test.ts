@@ -1375,6 +1375,143 @@ describe("GitMemoryRuntime", () => {
     })).toHaveLength(1);
   });
 
+  it.each([
+    {
+      label: "failed",
+      resultStatus: "failed" as const,
+      resultType: "reply" as const,
+      workStatus: "blocked" as const,
+      expectedRunStatus: "failed",
+      expectedTaskStatus: "blocked",
+      expectedMode: "continue_active_task",
+    },
+    {
+      label: "blocked",
+      resultStatus: "stuck" as const,
+      resultType: "reply" as const,
+      workStatus: "blocked" as const,
+      expectedRunStatus: "blocked",
+      expectedTaskStatus: "blocked",
+      expectedMode: "continue_active_task",
+    },
+    {
+      label: "completed",
+      resultStatus: "completed" as const,
+      resultType: "reply" as const,
+      workStatus: "done" as const,
+      expectedRunStatus: "completed",
+      expectedTaskStatus: "done",
+      expectedMode: "reopen_existing_task",
+    },
+  ])("creates a fresh run when continuing after a $label terminal run", async (fixture) => {
+    const contextStoreDir = await mkdtemp(join(tmpdir(), "ayati-git-memory-runtime-"));
+    const runtime = createGitMemoryRuntime({
+      contextStoreDir,
+      timezone: "Asia/Kolkata",
+      agentId: "local",
+    });
+    const first = await runtime.prepareUserTurn({
+      userMessage: `Handle ${fixture.label} focus timer work`,
+      at: "2026-06-28T09:00:00+05:30",
+    });
+    const firstRoute = await runtime.routeUserTurn({
+      sessionId: first.sessionId,
+      userMessage: `Handle ${fixture.label} focus timer work`,
+      fromSeq: first.userMessage.seq,
+      toSeq: first.userMessage.seq,
+      title: `Handle ${fixture.label} focus timer work`,
+      objective: "Create or repair a focus timer website.",
+      at: "2026-06-28T09:01:00+05:30",
+    });
+    if (firstRoute.status !== "ready") {
+      throw new Error(`Expected ready route, got ${firstRoute.status}.`);
+    }
+    const terminal = await runtime.finalizeTaskRun({
+      sessionId: first.sessionId,
+      taskId: firstRoute.taskId,
+      runId: firstRoute.runId,
+      result: {
+        type: fixture.resultType,
+        status: fixture.resultStatus,
+        content: `${fixture.label} terminal response.`,
+        totalIterations: 1,
+        totalToolCalls: fixture.expectedRunStatus === "completed" ? 1 : 0,
+        runPath: "data/runs/r-terminal",
+        workRunId: firstRoute.runId,
+        workState: {
+          status: fixture.workStatus,
+          summary: `${fixture.label} terminal summary.`,
+          openWork: fixture.expectedTaskStatus === "done" ? [] : [`Retry ${fixture.label} focus timer work.`],
+          blockers: fixture.expectedTaskStatus === "done" ? [] : [`${fixture.label} terminal blocker.`],
+          verifiedFacts: fixture.expectedTaskStatus === "done" ? ["Focus timer work completed."] : [],
+          evidence: fixture.expectedTaskStatus === "done" ? ["index.html"] : [],
+          nextStep: fixture.expectedTaskStatus === "done" ? "No next step." : `Retry ${fixture.label} focus timer work.`,
+        },
+        completedSteps: fixture.expectedTaskStatus === "done"
+          ? [{
+              step: 1,
+              outcome: "success",
+              summary: "Completed focus timer work.",
+              newFacts: ["Focus timer work completed."],
+              artifacts: ["index.html"],
+              toolsUsed: ["write_files"],
+            }]
+          : [],
+      },
+      conversationRefs: firstRoute.conversationRefs,
+      at: "2026-06-28T09:10:00+05:30",
+    });
+
+    const second = await runtime.prepareUserTurn({
+      userMessage: "continue",
+      at: "2026-06-28T09:15:00+05:30",
+    });
+    const continued = await runtime.continueActiveTurn({
+      sessionId: second.sessionId,
+      userMessage: "continue",
+      fromSeq: second.userMessage.seq,
+      toSeq: second.userMessage.seq,
+      at: "2026-06-28T09:15:01+05:30",
+    });
+
+    expect(terminal).toMatchObject({
+      runId: "R-20260628-0001",
+      runStatus: fixture.expectedRunStatus,
+    });
+    expect(continued).toMatchObject({
+      status: "ready",
+      mode: fixture.expectedMode,
+      taskId: firstRoute.taskId,
+      runId: "R-20260628-0002",
+      conversationRefs: [{ fromSeq: second.userMessage.seq, toSeq: second.userMessage.seq }],
+      memoryState: {
+        pendingTurn: {
+          routingStatus: "bound",
+          taskId: firstRoute.taskId,
+          runId: "R-20260628-0002",
+        },
+        activeTask: {
+          taskId: firstRoute.taskId,
+          recentRuns: [
+            { runId: "R-20260628-0001", status: fixture.expectedRunStatus },
+          ],
+        },
+      },
+    });
+    expect(continued?.runId).not.toBe(firstRoute.runId);
+
+    const driver = new GitMemoryWorktreeGitDriver(second.repoPath);
+    expect(JSON.parse(await driver.readFile(firstRoute.ref, gitMemoryTaskRunPath(firstRoute.taskId, firstRoute.runId)) ?? "{}"))
+      .toMatchObject({
+        runId: "R-20260628-0001",
+        status: fixture.expectedRunStatus,
+      });
+    expect(await driver.readFile(
+      firstRoute.ref,
+      gitMemoryTaskRunPath(firstRoute.taskId, "R-20260628-0002"),
+    )).toBeNull();
+  });
+
   it("does not append routed follow-up messages to the selected task branch before run finalization", async () => {
     const contextStoreDir = await mkdtemp(join(tmpdir(), "ayati-git-memory-runtime-"));
     const runtime = createGitMemoryRuntime({
