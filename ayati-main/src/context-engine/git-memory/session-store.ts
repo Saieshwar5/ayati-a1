@@ -421,6 +421,7 @@ export interface CommitGitMemoryTaskRunResult {
   branch: string;
   ref: string;
   runId: GitMemoryRunId;
+  runStatus: GitMemoryRunStatus;
   taskCommit: string;
   sessionStoreCommit?: string;
 }
@@ -1271,6 +1272,7 @@ export class GitMemoryDailySessionStore {
       branch: taskEntry.branch,
       ref,
       runId,
+      runStatus: run.status,
       taskCommit,
       ...(input.sessionStoreCommit ? { sessionStoreCommit: input.sessionStoreCommit } : {}),
     };
@@ -1290,6 +1292,9 @@ export class GitMemoryDailySessionStore {
       return null;
     }
     const runFile = parseJson<GitMemoryRunFile>(existingRun);
+    if (!runFile) {
+      throw new Error(`Git memory committed run file is invalid: ${input.runId}`);
+    }
     const commit = (await readCompactLog(driver, ref, 100))
       .find((entry) =>
         entry.trailers.taskId === input.taskId
@@ -1304,6 +1309,7 @@ export class GitMemoryDailySessionStore {
       branch: taskEntry.branch,
       ref,
       runId: input.runId,
+      runStatus: runFile.status,
       taskCommit: commit,
       ...(runFile?.sessionStoreCommit ? { sessionStoreCommit: runFile.sessionStoreCommit } : {}),
     };

@@ -48,6 +48,7 @@ import type {
   GitMemoryConversationSeqRange,
   GitMemoryRunFile,
   GitMemoryRunId,
+  GitMemoryRunStatus,
   GitMemorySessionAttachmentRecord,
   GitMemorySessionAttachmentsFile,
   GitMemorySessionId,
@@ -138,6 +139,7 @@ export interface FinalizeGitMemoryTaskRunInput extends BuildGitMemoryTaskRunComm
 
 export interface FinalizeGitMemoryTaskRunResult extends CommitGitMemoryTaskRunResult {
   alreadyFinalized: boolean;
+  requestedRunStatus?: GitMemoryRunStatus;
   assistantMessage?: GitMemoryConversationRecord;
 }
 
@@ -774,6 +776,7 @@ export class GitMemoryRuntime {
         return {
           result: existing,
           alreadyFinalized: true,
+          requestedRunStatus: baseCommitInput.status,
           assistantMessage: undefined,
         };
       }
@@ -805,6 +808,7 @@ export class GitMemoryRuntime {
           sessionStoreCommit: snapshot.sessionStoreCommit,
         }),
         alreadyFinalized: false,
+        requestedRunStatus: baseCommitInput.status,
         assistantMessage,
       };
     });
@@ -825,6 +829,7 @@ export class GitMemoryRuntime {
     return {
       ...finalized.result,
       alreadyFinalized: finalized.alreadyFinalized,
+      requestedRunStatus: finalized.requestedRunStatus,
       ...(finalized.assistantMessage ? { assistantMessage: finalized.assistantMessage } : {}),
     };
   }

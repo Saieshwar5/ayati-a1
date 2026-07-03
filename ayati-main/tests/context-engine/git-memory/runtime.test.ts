@@ -1262,6 +1262,119 @@ describe("GitMemoryRuntime", () => {
       });
   });
 
+  it("keeps terminal run status immutable when a later finalization requests a different status", async () => {
+    const contextStoreDir = await mkdtemp(join(tmpdir(), "ayati-git-memory-runtime-"));
+    const runtime = createGitMemoryRuntime({
+      contextStoreDir,
+      timezone: "Asia/Kolkata",
+      agentId: "local",
+    });
+    const prepared = await runtime.prepareUserTurn({
+      userMessage: "Create focus timer website",
+      at: "2026-06-28T09:00:00+05:30",
+    });
+    const routed = await runtime.routeUserTurn({
+      sessionId: prepared.sessionId,
+      userMessage: "Create focus timer website",
+      fromSeq: prepared.userMessage.seq,
+      toSeq: prepared.userMessage.seq,
+      title: "Create focus timer website",
+      objective: "Create a tiny focus timer website.",
+      at: "2026-06-28T09:01:00+05:30",
+    });
+    if (routed.status !== "ready") {
+      throw new Error(`Expected ready route, got ${routed.status}.`);
+    }
+
+    const failed = await runtime.finalizeTaskRun({
+      sessionId: prepared.sessionId,
+      taskId: routed.taskId,
+      runId: routed.runId,
+      result: {
+        type: "reply",
+        status: "failed",
+        content: "Provider failed before files were created.",
+        totalIterations: 1,
+        totalToolCalls: 0,
+        runPath: "data/runs/r-failed",
+        workRunId: routed.runId,
+        workState: {
+          status: "blocked",
+          summary: "Provider failed before creating files.",
+          openWork: ["Retry creating the website."],
+          blockers: ["Unexpected end of JSON input"],
+          verifiedFacts: [],
+          evidence: [],
+          nextStep: "Retry creating the website.",
+        },
+        completedSteps: [],
+      },
+      conversationRefs: routed.conversationRefs,
+      at: "2026-06-28T09:10:00+05:30",
+    });
+
+    const conflictingCompleted = await runtime.finalizeTaskRun({
+      sessionId: prepared.sessionId,
+      taskId: routed.taskId,
+      runId: routed.runId,
+      result: {
+        type: "reply",
+        status: "completed",
+        content: "Website created.",
+        totalIterations: 1,
+        totalToolCalls: 1,
+        runPath: "data/runs/r-completed",
+        workRunId: routed.runId,
+        workState: {
+          status: "done",
+          summary: "Website created.",
+          openWork: [],
+          blockers: [],
+          verifiedFacts: ["Website files were created."],
+          evidence: ["index.html"],
+          nextStep: "No next step.",
+        },
+        completedSteps: [{
+          step: 1,
+          outcome: "success",
+          summary: "Created website files.",
+          newFacts: ["Website files were created."],
+          artifacts: ["index.html"],
+          toolsUsed: ["write_files"],
+        }],
+      },
+      conversationRefs: routed.conversationRefs,
+      at: "2026-06-28T09:15:00+05:30",
+    });
+
+    expect(failed).toMatchObject({
+      alreadyFinalized: false,
+      runStatus: "failed",
+      requestedRunStatus: "failed",
+    });
+    expect(conflictingCompleted).toMatchObject({
+      alreadyFinalized: true,
+      runStatus: "failed",
+      requestedRunStatus: "completed",
+      taskCommit: failed.taskCommit,
+    });
+
+    const driver = new GitMemoryWorktreeGitDriver(prepared.repoPath);
+    expect(JSON.parse(await driver.readFile(routed.ref, gitMemoryTaskRunPath(routed.taskId, routed.runId)) ?? "{}"))
+      .toMatchObject({
+        status: "failed",
+        summary: "Provider failed before creating files.",
+        blockers: ["Unexpected end of JSON input"],
+        changedFiles: [],
+      });
+    const taskLog = await driver.log(routed.ref, 10);
+    expect(taskLog.filter((entry) => {
+      const trailers = parseGitMemoryCommitTrailers(entry.message);
+      return trailers.runId === routed.runId
+        && (trailers.event === "run_completed" || trailers.event === "run_failed");
+    })).toHaveLength(1);
+  });
+
   it("does not append routed follow-up messages to the selected task branch before run finalization", async () => {
     const contextStoreDir = await mkdtemp(join(tmpdir(), "ayati-git-memory-runtime-"));
     const runtime = createGitMemoryRuntime({
