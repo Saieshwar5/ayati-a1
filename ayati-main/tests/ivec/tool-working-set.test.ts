@@ -30,8 +30,8 @@ function skill(id: string, tools: ToolDefinition[]): SkillDefinition {
 
 function state(userMessage: string): LoopState {
   return {
-    runId: "r1",
-    runClass: "task",
+    runId: "",
+    runClass: "interaction",
     userMessage,
     workState: {
       status: "not_done",
@@ -45,7 +45,7 @@ function state(userMessage: string): LoopState {
     maxIterations: 15,
     consecutiveFailures: 0,
     completedSteps: [],
-    runPath: "/tmp/r1",
+    runPath: "",
     failureHistory: [],
     harnessContext: createInitialHarnessContext(),
   };
@@ -173,6 +173,51 @@ describe("ToolWorkingSetManager", () => {
     ]);
   });
 
+  it("pins fresh-session routing mutation tools outside the visible tool cap", () => {
+    const catalog = new ToolCatalog([
+      skill("filesystem", [
+        tool("write_file"),
+        tool("write_files"),
+        tool("create_directory"),
+        tool("shell_run_script"),
+        tool("shell"),
+        tool("search_in_files"),
+        tool("find_files"),
+        tool("read_file"),
+        tool("edit_file"),
+      ]),
+      skill("git-context", [
+        tool("git_context_list_sessions"),
+        tool("git_context_active"),
+        tool("git_context_list_tasks"),
+        tool("git_context_search_tasks"),
+        tool("git_context_read_task"),
+        tool("git_context_read_evidence"),
+        tool("git_context_search_evidence"),
+        tool("git_context_log"),
+        tool("git_context_activate_task_for_turn"),
+        tool("git_context_create_task_for_turn"),
+        tool("git_context_ask_clarification_for_turn"),
+      ]),
+    ]);
+    const executor = createToolExecutor([]);
+    const manager = new ToolWorkingSetManager({ catalog, toolExecutor: executor, maxVisibleTools: 12 });
+    const runState = state("create a website, write files, run tests, and search the project");
+    runState.runId = "";
+    runState.harnessContext = createInitialHarnessContext({
+      contextEngine: contextEngineWithFocus({ status: "none" }),
+    });
+    const context = { clientId: "c1", runId: "r1", sessionId: "s1", stepNumber: 1 };
+
+    manager.prepareForDecision(runState, context);
+
+    expect(manager.listActive(context).length).toBeGreaterThan(12);
+    expect(manager.listActive(context)).toContain("git_context_create_task_for_turn");
+    expect(manager.listActive(context)).toContain("git_context_ask_clarification_for_turn");
+    expect(executor.list(context)).toContain("git_context_create_task_for_turn");
+    expect(executor.list(context)).toContain("git_context_ask_clarification_for_turn");
+  });
+
   it("uses the full routing window when an active task exists", () => {
     const catalog = new ToolCatalog([
       skill("git-context", [
@@ -276,6 +321,41 @@ describe("ToolWorkingSetManager", () => {
     manager.prepareForDecision(runState, { clientId: "c1", runId: "real-run", sessionId: "s1", stepNumber: 2 });
 
     expect(manager.listActive({ runId: "real-run" })).toEqual([]);
+  });
+
+  it("removes task-routing mutation tools when a work run is active", () => {
+    const catalog = new ToolCatalog([
+      skill("git-context", [
+        tool("git_context_search_tasks"),
+        tool("git_context_create_task_for_turn"),
+        tool("git_context_activate_task_for_turn"),
+        tool("git_context_ask_clarification_for_turn"),
+      ]),
+      skill("filesystem", [
+        tool("write_files"),
+      ]),
+    ]);
+    const executor = createToolExecutor([]);
+    const manager = new ToolWorkingSetManager({ catalog, toolExecutor: executor, maxVisibleTools: 12 });
+    const context = { clientId: "c1", runId: "real-run", sessionId: "s1", stepNumber: 2 };
+    const runState = state("write the file");
+    runState.runId = "real-run";
+
+    manager.load({
+      toolNames: [
+        "git_context_search_tasks",
+        "git_context_create_task_for_turn",
+        "git_context_activate_task_for_turn",
+        "git_context_ask_clarification_for_turn",
+        "write_files",
+      ],
+    }, context);
+    manager.prepareForDecision(runState, context);
+
+    expect(manager.listActive(context)).toEqual([
+      "git_context_search_tasks",
+      "write_files",
+    ]);
   });
 });
 

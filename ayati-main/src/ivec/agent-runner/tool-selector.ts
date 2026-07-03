@@ -3,6 +3,7 @@ import type { LoopState } from "../types.js";
 import {
   detectRuntimeCapabilityMode,
   filterToolsForRuntimeMode,
+  requiredRoutingMutationToolsForRuntimeMode,
 } from "./runtime-capability-mode.js";
 
 export function selectToolsForDecision(
@@ -12,12 +13,23 @@ export function selectToolsForDecision(
 ): ToolDefinition[] {
   const mode = detectRuntimeCapabilityMode({ state });
   const candidateTools = filterToolsForRuntimeMode(mode, toolDefinitions);
+  const requiredToolNames = new Set(requiredRoutingMutationToolsForRuntimeMode(mode));
+  const requiredTools = candidateTools.filter((tool) => requiredToolNames.has(tool.name));
+  const budgetedTools = candidateTools.filter((tool) => !requiredToolNames.has(tool.name));
 
-  if (candidateTools.length <= limit) {
+  return appendUniqueTools(selectBudgetedTools(state, budgetedTools, limit), requiredTools);
+}
+
+function selectBudgetedTools(
+  state: LoopState,
+  candidateTools: ToolDefinition[],
+  limit: number,
+): ToolDefinition[] {
+  const normalizedLimit = Math.max(0, Math.floor(limit));
+  if (candidateTools.length <= normalizedLimit) {
     return [...candidateTools];
   }
 
-  const normalizedLimit = Math.max(0, Math.floor(limit));
   if (normalizedLimit === 0) {
     return [];
   }
@@ -43,6 +55,19 @@ export function selectToolsForDecision(
     .sort((left, right) => right.score - left.score || left.index - right.index)
     .slice(0, normalizedLimit)
     .map((entry) => entry.tool);
+}
+
+function appendUniqueTools(primary: ToolDefinition[], additional: ToolDefinition[]): ToolDefinition[] {
+  const seen = new Set<string>();
+  const merged: ToolDefinition[] = [];
+  for (const tool of [...primary, ...additional]) {
+    if (seen.has(tool.name)) {
+      continue;
+    }
+    seen.add(tool.name);
+    merged.push(tool);
+  }
+  return merged;
 }
 
 function buildToolSelectionQuery(state: LoopState): string {

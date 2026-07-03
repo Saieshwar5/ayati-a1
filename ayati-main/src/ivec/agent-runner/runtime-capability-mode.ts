@@ -186,6 +186,9 @@ export function isFreshSessionRoutingMode(mode: RuntimeCapabilityMode): boolean 
 }
 
 export function isRuntimeToolAllowed(mode: RuntimeCapabilityMode, toolName: string): boolean {
+  if (mode.name === "task_run" || mode.pendingTurnStatus === "bound") {
+    return !isGitContextTurnRoutingToolName(toolName);
+  }
   if (mode.name === "pre_task_routing") {
     return mode.pendingTurnStatus === "unbound" && isGitContextAllowedDuringPendingRouting(toolName);
   }
@@ -194,6 +197,16 @@ export function isRuntimeToolAllowed(mode: RuntimeCapabilityMode, toolName: stri
 
 export function filterToolsForRuntimeMode(mode: RuntimeCapabilityMode, tools: ToolDefinition[]): ToolDefinition[] {
   return tools.filter((tool) => isRuntimeToolAllowed(mode, tool.name));
+}
+
+export function requiredRoutingMutationToolsForRuntimeMode(mode: RuntimeCapabilityMode): string[] {
+  if (mode.name === "fresh_session_routing") {
+    return [...GIT_CONTEXT_FRESH_SESSION_ROUTING_TOOL_NAMES];
+  }
+  if (mode.name === "pre_task_routing" && mode.pendingTurnStatus === "unbound") {
+    return [...GIT_CONTEXT_TURN_ROUTING_TOOL_NAMES];
+  }
+  return [];
 }
 
 export function deterministicToolsForRuntimeMode(mode: RuntimeCapabilityMode): string[] | undefined {

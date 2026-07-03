@@ -9,6 +9,7 @@ import { createGitMemoryChatContextRuntime } from "../../src/app/git-memory-chat
 import {
   createGitMemoryRuntime,
   GitMemoryDailySessionStore,
+  type GitMemoryWriteBatchSnapshot,
   GIT_MEMORY_SESSION_STORE_DIR,
   GitMemoryWorktreeGitDriver,
   gitMemorySessionStoreAttachmentsPath,
@@ -17,6 +18,73 @@ import {
 import { FileLibrary } from "../../src/files/file-library.js";
 
 describe("createChatTurnRuntime", () => {
+  it("serializes chat turns for the same client before preparing pending turns", async () => {
+    const rootDir = mkdtempSync(join(tmpdir(), "ayati-chat-runtime-"));
+    const contextStoreDir = join(rootDir, "context");
+    const dataDir = join(rootDir, "data");
+
+    try {
+      const store = new GitMemoryDailySessionStore({
+        contextStoreDir,
+        now: () => new Date("2026-06-28T09:00:00.000Z"),
+      });
+      const gitMemoryRuntime = createGitMemoryRuntime({
+        contextStoreDir,
+        timezone: "Asia/Kolkata",
+        agentId: "local",
+        store,
+        now: () => new Date("2026-06-28T09:00:00.000Z"),
+      });
+      const chatContextRuntime = createGitMemoryChatContextRuntime({ gitMemoryRuntime });
+      const originalPrepareUserTurn = chatContextRuntime.prepareUserTurn.bind(chatContextRuntime);
+      const preparedMessages: string[] = [];
+      vi.spyOn(chatContextRuntime, "prepareUserTurn").mockImplementation(async (input) => {
+        preparedMessages.push(input.userMessage);
+        return await originalPrepareUserTurn(input);
+      });
+
+      const { provider, generateTurn, releaseFirst } = createGatedReplyProvider();
+      const runtime = createChatTurnRuntime({
+        provider,
+        dataDir,
+        chatContextRuntime,
+        now: () => new Date("2026-06-28T09:00:00.000Z"),
+      });
+
+      const first = runtime.processChat({
+        clientId: "local",
+        content: "hello first",
+        attachments: [],
+      });
+      await waitUntil(() => generateTurn.mock.calls.length === 1);
+
+      const second = runtime.processChat({
+        clientId: "local",
+        content: "hello second",
+        attachments: [],
+      });
+      await delay(50);
+
+      expect(preparedMessages).toEqual(["hello first"]);
+      expect(generateTurn).toHaveBeenCalledTimes(1);
+
+      releaseFirst();
+      await Promise.all([first, second]);
+      await waitForCommittedWrites(gitMemoryRuntime, "S-20260628-local", 4);
+
+      expect(preparedMessages).toEqual(["hello first", "hello second"]);
+      expect(generateTurn).toHaveBeenCalledTimes(2);
+
+      const records = await store.readSessionConversationRecords("S-20260628-local");
+      expect(records.filter((record) => record.role === "user").map((record) => record.text)).toEqual([
+        "hello first",
+        "hello second",
+      ]);
+    } finally {
+      rmSync(rootDir, { recursive: true, force: true });
+    }
+  });
+
   it("does not finalize a stale pending task run from a direct interaction reply", async () => {
     const rootDir = mkdtempSync(join(tmpdir(), "ayati-chat-runtime-"));
     const contextStoreDir = join(rootDir, "context");
@@ -147,6 +215,94 @@ describe("createChatTurnRuntime", () => {
       ) ?? "{}")).toMatchObject({
         status: "failed",
         blockers: ["Unexpected end of JSON input"],
+        next: "Retry or continue the task.",
+      });
+    } finally {
+      rmSync(rootDir, { recursive: true, force: true });
+    }
+  });
+
+  it("commits an agent-routed task run as failed when only the bound pending turn is available", async () => {
+    const rootDir = mkdtempSync(join(tmpdir(), "ayati-chat-runtime-"));
+    const contextStoreDir = join(rootDir, "context");
+    const dataDir = join(rootDir, "data");
+
+    try {
+      const store = new GitMemoryDailySessionStore({
+        contextStoreDir,
+        now: () => new Date("2026-06-28T09:00:00.000Z"),
+      });
+      const gitMemoryRuntime = createGitMemoryRuntime({
+        contextStoreDir,
+        timezone: "Asia/Kolkata",
+        agentId: "local",
+        store,
+        now: () => new Date("2026-06-28T09:00:00.000Z"),
+      });
+      const chatContextRuntime = createGitMemoryChatContextRuntime({ gitMemoryRuntime });
+      const first = await chatContextRuntime.prepareUserTurn({
+        clientId: "local",
+        userMessage: "create a tiny focus timer website",
+        at: "2026-06-28T09:00:00+05:30",
+      });
+      const task = await gitMemoryRuntime.createTaskBranch({
+        sessionId: first.sessionId,
+        title: "Focus Timer Website",
+        objective: "Create a tiny focus timer website.",
+        fromSeq: first.messageSeq,
+        toSeq: first.messageSeq,
+        at: "2026-06-28T09:00:01+05:30",
+      });
+      const followUp = await chatContextRuntime.prepareUserTurn({
+        clientId: "local",
+        userMessage: "add a dark mode toggle to it",
+        at: "2026-06-28T09:05:00+05:30",
+      });
+      const routed = await chatContextRuntime.activateTaskTurn({
+        clientId: "local",
+        turn: followUp,
+        taskId: task.taskId,
+        reason: "The user is continuing the focus timer website task.",
+        at: "2026-06-28T09:05:01+05:30",
+      });
+      if (routed?.status !== "ready") {
+        throw new Error(`Expected ready route, got ${routed?.status}.`);
+      }
+
+      const { provider } = createReplyProvider("unused");
+      const runtime = createChatTurnRuntime({
+        provider,
+        dataDir,
+        chatContextRuntime,
+        now: () => new Date("2026-06-28T09:06:00.000Z"),
+      });
+
+      await (runtime as any).completeFailedChatContextRun(
+        "local",
+        followUp,
+        null,
+        {
+          sessionId: followUp.sessionId,
+          runId: routed.runId,
+          triggerSeq: followUp.messageSeq,
+        },
+        new Error("Expected JSON object but received malformed provider output"),
+      );
+
+      const context = await chatContextRuntime.buildActiveContext(first.sessionId);
+      expect(context.task?.recentRuns[0]).toMatchObject({
+        runId: routed.runId,
+        status: "failed",
+        summary: "Task run failed before completion.",
+        toolCallCount: 0,
+      });
+      const driver = new GitMemoryWorktreeGitDriver(join(contextStoreDir, "sessions", first.sessionId));
+      expect(JSON.parse(await driver.readFile(
+        routed.ref,
+        gitMemoryTaskRunPath(task.taskId, routed.runId),
+      ) ?? "{}")).toMatchObject({
+        status: "failed",
+        blockers: ["Expected JSON object but received malformed provider output"],
         next: "Retry or continue the task.",
       });
     } finally {
@@ -346,6 +502,47 @@ function createReplyProvider(content = "Noted."): {
   };
 }
 
+function createGatedReplyProvider(): {
+  provider: LlmProvider;
+  generateTurn: ReturnType<typeof vi.fn>;
+  releaseFirst: () => void;
+} {
+  let callCount = 0;
+  let releaseFirst = () => {};
+  const firstGate = new Promise<void>((resolve) => {
+    releaseFirst = resolve;
+  });
+  const generateTurn = vi.fn(async () => {
+    callCount += 1;
+    const current = callCount;
+    if (current === 1) {
+      await firstGate;
+    }
+    return {
+      type: "assistant" as const,
+      content: `reply ${current}`,
+    };
+  });
+  return {
+    provider: {
+      name: "fake-provider",
+      version: "test",
+      capabilities: {
+        nativeToolCalling: true,
+        structuredOutput: {
+          jsonObject: true,
+          jsonSchema: true,
+        },
+      },
+      start() {},
+      stop() {},
+      generateTurn,
+    },
+    generateTurn,
+    releaseFirst,
+  };
+}
+
 function createThrowingProvider(error: unknown): {
   provider: LlmProvider;
   generateTurn: ReturnType<typeof vi.fn>;
@@ -370,6 +567,35 @@ function createThrowingProvider(error: unknown): {
     },
     generateTurn,
   };
+}
+
+async function waitUntil(predicate: () => boolean, timeoutMs = 1000): Promise<void> {
+  const startedAt = Date.now();
+  while (!predicate()) {
+    if (Date.now() - startedAt > timeoutMs) {
+      throw new Error("Timed out waiting for condition.");
+    }
+    await delay(10);
+  }
+}
+
+async function waitForCommittedWrites(
+  runtime: { getSessionWrites(sessionId: string): GitMemoryWriteBatchSnapshot[] },
+  sessionId: string,
+  count: number,
+): Promise<void> {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    const writes = runtime.getSessionWrites(sessionId);
+    if (writes.length >= count && writes.slice(0, count).every((write) => write.status === "committed")) {
+      return;
+    }
+    await delay(10);
+  }
+  throw new Error(`Timed out waiting for git memory writes: ${JSON.stringify(runtime.getSessionWrites(sessionId))}`);
+}
+
+async function delay(ms: number): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function extractStateView(messages: LlmMessage[]): any {

@@ -238,4 +238,25 @@ describe("runtime capability modes", () => {
 
     expect(buildRuntimeCapabilityPromptContext(mode).routingWindow).toBeUndefined();
   });
+
+  it("hides task-routing mutation tools once a work run exists", () => {
+    const mode = detectRuntimeCapabilityMode({
+      state: state(gitContext({
+        status: "active",
+        ref: "refs/heads/task/T-1",
+        workId: "T-1",
+      }), "R-1"),
+    });
+
+    expect(filterToolsForRuntimeMode(mode, [
+      tool("git_context_search_tasks"),
+      tool("git_context_create_task_for_turn"),
+      tool("git_context_activate_task_for_turn"),
+      tool("git_context_ask_clarification_for_turn"),
+      tool("write_files"),
+    ]).map((entry) => entry.name)).toEqual([
+      "git_context_search_tasks",
+      "write_files",
+    ]);
+  });
 });

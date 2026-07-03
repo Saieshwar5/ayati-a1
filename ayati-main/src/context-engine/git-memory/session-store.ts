@@ -13,6 +13,7 @@ import {
   gitMemorySessionActiveTaskRef,
   gitMemorySessionLatestBaseRef,
   gitMemorySessionLatestRunRef,
+  gitMemorySessionRunReservationRef,
   gitMemorySessionTaskRef,
   gitMemoryTaskLatestRunRef,
   readGitMemoryCustomRef,
@@ -715,6 +716,10 @@ export class GitMemoryDailySessionStore {
     if (existingRun !== null) {
       throw new Error(`Git memory task run already finalized: ${input.runId}`);
     }
+    if (await readGitMemoryCustomRef(driver, gitMemorySessionRunReservationRef(input.sessionId, input.runId))) {
+      throw new Error(`Git memory task run already reserved: ${input.runId}`);
+    }
+    await writeGitMemoryCustomRef(driver, gitMemorySessionRunReservationRef(input.sessionId, input.runId), ref);
     return { runId: input.runId };
   }
 
@@ -2076,6 +2081,13 @@ async function nextRunSequenceFromTasks(driver: GitMemoryWorktreeGitDriver): Pro
       if (sequence > 0) {
         sequences.push(sequence);
       }
+    }
+  }
+  for (const ref of await driver.listRefs("refs/ayati/sessions")) {
+    const match = /\/reserved-runs\/(R-\d{8}-\d{4})$/.exec(ref);
+    const sequence = match?.[1] ? runSequenceFromRunId(match[1]) : 0;
+    if (sequence > 0) {
+      sequences.push(sequence);
     }
   }
   return Math.max(0, ...sequences) + 1;

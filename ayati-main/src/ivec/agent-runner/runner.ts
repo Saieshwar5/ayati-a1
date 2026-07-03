@@ -573,7 +573,7 @@ export async function runAgentLoop(
 
     if (decision.kind === "load_tools") {
       toolLoadDecisionCount++;
-      const work = pendingRouting ? null : await ensureWorkRun("tool_load", decision);
+      const work = workRunHandle ? await ensureWorkRun("tool_load", decision) : null;
       const loadRunId = work?.runHandle.runId ?? decisionScopeId(inputHandle);
       const workToolContext = { ...toolContext, runId: loadRunId };
       recordFeedback(deps, inputHandle, work?.runHandle.runId, "tool_load", "requested", {

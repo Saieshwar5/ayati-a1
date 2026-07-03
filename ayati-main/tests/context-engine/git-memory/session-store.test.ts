@@ -799,6 +799,16 @@ describe("GitMemoryDailySessionStore", () => {
     expect(parseGitMemoryCommitTrailers(taskLog[0]?.message ?? "")).toMatchObject({
       event: "task_created",
     });
+    expect(await store.allocateTaskRunId(session.sessionId)).toBe("R-20260628-0002");
+    await expect(store.startTaskRun({
+      sessionId: session.sessionId,
+      taskId: task.taskId,
+      branch: task.branch,
+      runId: "R-20260628-0001",
+      fromSeq: user.seq,
+      toSeq: user.seq,
+      at: "2026-06-28T09:01:45+05:30",
+    })).rejects.toThrow("Git memory task run already reserved: R-20260628-0001");
   });
 
   it("does not start an already finalized task run", async () => {

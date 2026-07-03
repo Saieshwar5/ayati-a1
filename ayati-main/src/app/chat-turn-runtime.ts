@@ -121,6 +121,7 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
   private readonly feedbackLedger?: AgentFeedbackLedger;
   private readonly chatContextRuntime: GitMemoryChatContextRuntime;
   private readonly pulseProposalReflectionService = new PulseProposalReflectionService();
+  private readonly turnSerializer = new AsyncKeySerializer();
 
   constructor(options: CreateChatTurnRuntimeOptions) {
     this.onReply = options.onReply;
@@ -142,6 +143,35 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
   }
 
   async processChat(input: ChatTurnRuntimeInput): Promise<void> {
+    const serializationKey = this.chatTurnSerializationKey(input);
+    const queued = this.turnSerializer.isBusy(serializationKey);
+    if (queued) {
+      this.feedbackLedger?.record({
+        clientId: input.clientId,
+        stage: "runtime",
+        event: "chat_turn_queued",
+        data: {
+          serializationKey,
+          reason: "A previous chat turn is still running for this session key.",
+        },
+      });
+    }
+    return await this.turnSerializer.enqueue(serializationKey, async () => {
+      if (queued) {
+        this.feedbackLedger?.record({
+          clientId: input.clientId,
+          stage: "runtime",
+          event: "chat_turn_started_after_queue",
+          data: {
+            serializationKey,
+          },
+        });
+      }
+      await this.processChatUnlocked(input);
+    });
+  }
+
+  private async processChatUnlocked(input: ChatTurnRuntimeInput): Promise<void> {
     let inputHandle: SessionInputHandle | null = null;
     let runHandle: MemoryRunHandle | null = null;
     let chatContextTurn: GitMemoryChatContextPreparedTurn | null = null;
@@ -296,11 +326,11 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
           data: { message },
         });
       }
-      if (runHandle && routedContextTurn?.status === "ready") {
+      if (runHandle) {
         await this.completeFailedChatContextRun(
           input.clientId,
           chatContextTurn,
-          routedContextTurn,
+          routedContextTurn?.status === "ready" ? routedContextTurn : null,
           runHandle,
           err,
         );
@@ -310,6 +340,11 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
         content: formatChatRuntimeError(err),
       });
     }
+  }
+
+  private chatTurnSerializationKey(input: ChatTurnRuntimeInput): string {
+    const clientId = input.clientId.trim();
+    return clientId.length > 0 ? clientId : "local";
   }
 
   private async prepareChatContextTurn(
@@ -666,16 +701,34 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
   private async completeFailedChatContextRun(
     clientId: string,
     prepared: GitMemoryChatContextPreparedTurn | null,
-    routed: Extract<GitMemoryChatContextRoutedTurn, { status: "ready" }>,
+    routed: Extract<GitMemoryChatContextRoutedTurn, { status: "ready" }> | null,
     runHandle: MemoryRunHandle,
     error: unknown,
   ): Promise<void> {
-    if (!prepared || runHandle.runId !== routed.runId) {
+    if (!prepared || (routed && runHandle.runId !== routed.runId)) {
       return;
     }
 
     const message = errMessage(error);
     try {
+      const harnessContext = routed
+        ? createInitialHarnessContext(routed.harnessContext)
+        : await this.failedRunHarnessContextFromPendingTurn(prepared, runHandle);
+      if (!harnessContext) {
+        this.feedbackLedger?.record({
+          clientId,
+          sessionId: runHandle.sessionId,
+          seq: runHandle.triggerSeq,
+          runId: runHandle.runId,
+          stage: "context_engine",
+          event: "finalization_failed",
+          data: {
+            reason: "missing_bound_pending_turn",
+            message,
+          },
+        });
+        return;
+      }
       await this.completeChatContextRun(clientId, prepared, routed, {
         type: "reply",
         runClass: "task",
@@ -695,11 +748,29 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
           nextStep: "Retry or continue the task.",
         },
         completedSteps: [],
-        harnessContext: createInitialHarnessContext(routed.harnessContext),
+        harnessContext,
       });
     } catch (finalizationError) {
       devWarn(`[${clientId}] git memory failed-run finalization failed: ${errMessage(finalizationError)}`);
     }
+  }
+
+  private async failedRunHarnessContextFromPendingTurn(
+    prepared: GitMemoryChatContextPreparedTurn,
+    runHandle: MemoryRunHandle,
+  ): Promise<ReturnType<typeof createInitialHarnessContext> | null> {
+    const context = await this.chatContextRuntime.buildActiveContext(prepared.sessionId);
+    const pendingTurn = context.pendingTurn;
+    if (
+      pendingTurn?.routingStatus !== "bound"
+      || pendingTurn.runId !== runHandle.runId
+      || !pendingTurn.taskId
+    ) {
+      return null;
+    }
+    return createInitialHarnessContext({
+      contextEngine: buildGitMemoryHarnessContextPack(context),
+    });
   }
 
   private chatContextFinalizationSkipReason(
@@ -1116,6 +1187,30 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
     }
 
     throw new Error("Attachment is missing a usable fileId or path.");
+  }
+}
+
+class AsyncKeySerializer {
+  private readonly tails = new Map<string, Promise<void>>();
+
+  isBusy(key: string): boolean {
+    return this.tails.has(key);
+  }
+
+  async enqueue<T>(key: string, work: () => Promise<T>): Promise<T> {
+    const previous = this.tails.get(key) ?? Promise.resolve();
+    const current = previous.then(work);
+    const tail = current.then(
+      () => undefined,
+      () => undefined,
+    );
+    this.tails.set(key, tail);
+    tail.finally(() => {
+      if (this.tails.get(key) === tail) {
+        this.tails.delete(key);
+      }
+    });
+    return await current;
   }
 }
 

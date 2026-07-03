@@ -90,6 +90,12 @@ search, read, or activate yet. If the model tries to load or call normal work
 tools before a task exists, the runner records repair feedback instead of
 throwing a missing-run error to the user.
 
+Routing mutation tools are treated as routing controls, not ordinary work
+tools. During routing modes they are pinned outside the normal selected-tool and
+visible-tool budgets, so repair can always ask the model to create, activate,
+or clarify a task with a callable native tool. Once ownership is resolved or a
+real work run exists, those mutation tools are removed from the run surface.
+
 After a routing tool succeeds, the runner refreshes the harness context into
 the returned real task run id, removes routing/search/create/switch tools for
 the rest of that run, and prepares normal work tools for the original user

@@ -1132,6 +1132,176 @@ describe("agentLoop", () => {
     }
   });
 
+  it("loads tools before auto-binding the active task for action work", async () => {
+    const dataDir = makeTmpDir();
+    const outputPath = join(dataDir, "active-task-load-then-write.txt");
+    try {
+      const toolExecutor = createToolExecutor([]);
+      const toolWorkingSetManager = new ToolWorkingSetManager({
+        catalog: new ToolCatalog([{
+          id: "filesystem",
+          version: "1.0.0",
+          description: "Filesystem tools",
+          promptBlock: "",
+          tools: [writeFilesTool],
+        }]),
+        toolExecutor,
+        maxVisibleTools: 12,
+      });
+      const createWorkRun = vi.fn().mockResolvedValue({
+        runHandle: {
+          sessionId: "s1",
+          runId: "R-20260702-website-load-auto",
+          triggerSeq: 9,
+        },
+        harnessContext: {
+          contextEngine: {
+            session: {
+              sessionId: "s1",
+              conversationTail: [],
+              activityTail: [],
+              assetCount: 1,
+            },
+            focus: {
+              status: "active",
+              ref: "refs/heads/task/T-20260702-website",
+              workId: "T-20260702-website",
+            },
+            task: {
+              ref: "refs/heads/task/T-20260702-website",
+              workId: "T-20260702-website",
+              title: "Website task",
+              objective: "Maintain the website task.",
+              status: "active",
+              completed: ["Created initial website files."],
+              open: ["Improve the website."],
+              blockers: [],
+              facts: [],
+              next: "Improve the website.",
+              assets: [],
+              recentRuns: [],
+              recentCommits: [],
+              recentEvidence: [],
+            },
+            pendingTurn: {
+              routingStatus: "bound",
+              fromSeq: 9,
+              toSeq: 9,
+              text: "Add a dark mode toggle to the active website task",
+              workId: "T-20260702-website",
+              branch: "task/T-20260702-website",
+              runId: "R-20260702-website-load-auto",
+            },
+          },
+        },
+      });
+      const feedback = createMemoryFeedbackLedger();
+      const provider = createProvider([
+        {
+          kind: "load_tools",
+          request: {
+            toolNames: ["write_files"],
+            reason: "Need file writing tools for the active website follow-up",
+          },
+        },
+        {
+          kind: "act",
+          action: {
+            mode: "single",
+            calls: [{
+              id: "write_file",
+              tool: "write_files",
+              input: {
+                createDirs: true,
+                files: [{
+                  path: outputPath,
+                  content: "Loaded tools before active-task auto-bind.",
+                }],
+              },
+              dependsOn: [],
+              purpose: "Write the active-task follow-up after loading tools.",
+            }],
+            allowedTools: ["write_files"],
+            assertions: [{ kind: "file_exists", path: "$.files[0].path" }],
+          },
+        },
+        {
+          kind: "reply",
+          status: "completed",
+          message: `I updated the active task at ${outputPath}.`,
+        },
+      ]);
+
+      const result = await agentLoop({
+        provider,
+        toolExecutor,
+        toolWorkingSetManager,
+        toolDefinitions: [],
+        runRecorder: noopRunRecorder,
+        feedbackLedger: feedback.ledger,
+        createWorkRun,
+        inputHandle: { sessionId: "s1", seq: 9 },
+        clientId: "c1",
+        initialUserMessage: "Add a dark mode toggle to the active website task",
+        dataDir,
+        systemContext: "full system context with memory",
+        harnessContext: {
+          contextEngine: {
+            session: {
+              sessionId: "s1",
+              conversationTail: [],
+              activityTail: [],
+              assetCount: 1,
+            },
+            focus: {
+              status: "active",
+              ref: "refs/heads/task/T-20260702-website",
+              workId: "T-20260702-website",
+            },
+            task: {
+              ref: "refs/heads/task/T-20260702-website",
+              workId: "T-20260702-website",
+              title: "Website task",
+              objective: "Maintain the website task.",
+              status: "active",
+              completed: ["Created initial website files."],
+              open: ["Improve the website."],
+              blockers: [],
+              facts: [],
+              next: "Improve the website.",
+              assets: [],
+              recentRuns: [],
+              recentCommits: [],
+              recentEvidence: [],
+            },
+          },
+        },
+      });
+
+      expect(result.status).toBe("completed");
+      expect(result.runClass).toBe("task");
+      expect(result.workRunId).toBe("R-20260702-website-load-auto");
+      expect(readFileSync(outputPath, "utf-8")).toContain("Loaded tools before active-task auto-bind.");
+      expect(createWorkRun).toHaveBeenCalledTimes(1);
+      expect(createWorkRun).toHaveBeenCalledWith(
+        { sessionId: "s1", seq: 9 },
+        expect.objectContaining({
+          reason: "agent_action",
+          userMessage: "Add a dark mode toggle to the active website task",
+          activeTaskId: "T-20260702-website",
+          activeBranch: "task/T-20260702-website",
+        }),
+      );
+      expect(feedbackEvents(feedback.events, "guard", "missing_work_run")).toHaveLength(0);
+      expect(feedbackEvents(feedback.events, "tool_load", "requested")[0]?.runId).toBeUndefined();
+      expect(feedbackEvents(feedback.events, "tools", "normal_tools_enabled_for_work_run")[0]?.data).toMatchObject({
+        workRunId: "R-20260702-website-load-auto",
+      });
+    } finally {
+      cleanup(dataDir);
+    }
+  });
+
   it("runs active-task git-context reads before a work run without creating one", async () => {
     const dataDir = makeTmpDir();
     try {
