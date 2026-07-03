@@ -635,7 +635,9 @@ export async function runAgentLoop(
       continue;
     }
 
-    if (pendingRouting || freshSessionRouting) {
+    const preRunGitContextAction = isPreRunGitContextAction(decision, workRunHandle);
+
+    if (pendingRouting || freshSessionRouting || preRunGitContextAction) {
       const routingRunId = decisionScopeId(inputHandle);
       const routingToolContext = { ...toolContext, runId: routingRunId };
       recordFeedback(deps, inputHandle, undefined, "action", "started", {
@@ -653,6 +655,7 @@ export async function runAgentLoop(
         allowedTools: decision.action.allowedTools,
         pendingRouting: true,
         freshSessionRouting,
+        preRunGitContextAction,
       });
       const stepResult = await executePendingRoutingAction({
         deps,
@@ -1330,6 +1333,16 @@ function missingWorkRunRepairCode(pendingTurnStatus: string | undefined): "R_NOR
     return "R_PENDING_TURN_CLARIFYING";
   }
   return "R_NORMAL_TOOL_WITHOUT_TASK_RUN";
+}
+
+function isPreRunGitContextAction(
+  decision: AgentDecision,
+  workRunHandle: MemoryRunHandle | undefined,
+): boolean {
+  return decision.kind === "act"
+    && !workRunHandle
+    && decision.action.calls.length > 0
+    && decision.action.calls.every((call) => isGitContextAllowedDuringPendingRouting(call.tool));
 }
 
 function createFailureRecordFromStepSummary(step: StepSummary): LoopState["failureHistory"][number] {
