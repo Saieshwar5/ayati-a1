@@ -406,6 +406,16 @@ describe("buildAgentStateView", () => {
         "task_activation",
       ],
       repairCode: "R_FRESH_SESSION_NEEDS_TASK",
+      routingWindow: {
+        open: true,
+        step: 1,
+        maxSteps: 2,
+        remaining: 1,
+        expiresAfterThisDecision: false,
+        readToolsAvailable: true,
+        routingToolsAvailable: true,
+        readToolsRemainAfterExpiry: true,
+      },
     });
   });
 

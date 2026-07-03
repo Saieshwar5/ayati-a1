@@ -177,4 +177,65 @@ describe("runtime capability modes", () => {
 
     expect(isDecisionAllowedInRuntimeMode(mode, read)).toBe(true);
   });
+
+  it("projects routing-window timing before a work run exists", () => {
+    const firstStep = state(gitContext({
+      status: "active",
+      ref: "refs/heads/task/T-1",
+      workId: "T-1",
+    }));
+    firstStep.iteration = 1;
+    const secondStep = state(gitContext({
+      status: "active",
+      ref: "refs/heads/task/T-1",
+      workId: "T-1",
+    }));
+    secondStep.iteration = 2;
+    const expired = state(gitContext({
+      status: "active",
+      ref: "refs/heads/task/T-1",
+      workId: "T-1",
+    }));
+    expired.iteration = 3;
+
+    expect(buildRuntimeCapabilityPromptContext(detectRuntimeCapabilityMode({ state: firstStep })).routingWindow).toMatchObject({
+      open: true,
+      step: 1,
+      maxSteps: 2,
+      remaining: 1,
+      expiresAfterThisDecision: false,
+      readToolsAvailable: true,
+      routingToolsAvailable: true,
+      readToolsRemainAfterExpiry: true,
+    });
+    expect(buildRuntimeCapabilityPromptContext(detectRuntimeCapabilityMode({ state: secondStep })).routingWindow).toMatchObject({
+      open: true,
+      step: 2,
+      remaining: 0,
+      expiresAfterThisDecision: true,
+      routingToolsAvailable: true,
+    });
+    expect(buildRuntimeCapabilityPromptContext(detectRuntimeCapabilityMode({ state: expired })).routingWindow).toMatchObject({
+      open: false,
+      expired: true,
+      step: 3,
+      remaining: 0,
+      expiresAfterThisDecision: false,
+      readToolsAvailable: true,
+      routingToolsAvailable: false,
+      readToolsRemainAfterExpiry: true,
+    });
+  });
+
+  it("omits routing-window timing once a work run exists", () => {
+    const mode = detectRuntimeCapabilityMode({
+      state: state(gitContext({
+        status: "active",
+        ref: "refs/heads/task/T-1",
+        workId: "T-1",
+      }), "R-1"),
+    });
+
+    expect(buildRuntimeCapabilityPromptContext(mode).routingWindow).toBeUndefined();
+  });
 });

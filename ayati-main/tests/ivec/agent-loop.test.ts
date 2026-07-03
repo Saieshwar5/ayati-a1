@@ -634,9 +634,24 @@ describe("agentLoop", () => {
       expect(secondDecisionTools).toContain("write_files");
       expect(secondDecisionTools).not.toContain("git_context_create_task_for_turn");
       expect(feedbackEvents(feedback.events, "tools", "tool_mode_selected").map((event) => event.data?.["mode"])).toContain("fresh_session_routing");
+      expect(feedbackEvents(feedback.events, "tools", "routing_window_visible")[0]?.data).toMatchObject({
+        mode: "fresh_session_routing",
+        step: 1,
+        maxSteps: 2,
+        remaining: 1,
+        open: true,
+        expiresAfterThisDecision: false,
+        routingToolsAvailable: true,
+        readToolsRemainAfterExpiry: true,
+      });
       expect(feedbackEvents(feedback.events, "tools", "pre_task_routing_tools_visible")[0]?.data).toMatchObject({
         mode: "fresh_session_routing",
-        visibleRoutingTools: ["git_context_create_task_for_turn"],
+        visibleRoutingTools: expect.arrayContaining(["git_context_create_task_for_turn"]),
+        routingWindow: {
+          open: true,
+          step: 1,
+          maxSteps: 2,
+        },
       });
       expect(feedbackEvents(feedback.events, "tools", "normal_tools_enabled_for_work_run")[0]?.data).toMatchObject({
         workRunId: "R-20260702-001",
@@ -1306,6 +1321,16 @@ describe("agentLoop", () => {
         preRunGitContextAction: true,
         preRunGitContextReadAction: true,
         preRunGitContextRoutingAction: false,
+      });
+      expect(feedbackEvents(feedback.events, "tools", "routing_window_expiring")[0]?.data).toMatchObject({
+        mode: "fresh_session_routing",
+        step: 2,
+        maxSteps: 2,
+        remaining: 0,
+        open: true,
+        expiresAfterThisDecision: true,
+        readToolsVisible: expect.arrayContaining(["git_context_list_tasks"]),
+        routingToolsVisible: expect.arrayContaining(["git_context_create_task_for_turn"]),
       });
     } finally {
       cleanup(dataDir);

@@ -12,6 +12,7 @@ import {
   detectRuntimeCapabilityMode,
   deterministicToolsForRuntimeMode,
   isFreshSessionRoutingMode,
+  TASK_ROUTING_WINDOW_STEPS,
 } from "./runtime-capability-mode.js";
 
 export interface ToolLoadRequest {
@@ -52,7 +53,6 @@ interface RunToolState {
 }
 
 const DEFAULT_MAX_VISIBLE_TOOLS = 12;
-const TASK_ROUTING_WINDOW_STEPS = 2;
 const TASK_ROUTING_WINDOW_TOOL_NAMES = [
   "git_context_active",
   "git_context_list_tasks",

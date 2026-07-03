@@ -1671,8 +1671,39 @@ function recordToolWorkingSetFeedback(input: {
     iteration: input.iteration,
     toolContextRunId: input.toolContextRunId,
     ...toolMode,
+    ...(runtimeMode.routingWindow ? { routingWindow: runtimeMode.routingWindow } : {}),
     ...(warningCodes.length > 0 ? { warningCodes } : {}),
   });
+  if (runtimeMode.routingWindow) {
+    const routingWindowFeedback = {
+      iteration: input.iteration,
+      toolContextRunId: input.toolContextRunId,
+      mode: toolMode.mode,
+      hasWorkRun: toolMode.hasWorkRun,
+      focusStatus: toolMode.focusStatus,
+      pendingTurnStatus: toolMode.pendingTurnStatus,
+      step: runtimeMode.routingWindow.step,
+      maxSteps: runtimeMode.routingWindow.maxSteps,
+      remaining: runtimeMode.routingWindow.remaining,
+      open: runtimeMode.routingWindow.open,
+      expired: runtimeMode.routingWindow.expired ?? false,
+      expiresAfterThisDecision: runtimeMode.routingWindow.expiresAfterThisDecision,
+      readToolsVisible: toolMode.visibleReadTools,
+      routingToolsVisible: toolMode.visibleTaskRoutingTools,
+      readToolsAvailable: runtimeMode.routingWindow.readToolsAvailable,
+      routingToolsAvailable: runtimeMode.routingWindow.routingToolsAvailable,
+      readToolsRemainAfterExpiry: runtimeMode.routingWindow.readToolsRemainAfterExpiry,
+      guidance: runtimeMode.routingWindow.guidance,
+    };
+    if (runtimeMode.routingWindow.open) {
+      recordFeedback(input.deps, input.inputHandle, input.runId, "tools", "routing_window_visible", routingWindowFeedback);
+      if (runtimeMode.routingWindow.expiresAfterThisDecision) {
+        recordFeedback(input.deps, input.inputHandle, input.runId, "tools", "routing_window_expiring", routingWindowFeedback);
+      }
+    } else {
+      recordFeedback(input.deps, input.inputHandle, input.runId, "tools", "routing_window_expired", routingWindowFeedback);
+    }
+  }
   if (!toolMode.hasWorkRun && toolMode.visibleRoutingTools.length > 0) {
     recordFeedback(input.deps, input.inputHandle, input.runId, "tools", "pre_task_routing_tools_visible", {
       iteration: input.iteration,
@@ -1680,9 +1711,12 @@ function recordToolWorkingSetFeedback(input: {
       mode: toolMode.mode,
       visibleRoutingTools: toolMode.visibleRoutingTools,
       selectedRoutingTools: toolMode.selectedRoutingTools,
+      visibleReadTools: toolMode.visibleReadTools,
+      visibleTaskRoutingTools: toolMode.visibleTaskRoutingTools,
       visibleNormalTools: toolMode.visibleNormalTools,
       pendingTurnStatus: toolMode.pendingTurnStatus,
       focusStatus: toolMode.focusStatus,
+      ...(runtimeMode.routingWindow ? { routingWindow: runtimeMode.routingWindow } : {}),
     });
   }
 }
