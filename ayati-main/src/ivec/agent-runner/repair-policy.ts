@@ -13,6 +13,7 @@ export type RepairCode =
   | "R_MULTIPLE_NATIVE_TOOL_CALLS"
   | "R_PARSE_FAILED"
   | "R_PROVIDER_EMPTY_RESPONSE"
+  | "R_PROVIDER_MALFORMED_RESPONSE"
   | "R_VERIFICATION_FAILED"
   | "R_NO_PROGRESS"
   | "R_REPEATED_REPAIR_FAILURE";
@@ -92,6 +93,7 @@ export const REPAIR_CODES: readonly RepairCode[] = [
   "R_MULTIPLE_NATIVE_TOOL_CALLS",
   "R_PARSE_FAILED",
   "R_PROVIDER_EMPTY_RESPONSE",
+  "R_PROVIDER_MALFORMED_RESPONSE",
   "R_VERIFICATION_FAILED",
   "R_NO_PROGRESS",
   "R_REPEATED_REPAIR_FAILURE",
@@ -246,6 +248,17 @@ export const REPAIR_CODE_CATALOG: Readonly<Record<RepairCode, RepairCatalogEntry
     message: "The model provider returned no usable assistant message or tool call.",
     allowedNextActions: [
       "Retry the provider request once.",
+      "If retry fails, return a clean provider error to the user.",
+    ],
+    modelFacing: false,
+  },
+  R_PROVIDER_MALFORMED_RESPONSE: {
+    code: "R_PROVIDER_MALFORMED_RESPONSE",
+    severity: "error",
+    source: "provider.response",
+    message: "The model provider returned a malformed response that could not be parsed.",
+    allowedNextActions: [
+      "Retry the same provider request once.",
       "If retry fails, return a clean provider error to the user.",
     ],
     modelFacing: false,

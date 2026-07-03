@@ -1,5 +1,12 @@
 import type { LlmProvider } from "../../core/contracts/provider.js";
-import { isProviderEmptyResponseError } from "../../core/contracts/provider-errors.js";
+import {
+  isProviderEmptyResponseError,
+  isProviderMalformedResponseError,
+} from "../../core/contracts/provider-errors.js";
+import type {
+  ProviderEmptyResponseError,
+  ProviderMalformedResponseError,
+} from "../../core/contracts/provider-errors.js";
 import type { LlmMessage, LlmToolCall, LlmToolSchema, LlmTurnOutput } from "../../core/contracts/llm-protocol.js";
 import { agentTrace, isAgentTracePromptEnabled, tracePreview } from "../../shared/index.js";
 import type { ToolContractAssertion, ToolDefinition } from "../../skills/types.js";
@@ -400,21 +407,20 @@ async function generateTurnWithEmptyResponseRetry(
         parallelToolCalls: false,
       });
     } catch (error) {
-      if (!isProviderEmptyResponseError(error)) {
+      const responseFailure = providerResponseFailureDetails(error);
+      if (!responseFailure) {
         throw error;
       }
 
       const willRetry = providerAttempt <= MAX_PROVIDER_EMPTY_RESPONSE_RETRIES;
-      const repair = createRepairSignal("R_PROVIDER_EMPTY_RESPONSE", {
+      const repair = createRepairSignal(responseFailure.repairCode, {
         operatorDetails: {
           attempt: request.decisionAttempt,
           providerAttempt,
-          provider: error.details.provider,
-          model: error.details.model,
+          provider: responseFailure.provider,
+          model: responseFailure.model,
           latencyMs: Date.now() - request.requestStartedAt,
-          choiceCount: error.details.choiceCount,
-          responseKeys: error.details.responseKeys ?? [],
-          finishReason: error.details.finishReason,
+          ...responseFailure.operatorDetails,
           toolChoice: "auto",
           nativeToolCount: request.decisionTools.length,
           requestMode: request.decisionTools.length > 0 ? "tools" : "text",
@@ -422,15 +428,13 @@ async function generateTurnWithEmptyResponseRetry(
           ...(willRetry ? { retryDelayMs: PROVIDER_EMPTY_RESPONSE_RETRY_DELAY_MS } : {}),
         },
       });
-      recordDecisionFeedback(input, "provider_empty_response", {
+      recordDecisionFeedback(input, responseFailure.event, {
         attempt: request.decisionAttempt,
         providerAttempt,
-        provider: error.details.provider,
-        model: error.details.model,
+        provider: responseFailure.provider,
+        model: responseFailure.model,
         latencyMs: Date.now() - request.requestStartedAt,
-        choiceCount: error.details.choiceCount,
-        responseKeys: error.details.responseKeys ?? [],
-        finishReason: error.details.finishReason,
+        ...responseFailure.operatorDetails,
         toolChoice: "auto",
         nativeToolCount: request.decisionTools.length,
         requestMode: request.decisionTools.length > 0 ? "tools" : "text",
@@ -449,6 +453,61 @@ async function generateTurnWithEmptyResponseRetry(
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function providerResponseFailureDetails(error: unknown): {
+  event: "provider_empty_response" | "provider_malformed_response";
+  repairCode: "R_PROVIDER_EMPTY_RESPONSE" | "R_PROVIDER_MALFORMED_RESPONSE";
+  provider: string;
+  model?: string;
+  operatorDetails: Record<string, unknown>;
+} | undefined {
+  if (isProviderEmptyResponseError(error)) {
+    return providerEmptyResponseFailureDetails(error);
+  }
+  if (isProviderMalformedResponseError(error)) {
+    return providerMalformedResponseFailureDetails(error);
+  }
+  return undefined;
+}
+
+function providerEmptyResponseFailureDetails(error: ProviderEmptyResponseError): {
+  event: "provider_empty_response";
+  repairCode: "R_PROVIDER_EMPTY_RESPONSE";
+  provider: string;
+  model?: string;
+  operatorDetails: Record<string, unknown>;
+} {
+  return {
+    event: "provider_empty_response",
+    repairCode: "R_PROVIDER_EMPTY_RESPONSE",
+    provider: error.details.provider,
+    model: error.details.model,
+    operatorDetails: {
+      choiceCount: error.details.choiceCount,
+      responseKeys: error.details.responseKeys ?? [],
+      finishReason: error.details.finishReason,
+    },
+  };
+}
+
+function providerMalformedResponseFailureDetails(error: ProviderMalformedResponseError): {
+  event: "provider_malformed_response";
+  repairCode: "R_PROVIDER_MALFORMED_RESPONSE";
+  provider: string;
+  model?: string;
+  operatorDetails: Record<string, unknown>;
+} {
+  return {
+    event: "provider_malformed_response",
+    repairCode: "R_PROVIDER_MALFORMED_RESPONSE",
+    provider: error.details.provider,
+    model: error.details.model,
+    operatorDetails: {
+      errorName: error.details.errorName,
+      errorMessage: error.details.errorMessage,
+    },
+  };
 }
 
 function recordDecisionFeedback(

@@ -11,7 +11,10 @@ vi.mock("openai", () => {
 
 import OpenAI from "openai";
 import type { LlmProvider } from "../../src/core/contracts/provider.js";
-import { isProviderEmptyResponseError } from "../../src/core/contracts/provider-errors.js";
+import {
+  isProviderEmptyResponseError,
+  isProviderMalformedResponseError,
+} from "../../src/core/contracts/provider-errors.js";
 import {
   type ProviderRuntimeConfigHandle,
   setupProviderRuntimeConfig,
@@ -284,6 +287,31 @@ describe("OpenRouter provider", () => {
       choiceCount: 1,
       responseKeys: ["choices"],
       hasMessage: true,
+    });
+  });
+
+  it("should normalize malformed provider JSON responses", async () => {
+    process.env["OPENROUTER_API_KEY"] = "or-test-key";
+
+    const mockCreate = vi.fn().mockRejectedValue(new SyntaxError("Unexpected end of JSON input"));
+
+    mockOpenAIConstructor(mockCreate);
+
+    provider.start();
+    const error = await provider.generateTurn({ messages: [{ role: "user", content: "Hi" }] })
+      .then(() => null, (caught: unknown) => caught);
+
+    expect(error).toBeInstanceOf(Error);
+    expect(error).toMatchObject({ message: "Malformed response from OpenRouter." });
+    expect(isProviderMalformedResponseError(error)).toBe(true);
+    if (!isProviderMalformedResponseError(error)) {
+      throw new Error("Expected provider malformed response error.");
+    }
+    expect(error.details).toEqual({
+      provider: "openrouter",
+      model: "nvidia/nemotron-3-super-120b-a12b:free",
+      errorName: "SyntaxError",
+      errorMessage: "Unexpected end of JSON input",
     });
   });
 
