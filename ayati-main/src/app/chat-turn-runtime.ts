@@ -29,7 +29,10 @@ import {
   type GitMemorySessionAttachmentRecord,
   type GitMemoryConversationSeqRange,
 } from "../context-engine/index.js";
-import type { HarnessContextInput } from "../ivec/harness-context.js";
+import {
+  createInitialHarnessContext,
+  type HarnessContextInput,
+} from "../ivec/harness-context.js";
 import { devError, devLog, devWarn } from "../shared/index.js";
 import { agentLoop } from "../ivec/agent-loop.js";
 import {
@@ -292,6 +295,15 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
           event: "failed",
           data: { message },
         });
+      }
+      if (runHandle && routedContextTurn?.status === "ready") {
+        await this.completeFailedChatContextRun(
+          input.clientId,
+          chatContextTurn,
+          routedContextTurn,
+          runHandle,
+          err,
+        );
       }
       this.onReply?.(input.clientId, {
         type: "error",
@@ -612,6 +624,45 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
         }),
       },
     });
+  }
+
+  private async completeFailedChatContextRun(
+    clientId: string,
+    prepared: GitMemoryChatContextPreparedTurn | null,
+    routed: Extract<GitMemoryChatContextRoutedTurn, { status: "ready" }>,
+    runHandle: MemoryRunHandle,
+    error: unknown,
+  ): Promise<void> {
+    if (!prepared || runHandle.runId !== routed.runId) {
+      return;
+    }
+
+    const message = errMessage(error);
+    try {
+      await this.completeChatContextRun(clientId, prepared, routed, {
+        type: "reply",
+        runClass: "task",
+        content: `Runtime failed before the task run could complete: ${message}`,
+        status: "failed",
+        totalIterations: 0,
+        totalToolCalls: 0,
+        runPath: "",
+        workRunId: runHandle.runId,
+        workState: {
+          status: "blocked",
+          summary: "Task run failed before completion.",
+          openWork: ["Retry or continue the task after resolving the runtime failure."],
+          blockers: [message],
+          verifiedFacts: [],
+          evidence: [],
+          nextStep: "Retry or continue the task.",
+        },
+        completedSteps: [],
+        harnessContext: createInitialHarnessContext(routed.harnessContext),
+      });
+    } catch (finalizationError) {
+      devWarn(`[${clientId}] git memory failed-run finalization failed: ${errMessage(finalizationError)}`);
+    }
   }
 
   private chatContextFinalizationSkipReason(
@@ -1250,4 +1301,8 @@ function formatChatRuntimeError(error: unknown): string {
     return "I could not get a valid response from the model provider. Please retry.";
   }
   return "Failed to generate a response.";
+}
+
+function errMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }

@@ -74,6 +74,86 @@ describe("createChatTurnRuntime", () => {
     }
   });
 
+  it("commits a routed task run as failed when the provider throws", async () => {
+    const rootDir = mkdtempSync(join(tmpdir(), "ayati-chat-runtime-"));
+    const contextStoreDir = join(rootDir, "context");
+    const dataDir = join(rootDir, "data");
+
+    try {
+      const store = new GitMemoryDailySessionStore({
+        contextStoreDir,
+        now: () => new Date("2026-06-28T09:00:00.000Z"),
+      });
+      const gitMemoryRuntime = createGitMemoryRuntime({
+        contextStoreDir,
+        timezone: "Asia/Kolkata",
+        agentId: "local",
+        store,
+        now: () => new Date("2026-06-28T09:00:00.000Z"),
+      });
+      const chatContextRuntime = createGitMemoryChatContextRuntime({ gitMemoryRuntime });
+      const first = await chatContextRuntime.prepareUserTurn({
+        clientId: "local",
+        userMessage: "create a tiny focus timer website",
+        at: "2026-06-28T09:00:00+05:30",
+      });
+      await gitMemoryRuntime.createTaskBranch({
+        sessionId: first.sessionId,
+        title: "Focus Timer Website",
+        objective: "Create a tiny focus timer website.",
+        fromSeq: first.messageSeq,
+        toSeq: first.messageSeq,
+        at: "2026-06-28T09:00:01+05:30",
+      });
+
+      const replies: unknown[] = [];
+      const { provider } = createThrowingProvider(new Error("Unexpected end of JSON input"));
+      const runtime = createChatTurnRuntime({
+        provider,
+        dataDir,
+        chatContextRuntime,
+        onReply: (_clientId, data) => {
+          replies.push(data);
+        },
+        now: () => new Date("2026-06-28T09:05:00.000Z"),
+      });
+
+      await runtime.processChat({
+        clientId: "local",
+        content: "continue",
+        attachments: [],
+      });
+
+      expect(replies).toContainEqual(expect.objectContaining({
+        type: "error",
+        content: "Failed to generate a response.",
+      }));
+
+      const context = await chatContextRuntime.buildActiveContext(first.sessionId);
+      expect(context.task?.recentRuns[0]).toMatchObject({
+        status: "failed",
+        summary: "Task run failed before completion.",
+        toolCallCount: 0,
+      });
+
+      const failedRun = context.task?.recentRuns[0];
+      if (!context.task || !failedRun) {
+        throw new Error("Expected failed run context.");
+      }
+      const driver = new GitMemoryWorktreeGitDriver(join(contextStoreDir, "sessions", first.sessionId));
+      expect(JSON.parse(await driver.readFile(
+        `refs/heads/${context.task.branch}`,
+        gitMemoryTaskRunPath(context.task.taskId, failedRun.runId),
+      ) ?? "{}")).toMatchObject({
+        status: "failed",
+        blockers: ["Unexpected end of JSON input"],
+        next: "Retry or continue the task.",
+      });
+    } finally {
+      rmSync(rootDir, { recursive: true, force: true });
+    }
+  });
+
   it("records session-only attachments in the session-store before the agent decision", async () => {
     const rootDir = mkdtempSync(join(tmpdir(), "ayati-chat-runtime-"));
     const contextStoreDir = join(rootDir, "context");
@@ -175,6 +255,32 @@ function createReplyProvider(content = "Noted."): {
     type: "assistant" as const,
     content,
   }));
+  return {
+    provider: {
+      name: "fake-provider",
+      version: "test",
+      capabilities: {
+        nativeToolCalling: true,
+        structuredOutput: {
+          jsonObject: true,
+          jsonSchema: true,
+        },
+      },
+      start() {},
+      stop() {},
+      generateTurn,
+    },
+    generateTurn,
+  };
+}
+
+function createThrowingProvider(error: unknown): {
+  provider: LlmProvider;
+  generateTurn: ReturnType<typeof vi.fn>;
+} {
+  const generateTurn = vi.fn(async () => {
+    throw error;
+  });
   return {
     provider: {
       name: "fake-provider",
