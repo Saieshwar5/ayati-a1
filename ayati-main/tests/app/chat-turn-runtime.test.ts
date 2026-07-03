@@ -12,10 +12,68 @@ import {
   GIT_MEMORY_SESSION_STORE_DIR,
   GitMemoryWorktreeGitDriver,
   gitMemorySessionStoreAttachmentsPath,
+  gitMemoryTaskRunPath,
 } from "../../src/context-engine/index.js";
 import { FileLibrary } from "../../src/files/file-library.js";
 
 describe("createChatTurnRuntime", () => {
+  it("does not finalize a stale pending task run from a direct interaction reply", async () => {
+    const rootDir = mkdtempSync(join(tmpdir(), "ayati-chat-runtime-"));
+    const contextStoreDir = join(rootDir, "context");
+    const dataDir = join(rootDir, "data");
+
+    try {
+      const store = new GitMemoryDailySessionStore({
+        contextStoreDir,
+        now: () => new Date("2026-06-28T09:00:00.000Z"),
+      });
+      const gitMemoryRuntime = createGitMemoryRuntime({
+        contextStoreDir,
+        timezone: "Asia/Kolkata",
+        agentId: "local",
+        store,
+        now: () => new Date("2026-06-28T09:00:00.000Z"),
+      });
+      const chatContextRuntime = createGitMemoryChatContextRuntime({ gitMemoryRuntime });
+      const first = await chatContextRuntime.prepareUserTurn({
+        clientId: "local",
+        userMessage: "create a tiny focus timer website",
+        at: "2026-06-28T09:00:00+05:30",
+      });
+      const routed = await chatContextRuntime.routeTaskTurn({
+        clientId: "local",
+        turn: first,
+        userMessage: "create a tiny focus timer website",
+        at: "2026-06-28T09:00:01+05:30",
+      });
+      if (routed?.status !== "ready") {
+        throw new Error(`Expected ready route, got ${routed?.status}.`);
+      }
+
+      const { provider } = createReplyProvider("We are working on the focus timer website task.");
+      const runtime = createChatTurnRuntime({
+        provider,
+        dataDir,
+        chatContextRuntime,
+        now: () => new Date("2026-06-28T09:05:00.000Z"),
+      });
+
+      await runtime.processChat({
+        clientId: "local",
+        content: "what task are we working on?",
+        attachments: [],
+      });
+
+      const driver = new GitMemoryWorktreeGitDriver(join(contextStoreDir, "sessions", first.sessionId));
+      expect(await driver.readFile(
+        routed.ref,
+        gitMemoryTaskRunPath(routed.taskId, routed.runId),
+      )).toBeNull();
+    } finally {
+      rmSync(rootDir, { recursive: true, force: true });
+    }
+  });
+
   it("records session-only attachments in the session-store before the agent decision", async () => {
     const rootDir = mkdtempSync(join(tmpdir(), "ayati-chat-runtime-"));
     const contextStoreDir = join(rootDir, "context");
@@ -109,13 +167,13 @@ describe("createChatTurnRuntime", () => {
   });
 });
 
-function createReplyProvider(): {
+function createReplyProvider(content = "Noted."): {
   provider: LlmProvider;
   generateTurn: ReturnType<typeof vi.fn>;
 } {
   const generateTurn = vi.fn(async () => ({
     type: "assistant" as const,
-    content: "Noted.",
+    content,
   }));
   return {
     provider: {

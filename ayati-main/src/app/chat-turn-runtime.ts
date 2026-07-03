@@ -497,8 +497,11 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
     routed: GitMemoryChatContextRoutedTurn | null,
     result: AgentLoopResult,
   ): Promise<void> {
-    const binding = this.taskRunBindingFromRoutedOrResult(routed, result);
-    if (!prepared || !binding) {
+    const binding = result.runClass === "task"
+      ? this.taskRunBindingFromRoutedOrResult(routed, result)
+      : null;
+    const skipReason = this.chatContextFinalizationSkipReason(prepared, result, binding);
+    if (skipReason) {
       if (prepared && result.content.trim()) {
         await this.recordChatContextAssistantMessage(clientId, prepared, result.content);
       }
@@ -510,7 +513,7 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
           stage: "context_engine",
           event: "finalization_skipped",
           data: {
-            reason: !binding ? "no_task_run_binding" : "missing_prepared_turn",
+            reason: skipReason,
             contextEngine: buildContextEngineFeedbackSummary({
               context: result.harnessContext?.contextEngine,
               finalizationStatus: "skipped",
@@ -519,6 +522,10 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
           },
         });
       }
+      return;
+    }
+
+    if (!prepared || !binding) {
       return;
     }
 
@@ -605,6 +612,30 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
         }),
       },
     });
+  }
+
+  private chatContextFinalizationSkipReason(
+    prepared: GitMemoryChatContextPreparedTurn | null,
+    result: AgentLoopResult,
+    binding: {
+      taskId: string;
+      runId: string;
+      conversationRefs: GitMemoryConversationSeqRange[];
+    } | null,
+  ): string | null {
+    if (!prepared) {
+      return "missing_prepared_turn";
+    }
+    if (result.runClass !== "task") {
+      return "non_task_result";
+    }
+    if (!binding) {
+      return "no_task_run_binding";
+    }
+    if (result.workRunId && binding.runId !== result.workRunId) {
+      return "binding_run_mismatch";
+    }
+    return null;
   }
 
   private async recordChatContextAssistantMessage(
