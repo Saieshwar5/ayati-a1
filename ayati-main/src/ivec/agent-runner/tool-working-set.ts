@@ -7,6 +7,11 @@ import {
   GIT_CONTEXT_READ_ONLY_TOOL_NAMES,
   GIT_CONTEXT_TURN_ROUTING_TOOL_NAMES,
 } from "../../skills/builtins/git-context/tool-policy.js";
+import {
+  detectRuntimeCapabilityMode,
+  deterministicToolsForRuntimeMode,
+  isFreshSessionRoutingMode,
+} from "./runtime-capability-mode.js";
 
 export interface ToolLoadRequest {
   query?: string;
@@ -273,7 +278,8 @@ export class ToolWorkingSetManager {
     if (step < 1 || step > TASK_ROUTING_WINDOW_STEPS) {
       return request;
     }
-    const routingTools = isFreshSessionWithoutActiveTask(state)
+    const mode = detectRuntimeCapabilityMode({ state });
+    const routingTools = isFreshSessionRoutingMode(mode)
       ? GIT_CONTEXT_FRESH_SESSION_ROUTING_TOOL_NAMES
       : TASK_ROUTING_WINDOW_TOOL_NAMES;
     return {
@@ -370,6 +376,13 @@ export class ToolWorkingSetManager {
 }
 
 function buildDeterministicLoadRequest(state: LoopState): ToolLoadRequest {
+  const mode = detectRuntimeCapabilityMode({ state });
+  const modeTools = deterministicToolsForRuntimeMode(mode);
+  if (modeTools) {
+    return {
+      toolNames: modeTools,
+    };
+  }
   const pendingTurnStatus = state.harnessContext.contextEngine?.pendingTurn?.routingStatus;
   if (pendingTurnStatus === "unbound") {
     return {
@@ -476,10 +489,6 @@ function isTaskRoutingWindowTool(tool: string): boolean {
 
 function hasCompletedTaskRoutingWindowToolUse(state: LoopState): boolean {
   return state.completedSteps.some((step) => (step.toolsUsed ?? []).some(isTaskRoutingWindowTool));
-}
-
-function isFreshSessionWithoutActiveTask(state: LoopState): boolean {
-  return state.harnessContext.contextEngine?.focus.status === "none";
 }
 
 function summarizeLoadStatus(

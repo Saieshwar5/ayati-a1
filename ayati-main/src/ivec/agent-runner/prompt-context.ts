@@ -1,5 +1,6 @@
 import type { ContextEngineMachineContext } from "../../context-engine/index.js";
 import type { AgentContextPack } from "./context-pack.js";
+import type { RuntimeCapabilityPromptContext } from "./runtime-capability-mode.js";
 import type { AgentStateView } from "./state-view.js";
 
 export interface PromptPersonalContext {
@@ -74,6 +75,7 @@ export interface PromptToolsContext {
 }
 
 export interface AgentPromptContext extends AgentContextPack {
+  runtimeMode?: RuntimeCapabilityPromptContext;
   personal?: PromptPersonalContext;
   git?: PromptGitContext;
   tools?: PromptToolsContext;
@@ -82,6 +84,7 @@ export interface AgentPromptContext extends AgentContextPack {
 
 export interface ProjectAgentPromptContextInput {
   context: AgentContextPack;
+  runtimeMode?: RuntimeCapabilityPromptContext;
   sessionAttachments?: unknown;
   tools?: PromptToolsContext;
   scratch?: PromptScratchContext;
@@ -96,6 +99,7 @@ export function projectAgentPromptContext(input: ProjectAgentPromptContextInput)
   const scratch = compactScratchContext(input.scratch);
   return {
     ...input.context,
+    ...(input.runtimeMode ? { runtimeMode: input.runtimeMode } : {}),
     ...(personalMemorySnapshot ? {
       personal: {
         memorySnapshot: personalMemorySnapshot,
@@ -177,6 +181,7 @@ function projectGitTaskForPrompt(
 function compactAgentPromptContext(context: AgentPromptContext): AgentPromptContext {
   return {
     timeline: context.timeline,
+    ...(context.runtimeMode ? { runtimeMode: context.runtimeMode } : {}),
     ...(context.git ? { git: context.git } : {}),
     ...(context.tools ? { tools: context.tools } : {}),
     ...(context.scratch ? { scratch: context.scratch } : {}),

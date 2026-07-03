@@ -366,8 +366,39 @@ describe("buildAgentStateView", () => {
       "gitContext",
       "personal",
       "personalMemorySnapshot",
+      "runtimeMode",
       "timeline",
     ]);
+  });
+
+  it("projects compact runtime mode context", () => {
+    const state = createLoopState({
+      runId: "",
+      harnessContext: createHarnessContext({
+        contextEngine: createGitContext({
+          focus: {
+            status: "none",
+          },
+          task: undefined,
+        }),
+      }),
+    });
+
+    expect(buildAgentStateView(state).context.runtimeMode).toMatchObject({
+      name: "fresh_session_routing",
+      why: "No active task exists.",
+      allowed: [
+        "direct_reply",
+        "git_context_create_task_for_turn",
+        "git_context_ask_clarification_for_turn",
+      ],
+      blocked: [
+        "normal_work_tools",
+        "decision_load_tools",
+        "task_search_or_activation",
+      ],
+      repairCode: "R_FRESH_SESSION_NEEDS_TASK",
+    });
   });
 
   it("keeps progress, observations, and trace independent from context source", () => {

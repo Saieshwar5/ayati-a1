@@ -132,7 +132,7 @@ describe("ToolWorkingSetManager", () => {
     expect(manager.listActive({ runId: "r1" })).toEqual([]);
   });
 
-  it("limits git routing tools to create and clarify when no active task exists", () => {
+  it("preloads likely work tools with create and clarify routing tools when no active task exists", () => {
     const catalog = new ToolCatalog([
       skill("filesystem", [
         tool("write_file"),
@@ -150,6 +150,7 @@ describe("ToolWorkingSetManager", () => {
     const executor = createToolExecutor([]);
     const manager = new ToolWorkingSetManager({ catalog, toolExecutor: executor, maxVisibleTools: 12 });
     const runState = state("create a linux commands txt file");
+    runState.runId = "";
     runState.harnessContext = createInitialHarnessContext({
       contextEngine: contextEngineWithFocus({ status: "none" }),
     });

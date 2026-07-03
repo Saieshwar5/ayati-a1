@@ -1,5 +1,10 @@
 import type { LoopState, TaskNote, ToolContextState, ToolObservation, WorkEvidenceRef, WorkState } from "../types.js";
 import type { RepairPromptCard } from "./repair-policy.js";
+import {
+  buildRuntimeCapabilityPromptContext,
+  detectRuntimeCapabilityMode,
+} from "./runtime-capability-mode.js";
+import type { RuntimeCapabilityPromptContext } from "./runtime-capability-mode.js";
 import type { ToolLoadResult } from "./tool-working-set.js";
 import { buildAgentContextPack } from "./context-pack.js";
 import { projectAgentPromptContext } from "./prompt-context.js";
@@ -96,9 +101,12 @@ export interface AgentStateView {
 
 export interface AgentStateViewOptions {
   activeTools?: string[];
+  runtimeMode?: RuntimeCapabilityPromptContext;
 }
 
 export function buildAgentStateView(state: LoopState, options: AgentStateViewOptions = {}): AgentStateView {
+  const runtimeMode = options.runtimeMode
+    ?? buildRuntimeCapabilityPromptContext(detectRuntimeCapabilityMode({ state }));
   const progress = buildProgressView(state.workState);
   const toolLoad = buildToolLoadView(state.lastToolLoad);
   const workingFeedback = buildWorkingFeedbackView(state);
@@ -115,6 +123,7 @@ export function buildAgentStateView(state: LoopState, options: AgentStateViewOpt
   } : undefined;
   const context = projectAgentPromptContext({
     context: buildAgentContextPack(state),
+    runtimeMode,
     tools: buildToolsContext({
       activeTools: options.activeTools,
       toolLoad,

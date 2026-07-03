@@ -79,8 +79,14 @@ import { buildContextEngineFeedbackSummary } from "../feedback-ledger.js";
 import type { ToolDefinition, ToolResult } from "../../skills/types.js";
 import {
   isGitContextAllowedDuringPendingRouting,
-  isGitContextFreshSessionRoutingToolName,
 } from "../../skills/builtins/git-context/tool-policy.js";
+import {
+  detectRuntimeCapabilityMode,
+  isDecisionAllowedInRuntimeMode,
+  isFreshSessionRoutingMode,
+  isGitContextRoutingToolName,
+  summarizeRuntimeCapabilityTools,
+} from "./runtime-capability-mode.js";
 import {
   summarizeAgentAction,
   summarizeDecision,
@@ -523,10 +529,11 @@ export async function runAgentLoop(
       });
     }
 
-    const pendingRouting = hasUnboundOrClarifyingPendingTurn(state);
-    const freshSessionWithoutActiveTask = isFreshSessionWithoutActiveTask(state);
+    const runtimeMode = detectRuntimeCapabilityMode({ state, workRunHandle });
+    const pendingRouting = runtimeMode.name === "pre_task_routing";
+    const freshSessionWithoutActiveTask = isFreshSessionRoutingMode(runtimeMode);
 
-    if (freshSessionWithoutActiveTask && decision.kind === "load_tools") {
+    if (freshSessionWithoutActiveTask && !runtimeMode.allowToolLoading && decision.kind === "load_tools") {
       recordFreshSessionToolRepair({
         deps,
         inputHandle,
@@ -597,8 +604,9 @@ export async function runAgentLoop(
       continue;
     }
 
-    const freshSessionRouting = freshSessionWithoutActiveTask && isFreshSessionRoutingDecision(decision);
-    if (freshSessionWithoutActiveTask && !freshSessionRouting) {
+    const freshSessionDecisionAllowed = freshSessionWithoutActiveTask && isDecisionAllowedInRuntimeMode(runtimeMode, decision);
+    const freshSessionRouting = freshSessionDecisionAllowed && decision.kind === "act";
+    if (freshSessionWithoutActiveTask && !freshSessionDecisionAllowed) {
       recordFreshSessionToolRepair({
         deps,
         inputHandle,
@@ -1250,23 +1258,6 @@ function readHarnessContext(value: unknown): HarnessContextInput | null {
   return value as HarnessContextInput;
 }
 
-function hasUnboundOrClarifyingPendingTurn(state: LoopState): boolean {
-  const status = state.harnessContext.contextEngine?.pendingTurn?.routingStatus;
-  return status === "unbound" || status === "clarifying";
-}
-
-function isFreshSessionWithoutActiveTask(state: LoopState): boolean {
-  return state.harnessContext.contextEngine?.focus.status === "none";
-}
-
-function isFreshSessionRoutingDecision(decision: AgentDecision): decision is Extract<AgentDecision, { kind: "act" }> {
-  if (decision.kind !== "act" || decision.action.calls.length === 0) {
-    return false;
-  }
-  return decision.action.calls.every((call) => isGitContextFreshSessionRoutingToolName(call.tool))
-    && decision.action.allowedTools.every((tool) => isGitContextFreshSessionRoutingToolName(tool));
-}
-
 function recordFreshSessionToolRepair(input: {
   deps: AgentLoopDeps;
   inputHandle: SessionInputHandle;
@@ -1572,11 +1563,14 @@ function recordToolWorkingSetFeedback(input: {
   workRunHandle: MemoryRunHandle | undefined;
 }): void {
   const warningCodes = buildToolExposureWarningCodes(input.state, input.selectedTools, input.workRunHandle);
-  const toolMode = buildToolModeFeedback({
+  const runtimeMode = detectRuntimeCapabilityMode({
     state: input.state,
+    workRunHandle: input.workRunHandle,
+  });
+  const toolMode = summarizeRuntimeCapabilityTools({
+    mode: runtimeMode,
     visibleTools: input.visibleTools,
     selectedTools: input.selectedTools,
-    workRunHandle: input.workRunHandle,
   });
   recordFeedback(input.deps, input.inputHandle, input.runId, "tools", "working_set_prepared", {
     iteration: input.iteration,
@@ -1612,51 +1606,6 @@ function recordToolWorkingSetFeedback(input: {
       focusStatus: toolMode.focusStatus,
     });
   }
-}
-
-interface ToolModeFeedback {
-  mode: "task_run" | "fresh_session_routing" | "pre_task_routing" | "session_only";
-  hasWorkRun: boolean;
-  focusStatus?: string;
-  pendingTurnStatus?: string;
-  visibleRoutingTools: string[];
-  selectedRoutingTools: string[];
-  visibleNormalTools: string[];
-  selectedNormalTools: string[];
-  visibleToolCount: number;
-  selectedToolCount: number;
-}
-
-function buildToolModeFeedback(input: {
-  state: LoopState;
-  visibleTools: ToolDefinition[];
-  selectedTools: ToolDefinition[];
-  workRunHandle: MemoryRunHandle | undefined;
-}): ToolModeFeedback {
-  const hasWorkRun = Boolean(input.state.runId || input.workRunHandle);
-  const focusStatus = input.state.harnessContext.contextEngine?.focus.status;
-  const pendingTurnStatus = input.state.harnessContext.contextEngine?.pendingTurn?.routingStatus;
-  const visibleToolNames = input.visibleTools.map((tool) => tool.name);
-  const selectedToolNames = input.selectedTools.map((tool) => tool.name);
-  const mode: ToolModeFeedback["mode"] = hasWorkRun
-    ? "task_run"
-    : focusStatus === "none"
-      ? "fresh_session_routing"
-      : pendingTurnStatus === "unbound" || pendingTurnStatus === "clarifying"
-        ? "pre_task_routing"
-        : "session_only";
-  return {
-    mode,
-    hasWorkRun,
-    ...(focusStatus ? { focusStatus } : {}),
-    ...(pendingTurnStatus ? { pendingTurnStatus } : {}),
-    visibleRoutingTools: visibleToolNames.filter(isGitContextRoutingToolName),
-    selectedRoutingTools: selectedToolNames.filter(isGitContextRoutingToolName),
-    visibleNormalTools: visibleToolNames.filter((tool) => !isGitContextRoutingToolName(tool)),
-    selectedNormalTools: selectedToolNames.filter((tool) => !isGitContextRoutingToolName(tool)),
-    visibleToolCount: visibleToolNames.length,
-    selectedToolCount: selectedToolNames.length,
-  };
 }
 
 function recordStepFeedback(
@@ -1730,10 +1679,6 @@ function normalTaskToolNames(tools: ToolDefinition[]): string[] {
   return tools
     .map((tool) => tool.name)
     .filter((tool) => !isGitContextAllowedDuringPendingRouting(tool));
-}
-
-function isGitContextRoutingToolName(tool: string): boolean {
-  return isGitContextAllowedDuringPendingRouting(tool);
 }
 
 function latestCompletedTaskRoutingToolNames(state: LoopState): string[] {

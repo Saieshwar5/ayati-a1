@@ -1,22 +1,17 @@
 import type { ToolDefinition } from "../../skills/types.js";
-import {
-  isGitContextAllowedDuringPendingRouting,
-} from "../../skills/builtins/git-context/tool-policy.js";
 import type { LoopState } from "../types.js";
+import {
+  detectRuntimeCapabilityMode,
+  filterToolsForRuntimeMode,
+} from "./runtime-capability-mode.js";
 
 export function selectToolsForDecision(
   state: LoopState,
   toolDefinitions: ToolDefinition[],
   limit: number,
 ): ToolDefinition[] {
-  const pendingTurnStatus = state.harnessContext.contextEngine?.pendingTurn?.routingStatus;
-  if (pendingTurnStatus === "clarifying") {
-    return [];
-  }
-
-  const candidateTools = pendingTurnStatus === "unbound"
-    ? toolDefinitions.filter((tool) => isGitContextAllowedDuringPendingRouting(tool.name))
-    : toolDefinitions;
+  const mode = detectRuntimeCapabilityMode({ state });
+  const candidateTools = filterToolsForRuntimeMode(mode, toolDefinitions);
 
   if (candidateTools.length <= limit) {
     return [...candidateTools];

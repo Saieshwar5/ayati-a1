@@ -438,21 +438,21 @@ describe("agentLoop", () => {
 
       const secondCallInput = vi.mocked(provider.generateTurn).mock.calls[1]?.[0];
       const secondUserPrompt = secondCallInput.messages.find((message: { role: string }) => message.role === "user").content as string;
+      const secondDecisionTools = secondCallInput.tools.map((tool: { name: string }) => tool.name);
       const secondStateView = extractStateView(secondUserPrompt);
       expect(result.status).toBe("completed");
       expect(result.content).toBe("I need to create a task before using work tools.");
       expect(provider.generateTurn).toHaveBeenCalledTimes(2);
       expect(existsSync(outputPath)).toBe(false);
+      expect(secondDecisionTools).toContain("write_files");
+      expect(secondStateView.context.runtimeMode).toMatchObject({
+        name: "fresh_session_routing",
+        repairCode: "R_FRESH_SESSION_NEEDS_TASK",
+      });
+      expect(secondUserPrompt).toContain("Create the first task for durable work");
       expect(secondUserPrompt).toContain("R_FRESH_SESSION_NEEDS_TASK");
-      expect(secondUserPrompt).toContain("Call git_context_create_task_for_turn with title, objective, and reason.");
       expect(secondStateView.context.scratch.feedback.latest[0]).toMatchObject({
         code: "R_FRESH_SESSION_NEEDS_TASK",
-        repair: {
-          code: "R_FRESH_SESSION_NEEDS_TASK",
-          blockedTargets: ["write_files"],
-        },
-      });
-      expect(feedbackEvents(feedback.events, "guard", "fresh_session_tool_repair_requested")[0]?.data).toMatchObject({
         repair: {
           code: "R_FRESH_SESSION_NEEDS_TASK",
           blockedTargets: ["write_files"],
@@ -1371,6 +1371,7 @@ describe("agentLoop", () => {
       expect(systemPrompt).toContain("Decision rules:");
       expect(systemPrompt).toContain("Control tool shapes:");
       expect(systemPrompt).toContain("call the selected executable tool directly");
+      expect(systemPrompt).toContain("Evidence-before-done rule:");
       expect(userPrompt).not.toContain("Decision rules:");
       expect(userPrompt.indexOf("Selected tools:\n")).toBeLessThan(userPrompt.indexOf("State view:\n"));
       expect(stateView.userMessage).toBeUndefined();

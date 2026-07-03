@@ -48,6 +48,11 @@ function state(userMessage: string): LoopState {
 
 function pendingGitContext(
   routingStatus: "unbound" | "clarifying",
+  focus: ContextEngineMachineContext["focus"] = {
+    status: "active",
+    ref: "refs/heads/work/W-20260630-0001-website",
+    workId: "W-20260630-0001",
+  },
 ): ContextEngineMachineContext {
   return {
     session: {
@@ -63,9 +68,7 @@ function pendingGitContext(
       at: "2026-06-30T10:00:00.000Z",
       routingStatus,
     },
-    focus: {
-      status: "none",
-    },
+    focus,
   };
 }
 
@@ -93,6 +96,7 @@ describe("selectToolsForDecision", () => {
 
   it("limits selected tools to git-context routing tools for unbound pending turns", () => {
     const current = state("build a website and run it");
+    current.runId = "";
     current.harnessContext = {
       ...current.harnessContext,
       contextEngine: pendingGitContext("unbound"),
@@ -112,8 +116,35 @@ describe("selectToolsForDecision", () => {
     ]);
   });
 
+  it("keeps work tools visible with create or clarify routing tools when a fresh session has no active task", () => {
+    const current = state("build a website and run it");
+    current.runId = "";
+    current.harnessContext = {
+      ...current.harnessContext,
+      contextEngine: pendingGitContext("unbound", { status: "none" }),
+    };
+    const selected = selectToolsForDecision(current, [
+      tool("shell", 100),
+      tool("write_files", 100),
+      tool("git_context_list_tasks", 1),
+      tool("git_context_search_tasks", 1),
+      tool("git_context_create_task_for_turn", 1),
+      tool("git_context_ask_clarification_for_turn", 1),
+    ], 12);
+
+    expect(selected.map((entry) => entry.name)).toEqual([
+      "shell",
+      "write_files",
+      "git_context_list_tasks",
+      "git_context_search_tasks",
+      "git_context_create_task_for_turn",
+      "git_context_ask_clarification_for_turn",
+    ]);
+  });
+
   it("selects no executable tools while a pending turn is clarifying", () => {
     const current = state("build a website");
+    current.runId = "";
     current.harnessContext = {
       ...current.harnessContext,
       contextEngine: pendingGitContext("clarifying"),
