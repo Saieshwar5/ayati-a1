@@ -107,6 +107,7 @@ function createReadyChatContextRuntime(): GitMemoryChatContextRuntime {
   return {
     prepareUserTurn: vi.fn().mockResolvedValue(prepared),
     routeTaskTurn: vi.fn().mockResolvedValue(routed),
+    activateTaskTurn: vi.fn().mockResolvedValue(routed),
     completeTaskRun: vi.fn().mockResolvedValue({
       taskId: routed.taskId,
       branch: routed.branch,

@@ -43,6 +43,7 @@ import type {
   AgentArtifact,
   AgentLoopResult,
   ChatAttachmentInput,
+  CreateWorkRunRequest,
   DirectoryChatAttachmentInput,
   LoopConfig,
 } from "../ivec/types.js";
@@ -204,7 +205,14 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
           onWorkRunCreated: (created) => {
             runHandle = created;
           },
-          createWorkRun: this.failMissingGitMemoryRun,
+          createWorkRun: async (requestedInputHandle, request) => {
+            const routed = await this.bindActiveTaskForWorkRun(input.clientId, chatContextTurn, request);
+            routedContextTurn = routed;
+            return {
+              runHandle: this.runHandleFromRoutedTurn(requestedInputHandle, routed),
+              harnessContext: routed.harnessContext,
+            };
+          },
           clientId: input.clientId,
           uiContext: input.uiContext,
           initialUserMessage: input.content,
@@ -682,8 +690,50 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
     return `input:${inputHandle.sessionId}:${inputHandle.seq}`;
   }
 
-  private failMissingGitMemoryRun(_inputHandle: SessionInputHandle): MemoryRunHandle {
-    throw new Error("Git-memory routed run is required before chat tool execution.");
+  private async bindActiveTaskForWorkRun(
+    clientId: string,
+    turn: GitMemoryChatContextPreparedTurn | null,
+    request: CreateWorkRunRequest,
+  ): Promise<Extract<GitMemoryChatContextRoutedTurn, { status: "ready" }>> {
+    if (request.reason !== "agent_action" || !request.activeTaskId) {
+      throw new Error("Git-memory routed run is required before chat tool execution.");
+    }
+    const routed = await this.chatContextRuntime.activateTaskTurn({
+      clientId,
+      turn,
+      taskId: request.activeTaskId,
+      reason: `Continue active task for tool execution: ${request.userMessage}`,
+      at: this.nowProvider().toISOString(),
+    });
+    if (!routed || routed.status !== "ready") {
+      throw new Error("Git-memory active task run could not be created before chat tool execution.");
+    }
+    this.feedbackLedger?.record({
+      clientId,
+      sessionId: routed.sessionId,
+      runId: routed.runId,
+      stage: "run",
+      event: "auto_bound_active_task",
+      data: {
+        taskId: routed.taskId,
+        branch: routed.branch,
+        runId: routed.runId,
+        reason: request.reason,
+        activeTaskId: request.activeTaskId,
+        activeBranch: request.activeBranch,
+        contextEngine: buildContextEngineFeedbackSummary({
+          context: routed.harnessContext.contextEngine,
+          routeStatus: routed.status,
+          routeMode: routed.mode,
+          routeSource: "auto",
+          taskId: routed.taskId,
+          branch: routed.branch,
+          runId: routed.runId,
+          conversationRefs: routed.conversationRefs,
+        }),
+      },
+    });
+    return routed;
   }
 
   private harnessContextFromPreparedTurn(

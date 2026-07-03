@@ -963,6 +963,149 @@ describe("agentLoop", () => {
     }
   });
 
+  it("auto-binds the active task when an action tool is selected before a work run", async () => {
+    const dataDir = makeTmpDir();
+    const outputPath = join(dataDir, "active-task-auto-bind.txt");
+    try {
+      const toolExecutor = createToolExecutor([writeFilesTool]);
+      const createWorkRun = vi.fn().mockResolvedValue({
+        runHandle: {
+          sessionId: "s1",
+          runId: "R-20260702-website-auto",
+          triggerSeq: 8,
+        },
+        harnessContext: {
+          contextEngine: {
+            session: {
+              sessionId: "s1",
+              conversationTail: [],
+              activityTail: [],
+              assetCount: 1,
+            },
+            focus: {
+              status: "active",
+              ref: "refs/heads/task/T-20260702-website",
+              workId: "T-20260702-website",
+            },
+            task: {
+              ref: "refs/heads/task/T-20260702-website",
+              workId: "T-20260702-website",
+              title: "Website task",
+              objective: "Maintain the website task.",
+              status: "active",
+              completed: ["Created initial website files."],
+              open: ["Improve the website."],
+              blockers: [],
+              facts: [],
+              next: "Improve the website.",
+              assets: [],
+              recentRuns: [],
+              recentCommits: [],
+              recentEvidence: [],
+            },
+            pendingTurn: {
+              routingStatus: "bound",
+              fromSeq: 8,
+              toSeq: 8,
+              text: "Add a follow-up note to the active website task",
+              workId: "T-20260702-website",
+              branch: "task/T-20260702-website",
+              runId: "R-20260702-website-auto",
+            },
+          },
+        },
+      });
+      const provider = createProvider([
+        {
+          kind: "act",
+          action: {
+            mode: "single",
+            calls: [{
+              id: "write_file",
+              tool: "write_files",
+              input: {
+                createDirs: true,
+                files: [{
+                  path: outputPath,
+                  content: "Auto-bound active task follow-up.",
+                }],
+              },
+              dependsOn: [],
+              purpose: "Write the active-task follow-up note.",
+            }],
+            allowedTools: ["write_files"],
+            assertions: [{ kind: "file_exists", path: "$.files[0].path" }],
+          },
+        },
+        {
+          kind: "reply",
+          status: "completed",
+          message: `I updated the active task at ${outputPath}.`,
+        },
+      ]);
+
+      const result = await agentLoop({
+        provider,
+        toolExecutor,
+        toolDefinitions: toolExecutor.definitions(),
+        runRecorder: noopRunRecorder,
+        createWorkRun,
+        inputHandle: { sessionId: "s1", seq: 8 },
+        clientId: "c1",
+        initialUserMessage: "Add a follow-up note to the active website task",
+        dataDir,
+        systemContext: "full system context with memory",
+        harnessContext: {
+          contextEngine: {
+            session: {
+              sessionId: "s1",
+              conversationTail: [],
+              activityTail: [],
+              assetCount: 1,
+            },
+            focus: {
+              status: "active",
+              ref: "refs/heads/task/T-20260702-website",
+              workId: "T-20260702-website",
+            },
+            task: {
+              ref: "refs/heads/task/T-20260702-website",
+              workId: "T-20260702-website",
+              title: "Website task",
+              objective: "Maintain the website task.",
+              status: "active",
+              completed: ["Created initial website files."],
+              open: ["Improve the website."],
+              blockers: [],
+              facts: [],
+              next: "Improve the website.",
+              assets: [],
+              recentRuns: [],
+              recentCommits: [],
+              recentEvidence: [],
+            },
+          },
+        },
+      });
+
+      expect(result.status).toBe("completed");
+      expect(result.runClass).toBe("task");
+      expect(result.workRunId).toBe("R-20260702-website-auto");
+      expect(readFileSync(outputPath, "utf-8")).toContain("Auto-bound active task");
+      expect(createWorkRun).toHaveBeenCalledWith(
+        { sessionId: "s1", seq: 8 },
+        expect.objectContaining({
+          reason: "agent_action",
+          userMessage: "Add a follow-up note to the active website task",
+          activeTaskId: "T-20260702-website",
+          activeBranch: "task/T-20260702-website",
+        }),
+      );
+    } finally {
+      cleanup(dataDir);
+    }
+  });
+
   it("finalizes immediately when a verified action is marked as a completion candidate", async () => {
     const dataDir = makeTmpDir();
     const outputPath = join(dataDir, "completion-site", "index.html");

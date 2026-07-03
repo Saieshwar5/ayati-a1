@@ -81,6 +81,14 @@ export interface GitMemoryChatContextRouteTaskTurnInput {
   autoOnly?: boolean;
 }
 
+export interface GitMemoryChatContextActivateTaskTurnInput {
+  clientId: string;
+  turn: GitMemoryChatContextPreparedTurn | null;
+  taskId: GitMemoryTaskId;
+  reason: string;
+  at: string;
+}
+
 export type GitMemoryChatContextRoutedTurn = RoutedGitMemoryUserTurn & {
   harnessContext: HarnessContextInput;
 };
@@ -88,6 +96,7 @@ export type GitMemoryChatContextRoutedTurn = RoutedGitMemoryUserTurn & {
 export interface GitMemoryChatContextRuntime {
   prepareUserTurn(input: GitMemoryChatContextPrepareInput): Promise<GitMemoryChatContextPreparedTurn>;
   routeTaskTurn(input: GitMemoryChatContextRouteTaskTurnInput): Promise<GitMemoryChatContextRoutedTurn | null>;
+  activateTaskTurn(input: GitMemoryChatContextActivateTaskTurnInput): Promise<GitMemoryChatContextRoutedTurn | null>;
   completeTaskRun(input: GitMemoryChatContextCompleteTaskRunInput): Promise<FinalizeGitMemoryTaskRunResult | null>;
   recordAssistantMessage(input: GitMemoryChatContextAssistantMessageInput): Promise<GitMemoryConversationRecord | null>;
   recordSessionAttachments(input: GitMemoryChatContextSessionAttachmentsInput): Promise<GitMemorySessionAttachmentsFile | null>;
@@ -148,6 +157,31 @@ class AppGitMemoryChatContextRuntime implements GitMemoryChatContextRuntime {
       };
     } catch (err) {
       devWarn(`[${input.clientId}] git memory task routing failed: ${errorMessage(err)}`);
+      return null;
+    }
+  }
+
+  async activateTaskTurn(
+    input: GitMemoryChatContextActivateTaskTurnInput,
+  ): Promise<GitMemoryChatContextRoutedTurn | null> {
+    if (!input.turn) {
+      return null;
+    }
+    try {
+      const routed = await this.gitMemoryRuntime.activateTaskForTurn({
+        sessionId: input.turn.sessionId,
+        taskId: input.taskId,
+        reason: input.reason,
+        at: input.at,
+      });
+      return {
+        ...routed,
+        harnessContext: {
+          contextEngine: buildGitMemoryHarnessContextFromMemoryState(routed.memoryState),
+        },
+      };
+    } catch (err) {
+      devWarn(`[${input.clientId}] git memory active task binding failed: ${errorMessage(err)}`);
       return null;
     }
   }

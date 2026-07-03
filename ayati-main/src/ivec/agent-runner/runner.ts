@@ -13,6 +13,7 @@ import type {
   AgentLoopDeps,
   AgentLoopResult,
   AgentTaskSummaryRecord,
+  CreatedWorkRun,
   CompletionDirective,
   LoopConfig,
   LoopState,
@@ -178,7 +179,13 @@ export async function runAgentLoop(
         throw new Error("Git-memory run handle is required before agent action execution.");
       }
       try {
-        workRunHandle = createWorkRun(inputHandle);
+        const createdWorkRun = await createWorkRun(inputHandle, buildCreateWorkRunRequest(state, reason));
+        const normalizedWorkRun = normalizeCreatedWorkRun(createdWorkRun);
+        workRunHandle = normalizedWorkRun.runHandle;
+        if (normalizedWorkRun.harnessContext) {
+          deps.harnessContext = normalizedWorkRun.harnessContext;
+          syncHarnessContext(state, deps, inputHandle);
+        }
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         const repair = createMissingWorkRunRepairSignal({
@@ -1343,6 +1350,35 @@ function isPreRunGitContextAction(
     && !workRunHandle
     && decision.action.calls.length > 0
     && decision.action.calls.every((call) => isGitContextAllowedDuringPendingRouting(call.tool));
+}
+
+function buildCreateWorkRunRequest(state: LoopState, reason: string) {
+  const contextEngine = state.harnessContext.contextEngine;
+  const focus = contextEngine?.focus;
+  return {
+    reason,
+    userMessage: state.userMessage,
+    ...(focus?.status === "active" ? {
+      activeTaskId: focus.workId,
+      activeBranch: branchFromRef(focus.ref),
+    } : {}),
+  };
+}
+
+function normalizeCreatedWorkRun(created: CreatedWorkRun | MemoryRunHandle): CreatedWorkRun {
+  if ("runHandle" in created) {
+    return created;
+  }
+  return { runHandle: created };
+}
+
+function branchFromRef(ref: string | undefined): string | undefined {
+  if (!ref) {
+    return undefined;
+  }
+  return ref.startsWith("refs/heads/")
+    ? ref.slice("refs/heads/".length)
+    : ref;
 }
 
 function createFailureRecordFromStepSummary(step: StepSummary): LoopState["failureHistory"][number] {

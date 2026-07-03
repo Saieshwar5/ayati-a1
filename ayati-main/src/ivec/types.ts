@@ -360,6 +360,20 @@ export interface AgentLoopResult {
 
 export type OnProgressCallback = (log: string, runPath: string) => void;
 
+export interface CreateWorkRunRequest {
+  reason: string;
+  userMessage: string;
+  activeTaskId?: string;
+  activeBranch?: string;
+}
+
+export interface CreatedWorkRun {
+  runHandle: MemoryRunHandle;
+  harnessContext?: HarnessContextInput;
+}
+
+export type CreateWorkRunResult = MemoryRunHandle | CreatedWorkRun;
+
 // --- Deps ---
 
 export interface AgentLoopDeps {
@@ -371,7 +385,10 @@ export interface AgentLoopDeps {
   runRecorder?: RunRecorder;
   inputHandle?: SessionInputHandle;
   runHandle?: MemoryRunHandle;
-  createWorkRun?: (inputHandle: SessionInputHandle) => MemoryRunHandle;
+  createWorkRun?: (
+    inputHandle: SessionInputHandle,
+    request: CreateWorkRunRequest,
+  ) => CreateWorkRunResult | Promise<CreateWorkRunResult>;
   onWorkRunCreated?: (runHandle: MemoryRunHandle) => void;
   clientId: string;
   inputKind?: "user_message" | "system_event";
