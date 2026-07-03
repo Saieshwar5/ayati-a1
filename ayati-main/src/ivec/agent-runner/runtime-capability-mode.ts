@@ -6,6 +6,7 @@ import {
   GIT_CONTEXT_TURN_ROUTING_TOOL_NAMES,
   isGitContextAllowedDuringPendingRouting,
   isGitContextFreshSessionRoutingToolName,
+  isGitContextReadOnlyToolName,
 } from "../../skills/builtins/git-context/tool-policy.js";
 import type { LoopState } from "../types.js";
 import type { AgentDecision } from "./decision.js";
@@ -96,12 +97,13 @@ export function detectRuntimeCapabilityMode(input: {
       whyActive: "No active task exists.",
       allowedActions: [
         "direct_reply",
+        ...GIT_CONTEXT_READ_ONLY_TOOL_NAMES,
         ...GIT_CONTEXT_FRESH_SESSION_ROUTING_TOOL_NAMES,
       ],
       blockedCapabilities: [
         "normal_work_tools",
         "decision_load_tools",
-        "task_search_or_activation",
+        "task_activation",
       ],
       next: "Create the first task for durable work, ask a short clarification, or reply directly for non-task chat.",
       rules: FRESH_SESSION_ROUTING_RULES,
@@ -191,8 +193,12 @@ export function isDecisionAllowedInRuntimeMode(mode: RuntimeCapabilityMode, deci
   if (decision.kind !== "act" || decision.action.calls.length === 0) {
     return false;
   }
-  return decision.action.calls.every((call) => isGitContextFreshSessionRoutingToolName(call.tool))
-    && decision.action.allowedTools.every((tool) => isGitContextFreshSessionRoutingToolName(tool));
+  return decision.action.calls.every((call) => isGitContextAllowedInFreshSession(call.tool))
+    && decision.action.allowedTools.every(isGitContextAllowedInFreshSession);
+}
+
+function isGitContextAllowedInFreshSession(tool: string): boolean {
+  return isGitContextReadOnlyToolName(tool) || isGitContextFreshSessionRoutingToolName(tool);
 }
 
 export function summarizeRuntimeCapabilityTools(input: {

@@ -71,13 +71,21 @@ describe("runtime capability modes", () => {
       why: "No active task exists.",
       allowed: [
         "direct_reply",
+        "git_context_list_sessions",
+        "git_context_active",
+        "git_context_list_tasks",
+        "git_context_search_tasks",
+        "git_context_read_task",
+        "git_context_read_evidence",
+        "git_context_search_evidence",
+        "git_context_log",
         "git_context_create_task_for_turn",
         "git_context_ask_clarification_for_turn",
       ],
       blocked: [
         "normal_work_tools",
         "decision_load_tools",
-        "task_search_or_activation",
+        "task_activation",
       ],
       rules: [
         "Reply directly only for casual chat, explanation-only questions, thanks, or planning discussion.",
@@ -146,5 +154,27 @@ describe("runtime capability modes", () => {
     expect(isDecisionAllowedInRuntimeMode(mode, reply)).toBe(true);
     expect(isDecisionAllowedInRuntimeMode(mode, route)).toBe(true);
     expect(isDecisionAllowedInRuntimeMode(mode, loadTools)).toBe(false);
+  });
+
+  it("allows read-only git-context actions in fresh-session read mode", () => {
+    const mode = detectRuntimeCapabilityMode({
+      state: state(gitContext({ status: "none" })),
+    });
+    const read: AgentDecision = {
+      kind: "act",
+      action: {
+        mode: "single",
+        allowedTools: ["git_context_list_tasks"],
+        assertions: [],
+        calls: [{
+          id: "call_1",
+          tool: "git_context_list_tasks",
+          input: {},
+          dependsOn: [],
+        }],
+      },
+    };
+
+    expect(isDecisionAllowedInRuntimeMode(mode, read)).toBe(true);
   });
 });

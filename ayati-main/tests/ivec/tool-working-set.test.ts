@@ -129,7 +129,12 @@ describe("ToolWorkingSetManager", () => {
     expect(manager.listActive({ runId: "r1" })).toContain("git_context_create_task_for_turn");
 
     manager.prepareForDecision(runState, { clientId: "c1", runId: "r1", sessionId: "s1", stepNumber: 3 });
-    expect(manager.listActive({ runId: "r1" })).toEqual([]);
+    expect(manager.listActive({ runId: "r1" })).toEqual([
+      "git_context_active",
+      "git_context_list_tasks",
+      "git_context_search_tasks",
+      "git_context_read_task",
+    ]);
   });
 
   it("preloads likely work tools with create and clarify routing tools when no active task exists", () => {
@@ -159,6 +164,10 @@ describe("ToolWorkingSetManager", () => {
 
     expect(manager.listActive({ runId: "r1" })).toEqual([
       "write_file",
+      "git_context_active",
+      "git_context_list_tasks",
+      "git_context_search_tasks",
+      "git_context_read_task",
       "git_context_create_task_for_turn",
       "git_context_ask_clarification_for_turn",
     ]);
@@ -200,7 +209,7 @@ describe("ToolWorkingSetManager", () => {
     ]);
   });
 
-  it("removes routing tools after any successful task routing lookup within the routing window", () => {
+  it("keeps routing tools after a safe read lookup within the routing window", () => {
     const catalog = new ToolCatalog([
       skill("git-context", [
         tool("git_context_search_tasks"),
@@ -220,7 +229,10 @@ describe("ToolWorkingSetManager", () => {
     }], context);
     manager.cleanupAfterStep(context);
 
-    expect(manager.listActive(context)).toEqual([]);
+    expect(manager.listActive(context)).toEqual([
+      "git_context_search_tasks",
+      "git_context_create_task_for_turn",
+    ]);
   });
 
   it("removes routing tools immediately after successful create or switch routing", () => {

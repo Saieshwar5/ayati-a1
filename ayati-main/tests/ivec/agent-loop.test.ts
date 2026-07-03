@@ -210,6 +210,17 @@ function fakeActivateTaskForTurnTool(): ToolDefinition {
   };
 }
 
+function fakeGitContextReadTool(name: string, output: string): ToolDefinition {
+  return {
+    name,
+    description: `${name} fixture tool.`,
+    inputSchema: { type: "object", properties: {} },
+    async execute() {
+      return { ok: true, output };
+    },
+  };
+}
+
 function fakeVerificationFailureTool(): ToolDefinition {
   return {
     name: "fake_verify_failure",
@@ -1101,6 +1112,201 @@ describe("agentLoop", () => {
           activeBranch: "task/T-20260702-website",
         }),
       );
+    } finally {
+      cleanup(dataDir);
+    }
+  });
+
+  it("runs active-task git-context reads before a work run without creating one", async () => {
+    const dataDir = makeTmpDir();
+    try {
+      const readTaskTool = fakeGitContextReadTool("git_context_read_task", "Task: Website task. Open: Improve the website.");
+      const gitActivateTaskTool = fakeActivateTaskForTurnTool();
+      const gitCreateTaskTool = fakeCreateTaskForTurnTool();
+      const createWorkRun = vi.fn();
+      const toolExecutor = createToolExecutor([]);
+      const feedback = createMemoryFeedbackLedger();
+      const toolWorkingSetManager = new ToolWorkingSetManager({
+        catalog: new ToolCatalog([
+          skill("git-context", [
+            fakeGitContextReadTool("git_context_active", "Active task: Website task."),
+            fakeGitContextReadTool("git_context_list_tasks", "Website task"),
+            fakeGitContextReadTool("git_context_search_tasks", "Website task"),
+            readTaskTool,
+            gitCreateTaskTool,
+            gitActivateTaskTool,
+          ]),
+        ]),
+        toolExecutor,
+        maxVisibleTools: 12,
+      });
+      const provider = createProvider([
+        {
+          kind: "act",
+          action: {
+            mode: "single",
+            calls: [{
+              id: "read_task",
+              tool: "git_context_read_task",
+              input: { taskId: "T-20260702-website" },
+              dependsOn: [],
+              purpose: "Inspect active task context before deciding whether work is needed.",
+            }],
+            allowedTools: ["git_context_read_task"],
+            assertions: [],
+          },
+        },
+        {
+          kind: "reply",
+          status: "completed",
+          message: "The active task is the website task, and its next open item is to improve the website.",
+        },
+      ]);
+
+      const result = await agentLoop({
+        provider,
+        toolExecutor,
+        toolWorkingSetManager,
+        toolDefinitions: [readTaskTool, gitCreateTaskTool, gitActivateTaskTool],
+        runRecorder: noopRunRecorder,
+        feedbackLedger: feedback.ledger,
+        createWorkRun,
+        inputHandle: { sessionId: "s1", seq: 9 },
+        clientId: "c1",
+        initialUserMessage: "What is the active website task about?",
+        dataDir,
+        systemContext: "full system context with memory",
+        harnessContext: {
+          contextEngine: {
+            session: {
+              sessionId: "s1",
+              conversationTail: [],
+              activityTail: [],
+              assetCount: 1,
+            },
+            focus: {
+              status: "active",
+              ref: "refs/heads/task/T-20260702-website",
+              workId: "T-20260702-website",
+            },
+            task: {
+              ref: "refs/heads/task/T-20260702-website",
+              workId: "T-20260702-website",
+              title: "Website task",
+              objective: "Maintain the website task.",
+              status: "active",
+              completed: ["Created initial website files."],
+              open: ["Improve the website."],
+              blockers: [],
+              facts: [],
+              next: "Improve the website.",
+              assets: [],
+              recentRuns: [],
+              recentCommits: [],
+              recentEvidence: [],
+            },
+          },
+        },
+      });
+
+      expect(result.status).toBe("completed");
+      expect(result.runClass).toBe("interaction");
+      expect(result.workRunId).toBeUndefined();
+      expect(result.totalToolCalls).toBe(1);
+      expect(createWorkRun).not.toHaveBeenCalled();
+      expect(feedbackEvents(feedback.events, "guard", "missing_work_run")).toHaveLength(0);
+      expect(feedbackEvents(feedback.events, "action", "started")[0]?.data).toMatchObject({
+        preRunGitContextAction: true,
+        preRunGitContextReadAction: true,
+        preRunGitContextRoutingAction: false,
+      });
+    } finally {
+      cleanup(dataDir);
+    }
+  });
+
+  it("runs fresh-session git-context reads before a work run without creating one", async () => {
+    const dataDir = makeTmpDir();
+    try {
+      const listTasksTool = fakeGitContextReadTool("git_context_list_tasks", "No tasks found.");
+      const gitCreateTaskTool = fakeCreateTaskForTurnTool();
+      const createWorkRun = vi.fn();
+      const toolExecutor = createToolExecutor([]);
+      const feedback = createMemoryFeedbackLedger();
+      const toolWorkingSetManager = new ToolWorkingSetManager({
+        catalog: new ToolCatalog([
+          skill("git-context", [
+            fakeGitContextReadTool("git_context_active", "No active task."),
+            listTasksTool,
+            gitCreateTaskTool,
+          ]),
+        ]),
+        toolExecutor,
+        maxVisibleTools: 12,
+      });
+      const provider = createProvider([
+        {
+          kind: "act",
+          action: {
+            mode: "single",
+            calls: [{
+              id: "list_tasks",
+              tool: "git_context_list_tasks",
+              input: {},
+              dependsOn: [],
+              purpose: "Check whether any task exists before answering.",
+            }],
+            allowedTools: ["git_context_list_tasks"],
+            assertions: [],
+          },
+        },
+        {
+          kind: "reply",
+          status: "completed",
+          message: "There are no tasks yet.",
+        },
+      ]);
+
+      const result = await agentLoop({
+        provider,
+        toolExecutor,
+        toolWorkingSetManager,
+        toolDefinitions: [listTasksTool, gitCreateTaskTool],
+        runRecorder: noopRunRecorder,
+        feedbackLedger: feedback.ledger,
+        createWorkRun,
+        inputHandle: { sessionId: "s1", seq: 10 },
+        clientId: "c1",
+        initialUserMessage: "Do I have any tasks yet?",
+        dataDir,
+        systemContext: "full system context with memory",
+        harnessContext: {
+          contextEngine: {
+            session: {
+              sessionId: "s1",
+              conversationTail: [],
+              activityTail: [],
+              assetCount: 0,
+            },
+            focus: {
+              status: "none",
+            },
+          },
+        },
+      });
+
+      expect(result.status).toBe("completed");
+      expect(result.runClass).toBe("interaction");
+      expect(result.workRunId).toBeUndefined();
+      expect(result.totalToolCalls).toBe(1);
+      expect(createWorkRun).not.toHaveBeenCalled();
+      expect(feedbackEvents(feedback.events, "guard", "missing_work_run")).toHaveLength(0);
+      expect(feedbackEvents(feedback.events, "action", "started")[0]?.data).toMatchObject({
+        freshSessionRouting: false,
+        preRunGitContextAction: true,
+        preRunGitContextReadAction: true,
+        preRunGitContextRoutingAction: false,
+      });
     } finally {
       cleanup(dataDir);
     }

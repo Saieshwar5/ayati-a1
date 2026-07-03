@@ -6,6 +6,7 @@ import {
   GIT_CONTEXT_FRESH_SESSION_ROUTING_TOOL_NAMES,
   GIT_CONTEXT_READ_ONLY_TOOL_NAMES,
   GIT_CONTEXT_TURN_ROUTING_TOOL_NAMES,
+  isGitContextTurnRoutingToolName,
 } from "../../skills/builtins/git-context/tool-policy.js";
 import {
   detectRuntimeCapabilityMode,
@@ -94,7 +95,7 @@ export class ToolWorkingSetManager {
     const runState = this.getRunState(context);
     const step = context.stepNumber ?? 0;
     if (step > TASK_ROUTING_WINDOW_STEPS) {
-      this.removeTaskRoutingTools(runState, []);
+      this.removeTaskRoutingResolutionTools(runState, []);
       this.syncMount(context);
     }
     const request = buildDeterministicLoadRequest(state);
@@ -194,7 +195,7 @@ export class ToolWorkingSetManager {
         continue;
       }
       state.usedAtStep.set(entry.name, context.stepNumber ?? 0);
-      if (!call.error && isTaskRoutingWindowTool(entry.name)) {
+      if (!call.error && isTaskRoutingResolutionTool(entry.name)) {
         state.taskRouting.resolved = true;
       }
       nextTools.push(...(call.error ? entry.nextOnFailure : entry.nextOnSuccess));
@@ -252,8 +253,10 @@ export class ToolWorkingSetManager {
       }
       return !shouldRemove;
     });
-    if (state.taskRouting.resolved || step >= TASK_ROUTING_WINDOW_STEPS) {
+    if (state.taskRouting.resolved) {
       this.removeTaskRoutingTools(state, removed);
+    } else if (step >= TASK_ROUTING_WINDOW_STEPS) {
+      this.removeTaskRoutingResolutionTools(state, removed);
     }
     this.syncMount(context);
     return removed;
@@ -280,7 +283,10 @@ export class ToolWorkingSetManager {
     }
     const mode = detectRuntimeCapabilityMode({ state });
     const routingTools = isFreshSessionRoutingMode(mode)
-      ? GIT_CONTEXT_FRESH_SESSION_ROUTING_TOOL_NAMES
+      ? [
+        ...GIT_CONTEXT_READ_ONLY_TOOL_NAMES,
+        ...GIT_CONTEXT_FRESH_SESSION_ROUTING_TOOL_NAMES,
+      ]
       : TASK_ROUTING_WINDOW_TOOL_NAMES;
     return {
       ...request,
@@ -296,6 +302,18 @@ export class ToolWorkingSetManager {
     state.ordered = state.ordered.filter((tool) => !isTaskRoutingWindowTool(tool));
     for (const tool of before) {
       if (!state.ordered.includes(tool) && isTaskRoutingWindowTool(tool)) {
+        state.loadedAtStep.delete(tool);
+        state.usedAtStep.delete(tool);
+        removed.push(tool);
+      }
+    }
+  }
+
+  private removeTaskRoutingResolutionTools(state: RunToolState, removed: string[]): void {
+    const before = state.ordered;
+    state.ordered = state.ordered.filter((tool) => !isTaskRoutingResolutionTool(tool));
+    for (const tool of before) {
+      if (!state.ordered.includes(tool) && isTaskRoutingResolutionTool(tool)) {
         state.loadedAtStep.delete(tool);
         state.usedAtStep.delete(tool);
         removed.push(tool);
@@ -488,7 +506,11 @@ function isTaskRoutingWindowTool(tool: string): boolean {
 }
 
 function hasCompletedTaskRoutingWindowToolUse(state: LoopState): boolean {
-  return state.completedSteps.some((step) => (step.toolsUsed ?? []).some(isTaskRoutingWindowTool));
+  return state.completedSteps.some((step) => (step.toolsUsed ?? []).some(isTaskRoutingResolutionTool));
+}
+
+function isTaskRoutingResolutionTool(tool: string): boolean {
+  return isGitContextTurnRoutingToolName(tool);
 }
 
 function summarizeLoadStatus(

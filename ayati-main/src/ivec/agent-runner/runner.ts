@@ -80,6 +80,8 @@ import { buildContextEngineFeedbackSummary } from "../feedback-ledger.js";
 import type { ToolDefinition, ToolResult } from "../../skills/types.js";
 import {
   isGitContextAllowedDuringPendingRouting,
+  isGitContextReadOnlyToolName,
+  isGitContextTurnRoutingToolName,
 } from "../../skills/builtins/git-context/tool-policy.js";
 import {
   detectRuntimeCapabilityMode,
@@ -612,7 +614,9 @@ export async function runAgentLoop(
     }
 
     const freshSessionDecisionAllowed = freshSessionWithoutActiveTask && isDecisionAllowedInRuntimeMode(runtimeMode, decision);
-    const freshSessionRouting = freshSessionDecisionAllowed && decision.kind === "act";
+    const freshSessionRouting = freshSessionDecisionAllowed
+      && decision.kind === "act"
+      && decision.action.calls.some((call) => isGitContextTurnRoutingToolName(call.tool));
     if (freshSessionWithoutActiveTask && !freshSessionDecisionAllowed) {
       recordFreshSessionToolRepair({
         deps,
@@ -642,7 +646,11 @@ export async function runAgentLoop(
       continue;
     }
 
-    const preRunGitContextAction = isPreRunGitContextAction(decision, workRunHandle);
+    const preRunGitContextReadAction = isPreRunGitContextReadAction(decision, workRunHandle);
+    const preRunGitContextRoutingAction = isPreRunGitContextRoutingAction(decision, workRunHandle);
+    const preRunGitContextAction = preRunGitContextReadAction
+      || preRunGitContextRoutingAction
+      || isPreRunGitContextAction(decision, workRunHandle);
 
     if (pendingRouting || freshSessionRouting || preRunGitContextAction) {
       const routingRunId = decisionScopeId(inputHandle);
@@ -660,9 +668,11 @@ export async function runAgentLoop(
           purpose: call.purpose,
         })),
         allowedTools: decision.action.allowedTools,
-        pendingRouting: true,
+        pendingRouting: pendingRouting || freshSessionRouting || preRunGitContextRoutingAction,
         freshSessionRouting,
         preRunGitContextAction,
+        preRunGitContextReadAction,
+        preRunGitContextRoutingAction,
       });
       const stepResult = await executePendingRoutingAction({
         deps,
@@ -1350,6 +1360,26 @@ function isPreRunGitContextAction(
     && !workRunHandle
     && decision.action.calls.length > 0
     && decision.action.calls.every((call) => isGitContextAllowedDuringPendingRouting(call.tool));
+}
+
+function isPreRunGitContextReadAction(
+  decision: AgentDecision,
+  workRunHandle: MemoryRunHandle | undefined,
+): boolean {
+  return decision.kind === "act"
+    && !workRunHandle
+    && decision.action.calls.length > 0
+    && decision.action.calls.every((call) => isGitContextReadOnlyToolName(call.tool));
+}
+
+function isPreRunGitContextRoutingAction(
+  decision: AgentDecision,
+  workRunHandle: MemoryRunHandle | undefined,
+): boolean {
+  return decision.kind === "act"
+    && !workRunHandle
+    && decision.action.calls.length > 0
+    && decision.action.calls.every((call) => isGitContextTurnRoutingToolName(call.tool));
 }
 
 function buildCreateWorkRunRequest(state: LoopState, reason: string) {
