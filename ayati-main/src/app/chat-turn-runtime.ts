@@ -29,7 +29,10 @@ import {
   type GitMemorySessionAttachmentRecord,
   type GitMemoryConversationSeqRange,
 } from "../context-engine/index.js";
-import type { HarnessContextInput } from "../ivec/harness-context.js";
+import {
+  createInitialHarnessContext,
+  type HarnessContextInput,
+} from "../ivec/harness-context.js";
 import { devError, devLog, devWarn } from "../shared/index.js";
 import { agentLoop } from "../ivec/agent-loop.js";
 import {
@@ -43,6 +46,7 @@ import type {
   AgentArtifact,
   AgentLoopResult,
   ChatAttachmentInput,
+  CreateWorkRunRequest,
   DirectoryChatAttachmentInput,
   LoopConfig,
 } from "../ivec/types.js";
@@ -117,6 +121,7 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
   private readonly feedbackLedger?: AgentFeedbackLedger;
   private readonly chatContextRuntime: GitMemoryChatContextRuntime;
   private readonly pulseProposalReflectionService = new PulseProposalReflectionService();
+  private readonly turnSerializer = new AsyncKeySerializer();
 
   constructor(options: CreateChatTurnRuntimeOptions) {
     this.onReply = options.onReply;
@@ -138,6 +143,35 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
   }
 
   async processChat(input: ChatTurnRuntimeInput): Promise<void> {
+    const serializationKey = this.chatTurnSerializationKey(input);
+    const queued = this.turnSerializer.isBusy(serializationKey);
+    if (queued) {
+      this.feedbackLedger?.record({
+        clientId: input.clientId,
+        stage: "runtime",
+        event: "chat_turn_queued",
+        data: {
+          serializationKey,
+          reason: "A previous chat turn is still running for this session key.",
+        },
+      });
+    }
+    return await this.turnSerializer.enqueue(serializationKey, async () => {
+      if (queued) {
+        this.feedbackLedger?.record({
+          clientId: input.clientId,
+          stage: "runtime",
+          event: "chat_turn_started_after_queue",
+          data: {
+            serializationKey,
+          },
+        });
+      }
+      await this.processChatUnlocked(input);
+    });
+  }
+
+  private async processChatUnlocked(input: ChatTurnRuntimeInput): Promise<void> {
     let inputHandle: SessionInputHandle | null = null;
     let runHandle: MemoryRunHandle | null = null;
     let chatContextTurn: GitMemoryChatContextPreparedTurn | null = null;
@@ -204,7 +238,14 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
           onWorkRunCreated: (created) => {
             runHandle = created;
           },
-          createWorkRun: this.failMissingGitMemoryRun,
+          createWorkRun: async (requestedInputHandle, request) => {
+            const routed = await this.bindActiveTaskForWorkRun(input.clientId, chatContextTurn, request);
+            routedContextTurn = routed;
+            return {
+              runHandle: this.runHandleFromRoutedTurn(requestedInputHandle, routed),
+              harnessContext: routed.harnessContext,
+            };
+          },
           clientId: input.clientId,
           uiContext: input.uiContext,
           initialUserMessage: input.content,
@@ -285,11 +326,25 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
           data: { message },
         });
       }
+      if (runHandle) {
+        await this.completeFailedChatContextRun(
+          input.clientId,
+          chatContextTurn,
+          routedContextTurn?.status === "ready" ? routedContextTurn : null,
+          runHandle,
+          err,
+        );
+      }
       this.onReply?.(input.clientId, {
         type: "error",
         content: formatChatRuntimeError(err),
       });
     }
+  }
+
+  private chatTurnSerializationKey(input: ChatTurnRuntimeInput): string {
+    const clientId = input.clientId.trim();
+    return clientId.length > 0 ? clientId : "local";
   }
 
   private async prepareChatContextTurn(
@@ -490,7 +545,8 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
     result: AgentLoopResult,
   ): Promise<void> {
     const binding = this.taskRunBindingFromRoutedOrResult(routed, result);
-    if (!prepared || !binding) {
+    const skipReason = this.chatContextFinalizationSkipReason(prepared, routed, result, binding);
+    if (skipReason) {
       if (prepared && result.content.trim()) {
         await this.recordChatContextAssistantMessage(clientId, prepared, result.content);
       }
@@ -502,7 +558,7 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
           stage: "context_engine",
           event: "finalization_skipped",
           data: {
-            reason: !binding ? "no_task_run_binding" : "missing_prepared_turn",
+            reason: skipReason,
             contextEngine: buildContextEngineFeedbackSummary({
               context: result.harnessContext?.contextEngine,
               finalizationStatus: "skipped",
@@ -514,6 +570,11 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
       return;
     }
 
+    if (!prepared || !binding) {
+      return;
+    }
+
+    const finalizationResult = this.normalizeChatContextFinalizationResult(result, routed);
     const completedAt = this.nowProvider().toISOString();
     this.feedbackLedger?.record({
       clientId,
@@ -526,10 +587,11 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
         taskId: binding.taskId,
         runId: binding.runId,
         conversationRefs: binding.conversationRefs,
-        resultStatus: result.status,
-        resultType: result.type,
+        resultStatus: finalizationResult.status,
+        resultType: finalizationResult.type,
+        ...(finalizationResult.status === result.status ? {} : { originalResultStatus: result.status }),
         contextEngine: buildContextEngineFeedbackSummary({
-          context: result.harnessContext?.contextEngine,
+          context: finalizationResult.harnessContext?.contextEngine,
           finalizationStatus: "started",
           committed: false,
           taskId: binding.taskId,
@@ -543,11 +605,11 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
       turn: prepared,
       taskId: binding.taskId,
       runId: binding.runId,
-      result,
+      result: finalizationResult,
       conversationRefs: binding.conversationRefs,
       at: completedAt,
-      assistantMessage: result.content,
-      assistantMessageKind: result.workState?.status === "needs_user_input" ? "feedback_question" : "message",
+      assistantMessage: finalizationResult.content,
+      assistantMessageKind: finalizationResult.workState?.status === "needs_user_input" ? "feedback_question" : "message",
       assistantAt: this.nowProvider().toISOString(),
     });
     if (!completed) {
@@ -562,7 +624,7 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
           taskId: binding.taskId,
           reason: "complete_task_run_returned_null",
           contextEngine: buildContextEngineFeedbackSummary({
-            context: result.harnessContext?.contextEngine,
+            context: finalizationResult.harnessContext?.contextEngine,
             finalizationStatus: "failed",
             committed: false,
             taskId: binding.taskId,
@@ -586,7 +648,7 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
         taskCommit: completed.taskCommit,
         ref: completed.ref,
         contextEngine: buildContextEngineFeedbackSummary({
-          context: result.harnessContext?.contextEngine,
+          context: finalizationResult.harnessContext?.contextEngine,
           finalizationStatus: "committed",
           committed: true,
           taskId: completed.taskId,
@@ -597,6 +659,143 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
         }),
       },
     });
+  }
+
+  private normalizeChatContextFinalizationResult(
+    result: AgentLoopResult,
+    routed: GitMemoryChatContextRoutedTurn | null,
+  ): AgentLoopResult {
+    if (!this.isCompletionWithoutTaskEvidence(result, routed)) {
+      return result;
+    }
+
+    const { taskSummary: _taskSummary, taskAssets: _taskAssets, ...rest } = result;
+    return {
+      ...rest,
+      status: "stuck",
+      workState: {
+        status: "blocked",
+        summary: "Task run stopped without durable work evidence.",
+        openWork: ["Retry or continue the task with concrete work."],
+        blockers: ["The run completed without tool calls or durable evidence."],
+        verifiedFacts: result.workState?.verifiedFacts ?? [],
+        evidence: result.workState?.evidence ?? [],
+        nextStep: "Retry or continue the task with concrete work.",
+      },
+    };
+  }
+
+  private isCompletionWithoutTaskEvidence(
+    result: AgentLoopResult,
+    routed: GitMemoryChatContextRoutedTurn | null,
+  ): boolean {
+    if (routed?.status !== "ready" || result.status !== "completed") {
+      return false;
+    }
+    return result.totalToolCalls === 0
+      && (result.completedSteps ?? []).length === 0
+      && (result.taskAssets ?? []).length === 0
+      && (result.artifacts ?? []).length === 0;
+  }
+
+  private async completeFailedChatContextRun(
+    clientId: string,
+    prepared: GitMemoryChatContextPreparedTurn | null,
+    routed: Extract<GitMemoryChatContextRoutedTurn, { status: "ready" }> | null,
+    runHandle: MemoryRunHandle,
+    error: unknown,
+  ): Promise<void> {
+    if (!prepared || (routed && runHandle.runId !== routed.runId)) {
+      return;
+    }
+
+    const message = errMessage(error);
+    try {
+      const harnessContext = routed
+        ? createInitialHarnessContext(routed.harnessContext)
+        : await this.failedRunHarnessContextFromPendingTurn(prepared, runHandle);
+      if (!harnessContext) {
+        this.feedbackLedger?.record({
+          clientId,
+          sessionId: runHandle.sessionId,
+          seq: runHandle.triggerSeq,
+          runId: runHandle.runId,
+          stage: "context_engine",
+          event: "finalization_failed",
+          data: {
+            reason: "missing_bound_pending_turn",
+            message,
+          },
+        });
+        return;
+      }
+      await this.completeChatContextRun(clientId, prepared, routed, {
+        type: "reply",
+        runClass: "task",
+        content: `Runtime failed before the task run could complete: ${message}`,
+        status: "failed",
+        totalIterations: 0,
+        totalToolCalls: 0,
+        runPath: "",
+        workRunId: runHandle.runId,
+        workState: {
+          status: "blocked",
+          summary: "Task run failed before completion.",
+          openWork: ["Retry or continue the task after resolving the runtime failure."],
+          blockers: [message],
+          verifiedFacts: [],
+          evidence: [],
+          nextStep: "Retry or continue the task.",
+        },
+        completedSteps: [],
+        harnessContext,
+      });
+    } catch (finalizationError) {
+      devWarn(`[${clientId}] git memory failed-run finalization failed: ${errMessage(finalizationError)}`);
+    }
+  }
+
+  private async failedRunHarnessContextFromPendingTurn(
+    prepared: GitMemoryChatContextPreparedTurn,
+    runHandle: MemoryRunHandle,
+  ): Promise<ReturnType<typeof createInitialHarnessContext> | null> {
+    const context = await this.chatContextRuntime.buildActiveContext(prepared.sessionId);
+    const pendingTurn = context.pendingTurn;
+    if (
+      pendingTurn?.routingStatus !== "bound"
+      || pendingTurn.runId !== runHandle.runId
+      || !pendingTurn.taskId
+    ) {
+      return null;
+    }
+    return createInitialHarnessContext({
+      contextEngine: buildGitMemoryHarnessContextPack(context),
+    });
+  }
+
+  private chatContextFinalizationSkipReason(
+    prepared: GitMemoryChatContextPreparedTurn | null,
+    routed: GitMemoryChatContextRoutedTurn | null,
+    result: AgentLoopResult,
+    binding: {
+      taskId: string;
+      runId: string;
+      conversationRefs: GitMemoryConversationSeqRange[];
+    } | null,
+  ): string | null {
+    if (!prepared) {
+      return "missing_prepared_turn";
+    }
+    if (!binding) {
+      return "no_task_run_binding";
+    }
+    if (result.runClass !== "task" && routed?.status !== "ready") {
+      return "non_task_result";
+    }
+    if (result.workRunId && binding.runId !== result.workRunId) {
+      return "binding_run_mismatch";
+    }
+    return null;
   }
 
   private async recordChatContextAssistantMessage(
@@ -682,8 +881,50 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
     return `input:${inputHandle.sessionId}:${inputHandle.seq}`;
   }
 
-  private failMissingGitMemoryRun(_inputHandle: SessionInputHandle): MemoryRunHandle {
-    throw new Error("Git-memory routed run is required before chat tool execution.");
+  private async bindActiveTaskForWorkRun(
+    clientId: string,
+    turn: GitMemoryChatContextPreparedTurn | null,
+    request: CreateWorkRunRequest,
+  ): Promise<Extract<GitMemoryChatContextRoutedTurn, { status: "ready" }>> {
+    if (request.reason !== "agent_action" || !request.activeTaskId) {
+      throw new Error("Git-memory routed run is required before chat tool execution.");
+    }
+    const routed = await this.chatContextRuntime.activateTaskTurn({
+      clientId,
+      turn,
+      taskId: request.activeTaskId,
+      reason: `Continue active task for tool execution: ${request.userMessage}`,
+      at: this.nowProvider().toISOString(),
+    });
+    if (!routed || routed.status !== "ready") {
+      throw new Error("Git-memory active task run could not be created before chat tool execution.");
+    }
+    this.feedbackLedger?.record({
+      clientId,
+      sessionId: routed.sessionId,
+      runId: routed.runId,
+      stage: "run",
+      event: "auto_bound_active_task",
+      data: {
+        taskId: routed.taskId,
+        branch: routed.branch,
+        runId: routed.runId,
+        reason: request.reason,
+        activeTaskId: request.activeTaskId,
+        activeBranch: request.activeBranch,
+        contextEngine: buildContextEngineFeedbackSummary({
+          context: routed.harnessContext.contextEngine,
+          routeStatus: routed.status,
+          routeMode: routed.mode,
+          routeSource: "auto",
+          taskId: routed.taskId,
+          branch: routed.branch,
+          runId: routed.runId,
+          conversationRefs: routed.conversationRefs,
+        }),
+      },
+    });
+    return routed;
   }
 
   private harnessContextFromPreparedTurn(
@@ -949,6 +1190,30 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
   }
 }
 
+class AsyncKeySerializer {
+  private readonly tails = new Map<string, Promise<void>>();
+
+  isBusy(key: string): boolean {
+    return this.tails.has(key);
+  }
+
+  async enqueue<T>(key: string, work: () => Promise<T>): Promise<T> {
+    const previous = this.tails.get(key) ?? Promise.resolve();
+    const current = previous.then(work);
+    const tail = current.then(
+      () => undefined,
+      () => undefined,
+    );
+    this.tails.set(key, tail);
+    tail.finally(() => {
+      if (this.tails.get(key) === tail) {
+        this.tails.delete(key);
+      }
+    });
+    return await current;
+  }
+}
+
 function summarizeChatAttachment(attachment: ChatAttachmentInput): Record<string, unknown> {
   if ("fileId" in attachment) {
     return {
@@ -1169,4 +1434,8 @@ function formatChatRuntimeError(error: unknown): string {
     return "I could not get a valid response from the model provider. Please retry.";
   }
   return "Failed to generate a response.";
+}
+
+function errMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }

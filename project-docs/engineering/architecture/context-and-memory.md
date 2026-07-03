@@ -19,6 +19,7 @@ The runtime flow is:
 
 ```text
 user message
+-> chat runtime serializes same-session turns
 -> context engine records the global conversation on main
 -> runtime auto-binds obvious same-task continuation, or the agent uses
    git-context read/search and turn-aware routing tools when ownership is
@@ -35,6 +36,11 @@ Pending-turn routing states are:
 - `clarifying`: ownership is ambiguous; no task branch receives the turn and no
   run id is allocated until the user answers.
 
+Only one chat turn per client/session should enter pending-turn preparation and
+routing at a time. This serialization belongs above the context engine because
+the race is not just a git write conflict; it is two agent loops acting as if
+they both own the current pending turn.
+
 While a pending turn is `unbound` or `clarifying`, normal task tools are blocked.
 The agent may use git-context read/search tools and turn-aware routing tools:
 `git_context_activate_task_for_turn`, `git_context_create_task_for_turn`, and
@@ -42,7 +48,10 @@ The agent may use git-context read/search tools and turn-aware routing tools:
 
 Fresh sessions are stricter. If there is no active task, the runtime treats that
 as "zero tasks in this session" and exposes only create-or-clarify routing
-tools. After `git_context_create_task_for_turn` or
+tools. These routing mutation tools do not consume the normal selected-tool
+budget while routing is active; otherwise normal/read tools can crowd out the
+very tools needed to create or bind a task. After
+`git_context_create_task_for_turn` or
 `git_context_activate_task_for_turn` returns a ready route, the runner switches
 from the synthetic decision context to the real run id, refreshes
 `context.git.current`, removes routing tools for the rest of the run, and then

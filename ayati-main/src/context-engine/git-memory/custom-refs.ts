@@ -1,9 +1,11 @@
 import type { GitMemoryWorktreeGitDriver } from "./git-driver.js";
 import type {
+  GitMemoryRunId,
   GitMemorySessionId,
   GitMemoryTaskId,
 } from "./schema.js";
 import {
+  isGitMemoryRunId,
   isGitMemorySessionId,
   isGitMemoryTaskId,
 } from "./schema.js";
@@ -34,6 +36,17 @@ export function gitMemorySessionTaskRef(sessionId: GitMemorySessionId, taskId: G
   assertGitMemorySessionId(sessionId);
   assertGitMemoryTaskId(taskId);
   return `${gitMemorySessionTasksRefPrefix(sessionId)}${taskId}`;
+}
+
+export function gitMemorySessionRunReservationsRefPrefix(sessionId: GitMemorySessionId): string {
+  assertGitMemorySessionId(sessionId);
+  return `${GIT_MEMORY_CUSTOM_REF_PREFIX}/sessions/${sessionId}/reserved-runs/`;
+}
+
+export function gitMemorySessionRunReservationRef(sessionId: GitMemorySessionId, runId: GitMemoryRunId): string {
+  assertGitMemorySessionId(sessionId);
+  assertGitMemoryRunId(runId);
+  return `${gitMemorySessionRunReservationsRefPrefix(sessionId)}${runId}`;
 }
 
 export function gitMemoryTaskLatestRunRef(taskId: GitMemoryTaskId): string {
@@ -96,5 +109,11 @@ function assertGitMemorySessionId(sessionId: GitMemorySessionId): void {
 function assertGitMemoryTaskId(taskId: GitMemoryTaskId): void {
   if (!isGitMemoryTaskId(taskId)) {
     throw new Error(`Invalid git-memory task id: ${taskId}`);
+  }
+}
+
+function assertGitMemoryRunId(runId: GitMemoryRunId): void {
+  if (!isGitMemoryRunId(runId)) {
+    throw new Error(`Invalid git-memory run id: ${runId}`);
   }
 }

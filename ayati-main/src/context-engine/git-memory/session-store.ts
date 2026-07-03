@@ -13,6 +13,7 @@ import {
   gitMemorySessionActiveTaskRef,
   gitMemorySessionLatestBaseRef,
   gitMemorySessionLatestRunRef,
+  gitMemorySessionRunReservationRef,
   gitMemorySessionTaskRef,
   gitMemoryTaskLatestRunRef,
   readGitMemoryCustomRef,
@@ -421,6 +422,7 @@ export interface CommitGitMemoryTaskRunResult {
   branch: string;
   ref: string;
   runId: GitMemoryRunId;
+  runStatus: GitMemoryRunStatus;
   taskCommit: string;
   sessionStoreCommit?: string;
 }
@@ -710,6 +712,14 @@ export class GitMemoryDailySessionStore {
     if (!(await driver.hasRef(ref))) {
       throw new Error(`Git memory task branch missing: ${ref}`);
     }
+    const existingRun = await driver.readFile(ref, gitMemoryTaskRunPath(input.taskId, input.runId));
+    if (existingRun !== null) {
+      throw new Error(`Git memory task run already finalized: ${input.runId}`);
+    }
+    if (await readGitMemoryCustomRef(driver, gitMemorySessionRunReservationRef(input.sessionId, input.runId))) {
+      throw new Error(`Git memory task run already reserved: ${input.runId}`);
+    }
+    await writeGitMemoryCustomRef(driver, gitMemorySessionRunReservationRef(input.sessionId, input.runId), ref);
     return { runId: input.runId };
   }
 
@@ -1271,6 +1281,7 @@ export class GitMemoryDailySessionStore {
       branch: taskEntry.branch,
       ref,
       runId,
+      runStatus: run.status,
       taskCommit,
       ...(input.sessionStoreCommit ? { sessionStoreCommit: input.sessionStoreCommit } : {}),
     };
@@ -1290,6 +1301,9 @@ export class GitMemoryDailySessionStore {
       return null;
     }
     const runFile = parseJson<GitMemoryRunFile>(existingRun);
+    if (!runFile) {
+      throw new Error(`Git memory committed run file is invalid: ${input.runId}`);
+    }
     const commit = (await readCompactLog(driver, ref, 100))
       .find((entry) =>
         entry.trailers.taskId === input.taskId
@@ -1304,6 +1318,7 @@ export class GitMemoryDailySessionStore {
       branch: taskEntry.branch,
       ref,
       runId: input.runId,
+      runStatus: runFile.status,
       taskCommit: commit,
       ...(runFile?.sessionStoreCommit ? { sessionStoreCommit: runFile.sessionStoreCommit } : {}),
     };
@@ -2066,6 +2081,13 @@ async function nextRunSequenceFromTasks(driver: GitMemoryWorktreeGitDriver): Pro
       if (sequence > 0) {
         sequences.push(sequence);
       }
+    }
+  }
+  for (const ref of await driver.listRefs("refs/ayati/sessions")) {
+    const match = /\/reserved-runs\/(R-\d{8}-\d{4})$/.exec(ref);
+    const sequence = match?.[1] ? runSequenceFromRunId(match[1]) : 0;
+    if (sequence > 0) {
+      sequences.push(sequence);
     }
   }
   return Math.max(0, ...sequences) + 1;

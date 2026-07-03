@@ -6,11 +6,14 @@ import {
   GIT_CONTEXT_FRESH_SESSION_ROUTING_TOOL_NAMES,
   GIT_CONTEXT_READ_ONLY_TOOL_NAMES,
   GIT_CONTEXT_TURN_ROUTING_TOOL_NAMES,
+  isGitContextTurnRoutingToolName,
 } from "../../skills/builtins/git-context/tool-policy.js";
 import {
   detectRuntimeCapabilityMode,
   deterministicToolsForRuntimeMode,
   isFreshSessionRoutingMode,
+  requiredRoutingMutationToolsForRuntimeMode,
+  TASK_ROUTING_WINDOW_STEPS,
 } from "./runtime-capability-mode.js";
 
 export interface ToolLoadRequest {
@@ -51,7 +54,6 @@ interface RunToolState {
 }
 
 const DEFAULT_MAX_VISIBLE_TOOLS = 12;
-const TASK_ROUTING_WINDOW_STEPS = 2;
 const TASK_ROUTING_WINDOW_TOOL_NAMES = [
   "git_context_active",
   "git_context_list_tasks",
@@ -93,29 +95,38 @@ export class ToolWorkingSetManager {
   prepareForDecision(state: LoopState, context: ToolExecutionContext): ToolLoadResult {
     const runState = this.getRunState(context);
     const step = context.stepNumber ?? 0;
+    const mode = detectRuntimeCapabilityMode({ state });
+    if (mode.hasWorkRun || mode.pendingTurnStatus === "bound") {
+      this.removeTaskRoutingResolutionTools(runState, []);
+      this.syncMount(context);
+    }
     if (step > TASK_ROUTING_WINDOW_STEPS) {
-      this.removeTaskRoutingTools(runState, []);
+      this.removeTaskRoutingResolutionTools(runState, []);
       this.syncMount(context);
     }
     const request = buildDeterministicLoadRequest(state);
     const suppressTaskRoutingTools = hasCompletedTaskRoutingWindowToolUse(state);
+    const requiredRoutingTools = suppressTaskRoutingTools
+      ? []
+      : requiredRoutingMutationToolsForRuntimeMode(mode);
     const result = this.load(this.addTaskRoutingWindowTools(request, state, context), context);
+    const prepared = mergeToolLoadResult(result, this.ensureToolsLoadedOutsideLimit(requiredRoutingTools, context));
     if (suppressTaskRoutingTools) {
       const removed: string[] = [];
       this.removeTaskRoutingTools(runState, removed);
       if (removed.length > 0) {
         this.syncMount(context);
         return {
-          ...result,
-          loaded: result.loaded.filter((tool) => !removed.includes(tool)),
-          alreadyActive: result.alreadyActive.filter((tool) => !removed.includes(tool)),
-          evicted: [...result.evicted, ...removed],
-          message: `${result.message} Removed task routing tools after prior routing use: ${removed.join(", ")}.`,
+          ...prepared,
+          loaded: prepared.loaded.filter((tool) => !removed.includes(tool)),
+          alreadyActive: prepared.alreadyActive.filter((tool) => !removed.includes(tool)),
+          evicted: [...prepared.evicted, ...removed],
+          message: `${prepared.message} Removed task routing tools after prior routing use: ${removed.join(", ")}.`,
         };
       }
     }
     this.syncMount(context);
-    return result;
+    return prepared;
   }
 
   load(request: ToolLoadRequest, context: ToolExecutionContext): ToolLoadResult {
@@ -194,7 +205,7 @@ export class ToolWorkingSetManager {
         continue;
       }
       state.usedAtStep.set(entry.name, context.stepNumber ?? 0);
-      if (!call.error && isTaskRoutingWindowTool(entry.name)) {
+      if (!call.error && isTaskRoutingResolutionTool(entry.name)) {
         state.taskRouting.resolved = true;
       }
       nextTools.push(...(call.error ? entry.nextOnFailure : entry.nextOnSuccess));
@@ -252,8 +263,10 @@ export class ToolWorkingSetManager {
       }
       return !shouldRemove;
     });
-    if (state.taskRouting.resolved || step >= TASK_ROUTING_WINDOW_STEPS) {
+    if (state.taskRouting.resolved) {
       this.removeTaskRoutingTools(state, removed);
+    } else if (step >= TASK_ROUTING_WINDOW_STEPS) {
+      this.removeTaskRoutingResolutionTools(state, removed);
     }
     this.syncMount(context);
     return removed;
@@ -268,6 +281,9 @@ export class ToolWorkingSetManager {
     if (runState.taskRouting.resolved) {
       return request;
     }
+    if (state.runId || state.harnessContext.contextEngine?.pendingTurn?.routingStatus === "bound") {
+      return request;
+    }
     if (state.harnessContext.contextEngine?.pendingTurn?.routingStatus === "clarifying") {
       return request;
     }
@@ -280,7 +296,10 @@ export class ToolWorkingSetManager {
     }
     const mode = detectRuntimeCapabilityMode({ state });
     const routingTools = isFreshSessionRoutingMode(mode)
-      ? GIT_CONTEXT_FRESH_SESSION_ROUTING_TOOL_NAMES
+      ? [
+        ...GIT_CONTEXT_READ_ONLY_TOOL_NAMES,
+        ...GIT_CONTEXT_FRESH_SESSION_ROUTING_TOOL_NAMES,
+      ]
       : TASK_ROUTING_WINDOW_TOOL_NAMES;
     return {
       ...request,
@@ -301,6 +320,45 @@ export class ToolWorkingSetManager {
         removed.push(tool);
       }
     }
+  }
+
+  private removeTaskRoutingResolutionTools(state: RunToolState, removed: string[]): void {
+    const before = state.ordered;
+    state.ordered = state.ordered.filter((tool) => !isTaskRoutingResolutionTool(tool));
+    for (const tool of before) {
+      if (!state.ordered.includes(tool) && isTaskRoutingResolutionTool(tool)) {
+        state.loadedAtStep.delete(tool);
+        state.usedAtStep.delete(tool);
+        removed.push(tool);
+      }
+    }
+  }
+
+  private ensureToolsLoadedOutsideLimit(toolNames: string[], context: ToolExecutionContext): Pick<ToolLoadResult, "loaded" | "alreadyActive" | "missing"> {
+    const state = this.getRunState(context);
+    const loaded: string[] = [];
+    const alreadyActive: string[] = [];
+    const missing: string[] = [];
+
+    for (const name of normalizeStrings(toolNames)) {
+      const entry = this.catalog.get(name);
+      if (!entry) {
+        missing.push(name);
+        continue;
+      }
+      if (state.ordered.includes(entry.name)) {
+        alreadyActive.push(entry.name);
+        continue;
+      }
+      state.ordered.push(entry.name);
+      state.loadedAtStep.set(entry.name, context.stepNumber ?? 0);
+      loaded.push(entry.name);
+    }
+
+    if (loaded.length > 0) {
+      this.syncMount(context);
+    }
+    return { loaded, alreadyActive, missing };
   }
 
   private resolveRequest(request: Required<Pick<ToolLoadRequest, "toolNames" | "groups">> & Pick<ToolLoadRequest, "query">): { entries: ToolCatalogEntry[]; missing: string[] } {
@@ -483,12 +541,42 @@ function normalizeStrings(values: string[] | undefined): string[] {
   return [...new Set((values ?? []).map((value) => value.trim()).filter((value) => value.length > 0))];
 }
 
+function mergeToolLoadResult(
+  result: ToolLoadResult,
+  pinned: Pick<ToolLoadResult, "loaded" | "alreadyActive" | "missing">,
+): ToolLoadResult {
+  if (pinned.loaded.length === 0 && pinned.alreadyActive.length === 0 && pinned.missing.length === 0) {
+    return result;
+  }
+  return {
+    ...result,
+    loaded: normalizeStrings([...result.loaded, ...pinned.loaded]),
+    alreadyActive: normalizeStrings([...result.alreadyActive, ...pinned.alreadyActive]),
+    missing: normalizeStrings([...result.missing, ...pinned.missing]),
+    message: summarizeLoadMessage(
+      summarizeLoadStatus(
+        normalizeStrings([...result.loaded, ...pinned.loaded]),
+        normalizeStrings([...result.alreadyActive, ...pinned.alreadyActive]),
+        normalizeStrings([...result.missing, ...pinned.missing]),
+        result.loaded.length + result.alreadyActive.length + pinned.loaded.length + pinned.alreadyActive.length,
+      ),
+      normalizeStrings([...result.loaded, ...pinned.loaded]),
+      normalizeStrings([...result.alreadyActive, ...pinned.alreadyActive]),
+      normalizeStrings([...result.missing, ...pinned.missing]),
+    ),
+  };
+}
+
 function isTaskRoutingWindowTool(tool: string): boolean {
   return (TASK_ROUTING_WINDOW_TOOL_NAMES as readonly string[]).includes(tool);
 }
 
 function hasCompletedTaskRoutingWindowToolUse(state: LoopState): boolean {
-  return state.completedSteps.some((step) => (step.toolsUsed ?? []).some(isTaskRoutingWindowTool));
+  return state.completedSteps.some((step) => (step.toolsUsed ?? []).some(isTaskRoutingResolutionTool));
+}
+
+function isTaskRoutingResolutionTool(tool: string): boolean {
+  return isGitContextTurnRoutingToolName(tool);
 }
 
 function summarizeLoadStatus(

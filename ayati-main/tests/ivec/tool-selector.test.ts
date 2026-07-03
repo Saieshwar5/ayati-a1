@@ -142,6 +142,63 @@ describe("selectToolsForDecision", () => {
     ]);
   });
 
+  it("does not count fresh-session routing mutation tools against the selected tool cap", () => {
+    const current = state("create a small website and run it");
+    current.runId = "";
+    current.harnessContext = {
+      ...current.harnessContext,
+      contextEngine: pendingGitContext("unbound", { status: "none" }),
+    };
+
+    const selected = selectToolsForDecision(current, [
+      tool("write_files", 100),
+      tool("write_file", 90),
+      tool("create_directory", 80),
+      tool("shell", 70),
+      tool("search_in_files", 60),
+      tool("git_context_list_tasks", 1),
+      tool("git_context_search_tasks", 1),
+      tool("git_context_create_task_for_turn", 1),
+      tool("git_context_ask_clarification_for_turn", 1),
+    ], 3);
+
+    expect(selected.map((entry) => entry.name)).toEqual([
+      "write_files",
+      "write_file",
+      "create_directory",
+      "git_context_create_task_for_turn",
+      "git_context_ask_clarification_for_turn",
+    ]);
+  });
+
+  it("does not count active-task routing mutation tools against the selected tool cap", () => {
+    const current = state("continue the website and add dark mode");
+    current.runId = "";
+    current.harnessContext = {
+      ...current.harnessContext,
+      contextEngine: pendingGitContext("unbound"),
+    };
+
+    const selected = selectToolsForDecision(current, [
+      tool("write_files", 100),
+      tool("edit_file", 90),
+      tool("read_file", 80),
+      tool("git_context_list_tasks", 1),
+      tool("git_context_search_tasks", 1),
+      tool("git_context_activate_task_for_turn", 1),
+      tool("git_context_create_task_for_turn", 1),
+      tool("git_context_ask_clarification_for_turn", 1),
+    ], 2);
+
+    expect(selected.map((entry) => entry.name)).toEqual([
+      "git_context_list_tasks",
+      "git_context_search_tasks",
+      "git_context_activate_task_for_turn",
+      "git_context_create_task_for_turn",
+      "git_context_ask_clarification_for_turn",
+    ]);
+  });
+
   it("selects no executable tools while a pending turn is clarifying", () => {
     const current = state("build a website");
     current.runId = "";

@@ -13,6 +13,7 @@ import type {
   AgentLoopDeps,
   AgentLoopResult,
   AgentTaskSummaryRecord,
+  CreatedWorkRun,
   CompletionDirective,
   LoopConfig,
   LoopState,
@@ -79,6 +80,8 @@ import { buildContextEngineFeedbackSummary } from "../feedback-ledger.js";
 import type { ToolDefinition, ToolResult } from "../../skills/types.js";
 import {
   isGitContextAllowedDuringPendingRouting,
+  isGitContextReadOnlyToolName,
+  isGitContextTurnRoutingToolName,
 } from "../../skills/builtins/git-context/tool-policy.js";
 import {
   detectRuntimeCapabilityMode,
@@ -178,7 +181,13 @@ export async function runAgentLoop(
         throw new Error("Git-memory run handle is required before agent action execution.");
       }
       try {
-        workRunHandle = createWorkRun(inputHandle);
+        const createdWorkRun = await createWorkRun(inputHandle, buildCreateWorkRunRequest(state, reason));
+        const normalizedWorkRun = normalizeCreatedWorkRun(createdWorkRun);
+        workRunHandle = normalizedWorkRun.runHandle;
+        if (normalizedWorkRun.harnessContext) {
+          deps.harnessContext = normalizedWorkRun.harnessContext;
+          syncHarnessContext(state, deps, inputHandle);
+        }
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         const repair = createMissingWorkRunRepairSignal({
@@ -564,7 +573,7 @@ export async function runAgentLoop(
 
     if (decision.kind === "load_tools") {
       toolLoadDecisionCount++;
-      const work = pendingRouting ? null : await ensureWorkRun("tool_load", decision);
+      const work = workRunHandle ? await ensureWorkRun("tool_load", decision) : null;
       const loadRunId = work?.runHandle.runId ?? decisionScopeId(inputHandle);
       const workToolContext = { ...toolContext, runId: loadRunId };
       recordFeedback(deps, inputHandle, work?.runHandle.runId, "tool_load", "requested", {
@@ -605,7 +614,9 @@ export async function runAgentLoop(
     }
 
     const freshSessionDecisionAllowed = freshSessionWithoutActiveTask && isDecisionAllowedInRuntimeMode(runtimeMode, decision);
-    const freshSessionRouting = freshSessionDecisionAllowed && decision.kind === "act";
+    const freshSessionRouting = freshSessionDecisionAllowed
+      && decision.kind === "act"
+      && decision.action.calls.some((call) => isGitContextTurnRoutingToolName(call.tool));
     if (freshSessionWithoutActiveTask && !freshSessionDecisionAllowed) {
       recordFreshSessionToolRepair({
         deps,
@@ -635,7 +646,13 @@ export async function runAgentLoop(
       continue;
     }
 
-    if (pendingRouting || freshSessionRouting) {
+    const preRunGitContextReadAction = isPreRunGitContextReadAction(decision, workRunHandle);
+    const preRunGitContextRoutingAction = isPreRunGitContextRoutingAction(decision, workRunHandle);
+    const preRunGitContextAction = preRunGitContextReadAction
+      || preRunGitContextRoutingAction
+      || isPreRunGitContextAction(decision, workRunHandle);
+
+    if (pendingRouting || freshSessionRouting || preRunGitContextAction) {
       const routingRunId = decisionScopeId(inputHandle);
       const routingToolContext = { ...toolContext, runId: routingRunId };
       recordFeedback(deps, inputHandle, undefined, "action", "started", {
@@ -651,8 +668,11 @@ export async function runAgentLoop(
           purpose: call.purpose,
         })),
         allowedTools: decision.action.allowedTools,
-        pendingRouting: true,
+        pendingRouting: pendingRouting || freshSessionRouting || preRunGitContextRoutingAction,
         freshSessionRouting,
+        preRunGitContextAction,
+        preRunGitContextReadAction,
+        preRunGitContextRoutingAction,
       });
       const stepResult = await executePendingRoutingAction({
         deps,
@@ -1332,6 +1352,65 @@ function missingWorkRunRepairCode(pendingTurnStatus: string | undefined): "R_NOR
   return "R_NORMAL_TOOL_WITHOUT_TASK_RUN";
 }
 
+function isPreRunGitContextAction(
+  decision: AgentDecision,
+  workRunHandle: MemoryRunHandle | undefined,
+): boolean {
+  return decision.kind === "act"
+    && !workRunHandle
+    && decision.action.calls.length > 0
+    && decision.action.calls.every((call) => isGitContextAllowedDuringPendingRouting(call.tool));
+}
+
+function isPreRunGitContextReadAction(
+  decision: AgentDecision,
+  workRunHandle: MemoryRunHandle | undefined,
+): boolean {
+  return decision.kind === "act"
+    && !workRunHandle
+    && decision.action.calls.length > 0
+    && decision.action.calls.every((call) => isGitContextReadOnlyToolName(call.tool));
+}
+
+function isPreRunGitContextRoutingAction(
+  decision: AgentDecision,
+  workRunHandle: MemoryRunHandle | undefined,
+): boolean {
+  return decision.kind === "act"
+    && !workRunHandle
+    && decision.action.calls.length > 0
+    && decision.action.calls.every((call) => isGitContextTurnRoutingToolName(call.tool));
+}
+
+function buildCreateWorkRunRequest(state: LoopState, reason: string) {
+  const contextEngine = state.harnessContext.contextEngine;
+  const focus = contextEngine?.focus;
+  return {
+    reason,
+    userMessage: state.userMessage,
+    ...(focus?.status === "active" ? {
+      activeTaskId: focus.workId,
+      activeBranch: branchFromRef(focus.ref),
+    } : {}),
+  };
+}
+
+function normalizeCreatedWorkRun(created: CreatedWorkRun | MemoryRunHandle): CreatedWorkRun {
+  if ("runHandle" in created) {
+    return created;
+  }
+  return { runHandle: created };
+}
+
+function branchFromRef(ref: string | undefined): string | undefined {
+  if (!ref) {
+    return undefined;
+  }
+  return ref.startsWith("refs/heads/")
+    ? ref.slice("refs/heads/".length)
+    : ref;
+}
+
 function createFailureRecordFromStepSummary(step: StepSummary): LoopState["failureHistory"][number] {
   const failureType = step.failureType ?? "verify_failed";
   const reason = buildFailureHistoryReason(step);
@@ -1592,8 +1671,39 @@ function recordToolWorkingSetFeedback(input: {
     iteration: input.iteration,
     toolContextRunId: input.toolContextRunId,
     ...toolMode,
+    ...(runtimeMode.routingWindow ? { routingWindow: runtimeMode.routingWindow } : {}),
     ...(warningCodes.length > 0 ? { warningCodes } : {}),
   });
+  if (runtimeMode.routingWindow) {
+    const routingWindowFeedback = {
+      iteration: input.iteration,
+      toolContextRunId: input.toolContextRunId,
+      mode: toolMode.mode,
+      hasWorkRun: toolMode.hasWorkRun,
+      focusStatus: toolMode.focusStatus,
+      pendingTurnStatus: toolMode.pendingTurnStatus,
+      step: runtimeMode.routingWindow.step,
+      maxSteps: runtimeMode.routingWindow.maxSteps,
+      remaining: runtimeMode.routingWindow.remaining,
+      open: runtimeMode.routingWindow.open,
+      expired: runtimeMode.routingWindow.expired ?? false,
+      expiresAfterThisDecision: runtimeMode.routingWindow.expiresAfterThisDecision,
+      readToolsVisible: toolMode.visibleReadTools,
+      routingToolsVisible: toolMode.visibleTaskRoutingTools,
+      readToolsAvailable: runtimeMode.routingWindow.readToolsAvailable,
+      routingToolsAvailable: runtimeMode.routingWindow.routingToolsAvailable,
+      readToolsRemainAfterExpiry: runtimeMode.routingWindow.readToolsRemainAfterExpiry,
+      guidance: runtimeMode.routingWindow.guidance,
+    };
+    if (runtimeMode.routingWindow.open) {
+      recordFeedback(input.deps, input.inputHandle, input.runId, "tools", "routing_window_visible", routingWindowFeedback);
+      if (runtimeMode.routingWindow.expiresAfterThisDecision) {
+        recordFeedback(input.deps, input.inputHandle, input.runId, "tools", "routing_window_expiring", routingWindowFeedback);
+      }
+    } else {
+      recordFeedback(input.deps, input.inputHandle, input.runId, "tools", "routing_window_expired", routingWindowFeedback);
+    }
+  }
   if (!toolMode.hasWorkRun && toolMode.visibleRoutingTools.length > 0) {
     recordFeedback(input.deps, input.inputHandle, input.runId, "tools", "pre_task_routing_tools_visible", {
       iteration: input.iteration,
@@ -1601,9 +1711,12 @@ function recordToolWorkingSetFeedback(input: {
       mode: toolMode.mode,
       visibleRoutingTools: toolMode.visibleRoutingTools,
       selectedRoutingTools: toolMode.selectedRoutingTools,
+      visibleReadTools: toolMode.visibleReadTools,
+      visibleTaskRoutingTools: toolMode.visibleTaskRoutingTools,
       visibleNormalTools: toolMode.visibleNormalTools,
       pendingTurnStatus: toolMode.pendingTurnStatus,
       focusStatus: toolMode.focusStatus,
+      ...(runtimeMode.routingWindow ? { routingWindow: runtimeMode.routingWindow } : {}),
     });
   }
 }

@@ -5,29 +5,31 @@ Daemon communication flow:
 1. A communication channel sends a user message or event into the daemon.
 2. Current CLI path: `ayati-cli` sends `{ type: "chat", content, attachments? }` to `ws://localhost:8080`.
 3. `WsServer` parses JSON and forwards payloads to `IVecEngine.handleMessage`.
-4. The chat runtime records the user message in daily git context and prepares
+4. The chat runtime serializes chat turns for the same client/session so only
+   one turn can prepare or route pending-turn state at a time.
+5. The chat runtime records the user message in daily git context and prepares
    pending-turn ownership state.
-5. Runtime auto-binds obvious same-task follow-ups. If task ownership is
+6. Runtime auto-binds obvious same-task follow-ups. If task ownership is
    semantic or ambiguous, the agent can search/read git context and use
    turn-aware activate/create/clarify tools before normal task work runs.
-6. The runner builds a structured context pack from daily git context and
+7. The runner builds a structured context pack from daily git context and
    personal memory. Current-run attachments appear separately in the sparse
    state view only when present.
-7. The decision model returns direct assistant text for normal final replies,
+8. The decision model returns direct assistant text for normal final replies,
    calls `decision_load_tools` for working-set changes, calls task-only
    `ask_user_feedback` for blocking in-run feedback, or directly calls one
    selected executable tool.
-8. If an executable tool is called, the action executor validates the selected
+9. If an executable tool is called, the action executor validates the selected
    tool input and dispatches through registered tool definitions.
-9. Tool contracts/assertions turn results into verified facts and evidence.
-10. The progress reducer updates sparse `workState`; verified local work can mark
+10. Tool contracts/assertions turn results into verified facts and evidence.
+11. The progress reducer updates sparse `workState`; verified local work can mark
    `workState.status` as `done`.
-11. Completed tool work routes through a final direct assistant response so the
+12. Completed tool work routes through a final direct assistant response so the
    user sees a natural answer while verification details stay internal.
-12. Runtime finalization commits task state, run summaries, actions, evidence,
+13. Runtime finalization commits task state, run summaries, actions, evidence,
    assets, assistant response metadata, and git commit trailers exactly once for
    the task run when a run exists.
-13. The engine replies through `onReply`; local replies go back through `WsServer.send`.
+14. The engine replies through `onReply`; local replies go back through `WsServer.send`.
 
 Client model:
 
@@ -39,28 +41,31 @@ Git context and memory flow:
 
 1. User interactions are recorded in the daily git session conversation on the
    main branch.
-2. The context engine creates a pending turn. Obvious same-task follow-ups bind
+2. Same-session chat turns are serialized before this write, preventing two
+   user messages from racing while both believe they own the current pending
+   turn.
+3. The context engine creates a pending turn. Obvious same-task follow-ups bind
    automatically; semantic ownership uses git-context read/search plus
    turn-aware activate/create/clarify tools.
-3. While a pending turn is unbound or clarifying, normal task tools are blocked.
+4. While a pending turn is unbound or clarifying, normal task tools are blocked.
    No task branch receives the conversation and no run id is allocated until
    ownership is clear.
-4. The agent loop receives `gitContext` with conversation tail, pending-turn
+5. The agent loop receives `gitContext` with conversation tail, pending-turn
    state, focus, task state, task assets, recent runs, recent commits, recent
    evidence, facts, open work, and next step.
-5. Every completed task run writes machine-readable state, run summary,
+6. Every completed task run writes machine-readable state, run summary,
    actions, evidence manifests, final output, and task assets to the work
    branch.
-6. Run commits include Ayati commit metadata so the branch history itself is a
+7. Run commits include Ayati commit metadata so the branch history itself is a
    retrieval surface.
-7. Attachment restore reads git task assets from tool execution context. It
+8. Attachment restore reads git task assets from tool execution context. It
    does not use Activity memory.
-8. Session close can still enqueue personal-memory consolidation and episodic
+9. Session close can still enqueue personal-memory consolidation and episodic
    indexing when those services are enabled.
-9. Personal memory stores stable facts and preferences for personalization.
-10. Episodic memory indexes closed sessions for future recall when embeddings
+10. Personal memory stores stable facts and preferences for personalization.
+11. Episodic memory indexes closed sessions for future recall when embeddings
    are available.
-11. The context pack renders relevant git context and personal memory back into
+12. The context pack renders relevant git context and personal memory back into
     future agent runs as bounded JSON.
 
 Tool/action flow:

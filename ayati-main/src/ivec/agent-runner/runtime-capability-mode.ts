@@ -6,6 +6,8 @@ import {
   GIT_CONTEXT_TURN_ROUTING_TOOL_NAMES,
   isGitContextAllowedDuringPendingRouting,
   isGitContextFreshSessionRoutingToolName,
+  isGitContextReadOnlyToolName,
+  isGitContextTurnRoutingToolName,
 } from "../../skills/builtins/git-context/tool-policy.js";
 import type { LoopState } from "../types.js";
 import type { AgentDecision } from "./decision.js";
@@ -30,6 +32,20 @@ export interface RuntimeCapabilityMode {
   rules?: string[];
   repairCode?: RepairCode;
   allowToolLoading: boolean;
+  routingWindow?: RuntimeCapabilityRoutingWindow;
+}
+
+export interface RuntimeCapabilityRoutingWindow {
+  open: boolean;
+  expired?: boolean;
+  step: number;
+  maxSteps: number;
+  remaining: number;
+  expiresAfterThisDecision: boolean;
+  readToolsAvailable: boolean;
+  routingToolsAvailable: boolean;
+  readToolsRemainAfterExpiry: boolean;
+  guidance: string;
 }
 
 export interface RuntimeCapabilityPromptContext {
@@ -40,6 +56,7 @@ export interface RuntimeCapabilityPromptContext {
   next: string;
   rules?: string[];
   repairCode?: RepairCode;
+  routingWindow?: RuntimeCapabilityRoutingWindow;
 }
 
 export interface RuntimeCapabilityToolSummary {
@@ -51,9 +68,15 @@ export interface RuntimeCapabilityToolSummary {
   selectedRoutingTools: string[];
   visibleNormalTools: string[];
   selectedNormalTools: string[];
+  visibleReadTools: string[];
+  selectedReadTools: string[];
+  visibleTaskRoutingTools: string[];
+  selectedTaskRoutingTools: string[];
   visibleToolCount: number;
   selectedToolCount: number;
 }
+
+export const TASK_ROUTING_WINDOW_STEPS = 2;
 
 const FRESH_SESSION_ROUTING_RULES = [
   "Reply directly only for casual chat, explanation-only questions, thanks, or planning discussion.",
@@ -70,11 +93,13 @@ export function detectRuntimeCapabilityMode(input: {
   const hasWorkRun = Boolean(input.state.runId || input.workRunHandle?.runId);
   const focusStatus = input.state.harnessContext.contextEngine?.focus.status;
   const pendingTurnStatus = input.state.harnessContext.contextEngine?.pendingTurn?.routingStatus;
+  const routingWindow = buildRuntimeRoutingWindow(input.state, hasWorkRun, pendingTurnStatus);
   const common = {
     primary: true as const,
     hasWorkRun,
     ...(focusStatus ? { focusStatus } : {}),
     ...(pendingTurnStatus ? { pendingTurnStatus } : {}),
+    ...(routingWindow ? { routingWindow } : {}),
   };
 
   if (hasWorkRun) {
@@ -96,12 +121,13 @@ export function detectRuntimeCapabilityMode(input: {
       whyActive: "No active task exists.",
       allowedActions: [
         "direct_reply",
+        ...GIT_CONTEXT_READ_ONLY_TOOL_NAMES,
         ...GIT_CONTEXT_FRESH_SESSION_ROUTING_TOOL_NAMES,
       ],
       blockedCapabilities: [
         "normal_work_tools",
         "decision_load_tools",
-        "task_search_or_activation",
+        "task_activation",
       ],
       next: "Create the first task for durable work, ask a short clarification, or reply directly for non-task chat.",
       rules: FRESH_SESSION_ROUTING_RULES,
@@ -151,6 +177,7 @@ export function buildRuntimeCapabilityPromptContext(mode: RuntimeCapabilityMode)
     next: mode.next,
     ...(mode.rules ? { rules: mode.rules } : {}),
     ...(mode.repairCode ? { repairCode: mode.repairCode } : {}),
+    ...(mode.routingWindow ? { routingWindow: mode.routingWindow } : {}),
   };
 }
 
@@ -159,6 +186,9 @@ export function isFreshSessionRoutingMode(mode: RuntimeCapabilityMode): boolean 
 }
 
 export function isRuntimeToolAllowed(mode: RuntimeCapabilityMode, toolName: string): boolean {
+  if (mode.name === "task_run" || mode.pendingTurnStatus === "bound") {
+    return !isGitContextTurnRoutingToolName(toolName);
+  }
   if (mode.name === "pre_task_routing") {
     return mode.pendingTurnStatus === "unbound" && isGitContextAllowedDuringPendingRouting(toolName);
   }
@@ -167,6 +197,16 @@ export function isRuntimeToolAllowed(mode: RuntimeCapabilityMode, toolName: stri
 
 export function filterToolsForRuntimeMode(mode: RuntimeCapabilityMode, tools: ToolDefinition[]): ToolDefinition[] {
   return tools.filter((tool) => isRuntimeToolAllowed(mode, tool.name));
+}
+
+export function requiredRoutingMutationToolsForRuntimeMode(mode: RuntimeCapabilityMode): string[] {
+  if (mode.name === "fresh_session_routing") {
+    return [...GIT_CONTEXT_FRESH_SESSION_ROUTING_TOOL_NAMES];
+  }
+  if (mode.name === "pre_task_routing" && mode.pendingTurnStatus === "unbound") {
+    return [...GIT_CONTEXT_TURN_ROUTING_TOOL_NAMES];
+  }
+  return [];
 }
 
 export function deterministicToolsForRuntimeMode(mode: RuntimeCapabilityMode): string[] | undefined {
@@ -191,8 +231,12 @@ export function isDecisionAllowedInRuntimeMode(mode: RuntimeCapabilityMode, deci
   if (decision.kind !== "act" || decision.action.calls.length === 0) {
     return false;
   }
-  return decision.action.calls.every((call) => isGitContextFreshSessionRoutingToolName(call.tool))
-    && decision.action.allowedTools.every((tool) => isGitContextFreshSessionRoutingToolName(tool));
+  return decision.action.calls.every((call) => isGitContextAllowedInFreshSession(call.tool))
+    && decision.action.allowedTools.every(isGitContextAllowedInFreshSession);
+}
+
+function isGitContextAllowedInFreshSession(tool: string): boolean {
+  return isGitContextReadOnlyToolName(tool) || isGitContextFreshSessionRoutingToolName(tool);
 }
 
 export function summarizeRuntimeCapabilityTools(input: {
@@ -211,6 +255,10 @@ export function summarizeRuntimeCapabilityTools(input: {
     selectedRoutingTools: selectedToolNames.filter(isGitContextRoutingToolName),
     visibleNormalTools: visibleToolNames.filter((tool) => !isGitContextRoutingToolName(tool)),
     selectedNormalTools: selectedToolNames.filter((tool) => !isGitContextRoutingToolName(tool)),
+    visibleReadTools: visibleToolNames.filter(isGitContextReadOnlyToolName),
+    selectedReadTools: selectedToolNames.filter(isGitContextReadOnlyToolName),
+    visibleTaskRoutingTools: visibleToolNames.filter(isGitContextTurnRoutingToolName),
+    selectedTaskRoutingTools: selectedToolNames.filter(isGitContextTurnRoutingToolName),
     visibleToolCount: visibleToolNames.length,
     selectedToolCount: selectedToolNames.length,
   };
@@ -218,4 +266,36 @@ export function summarizeRuntimeCapabilityTools(input: {
 
 export function isGitContextRoutingToolName(tool: string): boolean {
   return isGitContextAllowedDuringPendingRouting(tool);
+}
+
+function buildRuntimeRoutingWindow(
+  state: LoopState,
+  hasWorkRun: boolean,
+  pendingTurnStatus: string | undefined,
+): RuntimeCapabilityRoutingWindow | undefined {
+  if (hasWorkRun || pendingTurnStatus === "clarifying") {
+    return undefined;
+  }
+  const step = Math.max(1, state.iteration || 1);
+  const routingResolved = state.completedSteps.some((completedStep) => {
+    return (completedStep.toolsUsed ?? []).some(isGitContextTurnRoutingToolName);
+  });
+  const open = !routingResolved && step <= TASK_ROUTING_WINDOW_STEPS;
+  const remaining = open ? Math.max(0, TASK_ROUTING_WINDOW_STEPS - step) : 0;
+  return {
+    open,
+    ...(!open ? { expired: true } : {}),
+    step,
+    maxSteps: TASK_ROUTING_WINDOW_STEPS,
+    remaining,
+    expiresAfterThisDecision: open && remaining === 0,
+    readToolsAvailable: true,
+    routingToolsAvailable: open,
+    readToolsRemainAfterExpiry: true,
+    guidance: open
+      ? remaining === 0
+        ? "Routing expires after this decision. Use create, switch, or clarification now if this turn is not the active task; otherwise continue the active task."
+        : "Use create, switch, or clarification if this turn belongs to a different or new task; otherwise continue the active task."
+      : "Task routing tools are expired for this pre-run decision. Read-only git-context tools can still inspect context; action tools continue the active task when one is active.",
+  };
 }

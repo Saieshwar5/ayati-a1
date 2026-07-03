@@ -128,6 +128,7 @@ function createChatContextRuntime(
   return {
     prepareUserTurn: vi.fn().mockResolvedValue(prepared),
     routeTaskTurn: vi.fn().mockResolvedValue(routedTurn),
+    activateTaskTurn: vi.fn().mockResolvedValue(routedTurn.status === "ready" ? routedTurn : null),
     completeTaskRun: vi.fn().mockResolvedValue({
       taskId: routedTurn.status === "ready" ? routedTurn.taskId : "W-20260627-0001",
       branch: routedTurn.status === "ready" ? routedTurn.branch : "task/W-20260627-0001-analyze-invoice",
@@ -162,6 +163,7 @@ function createUnboundChatContextRuntime(): GitMemoryChatContextRuntime {
   return {
     prepareUserTurn: vi.fn().mockResolvedValue(prepared),
     routeTaskTurn: vi.fn().mockResolvedValue(null),
+    activateTaskTurn: vi.fn().mockResolvedValue(null),
     completeTaskRun: vi.fn().mockResolvedValue({
       taskId: "W-20260627-0002",
       branch: "task/W-20260627-0002-upload-ui",
@@ -177,6 +179,31 @@ function createUnboundChatContextRuntime(): GitMemoryChatContextRuntime {
       text: "mock reply",
     }),
     buildActiveContext: vi.fn().mockResolvedValue(prepared.context),
+  };
+}
+
+function createActiveUnroutedChatContextRuntime(): GitMemoryChatContextRuntime {
+  const prepared = activeGitMemoryPreparedTurn();
+  const routed = readyGitMemoryRoutedTurn();
+  return {
+    prepareUserTurn: vi.fn().mockResolvedValue(prepared),
+    routeTaskTurn: vi.fn().mockResolvedValue(null),
+    activateTaskTurn: vi.fn().mockResolvedValue(routed),
+    completeTaskRun: vi.fn().mockResolvedValue({
+      taskId: routed.taskId,
+      branch: routed.branch,
+      ref: routed.ref,
+      runId: routed.runId,
+      taskCommit: "task-commit",
+    }),
+    recordAssistantMessage: vi.fn().mockResolvedValue({
+      v: 1,
+      seq: 2,
+      role: "assistant",
+      at: "2026-06-27T10:05:01+05:30",
+      text: "mock reply",
+    }),
+    buildActiveContext: vi.fn().mockResolvedValue(routed.context),
   };
 }
 
@@ -339,6 +366,55 @@ function unboundGitMemoryPreparedTurn(): GitMemoryChatContextPreparedTurn {
         blockers: [],
         facts: [],
         next: "Inspect reminder drift",
+        assets: [],
+        recentRuns: [],
+        recentCommits: [],
+        recentEvidence: [],
+      },
+    },
+  } as GitMemoryChatContextPreparedTurn;
+}
+
+function activeGitMemoryPreparedTurn(): GitMemoryChatContextPreparedTurn {
+  return {
+    status: "ready",
+    sessionId: "S-20260627-local",
+    repoPath: "/tmp/ayati-git-memory/S-20260627-local",
+    initialized: false,
+    messageSeq: 4,
+    context: {
+      session: {
+        sessionId: "S-20260627-local",
+        conversationTail: [{
+          v: 1,
+          seq: 4,
+          role: "user",
+          at: "2026-06-27T10:12:00+05:30",
+          text: "add a follow-up invoice note",
+        }],
+        activityTail: [],
+        recentCommits: [],
+        taskCount: 1,
+      },
+      focus: {
+        status: "active",
+        taskId: "W-20260627-0001",
+        branch: "task/W-20260627-0001-analyze-invoice",
+        ref: "refs/heads/task/W-20260627-0001-analyze-invoice",
+      },
+      task: {
+        ref: "refs/heads/task/W-20260627-0001-analyze-invoice",
+        taskId: "W-20260627-0001",
+        branch: "task/W-20260627-0001-analyze-invoice",
+        title: "Analyze invoice",
+        objective: "Analyze invoice",
+        status: "in_progress",
+        summary: "Analyze invoice",
+        completed: [],
+        open: ["Read invoice"],
+        blockers: [],
+        facts: [],
+        next: "Read invoice",
         assets: [],
         recentRuns: [],
         recentCommits: [],
@@ -906,6 +982,80 @@ describe("IVecEngine", () => {
           workId: "W-20260627-0002",
           title: "Upload UI redesign",
         },
+      });
+    } finally {
+      rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it("auto-binds the active task when chat action tools need a work run", async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "ayati-eng-active-autobind-"));
+    try {
+      const outputPath = join(dataDir, "invoice-note.txt");
+      const provider = createMockProvider({
+        generateTurn: vi.fn<(input: LlmTurnInput) => Promise<LlmTurnOutput>>()
+          .mockResolvedValueOnce({
+            type: "assistant",
+            content: JSON.stringify({
+              kind: "act",
+              action: {
+                mode: "single",
+                calls: [{
+                  id: "write_note",
+                  tool: "write_files",
+                  input: {
+                    createDirs: true,
+                    files: [{ path: outputPath, content: "Invoice follow-up note." }],
+                  },
+                  dependsOn: [],
+                  purpose: "Write the follow-up note for the active invoice task.",
+                }],
+                allowedTools: ["write_files"],
+                assertions: [{ kind: "file_exists", path: "$.files[0].path" }],
+              },
+            }),
+          })
+          .mockResolvedValueOnce({
+            type: "assistant",
+            content: JSON.stringify({
+              kind: "reply",
+              status: "completed",
+              message: `I wrote the invoice follow-up note at ${outputPath}.`,
+            }),
+          }),
+      });
+      const chatContextRuntime = createActiveUnroutedChatContextRuntime();
+      const toolExecutor = createToolExecutor([writeFilesTool]);
+      const onReply = vi.fn();
+      const engine = createEngine({
+        onReply,
+        provider,
+        toolExecutor,
+        dataDir,
+        chatContextRuntime,
+        systemEventPolicy: createSystemEventPolicy(),
+      });
+
+      await engine.start();
+      engine.handleMessage("c1", { type: "chat", content: "add a follow-up invoice note" });
+
+      await vi.waitFor(() => {
+        expect(chatContextRuntime.completeTaskRun).toHaveBeenCalledWith(expect.objectContaining({
+          taskId: "W-20260627-0001",
+          runId: "R-20260627-0001",
+        }));
+      });
+      expect(chatContextRuntime.routeTaskTurn).toHaveBeenCalledWith(expect.objectContaining({
+        autoOnly: true,
+      }));
+      expect(chatContextRuntime.activateTaskTurn).toHaveBeenCalledWith(expect.objectContaining({
+        clientId: "c1",
+        taskId: "W-20260627-0001",
+        reason: expect.stringContaining("Continue active task for tool execution"),
+      }));
+      expect(onReply).toHaveBeenCalledWith("c1", {
+        type: "reply",
+        content: expect.stringContaining(outputPath),
       });
     } finally {
       rmSync(dataDir, { recursive: true, force: true });

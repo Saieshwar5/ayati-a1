@@ -389,15 +389,33 @@ describe("buildAgentStateView", () => {
       why: "No active task exists.",
       allowed: [
         "direct_reply",
+        "git_context_list_sessions",
+        "git_context_active",
+        "git_context_list_tasks",
+        "git_context_search_tasks",
+        "git_context_read_task",
+        "git_context_read_evidence",
+        "git_context_search_evidence",
+        "git_context_log",
         "git_context_create_task_for_turn",
         "git_context_ask_clarification_for_turn",
       ],
       blocked: [
         "normal_work_tools",
         "decision_load_tools",
-        "task_search_or_activation",
+        "task_activation",
       ],
       repairCode: "R_FRESH_SESSION_NEEDS_TASK",
+      routingWindow: {
+        open: true,
+        step: 1,
+        maxSteps: 2,
+        remaining: 1,
+        expiresAfterThisDecision: false,
+        readToolsAvailable: true,
+        routingToolsAvailable: true,
+        readToolsRemainAfterExpiry: true,
+      },
     });
   });
 

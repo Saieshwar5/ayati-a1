@@ -1,6 +1,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { LlmProvider } from "../../src/core/contracts/provider.js";
-import { ProviderEmptyResponseError } from "../../src/core/contracts/provider-errors.js";
+import {
+  ProviderEmptyResponseError,
+  ProviderMalformedResponseError,
+} from "../../src/core/contracts/provider-errors.js";
 import type { LlmTurnOutput } from "../../src/core/contracts/llm-protocol.js";
 import { callAgentDecision, parseAgentDecision } from "../../src/ivec/agent-runner/decision.js";
 import type { AgentFeedbackEventInput, AgentFeedbackLedger } from "../../src/ivec/feedback-ledger.js";
@@ -708,6 +711,66 @@ describe("parseAgentDecision", () => {
           provider: "openrouter",
           model: "test-model",
           choiceCount: 0,
+          willRetry: true,
+        },
+      },
+    });
+  });
+
+  it("records and retries a malformed provider response once", async () => {
+    const providerError = new ProviderMalformedResponseError("Malformed response from OpenRouter.", {
+      provider: "openrouter",
+      model: "test-model",
+      errorName: "SyntaxError",
+      errorMessage: "Unexpected end of JSON input",
+    });
+    const { provider, generateTurn } = createProviderFromMock(
+      vi.fn()
+        .mockRejectedValueOnce(providerError)
+        .mockResolvedValueOnce({ type: "assistant", content: "Hi!" }),
+    );
+    const feedback = createFeedbackLedger();
+
+    const decision = await callAgentDecision({
+      provider,
+      stateView: createStateView(),
+      toolDefinitions: [],
+      feedbackLedger: feedback.ledger,
+      feedbackContext: {
+        clientId: "local",
+        sessionId: "S-test",
+        seq: 1,
+      },
+    });
+
+    expect(generateTurn).toHaveBeenCalledTimes(2);
+    expect(decision).toMatchObject({
+      kind: "reply",
+      status: "completed",
+      message: "Hi!",
+    });
+    const malformedEvents = feedback.events.filter((event) => event.event === "provider_malformed_response");
+    expect(malformedEvents).toHaveLength(1);
+    expect(malformedEvents[0]?.data).toMatchObject({
+      attempt: 1,
+      providerAttempt: 1,
+      provider: "openrouter",
+      model: "test-model",
+      errorName: "SyntaxError",
+      errorMessage: "Unexpected end of JSON input",
+      toolChoice: "auto",
+      nativeToolCount: 1,
+      requestMode: "tools",
+      willRetry: true,
+      retryDelayMs: 400,
+      repair: {
+        code: "R_PROVIDER_MALFORMED_RESPONSE",
+        modelFacing: false,
+        operatorDetails: {
+          provider: "openrouter",
+          model: "test-model",
+          errorName: "SyntaxError",
+          errorMessage: "Unexpected end of JSON input",
           willRetry: true,
         },
       },

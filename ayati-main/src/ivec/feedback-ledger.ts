@@ -322,6 +322,9 @@ export class AsyncAgentFeedbackLedger implements AgentFeedbackLedger {
     if (event.stage === "decision" && event.event === "provider_empty_response") {
       signals.add("provider_empty_response");
     }
+    if (event.stage === "decision" && event.event === "provider_malformed_response") {
+      signals.add("provider_malformed_response");
+    }
     if (event.stage === "guard" && event.event === "fresh_session_tool_repair_requested") {
       signals.add("fresh_session_tool_repair_requested");
     }
@@ -837,6 +840,13 @@ const REPAIR_TRIAGE_FINDINGS: ReadonlyArray<[string, AgentFeedbackTriageFinding]
     title: "Provider returned an empty response",
     details: "The model provider returned no usable assistant message or tool call.",
     recommendation: "Inspect provider_empty_response details for model, latency, response shape, native tool count, and retry outcome.",
+  }],
+  ["R_PROVIDER_MALFORMED_RESPONSE", {
+    code: "R_PROVIDER_MALFORMED_RESPONSE",
+    severity: "error",
+    title: "Provider returned a malformed response",
+    details: "The model provider returned a response that could not be parsed before Ayati received a usable assistant message or tool call.",
+    recommendation: "Inspect provider_malformed_response details for model, latency, parse error, native tool count, and retry outcome.",
   }],
   ["R_VERIFICATION_FAILED", {
     code: "R_VERIFICATION_FAILED",

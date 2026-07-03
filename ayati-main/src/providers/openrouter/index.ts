@@ -1,6 +1,9 @@
 import OpenAI from "openai";
 import type { LlmProvider } from "../../core/contracts/provider.js";
-import { ProviderEmptyResponseError } from "../../core/contracts/provider-errors.js";
+import {
+  ProviderEmptyResponseError,
+  ProviderMalformedResponseError,
+} from "../../core/contracts/provider-errors.js";
 import { getModelForProvider } from "../../config/llm-runtime-config.js";
 import type {
   LlmMessage,
@@ -47,6 +50,32 @@ function emptyOpenRouterResponseError(
     ...(finishReason ? { finishReason } : {}),
     hasMessage: Boolean(firstMessage),
   });
+}
+
+function malformedOpenRouterResponseError(
+  model: string,
+  cause: unknown,
+): ProviderMalformedResponseError {
+  const error = cause instanceof Error ? cause : undefined;
+  return new ProviderMalformedResponseError("Malformed response from OpenRouter.", {
+    provider: "openrouter",
+    model,
+    ...(error?.name ? { errorName: error.name } : {}),
+    ...(error?.message ? { errorMessage: error.message } : {}),
+  }, cause);
+}
+
+function isMalformedProviderResponseCause(error: unknown): boolean {
+  if (error instanceof SyntaxError) {
+    return true;
+  }
+
+  const message = error instanceof Error ? error.message : String(error);
+  const lower = message.toLowerCase();
+  return lower.includes("unexpected end of json input")
+    || lower.includes("invalid json response body")
+    || lower.includes("json.parse")
+    || (lower.includes("json") && lower.includes("response body"));
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -217,6 +246,11 @@ const provider: LlmProvider = {
             ...(typeof input.parallelToolCalls === "boolean" ? { parallel_tool_calls: input.parallelToolCalls } : {}),
           }
         : {}),
+    }).catch((error: unknown) => {
+      if (isMalformedProviderResponseCause(error)) {
+        throw malformedOpenRouterResponseError(model, error);
+      }
+      throw error;
     });
 
     const choices = Array.isArray(response.choices) ? response.choices : [];

@@ -71,13 +71,21 @@ describe("runtime capability modes", () => {
       why: "No active task exists.",
       allowed: [
         "direct_reply",
+        "git_context_list_sessions",
+        "git_context_active",
+        "git_context_list_tasks",
+        "git_context_search_tasks",
+        "git_context_read_task",
+        "git_context_read_evidence",
+        "git_context_search_evidence",
+        "git_context_log",
         "git_context_create_task_for_turn",
         "git_context_ask_clarification_for_turn",
       ],
       blocked: [
         "normal_work_tools",
         "decision_load_tools",
-        "task_search_or_activation",
+        "task_activation",
       ],
       rules: [
         "Reply directly only for casual chat, explanation-only questions, thanks, or planning discussion.",
@@ -146,5 +154,109 @@ describe("runtime capability modes", () => {
     expect(isDecisionAllowedInRuntimeMode(mode, reply)).toBe(true);
     expect(isDecisionAllowedInRuntimeMode(mode, route)).toBe(true);
     expect(isDecisionAllowedInRuntimeMode(mode, loadTools)).toBe(false);
+  });
+
+  it("allows read-only git-context actions in fresh-session read mode", () => {
+    const mode = detectRuntimeCapabilityMode({
+      state: state(gitContext({ status: "none" })),
+    });
+    const read: AgentDecision = {
+      kind: "act",
+      action: {
+        mode: "single",
+        allowedTools: ["git_context_list_tasks"],
+        assertions: [],
+        calls: [{
+          id: "call_1",
+          tool: "git_context_list_tasks",
+          input: {},
+          dependsOn: [],
+        }],
+      },
+    };
+
+    expect(isDecisionAllowedInRuntimeMode(mode, read)).toBe(true);
+  });
+
+  it("projects routing-window timing before a work run exists", () => {
+    const firstStep = state(gitContext({
+      status: "active",
+      ref: "refs/heads/task/T-1",
+      workId: "T-1",
+    }));
+    firstStep.iteration = 1;
+    const secondStep = state(gitContext({
+      status: "active",
+      ref: "refs/heads/task/T-1",
+      workId: "T-1",
+    }));
+    secondStep.iteration = 2;
+    const expired = state(gitContext({
+      status: "active",
+      ref: "refs/heads/task/T-1",
+      workId: "T-1",
+    }));
+    expired.iteration = 3;
+
+    expect(buildRuntimeCapabilityPromptContext(detectRuntimeCapabilityMode({ state: firstStep })).routingWindow).toMatchObject({
+      open: true,
+      step: 1,
+      maxSteps: 2,
+      remaining: 1,
+      expiresAfterThisDecision: false,
+      readToolsAvailable: true,
+      routingToolsAvailable: true,
+      readToolsRemainAfterExpiry: true,
+    });
+    expect(buildRuntimeCapabilityPromptContext(detectRuntimeCapabilityMode({ state: secondStep })).routingWindow).toMatchObject({
+      open: true,
+      step: 2,
+      remaining: 0,
+      expiresAfterThisDecision: true,
+      routingToolsAvailable: true,
+    });
+    expect(buildRuntimeCapabilityPromptContext(detectRuntimeCapabilityMode({ state: expired })).routingWindow).toMatchObject({
+      open: false,
+      expired: true,
+      step: 3,
+      remaining: 0,
+      expiresAfterThisDecision: false,
+      readToolsAvailable: true,
+      routingToolsAvailable: false,
+      readToolsRemainAfterExpiry: true,
+    });
+  });
+
+  it("omits routing-window timing once a work run exists", () => {
+    const mode = detectRuntimeCapabilityMode({
+      state: state(gitContext({
+        status: "active",
+        ref: "refs/heads/task/T-1",
+        workId: "T-1",
+      }), "R-1"),
+    });
+
+    expect(buildRuntimeCapabilityPromptContext(mode).routingWindow).toBeUndefined();
+  });
+
+  it("hides task-routing mutation tools once a work run exists", () => {
+    const mode = detectRuntimeCapabilityMode({
+      state: state(gitContext({
+        status: "active",
+        ref: "refs/heads/task/T-1",
+        workId: "T-1",
+      }), "R-1"),
+    });
+
+    expect(filterToolsForRuntimeMode(mode, [
+      tool("git_context_search_tasks"),
+      tool("git_context_create_task_for_turn"),
+      tool("git_context_activate_task_for_turn"),
+      tool("git_context_ask_clarification_for_turn"),
+      tool("write_files"),
+    ]).map((entry) => entry.name)).toEqual([
+      "git_context_search_tasks",
+      "write_files",
+    ]);
   });
 });
