@@ -1261,6 +1261,14 @@ describe("GitMemoryRuntime", () => {
         runId: routed.runId,
         status: fixture.expectedRunStatus,
       });
+    expect(JSON.parse(await driver.readFile(routed.ref, gitMemoryTaskStatePath(routed.taskId)) ?? "{}"))
+      .toMatchObject({
+        status: fixture.expectedRunStatus === "needs_user_input" ? "needs_user_input" : "blocked",
+        blockers: fixture.expectedRunStatus === "needs_user_input" ? [] : [`${fixture.label} terminal blocker.`],
+        next: fixture.expectedRunStatus === "needs_user_input"
+          ? "Choose the next terminal action."
+          : `Resolve ${fixture.label} terminal state.`,
+      });
   });
 
   it("keeps terminal run status immutable when a later finalization requests a different status", async () => {

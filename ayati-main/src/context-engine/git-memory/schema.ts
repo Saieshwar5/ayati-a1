@@ -16,7 +16,7 @@ export type GitMemoryActionId = string;
 
 export type GitMemoryConversationRole = "user" | "assistant" | "system";
 export type GitMemoryConversationKind = "message" | "feedback_question";
-export type GitMemoryTaskStatus = "open" | "in_progress" | "blocked" | "done" | "abandoned";
+export type GitMemoryTaskStatus = "open" | "in_progress" | "needs_user_input" | "blocked" | "done" | "abandoned";
 export type GitMemoryRunStatus = "completed" | "failed" | "blocked" | "needs_user_input";
 export type GitMemoryActionStatus = "completed" | "failed" | "skipped";
 export type GitMemoryCommitEventType =
@@ -765,7 +765,7 @@ function requireOptionalActionId(record: Record<string, unknown>, field: string,
 }
 
 function requireTaskStatus(record: Record<string, unknown>, errors: string[]): void {
-  requireOneOf(record, "status", ["open", "in_progress", "blocked", "done", "abandoned"], errors);
+  requireOneOf(record, "status", ["open", "in_progress", "needs_user_input", "blocked", "done", "abandoned"], errors);
 }
 
 function slugifyIdPart(value: string, fallback: string): string {

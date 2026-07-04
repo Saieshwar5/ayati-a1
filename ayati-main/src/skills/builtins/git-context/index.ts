@@ -98,7 +98,7 @@ const TASK_DETAIL_INCLUDES: GitMemoryTaskDetailInclude[] = [
   "conversation",
 ];
 
-const TASK_STATUSES: GitMemoryTaskStatus[] = ["open", "in_progress", "blocked", "done", "abandoned"];
+const TASK_STATUSES: GitMemoryTaskStatus[] = ["open", "in_progress", "needs_user_input", "blocked", "done", "abandoned"];
 
 const GIT_CONTEXT_PROMPT_BLOCK = [
   "Most git-context tools are read-only. Turn-aware git-context tools mutate only git-context task branch routing state through the runtime.",

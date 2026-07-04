@@ -161,7 +161,7 @@ describe("buildGitMemoryTaskRunCommitInput", () => {
     }]);
   });
 
-  it("maps feedback runs to needs-user-input run status and blocked task state", () => {
+  it("maps feedback runs to needs-user-input run status and task state", () => {
     const mapped = buildGitMemoryTaskRunCommitInput({
       sessionId: "S-20260628-local",
       taskId: "W-20260628-0001",
@@ -188,10 +188,12 @@ describe("buildGitMemoryTaskRunCommitInput", () => {
 
     expect(mapped).toMatchObject({
       status: "needs_user_input",
+      next: "Choose the first upload format to support.",
       state: {
-        status: "blocked",
-        blockers: ["Choose the first upload format to support."],
+        status: "needs_user_input",
+        blockers: [],
         open: ["Wait for upload format priority."],
+        next: "Choose the first upload format to support.",
       },
     });
   });

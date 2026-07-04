@@ -74,6 +74,7 @@ function markdownSection(markdown: string, title: string): string {
 function isGitMemoryTaskStatus(value: string): value is GitMemoryTaskStatus {
   return value === "open"
     || value === "in_progress"
+    || value === "needs_user_input"
     || value === "blocked"
     || value === "done"
     || value === "abandoned";

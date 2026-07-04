@@ -52,16 +52,25 @@ export function buildGitMemoryTaskRunCommitInput(
     input.result.content,
     "Completed run.",
   ]);
-  const next = firstNonEmpty([
-    workState.nextStep,
-    input.result.taskSummary?.nextAction,
-    workState.userInputNeeded,
-    input.result.taskSummary?.userInputNeeded,
-    taskStatus === "done" ? "No next step." : undefined,
-  ]);
+  const next = taskStatus === "needs_user_input"
+    ? firstNonEmpty([
+      workState.userInputNeeded,
+      input.result.taskSummary?.userInputNeeded,
+      workState.nextStep,
+      input.result.taskSummary?.nextAction,
+    ])
+    : firstNonEmpty([
+      workState.nextStep,
+      input.result.taskSummary?.nextAction,
+      workState.userInputNeeded,
+      input.result.taskSummary?.userInputNeeded,
+      taskStatus === "done" ? "No next step." : undefined,
+    ]);
   const completed = buildCompleted(input.result);
   const open = taskStatus === "done" ? [] : buildOpen(workState, input.result, next);
-  const blockers = buildBlockers(workState, input.result);
+  const blockers = buildBlockers(workState, input.result, {
+    includeUserInputNeeded: taskStatus !== "needs_user_input",
+  });
 
   return {
     sessionId: input.sessionId,
@@ -161,11 +170,12 @@ function toTaskStatus(
   if (result.taskSummary?.taskStatus === "done" || workState.status === "done") {
     return "done";
   }
+  if (result.taskSummary?.taskStatus === "needs_user_input" || workState.status === "needs_user_input") {
+    return "needs_user_input";
+  }
   if (
     result.taskSummary?.taskStatus === "blocked"
-    || result.taskSummary?.taskStatus === "needs_user_input"
     || workState.status === "blocked"
-    || workState.status === "needs_user_input"
     || result.status === "failed"
     || result.status === "stuck"
   ) {
@@ -233,12 +243,15 @@ function buildOpen(
 function buildBlockers(
   workState: HarnessWorkStateForContext,
   result: GitMemoryHarnessRunResultForContext,
+  options: { includeUserInputNeeded: boolean },
 ): string[] {
   return normalizeList([
     ...(workState.blockers ?? []),
     ...(result.taskSummary?.blockers ?? []),
-    workState.userInputNeeded,
-    result.taskSummary?.userInputNeeded,
+    ...(options.includeUserInputNeeded ? [
+      workState.userInputNeeded,
+      result.taskSummary?.userInputNeeded,
+    ] : []),
   ]);
 }
 
