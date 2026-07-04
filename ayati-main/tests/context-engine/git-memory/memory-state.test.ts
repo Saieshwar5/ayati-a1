@@ -27,7 +27,15 @@ describe("GitContextMemoryStateHydrator", () => {
 
     expect(state).toMatchObject({
       session: {
-        sessionId: "S-20260628-local",
+        meta: {
+          sessionId: "S-20260628-local",
+          date: "2026-06-28",
+          timezone: "Asia/Kolkata",
+          createdAt: "2026-06-28T00:00:00+05:30",
+          repoKind: "daily_session",
+          agentId: "local",
+          assetCount: 0,
+        },
         conversationTail: [],
         recentCommits: [{
           subject: "ayati: initialize session S-20260628-local",
@@ -38,6 +46,8 @@ describe("GitContextMemoryStateHydrator", () => {
       focus: { status: "none" },
       knownTasks: [],
     });
+    expect(state.session).not.toHaveProperty("sessionId");
+    expect(state.session).not.toHaveProperty("assetCount");
     expect(state.session.activityTail).toMatchObject([
       { seq: 1, type: "session_initialized" },
     ]);
@@ -61,7 +71,10 @@ describe("GitContextMemoryStateHydrator", () => {
     });
 
     expect(state.session).toMatchObject({
-      sessionId: "S-20260628-local",
+      meta: {
+        sessionId: "S-20260628-local",
+        assetCount: 0,
+      },
       taskCount: 1,
       currentBranch: prepared.task.branch,
       conversationTail: [{
@@ -138,7 +151,10 @@ describe("GitContextMemoryStateHydrator", () => {
     expect(context.pendingWrites).toBeUndefined();
     expect(context).toMatchObject({
       session: {
-        sessionId: "S-20260628-local",
+        meta: {
+          sessionId: "S-20260628-local",
+          assetCount: 0,
+        },
         taskCount: 1,
       },
       focus: {

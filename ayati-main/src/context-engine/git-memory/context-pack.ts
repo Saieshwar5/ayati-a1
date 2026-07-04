@@ -16,7 +16,7 @@ import {
 } from "./task-refs.js";
 import { parseGitMemoryTaskMarkdown } from "./task-markdown.js";
 import { parseGitMemorySessionSummary } from "./session-summary.js";
-import type { ContextSessionAttachments, ContextSessionSummary, TaskAssetRecord } from "../contracts.js";
+import type { ContextSessionAttachments, ContextSessionMeta, ContextSessionSummary, TaskAssetRecord } from "../contracts.js";
 import { GitMemoryWorktreeGitDriver, type GitMemoryLogEntry } from "./git-driver.js";
 import type { GitMemoryDailySessionStore } from "./session-store.js";
 import type {
@@ -26,6 +26,7 @@ import type {
   GitMemoryRunFile,
   GitMemorySessionAttachmentRecord,
   GitMemorySessionId,
+  GitMemorySessionMetaFile,
   GitMemoryTaskAssetsFile,
   GitMemoryTaskId,
   GitMemoryTaskStateFile,
@@ -150,7 +151,7 @@ export interface GitMemoryPendingTurnContext {
 
 export interface GitMemoryMachineContextPack {
   session: {
-    sessionId: GitMemorySessionId;
+    meta: ContextSessionMeta;
     conversationTail: GitMemoryConversationRecord[];
     conversationMarkdownTail: string;
     summary?: ContextSessionSummary;
@@ -192,7 +193,7 @@ export class GitMemoryContextReader {
   }): Promise<GitMemoryMachineContextPack> {
     const limits = normalizeLimits(input.limits);
     const driver = await this.store.openExistingDriver(input.sessionId);
-    const [conversationMarkdownDocument, conversationRecords, taskEntries, currentBranch, sessionCommits, summary, attachments] = await Promise.all([
+    const [conversationMarkdownDocument, conversationRecords, taskEntries, currentBranch, sessionCommits, summary, attachments, meta] = await Promise.all([
       driver.readWorkingFile(GIT_MEMORY_SESSION_CONVERSATION_MARKDOWN_PATH),
       this.store.readSessionConversationRecords(input.sessionId),
       readGitMemoryTaskEntries(driver),
@@ -200,6 +201,7 @@ export class GitMemoryContextReader {
       readRecentCommits(driver, GIT_MEMORY_MAIN_REF, limits.commitLogLimit),
       readSessionSummary(driver, input.sessionId),
       this.store.readSessionAttachments(input.sessionId),
+      this.store.readSessionMeta(input.sessionId),
     ]);
     const fallbackConversation = parseGitMemoryConversationMarkdown(conversationMarkdownDocument);
     const useMessageStoreConversation = conversationRecords.length > 0
@@ -209,7 +211,7 @@ export class GitMemoryContextReader {
       ? markdownTail(renderGitMemoryConversationMarkdownDocument(conversation), limits.conversationMarkdownCharLimit)
       : markdownTail(conversationMarkdownDocument, limits.conversationMarkdownCharLimit);
     const session = {
-      sessionId: input.sessionId,
+      meta: toContextSessionMeta(input.sessionId, meta, attachments?.attachments.length ?? 0),
       conversationTail: tail(conversation, limits.conversationTailLimit),
       conversationMarkdownTail: conversationMarkdown,
       ...(summary ? { summary } : {}),
@@ -323,6 +325,22 @@ export class GitMemoryContextReader {
       },
     };
   }
+}
+
+function toContextSessionMeta(
+  sessionId: GitMemorySessionId,
+  meta: GitMemorySessionMetaFile | null,
+  assetCount: number,
+): ContextSessionMeta {
+  return {
+    sessionId: meta?.sessionId ?? sessionId,
+    ...(meta?.date ? { date: meta.date } : {}),
+    ...(meta?.timezone ? { timezone: meta.timezone } : {}),
+    ...(meta?.createdAt ? { createdAt: meta.createdAt } : {}),
+    ...(meta?.repoKind ? { repoKind: meta.repoKind } : {}),
+    ...(meta?.agentId ? { agentId: meta.agentId } : {}),
+    assetCount,
+  };
 }
 
 export function compactGitMemoryCommit(entry: GitMemoryLogEntry): CompactGitMemoryCommitSummary {

@@ -7,7 +7,7 @@ import type {
   GitMemoryPendingTurnContext,
   GitMemoryPendingWriteContext,
 } from "./context-pack.js";
-import type { ContextSessionAttachments, ContextSessionSummary, TaskAssetRecord } from "../contracts.js";
+import type { ContextSessionAttachments, ContextSessionMeta, ContextSessionSummary, TaskAssetRecord } from "../contracts.js";
 import { GitMemoryContextReader } from "./context-pack.js";
 import type {
   GitMemoryDailySessionStore,
@@ -49,7 +49,7 @@ export interface GitContextMemoryActiveTask extends GitContextMemoryKnownTask {
 
 export interface GitContextMemoryState {
   session: {
-    sessionId: GitMemorySessionId;
+    meta: ContextSessionMeta;
     conversationTail: GitMemoryConversationRecord[];
     conversationMarkdownTail: string;
     summary?: ContextSessionSummary;
@@ -87,7 +87,7 @@ export class GitContextMemoryStateHydrator {
 
     return {
       session: {
-        sessionId: context.session.sessionId,
+        meta: context.session.meta,
         conversationTail: context.session.conversationTail,
         conversationMarkdownTail: context.session.conversationMarkdownTail,
         ...(context.session.summary ? { summary: context.session.summary } : {}),
@@ -116,7 +116,7 @@ export function buildGitMemoryContextPackFromMemoryState(
 ): GitMemoryMachineContextPack {
   return {
     session: {
-      sessionId: state.session.sessionId,
+      meta: state.session.meta,
       conversationTail: state.session.conversationTail,
       conversationMarkdownTail: state.session.conversationMarkdownTail,
       ...(state.session.summary ? { summary: state.session.summary } : {}),

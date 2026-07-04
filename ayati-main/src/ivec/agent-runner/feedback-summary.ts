@@ -207,14 +207,15 @@ export function summarizeContextEngine(
   if (!context) {
     return undefined;
   }
+  const sessionMeta = readContextSessionMeta(context.session);
   return {
-    sessionId: context.session.sessionId,
+    sessionId: sessionMeta.sessionId,
     conversationTailCount: context.session.conversationTail.length,
     conversationMarkdownChars: context.session.conversationMarkdownTail?.length ?? 0,
     sessionSummaryChars: context.session.summary?.text.length ?? 0,
     activityCount: context.session.activityTail.length,
     recentCommitCount: context.session.recentCommits?.length ?? 0,
-    assetCount: context.session.assetCount,
+    assetCount: sessionMeta.assetCount,
     pendingWriteCount: context.pendingWrites?.length ?? 0,
     pendingTurnStatus: context.pendingTurn?.routingStatus,
     pendingTurnRange: context.pendingTurn ? {
@@ -234,6 +235,19 @@ export function summarizeContextEngine(
       recentEvidenceCount: context.task.recentEvidence.length,
       assetCount: context.task.assets.length,
     } : undefined,
+  };
+}
+
+function readContextSessionMeta(
+  session: ContextEngineMachineContext["session"],
+): ContextEngineMachineContext["session"]["meta"] {
+  if (session.meta) {
+    return session.meta;
+  }
+  const legacy = session as unknown as { sessionId?: string; assetCount?: number };
+  return {
+    sessionId: legacy.sessionId ?? "unknown",
+    assetCount: legacy.assetCount ?? session.attachments?.count ?? 0,
   };
 }
 

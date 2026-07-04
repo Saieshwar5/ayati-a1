@@ -95,7 +95,10 @@ describe("git-context skill", () => {
     expect(result.ok).toBe(true);
     expect(result.v2?.structuredContent).toMatchObject({
       session: {
-        sessionId: "S-20260628-local",
+        meta: {
+          sessionId: "S-20260628-local",
+          assetCount: 0,
+        },
         conversationTail: [
           { seq: 1, role: "user", text: "Fix upload handling" },
         ],
@@ -125,6 +128,8 @@ describe("git-context skill", () => {
         }],
       },
     });
+    expect(result.v2?.structuredContent?.["session"]).not.toHaveProperty("sessionId");
+    expect(result.v2?.structuredContent?.["session"]).not.toHaveProperty("assetCount");
     const sessionRecentCommits = (result.v2?.structuredContent as {
       session?: { recentCommits?: Array<Record<string, unknown>> };
     }).session?.recentCommits ?? [];

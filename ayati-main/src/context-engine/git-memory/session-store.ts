@@ -615,6 +615,11 @@ export class GitMemoryDailySessionStore {
     return await readSessionMessageStoreAttachments(driver, sessionId);
   }
 
+  async readSessionMeta(sessionId: GitMemorySessionId): Promise<GitMemorySessionMetaFile | null> {
+    const driver = await GitMemoryWorktreeGitDriver.init(this.repoPath(sessionId));
+    return await readSessionMeta(driver, sessionId);
+  }
+
   async writeSessionAttachments(
     input: WriteGitMemorySessionAttachmentsInput,
   ): Promise<GitMemorySessionAttachmentsFile> {

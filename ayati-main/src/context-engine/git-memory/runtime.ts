@@ -904,7 +904,7 @@ export class GitMemoryRuntime {
         ),
       },
     };
-    this.sessionMemoryCache.set(state.session.sessionId, nextState);
+    this.sessionMemoryCache.set(state.session.meta.sessionId, nextState);
   }
 
   private setPendingTurn(turn: PendingGitMemoryTurnEnvelope): void {

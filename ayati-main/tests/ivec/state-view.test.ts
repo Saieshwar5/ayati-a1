@@ -14,7 +14,10 @@ function createHarnessContext(overrides: Partial<HarnessContext> = {}): HarnessC
 function createGitContext(overrides: Partial<ContextEngineMachineContext> = {}): ContextEngineMachineContext {
   return {
     session: {
-      sessionId: "2026-06-27",
+      meta: {
+        sessionId: "2026-06-27",
+        assetCount: 0,
+      },
       conversationTail: [],
       activityTail: [],
       recentCommits: [{
@@ -22,7 +25,6 @@ function createGitContext(overrides: Partial<ContextEngineMachineContext> = {}):
         subject: "ayati: checkpoint session",
         event: "session_checkpointed",
       }],
-      assetCount: 0,
     },
     focus: {
       status: "active",
@@ -149,6 +151,8 @@ describe("buildAgentStateView", () => {
         recent: [],
       },
     });
+    expect(context.git?.session).not.toHaveProperty("sessionId");
+    expect(context.git?.session).not.toHaveProperty("assetCount");
     expect(context.git?.session).not.toHaveProperty("recentCommits");
     expect(context.git?.session).not.toHaveProperty("conversationTail");
     expect(context.git?.session).not.toHaveProperty("conversationMarkdownTail");
@@ -287,9 +291,11 @@ describe("buildAgentStateView", () => {
       harnessContext: createHarnessContext({
         contextEngine: createGitContext({
           session: {
-            sessionId: "2026-06-27",
+            meta: {
+              sessionId: "2026-06-27",
+              assetCount: 0,
+            },
             activityTail: [],
-            assetCount: 0,
             conversationTail: [
               {
                 seq: 1,

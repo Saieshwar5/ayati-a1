@@ -880,7 +880,10 @@ function buildLoopStateFixture(exchangeCount: number): LoopState {
 function buildGitContextFixture(count: number, timestamp: string): ContextEngineMachineContext {
   return {
     session: {
-      sessionId: "2026-06-17",
+      meta: {
+        sessionId: "2026-06-17",
+        assetCount: 1,
+      },
       conversationTail: Array.from({ length: count }, (_, index) => ([
         {
           seq: index * 2 + 1,
@@ -896,7 +899,6 @@ function buildGitContextFixture(count: number, timestamp: string): ContextEngine
         },
       ])).flat(),
       activityTail: [],
-      assetCount: 1,
     },
     focus: {
       status: "active",
