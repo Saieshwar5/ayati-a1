@@ -35,6 +35,7 @@ import { createGitMemoryChatContextRuntime } from "./git-memory-chat-context-run
 import { createGitMemorySystemEventContextRuntime } from "./git-memory-system-event-context-runtime.js";
 import { createChatTurnRuntime } from "./chat-turn-runtime.js";
 import { createSystemEventRuntime } from "./system-event-runtime.js";
+import { ensureWorkspaceRoot } from "../skills/workspace-paths.js";
 
 const thisDir = dirname(fileURLToPath(import.meta.url));
 const projectRoot = resolve(thisDir, "..", "..");
@@ -44,6 +45,7 @@ const CLIENT_ID = "local";
 export async function main(): Promise<void> {
   await initializeLlmRuntimeConfig({ projectRoot });
   const runtimeConfig = loadAyatiRuntimeConfig(process.env);
+  await ensureWorkspaceRoot(runtimeConfig.workspace.root);
   const provider = await loadProvider(providerFactory);
   const systemEventPolicy = loadSystemEventPolicy(projectRoot);
   const feedbackLedger = createAgentFeedbackLedgerFromEnv({

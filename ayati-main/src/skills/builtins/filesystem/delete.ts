@@ -1,7 +1,8 @@
 import { rm, stat } from "node:fs/promises";
 import type { ToolDefinition, ToolResult } from "../../types.js";
-import { resolveWorkspacePath } from "../../workspace-paths.js";
+import { resolveWorkspaceMutationPath } from "../../workspace-paths.js";
 import { commonAnnotations, errorResult, errorResultFromUnknown, okResult, succeededContract, successV2 } from "../contract-helpers.js";
+import { externalWorkspacePathError } from "./external-path-policy.js";
 import { validateDeleteInput } from "./validators.js";
 
 export const deleteTool: ToolDefinition = {
@@ -11,10 +12,17 @@ export const deleteTool: ToolDefinition = {
     type: "object",
     required: ["path"],
     properties: {
-      path: { type: "string", description: "Absolute or relative path to delete." },
+      path: {
+        type: "string",
+        description: "Workspace-relative path by default. Absolute paths outside the workspace require allowExternalPath=true.",
+      },
       recursive: {
         type: "boolean",
         description: "Delete directories and their contents recursively (default: false).",
+      },
+      allowExternalPath: {
+        type: "boolean",
+        description: "Allow deleting an absolute path outside the configured workspace. Use only when the user explicitly requested that external path.",
       },
     },
   },
@@ -59,7 +67,13 @@ export const deleteTool: ToolDefinition = {
     const parsed = validateDeleteInput(input);
     if ("ok" in parsed) return parsed;
 
-    const targetPath = resolveWorkspacePath(parsed.path);
+    const resolved = resolveWorkspaceMutationPath(parsed.path, {
+      allowExternalPath: parsed.allowExternalPath,
+      operation: "delete",
+    });
+    if (!resolved.ok) return externalWorkspacePathError(resolved);
+
+    const targetPath = resolved.path;
     const start = Date.now();
 
     try {

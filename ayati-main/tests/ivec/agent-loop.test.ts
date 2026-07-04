@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 import { tmpdir } from "node:os";
@@ -12,8 +12,20 @@ import { ToolCatalog } from "../../src/ivec/agent-runner/tool-catalog.js";
 import { ToolWorkingSetManager } from "../../src/ivec/agent-runner/tool-working-set.js";
 import type { AgentFeedbackEventInput, AgentFeedbackLedger } from "../../src/ivec/feedback-ledger.js";
 
+const originalWorkspaceDir = process.env["AYATI_WORKSPACE_DIR"];
+
+afterEach(() => {
+  if (originalWorkspaceDir === undefined) {
+    delete process.env["AYATI_WORKSPACE_DIR"];
+  } else {
+    process.env["AYATI_WORKSPACE_DIR"] = originalWorkspaceDir;
+  }
+});
+
 function makeTmpDir(): string {
-  return mkdtempSync(join(tmpdir(), "ayati-agent-loop-"));
+  const path = mkdtempSync(join(tmpdir(), "ayati-agent-loop-"));
+  process.env["AYATI_WORKSPACE_DIR"] = path;
+  return path;
 }
 
 function cleanup(path: string): void {
@@ -385,6 +397,69 @@ describe("agentLoop", () => {
       expect(result.content).not.toContain("Done -");
       expect(result.content).not.toContain("deterministic verification");
       expect(result.content).not.toContain("Evidence:");
+    } finally {
+      cleanup(dataDir);
+    }
+  });
+
+  it("keeps a task waiting for user input when a direct reply finishes only the turn", async () => {
+    const dataDir = makeTmpDir();
+    const outputPath = join(dataDir, "project-note", "notes.md");
+    try {
+      const toolExecutor = createToolExecutor([writeFilesTool]);
+      const provider = createProvider([
+        {
+          kind: "act",
+          action: {
+            mode: "single",
+            calls: [{
+              id: "call_1",
+              tool: "write_files",
+              input: {
+                createDirs: true,
+                files: [{ path: outputPath, content: "# Project Notes\n\nPlaceholder.\n" }],
+              },
+              dependsOn: [],
+              purpose: "Create the placeholder note file first.",
+            }],
+            allowedTools: ["write_files"],
+            assertions: [],
+            completion: {
+              intent: "not_completion",
+              reason: "The placeholder is only the first step; the user still needs to send final points.",
+            },
+          },
+        },
+        {
+          kind: "reply",
+          status: "completed",
+          message: "I created the placeholder note file. Send the final points and I will add them.",
+        },
+      ]);
+
+      const result = await agentLoop({
+        provider,
+        toolExecutor,
+        toolDefinitions: toolExecutor.definitions(),
+        runRecorder: noopRunRecorder,
+        runHandle: { sessionId: "s1", runId: "r-partial-waiting" },
+        clientId: "c1",
+        initialUserMessage: "Create a project note file, but start with a placeholder first.",
+        dataDir,
+        systemContext: "full system context with memory",
+      });
+
+      expect(result.status).toBe("completed");
+      expect(result.content).toBe("I created the placeholder note file. Send the final points and I will add them.");
+      expect(readFileSync(outputPath, "utf-8")).toContain("Placeholder");
+      expect(result.workState?.status).toBe("needs_user_input");
+      expect(result.workState?.userInputNeeded).toBe("Send the final points and I will add them.");
+      expect(result.taskSummary).toMatchObject({
+        runStatus: "completed",
+        taskStatus: "needs_user_input",
+        stopReason: "needs_user_input",
+        userInputNeeded: "Send the final points and I will add them.",
+      });
     } finally {
       cleanup(dataDir);
     }
@@ -1497,7 +1572,7 @@ describe("agentLoop", () => {
     }
   });
 
-  it("finalizes immediately when a verified action is marked as a completion candidate", async () => {
+  it("finalizes immediately with a user-facing reply when a verified action is marked as a completion candidate", async () => {
     const dataDir = makeTmpDir();
     const outputPath = join(dataDir, "completion-site", "index.html");
     try {
@@ -1521,7 +1596,7 @@ describe("agentLoop", () => {
             assertions: [],
             completion: {
               intent: "completion_candidate",
-              reason: `I created the requested website at ${outputPath}.`,
+              reason: "Batch write the website file; tool returns sha256 and byte counts as deterministic verification.",
               expectedEvidence: ["index.html written"],
             },
           },
@@ -1544,7 +1619,10 @@ describe("agentLoop", () => {
       expect(result.totalIterations).toBe(1);
       expect(provider.generateTurn).toHaveBeenCalledTimes(1);
       expect(readFileSync(outputPath, "utf-8")).toBe("<!doctype html><title>Done</title>");
-      expect(result.content).toBe(`I created the requested website at ${outputPath}.`);
+      expect(result.content).toBe("Done. I created or updated `completion-site/index.html`.");
+      expect(result.content).not.toContain("Batch write");
+      expect(result.content).not.toContain("sha256");
+      expect(result.content).not.toContain("deterministic verification");
       expect(result.taskSummary).toMatchObject({
         runStatus: "completed",
         taskStatus: "done",

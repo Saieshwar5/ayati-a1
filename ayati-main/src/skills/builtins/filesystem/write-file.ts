@@ -1,8 +1,9 @@
 import { writeFile, mkdir } from "node:fs/promises";
 import { dirname } from "node:path";
 import type { ToolDefinition, ToolResult } from "../../types.js";
-import { resolveWorkspacePath } from "../../workspace-paths.js";
+import { resolveWorkspaceMutationPath } from "../../workspace-paths.js";
 import { commonAnnotations, errorResultFromUnknown, okResult, sha256Text, succeededContract, successV2 } from "../contract-helpers.js";
+import { externalWorkspacePathError } from "./external-path-policy.js";
 import { validateWriteFileInput } from "./validators.js";
 
 export const writeFileTool: ToolDefinition = {
@@ -12,11 +13,18 @@ export const writeFileTool: ToolDefinition = {
     type: "object",
     required: ["path", "content"],
     properties: {
-      path: { type: "string", description: "Absolute or relative file path." },
+      path: {
+        type: "string",
+        description: "Workspace-relative file path by default. Absolute paths outside the workspace require allowExternalPath=true.",
+      },
       content: { type: "string", description: "Content to write." },
       createDirs: {
         type: "boolean",
         description: "Create parent directories if they don't exist (default: false).",
+      },
+      allowExternalPath: {
+        type: "boolean",
+        description: "Allow writing to an absolute path outside the configured workspace. Use only when the user explicitly requested that external path.",
       },
     },
   },
@@ -66,7 +74,13 @@ export const writeFileTool: ToolDefinition = {
     const parsed = validateWriteFileInput(input);
     if ("ok" in parsed) return parsed;
 
-    const filePath = resolveWorkspacePath(parsed.path);
+    const resolved = resolveWorkspaceMutationPath(parsed.path, {
+      allowExternalPath: parsed.allowExternalPath,
+      operation: "write_file",
+    });
+    if (!resolved.ok) return externalWorkspacePathError(resolved);
+
+    const filePath = resolved.path;
     const start = Date.now();
 
     try {

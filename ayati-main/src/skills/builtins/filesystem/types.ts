@@ -12,6 +12,7 @@ export interface WriteFileInput {
   path: string;
   content: string;
   createDirs?: boolean;
+  allowExternalPath?: boolean;
   confirmationToken?: string;
 }
 
@@ -23,6 +24,7 @@ export interface WriteFilesInputFile {
 export interface WriteFilesInput {
   files: WriteFilesInputFile[];
   createDirs?: boolean;
+  allowExternalPath?: boolean;
   confirmationToken?: string;
 }
 
@@ -31,12 +33,14 @@ export interface EditFileInput {
   oldString: string;
   newString: string;
   replaceAll?: boolean;
+  allowExternalPath?: boolean;
   confirmationToken?: string;
 }
 
 export interface DeleteInput {
   path: string;
   recursive?: boolean;
+  allowExternalPath?: boolean;
   confirmationToken?: string;
 }
 
@@ -49,6 +53,7 @@ export interface ListDirectoryInput {
 export interface CreateDirectoryInput {
   path: string;
   recursive?: boolean;
+  allowExternalPath?: boolean;
   confirmationToken?: string;
 }
 
@@ -56,6 +61,7 @@ export interface MoveInput {
   source: string;
   destination: string;
   overwrite?: boolean;
+  allowExternalPath?: boolean;
   confirmationToken?: string;
 }
 

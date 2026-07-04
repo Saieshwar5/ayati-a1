@@ -21,7 +21,7 @@ describe("createDirectoryTool", () => {
 
   it("creates a directory", async () => {
     const dir = join(tmp, "newdir");
-    const result = await createDirectoryTool.execute({ path: dir });
+    const result = await createDirectoryTool.execute({ path: dir, allowExternalPath: true });
     expect(result.ok).toBe(true);
 
     const info = await stat(dir);
@@ -30,7 +30,7 @@ describe("createDirectoryTool", () => {
 
   it("creates nested directories recursively by default", async () => {
     const dir = join(tmp, "a", "b", "c");
-    const result = await createDirectoryTool.execute({ path: dir });
+    const result = await createDirectoryTool.execute({ path: dir, allowExternalPath: true });
     expect(result.ok).toBe(true);
 
     const info = await stat(dir);
@@ -39,15 +39,26 @@ describe("createDirectoryTool", () => {
 
   it("succeeds if directory already exists (recursive)", async () => {
     const dir = join(tmp, "existing");
-    await createDirectoryTool.execute({ path: dir });
-    const result = await createDirectoryTool.execute({ path: dir });
+    await createDirectoryTool.execute({ path: dir, allowExternalPath: true });
+    const result = await createDirectoryTool.execute({ path: dir, allowExternalPath: true });
     expect(result.ok).toBe(true);
   });
 
   it("fails when recursive=false and parent missing", async () => {
     const dir = join(tmp, "x", "y");
-    const result = await createDirectoryTool.execute({ path: dir, recursive: false });
+    const result = await createDirectoryTool.execute({
+      path: dir,
+      recursive: false,
+      allowExternalPath: true,
+    });
     expect(result.ok).toBe(false);
+  });
+
+  it("rejects external absolute directories by default", async () => {
+    const dir = join(tmp, "blocked");
+    const result = await createDirectoryTool.execute({ path: dir });
+    expect(result.ok).toBe(false);
+    expect(result.v2?.code).toBe("EXTERNAL_WORKSPACE_PATH_REQUIRES_ALLOW");
   });
 
   it("rejects invalid input", async () => {

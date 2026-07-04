@@ -29,7 +29,11 @@ describe("moveTool", () => {
     const dest = join(tmp, "b.txt");
     await writeFile(src, "content", "utf-8");
 
-    const result = await moveTool.execute({ source: src, destination: dest });
+    const result = await moveTool.execute({
+      source: src,
+      destination: dest,
+      allowExternalPath: true,
+    });
     expect(result.ok).toBe(true);
     expect(await exists(src)).toBe(false);
     expect(await readFile(dest, "utf-8")).toBe("content");
@@ -41,7 +45,11 @@ describe("moveTool", () => {
     await mkdir(srcDir);
     await writeFile(join(srcDir, "child.txt"), "hi", "utf-8");
 
-    const result = await moveTool.execute({ source: srcDir, destination: destDir });
+    const result = await moveTool.execute({
+      source: srcDir,
+      destination: destDir,
+      allowExternalPath: true,
+    });
     expect(result.ok).toBe(true);
     expect(await exists(srcDir)).toBe(false);
     expect(await readFile(join(destDir, "child.txt"), "utf-8")).toBe("hi");
@@ -53,7 +61,11 @@ describe("moveTool", () => {
     await writeFile(src, "a", "utf-8");
     await writeFile(dest, "b", "utf-8");
 
-    const result = await moveTool.execute({ source: src, destination: dest });
+    const result = await moveTool.execute({
+      source: src,
+      destination: dest,
+      allowExternalPath: true,
+    });
     expect(result.ok).toBe(false);
     expect(result.error).toContain("overwrite");
   });
@@ -64,7 +76,12 @@ describe("moveTool", () => {
     await writeFile(src, "new", "utf-8");
     await writeFile(dest, "old", "utf-8");
 
-    const result = await moveTool.execute({ source: src, destination: dest, overwrite: true });
+    const result = await moveTool.execute({
+      source: src,
+      destination: dest,
+      overwrite: true,
+      allowExternalPath: true,
+    });
     expect(result.ok).toBe(true);
     expect(await readFile(dest, "utf-8")).toBe("new");
   });
@@ -73,8 +90,21 @@ describe("moveTool", () => {
     const result = await moveTool.execute({
       source: join(tmp, "nope.txt"),
       destination: join(tmp, "dest.txt"),
+      allowExternalPath: true,
     });
     expect(result.ok).toBe(false);
+  });
+
+  it("rejects external absolute moves by default", async () => {
+    const src = join(tmp, "blocked-src.txt");
+    const dest = join(tmp, "blocked-dest.txt");
+    await writeFile(src, "content", "utf-8");
+
+    const result = await moveTool.execute({ source: src, destination: dest });
+    expect(result.ok).toBe(false);
+    expect(result.v2?.code).toBe("EXTERNAL_WORKSPACE_PATH_REQUIRES_ALLOW");
+    expect(await exists(src)).toBe(true);
+    expect(await exists(dest)).toBe(false);
   });
 
   it("rejects invalid input", async () => {

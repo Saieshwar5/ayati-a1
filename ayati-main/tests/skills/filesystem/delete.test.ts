@@ -28,7 +28,7 @@ describe("deleteTool", () => {
     const file = join(tmp, "remove-me.txt");
     await writeFile(file, "bye", "utf-8");
 
-    const result = await deleteTool.execute({ path: file });
+    const result = await deleteTool.execute({ path: file, allowExternalPath: true });
     expect(result.ok).toBe(true);
     expect(await exists(file)).toBe(false);
   });
@@ -38,7 +38,7 @@ describe("deleteTool", () => {
     await mkdir(dir);
     await writeFile(join(dir, "child.txt"), "x", "utf-8");
 
-    const result = await deleteTool.execute({ path: dir, recursive: true });
+    const result = await deleteTool.execute({ path: dir, recursive: true, allowExternalPath: true });
     expect(result.ok).toBe(true);
     expect(await exists(dir)).toBe(false);
   });
@@ -47,14 +47,24 @@ describe("deleteTool", () => {
     const dir = join(tmp, "mydir");
     await mkdir(dir);
 
-    const result = await deleteTool.execute({ path: dir });
+    const result = await deleteTool.execute({ path: dir, allowExternalPath: true });
     expect(result.ok).toBe(false);
     expect(result.error).toContain("recursive");
   });
 
   it("returns error for non-existent path", async () => {
-    const result = await deleteTool.execute({ path: join(tmp, "ghost") });
+    const result = await deleteTool.execute({ path: join(tmp, "ghost"), allowExternalPath: true });
     expect(result.ok).toBe(false);
+  });
+
+  it("rejects external absolute deletes by default", async () => {
+    const file = join(tmp, "blocked.txt");
+    await writeFile(file, "bye", "utf-8");
+
+    const result = await deleteTool.execute({ path: file });
+    expect(result.ok).toBe(false);
+    expect(result.v2?.code).toBe("EXTERNAL_WORKSPACE_PATH_REQUIRES_ALLOW");
+    expect(await exists(file)).toBe(true);
   });
 
   it("rejects invalid input", async () => {

@@ -137,7 +137,7 @@ describe("ToolWorkingSetManager", () => {
     ]);
   });
 
-  it("preloads likely work tools with create and clarify routing tools when no active task exists", () => {
+  it("preloads only create and clarify routing tools when no active task exists", () => {
     const catalog = new ToolCatalog([
       skill("filesystem", [
         tool("write_file"),
@@ -163,17 +163,12 @@ describe("ToolWorkingSetManager", () => {
     manager.prepareForDecision(runState, { clientId: "c1", runId: "r1", sessionId: "s1", stepNumber: 1 });
 
     expect(manager.listActive({ runId: "r1" })).toEqual([
-      "write_file",
-      "git_context_active",
-      "git_context_list_tasks",
-      "git_context_search_tasks",
-      "git_context_read_task",
       "git_context_create_task_for_turn",
       "git_context_ask_clarification_for_turn",
     ]);
   });
 
-  it("pins fresh-session routing mutation tools outside the visible tool cap", () => {
+  it("keeps fresh-session routing mutation tools visible under the tool cap", () => {
     const catalog = new ToolCatalog([
       skill("filesystem", [
         tool("write_file"),
@@ -211,7 +206,10 @@ describe("ToolWorkingSetManager", () => {
 
     manager.prepareForDecision(runState, context);
 
-    expect(manager.listActive(context).length).toBeGreaterThan(12);
+    expect(manager.listActive(context)).toEqual([
+      "git_context_create_task_for_turn",
+      "git_context_ask_clarification_for_turn",
+    ]);
     expect(manager.listActive(context)).toContain("git_context_create_task_for_turn");
     expect(manager.listActive(context)).toContain("git_context_ask_clarification_for_turn");
     expect(executor.list(context)).toContain("git_context_create_task_for_turn");

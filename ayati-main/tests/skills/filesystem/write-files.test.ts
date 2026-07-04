@@ -25,6 +25,7 @@ describe("writeFilesTool", () => {
     const second = join(tmp, "b.txt");
 
     const result = await writeFilesTool.execute({
+      allowExternalPath: true,
       files: [
         { path: first, content: "alpha" },
         { path: second, content: "beta" },
@@ -52,6 +53,7 @@ describe("writeFilesTool", () => {
 
     const result = await writeFilesTool.execute({
       createDirs: true,
+      allowExternalPath: true,
       files: [
         { path: first, content: "alpha" },
         { path: second, content: "beta" },
@@ -67,6 +69,7 @@ describe("writeFilesTool", () => {
     const file = join(tmp, "dup.txt");
 
     const result = await writeFilesTool.execute({
+      allowExternalPath: true,
       files: [
         { path: file, content: "first" },
         { path: file, content: "second" },
@@ -81,6 +84,7 @@ describe("writeFilesTool", () => {
 
   it("fails without createDirs when a parent is missing", async () => {
     const result = await writeFilesTool.execute({
+      allowExternalPath: true,
       files: [
         { path: join(tmp, "missing", "a.txt"), content: "alpha" },
       ],
@@ -104,6 +108,17 @@ describe("writeFilesTool", () => {
     expect(await readFile(expectedPath, "utf-8")).toBe("workspace default");
   });
 
+  it("rejects external absolute writes by default", async () => {
+    const result = await writeFilesTool.execute({
+      files: [
+        { path: join(tmp, "blocked.txt"), content: "blocked" },
+      ],
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.v2?.code).toBe("EXTERNAL_WORKSPACE_PATH_REQUIRES_ALLOW");
+  });
+
   it("verifies write contract through the tool executor", async () => {
     const first = join(tmp, "contract", "a.txt");
     const second = join(tmp, "contract", "b.txt");
@@ -111,6 +126,7 @@ describe("writeFilesTool", () => {
 
     const result = await executor.execute("write_files", {
       createDirs: true,
+      allowExternalPath: true,
       files: [
         { path: first, content: "alpha" },
         { path: second, content: "beta" },

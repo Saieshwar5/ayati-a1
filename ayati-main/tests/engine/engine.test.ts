@@ -121,6 +121,28 @@ function findReplyContent(onReply: ReturnType<typeof vi.fn>, type = "reply"): st
   return typeof message?.content === "string" ? message.content : "";
 }
 
+function createFeedbackRecorder(): {
+  ledger: NonNullable<CreateChatTurnRuntimeOptions["feedbackLedger"]>;
+  events: Array<{ stage?: string; event?: string; data?: Record<string, unknown> }>;
+} {
+  const events: Array<{ stage?: string; event?: string; data?: Record<string, unknown> }> = [];
+  return {
+    events,
+    ledger: {
+      enabled: true,
+      record(event) {
+        events.push(event as { stage?: string; event?: string; data?: Record<string, unknown> });
+      },
+      async flush() {
+        return;
+      },
+      async close() {
+        return;
+      },
+    },
+  };
+}
+
 function createChatContextRuntime(
   routedTurn: GitMemoryChatContextRoutedTurn = readyGitMemoryRoutedTurn(),
 ): GitMemoryChatContextRuntime {
@@ -905,6 +927,206 @@ describe("IVecEngine", () => {
           content: "mock reply",
         }),
         at: expect.any(String),
+      }));
+    } finally {
+      rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it("commits task clarification as needs_user_input", async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "ayati-eng-needs-user-"));
+    try {
+      const provider = createMockProvider({
+        generateTurn: vi.fn<(input: LlmTurnInput) => Promise<LlmTurnOutput>>()
+          .mockResolvedValue({
+            type: "assistant",
+            content: JSON.stringify({
+              kind: "ask_user",
+              question: "What should the note helper actually do?",
+              reason: "The task exists but the deliverable is unclear.",
+            }),
+          }),
+      });
+      const onReply = vi.fn();
+      const chatContextRuntime = createChatContextRuntime();
+      const engine = createEngine({
+        onReply,
+        provider,
+        dataDir,
+        chatContextRuntime,
+        systemEventPolicy: createSystemEventPolicy(),
+      });
+
+      await engine.start();
+      engine.handleMessage("c1", { type: "chat", content: "Maybe build some helper for my notes." });
+
+      await vi.waitFor(() => {
+        expect(chatContextRuntime.completeTaskRun).toHaveBeenCalled();
+      });
+      expect(onReply).toHaveBeenCalledWith("c1", {
+        type: "feedback",
+        content: "What should the note helper actually do?",
+      });
+      expect(chatContextRuntime.completeTaskRun).toHaveBeenCalledWith(expect.objectContaining({
+        assistantMessageKind: "feedback_question",
+        result: expect.objectContaining({
+          type: "feedback",
+          workState: expect.objectContaining({
+            status: "needs_user_input",
+            userInputNeeded: "What should the note helper actually do?",
+            nextStep: "What should the note helper actually do?",
+          }),
+          taskSummary: expect.objectContaining({
+            taskStatus: "needs_user_input",
+            userInputNeeded: "What should the note helper actually do?",
+            nextAction: "What should the note helper actually do?",
+            stopReason: "needs_user_input",
+          }),
+        }),
+      }));
+    } finally {
+      rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it("records finalization_failed when task-like waiting output has no task binding", async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "ayati-eng-finalization-required-"));
+    try {
+      const feedback = createFeedbackRecorder();
+      const chatContextRuntime = createUnboundChatContextRuntime();
+      const runtime = createChatTurnRuntime({
+        provider: createMockProvider(),
+        dataDir,
+        chatContextRuntime,
+        feedbackLedger: feedback.ledger,
+      });
+
+      await (runtime as unknown as {
+        completeChatContextRun(
+          clientId: string,
+          prepared: GitMemoryChatContextPreparedTurn,
+          routed: null,
+          result: {
+            type: "feedback";
+            runClass: "task";
+            content: string;
+            status: "completed";
+            totalIterations: number;
+            totalToolCalls: number;
+            runPath: string;
+            workState: {
+              status: "needs_user_input";
+              summary: string;
+              openWork: string[];
+              blockers: string[];
+              verifiedFacts: string[];
+              evidence: string[];
+              userInputNeeded: string;
+            };
+          },
+        ): Promise<void>;
+      }).completeChatContextRun("c1", unboundGitMemoryPreparedTurn(), null, {
+        type: "feedback",
+        runClass: "task",
+        content: "Which task should I continue?",
+        status: "completed",
+        totalIterations: 1,
+        totalToolCalls: 0,
+        runPath: "",
+        workState: {
+          status: "needs_user_input",
+          summary: "Task binding is required.",
+          openWork: [],
+          blockers: [],
+          verifiedFacts: [],
+          evidence: [],
+          userInputNeeded: "Which task should I continue?",
+        },
+      });
+
+      expect(chatContextRuntime.completeTaskRun).not.toHaveBeenCalled();
+      expect(feedback.events.some((event) => event.stage === "context_engine" && event.event === "finalization_skipped")).toBe(false);
+      expect(feedback.events.find((event) => event.stage === "context_engine" && event.event === "finalization_failed")?.data)
+        .toMatchObject({
+          reason: "no_task_run_binding",
+        });
+    } finally {
+      rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it("does not mark routing-only task work as done", async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "ayati-eng-routing-only-"));
+    try {
+      const routed = readyGitMemoryRoutedTurn();
+      const chatContextRuntime = createChatContextRuntime(routed);
+      const runtime = createChatTurnRuntime({
+        provider: createMockProvider(),
+        dataDir,
+        chatContextRuntime,
+      });
+
+      await (runtime as unknown as {
+        completeChatContextRun(
+          clientId: string,
+          prepared: GitMemoryChatContextPreparedTurn,
+          routed: Extract<GitMemoryChatContextRoutedTurn, { status: "ready" }>,
+          result: {
+            type: "reply";
+            runClass: "task";
+            content: string;
+            status: "completed";
+            totalIterations: number;
+            totalToolCalls: number;
+            runPath: string;
+            artifacts: Array<{ kind: "image"; name: string; relativePath: string; urlPath: string; mimeType: string }>;
+            completedSteps: Array<{
+              step: number;
+              outcome: string;
+              summary: string;
+              newFacts: string[];
+              artifacts: string[];
+              toolsUsed: string[];
+              toolSuccessCount: number;
+              toolFailureCount: number;
+            }>;
+          },
+        ): Promise<void>;
+      }).completeChatContextRun("c1", readyGitMemoryPreparedTurn(), routed, {
+        type: "reply",
+        runClass: "task",
+        content: "I created the helper.",
+        status: "completed",
+        totalIterations: 2,
+        totalToolCalls: 1,
+        runPath: "",
+        artifacts: [{
+          kind: "image",
+          name: "routing-placeholder",
+          relativePath: "routing-placeholder.txt",
+          urlPath: "/runs/routing-placeholder.txt",
+          mimeType: "text/plain",
+        }],
+        completedSteps: [{
+          step: 1,
+          outcome: "success",
+          summary: "Pending-turn routing tools executed successfully.",
+          newFacts: ["Pending-turn routing tools executed successfully."],
+          artifacts: [],
+          toolsUsed: ["git_context_create_task_for_turn"],
+          toolSuccessCount: 1,
+          toolFailureCount: 0,
+        }],
+      });
+
+      expect(chatContextRuntime.completeTaskRun).toHaveBeenCalledWith(expect.objectContaining({
+        result: expect.objectContaining({
+          status: "stuck",
+          workState: expect.objectContaining({
+            status: "blocked",
+            blockers: ["The run completed without tool calls or durable evidence."],
+          }),
+        }),
       }));
     } finally {
       rmSync(dataDir, { recursive: true, force: true });

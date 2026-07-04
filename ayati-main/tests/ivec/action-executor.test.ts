@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -11,8 +11,20 @@ import { writeFilesTool } from "../../src/skills/builtins/filesystem/write-files
 import { createToolExecutor } from "../../src/skills/tool-executor.js";
 import type { ToolDefinition } from "../../src/skills/types.js";
 
+const originalWorkspaceDir = process.env["AYATI_WORKSPACE_DIR"];
+
+afterEach(() => {
+  if (originalWorkspaceDir === undefined) {
+    delete process.env["AYATI_WORKSPACE_DIR"];
+  } else {
+    process.env["AYATI_WORKSPACE_DIR"] = originalWorkspaceDir;
+  }
+});
+
 function makeTmpDir(): string {
-  return mkdtempSync(join(tmpdir(), "ayati-action-executor-"));
+  const path = mkdtempSync(join(tmpdir(), "ayati-action-executor-"));
+  process.env["AYATI_WORKSPACE_DIR"] = path;
+  return path;
 }
 
 function cleanup(path: string): void {

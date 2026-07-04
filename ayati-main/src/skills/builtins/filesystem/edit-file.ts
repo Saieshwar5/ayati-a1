@@ -1,7 +1,8 @@
 import { readFile, writeFile } from "node:fs/promises";
 import type { ToolDefinition, ToolResult } from "../../types.js";
-import { resolveWorkspacePath } from "../../workspace-paths.js";
+import { resolveWorkspaceMutationPath } from "../../workspace-paths.js";
 import { commonAnnotations, errorResult, errorResultFromUnknown, okResult, sha256Text, succeededContract, successV2 } from "../contract-helpers.js";
+import { externalWorkspacePathError } from "./external-path-policy.js";
 import { validateEditFileInput } from "./validators.js";
 
 export const editFileTool: ToolDefinition = {
@@ -11,12 +12,19 @@ export const editFileTool: ToolDefinition = {
     type: "object",
     required: ["path", "oldString", "newString"],
     properties: {
-      path: { type: "string", description: "Absolute or relative file path." },
+      path: {
+        type: "string",
+        description: "Workspace-relative file path by default. Absolute paths outside the workspace require allowExternalPath=true.",
+      },
       oldString: { type: "string", description: "Text to find." },
       newString: { type: "string", description: "Text to replace with." },
       replaceAll: {
         type: "boolean",
         description: "Replace all occurrences (default: false, replaces first only).",
+      },
+      allowExternalPath: {
+        type: "boolean",
+        description: "Allow editing an absolute path outside the configured workspace. Use only when the user explicitly requested that external path.",
       },
     },
   },
@@ -66,7 +74,13 @@ export const editFileTool: ToolDefinition = {
     const parsed = validateEditFileInput(input);
     if ("ok" in parsed) return parsed;
 
-    const filePath = resolveWorkspacePath(parsed.path);
+    const resolved = resolveWorkspaceMutationPath(parsed.path, {
+      allowExternalPath: parsed.allowExternalPath,
+      operation: "edit_file",
+    });
+    if (!resolved.ok) return externalWorkspacePathError(resolved);
+
+    const filePath = resolved.path;
     const start = Date.now();
 
     try {

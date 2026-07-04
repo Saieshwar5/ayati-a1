@@ -2,7 +2,8 @@ import { mkdir, rename, rm, writeFile } from "node:fs/promises";
 import { createHash, randomUUID } from "node:crypto";
 import { basename, dirname, join } from "node:path";
 import type { ToolDefinition, ToolResult, ToolResultV2 } from "../../types.js";
-import { resolveWorkspacePath } from "../../workspace-paths.js";
+import { resolveWorkspaceMutationPath } from "../../workspace-paths.js";
+import { externalWorkspacePathError } from "./external-path-policy.js";
 import { validateWriteFilesInput } from "./validators.js";
 
 interface PreparedWrite {
@@ -33,7 +34,10 @@ export const writeFilesTool: ToolDefinition = {
           type: "object",
           required: ["path", "content"],
           properties: {
-            path: { type: "string", description: "Absolute or relative file path." },
+            path: {
+              type: "string",
+              description: "Workspace-relative file path by default. Absolute paths outside the workspace require allowExternalPath=true.",
+            },
             content: { type: "string", description: "Content to write." },
           },
           additionalProperties: false,
@@ -42,6 +46,10 @@ export const writeFilesTool: ToolDefinition = {
       createDirs: {
         type: "boolean",
         description: "Create parent directories if they don't exist (default: false).",
+      },
+      allowExternalPath: {
+        type: "boolean",
+        description: "Allow writing batch files to absolute paths outside the configured workspace. Use only when the user explicitly requested those external paths.",
       },
     },
     additionalProperties: false,
@@ -148,7 +156,13 @@ export const writeFilesTool: ToolDefinition = {
     const seenPaths = new Set<string>();
 
     for (const file of parsed.files) {
-      const filePath = resolveWorkspacePath(file.path);
+      const resolved = resolveWorkspaceMutationPath(file.path, {
+        allowExternalPath: parsed.allowExternalPath,
+        operation: "write_files",
+      });
+      if (!resolved.ok) return externalWorkspacePathError(resolved);
+
+      const filePath = resolved.path;
       if (seenPaths.has(filePath)) {
         const durationMs = Date.now() - start;
         const message = `Duplicate target path in batch: ${filePath}`;

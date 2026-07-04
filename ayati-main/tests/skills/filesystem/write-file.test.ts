@@ -21,7 +21,11 @@ describe("writeFileTool", () => {
 
   it("writes a file", async () => {
     const file = join(tmp, "out.txt");
-    const result = await writeFileTool.execute({ path: file, content: "hello world" });
+    const result = await writeFileTool.execute({
+      path: file,
+      content: "hello world",
+      allowExternalPath: true,
+    });
     expect(result.ok).toBe(true);
 
     const content = await readFile(file, "utf-8");
@@ -30,8 +34,8 @@ describe("writeFileTool", () => {
 
   it("overwrites an existing file", async () => {
     const file = join(tmp, "out.txt");
-    await writeFileTool.execute({ path: file, content: "first" });
-    await writeFileTool.execute({ path: file, content: "second" });
+    await writeFileTool.execute({ path: file, content: "first", allowExternalPath: true });
+    await writeFileTool.execute({ path: file, content: "second", allowExternalPath: true });
 
     const content = await readFile(file, "utf-8");
     expect(content).toBe("second");
@@ -39,7 +43,12 @@ describe("writeFileTool", () => {
 
   it("creates parent directories with createDirs", async () => {
     const file = join(tmp, "a", "b", "c.txt");
-    const result = await writeFileTool.execute({ path: file, content: "deep", createDirs: true });
+    const result = await writeFileTool.execute({
+      path: file,
+      content: "deep",
+      createDirs: true,
+      allowExternalPath: true,
+    });
     expect(result.ok).toBe(true);
 
     const content = await readFile(file, "utf-8");
@@ -48,8 +57,19 @@ describe("writeFileTool", () => {
 
   it("fails without createDirs when parent missing", async () => {
     const file = join(tmp, "x", "y.txt");
-    const result = await writeFileTool.execute({ path: file, content: "nope" });
+    const result = await writeFileTool.execute({
+      path: file,
+      content: "nope",
+      allowExternalPath: true,
+    });
     expect(result.ok).toBe(false);
+  });
+
+  it("rejects external absolute writes by default", async () => {
+    const file = join(tmp, "blocked.txt");
+    const result = await writeFileTool.execute({ path: file, content: "blocked" });
+    expect(result.ok).toBe(false);
+    expect(result.v2?.code).toBe("EXTERNAL_WORKSPACE_PATH_REQUIRES_ALLOW");
   });
 
   it("rejects missing content", async () => {

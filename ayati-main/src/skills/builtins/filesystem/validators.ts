@@ -87,9 +87,18 @@ export function validateWriteFileInput(input: unknown): WriteFileInput | ToolRes
   if (v.createDirs !== undefined && typeof v.createDirs !== "boolean") {
     return fail("createDirs must be a boolean.");
   }
+  if (v.allowExternalPath !== undefined && typeof v.allowExternalPath !== "boolean") {
+    return fail("allowExternalPath must be a boolean.");
+  }
   const tokenErr = validateConfirmationToken(v.confirmationToken);
   if (tokenErr) return tokenErr;
-  return { path: v.path, content: v.content, createDirs: v.createDirs, confirmationToken: v.confirmationToken };
+  return {
+    path: v.path,
+    content: v.content,
+    createDirs: v.createDirs,
+    allowExternalPath: v.allowExternalPath,
+    confirmationToken: v.confirmationToken,
+  };
 }
 
 export function validateWriteFilesInput(input: unknown): WriteFilesInput | ToolResult {
@@ -109,9 +118,17 @@ export function validateWriteFilesInput(input: unknown): WriteFilesInput | ToolR
   if (v.createDirs !== undefined && typeof v.createDirs !== "boolean") {
     return fail("createDirs must be a boolean.");
   }
+  if (v.allowExternalPath !== undefined && typeof v.allowExternalPath !== "boolean") {
+    return fail("allowExternalPath must be a boolean.");
+  }
   const tokenErr = validateConfirmationToken(v.confirmationToken);
   if (tokenErr) return tokenErr;
-  return { files, createDirs: v.createDirs, confirmationToken: v.confirmationToken };
+  return {
+    files,
+    createDirs: v.createDirs,
+    allowExternalPath: v.allowExternalPath,
+    confirmationToken: v.confirmationToken,
+  };
 }
 
 export function validateEditFileInput(input: unknown): EditFileInput | ToolResult {
@@ -125,6 +142,9 @@ export function validateEditFileInput(input: unknown): EditFileInput | ToolResul
   if (v.replaceAll !== undefined && typeof v.replaceAll !== "boolean") {
     return fail("replaceAll must be a boolean.");
   }
+  if (v.allowExternalPath !== undefined && typeof v.allowExternalPath !== "boolean") {
+    return fail("allowExternalPath must be a boolean.");
+  }
   const tokenErr = validateConfirmationToken(v.confirmationToken);
   if (tokenErr) return tokenErr;
   return {
@@ -132,6 +152,7 @@ export function validateEditFileInput(input: unknown): EditFileInput | ToolResul
     oldString: v.oldString,
     newString: v.newString,
     replaceAll: v.replaceAll,
+    allowExternalPath: v.allowExternalPath,
     confirmationToken: v.confirmationToken,
   };
 }
@@ -143,9 +164,17 @@ export function validateDeleteInput(input: unknown): DeleteInput | ToolResult {
   if (v.recursive !== undefined && typeof v.recursive !== "boolean") {
     return fail("recursive must be a boolean.");
   }
+  if (v.allowExternalPath !== undefined && typeof v.allowExternalPath !== "boolean") {
+    return fail("allowExternalPath must be a boolean.");
+  }
   const tokenErr = validateConfirmationToken(v.confirmationToken);
   if (tokenErr) return tokenErr;
-  return { path: v.path, recursive: v.recursive, confirmationToken: v.confirmationToken };
+  return {
+    path: v.path,
+    recursive: v.recursive,
+    allowExternalPath: v.allowExternalPath,
+    confirmationToken: v.confirmationToken,
+  };
 }
 
 export function validateListDirectoryInput(input: unknown): ListDirectoryInput | ToolResult {
@@ -168,9 +197,17 @@ export function validateCreateDirectoryInput(input: unknown): CreateDirectoryInp
   if (v.recursive !== undefined && typeof v.recursive !== "boolean") {
     return fail("recursive must be a boolean.");
   }
+  if (v.allowExternalPath !== undefined && typeof v.allowExternalPath !== "boolean") {
+    return fail("allowExternalPath must be a boolean.");
+  }
   const tokenErr = validateConfirmationToken(v.confirmationToken);
   if (tokenErr) return tokenErr;
-  return { path: v.path, recursive: v.recursive ?? true, confirmationToken: v.confirmationToken };
+  return {
+    path: v.path,
+    recursive: v.recursive ?? true,
+    allowExternalPath: v.allowExternalPath,
+    confirmationToken: v.confirmationToken,
+  };
 }
 
 export function validateMoveInput(input: unknown): MoveInput | ToolResult {
@@ -181,12 +218,16 @@ export function validateMoveInput(input: unknown): MoveInput | ToolResult {
   if (v.overwrite !== undefined && typeof v.overwrite !== "boolean") {
     return fail("overwrite must be a boolean.");
   }
+  if (v.allowExternalPath !== undefined && typeof v.allowExternalPath !== "boolean") {
+    return fail("allowExternalPath must be a boolean.");
+  }
   const tokenErr = validateConfirmationToken(v.confirmationToken);
   if (tokenErr) return tokenErr;
   return {
     source: v.source,
     destination: v.destination,
     overwrite: v.overwrite,
+    allowExternalPath: v.allowExternalPath,
     confirmationToken: v.confirmationToken,
   };
 }

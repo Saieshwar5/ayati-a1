@@ -43,7 +43,7 @@ export interface BuildGitMemoryTaskRunCommitInput {
 export function buildGitMemoryTaskRunCommitInput(
   input: BuildGitMemoryTaskRunCommitInput,
 ): CommitGitMemoryTaskRunInput {
-  const workState = input.result.workState ?? fallbackWorkState(input.result);
+  const workState = normalizeCommitWorkState(input.result.workState ?? fallbackWorkState(input.result), input.result);
   const taskStatus = toTaskStatus(workState, input.result);
   const runStatus = toRunStatus(workState, input.result);
   const summary = firstNonEmpty([
@@ -154,7 +154,7 @@ function toRunStatus(
   if (result.status === "failed") {
     return "failed";
   }
-  if (result.status === "stuck") {
+  if (result.status === "stuck" || workState.status === "blocked") {
     return "blocked";
   }
   if (workState.status === "needs_user_input" || result.type === "feedback") {
@@ -167,9 +167,6 @@ function toTaskStatus(
   workState: HarnessWorkStateForContext,
   result: GitMemoryHarnessRunResultForContext,
 ): GitMemoryTaskStatus {
-  if (result.taskSummary?.taskStatus === "done" || workState.status === "done") {
-    return "done";
-  }
   if (result.taskSummary?.taskStatus === "needs_user_input" || workState.status === "needs_user_input") {
     return "needs_user_input";
   }
@@ -180,6 +177,9 @@ function toTaskStatus(
     || result.status === "stuck"
   ) {
     return "blocked";
+  }
+  if (result.taskSummary?.taskStatus === "done" || workState.status === "done") {
+    return "done";
   }
   return "in_progress";
 }
@@ -217,6 +217,43 @@ function fallbackWorkState(result: GitMemoryHarnessRunResultForContext): Harness
     nextStep: result.taskSummary?.nextAction,
     userInputNeeded: result.taskSummary?.userInputNeeded,
   };
+}
+
+const TASK_ROUTING_TOOL_NAMES = new Set([
+  "git_context_activate_task_for_turn",
+  "git_context_create_task_for_turn",
+  "git_context_ask_clarification_for_turn",
+]);
+
+function normalizeCommitWorkState(
+  workState: HarnessWorkStateForContext,
+  result: GitMemoryHarnessRunResultForContext,
+): HarnessWorkStateForContext {
+  if (!isRoutingOnlyCompletedRun(result)) {
+    return workState;
+  }
+  return {
+    ...workState,
+    status: "blocked",
+    summary: "Task run stopped without durable work evidence.",
+    openWork: ["Retry or continue the task with concrete work."],
+    blockers: ["The run completed with only git-context routing work."],
+    nextStep: "Retry or continue the task with concrete work.",
+  };
+}
+
+function isRoutingOnlyCompletedRun(result: GitMemoryHarnessRunResultForContext): boolean {
+  if (result.status !== "completed" || result.type === "feedback") {
+    return false;
+  }
+  const completedSteps = result.completedSteps ?? [];
+  if (completedSteps.length === 0) {
+    return false;
+  }
+  return completedSteps.every((step) => {
+    const toolsUsed = normalizeList(step.toolsUsed);
+    return toolsUsed.length > 0 && toolsUsed.every((tool) => TASK_ROUTING_TOOL_NAMES.has(tool));
+  });
 }
 
 function buildCompleted(result: GitMemoryHarnessRunResultForContext): string[] {

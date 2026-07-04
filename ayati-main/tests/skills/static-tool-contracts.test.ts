@@ -61,7 +61,10 @@ describe("static built-in tool contracts", () => {
     const source = join(dir, "source.txt");
     const destination = join(dir, "destination.txt");
 
-    const created = await executor.execute("create_directory", { path: dir });
+    const created = await executor.execute("create_directory", {
+      path: dir,
+      allowExternalPath: true,
+    });
     expect(created.ok).toBe(true);
     expect(created.v2?.verification?.status).toBe("passed");
     expect((await stat(dir)).isDirectory()).toBe(true);
@@ -69,6 +72,7 @@ describe("static built-in tool contracts", () => {
     const written = await executor.execute("write_file", {
       path: source,
       content: "alpha beta",
+      allowExternalPath: true,
     });
     expect(written.ok).toBe(true);
     expect(written.v2?.code).toBe("FILE_WRITTEN");
@@ -86,6 +90,7 @@ describe("static built-in tool contracts", () => {
       path: source,
       oldString: "beta",
       newString: "gamma",
+      allowExternalPath: true,
     });
     expect(edited.ok).toBe(true);
     expect(edited.v2?.code).toBe("FILE_EDITED");
@@ -94,12 +99,16 @@ describe("static built-in tool contracts", () => {
     const moved = await executor.execute("move", {
       source,
       destination,
+      allowExternalPath: true,
     });
     expect(moved.ok).toBe(true);
     expect(moved.v2?.verification?.status).toBe("passed");
     expect(await readFile(destination, "utf-8")).toBe("alpha gamma");
 
-    const deleted = await executor.execute("delete", { path: destination });
+    const deleted = await executor.execute("delete", {
+      path: destination,
+      allowExternalPath: true,
+    });
     expect(deleted.ok).toBe(true);
     expect(deleted.v2?.verification?.status).toBe("passed");
     await expect(stat(destination)).rejects.toThrow();
@@ -122,7 +131,11 @@ describe("static built-in tool contracts", () => {
     expect(shell.v2?.structuredContent).toMatchObject({ exitCode: 0, timedOut: false });
 
     const scriptPath = join(tmp, "script.sh");
-    await writeFileTool.execute({ path: scriptPath, content: "printf script-ok\n" });
+    await writeFileTool.execute({
+      path: scriptPath,
+      content: "printf script-ok\n",
+      allowExternalPath: true,
+    });
     const script = await executor.execute("shell_run_script", { scriptPath, cwd: tmp });
     expect(script.ok).toBe(true);
     expect(script.v2?.verification?.status).toBe("passed");

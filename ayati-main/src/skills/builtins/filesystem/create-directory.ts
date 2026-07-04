@@ -1,7 +1,8 @@
 import { mkdir } from "node:fs/promises";
 import type { ToolDefinition, ToolResult } from "../../types.js";
-import { resolveWorkspacePath } from "../../workspace-paths.js";
+import { resolveWorkspaceMutationPath } from "../../workspace-paths.js";
 import { commonAnnotations, errorResultFromUnknown, okResult, succeededContract, successV2 } from "../contract-helpers.js";
+import { externalWorkspacePathError } from "./external-path-policy.js";
 import { validateCreateDirectoryInput } from "./validators.js";
 
 export const createDirectoryTool: ToolDefinition = {
@@ -11,10 +12,17 @@ export const createDirectoryTool: ToolDefinition = {
     type: "object",
     required: ["path"],
     properties: {
-      path: { type: "string", description: "Absolute or relative directory path." },
+      path: {
+        type: "string",
+        description: "Workspace-relative directory path by default. Absolute paths outside the workspace require allowExternalPath=true.",
+      },
       recursive: {
         type: "boolean",
         description: "Create parent directories if needed (default: true).",
+      },
+      allowExternalPath: {
+        type: "boolean",
+        description: "Allow creating an absolute directory outside the configured workspace. Use only when the user explicitly requested that external path.",
       },
     },
   },
@@ -58,7 +66,13 @@ export const createDirectoryTool: ToolDefinition = {
     const parsed = validateCreateDirectoryInput(input);
     if ("ok" in parsed) return parsed;
 
-    const dirPath = resolveWorkspacePath(parsed.path);
+    const resolved = resolveWorkspaceMutationPath(parsed.path, {
+      allowExternalPath: parsed.allowExternalPath,
+      operation: "create_directory",
+    });
+    if (!resolved.ok) return externalWorkspacePathError(resolved);
+
+    const dirPath = resolved.path;
     const start = Date.now();
 
     try {

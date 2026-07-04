@@ -545,24 +545,26 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
     routed: GitMemoryChatContextRoutedTurn | null,
     result: AgentLoopResult,
   ): Promise<void> {
-    const binding = this.taskRunBindingFromRoutedOrResult(routed, result);
-    const skipReason = this.chatContextFinalizationSkipReason(prepared, routed, result, binding);
+    const normalizedResult = this.normalizeTaskWaitingResult(result);
+    const binding = this.taskRunBindingFromRoutedOrResult(routed, normalizedResult);
+    const skipReason = this.chatContextFinalizationSkipReason(prepared, routed, normalizedResult, binding);
     if (skipReason) {
       if (prepared && result.content.trim()) {
         await this.recordChatContextAssistantMessage(clientId, prepared, result.content);
       }
       if (prepared) {
+        const taskFinalizationRequired = this.isTaskFinalizationRequired(normalizedResult);
         this.feedbackLedger?.record({
           clientId,
           sessionId: prepared.sessionId,
           seq: prepared.messageSeq,
           stage: "context_engine",
-          event: "finalization_skipped",
+          event: taskFinalizationRequired ? "finalization_failed" : "finalization_skipped",
           data: {
             reason: skipReason,
             contextEngine: buildContextEngineFeedbackSummary({
-              context: result.harnessContext?.contextEngine,
-              finalizationStatus: "skipped",
+              context: normalizedResult.harnessContext?.contextEngine,
+              finalizationStatus: taskFinalizationRequired ? "failed" : "skipped",
               committed: false,
             }),
           },
@@ -575,7 +577,7 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
       return;
     }
 
-    const finalizationResult = this.normalizeChatContextFinalizationResult(result, routed);
+    const finalizationResult = this.normalizeChatContextFinalizationResult(normalizedResult, routed);
     const completedAt = this.nowProvider().toISOString();
     this.feedbackLedger?.record({
       clientId,
@@ -693,10 +695,75 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
     if (routed?.status !== "ready" || result.status !== "completed") {
       return false;
     }
-    return result.totalToolCalls === 0
-      && (result.completedSteps ?? []).length === 0
+    if (result.type === "feedback" || result.workState?.status === "needs_user_input" || result.taskSummary?.taskStatus === "needs_user_input") {
+      return false;
+    }
+    if (isRoutingOnlyTaskRun(result)) {
+      return true;
+    }
+    return !hasDurableTaskEvidence(result)
       && (result.taskAssets ?? []).length === 0
       && (result.artifacts ?? []).length === 0;
+  }
+
+  private normalizeTaskWaitingResult(result: AgentLoopResult): AgentLoopResult {
+    const userInputNeeded = firstNonEmptyString([
+      result.workState?.userInputNeeded,
+      result.taskSummary?.userInputNeeded,
+      result.type === "feedback" ? result.content : undefined,
+    ]);
+    const shouldWait = Boolean(userInputNeeded)
+      || result.type === "feedback"
+      || result.workState?.status === "needs_user_input"
+      || result.taskSummary?.taskStatus === "needs_user_input";
+    if (!shouldWait) {
+      return result;
+    }
+
+    const next = userInputNeeded || result.workState?.nextStep || result.taskSummary?.nextAction || result.content;
+    return {
+      ...result,
+      workState: {
+        status: "needs_user_input",
+        summary: result.workState?.summary || result.taskSummary?.summary || result.content || "User input is needed before the task can continue.",
+        openWork: uniqueStrings([
+          next,
+          ...(result.workState?.openWork ?? []),
+        ]),
+        blockers: result.workState?.blockers ?? [],
+        verifiedFacts: result.workState?.verifiedFacts ?? [],
+        evidence: result.workState?.evidence ?? [],
+        evidenceRefs: result.workState?.evidenceRefs,
+        taskNotes: result.workState?.taskNotes,
+        nextStep: next,
+        userInputNeeded: next,
+      },
+      taskSummary: result.taskSummary
+        ? {
+            ...result.taskSummary,
+            taskStatus: "needs_user_input",
+            userInputNeeded: next,
+            nextAction: next,
+            openWork: uniqueStrings([
+              next,
+              ...(result.taskSummary.openWork ?? []),
+            ]),
+            stopReason: "needs_user_input",
+          }
+        : result.taskSummary,
+    };
+  }
+
+  private isTaskFinalizationRequired(result: AgentLoopResult): boolean {
+    return result.runClass === "task"
+      || Boolean(result.workRunId)
+      || result.totalToolCalls > 0
+      || (result.completedSteps ?? []).length > 0
+      || (result.taskAssets ?? []).length > 0
+      || (result.artifacts ?? []).length > 0
+      || result.workState?.status === "done"
+      || result.workState?.status === "needs_user_input"
+      || result.workState?.status === "blocked";
   }
 
   private async completeFailedChatContextRun(
@@ -1445,6 +1512,43 @@ function formatChatRuntimeError(error: unknown): string {
     return "I could not get a valid response from the model provider. Please retry.";
   }
   return "Failed to generate a response.";
+}
+
+function firstNonEmptyString(values: Array<string | undefined>): string | undefined {
+  return values.find((value): value is string => typeof value === "string" && value.trim().length > 0)?.trim();
+}
+
+function uniqueStrings(values: Array<string | undefined>): string[] {
+  return [...new Set(values
+    .map((value) => value?.trim() ?? "")
+    .filter((value) => value.length > 0))];
+}
+
+const TASK_ROUTING_TOOL_NAMES = new Set([
+  "git_context_activate_task_for_turn",
+  "git_context_create_task_for_turn",
+  "git_context_ask_clarification_for_turn",
+]);
+
+function hasDurableTaskEvidence(result: AgentLoopResult): boolean {
+  return (result.completedSteps ?? []).some((step) => {
+    if ((step.artifacts ?? []).length > 0) {
+      return true;
+    }
+    const toolsUsed = step.toolsUsed ?? [];
+    return toolsUsed.some((tool) => !TASK_ROUTING_TOOL_NAMES.has(tool));
+  });
+}
+
+function isRoutingOnlyTaskRun(result: AgentLoopResult): boolean {
+  const completedSteps = result.completedSteps ?? [];
+  if (completedSteps.length === 0) {
+    return false;
+  }
+  return completedSteps.every((step) => {
+    const toolsUsed = step.toolsUsed ?? [];
+    return toolsUsed.length > 0 && toolsUsed.every((tool) => TASK_ROUTING_TOOL_NAMES.has(tool));
+  });
 }
 
 function errMessage(error: unknown): string {

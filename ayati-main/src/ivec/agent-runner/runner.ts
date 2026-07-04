@@ -495,7 +495,18 @@ export async function runAgentLoop(
     if (decision.kind === "reply") {
       state.status = decision.status === "failed" ? "failed" : "completed";
       state.finalOutput = decision.message;
-      if (decision.status === "completed" && canMarkTerminalReplyDone(state)) {
+      const userInputNeeded = decision.status === "completed"
+        ? deriveUserInputNeededFromTerminalReply(decision.message)
+        : undefined;
+      if (userInputNeeded && state.runClass === "task") {
+        state.workState = {
+          ...state.workState,
+          status: "needs_user_input",
+          userInputNeeded,
+          nextStep: userInputNeeded,
+          summary: state.workState.summary || decision.message,
+        };
+      } else if (decision.status === "completed" && canMarkTerminalReplyDone(state)) {
         state.workState = {
           ...state.workState,
           status: "done",
@@ -964,7 +975,7 @@ export async function runAgentLoop(
       });
       recordRunMetric(metrics, "verified_completion", { kind: "local" });
       state.status = "completed";
-      state.finalOutput = buildVerifiedCompletionReply(state, decision.action);
+      state.finalOutput = buildVerifiedCompletionReply(state, stepResult.stepSummary);
       return finalize({
         status: "completed",
         content: state.finalOutput,
@@ -2431,6 +2442,28 @@ function canMarkTerminalReplyDone(state: LoopState): boolean {
     && !state.workState.userInputNeeded?.trim();
 }
 
+function deriveUserInputNeededFromTerminalReply(message: string): string | undefined {
+  const sentences = message
+    .split(/(?<=[.!?])\s+/)
+    .map((sentence) => sentence.trim())
+    .filter((sentence) => sentence.length > 0);
+  const waitingSentence = sentences.find(isUserInputRequestSentence);
+  return waitingSentence ? normalizeTerminalReplyRequest(waitingSentence) : undefined;
+}
+
+function isUserInputRequestSentence(sentence: string): boolean {
+  return /\b(?:send|tell|provide|share|choose|confirm|pick|select|let me know|when you|once you|after you)\b/i.test(sentence)
+    && /\b(?:you|your|me|the|which|what|when|whether)\b/i.test(sentence);
+}
+
+function normalizeTerminalReplyRequest(sentence: string): string {
+  const trimmed = sentence.trim();
+  if (trimmed.endsWith(".") || trimmed.endsWith("?") || trimmed.endsWith("!")) {
+    return trimmed;
+  }
+  return `${trimmed}.`;
+}
+
 function discardModelWorkingNotes(decision: AgentDecision): void {
   void decision.workingNotes;
 }
@@ -2490,16 +2523,54 @@ function canCompleteLocallyAfterAction(
     && (workState.blockers?.length ?? 0) === 0;
 }
 
-function buildVerifiedCompletionReply(state: LoopState, action?: AgentAction): string {
-  const reason = action?.completion?.reason?.trim();
-  if (reason) {
-    return reason;
+function buildVerifiedCompletionReply(state: LoopState, step?: StepSummary): string {
+  const artifacts = normalizeList(step?.artifacts ?? [])
+    .filter((artifact) => isDurableStepArtifact(artifact))
+    .map((artifact) => displayArtifactPath(artifact));
+  if (artifacts.length > 0) {
+    return `Done. I created or updated ${formatDisplayList(artifacts)}.`;
   }
+
   const summary = state.workState.summary?.trim();
-  if (summary) {
+  if (summary && !looksLikeInternalCompletionText(summary)) {
     return summary;
   }
-  return "I completed the task.";
+  return "Done. I completed the task.";
+}
+
+function displayArtifactPath(path: string): string {
+  const trimmed = path.trim();
+  if (!isAbsolute(trimmed)) {
+    return trimmed;
+  }
+  const workspaceDir = process.env["AYATI_WORKSPACE_DIR"];
+  if (!workspaceDir) {
+    return trimmed;
+  }
+  const workspaceRoot = resolve(workspaceDir);
+  const relative = trimmed.startsWith(`${workspaceRoot}/`)
+    ? trimmed.slice(workspaceRoot.length + 1)
+    : trimmed;
+  return relative || trimmed;
+}
+
+function formatDisplayList(values: string[]): string {
+  const display = values.slice(0, 4).map((value) => `\`${value}\``);
+  const remaining = Math.max(0, values.length - display.length);
+  if (remaining > 0) {
+    display.push(`${remaining} more`);
+  }
+  if (display.length === 1) {
+    return display[0]!;
+  }
+  if (display.length === 2) {
+    return `${display[0]} and ${display[1]}`;
+  }
+  return `${display.slice(0, -1).join(", ")}, and ${display[display.length - 1]}`;
+}
+
+function looksLikeInternalCompletionText(text: string): boolean {
+  return /\b(?:tool(?:\s+call)?|sha256|deterministic verification|evidence contract|assertion|reducer|work state|harness|completion candidate|batch write)\b/i.test(text);
 }
 
 function buildFailureReply(state: LoopState): string {

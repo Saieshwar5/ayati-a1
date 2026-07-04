@@ -1,7 +1,8 @@
 import { rename, copyFile, cp, stat, rm, access } from "node:fs/promises";
 import type { ToolDefinition, ToolResult } from "../../types.js";
-import { resolveWorkspacePath } from "../../workspace-paths.js";
+import { resolveWorkspaceMutationPath } from "../../workspace-paths.js";
 import { commonAnnotations, errorResult, errorResultFromUnknown, okResult, succeededContract, successV2 } from "../contract-helpers.js";
+import { externalWorkspacePathError } from "./external-path-policy.js";
 import { validateMoveInput } from "./validators.js";
 
 async function exists(p: string): Promise<boolean> {
@@ -20,11 +21,21 @@ export const moveTool: ToolDefinition = {
     type: "object",
     required: ["source", "destination"],
     properties: {
-      source: { type: "string", description: "Source path." },
-      destination: { type: "string", description: "Destination path." },
+      source: {
+        type: "string",
+        description: "Workspace-relative source path by default. Absolute paths outside the workspace require allowExternalPath=true.",
+      },
+      destination: {
+        type: "string",
+        description: "Workspace-relative destination path by default. Absolute paths outside the workspace require allowExternalPath=true.",
+      },
       overwrite: {
         type: "boolean",
         description: "Overwrite destination if it exists (default: false).",
+      },
+      allowExternalPath: {
+        type: "boolean",
+        description: "Allow moving from or to absolute paths outside the configured workspace. Use only when the user explicitly requested those external paths.",
       },
     },
   },
@@ -80,8 +91,20 @@ export const moveTool: ToolDefinition = {
     const parsed = validateMoveInput(input);
     if ("ok" in parsed) return parsed;
 
-    const src = resolveWorkspacePath(parsed.source);
-    const dest = resolveWorkspacePath(parsed.destination);
+    const resolvedSource = resolveWorkspaceMutationPath(parsed.source, {
+      allowExternalPath: parsed.allowExternalPath,
+      operation: "move source",
+    });
+    if (!resolvedSource.ok) return externalWorkspacePathError(resolvedSource);
+
+    const resolvedDestination = resolveWorkspaceMutationPath(parsed.destination, {
+      allowExternalPath: parsed.allowExternalPath,
+      operation: "move destination",
+    });
+    if (!resolvedDestination.ok) return externalWorkspacePathError(resolvedDestination);
+
+    const src = resolvedSource.path;
+    const dest = resolvedDestination.path;
     const start = Date.now();
 
     try {

@@ -1462,6 +1462,7 @@ function taskCompletionSchema(): Record<string, unknown> {
     reason: {
       type: "string",
       minLength: 1,
+      description: "Internal completion rationale for the harness. This is not shown directly to the user.",
     },
     expectedEvidence: {
       type: "array",

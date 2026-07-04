@@ -198,6 +198,54 @@ describe("buildGitMemoryTaskRunCommitInput", () => {
     });
   });
 
+  it("does not map routing-only completed runs to done", () => {
+    const mapped = buildGitMemoryTaskRunCommitInput({
+      sessionId: "S-20260628-local",
+      taskId: "W-20260628-0001",
+      result: {
+        type: "reply",
+        status: "completed",
+        content: "I created the markdown helper.",
+        totalIterations: 3,
+        totalToolCalls: 1,
+        runPath: "data/runs/r-routing-only",
+        taskSummary: {
+          taskStatus: "done",
+          summary: "I created the markdown helper.",
+          completedMilestones: ["Pending-turn routing tools executed successfully."],
+          openWork: [],
+          nextAction: "No next step.",
+        },
+        completedSteps: [{
+          step: 1,
+          outcome: "success",
+          summary: "Pending-turn routing tools executed successfully.",
+          newFacts: ["Pending-turn routing tools executed successfully."],
+          artifacts: [],
+          toolsUsed: ["git_context_create_task_for_turn"],
+          evidenceSummary: "git_context_create_task_for_turn: Pending turn created a new git-context task.",
+          toolSuccessCount: 1,
+          toolFailureCount: 0,
+        }],
+      },
+      conversationRefs: [{ fromSeq: 9, toSeq: 9 }],
+      at: "2026-06-28T11:00:00+05:30",
+    });
+
+    expect(mapped).toMatchObject({
+      status: "blocked",
+      summary: "I created the markdown helper.",
+      state: {
+        status: "blocked",
+        summary: "Task run stopped without durable work evidence.",
+        open: ["Retry or continue the task with concrete work."],
+        blockers: ["The run completed with only git-context routing work."],
+        next: "Retry or continue the task with concrete work.",
+      },
+      next: "Retry or continue the task with concrete work.",
+    });
+  });
+
   it("maps failed runs to failed run status and blocked task state", () => {
     const mapped = buildGitMemoryTaskRunCommitInput({
       sessionId: "S-20260628-local",
