@@ -13,10 +13,7 @@ export interface PromptGitContext {
 }
 
 export interface PromptGitSessionContext {
-  meta: {
-    sessionId: string;
-    assetCount: number;
-  };
+  meta: ContextEngineMachineContext["session"]["meta"];
   summary?: ContextEngineMachineContext["session"]["summary"];
   attachments?: unknown;
   activity: {
@@ -127,15 +124,23 @@ function projectGitSessionForPrompt(
   attachments: unknown,
 ): PromptGitSessionContext {
   return {
-    meta: {
-      sessionId: session.sessionId,
-      assetCount: session.assetCount,
-    },
+    meta: readSessionMeta(session),
     ...(session.summary ? { summary: session.summary } : {}),
     ...(attachments ?? session.attachments ? { attachments: attachments ?? session.attachments } : {}),
     activity: {
       recent: session.activityTail,
     },
+  };
+}
+
+function readSessionMeta(session: ContextEngineMachineContext["session"]): ContextEngineMachineContext["session"]["meta"] {
+  if (session.meta) {
+    return session.meta;
+  }
+  const legacy = session as unknown as { sessionId?: string; assetCount?: number };
+  return {
+    sessionId: legacy.sessionId ?? "unknown",
+    assetCount: legacy.assetCount ?? session.attachments?.count ?? 0,
   };
 }
 

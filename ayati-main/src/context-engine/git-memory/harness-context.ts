@@ -30,16 +30,15 @@ export function buildGitMemoryHarnessContextPack(
 ): ContextEngineMachineContext {
   return {
     session: {
-      sessionId: context.session.sessionId,
+      meta: context.session.meta,
       conversationTail: (context.session.conversationTail ?? []).map(toConversationRecord),
       ...(context.session.conversationMarkdownTail ? { conversationMarkdownTail: context.session.conversationMarkdownTail } : {}),
       ...(context.session.summary ? { summary: context.session.summary } : {}),
       ...(context.session.attachments ? { attachments: context.session.attachments } : {}),
       activityTail: (context.session.activityTail ?? [])
-        .map((activity) => toSessionActivityRecord(context.session.sessionId, activity))
+        .map((activity) => toSessionActivityRecord(context.session.meta.sessionId, activity))
         .filter(isSessionActivityRecord),
       recentCommits: (context.session.recentCommits ?? []).map(toCompactCommitSummary),
-      assetCount: context.session.attachments?.count ?? 0,
     },
     ...(context.pendingWrites && context.pendingWrites.length > 0 ? {
       pendingWrites: context.pendingWrites.map(toPendingWrite),
@@ -73,16 +72,15 @@ export function buildGitMemoryHarnessContextFromMemoryState(
 ): ContextEngineMachineContext {
   return {
     session: {
-      sessionId: state.session.sessionId,
+      meta: state.session.meta,
       conversationTail: state.session.conversationTail.map(toConversationRecord),
       ...(state.session.conversationMarkdownTail ? { conversationMarkdownTail: state.session.conversationMarkdownTail } : {}),
       ...(state.session.summary ? { summary: state.session.summary } : {}),
       ...(state.session.attachments ? { attachments: state.session.attachments } : {}),
       activityTail: state.session.activityTail
-        .map((activity) => toSessionActivityRecord(state.session.sessionId, activity))
+        .map((activity) => toSessionActivityRecord(state.session.meta.sessionId, activity))
         .filter(isSessionActivityRecord),
       recentCommits: state.session.recentCommits.map(toCompactCommitSummary),
-      assetCount: state.session.attachments?.count ?? 0,
     },
     ...(state.pendingWrites.length > 0 ? {
       pendingWrites: state.pendingWrites.map(toPendingWrite),

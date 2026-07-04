@@ -38,7 +38,15 @@ describe("GitMemoryContextReader", () => {
 
     expect(pack).toMatchObject({
       session: {
-        sessionId: "S-20260628-local",
+        meta: {
+          sessionId: "S-20260628-local",
+          date: "2026-06-28",
+          timezone: "Asia/Kolkata",
+          createdAt: "2026-06-28T00:00:00+05:30",
+          repoKind: "daily_session",
+          agentId: "local",
+          assetCount: 0,
+        },
         conversationTail: [],
         recentCommits: [{
           subject: "ayati: initialize session S-20260628-local",
@@ -47,6 +55,8 @@ describe("GitMemoryContextReader", () => {
       },
       focus: { status: "none" },
     });
+    expect(pack.session).not.toHaveProperty("sessionId");
+    expect(pack.session).not.toHaveProperty("assetCount");
     expect(pack.session.activityTail).toMatchObject([
       { seq: 1, type: "session_initialized" },
     ]);

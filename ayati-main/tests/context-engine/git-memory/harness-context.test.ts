@@ -33,8 +33,15 @@ describe("buildGitMemoryHarnessContextPack", () => {
 
     expect(harness).toMatchObject({
       session: {
-        sessionId: "S-20260628-local",
-        assetCount: 0,
+        meta: {
+          sessionId: "S-20260628-local",
+          date: "2026-06-28",
+          timezone: "Asia/Kolkata",
+          createdAt: "2026-06-28T00:00:00+05:30",
+          repoKind: "daily_session",
+          agentId: "local",
+          assetCount: 0,
+        },
         conversationTail: [],
         summary: {
           text: "Session summary text.",
@@ -52,6 +59,8 @@ describe("buildGitMemoryHarnessContextPack", () => {
       },
       focus: { status: "none" },
     });
+    expect(harness.session).not.toHaveProperty("sessionId");
+    expect(harness.session).not.toHaveProperty("assetCount");
     expect(harness.task).toBeUndefined();
 
     const memory = await createGitContextMemoryStateHydrator(store).hydrate({
@@ -240,8 +249,10 @@ describe("buildGitMemoryHarnessContextPack", () => {
 
     expect(harness).toMatchObject({
       session: {
-        sessionId: "S-20260628-local",
-        assetCount: 0,
+        meta: {
+          sessionId: "S-20260628-local",
+          assetCount: 0,
+        },
         conversationTail: [{
           seq: 1,
           role: "user",
@@ -317,6 +328,8 @@ describe("buildGitMemoryHarnessContextPack", () => {
       },
     });
     expect(memoryHarness).toEqual(harness);
+    expect(harness.session).not.toHaveProperty("sessionId");
+    expect(harness.session).not.toHaveProperty("assetCount");
     expect(harness.session.recentCommits[0]).toMatchObject({
       subject: "ayati: initialize session S-20260628-local",
       event: "session_initialized",

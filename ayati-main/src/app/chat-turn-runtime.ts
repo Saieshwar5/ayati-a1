@@ -28,6 +28,7 @@ import {
   buildGitMemoryHarnessContextPack,
   type GitMemorySessionAttachmentRecord,
   type GitMemoryConversationSeqRange,
+  type GitMemoryMachineContextPack,
 } from "../context-engine/index.js";
 import {
   createInitialHarnessContext,
@@ -1388,13 +1389,14 @@ function formatAttachmentLabel(attachment: ChatAttachmentInput): string {
 function promptMemoryContextFromGitMemory(
   routed: GitMemoryChatContextRoutedTurn | null,
 ): PromptMemoryContext {
+  const sessionId = readGitMemoryContextSessionId(routed?.context.session);
   const conversationTurns: ConversationTurn[] = (routed?.context.session.conversationTail ?? [])
     .filter(isUserAssistantGitMemoryMessage)
     .map((message) => ({
       role: message.role,
       content: message.text ?? "",
       timestamp: message.at,
-      sessionPath: `git-memory:${routed?.context.session.sessionId ?? ""}`,
+      sessionPath: `git-memory:${sessionId ?? ""}`,
       seq: message.seq,
       ...(message.runId ? { workRunId: message.runId } : {}),
     }));
@@ -1406,6 +1408,15 @@ function promptMemoryContextFromGitMemory(
     personalMemorySnapshot: "",
     personalMemories: [],
   };
+}
+
+function readGitMemoryContextSessionId(
+  session: GitMemoryMachineContextPack["session"] | undefined,
+): string | undefined {
+  if (!session) {
+    return undefined;
+  }
+  return session.meta?.sessionId ?? (session as unknown as { sessionId?: string }).sessionId;
 }
 
 function isUserAssistantGitMemoryMessage(

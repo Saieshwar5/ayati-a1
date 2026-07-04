@@ -187,16 +187,25 @@ export interface ContextSessionAttachments {
   updatedAt?: string;
 }
 
+export interface ContextSessionMeta {
+  sessionId: string;
+  date?: string;
+  timezone?: string;
+  createdAt?: string;
+  repoKind?: "daily_session";
+  agentId?: string;
+  assetCount: number;
+}
+
 export interface ContextEngineMachineContext {
   session: {
-    sessionId: string;
+    meta: ContextSessionMeta;
     conversationTail: ContextConversationRecord[];
     conversationMarkdownTail?: string;
     summary?: ContextSessionSummary;
     attachments?: ContextSessionAttachments;
     activityTail: ContextSessionActivityRecord[];
     recentCommits?: ContextCommitSummary[];
-    assetCount: number;
   };
   pendingWrites?: ContextPendingWrite[];
   pendingTurn?: ContextPendingTurn;

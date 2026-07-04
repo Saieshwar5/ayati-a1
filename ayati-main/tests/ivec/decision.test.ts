@@ -188,7 +188,10 @@ describe("parseAgentDecision", () => {
           },
           gitContext: {
             session: {
-              sessionId: "S-20260627-local",
+              meta: {
+                sessionId: "S-20260627-local",
+                assetCount: 0,
+              },
               conversationTail: [],
               conversationMarkdownTail: "# Conversation\n\nlegacy",
               summary: {
@@ -196,7 +199,6 @@ describe("parseAgentDecision", () => {
               },
               activityTail: [],
               recentCommits: [],
-              assetCount: 0,
             },
             focus: { status: "none" },
           },

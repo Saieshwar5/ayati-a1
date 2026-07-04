@@ -1886,7 +1886,7 @@ function summarizeDecisionInputState(stateView: AgentStateView): Record<string, 
     pendingAssistantQuestion: latestAssistantQuestion && "content" in latestAssistantQuestion
       ? latestAssistantQuestion.content
       : undefined,
-    gitSessionId: stateView.context.gitContext?.session.sessionId,
+    gitSessionId: readContextSessionId(stateView.context.gitContext?.session),
     gitWorkId: stateView.context.gitContext?.task?.workId,
     gitWorkTitle: stateView.context.gitContext?.task?.title,
     gitOpenWorkCount: stateView.context.gitContext?.task?.open.length ?? 0,
@@ -2825,8 +2825,17 @@ function buildAttachmentNames(preparedAttachments: PreparedAttachmentSummary[] |
   return (preparedAttachments ?? []).map((attachment) => attachment.displayName);
 }
 
+function readContextSessionId(
+  session: NonNullable<LoopState["harnessContext"]["contextEngine"]>["session"] | undefined,
+): string | undefined {
+  if (!session) {
+    return undefined;
+  }
+  return session.meta?.sessionId ?? (session as unknown as { sessionId?: string }).sessionId;
+}
+
 function buildTaskAssets(state: LoopState): TaskAssetRecord[] {
-  const sessionId = state.harnessContext.contextEngine?.session.sessionId;
+  const sessionId = readContextSessionId(state.harnessContext.contextEngine?.session);
   return dedupeTaskAssets([
     ...(state.preparedAttachmentRecords ?? []).map((record) => attachmentRecordToTaskAsset(record, sessionId)),
     ...(state.managedFiles ?? []).map((file): TaskAssetRecord => ({
