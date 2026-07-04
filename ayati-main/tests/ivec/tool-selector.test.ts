@@ -116,7 +116,7 @@ describe("selectToolsForDecision", () => {
     ]);
   });
 
-  it("keeps work tools visible with create or clarify routing tools when a fresh session has no active task", () => {
+  it("selects only first-task routing tools when a fresh session has no active task", () => {
     const current = state("build a website and run it");
     current.runId = "";
     current.harnessContext = {
@@ -133,16 +133,12 @@ describe("selectToolsForDecision", () => {
     ], 12);
 
     expect(selected.map((entry) => entry.name)).toEqual([
-      "shell",
-      "write_files",
-      "git_context_list_tasks",
-      "git_context_search_tasks",
       "git_context_create_task_for_turn",
       "git_context_ask_clarification_for_turn",
     ]);
   });
 
-  it("does not count fresh-session routing mutation tools against the selected tool cap", () => {
+  it("keeps first-task routing tools available regardless of selected tool cap", () => {
     const current = state("create a small website and run it");
     current.runId = "";
     current.harnessContext = {
@@ -163,9 +159,6 @@ describe("selectToolsForDecision", () => {
     ], 3);
 
     expect(selected.map((entry) => entry.name)).toEqual([
-      "write_files",
-      "write_file",
-      "create_directory",
       "git_context_create_task_for_turn",
       "git_context_ask_clarification_for_turn",
     ]);

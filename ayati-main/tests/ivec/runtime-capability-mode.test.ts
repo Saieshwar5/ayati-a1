@@ -71,14 +71,6 @@ describe("runtime capability modes", () => {
       why: "No active task exists.",
       allowed: [
         "direct_reply",
-        "git_context_list_sessions",
-        "git_context_active",
-        "git_context_list_tasks",
-        "git_context_search_tasks",
-        "git_context_read_task",
-        "git_context_read_evidence",
-        "git_context_search_evidence",
-        "git_context_log",
         "git_context_create_task_for_turn",
         "git_context_ask_clarification_for_turn",
       ],
@@ -88,17 +80,17 @@ describe("runtime capability modes", () => {
         "task_activation",
       ],
       rules: [
-        "Reply directly only for casual chat, explanation-only questions, thanks, or planning discussion.",
-        "If the current user asks to create, write, edit, build, run, test, fix, save, or change an artifact, file, code, doc, site, or app, do not reply directly.",
-        "For durable work, call git_context_create_task_for_turn with title, objective, and reason.",
+        "Create a task only when the current user request has a concrete deliverable and enough detail to begin work now.",
+        "Do not create a task for early conversation, brainstorming, vague intent, preferences, or discovery. Reply directly with one short clarifying question.",
+        "A concrete deliverable means the user has specified what to make, change, analyze, or produce, and the expected output is clear enough to start without another user answer.",
+        "For clear durable work, call git_context_create_task_for_turn with title, objective, and reason.",
         "Never print task metadata JSON as the assistant response. Put task metadata in the native tool call arguments.",
-        "If unsure whether the request is durable work, ask a short clarification.",
       ],
       repairCode: "R_FRESH_SESSION_NEEDS_TASK",
     });
   });
 
-  it("keeps tools visible in fresh session so the runner can repair normal work attempts", () => {
+  it("exposes only first-task routing tools in a fresh session", () => {
     const mode = detectRuntimeCapabilityMode({
       state: state(gitContext({ status: "none" })),
     });
@@ -109,8 +101,6 @@ describe("runtime capability modes", () => {
       tool("git_context_create_task_for_turn"),
       tool("git_context_ask_clarification_for_turn"),
     ]).map((entry) => entry.name)).toEqual([
-      "write_files",
-      "git_context_search_tasks",
       "git_context_create_task_for_turn",
       "git_context_ask_clarification_for_turn",
     ]);

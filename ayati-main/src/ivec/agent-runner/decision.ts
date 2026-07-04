@@ -94,6 +94,7 @@ interface CallAgentDecisionInput {
   stateView: AgentStateView;
   toolDefinitions: ToolDefinition[];
   toolRoutingSummary?: string;
+  toolLoadingAvailable?: boolean;
   taskFeedbackToolAvailable?: boolean;
   systemContext?: string;
   metrics?: RunMetrics;
@@ -178,6 +179,7 @@ export async function callAgentDecision(input: CallAgentDecisionInput): Promise<
         throw new Error(`Provider ${input.provider.name} does not support native decision tools.`);
       }
       const decisionTools = buildNativeDecisionTools(input.toolDefinitions, {
+        toolLoadingAvailable: input.toolLoadingAvailable !== false,
         taskFeedbackToolAvailable: input.taskFeedbackToolAvailable === true,
       });
       recordDecisionFeedback(input, "native_tool_surface", {
@@ -215,9 +217,14 @@ export async function callAgentDecision(input: CallAgentDecisionInput): Promise<
     }
     traceDecisionProviderResponse(turn, attempt);
 
+    const nativeDecision = turn.type === "tool_calls"
+      ? nativeDecisionFromToolCalls(turn.calls, input.toolDefinitions)
+      : null;
     rawText = turn.type === "assistant"
       ? turn.content.trim()
-      : serializeNativeDecisionToolCalls(turn.calls, input.toolDefinitions);
+      : typeof nativeDecision === "string"
+        ? nativeDecision
+        : serializeNativeDecisionToolCalls(turn.calls, input.toolDefinitions);
     agentTrace("agent_decision", `attempt=${attempt + 1} raw_response=${tracePreview(rawText)}`);
     recordDecisionFeedback(input, "raw_response", {
       attempt: attempt + 1,
@@ -274,13 +281,16 @@ export async function callAgentDecision(input: CallAgentDecisionInput): Promise<
         });
         return directReply;
       }
-      const decision = parseAgentDecision(rawText);
+      const decision = nativeDecision && typeof nativeDecision !== "string"
+        ? nativeDecision
+        : parseAgentDecision(rawText);
       agentTrace("agent_decision", `attempt=${attempt + 1} parsed_decision kind=${decision.kind}`);
       recordDecisionFeedback(input, "parsed", {
         attempt: attempt + 1,
         decision: summarizeDecisionForFeedback(decision),
       });
       const violation = validateToolProtocol(decision, input.toolDefinitions, {
+        toolLoadingAvailable: input.toolLoadingAvailable !== false,
         taskFeedbackToolAvailable: input.taskFeedbackToolAvailable === true,
       });
       if (violation) {
@@ -673,6 +683,7 @@ function validateToolProtocol(
   decision: AgentDecision,
   selectedToolDefinitions: ToolDefinition[],
   options: {
+    toolLoadingAvailable: boolean;
     taskFeedbackToolAvailable: boolean;
   },
 ): ToolProtocolViolation | null {
@@ -687,6 +698,15 @@ function validateToolProtocol(
     };
   }
   if (decision.kind === "load_tools") {
+    if (!options.toolLoadingAvailable) {
+      return {
+        kind: "tool_protocol_violation",
+        reason: "decision_load_tools is not available in the current runtime mode",
+        invalidTools: ["decision_load_tools"],
+        selectedTools,
+        loadToolsUsedAsAction: false,
+      };
+    }
     const hasSelector = Boolean(decision.request.query?.trim())
       || decision.request.toolNames.length > 0
       || decision.request.groups.length > 0;
@@ -884,6 +904,11 @@ function detectAssistantTextToolCall(
   text: string,
   selectedTools: ToolDefinition[],
 ): AssistantTextToolCallViolation | null {
+  const internalAction = detectInternalActionTextToolCall(text, selectedTools);
+  if (internalAction) {
+    return internalAction;
+  }
+
   const parsed = parseJsonRecord(text);
   if (!looksLikeToolCallRecord(parsed)) {
     return null;
@@ -898,6 +923,43 @@ function detectAssistantTextToolCall(
     inputKeys: Object.keys(input ?? {}),
     selectedTools: selectedTools.map((tool) => tool.name),
   };
+}
+
+function detectInternalActionTextToolCall(
+  text: string,
+  selectedTools: ToolDefinition[],
+): AssistantTextToolCallViolation | null {
+  const trimmed = text.trimStart();
+  if (parseJsonRecord(trimmed)) {
+    return null;
+  }
+  if (!trimmed.startsWith("{") || !/"kind"\s*:\s*"act"/.test(trimmed)) {
+    return null;
+  }
+  if (!/"action"\s*:/.test(trimmed) && !/"allowedTools"\s*:/.test(trimmed) && !/"calls"\s*:/.test(trimmed)) {
+    return null;
+  }
+  const selectedToolNames = selectedTools.map((tool) => tool.name);
+  const toolName = extractInternalActionToolName(trimmed, selectedToolNames);
+  return {
+    kind: "assistant_text_tool_call",
+    reason: "Assistant text contained internal action JSON. Executable work must use provider native tool calling, not printed harness JSON.",
+    ...(toolName ? { toolName } : {}),
+    inputKeys: [],
+    selectedTools: selectedToolNames,
+  };
+}
+
+function extractInternalActionToolName(text: string, selectedToolNames: string[]): string | undefined {
+  const allowedMatch = text.match(/"allowedTools"\s*:\s*\[\s*"([^"]+)"/);
+  if (allowedMatch?.[1]) {
+    return allowedMatch[1];
+  }
+  const toolMatch = text.match(/"tool"\s*:\s*"([^"]+)"/);
+  if (toolMatch?.[1]) {
+    return toolMatch[1];
+  }
+  return selectedToolNames.find((tool) => text.includes(`"${tool}"`) || text.includes(tool));
 }
 
 function looksLikeToolCallRecord(value: unknown): boolean {
@@ -990,7 +1052,7 @@ Decision rules:
 - Task routing tools may be visible briefly at the start of a run. Before task work, decide whether the current request belongs to the current active task, a different existing task, a new task, or no task.
 - If the request clearly continues the current active task, continue directly with normal task tools; do not call a routing tool just to confirm the active task.
 - If task ownership may belong to a different existing task, use git-context task search/read tools and then activate/switch only when there is a clear match.
-- If the request starts new durable work, use git_context_create_task_for_turn. Do not create or switch tasks for casual chat, thanks, explanation-only questions, or planning discussion.
+- If the request starts clear durable work with a concrete deliverable and enough detail to begin now, use git_context_create_task_for_turn. If the user is still exploring, brainstorming, or vague, reply directly with one short clarifying question instead of creating a task.
 - Visible routing tools are optional routing aids, not an instruction to create, switch, or ask clarification.
 - Normal work tools require a task run. If no task run exists, reply directly, ask a short clarification, or use git-context routing tools to create or activate the right task first.
 - If context.git.current.pendingTurn.routingStatus is "unbound", route the pending turn before normal task work. Use git-context read/search tools, then git_context_activate_task_for_turn, git_context_create_task_for_turn, or git_context_ask_clarification_for_turn. Do not call shell, filesystem, document, database, Python, UI, or other task tools while the pending turn is unbound.
@@ -1299,11 +1361,13 @@ const CONTROL_DECISION_TOOL_NAMES = new Set([
 function buildNativeDecisionTools(
   selectedTools: ToolDefinition[],
   options: {
+    toolLoadingAvailable: boolean;
     taskFeedbackToolAvailable: boolean;
   },
 ): LlmToolSchema[] {
-  const controlTools: LlmToolSchema[] = [
-    {
+  const controlTools: LlmToolSchema[] = [];
+  if (options.toolLoadingAvailable) {
+    controlTools.push({
       name: "decision_load_tools",
       description: "Request hidden tools by exact group, exact tool name, or search query when selected tools are insufficient.",
       inputSchema: {
@@ -1336,8 +1400,8 @@ function buildNativeDecisionTools(
           { required: ["groups"] },
         ],
       },
-    },
-  ];
+    });
+  }
   if (options.taskFeedbackToolAvailable) {
     controlTools.push({
       name: TASK_FEEDBACK_TOOL_NAME,
@@ -1448,6 +1512,25 @@ function serializeNativeDecisionToolCalls(calls: LlmToolCall[], selectedTools: T
   return JSON.stringify(nativeExecutableToolCallToPayload(call, input));
 }
 
+function nativeDecisionFromToolCalls(calls: LlmToolCall[], selectedTools: ToolDefinition[]): AgentDecision | string {
+  if (calls.length !== 1) {
+    return `native_decision_error: expected exactly one native tool call, received ${calls.length}.`;
+  }
+
+  const call = calls[0]!;
+  const input = isPlainObject(call.input) ? call.input : {};
+  if (CONTROL_DECISION_TOOL_NAMES.has(call.name)) {
+    return nativeDecisionToolCallToDecision(call.name, input);
+  }
+
+  const selected = selectedTools.find((tool) => tool.name === call.name);
+  if (!selected) {
+    return `native_decision_error: unknown or unselected native tool '${call.name}'. Request tools with decision_load_tools before executable work.`;
+  }
+
+  return nativeExecutableToolCallToDecision(call, input);
+}
+
 function nativeDecisionToolCallToPayload(toolName: string, input: Record<string, unknown>): Record<string, unknown> {
   switch (toolName) {
     case "decision_reply":
@@ -1484,7 +1567,59 @@ function nativeDecisionToolCallToPayload(toolName: string, input: Record<string,
   }
 }
 
+function nativeDecisionToolCallToDecision(toolName: string, input: Record<string, unknown>): AgentDecision {
+  switch (toolName) {
+    case "decision_reply":
+      return {
+        kind: "reply",
+        status: input["status"] === "failed" ? "failed" : "completed",
+        message: String(input["message"] ?? ""),
+        workingNotes: normalizeWorkingNotes(input["workingNotes"]),
+      };
+    case "decision_ask_user":
+    case TASK_FEEDBACK_TOOL_NAME:
+      return {
+        kind: "ask_user",
+        question: String(input["question"] ?? ""),
+        reason: String(input["reason"] ?? ""),
+        workingNotes: normalizeWorkingNotes(input["workingNotes"]),
+      };
+    case "decision_load_tools":
+      return {
+        kind: "load_tools",
+        request: normalizeToolLoadRequest(input),
+        workingNotes: normalizeWorkingNotes(input["workingNotes"]),
+      };
+    default:
+      return {
+        kind: "reply",
+        status: "failed",
+        message: `Unknown native control tool: ${toolName}`,
+      };
+  }
+}
+
 function nativeExecutableToolCallToPayload(call: LlmToolCall, input: Record<string, unknown>): Record<string, unknown> {
+  const { cleanInput, completion } = extractTaskCompletion(input);
+  return {
+    kind: "act",
+    action: {
+      mode: "single",
+      allowedTools: [call.name],
+      calls: [{
+        id: call.id || `${call.name}_call`,
+        tool: call.name,
+        input: cleanInput,
+        dependsOn: [],
+        purpose: `Execute ${call.name}`,
+      }],
+      assertions: [],
+      completion,
+    },
+  };
+}
+
+function nativeExecutableToolCallToDecision(call: LlmToolCall, input: Record<string, unknown>): AgentDecision {
   const { cleanInput, completion } = extractTaskCompletion(input);
   return {
     kind: "act",

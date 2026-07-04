@@ -296,10 +296,7 @@ export class ToolWorkingSetManager {
     }
     const mode = detectRuntimeCapabilityMode({ state });
     const routingTools = isFreshSessionRoutingMode(mode)
-      ? [
-        ...GIT_CONTEXT_READ_ONLY_TOOL_NAMES,
-        ...GIT_CONTEXT_FRESH_SESSION_ROUTING_TOOL_NAMES,
-      ]
+      ? GIT_CONTEXT_FRESH_SESSION_ROUTING_TOOL_NAMES
       : TASK_ROUTING_WINDOW_TOOL_NAMES;
     return {
       ...request,

@@ -118,6 +118,8 @@ describe("parseAgentDecision", () => {
     expect(systemPrompt).toContain("call the selected executable tool directly");
     expect(systemPrompt).toContain("Use ask_user_feedback only during an active task run");
     expect(systemPrompt).toContain("Do not use ask_user_feedback for final responses");
+    expect(systemPrompt).toContain("concrete deliverable and enough detail to begin now");
+    expect(systemPrompt).toContain("reply directly with one short clarifying question instead of creating a task");
     expect(systemPrompt).toContain("Normal work tools require a task run");
     expect(systemPrompt).toContain("Do not tell the user tools are missing.");
     expect(systemPrompt).not.toContain("decision_act");
@@ -507,6 +509,78 @@ describe("parseAgentDecision", () => {
         code: "R_ASSISTANT_TEXT_TOOL_CALL",
       },
     });
+  });
+
+  it("repairs truncated internal action JSON returned as assistant text", async () => {
+    const truncatedInternalActionJson = "{\"kind\":\"act\",\"action\":{\"mode\":\"single\",\"allowedTools\":[\"write_files\"],\"calls\":[{\"id\":\"call_1\",\"t";
+    const feedback = createFeedbackLedger();
+    const { provider, generateTurn } = createNativeToolProvider([
+      {
+        type: "assistant",
+        content: truncatedInternalActionJson,
+      },
+      {
+        type: "tool_calls",
+        calls: [{
+          id: "call_2",
+          name: "write_files",
+          input: {
+            files: [{ path: "live-tests/fresh-gate/count_lines.py", content: "print('ok')\n" }],
+            createDirs: true,
+            taskCompletion: {
+              intent: "completion_candidate",
+              reason: "This writes the requested script file.",
+            },
+          },
+        }],
+      },
+    ]);
+
+    const decision = await callAgentDecision({
+      provider,
+      stateView: createStateView(),
+      toolDefinitions: [createTool("write_files", {
+        type: "object",
+        required: ["files"],
+        properties: {
+          files: { type: "array" },
+          createDirs: { type: "boolean" },
+        },
+      })],
+      feedbackLedger: feedback.ledger,
+      feedbackContext: {
+        clientId: "local",
+        sessionId: "S-test",
+        seq: 3,
+      },
+    });
+
+    expect(decision.kind).toBe("act");
+    if (decision.kind !== "act") {
+      throw new Error("Expected act decision.");
+    }
+    expect(decision.action.calls[0]).toMatchObject({
+      id: "call_2",
+      tool: "write_files",
+      input: {
+        files: [{ path: "live-tests/fresh-gate/count_lines.py", content: "print('ok')\n" }],
+        createDirs: true,
+      },
+    });
+    expect(generateTurn).toHaveBeenCalledTimes(2);
+    const repairPrompt = generateTurn.mock.calls[1]?.[0]?.messages.at(-1)?.content ?? "";
+    expect(repairPrompt).toContain("Repair code: R_ASSISTANT_TEXT_TOOL_CALL");
+    expect(repairPrompt).toContain("Blocked targets: write_files");
+    expect(repairPrompt).toContain("Do not write tool-call JSON in assistant text");
+    expect(feedback.events.find((event) => event.event === "assistant_text_tool_call")?.data).toMatchObject({
+      toolName: "write_files",
+      selectedTools: ["write_files"],
+      repair: {
+        code: "R_ASSISTANT_TEXT_TOOL_CALL",
+        blockedTargets: ["write_files"],
+      },
+    });
+    expect(feedback.events.some((event) => event.event === "parse_failed")).toBe(false);
   });
 
   it("returns a failed reply after repeated assistant-text tool calls", async () => {

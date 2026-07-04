@@ -455,20 +455,15 @@ describe("agentLoop", () => {
       expect(result.content).toBe("I need to create a task before using work tools.");
       expect(provider.generateTurn).toHaveBeenCalledTimes(2);
       expect(existsSync(outputPath)).toBe(false);
-      expect(secondDecisionTools).toContain("write_files");
+      expect(secondDecisionTools).not.toContain("write_files");
+      expect(secondDecisionTools).not.toContain("decision_load_tools");
       expect(secondStateView.context.runtimeMode).toMatchObject({
         name: "fresh_session_routing",
         repairCode: "R_FRESH_SESSION_NEEDS_TASK",
       });
-      expect(secondUserPrompt).toContain("Create the first task for durable work");
+      expect(secondUserPrompt).toContain("Create a task only when the current user request has a concrete deliverable");
       expect(secondUserPrompt).toContain("R_FRESH_SESSION_NEEDS_TASK");
-      expect(secondStateView.context.scratch.feedback.latest[0]).toMatchObject({
-        code: "R_FRESH_SESSION_NEEDS_TASK",
-        repair: {
-          code: "R_FRESH_SESSION_NEEDS_TASK",
-          blockedTargets: ["write_files"],
-        },
-      });
+      expect(feedbackEvents(feedback.events, "action", "started")).toHaveLength(0);
     } finally {
       cleanup(dataDir);
     }
@@ -1483,23 +1478,18 @@ describe("agentLoop", () => {
       expect(result.status).toBe("completed");
       expect(result.runClass).toBe("interaction");
       expect(result.workRunId).toBeUndefined();
-      expect(result.totalToolCalls).toBe(1);
+      expect(result.totalToolCalls).toBe(0);
       expect(createWorkRun).not.toHaveBeenCalled();
       expect(feedbackEvents(feedback.events, "guard", "missing_work_run")).toHaveLength(0);
-      expect(feedbackEvents(feedback.events, "action", "started")[0]?.data).toMatchObject({
-        freshSessionRouting: false,
-        preRunGitContextAction: true,
-        preRunGitContextReadAction: true,
-        preRunGitContextRoutingAction: false,
-      });
-      expect(feedbackEvents(feedback.events, "tools", "routing_window_expiring")[0]?.data).toMatchObject({
+      expect(feedbackEvents(feedback.events, "action", "started")).toHaveLength(0);
+      expect(feedbackEvents(feedback.events, "tools", "routing_window_visible")[0]?.data).toMatchObject({
         mode: "fresh_session_routing",
-        step: 2,
+        step: 1,
         maxSteps: 2,
-        remaining: 0,
+        remaining: 1,
         open: true,
-        expiresAfterThisDecision: true,
-        readToolsVisible: expect.arrayContaining(["git_context_list_tasks"]),
+        expiresAfterThisDecision: false,
+        readToolsVisible: [],
         routingToolsVisible: expect.arrayContaining(["git_context_create_task_for_turn"]),
       });
     } finally {

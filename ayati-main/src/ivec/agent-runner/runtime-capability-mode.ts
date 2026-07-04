@@ -79,11 +79,11 @@ export interface RuntimeCapabilityToolSummary {
 export const TASK_ROUTING_WINDOW_STEPS = 2;
 
 const FRESH_SESSION_ROUTING_RULES = [
-  "Reply directly only for casual chat, explanation-only questions, thanks, or planning discussion.",
-  "If the current user asks to create, write, edit, build, run, test, fix, save, or change an artifact, file, code, doc, site, or app, do not reply directly.",
-  "For durable work, call git_context_create_task_for_turn with title, objective, and reason.",
+  "Create a task only when the current user request has a concrete deliverable and enough detail to begin work now.",
+  "Do not create a task for early conversation, brainstorming, vague intent, preferences, or discovery. Reply directly with one short clarifying question.",
+  "A concrete deliverable means the user has specified what to make, change, analyze, or produce, and the expected output is clear enough to start without another user answer.",
+  "For clear durable work, call git_context_create_task_for_turn with title, objective, and reason.",
   "Never print task metadata JSON as the assistant response. Put task metadata in the native tool call arguments.",
-  "If unsure whether the request is durable work, ask a short clarification.",
 ];
 
 export function detectRuntimeCapabilityMode(input: {
@@ -121,7 +121,6 @@ export function detectRuntimeCapabilityMode(input: {
       whyActive: "No active task exists.",
       allowedActions: [
         "direct_reply",
-        ...GIT_CONTEXT_READ_ONLY_TOOL_NAMES,
         ...GIT_CONTEXT_FRESH_SESSION_ROUTING_TOOL_NAMES,
       ],
       blockedCapabilities: [
@@ -189,6 +188,9 @@ export function isRuntimeToolAllowed(mode: RuntimeCapabilityMode, toolName: stri
   if (mode.name === "task_run" || mode.pendingTurnStatus === "bound") {
     return !isGitContextTurnRoutingToolName(toolName);
   }
+  if (mode.name === "fresh_session_routing") {
+    return isGitContextFreshSessionRoutingToolName(toolName);
+  }
   if (mode.name === "pre_task_routing") {
     return mode.pendingTurnStatus === "unbound" && isGitContextAllowedDuringPendingRouting(toolName);
   }
@@ -210,6 +212,9 @@ export function requiredRoutingMutationToolsForRuntimeMode(mode: RuntimeCapabili
 }
 
 export function deterministicToolsForRuntimeMode(mode: RuntimeCapabilityMode): string[] | undefined {
+  if (mode.name === "fresh_session_routing") {
+    return [...GIT_CONTEXT_FRESH_SESSION_ROUTING_TOOL_NAMES];
+  }
   if (mode.name === "pre_task_routing") {
     return mode.pendingTurnStatus === "unbound"
       ? [
