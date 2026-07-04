@@ -604,11 +604,7 @@ describe("buildAgentStateView", () => {
     });
     expect(stateView.context.tools).not.toHaveProperty("inputSchema");
     expect(stateView.context.tools).not.toHaveProperty("schemas");
-    expect(stateView.context.scratch?.toolLoad).toMatchObject({
-      status: "partial",
-      loaded: ["read_file"],
-      missing: ["write_file"],
-    });
+    expect(stateView.context.scratch).not.toHaveProperty("toolLoad");
     expect(stateView.attachments?.incoming?.[0]).toMatchObject({
       id: "doc-1",
       name: "invoice.pdf",

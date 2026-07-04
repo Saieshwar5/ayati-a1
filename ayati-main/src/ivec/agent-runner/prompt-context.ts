@@ -59,7 +59,6 @@ export interface PromptGitTaskContext {
 export interface PromptScratchContext {
   progress?: unknown;
   feedback?: unknown;
-  toolLoad?: unknown;
   observations?: unknown;
   trace?: unknown;
   attachments?: unknown;
@@ -201,7 +200,6 @@ function compactScratchContext(scratch: PromptScratchContext | undefined): Promp
   const compacted: PromptScratchContext = {
     ...(scratch.progress ? { progress: scratch.progress } : {}),
     ...(scratch.feedback ? { feedback: scratch.feedback } : {}),
-    ...(scratch.toolLoad ? { toolLoad: scratch.toolLoad } : {}),
     ...(scratch.observations ? { observations: scratch.observations } : {}),
     ...(scratch.trace ? { trace: scratch.trace } : {}),
     ...(scratch.attachments ? { attachments: scratch.attachments } : {}),

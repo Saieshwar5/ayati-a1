@@ -195,7 +195,7 @@ Tool loading has explicit outcomes:
 - `not_needed`: deterministic follow-up loading had nothing to add
 
 The latest load outcome is stored in transient run state and appears in the next
-decision prompt under `context.tools.lastLoad` and `context.scratch.toolLoad`.
+decision prompt under `context.tools.lastLoad`.
 It includes requested selectors, loaded tools, already-active tools, evictions,
 missing selectors, status, and a short message. Historical load outcomes are
 not accumulated in prompt context.
