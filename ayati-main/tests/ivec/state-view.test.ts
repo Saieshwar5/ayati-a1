@@ -429,17 +429,30 @@ describe("buildAgentStateView", () => {
         userInputNeeded: "Can I edit the prompt?",
       },
       toolContext: {
-        recent: [{
-          id: "obs-1",
-          step: 1,
-          callId: "call-1",
-          tool: "read_file",
-          status: "success",
-          mode: "summary",
-          retention: "while_relevant",
-          content: "Read state-view.ts.",
-          hasMore: false,
-        }],
+        recent: [
+          {
+            id: "obs-1",
+            step: 1,
+            callId: "call-1",
+            tool: "read_file",
+            status: "success",
+            mode: "summary",
+            retention: "while_relevant",
+            content: "Read state-view.ts.",
+            hasMore: false,
+          },
+          {
+            id: "obs-2",
+            step: 1,
+            callId: "call-2",
+            tool: "shell_run_script",
+            status: "success",
+            mode: "summary",
+            retention: "next_step",
+            content: "npm test passed.",
+            hasMore: false,
+          },
+        ],
       },
       completedSteps: [{
         step: 1,
@@ -470,9 +483,13 @@ describe("buildAgentStateView", () => {
       summary: "Need approval before editing.",
       userInputNeeded: "Can I edit the prompt?",
     });
-    expect(stateView.observations?.latest).toHaveLength(1);
-    expect((stateView.context.scratch?.observations as { latest?: unknown[] } | undefined)?.latest).toHaveLength(1);
+    expect(stateView.observations?.latest).toHaveLength(2);
+    expect((stateView.context.scratch?.observations as { latest?: unknown[] } | undefined)?.latest).toHaveLength(2);
     expect(stateView.observations?.latest[0]?.retention).toBe("while_relevant");
+    expect(stateView.readContext?.latest).toHaveLength(1);
+    expect(stateView.readContext?.latest[0]?.tool).toBe("read_file");
+    expect((stateView.context.scratch?.readContext as { latest?: Array<{ tool: string; content: string }> } | undefined)?.latest)
+      .toEqual([expect.objectContaining({ tool: "read_file", content: "Read state-view.ts." })]);
     expect(stateView.trace?.recentSteps?.map((step) => step.step)).toEqual([1]);
     expect((stateView.context.scratch?.trace as { recentSteps?: Array<{ step: number }> } | undefined)?.recentSteps?.map((step) => step.step)).toEqual([1]);
     expect(stateView.workingFeedback?.latest[0]).toMatchObject({

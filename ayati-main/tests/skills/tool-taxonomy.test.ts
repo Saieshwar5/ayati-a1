@@ -17,6 +17,7 @@ import {
   isReadOnlyTool,
   isRoutingTool,
   isToolAllowedInPhase,
+  getToolLoadGroups,
   missingToolTaxonomy,
   requiresTaskRun,
   summarizeToolTaxonomy,
@@ -37,6 +38,9 @@ describe("tool taxonomy", () => {
     expect(isReadOnlyTool("read_file")).toBe(true);
     expect(canRunBeforeTask("read_file")).toBe(true);
     expect(requiresTaskRun("read_file")).toBe(false);
+    expect(getToolTaxonomy("read_file")).toMatchObject({ lifetime: "run" });
+    expect(getToolTaxonomy("write_files")).toMatchObject({ lifetime: "run" });
+    expect(getToolLoadGroups("write_files")).toEqual(expect.arrayContaining(["file:write", "file:create"]));
 
     expect(isRoutingTool("git_context_create_task_for_turn")).toBe(true);
     expect(isMutationTool("git_context_create_task_for_turn")).toBe(true);
@@ -85,6 +89,11 @@ describe("tool taxonomy", () => {
     expect(summary.requiresTaskRun).toEqual(["write_file", "shell_session_start"]);
     expect(summary.canRunBeforeTask).toEqual(["read_file", "git_context_activate_task_for_turn"]);
     expect(summary.longRunning).toEqual(["shell_session_start"]);
+    expect(summary.lifetimes).toMatchObject({
+      run: 2,
+      single_use: 1,
+      background: 1,
+    });
   });
 });
 

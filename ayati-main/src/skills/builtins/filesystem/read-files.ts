@@ -9,6 +9,7 @@ import {
 } from "../../observations/context-observation.js";
 import { commonAnnotations, failureV2, okResult, succeededContract, successV2 } from "../contract-helpers.js";
 import { readFileTool } from "./read-file.js";
+import { addFileMetadataAdvisory, fileMetadataAdvisoryCondition } from "./read-advisory.js";
 import { validateReadFilesInput } from "./validators.js";
 import type { ReadFileInput } from "./types.js";
 
@@ -212,7 +213,10 @@ export const readFilesTool: ToolDefinition = {
         .reduce((total, entry) => total + entry.content.length, 0),
       allowMissing: parsed.allowMissing === true,
     };
-    const observation = buildBatchObservation(results, summary);
+    const advisoryReason = readFilesMetadataAdvisoryReason(results, parsed.files);
+    const observation = advisoryReason
+      ? addFileMetadataAdvisory(buildBatchObservation(results, summary), advisoryReason)
+      : buildBatchObservation(results, summary);
     const output = renderContextObservation({
       tool: "read_files",
       status,
@@ -280,6 +284,9 @@ export const readFilesTool: ToolDefinition = {
         message: `${truncatedCount} file preview${truncatedCount === 1 ? " was" : "s were"} truncated by batch limits.`,
       });
     }
+    if (advisoryReason) {
+      conditions.push(fileMetadataAdvisoryCondition(advisoryReason));
+    }
 
     return {
       ...okResult({
@@ -302,6 +309,25 @@ export const readFilesTool: ToolDefinition = {
 function resolveMode(input: ReadFileInput): string {
   if (input.mode) return input.mode;
   return input.query?.trim() ? "search" : "auto";
+}
+
+function readFilesMetadataAdvisoryReason(results: ReadFilesEntry[], requestedFiles: ReadFileInput[]): string | undefined {
+  if (results.some((entry) => !entry.ok)) {
+    return "Some requested paths failed during a batch content read.";
+  }
+  if (results.some((entry) => entry.ok && entry.truncated)) {
+    return "One or more file previews were truncated by read_files.";
+  }
+  if (requestedFiles.some((file) => file.mode === "full")) {
+    return "The batch requested explicit full reads.";
+  }
+  if (results.length >= 4) {
+    return "The batch read several files at once.";
+  }
+  if (results.some((entry) => entry.ok && (entry.sizeBytes ?? 0) > 80_000)) {
+    return "The batch included medium or large files.";
+  }
+  return undefined;
 }
 
 function buildBatchObservation(

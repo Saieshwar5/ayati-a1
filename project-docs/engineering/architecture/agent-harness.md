@@ -131,7 +131,7 @@ while removing the model-facing nested action wrapper.
 `decision_load_tools` must include at least one non-empty selector:
 
 - `groups`: exact group names from the compact loading map, such as
-  `skill:filesystem` or `workflow:code_edit`
+  `file:read`, `file:write`, or `shell:command`
 - `toolNames`: exact tool names when already known
 - `query`: search text when the model is unsure which hidden tool should load
 
@@ -168,13 +168,13 @@ large, only that runtime block may be truncated.
 ## Tool Visibility
 
 The runtime keeps a hidden catalog of available tools and exposes a run-scoped
-working set of at most `maxSelectedTools` executable schemas, currently 12 by
+working set of at most `maxSelectedTools` executable schemas, currently 15 by
 default.
 
-The hidden catalog prompt summary is compact by design. It lists loadable groups
-and representative tool names per skill so the model can request tools by group
-first and exact name when obvious, without injecting every full tool schema into
-every decision.
+The hidden catalog prompt summary is compact by design. It lists smaller
+purpose-built loadable groups and representative tool names so the model can
+request 1-3 groups together, or exact names when obvious, without injecting
+every full tool schema into every decision.
 
 Before each decision, the runner deterministically prepares likely tools from
 the current input, attachments, git task context, work state, evidence refs, and

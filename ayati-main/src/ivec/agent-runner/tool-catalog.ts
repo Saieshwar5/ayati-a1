@@ -1,4 +1,10 @@
 import type { SkillDefinition, ToolDefinition, ToolDomain } from "../../skills/types.js";
+import {
+  getToolLoadGroups,
+  getToolNextOnFailure,
+  getToolNextOnSuccess,
+  getToolTaxonomy,
+} from "../../skills/tool-taxonomy.js";
 
 export type ToolDeactivationPolicy = "manual" | "one_step" | "success" | "task";
 
@@ -58,6 +64,20 @@ export class ToolCatalog {
     return [...this.byName.values()];
   }
 
+  groupNames(): string[] {
+    return [...this.byGroup.keys()].sort();
+  }
+
+  groupSummaries(limit = 80): string[] {
+    return this.groupNames()
+      .filter((group) => isPromptGroup(group))
+      .slice(0, limit)
+      .map((group) => {
+        const tools = this.toolsForGroup(group).slice(0, 6).map((entry) => entry.name);
+        return `${group}: ${tools.join(", ")}`;
+      });
+  }
+
   toolsForGroup(group: string): ToolCatalogEntry[] {
     return [...(this.byGroup.get(group) ?? [])];
   }
@@ -73,10 +93,6 @@ export class ToolCatalog {
   }
 
   promptSummary(maxSkills = 24): string {
-    const groups = [...new Set(this.list().flatMap((entry) => entry.groups))]
-      .filter((group) => group.startsWith("skill:") || group.startsWith("workflow:") || group.startsWith("artifact:"))
-      .sort()
-      .slice(0, 80);
     const skills = [...this.skillSummaries.entries()]
       .slice(0, maxSkills)
       .map(([id, description]) => {
@@ -92,7 +108,8 @@ export class ToolCatalog {
     return [
       "Hidden tools are loaded by returning load_tools when selected tools are insufficient.",
       "load_tools must include at least one selector: groups, toolNames, or query.",
-      `Loadable groups: ${groups.join(", ") || "(none)"}.`,
+      "Prefer 1-3 small purpose-built groups together instead of one broad group.",
+      `Loadable groups:\n${this.groupSummaries().map((line) => `- ${line}`).join("\n") || "- (none)"}.`,
       "Skill summaries:",
       ...skills,
     ].join("\n");
@@ -101,17 +118,21 @@ export class ToolCatalog {
 
 function buildEntry(skill: SkillDefinition, tool: ToolDefinition): ToolCatalogEntry {
   const domain = tool.annotations?.domain ?? tool.selectionHints?.domain;
+  const taxonomyGroups = getToolLoadGroups(tool.name);
   const groups = uniqueStrings([
     `skill:${skill.id}`,
     skill.id,
     ...(domain ? [`domain:${domain}`, domain] : []),
-    ...operationGroups(tool),
-    ...artifactGroups(tool),
-    ...workflowGroups(skill.id, domain),
+    ...(taxonomyGroups.length > 0 ? taxonomyGroups : [
+      ...operationGroups(tool),
+      ...artifactGroups(tool),
+      ...workflowGroups(skill.id, domain),
+    ]),
+    ...workflowGroupsFromTaxonomy(taxonomyGroups),
     ...(tool.selectionHints?.tags ?? []).map((tag) => `tag:${tag}`),
   ]);
 
-  const next = inferNextTools(tool.name);
+  const next = taxonomyNextTools(tool.name) ?? inferNextTools(tool.name);
   return {
     id: `${skill.id}.${tool.name}`,
     name: tool.name,
@@ -131,6 +152,37 @@ function buildEntry(skill: SkillDefinition, tool: ToolDefinition): ToolCatalogEn
     nextOnFailure: next.failure,
     tool,
   };
+}
+
+function isPromptGroup(group: string): boolean {
+  return group.includes(":") && !group.startsWith("tag:");
+}
+
+function workflowGroupsFromTaxonomy(groups: string[]): string[] {
+  const values = new Set(groups);
+  const result: string[] = [];
+  if (values.has("file:read") || values.has("file:write") || values.has("file:refactor") || values.has("shell:command")) {
+    result.push("workflow:code_edit", "workflow:static_site");
+  }
+  if (values.has("attachment:basic") || values.has("document:qa")) {
+    result.push("workflow:attachment_work", "workflow:document_qa");
+  }
+  if (values.has("data:inspect") || values.has("data:execute")) {
+    result.push("workflow:data_analysis");
+  }
+  if (values.has("ui:workspace")) {
+    result.push("workflow:ui_workspace");
+  }
+  return result;
+}
+
+function taxonomyNextTools(toolName: string): { success: string[]; failure: string[] } | undefined {
+  const success = getToolNextOnSuccess(toolName);
+  const failure = getToolNextOnFailure(toolName);
+  if (success.length === 0 && failure.length === 0) {
+    return undefined;
+  }
+  return { success, failure };
 }
 
 function scoreEntry(entry: ToolCatalogEntry, tokens: Set<string>, query: string): ToolSearchResult {
@@ -268,6 +320,20 @@ function inferNextTools(toolName: string): { success: string[]; failure: string[
 }
 
 function inferDeactivationPolicy(tool: ToolDefinition): ToolDeactivationPolicy {
+  const taxonomy = getToolTaxonomy(tool.name);
+  if (taxonomy) {
+    switch (taxonomy.lifetime) {
+      case "single_use":
+        return "success";
+      case "one_step":
+        return "one_step";
+      case "phase":
+      case "run":
+      case "session":
+      case "background":
+        return "task";
+    }
+  }
   const name = tool.name;
   if (name === "find_files" || name === "attachment_restore" || name === "restore_attachment_context") {
     return "success";

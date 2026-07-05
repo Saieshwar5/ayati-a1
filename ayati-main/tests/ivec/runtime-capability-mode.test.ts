@@ -90,20 +90,24 @@ describe("runtime capability modes", () => {
     });
   });
 
-  it("exposes only first-task routing tools in a fresh session", () => {
+  it("allows safe read and first-task routing tools in a fresh session", () => {
     const mode = detectRuntimeCapabilityMode({
       state: state(gitContext({ status: "none" })),
     });
 
-    expect(filterToolsForRuntimeMode(mode, [
+    const allowed = filterToolsForRuntimeMode(mode, [
       tool("write_files"),
       tool("git_context_search_tasks"),
       tool("git_context_create_task_for_turn"),
       tool("git_context_ask_clarification_for_turn"),
-    ]).map((entry) => entry.name)).toEqual([
+    ]).map((entry) => entry.name);
+
+    expect(allowed).toEqual([
+      "git_context_search_tasks",
       "git_context_create_task_for_turn",
       "git_context_ask_clarification_for_turn",
     ]);
+    expect(allowed).not.toContain("write_files");
   });
 
   it("allows only direct replies or fresh-session routing decisions before the first task", () => {

@@ -5,7 +5,11 @@ import {
   isToolAllowedInPhase,
   summarizeToolTaxonomy,
 } from "../../skills/tool-taxonomy.js";
-import type { RuntimeCapabilityMode, RuntimeCapabilityModeName } from "./runtime-capability-mode.js";
+import {
+  runtimeToolPhase,
+  type RuntimeCapabilityMode,
+  type RuntimeCapabilityModeName,
+} from "./runtime-capability-mode.js";
 
 export type ToolPolicyViolationCode =
   | "unknown_tool_taxonomy"
@@ -38,7 +42,7 @@ export function auditToolPolicy(input: {
   selectedTools: ToolDefinition[] | string[];
 }): ToolPolicyAudit {
   const selectedTools = normalizeToolNames(input.selectedTools);
-  const phase = phaseForRuntimeMode(input.mode, selectedTools);
+  const phase = runtimeToolPhase(input.mode, selectedTools.length);
   const violationMap = new Map<ToolPolicyViolationCode, ToolPolicyViolation>();
 
   for (const toolName of selectedTools) {
@@ -104,16 +108,6 @@ export function auditToolPolicy(input: {
 
 function normalizeToolNames(tools: ToolDefinition[] | string[]): string[] {
   return tools.map((tool) => typeof tool === "string" ? tool : tool.name);
-}
-
-function phaseForRuntimeMode(mode: RuntimeCapabilityMode, selectedTools: string[]): ToolPhase {
-  if (mode.name === "task_run" || mode.hasWorkRun) {
-    return "task_run";
-  }
-  if (mode.name === "fresh_session_routing" || mode.name === "pre_task_routing") {
-    return "routing";
-  }
-  return selectedTools.length > 0 ? "enquiry" : "conversation";
 }
 
 function isRoutingMutationAfterTaskBound(

@@ -27,6 +27,10 @@ export interface PromptObservations {
   latest: ToolObservation[];
 }
 
+export interface PromptReadContext {
+  latest: ToolObservation[];
+}
+
 export interface PromptToolLoadState {
   status: ToolLoadResult["status"];
   requested: ToolLoadResult["requested"];
@@ -81,6 +85,7 @@ export interface AgentStateView {
   workingFeedback?: PromptWorkingFeedback;
   toolLoad?: PromptToolLoadState;
   observations?: PromptObservations;
+  readContext?: PromptReadContext;
   trace?: PromptTrace;
   attachments?: {
     incoming?: Array<{ id: string; name: string; kind: string; source: string; mimeType?: string; status: string }>;
@@ -111,6 +116,7 @@ export function buildAgentStateView(state: LoopState, options: AgentStateViewOpt
   const toolLoad = buildToolLoadView(state.lastToolLoad);
   const workingFeedback = buildWorkingFeedbackView(state);
   const observations = buildObservationsView(state.toolContext);
+  const readContext = buildReadContextView(state.toolContext);
   const trace = buildTraceView(state);
   const attachments = buildAttachmentState(state);
   const systemEvent = state.systemEvent ? {
@@ -132,6 +138,7 @@ export function buildAgentStateView(state: LoopState, options: AgentStateViewOpt
       progress,
       workingFeedback,
       observations,
+      readContext,
       trace,
       attachments,
       systemEvent,
@@ -144,6 +151,7 @@ export function buildAgentStateView(state: LoopState, options: AgentStateViewOpt
     ...(workingFeedback ? { workingFeedback } : {}),
     ...(toolLoad ? { toolLoad } : {}),
     ...(observations ? { observations } : {}),
+    ...(readContext ? { readContext } : {}),
     ...(trace ? { trace } : {}),
     ...(attachments ? { attachments } : {}),
     ...(systemEvent ? { systemEvent } : {}),
@@ -170,6 +178,7 @@ function buildScratchContext(input: {
   progress?: PromptProgressState;
   workingFeedback?: PromptWorkingFeedback;
   observations?: PromptObservations;
+  readContext?: PromptReadContext;
   trace?: PromptTrace;
   attachments?: AgentStateView["attachments"];
   systemEvent?: AgentStateView["systemEvent"];
@@ -178,6 +187,7 @@ function buildScratchContext(input: {
     ...(input.progress ? { progress: input.progress } : {}),
     ...(input.workingFeedback ? { feedback: input.workingFeedback } : {}),
     ...(input.observations ? { observations: input.observations } : {}),
+    ...(input.readContext ? { readContext: input.readContext } : {}),
     ...(input.trace ? { trace: input.trace } : {}),
     ...(input.attachments ? { attachments: input.attachments } : {}),
     ...(input.systemEvent ? { systemEvent: input.systemEvent } : {}),
@@ -357,6 +367,22 @@ function buildPromptObservations(observations: ToolObservation[] | undefined): T
 
 function buildObservationsView(toolContext: ToolContextState | undefined): PromptObservations | undefined {
   const latest = buildPromptObservations(toolContext?.recent);
+  return latest.length > 0 ? { latest } : undefined;
+}
+
+const READ_CONTEXT_TOOLS = new Set([
+  "inspect_paths",
+  "read_file",
+  "read_files",
+  "search_in_files",
+  "find_files",
+  "list_directory",
+]);
+
+function buildReadContextView(toolContext: ToolContextState | undefined): PromptReadContext | undefined {
+  const latest = buildPromptObservations(
+    (toolContext?.recent ?? []).filter((observation) => READ_CONTEXT_TOOLS.has(observation.tool)),
+  );
   return latest.length > 0 ? { latest } : undefined;
 }
 

@@ -344,7 +344,7 @@ export const DEFAULT_LOOP_CONFIG: LoopConfig = {
   maxParallelToolCallsPerStep: 3,
   maxInlineActOutputChars: 8_000,
   maxVerifyArtifactChars: 20_000,
-  maxSelectedTools: 12,
+  maxSelectedTools: 15,
   strategyReviewFailureThreshold: 3,
 };
 

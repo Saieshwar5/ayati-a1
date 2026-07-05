@@ -1062,6 +1062,7 @@ Decision rules:
 - If git context is ambiguous, the app runtime should ask the user before this decision runs; do not guess between multiple possible tasks.
 - Treat context.scratch.progress as the authoritative current task progress. It may be absent on the first decision.
 - Use context.scratch.feedback as the latest harness feedback. Correct the specific failed tool call or protocol issue before trying a different path.
+- Use context.scratch.readContext.latest as the current run's file, directory, search, metadata, and read output context. Prefer it before reading the same paths again.
 - Use context.scratch.observations.latest as the latest real tool output cards. If these cards answer the user, reply instead of rerunning equivalent tools.
 - Treat observations as hot bounded context. Respect each card's retention: next_step is temporary, while_relevant can guide nearby work, and evidence_only means use evidence tools before relying on the preview.
 - Use context.scratch.trace.recentSteps only as compact execution history, not as evidence.
@@ -1086,7 +1087,8 @@ Decision rules:
 - Before a task run exists, ask planning or context questions directly in assistant text.
 - For tool work, call the selected executable tool directly. Never wrap executable calls inside another tool.
 - Use decision_load_tools when the visible selected tools are not enough for the next action. Do not tell the user tools are missing.
-- decision_load_tools must include a non-empty selector: exact toolNames when known, groups when a group fits, or query when uncertain.
+- decision_load_tools must include a non-empty selector: exact toolNames when known, 1-3 small groups when groups fit, or query when uncertain.
+- Prefer purpose-built groups such as file:read, file:write, shell:command, task:read, evidence:read, attachment:basic, document:qa, data:inspect, and data:execute. Broad workflow groups are fallbacks.
 - Tool protocol has two separate phases: decision_load_tools only changes the visible tool set for a later decision; selected executable tools perform work.
 - decision_load_tools is a meta decision tool, not an executable tool.
 - If Selected tools is "(none)" and work remains, call decision_load_tools instead of replying that you will do work later.
@@ -1104,12 +1106,12 @@ Decision rules:
 - For UI/layout fixes, use "not_completion" when an edit still needs screenshot, build, or test verification.
 
 Control tool shapes:
-- decision_load_tools({ "query": "...", "toolNames": ["read_files"], "groups": ["workflow:code_edit"] })
+- decision_load_tools({ "query": "...", "toolNames": ["read_files"], "groups": ["file:read", "file:write"] })
 - ask_user_feedback({ "question": "...", "reason": "..." }) only when exposed during an active task run
 
 Tool protocol examples:
 - Bad when shell is not selected: calling shell or trying to use load_tools as executable work.
-- Good instead: decision_load_tools({ "groups": ["skill:shell"] }).
+- Good instead: decision_load_tools({ "groups": ["shell:command"] }).
 - Good after shell appears in Selected tools: call shell directly with its required input schema.
 - Good when write_files is selected: call write_files directly with files, createDirs, and taskCompletion.`;
 

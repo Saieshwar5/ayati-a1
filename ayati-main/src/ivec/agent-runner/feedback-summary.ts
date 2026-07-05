@@ -73,6 +73,7 @@ export function summarizePromptStateView(
       keys: Object.keys(scratch),
       feedbackCount: readArray(readRecord(scratch.feedback)?.["latest"]).length,
       observationCount: readArray(readRecord(scratch.observations)?.["latest"]).length,
+      readContextCount: readArray(readRecord(scratch.readContext)?.["latest"]).length,
       traceStepCount: readArray(readRecord(scratch.trace)?.["recentSteps"]).length,
       traceFailureCount: readArray(readRecord(scratch.trace)?.["recentFailures"]).length,
       attachmentKeys: scratch.attachments && typeof scratch.attachments === "object"

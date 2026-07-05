@@ -66,6 +66,38 @@ describe("readFilesTool", () => {
     expect(structured.summary.truncated).toBeGreaterThan(0);
     expect(structured.results[0]?.content.length).toBeLessThanOrEqual(20);
     expect(structured.results.some((entry) => entry.truncated)).toBe(true);
+    expect(result.v2?.conditions).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: "FILE_METADATA_RECOMMENDED", severity: "info" }),
+    ]));
+  });
+
+  it("adds a metadata advisory for broad batch reads without failing the read", async () => {
+    const files = await Promise.all(["a.txt", "b.txt", "c.txt", "d.txt"].map(async (name) => {
+      const path = join(tmp, name);
+      await writeFile(path, `${name}\n`, "utf-8");
+      return path;
+    }));
+
+    const result = await readFilesTool.execute({
+      files: files.map((path) => ({ path })),
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.output).toContain("Advisory:");
+    expect(result.output).toContain("inspect_paths");
+    expect(result.v2?.conditions).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        code: "FILE_METADATA_RECOMMENDED",
+        severity: "info",
+      }),
+    ]));
+    expect(result.v2?.structuredContent).toMatchObject({
+      observation: {
+        stats: {
+          fileMetadataAdvisory: true,
+        },
+      },
+    });
   });
 
   it("fails the batch by default when any file fails", async () => {

@@ -15,6 +15,7 @@ import {
 } from "../../observations/context-observation.js";
 import { resolveWorkspacePath } from "../../workspace-paths.js";
 import { commonAnnotations, errorResult, errorResultFromUnknown, okResult, succeededContract, successV2 } from "../contract-helpers.js";
+import { addFileMetadataAdvisory, fileMetadataAdvisoryCondition } from "./read-advisory.js";
 import { validateReadFileInput } from "./validators.js";
 import type { ReadFileInput } from "./types.js";
 
@@ -186,11 +187,20 @@ export const readFileTool: ToolDefinition = {
         ...(built.startLine !== undefined ? { startLine: built.startLine } : {}),
         ...(built.endLine !== undefined ? { endLine: built.endLine } : {}),
       };
+      const advisoryReason = fileMetadataAdvisoryReason({
+        mode,
+        sizeBytes: info.size,
+        truncated: built.truncated,
+        lineCountKnown: built.lineCountKnown,
+      });
+      if (advisoryReason) {
+        structuredContent.observation = addFileMetadataAdvisory(built.observation, advisoryReason);
+      }
       const output = renderContextObservation({
         tool: "read_file",
         status: "success",
         message: `Inspected file: ${filePath}`,
-        observation: built.observation,
+        observation: structuredContent.observation,
       });
 
       return {
@@ -203,6 +213,7 @@ export const readFileTool: ToolDefinition = {
             structuredContent,
             artifacts: [{ kind: "file", path: filePath }],
             diagnostics: meta,
+            ...(advisoryReason ? { conditions: [fileMetadataAdvisoryCondition(advisoryReason)] } : {}),
           }),
         }),
         rawOutput: built.rawOutput,
@@ -223,6 +234,24 @@ function resolveMode(input: ReadFileInput): ReadMode {
     return input.mode;
   }
   return input.query?.trim() ? "search" : "auto";
+}
+
+function fileMetadataAdvisoryReason(input: {
+  mode: ReadMode;
+  sizeBytes: number;
+  truncated: boolean;
+  lineCountKnown: boolean;
+}): string | undefined {
+  if (input.truncated || !input.lineCountKnown) {
+    return "This read returned truncated or sampled context.";
+  }
+  if (input.mode === "full" && input.sizeBytes > 80_000) {
+    return "This was a large explicit full read.";
+  }
+  if (input.mode === "auto" && input.sizeBytes > 250_000) {
+    return "This was a large automatic read.";
+  }
+  return undefined;
 }
 
 async function loadSource(filePath: string, sizeBytes: number, mode: ReadMode): Promise<TextSource> {

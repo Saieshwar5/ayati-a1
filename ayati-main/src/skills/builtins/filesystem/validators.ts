@@ -3,6 +3,7 @@ import type {
   ReadFileInput,
   ReadFilesInput,
   ReadFilesInputFile,
+  InspectPathsInput,
   WriteFileInput,
   WriteFilesInput,
   WriteFilesInputFile,
@@ -119,6 +120,32 @@ export function validateReadFilesInput(input: unknown): ReadFilesInput | ToolRes
     maxPerFileChars: v.maxPerFileChars,
     maxTotalChars: v.maxTotalChars,
     allowMissing: v.allowMissing,
+  };
+}
+
+export function validateInspectPathsInput(input: unknown): InspectPathsInput | ToolResult {
+  if (!isObject(input)) return fail("expected object.");
+  const v = input as Partial<InspectPathsInput>;
+  if (!Array.isArray(v.paths) || v.paths.length === 0) {
+    return fail("paths must be a non-empty array.");
+  }
+  if (!v.paths.every((path) => isNonEmptyString(path))) {
+    return fail("paths must contain only non-empty strings.");
+  }
+  if (v.includeLineCount !== undefined && typeof v.includeLineCount !== "boolean") {
+    return fail("includeLineCount must be a boolean.");
+  }
+  if (v.includeHash !== undefined && typeof v.includeHash !== "boolean") {
+    return fail("includeHash must be a boolean.");
+  }
+  if (v.includeDirectoryCounts !== undefined && typeof v.includeDirectoryCounts !== "boolean") {
+    return fail("includeDirectoryCounts must be a boolean.");
+  }
+  return {
+    paths: v.paths,
+    includeLineCount: v.includeLineCount,
+    includeHash: v.includeHash,
+    includeDirectoryCounts: v.includeDirectoryCounts,
   };
 }
 

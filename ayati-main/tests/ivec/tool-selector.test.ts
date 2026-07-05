@@ -116,7 +116,7 @@ describe("selectToolsForDecision", () => {
     ]);
   });
 
-  it("selects only first-task routing tools when a fresh session has no active task", () => {
+  it("selects safe read and first-task routing tools when a fresh session has no active task", () => {
     const current = state("build a website and run it");
     current.runId = "";
     current.harnessContext = {
@@ -132,10 +132,15 @@ describe("selectToolsForDecision", () => {
       tool("git_context_ask_clarification_for_turn", 1),
     ], 12);
 
-    expect(selected.map((entry) => entry.name)).toEqual([
+    const selectedNames = selected.map((entry) => entry.name);
+    expect(selectedNames).toEqual([
+      "git_context_list_tasks",
+      "git_context_search_tasks",
       "git_context_create_task_for_turn",
       "git_context_ask_clarification_for_turn",
     ]);
+    expect(selectedNames).not.toContain("shell");
+    expect(selectedNames).not.toContain("write_files");
   });
 
   it("keeps first-task routing tools available regardless of selected tool cap", () => {
@@ -158,10 +163,18 @@ describe("selectToolsForDecision", () => {
       tool("git_context_ask_clarification_for_turn", 1),
     ], 3);
 
-    expect(selected.map((entry) => entry.name)).toEqual([
+    const selectedNames = selected.map((entry) => entry.name);
+    expect(selectedNames).toEqual([
+      "search_in_files",
+      "git_context_list_tasks",
+      "git_context_search_tasks",
       "git_context_create_task_for_turn",
       "git_context_ask_clarification_for_turn",
     ]);
+    expect(selectedNames).not.toContain("write_files");
+    expect(selectedNames).not.toContain("write_file");
+    expect(selectedNames).not.toContain("create_directory");
+    expect(selectedNames).not.toContain("shell");
   });
 
   it("does not count active-task routing mutation tools against the selected tool cap", () => {
@@ -183,13 +196,16 @@ describe("selectToolsForDecision", () => {
       tool("git_context_ask_clarification_for_turn", 1),
     ], 2);
 
-    expect(selected.map((entry) => entry.name)).toEqual([
+    const selectedNames = selected.map((entry) => entry.name);
+    expect(selectedNames).toEqual([
+      "read_file",
       "git_context_list_tasks",
-      "git_context_search_tasks",
       "git_context_activate_task_for_turn",
       "git_context_create_task_for_turn",
       "git_context_ask_clarification_for_turn",
     ]);
+    expect(selectedNames).not.toContain("write_files");
+    expect(selectedNames).not.toContain("edit_file");
   });
 
   it("selects no executable tools while a pending turn is clarifying", () => {
