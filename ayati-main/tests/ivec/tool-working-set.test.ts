@@ -52,7 +52,7 @@ function state(userMessage: string): LoopState {
 }
 
 describe("ToolWorkingSetManager", () => {
-  it("preloads likely tools before the decision and enforces last-tool eviction", () => {
+  it("preloads likely tools before the decision and enforces lifecycle-priority eviction", () => {
     const catalog = new ToolCatalog([
       skill("filesystem", [
         tool("find_files", "Find files"),
@@ -70,8 +70,8 @@ describe("ToolWorkingSetManager", () => {
     expect(manager.listActive(context)).toHaveLength(3);
 
     manager.load({ toolNames: ["write_file"], reason: "need write fallback" }, context);
-    expect(manager.listActive(context)).toEqual(["find_files", "search_in_files", "write_file"]);
-    expect(executor.list(context)).toEqual(["find_files", "search_in_files", "write_file"]);
+    expect(manager.listActive(context)).toEqual(["search_in_files", "read_file", "write_file"]);
+    expect(executor.list(context)).toEqual(["search_in_files", "read_file", "write_file"]);
   });
 
   it("loads deterministic follow-up tools after execution and deactivates success-scoped tools", () => {
@@ -96,6 +96,115 @@ describe("ToolWorkingSetManager", () => {
     }], context);
 
     expect(manager.listActive(context)).toEqual(["read_file", "edit_file", "write_file"]);
+  });
+
+  it("keeps read and write file tools active across task-run steps", () => {
+    const catalog = new ToolCatalog([
+      skill("filesystem", [
+        tool("read_file", "Read file"),
+        tool("read_files", "Read files"),
+        tool("search_in_files", "Search in files"),
+        tool("write_file", "Write file"),
+        tool("write_files", "Write files"),
+        tool("edit_file", "Edit file"),
+      ]),
+    ]);
+    const executor = createToolExecutor([]);
+    const manager = new ToolWorkingSetManager({ catalog, toolExecutor: executor, maxVisibleTools: 15 });
+    const context = { clientId: "c1", runId: "r1", sessionId: "s1", stepNumber: 1 };
+
+    manager.load({ groups: ["file:read", "file:write"] }, context);
+    manager.afterExecution([{
+      callId: "call_1",
+      tool: "write_files",
+      input: {},
+      output: "written",
+    }], context);
+    manager.cleanupAfterStep(context);
+
+    const nextContext = { ...context, stepNumber: 2 };
+    manager.prepareForDecision({ ...state("continue writing files"), runId: "r1" }, nextContext);
+
+    expect(manager.listActive(nextContext)).toEqual(expect.arrayContaining([
+      "read_file",
+      "read_files",
+      "search_in_files",
+      "write_file",
+      "write_files",
+      "edit_file",
+    ]));
+  });
+
+  it("preloads file tools instead of shell or UI tools for project creation", () => {
+    const catalog = new ToolCatalog([
+      skill("filesystem", [
+        tool("find_files", "Find files"),
+        tool("search_in_files", "Search in files"),
+        tool("list_directory", "List directory"),
+        tool("read_file", "Read file"),
+        tool("read_files", "Read files"),
+        tool("write_file", "Write file"),
+        tool("write_files", "Write files"),
+        tool("edit_file", "Edit file"),
+        tool("create_directory", "Create directory"),
+      ]),
+      skill("shell", [
+        tool("shell", "Run shell command"),
+        tool("shell_run_script", "Run shell script"),
+      ]),
+      skill("ui", [
+        tool("workspace_get_state", "Get workspace state"),
+        tool("workspace_set_layout", "Set workspace layout"),
+      ]),
+    ]);
+    const executor = createToolExecutor([]);
+    const manager = new ToolWorkingSetManager({ catalog, toolExecutor: executor, maxVisibleTools: 15 });
+    const context = { clientId: "c1", runId: "r1", sessionId: "s1", stepNumber: 1 };
+    const runState = state("Build a small vanilla HTML/CSS/JS project that is usable in the browser");
+    runState.runId = "r1";
+
+    manager.prepareForDecision(runState, context);
+
+    const active = manager.listActive(context);
+    expect(active).toEqual(expect.arrayContaining([
+      "list_directory",
+      "read_file",
+      "read_files",
+      "write_file",
+      "write_files",
+      "create_directory",
+    ]));
+    expect(active).not.toContain("shell");
+    expect(active).not.toContain("shell_run_script");
+    expect(active).not.toContain("workspace_get_state");
+    expect(active).not.toContain("workspace_set_layout");
+  });
+
+  it("preloads shell tools for explicit command execution", () => {
+    const catalog = new ToolCatalog([
+      skill("filesystem", [
+        tool("search_in_files", "Search in files"),
+        tool("read_file", "Read file"),
+      ]),
+      skill("shell", [
+        tool("shell", "Run shell command"),
+        tool("shell_run_script", "Run shell script"),
+      ]),
+    ]);
+    const executor = createToolExecutor([]);
+    const manager = new ToolWorkingSetManager({ catalog, toolExecutor: executor, maxVisibleTools: 15 });
+    const context = { clientId: "c1", runId: "r1", sessionId: "s1", stepNumber: 1 };
+    const runState = state("Run pnpm build and fix any compile errors");
+    runState.runId = "r1";
+
+    manager.prepareForDecision(runState, context);
+
+    expect(manager.listActive(context)).toEqual(expect.arrayContaining([
+      "shell",
+      "shell_run_script",
+      "search_in_files",
+      "read_file",
+    ]));
   });
 
   it("exposes git task-routing tools for the first two decision stages and then expires them", () => {
@@ -250,6 +359,69 @@ describe("ToolWorkingSetManager", () => {
       "git_context_create_task_for_turn",
       "git_context_ask_clarification_for_turn",
     ]);
+  });
+
+  it("removes write and shell tools before an active task turn is bound to a work run", () => {
+    const catalog = new ToolCatalog([
+      skill("filesystem", [
+        tool("find_files"),
+        tool("search_in_files"),
+        tool("read_file"),
+        tool("write_file"),
+        tool("write_files"),
+        tool("create_directory"),
+      ]),
+      skill("shell", [
+        tool("shell"),
+        tool("shell_run_script"),
+      ]),
+      skill("git-context", [
+        tool("git_context_active"),
+        tool("git_context_list_tasks"),
+        tool("git_context_search_tasks"),
+        tool("git_context_read_task"),
+        tool("git_context_activate_task_for_turn"),
+        tool("git_context_create_task_for_turn"),
+        tool("git_context_ask_clarification_for_turn"),
+      ]),
+    ]);
+    const executor = createToolExecutor([]);
+    const manager = new ToolWorkingSetManager({ catalog, toolExecutor: executor, maxVisibleTools: 12 });
+    const runState = state("write files, create a folder, run a command, and show where it is");
+    runState.harnessContext = createInitialHarnessContext({
+      contextEngine: contextEngineWithFocus({
+        status: "active",
+        ref: "refs/heads/task/T-20260702-001-website",
+        workId: "T-20260702-001",
+      }),
+    });
+    const context = { clientId: "c1", runId: "decision:s1:1", sessionId: "s1", stepNumber: 1 };
+
+    const result = manager.prepareForDecision(runState, context);
+    const active = manager.listActive(context);
+
+    expect(active).toEqual([
+      "find_files",
+      "search_in_files",
+      "read_file",
+      "git_context_active",
+      "git_context_list_tasks",
+      "git_context_search_tasks",
+      "git_context_read_task",
+      "git_context_activate_task_for_turn",
+      "git_context_create_task_for_turn",
+      "git_context_ask_clarification_for_turn",
+    ]);
+    expect(active).not.toContain("write_file");
+    expect(active).not.toContain("write_files");
+    expect(active).not.toContain("create_directory");
+    expect(active).not.toContain("shell");
+    expect(active).not.toContain("shell_run_script");
+    expect(result.evicted).toEqual(expect.arrayContaining([
+      "write_file",
+      "write_files",
+    ]));
+    expect(executor.list(context)).toEqual(active);
   });
 
   it("keeps routing tools after a safe read lookup within the routing window", () => {

@@ -67,6 +67,30 @@ describe("readFileTool", () => {
     });
   });
 
+  it("adds a metadata advisory for large explicit full reads", async () => {
+    const file = join(tmp, "large.txt");
+    await writeFile(file, `${"alpha\n".repeat(15_000)}`, "utf-8");
+
+    const result = await readFileTool.execute({ path: file, mode: "full" });
+
+    expect(result.ok).toBe(true);
+    expect(result.output).toContain("Advisory:");
+    expect(result.output).toContain("inspect_paths");
+    expect(result.v2?.conditions).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        code: "FILE_METADATA_RECOMMENDED",
+        severity: "info",
+      }),
+    ]));
+    expect(result.v2?.structuredContent).toMatchObject({
+      observation: {
+        stats: {
+          fileMetadataAdvisory: true,
+        },
+      },
+    });
+  });
+
   it("requires query for search mode", async () => {
     const file = join(tmp, "search-missing-query.txt");
     await writeFile(file, "content", "utf-8");

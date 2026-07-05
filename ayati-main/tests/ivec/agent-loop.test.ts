@@ -544,7 +544,7 @@ describe("agentLoop", () => {
     }
   });
 
-  it("records a repair code when normal tools reach the runner without a work run", async () => {
+  it("repairs normal tool attempts before the first task is routed", async () => {
     const dataDir = makeTmpDir();
     const outputPath = join(dataDir, "missing-run.txt");
     try {
@@ -568,9 +568,14 @@ describe("agentLoop", () => {
             assertions: [],
           },
         },
+        {
+          kind: "reply",
+          status: "blocked",
+          message: "I need to create a task before writing files.",
+        },
       ]);
 
-      await expect(agentLoop({
+      const result = await agentLoop({
         provider,
         toolExecutor,
         toolDefinitions: toolExecutor.definitions(),
@@ -581,12 +586,14 @@ describe("agentLoop", () => {
         initialUserMessage: "Create a file",
         dataDir,
         systemContext: "full system context with memory",
-      })).rejects.toThrow("Git-memory run handle is required before agent action execution.");
+      });
 
+      expect(result.status).toBe("completed");
       expect(existsSync(outputPath)).toBe(false);
-      expect(feedbackEvents(feedback.events, "guard", "missing_work_run")[0]?.data).toMatchObject({
+      expect(feedbackEvents(feedback.events, "action", "started")).toHaveLength(0);
+      expect(feedbackEvents(feedback.events, "decision", "repair_requested")[0]?.data).toMatchObject({
         repair: {
-          code: "R_NORMAL_TOOL_WITHOUT_TASK_RUN",
+          code: "R_TOOL_NOT_SELECTED",
           blockedTargets: ["write_files"],
         },
       });
@@ -1059,7 +1066,7 @@ describe("agentLoop", () => {
     }
   });
 
-  it("auto-binds the active task when an action tool is selected before a work run", async () => {
+  it("repairs active-task action tools before a work run is created", async () => {
     const dataDir = makeTmpDir();
     const outputPath = join(dataDir, "active-task-auto-bind.txt");
     try {
@@ -1185,24 +1192,16 @@ describe("agentLoop", () => {
       });
 
       expect(result.status).toBe("completed");
-      expect(result.runClass).toBe("task");
-      expect(result.workRunId).toBe("R-20260702-website-auto");
-      expect(readFileSync(outputPath, "utf-8")).toContain("Auto-bound active task");
-      expect(createWorkRun).toHaveBeenCalledWith(
-        { sessionId: "s1", seq: 8 },
-        expect.objectContaining({
-          reason: "agent_action",
-          userMessage: "Add a follow-up note to the active website task",
-          activeTaskId: "T-20260702-website",
-          activeBranch: "task/T-20260702-website",
-        }),
-      );
+      expect(result.runClass).toBe("interaction");
+      expect(result.workRunId).toBeUndefined();
+      expect(existsSync(outputPath)).toBe(false);
+      expect(createWorkRun).not.toHaveBeenCalled();
     } finally {
       cleanup(dataDir);
     }
   });
 
-  it("loads tools before auto-binding the active task for action work", async () => {
+  it("filters loaded action tools before an active task has a work run", async () => {
     const dataDir = makeTmpDir();
     const outputPath = join(dataDir, "active-task-load-then-write.txt");
     try {
@@ -1349,24 +1348,13 @@ describe("agentLoop", () => {
       });
 
       expect(result.status).toBe("completed");
-      expect(result.runClass).toBe("task");
-      expect(result.workRunId).toBe("R-20260702-website-load-auto");
-      expect(readFileSync(outputPath, "utf-8")).toContain("Loaded tools before active-task auto-bind.");
-      expect(createWorkRun).toHaveBeenCalledTimes(1);
-      expect(createWorkRun).toHaveBeenCalledWith(
-        { sessionId: "s1", seq: 9 },
-        expect.objectContaining({
-          reason: "agent_action",
-          userMessage: "Add a dark mode toggle to the active website task",
-          activeTaskId: "T-20260702-website",
-          activeBranch: "task/T-20260702-website",
-        }),
-      );
+      expect(result.runClass).toBe("interaction");
+      expect(result.workRunId).toBeUndefined();
+      expect(existsSync(outputPath)).toBe(false);
+      expect(createWorkRun).not.toHaveBeenCalled();
       expect(feedbackEvents(feedback.events, "guard", "missing_work_run")).toHaveLength(0);
       expect(feedbackEvents(feedback.events, "tool_load", "requested")[0]?.runId).toBeUndefined();
-      expect(feedbackEvents(feedback.events, "tools", "normal_tools_enabled_for_work_run")[0]?.data).toMatchObject({
-        workRunId: "R-20260702-website-load-auto",
-      });
+      expect(feedbackEvents(feedback.events, "tools", "normal_tools_enabled_for_work_run")).toHaveLength(0);
     } finally {
       cleanup(dataDir);
     }

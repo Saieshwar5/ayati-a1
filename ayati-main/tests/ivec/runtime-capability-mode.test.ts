@@ -83,27 +83,31 @@ describe("runtime capability modes", () => {
         "Create a task only when the current user request has a concrete deliverable and enough detail to begin work now.",
         "Do not create a task for early conversation, brainstorming, vague intent, preferences, or discovery. Reply directly with one short clarifying question.",
         "A concrete deliverable means the user has specified what to make, change, analyze, or produce, and the expected output is clear enough to start without another user answer.",
-        "For clear durable work, call git_context_create_task_for_turn with title, objective, and reason.",
+        "For clear durable work with no active task, call git_context_create_task_for_turn with title, objective, and reason. If an active task exists, create a new task only for clearly separate work and include whyNotActiveTask plus separateTaskReason.",
         "Never print task metadata JSON as the assistant response. Put task metadata in the native tool call arguments.",
       ],
       repairCode: "R_FRESH_SESSION_NEEDS_TASK",
     });
   });
 
-  it("exposes only first-task routing tools in a fresh session", () => {
+  it("allows safe read and first-task routing tools in a fresh session", () => {
     const mode = detectRuntimeCapabilityMode({
       state: state(gitContext({ status: "none" })),
     });
 
-    expect(filterToolsForRuntimeMode(mode, [
+    const allowed = filterToolsForRuntimeMode(mode, [
       tool("write_files"),
       tool("git_context_search_tasks"),
       tool("git_context_create_task_for_turn"),
       tool("git_context_ask_clarification_for_turn"),
-    ]).map((entry) => entry.name)).toEqual([
+    ]).map((entry) => entry.name);
+
+    expect(allowed).toEqual([
+      "git_context_search_tasks",
       "git_context_create_task_for_turn",
       "git_context_ask_clarification_for_turn",
     ]);
+    expect(allowed).not.toContain("write_files");
   });
 
   it("allows only direct replies or fresh-session routing decisions before the first task", () => {

@@ -1,6 +1,12 @@
 import type { MemoryRunHandle } from "../../memory/types.js";
 import type { ToolDefinition } from "../../skills/types.js";
 import {
+  getToolTaxonomy,
+  isToolAllowedInPhase,
+  type ToolPhase,
+  type ToolTaxonomyEntry,
+} from "../../skills/tool-taxonomy.js";
+import {
   GIT_CONTEXT_FRESH_SESSION_ROUTING_TOOL_NAMES,
   GIT_CONTEXT_READ_ONLY_TOOL_NAMES,
   GIT_CONTEXT_TURN_ROUTING_TOOL_NAMES,
@@ -82,7 +88,7 @@ const FRESH_SESSION_ROUTING_RULES = [
   "Create a task only when the current user request has a concrete deliverable and enough detail to begin work now.",
   "Do not create a task for early conversation, brainstorming, vague intent, preferences, or discovery. Reply directly with one short clarifying question.",
   "A concrete deliverable means the user has specified what to make, change, analyze, or produce, and the expected output is clear enough to start without another user answer.",
-  "For clear durable work, call git_context_create_task_for_turn with title, objective, and reason.",
+  "For clear durable work with no active task, call git_context_create_task_for_turn with title, objective, and reason. If an active task exists, create a new task only for clearly separate work and include whyNotActiveTask plus separateTaskReason.",
   "Never print task metadata JSON as the assistant response. Put task metadata in the native tool call arguments.",
 ];
 
@@ -185,20 +191,42 @@ export function isFreshSessionRoutingMode(mode: RuntimeCapabilityMode): boolean 
 }
 
 export function isRuntimeToolAllowed(mode: RuntimeCapabilityMode, toolName: string): boolean {
-  if (mode.name === "task_run" || mode.pendingTurnStatus === "bound") {
-    return !isGitContextTurnRoutingToolName(toolName);
+  const taxonomy = getToolTaxonomy(toolName);
+  if (!taxonomy) {
+    return mode.name === "task_run" || mode.hasWorkRun;
   }
-  if (mode.name === "fresh_session_routing") {
-    return isGitContextFreshSessionRoutingToolName(toolName);
+
+  if (mode.name === "task_run" || mode.hasWorkRun) {
+    return !isTaskRoutingMutation(taxonomy);
   }
-  if (mode.name === "pre_task_routing") {
-    return mode.pendingTurnStatus === "unbound" && isGitContextAllowedDuringPendingRouting(toolName);
+
+  if (mode.pendingTurnStatus === "clarifying") {
+    return false;
   }
-  return true;
+
+  if (isReadOnlyAllowedBeforeTask(mode, toolName, taxonomy)) {
+    return true;
+  }
+
+  if (isTaskRoutingMutation(taxonomy)) {
+    return Boolean(mode.routingWindow?.open) && taxonomy.canRunBeforeTask;
+  }
+
+  return false;
 }
 
 export function filterToolsForRuntimeMode(mode: RuntimeCapabilityMode, tools: ToolDefinition[]): ToolDefinition[] {
   return tools.filter((tool) => isRuntimeToolAllowed(mode, tool.name));
+}
+
+export function runtimeToolPhase(mode: RuntimeCapabilityMode, selectedToolCount = 0): ToolPhase {
+  if (mode.name === "task_run" || mode.hasWorkRun) {
+    return "task_run";
+  }
+  if (mode.name === "fresh_session_routing" || mode.name === "pre_task_routing" || mode.routingWindow?.open) {
+    return "routing";
+  }
+  return selectedToolCount > 0 ? "enquiry" : "conversation";
 }
 
 export function requiredRoutingMutationToolsForRuntimeMode(mode: RuntimeCapabilityMode): string[] {
@@ -206,6 +234,9 @@ export function requiredRoutingMutationToolsForRuntimeMode(mode: RuntimeCapabili
     return [...GIT_CONTEXT_FRESH_SESSION_ROUTING_TOOL_NAMES];
   }
   if (mode.name === "pre_task_routing" && mode.pendingTurnStatus === "unbound") {
+    return [...GIT_CONTEXT_TURN_ROUTING_TOOL_NAMES];
+  }
+  if (!mode.hasWorkRun && mode.routingWindow?.open) {
     return [...GIT_CONTEXT_TURN_ROUTING_TOOL_NAMES];
   }
   return [];
@@ -242,6 +273,24 @@ export function isDecisionAllowedInRuntimeMode(mode: RuntimeCapabilityMode, deci
 
 function isGitContextAllowedInFreshSession(tool: string): boolean {
   return isGitContextReadOnlyToolName(tool) || isGitContextFreshSessionRoutingToolName(tool);
+}
+
+function isReadOnlyAllowedBeforeTask(
+  mode: RuntimeCapabilityMode,
+  toolName: string,
+  taxonomy: ToolTaxonomyEntry,
+): boolean {
+  if (taxonomy.effect !== "read_only") {
+    return false;
+  }
+  if (isToolAllowedInPhase(toolName, runtimeToolPhase(mode, 1))) {
+    return true;
+  }
+  return Boolean(mode.routingWindow?.open) && isToolAllowedInPhase(toolName, "enquiry");
+}
+
+function isTaskRoutingMutation(taxonomy: ToolTaxonomyEntry): boolean {
+  return taxonomy.effect === "context_mutation" && taxonomy.roles.includes("task_routing");
 }
 
 export function summarizeRuntimeCapabilityTools(input: {

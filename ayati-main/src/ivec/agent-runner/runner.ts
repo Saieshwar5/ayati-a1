@@ -69,6 +69,12 @@ import {
   repairSignalToFeedbackData,
   repairSignalToPromptCard,
 } from "./repair-policy.js";
+import {
+  evaluateReadProgressGuard,
+  markReadProgressRejected,
+  updateReadProgressAfterActOutput,
+} from "./read-progress-policy.js";
+import type { ReadProgressViolation } from "./read-progress-policy.js";
 import type { ToolLoadResult } from "./tool-working-set.js";
 import { executeAgentAction } from "./action-executor.js";
 import type { AgentActionExecutionResult } from "./action-executor.js";
@@ -100,6 +106,7 @@ import {
   summarizeVerification,
   summarizeWorkState,
 } from "./feedback-summary.js";
+import { auditToolPolicy } from "./tool-policy-audit.js";
 
 interface MemoryRunContext {
   runHandle: MemoryRunHandle;
@@ -442,6 +449,10 @@ export async function runAgentLoop(
     });
     const taskFeedbackToolAvailable = isTaskFeedbackToolAvailable(state, workRunHandle);
     const decisionRuntimeMode = detectRuntimeCapabilityMode({ state, workRunHandle });
+    const decisionToolPolicyAudit = auditToolPolicy({
+      mode: decisionRuntimeMode,
+      selectedTools,
+    });
     recordFeedback(deps, inputHandle, state.runId || workRunHandle?.runId, "decision", "prompt_summary", {
       iteration: state.iteration,
       nativeControlTools: [
@@ -463,6 +474,7 @@ export async function runAgentLoop(
         context: state.harnessContext.contextEngine,
       }),
       warningCodes: buildToolExposureWarningCodes(state, selectedTools, workRunHandle),
+      toolPolicyAudit: decisionToolPolicyAudit,
       inputState: summarizeDecisionInputState(stateView),
     });
     const decision = await callAgentDecision({
@@ -852,6 +864,37 @@ export async function runAgentLoop(
         activeTools: activeToolsForWorkRun,
       });
     }
+    const readProgressViolation = evaluateReadProgressGuard(state.readProgress, decision.action);
+    if (readProgressViolation) {
+      recordReadProgressRepair({
+        deps,
+        inputHandle,
+        state,
+        config,
+        decision,
+        runId: work.runHandle.runId,
+        violation: readProgressViolation,
+      });
+      if (hasRepeatedRepairFailure(state.failureHistory)) {
+        recordRepeatedRepairFailure({
+          deps,
+          inputHandle,
+          state,
+          runId: work.runHandle.runId,
+        });
+        state.status = "failed";
+        state.finalOutput = buildFailureReply(state);
+        return finalize({ status: "failed", content: state.finalOutput });
+      }
+      if (state.consecutiveFailures >= config.maxConsecutiveFailures) {
+        state.status = "failed";
+        state.finalOutput = buildFailureReply(state);
+        return finalize({ status: "failed", content: state.finalOutput });
+      }
+      queueStateSnapshot();
+      recordStateSnapshotMetric("after_read_progress_guard");
+      continue;
+    }
     recordFeedback(deps, inputHandle, work.runHandle.runId, "action", "started", {
       iteration: state.iteration,
       mode: decision.action.mode,
@@ -881,6 +924,7 @@ export async function runAgentLoop(
       failedVerificationCount++;
     }
     totalToolCalls += stepResult.stepSummary.toolSuccessCount + stepResult.stepSummary.toolFailureCount;
+    state.readProgress = updateReadProgressAfterActOutput(state.readProgress, stepResult.execution.actOutput);
     recordActionFeedback(deps, inputHandle, work.runHandle.runId, decision.action, stepResult);
     recordStepFeedback(deps, inputHandle, work.runHandle.runId, state.iteration, stepResult);
 
@@ -1338,6 +1382,49 @@ function recordFreshSessionToolRepair(input: {
   });
 }
 
+function recordReadProgressRepair(input: {
+  deps: AgentLoopDeps;
+  inputHandle: SessionInputHandle;
+  state: LoopState;
+  config: LoopConfig;
+  decision: AgentDecision;
+  runId: string;
+  violation: ReadProgressViolation;
+}): void {
+  input.state.consecutiveFailures++;
+  input.state.readProgress = markReadProgressRejected(input.state.readProgress);
+  const repair = createRepairSignal(input.violation.code, {
+    message: input.violation.message,
+    blockedTargets: input.violation.blockedTargets,
+    allowedNextActions: input.violation.allowedNextActions,
+    operatorDetails: {
+      ...input.violation.operatorDetails,
+      consecutiveFailures: input.state.consecutiveFailures,
+      maxConsecutiveFailures: input.config.maxConsecutiveFailures,
+      decision: summarizeDecision(input.decision),
+      readProgress: input.state.readProgress,
+    },
+  });
+  const promptCard = repairSignalToPromptCard(repair);
+  input.state.failureHistory.push({
+    step: input.state.iteration,
+    failureType: "no_progress",
+    reason: repair.message,
+    blockedTargets: repair.blockedTargets,
+    repairCode: repair.code,
+    ...(promptCard ? { repair: promptCard } : {}),
+  });
+  recordFeedback(input.deps, input.inputHandle, input.runId, "guard", "read_progress_repair_requested", {
+    message: repair.message,
+    warningCodes: ["read_progress_repair_requested", repair.code],
+    consecutiveFailures: input.state.consecutiveFailures,
+    maxConsecutiveFailures: input.config.maxConsecutiveFailures,
+    decision: summarizeDecision(input.decision),
+    readProgress: input.state.readProgress,
+    ...repairSignalToFeedbackData(repair),
+  });
+}
+
 function createMissingWorkRunRepairSignal(input: {
   reason: string;
   message: string;
@@ -1659,6 +1746,10 @@ function recordToolWorkingSetFeedback(input: {
     state: input.state,
     workRunHandle: input.workRunHandle,
   });
+  const toolPolicyAudit = auditToolPolicy({
+    mode: runtimeMode,
+    selectedTools: input.selectedTools,
+  });
   const toolMode = summarizeRuntimeCapabilityTools({
     mode: runtimeMode,
     visibleTools: input.visibleTools,
@@ -1674,6 +1765,7 @@ function recordToolWorkingSetFeedback(input: {
     deterministicLoad: summarizeToolLoadResult(input.deterministicToolLoad),
     visible: summarizeToolDefinitions(input.visibleTools),
     selected: summarizeToolDefinitions(input.selectedTools),
+    toolPolicyAudit,
     normalSelectedTools: normalTaskToolNames(input.selectedTools),
     contextEngine: buildContextEngineFeedbackSummary({
       context: input.state.harnessContext.contextEngine,
@@ -1684,6 +1776,7 @@ function recordToolWorkingSetFeedback(input: {
     iteration: input.iteration,
     toolContextRunId: input.toolContextRunId,
     ...toolMode,
+    toolPolicyAudit,
     ...(runtimeMode.routingWindow ? { routingWindow: runtimeMode.routingWindow } : {}),
     ...(warningCodes.length > 0 ? { warningCodes } : {}),
   });
@@ -1908,6 +2001,7 @@ function summarizeDecisionInputState(stateView: AgentStateView): Record<string, 
     verifiedFactCount: stateView.progress?.verifiedFacts?.length ?? 0,
     evidenceRefCount: stateView.progress?.evidenceRefs?.length ?? 0,
     recentObservationCount: stateView.observations?.latest.length ?? 0,
+    recentReadContextCount: stateView.readContext?.latest.length ?? 0,
     recentTraceStepCount: stateView.trace?.recentSteps?.length ?? 0,
     recentFailureCount: stateView.trace?.recentFailures?.length ?? 0,
     attachmentCount,

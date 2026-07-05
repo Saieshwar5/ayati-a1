@@ -8,10 +8,12 @@ import {
   GIT_CONTEXT_TURN_ROUTING_TOOL_NAMES,
   isGitContextTurnRoutingToolName,
 } from "../../skills/builtins/git-context/tool-policy.js";
+import { getToolLoadPriority } from "../../skills/tool-taxonomy.js";
 import {
   detectRuntimeCapabilityMode,
   deterministicToolsForRuntimeMode,
   isFreshSessionRoutingMode,
+  isRuntimeToolAllowed,
   requiredRoutingMutationToolsForRuntimeMode,
   TASK_ROUTING_WINDOW_STEPS,
 } from "./runtime-capability-mode.js";
@@ -53,7 +55,7 @@ interface RunToolState {
   };
 }
 
-const DEFAULT_MAX_VISIBLE_TOOLS = 12;
+const DEFAULT_MAX_VISIBLE_TOOLS = 15;
 const TASK_ROUTING_WINDOW_TOOL_NAMES = [
   "git_context_active",
   "git_context_list_tasks",
@@ -106,11 +108,11 @@ export class ToolWorkingSetManager {
     }
     const request = buildDeterministicLoadRequest(state);
     const suppressTaskRoutingTools = hasCompletedTaskRoutingWindowToolUse(state);
-    const requiredRoutingTools = suppressTaskRoutingTools
+    const requiredRoutingTools = suppressTaskRoutingTools || step > TASK_ROUTING_WINDOW_STEPS
       ? []
       : requiredRoutingMutationToolsForRuntimeMode(mode);
     const result = this.load(this.addTaskRoutingWindowTools(request, state, context), context);
-    const prepared = mergeToolLoadResult(result, this.ensureToolsLoadedOutsideLimit(requiredRoutingTools, context));
+    let prepared = mergeToolLoadResult(result, this.ensureToolsLoadedOutsideLimit(requiredRoutingTools, context));
     if (suppressTaskRoutingTools) {
       const removed: string[] = [];
       this.removeTaskRoutingTools(runState, removed);
@@ -124,6 +126,17 @@ export class ToolWorkingSetManager {
           message: `${prepared.message} Removed task routing tools after prior routing use: ${removed.join(", ")}.`,
         };
       }
+    }
+    const policyRemoved: string[] = [];
+    this.removeToolsDisallowedForRuntimeMode(runState, mode, policyRemoved);
+    if (policyRemoved.length > 0) {
+      prepared = {
+        ...prepared,
+        loaded: prepared.loaded.filter((tool) => !policyRemoved.includes(tool)),
+        alreadyActive: prepared.alreadyActive.filter((tool) => !policyRemoved.includes(tool)),
+        evicted: normalizeStrings([...prepared.evicted, ...policyRemoved]),
+        message: `${prepared.message} Removed tools disallowed for ${mode.name}: ${policyRemoved.join(", ")}.`,
+      };
     }
     this.syncMount(context);
     return prepared;
@@ -140,7 +153,7 @@ export class ToolWorkingSetManager {
         alreadyActive: [],
         evicted: [],
         missing: [],
-        message: "load_tools requires at least one non-empty selector: groups, toolNames, or query.",
+        message: this.summarizeLoadMessage("invalid_request", [], [], [], normalized),
       };
     }
 
@@ -155,7 +168,7 @@ export class ToolWorkingSetManager {
         alreadyActive: [],
         evicted: [],
         missing: [],
-        message: `Failed to resolve tool load request: ${error instanceof Error ? error.message : String(error)}`,
+        message: `Failed to resolve tool load request: ${error instanceof Error ? error.message : String(error)} ${this.availableGroupHint()}`.trim(),
       };
     }
 
@@ -170,11 +183,17 @@ export class ToolWorkingSetManager {
         continue;
       }
       while (state.ordered.length >= this.maxVisibleTools) {
-        const removed = state.ordered.pop();
-        if (!removed) break;
+        const removed = this.evictOneForIncomingTool(state, entry.name);
+        if (!removed) {
+          missing.push(`${entry.name} (visible tool limit)`);
+          break;
+        }
         evicted.push(removed);
         state.loadedAtStep.delete(removed);
         state.usedAtStep.delete(removed);
+      }
+      if (state.ordered.length >= this.maxVisibleTools) {
+        continue;
       }
       state.ordered.push(entry.name);
       state.loadedAtStep.set(entry.name, context.stepNumber ?? 0);
@@ -190,7 +209,7 @@ export class ToolWorkingSetManager {
       alreadyActive,
       evicted,
       missing,
-      message: summarizeLoadMessage(status, loaded, alreadyActive, missing),
+      message: this.summarizeLoadMessage(status, loaded, alreadyActive, missing, normalized, evicted),
     };
   }
 
@@ -331,6 +350,22 @@ export class ToolWorkingSetManager {
     }
   }
 
+  private removeToolsDisallowedForRuntimeMode(
+    state: RunToolState,
+    mode: ReturnType<typeof detectRuntimeCapabilityMode>,
+    removed: string[],
+  ): void {
+    const before = state.ordered;
+    state.ordered = state.ordered.filter((tool) => isRuntimeToolAllowed(mode, tool));
+    for (const tool of before) {
+      if (!state.ordered.includes(tool)) {
+        state.loadedAtStep.delete(tool);
+        state.usedAtStep.delete(tool);
+        removed.push(tool);
+      }
+    }
+  }
+
   private ensureToolsLoadedOutsideLimit(toolNames: string[], context: ToolExecutionContext): Pick<ToolLoadResult, "loaded" | "alreadyActive" | "missing"> {
     const state = this.getRunState(context);
     const loaded: string[] = [];
@@ -356,6 +391,29 @@ export class ToolWorkingSetManager {
       this.syncMount(context);
     }
     return { loaded, alreadyActive, missing };
+  }
+
+  private evictOneForIncomingTool(state: RunToolState, incomingTool: string): string | undefined {
+    const incomingPriority = toolPriority(this.catalog.get(incomingTool)?.name ?? incomingTool);
+    const candidates = state.ordered
+      .filter((tool) => !isTaskRoutingResolutionTool(tool))
+      .map((tool, index) => ({
+        tool,
+        index,
+        priority: toolPriority(tool),
+        loadedAt: state.loadedAtStep.get(tool) ?? 0,
+      }))
+      .sort((left, right) => (
+        left.priority - right.priority
+        || left.loadedAt - right.loadedAt
+        || right.index - left.index
+      ));
+    const candidate = candidates[0];
+    if (!candidate || candidate.priority > incomingPriority) {
+      return undefined;
+    }
+    state.ordered = state.ordered.filter((tool) => tool !== candidate.tool);
+    return candidate.tool;
   }
 
   private resolveRequest(request: Required<Pick<ToolLoadRequest, "toolNames" | "groups">> & Pick<ToolLoadRequest, "query">): { entries: ToolCatalogEntry[]; missing: string[] } {
@@ -388,6 +446,43 @@ export class ToolWorkingSetManager {
     }
 
     return { entries: [...entries.values()].slice(0, this.maxVisibleTools), missing };
+  }
+
+  private summarizeLoadMessage(
+    status: ToolLoadStatus,
+    loaded: string[],
+    alreadyActive: string[],
+    missing: string[],
+    request: Required<Pick<ToolLoadRequest, "toolNames" | "groups">> & Pick<ToolLoadRequest, "query">,
+    evicted: string[] = [],
+  ): string {
+    const base = summarizeLoadMessage(status, loaded, alreadyActive, missing);
+    const parts = [base];
+    if (evicted.length > 0) {
+      parts.push(`Evicted lower-priority tools to stay within the ${this.maxVisibleTools}-tool working set: ${evicted.join(", ")}.`);
+    }
+    if (status === "already_active" && alreadyActive.length > 0) {
+      parts.push(`Use the already active tools now instead of loading them again: ${alreadyActive.slice(0, 8).join(", ")}.`);
+    }
+    if (missing.length > 0 || status === "no_match" || status === "invalid_request") {
+      const missingGroups = request.groups.filter((group) => this.catalog.toolsForGroup(group).length === 0);
+      if (missingGroups.length > 0) {
+        parts.push(`Unknown groups: ${missingGroups.join(", ")}.`);
+      }
+      parts.push(this.availableGroupHint());
+    }
+    if (request.groups.length > 1) {
+      parts.push("Multiple groups are supported; prefer 1-3 small groups such as file:read + file:write + shell:command.");
+    }
+    return parts.filter((part) => part.length > 0).join(" ");
+  }
+
+  private availableGroupHint(): string {
+    const groups = this.catalog.groupSummaries(12);
+    if (groups.length === 0) {
+      return "No loadable groups are registered.";
+    }
+    return `Available groups include: ${groups.join("; ")}.`;
   }
 
   private getRunState(context: ToolExecutionContext): RunToolState {
@@ -465,28 +560,34 @@ function buildDeterministicLoadRequest(state: LoopState): ToolLoadRequest {
   const groups = new Set<string>();
 
   if (/\b(find|search|where|locate)\b/.test(text)) {
+    toolNames.add("inspect_paths");
     toolNames.add("find_files");
     toolNames.add("search_in_files");
   }
   if (/\b(read|open|show|inspect|view)\b/.test(text)) {
+    toolNames.add("inspect_paths");
     toolNames.add("find_files");
+    toolNames.add("read_files");
     toolNames.add("read_file");
   }
   if (/\b(edit|fix|update|modify|refactor|change)\b/.test(text)) {
+    toolNames.add("inspect_paths");
     toolNames.add("find_files");
     toolNames.add("search_in_files");
+    toolNames.add("read_files");
     toolNames.add("read_file");
     toolNames.add("edit_file");
   }
-  if (/\b(create|write|generate|save)\b/.test(text)) {
-    toolNames.add("write_file");
-    toolNames.add("write_files");
-    toolNames.add("create_directory");
+  if (hasFileCreationIntent(text)) {
+    groups.add("file:create");
+    groups.add("file:write");
+    groups.add("file:read");
+  } else if (/\b(create|write|generate|save)\b/.test(text)) {
+    groups.add("file:write");
   }
-  if (/\b(run|test|build|install|command|terminal|server)\b/.test(text)) {
-    toolNames.add("shell_run_script");
-    toolNames.add("shell");
-    toolNames.add("search_in_files");
+  if (hasShellCommandIntent(text)) {
+    groups.add("shell:command");
+    groups.add("file:verify");
   }
   if (/\b(pdf|docx|document|summari[sz]e|section|citation)\b/.test(text) || hasPreparedDocument(state)) {
     toolNames.add("attachment_restore");
@@ -505,7 +606,7 @@ function buildDeterministicLoadRequest(state: LoopState): ToolLoadRequest {
     groups.add("domain:memory");
     groups.add("domain:recall");
   }
-  if (/\b(window|workspace|browser|preview|show|focus|layout)\b/.test(text)) {
+  if (hasUiWorkspaceIntent(text)) {
     groups.add("workflow:ui_workspace");
   }
   if ((state.workState.evidenceRefs ?? []).length > 0) {
@@ -525,6 +626,31 @@ function buildDeterministicLoadRequest(state: LoopState): ToolLoadRequest {
   };
 }
 
+function hasFileCreationIntent(text: string): boolean {
+  const hasCreationVerb = /\b(build|create|make|generate|write|save|scaffold|set up|setup)\b/.test(text);
+  if (!hasCreationVerb) {
+    return false;
+  }
+  return /\b(website|web site|site|app|application|project|page|dashboard|component|script|file|files|folder|directory|html|css|js|javascript|typescript|react|vue|svelte|vanilla)\b/.test(text);
+}
+
+function hasShellCommandIntent(text: string): boolean {
+  if (/\b(run|execute|test|install|start|serve|launch|compile|terminal|command|server)\b/.test(text)) {
+    return true;
+  }
+  if (/\b(run|execute)\s+(the\s+)?build\b|\bbuild\s+(command|script|step|pipeline)\b/.test(text)) {
+    return true;
+  }
+  return /\b(npm|pnpm|yarn|bun|node|deno|python|pytest|vitest|jest|cargo|go test|make|docker|git)\b/.test(text);
+}
+
+function hasUiWorkspaceIntent(text: string): boolean {
+  if (/\b(window|workspace|preview|focus|layout)\b/.test(text)) {
+    return true;
+  }
+  return /\b(open|show|launch|view)\s+(it\s+)?(in\s+)?(the\s+)?browser\b|\bbrowser\s+(preview|window)\b/.test(text);
+}
+
 function normalizeRequest(request: ToolLoadRequest): Required<Pick<ToolLoadRequest, "toolNames" | "groups">> & Pick<ToolLoadRequest, "query"> {
   const query = request.query?.trim();
   return {
@@ -536,6 +662,10 @@ function normalizeRequest(request: ToolLoadRequest): Required<Pick<ToolLoadReque
 
 function normalizeStrings(values: string[] | undefined): string[] {
   return [...new Set((values ?? []).map((value) => value.trim()).filter((value) => value.length > 0))];
+}
+
+function toolPriority(toolName: string): number {
+  return getToolLoadPriority(toolName) ?? 50;
 }
 
 function mergeToolLoadResult(

@@ -1,6 +1,9 @@
 import type { ToolResult } from "../../types.js";
 import type {
   ReadFileInput,
+  ReadFilesInput,
+  ReadFilesInputFile,
+  InspectPathsInput,
   WriteFileInput,
   WriteFilesInput,
   WriteFilesInputFile,
@@ -12,6 +15,8 @@ import type {
   FindFilesInput,
   SearchInFilesInput,
 } from "./types.js";
+
+const MAX_READ_FILES = 20;
 
 function fail(msg: string): ToolResult {
   return { ok: false, error: `Invalid input: ${msg}` };
@@ -76,6 +81,71 @@ export function validateReadFileInput(input: unknown): ReadFileInput | ToolResul
     lineCount: v.lineCount,
     contextLines: v.contextLines,
     maxBlocks: v.maxBlocks,
+  };
+}
+
+export function validateReadFilesInput(input: unknown): ReadFilesInput | ToolResult {
+  if (!isObject(input)) return fail("expected object.");
+  const v = input as Partial<ReadFilesInput>;
+  if (!Array.isArray(v.files) || v.files.length === 0) {
+    return fail("files must be a non-empty array.");
+  }
+  if (v.files.length > MAX_READ_FILES) {
+    return fail(`files must contain at most ${MAX_READ_FILES} entries.`);
+  }
+
+  const files: ReadFilesInputFile[] = [];
+  for (const [index, file] of v.files.entries()) {
+    if (!isObject(file)) return fail(`files[${index}] must be an object.`);
+    const parsed = validateReadFileInput(file);
+    if ("ok" in parsed) {
+      const detail = parsed.error?.replace(/^Invalid input:\s*/, "") ?? "invalid read input.";
+      return fail(`files[${index}]: ${detail}`);
+    }
+    files.push(parsed);
+  }
+
+  if (v.maxPerFileChars !== undefined && !isPositiveInt(v.maxPerFileChars)) {
+    return fail("maxPerFileChars must be a positive integer.");
+  }
+  if (v.maxTotalChars !== undefined && !isPositiveInt(v.maxTotalChars)) {
+    return fail("maxTotalChars must be a positive integer.");
+  }
+  if (v.allowMissing !== undefined && typeof v.allowMissing !== "boolean") {
+    return fail("allowMissing must be a boolean.");
+  }
+
+  return {
+    files,
+    maxPerFileChars: v.maxPerFileChars,
+    maxTotalChars: v.maxTotalChars,
+    allowMissing: v.allowMissing,
+  };
+}
+
+export function validateInspectPathsInput(input: unknown): InspectPathsInput | ToolResult {
+  if (!isObject(input)) return fail("expected object.");
+  const v = input as Partial<InspectPathsInput>;
+  if (!Array.isArray(v.paths) || v.paths.length === 0) {
+    return fail("paths must be a non-empty array.");
+  }
+  if (!v.paths.every((path) => isNonEmptyString(path))) {
+    return fail("paths must contain only non-empty strings.");
+  }
+  if (v.includeLineCount !== undefined && typeof v.includeLineCount !== "boolean") {
+    return fail("includeLineCount must be a boolean.");
+  }
+  if (v.includeHash !== undefined && typeof v.includeHash !== "boolean") {
+    return fail("includeHash must be a boolean.");
+  }
+  if (v.includeDirectoryCounts !== undefined && typeof v.includeDirectoryCounts !== "boolean") {
+    return fail("includeDirectoryCounts must be a boolean.");
+  }
+  return {
+    paths: v.paths,
+    includeLineCount: v.includeLineCount,
+    includeHash: v.includeHash,
+    includeDirectoryCounts: v.includeDirectoryCounts,
   };
 }
 

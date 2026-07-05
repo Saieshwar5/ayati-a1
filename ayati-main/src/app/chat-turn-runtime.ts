@@ -40,6 +40,7 @@ import {
   buildContextEngineFeedbackSummary,
   type AgentFeedbackLedger,
 } from "../ivec/feedback-ledger.js";
+import { isGitContextReadOnlyToolName } from "../skills/builtins/git-context/tool-policy.js";
 import type { ChatTurnRuntime, ChatTurnRuntimeInput } from "../ivec/chat-turn-runtime.js";
 import type { ToolWorkingSetManager } from "../ivec/agent-runner/tool-working-set.js";
 import { summarizeHarnessContext } from "../ivec/agent-runner/feedback-summary.js";
@@ -553,18 +554,22 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
         await this.recordChatContextAssistantMessage(clientId, prepared, result.content);
       }
       if (prepared) {
-        const taskFinalizationRequired = this.isTaskFinalizationRequired(normalizedResult);
+        const disposition = this.noBindingFinalizationDisposition(prepared, skipReason, normalizedResult);
         this.feedbackLedger?.record({
           clientId,
           sessionId: prepared.sessionId,
           seq: prepared.messageSeq,
           stage: "context_engine",
-          event: taskFinalizationRequired ? "finalization_failed" : "finalization_skipped",
+          event: disposition.event,
           data: {
-            reason: skipReason,
+            reason: disposition.reason,
+            skipReason,
+            resultClass: normalizedResult.runClass,
+            resultStatus: normalizedResult.status,
+            resultType: normalizedResult.type,
             contextEngine: buildContextEngineFeedbackSummary({
               context: normalizedResult.harnessContext?.contextEngine,
-              finalizationStatus: taskFinalizationRequired ? "failed" : "skipped",
+              finalizationStatus: disposition.finalizationStatus,
               committed: false,
             }),
           },
@@ -764,6 +769,64 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
       || result.workState?.status === "done"
       || result.workState?.status === "needs_user_input"
       || result.workState?.status === "blocked";
+  }
+
+  private noBindingFinalizationDisposition(
+    prepared: GitMemoryChatContextPreparedTurn,
+    skipReason: string,
+    result: AgentLoopResult,
+  ): {
+    event: "conversation_enquiry_recorded" | "finalization_failed" | "finalization_skipped";
+    finalizationStatus: "skipped" | "failed";
+    reason: string;
+  } {
+    if (skipReason !== "no_task_run_binding") {
+      const taskFinalizationRequired = this.isTaskFinalizationRequired(result);
+      return {
+        event: taskFinalizationRequired ? "finalization_failed" : "finalization_skipped",
+        finalizationStatus: taskFinalizationRequired ? "failed" : "skipped",
+        reason: skipReason,
+      };
+    }
+
+    if (this.isTaskfulResultWithoutBinding(prepared, result)) {
+      return {
+        event: "finalization_failed",
+        finalizationStatus: "failed",
+        reason: "taskful_result_without_task_run_binding",
+      };
+    }
+
+    return {
+      event: "conversation_enquiry_recorded",
+      finalizationStatus: "skipped",
+      reason: "conversation_or_enquiry_without_task_run",
+    };
+  }
+
+  private isTaskfulResultWithoutBinding(
+    prepared: GitMemoryChatContextPreparedTurn,
+    result: AgentLoopResult,
+  ): boolean {
+    if (result.runClass === "task" || Boolean(result.workRunId) || Boolean(result.taskSummary)) {
+      return true;
+    }
+    if ((result.taskAssets ?? []).length > 0 || (result.artifacts ?? []).length > 0) {
+      return true;
+    }
+    if (hasMutatingOrDurableTaskStep(result)) {
+      return true;
+    }
+    return isDurableWorkRequest(this.preparedUserMessageText(prepared))
+      && hasDurableCompletionClaim(result.content);
+  }
+
+  private preparedUserMessageText(prepared: GitMemoryChatContextPreparedTurn): string {
+    return [...prepared.context.session.conversationTail]
+      .reverse()
+      .find((record) => record.role === "user" && record.seq === prepared.messageSeq)
+      ?.text
+      ?.trim() ?? "";
   }
 
   private async completeFailedChatContextRun(
@@ -1530,6 +1593,29 @@ const TASK_ROUTING_TOOL_NAMES = new Set([
   "git_context_ask_clarification_for_turn",
 ]);
 
+const CONVERSATION_READ_ONLY_TOOL_NAMES = new Set([
+  "read_file",
+  "list_directory",
+  "find_files",
+  "search_in_files",
+  "attachment_list",
+  "attachment_inspect",
+  "attachment_read",
+  "attachment_query",
+  "attachment_query_table",
+  "directory_search",
+  "dataset_profile",
+  "dataset_query",
+  "document_list_sections",
+  "document_read_section",
+  "document_query",
+  "evidence_read_lines",
+  "evidence_search",
+  "evidence_tail",
+  "evidence_next_chunk",
+  "calculator",
+]);
+
 function hasDurableTaskEvidence(result: AgentLoopResult): boolean {
   return (result.completedSteps ?? []).some((step) => {
     if ((step.artifacts ?? []).length > 0) {
@@ -1538,6 +1624,35 @@ function hasDurableTaskEvidence(result: AgentLoopResult): boolean {
     const toolsUsed = step.toolsUsed ?? [];
     return toolsUsed.some((tool) => !TASK_ROUTING_TOOL_NAMES.has(tool));
   });
+}
+
+function hasMutatingOrDurableTaskStep(result: AgentLoopResult): boolean {
+  return (result.completedSteps ?? []).some((step) => {
+    if ((step.artifacts ?? []).length > 0) {
+      return true;
+    }
+    const toolsUsed = step.toolsUsed ?? [];
+    return toolsUsed.some((tool) => !isConversationReadOnlyTool(tool) && !TASK_ROUTING_TOOL_NAMES.has(tool));
+  });
+}
+
+function isConversationReadOnlyTool(tool: string): boolean {
+  return CONVERSATION_READ_ONLY_TOOL_NAMES.has(tool) || isGitContextReadOnlyToolName(tool);
+}
+
+function isDurableWorkRequest(message: string): boolean {
+  const normalized = message.trim().toLowerCase();
+  if (!normalized) {
+    return false;
+  }
+  if (/^(what|where|why|how|when|which|who|show|explain|describe|summarize|tell me|did|is|are|was|were)\b/.test(normalized)) {
+    return false;
+  }
+  return /\b(build|create|make|write|save|edit|update|change|fix|implement|generate|add|remove|delete|move|rename|apply|run|test|set up|setup)\b/.test(normalized);
+}
+
+function hasDurableCompletionClaim(message: string): boolean {
+  return /\b(done|completed|created|built|wrote|saved|edited|updated|changed|fixed|implemented|generated|added|removed|deleted|moved|renamed|applied|ran|tested|set up)\b/i.test(message);
 }
 
 function isRoutingOnlyTaskRun(result: AgentLoopResult): boolean {

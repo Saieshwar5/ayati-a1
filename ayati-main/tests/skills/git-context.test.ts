@@ -27,6 +27,14 @@ describe("git-context skill", () => {
 
     expect(createTask.inputSchema).toMatchObject({
       required: ["title", "objective", "reason"],
+      properties: {
+        whyNotActiveTask: {
+          type: "string",
+        },
+        separateTaskReason: {
+          type: "string",
+        },
+      },
     });
     expect(activateTask.inputSchema).toMatchObject({
       required: ["reason"],
@@ -411,7 +419,102 @@ describe("git-context skill", () => {
     });
   });
 
-  it("creates a new task for the current pending turn through the runtime", async () => {
+  it("creates a new task without separate-work justification when no active task exists", async () => {
+    const contextStoreDir = await mkdtemp(join(tmpdir(), "ayati-git-context-skill-"));
+    const store = new GitMemoryDailySessionStore({ contextStoreDir });
+    const runtime = createGitMemoryRuntime({
+      contextStoreDir,
+      timezone: "Asia/Kolkata",
+      agentId: "local",
+      store,
+      now: () => new Date("2026-06-28T08:00:00.000Z"),
+    });
+    const pending = await runtime.prepareUserTurn({
+      userMessage: "create a one page bakery website",
+      at: "2026-06-28T08:00:00+05:30",
+    });
+    const skill = createGitContextSkill({
+      contextStoreDir,
+      gitMemoryRuntime: runtime,
+    });
+    const tool = requiredTool(skill, "git_context_create_task_for_turn");
+
+    const result = await tool.execute({
+      sessionId: pending.sessionId,
+      title: "Bakery Website",
+      objective: "Create a one page bakery website.",
+      reason: "The user started the first durable task in this session.",
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.v2?.structuredContent).toMatchObject({
+      status: "ready",
+      mode: "create_new_task",
+      sessionId: pending.sessionId,
+      conversationRefs: [{ fromSeq: pending.userMessage.seq, toSeq: pending.userMessage.seq }],
+      createdTask: {
+        title: "Bakery Website",
+        objective: "Create a one page bakery website.",
+      },
+    });
+  });
+
+  it("rejects creating a new task while active task exists without separate-work justification", async () => {
+    const prepared = await prepareMultiTaskGitContextSession();
+    const runtime = createGitMemoryRuntime({
+      contextStoreDir: prepared.contextStoreDir,
+      timezone: "Asia/Kolkata",
+      agentId: "local",
+      store: prepared.store,
+    });
+    await runtime.prepareUserTurn({
+      userMessage: "this is close, make it calmer",
+      at: "2026-06-28T11:10:00+05:30",
+    });
+    const skill = createGitContextSkill({
+      contextStoreDir: prepared.contextStoreDir,
+      gitMemoryRuntime: runtime,
+    });
+    const tool = requiredTool(skill, "git_context_create_task_for_turn");
+
+    const result = await tool.execute({
+      sessionId: prepared.session.sessionId,
+      title: "Calmer Website Refinement",
+      objective: "Make the current website calmer and less salesy.",
+      reason: "User asked to refine the current website.",
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain("Active git-context task");
+    expect(result.v2).toMatchObject({
+      code: "GIT_CONTEXT_CREATE_TASK_REQUIRES_SEPARATE_WORK",
+      error: {
+        category: "validation",
+        retryable: true,
+      },
+      structuredContent: {
+        activeTask: {
+          taskId: prepared.reminderTask.taskId,
+          title: "Fix reminder scheduling",
+        },
+        missingOrWeakFields: ["whyNotActiveTask", "separateTaskReason"],
+      },
+    });
+
+    const snapshot = await prepared.store.readTaskRoutingSnapshot(prepared.session.sessionId);
+    expect(snapshot.tasks.map((task) => task.taskId)).toEqual(expect.arrayContaining([
+      prepared.reminderTask.taskId,
+      prepared.uploadTask.taskId,
+    ]));
+    expect(snapshot.tasks).toHaveLength(2);
+    expect(runtime.getSessionWrites(prepared.session.sessionId)).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        type: "task_routed",
+      }),
+    ]));
+  });
+
+  it("creates a separate new task while active task exists with justification", async () => {
     const prepared = await prepareMultiTaskGitContextSession();
     const runtime = createGitMemoryRuntime({
       contextStoreDir: prepared.contextStoreDir,
@@ -434,6 +537,8 @@ describe("git-context skill", () => {
       title: "Fix notification digest",
       objective: "Investigate missing notification digest delivery.",
       reason: "User started a different durable notification task.",
+      whyNotActiveTask: "The active task is reminder scheduling, but this turn is about notification digest delivery.",
+      separateTaskReason: "Notification digest delivery is a separate durable investigation with a different outcome.",
     });
 
     expect(result.ok).toBe(true);

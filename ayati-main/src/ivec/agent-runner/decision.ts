@@ -1052,7 +1052,7 @@ Decision rules:
 - Task routing tools may be visible briefly at the start of a run. Before task work, decide whether the current request belongs to the current active task, a different existing task, a new task, or no task.
 - If the request clearly continues the current active task, continue directly with normal task tools; do not call a routing tool just to confirm the active task.
 - If task ownership may belong to a different existing task, use git-context task search/read tools and then activate/switch only when there is a clear match.
-- If the request starts clear durable work with a concrete deliverable and enough detail to begin now, use git_context_create_task_for_turn. If the user is still exploring, brainstorming, or vague, reply directly with one short clarifying question instead of creating a task.
+- If the request starts clear durable work with a concrete deliverable and enough detail to begin now, use git_context_create_task_for_turn. If an active task exists, create a new task only for clearly separate work and include whyNotActiveTask plus separateTaskReason; otherwise activate the active/existing task or ask clarification. If the user is still exploring, brainstorming, or vague, reply directly with one short clarifying question instead of creating a task.
 - Visible routing tools are optional routing aids, not an instruction to create, switch, or ask clarification.
 - Normal work tools require a task run. If no task run exists, reply directly, ask a short clarification, or use git-context routing tools to create or activate the right task first.
 - If context.git.current.pendingTurn.routingStatus is "unbound", route the pending turn before normal task work. Use git-context read/search tools, then git_context_activate_task_for_turn, git_context_create_task_for_turn, or git_context_ask_clarification_for_turn. Do not call shell, filesystem, document, database, Python, UI, or other task tools while the pending turn is unbound.
@@ -1062,6 +1062,7 @@ Decision rules:
 - If git context is ambiguous, the app runtime should ask the user before this decision runs; do not guess between multiple possible tasks.
 - Treat context.scratch.progress as the authoritative current task progress. It may be absent on the first decision.
 - Use context.scratch.feedback as the latest harness feedback. Correct the specific failed tool call or protocol issue before trying a different path.
+- Use context.scratch.readContext.latest as the current run's file, directory, search, metadata, and read output context. Prefer it before reading the same paths again.
 - Use context.scratch.observations.latest as the latest real tool output cards. If these cards answer the user, reply instead of rerunning equivalent tools.
 - Treat observations as hot bounded context. Respect each card's retention: next_step is temporary, while_relevant can guide nearby work, and evidence_only means use evidence tools before relying on the preview.
 - Use context.scratch.trace.recentSteps only as compact execution history, not as evidence.
@@ -1086,13 +1087,15 @@ Decision rules:
 - Before a task run exists, ask planning or context questions directly in assistant text.
 - For tool work, call the selected executable tool directly. Never wrap executable calls inside another tool.
 - Use decision_load_tools when the visible selected tools are not enough for the next action. Do not tell the user tools are missing.
-- decision_load_tools must include a non-empty selector: exact toolNames when known, groups when a group fits, or query when uncertain.
+- decision_load_tools must include a non-empty selector: exact toolNames when known, 1-3 small groups when groups fit, or query when uncertain.
+- Prefer purpose-built groups such as file:read, file:write, shell:command, task:read, evidence:read, attachment:basic, document:qa, data:inspect, and data:execute. Broad workflow groups are fallbacks.
 - Tool protocol has two separate phases: decision_load_tools only changes the visible tool set for a later decision; selected executable tools perform work.
 - decision_load_tools is a meta decision tool, not an executable tool.
 - If Selected tools is "(none)" and work remains, call decision_load_tools instead of replying that you will do work later.
 - Executable tool calls may use only tool names listed under Selected tools.
 - Keep each model decision to one executable tool call. The harness will continue the loop for follow-up calls after observing the result.
 - Use only tools listed in Selected tools.
+- Prefer read_files over repeated read_file calls when multiple known files/pages are relevant to the next edit.
 - Prefer write_files for generated websites, apps, and multi-file file creation.
 - Hidden tools are loaded by decision_load_tools, not by calling skill_search or skill_activate unless those are explicitly selected executable tools.
 - Do not include assertions. Tool-owned contracts provide deterministic verification.
@@ -1103,12 +1106,12 @@ Decision rules:
 - For UI/layout fixes, use "not_completion" when an edit still needs screenshot, build, or test verification.
 
 Control tool shapes:
-- decision_load_tools({ "query": "...", "toolNames": ["read_file"], "groups": ["workflow:code_edit"] })
+- decision_load_tools({ "query": "...", "toolNames": ["read_files"], "groups": ["file:read", "file:write"] })
 - ask_user_feedback({ "question": "...", "reason": "..." }) only when exposed during an active task run
 
 Tool protocol examples:
 - Bad when shell is not selected: calling shell or trying to use load_tools as executable work.
-- Good instead: decision_load_tools({ "groups": ["skill:shell"] }).
+- Good instead: decision_load_tools({ "groups": ["shell:command"] }).
 - Good after shell appears in Selected tools: call shell directly with its required input schema.
 - Good when write_files is selected: call write_files directly with files, createDirs, and taskCompletion.`;
 

@@ -60,6 +60,7 @@ export interface PromptScratchContext {
   progress?: unknown;
   feedback?: unknown;
   observations?: unknown;
+  readContext?: unknown;
   trace?: unknown;
   attachments?: unknown;
   systemEvent?: unknown;
@@ -201,6 +202,7 @@ function compactScratchContext(scratch: PromptScratchContext | undefined): Promp
     ...(scratch.progress ? { progress: scratch.progress } : {}),
     ...(scratch.feedback ? { feedback: scratch.feedback } : {}),
     ...(scratch.observations ? { observations: scratch.observations } : {}),
+    ...(scratch.readContext ? { readContext: scratch.readContext } : {}),
     ...(scratch.trace ? { trace: scratch.trace } : {}),
     ...(scratch.attachments ? { attachments: scratch.attachments } : {}),
     ...(scratch.systemEvent ? { systemEvent: scratch.systemEvent } : {}),

@@ -1041,6 +1041,12 @@ function inferContextEngineFeedbackFromEvent(event: AgentFeedbackEvent): AgentFe
       committed: false,
     });
   }
+  if (event.event === "conversation_enquiry_recorded") {
+    return compactContextEngineFeedbackSummary({
+      finalizationStatus: "skipped",
+      committed: false,
+    });
+  }
   if (event.event === "finalization_failed") {
     return compactContextEngineFeedbackSummary({
       finalizationStatus: "failed",

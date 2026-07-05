@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { IVecEngine } from "../../src/ivec/index.js";
@@ -1048,7 +1048,8 @@ describe("IVecEngine", () => {
       expect(feedback.events.some((event) => event.stage === "context_engine" && event.event === "finalization_skipped")).toBe(false);
       expect(feedback.events.find((event) => event.stage === "context_engine" && event.event === "finalization_failed")?.data)
         .toMatchObject({
-          reason: "no_task_run_binding",
+          reason: "taskful_result_without_task_run_binding",
+          skipReason: "no_task_run_binding",
         });
     } finally {
       rmSync(dataDir, { recursive: true, force: true });
@@ -1210,7 +1211,7 @@ describe("IVecEngine", () => {
     }
   });
 
-  it("auto-binds the active task when chat action tools need a work run", async () => {
+  it("repairs chat action tools before an active task work run exists", async () => {
     const dataDir = mkdtempSync(join(tmpdir(), "ayati-eng-active-autobind-"));
     try {
       const outputPath = join(dataDir, "invoice-note.txt");
@@ -1262,23 +1263,17 @@ describe("IVecEngine", () => {
       engine.handleMessage("c1", { type: "chat", content: "add a follow-up invoice note" });
 
       await vi.waitFor(() => {
-        expect(chatContextRuntime.completeTaskRun).toHaveBeenCalledWith(expect.objectContaining({
-          taskId: "W-20260627-0001",
-          runId: "R-20260627-0001",
-        }));
+        expect(onReply).toHaveBeenCalledWith("c1", {
+          type: "reply",
+          content: expect.stringContaining(outputPath),
+        });
       });
+      expect(chatContextRuntime.completeTaskRun).not.toHaveBeenCalled();
       expect(chatContextRuntime.routeTaskTurn).toHaveBeenCalledWith(expect.objectContaining({
         autoOnly: true,
       }));
-      expect(chatContextRuntime.activateTaskTurn).toHaveBeenCalledWith(expect.objectContaining({
-        clientId: "c1",
-        taskId: "W-20260627-0001",
-        reason: expect.stringContaining("Continue active task for tool execution"),
-      }));
-      expect(onReply).toHaveBeenCalledWith("c1", {
-        type: "reply",
-        content: expect.stringContaining(outputPath),
-      });
+      expect(chatContextRuntime.activateTaskTurn).not.toHaveBeenCalled();
+      expect(existsSync(outputPath)).toBe(false);
     } finally {
       rmSync(dataDir, { recursive: true, force: true });
     }

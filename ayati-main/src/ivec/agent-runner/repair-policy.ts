@@ -16,6 +16,8 @@ export type RepairCode =
   | "R_PROVIDER_MALFORMED_RESPONSE"
   | "R_VERIFICATION_FAILED"
   | "R_NO_PROGRESS"
+  | "R_DUPLICATE_READ"
+  | "R_MUTATION_EXPECTED_AFTER_CONTEXT"
   | "R_REPEATED_REPAIR_FAILURE";
 
 export type RepairSeverity = "info" | "repairable" | "warning" | "error" | "fatal";
@@ -96,6 +98,8 @@ export const REPAIR_CODES: readonly RepairCode[] = [
   "R_PROVIDER_MALFORMED_RESPONSE",
   "R_VERIFICATION_FAILED",
   "R_NO_PROGRESS",
+  "R_DUPLICATE_READ",
+  "R_MUTATION_EXPECTED_AFTER_CONTEXT",
   "R_REPEATED_REPAIR_FAILURE",
 ];
 
@@ -280,6 +284,30 @@ export const REPAIR_CODE_CATALOG: Readonly<Record<RepairCode, RepairCatalogEntry
     message: "The recent steps did not move the task forward.",
     allowedNextActions: [
       "Change strategy or stop with a clear failure if no useful next action exists.",
+    ],
+    modelFacing: true,
+  },
+  R_DUPLICATE_READ: {
+    code: "R_DUPLICATE_READ",
+    severity: "repairable",
+    source: "runner.read_progress",
+    message: "The selected read repeats context that is already available in this task run.",
+    allowedNextActions: [
+      "Use the existing observations and evidence instead of reading the same target again.",
+      "If the user requested a concrete change, call write_file, write_files, or edit_file next.",
+      "Ask one specific clarification only if the missing detail blocks the change.",
+    ],
+    modelFacing: true,
+  },
+  R_MUTATION_EXPECTED_AFTER_CONTEXT: {
+    code: "R_MUTATION_EXPECTED_AFTER_CONTEXT",
+    severity: "repairable",
+    source: "runner.read_progress",
+    message: "This task run has already gathered enough read context before making a change.",
+    allowedNextActions: [
+      "Use the current observations and evidence to make the requested change.",
+      "Call write_file, write_files, or edit_file next when the user asked to build or update files.",
+      "Ask one specific clarification if the change cannot be made from the available context.",
     ],
     modelFacing: true,
   },
