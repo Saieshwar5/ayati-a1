@@ -68,6 +68,26 @@ should update progress as verified work.
 
 ## Good Contract Examples
 
+Filesystem inspection should prove:
+
+- requested paths were inspected
+- each path's existence and kind: file, directory, symlink, missing, or other
+- size and modified time when available
+- line count when requested and practical
+- content/language hints when detectable
+- directory child counts when requested
+- read recommendation for whether to read directly, read a range, search, or
+  inspect deeper first
+
+Filesystem reads should prove:
+
+- requested path or paths were resolved
+- range, truncation, and `hasMore` status are explicit
+- output shape is clear for single-file and multi-file reads
+- broad or risky reads produce advisory feedback when metadata should be used
+  first
+- raw output is available as run evidence when it is too large for prompt use
+
 Filesystem writes should prove:
 
 - requested files were written
@@ -121,6 +141,12 @@ Examples:
 - `VALIDATION_ERROR` -> ask for corrected input or choose a valid schema
 - `PERMISSION_DENIED` -> block or ask user
 - `TIMEOUT` -> reduce scope or ask user before retrying expensive work
+
+Read advisories are intentionally softer than failure contracts. For example,
+`FILE_METADATA_RECOMMENDED` tells the model that `inspect_paths` would likely
+help before another broad or truncated read. The read may still succeed; the
+advisory exists to improve the next decision without adding a separate intent
+classifier.
 
 ## Migration Rule
 

@@ -8,7 +8,8 @@ Current product features:
   task-only `ask_user_feedback` for blocking in-run feedback, and selected
   executable tools exposed directly through their own native schemas.
 - Strict run-scoped tool loading from hidden tool catalog groups, exact tool
-  names, or search queries, with tool-load and failure feedback fed back into
+  names, or search queries, with small purpose-built groups, lifecycle-aware
+  retention, deterministic follow-up loading, and repair feedback fed back into
   the next decision.
 - Stable repair-code feedback for deterministic protocol, tool-input,
   task-routing, provider-empty-response, verification, no-progress, and
@@ -31,6 +32,14 @@ Current product features:
 - Hot tool-output context with retention metadata and evidence tools for
   reading, searching, tailing, or chunking saved raw output without flooding
   every model decision.
+- Prompt-facing read context for recent file/search/inspect results, backed by
+  run evidence instead of durable task-state bloat.
+- Filesystem metadata and batched-read tools, including `inspect_paths`,
+  `read_files`, read advisories, and search/list tools for efficient code and
+  document context gathering.
+- Read-progress feedback for active task runs, so repeated read-only loops can
+  be redirected toward writing/editing, clarification, or a useful blocked
+  state.
 - Personal memory for stable user facts, time-based facts, and evolving preferences.
 - Episodic memory for semantic recall over closed sessions when embeddings are available.
 - Managed file registration and upload processing.

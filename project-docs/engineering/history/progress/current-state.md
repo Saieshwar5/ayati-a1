@@ -1,6 +1,6 @@
 # Current State
 
-Last updated: 2026-07-02
+Last updated: 2026-07-06
 
 Ayati's active task-continuity path is git-native. The old task-thread and
 Activity continuation path is historical and must not be reintroduced into the
@@ -62,6 +62,26 @@ context.timeline + context.git + context.tools + context.scratch + context.perso
   internal memory cache.
 - Hot tool-output observation retention: `next_step`, `while_relevant`, and
   `evidence_only`.
+- Prompt-facing read context at `context.scratch.readContext.latest`, derived
+  from recent inspect/find/list/search/read tool output and kept separate from
+  durable task state.
+- Filesystem inspection and efficient read tools:
+  - `inspect_paths` for metadata, line counts, content hints, hashes, directory
+    counts, and read recommendations.
+  - `read_files` for multi-file reads.
+  - `read_file` and `read_files` advisory feedback when metadata should be used
+    before broad, truncated, or risky reads.
+- Tool taxonomy as the source of truth for hidden catalog groups, loading
+  priority, tool lifecycles, deterministic follow-up loading, and runtime
+  removal policy.
+- Smaller purpose-built tool groups, 15 selected executable tools by default,
+  and multi-group `decision_load_tools` requests.
+- Deterministic file-vs-shell loading: create/build website/app/project intent
+  prepares file create/write/read tools, while shell loads for explicit
+  run/test/install/start/build-command intent.
+- Read-progress policy and feedback for active task runs, aimed at reducing
+  repeated read-only loops when the next useful move is write/edit,
+  clarification, or a blocked result.
 - Context-engine and tool-mode feedback observability: feedback summaries and
   raw events carry compact pending-turn, route source/mode, task/branch/run,
   tool-mode, routing-tool visibility/deactivation, finalization, commit, asset,
@@ -95,5 +115,5 @@ is the simple runtime path.
 5. System-event parity with chat pending-turn routing and finalization.
 6. Legacy cleanup around historical focus/message-link/event files.
 7. Stable milestone tags.
-8. Advanced raw-context lifecycle only if real usage proves retention plus
-   evidence tools is not enough.
+8. Advanced raw-context lifecycle only if real usage proves read context,
+   observation retention, and evidence tools are not enough.

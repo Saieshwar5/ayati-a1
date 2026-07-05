@@ -169,12 +169,22 @@ large, only that runtime block may be truncated.
 
 The runtime keeps a hidden catalog of available tools and exposes a run-scoped
 working set of at most `maxSelectedTools` executable schemas, currently 15 by
-default.
+default. The source of truth for tool grouping and lifecycle metadata is the
+static tool taxonomy, not scattered prompt text.
 
 The hidden catalog prompt summary is compact by design. It lists smaller
 purpose-built loadable groups and representative tool names so the model can
 request 1-3 groups together, or exact names when obvious, without injecting
 every full tool schema into every decision.
+
+Tool groups should stay small and purpose-built. Examples include:
+
+- `file:inspect`: path metadata before reading or editing.
+- `file:find`: directory and content discovery.
+- `file:read`: file reads, batched reads, and content search.
+- `file:write`: file creation and edits.
+- `shell:command`: explicit command execution only.
+- `git-context:*`: task/session context retrieval and routing.
 
 Before each decision, the runner deterministically prepares likely tools from
 the current input, attachments, git task context, work state, evidence refs, and
@@ -183,6 +193,18 @@ recent failures. If the model needs a missing capability, it calls
 execution can also deterministically load likely next tools, for example
 `find_files` loading `read_file` and `edit_file`. Some tools deactivate
 automatically after success or after one step.
+
+Tool loading is deterministic at the boundary. A request to create or build a
+website, app, file, or project should prepare file create/write/read tools, not
+shell by default. Shell tools should load for explicit run/test/install/start or
+command-execution intent. This keeps the model from using a shell transcript as
+the primary way to create simple files.
+
+Tool lifecycle is also part of the taxonomy. Read and write tools should remain
+available across the active run when they are useful for ongoing work.
+Narrow routing, discovery, or repair-only tools may expire after success, after
+one decision, or when their mode no longer applies. Runtime policy can remove
+unsafe or irrelevant tools without relying on the model to unload them.
 
 Tool loading has explicit outcomes:
 
@@ -199,6 +221,12 @@ decision prompt under `context.tools.lastLoad`.
 It includes requested selectors, loaded tools, already-active tools, evictions,
 missing selectors, status, and a short message. Historical load outcomes are
 not accumulated in prompt context.
+
+If a load request fails or matches the wrong thing, repair should show the model
+the available loading vocabulary: valid groups, representative tools, matched
+selectors, missing selectors, and a short recovery message. The repair should
+help the model make a better `decision_load_tools` call instead of forcing a new
+classification step.
 
 Tool-mode feedback is operator-facing and compact. The runner records
 `tools.tool_mode_selected`, `tools.pre_task_routing_tools_visible`,
@@ -224,7 +252,8 @@ a deduplicated grouped payload:
   context when a task is resolved.
 - `context.tools`: active tool names and the latest tool-load result.
 - `context.scratch`: current-run progress, working feedback, tool observations,
-  trace, transient attachments, and system-event state.
+  prompt-facing read context, trace, transient attachments, and system-event
+  state.
 - `context.personal`: long-lived user memory snapshot when present.
 
 The internal aliases `context.gitContext`, top-level `progress`,
@@ -281,6 +310,20 @@ If observations point to truncated, chunked, or `evidence_only` output, the
 model should use evidence tools before rerunning the original output-producing
 tool. Evidence rereads are hot context under `context.scratch.observations` and
 should not become durable task memory unless verified progress promotes a fact.
+
+Read-heavy task runs also expose compact recent read context under
+`context.scratch.readContext.latest`. This is prompt-facing working memory for
+the current run. It is derived from recent file/search/list/inspect tool output
+and should help the model know what it just inspected, read, searched, or found.
+It is not durable task state. Raw read output remains in run evidence and tool
+records; task state should retain only useful facts, summaries, files, evidence
+refs, and run metadata.
+
+The model should prefer `inspect_paths` before large or unfamiliar reads. A
+direct `read_file` or `read_files` call is still allowed, but filesystem read
+tools can return advisory feedback when metadata would have been safer first,
+for example when paths are broad, output is truncated, or the file shape is
+unknown. This advisory is a repair hint, not a hard block.
 
 ## Feedback Triage
 
@@ -386,6 +429,13 @@ stage records:
 The action stage records starts, completions, individual tool results,
 artifacts, and failures. Final feedback records the summary used by
 `latest-summary.json`.
+
+The runner also records read-progress signals for active task runs. These
+signals help detect loops where the model keeps selecting read-only tools after
+enough context is available for a requested write or edit. The guard should
+prefer a useful next action: write/edit when the requested work is concrete, ask
+a specific clarification question when required information is missing, or stop
+with a blocked state when progress cannot be made.
 
 Context-engine feedback events are operator-facing observability, not
 model-facing control. They record compact lifecycle facts such as

@@ -67,7 +67,8 @@ are:
   task context when a task is resolved.
 - `context.tools`: active tool names and the latest tool-load result.
 - `context.scratch`: current-run progress, working feedback, tool
-  observations, trace, transient attachments, and system-event state.
+  observations, prompt-facing read context, trace, transient attachments, and
+  system-event state.
 - `context.personal`: long-lived personal memory snapshot when present.
 
 The internal compatibility field `context.gitContext` can still exist inside
@@ -152,6 +153,28 @@ tools (`evidence_search`, `evidence_read_lines`, `evidence_tail`, and
 should not become durable task notes by default. Durable task facts should come
 from verification and progress reduction, not from keeping arbitrary raw slices
 in long-lived context.
+
+Read tools have an additional prompt-facing projection:
+`context.scratch.readContext.latest`. This is a compact working-memory view of
+recent filesystem and search context in the current run. It can include recent
+`inspect_paths`, `find_files`, `list_directory`, `search_in_files`,
+`read_file`, and `read_files` results. It exists so the model can make the next
+decision from the context it just gathered without putting raw file contents
+into task state.
+
+Read context should follow these boundaries:
+
+- show enough recent raw or near-raw context for the next decision
+- keep durable raw output in run evidence and tool records
+- promote only verified, useful facts into task state
+- avoid storing every read forever in scratch or task metadata
+- use evidence tools to recover older or larger output when needed
+
+Filesystem metadata should often come before large reads. `inspect_paths`
+returns size, line-count, file/directory kind, language/content hints, hashes
+when requested, directory counts when requested, and read recommendations. The
+model may still read directly, but read tools can emit advisory feedback when
+metadata would have reduced truncation, broad reads, or wrong-file decisions.
 
 ## Conversation
 
