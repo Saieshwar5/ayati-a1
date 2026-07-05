@@ -170,6 +170,14 @@ export interface FailureRecord {
   repair?: RepairPromptCard;
 }
 
+export interface ReadProgressState {
+  readOnlyStepCount: number;
+  duplicateReadCount: number;
+  mutationStepCount: number;
+  rejectedReadCount: number;
+  signatures: string[];
+}
+
 export interface LoopState {
   runId: string;
   currentSeq: number;
@@ -198,6 +206,7 @@ export interface LoopState {
   completedSteps: StepSummary[];
   runPath: string;
   failureHistory: FailureRecord[];
+  readProgress?: ReadProgressState;
   attachedDocuments?: ManagedDocumentManifest[];
   attachmentWarnings?: string[];
   preparedAttachments?: PreparedAttachmentSummary[];

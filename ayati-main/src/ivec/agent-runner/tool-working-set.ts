@@ -470,11 +470,13 @@ function buildDeterministicLoadRequest(state: LoopState): ToolLoadRequest {
   }
   if (/\b(read|open|show|inspect|view)\b/.test(text)) {
     toolNames.add("find_files");
+    toolNames.add("read_files");
     toolNames.add("read_file");
   }
   if (/\b(edit|fix|update|modify|refactor|change)\b/.test(text)) {
     toolNames.add("find_files");
     toolNames.add("search_in_files");
+    toolNames.add("read_files");
     toolNames.add("read_file");
     toolNames.add("edit_file");
   }

@@ -69,6 +69,12 @@ import {
   repairSignalToFeedbackData,
   repairSignalToPromptCard,
 } from "./repair-policy.js";
+import {
+  evaluateReadProgressGuard,
+  markReadProgressRejected,
+  updateReadProgressAfterActOutput,
+} from "./read-progress-policy.js";
+import type { ReadProgressViolation } from "./read-progress-policy.js";
 import type { ToolLoadResult } from "./tool-working-set.js";
 import { executeAgentAction } from "./action-executor.js";
 import type { AgentActionExecutionResult } from "./action-executor.js";
@@ -852,6 +858,37 @@ export async function runAgentLoop(
         activeTools: activeToolsForWorkRun,
       });
     }
+    const readProgressViolation = evaluateReadProgressGuard(state.readProgress, decision.action);
+    if (readProgressViolation) {
+      recordReadProgressRepair({
+        deps,
+        inputHandle,
+        state,
+        config,
+        decision,
+        runId: work.runHandle.runId,
+        violation: readProgressViolation,
+      });
+      if (hasRepeatedRepairFailure(state.failureHistory)) {
+        recordRepeatedRepairFailure({
+          deps,
+          inputHandle,
+          state,
+          runId: work.runHandle.runId,
+        });
+        state.status = "failed";
+        state.finalOutput = buildFailureReply(state);
+        return finalize({ status: "failed", content: state.finalOutput });
+      }
+      if (state.consecutiveFailures >= config.maxConsecutiveFailures) {
+        state.status = "failed";
+        state.finalOutput = buildFailureReply(state);
+        return finalize({ status: "failed", content: state.finalOutput });
+      }
+      queueStateSnapshot();
+      recordStateSnapshotMetric("after_read_progress_guard");
+      continue;
+    }
     recordFeedback(deps, inputHandle, work.runHandle.runId, "action", "started", {
       iteration: state.iteration,
       mode: decision.action.mode,
@@ -881,6 +918,7 @@ export async function runAgentLoop(
       failedVerificationCount++;
     }
     totalToolCalls += stepResult.stepSummary.toolSuccessCount + stepResult.stepSummary.toolFailureCount;
+    state.readProgress = updateReadProgressAfterActOutput(state.readProgress, stepResult.execution.actOutput);
     recordActionFeedback(deps, inputHandle, work.runHandle.runId, decision.action, stepResult);
     recordStepFeedback(deps, inputHandle, work.runHandle.runId, state.iteration, stepResult);
 
@@ -1334,6 +1372,49 @@ function recordFreshSessionToolRepair(input: {
       context: input.state.harnessContext.contextEngine,
     }),
     harnessContext: summarizeHarnessContext(input.state.harnessContext),
+    ...repairSignalToFeedbackData(repair),
+  });
+}
+
+function recordReadProgressRepair(input: {
+  deps: AgentLoopDeps;
+  inputHandle: SessionInputHandle;
+  state: LoopState;
+  config: LoopConfig;
+  decision: AgentDecision;
+  runId: string;
+  violation: ReadProgressViolation;
+}): void {
+  input.state.consecutiveFailures++;
+  input.state.readProgress = markReadProgressRejected(input.state.readProgress);
+  const repair = createRepairSignal(input.violation.code, {
+    message: input.violation.message,
+    blockedTargets: input.violation.blockedTargets,
+    allowedNextActions: input.violation.allowedNextActions,
+    operatorDetails: {
+      ...input.violation.operatorDetails,
+      consecutiveFailures: input.state.consecutiveFailures,
+      maxConsecutiveFailures: input.config.maxConsecutiveFailures,
+      decision: summarizeDecision(input.decision),
+      readProgress: input.state.readProgress,
+    },
+  });
+  const promptCard = repairSignalToPromptCard(repair);
+  input.state.failureHistory.push({
+    step: input.state.iteration,
+    failureType: "no_progress",
+    reason: repair.message,
+    blockedTargets: repair.blockedTargets,
+    repairCode: repair.code,
+    ...(promptCard ? { repair: promptCard } : {}),
+  });
+  recordFeedback(input.deps, input.inputHandle, input.runId, "guard", "read_progress_repair_requested", {
+    message: repair.message,
+    warningCodes: ["read_progress_repair_requested", repair.code],
+    consecutiveFailures: input.state.consecutiveFailures,
+    maxConsecutiveFailures: input.config.maxConsecutiveFailures,
+    decision: summarizeDecision(input.decision),
+    readProgress: input.state.readProgress,
     ...repairSignalToFeedbackData(repair),
   });
 }

@@ -8,6 +8,15 @@ export interface ReadFileInput {
   maxBlocks?: number;
 }
 
+export interface ReadFilesInputFile extends ReadFileInput {}
+
+export interface ReadFilesInput {
+  files: ReadFilesInputFile[];
+  maxPerFileChars?: number;
+  maxTotalChars?: number;
+  allowMissing?: boolean;
+}
+
 export interface WriteFileInput {
   path: string;
   content: string;

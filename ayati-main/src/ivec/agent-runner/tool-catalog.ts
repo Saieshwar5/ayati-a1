@@ -247,9 +247,10 @@ function inferProduces(tool: ToolDefinition): string[] {
 
 function inferNextTools(toolName: string): { success: string[]; failure: string[] } {
   const map: Record<string, { success: string[]; failure: string[] }> = {
-    find_files: { success: ["read_file", "edit_file", "write_file"], failure: ["list_directory", "search_in_files"] },
-    search_in_files: { success: ["read_file", "edit_file"], failure: ["find_files", "list_directory"] },
+    find_files: { success: ["read_files", "read_file", "edit_file", "write_file"], failure: ["list_directory", "search_in_files"] },
+    search_in_files: { success: ["read_files", "read_file", "edit_file"], failure: ["find_files", "list_directory"] },
     read_file: { success: ["edit_file", "write_file", "search_in_files"], failure: ["find_files", "list_directory"] },
+    read_files: { success: ["edit_file", "write_file", "write_files", "search_in_files"], failure: ["find_files", "list_directory", "read_file"] },
     edit_file: { success: ["read_file", "shell_run_script"], failure: ["read_file", "search_in_files"] },
     write_file: { success: ["read_file", "shell_run_script"], failure: ["create_directory", "write_file"] },
     write_files: { success: ["read_file", "shell_run_script"], failure: ["create_directory", "write_files"] },

@@ -1093,6 +1093,7 @@ Decision rules:
 - Executable tool calls may use only tool names listed under Selected tools.
 - Keep each model decision to one executable tool call. The harness will continue the loop for follow-up calls after observing the result.
 - Use only tools listed in Selected tools.
+- Prefer read_files over repeated read_file calls when multiple known files/pages are relevant to the next edit.
 - Prefer write_files for generated websites, apps, and multi-file file creation.
 - Hidden tools are loaded by decision_load_tools, not by calling skill_search or skill_activate unless those are explicitly selected executable tools.
 - Do not include assertions. Tool-owned contracts provide deterministic verification.
@@ -1103,7 +1104,7 @@ Decision rules:
 - For UI/layout fixes, use "not_completion" when an edit still needs screenshot, build, or test verification.
 
 Control tool shapes:
-- decision_load_tools({ "query": "...", "toolNames": ["read_file"], "groups": ["workflow:code_edit"] })
+- decision_load_tools({ "query": "...", "toolNames": ["read_files"], "groups": ["workflow:code_edit"] })
 - ask_user_feedback({ "question": "...", "reason": "..." }) only when exposed during an active task run
 
 Tool protocol examples:

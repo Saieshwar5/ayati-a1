@@ -9,6 +9,7 @@ import { deleteTool } from "../../src/skills/builtins/filesystem/delete.js";
 import { editFileTool } from "../../src/skills/builtins/filesystem/edit-file.js";
 import { moveTool } from "../../src/skills/builtins/filesystem/move.js";
 import { readFileTool } from "../../src/skills/builtins/filesystem/read-file.js";
+import { readFilesTool } from "../../src/skills/builtins/filesystem/read-files.js";
 import { writeFileTool } from "../../src/skills/builtins/filesystem/write-file.js";
 import { pulseTool } from "../../src/skills/builtins/pulse/index.js";
 import {
@@ -53,6 +54,7 @@ describe("static built-in tool contracts", () => {
       createDirectoryTool,
       writeFileTool,
       readFileTool,
+      readFilesTool,
       editFileTool,
       moveTool,
       deleteTool,
@@ -85,6 +87,18 @@ describe("static built-in tool contracts", () => {
     expect(read.ok).toBe(true);
     expect(read.v2?.verification?.status).toBe("passed");
     expect(read.v2?.structuredContent).toMatchObject({ content: "alpha beta" });
+
+    const batchRead = await executor.execute("read_files", {
+      files: [{ path: source }, { path: source, mode: "search", query: "beta" }],
+    });
+    expect(batchRead.ok).toBe(true);
+    expect(batchRead.v2?.verification?.status).toBe("passed");
+    expect(batchRead.v2?.structuredContent).toMatchObject({
+      summary: {
+        requested: 2,
+        succeeded: 2,
+      },
+    });
 
     const edited = await executor.execute("edit_file", {
       path: source,
