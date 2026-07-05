@@ -17,6 +17,7 @@ import type {
   CompletionDirective,
   LoopConfig,
   LoopState,
+  PromptToolCallContext,
   StepSummary,
   TaskSummaryFailureSummary,
   ToolObservation,
@@ -721,7 +722,7 @@ export async function runAgentLoop(
       const compactedWorkState = compactWorkState(stepResult.execution.nextWorkState);
       recordCompactionMetric(metrics, "workState", beforeWorkStateChars, measureJson(compactedWorkState), { step: state.iteration });
       state.workState = compactedWorkState;
-      state.toolContext = compactToolContext({ recent: getLatestObservations(stepResult.execution) });
+      state.toolContext = buildUpdatedToolContext(state, stepResult.execution);
       stepResult.stepSummary.workState = compactedWorkState;
       stepResult.stepRecord.workState = compactedWorkState;
       recordReducerFeedback(deps, inputHandle, routingRunId, state.iteration, {
@@ -932,7 +933,7 @@ export async function runAgentLoop(
     const compactedWorkState = compactWorkState(stepResult.execution.nextWorkState);
     recordCompactionMetric(metrics, "workState", beforeWorkStateChars, measureJson(compactedWorkState), { step: state.iteration });
     state.workState = compactedWorkState;
-    state.toolContext = compactToolContext({ recent: getLatestObservations(stepResult.execution) });
+    state.toolContext = buildUpdatedToolContext(state, stepResult.execution);
     stepResult.stepSummary.workState = compactedWorkState;
     stepResult.stepRecord.workState = compactedWorkState;
     recordReducerFeedback(deps, inputHandle, work.runHandle.runId, state.iteration, {
@@ -2000,6 +2001,7 @@ function summarizeDecisionInputState(stateView: AgentStateView): Record<string, 
     blockerCount: stateView.progress?.blockers?.length ?? 0,
     verifiedFactCount: stateView.progress?.verifiedFacts?.length ?? 0,
     evidenceRefCount: stateView.progress?.evidenceRefs?.length ?? 0,
+    recentToolCallCount: stateView.toolCalls?.latest.length ?? 0,
     recentObservationCount: stateView.observations?.latest.length ?? 0,
     recentReadContextCount: stateView.readContext?.latest.length ?? 0,
     recentTraceStepCount: stateView.trace?.recentSteps?.length ?? 0,
@@ -2566,6 +2568,39 @@ function getLatestObservations(execution: AgentActionExecutionResult): ToolObser
   return execution.actOutput.toolCalls
     .map((call) => call.observation)
     .filter((observation): observation is NonNullable<ActToolCallRecord["observation"]> => observation !== undefined);
+}
+
+function buildUpdatedToolContext(
+  state: LoopState,
+  execution: AgentActionExecutionResult,
+): LoopState["toolContext"] {
+  return compactToolContext({
+    recent: getLatestObservations(execution),
+    toolCalls: [
+      ...(state.toolContext?.toolCalls ?? []),
+      ...execution.actOutput.toolCalls.map((call) => toPromptToolCallContext(state.iteration, call)),
+    ],
+  });
+}
+
+function toPromptToolCallContext(step: number, call: ActToolCallRecord): PromptToolCallContext {
+  return {
+    step,
+    ...(call.callId ? { callId: call.callId } : {}),
+    tool: call.tool,
+    input: call.input,
+    status: call.error ? "failed" : "success",
+    output: call.output,
+    ...(call.error ? { error: call.error } : {}),
+    ...(call.code ? { code: call.code } : {}),
+    ...(call.operationStatus ? { operationStatus: call.operationStatus } : {}),
+    ...(call.artifacts && call.artifacts.length > 0 ? { artifacts: call.artifacts } : {}),
+    ...(call.evidenceRef ? { evidenceRef: call.evidenceRef } : {}),
+    ...(call.observation?.hasMore !== undefined ? { hasMore: call.observation.hasMore } : {}),
+    ...(call.rawOutputPath ? { rawOutputPath: call.rawOutputPath } : {}),
+    ...(call.rawOutputChars !== undefined ? { rawOutputChars: call.rawOutputChars } : {}),
+    ...(call.outputTruncated !== undefined ? { outputTruncated: call.outputTruncated } : {}),
+  };
 }
 
 function isEvidenceReviewAction(action: AgentAction): boolean {

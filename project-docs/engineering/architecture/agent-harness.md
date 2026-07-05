@@ -251,8 +251,10 @@ a deduplicated grouped payload:
 - `context.git.current`: focus, pending-turn routing state, and selected task
   context when a task is resolved.
 - `context.tools`: active tool names and the latest tool-load result.
-- `context.scratch`: current-run progress, working feedback, tool observations,
-  prompt-facing read context, and transient attachments.
+- `context.scratch`: current-run status and the ordered tool-call memory for
+  this run. During the scratch-context simplification transition, progress,
+  working feedback, tool observations, prompt-facing read context, and transient
+  attachments may still appear as compatibility fields.
 - `context.personal`: long-lived user memory snapshot when present.
 
 The internal aliases `context.gitContext`, top-level `progress`,

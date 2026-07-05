@@ -145,6 +145,8 @@ describe("parseAgentDecision", () => {
     expect(systemPrompt).toContain("Use context.timeline for exact recent messages and current input");
     expect(systemPrompt).toContain("If summary and exact conversation conflict, trust context.timeline");
     expect(systemPrompt).toContain("do not infer omitted details from it");
+    expect(systemPrompt).toContain("context.scratch.status");
+    expect(systemPrompt).toContain("context.scratch.toolCalls.latest");
     expect(systemPrompt).toContain("context.scratch.progress");
     expect(systemPrompt).toContain("context.scratch.feedback");
     expect(systemPrompt).toContain("context.scratch.readContext.latest");

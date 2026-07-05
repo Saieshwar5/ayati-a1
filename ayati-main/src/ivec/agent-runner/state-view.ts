@@ -1,4 +1,4 @@
-import type { LoopState, TaskNote, ToolContextState, ToolObservation, WorkEvidenceRef, WorkState } from "../types.js";
+import type { LoopState, PromptToolCallContext, TaskNote, ToolContextState, ToolObservation, WorkEvidenceRef, WorkState } from "../types.js";
 import type { RepairPromptCard } from "./repair-policy.js";
 import {
   buildRuntimeCapabilityPromptContext,
@@ -29,6 +29,10 @@ export interface PromptObservations {
 
 export interface PromptReadContext {
   latest: ToolObservation[];
+}
+
+export interface PromptToolCalls {
+  latest: PromptToolCallContext[];
 }
 
 export interface PromptToolLoadState {
@@ -86,6 +90,7 @@ export interface AgentStateView {
   toolLoad?: PromptToolLoadState;
   observations?: PromptObservations;
   readContext?: PromptReadContext;
+  toolCalls?: PromptToolCalls;
   trace?: PromptTrace;
   attachments?: {
     incoming?: Array<{ id: string; name: string; kind: string; source: string; mimeType?: string; status: string }>;
@@ -117,6 +122,7 @@ export function buildAgentStateView(state: LoopState, options: AgentStateViewOpt
   const workingFeedback = buildWorkingFeedbackView(state);
   const observations = buildObservationsView(state.toolContext);
   const readContext = buildReadContextView(state.toolContext);
+  const toolCalls = buildToolCallsView(state.toolContext);
   const trace = buildTraceView(state);
   const attachments = buildAttachmentState(state);
   const systemEvent = state.systemEvent ? {
@@ -135,6 +141,8 @@ export function buildAgentStateView(state: LoopState, options: AgentStateViewOpt
       toolLoad,
     }),
     scratch: buildScratchContext({
+      status: state.workState.status,
+      toolCalls,
       progress,
       workingFeedback,
       observations,
@@ -150,6 +158,7 @@ export function buildAgentStateView(state: LoopState, options: AgentStateViewOpt
     ...(toolLoad ? { toolLoad } : {}),
     ...(observations ? { observations } : {}),
     ...(readContext ? { readContext } : {}),
+    ...(toolCalls ? { toolCalls } : {}),
     ...(trace ? { trace } : {}),
     ...(attachments ? { attachments } : {}),
     ...(systemEvent ? { systemEvent } : {}),
@@ -173,6 +182,8 @@ function buildToolsContext(input: {
 }
 
 function buildScratchContext(input: {
+  status: WorkState["status"];
+  toolCalls?: PromptToolCalls;
   progress?: PromptProgressState;
   workingFeedback?: PromptWorkingFeedback;
   observations?: PromptObservations;
@@ -180,6 +191,8 @@ function buildScratchContext(input: {
   attachments?: AgentStateView["attachments"];
 }): PromptScratchContext {
   return {
+    status: input.status,
+    ...(input.toolCalls ? { toolCalls: input.toolCalls } : {}),
     ...(input.progress ? { progress: input.progress } : {}),
     ...(input.workingFeedback ? { feedback: input.workingFeedback } : {}),
     ...(input.observations ? { observations: input.observations } : {}),
@@ -377,6 +390,11 @@ function buildReadContextView(toolContext: ToolContextState | undefined): Prompt
   const latest = buildPromptObservations(
     (toolContext?.recent ?? []).filter((observation) => READ_CONTEXT_TOOLS.has(observation.tool)),
   );
+  return latest.length > 0 ? { latest } : undefined;
+}
+
+function buildToolCallsView(toolContext: ToolContextState | undefined): PromptToolCalls | undefined {
+  const latest = toolContext?.toolCalls ?? [];
   return latest.length > 0 ? { latest } : undefined;
 }
 

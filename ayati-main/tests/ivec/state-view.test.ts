@@ -367,13 +367,14 @@ describe("buildAgentStateView", () => {
     });
     expect(stateView.context.git).not.toHaveProperty("personalMemorySnapshot");
     expect(stateView.context.tools).toBeUndefined();
-    expect(stateView.context.scratch).toBeUndefined();
+    expect(stateView.context.scratch).toEqual({ status: "not_done" });
     expect(Object.keys(stateView.context).sort()).toEqual([
       "git",
       "gitContext",
       "personal",
       "personalMemorySnapshot",
       "runtimeMode",
+      "scratch",
       "timeline",
     ]);
   });
@@ -430,6 +431,15 @@ describe("buildAgentStateView", () => {
         userInputNeeded: "Can I edit the prompt?",
       },
       toolContext: {
+        toolCalls: [{
+          step: 1,
+          callId: "call-1",
+          tool: "read_file",
+          input: { path: "state-view.ts" },
+          status: "success",
+          output: "Read state-view.ts.",
+          hasMore: false,
+        }],
         recent: [
           {
             id: "obs-1",
@@ -491,6 +501,18 @@ describe("buildAgentStateView", () => {
     expect(stateView.readContext?.latest[0]?.tool).toBe("read_file");
     expect((stateView.context.scratch?.readContext as { latest?: Array<{ tool: string; content: string }> } | undefined)?.latest)
       .toEqual([expect.objectContaining({ tool: "read_file", content: "Read state-view.ts." })]);
+    expect(stateView.toolCalls?.latest).toEqual([
+      expect.objectContaining({
+        step: 1,
+        callId: "call-1",
+        tool: "read_file",
+        input: { path: "state-view.ts" },
+        status: "success",
+        output: "Read state-view.ts.",
+      }),
+    ]);
+    expect((stateView.context.scratch?.toolCalls as { latest?: Array<{ tool: string; input: unknown; output: string }> } | undefined)?.latest)
+      .toEqual([expect.objectContaining({ tool: "read_file", input: { path: "state-view.ts" }, output: "Read state-view.ts." })]);
     expect(stateView.trace?.recentSteps?.map((step) => step.step)).toEqual([1]);
     expect(stateView.context.scratch).not.toHaveProperty("trace");
     expect(stateView.workingFeedback?.latest[0]).toMatchObject({

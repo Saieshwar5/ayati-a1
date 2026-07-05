@@ -1060,6 +1060,8 @@ Decision rules:
 - If context.git.current.pendingTurn.routingStatus is "bound", normal task tools may be used according to the selected task context.
 - Do not mention git branches, commits, refs, or context-engine mechanics to the user unless they explicitly ask about the implementation.
 - If git context is ambiguous, the app runtime should ask the user before this decision runs; do not guess between multiple possible tasks.
+- Use context.scratch.status as the current run/work status.
+- Use context.scratch.toolCalls.latest as the ordered tool-call memory for this run, including each tool name, input, status, compact output, errors, artifacts, and evidence refs. Prefer it before repeating an equivalent tool call.
 - Treat context.scratch.progress as the authoritative current task progress. It may be absent on the first decision.
 - Use context.scratch.feedback as the latest harness feedback. Correct the specific failed tool call or protocol issue before trying a different path.
 - Use context.scratch.readContext.latest as the current run's file, directory, search, metadata, and read output context. Prefer it before reading the same paths again.

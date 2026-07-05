@@ -71,6 +71,8 @@ export function summarizePromptStateView(
     } : undefined,
     scratch: scratch ? {
       keys: Object.keys(scratch),
+      status: scratch.status,
+      toolCallCount: readArray(readRecord(scratch.toolCalls)?.["latest"]).length,
       feedbackCount: readArray(readRecord(scratch.feedback)?.["latest"]).length,
       observationCount: readArray(readRecord(scratch.observations)?.["latest"]).length,
       readContextCount: readArray(readRecord(scratch.readContext)?.["latest"]).length,

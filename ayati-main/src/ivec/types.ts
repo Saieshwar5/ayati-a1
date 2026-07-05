@@ -136,8 +136,27 @@ export interface ToolObservation {
   availableActions?: Array<"next_chunk" | "search" | "read_lines" | "tail">;
 }
 
+export interface PromptToolCallContext {
+  step: number;
+  callId?: string;
+  tool: string;
+  input: unknown;
+  status: "success" | "failed";
+  output: string;
+  error?: string;
+  code?: string;
+  operationStatus?: ToolOperationStatus;
+  artifacts?: ArtifactRef[];
+  evidenceRef?: WorkEvidenceRef;
+  hasMore?: boolean;
+  rawOutputPath?: string;
+  rawOutputChars?: number;
+  outputTruncated?: boolean;
+}
+
 export interface ToolContextState {
   recent: ToolObservation[];
+  toolCalls?: PromptToolCallContext[];
 }
 
 export interface TaskNote {
