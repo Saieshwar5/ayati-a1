@@ -240,7 +240,7 @@ function buildDirectoryObservation(input: {
     hasMore: input.capped,
     suggestedReads: [
       { kind: "search", reason: "Use find_files or search_in_files to narrow this directory.", input: {} },
-      { kind: "read_lines", reason: "Read the saved listing around a specific entry.", input: {} },
+      { kind: "list_narrower", reason: "List a narrower directory or filter for a specific entry.", input: {} },
     ],
   };
 }

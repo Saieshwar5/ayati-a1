@@ -90,6 +90,7 @@ export interface ProjectAgentPromptContextInput {
 
 export interface AgentPromptStateView {
   context: AgentPromptContext;
+  attachments?: AgentStateView["attachments"];
 }
 
 export function projectAgentPromptContext(input: ProjectAgentPromptContextInput): AgentPromptContext {
@@ -119,6 +120,7 @@ export function projectAgentPromptContext(input: ProjectAgentPromptContextInput)
 export function projectAgentStateViewForPrompt(stateView: AgentStateView): AgentPromptStateView {
   return {
     context: compactAgentPromptContext(stateView.context),
+    ...(stateView.attachments ? { attachments: stateView.attachments } : {}),
   };
 }
 

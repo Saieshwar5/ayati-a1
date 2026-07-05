@@ -526,51 +526,6 @@ describe("executeAgentAction verification gates", () => {
     }
   });
 
-  it("keeps evidence reread snippets as next-step task notes", async () => {
-    const runPath = makeTmpDir();
-    try {
-      const evidenceReadTool: ToolDefinition = {
-        name: "evidence_read_lines",
-        description: "Return bounded saved evidence lines.",
-        inputSchema: {
-          type: "object",
-          required: ["evidenceRef"],
-          properties: {
-            evidenceRef: { type: "string" },
-            startLine: { type: "number" },
-            endLine: { type: "number" },
-          },
-        },
-        async execute() {
-          return {
-            ok: true,
-            output: "5: import { missingSymbol } from './missing.js'\n6: export function run() {}",
-          };
-        },
-      };
-
-      const result = await runAction(
-        [evidenceReadTool],
-        actionFor("evidence_read_lines", {
-          evidenceRef: "evidence://ev_001_call_1",
-          startLine: 5,
-          endLine: 6,
-        }, "Inspect saved failing import lines"),
-        runPath,
-      );
-
-      expect(result.nextWorkState.taskNotes).toHaveLength(1);
-      expect(result.nextWorkState.taskNotes?.[0]).toMatchObject({
-        id: "note:evidence_read_lines:evidence://ev_001_call_1",
-        source: "evidence_read_lines:evidence://ev_001_call_1",
-        expires: "next_step",
-      });
-      expect(result.nextWorkState.taskNotes?.[0]?.text).toContain("missingSymbol");
-    } finally {
-      cleanup(runPath);
-    }
-  });
-
   it("preserves contract-backed facts when deterministic filesystem work succeeds", async () => {
     const runPath = makeTmpDir();
     const outputPath = join(runPath, "created.txt");

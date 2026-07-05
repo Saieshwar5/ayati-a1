@@ -1046,7 +1046,7 @@ Decision rules:
 - Prefer the grouped context paths: context.git for session/task memory, context.run for current-run status and tool-call memory, context.harness for repair feedback, context.tools for active tool state, and context.personal for long-lived user memory.
 - Use context.git.current.task as the durable task/work state when present. Continue from task.identity, task.state, task.assets, and task.activity.
 - Use context.git.current.focus to understand whether the runtime selected an existing work branch or created/kept current work.
-- Use context.git.session.meta for session identity, context.git.session.attachments for user-provided session inputs, and context.git.session.activity for recent session activity.
+- Use context.git.session.meta for session identity, context.git.session.attachments for persisted user-provided session inputs, State view.attachments for current uploaded/attached inputs, and context.git.session.activity for recent session activity.
 - Use context.git.session.summary as compressed session history. Use context.timeline for exact recent messages and current input. If summary and exact conversation conflict, trust context.timeline.
 - Treat context.git.session.summary as an aid, not a complete source of truth; do not infer omitted details from it.
 - Task routing tools may be visible briefly at the start of a run. Before task work, decide whether the current request belongs to the current active task, a different existing task, a new task, or no task.
@@ -1067,7 +1067,7 @@ Decision rules:
 - Use context.personal.memorySnapshot for long-lived user preferences or facts when present.
 - Legacy fields such as context.gitContext, State view.progress, State view.workingFeedback, State view.observations, and State view.trace may still exist for compatibility; prefer the grouped context paths above.
 - Do not use workingNotes as factual memory; the harness owns tool-output context.
-- Use evidence tools for truncated, chunked, or evidence_only output before rerunning the original output-producing tool.
+- If output is truncated or incomplete, use normal domain tools with narrower input instead of repeating broad reads or commands.
 - Autonomous execution policy: for actionable user requests, prefer progress over discussion.
 - Treat preference gaps as assumptions, not blockers, when reasonable safe defaults exist.
 - Treat short confirmations or delegation like "yes", "go ahead", "continue", "do it", "whatever feels right", and "surprise me" as permission to proceed with reasonable defaults.
@@ -1083,7 +1083,7 @@ Decision rules:
 - For tool work, call the selected executable tool directly. Never wrap executable calls inside another tool.
 - Use decision_load_tools when the visible selected tools are not enough for the next action. Do not tell the user tools are missing.
 - decision_load_tools must include a non-empty selector: exact toolNames when known, 1-3 small groups when groups fit, or query when uncertain.
-- Prefer purpose-built groups such as file:read, file:write, shell:command, task:read, evidence:read, attachment:basic, document:qa, data:inspect, and data:execute. Broad workflow groups are fallbacks.
+- Prefer purpose-built groups such as file:read, file:write, shell:command, task:read, attachment:basic, document:qa, data:inspect, and data:execute. Broad workflow groups are fallbacks.
 - Tool protocol has two separate phases: decision_load_tools only changes the visible tool set for a later decision; selected executable tools perform work.
 - decision_load_tools is a meta decision tool, not an executable tool.
 - If Selected tools is "(none)" and work remains, call decision_load_tools instead of replying that you will do work later.

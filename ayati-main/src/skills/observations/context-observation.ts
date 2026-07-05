@@ -9,7 +9,7 @@ export interface ToolContextBlock {
 }
 
 export interface ToolSuggestedRead {
-  kind: "search" | "read_lines" | "tail" | "next_chunk";
+  kind: "search" | "read_range" | "read_next_range" | "inspect" | "rerun_narrower" | "list_narrower";
   reason: string;
   input: Record<string, unknown>;
 }
@@ -164,7 +164,7 @@ export function renderContextObservation(input: {
   }
 
   if (input.observation.hasMore) {
-    lines.push("", "More context is available through evidence tools.");
+    lines.push("", "More context may be available through narrower domain-tool calls.");
   }
   if (input.observation.suggestedReads && input.observation.suggestedReads.length > 0) {
     lines.push("", "Suggested reads:");
@@ -221,7 +221,14 @@ export function readContextObservation(value: unknown): ToolContextObservation |
         if (!item || typeof item !== "object" || Array.isArray(item)) return [];
         const read = item as Record<string, unknown>;
         const kind = read["kind"];
-        if (kind !== "search" && kind !== "read_lines" && kind !== "tail" && kind !== "next_chunk") return [];
+        if (
+          kind !== "search"
+          && kind !== "read_range"
+          && kind !== "read_next_range"
+          && kind !== "inspect"
+          && kind !== "rerun_narrower"
+          && kind !== "list_narrower"
+        ) return [];
         const reason = typeof read["reason"] === "string" ? read["reason"] : "";
         const rawInput = read["input"];
         const readInput = rawInput && typeof rawInput === "object" && !Array.isArray(rawInput)

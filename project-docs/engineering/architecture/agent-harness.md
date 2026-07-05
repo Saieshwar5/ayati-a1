@@ -308,7 +308,8 @@ continue the focused work branch, use task assets, start new work, or ask the
 user when runtime task resolution is ambiguous.
 
 If tool output is truncated, chunked, or evidence-only, the model should use
-evidence tools before rerunning the original output-producing tool.
+normal domain tools with narrower input instead of repeating broad reads or
+commands.
 Prompt-facing ordered tool output for the current run is carried by
 `context.run.toolCalls`, including tool input, compact output,
 errors, artifacts, and evidence refs. Read-heavy tool results use the same

@@ -621,10 +621,6 @@ const PARALLEL_SAFE_TOOL_NAMES = new Set([
   "read_files",
   "list_directory",
   "search_in_files",
-  "evidence_next_chunk",
-  "evidence_read_lines",
-  "evidence_tail",
-  "evidence_search",
 ]);
 
 const PARALLEL_SAFE_DOMAINS = new Set([

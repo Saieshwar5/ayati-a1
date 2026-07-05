@@ -116,5 +116,5 @@ is the simple runtime path.
 5. System-event parity with chat pending-turn routing and finalization.
 6. Legacy cleanup around historical focus/message-link/event files.
 7. Stable milestone tags.
-8. Advanced raw-context lifecycle only if real usage proves read context,
-   observation retention, and evidence tools are not enough.
+8. Advanced raw-context lifecycle only if real usage proves compact run
+   tool-call context and domain-tool narrowing are not enough.

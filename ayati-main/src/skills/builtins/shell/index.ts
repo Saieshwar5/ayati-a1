@@ -274,9 +274,9 @@ function buildShellObservation(input: ShellCommandResultInput): ToolContextObser
     blocks,
     hasMore: input.truncated || rawOutput.length > 12_000,
     suggestedReads: [
-      { kind: "search", reason: "Search raw command output for another error, file path, or test name.", input: {} },
-      { kind: "tail", reason: "Read the latest command output lines.", input: { lineCount: 120 } },
-      { kind: "read_lines", reason: "Read exact output lines around a reported issue.", input: {} },
+      { kind: "search", reason: "Search command output for another error, file path, or test name.", input: {} },
+      { kind: "rerun_narrower", reason: "Rerun a narrower command for the latest relevant lines.", input: { lineCount: 120 } },
+      { kind: "rerun_narrower", reason: "Rerun a narrower command around the reported issue.", input: {} },
     ],
   };
 }

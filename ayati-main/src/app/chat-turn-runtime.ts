@@ -1609,10 +1609,6 @@ const CONVERSATION_READ_ONLY_TOOL_NAMES = new Set([
   "document_list_sections",
   "document_read_section",
   "document_query",
-  "evidence_read_lines",
-  "evidence_search",
-  "evidence_tail",
-  "evidence_next_chunk",
   "calculator",
 ]);
 

@@ -80,8 +80,6 @@ import type { ToolLoadResult } from "./tool-working-set.js";
 import { executeAgentAction } from "./action-executor.js";
 import type { AgentActionExecutionResult } from "./action-executor.js";
 import { planLocalRecovery } from "./failure-policy.js";
-import { createEvidenceTools } from "./evidence-tools.js";
-import { isEvidenceToolName } from "./observation-builder.js";
 import { deriveExecutionStatus } from "../verification-gates.js";
 import { buildContextEngineFeedbackSummary } from "../feedback-ledger.js";
 import type { ToolDefinition, ToolResult } from "../../skills/types.js";
@@ -283,7 +281,6 @@ export async function runAgentLoop(
       stepNumber: state.iteration,
       ...(deps.uiContext ? { uiContext: deps.uiContext } : {}),
     });
-    deps.toolExecutor?.unmount?.(evidenceToolGroupId(cleanupRunId));
     devLog(`[${deps.clientId}] [metrics:agent_loop] ${formatRunMetrics(metrics)}`);
     const responseKind = input.responseKind ?? input.completion?.response_kind ?? state.preferredResponseKind ?? "reply";
     const finalContent = input.content ?? state.finalOutput;
@@ -423,8 +420,6 @@ export async function runAgentLoop(
     } else {
       await deps.skillActivationManager?.prepareForDecision(state, toolContext);
     }
-    syncEvidenceTools(deps, state, toolContext);
-
     const visibleTools = deps.toolWorkingSetManager
       ? deps.toolWorkingSetManager.visibleToolDefinitions(toolContext)
       : deps.toolExecutor?.definitions({
@@ -839,7 +834,6 @@ export async function runAgentLoop(
     } else {
       await deps.skillActivationManager?.prepareForDecision(state, workToolContext);
     }
-    syncEvidenceTools(deps, state, workToolContext);
     recordFeedback(deps, inputHandle, work.runHandle.runId, "tools", "working_set_refreshed_for_action", {
       iteration: state.iteration,
       toolContextRunId: workToolContext.runId,
@@ -944,11 +938,8 @@ export async function runAgentLoop(
 
     const compactedStep = compactStepSummaryForState(stepResult.stepSummary);
     recordCompactionMetric(metrics, "completedStepSummary", measureJson(stepResult.stepSummary), measureJson(compactedStep), { step: state.iteration });
-    const evidenceReviewAction = isEvidenceReviewAction(decision.action);
-    if (!evidenceReviewAction) {
-      state.completedSteps.push(compactedStep);
-      await work.runStateManager.appendStepRecord(stepResult.stepRecord, stepResult.fullStepText);
-    }
+    state.completedSteps.push(compactedStep);
+    await work.runStateManager.appendStepRecord(stepResult.stepRecord, stepResult.fullStepText);
 
     recordPlanModeMetric(metrics, decision.action.mode, {
       step: state.iteration,
@@ -2601,39 +2592,6 @@ function toPromptToolCallContext(step: number, call: ActToolCallRecord): PromptT
     ...(call.rawOutputChars !== undefined ? { rawOutputChars: call.rawOutputChars } : {}),
     ...(call.outputTruncated !== undefined ? { outputTruncated: call.outputTruncated } : {}),
   };
-}
-
-function isEvidenceReviewAction(action: AgentAction): boolean {
-  return action.calls.length > 0 && action.calls.every((call) => isEvidenceToolName(call.tool));
-}
-
-function syncEvidenceTools(
-  deps: AgentLoopDeps,
-  state: LoopState,
-  toolContext: { runId: string; sessionId: string; stepNumber: number; clientId: string },
-): void {
-  if (!deps.toolExecutor?.mount || !deps.toolExecutor.unmount) {
-    return;
-  }
-  const groupId = evidenceToolGroupId(toolContext.runId);
-  const evidenceRefs = state.workState.evidenceRefs ?? [];
-  if (evidenceRefs.length === 0) {
-    deps.toolExecutor.unmount(groupId);
-    return;
-  }
-  deps.toolExecutor.mount(groupId, createEvidenceTools(state), {
-    scope: "run",
-    runId: toolContext.runId,
-    sessionId: toolContext.sessionId,
-    activatedAtStep: toolContext.stepNumber,
-    skillId: "evidence",
-    toolIds: ["next_chunk", "search", "read_lines", "tail"],
-    description: "Run-scoped tools for reading saved tool-output evidence.",
-  });
-}
-
-function evidenceToolGroupId(runId: string): string {
-  return `dynamic:evidence:${runId}`;
 }
 
 function canCompleteFromVerifiedState(state: LoopState): boolean {

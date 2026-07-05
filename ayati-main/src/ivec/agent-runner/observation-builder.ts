@@ -9,6 +9,7 @@ import type { AgentToolCallSpec } from "./decision.js";
 import type {
   ActToolCallRecord,
   EvidenceAccessMode,
+  ToolAvailableAction,
   ToolObservation,
   ToolObservationRetention,
   WorkEvidenceRef,
@@ -29,13 +30,6 @@ const DECISION_CONTEXT_TOOLS = new Set([
   "search_in_files",
   "find_files",
   "list_directory",
-]);
-
-const EVIDENCE_TOOLS = new Set([
-  "evidence_next_chunk",
-  "evidence_search",
-  "evidence_read_lines",
-  "evidence_tail",
 ]);
 
 export interface ToolObservationBuildInput {
@@ -125,7 +119,8 @@ export async function buildToolObservation(input: ToolObservationBuildInput): Pr
   const hasMore = structuredHasMore ?? (mode === "chunk"
     ? slice?.nextOffset !== undefined
     : (contextObservation?.hasMore ?? mode === "large_ref"));
-  const access = resolveAccess(mode, shouldWriteRaw || existingEvidenceRef !== undefined);
+  const rawAccess = resolveRawAccess(shouldWriteRaw || existingEvidenceRef !== undefined);
+  const availableActions = resolveAvailableActions(mode, hasMore);
   const observationEvidenceRef = sourceEvidenceRef ?? contextObservation?.evidenceRef ?? (shouldWriteRaw && rawOutputPath ? `evidence://${evidenceId}` : undefined);
   const observation: ToolObservation = {
     id: buildObservationId(input.stepNumber, input.call.id),
@@ -149,7 +144,7 @@ export async function buildToolObservation(input: ToolObservationBuildInput): Pr
         ...(slice.nextOffset !== undefined ? { nextOffset: slice.nextOffset } : {}),
       },
     } : {}),
-    ...(access.length > 0 && mode !== "full" ? { availableActions: access.filter((item) => item !== "full") as ToolObservation["availableActions"] } : {}),
+    ...(availableActions.length > 0 ? { availableActions } : {}),
   };
 
   const evidenceRef = shouldWriteRaw && rawOutputPath
@@ -164,7 +159,7 @@ export async function buildToolObservation(input: ToolObservationBuildInput): Pr
         rawOutputChars,
         lineCount,
         truncated: externallyTruncated || mode !== "full",
-        access,
+        access: rawAccess,
       }
     : undefined;
 
@@ -177,16 +172,9 @@ export async function buildToolObservation(input: ToolObservationBuildInput): Pr
   };
 }
 
-export function isEvidenceToolName(toolName: string): boolean {
-  return EVIDENCE_TOOLS.has(toolName);
-}
-
 function resolveObservationPolicy(tool: ToolDefinition | undefined, toolName: string): ToolObservationPolicy {
   if (tool?.observationPolicy) {
     return tool.observationPolicy;
-  }
-  if (EVIDENCE_TOOLS.has(toolName)) {
-    return { outputImportance: "decision_context", rawStorage: "never", maxObservationChars: CHUNK_CHARS };
   }
   if (DECISION_CONTEXT_TOOLS.has(toolName)) {
     return { outputImportance: "decision_context", rawStorage: "always", maxObservationChars: CHUNK_CHARS };
@@ -215,23 +203,24 @@ function resolveObservationMode(outputChars: number): ToolObservation["mode"] {
   return "large_ref";
 }
 
-function resolveAccess(mode: ToolObservation["mode"], hasRawOutput: boolean): EvidenceAccessMode[] {
-  if (!hasRawOutput) {
-    return [];
-  }
+function resolveRawAccess(hasRawOutput: boolean): EvidenceAccessMode[] {
+  return hasRawOutput ? ["raw"] : [];
+}
+
+function resolveAvailableActions(mode: ToolObservation["mode"], hasMore: boolean): ToolAvailableAction[] {
   if (mode === "chunk") {
-    return ["next_chunk", "search", "read_lines", "tail"];
+    return hasMore ? ["read_next_range", "search", "read_range"] : ["search", "read_range"];
   }
-  if (mode === "large_ref" || mode === "summary" || mode === "focused") {
-    return ["search", "read_lines", "tail"];
+  if (mode === "large_ref") {
+    return ["search", "read_range", "inspect"];
   }
-  return ["full", "search", "read_lines", "tail"];
+  if (mode === "summary" || mode === "focused") {
+    return ["search", "read_range"];
+  }
+  return [];
 }
 
 function resolveRetention(toolName: string, mode: ToolObservation["mode"]): ToolObservationRetention {
-  if (EVIDENCE_TOOLS.has(toolName)) {
-    return "next_step";
-  }
   if (mode === "large_ref") {
     return "evidence_only";
   }

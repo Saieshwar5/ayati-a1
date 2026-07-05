@@ -29,9 +29,8 @@ Current product features:
   summaries, action records, evidence manifests, and commit trailers.
 - Git task assets for restoring user-attached
   documents, datasets, files, and directories into later follow-up runs.
-- Hot tool-output context with retention metadata and evidence tools for
-  reading, searching, tailing, or chunking saved raw output without flooding
-  every model decision.
+- Hot tool-output context with retention metadata, compact previews, and raw
+  output audit refs without flooding every model decision.
 - Prompt-facing read context for recent file/search/inspect results, backed by
   run evidence instead of durable task-state bloat.
 - Filesystem metadata and batched-read tools, including `inspect_paths`,

@@ -94,7 +94,8 @@ export interface AgentTaskSummaryRecord {
 
 export type WorkStatus = "not_done" | "done" | "blocked" | "needs_user_input";
 
-export type EvidenceAccessMode = "full" | "next_chunk" | "search" | "read_lines" | "tail";
+export type EvidenceAccessMode = "raw";
+export type ToolAvailableAction = "search" | "read_range" | "read_next_range" | "inspect" | "rerun_narrower" | "list_narrower";
 export type ToolObservationMode = "full" | "focused" | "chunk" | "large_ref" | "summary";
 export type ToolObservationRetention = "next_step" | "while_relevant" | "evidence_only";
 export type ToolObservationStatus = "success" | "failed";
@@ -133,7 +134,7 @@ export interface ToolObservation {
     currentRange: [number, number];
     nextOffset?: number;
   };
-  availableActions?: Array<"next_chunk" | "search" | "read_lines" | "tail">;
+  availableActions?: ToolAvailableAction[];
 }
 
 export interface PromptToolCallContext {

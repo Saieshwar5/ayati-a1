@@ -78,7 +78,7 @@ function renderedObservationLines(observation: ToolObservation): string[] {
     .filter((line) => !line.startsWith("Stats:"))
     .filter((line) => line !== "Highlights:")
     .filter((line) => line !== "Suggested reads:")
-    .filter((line) => line !== "More context is available through evidence tools.")
+    .filter((line) => line !== "More context may be available through narrower domain-tool calls.")
     .slice(0, 4);
 }
 

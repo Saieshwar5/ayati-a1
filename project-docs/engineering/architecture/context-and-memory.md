@@ -143,18 +143,18 @@ artifacts, evidence refs, and truncation metadata. Internal observation records
 may still carry deterministic retention metadata:
 
 - `next_step`: temporary output for the next decision, such as command output
-  or a saved-evidence reread.
+  or a compact tool result.
 - `while_relevant`: compact file/search/list context that can guide nearby
   work.
-- `evidence_only`: a preview of very large output; use evidence tools before
-  relying on the preview.
+- `evidence_only`: a preview of very large output; use narrower domain tools
+  before relying on omitted output.
 
-Raw output is still available through run-scoped evidence refs and evidence
-tools (`evidence_search`, `evidence_read_lines`, `evidence_tail`, and
-`evidence_next_chunk`). Evidence rereads can help the next decision, but they
-should not become durable task notes by default. Durable task facts should come
-from verification and progress reduction, not from keeping arbitrary raw slices
-in long-lived context.
+Raw output is still saved through run-scoped evidence refs for audit,
+debugging, persistence, and git-context summaries. It is not exposed through
+run-scoped model-callable evidence tools. If the model needs more context, it
+should call the original domain tools with narrower inputs. Durable task facts
+should come from verification and progress reduction, not from keeping
+arbitrary raw slices in long-lived context.
 
 Read tools use the same prompt-facing projection:
 `context.run.toolCalls`. This gives the model the filesystem/search context it
@@ -167,7 +167,7 @@ Read context should follow these boundaries:
 - keep durable raw output in run evidence and tool records
 - promote only verified, useful facts into task state
 - avoid storing every read forever in scratch or task metadata
-- use evidence tools to recover older or larger output when needed
+- use normal domain tools with narrower inputs to recover missing context when needed
 
 Filesystem metadata should often come before large reads. `inspect_paths`
 returns size, line-count, file/directory kind, language/content hints, hashes
