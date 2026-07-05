@@ -580,9 +580,7 @@ describe("createChatTurnRuntime", () => {
           originalPath: attachmentPath,
         }],
       });
-      expect(stateView.context.scratch.attachments).toMatchObject({
-        managedFiles: [{ name: "policy.txt", status: "new" }],
-      });
+      expect(stateView.context.scratch).not.toHaveProperty("attachments");
       expect(replies).toContainEqual(expect.objectContaining({
         type: "reply",
         content: "Noted.",

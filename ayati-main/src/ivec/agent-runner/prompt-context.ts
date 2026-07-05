@@ -60,7 +60,6 @@ export interface PromptScratchContext {
   status?: unknown;
   toolCalls?: unknown;
   feedback?: unknown;
-  attachments?: unknown;
 }
 
 export interface PromptToolsContext {
@@ -199,7 +198,6 @@ function compactScratchContext(scratch: PromptScratchContext | undefined): Promp
     ...(scratch.status ? { status: scratch.status } : {}),
     ...(scratch.toolCalls ? { toolCalls: scratch.toolCalls } : {}),
     ...(scratch.feedback ? { feedback: scratch.feedback } : {}),
-    ...(scratch.attachments ? { attachments: scratch.attachments } : {}),
   };
   return Object.keys(compacted).length > 0 ? compacted : undefined;
 }

@@ -74,9 +74,6 @@ export function summarizePromptStateView(
       status: scratch.status,
       toolCallCount: readArray(readRecord(scratch.toolCalls)?.["latest"]).length,
       feedbackCount: readArray(readRecord(scratch.feedback)?.["latest"]).length,
-      attachmentKeys: scratch.attachments && typeof scratch.attachments === "object"
-        ? Object.keys(scratch.attachments as Record<string, unknown>)
-        : [],
     } : undefined,
     personal: context.personal ? {
       memoryChars: context.personal.memorySnapshot.length,

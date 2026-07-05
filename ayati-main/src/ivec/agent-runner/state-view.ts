@@ -144,7 +144,6 @@ export function buildAgentStateView(state: LoopState, options: AgentStateViewOpt
       status: state.workState.status,
       toolCalls,
       workingFeedback,
-      attachments,
     }),
   });
 
@@ -182,13 +181,11 @@ function buildScratchContext(input: {
   status: WorkState["status"];
   toolCalls?: PromptToolCalls;
   workingFeedback?: PromptWorkingFeedback;
-  attachments?: AgentStateView["attachments"];
 }): PromptScratchContext {
   return {
     status: input.status,
     ...(input.toolCalls ? { toolCalls: input.toolCalls } : {}),
     ...(input.workingFeedback ? { feedback: input.workingFeedback } : {}),
-    ...(input.attachments ? { attachments: input.attachments } : {}),
   };
 }
 

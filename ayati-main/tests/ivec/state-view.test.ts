@@ -632,13 +632,9 @@ describe("buildAgentStateView", () => {
     expect(stateView.context.tools).not.toHaveProperty("inputSchema");
     expect(stateView.context.tools).not.toHaveProperty("schemas");
     expect(stateView.context.scratch).not.toHaveProperty("toolLoad");
-    expect(stateView.attachments?.incoming?.[0]).toMatchObject({
-      id: "doc-1",
-      name: "invoice.pdf",
-      status: "registered",
-    });
     expect(stateView.context.git?.session.attachments).toBeUndefined();
-    expect(stateView.context.scratch?.attachments).toMatchObject({
+    expect(stateView.context.scratch).not.toHaveProperty("attachments");
+    expect(stateView.attachments).toMatchObject({
       incoming: [{ id: "doc-1", name: "invoice.pdf", status: "registered" }],
       prepared: [{ id: "prepared-1", name: "invoice.pdf", status: "ready" }],
       managedFiles: [{ id: "file-1", name: "invoice.pdf", status: "ready" }],
