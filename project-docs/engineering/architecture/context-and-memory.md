@@ -66,7 +66,7 @@ are:
 - `context.git.current`: current git focus, pending turn state, and selected
   task context when a task is resolved.
 - `context.tools`: active tool names and the latest tool-load result.
-- `context.scratch`: current-run status and the ordered tool-call memory for
+- `context.run`: current-run status and the ordered tool-call memory for
   this run.
 - `context.harness`: harness repair feedback for the current decision.
 - `context.personal`: long-lived personal memory snapshot when present.
@@ -137,7 +137,7 @@ large files, command logs, and evidence slices should not remain in every prompt
 for the whole run.
 
 The runtime exposes current-run tool output in
-`State view.context.scratch.toolCalls.latest`.
+`State view.context.run.toolCalls.latest`.
 Each entry contains the tool name, input, status, compact output or error,
 artifacts, evidence refs, and truncation metadata. Internal observation records
 may still carry deterministic retention metadata:
@@ -157,7 +157,7 @@ from verification and progress reduction, not from keeping arbitrary raw slices
 in long-lived context.
 
 Read tools use the same prompt-facing projection:
-`context.scratch.toolCalls.latest`. This gives the model the recent
+`context.run.toolCalls.latest`. This gives the model the recent
 filesystem/search context it just gathered without putting raw file contents
 into task state. Raw read output stays in run evidence and tool records.
 

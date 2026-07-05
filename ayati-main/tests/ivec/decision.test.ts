@@ -145,14 +145,15 @@ describe("parseAgentDecision", () => {
     expect(systemPrompt).toContain("Use context.timeline for exact recent messages and current input");
     expect(systemPrompt).toContain("If summary and exact conversation conflict, trust context.timeline");
     expect(systemPrompt).toContain("do not infer omitted details from it");
-    expect(systemPrompt).toContain("context.scratch.status");
-    expect(systemPrompt).toContain("context.scratch.toolCalls.latest");
-    expect(systemPrompt).not.toContain("context.scratch.progress");
-    expect(systemPrompt).not.toContain("context.scratch.feedback");
+    expect(systemPrompt).toContain("context.run.status");
+    expect(systemPrompt).toContain("context.run.toolCalls.latest");
+    expect(systemPrompt).not.toContain("context.scratch");
+    expect(systemPrompt).not.toContain("context.run.progress");
+    expect(systemPrompt).not.toContain("context.run.feedback");
     expect(systemPrompt).toContain("context.harness.feedback");
-    expect(systemPrompt).not.toContain("context.scratch.readContext.latest");
-    expect(systemPrompt).not.toContain("context.scratch.observations.latest");
-    expect(systemPrompt).not.toContain("context.scratch.trace");
+    expect(systemPrompt).not.toContain("context.run.readContext.latest");
+    expect(systemPrompt).not.toContain("context.run.observations.latest");
+    expect(systemPrompt).not.toContain("context.run.trace");
     expect(systemPrompt).toContain("context.tools.active");
     expect(systemPrompt).toContain("context.personal.memorySnapshot");
     expect(systemPrompt).toContain("Legacy fields such as context.gitContext");
@@ -264,7 +265,7 @@ describe("parseAgentDecision", () => {
               }],
             },
           },
-          scratch: {
+          run: {
             status: "not_done",
           },
           personal: {
@@ -361,7 +362,7 @@ describe("parseAgentDecision", () => {
             }],
           },
         },
-        scratch: {
+        run: {
           status: "not_done",
         },
         personal: {
@@ -376,6 +377,7 @@ describe("parseAgentDecision", () => {
     expect(promptStateView).not.toHaveProperty("trace");
     expect(promptStateView.context).not.toHaveProperty("gitContext");
     expect(promptStateView.context).not.toHaveProperty("personalMemorySnapshot");
+    expect(promptStateView.context).not.toHaveProperty("scratch");
   });
 
   it("repairs act decisions that reference unselected tools into load_tools", async () => {

@@ -580,7 +580,7 @@ describe("createChatTurnRuntime", () => {
           originalPath: attachmentPath,
         }],
       });
-      expect(stateView.context.scratch).not.toHaveProperty("attachments");
+      expect(stateView.context.run).not.toHaveProperty("attachments");
       expect(replies).toContainEqual(expect.objectContaining({
         type: "reply",
         content: "Noted.",

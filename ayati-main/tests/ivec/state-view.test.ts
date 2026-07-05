@@ -241,7 +241,7 @@ describe("buildAgentStateView", () => {
     });
   });
 
-  it("projects repair-coded failure history into scratch feedback without trace", () => {
+  it("projects repair-coded failure history into harness feedback without run trace", () => {
     const state = createLoopState({
       failureHistory: [{
         step: 1,
@@ -272,7 +272,7 @@ describe("buildAgentStateView", () => {
         blockedTargets: ["write_files"],
       },
     });
-    expect(stateView.context.scratch).not.toHaveProperty("feedback");
+    expect(stateView.context.run).not.toHaveProperty("feedback");
     expect(stateView.context.harness?.feedback?.latest[0]).toMatchObject({
       code: "R_FRESH_SESSION_NEEDS_TASK",
       repair: {
@@ -283,7 +283,7 @@ describe("buildAgentStateView", () => {
       code: "R_FRESH_SESSION_NEEDS_TASK",
       blockedTargets: ["write_files"],
     });
-    expect(stateView.context.scratch).not.toHaveProperty("trace");
+    expect(stateView.context.run).not.toHaveProperty("trace");
   });
 
   it("builds timeline from git conversation tail", () => {
@@ -353,7 +353,7 @@ describe("buildAgentStateView", () => {
     }]);
   });
 
-  it("groups personal memory without mixing it into git, tools, or scratch context", () => {
+  it("groups personal memory without mixing it into git, tools, or run context", () => {
     const state = createLoopState({
       harnessContext: createHarnessContext({
         personalMemorySnapshot: "Prefer exact schema contracts.",
@@ -368,14 +368,15 @@ describe("buildAgentStateView", () => {
     });
     expect(stateView.context.git).not.toHaveProperty("personalMemorySnapshot");
     expect(stateView.context.tools).toBeUndefined();
-    expect(stateView.context.scratch).toEqual({ status: "not_done" });
+    expect(stateView.context.run).toEqual({ status: "not_done" });
+    expect(stateView.context).not.toHaveProperty("scratch");
     expect(Object.keys(stateView.context).sort()).toEqual([
       "git",
       "gitContext",
       "personal",
       "personalMemorySnapshot",
+      "run",
       "runtimeMode",
-      "scratch",
       "timeline",
     ]);
   });
@@ -420,7 +421,7 @@ describe("buildAgentStateView", () => {
     });
   });
 
-  it("keeps progress and observations independent from context source without scratch trace", () => {
+  it("keeps progress and observations independent from context source without run trace", () => {
     const state = createLoopState({
       workState: {
         status: "needs_user_input",
@@ -490,13 +491,13 @@ describe("buildAgentStateView", () => {
       summary: "Need approval before editing.",
       userInputNeeded: "Can I edit the prompt?",
     });
-    expect(stateView.context.scratch).not.toHaveProperty("progress");
+    expect(stateView.context.run).not.toHaveProperty("progress");
     expect(stateView.observations?.latest).toHaveLength(2);
-    expect(stateView.context.scratch).not.toHaveProperty("observations");
+    expect(stateView.context.run).not.toHaveProperty("observations");
     expect(stateView.observations?.latest[0]?.retention).toBe("while_relevant");
     expect(stateView.readContext?.latest).toHaveLength(1);
     expect(stateView.readContext?.latest[0]?.tool).toBe("read_file");
-    expect(stateView.context.scratch).not.toHaveProperty("readContext");
+    expect(stateView.context.run).not.toHaveProperty("readContext");
     expect(stateView.toolCalls?.latest).toEqual([
       expect.objectContaining({
         step: 1,
@@ -507,15 +508,15 @@ describe("buildAgentStateView", () => {
         output: "Read state-view.ts.",
       }),
     ]);
-    expect((stateView.context.scratch?.toolCalls as { latest?: Array<{ tool: string; input: unknown; output: string }> } | undefined)?.latest)
+    expect((stateView.context.run?.toolCalls as { latest?: Array<{ tool: string; input: unknown; output: string }> } | undefined)?.latest)
       .toEqual([expect.objectContaining({ tool: "read_file", input: { path: "state-view.ts" }, output: "Read state-view.ts." })]);
     expect(stateView.trace?.recentSteps?.map((step) => step.step)).toEqual([1]);
-    expect(stateView.context.scratch).not.toHaveProperty("trace");
+    expect(stateView.context.run).not.toHaveProperty("trace");
     expect(stateView.workingFeedback?.latest[0]).toMatchObject({
       source: "tool_execution",
       message: "Approval required before editing.",
     });
-    expect(stateView.context.scratch).not.toHaveProperty("feedback");
+    expect(stateView.context.run).not.toHaveProperty("feedback");
     expect((stateView.context.harness?.feedback as { latest?: Array<{ source: string }> } | undefined)?.latest?.[0])
       .toMatchObject({ source: "tool_execution" });
   });
@@ -633,9 +634,9 @@ describe("buildAgentStateView", () => {
     });
     expect(stateView.context.tools).not.toHaveProperty("inputSchema");
     expect(stateView.context.tools).not.toHaveProperty("schemas");
-    expect(stateView.context.scratch).not.toHaveProperty("toolLoad");
+    expect(stateView.context.run).not.toHaveProperty("toolLoad");
     expect(stateView.context.git?.session.attachments).toBeUndefined();
-    expect(stateView.context.scratch).not.toHaveProperty("attachments");
+    expect(stateView.context.run).not.toHaveProperty("attachments");
     expect(stateView.attachments).toMatchObject({
       incoming: [{ id: "doc-1", name: "invoice.pdf", status: "registered" }],
       prepared: [{ id: "prepared-1", name: "invoice.pdf", status: "ready" }],
@@ -657,6 +658,6 @@ describe("buildAgentStateView", () => {
       approvalRequired: true,
       approvalState: "pending",
     });
-    expect(stateView.context.scratch).not.toHaveProperty("systemEvent");
+    expect(stateView.context.run).not.toHaveProperty("systemEvent");
   });
 });

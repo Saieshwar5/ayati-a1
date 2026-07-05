@@ -251,7 +251,7 @@ a deduplicated grouped payload:
 - `context.git.current`: focus, pending-turn routing state, and selected task
   context when a task is resolved.
 - `context.tools`: active tool names and the latest tool-load result.
-- `context.scratch`: current-run status and the ordered tool-call memory for
+- `context.run`: current-run status and the ordered tool-call memory for
   this run.
 - `context.harness`: harness repair feedback for the current decision.
 - `context.personal`: long-lived user memory snapshot when present.
@@ -260,7 +260,7 @@ The internal aliases `context.gitContext`, top-level `progress`,
 `workingFeedback`, `toolLoad`, `observations`, `trace`, `attachments`, and
 `systemEvent` may still exist for compatibility inside the runtime state view.
 They should not be treated as canonical model-facing paths. Trace and
-system-event metadata should not be placed under `context.scratch`.
+system-event metadata should not be placed under `context.run`.
 
 Working feedback is model-facing. Feedback ledger events are operator-facing.
 Both should describe the same harness reality:
@@ -310,7 +310,7 @@ user when runtime task resolution is ambiguous.
 If tool output is truncated, chunked, or evidence-only, the model should use
 evidence tools before rerunning the original output-producing tool.
 Prompt-facing tool output for the current run is carried by
-`context.scratch.toolCalls.latest`, including tool input, compact output,
+`context.run.toolCalls.latest`, including tool input, compact output,
 errors, artifacts, and evidence refs. Read-heavy tool results use the same
 channel. Raw read output remains in run evidence and tool records; task state
 should retain only useful facts, summaries, files, evidence refs, and run

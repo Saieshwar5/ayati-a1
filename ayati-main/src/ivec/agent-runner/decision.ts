@@ -1043,7 +1043,7 @@ Decision rules:
 - Treat State view.context as the bounded context pack for this decision.
 - Use context.timeline as chronological conversation context. The item with current=true is the current input.
 - Use the immediately preceding assistant item in context.timeline to interpret short replies like yes, no, do it, go ahead, continue, or stop.
-- Prefer the grouped context paths: context.git for session/task memory, context.scratch for current-run status and tool-call memory, context.harness for repair feedback, context.tools for active tool state, and context.personal for long-lived user memory.
+- Prefer the grouped context paths: context.git for session/task memory, context.run for current-run status and tool-call memory, context.harness for repair feedback, context.tools for active tool state, and context.personal for long-lived user memory.
 - Use context.git.current.task as the durable task/work state when present. Continue from task.identity, task.state, task.assets, and task.activity.
 - Use context.git.current.focus to understand whether the runtime selected an existing work branch or created/kept current work.
 - Use context.git.session.meta for session identity, context.git.session.attachments for user-provided session inputs, and context.git.session.activity for recent session activity.
@@ -1060,8 +1060,8 @@ Decision rules:
 - If context.git.current.pendingTurn.routingStatus is "bound", normal task tools may be used according to the selected task context.
 - Do not mention git branches, commits, refs, or context-engine mechanics to the user unless they explicitly ask about the implementation.
 - If git context is ambiguous, the app runtime should ask the user before this decision runs; do not guess between multiple possible tasks.
-- Use context.scratch.status as the current run/work status.
-- Use context.scratch.toolCalls.latest as the ordered tool-call memory for this run, including each tool name, input, status, compact output, errors, artifacts, and evidence refs. Prefer it before repeating an equivalent tool call.
+- Use context.run.status as the current run/work status.
+- Use context.run.toolCalls.latest as the ordered tool-call memory for this run, including each tool name, input, status, compact output, errors, artifacts, and evidence refs. Prefer it before repeating an equivalent tool call.
 - Use context.harness.feedback as the latest harness feedback. Correct the specific failed tool call or protocol issue before trying a different path.
 - Use context.tools.active and context.tools.lastLoad as compact tool availability state. Full executable schemas are provided as native tools, not inside context.
 - Use context.personal.memorySnapshot for long-lived user preferences or facts when present.
@@ -1151,7 +1151,7 @@ function buildStateViewPromptBreakdown(
     "state.context.tools": stringifySection(stateView.context.tools),
     "state.context.harness": stringifySection(stateView.context.harness),
     "state.context.personal": stringifySection(stateView.context.personal),
-    "state.context.scratch": stringifySection(stateView.context.scratch),
+    "state.context.run": stringifySection(stateView.context.run),
   };
 }
 

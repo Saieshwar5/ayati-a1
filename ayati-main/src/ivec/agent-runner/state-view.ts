@@ -8,7 +8,7 @@ import type { RuntimeCapabilityPromptContext } from "./runtime-capability-mode.j
 import type { ToolLoadResult } from "./tool-working-set.js";
 import { buildAgentContextPack } from "./context-pack.js";
 import { projectAgentPromptContext } from "./prompt-context.js";
-import type { AgentPromptContext, PromptHarnessContext, PromptScratchContext, PromptToolsContext } from "./prompt-context.js";
+import type { AgentPromptContext, PromptHarnessContext, PromptRunContext, PromptToolsContext } from "./prompt-context.js";
 
 export interface PromptProgressState {
   status: WorkState["status"];
@@ -143,7 +143,7 @@ export function buildAgentStateView(state: LoopState, options: AgentStateViewOpt
     harness: buildHarnessContext({
       workingFeedback,
     }),
-    scratch: buildScratchContext({
+    run: buildRunContext({
       status: state.workState.status,
       toolCalls,
     }),
@@ -179,10 +179,10 @@ function buildToolsContext(input: {
   };
 }
 
-function buildScratchContext(input: {
+function buildRunContext(input: {
   status: WorkState["status"];
   toolCalls?: PromptToolCalls;
-}): PromptScratchContext {
+}): PromptRunContext {
   return {
     status: input.status,
     ...(input.toolCalls ? { toolCalls: input.toolCalls } : {}),
