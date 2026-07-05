@@ -1048,7 +1048,8 @@ describe("IVecEngine", () => {
       expect(feedback.events.some((event) => event.stage === "context_engine" && event.event === "finalization_skipped")).toBe(false);
       expect(feedback.events.find((event) => event.stage === "context_engine" && event.event === "finalization_failed")?.data)
         .toMatchObject({
-          reason: "no_task_run_binding",
+          reason: "taskful_result_without_task_run_binding",
+          skipReason: "no_task_run_binding",
         });
     } finally {
       rmSync(dataDir, { recursive: true, force: true });

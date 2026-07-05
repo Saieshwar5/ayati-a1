@@ -6,6 +6,8 @@ import type { LlmProvider } from "../../src/core/contracts/provider.js";
 import type { LlmMessage } from "../../src/core/contracts/llm-protocol.js";
 import { createChatTurnRuntime } from "../../src/app/chat-turn-runtime.js";
 import { createGitMemoryChatContextRuntime } from "../../src/app/git-memory-chat-context-runtime.js";
+import type { AgentFeedbackEventInput } from "../../src/ivec/feedback-ledger.js";
+import type { AgentLoopResult } from "../../src/ivec/types.js";
 import {
   createGitMemoryRuntime,
   GitMemoryDailySessionStore,
@@ -137,6 +139,122 @@ describe("createChatTurnRuntime", () => {
         routed.ref,
         gitMemoryTaskRunPath(routed.taskId, routed.runId),
       )).toBeNull();
+    } finally {
+      rmSync(rootDir, { recursive: true, force: true });
+    }
+  });
+
+  it("records no-binding direct replies as conversation or enquiry instead of task finalization failures", async () => {
+    const rootDir = mkdtempSync(join(tmpdir(), "ayati-chat-runtime-"));
+    const contextStoreDir = join(rootDir, "context");
+    const dataDir = join(rootDir, "data");
+
+    try {
+      const store = new GitMemoryDailySessionStore({
+        contextStoreDir,
+        now: () => new Date("2026-06-28T09:00:00.000Z"),
+      });
+      const gitMemoryRuntime = createGitMemoryRuntime({
+        contextStoreDir,
+        timezone: "Asia/Kolkata",
+        agentId: "local",
+        store,
+        now: () => new Date("2026-06-28T09:00:00.000Z"),
+      });
+      const feedbackEvents: AgentFeedbackEventInput[] = [];
+      const { provider } = createReplyProvider("Ayati is a persistent AI agent daemon.");
+      const runtime = createChatTurnRuntime({
+        provider,
+        dataDir,
+        chatContextRuntime: createGitMemoryChatContextRuntime({ gitMemoryRuntime }),
+        feedbackLedger: createFeedbackRecorder(feedbackEvents),
+        now: () => new Date("2026-06-28T09:00:00.000Z"),
+      });
+
+      await runtime.processChat({
+        clientId: "local",
+        content: "what is Ayati?",
+        attachments: [],
+      });
+
+      expect(feedbackEvents).toContainEqual(expect.objectContaining({
+        stage: "context_engine",
+        event: "conversation_enquiry_recorded",
+        data: expect.objectContaining({
+          reason: "conversation_or_enquiry_without_task_run",
+          skipReason: "no_task_run_binding",
+        }),
+      }));
+      expect(feedbackEvents).not.toContainEqual(expect.objectContaining({
+        stage: "context_engine",
+        event: "finalization_failed",
+      }));
+    } finally {
+      rmSync(rootDir, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps task-like no-binding completions visible as finalization failures", async () => {
+    const rootDir = mkdtempSync(join(tmpdir(), "ayati-chat-runtime-"));
+    const contextStoreDir = join(rootDir, "context");
+    const dataDir = join(rootDir, "data");
+
+    try {
+      const store = new GitMemoryDailySessionStore({
+        contextStoreDir,
+        now: () => new Date("2026-06-28T09:00:00.000Z"),
+      });
+      const gitMemoryRuntime = createGitMemoryRuntime({
+        contextStoreDir,
+        timezone: "Asia/Kolkata",
+        agentId: "local",
+        store,
+        now: () => new Date("2026-06-28T09:00:00.000Z"),
+      });
+      const chatContextRuntime = createGitMemoryChatContextRuntime({ gitMemoryRuntime });
+      const turn = await chatContextRuntime.prepareUserTurn({
+        clientId: "local",
+        userMessage: "create a one page website",
+        at: "2026-06-28T09:00:00+05:30",
+      });
+      const feedbackEvents: AgentFeedbackEventInput[] = [];
+      const { provider } = createReplyProvider("unused");
+      const runtime = createChatTurnRuntime({
+        provider,
+        dataDir,
+        chatContextRuntime,
+        feedbackLedger: createFeedbackRecorder(feedbackEvents),
+        now: () => new Date("2026-06-28T09:00:00.000Z"),
+      });
+      const result: AgentLoopResult = {
+        type: "reply",
+        runClass: "interaction",
+        content: "Done. I created the website files.",
+        status: "completed",
+        totalIterations: 1,
+        totalToolCalls: 0,
+        runPath: "",
+        completedSteps: [],
+        workState: {
+          status: "done",
+          summary: "Done. I created the website files.",
+          openWork: [],
+          blockers: [],
+          verifiedFacts: [],
+          evidence: [],
+        },
+      };
+
+      await (runtime as any).completeChatContextRun("local", turn, null, result);
+
+      expect(feedbackEvents).toContainEqual(expect.objectContaining({
+        stage: "context_engine",
+        event: "finalization_failed",
+        data: expect.objectContaining({
+          reason: "taskful_result_without_task_run_binding",
+          skipReason: "no_task_run_binding",
+        }),
+      }));
     } finally {
       rmSync(rootDir, { recursive: true, force: true });
     }
@@ -566,6 +684,21 @@ function createThrowingProvider(error: unknown): {
       generateTurn,
     },
     generateTurn,
+  };
+}
+
+function createFeedbackRecorder(events: AgentFeedbackEventInput[]) {
+  return {
+    enabled: true,
+    record(event: AgentFeedbackEventInput): void {
+      events.push(event);
+    },
+    async flush(): Promise<void> {
+      return;
+    },
+    async close(): Promise<void> {
+      return;
+    },
   };
 }
 
