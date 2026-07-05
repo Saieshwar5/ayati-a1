@@ -149,7 +149,7 @@ describe("parseAgentDecision", () => {
     expect(systemPrompt).toContain("context.scratch.feedback");
     expect(systemPrompt).toContain("context.scratch.readContext.latest");
     expect(systemPrompt).toContain("context.scratch.observations.latest");
-    expect(systemPrompt).toContain("context.scratch.trace.recentSteps");
+    expect(systemPrompt).not.toContain("context.scratch.trace");
     expect(systemPrompt).toContain("context.tools.active");
     expect(systemPrompt).toContain("context.personal.memorySnapshot");
     expect(systemPrompt).toContain("Legacy fields such as context.gitContext");

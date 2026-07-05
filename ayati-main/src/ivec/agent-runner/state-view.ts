@@ -139,7 +139,6 @@ export function buildAgentStateView(state: LoopState, options: AgentStateViewOpt
       workingFeedback,
       observations,
       readContext,
-      trace,
       attachments,
     }),
   });
@@ -178,7 +177,6 @@ function buildScratchContext(input: {
   workingFeedback?: PromptWorkingFeedback;
   observations?: PromptObservations;
   readContext?: PromptReadContext;
-  trace?: PromptTrace;
   attachments?: AgentStateView["attachments"];
 }): PromptScratchContext {
   return {
@@ -186,7 +184,6 @@ function buildScratchContext(input: {
     ...(input.workingFeedback ? { feedback: input.workingFeedback } : {}),
     ...(input.observations ? { observations: input.observations } : {}),
     ...(input.readContext ? { readContext: input.readContext } : {}),
-    ...(input.trace ? { trace: input.trace } : {}),
     ...(input.attachments ? { attachments: input.attachments } : {}),
   };
 }

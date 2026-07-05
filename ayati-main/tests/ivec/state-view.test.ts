@@ -241,7 +241,7 @@ describe("buildAgentStateView", () => {
     });
   });
 
-  it("projects repair-coded failure history into scratch feedback and trace", () => {
+  it("projects repair-coded failure history into scratch feedback without trace", () => {
     const state = createLoopState({
       failureHistory: [{
         step: 1,
@@ -278,10 +278,11 @@ describe("buildAgentStateView", () => {
         code: "R_FRESH_SESSION_NEEDS_TASK",
       },
     });
-    expect(stateView.context.scratch?.trace?.recentFailures?.[0]).toMatchObject({
+    expect(stateView.trace?.recentFailures?.[0]).toMatchObject({
       code: "R_FRESH_SESSION_NEEDS_TASK",
       blockedTargets: ["write_files"],
     });
+    expect(stateView.context.scratch).not.toHaveProperty("trace");
   });
 
   it("builds timeline from git conversation tail", () => {
@@ -417,7 +418,7 @@ describe("buildAgentStateView", () => {
     });
   });
 
-  it("keeps progress, observations, and trace independent from context source", () => {
+  it("keeps progress and observations independent from context source without scratch trace", () => {
     const state = createLoopState({
       workState: {
         status: "needs_user_input",
@@ -491,7 +492,7 @@ describe("buildAgentStateView", () => {
     expect((stateView.context.scratch?.readContext as { latest?: Array<{ tool: string; content: string }> } | undefined)?.latest)
       .toEqual([expect.objectContaining({ tool: "read_file", content: "Read state-view.ts." })]);
     expect(stateView.trace?.recentSteps?.map((step) => step.step)).toEqual([1]);
-    expect((stateView.context.scratch?.trace as { recentSteps?: Array<{ step: number }> } | undefined)?.recentSteps?.map((step) => step.step)).toEqual([1]);
+    expect(stateView.context.scratch).not.toHaveProperty("trace");
     expect(stateView.workingFeedback?.latest[0]).toMatchObject({
       source: "tool_execution",
       message: "Approval required before editing.",

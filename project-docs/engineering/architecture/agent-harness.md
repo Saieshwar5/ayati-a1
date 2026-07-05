@@ -252,14 +252,14 @@ a deduplicated grouped payload:
   context when a task is resolved.
 - `context.tools`: active tool names and the latest tool-load result.
 - `context.scratch`: current-run progress, working feedback, tool observations,
-  prompt-facing read context, trace, and transient attachments.
+  prompt-facing read context, and transient attachments.
 - `context.personal`: long-lived user memory snapshot when present.
 
 The internal aliases `context.gitContext`, top-level `progress`,
 `workingFeedback`, `toolLoad`, `observations`, `trace`, `attachments`, and
 `systemEvent` may still exist for compatibility inside the runtime state view.
-They should not be treated as canonical model-facing paths, and system-event
-metadata should not be placed under `context.scratch`.
+They should not be treated as canonical model-facing paths. Trace and
+system-event metadata should not be placed under `context.scratch`.
 
 Working feedback is model-facing. Feedback ledger events are operator-facing.
 Both should describe the same harness reality:

@@ -1065,8 +1065,6 @@ Decision rules:
 - Use context.scratch.readContext.latest as the current run's file, directory, search, metadata, and read output context. Prefer it before reading the same paths again.
 - Use context.scratch.observations.latest as the latest real tool output cards. If these cards answer the user, reply instead of rerunning equivalent tools.
 - Treat observations as hot bounded context. Respect each card's retention: next_step is temporary, while_relevant can guide nearby work, and evidence_only means use evidence tools before relying on the preview.
-- Use context.scratch.trace.recentSteps only as compact execution history, not as evidence.
-- Use context.scratch.trace.recentFailures to avoid repeating failed paths.
 - Use context.tools.active and context.tools.lastLoad as compact tool availability state. Full executable schemas are provided as native tools, not inside context.
 - Use context.personal.memorySnapshot for long-lived user preferences or facts when present.
 - Legacy fields such as context.gitContext, State view.progress, State view.workingFeedback, State view.observations, and State view.trace may still exist for compatibility; prefer the grouped context paths above.
@@ -1081,7 +1079,7 @@ Decision rules:
 - Do not use direct assistant text to say you will do future work. If work remains, call a selected executable tool or decision_load_tools.
 - Final replies must answer the user's request in natural, human-readable language.
 - Do not mention internal execution details in final replies: tool calls, deterministic verification, evidence contracts, assertions, reducers, work state, or harness steps.
-- Use user-visible results from observations and trace summaries, such as created paths, changed files, command results, document findings, or next steps.
+- Use user-visible results from observations and current progress, such as created paths, changed files, command results, document findings, or next steps.
 - Use ask_user_feedback only during an active task run, and only for hard blockers: missing target with no safe default, destructive or irreversible action, credentials or approval required, external cost/account action, or true ambiguity where the wrong choice would likely waste substantial work.
 - Do not use ask_user_feedback for final responses, casual chat, pre-task planning, style, wording, organization, or preference choices when reasonable defaults can satisfy the request.
 - Before a task run exists, ask planning or context questions directly in assistant text.
