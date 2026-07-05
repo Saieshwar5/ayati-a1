@@ -2393,8 +2393,15 @@ async function hasSuccessfulShellStep(runPath: string, expectedText: string): Pr
 }
 
 async function readOptimizationSummary(runPath: string): Promise<Record<string, unknown>> {
-  const raw = await readFile(join(runPath, "optimization-summary.json"), "utf-8");
-  return JSON.parse(raw) as Record<string, unknown>;
+  if (runPath.trim().length === 0) {
+    return {};
+  }
+  try {
+    const raw = await readFile(join(runPath, "optimization-summary.json"), "utf-8");
+    return JSON.parse(raw) as Record<string, unknown>;
+  } catch {
+    return {};
+  }
 }
 
 function readRecord(value: unknown, path: string[]): Record<string, unknown> {

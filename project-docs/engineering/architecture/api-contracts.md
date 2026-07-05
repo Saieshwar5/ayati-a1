@@ -39,7 +39,6 @@ HTTP API server:
 Known HTTP paths:
 
 - `POST /api/uploads`
-- `GET /api/artifacts/<artifact-path>`
 - `POST /api/pulse`
 
 Use `AYATI_HTTP_API_TOKEN` when Pulse API access needs token protection.

@@ -1043,10 +1043,10 @@ Decision rules:
 - Treat State view.context as the bounded context pack for this decision.
 - Use context.timeline as chronological conversation context. The item with current=true is the current input.
 - Use the immediately preceding assistant item in context.timeline to interpret short replies like yes, no, do it, go ahead, continue, or stop.
-- Prefer the grouped context paths: context.git for session/task memory, context.scratch for current-run state, context.tools for active tool state, and context.personal for long-lived user memory.
+- Prefer the grouped context paths: context.git for session/task memory, context.run for current-run status and tool-call memory, context.harness for repair feedback, context.tools for active tool state, and context.personal for long-lived user memory.
 - Use context.git.current.task as the durable task/work state when present. Continue from task.identity, task.state, task.assets, and task.activity.
 - Use context.git.current.focus to understand whether the runtime selected an existing work branch or created/kept current work.
-- Use context.git.session.meta for session identity, context.git.session.attachments for user-provided session inputs, and context.git.session.activity for recent session activity.
+- Use context.git.session.meta for session identity, context.git.session.attachments for persisted user-provided session inputs, State view.attachments for current uploaded/attached inputs, and context.git.session.activity for recent session activity.
 - Use context.git.session.summary as compressed session history. Use context.timeline for exact recent messages and current input. If summary and exact conversation conflict, trust context.timeline.
 - Treat context.git.session.summary as an aid, not a complete source of truth; do not infer omitted details from it.
 - Task routing tools may be visible briefly at the start of a run. Before task work, decide whether the current request belongs to the current active task, a different existing task, a new task, or no task.
@@ -1060,19 +1060,14 @@ Decision rules:
 - If context.git.current.pendingTurn.routingStatus is "bound", normal task tools may be used according to the selected task context.
 - Do not mention git branches, commits, refs, or context-engine mechanics to the user unless they explicitly ask about the implementation.
 - If git context is ambiguous, the app runtime should ask the user before this decision runs; do not guess between multiple possible tasks.
-- Treat context.scratch.progress as the authoritative current task progress. It may be absent on the first decision.
-- Use context.scratch.feedback as the latest harness feedback. Correct the specific failed tool call or protocol issue before trying a different path.
-- Use context.scratch.readContext.latest as the current run's file, directory, search, metadata, and read output context. Prefer it before reading the same paths again.
-- Use context.scratch.observations.latest as the latest real tool output cards. If these cards answer the user, reply instead of rerunning equivalent tools.
-- Treat observations as hot bounded context. Respect each card's retention: next_step is temporary, while_relevant can guide nearby work, and evidence_only means use evidence tools before relying on the preview.
-- Use context.scratch.trace.recentSteps only as compact execution history, not as evidence.
-- Use context.scratch.trace.recentFailures to avoid repeating failed paths.
+- Use context.run.status as the current run/work status.
+- Use context.run.toolCalls as the ordered tool-call memory for this run, including each tool name, input, status, compact output, errors, artifacts, and evidence refs. Prefer it before repeating an equivalent tool call.
+- Use context.harness.feedback as the latest harness feedback. Correct the specific failed tool call or protocol issue before trying a different path.
 - Use context.tools.active and context.tools.lastLoad as compact tool availability state. Full executable schemas are provided as native tools, not inside context.
 - Use context.personal.memorySnapshot for long-lived user preferences or facts when present.
 - Legacy fields such as context.gitContext, State view.progress, State view.workingFeedback, State view.observations, and State view.trace may still exist for compatibility; prefer the grouped context paths above.
 - Do not use workingNotes as factual memory; the harness owns tool-output context.
-- Use evidence tools for truncated, chunked, or evidence_only output before rerunning the original output-producing tool.
-- If context.scratch.progress.status is "done", return a direct reply. Do not call more tools.
+- If output is truncated or incomplete, use normal domain tools with narrower input instead of repeating broad reads or commands.
 - Autonomous execution policy: for actionable user requests, prefer progress over discussion.
 - Treat preference gaps as assumptions, not blockers, when reasonable safe defaults exist.
 - Treat short confirmations or delegation like "yes", "go ahead", "continue", "do it", "whatever feels right", and "surprise me" as permission to proceed with reasonable defaults.
@@ -1081,14 +1076,14 @@ Decision rules:
 - Do not use direct assistant text to say you will do future work. If work remains, call a selected executable tool or decision_load_tools.
 - Final replies must answer the user's request in natural, human-readable language.
 - Do not mention internal execution details in final replies: tool calls, deterministic verification, evidence contracts, assertions, reducers, work state, or harness steps.
-- Use user-visible results from observations and trace summaries, such as created paths, changed files, command results, document findings, or next steps.
+- Use user-visible results from observations and current progress, such as created paths, changed files, command results, document findings, or next steps.
 - Use ask_user_feedback only during an active task run, and only for hard blockers: missing target with no safe default, destructive or irreversible action, credentials or approval required, external cost/account action, or true ambiguity where the wrong choice would likely waste substantial work.
 - Do not use ask_user_feedback for final responses, casual chat, pre-task planning, style, wording, organization, or preference choices when reasonable defaults can satisfy the request.
 - Before a task run exists, ask planning or context questions directly in assistant text.
 - For tool work, call the selected executable tool directly. Never wrap executable calls inside another tool.
 - Use decision_load_tools when the visible selected tools are not enough for the next action. Do not tell the user tools are missing.
 - decision_load_tools must include a non-empty selector: exact toolNames when known, 1-3 small groups when groups fit, or query when uncertain.
-- Prefer purpose-built groups such as file:read, file:write, shell:command, task:read, evidence:read, attachment:basic, document:qa, data:inspect, and data:execute. Broad workflow groups are fallbacks.
+- Prefer purpose-built groups such as file:read, file:write, shell:command, task:read, attachment:basic, document:qa, data:inspect, and data:execute. Broad workflow groups are fallbacks.
 - Tool protocol has two separate phases: decision_load_tools only changes the visible tool set for a later decision; selected executable tools perform work.
 - decision_load_tools is a meta decision tool, not an executable tool.
 - If Selected tools is "(none)" and work remains, call decision_load_tools instead of replying that you will do work later.
@@ -1154,8 +1149,9 @@ function buildStateViewPromptBreakdown(
     "state.context.timeline": stringifySection(stateView.context.timeline),
     "state.context.git": stringifySection(stateView.context.git),
     "state.context.tools": stringifySection(stateView.context.tools),
+    "state.context.harness": stringifySection(stateView.context.harness),
     "state.context.personal": stringifySection(stateView.context.personal),
-    "state.context.scratch": stringifySection(stateView.context.scratch),
+    "state.context.run": stringifySection(stateView.context.run),
   };
 }
 

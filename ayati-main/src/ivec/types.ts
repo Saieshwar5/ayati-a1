@@ -94,24 +94,10 @@ export interface AgentTaskSummaryRecord {
 
 export type WorkStatus = "not_done" | "done" | "blocked" | "needs_user_input";
 
-export type EvidenceAccessMode = "full" | "next_chunk" | "search" | "read_lines" | "tail";
+export type ToolAvailableAction = "search" | "read_range" | "read_next_range" | "inspect" | "rerun_narrower" | "list_narrower";
 export type ToolObservationMode = "full" | "focused" | "chunk" | "large_ref" | "summary";
 export type ToolObservationRetention = "next_step" | "while_relevant" | "evidence_only";
 export type ToolObservationStatus = "success" | "failed";
-
-export interface WorkEvidenceRef {
-  id: string;
-  step: number;
-  callId: string;
-  tool: string;
-  title: string;
-  ref: string;
-  rawOutputPath: string;
-  rawOutputChars: number;
-  lineCount?: number;
-  truncated: boolean;
-  access: EvidenceAccessMode[];
-}
 
 export interface ToolObservation {
   id: string;
@@ -125,7 +111,6 @@ export interface ToolObservation {
   content: string;
   evidenceRef?: string;
   sourceEvidenceRef?: string;
-  rawOutputPath?: string;
   rawOutputChars?: number;
   lineCount?: number;
   hasMore: boolean;
@@ -133,11 +118,28 @@ export interface ToolObservation {
     currentRange: [number, number];
     nextOffset?: number;
   };
-  availableActions?: Array<"next_chunk" | "search" | "read_lines" | "tail">;
+  availableActions?: ToolAvailableAction[];
+}
+
+export interface PromptToolCallContext {
+  step: number;
+  callId?: string;
+  tool: string;
+  input: unknown;
+  status: "success" | "failed";
+  output: string;
+  error?: string;
+  code?: string;
+  operationStatus?: ToolOperationStatus;
+  artifacts?: ArtifactRef[];
+  hasMore?: boolean;
+  rawOutputChars?: number;
+  outputTruncated?: boolean;
 }
 
 export interface ToolContextState {
   recent: ToolObservation[];
+  toolCalls?: PromptToolCallContext[];
 }
 
 export interface TaskNote {
@@ -154,7 +156,6 @@ export interface WorkState {
   blockers?: string[];
   verifiedFacts: string[];
   evidence: string[];
-  evidenceRefs?: WorkEvidenceRef[];
   taskNotes?: TaskNote[];
   nextStep?: string;
   userInputNeeded?: string;
@@ -271,8 +272,6 @@ export interface ActToolCallRecord {
   tool: string;
   input: unknown;
   output: string;
-  outputStorage?: "inline" | "raw_file";
-  rawOutputPath?: string;
   rawOutputChars?: number;
   outputTruncated?: boolean;
   error?: string;
@@ -281,7 +280,6 @@ export interface ActToolCallRecord {
   operationStatus?: ToolOperationStatus;
   code?: string;
   artifacts?: ArtifactRef[];
-  evidenceRef?: WorkEvidenceRef;
   verifiedFacts?: VerifiedFact[];
   assertionResults?: AssertionResult[];
   observation?: ToolObservation;

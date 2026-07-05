@@ -251,15 +251,16 @@ a deduplicated grouped payload:
 - `context.git.current`: focus, pending-turn routing state, and selected task
   context when a task is resolved.
 - `context.tools`: active tool names and the latest tool-load result.
-- `context.scratch`: current-run progress, working feedback, tool observations,
-  prompt-facing read context, trace, transient attachments, and system-event
-  state.
+- `context.run`: current-run status and the ordered tool-call memory for
+  this run.
+- `context.harness`: harness repair feedback for the current decision.
 - `context.personal`: long-lived user memory snapshot when present.
 
 The internal aliases `context.gitContext`, top-level `progress`,
 `workingFeedback`, `toolLoad`, `observations`, `trace`, `attachments`, and
 `systemEvent` may still exist for compatibility inside the runtime state view.
-They should not be treated as the canonical model-facing paths.
+They should not be treated as canonical model-facing paths. Trace and
+system-event metadata should not be placed under `context.run`.
 
 Working feedback is model-facing. Feedback ledger events are operator-facing.
 Both should describe the same harness reality:
@@ -272,7 +273,7 @@ Both should describe the same harness reality:
 Repair feedback uses stable `R_*` repair codes instead of one-off prompt
 strings. The same repair signal can be projected three ways:
 
-- a compact model-facing repair prompt in `context.scratch.feedback`
+- a compact model-facing repair prompt in `context.harness.feedback`
 - operator-facing feedback event data under `repair.code`
 - feedback-ledger warning and triage summaries
 
@@ -306,18 +307,15 @@ task continuation stays inside the existing decision stage through
 continue the focused work branch, use task assets, start new work, or ask the
 user when runtime task resolution is ambiguous.
 
-If observations point to truncated, chunked, or `evidence_only` output, the
-model should use evidence tools before rerunning the original output-producing
-tool. Evidence rereads are hot context under `context.scratch.observations` and
-should not become durable task memory unless verified progress promotes a fact.
-
-Read-heavy task runs also expose compact recent read context under
-`context.scratch.readContext.latest`. This is prompt-facing working memory for
-the current run. It is derived from recent file/search/list/inspect tool output
-and should help the model know what it just inspected, read, searched, or found.
-It is not durable task state. Raw read output remains in run evidence and tool
-records; task state should retain only useful facts, summaries, files, evidence
-refs, and run metadata.
+If tool output is truncated, chunked, or evidence-only, the model should use
+normal domain tools with narrower input instead of repeating broad reads or
+commands.
+Prompt-facing ordered tool output for the current run is carried by
+`context.run.toolCalls`, including tool input, compact output,
+errors, artifacts, and evidence refs. Read-heavy tool results use the same
+channel. Raw read output remains in run evidence and tool records; task state
+should retain only useful facts, summaries, files, evidence refs, and run
+metadata.
 
 The model should prefer `inspect_paths` before large or unfamiliar reads. A
 direct `read_file` or `read_files` call is still allowed, but filesystem read
@@ -463,7 +461,7 @@ mentioning harness internals.
 ## Failure Handling
 
 Failures are stored in `failureHistory` and compacted into
-`context.scratch.feedback`.
+`context.harness.feedback`.
 The local failure policy can retry deterministic recoveries, such as retrying
 file writes with `createDirs=true` when a parent directory is missing.
 

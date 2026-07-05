@@ -21,7 +21,7 @@ daily git context + run recorder + personal memory -> git context pack -> decisi
 The model prompt receives a deduplicated grouped projection:
 
 ```text
-context.timeline + context.git + context.tools + context.scratch + context.personal
+context.timeline + context.git + context.tools + context.harness + context.run + context.personal
 ```
 
 ## Implemented
@@ -62,9 +62,10 @@ context.timeline + context.git + context.tools + context.scratch + context.perso
   internal memory cache.
 - Hot tool-output observation retention: `next_step`, `while_relevant`, and
   `evidence_only`.
-- Prompt-facing read context at `context.scratch.readContext.latest`, derived
-  from recent inspect/find/list/search/read tool output and kept separate from
-  durable task state.
+- Prompt-facing read tool context through `context.run.toolCalls`,
+  kept separate from durable task state.
+- Prompt-facing harness repair feedback through `context.harness.feedback`,
+  kept separate from run context.
 - Filesystem inspection and efficient read tools:
   - `inspect_paths` for metadata, line counts, content hints, hashes, directory
     counts, and read recommendations.
@@ -115,5 +116,5 @@ is the simple runtime path.
 5. System-event parity with chat pending-turn routing and finalization.
 6. Legacy cleanup around historical focus/message-link/event files.
 7. Stable milestone tags.
-8. Advanced raw-context lifecycle only if real usage proves read context,
-   observation retention, and evidence tools are not enough.
+8. Advanced raw-context lifecycle only if real usage proves compact run
+   tool-call context and domain-tool narrowing are not enough.

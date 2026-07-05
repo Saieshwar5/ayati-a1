@@ -223,7 +223,7 @@ describe("AsyncAgentFeedbackLedger", () => {
                   summary: "tests passed",
                   artifacts: [],
                   facts: [],
-                  accessModes: ["tail"],
+                  accessModes: ["raw"],
                 }],
               },
             },

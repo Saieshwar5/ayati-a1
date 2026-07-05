@@ -14,7 +14,7 @@ import { recordRunMetric } from "../metrics.js";
 import { uniqueArtifacts } from "../../verification/artifact-assertions.js";
 import type { AgentAction, AgentToolCallSpec } from "./decision.js";
 import { reduceVerifiedWorkState } from "../verification-contracts/progress-reducer.js";
-import type { WorkEvidenceRef, WorkState } from "../types.js";
+import type { WorkState } from "../types.js";
 import { buildToolObservation } from "./observation-builder.js";
 import {
   checkDeterministicSuccessGate,
@@ -31,7 +31,6 @@ export interface AgentActionExecutionDeps {
   uiContext?: AgentUiContext;
   runRecorder: RunRecorder;
   runHandle: MemoryRunHandle;
-  runPath: string;
   taskAssets?: TaskAssetRecord[];
   metrics?: RunMetrics;
 }
@@ -87,7 +86,7 @@ export async function executeAgentAction(
   return {
     actOutput,
     verifyOutput,
-    nextWorkState: mergeWorkEvidenceRefs(reducedWorkState, previousWorkState, collectWorkEvidenceRefs(actOutput)),
+    nextWorkState: reducedWorkState,
   };
 }
 
@@ -388,7 +387,6 @@ async function executeToolCall(
   };
   const toolDefinition = deps.selectedTools.find((tool) => tool.name === call.tool);
   const observationResult = await buildToolObservation({
-    runPath: deps.runPath,
     stepNumber,
     call,
     record,
@@ -399,25 +397,12 @@ async function executeToolCall(
     record.observation = observationResult.observation;
     record.output = observationResult.observation.content;
   }
-  if (observationResult.rawOutputPath) {
-    record.rawOutputPath = observationResult.rawOutputPath;
-    record.outputStorage = "raw_file";
-  }
   if (typeof observationResult.rawOutputChars === "number") {
     record.rawOutputChars = observationResult.rawOutputChars;
   }
   if (observationResult.outputTruncated) {
     record.outputTruncated = true;
   }
-  if (observationResult.evidenceRef) {
-    record.evidenceRef = observationResult.evidenceRef;
-    record.artifacts = [...(record.artifacts ?? []), { kind: "file", path: observationResult.evidenceRef.rawOutputPath }];
-    record.meta = {
-      ...(record.meta ?? {}),
-      evidenceRef: observationResult.evidenceRef,
-    };
-  }
-
   deps.runRecorder.recordToolResult(deps.clientId, {
     runId: deps.runHandle.runId,
     sessionId: deps.runHandle.sessionId,
@@ -565,7 +550,6 @@ function buildEvidenceItems(actOutput: ActOutput): string[] {
       call.result?.message,
       ...(call.assertionResults ?? []).map((assertion) => `${call.tool}.${assertion.id}: ${assertion.message}`),
       ...(call.verifiedFacts ?? []).map((fact) => fact.message),
-      call.evidenceRef ? `${call.tool} raw output saved as ${call.evidenceRef.ref}.` : undefined,
       call.error ? `${call.tool} failed: ${call.error}` : undefined,
     ]),
   ]).slice(0, 12);
@@ -578,31 +562,6 @@ function buildNewFacts(actOutput: ActOutput): string[] {
       ...(call.assertionResults ?? []).flatMap((assertion) => (assertion.facts ?? []).map((fact) => fact.message)),
     ]),
   ]).slice(0, 12);
-}
-
-function collectWorkEvidenceRefs(actOutput: ActOutput): WorkEvidenceRef[] {
-  return actOutput.toolCalls
-    .map((call) => call.evidenceRef)
-    .filter((ref): ref is WorkEvidenceRef => ref !== undefined);
-}
-
-function mergeWorkEvidenceRefs(
-  next: WorkState,
-  previous: WorkState,
-  refs: WorkEvidenceRef[],
-): WorkState {
-  const byId = new Map<string, WorkEvidenceRef>();
-  for (const ref of previous.evidenceRefs ?? []) {
-    byId.set(ref.id, ref);
-  }
-  for (const ref of refs) {
-    byId.set(ref.id, ref);
-  }
-  const evidenceRefs = [...byId.values()].slice(-12);
-  return {
-    ...next,
-    ...(evidenceRefs.length > 0 ? { evidenceRefs } : {}),
-  };
 }
 
 function summarizeActionFailure(actOutput: ActOutput, assertionFailures: string[]): string {
@@ -621,10 +580,6 @@ const PARALLEL_SAFE_TOOL_NAMES = new Set([
   "read_files",
   "list_directory",
   "search_in_files",
-  "evidence_next_chunk",
-  "evidence_read_lines",
-  "evidence_tail",
-  "evidence_search",
 ]);
 
 const PARALLEL_SAFE_DOMAINS = new Set([

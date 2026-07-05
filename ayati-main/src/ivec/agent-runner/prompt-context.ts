@@ -56,14 +56,13 @@ export interface PromptGitTaskContext {
   };
 };
 
-export interface PromptScratchContext {
-  progress?: unknown;
+export interface PromptRunContext {
+  status?: unknown;
+  toolCalls?: unknown;
+}
+
+export interface PromptHarnessContext {
   feedback?: unknown;
-  observations?: unknown;
-  readContext?: unknown;
-  trace?: unknown;
-  attachments?: unknown;
-  systemEvent?: unknown;
 }
 
 export interface PromptToolsContext {
@@ -76,7 +75,8 @@ export interface AgentPromptContext extends AgentContextPack {
   personal?: PromptPersonalContext;
   git?: PromptGitContext;
   tools?: PromptToolsContext;
-  scratch?: PromptScratchContext;
+  harness?: PromptHarnessContext;
+  run?: PromptRunContext;
 }
 
 export interface ProjectAgentPromptContextInput {
@@ -84,16 +84,19 @@ export interface ProjectAgentPromptContextInput {
   runtimeMode?: RuntimeCapabilityPromptContext;
   sessionAttachments?: unknown;
   tools?: PromptToolsContext;
-  scratch?: PromptScratchContext;
+  harness?: PromptHarnessContext;
+  run?: PromptRunContext;
 }
 
 export interface AgentPromptStateView {
   context: AgentPromptContext;
+  attachments?: AgentStateView["attachments"];
 }
 
 export function projectAgentPromptContext(input: ProjectAgentPromptContextInput): AgentPromptContext {
   const personalMemorySnapshot = input.context.personalMemorySnapshot?.trim();
-  const scratch = compactScratchContext(input.scratch);
+  const harness = compactHarnessContext(input.harness);
+  const run = compactRunContext(input.run);
   return {
     ...input.context,
     ...(input.runtimeMode ? { runtimeMode: input.runtimeMode } : {}),
@@ -109,13 +112,15 @@ export function projectAgentPromptContext(input: ProjectAgentPromptContextInput)
       },
     } : {}),
     ...(input.tools ? { tools: input.tools } : {}),
-    ...(scratch ? { scratch } : {}),
+    ...(harness ? { harness } : {}),
+    ...(run ? { run } : {}),
   };
 }
 
 export function projectAgentStateViewForPrompt(stateView: AgentStateView): AgentPromptStateView {
   return {
     context: compactAgentPromptContext(stateView.context),
+    ...(stateView.attachments ? { attachments: stateView.attachments } : {}),
   };
 }
 
@@ -189,23 +194,29 @@ function compactAgentPromptContext(context: AgentPromptContext): AgentPromptCont
     ...(context.runtimeMode ? { runtimeMode: context.runtimeMode } : {}),
     ...(context.git ? { git: context.git } : {}),
     ...(context.tools ? { tools: context.tools } : {}),
-    ...(context.scratch ? { scratch: context.scratch } : {}),
+    ...(context.harness ? { harness: context.harness } : {}),
+    ...(context.run ? { run: context.run } : {}),
     ...(context.personal ? { personal: context.personal } : {}),
   };
 }
 
-function compactScratchContext(scratch: PromptScratchContext | undefined): PromptScratchContext | undefined {
-  if (!scratch) {
+function compactHarnessContext(harness: PromptHarnessContext | undefined): PromptHarnessContext | undefined {
+  if (!harness) {
     return undefined;
   }
-  const compacted: PromptScratchContext = {
-    ...(scratch.progress ? { progress: scratch.progress } : {}),
-    ...(scratch.feedback ? { feedback: scratch.feedback } : {}),
-    ...(scratch.observations ? { observations: scratch.observations } : {}),
-    ...(scratch.readContext ? { readContext: scratch.readContext } : {}),
-    ...(scratch.trace ? { trace: scratch.trace } : {}),
-    ...(scratch.attachments ? { attachments: scratch.attachments } : {}),
-    ...(scratch.systemEvent ? { systemEvent: scratch.systemEvent } : {}),
+  const compacted: PromptHarnessContext = {
+    ...(harness.feedback ? { feedback: harness.feedback } : {}),
+  };
+  return Object.keys(compacted).length > 0 ? compacted : undefined;
+}
+
+function compactRunContext(run: PromptRunContext | undefined): PromptRunContext | undefined {
+  if (!run) {
+    return undefined;
+  }
+  const compacted: PromptRunContext = {
+    ...(run.status ? { status: run.status } : {}),
+    ...(run.toolCalls ? { toolCalls: run.toolCalls } : {}),
   };
   return Object.keys(compacted).length > 0 ? compacted : undefined;
 }

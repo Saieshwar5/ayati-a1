@@ -1,5 +1,3 @@
-import { mkdir, writeFile } from "node:fs/promises";
-import { join } from "node:path";
 import type { ToolDefinition, ToolObservationPolicy } from "../../skills/types.js";
 import {
   readContextObservation,
@@ -8,16 +6,14 @@ import {
 import type { AgentToolCallSpec } from "./decision.js";
 import type {
   ActToolCallRecord,
-  EvidenceAccessMode,
+  ToolAvailableAction,
   ToolObservation,
   ToolObservationRetention,
-  WorkEvidenceRef,
 } from "../types.js";
 
 const SMALL_OUTPUT_CHARS = 12_000;
 const MEDIUM_OUTPUT_CHARS = 120_000;
 const CHUNK_CHARS = 8_000;
-const RAW_DIR = "raw";
 
 const DECISION_CONTEXT_TOOLS = new Set([
   "shell",
@@ -31,15 +27,7 @@ const DECISION_CONTEXT_TOOLS = new Set([
   "list_directory",
 ]);
 
-const EVIDENCE_TOOLS = new Set([
-  "evidence_next_chunk",
-  "evidence_search",
-  "evidence_read_lines",
-  "evidence_tail",
-]);
-
 export interface ToolObservationBuildInput {
-  runPath: string;
   stepNumber: number;
   call: AgentToolCallSpec;
   record: ActToolCallRecord;
@@ -49,8 +37,6 @@ export interface ToolObservationBuildInput {
 
 export interface ToolObservationBuildResult {
   observation?: ToolObservation;
-  evidenceRef?: WorkEvidenceRef;
-  rawOutputPath?: string;
   rawOutputChars?: number;
   outputTruncated?: boolean;
 }
@@ -85,16 +71,6 @@ export async function buildToolObservation(input: ToolObservationBuildInput): Pr
       ? `evidence://${existingEvidenceRef}`
       : undefined;
   const maxObservationChars = policy.maxObservationChars ?? CHUNK_CHARS;
-  const shouldWriteRaw = shouldStoreRaw(policy, output);
-  const evidenceId = buildEvidenceId(input.stepNumber, input.call.id);
-  const rawOutputPath = shouldWriteRaw
-    ? buildRawOutputPath(input.stepNumber, input.call.id, input.call.tool)
-    : readStructuredString(input.record.result?.structuredContent, "rawOutputPath");
-
-  if (shouldWriteRaw && rawOutputPath) {
-    await writeRawOutput(input.runPath, rawOutputPath, output);
-  }
-
   const rawOutputChars = output.length;
   const externallyTruncated = readStructuredBoolean(input.record.result?.structuredContent, "truncated")
     ?? readMetaBoolean(input.record.meta, "truncated")
@@ -125,8 +101,8 @@ export async function buildToolObservation(input: ToolObservationBuildInput): Pr
   const hasMore = structuredHasMore ?? (mode === "chunk"
     ? slice?.nextOffset !== undefined
     : (contextObservation?.hasMore ?? mode === "large_ref"));
-  const access = resolveAccess(mode, shouldWriteRaw || existingEvidenceRef !== undefined);
-  const observationEvidenceRef = sourceEvidenceRef ?? contextObservation?.evidenceRef ?? (shouldWriteRaw && rawOutputPath ? `evidence://${evidenceId}` : undefined);
+  const availableActions = resolveAvailableActions(mode, hasMore);
+  const observationEvidenceRef = sourceEvidenceRef ?? contextObservation?.evidenceRef;
   const observation: ToolObservation = {
     id: buildObservationId(input.stepNumber, input.call.id),
     step: input.stepNumber,
@@ -137,7 +113,6 @@ export async function buildToolObservation(input: ToolObservationBuildInput): Pr
     mode,
     retention: resolveRetention(input.call.tool, mode),
     content,
-    ...(rawOutputPath ? { rawOutputPath } : {}),
     ...(observationEvidenceRef ? { evidenceRef: observationEvidenceRef } : {}),
     ...(sourceEvidenceRef ? { sourceEvidenceRef } : {}),
     rawOutputChars,
@@ -149,60 +124,24 @@ export async function buildToolObservation(input: ToolObservationBuildInput): Pr
         ...(slice.nextOffset !== undefined ? { nextOffset: slice.nextOffset } : {}),
       },
     } : {}),
-    ...(access.length > 0 && mode !== "full" ? { availableActions: access.filter((item) => item !== "full") as ToolObservation["availableActions"] } : {}),
+    ...(availableActions.length > 0 ? { availableActions } : {}),
   };
-
-  const evidenceRef = shouldWriteRaw && rawOutputPath
-    ? {
-        id: evidenceId,
-        step: input.stepNumber,
-        callId: input.call.id,
-        tool: input.call.tool,
-        title: buildEvidenceTitle(input.call.tool, input.record),
-        ref: `evidence://${evidenceId}`,
-        rawOutputPath,
-        rawOutputChars,
-        lineCount,
-        truncated: externallyTruncated || mode !== "full",
-        access,
-      }
-    : undefined;
 
   return {
     observation,
-    ...(evidenceRef ? { evidenceRef } : {}),
-    ...(rawOutputPath ? { rawOutputPath } : {}),
     rawOutputChars,
     outputTruncated: externallyTruncated || mode !== "full",
   };
-}
-
-export function isEvidenceToolName(toolName: string): boolean {
-  return EVIDENCE_TOOLS.has(toolName);
 }
 
 function resolveObservationPolicy(tool: ToolDefinition | undefined, toolName: string): ToolObservationPolicy {
   if (tool?.observationPolicy) {
     return tool.observationPolicy;
   }
-  if (EVIDENCE_TOOLS.has(toolName)) {
-    return { outputImportance: "decision_context", rawStorage: "never", maxObservationChars: CHUNK_CHARS };
-  }
   if (DECISION_CONTEXT_TOOLS.has(toolName)) {
     return { outputImportance: "decision_context", rawStorage: "always", maxObservationChars: CHUNK_CHARS };
   }
   return { outputImportance: "operation_summary", rawStorage: "never" };
-}
-
-function shouldStoreRaw(policy: ToolObservationPolicy, output: string): boolean {
-  const rawStorage = policy.rawStorage ?? "always";
-  if (rawStorage === "never") {
-    return false;
-  }
-  if (rawStorage === "when_truncated") {
-    return output.length > SMALL_OUTPUT_CHARS;
-  }
-  return output.length > 0;
 }
 
 function resolveObservationMode(outputChars: number): ToolObservation["mode"] {
@@ -215,23 +154,20 @@ function resolveObservationMode(outputChars: number): ToolObservation["mode"] {
   return "large_ref";
 }
 
-function resolveAccess(mode: ToolObservation["mode"], hasRawOutput: boolean): EvidenceAccessMode[] {
-  if (!hasRawOutput) {
-    return [];
-  }
+function resolveAvailableActions(mode: ToolObservation["mode"], hasMore: boolean): ToolAvailableAction[] {
   if (mode === "chunk") {
-    return ["next_chunk", "search", "read_lines", "tail"];
+    return hasMore ? ["read_next_range", "search", "read_range"] : ["search", "read_range"];
   }
-  if (mode === "large_ref" || mode === "summary" || mode === "focused") {
-    return ["search", "read_lines", "tail"];
+  if (mode === "large_ref") {
+    return ["search", "read_range", "inspect"];
   }
-  return ["full", "search", "read_lines", "tail"];
+  if (mode === "summary" || mode === "focused") {
+    return ["search", "read_range"];
+  }
+  return [];
 }
 
 function resolveRetention(toolName: string, mode: ToolObservation["mode"]): ToolObservationRetention {
-  if (EVIDENCE_TOOLS.has(toolName)) {
-    return "next_step";
-  }
   if (mode === "large_ref") {
     return "evidence_only";
   }
@@ -319,30 +255,8 @@ function sliceLinesByCharBudget(output: string, startLine: number, maxChars: num
   };
 }
 
-function buildEvidenceId(stepNumber: number, callId: string): string {
-  return `ev_${String(stepNumber).padStart(3, "0")}_${sanitizeSegment(callId)}`;
-}
-
 function buildObservationId(stepNumber: number, callId: string): string {
   return `ctx_${String(stepNumber).padStart(3, "0")}_${sanitizeSegment(callId)}`;
-}
-
-function buildRawOutputPath(stepNumber: number, callId: string, toolName: string): string {
-  return `${RAW_DIR}/${String(stepNumber).padStart(3, "0")}-${sanitizeSegment(callId)}-${sanitizeSegment(toolName)}-output.txt`;
-}
-
-function buildEvidenceTitle(toolName: string, record: ActToolCallRecord): string {
-  const message = record.result?.message?.trim();
-  if (message) {
-    return `${toolName}: ${message}`;
-  }
-  return `${toolName} output`;
-}
-
-async function writeRawOutput(runPath: string, rawOutputPath: string, output: string): Promise<void> {
-  const absolutePath = join(runPath, rawOutputPath);
-  await mkdir(join(runPath, RAW_DIR), { recursive: true });
-  await writeFile(absolutePath, output, "utf-8");
 }
 
 function countLines(value: string): number {

@@ -352,8 +352,8 @@ async function buildSearchOutput(input: {
     blocks: search.blocks.map((item) => item.block),
     hasMore: search.matchCount > search.blocks.length,
     suggestedReads: [
-      { kind: "search", reason: "Search raw evidence for another term.", input: { query } },
-      { kind: "read_lines", reason: "Read exact lines around a match.", input: {} },
+      { kind: "search", reason: "Search the file content for another term.", input: { query } },
+      { kind: "read_range", reason: "Read exact lines around a match.", input: {} },
     ],
   };
   return {
@@ -408,8 +408,8 @@ async function buildSliceOutput(input: {
     blocks: [makeBlock({ title: "Requested line slice", lines: numbered, startLine: slice.startLine, maxChars: 6_000 })],
     hasMore: endLine < slice.lineCount,
     suggestedReads: [
-      { kind: "read_lines", reason: "Continue with a nearby exact line range.", input: { startLine: endLine + 1 } },
-      { kind: "search", reason: "Search this saved output for specific text.", input: {} },
+      { kind: "read_next_range", reason: "Continue with a nearby exact line range.", input: { startLine: endLine + 1 } },
+      { kind: "search", reason: "Search this file for specific text.", input: {} },
     ],
   };
   return {
@@ -444,7 +444,7 @@ function buildFullOutput(input: {
   const observation: ToolContextObservation = {
     mode: truncated ? "large_ref" : "focused",
     summary: truncated
-      ? `Explicit full read was capped for ${input.filePath}; use evidence tools or line slices for more.`
+      ? `Explicit full read was capped for ${input.filePath}; use narrower line slices for more.`
       : `Explicit full read returned ${lines.length} line${lines.length === 1 ? "" : "s"} from ${input.filePath}.`,
     stats: {
       filePath: input.filePath,
@@ -459,8 +459,8 @@ function buildFullOutput(input: {
     blocks: headTailBlocks({ lines, headLines: 30, tailLines: 40, maxBlockChars: 3_000 }),
     hasMore: truncated,
     suggestedReads: [
-      { kind: "read_lines", reason: "Read an exact line range from the raw evidence.", input: {} },
-      { kind: "search", reason: "Search the raw evidence for a symbol or error.", input: {} },
+      { kind: "read_range", reason: "Read an exact file line range.", input: {} },
+      { kind: "search", reason: "Search the file content for a symbol or error.", input: {} },
     ],
   };
   return {
@@ -528,7 +528,7 @@ function buildProfileOrAutoOutput(input: {
     hasMore: !input.source.complete,
     suggestedReads: [
       { kind: "search", reason: "Search for the relevant symbol, error, or term instead of reading the whole file.", input: {} },
-      { kind: "read_lines", reason: "Read an exact line range once the relevant location is known.", input: {} },
+      { kind: "read_range", reason: "Read an exact line range once the relevant location is known.", input: {} },
     ],
   };
   const content = blocks.map((block) => block.content).join("\n\n---\n\n") || observation.summary;

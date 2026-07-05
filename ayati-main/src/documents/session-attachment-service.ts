@@ -137,11 +137,11 @@ export class SessionAttachmentService {
       };
     }
 
-    const runPath = resolve(this.dataDir, "runs", runId);
+    const artifactRoot = resolve(this.dataDir, "prepared-attachments", sanitizeFileName(runId));
     const preparedInputId = buildPreparedInputId(currentRunAttachments.length + 1, manifest.documentId);
-    const record = await this.prepareSingleAttachment(manifest, preparedInputId, runPath);
-    this.preparedAttachmentRegistry.upsertRunAttachment(runId, runPath, record);
-    await persistRestoredAttachmentArtifacts(runPath, this.preparedAttachmentRegistry.getRunAttachments(runId));
+    const record = await this.prepareSingleAttachment(manifest, preparedInputId, artifactRoot);
+    this.preparedAttachmentRegistry.upsertRunAttachment(runId, artifactRoot, record);
+    await persistRestoredAttachmentArtifacts(artifactRoot, this.preparedAttachmentRegistry.getRunAttachments(runId));
 
     return {
       source: "task_asset",
@@ -156,11 +156,11 @@ export class SessionAttachmentService {
   private async prepareSingleAttachment(
     manifest: ManagedDocumentManifest,
     preparedInputId: string,
-    runPath: string,
+    artifactRoot: string,
   ): Promise<PreparedAttachmentRecord> {
     const mode = resolvePreparedAttachmentMode(manifest.kind);
     if (mode === "structured_data") {
-      return prepareStructuredAttachment({ manifest, preparedInputId, runPath });
+      return prepareStructuredAttachment({ manifest, preparedInputId, artifactRoot });
     }
     if (mode === "unstructured_text") {
       if (!this.documentStore) {
@@ -169,7 +169,7 @@ export class SessionAttachmentService {
       return prepareUnstructuredAttachment({
         manifest,
         preparedInputId,
-        runPath,
+        artifactRoot,
         documentStore: this.documentStore,
       });
     }
@@ -278,11 +278,14 @@ function buildPreparedInputId(index: number, documentId: string): string {
   return `att_${index}_${documentId.slice(0, 8)}`;
 }
 
-async function persistRestoredAttachmentArtifacts(runPath: string, records: PreparedAttachmentRecord[]): Promise<void> {
-  const attachmentsDir = join(runPath, "attachments");
-  await mkdir(attachmentsDir, { recursive: true });
+async function persistRestoredAttachmentArtifacts(artifactRoot: string, records: PreparedAttachmentRecord[]): Promise<void> {
+  await mkdir(artifactRoot, { recursive: true });
   for (const record of records) {
     await writeFile(record.summary.artifactPath, JSON.stringify(record.detail.payload, null, 2), "utf-8");
   }
-  await writeFile(join(attachmentsDir, "index.json"), JSON.stringify({ attachments: records.map((record) => record.summary) }, null, 2), "utf-8");
+  await writeFile(join(artifactRoot, "index.json"), JSON.stringify({ attachments: records.map((record) => record.summary) }, null, 2), "utf-8");
+}
+
+function sanitizeFileName(value: string): string {
+  return value.replace(/[^a-zA-Z0-9._-]+/g, "_").replace(/^_+|_+$/g, "") || "run";
 }

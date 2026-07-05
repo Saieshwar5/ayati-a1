@@ -609,10 +609,6 @@ function buildDeterministicLoadRequest(state: LoopState): ToolLoadRequest {
   if (hasUiWorkspaceIntent(text)) {
     groups.add("workflow:ui_workspace");
   }
-  if ((state.workState.evidenceRefs ?? []).length > 0) {
-    toolNames.add("evidence_search");
-    toolNames.add("evidence_read_lines");
-  }
   if (hasAttachmentWork(state)) {
     toolNames.add("attachment_restore");
     toolNames.add("attachment_list");

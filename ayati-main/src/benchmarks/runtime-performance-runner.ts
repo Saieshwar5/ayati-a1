@@ -651,14 +651,9 @@ async function runHttpServerCase(config: RuntimeScaleConfig): Promise<CaseResult
   return withTempDir("ayati-runtime-http-", async (root) => {
     const startedAt = performance.now();
     const uploadsDir = join(root, "uploads");
-    const runsDir = join(root, "runs");
-    const runId = "runtime-run";
-    await mkdir(join(runsDir, runId), { recursive: true });
-    await writeFile(join(runsDir, runId, "artifact.txt"), "runtime artifact\n".repeat(8_000), "utf-8");
     const port = await allocatePort();
     const server = new UploadServer({
       uploadsDir,
-      runsDir,
       host: "127.0.0.1",
       port,
       maxUploadBytes: 2 * 1024 * 1024,
@@ -668,25 +663,8 @@ async function runHttpServerCase(config: RuntimeScaleConfig): Promise<CaseResult
       const fixture = {
         concurrency: config.concurrency,
         uploadBytes: 64 * 1024,
-        artifactBytes: 136_000,
       };
       const operations = [
-        await measureOperation("http_artifact_download_concurrent", async () => {
-          await Promise.all(Array.from({ length: config.concurrency }, async () => {
-            const response = await fetch(`http://127.0.0.1:${port}/api/artifacts/${runId}/artifact.txt`);
-            if (!response.ok) {
-              throw new Error(`artifact download failed with ${response.status}`);
-            }
-            await response.arrayBuffer();
-          }));
-        }, {
-          description: "Download artifacts through the HTTP server with concurrent local clients.",
-          fixture,
-          iterations: config.shortIterations,
-          itemsPerIteration: config.concurrency,
-          itemLabel: "downloads",
-          warnIfP95MsAbove: 500,
-        }),
         await measureOperation("http_upload_concurrent", async () => {
           await Promise.all(Array.from({ length: config.concurrency }, async (_, index) => {
             const form = new FormData();

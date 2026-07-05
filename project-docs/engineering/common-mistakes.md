@@ -22,9 +22,9 @@ Avoid these:
   instead of keeping those deterministic in runtime finalization.
 - Requiring a model-callable tool just to continue the already-active task when
   runtime can auto-bind an obvious same-task follow-up.
-- Loading every task branch, old conversation, or raw evidence record into the
-  default prompt instead of using compact active context and on-demand
-  git-context/evidence tools.
+- Loading every task branch, old conversation, or raw output record into the
+  default prompt instead of using compact active context, git-context retrieval,
+  and narrower domain-tool calls.
 - Writing runtime state into source-controlled docs.
 - Ignoring `context/system-event-policy.json`.
 - Breaking CLI/server message contracts.

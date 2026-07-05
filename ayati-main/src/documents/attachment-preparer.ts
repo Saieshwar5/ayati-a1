@@ -15,7 +15,7 @@ export interface PrepareIncomingAttachmentsResult {
 export async function prepareIncomingAttachments(input: {
   attachedDocuments: ManagedDocumentManifest[];
   runId: string;
-  runPath: string;
+  attachmentRoot: string;
   documentStore: DocumentStore;
   registry: PreparedAttachmentRegistry;
 }): Promise<PrepareIncomingAttachmentsResult> {
@@ -28,7 +28,7 @@ export async function prepareIncomingAttachments(input: {
       records.push(await prepareStructuredAttachment({
         manifest,
         preparedInputId,
-        runPath: input.runPath,
+        artifactRoot: input.attachmentRoot,
       }));
       continue;
     }
@@ -37,7 +37,7 @@ export async function prepareIncomingAttachments(input: {
       records.push(await prepareUnstructuredAttachment({
         manifest,
         preparedInputId,
-        runPath: input.runPath,
+        artifactRoot: input.attachmentRoot,
         documentStore: input.documentStore,
       }));
       continue;
@@ -46,12 +46,12 @@ export async function prepareIncomingAttachments(input: {
     records.push(await prepareUnsupportedAttachment({
       manifest,
       preparedInputId,
-      runPath: input.runPath,
+      artifactRoot: input.attachmentRoot,
     }));
   }
 
-  input.registry.registerRunAttachments(input.runId, input.runPath, records);
-  await writeAttachmentIndexArtifact(input.runPath, records.map((record) => record.summary));
+  input.registry.registerRunAttachments(input.runId, input.attachmentRoot, records);
+  await writeAttachmentIndexArtifact(input.attachmentRoot, records.map((record) => record.summary));
 
   return {
     summaries: records.map((record) => record.summary),
@@ -62,9 +62,9 @@ export async function prepareIncomingAttachments(input: {
 async function prepareUnsupportedAttachment(input: {
   manifest: ManagedDocumentManifest;
   preparedInputId: string;
-  runPath: string;
+  artifactRoot: string;
 }): Promise<PreparedAttachmentRecord> {
-  const artifactDir = join(input.runPath, "attachments");
+  const artifactDir = input.artifactRoot;
   const artifactPath = join(artifactDir, `${input.preparedInputId}.json`);
   const payload = {
     sourcePath: input.manifest.storedPath,
@@ -91,7 +91,7 @@ async function prepareUnsupportedAttachment(input: {
   return {
     summary,
     manifest: input.manifest,
-    runPath: input.runPath,
+    artifactRoot: input.artifactRoot,
     detail: {
       kind: "unsupported",
       payload,
@@ -99,8 +99,7 @@ async function prepareUnsupportedAttachment(input: {
   };
 }
 
-async function writeAttachmentIndexArtifact(runPath: string, summaries: PreparedAttachmentSummary[]): Promise<void> {
-  const artifactDir = join(runPath, "attachments");
-  await mkdir(artifactDir, { recursive: true });
-  await writeFile(join(artifactDir, "index.json"), JSON.stringify({ attachments: summaries }, null, 2), "utf-8");
+async function writeAttachmentIndexArtifact(artifactRoot: string, summaries: PreparedAttachmentSummary[]): Promise<void> {
+  await mkdir(artifactRoot, { recursive: true });
+  await writeFile(join(artifactRoot, "index.json"), JSON.stringify({ attachments: summaries }, null, 2), "utf-8");
 }

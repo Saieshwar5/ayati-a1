@@ -1,7 +1,5 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import { createReadStream } from "node:fs";
-import { stat } from "node:fs/promises";
-import { join, resolve, sep } from "node:path";
+import { resolve } from "node:path";
 import { devError, devLog, devWarn } from "../shared/index.js";
 import type { ToolDefinition, ToolResult } from "../skills/types.js";
 import { persistManagedUpload, type ManagedUploadRecord } from "./upload-storage.js";
@@ -13,30 +11,10 @@ const DEFAULT_MAX_UPLOAD_BYTES = 25 * 1024 * 1024;
 const DEFAULT_MAX_JSON_BYTES = 1024 * 1024;
 const DEFAULT_ALLOW_ORIGIN = "*";
 const UPLOAD_PATH = "/api/uploads";
-const ARTIFACT_PATH_PREFIX = "/api/artifacts/";
 const PULSE_PATH = "/api/pulse";
-
-const CONTENT_TYPE_BY_EXTENSION: Record<string, string> = {
-  ".gif": "image/gif",
-  ".css": "text/css; charset=utf-8",
-  ".html": "text/html; charset=utf-8",
-  ".jpeg": "image/jpeg",
-  ".jpg": "image/jpeg",
-  ".js": "text/javascript; charset=utf-8",
-  ".json": "application/json; charset=utf-8",
-  ".md": "text/markdown; charset=utf-8",
-  ".mp4": "video/mp4",
-  ".png": "image/png",
-  ".svg": "image/svg+xml",
-  ".txt": "text/plain; charset=utf-8",
-  ".wasm": "application/wasm",
-  ".webm": "video/webm",
-  ".webp": "image/webp",
-};
 
 export interface UploadServerOptions {
   uploadsDir: string;
-  runsDir?: string;
   host?: string;
   port?: number;
   maxUploadBytes?: number;
@@ -57,7 +35,6 @@ type UploadBlobLike = {
 
 export class UploadServer {
   readonly uploadsDir: string;
-  readonly runsDir: string;
   private readonly host: string;
   private readonly port: number;
   private readonly maxUploadBytes: number;
@@ -71,7 +48,6 @@ export class UploadServer {
 
   constructor(options: UploadServerOptions) {
     this.uploadsDir = resolve(options.uploadsDir);
-    this.runsDir = resolve(options.runsDir ?? join(this.uploadsDir, "..", "..", "runs"));
     this.host = options.host?.trim() || DEFAULT_HOST;
     this.port = options.port ?? DEFAULT_PORT;
     this.maxUploadBytes = Math.max(1024, options.maxUploadBytes ?? DEFAULT_MAX_UPLOAD_BYTES);
@@ -127,22 +103,6 @@ export class UploadServer {
     const requestUrl = new URL(req.url ?? "/", `http://${req.headers.host ?? `${this.host}:${this.port}`}`);
     if (requestUrl.pathname === PULSE_PATH) {
       await this.handlePulseRequest(req, res);
-      return;
-    }
-
-    if (req.method === "GET" && requestUrl.pathname.startsWith(ARTIFACT_PATH_PREFIX)) {
-      try {
-        await this.handleArtifactDownload(res, requestUrl.pathname);
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        const statusCode = classifyArtifactError(message);
-        if (statusCode >= 500) {
-          devError("Artifact server error:", message);
-        } else {
-          devWarn(`Artifact request rejected: ${message}`);
-        }
-        this.sendJson(res, statusCode, { error: message });
-      }
       return;
     }
 
@@ -306,50 +266,6 @@ export class UploadServer {
     });
   }
 
-  private async handleArtifactDownload(res: ServerResponse, pathname: string): Promise<void> {
-    const suffix = pathname.slice(ARTIFACT_PATH_PREFIX.length);
-    const segments = suffix.split("/").filter((segment) => segment.length > 0).map((segment) => decodeURIComponent(segment));
-    const [runId, ...artifactSegments] = segments;
-    if (!runId || artifactSegments.length === 0) {
-      throw new Error("artifact path is incomplete.");
-    }
-
-    const artifactRelativePath = artifactSegments.join(sep);
-    const runRoot = resolve(this.runsDir, runId);
-    const filePath = resolve(runRoot, artifactRelativePath);
-    const allowedPrefix = `${runRoot}${sep}`;
-    if (filePath !== runRoot && !filePath.startsWith(allowedPrefix)) {
-      throw new Error("artifact path escapes the run directory.");
-    }
-
-    await this.sendFile(res, filePath, "public, max-age=3600", "artifact file was not found.");
-  }
-
-  private async sendFile(
-    res: ServerResponse,
-    filePath: string,
-    cacheControl = "public, max-age=3600",
-    missingMessage = "file was not found.",
-  ): Promise<void> {
-    const fileStat = await stat(filePath);
-    if (!fileStat.isFile()) {
-      throw new Error(missingMessage);
-    }
-
-    res.statusCode = 200;
-    res.setHeader("Content-Type", getContentType(filePath));
-    res.setHeader("Content-Length", String(fileStat.size));
-    res.setHeader("Cache-Control", cacheControl);
-
-    await new Promise<void>((resolveStream, rejectStream) => {
-      const stream = createReadStream(filePath);
-      stream.on("error", rejectStream);
-      stream.on("end", resolveStream);
-      res.on("error", rejectStream);
-      stream.pipe(res);
-    });
-  }
-
   private sendJson(res: ServerResponse, statusCode: number, body: unknown): void {
     res.statusCode = statusCode;
     res.setHeader("Content-Type", "application/json");
@@ -425,23 +341,9 @@ function classifyUploadError(message: string): number {
   return 500;
 }
 
-function classifyArtifactError(message: string): number {
-  const normalized = message.toLowerCase();
-  if (normalized.includes("incomplete") || normalized.includes("escapes")) return 400;
-  if (normalized.includes("not found")) return 404;
-  return 500;
-}
-
 function isManagedPath(url: string): boolean {
   return url.startsWith(UPLOAD_PATH)
-    || url.startsWith(ARTIFACT_PATH_PREFIX)
     || url.startsWith(PULSE_PATH);
-}
-
-function getContentType(filePath: string): string {
-  const lowerPath = filePath.toLowerCase();
-  const extension = lowerPath.slice(lowerPath.lastIndexOf("."));
-  return CONTENT_TYPE_BY_EXTENSION[extension] ?? "application/octet-stream";
 }
 
 function isJsonContentType(value: string): boolean {

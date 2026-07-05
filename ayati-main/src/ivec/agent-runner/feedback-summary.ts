@@ -29,7 +29,8 @@ export function summarizePromptStateView(
 ): Record<string, unknown> {
   const context = stateView.context;
   const gitCurrent = context.git?.current;
-  const scratch = context.scratch;
+  const harness = context.harness;
+  const run = context.run;
   return {
     fingerprint: fingerprintPayload(stateView),
     contextKeys: Object.keys(context),
@@ -69,16 +70,13 @@ export function summarizePromptStateView(
       active: context.tools.active,
       lastLoadStatus: readRecord(context.tools.lastLoad)?.["status"],
     } : undefined,
-    scratch: scratch ? {
-      keys: Object.keys(scratch),
-      feedbackCount: readArray(readRecord(scratch.feedback)?.["latest"]).length,
-      observationCount: readArray(readRecord(scratch.observations)?.["latest"]).length,
-      readContextCount: readArray(readRecord(scratch.readContext)?.["latest"]).length,
-      traceStepCount: readArray(readRecord(scratch.trace)?.["recentSteps"]).length,
-      traceFailureCount: readArray(readRecord(scratch.trace)?.["recentFailures"]).length,
-      attachmentKeys: scratch.attachments && typeof scratch.attachments === "object"
-        ? Object.keys(scratch.attachments as Record<string, unknown>)
-        : [],
+    harness: harness ? {
+      feedbackCount: readArray(readRecord(harness.feedback)?.["latest"]).length,
+    } : undefined,
+    run: run ? {
+      keys: Object.keys(run),
+      status: run.status,
+      toolCallCount: readArray(run.toolCalls).length,
     } : undefined,
     personal: context.personal ? {
       memoryChars: context.personal.memorySnapshot.length,
@@ -174,7 +172,6 @@ export function summarizeWorkState(workState: WorkState): Record<string, unknown
     blockerCount: workState.blockers?.length ?? 0,
     verifiedFactCount: workState.verifiedFacts.length,
     evidenceCount: workState.evidence.length,
-    evidenceRefCount: workState.evidenceRefs?.length ?? 0,
     taskNoteCount: workState.taskNotes?.length ?? 0,
     nextStepPreview: previewString(workState.nextStep, 180),
     userInputNeededPreview: previewString(workState.userInputNeeded, 180),

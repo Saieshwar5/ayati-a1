@@ -738,7 +738,6 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
         blockers: result.workState?.blockers ?? [],
         verifiedFacts: result.workState?.verifiedFacts ?? [],
         evidence: result.workState?.evidence ?? [],
-        evidenceRefs: result.workState?.evidenceRefs,
         taskNotes: result.workState?.taskNotes,
         nextStep: next,
         userInputNeeded: next,
@@ -1609,10 +1608,6 @@ const CONVERSATION_READ_ONLY_TOOL_NAMES = new Set([
   "document_list_sections",
   "document_read_section",
   "document_query",
-  "evidence_read_lines",
-  "evidence_search",
-  "evidence_tail",
-  "evidence_next_chunk",
   "calculator",
 ]);
 

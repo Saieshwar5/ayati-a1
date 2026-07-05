@@ -31,7 +31,7 @@ describe("SessionAttachmentService", () => {
       await prepareIncomingAttachments({
         attachedDocuments: firstRegistered.documents,
         runId: "run-1",
-        runPath: join(dataDir, "runs", "run-1"),
+        attachmentRoot: join(dataDir, "prepared-attachments", "run-1"),
         documentStore,
         registry,
       });
@@ -40,7 +40,7 @@ describe("SessionAttachmentService", () => {
       await prepareIncomingAttachments({
         attachedDocuments: secondRegistered.documents,
         runId: "run-2",
-        runPath: join(dataDir, "runs", "run-2"),
+        attachmentRoot: join(dataDir, "prepared-attachments", "run-2"),
         documentStore,
         registry,
       });

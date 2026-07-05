@@ -115,10 +115,6 @@ export function checkDeterministicSuccessGate(
 
   const evidenceItems = actOutput.toolCalls.map(formatDeterministicEvidenceItem);
   const summary = buildDeterministicSummary(actOutput, successCriteria, evidenceItems);
-  const usedRawArtifacts = actOutput.toolCalls
-    .map((call) => call.rawOutputPath)
-    .filter((path): path is string => typeof path === "string" && path.trim().length > 0);
-
   return {
     passed: true,
     method: "script",
@@ -128,8 +124,8 @@ export function checkDeterministicSuccessGate(
     evidenceSummary: evidenceItems.join("; "),
     evidenceItems,
     newFacts: evidenceItems,
-    artifacts: [...usedRawArtifacts],
-    usedRawArtifacts,
+    artifacts: [],
+    usedRawArtifacts: [],
   };
 }
 

@@ -73,7 +73,8 @@ session-store submodule, pending-turn ownership, active task refs, task
 branches, task assets, run summaries, evidence manifests, session summaries
 when present, and commit metadata. The model-facing
 prompt uses grouped paths such as `context.git`, `context.timeline`,
-`context.scratch`, `context.tools`, and `context.personal`.
+`context.run`, `context.harness`, `context.tools`, and
+`context.personal`.
 
 `AYATI_GIT_CONTEXT_STORE_DIR` overrides the context-engine storage directory.
 When unset, Ayati uses `ayati-main/data/context-engine`. Relative paths resolve

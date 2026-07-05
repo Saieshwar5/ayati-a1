@@ -150,11 +150,6 @@ export const TOOL_TAXONOMY: Readonly<Record<string, ToolTaxonomyEntry>> = buildT
     loadGroups: ["shell:session"],
   }),
 
-  evidence_next_chunk: readOnly(["evidence_access"], "phase", ["task_run"], { loadGroups: ["evidence:read"] }),
-  evidence_read_lines: readOnly(["evidence_access"], "phase", ["task_run"], { loadGroups: ["evidence:read"] }),
-  evidence_tail: readOnly(["evidence_access"], "phase", ["task_run"], { loadGroups: ["evidence:read"] }),
-  evidence_search: readOnly(["evidence_access"], "phase", ["task_run"], { loadGroups: ["evidence:read"] }),
-
   db_list_tables: readOnly(["enquiry_read", "data_analysis"], "phase", ["enquiry", "task_run"]),
   db_describe_table: readOnly(["enquiry_read", "data_analysis"], "phase", ["enquiry", "task_run"]),
   db_get_table_ddl: readOnly(["enquiry_read", "data_analysis"], "phase", ["enquiry", "task_run"]),

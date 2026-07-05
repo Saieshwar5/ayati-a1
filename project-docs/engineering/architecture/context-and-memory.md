@@ -66,9 +66,9 @@ are:
 - `context.git.current`: current git focus, pending turn state, and selected
   task context when a task is resolved.
 - `context.tools`: active tool names and the latest tool-load result.
-- `context.scratch`: current-run progress, working feedback, tool
-  observations, prompt-facing read context, trace, transient attachments, and
-  system-event state.
+- `context.run`: current-run status and the ordered tool-call memory for
+  this run.
+- `context.harness`: harness repair feedback for the current decision.
 - `context.personal`: long-lived personal memory snapshot when present.
 
 The internal compatibility field `context.gitContext` can still exist inside
@@ -136,31 +136,30 @@ memory. The agent should see enough raw context to make the next decision, but
 large files, command logs, and evidence slices should not remain in every prompt
 for the whole run.
 
-The runtime exposes recent tool cards in
-`State view.context.scratch.observations.latest`.
-Each card has deterministic retention metadata:
+The runtime exposes ordered current-run tool output in
+`State view.context.run.toolCalls`.
+Each entry contains the tool name, input, status, compact output or error,
+artifacts, evidence refs, and truncation metadata. Internal observation records
+may still carry deterministic retention metadata:
 
 - `next_step`: temporary output for the next decision, such as command output
-  or a saved-evidence reread.
+  or a compact tool result.
 - `while_relevant`: compact file/search/list context that can guide nearby
   work.
-- `evidence_only`: a preview of very large output; use evidence tools before
-  relying on the preview.
+- `evidence_only`: a preview of very large output; use narrower domain tools
+  before relying on omitted output.
 
-Raw output is still available through run-scoped evidence refs and evidence
-tools (`evidence_search`, `evidence_read_lines`, `evidence_tail`, and
-`evidence_next_chunk`). Evidence rereads can help the next decision, but they
-should not become durable task notes by default. Durable task facts should come
-from verification and progress reduction, not from keeping arbitrary raw slices
-in long-lived context.
+Raw output is still saved through run-scoped evidence refs for audit,
+debugging, persistence, and git-context summaries. It is not exposed through
+run-scoped model-callable evidence tools. If the model needs more context, it
+should call the original domain tools with narrower inputs. Durable task facts
+should come from verification and progress reduction, not from keeping
+arbitrary raw slices in long-lived context.
 
-Read tools have an additional prompt-facing projection:
-`context.scratch.readContext.latest`. This is a compact working-memory view of
-recent filesystem and search context in the current run. It can include recent
-`inspect_paths`, `find_files`, `list_directory`, `search_in_files`,
-`read_file`, and `read_files` results. It exists so the model can make the next
-decision from the context it just gathered without putting raw file contents
-into task state.
+Read tools use the same prompt-facing projection:
+`context.run.toolCalls`. This gives the model the filesystem/search context it
+has gathered during the current run without putting raw file contents into task
+state. Raw read output stays in run evidence and tool records.
 
 Read context should follow these boundaries:
 
@@ -168,7 +167,7 @@ Read context should follow these boundaries:
 - keep durable raw output in run evidence and tool records
 - promote only verified, useful facts into task state
 - avoid storing every read forever in scratch or task metadata
-- use evidence tools to recover older or larger output when needed
+- use normal domain tools with narrower inputs to recover missing context when needed
 
 Filesystem metadata should often come before large reads. `inspect_paths`
 returns size, line-count, file/directory kind, language/content hints, hashes
@@ -188,8 +187,9 @@ session-store/sessions/<sessionId>/messages/000002-assistant.md
 
 The parent daily-session repository should not store new session conversation
 files. For new sessions, parent `main` contains the `session-store` gitlink and
-task branches contain task metadata/run files. Conversation messages are written
-to the session-store working tree during the live conversation.
+task branches contain task metadata, run summaries, evidence, assets, and
+commit records. Conversation messages are written to the session-store working
+tree during the live conversation.
 
 Ayati does not commit the session-store on every message. The normal flow is:
 

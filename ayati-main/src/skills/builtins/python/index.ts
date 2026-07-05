@@ -474,7 +474,7 @@ const PYTHON_PROMPT_BLOCK = [
   "Prefer python_inspect_dataset before python_execute for CSV, JSON, Parquet, SQLite analysis, or ML tasks.",
   "Prefer these Python tools over the generic shell tool whenever the job is primarily dataframe work, statistics, visualization, or machine learning.",
   "python_execute exposes AYATI_PYTHON_RUN_DIR, AYATI_PYTHON_ARTIFACT_DIR, AYATI_PYTHON_INPUT_FILES, and AYATI_PYTHON_SQLITE_DB_PATHS to the Python process.",
-  "Write generated charts, reports, and derived files into AYATI_PYTHON_ARTIFACT_DIR so they are captured as run artifacts.",
+  "Write generated charts, reports, and derived files into AYATI_PYTHON_ARTIFACT_DIR so they are captured as Python artifacts.",
   "Do not use bare python, python3, or pip through shell when these managed Python tools can do the job.",
 ].join("\n");
 

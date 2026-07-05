@@ -8,30 +8,30 @@ export interface PreparedAttachmentDetailRecord {
 export interface PreparedAttachmentRecord {
   summary: PreparedAttachmentSummary;
   manifest: ManagedDocumentManifest;
-  runPath: string;
+  artifactRoot: string;
   detail: PreparedAttachmentDetailRecord;
 }
 
 export class PreparedAttachmentRegistry {
   private readonly runs = new Map<string, {
-    runPath: string;
+    artifactRoot: string;
     attachments: Map<string, PreparedAttachmentRecord>;
   }>();
 
-  registerRunAttachments(runId: string, runPath: string, records: PreparedAttachmentRecord[]): void {
+  registerRunAttachments(runId: string, artifactRoot: string, records: PreparedAttachmentRecord[]): void {
     this.runs.set(runId, {
-      runPath,
+      artifactRoot,
       attachments: new Map(records.map((record) => [record.summary.preparedInputId, record])),
     });
   }
 
-  upsertRunAttachment(runId: string, runPath: string, record: PreparedAttachmentRecord): void {
+  upsertRunAttachment(runId: string, artifactRoot: string, record: PreparedAttachmentRecord): void {
     const run = this.runs.get(runId);
     if (!run) {
-      this.registerRunAttachments(runId, runPath, [record]);
+      this.registerRunAttachments(runId, artifactRoot, [record]);
       return;
     }
-    run.runPath = runPath;
+    run.artifactRoot = artifactRoot;
     run.attachments.set(record.summary.preparedInputId, record);
   }
 

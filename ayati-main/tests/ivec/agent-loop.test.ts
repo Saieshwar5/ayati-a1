@@ -2162,7 +2162,7 @@ describe("agentLoop", () => {
     }
   });
 
-  it("feeds recent output context cards and evidence refs into the next decision", async () => {
+  it("feeds prior tool calls and outputs into the next decision", async () => {
     const dataDir = makeTmpDir();
     try {
       const ramSummaryTool: ToolDefinition = {
@@ -2269,26 +2269,26 @@ describe("agentLoop", () => {
       const userPrompt = secondCallInput.messages.find((message: { role: string }) => message.role === "user").content as string;
       const stateView = extractStateView(userPrompt);
       expect(stateView.observations).toBeUndefined();
-      expect(stateView.context.scratch.observations.latest).toHaveLength(2);
-      expect(stateView.context.scratch.observations.latest[0].purpose).toBe("Get RAM summary");
-      expect(stateView.context.scratch.observations.latest[0].content).toContain("3.5Gi used");
-      expect(stateView.context.scratch.observations.latest[0].evidenceRef).toBe("evidence://ev_001_call_1");
-      expect(stateView.context.scratch.observations.latest[1].purpose).toBe("List top RAM processes");
-      expect(stateView.context.scratch.observations.latest[1].content).toContain("chromium");
-      expect(stateView.context.scratch.observations.latest[1].evidenceRef).toBe("evidence://ev_001_call_2");
+      expect(stateView.context.run.observations).toBeUndefined();
+      expect(stateView.context.run.readContext).toBeUndefined();
+      expect(stateView.context.run.toolCalls).toHaveLength(2);
+      expect(stateView.context.run.toolCalls[0].tool).toBe("read_file");
+      expect(stateView.context.run.toolCalls[0].input).toEqual({ path: "/proc/meminfo" });
+      expect(stateView.context.run.toolCalls[0].output).toContain("3.5Gi used");
+      expect(stateView.context.run.toolCalls[0]).not.toHaveProperty("evidenceRef");
+      expect(stateView.context.run.toolCalls[0]).not.toHaveProperty("hasMore");
+      expect(stateView.context.run.toolCalls[1].tool).toBe("search_in_files");
+      expect(stateView.context.run.toolCalls[1].input).toEqual({ path: "/proc", query: "memory" });
+      expect(stateView.context.run.toolCalls[1].output).toContain("chromium");
+      expect(stateView.context.run.toolCalls[1]).not.toHaveProperty("evidenceRef");
+      expect(stateView.context.run.toolCalls[1]).not.toHaveProperty("hasMore");
       expect(stateView.latestObservation).toBeUndefined();
       expect(userPrompt).not.toContain("\"latestObservation\"");
       expect(stateView.toolContext).toBeUndefined();
       expect(stateView.progress).toBeUndefined();
-      expect(stateView.context.scratch.progress.evidenceRefs[0].ref).toBe("evidence://ev_001_call_1");
-      expect(stateView.context.scratch.progress.evidenceRefs[1].ref).toBe("evidence://ev_001_call_2");
+      expect(stateView.context.run.progress).toBeUndefined();
       expect(stateView.workingNotes).toBeUndefined();
-      expect(userPrompt).toContain("evidence_search");
-      expect(existsSync(join(dataDir, "runs", "r-observation", "raw", "001-call_1-read_file-output.txt"))).toBe(true);
-      expect(existsSync(join(dataDir, "runs", "r-observation", "raw", "001-call_2-search_in_files-output.txt"))).toBe(true);
-      const persisted = JSON.parse(readFileSync(join(dataDir, "runs", "r-observation", "state.json"), "utf-8"));
-      expect(persisted.toolContext.recent).toHaveLength(2);
-      expect(persisted.workingNotes).toBeUndefined();
+      expect(existsSync(join(dataDir, "runs", "r-observation"))).toBe(false);
     } finally {
       cleanup(dataDir);
     }

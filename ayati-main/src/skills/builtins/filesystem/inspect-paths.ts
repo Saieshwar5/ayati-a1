@@ -407,7 +407,7 @@ function buildObservation(results: InspectPathEntry[], summary: ReturnType<typeo
     hasMore: false,
     suggestedReads: [
       { kind: "search", reason: "Search inside roots or files when metadata shows large files.", input: {} },
-      { kind: "read_lines", reason: "Read exact slices after metadata identifies a manageable target.", input: {} },
+      { kind: "read_range", reason: "Read exact slices after metadata identifies a manageable target.", input: {} },
     ],
   };
 }

@@ -88,13 +88,6 @@ function buildToolSelectionQuery(state: LoopState): string {
       card.evidenceRef,
       card.sourceEvidenceRef,
     ]),
-    ...(state.workState.evidenceRefs ?? []).flatMap((ref) => [
-      ref.id,
-      ref.ref,
-      ref.title,
-      ref.tool,
-      ...ref.access,
-    ]),
     ...gitContextTerms(state),
     ...gitContextAttachmentTerms(state),
     ...(state.completedSteps.slice(-2).flatMap((step) => [

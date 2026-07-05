@@ -1,4 +1,4 @@
-import type { LoopState, TaskNote, ToolContextState, ToolObservation, WorkEvidenceRef, WorkState } from "../types.js";
+import type { LoopState, PromptToolCallContext, TaskNote, ToolContextState, ToolObservation, WorkState } from "../types.js";
 import type { RepairPromptCard } from "./repair-policy.js";
 import {
   buildRuntimeCapabilityPromptContext,
@@ -8,7 +8,7 @@ import type { RuntimeCapabilityPromptContext } from "./runtime-capability-mode.j
 import type { ToolLoadResult } from "./tool-working-set.js";
 import { buildAgentContextPack } from "./context-pack.js";
 import { projectAgentPromptContext } from "./prompt-context.js";
-import type { AgentPromptContext, PromptScratchContext, PromptToolsContext } from "./prompt-context.js";
+import type { AgentPromptContext, PromptHarnessContext, PromptRunContext, PromptToolsContext } from "./prompt-context.js";
 
 export interface PromptProgressState {
   status: WorkState["status"];
@@ -17,7 +17,6 @@ export interface PromptProgressState {
   blockers?: string[];
   verifiedFacts?: string[];
   evidence?: string[];
-  evidenceRefs?: WorkEvidenceRef[];
   taskNotes?: TaskNote[];
   nextStep?: string;
   userInputNeeded?: string;
@@ -30,6 +29,9 @@ export interface PromptObservations {
 export interface PromptReadContext {
   latest: ToolObservation[];
 }
+
+export type PromptRunToolCallContext = Omit<PromptToolCallContext, "hasMore">;
+export type PromptToolCalls = PromptRunToolCallContext[];
 
 export interface PromptToolLoadState {
   status: ToolLoadResult["status"];
@@ -86,6 +88,7 @@ export interface AgentStateView {
   toolLoad?: PromptToolLoadState;
   observations?: PromptObservations;
   readContext?: PromptReadContext;
+  toolCalls?: PromptToolCalls;
   trace?: PromptTrace;
   attachments?: {
     incoming?: Array<{ id: string; name: string; kind: string; source: string; mimeType?: string; status: string }>;
@@ -117,6 +120,7 @@ export function buildAgentStateView(state: LoopState, options: AgentStateViewOpt
   const workingFeedback = buildWorkingFeedbackView(state);
   const observations = buildObservationsView(state.toolContext);
   const readContext = buildReadContextView(state.toolContext);
+  const toolCalls = buildToolCallsView(state.toolContext);
   const trace = buildTraceView(state);
   const attachments = buildAttachmentState(state);
   const systemEvent = state.systemEvent ? {
@@ -134,14 +138,12 @@ export function buildAgentStateView(state: LoopState, options: AgentStateViewOpt
       activeTools: options.activeTools,
       toolLoad,
     }),
-    scratch: buildScratchContext({
-      progress,
+    harness: buildHarnessContext({
       workingFeedback,
-      observations,
-      readContext,
-      trace,
-      attachments,
-      systemEvent,
+    }),
+    run: buildRunContext({
+      status: state.workState.status,
+      toolCalls,
     }),
   });
 
@@ -152,6 +154,7 @@ export function buildAgentStateView(state: LoopState, options: AgentStateViewOpt
     ...(toolLoad ? { toolLoad } : {}),
     ...(observations ? { observations } : {}),
     ...(readContext ? { readContext } : {}),
+    ...(toolCalls ? { toolCalls } : {}),
     ...(trace ? { trace } : {}),
     ...(attachments ? { attachments } : {}),
     ...(systemEvent ? { systemEvent } : {}),
@@ -174,23 +177,24 @@ function buildToolsContext(input: {
   };
 }
 
-function buildScratchContext(input: {
-  progress?: PromptProgressState;
-  workingFeedback?: PromptWorkingFeedback;
-  observations?: PromptObservations;
-  readContext?: PromptReadContext;
-  trace?: PromptTrace;
-  attachments?: AgentStateView["attachments"];
-  systemEvent?: AgentStateView["systemEvent"];
-}): PromptScratchContext {
+function buildRunContext(input: {
+  status: WorkState["status"];
+  toolCalls?: PromptToolCalls;
+}): PromptRunContext {
   return {
-    ...(input.progress ? { progress: input.progress } : {}),
-    ...(input.workingFeedback ? { feedback: input.workingFeedback } : {}),
-    ...(input.observations ? { observations: input.observations } : {}),
-    ...(input.readContext ? { readContext: input.readContext } : {}),
-    ...(input.trace ? { trace: input.trace } : {}),
-    ...(input.attachments ? { attachments: input.attachments } : {}),
-    ...(input.systemEvent ? { systemEvent: input.systemEvent } : {}),
+    status: input.status,
+    ...(input.toolCalls ? { toolCalls: input.toolCalls } : {}),
+  };
+}
+
+function buildHarnessContext(input: {
+  workingFeedback?: PromptWorkingFeedback;
+}): PromptHarnessContext | undefined {
+  if (!input.workingFeedback) {
+    return undefined;
+  }
+  return {
+    feedback: input.workingFeedback,
   };
 }
 
@@ -311,7 +315,6 @@ function buildProgressView(workState: WorkState): PromptProgressState | undefine
   const blockers = compactList(workState.blockers, 4, 180);
   const verifiedFacts = compactList(workState.verifiedFacts, 6, 180);
   const evidence = compactList(workState.evidence, 5, 180);
-  const evidenceRefs = (workState.evidenceRefs ?? []).slice(-5);
   const taskNotes = compactTaskNotes(workState.taskNotes);
   const nextStep = workState.nextStep?.trim() ? truncate(workState.nextStep, 220) : undefined;
   const userInputNeeded = workState.userInputNeeded?.trim() ? truncate(workState.userInputNeeded, 220) : undefined;
@@ -321,7 +324,6 @@ function buildProgressView(workState: WorkState): PromptProgressState | undefine
     || blockers.length > 0
     || verifiedFacts.length > 0
     || evidence.length > 0
-    || evidenceRefs.length > 0
     || taskNotes.length > 0
     || nextStep !== undefined
     || userInputNeeded !== undefined;
@@ -337,7 +339,6 @@ function buildProgressView(workState: WorkState): PromptProgressState | undefine
     ...(blockers.length > 0 ? { blockers } : {}),
     ...(verifiedFacts.length > 0 ? { verifiedFacts } : {}),
     ...(evidence.length > 0 ? { evidence } : {}),
-    ...(evidenceRefs.length > 0 ? { evidenceRefs } : {}),
     ...(taskNotes.length > 0 ? { taskNotes } : {}),
     ...(nextStep ? { nextStep } : {}),
     ...(userInputNeeded ? { userInputNeeded } : {}),
@@ -384,6 +385,16 @@ function buildReadContextView(toolContext: ToolContextState | undefined): Prompt
     (toolContext?.recent ?? []).filter((observation) => READ_CONTEXT_TOOLS.has(observation.tool)),
   );
   return latest.length > 0 ? { latest } : undefined;
+}
+
+function buildToolCallsView(toolContext: ToolContextState | undefined): PromptToolCalls | undefined {
+  const toolCalls = (toolContext?.toolCalls ?? []).map(projectPromptToolCall);
+  return toolCalls.length > 0 ? toolCalls : undefined;
+}
+
+function projectPromptToolCall(call: PromptToolCallContext): PromptRunToolCallContext {
+  const { hasMore: _hasMore, ...projected } = call;
+  return projected;
 }
 
 function buildTraceView(state: LoopState): PromptTrace | undefined {

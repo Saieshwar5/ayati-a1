@@ -365,7 +365,7 @@ function buildBatchObservation(
     suggestedReads: summary.truncated > 0
       ? [
         { kind: "search", reason: "Search a specific file for the exact selector, symbol, or phrase needed next.", input: {} },
-        { kind: "read_lines", reason: "Read a precise line range from a truncated file.", input: {} },
+        { kind: "read_range", reason: "Read a precise line range from a truncated file.", input: {} },
       ]
       : [
         { kind: "search", reason: "Search within files only if the batch did not include the relevant location.", input: {} },

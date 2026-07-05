@@ -1,5 +1,3 @@
-import { writeFile } from "node:fs/promises";
-import { join } from "node:path";
 import type { LlmCostEstimate, LlmTokenUsage } from "../core/contracts/llm-protocol.js";
 import { estimateTextTokens } from "../prompt/token-estimator.js";
 
@@ -525,15 +523,6 @@ export function recordOptimizationEvent(
   });
 }
 
-export async function writeOptimizationMetrics(runPath: string, metrics: RunMetrics): Promise<void> {
-  const summaryPath = join(runPath, "optimization-summary.json");
-  const eventsPath = join(runPath, "optimization-events.jsonl");
-  await Promise.all([
-    writeFile(summaryPath, `${JSON.stringify(buildOptimizationSummary(metrics), null, 2)}\n`, "utf-8"),
-    writeFile(eventsPath, metrics.optimizationEvents.map((event) => JSON.stringify(event)).join("\n") + "\n", "utf-8"),
-  ]);
-}
-
 export function formatRunMetrics(metrics: RunMetrics): string {
   const totalMs = Math.max(0, Date.now() - metrics.startedAtMs);
   const stageSummary = Object.entries(metrics.stages)
@@ -545,17 +534,6 @@ export function formatRunMetrics(metrics: RunMetrics): string {
     .join(" | ");
 
   return `total=${totalMs}ms llm_calls=${metrics.llmCalls} tool_calls=${metrics.toolCalls} local_decisions=${metrics.localDecisions}${stageSummary ? ` | ${stageSummary}` : ""}`;
-}
-
-function buildOptimizationSummary(metrics: RunMetrics): Record<string, unknown> {
-  return {
-    totalMs: Math.max(0, Date.now() - metrics.startedAtMs),
-    llmCalls: metrics.llmCalls,
-    toolCalls: metrics.toolCalls,
-    localDecisions: metrics.localDecisions,
-    stages: metrics.stages,
-    optimization: metrics.optimization,
-  };
 }
 
 function measureSections(sections: Record<string, string | number | undefined>): {

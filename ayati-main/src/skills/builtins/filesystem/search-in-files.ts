@@ -288,8 +288,8 @@ function buildSearchObservation(input: {
     blocks,
     hasMore: input.capped || input.matches.length > blocks.length,
     suggestedReads: [
-      { kind: "read_lines", reason: "Read exact source lines around a match.", input: {} },
-      { kind: "search", reason: "Search raw search output for a specific file or term.", input: { query: input.query } },
+      { kind: "read_range", reason: "Read exact source lines around a match.", input: {} },
+      { kind: "search", reason: "Search within source files for a specific file or term.", input: { query: input.query } },
     ],
   };
 }

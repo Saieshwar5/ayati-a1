@@ -18,7 +18,7 @@ export interface PythonArtifactPaths {
 export async function createPythonArtifactPaths(dataDir: string, runId?: string): Promise<PythonArtifactPaths> {
   const execId = randomUUID();
   const runDir = runId
-    ? resolve(dataDir, "runs", runId, "python", execId)
+    ? resolve(dataDir, "python", "runs", runId, execId)
     : resolve(dataDir, "python", "adhoc", execId);
   const artifactsDir = resolve(runDir, "artifacts");
 
