@@ -253,8 +253,8 @@ a deduplicated grouped payload:
 - `context.tools`: active tool names and the latest tool-load result.
 - `context.scratch`: current-run status and the ordered tool-call memory for
   this run. During the scratch-context simplification transition, progress,
-  working feedback, tool observations, prompt-facing read context, and transient
-  attachments may still appear as compatibility fields.
+  working feedback, and transient attachments may still appear as compatibility
+  fields.
 - `context.personal`: long-lived user memory snapshot when present.
 
 The internal aliases `context.gitContext`, top-level `progress`,
@@ -308,18 +308,14 @@ task continuation stays inside the existing decision stage through
 continue the focused work branch, use task assets, start new work, or ask the
 user when runtime task resolution is ambiguous.
 
-If observations point to truncated, chunked, or `evidence_only` output, the
-model should use evidence tools before rerunning the original output-producing
-tool. Evidence rereads are hot context under `context.scratch.observations` and
-should not become durable task memory unless verified progress promotes a fact.
-
-Read-heavy task runs also expose compact recent read context under
-`context.scratch.readContext.latest`. This is prompt-facing working memory for
-the current run. It is derived from recent file/search/list/inspect tool output
-and should help the model know what it just inspected, read, searched, or found.
-It is not durable task state. Raw read output remains in run evidence and tool
-records; task state should retain only useful facts, summaries, files, evidence
-refs, and run metadata.
+If tool output is truncated, chunked, or evidence-only, the model should use
+evidence tools before rerunning the original output-producing tool.
+Prompt-facing tool output for the current run is carried by
+`context.scratch.toolCalls.latest`, including tool input, compact output,
+errors, artifacts, and evidence refs. Read-heavy tool results use the same
+channel. Raw read output remains in run evidence and tool records; task state
+should retain only useful facts, summaries, files, evidence refs, and run
+metadata.
 
 The model should prefer `inspect_paths` before large or unfamiliar reads. A
 direct `read_file` or `read_files` call is still allowed, but filesystem read

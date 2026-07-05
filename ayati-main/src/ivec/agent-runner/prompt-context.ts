@@ -61,8 +61,6 @@ export interface PromptScratchContext {
   toolCalls?: unknown;
   progress?: unknown;
   feedback?: unknown;
-  observations?: unknown;
-  readContext?: unknown;
   attachments?: unknown;
 }
 
@@ -203,8 +201,6 @@ function compactScratchContext(scratch: PromptScratchContext | undefined): Promp
     ...(scratch.toolCalls ? { toolCalls: scratch.toolCalls } : {}),
     ...(scratch.progress ? { progress: scratch.progress } : {}),
     ...(scratch.feedback ? { feedback: scratch.feedback } : {}),
-    ...(scratch.observations ? { observations: scratch.observations } : {}),
-    ...(scratch.readContext ? { readContext: scratch.readContext } : {}),
     ...(scratch.attachments ? { attachments: scratch.attachments } : {}),
   };
   return Object.keys(compacted).length > 0 ? compacted : undefined;

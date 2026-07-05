@@ -1064,9 +1064,6 @@ Decision rules:
 - Use context.scratch.toolCalls.latest as the ordered tool-call memory for this run, including each tool name, input, status, compact output, errors, artifacts, and evidence refs. Prefer it before repeating an equivalent tool call.
 - Treat context.scratch.progress as the authoritative current task progress. It may be absent on the first decision.
 - Use context.scratch.feedback as the latest harness feedback. Correct the specific failed tool call or protocol issue before trying a different path.
-- Use context.scratch.readContext.latest as the current run's file, directory, search, metadata, and read output context. Prefer it before reading the same paths again.
-- Use context.scratch.observations.latest as the latest real tool output cards. If these cards answer the user, reply instead of rerunning equivalent tools.
-- Treat observations as hot bounded context. Respect each card's retention: next_step is temporary, while_relevant can guide nearby work, and evidence_only means use evidence tools before relying on the preview.
 - Use context.tools.active and context.tools.lastLoad as compact tool availability state. Full executable schemas are provided as native tools, not inside context.
 - Use context.personal.memorySnapshot for long-lived user preferences or facts when present.
 - Legacy fields such as context.gitContext, State view.progress, State view.workingFeedback, State view.observations, and State view.trace may still exist for compatibility; prefer the grouped context paths above.

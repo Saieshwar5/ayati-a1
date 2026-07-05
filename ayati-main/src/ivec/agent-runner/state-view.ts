@@ -145,8 +145,6 @@ export function buildAgentStateView(state: LoopState, options: AgentStateViewOpt
       toolCalls,
       progress,
       workingFeedback,
-      observations,
-      readContext,
       attachments,
     }),
   });
@@ -186,8 +184,6 @@ function buildScratchContext(input: {
   toolCalls?: PromptToolCalls;
   progress?: PromptProgressState;
   workingFeedback?: PromptWorkingFeedback;
-  observations?: PromptObservations;
-  readContext?: PromptReadContext;
   attachments?: AgentStateView["attachments"];
 }): PromptScratchContext {
   return {
@@ -195,8 +191,6 @@ function buildScratchContext(input: {
     ...(input.toolCalls ? { toolCalls: input.toolCalls } : {}),
     ...(input.progress ? { progress: input.progress } : {}),
     ...(input.workingFeedback ? { feedback: input.workingFeedback } : {}),
-    ...(input.observations ? { observations: input.observations } : {}),
-    ...(input.readContext ? { readContext: input.readContext } : {}),
     ...(input.attachments ? { attachments: input.attachments } : {}),
   };
 }

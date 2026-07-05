@@ -495,12 +495,11 @@ describe("buildAgentStateView", () => {
       userInputNeeded: "Can I edit the prompt?",
     });
     expect(stateView.observations?.latest).toHaveLength(2);
-    expect((stateView.context.scratch?.observations as { latest?: unknown[] } | undefined)?.latest).toHaveLength(2);
+    expect(stateView.context.scratch).not.toHaveProperty("observations");
     expect(stateView.observations?.latest[0]?.retention).toBe("while_relevant");
     expect(stateView.readContext?.latest).toHaveLength(1);
     expect(stateView.readContext?.latest[0]?.tool).toBe("read_file");
-    expect((stateView.context.scratch?.readContext as { latest?: Array<{ tool: string; content: string }> } | undefined)?.latest)
-      .toEqual([expect.objectContaining({ tool: "read_file", content: "Read state-view.ts." })]);
+    expect(stateView.context.scratch).not.toHaveProperty("readContext");
     expect(stateView.toolCalls?.latest).toEqual([
       expect.objectContaining({
         step: 1,

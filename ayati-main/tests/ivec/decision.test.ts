@@ -149,8 +149,8 @@ describe("parseAgentDecision", () => {
     expect(systemPrompt).toContain("context.scratch.toolCalls.latest");
     expect(systemPrompt).toContain("context.scratch.progress");
     expect(systemPrompt).toContain("context.scratch.feedback");
-    expect(systemPrompt).toContain("context.scratch.readContext.latest");
-    expect(systemPrompt).toContain("context.scratch.observations.latest");
+    expect(systemPrompt).not.toContain("context.scratch.readContext.latest");
+    expect(systemPrompt).not.toContain("context.scratch.observations.latest");
     expect(systemPrompt).not.toContain("context.scratch.trace");
     expect(systemPrompt).toContain("context.tools.active");
     expect(systemPrompt).toContain("context.personal.memorySnapshot");

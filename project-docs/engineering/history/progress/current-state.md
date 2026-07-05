@@ -62,9 +62,8 @@ context.timeline + context.git + context.tools + context.scratch + context.perso
   internal memory cache.
 - Hot tool-output observation retention: `next_step`, `while_relevant`, and
   `evidence_only`.
-- Prompt-facing read context at `context.scratch.readContext.latest`, derived
-  from recent inspect/find/list/search/read tool output and kept separate from
-  durable task state.
+- Prompt-facing read tool context through `context.scratch.toolCalls.latest`,
+  kept separate from durable task state.
 - Filesystem inspection and efficient read tools:
   - `inspect_paths` for metadata, line counts, content hints, hashes, directory
     counts, and read recommendations.
