@@ -1,4 +1,4 @@
-import type { LoopState, PromptToolCallContext, TaskNote, ToolContextState, ToolObservation, WorkEvidenceRef, WorkState } from "../types.js";
+import type { LoopState, PromptToolCallContext, TaskNote, ToolContextState, ToolObservation, WorkState } from "../types.js";
 import type { RepairPromptCard } from "./repair-policy.js";
 import {
   buildRuntimeCapabilityPromptContext,
@@ -17,7 +17,6 @@ export interface PromptProgressState {
   blockers?: string[];
   verifiedFacts?: string[];
   evidence?: string[];
-  evidenceRefs?: WorkEvidenceRef[];
   taskNotes?: TaskNote[];
   nextStep?: string;
   userInputNeeded?: string;
@@ -316,7 +315,6 @@ function buildProgressView(workState: WorkState): PromptProgressState | undefine
   const blockers = compactList(workState.blockers, 4, 180);
   const verifiedFacts = compactList(workState.verifiedFacts, 6, 180);
   const evidence = compactList(workState.evidence, 5, 180);
-  const evidenceRefs = (workState.evidenceRefs ?? []).slice(-5);
   const taskNotes = compactTaskNotes(workState.taskNotes);
   const nextStep = workState.nextStep?.trim() ? truncate(workState.nextStep, 220) : undefined;
   const userInputNeeded = workState.userInputNeeded?.trim() ? truncate(workState.userInputNeeded, 220) : undefined;
@@ -326,7 +324,6 @@ function buildProgressView(workState: WorkState): PromptProgressState | undefine
     || blockers.length > 0
     || verifiedFacts.length > 0
     || evidence.length > 0
-    || evidenceRefs.length > 0
     || taskNotes.length > 0
     || nextStep !== undefined
     || userInputNeeded !== undefined;
@@ -342,7 +339,6 @@ function buildProgressView(workState: WorkState): PromptProgressState | undefine
     ...(blockers.length > 0 ? { blockers } : {}),
     ...(verifiedFacts.length > 0 ? { verifiedFacts } : {}),
     ...(evidence.length > 0 ? { evidence } : {}),
-    ...(evidenceRefs.length > 0 ? { evidenceRefs } : {}),
     ...(taskNotes.length > 0 ? { taskNotes } : {}),
     ...(nextStep ? { nextStep } : {}),
     ...(userInputNeeded ? { userInputNeeded } : {}),

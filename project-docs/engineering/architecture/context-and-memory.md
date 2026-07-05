@@ -187,8 +187,9 @@ session-store/sessions/<sessionId>/messages/000002-assistant.md
 
 The parent daily-session repository should not store new session conversation
 files. For new sessions, parent `main` contains the `session-store` gitlink and
-task branches contain task metadata/run files. Conversation messages are written
-to the session-store working tree during the live conversation.
+task branches contain task metadata, run summaries, evidence, assets, and
+commit records. Conversation messages are written to the session-store working
+tree during the live conversation.
 
 Ayati does not commit the session-store on every message. The normal flow is:
 

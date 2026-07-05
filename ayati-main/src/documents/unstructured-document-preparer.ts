@@ -8,11 +8,11 @@ import type { ManagedDocumentManifest, PreparedAttachmentSummary } from "./types
 export async function prepareUnstructuredAttachment(input: {
   manifest: ManagedDocumentManifest;
   preparedInputId: string;
-  runPath: string;
+  artifactRoot: string;
   documentStore: DocumentStore;
 }): Promise<PreparedAttachmentRecord> {
   const prepared = await input.documentStore.prepareDocument(input.manifest);
-  const artifactDir = join(input.runPath, "attachments");
+  const artifactDir = input.artifactRoot;
   const artifactPath = join(artifactDir, `${input.preparedInputId}.json`);
   const sectionHints = prepared.document.segments.slice(0, 8).map((segment) => segment.location);
   const indexed = existsSync(join(input.documentStore.documentsDir, input.manifest.documentId, "vector-index.json"));
@@ -60,7 +60,7 @@ export async function prepareUnstructuredAttachment(input: {
   return {
     summary,
     manifest: input.manifest,
-    runPath: input.runPath,
+    artifactRoot: input.artifactRoot,
     detail,
   };
 }

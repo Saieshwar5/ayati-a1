@@ -11,14 +11,14 @@ import type { ManagedDocumentManifest, PreparedAttachmentSummary } from "./types
 export async function prepareStructuredAttachment(input: {
   manifest: ManagedDocumentManifest;
   preparedInputId: string;
-  runPath: string;
+  artifactRoot: string;
 }): Promise<PreparedAttachmentRecord> {
   const parsed = await readParsedStructuredData(input.manifest.storedPath, assertStructuredKind(input.manifest.kind));
   const inferredTypes = inferStructuredColumnTypes(parsed.rows, parsed.headers);
   const sampleRows = buildStructuredPreviewRows(parsed.rows, 5);
-  const stagingDbPath = join(input.runPath, "attachments", "staging.sqlite");
+  const stagingDbPath = join(input.artifactRoot, "staging.sqlite");
   const stagingTableName = buildStagingTableName(input.preparedInputId);
-  const artifactDir = join(input.runPath, "attachments");
+  const artifactDir = input.artifactRoot;
   const artifactPath = join(artifactDir, `${input.preparedInputId}.json`);
   const summary: PreparedAttachmentSummary = {
     preparedInputId: input.preparedInputId,
@@ -69,7 +69,7 @@ export async function prepareStructuredAttachment(input: {
   return {
     summary,
     manifest: input.manifest,
-    runPath: input.runPath,
+    artifactRoot: input.artifactRoot,
     detail,
   };
 }

@@ -80,8 +80,10 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorReport> {
       checkWritableDir(dataDir),
       checkWritableDir(resolve(dataDir, "files")),
       checkWritableDir(resolve(dataDir, "documents")),
-      checkWritableDir(resolve(dataDir, "runs")),
       checkWritableDir(resolve(dataDir, "directories")),
+      checkWritableDir(resolve(dataDir, "run-attachments")),
+      checkWritableDir(resolve(dataDir, "prepared-attachments")),
+      checkWritableDir(resolve(dataDir, "python")),
     ]),
   });
 

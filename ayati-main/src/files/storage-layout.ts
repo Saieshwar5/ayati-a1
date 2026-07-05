@@ -5,12 +5,12 @@ import type { RunFileReference, RunFilesManifest } from "./types.js";
 export class FileStorageLayout {
   readonly dataDir: string;
   readonly filesDir: string;
-  readonly runsDir: string;
+  readonly runAttachmentsDir: string;
 
   constructor(dataDir: string) {
     this.dataDir = resolve(dataDir);
     this.filesDir = resolve(this.dataDir, "files");
-    this.runsDir = resolve(this.dataDir, "runs");
+    this.runAttachmentsDir = resolve(this.dataDir, "run-attachments");
   }
 
   fileDir(fileId: string): string {
@@ -38,7 +38,7 @@ export class FileStorageLayout {
   }
 
   runFilesPath(runId: string): string {
-    return resolve(this.runsDir, runId, "files.json");
+    return resolve(this.runAttachmentsDir, runId, "files.json");
   }
 
   async ensureFileDirs(fileId: string): Promise<void> {
@@ -69,7 +69,7 @@ export class FileStorageLayout {
       manifest.files.push(reference);
     }
 
-    await mkdir(join(this.runsDir, runId), { recursive: true });
+    await mkdir(join(this.runAttachmentsDir, runId), { recursive: true });
     await writeFile(manifestPath, JSON.stringify(manifest, null, 2), "utf-8");
   }
 

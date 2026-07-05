@@ -40,7 +40,7 @@ describe("DirectoryLibrary", () => {
       expect(directory.entries.map((entry) => entry.relativePath)).not.toContain("node_modules/leftpad/index.ts");
       expect(directory.entries.map((entry) => entry.relativePath)).not.toContain("data/secret.ts");
       expect(existsSync(join(dataDir, "directories", directory.directoryId, "metadata.json"))).toBe(true);
-      expect(existsSync(join(dataDir, "runs", "run-1", "directories.json"))).toBe(true);
+      expect(existsSync(join(dataDir, "run-attachments", "run-1", "directories.json"))).toBe(true);
     } finally {
       rmSync(dataDir, { recursive: true, force: true });
     }

@@ -60,7 +60,7 @@ const DEFAULT_EXCLUDES = [
 export class DirectoryLibrary {
   readonly dataDir: string;
   readonly directoriesDir: string;
-  readonly runsDir: string;
+  readonly runAttachmentsDir: string;
   private readonly nowProvider: () => Date;
   private readonly defaultMaxDepth: number;
   private readonly defaultMaxFiles: number;
@@ -68,7 +68,7 @@ export class DirectoryLibrary {
   constructor(options: DirectoryLibraryOptions) {
     this.dataDir = resolve(options.dataDir);
     this.directoriesDir = resolve(this.dataDir, "directories");
-    this.runsDir = resolve(this.dataDir, "runs");
+    this.runAttachmentsDir = resolve(this.dataDir, "run-attachments");
     this.nowProvider = options.now ?? (() => new Date());
     this.defaultMaxDepth = clampInt(options.defaultMaxDepth, DEFAULT_MAX_DEPTH, 0, 20);
     this.defaultMaxFiles = clampInt(options.defaultMaxFiles, DEFAULT_MAX_FILES, 1, 10_000);
@@ -244,7 +244,7 @@ export class DirectoryLibrary {
   }
 
   private runDirectoriesPath(runId: string): string {
-    return resolve(this.runsDir, runId, "directories.json");
+    return resolve(this.runAttachmentsDir, runId, "directories.json");
   }
 
   private async appendRunDirectory(runId: string, reference: RunDirectoryReference): Promise<void> {
@@ -268,7 +268,7 @@ export class DirectoryLibrary {
       manifest.directories.push(reference);
     }
 
-    await mkdir(resolve(this.runsDir, runId), { recursive: true });
+    await mkdir(resolve(this.runAttachmentsDir, runId), { recursive: true });
     await writeFile(manifestPath, JSON.stringify(manifest, null, 2), "utf-8");
   }
 

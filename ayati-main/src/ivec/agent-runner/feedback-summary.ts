@@ -172,7 +172,6 @@ export function summarizeWorkState(workState: WorkState): Record<string, unknown
     blockerCount: workState.blockers?.length ?? 0,
     verifiedFactCount: workState.verifiedFacts.length,
     evidenceCount: workState.evidence.length,
-    evidenceRefCount: workState.evidenceRefs?.length ?? 0,
     taskNoteCount: workState.taskNotes?.length ?? 0,
     nextStepPreview: previewString(workState.nextStep, 180),
     userInputNeededPreview: previewString(workState.userInputNeeded, 180),

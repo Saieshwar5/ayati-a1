@@ -738,7 +738,6 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
         blockers: result.workState?.blockers ?? [],
         verifiedFacts: result.workState?.verifiedFacts ?? [],
         evidence: result.workState?.evidence ?? [],
-        evidenceRefs: result.workState?.evidenceRefs,
         taskNotes: result.workState?.taskNotes,
         nextStep: next,
         userInputNeeded: next,

@@ -10,9 +10,11 @@ Known runtime data categories:
 - Episodic memory metadata and vector indexes.
 - Document storage and document vectors for prepared document compatibility.
 - Managed attachment library: files under `data/files/`, directory manifests
-  under `data/directories/`, and run attachment manifests under `data/runs/`.
+  under `data/directories/`, per-run attachment manifests under
+  `data/run-attachments/`, and prepared attachment caches under
+  `data/prepared-attachments/`.
 - Runtime provider configuration.
-- Generated run artifacts.
+- Python execution scratch and generated Python artifacts under `data/python/`.
 - Agent feedback traces under `data/feedback/`.
 - System-event queues.
 - Plugin state.
@@ -50,5 +52,11 @@ state, tool-load results, action verification data, tool-result previews, final
 response data, task summary counts, and context-engine lifecycle events such as
 prepared, routed, agent-routed, clarification-requested, finalization-skipped,
 finalization-failed, and committed.
+
+Ayati no longer writes harness-local run directories such as
+`data/runs/<runId>/state.json`, `step-records.jsonl`, `steps/*.md`, `raw/*.txt`,
+or optimization summary files. Agent-facing run context stays in memory during
+the run, and durable task/run memory is finalized through the git context
+engine.
 
 Do not commit runtime data unless a specific fixture is intentionally created for tests.

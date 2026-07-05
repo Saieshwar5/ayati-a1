@@ -28,7 +28,7 @@ describe("FileLibrary", () => {
 
       const text = await library.readText(file.fileId);
       expect(String(text["text"])).toContain("Remember the fileId.");
-      expect(existsSync(join(dataDir, "runs", "run-1", "files.json"))).toBe(true);
+      expect(existsSync(join(dataDir, "run-attachments", "run-1", "files.json"))).toBe(true);
     } finally {
       rmSync(dataDir, { recursive: true, force: true });
     }

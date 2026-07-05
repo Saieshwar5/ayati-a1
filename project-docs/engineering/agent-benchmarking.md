@@ -9,24 +9,21 @@ context pack -> decision -> action executor -> deterministic verification -> pro
 
 ## Runtime References
 
-- `ayati-main/src/ivec/agent-runner/runner.ts`: loop orchestration, state snapshots, compaction, verification recording, and final result creation.
+- `ayati-main/src/ivec/agent-runner/runner.ts`: loop orchestration, in-memory state tracking, compaction, verification recording, and final result creation.
 - `ayati-main/src/ivec/agent-runner/decision.ts`: decision prompt construction, model call timing, and provider usage recording.
 - `ayati-main/src/ivec/agent-runner/context-pack.ts`: bounded context pack fields and truncation limits.
 - `ayati-main/src/ivec/agent-runner/state-view.ts`: sparse model-facing state view.
-- `ayati-main/src/ivec/metrics.ts`: optimization summaries and event log persistence.
+- `ayati-main/src/ivec/metrics.ts`: in-memory optimization metrics and compact runtime metric formatting.
 - `ayati-main/src/providers/fireworks/index.ts`: Fireworks OpenAI-compatible chat adapter.
 - `ayati-main/src/benchmarks/agent-benchmark-runner.ts`: deterministic benchmark runner and case recipes.
 
 ## Metrics Captured
 
-Every agent run writes:
+Agent runs collect in-memory optimization metrics during execution. These
+metrics are used for live logging, feedback, and benchmark reports; they are no
+longer persisted under local `data/runs/<runId>/` directories.
 
-```text
-data/runs/<runId>/optimization-summary.json
-data/runs/<runId>/optimization-events.jsonl
-```
-
-The optimization summary captures:
+The metric model captures:
 
 - LLM, tool, and local decision call counts.
 - Stage call counts, failures, total latency, and max latency.
@@ -204,8 +201,6 @@ human-review.md
 <case-id>/diff.patch
 <case-id>/fixture-before/
 <case-id>/fixture-after/
-<case-id>/<run-id>/optimization-summary.json
-<case-id>/<run-id>/optimization-events.jsonl
 ```
 
 Each benchmark recreates a fresh fixture workspace before it runs. Agent edits

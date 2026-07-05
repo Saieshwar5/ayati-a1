@@ -43,7 +43,7 @@ function writeWorkbook(filePath: string, sheets: Array<{ name: string; rows: unk
 describe("prepared attachment tools", () => {
   it("profiles, queries, and promotes prepared csv attachments", async () => {
     const dataDir = makeTmpDir();
-    const runPath = join(dataDir, "runs", "run-1");
+    const attachmentRoot = join(dataDir, "prepared-attachments", "run-1");
     const csvPath = join(dataDir, "sales.csv");
     writeFileSync(csvPath, "month,amount\nJan,120\nFeb,180\n", "utf-8");
 
@@ -54,7 +54,7 @@ describe("prepared attachment tools", () => {
       await prepareIncomingAttachments({
         attachedDocuments: registered.documents,
         runId: "run-1",
-        runPath,
+        attachmentRoot,
         documentStore,
         registry,
       });
@@ -98,7 +98,7 @@ describe("prepared attachment tools", () => {
 
   it("profiles, queries, and promotes prepared xlsx attachments", async () => {
     const dataDir = makeTmpDir();
-    const runPath = join(dataDir, "runs", "run-1");
+    const attachmentRoot = join(dataDir, "prepared-attachments", "run-1");
     const workbookPath = join(dataDir, "sales.xlsx");
     writeWorkbook(workbookPath, [
       {
@@ -118,7 +118,7 @@ describe("prepared attachment tools", () => {
       await prepareIncomingAttachments({
         attachedDocuments: registered.documents,
         runId: "run-1",
-        runPath,
+        attachmentRoot,
         documentStore,
         registry,
       });
@@ -168,7 +168,7 @@ describe("prepared attachment tools", () => {
 
   it("resolves a single structured attachment when the reference is truncated or omitted", async () => {
     const dataDir = makeTmpDir();
-    const runPath = join(dataDir, "runs", "run-1");
+    const attachmentRoot = join(dataDir, "prepared-attachments", "run-1");
     const csvPath = join(dataDir, "employees.csv");
     writeFileSync(csvPath, "name,salary\nLila,42000\n", "utf-8");
 
@@ -179,7 +179,7 @@ describe("prepared attachment tools", () => {
       await prepareIncomingAttachments({
         attachedDocuments: registered.documents,
         runId: "run-1",
-        runPath,
+        attachmentRoot,
         documentStore,
         registry,
       });
@@ -213,7 +213,7 @@ describe("prepared attachment tools", () => {
 
   it("lists and reads prepared document sections", async () => {
     const dataDir = makeTmpDir();
-    const runPath = join(dataDir, "runs", "run-1");
+    const attachmentRoot = join(dataDir, "prepared-attachments", "run-1");
     const textPath = join(dataDir, "profile.txt");
     writeFileSync(textPath, "Summary\n\nNode.js engineer\n\nProjects\n\nBuilt APIs", "utf-8");
 
@@ -224,7 +224,7 @@ describe("prepared attachment tools", () => {
       await prepareIncomingAttachments({
         attachedDocuments: registered.documents,
         runId: "run-1",
-        runPath,
+        attachmentRoot,
         documentStore,
         registry,
       });
@@ -256,7 +256,7 @@ describe("prepared attachment tools", () => {
 
   it("queries prepared documents through the document backend", async () => {
     const dataDir = makeTmpDir();
-    const runPath = join(dataDir, "runs", "run-1");
+    const attachmentRoot = join(dataDir, "prepared-attachments", "run-1");
     const textPath = join(dataDir, "profile.txt");
     writeFileSync(textPath, "Summary\n\nNode.js engineer", "utf-8");
 
@@ -267,7 +267,7 @@ describe("prepared attachment tools", () => {
       await prepareIncomingAttachments({
         attachedDocuments: registered.documents,
         runId: "run-1",
-        runPath,
+        attachmentRoot,
         documentStore,
         registry,
       });
@@ -305,7 +305,7 @@ describe("prepared attachment tools", () => {
 
   it("resolves a single document attachment by name or omitted reference", async () => {
     const dataDir = makeTmpDir();
-    const runPath = join(dataDir, "runs", "run-1");
+    const attachmentRoot = join(dataDir, "prepared-attachments", "run-1");
     const textPath = join(dataDir, "summary.txt");
     writeFileSync(textPath, "Summary\n\nThis file explains the Helix process.", "utf-8");
 
@@ -316,7 +316,7 @@ describe("prepared attachment tools", () => {
       await prepareIncomingAttachments({
         attachedDocuments: registered.documents,
         runId: "run-1",
-        runPath,
+        attachmentRoot,
         documentStore,
         registry,
       });

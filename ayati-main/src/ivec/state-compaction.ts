@@ -1,4 +1,4 @@
-import type { LoopState, PromptToolCallContext, StepSummary, TaskNote, ToolContextState, ToolObservation, WorkEvidenceRef, WorkState } from "./types.js";
+import type { LoopState, PromptToolCallContext, StepSummary, TaskNote, ToolContextState, ToolObservation, WorkState } from "./types.js";
 
 const WORK_STATE_LIMITS = {
   summaryChars: 900,
@@ -8,7 +8,6 @@ const WORK_STATE_LIMITS = {
   blockers: { count: 4, chars: 220 },
   verifiedFacts: { count: 8, chars: 220 },
   evidence: { count: 6, chars: 240 },
-  evidenceRefs: 8,
   taskNotes: { count: 8, textChars: 320, sourceChars: 160 },
 };
 
@@ -41,7 +40,6 @@ export function compactWorkState(workState: WorkState): WorkState {
     blockers: compactStringList(workState.blockers, WORK_STATE_LIMITS.blockers),
     verifiedFacts: compactStringList(workState.verifiedFacts, WORK_STATE_LIMITS.verifiedFacts),
     evidence: compactStringList(workState.evidence, WORK_STATE_LIMITS.evidence),
-    evidenceRefs: compactEvidenceRefs(workState.evidenceRefs, WORK_STATE_LIMITS.evidenceRefs),
     taskNotes: compactTaskNotes(workState.taskNotes, WORK_STATE_LIMITS.taskNotes),
     nextStep: compactOptionalText(workState.nextStep, WORK_STATE_LIMITS.nextStepChars),
     userInputNeeded: compactOptionalText(workState.userInputNeeded, WORK_STATE_LIMITS.userInputNeededChars),
@@ -200,13 +198,6 @@ function uniqueStrings(values: string[]): string[] {
     output.push(compact);
   }
   return output;
-}
-
-function compactEvidenceRefs(values: WorkEvidenceRef[] | undefined, limit: number): WorkEvidenceRef[] | undefined {
-  const refs = (values ?? [])
-    .filter((ref) => ref.id.trim().length > 0 && ref.ref.trim().length > 0)
-    .slice(-limit);
-  return refs.length > 0 ? refs : undefined;
 }
 
 function compactTaskNotes(

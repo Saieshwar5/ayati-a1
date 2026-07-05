@@ -222,7 +222,6 @@ export async function main(): Promise<void> {
 
   const uploadServer = new UploadServer({
     uploadsDir: content.documentStore.uploadsDir,
-    runsDir: resolve(projectRoot, "data", "runs"),
     host: content.httpHost,
     port: content.httpPort,
     maxUploadBytes: runtimeConfig.http.maxUploadBytes,

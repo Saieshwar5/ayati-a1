@@ -94,25 +94,10 @@ export interface AgentTaskSummaryRecord {
 
 export type WorkStatus = "not_done" | "done" | "blocked" | "needs_user_input";
 
-export type EvidenceAccessMode = "raw";
 export type ToolAvailableAction = "search" | "read_range" | "read_next_range" | "inspect" | "rerun_narrower" | "list_narrower";
 export type ToolObservationMode = "full" | "focused" | "chunk" | "large_ref" | "summary";
 export type ToolObservationRetention = "next_step" | "while_relevant" | "evidence_only";
 export type ToolObservationStatus = "success" | "failed";
-
-export interface WorkEvidenceRef {
-  id: string;
-  step: number;
-  callId: string;
-  tool: string;
-  title: string;
-  ref: string;
-  rawOutputPath: string;
-  rawOutputChars: number;
-  lineCount?: number;
-  truncated: boolean;
-  access: EvidenceAccessMode[];
-}
 
 export interface ToolObservation {
   id: string;
@@ -126,7 +111,6 @@ export interface ToolObservation {
   content: string;
   evidenceRef?: string;
   sourceEvidenceRef?: string;
-  rawOutputPath?: string;
   rawOutputChars?: number;
   lineCount?: number;
   hasMore: boolean;
@@ -148,9 +132,7 @@ export interface PromptToolCallContext {
   code?: string;
   operationStatus?: ToolOperationStatus;
   artifacts?: ArtifactRef[];
-  evidenceRef?: WorkEvidenceRef;
   hasMore?: boolean;
-  rawOutputPath?: string;
   rawOutputChars?: number;
   outputTruncated?: boolean;
 }
@@ -174,7 +156,6 @@ export interface WorkState {
   blockers?: string[];
   verifiedFacts: string[];
   evidence: string[];
-  evidenceRefs?: WorkEvidenceRef[];
   taskNotes?: TaskNote[];
   nextStep?: string;
   userInputNeeded?: string;
@@ -291,8 +272,6 @@ export interface ActToolCallRecord {
   tool: string;
   input: unknown;
   output: string;
-  outputStorage?: "inline" | "raw_file";
-  rawOutputPath?: string;
   rawOutputChars?: number;
   outputTruncated?: boolean;
   error?: string;
@@ -301,7 +280,6 @@ export interface ActToolCallRecord {
   operationStatus?: ToolOperationStatus;
   code?: string;
   artifacts?: ArtifactRef[];
-  evidenceRef?: WorkEvidenceRef;
   verifiedFacts?: VerifiedFact[];
   assertionResults?: AssertionResult[];
   observation?: ToolObservation;

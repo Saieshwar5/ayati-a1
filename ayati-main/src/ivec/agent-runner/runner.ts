@@ -1,12 +1,11 @@
 import { createHash } from "node:crypto";
-import { dirname, isAbsolute, resolve } from "node:path";
-import { devLog, devWarn } from "../../shared/index.js";
+import { dirname, isAbsolute, join, resolve } from "node:path";
+import { devLog } from "../../shared/index.js";
 import { prepareIncomingAttachments } from "../../documents/attachment-preparer.js";
 import type { PreparedAttachmentRecord } from "../../documents/prepared-attachment-registry.js";
 import type { PreparedAttachmentSummary } from "../../documents/types.js";
 import type { MemoryRunHandle, RunRecorder, SessionInputHandle } from "../../memory/types.js";
 import type { TaskAssetRecord } from "../../context-engine/index.js";
-import type { AgentArtifact } from "../types.js";
 import type {
   ActOutput,
   ActToolCallRecord,
@@ -27,16 +26,6 @@ import {
   DEFAULT_LOOP_CONFIG,
 } from "../types.js";
 import {
-  initRunDirectory,
-  queueStateWrite,
-  flushStateWrites,
-  writeStepMarkdown,
-  formatActMarkdown,
-  formatVerifyMarkdown,
-} from "../state-persistence.js";
-import { RunStateManager } from "../run-state-manager.js";
-import type { StepRecord } from "../run-state-manager.js";
-import {
   createRunMetrics,
   formatRunMetrics,
   recordCompactionMetric,
@@ -44,7 +33,6 @@ import {
   recordRunMetric,
   recordStateSizeMetric,
   recordVerificationMetric,
-  writeOptimizationMetrics,
 } from "../metrics.js";
 import {
   buildLoopStateSizeBreakdown,
@@ -53,7 +41,6 @@ import {
   compactWorkState,
   measureJson,
 } from "../state-compaction.js";
-import { collectAgentArtifacts } from "../agent-artifacts.js";
 import {
   applyHarnessContextToState,
   buildHarnessContextFromSources,
@@ -109,8 +96,6 @@ import { auditToolPolicy } from "./tool-policy-audit.js";
 
 interface MemoryRunContext {
   runHandle: MemoryRunHandle;
-  runPath: string;
-  runStateManager: RunStateManager;
 }
 
 const FRESH_SESSION_TOOL_REPAIR_MESSAGE = "No active task exists. Create and activate the first task with git_context_create_task_for_turn before using work tools, or ask a short clarification if the request is unclear.";
@@ -141,11 +126,6 @@ export async function runAgentLoop(
   const config: LoopConfig = resolvedConfig ?? { ...DEFAULT_LOOP_CONFIG, ...deps.config };
   const inputHandle = resolveInputHandle(deps);
   let workRunHandle = deps.runHandle;
-  let runPath = workRunHandle ? initRunDirectory(deps.dataDir, workRunHandle.runId) : "";
-  let runStateManager: RunStateManager | null = runPath ? new RunStateManager(runPath) : null;
-  if (runStateManager) {
-    await runStateManager.ready();
-  }
   const metrics = createRunMetrics();
 
   let totalToolCalls = 0;
@@ -153,7 +133,7 @@ export async function runAgentLoop(
   let actionStepCount = 0;
   let failedVerificationCount = 0;
   let lastVerificationPassed: boolean | undefined;
-  const state = buildInitialState(deps, config, inputHandle, runPath, workRunHandle);
+  const state = buildInitialState(deps, config, inputHandle, workRunHandle);
   recordFeedback(deps, inputHandle, workRunHandle?.runId, "loop", "started", {
     inputKind: state.inputKind ?? "user_message",
     userMessage: state.userMessage,
@@ -225,25 +205,8 @@ export async function runAgentLoop(
         reason,
       });
     }
-    if (!runPath) {
-      runPath = initRunDirectory(deps.dataDir, workRunHandle.runId);
-      runStateManager = new RunStateManager(runPath);
-      await runStateManager.ready();
-      state.runId = workRunHandle.runId;
-      state.runPath = runPath;
-    }
-    return { runHandle: workRunHandle, runPath, runStateManager: runStateManager! };
-  };
-
-  const queueStateSnapshot = (): void => {
-    if (!runPath) {
-      return;
-    }
-    void queueStateWrite(runPath, state).catch((error) => {
-      devWarn(
-        `[${deps.clientId}] failed to persist run state snapshot: ${error instanceof Error ? error.message : String(error)}`,
-      );
-    });
+    state.runId = workRunHandle.runId;
+    return { runHandle: workRunHandle };
   };
   const recordStateSnapshotMetric = (label: string): void => {
     recordStateSizeMetric(metrics, label, buildLoopStateSizeBreakdown(state));
@@ -256,16 +219,7 @@ export async function runAgentLoop(
   }): Promise<AgentLoopResult> => {
     syncPreparedAttachmentsFromRegistry(state, deps);
     syncHarnessContext(state, deps, inputHandle);
-    queueStateSnapshot();
     recordStateSnapshotMetric("final");
-    if (runPath) {
-      await flushStateWrites(runPath);
-      await writeOptimizationMetrics(runPath, metrics).catch((error) => {
-        devWarn(
-          `[${deps.clientId}] failed to persist optimization metrics: ${error instanceof Error ? error.message : String(error)}`,
-        );
-      });
-    }
     const cleanupRunId = state.runId || decisionScopeId(inputHandle);
     deps.skillActivationManager?.deactivateRun({
       clientId: deps.clientId,
@@ -293,7 +247,6 @@ export async function runAgentLoop(
       toolLoadDecisionCount,
       actionStepCount,
       failedVerificationCount,
-      runPath,
       state,
     });
     recordFeedback(deps, inputHandle, state.runId || workRunHandle?.runId, "harness", "result", {
@@ -307,7 +260,6 @@ export async function runAgentLoop(
       failedVerificationCount,
       verificationPassed: lastVerificationPassed,
       finalContentPreview: finalContent,
-      runPath,
       workState: summarizeWorkState(state.workState),
       completedStepCount: state.completedSteps.length,
       taskSummary: summarizeTaskSummary(taskSummary),
@@ -325,7 +277,6 @@ export async function runAgentLoop(
       verificationPassed: lastVerificationPassed,
       basedOnVerifiedFacts: state.workState.verifiedFacts.length > 0 || lastVerificationPassed === true,
       warnings: warningFlags,
-      runPath,
       taskSummary: summarizeTaskSummary(taskSummary),
       feedbackSummary: {
         status: input.status,
@@ -347,7 +298,7 @@ export async function runAgentLoop(
         warnings: warningFlags,
       },
     });
-    return buildLoopResult(state, deps.dataDir, {
+    return buildLoopResult(state, {
       status: input.status,
       totalIterations: state.iteration,
       totalToolCalls,
@@ -371,14 +322,12 @@ export async function runAgentLoop(
     `[${deps.clientId}] agentLoop start inputKind=${state.inputKind ?? "user_message"} seq=${inputHandle.seq} workRun=${state.runId || "none"} message=${state.userMessage.slice(0, 160)}`,
   );
 
-  queueStateSnapshot();
   recordStateSnapshotMetric("initial");
 
   if ((state.attachedDocuments ?? []).some((document) => document.kind !== "image")) {
     const work = await ensureWorkRun();
-    await prepareAttachmentsForRun(deps, state, work.runHandle.runId, work.runPath);
+    await prepareAttachmentsForRun(deps, state, work.runHandle.runId);
     syncHarnessContext(state, deps, inputHandle);
-    queueStateSnapshot();
   }
 
   while (state.status === "running" && state.iteration < config.maxIterations) {
@@ -588,7 +537,6 @@ export async function runAgentLoop(
         state.finalOutput = buildFailureReply(state);
         return finalize({ status: "failed", content: state.finalOutput });
       }
-      queueStateSnapshot();
       continue;
     }
 
@@ -626,7 +574,6 @@ export async function runAgentLoop(
         evicted: loadResult.evicted,
         message: loadResult.message,
       });
-      queueStateSnapshot();
       recordRunMetric(metrics, "tool_load_decision", {
         kind: "local",
         status: ["loaded", "partial", "already_active"].includes(loadResult.status) ? "success" : "failed",
@@ -663,7 +610,6 @@ export async function runAgentLoop(
         state.finalOutput = buildFailureReply(state);
         return finalize({ status: "failed", content: state.finalOutput });
       }
-      queueStateSnapshot();
       continue;
     }
 
@@ -719,7 +665,6 @@ export async function runAgentLoop(
       state.workState = compactedWorkState;
       state.toolContext = buildUpdatedToolContext(state, stepResult.execution);
       stepResult.stepSummary.workState = compactedWorkState;
-      stepResult.stepRecord.workState = compactedWorkState;
       recordReducerFeedback(deps, inputHandle, routingRunId, state.iteration, {
         beforeWorkStateChars,
         compactedWorkState,
@@ -740,24 +685,14 @@ export async function runAgentLoop(
         workRunHandle = routedRunHandle;
         deps.runHandle = routedRunHandle;
         deps.onWorkRunCreated?.(routedRunHandle);
-        runPath = initRunDirectory(deps.dataDir, routedRunHandle.runId);
-        runStateManager = new RunStateManager(runPath);
-        await runStateManager.ready();
         state.runId = routedRunHandle.runId;
-        state.runPath = runPath;
         state.runClass = "task";
         deps.harnessContext = routingUpdate.harnessContext;
         syncHarnessContext(state, deps, inputHandle);
         if ((state.attachedDocuments ?? []).some((document) => document.kind !== "image")) {
-          await prepareAttachmentsForRun(deps, state, routedRunHandle.runId, runPath);
+          await prepareAttachmentsForRun(deps, state, routedRunHandle.runId);
           syncHarnessContext(state, deps, inputHandle);
         }
-        const pad = String(state.iteration).padStart(3, "0");
-        const actMarkdownPath = `steps/${pad}-act.md`;
-        const verifyMarkdownPath = `steps/${pad}-verify.md`;
-        writeStepMarkdown(runPath, actMarkdownPath, formatActMarkdown(stepResult.execution.actOutput));
-        writeStepMarkdown(runPath, verifyMarkdownPath, formatVerifyMarkdown(stepResult.execution.verifyOutput, stepResult.execution.actOutput.toolCalls));
-        await runStateManager.appendStepRecord(stepResult.stepRecord, stepResult.fullStepText);
         recordFeedback(deps, inputHandle, routedRunHandle.runId, "run", "created", {
           reason: "git_context_turn_routed",
           taskId: routingUpdate.taskId,
@@ -817,11 +752,10 @@ export async function runAgentLoop(
         state.consecutiveFailures = 0;
       }
 
-      queueStateSnapshot();
       recordStateSnapshotMetric("after_pending_routing_step");
       deps.onProgress?.(
         `Step ${state.iteration}: ${stepResult.stepSummary.executionContract} -> ${stepResult.stepSummary.outcome}`,
-        runPath,
+        state.runPath,
       );
       continue;
     }
@@ -886,7 +820,6 @@ export async function runAgentLoop(
         state.finalOutput = buildFailureReply(state);
         return finalize({ status: "failed", content: state.finalOutput });
       }
-      queueStateSnapshot();
       recordStateSnapshotMetric("after_read_progress_guard");
       continue;
     }
@@ -929,7 +862,6 @@ export async function runAgentLoop(
     state.workState = compactedWorkState;
     state.toolContext = buildUpdatedToolContext(state, stepResult.execution);
     stepResult.stepSummary.workState = compactedWorkState;
-    stepResult.stepRecord.workState = compactedWorkState;
     recordReducerFeedback(deps, inputHandle, work.runHandle.runId, state.iteration, {
       beforeWorkStateChars,
       compactedWorkState,
@@ -939,7 +871,6 @@ export async function runAgentLoop(
     const compactedStep = compactStepSummaryForState(stepResult.stepSummary);
     recordCompactionMetric(metrics, "completedStepSummary", measureJson(stepResult.stepSummary), measureJson(compactedStep), { step: state.iteration });
     state.completedSteps.push(compactedStep);
-    await work.runStateManager.appendStepRecord(stepResult.stepRecord, stepResult.fullStepText);
 
     recordPlanModeMetric(metrics, decision.action.mode, {
       step: state.iteration,
@@ -997,11 +928,10 @@ export async function runAgentLoop(
       state.consecutiveFailures = 0;
     }
 
-    queueStateSnapshot();
     recordStateSnapshotMetric("after_step");
     deps.onProgress?.(
       `Step ${state.iteration}: ${stepResult.stepSummary.executionContract} -> ${stepResult.stepSummary.outcome}`,
-      runPath,
+      state.runPath,
     );
 
     if (canCompleteLocallyAfterAction(decision.action, stepResult.stepSummary, state.workState)) {
@@ -1044,8 +974,6 @@ interface ExecuteActionStepInput {
 interface ExecuteActionStepResult {
   execution: AgentActionExecutionResult;
   stepSummary: StepSummary;
-  stepRecord: StepRecord;
-  fullStepText: string;
 }
 
 interface ExecutePendingRoutingActionInput {
@@ -1095,21 +1023,11 @@ async function executePendingRoutingAction(
     stepNumber: input.stepNumber,
     action: input.decision.action,
     execution,
-    actMarkdownPath: "",
-    verifyMarkdownPath: "",
   });
   stepSummary.artifacts = stepSummary.artifacts.filter((artifact) => artifact.trim().length > 0);
-  const stepRecord = buildStepRecord(stepSummary, execution);
-  const fullStepText = [
-    `Step ${input.stepNumber}`,
-    formatActMarkdown(execution.actOutput),
-    formatVerifyMarkdown(execution.verifyOutput, execution.actOutput.toolCalls),
-  ].join("\n\n");
   return {
     execution,
     stepSummary,
-    stepRecord,
-    fullStepText,
   };
 }
 
@@ -1949,10 +1867,7 @@ function recordActionFeedback(
       })),
       verifiedFactCount: call.verifiedFacts?.length ?? 0,
       outputPreview: call.output,
-      outputStorage: call.outputStorage,
-      rawOutputPath: call.rawOutputPath,
       artifacts: call.artifacts,
-      evidenceRef: call.evidenceRef,
     });
   }
   if (stepResult.stepSummary.outcome === "failed") {
@@ -1991,7 +1906,6 @@ function summarizeDecisionInputState(stateView: AgentStateView): Record<string, 
     workStatus: stateView.progress?.status,
     blockerCount: stateView.progress?.blockers?.length ?? 0,
     verifiedFactCount: stateView.progress?.verifiedFacts?.length ?? 0,
-    evidenceRefCount: stateView.progress?.evidenceRefs?.length ?? 0,
     recentToolCallCount: stateView.toolCalls?.length ?? 0,
     recentObservationCount: stateView.observations?.latest.length ?? 0,
     recentReadContextCount: stateView.readContext?.latest.length ?? 0,
@@ -2009,7 +1923,6 @@ function buildFinalFeedbackWarnings(input: {
   toolLoadDecisionCount: number;
   actionStepCount: number;
   failedVerificationCount: number;
-  runPath: string;
   state: LoopState;
 }): string[] {
   const warnings: string[] = [];
@@ -2019,7 +1932,7 @@ function buildFinalFeedbackWarnings(input: {
   if (
     input.status === "completed"
     && input.totalToolCalls === 0
-    && (input.toolLoadDecisionCount > 0 || input.actionStepCount > 0 || input.state.runClass === "task" || input.runPath.length > 0)
+    && (input.toolLoadDecisionCount > 0 || input.actionStepCount > 0 || input.state.runClass === "task")
   ) {
     warnings.push("completed_without_tool_calls");
   }
@@ -2065,7 +1978,6 @@ async function executeActionStep(input: ExecuteActionStepInput): Promise<Execute
       runRecorder: input.deps.runRecorder ?? noopRunRecorder,
       runHandle,
       metrics: input.metrics,
-      runPath: input.state.runPath,
       taskAssets: input.state.harnessContext.contextEngine?.task?.assets,
     },
     input.decision.action,
@@ -2087,7 +1999,6 @@ async function executeActionStep(input: ExecuteActionStepInput): Promise<Execute
           runRecorder: input.deps.runRecorder ?? noopRunRecorder,
           runHandle,
           metrics: input.metrics,
-          runPath: input.state.runPath,
           taskAssets: input.state.harnessContext.contextEngine?.task?.assets,
         },
         recovery.action,
@@ -2101,31 +2012,15 @@ async function executeActionStep(input: ExecuteActionStepInput): Promise<Execute
   await applyToolStateUpdates(input.state, input.deps, execution.actOutput.toolCalls);
   syncPreparedAttachmentsFromRegistry(input.state, input.deps);
 
-  const pad = String(input.stepNumber).padStart(3, "0");
-  const actMarkdownPath = `steps/${pad}-act.md`;
-  const verifyMarkdownPath = `steps/${pad}-verify.md`;
-  writeStepMarkdown(input.state.runPath, actMarkdownPath, formatActMarkdown(execution.actOutput));
-  writeStepMarkdown(input.state.runPath, verifyMarkdownPath, formatVerifyMarkdown(execution.verifyOutput, execution.actOutput.toolCalls));
-
   const stepSummary = buildStepSummary({
     stepNumber: input.stepNumber,
     action: input.decision.action,
     execution,
-    actMarkdownPath,
-    verifyMarkdownPath,
   });
-  const stepRecord = buildStepRecord(stepSummary, execution);
-  const fullStepText = [
-    `Step ${input.stepNumber}`,
-    formatActMarkdown(execution.actOutput),
-    formatVerifyMarkdown(execution.verifyOutput, execution.actOutput.toolCalls),
-  ].join("\n\n");
 
   return {
     execution,
     stepSummary,
-    stepRecord,
-    fullStepText,
   };
 }
 
@@ -2236,14 +2131,10 @@ function buildStepSummary(input: {
   stepNumber: number;
   action: AgentAction;
   execution: AgentActionExecutionResult;
-  actMarkdownPath: string;
-  verifyMarkdownPath: string;
 }): StepSummary {
   const toolSuccessCount = input.execution.actOutput.toolCalls.filter((call) => !call.error).length;
   const toolFailureCount = input.execution.actOutput.toolCalls.length - toolSuccessCount;
   const artifacts = [
-    input.actMarkdownPath,
-    input.verifyMarkdownPath,
     ...input.execution.actOutput.toolCalls.flatMap((call) => (call.artifacts ?? []).map((artifact) => artifact.path ?? artifact.uri ?? artifact.id ?? "")),
     ...input.execution.verifyOutput.artifacts,
   ].filter((artifact) => artifact.trim().length > 0);
@@ -2282,49 +2173,11 @@ function buildStepSummary(input: {
   };
 }
 
-function buildStepRecord(step: StepSummary, execution: AgentActionExecutionResult): StepRecord {
-  return {
-    step: step.step,
-    executionContract: step.executionContract ?? "",
-    outcome: step.outcome,
-    summary: step.summary,
-    newFacts: step.newFacts,
-    artifacts: step.artifacts,
-    toolSuccessCount: step.toolSuccessCount,
-    toolFailureCount: step.toolFailureCount,
-    contractVersion: 2,
-    verificationPolicy: step.verificationPolicy,
-    verificationRationale: step.verificationRationale,
-    expectedArtifacts: step.expectedArtifacts,
-    expectedStateChange: step.expectedStateChange,
-    requiresFullStepContext: step.requiresFullStepContext,
-    expectationCheckStatus: step.expectationCheckStatus,
-    expectationCheckSummary: step.expectationCheckSummary,
-    verificationMethod: step.verificationMethod,
-    executionStatus: step.executionStatus,
-    validationStatus: step.validationStatus,
-    evidenceSummary: step.evidenceSummary,
-    evidenceItems: step.evidenceItems ?? [],
-    evidenceSource: step.evidenceSource,
-    outputSize: step.outputSize,
-    lineCount: step.lineCount,
-    truncated: step.truncated,
-    workState: step.workState,
-    stoppedEarlyReason: step.stoppedEarlyReason,
-    failureType: step.failureType,
-    blockedTargets: step.blockedTargets ?? [],
-    act: {
-      toolCalls: execution.actOutput.toolCalls,
-      finalText: execution.actOutput.finalText,
-    },
-  };
-}
-
 function buildStepEvidenceMetadata(calls: ActToolCallRecord[]): Pick<StepSummary, "evidenceSource" | "outputSize" | "lineCount" | "truncated"> {
   const sources = calls.map(buildToolEvidenceSource);
-  const outputSize = sumNumbers(calls.map((call) => call.rawOutputChars ?? call.evidenceRef?.rawOutputChars));
-  const lineCount = sumNumbers(calls.map((call) => call.evidenceRef?.lineCount ?? call.observation?.lineCount));
-  const truncated = calls.some((call) => call.outputTruncated === true || call.evidenceRef?.truncated === true || call.observation?.hasMore === true);
+  const outputSize = sumNumbers(calls.map((call) => call.rawOutputChars ?? call.observation?.rawOutputChars));
+  const lineCount = sumNumbers(calls.map((call) => call.observation?.lineCount));
+  const truncated = calls.some((call) => call.outputTruncated === true || call.observation?.hasMore === true);
   return {
     ...(sources.length > 0 ? { evidenceSource: { kind: "tool-output", toolCalls: sources } } : {}),
     ...(outputSize !== undefined ? { outputSize } : {}),
@@ -2341,11 +2194,10 @@ function buildToolEvidenceSource(call: ActToolCallRecord): Record<string, unknow
     status: call.error ? "failed" : "success",
     operationStatus: call.operationStatus,
     code: call.code,
-    rawOutputPath: call.rawOutputPath ?? call.evidenceRef?.rawOutputPath ?? call.observation?.rawOutputPath,
-    evidenceRef: call.evidenceRef?.ref ?? call.observation?.evidenceRef,
-    rawOutputChars: call.rawOutputChars ?? call.evidenceRef?.rawOutputChars ?? call.observation?.rawOutputChars,
-    lineCount: call.evidenceRef?.lineCount ?? call.observation?.lineCount,
-    truncated: call.outputTruncated ?? call.evidenceRef?.truncated,
+    evidenceRef: call.observation?.evidenceRef,
+    rawOutputChars: call.rawOutputChars ?? call.observation?.rawOutputChars,
+    lineCount: call.observation?.lineCount,
+    truncated: call.outputTruncated,
     ...selectedSourceFields(call.input),
     ...selectedSourceFields(call.result?.structuredContent),
   });
@@ -2400,7 +2252,6 @@ function buildInitialState(
   deps: AgentLoopDeps,
   config: LoopConfig,
   inputHandle: SessionInputHandle,
-  runPath: string,
   runHandle: MemoryRunHandle | undefined,
 ): LoopState {
   const harnessContext = createInitialHarnessContext(harnessContextInputFromDeps(deps));
@@ -2427,7 +2278,7 @@ function buildInitialState(
     maxIterations: config.maxIterations,
     consecutiveFailures: 0,
     completedSteps: [],
-    runPath,
+    runPath: "",
     failureHistory: [],
     attachedDocuments: deps.attachedDocuments ?? [],
     attachmentWarnings: deps.attachmentWarnings ?? [],
@@ -2468,21 +2319,29 @@ async function prepareAttachmentsForRun(
   deps: AgentLoopDeps,
   state: LoopState,
   runId: string,
-  runPath: string,
 ): Promise<void> {
   const preparableDocuments = (state.attachedDocuments ?? []).filter((document) => document.kind !== "image");
   if (preparableDocuments.length === 0 || !deps.documentStore || !deps.preparedAttachmentRegistry) {
     return;
   }
+  const attachmentRoot = preparedAttachmentRoot(deps.dataDir, runId);
   const prepared = await prepareIncomingAttachments({
     attachedDocuments: preparableDocuments,
     runId,
-    runPath,
+    attachmentRoot,
     documentStore: deps.documentStore,
     registry: deps.preparedAttachmentRegistry,
   });
   state.preparedAttachments = prepared.summaries;
   state.preparedAttachmentRecords = prepared.records;
+}
+
+function preparedAttachmentRoot(dataDir: string, runId: string): string {
+  return join(dataDir, "prepared-attachments", sanitizeFileName(runId));
+}
+
+function sanitizeFileName(value: string): string {
+  return value.replace(/[^a-zA-Z0-9._-]+/g, "_").replace(/^_+|_+$/g, "") || "run";
 }
 
 function syncHarnessContext(state: LoopState, deps: AgentLoopDeps, _inputHandle: SessionInputHandle): void {
@@ -2586,9 +2445,7 @@ function toPromptToolCallContext(step: number, call: ActToolCallRecord): PromptT
     ...(call.code ? { code: call.code } : {}),
     ...(call.operationStatus ? { operationStatus: call.operationStatus } : {}),
     ...(call.artifacts && call.artifacts.length > 0 ? { artifacts: call.artifacts } : {}),
-    ...(call.evidenceRef ? { evidenceRef: call.evidenceRef } : {}),
     ...(call.observation?.hasMore !== undefined ? { hasMore: call.observation.hasMore } : {}),
-    ...(call.rawOutputPath ? { rawOutputPath: call.rawOutputPath } : {}),
     ...(call.rawOutputChars !== undefined ? { rawOutputChars: call.rawOutputChars } : {}),
     ...(call.outputTruncated !== undefined ? { outputTruncated: call.outputTruncated } : {}),
   };
@@ -2759,7 +2616,6 @@ function classifyFailure(execution: AgentActionExecutionResult): {
 
 function buildLoopResult(
   state: LoopState,
-  dataDir: string,
   input: {
     status: AgentLoopResult["status"];
     totalIterations: number;
@@ -2790,12 +2646,6 @@ function buildLoopResult(
     result.taskAssets = buildTaskAssets(state);
   }
 
-  const artifacts = state.runId && state.runPath
-    ? collectAgentArtifacts(state.runId, state.runPath, dataDir, state.completedSteps) as AgentArtifact[]
-    : [];
-  if (artifacts.length > 0) {
-    result.artifacts = artifacts;
-  }
   return result;
 }
 
@@ -2825,7 +2675,7 @@ function buildTaskSummaryRecord(
   const blockers = buildTaskSummaryBlockers(state, taskStatus, failureSummary);
   return {
     runId: state.runId,
-    runPath: state.runPath ? absolutePath(state.runPath) : "",
+    runPath: "",
     triggerSeq: state.currentSeq,
     discussionStartSeq: findDiscussionStartSeq(state),
     discussionEndSeq: state.currentSeq,
