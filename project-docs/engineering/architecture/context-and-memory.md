@@ -67,8 +67,7 @@ are:
   task context when a task is resolved.
 - `context.tools`: active tool names and the latest tool-load result.
 - `context.scratch`: current-run progress, working feedback, tool
-  observations, prompt-facing read context, trace, transient attachments, and
-  system-event state.
+  observations, prompt-facing read context, trace, and transient attachments.
 - `context.personal`: long-lived personal memory snapshot when present.
 
 The internal compatibility field `context.gitContext` can still exist inside

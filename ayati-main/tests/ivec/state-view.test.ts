@@ -641,12 +641,6 @@ describe("buildAgentStateView", () => {
       approvalRequired: true,
       approvalState: "pending",
     });
-    expect(stateView.context.scratch?.systemEvent).toMatchObject({
-      source: "calendar",
-      eventName: "meeting.started",
-      requestedAction: "Prepare meeting notes.",
-      approvalRequired: true,
-      approvalState: "pending",
-    });
+    expect(stateView.context.scratch).not.toHaveProperty("systemEvent");
   });
 });

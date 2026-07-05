@@ -141,7 +141,6 @@ export function buildAgentStateView(state: LoopState, options: AgentStateViewOpt
       readContext,
       trace,
       attachments,
-      systemEvent,
     }),
   });
 
@@ -181,7 +180,6 @@ function buildScratchContext(input: {
   readContext?: PromptReadContext;
   trace?: PromptTrace;
   attachments?: AgentStateView["attachments"];
-  systemEvent?: AgentStateView["systemEvent"];
 }): PromptScratchContext {
   return {
     ...(input.progress ? { progress: input.progress } : {}),
@@ -190,7 +188,6 @@ function buildScratchContext(input: {
     ...(input.readContext ? { readContext: input.readContext } : {}),
     ...(input.trace ? { trace: input.trace } : {}),
     ...(input.attachments ? { attachments: input.attachments } : {}),
-    ...(input.systemEvent ? { systemEvent: input.systemEvent } : {}),
   };
 }
 

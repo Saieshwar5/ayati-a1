@@ -63,7 +63,6 @@ export interface PromptScratchContext {
   readContext?: unknown;
   trace?: unknown;
   attachments?: unknown;
-  systemEvent?: unknown;
 }
 
 export interface PromptToolsContext {
@@ -205,7 +204,6 @@ function compactScratchContext(scratch: PromptScratchContext | undefined): Promp
     ...(scratch.readContext ? { readContext: scratch.readContext } : {}),
     ...(scratch.trace ? { trace: scratch.trace } : {}),
     ...(scratch.attachments ? { attachments: scratch.attachments } : {}),
-    ...(scratch.systemEvent ? { systemEvent: scratch.systemEvent } : {}),
   };
   return Object.keys(compacted).length > 0 ? compacted : undefined;
 }
