@@ -21,7 +21,7 @@ daily git context + run recorder + personal memory -> git context pack -> decisi
 The model prompt receives a deduplicated grouped projection:
 
 ```text
-context.timeline + context.git + context.tools + context.scratch + context.personal
+context.timeline + context.git + context.tools + context.harness + context.scratch + context.personal
 ```
 
 ## Implemented
@@ -64,6 +64,8 @@ context.timeline + context.git + context.tools + context.scratch + context.perso
   `evidence_only`.
 - Prompt-facing read tool context through `context.scratch.toolCalls.latest`,
   kept separate from durable task state.
+- Prompt-facing harness repair feedback through `context.harness.feedback`,
+  kept separate from run scratch.
 - Filesystem inspection and efficient read tools:
   - `inspect_paths` for metadata, line counts, content hints, hashes, directory
     counts, and read recommendations.

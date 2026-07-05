@@ -8,7 +8,7 @@ import type { RuntimeCapabilityPromptContext } from "./runtime-capability-mode.j
 import type { ToolLoadResult } from "./tool-working-set.js";
 import { buildAgentContextPack } from "./context-pack.js";
 import { projectAgentPromptContext } from "./prompt-context.js";
-import type { AgentPromptContext, PromptScratchContext, PromptToolsContext } from "./prompt-context.js";
+import type { AgentPromptContext, PromptHarnessContext, PromptScratchContext, PromptToolsContext } from "./prompt-context.js";
 
 export interface PromptProgressState {
   status: WorkState["status"];
@@ -140,10 +140,12 @@ export function buildAgentStateView(state: LoopState, options: AgentStateViewOpt
       activeTools: options.activeTools,
       toolLoad,
     }),
+    harness: buildHarnessContext({
+      workingFeedback,
+    }),
     scratch: buildScratchContext({
       status: state.workState.status,
       toolCalls,
-      workingFeedback,
     }),
   });
 
@@ -180,12 +182,21 @@ function buildToolsContext(input: {
 function buildScratchContext(input: {
   status: WorkState["status"];
   toolCalls?: PromptToolCalls;
-  workingFeedback?: PromptWorkingFeedback;
 }): PromptScratchContext {
   return {
     status: input.status,
     ...(input.toolCalls ? { toolCalls: input.toolCalls } : {}),
-    ...(input.workingFeedback ? { feedback: input.workingFeedback } : {}),
+  };
+}
+
+function buildHarnessContext(input: {
+  workingFeedback?: PromptWorkingFeedback;
+}): PromptHarnessContext | undefined {
+  if (!input.workingFeedback) {
+    return undefined;
+  }
+  return {
+    feedback: input.workingFeedback,
   };
 }
 

@@ -29,6 +29,7 @@ export function summarizePromptStateView(
 ): Record<string, unknown> {
   const context = stateView.context;
   const gitCurrent = context.git?.current;
+  const harness = context.harness;
   const scratch = context.scratch;
   return {
     fingerprint: fingerprintPayload(stateView),
@@ -69,11 +70,13 @@ export function summarizePromptStateView(
       active: context.tools.active,
       lastLoadStatus: readRecord(context.tools.lastLoad)?.["status"],
     } : undefined,
+    harness: harness ? {
+      feedbackCount: readArray(readRecord(harness.feedback)?.["latest"]).length,
+    } : undefined,
     scratch: scratch ? {
       keys: Object.keys(scratch),
       status: scratch.status,
       toolCallCount: readArray(readRecord(scratch.toolCalls)?.["latest"]).length,
-      feedbackCount: readArray(readRecord(scratch.feedback)?.["latest"]).length,
     } : undefined,
     personal: context.personal ? {
       memoryChars: context.personal.memorySnapshot.length,

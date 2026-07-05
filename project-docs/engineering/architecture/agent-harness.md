@@ -252,8 +252,8 @@ a deduplicated grouped payload:
   context when a task is resolved.
 - `context.tools`: active tool names and the latest tool-load result.
 - `context.scratch`: current-run status and the ordered tool-call memory for
-  this run. During the scratch-context simplification transition, working
-  feedback may still appear as a compatibility field.
+  this run.
+- `context.harness`: harness repair feedback for the current decision.
 - `context.personal`: long-lived user memory snapshot when present.
 
 The internal aliases `context.gitContext`, top-level `progress`,
@@ -273,7 +273,7 @@ Both should describe the same harness reality:
 Repair feedback uses stable `R_*` repair codes instead of one-off prompt
 strings. The same repair signal can be projected three ways:
 
-- a compact model-facing repair prompt in `context.scratch.feedback`
+- a compact model-facing repair prompt in `context.harness.feedback`
 - operator-facing feedback event data under `repair.code`
 - feedback-ledger warning and triage summaries
 
@@ -460,7 +460,7 @@ mentioning harness internals.
 ## Failure Handling
 
 Failures are stored in `failureHistory` and compacted into
-`context.scratch.feedback`.
+`context.harness.feedback`.
 The local failure policy can retry deterministic recoveries, such as retrying
 file writes with `createDirs=true` when a parent directory is missing.
 

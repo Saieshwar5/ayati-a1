@@ -148,7 +148,8 @@ describe("parseAgentDecision", () => {
     expect(systemPrompt).toContain("context.scratch.status");
     expect(systemPrompt).toContain("context.scratch.toolCalls.latest");
     expect(systemPrompt).not.toContain("context.scratch.progress");
-    expect(systemPrompt).toContain("context.scratch.feedback");
+    expect(systemPrompt).not.toContain("context.scratch.feedback");
+    expect(systemPrompt).toContain("context.harness.feedback");
     expect(systemPrompt).not.toContain("context.scratch.readContext.latest");
     expect(systemPrompt).not.toContain("context.scratch.observations.latest");
     expect(systemPrompt).not.toContain("context.scratch.trace");
@@ -254,11 +255,7 @@ describe("parseAgentDecision", () => {
           tools: {
             active: ["read_file"],
           },
-          scratch: {
-            progress: {
-              status: "not_done",
-              summary: "Work in progress.",
-            },
+          harness: {
             feedback: {
               latest: [{
                 severity: "warning",
@@ -266,6 +263,9 @@ describe("parseAgentDecision", () => {
                 message: "Fix the next call.",
               }],
             },
+          },
+          scratch: {
+            status: "not_done",
           },
           personal: {
             memorySnapshot: "Prefer concise answers.",
@@ -352,11 +352,7 @@ describe("parseAgentDecision", () => {
         tools: {
           active: ["read_file"],
         },
-        scratch: {
-          progress: {
-            status: "not_done",
-            summary: "Work in progress.",
-          },
+        harness: {
           feedback: {
             latest: [{
               severity: "warning",
@@ -364,6 +360,9 @@ describe("parseAgentDecision", () => {
               message: "Fix the next call.",
             }],
           },
+        },
+        scratch: {
+          status: "not_done",
         },
         personal: {
           memorySnapshot: "Prefer concise answers.",

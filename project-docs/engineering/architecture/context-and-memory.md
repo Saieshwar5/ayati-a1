@@ -67,8 +67,8 @@ are:
   task context when a task is resolved.
 - `context.tools`: active tool names and the latest tool-load result.
 - `context.scratch`: current-run status and the ordered tool-call memory for
-  this run. During the scratch-context simplification transition, working
-  feedback may still appear as a compatibility field.
+  this run.
+- `context.harness`: harness repair feedback for the current decision.
 - `context.personal`: long-lived personal memory snapshot when present.
 
 The internal compatibility field `context.gitContext` can still exist inside

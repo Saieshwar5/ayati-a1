@@ -59,6 +59,9 @@ export interface PromptGitTaskContext {
 export interface PromptScratchContext {
   status?: unknown;
   toolCalls?: unknown;
+}
+
+export interface PromptHarnessContext {
   feedback?: unknown;
 }
 
@@ -72,6 +75,7 @@ export interface AgentPromptContext extends AgentContextPack {
   personal?: PromptPersonalContext;
   git?: PromptGitContext;
   tools?: PromptToolsContext;
+  harness?: PromptHarnessContext;
   scratch?: PromptScratchContext;
 }
 
@@ -80,6 +84,7 @@ export interface ProjectAgentPromptContextInput {
   runtimeMode?: RuntimeCapabilityPromptContext;
   sessionAttachments?: unknown;
   tools?: PromptToolsContext;
+  harness?: PromptHarnessContext;
   scratch?: PromptScratchContext;
 }
 
@@ -89,6 +94,7 @@ export interface AgentPromptStateView {
 
 export function projectAgentPromptContext(input: ProjectAgentPromptContextInput): AgentPromptContext {
   const personalMemorySnapshot = input.context.personalMemorySnapshot?.trim();
+  const harness = compactHarnessContext(input.harness);
   const scratch = compactScratchContext(input.scratch);
   return {
     ...input.context,
@@ -105,6 +111,7 @@ export function projectAgentPromptContext(input: ProjectAgentPromptContextInput)
       },
     } : {}),
     ...(input.tools ? { tools: input.tools } : {}),
+    ...(harness ? { harness } : {}),
     ...(scratch ? { scratch } : {}),
   };
 }
@@ -185,9 +192,20 @@ function compactAgentPromptContext(context: AgentPromptContext): AgentPromptCont
     ...(context.runtimeMode ? { runtimeMode: context.runtimeMode } : {}),
     ...(context.git ? { git: context.git } : {}),
     ...(context.tools ? { tools: context.tools } : {}),
+    ...(context.harness ? { harness: context.harness } : {}),
     ...(context.scratch ? { scratch: context.scratch } : {}),
     ...(context.personal ? { personal: context.personal } : {}),
   };
+}
+
+function compactHarnessContext(harness: PromptHarnessContext | undefined): PromptHarnessContext | undefined {
+  if (!harness) {
+    return undefined;
+  }
+  const compacted: PromptHarnessContext = {
+    ...(harness.feedback ? { feedback: harness.feedback } : {}),
+  };
+  return Object.keys(compacted).length > 0 ? compacted : undefined;
 }
 
 function compactScratchContext(scratch: PromptScratchContext | undefined): PromptScratchContext | undefined {
@@ -197,7 +215,6 @@ function compactScratchContext(scratch: PromptScratchContext | undefined): Promp
   const compacted: PromptScratchContext = {
     ...(scratch.status ? { status: scratch.status } : {}),
     ...(scratch.toolCalls ? { toolCalls: scratch.toolCalls } : {}),
-    ...(scratch.feedback ? { feedback: scratch.feedback } : {}),
   };
   return Object.keys(compacted).length > 0 ? compacted : undefined;
 }

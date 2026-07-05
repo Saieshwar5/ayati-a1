@@ -272,7 +272,8 @@ describe("buildAgentStateView", () => {
         blockedTargets: ["write_files"],
       },
     });
-    expect(stateView.context.scratch?.feedback?.latest[0]).toMatchObject({
+    expect(stateView.context.scratch).not.toHaveProperty("feedback");
+    expect(stateView.context.harness?.feedback?.latest[0]).toMatchObject({
       code: "R_FRESH_SESSION_NEEDS_TASK",
       repair: {
         code: "R_FRESH_SESSION_NEEDS_TASK",
@@ -514,7 +515,8 @@ describe("buildAgentStateView", () => {
       source: "tool_execution",
       message: "Approval required before editing.",
     });
-    expect((stateView.context.scratch?.feedback as { latest?: Array<{ source: string }> } | undefined)?.latest?.[0])
+    expect(stateView.context.scratch).not.toHaveProperty("feedback");
+    expect((stateView.context.harness?.feedback as { latest?: Array<{ source: string }> } | undefined)?.latest?.[0])
       .toMatchObject({ source: "tool_execution" });
   });
 
