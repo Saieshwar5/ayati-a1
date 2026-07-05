@@ -106,6 +106,7 @@ import {
   summarizeVerification,
   summarizeWorkState,
 } from "./feedback-summary.js";
+import { auditToolPolicy } from "./tool-policy-audit.js";
 
 interface MemoryRunContext {
   runHandle: MemoryRunHandle;
@@ -448,6 +449,10 @@ export async function runAgentLoop(
     });
     const taskFeedbackToolAvailable = isTaskFeedbackToolAvailable(state, workRunHandle);
     const decisionRuntimeMode = detectRuntimeCapabilityMode({ state, workRunHandle });
+    const decisionToolPolicyAudit = auditToolPolicy({
+      mode: decisionRuntimeMode,
+      selectedTools,
+    });
     recordFeedback(deps, inputHandle, state.runId || workRunHandle?.runId, "decision", "prompt_summary", {
       iteration: state.iteration,
       nativeControlTools: [
@@ -469,6 +474,7 @@ export async function runAgentLoop(
         context: state.harnessContext.contextEngine,
       }),
       warningCodes: buildToolExposureWarningCodes(state, selectedTools, workRunHandle),
+      toolPolicyAudit: decisionToolPolicyAudit,
       inputState: summarizeDecisionInputState(stateView),
     });
     const decision = await callAgentDecision({
@@ -1740,6 +1746,10 @@ function recordToolWorkingSetFeedback(input: {
     state: input.state,
     workRunHandle: input.workRunHandle,
   });
+  const toolPolicyAudit = auditToolPolicy({
+    mode: runtimeMode,
+    selectedTools: input.selectedTools,
+  });
   const toolMode = summarizeRuntimeCapabilityTools({
     mode: runtimeMode,
     visibleTools: input.visibleTools,
@@ -1755,6 +1765,7 @@ function recordToolWorkingSetFeedback(input: {
     deterministicLoad: summarizeToolLoadResult(input.deterministicToolLoad),
     visible: summarizeToolDefinitions(input.visibleTools),
     selected: summarizeToolDefinitions(input.selectedTools),
+    toolPolicyAudit,
     normalSelectedTools: normalTaskToolNames(input.selectedTools),
     contextEngine: buildContextEngineFeedbackSummary({
       context: input.state.harnessContext.contextEngine,
@@ -1765,6 +1776,7 @@ function recordToolWorkingSetFeedback(input: {
     iteration: input.iteration,
     toolContextRunId: input.toolContextRunId,
     ...toolMode,
+    toolPolicyAudit,
     ...(runtimeMode.routingWindow ? { routingWindow: runtimeMode.routingWindow } : {}),
     ...(warningCodes.length > 0 ? { warningCodes } : {}),
   });

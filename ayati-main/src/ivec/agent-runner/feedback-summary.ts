@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import type { ContextEngineMachineContext } from "../../context-engine/index.js";
 import type { ToolDefinition } from "../../skills/types.js";
+import { summarizeToolTaxonomy } from "../../skills/tool-taxonomy.js";
 import type { HarnessContext, HarnessContextInput } from "../harness-context.js";
 import type { StepSummary, VerifyOutput, WorkState } from "../types.js";
 import type { AgentDecision, AgentAction } from "./decision.js";
@@ -85,9 +86,11 @@ export function summarizePromptStateView(
 }
 
 export function summarizeToolDefinitions(tools: ToolDefinition[]): Record<string, unknown> {
+  const names = tools.map((tool) => tool.name);
   return {
     count: tools.length,
-    names: tools.map((tool) => tool.name),
+    names,
+    taxonomy: summarizeToolTaxonomy(names),
     schemas: tools.map((tool) => ({
       name: tool.name,
       requiredFields: readSchemaRequiredFields(tool.inputSchema),
@@ -107,6 +110,12 @@ export function summarizeToolLoadResult(result: ToolLoadResult | undefined): Rec
     alreadyActive: result.alreadyActive,
     evicted: result.evicted,
     missing: result.missing,
+    taxonomy: {
+      loaded: summarizeToolTaxonomy(result.loaded),
+      alreadyActive: summarizeToolTaxonomy(result.alreadyActive),
+      evicted: summarizeToolTaxonomy(result.evicted),
+      missing: summarizeToolTaxonomy(result.missing),
+    },
     message: result.message,
   };
 }
@@ -139,10 +148,12 @@ export function summarizeDecision(decision: AgentDecision): Record<string, unkno
 }
 
 export function summarizeAgentAction(action: AgentAction): Record<string, unknown> {
+  const tools = action.calls.map((call) => call.tool);
   return {
     mode: action.mode,
     allowedTools: action.allowedTools,
     callCount: action.calls.length,
+    taxonomy: summarizeToolTaxonomy(tools),
     calls: action.calls.map((call) => ({
       id: call.id,
       tool: call.tool,
