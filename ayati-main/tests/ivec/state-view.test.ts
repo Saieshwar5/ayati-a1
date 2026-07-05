@@ -489,11 +489,7 @@ describe("buildAgentStateView", () => {
       summary: "Need approval before editing.",
       userInputNeeded: "Can I edit the prompt?",
     });
-    expect(stateView.context.scratch?.progress).toMatchObject({
-      status: "needs_user_input",
-      summary: "Need approval before editing.",
-      userInputNeeded: "Can I edit the prompt?",
-    });
+    expect(stateView.context.scratch).not.toHaveProperty("progress");
     expect(stateView.observations?.latest).toHaveLength(2);
     expect(stateView.context.scratch).not.toHaveProperty("observations");
     expect(stateView.observations?.latest[0]?.retention).toBe("while_relevant");

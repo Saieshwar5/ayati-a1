@@ -147,7 +147,7 @@ describe("parseAgentDecision", () => {
     expect(systemPrompt).toContain("do not infer omitted details from it");
     expect(systemPrompt).toContain("context.scratch.status");
     expect(systemPrompt).toContain("context.scratch.toolCalls.latest");
-    expect(systemPrompt).toContain("context.scratch.progress");
+    expect(systemPrompt).not.toContain("context.scratch.progress");
     expect(systemPrompt).toContain("context.scratch.feedback");
     expect(systemPrompt).not.toContain("context.scratch.readContext.latest");
     expect(systemPrompt).not.toContain("context.scratch.observations.latest");

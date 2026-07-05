@@ -252,9 +252,8 @@ a deduplicated grouped payload:
   context when a task is resolved.
 - `context.tools`: active tool names and the latest tool-load result.
 - `context.scratch`: current-run status and the ordered tool-call memory for
-  this run. During the scratch-context simplification transition, progress,
-  working feedback, and transient attachments may still appear as compatibility
-  fields.
+  this run. During the scratch-context simplification transition, working
+  feedback and transient attachments may still appear as compatibility fields.
 - `context.personal`: long-lived user memory snapshot when present.
 
 The internal aliases `context.gitContext`, top-level `progress`,

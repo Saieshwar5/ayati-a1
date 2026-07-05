@@ -2284,8 +2284,9 @@ describe("agentLoop", () => {
       expect(userPrompt).not.toContain("\"latestObservation\"");
       expect(stateView.toolContext).toBeUndefined();
       expect(stateView.progress).toBeUndefined();
-      expect(stateView.context.scratch.progress.evidenceRefs[0].ref).toBe("evidence://ev_001_call_1");
-      expect(stateView.context.scratch.progress.evidenceRefs[1].ref).toBe("evidence://ev_001_call_2");
+      expect(stateView.context.scratch.progress).toBeUndefined();
+      expect(stateView.context.scratch.toolCalls.latest[0].evidenceRef.ref).toBe("evidence://ev_001_call_1");
+      expect(stateView.context.scratch.toolCalls.latest[1].evidenceRef.ref).toBe("evidence://ev_001_call_2");
       expect(stateView.workingNotes).toBeUndefined();
       expect(userPrompt).toContain("evidence_search");
       expect(existsSync(join(dataDir, "runs", "r-observation", "raw", "001-call_1-read_file-output.txt"))).toBe(true);

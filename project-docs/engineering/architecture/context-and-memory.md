@@ -67,9 +67,8 @@ are:
   task context when a task is resolved.
 - `context.tools`: active tool names and the latest tool-load result.
 - `context.scratch`: current-run status and the ordered tool-call memory for
-  this run. During the scratch-context simplification transition, progress,
-  working feedback, tool observations, prompt-facing read context, and transient
-  attachments may still appear as compatibility fields.
+  this run. During the scratch-context simplification transition, working
+  feedback and transient attachments may still appear as compatibility fields.
 - `context.personal`: long-lived personal memory snapshot when present.
 
 The internal compatibility field `context.gitContext` can still exist inside
