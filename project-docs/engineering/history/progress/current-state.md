@@ -62,7 +62,7 @@ context.timeline + context.git + context.tools + context.harness + context.run +
   internal memory cache.
 - Hot tool-output observation retention: `next_step`, `while_relevant`, and
   `evidence_only`.
-- Prompt-facing read tool context through `context.run.toolCalls.latest`,
+- Prompt-facing read tool context through `context.run.toolCalls`,
   kept separate from durable task state.
 - Prompt-facing harness repair feedback through `context.harness.feedback`,
   kept separate from run context.

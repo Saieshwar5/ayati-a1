@@ -136,8 +136,8 @@ memory. The agent should see enough raw context to make the next decision, but
 large files, command logs, and evidence slices should not remain in every prompt
 for the whole run.
 
-The runtime exposes current-run tool output in
-`State view.context.run.toolCalls.latest`.
+The runtime exposes ordered current-run tool output in
+`State view.context.run.toolCalls`.
 Each entry contains the tool name, input, status, compact output or error,
 artifacts, evidence refs, and truncation metadata. Internal observation records
 may still carry deterministic retention metadata:
@@ -157,9 +157,9 @@ from verification and progress reduction, not from keeping arbitrary raw slices
 in long-lived context.
 
 Read tools use the same prompt-facing projection:
-`context.run.toolCalls.latest`. This gives the model the recent
-filesystem/search context it just gathered without putting raw file contents
-into task state. Raw read output stays in run evidence and tool records.
+`context.run.toolCalls`. This gives the model the filesystem/search context it
+has gathered during the current run without putting raw file contents into task
+state. Raw read output stays in run evidence and tool records.
 
 Read context should follow these boundaries:
 

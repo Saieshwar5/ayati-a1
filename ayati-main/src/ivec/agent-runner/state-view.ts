@@ -31,9 +31,8 @@ export interface PromptReadContext {
   latest: ToolObservation[];
 }
 
-export interface PromptToolCalls {
-  latest: PromptToolCallContext[];
-}
+export type PromptRunToolCallContext = Omit<PromptToolCallContext, "hasMore">;
+export type PromptToolCalls = PromptRunToolCallContext[];
 
 export interface PromptToolLoadState {
   status: ToolLoadResult["status"];
@@ -393,8 +392,13 @@ function buildReadContextView(toolContext: ToolContextState | undefined): Prompt
 }
 
 function buildToolCallsView(toolContext: ToolContextState | undefined): PromptToolCalls | undefined {
-  const latest = toolContext?.toolCalls ?? [];
-  return latest.length > 0 ? { latest } : undefined;
+  const toolCalls = (toolContext?.toolCalls ?? []).map(projectPromptToolCall);
+  return toolCalls.length > 0 ? toolCalls : undefined;
+}
+
+function projectPromptToolCall(call: PromptToolCallContext): PromptRunToolCallContext {
+  const { hasMore: _hasMore, ...projected } = call;
+  return projected;
 }
 
 function buildTraceView(state: LoopState): PromptTrace | undefined {

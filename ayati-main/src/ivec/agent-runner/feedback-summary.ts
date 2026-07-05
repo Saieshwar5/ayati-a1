@@ -76,7 +76,7 @@ export function summarizePromptStateView(
     run: run ? {
       keys: Object.keys(run),
       status: run.status,
-      toolCallCount: readArray(readRecord(run.toolCalls)?.["latest"]).length,
+      toolCallCount: readArray(run.toolCalls).length,
     } : undefined,
     personal: context.personal ? {
       memoryChars: context.personal.memorySnapshot.length,

@@ -309,8 +309,8 @@ user when runtime task resolution is ambiguous.
 
 If tool output is truncated, chunked, or evidence-only, the model should use
 evidence tools before rerunning the original output-producing tool.
-Prompt-facing tool output for the current run is carried by
-`context.run.toolCalls.latest`, including tool input, compact output,
+Prompt-facing ordered tool output for the current run is carried by
+`context.run.toolCalls`, including tool input, compact output,
 errors, artifacts, and evidence refs. Read-heavy tool results use the same
 channel. Raw read output remains in run evidence and tool records; task state
 should retain only useful facts, summaries, files, evidence refs, and run

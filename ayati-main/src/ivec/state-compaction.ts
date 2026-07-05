@@ -16,7 +16,6 @@ const LOOP_STATE_LIMITS = {
   workingNotes: { count: 12, chars: 420 },
   toolContextCards: 5,
   toolContextCardChars: 4_000,
-  toolCalls: 30,
   toolCallOutputChars: 4_000,
   toolCallInputStringChars: 1_200,
 };
@@ -167,7 +166,6 @@ function compactToolObservation(observation: ToolObservation, maxChars: number):
 
 function compactPromptToolCalls(calls: PromptToolCallContext[] | undefined): PromptToolCallContext[] | undefined {
   const compacted = (calls ?? [])
-    .slice(-LOOP_STATE_LIMITS.toolCalls)
     .map((call) => ({
       ...call,
       input: compactUnknown(call.input, LOOP_STATE_LIMITS.toolCallInputStringChars),

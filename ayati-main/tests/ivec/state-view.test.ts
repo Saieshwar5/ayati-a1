@@ -498,7 +498,7 @@ describe("buildAgentStateView", () => {
     expect(stateView.readContext?.latest).toHaveLength(1);
     expect(stateView.readContext?.latest[0]?.tool).toBe("read_file");
     expect(stateView.context.run).not.toHaveProperty("readContext");
-    expect(stateView.toolCalls?.latest).toEqual([
+    expect(stateView.toolCalls).toEqual([
       expect.objectContaining({
         step: 1,
         callId: "call-1",
@@ -508,8 +508,9 @@ describe("buildAgentStateView", () => {
         output: "Read state-view.ts.",
       }),
     ]);
-    expect((stateView.context.run?.toolCalls as { latest?: Array<{ tool: string; input: unknown; output: string }> } | undefined)?.latest)
+    expect((stateView.context.run?.toolCalls as Array<{ tool: string; input: unknown; output: string; hasMore?: boolean }> | undefined))
       .toEqual([expect.objectContaining({ tool: "read_file", input: { path: "state-view.ts" }, output: "Read state-view.ts." })]);
+    expect(stateView.context.run?.toolCalls?.[0]).not.toHaveProperty("hasMore");
     expect(stateView.trace?.recentSteps?.map((step) => step.step)).toEqual([1]);
     expect(stateView.context.run).not.toHaveProperty("trace");
     expect(stateView.workingFeedback?.latest[0]).toMatchObject({
