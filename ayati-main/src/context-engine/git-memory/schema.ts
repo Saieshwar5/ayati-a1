@@ -209,10 +209,6 @@ export function gitMemoryTaskNotesPath(taskId: GitMemoryTaskId): string {
   return `${gitMemoryTaskDir(taskId)}/notes.md`;
 }
 
-export function gitMemoryTaskContextPath(taskId: GitMemoryTaskId): string {
-  return `${gitMemoryTaskDir(taskId)}/context.md`;
-}
-
 export function gitMemoryTaskConversationDir(taskId: GitMemoryTaskId): string {
   return `${gitMemoryTaskDir(taskId)}/conversation`;
 }

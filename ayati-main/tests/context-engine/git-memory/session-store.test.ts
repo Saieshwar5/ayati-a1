@@ -21,6 +21,7 @@ import {
   gitMemoryTaskActionsPath,
   gitMemoryTaskAssetsPath,
   gitMemoryTaskConversationMessagePath,
+  gitMemoryTaskDir,
   gitMemoryTaskEvidenceManifestPath,
   gitMemoryTaskMarkdownPath,
   gitMemoryTaskNotesPath,
@@ -657,7 +658,12 @@ describe("GitMemoryDailySessionStore", () => {
     expect(await driver.readFile(task.ref, gitMemoryTaskConversationMessagePath(task.taskId, 1, "user"))).toBeNull();
     expect(await driver.readFile(task.ref, gitMemoryTaskConversationMessagePath(task.taskId, 2, "assistant"))).toBeNull();
     expect(await driver.readFile(task.ref, gitMemoryTaskConversationMessagePath(task.taskId, 3, "user"))).toBeNull();
-    expect(await driver.readFile(task.ref, `tasks/${task.taskId}/task.json`)).toBeNull();
+    expect(await driver.listTreePaths(task.ref, gitMemoryTaskDir(task.taskId))).toEqual([
+      gitMemoryTaskAssetsPath(task.taskId),
+      gitMemoryTaskNotesPath(task.taskId),
+      gitMemoryTaskStatePath(task.taskId),
+      gitMemoryTaskMarkdownPath(task.taskId),
+    ].sort());
     const taskMarkdown = await driver.readFile(task.ref, gitMemoryTaskMarkdownPath(task.taskId)) ?? "";
     expect(taskMarkdown).toContain("# Fix upload handling");
     expect(taskMarkdown).toContain("Task: W-20260628-0001");

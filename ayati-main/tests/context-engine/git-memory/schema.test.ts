@@ -11,7 +11,6 @@ import {
   gitMemoryTaskAssetsPath,
   gitMemoryTaskConversationDir,
   gitMemoryTaskConversationMessagePath,
-  gitMemoryTaskContextPath,
   gitMemoryTaskEvidenceManifestPath,
   gitMemoryTaskMarkdownPath,
   gitMemoryTaskNotesPath,
@@ -53,7 +52,6 @@ describe("git memory schema", () => {
       .toBe("tasks/W-20260628-0001/evidence/R-20260628-0001/manifest.jsonl");
     expect(gitMemoryTaskAssetsPath("W-20260628-0001")).toBe("tasks/W-20260628-0001/assets.json");
     expect(gitMemoryTaskNotesPath("W-20260628-0001")).toBe("tasks/W-20260628-0001/notes.md");
-    expect(gitMemoryTaskContextPath("W-20260628-0001")).toBe("tasks/W-20260628-0001/context.md");
     expect(gitMemoryTaskConversationDir("W-20260628-0001")).toBe("tasks/W-20260628-0001/conversation");
     expect(gitMemoryTaskConversationMessagePath("W-20260628-0001", 14, "user"))
       .toBe("tasks/W-20260628-0001/conversation/000014-user.md");

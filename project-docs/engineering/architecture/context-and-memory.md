@@ -261,13 +261,20 @@ tasks/<taskId>/
 Core files:
 
 - `task.md`: human/model-readable task identity and objective.
-- `task.json`: stable machine-readable identity and metadata.
 - `state.json`: current machine-readable task state.
 - `runs/<runId>.md`: human/model-readable run summary.
 - `runs/<runId>.json`: machine-readable run summary.
 - `actions/<runId>.jsonl`: compact tool/action metadata for a run.
 - `evidence/<runId>/manifest.jsonl`: durable compact evidence records.
 - `assets.json` or equivalent asset index when task assets are present.
+- `notes.md`: compact task note/index generated from current task state,
+  latest run, recent work, files, facts, and search terms.
+
+Agent task context is built from `task.md`, `state.json`, `assets.json`,
+recent `runs/*.json`, recent evidence manifests, commit metadata, and
+conversation reconstructed from `sessionStoreCommit` plus `conversationRefs`.
+Do not add separate task identity or task-context placeholder files unless a
+new reader and persistence contract actually uses them.
 
 Run commits carry useful Ayati commit trailers such as session id, task id, run
 id, event, status, branch, conversation sequence, and action ids. The commit

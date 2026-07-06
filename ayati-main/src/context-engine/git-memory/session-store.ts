@@ -70,7 +70,6 @@ import {
   gitMemoryTaskDir,
   gitMemoryTaskAssetsPath,
   gitMemoryTaskActionsPath,
-  gitMemoryTaskContextPath,
   gitMemoryTaskConversationDir,
   gitMemoryTaskEvidenceManifestPath,
   gitMemoryTaskMarkdownPath,
@@ -997,7 +996,6 @@ export class GitMemoryDailySessionStore {
           state,
           updatedAt: at,
         }),
-        [gitMemoryTaskContextPath(taskId)]: "",
       },
       message: renderGitMemoryCommitMessage({
         subject: `ayati: create task ${taskId}`,
