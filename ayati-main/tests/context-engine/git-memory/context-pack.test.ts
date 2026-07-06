@@ -352,7 +352,6 @@ describe("GitMemoryContextReader", () => {
       summary: "Inspected upload handling and found validation mismatch.",
       completed: ["Inspected upload server"],
       open: ["Patch upload validation handling"],
-      facts: ["UploadServer validates multipart uploads."],
       next: "Patch upload validation handling.",
       assets: [{
         assetId: "asset-upload-log",
@@ -362,6 +361,9 @@ describe("GitMemoryContextReader", () => {
         path: "/tmp/upload.log",
       }],
     });
+    expect(pack.task.facts).toEqual(expect.arrayContaining([
+      "UploadServer validates multipart uploads.",
+    ]));
     expect(pack.task?.conversationMarkdownTail).toContain("Fix upload handling");
     expect(pack.task?.conversationMarkdownTail).toContain("I will inspect upload handling.");
     expect(pack.task?.conversationMarkdownTail).not.toContain("Continue from there.");

@@ -169,6 +169,7 @@ function createChatContextRuntime(
         commit: "task-commit",
       },
     }),
+    recordTaskRunStep: vi.fn().mockResolvedValue(undefined),
     recordAssistantMessage: vi.fn().mockResolvedValue({
       v: 1,
       seq: 2,
@@ -193,6 +194,7 @@ function createUnboundChatContextRuntime(): GitMemoryChatContextRuntime {
       runId: "R-20260627-0004",
       taskCommit: "task-commit",
     }),
+    recordTaskRunStep: vi.fn().mockResolvedValue(undefined),
     recordAssistantMessage: vi.fn().mockResolvedValue({
       v: 1,
       seq: 2,
@@ -218,6 +220,7 @@ function createActiveUnroutedChatContextRuntime(): GitMemoryChatContextRuntime {
       runId: routed.runId,
       taskCommit: "task-commit",
     }),
+    recordTaskRunStep: vi.fn().mockResolvedValue(undefined),
     recordAssistantMessage: vi.fn().mockResolvedValue({
       v: 1,
       seq: 2,
@@ -254,6 +257,7 @@ function createSystemEventContextRuntime(
         commit: "task-commit",
       },
     }),
+    recordTaskRunStep: vi.fn().mockResolvedValue(undefined),
     recordAssistantMessage: vi.fn().mockResolvedValue({
       v: 1,
       seq: 2,

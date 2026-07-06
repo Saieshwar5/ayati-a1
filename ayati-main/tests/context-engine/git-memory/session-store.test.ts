@@ -21,7 +21,6 @@ import {
   gitMemoryTaskAssetsPath,
   gitMemoryTaskConversationMessagePath,
   gitMemoryTaskDir,
-  gitMemoryTaskMarkdownPath,
   gitMemoryTaskNotesPath,
   gitMemoryTaskRunMarkdownPath,
   gitMemoryTaskRunPath,
@@ -661,15 +660,26 @@ describe("GitMemoryDailySessionStore", () => {
       gitMemoryTaskAssetsPath(task.taskId),
       gitMemoryTaskNotesPath(task.taskId),
       gitMemoryTaskStatePath(task.taskId),
-      gitMemoryTaskMarkdownPath(task.taskId),
     ].sort());
-    const taskMarkdown = await driver.readFile(task.ref, gitMemoryTaskMarkdownPath(task.taskId)) ?? "";
-    expect(taskMarkdown).toContain("# Fix upload handling");
-    expect(taskMarkdown).toContain("Task: W-20260628-0001");
-    expect(taskMarkdown).toContain("Status: open");
-    expect(taskMarkdown).toContain("## Objective");
-    expect(taskMarkdown).toContain("Find and fix upload handling failures.");
-    expect(taskMarkdown).not.toContain("## Open");
+    const taskState = JSON.parse(await driver.readFile(task.ref, gitMemoryTaskStatePath(task.taskId)) ?? "{}");
+    expect(taskState).toMatchObject({
+      schemaVersion: 2,
+      task: {
+        taskId: "W-20260628-0001",
+        title: "Fix upload handling",
+        objective: "Find and fix upload handling failures.",
+        branch: "task/W-20260628-0001-fix-upload-handling",
+      },
+      status: "open",
+      summary: "Find and fix upload handling failures.",
+      progress: {
+        open: ["Find and fix upload handling failures."],
+      },
+      runs: {
+        runIds: [],
+        recent: [],
+      },
+    });
     const taskNotes = await driver.readFile(task.ref, gitMemoryTaskNotesPath(task.taskId)) ?? "";
     expect(taskNotes).toContain("# Fix upload handling");
     expect(taskNotes).toContain("Task: W-20260628-0001");
@@ -686,12 +696,6 @@ describe("GitMemoryDailySessionStore", () => {
     expect(taskNotes).toContain("## Search Terms");
     expect(taskNotes).toContain("upload");
     expect(taskNotes).not.toContain("Latest Run:");
-    expect(JSON.parse(await driver.readFile(task.ref, gitMemoryTaskStatePath(task.taskId)) ?? "{}"))
-      .toMatchObject({
-        status: "open",
-        summary: "Find and fix upload handling failures.",
-        open: ["Find and fix upload handling failures."],
-      });
     expect(JSON.parse(await driver.readFile(task.ref, gitMemoryTaskAssetsPath(task.taskId)) ?? "{}"))
       .toEqual({ schemaVersion: 1, assets: [] });
     expect(await driver.readFile(task.ref, `tasks/${task.taskId}/assets.jsonl`)).toBeNull();
@@ -1196,15 +1200,20 @@ describe("GitMemoryDailySessionStore", () => {
     });
 
     const driver = new GitMemoryWorktreeGitDriver(session.repoPath);
-    expect(JSON.parse(await driver.readFile(task.ref, gitMemoryTaskStatePath(task.taskId)) ?? "{}"))
+    const taskState = JSON.parse(await driver.readFile(task.ref, gitMemoryTaskStatePath(task.taskId)) ?? "{}");
+    expect(taskState)
       .toMatchObject({
         status: "in_progress",
         summary: "Inspected upload handling and found validation mismatch.",
-        completed: ["Inspected upload server"],
-        open: ["Patch upload validation handling"],
-        facts: ["UploadServer validates multipart uploads."],
-        next: "Patch upload validation handling.",
+        progress: {
+          completed: ["Inspected upload server"],
+          open: ["Patch upload validation handling"],
+          next: "Patch upload validation handling.",
+        },
       });
+    expect(taskState.memory.facts).toEqual(expect.arrayContaining([expect.objectContaining({
+      text: "UploadServer validates multipart uploads.",
+    })]));
     expect(JSON.parse(await driver.readFile(task.ref, gitMemoryTaskRunPath(task.taskId, run.runId)) ?? "{}"))
       .toMatchObject({
         runId: "R-20260628-0001",
@@ -1327,11 +1336,9 @@ describe("GitMemoryDailySessionStore", () => {
       limits: {
         evidenceLimit: 1,
         runLimit: 1,
-        taskMarkdownCharLimit: 2_000,
         runMarkdownCharLimit: 2_000,
       },
     })).resolves.toMatchObject({
-      taskMarkdown: expect.stringContaining("# Fix upload handling"),
       recentRunMarkdown: [{
         runId: "R-20260628-0001",
         path: "tasks/W-20260628-0001/runs/R-20260628-0001.md",
@@ -1391,7 +1398,7 @@ describe("GitMemoryDailySessionStore", () => {
     const driver = new GitMemoryWorktreeGitDriver(session.repoPath);
 
     expect(await driver.currentBranch()).toBe(task.branch);
-    expect(await driver.readWorkingFile(gitMemoryTaskMarkdownPath(task.taskId)))
+    expect(await driver.readWorkingFile(gitMemoryTaskStatePath(task.taskId)))
       .toContain("Linux commands file");
     expect(await driver.readWorkingFile(gitMemoryTaskStatePath(task.taskId)))
       .toContain("Create a text file with ten Linux commands.");
@@ -1583,7 +1590,9 @@ describe("GitMemoryDailySessionStore", () => {
     expect(JSON.parse(await driver.readFile(task.ref, gitMemoryTaskStatePath(task.taskId)) ?? "{}"))
       .toMatchObject({
         status: "in_progress",
-        next: "Continue upload validation.",
+        progress: {
+          next: "Continue upload validation.",
+        },
       });
   });
 

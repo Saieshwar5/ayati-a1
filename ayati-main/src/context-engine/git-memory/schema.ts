@@ -19,6 +19,8 @@ export type GitMemoryConversationKind = "message" | "feedback_question";
 export type GitMemoryTaskStatus = "open" | "in_progress" | "needs_user_input" | "blocked" | "done" | "abandoned";
 export type GitMemoryRunStatus = "completed" | "failed" | "blocked" | "needs_user_input";
 export type GitMemoryActionStatus = "completed" | "failed" | "skipped";
+export type GitMemoryTaskFactConfidence = "verified" | "observed" | "assumed";
+export type GitMemoryTaskFileRole = "created" | "modified" | "touched" | "reference" | "generated";
 export type GitMemoryCommitEventType =
   | "session_initialized"
   | "session_checkpointed"
@@ -97,15 +99,79 @@ export interface GitMemoryConversationSeqRange {
   toSeq: number;
 }
 
+export interface GitMemoryTaskStateFact {
+  text: string;
+  sourceRunId?: GitMemoryRunId;
+  sourceStep?: number;
+  confidence: GitMemoryTaskFactConfidence;
+}
+
+export interface GitMemoryTaskStateDecision {
+  text: string;
+  sourceRunId?: GitMemoryRunId;
+}
+
+export interface GitMemoryTaskStateEvidence {
+  summary: string;
+  sourceRunId?: GitMemoryRunId;
+  sourceStep?: number;
+  artifacts: string[];
+  facts: string[];
+}
+
+export interface GitMemoryTaskStateFileRecord {
+  path: string;
+  role: GitMemoryTaskFileRole;
+  reason?: string;
+  sourceRunId?: GitMemoryRunId;
+}
+
+export interface GitMemoryTaskStateRunSummary {
+  runId: GitMemoryRunId;
+  status: GitMemoryRunStatus;
+  summary: string;
+  outcome?: string;
+  completedAt?: string;
+  changedFiles: string[];
+  next?: string;
+}
+
 export interface GitMemoryTaskStateFile {
-  schemaVersion: 1;
+  schemaVersion: 2;
+  task: {
+    taskId: GitMemoryTaskId;
+    title: string;
+    objective: string;
+    branch: string;
+    createdAt: string;
+    updatedAt: string;
+  };
   status: GitMemoryTaskStatus;
   summary: string;
-  completed: string[];
-  open: string[];
-  blockers: string[];
-  facts: string[];
-  next: string;
+  progress: {
+    completed: string[];
+    open: string[];
+    blockers: string[];
+    next: string;
+  };
+  memory: {
+    facts: GitMemoryTaskStateFact[];
+    decisions: GitMemoryTaskStateDecision[];
+    evidence: GitMemoryTaskStateEvidence[];
+    files: GitMemoryTaskStateFileRecord[];
+    assets: TaskAssetRecord[];
+  };
+  runs: {
+    latestRunId?: GitMemoryRunId;
+    runIds: GitMemoryRunId[];
+    recent: GitMemoryTaskStateRunSummary[];
+  };
+  context: {
+    workingSummary: string;
+    importantFiles: string[];
+    searchTerms: string[];
+    warnings: string[];
+  };
   updatedAt: string;
 }
 
@@ -237,10 +303,6 @@ export type ValidationResult<T> =
 
 export function gitMemoryTaskDir(taskId: GitMemoryTaskId): string {
   return `tasks/${taskId}`;
-}
-
-export function gitMemoryTaskMarkdownPath(taskId: GitMemoryTaskId): string {
-  return `${gitMemoryTaskDir(taskId)}/task.md`;
 }
 
 export function gitMemoryTaskStatePath(taskId: GitMemoryTaskId): string {
@@ -449,15 +511,46 @@ export function validateGitMemoryTaskStateFile(value: unknown): ValidationResult
   const errors: string[] = [];
   const record = requireRecord(value, "task state", errors);
   if (record) {
-    requireSchemaVersion(record, errors);
+    requireExactSchemaVersion(record, 2, errors);
+    const task = requireRecord(record["task"], "task", errors);
+    if (task) {
+      requireTaskId(task, "taskId", errors);
+      requireNonEmptyString(task, "title", errors);
+      requireNonEmptyString(task, "objective", errors);
+      requireNonEmptyString(task, "branch", errors);
+      requireNonEmptyString(task, "createdAt", errors);
+      requireNonEmptyString(task, "updatedAt", errors);
+    }
     requireTaskStatus(record, errors);
     requireNonEmptyString(record, "summary", errors);
-    requireOptionalNonEmptyString(record, "sessionStoreCommit", errors);
-    requireStringArray(record, "completed", errors);
-    requireStringArray(record, "open", errors);
-    requireStringArray(record, "blockers", errors);
-    requireStringArray(record, "facts", errors);
-    requireNonEmptyString(record, "next", errors);
+    const progress = requireRecord(record["progress"], "progress", errors);
+    if (progress) {
+      requireStringArray(progress, "completed", errors);
+      requireStringArray(progress, "open", errors);
+      requireStringArray(progress, "blockers", errors);
+      requireNonEmptyString(progress, "next", errors);
+    }
+    const memory = requireRecord(record["memory"], "memory", errors);
+    if (memory) {
+      validateTaskStateFacts(memory["facts"], errors);
+      validateTaskStateDecisions(memory["decisions"], errors);
+      validateTaskStateEvidence(memory["evidence"], errors);
+      validateTaskStateFiles(memory["files"], errors);
+      requireArray(memory, "assets", errors);
+    }
+    const runs = requireRecord(record["runs"], "runs", errors);
+    if (runs) {
+      requireOptionalRunId(runs, "latestRunId", errors);
+      validateRunIdArray(runs["runIds"], "runIds", errors);
+      validateTaskStateRunSummaries(runs["recent"], errors);
+    }
+    const context = requireRecord(record["context"], "context", errors);
+    if (context) {
+      requireNonEmptyString(context, "workingSummary", errors);
+      requireStringArray(context, "importantFiles", errors);
+      requireStringArray(context, "searchTerms", errors);
+      requireStringArray(context, "warnings", errors);
+    }
     requireNonEmptyString(record, "updatedAt", errors);
   }
   return validationResult(value, errors);
@@ -557,6 +650,12 @@ function requireRecord(value: unknown, label: string, errors: string[]): Record<
 function requireSchemaVersion(record: Record<string, unknown>, errors: string[]): void {
   if (record["schemaVersion"] !== GIT_MEMORY_SCHEMA_VERSION) {
     errors.push("schemaVersion must be 1.");
+  }
+}
+
+function requireExactSchemaVersion(record: Record<string, unknown>, version: number, errors: string[]): void {
+  if (record["schemaVersion"] !== version) {
+    errors.push(`schemaVersion must be ${version}.`);
   }
 }
 
@@ -717,6 +816,95 @@ function requireOptionalStringArray(record: Record<string, unknown>, field: stri
     return;
   }
   requireStringArray(record, field, errors);
+}
+
+function validateRunIdArray(value: unknown, field: string, errors: string[]): void {
+  if (!Array.isArray(value)) {
+    errors.push(`${field} must be an array.`);
+    return;
+  }
+  value.forEach((item, index) => {
+    if (!isGitMemoryRunId(item)) {
+      errors.push(`${field}[${index}] must be a valid git-memory run id.`);
+    }
+  });
+}
+
+function validateTaskStateFacts(value: unknown, errors: string[]): void {
+  if (!Array.isArray(value)) {
+    errors.push("facts must be an array.");
+    return;
+  }
+  value.forEach((item, index) => {
+    const fact = requireRecord(item, `facts[${index}]`, errors);
+    if (!fact) return;
+    requireNonEmptyString(fact, "text", errors);
+    requireOptionalRunId(fact, "sourceRunId", errors);
+    requireOptionalPositiveInteger(fact, "sourceStep", errors);
+    requireOneOf(fact, "confidence", ["verified", "observed", "assumed"], errors);
+  });
+}
+
+function validateTaskStateDecisions(value: unknown, errors: string[]): void {
+  if (!Array.isArray(value)) {
+    errors.push("decisions must be an array.");
+    return;
+  }
+  value.forEach((item, index) => {
+    const decision = requireRecord(item, `decisions[${index}]`, errors);
+    if (!decision) return;
+    requireNonEmptyString(decision, "text", errors);
+    requireOptionalRunId(decision, "sourceRunId", errors);
+  });
+}
+
+function validateTaskStateEvidence(value: unknown, errors: string[]): void {
+  if (!Array.isArray(value)) {
+    errors.push("evidence must be an array.");
+    return;
+  }
+  value.forEach((item, index) => {
+    const evidence = requireRecord(item, `evidence[${index}]`, errors);
+    if (!evidence) return;
+    requireNonEmptyString(evidence, "summary", errors);
+    requireOptionalRunId(evidence, "sourceRunId", errors);
+    requireOptionalPositiveInteger(evidence, "sourceStep", errors);
+    requireStringArray(evidence, "artifacts", errors);
+    requireStringArray(evidence, "facts", errors);
+  });
+}
+
+function validateTaskStateFiles(value: unknown, errors: string[]): void {
+  if (!Array.isArray(value)) {
+    errors.push("files must be an array.");
+    return;
+  }
+  value.forEach((item, index) => {
+    const file = requireRecord(item, `files[${index}]`, errors);
+    if (!file) return;
+    requireNonEmptyString(file, "path", errors);
+    requireOneOf(file, "role", ["created", "modified", "touched", "reference", "generated"], errors);
+    requireOptionalNonEmptyString(file, "reason", errors);
+    requireOptionalRunId(file, "sourceRunId", errors);
+  });
+}
+
+function validateTaskStateRunSummaries(value: unknown, errors: string[]): void {
+  if (!Array.isArray(value)) {
+    errors.push("recent must be an array.");
+    return;
+  }
+  value.forEach((item, index) => {
+    const run = requireRecord(item, `recent[${index}]`, errors);
+    if (!run) return;
+    requireRunId(run, "runId", errors);
+    requireOneOf(run, "status", ["completed", "failed", "blocked", "needs_user_input"], errors);
+    requireNonEmptyString(run, "summary", errors);
+    requireOptionalNonEmptyString(run, "outcome", errors);
+    requireOptionalNonEmptyString(run, "completedAt", errors);
+    requireStringArray(run, "changedFiles", errors);
+    requireOptionalNonEmptyString(run, "next", errors);
+  });
 }
 
 function requireDate(record: Record<string, unknown>, field: string, errors: string[]): void {

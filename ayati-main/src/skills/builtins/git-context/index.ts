@@ -340,7 +340,6 @@ function createReadTaskTool(store: GitMemoryDailySessionStore): ToolDefinition {
           commitLogLimit: { type: "number" },
           evidenceLimit: { type: "number" },
           conversationMarkdownCharLimit: { type: "number" },
-          taskMarkdownCharLimit: { type: "number" },
           runMarkdownCharLimit: { type: "number" },
         },
       },
@@ -1125,7 +1124,7 @@ function parseTaskDetailLimits(input: Partial<GitMemoryTaskDetailLimits> | undef
     return invalidInput("limits must be an object when provided.");
   }
   const output: Partial<GitMemoryTaskDetailLimits> = {};
-  for (const key of ["runLimit", "actionRunLimit", "actionLimit", "commitLogLimit", "evidenceLimit", "conversationMarkdownCharLimit", "taskMarkdownCharLimit", "runMarkdownCharLimit"] as const) {
+  for (const key of ["runLimit", "actionRunLimit", "actionLimit", "commitLogLimit", "evidenceLimit", "conversationMarkdownCharLimit", "runMarkdownCharLimit"] as const) {
     const value = input[key];
     if (value === undefined) {
       continue;

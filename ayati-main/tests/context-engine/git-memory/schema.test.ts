@@ -10,14 +10,11 @@ import {
   gitMemoryTaskAssetsPath,
   gitMemoryTaskConversationDir,
   gitMemoryTaskConversationMessagePath,
-  gitMemoryTaskMarkdownPath,
   gitMemoryTaskNotesPath,
   gitMemoryTaskRunMarkdownPath,
   gitMemoryTaskRunPath,
   gitMemoryTaskStepsPath,
   gitMemoryTaskStatePath,
-  parseGitMemoryTaskMarkdown,
-  renderGitMemoryTaskMarkdown,
   validateGitMemoryActionRecord,
   validateGitMemoryConversationRecord,
   validateGitMemoryEvidenceManifestRecord,
@@ -39,7 +36,6 @@ describe("git memory schema", () => {
     expect(gitMemorySessionStoreMessagePath("S-20260628-local", 1, "user"))
       .toBe("sessions/S-20260628-local/messages/000001-user.md");
 
-    expect(gitMemoryTaskMarkdownPath("W-20260628-0001")).toBe("tasks/W-20260628-0001/task.md");
     expect(gitMemoryTaskStatePath("W-20260628-0001")).toBe("tasks/W-20260628-0001/state.json");
     expect(gitMemoryTaskRunPath("W-20260628-0001", "R-20260628-0001"))
       .toBe("tasks/W-20260628-0001/runs/R-20260628-0001.json");
@@ -132,14 +128,51 @@ describe("git memory schema", () => {
 
   it("validates task branch state, run files, and action records", () => {
     expect(validateGitMemoryTaskStateFile({
-      schemaVersion: 1,
+      schemaVersion: 2,
+      task: {
+        taskId: "W-20260628-0001",
+        title: "Fix upload handling",
+        objective: "Find and fix the upload handling issue.",
+        branch: "task/W-20260628-0001-fix-upload-handling",
+        createdAt: "2026-06-28T09:01:00+05:30",
+        updatedAt: "2026-06-28T09:10:00+05:30",
+      },
       status: "in_progress",
       summary: "Upload handling fails during document registration.",
-      completed: ["Inspected UploadServer wiring"],
-      open: ["Patch validation handling"],
-      blockers: [],
-      facts: ["Uploads are handled by UploadServer."],
-      next: "Patch validation handling.",
+      progress: {
+        completed: ["Inspected UploadServer wiring"],
+        open: ["Patch validation handling"],
+        blockers: [],
+        next: "Patch validation handling.",
+      },
+      memory: {
+        facts: [{
+          text: "Uploads are handled by UploadServer.",
+          sourceRunId: "R-20260628-0001",
+          confidence: "verified",
+        }],
+        decisions: [],
+        evidence: [],
+        files: [],
+        assets: [],
+      },
+      runs: {
+        latestRunId: "R-20260628-0001",
+        runIds: ["R-20260628-0001"],
+        recent: [{
+          runId: "R-20260628-0001",
+          status: "completed",
+          summary: "Inspected upload handling.",
+          completedAt: "2026-06-28T09:10:00+05:30",
+          changedFiles: [],
+        }],
+      },
+      context: {
+        workingSummary: "Upload handling fails during document registration.",
+        importantFiles: [],
+        searchTerms: ["upload", "handling"],
+        warnings: [],
+      },
       updatedAt: "2026-06-28T09:10:00+05:30",
     }).ok).toBe(true);
 
@@ -191,26 +224,4 @@ describe("git memory schema", () => {
     }).ok).toBe(true);
   });
 
-  it("renders and parses canonical task markdown identity", () => {
-    const markdown = renderGitMemoryTaskMarkdown({
-      taskId: "W-20260628-0001",
-      title: "Fix upload handling",
-      objective: "Find and fix the upload handling issue.",
-      status: "open",
-      createdAt: "2026-06-28T09:01:00+05:30",
-      updatedAt: "2026-06-28T09:01:00+05:30",
-    });
-
-    expect(markdown).toContain("# Fix upload handling");
-    expect(markdown).toContain("Task: W-20260628-0001");
-    expect(markdown).toContain("## Objective");
-    expect(parseGitMemoryTaskMarkdown(markdown)).toEqual({
-      taskId: "W-20260628-0001",
-      title: "Fix upload handling",
-      objective: "Find and fix the upload handling issue.",
-      status: "open",
-      createdAt: "2026-06-28T09:01:00+05:30",
-      updatedAt: "2026-06-28T09:01:00+05:30",
-    });
-  });
 });

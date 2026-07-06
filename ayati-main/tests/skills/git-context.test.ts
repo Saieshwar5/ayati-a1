@@ -726,7 +726,6 @@ describe("git-context skill", () => {
         commitLogLimit: 2,
         evidenceLimit: 1,
         conversationMarkdownCharLimit: 200,
-        taskMarkdownCharLimit: 2_000,
         runMarkdownCharLimit: 2_000,
       },
     });
@@ -742,7 +741,9 @@ describe("git-context skill", () => {
       },
       state: {
         status: "in_progress",
-        next: "Verify upload validation patch.",
+        progress: {
+          next: "Verify upload validation patch.",
+        },
       },
       assets: [{
         assetId: "asset-upload-log",
@@ -754,23 +755,15 @@ describe("git-context skill", () => {
         runId: "R-20260628-0002",
         summary: "Patched upload validation handling.",
       }],
-      taskMarkdown: expect.stringContaining("# Fix upload handling"),
       recentRunMarkdown: [{
         runId: "R-20260628-0002",
         path: "tasks/W-20260628-0001/runs/R-20260628-0002.md",
         markdown: expect.stringContaining("Patched upload validation handling."),
       }],
-      recentActions: [{
-        runId: "R-20260628-0002",
-        actions: [{
-          tool: "edit_file",
-          summary: "Patched upload validation branch.",
-        }],
-      }],
+      recentActions: [],
       recentEvidence: [{
         runId: "R-20260628-0002",
         taskId: "W-20260628-0001",
-        actionId: "ACT-20260628-000101",
         tool: "edit_file",
         summary: "Patched upload validation branch.",
         evidenceRef: "evidence/ACT-20260628-000101.txt",
@@ -778,7 +771,7 @@ describe("git-context skill", () => {
       conversationMarkdownTail: expect.stringContaining("Fix upload handling"),
     });
     expect((result.v2?.structuredContent as { recentRuns?: unknown[] }).recentRuns).toHaveLength(1);
-    expect((result.v2?.structuredContent as { recentActions?: unknown[] }).recentActions).toHaveLength(1);
+    expect((result.v2?.structuredContent as { recentActions?: unknown[] }).recentActions).toHaveLength(0);
     expect((result.v2?.structuredContent as { recentEvidence?: unknown[] }).recentEvidence).toHaveLength(1);
     const commits = (result.v2?.structuredContent as { recentCommits?: Array<{ subject?: string }> }).recentCommits ?? [];
     expect(commits).toHaveLength(2);
@@ -850,7 +843,6 @@ describe("git-context skill", () => {
       evidence: [{
         runId: "R-20260628-0002",
         taskId: "W-20260628-0001",
-        actionId: "ACT-20260628-000101",
         tool: "edit_file",
         summary: "Patched upload validation branch.",
         artifacts: ["ayati-main/src/server/upload-server.ts"],

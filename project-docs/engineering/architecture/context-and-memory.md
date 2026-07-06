@@ -260,8 +260,10 @@ tasks/<taskId>/
 
 Core files:
 
-- `task.md`: human/model-readable task identity and objective.
-- `state.json`: current machine-readable task state.
+- `state.json`: canonical machine-readable task context. It stores task
+  identity, objective, status, progress, durable facts, decisions, evidence
+  summaries, important files, assets, run ids, recent run summaries, and
+  derived search/context hints.
 - `runs/<runId>.md`: human/model-readable run summary.
 - `runs/<runId>.json`: machine-readable run summary.
 - `steps/<runId>.jsonl`: full durable step records for a run, including
@@ -272,10 +274,10 @@ Core files:
 - `notes.md`: compact task note/index generated from current task state,
   latest run, recent work, files, facts, and search terms.
 
-Agent task context is built from `task.md`, `state.json`, `assets.json`,
-recent `runs/*.json`, compact evidence summaries derived from `steps/*.jsonl`,
-commit metadata, and conversation reconstructed from `sessionStoreCommit` plus
-`conversationRefs`.
+Agent task context is built primarily from `state.json`, with recent
+`runs/*.json`, compact evidence summaries derived from `steps/*.jsonl`, commit
+metadata, and conversation reconstructed from `sessionStoreCommit` plus
+`conversationRefs` used as bounded supporting context.
 Do not add separate task identity or task-context placeholder files unless a
 new reader and persistence contract actually uses them.
 

@@ -14,7 +14,6 @@ import {
   type GitMemoryDerivedTaskEntry,
   readGitMemoryTaskEntries,
 } from "./task-refs.js";
-import { parseGitMemoryTaskMarkdown } from "./task-markdown.js";
 import { parseGitMemorySessionSummary } from "./session-summary.js";
 import type { ContextSessionAttachments, ContextSessionMeta, ContextSessionSummary, TaskAssetRecord } from "../contracts.js";
 import { GitMemoryWorktreeGitDriver, type GitMemoryLogEntry } from "./git-driver.js";
@@ -38,7 +37,6 @@ import {
   gitMemoryTaskDir,
   gitMemoryTaskAssetsPath,
   gitMemoryTaskConversationDir,
-  gitMemoryTaskMarkdownPath,
   gitMemoryTaskStatePath,
   gitMemorySessionStoreMessagesDir,
   gitMemorySessionStoreSummaryMarkdownPath,
@@ -268,8 +266,7 @@ export class GitMemoryContextReader {
       };
     }
 
-    const [taskMarkdown, state, assets, conversationMarkdownTail, recentRuns, recentEvidence, recentCommits] = await Promise.all([
-      driver.readFile(ref, gitMemoryTaskMarkdownPath(taskEntry.taskId)),
+    const [state, assets, conversationMarkdownTail, recentRuns, recentEvidence, recentCommits] = await Promise.all([
       readRefJson<GitMemoryTaskStateFile>(driver, ref, gitMemoryTaskStatePath(taskEntry.taskId)),
       readTaskAssets(driver, ref, taskEntry.taskId),
       readTaskConversationMarkdownTail(driver, ref, input.sessionId, taskEntry.taskId, limits.conversationMarkdownCharLimit),
@@ -277,8 +274,7 @@ export class GitMemoryContextReader {
       readRecentEvidence(driver, ref, taskEntry.taskId, limits.evidenceLimit),
       readRecentCommits(driver, ref, limits.commitLogLimit),
     ]);
-    const task = parseGitMemoryTaskMarkdown(taskMarkdown);
-    if (!task || !state) {
+    if (!state) {
       return {
         session,
         focus: {
@@ -286,7 +282,7 @@ export class GitMemoryContextReader {
           taskId: taskEntry.taskId,
           branch: taskEntry.branch,
           ref,
-          reason: "focused task branch is missing task.md or state.json",
+          reason: "focused task branch is missing state.json",
         },
       };
     }
@@ -309,19 +305,48 @@ export class GitMemoryContextReader {
         ref,
         taskId: taskEntry.taskId,
         branch: taskEntry.branch,
-        title: task.title,
-        objective: task.objective,
+        title: state.task.title,
+        objective: state.task.objective,
         status: state.status,
         summary: state.summary,
-        completed: state.completed,
-        open: state.open,
-        blockers: state.blockers,
-        facts: state.facts,
-        next: state.next,
-        assets,
+        completed: state.progress.completed,
+        open: state.progress.open,
+        blockers: state.progress.blockers,
+        facts: state.memory.facts.map((fact) => fact.text),
+        next: state.progress.next,
+        assets: state.memory.assets.length > 0 ? state.memory.assets : assets,
         conversationMarkdownTail,
-        recentRuns,
-        recentEvidence,
+        recentRuns: recentRuns.length > 0 ? recentRuns : state.runs.recent.map((run) => ({
+          schemaVersion: 1,
+          runId: run.runId,
+          taskId: taskEntry.taskId,
+          status: run.status,
+          startedAt: run.completedAt ?? state.updatedAt,
+          ...(run.completedAt ? { completedAt: run.completedAt } : {}),
+          conversationRefs: [],
+          summary: run.summary,
+          ...(run.outcome ? { outcome: run.outcome } : {}),
+          toolCallCount: 0,
+          changedFiles: run.changedFiles,
+          newFacts: [],
+          ...(run.next ? { next: run.next } : {}),
+        })),
+        recentEvidence: recentEvidence.length > 0 ? recentEvidence : state.memory.evidence.flatMap((record) => {
+          const sourceRunId = record.sourceRunId ?? state.runs.latestRunId;
+          if (!sourceRunId) return [];
+          return [{
+            v: 1,
+            runId: sourceRunId,
+            taskId: taskEntry.taskId,
+            ...(record.sourceStep ? { step: record.sourceStep } : {}),
+            tool: "state",
+            status: "completed",
+            summary: record.summary,
+            artifacts: record.artifacts,
+            facts: record.facts,
+            accessModes: ["state"],
+          } satisfies GitMemoryEvidenceManifestRecord];
+        }),
         recentCommits: recentCommits.map(toModelCommitSummary),
       },
     };
