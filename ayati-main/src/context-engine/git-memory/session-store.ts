@@ -1496,6 +1496,7 @@ export class GitMemoryDailySessionStore {
     await writeGitMemoryCustomRef(driver, gitMemorySessionLatestRunRef(input.sessionId), taskCommit);
     await writeGitMemoryCustomRef(driver, gitMemorySessionTaskRef(input.sessionId, input.taskId), taskCommit);
     await writeGitMemoryCustomRef(driver, gitMemoryTaskLatestRunRef(input.taskId), taskCommit);
+    await driver.removeWorkingFile(gitMemoryTaskStepsStagingPath(input.taskId, runId));
 
     return {
       taskId: input.taskId,

@@ -25,6 +25,7 @@ import {
   gitMemoryTaskRunMarkdownPath,
   gitMemoryTaskRunPath,
   gitMemoryTaskStepsPath,
+  gitMemoryTaskStepsStagingPath,
   gitMemoryTaskStatePath,
   parseGitMemoryCommitTrailers,
 } from "../../../src/context-engine/git-memory/index.js";
@@ -1123,6 +1124,9 @@ describe("GitMemoryDailySessionStore", () => {
         truncated: false,
       },
     });
+    const driver = new GitMemoryWorktreeGitDriver(session.repoPath);
+    expect(await driver.readWorkingFile(gitMemoryTaskStepsStagingPath(task.taskId, "R-20260628-0001")))
+      .toContain("Read upload server implementation.");
 
     const run = await store.commitTaskRun({
       sessionId: session.sessionId,
@@ -1199,7 +1203,7 @@ describe("GitMemoryDailySessionStore", () => {
       runId: "R-20260628-0001",
     });
 
-    const driver = new GitMemoryWorktreeGitDriver(session.repoPath);
+    expect(await driver.readWorkingFile(gitMemoryTaskStepsStagingPath(task.taskId, run.runId))).toBeNull();
     const taskState = JSON.parse(await driver.readFile(task.ref, gitMemoryTaskStatePath(task.taskId)) ?? "{}");
     expect(taskState)
       .toMatchObject({
