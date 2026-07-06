@@ -55,6 +55,7 @@ import type {
   GitMemoryTaskStateFileRecord,
   GitMemoryTaskStatus,
   GitMemoryStepRecord,
+  GitMemoryStepToolCallRecord,
 } from "./schema.js";
 import {
   GIT_MEMORY_SESSION_CONVERSATION_MARKDOWN_PATH,
@@ -237,6 +238,27 @@ export interface GitMemoryTaskEvidenceResult {
   ref: string;
   runId?: GitMemoryRunId;
   evidence: GitMemoryEvidenceManifestRecord[];
+}
+
+export interface ReadGitMemoryRunStepInput {
+  sessionId: GitMemorySessionId;
+  runId: GitMemoryRunId;
+  step: number;
+  callId?: string;
+  taskId?: GitMemoryTaskId;
+  branch?: string;
+}
+
+export interface GitMemoryRunStepReadResult {
+  sessionId: GitMemorySessionId;
+  taskId: GitMemoryTaskId;
+  branch: string;
+  ref: string;
+  runId: GitMemoryRunId;
+  step: number;
+  source: "staged" | "committed";
+  record: GitMemoryStepRecord;
+  toolCall?: GitMemoryStepToolCallRecord;
 }
 
 export interface SearchGitMemoryEvidenceInput {
@@ -923,6 +945,55 @@ export class GitMemoryDailySessionStore {
       ...(input.runId ? { runId: input.runId } : {}),
       evidence,
     };
+  }
+
+  async readRunStep(input: ReadGitMemoryRunStepInput): Promise<GitMemoryRunStepReadResult> {
+    const driver = await this.openExistingDriver(input.sessionId);
+    const hasTaskSelector = Boolean(input.taskId?.trim() || input.branch?.trim());
+    const taskEntries = hasTaskSelector
+      ? [await resolveGitMemoryTaskEntry(driver, input)]
+      : await readGitMemoryTaskEntries(driver);
+
+    for (const taskEntry of taskEntries) {
+      const ref = `refs/heads/${taskEntry.branch}`;
+      if (!(await driver.hasRef(ref))) {
+        if (hasTaskSelector) {
+          throw new Error(`Git memory task branch missing: ${ref}`);
+        }
+        continue;
+      }
+
+      const staged = await readTaskRunStagedSteps(driver, taskEntry.taskId, input.runId);
+      const stagedMatch = findRunStepRecord(staged, input);
+      if (stagedMatch) {
+        return buildRunStepReadResult({
+          sessionId: input.sessionId,
+          taskId: taskEntry.taskId,
+          branch: taskEntry.branch,
+          ref,
+          source: "staged",
+          record: stagedMatch.record,
+          toolCall: stagedMatch.toolCall,
+        });
+      }
+
+      const committed = await readRefJsonl<GitMemoryStepRecord>(driver, ref, gitMemoryTaskStepsPath(taskEntry.taskId, input.runId));
+      const committedMatch = findRunStepRecord(committed, input);
+      if (committedMatch) {
+        return buildRunStepReadResult({
+          sessionId: input.sessionId,
+          taskId: taskEntry.taskId,
+          branch: taskEntry.branch,
+          ref,
+          source: "committed",
+          record: committedMatch.record,
+          toolCall: committedMatch.toolCall,
+        });
+      }
+    }
+
+    const callSuffix = input.callId ? ` call ${input.callId}` : "";
+    throw new Error(`Git memory run step not found: ${input.runId} step ${input.step}${callSuffix}`);
   }
 
   async searchEvidence(input: SearchGitMemoryEvidenceInput): Promise<GitMemoryEvidenceSearchResult> {
@@ -2511,6 +2582,43 @@ async function readTaskEvidenceForRun(
 
 function legacyGitMemoryTaskEvidenceManifestPath(taskId: GitMemoryTaskId, runId: GitMemoryRunId): string {
   return `${gitMemoryTaskDir(taskId)}/evidence/${runId}/manifest.jsonl`;
+}
+
+function findRunStepRecord(
+  records: GitMemoryStepRecord[],
+  input: Pick<ReadGitMemoryRunStepInput, "runId" | "step" | "callId">,
+): { record: GitMemoryStepRecord; toolCall?: GitMemoryStepToolCallRecord } | undefined {
+  const record = records.find((candidate) => candidate.runId === input.runId && candidate.step === input.step);
+  if (!record) {
+    return undefined;
+  }
+  if (!input.callId) {
+    return { record };
+  }
+  const toolCall = record.toolCalls.find((call) => call.callId === input.callId);
+  return toolCall ? { record, toolCall } : undefined;
+}
+
+function buildRunStepReadResult(input: {
+  sessionId: GitMemorySessionId;
+  taskId: GitMemoryTaskId;
+  branch: string;
+  ref: string;
+  source: GitMemoryRunStepReadResult["source"];
+  record: GitMemoryStepRecord;
+  toolCall?: GitMemoryStepToolCallRecord;
+}): GitMemoryRunStepReadResult {
+  return {
+    sessionId: input.sessionId,
+    taskId: input.taskId,
+    branch: input.branch,
+    ref: input.ref,
+    runId: input.record.runId,
+    step: input.record.step,
+    source: input.source,
+    record: input.record,
+    ...(input.toolCall ? { toolCall: input.toolCall } : {}),
+  };
 }
 
 function stepToEvidenceRecord(step: GitMemoryStepRecord): GitMemoryEvidenceManifestRecord {

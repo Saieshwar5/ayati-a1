@@ -148,6 +148,11 @@ describe("parseAgentDecision", () => {
     expect(systemPrompt).toContain("context.run.status");
     expect(systemPrompt).toContain("context.run.workState");
     expect(systemPrompt).toContain("context.run.toolCalls");
+    expect(systemPrompt).toContain("mode=\"summary\"");
+    expect(systemPrompt).toContain("outputPreview");
+    expect(systemPrompt).toContain("stepRef");
+    expect(systemPrompt).toContain("evidenceRef");
+    expect(systemPrompt).toContain("git_context_read_run_step");
     expect(systemPrompt).not.toContain("context.scratch");
     expect(systemPrompt).not.toContain("context.run.progress");
     expect(systemPrompt).not.toContain("context.run.feedback");

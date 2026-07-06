@@ -17,6 +17,10 @@ import {
   requiredRoutingMutationToolsForRuntimeMode,
   TASK_ROUTING_WINDOW_STEPS,
 } from "./runtime-capability-mode.js";
+import {
+  hasRecoverableCompactedRunToolCall,
+  RUN_STEP_RECOVERY_TOOL_NAME,
+} from "./run-tool-call-context.js";
 
 export interface ToolLoadRequest {
   query?: string;
@@ -558,6 +562,10 @@ function buildDeterministicLoadRequest(state: LoopState): ToolLoadRequest {
 
   const toolNames = new Set<string>();
   const groups = new Set<string>();
+
+  if (hasRecoverableCompactedRunToolCall(state.toolContext?.toolCalls)) {
+    toolNames.add(RUN_STEP_RECOVERY_TOOL_NAME);
+  }
 
   if (/\b(find|search|where|locate)\b/.test(text)) {
     toolNames.add("inspect_paths");

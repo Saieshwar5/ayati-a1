@@ -207,6 +207,33 @@ describe("ToolWorkingSetManager", () => {
     ]));
   });
 
+  it("preloads run-step recovery when compacted stepRef tool-call context exists", () => {
+    const catalog = new ToolCatalog([
+      skill("git-context", [
+        tool("git_context_read_run_step", "Recover full persisted step or tool-call data"),
+      ]),
+      skill("filesystem", [
+        tool("read_file", "Read file"),
+        tool("write_files", "Write files"),
+      ]),
+    ]);
+    const executor = createToolExecutor([]);
+    const manager = new ToolWorkingSetManager({ catalog, toolExecutor: executor, maxVisibleTools: 3 });
+    const context = { clientId: "c1", runId: "r1", sessionId: "s1", stepNumber: 6 };
+    const runState = state("continue implementation");
+    runState.runId = "r1";
+    runState.runClass = "task";
+    runState.toolContext = {
+      recent: [],
+      toolCalls: recoverableToolCalls(),
+    };
+
+    manager.prepareForDecision(runState, context);
+
+    expect(manager.listActive(context)).toContain("git_context_read_run_step");
+    expect(executor.list(context)).toContain("git_context_read_run_step");
+  });
+
   it("exposes git task-routing tools for the first two decision stages and then expires them", () => {
     const catalog = new ToolCatalog([
       skill("git-context", [
@@ -539,4 +566,54 @@ function contextEngineWithFocus(focus: ContextEngineMachineContext["focus"]): Co
     },
     focus,
   };
+}
+
+function recoverableToolCalls(): NonNullable<LoopState["toolContext"]>["toolCalls"] {
+  return [
+    {
+      step: 1,
+      callId: "call-old",
+      tool: "read_file",
+      input: { path: "src/old.ts" },
+      status: "success",
+      output: "old output",
+      stepRef: { runId: "r1", step: 1, callId: "call-old" },
+    },
+    {
+      step: 2,
+      callId: "call-2",
+      tool: "read_file",
+      input: { path: "src/2.ts" },
+      status: "success",
+      output: "output 2",
+      stepRef: { runId: "r1", step: 2, callId: "call-2" },
+    },
+    {
+      step: 3,
+      callId: "call-3",
+      tool: "read_file",
+      input: { path: "src/3.ts" },
+      status: "success",
+      output: "output 3",
+      stepRef: { runId: "r1", step: 3, callId: "call-3" },
+    },
+    {
+      step: 4,
+      callId: "call-4",
+      tool: "read_file",
+      input: { path: "src/4.ts" },
+      status: "success",
+      output: "output 4",
+      stepRef: { runId: "r1", step: 4, callId: "call-4" },
+    },
+    {
+      step: 5,
+      callId: "call-5",
+      tool: "read_file",
+      input: { path: "src/5.ts" },
+      status: "success",
+      output: "output 5",
+      stepRef: { runId: "r1", step: 5, callId: "call-5" },
+    },
+  ];
 }

@@ -7,6 +7,7 @@ import {
   type GitMemoryRuntime,
   type GitMemoryContextLimits,
   type ReadGitMemoryEvidenceInput,
+  type ReadGitMemoryRunStepInput,
   type SearchGitMemoryEvidenceInput,
   type GitMemoryTaskDetailInclude,
   type GitMemoryTaskDetailLimits,
@@ -61,6 +62,15 @@ interface ReadEvidenceInput extends TaskSelectorInput {
   limit?: number;
 }
 
+interface ReadRunStepInput extends SessionScopedInput {
+  sessionId: string;
+  runId: string;
+  step: number;
+  callId?: string;
+  taskId?: string;
+  branch?: string;
+}
+
 interface SearchEvidenceInput extends SessionScopedInput {
   sessionId: string;
   query: string;
@@ -111,6 +121,7 @@ const GIT_CONTEXT_PROMPT_BLOCK = [
   "Use git_context_search_tasks to find likely matching prior tasks by title, summary, facts, open work, blockers, next step, branch, or status.",
   "Use git_context_read_task to inspect one task branch deeply with bounded runs, actions, assets, commits, evidence, and Markdown conversation.",
   "Use git_context_read_evidence to read compact durable evidence records for a task or run.",
+  "Use git_context_read_run_step to recover full persisted step or tool-call data from a compact context.run.toolCalls stepRef.",
   "Use git_context_search_evidence to find compact durable evidence records by summary, tool, fact, artifact, run id, action id, or evidence ref.",
   "Use git_context_log to inspect compact commit history for main or one task branch.",
   "Use git_context_activate_task_for_turn when the current pending user turn belongs to a different existing task.",
@@ -139,6 +150,7 @@ export function createGitContextSkill(deps: GitContextSkillDeps): SkillDefinitio
       createSearchTasksTool(store),
       createReadTaskTool(store),
       createReadEvidenceTool(store),
+      createReadRunStepTool(store),
       createSearchEvidenceTool(store),
       createLogTool(store),
       createActivateTaskForTurnTool(store, runtime),
@@ -413,6 +425,60 @@ function createReadEvidenceTool(store: GitMemoryDailySessionStore): ToolDefiniti
           code: "GIT_CONTEXT_EVIDENCE_READ",
           message: "Git-context evidence read.",
           structuredContent: evidence,
+        });
+      } catch (err) {
+        return gitContextReadFailed(err);
+      }
+    },
+  };
+}
+
+function createReadRunStepTool(store: GitMemoryDailySessionStore): ToolDefinition {
+  return {
+    name: "git_context_read_run_step",
+    description: "Recover full persisted git-context step or tool-call data by run id, step number, and optional call id.",
+    inputSchema: sessionScopedInputSchema({
+      runId: {
+        type: "string",
+        description: "Run id from context.run.toolCalls[*].stepRef.runId.",
+      },
+      step: {
+        type: "number",
+        description: "Step number from context.run.toolCalls[*].stepRef.step.",
+      },
+      callId: {
+        type: "string",
+        description: "Optional tool call id from context.run.toolCalls[*].stepRef.callId. When provided, the matching tool call is returned separately.",
+      },
+      taskId: {
+        type: "string",
+        description: "Optional task id to scope the lookup. Usually not required when using a stepRef.",
+      },
+      branch: {
+        type: "string",
+        description: "Optional task branch to scope the lookup. Provide at most one of taskId or branch.",
+      },
+    }, ["runId", "step"]),
+    outputSchema: genericObjectOutputSchema,
+    annotations: gitContextReadOnlyAnnotations(),
+    resultContract: gitContextSucceededContract("run_step_read"),
+    selectionHints: {
+      tags: ["git-context", "step", "run", "tool-call", "stepRef", "evidence", "read-only"],
+      aliases: ["read run step", "recover compacted tool output", "read step ref", "read tool call ref"],
+      domain: "git_context",
+      priority: 6,
+    },
+    async execute(input, context): Promise<ToolResult> {
+      const parsed = parseReadRunStepInput(input, context);
+      if ("ok" in parsed) {
+        return parsed;
+      }
+      try {
+        const step = await store.readRunStep(parsed);
+        return okJsonResult({
+          code: "GIT_CONTEXT_RUN_STEP_READ",
+          message: "Git-context run step read.",
+          structuredContent: step,
         });
       } catch (err) {
         return gitContextReadFailed(err);
@@ -959,6 +1025,47 @@ function parseReadEvidenceInput(
     ...(scoped.branch ? { branch: scoped.branch } : {}),
     ...(trimOptional(value.runId) ? { runId: trimOptional(value.runId) } : {}),
     ...(typeof value.limit === "number" ? { limit: Math.floor(value.limit) } : {}),
+  };
+}
+
+function parseReadRunStepInput(
+  input: unknown,
+  context?: ToolExecutionContext,
+): ReadGitMemoryRunStepInput | ToolResult {
+  const scoped = parseSessionScopedInput(input, context);
+  if ("ok" in scoped) {
+    return scoped;
+  }
+  const value = input && typeof input === "object" && !Array.isArray(input)
+    ? input as Partial<ReadRunStepInput>
+    : {};
+  if (typeof value.runId !== "string" || value.runId.trim().length === 0) {
+    return invalidInput("runId must be a non-empty string.");
+  }
+  if (typeof value.step !== "number" || !Number.isInteger(value.step) || value.step < 1) {
+    return invalidInput("step must be a positive integer.");
+  }
+  if (value.callId !== undefined && typeof value.callId !== "string") {
+    return invalidInput("callId must be a string.");
+  }
+  if (value.taskId !== undefined && typeof value.taskId !== "string") {
+    return invalidInput("taskId must be a string.");
+  }
+  if (value.branch !== undefined && typeof value.branch !== "string") {
+    return invalidInput("branch must be a string.");
+  }
+  const taskId = trimOptional(value.taskId);
+  const branch = trimOptional(value.branch);
+  if (taskId && branch) {
+    return invalidInput("provide at most one run step scope: taskId or branch.");
+  }
+  return {
+    sessionId: scoped.sessionId,
+    runId: value.runId.trim(),
+    step: value.step,
+    ...(trimOptional(value.callId) ? { callId: trimOptional(value.callId) } : {}),
+    ...(taskId ? { taskId } : {}),
+    ...(branch ? { branch } : {}),
   };
 }
 

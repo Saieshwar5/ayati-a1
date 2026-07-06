@@ -5,6 +5,7 @@ export const GIT_CONTEXT_READ_ONLY_TOOL_NAMES = [
   "git_context_search_tasks",
   "git_context_read_task",
   "git_context_read_evidence",
+  "git_context_read_run_step",
   "git_context_search_evidence",
   "git_context_log",
 ] as const;

@@ -121,6 +121,12 @@ export interface ToolObservation {
   availableActions?: ToolAvailableAction[];
 }
 
+export interface PromptToolCallStepRef {
+  runId: string;
+  step: number;
+  callId?: string;
+}
+
 export interface PromptToolCallContext {
   step: number;
   callId?: string;
@@ -133,6 +139,8 @@ export interface PromptToolCallContext {
   operationStatus?: ToolOperationStatus;
   artifacts?: ArtifactRef[];
   hasMore?: boolean;
+  stepRef?: PromptToolCallStepRef;
+  evidenceRef?: string;
   rawOutputChars?: number;
   outputTruncated?: boolean;
 }

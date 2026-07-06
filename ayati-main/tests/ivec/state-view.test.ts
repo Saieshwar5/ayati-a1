@@ -521,6 +521,7 @@ describe("buildAgentStateView", () => {
     ]);
     expect((stateView.context.run?.toolCalls as Array<{ tool: string; input: unknown; output: string; hasMore?: boolean }> | undefined))
       .toEqual([expect.objectContaining({ tool: "read_file", input: { path: "state-view.ts" }, output: "Read state-view.ts." })]);
+    expect(stateView.context.run?.toolCalls?.[0]).toHaveProperty("mode", "full");
     expect(stateView.context.run?.toolCalls?.[0]).not.toHaveProperty("hasMore");
     expect(stateView.trace?.recentSteps?.map((step) => step.step)).toEqual([1]);
     expect(stateView.context.run).not.toHaveProperty("trace");
@@ -531,6 +532,95 @@ describe("buildAgentStateView", () => {
     expect(stateView.context.run).not.toHaveProperty("feedback");
     expect((stateView.context.harness?.feedback as { latest?: Array<{ source: string }> } | undefined)?.latest?.[0])
       .toMatchObject({ source: "tool_execution" });
+  });
+
+  it("compacts older successful run tool calls while keeping failures and recent calls detailed", () => {
+    const oldReadOutput = `old read output ${"x".repeat(1_200)}`;
+    const failedOutput = "command failed with stack trace";
+    const state = createLoopState({
+      toolContext: {
+        recent: [],
+        toolCalls: [
+          {
+            step: 1,
+            callId: "call-old-read",
+            tool: "read_file",
+            input: { path: "src/old.ts" },
+            status: "success",
+            output: oldReadOutput,
+            stepRef: { runId: "run-current", step: 1, callId: "call-old-read" },
+            evidenceRef: "steps/run-current.jsonl#call-old-read",
+          },
+          {
+            step: 2,
+            callId: "call-old-failed",
+            tool: "exec_command",
+            input: { cmd: "pnpm test" },
+            status: "failed",
+            output: failedOutput,
+            error: "Tests failed.",
+            stepRef: { runId: "run-current", step: 2, callId: "call-old-failed" },
+          },
+          {
+            step: 3,
+            callId: "call-search",
+            tool: "search_in_files",
+            input: { path: "src", query: "context.run" },
+            status: "success",
+            output: "src/ivec/state-view.ts: context.run",
+          },
+          {
+            step: 4,
+            callId: "call-shell",
+            tool: "exec_command",
+            input: { cmd: "pnpm --filter ayati-main build" },
+            status: "success",
+            output: "build passed",
+          },
+          {
+            step: 5,
+            callId: "call-patch",
+            tool: "apply_patch",
+            input: { path: "src/ivec/state-view.ts" },
+            status: "success",
+            output: "patch applied",
+          },
+          {
+            step: 6,
+            callId: "call-recent-read",
+            tool: "read_file",
+            input: { path: "src/recent.ts" },
+            status: "success",
+            output: "recent read output",
+          },
+        ],
+      },
+    });
+
+    const toolCalls = buildAgentStateView(state).context.run?.toolCalls;
+    expect(toolCalls).toHaveLength(6);
+    expect(toolCalls?.[0]).toMatchObject({
+      callId: "call-old-read",
+      mode: "summary",
+      outputCompacted: true,
+      outputPreview: expect.stringContaining("old read output"),
+      summary: expect.stringContaining("read_file read for src/old.ts"),
+      stepRef: { runId: "run-current", step: 1, callId: "call-old-read" },
+      evidenceRef: "steps/run-current.jsonl#call-old-read",
+    });
+    expect(toolCalls?.[0]).not.toHaveProperty("output");
+    expect(toolCalls?.[1]).toMatchObject({
+      callId: "call-old-failed",
+      mode: "full",
+      output: failedOutput,
+      error: "Tests failed.",
+      stepRef: { runId: "run-current", step: 2, callId: "call-old-failed" },
+    });
+    expect(toolCalls?.slice(2).map((call) => call.mode)).toEqual(["full", "full", "full", "full"]);
+    expect(toolCalls?.[5]).toMatchObject({
+      callId: "call-recent-read",
+      output: "recent read output",
+    });
   });
 
   it("groups tool load, attachments, and system events while keeping top-level aliases", () => {

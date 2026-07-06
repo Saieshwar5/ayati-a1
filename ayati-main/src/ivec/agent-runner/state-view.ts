@@ -1,5 +1,7 @@
-import type { LoopState, PromptToolCallContext, TaskNote, ToolContextState, ToolObservation, WorkState } from "../types.js";
+import type { LoopState, TaskNote, ToolContextState, ToolObservation, WorkState } from "../types.js";
 import type { RepairPromptCard } from "./repair-policy.js";
+import { buildPromptToolCallsForRun } from "./run-tool-call-context.js";
+import type { PromptToolCalls } from "./run-tool-call-context.js";
 import {
   buildRuntimeCapabilityPromptContext,
   detectRuntimeCapabilityMode,
@@ -25,9 +27,6 @@ export interface PromptObservations {
 export interface PromptReadContext {
   latest: ToolObservation[];
 }
-
-export type PromptRunToolCallContext = Omit<PromptToolCallContext, "hasMore">;
-export type PromptToolCalls = PromptRunToolCallContext[];
 
 export interface PromptToolLoadState {
   status: ToolLoadResult["status"];
@@ -387,13 +386,7 @@ function buildReadContextView(toolContext: ToolContextState | undefined): Prompt
 }
 
 function buildToolCallsView(toolContext: ToolContextState | undefined): PromptToolCalls | undefined {
-  const toolCalls = (toolContext?.toolCalls ?? []).map(projectPromptToolCall);
-  return toolCalls.length > 0 ? toolCalls : undefined;
-}
-
-function projectPromptToolCall(call: PromptToolCallContext): PromptRunToolCallContext {
-  const { hasMore: _hasMore, ...projected } = call;
-  return projected;
+  return buildPromptToolCallsForRun(toolContext?.toolCalls);
 }
 
 function buildTraceView(state: LoopState): PromptTrace | undefined {

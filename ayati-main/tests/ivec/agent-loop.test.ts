@@ -2275,11 +2275,13 @@ describe("agentLoop", () => {
       expect(stateView.context.run.toolCalls[0].tool).toBe("read_file");
       expect(stateView.context.run.toolCalls[0].input).toEqual({ path: "/proc/meminfo" });
       expect(stateView.context.run.toolCalls[0].output).toContain("3.5Gi used");
+      expect(stateView.context.run.toolCalls[0].stepRef).toEqual({ runId: "r-observation", step: 1, callId: "call_1" });
       expect(stateView.context.run.toolCalls[0]).not.toHaveProperty("evidenceRef");
       expect(stateView.context.run.toolCalls[0]).not.toHaveProperty("hasMore");
       expect(stateView.context.run.toolCalls[1].tool).toBe("search_in_files");
       expect(stateView.context.run.toolCalls[1].input).toEqual({ path: "/proc", query: "memory" });
       expect(stateView.context.run.toolCalls[1].output).toContain("chromium");
+      expect(stateView.context.run.toolCalls[1].stepRef).toEqual({ runId: "r-observation", step: 1, callId: "call_2" });
       expect(stateView.context.run.toolCalls[1]).not.toHaveProperty("evidenceRef");
       expect(stateView.context.run.toolCalls[1]).not.toHaveProperty("hasMore");
       expect(stateView.latestObservation).toBeUndefined();

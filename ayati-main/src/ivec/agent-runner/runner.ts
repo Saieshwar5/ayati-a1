@@ -2541,12 +2541,12 @@ function buildUpdatedToolContext(
     recent: getLatestObservations(execution),
     toolCalls: [
       ...(state.toolContext?.toolCalls ?? []),
-      ...execution.actOutput.toolCalls.map((call) => toPromptToolCallContext(state.iteration, call)),
+      ...execution.actOutput.toolCalls.map((call) => toPromptToolCallContext(state.runId, state.iteration, call)),
     ],
   });
 }
 
-function toPromptToolCallContext(step: number, call: ActToolCallRecord): PromptToolCallContext {
+function toPromptToolCallContext(runId: string, step: number, call: ActToolCallRecord): PromptToolCallContext {
   return {
     step,
     ...(call.callId ? { callId: call.callId } : {}),
@@ -2559,6 +2559,8 @@ function toPromptToolCallContext(step: number, call: ActToolCallRecord): PromptT
     ...(call.operationStatus ? { operationStatus: call.operationStatus } : {}),
     ...(call.artifacts && call.artifacts.length > 0 ? { artifacts: call.artifacts } : {}),
     ...(call.observation?.hasMore !== undefined ? { hasMore: call.observation.hasMore } : {}),
+    ...(runId.trim().length > 0 ? { stepRef: { runId, step, ...(call.callId ? { callId: call.callId } : {}) } } : {}),
+    ...(call.observation?.evidenceRef ? { evidenceRef: call.observation.evidenceRef } : {}),
     ...(call.rawOutputChars !== undefined ? { rawOutputChars: call.rawOutputChars } : {}),
     ...(call.outputTruncated !== undefined ? { outputTruncated: call.outputTruncated } : {}),
   };

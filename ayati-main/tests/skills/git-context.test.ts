@@ -853,6 +853,93 @@ describe("git-context skill", () => {
     expect(await driver.log(prepared.task.ref, 10)).toEqual(taskLogBefore);
   });
 
+  it("reads a full staged run step by stepRef without mutating git-memory refs", async () => {
+    const prepared = await prepareGitContextSession();
+    const runId = "R-20260628-0099";
+    await prepared.store.appendTaskRunStep({
+      sessionId: prepared.session.sessionId,
+      taskId: prepared.task.taskId,
+      runId,
+      record: {
+        v: 1,
+        runId,
+        taskId: prepared.task.taskId,
+        step: 3,
+        status: "completed",
+        completedAt: "2026-06-28T09:30:00+05:30",
+        summary: "Recovered full upload server output.",
+        toolCalls: [{
+          callId: "call-read-upload",
+          tool: "read_file",
+          status: "success",
+          input: {
+            path: "ayati-main/src/server/upload-server.ts",
+            range: [1, 120],
+          },
+          output: "full upload server implementation output\nline 2\nline 3",
+          rawOutputChars: 4_200,
+          outputTruncated: false,
+          observation: {
+            evidenceRef: "steps/R-20260628-0099.jsonl#call-read-upload",
+          },
+        }],
+        verification: {
+          passed: true,
+          method: "execution_gate",
+          executionStatus: "all_succeeded",
+          validationStatus: "passed",
+          summary: "Read succeeded.",
+          evidenceSummary: "steps/R-20260628-0099.jsonl#step-3",
+          evidenceItems: ["Read upload server implementation."],
+          newFacts: ["Upload server output was recovered."],
+          artifacts: ["ayati-main/src/server/upload-server.ts"],
+          usedRawArtifacts: [],
+        },
+        facts: ["Upload server output was recovered."],
+        artifacts: ["ayati-main/src/server/upload-server.ts"],
+        outputSize: 4_200,
+        lineCount: 120,
+        truncated: false,
+      },
+    });
+    const driver = new GitMemoryWorktreeGitDriver(prepared.session.repoPath);
+    const mainLogBefore = await driver.log(GIT_MEMORY_MAIN_REF, 10);
+    const taskLogBefore = await driver.log(prepared.task.ref, 10);
+    const skill = createGitContextSkill({ contextStoreDir: prepared.contextStoreDir });
+    const tool = requiredTool(skill, "git_context_read_run_step");
+
+    const result = await tool.execute({
+      sessionId: prepared.session.sessionId,
+      runId,
+      step: 3,
+      callId: "call-read-upload",
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.v2?.structuredContent).toMatchObject({
+      sessionId: prepared.session.sessionId,
+      taskId: prepared.task.taskId,
+      branch: prepared.task.branch,
+      runId,
+      step: 3,
+      source: "staged",
+      record: {
+        summary: "Recovered full upload server output.",
+        toolCalls: [{
+          callId: "call-read-upload",
+          output: "full upload server implementation output\nline 2\nline 3",
+        }],
+      },
+      toolCall: {
+        callId: "call-read-upload",
+        tool: "read_file",
+        output: "full upload server implementation output\nline 2\nline 3",
+      },
+    });
+    expect(await driver.log(GIT_MEMORY_MAIN_REF, 10)).toEqual(mainLogBefore);
+    expect(await driver.log(prepared.task.ref, 10)).toEqual(taskLogBefore);
+  });
+
   it("searches compact evidence across task branches and respects scoped limits", async () => {
     const prepared = await prepareMultiTaskGitContextSession();
     const driver = new GitMemoryWorktreeGitDriver(prepared.session.repoPath);

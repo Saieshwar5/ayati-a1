@@ -238,6 +238,7 @@ export const TOOL_TAXONOMY: Readonly<Record<string, ToolTaxonomyEntry>> = buildT
   git_context_search_tasks: readOnly(["enquiry_read", "task_routing"], "phase", ["enquiry", "routing", "task_run"], { loadGroups: ["task:read", "task:routing"] }),
   git_context_read_task: readOnly(["enquiry_read", "task_routing"], "phase", ["enquiry", "routing", "task_run"], { loadGroups: ["task:read", "task:routing"] }),
   git_context_read_evidence: readOnly(["enquiry_read", "evidence_access"], "phase", ["enquiry", "task_run"], { loadGroups: ["task:read", "evidence:read"] }),
+  git_context_read_run_step: readOnly(["enquiry_read", "evidence_access"], "phase", ["enquiry", "task_run"], { loadGroups: ["task:read", "evidence:read"] }),
   git_context_search_evidence: readOnly(["enquiry_read", "evidence_access"], "phase", ["enquiry", "task_run"], { loadGroups: ["task:read", "evidence:read"] }),
   git_context_log: readOnly(["enquiry_read"], "phase", ["enquiry", "task_run"], { loadGroups: ["task:read"] }),
   git_context_activate_task_for_turn: contextMutation(["task_routing"], "single_use", ROUTING_ONLY, { loadGroups: ["task:routing"] }),
