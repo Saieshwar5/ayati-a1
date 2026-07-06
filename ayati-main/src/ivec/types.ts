@@ -335,7 +335,7 @@ export interface LoopConfig {
 }
 
 export const DEFAULT_LOOP_CONFIG: LoopConfig = {
-  maxIterations: 15,
+  maxIterations: 20,
   maxConsecutiveFailures: 5,
   maxTotalToolCallsPerStep: 4,
   maxSequentialToolCallsPerStep: 4,

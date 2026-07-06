@@ -146,6 +146,7 @@ describe("parseAgentDecision", () => {
     expect(systemPrompt).toContain("If summary and exact conversation conflict, trust context.timeline");
     expect(systemPrompt).toContain("do not infer omitted details from it");
     expect(systemPrompt).toContain("context.run.status");
+    expect(systemPrompt).toContain("context.run.workState");
     expect(systemPrompt).toContain("context.run.toolCalls");
     expect(systemPrompt).not.toContain("context.scratch");
     expect(systemPrompt).not.toContain("context.run.progress");

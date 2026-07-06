@@ -8,19 +8,15 @@ import type { RuntimeCapabilityPromptContext } from "./runtime-capability-mode.j
 import type { ToolLoadResult } from "./tool-working-set.js";
 import { buildAgentContextPack } from "./context-pack.js";
 import { projectAgentPromptContext } from "./prompt-context.js";
-import type { AgentPromptContext, PromptHarnessContext, PromptRunContext, PromptToolsContext } from "./prompt-context.js";
+import type {
+  AgentPromptContext,
+  PromptHarnessContext,
+  PromptRunContext,
+  PromptRunWorkStateContext,
+  PromptToolsContext,
+} from "./prompt-context.js";
 
-export interface PromptProgressState {
-  status: WorkState["status"];
-  summary?: string;
-  openWork?: string[];
-  blockers?: string[];
-  verifiedFacts?: string[];
-  evidence?: string[];
-  taskNotes?: TaskNote[];
-  nextStep?: string;
-  userInputNeeded?: string;
-}
+export interface PromptProgressState extends PromptRunWorkStateContext {}
 
 export interface PromptObservations {
   latest: ToolObservation[];
@@ -143,6 +139,7 @@ export function buildAgentStateView(state: LoopState, options: AgentStateViewOpt
     }),
     run: buildRunContext({
       status: state.workState.status,
+      workState: progress,
       toolCalls,
     }),
   });
@@ -179,10 +176,12 @@ function buildToolsContext(input: {
 
 function buildRunContext(input: {
   status: WorkState["status"];
+  workState?: PromptProgressState;
   toolCalls?: PromptToolCalls;
 }): PromptRunContext {
   return {
     status: input.status,
+    ...(input.workState ? { workState: input.workState } : {}),
     ...(input.toolCalls ? { toolCalls: input.toolCalls } : {}),
   };
 }

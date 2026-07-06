@@ -1,4 +1,5 @@
 import type { ContextEngineMachineContext } from "../../context-engine/index.js";
+import type { TaskNote, WorkState } from "../types.js";
 import type { AgentContextPack } from "./context-pack.js";
 import type { RuntimeCapabilityPromptContext } from "./runtime-capability-mode.js";
 import type { AgentStateView } from "./state-view.js";
@@ -57,8 +58,21 @@ export interface PromptGitTaskContext {
 };
 
 export interface PromptRunContext {
-  status?: unknown;
+  status?: WorkState["status"];
+  workState?: PromptRunWorkStateContext;
   toolCalls?: unknown;
+}
+
+export interface PromptRunWorkStateContext {
+  status: WorkState["status"];
+  summary?: string;
+  openWork?: string[];
+  blockers?: string[];
+  verifiedFacts?: string[];
+  evidence?: string[];
+  taskNotes?: TaskNote[];
+  nextStep?: string;
+  userInputNeeded?: string;
 }
 
 export interface PromptHarnessContext {
@@ -216,6 +230,7 @@ function compactRunContext(run: PromptRunContext | undefined): PromptRunContext 
   }
   const compacted: PromptRunContext = {
     ...(run.status ? { status: run.status } : {}),
+    ...(run.workState ? { workState: run.workState } : {}),
     ...(run.toolCalls ? { toolCalls: run.toolCalls } : {}),
   };
   return Object.keys(compacted).length > 0 ? compacted : undefined;

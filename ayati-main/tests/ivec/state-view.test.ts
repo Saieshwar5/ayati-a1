@@ -369,6 +369,7 @@ describe("buildAgentStateView", () => {
     expect(stateView.context.git).not.toHaveProperty("personalMemorySnapshot");
     expect(stateView.context.tools).toBeUndefined();
     expect(stateView.context.run).toEqual({ status: "not_done" });
+    expect(stateView.context.run).not.toHaveProperty("workState");
     expect(stateView.context).not.toHaveProperty("scratch");
     expect(Object.keys(stateView.context).sort()).toEqual([
       "git",
@@ -489,6 +490,16 @@ describe("buildAgentStateView", () => {
     expect(stateView.progress).toMatchObject({
       status: "needs_user_input",
       summary: "Need approval before editing.",
+      userInputNeeded: "Can I edit the prompt?",
+    });
+    expect(stateView.context.run?.workState).toEqual(stateView.progress);
+    expect(stateView.context.run?.workState).toMatchObject({
+      status: "needs_user_input",
+      summary: "Need approval before editing.",
+      openWork: ["Patch prompt"],
+      blockers: ["Approval required"],
+      verifiedFacts: ["State view uses git context."],
+      evidence: ["state-view.ts"],
       userInputNeeded: "Can I edit the prompt?",
     });
     expect(stateView.context.run).not.toHaveProperty("progress");

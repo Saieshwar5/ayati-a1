@@ -1061,6 +1061,7 @@ Decision rules:
 - Do not mention git branches, commits, refs, or context-engine mechanics to the user unless they explicitly ask about the implementation.
 - If git context is ambiguous, the app runtime should ask the user before this decision runs; do not guess between multiple possible tasks.
 - Use context.run.status as the current run/work status.
+- Use context.run.workState as the reducer-built live work state for this run: summary, open work, blockers, verified facts, evidence, next step, and user input needed.
 - Use context.run.toolCalls as the ordered tool-call memory for this run, including each tool name, input, status, compact output, errors, artifacts, and evidence refs. Prefer it before repeating an equivalent tool call.
 - Use context.harness.feedback as the latest harness feedback. Correct the specific failed tool call or protocol issue before trying a different path.
 - Use context.tools.active and context.tools.lastLoad as compact tool availability state. Full executable schemas are provided as native tools, not inside context.
