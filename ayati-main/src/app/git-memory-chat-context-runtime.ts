@@ -10,6 +10,7 @@ import type {
   GitMemorySessionAttachmentsFile,
   GitMemoryRuntime,
   GitMemorySessionId,
+  GitMemoryStepRecord,
   GitMemoryTaskId,
   RoutedGitMemoryUserTurn,
 } from "../context-engine/index.js";
@@ -71,6 +72,12 @@ export interface GitMemoryChatContextCompleteTaskRunInput {
   assistantAt?: string;
 }
 
+export interface GitMemoryChatContextRecordTaskRunStepInput {
+  clientId: string;
+  turn: GitMemoryChatContextPreparedTurn | null;
+  record: GitMemoryStepRecord;
+}
+
 export interface GitMemoryChatContextRouteTaskTurnInput {
   clientId: string;
   turn: GitMemoryChatContextPreparedTurn | null;
@@ -98,6 +105,7 @@ export interface GitMemoryChatContextRuntime {
   routeTaskTurn(input: GitMemoryChatContextRouteTaskTurnInput): Promise<GitMemoryChatContextRoutedTurn | null>;
   activateTaskTurn(input: GitMemoryChatContextActivateTaskTurnInput): Promise<GitMemoryChatContextRoutedTurn | null>;
   completeTaskRun(input: GitMemoryChatContextCompleteTaskRunInput): Promise<FinalizeGitMemoryTaskRunResult | null>;
+  recordTaskRunStep(input: GitMemoryChatContextRecordTaskRunStepInput): void;
   recordAssistantMessage(input: GitMemoryChatContextAssistantMessageInput): Promise<GitMemoryConversationRecord | null>;
   recordSessionAttachments(input: GitMemoryChatContextSessionAttachmentsInput): Promise<GitMemorySessionAttachmentsFile | null>;
   buildActiveContext(sessionId: GitMemorySessionId): Promise<GitMemoryMachineContextPack>;
@@ -207,6 +215,16 @@ class AppGitMemoryChatContextRuntime implements GitMemoryChatContextRuntime {
       assistantMessage: input.assistantMessage,
       assistantMessageKind: input.assistantMessageKind,
       assistantAt: input.assistantAt,
+    });
+  }
+
+  recordTaskRunStep(input: GitMemoryChatContextRecordTaskRunStepInput): void {
+    if (!input.turn) {
+      return;
+    }
+    this.gitMemoryRuntime.recordTaskRunStep({
+      sessionId: input.turn.sessionId,
+      record: input.record,
     });
   }
 

@@ -374,7 +374,6 @@ describe("GitMemoryContextReader", () => {
     expect(pack.task?.recentEvidence).toMatchObject([{
       runId: "R-20260628-0001",
       taskId: "W-20260628-0001",
-      actionId: "ACT-20260628-000001",
       tool: "read_file",
       summary: "Read upload server implementation.",
       evidenceRef: "evidence/ACT-20260628-000001.txt",
@@ -384,14 +383,8 @@ describe("GitMemoryContextReader", () => {
       lineCount: 80,
       truncated: false,
       source: {
-        kind: "tool-output",
-        toolCalls: [{
-          kind: "tool-output",
-          tool: "read_file",
-          callId: "call-read-upload",
-          filePath: "ayati-main/src/server/upload-server.ts",
-          rawOutputPath: "raw/001-call-read-upload-read_file.txt",
-        }],
+        kind: "git-memory-step",
+        step: 1,
       },
     }]);
     expect(pack.task?.recentCommits[0]).toMatchObject({

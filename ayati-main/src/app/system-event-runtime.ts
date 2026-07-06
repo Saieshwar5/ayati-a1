@@ -203,6 +203,13 @@ class AppSystemEventRuntime implements SystemEventRuntime {
         runRecorder: systemEventRunRecorder,
         inputHandle,
         ...(runHandle ? { runHandle } : {}),
+        recordTaskStep: (record) => {
+          this.systemEventContextRuntime.recordTaskRunStep({
+            clientId,
+            turn: preparedContextTurn,
+            record,
+          });
+        },
         createWorkRun: this.failMissingGitMemoryRun,
         clientId,
         inputKind: "system_event",

@@ -27,6 +27,7 @@ import type {
   GitMemorySessionAttachmentRecord,
   GitMemorySessionId,
   GitMemorySessionMetaFile,
+  GitMemoryStepRecord,
   GitMemoryTaskAssetsFile,
   GitMemoryTaskId,
   GitMemoryTaskStateFile,
@@ -385,6 +386,18 @@ async function readRecentEvidence(
   taskId: GitMemoryTaskId,
   limit: number,
 ): Promise<GitMemoryEvidenceManifestRecord[]> {
+  const stepPrefix = `${gitMemoryTaskDir(taskId)}/steps`;
+  const stepPaths = (await driver.listTreePaths(ref, stepPrefix))
+    .filter((path) => path.endsWith(".jsonl"))
+    .sort();
+  const stepRecords: GitMemoryEvidenceManifestRecord[] = [];
+  for (const path of stepPaths) {
+    stepRecords.push(...parseJsonl<GitMemoryStepRecord>(await driver.readFile(ref, path)).map(stepToEvidenceRecord));
+  }
+  if (stepRecords.length > 0) {
+    return tail(stepRecords, limit);
+  }
+
   const prefix = `${gitMemoryTaskDir(taskId)}/evidence`;
   const paths = (await driver.listTreePaths(ref, prefix))
     .filter((path) => path.endsWith("/manifest.jsonl"))
@@ -394,6 +407,30 @@ async function readRecentEvidence(
     records.push(...parseJsonl<GitMemoryEvidenceManifestRecord>(await driver.readFile(ref, path)));
   }
   return tail(records, limit);
+}
+
+function stepToEvidenceRecord(step: GitMemoryStepRecord): GitMemoryEvidenceManifestRecord {
+  const tools = step.toolCalls.map((call) => call.tool).filter(Boolean);
+  return {
+    v: 1,
+    runId: step.runId,
+    taskId: step.taskId,
+    step: step.step,
+    tool: tools.length > 0 ? [...new Set(tools)].join(",") : "agent_step",
+    status: step.status === "failed" ? "failed" : step.status === "skipped" ? "skipped" : "completed",
+    summary: step.summary || step.verification.summary || step.verification.evidenceSummary || "Step completed.",
+    evidenceRef: step.verification.evidenceSummary ?? step.summary,
+    artifacts: step.artifacts,
+    facts: step.facts,
+    accessModes: ["step"],
+    ...(step.outputSize !== undefined ? { outputSize: step.outputSize } : {}),
+    ...(step.lineCount !== undefined ? { lineCount: step.lineCount } : {}),
+    ...(step.truncated !== undefined ? { truncated: step.truncated } : {}),
+    source: {
+      kind: "git-memory-step",
+      step: step.step,
+    },
+  };
 }
 
 async function readRecentCommits(

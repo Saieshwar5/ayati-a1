@@ -20,7 +20,7 @@ import type {
   RunRecorder,
   SessionInputHandle,
 } from "../memory/types.js";
-import type { TaskAssetRecord } from "../context-engine/index.js";
+import type { GitMemoryStepRecord, TaskAssetRecord } from "../context-engine/index.js";
 import type { DocumentStore } from "../documents/document-store.js";
 import type { PreparedAttachmentRecord, PreparedAttachmentRegistry } from "../documents/prepared-attachment-registry.js";
 import type { ManagedDocumentManifest, PreparedAttachmentSummary } from "../documents/types.js";
@@ -411,6 +411,7 @@ export interface AgentLoopDeps {
   initialUserMessage?: string;
   uiContext?: AgentUiContext;
   onProgress?: OnProgressCallback;
+  recordTaskStep?: (record: GitMemoryStepRecord) => void;
   feedbackLedger?: AgentFeedbackLedger;
   config?: Partial<LoopConfig>;
   dataDir: string;

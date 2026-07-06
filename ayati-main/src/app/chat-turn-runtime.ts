@@ -237,6 +237,13 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
           runRecorder: chatRunRecorder,
           inputHandle,
           ...(runHandle ? { runHandle } : {}),
+          recordTaskStep: (record) => {
+            this.chatContextRuntime.recordTaskRunStep({
+              clientId: input.clientId,
+              turn: chatContextTurn,
+              record,
+            });
+          },
           onWorkRunCreated: (created) => {
             runHandle = created;
           },

@@ -264,15 +264,18 @@ Core files:
 - `state.json`: current machine-readable task state.
 - `runs/<runId>.md`: human/model-readable run summary.
 - `runs/<runId>.json`: machine-readable run summary.
-- `actions/<runId>.jsonl`: compact tool/action metadata for a run.
-- `evidence/<runId>/manifest.jsonl`: durable compact evidence records.
+- `steps/<runId>.jsonl`: full durable step records for a run, including
+  tool calls, full tool inputs and outputs available to the runner,
+  observations, deterministic verification, facts, artifacts, and work-state
+  updates.
 - `assets.json` or equivalent asset index when task assets are present.
 - `notes.md`: compact task note/index generated from current task state,
   latest run, recent work, files, facts, and search terms.
 
 Agent task context is built from `task.md`, `state.json`, `assets.json`,
-recent `runs/*.json`, recent evidence manifests, commit metadata, and
-conversation reconstructed from `sessionStoreCommit` plus `conversationRefs`.
+recent `runs/*.json`, compact evidence summaries derived from `steps/*.jsonl`,
+commit metadata, and conversation reconstructed from `sessionStoreCommit` plus
+`conversationRefs`.
 Do not add separate task identity or task-context placeholder files unless a
 new reader and persistence contract actually uses them.
 
@@ -280,8 +283,8 @@ Run commits carry useful Ayati commit trailers such as session id, task id, run
 id, event, status, branch, conversation sequence, and action ids. The commit
 message and run Markdown should include compact human-readable summary,
 outcome, work performed, verification, blockers, evidence, and next step. Raw
-tool output stays in evidence files/manifests, not in commit messages or task
-state.
+tool input/output belongs in `steps/<runId>.jsonl`, not in commit messages or
+task state.
 
 ## Assets
 

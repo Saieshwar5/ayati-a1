@@ -8,6 +8,7 @@ import type {
   GitMemoryRunId,
   GitMemoryRuntime,
   GitMemorySessionId,
+  GitMemoryStepRecord,
   GitMemoryTaskId,
   RoutedGitMemoryUserTurn,
 } from "../context-engine/index.js";
@@ -60,6 +61,12 @@ export interface GitMemorySystemEventContextCompleteTaskRunInput {
   assistantAt?: string;
 }
 
+export interface GitMemorySystemEventContextRecordTaskRunStepInput {
+  clientId: string;
+  turn: GitMemorySystemEventContextPreparedTurn | null;
+  record: GitMemoryStepRecord;
+}
+
 export interface GitMemorySystemEventContextRouteTaskTurnInput {
   clientId: string;
   turn: GitMemorySystemEventContextPreparedTurn | null;
@@ -81,6 +88,7 @@ export interface GitMemorySystemEventContextRuntime {
     input: GitMemorySystemEventContextRouteTaskTurnInput,
   ): Promise<GitMemorySystemEventContextRoutedTurn | null>;
   completeTaskRun(input: GitMemorySystemEventContextCompleteTaskRunInput): Promise<FinalizeGitMemoryTaskRunResult | null>;
+  recordTaskRunStep(input: GitMemorySystemEventContextRecordTaskRunStepInput): void;
   recordAssistantMessage(
     input: GitMemorySystemEventContextAssistantMessageInput,
   ): Promise<GitMemoryConversationRecord | null>;
@@ -162,6 +170,16 @@ class AppGitMemorySystemEventContextRuntime implements GitMemorySystemEventConte
       changedFiles: input.changedFiles,
       assistantMessage: input.assistantMessage,
       assistantAt: input.assistantAt,
+    });
+  }
+
+  recordTaskRunStep(input: GitMemorySystemEventContextRecordTaskRunStepInput): void {
+    if (!input.turn) {
+      return;
+    }
+    this.gitMemoryRuntime.recordTaskRunStep({
+      sessionId: input.turn.sessionId,
+      record: input.record,
     });
   }
 

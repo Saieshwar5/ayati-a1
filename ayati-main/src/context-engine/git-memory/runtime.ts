@@ -9,6 +9,7 @@ import type {
   GitMemoryDailySessionHandle,
   GitMemorySessionCheckpoint,
   GitMemoryTaskRoutingSnapshot,
+  RecordGitMemoryTaskRunStepInput,
   SelectGitMemoryTaskForTurnResult,
 } from "./session-store.js";
 import { GitMemoryDailySessionStore } from "./session-store.js";
@@ -52,6 +53,7 @@ import type {
   GitMemorySessionAttachmentRecord,
   GitMemorySessionAttachmentsFile,
   GitMemorySessionId,
+  GitMemoryStepRecord,
   GitMemoryTaskId,
 } from "./schema.js";
 import { createGitMemorySessionId } from "./schema.js";
@@ -135,6 +137,12 @@ export interface FinalizeGitMemoryTaskRunInput extends BuildGitMemoryTaskRunComm
   assistantMessage?: string;
   assistantMessageKind?: GitMemoryConversationRecord["kind"];
   assistantAt?: string;
+}
+
+export interface RecordGitMemoryTaskRunStepRuntimeInput {
+  sessionId: GitMemorySessionId;
+  record: GitMemoryStepRecord;
+  at?: string;
 }
 
 export interface FinalizeGitMemoryTaskRunResult extends CommitGitMemoryTaskRunResult {
@@ -755,6 +763,26 @@ export class GitMemoryRuntime {
     }
     this.clearCommittedPendingTurn(input.sessionId, result.runId);
     return result;
+  }
+
+  recordTaskRunStep(input: RecordGitMemoryTaskRunStepRuntimeInput): void {
+    const request: RecordGitMemoryTaskRunStepInput = {
+      sessionId: input.sessionId,
+      taskId: input.record.taskId,
+      runId: input.record.runId,
+      record: input.record,
+    };
+    const write = this.writeQueue.enqueue({
+      sessionId: input.sessionId,
+      type: "task_run_step_recorded",
+      label: "record_task_run_step",
+      createdAt: input.at ?? input.record.completedAt,
+    }, async () => {
+      await this.store.appendTaskRunStep(request);
+    });
+    void write.catch(() => {
+      this.invalidateSessionMemory(input.sessionId);
+    });
   }
 
   async finalizeTaskRun(input: FinalizeGitMemoryTaskRunInput): Promise<FinalizeGitMemoryTaskRunResult> {

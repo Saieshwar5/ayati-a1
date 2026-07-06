@@ -55,6 +55,7 @@ import type {
   GitMemoryTaskAssetsFile,
   GitMemoryTaskStateFile,
   GitMemoryTaskStatus,
+  GitMemoryStepRecord,
 } from "./schema.js";
 import {
   GIT_MEMORY_SESSION_CONVERSATION_MARKDOWN_PATH,
@@ -69,13 +70,13 @@ import {
   gitMemoryDateFromSessionId,
   gitMemoryTaskDir,
   gitMemoryTaskAssetsPath,
-  gitMemoryTaskActionsPath,
   gitMemoryTaskConversationDir,
-  gitMemoryTaskEvidenceManifestPath,
   gitMemoryTaskMarkdownPath,
   gitMemoryTaskNotesPath,
   gitMemoryTaskRunMarkdownPath,
   gitMemoryTaskRunPath,
+  gitMemoryTaskStepsPath,
+  gitMemoryTaskStepsStagingPath,
   gitMemoryTaskStatePath,
   gitMemorySessionStoreMessagePath,
   gitMemorySessionStoreMessagesDir,
@@ -388,6 +389,13 @@ export interface CommitGitMemoryTaskRunEvidenceInput {
   source?: Record<string, unknown>;
 }
 
+export interface RecordGitMemoryTaskRunStepInput {
+  sessionId: GitMemorySessionId;
+  taskId: GitMemoryTaskId;
+  runId: GitMemoryRunId;
+  record: GitMemoryStepRecord;
+}
+
 export interface CommitGitMemoryTaskRunInput {
   sessionId: GitMemorySessionId;
   taskId: GitMemoryTaskId;
@@ -414,6 +422,7 @@ export interface CommitGitMemoryTaskRunInput {
   state?: Partial<Omit<GitMemoryTaskStateFile, "schemaVersion" | "updatedAt">>;
   evidence?: CommitGitMemoryTaskRunEvidenceInput[];
   assets?: TaskAssetRecord[];
+  steps?: GitMemoryStepRecord[];
 }
 
 export interface CommitGitMemoryTaskRunResult {
@@ -725,6 +734,22 @@ export class GitMemoryDailySessionStore {
     }
     await writeGitMemoryCustomRef(driver, gitMemorySessionRunReservationRef(input.sessionId, input.runId), ref);
     return { runId: input.runId };
+  }
+
+  async appendTaskRunStep(input: RecordGitMemoryTaskRunStepInput): Promise<void> {
+    const driver = await GitMemoryWorktreeGitDriver.init(this.repoPath(input.sessionId));
+    const taskEntry = await resolveGitMemoryTaskEntry(driver, { taskId: input.taskId });
+    const ref = `refs/heads/${taskEntry.branch}`;
+    if (!(await driver.hasRef(ref))) {
+      throw new Error(`Git memory task branch missing: ${ref}`);
+    }
+    if (input.record.taskId !== input.taskId || input.record.runId !== input.runId) {
+      throw new Error(`Git memory step record does not match task/run: ${input.taskId}/${input.runId}`);
+    }
+    await driver.appendWorkingFile(
+      gitMemoryTaskStepsStagingPath(input.taskId, input.runId),
+      `${JSON.stringify(input.record)}\n`,
+    );
   }
 
   async readTaskRoutingSnapshot(sessionId: GitMemorySessionId): Promise<GitMemoryTaskRoutingSnapshot> {
@@ -1165,6 +1190,16 @@ export class GitMemoryDailySessionStore {
       actions,
       evidence: input.evidence,
     });
+    const stagedSteps = await readTaskRunStagedSteps(driver, input.taskId, runId);
+    const steps = stagedSteps.length > 0
+      ? stagedSteps
+      : input.steps ?? buildStepRecordsFromLegacyEvidence({
+        taskId: input.taskId,
+        runId,
+        actions,
+        evidence,
+        completedAt,
+      });
     const existingAssets = await readTaskAssets(driver, ref, input.taskId);
     const mergedAssets = mergeTaskAssets(existingAssets, input.assets ?? []);
     const newFacts = input.newFacts ?? [];
@@ -1223,9 +1258,8 @@ export class GitMemoryDailySessionStore {
     const files: Record<string, string> = {
       [gitMemoryTaskStatePath(input.taskId)]: prettyJson(updatedState),
       [gitMemoryTaskRunPath(input.taskId, runId)]: prettyJson(run),
-      [gitMemoryTaskRunMarkdownPath(input.taskId, runId)]: renderTaskRunMarkdown(run, actions, evidence),
-      [gitMemoryTaskActionsPath(input.taskId, runId)]: jsonl(actions),
-      [gitMemoryTaskEvidenceManifestPath(input.taskId, runId)]: jsonl(evidence),
+      [gitMemoryTaskRunMarkdownPath(input.taskId, runId)]: renderTaskRunMarkdown(run, steps),
+      [gitMemoryTaskStepsPath(input.taskId, runId)]: jsonl(steps),
       [gitMemoryTaskNotesPath(input.taskId)]: renderGitMemoryTaskNotes({
         taskId: input.taskId,
         branch: taskEntry.branch,
@@ -1405,8 +1439,7 @@ function jsonl<T>(records: T[]): string {
 
 function renderTaskRunMarkdown(
   run: GitMemoryRunFile,
-  actions: GitMemoryActionRecord[],
-  evidence: GitMemoryEvidenceManifestRecord[],
+  steps: GitMemoryStepRecord[],
 ): string {
   return [
     `# Run ${run.runId}`,
@@ -1423,40 +1456,40 @@ function renderTaskRunMarkdown(
     renderMarkdownList("Work Performed", run.workPerformed ?? []),
     renderMarkdownList("Changed Files", run.changedFiles),
     renderMarkdownList("Verification", run.verification ?? []),
-    renderEvidenceMarkdown(evidence),
+    renderStepEvidenceMarkdown(steps),
     renderMarkdownList("Decisions", run.decisions ?? []),
     renderMarkdownList("Blockers", run.blockers ?? []),
     renderMarkdownParagraph("Next", run.next ?? "No next step."),
     renderMarkdownList("New Facts", run.newFacts),
-    renderActionMarkdown(actions),
+    renderStepActionMarkdown(steps),
   ].join("\n");
 }
 
-function renderActionMarkdown(actions: GitMemoryActionRecord[]): string {
-  if (actions.length === 0) {
+function renderStepActionMarkdown(steps: GitMemoryStepRecord[]): string {
+  if (steps.length === 0) {
     return "## Actions\n\nNone.\n";
   }
   return [
     "## Actions",
     "",
-    ...actions.map((action) => [
-      `- ${action.actionId} ${action.tool} ${action.status}: ${action.summary}`,
-      ...(action.evidenceRef ? [`  Evidence: ${action.evidenceRef}`] : []),
+    ...steps.map((step) => [
+      `- Step ${step.step} ${step.status}: ${step.summary}`,
+      ...(step.action?.["executionContract"] ? [`  Contract: ${String(step.action["executionContract"])}`] : []),
+      ...(step.toolCalls.length > 0 ? [`  Tools: ${unique(step.toolCalls.map((call) => call.tool)).join(", ")}`] : []),
     ].join("\n")),
     "",
   ].join("\n");
 }
 
-function renderEvidenceMarkdown(evidence: GitMemoryEvidenceManifestRecord[]): string {
-  if (evidence.length === 0) {
+function renderStepEvidenceMarkdown(steps: GitMemoryStepRecord[]): string {
+  if (steps.length === 0) {
     return "## Evidence\n\nNone.\n";
   }
   return [
     "## Evidence",
     "",
-    ...evidence.map((record) => [
-      `- ${record.tool}: ${record.summary}`,
-      ...(record.evidenceRef ? [`  Ref: ${record.evidenceRef}`] : []),
+    ...steps.map((record) => [
+      `- Step ${record.step}: ${record.verification.evidenceSummary ?? record.verification.summary}`,
       ...(record.artifacts.length > 0 ? [`  Artifacts: ${record.artifacts.join(", ")}`] : []),
       ...(record.facts.length > 0 ? [`  Facts: ${record.facts.join("; ")}`] : []),
     ].join("\n")),
@@ -1722,6 +1755,16 @@ async function readTaskAssets(
 ): Promise<TaskAssetRecord[]> {
   const current = await readRefJson<GitMemoryTaskAssetsFile>(driver, ref, gitMemoryTaskAssetsPath(taskId));
   return Array.isArray(current?.assets) ? current.assets.filter(isTaskAssetRecord) : [];
+}
+
+async function readTaskRunStagedSteps(
+  driver: GitMemoryWorktreeGitDriver,
+  taskId: GitMemoryTaskId,
+  runId: GitMemoryRunId,
+): Promise<GitMemoryStepRecord[]> {
+  return parseJsonl<GitMemoryStepRecord>(
+    await driver.readWorkingFile(gitMemoryTaskStepsStagingPath(taskId, runId)),
+  ).filter((record) => record.taskId === taskId && record.runId === runId);
 }
 
 function mergeTaskAssets(
@@ -2193,6 +2236,18 @@ async function readAllTaskEvidence(
   ref: string,
   taskId: GitMemoryTaskId,
 ): Promise<GitMemoryEvidenceManifestRecord[]> {
+  const stepPrefix = `${gitMemoryTaskDir(taskId)}/steps`;
+  const stepPaths = (await driver.listTreePaths(ref, stepPrefix))
+    .filter((path) => path.endsWith(".jsonl"))
+    .sort();
+  const stepRecords: GitMemoryEvidenceManifestRecord[] = [];
+  for (const path of stepPaths) {
+    stepRecords.push(...await readRefJsonl<GitMemoryStepRecord>(driver, ref, path).then((steps) => steps.map(stepToEvidenceRecord)));
+  }
+  if (stepRecords.length > 0) {
+    return stepRecords;
+  }
+
   const prefix = `${gitMemoryTaskDir(taskId)}/evidence`;
   const paths = (await driver.listTreePaths(ref, prefix))
     .filter((path) => path.endsWith("/manifest.jsonl"))
@@ -2211,12 +2266,44 @@ async function readTaskEvidenceForRun(
   runId: GitMemoryRunId,
   limit: number,
 ): Promise<GitMemoryEvidenceManifestRecord[]> {
-  const path = gitMemoryTaskEvidenceManifestPath(taskId, runId);
+  const steps = await readRefJsonl<GitMemoryStepRecord>(driver, ref, gitMemoryTaskStepsPath(taskId, runId));
+  if (steps.length > 0) {
+    return tail(steps.map(stepToEvidenceRecord), limit);
+  }
+  const path = legacyGitMemoryTaskEvidenceManifestPath(taskId, runId);
   const raw = await driver.readFile(ref, path);
   if (raw === null) {
-    throw new Error(`Git memory evidence manifest not found for run: ${runId}`);
+    throw new Error(`Git memory step log or evidence manifest not found for run: ${runId}`);
   }
   return tail(parseJsonl<GitMemoryEvidenceManifestRecord>(raw), limit);
+}
+
+function legacyGitMemoryTaskEvidenceManifestPath(taskId: GitMemoryTaskId, runId: GitMemoryRunId): string {
+  return `${gitMemoryTaskDir(taskId)}/evidence/${runId}/manifest.jsonl`;
+}
+
+function stepToEvidenceRecord(step: GitMemoryStepRecord): GitMemoryEvidenceManifestRecord {
+  const tools = step.toolCalls.map((call) => call.tool).filter(Boolean);
+  return {
+    v: 1,
+    runId: step.runId,
+    taskId: step.taskId,
+    step: step.step,
+    tool: tools.length > 0 ? unique(tools).join(",") : "agent_step",
+    status: step.status === "failed" ? "failed" : step.status === "skipped" ? "skipped" : "completed",
+    summary: step.summary || step.verification.summary || step.verification.evidenceSummary || "Step completed.",
+    evidenceRef: step.verification.evidenceSummary ?? step.summary,
+    artifacts: step.artifacts,
+    facts: step.facts,
+    accessModes: ["step"],
+    ...(step.outputSize !== undefined ? { outputSize: step.outputSize } : {}),
+    ...(step.lineCount !== undefined ? { lineCount: step.lineCount } : {}),
+    ...(step.truncated !== undefined ? { truncated: step.truncated } : {}),
+    source: {
+      kind: "git-memory-step",
+      step: step.step,
+    },
+  };
 }
 
 async function readCompactLog(
@@ -2398,6 +2485,74 @@ function buildEvidenceManifestRecords(input: {
     accessModes: action.evidenceRef ? ["summary"] : [],
     source: { kind: "git-memory-action" },
   }));
+}
+
+function buildStepRecordsFromLegacyEvidence(input: {
+  taskId: GitMemoryTaskId;
+  runId: GitMemoryRunId;
+  actions: GitMemoryActionRecord[];
+  evidence: GitMemoryEvidenceManifestRecord[];
+  completedAt: string;
+}): GitMemoryStepRecord[] {
+  const evidence = input.evidence.length > 0
+    ? input.evidence
+    : input.actions.map((action, index): GitMemoryEvidenceManifestRecord => ({
+      v: 1,
+      runId: input.runId,
+      taskId: input.taskId,
+      step: index + 1,
+      actionId: action.actionId,
+      tool: action.tool,
+      status: action.status,
+      summary: action.summary,
+      ...(action.evidenceRef ? { evidenceRef: action.evidenceRef } : {}),
+      artifacts: [],
+      facts: [],
+      accessModes: action.evidenceRef ? ["summary"] : [],
+      source: { kind: "legacy-action" },
+    }));
+  return evidence.map((record, index): GitMemoryStepRecord => {
+    const status = record.status === "failed"
+      ? "failed"
+      : record.status === "skipped"
+        ? "skipped"
+        : "completed";
+    return {
+      v: 1,
+      runId: input.runId,
+      taskId: input.taskId,
+      step: record.step ?? index + 1,
+      status,
+      completedAt: input.completedAt,
+      summary: record.summary,
+      action: {
+        toolsUsed: [record.tool],
+        toolSuccessCount: status === "completed" ? 1 : 0,
+        toolFailureCount: status === "failed" ? 1 : 0,
+      },
+      toolCalls: [{
+        tool: record.tool,
+        status: status === "failed" ? "failed" : "success",
+        input: {},
+        ...(record.evidenceRef ? { output: record.evidenceRef } : {}),
+      }],
+      verification: {
+        passed: status === "completed",
+        policy: "deterministic",
+        summary: record.summary,
+        ...(record.evidenceRef ? { evidenceSummary: record.evidenceRef } : {}),
+        evidenceItems: record.facts,
+        newFacts: record.facts,
+        artifacts: record.artifacts,
+        usedRawArtifacts: [],
+      },
+      facts: record.facts,
+      artifacts: record.artifacts,
+      ...(record.outputSize !== undefined ? { outputSize: record.outputSize } : {}),
+      ...(record.lineCount !== undefined ? { lineCount: record.lineCount } : {}),
+      ...(record.truncated !== undefined ? { truncated: record.truncated } : {}),
+    };
+  });
 }
 
 function tail<T>(values: T[], limit: number): T[] {

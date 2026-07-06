@@ -18,15 +18,14 @@ import {
   gitMemorySessionStoreSchemaPath,
   gitMemorySessionStoreSummaryMarkdownPath,
   gitMemorySessionStoreSummaryMetaPath,
-  gitMemoryTaskActionsPath,
   gitMemoryTaskAssetsPath,
   gitMemoryTaskConversationMessagePath,
   gitMemoryTaskDir,
-  gitMemoryTaskEvidenceManifestPath,
   gitMemoryTaskMarkdownPath,
   gitMemoryTaskNotesPath,
   gitMemoryTaskRunMarkdownPath,
   gitMemoryTaskRunPath,
+  gitMemoryTaskStepsPath,
   gitMemoryTaskStatePath,
   parseGitMemoryCommitTrailers,
 } from "../../../src/context-engine/git-memory/index.js";
@@ -1040,10 +1039,91 @@ describe("GitMemoryDailySessionStore", () => {
       toSeq: 2,
       at: "2026-06-28T09:01:00+05:30",
     });
+    await store.appendTaskRunStep({
+      sessionId: session.sessionId,
+      taskId: task.taskId,
+      runId: "R-20260628-0001",
+      record: {
+        v: 1,
+        runId: "R-20260628-0001",
+        taskId: task.taskId,
+        step: 1,
+        status: "completed",
+        startedAt: "2026-06-28T09:02:00+05:30",
+        completedAt: "2026-06-28T09:02:01+05:30",
+        summary: "Read upload server implementation.",
+        decision: {
+          actionKind: "tool_calls",
+          mode: "single",
+        },
+        action: {
+          executionContract: "single action: read_file",
+          toolsUsed: ["read_file"],
+          toolSuccessCount: 1,
+          toolFailureCount: 0,
+        },
+        toolCalls: [{
+          callId: "call-read-upload",
+          tool: "read_file",
+          status: "success",
+          input: {
+            path: "ayati-main/src/server/upload-server.ts",
+            range: [1, 80],
+          },
+          output: "full upload server implementation output\nline 2",
+          rawOutputChars: 1200,
+          outputTruncated: false,
+          operationStatus: "completed",
+          artifacts: [{
+            kind: "file",
+            path: "ayati-main/src/server/upload-server.ts",
+          }],
+          observation: {
+            id: "obs-upload",
+            step: 1,
+            callId: "call-read-upload",
+            tool: "read_file",
+            status: "success",
+            mode: "full",
+            retention: "while_relevant",
+            content: "full upload server implementation output\nline 2",
+            evidenceRef: "evidence/ACT-20260628-000001.txt",
+            rawOutputChars: 1200,
+            lineCount: 80,
+            hasMore: false,
+          },
+        }],
+        verification: {
+          passed: true,
+          policy: "deterministic",
+          method: "execution_gate",
+          executionStatus: "all_succeeded",
+          validationStatus: "passed",
+          summary: "Read upload server implementation.",
+          evidenceSummary: "evidence/ACT-20260628-000001.txt",
+          evidenceItems: ["Upload server implementation was inspected."],
+          newFacts: ["Upload server implementation was inspected."],
+          artifacts: ["ayati-main/src/server/upload-server.ts"],
+          usedRawArtifacts: [],
+        },
+        workStateAfter: {
+          status: "not_done",
+          summary: "Inspected upload handling.",
+          verifiedFacts: ["Upload server implementation was inspected."],
+          evidence: ["evidence/ACT-20260628-000001.txt"],
+        },
+        facts: ["Upload server implementation was inspected."],
+        artifacts: ["ayati-main/src/server/upload-server.ts"],
+        outputSize: 1200,
+        lineCount: 80,
+        truncated: false,
+      },
+    });
 
     const run = await store.commitTaskRun({
       sessionId: session.sessionId,
       taskId: task.taskId,
+      runId: "R-20260628-0001",
       status: "completed",
       startedAt: "2026-06-28T09:02:00+05:30",
       completedAt: "2026-06-28T09:10:00+05:30",
@@ -1165,8 +1245,8 @@ describe("GitMemoryDailySessionStore", () => {
     expect(runMarkdown).toContain("Patch upload validation handling.");
     expect(runMarkdown).toContain("- ayati-main/src/server/upload-server.ts");
     expect(runMarkdown).toContain("- UploadServer validates multipart uploads.");
-    expect(runMarkdown).toContain("- ACT-20260628-000001 read_file completed: Read upload server implementation.");
-    expect(runMarkdown).toContain("Evidence: evidence/ACT-20260628-000001.txt");
+    expect(runMarkdown).toContain("- Step 1 completed: Read upload server implementation.");
+    expect(runMarkdown).toContain("Tools: read_file");
     const taskNotes = await driver.readFile(task.ref, gitMemoryTaskNotesPath(task.taskId)) ?? "";
     expect(taskNotes).toContain("# Fix upload handling");
     expect(taskNotes).toContain("Task: W-20260628-0001");
@@ -1195,39 +1275,40 @@ describe("GitMemoryDailySessionStore", () => {
     expect(taskNotes).toContain("Patch upload validation handling.");
     expect(taskNotes).not.toContain("raw/001-call-read-upload-read_file.txt");
     expect(taskNotes).not.toContain("evidence/ACT-20260628-000001.txt");
-    expect(parseJsonl(await driver.readFile(task.ref, gitMemoryTaskActionsPath(task.taskId, run.runId))))
+    const steps = parseJsonl(await driver.readFile(task.ref, gitMemoryTaskStepsPath(task.taskId, run.runId)));
+    expect(steps)
       .toMatchObject([{
-        actionId: "ACT-20260628-000001",
         runId: "R-20260628-0001",
-        tool: "read_file",
         status: "completed",
-      }]);
-    expect(parseJsonl(await driver.readFile(task.ref, gitMemoryTaskEvidenceManifestPath(task.taskId, run.runId))))
-      .toMatchObject([{
-        actionId: "ACT-20260628-000001",
-        runId: "R-20260628-0001",
         taskId: "W-20260628-0001",
-        tool: "read_file",
-        status: "completed",
+        step: 1,
         summary: "Read upload server implementation.",
-        evidenceRef: "evidence/ACT-20260628-000001.txt",
+        toolCalls: [{
+          callId: "call-read-upload",
+          tool: "read_file",
+          input: {
+            path: "ayati-main/src/server/upload-server.ts",
+            range: [1, 80],
+          },
+          output: "full upload server implementation output\nline 2",
+          observation: {
+            content: "full upload server implementation output\nline 2",
+            evidenceRef: "evidence/ACT-20260628-000001.txt",
+          },
+        }],
         artifacts: ["ayati-main/src/server/upload-server.ts"],
         facts: ["Upload server implementation was inspected."],
-        accessModes: ["summary", "read_lines"],
+        verification: {
+          passed: true,
+          evidenceSummary: "evidence/ACT-20260628-000001.txt",
+          evidenceItems: ["Upload server implementation was inspected."],
+        },
         outputSize: 1200,
         lineCount: 80,
         truncated: false,
-        source: {
-          kind: "tool-output",
-          toolCalls: [{
-            kind: "tool-output",
-            tool: "read_file",
-            callId: "call-read-upload",
-            filePath: "ayati-main/src/server/upload-server.ts",
-            rawOutputPath: "raw/001-call-read-upload-read_file.txt",
-          }],
-        },
       }]);
+    expect(await driver.readFile(task.ref, `tasks/${task.taskId}/actions/${run.runId}.jsonl`)).toBeNull();
+    expect(await driver.readFile(task.ref, `tasks/${task.taskId}/evidence/${run.runId}/manifest.jsonl`)).toBeNull();
     expect(JSON.parse(await driver.readFile(task.ref, gitMemoryTaskAssetsPath(task.taskId)) ?? "{}"))
       .toEqual({
         schemaVersion: 1,

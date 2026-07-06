@@ -6,6 +6,7 @@ export type GitMemoryWriteBatchType =
   | "task_created"
   | "task_switched"
   | "task_routed"
+  | "task_run_step_recorded"
   | "task_run_committed"
   | "session_checkpointed";
 

@@ -169,6 +169,68 @@ export interface GitMemoryEvidenceManifestRecord {
   source?: Record<string, unknown>;
 }
 
+export type GitMemoryStepStatus = "completed" | "failed" | "skipped";
+
+export interface GitMemoryStepToolCallRecord {
+  callId?: string;
+  tool: string;
+  status: "success" | "failed";
+  startedAt?: string;
+  completedAt?: string;
+  input: unknown;
+  output?: string;
+  rawOutputChars?: number;
+  outputTruncated?: boolean;
+  error?: string;
+  code?: string;
+  operationStatus?: string;
+  meta?: Record<string, unknown>;
+  result?: unknown;
+  artifacts?: unknown[];
+  verifiedFacts?: unknown[];
+  assertionResults?: unknown[];
+  observation?: unknown;
+}
+
+export interface GitMemoryStepVerificationRecord {
+  passed: boolean;
+  policy?: string;
+  method?: string;
+  executionStatus?: string;
+  validationStatus?: string;
+  summary: string;
+  evidenceSummary?: string;
+  evidenceItems: string[];
+  newFacts: string[];
+  artifacts: string[];
+  usedRawArtifacts: string[];
+  expectationCheckStatus?: string;
+  expectationCheckSummary?: string;
+}
+
+export interface GitMemoryStepRecord {
+  v: 1;
+  runId: GitMemoryRunId;
+  taskId: GitMemoryTaskId;
+  step: number;
+  status: GitMemoryStepStatus;
+  startedAt?: string;
+  completedAt: string;
+  summary: string;
+  decision?: Record<string, unknown>;
+  action?: Record<string, unknown>;
+  toolCalls: GitMemoryStepToolCallRecord[];
+  verification: GitMemoryStepVerificationRecord;
+  workStateAfter?: unknown;
+  facts: string[];
+  artifacts: string[];
+  outputSize?: number;
+  lineCount?: number;
+  truncated?: boolean;
+  failureType?: string;
+  blockedTargets?: string[];
+}
+
 export type ValidationResult<T> =
   | { ok: true; value: T }
   | { ok: false; errors: string[] };
@@ -193,12 +255,12 @@ export function gitMemoryTaskRunMarkdownPath(taskId: GitMemoryTaskId, runId: Git
   return `${gitMemoryTaskDir(taskId)}/runs/${runId}.md`;
 }
 
-export function gitMemoryTaskActionsPath(taskId: GitMemoryTaskId, runId: GitMemoryRunId): string {
-  return `${gitMemoryTaskDir(taskId)}/actions/${runId}.jsonl`;
+export function gitMemoryTaskStepsPath(taskId: GitMemoryTaskId, runId: GitMemoryRunId): string {
+  return `${gitMemoryTaskDir(taskId)}/steps/${runId}.jsonl`;
 }
 
-export function gitMemoryTaskEvidenceManifestPath(taskId: GitMemoryTaskId, runId: GitMemoryRunId): string {
-  return `${gitMemoryTaskDir(taskId)}/evidence/${runId}/manifest.jsonl`;
+export function gitMemoryTaskStepsStagingPath(taskId: GitMemoryTaskId, runId: GitMemoryRunId): string {
+  return `${gitMemoryTaskStepsPath(taskId, runId)}.tmp`;
 }
 
 export function gitMemoryTaskAssetsPath(taskId: GitMemoryTaskId): string {
