@@ -534,8 +534,8 @@ describe("buildAgentStateView", () => {
       .toMatchObject({ source: "tool_execution" });
   });
 
-  it("compacts older successful run tool calls while keeping failures and recent calls detailed", () => {
-    const oldReadOutput = `old read output ${"x".repeat(1_200)}`;
+  it("compacts older successful run tool calls under context budget pressure", () => {
+    const oldReadOutput = `old read output ${"x".repeat(32_000)}`;
     const failedOutput = "command failed with stack trace";
     const state = createLoopState({
       toolContext: {
@@ -601,12 +601,14 @@ describe("buildAgentStateView", () => {
     expect(toolCalls).toHaveLength(6);
     expect(toolCalls?.[0]).toMatchObject({
       callId: "call-old-read",
-      mode: "summary",
+      mode: "preview",
       outputCompacted: true,
       outputPreview: expect.stringContaining("old read output"),
       summary: expect.stringContaining("read_file read for src/old.ts"),
       stepRef: { runId: "run-current", step: 1, callId: "call-old-read" },
       evidenceRef: "steps/run-current.jsonl#call-old-read",
+      compactionReason: "context_budget",
+      recoverable: true,
     });
     expect(toolCalls?.[0]).not.toHaveProperty("output");
     expect(toolCalls?.[1]).toMatchObject({
@@ -621,6 +623,50 @@ describe("buildAgentStateView", () => {
       callId: "call-recent-read",
       output: "recent read output",
     });
+  });
+
+  it("keeps older run tool calls full when they fit the live context budget", () => {
+    const state = createLoopState({
+      toolContext: {
+        recent: [],
+        toolCalls: [
+          {
+            step: 1,
+            callId: "call-old-read",
+            tool: "read_file",
+            input: { path: "src/old.ts" },
+            status: "success",
+            output: "old read output",
+            stepRef: { runId: "run-current", step: 1, callId: "call-old-read" },
+          },
+          {
+            step: 2,
+            callId: "call-write",
+            tool: "write_file",
+            input: { path: "src/new.ts", content: "new content" },
+            status: "success",
+            output: "write completed",
+          },
+          {
+            step: 3,
+            callId: "call-recent-read",
+            tool: "read_file",
+            input: { path: "src/recent.ts" },
+            status: "success",
+            output: "recent read output",
+          },
+        ],
+      },
+    });
+
+    const toolCalls = buildAgentStateView(state).context.run?.toolCalls;
+    expect(toolCalls?.map((call) => call.mode)).toEqual(["full", "full", "full"]);
+    expect(toolCalls?.[0]).toMatchObject({
+      callId: "call-old-read",
+      output: "old read output",
+      stepRef: { runId: "run-current", step: 1, callId: "call-old-read" },
+    });
+    expect(toolCalls?.[0]).not.toHaveProperty("outputCompacted");
   });
 
   it("groups tool load, attachments, and system events while keeping top-level aliases", () => {

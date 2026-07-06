@@ -2,7 +2,7 @@ import type { PromptToolCallContext } from "../types.js";
 
 export const RUN_STEP_RECOVERY_TOOL_NAME = "git_context_read_run_step";
 
-export type PromptRunToolCallMode = "full" | "summary";
+export type PromptRunToolCallMode = "full" | "preview" | "summary" | "reference";
 
 export interface PromptRunToolCallContext {
   step: number;
@@ -24,46 +24,44 @@ export interface PromptRunToolCallContext {
   originalOutputChars?: number;
   outputTruncated?: boolean;
   outputCompacted?: boolean;
+  recoverable?: boolean;
+  compactionReason?: "context_budget" | "truncated_output";
 }
 
 export type PromptToolCalls = PromptRunToolCallContext[];
 
 const PROMPT_TOOL_CALL_POLICY = {
-  maxFullRecentCalls: 4,
   protectedRecentCalls: 2,
   maxTotalChars: 30_000,
-  maxFullOutputChars: 8_000,
+  maxPreviewOutputChars: 4_000,
   maxSummaryOutputChars: 1_000,
-  maxFullInputStringChars: 1_200,
+  maxPreviewInputStringChars: 1_200,
   maxSummaryInputStringChars: 800,
+  maxReferenceInputStringChars: 300,
   maxErrorChars: 1_600,
   maxSummaryChars: 520,
 };
 
 export function buildPromptToolCallsForRun(calls: PromptToolCallContext[] | undefined): PromptToolCalls | undefined {
-  const projected = compactPromptToolCallsForRun((calls ?? []).map(projectPromptToolCall));
+  const projected = applyPromptToolCallBudget((calls ?? []).map(projectPromptToolCall));
   return projected.length > 0 ? projected : undefined;
 }
 
 export function hasRecoverableCompactedRunToolCall(calls: PromptToolCallContext[] | undefined): boolean {
-  const values = calls ?? [];
-  const recentFullStart = Math.max(0, values.length - PROMPT_TOOL_CALL_POLICY.maxFullRecentCalls);
-  return values.some((call, index) => Boolean(call.stepRef) && (
-    call.outputTruncated === true
-    || call.output.length > PROMPT_TOOL_CALL_POLICY.maxFullOutputChars
-    || (index < recentFullStart && call.status === "success")
+  return (buildPromptToolCallsForRun(calls) ?? []).some((call) => (
+    call.mode !== "full" && call.outputCompacted === true && Boolean(call.stepRef)
   ));
 }
 
 function projectPromptToolCall(call: PromptToolCallContext): PromptRunToolCallContext {
-  return {
+  const projected: PromptRunToolCallContext = {
     step: call.step,
     ...(call.callId ? { callId: call.callId } : {}),
     tool: call.tool,
-    input: compactUnknownForPrompt(call.input, PROMPT_TOOL_CALL_POLICY.maxFullInputStringChars),
+    input: call.input,
     status: call.status,
     mode: "full",
-    output: truncatePreserveLines(call.output, PROMPT_TOOL_CALL_POLICY.maxFullOutputChars),
+    output: call.output,
     ...(call.error ? { error: truncatePreserveLines(call.error, PROMPT_TOOL_CALL_POLICY.maxErrorChars) } : {}),
     ...(call.code ? { code: call.code } : {}),
     ...(call.operationStatus ? { operationStatus: call.operationStatus } : {}),
@@ -71,29 +69,27 @@ function projectPromptToolCall(call: PromptToolCallContext): PromptRunToolCallCo
     ...(call.stepRef ? { stepRef: call.stepRef } : {}),
     ...(call.evidenceRef ? { evidenceRef: call.evidenceRef } : {}),
     ...(call.rawOutputChars !== undefined ? { rawOutputChars: call.rawOutputChars } : {}),
-    ...(call.output.length > PROMPT_TOOL_CALL_POLICY.maxFullOutputChars ? { originalOutputChars: call.output.length } : {}),
     ...(call.outputTruncated !== undefined ? { outputTruncated: call.outputTruncated } : {}),
-    ...(call.output.length > PROMPT_TOOL_CALL_POLICY.maxFullOutputChars ? { outputCompacted: true } : {}),
   };
+  return call.outputTruncated === true
+    ? compactPromptToolCall(projected, "preview", "truncated_output")
+    : projected;
 }
 
-function compactPromptToolCallsForRun(calls: PromptRunToolCallContext[]): PromptRunToolCallContext[] {
+function applyPromptToolCallBudget(calls: PromptRunToolCallContext[]): PromptRunToolCallContext[] {
   if (calls.length === 0) {
     return [];
   }
 
-  const recentFullStart = Math.max(0, calls.length - PROMPT_TOOL_CALL_POLICY.maxFullRecentCalls);
-  const compacted = calls.map((call, index) => (
-    index >= recentFullStart || call.status === "failed"
-      ? call
-      : compactPromptToolCallSummary(call)
-  ));
+  const compacted = [...calls];
 
   if (measurePromptJson(compacted) <= PROMPT_TOOL_CALL_POLICY.maxTotalChars) {
     return compacted;
   }
 
-  compactOldestFullCalls(compacted, {
+  degradeOldestCalls(compacted, {
+    from: "full",
+    to: "preview",
     protectedRecentCount: PROMPT_TOOL_CALL_POLICY.protectedRecentCalls,
     includeFailures: false,
   });
@@ -101,7 +97,19 @@ function compactPromptToolCallsForRun(calls: PromptRunToolCallContext[]): Prompt
     return compacted;
   }
 
-  compactOldestFullCalls(compacted, {
+  degradeOldestCalls(compacted, {
+    from: "preview",
+    to: "summary",
+    protectedRecentCount: PROMPT_TOOL_CALL_POLICY.protectedRecentCalls,
+    includeFailures: false,
+  });
+  if (measurePromptJson(compacted) <= PROMPT_TOOL_CALL_POLICY.maxTotalChars) {
+    return compacted;
+  }
+
+  degradeOldestCalls(compacted, {
+    from: "full",
+    to: "preview",
     protectedRecentCount: PROMPT_TOOL_CALL_POLICY.protectedRecentCalls,
     includeFailures: true,
   });
@@ -109,16 +117,50 @@ function compactPromptToolCallsForRun(calls: PromptRunToolCallContext[]): Prompt
     return compacted;
   }
 
-  compactOldestFullCalls(compacted, {
+  degradeOldestCalls(compacted, {
+    from: "preview",
+    to: "summary",
+    protectedRecentCount: PROMPT_TOOL_CALL_POLICY.protectedRecentCalls,
+    includeFailures: true,
+  });
+  if (measurePromptJson(compacted) <= PROMPT_TOOL_CALL_POLICY.maxTotalChars) {
+    return compacted;
+  }
+
+  degradeOldestCalls(compacted, {
+    from: "full",
+    to: "preview",
+    protectedRecentCount: 0,
+    includeFailures: true,
+  });
+  if (measurePromptJson(compacted) <= PROMPT_TOOL_CALL_POLICY.maxTotalChars) {
+    return compacted;
+  }
+
+  degradeOldestCalls(compacted, {
+    from: "preview",
+    to: "summary",
+    protectedRecentCount: 0,
+    includeFailures: true,
+  });
+  if (measurePromptJson(compacted) <= PROMPT_TOOL_CALL_POLICY.maxTotalChars) {
+    return compacted;
+  }
+
+  degradeOldestCalls(compacted, {
+    from: "summary",
+    to: "reference",
     protectedRecentCount: 0,
     includeFailures: true,
   });
   return compacted;
 }
 
-function compactOldestFullCalls(
+function degradeOldestCalls(
   calls: PromptRunToolCallContext[],
   options: {
+    from: PromptRunToolCallMode;
+    to: Exclude<PromptRunToolCallMode, "full">;
     protectedRecentCount: number;
     includeFailures: boolean;
   },
@@ -126,26 +168,40 @@ function compactOldestFullCalls(
   const protectedStart = Math.max(0, calls.length - options.protectedRecentCount);
   for (let index = 0; index < protectedStart; index += 1) {
     const call = calls[index];
-    if (!call || call.mode === "summary" || (!options.includeFailures && call.status === "failed")) {
+    if (!call || call.mode !== options.from || (!options.includeFailures && call.status === "failed")) {
       continue;
     }
-    calls[index] = compactPromptToolCallSummary(call);
+    calls[index] = compactPromptToolCall(call, options.to, "context_budget");
     if (measurePromptJson(calls) <= PROMPT_TOOL_CALL_POLICY.maxTotalChars) {
       return;
     }
   }
 }
 
-function compactPromptToolCallSummary(call: PromptRunToolCallContext): PromptRunToolCallContext {
+function compactPromptToolCall(
+  call: PromptRunToolCallContext,
+  mode: Exclude<PromptRunToolCallMode, "full">,
+  reason: NonNullable<PromptRunToolCallContext["compactionReason"]>,
+): PromptRunToolCallContext {
   const output = call.output ?? call.outputPreview ?? "";
-  const outputPreview = truncatePreserveLines(output, PROMPT_TOOL_CALL_POLICY.maxSummaryOutputChars);
+  const outputPreview = mode === "preview"
+    ? truncatePreserveLines(output, PROMPT_TOOL_CALL_POLICY.maxPreviewOutputChars)
+    : mode === "summary"
+      ? truncatePreserveLines(output, PROMPT_TOOL_CALL_POLICY.maxSummaryOutputChars)
+      : "";
+  const inputChars = mode === "preview"
+    ? PROMPT_TOOL_CALL_POLICY.maxPreviewInputStringChars
+    : mode === "summary"
+      ? PROMPT_TOOL_CALL_POLICY.maxSummaryInputStringChars
+      : PROMPT_TOOL_CALL_POLICY.maxReferenceInputStringChars;
+  const recoverable = Boolean(call.stepRef);
   return {
     step: call.step,
     ...(call.callId ? { callId: call.callId } : {}),
     tool: call.tool,
-    input: compactUnknownForPrompt(call.input, PROMPT_TOOL_CALL_POLICY.maxSummaryInputStringChars),
+    input: compactUnknownForPrompt(call.input, inputChars),
     status: call.status,
-    mode: "summary",
+    mode,
     summary: buildToolCallSummary(call),
     ...(outputPreview.length > 0 ? { outputPreview } : {}),
     ...(call.error ? { error: truncatePreserveLines(call.error, PROMPT_TOOL_CALL_POLICY.maxErrorChars) } : {}),
@@ -158,6 +214,8 @@ function compactPromptToolCallSummary(call: PromptRunToolCallContext): PromptRun
     ...(output.length > 0 ? { originalOutputChars: call.originalOutputChars ?? output.length } : {}),
     ...(call.outputTruncated !== undefined ? { outputTruncated: call.outputTruncated } : {}),
     outputCompacted: true,
+    ...(recoverable ? { recoverable: true } : {}),
+    compactionReason: reason,
   };
 }
 

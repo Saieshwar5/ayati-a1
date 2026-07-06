@@ -103,11 +103,16 @@ function fakeReadFileTool(): ToolDefinition {
       retrySafe: true,
       longRunning: false,
     },
+    observationPolicy: {
+      outputImportance: "decision_context",
+      rawStorage: "always",
+      maxObservationChars: 20_000,
+    },
     async execute(input) {
       const path = typeof input === "object" && input && "path" in input
         ? String((input as { path: unknown }).path)
         : "unknown";
-      const output = `FULL_OUTPUT_${path}\n${"context-line ".repeat(120)}`;
+      const output = `FULL_OUTPUT_${path}\n${"context-line\n".repeat(1_800)}`;
       return {
         ok: true,
         output,
@@ -267,14 +272,14 @@ describe("run tool-call recovery", () => {
         const toolCalls = stateView.context.run.toolCalls;
         expect(toolCalls).toHaveLength(5);
         expect(toolCalls[0]).toMatchObject({
-          mode: "summary",
           callId: "call_1",
           tool: "read_file",
           outputCompacted: true,
           stepRef: { runId: "r-recovery", step: 1, callId: "call_1" },
         });
+        expect(["preview", "summary", "reference"]).toContain(toolCalls[0].mode);
         expect(toolCalls[0].output).toBeUndefined();
-        expect(toolCalls[0].outputPreview).toContain("FULL_OUTPUT_file_1.txt");
+        expect(toolCalls[0].summary).toContain("read_file read for file_1.txt");
         expect(stateView.context.tools.active).toContain("git_context_read_run_step");
         return {
           kind: "act",
@@ -324,6 +329,9 @@ describe("run tool-call recovery", () => {
         initialUserMessage: "Read these files, write a marker file, then recover any compacted run step if needed.",
         dataDir,
         systemContext: "system context",
+        config: {
+          maxInlineActOutputChars: 20_000,
+        },
         harnessContext: {
           contextEngine: {
             session: {

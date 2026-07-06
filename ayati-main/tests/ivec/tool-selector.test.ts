@@ -263,7 +263,7 @@ function recoverableToolCalls(): NonNullable<LoopState["toolContext"]>["toolCall
       tool: "read_file",
       input: { path: "src/old.ts" },
       status: "success",
-      output: "old output",
+      output: `old output ${"x".repeat(16_000)}`,
       stepRef: { runId: "run-1", step: 1, callId: "call-old" },
     },
     {
@@ -272,7 +272,7 @@ function recoverableToolCalls(): NonNullable<LoopState["toolContext"]>["toolCall
       tool: "read_file",
       input: { path: "src/2.ts" },
       status: "success",
-      output: "output 2",
+      output: `output 2 ${"x".repeat(16_000)}`,
       stepRef: { runId: "run-1", step: 2, callId: "call-2" },
     },
     {
@@ -281,7 +281,7 @@ function recoverableToolCalls(): NonNullable<LoopState["toolContext"]>["toolCall
       tool: "read_file",
       input: { path: "src/3.ts" },
       status: "success",
-      output: "output 3",
+      output: `output 3 ${"x".repeat(16_000)}`,
       stepRef: { runId: "run-1", step: 3, callId: "call-3" },
     },
     {
