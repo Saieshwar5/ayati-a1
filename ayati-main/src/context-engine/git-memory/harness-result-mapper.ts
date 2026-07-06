@@ -265,6 +265,7 @@ function fallbackWorkState(result: GitMemoryHarnessRunResultForContext): Harness
     blockers: result.taskSummary?.blockers ?? [],
     verifiedFacts: result.taskSummary?.keyFacts ?? [],
     evidence: result.taskSummary?.evidence ?? [],
+    artifacts: buildChangedFiles(result),
     nextStep: result.taskSummary?.nextAction,
     userInputNeeded: result.taskSummary?.userInputNeeded,
   };

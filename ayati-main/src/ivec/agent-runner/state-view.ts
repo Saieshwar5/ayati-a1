@@ -313,6 +313,7 @@ function buildProgressView(workState: WorkState): PromptProgressState | undefine
   const blockers = compactList(workState.blockers, 4, 180);
   const verifiedFacts = compactList(workState.verifiedFacts, 6, 180);
   const evidence = compactList(workState.evidence, 5, 180);
+  const artifacts = compactList(workState.artifacts, 6, 180);
   const taskNotes = compactTaskNotes(workState.taskNotes);
   const nextStep = workState.nextStep?.trim() ? truncate(workState.nextStep, 220) : undefined;
   const userInputNeeded = workState.userInputNeeded?.trim() ? truncate(workState.userInputNeeded, 220) : undefined;
@@ -322,6 +323,7 @@ function buildProgressView(workState: WorkState): PromptProgressState | undefine
     || blockers.length > 0
     || verifiedFacts.length > 0
     || evidence.length > 0
+    || artifacts.length > 0
     || taskNotes.length > 0
     || nextStep !== undefined
     || userInputNeeded !== undefined;
@@ -337,6 +339,7 @@ function buildProgressView(workState: WorkState): PromptProgressState | undefine
     ...(blockers.length > 0 ? { blockers } : {}),
     ...(verifiedFacts.length > 0 ? { verifiedFacts } : {}),
     ...(evidence.length > 0 ? { evidence } : {}),
+    ...(artifacts.length > 0 ? { artifacts } : {}),
     ...(taskNotes.length > 0 ? { taskNotes } : {}),
     ...(nextStep ? { nextStep } : {}),
     ...(userInputNeeded ? { userInputNeeded } : {}),

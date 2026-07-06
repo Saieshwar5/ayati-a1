@@ -164,6 +164,7 @@ export interface WorkState {
   blockers?: string[];
   verifiedFacts: string[];
   evidence: string[];
+  artifacts?: string[];
   taskNotes?: TaskNote[];
   nextStep?: string;
   userInputNeeded?: string;

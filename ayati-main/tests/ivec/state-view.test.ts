@@ -431,6 +431,7 @@ describe("buildAgentStateView", () => {
         blockers: ["Approval required"],
         verifiedFacts: ["State view uses git context."],
         evidence: ["state-view.ts"],
+        artifacts: ["state-view.ts"],
         userInputNeeded: "Can I edit the prompt?",
       },
       toolContext: {
@@ -500,6 +501,7 @@ describe("buildAgentStateView", () => {
       blockers: ["Approval required"],
       verifiedFacts: ["State view uses git context."],
       evidence: ["state-view.ts"],
+      artifacts: ["state-view.ts"],
       userInputNeeded: "Can I edit the prompt?",
     });
     expect(stateView.context.run).not.toHaveProperty("progress");

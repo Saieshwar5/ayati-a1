@@ -240,6 +240,7 @@ export interface HarnessWorkStateForContext {
   blockers?: string[];
   verifiedFacts: string[];
   evidence: string[];
+  artifacts?: string[];
   nextStep?: string;
   userInputNeeded?: string;
 }

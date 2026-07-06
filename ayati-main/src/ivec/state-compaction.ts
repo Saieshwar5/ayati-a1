@@ -8,6 +8,7 @@ const WORK_STATE_LIMITS = {
   blockers: { count: 4, chars: 220 },
   verifiedFacts: { count: 8, chars: 220 },
   evidence: { count: 6, chars: 240 },
+  artifacts: { count: 8, chars: 240 },
   taskNotes: { count: 8, textChars: 320, sourceChars: 160 },
 };
 
@@ -40,6 +41,7 @@ export function compactWorkState(workState: WorkState): WorkState {
     blockers: compactStringList(workState.blockers, WORK_STATE_LIMITS.blockers),
     verifiedFacts: compactStringList(workState.verifiedFacts, WORK_STATE_LIMITS.verifiedFacts),
     evidence: compactStringList(workState.evidence, WORK_STATE_LIMITS.evidence),
+    artifacts: compactStringList(workState.artifacts, WORK_STATE_LIMITS.artifacts),
     taskNotes: compactTaskNotes(workState.taskNotes, WORK_STATE_LIMITS.taskNotes),
     nextStep: compactOptionalText(workState.nextStep, WORK_STATE_LIMITS.nextStepChars),
     userInputNeeded: compactOptionalText(workState.userInputNeeded, WORK_STATE_LIMITS.userInputNeededChars),

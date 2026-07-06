@@ -68,6 +68,7 @@ export async function executeAgentAction(
         summary: verifyOutput.summary,
         evidenceItems: verifyOutput.evidenceItems,
         newFacts: verifyOutput.newFacts,
+        artifacts: verifyOutput.artifacts,
       }),
     };
   }
@@ -80,6 +81,7 @@ export async function executeAgentAction(
     summary: verifyOutput.summary,
     evidenceItems: verifyOutput.evidenceItems,
     newFacts: verifyOutput.newFacts,
+    artifacts: verifyOutput.artifacts,
     taskNotes,
   });
 

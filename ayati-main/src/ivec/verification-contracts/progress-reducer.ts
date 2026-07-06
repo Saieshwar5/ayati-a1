@@ -5,6 +5,7 @@ interface VerifiedStepProgressInput {
   summary: string;
   evidenceItems: string[];
   newFacts: string[];
+  artifacts?: string[];
   taskNotes?: TaskNote[];
 }
 
@@ -31,6 +32,7 @@ export function reduceVerifiedWorkState(
     blockers,
     verifiedFacts: uniqueStrings([...previous.verifiedFacts, ...step.newFacts]).slice(0, 8),
     evidence: uniqueStrings([...previous.evidence, ...step.evidenceItems]).slice(0, 6),
+    artifacts: uniqueStrings([...(previous.artifacts ?? []), ...(step.artifacts ?? [])]).slice(0, 8),
     taskNotes: mergeTaskNotes(previous.taskNotes, step.taskNotes),
     nextStep: previous.nextStep,
   };

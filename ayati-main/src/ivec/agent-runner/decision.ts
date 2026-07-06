@@ -1061,7 +1061,7 @@ Decision rules:
 - Do not mention git branches, commits, refs, or context-engine mechanics to the user unless they explicitly ask about the implementation.
 - If git context is ambiguous, the app runtime should ask the user before this decision runs; do not guess between multiple possible tasks.
 - Use context.run.status as the current run/work status.
-- Use context.run.workState as the reducer-built live work state for this run: summary, open work, blockers, verified facts, evidence, next step, and user input needed.
+- Use context.run.workState as the reducer-built live work state for this run: summary, open work, blockers, verified facts, evidence, verified artifacts, next step, and user input needed.
 - Use context.run.toolCalls as the ordered tool-call memory for this run. Records with mode="full" include exact live input and output. Records with mode="preview", mode="summary", or mode="reference" were compacted for context budget; use their summary, input, outputPreview, errors, artifacts, stepRef, and evidenceRef without assuming omitted output. Prefer this memory before repeating an equivalent tool call.
 - If an older compacted tool-call record has a stepRef and exact omitted output is required, use git_context_read_run_step when available instead of repeating a broad equivalent read or command.
 - Use context.harness.feedback as the latest harness feedback. Correct the specific failed tool call or protocol issue before trying a different path.
