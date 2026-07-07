@@ -578,9 +578,9 @@ export function buildFeedbackTriageSummary(summary: AgentFeedbackLatestSummary):
     findings.push({
       code: "fresh_session_tool_repair_requested",
       severity: "warning",
-      title: "Fresh session needed first task routing",
-      details: "The model tried to load or call tools before any active task existed.",
-      recommendation: "Use git_context_create_task_for_turn first, or ask a short clarification if the request is unclear.",
+      title: "Fresh session needed a promotion target",
+      details: "The model tried to load or call work tools before any active task or promotion target existed.",
+      recommendation: "Use git_context_set_promotion_target_for_turn first, or ask a short clarification if the request is unclear.",
     });
   }
 
@@ -865,9 +865,9 @@ const REPAIR_TRIAGE_FINDINGS: ReadonlyArray<[string, AgentFeedbackTriageFinding]
   ["R_FRESH_SESSION_NEEDS_TASK", {
     code: "R_FRESH_SESSION_NEEDS_TASK",
     severity: "warning",
-    title: "Fresh session needs task creation",
-    details: "The model tried to use normal work tools before any active task existed.",
-    recommendation: "Create a task first with git_context_create_task_for_turn, or ask a short clarification.",
+    title: "Fresh session needs a promotion target",
+    details: "The model tried to use normal work tools before any active task or promotion target existed.",
+    recommendation: "Set a promotion target first with git_context_set_promotion_target_for_turn, or ask a short clarification.",
   }],
   ["R_NORMAL_TOOL_WITHOUT_TASK_RUN", {
     code: "R_NORMAL_TOOL_WITHOUT_TASK_RUN",

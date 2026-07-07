@@ -1165,17 +1165,29 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
     request: CreateWorkRunRequest,
     sessionRunHandle: MemoryRunHandle | null,
   ): Promise<Extract<GitMemoryChatContextRoutedTurn, { status: "ready" }>> {
-    if (request.reason !== "agent_action" || !request.activeTaskId) {
+    if (request.reason !== "agent_action" || (!request.activeTaskId && !request.newTask)) {
       throw new Error("Git-memory routed run is required before chat tool execution.");
     }
-    const routed = await this.chatContextRuntime.activateTaskTurn({
-      clientId,
-      turn,
-      taskId: request.activeTaskId,
-      reason: `Continue active task for tool execution: ${request.userMessage}`,
-      ...(sessionRunHandle ? { sessionRunId: sessionRunHandle.runId } : {}),
-      at: this.nowProvider().toISOString(),
-    });
+    const at = this.nowProvider().toISOString();
+    const routed = request.newTask
+      ? await this.chatContextRuntime.createTaskTurn?.({
+          clientId,
+          turn,
+          title: request.newTask.title,
+          objective: request.newTask.objective,
+          reason: request.newTask.reasonDetails
+            ?? `Create task for tool execution: ${request.userMessage}`,
+          ...(sessionRunHandle ? { sessionRunId: sessionRunHandle.runId } : {}),
+          at,
+        })
+      : await this.chatContextRuntime.activateTaskTurn({
+          clientId,
+          turn,
+          taskId: request.activeTaskId!,
+          reason: `Continue active task for tool execution: ${request.userMessage}`,
+          ...(sessionRunHandle ? { sessionRunId: sessionRunHandle.runId } : {}),
+          at,
+        });
     if (!routed || routed.status !== "ready") {
       throw new Error("Git-memory active task run could not be created before chat tool execution.");
     }
@@ -1192,6 +1204,7 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
         reason: request.reason,
         activeTaskId: request.activeTaskId,
         activeBranch: request.activeBranch,
+        newTask: request.newTask,
         contextEngine: buildContextEngineFeedbackSummary({
           context: routed.harnessContext.contextEngine,
           routeStatus: routed.status,

@@ -173,9 +173,9 @@ export const REPAIR_CODE_CATALOG: Readonly<Record<RepairCode, RepairCatalogEntry
     code: "R_FRESH_SESSION_NEEDS_TASK",
     severity: "repairable",
     source: "runner.guard",
-    message: "No active task exists yet. Normal work tools cannot run before task creation.",
+    message: "No active task or promotion target exists yet. Normal work tools cannot run before task promotion.",
     allowedNextActions: [
-      "Call git_context_create_task_for_turn with title, objective, and createReason \"no_active_task\".",
+      "Call git_context_set_promotion_target_for_turn with title, objective, and createReason \"no_active_task\".",
       "Ask a short clarification if the request is unclear.",
     ],
     modelFacing: true,
@@ -198,7 +198,7 @@ export const REPAIR_CODE_CATALOG: Readonly<Record<RepairCode, RepairCatalogEntry
     message: "The current pending turn is not bound to a task.",
     allowedNextActions: [
       "Use git-context read/search tools if needed.",
-      "Then call git_context_activate_task_for_turn, git_context_create_task_for_turn, or git_context_ask_clarification_for_turn.",
+      "Then call git_context_activate_task_for_turn, git_context_set_promotion_target_for_turn, git_context_create_task_for_turn, or git_context_ask_clarification_for_turn.",
     ],
     modelFacing: true,
   },

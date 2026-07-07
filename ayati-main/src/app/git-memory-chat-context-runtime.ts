@@ -128,6 +128,16 @@ export interface GitMemoryChatContextActivateTaskTurnInput {
   at: string;
 }
 
+export interface GitMemoryChatContextCreateTaskTurnInput {
+  clientId: string;
+  turn: GitMemoryChatContextPreparedTurn | null;
+  title: string;
+  objective: string;
+  reason: string;
+  sessionRunId?: GitMemoryRunId;
+  at: string;
+}
+
 export type GitMemoryChatContextRoutedTurn = RoutedGitMemoryUserTurn & {
   harnessContext: HarnessContextInput;
 };
@@ -137,6 +147,7 @@ export interface GitMemoryChatContextRuntime {
   startSessionRun(input: GitMemoryChatContextStartSessionRunInput): Promise<StartGitMemorySessionRunResult | null>;
   routeTaskTurn(input: GitMemoryChatContextRouteTaskTurnInput): Promise<GitMemoryChatContextRoutedTurn | null>;
   activateTaskTurn(input: GitMemoryChatContextActivateTaskTurnInput): Promise<GitMemoryChatContextRoutedTurn | null>;
+  createTaskTurn?(input: GitMemoryChatContextCreateTaskTurnInput): Promise<GitMemoryChatContextRoutedTurn | null>;
   finalizeSessionRun(input: GitMemoryChatContextFinalizeSessionRunInput): Promise<FinalizeGitMemorySessionRunResult | null>;
   completeTaskRun(input: GitMemoryChatContextCompleteTaskRunInput): Promise<FinalizeGitMemoryTaskRunResult | null>;
   recordSessionRunStep(input: GitMemoryChatContextRecordSessionRunStepInput): void;
@@ -247,6 +258,33 @@ class AppGitMemoryChatContextRuntime implements GitMemoryChatContextRuntime {
       };
     } catch (err) {
       devWarn(`[${input.clientId}] git memory active task binding failed: ${errorMessage(err)}`);
+      return null;
+    }
+  }
+
+  async createTaskTurn(
+    input: GitMemoryChatContextCreateTaskTurnInput,
+  ): Promise<GitMemoryChatContextRoutedTurn | null> {
+    if (!input.turn) {
+      return null;
+    }
+    try {
+      const routed = await this.gitMemoryRuntime.createTaskForTurn({
+        sessionId: input.turn.sessionId,
+        title: input.title,
+        objective: input.objective,
+        reason: input.reason,
+        ...(input.sessionRunId ? { sessionRunId: input.sessionRunId } : {}),
+        at: input.at,
+      });
+      return {
+        ...routed,
+        harnessContext: {
+          contextEngine: buildGitMemoryHarnessContextFromMemoryState(routed.memoryState),
+        },
+      };
+    } catch (err) {
+      devWarn(`[${input.clientId}] git memory new task target binding failed: ${errorMessage(err)}`);
       return null;
     }
   }

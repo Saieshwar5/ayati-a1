@@ -217,6 +217,7 @@ export interface LoopState {
   runPath: string;
   failureHistory: FailureRecord[];
   readProgress?: ReadProgressState;
+  promotionTarget?: PromotionTarget;
   attachedDocuments?: ManagedDocumentManifest[];
   attachmentWarnings?: string[];
   preparedAttachments?: PreparedAttachmentSummary[];
@@ -225,6 +226,15 @@ export interface LoopState {
   managedDirectories?: DirectoryAttachmentRecord[];
   harnessContext: HarnessContext;
 }
+
+export type PromotionTarget =
+  | {
+      kind: "new_task";
+      title: string;
+      objective: string;
+      createReason: string;
+      reasonDetails?: string;
+    };
 
 export type StepVerificationPolicy = "deterministic" | "llm" | "script" | "hybrid";
 export type StepExpectationCheckStatus = "passed" | "failed" | "invalid" | "skipped";
@@ -392,6 +402,12 @@ export interface CreateWorkRunRequest {
   userMessage: string;
   activeTaskId?: string;
   activeBranch?: string;
+  newTask?: {
+    title: string;
+    objective: string;
+    createReason?: string;
+    reasonDetails?: string;
+  };
 }
 
 export interface CreatedWorkRun {

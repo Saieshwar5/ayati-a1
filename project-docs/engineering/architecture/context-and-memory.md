@@ -49,15 +49,16 @@ agent may also use git-context read/search tools and turn-aware routing tools:
 `git_context_ask_clarification_for_turn`.
 
 Fresh sessions are read-capable but mutation-gated. If there is no active task,
-read-only tools can run in the session run, while mutation requires
-create-or-clarify routing first. These routing mutation tools do not consume the
-normal selected-tool budget while routing is active; otherwise normal tools can
-crowd out the very tools needed to create or bind a task. After
-`git_context_create_task_for_turn` or
-`git_context_activate_task_for_turn` returns a ready route, the runner promotes
-the active session run to the returned task run id, refreshes
-`context.git.current`, removes routing tools for the rest of the run, and then
-allows normal mutation tools.
+read-only tools can run in the session run, while mutation requires a promotion
+target, task activation, task creation, or clarification first. Prefer
+`git_context_set_promotion_target_for_turn` for new durable work: it records a
+non-durable target and does not create a task unless a later mutation tool
+promotes the active session run. Routing/target tools do not consume the normal
+selected-tool budget while routing is active; otherwise normal tools can crowd
+out the very tools needed to choose a target or bind a task. After
+activation/creation returns a ready route, or after a target is promoted by the
+first mutation, the runner refreshes `context.git.current`, removes routing
+tools for the rest of the run, and then allows normal mutation tools.
 
 If an active task exists, the turn still starts as a session run. For same-task
 continuation, the model may read first in the session run; the runner promotes

@@ -26,6 +26,8 @@ Daemon communication flow:
 11. Tool contracts/assertions turn results into verified facts and evidence.
 12. If the selected tool mutates workspace, external state, or durable task
    state, the active session run is promoted to a task run before execution.
+   For new durable work, a prior promotion target can create the task at this
+   moment instead of creating a task during read-only exploration.
 13. The progress reducer updates sparse `workState`; verified local work can mark
    `workState.status` as `done`.
 14. Completed tool work routes through a final direct assistant response so the
@@ -59,8 +61,8 @@ Git context and memory flow:
    state, focus, task state, task assets, recent runs, recent commits, recent
    evidence, facts, open work, and next step.
 6. If mutation becomes necessary, the active session run is promoted to the
-   selected or newly created task run. Pre-promotion read steps follow the same
-   run id into the task step log.
+   selected, activated, or targeted-new task run. Pre-promotion read/target
+   steps follow the same run id into the task step log.
 7. Every completed task run writes machine-readable state, run summary,
    actions, evidence manifests, final output, and task assets to the work
    branch. Read-only unpromoted runs are finalized in the session-store.

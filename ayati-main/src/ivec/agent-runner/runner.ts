@@ -100,7 +100,7 @@ interface MemoryRunContext {
   runHandle: MemoryRunHandle;
 }
 
-const FRESH_SESSION_TOOL_REPAIR_MESSAGE = "No active task exists. Create and activate the first task with git_context_create_task_for_turn before using work tools, or ask a short clarification if the request is unclear.";
+const FRESH_SESSION_TOOL_REPAIR_MESSAGE = "No active task or promotion target exists. Set a new-task promotion target with git_context_set_promotion_target_for_turn before using work tools, or ask a short clarification if the request is unclear.";
 const REPEATED_REPAIR_FAILURE_THRESHOLD = 3;
 const FILE_MUTATION_TOOL_NAMES = new Set([
   "patch_files",
@@ -1123,6 +1123,7 @@ async function executePendingRoutingAction(
     verifyOutput,
     nextWorkState: input.state.workState,
   };
+  await applyToolStateUpdates(input.state, input.deps, execution.actOutput.toolCalls);
   const stepSummary = buildStepSummary({
     stepNumber: input.stepNumber,
     action: input.decision.action,
@@ -1176,7 +1177,7 @@ function validatePendingRoutingAction(input: ExecutePendingRoutingActionInput): 
     } else if (!isGitContextAllowedDuringPendingRouting(call.tool)) {
       return [
         `Tool '${call.tool}' cannot run while the current git-memory pending turn is unbound or clarifying.`,
-        "Use git-context read/search tools and then git_context_activate_task_for_turn, git_context_create_task_for_turn, or git_context_ask_clarification_for_turn before task execution.",
+        "Use git-context read/search tools and then git_context_activate_task_for_turn, git_context_set_promotion_target_for_turn, git_context_create_task_for_turn, or git_context_ask_clarification_for_turn before task execution.",
       ].join(" ");
     }
     const validation = input.deps.toolExecutor.validate(call.tool, call.input, input.toolContext);
@@ -1571,6 +1572,14 @@ function buildCreateWorkRunRequest(state: LoopState, reason: string) {
     ...(focus?.status === "active" ? {
       activeTaskId: focus.workId,
       activeBranch: branchFromRef(focus.ref),
+    } : {}),
+    ...(state.promotionTarget?.kind === "new_task" ? {
+      newTask: {
+        title: state.promotionTarget.title,
+        objective: state.promotionTarget.objective,
+        createReason: state.promotionTarget.createReason,
+        ...(state.promotionTarget.reasonDetails ? { reasonDetails: state.promotionTarget.reasonDetails } : {}),
+      },
     } : {}),
   };
 }
@@ -2243,6 +2252,24 @@ async function applyToolStateUpdates(state: LoopState, deps: AgentLoopDeps, call
           },
         } : {}),
       }));
+      continue;
+    }
+    if (update["type"] === "set_promotion_target") {
+      const kind = readString(update["kind"]);
+      const title = readString(update["title"]);
+      const objective = readString(update["objective"]);
+      const createReason = readString(update["createReason"]);
+      if (kind !== "new_task" || !title || !objective || !createReason) {
+        continue;
+      }
+      const reasonDetails = readString(update["reasonDetails"]);
+      state.promotionTarget = {
+        kind: "new_task",
+        title,
+        objective,
+        createReason,
+        ...(reasonDetails ? { reasonDetails } : {}),
+      };
     }
   }
 }

@@ -22,6 +22,7 @@ import type { RepairCode } from "./repair-policy.js";
 export type RuntimeCapabilityModeName =
   | "task_run"
   | "active_task_ready"
+  | "promotion_target_ready"
   | "fresh_session_routing"
   | "pre_task_routing"
   | "session_only";
@@ -91,7 +92,7 @@ const FRESH_SESSION_ROUTING_RULES = [
   "Create a task only when the current user request has a concrete deliverable and enough detail to begin work now.",
   "Do not create a task for early conversation, brainstorming, vague intent, preferences, or discovery. Reply directly with one short clarifying question.",
   "A concrete deliverable means the user has specified what to make, change, analyze, or produce, and the expected output is clear enough to start without another user answer.",
-  "For clear durable work with no active task, call git_context_create_task_for_turn with title, objective, and createReason \"no_active_task\". If an active task exists, same-task continuation should use normal work tools directly; create a new task only for valid separate work with createReason \"explicit_user_requested_new_task\", \"new_unrelated_goal\", \"new_independent_artifact\", or \"separate_parallel_workstream\".",
+  "For clear durable work with no active task, call git_context_set_promotion_target_for_turn with title, objective, and createReason \"no_active_task\". If mutation later becomes necessary, the runtime creates that task during promotion. If an active task exists, same-task continuation should use normal work tools directly; set a new-task target only for valid separate work with createReason \"explicit_user_requested_new_task\", \"new_unrelated_goal\", \"new_independent_artifact\", or \"separate_parallel_workstream\".",
   "Never print task metadata JSON as the assistant response. Put task metadata in the native tool call arguments.",
 ];
 
@@ -102,6 +103,7 @@ export function detectRuntimeCapabilityMode(input: {
 }): RuntimeCapabilityMode {
   const hasWorkRun = Boolean(input.state.runId || input.workRunHandle?.runId);
   const hasSessionRun = Boolean(input.sessionRunHandle?.runId);
+  const hasPromotionTarget = Boolean(input.state.promotionTarget);
   const focusStatus = input.state.harnessContext.contextEngine?.focus.status;
   const pendingTurnStatus = input.state.harnessContext.contextEngine?.pendingTurn?.routingStatus;
   const routingWindow = buildRuntimeRoutingWindow(input.state, hasWorkRun, pendingTurnStatus);
@@ -126,6 +128,23 @@ export function detectRuntimeCapabilityMode(input: {
     };
   }
 
+  if (hasPromotionTarget) {
+    return {
+      ...common,
+      name: "promotion_target_ready",
+      whyActive: "A non-durable promotion target exists for the current session run.",
+      allowedActions: [
+        "direct_reply",
+        "decision_load_tools",
+        "normal_work_tools",
+        ...GIT_CONTEXT_READ_ONLY_TOOL_NAMES,
+      ],
+      blockedCapabilities: ["task_routing_target_already_selected"],
+      next: "Use normal work tools to create/bind the target task through promotion, load missing tools if needed, or reply without creating a task.",
+      allowToolLoading: true,
+    };
+  }
+
   if (focusStatus === "none") {
     if (hasSessionRun) {
       return {
@@ -144,7 +163,7 @@ export function detectRuntimeCapabilityMode(input: {
           "destructive_tools_until_task_promotion",
           "task_activation",
         ],
-        next: "Use read-only tools for inspection, create the first task before durable mutation, ask a short clarification, or reply directly.",
+        next: "Use read-only tools for inspection, set a promotion target before durable mutation, ask a short clarification, or reply directly.",
         rules: FRESH_SESSION_ROUTING_RULES,
         repairCode: "R_FRESH_SESSION_NEEDS_TASK",
         allowToolLoading: true,
@@ -247,6 +266,10 @@ export function isRuntimeToolAllowed(mode: RuntimeCapabilityMode, toolName: stri
     return !isTaskRoutingMutation(taxonomy);
   }
 
+  if (mode.name === "promotion_target_ready") {
+    return !isTaskRoutingMutation(taxonomy);
+  }
+
   if (mode.name === "active_task_ready") {
     if (isTaskRoutingMutation(taxonomy)) {
       return Boolean(mode.routingWindow?.open) && taxonomy.canRunBeforeTask;
@@ -274,7 +297,7 @@ export function filterToolsForRuntimeMode(mode: RuntimeCapabilityMode, tools: To
 }
 
 export function runtimeToolPhase(mode: RuntimeCapabilityMode, selectedToolCount = 0): ToolPhase {
-  if (mode.name === "task_run" || mode.name === "active_task_ready" || mode.hasWorkRun) {
+  if (mode.name === "task_run" || mode.name === "active_task_ready" || mode.name === "promotion_target_ready" || mode.hasWorkRun) {
     return "task_run";
   }
   if (mode.name === "fresh_session_routing" || mode.name === "pre_task_routing" || mode.routingWindow?.open) {

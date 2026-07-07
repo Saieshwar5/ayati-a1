@@ -91,11 +91,15 @@ and the turn-aware routing tools:
 - `git_context_ask_clarification_for_turn`
 
 When a fresh session has no active task, read-only tools remain available on the
-session run. Mutating work still requires task creation or clarification first:
-the initial routing mutation surface exposes `git_context_create_task_for_turn`
-and `git_context_ask_clarification_for_turn`. If the model tries to call a
-mutation tool before a task exists, the runner records repair feedback instead
-of throwing a missing-run error to the user.
+session run. Mutating work still requires a promotion target or clarification
+first: the initial routing surface exposes
+`git_context_set_promotion_target_for_turn`,
+`git_context_create_task_for_turn`, and
+`git_context_ask_clarification_for_turn`. The target tool is preferred for new
+durable work because it records intent without creating a durable task; the task
+is created only if a later mutation tool promotes the active session run. If the
+model tries to call a mutation tool before a task or target exists, the runner
+records repair feedback instead of throwing a missing-run error to the user.
 
 Routing mutation tools are treated as routing controls, not ordinary work
 tools. During routing modes they are pinned outside the normal selected-tool and
@@ -118,7 +122,7 @@ the rest of that run, and prepares normal work tools for the original user
 message. This allows flows such as:
 
 ```text
-fresh request -> git_context_create_task_for_turn -> write_files -> final reply
+fresh request -> git_context_set_promotion_target_for_turn -> write_files -> final reply
 read-only question -> read_file -> final reply stored as session run
 same active task -> read_file -> write_files -> final reply stored as task run
 different existing task -> git_context_activate_task_for_turn -> normal work tool -> final reply

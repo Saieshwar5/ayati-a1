@@ -41,6 +41,7 @@ context.timeline + context.git + context.tools + context.harness + context.run +
   events:
   - every provider-handled turn starts as a session run,
   - read-only tools can execute before task binding,
+  - new-task targets can be recorded without creating a durable task,
   - mutation promotes the active session run into a task run,
   - unpromoted runs finalize in `session-store`,
   - promoted runs finalize only in the task directory using the same run id.
@@ -49,8 +50,8 @@ context.timeline + context.git + context.tools + context.harness + context.run +
 - Pending-routing guard: normal task tools cannot run while a pending turn is
   unbound or clarifying.
 - Fresh-session mutation gate: when no active task exists, read-only tools can
-  run in the session run, while mutation repairs back to task creation or
-  clarification instead of crashing with a missing run.
+  run in the session run, while mutation repairs back to promotion-target
+  selection or clarification instead of crashing with a missing run.
 - Active context refresh after activate/create routing.
 - Same-turn continuation after routing: create/activate tools return a real
   run id, routing tools are deactivated, normal work tools are prepared, and the

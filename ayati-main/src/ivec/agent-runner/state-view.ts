@@ -241,7 +241,7 @@ function buildPendingTurnWorkingFeedback(state: LoopState): PromptWorkingFeedbac
       severity: "warning",
       source: "tool_validation",
       message: "The current git-context pending turn is unbound. Normal task tools are not valid until this turn is routed to an existing task, a new task, or clarification.",
-      retryHint: "Use git-context read/search tools if needed, then call git_context_activate_task_for_turn, git_context_create_task_for_turn, or git_context_ask_clarification_for_turn.",
+      retryHint: "Use git-context read/search tools if needed, then call git_context_activate_task_for_turn, git_context_set_promotion_target_for_turn, git_context_create_task_for_turn, or git_context_ask_clarification_for_turn.",
     };
   }
   if (pendingTurn?.routingStatus === "clarifying") {
@@ -277,8 +277,8 @@ function isToolValidationReason(reason: string): boolean {
 }
 
 function buildFailureRetryHint(failureType: LoopState["failureHistory"][number]["failureType"], reason: string): string | undefined {
-  if (reason.includes("No active task exists")) {
-    return "Use git_context_create_task_for_turn first, or ask a short clarification if the request is unclear.";
+  if (reason.includes("No active task exists") || reason.includes("No active task or promotion target exists")) {
+    return "Use git_context_set_promotion_target_for_turn first, or ask a short clarification if the request is unclear.";
   }
   if (failureType === "validation_error" || isToolValidationReason(reason)) {
     return "Retry the selected executable tool with all required schema fields. Do not use an empty input object.";

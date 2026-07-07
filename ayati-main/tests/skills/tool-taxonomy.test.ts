@@ -42,6 +42,12 @@ describe("tool taxonomy", () => {
     expect(getToolTaxonomy("write_files")).toMatchObject({ lifetime: "run" });
     expect(getToolLoadGroups("write_files")).toEqual(expect.arrayContaining(["file:write", "file:create"]));
 
+    expect(isRoutingTool("git_context_set_promotion_target_for_turn")).toBe(true);
+    expect(isMutationTool("git_context_set_promotion_target_for_turn")).toBe(true);
+    expect(canRunBeforeTask("git_context_set_promotion_target_for_turn")).toBe(true);
+    expect(isToolAllowedInPhase("git_context_set_promotion_target_for_turn", "routing")).toBe(true);
+    expect(isToolAllowedInPhase("git_context_set_promotion_target_for_turn", "task_run")).toBe(false);
+
     expect(isRoutingTool("git_context_create_task_for_turn")).toBe(true);
     expect(isMutationTool("git_context_create_task_for_turn")).toBe(true);
     expect(canRunBeforeTask("git_context_create_task_for_turn")).toBe(true);

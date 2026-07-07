@@ -133,6 +133,7 @@ const GIT_CONTEXT_PROMPT_BLOCK = [
   "Use git_context_read_run_step to recover full persisted step or tool-call data from a compact context.run.toolCalls stepRef.",
   "Use git_context_search_evidence to find compact durable evidence records by summary, tool, fact, artifact, run id, action id, or evidence ref.",
   "Use git_context_log to inspect compact commit history for main or one task branch.",
+  "Use git_context_set_promotion_target_for_turn to choose a new-task target without creating a task yet; the task is created only if a later mutation tool promotes the active session run.",
   "Use git_context_activate_task_for_turn when the current pending user turn belongs to a different existing task.",
   "Use git_context_create_task_for_turn only when the current pending user turn starts new durable task work with a valid createReason.",
   "If an active task exists, same-task continuation should use normal work tools directly. Create a new task only for valid separate work such as explicit_user_requested_new_task, new_unrelated_goal, new_independent_artifact, or separate_parallel_workstream.",
@@ -162,6 +163,7 @@ export function createGitContextSkill(deps: GitContextSkillDeps): SkillDefinitio
       createReadRunStepTool(store),
       createSearchEvidenceTool(store),
       createLogTool(store),
+      createSetPromotionTargetForTurnTool(runtime),
       createActivateTaskForTurnTool(store, runtime),
       createCreateTaskForTurnTool(runtime),
       createAskClarificationForTurnTool(runtime),
@@ -652,6 +654,81 @@ function createActivateTaskForTurnTool(
           code: "GIT_CONTEXT_TURN_TASK_ACTIVATED",
           message: "Pending turn activated on existing git-context task.",
           structuredContent: withHarnessContext(route),
+        });
+      } catch (err) {
+        return gitContextMutationFailed(err);
+      }
+    },
+  };
+}
+
+function createSetPromotionTargetForTurnTool(runtime: GitMemoryRuntime | undefined): ToolDefinition {
+  return {
+    name: "git_context_set_promotion_target_for_turn",
+    description: "Choose a new-task promotion target for the current pending user turn without creating a durable task yet. The runtime creates the task only if a later mutation tool needs promotion.",
+    inputSchema: sessionScopedInputSchema({
+      title: {
+        type: "string",
+        description: "Short task title to use if mutation later promotes the active session run.",
+      },
+      objective: {
+        type: "string",
+        description: "Durable task objective to use if mutation later promotes the active session run.",
+      },
+      createReason: {
+        type: "string",
+        enum: [...CREATE_TASK_REASON_CODES],
+        description: "Deterministic reason code for the future task target. Do not set a new-task target for same active task continuation.",
+      },
+      reasonDetails: {
+        type: "string",
+        description: "Optional human-readable details for logs. This does not create a task.",
+      },
+    }, ["title", "objective", "createReason"]),
+    outputSchema: genericObjectOutputSchema,
+    annotations: gitContextTurnMutationAnnotations(),
+    resultContract: gitContextSucceededContract("turn_promotion_target_set"),
+    selectionHints: {
+      tags: ["git-context", "pending-turn", "task", "target", "promotion", "routing"],
+      aliases: ["set promotion target", "draft task target", "choose new task target"],
+      domain: "git_context",
+      priority: 8,
+    },
+    async execute(input, context): Promise<ToolResult> {
+      const parsed = parseCreateTaskInput(input, context);
+      if ("ok" in parsed) {
+        return parsed;
+      }
+      try {
+        if (runtime) {
+          const activeTaskGuard = await validateCreateTaskForActiveFocus(runtime, parsed);
+          if (activeTaskGuard) {
+            return activeTaskGuard;
+          }
+        }
+        return okJsonResult({
+          code: "GIT_CONTEXT_TURN_PROMOTION_TARGET_SET",
+          message: "Pending turn promotion target recorded. No durable task was created.",
+          structuredContent: {
+            status: "ready",
+            target: {
+              kind: "new_task",
+              title: parsed.title,
+              objective: parsed.objective,
+              createReason: parsed.createReason,
+              ...(parsed.reasonDetails ? { reasonDetails: parsed.reasonDetails } : {}),
+            },
+          },
+          meta: {
+            stateUpdates: [{
+              type: "set_promotion_target",
+              kind: "new_task",
+              title: parsed.title,
+              objective: parsed.objective,
+              createReason: parsed.createReason,
+              ...(parsed.reasonDetails ? { reasonDetails: parsed.reasonDetails } : {}),
+            }],
+          },
         });
       } catch (err) {
         return gitContextMutationFailed(err);

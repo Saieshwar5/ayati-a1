@@ -24,6 +24,7 @@ import {
 import { FileLibrary } from "../../src/files/file-library.js";
 import { readFileTool } from "../../src/skills/builtins/filesystem/read-file.js";
 import { writeFilesTool } from "../../src/skills/builtins/filesystem/write-files.js";
+import { createGitContextSkill } from "../../src/skills/builtins/git-context/index.js";
 import { createToolExecutor } from "../../src/skills/tool-executor.js";
 
 describe("createChatTurnRuntime", () => {
@@ -865,6 +866,208 @@ describe("createChatTurnRuntime", () => {
         toolCalls: [{ tool: "read_file", status: "success" }],
       });
       expect(await driver.listTreePaths(GIT_MEMORY_MAIN_REF, "tasks")).toEqual([]);
+    } finally {
+      if (previousWorkspaceDir === undefined) {
+        delete process.env["AYATI_WORKSPACE_DIR"];
+      } else {
+        process.env["AYATI_WORKSPACE_DIR"] = previousWorkspaceDir;
+      }
+      rmSync(rootDir, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps a new-task promotion target non-durable when no mutation follows", async () => {
+    const rootDir = mkdtempSync(join(tmpdir(), "ayati-chat-runtime-target-only-"));
+    const contextStoreDir = join(rootDir, "context");
+    const dataDir = join(rootDir, "data");
+
+    try {
+      const store = new GitMemoryDailySessionStore({
+        contextStoreDir,
+        now: () => new Date("2026-06-28T09:00:00.000Z"),
+      });
+      const gitMemoryRuntime = createGitMemoryRuntime({
+        contextStoreDir,
+        timezone: "Asia/Kolkata",
+        agentId: "local",
+        store,
+        now: () => new Date("2026-06-28T09:00:00.000Z"),
+      });
+      const gitContextSkill = createGitContextSkill({ contextStoreDir, gitMemoryRuntime });
+      const provider = createAgentDecisionProvider([
+        {
+          kind: "act",
+          action: {
+            mode: "single",
+            calls: [{
+              id: "target_notes",
+              tool: "git_context_set_promotion_target_for_turn",
+              input: {
+                title: "Create notes",
+                objective: "Create a notes file.",
+                createReason: "no_active_task",
+              },
+              dependsOn: [],
+              purpose: "Choose the future task target without creating it yet.",
+            }],
+            allowedTools: ["git_context_set_promotion_target_for_turn"],
+            assertions: [],
+          },
+        },
+        {
+          kind: "reply",
+          status: "completed",
+          message: "I can create the notes file when you want me to proceed.",
+        },
+      ]);
+      const runtime = createChatTurnRuntime({
+        provider,
+        dataDir,
+        chatContextRuntime: createGitMemoryChatContextRuntime({ gitMemoryRuntime }),
+        toolExecutor: createToolExecutor(gitContextSkill.tools),
+        now: () => new Date("2026-06-28T09:00:00.000Z"),
+      });
+
+      await runtime.processChat({
+        clientId: "local",
+        content: "maybe create a notes file",
+        attachments: [],
+      });
+
+      const sessionId = "S-20260628-local";
+      const runId = "R-20260628-0001";
+      const driver = new GitMemoryWorktreeGitDriver(join(contextStoreDir, "sessions", sessionId));
+      const sessionStore = await driver.openSubmoduleRepo(GIT_MEMORY_SESSION_STORE_DIR);
+      expect(JSON.parse(await sessionStore.readFile(
+        GIT_MEMORY_MAIN_REF,
+        gitMemorySessionStoreRunPath(sessionId, runId),
+      ) ?? "{}")).toMatchObject({
+        sessionId,
+        runId,
+        runClass: "session",
+        status: "completed",
+        toolCallCount: 1,
+        toolsUsed: ["git_context_set_promotion_target_for_turn"],
+      });
+      expect(await driver.listTreePaths(GIT_MEMORY_MAIN_REF, "tasks")).toEqual([]);
+    } finally {
+      rmSync(rootDir, { recursive: true, force: true });
+    }
+  });
+
+  it("creates the targeted new task only when mutation promotes the session run", async () => {
+    const rootDir = mkdtempSync(join(tmpdir(), "ayati-chat-runtime-target-promote-"));
+    const contextStoreDir = join(rootDir, "context");
+    const dataDir = join(rootDir, "data");
+    const workspaceDir = join(rootDir, "workspace");
+    const previousWorkspaceDir = process.env["AYATI_WORKSPACE_DIR"];
+    mkdirSync(workspaceDir, { recursive: true });
+    process.env["AYATI_WORKSPACE_DIR"] = workspaceDir;
+
+    try {
+      const store = new GitMemoryDailySessionStore({
+        contextStoreDir,
+        now: () => new Date("2026-06-28T09:00:00.000Z"),
+      });
+      const gitMemoryRuntime = createGitMemoryRuntime({
+        contextStoreDir,
+        timezone: "Asia/Kolkata",
+        agentId: "local",
+        store,
+        now: () => new Date("2026-06-28T09:00:00.000Z"),
+      });
+      const chatContextRuntime = createGitMemoryChatContextRuntime({ gitMemoryRuntime });
+      const gitContextSkill = createGitContextSkill({ contextStoreDir, gitMemoryRuntime });
+      const provider = createAgentDecisionProvider([
+        {
+          kind: "act",
+          action: {
+            mode: "single",
+            calls: [{
+              id: "target_notes",
+              tool: "git_context_set_promotion_target_for_turn",
+              input: {
+                title: "Create notes",
+                objective: "Create a notes file.",
+                createReason: "no_active_task",
+              },
+              dependsOn: [],
+              purpose: "Choose the future task target before writing.",
+            }],
+            allowedTools: ["git_context_set_promotion_target_for_turn"],
+            assertions: [],
+          },
+        },
+        {
+          kind: "act",
+          action: {
+            mode: "single",
+            calls: [{
+              id: "write_notes",
+              tool: "write_files",
+              input: {
+                files: [{ path: "notes.md", content: "# Notes\n\nCreated after promotion.\n" }],
+              },
+              dependsOn: [],
+              purpose: "Create the requested notes file.",
+            }],
+            allowedTools: ["write_files"],
+            assertions: [],
+            completion: {
+              intent: "not_completion",
+              reason: "The task work state still needs to be updated after the file write.",
+            },
+          },
+        },
+        {
+          kind: "update_work_state",
+          update: {
+            status: "done",
+            summary: "Created the notes file.",
+            openWork: [],
+            blockers: [],
+          },
+        },
+        {
+          kind: "reply",
+          status: "completed",
+          message: "Created `notes.md`.",
+        },
+      ]);
+      const runtime = createChatTurnRuntime({
+        provider,
+        dataDir,
+        chatContextRuntime,
+        toolExecutor: createToolExecutor([...gitContextSkill.tools, writeFilesTool]),
+        now: () => new Date("2026-06-28T09:00:00.000Z"),
+      });
+
+      await runtime.processChat({
+        clientId: "local",
+        content: "create a notes file",
+        attachments: [],
+      });
+
+      const sessionId = "S-20260628-local";
+      const runId = "R-20260628-0001";
+      const driver = new GitMemoryWorktreeGitDriver(join(contextStoreDir, "sessions", sessionId));
+      const sessionStore = await driver.openSubmoduleRepo(GIT_MEMORY_SESSION_STORE_DIR);
+      expect(await sessionStore.readFile(
+        GIT_MEMORY_MAIN_REF,
+        gitMemorySessionStoreRunPath(sessionId, runId),
+      )).toBeNull();
+
+      const context = await chatContextRuntime.buildActiveContext(sessionId);
+      expect(context.task).toMatchObject({
+        title: "Create notes",
+        objective: "Create a notes file.",
+      });
+      expect(context.task?.recentRuns[0]).toMatchObject({
+        runId,
+        status: "completed",
+        toolCallCount: 2,
+      });
+      expect(readFileSync(join(workspaceDir, "notes.md"), "utf-8")).toContain("Created after promotion.");
     } finally {
       if (previousWorkspaceDir === undefined) {
         delete process.env["AYATI_WORKSPACE_DIR"];
