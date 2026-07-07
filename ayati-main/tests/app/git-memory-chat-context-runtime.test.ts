@@ -350,6 +350,125 @@ describe("createGitMemoryChatContextRuntime", () => {
     }
   });
 
+  it("prepares clarification answers without carrying the old clarifying pending turn", async () => {
+    const storeDir = mkdtempSync(join(tmpdir(), "ayati-git-memory-chat-context-"));
+    try {
+      const gitMemoryRuntime = createGitMemoryRuntime({
+        contextStoreDir: storeDir,
+        timezone: "Asia/Kolkata",
+        agentId: "local",
+      });
+      const runtime = createGitMemoryChatContextRuntime({ gitMemoryRuntime });
+      const api = await runtime.prepareUserTurn({
+        clientId: "local",
+        userMessage: "Fix upload API",
+        at: "2026-06-28T09:00:00+05:30",
+      });
+      const apiRoute = await runtime.routeTaskTurn({
+        clientId: "local",
+        turn: api,
+        userMessage: "Fix upload API",
+        at: "2026-06-28T09:00:01+05:30",
+      });
+      if (apiRoute?.status !== "ready") {
+        throw new Error(`Expected ready API route, got ${apiRoute?.status}.`);
+      }
+      await runtime.completeTaskRun({
+        clientId: "local",
+        turn: api,
+        taskId: apiRoute.taskId,
+        runId: apiRoute.runId,
+        result: {
+          type: "reply",
+          status: "completed",
+          content: "Upload API task noted.",
+          totalIterations: 1,
+          totalToolCalls: 0,
+          completedSteps: [],
+        },
+        conversationRefs: apiRoute.conversationRefs,
+        at: "2026-06-28T09:01:00+05:30",
+      });
+      const ui = await runtime.prepareUserTurn({
+        clientId: "local",
+        userMessage: "Fix upload UI",
+        at: "2026-06-28T09:05:00+05:30",
+      });
+      const uiRoute = await runtime.routeTaskTurn({
+        clientId: "local",
+        turn: ui,
+        userMessage: "Fix upload UI",
+        at: "2026-06-28T09:05:01+05:30",
+      });
+      if (uiRoute?.status !== "ready") {
+        throw new Error(`Expected ready UI route, got ${uiRoute?.status}.`);
+      }
+      await runtime.completeTaskRun({
+        clientId: "local",
+        turn: ui,
+        taskId: uiRoute.taskId,
+        runId: uiRoute.runId,
+        result: {
+          type: "reply",
+          status: "completed",
+          content: "Upload UI task noted.",
+          totalIterations: 1,
+          totalToolCalls: 0,
+          completedSteps: [],
+        },
+        conversationRefs: uiRoute.conversationRefs,
+        at: "2026-06-28T09:06:00+05:30",
+      });
+      const ambiguous = await runtime.prepareUserTurn({
+        clientId: "local",
+        userMessage: "continue upload",
+        at: "2026-06-28T09:10:00+05:30",
+      });
+      await gitMemoryRuntime.askClarificationForTurn({
+        sessionId: ambiguous.sessionId,
+        reason: "The upload follow-up could refer to the API or UI task.",
+        candidateTaskIds: [apiRoute.taskId, uiRoute.taskId],
+        at: "2026-06-28T09:10:01+05:30",
+      });
+
+      const answer = await runtime.prepareUserTurn({
+        clientId: "local",
+        userMessage: "the API one",
+        at: "2026-06-28T09:11:00+05:30",
+      });
+      expect(answer.context.pendingTurn).toBeUndefined();
+      expect(answer.memoryState.pendingTurn).toBeUndefined();
+
+      const resolved = await runtime.activateTaskTurn({
+        clientId: "local",
+        turn: answer,
+        taskId: apiRoute.taskId,
+        reason: "The user clarified that the API upload task owns this follow-up.",
+        at: "2026-06-28T09:11:01+05:30",
+      });
+
+      expect(resolved).toMatchObject({
+        status: "ready",
+        taskId: apiRoute.taskId,
+        conversationRefs: [{ fromSeq: answer.messageSeq, toSeq: answer.messageSeq }],
+        harnessContext: {
+          contextEngine: {
+            pendingTurn: {
+              text: "the API one",
+              routingStatus: "bound",
+              workId: apiRoute.taskId,
+            },
+          },
+        },
+      });
+      expect(resolved?.conversationRefs).not.toEqual([
+        { fromSeq: ambiguous.messageSeq, toSeq: ambiguous.messageSeq },
+      ]);
+    } finally {
+      rmSync(storeDir, { recursive: true, force: true });
+    }
+  });
+
   it("commits completed task runs through the git-memory bridge", async () => {
     const storeDir = mkdtempSync(join(tmpdir(), "ayati-git-memory-chat-context-"));
     try {

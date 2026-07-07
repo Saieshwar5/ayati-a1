@@ -296,7 +296,7 @@ export class GitMemoryRuntime {
       createdAt: at,
       record: userMessage,
     });
-    this.clearUnboundPendingTurn(session.sessionId);
+    this.clearNonBoundPendingTurn(session.sessionId);
     const memoryState = await this.hydrateMemoryState(session.sessionId);
     const context = buildGitMemoryContextPackFromMemoryState(memoryState);
     return {
@@ -1160,9 +1160,9 @@ export class GitMemoryRuntime {
     }
   }
 
-  private clearUnboundPendingTurn(sessionId: GitMemorySessionId): void {
+  private clearNonBoundPendingTurn(sessionId: GitMemorySessionId): void {
     const existing = this.pendingTurns.get(sessionId);
-    if (!existing || existing.routingStatus === "unbound") {
+    if (!existing || existing.routingStatus !== "bound") {
       this.pendingTurns.delete(sessionId);
     }
   }
