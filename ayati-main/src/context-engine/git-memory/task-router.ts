@@ -25,6 +25,7 @@ export interface ResolveGitMemoryTaskRouteInput {
 export interface ApplyGitMemoryTaskRouteInput extends ResolveGitMemoryTaskRouteInput, GitMemoryConversationSeqRange {
   at?: string;
   runId?: GitMemoryRunId;
+  sessionRunId?: GitMemoryRunId;
   title?: string;
   objective?: string;
 }

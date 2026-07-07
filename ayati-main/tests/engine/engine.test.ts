@@ -149,8 +149,14 @@ function createChatContextRuntime(
   const prepared = readyGitMemoryPreparedTurn();
   return {
     prepareUserTurn: vi.fn().mockResolvedValue(prepared),
+    startSessionRun: vi.fn().mockResolvedValue({ runId: "R-20260627-0001" }),
     routeTaskTurn: vi.fn().mockResolvedValue(routedTurn),
     activateTaskTurn: vi.fn().mockResolvedValue(routedTurn.status === "ready" ? routedTurn : null),
+    finalizeSessionRun: vi.fn().mockResolvedValue({
+      sessionId: prepared.sessionId,
+      runId: "R-20260627-0001",
+      sessionStoreCommit: "session-store-commit",
+    }),
     completeTaskRun: vi.fn().mockResolvedValue({
       taskId: routedTurn.status === "ready" ? routedTurn.taskId : "W-20260627-0001",
       branch: routedTurn.status === "ready" ? routedTurn.branch : "task/W-20260627-0001-analyze-invoice",
@@ -169,6 +175,7 @@ function createChatContextRuntime(
         commit: "task-commit",
       },
     }),
+    recordSessionRunStep: vi.fn().mockResolvedValue(undefined),
     recordTaskRunStep: vi.fn().mockResolvedValue(undefined),
     recordAssistantMessage: vi.fn().mockResolvedValue({
       v: 1,
@@ -185,8 +192,14 @@ function createUnboundChatContextRuntime(): GitMemoryChatContextRuntime {
   const prepared = unboundGitMemoryPreparedTurn();
   return {
     prepareUserTurn: vi.fn().mockResolvedValue(prepared),
+    startSessionRun: vi.fn().mockResolvedValue({ runId: "R-20260627-0004" }),
     routeTaskTurn: vi.fn().mockResolvedValue(null),
     activateTaskTurn: vi.fn().mockResolvedValue(null),
+    finalizeSessionRun: vi.fn().mockResolvedValue({
+      sessionId: prepared.sessionId,
+      runId: "R-20260627-0004",
+      sessionStoreCommit: "session-store-commit",
+    }),
     completeTaskRun: vi.fn().mockResolvedValue({
       taskId: "W-20260627-0002",
       branch: "task/W-20260627-0002-upload-ui",
@@ -194,6 +207,7 @@ function createUnboundChatContextRuntime(): GitMemoryChatContextRuntime {
       runId: "R-20260627-0004",
       taskCommit: "task-commit",
     }),
+    recordSessionRunStep: vi.fn().mockResolvedValue(undefined),
     recordTaskRunStep: vi.fn().mockResolvedValue(undefined),
     recordAssistantMessage: vi.fn().mockResolvedValue({
       v: 1,
@@ -211,8 +225,14 @@ function createActiveUnroutedChatContextRuntime(): GitMemoryChatContextRuntime {
   const routed = readyGitMemoryRoutedTurn();
   return {
     prepareUserTurn: vi.fn().mockResolvedValue(prepared),
+    startSessionRun: vi.fn().mockResolvedValue({ runId: routed.runId }),
     routeTaskTurn: vi.fn().mockResolvedValue(null),
     activateTaskTurn: vi.fn().mockResolvedValue(routed),
+    finalizeSessionRun: vi.fn().mockResolvedValue({
+      sessionId: prepared.sessionId,
+      runId: routed.runId,
+      sessionStoreCommit: "session-store-commit",
+    }),
     completeTaskRun: vi.fn().mockResolvedValue({
       taskId: routed.taskId,
       branch: routed.branch,
@@ -220,6 +240,7 @@ function createActiveUnroutedChatContextRuntime(): GitMemoryChatContextRuntime {
       runId: routed.runId,
       taskCommit: "task-commit",
     }),
+    recordSessionRunStep: vi.fn().mockResolvedValue(undefined),
     recordTaskRunStep: vi.fn().mockResolvedValue(undefined),
     recordAssistantMessage: vi.fn().mockResolvedValue({
       v: 1,
@@ -852,6 +873,55 @@ describe("IVecEngine", () => {
           type: "reply",
           content: "mock reply",
         });
+      });
+    } finally {
+      rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it("finalizes a session run for unbound direct replies without committing a task run", async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "ayati-eng-session-run-"));
+    try {
+      const provider = createMockProvider({
+        generateTurn: vi.fn<(input: LlmTurnInput) => Promise<LlmTurnOutput>>()
+          .mockResolvedValue({
+            type: "assistant",
+            content: JSON.stringify({
+              kind: "reply",
+              message: "Upload handling lives in the upload service.",
+              status: "completed",
+            }),
+          }),
+      });
+      const onReply = vi.fn();
+      const chatContextRuntime = createUnboundChatContextRuntime();
+      const engine = createEngine({
+        onReply,
+        provider,
+        dataDir,
+        chatContextRuntime,
+        systemEventPolicy: createSystemEventPolicy(),
+      });
+
+      await engine.start();
+      engine.handleMessage("c1", { type: "chat", content: "where is upload handling?" });
+
+      await vi.waitFor(() => {
+        expect(chatContextRuntime.finalizeSessionRun).toHaveBeenCalledWith(expect.objectContaining({
+          clientId: "c1",
+          runId: "R-20260627-0004",
+          status: "completed",
+          assistantResponse: "Upload handling lives in the upload service.",
+        }));
+      });
+      expect(chatContextRuntime.completeTaskRun).not.toHaveBeenCalled();
+      expect(chatContextRuntime.recordAssistantMessage).toHaveBeenCalledWith(expect.objectContaining({
+        runId: "R-20260627-0004",
+        message: "Upload handling lives in the upload service.",
+      }));
+      expect(onReply).toHaveBeenCalledWith("c1", {
+        type: "reply",
+        content: "Upload handling lives in the upload service.",
       });
     } finally {
       rmSync(dataDir, { recursive: true, force: true });

@@ -5,7 +5,7 @@ import { prepareIncomingAttachments } from "../../documents/attachment-preparer.
 import type { PreparedAttachmentRecord } from "../../documents/prepared-attachment-registry.js";
 import type { PreparedAttachmentSummary } from "../../documents/types.js";
 import type { MemoryRunHandle, RunRecorder, SessionInputHandle } from "../../memory/types.js";
-import type { GitMemoryStepRecord, TaskAssetRecord } from "../../context-engine/index.js";
+import type { GitMemorySessionStepRecord, GitMemoryStepRecord, TaskAssetRecord } from "../../context-engine/index.js";
 import type {
   ActOutput,
   ActToolCallRecord,
@@ -137,6 +137,7 @@ export async function runAgentLoop(
   const config: LoopConfig = resolvedConfig ?? { ...DEFAULT_LOOP_CONFIG, ...deps.config };
   const inputHandle = resolveInputHandle(deps);
   let workRunHandle = deps.runHandle;
+  const sessionRunHandle = deps.sessionRunHandle;
   const metrics = createRunMetrics();
 
   let totalToolCalls = 0;
@@ -231,7 +232,7 @@ export async function runAgentLoop(
     syncPreparedAttachmentsFromRegistry(state, deps);
     syncHarnessContext(state, deps, inputHandle);
     recordStateSnapshotMetric("final");
-    const cleanupRunId = state.runId || decisionScopeId(inputHandle);
+    const cleanupRunId = state.runId || sessionRunHandle?.runId || decisionScopeId(inputHandle);
     deps.skillActivationManager?.deactivateRun({
       clientId: deps.clientId,
       runId: cleanupRunId,
@@ -260,7 +261,7 @@ export async function runAgentLoop(
       failedVerificationCount,
       state,
     });
-    recordFeedback(deps, inputHandle, state.runId || workRunHandle?.runId, "harness", "result", {
+    recordFeedback(deps, inputHandle, state.runId || workRunHandle?.runId || sessionRunHandle?.runId, "harness", "result", {
       status: input.status,
       responseKind,
       runClass: state.runClass,
@@ -276,7 +277,7 @@ export async function runAgentLoop(
       taskSummary: summarizeTaskSummary(taskSummary),
       harnessContext: summarizeHarnessContext(state.harnessContext),
     });
-    recordFeedback(deps, inputHandle, state.runId || workRunHandle?.runId, "final", "reply", {
+    recordFeedback(deps, inputHandle, state.runId || workRunHandle?.runId || sessionRunHandle?.runId, "final", "reply", {
       status: input.status,
       responseKind,
       content: finalContent,
@@ -304,7 +305,7 @@ export async function runAgentLoop(
             ? "not_started"
             : "skipped",
           committed: false,
-          runId: state.runId || workRunHandle?.runId,
+          runId: state.runId || workRunHandle?.runId || sessionRunHandle?.runId,
         }),
         warnings: warningFlags,
       },
@@ -321,9 +322,9 @@ export async function runAgentLoop(
 
   state.userMessage = getPrimaryUserMessage(deps);
   syncHarnessContext(state, deps, inputHandle);
-  recordFeedback(deps, inputHandle, state.runId || workRunHandle?.runId, "harness", "context_input", {
+  recordFeedback(deps, inputHandle, state.runId || workRunHandle?.runId || sessionRunHandle?.runId, "harness", "context_input", {
     inputKind: state.inputKind ?? "user_message",
-    runId: state.runId || workRunHandle?.runId,
+    runId: state.runId || workRunHandle?.runId || sessionRunHandle?.runId,
     userMessage: state.userMessage,
     summary: summarizeHarnessContext(state.harnessContext),
     context: state.harnessContext,
@@ -379,7 +380,7 @@ export async function runAgentLoop(
 
     const toolContext = {
       clientId: deps.clientId,
-      runId: state.runId || decisionScopeId(inputHandle),
+      runId: state.runId || sessionRunHandle?.runId || decisionScopeId(inputHandle),
       sessionId: inputHandle.sessionId,
       stepNumber: state.iteration,
       ...(deps.uiContext ? { uiContext: deps.uiContext } : {}),
@@ -399,7 +400,7 @@ export async function runAgentLoop(
     recordToolWorkingSetFeedback({
       deps,
       inputHandle,
-      runId: state.runId || workRunHandle?.runId,
+      runId: state.runId || workRunHandle?.runId || sessionRunHandle?.runId,
       state,
       iteration: state.iteration,
       toolContextRunId: toolContext.runId,
@@ -417,7 +418,7 @@ export async function runAgentLoop(
       mode: decisionRuntimeMode,
       selectedTools,
     });
-    recordFeedback(deps, inputHandle, state.runId || workRunHandle?.runId, "decision", "prompt_summary", {
+    recordFeedback(deps, inputHandle, state.runId || workRunHandle?.runId || sessionRunHandle?.runId, "decision", "prompt_summary", {
       iteration: state.iteration,
       nativeControlTools: [
         ...(decisionRuntimeMode.allowToolLoading ? ["decision_load_tools"] : []),
@@ -457,11 +458,11 @@ export async function runAgentLoop(
         clientId: deps.clientId,
         sessionId: inputHandle.sessionId,
         seq: inputHandle.seq,
-        ...(state.runId || workRunHandle?.runId ? { runId: state.runId || workRunHandle?.runId } : {}),
+        ...(state.runId || workRunHandle?.runId || sessionRunHandle?.runId ? { runId: state.runId || workRunHandle?.runId || sessionRunHandle?.runId } : {}),
       },
     });
     discardModelWorkingNotes(decision);
-    recordFeedback(deps, inputHandle, state.runId || workRunHandle?.runId, "decision", "selected", {
+    recordFeedback(deps, inputHandle, state.runId || workRunHandle?.runId || sessionRunHandle?.runId, "decision", "selected", {
       iteration: state.iteration,
       decision: summarizeDecision(decision),
       pendingTurnStatus: state.harnessContext.contextEngine?.pendingTurn?.routingStatus,
@@ -487,7 +488,7 @@ export async function runAgentLoop(
             deps,
             inputHandle,
             state,
-            runId: state.runId || workRunHandle?.runId,
+            runId: state.runId || workRunHandle?.runId || sessionRunHandle?.runId,
           });
           state.status = "failed";
           state.finalOutput = buildFailureReply(state);
@@ -561,7 +562,7 @@ export async function runAgentLoop(
     if (decision.kind === "update_work_state") {
       const updateResult = applyAgentWorkStateUpdate(state, decision.update);
       const rejectionReason = updateResult.accepted ? undefined : updateResult.reason;
-      recordFeedback(deps, inputHandle, state.runId || workRunHandle?.runId, "work_state", updateResult.accepted ? "updated" : "rejected", {
+      recordFeedback(deps, inputHandle, state.runId || workRunHandle?.runId || sessionRunHandle?.runId, "work_state", updateResult.accepted ? "updated" : "rejected", {
         iteration: state.iteration,
         update: decision.update,
         workState: summarizeWorkState(state.workState),
@@ -617,7 +618,7 @@ export async function runAgentLoop(
     if (decision.kind === "load_tools") {
       toolLoadDecisionCount++;
       const work = workRunHandle ? await ensureWorkRun("tool_load", decision) : null;
-      const loadRunId = work?.runHandle.runId ?? decisionScopeId(inputHandle);
+      const loadRunId = work?.runHandle.runId ?? sessionRunHandle?.runId ?? decisionScopeId(inputHandle);
       const workToolContext = { ...toolContext, runId: loadRunId };
       recordFeedback(deps, inputHandle, work?.runHandle.runId, "tool_load", "requested", {
         iteration: state.iteration,
@@ -694,7 +695,7 @@ export async function runAgentLoop(
       || isPreRunGitContextAction(decision, workRunHandle);
 
     if (pendingRouting || freshSessionRouting || preRunGitContextAction) {
-      const routingRunId = decisionScopeId(inputHandle);
+      const routingRunId = sessionRunHandle?.runId ?? decisionScopeId(inputHandle);
       const routingToolContext = { ...toolContext, runId: routingRunId };
       recordFeedback(deps, inputHandle, undefined, "action", "started", {
         iteration: state.iteration,
@@ -804,10 +805,17 @@ export async function runAgentLoop(
           }),
         });
       }
-      recordTaskStep(deps, state, decision.action, stepResult, {
-        startedAt: stepStartedAt,
-        completedAt: stepCompletedAt,
-      });
+      if (state.runClass === "task") {
+        recordTaskStep(deps, state, decision.action, stepResult, {
+          startedAt: stepStartedAt,
+          completedAt: stepCompletedAt,
+        });
+      } else {
+        recordSessionStep(deps, sessionRunHandle, decision.action, stepResult, {
+          startedAt: stepStartedAt,
+          completedAt: stepCompletedAt,
+        });
+      }
 
       if (stepResult.stepSummary.outcome === "failed") {
         state.consecutiveFailures++;
@@ -2359,6 +2367,102 @@ function recordTaskStep(
     stepResult,
     timing,
   }));
+}
+
+function recordSessionStep(
+  deps: AgentLoopDeps,
+  sessionRunHandle: MemoryRunHandle | undefined,
+  action: AgentAction,
+  stepResult: ExecuteActionStepResult,
+  timing: {
+    startedAt: string;
+    completedAt: string;
+  },
+): void {
+  if (!deps.recordSessionStep || !sessionRunHandle?.runId) {
+    return;
+  }
+  deps.recordSessionStep(buildGitMemorySessionStepRecord({
+    sessionId: sessionRunHandle.sessionId,
+    runId: sessionRunHandle.runId,
+    action,
+    stepResult,
+    timing,
+  }));
+}
+
+function buildGitMemorySessionStepRecord(input: {
+  sessionId: string;
+  runId: string;
+  action: AgentAction;
+  stepResult: ExecuteActionStepResult;
+  timing: {
+    startedAt: string;
+    completedAt: string;
+  };
+}): GitMemorySessionStepRecord {
+  const step = input.stepResult.stepSummary;
+  const verification = input.stepResult.execution.verifyOutput;
+  const status = step.outcome === "failed" ? "failed" : step.outcome === "skipped" ? "skipped" : "completed";
+  return {
+    v: 1,
+    sessionId: input.sessionId,
+    runId: input.runId,
+    step: step.step,
+    status,
+    startedAt: input.timing.startedAt,
+    completedAt: input.timing.completedAt,
+    summary: step.summary,
+    decision: {
+      actionKind: "tool_calls",
+      mode: input.action.mode,
+      allowedTools: input.action.allowedTools,
+      completion: input.action.completion,
+      assertions: input.action.assertions,
+    },
+    action: {
+      executionContract: step.executionContract,
+      calls: input.action.calls,
+      toolsUsed: step.toolsUsed ?? [],
+      toolSuccessCount: step.toolSuccessCount,
+      toolFailureCount: step.toolFailureCount,
+      stoppedEarlyReason: step.stoppedEarlyReason,
+    },
+    toolCalls: input.stepResult.execution.actOutput.toolCalls.map((call) => ({
+      ...call,
+      status: call.error ? "failed" : "success",
+    })),
+    verification: {
+      passed: verification.passed,
+      policy: step.verificationPolicy,
+      method: verification.method,
+      executionStatus: verification.executionStatus,
+      validationStatus: verification.validationStatus,
+      summary: verification.summary,
+      evidenceSummary: verification.evidenceSummary,
+      evidenceItems: verification.evidenceItems,
+      newFacts: verification.newFacts,
+      artifacts: verification.artifacts,
+      usedRawArtifacts: verification.usedRawArtifacts,
+      expectationCheckStatus: verification.expectationCheckStatus,
+      expectationCheckSummary: verification.expectationCheckSummary,
+    },
+    workStateAfter: input.stepResult.execution.nextWorkState,
+    facts: uniqueStrings([
+      ...step.newFacts,
+      ...verification.newFacts,
+      ...(step.evidenceItems ?? []),
+    ]),
+    artifacts: uniqueStrings([
+      ...step.artifacts,
+      ...verification.artifacts,
+    ]),
+    outputSize: step.outputSize,
+    lineCount: step.lineCount,
+    truncated: step.truncated,
+    failureType: step.failureType,
+    blockedTargets: step.blockedTargets,
+  };
 }
 
 function buildGitMemoryStepRecord(input: {

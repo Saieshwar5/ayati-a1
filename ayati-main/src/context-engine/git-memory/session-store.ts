@@ -46,7 +46,11 @@ import type {
   GitMemorySessionAttachmentsFile,
   GitMemorySessionId,
   GitMemorySessionMetaFile,
+  GitMemorySessionRunFile,
+  GitMemorySessionRunPromotion,
+  GitMemorySessionRunStatus,
   GitMemorySessionSummaryMetaFile,
+  GitMemorySessionStepRecord,
   GitMemoryTaskId,
   GitMemoryTaskAssetsFile,
   GitMemoryTaskStateDecision,
@@ -83,8 +87,16 @@ import {
   gitMemorySessionStoreMetaPath,
   gitMemorySessionStoreSchemaPath,
   gitMemorySessionStoreAttachmentsPath,
+  gitMemorySessionStoreActiveRunPath,
+  gitMemorySessionStoreActiveRunStepsPath,
+  gitMemorySessionStoreSessionDir,
   gitMemorySessionStoreSummaryMarkdownPath,
   gitMemorySessionStoreSummaryMetaPath,
+  gitMemorySessionStoreRunMarkdownPath,
+  gitMemorySessionStoreRunPath,
+  gitMemorySessionStoreRunsDir,
+  gitMemorySessionStoreStepsPath,
+  isGitMemoryRunId,
   isGitMemorySessionId,
 } from "./schema.js";
 
@@ -436,6 +448,60 @@ export interface RecordGitMemoryTaskRunStepInput {
   record: GitMemoryStepRecord;
 }
 
+export interface StartGitMemorySessionRunInput extends GitMemoryConversationSeqRange {
+  sessionId: GitMemorySessionId;
+  runId: GitMemoryRunId;
+  at?: string;
+  triggerSeq?: number;
+}
+
+export interface StartGitMemorySessionRunResult {
+  runId: GitMemoryRunId;
+}
+
+export interface RecordGitMemorySessionRunStepInput {
+  sessionId: GitMemorySessionId;
+  runId: GitMemoryRunId;
+  record: GitMemorySessionStepRecord;
+}
+
+export interface FinalizeGitMemorySessionRunInput {
+  sessionId: GitMemorySessionId;
+  runId: GitMemoryRunId;
+  status: Exclude<GitMemorySessionRunStatus, "running" | "promoted">;
+  startedAt?: string;
+  completedAt?: string;
+  triggerSeq?: number;
+  conversationRefs: GitMemoryConversationSeqRange[];
+  summary: string;
+  assistantResponse?: string;
+  toolCallCount?: number;
+  toolsUsed?: string[];
+  blockers?: string[];
+  next?: string;
+}
+
+export interface FinalizeGitMemorySessionRunResult {
+  sessionId: GitMemorySessionId;
+  runId: GitMemoryRunId;
+  sessionStoreCommit: string;
+}
+
+export interface PromoteGitMemorySessionRunInput {
+  sessionId: GitMemorySessionId;
+  runId: GitMemoryRunId;
+  taskId: GitMemoryTaskId;
+  branch: string;
+  ref: string;
+}
+
+export interface PromoteGitMemorySessionRunResult {
+  sessionId: GitMemorySessionId;
+  runId: GitMemoryRunId;
+  promotedTo: GitMemorySessionRunPromotion;
+  promotedStepCount: number;
+}
+
 export interface CommitGitMemoryTaskRunInput {
   sessionId: GitMemorySessionId;
   taskId: GitMemoryTaskId;
@@ -535,6 +601,7 @@ export interface StartGitMemoryTaskRunInput extends GitMemoryConversationSeqRang
   branch: string;
   runId: GitMemoryRunId;
   at?: string;
+  allowActiveSessionRun?: boolean;
 }
 
 export interface StartGitMemoryTaskRunResult {
@@ -764,7 +831,169 @@ export class GitMemoryDailySessionStore {
   async allocateTaskRunId(sessionId: GitMemorySessionId): Promise<GitMemoryRunId> {
     const driver = await GitMemoryWorktreeGitDriver.init(this.repoPath(sessionId));
     const date = gitMemoryDateFromSessionId(sessionId);
-    return createGitMemoryRunId(date, await nextRunSequenceFromTasks(driver));
+    return createGitMemoryRunId(date, await nextRunSequence(driver, sessionId));
+  }
+
+  async startSessionRun(input: StartGitMemorySessionRunInput): Promise<StartGitMemorySessionRunResult> {
+    const driver = await GitMemoryWorktreeGitDriver.init(this.repoPath(input.sessionId));
+    const messageStore = await driver.openSubmoduleRepo(GIT_MEMORY_SESSION_STORE_DIR);
+    if (await messageStore.readWorkingFile(gitMemorySessionStoreActiveRunPath(input.sessionId, input.runId))) {
+      throw new Error(`Git memory session run already active: ${input.runId}`);
+    }
+    if (await messageStore.readFile(GIT_MEMORY_MAIN_REF, gitMemorySessionStoreRunPath(input.sessionId, input.runId))) {
+      throw new Error(`Git memory session run already finalized: ${input.runId}`);
+    }
+    if (await readGitMemoryCustomRef(driver, gitMemorySessionRunReservationRef(input.sessionId, input.runId))) {
+      throw new Error(`Git memory task run already reserved: ${input.runId}`);
+    }
+    const startedAt = input.at ?? this.nowIso();
+    const run: GitMemorySessionRunFile = {
+      schemaVersion: 1,
+      sessionId: input.sessionId,
+      runId: input.runId,
+      runClass: "session",
+      status: "running",
+      startedAt,
+      triggerSeq: input.triggerSeq ?? input.fromSeq,
+      conversationRefs: [{ fromSeq: input.fromSeq, toSeq: input.toSeq }],
+      summary: "Session run is active.",
+      toolCallCount: 0,
+      toolsUsed: [],
+    };
+    await messageStore.writeWorkingFiles({
+      [gitMemorySessionStoreActiveRunPath(input.sessionId, input.runId)]: prettyJson(run),
+      [gitMemorySessionStoreActiveRunStepsPath(input.sessionId, input.runId)]: "",
+    });
+    return { runId: input.runId };
+  }
+
+  async appendSessionRunStep(input: RecordGitMemorySessionRunStepInput): Promise<void> {
+    const driver = await GitMemoryWorktreeGitDriver.init(this.repoPath(input.sessionId));
+    const messageStore = await driver.openSubmoduleRepo(GIT_MEMORY_SESSION_STORE_DIR);
+    if (!await messageStore.readWorkingFile(gitMemorySessionStoreActiveRunPath(input.sessionId, input.runId))) {
+      throw new Error(`Git memory session run is not active: ${input.runId}`);
+    }
+    if (input.record.sessionId !== input.sessionId || input.record.runId !== input.runId) {
+      throw new Error(`Git memory session step record does not match session/run: ${input.sessionId}/${input.runId}`);
+    }
+    await messageStore.appendWorkingFile(
+      gitMemorySessionStoreActiveRunStepsPath(input.sessionId, input.runId),
+      `${JSON.stringify(input.record)}\n`,
+    );
+  }
+
+  async finalizeSessionRun(input: FinalizeGitMemorySessionRunInput): Promise<FinalizeGitMemorySessionRunResult> {
+    const driver = await GitMemoryWorktreeGitDriver.init(this.repoPath(input.sessionId));
+    const messageStore = await driver.openSubmoduleRepo(GIT_MEMORY_SESSION_STORE_DIR);
+    const activeRun = parseJson<GitMemorySessionRunFile>(
+      await messageStore.readWorkingFile(gitMemorySessionStoreActiveRunPath(input.sessionId, input.runId)),
+    );
+    if (!activeRun) {
+      throw new Error(`Git memory session run is not active: ${input.runId}`);
+    }
+    if (await messageStore.readFile(GIT_MEMORY_MAIN_REF, gitMemorySessionStoreRunPath(input.sessionId, input.runId))) {
+      throw new Error(`Git memory session run already finalized: ${input.runId}`);
+    }
+    const steps = readSessionRunWorkingSteps(
+      await messageStore.readWorkingFile(gitMemorySessionStoreActiveRunStepsPath(input.sessionId, input.runId)),
+    ).filter((record) => record.sessionId === input.sessionId && record.runId === input.runId);
+    const completedAt = input.completedAt ?? this.nowIso();
+    const run: GitMemorySessionRunFile = {
+      schemaVersion: 1,
+      sessionId: input.sessionId,
+      runId: input.runId,
+      runClass: "session",
+      status: input.status,
+      startedAt: input.startedAt ?? activeRun.startedAt,
+      completedAt,
+      triggerSeq: input.triggerSeq ?? activeRun.triggerSeq,
+      conversationRefs: input.conversationRefs,
+      summary: input.summary,
+      ...(input.assistantResponse?.trim() ? { assistantResponse: input.assistantResponse } : {}),
+      toolCallCount: input.toolCallCount ?? countSessionRunToolCalls(steps),
+      toolsUsed: normalizeStrings(input.toolsUsed ?? steps.flatMap((step) => step.toolCalls.map((call) => call.tool))),
+      ...(input.blockers?.length ? { blockers: normalizeStrings(input.blockers) } : {}),
+      ...(input.next?.trim() ? { next: input.next.trim() } : {}),
+    };
+    const runPath = gitMemorySessionStoreRunPath(input.sessionId, input.runId);
+    const markdownPath = gitMemorySessionStoreRunMarkdownPath(input.sessionId, input.runId);
+    const stepsPath = gitMemorySessionStoreStepsPath(input.sessionId, input.runId);
+    await messageStore.writeWorkingFiles({
+      [runPath]: prettyJson(run),
+      [markdownPath]: renderSessionRunMarkdown(run, steps),
+      [stepsPath]: jsonl(steps),
+    });
+    await messageStore.removeWorkingFile(gitMemorySessionStoreActiveRunPath(input.sessionId, input.runId));
+    await messageStore.removeWorkingFile(gitMemorySessionStoreActiveRunStepsPath(input.sessionId, input.runId));
+    const sessionStoreCommit = await messageStore.commitPaths([
+      runPath,
+      markdownPath,
+      stepsPath,
+    ], renderGitMemoryCommitMessage({
+      subject: `ayati: complete session run ${input.runId}`,
+      summary: input.summary,
+      trailers: {
+        sessionId: input.sessionId,
+        runId: input.runId,
+        event: input.status === "failed" ? "run_failed" : "run_completed",
+        status: input.status,
+        at: completedAt,
+        schemaVersion: 1,
+      },
+    })) ?? await messageStore.resolveRef(GIT_MEMORY_MAIN_REF);
+    if (!sessionStoreCommit) {
+      throw new Error(`Git memory session-store commit is missing after session run finalization: ${input.runId}`);
+    }
+    return {
+      sessionId: input.sessionId,
+      runId: input.runId,
+      sessionStoreCommit,
+    };
+  }
+
+  async promoteSessionRunToTaskRun(input: PromoteGitMemorySessionRunInput): Promise<PromoteGitMemorySessionRunResult> {
+    const driver = await GitMemoryWorktreeGitDriver.init(this.repoPath(input.sessionId));
+    const messageStore = await driver.openSubmoduleRepo(GIT_MEMORY_SESSION_STORE_DIR);
+    const activeRun = await messageStore.readWorkingFile(gitMemorySessionStoreActiveRunPath(input.sessionId, input.runId));
+    if (!activeRun) {
+      throw new Error(`Git memory session run is not active: ${input.runId}`);
+    }
+    if (await messageStore.readFile(GIT_MEMORY_MAIN_REF, gitMemorySessionStoreRunPath(input.sessionId, input.runId))) {
+      throw new Error(`Git memory session run already finalized: ${input.runId}`);
+    }
+    const taskEntry = await resolveGitMemoryTaskEntry(driver, { taskId: input.taskId });
+    if (taskEntry.branch !== input.branch) {
+      throw new Error(`Git memory task branch mismatch for promotion: ${input.taskId}`);
+    }
+    const taskRef = `refs/heads/${taskEntry.branch}`;
+    if (!(await driver.hasRef(taskRef))) {
+      throw new Error(`Git memory task branch missing: ${taskRef}`);
+    }
+    const sessionSteps = readSessionRunWorkingSteps(
+      await messageStore.readWorkingFile(gitMemorySessionStoreActiveRunStepsPath(input.sessionId, input.runId)),
+    ).filter((record) => record.sessionId === input.sessionId && record.runId === input.runId);
+    const taskSteps = sessionSteps.map(({ sessionId: _sessionId, ...record }): GitMemoryStepRecord => ({
+      ...record,
+      taskId: input.taskId,
+    }));
+    for (const step of taskSteps) {
+      await driver.appendWorkingFile(
+        gitMemoryTaskStepsStagingPath(input.taskId, input.runId),
+        `${JSON.stringify(step)}\n`,
+      );
+    }
+    await messageStore.removeWorkingFile(gitMemorySessionStoreActiveRunPath(input.sessionId, input.runId));
+    await messageStore.removeWorkingFile(gitMemorySessionStoreActiveRunStepsPath(input.sessionId, input.runId));
+    return {
+      sessionId: input.sessionId,
+      runId: input.runId,
+      promotedTo: {
+        taskId: input.taskId,
+        branch: input.branch,
+        ref: input.ref,
+      },
+      promotedStepCount: taskSteps.length,
+    };
   }
 
   async startTaskRun(input: StartGitMemoryTaskRunInput): Promise<StartGitMemoryTaskRunResult> {
@@ -779,6 +1008,12 @@ export class GitMemoryDailySessionStore {
     }
     if (await readGitMemoryCustomRef(driver, gitMemorySessionRunReservationRef(input.sessionId, input.runId))) {
       throw new Error(`Git memory task run already reserved: ${input.runId}`);
+    }
+    if (!input.allowActiveSessionRun) {
+      const messageStore = await driver.openSubmoduleRepo(GIT_MEMORY_SESSION_STORE_DIR);
+      if (await messageStore.readWorkingFile(gitMemorySessionStoreActiveRunPath(input.sessionId, input.runId))) {
+        throw new Error(`Git memory session run already active: ${input.runId}`);
+      }
     }
     await writeGitMemoryCustomRef(driver, gitMemorySessionRunReservationRef(input.sessionId, input.runId), ref);
     return { runId: input.runId };
@@ -1281,7 +1516,7 @@ export class GitMemoryDailySessionStore {
       throw new Error(`Git memory task branch missing: ${ref}`);
     }
 
-    const runId = input.runId ?? createGitMemoryRunId(date, await nextRunSequenceFromTasks(driver));
+    const runId = input.runId ?? createGitMemoryRunId(date, await nextRunSequence(driver, input.sessionId));
     const existingRun = await driver.readFile(ref, gitMemoryTaskRunPath(input.taskId, runId));
     if (existingRun !== null) {
       throw new Error(`Git memory task run already committed: ${runId}`);
@@ -1674,6 +1909,43 @@ function renderTaskRunMarkdown(
     renderMarkdownParagraph("Next", run.next ?? "No next step."),
     renderMarkdownList("New Facts", run.newFacts),
     renderStepActionMarkdown(steps),
+  ].join("\n");
+}
+
+function renderSessionRunMarkdown(
+  run: GitMemorySessionRunFile,
+  steps: GitMemorySessionStepRecord[],
+): string {
+  return [
+    `# Session Run ${run.runId}`,
+    "",
+    `Session: ${run.sessionId}`,
+    `Status: ${run.status}`,
+    `Started: ${run.startedAt}`,
+    ...(run.completedAt ? [`Completed: ${run.completedAt}`] : []),
+    "",
+    renderMarkdownParagraph("Summary", run.summary),
+    renderMarkdownParagraph("Conversation", formatConversationRefs(run.conversationRefs)),
+    renderMarkdownList("Tools Used", run.toolsUsed),
+    renderSessionStepMarkdown(steps),
+    renderMarkdownList("Blockers", run.blockers ?? []),
+    renderMarkdownParagraph("Next", run.next ?? ""),
+    ...(run.assistantResponse ? ["", "## Assistant Response", "", run.assistantResponse.trim(), ""] : []),
+  ].join("\n");
+}
+
+function renderSessionStepMarkdown(steps: GitMemorySessionStepRecord[]): string {
+  if (steps.length === 0) {
+    return "";
+  }
+  return [
+    "## Steps",
+    "",
+    ...steps.map((step) => [
+      `- Step ${step.step}: ${step.summary}`,
+      ...(step.toolCalls.length > 0 ? [`  Tools: ${unique(step.toolCalls.map((call) => call.tool)).join(", ")}`] : []),
+    ].join("\n")),
+    "",
   ].join("\n");
 }
 
@@ -2315,6 +2587,28 @@ async function readTaskRunStagedSteps(
   ).filter((record) => record.taskId === taskId && record.runId === runId);
 }
 
+function readSessionRunWorkingSteps(value: string | null): GitMemorySessionStepRecord[] {
+  return parseJsonl<GitMemorySessionStepRecord>(value)
+    .filter((record) => (
+      record
+      && typeof record === "object"
+      && record.v === 1
+      && isGitMemorySessionId(record.sessionId)
+      && isGitMemoryRunId(record.runId)
+      && Number.isInteger(record.step)
+    ));
+}
+
+function countSessionRunToolCalls(steps: GitMemorySessionStepRecord[]): number {
+  return steps.reduce((sum, step) => sum + step.toolCalls.length, 0);
+}
+
+function normalizeStrings(values: string[] | undefined): string[] {
+  return unique((values ?? [])
+    .map((value) => value.trim())
+    .filter((value) => value.length > 0));
+}
+
 function mergeTaskAssets(
   existing: TaskAssetRecord[],
   incoming: TaskAssetRecord[],
@@ -2666,7 +2960,18 @@ function parseMarkdownTextSection(markdown: string, title: string): string {
   return match?.[1]?.trim() ?? "";
 }
 
-async function nextRunSequenceFromTasks(driver: GitMemoryWorktreeGitDriver): Promise<number> {
+async function nextRunSequence(
+  driver: GitMemoryWorktreeGitDriver,
+  sessionId: GitMemorySessionId,
+): Promise<number> {
+  const sequences = [
+    ...await runSequencesFromTasks(driver),
+    ...await runSequencesFromSessionStore(driver, sessionId),
+  ];
+  return Math.max(0, ...sequences) + 1;
+}
+
+async function runSequencesFromTasks(driver: GitMemoryWorktreeGitDriver): Promise<number[]> {
   const sequences: number[] = [];
   for (const task of await readGitMemoryTaskEntries(driver)) {
     const ref = `refs/heads/${task.branch}`;
@@ -2697,7 +3002,39 @@ async function nextRunSequenceFromTasks(driver: GitMemoryWorktreeGitDriver): Pro
       sequences.push(sequence);
     }
   }
-  return Math.max(0, ...sequences) + 1;
+  return sequences;
+}
+
+async function runSequencesFromSessionStore(
+  driver: GitMemoryWorktreeGitDriver,
+  sessionId: GitMemorySessionId,
+): Promise<number[]> {
+  const messageStore = await openExistingSessionMessageStoreDriver(driver);
+  if (!messageStore) {
+    return [];
+  }
+  const sequences: number[] = [];
+  const finalPrefix = gitMemorySessionStoreRunsDir(sessionId);
+  const finalPaths = (await messageStore.listTreePaths(GIT_MEMORY_MAIN_REF, finalPrefix))
+    .filter((path) => path.endsWith(".json"));
+  for (const path of finalPaths) {
+    const sequence = runSequenceFromRunId(runIdFromRunPath(path));
+    if (sequence > 0) {
+      sequences.push(sequence);
+    }
+  }
+  const activeRunsDir = join(messageStore.repoPath, gitMemorySessionStoreSessionDir(sessionId), "active-runs");
+  const entries = await readdir(activeRunsDir, { withFileTypes: true }).catch(() => []);
+  for (const entry of entries) {
+    if (!entry.isDirectory() || !isGitMemoryRunId(entry.name)) {
+      continue;
+    }
+    const sequence = runSequenceFromRunId(entry.name);
+    if (sequence > 0) {
+      sequences.push(sequence);
+    }
+  }
+  return sequences;
 }
 
 function normalizeTaskDetailInclude(input: GitMemoryTaskDetailInclude[] | undefined): Set<GitMemoryTaskDetailInclude> {

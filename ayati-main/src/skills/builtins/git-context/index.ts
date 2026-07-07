@@ -646,6 +646,7 @@ function createActivateTaskForTurnTool(
           sessionId: parsed.sessionId,
           taskId,
           reason: parsed.reason,
+          ...(context?.runId ? { sessionRunId: context.runId } : {}),
         });
         return okJsonResult({
           code: "GIT_CONTEXT_TURN_TASK_ACTIVATED",
@@ -709,6 +710,7 @@ function createCreateTaskForTurnTool(runtime: GitMemoryRuntime | undefined): Too
           title: parsed.title,
           objective: parsed.objective,
           reason: createTaskRouteReason(parsed),
+          ...(context?.runId ? { sessionRunId: context.runId } : {}),
         });
         return okJsonResult({
           code: "GIT_CONTEXT_TURN_TASK_CREATED",

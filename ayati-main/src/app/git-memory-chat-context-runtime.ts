@@ -1,5 +1,6 @@
 import type {
   FinalizeGitMemoryTaskRunResult,
+  FinalizeGitMemorySessionRunResult,
   GitMemoryConversationRecord,
   GitMemoryConversationSeqRange,
   GitContextMemoryState,
@@ -10,9 +11,11 @@ import type {
   GitMemorySessionAttachmentsFile,
   GitMemoryRuntime,
   GitMemorySessionId,
+  GitMemorySessionStepRecord,
   GitMemoryStepRecord,
   GitMemoryTaskId,
   RoutedGitMemoryUserTurn,
+  StartGitMemorySessionRunResult,
 } from "../context-engine/index.js";
 import {
   buildGitMemoryHarnessContextFromMemoryState,
@@ -72,10 +75,37 @@ export interface GitMemoryChatContextCompleteTaskRunInput {
   assistantAt?: string;
 }
 
+export interface GitMemoryChatContextStartSessionRunInput {
+  clientId: string;
+  turn: GitMemoryChatContextPreparedTurn | null;
+  at: string;
+}
+
+export interface GitMemoryChatContextFinalizeSessionRunInput {
+  clientId: string;
+  turn: GitMemoryChatContextPreparedTurn | null;
+  runId: string;
+  status: "completed" | "failed" | "blocked" | "needs_user_input";
+  summary: string;
+  assistantResponse?: string;
+  at: string;
+  startedAt?: string;
+  blockers?: string[];
+  next?: string;
+  toolsUsed?: string[];
+  toolCallCount?: number;
+}
+
 export interface GitMemoryChatContextRecordTaskRunStepInput {
   clientId: string;
   turn: GitMemoryChatContextPreparedTurn | null;
   record: GitMemoryStepRecord;
+}
+
+export interface GitMemoryChatContextRecordSessionRunStepInput {
+  clientId: string;
+  turn: GitMemoryChatContextPreparedTurn | null;
+  record: GitMemorySessionStepRecord;
 }
 
 export interface GitMemoryChatContextRouteTaskTurnInput {
@@ -83,6 +113,7 @@ export interface GitMemoryChatContextRouteTaskTurnInput {
   turn: GitMemoryChatContextPreparedTurn | null;
   userMessage: string;
   at: string;
+  sessionRunId?: GitMemoryRunId;
   title?: string;
   objective?: string;
   autoOnly?: boolean;
@@ -93,6 +124,7 @@ export interface GitMemoryChatContextActivateTaskTurnInput {
   turn: GitMemoryChatContextPreparedTurn | null;
   taskId: GitMemoryTaskId;
   reason: string;
+  sessionRunId?: GitMemoryRunId;
   at: string;
 }
 
@@ -102,9 +134,12 @@ export type GitMemoryChatContextRoutedTurn = RoutedGitMemoryUserTurn & {
 
 export interface GitMemoryChatContextRuntime {
   prepareUserTurn(input: GitMemoryChatContextPrepareInput): Promise<GitMemoryChatContextPreparedTurn>;
+  startSessionRun(input: GitMemoryChatContextStartSessionRunInput): Promise<StartGitMemorySessionRunResult | null>;
   routeTaskTurn(input: GitMemoryChatContextRouteTaskTurnInput): Promise<GitMemoryChatContextRoutedTurn | null>;
   activateTaskTurn(input: GitMemoryChatContextActivateTaskTurnInput): Promise<GitMemoryChatContextRoutedTurn | null>;
+  finalizeSessionRun(input: GitMemoryChatContextFinalizeSessionRunInput): Promise<FinalizeGitMemorySessionRunResult | null>;
   completeTaskRun(input: GitMemoryChatContextCompleteTaskRunInput): Promise<FinalizeGitMemoryTaskRunResult | null>;
+  recordSessionRunStep(input: GitMemoryChatContextRecordSessionRunStepInput): void;
   recordTaskRunStep(input: GitMemoryChatContextRecordTaskRunStepInput): void;
   recordAssistantMessage(input: GitMemoryChatContextAssistantMessageInput): Promise<GitMemoryConversationRecord | null>;
   recordSessionAttachments(input: GitMemoryChatContextSessionAttachmentsInput): Promise<GitMemorySessionAttachmentsFile | null>;
@@ -136,6 +171,26 @@ class AppGitMemoryChatContextRuntime implements GitMemoryChatContextRuntime {
     };
   }
 
+  async startSessionRun(
+    input: GitMemoryChatContextStartSessionRunInput,
+  ): Promise<StartGitMemorySessionRunResult | null> {
+    if (!input.turn) {
+      return null;
+    }
+    try {
+      return await this.gitMemoryRuntime.startSessionRun({
+        sessionId: input.turn.sessionId,
+        fromSeq: input.turn.messageSeq,
+        toSeq: input.turn.messageSeq,
+        at: input.at,
+        triggerSeq: input.turn.messageSeq,
+      });
+    } catch (err) {
+      devWarn(`[${input.clientId}] git memory session run start failed: ${errorMessage(err)}`);
+      return null;
+    }
+  }
+
   async routeTaskTurn(
     input: GitMemoryChatContextRouteTaskTurnInput,
   ): Promise<GitMemoryChatContextRoutedTurn | null> {
@@ -149,6 +204,7 @@ class AppGitMemoryChatContextRuntime implements GitMemoryChatContextRuntime {
         fromSeq: input.turn.messageSeq,
         toSeq: input.turn.messageSeq,
         at: input.at,
+        ...(input.sessionRunId ? { sessionRunId: input.sessionRunId } : {}),
         title: input.title,
         objective: input.objective,
       };
@@ -180,6 +236,7 @@ class AppGitMemoryChatContextRuntime implements GitMemoryChatContextRuntime {
         sessionId: input.turn.sessionId,
         taskId: input.taskId,
         reason: input.reason,
+        ...(input.sessionRunId ? { sessionRunId: input.sessionRunId } : {}),
         at: input.at,
       });
       return {
@@ -190,6 +247,37 @@ class AppGitMemoryChatContextRuntime implements GitMemoryChatContextRuntime {
       };
     } catch (err) {
       devWarn(`[${input.clientId}] git memory active task binding failed: ${errorMessage(err)}`);
+      return null;
+    }
+  }
+
+  async finalizeSessionRun(
+    input: GitMemoryChatContextFinalizeSessionRunInput,
+  ): Promise<FinalizeGitMemorySessionRunResult | null> {
+    if (!input.turn) {
+      return null;
+    }
+    try {
+      return await this.gitMemoryRuntime.finalizeSessionRun({
+        sessionId: input.turn.sessionId,
+        runId: input.runId,
+        status: input.status,
+        startedAt: input.startedAt,
+        completedAt: input.at,
+        triggerSeq: input.turn.messageSeq,
+        conversationRefs: [{
+          fromSeq: input.turn.messageSeq,
+          toSeq: input.turn.messageSeq,
+        }],
+        summary: input.summary,
+        assistantResponse: input.assistantResponse,
+        blockers: input.blockers,
+        next: input.next,
+        toolsUsed: input.toolsUsed,
+        toolCallCount: input.toolCallCount,
+      });
+    } catch (err) {
+      devWarn(`[${input.clientId}] git memory session run finalize failed: ${errorMessage(err)}`);
       return null;
     }
   }
@@ -215,6 +303,16 @@ class AppGitMemoryChatContextRuntime implements GitMemoryChatContextRuntime {
       assistantMessage: input.assistantMessage,
       assistantMessageKind: input.assistantMessageKind,
       assistantAt: input.assistantAt,
+    });
+  }
+
+  recordSessionRunStep(input: GitMemoryChatContextRecordSessionRunStepInput): void {
+    if (!input.turn) {
+      return;
+    }
+    this.gitMemoryRuntime.recordSessionRunStep({
+      sessionId: input.turn.sessionId,
+      record: input.record,
     });
   }
 
