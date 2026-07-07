@@ -126,6 +126,31 @@ describe("runtime capability modes", () => {
     expect(allowed).not.toContain("write_files");
   });
 
+  it("allows taxonomy read-only tools during an active session run before task binding", () => {
+    const mode = detectRuntimeCapabilityMode({
+      state: state(gitContext({ status: "none" })),
+      sessionRunHandle: { sessionId: "s1", runId: "R-session" },
+    });
+
+    expect(mode.name).toBe("fresh_session_routing");
+    expect(mode.hasSessionRun).toBe(true);
+    expect(mode.allowToolLoading).toBe(true);
+    expect(buildRuntimeCapabilityPromptContext(mode)).toMatchObject({
+      allowed: expect.arrayContaining(["decision_load_tools", "read_only_tools"]),
+      blocked: expect.arrayContaining(["workspace_mutation_until_task_promotion"]),
+    });
+    expect(filterToolsForRuntimeMode(mode, [
+      tool("read_file"),
+      tool("document_query"),
+      tool("write_files"),
+      tool("git_context_create_task_for_turn"),
+    ]).map((entry) => entry.name)).toEqual([
+      "read_file",
+      "document_query",
+      "git_context_create_task_for_turn",
+    ]);
+  });
+
   it("allows only direct replies or fresh-session routing decisions before the first task", () => {
     const mode = detectRuntimeCapabilityMode({
       state: state(gitContext({ status: "none" })),
@@ -164,6 +189,45 @@ describe("runtime capability modes", () => {
     expect(isDecisionAllowedInRuntimeMode(mode, reply)).toBe(true);
     expect(isDecisionAllowedInRuntimeMode(mode, route)).toBe(true);
     expect(isDecisionAllowedInRuntimeMode(mode, loadTools)).toBe(false);
+  });
+
+  it("allows read-only decisions during an active session run before first-task routing", () => {
+    const mode = detectRuntimeCapabilityMode({
+      state: state(gitContext({ status: "none" })),
+      sessionRunHandle: { sessionId: "s1", runId: "R-session" },
+    });
+    const read: AgentDecision = {
+      kind: "act",
+      action: {
+        mode: "single",
+        allowedTools: ["read_file"],
+        assertions: [],
+        calls: [{
+          id: "call_1",
+          tool: "read_file",
+          input: { path: "README.md" },
+          dependsOn: [],
+        }],
+      },
+    };
+    const mutate: AgentDecision = {
+      kind: "act",
+      action: {
+        mode: "single",
+        allowedTools: ["write_files"],
+        assertions: [],
+        calls: [{
+          id: "call_1",
+          tool: "write_files",
+          input: { files: [] },
+          dependsOn: [],
+        }],
+      },
+    };
+
+    expect(isDecisionAllowedInRuntimeMode(mode, read)).toBe(true);
+    expect(isDecisionAllowedInRuntimeMode(mode, { kind: "load_tools", request: { toolNames: ["read_file"], groups: [] } })).toBe(true);
+    expect(isDecisionAllowedInRuntimeMode(mode, mutate)).toBe(false);
   });
 
   it("allows read-only git-context actions in fresh-session read mode", () => {

@@ -30,6 +30,7 @@ export interface RuntimeCapabilityMode {
   name: RuntimeCapabilityModeName;
   primary: true;
   hasWorkRun: boolean;
+  hasSessionRun: boolean;
   focusStatus?: string;
   pendingTurnStatus?: string;
   whyActive: string;
@@ -69,6 +70,7 @@ export interface RuntimeCapabilityPromptContext {
 export interface RuntimeCapabilityToolSummary {
   mode: RuntimeCapabilityModeName;
   hasWorkRun: boolean;
+  hasSessionRun: boolean;
   focusStatus?: string;
   pendingTurnStatus?: string;
   visibleRoutingTools: string[];
@@ -96,14 +98,17 @@ const FRESH_SESSION_ROUTING_RULES = [
 export function detectRuntimeCapabilityMode(input: {
   state: LoopState;
   workRunHandle?: MemoryRunHandle;
+  sessionRunHandle?: MemoryRunHandle;
 }): RuntimeCapabilityMode {
   const hasWorkRun = Boolean(input.state.runId || input.workRunHandle?.runId);
+  const hasSessionRun = Boolean(input.sessionRunHandle?.runId);
   const focusStatus = input.state.harnessContext.contextEngine?.focus.status;
   const pendingTurnStatus = input.state.harnessContext.contextEngine?.pendingTurn?.routingStatus;
   const routingWindow = buildRuntimeRoutingWindow(input.state, hasWorkRun, pendingTurnStatus);
   const common = {
     primary: true as const,
     hasWorkRun,
+    hasSessionRun,
     ...(focusStatus ? { focusStatus } : {}),
     ...(pendingTurnStatus ? { pendingTurnStatus } : {}),
     ...(routingWindow ? { routingWindow } : {}),
@@ -122,6 +127,29 @@ export function detectRuntimeCapabilityMode(input: {
   }
 
   if (focusStatus === "none") {
+    if (hasSessionRun) {
+      return {
+        ...common,
+        name: "fresh_session_routing",
+        whyActive: "A session run exists and no active task exists.",
+        allowedActions: [
+          "direct_reply",
+          "decision_load_tools",
+          "read_only_tools",
+          ...GIT_CONTEXT_FRESH_SESSION_ROUTING_TOOL_NAMES,
+        ],
+        blockedCapabilities: [
+          "workspace_mutation_until_task_promotion",
+          "external_mutation_until_task_promotion",
+          "destructive_tools_until_task_promotion",
+          "task_activation",
+        ],
+        next: "Use read-only tools for inspection, create the first task before durable mutation, ask a short clarification, or reply directly.",
+        rules: FRESH_SESSION_ROUTING_RULES,
+        repairCode: "R_FRESH_SESSION_NEEDS_TASK",
+        allowToolLoading: true,
+      };
+    }
     return {
       ...common,
       name: "fresh_session_routing",
@@ -269,6 +297,9 @@ export function requiredRoutingMutationToolsForRuntimeMode(mode: RuntimeCapabili
 }
 
 export function deterministicToolsForRuntimeMode(mode: RuntimeCapabilityMode): string[] | undefined {
+  if (mode.hasSessionRun && mode.pendingTurnStatus !== "clarifying") {
+    return undefined;
+  }
   if (mode.name === "fresh_session_routing") {
     return [...GIT_CONTEXT_FRESH_SESSION_ROUTING_TOOL_NAMES];
   }
@@ -290,8 +321,15 @@ export function isDecisionAllowedInRuntimeMode(mode: RuntimeCapabilityMode, deci
   if (decision.kind === "reply") {
     return true;
   }
+  if (mode.hasSessionRun && decision.kind === "load_tools") {
+    return true;
+  }
   if (decision.kind !== "act" || decision.action.calls.length === 0) {
     return false;
+  }
+  if (mode.hasSessionRun) {
+    return decision.action.calls.every((call) => isRuntimeToolAllowed(mode, call.tool))
+      && decision.action.allowedTools.every((tool) => isRuntimeToolAllowed(mode, tool));
   }
   return decision.action.calls.every((call) => isGitContextAllowedInFreshSession(call.tool))
     && decision.action.allowedTools.every(isGitContextAllowedInFreshSession);
@@ -308,6 +346,9 @@ function isReadOnlyAllowedBeforeTask(
 ): boolean {
   if (taxonomy.effect !== "read_only") {
     return false;
+  }
+  if (mode.hasSessionRun) {
+    return taxonomy.allowedPhases.some((phase) => phase === "conversation" || phase === "enquiry" || phase === "routing");
   }
   if (isToolAllowedInPhase(toolName, runtimeToolPhase(mode, 1))) {
     return true;
@@ -329,6 +370,7 @@ export function summarizeRuntimeCapabilityTools(input: {
   return {
     mode: input.mode.name,
     hasWorkRun: input.mode.hasWorkRun,
+    hasSessionRun: input.mode.hasSessionRun,
     ...(input.mode.focusStatus ? { focusStatus: input.mode.focusStatus } : {}),
     ...(input.mode.pendingTurnStatus ? { pendingTurnStatus: input.mode.pendingTurnStatus } : {}),
     visibleRoutingTools: visibleToolNames.filter(isGitContextRoutingToolName),

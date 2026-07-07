@@ -1,5 +1,6 @@
 import type { ToolExecutionContext, ToolDefinition } from "../../skills/types.js";
 import type { ToolExecutor } from "../../skills/tool-executor.js";
+import type { MemoryRunHandle } from "../../memory/types.js";
 import type { ActToolCallRecord, LoopState } from "../types.js";
 import type { ToolCatalog, ToolCatalogEntry } from "./tool-catalog.js";
 import {
@@ -98,10 +99,21 @@ export class ToolWorkingSetManager {
     this.toolExecutor.unmount?.(this.groupId(runId));
   }
 
-  prepareForDecision(state: LoopState, context: ToolExecutionContext): ToolLoadResult {
+  prepareForDecision(
+    state: LoopState,
+    context: ToolExecutionContext,
+    input: {
+      workRunHandle?: MemoryRunHandle;
+      sessionRunHandle?: MemoryRunHandle;
+    } = {},
+  ): ToolLoadResult {
     const runState = this.getRunState(context);
     const step = context.stepNumber ?? 0;
-    const mode = detectRuntimeCapabilityMode({ state });
+    const mode = detectRuntimeCapabilityMode({
+      state,
+      workRunHandle: input.workRunHandle,
+      sessionRunHandle: input.sessionRunHandle,
+    });
     if (mode.hasWorkRun || mode.pendingTurnStatus === "bound") {
       this.removeTaskRoutingResolutionTools(runState, []);
       this.syncMount(context);
@@ -110,12 +122,12 @@ export class ToolWorkingSetManager {
       this.removeTaskRoutingResolutionTools(runState, []);
       this.syncMount(context);
     }
-    const request = buildDeterministicLoadRequest(state);
+    const request = buildDeterministicLoadRequest(state, input);
     const suppressTaskRoutingTools = hasCompletedTaskRoutingWindowToolUse(state);
     const requiredRoutingTools = suppressTaskRoutingTools || step > TASK_ROUTING_WINDOW_STEPS
       ? []
       : requiredRoutingMutationToolsForRuntimeMode(mode);
-    const result = this.load(this.addTaskRoutingWindowTools(request, state, context), context);
+    const result = this.load(this.addTaskRoutingWindowTools(request, state, context, input), context);
     let prepared = mergeToolLoadResult(result, this.ensureToolsLoadedOutsideLimit(requiredRoutingTools, context));
     if (suppressTaskRoutingTools) {
       const removed: string[] = [];
@@ -299,9 +311,17 @@ export class ToolWorkingSetManager {
     request: ToolLoadRequest,
     state: LoopState,
     context: ToolExecutionContext,
+    input: {
+      workRunHandle?: MemoryRunHandle;
+      sessionRunHandle?: MemoryRunHandle;
+    } = {},
   ): ToolLoadRequest {
     const runState = this.getRunState(context);
-    const mode = detectRuntimeCapabilityMode({ state });
+    const mode = detectRuntimeCapabilityMode({
+      state,
+      workRunHandle: input.workRunHandle,
+      sessionRunHandle: input.sessionRunHandle,
+    });
     if (runState.taskRouting.resolved) {
       return request;
     }
@@ -529,8 +549,18 @@ export class ToolWorkingSetManager {
   }
 }
 
-function buildDeterministicLoadRequest(state: LoopState): ToolLoadRequest {
-  const mode = detectRuntimeCapabilityMode({ state });
+function buildDeterministicLoadRequest(
+  state: LoopState,
+  input: {
+    workRunHandle?: MemoryRunHandle;
+    sessionRunHandle?: MemoryRunHandle;
+  } = {},
+): ToolLoadRequest {
+  const mode = detectRuntimeCapabilityMode({
+    state,
+    workRunHandle: input.workRunHandle,
+    sessionRunHandle: input.sessionRunHandle,
+  });
   const modeTools = deterministicToolsForRuntimeMode(mode);
   if (modeTools) {
     return {

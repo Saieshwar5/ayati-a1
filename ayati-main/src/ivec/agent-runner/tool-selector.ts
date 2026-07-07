@@ -1,4 +1,5 @@
 import type { ToolDefinition } from "../../skills/types.js";
+import type { MemoryRunHandle } from "../../memory/types.js";
 import type { LoopState } from "../types.js";
 import {
   detectRuntimeCapabilityMode,
@@ -14,8 +15,16 @@ export function selectToolsForDecision(
   state: LoopState,
   toolDefinitions: ToolDefinition[],
   limit: number,
+  input: {
+    workRunHandle?: MemoryRunHandle;
+    sessionRunHandle?: MemoryRunHandle;
+  } = {},
 ): ToolDefinition[] {
-  const mode = detectRuntimeCapabilityMode({ state });
+  const mode = detectRuntimeCapabilityMode({
+    state,
+    workRunHandle: input.workRunHandle,
+    sessionRunHandle: input.sessionRunHandle,
+  });
   const candidateTools = filterToolsForRuntimeMode(mode, toolDefinitions);
   const requiredToolNames = new Set(requiredRoutingMutationToolsForRuntimeMode(mode));
   if (hasRecoverableCompactedRunToolCall(state.toolContext?.toolCalls)) {

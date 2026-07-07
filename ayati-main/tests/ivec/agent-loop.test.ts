@@ -413,6 +413,91 @@ describe("agentLoop", () => {
     }
   });
 
+  it("executes read-only tools in a session run without creating a task run", async () => {
+    const dataDir = makeTmpDir();
+    try {
+      const readTool: ToolDefinition = {
+        name: "read_file",
+        description: "Read a file without mutating the workspace.",
+        annotations: {
+          domain: "filesystem",
+          readOnly: true,
+          mutatesWorkspace: false,
+          mutatesExternalWorld: false,
+          destructive: false,
+          idempotent: true,
+          retrySafe: true,
+          longRunning: false,
+        },
+        async execute() {
+          return {
+            ok: true,
+            output: "upload handling lives in src/upload.ts",
+          };
+        },
+      };
+      const toolExecutor = createToolExecutor([readTool]);
+      const provider = createProvider([
+        {
+          kind: "act",
+          action: {
+            mode: "single",
+            calls: [{
+              id: "call_1",
+              tool: "read_file",
+              input: { path: "src/upload.ts" },
+              dependsOn: [],
+              purpose: "Inspect upload handling",
+            }],
+            allowedTools: ["read_file"],
+            assertions: [],
+          },
+        },
+        {
+          kind: "reply",
+          status: "completed",
+          message: "Upload handling lives in src/upload.ts.",
+        },
+      ]);
+      const createWorkRun = vi.fn();
+      const recordTaskStep = vi.fn();
+      const recordSessionStep = vi.fn();
+
+      const result = await agentLoop({
+        provider,
+        toolExecutor,
+        toolDefinitions: toolExecutor.definitions(),
+        runRecorder: noopRunRecorder,
+        inputHandle: { sessionId: "s1", seq: 1 },
+        sessionRunHandle: { sessionId: "s1", runId: "R-session", triggerSeq: 1 },
+        createWorkRun,
+        recordTaskStep,
+        recordSessionStep,
+        clientId: "c1",
+        initialUserMessage: "where is upload handling implemented?",
+        dataDir,
+        systemContext: "full system context with memory",
+      });
+
+      expect(result.status).toBe("completed");
+      expect(result.runClass).toBe("interaction");
+      expect(result.workRunId).toBeUndefined();
+      expect(createWorkRun).not.toHaveBeenCalled();
+      expect(recordTaskStep).not.toHaveBeenCalled();
+      expect(recordSessionStep).toHaveBeenCalledWith(expect.objectContaining({
+        sessionId: "s1",
+        runId: "R-session",
+        status: "completed",
+        toolCalls: [expect.objectContaining({
+          tool: "read_file",
+          status: "success",
+        })],
+      }));
+    } finally {
+      cleanup(dataDir);
+    }
+  });
+
   it("uses update_work_state before a response-only final task reply", async () => {
     const dataDir = makeTmpDir();
     const outputPath = join(dataDir, "tea.html");

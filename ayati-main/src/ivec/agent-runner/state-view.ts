@@ -1,4 +1,5 @@
 import type { LoopState, TaskNote, ToolContextState, ToolObservation, WorkState } from "../types.js";
+import type { MemoryRunHandle } from "../../memory/types.js";
 import type { RepairPromptCard } from "./repair-policy.js";
 import { buildPromptToolCallsForRun } from "./run-tool-call-context.js";
 import type { PromptToolCalls } from "./run-tool-call-context.js";
@@ -105,11 +106,17 @@ export interface AgentStateView {
 export interface AgentStateViewOptions {
   activeTools?: string[];
   runtimeMode?: RuntimeCapabilityPromptContext;
+  workRunHandle?: MemoryRunHandle;
+  sessionRunHandle?: MemoryRunHandle;
 }
 
 export function buildAgentStateView(state: LoopState, options: AgentStateViewOptions = {}): AgentStateView {
   const runtimeMode = options.runtimeMode
-    ?? buildRuntimeCapabilityPromptContext(detectRuntimeCapabilityMode({ state }));
+    ?? buildRuntimeCapabilityPromptContext(detectRuntimeCapabilityMode({
+      state,
+      workRunHandle: options.workRunHandle,
+      sessionRunHandle: options.sessionRunHandle,
+    }));
   const progress = buildProgressView(state.workState);
   const toolLoad = buildToolLoadView(state.lastToolLoad);
   const workingFeedback = buildWorkingFeedbackView(state);

@@ -71,6 +71,7 @@ import { planLocalRecovery } from "./failure-policy.js";
 import { deriveExecutionStatus } from "../verification-gates.js";
 import { buildContextEngineFeedbackSummary } from "../feedback-ledger.js";
 import type { ToolDefinition, ToolResult } from "../../skills/types.js";
+import { isReadOnlyTool } from "../../skills/tool-taxonomy.js";
 import {
   isGitContextAllowedDuringPendingRouting,
   isGitContextReadOnlyToolName,
@@ -387,7 +388,10 @@ export async function runAgentLoop(
     };
     let deterministicToolLoad: ToolLoadResult | undefined;
     if (deps.toolWorkingSetManager) {
-      deterministicToolLoad = deps.toolWorkingSetManager.prepareForDecision(state, toolContext);
+      deterministicToolLoad = deps.toolWorkingSetManager.prepareForDecision(state, toolContext, {
+        workRunHandle,
+        sessionRunHandle,
+      });
     } else {
       await deps.skillActivationManager?.prepareForDecision(state, toolContext);
     }
@@ -396,7 +400,10 @@ export async function runAgentLoop(
       : deps.toolExecutor?.definitions({
         ...toolContext,
       }) ?? deps.toolDefinitions;
-    const selectedTools = selectToolsForDecision(state, visibleTools, config.maxSelectedTools);
+    const selectedTools = selectToolsForDecision(state, visibleTools, config.maxSelectedTools, {
+      workRunHandle,
+      sessionRunHandle,
+    });
     recordToolWorkingSetFeedback({
       deps,
       inputHandle,
@@ -408,12 +415,15 @@ export async function runAgentLoop(
       visibleTools,
       selectedTools,
       workRunHandle,
+      sessionRunHandle,
     });
     const stateView = buildAgentStateView(state, {
       activeTools: selectedTools.map((tool) => tool.name),
+      workRunHandle,
+      sessionRunHandle,
     });
     const taskFeedbackToolAvailable = isTaskFeedbackToolAvailable(state, workRunHandle);
-    const decisionRuntimeMode = detectRuntimeCapabilityMode({ state, workRunHandle });
+    const decisionRuntimeMode = detectRuntimeCapabilityMode({ state, workRunHandle, sessionRunHandle });
     const decisionToolPolicyAudit = auditToolPolicy({
       mode: decisionRuntimeMode,
       selectedTools,
@@ -439,7 +449,7 @@ export async function runAgentLoop(
       contextEngine: buildContextEngineFeedbackSummary({
         context: state.harnessContext.contextEngine,
       }),
-      warningCodes: buildToolExposureWarningCodes(state, selectedTools, workRunHandle),
+      warningCodes: buildToolExposureWarningCodes(state, selectedTools, workRunHandle, sessionRunHandle),
       toolPolicyAudit: decisionToolPolicyAudit,
       inputState: summarizeDecisionInputState(stateView),
     });
@@ -583,7 +593,7 @@ export async function runAgentLoop(
       continue;
     }
 
-    const runtimeMode = detectRuntimeCapabilityMode({ state, workRunHandle });
+    const runtimeMode = detectRuntimeCapabilityMode({ state, workRunHandle, sessionRunHandle });
     const pendingRouting = runtimeMode.name === "pre_task_routing";
     const freshSessionWithoutActiveTask = isFreshSessionRoutingMode(runtimeMode);
 
@@ -693,8 +703,9 @@ export async function runAgentLoop(
     const preRunGitContextAction = preRunGitContextReadAction
       || preRunGitContextRoutingAction
       || isPreRunGitContextAction(decision, workRunHandle);
+    const sessionReadOnlyAction = isSessionReadOnlyAction(decision, workRunHandle, sessionRunHandle);
 
-    if (pendingRouting || freshSessionRouting || preRunGitContextAction) {
+    if (pendingRouting || freshSessionRouting || preRunGitContextAction || sessionReadOnlyAction) {
       const routingRunId = sessionRunHandle?.runId ?? decisionScopeId(inputHandle);
       const routingToolContext = { ...toolContext, runId: routingRunId };
       recordFeedback(deps, inputHandle, undefined, "action", "started", {
@@ -725,6 +736,7 @@ export async function runAgentLoop(
         decision,
         stepNumber: state.iteration,
         toolContext: routingToolContext,
+        readOnlySessionAction: sessionReadOnlyAction,
       });
       const stepCompletedAt = new Date().toISOString();
       actionStepCount++;
@@ -1080,6 +1092,7 @@ interface ExecutePendingRoutingActionInput {
     sessionId: string;
     stepNumber: number;
   };
+  readOnlySessionAction?: boolean;
 }
 
 type TurnRoutingUpdate =
@@ -1145,6 +1158,9 @@ function validatePendingRoutingAction(input: ExecutePendingRoutingActionInput): 
     if (!selected.has(tool)) {
       return `Allowed tool '${tool}' was not selected for this decision.`;
     }
+    if (input.readOnlySessionAction && !isReadOnlyTool(tool)) {
+      return `Allowed tool '${tool}' cannot run in a session read-only action before task promotion.`;
+    }
   }
   for (const call of action.calls) {
     if (!selected.has(call.tool)) {
@@ -1153,7 +1169,11 @@ function validatePendingRoutingAction(input: ExecutePendingRoutingActionInput): 
     if (!allowed.has(call.tool)) {
       return `Tool '${call.tool}' was not listed in action.allowedTools.`;
     }
-    if (!isGitContextAllowedDuringPendingRouting(call.tool)) {
+    if (input.readOnlySessionAction) {
+      if (!isReadOnlyTool(call.tool)) {
+        return `Tool '${call.tool}' cannot run in a session read-only action before task promotion.`;
+      }
+    } else if (!isGitContextAllowedDuringPendingRouting(call.tool)) {
       return [
         `Tool '${call.tool}' cannot run while the current git-memory pending turn is unbound or clarifying.`,
         "Use git-context read/search tools and then git_context_activate_task_for_turn, git_context_create_task_for_turn, or git_context_ask_clarification_for_turn before task execution.",
@@ -1530,6 +1550,18 @@ function isPreRunGitContextRoutingAction(
     && decision.action.calls.every((call) => isGitContextTurnRoutingToolName(call.tool));
 }
 
+function isSessionReadOnlyAction(
+  decision: AgentDecision,
+  workRunHandle: MemoryRunHandle | undefined,
+  sessionRunHandle: MemoryRunHandle | undefined,
+): boolean {
+  return decision.kind === "act"
+    && !workRunHandle
+    && Boolean(sessionRunHandle?.runId)
+    && decision.action.calls.length > 0
+    && decision.action.calls.every((call) => isReadOnlyTool(call.tool));
+}
+
 function buildCreateWorkRunRequest(state: LoopState, reason: string) {
   const contextEngine = state.harnessContext.contextEngine;
   const focus = contextEngine?.focus;
@@ -1788,11 +1820,13 @@ function recordToolWorkingSetFeedback(input: {
   visibleTools: ToolDefinition[];
   selectedTools: ToolDefinition[];
   workRunHandle: MemoryRunHandle | undefined;
+  sessionRunHandle: MemoryRunHandle | undefined;
 }): void {
-  const warningCodes = buildToolExposureWarningCodes(input.state, input.selectedTools, input.workRunHandle);
+  const warningCodes = buildToolExposureWarningCodes(input.state, input.selectedTools, input.workRunHandle, input.sessionRunHandle);
   const runtimeMode = detectRuntimeCapabilityMode({
     state: input.state,
     workRunHandle: input.workRunHandle,
+    sessionRunHandle: input.sessionRunHandle,
   });
   const toolPolicyAudit = auditToolPolicy({
     mode: runtimeMode,
@@ -1807,7 +1841,8 @@ function recordToolWorkingSetFeedback(input: {
     iteration: input.iteration,
     toolContextRunId: input.toolContextRunId,
     workRunId: input.workRunHandle?.runId,
-    runHandlePresent: Boolean(input.workRunHandle || input.state.runId),
+    sessionRunId: input.sessionRunHandle?.runId,
+    runHandlePresent: Boolean(input.workRunHandle || input.sessionRunHandle || input.state.runId),
     pendingTurnStatus: input.state.harnessContext.contextEngine?.pendingTurn?.routingStatus,
     toolMode,
     deterministicLoad: summarizeToolLoadResult(input.deterministicToolLoad),
@@ -1834,6 +1869,7 @@ function recordToolWorkingSetFeedback(input: {
       toolContextRunId: input.toolContextRunId,
       mode: toolMode.mode,
       hasWorkRun: toolMode.hasWorkRun,
+      hasSessionRun: toolMode.hasSessionRun,
       focusStatus: toolMode.focusStatus,
       pendingTurnStatus: toolMode.pendingTurnStatus,
       step: runtimeMode.routingWindow.step,
@@ -1919,15 +1955,17 @@ function buildToolExposureWarningCodes(
   state: LoopState,
   selectedTools: ToolDefinition[],
   workRunHandle: MemoryRunHandle | undefined,
+  sessionRunHandle: MemoryRunHandle | undefined,
 ): string[] {
   const warningCodes: string[] = [];
-  const mode = detectRuntimeCapabilityMode({ state, workRunHandle });
+  const mode = detectRuntimeCapabilityMode({ state, workRunHandle, sessionRunHandle });
   const pendingTurnStatus = state.harnessContext.contextEngine?.pendingTurn?.routingStatus;
   const normalTools = normalTaskToolNames(selectedTools);
-  if ((pendingTurnStatus === "unbound" || pendingTurnStatus === "clarifying") && normalTools.length > 0) {
+  const unsafeNormalTools = normalTools.filter((tool) => !isReadOnlyTool(tool));
+  if ((pendingTurnStatus === "unbound" || pendingTurnStatus === "clarifying") && unsafeNormalTools.length > 0) {
     warningCodes.push("normal_tool_visible_during_pending_routing", "routing_state_mismatch");
   }
-  if (!state.runId && !workRunHandle && mode.name !== "active_task_ready" && normalTools.length > 0) {
+  if (!state.runId && !workRunHandle && mode.name !== "active_task_ready" && unsafeNormalTools.length > 0) {
     warningCodes.push("normal_tools_selected_without_work_run");
   }
   return uniqueStrings(warningCodes);
