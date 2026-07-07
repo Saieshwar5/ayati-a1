@@ -7,12 +7,14 @@ Areas that deserve careful test coverage when changed:
   persistence, and attachment restore behavior.
 - Clarification follow-up resolution after `pendingTurn.routingStatus =
   "clarifying"`.
-- Broader engine/app live-flow coverage around create/activate routing beyond
-  the focused agent-loop tests.
+- Broader engine/app live-flow coverage around unusual create/activate routing
+  failures beyond the covered session-run read-only and read-then-mutate
+  promotion paths.
 - Attachment preservation while a turn is still unbound or clarifying.
 - App-level task-run finalization for completed, failed, blocked,
   needs-user-input, stuck/max-iteration, and tool-failure outcomes.
-- System-event parity with chat pending-turn routing and finalization.
+- System-event parity with chat pending-turn routing edge cases and failure
+  handling.
 - Daemon lifecycle and long-running service assumptions.
 - Tool call validation and execution.
 - Session rotation and memory persistence.

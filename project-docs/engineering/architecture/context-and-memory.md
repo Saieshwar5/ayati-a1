@@ -33,38 +33,45 @@ Pending-turn routing states are:
 - `unbound`: user message is global only; task ownership is not decided.
 - `bound`: runtime has selected/created a task, appended the conversation range
   to that task branch, and allocated a run id.
-- `clarifying`: ownership is ambiguous; no task branch receives the turn and no
-  run id is allocated until the user answers.
+- `clarifying`: ownership is ambiguous; no task branch receives the turn until
+  the user answers.
 
 Only one chat turn per client/session should enter pending-turn preparation and
 routing at a time. This serialization belongs above the context engine because
 the race is not just a git write conflict; it is two agent loops acting as if
 they both own the current pending turn.
 
-While a pending turn is `unbound` or `clarifying`, normal task tools are blocked.
-The agent may use git-context read/search tools and turn-aware routing tools:
+Every provider-handled chat turn and system event starts as a session run in
+the session-store. While a pending turn is `unbound` or `clarifying`, mutation
+tools are blocked, but read-only tools may execute in that session run. The
+agent may also use git-context read/search tools and turn-aware routing tools:
 `git_context_activate_task_for_turn`, `git_context_create_task_for_turn`, and
 `git_context_ask_clarification_for_turn`.
 
-Fresh sessions are stricter. If there is no active task, the runtime treats that
-as "zero tasks in this session" and exposes only create-or-clarify routing
-tools. These routing mutation tools do not consume the normal selected-tool
-budget while routing is active; otherwise normal/read tools can crowd out the
-very tools needed to create or bind a task. After
+Fresh sessions are read-capable but mutation-gated. If there is no active task,
+read-only tools can run in the session run, while mutation requires
+create-or-clarify routing first. These routing mutation tools do not consume the
+normal selected-tool budget while routing is active; otherwise normal tools can
+crowd out the very tools needed to create or bind a task. After
 `git_context_create_task_for_turn` or
-`git_context_activate_task_for_turn` returns a ready route, the runner switches
-from the synthetic decision context to the real run id, refreshes
+`git_context_activate_task_for_turn` returns a ready route, the runner promotes
+the active session run to the returned task run id, refreshes
 `context.git.current`, removes routing tools for the rest of the run, and then
-allows normal work tools.
+allows normal mutation tools.
 
-If an active task exists and no run id exists yet, normal work tools can appear
-alongside the short routing window. For same-task continuation, the model uses
-normal work tools directly and the runner creates/binds the active-task run
-through the app runtime immediately before executing the first normal tool. For
-new tasks, different existing tasks, or ambiguous ownership, the model may use
-create, activate, or clarify routing tools during the window. Once a normal
-tool creates the run, or once routing is resolved, routing mutation tools are
-removed from the task-run surface.
+If an active task exists, the turn still starts as a session run. For same-task
+continuation, the model may read first in the session run; the runner promotes
+that same run id into the active task immediately before the first mutation
+tool executes. For new tasks, different existing tasks, or ambiguous ownership,
+the model may use create, activate, or clarify routing tools during the window.
+Once mutation promotes the run, or once routing is resolved, routing mutation
+tools are removed from the task-run surface.
+
+A session run has exactly one final home. If it remains read-only, it is
+finalized in `session-store`. If it is promoted, pre-promotion read steps move
+with the same run id into the task step log, and the final run is written only
+under the task directory. Completed session runs are sealed and are never
+promoted later.
 
 The model-facing prompt uses a grouped context projection. The important paths
 are:

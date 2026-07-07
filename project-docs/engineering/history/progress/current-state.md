@@ -1,6 +1,6 @@
 # Current State
 
-Last updated: 2026-07-06
+Last updated: 2026-07-07
 
 Ayati's active task-continuity path is git-native. The old task-thread and
 Activity continuation path is historical and must not be reintroduced into the
@@ -37,13 +37,20 @@ context.timeline + context.git + context.tools + context.harness + context.run +
   - `git_context_ask_clarification_for_turn`
 - Git-context read/search tools for explicit retrieval instead of loading every
   branch into the prompt.
+- Run-first session lifecycle for provider-handled chat turns and system
+  events:
+  - every provider-handled turn starts as a session run,
+  - read-only tools can execute before task binding,
+  - mutation promotes the active session run into a task run,
+  - unpromoted runs finalize in `session-store`,
+  - promoted runs finalize only in the task directory using the same run id.
 - Grouped prompt context with legacy aliases kept internal for compatibility
   instead of promoted as duplicate model-facing payload.
 - Pending-routing guard: normal task tools cannot run while a pending turn is
   unbound or clarifying.
-- Fresh-session task gate: when no active task exists, the model sees only
-  create-or-clarify routing tools; normal work tools repair back to task
-  creation instead of crashing with a missing run.
+- Fresh-session mutation gate: when no active task exists, read-only tools can
+  run in the session run, while mutation repairs back to task creation or
+  clarification instead of crashing with a missing run.
 - Active context refresh after activate/create routing.
 - Same-turn continuation after routing: create/activate tools return a real
   run id, routing tools are deactivated, normal work tools are prepared, and the
@@ -109,12 +116,9 @@ is the simple runtime path.
 
 1. Clarification follow-up resolution.
 2. Attachment preservation and ownership during pending-turn routing.
-3. Broader app/engine-level live-flow coverage beyond the focused agent-loop
-   routing tests.
-4. App-level finalization coverage for completed, failed, blocked,
+3. App-level finalization coverage for completed, failed, blocked,
    needs-user-input, stuck/max-iteration, and tool-failure outcomes.
-5. System-event parity with chat pending-turn routing and finalization.
-6. Legacy cleanup around historical focus/message-link/event files.
-7. Stable milestone tags.
-8. Advanced raw-context lifecycle only if real usage proves compact run
+4. Legacy cleanup around historical focus/message-link/event files.
+5. Stable milestone tags.
+6. Advanced raw-context lifecycle only if real usage proves compact run
    tool-call context and domain-tool narrowing are not enough.
