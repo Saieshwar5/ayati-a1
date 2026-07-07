@@ -53,6 +53,49 @@ export interface EditFileInput {
   confirmationToken?: string;
 }
 
+export type EditFilesMode = "replace" | "insert_before" | "insert_after" | "replace_range";
+
+export interface EditFilesInputEdit {
+  path: string;
+  mode?: EditFilesMode;
+  oldString?: string;
+  newString?: string;
+  replaceAll?: boolean;
+  anchor?: string;
+  content?: string;
+  startLine?: number;
+  endLine?: number;
+}
+
+export interface EditFilesInput {
+  edits: EditFilesInputEdit[];
+  allowExternalPath?: boolean;
+  confirmationToken?: string;
+}
+
+export type PatchFilesPatchKind = "replace_text" | "replace_all_text" | "insert_before" | "insert_after" | "replace_lines";
+
+export interface PatchFilesPatch {
+  kind: PatchFilesPatchKind;
+  find?: string;
+  replace?: string;
+  anchor?: string;
+  content?: string;
+  startLine?: number;
+  endLine?: number;
+}
+
+export interface PatchFilesInputFile {
+  path: string;
+  patches: PatchFilesPatch[];
+}
+
+export interface PatchFilesInput {
+  files: PatchFilesInputFile[];
+  allowExternalPath?: boolean;
+  confirmationToken?: string;
+}
+
 export interface DeleteInput {
   path: string;
   recursive?: boolean;

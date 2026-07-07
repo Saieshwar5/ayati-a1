@@ -8,6 +8,13 @@ import type {
   WriteFilesInput,
   WriteFilesInputFile,
   EditFileInput,
+  EditFilesInput,
+  EditFilesInputEdit,
+  EditFilesMode,
+  PatchFilesInput,
+  PatchFilesInputFile,
+  PatchFilesPatch,
+  PatchFilesPatchKind,
   DeleteInput,
   ListDirectoryInput,
   CreateDirectoryInput,
@@ -17,6 +24,9 @@ import type {
 } from "./types.js";
 
 const MAX_READ_FILES = 20;
+const MAX_BATCH_EDITS = 40;
+const MAX_PATCH_FILES = 20;
+const MAX_PATCHES_PER_FILE = 20;
 
 function fail(msg: string): ToolResult {
   return { ok: false, error: `Invalid input: ${msg}` };
@@ -225,6 +235,169 @@ export function validateEditFileInput(input: unknown): EditFileInput | ToolResul
     allowExternalPath: v.allowExternalPath,
     confirmationToken: v.confirmationToken,
   };
+}
+
+export function validateEditFilesInput(input: unknown): EditFilesInput | ToolResult {
+  if (!isObject(input)) return fail("expected object.");
+  const v = input as Partial<EditFilesInput>;
+  if (!Array.isArray(v.edits)) return fail("edits must be an array.");
+  if (v.edits.length === 0) return fail("edits must contain at least one edit.");
+  if (v.edits.length > MAX_BATCH_EDITS) return fail(`edits must contain ${MAX_BATCH_EDITS} or fewer edits.`);
+  if (v.allowExternalPath !== undefined && typeof v.allowExternalPath !== "boolean") {
+    return fail("allowExternalPath must be a boolean.");
+  }
+  const tokenErr = validateConfirmationToken(v.confirmationToken);
+  if (tokenErr) return tokenErr;
+
+  const edits: EditFilesInputEdit[] = [];
+  for (const [index, rawEdit] of v.edits.entries()) {
+    if (!isObject(rawEdit)) return fail(`edits[${index}] must be an object.`);
+    const edit = rawEdit as Partial<EditFilesInputEdit>;
+    if (!isNonEmptyString(edit.path)) return fail(`edits[${index}].path must be a non-empty string.`);
+    const mode = edit.mode ?? "replace";
+    if (!isEditFilesMode(mode)) {
+      return fail(`edits[${index}].mode must be one of replace, insert_before, insert_after, or replace_range.`);
+    }
+    if (mode === "replace") {
+      if (typeof edit.oldString !== "string" || edit.oldString.length === 0) {
+        return fail(`edits[${index}].oldString must be a non-empty string for replace mode.`);
+      }
+      if (typeof edit.newString !== "string") {
+        return fail(`edits[${index}].newString must be a string for replace mode.`);
+      }
+      if (edit.replaceAll !== undefined && typeof edit.replaceAll !== "boolean") {
+        return fail(`edits[${index}].replaceAll must be a boolean.`);
+      }
+    } else if (mode === "insert_before" || mode === "insert_after") {
+      if (typeof edit.anchor !== "string" || edit.anchor.length === 0) {
+        return fail(`edits[${index}].anchor must be a non-empty string for ${mode} mode.`);
+      }
+      if (typeof edit.content !== "string") {
+        return fail(`edits[${index}].content must be a string for ${mode} mode.`);
+      }
+    } else {
+      if (!isPositiveInt(edit.startLine)) {
+        return fail(`edits[${index}].startLine must be a positive integer for replace_range mode.`);
+      }
+      if (!isPositiveInt(edit.endLine)) {
+        return fail(`edits[${index}].endLine must be a positive integer for replace_range mode.`);
+      }
+      if (edit.endLine < edit.startLine) {
+        return fail(`edits[${index}].endLine must be greater than or equal to startLine.`);
+      }
+      if (typeof edit.newString !== "string") {
+        return fail(`edits[${index}].newString must be a string for replace_range mode.`);
+      }
+    }
+
+    edits.push({
+      path: edit.path,
+      mode,
+      ...(edit.oldString !== undefined ? { oldString: edit.oldString } : {}),
+      ...(edit.newString !== undefined ? { newString: edit.newString } : {}),
+      ...(edit.replaceAll !== undefined ? { replaceAll: edit.replaceAll } : {}),
+      ...(edit.anchor !== undefined ? { anchor: edit.anchor } : {}),
+      ...(edit.content !== undefined ? { content: edit.content } : {}),
+      ...(edit.startLine !== undefined ? { startLine: edit.startLine } : {}),
+      ...(edit.endLine !== undefined ? { endLine: edit.endLine } : {}),
+    });
+  }
+
+  return {
+    edits,
+    allowExternalPath: v.allowExternalPath,
+    confirmationToken: v.confirmationToken,
+  };
+}
+
+function isEditFilesMode(value: unknown): value is EditFilesMode {
+  return value === "replace" || value === "insert_before" || value === "insert_after" || value === "replace_range";
+}
+
+export function validatePatchFilesInput(input: unknown): PatchFilesInput | ToolResult {
+  if (!isObject(input)) return fail("expected object.");
+  const v = input as Partial<PatchFilesInput>;
+  if (!Array.isArray(v.files)) return fail("files must be an array.");
+  if (v.files.length === 0) return fail("files must contain at least one file.");
+  if (v.files.length > MAX_PATCH_FILES) return fail(`files must contain ${MAX_PATCH_FILES} or fewer files.`);
+  if (v.allowExternalPath !== undefined && typeof v.allowExternalPath !== "boolean") {
+    return fail("allowExternalPath must be a boolean.");
+  }
+  const tokenErr = validateConfirmationToken(v.confirmationToken);
+  if (tokenErr) return tokenErr;
+
+  const files: PatchFilesInputFile[] = [];
+  for (const [fileIndex, rawFile] of v.files.entries()) {
+    if (!isObject(rawFile)) return fail(`files[${fileIndex}] must be an object.`);
+    const file = rawFile as Partial<PatchFilesInputFile>;
+    if (!isNonEmptyString(file.path)) return fail(`files[${fileIndex}].path must be a non-empty string.`);
+    if (!Array.isArray(file.patches)) return fail(`files[${fileIndex}].patches must be an array.`);
+    if (file.patches.length === 0) return fail(`files[${fileIndex}].patches must contain at least one patch.`);
+    if (file.patches.length > MAX_PATCHES_PER_FILE) {
+      return fail(`files[${fileIndex}].patches must contain ${MAX_PATCHES_PER_FILE} or fewer patches.`);
+    }
+
+    const patches: PatchFilesPatch[] = [];
+    for (const [patchIndex, rawPatch] of file.patches.entries()) {
+      if (!isObject(rawPatch)) return fail(`files[${fileIndex}].patches[${patchIndex}] must be an object.`);
+      const patch = rawPatch as Partial<PatchFilesPatch>;
+      if (!isPatchFilesPatchKind(patch.kind)) {
+        return fail(`files[${fileIndex}].patches[${patchIndex}].kind must be one of replace_text, replace_all_text, insert_before, insert_after, or replace_lines.`);
+      }
+      if (patch.kind === "replace_text" || patch.kind === "replace_all_text") {
+        if (typeof patch.find !== "string" || patch.find.length === 0) {
+          return fail(`files[${fileIndex}].patches[${patchIndex}].find must be a non-empty string for ${patch.kind}.`);
+        }
+        if (typeof patch.replace !== "string") {
+          return fail(`files[${fileIndex}].patches[${patchIndex}].replace must be a string for ${patch.kind}.`);
+        }
+      } else if (patch.kind === "insert_before" || patch.kind === "insert_after") {
+        if (typeof patch.anchor !== "string" || patch.anchor.length === 0) {
+          return fail(`files[${fileIndex}].patches[${patchIndex}].anchor must be a non-empty string for ${patch.kind}.`);
+        }
+        if (typeof patch.content !== "string" || patch.content.length === 0) {
+          return fail(`files[${fileIndex}].patches[${patchIndex}].content must be a non-empty string for ${patch.kind}.`);
+        }
+      } else {
+        if (!isPositiveInt(patch.startLine)) {
+          return fail(`files[${fileIndex}].patches[${patchIndex}].startLine must be a positive integer for replace_lines.`);
+        }
+        if (!isPositiveInt(patch.endLine)) {
+          return fail(`files[${fileIndex}].patches[${patchIndex}].endLine must be a positive integer for replace_lines.`);
+        }
+        if (patch.endLine < patch.startLine) {
+          return fail(`files[${fileIndex}].patches[${patchIndex}].endLine must be greater than or equal to startLine.`);
+        }
+        if (typeof patch.replace !== "string") {
+          return fail(`files[${fileIndex}].patches[${patchIndex}].replace must be a string for replace_lines.`);
+        }
+      }
+      patches.push({
+        kind: patch.kind,
+        ...(patch.find !== undefined ? { find: patch.find } : {}),
+        ...(patch.replace !== undefined ? { replace: patch.replace } : {}),
+        ...(patch.anchor !== undefined ? { anchor: patch.anchor } : {}),
+        ...(patch.content !== undefined ? { content: patch.content } : {}),
+        ...(patch.startLine !== undefined ? { startLine: patch.startLine } : {}),
+        ...(patch.endLine !== undefined ? { endLine: patch.endLine } : {}),
+      });
+    }
+    files.push({ path: file.path, patches });
+  }
+
+  return {
+    files,
+    allowExternalPath: v.allowExternalPath,
+    confirmationToken: v.confirmationToken,
+  };
+}
+
+function isPatchFilesPatchKind(value: unknown): value is PatchFilesPatchKind {
+  return value === "replace_text"
+    || value === "replace_all_text"
+    || value === "insert_before"
+    || value === "insert_after"
+    || value === "replace_lines";
 }
 
 export function validateDeleteInput(input: unknown): DeleteInput | ToolResult {

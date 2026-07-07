@@ -584,7 +584,9 @@ function buildDeterministicLoadRequest(state: LoopState): ToolLoadRequest {
     toolNames.add("search_in_files");
     toolNames.add("read_files");
     toolNames.add("read_file");
+    toolNames.add("patch_files");
     toolNames.add("edit_file");
+    toolNames.add("edit_files");
   }
   if (hasFileCreationIntent(text)) {
     groups.add("file:create");

@@ -412,6 +412,79 @@ describe("agentLoop", () => {
     }
   });
 
+  it("uses update_work_state before a response-only final task reply", async () => {
+    const dataDir = makeTmpDir();
+    const outputPath = join(dataDir, "tea.html");
+    try {
+      const toolExecutor = createToolExecutor([writeFilesTool]);
+      const provider = createProvider([
+        {
+          kind: "act",
+          action: {
+            mode: "single",
+            calls: [{
+              id: "call_1",
+              tool: "write_files",
+              input: {
+                files: [{ path: outputPath, content: "<h1>Tea Stall</h1>\n" }],
+              },
+              dependsOn: [],
+              purpose: "Create the requested page",
+            }],
+            allowedTools: ["write_files"],
+            assertions: [],
+            completion: {
+              intent: "not_completion",
+              reason: "The work state still needs to be updated after the write succeeds.",
+            },
+          },
+        },
+        {
+          kind: "update_work_state",
+          update: {
+            status: "done",
+            summary: "Created the requested tea stall HTML page.",
+            openWork: [],
+            blockers: [],
+          },
+        },
+        {
+          kind: "reply",
+          status: "completed",
+          message: "Created `tea.html` with a simple tea stall page.",
+        },
+      ]);
+
+      const result = await agentLoop({
+        provider,
+        toolExecutor,
+        toolDefinitions: toolExecutor.definitions(),
+        runRecorder: noopRunRecorder,
+        runHandle: { sessionId: "s1", runId: "r-work-state-final" },
+        clientId: "c1",
+        initialUserMessage: "Create a small tea stall HTML page.",
+        dataDir,
+        systemContext: "full system context with memory",
+      });
+
+      const finalCallInput = vi.mocked(provider.generateTurn).mock.calls[2]?.[0];
+      const finalPrompt = finalCallInput.messages.find((message: { role: string }) => message.role === "user").content as string;
+      expect(result.status).toBe("completed");
+      expect(result.runClass).toBe("task");
+      expect(result.workState?.status).toBe("done");
+      expect(result.workState?.summary).toBe("Created the requested tea stall HTML page.");
+      expect(result.content).toBe("Created `tea.html` with a simple tea stall page.");
+      expect(result.content).not.toContain("deterministic verification");
+      expect(readFileSync(outputPath, "utf-8")).toContain("Tea Stall");
+      expect(provider.generateTurn).toHaveBeenCalledTimes(3);
+      expect(finalCallInput.tools).toEqual([]);
+      expect(finalPrompt).toContain("\"status\": \"done\"");
+      expect(finalPrompt).toContain("Created the requested tea stall HTML page.");
+    } finally {
+      cleanup(dataDir);
+    }
+  });
+
   it("keeps a task waiting for user input when a direct reply finishes only the turn", async () => {
     const dataDir = makeTmpDir();
     const outputPath = join(dataDir, "project-note", "notes.md");
@@ -1638,6 +1711,11 @@ describe("agentLoop", () => {
             },
           },
         },
+        {
+          kind: "reply",
+          status: "completed",
+          message: "Created `completion-site/index.html` for the small website.",
+        },
       ]);
 
       const result = await agentLoop({
@@ -1653,10 +1731,10 @@ describe("agentLoop", () => {
       });
 
       expect(result.status).toBe("completed");
-      expect(result.totalIterations).toBe(1);
-      expect(provider.generateTurn).toHaveBeenCalledTimes(1);
+      expect(result.totalIterations).toBe(2);
+      expect(provider.generateTurn).toHaveBeenCalledTimes(2);
       expect(readFileSync(outputPath, "utf-8")).toBe("<!doctype html><title>Done</title>");
-      expect(result.content).toBe("Done. I created or updated `completion-site/index.html`.");
+      expect(result.content).toBe("Created `completion-site/index.html` for the small website.");
       expect(result.content).not.toContain("Batch write");
       expect(result.content).not.toContain("sha256");
       expect(result.content).not.toContain("deterministic verification");
@@ -1665,6 +1743,64 @@ describe("agentLoop", () => {
         taskStatus: "done",
         toolsUsed: ["write_files"],
       });
+    } finally {
+      cleanup(dataDir);
+    }
+  });
+
+  it("rejects control-token prose from the response-only final turn", async () => {
+    const dataDir = makeTmpDir();
+    const outputPath = join(dataDir, "completion-site", "index.html");
+    const feedback = createMemoryFeedbackLedger();
+    try {
+      const toolExecutor = createToolExecutor([writeFilesTool]);
+      const provider = createProvider([
+        {
+          kind: "act",
+          action: {
+            mode: "single",
+            calls: [{
+              id: "call_1",
+              tool: "write_files",
+              input: {
+                createDirs: true,
+                files: [{ path: outputPath, content: "<!doctype html><title>Done</title>" }],
+              },
+              dependsOn: [],
+              purpose: "Create the requested website",
+            }],
+            allowedTools: ["write_files"],
+            assertions: [],
+            completion: {
+              intent: "completion_candidate",
+              reason: "The requested website file is written and verified.",
+              expectedEvidence: ["index.html written"],
+            },
+          },
+        },
+        "update_work_state",
+      ]);
+
+      const result = await agentLoop({
+        provider,
+        toolExecutor,
+        toolDefinitions: toolExecutor.definitions(),
+        runRecorder: noopRunRecorder,
+        runHandle: { sessionId: "s1", runId: "r-final-control-token" },
+        clientId: "c1",
+        initialUserMessage: "Create a small website",
+        dataDir,
+        systemContext: "full system context with memory",
+        feedbackLedger: feedback.ledger,
+      });
+
+      expect(result.status).toBe("completed");
+      expect(result.totalIterations).toBe(2);
+      expect(provider.generateTurn).toHaveBeenCalledTimes(2);
+      expect(readFileSync(outputPath, "utf-8")).toBe("<!doctype html><title>Done</title>");
+      expect(result.content).not.toBe("update_work_state");
+      expect(result.content).toBe("Done. I completed the task.");
+      expect(feedbackEvents(feedback.events, "decision", "final_response_rejected")).toHaveLength(1);
     } finally {
       cleanup(dataDir);
     }

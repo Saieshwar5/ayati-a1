@@ -930,6 +930,46 @@ describe("parseAgentDecision", () => {
     });
   });
 
+  it("exposes update_work_state only when enabled", async () => {
+    const { provider, generateTurn } = createNativeToolProvider([
+      {
+        type: "tool_calls",
+        calls: [{
+          id: "work_state_update_1",
+          name: "update_work_state",
+          input: {
+            status: "done",
+            summary: "Created the requested files.",
+            openWork: [],
+            blockers: [],
+          },
+        }],
+      },
+    ], { jsonSchema: true });
+
+    const decision = await callAgentDecision({
+      provider,
+      stateView: createStateView(),
+      toolDefinitions: [],
+      workStateUpdateAvailable: true,
+    });
+
+    expect(generateTurn.mock.calls[0]?.[0]?.tools.map((tool: { name: string }) => tool.name)).toEqual([
+      "decision_load_tools",
+      "update_work_state",
+    ]);
+    expect(decision).toEqual({
+      kind: "update_work_state",
+      update: {
+        status: "done",
+        summary: "Created the requested files.",
+        openWork: [],
+        blockers: [],
+      },
+      workingNotes: undefined,
+    });
+  });
+
   it("exposes selected executable tools as native tools", async () => {
     const { provider, generateTurn } = createProvider([
       JSON.stringify({ kind: "reply", status: "completed", message: "Hi!" }),

@@ -58,6 +58,15 @@ export interface AgentToolLoadRequest {
   groups: string[];
 }
 
+export interface AgentWorkStateUpdate {
+  status: "not_done" | "done" | "blocked" | "needs_user_input";
+  summary?: string;
+  openWork?: string[];
+  blockers?: string[];
+  nextStep?: string;
+  userInputNeeded?: string;
+}
+
 export type DecisionFailureKind =
   | "invalid_json"
   | "unsupported_decision_kind"
@@ -87,6 +96,11 @@ export type AgentDecision =
       kind: "load_tools";
       request: AgentToolLoadRequest;
       workingNotes?: string[];
+    }
+  | {
+      kind: "update_work_state";
+      update: AgentWorkStateUpdate;
+      workingNotes?: string[];
     };
 
 interface CallAgentDecisionInput {
@@ -96,6 +110,7 @@ interface CallAgentDecisionInput {
   toolRoutingSummary?: string;
   toolLoadingAvailable?: boolean;
   taskFeedbackToolAvailable?: boolean;
+  workStateUpdateAvailable?: boolean;
   systemContext?: string;
   metrics?: RunMetrics;
   feedbackLedger?: AgentFeedbackLedger;
@@ -143,6 +158,7 @@ const MAX_PROVIDER_EMPTY_RESPONSE_RETRIES = 1;
 const PROVIDER_EMPTY_RESPONSE_RETRY_DELAY_MS = 400;
 const TOOL_PROTOCOL_FAILURE_REPLY = "I could not form a valid tool call for this request.";
 const TASK_FEEDBACK_TOOL_NAME = "ask_user_feedback";
+const WORK_STATE_UPDATE_TOOL_NAME = "update_work_state";
 
 export async function callAgentDecision(input: CallAgentDecisionInput): Promise<AgentDecision> {
   const promptStateView = projectAgentStateViewForPrompt(input.stateView);
@@ -181,6 +197,7 @@ export async function callAgentDecision(input: CallAgentDecisionInput): Promise<
       const decisionTools = buildNativeDecisionTools(input.toolDefinitions, {
         toolLoadingAvailable: input.toolLoadingAvailable !== false,
         taskFeedbackToolAvailable: input.taskFeedbackToolAvailable === true,
+        workStateUpdateAvailable: input.workStateUpdateAvailable === true,
       });
       recordDecisionFeedback(input, "native_tool_surface", {
         attempt: attempt + 1,
@@ -292,6 +309,7 @@ export async function callAgentDecision(input: CallAgentDecisionInput): Promise<
       const violation = validateToolProtocol(decision, input.toolDefinitions, {
         toolLoadingAvailable: input.toolLoadingAvailable !== false,
         taskFeedbackToolAvailable: input.taskFeedbackToolAvailable === true,
+        workStateUpdateAvailable: input.workStateUpdateAvailable === true,
       });
       if (violation) {
         const repair = createToolProtocolRepairSignal(violation, attempt + 1);
@@ -557,6 +575,12 @@ function summarizeDecisionForFeedback(decision: AgentDecision): Record<string, u
       request: decision.request,
     };
   }
+  if (decision.kind === "update_work_state") {
+    return {
+      kind: decision.kind,
+      update: decision.update,
+    };
+  }
   return {
     kind: decision.kind,
     mode: decision.action.mode,
@@ -620,6 +644,9 @@ function createToolProtocolRepairSignal(violation: ToolProtocolViolation, attemp
 function toolProtocolRepairCode(violation: ToolProtocolViolation): RepairCode {
   if (violation.invalidTools.includes(TASK_FEEDBACK_TOOL_NAME)) {
     return "R_TASK_FEEDBACK_UNAVAILABLE";
+  }
+  if (violation.invalidTools.includes(WORK_STATE_UPDATE_TOOL_NAME)) {
+    return "R_TOOL_NOT_SELECTED";
   }
   if (violation.reason.includes("no tool calls")) {
     return "R_NO_PROGRESS";
@@ -685,6 +712,7 @@ function validateToolProtocol(
   options: {
     toolLoadingAvailable: boolean;
     taskFeedbackToolAvailable: boolean;
+    workStateUpdateAvailable: boolean;
   },
 ): ToolProtocolViolation | null {
   const selectedTools = selectedToolDefinitions.map((tool) => tool.name);
@@ -720,6 +748,19 @@ function validateToolProtocol(
       selectedTools,
       loadToolsUsedAsAction: false,
     };
+  }
+
+  if (decision.kind === "update_work_state") {
+    if (!options.workStateUpdateAvailable) {
+      return {
+        kind: "tool_protocol_violation",
+        reason: "update_work_state is only available during an active task run",
+        invalidTools: [WORK_STATE_UPDATE_TOOL_NAME],
+        selectedTools,
+        loadToolsUsedAsAction: false,
+      };
+    }
+    return null;
   }
 
   if (decision.kind !== "act") {
@@ -1027,6 +1068,14 @@ export function parseAgentDecision(text: string): AgentDecision {
     };
   }
 
+  if (kind === "update_work_state") {
+    return {
+      kind: "update_work_state",
+      update: normalizeWorkStateUpdate(parsed["update"] ?? parsed),
+      workingNotes: normalizeWorkingNotes(parsed["workingNotes"]),
+    };
+  }
+
   throw new SyntaxError(`Unsupported agent decision kind: ${String(kind)}`);
 }
 
@@ -1034,12 +1083,12 @@ const STABLE_DECISION_SYSTEM_CONTEXT = `You are the decision component of an AI 
 Choose the next agent decision only. Use native tool calls; the harness executes tools locally.
 Prefer deterministic actions with concrete tool inputs.
 Use the structured context pack and optional work state in the state view.
-Use direct assistant text for normal terminal replies. Use native tool calls only for tool loading, executable work, or task-run feedback requests.
+Use direct assistant text for normal terminal replies. Use native tool calls only for tool loading, executable work, task-run work-state updates, or task-run feedback requests.
 
 Decision rules:
 - Return direct assistant text for normal user-facing replies, including greetings, explanations, summaries, poems, stories, and final answers after completed work.
 - Call exactly one native tool only when work needs tool loading, executable action, or task-run feedback.
-- Available control tools are decision_load_tools and, only during an active task run, ask_user_feedback.
+- Available control tools are decision_load_tools and, only during an active task run, update_work_state and ask_user_feedback.
 - Treat State view.context as the bounded context pack for this decision.
 - Use context.timeline as chronological conversation context. The item with current=true is the current input.
 - Use the immediately preceding assistant item in context.timeline to interpret short replies like yes, no, do it, go ahead, continue, or stop.
@@ -1075,6 +1124,9 @@ Decision rules:
 - Treat short confirmations or delegation like "yes", "go ahead", "continue", "do it", "whatever feels right", and "surprise me" as permission to proceed with reasonable defaults.
 - Use direct assistant text only as a terminal response: pure conversation, final answer after completed work, failed task, or impossible task.
 - Evidence-before-done rule: for durable work requests, a final direct reply is allowed only after observed tool output or verified task state shows the work is complete. Durable work includes creating, editing, deleting, saving, building, running, testing, fixing, or changing files, code, docs, apps, websites, or workspace state. If durable work remains, call the appropriate selected tool or routing tool instead of replying.
+- During an active task run, after tool output and work-state context show the requested durable work is complete, call update_work_state with status "done" and a short summary instead of sending the final user reply directly. The harness will then ask for a final response with no tools available.
+- update_work_state may change only status, summary, openWork, blockers, nextStep, and userInputNeeded. Do not put verified facts, evidence, artifacts, files, tool transcripts, or run ids into it; those come from tool results and runtime verification.
+- Use update_work_state with status "not_done" when max-step or partial-progress context requires a concise openWork list. Use status "blocked" only with blockers. Use status "needs_user_input" only with userInputNeeded.
 - Do not use direct assistant text to say you will do future work. If work remains, call a selected executable tool or decision_load_tools.
 - Final replies must answer the user's request in natural, human-readable language.
 - Do not mention internal execution details in final replies: tool calls, deterministic verification, evidence contracts, assertions, reducers, work state, or harness steps.
@@ -1094,6 +1146,8 @@ Decision rules:
 - Use only tools listed in Selected tools.
 - Prefer read_files over repeated read_file calls when multiple known files/pages are relevant to the next edit.
 - Prefer write_files for generated websites, apps, and multi-file file creation.
+- Prefer patch_files for normal edits to existing files. Use small stable find strings such as "background: white" instead of large formatted blocks that may differ in whitespace.
+- Prefer edit_files for coordinated edits across one or more known files instead of separate edit_file calls or full-file rewrites; use exact replace, anchor insert, or line-range replacement based on the evidence already read.
 - Hidden tools are loaded by decision_load_tools, not by calling skill_search or skill_activate unless those are explicitly selected executable tools.
 - Do not include assertions. Tool-owned contracts provide deterministic verification.
 - Every executable tool call must include taskCompletion.
@@ -1104,6 +1158,7 @@ Decision rules:
 
 Control tool shapes:
 - decision_load_tools({ "query": "...", "toolNames": ["read_files"], "groups": ["file:read", "file:write"] })
+- update_work_state({ "status": "done", "summary": "Created the requested website files.", "openWork": [], "blockers": [] }) only when exposed during an active task run
 - ask_user_feedback({ "question": "...", "reason": "..." }) only when exposed during an active task run
 
 Tool protocol examples:
@@ -1211,6 +1266,28 @@ function normalizeToolLoadRequest(value: unknown): AgentToolLoadRequest {
     toolNames: normalizeStringArray(record["toolNames"]),
     groups: normalizeStringArray(record["groups"]),
   };
+}
+
+function normalizeWorkStateUpdate(value: unknown): AgentWorkStateUpdate {
+  const record = isPlainObject(value) ? value : {};
+  return {
+    status: normalizeWorkStateStatus(record["status"]),
+    ...(typeof record["summary"] === "string" && record["summary"].trim().length > 0
+      ? { summary: record["summary"].trim() }
+      : {}),
+    ...(Array.isArray(record["openWork"]) ? { openWork: normalizeStringArray(record["openWork"]) } : {}),
+    ...(Array.isArray(record["blockers"]) ? { blockers: normalizeStringArray(record["blockers"]) } : {}),
+    ...(typeof record["nextStep"] === "string" && record["nextStep"].trim().length > 0
+      ? { nextStep: record["nextStep"].trim() }
+      : {}),
+    ...(typeof record["userInputNeeded"] === "string" && record["userInputNeeded"].trim().length > 0
+      ? { userInputNeeded: record["userInputNeeded"].trim() }
+      : {}),
+  };
+}
+
+function normalizeWorkStateStatus(value: unknown): AgentWorkStateUpdate["status"] {
+  return value === "done" || value === "blocked" || value === "needs_user_input" ? value : "not_done";
 }
 
 function normalizeWorkingNotes(value: unknown): string[] | undefined {
@@ -1357,6 +1434,7 @@ const CONTROL_DECISION_TOOL_NAMES = new Set([
   "decision_ask_user",
   "decision_load_tools",
   TASK_FEEDBACK_TOOL_NAME,
+  WORK_STATE_UPDATE_TOOL_NAME,
 ]);
 
 function buildNativeDecisionTools(
@@ -1364,6 +1442,7 @@ function buildNativeDecisionTools(
   options: {
     toolLoadingAvailable: boolean;
     taskFeedbackToolAvailable: boolean;
+    workStateUpdateAvailable: boolean;
   },
 ): LlmToolSchema[] {
   const controlTools: LlmToolSchema[] = [];
@@ -1418,6 +1497,47 @@ function buildNativeDecisionTools(
         },
         workingNotes: workingNotesSchema(),
       }, ["question", "reason"]),
+    });
+  }
+  if (options.workStateUpdateAvailable) {
+    controlTools.push({
+      name: WORK_STATE_UPDATE_TOOL_NAME,
+      description: "Update only the current task run work status and short progress summary after reviewing tool results. Does not update evidence, facts, artifacts, files, or tool records.",
+      inputSchema: objectSchema({
+        status: {
+          type: "string",
+          enum: ["not_done", "done", "blocked", "needs_user_input"],
+        },
+        summary: {
+          type: "string",
+          minLength: 1,
+        },
+        openWork: {
+          type: "array",
+          items: {
+            type: "string",
+            minLength: 1,
+          },
+          maxItems: 8,
+        },
+        blockers: {
+          type: "array",
+          items: {
+            type: "string",
+            minLength: 1,
+          },
+          maxItems: 6,
+        },
+        nextStep: {
+          type: "string",
+          minLength: 1,
+        },
+        userInputNeeded: {
+          type: "string",
+          minLength: 1,
+        },
+        workingNotes: workingNotesSchema(),
+      }, ["status"]),
     });
   }
   const executableTools = selectedTools
@@ -1560,6 +1680,12 @@ function nativeDecisionToolCallToPayload(toolName: string, input: Record<string,
         },
         ...(input["workingNotes"] ? { workingNotes: input["workingNotes"] } : {}),
       };
+    case WORK_STATE_UPDATE_TOOL_NAME:
+      return {
+        kind: "update_work_state",
+        update: nativeWorkStateUpdatePayload(input),
+        ...(input["workingNotes"] ? { workingNotes: input["workingNotes"] } : {}),
+      };
     default:
       return {
         kind: "reply",
@@ -1592,6 +1718,12 @@ function nativeDecisionToolCallToDecision(toolName: string, input: Record<string
         request: normalizeToolLoadRequest(input),
         workingNotes: normalizeWorkingNotes(input["workingNotes"]),
       };
+    case WORK_STATE_UPDATE_TOOL_NAME:
+      return {
+        kind: "update_work_state",
+        update: normalizeWorkStateUpdate(input),
+        workingNotes: normalizeWorkingNotes(input["workingNotes"]),
+      };
     default:
       return {
         kind: "reply",
@@ -1599,6 +1731,17 @@ function nativeDecisionToolCallToDecision(toolName: string, input: Record<string
         message: `Unknown native control tool: ${toolName}`,
       };
   }
+}
+
+function nativeWorkStateUpdatePayload(input: Record<string, unknown>): Record<string, unknown> {
+  return {
+    status: input["status"],
+    ...(input["summary"] ? { summary: input["summary"] } : {}),
+    ...(input["openWork"] ? { openWork: input["openWork"] } : {}),
+    ...(input["blockers"] ? { blockers: input["blockers"] } : {}),
+    ...(input["nextStep"] ? { nextStep: input["nextStep"] } : {}),
+    ...(input["userInputNeeded"] ? { userInputNeeded: input["userInputNeeded"] } : {}),
+  };
 }
 
 function nativeExecutableToolCallToPayload(call: LlmToolCall, input: Record<string, unknown>): Record<string, unknown> {

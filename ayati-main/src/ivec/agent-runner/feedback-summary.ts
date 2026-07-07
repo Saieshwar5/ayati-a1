@@ -140,6 +140,12 @@ export function summarizeDecision(decision: AgentDecision): Record<string, unkno
       request: decision.request,
     };
   }
+  if (decision.kind === "update_work_state") {
+    return {
+      kind: "update_work_state",
+      update: decision.update,
+    };
+  }
   return {
     kind: "act",
     action: summarizeAgentAction(decision.action),

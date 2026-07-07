@@ -83,7 +83,7 @@ export const TOOL_TAXONOMY: Readonly<Record<string, ToolTaxonomyEntry>> = buildT
 
   find_files: readOnly(["enquiry_read", "task_discovery"], "one_step", ["enquiry", "routing", "task_run"], {
     loadGroups: ["file:read", "file:search", "file:refactor"],
-    nextOnSuccess: ["inspect_paths", "read_files", "read_file", "edit_file", "write_file"],
+    nextOnSuccess: ["inspect_paths", "read_files", "read_file", "patch_files", "edit_file", "edit_files", "write_file"],
     nextOnFailure: ["list_directory", "search_in_files"],
   }),
   inspect_paths: readOnly(["enquiry_read", "task_discovery"], "run", ["enquiry", "routing", "task_run"], {
@@ -93,7 +93,7 @@ export const TOOL_TAXONOMY: Readonly<Record<string, ToolTaxonomyEntry>> = buildT
   }),
   search_in_files: readOnly(["enquiry_read", "task_discovery"], "run", ["enquiry", "routing", "task_run"], {
     loadGroups: ["file:read", "file:search", "file:refactor", "file:verify"],
-    nextOnSuccess: ["inspect_paths", "read_files", "read_file", "edit_file"],
+    nextOnSuccess: ["inspect_paths", "read_files", "read_file", "patch_files", "edit_file", "edit_files"],
     nextOnFailure: ["find_files", "list_directory"],
   }),
   list_directory: readOnly(["enquiry_read", "task_discovery"], "run", ["enquiry", "routing", "task_run"], {
@@ -101,12 +101,12 @@ export const TOOL_TAXONOMY: Readonly<Record<string, ToolTaxonomyEntry>> = buildT
   }),
   read_file: readOnly(["enquiry_read", "task_discovery", "evidence_access"], "run", ["enquiry", "routing", "task_run"], {
     loadGroups: ["file:read", "file:verify", "file:refactor"],
-    nextOnSuccess: ["edit_file", "write_file", "search_in_files"],
+    nextOnSuccess: ["patch_files", "edit_file", "edit_files", "write_file", "search_in_files"],
     nextOnFailure: ["find_files", "list_directory"],
   }),
   read_files: readOnly(["enquiry_read", "task_discovery", "evidence_access"], "run", ["enquiry", "routing", "task_run"], {
     loadGroups: ["file:read", "file:verify", "file:refactor"],
-    nextOnSuccess: ["edit_file", "write_file", "write_files", "search_in_files"],
+    nextOnSuccess: ["patch_files", "edit_file", "edit_files", "write_file", "write_files", "search_in_files"],
     nextOnFailure: ["find_files", "list_directory", "read_file"],
   }),
   write_file: workspaceMutation(["task_mutation"], "run", TASK_RUN_ONLY, {
@@ -123,6 +123,16 @@ export const TOOL_TAXONOMY: Readonly<Record<string, ToolTaxonomyEntry>> = buildT
     loadGroups: ["file:write", "file:refactor"],
     nextOnSuccess: ["read_file", "shell_run_script"],
     nextOnFailure: ["read_file", "search_in_files"],
+  }),
+  edit_files: workspaceMutation(["task_mutation"], "run", TASK_RUN_ONLY, {
+    loadGroups: ["file:write", "file:refactor"],
+    nextOnSuccess: ["read_file", "read_files", "shell_run_script"],
+    nextOnFailure: ["read_file", "read_files", "search_in_files"],
+  }),
+  patch_files: workspaceMutation(["task_mutation"], "run", TASK_RUN_ONLY, {
+    loadGroups: ["file:write", "file:refactor"],
+    nextOnSuccess: ["read_file", "read_files", "shell_run_script"],
+    nextOnFailure: ["read_file", "read_files", "search_in_files", "write_files"],
   }),
   create_directory: workspaceMutation(["task_mutation"], "one_step", TASK_RUN_ONLY, {
     loadGroups: ["file:create"],

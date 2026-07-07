@@ -14,6 +14,7 @@ import type {
   AgentTaskSummaryRecord,
   CreatedWorkRun,
   CompletionDirective,
+  FailureRecord,
   LoopConfig,
   LoopState,
   PromptToolCallContext,
@@ -50,7 +51,7 @@ import {
 import { buildAgentStateView, type AgentStateView } from "./state-view.js";
 import { selectToolsForDecision } from "./tool-selector.js";
 import { callAgentDecision } from "./decision.js";
-import type { AgentAction, AgentDecision } from "./decision.js";
+import type { AgentAction, AgentDecision, AgentWorkStateUpdate } from "./decision.js";
 import type { RepairCode, RepairSignal } from "./repair-policy.js";
 import {
   createRepairSignal,
@@ -100,6 +101,16 @@ interface MemoryRunContext {
 
 const FRESH_SESSION_TOOL_REPAIR_MESSAGE = "No active task exists. Create and activate the first task with git_context_create_task_for_turn before using work tools, or ask a short clarification if the request is unclear.";
 const REPEATED_REPAIR_FAILURE_THRESHOLD = 3;
+const FILE_MUTATION_TOOL_NAMES = new Set([
+  "patch_files",
+  "edit_files",
+  "edit_file",
+  "write_files",
+  "write_file",
+  "delete",
+  "move",
+  "create_directory",
+]);
 
 const noopRunRecorder: RunRecorder = {
   recordToolCall(): void {
@@ -339,19 +350,29 @@ export async function runAgentLoop(
 
     syncHarnessContext(state, deps, inputHandle);
     state.iteration++;
-    const finalReplyFromVerifiedState = canCompleteFromVerifiedState(state);
-    if (finalReplyFromVerifiedState) {
+    const finalReplyFromWorkState = canFinalizeFromWorkState(state);
+    if (finalReplyFromWorkState) {
       state.status = "completed";
-      state.finalOutput = buildVerifiedCompletionReply(state);
+      state.finalOutput = await buildFinalResponseFromWorkState({
+        deps,
+        state,
+        metrics,
+        inputHandle,
+        workRunHandle,
+      });
+      const responseKind = state.workState.status === "needs_user_input"
+        ? "feedback"
+        : state.preferredResponseKind ?? "reply";
       return finalize({
         status: "completed",
         content: state.finalOutput,
-        responseKind: state.preferredResponseKind ?? "reply",
+        responseKind,
         completion: {
           done: true,
           summary: state.finalOutput,
           status: "completed",
-          response_kind: state.preferredResponseKind ?? "reply",
+          response_kind: responseKind,
+          ...(state.workState.status === "needs_user_input" ? { feedback_kind: "clarification" } : {}),
         },
       });
     }
@@ -374,9 +395,7 @@ export async function runAgentLoop(
       : deps.toolExecutor?.definitions({
         ...toolContext,
       }) ?? deps.toolDefinitions;
-    const selectedTools = finalReplyFromVerifiedState
-      ? []
-      : selectToolsForDecision(state, visibleTools, config.maxSelectedTools);
+    const selectedTools = selectToolsForDecision(state, visibleTools, config.maxSelectedTools);
     recordToolWorkingSetFeedback({
       deps,
       inputHandle,
@@ -402,6 +421,7 @@ export async function runAgentLoop(
       iteration: state.iteration,
       nativeControlTools: [
         ...(decisionRuntimeMode.allowToolLoading ? ["decision_load_tools"] : []),
+        ...(isWorkStateUpdateToolAvailable(state, workRunHandle) ? ["update_work_state"] : []),
         ...(taskFeedbackToolAvailable ? ["ask_user_feedback"] : []),
       ],
       selectedTools: selectedTools.map((tool) => tool.name),
@@ -414,7 +434,7 @@ export async function runAgentLoop(
       workingFeedbackCount: stateView.workingFeedback?.latest.length ?? 0,
       recentFailureCount: state.failureHistory.length,
       consecutiveFailures: state.consecutiveFailures,
-      finalReplyFromVerifiedState,
+      finalReplyFromWorkState,
       contextEngine: buildContextEngineFeedbackSummary({
         context: state.harnessContext.contextEngine,
       }),
@@ -429,6 +449,7 @@ export async function runAgentLoop(
       toolRoutingSummary: deps.toolWorkingSetManager?.getPromptSummary(),
       toolLoadingAvailable: decisionRuntimeMode.allowToolLoading,
       taskFeedbackToolAvailable,
+      workStateUpdateAvailable: isWorkStateUpdateToolAvailable(state, workRunHandle),
       systemContext: deps.systemContext,
       metrics,
       feedbackLedger: deps.feedbackLedger,
@@ -450,6 +471,35 @@ export async function runAgentLoop(
     });
 
     if (decision.kind === "reply") {
+      const terminalReplyRejection = shouldRejectTerminalReplyForUnresolvedMutation(state, decision);
+      if (terminalReplyRejection) {
+        recordTerminalReplyMutationRepair({
+          deps,
+          inputHandle,
+          state,
+          config,
+          decision,
+          reason: terminalReplyRejection.reason,
+          failedStep: terminalReplyRejection.failedStep,
+        });
+        if (hasRepeatedRepairFailure(state.failureHistory)) {
+          recordRepeatedRepairFailure({
+            deps,
+            inputHandle,
+            state,
+            runId: state.runId || workRunHandle?.runId,
+          });
+          state.status = "failed";
+          state.finalOutput = buildFailureReply(state);
+          return finalize({ status: "failed", content: state.finalOutput });
+        }
+        if (state.consecutiveFailures >= config.maxConsecutiveFailures) {
+          state.status = "failed";
+          state.finalOutput = buildFailureReply(state);
+          return finalize({ status: "failed", content: state.finalOutput });
+        }
+        continue;
+      }
       state.status = decision.status === "failed" ? "failed" : "completed";
       state.finalOutput = decision.message;
       const userInputNeeded = decision.status === "completed"
@@ -506,6 +556,30 @@ export async function runAgentLoop(
           feedback_kind: "clarification",
         },
       });
+    }
+
+    if (decision.kind === "update_work_state") {
+      const updateResult = applyAgentWorkStateUpdate(state, decision.update);
+      const rejectionReason = updateResult.accepted ? undefined : updateResult.reason;
+      recordFeedback(deps, inputHandle, state.runId || workRunHandle?.runId, "work_state", updateResult.accepted ? "updated" : "rejected", {
+        iteration: state.iteration,
+        update: decision.update,
+        workState: summarizeWorkState(state.workState),
+        ...(rejectionReason ? { reason: rejectionReason } : {}),
+      });
+      if (!updateResult.accepted) {
+        state.consecutiveFailures++;
+        state.failureHistory.push(createFailureRecordFromWorkStateUpdate(state.iteration, updateResult.reason));
+        if (hasRepeatedRepairFailure(state.failureHistory) || state.consecutiveFailures >= config.maxConsecutiveFailures) {
+          state.status = "failed";
+          state.finalOutput = buildFailureReply(state);
+          return finalize({ status: "failed", content: state.finalOutput });
+        }
+      } else {
+        state.consecutiveFailures = 0;
+      }
+      recordStateSnapshotMetric("after_work_state_update");
+      continue;
     }
 
     const runtimeMode = detectRuntimeCapabilityMode({ state, workRunHandle });
@@ -946,29 +1020,26 @@ export async function runAgentLoop(
       state.runPath,
     );
 
-    if (canCompleteLocallyAfterAction(decision.action, stepResult.stepSummary, state.workState)) {
+    if (canCompleteLocallyAfterAction(decision.action, stepResult.stepSummary, state.workState, state)) {
       state.workState = compactWorkState({
         ...state.workState,
         status: "done",
       });
       recordRunMetric(metrics, "verified_completion", { kind: "local" });
-      state.status = "completed";
-      state.finalOutput = buildVerifiedCompletionReply(state, stepResult.stepSummary);
-      return finalize({
-        status: "completed",
-        content: state.finalOutput,
-        responseKind: state.preferredResponseKind ?? "reply",
-        completion: {
-          done: true,
-          summary: state.finalOutput,
-          status: "completed",
-          response_kind: state.preferredResponseKind ?? "reply",
-        },
-      });
+      recordStateSnapshotMetric("after_verified_completion");
+      continue;
     }
   }
 
   state.status = "stuck";
+  state.workState = compactWorkState({
+    ...state.workState,
+    status: state.workState.status === "done" ? "done" : "not_done",
+    openWork: normalizeList(state.workState.openWork).length > 0
+      ? state.workState.openWork
+      : ["Continue the requested task from the latest verified state."],
+    nextStep: state.workState.nextStep || "Continue the requested task from the latest verified state.",
+  });
   state.finalOutput = `I reached the ${config.maxIterations}-step limit before finishing the task.`;
   return finalize({ status: "stuck", content: state.finalOutput });
 }
@@ -1343,6 +1414,53 @@ function recordReadProgressRepair(input: {
     maxConsecutiveFailures: input.config.maxConsecutiveFailures,
     decision: summarizeDecision(input.decision),
     readProgress: input.state.readProgress,
+    ...repairSignalToFeedbackData(repair),
+  });
+}
+
+function recordTerminalReplyMutationRepair(input: {
+  deps: AgentLoopDeps;
+  inputHandle: SessionInputHandle;
+  state: LoopState;
+  config: LoopConfig;
+  decision: Extract<AgentDecision, { kind: "reply" }>;
+  reason: string;
+  failedStep?: StepSummary;
+}): void {
+  input.state.consecutiveFailures++;
+  const repair = createRepairSignal("R_MUTATION_EXPECTED_AFTER_CONTEXT", {
+    source: "runner.completion_guard",
+    message: input.reason,
+    blockedTargets: ["direct_reply"],
+    allowedNextActions: [
+      "Call patch_files with small stable targets from the latest read output.",
+      "Call write_files if replacing the complete file is clearer.",
+      "Call another selected mutation tool if it is the correct way to complete the requested change.",
+      "Do not send a final reply until a mutation tool succeeds after the latest failed mutation.",
+    ],
+    operatorDetails: {
+      consecutiveFailures: input.state.consecutiveFailures,
+      maxConsecutiveFailures: input.config.maxConsecutiveFailures,
+      decision: summarizeDecision(input.decision),
+      ...(input.failedStep ? { failedStep: summarizeStep(input.failedStep) } : {}),
+    },
+  });
+  const promptCard = repairSignalToPromptCard(repair);
+  input.state.failureHistory.push({
+    step: input.state.iteration,
+    failureType: "no_progress",
+    reason: repair.message,
+    blockedTargets: repair.blockedTargets,
+    repairCode: repair.code,
+    ...(promptCard ? { repair: promptCard } : {}),
+  });
+  recordFeedback(input.deps, input.inputHandle, input.state.runId, "guard", "terminal_reply_repair_requested", {
+    message: repair.message,
+    warningCodes: ["terminal_reply_rejected", repair.code],
+    consecutiveFailures: input.state.consecutiveFailures,
+    maxConsecutiveFailures: input.config.maxConsecutiveFailures,
+    decision: summarizeDecision(input.decision),
+    ...(input.failedStep ? { failedStep: summarizeStep(input.failedStep) } : {}),
     ...repairSignalToFeedbackData(repair),
   });
 }
@@ -2499,7 +2617,52 @@ function canMarkTerminalReplyDone(state: LoopState): boolean {
   return state.workState.status === "not_done"
     && (state.workState.openWork?.length ?? 0) === 0
     && (state.workState.blockers?.length ?? 0) === 0
-    && !state.workState.userInputNeeded?.trim();
+    && !state.workState.userInputNeeded?.trim()
+    && !hasUnresolvedFileMutationFailure(state);
+}
+
+function shouldRejectTerminalReplyForUnresolvedMutation(
+  state: LoopState,
+  decision: Extract<AgentDecision, { kind: "reply" }>,
+): { reason: string; failedStep?: StepSummary } | null {
+  if (decision.status !== "completed" || state.runClass !== "task" || !isFileMutationRequest(state.userMessage)) {
+    return null;
+  }
+  const failedStep = latestFileMutationStep(state.completedSteps, "failed");
+  if (!failedStep) {
+    return null;
+  }
+  const latestSuccess = latestFileMutationStep(state.completedSteps, "success");
+  if (latestSuccess && latestSuccess.step > failedStep.step) {
+    return null;
+  }
+  return {
+    reason: "The user asked for file changes, but the latest file mutation failed and no later file mutation succeeded. Continue with patch_files, write_files, edit_files, or another mutation tool instead of sending a final reply.",
+    failedStep,
+  };
+}
+
+function hasUnresolvedFileMutationFailure(state: LoopState): boolean {
+  return Boolean(shouldRejectTerminalReplyForUnresolvedMutation(state, {
+    kind: "reply",
+    status: "completed",
+    message: "",
+  }));
+}
+
+function isFileMutationRequest(message: string): boolean {
+  return /\b(?:create|write|save|edit|update|change|modify|patch|replace|delete|remove|move|rename|fix|build|generate)\b/i.test(message)
+    && /\b(?:file|files|folder|directory|path|html|css|js|ts|tsx|jsx|json|md|txt|site|website|app|page|component|code)\b/i.test(message);
+}
+
+function latestFileMutationStep(steps: StepSummary[], outcome: "success" | "failed"): StepSummary | undefined {
+  return [...steps]
+    .reverse()
+    .find((step) => step.outcome === outcome && stepUsesFileMutationTool(step));
+}
+
+function stepUsesFileMutationTool(step: StepSummary): boolean {
+  return (step.toolsUsed ?? []).some((tool) => FILE_MUTATION_TOOL_NAMES.has(tool));
 }
 
 function deriveUserInputNeededFromTerminalReply(message: string): string | undefined {
@@ -2567,18 +2730,205 @@ function toPromptToolCallContext(runId: string, step: number, call: ActToolCallR
   };
 }
 
-function canCompleteFromVerifiedState(state: LoopState): boolean {
-  return state.workState.status === "done" && state.workState.userInputNeeded === undefined;
+function canFinalizeFromWorkState(state: LoopState): boolean {
+  return state.workState.status === "done"
+    || state.workState.status === "needs_user_input";
+}
+
+async function buildFinalResponseFromWorkState(input: {
+  deps: AgentLoopDeps;
+  state: LoopState;
+  metrics: ReturnType<typeof createRunMetrics>;
+  inputHandle: SessionInputHandle;
+  workRunHandle: MemoryRunHandle | undefined;
+}): Promise<string> {
+  const stateView = buildAgentStateView(input.state, {
+    activeTools: [],
+  });
+  const decision = await callAgentDecision({
+    provider: input.deps.provider,
+    stateView,
+    toolDefinitions: [],
+    toolLoadingAvailable: false,
+    taskFeedbackToolAvailable: false,
+    workStateUpdateAvailable: false,
+    systemContext: [
+      input.deps.systemContext,
+      "Final response-only mode: tools are unavailable. Reply naturally to the user from context.run.workState, verified facts, artifacts, and recent tool-call memory. Do not mention harness internals. Do not say control tool names such as update_work_state, decision_load_tools, or ask_user_feedback.",
+    ].filter((section): section is string => Boolean(section?.trim())).join("\n\n"),
+    metrics: input.metrics,
+    feedbackLedger: input.deps.feedbackLedger,
+    feedbackContext: {
+      clientId: input.deps.clientId,
+      sessionId: input.inputHandle.sessionId,
+      seq: input.inputHandle.seq,
+      ...(input.state.runId || input.workRunHandle?.runId ? { runId: input.state.runId || input.workRunHandle?.runId } : {}),
+    },
+  });
+  if (decision.kind === "reply" && decision.status === "completed" && decision.message.trim().length > 0) {
+    if (!isUsableFinalResponseMessage(decision.message)) {
+      recordFeedback(input.deps, input.inputHandle, input.state.runId || input.workRunHandle?.runId, "decision", "final_response_rejected", {
+        reason: "control_or_action_payload_in_final_response",
+        messagePreview: decision.message.slice(0, 160),
+      });
+    } else {
+      return decision.message;
+    }
+  }
+  if (input.state.workState.status === "needs_user_input" && input.state.workState.userInputNeeded?.trim()) {
+    return input.state.workState.userInputNeeded.trim();
+  }
+  if (input.state.workState.status === "blocked") {
+    return buildBlockedWorkStateReply(input.state);
+  }
+  return buildVerifiedCompletionReply(input.state);
+}
+
+function isUsableFinalResponseMessage(message: string): boolean {
+  const trimmed = message.trim();
+  if (!trimmed) return false;
+  if (["update_work_state", "decision_load_tools", "ask_user_feedback"].includes(trimmed)) {
+    return false;
+  }
+  if (/\b(?:update_work_state|decision_load_tools|ask_user_feedback)\b/i.test(trimmed)) {
+    return false;
+  }
+  if (/<tool_call>|tool use displayed to the user as a native function call/i.test(trimmed)) {
+    return false;
+  }
+  if (!trimmed.startsWith("{")) {
+    return true;
+  }
+  try {
+    const parsed = JSON.parse(trimmed) as unknown;
+    if (!parsed || typeof parsed !== "object") {
+      return true;
+    }
+    const value = parsed as Record<string, unknown>;
+    return !["act", "load_tools", "update_work_state", "ask_user", "reply"].includes(String(value["kind"] ?? ""));
+  } catch {
+    return true;
+  }
+}
+
+function buildBlockedWorkStateReply(state: LoopState): string {
+  const blocker = state.workState.blockers?.find((item) => item.trim().length > 0);
+  return blocker ? `I couldn't complete the task. ${blocker}` : "I couldn't complete the task.";
+}
+
+function isWorkStateUpdateToolAvailable(
+  state: LoopState,
+  workRunHandle: MemoryRunHandle | undefined,
+): boolean {
+  const hasTaskRun = Boolean(state.runId || workRunHandle?.runId);
+  return hasTaskRun && state.runClass === "task" && state.workState.status === "not_done";
+}
+
+function applyAgentWorkStateUpdate(
+  state: LoopState,
+  update: AgentWorkStateUpdate,
+): { accepted: true } | { accepted: false; reason: string } {
+  const summary = update.summary?.trim() || state.workState.summary;
+  if (update.status === "done") {
+    if (update.userInputNeeded?.trim()) {
+      return { accepted: false, reason: "Done work state cannot also require user input." };
+    }
+    if ((update.blockers ?? []).some((item) => item.trim().length > 0)) {
+      return { accepted: false, reason: "Done work state cannot include blockers." };
+    }
+    if (!hasWorkStateCompletionEvidence(state)) {
+      return { accepted: false, reason: "Cannot mark work done without prior successful tool evidence, verified facts, evidence, or artifacts." };
+    }
+    state.workState = compactWorkState({
+      ...state.workState,
+      status: "done",
+      summary,
+      openWork: [],
+      blockers: [],
+      nextStep: undefined,
+      userInputNeeded: undefined,
+    });
+    return { accepted: true };
+  }
+
+  if (update.status === "blocked") {
+    const blockers = normalizeList(update.blockers);
+    if (blockers.length === 0) {
+      return { accepted: false, reason: "Blocked work state requires at least one blocker." };
+    }
+    state.workState = compactWorkState({
+      ...state.workState,
+      status: "blocked",
+      summary,
+      blockers,
+      openWork: normalizeList(update.openWork).length > 0 ? normalizeList(update.openWork) : state.workState.openWork,
+      nextStep: update.nextStep,
+      userInputNeeded: undefined,
+    });
+    return { accepted: true };
+  }
+
+  if (update.status === "needs_user_input") {
+    const userInputNeeded = update.userInputNeeded?.trim();
+    if (!userInputNeeded) {
+      return { accepted: false, reason: "Needs-user-input work state requires userInputNeeded." };
+    }
+    state.workState = compactWorkState({
+      ...state.workState,
+      status: "needs_user_input",
+      summary,
+      userInputNeeded,
+      nextStep: userInputNeeded,
+      openWork: normalizeList(update.openWork).length > 0 ? normalizeList(update.openWork) : state.workState.openWork,
+      blockers: [],
+    });
+    return { accepted: true };
+  }
+
+  state.workState = compactWorkState({
+    ...state.workState,
+    status: "not_done",
+    summary,
+    ...(Array.isArray(update.openWork) ? { openWork: normalizeList(update.openWork) } : {}),
+    ...(Array.isArray(update.blockers) ? { blockers: normalizeList(update.blockers) } : {}),
+    ...(update.nextStep ? { nextStep: update.nextStep.trim() } : {}),
+    userInputNeeded: undefined,
+  });
+  return { accepted: true };
+}
+
+function hasWorkStateCompletionEvidence(state: LoopState): boolean {
+  if (isFileMutationRequest(state.userMessage)) {
+    const latestFailure = latestFileMutationStep(state.completedSteps, "failed");
+    const latestSuccess = latestFileMutationStep(state.completedSteps, "success");
+    return Boolean(latestSuccess && (!latestFailure || latestSuccess.step > latestFailure.step));
+  }
+  return state.completedSteps.some((step) => step.outcome === "success" && (step.toolSuccessCount ?? 0) > 0)
+    || state.workState.verifiedFacts.length > 0
+    || state.workState.evidence.length > 0
+    || (state.workState.artifacts?.length ?? 0) > 0
+    || (state.toolContext?.toolCalls ?? []).some((call) => call.status === "success");
+}
+
+function createFailureRecordFromWorkStateUpdate(step: number, reason: string): FailureRecord {
+  return {
+    step,
+    failureType: "validation_error",
+    reason,
+    blockedTargets: ["update_work_state"],
+  };
 }
 
 function canCompleteLocallyAfterAction(
   action: AgentAction,
   step: StepSummary,
   workState: WorkState,
+  state: LoopState,
 ): boolean {
   return action.completion?.intent === "completion_candidate"
     && step.outcome === "success"
     && step.toolFailureCount === 0
+    && (!isFileMutationRequest(state.userMessage) || stepUsesFileMutationTool(step))
     && !(workState.userInputNeeded?.trim())
     && (workState.blockers?.length ?? 0) === 0;
 }

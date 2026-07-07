@@ -285,8 +285,8 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
           toolDefinitions,
           routedContextTurn,
         );
-        this.dispatchAgentResponse(input.clientId, runHandle, result);
         await this.completeChatContextRun(input.clientId, chatContextTurn, routedContextTurn, result);
+        this.dispatchAgentResponse(input.clientId, runHandle, result);
         this.feedbackLedger?.record({
           clientId: input.clientId,
           sessionId: inputHandle.sessionId,

@@ -7,7 +7,9 @@ import databaseSkill from "../../src/skills/builtins/database/index.js";
 import { createDirectoryTool } from "../../src/skills/builtins/filesystem/create-directory.js";
 import { deleteTool } from "../../src/skills/builtins/filesystem/delete.js";
 import { editFileTool } from "../../src/skills/builtins/filesystem/edit-file.js";
+import { editFilesTool } from "../../src/skills/builtins/filesystem/edit-files.js";
 import { moveTool } from "../../src/skills/builtins/filesystem/move.js";
+import { patchFilesTool } from "../../src/skills/builtins/filesystem/patch-files.js";
 import { readFileTool } from "../../src/skills/builtins/filesystem/read-file.js";
 import { readFilesTool } from "../../src/skills/builtins/filesystem/read-files.js";
 import { writeFileTool } from "../../src/skills/builtins/filesystem/write-file.js";
@@ -56,6 +58,8 @@ describe("static built-in tool contracts", () => {
       readFileTool,
       readFilesTool,
       editFileTool,
+      editFilesTool,
+      patchFilesTool,
       moveTool,
       deleteTool,
     ]);
@@ -108,6 +112,27 @@ describe("static built-in tool contracts", () => {
     });
     expect(edited.ok).toBe(true);
     expect(edited.v2?.code).toBe("FILE_EDITED");
+    expect(await readFile(source, "utf-8")).toBe("alpha gamma");
+
+    const batchEdited = await executor.execute("edit_files", {
+      allowExternalPath: true,
+      edits: [
+        { path: source, oldString: "alpha", newString: "omega" },
+      ],
+    });
+    expect(batchEdited.ok).toBe(true);
+    expect(batchEdited.v2?.verification?.status).toBe("passed");
+    expect(await readFile(source, "utf-8")).toBe("omega gamma");
+
+    const patched = await executor.execute("patch_files", {
+      allowExternalPath: true,
+      files: [{
+        path: source,
+        patches: [{ kind: "replace_text", find: "omega", replace: "alpha" }],
+      }],
+    });
+    expect(patched.ok).toBe(true);
+    expect(patched.v2?.verification?.status).toBe("passed");
     expect(await readFile(source, "utf-8")).toBe("alpha gamma");
 
     const moved = await executor.execute("move", {
