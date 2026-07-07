@@ -11,3 +11,5 @@ are not yet ready to become active implementation plans.
 - `artifact-match-precision.md`: improve git-context task search so
   `matchedArtifacts` identifies the specific referenced file instead of every
   artifact sharing the task subject.
+- `task-state-memory-cleanup.md`: keep `state.json` as clean task working
+  memory while preserving detailed tool evidence in run/step files.
