@@ -1,5 +1,6 @@
 import type {
   FinalizeGitMemoryTaskRunResult,
+  FinalizeGitMemorySessionRunResult,
   GitMemoryConversationRecord,
   GitMemoryConversationSeqRange,
   GitContextMemoryState,
@@ -8,9 +9,11 @@ import type {
   GitMemoryRunId,
   GitMemoryRuntime,
   GitMemorySessionId,
+  GitMemorySessionStepRecord,
   GitMemoryStepRecord,
   GitMemoryTaskId,
   RoutedGitMemoryUserTurn,
+  StartGitMemorySessionRunResult,
 } from "../context-engine/index.js";
 import {
   buildGitMemoryHarnessContextFromMemoryState,
@@ -61,10 +64,36 @@ export interface GitMemorySystemEventContextCompleteTaskRunInput {
   assistantAt?: string;
 }
 
+export interface GitMemorySystemEventContextStartSessionRunInput {
+  clientId: string;
+  turn: GitMemorySystemEventContextPreparedTurn | null;
+  at: string;
+}
+
+export interface GitMemorySystemEventContextFinalizeSessionRunInput {
+  clientId: string;
+  turn: GitMemorySystemEventContextPreparedTurn | null;
+  runId: string;
+  status: "completed" | "failed" | "blocked" | "needs_user_input";
+  summary: string;
+  assistantResponse?: string;
+  at: string;
+  blockers?: string[];
+  next?: string;
+  toolsUsed?: string[];
+  toolCallCount?: number;
+}
+
 export interface GitMemorySystemEventContextRecordTaskRunStepInput {
   clientId: string;
   turn: GitMemorySystemEventContextPreparedTurn | null;
   record: GitMemoryStepRecord;
+}
+
+export interface GitMemorySystemEventContextRecordSessionRunStepInput {
+  clientId: string;
+  turn: GitMemorySystemEventContextPreparedTurn | null;
+  record: GitMemorySessionStepRecord;
 }
 
 export interface GitMemorySystemEventContextRouteTaskTurnInput {
@@ -72,6 +101,7 @@ export interface GitMemorySystemEventContextRouteTaskTurnInput {
   turn: GitMemorySystemEventContextPreparedTurn | null;
   userMessage: string;
   at: string;
+  sessionRunId?: GitMemoryRunId;
   title?: string;
   objective?: string;
 }
@@ -84,10 +114,13 @@ export interface GitMemorySystemEventContextRuntime {
   prepareSystemEventTurn(
     input: GitMemorySystemEventContextPrepareInput,
   ): Promise<GitMemorySystemEventContextPreparedTurn>;
+  startSessionRun(input: GitMemorySystemEventContextStartSessionRunInput): Promise<StartGitMemorySessionRunResult | null>;
   routeTaskTurn(
     input: GitMemorySystemEventContextRouteTaskTurnInput,
   ): Promise<GitMemorySystemEventContextRoutedTurn | null>;
+  finalizeSessionRun(input: GitMemorySystemEventContextFinalizeSessionRunInput): Promise<FinalizeGitMemorySessionRunResult | null>;
   completeTaskRun(input: GitMemorySystemEventContextCompleteTaskRunInput): Promise<FinalizeGitMemoryTaskRunResult | null>;
+  recordSessionRunStep(input: GitMemorySystemEventContextRecordSessionRunStepInput): void;
   recordTaskRunStep(input: GitMemorySystemEventContextRecordTaskRunStepInput): void;
   recordAssistantMessage(
     input: GitMemorySystemEventContextAssistantMessageInput,
@@ -122,6 +155,26 @@ class AppGitMemorySystemEventContextRuntime implements GitMemorySystemEventConte
     };
   }
 
+  async startSessionRun(
+    input: GitMemorySystemEventContextStartSessionRunInput,
+  ): Promise<StartGitMemorySessionRunResult | null> {
+    if (!input.turn) {
+      return null;
+    }
+    try {
+      return await this.gitMemoryRuntime.startSessionRun({
+        sessionId: input.turn.sessionId,
+        fromSeq: input.turn.messageSeq,
+        toSeq: input.turn.messageSeq,
+        at: input.at,
+        triggerSeq: input.turn.messageSeq,
+      });
+    } catch (err) {
+      devWarn(`[${input.clientId}] git memory system-event session run start failed: ${errorMessage(err)}`);
+      return null;
+    }
+  }
+
   async routeTaskTurn(
     input: GitMemorySystemEventContextRouteTaskTurnInput,
   ): Promise<GitMemorySystemEventContextRoutedTurn | null> {
@@ -135,6 +188,7 @@ class AppGitMemorySystemEventContextRuntime implements GitMemorySystemEventConte
         fromSeq: input.turn.messageSeq,
         toSeq: input.turn.messageSeq,
         at: input.at,
+        ...(input.sessionRunId ? { sessionRunId: input.sessionRunId } : {}),
         title: input.title,
         objective: input.objective,
       });
@@ -146,6 +200,36 @@ class AppGitMemorySystemEventContextRuntime implements GitMemorySystemEventConte
       };
     } catch (err) {
       devWarn(`[${input.clientId}] git memory system-event task routing failed: ${errorMessage(err)}`);
+      return null;
+    }
+  }
+
+  async finalizeSessionRun(
+    input: GitMemorySystemEventContextFinalizeSessionRunInput,
+  ): Promise<FinalizeGitMemorySessionRunResult | null> {
+    if (!input.turn) {
+      return null;
+    }
+    try {
+      return await this.gitMemoryRuntime.finalizeSessionRun({
+        sessionId: input.turn.sessionId,
+        runId: input.runId,
+        status: input.status,
+        completedAt: input.at,
+        triggerSeq: input.turn.messageSeq,
+        conversationRefs: [{
+          fromSeq: input.turn.messageSeq,
+          toSeq: input.turn.messageSeq,
+        }],
+        summary: input.summary,
+        assistantResponse: input.assistantResponse,
+        blockers: input.blockers,
+        next: input.next,
+        toolsUsed: input.toolsUsed,
+        toolCallCount: input.toolCallCount,
+      });
+    } catch (err) {
+      devWarn(`[${input.clientId}] git memory system-event session run finalize failed: ${errorMessage(err)}`);
       return null;
     }
   }
@@ -178,6 +262,16 @@ class AppGitMemorySystemEventContextRuntime implements GitMemorySystemEventConte
       return;
     }
     this.gitMemoryRuntime.recordTaskRunStep({
+      sessionId: input.turn.sessionId,
+      record: input.record,
+    });
+  }
+
+  recordSessionRunStep(input: GitMemorySystemEventContextRecordSessionRunStepInput): void {
+    if (!input.turn) {
+      return;
+    }
+    this.gitMemoryRuntime.recordSessionRunStep({
       sessionId: input.turn.sessionId,
       record: input.record,
     });

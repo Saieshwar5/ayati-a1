@@ -130,6 +130,7 @@ class AppSystemEventRuntime implements SystemEventRuntime {
     const { clientId, event } = input;
     let inputHandle: SessionInputHandle | null = null;
     let runHandle: MemoryRunHandle | null = null;
+    let sessionRunHandle: MemoryRunHandle | null = null;
     let preparedContextTurn: GitMemorySystemEventContextPreparedTurn | null = null;
     let routedContextTurn: GitMemorySystemEventContextRoutedTurn | null = null;
     const incomingMessage = event.summary;
@@ -176,12 +177,14 @@ class AppSystemEventRuntime implements SystemEventRuntime {
         return;
       }
 
+      sessionRunHandle = await this.startSystemEventSessionRun(clientId, preparedContextTurn, inputHandle);
       const toolDefinitions = systemEventPlan.toolDefinitions;
       routedContextTurn = await this.routeSystemEventContextTurn(
         clientId,
         preparedContextTurn,
         event,
         systemEventPlan,
+        sessionRunHandle,
       );
       if (routedContextTurn?.status === "ambiguous") {
         await this.dispatchSystemEventContextAmbiguity(clientId, preparedContextTurn, routedContextTurn);
@@ -190,6 +193,9 @@ class AppSystemEventRuntime implements SystemEventRuntime {
       runHandle = routedContextTurn?.status === "ready"
         ? this.runHandleFromRoutedTurn(inputHandle, routedContextTurn)
         : null;
+      if (runHandle && sessionRunHandle?.runId === runHandle.runId) {
+        sessionRunHandle = null;
+      }
 
       devLog(
         `[${clientId}] system_event entering agentLoop eventId=${event.eventId} mode=${systemEventPlan.policy.mode} intent=${systemEventPlan.classification.intentKind} approval=${systemEventPlan.policy.approvalRequired ? "required" : "not_required"} tools=${toolDefinitions.length} payloadKeys=${Object.keys(event.payload).join(",") || "none"}`,
@@ -203,6 +209,14 @@ class AppSystemEventRuntime implements SystemEventRuntime {
         runRecorder: systemEventRunRecorder,
         inputHandle,
         ...(runHandle ? { runHandle } : {}),
+        ...(sessionRunHandle ? { sessionRunHandle } : {}),
+        recordSessionStep: (record) => {
+          this.systemEventContextRuntime.recordSessionRunStep({
+            clientId,
+            turn: preparedContextTurn,
+            record,
+          });
+        },
         recordTaskStep: (record) => {
           this.systemEventContextRuntime.recordTaskRunStep({
             clientId,
@@ -248,7 +262,7 @@ class AppSystemEventRuntime implements SystemEventRuntime {
         event: event.eventName,
         eventId: event.eventId,
       });
-      await this.completeSystemEventContextRun(clientId, preparedContextTurn, routedContextTurn, result);
+      await this.completeSystemEventContextRun(clientId, preparedContextTurn, routedContextTurn, result, sessionRunHandle);
     } catch (err) {
       devError("System event processing error:", err);
       if (runHandle) {
@@ -321,6 +335,7 @@ class AppSystemEventRuntime implements SystemEventRuntime {
     turn: GitMemorySystemEventContextPreparedTurn | null,
     event: AyatiSystemEvent,
     plan: SystemEventExecutionPlan,
+    sessionRunHandle: MemoryRunHandle | null,
   ): Promise<GitMemorySystemEventContextRoutedTurn | null> {
     if (turn) {
       this.feedbackLedger?.record({
@@ -344,6 +359,7 @@ class AppSystemEventRuntime implements SystemEventRuntime {
       title: this.systemEventTaskTitle(event),
       objective: this.systemEventTaskObjective(event, plan),
       at: this.nowProvider().toISOString(),
+      ...(sessionRunHandle ? { sessionRunId: sessionRunHandle.runId } : {}),
     });
     if (!turn || !routed) {
       if (turn) {
@@ -469,8 +485,17 @@ class AppSystemEventRuntime implements SystemEventRuntime {
     prepared: GitMemorySystemEventContextPreparedTurn | null,
     routed: GitMemorySystemEventContextRoutedTurn | null,
     result: AgentLoopResult,
+    sessionRunHandle?: MemoryRunHandle | null,
   ): Promise<void> {
     if (!prepared || routed?.status !== "ready") {
+      if (prepared && result.content.trim()) {
+        await this.recordSystemEventAssistantMessage(clientId, prepared, result.content, {
+          ...(sessionRunHandle ? { runId: sessionRunHandle.runId } : {}),
+        });
+      }
+      if (prepared && sessionRunHandle) {
+        await this.finalizeSystemEventSessionRun(clientId, prepared, sessionRunHandle, result);
+      }
       if (prepared) {
         this.feedbackLedger?.record({
           clientId,
@@ -599,6 +624,79 @@ class AppSystemEventRuntime implements SystemEventRuntime {
       sessionId: turn.sessionId,
       seq: turn.messageSeq,
     };
+  }
+
+  private async startSystemEventSessionRun(
+    clientId: string,
+    turn: GitMemorySystemEventContextPreparedTurn,
+    inputHandle: SessionInputHandle,
+  ): Promise<MemoryRunHandle | null> {
+    const started = await this.systemEventContextRuntime.startSessionRun({
+      clientId,
+      turn,
+      at: this.nowProvider().toISOString(),
+    });
+    if (!started) {
+      return null;
+    }
+    const runHandle = {
+      sessionId: inputHandle.sessionId,
+      runId: started.runId,
+      triggerSeq: inputHandle.seq,
+    };
+    this.feedbackLedger?.record({
+      clientId,
+      sessionId: runHandle.sessionId,
+      seq: inputHandle.seq,
+      runId: runHandle.runId,
+      stage: "run",
+      event: "session_run_started",
+      data: {
+        runId: runHandle.runId,
+        inputKind: "system_event",
+      },
+    });
+    return runHandle;
+  }
+
+  private async finalizeSystemEventSessionRun(
+    clientId: string,
+    turn: GitMemorySystemEventContextPreparedTurn | null,
+    runHandle: MemoryRunHandle,
+    result: AgentLoopResult,
+  ): Promise<void> {
+    if (!turn) {
+      return;
+    }
+    const status = sessionRunStatusFromResult(result);
+    const finalized = await this.systemEventContextRuntime.finalizeSessionRun({
+      clientId,
+      turn,
+      runId: runHandle.runId,
+      status,
+      summary: result.workState?.summary || result.content || "System-event session run completed.",
+      assistantResponse: result.content,
+      at: this.nowProvider().toISOString(),
+      blockers: result.workState?.blockers,
+      next: result.workState?.nextStep,
+      toolsUsed: uniqueStrings(result.completedSteps?.flatMap((step) => step.toolsUsed ?? []) ?? []),
+      toolCallCount: result.totalToolCalls,
+    });
+    this.feedbackLedger?.record({
+      clientId,
+      sessionId: runHandle.sessionId,
+      seq: runHandle.triggerSeq,
+      runId: runHandle.runId,
+      stage: "context_engine",
+      event: finalized ? "session_run_finalized" : "session_run_finalization_failed",
+      data: {
+        status,
+        committed: Boolean(finalized),
+        resultStatus: result.status,
+        resultType: result.type,
+        inputKind: "system_event",
+      },
+    });
   }
 
   private runHandleFromRoutedTurn(
@@ -797,6 +895,22 @@ function formatGitMemoryAmbiguityMessage(
 
 function optionalString(value: unknown): string | undefined {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
+}
+
+function uniqueStrings(values: Array<string | undefined>): string[] {
+  return [...new Set(values
+    .map((value) => value?.trim() ?? "")
+    .filter((value) => value.length > 0))];
+}
+
+function sessionRunStatusFromResult(result: AgentLoopResult): "completed" | "failed" | "blocked" | "needs_user_input" {
+  if (result.workState?.status === "needs_user_input") {
+    return "needs_user_input";
+  }
+  if (result.workState?.status === "blocked") {
+    return "blocked";
+  }
+  return result.status === "completed" ? "completed" : "failed";
 }
 
 function safeJson(value: unknown): string {

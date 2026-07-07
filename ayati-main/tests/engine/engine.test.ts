@@ -259,7 +259,13 @@ function createSystemEventContextRuntime(
   const prepared = readyGitMemorySystemEventPreparedTurn();
   return {
     prepareSystemEventTurn: vi.fn().mockResolvedValue(prepared),
+    startSessionRun: vi.fn().mockResolvedValue({ runId: "R-20260627-0001" }),
     routeTaskTurn: vi.fn().mockResolvedValue(routedTurn),
+    finalizeSessionRun: vi.fn().mockResolvedValue({
+      sessionId: prepared.sessionId,
+      runId: "R-20260627-0001",
+      sessionStoreCommit: "session-store-commit",
+    }),
     completeTaskRun: vi.fn().mockResolvedValue({
       taskId: routedTurn.status === "ready" ? routedTurn.taskId : "W-20260627-0001",
       branch: routedTurn.status === "ready" ? routedTurn.branch : "task/W-20260627-0001-analyze-invoice",
@@ -278,6 +284,7 @@ function createSystemEventContextRuntime(
         commit: "task-commit",
       },
     }),
+    recordSessionRunStep: vi.fn().mockResolvedValue(undefined),
     recordTaskRunStep: vi.fn().mockResolvedValue(undefined),
     recordAssistantMessage: vi.fn().mockResolvedValue({
       v: 1,
@@ -1705,6 +1712,179 @@ describe("IVecEngine", () => {
         assistantMessage: "mock reply",
       }));
       expect(systemEventContextRuntime.recordAssistantMessage).not.toHaveBeenCalled();
+    } finally {
+      rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it("finalizes an unpromoted system event as a session run", async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "ayati-eng-system-session-run-"));
+    try {
+      const provider = createMockProvider({
+        generateTurn: vi.fn<(input: LlmTurnInput) => Promise<LlmTurnOutput>>().mockResolvedValue({
+          type: "assistant",
+          content: JSON.stringify({
+            kind: "reply",
+            status: "completed",
+            message: "The reminder was reviewed; no task update is needed.",
+          }),
+        }),
+      });
+      const onReply = vi.fn();
+      const systemEventContextRuntime = createSystemEventContextRuntime();
+      vi.mocked(systemEventContextRuntime.routeTaskTurn).mockResolvedValue(null);
+      const engine = createEngine({
+        onReply,
+        provider,
+        systemEventContextRuntime,
+        dataDir,
+        systemEventPolicy: createSystemEventPolicy(),
+      });
+
+      await engine.start();
+      await engine.handleSystemEvent("c1", {
+        type: "system_event",
+        source: "pulse",
+        eventName: "reminder_due",
+        eventId: "evt-session-run-1",
+        receivedAt: "2026-03-01T10:00:05.000Z",
+        summary: "Reminder due: Review notes",
+        payload: {
+          occurrenceId: "occ-session-run-1",
+          reminderId: "rem-session-run-1",
+          title: "Review notes",
+          instruction: "Review notes only",
+          scheduledFor: "2026-03-01T10:00:00.000Z",
+          triggeredAt: "2026-03-01T10:00:05.000Z",
+          timezone: "UTC",
+        },
+      });
+
+      expect(systemEventContextRuntime.startSessionRun).toHaveBeenCalledWith(expect.objectContaining({
+        clientId: "c1",
+      }));
+      expect(systemEventContextRuntime.completeTaskRun).not.toHaveBeenCalled();
+      expect(systemEventContextRuntime.finalizeSessionRun).toHaveBeenCalledWith(expect.objectContaining({
+        clientId: "c1",
+        runId: "R-20260627-0001",
+        status: "completed",
+        assistantResponse: "The reminder was reviewed; no task update is needed.",
+      }));
+      expect(systemEventContextRuntime.recordAssistantMessage).toHaveBeenCalledWith(expect.objectContaining({
+        runId: "R-20260627-0001",
+        message: "The reminder was reviewed; no task update is needed.",
+      }));
+      expect(onReply).toHaveBeenCalledWith("c1", {
+        type: "notification",
+        content: "The reminder was reviewed; no task update is needed.",
+        final: true,
+      });
+    } finally {
+      rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it("records read-only system event tool steps on the session run", async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "ayati-eng-system-read-session-"));
+    try {
+      const readTool: ToolDefinition = {
+        name: "read_file",
+        description: "Read a file for system-event inspection.",
+        annotations: {
+          domain: "filesystem",
+          readOnly: true,
+          mutatesWorkspace: false,
+          mutatesExternalWorld: false,
+          destructive: false,
+          idempotent: true,
+          retrySafe: true,
+          longRunning: false,
+        },
+        async execute() {
+          return {
+            ok: true,
+            output: "health notes are already current",
+          };
+        },
+      };
+      const provider = createMockProvider({
+        generateTurn: vi.fn<(input: LlmTurnInput) => Promise<LlmTurnOutput>>()
+          .mockResolvedValueOnce({
+            type: "assistant",
+            content: JSON.stringify({
+              kind: "act",
+              action: {
+                mode: "single",
+                calls: [{
+                  id: "call_1",
+                  tool: "read_file",
+                  input: { path: "health-notes.md" },
+                  dependsOn: [],
+                  purpose: "Inspect health notes",
+                }],
+                allowedTools: ["read_file"],
+                assertions: [],
+              },
+            }),
+          })
+          .mockResolvedValueOnce({
+            type: "assistant",
+            content: JSON.stringify({
+              kind: "reply",
+              status: "completed",
+              message: "Health notes are already current.",
+            }),
+          }),
+      });
+      const toolExecutor = createToolExecutor([readTool]);
+      const systemEventContextRuntime = createSystemEventContextRuntime();
+      vi.mocked(systemEventContextRuntime.routeTaskTurn).mockResolvedValue(null);
+      const engine = createEngine({
+        provider,
+        toolExecutor,
+        systemEventContextRuntime,
+        dataDir,
+        systemEventPolicy: createSystemEventPolicy(),
+      });
+
+      await engine.start();
+      await engine.handleSystemEvent("c1", {
+        type: "system_event",
+        source: "pulse",
+        eventName: "reminder_due",
+        eventId: "evt-system-read-1",
+        receivedAt: "2026-03-01T10:00:05.000Z",
+        summary: "Reminder due: Inspect health notes",
+        payload: {
+          occurrenceId: "occ-system-read-1",
+          reminderId: "rem-system-read-1",
+          title: "Inspect health notes",
+          instruction: "Inspect health notes only",
+          scheduledFor: "2026-03-01T10:00:00.000Z",
+          triggeredAt: "2026-03-01T10:00:05.000Z",
+          timezone: "UTC",
+        },
+      });
+
+      expect(systemEventContextRuntime.recordSessionRunStep).toHaveBeenCalledWith(expect.objectContaining({
+        clientId: "c1",
+        record: expect.objectContaining({
+          sessionId: "S-20260627-local",
+          runId: "R-20260627-0001",
+          status: "completed",
+          toolCalls: [expect.objectContaining({
+            tool: "read_file",
+            status: "success",
+          })],
+        }),
+      }));
+      expect(systemEventContextRuntime.recordTaskRunStep).not.toHaveBeenCalled();
+      expect(systemEventContextRuntime.completeTaskRun).not.toHaveBeenCalled();
+      expect(systemEventContextRuntime.finalizeSessionRun).toHaveBeenCalledWith(expect.objectContaining({
+        runId: "R-20260627-0001",
+        toolCallCount: 1,
+        toolsUsed: ["read_file"],
+      }));
     } finally {
       rmSync(dataDir, { recursive: true, force: true });
     }
