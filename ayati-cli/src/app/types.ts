@@ -5,6 +5,8 @@ export type ChatMessage = {
   content: string;
   attachments?: ChatAttachment[];
   timestamp: number;
+  streaming?: boolean;
+  commitStatus?: ReplyDoneMessage["commitStatus"];
 };
 
 export interface ChatAttachment {
@@ -36,7 +38,14 @@ export interface WorkspaceEventMessage {
   uiContext?: AgentUiContext;
 }
 
-export type ClientMessage = ChatRequestMessage | WorkspaceEventMessage;
+export interface ClientHelloMessage {
+  type: "client_hello";
+  capabilities?: {
+    replyStreaming?: boolean;
+  };
+}
+
+export type ClientMessage = ChatRequestMessage | WorkspaceEventMessage | ClientHelloMessage;
 
 export interface AgentUiContext {
   source: "agent-cli";
@@ -55,6 +64,8 @@ export interface AgentUiContext {
 export interface ReplyMessage {
   type: "reply";
   content: string;
+  runId?: string;
+  artifacts?: unknown[];
 }
 
 export interface FeedbackMessage {
@@ -74,6 +85,30 @@ export interface ProgressMessage {
   runId?: string;
 }
 
+export interface ReplyStartedMessage {
+  type: "reply_started";
+  turnId: string;
+  runId?: string;
+  kind?: "reply" | "feedback" | "notification";
+}
+
+export interface ReplyDeltaMessage {
+  type: "reply_delta";
+  turnId: string;
+  seq: number;
+  delta: string;
+}
+
+export interface ReplyDoneMessage {
+  type: "reply_done";
+  turnId: string;
+  content: string;
+  commitStatus: "committed" | "skipped" | "failed";
+  kind?: "reply" | "feedback" | "notification";
+  runId?: string;
+  artifacts?: unknown[];
+}
+
 export interface ErrorMessage {
   type: "error";
   content: string;
@@ -84,4 +119,7 @@ export type ServerMessage =
   | FeedbackMessage
   | NotificationMessage
   | ProgressMessage
+  | ReplyStartedMessage
+  | ReplyDeltaMessage
+  | ReplyDoneMessage
   | ErrorMessage;

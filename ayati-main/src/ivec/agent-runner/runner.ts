@@ -2745,6 +2745,22 @@ async function buildFinalResponseFromWorkState(input: {
   const stateView = buildAgentStateView(input.state, {
     activeTools: [],
   });
+  const finalResponseKind = input.state.workState.status === "needs_user_input"
+    ? "feedback"
+    : input.state.preferredResponseKind === "notification"
+      ? "notification"
+      : "reply";
+  const streamFinalResponse = Boolean(
+    input.deps.onFinalResponseStream
+      && input.deps.provider.capabilities.streaming === true
+      && input.deps.provider.streamTurn,
+  );
+  if (streamFinalResponse) {
+    input.deps.onFinalResponseStream?.({
+      type: "start",
+      kind: finalResponseKind,
+    });
+  }
   const decision = await callAgentDecision({
     provider: input.deps.provider,
     stateView,
@@ -2764,6 +2780,16 @@ async function buildFinalResponseFromWorkState(input: {
       seq: input.inputHandle.seq,
       ...(input.state.runId || input.workRunHandle?.runId ? { runId: input.state.runId || input.workRunHandle?.runId } : {}),
     },
+    ...(streamFinalResponse
+      ? {
+          onAssistantTextDelta: (delta: string) => {
+            input.deps.onFinalResponseStream?.({
+              type: "delta",
+              delta,
+            });
+          },
+        }
+      : {}),
   });
   if (decision.kind === "reply" && decision.status === "completed" && decision.message.trim().length > 0) {
     if (!isUsableFinalResponseMessage(decision.message)) {

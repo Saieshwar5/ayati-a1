@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import type { LlmProvider } from "../core/contracts/provider.js";
 import { isProviderEmptyResponseError } from "../core/contracts/provider-errors.js";
@@ -50,6 +50,8 @@ import type {
   ChatAttachmentInput,
   CreateWorkRunRequest,
   DirectoryChatAttachmentInput,
+  FinalResponseStreamEvent,
+  FinalResponseStreamKind,
   LoopConfig,
 } from "../ivec/types.js";
 import { buildStaticSystemContext } from "./static-prompt.js";
@@ -61,6 +63,7 @@ import type {
 
 export interface CreateChatTurnRuntimeOptions {
   onReply?: (clientId: string, data: unknown) => void;
+  clientSupportsReplyStreaming?: (clientId: string) => boolean;
   provider?: LlmProvider;
   staticContext?: StaticContext;
   toolExecutor?: ToolExecutor;
@@ -82,6 +85,15 @@ interface RegisteredChatAttachments {
   warnings: string[];
   managedFiles: ManagedFileRecord[];
   managedDirectories: DirectoryAttachmentRecord[];
+}
+
+type ReplyCommitStatus = "committed" | "skipped" | "failed";
+
+interface LiveReplyStream {
+  turnId: string;
+  kind: FinalResponseStreamKind;
+  content: string;
+  seq: number;
 }
 
 const chatRunRecorder: RunRecorder = {
@@ -108,6 +120,7 @@ export function createChatTurnRuntime(options: CreateChatTurnRuntimeOptions): Ch
 
 class AppChatTurnRuntime implements ChatTurnRuntime {
   private readonly onReply?: (clientId: string, data: unknown) => void;
+  private readonly clientSupportsReplyStreaming: (clientId: string) => boolean;
   private readonly provider?: LlmProvider;
   private readonly staticContext?: StaticContext;
   private readonly toolExecutor?: ToolExecutor;
@@ -127,6 +140,7 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
 
   constructor(options: CreateChatTurnRuntimeOptions) {
     this.onReply = options.onReply;
+    this.clientSupportsReplyStreaming = options.clientSupportsReplyStreaming ?? (() => false);
     this.provider = options.provider;
     this.staticContext = options.staticContext;
     this.toolExecutor = options.toolExecutor;
@@ -178,6 +192,7 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
     let runHandle: MemoryRunHandle | null = null;
     let chatContextTurn: GitMemoryChatContextPreparedTurn | null = null;
     let routedContextTurn: GitMemoryChatContextRoutedTurn | null = null;
+    let liveFinalResponseStream: LiveReplyStream | null = null;
 
     try {
       chatContextTurn = await this.prepareChatContextTurn(input.clientId, input.content);
@@ -277,6 +292,18 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
               this.sendProgress(input.clientId, runHandle, log);
             }
           },
+          ...(this.clientSupportsReplyStreaming(input.clientId)
+            ? {
+                onFinalResponseStream: (event: FinalResponseStreamEvent) => {
+                  liveFinalResponseStream = this.handleLiveFinalResponseStreamEvent(
+                    input.clientId,
+                    runHandle,
+                    liveFinalResponseStream,
+                    event,
+                  );
+                },
+              }
+            : {}),
         });
         result = await this.applyPulseProposalReflection(
           input.clientId,
@@ -285,8 +312,8 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
           toolDefinitions,
           routedContextTurn,
         );
-        await this.completeChatContextRun(input.clientId, chatContextTurn, routedContextTurn, result);
-        this.dispatchAgentResponse(input.clientId, runHandle, result);
+        const commitStatus = await this.completeChatContextRun(input.clientId, chatContextTurn, routedContextTurn, result);
+        this.dispatchAgentResponse(input.clientId, runHandle, result, commitStatus, liveFinalResponseStream);
         this.feedbackLedger?.record({
           clientId: input.clientId,
           sessionId: inputHandle.sessionId,
@@ -307,7 +334,7 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
         this.dispatchAgentResponse(input.clientId, null, {
           type: "reply",
           content: echoContent,
-        });
+        }, "skipped");
         await this.recordChatContextAssistantMessage(input.clientId, chatContextTurn, echoContent, {
           taskId: routedContextTurn?.status === "ready" ? routedContextTurn.taskId : undefined,
         });
@@ -343,6 +370,15 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
           runHandle,
           err,
         );
+      }
+      const failedLiveStream = liveFinalResponseStream as LiveReplyStream | null;
+      if (failedLiveStream) {
+        this.finishLiveFinalResponseStream(input.clientId, runHandle, failedLiveStream, {
+          kind: failedLiveStream.kind,
+          content: failedLiveStream.content,
+          commitStatus: "failed",
+        });
+        liveFinalResponseStream = null;
       }
       this.onReply?.(input.clientId, {
         type: "error",
@@ -544,7 +580,7 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
     this.dispatchAgentResponse(clientId, null, {
       type: "feedback",
       content: message,
-    });
+    }, "skipped");
   }
 
   private async completeChatContextRun(
@@ -552,7 +588,7 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
     prepared: GitMemoryChatContextPreparedTurn | null,
     routed: GitMemoryChatContextRoutedTurn | null,
     result: AgentLoopResult,
-  ): Promise<void> {
+  ): Promise<ReplyCommitStatus> {
     const normalizedResult = this.normalizeTaskWaitingResult(result);
     const binding = this.taskRunBindingFromRoutedOrResult(routed, normalizedResult);
     const skipReason = this.chatContextFinalizationSkipReason(prepared, routed, normalizedResult, binding);
@@ -560,8 +596,10 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
       if (prepared && result.content.trim()) {
         await this.recordChatContextAssistantMessage(clientId, prepared, result.content);
       }
+      let commitStatus: ReplyCommitStatus = "skipped";
       if (prepared) {
         const disposition = this.noBindingFinalizationDisposition(prepared, skipReason, normalizedResult);
+        commitStatus = disposition.finalizationStatus === "failed" ? "failed" : "skipped";
         this.feedbackLedger?.record({
           clientId,
           sessionId: prepared.sessionId,
@@ -582,11 +620,11 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
           },
         });
       }
-      return;
+      return commitStatus;
     }
 
     if (!prepared || !binding) {
-      return;
+      return "skipped";
     }
 
     const finalizationResult = this.normalizeChatContextFinalizationResult(normalizedResult, routed);
@@ -648,7 +686,7 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
           }),
         },
       });
-      return;
+      return "failed";
     }
 
     this.feedbackLedger?.record({
@@ -674,6 +712,7 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
         }),
       },
     });
+    return "committed";
   }
 
   private normalizeChatContextFinalizationResult(
@@ -1163,16 +1202,18 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
       content: string;
       artifacts?: AgentArtifact[];
     },
+    commitStatus: ReplyCommitStatus,
+    liveStream?: LiveReplyStream | null,
   ): void {
     switch (result.type) {
       case "reply":
-        this.sendAssistantReply(clientId, runHandle, result.content, result.artifacts);
+        this.sendAssistantReply(clientId, runHandle, result.content, commitStatus, result.artifacts, liveStream);
         return;
       case "feedback":
-        this.sendAssistantFeedback(clientId, runHandle, result.content, result.artifacts);
+        this.sendAssistantFeedback(clientId, runHandle, result.content, commitStatus, result.artifacts, liveStream);
         return;
       case "notification":
-        this.sendAssistantNotification(clientId, runHandle, result.content, result.artifacts);
+        this.sendAssistantNotification(clientId, runHandle, result.content, commitStatus, result.artifacts, liveStream);
         return;
       case "none":
         return;
@@ -1183,11 +1224,26 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
     clientId: string,
     runHandle: MemoryRunHandle | null,
     content: string,
+    commitStatus: ReplyCommitStatus,
     artifacts?: AgentArtifact[],
+    liveStream?: LiveReplyStream | null,
   ): void {
     const artifactPayload = artifacts && artifacts.length > 0 && runHandle
       ? { artifacts, runId: runHandle.runId }
       : {};
+    if (liveStream) {
+      this.finishLiveFinalResponseStream(clientId, runHandle, liveStream, {
+        kind: "reply",
+        content,
+        commitStatus,
+        extraPayload: artifactPayload,
+      });
+      return;
+    }
+    if (this.clientSupportsReplyStreaming(clientId)) {
+      this.sendStreamedAssistantResponse(clientId, runHandle, "reply", content, commitStatus, artifactPayload);
+      return;
+    }
     this.onReply?.(clientId, {
       type: "reply",
       content,
@@ -1199,11 +1255,26 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
     clientId: string,
     runHandle: MemoryRunHandle | null,
     content: string,
+    commitStatus: ReplyCommitStatus,
     artifacts?: AgentArtifact[],
+    liveStream?: LiveReplyStream | null,
   ): void {
     const artifactPayload = artifacts && artifacts.length > 0 && runHandle
       ? { artifacts, runId: runHandle.runId }
       : {};
+    if (liveStream) {
+      this.finishLiveFinalResponseStream(clientId, runHandle, liveStream, {
+        kind: "feedback",
+        content,
+        commitStatus,
+        extraPayload: artifactPayload,
+      });
+      return;
+    }
+    if (this.clientSupportsReplyStreaming(clientId)) {
+      this.sendStreamedAssistantResponse(clientId, runHandle, "feedback", content, commitStatus, artifactPayload);
+      return;
+    }
     this.onReply?.(clientId, {
       type: "feedback",
       content,
@@ -1215,16 +1286,139 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
     clientId: string,
     runHandle: MemoryRunHandle | null,
     content: string,
+    commitStatus: ReplyCommitStatus,
     artifacts?: AgentArtifact[],
+    liveStream?: LiveReplyStream | null,
   ): void {
     const artifactPayload = artifacts && artifacts.length > 0 && runHandle
       ? { artifacts, runId: runHandle.runId }
       : {};
+    if (liveStream) {
+      this.finishLiveFinalResponseStream(clientId, runHandle, liveStream, {
+        kind: "notification",
+        content,
+        commitStatus,
+        extraPayload: artifactPayload,
+      });
+      return;
+    }
+    if (this.clientSupportsReplyStreaming(clientId)) {
+      this.sendStreamedAssistantResponse(clientId, runHandle, "notification", content, commitStatus, artifactPayload);
+      return;
+    }
     this.onReply?.(clientId, {
       type: "notification",
       content,
       final: true,
       ...artifactPayload,
+    });
+  }
+
+  private handleLiveFinalResponseStreamEvent(
+    clientId: string,
+    runHandle: MemoryRunHandle | null,
+    current: LiveReplyStream | null,
+    event: FinalResponseStreamEvent,
+  ): LiveReplyStream | null {
+    if (!this.clientSupportsReplyStreaming(clientId)) {
+      return current;
+    }
+    if (event.type === "start") {
+      const turnId = randomUUID();
+      this.onReply?.(clientId, {
+        type: "reply_started",
+        turnId,
+        kind: event.kind,
+        ...(runHandle ? { runId: runHandle.runId } : {}),
+      });
+      return {
+        turnId,
+        kind: event.kind,
+        content: "",
+        seq: 0,
+      };
+    }
+
+    const stream = current ?? this.handleLiveFinalResponseStreamEvent(clientId, runHandle, null, {
+      type: "start",
+      kind: "reply",
+    });
+    if (!stream) {
+      return null;
+    }
+    if (event.delta.length === 0) {
+      return stream;
+    }
+    const next = {
+      ...stream,
+      content: `${stream.content}${event.delta}`,
+      seq: stream.seq + 1,
+    };
+    this.onReply?.(clientId, {
+      type: "reply_delta",
+      turnId: next.turnId,
+      seq: next.seq,
+      delta: event.delta,
+    });
+    return next;
+  }
+
+  private finishLiveFinalResponseStream(
+    clientId: string,
+    runHandle: MemoryRunHandle | null,
+    stream: LiveReplyStream,
+    result: {
+      kind: "reply" | "feedback" | "notification";
+      content: string;
+      commitStatus: ReplyCommitStatus;
+      extraPayload?: Record<string, unknown>;
+    },
+  ): void {
+    this.onReply?.(clientId, {
+      type: "reply_done",
+      turnId: stream.turnId,
+      kind: result.kind,
+      content: result.content,
+      commitStatus: result.commitStatus,
+      ...(runHandle ? { runId: runHandle.runId } : {}),
+      ...(result.extraPayload ?? {}),
+    });
+  }
+
+  private sendStreamedAssistantResponse(
+    clientId: string,
+    runHandle: MemoryRunHandle | null,
+    kind: "reply" | "feedback" | "notification",
+    content: string,
+    commitStatus: ReplyCommitStatus,
+    extraPayload: Record<string, unknown>,
+  ): void {
+    const turnId = randomUUID();
+    const runPayload = runHandle ? { runId: runHandle.runId } : {};
+    this.onReply?.(clientId, {
+      type: "reply_started",
+      turnId,
+      kind,
+      ...runPayload,
+    });
+    let seq = 0;
+    for (const delta of chunkReplyContent(content)) {
+      seq++;
+      this.onReply?.(clientId, {
+        type: "reply_delta",
+        turnId,
+        seq,
+        delta,
+      });
+    }
+    this.onReply?.(clientId, {
+      type: "reply_done",
+      turnId,
+      kind,
+      content,
+      commitStatus,
+      ...runPayload,
+      ...extraPayload,
     });
   }
 
@@ -1668,6 +1862,18 @@ function isRoutingOnlyTaskRun(result: AgentLoopResult): boolean {
     const toolsUsed = step.toolsUsed ?? [];
     return toolsUsed.length > 0 && toolsUsed.every((tool) => TASK_ROUTING_TOOL_NAMES.has(tool));
   });
+}
+
+function chunkReplyContent(content: string): string[] {
+  if (content.length === 0) {
+    return [];
+  }
+  const chunks: string[] = [];
+  const chunkSize = 96;
+  for (let index = 0; index < content.length; index += chunkSize) {
+    chunks.push(content.slice(index, index + chunkSize));
+  }
+  return chunks;
 }
 
 function errMessage(error: unknown): string {

@@ -18,12 +18,44 @@ Typical client chat payload:
 }
 ```
 
+Streaming-capable clients may announce support after connecting:
+
+```json
+{
+  "type": "client_hello",
+  "capabilities": {
+    "replyStreaming": true
+  }
+}
+```
+
 Server response types handled by the CLI:
 
 - `reply`
 - `feedback`
 - `notification`
 - `error`
+- `progress`
+- `reply_started`
+- `reply_delta`
+- `reply_done`
+
+For clients that do not send `client_hello.capabilities.replyStreaming=true`,
+the daemon keeps sending final `reply`, `feedback`, and `notification` events.
+For streaming-capable clients, final user-visible responses may be delivered as
+`reply_started` followed by one or more `reply_delta` events and a final
+`reply_done`. The `reply_done.content` field is the assembled canonical
+assistant response and includes a `commitStatus` value:
+
+- `committed`: a task run was finalized and committed.
+- `skipped`: no task-run commit was needed for this response.
+- `failed`: task-run finalization failed after the response was assembled.
+
+Provider-native token streaming is used only for response-only final text after
+the harness has reached a user-visible reply or feedback path. Normal
+decision/tool-selection calls are not streamed to clients. Native final-response
+streaming is currently implemented for OpenAI and Fireworks providers; other
+providers use the same transport events with daemon-chunked final text.
 
 Future clients should preserve the same principle even if they use a different transport:
 

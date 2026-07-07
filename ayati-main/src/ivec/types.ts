@@ -375,6 +375,17 @@ export interface AgentLoopResult {
 }
 
 export type OnProgressCallback = (log: string, runPath: string) => void;
+export type FinalResponseStreamKind = "reply" | "feedback" | "notification";
+export type FinalResponseStreamEvent =
+  | {
+      type: "start";
+      kind: FinalResponseStreamKind;
+    }
+  | {
+      type: "delta";
+      delta: string;
+    };
+export type OnFinalResponseStreamCallback = (event: FinalResponseStreamEvent) => void;
 
 export interface CreateWorkRunRequest {
   reason: string;
@@ -420,6 +431,7 @@ export interface AgentLoopDeps {
   initialUserMessage?: string;
   uiContext?: AgentUiContext;
   onProgress?: OnProgressCallback;
+  onFinalResponseStream?: OnFinalResponseStreamCallback;
   recordTaskStep?: (record: GitMemoryStepRecord) => void;
   feedbackLedger?: AgentFeedbackLedger;
   config?: Partial<LoopConfig>;

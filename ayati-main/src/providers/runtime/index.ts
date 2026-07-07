@@ -5,6 +5,7 @@ import {
 import type { LlmProvider } from "../../core/contracts/provider.js";
 import type {
   LlmInputTokenCount,
+  LlmTurnStreamCallbacks,
   LlmTurnInput,
   LlmTurnOutput,
 } from "../../core/contracts/llm-protocol.js";
@@ -57,6 +58,18 @@ const runtimeProvider: LlmProvider = {
 
     const provider = await ensureActiveProvider();
     return provider.generateTurn(input);
+  },
+
+  async streamTurn(input: LlmTurnInput, callbacks: LlmTurnStreamCallbacks): Promise<LlmTurnOutput> {
+    if (!started) {
+      throw new Error("Runtime provider not started.");
+    }
+
+    const provider = await ensureActiveProvider();
+    if (!provider.streamTurn) {
+      return provider.generateTurn(input);
+    }
+    return provider.streamTurn(input, callbacks);
   },
 };
 

@@ -115,6 +115,7 @@ interface CallAgentDecisionInput {
   metrics?: RunMetrics;
   feedbackLedger?: AgentFeedbackLedger;
   feedbackContext?: AgentDecisionFeedbackContext;
+  onAssistantTextDelta?: (delta: string) => void;
 }
 
 interface ToolProtocolViolation {
@@ -428,12 +429,24 @@ async function generateTurnWithEmptyResponseRetry(
   for (;;) {
     providerAttempt++;
     try {
-      return await input.provider.generateTurn({
+      const turnInput = {
         messages: request.messages,
         tools: request.decisionTools,
-        toolChoice: "auto",
+        toolChoice: "auto" as const,
         parallelToolCalls: false,
-      });
+      };
+      if (
+        input.onAssistantTextDelta
+        && request.decisionTools.length === 0
+        && request.decisionAttempt === 1
+        && input.provider.capabilities.streaming === true
+        && input.provider.streamTurn
+      ) {
+        return await input.provider.streamTurn(turnInput, {
+          onTextDelta: input.onAssistantTextDelta,
+        });
+      }
+      return await input.provider.generateTurn(turnInput);
     } catch (error) {
       const responseFailure = providerResponseFailureDetails(error);
       if (!responseFailure) {

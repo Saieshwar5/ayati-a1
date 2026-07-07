@@ -6,6 +6,7 @@ import type {
   LlmToolChoice,
   LlmToolCall,
   LlmInputTokenCount,
+  LlmTurnStreamCallbacks,
   LlmToolSchema,
   LlmTurnInput,
   LlmTurnOutput,
@@ -269,6 +270,91 @@ const provider: LlmProvider = {
     }
 
     const reply = message.content;
+    if (!reply) {
+      throw new Error("Empty response from OpenAI.");
+    }
+
+    return {
+      type: "assistant",
+      content: reply,
+    };
+  },
+
+  async streamTurn(input: LlmTurnInput, callbacks: LlmTurnStreamCallbacks): Promise<LlmTurnOutput> {
+    if (!client) {
+      throw new Error("OpenAI provider not started.");
+    }
+
+    const model = getModelForProvider("openai");
+    const nameMaps = buildToolNameMapsForProvider(provider.name, input.tools);
+    const messages = await toOpenAiMessages(input.messages, nameMaps);
+    const responseTools = toOpenAiResponseTools(input.tools, nameMaps);
+    const toolChoice = toOpenAiToolChoice(input.toolChoice, nameMaps);
+    const responseFormat = toOpenAiResponseFormat(
+      compileResponseFormatForProvider(provider.name, provider.capabilities, input.responseFormat),
+    );
+
+    const stream = await client.chat.completions.create({
+      model,
+      messages,
+      stream: true,
+      ...(responseFormat ? { response_format: responseFormat as any } : {}),
+      ...(responseTools
+        ? {
+            tools: responseTools.map((tool) => ({
+              type: "function",
+              function: {
+                name: tool["name"] as string,
+                description: (tool["description"] as string | undefined) ?? undefined,
+                parameters: (tool["parameters"] as Record<string, unknown>) ?? {},
+              },
+            })),
+            tool_choice: toolChoice ?? "auto",
+            ...(typeof input.parallelToolCalls === "boolean" ? { parallel_tool_calls: input.parallelToolCalls } : {}),
+          }
+        : {}),
+    } as any);
+
+    const textParts: string[] = [];
+    const toolCalls = new Map<number, {
+      id?: string;
+      name?: string;
+      arguments: string;
+    }>();
+
+    for await (const chunk of stream as unknown as AsyncIterable<OpenAI.Chat.Completions.ChatCompletionChunk>) {
+      const delta = chunk.choices[0]?.delta;
+      const content = delta?.content;
+      if (typeof content === "string" && content.length > 0) {
+        textParts.push(content);
+        callbacks.onTextDelta?.(content);
+      }
+      for (const call of delta?.tool_calls ?? []) {
+        const index = typeof call.index === "number" ? call.index : toolCalls.size;
+        const existing = toolCalls.get(index) ?? { arguments: "" };
+        const fn = call.function;
+        toolCalls.set(index, {
+          id: call.id ?? existing.id,
+          name: fn?.name ?? existing.name,
+          arguments: `${existing.arguments}${fn?.arguments ?? ""}`,
+        });
+      }
+    }
+
+    if (toolCalls.size > 0) {
+      const calls = [...toolCalls.values()].map<LlmToolCall>((call) => ({
+        id: call.id ?? crypto.randomUUID(),
+        name: toCanonicalToolName(call.name ?? "unknown_tool", nameMaps),
+        input: parseToolArguments(call.arguments || "{}"),
+      }));
+      return {
+        type: "tool_calls",
+        calls,
+        ...(textParts.length > 0 ? { assistantContent: textParts.join("") } : {}),
+      };
+    }
+
+    const reply = textParts.join("");
     if (!reply) {
       throw new Error("Empty response from OpenAI.");
     }

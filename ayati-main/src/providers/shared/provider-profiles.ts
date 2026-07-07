@@ -85,6 +85,7 @@ export const PROVIDER_PROFILES: Record<SupportedLlmProvider, ProviderProfile> = 
   openai: {
     capabilities: {
       nativeToolCalling: true,
+      streaming: true,
       imageInput: true,
       structuredOutput: {
         jsonObject: OPENAI_STRUCTURED_OUTPUT.jsonObject,
@@ -118,6 +119,7 @@ export const PROVIDER_PROFILES: Record<SupportedLlmProvider, ProviderProfile> = 
   fireworks: {
     capabilities: {
       nativeToolCalling: true,
+      streaming: true,
       imageInput: true,
       structuredOutput: {
         jsonObject: FIREWORKS_STRUCTURED_OUTPUT.jsonObject,
@@ -195,6 +197,11 @@ function getKnownProviderProfile(providerName: string): ProviderProfile | undefi
 function cloneCapabilities(capabilities: LlmProviderCapabilities): LlmProviderCapabilities {
   return {
     nativeToolCalling: capabilities.nativeToolCalling,
+    ...(typeof capabilities.streaming === "boolean"
+      ? {
+          streaming: capabilities.streaming,
+        }
+      : {}),
     ...(typeof capabilities.imageInput === "boolean"
       ? {
           imageInput: capabilities.imageInput,

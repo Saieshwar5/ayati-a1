@@ -326,6 +326,90 @@ describe("Fireworks provider", () => {
     });
   });
 
+  it("should stream assistant text deltas and return assembled output", async () => {
+    process.env["FIREWORKS_API_KEY"] = "fw-test-key";
+    process.env["FIREWORKS_REASONING_EFFORT"] = "high";
+
+    async function* chunks() {
+      yield { choices: [{ delta: { content: "Hello" } }] };
+      yield { choices: [{ delta: { content: " Fireworks" } }] };
+    }
+
+    const mockCreate = vi.fn().mockResolvedValue(chunks());
+    mockOpenAIConstructor(mockCreate);
+
+    provider.start();
+    const deltas: string[] = [];
+    const out = await provider.streamTurn?.({
+      messages: [{ role: "user", content: "Hi" }],
+    }, {
+      onTextDelta: (delta) => deltas.push(delta),
+    });
+
+    expect(mockCreate).toHaveBeenCalledWith({
+      model: "fireworks/minimax-m2p5",
+      reasoning_effort: "high",
+      messages: [{ role: "user", content: "Hi" }],
+      stream: true,
+    });
+    expect(deltas).toEqual(["Hello", " Fireworks"]);
+    expect(out).toEqual({ type: "assistant", content: "Hello Fireworks" });
+  });
+
+  it("should assemble streamed tool calls", async () => {
+    process.env["FIREWORKS_API_KEY"] = "fw-test-key";
+    process.env["FIREWORKS_REASONING_EFFORT"] = "medium";
+
+    const mockCreate = vi.fn().mockImplementation((req: any) => {
+      const toolName = req?.tools?.[0]?.function?.name;
+      async function* chunks() {
+        yield {
+          choices: [{
+            delta: {
+              tool_calls: [{
+                index: 0,
+                id: "call_1",
+                function: {
+                  name: toolName,
+                  arguments: "{\"cmd\"",
+                },
+              }],
+            },
+          }],
+        };
+        yield {
+          choices: [{
+            delta: {
+              tool_calls: [{
+                index: 0,
+                function: {
+                  arguments: ":\"pwd\"}",
+                },
+              }],
+            },
+          }],
+        };
+      }
+      return chunks();
+    });
+    mockOpenAIConstructor(mockCreate);
+
+    provider.start();
+    const out = await provider.streamTurn?.({
+      messages: [{ role: "user", content: "where am i" }],
+      tools: [{
+        name: "shell.tool",
+        description: "Run shell",
+        inputSchema: { type: "object", properties: { cmd: { type: "string" } } },
+      }],
+    }, {});
+
+    expect(out).toEqual({
+      type: "tool_calls",
+      calls: [{ id: "call_1", name: "shell.tool", input: { cmd: "pwd" } }],
+    });
+  });
+
   it("should pass structured output settings when requested", async () => {
     process.env["FIREWORKS_API_KEY"] = "fw-test-key";
     process.env["FIREWORKS_REASONING_EFFORT"] = "medium";

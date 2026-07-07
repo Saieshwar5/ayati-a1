@@ -13,12 +13,17 @@ export interface WsServerOptions {
   onDisconnect?: (clientId: string) => void;
 }
 
+interface ClientCapabilities {
+  replyStreaming: boolean;
+}
+
 export class WsServer {
   private readonly port: number;
   private readonly onMessage: (clientId: string, data: unknown) => void;
   private readonly onDisconnect?: (clientId: string) => void;
   private wss: WebSocketServer | null = null;
   private clients = new Map<string, WebSocket>();
+  private clientCapabilities = new Map<string, ClientCapabilities>();
   private defaultClientId: string | null = null;
   private retryCount = 0;
   private retryTimer: ReturnType<typeof setTimeout> | null = null;
@@ -49,6 +54,7 @@ export class WsServer {
       this.wss.on("connection", (ws) => {
         const clientId = randomUUID();
         this.clients.set(clientId, ws);
+        this.clientCapabilities.set(clientId, { replyStreaming: false });
         this.defaultClientId = clientId;
         devLog(`Client connected: ${clientId}`);
 
@@ -62,11 +68,15 @@ export class WsServer {
             ws.send(JSON.stringify({ type: "error", content: "Invalid JSON" }));
             return;
           }
+          if (this.recordClientHello(clientId, parsed)) {
+            return;
+          }
           this.onMessage(clientId, parsed);
         });
 
         ws.on("close", () => {
           this.clients.delete(clientId);
+          this.clientCapabilities.delete(clientId);
           if (this.defaultClientId === clientId) {
             const first = this.clients.keys().next();
             this.defaultClientId = first.done ? null : first.value;
@@ -136,6 +146,20 @@ export class WsServer {
     ws.send(JSON.stringify(data));
   }
 
+  clientSupportsReplyStreaming(clientId: string): boolean {
+    const direct = this.clientCapabilities.get(clientId);
+    if (direct) {
+      return direct.replyStreaming;
+    }
+    if (clientId !== "local") {
+      return false;
+    }
+    if (this.defaultClientId) {
+      return this.clientCapabilities.get(this.defaultClientId)?.replyStreaming === true;
+    }
+    return false;
+  }
+
   async stop(): Promise<void> {
     this.stopping = true;
 
@@ -148,6 +172,7 @@ export class WsServer {
       client.close(1001, "Server shutting down");
     }
     this.clients.clear();
+    this.clientCapabilities.clear();
 
     return new Promise<void>((resolve) => {
       if (!this.wss) {
@@ -161,4 +186,25 @@ export class WsServer {
       });
     });
   }
+
+  private recordClientHello(clientId: string, data: unknown): boolean {
+    if (!data || typeof data !== "object" || Array.isArray(data)) {
+      return false;
+    }
+    const record = data as Record<string, unknown>;
+    if (record["type"] !== "client_hello") {
+      return false;
+    }
+    const capabilities = readObject(record["capabilities"]);
+    this.clientCapabilities.set(clientId, {
+      replyStreaming: capabilities?.["replyStreaming"] === true,
+    });
+    return true;
+  }
+}
+
+function readObject(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined;
 }

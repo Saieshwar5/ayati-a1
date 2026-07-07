@@ -67,6 +67,10 @@ export interface LlmTurnInput {
   responseFormat?: LlmResponseFormat;
 }
 
+export interface LlmTurnStreamCallbacks {
+  onTextDelta?: (delta: string) => void;
+}
+
 export interface LlmInputTokenCount {
   provider: string;
   model: string;
@@ -110,6 +114,7 @@ export type LlmTurnOutput =
 
 export interface LlmProviderCapabilities {
   nativeToolCalling: boolean;
+  streaming?: boolean;
   imageInput?: boolean;
   structuredOutput?: {
     jsonObject: boolean;

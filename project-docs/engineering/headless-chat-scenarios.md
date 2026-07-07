@@ -123,6 +123,9 @@ reply         final assistant answer
 feedback      final user-input request
 notification  final only when final=true
 error         final failed turn
+reply_started start of a streamed final assistant answer
+reply_delta   streamed final assistant text chunk
+reply_done    final marker for streamed assistant answer
 ```
 
 The coding agent should treat a turn as finished when it receives:
@@ -131,8 +134,13 @@ The coding agent should treat a turn as finished when it receives:
 - `feedback`
 - `error`
 - `notification` with `final: true`
+- `reply_done`
 
-`progress` is not final. Keep it in the transcript, then continue waiting.
+`progress`, `reply_started`, and `reply_delta` are not final. Keep them in the
+transcript, then continue waiting. For streamed replies, `reply_done.content`
+is the full assembled assistant response and `reply_done.commitStatus` says
+whether the response was committed, skipped because no task commit was needed,
+or failed during finalization.
 
 ## Feedback Questions
 

@@ -225,6 +225,34 @@ describe("OpenAI provider", () => {
     });
   });
 
+  it("should stream assistant text deltas and return assembled output", async () => {
+    process.env["OPENAI_API_KEY"] = "sk-test-key";
+
+    async function* chunks() {
+      yield { choices: [{ delta: { content: "Hello" } }] };
+      yield { choices: [{ delta: { content: " streaming" } }] };
+    }
+
+    const mockCreate = vi.fn().mockResolvedValue(chunks());
+    mockOpenAIConstructor(mockCreate);
+
+    provider.start();
+    const deltas: string[] = [];
+    const out = await provider.streamTurn?.({
+      messages: [{ role: "user", content: "Hi" }],
+    }, {
+      onTextDelta: (delta) => deltas.push(delta),
+    });
+
+    expect(mockCreate).toHaveBeenCalledWith({
+      model: "gpt-4o",
+      messages: [{ role: "user", content: "Hi" }],
+      stream: true,
+    });
+    expect(deltas).toEqual(["Hello", " streaming"]);
+    expect(out).toEqual({ type: "assistant", content: "Hello streaming" });
+  });
+
   it("should preserve array item schemas in outgoing tool parameters", async () => {
     process.env["OPENAI_API_KEY"] = "sk-test-key";
 

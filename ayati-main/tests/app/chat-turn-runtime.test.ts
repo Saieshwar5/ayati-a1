@@ -20,6 +20,70 @@ import {
 import { FileLibrary } from "../../src/files/file-library.js";
 
 describe("createChatTurnRuntime", () => {
+  it("streams final replies only for clients that support reply streaming", async () => {
+    const rootDir = mkdtempSync(join(tmpdir(), "ayati-chat-runtime-stream-"));
+    const contextStoreDir = join(rootDir, "context");
+    const dataDir = join(rootDir, "data");
+
+    try {
+      const gitMemoryRuntime = createGitMemoryRuntime({
+        contextStoreDir,
+        timezone: "Asia/Kolkata",
+        agentId: "local",
+        now: () => new Date("2026-06-28T09:00:00.000Z"),
+      });
+      const replies: Array<{ clientId: string; data: Record<string, unknown> }> = [];
+      const runtime = createChatTurnRuntime({
+        dataDir,
+        chatContextRuntime: createGitMemoryChatContextRuntime({ gitMemoryRuntime }),
+        clientSupportsReplyStreaming: (clientId) => clientId === "streaming-client",
+        onReply: (clientId, data) => {
+          replies.push({ clientId, data: data as Record<string, unknown> });
+        },
+        now: () => new Date("2026-06-28T09:00:00.000Z"),
+      });
+
+      await runtime.processChat({
+        clientId: "streaming-client",
+        content: "hello streaming",
+        attachments: [],
+      });
+
+      const streamingEvents = replies.filter((reply) => reply.clientId === "streaming-client").map((reply) => reply.data);
+      expect(streamingEvents[0]).toMatchObject({
+        type: "reply_started",
+        kind: "reply",
+      });
+      const turnId = streamingEvents[0]?.["turnId"];
+      expect(typeof turnId).toBe("string");
+      const deltas = streamingEvents.filter((event) => event["type"] === "reply_delta");
+      expect(deltas.length).toBeGreaterThan(0);
+      expect(deltas.map((event) => event["delta"]).join("")).toBe('Received: "hello streaming"');
+      expect(streamingEvents.at(-1)).toMatchObject({
+        type: "reply_done",
+        turnId,
+        kind: "reply",
+        content: 'Received: "hello streaming"',
+        commitStatus: "skipped",
+      });
+      expect(streamingEvents.some((event) => event["type"] === "reply")).toBe(false);
+
+      await runtime.processChat({
+        clientId: "legacy-client",
+        content: "hello legacy",
+        attachments: [],
+      });
+
+      const legacyEvents = replies.filter((reply) => reply.clientId === "legacy-client").map((reply) => reply.data);
+      expect(legacyEvents).toEqual([{
+        type: "reply",
+        content: 'Received: "hello legacy"',
+      }]);
+    } finally {
+      rmSync(rootDir, { recursive: true, force: true });
+    }
+  });
+
   it("serializes chat turns for the same client before preparing pending turns", async () => {
     const rootDir = mkdtempSync(join(tmpdir(), "ayati-chat-runtime-"));
     const contextStoreDir = join(rootDir, "context");

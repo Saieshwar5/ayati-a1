@@ -186,6 +186,7 @@ export async function main(): Promise<void> {
     onReply: (clientId, data) => {
       wsServer.send(clientId, data);
     },
+    clientSupportsReplyStreaming: (clientId) => wsServer.clientSupportsReplyStreaming(clientId),
     provider,
     staticContext,
     toolExecutor: skills.toolExecutor,

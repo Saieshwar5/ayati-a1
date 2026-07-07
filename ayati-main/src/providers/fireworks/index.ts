@@ -7,6 +7,7 @@ import type {
   LlmToolCall,
   LlmInputTokenCount,
   LlmTokenUsage,
+  LlmTurnStreamCallbacks,
   LlmToolSchema,
   LlmTurnInput,
   LlmTurnOutput,
@@ -320,6 +321,95 @@ const provider: LlmProvider = {
       content: reply,
       ...(usage ? { usage } : {}),
       ...(cost ? { cost } : {}),
+    };
+  },
+
+  async streamTurn(input: LlmTurnInput, callbacks: LlmTurnStreamCallbacks): Promise<LlmTurnOutput> {
+    if (!client) {
+      throw new Error("Fireworks provider not started.");
+    }
+
+    const model = getModelForProvider("fireworks");
+    const nameMaps = buildToolNameMapsForProvider(provider.name, input.tools);
+    const messages = await toFireworksMessages(input.messages, nameMaps);
+    const responseTools = toFireworksResponseTools(input.tools, nameMaps);
+    const toolChoice = toFireworksToolChoice(input.toolChoice, nameMaps);
+    const responseFormat = responseTools
+      ? undefined
+      : toOpenAiResponseFormat(
+          compileResponseFormatForProvider(provider.name, provider.capabilities, input.responseFormat),
+        );
+
+    const request: Record<string, unknown> = {
+      model,
+      messages,
+      stream: true,
+      ...(responseFormat ? { response_format: responseFormat } : {}),
+      ...(responseTools
+        ? {
+            tools: responseTools.map((tool) => ({
+              type: "function",
+              function: {
+                name: tool["name"] as string,
+                description: (tool["description"] as string | undefined) ?? undefined,
+                parameters: (tool["parameters"] as Record<string, unknown>) ?? {},
+              },
+            })),
+            tool_choice: toolChoice ?? "auto",
+            ...(typeof input.parallelToolCalls === "boolean" ? { parallel_tool_calls: input.parallelToolCalls } : {}),
+          }
+        : {}),
+      ...(usesMiniMaxReasoning(model) ? { reasoning_effort: getReasoningEffort() } : {}),
+    };
+
+    const stream = await client.chat.completions.create(request as any);
+    const textParts: string[] = [];
+    const toolCalls = new Map<number, {
+      id?: string;
+      name?: string;
+      arguments: string;
+    }>();
+
+    for await (const chunk of stream as unknown as AsyncIterable<OpenAI.Chat.Completions.ChatCompletionChunk>) {
+      const delta = chunk.choices[0]?.delta;
+      const content = delta?.content;
+      if (typeof content === "string" && content.length > 0) {
+        textParts.push(content);
+        callbacks.onTextDelta?.(content);
+      }
+      for (const call of delta?.tool_calls ?? []) {
+        const index = typeof call.index === "number" ? call.index : toolCalls.size;
+        const existing = toolCalls.get(index) ?? { arguments: "" };
+        const fn = call.function;
+        toolCalls.set(index, {
+          id: call.id ?? existing.id,
+          name: fn?.name ?? existing.name,
+          arguments: `${existing.arguments}${fn?.arguments ?? ""}`,
+        });
+      }
+    }
+
+    if (toolCalls.size > 0) {
+      const calls = [...toolCalls.values()].map<LlmToolCall>((call) => ({
+        id: call.id ?? crypto.randomUUID(),
+        name: toCanonicalToolName(call.name ?? "unknown_tool", nameMaps),
+        input: parseToolArguments(call.arguments || "{}"),
+      }));
+      return {
+        type: "tool_calls",
+        calls,
+        ...(textParts.length > 0 ? { assistantContent: textParts.join("") } : {}),
+      };
+    }
+
+    const reply = textParts.join("");
+    if (reply.trim().length === 0) {
+      throw new Error("Empty response from Fireworks: streamed response had no text content and no tool calls.");
+    }
+
+    return {
+      type: "assistant",
+      content: reply,
     };
   },
 };

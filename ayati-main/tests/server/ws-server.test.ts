@@ -93,6 +93,39 @@ describe("WsServer", () => {
     await closeClient(client);
   });
 
+  it("records client streaming capability without forwarding client_hello", async () => {
+    const port = getPort();
+    let capturedClientId = "";
+    const onMessage = vi.fn((clientId: string) => {
+      capturedClientId = clientId;
+    });
+    server = new WsServer({ port, onMessage });
+    await server.start();
+
+    const client = await connectClient(port);
+    client.send(JSON.stringify({
+      type: "client_hello",
+      capabilities: {
+        replyStreaming: true,
+      },
+    }));
+
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(onMessage).not.toHaveBeenCalled();
+
+    const messageReceived = new Promise<void>((resolve) => {
+      onMessage.mockImplementation((clientId: string) => {
+        capturedClientId = clientId;
+        resolve();
+      });
+    });
+    client.send(JSON.stringify({ type: "chat", content: "hello" }));
+    await messageReceived;
+
+    expect(server.clientSupportsReplyStreaming(capturedClientId)).toBe(true);
+    await closeClient(client);
+  });
+
   it("should reject invalid JSON and send an error back to the client", async () => {
     const port = getPort();
     const onMessage = vi.fn();

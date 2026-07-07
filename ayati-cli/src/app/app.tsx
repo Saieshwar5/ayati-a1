@@ -66,6 +66,7 @@ export function App(): React.JSX.Element {
   );
   const messageListRef = useRef<MessageListHandle>(null);
   const workspaceSessionId = useMemo(() => randomUUID(), []);
+  const streamedMessageIdsRef = useRef(new Map<string, string>());
 
   useEffect(() => {
     const handleResize = (): void => {
@@ -83,7 +84,65 @@ export function App(): React.JSX.Element {
   }, []);
 
   const onMessage = useCallback((data: unknown) => {
-    const msg = data as ServerMessage | { type?: string; content?: string; final?: boolean };
+    const msg = data as ServerMessage;
+    if (msg.type === "reply_started" && typeof msg.turnId === "string") {
+      const kind = toAssistantMessageKind(msg.kind);
+      const draft = {
+        ...createMessage("assistant", "", kind),
+        streaming: true,
+      };
+      streamedMessageIdsRef.current.set(msg.turnId, draft.id);
+      setMessages((prev) => [...prev, draft]);
+      return;
+    }
+
+    if (msg.type === "reply_delta" && typeof msg.turnId === "string" && typeof msg.delta === "string") {
+      const messageId = streamedMessageIdsRef.current.get(msg.turnId);
+      if (!messageId) {
+        const draft = {
+          ...createMessage("assistant", msg.delta, "reply"),
+          streaming: true,
+        };
+        streamedMessageIdsRef.current.set(msg.turnId, draft.id);
+        setMessages((prev) => [...prev, draft]);
+        return;
+      }
+      setMessages((prev) => prev.map((message) => (
+        message.id === messageId
+          ? { ...message, content: `${message.content}${msg.delta}` }
+          : message
+      )));
+      return;
+    }
+
+    if (msg.type === "reply_done" && typeof msg.turnId === "string" && typeof msg.content === "string") {
+      const kind = toAssistantMessageKind(msg.kind);
+      const messageId = streamedMessageIdsRef.current.get(msg.turnId);
+      streamedMessageIdsRef.current.delete(msg.turnId);
+      if (messageId) {
+        setMessages((prev) => prev.map((message) => (
+          message.id === messageId
+            ? {
+                ...message,
+                kind,
+                content: msg.content,
+                streaming: false,
+                commitStatus: msg.commitStatus,
+              }
+            : message
+        )));
+      } else {
+        const reply = {
+          ...createMessage("assistant", msg.content, kind),
+          commitStatus: msg.commitStatus,
+        };
+        setMessages((prev) => [...prev, reply]);
+      }
+      setProgressLines([]);
+      setIsLoading(false);
+      return;
+    }
+
     if (msg.type === "reply" && typeof msg.content === "string") {
       const reply = createMessage("assistant", msg.content, "reply");
       setMessages((prev) => [...prev, reply]);
@@ -142,8 +201,14 @@ export function App(): React.JSX.Element {
     if (!connected) {
       return;
     }
+    send({
+      type: "client_hello",
+      capabilities: {
+        replyStreaming: true,
+      },
+    });
     emitWorkspaceEvent("workspace_session_started");
-  }, [connected, emitWorkspaceEvent]);
+  }, [connected, emitWorkspaceEvent, send]);
 
   useEffect(() => () => {
     send({
@@ -383,6 +448,13 @@ function handleCommand(command: string, pushAssistantMessage: (content: string) 
   }
 
   pushAssistantMessage(`Unknown command. ${DOC_COMMAND_HELP}`);
+}
+
+function toAssistantMessageKind(kind: unknown): ChatMessage["kind"] {
+  if (kind === "feedback" || kind === "notification") {
+    return kind;
+  }
+  return "reply";
 }
 
 function toServerAttachments(attachments: ChatAttachment[]): ChatAttachment[] {

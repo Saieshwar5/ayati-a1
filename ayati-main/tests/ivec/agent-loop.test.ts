@@ -4,6 +4,7 @@ import { isAbsolute, join } from "node:path";
 import { tmpdir } from "node:os";
 import { agentLoop } from "../../src/ivec/agent-loop.js";
 import type { LlmProvider } from "../../src/core/contracts/provider.js";
+import type { LlmTurnInput, LlmTurnOutput, LlmTurnStreamCallbacks } from "../../src/core/contracts/llm-protocol.js";
 import { noopRunRecorder } from "../../src/ivec/noop-run-recorder.js";
 import { writeFilesTool } from "../../src/skills/builtins/filesystem/write-files.js";
 import { createToolExecutor } from "../../src/skills/tool-executor.js";
@@ -2209,6 +2210,96 @@ describe("agentLoop", () => {
       expect(provider.generateTurn).toHaveBeenCalledTimes(2);
       expect(existsSync(indexPath)).toBe(true);
       expect(existsSync(cssPath)).toBe(true);
+    } finally {
+      cleanup(dataDir);
+    }
+  });
+
+  it("streams only the response-only final reply after verified tool work", async () => {
+    const dataDir = makeTmpDir();
+    const outputPath = join(dataDir, "final-stream", "note.txt");
+    try {
+      const toolExecutor = createToolExecutor([writeFilesTool]);
+      const finalDeltas: string[] = [];
+      const generateTurn = vi.fn().mockResolvedValue({
+        type: "assistant",
+        content: JSON.stringify({
+          kind: "act",
+          action: {
+            mode: "single",
+            calls: [{
+              id: "call_1",
+              tool: "write_files",
+              input: {
+                createDirs: true,
+                files: [{
+                  path: outputPath,
+                  content: "streamed final response test",
+                }],
+              },
+              dependsOn: [],
+              purpose: "Write the note",
+            }],
+            allowedTools: ["write_files"],
+            assertions: [],
+            completion: {
+              intent: "completion_candidate",
+              reason: "The requested note file was written.",
+            },
+          },
+        }),
+      });
+      const streamTurn = vi.fn(async (
+        _input: LlmTurnInput,
+        callbacks: LlmTurnStreamCallbacks,
+      ): Promise<LlmTurnOutput> => {
+        callbacks.onTextDelta?.("Done. ");
+        callbacks.onTextDelta?.("I wrote the note.");
+        return {
+          type: "assistant",
+          content: "Done. I wrote the note.",
+        };
+      });
+      const provider: LlmProvider = {
+        name: "mock",
+        version: "1.0.0",
+        capabilities: {
+          nativeToolCalling: true,
+          streaming: true,
+          structuredOutput: { jsonObject: true },
+        },
+        start: vi.fn(),
+        stop: vi.fn(),
+        generateTurn,
+        streamTurn,
+      };
+      const streamEvents: Array<{ type: string; delta?: string; kind?: string }> = [];
+
+      const result = await agentLoop({
+        provider,
+        toolExecutor,
+        toolDefinitions: toolExecutor.definitions(),
+        runRecorder: noopRunRecorder,
+        runHandle: { sessionId: "s1", runId: "r-final-stream" },
+        clientId: "c1",
+        initialUserMessage: "write a note",
+        dataDir,
+        systemContext: "full system context with memory",
+        onFinalResponseStream: (event) => {
+          streamEvents.push(event);
+          if (event.type === "delta") {
+            finalDeltas.push(event.delta);
+          }
+        },
+      });
+
+      expect(result.status).toBe("completed");
+      expect(result.content).toBe("Done. I wrote the note.");
+      expect(generateTurn).toHaveBeenCalledTimes(1);
+      expect(streamTurn).toHaveBeenCalledTimes(1);
+      expect(streamEvents[0]).toEqual({ type: "start", kind: "reply" });
+      expect(finalDeltas.join("")).toBe("Done. I wrote the note.");
+      expect(existsSync(outputPath)).toBe(true);
     } finally {
       cleanup(dataDir);
     }
