@@ -1078,6 +1078,230 @@ describe("createChatTurnRuntime", () => {
     }
   });
 
+  it("keeps clarification turns session-only and promotes the answer turn when it mutates", async () => {
+    const rootDir = mkdtempSync(join(tmpdir(), "ayati-chat-runtime-clarify-promote-"));
+    const contextStoreDir = join(rootDir, "context");
+    const dataDir = join(rootDir, "data");
+    const workspaceDir = join(rootDir, "workspace");
+    const previousWorkspaceDir = process.env["AYATI_WORKSPACE_DIR"];
+    mkdirSync(workspaceDir, { recursive: true });
+    process.env["AYATI_WORKSPACE_DIR"] = workspaceDir;
+
+    try {
+      const store = new GitMemoryDailySessionStore({
+        contextStoreDir,
+        now: () => new Date("2026-06-28T09:00:00.000Z"),
+      });
+      const gitMemoryRuntime = createGitMemoryRuntime({
+        contextStoreDir,
+        timezone: "Asia/Kolkata",
+        agentId: "local",
+        store,
+        now: () => new Date("2026-06-28T09:00:00.000Z"),
+      });
+      const chatContextRuntime = createGitMemoryChatContextRuntime({ gitMemoryRuntime });
+      const apiTurn = await chatContextRuntime.prepareUserTurn({
+        clientId: "local",
+        userMessage: "fix upload API",
+        at: "2026-06-28T09:00:00+05:30",
+      });
+      const apiTask = await gitMemoryRuntime.createTaskBranch({
+        sessionId: apiTurn.sessionId,
+        title: "Fix upload API",
+        objective: "Fix upload API behavior.",
+        fromSeq: apiTurn.messageSeq,
+        toSeq: apiTurn.messageSeq,
+        at: "2026-06-28T09:00:01+05:30",
+      });
+      const uiTurn = await chatContextRuntime.prepareUserTurn({
+        clientId: "local",
+        userMessage: "fix upload UI",
+        at: "2026-06-28T09:01:00+05:30",
+      });
+      const uiTask = await gitMemoryRuntime.createTaskBranch({
+        sessionId: uiTurn.sessionId,
+        title: "Fix upload UI",
+        objective: "Fix upload UI behavior.",
+        fromSeq: uiTurn.messageSeq,
+        toSeq: uiTurn.messageSeq,
+        at: "2026-06-28T09:01:01+05:30",
+      });
+      const gitContextSkill = createGitContextSkill({ contextStoreDir, gitMemoryRuntime });
+      const provider = createAgentDecisionProvider([
+        {
+          kind: "act",
+          action: {
+            mode: "single",
+            calls: [{
+              id: "clarify_upload",
+              tool: "git_context_ask_clarification_for_turn",
+              input: {
+                reason: "The upload follow-up could refer to the API or UI task.",
+                candidateTaskIds: [apiTask.taskId, uiTask.taskId],
+              },
+              dependsOn: [],
+              purpose: "Ask the user which upload task owns this follow-up.",
+            }],
+            allowedTools: ["git_context_ask_clarification_for_turn"],
+            assertions: [],
+          },
+        },
+        {
+          kind: "reply",
+          status: "completed",
+          message: "Which upload task do you mean: API or UI?",
+        },
+        {
+          kind: "act",
+          action: {
+            mode: "single",
+            calls: [{
+              id: "activate_api",
+              tool: "git_context_activate_task_for_turn",
+              input: {
+                taskId: apiTask.taskId,
+                reason: "The user clarified that the API upload task owns this follow-up.",
+              },
+              dependsOn: [],
+              purpose: "Bind this fresh clarification answer turn to the API upload task.",
+            }],
+            allowedTools: ["git_context_activate_task_for_turn"],
+            assertions: [],
+          },
+        },
+        {
+          kind: "act",
+          action: {
+            mode: "single",
+            calls: [{
+              id: "write_api_note",
+              tool: "write_files",
+              input: {
+                createDirs: true,
+                files: [{
+                  path: "notes/upload-api.md",
+                  content: "# Upload API\n\nClarified follow-up belongs to the API task.\n",
+                }],
+              },
+              dependsOn: [],
+              purpose: "Persist the clarified API upload note.",
+            }],
+            allowedTools: ["write_files"],
+            assertions: [],
+            completion: {
+              intent: "not_completion",
+              reason: "The task state still needs to be updated after the file write.",
+            },
+          },
+        },
+        {
+          kind: "update_work_state",
+          update: {
+            status: "done",
+            summary: "Updated the upload API note after clarification.",
+            openWork: [],
+            blockers: [],
+          },
+        },
+        {
+          kind: "reply",
+          status: "completed",
+          message: "Updated the upload API note.",
+        },
+      ]);
+      const replies: unknown[] = [];
+      const runtime = createChatTurnRuntime({
+        provider,
+        dataDir,
+        chatContextRuntime,
+        toolExecutor: createToolExecutor([...gitContextSkill.tools, writeFilesTool]),
+        onReply: (_clientId, data) => {
+          replies.push(data);
+        },
+        now: () => new Date("2026-06-28T09:05:00.000Z"),
+      });
+
+      await runtime.processChat({
+        clientId: "local",
+        content: "continue upload",
+        attachments: [],
+      });
+      await runtime.processChat({
+        clientId: "local",
+        content: "the API one",
+        attachments: [],
+      });
+
+      const sessionId = apiTurn.sessionId;
+      const clarificationRunId = "R-20260628-0001";
+      const answerRunId = "R-20260628-0002";
+      const driver = new GitMemoryWorktreeGitDriver(join(contextStoreDir, "sessions", sessionId));
+      const sessionStore = await driver.openSubmoduleRepo(GIT_MEMORY_SESSION_STORE_DIR);
+      expect(JSON.parse(await sessionStore.readFile(
+        GIT_MEMORY_MAIN_REF,
+        gitMemorySessionStoreRunPath(sessionId, clarificationRunId),
+      ) ?? "{}")).toMatchObject({
+        sessionId,
+        runId: clarificationRunId,
+        runClass: "session",
+        toolsUsed: ["git_context_ask_clarification_for_turn"],
+        toolCallCount: 1,
+      });
+      expect(readJsonl(await sessionStore.readFile(
+        GIT_MEMORY_MAIN_REF,
+        gitMemorySessionStoreStepsPath(sessionId, clarificationRunId),
+      )).map((step) => step.toolCalls?.[0]?.tool)).toEqual(["git_context_ask_clarification_for_turn"]);
+      expect(await sessionStore.readFile(
+        GIT_MEMORY_MAIN_REF,
+        gitMemorySessionStoreRunPath(sessionId, answerRunId),
+      )).toBeNull();
+      expect(await driver.readFile(
+        apiTask.ref,
+        gitMemoryTaskRunPath(apiTask.taskId, clarificationRunId),
+      )).toBeNull();
+      expect(await driver.readFile(
+        uiTask.ref,
+        gitMemoryTaskRunPath(uiTask.taskId, answerRunId),
+      )).toBeNull();
+
+      const apiRun = JSON.parse(await driver.readFile(
+        apiTask.ref,
+        gitMemoryTaskRunPath(apiTask.taskId, answerRunId),
+      ) ?? "{}");
+      expect(apiRun).toMatchObject({
+        taskId: apiTask.taskId,
+        runId: answerRunId,
+        status: "completed",
+        summary: "Updated the upload API note.",
+        toolCallCount: 2,
+      });
+      expect(readJsonl(await driver.readFile(
+        apiTask.ref,
+        gitMemoryTaskStepsPath(apiTask.taskId, answerRunId),
+      )).map((step) => step.toolCalls?.[0]?.tool)).toEqual([
+        "git_context_activate_task_for_turn",
+        "write_files",
+      ]);
+      expect(readFileSync(join(workspaceDir, "notes/upload-api.md"), "utf-8"))
+        .toContain("Clarified follow-up belongs to the API task.");
+      expect(replies).toContainEqual(expect.objectContaining({
+        type: "reply",
+        content: "Which upload task do you mean: API or UI?",
+      }));
+      expect(replies).toContainEqual(expect.objectContaining({
+        type: "reply",
+        content: "Updated the upload API note.",
+      }));
+    } finally {
+      if (previousWorkspaceDir === undefined) {
+        delete process.env["AYATI_WORKSPACE_DIR"];
+      } else {
+        process.env["AYATI_WORKSPACE_DIR"] = previousWorkspaceDir;
+      }
+      rmSync(rootDir, { recursive: true, force: true });
+    }
+  });
+
   it("promotes an active session run into the task run when mutation becomes necessary", async () => {
     const rootDir = mkdtempSync(join(tmpdir(), "ayati-chat-runtime-session-promote-"));
     const contextStoreDir = join(rootDir, "context");
