@@ -21,6 +21,7 @@ import type { RepairCode } from "./repair-policy.js";
 
 export type RuntimeCapabilityModeName =
   | "task_run"
+  | "active_task_ready"
   | "fresh_session_routing"
   | "pre_task_routing"
   | "session_only";
@@ -99,7 +100,7 @@ export function detectRuntimeCapabilityMode(input: {
   const hasWorkRun = Boolean(input.state.runId || input.workRunHandle?.runId);
   const focusStatus = input.state.harnessContext.contextEngine?.focus.status;
   const pendingTurnStatus = input.state.harnessContext.contextEngine?.pendingTurn?.routingStatus;
-  const routingWindow = buildRuntimeRoutingWindow(input.state, hasWorkRun, pendingTurnStatus);
+  const routingWindow = buildRuntimeRoutingWindow(input.state, hasWorkRun, pendingTurnStatus, focusStatus);
   const common = {
     primary: true as const,
     hasWorkRun,
@@ -162,6 +163,18 @@ export function detectRuntimeCapabilityMode(input: {
     };
   }
 
+  if (focusStatus === "active") {
+    return {
+      ...common,
+      name: "active_task_ready",
+      whyActive: "An active task exists and a task run can be created automatically before normal work tools execute.",
+      allowedActions: ["direct_reply", "decision_load_tools", "normal_work_tools"],
+      blockedCapabilities: ["task_routing_for_same_task_continuation"],
+      next: "Continue the active task with selected tools, load missing tools if needed, or reply when no tool work is needed.",
+      allowToolLoading: true,
+    };
+  }
+
   return {
     ...common,
     name: "session_only",
@@ -193,10 +206,10 @@ export function isFreshSessionRoutingMode(mode: RuntimeCapabilityMode): boolean 
 export function isRuntimeToolAllowed(mode: RuntimeCapabilityMode, toolName: string): boolean {
   const taxonomy = getToolTaxonomy(toolName);
   if (!taxonomy) {
-    return mode.name === "task_run" || mode.hasWorkRun;
+    return mode.name === "task_run" || mode.name === "active_task_ready" || mode.hasWorkRun;
   }
 
-  if (mode.name === "task_run" || mode.hasWorkRun) {
+  if (mode.name === "task_run" || mode.name === "active_task_ready" || mode.hasWorkRun) {
     return !isTaskRoutingMutation(taxonomy);
   }
 
@@ -220,7 +233,7 @@ export function filterToolsForRuntimeMode(mode: RuntimeCapabilityMode, tools: To
 }
 
 export function runtimeToolPhase(mode: RuntimeCapabilityMode, selectedToolCount = 0): ToolPhase {
-  if (mode.name === "task_run" || mode.hasWorkRun) {
+  if (mode.name === "task_run" || mode.name === "active_task_ready" || mode.hasWorkRun) {
     return "task_run";
   }
   if (mode.name === "fresh_session_routing" || mode.name === "pre_task_routing" || mode.routingWindow?.open) {
@@ -326,8 +339,12 @@ function buildRuntimeRoutingWindow(
   state: LoopState,
   hasWorkRun: boolean,
   pendingTurnStatus: string | undefined,
+  focusStatus: string | undefined,
 ): RuntimeCapabilityRoutingWindow | undefined {
   if (hasWorkRun || pendingTurnStatus === "clarifying") {
+    return undefined;
+  }
+  if (focusStatus === "active" && !pendingTurnStatus) {
     return undefined;
   }
   const step = Math.max(1, state.iteration || 1);

@@ -928,7 +928,7 @@ describe("agentLoop", () => {
     }
   });
 
-  it("allows git-context routing before a work run when an active task has no pending-turn envelope", async () => {
+  it("auto-creates a run for active-task work when there is no pending-turn envelope", async () => {
     const dataDir = makeTmpDir();
     const outputPath = join(dataDir, "website-follow-up.txt");
     try {
@@ -950,6 +950,44 @@ describe("agentLoop", () => {
       } satisfies ToolDefinition));
       const toolExecutor = createToolExecutor([]);
       const feedback = createMemoryFeedbackLedger();
+      const createWorkRun = vi.fn().mockResolvedValue({
+        runHandle: {
+          sessionId: "s1",
+          runId: "R-20260702-website-002",
+          triggerSeq: 7,
+        },
+        harnessContext: {
+          contextEngine: {
+            session: {
+              sessionId: "s1",
+              conversationTail: [],
+              activityTail: [],
+              assetCount: 1,
+            },
+            focus: {
+              status: "active",
+              ref: "refs/heads/task/T-20260702-website",
+              workId: "T-20260702-website",
+            },
+            task: {
+              ref: "refs/heads/task/T-20260702-website",
+              workId: "T-20260702-website",
+              title: "Website task",
+              objective: "Maintain the website task.",
+              status: "active",
+              completed: ["Created initial website files."],
+              open: ["Improve the website."],
+              blockers: [],
+              facts: [],
+              next: "Improve the website.",
+              assets: [],
+              recentRuns: [],
+              recentCommits: [],
+              recentEvidence: [],
+            },
+          },
+        },
+      });
       const toolWorkingSetManager = new ToolWorkingSetManager({
         catalog: new ToolCatalog([
           skill("git-context", [
@@ -963,24 +1001,6 @@ describe("agentLoop", () => {
         maxVisibleTools: 12,
       });
       const provider = createProvider([
-        {
-          kind: "act",
-          action: {
-            mode: "single",
-            calls: [{
-              id: "activate_task",
-              tool: "git_context_activate_task_for_turn",
-              input: {
-                taskId: "T-20260702-website",
-                reason: "The user is continuing the active website task.",
-              },
-              dependsOn: [],
-              purpose: "Bind this follow-up to the existing active task before editing files.",
-            }],
-            allowedTools: ["git_context_activate_task_for_turn"],
-            assertions: [],
-          },
-        },
         {
           kind: "act",
           action: {
@@ -1016,6 +1036,7 @@ describe("agentLoop", () => {
         toolDefinitions: [gitActivateTaskTool, gitCreateTaskTool, ...gitReadOnlyTools, writeFilesTool],
         runRecorder: noopRunRecorder,
         feedbackLedger: feedback.ledger,
+        createWorkRun,
         inputHandle: { sessionId: "s1", seq: 7 },
         clientId: "c1",
         initialUserMessage: "Make this active website task a little nicer with a note file",
@@ -1061,13 +1082,15 @@ describe("agentLoop", () => {
       expect(result.status).toBe("completed");
       expect(result.runClass).toBe("task");
       expect(result.workRunId).toBe("R-20260702-website-002");
-      expect(result.totalToolCalls).toBe(2);
-      expect(provider.generateTurn).toHaveBeenCalledTimes(3);
+      expect(result.totalToolCalls).toBe(1);
+      expect(provider.generateTurn).toHaveBeenCalledTimes(2);
       expect(readFileSync(outputPath, "utf-8")).toContain("Follow-up note");
-      expect(firstDecisionTools).toContain("git_context_activate_task_for_turn");
+      expect(firstDecisionTools).toContain("write_files");
+      expect(firstDecisionTools).not.toContain("git_context_activate_task_for_turn");
       expect(secondDecisionTools).toContain("write_files");
       expect(secondDecisionTools).not.toContain("git_context_activate_task_for_turn");
-      expect(feedbackEvents(feedback.events, "tools", "tool_mode_selected").map((event) => event.data?.["mode"])).toContain("session_only");
+      expect(createWorkRun).toHaveBeenCalledTimes(1);
+      expect(feedbackEvents(feedback.events, "tools", "tool_mode_selected").map((event) => event.data?.["mode"])).toContain("active_task_ready");
       expect(feedbackEvents(feedback.events, "guard", "missing_work_run")).toHaveLength(0);
       expect(feedbackEvents(feedback.events, "tools", "normal_tools_enabled_for_work_run")[0]?.data).toMatchObject({
         workRunId: "R-20260702-website-002",
@@ -1077,7 +1100,7 @@ describe("agentLoop", () => {
     }
   });
 
-  it("repairs active-task action tools before a work run is created", async () => {
+  it("auto-creates a run before active-task action tools execute", async () => {
     const dataDir = makeTmpDir();
     const outputPath = join(dataDir, "active-task-auto-bind.txt");
     try {
@@ -1203,16 +1226,25 @@ describe("agentLoop", () => {
       });
 
       expect(result.status).toBe("completed");
-      expect(result.runClass).toBe("interaction");
-      expect(result.workRunId).toBeUndefined();
-      expect(existsSync(outputPath)).toBe(false);
-      expect(createWorkRun).not.toHaveBeenCalled();
+      expect(result.runClass).toBe("task");
+      expect(result.workRunId).toBe("R-20260702-website-auto");
+      expect(readFileSync(outputPath, "utf-8")).toBe("Auto-bound active task follow-up.");
+      expect(createWorkRun).toHaveBeenCalledTimes(1);
+      expect(createWorkRun).toHaveBeenCalledWith(
+        { sessionId: "s1", seq: 8 },
+        expect.objectContaining({
+          reason: "agent_action",
+          activeTaskId: "T-20260702-website",
+          activeBranch: "task/T-20260702-website",
+          userMessage: "Add a follow-up note to the active website task",
+        }),
+      );
     } finally {
       cleanup(dataDir);
     }
   });
 
-  it("filters loaded action tools before an active task has a work run", async () => {
+  it("loads tools before active-task run allocation and auto-creates the run before action", async () => {
     const dataDir = makeTmpDir();
     const outputPath = join(dataDir, "active-task-load-then-write.txt");
     try {
@@ -1359,13 +1391,15 @@ describe("agentLoop", () => {
       });
 
       expect(result.status).toBe("completed");
-      expect(result.runClass).toBe("interaction");
-      expect(result.workRunId).toBeUndefined();
-      expect(existsSync(outputPath)).toBe(false);
-      expect(createWorkRun).not.toHaveBeenCalled();
+      expect(result.runClass).toBe("task");
+      expect(result.workRunId).toBe("R-20260702-website-load-auto");
+      expect(readFileSync(outputPath, "utf-8")).toBe("Loaded tools before active-task auto-bind.");
+      expect(createWorkRun).toHaveBeenCalledTimes(1);
       expect(feedbackEvents(feedback.events, "guard", "missing_work_run")).toHaveLength(0);
       expect(feedbackEvents(feedback.events, "tool_load", "requested")[0]?.runId).toBeUndefined();
-      expect(feedbackEvents(feedback.events, "tools", "normal_tools_enabled_for_work_run")).toHaveLength(0);
+      expect(feedbackEvents(feedback.events, "tools", "normal_tools_enabled_for_work_run")[0]?.data).toMatchObject({
+        workRunId: "R-20260702-website-load-auto",
+      });
     } finally {
       cleanup(dataDir);
     }

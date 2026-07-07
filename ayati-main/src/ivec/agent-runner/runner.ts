@@ -1795,12 +1795,13 @@ function buildToolExposureWarningCodes(
   workRunHandle: MemoryRunHandle | undefined,
 ): string[] {
   const warningCodes: string[] = [];
+  const mode = detectRuntimeCapabilityMode({ state, workRunHandle });
   const pendingTurnStatus = state.harnessContext.contextEngine?.pendingTurn?.routingStatus;
   const normalTools = normalTaskToolNames(selectedTools);
   if ((pendingTurnStatus === "unbound" || pendingTurnStatus === "clarifying") && normalTools.length > 0) {
     warningCodes.push("normal_tool_visible_during_pending_routing", "routing_state_mismatch");
   }
-  if (!state.runId && !workRunHandle && normalTools.length > 0) {
+  if (!state.runId && !workRunHandle && mode.name !== "active_task_ready" && normalTools.length > 0) {
     warningCodes.push("normal_tools_selected_without_work_run");
   }
   return uniqueStrings(warningCodes);

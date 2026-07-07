@@ -44,6 +44,7 @@ export function auditToolPolicy(input: {
   const selectedTools = normalizeToolNames(input.selectedTools);
   const phase = runtimeToolPhase(input.mode, selectedTools.length);
   const violationMap = new Map<ToolPolicyViolationCode, ToolPolicyViolation>();
+  const hasExecutionRunBoundary = input.mode.hasWorkRun || input.mode.name === "active_task_ready";
 
   for (const toolName of selectedTools) {
     const taxonomy = getToolTaxonomy(toolName);
@@ -57,7 +58,7 @@ export function auditToolPolicy(input: {
       continue;
     }
 
-    if (!input.mode.hasWorkRun && taxonomy.requiresTaskRun) {
+    if (!hasExecutionRunBoundary && taxonomy.requiresTaskRun) {
       addViolation(violationMap, {
         code: "mutation_tool_without_task_run",
         severity: "error",
@@ -66,7 +67,7 @@ export function auditToolPolicy(input: {
       });
     }
 
-    if (!input.mode.hasWorkRun && isLongRunningTool(taxonomy)) {
+    if (!hasExecutionRunBoundary && isLongRunningTool(taxonomy)) {
       addViolation(violationMap, {
         code: "long_running_tool_without_task_run",
         severity: "error",

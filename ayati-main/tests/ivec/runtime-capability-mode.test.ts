@@ -48,6 +48,22 @@ function gitContext(focus: ContextEngineMachineContext["focus"]): ContextEngineM
   };
 }
 
+function gitContextWithPendingTurn(
+  focus: ContextEngineMachineContext["focus"],
+  routingStatus: "unbound" | "bound" | "clarifying",
+): ContextEngineMachineContext {
+  return {
+    ...gitContext(focus),
+    pendingTurn: {
+      routingStatus,
+      fromSeq: 1,
+      toSeq: 1,
+      text: "continue the website task",
+      at: "2026-07-07T08:00:00.000Z",
+    },
+  };
+}
+
 function tool(name: string): ToolDefinition {
   return {
     name,
@@ -173,23 +189,23 @@ describe("runtime capability modes", () => {
   });
 
   it("projects routing-window timing before a work run exists", () => {
-    const firstStep = state(gitContext({
+    const firstStep = state(gitContextWithPendingTurn({
       status: "active",
       ref: "refs/heads/task/T-1",
       workId: "T-1",
-    }));
+    }, "unbound"));
     firstStep.iteration = 1;
-    const secondStep = state(gitContext({
+    const secondStep = state(gitContextWithPendingTurn({
       status: "active",
       ref: "refs/heads/task/T-1",
       workId: "T-1",
-    }));
+    }, "unbound"));
     secondStep.iteration = 2;
-    const expired = state(gitContext({
+    const expired = state(gitContextWithPendingTurn({
       status: "active",
       ref: "refs/heads/task/T-1",
       workId: "T-1",
-    }));
+    }, "unbound"));
     expired.iteration = 3;
 
     expect(buildRuntimeCapabilityPromptContext(detectRuntimeCapabilityMode({ state: firstStep })).routingWindow).toMatchObject({
@@ -219,6 +235,34 @@ describe("runtime capability modes", () => {
       routingToolsAvailable: false,
       readToolsRemainAfterExpiry: true,
     });
+  });
+
+  it("allows normal tools for active task continuation before the run is allocated", () => {
+    const mode = detectRuntimeCapabilityMode({
+      state: state(gitContext({
+        status: "active",
+        ref: "refs/heads/task/T-1",
+        workId: "T-1",
+      })),
+    });
+
+    expect(mode.name).toBe("active_task_ready");
+    expect(mode.allowToolLoading).toBe(true);
+    expect(buildRuntimeCapabilityPromptContext(mode)).toMatchObject({
+      name: "active_task_ready",
+      allowed: ["direct_reply", "decision_load_tools", "normal_work_tools"],
+      blocked: ["task_routing_for_same_task_continuation"],
+    });
+    expect(buildRuntimeCapabilityPromptContext(mode).routingWindow).toBeUndefined();
+    expect(filterToolsForRuntimeMode(mode, [
+      tool("git_context_search_tasks"),
+      tool("git_context_create_task_for_turn"),
+      tool("git_context_activate_task_for_turn"),
+      tool("write_files"),
+    ]).map((entry) => entry.name)).toEqual([
+      "git_context_search_tasks",
+      "write_files",
+    ]);
   });
 
   it("omits routing-window timing once a work run exists", () => {

@@ -301,7 +301,11 @@ export class ToolWorkingSetManager {
     context: ToolExecutionContext,
   ): ToolLoadRequest {
     const runState = this.getRunState(context);
+    const mode = detectRuntimeCapabilityMode({ state });
     if (runState.taskRouting.resolved) {
+      return request;
+    }
+    if (mode.name === "active_task_ready") {
       return request;
     }
     if (state.runId || state.harnessContext.contextEngine?.pendingTurn?.routingStatus === "bound") {
@@ -317,7 +321,6 @@ export class ToolWorkingSetManager {
     if (step < 1 || step > TASK_ROUTING_WINDOW_STEPS) {
       return request;
     }
-    const mode = detectRuntimeCapabilityMode({ state });
     const routingTools = isFreshSessionRoutingMode(mode)
       ? GIT_CONTEXT_FRESH_SESSION_ROUTING_TOOL_NAMES
       : TASK_ROUTING_WINDOW_TOOL_NAMES;

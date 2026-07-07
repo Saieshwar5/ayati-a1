@@ -120,7 +120,7 @@ describe("parseAgentDecision", () => {
     expect(systemPrompt).toContain("Do not use ask_user_feedback for final responses");
     expect(systemPrompt).toContain("concrete deliverable and enough detail to begin now");
     expect(systemPrompt).toContain("reply directly with one short clarifying question instead of creating a task");
-    expect(systemPrompt).toContain("Normal work tools require a task run");
+    expect(systemPrompt).toContain("Normal work tools require task ownership");
     expect(systemPrompt).toContain("Do not tell the user tools are missing.");
     expect(systemPrompt).not.toContain("decision_act");
   });

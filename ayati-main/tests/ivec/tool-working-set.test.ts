@@ -352,7 +352,7 @@ describe("ToolWorkingSetManager", () => {
     expect(executor.list(context)).toContain("git_context_ask_clarification_for_turn");
   });
 
-  it("uses the full routing window when an active task exists", () => {
+  it("uses the full routing window when an active task has an unbound pending turn", () => {
     const catalog = new ToolCatalog([
       skill("git-context", [
         tool("git_context_active"),
@@ -368,11 +368,11 @@ describe("ToolWorkingSetManager", () => {
     const manager = new ToolWorkingSetManager({ catalog, toolExecutor: executor, maxVisibleTools: 12 });
     const runState = state("continue the website");
     runState.harnessContext = createInitialHarnessContext({
-      contextEngine: contextEngineWithFocus({
+      contextEngine: contextEngineWithPendingTurn({
         status: "active",
         ref: "refs/heads/task/T-20260702-001-website",
         workId: "T-20260702-001",
-      }),
+      }, "unbound"),
     });
 
     manager.prepareForDecision(runState, { clientId: "c1", runId: "r1", sessionId: "s1", stepNumber: 1 });
@@ -388,7 +388,7 @@ describe("ToolWorkingSetManager", () => {
     ]);
   });
 
-  it("removes write and shell tools before an active task turn is bound to a work run", () => {
+  it("keeps mutation tools available for active task continuation before run allocation", () => {
     const catalog = new ToolCatalog([
       skill("filesystem", [
         tool("find_files"),
@@ -427,24 +427,20 @@ describe("ToolWorkingSetManager", () => {
     const result = manager.prepareForDecision(runState, context);
     const active = manager.listActive(context);
 
-    expect(active).toEqual([
+    expect(active).toEqual(expect.arrayContaining([
       "find_files",
       "search_in_files",
       "read_file",
-      "git_context_active",
-      "git_context_list_tasks",
-      "git_context_search_tasks",
-      "git_context_read_task",
-      "git_context_activate_task_for_turn",
-      "git_context_create_task_for_turn",
-      "git_context_ask_clarification_for_turn",
-    ]);
-    expect(active).not.toContain("write_file");
-    expect(active).not.toContain("write_files");
-    expect(active).not.toContain("create_directory");
-    expect(active).not.toContain("shell");
-    expect(active).not.toContain("shell_run_script");
-    expect(result.evicted).toEqual(expect.arrayContaining([
+      "write_file",
+      "write_files",
+      "create_directory",
+      "shell",
+      "shell_run_script",
+    ]));
+    expect(active).not.toContain("git_context_activate_task_for_turn");
+    expect(active).not.toContain("git_context_create_task_for_turn");
+    expect(active).not.toContain("git_context_ask_clarification_for_turn");
+    expect(result.evicted).not.toEqual(expect.arrayContaining([
       "write_file",
       "write_files",
     ]));
@@ -565,6 +561,22 @@ function contextEngineWithFocus(focus: ContextEngineMachineContext["focus"]): Co
       assetCount: 0,
     },
     focus,
+  };
+}
+
+function contextEngineWithPendingTurn(
+  focus: ContextEngineMachineContext["focus"],
+  routingStatus: "unbound" | "bound" | "clarifying",
+): ContextEngineMachineContext {
+  return {
+    ...contextEngineWithFocus(focus),
+    pendingTurn: {
+      routingStatus,
+      fromSeq: 1,
+      toSeq: 1,
+      text: "continue the website",
+      at: "2026-07-07T08:00:00.000Z",
+    },
   };
 }
 

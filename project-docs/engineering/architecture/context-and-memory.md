@@ -57,6 +57,12 @@ from the synthetic decision context to the real run id, refreshes
 `context.git.current`, removes routing tools for the rest of the run, and then
 allows normal work tools.
 
+If an active task clearly owns the request and no run id exists yet, the model
+can use normal work tools directly. The runner creates and binds the active-task
+run through the app runtime immediately before executing the first normal tool.
+Create and activate routing tools are only for new tasks, different existing
+tasks, or ambiguous ownership.
+
 The model-facing prompt uses a grouped context projection. The important paths
 are:
 
