@@ -1096,6 +1096,7 @@ export class GitMemoryRuntime {
       facts,
       next,
       assets: [],
+      artifacts: [],
       conversationMarkdownTail: markdownTail(
         renderGitMemoryConversationMarkdownDocument(conversation, {
           taskId: result.taskId,

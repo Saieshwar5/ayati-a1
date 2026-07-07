@@ -51,6 +51,7 @@ export interface PromptGitTaskContext {
     summary?: string;
   };
   assets: ContextEngineTaskContext["assets"];
+  artifacts?: ContextEngineTaskContext["artifacts"];
   activity: {
     recentRuns: ContextEngineTaskContext["recentRuns"];
     recentEvidence: ContextEngineTaskContext["recentEvidence"];
@@ -196,6 +197,7 @@ function projectGitTaskForPrompt(
       ...(task.summary ? { summary: task.summary } : {}),
     },
     assets: task.assets,
+    ...(task.artifacts ? { artifacts: task.artifacts } : {}),
     activity: {
       recentRuns: task.recentRuns,
       recentEvidence: task.recentEvidence,

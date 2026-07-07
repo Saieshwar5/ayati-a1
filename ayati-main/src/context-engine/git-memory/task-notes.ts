@@ -33,6 +33,10 @@ export function renderGitMemoryTaskNotes(input: RenderGitMemoryTaskNotesInput): 
     ...(input.files ?? []),
     ...(latestRun?.changedFiles ?? []),
   ]);
+  const artifactLines = input.state.memory.files.map((file) => {
+    const source = file.source === "user_attachment" ? "user attachment" : "agent workspace";
+    return `${file.identity.name} (${file.path}; ${source}; ${file.status})`;
+  });
   const recentWork = unique([
     ...(input.recentWork ?? []),
     ...(latestRun?.workPerformed ?? []),
@@ -81,6 +85,7 @@ export function renderGitMemoryTaskNotes(input: RenderGitMemoryTaskNotesInput): 
     renderMarkdownList("Facts", facts),
     renderMarkdownList("Decisions", decisions),
     renderMarkdownList("Files", files),
+    renderMarkdownList("Artifacts", artifactLines),
     renderMarkdownList("Recent Work", recentWork),
     renderSearchTerms(searchTerms),
     "## Next",

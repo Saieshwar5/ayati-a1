@@ -248,13 +248,22 @@ describe("git-context skill", () => {
 
     expect(result.ok).toBe(true);
     const matches = (result.v2?.structuredContent as {
-      matches?: Array<{ taskId: string; files?: string[]; matchReasons: string[] }>;
+      matches?: Array<{
+        taskId: string;
+        files?: string[];
+        matchReasons: string[];
+        matchedArtifacts?: Array<{ path: string; identity: { name: string; aliases: string[] } }>;
+      }>;
     }).matches ?? [];
     expect(matches[0]).toMatchObject({
       taskId: prepared.uploadTask.taskId,
       files: ["ayati-main/src/server/upload-server.ts"],
     });
     expect(matches[0]?.matchReasons).toEqual(expect.arrayContaining(["files"]));
+    expect(matches[0]?.matchReasons).toEqual(expect.arrayContaining(["artifactPath", "artifactFilename"]));
+    expect(matches[0]?.matchedArtifacts?.[0]).toMatchObject({
+      path: "ayati-main/src/server/upload-server.ts",
+    });
   });
 
   it("filters search results by task status", async () => {
@@ -566,6 +575,45 @@ describe("git-context skill", () => {
     });
     expect((result.v2?.structuredContent as { matchedSignals?: string[] }).matchedSignals)
       .toEqual(expect.arrayContaining(["same-task update language"]));
+  });
+
+  it("allows an explicit new task request even when terms overlap the active task", async () => {
+    const prepared = await prepareGitContextSession();
+    const runtime = createGitMemoryRuntime({
+      contextStoreDir: prepared.contextStoreDir,
+      timezone: "Asia/Kolkata",
+      agentId: "local",
+      store: prepared.store,
+    });
+    const pending = await runtime.prepareUserTurn({
+      userMessage: "Start a new task to create an upload handling status page. Make separate HTML and CSS files for it.",
+      at: "2026-06-28T11:14:00+05:30",
+    });
+    const skill = createGitContextSkill({
+      contextStoreDir: prepared.contextStoreDir,
+      gitMemoryRuntime: runtime,
+    });
+    const tool = requiredTool(skill, "git_context_create_task_for_turn");
+
+    const result = await tool.execute({
+      sessionId: prepared.session.sessionId,
+      title: "Upload handling status page",
+      objective: "Create an upload handling status page with separate HTML and CSS files.",
+      createReason: "explicit_user_requested_new_task",
+      reasonDetails: "The user explicitly asked to start a new task.",
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.v2?.structuredContent).toMatchObject({
+      status: "ready",
+      mode: "create_new_task",
+      taskId: "W-20260628-0002",
+      runId: "R-20260628-0003",
+      conversationRefs: [{ fromSeq: pending.userMessage.seq, toSeq: pending.userMessage.seq }],
+      createdTask: {
+        title: "Upload handling status page",
+      },
+    });
   });
 
   it("creates a separate new task while active task exists with justification", async () => {

@@ -15,7 +15,7 @@ import {
   readGitMemoryTaskEntries,
 } from "./task-refs.js";
 import { parseGitMemorySessionSummary } from "./session-summary.js";
-import type { ContextSessionAttachments, ContextSessionMeta, ContextSessionSummary, TaskAssetRecord } from "../contracts.js";
+import type { ContextSessionAttachments, ContextSessionMeta, ContextSessionSummary, ContextTaskArtifactRecord, TaskAssetRecord } from "../contracts.js";
 import { GitMemoryWorktreeGitDriver, type GitMemoryLogEntry } from "./git-driver.js";
 import type { GitMemoryDailySessionStore } from "./session-store.js";
 import type {
@@ -176,6 +176,7 @@ export interface GitMemoryMachineContextPack {
     facts: string[];
     next: string;
     assets: TaskAssetRecord[];
+    artifacts?: ContextTaskArtifactRecord[];
     conversationMarkdownTail: string;
     recentRuns: GitMemoryRunFile[];
     recentEvidence: GitMemoryEvidenceManifestRecord[];
@@ -315,6 +316,7 @@ export class GitMemoryContextReader {
         facts: state.memory.facts.map((fact) => fact.text),
         next: state.progress.next,
         assets: state.memory.assets.length > 0 ? state.memory.assets : assets,
+        artifacts: state.memory.files,
         conversationMarkdownTail,
         recentRuns: recentRuns.length > 0 ? recentRuns : state.runs.recent.map((run) => ({
           schemaVersion: 1,

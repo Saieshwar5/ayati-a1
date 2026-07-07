@@ -119,11 +119,33 @@ export interface GitMemoryTaskStateEvidence {
   facts: string[];
 }
 
+export type GitMemoryTaskArtifactSource = "user_attachment" | "agent_workspace";
+export type GitMemoryTaskArtifactStatus = "active" | "deleted" | "renamed" | "superseded";
+export type GitMemoryTaskArtifactConfidence = "user_provided" | "verified" | "inferred";
+
+export interface GitMemoryTaskArtifactIdentity {
+  name: string;
+  type: string;
+  description: string;
+  aliases: string[];
+}
+
 export interface GitMemoryTaskStateFileRecord {
+  artifactId: string;
+  source: GitMemoryTaskArtifactSource;
+  kind: string;
   path: string;
+  originalName?: string;
+  mimeType?: string;
   role: GitMemoryTaskFileRole;
+  identity: GitMemoryTaskArtifactIdentity;
+  status: GitMemoryTaskArtifactStatus;
   reason?: string;
+  createdByRunId?: GitMemoryRunId;
+  lastTouchedRunId?: GitMemoryRunId;
   sourceRunId?: GitMemoryRunId;
+  sourceTurnSeq?: number;
+  confidence: GitMemoryTaskArtifactConfidence;
 }
 
 export interface GitMemoryTaskStateRunSummary {
@@ -882,10 +904,27 @@ function validateTaskStateFiles(value: unknown, errors: string[]): void {
   value.forEach((item, index) => {
     const file = requireRecord(item, `files[${index}]`, errors);
     if (!file) return;
+    requireNonEmptyString(file, "artifactId", errors);
+    requireOneOf(file, "source", ["user_attachment", "agent_workspace"], errors);
+    requireNonEmptyString(file, "kind", errors);
     requireNonEmptyString(file, "path", errors);
+    requireOptionalNonEmptyString(file, "originalName", errors);
+    requireOptionalNonEmptyString(file, "mimeType", errors);
     requireOneOf(file, "role", ["created", "modified", "touched", "reference", "generated"], errors);
+    const identity = requireRecord(file["identity"], `files[${index}].identity`, errors);
+    if (identity) {
+      requireNonEmptyString(identity, "name", errors);
+      requireNonEmptyString(identity, "type", errors);
+      requireNonEmptyString(identity, "description", errors);
+      requireStringArray(identity, "aliases", errors);
+    }
+    requireOneOf(file, "status", ["active", "deleted", "renamed", "superseded"], errors);
     requireOptionalNonEmptyString(file, "reason", errors);
+    requireOptionalRunId(file, "createdByRunId", errors);
+    requireOptionalRunId(file, "lastTouchedRunId", errors);
     requireOptionalRunId(file, "sourceRunId", errors);
+    requireOptionalPositiveInteger(file, "sourceTurnSeq", errors);
+    requireOneOf(file, "confidence", ["user_provided", "verified", "inferred"], errors);
   });
 }
 

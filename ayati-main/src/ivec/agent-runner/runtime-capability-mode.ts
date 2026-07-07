@@ -358,7 +358,8 @@ function buildRuntimeRoutingWindow(
   }
   const step = Math.max(1, state.iteration || 1);
   const routingResolved = state.completedSteps.some((completedStep) => {
-    return (completedStep.toolsUsed ?? []).some(isGitContextTurnRoutingToolName);
+    return completedStep.outcome !== "failed"
+      && (completedStep.toolsUsed ?? []).some(isGitContextTurnRoutingToolName);
   });
   const open = !routingResolved && step <= TASK_ROUTING_WINDOW_STEPS;
   const remaining = open ? Math.max(0, TASK_ROUTING_WINDOW_STEPS - step) : 0;

@@ -286,6 +286,21 @@ describe("buildGitMemoryHarnessContextPack", () => {
           name: "upload.log",
           path: "/tmp/upload.log",
         }],
+        artifacts: expect.arrayContaining([
+          expect.objectContaining({
+            source: "agent_workspace",
+            path: "ayati-main/src/server/upload-server.ts",
+            identity: expect.objectContaining({
+              type: "script",
+              aliases: expect.arrayContaining(["upload-server.ts"]),
+            }),
+          }),
+          expect.objectContaining({
+            source: "user_attachment",
+            path: "/tmp/upload.log",
+            originalName: "upload.log",
+          }),
+        ]),
         recentRuns: [{
           runId: "R-20260628-0001",
           workId: task.taskId,

@@ -1,5 +1,6 @@
+import { createHash } from "node:crypto";
 import { access, readdir } from "node:fs/promises";
-import { join } from "node:path";
+import { basename, extname, join } from "node:path";
 import type { TaskAssetRecord } from "../contracts.js";
 import { GitMemoryWorktreeGitDriver } from "./git-driver.js";
 import { parseGitMemoryCommitTrailers, renderGitMemoryCommitMessage, type ParsedGitMemoryCommitTrailers } from "./commit-message.js";
@@ -213,7 +214,9 @@ export interface SearchGitMemoryTasksInput {
 
 export interface GitMemoryTaskSearchMatch extends GitMemoryTaskRoutingSnapshotTask {
   score: number;
+  routeScore: number;
   matchReasons: string[];
+  matchedArtifacts?: GitMemoryTaskSearchArtifact[];
 }
 
 export interface GitMemoryTaskSearchResult {
@@ -312,6 +315,18 @@ export interface AppendGitMemoryConversationRecordInput {
   record: GitMemoryConversationRecord;
 }
 
+export interface GitMemoryTaskSearchArtifact {
+  artifactId: string;
+  source: GitMemoryTaskStateFileRecord["source"];
+  kind: string;
+  path: string;
+  originalName?: string;
+  role: GitMemoryTaskStateFileRecord["role"];
+  status: GitMemoryTaskStateFileRecord["status"];
+  identity: GitMemoryTaskStateFileRecord["identity"];
+  confidence: GitMemoryTaskStateFileRecord["confidence"];
+}
+
 export interface GitMemoryTaskRoutingSnapshotTask {
   taskId: GitMemoryTaskId;
   branch: string;
@@ -327,6 +342,7 @@ export interface GitMemoryTaskRoutingSnapshotTask {
   updatedAt?: string;
   latestRunId?: GitMemoryRunId;
   files?: string[];
+  artifacts?: GitMemoryTaskSearchArtifact[];
   missing?: boolean;
 }
 
@@ -1333,6 +1349,23 @@ export class GitMemoryDailySessionStore {
       ...workPerformed,
       ...(evidenceSummaries(evidence) ?? []),
     ]);
+    const taskFiles = mergeTaskStateFiles(previousState.memory.files, [
+      ...taskStateFiles(input.changedFiles ?? [], "modified", "changed in run", runId, {
+        title: previousState.task.title,
+        objective: previousState.task.objective,
+        sourceTurnSeq: input.conversationRefs[0]?.fromSeq,
+      }),
+      ...taskStateFiles(evidence.flatMap((record) => record.artifacts), "reference", "evidence artifact", runId, {
+        title: previousState.task.title,
+        objective: previousState.task.objective,
+        sourceTurnSeq: input.conversationRefs[0]?.fromSeq,
+      }),
+      ...taskStateFilesFromAssets(mergedAssets, runId, {
+        title: previousState.task.title,
+        objective: previousState.task.objective,
+        sourceTurnSeq: input.conversationRefs[0]?.fromSeq,
+      }),
+    ]);
     const updatedState: GitMemoryTaskStateFile = {
       schemaVersion: 2,
       task: {
@@ -1360,16 +1393,7 @@ export class GitMemoryDailySessionStore {
           previousState.memory.evidence,
           taskStateEvidence(evidence, runId),
         ),
-        files: mergeTaskStateFiles(previousState.memory.files, [
-          ...taskStateFiles(input.changedFiles ?? [], "modified", "changed in run", runId),
-          ...taskStateFiles(evidence.flatMap((record) => record.artifacts), "reference", "evidence artifact", runId),
-          ...taskStateFiles(
-            mergedAssets.map((asset) => asset.path ?? asset.name ?? "").filter(Boolean),
-            "generated",
-            "task asset",
-            runId,
-          ),
-        ]),
+        files: taskFiles,
         assets: mergedAssets,
       },
       runs: {
@@ -1408,7 +1432,10 @@ export class GitMemoryDailySessionStore {
             taskStateFacts(input.state?.facts ?? stateFacts, runId, "verified"),
           ).map((fact) => fact.text),
           next,
-          files: noteFiles,
+          files: [
+            ...noteFiles,
+            ...taskFiles.flatMap(taskStateFileSearchTerms),
+          ],
           decisions,
         }),
         warnings: progressBlockers,
@@ -1779,14 +1806,87 @@ function taskStateFiles(
   role: GitMemoryTaskStateFileRecord["role"],
   reason: string,
   sourceRunId: GitMemoryRunId,
+  context: ArtifactIdentityContext,
 ): GitMemoryTaskStateFileRecord[] {
   return unique(paths)
-    .map((path) => ({
+    .map((path) => taskStateFileRecord({
+      source: "agent_workspace",
+      kind: inferArtifactKind(path),
       path,
       role,
       reason,
       sourceRunId,
-    }));
+      lastTouchedRunId: sourceRunId,
+      confidence: "verified",
+    }, context));
+}
+
+function taskStateFilesFromAssets(
+  assets: TaskAssetRecord[],
+  sourceRunId: GitMemoryRunId,
+  context: ArtifactIdentityContext,
+): GitMemoryTaskStateFileRecord[] {
+  return assets
+    .map((asset) => taskStateFileRecord({
+      source: isUserAttachmentAsset(asset) ? "user_attachment" : "agent_workspace",
+      kind: asset.kind,
+      path: asset.path ?? asset.name,
+      originalName: asset.name,
+      role: asset.role === "generated" ? "generated" : "reference",
+      reason: asset.role === "generated" ? "generated task asset" : "task input asset",
+      sourceRunId,
+      ...(asset.role === "generated" ? { lastTouchedRunId: sourceRunId } : {}),
+      confidence: isUserAttachmentAsset(asset) ? "user_provided" : "verified",
+    }, context))
+    .filter((record, index, all) => all.findIndex((candidate) => candidate.path === record.path && candidate.source === record.source) === index);
+}
+
+interface ArtifactIdentityContext {
+  title: string;
+  objective: string;
+  sourceTurnSeq?: number;
+}
+
+function taskStateFileRecord(
+  input: {
+    source: GitMemoryTaskStateFileRecord["source"];
+    kind: string;
+    path: string;
+    originalName?: string;
+    mimeType?: string;
+    role: GitMemoryTaskStateFileRecord["role"];
+    reason: string;
+    sourceRunId: GitMemoryRunId;
+    lastTouchedRunId?: GitMemoryRunId;
+    confidence: GitMemoryTaskStateFileRecord["confidence"];
+  },
+  context: ArtifactIdentityContext,
+): GitMemoryTaskStateFileRecord {
+  const identity = buildArtifactIdentity({
+    path: input.path,
+    originalName: input.originalName,
+    kind: input.kind,
+    source: input.source,
+    title: context.title,
+    objective: context.objective,
+  });
+  return {
+    artifactId: stableArtifactId(input.source, input.path),
+    source: input.source,
+    kind: input.kind,
+    path: input.path,
+    ...(input.originalName ? { originalName: input.originalName } : {}),
+    ...(input.mimeType ? { mimeType: input.mimeType } : {}),
+    role: input.role,
+    identity,
+    status: "active",
+    reason: input.reason,
+    ...(input.role === "generated" || input.role === "modified" ? { createdByRunId: input.sourceRunId } : {}),
+    ...(input.lastTouchedRunId ? { lastTouchedRunId: input.lastTouchedRunId } : {}),
+    sourceRunId: input.sourceRunId,
+    ...(context.sourceTurnSeq ? { sourceTurnSeq: context.sourceTurnSeq } : {}),
+    confidence: input.confidence,
+  };
 }
 
 function mergeTaskStateFiles(
@@ -1795,9 +1895,151 @@ function mergeTaskStateFiles(
 ): GitMemoryTaskStateFileRecord[] {
   const files = new Map<string, GitMemoryTaskStateFileRecord>();
   for (const file of [...existing, ...incoming]) {
-    files.set(`${file.path}:${file.role}`, file);
+    const key = `${file.source}:${file.path}`;
+    const previous = files.get(key);
+    files.set(key, previous ? {
+      ...previous,
+      ...file,
+      artifactId: previous.artifactId || file.artifactId,
+      role: chooseTaskFileRole(previous.role, file.role),
+      reason: chooseTaskFileRole(previous.role, file.role) === previous.role ? previous.reason : file.reason,
+      createdByRunId: previous.createdByRunId ?? file.createdByRunId,
+      sourceRunId: file.sourceRunId ?? previous.sourceRunId,
+      lastTouchedRunId: file.lastTouchedRunId ?? previous.lastTouchedRunId,
+    } : file);
   }
   return [...files.values()];
+}
+
+function chooseTaskFileRole(
+  previous: GitMemoryTaskStateFileRecord["role"],
+  incoming: GitMemoryTaskStateFileRecord["role"],
+): GitMemoryTaskStateFileRecord["role"] {
+  return taskFileRolePriority(incoming) > taskFileRolePriority(previous) ? incoming : previous;
+}
+
+function taskFileRolePriority(role: GitMemoryTaskStateFileRecord["role"]): number {
+  switch (role) {
+    case "modified":
+      return 5;
+    case "created":
+      return 4;
+    case "generated":
+      return 3;
+    case "touched":
+      return 2;
+    case "reference":
+      return 1;
+  }
+}
+
+function taskStateFileSearchTerms(file: GitMemoryTaskStateFileRecord): string[] {
+  return [
+    file.path,
+    file.originalName ?? "",
+    file.identity.name,
+    file.identity.description,
+    file.identity.type,
+    ...file.identity.aliases,
+  ];
+}
+
+function buildArtifactIdentity(input: {
+  path: string;
+  originalName?: string;
+  kind: string;
+  source: GitMemoryTaskStateFileRecord["source"];
+  title: string;
+  objective: string;
+}): GitMemoryTaskStateFileRecord["identity"] {
+  const fileName = input.originalName?.trim() || basename(input.path);
+  const subject = taskSubject(input.title, input.objective);
+  const type = inferArtifactIdentityType(input.path, input.kind);
+  const label = artifactLabel(fileName, type, input.source);
+  const name = titleCase(`${subject} ${label}`.trim());
+  const aliases = unique([
+    fileName,
+    stripExtension(fileName),
+    label,
+    `${subject} ${label}`,
+    type.replace(/_/g, " "),
+    ...(input.source === "user_attachment" ? [`uploaded ${label}`, `attached ${label}`] : []),
+  ].flatMap((value) => [value, normalizeAlias(value)]));
+  return {
+    name,
+    type,
+    description: input.source === "user_attachment"
+      ? `User-provided ${label} for ${subject}.`
+      : `${label} for ${subject}.`,
+    aliases,
+  };
+}
+
+function taskSubject(title: string, objective: string): string {
+  const source = title.trim() || objective.trim() || "task";
+  return normalizeWords(source
+    .replace(/^(create|build|make|update|fix|implement|add|write|generate)\s+/i, "")
+    .replace(/\b(static|tiny|simple|new)\b/gi, " "))
+    || "task";
+}
+
+function artifactLabel(fileName: string, type: string, source: GitMemoryTaskStateFileRecord["source"]): string {
+  const stem = stripExtension(fileName).toLowerCase();
+  if (stem === "index" && type === "html_page") return "homepage";
+  if (["style", "styles", "main"].includes(stem) && type === "stylesheet") return "stylesheet";
+  if (stem.includes("logo")) return "logo";
+  if (type === "html_page") return `${normalizeWords(stem)} page`;
+  if (type === "stylesheet") return "stylesheet";
+  if (type === "script") return "script";
+  if (type === "image_asset") return source === "user_attachment" ? "image asset" : "image";
+  if (type === "directory") return `${normalizeWords(stem)} directory`;
+  return normalizeWords(stem) || "artifact";
+}
+
+function inferArtifactKind(path: string): string {
+  return extname(path) ? "file" : "directory";
+}
+
+function inferArtifactIdentityType(path: string, kind: string): string {
+  if (kind === "directory") return "directory";
+  const ext = extname(path).toLowerCase();
+  if ([".html", ".htm"].includes(ext)) return "html_page";
+  if (ext === ".css") return "stylesheet";
+  if ([".js", ".ts", ".jsx", ".tsx", ".mjs", ".cjs"].includes(ext)) return "script";
+  if ([".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg"].includes(ext)) return "image_asset";
+  if ([".json", ".csv", ".xlsx", ".xls", ".sqlite", ".db"].includes(ext)) return "data_file";
+  if ([".md", ".txt", ".pdf", ".doc", ".docx"].includes(ext)) return "document";
+  return "file";
+}
+
+function isUserAttachmentAsset(asset: TaskAssetRecord): boolean {
+  return asset.role === "input" || asset.role === "reference" || Boolean(asset.sessionAssetId);
+}
+
+function stableArtifactId(source: GitMemoryTaskStateFileRecord["source"], path: string): string {
+  return `artifact-${createHash("sha256").update(`${source}:${path}`).digest("hex").slice(0, 16)}`;
+}
+
+function stripExtension(value: string): string {
+  const extension = extname(value);
+  return extension ? value.slice(0, -extension.length) : value;
+}
+
+function titleCase(value: string): string {
+  return normalizeWords(value).replace(/\b[a-z]/g, (letter) => letter.toUpperCase());
+}
+
+function normalizeWords(value: string): string {
+  return value
+    .replace(/[_/-]+/g, " ")
+    .replace(/[^a-z0-9 ]+/gi, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
+}
+
+function normalizeAlias(value: string): string {
+  return normalizeWords(value);
 }
 
 function deriveTaskStateSearchTerms(input: {
@@ -2364,6 +2606,7 @@ async function readTaskSearchDocumentsFromDriver(
         updatedAt: state?.updatedAt ?? taskEntry.updatedAt,
         ...(state?.runs.latestRunId ? { latestRunId: state.runs.latestRunId } : notes.latestRunId ? { latestRunId: notes.latestRunId } : {}),
         ...(state?.context.importantFiles.length ? { files: state.context.importantFiles } : notes.files.length > 0 ? { files: notes.files } : {}),
+        ...(state?.memory.files.length ? { artifacts: state.memory.files.map(taskSearchArtifactFromStateFile) } : {}),
         ...(!state ? { missing: true } : {}),
       },
       notesMarkdown: notesMarkdown ?? "",
@@ -2373,6 +2616,20 @@ async function readTaskSearchDocumentsFromDriver(
   }
 
   return documents;
+}
+
+function taskSearchArtifactFromStateFile(record: GitMemoryTaskStateFileRecord): GitMemoryTaskSearchArtifact {
+  return {
+    artifactId: record.artifactId,
+    source: record.source,
+    kind: record.kind,
+    path: record.path,
+    ...(record.originalName ? { originalName: record.originalName } : {}),
+    role: record.role,
+    status: record.status,
+    identity: record.identity,
+    confidence: record.confidence,
+  };
 }
 
 function parseTaskNotesSearchFields(markdown: string): {
@@ -2673,30 +2930,61 @@ function scoreTaskSearchMatch(
   rawQuery: string,
   queryTokens: string[],
 ): GitMemoryTaskSearchMatch {
+  const scored = scoreGitMemoryTaskSearchDocument(document, rawQuery, queryTokens);
+  return {
+    ...document.task,
+    score: scored.score,
+    routeScore: scored.routeScore,
+    matchReasons: scored.matchReasons,
+    ...(scored.matchedArtifacts.length > 0 ? { matchedArtifacts: scored.matchedArtifacts } : {}),
+  };
+}
+
+export interface GitMemoryTaskSearchScore {
+  score: number;
+  routeScore: number;
+  matchReasons: string[];
+  matchedArtifacts: GitMemoryTaskSearchArtifact[];
+}
+
+export function scoreGitMemoryTaskSearchDocument(
+  document: {
+    task: GitMemoryTaskRoutingSnapshotTask;
+    notesMarkdown?: string;
+    recentWork?: string[];
+    searchTerms?: string[];
+  },
+  rawQuery: string,
+  queryTokens = tokenizeSearchText(rawQuery),
+): GitMemoryTaskSearchScore {
   const task = document.task;
   const reasons = new Set<string>();
+  const matchedArtifacts = new Map<string, GitMemoryTaskSearchArtifact>();
   let score = 0;
+  let routeScore = 0;
   const normalizedQuery = normalizeSearchText(rawQuery);
 
   const weightedFields: Array<{
     reason: string;
-    weight: number;
+    searchWeight: number;
+    routeSingleTokenScore: number;
+    routeMultiTokenScore: number;
     values: string[];
   }> = [
-    { reason: "taskId", weight: 18, values: [task.taskId] },
-    { reason: "branch", weight: 14, values: [task.branch] },
-    { reason: "title", weight: 12, values: [task.title] },
-    { reason: "objective", weight: 10, values: [task.objective] },
-    { reason: "summary", weight: 8, values: [task.summary] },
-    { reason: "next", weight: 7, values: [task.next] },
-    { reason: "facts", weight: 6, values: task.facts },
-    { reason: "files", weight: 11, values: task.files ?? [] },
-    { reason: "recentWork", weight: 8, values: document.recentWork },
-    { reason: "searchTerms", weight: 7, values: document.searchTerms },
-    { reason: "open", weight: 5, values: task.open },
-    { reason: "blockers", weight: 5, values: task.blockers },
-    { reason: "status", weight: 3, values: [task.status] },
-    { reason: "notes", weight: 2, values: [document.notesMarkdown] },
+    { reason: "taskId", searchWeight: 100, routeSingleTokenScore: 100, routeMultiTokenScore: 100, values: [task.taskId] },
+    { reason: "branch", searchWeight: 60, routeSingleTokenScore: 45, routeMultiTokenScore: 85, values: [task.branch] },
+    { reason: "title", searchWeight: 55, routeSingleTokenScore: 55, routeMultiTokenScore: 90, values: [task.title] },
+    { reason: "objective", searchWeight: 45, routeSingleTokenScore: 40, routeMultiTokenScore: 75, values: [task.objective] },
+    { reason: "files", searchWeight: 58, routeSingleTokenScore: 58, routeMultiTokenScore: 78, values: task.files ?? [] },
+    { reason: "summary", searchWeight: 30, routeSingleTokenScore: 30, routeMultiTokenScore: 60, values: [task.summary] },
+    { reason: "next", searchWeight: 28, routeSingleTokenScore: 28, routeMultiTokenScore: 58, values: [task.next] },
+    { reason: "facts", searchWeight: 26, routeSingleTokenScore: 26, routeMultiTokenScore: 62, values: task.facts },
+    { reason: "recentWork", searchWeight: 24, routeSingleTokenScore: 24, routeMultiTokenScore: 55, values: document.recentWork ?? [] },
+    { reason: "searchTerms", searchWeight: 22, routeSingleTokenScore: 22, routeMultiTokenScore: 55, values: document.searchTerms ?? [] },
+    { reason: "open", searchWeight: 20, routeSingleTokenScore: 20, routeMultiTokenScore: 72, values: task.open },
+    { reason: "blockers", searchWeight: 18, routeSingleTokenScore: 18, routeMultiTokenScore: 50, values: task.blockers },
+    { reason: "status", searchWeight: 5, routeSingleTokenScore: 5, routeMultiTokenScore: 5, values: [task.status] },
+    { reason: "notes", searchWeight: 4, routeSingleTokenScore: 4, routeMultiTokenScore: 20, values: [document.notesMarkdown ?? ""] },
   ];
 
   for (const field of weightedFields) {
@@ -2705,21 +2993,112 @@ function scoreTaskSearchMatch(
       continue;
     }
     if (normalizedQuery && fieldText.includes(normalizedQuery)) {
-      score += field.weight * 3;
+      score += queryTokens.length > 1 ? field.searchWeight * 3 : field.searchWeight;
+      routeScore = Math.max(routeScore, queryTokens.length > 1
+        ? field.routeMultiTokenScore
+        : field.routeSingleTokenScore);
       reasons.add(field.reason);
       continue;
     }
     const hits = queryTokens.filter((token) => fieldText.includes(token)).length;
     if (hits > 0) {
-      score += hits * field.weight;
+      score += hits * field.searchWeight;
+      routeScore = Math.max(routeScore, hits >= 2
+        ? field.routeMultiTokenScore
+        : field.routeSingleTokenScore);
       reasons.add(field.reason);
     }
   }
 
+  for (const artifact of task.artifacts ?? []) {
+    const artifactScore = scoreTaskSearchArtifact(artifact, normalizedQuery, queryTokens);
+    if (artifactScore.score <= 0) {
+      continue;
+    }
+    score += artifactScore.score;
+    routeScore = Math.max(routeScore, artifactScore.routeScore);
+    matchedArtifacts.set(artifact.artifactId, artifact);
+    for (const reason of artifactScore.reasons) {
+      reasons.add(reason);
+    }
+  }
+
   return {
-    ...task,
     score,
+    routeScore,
     matchReasons: [...reasons],
+    matchedArtifacts: [...matchedArtifacts.values()],
+  };
+}
+
+function scoreTaskSearchArtifact(
+  artifact: GitMemoryTaskSearchArtifact,
+  normalizedQuery: string,
+  queryTokens: string[],
+): { score: number; routeScore: number; reasons: string[] } {
+  let score = 0;
+  let routeScore = 0;
+  const reasons = new Set<string>();
+  const fields: Array<{
+    reason: string;
+    searchWeight: number;
+    routeSingleTokenScore: number;
+    routeMultiTokenScore: number;
+    values: string[];
+  }> = [
+    { reason: "artifactPath", searchWeight: 95, routeSingleTokenScore: 82, routeMultiTokenScore: 95, values: [artifact.path] },
+    { reason: "artifactFilename", searchWeight: 86, routeSingleTokenScore: 78, routeMultiTokenScore: 88, values: [basename(artifact.path)] },
+    { reason: "artifactOriginalName", searchWeight: 90, routeSingleTokenScore: 82, routeMultiTokenScore: 90, values: artifact.originalName ? [artifact.originalName] : [] },
+    { reason: "artifactIdentity", searchWeight: 88, routeSingleTokenScore: 70, routeMultiTokenScore: 88, values: [artifact.identity.name] },
+    { reason: "artifactAlias", searchWeight: 82, routeSingleTokenScore: 68, routeMultiTokenScore: 82, values: artifact.identity.aliases },
+    { reason: "artifactType", searchWeight: 20, routeSingleTokenScore: 20, routeMultiTokenScore: 40, values: [artifact.identity.type, artifact.kind, artifact.role] },
+    { reason: "artifactSource", searchWeight: 15, routeSingleTokenScore: 15, routeMultiTokenScore: 35, values: [artifact.source] },
+  ];
+
+  for (const field of fields) {
+    const fieldText = normalizeSearchText(field.values.join(" "));
+    if (!fieldText) {
+      continue;
+    }
+    if (normalizedQuery && fieldText.includes(normalizedQuery)) {
+      score += queryTokens.length > 1 ? field.searchWeight * 3 : field.searchWeight;
+      routeScore = Math.max(routeScore, queryTokens.length > 1
+        ? field.routeMultiTokenScore
+        : field.routeSingleTokenScore);
+      reasons.add(field.reason);
+      continue;
+    }
+    const hits = queryTokens.filter((token) => fieldText.includes(token)).length;
+    if (hits > 0) {
+      score += hits * field.searchWeight;
+      routeScore = Math.max(routeScore, hits >= 2
+        ? field.routeMultiTokenScore
+        : field.routeSingleTokenScore);
+      reasons.add(field.reason);
+    }
+  }
+
+  const hasSpecificAttachmentWord = queryTokens.some((token) => token === "uploaded" || token === "attachment" || token === "attached");
+  const hasUploadWord = queryTokens.includes("upload");
+  if (artifact.source === "user_attachment" && (hasSpecificAttachmentWord || hasUploadWord)) {
+    const identityText = normalizeSearchText([
+      artifact.originalName,
+      artifact.path,
+      artifact.identity.name,
+      ...artifact.identity.aliases,
+    ].filter(Boolean).join(" "));
+    const semanticHits = queryTokens.filter((token) => identityText.includes(token)).length;
+    if (semanticHits > 0 && (hasSpecificAttachmentWord || semanticHits >= 2)) {
+      score += 90 + semanticHits * 30;
+      routeScore = Math.max(routeScore, semanticHits >= 2 ? 95 : 85);
+      reasons.add("userAttachment");
+    }
+  }
+
+  return {
+    score,
+    routeScore,
+    reasons: [...reasons],
   };
 }
 

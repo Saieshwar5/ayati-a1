@@ -703,7 +703,9 @@ function isTaskRoutingWindowTool(tool: string): boolean {
 }
 
 function hasCompletedTaskRoutingWindowToolUse(state: LoopState): boolean {
-  return state.completedSteps.some((step) => (step.toolsUsed ?? []).some(isTaskRoutingResolutionTool));
+  return state.completedSteps.some((step) => {
+    return step.outcome !== "failed" && (step.toolsUsed ?? []).some(isTaskRoutingResolutionTool);
+  });
 }
 
 function isTaskRoutingResolutionTool(tool: string): boolean {

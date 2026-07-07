@@ -1218,6 +1218,32 @@ describe("GitMemoryDailySessionStore", () => {
     expect(taskState.memory.facts).toEqual(expect.arrayContaining([expect.objectContaining({
       text: "UploadServer validates multipart uploads.",
     })]));
+    expect(taskState.memory.files).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        source: "agent_workspace",
+        path: "ayati-main/src/server/upload-server.ts",
+        role: "modified",
+        status: "active",
+        identity: expect.objectContaining({
+          name: expect.stringContaining("Upload"),
+          type: "script",
+          aliases: expect.arrayContaining(["upload-server.ts"]),
+        }),
+        lastTouchedRunId: "R-20260628-0001",
+        confidence: "verified",
+      }),
+      expect.objectContaining({
+        source: "user_attachment",
+        path: "/tmp/upload.log",
+        originalName: "upload.log",
+        role: "reference",
+        identity: expect.objectContaining({
+          name: expect.stringContaining("Upload"),
+          aliases: expect.arrayContaining(["upload.log"]),
+        }),
+        confidence: "user_provided",
+      }),
+    ]));
     expect(JSON.parse(await driver.readFile(task.ref, gitMemoryTaskRunPath(task.taskId, run.runId)) ?? "{}"))
       .toMatchObject({
         runId: "R-20260628-0001",

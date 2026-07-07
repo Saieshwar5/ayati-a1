@@ -989,7 +989,18 @@ function evaluateCreateTaskPolicy(
   allowedNextActions: string[];
 } {
   const message = activeContext.pendingTurn?.text ?? "";
-  const matchedSignals = sameTaskContinuationSignals(activeContext, input, message);
+  const combined = [
+    message,
+    input.title,
+    input.objective,
+    input.reasonDetails ?? "",
+  ].join(" ");
+  const explicitNewTaskSignals = explicitNewTaskRequestSignals(combined);
+  const sameTaskSignals = sameTaskLanguageSignals(combined);
+  if (input.createReason !== "no_active_task" && explicitNewTaskSignals.length > 0 && sameTaskSignals.length === 0) {
+    return { allowed: true };
+  }
+  const matchedSignals = sameTaskContinuationSignals(activeContext, input, message, sameTaskSignals);
   if (matchedSignals.length > 0) {
     return {
       allowed: false,
@@ -1007,22 +1018,39 @@ function evaluateCreateTaskPolicy(
   return { allowed: true };
 }
 
+function explicitNewTaskRequestSignals(userMessage: string): string[] {
+  const normalized = normalizeRoutingText(userMessage);
+  if (!normalized) {
+    return [];
+  }
+  if (/\b(do not|dont|don t|without)\s+(create|start|open|make)\s+(a\s+)?new\s+task\b/.test(normalized)) {
+    return [];
+  }
+  const signals: string[] = [];
+  if (/\b(start|create|open|make|begin)\s+(a\s+)?new\s+task\b/.test(normalized)
+    || /\bnew\s+task\s+(to|for|about)\b/.test(normalized)) {
+    signals.push("explicit new task request");
+  }
+  if (/\b(start|create|open|begin)\s+(a\s+)?(separate|different)\s+(task|workstream|work stream)\b/.test(normalized)
+    || /\b(separate|different)\s+(task|workstream|work stream)\b/.test(normalized)) {
+    signals.push("explicit separate task request");
+  }
+  return signals;
+}
+
 function sameTaskContinuationSignals(
   activeContext: Awaited<ReturnType<GitMemoryRuntime["buildActiveContext"]>>,
   input: CreateTaskInput,
   userMessage: string,
+  existingSignals: string[] = [],
 ): string[] {
-  const signals: string[] = [];
+  const signals: string[] = [...existingSignals];
   const combined = normalizeRoutingText([
     userMessage,
     input.title,
     input.objective,
     input.reasonDetails ?? "",
   ].join(" "));
-  if (/\b(same|current|active|previous|existing|that|this)\b/.test(combined)
-    && /\b(update|change|edit|modify|refine|add|remove|delete|fix|continue|improve|rewrite)\b/.test(combined)) {
-    signals.push("same-task update language");
-  }
   if (/\b(active|current|previous|existing)\s+task\s+(is\s+)?(done|completed|complete)\b/.test(combined)
     || /\b(done|completed|complete)\s+(active|current|previous|existing)\s+task\b/.test(combined)) {
     signals.push("active task completion used as create-task reason");
@@ -1049,6 +1077,15 @@ function sameTaskContinuationSignals(
     }
   }
   return [...new Set(signals)];
+}
+
+function sameTaskLanguageSignals(input: string): string[] {
+  const combined = normalizeRoutingText(input);
+  if (/\b(same|current|active|previous|existing|that|this)\b/.test(combined)
+    && /\b(update|change|edit|modify|refine|add|remove|delete|fix|continue|improve|rewrite)\b/.test(combined)) {
+    return ["same-task update language"];
+  }
+  return [];
 }
 
 function routingTerms(input: string | string[]): Set<string> {

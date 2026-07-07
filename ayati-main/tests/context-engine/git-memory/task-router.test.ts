@@ -107,6 +107,48 @@ describe("GitMemoryTaskRouter", () => {
     });
   });
 
+  it("switches focus when an artifact identity matches another task", async () => {
+    const { store, router, sessionId } = await openedRouterStore();
+    const notesTask = await createTaskFromMessage(store, router, sessionId, "Build notes app", 1);
+    await store.commitTaskRun({
+      sessionId,
+      taskId: notesTask.taskId,
+      runId: "R-20260628-0001",
+      status: "completed",
+      completedAt: "2026-06-28T09:05:00+05:30",
+      conversationRefs: [{ fromSeq: 1, toSeq: 1 }],
+      summary: "Created the notes app stylesheet.",
+      changedFiles: ["src/notes/styles.css"],
+      state: {
+        status: "open",
+        summary: "Notes app stylesheet exists.",
+        open: ["Refine notes app styling."],
+        next: "Refine notes app styling.",
+      },
+    });
+    await createTaskFromMessage(store, router, sessionId, "Build tea stall website", 2);
+    const switchMessage = await store.appendConversationMessage({
+      sessionId,
+      role: "user",
+      text: "update the notes app stylesheet",
+      at: "2026-06-28T09:10:00+05:30",
+    });
+
+    const route = await router.route({
+      sessionId,
+      userMessage: switchMessage.text ?? "",
+      fromSeq: switchMessage.seq,
+      toSeq: switchMessage.seq,
+      at: "2026-06-28T09:10:01+05:30",
+    });
+
+    expect(route).toMatchObject({
+      status: "ready",
+      mode: "switch_to_existing_task",
+      taskId: notesTask.taskId,
+    });
+  });
+
   it("reopens a completed task when it is selected again", async () => {
     const { store, router, sessionId } = await openedRouterStore();
     const uploadTask = await createTaskFromMessage(store, router, sessionId, "Fix upload handling", 1);

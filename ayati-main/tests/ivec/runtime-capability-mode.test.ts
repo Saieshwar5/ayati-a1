@@ -304,6 +304,43 @@ describe("runtime capability modes", () => {
     ]);
   });
 
+  it("keeps active-task routing tools after a failed routing attempt", () => {
+    const current = state(gitContext({
+      status: "active",
+      ref: "refs/heads/task/T-1",
+      workId: "T-1",
+    }));
+    current.iteration = 2;
+    current.completedSteps.push({
+      step: 1,
+      outcome: "failed",
+      summary: "Task creation was rejected.",
+      newFacts: [],
+      artifacts: [],
+      toolsUsed: ["git_context_create_task_for_turn"],
+      toolSuccessCount: 0,
+      toolFailureCount: 1,
+    });
+    const mode = detectRuntimeCapabilityMode({ state: current });
+
+    expect(mode.name).toBe("active_task_ready");
+    expect(buildRuntimeCapabilityPromptContext(mode).routingWindow).toMatchObject({
+      open: true,
+      step: 2,
+      routingToolsAvailable: true,
+      expiresAfterThisDecision: true,
+    });
+    expect(filterToolsForRuntimeMode(mode, [
+      tool("git_context_create_task_for_turn"),
+      tool("git_context_activate_task_for_turn"),
+      tool("write_files"),
+    ]).map((entry) => entry.name)).toEqual([
+      "git_context_create_task_for_turn",
+      "git_context_activate_task_for_turn",
+      "write_files",
+    ]);
+  });
+
   it("omits routing-window timing once a work run exists", () => {
     const mode = detectRuntimeCapabilityMode({
       state: state(gitContext({
