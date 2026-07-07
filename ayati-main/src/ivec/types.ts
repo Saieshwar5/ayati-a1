@@ -20,7 +20,7 @@ import type {
   RunRecorder,
   SessionInputHandle,
 } from "../memory/types.js";
-import type { TaskAssetRecord } from "../context-engine/index.js";
+import type { GitMemoryStepRecord, TaskAssetRecord } from "../context-engine/index.js";
 import type { DocumentStore } from "../documents/document-store.js";
 import type { PreparedAttachmentRecord, PreparedAttachmentRegistry } from "../documents/prepared-attachment-registry.js";
 import type { ManagedDocumentManifest, PreparedAttachmentSummary } from "../documents/types.js";
@@ -121,6 +121,12 @@ export interface ToolObservation {
   availableActions?: ToolAvailableAction[];
 }
 
+export interface PromptToolCallStepRef {
+  runId: string;
+  step: number;
+  callId?: string;
+}
+
 export interface PromptToolCallContext {
   step: number;
   callId?: string;
@@ -133,6 +139,8 @@ export interface PromptToolCallContext {
   operationStatus?: ToolOperationStatus;
   artifacts?: ArtifactRef[];
   hasMore?: boolean;
+  stepRef?: PromptToolCallStepRef;
+  evidenceRef?: string;
   rawOutputChars?: number;
   outputTruncated?: boolean;
 }
@@ -156,6 +164,7 @@ export interface WorkState {
   blockers?: string[];
   verifiedFacts: string[];
   evidence: string[];
+  artifacts?: string[];
   taskNotes?: TaskNote[];
   nextStep?: string;
   userInputNeeded?: string;
@@ -335,7 +344,7 @@ export interface LoopConfig {
 }
 
 export const DEFAULT_LOOP_CONFIG: LoopConfig = {
-  maxIterations: 15,
+  maxIterations: 20,
   maxConsecutiveFailures: 5,
   maxTotalToolCallsPerStep: 4,
   maxSequentialToolCallsPerStep: 4,
@@ -411,6 +420,7 @@ export interface AgentLoopDeps {
   initialUserMessage?: string;
   uiContext?: AgentUiContext;
   onProgress?: OnProgressCallback;
+  recordTaskStep?: (record: GitMemoryStepRecord) => void;
   feedbackLedger?: AgentFeedbackLedger;
   config?: Partial<LoopConfig>;
   dataDir: string;

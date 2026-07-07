@@ -14,6 +14,7 @@ import type {
   GitMemoryRunId,
   GitMemoryRunStatus,
   GitMemorySessionId,
+  GitMemoryStepRecord,
   GitMemoryTaskId,
   GitMemoryTaskStatus,
 } from "./schema.js";
@@ -95,6 +96,7 @@ export function buildGitMemoryTaskRunCommitInput(
     ...(input.result.content.trim() ? { assistantResponse: input.result.content } : {}),
     actions: buildRunActions(input.result.completedSteps ?? [], input.at),
     evidence: buildRunEvidence(input.result.completedSteps ?? []),
+    ...(input.runId ? { steps: buildRunSteps(input.taskId, input.runId, input.result.completedSteps ?? [], input.at) } : {}),
     ...(input.result.taskAssets?.length ? { assets: input.result.taskAssets } : {}),
     toolCallCount: input.result.totalToolCalls,
     changedFiles: input.changedFiles ?? buildChangedFiles(input.result),
@@ -144,6 +146,55 @@ function buildRunActions(
     startedAt: at,
     completedAt: at,
     ...(step.evidenceSummary ? { evidenceRef: step.evidenceSummary } : {}),
+  }));
+}
+
+function buildRunSteps(
+  taskId: GitMemoryTaskId,
+  runId: GitMemoryRunId,
+  steps: HarnessStepSummaryForContext[],
+  at: string,
+): GitMemoryStepRecord[] {
+  return steps.map((step): GitMemoryStepRecord => ({
+    v: 1,
+    runId,
+    taskId,
+    step: step.step,
+    status: toActionStatus(step.outcome) === "failed"
+      ? "failed"
+      : toActionStatus(step.outcome) === "skipped"
+        ? "skipped"
+        : "completed",
+    completedAt: at,
+    summary: step.summary,
+    action: {
+      executionContract: step.executionContract,
+      toolsUsed: normalizeList(step.toolsUsed),
+    },
+    toolCalls: normalizeList(step.toolsUsed).map((tool) => ({
+      tool,
+      status: step.outcome === "failed" ? "failed" as const : "success" as const,
+      input: {},
+      ...(step.evidenceSummary ? { output: step.evidenceSummary } : {}),
+    })),
+    verification: {
+      passed: step.outcome === "success",
+      policy: "deterministic",
+      summary: step.summary,
+      ...(step.evidenceSummary ? { evidenceSummary: step.evidenceSummary } : {}),
+      evidenceItems: normalizeList(step.evidenceItems),
+      newFacts: normalizeList(step.newFacts),
+      artifacts: normalizeList(step.artifacts),
+      usedRawArtifacts: [],
+    },
+    facts: normalizeList([
+      ...step.newFacts,
+      ...(step.evidenceItems ?? []),
+    ]),
+    artifacts: normalizeList(step.artifacts),
+    ...(step.outputSize !== undefined ? { outputSize: step.outputSize } : {}),
+    ...(step.lineCount !== undefined ? { lineCount: step.lineCount } : {}),
+    ...(step.truncated !== undefined ? { truncated: step.truncated } : {}),
   }));
 }
 
@@ -214,6 +265,7 @@ function fallbackWorkState(result: GitMemoryHarnessRunResultForContext): Harness
     blockers: result.taskSummary?.blockers ?? [],
     verifiedFacts: result.taskSummary?.keyFacts ?? [],
     evidence: result.taskSummary?.evidence ?? [],
+    artifacts: buildChangedFiles(result),
     nextStep: result.taskSummary?.nextAction,
     userInputNeeded: result.taskSummary?.userInputNeeded,
   };

@@ -19,6 +19,8 @@ export type GitMemoryConversationKind = "message" | "feedback_question";
 export type GitMemoryTaskStatus = "open" | "in_progress" | "needs_user_input" | "blocked" | "done" | "abandoned";
 export type GitMemoryRunStatus = "completed" | "failed" | "blocked" | "needs_user_input";
 export type GitMemoryActionStatus = "completed" | "failed" | "skipped";
+export type GitMemoryTaskFactConfidence = "verified" | "observed" | "assumed";
+export type GitMemoryTaskFileRole = "created" | "modified" | "touched" | "reference" | "generated";
 export type GitMemoryCommitEventType =
   | "session_initialized"
   | "session_checkpointed"
@@ -97,15 +99,101 @@ export interface GitMemoryConversationSeqRange {
   toSeq: number;
 }
 
+export interface GitMemoryTaskStateFact {
+  text: string;
+  sourceRunId?: GitMemoryRunId;
+  sourceStep?: number;
+  confidence: GitMemoryTaskFactConfidence;
+}
+
+export interface GitMemoryTaskStateDecision {
+  text: string;
+  sourceRunId?: GitMemoryRunId;
+}
+
+export interface GitMemoryTaskStateEvidence {
+  summary: string;
+  sourceRunId?: GitMemoryRunId;
+  sourceStep?: number;
+  artifacts: string[];
+  facts: string[];
+}
+
+export type GitMemoryTaskArtifactSource = "user_attachment" | "agent_workspace";
+export type GitMemoryTaskArtifactStatus = "active" | "deleted" | "renamed" | "superseded";
+export type GitMemoryTaskArtifactConfidence = "user_provided" | "verified" | "inferred";
+
+export interface GitMemoryTaskArtifactIdentity {
+  name: string;
+  type: string;
+  description: string;
+  aliases: string[];
+}
+
+export interface GitMemoryTaskStateFileRecord {
+  artifactId: string;
+  source: GitMemoryTaskArtifactSource;
+  kind: string;
+  path: string;
+  originalName?: string;
+  mimeType?: string;
+  role: GitMemoryTaskFileRole;
+  identity: GitMemoryTaskArtifactIdentity;
+  status: GitMemoryTaskArtifactStatus;
+  reason?: string;
+  createdByRunId?: GitMemoryRunId;
+  lastTouchedRunId?: GitMemoryRunId;
+  sourceRunId?: GitMemoryRunId;
+  sourceTurnSeq?: number;
+  confidence: GitMemoryTaskArtifactConfidence;
+}
+
+export interface GitMemoryTaskStateRunSummary {
+  runId: GitMemoryRunId;
+  status: GitMemoryRunStatus;
+  summary: string;
+  outcome?: string;
+  completedAt?: string;
+  changedFiles: string[];
+  next?: string;
+}
+
 export interface GitMemoryTaskStateFile {
-  schemaVersion: 1;
+  schemaVersion: 2;
+  task: {
+    taskId: GitMemoryTaskId;
+    title: string;
+    objective: string;
+    branch: string;
+    createdAt: string;
+    updatedAt: string;
+  };
   status: GitMemoryTaskStatus;
   summary: string;
-  completed: string[];
-  open: string[];
-  blockers: string[];
-  facts: string[];
-  next: string;
+  progress: {
+    completed: string[];
+    open: string[];
+    blockers: string[];
+    next: string;
+  };
+  memory: {
+    facts: GitMemoryTaskStateFact[];
+    decisions: GitMemoryTaskStateDecision[];
+    evidence: GitMemoryTaskStateEvidence[];
+    files: GitMemoryTaskStateFileRecord[];
+    assets: TaskAssetRecord[];
+  };
+  runs: {
+    latestRunId?: GitMemoryRunId;
+    runIds: GitMemoryRunId[];
+    recent: GitMemoryTaskStateRunSummary[];
+  };
+  context: {
+    workingSummary: string;
+    importantFiles: string[];
+    searchTerms: string[];
+    warnings: string[];
+  };
   updatedAt: string;
 }
 
@@ -169,16 +257,74 @@ export interface GitMemoryEvidenceManifestRecord {
   source?: Record<string, unknown>;
 }
 
+export type GitMemoryStepStatus = "completed" | "failed" | "skipped";
+
+export interface GitMemoryStepToolCallRecord {
+  callId?: string;
+  tool: string;
+  status: "success" | "failed";
+  startedAt?: string;
+  completedAt?: string;
+  input: unknown;
+  output?: string;
+  rawOutputChars?: number;
+  outputTruncated?: boolean;
+  error?: string;
+  code?: string;
+  operationStatus?: string;
+  meta?: Record<string, unknown>;
+  result?: unknown;
+  artifacts?: unknown[];
+  verifiedFacts?: unknown[];
+  assertionResults?: unknown[];
+  observation?: unknown;
+}
+
+export interface GitMemoryStepVerificationRecord {
+  passed: boolean;
+  policy?: string;
+  method?: string;
+  executionStatus?: string;
+  validationStatus?: string;
+  summary: string;
+  evidenceSummary?: string;
+  evidenceItems: string[];
+  newFacts: string[];
+  artifacts: string[];
+  usedRawArtifacts: string[];
+  expectationCheckStatus?: string;
+  expectationCheckSummary?: string;
+}
+
+export interface GitMemoryStepRecord {
+  v: 1;
+  runId: GitMemoryRunId;
+  taskId: GitMemoryTaskId;
+  step: number;
+  status: GitMemoryStepStatus;
+  startedAt?: string;
+  completedAt: string;
+  summary: string;
+  decision?: Record<string, unknown>;
+  action?: Record<string, unknown>;
+  toolCalls: GitMemoryStepToolCallRecord[];
+  verification: GitMemoryStepVerificationRecord;
+  workStateAfter?: unknown;
+  facts: string[];
+  artifacts: string[];
+  outputSize?: number;
+  lineCount?: number;
+  truncated?: boolean;
+  failureType?: string;
+  blockedTargets?: string[];
+}
+
 export type ValidationResult<T> =
   | { ok: true; value: T }
   | { ok: false; errors: string[] };
 
 export function gitMemoryTaskDir(taskId: GitMemoryTaskId): string {
   return `tasks/${taskId}`;
-}
-
-export function gitMemoryTaskMarkdownPath(taskId: GitMemoryTaskId): string {
-  return `${gitMemoryTaskDir(taskId)}/task.md`;
 }
 
 export function gitMemoryTaskStatePath(taskId: GitMemoryTaskId): string {
@@ -193,12 +339,12 @@ export function gitMemoryTaskRunMarkdownPath(taskId: GitMemoryTaskId, runId: Git
   return `${gitMemoryTaskDir(taskId)}/runs/${runId}.md`;
 }
 
-export function gitMemoryTaskActionsPath(taskId: GitMemoryTaskId, runId: GitMemoryRunId): string {
-  return `${gitMemoryTaskDir(taskId)}/actions/${runId}.jsonl`;
+export function gitMemoryTaskStepsPath(taskId: GitMemoryTaskId, runId: GitMemoryRunId): string {
+  return `${gitMemoryTaskDir(taskId)}/steps/${runId}.jsonl`;
 }
 
-export function gitMemoryTaskEvidenceManifestPath(taskId: GitMemoryTaskId, runId: GitMemoryRunId): string {
-  return `${gitMemoryTaskDir(taskId)}/evidence/${runId}/manifest.jsonl`;
+export function gitMemoryTaskStepsStagingPath(taskId: GitMemoryTaskId, runId: GitMemoryRunId): string {
+  return `${gitMemoryTaskStepsPath(taskId, runId)}.tmp`;
 }
 
 export function gitMemoryTaskAssetsPath(taskId: GitMemoryTaskId): string {
@@ -207,10 +353,6 @@ export function gitMemoryTaskAssetsPath(taskId: GitMemoryTaskId): string {
 
 export function gitMemoryTaskNotesPath(taskId: GitMemoryTaskId): string {
   return `${gitMemoryTaskDir(taskId)}/notes.md`;
-}
-
-export function gitMemoryTaskContextPath(taskId: GitMemoryTaskId): string {
-  return `${gitMemoryTaskDir(taskId)}/context.md`;
 }
 
 export function gitMemoryTaskConversationDir(taskId: GitMemoryTaskId): string {
@@ -391,15 +533,46 @@ export function validateGitMemoryTaskStateFile(value: unknown): ValidationResult
   const errors: string[] = [];
   const record = requireRecord(value, "task state", errors);
   if (record) {
-    requireSchemaVersion(record, errors);
+    requireExactSchemaVersion(record, 2, errors);
+    const task = requireRecord(record["task"], "task", errors);
+    if (task) {
+      requireTaskId(task, "taskId", errors);
+      requireNonEmptyString(task, "title", errors);
+      requireNonEmptyString(task, "objective", errors);
+      requireNonEmptyString(task, "branch", errors);
+      requireNonEmptyString(task, "createdAt", errors);
+      requireNonEmptyString(task, "updatedAt", errors);
+    }
     requireTaskStatus(record, errors);
     requireNonEmptyString(record, "summary", errors);
-    requireOptionalNonEmptyString(record, "sessionStoreCommit", errors);
-    requireStringArray(record, "completed", errors);
-    requireStringArray(record, "open", errors);
-    requireStringArray(record, "blockers", errors);
-    requireStringArray(record, "facts", errors);
-    requireNonEmptyString(record, "next", errors);
+    const progress = requireRecord(record["progress"], "progress", errors);
+    if (progress) {
+      requireStringArray(progress, "completed", errors);
+      requireStringArray(progress, "open", errors);
+      requireStringArray(progress, "blockers", errors);
+      requireNonEmptyString(progress, "next", errors);
+    }
+    const memory = requireRecord(record["memory"], "memory", errors);
+    if (memory) {
+      validateTaskStateFacts(memory["facts"], errors);
+      validateTaskStateDecisions(memory["decisions"], errors);
+      validateTaskStateEvidence(memory["evidence"], errors);
+      validateTaskStateFiles(memory["files"], errors);
+      requireArray(memory, "assets", errors);
+    }
+    const runs = requireRecord(record["runs"], "runs", errors);
+    if (runs) {
+      requireOptionalRunId(runs, "latestRunId", errors);
+      validateRunIdArray(runs["runIds"], "runIds", errors);
+      validateTaskStateRunSummaries(runs["recent"], errors);
+    }
+    const context = requireRecord(record["context"], "context", errors);
+    if (context) {
+      requireNonEmptyString(context, "workingSummary", errors);
+      requireStringArray(context, "importantFiles", errors);
+      requireStringArray(context, "searchTerms", errors);
+      requireStringArray(context, "warnings", errors);
+    }
     requireNonEmptyString(record, "updatedAt", errors);
   }
   return validationResult(value, errors);
@@ -499,6 +672,12 @@ function requireRecord(value: unknown, label: string, errors: string[]): Record<
 function requireSchemaVersion(record: Record<string, unknown>, errors: string[]): void {
   if (record["schemaVersion"] !== GIT_MEMORY_SCHEMA_VERSION) {
     errors.push("schemaVersion must be 1.");
+  }
+}
+
+function requireExactSchemaVersion(record: Record<string, unknown>, version: number, errors: string[]): void {
+  if (record["schemaVersion"] !== version) {
+    errors.push(`schemaVersion must be ${version}.`);
   }
 }
 
@@ -659,6 +838,112 @@ function requireOptionalStringArray(record: Record<string, unknown>, field: stri
     return;
   }
   requireStringArray(record, field, errors);
+}
+
+function validateRunIdArray(value: unknown, field: string, errors: string[]): void {
+  if (!Array.isArray(value)) {
+    errors.push(`${field} must be an array.`);
+    return;
+  }
+  value.forEach((item, index) => {
+    if (!isGitMemoryRunId(item)) {
+      errors.push(`${field}[${index}] must be a valid git-memory run id.`);
+    }
+  });
+}
+
+function validateTaskStateFacts(value: unknown, errors: string[]): void {
+  if (!Array.isArray(value)) {
+    errors.push("facts must be an array.");
+    return;
+  }
+  value.forEach((item, index) => {
+    const fact = requireRecord(item, `facts[${index}]`, errors);
+    if (!fact) return;
+    requireNonEmptyString(fact, "text", errors);
+    requireOptionalRunId(fact, "sourceRunId", errors);
+    requireOptionalPositiveInteger(fact, "sourceStep", errors);
+    requireOneOf(fact, "confidence", ["verified", "observed", "assumed"], errors);
+  });
+}
+
+function validateTaskStateDecisions(value: unknown, errors: string[]): void {
+  if (!Array.isArray(value)) {
+    errors.push("decisions must be an array.");
+    return;
+  }
+  value.forEach((item, index) => {
+    const decision = requireRecord(item, `decisions[${index}]`, errors);
+    if (!decision) return;
+    requireNonEmptyString(decision, "text", errors);
+    requireOptionalRunId(decision, "sourceRunId", errors);
+  });
+}
+
+function validateTaskStateEvidence(value: unknown, errors: string[]): void {
+  if (!Array.isArray(value)) {
+    errors.push("evidence must be an array.");
+    return;
+  }
+  value.forEach((item, index) => {
+    const evidence = requireRecord(item, `evidence[${index}]`, errors);
+    if (!evidence) return;
+    requireNonEmptyString(evidence, "summary", errors);
+    requireOptionalRunId(evidence, "sourceRunId", errors);
+    requireOptionalPositiveInteger(evidence, "sourceStep", errors);
+    requireStringArray(evidence, "artifacts", errors);
+    requireStringArray(evidence, "facts", errors);
+  });
+}
+
+function validateTaskStateFiles(value: unknown, errors: string[]): void {
+  if (!Array.isArray(value)) {
+    errors.push("files must be an array.");
+    return;
+  }
+  value.forEach((item, index) => {
+    const file = requireRecord(item, `files[${index}]`, errors);
+    if (!file) return;
+    requireNonEmptyString(file, "artifactId", errors);
+    requireOneOf(file, "source", ["user_attachment", "agent_workspace"], errors);
+    requireNonEmptyString(file, "kind", errors);
+    requireNonEmptyString(file, "path", errors);
+    requireOptionalNonEmptyString(file, "originalName", errors);
+    requireOptionalNonEmptyString(file, "mimeType", errors);
+    requireOneOf(file, "role", ["created", "modified", "touched", "reference", "generated"], errors);
+    const identity = requireRecord(file["identity"], `files[${index}].identity`, errors);
+    if (identity) {
+      requireNonEmptyString(identity, "name", errors);
+      requireNonEmptyString(identity, "type", errors);
+      requireNonEmptyString(identity, "description", errors);
+      requireStringArray(identity, "aliases", errors);
+    }
+    requireOneOf(file, "status", ["active", "deleted", "renamed", "superseded"], errors);
+    requireOptionalNonEmptyString(file, "reason", errors);
+    requireOptionalRunId(file, "createdByRunId", errors);
+    requireOptionalRunId(file, "lastTouchedRunId", errors);
+    requireOptionalRunId(file, "sourceRunId", errors);
+    requireOptionalPositiveInteger(file, "sourceTurnSeq", errors);
+    requireOneOf(file, "confidence", ["user_provided", "verified", "inferred"], errors);
+  });
+}
+
+function validateTaskStateRunSummaries(value: unknown, errors: string[]): void {
+  if (!Array.isArray(value)) {
+    errors.push("recent must be an array.");
+    return;
+  }
+  value.forEach((item, index) => {
+    const run = requireRecord(item, `recent[${index}]`, errors);
+    if (!run) return;
+    requireRunId(run, "runId", errors);
+    requireOneOf(run, "status", ["completed", "failed", "blocked", "needs_user_input"], errors);
+    requireNonEmptyString(run, "summary", errors);
+    requireOptionalNonEmptyString(run, "outcome", errors);
+    requireOptionalNonEmptyString(run, "completedAt", errors);
+    requireStringArray(run, "changedFiles", errors);
+    requireOptionalNonEmptyString(run, "next", errors);
+  });
 }
 
 function requireDate(record: Record<string, unknown>, field: string, errors: string[]): void {

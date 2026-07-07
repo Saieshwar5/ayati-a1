@@ -1,8 +1,5 @@
 import type { GitMemoryWorktreeGitDriver } from "./git-driver.js";
 import { gitMemorySessionTasksRefPrefix } from "./custom-refs.js";
-import {
-  parseGitMemoryTaskMarkdown,
-} from "./task-markdown.js";
 import type {
   GitMemorySessionId,
   GitMemoryTaskId,
@@ -10,7 +7,6 @@ import type {
   GitMemoryTaskStatus,
 } from "./schema.js";
 import {
-  gitMemoryTaskMarkdownPath,
   gitMemoryTaskStatePath,
   isGitMemoryTaskId,
 } from "./schema.js";
@@ -63,21 +59,17 @@ async function readGitMemoryTaskEntriesFromRefs(
       continue;
     }
     const branch = parsed.branch ?? await resolveTaskBranchForTaskId(driver, parsed.taskId);
-    const [taskMarkdown, state] = await Promise.all([
-      driver.readFile(ref, gitMemoryTaskMarkdownPath(parsed.taskId)),
-      readRefJson<GitMemoryTaskStateFile>(driver, ref, gitMemoryTaskStatePath(parsed.taskId)),
-    ]);
-    const task = parseGitMemoryTaskMarkdown(taskMarkdown);
+    const state = await readRefJson<GitMemoryTaskStateFile>(driver, ref, gitMemoryTaskStatePath(parsed.taskId));
     entries.push({
       taskId: parsed.taskId,
       branch,
       ref,
-      title: task?.title ?? parsed.taskId,
-      objective: task?.objective ?? task?.title ?? parsed.taskId,
-      status: state?.status ?? task?.status ?? "open",
-      createdAt: task?.createdAt ?? "",
-      updatedAt: state?.updatedAt ?? task?.updatedAt ?? "",
-      ...(!task || !state ? { missing: true } : {}),
+      title: state?.task.title ?? parsed.taskId,
+      objective: state?.task.objective ?? parsed.taskId,
+      status: state?.status ?? "open",
+      createdAt: state?.task.createdAt ?? "",
+      updatedAt: state?.updatedAt ?? state?.task.updatedAt ?? "",
+      ...(!state ? { missing: true } : {}),
     });
   }
   return entries.sort((left, right) => left.taskId.localeCompare(right.taskId));

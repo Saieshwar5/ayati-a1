@@ -96,6 +96,15 @@ visible-tool budgets, so repair can always ask the model to create, activate,
 or clarify a task with a callable native tool. Once ownership is resolved or a
 real work run exists, those mutation tools are removed from the run surface.
 
+When an active task exists and no run id exists yet, normal work tools and the
+short routing window can be visible together. If the request belongs to the
+same active task, the model should call normal work tools directly; the runner
+asks the app runtime to allocate and bind the task run immediately before the
+first normal action executes. If the request is new, different, or ambiguous,
+the model may use the routing tools during the window. Unused routing tools
+expire after the routing window, and any normal work action creates the run and
+removes routing tools from the surface.
+
 After a routing tool succeeds, the runner refreshes the harness context into
 the returned real task run id, removes routing/search/create/switch tools for
 the rest of that run, and prepares normal work tools for the original user
@@ -103,7 +112,8 @@ message. This allows flows such as:
 
 ```text
 fresh request -> git_context_create_task_for_turn -> write_files -> final reply
-existing task -> git_context_activate_task_for_turn -> normal work tool -> final reply
+same active task -> write_files -> final reply
+different existing task -> git_context_activate_task_for_turn -> normal work tool -> final reply
 ```
 
 The model should not call a tool just to continue the already-active task;

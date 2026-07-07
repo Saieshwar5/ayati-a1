@@ -543,6 +543,7 @@ describe("executeAgentAction verification gates", () => {
       expect(result.verifyOutput.artifacts).toContain(outputPath);
       expect(result.nextWorkState.status).toBe("not_done");
       expect(result.nextWorkState.verifiedFacts.some((fact) => fact.includes("Read-back hash verified"))).toBe(true);
+      expect(result.nextWorkState.artifacts).toContain(outputPath);
       expect(existsSync(outputPath)).toBe(true);
     } finally {
       cleanup(runPath);

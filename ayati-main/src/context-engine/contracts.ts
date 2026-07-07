@@ -83,6 +83,31 @@ export interface TaskAssetRecord {
   path?: string;
 }
 
+export interface ContextTaskArtifactIdentity {
+  name: string;
+  type: string;
+  description: string;
+  aliases: string[];
+}
+
+export interface ContextTaskArtifactRecord {
+  artifactId: string;
+  source: "user_attachment" | "agent_workspace";
+  kind: string;
+  path: string;
+  originalName?: string;
+  mimeType?: string;
+  role: string;
+  identity: ContextTaskArtifactIdentity;
+  status: string;
+  reason?: string;
+  createdByRunId?: string;
+  lastTouchedRunId?: string;
+  sourceRunId?: string;
+  sourceTurnSeq?: number;
+  confidence: string;
+}
+
 export interface ContextTaskFact {
   text: string;
   source: string;
@@ -223,6 +248,7 @@ export interface ContextEngineMachineContext {
     next?: string;
     conversationMarkdownTail?: string;
     assets: TaskAssetRecord[];
+    artifacts?: ContextTaskArtifactRecord[];
     recentRuns: ContextTaskRunSummary[];
     recentCommits: ContextCommitSummary[];
     recentEvidence: ContextTaskEvidenceSummary[];
@@ -240,6 +266,7 @@ export interface HarnessWorkStateForContext {
   blockers?: string[];
   verifiedFacts: string[];
   evidence: string[];
+  artifacts?: string[];
   nextStep?: string;
   userInputNeeded?: string;
 }

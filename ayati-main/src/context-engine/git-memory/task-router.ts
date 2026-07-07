@@ -4,6 +4,7 @@ import type {
   GitMemoryTaskRoutingSnapshotTask,
   SelectGitMemoryTaskForTurnResult,
 } from "./session-store.js";
+import { scoreGitMemoryTaskSearchDocument } from "./session-store.js";
 import type {
   GitMemoryConversationSeqRange,
   GitMemoryRunId,
@@ -279,52 +280,11 @@ function resolveExplicitTaskId(
 }
 
 function scoreTaskCandidate(userMessage: string, task: GitMemoryTaskRoutingSnapshotTask): ScoredTaskCandidate {
-  const reasons: string[] = [];
-  let score = 0;
-  const messageTokens = tokenize(userMessage);
-  if (includesNormalizedPhrase(userMessage, task.title)) {
-    score = Math.max(score, 90);
-    reasons.push("task title matched");
-  }
-  const branchSlug = task.branch.replace(/^task\/W-\d{8}-\d{4}-?/, "").replace(/-/g, " ");
-  if (includesNormalizedPhrase(userMessage, branchSlug)) {
-    score = Math.max(score, 85);
-    reasons.push("branch slug matched");
-  }
-  if (includesNormalizedPhrase(userMessage, task.objective)) {
-    score = Math.max(score, 75);
-    reasons.push("task objective matched");
-  }
-  for (const item of task.open) {
-    if (includesNormalizedPhrase(userMessage, item)) {
-      score = Math.max(score, 72);
-      reasons.push("open work matched");
-    }
-  }
-  for (const fact of task.facts) {
-    if (includesNormalizedPhrase(userMessage, fact)) {
-      score = Math.max(score, 62);
-      reasons.push("task fact matched");
-    }
-  }
-
-  const titleOverlap = tokenOverlap(messageTokens, tokenize(task.title));
-  if (titleOverlap.length >= 2) {
-    score = Math.max(score, 70);
-    reasons.push(`task title tokens matched: ${titleOverlap.join(", ")}`);
-  } else if (titleOverlap.length === 1) {
-    score = Math.max(score, 55);
-    reasons.push(`task title token matched: ${titleOverlap[0]}`);
-  }
-
-  const objectiveOverlap = tokenOverlap(messageTokens, tokenize(task.objective));
-  if (objectiveOverlap.length >= 2) {
-    score = Math.max(score, 60);
-    reasons.push(`task objective tokens matched: ${objectiveOverlap.join(", ")}`);
-  }
+  const scored = scoreGitMemoryTaskSearchDocument({ task }, userMessage);
+  const reasons = scored.matchReasons.length > 0 ? scored.matchReasons : ["candidate matched"];
 
   return {
-    ...candidateToRouteCandidate(task, score, reasons.length > 0 ? reasons : ["candidate matched"]),
+    ...candidateToRouteCandidate(task, scored.routeScore, reasons),
     task,
   };
 }
@@ -443,26 +403,6 @@ function createNew(userMessage: string, reason: string): GitMemoryTaskRouteResol
   };
 }
 
-const STOP_WORDS = new Set([
-  "a",
-  "an",
-  "and",
-  "are",
-  "back",
-  "continue",
-  "do",
-  "for",
-  "go",
-  "it",
-  "on",
-  "please",
-  "resume",
-  "the",
-  "this",
-  "to",
-  "work",
-]);
-
 function normalizeText(value: string): string {
   return value
     .normalize("NFKD")
@@ -471,31 +411,6 @@ function normalizeText(value: string): string {
     .replace(/[^a-z0-9./_-]+/g, " ")
     .replace(/\s+/g, " ")
     .trim();
-}
-
-function tokenize(value: string): string[] {
-  const seen = new Set<string>();
-  const tokens: string[] = [];
-  for (const token of normalizeText(value).split(" ")) {
-    const cleaned = token.replace(/^[^a-z0-9]+|[^a-z0-9]+$/g, "");
-    if (cleaned.length < 2 || STOP_WORDS.has(cleaned) || seen.has(cleaned)) {
-      continue;
-    }
-    seen.add(cleaned);
-    tokens.push(cleaned);
-  }
-  return tokens;
-}
-
-function includesNormalizedPhrase(haystack: string, needle: string): boolean {
-  const normalizedHaystack = ` ${normalizeText(haystack)} `;
-  const normalizedNeedle = normalizeText(needle);
-  return normalizedNeedle.length > 0 && normalizedHaystack.includes(` ${normalizedNeedle} `);
-}
-
-function tokenOverlap(left: string[], right: string[]): string[] {
-  const rightSet = new Set(right);
-  return left.filter((token) => rightSet.has(token));
 }
 
 function deriveTitleFromMessage(message: string, maxLength = 80): string {

@@ -17,6 +17,10 @@ import {
   requiredRoutingMutationToolsForRuntimeMode,
   TASK_ROUTING_WINDOW_STEPS,
 } from "./runtime-capability-mode.js";
+import {
+  hasRecoverableCompactedRunToolCall,
+  RUN_STEP_RECOVERY_TOOL_NAME,
+} from "./run-tool-call-context.js";
 
 export interface ToolLoadRequest {
   query?: string;
@@ -297,6 +301,7 @@ export class ToolWorkingSetManager {
     context: ToolExecutionContext,
   ): ToolLoadRequest {
     const runState = this.getRunState(context);
+    const mode = detectRuntimeCapabilityMode({ state });
     if (runState.taskRouting.resolved) {
       return request;
     }
@@ -313,7 +318,6 @@ export class ToolWorkingSetManager {
     if (step < 1 || step > TASK_ROUTING_WINDOW_STEPS) {
       return request;
     }
-    const mode = detectRuntimeCapabilityMode({ state });
     const routingTools = isFreshSessionRoutingMode(mode)
       ? GIT_CONTEXT_FRESH_SESSION_ROUTING_TOOL_NAMES
       : TASK_ROUTING_WINDOW_TOOL_NAMES;
@@ -559,6 +563,10 @@ function buildDeterministicLoadRequest(state: LoopState): ToolLoadRequest {
   const toolNames = new Set<string>();
   const groups = new Set<string>();
 
+  if (hasRecoverableCompactedRunToolCall(state.toolContext?.toolCalls)) {
+    toolNames.add(RUN_STEP_RECOVERY_TOOL_NAME);
+  }
+
   if (/\b(find|search|where|locate)\b/.test(text)) {
     toolNames.add("inspect_paths");
     toolNames.add("find_files");
@@ -695,7 +703,9 @@ function isTaskRoutingWindowTool(tool: string): boolean {
 }
 
 function hasCompletedTaskRoutingWindowToolUse(state: LoopState): boolean {
-  return state.completedSteps.some((step) => (step.toolsUsed ?? []).some(isTaskRoutingResolutionTool));
+  return state.completedSteps.some((step) => {
+    return step.outcome !== "failed" && (step.toolsUsed ?? []).some(isTaskRoutingResolutionTool);
+  });
 }
 
 function isTaskRoutingResolutionTool(tool: string): boolean {

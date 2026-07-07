@@ -207,6 +207,33 @@ describe("ToolWorkingSetManager", () => {
     ]));
   });
 
+  it("preloads run-step recovery when compacted stepRef tool-call context exists", () => {
+    const catalog = new ToolCatalog([
+      skill("git-context", [
+        tool("git_context_read_run_step", "Recover full persisted step or tool-call data"),
+      ]),
+      skill("filesystem", [
+        tool("read_file", "Read file"),
+        tool("write_files", "Write files"),
+      ]),
+    ]);
+    const executor = createToolExecutor([]);
+    const manager = new ToolWorkingSetManager({ catalog, toolExecutor: executor, maxVisibleTools: 3 });
+    const context = { clientId: "c1", runId: "r1", sessionId: "s1", stepNumber: 6 };
+    const runState = state("continue implementation");
+    runState.runId = "r1";
+    runState.runClass = "task";
+    runState.toolContext = {
+      recent: [],
+      toolCalls: recoverableToolCalls(),
+    };
+
+    manager.prepareForDecision(runState, context);
+
+    expect(manager.listActive(context)).toContain("git_context_read_run_step");
+    expect(executor.list(context)).toContain("git_context_read_run_step");
+  });
+
   it("exposes git task-routing tools for the first two decision stages and then expires them", () => {
     const catalog = new ToolCatalog([
       skill("git-context", [
@@ -325,7 +352,7 @@ describe("ToolWorkingSetManager", () => {
     expect(executor.list(context)).toContain("git_context_ask_clarification_for_turn");
   });
 
-  it("uses the full routing window when an active task exists", () => {
+  it("uses the full routing window when an active task has an unbound pending turn", () => {
     const catalog = new ToolCatalog([
       skill("git-context", [
         tool("git_context_active"),
@@ -341,11 +368,11 @@ describe("ToolWorkingSetManager", () => {
     const manager = new ToolWorkingSetManager({ catalog, toolExecutor: executor, maxVisibleTools: 12 });
     const runState = state("continue the website");
     runState.harnessContext = createInitialHarnessContext({
-      contextEngine: contextEngineWithFocus({
+      contextEngine: contextEngineWithPendingTurn({
         status: "active",
         ref: "refs/heads/task/T-20260702-001-website",
         workId: "T-20260702-001",
-      }),
+      }, "unbound"),
     });
 
     manager.prepareForDecision(runState, { clientId: "c1", runId: "r1", sessionId: "s1", stepNumber: 1 });
@@ -361,7 +388,7 @@ describe("ToolWorkingSetManager", () => {
     ]);
   });
 
-  it("removes write and shell tools before an active task turn is bound to a work run", () => {
+  it("keeps mutation tools and routing-window tools available for active task continuation before run allocation", () => {
     const catalog = new ToolCatalog([
       skill("filesystem", [
         tool("find_files"),
@@ -400,24 +427,17 @@ describe("ToolWorkingSetManager", () => {
     const result = manager.prepareForDecision(runState, context);
     const active = manager.listActive(context);
 
-    expect(active).toEqual([
+    expect(active).toEqual(expect.arrayContaining([
       "find_files",
       "search_in_files",
       "read_file",
-      "git_context_active",
-      "git_context_list_tasks",
-      "git_context_search_tasks",
-      "git_context_read_task",
+      "write_file",
+      "write_files",
       "git_context_activate_task_for_turn",
       "git_context_create_task_for_turn",
       "git_context_ask_clarification_for_turn",
-    ]);
-    expect(active).not.toContain("write_file");
-    expect(active).not.toContain("write_files");
-    expect(active).not.toContain("create_directory");
-    expect(active).not.toContain("shell");
-    expect(active).not.toContain("shell_run_script");
-    expect(result.evicted).toEqual(expect.arrayContaining([
+    ]));
+    expect(result.evicted).not.toEqual(expect.arrayContaining([
       "write_file",
       "write_files",
     ]));
@@ -539,4 +559,70 @@ function contextEngineWithFocus(focus: ContextEngineMachineContext["focus"]): Co
     },
     focus,
   };
+}
+
+function contextEngineWithPendingTurn(
+  focus: ContextEngineMachineContext["focus"],
+  routingStatus: "unbound" | "bound" | "clarifying",
+): ContextEngineMachineContext {
+  return {
+    ...contextEngineWithFocus(focus),
+    pendingTurn: {
+      routingStatus,
+      fromSeq: 1,
+      toSeq: 1,
+      text: "continue the website",
+      at: "2026-07-07T08:00:00.000Z",
+    },
+  };
+}
+
+function recoverableToolCalls(): NonNullable<LoopState["toolContext"]>["toolCalls"] {
+  return [
+    {
+      step: 1,
+      callId: "call-old",
+      tool: "read_file",
+      input: { path: "src/old.ts" },
+      status: "success",
+      output: `old output ${"x".repeat(16_000)}`,
+      stepRef: { runId: "r1", step: 1, callId: "call-old" },
+    },
+    {
+      step: 2,
+      callId: "call-2",
+      tool: "read_file",
+      input: { path: "src/2.ts" },
+      status: "success",
+      output: `output 2 ${"x".repeat(16_000)}`,
+      stepRef: { runId: "r1", step: 2, callId: "call-2" },
+    },
+    {
+      step: 3,
+      callId: "call-3",
+      tool: "read_file",
+      input: { path: "src/3.ts" },
+      status: "success",
+      output: `output 3 ${"x".repeat(16_000)}`,
+      stepRef: { runId: "r1", step: 3, callId: "call-3" },
+    },
+    {
+      step: 4,
+      callId: "call-4",
+      tool: "read_file",
+      input: { path: "src/4.ts" },
+      status: "success",
+      output: "output 4",
+      stepRef: { runId: "r1", step: 4, callId: "call-4" },
+    },
+    {
+      step: 5,
+      callId: "call-5",
+      tool: "read_file",
+      input: { path: "src/5.ts" },
+      status: "success",
+      output: "output 5",
+      stepRef: { runId: "r1", step: 5, callId: "call-5" },
+    },
+  ];
 }

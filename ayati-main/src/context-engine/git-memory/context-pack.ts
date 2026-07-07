@@ -14,9 +14,8 @@ import {
   type GitMemoryDerivedTaskEntry,
   readGitMemoryTaskEntries,
 } from "./task-refs.js";
-import { parseGitMemoryTaskMarkdown } from "./task-markdown.js";
 import { parseGitMemorySessionSummary } from "./session-summary.js";
-import type { ContextSessionAttachments, ContextSessionMeta, ContextSessionSummary, TaskAssetRecord } from "../contracts.js";
+import type { ContextSessionAttachments, ContextSessionMeta, ContextSessionSummary, ContextTaskArtifactRecord, TaskAssetRecord } from "../contracts.js";
 import { GitMemoryWorktreeGitDriver, type GitMemoryLogEntry } from "./git-driver.js";
 import type { GitMemoryDailySessionStore } from "./session-store.js";
 import type {
@@ -27,6 +26,7 @@ import type {
   GitMemorySessionAttachmentRecord,
   GitMemorySessionId,
   GitMemorySessionMetaFile,
+  GitMemoryStepRecord,
   GitMemoryTaskAssetsFile,
   GitMemoryTaskId,
   GitMemoryTaskStateFile,
@@ -37,7 +37,6 @@ import {
   gitMemoryTaskDir,
   gitMemoryTaskAssetsPath,
   gitMemoryTaskConversationDir,
-  gitMemoryTaskMarkdownPath,
   gitMemoryTaskStatePath,
   gitMemorySessionStoreMessagesDir,
   gitMemorySessionStoreSummaryMarkdownPath,
@@ -177,6 +176,7 @@ export interface GitMemoryMachineContextPack {
     facts: string[];
     next: string;
     assets: TaskAssetRecord[];
+    artifacts?: ContextTaskArtifactRecord[];
     conversationMarkdownTail: string;
     recentRuns: GitMemoryRunFile[];
     recentEvidence: GitMemoryEvidenceManifestRecord[];
@@ -267,8 +267,7 @@ export class GitMemoryContextReader {
       };
     }
 
-    const [taskMarkdown, state, assets, conversationMarkdownTail, recentRuns, recentEvidence, recentCommits] = await Promise.all([
-      driver.readFile(ref, gitMemoryTaskMarkdownPath(taskEntry.taskId)),
+    const [state, assets, conversationMarkdownTail, recentRuns, recentEvidence, recentCommits] = await Promise.all([
       readRefJson<GitMemoryTaskStateFile>(driver, ref, gitMemoryTaskStatePath(taskEntry.taskId)),
       readTaskAssets(driver, ref, taskEntry.taskId),
       readTaskConversationMarkdownTail(driver, ref, input.sessionId, taskEntry.taskId, limits.conversationMarkdownCharLimit),
@@ -276,8 +275,7 @@ export class GitMemoryContextReader {
       readRecentEvidence(driver, ref, taskEntry.taskId, limits.evidenceLimit),
       readRecentCommits(driver, ref, limits.commitLogLimit),
     ]);
-    const task = parseGitMemoryTaskMarkdown(taskMarkdown);
-    if (!task || !state) {
+    if (!state) {
       return {
         session,
         focus: {
@@ -285,7 +283,7 @@ export class GitMemoryContextReader {
           taskId: taskEntry.taskId,
           branch: taskEntry.branch,
           ref,
-          reason: "focused task branch is missing task.md or state.json",
+          reason: "focused task branch is missing state.json",
         },
       };
     }
@@ -308,19 +306,49 @@ export class GitMemoryContextReader {
         ref,
         taskId: taskEntry.taskId,
         branch: taskEntry.branch,
-        title: task.title,
-        objective: task.objective,
+        title: state.task.title,
+        objective: state.task.objective,
         status: state.status,
         summary: state.summary,
-        completed: state.completed,
-        open: state.open,
-        blockers: state.blockers,
-        facts: state.facts,
-        next: state.next,
-        assets,
+        completed: state.progress.completed,
+        open: state.progress.open,
+        blockers: state.progress.blockers,
+        facts: state.memory.facts.map((fact) => fact.text),
+        next: state.progress.next,
+        assets: state.memory.assets.length > 0 ? state.memory.assets : assets,
+        artifacts: state.memory.files,
         conversationMarkdownTail,
-        recentRuns,
-        recentEvidence,
+        recentRuns: recentRuns.length > 0 ? recentRuns : state.runs.recent.map((run) => ({
+          schemaVersion: 1,
+          runId: run.runId,
+          taskId: taskEntry.taskId,
+          status: run.status,
+          startedAt: run.completedAt ?? state.updatedAt,
+          ...(run.completedAt ? { completedAt: run.completedAt } : {}),
+          conversationRefs: [],
+          summary: run.summary,
+          ...(run.outcome ? { outcome: run.outcome } : {}),
+          toolCallCount: 0,
+          changedFiles: run.changedFiles,
+          newFacts: [],
+          ...(run.next ? { next: run.next } : {}),
+        })),
+        recentEvidence: recentEvidence.length > 0 ? recentEvidence : state.memory.evidence.flatMap((record) => {
+          const sourceRunId = record.sourceRunId ?? state.runs.latestRunId;
+          if (!sourceRunId) return [];
+          return [{
+            v: 1,
+            runId: sourceRunId,
+            taskId: taskEntry.taskId,
+            ...(record.sourceStep ? { step: record.sourceStep } : {}),
+            tool: "state",
+            status: "completed",
+            summary: record.summary,
+            artifacts: record.artifacts,
+            facts: record.facts,
+            accessModes: ["state"],
+          } satisfies GitMemoryEvidenceManifestRecord];
+        }),
         recentCommits: recentCommits.map(toModelCommitSummary),
       },
     };
@@ -385,6 +413,18 @@ async function readRecentEvidence(
   taskId: GitMemoryTaskId,
   limit: number,
 ): Promise<GitMemoryEvidenceManifestRecord[]> {
+  const stepPrefix = `${gitMemoryTaskDir(taskId)}/steps`;
+  const stepPaths = (await driver.listTreePaths(ref, stepPrefix))
+    .filter((path) => path.endsWith(".jsonl"))
+    .sort();
+  const stepRecords: GitMemoryEvidenceManifestRecord[] = [];
+  for (const path of stepPaths) {
+    stepRecords.push(...parseJsonl<GitMemoryStepRecord>(await driver.readFile(ref, path)).map(stepToEvidenceRecord));
+  }
+  if (stepRecords.length > 0) {
+    return tail(stepRecords, limit);
+  }
+
   const prefix = `${gitMemoryTaskDir(taskId)}/evidence`;
   const paths = (await driver.listTreePaths(ref, prefix))
     .filter((path) => path.endsWith("/manifest.jsonl"))
@@ -394,6 +434,30 @@ async function readRecentEvidence(
     records.push(...parseJsonl<GitMemoryEvidenceManifestRecord>(await driver.readFile(ref, path)));
   }
   return tail(records, limit);
+}
+
+function stepToEvidenceRecord(step: GitMemoryStepRecord): GitMemoryEvidenceManifestRecord {
+  const tools = step.toolCalls.map((call) => call.tool).filter(Boolean);
+  return {
+    v: 1,
+    runId: step.runId,
+    taskId: step.taskId,
+    step: step.step,
+    tool: tools.length > 0 ? [...new Set(tools)].join(",") : "agent_step",
+    status: step.status === "failed" ? "failed" : step.status === "skipped" ? "skipped" : "completed",
+    summary: step.summary || step.verification.summary || step.verification.evidenceSummary || "Step completed.",
+    evidenceRef: step.verification.evidenceSummary ?? step.summary,
+    artifacts: step.artifacts,
+    facts: step.facts,
+    accessModes: ["step"],
+    ...(step.outputSize !== undefined ? { outputSize: step.outputSize } : {}),
+    ...(step.lineCount !== undefined ? { lineCount: step.lineCount } : {}),
+    ...(step.truncated !== undefined ? { truncated: step.truncated } : {}),
+    source: {
+      kind: "git-memory-step",
+      step: step.step,
+    },
+  };
 }
 
 async function readRecentCommits(

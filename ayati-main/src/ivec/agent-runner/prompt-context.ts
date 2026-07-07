@@ -1,4 +1,5 @@
 import type { ContextEngineMachineContext } from "../../context-engine/index.js";
+import type { TaskNote, WorkState } from "../types.js";
 import type { AgentContextPack } from "./context-pack.js";
 import type { RuntimeCapabilityPromptContext } from "./runtime-capability-mode.js";
 import type { AgentStateView } from "./state-view.js";
@@ -50,6 +51,7 @@ export interface PromptGitTaskContext {
     summary?: string;
   };
   assets: ContextEngineTaskContext["assets"];
+  artifacts?: ContextEngineTaskContext["artifacts"];
   activity: {
     recentRuns: ContextEngineTaskContext["recentRuns"];
     recentEvidence: ContextEngineTaskContext["recentEvidence"];
@@ -57,8 +59,22 @@ export interface PromptGitTaskContext {
 };
 
 export interface PromptRunContext {
-  status?: unknown;
+  status?: WorkState["status"];
+  workState?: PromptRunWorkStateContext;
   toolCalls?: unknown;
+}
+
+export interface PromptRunWorkStateContext {
+  status: WorkState["status"];
+  summary?: string;
+  openWork?: string[];
+  blockers?: string[];
+  verifiedFacts?: string[];
+  evidence?: string[];
+  artifacts?: string[];
+  taskNotes?: TaskNote[];
+  nextStep?: string;
+  userInputNeeded?: string;
 }
 
 export interface PromptHarnessContext {
@@ -181,6 +197,7 @@ function projectGitTaskForPrompt(
       ...(task.summary ? { summary: task.summary } : {}),
     },
     assets: task.assets,
+    ...(task.artifacts ? { artifacts: task.artifacts } : {}),
     activity: {
       recentRuns: task.recentRuns,
       recentEvidence: task.recentEvidence,
@@ -216,6 +233,7 @@ function compactRunContext(run: PromptRunContext | undefined): PromptRunContext 
   }
   const compacted: PromptRunContext = {
     ...(run.status ? { status: run.status } : {}),
+    ...(run.workState ? { workState: run.workState } : {}),
     ...(run.toolCalls ? { toolCalls: run.toolCalls } : {}),
   };
   return Object.keys(compacted).length > 0 ? compacted : undefined;

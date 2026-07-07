@@ -23,10 +23,20 @@ export function renderGitMemoryTaskNotes(input: RenderGitMemoryTaskNotesInput): 
   const latestRun = input.latestRun;
   const decisions = latestRun?.decisions ?? [];
   const updatedAt = input.updatedAt ?? input.state.updatedAt;
+  const completed = input.state.progress.completed;
+  const open = input.state.progress.open;
+  const blockers = input.state.progress.blockers;
+  const facts = input.state.memory.facts.map((fact) => fact.text);
+  const next = input.state.progress.next;
   const files = unique([
+    ...input.state.context.importantFiles,
     ...(input.files ?? []),
     ...(latestRun?.changedFiles ?? []),
   ]);
+  const artifactLines = input.state.memory.files.map((file) => {
+    const source = file.source === "user_attachment" ? "user attachment" : "agent workspace";
+    return `${file.identity.name} (${file.path}; ${source}; ${file.status})`;
+  });
   const recentWork = unique([
     ...(input.recentWork ?? []),
     ...(latestRun?.workPerformed ?? []),
@@ -39,11 +49,11 @@ export function renderGitMemoryTaskNotes(input: RenderGitMemoryTaskNotesInput): 
       input.objective,
       input.state.status || input.status,
       input.state.summary,
-      input.state.next,
-      ...input.state.completed,
-      ...input.state.open,
-      ...input.state.blockers,
-      ...input.state.facts,
+      next,
+      ...completed,
+      ...open,
+      ...blockers,
+      ...facts,
       ...decisions,
       ...files,
       ...recentWork,
@@ -69,17 +79,18 @@ export function renderGitMemoryTaskNotes(input: RenderGitMemoryTaskNotesInput): 
     "",
     input.state.summary,
     "",
-    renderMarkdownList("Completed", input.state.completed),
-    renderMarkdownList("Open Work", input.state.open),
-    renderMarkdownList("Blockers", input.state.blockers),
-    renderMarkdownList("Facts", input.state.facts),
+    renderMarkdownList("Completed", completed),
+    renderMarkdownList("Open Work", open),
+    renderMarkdownList("Blockers", blockers),
+    renderMarkdownList("Facts", facts),
     renderMarkdownList("Decisions", decisions),
     renderMarkdownList("Files", files),
+    renderMarkdownList("Artifacts", artifactLines),
     renderMarkdownList("Recent Work", recentWork),
     renderSearchTerms(searchTerms),
     "## Next",
     "",
-    input.state.next,
+    next,
     "",
   ].join("\n");
 }

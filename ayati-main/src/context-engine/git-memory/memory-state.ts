@@ -7,7 +7,7 @@ import type {
   GitMemoryPendingTurnContext,
   GitMemoryPendingWriteContext,
 } from "./context-pack.js";
-import type { ContextSessionAttachments, ContextSessionMeta, ContextSessionSummary, TaskAssetRecord } from "../contracts.js";
+import type { ContextSessionAttachments, ContextSessionMeta, ContextSessionSummary, ContextTaskArtifactRecord, TaskAssetRecord } from "../contracts.js";
 import { GitMemoryContextReader } from "./context-pack.js";
 import type {
   GitMemoryDailySessionStore,
@@ -41,6 +41,7 @@ export interface GitContextMemoryKnownTask {
 export interface GitContextMemoryActiveTask extends GitContextMemoryKnownTask {
   completed: string[];
   assets: TaskAssetRecord[];
+  artifacts: ContextTaskArtifactRecord[];
   conversationMarkdownTail: string;
   recentRuns: GitMemoryRunFile[];
   recentCommits: GitMemoryModelCommitSummary[];
@@ -143,6 +144,7 @@ export function buildGitMemoryContextPackFromMemoryState(
         facts: state.activeTask.facts,
         next: state.activeTask.next,
         assets: state.activeTask.assets,
+        ...((state.activeTask.artifacts?.length ?? 0) > 0 ? { artifacts: state.activeTask.artifacts } : {}),
         conversationMarkdownTail: state.activeTask.conversationMarkdownTail,
         recentRuns: state.activeTask.recentRuns,
         recentEvidence: state.activeTask.recentEvidence,
@@ -188,6 +190,7 @@ function toActiveTask(
     summary: task.summary,
     completed: task.completed,
     assets: task.assets,
+    artifacts: task.artifacts ?? [],
     conversationMarkdownTail: task.conversationMarkdownTail,
     open: task.open,
     blockers: task.blockers,

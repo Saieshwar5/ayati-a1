@@ -11,6 +11,7 @@ import {
   gitMemorySessionLatestRunRef,
   gitMemorySessionTaskRef,
   gitMemoryTaskLatestRunRef,
+  gitMemoryTaskStatePath,
   readGitMemoryCustomRef,
   writeGitMemoryCustomRef,
 } from "../../../src/context-engine/git-memory/index.js";
@@ -99,7 +100,7 @@ describe("git memory custom refs", () => {
     const driver = new GitMemoryWorktreeGitDriver(session.repoPath);
 
     expect(await driver.readFile(second.ref, `tasks/${first.taskId}/runs/R-20260628-0001.json`)).toBeNull();
-    expect(await driver.readFile(second.ref, `tasks/${second.taskId}/task.md`)).toContain("Review billing copy");
+    expect(await driver.readFile(second.ref, gitMemoryTaskStatePath(second.taskId))).toContain("Review billing copy");
     await expect(readGitMemoryCustomRef(driver, gitMemorySessionLatestBaseRef(session.sessionId)))
       .resolves.toBe(await driver.resolveRef(GIT_MEMORY_MAIN_REF));
   });

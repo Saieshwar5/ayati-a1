@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
-import { access, mkdir, readFile, unlink, writeFile } from "node:fs/promises";
+import { access, appendFile, mkdir, readFile, rm, unlink, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -106,6 +106,16 @@ export class GitMemoryWorktreeGitDriver {
       await mkdir(dirname(absolutePath), { recursive: true });
       await writeFile(absolutePath, content, "utf-8");
     }
+  }
+
+  async appendWorkingFile(path: string, content: string): Promise<void> {
+    const absolutePath = join(this.repoPath, path);
+    await mkdir(dirname(absolutePath), { recursive: true });
+    await appendFile(absolutePath, content, "utf-8");
+  }
+
+  async removeWorkingFile(path: string): Promise<void> {
+    await rm(join(this.repoPath, path), { force: true });
   }
 
   async commitFiles(input: GitMemoryCommitFilesInput): Promise<string> {

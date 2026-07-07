@@ -26,12 +26,19 @@ describe("git-context skill", () => {
     const askClarification = requiredTool(skill, "git_context_ask_clarification_for_turn");
 
     expect(createTask.inputSchema).toMatchObject({
-      required: ["title", "objective", "reason"],
+      required: ["title", "objective", "createReason"],
       properties: {
-        whyNotActiveTask: {
+        createReason: {
           type: "string",
+          enum: [
+            "no_active_task",
+            "explicit_user_requested_new_task",
+            "new_unrelated_goal",
+            "new_independent_artifact",
+            "separate_parallel_workstream",
+          ],
         },
-        separateTaskReason: {
+        reasonDetails: {
           type: "string",
         },
       },
@@ -241,13 +248,22 @@ describe("git-context skill", () => {
 
     expect(result.ok).toBe(true);
     const matches = (result.v2?.structuredContent as {
-      matches?: Array<{ taskId: string; files?: string[]; matchReasons: string[] }>;
+      matches?: Array<{
+        taskId: string;
+        files?: string[];
+        matchReasons: string[];
+        matchedArtifacts?: Array<{ path: string; identity: { name: string; aliases: string[] } }>;
+      }>;
     }).matches ?? [];
     expect(matches[0]).toMatchObject({
       taskId: prepared.uploadTask.taskId,
       files: ["ayati-main/src/server/upload-server.ts"],
     });
     expect(matches[0]?.matchReasons).toEqual(expect.arrayContaining(["files"]));
+    expect(matches[0]?.matchReasons).toEqual(expect.arrayContaining(["artifactPath", "artifactFilename"]));
+    expect(matches[0]?.matchedArtifacts?.[0]).toMatchObject({
+      path: "ayati-main/src/server/upload-server.ts",
+    });
   });
 
   it("filters search results by task status", async () => {
@@ -443,7 +459,8 @@ describe("git-context skill", () => {
       sessionId: pending.sessionId,
       title: "Bakery Website",
       objective: "Create a one page bakery website.",
-      reason: "The user started the first durable task in this session.",
+      createReason: "no_active_task",
+      reasonDetails: "The user started the first durable task in this session.",
     });
 
     expect(result.ok).toBe(true);
@@ -459,7 +476,7 @@ describe("git-context skill", () => {
     });
   });
 
-  it("rejects creating a new task while active task exists without separate-work justification", async () => {
+  it("rejects creating a new task with no_active_task while active task exists", async () => {
     const prepared = await prepareMultiTaskGitContextSession();
     const runtime = createGitMemoryRuntime({
       contextStoreDir: prepared.contextStoreDir,
@@ -481,23 +498,24 @@ describe("git-context skill", () => {
       sessionId: prepared.session.sessionId,
       title: "Calmer Website Refinement",
       objective: "Make the current website calmer and less salesy.",
-      reason: "User asked to refine the current website.",
+      createReason: "no_active_task",
+      reasonDetails: "User asked to refine the current website.",
     });
 
     expect(result.ok).toBe(false);
-    expect(result.error).toContain("Active git-context task");
+    expect(result.error).toContain("Cannot create a new task with createReason");
     expect(result.v2).toMatchObject({
-      code: "GIT_CONTEXT_CREATE_TASK_REQUIRES_SEPARATE_WORK",
+      code: "GIT_CONTEXT_CREATE_TASK_REASON_REJECTED",
       error: {
         category: "validation",
         retryable: true,
       },
       structuredContent: {
+        createReason: "no_active_task",
         activeTask: {
           taskId: prepared.reminderTask.taskId,
           title: "Fix reminder scheduling",
         },
-        missingOrWeakFields: ["whyNotActiveTask", "separateTaskReason"],
       },
     });
 
@@ -512,6 +530,90 @@ describe("git-context skill", () => {
         type: "task_routed",
       }),
     ]));
+  });
+
+  it("rejects creating a new task when the pending turn updates the active task", async () => {
+    const prepared = await prepareGitContextSession();
+    const runtime = createGitMemoryRuntime({
+      contextStoreDir: prepared.contextStoreDir,
+      timezone: "Asia/Kolkata",
+      agentId: "local",
+      store: prepared.store,
+    });
+    await runtime.prepareUserTurn({
+      userMessage: "Update the same upload handling work. Add another validation fix to the current upload handling files.",
+      at: "2026-06-28T11:12:00+05:30",
+    });
+    const skill = createGitContextSkill({
+      contextStoreDir: prepared.contextStoreDir,
+      gitMemoryRuntime: runtime,
+    });
+    const tool = requiredTool(skill, "git_context_create_task_for_turn");
+
+    const result = await tool.execute({
+      sessionId: prepared.session.sessionId,
+      title: "Update upload handling validation",
+      objective: "Update the same upload handling files with another validation fix.",
+      createReason: "new_independent_artifact",
+      reasonDetails: "The active task is already completed enough and this is a follow-up update.",
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.v2).toMatchObject({
+      code: "GIT_CONTEXT_CREATE_TASK_REASON_REJECTED",
+      structuredContent: {
+        createReason: "new_independent_artifact",
+        allowedCreateReasons: [],
+        activeTask: {
+          taskId: prepared.task.taskId,
+          title: "Fix upload handling",
+        },
+        allowedNextActions: expect.arrayContaining([
+          "Continue the active task with normal work tools instead of creating a task.",
+        ]),
+      },
+    });
+    expect((result.v2?.structuredContent as { matchedSignals?: string[] }).matchedSignals)
+      .toEqual(expect.arrayContaining(["same-task update language"]));
+  });
+
+  it("allows an explicit new task request even when terms overlap the active task", async () => {
+    const prepared = await prepareGitContextSession();
+    const runtime = createGitMemoryRuntime({
+      contextStoreDir: prepared.contextStoreDir,
+      timezone: "Asia/Kolkata",
+      agentId: "local",
+      store: prepared.store,
+    });
+    const pending = await runtime.prepareUserTurn({
+      userMessage: "Start a new task to create an upload handling status page. Make separate HTML and CSS files for it.",
+      at: "2026-06-28T11:14:00+05:30",
+    });
+    const skill = createGitContextSkill({
+      contextStoreDir: prepared.contextStoreDir,
+      gitMemoryRuntime: runtime,
+    });
+    const tool = requiredTool(skill, "git_context_create_task_for_turn");
+
+    const result = await tool.execute({
+      sessionId: prepared.session.sessionId,
+      title: "Upload handling status page",
+      objective: "Create an upload handling status page with separate HTML and CSS files.",
+      createReason: "explicit_user_requested_new_task",
+      reasonDetails: "The user explicitly asked to start a new task.",
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.v2?.structuredContent).toMatchObject({
+      status: "ready",
+      mode: "create_new_task",
+      taskId: "W-20260628-0002",
+      runId: "R-20260628-0003",
+      conversationRefs: [{ fromSeq: pending.userMessage.seq, toSeq: pending.userMessage.seq }],
+      createdTask: {
+        title: "Upload handling status page",
+      },
+    });
   });
 
   it("creates a separate new task while active task exists with justification", async () => {
@@ -536,9 +638,8 @@ describe("git-context skill", () => {
       sessionId: prepared.session.sessionId,
       title: "Fix notification digest",
       objective: "Investigate missing notification digest delivery.",
-      reason: "User started a different durable notification task.",
-      whyNotActiveTask: "The active task is reminder scheduling, but this turn is about notification digest delivery.",
-      separateTaskReason: "Notification digest delivery is a separate durable investigation with a different outcome.",
+      createReason: "new_unrelated_goal",
+      reasonDetails: "User started a different durable notification task.",
     });
 
     expect(result.ok).toBe(true);
@@ -726,7 +827,6 @@ describe("git-context skill", () => {
         commitLogLimit: 2,
         evidenceLimit: 1,
         conversationMarkdownCharLimit: 200,
-        taskMarkdownCharLimit: 2_000,
         runMarkdownCharLimit: 2_000,
       },
     });
@@ -742,7 +842,9 @@ describe("git-context skill", () => {
       },
       state: {
         status: "in_progress",
-        next: "Verify upload validation patch.",
+        progress: {
+          next: "Verify upload validation patch.",
+        },
       },
       assets: [{
         assetId: "asset-upload-log",
@@ -754,23 +856,15 @@ describe("git-context skill", () => {
         runId: "R-20260628-0002",
         summary: "Patched upload validation handling.",
       }],
-      taskMarkdown: expect.stringContaining("# Fix upload handling"),
       recentRunMarkdown: [{
         runId: "R-20260628-0002",
         path: "tasks/W-20260628-0001/runs/R-20260628-0002.md",
         markdown: expect.stringContaining("Patched upload validation handling."),
       }],
-      recentActions: [{
-        runId: "R-20260628-0002",
-        actions: [{
-          tool: "edit_file",
-          summary: "Patched upload validation branch.",
-        }],
-      }],
+      recentActions: [],
       recentEvidence: [{
         runId: "R-20260628-0002",
         taskId: "W-20260628-0001",
-        actionId: "ACT-20260628-000101",
         tool: "edit_file",
         summary: "Patched upload validation branch.",
         evidenceRef: "evidence/ACT-20260628-000101.txt",
@@ -778,7 +872,7 @@ describe("git-context skill", () => {
       conversationMarkdownTail: expect.stringContaining("Fix upload handling"),
     });
     expect((result.v2?.structuredContent as { recentRuns?: unknown[] }).recentRuns).toHaveLength(1);
-    expect((result.v2?.structuredContent as { recentActions?: unknown[] }).recentActions).toHaveLength(1);
+    expect((result.v2?.structuredContent as { recentActions?: unknown[] }).recentActions).toHaveLength(0);
     expect((result.v2?.structuredContent as { recentEvidence?: unknown[] }).recentEvidence).toHaveLength(1);
     const commits = (result.v2?.structuredContent as { recentCommits?: Array<{ subject?: string }> }).recentCommits ?? [];
     expect(commits).toHaveLength(2);
@@ -850,12 +944,98 @@ describe("git-context skill", () => {
       evidence: [{
         runId: "R-20260628-0002",
         taskId: "W-20260628-0001",
-        actionId: "ACT-20260628-000101",
         tool: "edit_file",
         summary: "Patched upload validation branch.",
         artifacts: ["ayati-main/src/server/upload-server.ts"],
         facts: ["Upload validation handles multipart MIME metadata."],
       }],
+    });
+    expect(await driver.log(GIT_MEMORY_MAIN_REF, 10)).toEqual(mainLogBefore);
+    expect(await driver.log(prepared.task.ref, 10)).toEqual(taskLogBefore);
+  });
+
+  it("reads a full staged run step by stepRef without mutating git-memory refs", async () => {
+    const prepared = await prepareGitContextSession();
+    const runId = "R-20260628-0099";
+    await prepared.store.appendTaskRunStep({
+      sessionId: prepared.session.sessionId,
+      taskId: prepared.task.taskId,
+      runId,
+      record: {
+        v: 1,
+        runId,
+        taskId: prepared.task.taskId,
+        step: 3,
+        status: "completed",
+        completedAt: "2026-06-28T09:30:00+05:30",
+        summary: "Recovered full upload server output.",
+        toolCalls: [{
+          callId: "call-read-upload",
+          tool: "read_file",
+          status: "success",
+          input: {
+            path: "ayati-main/src/server/upload-server.ts",
+            range: [1, 120],
+          },
+          output: "full upload server implementation output\nline 2\nline 3",
+          rawOutputChars: 4_200,
+          outputTruncated: false,
+          observation: {
+            evidenceRef: "steps/R-20260628-0099.jsonl#call-read-upload",
+          },
+        }],
+        verification: {
+          passed: true,
+          method: "execution_gate",
+          executionStatus: "all_succeeded",
+          validationStatus: "passed",
+          summary: "Read succeeded.",
+          evidenceSummary: "steps/R-20260628-0099.jsonl#step-3",
+          evidenceItems: ["Read upload server implementation."],
+          newFacts: ["Upload server output was recovered."],
+          artifacts: ["ayati-main/src/server/upload-server.ts"],
+          usedRawArtifacts: [],
+        },
+        facts: ["Upload server output was recovered."],
+        artifacts: ["ayati-main/src/server/upload-server.ts"],
+        outputSize: 4_200,
+        lineCount: 120,
+        truncated: false,
+      },
+    });
+    const driver = new GitMemoryWorktreeGitDriver(prepared.session.repoPath);
+    const mainLogBefore = await driver.log(GIT_MEMORY_MAIN_REF, 10);
+    const taskLogBefore = await driver.log(prepared.task.ref, 10);
+    const skill = createGitContextSkill({ contextStoreDir: prepared.contextStoreDir });
+    const tool = requiredTool(skill, "git_context_read_run_step");
+
+    const result = await tool.execute({
+      sessionId: prepared.session.sessionId,
+      runId,
+      step: 3,
+      callId: "call-read-upload",
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.v2?.structuredContent).toMatchObject({
+      sessionId: prepared.session.sessionId,
+      taskId: prepared.task.taskId,
+      branch: prepared.task.branch,
+      runId,
+      step: 3,
+      source: "staged",
+      record: {
+        summary: "Recovered full upload server output.",
+        toolCalls: [{
+          callId: "call-read-upload",
+          output: "full upload server implementation output\nline 2\nline 3",
+        }],
+      },
+      toolCall: {
+        callId: "call-read-upload",
+        tool: "read_file",
+        output: "full upload server implementation output\nline 2\nline 3",
+      },
     });
     expect(await driver.log(GIT_MEMORY_MAIN_REF, 10)).toEqual(mainLogBefore);
     expect(await driver.log(prepared.task.ref, 10)).toEqual(taskLogBefore);

@@ -48,7 +48,7 @@ describe("repair policy", () => {
       },
     });
     expect(signal.allowedNextActions).toEqual([
-      "Call git_context_create_task_for_turn with title, objective, and reason.",
+      "Call git_context_create_task_for_turn with title, objective, and createReason \"no_active_task\".",
       "Ask a short clarification if the request is unclear.",
     ]);
   });
@@ -58,8 +58,8 @@ describe("repair policy", () => {
       severity: "error",
       source: "decision.input_schema.native",
       message: "Missing required fields for git_context_create_task_for_turn.",
-      missingFields: ["title", "objective", "reason"],
-      allowedNextActions: ["Call git_context_create_task_for_turn again with title, objective, and reason."],
+      missingFields: ["title", "objective", "createReason"],
+      allowedNextActions: ["Call git_context_create_task_for_turn again with title, objective, and createReason."],
     });
 
     expect(signal).toMatchObject({
@@ -67,15 +67,15 @@ describe("repair policy", () => {
       severity: "error",
       source: "decision.input_schema.native",
       message: "Missing required fields for git_context_create_task_for_turn.",
-      missingFields: ["title", "objective", "reason"],
-      allowedNextActions: ["Call git_context_create_task_for_turn again with title, objective, and reason."],
+      missingFields: ["title", "objective", "createReason"],
+      allowedNextActions: ["Call git_context_create_task_for_turn again with title, objective, and createReason."],
     });
   });
 
   it("formats a compact model-facing prompt card", () => {
     const signal = createRepairSignal("R_TOOL_INPUT_MISSING_REQUIRED_FIELD", {
       blockedTargets: ["git_context_create_task_for_turn"],
-      missingFields: ["title", "objective", "reason"],
+      missingFields: ["title", "objective", "createReason"],
       operatorDetails: {
         attempt: 1,
         inputKeys: ["taskCompletion"],
@@ -86,13 +86,13 @@ describe("repair policy", () => {
       code: "R_TOOL_INPUT_MISSING_REQUIRED_FIELD",
       message: "The selected tool input is missing required fields.",
       blockedTargets: ["git_context_create_task_for_turn"],
-      missingFields: ["title", "objective", "reason"],
+      missingFields: ["title", "objective", "createReason"],
       allowedNextActions: ["Call the selected tool again with the missing required fields."],
     });
 
     const promptText = repairSignalToPromptText(signal);
     expect(promptText).toContain("Repair code: R_TOOL_INPUT_MISSING_REQUIRED_FIELD");
-    expect(promptText).toContain("Missing fields: title, objective, reason");
+    expect(promptText).toContain("Missing fields: title, objective, createReason");
     expect(promptText).not.toContain("operatorDetails");
     expect(promptText).not.toContain("taskCompletion");
   });
@@ -150,4 +150,3 @@ describe("repair policy", () => {
     });
   });
 });
-

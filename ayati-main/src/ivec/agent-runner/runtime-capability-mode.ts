@@ -21,6 +21,7 @@ import type { RepairCode } from "./repair-policy.js";
 
 export type RuntimeCapabilityModeName =
   | "task_run"
+  | "active_task_ready"
   | "fresh_session_routing"
   | "pre_task_routing"
   | "session_only";
@@ -88,7 +89,7 @@ const FRESH_SESSION_ROUTING_RULES = [
   "Create a task only when the current user request has a concrete deliverable and enough detail to begin work now.",
   "Do not create a task for early conversation, brainstorming, vague intent, preferences, or discovery. Reply directly with one short clarifying question.",
   "A concrete deliverable means the user has specified what to make, change, analyze, or produce, and the expected output is clear enough to start without another user answer.",
-  "For clear durable work with no active task, call git_context_create_task_for_turn with title, objective, and reason. If an active task exists, create a new task only for clearly separate work and include whyNotActiveTask plus separateTaskReason.",
+  "For clear durable work with no active task, call git_context_create_task_for_turn with title, objective, and createReason \"no_active_task\". If an active task exists, same-task continuation should use normal work tools directly; create a new task only for valid separate work with createReason \"explicit_user_requested_new_task\", \"new_unrelated_goal\", \"new_independent_artifact\", or \"separate_parallel_workstream\".",
   "Never print task metadata JSON as the assistant response. Put task metadata in the native tool call arguments.",
 ];
 
@@ -162,6 +163,24 @@ export function detectRuntimeCapabilityMode(input: {
     };
   }
 
+  if (focusStatus === "active") {
+    return {
+      ...common,
+      name: "active_task_ready",
+      whyActive: "An active task exists and a task run can be created automatically before normal work tools execute.",
+      allowedActions: [
+        "direct_reply",
+        "decision_load_tools",
+        "normal_work_tools",
+        ...GIT_CONTEXT_READ_ONLY_TOOL_NAMES,
+        ...GIT_CONTEXT_TURN_ROUTING_TOOL_NAMES,
+      ],
+      blockedCapabilities: [],
+      next: "Use normal work tools to continue the active task, or use routing tools within the short routing window only when the turn belongs to a new or different task.",
+      allowToolLoading: true,
+    };
+  }
+
   return {
     ...common,
     name: "session_only",
@@ -193,11 +212,18 @@ export function isFreshSessionRoutingMode(mode: RuntimeCapabilityMode): boolean 
 export function isRuntimeToolAllowed(mode: RuntimeCapabilityMode, toolName: string): boolean {
   const taxonomy = getToolTaxonomy(toolName);
   if (!taxonomy) {
-    return mode.name === "task_run" || mode.hasWorkRun;
+    return mode.name === "task_run" || mode.name === "active_task_ready" || mode.hasWorkRun;
   }
 
   if (mode.name === "task_run" || mode.hasWorkRun) {
     return !isTaskRoutingMutation(taxonomy);
+  }
+
+  if (mode.name === "active_task_ready") {
+    if (isTaskRoutingMutation(taxonomy)) {
+      return Boolean(mode.routingWindow?.open) && taxonomy.canRunBeforeTask;
+    }
+    return true;
   }
 
   if (mode.pendingTurnStatus === "clarifying") {
@@ -220,7 +246,7 @@ export function filterToolsForRuntimeMode(mode: RuntimeCapabilityMode, tools: To
 }
 
 export function runtimeToolPhase(mode: RuntimeCapabilityMode, selectedToolCount = 0): ToolPhase {
-  if (mode.name === "task_run" || mode.hasWorkRun) {
+  if (mode.name === "task_run" || mode.name === "active_task_ready" || mode.hasWorkRun) {
     return "task_run";
   }
   if (mode.name === "fresh_session_routing" || mode.name === "pre_task_routing" || mode.routingWindow?.open) {
@@ -332,7 +358,8 @@ function buildRuntimeRoutingWindow(
   }
   const step = Math.max(1, state.iteration || 1);
   const routingResolved = state.completedSteps.some((completedStep) => {
-    return (completedStep.toolsUsed ?? []).some(isGitContextTurnRoutingToolName);
+    return completedStep.outcome !== "failed"
+      && (completedStep.toolsUsed ?? []).some(isGitContextTurnRoutingToolName);
   });
   const open = !routingResolved && step <= TASK_ROUTING_WINDOW_STEPS;
   const remaining = open ? Math.max(0, TASK_ROUTING_WINDOW_STEPS - step) : 0;

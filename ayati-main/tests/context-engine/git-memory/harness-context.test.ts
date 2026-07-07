@@ -286,6 +286,21 @@ describe("buildGitMemoryHarnessContextPack", () => {
           name: "upload.log",
           path: "/tmp/upload.log",
         }],
+        artifacts: expect.arrayContaining([
+          expect.objectContaining({
+            source: "agent_workspace",
+            path: "ayati-main/src/server/upload-server.ts",
+            identity: expect.objectContaining({
+              type: "script",
+              aliases: expect.arrayContaining(["upload-server.ts"]),
+            }),
+          }),
+          expect.objectContaining({
+            source: "user_attachment",
+            path: "/tmp/upload.log",
+            originalName: "upload.log",
+          }),
+        ]),
         recentRuns: [{
           runId: "R-20260628-0001",
           workId: task.taskId,
@@ -310,19 +325,12 @@ describe("buildGitMemoryHarnessContextPack", () => {
           evidenceRef: "evidence/read-upload-server.txt",
           artifacts: ["ayati-main/src/server/upload-server.ts"],
           facts: ["Upload route validates MIME type."],
-          accessModes: ["summary"],
+          accessModes: ["step"],
           outputSize: 1200,
           lineCount: 80,
           truncated: false,
           source: {
-            kind: "tool-output",
-            toolCalls: [{
-              kind: "tool-output",
-              tool: "read_file",
-              callId: "call-read-upload",
-              filePath: "ayati-main/src/server/upload-server.ts",
-              rawOutputPath: "raw/001-call-read-upload-read_file.txt",
-            }],
+            kind: "git-memory-step",
           },
         }],
       },

@@ -222,4 +222,85 @@ describe("selectToolsForDecision", () => {
       tool("shell", 100),
     ], 12)).toEqual([]);
   });
+
+  it("selects run-step recovery outside the cap when compacted stepRef tool-call context exists", () => {
+    const current = state("continue implementation");
+    current.toolContext = {
+      recent: [],
+      toolCalls: recoverableToolCalls(),
+    };
+
+    const selected = selectToolsForDecision(current, [
+      tool("write_files", 100),
+      tool("read_file", 90),
+      tool("git_context_read_run_step", 0),
+    ], 1);
+
+    expect(selected.map((entry) => entry.name)).toEqual([
+      "write_files",
+      "git_context_read_run_step",
+    ]);
+  });
+
+  it("does not select run-step recovery when no compacted stepRef tool-call context exists", () => {
+    const current = state("continue implementation");
+
+    const selected = selectToolsForDecision(current, [
+      tool("write_files", 100),
+      tool("read_file", 90),
+      tool("git_context_read_run_step", 0),
+    ], 1);
+
+    expect(selected.map((entry) => entry.name)).toEqual(["write_files"]);
+  });
 });
+
+function recoverableToolCalls(): NonNullable<LoopState["toolContext"]>["toolCalls"] {
+  return [
+    {
+      step: 1,
+      callId: "call-old",
+      tool: "read_file",
+      input: { path: "src/old.ts" },
+      status: "success",
+      output: `old output ${"x".repeat(16_000)}`,
+      stepRef: { runId: "run-1", step: 1, callId: "call-old" },
+    },
+    {
+      step: 2,
+      callId: "call-2",
+      tool: "read_file",
+      input: { path: "src/2.ts" },
+      status: "success",
+      output: `output 2 ${"x".repeat(16_000)}`,
+      stepRef: { runId: "run-1", step: 2, callId: "call-2" },
+    },
+    {
+      step: 3,
+      callId: "call-3",
+      tool: "read_file",
+      input: { path: "src/3.ts" },
+      status: "success",
+      output: `output 3 ${"x".repeat(16_000)}`,
+      stepRef: { runId: "run-1", step: 3, callId: "call-3" },
+    },
+    {
+      step: 4,
+      callId: "call-4",
+      tool: "read_file",
+      input: { path: "src/4.ts" },
+      status: "success",
+      output: "output 4",
+      stepRef: { runId: "run-1", step: 4, callId: "call-4" },
+    },
+    {
+      step: 5,
+      callId: "call-5",
+      tool: "read_file",
+      input: { path: "src/5.ts" },
+      status: "success",
+      output: "output 5",
+      stepRef: { runId: "run-1", step: 5, callId: "call-5" },
+    },
+  ];
+}

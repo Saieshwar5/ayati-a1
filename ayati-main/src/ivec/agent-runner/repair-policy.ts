@@ -175,7 +175,7 @@ export const REPAIR_CODE_CATALOG: Readonly<Record<RepairCode, RepairCatalogEntry
     source: "runner.guard",
     message: "No active task exists yet. Normal work tools cannot run before task creation.",
     allowedNextActions: [
-      "Call git_context_create_task_for_turn with title, objective, and reason.",
+      "Call git_context_create_task_for_turn with title, objective, and createReason \"no_active_task\".",
       "Ask a short clarification if the request is unclear.",
     ],
     modelFacing: true,

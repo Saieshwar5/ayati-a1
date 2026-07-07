@@ -18,14 +18,14 @@ import {
   gitMemorySessionStoreSchemaPath,
   gitMemorySessionStoreSummaryMarkdownPath,
   gitMemorySessionStoreSummaryMetaPath,
-  gitMemoryTaskActionsPath,
   gitMemoryTaskAssetsPath,
   gitMemoryTaskConversationMessagePath,
-  gitMemoryTaskEvidenceManifestPath,
-  gitMemoryTaskMarkdownPath,
+  gitMemoryTaskDir,
   gitMemoryTaskNotesPath,
   gitMemoryTaskRunMarkdownPath,
   gitMemoryTaskRunPath,
+  gitMemoryTaskStepsPath,
+  gitMemoryTaskStepsStagingPath,
   gitMemoryTaskStatePath,
   parseGitMemoryCommitTrailers,
 } from "../../../src/context-engine/git-memory/index.js";
@@ -657,14 +657,30 @@ describe("GitMemoryDailySessionStore", () => {
     expect(await driver.readFile(task.ref, gitMemoryTaskConversationMessagePath(task.taskId, 1, "user"))).toBeNull();
     expect(await driver.readFile(task.ref, gitMemoryTaskConversationMessagePath(task.taskId, 2, "assistant"))).toBeNull();
     expect(await driver.readFile(task.ref, gitMemoryTaskConversationMessagePath(task.taskId, 3, "user"))).toBeNull();
-    expect(await driver.readFile(task.ref, `tasks/${task.taskId}/task.json`)).toBeNull();
-    const taskMarkdown = await driver.readFile(task.ref, gitMemoryTaskMarkdownPath(task.taskId)) ?? "";
-    expect(taskMarkdown).toContain("# Fix upload handling");
-    expect(taskMarkdown).toContain("Task: W-20260628-0001");
-    expect(taskMarkdown).toContain("Status: open");
-    expect(taskMarkdown).toContain("## Objective");
-    expect(taskMarkdown).toContain("Find and fix upload handling failures.");
-    expect(taskMarkdown).not.toContain("## Open");
+    expect(await driver.listTreePaths(task.ref, gitMemoryTaskDir(task.taskId))).toEqual([
+      gitMemoryTaskAssetsPath(task.taskId),
+      gitMemoryTaskNotesPath(task.taskId),
+      gitMemoryTaskStatePath(task.taskId),
+    ].sort());
+    const taskState = JSON.parse(await driver.readFile(task.ref, gitMemoryTaskStatePath(task.taskId)) ?? "{}");
+    expect(taskState).toMatchObject({
+      schemaVersion: 2,
+      task: {
+        taskId: "W-20260628-0001",
+        title: "Fix upload handling",
+        objective: "Find and fix upload handling failures.",
+        branch: "task/W-20260628-0001-fix-upload-handling",
+      },
+      status: "open",
+      summary: "Find and fix upload handling failures.",
+      progress: {
+        open: ["Find and fix upload handling failures."],
+      },
+      runs: {
+        runIds: [],
+        recent: [],
+      },
+    });
     const taskNotes = await driver.readFile(task.ref, gitMemoryTaskNotesPath(task.taskId)) ?? "";
     expect(taskNotes).toContain("# Fix upload handling");
     expect(taskNotes).toContain("Task: W-20260628-0001");
@@ -681,12 +697,6 @@ describe("GitMemoryDailySessionStore", () => {
     expect(taskNotes).toContain("## Search Terms");
     expect(taskNotes).toContain("upload");
     expect(taskNotes).not.toContain("Latest Run:");
-    expect(JSON.parse(await driver.readFile(task.ref, gitMemoryTaskStatePath(task.taskId)) ?? "{}"))
-      .toMatchObject({
-        status: "open",
-        summary: "Find and fix upload handling failures.",
-        open: ["Find and fix upload handling failures."],
-      });
     expect(JSON.parse(await driver.readFile(task.ref, gitMemoryTaskAssetsPath(task.taskId)) ?? "{}"))
       .toEqual({ schemaVersion: 1, assets: [] });
     expect(await driver.readFile(task.ref, `tasks/${task.taskId}/assets.jsonl`)).toBeNull();
@@ -1034,10 +1044,94 @@ describe("GitMemoryDailySessionStore", () => {
       toSeq: 2,
       at: "2026-06-28T09:01:00+05:30",
     });
+    await store.appendTaskRunStep({
+      sessionId: session.sessionId,
+      taskId: task.taskId,
+      runId: "R-20260628-0001",
+      record: {
+        v: 1,
+        runId: "R-20260628-0001",
+        taskId: task.taskId,
+        step: 1,
+        status: "completed",
+        startedAt: "2026-06-28T09:02:00+05:30",
+        completedAt: "2026-06-28T09:02:01+05:30",
+        summary: "Read upload server implementation.",
+        decision: {
+          actionKind: "tool_calls",
+          mode: "single",
+        },
+        action: {
+          executionContract: "single action: read_file",
+          toolsUsed: ["read_file"],
+          toolSuccessCount: 1,
+          toolFailureCount: 0,
+        },
+        toolCalls: [{
+          callId: "call-read-upload",
+          tool: "read_file",
+          status: "success",
+          input: {
+            path: "ayati-main/src/server/upload-server.ts",
+            range: [1, 80],
+          },
+          output: "full upload server implementation output\nline 2",
+          rawOutputChars: 1200,
+          outputTruncated: false,
+          operationStatus: "completed",
+          artifacts: [{
+            kind: "file",
+            path: "ayati-main/src/server/upload-server.ts",
+          }],
+          observation: {
+            id: "obs-upload",
+            step: 1,
+            callId: "call-read-upload",
+            tool: "read_file",
+            status: "success",
+            mode: "full",
+            retention: "while_relevant",
+            content: "full upload server implementation output\nline 2",
+            evidenceRef: "evidence/ACT-20260628-000001.txt",
+            rawOutputChars: 1200,
+            lineCount: 80,
+            hasMore: false,
+          },
+        }],
+        verification: {
+          passed: true,
+          policy: "deterministic",
+          method: "execution_gate",
+          executionStatus: "all_succeeded",
+          validationStatus: "passed",
+          summary: "Read upload server implementation.",
+          evidenceSummary: "evidence/ACT-20260628-000001.txt",
+          evidenceItems: ["Upload server implementation was inspected."],
+          newFacts: ["Upload server implementation was inspected."],
+          artifacts: ["ayati-main/src/server/upload-server.ts"],
+          usedRawArtifacts: [],
+        },
+        workStateAfter: {
+          status: "not_done",
+          summary: "Inspected upload handling.",
+          verifiedFacts: ["Upload server implementation was inspected."],
+          evidence: ["evidence/ACT-20260628-000001.txt"],
+        },
+        facts: ["Upload server implementation was inspected."],
+        artifacts: ["ayati-main/src/server/upload-server.ts"],
+        outputSize: 1200,
+        lineCount: 80,
+        truncated: false,
+      },
+    });
+    const driver = new GitMemoryWorktreeGitDriver(session.repoPath);
+    expect(await driver.readWorkingFile(gitMemoryTaskStepsStagingPath(task.taskId, "R-20260628-0001")))
+      .toContain("Read upload server implementation.");
 
     const run = await store.commitTaskRun({
       sessionId: session.sessionId,
       taskId: task.taskId,
+      runId: "R-20260628-0001",
       status: "completed",
       startedAt: "2026-06-28T09:02:00+05:30",
       completedAt: "2026-06-28T09:10:00+05:30",
@@ -1109,16 +1203,47 @@ describe("GitMemoryDailySessionStore", () => {
       runId: "R-20260628-0001",
     });
 
-    const driver = new GitMemoryWorktreeGitDriver(session.repoPath);
-    expect(JSON.parse(await driver.readFile(task.ref, gitMemoryTaskStatePath(task.taskId)) ?? "{}"))
+    expect(await driver.readWorkingFile(gitMemoryTaskStepsStagingPath(task.taskId, run.runId))).toBeNull();
+    const taskState = JSON.parse(await driver.readFile(task.ref, gitMemoryTaskStatePath(task.taskId)) ?? "{}");
+    expect(taskState)
       .toMatchObject({
         status: "in_progress",
         summary: "Inspected upload handling and found validation mismatch.",
-        completed: ["Inspected upload server"],
-        open: ["Patch upload validation handling"],
-        facts: ["UploadServer validates multipart uploads."],
-        next: "Patch upload validation handling.",
+        progress: {
+          completed: ["Inspected upload server"],
+          open: ["Patch upload validation handling"],
+          next: "Patch upload validation handling.",
+        },
       });
+    expect(taskState.memory.facts).toEqual(expect.arrayContaining([expect.objectContaining({
+      text: "UploadServer validates multipart uploads.",
+    })]));
+    expect(taskState.memory.files).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        source: "agent_workspace",
+        path: "ayati-main/src/server/upload-server.ts",
+        role: "modified",
+        status: "active",
+        identity: expect.objectContaining({
+          name: expect.stringContaining("Upload"),
+          type: "script",
+          aliases: expect.arrayContaining(["upload-server.ts"]),
+        }),
+        lastTouchedRunId: "R-20260628-0001",
+        confidence: "verified",
+      }),
+      expect.objectContaining({
+        source: "user_attachment",
+        path: "/tmp/upload.log",
+        originalName: "upload.log",
+        role: "reference",
+        identity: expect.objectContaining({
+          name: expect.stringContaining("Upload"),
+          aliases: expect.arrayContaining(["upload.log"]),
+        }),
+        confidence: "user_provided",
+      }),
+    ]));
     expect(JSON.parse(await driver.readFile(task.ref, gitMemoryTaskRunPath(task.taskId, run.runId)) ?? "{}"))
       .toMatchObject({
         runId: "R-20260628-0001",
@@ -1159,8 +1284,8 @@ describe("GitMemoryDailySessionStore", () => {
     expect(runMarkdown).toContain("Patch upload validation handling.");
     expect(runMarkdown).toContain("- ayati-main/src/server/upload-server.ts");
     expect(runMarkdown).toContain("- UploadServer validates multipart uploads.");
-    expect(runMarkdown).toContain("- ACT-20260628-000001 read_file completed: Read upload server implementation.");
-    expect(runMarkdown).toContain("Evidence: evidence/ACT-20260628-000001.txt");
+    expect(runMarkdown).toContain("- Step 1 completed: Read upload server implementation.");
+    expect(runMarkdown).toContain("Tools: read_file");
     const taskNotes = await driver.readFile(task.ref, gitMemoryTaskNotesPath(task.taskId)) ?? "";
     expect(taskNotes).toContain("# Fix upload handling");
     expect(taskNotes).toContain("Task: W-20260628-0001");
@@ -1189,39 +1314,40 @@ describe("GitMemoryDailySessionStore", () => {
     expect(taskNotes).toContain("Patch upload validation handling.");
     expect(taskNotes).not.toContain("raw/001-call-read-upload-read_file.txt");
     expect(taskNotes).not.toContain("evidence/ACT-20260628-000001.txt");
-    expect(parseJsonl(await driver.readFile(task.ref, gitMemoryTaskActionsPath(task.taskId, run.runId))))
+    const steps = parseJsonl(await driver.readFile(task.ref, gitMemoryTaskStepsPath(task.taskId, run.runId)));
+    expect(steps)
       .toMatchObject([{
-        actionId: "ACT-20260628-000001",
         runId: "R-20260628-0001",
-        tool: "read_file",
         status: "completed",
-      }]);
-    expect(parseJsonl(await driver.readFile(task.ref, gitMemoryTaskEvidenceManifestPath(task.taskId, run.runId))))
-      .toMatchObject([{
-        actionId: "ACT-20260628-000001",
-        runId: "R-20260628-0001",
         taskId: "W-20260628-0001",
-        tool: "read_file",
-        status: "completed",
+        step: 1,
         summary: "Read upload server implementation.",
-        evidenceRef: "evidence/ACT-20260628-000001.txt",
+        toolCalls: [{
+          callId: "call-read-upload",
+          tool: "read_file",
+          input: {
+            path: "ayati-main/src/server/upload-server.ts",
+            range: [1, 80],
+          },
+          output: "full upload server implementation output\nline 2",
+          observation: {
+            content: "full upload server implementation output\nline 2",
+            evidenceRef: "evidence/ACT-20260628-000001.txt",
+          },
+        }],
         artifacts: ["ayati-main/src/server/upload-server.ts"],
         facts: ["Upload server implementation was inspected."],
-        accessModes: ["summary", "read_lines"],
+        verification: {
+          passed: true,
+          evidenceSummary: "evidence/ACT-20260628-000001.txt",
+          evidenceItems: ["Upload server implementation was inspected."],
+        },
         outputSize: 1200,
         lineCount: 80,
         truncated: false,
-        source: {
-          kind: "tool-output",
-          toolCalls: [{
-            kind: "tool-output",
-            tool: "read_file",
-            callId: "call-read-upload",
-            filePath: "ayati-main/src/server/upload-server.ts",
-            rawOutputPath: "raw/001-call-read-upload-read_file.txt",
-          }],
-        },
       }]);
+    expect(await driver.readFile(task.ref, `tasks/${task.taskId}/actions/${run.runId}.jsonl`)).toBeNull();
+    expect(await driver.readFile(task.ref, `tasks/${task.taskId}/evidence/${run.runId}/manifest.jsonl`)).toBeNull();
     expect(JSON.parse(await driver.readFile(task.ref, gitMemoryTaskAssetsPath(task.taskId)) ?? "{}"))
       .toEqual({
         schemaVersion: 1,
@@ -1240,11 +1366,9 @@ describe("GitMemoryDailySessionStore", () => {
       limits: {
         evidenceLimit: 1,
         runLimit: 1,
-        taskMarkdownCharLimit: 2_000,
         runMarkdownCharLimit: 2_000,
       },
     })).resolves.toMatchObject({
-      taskMarkdown: expect.stringContaining("# Fix upload handling"),
       recentRunMarkdown: [{
         runId: "R-20260628-0001",
         path: "tasks/W-20260628-0001/runs/R-20260628-0001.md",
@@ -1304,7 +1428,7 @@ describe("GitMemoryDailySessionStore", () => {
     const driver = new GitMemoryWorktreeGitDriver(session.repoPath);
 
     expect(await driver.currentBranch()).toBe(task.branch);
-    expect(await driver.readWorkingFile(gitMemoryTaskMarkdownPath(task.taskId)))
+    expect(await driver.readWorkingFile(gitMemoryTaskStatePath(task.taskId)))
       .toContain("Linux commands file");
     expect(await driver.readWorkingFile(gitMemoryTaskStatePath(task.taskId)))
       .toContain("Create a text file with ten Linux commands.");
@@ -1496,7 +1620,9 @@ describe("GitMemoryDailySessionStore", () => {
     expect(JSON.parse(await driver.readFile(task.ref, gitMemoryTaskStatePath(task.taskId)) ?? "{}"))
       .toMatchObject({
         status: "in_progress",
-        next: "Continue upload validation.",
+        progress: {
+          next: "Continue upload validation.",
+        },
       });
   });
 

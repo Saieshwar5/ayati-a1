@@ -1,5 +1,6 @@
+import { createHash } from "node:crypto";
 import { access, readdir } from "node:fs/promises";
-import { join } from "node:path";
+import { basename, extname, join } from "node:path";
 import type { TaskAssetRecord } from "../contracts.js";
 import { GitMemoryWorktreeGitDriver } from "./git-driver.js";
 import { parseGitMemoryCommitTrailers, renderGitMemoryCommitMessage, type ParsedGitMemoryCommitTrailers } from "./commit-message.js";
@@ -26,11 +27,6 @@ import {
   resolveGitMemoryTaskEntry,
   type GitMemoryDerivedTaskEntry,
 } from "./task-refs.js";
-import {
-  parseGitMemoryTaskMarkdown,
-  renderGitMemoryTaskMarkdown,
-  type GitMemoryTaskMarkdownFile,
-} from "./task-markdown.js";
 import { renderGitMemoryTaskNotes } from "./task-notes.js";
 import {
   renderGitMemorySessionSummaryMarkdown,
@@ -53,8 +49,14 @@ import type {
   GitMemorySessionSummaryMetaFile,
   GitMemoryTaskId,
   GitMemoryTaskAssetsFile,
+  GitMemoryTaskStateDecision,
+  GitMemoryTaskStateEvidence,
+  GitMemoryTaskStateFact,
   GitMemoryTaskStateFile,
+  GitMemoryTaskStateFileRecord,
   GitMemoryTaskStatus,
+  GitMemoryStepRecord,
+  GitMemoryStepToolCallRecord,
 } from "./schema.js";
 import {
   GIT_MEMORY_SESSION_CONVERSATION_MARKDOWN_PATH,
@@ -69,14 +71,12 @@ import {
   gitMemoryDateFromSessionId,
   gitMemoryTaskDir,
   gitMemoryTaskAssetsPath,
-  gitMemoryTaskActionsPath,
-  gitMemoryTaskContextPath,
   gitMemoryTaskConversationDir,
-  gitMemoryTaskEvidenceManifestPath,
-  gitMemoryTaskMarkdownPath,
   gitMemoryTaskNotesPath,
   gitMemoryTaskRunMarkdownPath,
   gitMemoryTaskRunPath,
+  gitMemoryTaskStepsPath,
+  gitMemoryTaskStepsStagingPath,
   gitMemoryTaskStatePath,
   gitMemorySessionStoreMessagePath,
   gitMemorySessionStoreMessagesDir,
@@ -142,7 +142,6 @@ export interface GitMemoryTaskDetailLimits {
   commitLogLimit: number;
   evidenceLimit: number;
   conversationMarkdownCharLimit: number;
-  taskMarkdownCharLimit: number;
   runMarkdownCharLimit: number;
 }
 
@@ -178,8 +177,7 @@ export interface GitMemoryTaskDetail {
   taskId: GitMemoryTaskId;
   branch: string;
   ref: string;
-  task?: GitMemoryTaskMarkdownFile;
-  taskMarkdown?: string;
+  task?: GitMemoryTaskStateFile["task"];
   state?: GitMemoryTaskStateFile;
   assets?: TaskAssetRecord[];
   recentRuns?: GitMemoryRunFile[];
@@ -216,7 +214,9 @@ export interface SearchGitMemoryTasksInput {
 
 export interface GitMemoryTaskSearchMatch extends GitMemoryTaskRoutingSnapshotTask {
   score: number;
+  routeScore: number;
   matchReasons: string[];
+  matchedArtifacts?: GitMemoryTaskSearchArtifact[];
 }
 
 export interface GitMemoryTaskSearchResult {
@@ -241,6 +241,27 @@ export interface GitMemoryTaskEvidenceResult {
   ref: string;
   runId?: GitMemoryRunId;
   evidence: GitMemoryEvidenceManifestRecord[];
+}
+
+export interface ReadGitMemoryRunStepInput {
+  sessionId: GitMemorySessionId;
+  runId: GitMemoryRunId;
+  step: number;
+  callId?: string;
+  taskId?: GitMemoryTaskId;
+  branch?: string;
+}
+
+export interface GitMemoryRunStepReadResult {
+  sessionId: GitMemorySessionId;
+  taskId: GitMemoryTaskId;
+  branch: string;
+  ref: string;
+  runId: GitMemoryRunId;
+  step: number;
+  source: "staged" | "committed";
+  record: GitMemoryStepRecord;
+  toolCall?: GitMemoryStepToolCallRecord;
 }
 
 export interface SearchGitMemoryEvidenceInput {
@@ -294,6 +315,18 @@ export interface AppendGitMemoryConversationRecordInput {
   record: GitMemoryConversationRecord;
 }
 
+export interface GitMemoryTaskSearchArtifact {
+  artifactId: string;
+  source: GitMemoryTaskStateFileRecord["source"];
+  kind: string;
+  path: string;
+  originalName?: string;
+  role: GitMemoryTaskStateFileRecord["role"];
+  status: GitMemoryTaskStateFileRecord["status"];
+  identity: GitMemoryTaskStateFileRecord["identity"];
+  confidence: GitMemoryTaskStateFileRecord["confidence"];
+}
+
 export interface GitMemoryTaskRoutingSnapshotTask {
   taskId: GitMemoryTaskId;
   branch: string;
@@ -309,6 +342,7 @@ export interface GitMemoryTaskRoutingSnapshotTask {
   updatedAt?: string;
   latestRunId?: GitMemoryRunId;
   files?: string[];
+  artifacts?: GitMemoryTaskSearchArtifact[];
   missing?: boolean;
 }
 
@@ -332,8 +366,14 @@ export interface CreateGitMemoryTaskBranchInput extends GitMemoryConversationSeq
   runId?: GitMemoryRunId;
   status?: GitMemoryTaskStatus;
   at?: string;
-  state?: Partial<Omit<GitMemoryTaskStateFile, "schemaVersion" | "status" | "updatedAt">> & {
+  state?: {
     status?: GitMemoryTaskStatus;
+    summary?: string;
+    completed?: string[];
+    open?: string[];
+    blockers?: string[];
+    facts?: string[];
+    next?: string;
   };
 }
 
@@ -389,6 +429,13 @@ export interface CommitGitMemoryTaskRunEvidenceInput {
   source?: Record<string, unknown>;
 }
 
+export interface RecordGitMemoryTaskRunStepInput {
+  sessionId: GitMemorySessionId;
+  taskId: GitMemoryTaskId;
+  runId: GitMemoryRunId;
+  record: GitMemoryStepRecord;
+}
+
 export interface CommitGitMemoryTaskRunInput {
   sessionId: GitMemorySessionId;
   taskId: GitMemoryTaskId;
@@ -412,9 +459,18 @@ export interface CommitGitMemoryTaskRunInput {
   changedFiles?: string[];
   newFacts?: string[];
   next?: string;
-  state?: Partial<Omit<GitMemoryTaskStateFile, "schemaVersion" | "updatedAt">>;
+  state?: {
+    status?: GitMemoryTaskStatus;
+    summary?: string;
+    completed?: string[];
+    open?: string[];
+    blockers?: string[];
+    facts?: string[];
+    next?: string;
+  };
   evidence?: CommitGitMemoryTaskRunEvidenceInput[];
   assets?: TaskAssetRecord[];
+  steps?: GitMemoryStepRecord[];
 }
 
 export interface CommitGitMemoryTaskRunResult {
@@ -728,6 +784,22 @@ export class GitMemoryDailySessionStore {
     return { runId: input.runId };
   }
 
+  async appendTaskRunStep(input: RecordGitMemoryTaskRunStepInput): Promise<void> {
+    const driver = await GitMemoryWorktreeGitDriver.init(this.repoPath(input.sessionId));
+    const taskEntry = await resolveGitMemoryTaskEntry(driver, { taskId: input.taskId });
+    const ref = `refs/heads/${taskEntry.branch}`;
+    if (!(await driver.hasRef(ref))) {
+      throw new Error(`Git memory task branch missing: ${ref}`);
+    }
+    if (input.record.taskId !== input.taskId || input.record.runId !== input.runId) {
+      throw new Error(`Git memory step record does not match task/run: ${input.taskId}/${input.runId}`);
+    }
+    await driver.appendWorkingFile(
+      gitMemoryTaskStepsStagingPath(input.taskId, input.runId),
+      `${JSON.stringify(input.record)}\n`,
+    );
+  }
+
   async readTaskRoutingSnapshot(sessionId: GitMemorySessionId): Promise<GitMemoryTaskRoutingSnapshot> {
     const driver = await this.openExistingDriver(sessionId);
     return await readTaskRoutingSnapshotFromDriver(driver, sessionId);
@@ -750,10 +822,8 @@ export class GitMemoryDailySessionStore {
       ref,
     };
 
-    const readTaskMarkdown = include.has("task") || include.has("markdown")
-      ? driver.readFile(ref, gitMemoryTaskMarkdownPath(taskEntry.taskId))
-      : Promise.resolve(null);
     const readState = include.has("state")
+      || include.has("task")
       ? readRefJson<GitMemoryTaskStateFile>(driver, ref, gitMemoryTaskStatePath(taskEntry.taskId))
       : Promise.resolve(null);
     const readAssets = include.has("assets")
@@ -778,8 +848,7 @@ export class GitMemoryDailySessionStore {
       ? readTaskConversationMarkdownTail(driver, ref, input.sessionId, taskEntry.taskId, limits.conversationMarkdownCharLimit)
       : Promise.resolve("");
 
-    const [taskMarkdown, state, assets, recentRuns, recentRunMarkdown, recentActions, recentCommits, recentEvidence, conversationMarkdownTail] = await Promise.all([
-      readTaskMarkdown,
+    const [state, assets, recentRuns, recentRunMarkdown, recentActions, recentCommits, recentEvidence, conversationMarkdownTail] = await Promise.all([
       readState,
       readAssets,
       readRuns,
@@ -790,12 +859,10 @@ export class GitMemoryDailySessionStore {
       readConversationMarkdown,
     ]);
 
-    const task = parseGitMemoryTaskMarkdown(taskMarkdown);
-    if (include.has("task") && task) {
-      detail.task = task;
+    if (include.has("task") && state) {
+      detail.task = state.task;
     }
     if (include.has("markdown")) {
-      detail.taskMarkdown = markdownTail(taskMarkdown, limits.taskMarkdownCharLimit);
       detail.recentRunMarkdown = recentRunMarkdown;
     }
     if (include.has("state") && state) {
@@ -896,6 +963,55 @@ export class GitMemoryDailySessionStore {
     };
   }
 
+  async readRunStep(input: ReadGitMemoryRunStepInput): Promise<GitMemoryRunStepReadResult> {
+    const driver = await this.openExistingDriver(input.sessionId);
+    const hasTaskSelector = Boolean(input.taskId?.trim() || input.branch?.trim());
+    const taskEntries = hasTaskSelector
+      ? [await resolveGitMemoryTaskEntry(driver, input)]
+      : await readGitMemoryTaskEntries(driver);
+
+    for (const taskEntry of taskEntries) {
+      const ref = `refs/heads/${taskEntry.branch}`;
+      if (!(await driver.hasRef(ref))) {
+        if (hasTaskSelector) {
+          throw new Error(`Git memory task branch missing: ${ref}`);
+        }
+        continue;
+      }
+
+      const staged = await readTaskRunStagedSteps(driver, taskEntry.taskId, input.runId);
+      const stagedMatch = findRunStepRecord(staged, input);
+      if (stagedMatch) {
+        return buildRunStepReadResult({
+          sessionId: input.sessionId,
+          taskId: taskEntry.taskId,
+          branch: taskEntry.branch,
+          ref,
+          source: "staged",
+          record: stagedMatch.record,
+          toolCall: stagedMatch.toolCall,
+        });
+      }
+
+      const committed = await readRefJsonl<GitMemoryStepRecord>(driver, ref, gitMemoryTaskStepsPath(taskEntry.taskId, input.runId));
+      const committedMatch = findRunStepRecord(committed, input);
+      if (committedMatch) {
+        return buildRunStepReadResult({
+          sessionId: input.sessionId,
+          taskId: taskEntry.taskId,
+          branch: taskEntry.branch,
+          ref,
+          source: "committed",
+          record: committedMatch.record,
+          toolCall: committedMatch.toolCall,
+        });
+      }
+    }
+
+    const callSuffix = input.callId ? ` call ${input.callId}` : "";
+    throw new Error(`Git memory run step not found: ${input.runId} step ${input.step}${callSuffix}`);
+  }
+
   async searchEvidence(input: SearchGitMemoryEvidenceInput): Promise<GitMemoryEvidenceSearchResult> {
     const driver = await this.openExistingDriver(input.sessionId);
     const query = input.query.trim();
@@ -960,23 +1076,54 @@ export class GitMemoryDailySessionStore {
 
     const at = input.at ?? this.nowIso();
     const status = input.status ?? "open";
-    const task: GitMemoryTaskMarkdownFile = {
-      taskId,
-      title: input.title,
-      objective: input.objective,
-      status,
-      createdAt: at,
-      updatedAt: at,
-    };
     const state: GitMemoryTaskStateFile = {
-      schemaVersion: 1,
+      schemaVersion: 2,
+      task: {
+        taskId,
+        title: input.title,
+        objective: input.objective,
+        branch,
+        createdAt: at,
+        updatedAt: at,
+      },
       status: input.state?.status ?? status,
       summary: input.state?.summary ?? input.objective,
-      completed: input.state?.completed ?? [],
-      open: input.state?.open ?? [input.objective],
-      blockers: input.state?.blockers ?? [],
-      facts: input.state?.facts ?? [],
-      next: input.state?.next ?? input.objective,
+      progress: {
+        completed: input.state?.completed ?? [],
+        open: input.state?.open ?? [input.objective],
+        blockers: input.state?.blockers ?? [],
+        next: input.state?.next ?? input.objective,
+      },
+      memory: {
+        facts: taskStateFacts(input.state?.facts ?? []),
+        decisions: [],
+        evidence: [],
+        files: [],
+        assets: [],
+      },
+      runs: {
+        runIds: [],
+        recent: [],
+      },
+      context: {
+        workingSummary: input.state?.summary ?? input.objective,
+        importantFiles: [],
+        searchTerms: deriveTaskStateSearchTerms({
+          taskId,
+          branch,
+          title: input.title,
+          objective: input.objective,
+          summary: input.state?.summary ?? input.objective,
+          completed: input.state?.completed ?? [],
+          open: input.state?.open ?? [input.objective],
+          blockers: input.state?.blockers ?? [],
+          facts: input.state?.facts ?? [],
+          next: input.state?.next ?? input.objective,
+          files: [],
+          decisions: [],
+        }),
+        warnings: input.state?.blockers ?? [],
+      },
       updatedAt: at,
     };
     const parentRef = await resolveTaskBranchParentRef(driver, input.sessionId);
@@ -985,19 +1132,17 @@ export class GitMemoryDailySessionStore {
       ref,
       parentRef,
       files: {
-        [gitMemoryTaskMarkdownPath(taskId)]: renderGitMemoryTaskMarkdown(task),
         [gitMemoryTaskStatePath(taskId)]: prettyJson(state),
         [gitMemoryTaskAssetsPath(taskId)]: prettyJson({ schemaVersion: 1, assets: [] } satisfies GitMemoryTaskAssetsFile),
         [gitMemoryTaskNotesPath(taskId)]: renderGitMemoryTaskNotes({
           taskId,
           branch,
-          title: task.title,
-          objective: task.objective,
+          title: state.task.title,
+          objective: state.task.objective,
           status,
           state,
           updatedAt: at,
         }),
-        [gitMemoryTaskContextPath(taskId)]: "",
       },
       message: renderGitMemoryCommitMessage({
         subject: `ayati: create task ${taskId}`,
@@ -1020,7 +1165,7 @@ export class GitMemoryDailySessionStore {
     await writeGitMemoryCustomRef(driver, gitMemorySessionActiveTaskRef(input.sessionId), taskCommit);
     await writeGitMemoryCustomRef(driver, gitMemorySessionTaskRef(input.sessionId, taskId), taskCommit);
 
-    return { taskId, branch, ref, title: task.title, objective: task.objective, status, state, taskCommit };
+    return { taskId, branch, ref, title: state.task.title, objective: state.task.objective, status, state, taskCommit };
   }
 
   async selectTaskForTurn(input: SelectGitMemoryTaskForTurnInput): Promise<SelectGitMemoryTaskForTurnResult> {
@@ -1167,37 +1312,136 @@ export class GitMemoryDailySessionStore {
       actions,
       evidence: input.evidence,
     });
+    const stagedSteps = await readTaskRunStagedSteps(driver, input.taskId, runId);
+    const steps = stagedSteps.length > 0
+      ? stagedSteps
+      : input.steps ?? buildStepRecordsFromLegacyEvidence({
+        taskId: input.taskId,
+        runId,
+        actions,
+        evidence,
+        completedAt,
+      });
     const existingAssets = await readTaskAssets(driver, ref, input.taskId);
     const mergedAssets = mergeTaskAssets(existingAssets, input.assets ?? []);
-    const newFacts = input.newFacts ?? [];
-    const updatedState: GitMemoryTaskStateFile = {
-      schemaVersion: 1,
-      status: input.state?.status ?? previousState.status,
-      summary: input.state?.summary ?? input.summary,
-      completed: input.state?.completed ?? previousState.completed,
-      open: input.state?.open ?? previousState.open,
-      blockers: input.state?.blockers ?? previousState.blockers,
-      facts: input.state?.facts ?? unique([...previousState.facts, ...newFacts]),
-      next: input.state?.next ?? input.next ?? previousState.next,
-      updatedAt: completedAt,
-    };
+    const evidenceFacts = unique(evidence.flatMap((record) => record.facts));
+    const stepFacts = unique(steps.flatMap((step) => step.facts));
+    const newFacts = unique(input.newFacts ?? []);
+    const stateFacts = unique([...newFacts, ...evidenceFacts, ...stepFacts]);
+    const progressCompleted = input.state?.completed ?? previousState.progress.completed;
+    const progressOpen = input.state?.open ?? previousState.progress.open;
+    const progressBlockers = input.state?.blockers ?? previousState.progress.blockers;
+    const progressNext = input.state?.next ?? input.next ?? previousState.progress.next;
     const workPerformed = normalizeMemoryList(input.workPerformed)
-      ?? normalizeMemoryList(updatedState.completed)
+      ?? normalizeMemoryList(progressCompleted)
       ?? actionSummaries(actions);
     const verification = normalizeMemoryList(input.verification)
       ?? evidenceSummaries(evidence)
       ?? actionVerificationSummaries(actions);
     const blockers = normalizeMemoryList(input.blockers)
-      ?? normalizeMemoryList(updatedState.blockers)
+      ?? normalizeMemoryList(progressBlockers)
       ?? [];
     const decisions = normalizeMemoryList(input.decisions) ?? [];
-    const next = input.next ?? updatedState.next;
+    const next = input.next ?? progressNext;
     const outcome = input.outcome ?? defaultRunOutcome(input.status, input.summary);
     const noteFiles = taskNoteFiles(input.changedFiles ?? [], evidence, mergedAssets);
     const noteRecentWork = unique([
       ...workPerformed,
       ...(evidenceSummaries(evidence) ?? []),
     ]);
+    const taskFiles = mergeTaskStateFiles(previousState.memory.files, [
+      ...taskStateFiles(input.changedFiles ?? [], "modified", "changed in run", runId, {
+        title: previousState.task.title,
+        objective: previousState.task.objective,
+        sourceTurnSeq: input.conversationRefs[0]?.fromSeq,
+      }),
+      ...taskStateFiles(evidence.flatMap((record) => record.artifacts), "reference", "evidence artifact", runId, {
+        title: previousState.task.title,
+        objective: previousState.task.objective,
+        sourceTurnSeq: input.conversationRefs[0]?.fromSeq,
+      }),
+      ...taskStateFilesFromAssets(mergedAssets, runId, {
+        title: previousState.task.title,
+        objective: previousState.task.objective,
+        sourceTurnSeq: input.conversationRefs[0]?.fromSeq,
+      }),
+    ]);
+    const updatedState: GitMemoryTaskStateFile = {
+      schemaVersion: 2,
+      task: {
+        ...previousState.task,
+        updatedAt: completedAt,
+      },
+      status: input.state?.status ?? previousState.status,
+      summary: input.state?.summary ?? input.summary,
+      progress: {
+        completed: progressCompleted,
+        open: progressOpen,
+        blockers: progressBlockers,
+        next: progressNext,
+      },
+      memory: {
+        facts: mergeTaskStateFacts(
+          previousState.memory.facts,
+          taskStateFacts(input.state?.facts ?? stateFacts, runId, "verified"),
+        ),
+        decisions: mergeTaskStateDecisions(
+          previousState.memory.decisions,
+          taskStateDecisions(decisions, runId),
+        ),
+        evidence: mergeTaskStateEvidence(
+          previousState.memory.evidence,
+          taskStateEvidence(evidence, runId),
+        ),
+        files: taskFiles,
+        assets: mergedAssets,
+      },
+      runs: {
+        latestRunId: runId,
+        runIds: unique([...previousState.runs.runIds, runId]),
+        recent: tail([
+          ...previousState.runs.recent.filter((runSummary) => runSummary.runId !== runId),
+          {
+            runId,
+            status: input.status,
+            summary: input.summary,
+            outcome,
+            completedAt,
+            changedFiles: input.changedFiles ?? [],
+            ...(next ? { next } : {}),
+          },
+        ], 10),
+      },
+      context: {
+        workingSummary: input.state?.summary ?? input.summary,
+        importantFiles: tail(unique([
+          ...previousState.context.importantFiles,
+          ...noteFiles,
+        ]), 40),
+        searchTerms: deriveTaskStateSearchTerms({
+          taskId: input.taskId,
+          branch: taskEntry.branch,
+          title: previousState.task.title,
+          objective: previousState.task.objective,
+          summary: input.state?.summary ?? input.summary,
+          completed: progressCompleted,
+          open: progressOpen,
+          blockers: progressBlockers,
+          facts: mergeTaskStateFacts(
+            previousState.memory.facts,
+            taskStateFacts(input.state?.facts ?? stateFacts, runId, "verified"),
+          ).map((fact) => fact.text),
+          next,
+          files: [
+            ...noteFiles,
+            ...taskFiles.flatMap(taskStateFileSearchTerms),
+          ],
+          decisions,
+        }),
+        warnings: progressBlockers,
+      },
+      updatedAt: completedAt,
+    };
     const run: GitMemoryRunFile = {
       schemaVersion: 1,
       runId,
@@ -1225,9 +1469,8 @@ export class GitMemoryDailySessionStore {
     const files: Record<string, string> = {
       [gitMemoryTaskStatePath(input.taskId)]: prettyJson(updatedState),
       [gitMemoryTaskRunPath(input.taskId, runId)]: prettyJson(run),
-      [gitMemoryTaskRunMarkdownPath(input.taskId, runId)]: renderTaskRunMarkdown(run, actions, evidence),
-      [gitMemoryTaskActionsPath(input.taskId, runId)]: jsonl(actions),
-      [gitMemoryTaskEvidenceManifestPath(input.taskId, runId)]: jsonl(evidence),
+      [gitMemoryTaskRunMarkdownPath(input.taskId, runId)]: renderTaskRunMarkdown(run, steps),
+      [gitMemoryTaskStepsPath(input.taskId, runId)]: jsonl(steps),
       [gitMemoryTaskNotesPath(input.taskId)]: renderGitMemoryTaskNotes({
         taskId: input.taskId,
         branch: taskEntry.branch,
@@ -1257,8 +1500,8 @@ export class GitMemoryDailySessionStore {
         outcome,
         workPerformed,
         verification,
-        completed: updatedState.completed,
-        open: updatedState.open,
+        completed: updatedState.progress.completed,
+        open: updatedState.progress.open,
         next,
         trailers: {
           sessionId: input.sessionId,
@@ -1280,6 +1523,7 @@ export class GitMemoryDailySessionStore {
     await writeGitMemoryCustomRef(driver, gitMemorySessionLatestRunRef(input.sessionId), taskCommit);
     await writeGitMemoryCustomRef(driver, gitMemorySessionTaskRef(input.sessionId, input.taskId), taskCommit);
     await writeGitMemoryCustomRef(driver, gitMemoryTaskLatestRunRef(input.taskId), taskCommit);
+    await driver.removeWorkingFile(gitMemoryTaskStepsStagingPath(input.taskId, runId));
 
     return {
       taskId: input.taskId,
@@ -1407,8 +1651,7 @@ function jsonl<T>(records: T[]): string {
 
 function renderTaskRunMarkdown(
   run: GitMemoryRunFile,
-  actions: GitMemoryActionRecord[],
-  evidence: GitMemoryEvidenceManifestRecord[],
+  steps: GitMemoryStepRecord[],
 ): string {
   return [
     `# Run ${run.runId}`,
@@ -1425,40 +1668,40 @@ function renderTaskRunMarkdown(
     renderMarkdownList("Work Performed", run.workPerformed ?? []),
     renderMarkdownList("Changed Files", run.changedFiles),
     renderMarkdownList("Verification", run.verification ?? []),
-    renderEvidenceMarkdown(evidence),
+    renderStepEvidenceMarkdown(steps),
     renderMarkdownList("Decisions", run.decisions ?? []),
     renderMarkdownList("Blockers", run.blockers ?? []),
     renderMarkdownParagraph("Next", run.next ?? "No next step."),
     renderMarkdownList("New Facts", run.newFacts),
-    renderActionMarkdown(actions),
+    renderStepActionMarkdown(steps),
   ].join("\n");
 }
 
-function renderActionMarkdown(actions: GitMemoryActionRecord[]): string {
-  if (actions.length === 0) {
+function renderStepActionMarkdown(steps: GitMemoryStepRecord[]): string {
+  if (steps.length === 0) {
     return "## Actions\n\nNone.\n";
   }
   return [
     "## Actions",
     "",
-    ...actions.map((action) => [
-      `- ${action.actionId} ${action.tool} ${action.status}: ${action.summary}`,
-      ...(action.evidenceRef ? [`  Evidence: ${action.evidenceRef}`] : []),
+    ...steps.map((step) => [
+      `- Step ${step.step} ${step.status}: ${step.summary}`,
+      ...(step.action?.["executionContract"] ? [`  Contract: ${String(step.action["executionContract"])}`] : []),
+      ...(step.toolCalls.length > 0 ? [`  Tools: ${unique(step.toolCalls.map((call) => call.tool)).join(", ")}`] : []),
     ].join("\n")),
     "",
   ].join("\n");
 }
 
-function renderEvidenceMarkdown(evidence: GitMemoryEvidenceManifestRecord[]): string {
-  if (evidence.length === 0) {
+function renderStepEvidenceMarkdown(steps: GitMemoryStepRecord[]): string {
+  if (steps.length === 0) {
     return "## Evidence\n\nNone.\n";
   }
   return [
     "## Evidence",
     "",
-    ...evidence.map((record) => [
-      `- ${record.tool}: ${record.summary}`,
-      ...(record.evidenceRef ? [`  Ref: ${record.evidenceRef}`] : []),
+    ...steps.map((record) => [
+      `- Step ${record.step}: ${record.verification.evidenceSummary ?? record.verification.summary}`,
       ...(record.artifacts.length > 0 ? [`  Artifacts: ${record.artifacts.join(", ")}`] : []),
       ...(record.facts.length > 0 ? [`  Facts: ${record.facts.join("; ")}`] : []),
     ].join("\n")),
@@ -1491,6 +1734,342 @@ function renderMarkdownList(title: string, items: string[]): string {
 function normalizeMemoryList(values: string[] | undefined): string[] | undefined {
   const normalized = (values ?? []).map((value) => value.trim()).filter(Boolean);
   return normalized.length > 0 ? unique(normalized) : undefined;
+}
+
+function taskStateFacts(
+  values: string[],
+  sourceRunId?: GitMemoryRunId,
+  confidence: GitMemoryTaskStateFact["confidence"] = "observed",
+): GitMemoryTaskStateFact[] {
+  return unique(values)
+    .map((text) => ({
+      text,
+      ...(sourceRunId ? { sourceRunId } : {}),
+      confidence,
+    }));
+}
+
+function mergeTaskStateFacts(
+  existing: GitMemoryTaskStateFact[],
+  incoming: GitMemoryTaskStateFact[],
+): GitMemoryTaskStateFact[] {
+  const facts = new Map<string, GitMemoryTaskStateFact>();
+  for (const fact of [...existing, ...incoming]) {
+    facts.set(fact.text.toLowerCase(), fact);
+  }
+  return [...facts.values()];
+}
+
+function taskStateDecisions(values: string[], sourceRunId: GitMemoryRunId): GitMemoryTaskStateDecision[] {
+  return unique(values).map((text) => ({ text, sourceRunId }));
+}
+
+function mergeTaskStateDecisions(
+  existing: GitMemoryTaskStateDecision[],
+  incoming: GitMemoryTaskStateDecision[],
+): GitMemoryTaskStateDecision[] {
+  const decisions = new Map<string, GitMemoryTaskStateDecision>();
+  for (const decision of [...existing, ...incoming]) {
+    decisions.set(decision.text.toLowerCase(), decision);
+  }
+  return [...decisions.values()];
+}
+
+function taskStateEvidence(
+  evidence: GitMemoryEvidenceManifestRecord[],
+  sourceRunId: GitMemoryRunId,
+): GitMemoryTaskStateEvidence[] {
+  return evidence
+    .map((record) => ({
+      summary: record.summary,
+      sourceRunId,
+      ...(record.step ? { sourceStep: record.step } : {}),
+      artifacts: record.artifacts,
+      facts: record.facts,
+    }))
+    .filter((record) => record.summary.trim().length > 0);
+}
+
+function mergeTaskStateEvidence(
+  existing: GitMemoryTaskStateEvidence[],
+  incoming: GitMemoryTaskStateEvidence[],
+): GitMemoryTaskStateEvidence[] {
+  const evidence = new Map<string, GitMemoryTaskStateEvidence>();
+  for (const record of [...existing, ...incoming]) {
+    evidence.set(`${record.sourceRunId ?? ""}:${record.sourceStep ?? ""}:${record.summary.toLowerCase()}`, record);
+  }
+  return [...evidence.values()];
+}
+
+function taskStateFiles(
+  paths: string[],
+  role: GitMemoryTaskStateFileRecord["role"],
+  reason: string,
+  sourceRunId: GitMemoryRunId,
+  context: ArtifactIdentityContext,
+): GitMemoryTaskStateFileRecord[] {
+  return unique(paths)
+    .map((path) => taskStateFileRecord({
+      source: "agent_workspace",
+      kind: inferArtifactKind(path),
+      path,
+      role,
+      reason,
+      sourceRunId,
+      lastTouchedRunId: sourceRunId,
+      confidence: "verified",
+    }, context));
+}
+
+function taskStateFilesFromAssets(
+  assets: TaskAssetRecord[],
+  sourceRunId: GitMemoryRunId,
+  context: ArtifactIdentityContext,
+): GitMemoryTaskStateFileRecord[] {
+  return assets
+    .map((asset) => taskStateFileRecord({
+      source: isUserAttachmentAsset(asset) ? "user_attachment" : "agent_workspace",
+      kind: asset.kind,
+      path: asset.path ?? asset.name,
+      originalName: asset.name,
+      role: asset.role === "generated" ? "generated" : "reference",
+      reason: asset.role === "generated" ? "generated task asset" : "task input asset",
+      sourceRunId,
+      ...(asset.role === "generated" ? { lastTouchedRunId: sourceRunId } : {}),
+      confidence: isUserAttachmentAsset(asset) ? "user_provided" : "verified",
+    }, context))
+    .filter((record, index, all) => all.findIndex((candidate) => candidate.path === record.path && candidate.source === record.source) === index);
+}
+
+interface ArtifactIdentityContext {
+  title: string;
+  objective: string;
+  sourceTurnSeq?: number;
+}
+
+function taskStateFileRecord(
+  input: {
+    source: GitMemoryTaskStateFileRecord["source"];
+    kind: string;
+    path: string;
+    originalName?: string;
+    mimeType?: string;
+    role: GitMemoryTaskStateFileRecord["role"];
+    reason: string;
+    sourceRunId: GitMemoryRunId;
+    lastTouchedRunId?: GitMemoryRunId;
+    confidence: GitMemoryTaskStateFileRecord["confidence"];
+  },
+  context: ArtifactIdentityContext,
+): GitMemoryTaskStateFileRecord {
+  const identity = buildArtifactIdentity({
+    path: input.path,
+    originalName: input.originalName,
+    kind: input.kind,
+    source: input.source,
+    title: context.title,
+    objective: context.objective,
+  });
+  return {
+    artifactId: stableArtifactId(input.source, input.path),
+    source: input.source,
+    kind: input.kind,
+    path: input.path,
+    ...(input.originalName ? { originalName: input.originalName } : {}),
+    ...(input.mimeType ? { mimeType: input.mimeType } : {}),
+    role: input.role,
+    identity,
+    status: "active",
+    reason: input.reason,
+    ...(input.role === "generated" || input.role === "modified" ? { createdByRunId: input.sourceRunId } : {}),
+    ...(input.lastTouchedRunId ? { lastTouchedRunId: input.lastTouchedRunId } : {}),
+    sourceRunId: input.sourceRunId,
+    ...(context.sourceTurnSeq ? { sourceTurnSeq: context.sourceTurnSeq } : {}),
+    confidence: input.confidence,
+  };
+}
+
+function mergeTaskStateFiles(
+  existing: GitMemoryTaskStateFileRecord[],
+  incoming: GitMemoryTaskStateFileRecord[],
+): GitMemoryTaskStateFileRecord[] {
+  const files = new Map<string, GitMemoryTaskStateFileRecord>();
+  for (const file of [...existing, ...incoming]) {
+    const key = `${file.source}:${file.path}`;
+    const previous = files.get(key);
+    files.set(key, previous ? {
+      ...previous,
+      ...file,
+      artifactId: previous.artifactId || file.artifactId,
+      role: chooseTaskFileRole(previous.role, file.role),
+      reason: chooseTaskFileRole(previous.role, file.role) === previous.role ? previous.reason : file.reason,
+      createdByRunId: previous.createdByRunId ?? file.createdByRunId,
+      sourceRunId: file.sourceRunId ?? previous.sourceRunId,
+      lastTouchedRunId: file.lastTouchedRunId ?? previous.lastTouchedRunId,
+    } : file);
+  }
+  return [...files.values()];
+}
+
+function chooseTaskFileRole(
+  previous: GitMemoryTaskStateFileRecord["role"],
+  incoming: GitMemoryTaskStateFileRecord["role"],
+): GitMemoryTaskStateFileRecord["role"] {
+  return taskFileRolePriority(incoming) > taskFileRolePriority(previous) ? incoming : previous;
+}
+
+function taskFileRolePriority(role: GitMemoryTaskStateFileRecord["role"]): number {
+  switch (role) {
+    case "modified":
+      return 5;
+    case "created":
+      return 4;
+    case "generated":
+      return 3;
+    case "touched":
+      return 2;
+    case "reference":
+      return 1;
+  }
+}
+
+function taskStateFileSearchTerms(file: GitMemoryTaskStateFileRecord): string[] {
+  return [
+    file.path,
+    file.originalName ?? "",
+    file.identity.name,
+    file.identity.description,
+    file.identity.type,
+    ...file.identity.aliases,
+  ];
+}
+
+function buildArtifactIdentity(input: {
+  path: string;
+  originalName?: string;
+  kind: string;
+  source: GitMemoryTaskStateFileRecord["source"];
+  title: string;
+  objective: string;
+}): GitMemoryTaskStateFileRecord["identity"] {
+  const fileName = input.originalName?.trim() || basename(input.path);
+  const subject = taskSubject(input.title, input.objective);
+  const type = inferArtifactIdentityType(input.path, input.kind);
+  const label = artifactLabel(fileName, type, input.source);
+  const name = titleCase(`${subject} ${label}`.trim());
+  const aliases = unique([
+    fileName,
+    stripExtension(fileName),
+    label,
+    `${subject} ${label}`,
+    type.replace(/_/g, " "),
+    ...(input.source === "user_attachment" ? [`uploaded ${label}`, `attached ${label}`] : []),
+  ].flatMap((value) => [value, normalizeAlias(value)]));
+  return {
+    name,
+    type,
+    description: input.source === "user_attachment"
+      ? `User-provided ${label} for ${subject}.`
+      : `${label} for ${subject}.`,
+    aliases,
+  };
+}
+
+function taskSubject(title: string, objective: string): string {
+  const source = title.trim() || objective.trim() || "task";
+  return normalizeWords(source
+    .replace(/^(create|build|make|update|fix|implement|add|write|generate)\s+/i, "")
+    .replace(/\b(static|tiny|simple|new)\b/gi, " "))
+    || "task";
+}
+
+function artifactLabel(fileName: string, type: string, source: GitMemoryTaskStateFileRecord["source"]): string {
+  const stem = stripExtension(fileName).toLowerCase();
+  if (stem === "index" && type === "html_page") return "homepage";
+  if (["style", "styles", "main"].includes(stem) && type === "stylesheet") return "stylesheet";
+  if (stem.includes("logo")) return "logo";
+  if (type === "html_page") return `${normalizeWords(stem)} page`;
+  if (type === "stylesheet") return "stylesheet";
+  if (type === "script") return "script";
+  if (type === "image_asset") return source === "user_attachment" ? "image asset" : "image";
+  if (type === "directory") return `${normalizeWords(stem)} directory`;
+  return normalizeWords(stem) || "artifact";
+}
+
+function inferArtifactKind(path: string): string {
+  return extname(path) ? "file" : "directory";
+}
+
+function inferArtifactIdentityType(path: string, kind: string): string {
+  if (kind === "directory") return "directory";
+  const ext = extname(path).toLowerCase();
+  if ([".html", ".htm"].includes(ext)) return "html_page";
+  if (ext === ".css") return "stylesheet";
+  if ([".js", ".ts", ".jsx", ".tsx", ".mjs", ".cjs"].includes(ext)) return "script";
+  if ([".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg"].includes(ext)) return "image_asset";
+  if ([".json", ".csv", ".xlsx", ".xls", ".sqlite", ".db"].includes(ext)) return "data_file";
+  if ([".md", ".txt", ".pdf", ".doc", ".docx"].includes(ext)) return "document";
+  return "file";
+}
+
+function isUserAttachmentAsset(asset: TaskAssetRecord): boolean {
+  return asset.role === "input" || asset.role === "reference" || Boolean(asset.sessionAssetId);
+}
+
+function stableArtifactId(source: GitMemoryTaskStateFileRecord["source"], path: string): string {
+  return `artifact-${createHash("sha256").update(`${source}:${path}`).digest("hex").slice(0, 16)}`;
+}
+
+function stripExtension(value: string): string {
+  const extension = extname(value);
+  return extension ? value.slice(0, -extension.length) : value;
+}
+
+function titleCase(value: string): string {
+  return normalizeWords(value).replace(/\b[a-z]/g, (letter) => letter.toUpperCase());
+}
+
+function normalizeWords(value: string): string {
+  return value
+    .replace(/[_/-]+/g, " ")
+    .replace(/[^a-z0-9 ]+/gi, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
+}
+
+function normalizeAlias(value: string): string {
+  return normalizeWords(value);
+}
+
+function deriveTaskStateSearchTerms(input: {
+  taskId: GitMemoryTaskId;
+  branch: string;
+  title: string;
+  objective: string;
+  summary: string;
+  completed: string[];
+  open: string[];
+  blockers: string[];
+  facts: string[];
+  next: string;
+  files: string[];
+  decisions: string[];
+}): string[] {
+  return unique([
+    input.taskId,
+    input.branch,
+    input.title,
+    input.objective,
+    input.summary,
+    input.next,
+    ...input.completed,
+    ...input.open,
+    ...input.blockers,
+    ...input.facts,
+    ...input.files,
+    ...input.decisions,
+  ].flatMap(tokenizeSearchText));
 }
 
 function actionSummaries(actions: GitMemoryActionRecord[]): string[] {
@@ -1724,6 +2303,16 @@ async function readTaskAssets(
 ): Promise<TaskAssetRecord[]> {
   const current = await readRefJson<GitMemoryTaskAssetsFile>(driver, ref, gitMemoryTaskAssetsPath(taskId));
   return Array.isArray(current?.assets) ? current.assets.filter(isTaskAssetRecord) : [];
+}
+
+async function readTaskRunStagedSteps(
+  driver: GitMemoryWorktreeGitDriver,
+  taskId: GitMemoryTaskId,
+  runId: GitMemoryRunId,
+): Promise<GitMemoryStepRecord[]> {
+  return parseJsonl<GitMemoryStepRecord>(
+    await driver.readWorkingFile(gitMemoryTaskStepsStagingPath(taskId, runId)),
+  ).filter((record) => record.taskId === taskId && record.runId === runId);
 }
 
 function mergeTaskAssets(
@@ -1993,14 +2582,12 @@ async function readTaskSearchDocumentsFromDriver(
       continue;
     }
 
-    const [taskMarkdown, state, notesMarkdown] = await Promise.all([
-      driver.readFile(ref, gitMemoryTaskMarkdownPath(taskEntry.taskId)),
+    const [state, notesMarkdown] = await Promise.all([
       parseJson<GitMemoryTaskStateFile>(
         await driver.readFile(ref, gitMemoryTaskStatePath(taskEntry.taskId)),
       ),
       driver.readFile(ref, gitMemoryTaskNotesPath(taskEntry.taskId)),
     ]);
-    const task = parseGitMemoryTaskMarkdown(taskMarkdown);
     const notes = parseTaskNotesSearchFields(notesMarkdown ?? "");
     documents.push({
       entry: taskEntry,
@@ -2008,26 +2595,41 @@ async function readTaskSearchDocumentsFromDriver(
         taskId: taskEntry.taskId,
         branch: taskEntry.branch,
         ref,
-        title: task?.title ?? taskEntry.title,
-        objective: task?.objective ?? taskEntry.title,
+        title: state?.task.title ?? taskEntry.title,
+        objective: state?.task.objective ?? taskEntry.title,
         status: state?.status ?? taskEntry.status,
-        summary: state?.summary ?? task?.objective ?? taskEntry.title,
-        open: state?.open ?? [],
-        blockers: state?.blockers ?? [],
-        facts: state?.facts ?? [],
-        next: state?.next ?? task?.objective ?? taskEntry.title,
+        summary: state?.summary ?? taskEntry.title,
+        open: state?.progress.open ?? [],
+        blockers: state?.progress.blockers ?? [],
+        facts: state?.memory.facts.map((fact) => fact.text) ?? [],
+        next: state?.progress.next ?? taskEntry.title,
         updatedAt: state?.updatedAt ?? taskEntry.updatedAt,
-        ...(notes.latestRunId ? { latestRunId: notes.latestRunId } : {}),
-        ...(notes.files.length > 0 ? { files: notes.files } : {}),
-        ...(!task || !state ? { missing: true } : {}),
+        ...(state?.runs.latestRunId ? { latestRunId: state.runs.latestRunId } : notes.latestRunId ? { latestRunId: notes.latestRunId } : {}),
+        ...(state?.context.importantFiles.length ? { files: state.context.importantFiles } : notes.files.length > 0 ? { files: notes.files } : {}),
+        ...(state?.memory.files.length ? { artifacts: state.memory.files.map(taskSearchArtifactFromStateFile) } : {}),
+        ...(!state ? { missing: true } : {}),
       },
       notesMarkdown: notesMarkdown ?? "",
       recentWork: notes.recentWork,
-      searchTerms: notes.searchTerms,
+      searchTerms: state?.context.searchTerms ?? notes.searchTerms,
     });
   }
 
   return documents;
+}
+
+function taskSearchArtifactFromStateFile(record: GitMemoryTaskStateFileRecord): GitMemoryTaskSearchArtifact {
+  return {
+    artifactId: record.artifactId,
+    source: record.source,
+    kind: record.kind,
+    path: record.path,
+    ...(record.originalName ? { originalName: record.originalName } : {}),
+    role: record.role,
+    status: record.status,
+    identity: record.identity,
+    confidence: record.confidence,
+  };
 }
 
 function parseTaskNotesSearchFields(markdown: string): {
@@ -2112,7 +2714,6 @@ function normalizeTaskDetailLimits(input: Partial<GitMemoryTaskDetailLimits> | u
     commitLogLimit: normalizeReadLimit(input?.commitLogLimit, 10),
     evidenceLimit: normalizeReadLimit(input?.evidenceLimit, 20),
     conversationMarkdownCharLimit: normalizeMarkdownCharLimit(input?.conversationMarkdownCharLimit, 12_000),
-    taskMarkdownCharLimit: normalizeMarkdownCharLimit(input?.taskMarkdownCharLimit, 12_000),
     runMarkdownCharLimit: normalizeMarkdownCharLimit(input?.runMarkdownCharLimit, 12_000),
   };
 }
@@ -2195,6 +2796,18 @@ async function readAllTaskEvidence(
   ref: string,
   taskId: GitMemoryTaskId,
 ): Promise<GitMemoryEvidenceManifestRecord[]> {
+  const stepPrefix = `${gitMemoryTaskDir(taskId)}/steps`;
+  const stepPaths = (await driver.listTreePaths(ref, stepPrefix))
+    .filter((path) => path.endsWith(".jsonl"))
+    .sort();
+  const stepRecords: GitMemoryEvidenceManifestRecord[] = [];
+  for (const path of stepPaths) {
+    stepRecords.push(...await readRefJsonl<GitMemoryStepRecord>(driver, ref, path).then((steps) => steps.map(stepToEvidenceRecord)));
+  }
+  if (stepRecords.length > 0) {
+    return stepRecords;
+  }
+
   const prefix = `${gitMemoryTaskDir(taskId)}/evidence`;
   const paths = (await driver.listTreePaths(ref, prefix))
     .filter((path) => path.endsWith("/manifest.jsonl"))
@@ -2213,12 +2826,81 @@ async function readTaskEvidenceForRun(
   runId: GitMemoryRunId,
   limit: number,
 ): Promise<GitMemoryEvidenceManifestRecord[]> {
-  const path = gitMemoryTaskEvidenceManifestPath(taskId, runId);
+  const steps = await readRefJsonl<GitMemoryStepRecord>(driver, ref, gitMemoryTaskStepsPath(taskId, runId));
+  if (steps.length > 0) {
+    return tail(steps.map(stepToEvidenceRecord), limit);
+  }
+  const path = legacyGitMemoryTaskEvidenceManifestPath(taskId, runId);
   const raw = await driver.readFile(ref, path);
   if (raw === null) {
-    throw new Error(`Git memory evidence manifest not found for run: ${runId}`);
+    throw new Error(`Git memory step log or evidence manifest not found for run: ${runId}`);
   }
   return tail(parseJsonl<GitMemoryEvidenceManifestRecord>(raw), limit);
+}
+
+function legacyGitMemoryTaskEvidenceManifestPath(taskId: GitMemoryTaskId, runId: GitMemoryRunId): string {
+  return `${gitMemoryTaskDir(taskId)}/evidence/${runId}/manifest.jsonl`;
+}
+
+function findRunStepRecord(
+  records: GitMemoryStepRecord[],
+  input: Pick<ReadGitMemoryRunStepInput, "runId" | "step" | "callId">,
+): { record: GitMemoryStepRecord; toolCall?: GitMemoryStepToolCallRecord } | undefined {
+  const record = records.find((candidate) => candidate.runId === input.runId && candidate.step === input.step);
+  if (!record) {
+    return undefined;
+  }
+  if (!input.callId) {
+    return { record };
+  }
+  const toolCall = record.toolCalls.find((call) => call.callId === input.callId);
+  return toolCall ? { record, toolCall } : undefined;
+}
+
+function buildRunStepReadResult(input: {
+  sessionId: GitMemorySessionId;
+  taskId: GitMemoryTaskId;
+  branch: string;
+  ref: string;
+  source: GitMemoryRunStepReadResult["source"];
+  record: GitMemoryStepRecord;
+  toolCall?: GitMemoryStepToolCallRecord;
+}): GitMemoryRunStepReadResult {
+  return {
+    sessionId: input.sessionId,
+    taskId: input.taskId,
+    branch: input.branch,
+    ref: input.ref,
+    runId: input.record.runId,
+    step: input.record.step,
+    source: input.source,
+    record: input.record,
+    ...(input.toolCall ? { toolCall: input.toolCall } : {}),
+  };
+}
+
+function stepToEvidenceRecord(step: GitMemoryStepRecord): GitMemoryEvidenceManifestRecord {
+  const tools = step.toolCalls.map((call) => call.tool).filter(Boolean);
+  return {
+    v: 1,
+    runId: step.runId,
+    taskId: step.taskId,
+    step: step.step,
+    tool: tools.length > 0 ? unique(tools).join(",") : "agent_step",
+    status: step.status === "failed" ? "failed" : step.status === "skipped" ? "skipped" : "completed",
+    summary: step.summary || step.verification.summary || step.verification.evidenceSummary || "Step completed.",
+    evidenceRef: step.verification.evidenceSummary ?? step.summary,
+    artifacts: step.artifacts,
+    facts: step.facts,
+    accessModes: ["step"],
+    ...(step.outputSize !== undefined ? { outputSize: step.outputSize } : {}),
+    ...(step.lineCount !== undefined ? { lineCount: step.lineCount } : {}),
+    ...(step.truncated !== undefined ? { truncated: step.truncated } : {}),
+    source: {
+      kind: "git-memory-step",
+      step: step.step,
+    },
+  };
 }
 
 async function readCompactLog(
@@ -2248,30 +2930,61 @@ function scoreTaskSearchMatch(
   rawQuery: string,
   queryTokens: string[],
 ): GitMemoryTaskSearchMatch {
+  const scored = scoreGitMemoryTaskSearchDocument(document, rawQuery, queryTokens);
+  return {
+    ...document.task,
+    score: scored.score,
+    routeScore: scored.routeScore,
+    matchReasons: scored.matchReasons,
+    ...(scored.matchedArtifacts.length > 0 ? { matchedArtifacts: scored.matchedArtifacts } : {}),
+  };
+}
+
+export interface GitMemoryTaskSearchScore {
+  score: number;
+  routeScore: number;
+  matchReasons: string[];
+  matchedArtifacts: GitMemoryTaskSearchArtifact[];
+}
+
+export function scoreGitMemoryTaskSearchDocument(
+  document: {
+    task: GitMemoryTaskRoutingSnapshotTask;
+    notesMarkdown?: string;
+    recentWork?: string[];
+    searchTerms?: string[];
+  },
+  rawQuery: string,
+  queryTokens = tokenizeSearchText(rawQuery),
+): GitMemoryTaskSearchScore {
   const task = document.task;
   const reasons = new Set<string>();
+  const matchedArtifacts = new Map<string, GitMemoryTaskSearchArtifact>();
   let score = 0;
+  let routeScore = 0;
   const normalizedQuery = normalizeSearchText(rawQuery);
 
   const weightedFields: Array<{
     reason: string;
-    weight: number;
+    searchWeight: number;
+    routeSingleTokenScore: number;
+    routeMultiTokenScore: number;
     values: string[];
   }> = [
-    { reason: "taskId", weight: 18, values: [task.taskId] },
-    { reason: "branch", weight: 14, values: [task.branch] },
-    { reason: "title", weight: 12, values: [task.title] },
-    { reason: "objective", weight: 10, values: [task.objective] },
-    { reason: "summary", weight: 8, values: [task.summary] },
-    { reason: "next", weight: 7, values: [task.next] },
-    { reason: "facts", weight: 6, values: task.facts },
-    { reason: "files", weight: 11, values: task.files ?? [] },
-    { reason: "recentWork", weight: 8, values: document.recentWork },
-    { reason: "searchTerms", weight: 7, values: document.searchTerms },
-    { reason: "open", weight: 5, values: task.open },
-    { reason: "blockers", weight: 5, values: task.blockers },
-    { reason: "status", weight: 3, values: [task.status] },
-    { reason: "notes", weight: 2, values: [document.notesMarkdown] },
+    { reason: "taskId", searchWeight: 100, routeSingleTokenScore: 100, routeMultiTokenScore: 100, values: [task.taskId] },
+    { reason: "branch", searchWeight: 60, routeSingleTokenScore: 45, routeMultiTokenScore: 85, values: [task.branch] },
+    { reason: "title", searchWeight: 55, routeSingleTokenScore: 55, routeMultiTokenScore: 90, values: [task.title] },
+    { reason: "objective", searchWeight: 45, routeSingleTokenScore: 40, routeMultiTokenScore: 75, values: [task.objective] },
+    { reason: "files", searchWeight: 58, routeSingleTokenScore: 58, routeMultiTokenScore: 78, values: task.files ?? [] },
+    { reason: "summary", searchWeight: 30, routeSingleTokenScore: 30, routeMultiTokenScore: 60, values: [task.summary] },
+    { reason: "next", searchWeight: 28, routeSingleTokenScore: 28, routeMultiTokenScore: 58, values: [task.next] },
+    { reason: "facts", searchWeight: 26, routeSingleTokenScore: 26, routeMultiTokenScore: 62, values: task.facts },
+    { reason: "recentWork", searchWeight: 24, routeSingleTokenScore: 24, routeMultiTokenScore: 55, values: document.recentWork ?? [] },
+    { reason: "searchTerms", searchWeight: 22, routeSingleTokenScore: 22, routeMultiTokenScore: 55, values: document.searchTerms ?? [] },
+    { reason: "open", searchWeight: 20, routeSingleTokenScore: 20, routeMultiTokenScore: 72, values: task.open },
+    { reason: "blockers", searchWeight: 18, routeSingleTokenScore: 18, routeMultiTokenScore: 50, values: task.blockers },
+    { reason: "status", searchWeight: 5, routeSingleTokenScore: 5, routeMultiTokenScore: 5, values: [task.status] },
+    { reason: "notes", searchWeight: 4, routeSingleTokenScore: 4, routeMultiTokenScore: 20, values: [document.notesMarkdown ?? ""] },
   ];
 
   for (const field of weightedFields) {
@@ -2280,21 +2993,112 @@ function scoreTaskSearchMatch(
       continue;
     }
     if (normalizedQuery && fieldText.includes(normalizedQuery)) {
-      score += field.weight * 3;
+      score += queryTokens.length > 1 ? field.searchWeight * 3 : field.searchWeight;
+      routeScore = Math.max(routeScore, queryTokens.length > 1
+        ? field.routeMultiTokenScore
+        : field.routeSingleTokenScore);
       reasons.add(field.reason);
       continue;
     }
     const hits = queryTokens.filter((token) => fieldText.includes(token)).length;
     if (hits > 0) {
-      score += hits * field.weight;
+      score += hits * field.searchWeight;
+      routeScore = Math.max(routeScore, hits >= 2
+        ? field.routeMultiTokenScore
+        : field.routeSingleTokenScore);
       reasons.add(field.reason);
     }
   }
 
+  for (const artifact of task.artifacts ?? []) {
+    const artifactScore = scoreTaskSearchArtifact(artifact, normalizedQuery, queryTokens);
+    if (artifactScore.score <= 0) {
+      continue;
+    }
+    score += artifactScore.score;
+    routeScore = Math.max(routeScore, artifactScore.routeScore);
+    matchedArtifacts.set(artifact.artifactId, artifact);
+    for (const reason of artifactScore.reasons) {
+      reasons.add(reason);
+    }
+  }
+
   return {
-    ...task,
     score,
+    routeScore,
     matchReasons: [...reasons],
+    matchedArtifacts: [...matchedArtifacts.values()],
+  };
+}
+
+function scoreTaskSearchArtifact(
+  artifact: GitMemoryTaskSearchArtifact,
+  normalizedQuery: string,
+  queryTokens: string[],
+): { score: number; routeScore: number; reasons: string[] } {
+  let score = 0;
+  let routeScore = 0;
+  const reasons = new Set<string>();
+  const fields: Array<{
+    reason: string;
+    searchWeight: number;
+    routeSingleTokenScore: number;
+    routeMultiTokenScore: number;
+    values: string[];
+  }> = [
+    { reason: "artifactPath", searchWeight: 95, routeSingleTokenScore: 82, routeMultiTokenScore: 95, values: [artifact.path] },
+    { reason: "artifactFilename", searchWeight: 86, routeSingleTokenScore: 78, routeMultiTokenScore: 88, values: [basename(artifact.path)] },
+    { reason: "artifactOriginalName", searchWeight: 90, routeSingleTokenScore: 82, routeMultiTokenScore: 90, values: artifact.originalName ? [artifact.originalName] : [] },
+    { reason: "artifactIdentity", searchWeight: 88, routeSingleTokenScore: 70, routeMultiTokenScore: 88, values: [artifact.identity.name] },
+    { reason: "artifactAlias", searchWeight: 82, routeSingleTokenScore: 68, routeMultiTokenScore: 82, values: artifact.identity.aliases },
+    { reason: "artifactType", searchWeight: 20, routeSingleTokenScore: 20, routeMultiTokenScore: 40, values: [artifact.identity.type, artifact.kind, artifact.role] },
+    { reason: "artifactSource", searchWeight: 15, routeSingleTokenScore: 15, routeMultiTokenScore: 35, values: [artifact.source] },
+  ];
+
+  for (const field of fields) {
+    const fieldText = normalizeSearchText(field.values.join(" "));
+    if (!fieldText) {
+      continue;
+    }
+    if (normalizedQuery && fieldText.includes(normalizedQuery)) {
+      score += queryTokens.length > 1 ? field.searchWeight * 3 : field.searchWeight;
+      routeScore = Math.max(routeScore, queryTokens.length > 1
+        ? field.routeMultiTokenScore
+        : field.routeSingleTokenScore);
+      reasons.add(field.reason);
+      continue;
+    }
+    const hits = queryTokens.filter((token) => fieldText.includes(token)).length;
+    if (hits > 0) {
+      score += hits * field.searchWeight;
+      routeScore = Math.max(routeScore, hits >= 2
+        ? field.routeMultiTokenScore
+        : field.routeSingleTokenScore);
+      reasons.add(field.reason);
+    }
+  }
+
+  const hasSpecificAttachmentWord = queryTokens.some((token) => token === "uploaded" || token === "attachment" || token === "attached");
+  const hasUploadWord = queryTokens.includes("upload");
+  if (artifact.source === "user_attachment" && (hasSpecificAttachmentWord || hasUploadWord)) {
+    const identityText = normalizeSearchText([
+      artifact.originalName,
+      artifact.path,
+      artifact.identity.name,
+      ...artifact.identity.aliases,
+    ].filter(Boolean).join(" "));
+    const semanticHits = queryTokens.filter((token) => identityText.includes(token)).length;
+    if (semanticHits > 0 && (hasSpecificAttachmentWord || semanticHits >= 2)) {
+      score += 90 + semanticHits * 30;
+      routeScore = Math.max(routeScore, semanticHits >= 2 ? 95 : 85);
+      reasons.add("userAttachment");
+    }
+  }
+
+  return {
+    score,
+    routeScore,
+    reasons: [...reasons],
   };
 }
 
@@ -2400,6 +3204,74 @@ function buildEvidenceManifestRecords(input: {
     accessModes: action.evidenceRef ? ["summary"] : [],
     source: { kind: "git-memory-action" },
   }));
+}
+
+function buildStepRecordsFromLegacyEvidence(input: {
+  taskId: GitMemoryTaskId;
+  runId: GitMemoryRunId;
+  actions: GitMemoryActionRecord[];
+  evidence: GitMemoryEvidenceManifestRecord[];
+  completedAt: string;
+}): GitMemoryStepRecord[] {
+  const evidence = input.evidence.length > 0
+    ? input.evidence
+    : input.actions.map((action, index): GitMemoryEvidenceManifestRecord => ({
+      v: 1,
+      runId: input.runId,
+      taskId: input.taskId,
+      step: index + 1,
+      actionId: action.actionId,
+      tool: action.tool,
+      status: action.status,
+      summary: action.summary,
+      ...(action.evidenceRef ? { evidenceRef: action.evidenceRef } : {}),
+      artifacts: [],
+      facts: [],
+      accessModes: action.evidenceRef ? ["summary"] : [],
+      source: { kind: "legacy-action" },
+    }));
+  return evidence.map((record, index): GitMemoryStepRecord => {
+    const status = record.status === "failed"
+      ? "failed"
+      : record.status === "skipped"
+        ? "skipped"
+        : "completed";
+    return {
+      v: 1,
+      runId: input.runId,
+      taskId: input.taskId,
+      step: record.step ?? index + 1,
+      status,
+      completedAt: input.completedAt,
+      summary: record.summary,
+      action: {
+        toolsUsed: [record.tool],
+        toolSuccessCount: status === "completed" ? 1 : 0,
+        toolFailureCount: status === "failed" ? 1 : 0,
+      },
+      toolCalls: [{
+        tool: record.tool,
+        status: status === "failed" ? "failed" : "success",
+        input: {},
+        ...(record.evidenceRef ? { output: record.evidenceRef } : {}),
+      }],
+      verification: {
+        passed: status === "completed",
+        policy: "deterministic",
+        summary: record.summary,
+        ...(record.evidenceRef ? { evidenceSummary: record.evidenceRef } : {}),
+        evidenceItems: record.facts,
+        newFacts: record.facts,
+        artifacts: record.artifacts,
+        usedRawArtifacts: [],
+      },
+      facts: record.facts,
+      artifacts: record.artifacts,
+      ...(record.outputSize !== undefined ? { outputSize: record.outputSize } : {}),
+      ...(record.lineCount !== undefined ? { lineCount: record.lineCount } : {}),
+      ...(record.truncated !== undefined ? { truncated: record.truncated } : {}),
+    };
+  });
 }
 
 function tail<T>(values: T[], limit: number): T[] {

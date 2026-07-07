@@ -57,6 +57,15 @@ from the synthetic decision context to the real run id, refreshes
 `context.git.current`, removes routing tools for the rest of the run, and then
 allows normal work tools.
 
+If an active task exists and no run id exists yet, normal work tools can appear
+alongside the short routing window. For same-task continuation, the model uses
+normal work tools directly and the runner creates/binds the active-task run
+through the app runtime immediately before executing the first normal tool. For
+new tasks, different existing tasks, or ambiguous ownership, the model may use
+create, activate, or clarify routing tools during the window. Once a normal
+tool creates the run, or once routing is resolved, routing mutation tools are
+removed from the task-run surface.
+
 The model-facing prompt uses a grouped context projection. The important paths
 are:
 
@@ -260,21 +269,33 @@ tasks/<taskId>/
 
 Core files:
 
-- `task.md`: human/model-readable task identity and objective.
-- `task.json`: stable machine-readable identity and metadata.
-- `state.json`: current machine-readable task state.
+- `state.json`: canonical machine-readable task context. It stores task
+  identity, objective, status, progress, durable facts, decisions, evidence
+  summaries, important files, assets, run ids, recent run summaries, and
+  derived search/context hints.
 - `runs/<runId>.md`: human/model-readable run summary.
 - `runs/<runId>.json`: machine-readable run summary.
-- `actions/<runId>.jsonl`: compact tool/action metadata for a run.
-- `evidence/<runId>/manifest.jsonl`: durable compact evidence records.
+- `steps/<runId>.jsonl`: full durable step records for a run, including
+  tool calls, full tool inputs and outputs available to the runner,
+  observations, deterministic verification, facts, artifacts, and work-state
+  updates.
 - `assets.json` or equivalent asset index when task assets are present.
+- `notes.md`: compact task note/index generated from current task state,
+  latest run, recent work, files, facts, and search terms.
+
+Agent task context is built primarily from `state.json`, with recent
+`runs/*.json`, compact evidence summaries derived from `steps/*.jsonl`, commit
+metadata, and conversation reconstructed from `sessionStoreCommit` plus
+`conversationRefs` used as bounded supporting context.
+Do not add separate task identity or task-context placeholder files unless a
+new reader and persistence contract actually uses them.
 
 Run commits carry useful Ayati commit trailers such as session id, task id, run
 id, event, status, branch, conversation sequence, and action ids. The commit
 message and run Markdown should include compact human-readable summary,
 outcome, work performed, verification, blockers, evidence, and next step. Raw
-tool output stays in evidence files/manifests, not in commit messages or task
-state.
+tool input/output belongs in `steps/<runId>.jsonl`, not in commit messages or
+task state.
 
 ## Assets
 

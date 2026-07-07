@@ -120,7 +120,7 @@ describe("parseAgentDecision", () => {
     expect(systemPrompt).toContain("Do not use ask_user_feedback for final responses");
     expect(systemPrompt).toContain("concrete deliverable and enough detail to begin now");
     expect(systemPrompt).toContain("reply directly with one short clarifying question instead of creating a task");
-    expect(systemPrompt).toContain("Normal work tools require a task run");
+    expect(systemPrompt).toContain("Normal work tools require task ownership");
     expect(systemPrompt).toContain("Do not tell the user tools are missing.");
     expect(systemPrompt).not.toContain("decision_act");
   });
@@ -146,7 +146,13 @@ describe("parseAgentDecision", () => {
     expect(systemPrompt).toContain("If summary and exact conversation conflict, trust context.timeline");
     expect(systemPrompt).toContain("do not infer omitted details from it");
     expect(systemPrompt).toContain("context.run.status");
+    expect(systemPrompt).toContain("context.run.workState");
     expect(systemPrompt).toContain("context.run.toolCalls");
+    expect(systemPrompt).toContain("mode=\"summary\"");
+    expect(systemPrompt).toContain("outputPreview");
+    expect(systemPrompt).toContain("stepRef");
+    expect(systemPrompt).toContain("evidenceRef");
+    expect(systemPrompt).toContain("git_context_read_run_step");
     expect(systemPrompt).not.toContain("context.scratch");
     expect(systemPrompt).not.toContain("context.run.progress");
     expect(systemPrompt).not.toContain("context.run.feedback");

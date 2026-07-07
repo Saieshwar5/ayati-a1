@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { IVecEngine } from "../../src/ivec/index.js";
@@ -169,6 +169,7 @@ function createChatContextRuntime(
         commit: "task-commit",
       },
     }),
+    recordTaskRunStep: vi.fn().mockResolvedValue(undefined),
     recordAssistantMessage: vi.fn().mockResolvedValue({
       v: 1,
       seq: 2,
@@ -193,6 +194,7 @@ function createUnboundChatContextRuntime(): GitMemoryChatContextRuntime {
       runId: "R-20260627-0004",
       taskCommit: "task-commit",
     }),
+    recordTaskRunStep: vi.fn().mockResolvedValue(undefined),
     recordAssistantMessage: vi.fn().mockResolvedValue({
       v: 1,
       seq: 2,
@@ -218,6 +220,7 @@ function createActiveUnroutedChatContextRuntime(): GitMemoryChatContextRuntime {
       runId: routed.runId,
       taskCommit: "task-commit",
     }),
+    recordTaskRunStep: vi.fn().mockResolvedValue(undefined),
     recordAssistantMessage: vi.fn().mockResolvedValue({
       v: 1,
       seq: 2,
@@ -254,6 +257,7 @@ function createSystemEventContextRuntime(
         commit: "task-commit",
       },
     }),
+    recordTaskRunStep: vi.fn().mockResolvedValue(undefined),
     recordAssistantMessage: vi.fn().mockResolvedValue({
       v: 1,
       seq: 2,
@@ -1211,7 +1215,7 @@ describe("IVecEngine", () => {
     }
   });
 
-  it("repairs chat action tools before an active task work run exists", async () => {
+  it("auto-binds chat action tools to the active task before execution", async () => {
     const dataDir = mkdtempSync(join(tmpdir(), "ayati-eng-active-autobind-"));
     try {
       const outputPath = join(dataDir, "invoice-note.txt");
@@ -1226,10 +1230,11 @@ describe("IVecEngine", () => {
                 calls: [{
                   id: "write_note",
                   tool: "write_files",
-                  input: {
-                    createDirs: true,
-                    files: [{ path: outputPath, content: "Invoice follow-up note." }],
-                  },
+	                  input: {
+	                    createDirs: true,
+	                    allowExternalPath: true,
+	                    files: [{ path: outputPath, content: "Invoice follow-up note." }],
+	                  },
                   dependsOn: [],
                   purpose: "Write the follow-up note for the active invoice task.",
                 }],
@@ -1268,12 +1273,14 @@ describe("IVecEngine", () => {
           content: expect.stringContaining(outputPath),
         });
       });
-      expect(chatContextRuntime.completeTaskRun).not.toHaveBeenCalled();
+      expect(chatContextRuntime.completeTaskRun).toHaveBeenCalled();
       expect(chatContextRuntime.routeTaskTurn).toHaveBeenCalledWith(expect.objectContaining({
         autoOnly: true,
       }));
-      expect(chatContextRuntime.activateTaskTurn).not.toHaveBeenCalled();
-      expect(existsSync(outputPath)).toBe(false);
+      expect(chatContextRuntime.activateTaskTurn).toHaveBeenCalledWith(expect.objectContaining({
+        taskId: "W-20260627-0001",
+      }));
+      expect(readFileSync(outputPath, "utf-8")).toBe("Invoice follow-up note.");
     } finally {
       rmSync(dataDir, { recursive: true, force: true });
     }

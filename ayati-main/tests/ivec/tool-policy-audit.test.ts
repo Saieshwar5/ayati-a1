@@ -57,6 +57,29 @@ describe("tool policy audit", () => {
     expect(audit.violations).toEqual([]);
   });
 
+  it("allows routing mutations during the active-task routing window", () => {
+    const audit = auditToolPolicy({
+      mode: {
+        ...mode("active_task_ready"),
+        routingWindow: {
+          open: true,
+          step: 1,
+          maxSteps: 2,
+          remaining: 1,
+          expiresAfterThisDecision: false,
+          readToolsAvailable: true,
+          routingToolsAvailable: true,
+          readToolsRemainAfterExpiry: true,
+          guidance: "test routing window",
+        },
+      },
+      selectedTools: ["write_files", "git_context_create_task_for_turn"],
+    });
+
+    expect(audit.phase).toBe("task_run");
+    expect(audit.violations).toEqual([]);
+  });
+
   it("flags routing mutations after task work is bound", () => {
     const audit = auditToolPolicy({
       mode: mode("task_run", true, "bound"),

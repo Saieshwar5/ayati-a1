@@ -1,5 +1,7 @@
-import type { LoopState, PromptToolCallContext, TaskNote, ToolContextState, ToolObservation, WorkState } from "../types.js";
+import type { LoopState, TaskNote, ToolContextState, ToolObservation, WorkState } from "../types.js";
 import type { RepairPromptCard } from "./repair-policy.js";
+import { buildPromptToolCallsForRun } from "./run-tool-call-context.js";
+import type { PromptToolCalls } from "./run-tool-call-context.js";
 import {
   buildRuntimeCapabilityPromptContext,
   detectRuntimeCapabilityMode,
@@ -8,19 +10,15 @@ import type { RuntimeCapabilityPromptContext } from "./runtime-capability-mode.j
 import type { ToolLoadResult } from "./tool-working-set.js";
 import { buildAgentContextPack } from "./context-pack.js";
 import { projectAgentPromptContext } from "./prompt-context.js";
-import type { AgentPromptContext, PromptHarnessContext, PromptRunContext, PromptToolsContext } from "./prompt-context.js";
+import type {
+  AgentPromptContext,
+  PromptHarnessContext,
+  PromptRunContext,
+  PromptRunWorkStateContext,
+  PromptToolsContext,
+} from "./prompt-context.js";
 
-export interface PromptProgressState {
-  status: WorkState["status"];
-  summary?: string;
-  openWork?: string[];
-  blockers?: string[];
-  verifiedFacts?: string[];
-  evidence?: string[];
-  taskNotes?: TaskNote[];
-  nextStep?: string;
-  userInputNeeded?: string;
-}
+export interface PromptProgressState extends PromptRunWorkStateContext {}
 
 export interface PromptObservations {
   latest: ToolObservation[];
@@ -29,9 +27,6 @@ export interface PromptObservations {
 export interface PromptReadContext {
   latest: ToolObservation[];
 }
-
-export type PromptRunToolCallContext = Omit<PromptToolCallContext, "hasMore">;
-export type PromptToolCalls = PromptRunToolCallContext[];
 
 export interface PromptToolLoadState {
   status: ToolLoadResult["status"];
@@ -143,6 +138,7 @@ export function buildAgentStateView(state: LoopState, options: AgentStateViewOpt
     }),
     run: buildRunContext({
       status: state.workState.status,
+      workState: progress,
       toolCalls,
     }),
   });
@@ -179,10 +175,12 @@ function buildToolsContext(input: {
 
 function buildRunContext(input: {
   status: WorkState["status"];
+  workState?: PromptProgressState;
   toolCalls?: PromptToolCalls;
 }): PromptRunContext {
   return {
     status: input.status,
+    ...(input.workState ? { workState: input.workState } : {}),
     ...(input.toolCalls ? { toolCalls: input.toolCalls } : {}),
   };
 }
@@ -315,6 +313,7 @@ function buildProgressView(workState: WorkState): PromptProgressState | undefine
   const blockers = compactList(workState.blockers, 4, 180);
   const verifiedFacts = compactList(workState.verifiedFacts, 6, 180);
   const evidence = compactList(workState.evidence, 5, 180);
+  const artifacts = compactList(workState.artifacts, 6, 180);
   const taskNotes = compactTaskNotes(workState.taskNotes);
   const nextStep = workState.nextStep?.trim() ? truncate(workState.nextStep, 220) : undefined;
   const userInputNeeded = workState.userInputNeeded?.trim() ? truncate(workState.userInputNeeded, 220) : undefined;
@@ -324,6 +323,7 @@ function buildProgressView(workState: WorkState): PromptProgressState | undefine
     || blockers.length > 0
     || verifiedFacts.length > 0
     || evidence.length > 0
+    || artifacts.length > 0
     || taskNotes.length > 0
     || nextStep !== undefined
     || userInputNeeded !== undefined;
@@ -339,6 +339,7 @@ function buildProgressView(workState: WorkState): PromptProgressState | undefine
     ...(blockers.length > 0 ? { blockers } : {}),
     ...(verifiedFacts.length > 0 ? { verifiedFacts } : {}),
     ...(evidence.length > 0 ? { evidence } : {}),
+    ...(artifacts.length > 0 ? { artifacts } : {}),
     ...(taskNotes.length > 0 ? { taskNotes } : {}),
     ...(nextStep ? { nextStep } : {}),
     ...(userInputNeeded ? { userInputNeeded } : {}),
@@ -388,13 +389,7 @@ function buildReadContextView(toolContext: ToolContextState | undefined): Prompt
 }
 
 function buildToolCallsView(toolContext: ToolContextState | undefined): PromptToolCalls | undefined {
-  const toolCalls = (toolContext?.toolCalls ?? []).map(projectPromptToolCall);
-  return toolCalls.length > 0 ? toolCalls : undefined;
-}
-
-function projectPromptToolCall(call: PromptToolCallContext): PromptRunToolCallContext {
-  const { hasMore: _hasMore, ...projected } = call;
-  return projected;
+  return buildPromptToolCallsForRun(toolContext?.toolCalls);
 }
 
 function buildTraceView(state: LoopState): PromptTrace | undefined {

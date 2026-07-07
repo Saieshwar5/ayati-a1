@@ -5,7 +5,7 @@ import { prepareIncomingAttachments } from "../../documents/attachment-preparer.
 import type { PreparedAttachmentRecord } from "../../documents/prepared-attachment-registry.js";
 import type { PreparedAttachmentSummary } from "../../documents/types.js";
 import type { MemoryRunHandle, RunRecorder, SessionInputHandle } from "../../memory/types.js";
-import type { TaskAssetRecord } from "../../context-engine/index.js";
+import type { GitMemoryStepRecord, TaskAssetRecord } from "../../context-engine/index.js";
 import type {
   ActOutput,
   ActToolCallRecord,
@@ -641,6 +641,7 @@ export async function runAgentLoop(
         preRunGitContextReadAction,
         preRunGitContextRoutingAction,
       });
+      const stepStartedAt = new Date().toISOString();
       const stepResult = await executePendingRoutingAction({
         deps,
         state,
@@ -650,6 +651,7 @@ export async function runAgentLoop(
         stepNumber: state.iteration,
         toolContext: routingToolContext,
       });
+      const stepCompletedAt = new Date().toISOString();
       actionStepCount++;
       lastVerificationPassed = stepResult.execution.verifyOutput.passed;
       if (!stepResult.execution.verifyOutput.passed) {
@@ -728,6 +730,10 @@ export async function runAgentLoop(
           }),
         });
       }
+      recordTaskStep(deps, state, decision.action, stepResult, {
+        startedAt: stepStartedAt,
+        completedAt: stepCompletedAt,
+      });
 
       if (stepResult.stepSummary.outcome === "failed") {
         state.consecutiveFailures++;
@@ -837,6 +843,7 @@ export async function runAgentLoop(
       })),
       allowedTools: decision.action.allowedTools,
     });
+    const stepStartedAt = new Date().toISOString();
     const stepResult = await executeActionStep({
       deps,
       state,
@@ -846,6 +853,7 @@ export async function runAgentLoop(
       decision,
       stepNumber: state.iteration,
     });
+    const stepCompletedAt = new Date().toISOString();
     actionStepCount++;
     lastVerificationPassed = stepResult.execution.verifyOutput.passed;
     if (!stepResult.execution.verifyOutput.passed) {
@@ -871,6 +879,10 @@ export async function runAgentLoop(
     const compactedStep = compactStepSummaryForState(stepResult.stepSummary);
     recordCompactionMetric(metrics, "completedStepSummary", measureJson(stepResult.stepSummary), measureJson(compactedStep), { step: state.iteration });
     state.completedSteps.push(compactedStep);
+    recordTaskStep(deps, state, decision.action, stepResult, {
+      startedAt: stepStartedAt,
+      completedAt: stepCompletedAt,
+    });
 
     recordPlanModeMetric(metrics, decision.action.mode, {
       step: state.iteration,
@@ -1783,12 +1795,13 @@ function buildToolExposureWarningCodes(
   workRunHandle: MemoryRunHandle | undefined,
 ): string[] {
   const warningCodes: string[] = [];
+  const mode = detectRuntimeCapabilityMode({ state, workRunHandle });
   const pendingTurnStatus = state.harnessContext.contextEngine?.pendingTurn?.routingStatus;
   const normalTools = normalTaskToolNames(selectedTools);
   if ((pendingTurnStatus === "unbound" || pendingTurnStatus === "clarifying") && normalTools.length > 0) {
     warningCodes.push("normal_tool_visible_during_pending_routing", "routing_state_mismatch");
   }
-  if (!state.runId && !workRunHandle && normalTools.length > 0) {
+  if (!state.runId && !workRunHandle && mode.name !== "active_task_ready" && normalTools.length > 0) {
     warningCodes.push("normal_tools_selected_without_work_run");
   }
   return uniqueStrings(warningCodes);
@@ -2203,6 +2216,107 @@ function buildToolEvidenceSource(call: ActToolCallRecord): Record<string, unknow
   });
 }
 
+function recordTaskStep(
+  deps: AgentLoopDeps,
+  state: LoopState,
+  action: AgentAction,
+  stepResult: ExecuteActionStepResult,
+  timing: {
+    startedAt: string;
+    completedAt: string;
+  },
+): void {
+  if (!deps.recordTaskStep || !state.runId || state.runClass !== "task") {
+    return;
+  }
+  const taskId = state.harnessContext.contextEngine?.task?.workId
+    ?? state.harnessContext.contextEngine?.pendingTurn?.workId;
+  if (!taskId) {
+    return;
+  }
+  deps.recordTaskStep(buildGitMemoryStepRecord({
+    taskId,
+    runId: state.runId,
+    action,
+    stepResult,
+    timing,
+  }));
+}
+
+function buildGitMemoryStepRecord(input: {
+  taskId: string;
+  runId: string;
+  action: AgentAction;
+  stepResult: ExecuteActionStepResult;
+  timing: {
+    startedAt: string;
+    completedAt: string;
+  };
+}): GitMemoryStepRecord {
+  const step = input.stepResult.stepSummary;
+  const verification = input.stepResult.execution.verifyOutput;
+  const status = step.outcome === "failed" ? "failed" : step.outcome === "skipped" ? "skipped" : "completed";
+  return {
+    v: 1,
+    taskId: input.taskId,
+    runId: input.runId,
+    step: step.step,
+    status,
+    startedAt: input.timing.startedAt,
+    completedAt: input.timing.completedAt,
+    summary: step.summary,
+    decision: {
+      actionKind: "tool_calls",
+      mode: input.action.mode,
+      allowedTools: input.action.allowedTools,
+      completion: input.action.completion,
+      assertions: input.action.assertions,
+    },
+    action: {
+      executionContract: step.executionContract,
+      calls: input.action.calls,
+      toolsUsed: step.toolsUsed ?? [],
+      toolSuccessCount: step.toolSuccessCount,
+      toolFailureCount: step.toolFailureCount,
+      stoppedEarlyReason: step.stoppedEarlyReason,
+    },
+    toolCalls: input.stepResult.execution.actOutput.toolCalls.map((call) => ({
+      ...call,
+      status: call.error ? "failed" : "success",
+    })),
+    verification: {
+      passed: verification.passed,
+      policy: step.verificationPolicy,
+      method: verification.method,
+      executionStatus: verification.executionStatus,
+      validationStatus: verification.validationStatus,
+      summary: verification.summary,
+      evidenceSummary: verification.evidenceSummary,
+      evidenceItems: verification.evidenceItems,
+      newFacts: verification.newFacts,
+      artifacts: verification.artifacts,
+      usedRawArtifacts: verification.usedRawArtifacts,
+      expectationCheckStatus: verification.expectationCheckStatus,
+      expectationCheckSummary: verification.expectationCheckSummary,
+    },
+    workStateAfter: input.stepResult.execution.nextWorkState,
+    facts: uniqueStrings([
+      ...step.newFacts,
+      ...verification.newFacts,
+      ...(step.evidenceItems ?? []),
+    ]),
+    artifacts: uniqueStrings([
+      ...step.artifacts,
+      ...verification.artifacts,
+    ]),
+    ...(step.outputSize !== undefined ? { outputSize: step.outputSize } : {}),
+    ...(step.lineCount !== undefined ? { lineCount: step.lineCount } : {}),
+    ...(step.truncated !== undefined ? { truncated: step.truncated } : {}),
+    ...(step.failureType ? { failureType: step.failureType } : {}),
+    ...(step.blockedTargets?.length ? { blockedTargets: step.blockedTargets } : {}),
+  };
+}
+
 function selectedSourceFields(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     return {};
@@ -2428,12 +2542,12 @@ function buildUpdatedToolContext(
     recent: getLatestObservations(execution),
     toolCalls: [
       ...(state.toolContext?.toolCalls ?? []),
-      ...execution.actOutput.toolCalls.map((call) => toPromptToolCallContext(state.iteration, call)),
+      ...execution.actOutput.toolCalls.map((call) => toPromptToolCallContext(state.runId, state.iteration, call)),
     ],
   });
 }
 
-function toPromptToolCallContext(step: number, call: ActToolCallRecord): PromptToolCallContext {
+function toPromptToolCallContext(runId: string, step: number, call: ActToolCallRecord): PromptToolCallContext {
   return {
     step,
     ...(call.callId ? { callId: call.callId } : {}),
@@ -2446,6 +2560,8 @@ function toPromptToolCallContext(step: number, call: ActToolCallRecord): PromptT
     ...(call.operationStatus ? { operationStatus: call.operationStatus } : {}),
     ...(call.artifacts && call.artifacts.length > 0 ? { artifacts: call.artifacts } : {}),
     ...(call.observation?.hasMore !== undefined ? { hasMore: call.observation.hasMore } : {}),
+    ...(runId.trim().length > 0 ? { stepRef: { runId, step, ...(call.callId ? { callId: call.callId } : {}) } } : {}),
+    ...(call.observation?.evidenceRef ? { evidenceRef: call.observation.evidenceRef } : {}),
     ...(call.rawOutputChars !== undefined ? { rawOutputChars: call.rawOutputChars } : {}),
     ...(call.outputTruncated !== undefined ? { outputTruncated: call.outputTruncated } : {}),
   };

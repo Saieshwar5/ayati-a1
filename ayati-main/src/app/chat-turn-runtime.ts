@@ -237,6 +237,13 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
           runRecorder: chatRunRecorder,
           inputHandle,
           ...(runHandle ? { runHandle } : {}),
+          recordTaskStep: (record) => {
+            this.chatContextRuntime.recordTaskRunStep({
+              clientId: input.clientId,
+              turn: chatContextTurn,
+              record,
+            });
+          },
           onWorkRunCreated: (created) => {
             runHandle = created;
           },
@@ -688,6 +695,7 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
         blockers: ["The run completed without tool calls or durable evidence."],
         verifiedFacts: result.workState?.verifiedFacts ?? [],
         evidence: result.workState?.evidence ?? [],
+        artifacts: result.workState?.artifacts ?? [],
         nextStep: "Retry or continue the task with concrete work.",
       },
     };
@@ -738,6 +746,7 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
         blockers: result.workState?.blockers ?? [],
         verifiedFacts: result.workState?.verifiedFacts ?? [],
         evidence: result.workState?.evidence ?? [],
+        artifacts: result.workState?.artifacts ?? [],
         taskNotes: result.workState?.taskNotes,
         nextStep: next,
         userInputNeeded: next,

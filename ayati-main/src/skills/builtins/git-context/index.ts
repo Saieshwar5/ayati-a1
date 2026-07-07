@@ -7,6 +7,7 @@ import {
   type GitMemoryRuntime,
   type GitMemoryContextLimits,
   type ReadGitMemoryEvidenceInput,
+  type ReadGitMemoryRunStepInput,
   type SearchGitMemoryEvidenceInput,
   type GitMemoryTaskDetailInclude,
   type GitMemoryTaskDetailLimits,
@@ -61,6 +62,15 @@ interface ReadEvidenceInput extends TaskSelectorInput {
   limit?: number;
 }
 
+interface ReadRunStepInput extends SessionScopedInput {
+  sessionId: string;
+  runId: string;
+  step: number;
+  callId?: string;
+  taskId?: string;
+  branch?: string;
+}
+
 interface SearchEvidenceInput extends SessionScopedInput {
   sessionId: string;
   query: string;
@@ -73,13 +83,22 @@ interface SwitchTaskInput extends TaskSelectorInput {
   reason: string;
 }
 
+const CREATE_TASK_REASON_CODES = [
+  "no_active_task",
+  "explicit_user_requested_new_task",
+  "new_unrelated_goal",
+  "new_independent_artifact",
+  "separate_parallel_workstream",
+] as const;
+
+type CreateTaskReasonCode = typeof CREATE_TASK_REASON_CODES[number];
+
 interface CreateTaskInput extends SessionScopedInput {
   sessionId: string;
   title: string;
   objective: string;
-  reason: string;
-  whyNotActiveTask?: string;
-  separateTaskReason?: string;
+  createReason: CreateTaskReasonCode;
+  reasonDetails?: string;
 }
 
 interface AskClarificationForTurnInput extends SessionScopedInput {
@@ -111,11 +130,12 @@ const GIT_CONTEXT_PROMPT_BLOCK = [
   "Use git_context_search_tasks to find likely matching prior tasks by title, summary, facts, open work, blockers, next step, branch, or status.",
   "Use git_context_read_task to inspect one task branch deeply with bounded runs, actions, assets, commits, evidence, and Markdown conversation.",
   "Use git_context_read_evidence to read compact durable evidence records for a task or run.",
+  "Use git_context_read_run_step to recover full persisted step or tool-call data from a compact context.run.toolCalls stepRef.",
   "Use git_context_search_evidence to find compact durable evidence records by summary, tool, fact, artifact, run id, action id, or evidence ref.",
   "Use git_context_log to inspect compact commit history for main or one task branch.",
   "Use git_context_activate_task_for_turn when the current pending user turn belongs to a different existing task.",
-  "Use git_context_create_task_for_turn when the current pending user turn starts new durable task work.",
-  "If an active task exists, create a new task only for clearly separate work. Include whyNotActiveTask and separateTaskReason; otherwise activate the active/existing task or ask clarification.",
+  "Use git_context_create_task_for_turn only when the current pending user turn starts new durable task work with a valid createReason.",
+  "If an active task exists, same-task continuation should use normal work tools directly. Create a new task only for valid separate work such as explicit_user_requested_new_task, new_unrelated_goal, new_independent_artifact, or separate_parallel_workstream.",
   "Use git_context_ask_clarification_for_turn when the current pending user turn has ambiguous task ownership.",
   "Do not call a tool just to continue the already-active task; obvious same-task continuation is automatic.",
   "Do not switch or create task branches with low-level branch tools during normal live turns; route pending turns through the turn-aware tools.",
@@ -139,6 +159,7 @@ export function createGitContextSkill(deps: GitContextSkillDeps): SkillDefinitio
       createSearchTasksTool(store),
       createReadTaskTool(store),
       createReadEvidenceTool(store),
+      createReadRunStepTool(store),
       createSearchEvidenceTool(store),
       createLogTool(store),
       createActivateTaskForTurnTool(store, runtime),
@@ -340,7 +361,6 @@ function createReadTaskTool(store: GitMemoryDailySessionStore): ToolDefinition {
           commitLogLimit: { type: "number" },
           evidenceLimit: { type: "number" },
           conversationMarkdownCharLimit: { type: "number" },
-          taskMarkdownCharLimit: { type: "number" },
           runMarkdownCharLimit: { type: "number" },
         },
       },
@@ -414,6 +434,60 @@ function createReadEvidenceTool(store: GitMemoryDailySessionStore): ToolDefiniti
           code: "GIT_CONTEXT_EVIDENCE_READ",
           message: "Git-context evidence read.",
           structuredContent: evidence,
+        });
+      } catch (err) {
+        return gitContextReadFailed(err);
+      }
+    },
+  };
+}
+
+function createReadRunStepTool(store: GitMemoryDailySessionStore): ToolDefinition {
+  return {
+    name: "git_context_read_run_step",
+    description: "Recover full persisted git-context step or tool-call data by run id, step number, and optional call id.",
+    inputSchema: sessionScopedInputSchema({
+      runId: {
+        type: "string",
+        description: "Run id from context.run.toolCalls[*].stepRef.runId.",
+      },
+      step: {
+        type: "number",
+        description: "Step number from context.run.toolCalls[*].stepRef.step.",
+      },
+      callId: {
+        type: "string",
+        description: "Optional tool call id from context.run.toolCalls[*].stepRef.callId. When provided, the matching tool call is returned separately.",
+      },
+      taskId: {
+        type: "string",
+        description: "Optional task id to scope the lookup. Usually not required when using a stepRef.",
+      },
+      branch: {
+        type: "string",
+        description: "Optional task branch to scope the lookup. Provide at most one of taskId or branch.",
+      },
+    }, ["runId", "step"]),
+    outputSchema: genericObjectOutputSchema,
+    annotations: gitContextReadOnlyAnnotations(),
+    resultContract: gitContextSucceededContract("run_step_read"),
+    selectionHints: {
+      tags: ["git-context", "step", "run", "tool-call", "stepRef", "evidence", "read-only"],
+      aliases: ["read run step", "recover compacted tool output", "read step ref", "read tool call ref"],
+      domain: "git_context",
+      priority: 6,
+    },
+    async execute(input, context): Promise<ToolResult> {
+      const parsed = parseReadRunStepInput(input, context);
+      if ("ok" in parsed) {
+        return parsed;
+      }
+      try {
+        const step = await store.readRunStep(parsed);
+        return okJsonResult({
+          code: "GIT_CONTEXT_RUN_STEP_READ",
+          message: "Git-context run step read.",
+          structuredContent: step,
         });
       } catch (err) {
         return gitContextReadFailed(err);
@@ -588,7 +662,7 @@ function createActivateTaskForTurnTool(
 function createCreateTaskForTurnTool(runtime: GitMemoryRuntime | undefined): ToolDefinition {
   return {
     name: "git_context_create_task_for_turn",
-    description: "Create a new git-context task for the current pending user turn, start a run, and refresh active context. If an active task exists, this must be clearly separate work and must include whyNotActiveTask and separateTaskReason.",
+    description: "Create a new git-context task for the current pending user turn, start a run, and refresh active context. Use only when the turn starts separate durable work with a valid createReason.",
     inputSchema: sessionScopedInputSchema({
       title: {
         type: "string",
@@ -598,19 +672,16 @@ function createCreateTaskForTurnTool(runtime: GitMemoryRuntime | undefined): Too
         type: "string",
         description: "Durable task objective.",
       },
-      reason: {
+      createReason: {
         type: "string",
-        description: "Short reason this pending turn should create a new task.",
+        enum: [...CREATE_TASK_REASON_CODES],
+        description: "Deterministic reason code for creating a new task. Do not create a new task for same active task continuation.",
       },
-      whyNotActiveTask: {
+      reasonDetails: {
         type: "string",
-        description: "Required when an active task exists. Explain why the active task should not own this pending turn.",
+        description: "Optional human-readable details for logs. This does not grant permission to create the task.",
       },
-      separateTaskReason: {
-        type: "string",
-        description: "Required when an active task exists. Explain the separate durable deliverable or topic that justifies creating a new task.",
-      },
-    }, ["title", "objective", "reason"]),
+    }, ["title", "objective", "createReason"]),
     outputSchema: genericObjectOutputSchema,
     annotations: gitContextTurnMutationAnnotations(),
     resultContract: gitContextSucceededContract("turn_task_created"),
@@ -637,7 +708,7 @@ function createCreateTaskForTurnTool(runtime: GitMemoryRuntime | undefined): Too
           sessionId: parsed.sessionId,
           title: parsed.title,
           objective: parsed.objective,
-          reason: parsed.reason,
+          reason: createTaskRouteReason(parsed),
         });
         return okJsonResult({
           code: "GIT_CONTEXT_TURN_TASK_CREATED",
@@ -785,18 +856,32 @@ function parseCreateTaskInput(input: unknown, context?: ToolExecutionContext): C
   if (typeof objective !== "string") {
     return objective;
   }
-  const reason = trimRequired(value.reason, "reason");
-  if (typeof reason !== "string") {
-    return reason;
+  const createReason = parseCreateTaskReason(value.createReason);
+  if (typeof createReason !== "string") {
+    return createReason;
   }
   return {
     sessionId: scoped.sessionId,
     title,
     objective,
-    reason,
-    ...(trimOptional(value.whyNotActiveTask) ? { whyNotActiveTask: trimOptional(value.whyNotActiveTask) } : {}),
-    ...(trimOptional(value.separateTaskReason) ? { separateTaskReason: trimOptional(value.separateTaskReason) } : {}),
+    createReason,
+    ...(trimOptional(value.reasonDetails) ? { reasonDetails: trimOptional(value.reasonDetails) } : {}),
   };
+}
+
+function parseCreateTaskReason(value: unknown): CreateTaskReasonCode | ToolResult {
+  if (typeof value !== "string" || value.trim().length === 0) {
+    return invalidInput(`createReason must be one of: ${CREATE_TASK_REASON_CODES.join(", ")}.`);
+  }
+  const trimmed = value.trim();
+  if (!isCreateTaskReasonCode(trimmed)) {
+    return invalidInput(`createReason must be one of: ${CREATE_TASK_REASON_CODES.join(", ")}.`);
+  }
+  return trimmed;
+}
+
+function isCreateTaskReasonCode(value: string): value is CreateTaskReasonCode {
+  return (CREATE_TASK_REASON_CODES as readonly string[]).includes(value);
 }
 
 function parseAskClarificationForTurnInput(
@@ -840,28 +925,177 @@ async function validateCreateTaskForActiveFocus(
 ): Promise<ToolResult | null> {
   const activeContext = await runtime.buildActiveContext(input.sessionId);
   if (activeContext.focus.status !== "active") {
+    if (input.createReason !== "no_active_task") {
+      return createTaskReasonRejected({
+        message: `Cannot create a new task with createReason "${input.createReason}" because no active task exists. Use createReason "no_active_task".`,
+        createReason: input.createReason,
+        allowedCreateReasons: ["no_active_task"],
+        allowedNextActions: [
+          "Retry git_context_create_task_for_turn with createReason \"no_active_task\".",
+        ],
+      });
+    }
     return null;
   }
 
-  const weakFields = [
-    ...(isUsableSeparateTaskJustification(input.whyNotActiveTask) ? [] : ["whyNotActiveTask"]),
-    ...(isUsableSeparateTaskJustification(input.separateTaskReason) ? [] : ["separateTaskReason"]),
-  ];
-  if (weakFields.length === 0) {
-    return null;
+  if (input.createReason === "no_active_task") {
+    return createTaskReasonRejected({
+      message: "Cannot create a new task with createReason \"no_active_task\" because an active git-context task exists.",
+      activeContext,
+      createReason: input.createReason,
+      allowedCreateReasons: [
+        "explicit_user_requested_new_task",
+        "new_unrelated_goal",
+        "new_independent_artifact",
+        "separate_parallel_workstream",
+      ],
+      allowedNextActions: [
+        "Continue the active task with normal work tools when this turn belongs to the same task.",
+        "Use git_context_create_task_for_turn only with a valid separate-work createReason for clearly separate work.",
+        "Use git_context_activate_task_for_turn when the user explicitly switches to a different existing task.",
+      ],
+    });
   }
 
-  return createTaskRequiresSeparateWorkJustification(activeContext, weakFields);
-}
-
-function isUsableSeparateTaskJustification(value: string | undefined): boolean {
-  if (!value || value.trim().length < 12) {
-    return false;
+  const policy = evaluateCreateTaskPolicy(activeContext, input);
+  if (!policy.allowed) {
+    return createTaskReasonRejected({
+      message: policy.message,
+      activeContext,
+      createReason: input.createReason,
+      matchedSignals: policy.matchedSignals,
+      allowedCreateReasons: policy.allowedCreateReasons,
+      allowedNextActions: policy.allowedNextActions,
+    });
   }
-  return !GENERIC_SEPARATE_TASK_JUSTIFICATIONS.has(normalizeJustification(value));
+
+  return null;
 }
 
-function normalizeJustification(value: string): string {
+function createTaskRouteReason(input: CreateTaskInput): string {
+  return input.reasonDetails ?? input.createReason;
+}
+
+function evaluateCreateTaskPolicy(
+  activeContext: Awaited<ReturnType<GitMemoryRuntime["buildActiveContext"]>>,
+  input: CreateTaskInput,
+): {
+  allowed: true;
+} | {
+  allowed: false;
+  message: string;
+  matchedSignals: string[];
+  allowedCreateReasons: CreateTaskReasonCode[];
+  allowedNextActions: string[];
+} {
+  const message = activeContext.pendingTurn?.text ?? "";
+  const combined = [
+    message,
+    input.title,
+    input.objective,
+    input.reasonDetails ?? "",
+  ].join(" ");
+  const explicitNewTaskSignals = explicitNewTaskRequestSignals(combined);
+  const sameTaskSignals = sameTaskLanguageSignals(combined);
+  if (input.createReason !== "no_active_task" && explicitNewTaskSignals.length > 0 && sameTaskSignals.length === 0) {
+    return { allowed: true };
+  }
+  const matchedSignals = sameTaskContinuationSignals(activeContext, input, message, sameTaskSignals);
+  if (matchedSignals.length > 0) {
+    return {
+      allowed: false,
+      message: "Cannot create a new task because this pending turn appears to continue or update the active task. Continue the active task with normal work tools; the runtime should own run creation.",
+      matchedSignals,
+      allowedCreateReasons: [],
+      allowedNextActions: [
+        "Continue the active task with normal work tools instead of creating a task.",
+        "Use git_context_activate_task_for_turn only if the turn belongs to a different existing task.",
+        "Ask a clarification if the user intended separate work.",
+      ],
+    };
+  }
+
+  return { allowed: true };
+}
+
+function explicitNewTaskRequestSignals(userMessage: string): string[] {
+  const normalized = normalizeRoutingText(userMessage);
+  if (!normalized) {
+    return [];
+  }
+  if (/\b(do not|dont|don t|without)\s+(create|start|open|make)\s+(a\s+)?new\s+task\b/.test(normalized)) {
+    return [];
+  }
+  const signals: string[] = [];
+  if (/\b(start|create|open|make|begin)\s+(a\s+)?new\s+task\b/.test(normalized)
+    || /\bnew\s+task\s+(to|for|about)\b/.test(normalized)) {
+    signals.push("explicit new task request");
+  }
+  if (/\b(start|create|open|begin)\s+(a\s+)?(separate|different)\s+(task|workstream|work stream)\b/.test(normalized)
+    || /\b(separate|different)\s+(task|workstream|work stream)\b/.test(normalized)) {
+    signals.push("explicit separate task request");
+  }
+  return signals;
+}
+
+function sameTaskContinuationSignals(
+  activeContext: Awaited<ReturnType<GitMemoryRuntime["buildActiveContext"]>>,
+  input: CreateTaskInput,
+  userMessage: string,
+  existingSignals: string[] = [],
+): string[] {
+  const signals: string[] = [...existingSignals];
+  const combined = normalizeRoutingText([
+    userMessage,
+    input.title,
+    input.objective,
+    input.reasonDetails ?? "",
+  ].join(" "));
+  if (/\b(active|current|previous|existing)\s+task\s+(is\s+)?(done|completed|complete)\b/.test(combined)
+    || /\b(done|completed|complete)\s+(active|current|previous|existing)\s+task\b/.test(combined)) {
+    signals.push("active task completion used as create-task reason");
+  }
+  const activeTask = activeContext.task;
+  if (!activeTask) {
+    return signals;
+  }
+  const taskTerms = routingTerms([
+    activeTask.title,
+    activeTask.objective,
+    activeTask.summary,
+    ...activeTask.facts,
+    ...activeTask.assets.map((asset) => `${asset.name} ${asset.path ?? ""}`),
+  ]);
+  const inputTerms = routingTerms(combined);
+  const overlap = [...taskTerms].filter((term) => inputTerms.has(term));
+  if (overlap.length >= 2) {
+    signals.push(`active task terms matched: ${overlap.slice(0, 6).join(", ")}`);
+  }
+  for (const file of activeTask.assets.flatMap((asset) => asset.path ? [asset.path] : [])) {
+    if (file && combined.includes(normalizeRoutingText(file))) {
+      signals.push(`active task artifact matched: ${file}`);
+    }
+  }
+  return [...new Set(signals)];
+}
+
+function sameTaskLanguageSignals(input: string): string[] {
+  const combined = normalizeRoutingText(input);
+  if (/\b(same|current|active|previous|existing|that|this)\b/.test(combined)
+    && /\b(update|change|edit|modify|refine|add|remove|delete|fix|continue|improve|rewrite)\b/.test(combined)) {
+    return ["same-task update language"];
+  }
+  return [];
+}
+
+function routingTerms(input: string | string[]): Set<string> {
+  const text = Array.isArray(input) ? input.join(" ") : input;
+  return new Set(normalizeRoutingText(text)
+    .split(/\s+/g)
+    .filter((token) => token.length >= 4 && !ROUTING_STOP_WORDS.has(token)));
+}
+
+function normalizeRoutingText(value: string): string {
   return value
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, " ")
@@ -869,15 +1103,46 @@ function normalizeJustification(value: string): string {
     .trim();
 }
 
-const GENERIC_SEPARATE_TASK_JUSTIFICATIONS = new Set([
-  "new task",
-  "separate task",
-  "different task",
-  "not active task",
+const ROUTING_STOP_WORDS = new Set([
+  "task",
+  "work",
+  "user",
+  "turn",
+  "create",
+  "investigate",
+  "fix",
+  "update",
+  "change",
+  "edit",
+  "modify",
+  "refine",
+  "add",
+  "remove",
+  "delete",
+  "same",
+  "different",
+  "separate",
   "unrelated",
-  "unrelated task",
-  "separate work",
-  "different work",
+  "active",
+  "current",
+  "previous",
+  "existing",
+  "done",
+  "completed",
+  "complete",
+  "with",
+  "this",
+  "that",
+  "from",
+  "into",
+  "file",
+  "files",
+  "website",
+  "site",
+  "durable",
+  "handling",
+  "validation",
+  "delivery",
 ]);
 
 async function resolveTaskIdFromSelector(
@@ -960,6 +1225,47 @@ function parseReadEvidenceInput(
     ...(scoped.branch ? { branch: scoped.branch } : {}),
     ...(trimOptional(value.runId) ? { runId: trimOptional(value.runId) } : {}),
     ...(typeof value.limit === "number" ? { limit: Math.floor(value.limit) } : {}),
+  };
+}
+
+function parseReadRunStepInput(
+  input: unknown,
+  context?: ToolExecutionContext,
+): ReadGitMemoryRunStepInput | ToolResult {
+  const scoped = parseSessionScopedInput(input, context);
+  if ("ok" in scoped) {
+    return scoped;
+  }
+  const value = input && typeof input === "object" && !Array.isArray(input)
+    ? input as Partial<ReadRunStepInput>
+    : {};
+  if (typeof value.runId !== "string" || value.runId.trim().length === 0) {
+    return invalidInput("runId must be a non-empty string.");
+  }
+  if (typeof value.step !== "number" || !Number.isInteger(value.step) || value.step < 1) {
+    return invalidInput("step must be a positive integer.");
+  }
+  if (value.callId !== undefined && typeof value.callId !== "string") {
+    return invalidInput("callId must be a string.");
+  }
+  if (value.taskId !== undefined && typeof value.taskId !== "string") {
+    return invalidInput("taskId must be a string.");
+  }
+  if (value.branch !== undefined && typeof value.branch !== "string") {
+    return invalidInput("branch must be a string.");
+  }
+  const taskId = trimOptional(value.taskId);
+  const branch = trimOptional(value.branch);
+  if (taskId && branch) {
+    return invalidInput("provide at most one run step scope: taskId or branch.");
+  }
+  return {
+    sessionId: scoped.sessionId,
+    runId: value.runId.trim(),
+    step: value.step,
+    ...(trimOptional(value.callId) ? { callId: trimOptional(value.callId) } : {}),
+    ...(taskId ? { taskId } : {}),
+    ...(branch ? { branch } : {}),
   };
 }
 
@@ -1125,7 +1431,7 @@ function parseTaskDetailLimits(input: Partial<GitMemoryTaskDetailLimits> | undef
     return invalidInput("limits must be an object when provided.");
   }
   const output: Partial<GitMemoryTaskDetailLimits> = {};
-  for (const key of ["runLimit", "actionRunLimit", "actionLimit", "commitLogLimit", "evidenceLimit", "conversationMarkdownCharLimit", "taskMarkdownCharLimit", "runMarkdownCharLimit"] as const) {
+  for (const key of ["runLimit", "actionRunLimit", "actionLimit", "commitLogLimit", "evidenceLimit", "conversationMarkdownCharLimit", "runMarkdownCharLimit"] as const) {
     const value = input[key];
     if (value === undefined) {
       continue;
@@ -1190,46 +1496,41 @@ function withHarnessContext<T extends { memoryState: GitContextMemoryState; cont
   };
 }
 
-function createTaskRequiresSeparateWorkJustification(
-  activeContext: Awaited<ReturnType<GitMemoryRuntime["buildActiveContext"]>>,
-  weakFields: string[],
-): ToolResult {
-  const activeTask = activeContext.task;
-  const activeTaskLabel = activeTask
-    ? `${activeTask.taskId} (${activeTask.title})`
-    : activeContext.focus.status === "active"
-      ? activeContext.focus.taskId
-      : "the active task";
+function createTaskReasonRejected(input: {
+  message: string;
+  activeContext?: Awaited<ReturnType<GitMemoryRuntime["buildActiveContext"]>>;
+  createReason: CreateTaskReasonCode;
+  matchedSignals?: string[];
+  allowedCreateReasons: CreateTaskReasonCode[];
+  allowedNextActions: string[];
+}): ToolResult {
+  const activeTask = input.activeContext?.task;
   return errorResult({
-    code: "GIT_CONTEXT_CREATE_TASK_REQUIRES_SEPARATE_WORK",
-    message: `Active git-context task ${activeTaskLabel} exists. Creating a new task while a task is active requires whyNotActiveTask and separateTaskReason explaining why this is separate work.`,
+    code: "GIT_CONTEXT_CREATE_TASK_REASON_REJECTED",
+    message: input.message,
     category: "validation",
     retryable: true,
     recoverable: true,
     structuredContent: {
-      activeTask: activeTask
+      createReason: input.createReason,
+      allowedCreateReasons: input.allowedCreateReasons,
+      ...(input.matchedSignals?.length ? { matchedSignals: input.matchedSignals } : {}),
+      ...(input.activeContext
         ? {
-            taskId: activeTask.taskId,
-            title: activeTask.title,
-            objective: activeTask.objective,
-            status: activeTask.status,
-            branch: activeTask.branch,
+            activeTask: activeTask
+              ? {
+                  taskId: activeTask.taskId,
+                  title: activeTask.title,
+                  objective: activeTask.objective,
+                  status: activeTask.status,
+                  branch: activeTask.branch,
+                }
+              : input.activeContext.focus,
           }
-        : activeContext.focus,
-      missingOrWeakFields: weakFields,
-      allowedNextActions: [
-        "Use git_context_activate_task_for_turn if this pending turn continues or refines the active task.",
-        "Use git_context_search_tasks or git_context_list_tasks if this belongs to previously worked-on task context.",
-        "Use git_context_ask_clarification_for_turn if task ownership is unclear.",
-        "Retry git_context_create_task_for_turn only if this is clearly separate work and include whyNotActiveTask plus separateTaskReason.",
-      ],
+        : {}),
+      allowedNextActions: input.allowedNextActions,
     },
-    suggestedNextActions: [
-      "Use git_context_activate_task_for_turn for continuation or refinement of the active task.",
-      "Search/list existing tasks and activate the matching task if the user is returning to prior work.",
-      "Ask clarification if it is unclear whether this should be separate work.",
-      "Retry create-task only with whyNotActiveTask and separateTaskReason for clearly separate work.",
-    ],
+    suggestedNextActions: input.allowedNextActions,
   });
 }
 
