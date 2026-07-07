@@ -1927,23 +1927,20 @@ const CONVERSATION_READ_ONLY_TOOL_NAMES = new Set([
 ]);
 
 function hasDurableTaskEvidence(result: AgentLoopResult): boolean {
-  return (result.completedSteps ?? []).some((step) => {
-    if ((step.artifacts ?? []).length > 0) {
-      return true;
-    }
-    const toolsUsed = step.toolsUsed ?? [];
-    return toolsUsed.some((tool) => !TASK_ROUTING_TOOL_NAMES.has(tool));
-  });
+  return (result.completedSteps ?? []).some(stepHasMutatingOrDurableTaskEvidence);
 }
 
 function hasMutatingOrDurableTaskStep(result: AgentLoopResult): boolean {
-  return (result.completedSteps ?? []).some((step) => {
-    if ((step.artifacts ?? []).length > 0) {
-      return true;
-    }
-    const toolsUsed = step.toolsUsed ?? [];
-    return toolsUsed.some((tool) => !isConversationReadOnlyTool(tool) && !TASK_ROUTING_TOOL_NAMES.has(tool));
-  });
+  return (result.completedSteps ?? []).some(stepHasMutatingOrDurableTaskEvidence);
+}
+
+function stepHasMutatingOrDurableTaskEvidence(step: NonNullable<AgentLoopResult["completedSteps"]>[number]): boolean {
+  const toolsUsed = step.toolsUsed ?? [];
+  const hasMutatingTool = toolsUsed.some((tool) => !isConversationReadOnlyTool(tool) && !TASK_ROUTING_TOOL_NAMES.has(tool));
+  if (hasMutatingTool) {
+    return true;
+  }
+  return toolsUsed.length === 0 && (step.artifacts ?? []).length > 0;
 }
 
 function isConversationReadOnlyTool(tool: string): boolean {

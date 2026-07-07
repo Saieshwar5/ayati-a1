@@ -571,6 +571,125 @@ describe("createChatTurnRuntime", () => {
     }
   });
 
+  it("blocks a routed task run when only read-only tools succeed", async () => {
+    const rootDir = mkdtempSync(join(tmpdir(), "ayati-chat-runtime-read-only-task-"));
+    const contextStoreDir = join(rootDir, "context");
+    const dataDir = join(rootDir, "data");
+    const workspaceDir = join(rootDir, "workspace");
+    const previousWorkspaceDir = process.env["AYATI_WORKSPACE_DIR"];
+    mkdirSync(workspaceDir, { recursive: true });
+    writeFileSync(join(workspaceDir, "focus.ts"), "export const focusTimer = true;\n", "utf-8");
+    process.env["AYATI_WORKSPACE_DIR"] = workspaceDir;
+
+    try {
+      const store = new GitMemoryDailySessionStore({
+        contextStoreDir,
+        now: () => new Date("2026-06-28T09:00:00.000Z"),
+      });
+      const gitMemoryRuntime = createGitMemoryRuntime({
+        contextStoreDir,
+        timezone: "Asia/Kolkata",
+        agentId: "local",
+        store,
+        now: () => new Date("2026-06-28T09:00:00.000Z"),
+      });
+      const chatContextRuntime = createGitMemoryChatContextRuntime({ gitMemoryRuntime });
+      const first = await chatContextRuntime.prepareUserTurn({
+        clientId: "local",
+        userMessage: "create a tiny focus timer website",
+        at: "2026-06-28T09:00:00+05:30",
+      });
+      await gitMemoryRuntime.createTaskBranch({
+        sessionId: first.sessionId,
+        title: "Focus Timer Website",
+        objective: "Create a tiny focus timer website.",
+        fromSeq: first.messageSeq,
+        toSeq: first.messageSeq,
+        at: "2026-06-28T09:00:01+05:30",
+      });
+      const provider = createAgentDecisionProvider([
+        {
+          kind: "act",
+          action: {
+            mode: "single",
+            calls: [{
+              id: "read_focus",
+              tool: "read_file",
+              input: { path: "focus.ts", mode: "search", query: "focusTimer" },
+              dependsOn: [],
+              purpose: "Inspect the current focus timer file.",
+            }],
+            allowedTools: ["read_file"],
+            assertions: [],
+          },
+        },
+        {
+          kind: "update_work_state",
+          update: {
+            status: "done",
+            summary: "Inspected the focus timer file.",
+            openWork: [],
+            blockers: [],
+          },
+        },
+        {
+          kind: "reply",
+          status: "completed",
+          message: "I inspected the focus timer file.",
+        },
+      ]);
+      const runtime = createChatTurnRuntime({
+        provider,
+        dataDir,
+        chatContextRuntime,
+        toolExecutor: createToolExecutor([readFileTool]),
+        now: () => new Date("2026-06-28T09:05:00.000Z"),
+      });
+
+      await runtime.processChat({
+        clientId: "local",
+        content: "continue",
+        attachments: [],
+      });
+
+      const context = await chatContextRuntime.buildActiveContext(first.sessionId);
+      expect(context.task?.status).toBe("blocked");
+      expect(context.task?.recentRuns[0]).toMatchObject({
+        status: "blocked",
+        summary: "Task run stopped without durable work evidence.",
+        toolCallCount: 1,
+      });
+
+      const blockedRun = context.task?.recentRuns[0];
+      if (!context.task || !blockedRun) {
+        throw new Error("Expected blocked read-only task run context.");
+      }
+      const driver = new GitMemoryWorktreeGitDriver(join(contextStoreDir, "sessions", first.sessionId));
+      const run = JSON.parse(await driver.readFile(
+        `refs/heads/${context.task.branch}`,
+        gitMemoryTaskRunPath(context.task.taskId, blockedRun.runId),
+      ) ?? "{}");
+      expect(run).toMatchObject({
+        status: "blocked",
+        blockers: ["The run completed without tool calls or durable evidence."],
+        next: "Retry or continue the task with concrete work.",
+        toolCallCount: 1,
+      });
+      const steps = readJsonl(await driver.readFile(
+        `refs/heads/${context.task.branch}`,
+        gitMemoryTaskStepsPath(context.task.taskId, blockedRun.runId),
+      ));
+      expect(steps.map((step) => step.toolCalls?.[0]?.tool)).toEqual(["read_file"]);
+    } finally {
+      if (previousWorkspaceDir === undefined) {
+        delete process.env["AYATI_WORKSPACE_DIR"];
+      } else {
+        process.env["AYATI_WORKSPACE_DIR"] = previousWorkspaceDir;
+      }
+      rmSync(rootDir, { recursive: true, force: true });
+    }
+  });
+
   it("records session-only attachments in the session-store before the agent decision", async () => {
     const rootDir = mkdtempSync(join(tmpdir(), "ayati-chat-runtime-"));
     const contextStoreDir = join(rootDir, "context");

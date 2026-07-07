@@ -3102,7 +3102,7 @@ function canCompleteLocallyAfterAction(
 }
 
 function buildVerifiedCompletionReply(state: LoopState, step?: StepSummary): string {
-  const artifacts = normalizeList(step?.artifacts ?? [])
+  const artifacts = normalizeList(step && stepHasGeneratedArtifactEvidence(step) ? step.artifacts : [])
     .filter((artifact) => isDurableStepArtifact(artifact))
     .map((artifact) => displayArtifactPath(artifact));
   if (artifacts.length > 0) {
@@ -3503,7 +3503,9 @@ function buildTaskAssets(state: LoopState): TaskAssetRecord[] {
 }
 
 function buildGeneratedArtifactAssets(state: LoopState): TaskAssetRecord[] {
-  const artifacts = normalizeList(state.completedSteps.flatMap((step) => step.artifacts))
+  const artifacts = normalizeList(state.completedSteps.flatMap((step) => (
+    stepHasGeneratedArtifactEvidence(step) ? step.artifacts : []
+  )))
     .filter((artifact) => isDurableStepArtifact(artifact))
     .map((artifact) => absolutePath(artifact));
   const assets: TaskAssetRecord[] = [];
@@ -3569,6 +3571,14 @@ function isDurableStepArtifact(artifact: string): boolean {
     return false;
   }
   return !normalized.includes("/observations/");
+}
+
+function stepHasGeneratedArtifactEvidence(step: StepSummary): boolean {
+  const toolsUsed = step.toolsUsed ?? [];
+  if (toolsUsed.length === 0) {
+    return true;
+  }
+  return toolsUsed.some((tool) => !isReadOnlyTool(tool) && !isGitContextReadOnlyToolName(tool) && !isGitContextRoutingToolName(tool));
 }
 
 function inferPathAssetKind(path: string): string {
