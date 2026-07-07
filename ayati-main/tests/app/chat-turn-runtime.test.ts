@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
@@ -12,12 +12,19 @@ import {
   createGitMemoryRuntime,
   GitMemoryDailySessionStore,
   type GitMemoryWriteBatchSnapshot,
+  GIT_MEMORY_MAIN_REF,
   GIT_MEMORY_SESSION_STORE_DIR,
   GitMemoryWorktreeGitDriver,
   gitMemorySessionStoreAttachmentsPath,
+  gitMemorySessionStoreRunPath,
+  gitMemorySessionStoreStepsPath,
   gitMemoryTaskRunPath,
+  gitMemoryTaskStepsPath,
 } from "../../src/context-engine/index.js";
 import { FileLibrary } from "../../src/files/file-library.js";
+import { readFileTool } from "../../src/skills/builtins/filesystem/read-file.js";
+import { writeFilesTool } from "../../src/skills/builtins/filesystem/write-files.js";
+import { createToolExecutor } from "../../src/skills/tool-executor.js";
 
 describe("createChatTurnRuntime", () => {
   it("streams final replies only for clients that support reply streaming", async () => {
@@ -653,6 +660,254 @@ describe("createChatTurnRuntime", () => {
       rmSync(rootDir, { recursive: true, force: true });
     }
   });
+
+  it("finalizes read-only chat tool work as a session-store run without creating a task", async () => {
+    const rootDir = mkdtempSync(join(tmpdir(), "ayati-chat-runtime-session-read-"));
+    const contextStoreDir = join(rootDir, "context");
+    const dataDir = join(rootDir, "data");
+    const workspaceDir = join(rootDir, "workspace");
+    const previousWorkspaceDir = process.env["AYATI_WORKSPACE_DIR"];
+    mkdirSync(workspaceDir, { recursive: true });
+    writeFileSync(join(workspaceDir, "upload.ts"), "export function handleUpload() { return true; }\n", "utf-8");
+    process.env["AYATI_WORKSPACE_DIR"] = workspaceDir;
+
+    try {
+      const store = new GitMemoryDailySessionStore({
+        contextStoreDir,
+        now: () => new Date("2026-06-28T09:00:00.000Z"),
+      });
+      const gitMemoryRuntime = createGitMemoryRuntime({
+        contextStoreDir,
+        timezone: "Asia/Kolkata",
+        agentId: "local",
+        store,
+        now: () => new Date("2026-06-28T09:00:00.000Z"),
+      });
+      const provider = createAgentDecisionProvider([
+        {
+          kind: "act",
+          action: {
+            mode: "single",
+            calls: [{
+              id: "read_upload",
+              tool: "read_file",
+              input: { path: "upload.ts", mode: "search", query: "handleUpload" },
+              dependsOn: [],
+              purpose: "Inspect upload handling without mutating workspace state.",
+            }],
+            allowedTools: ["read_file"],
+            assertions: [],
+          },
+        },
+        {
+          kind: "reply",
+          status: "completed",
+          message: "Upload handling lives in upload.ts.",
+        },
+      ]);
+      const runtime = createChatTurnRuntime({
+        provider,
+        dataDir,
+        chatContextRuntime: createGitMemoryChatContextRuntime({ gitMemoryRuntime }),
+        toolExecutor: createToolExecutor([readFileTool]),
+        now: () => new Date("2026-06-28T09:00:00.000Z"),
+      });
+
+      await runtime.processChat({
+        clientId: "local",
+        content: "where is upload handling implemented?",
+        attachments: [],
+      });
+
+      const sessionId = "S-20260628-local";
+      const runId = "R-20260628-0001";
+      const driver = new GitMemoryWorktreeGitDriver(join(contextStoreDir, "sessions", sessionId));
+      const sessionStore = await driver.openSubmoduleRepo(GIT_MEMORY_SESSION_STORE_DIR);
+      expect(JSON.parse(await sessionStore.readFile(
+        GIT_MEMORY_MAIN_REF,
+        gitMemorySessionStoreRunPath(sessionId, runId),
+      ) ?? "{}")).toMatchObject({
+        sessionId,
+        runId,
+        runClass: "session",
+        status: "completed",
+        summary: "Upload handling lives in upload.ts.",
+        toolCallCount: 1,
+        toolsUsed: ["read_file"],
+      });
+      const steps = readJsonl(await sessionStore.readFile(
+        GIT_MEMORY_MAIN_REF,
+        gitMemorySessionStoreStepsPath(sessionId, runId),
+      ));
+      expect(steps).toHaveLength(1);
+      expect(steps[0]).toMatchObject({
+        sessionId,
+        runId,
+        toolCalls: [{ tool: "read_file", status: "success" }],
+      });
+      expect(await driver.listTreePaths(GIT_MEMORY_MAIN_REF, "tasks")).toEqual([]);
+    } finally {
+      if (previousWorkspaceDir === undefined) {
+        delete process.env["AYATI_WORKSPACE_DIR"];
+      } else {
+        process.env["AYATI_WORKSPACE_DIR"] = previousWorkspaceDir;
+      }
+      rmSync(rootDir, { recursive: true, force: true });
+    }
+  });
+
+  it("promotes an active session run into the task run when mutation becomes necessary", async () => {
+    const rootDir = mkdtempSync(join(tmpdir(), "ayati-chat-runtime-session-promote-"));
+    const contextStoreDir = join(rootDir, "context");
+    const dataDir = join(rootDir, "data");
+    const workspaceDir = join(rootDir, "workspace");
+    const previousWorkspaceDir = process.env["AYATI_WORKSPACE_DIR"];
+    mkdirSync(workspaceDir, { recursive: true });
+    writeFileSync(join(workspaceDir, "upload.ts"), "export function handleUpload() { return true; }\n", "utf-8");
+    process.env["AYATI_WORKSPACE_DIR"] = workspaceDir;
+
+    try {
+      const store = new GitMemoryDailySessionStore({
+        contextStoreDir,
+        now: () => new Date("2026-06-28T09:00:00.000Z"),
+      });
+      const gitMemoryRuntime = createGitMemoryRuntime({
+        contextStoreDir,
+        timezone: "Asia/Kolkata",
+        agentId: "local",
+        store,
+        now: () => new Date("2026-06-28T09:00:00.000Z"),
+      });
+      const chatContextRuntime = createGitMemoryChatContextRuntime({ gitMemoryRuntime });
+      const initial = await chatContextRuntime.prepareUserTurn({
+        clientId: "local",
+        userMessage: "fix upload handling",
+        at: "2026-06-28T09:00:00+05:30",
+      });
+      const task = await gitMemoryRuntime.createTaskBranch({
+        sessionId: initial.sessionId,
+        title: "Fix upload handling",
+        objective: "Find and fix upload handling issues.",
+        fromSeq: initial.messageSeq,
+        toSeq: initial.messageSeq,
+        at: "2026-06-28T09:00:01+05:30",
+      });
+      const provider = createAgentDecisionProvider([
+        {
+          kind: "act",
+          action: {
+            mode: "single",
+            calls: [{
+              id: "read_upload",
+              tool: "read_file",
+              input: { path: "upload.ts", mode: "search", query: "handleUpload" },
+              dependsOn: [],
+              purpose: "Inspect upload handling before editing task notes.",
+            }],
+            allowedTools: ["read_file"],
+            assertions: [],
+          },
+        },
+        {
+          kind: "act",
+          action: {
+            mode: "single",
+            calls: [{
+              id: "write_upload_notes",
+              tool: "write_files",
+              input: {
+                createDirs: true,
+                files: [{
+                  path: "notes/upload.md",
+                  content: "# Upload notes\n\nhandleUpload is currently implemented in upload.ts.\n",
+                }],
+              },
+              dependsOn: [],
+              purpose: "Persist the upload handling note.",
+            }],
+            allowedTools: ["write_files"],
+            assertions: [],
+            completion: {
+              intent: "not_completion",
+              reason: "The task work state still needs to be updated after the file write.",
+            },
+          },
+        },
+        {
+          kind: "update_work_state",
+          update: {
+            status: "done",
+            summary: "Updated upload handling notes.",
+            openWork: [],
+            blockers: [],
+          },
+        },
+        {
+          kind: "reply",
+          status: "completed",
+          message: "Updated the upload handling notes.",
+        },
+      ]);
+      const runtime = createChatTurnRuntime({
+        provider,
+        dataDir,
+        chatContextRuntime,
+        toolExecutor: createToolExecutor([readFileTool, writeFilesTool]),
+        now: () => new Date("2026-06-28T09:05:00.000Z"),
+      });
+
+      await runtime.processChat({
+        clientId: "local",
+        content: "inspect upload.ts and update the upload notes",
+        attachments: [],
+      });
+
+      const sessionId = initial.sessionId;
+      const runId = "R-20260628-0001";
+      const driver = new GitMemoryWorktreeGitDriver(join(contextStoreDir, "sessions", sessionId));
+      const sessionStore = await driver.openSubmoduleRepo(GIT_MEMORY_SESSION_STORE_DIR);
+      expect(await sessionStore.readFile(
+        GIT_MEMORY_MAIN_REF,
+        gitMemorySessionStoreRunPath(sessionId, runId),
+      )).toBeNull();
+      expect(await sessionStore.readFile(
+        GIT_MEMORY_MAIN_REF,
+        gitMemorySessionStoreStepsPath(sessionId, runId),
+      )).toBeNull();
+
+      const context = await chatContextRuntime.buildActiveContext(sessionId);
+      const completedRun = context.task?.recentRuns[0];
+      expect(completedRun).toMatchObject({
+        runId,
+        status: "completed",
+        summary: "Updated the upload handling notes.",
+        toolCallCount: 2,
+      });
+      expect(JSON.parse(await driver.readFile(
+        task.ref,
+        gitMemoryTaskRunPath(task.taskId, runId),
+      ) ?? "{}")).toMatchObject({
+        taskId: task.taskId,
+        runId,
+        status: "completed",
+        toolCallCount: 2,
+      });
+      const taskSteps = readJsonl(await driver.readFile(
+        task.ref,
+        gitMemoryTaskStepsPath(task.taskId, runId),
+      ));
+      expect(taskSteps).toHaveLength(2);
+      expect(taskSteps.map((step) => step.toolCalls?.[0]?.tool)).toEqual(["read_file", "write_files"]);
+      expect(readFileSync(join(workspaceDir, "notes/upload.md"), "utf-8")).toContain("handleUpload");
+    } finally {
+      if (previousWorkspaceDir === undefined) {
+        delete process.env["AYATI_WORKSPACE_DIR"];
+      } else {
+        process.env["AYATI_WORKSPACE_DIR"] = previousWorkspaceDir;
+      }
+      rmSync(rootDir, { recursive: true, force: true });
+    }
+  });
 });
 
 function createReplyProvider(content = "Noted."): {
@@ -749,6 +1004,33 @@ function createThrowingProvider(error: unknown): {
   };
 }
 
+function createAgentDecisionProvider(responses: unknown[]): LlmProvider {
+  const queue = responses.map((response) => typeof response === "string" ? response : JSON.stringify(response));
+  return {
+    name: "fake-provider",
+    version: "test",
+    capabilities: {
+      nativeToolCalling: true,
+      structuredOutput: {
+        jsonObject: true,
+        jsonSchema: true,
+      },
+    },
+    start() {},
+    stop() {},
+    generateTurn: vi.fn(async () => {
+      const content = queue.shift();
+      if (!content) {
+        throw new Error("No queued provider response.");
+      }
+      return {
+        type: "assistant" as const,
+        content,
+      };
+    }),
+  };
+}
+
 function createFeedbackRecorder(events: AgentFeedbackEventInput[]) {
   return {
     enabled: true,
@@ -802,4 +1084,11 @@ function extractStateView(messages: LlmMessage[]): any {
     throw new Error("State view section missing from decision prompt.");
   }
   return JSON.parse(content.slice(start + marker.length).trim());
+}
+
+function readJsonl(value: string | null): any[] {
+  if (!value?.trim()) {
+    return [];
+  }
+  return value.trim().split("\n").map((line) => JSON.parse(line));
 }
