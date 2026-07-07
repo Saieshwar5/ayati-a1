@@ -305,9 +305,6 @@ export class ToolWorkingSetManager {
     if (runState.taskRouting.resolved) {
       return request;
     }
-    if (mode.name === "active_task_ready") {
-      return request;
-    }
     if (state.runId || state.harnessContext.contextEngine?.pendingTurn?.routingStatus === "bound") {
       return request;
     }

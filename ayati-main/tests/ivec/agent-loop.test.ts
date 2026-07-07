@@ -1086,9 +1086,13 @@ describe("agentLoop", () => {
       expect(provider.generateTurn).toHaveBeenCalledTimes(2);
       expect(readFileSync(outputPath, "utf-8")).toContain("Follow-up note");
       expect(firstDecisionTools).toContain("write_files");
-      expect(firstDecisionTools).not.toContain("git_context_activate_task_for_turn");
+      expect(firstDecisionTools).toContain("git_context_activate_task_for_turn");
+      expect(firstDecisionTools).toContain("git_context_create_task_for_turn");
+      expect(firstDecisionTools).toContain("git_context_ask_clarification_for_turn");
       expect(secondDecisionTools).toContain("write_files");
       expect(secondDecisionTools).not.toContain("git_context_activate_task_for_turn");
+      expect(secondDecisionTools).not.toContain("git_context_create_task_for_turn");
+      expect(secondDecisionTools).not.toContain("git_context_ask_clarification_for_turn");
       expect(createWorkRun).toHaveBeenCalledTimes(1);
       expect(feedbackEvents(feedback.events, "tools", "tool_mode_selected").map((event) => event.data?.["mode"])).toContain("active_task_ready");
       expect(feedbackEvents(feedback.events, "guard", "missing_work_run")).toHaveLength(0);

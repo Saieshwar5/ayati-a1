@@ -250,17 +250,56 @@ describe("runtime capability modes", () => {
     expect(mode.allowToolLoading).toBe(true);
     expect(buildRuntimeCapabilityPromptContext(mode)).toMatchObject({
       name: "active_task_ready",
-      allowed: ["direct_reply", "decision_load_tools", "normal_work_tools"],
-      blocked: ["task_routing_for_same_task_continuation"],
+      allowed: expect.arrayContaining([
+        "direct_reply",
+        "decision_load_tools",
+        "normal_work_tools",
+        "git_context_activate_task_for_turn",
+        "git_context_create_task_for_turn",
+        "git_context_ask_clarification_for_turn",
+      ]),
+      blocked: [],
     });
-    expect(buildRuntimeCapabilityPromptContext(mode).routingWindow).toBeUndefined();
+    expect(buildRuntimeCapabilityPromptContext(mode).routingWindow).toMatchObject({
+      open: true,
+      step: 1,
+      routingToolsAvailable: true,
+    });
     expect(filterToolsForRuntimeMode(mode, [
       tool("git_context_search_tasks"),
       tool("git_context_create_task_for_turn"),
       tool("git_context_activate_task_for_turn"),
+      tool("git_context_ask_clarification_for_turn"),
       tool("write_files"),
     ]).map((entry) => entry.name)).toEqual([
       "git_context_search_tasks",
+      "git_context_create_task_for_turn",
+      "git_context_activate_task_for_turn",
+      "git_context_ask_clarification_for_turn",
+      "write_files",
+    ]);
+  });
+
+  it("expires active-task routing tools before run allocation while keeping normal tools", () => {
+    const current = state(gitContext({
+      status: "active",
+      ref: "refs/heads/task/T-1",
+      workId: "T-1",
+    }));
+    current.iteration = 3;
+    const mode = detectRuntimeCapabilityMode({ state: current });
+
+    expect(mode.name).toBe("active_task_ready");
+    expect(buildRuntimeCapabilityPromptContext(mode).routingWindow).toMatchObject({
+      open: false,
+      expired: true,
+      routingToolsAvailable: false,
+    });
+    expect(filterToolsForRuntimeMode(mode, [
+      tool("git_context_create_task_for_turn"),
+      tool("git_context_activate_task_for_turn"),
+      tool("write_files"),
+    ]).map((entry) => entry.name)).toEqual([
       "write_files",
     ]);
   });

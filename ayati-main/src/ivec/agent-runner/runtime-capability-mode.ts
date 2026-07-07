@@ -100,7 +100,7 @@ export function detectRuntimeCapabilityMode(input: {
   const hasWorkRun = Boolean(input.state.runId || input.workRunHandle?.runId);
   const focusStatus = input.state.harnessContext.contextEngine?.focus.status;
   const pendingTurnStatus = input.state.harnessContext.contextEngine?.pendingTurn?.routingStatus;
-  const routingWindow = buildRuntimeRoutingWindow(input.state, hasWorkRun, pendingTurnStatus, focusStatus);
+  const routingWindow = buildRuntimeRoutingWindow(input.state, hasWorkRun, pendingTurnStatus);
   const common = {
     primary: true as const,
     hasWorkRun,
@@ -168,9 +168,15 @@ export function detectRuntimeCapabilityMode(input: {
       ...common,
       name: "active_task_ready",
       whyActive: "An active task exists and a task run can be created automatically before normal work tools execute.",
-      allowedActions: ["direct_reply", "decision_load_tools", "normal_work_tools"],
-      blockedCapabilities: ["task_routing_for_same_task_continuation"],
-      next: "Continue the active task with selected tools, load missing tools if needed, or reply when no tool work is needed.",
+      allowedActions: [
+        "direct_reply",
+        "decision_load_tools",
+        "normal_work_tools",
+        ...GIT_CONTEXT_READ_ONLY_TOOL_NAMES,
+        ...GIT_CONTEXT_TURN_ROUTING_TOOL_NAMES,
+      ],
+      blockedCapabilities: [],
+      next: "Use normal work tools to continue the active task, or use routing tools within the short routing window only when the turn belongs to a new or different task.",
       allowToolLoading: true,
     };
   }
@@ -209,8 +215,15 @@ export function isRuntimeToolAllowed(mode: RuntimeCapabilityMode, toolName: stri
     return mode.name === "task_run" || mode.name === "active_task_ready" || mode.hasWorkRun;
   }
 
-  if (mode.name === "task_run" || mode.name === "active_task_ready" || mode.hasWorkRun) {
+  if (mode.name === "task_run" || mode.hasWorkRun) {
     return !isTaskRoutingMutation(taxonomy);
+  }
+
+  if (mode.name === "active_task_ready") {
+    if (isTaskRoutingMutation(taxonomy)) {
+      return Boolean(mode.routingWindow?.open) && taxonomy.canRunBeforeTask;
+    }
+    return true;
   }
 
   if (mode.pendingTurnStatus === "clarifying") {
@@ -339,12 +352,8 @@ function buildRuntimeRoutingWindow(
   state: LoopState,
   hasWorkRun: boolean,
   pendingTurnStatus: string | undefined,
-  focusStatus: string | undefined,
 ): RuntimeCapabilityRoutingWindow | undefined {
   if (hasWorkRun || pendingTurnStatus === "clarifying") {
-    return undefined;
-  }
-  if (focusStatus === "active" && !pendingTurnStatus) {
     return undefined;
   }
   const step = Math.max(1, state.iteration || 1);

@@ -85,7 +85,7 @@ export function auditToolPolicy(input: {
       });
     }
 
-    if (!isToolAllowedInPhase(toolName, phase)) {
+    if (!isToolAllowedInPhase(toolName, phase) && !isActiveTaskRoutingWindowMutation(input.mode, taxonomy)) {
       addViolation(violationMap, {
         code: "tool_not_allowed_in_phase",
         severity: "warning",
@@ -119,6 +119,16 @@ function isRoutingMutationAfterTaskBound(
     return false;
   }
   return taxonomy.effect === "context_mutation" && taxonomy.roles.includes("task_routing");
+}
+
+function isActiveTaskRoutingWindowMutation(
+  mode: RuntimeCapabilityMode,
+  taxonomy: NonNullable<ReturnType<typeof getToolTaxonomy>>,
+): boolean {
+  return mode.name === "active_task_ready"
+    && Boolean(mode.routingWindow?.open)
+    && taxonomy.effect === "context_mutation"
+    && taxonomy.roles.includes("task_routing");
 }
 
 function isLongRunningTool(taxonomy: NonNullable<ReturnType<typeof getToolTaxonomy>>): boolean {

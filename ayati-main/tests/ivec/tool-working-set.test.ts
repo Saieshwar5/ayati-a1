@@ -388,7 +388,7 @@ describe("ToolWorkingSetManager", () => {
     ]);
   });
 
-  it("keeps mutation tools available for active task continuation before run allocation", () => {
+  it("keeps mutation tools and routing-window tools available for active task continuation before run allocation", () => {
     const catalog = new ToolCatalog([
       skill("filesystem", [
         tool("find_files"),
@@ -433,13 +433,10 @@ describe("ToolWorkingSetManager", () => {
       "read_file",
       "write_file",
       "write_files",
-      "create_directory",
-      "shell",
-      "shell_run_script",
+      "git_context_activate_task_for_turn",
+      "git_context_create_task_for_turn",
+      "git_context_ask_clarification_for_turn",
     ]));
-    expect(active).not.toContain("git_context_activate_task_for_turn");
-    expect(active).not.toContain("git_context_create_task_for_turn");
-    expect(active).not.toContain("git_context_ask_clarification_for_turn");
     expect(result.evicted).not.toEqual(expect.arrayContaining([
       "write_file",
       "write_files",
