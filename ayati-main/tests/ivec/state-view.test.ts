@@ -254,7 +254,7 @@ describe("buildAgentStateView", () => {
           message: "No active task exists yet. Normal work tools cannot run before task creation.",
           blockedTargets: ["write_files"],
           allowedNextActions: [
-            "Call git_context_create_task_for_turn with title, objective, and reason.",
+            "Call git_context_create_task_for_turn with title, objective, and createReason \"no_active_task\".",
           ],
         },
       }],
@@ -266,7 +266,7 @@ describe("buildAgentStateView", () => {
       source: "tool_validation",
       code: "R_FRESH_SESSION_NEEDS_TASK",
       message: "No active task exists yet. Normal work tools cannot run before task creation.",
-      retryHint: "Call git_context_create_task_for_turn with title, objective, and reason.",
+      retryHint: "Call git_context_create_task_for_turn with title, objective, and createReason \"no_active_task\".",
       repair: {
         code: "R_FRESH_SESSION_NEEDS_TASK",
         blockedTargets: ["write_files"],

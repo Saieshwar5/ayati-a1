@@ -93,11 +93,21 @@ function fakeCreateTaskForTurnTool(): ToolDefinition {
     description: "Create a task for the current turn.",
     inputSchema: {
       type: "object",
-      required: ["title", "objective", "reason"],
+      required: ["title", "objective", "createReason"],
       properties: {
         title: { type: "string" },
         objective: { type: "string" },
-        reason: { type: "string" },
+        createReason: {
+          type: "string",
+          enum: [
+            "no_active_task",
+            "explicit_user_requested_new_task",
+            "new_unrelated_goal",
+            "new_independent_artifact",
+            "separate_parallel_workstream",
+          ],
+        },
+        reasonDetails: { type: "string" },
       },
     },
     async execute() {
@@ -628,7 +638,8 @@ describe("agentLoop", () => {
               input: {
                 title: "Linux commands file",
                 objective: "Create a text file with 10 important Linux commands.",
-                reason: "The user asked for durable file creation work.",
+                createReason: "no_active_task",
+                reasonDetails: "The user asked for durable file creation work.",
               },
               dependsOn: [],
               purpose: "Create and activate the first task before using filesystem tools.",

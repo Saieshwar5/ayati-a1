@@ -83,7 +83,7 @@ describe("runtime capability modes", () => {
         "Create a task only when the current user request has a concrete deliverable and enough detail to begin work now.",
         "Do not create a task for early conversation, brainstorming, vague intent, preferences, or discovery. Reply directly with one short clarifying question.",
         "A concrete deliverable means the user has specified what to make, change, analyze, or produce, and the expected output is clear enough to start without another user answer.",
-        "For clear durable work with no active task, call git_context_create_task_for_turn with title, objective, and reason. If an active task exists, create a new task only for clearly separate work and include whyNotActiveTask plus separateTaskReason.",
+        "For clear durable work with no active task, call git_context_create_task_for_turn with title, objective, and createReason \"no_active_task\". If an active task exists, same-task continuation should use normal work tools directly; create a new task only for valid separate work with createReason \"explicit_user_requested_new_task\", \"new_unrelated_goal\", \"new_independent_artifact\", or \"separate_parallel_workstream\".",
         "Never print task metadata JSON as the assistant response. Put task metadata in the native tool call arguments.",
       ],
       repairCode: "R_FRESH_SESSION_NEEDS_TASK",

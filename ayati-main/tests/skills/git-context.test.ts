@@ -26,12 +26,19 @@ describe("git-context skill", () => {
     const askClarification = requiredTool(skill, "git_context_ask_clarification_for_turn");
 
     expect(createTask.inputSchema).toMatchObject({
-      required: ["title", "objective", "reason"],
+      required: ["title", "objective", "createReason"],
       properties: {
-        whyNotActiveTask: {
+        createReason: {
           type: "string",
+          enum: [
+            "no_active_task",
+            "explicit_user_requested_new_task",
+            "new_unrelated_goal",
+            "new_independent_artifact",
+            "separate_parallel_workstream",
+          ],
         },
-        separateTaskReason: {
+        reasonDetails: {
           type: "string",
         },
       },
@@ -443,7 +450,8 @@ describe("git-context skill", () => {
       sessionId: pending.sessionId,
       title: "Bakery Website",
       objective: "Create a one page bakery website.",
-      reason: "The user started the first durable task in this session.",
+      createReason: "no_active_task",
+      reasonDetails: "The user started the first durable task in this session.",
     });
 
     expect(result.ok).toBe(true);
@@ -459,7 +467,7 @@ describe("git-context skill", () => {
     });
   });
 
-  it("rejects creating a new task while active task exists without separate-work justification", async () => {
+  it("rejects creating a new task with no_active_task while active task exists", async () => {
     const prepared = await prepareMultiTaskGitContextSession();
     const runtime = createGitMemoryRuntime({
       contextStoreDir: prepared.contextStoreDir,
@@ -481,23 +489,24 @@ describe("git-context skill", () => {
       sessionId: prepared.session.sessionId,
       title: "Calmer Website Refinement",
       objective: "Make the current website calmer and less salesy.",
-      reason: "User asked to refine the current website.",
+      createReason: "no_active_task",
+      reasonDetails: "User asked to refine the current website.",
     });
 
     expect(result.ok).toBe(false);
-    expect(result.error).toContain("Active git-context task");
+    expect(result.error).toContain("Cannot create a new task with createReason");
     expect(result.v2).toMatchObject({
-      code: "GIT_CONTEXT_CREATE_TASK_REQUIRES_SEPARATE_WORK",
+      code: "GIT_CONTEXT_CREATE_TASK_REASON_REJECTED",
       error: {
         category: "validation",
         retryable: true,
       },
       structuredContent: {
+        createReason: "no_active_task",
         activeTask: {
           taskId: prepared.reminderTask.taskId,
           title: "Fix reminder scheduling",
         },
-        missingOrWeakFields: ["whyNotActiveTask", "separateTaskReason"],
       },
     });
 
@@ -512,6 +521,51 @@ describe("git-context skill", () => {
         type: "task_routed",
       }),
     ]));
+  });
+
+  it("rejects creating a new task when the pending turn updates the active task", async () => {
+    const prepared = await prepareGitContextSession();
+    const runtime = createGitMemoryRuntime({
+      contextStoreDir: prepared.contextStoreDir,
+      timezone: "Asia/Kolkata",
+      agentId: "local",
+      store: prepared.store,
+    });
+    await runtime.prepareUserTurn({
+      userMessage: "Update the same upload handling work. Add another validation fix to the current upload handling files.",
+      at: "2026-06-28T11:12:00+05:30",
+    });
+    const skill = createGitContextSkill({
+      contextStoreDir: prepared.contextStoreDir,
+      gitMemoryRuntime: runtime,
+    });
+    const tool = requiredTool(skill, "git_context_create_task_for_turn");
+
+    const result = await tool.execute({
+      sessionId: prepared.session.sessionId,
+      title: "Update upload handling validation",
+      objective: "Update the same upload handling files with another validation fix.",
+      createReason: "new_independent_artifact",
+      reasonDetails: "The active task is already completed enough and this is a follow-up update.",
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.v2).toMatchObject({
+      code: "GIT_CONTEXT_CREATE_TASK_REASON_REJECTED",
+      structuredContent: {
+        createReason: "new_independent_artifact",
+        allowedCreateReasons: [],
+        activeTask: {
+          taskId: prepared.task.taskId,
+          title: "Fix upload handling",
+        },
+        allowedNextActions: expect.arrayContaining([
+          "Continue the active task with normal work tools instead of creating a task.",
+        ]),
+      },
+    });
+    expect((result.v2?.structuredContent as { matchedSignals?: string[] }).matchedSignals)
+      .toEqual(expect.arrayContaining(["same-task update language"]));
   });
 
   it("creates a separate new task while active task exists with justification", async () => {
@@ -536,9 +590,8 @@ describe("git-context skill", () => {
       sessionId: prepared.session.sessionId,
       title: "Fix notification digest",
       objective: "Investigate missing notification digest delivery.",
-      reason: "User started a different durable notification task.",
-      whyNotActiveTask: "The active task is reminder scheduling, but this turn is about notification digest delivery.",
-      separateTaskReason: "Notification digest delivery is a separate durable investigation with a different outcome.",
+      createReason: "new_unrelated_goal",
+      reasonDetails: "User started a different durable notification task.",
     });
 
     expect(result.ok).toBe(true);
