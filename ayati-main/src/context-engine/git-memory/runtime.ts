@@ -162,9 +162,18 @@ export interface FinalizeGitMemorySessionRunRuntimeInput {
   triggerSeq?: number;
   conversationRefs: GitMemoryConversationSeqRange[];
   summary: string;
+  intent?: string;
+  routing?: string;
+  outcome?: string;
+  workPerformed?: string[];
+  verification?: string[];
+  decisions?: string[];
   assistantResponse?: string;
   toolCallCount?: number;
   toolsUsed?: string[];
+  changedFiles?: string[];
+  newFacts?: string[];
+  workState?: unknown;
   blockers?: string[];
   next?: string;
 }

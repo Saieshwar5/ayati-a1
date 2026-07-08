@@ -40,7 +40,7 @@ import type { AgentFeedbackLedger } from "./feedback-ledger.js";
 import type { HarnessContext, HarnessContextInput } from "./harness-context.js";
 
 export type SystemEventApprovalState = "not_needed" | "pending" | "granted" | "rejected";
-export type RunClass = "interaction" | "task";
+export type RunClass = "interaction" | "session" | "task";
 export type TaskSummaryRunStatus = "completed" | "failed" | "stuck";
 export type TaskSummaryTaskStatus = "open" | "done" | "blocked" | "needs_user_input";
 export type TaskSummaryStopReason = "completed" | "needs_user_input" | "blocked" | "failed" | "stuck";

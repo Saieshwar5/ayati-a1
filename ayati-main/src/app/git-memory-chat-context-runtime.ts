@@ -87,6 +87,12 @@ export interface GitMemoryChatContextFinalizeSessionRunInput {
   runId: string;
   status: "completed" | "failed" | "blocked" | "needs_user_input";
   summary: string;
+  intent?: string;
+  routing?: string;
+  outcome?: string;
+  workPerformed?: string[];
+  verification?: string[];
+  decisions?: string[];
   assistantResponse?: string;
   at: string;
   startedAt?: string;
@@ -94,6 +100,9 @@ export interface GitMemoryChatContextFinalizeSessionRunInput {
   next?: string;
   toolsUsed?: string[];
   toolCallCount?: number;
+  changedFiles?: string[];
+  newFacts?: string[];
+  workState?: unknown;
 }
 
 export interface GitMemoryChatContextRecordTaskRunStepInput {
@@ -308,11 +317,20 @@ class AppGitMemoryChatContextRuntime implements GitMemoryChatContextRuntime {
           toSeq: input.turn.messageSeq,
         }],
         summary: input.summary,
+        intent: input.intent,
+        routing: input.routing,
+        outcome: input.outcome,
+        workPerformed: input.workPerformed,
+        verification: input.verification,
+        decisions: input.decisions,
         assistantResponse: input.assistantResponse,
         blockers: input.blockers,
         next: input.next,
         toolsUsed: input.toolsUsed,
         toolCallCount: input.toolCallCount,
+        changedFiles: input.changedFiles,
+        newFacts: input.newFacts,
+        workState: input.workState,
       });
     } catch (err) {
       devWarn(`[${input.clientId}] git memory session run finalize failed: ${errorMessage(err)}`);

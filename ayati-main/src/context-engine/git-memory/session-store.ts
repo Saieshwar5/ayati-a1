@@ -474,9 +474,18 @@ export interface FinalizeGitMemorySessionRunInput {
   triggerSeq?: number;
   conversationRefs: GitMemoryConversationSeqRange[];
   summary: string;
+  intent?: string;
+  routing?: string;
+  outcome?: string;
+  workPerformed?: string[];
+  verification?: string[];
+  decisions?: string[];
   assistantResponse?: string;
   toolCallCount?: number;
   toolsUsed?: string[];
+  changedFiles?: string[];
+  newFacts?: string[];
+  workState?: unknown;
   blockers?: string[];
   next?: string;
 }
@@ -859,6 +868,8 @@ export class GitMemoryDailySessionStore {
       summary: "Session run is active.",
       toolCallCount: 0,
       toolsUsed: [],
+      changedFiles: [],
+      newFacts: [],
     };
     await messageStore.writeWorkingFiles({
       [gitMemorySessionStoreActiveRunPath(input.sessionId, input.runId)]: prettyJson(run),
@@ -898,6 +909,21 @@ export class GitMemoryDailySessionStore {
       await messageStore.readWorkingFile(gitMemorySessionStoreActiveRunStepsPath(input.sessionId, input.runId)),
     ).filter((record) => record.sessionId === input.sessionId && record.runId === input.runId);
     const completedAt = input.completedAt ?? this.nowIso();
+    const workPerformed = normalizeMemoryList(input.workPerformed)
+      ?? normalizeMemoryList(steps.map((step) => step.summary))
+      ?? [];
+    const verification = normalizeMemoryList(input.verification)
+      ?? normalizeMemoryList(steps.flatMap((step) => [
+        step.verification.evidenceSummary,
+        ...step.verification.evidenceItems,
+      ]))
+      ?? [];
+    const decisions = normalizeMemoryList(input.decisions) ?? [];
+    const blockers = normalizeMemoryList(input.blockers) ?? [];
+    const next = input.next?.trim();
+    const changedFiles = normalizeStrings(input.changedFiles ?? []);
+    const newFacts = normalizeStrings(input.newFacts ?? steps.flatMap((step) => step.facts));
+    const workState = input.workState ?? latestSessionRunWorkState(steps);
     const run: GitMemorySessionRunFile = {
       schemaVersion: 1,
       sessionId: input.sessionId,
@@ -909,11 +935,20 @@ export class GitMemoryDailySessionStore {
       triggerSeq: input.triggerSeq ?? activeRun.triggerSeq,
       conversationRefs: input.conversationRefs,
       summary: input.summary,
+      intent: input.intent ?? input.summary,
+      routing: input.routing ?? formatConversationRefs(input.conversationRefs),
+      outcome: input.outcome ?? defaultSessionRunOutcome(input.status, input.summary),
+      ...(workPerformed.length > 0 ? { workPerformed } : {}),
+      ...(verification.length > 0 ? { verification } : {}),
+      ...(decisions.length > 0 ? { decisions } : {}),
       ...(input.assistantResponse?.trim() ? { assistantResponse: input.assistantResponse } : {}),
       toolCallCount: input.toolCallCount ?? countSessionRunToolCalls(steps),
       toolsUsed: normalizeStrings(input.toolsUsed ?? steps.flatMap((step) => step.toolCalls.map((call) => call.tool))),
-      ...(input.blockers?.length ? { blockers: normalizeStrings(input.blockers) } : {}),
-      ...(input.next?.trim() ? { next: input.next.trim() } : {}),
+      changedFiles,
+      newFacts,
+      ...(workState !== undefined ? { workState } : {}),
+      ...(blockers.length > 0 ? { blockers } : {}),
+      ...(next ? { next } : {}),
     };
     const runPath = gitMemorySessionStoreRunPath(input.sessionId, input.runId);
     const markdownPath = gitMemorySessionStoreRunMarkdownPath(input.sessionId, input.runId);
@@ -1924,25 +1959,49 @@ function renderSessionRunMarkdown(
     `Started: ${run.startedAt}`,
     ...(run.completedAt ? [`Completed: ${run.completedAt}`] : []),
     "",
-    renderMarkdownParagraph("Summary", run.summary),
-    renderMarkdownParagraph("Conversation", formatConversationRefs(run.conversationRefs)),
+    renderMarkdownParagraph("Intent", run.intent ?? run.summary),
+    renderMarkdownParagraph("Routing", run.routing ?? formatConversationRefs(run.conversationRefs)),
+    renderMarkdownParagraph("Outcome", run.outcome ?? defaultSessionRunOutcome(run.status, run.summary)),
+    renderMarkdownList("Work Performed", run.workPerformed ?? []),
+    renderMarkdownList("Changed Files", run.changedFiles),
+    renderMarkdownList("Verification", run.verification ?? []),
+    renderSessionStepEvidenceMarkdown(steps),
+    renderMarkdownList("Decisions", run.decisions ?? []),
     renderMarkdownList("Tools Used", run.toolsUsed),
-    renderSessionStepMarkdown(steps),
     renderMarkdownList("Blockers", run.blockers ?? []),
-    renderMarkdownParagraph("Next", run.next ?? ""),
+    renderMarkdownParagraph("Next", run.next ?? "No next step."),
+    renderMarkdownList("New Facts", run.newFacts),
+    renderSessionStepActionMarkdown(steps),
     ...(run.assistantResponse ? ["", "## Assistant Response", "", run.assistantResponse.trim(), ""] : []),
   ].join("\n");
 }
 
-function renderSessionStepMarkdown(steps: GitMemorySessionStepRecord[]): string {
+function renderSessionStepEvidenceMarkdown(steps: GitMemorySessionStepRecord[]): string {
   if (steps.length === 0) {
-    return "";
+    return "## Evidence\n\nNone.\n";
   }
   return [
-    "## Steps",
+    "## Evidence",
+    "",
+    ...steps.map((record) => [
+      `- Step ${record.step}: ${record.verification.evidenceSummary ?? record.verification.summary}`,
+      ...(record.artifacts.length > 0 ? [`  Artifacts: ${record.artifacts.join(", ")}`] : []),
+      ...(record.facts.length > 0 ? [`  Facts: ${record.facts.join("; ")}`] : []),
+    ].join("\n")),
+    "",
+  ].join("\n");
+}
+
+function renderSessionStepActionMarkdown(steps: GitMemorySessionStepRecord[]): string {
+  if (steps.length === 0) {
+    return "## Actions\n\nNone.\n";
+  }
+  return [
+    "## Actions",
     "",
     ...steps.map((step) => [
-      `- Step ${step.step}: ${step.summary}`,
+      `- Step ${step.step} ${step.status}: ${step.summary}`,
+      ...(step.action?.["executionContract"] ? [`  Contract: ${String(step.action["executionContract"])}`] : []),
       ...(step.toolCalls.length > 0 ? [`  Tools: ${unique(step.toolCalls.map((call) => call.tool)).join(", ")}`] : []),
     ].join("\n")),
     "",
@@ -2003,8 +2062,8 @@ function renderMarkdownList(title: string, items: string[]): string {
   ].join("\n");
 }
 
-function normalizeMemoryList(values: string[] | undefined): string[] | undefined {
-  const normalized = (values ?? []).map((value) => value.trim()).filter(Boolean);
+function normalizeMemoryList(values: Array<string | undefined> | undefined): string[] | undefined {
+  const normalized = (values ?? []).map((value) => value?.trim() ?? "").filter(Boolean);
   return normalized.length > 0 ? unique(normalized) : undefined;
 }
 
@@ -2391,6 +2450,26 @@ function defaultRunOutcome(status: GitMemoryRunStatus, summary: string): string 
   return normalizedSummary ? `Needs user input: ${normalizedSummary}` : "Needs user input.";
 }
 
+function defaultSessionRunOutcome(status: GitMemorySessionRunStatus, summary: string): string {
+  const normalizedSummary = summary.trim();
+  if (status === "running") {
+    return normalizedSummary || "Session run is active.";
+  }
+  if (status === "promoted") {
+    return normalizedSummary || "Session run promoted.";
+  }
+  if (status === "completed") {
+    return normalizedSummary || "Session run completed.";
+  }
+  if (status === "failed") {
+    return normalizedSummary ? `Run failed: ${normalizedSummary}` : "Run failed.";
+  }
+  if (status === "blocked") {
+    return normalizedSummary ? `Run blocked: ${normalizedSummary}` : "Run blocked.";
+  }
+  return normalizedSummary ? `Needs user input: ${normalizedSummary}` : "Needs user input.";
+}
+
 function formatConversationRefs(refs: GitMemoryConversationSeqRange[]): string {
   if (refs.length === 0) {
     return "No conversation range recorded.";
@@ -2601,6 +2680,15 @@ function readSessionRunWorkingSteps(value: string | null): GitMemorySessionStepR
 
 function countSessionRunToolCalls(steps: GitMemorySessionStepRecord[]): number {
   return steps.reduce((sum, step) => sum + step.toolCalls.length, 0);
+}
+
+function latestSessionRunWorkState(steps: GitMemorySessionStepRecord[]): unknown {
+  for (let index = steps.length - 1; index >= 0; index -= 1) {
+    if (steps[index]?.workStateAfter !== undefined) {
+      return steps[index]?.workStateAfter;
+    }
+  }
+  return undefined;
 }
 
 function normalizeStrings(values: string[] | undefined): string[] {

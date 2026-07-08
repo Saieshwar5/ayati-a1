@@ -39,6 +39,7 @@ import type {
   GitMemorySystemEventContextRoutedTurn,
   GitMemorySystemEventContextRuntime,
 } from "./git-memory-system-event-context-runtime.js";
+import { buildSessionRunFinalizationFields } from "./session-run-finalization.js";
 
 export interface CreateSystemEventRuntimeOptions {
   onReply?: (clientId: string, data: unknown) => void;
@@ -669,18 +670,28 @@ class AppSystemEventRuntime implements SystemEventRuntime {
       return;
     }
     const status = sessionRunStatusFromResult(result);
+    const runFields = buildSessionRunFinalizationFields(result, status);
     const finalized = await this.systemEventContextRuntime.finalizeSessionRun({
       clientId,
       turn,
       runId: runHandle.runId,
       status,
-      summary: result.workState?.summary || result.content || "System-event session run completed.",
+      summary: runFields.summary,
+      intent: runFields.intent,
+      routing: runFields.routing,
+      outcome: runFields.outcome,
+      workPerformed: runFields.workPerformed,
+      verification: runFields.verification,
+      decisions: runFields.decisions,
       assistantResponse: result.content,
       at: this.nowProvider().toISOString(),
-      blockers: result.workState?.blockers,
-      next: result.workState?.nextStep,
+      blockers: runFields.blockers,
+      next: runFields.next,
       toolsUsed: uniqueStrings(result.completedSteps?.flatMap((step) => step.toolsUsed ?? []) ?? []),
       toolCallCount: result.totalToolCalls,
+      changedFiles: runFields.changedFiles,
+      newFacts: runFields.newFacts,
+      workState: result.workState,
     });
     this.feedbackLedger?.record({
       clientId,

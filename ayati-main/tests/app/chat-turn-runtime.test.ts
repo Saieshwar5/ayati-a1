@@ -843,18 +843,30 @@ describe("createChatTurnRuntime", () => {
       const runId = "R-20260628-0001";
       const driver = new GitMemoryWorktreeGitDriver(join(contextStoreDir, "sessions", sessionId));
       const sessionStore = await driver.openSubmoduleRepo(GIT_MEMORY_SESSION_STORE_DIR);
-      expect(JSON.parse(await sessionStore.readFile(
+      const sessionRun = JSON.parse(await sessionStore.readFile(
         GIT_MEMORY_MAIN_REF,
         gitMemorySessionStoreRunPath(sessionId, runId),
-      ) ?? "{}")).toMatchObject({
+      ) ?? "{}");
+      expect(sessionRun).toMatchObject({
         sessionId,
         runId,
         runClass: "session",
         status: "completed",
         summary: "Upload handling lives in upload.ts.",
+        intent: "Upload handling lives in upload.ts.",
+        outcome: "Upload handling lives in upload.ts.",
+        workPerformed: expect.any(Array),
         toolCallCount: 1,
         toolsUsed: ["read_file"],
+        changedFiles: [],
+        newFacts: expect.any(Array),
+        workState: {
+          status: expect.any(String),
+          verifiedFacts: expect.any(Array),
+          evidence: expect.any(Array),
+        },
       });
+      expect(sessionRun.workPerformed.length).toBeGreaterThan(0);
       const steps = readJsonl(await sessionStore.readFile(
         GIT_MEMORY_MAIN_REF,
         gitMemorySessionStoreStepsPath(sessionId, runId),

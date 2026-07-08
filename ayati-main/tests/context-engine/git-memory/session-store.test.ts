@@ -873,6 +873,15 @@ describe("GitMemoryDailySessionStore", () => {
         step: 1,
         tool: "search_in_files",
         completedAt: "2026-06-28T09:00:03+05:30",
+        facts: ["Upload handling reference found."],
+        workStateAfter: {
+          status: "done",
+          summary: "Found upload handling references.",
+          verifiedFacts: ["Upload handling reference found."],
+          evidence: ["search_in_files evidence"],
+          artifacts: [],
+          nextStep: "No next step.",
+        },
       }),
     });
 
@@ -897,22 +906,39 @@ describe("GitMemoryDailySessionStore", () => {
     expect(await messageStore.readWorkingFile(
       gitMemorySessionStoreActiveRunStepsPath(session.sessionId, "R-20260628-0001"),
     )).toBeNull();
-    expect(JSON.parse(await messageStore.readFile(
+    const runFile = JSON.parse(await messageStore.readFile(
       GIT_MEMORY_MAIN_REF,
       gitMemorySessionStoreRunPath(session.sessionId, "R-20260628-0001"),
-    ) ?? "{}")).toMatchObject({
+    ) ?? "{}");
+    expect(runFile).toMatchObject({
       sessionId: session.sessionId,
       runId: "R-20260628-0001",
       runClass: "session",
       status: "completed",
       summary: "Found upload handling references.",
+      intent: "Found upload handling references.",
+      routing: `conversation ${user.seq}-${user.seq}`,
+      outcome: "Found upload handling references.",
+      workPerformed: ["search_in_files completed"],
+      verification: ["search_in_files evidence"],
       toolCallCount: 1,
       toolsUsed: ["search_in_files"],
+      changedFiles: [],
+      newFacts: ["Upload handling reference found."],
+      workState: {
+        status: "done",
+        summary: "Found upload handling references.",
+        verifiedFacts: ["Upload handling reference found."],
+        evidence: ["search_in_files evidence"],
+      },
     });
-    expect(await messageStore.readFile(
+    const runMarkdown = await messageStore.readFile(
       GIT_MEMORY_MAIN_REF,
       gitMemorySessionStoreRunMarkdownPath(session.sessionId, "R-20260628-0001"),
-    )).toContain("# Session Run R-20260628-0001");
+    );
+    expect(runMarkdown).toContain("# Session Run R-20260628-0001");
+    expect(runMarkdown).toContain("## Work Performed");
+    expect(runMarkdown).toContain("## Actions");
     expect(readJsonl(await messageStore.readFile(
       GIT_MEMORY_MAIN_REF,
       gitMemorySessionStoreStepsPath(session.sessionId, "R-20260628-0001"),
@@ -1938,6 +1964,9 @@ function sessionRunStep(input: {
   step: number;
   tool: string;
   completedAt: string;
+  facts?: string[];
+  artifacts?: string[];
+  workStateAfter?: unknown;
 }) {
   return {
     v: 1 as const,
@@ -1963,11 +1992,12 @@ function sessionRunStep(input: {
       summary: `${input.tool} verified`,
       evidenceItems: [`${input.tool} evidence`],
       newFacts: [],
-      artifacts: [],
+      artifacts: input.artifacts ?? [],
       usedRawArtifacts: [],
     },
-    facts: [],
-    artifacts: [],
+    ...(input.workStateAfter !== undefined ? { workStateAfter: input.workStateAfter } : {}),
+    facts: input.facts ?? [],
+    artifacts: input.artifacts ?? [],
   };
 }
 

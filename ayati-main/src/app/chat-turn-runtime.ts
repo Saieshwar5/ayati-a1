@@ -60,6 +60,7 @@ import type {
   GitMemoryChatContextRoutedTurn,
   GitMemoryChatContextRuntime,
 } from "./git-memory-chat-context-runtime.js";
+import { buildSessionRunFinalizationFields } from "./session-run-finalization.js";
 
 export interface CreateChatTurnRuntimeOptions {
   onReply?: (clientId: string, data: unknown) => void;
@@ -1115,18 +1116,28 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
       return;
     }
     const status = sessionRunStatusFromResult(result);
+    const runFields = buildSessionRunFinalizationFields(result, status);
     const finalized = await this.chatContextRuntime.finalizeSessionRun({
       clientId,
       turn,
       runId: runHandle.runId,
       status,
-      summary: result.workState?.summary || result.content || "Session run completed.",
+      summary: runFields.summary,
+      intent: runFields.intent,
+      routing: runFields.routing,
+      outcome: runFields.outcome,
+      workPerformed: runFields.workPerformed,
+      verification: runFields.verification,
+      decisions: runFields.decisions,
       assistantResponse: result.content,
       at: this.nowProvider().toISOString(),
-      blockers: result.workState?.blockers,
-      next: result.workState?.nextStep,
+      blockers: runFields.blockers,
+      next: runFields.next,
       toolsUsed: uniqueStrings(result.completedSteps?.flatMap((step) => step.toolsUsed ?? []) ?? []),
       toolCallCount: result.totalToolCalls,
+      changedFiles: runFields.changedFiles,
+      newFacts: runFields.newFacts,
+      workState: result.workState,
     });
     this.feedbackLedger?.record({
       clientId,
