@@ -14,8 +14,13 @@ import {
   gitMemorySessionStoreMessagePath,
   gitMemorySessionStoreMessagesDir,
   gitMemorySessionStoreAttachmentsPath,
+  gitMemorySessionStoreActiveRunPath,
+  gitMemorySessionStoreActiveRunStepsPath,
   gitMemorySessionStoreMetaPath,
   gitMemorySessionStoreSchemaPath,
+  gitMemorySessionStoreRunMarkdownPath,
+  gitMemorySessionStoreRunPath,
+  gitMemorySessionStoreStepsPath,
   gitMemorySessionStoreSummaryMarkdownPath,
   gitMemorySessionStoreSummaryMetaPath,
   gitMemoryTaskAssetsPath,
@@ -819,6 +824,277 @@ describe("GitMemoryDailySessionStore", () => {
       toSeq: user.seq,
       at: "2026-06-28T09:01:45+05:30",
     })).rejects.toThrow("Git memory task run already reserved: R-20260628-0001");
+  });
+
+  it("starts and finalizes session runs in the session-store without creating task files", async () => {
+    const contextStoreDir = await mkdtemp(join(tmpdir(), "ayati-git-memory-"));
+    const store = new GitMemoryDailySessionStore({ contextStoreDir });
+    const session = await store.openOrCreateDailySession({
+      date: "2026-06-28",
+      timezone: "Asia/Kolkata",
+      agentId: "local",
+      createdAt: "2026-06-28T00:00:00+05:30",
+    });
+    const user = await store.appendConversationMessage({
+      sessionId: session.sessionId,
+      role: "user",
+      text: "Where is upload handling implemented?",
+      at: "2026-06-28T09:00:00+05:30",
+    });
+
+    const started = await store.startSessionRun({
+      sessionId: session.sessionId,
+      runId: "R-20260628-0001",
+      fromSeq: user.seq,
+      toSeq: user.seq,
+      at: "2026-06-28T09:00:01+05:30",
+    });
+    expect(started).toEqual({ runId: "R-20260628-0001" });
+
+    const driver = new GitMemoryWorktreeGitDriver(session.repoPath);
+    const messageStore = await driver.openSubmoduleRepo(GIT_MEMORY_SESSION_STORE_DIR);
+    expect(JSON.parse(await messageStore.readWorkingFile(
+      gitMemorySessionStoreActiveRunPath(session.sessionId, "R-20260628-0001"),
+    ) ?? "{}")).toMatchObject({
+      sessionId: session.sessionId,
+      runId: "R-20260628-0001",
+      runClass: "session",
+      status: "running",
+      conversationRefs: [{ fromSeq: user.seq, toSeq: user.seq }],
+    });
+    expect(await store.allocateTaskRunId(session.sessionId)).toBe("R-20260628-0002");
+
+    await store.appendSessionRunStep({
+      sessionId: session.sessionId,
+      runId: "R-20260628-0001",
+      record: sessionRunStep({
+        sessionId: session.sessionId,
+        runId: "R-20260628-0001",
+        step: 1,
+        tool: "search_in_files",
+        completedAt: "2026-06-28T09:00:03+05:30",
+        facts: ["Upload handling reference found."],
+        workStateAfter: {
+          status: "done",
+          summary: "Found upload handling references.",
+          verifiedFacts: ["Upload handling reference found."],
+          evidence: ["search_in_files evidence"],
+          artifacts: [],
+          nextStep: "No next step.",
+        },
+      }),
+    });
+
+    const sessionStoreHeadBeforeFinalize = await messageStore.resolveRef(GIT_MEMORY_MAIN_REF);
+    const finalized = await store.finalizeSessionRun({
+      sessionId: session.sessionId,
+      runId: "R-20260628-0001",
+      status: "completed",
+      completedAt: "2026-06-28T09:00:04+05:30",
+      conversationRefs: [{ fromSeq: user.seq, toSeq: user.seq }],
+      summary: "Found upload handling references.",
+      assistantResponse: "Upload handling is implemented in the server.",
+    });
+
+    expect(finalized).toMatchObject({
+      sessionId: session.sessionId,
+      runId: "R-20260628-0001",
+      committed: false,
+    });
+    expect(finalized.sessionStoreCommit).toBeUndefined();
+    expect(await messageStore.resolveRef(GIT_MEMORY_MAIN_REF)).toBe(sessionStoreHeadBeforeFinalize);
+    expect(await messageStore.readWorkingFile(
+      gitMemorySessionStoreActiveRunPath(session.sessionId, "R-20260628-0001"),
+    )).toBeNull();
+    expect(await messageStore.readWorkingFile(
+      gitMemorySessionStoreActiveRunStepsPath(session.sessionId, "R-20260628-0001"),
+    )).toBeNull();
+    const runFile = JSON.parse(await messageStore.readWorkingFile(
+      gitMemorySessionStoreRunPath(session.sessionId, "R-20260628-0001"),
+    ) ?? "{}");
+    expect(runFile).toMatchObject({
+      sessionId: session.sessionId,
+      runId: "R-20260628-0001",
+      runClass: "session",
+      status: "completed",
+      summary: "Found upload handling references.",
+      intent: "Found upload handling references.",
+      routing: `conversation ${user.seq}-${user.seq}`,
+      outcome: "Found upload handling references.",
+      workPerformed: ["search_in_files completed"],
+      verification: ["search_in_files evidence"],
+      toolCallCount: 1,
+      toolsUsed: ["search_in_files"],
+      changedFiles: [],
+      newFacts: ["Upload handling reference found."],
+      workState: {
+        status: "done",
+        summary: "Found upload handling references.",
+        verifiedFacts: ["Upload handling reference found."],
+        evidence: ["search_in_files evidence"],
+      },
+    });
+    expect(await messageStore.readFile(
+      GIT_MEMORY_MAIN_REF,
+      gitMemorySessionStoreRunPath(session.sessionId, "R-20260628-0001"),
+    )).toBeNull();
+    const runMarkdown = await messageStore.readWorkingFile(
+      gitMemorySessionStoreRunMarkdownPath(session.sessionId, "R-20260628-0001"),
+    );
+    expect(runMarkdown).toContain("# Session Run R-20260628-0001");
+    expect(runMarkdown).toContain("## Work Performed");
+    expect(runMarkdown).toContain("## Actions");
+    expect(readJsonl(await messageStore.readWorkingFile(
+      gitMemorySessionStoreStepsPath(session.sessionId, "R-20260628-0001"),
+    ))).toHaveLength(1);
+    expect(await driver.listTreePaths(GIT_MEMORY_MAIN_REF, "tasks")).toEqual([]);
+    expect(await store.allocateTaskRunId(session.sessionId)).toBe("R-20260628-0002");
+  });
+
+  it("blocks task run start on an active session run unless promotion explicitly allows it", async () => {
+    const contextStoreDir = await mkdtemp(join(tmpdir(), "ayati-git-memory-"));
+    const store = new GitMemoryDailySessionStore({ contextStoreDir });
+    const session = await store.openOrCreateDailySession({
+      date: "2026-06-28",
+      timezone: "Asia/Kolkata",
+      agentId: "local",
+      createdAt: "2026-06-28T00:00:00+05:30",
+    });
+    const user = await store.appendConversationMessage({
+      sessionId: session.sessionId,
+      role: "user",
+      text: "Read then edit upload handling",
+      at: "2026-06-28T09:00:00+05:30",
+    });
+    await store.startSessionRun({
+      sessionId: session.sessionId,
+      runId: "R-20260628-0001",
+      fromSeq: user.seq,
+      toSeq: user.seq,
+      at: "2026-06-28T09:00:01+05:30",
+    });
+    const task = await store.createTaskBranch({
+      sessionId: session.sessionId,
+      title: "Fix upload handling",
+      objective: "Find and fix upload handling failures.",
+      fromSeq: user.seq,
+      toSeq: user.seq,
+      at: "2026-06-28T09:01:00+05:30",
+    });
+
+    await expect(store.startTaskRun({
+      sessionId: session.sessionId,
+      taskId: task.taskId,
+      branch: task.branch,
+      runId: "R-20260628-0001",
+      fromSeq: user.seq,
+      toSeq: user.seq,
+    })).rejects.toThrow("Git memory session run already active: R-20260628-0001");
+
+    await expect(store.startTaskRun({
+      sessionId: session.sessionId,
+      taskId: task.taskId,
+      branch: task.branch,
+      runId: "R-20260628-0001",
+      fromSeq: user.seq,
+      toSeq: user.seq,
+      allowActiveSessionRun: true,
+    })).resolves.toEqual({ runId: "R-20260628-0001" });
+  });
+
+  it("promotes active session run steps into task-run staging without finalizing a session-run copy", async () => {
+    const contextStoreDir = await mkdtemp(join(tmpdir(), "ayati-git-memory-"));
+    const store = new GitMemoryDailySessionStore({ contextStoreDir });
+    const session = await store.openOrCreateDailySession({
+      date: "2026-06-28",
+      timezone: "Asia/Kolkata",
+      agentId: "local",
+      createdAt: "2026-06-28T00:00:00+05:30",
+    });
+    const user = await store.appendConversationMessage({
+      sessionId: session.sessionId,
+      role: "user",
+      text: "Read upload handling and then fix it",
+      at: "2026-06-28T09:00:00+05:30",
+    });
+    await store.startSessionRun({
+      sessionId: session.sessionId,
+      runId: "R-20260628-0001",
+      fromSeq: user.seq,
+      toSeq: user.seq,
+      at: "2026-06-28T09:00:01+05:30",
+    });
+    await store.appendSessionRunStep({
+      sessionId: session.sessionId,
+      runId: "R-20260628-0001",
+      record: sessionRunStep({
+        sessionId: session.sessionId,
+        runId: "R-20260628-0001",
+        step: 1,
+        tool: "read_file",
+        completedAt: "2026-06-28T09:00:03+05:30",
+      }),
+    });
+    const task = await store.createTaskBranch({
+      sessionId: session.sessionId,
+      title: "Fix upload handling",
+      objective: "Find and fix upload handling failures.",
+      fromSeq: user.seq,
+      toSeq: user.seq,
+      at: "2026-06-28T09:01:00+05:30",
+    });
+    await store.startTaskRun({
+      sessionId: session.sessionId,
+      taskId: task.taskId,
+      branch: task.branch,
+      runId: "R-20260628-0001",
+      fromSeq: user.seq,
+      toSeq: user.seq,
+      allowActiveSessionRun: true,
+    });
+
+    const promoted = await store.promoteSessionRunToTaskRun({
+      sessionId: session.sessionId,
+      runId: "R-20260628-0001",
+      taskId: task.taskId,
+      branch: task.branch,
+      ref: task.ref,
+    });
+
+    expect(promoted).toEqual({
+      sessionId: session.sessionId,
+      runId: "R-20260628-0001",
+      promotedTo: {
+        taskId: task.taskId,
+        branch: task.branch,
+        ref: task.ref,
+      },
+      promotedStepCount: 1,
+    });
+    const driver = new GitMemoryWorktreeGitDriver(session.repoPath);
+    const messageStore = await driver.openSubmoduleRepo(GIT_MEMORY_SESSION_STORE_DIR);
+    expect(await messageStore.readWorkingFile(
+      gitMemorySessionStoreActiveRunPath(session.sessionId, "R-20260628-0001"),
+    )).toBeNull();
+    expect(await messageStore.readWorkingFile(
+      gitMemorySessionStoreActiveRunStepsPath(session.sessionId, "R-20260628-0001"),
+    )).toBeNull();
+    expect(await messageStore.readFile(
+      GIT_MEMORY_MAIN_REF,
+      gitMemorySessionStoreRunPath(session.sessionId, "R-20260628-0001"),
+    )).toBeNull();
+
+    const staged = readJsonl(await driver.readWorkingFile(
+      gitMemoryTaskStepsStagingPath(task.taskId, "R-20260628-0001"),
+    ));
+    expect(staged).toHaveLength(1);
+    expect(staged[0]).toMatchObject({
+      taskId: task.taskId,
+      runId: "R-20260628-0001",
+      step: 1,
+      toolCalls: [{ tool: "read_file" }],
+    });
+    expect(staged[0]).not.toHaveProperty("sessionId");
   });
 
   it("does not start an already finalized task run", async () => {
@@ -1680,6 +1956,53 @@ function parseJsonl(value: string | null): unknown[] {
     return [];
   }
   return value.trim().split(/\r?\n/).map((line) => JSON.parse(line) as unknown);
+}
+
+function readJsonl(value: string | null): unknown[] {
+  return parseJsonl(value);
+}
+
+function sessionRunStep(input: {
+  sessionId: string;
+  runId: string;
+  step: number;
+  tool: string;
+  completedAt: string;
+  facts?: string[];
+  artifacts?: string[];
+  workStateAfter?: unknown;
+}) {
+  return {
+    v: 1 as const,
+    sessionId: input.sessionId,
+    runId: input.runId,
+    step: input.step,
+    status: "completed" as const,
+    completedAt: input.completedAt,
+    summary: `${input.tool} completed`,
+    toolCalls: [{
+      callId: `call-${input.step}`,
+      tool: input.tool,
+      status: "success" as const,
+      input: {},
+      output: `${input.tool} output`,
+    }],
+    verification: {
+      passed: true,
+      policy: "deterministic",
+      method: "execution_gate",
+      executionStatus: "all_succeeded",
+      validationStatus: "passed",
+      summary: `${input.tool} verified`,
+      evidenceItems: [`${input.tool} evidence`],
+      newFacts: [],
+      artifacts: input.artifacts ?? [],
+      usedRawArtifacts: [],
+    },
+    ...(input.workStateAfter !== undefined ? { workStateAfter: input.workStateAfter } : {}),
+    facts: input.facts ?? [],
+    artifacts: input.artifacts ?? [],
+  };
 }
 
 async function gitStatus(repoPath: string): Promise<string> {

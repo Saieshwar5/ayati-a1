@@ -30,6 +30,9 @@ Primary value:
 - Default daily git context for task/work continuity, including conversation,
   active task refs, work branches, task state, assets, actions, evidence, and
   commit metadata.
+- Run-first execution: provider-handled turns can perform read-only work in a
+  session run, and promote that same run into a task run only when mutation
+  becomes necessary.
 - Turn-aware task routing: obvious same-task follow-ups are bound
   automatically, while the agent can search/read tasks and route ambiguous or
   new durable work through activate, create, or clarify tools before normal

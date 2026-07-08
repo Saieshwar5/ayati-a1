@@ -846,6 +846,12 @@ function buildLoopStateFixture(exchangeCount: number): LoopState {
         toolFailureCount: 0,
       },
     ],
+    routingAttempts: {
+      successCount: 0,
+      failureCount: 0,
+      maxFailures: 2,
+      resolved: false,
+    },
     runPath: "/tmp/runtime-state-view",
     failureHistory: [],
     harnessContext: {

@@ -1,4 +1,5 @@
 import type { LoopState, TaskNote, ToolContextState, ToolObservation, WorkState } from "../types.js";
+import type { MemoryRunHandle } from "../../memory/types.js";
 import type { RepairPromptCard } from "./repair-policy.js";
 import { buildPromptToolCallsForRun } from "./run-tool-call-context.js";
 import type { PromptToolCalls } from "./run-tool-call-context.js";
@@ -105,11 +106,17 @@ export interface AgentStateView {
 export interface AgentStateViewOptions {
   activeTools?: string[];
   runtimeMode?: RuntimeCapabilityPromptContext;
+  workRunHandle?: MemoryRunHandle;
+  sessionRunHandle?: MemoryRunHandle;
 }
 
 export function buildAgentStateView(state: LoopState, options: AgentStateViewOptions = {}): AgentStateView {
   const runtimeMode = options.runtimeMode
-    ?? buildRuntimeCapabilityPromptContext(detectRuntimeCapabilityMode({ state }));
+    ?? buildRuntimeCapabilityPromptContext(detectRuntimeCapabilityMode({
+      state,
+      workRunHandle: options.workRunHandle,
+      sessionRunHandle: options.sessionRunHandle,
+    }));
   const progress = buildProgressView(state.workState);
   const toolLoad = buildToolLoadView(state.lastToolLoad);
   const workingFeedback = buildWorkingFeedbackView(state);
@@ -140,6 +147,8 @@ export function buildAgentStateView(state: LoopState, options: AgentStateViewOpt
       status: state.workState.status,
       workState: progress,
       toolCalls,
+      routing: buildRoutingAttemptView(state),
+      deferredMutation: buildDeferredMutationView(state),
     }),
   });
 
@@ -177,11 +186,51 @@ function buildRunContext(input: {
   status: WorkState["status"];
   workState?: PromptProgressState;
   toolCalls?: PromptToolCalls;
+  routing?: PromptRunContext["routing"];
+  deferredMutation?: PromptRunContext["deferredMutation"];
 }): PromptRunContext {
   return {
     status: input.status,
     ...(input.workState ? { workState: input.workState } : {}),
     ...(input.toolCalls ? { toolCalls: input.toolCalls } : {}),
+    ...(input.routing ? { routing: input.routing } : {}),
+    ...(input.deferredMutation ? { deferredMutation: input.deferredMutation } : {}),
+  };
+}
+
+function buildRoutingAttemptView(state: LoopState): PromptRunContext["routing"] | undefined {
+  const routing = state.routingAttempts;
+  if (!routing) {
+    return undefined;
+  }
+  if (
+    routing.successCount === 0
+    && routing.failureCount === 0
+    && !routing.resolved
+    && !routing.lastTool
+    && !routing.lastError
+  ) {
+    return undefined;
+  }
+  return {
+    successCount: routing.successCount,
+    failureCount: routing.failureCount,
+    maxFailures: routing.maxFailures,
+    resolved: routing.resolved,
+    ...(routing.lastTool ? { lastTool: routing.lastTool } : {}),
+    ...(routing.lastError ? { lastError: routing.lastError } : {}),
+  };
+}
+
+function buildDeferredMutationView(state: LoopState): PromptRunContext["deferredMutation"] | undefined {
+  const deferred = state.deferredMutation;
+  if (!deferred) {
+    return undefined;
+  }
+  return {
+    reason: deferred.reason,
+    tools: deferred.blockedTools,
+    callCount: deferred.action.calls.length,
   };
 }
 
@@ -201,6 +250,11 @@ function buildWorkingFeedbackView(state: LoopState): PromptWorkingFeedback | und
   const pendingTurnFeedback = buildPendingTurnWorkingFeedback(state);
   if (pendingTurnFeedback) {
     latest.push(pendingTurnFeedback);
+  }
+
+  const deferredMutationFeedback = buildDeferredMutationWorkingFeedback(state);
+  if (deferredMutationFeedback) {
+    latest.push(deferredMutationFeedback);
   }
 
   const toolLoadFeedback = buildToolLoadWorkingFeedback(state.lastToolLoad);
@@ -227,14 +281,28 @@ function buildWorkingFeedbackView(state: LoopState): PromptWorkingFeedback | und
   return latest.length > 0 ? { latest: latest.slice(-4) } : undefined;
 }
 
+function buildDeferredMutationWorkingFeedback(state: LoopState): PromptWorkingFeedbackItem | undefined {
+  const deferred = state.deferredMutation;
+  if (!deferred) {
+    return undefined;
+  }
+  return {
+    severity: "warning",
+    source: "tool_validation",
+    code: "mutation_deferred_for_task_routing",
+    message: `The pending mutation (${deferred.blockedTools.join(", ")}) is paused until this session run has task ownership.`,
+    retryHint: "Use git_context_activate_task_for_turn to bind the active/existing task, git_context_search_tasks if another task may own it, or git_context_create_task_for_turn for a new task. The deferred mutation will execute automatically after routing.",
+  };
+}
+
 function buildPendingTurnWorkingFeedback(state: LoopState): PromptWorkingFeedbackItem | undefined {
   const pendingTurn = state.harnessContext.contextEngine?.pendingTurn;
   if (pendingTurn?.routingStatus === "unbound") {
     return {
       severity: "warning",
       source: "tool_validation",
-      message: "The current git-context pending turn is unbound. Normal task tools are not valid until this turn is routed to an existing task, a new task, or clarification.",
-      retryHint: "Use git-context read/search tools if needed, then call git_context_activate_task_for_turn, git_context_create_task_for_turn, or git_context_ask_clarification_for_turn.",
+      message: "The current git-context pending turn is unbound. Normal task tools are not valid until this turn is routed to an existing task or a new task.",
+      retryHint: "Use git-context read/search tools if needed, then call git_context_activate_task_for_turn or git_context_create_task_for_turn. Ask the user directly if task ownership is ambiguous.",
     };
   }
   if (pendingTurn?.routingStatus === "clarifying") {
@@ -271,7 +339,7 @@ function isToolValidationReason(reason: string): boolean {
 
 function buildFailureRetryHint(failureType: LoopState["failureHistory"][number]["failureType"], reason: string): string | undefined {
   if (reason.includes("No active task exists")) {
-    return "Use git_context_create_task_for_turn first, or ask a short clarification if the request is unclear.";
+    return "Use git_context_search_tasks if needed, then git_context_activate_task_for_turn or git_context_create_task_for_turn before mutation. Ask a short clarification directly if the request is unclear.";
   }
   if (failureType === "validation_error" || isToolValidationReason(reason)) {
     return "Retry the selected executable tool with all required schema fields. Do not use an empty input object.";

@@ -9,8 +9,13 @@ import type {
   GitMemoryDailySessionHandle,
   GitMemorySessionCheckpoint,
   GitMemoryTaskRoutingSnapshot,
+  FinalizeGitMemorySessionRunInput,
+  FinalizeGitMemorySessionRunResult,
+  PromoteGitMemorySessionRunResult,
   RecordGitMemoryTaskRunStepInput,
+  RecordGitMemorySessionRunStepInput,
   SelectGitMemoryTaskForTurnResult,
+  StartGitMemorySessionRunResult,
 } from "./session-store.js";
 import { GitMemoryDailySessionStore } from "./session-store.js";
 import {
@@ -38,7 +43,6 @@ import {
   GitMemoryTaskRouter,
   type AppliedGitMemoryTaskRoute,
   type ApplyGitMemoryTaskRouteInput,
-  type GitMemoryTaskRouteCandidate,
   type GitMemoryTaskRouteResolution,
   type ResolveGitMemoryTaskRouteInput,
   isGitMemoryPureFollowUpMessage,
@@ -50,9 +54,11 @@ import type {
   GitMemoryRunFile,
   GitMemoryRunId,
   GitMemoryRunStatus,
+  GitMemorySessionRunStatus,
   GitMemorySessionAttachmentRecord,
   GitMemorySessionAttachmentsFile,
   GitMemorySessionId,
+  GitMemorySessionStepRecord,
   GitMemoryStepRecord,
   GitMemoryTaskId,
 } from "./schema.js";
@@ -139,9 +145,47 @@ export interface FinalizeGitMemoryTaskRunInput extends BuildGitMemoryTaskRunComm
   assistantAt?: string;
 }
 
+export interface StartGitMemorySessionRunRuntimeInput extends GitMemoryConversationSeqRange {
+  sessionId: GitMemorySessionId;
+  runId?: GitMemoryRunId;
+  at?: string;
+  triggerSeq?: number;
+}
+
+export interface FinalizeGitMemorySessionRunRuntimeInput {
+  sessionId: GitMemorySessionId;
+  runId: GitMemoryRunId;
+  status: Exclude<GitMemorySessionRunStatus, "running" | "promoted">;
+  startedAt?: string;
+  completedAt?: string;
+  triggerSeq?: number;
+  conversationRefs: GitMemoryConversationSeqRange[];
+  summary: string;
+  intent?: string;
+  routing?: string;
+  outcome?: string;
+  workPerformed?: string[];
+  verification?: string[];
+  decisions?: string[];
+  assistantResponse?: string;
+  toolCallCount?: number;
+  toolsUsed?: string[];
+  changedFiles?: string[];
+  newFacts?: string[];
+  workState?: unknown;
+  blockers?: string[];
+  next?: string;
+}
+
 export interface RecordGitMemoryTaskRunStepRuntimeInput {
   sessionId: GitMemorySessionId;
   record: GitMemoryStepRecord;
+  at?: string;
+}
+
+export interface RecordGitMemorySessionRunStepRuntimeInput {
+  sessionId: GitMemorySessionId;
+  record: GitMemorySessionStepRecord;
   at?: string;
 }
 
@@ -167,6 +211,7 @@ export interface ActivateGitMemoryTaskForTurnInput {
   sessionId: GitMemorySessionId;
   taskId: GitMemoryTaskId;
   reason: string;
+  sessionRunId?: GitMemoryRunId;
   at?: string;
 }
 
@@ -175,13 +220,7 @@ export interface CreateGitMemoryTaskForTurnInput {
   title: string;
   objective: string;
   reason: string;
-  at?: string;
-}
-
-export interface AskGitMemoryTaskClarificationForTurnInput {
-  sessionId: GitMemorySessionId;
-  reason: string;
-  candidateTaskIds?: GitMemoryTaskId[];
+  sessionRunId?: GitMemoryRunId;
   at?: string;
 }
 
@@ -258,7 +297,7 @@ export class GitMemoryRuntime {
       createdAt: at,
       record: userMessage,
     });
-    this.clearUnboundPendingTurn(session.sessionId);
+    this.clearNonBoundPendingTurn(session.sessionId);
     const memoryState = await this.hydrateMemoryState(session.sessionId);
     const context = buildGitMemoryContextPackFromMemoryState(memoryState);
     return {
@@ -367,6 +406,82 @@ export class GitMemoryRuntime {
     return result;
   }
 
+  async startSessionRun(input: StartGitMemorySessionRunRuntimeInput): Promise<StartGitMemorySessionRunResult> {
+    const at = input.at ?? this.nowProvider().toISOString();
+    return await this.writeQueue.enqueue({
+      sessionId: input.sessionId,
+      type: "session_run_started",
+      label: "start_session_run",
+      createdAt: at,
+    }, async () => {
+      const runId = input.runId ?? await this.store.allocateTaskRunId(input.sessionId);
+      return await this.store.startSessionRun({
+        sessionId: input.sessionId,
+        runId,
+        fromSeq: input.fromSeq,
+        toSeq: input.toSeq,
+        at,
+        triggerSeq: input.triggerSeq,
+      });
+    });
+  }
+
+  recordSessionRunStep(input: RecordGitMemorySessionRunStepRuntimeInput): void {
+    const request: RecordGitMemorySessionRunStepInput = {
+      sessionId: input.sessionId,
+      runId: input.record.runId,
+      record: input.record,
+    };
+    const write = this.writeQueue.enqueue({
+      sessionId: input.sessionId,
+      type: "session_run_step_recorded",
+      label: "record_session_run_step",
+      createdAt: input.at ?? input.record.completedAt,
+    }, async () => {
+      await this.store.appendSessionRunStep(request);
+    });
+    void write.catch(() => {
+      this.invalidateSessionMemory(input.sessionId);
+    });
+  }
+
+  async finalizeSessionRun(
+    input: FinalizeGitMemorySessionRunRuntimeInput,
+  ): Promise<FinalizeGitMemorySessionRunResult> {
+    const completedAt = input.completedAt ?? this.nowProvider().toISOString();
+    return await this.writeQueue.enqueue({
+      sessionId: input.sessionId,
+      type: "session_run_finalized",
+      label: "finalize_session_run",
+      createdAt: completedAt,
+    }, async () => {
+      const finalizeInput: FinalizeGitMemorySessionRunInput = {
+        ...input,
+        completedAt,
+      };
+      return await this.store.finalizeSessionRun(finalizeInput);
+    });
+  }
+
+  async promoteSessionRunToTaskRun(input: {
+    sessionId: GitMemorySessionId;
+    runId: GitMemoryRunId;
+    taskId: GitMemoryTaskId;
+    branch: string;
+    ref: string;
+    at?: string;
+  }): Promise<PromoteGitMemorySessionRunResult> {
+    const at = input.at ?? this.nowProvider().toISOString();
+    return await this.writeQueue.enqueue({
+      sessionId: input.sessionId,
+      type: "session_run_promoted",
+      label: "promote_session_run_to_task_run",
+      createdAt: at,
+    }, async () => {
+      return await this.store.promoteSessionRunToTaskRun(input);
+    });
+  }
+
   async createTaskBranch(input: CreateGitMemoryTaskBranchInput): Promise<CreateGitMemoryTaskBranchResult> {
     const result = await this.writeQueue.enqueue({
       sessionId: input.sessionId,
@@ -422,7 +537,7 @@ export class GitMemoryRuntime {
       label: "continue_active_turn",
       createdAt: input.at,
     }, async () => {
-      const runId = await this.store.allocateTaskRunId(input.sessionId);
+      const runId = input.sessionRunId ?? await this.store.allocateTaskRunId(input.sessionId);
       const selectedTask = await this.store.selectTaskForTurn({
         sessionId: input.sessionId,
         taskId: activeTask.taskId,
@@ -433,6 +548,15 @@ export class GitMemoryRuntime {
         runId,
         summary: reason,
       });
+      if (input.sessionRunId) {
+        await this.store.promoteSessionRunToTaskRun({
+          sessionId: input.sessionId,
+          runId,
+          taskId: selectedTask.taskId,
+          branch: selectedTask.branch,
+          ref: selectedTask.ref,
+        });
+      }
       await this.store.startTaskRun({
         sessionId: input.sessionId,
         taskId: selectedTask.taskId,
@@ -441,6 +565,7 @@ export class GitMemoryRuntime {
         fromSeq: input.fromSeq,
         toSeq: input.toSeq,
         at: input.at,
+        allowActiveSessionRun: Boolean(input.sessionRunId),
       });
       return {
         status: "ready" as const,
@@ -498,7 +623,7 @@ export class GitMemoryRuntime {
       label: "activate_task_for_turn",
       createdAt: at,
     }, async () => {
-      const runId = await this.store.allocateTaskRunId(input.sessionId);
+      const runId = input.sessionRunId ?? await this.store.allocateTaskRunId(input.sessionId);
       const selectedTask = await this.store.selectTaskForTurn({
         sessionId: input.sessionId,
         taskId: input.taskId,
@@ -509,6 +634,15 @@ export class GitMemoryRuntime {
         runId,
         summary: input.reason,
       });
+      if (input.sessionRunId) {
+        await this.store.promoteSessionRunToTaskRun({
+          sessionId: input.sessionId,
+          runId,
+          taskId: selectedTask.taskId,
+          branch: selectedTask.branch,
+          ref: selectedTask.ref,
+        });
+      }
       await this.store.startTaskRun({
         sessionId: input.sessionId,
         taskId: selectedTask.taskId,
@@ -517,6 +651,7 @@ export class GitMemoryRuntime {
         fromSeq: pendingTurn.fromSeq,
         toSeq: pendingTurn.toSeq,
         at,
+        allowActiveSessionRun: Boolean(input.sessionRunId),
       });
       return {
         status: "ready" as const,
@@ -566,7 +701,7 @@ export class GitMemoryRuntime {
       label: "create_task_for_turn",
       createdAt: at,
     }, async () => {
-      const runId = await this.store.allocateTaskRunId(input.sessionId);
+      const runId = input.sessionRunId ?? await this.store.allocateTaskRunId(input.sessionId);
       const createdTask = await this.store.createTaskBranch({
         sessionId: input.sessionId,
         title: input.title,
@@ -585,6 +720,15 @@ export class GitMemoryRuntime {
           next: input.objective,
         },
       });
+      if (input.sessionRunId) {
+        await this.store.promoteSessionRunToTaskRun({
+          sessionId: input.sessionId,
+          runId,
+          taskId: createdTask.taskId,
+          branch: createdTask.branch,
+          ref: createdTask.ref,
+        });
+      }
       await this.store.startTaskRun({
         sessionId: input.sessionId,
         taskId: createdTask.taskId,
@@ -593,6 +737,7 @@ export class GitMemoryRuntime {
         fromSeq: pendingTurn.fromSeq,
         toSeq: pendingTurn.toSeq,
         at,
+        allowActiveSessionRun: Boolean(input.sessionRunId),
       });
       return {
         status: "ready" as const,
@@ -630,31 +775,6 @@ export class GitMemoryRuntime {
     const context = buildGitMemoryContextPackFromMemoryState(memoryState);
     return {
       ...routed,
-      context,
-      memoryState,
-    };
-  }
-
-  async askClarificationForTurn(
-    input: AskGitMemoryTaskClarificationForTurnInput,
-  ): Promise<Extract<RoutedGitMemoryUserTurn, { status: "ambiguous" }>> {
-    const pendingTurn = await this.requireOrCreateUnboundPendingTurn(input.sessionId, input.at);
-    const candidates = await this.taskRouteCandidatesForIds(
-      input.sessionId,
-      input.candidateTaskIds ?? [],
-      input.reason,
-    );
-    this.markPendingTurnClarifying(input.sessionId, {
-      fromSeq: pendingTurn.fromSeq,
-      toSeq: pendingTurn.toSeq,
-    });
-    const memoryState = await this.hydrateMemoryState(input.sessionId);
-    const context = buildGitMemoryContextPackFromMemoryState(memoryState);
-    return {
-      status: "ambiguous",
-      sessionId: input.sessionId,
-      candidates,
-      reason: input.reason,
       context,
       memoryState,
     };
@@ -704,10 +824,19 @@ export class GitMemoryRuntime {
           reason: resolution.reason,
         } as const;
       }
-      const runId = await this.store.allocateTaskRunId(input.sessionId);
+      const runId = input.sessionRunId ?? await this.store.allocateTaskRunId(input.sessionId);
       const route = await this.taskRouter.applyResolution({ ...input, runId }, resolution);
       if (route.status === "ambiguous") {
         throw new Error("Git memory task route unexpectedly became ambiguous after run allocation.");
+      }
+      if (input.sessionRunId) {
+        await this.store.promoteSessionRunToTaskRun({
+          sessionId: input.sessionId,
+          runId,
+          taskId: route.taskId,
+          branch: route.branch,
+          ref: route.ref,
+        });
       }
       await this.store.startTaskRun({
         sessionId: input.sessionId,
@@ -717,6 +846,7 @@ export class GitMemoryRuntime {
         fromSeq: input.fromSeq,
         toSeq: input.toSeq,
         at: input.at,
+        allowActiveSessionRun: Boolean(input.sessionRunId),
       });
       return {
         ...route,
@@ -1006,9 +1136,9 @@ export class GitMemoryRuntime {
     }
   }
 
-  private clearUnboundPendingTurn(sessionId: GitMemorySessionId): void {
+  private clearNonBoundPendingTurn(sessionId: GitMemorySessionId): void {
     const existing = this.pendingTurns.get(sessionId);
-    if (!existing || existing.routingStatus === "unbound") {
+    if (!existing || existing.routingStatus !== "bound") {
       this.pendingTurns.delete(sessionId);
     }
   }
@@ -1044,29 +1174,6 @@ export class GitMemoryRuntime {
     };
     this.setPendingTurn(created);
     return created;
-  }
-
-  private async taskRouteCandidatesForIds(
-    sessionId: GitMemorySessionId,
-    taskIds: GitMemoryTaskId[],
-    reason: string,
-  ): Promise<GitMemoryTaskRouteCandidate[]> {
-    if (taskIds.length === 0) {
-      return [];
-    }
-    const requested = new Set(taskIds);
-    const snapshot = await this.store.readTaskRoutingSnapshot(sessionId);
-    return snapshot.tasks
-      .filter((task) => requested.has(task.taskId))
-      .map((task) => ({
-        taskId: task.taskId,
-        branch: task.branch,
-        ref: task.ref,
-        title: task.title,
-        status: task.status,
-        score: 100,
-        reasons: [reason],
-      }));
   }
 
   private async cacheCreatedTask(

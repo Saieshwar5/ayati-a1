@@ -18,6 +18,7 @@ export type GitMemoryConversationRole = "user" | "assistant" | "system";
 export type GitMemoryConversationKind = "message" | "feedback_question";
 export type GitMemoryTaskStatus = "open" | "in_progress" | "needs_user_input" | "blocked" | "done" | "abandoned";
 export type GitMemoryRunStatus = "completed" | "failed" | "blocked" | "needs_user_input";
+export type GitMemorySessionRunStatus = GitMemoryRunStatus | "running" | "promoted";
 export type GitMemoryActionStatus = "completed" | "failed" | "skipped";
 export type GitMemoryTaskFactConfidence = "verified" | "observed" | "assumed";
 export type GitMemoryTaskFileRole = "created" | "modified" | "touched" | "reference" | "generated";
@@ -79,6 +80,40 @@ export interface GitMemorySessionAttachmentsFile {
   sessionId: GitMemorySessionId;
   updatedAt: string;
   attachments: GitMemorySessionAttachmentRecord[];
+}
+
+export interface GitMemorySessionRunPromotion {
+  taskId: GitMemoryTaskId;
+  branch: string;
+  ref: string;
+}
+
+export interface GitMemorySessionRunFile {
+  schemaVersion: 1;
+  sessionId: GitMemorySessionId;
+  runId: GitMemoryRunId;
+  runClass: "session";
+  status: GitMemorySessionRunStatus;
+  startedAt: string;
+  completedAt?: string;
+  triggerSeq?: number;
+  conversationRefs: GitMemoryConversationSeqRange[];
+  summary: string;
+  intent?: string;
+  routing?: string;
+  outcome?: string;
+  workPerformed?: string[];
+  verification?: string[];
+  decisions?: string[];
+  assistantResponse?: string;
+  toolCallCount: number;
+  toolsUsed: string[];
+  changedFiles: string[];
+  newFacts: string[];
+  workState?: unknown;
+  promotedTo?: GitMemorySessionRunPromotion;
+  blockers?: string[];
+  next?: string;
 }
 
 export interface GitMemoryConversationRecord {
@@ -319,6 +354,29 @@ export interface GitMemoryStepRecord {
   blockedTargets?: string[];
 }
 
+export interface GitMemorySessionStepRecord {
+  v: 1;
+  sessionId: GitMemorySessionId;
+  runId: GitMemoryRunId;
+  step: number;
+  status: GitMemoryStepStatus;
+  startedAt?: string;
+  completedAt: string;
+  summary: string;
+  decision?: Record<string, unknown>;
+  action?: Record<string, unknown>;
+  toolCalls: GitMemoryStepToolCallRecord[];
+  verification: GitMemoryStepVerificationRecord;
+  workStateAfter?: unknown;
+  facts: string[];
+  artifacts: string[];
+  outputSize?: number;
+  lineCount?: number;
+  truncated?: boolean;
+  failureType?: string;
+  blockedTargets?: string[];
+}
+
 export type ValidationResult<T> =
   | { ok: true; value: T }
   | { ok: false; errors: string[] };
@@ -406,6 +464,50 @@ export function gitMemorySessionStoreSummaryMetaPath(sessionId: GitMemorySession
 
 export function gitMemorySessionStoreAttachmentsPath(sessionId: GitMemorySessionId): string {
   return `${gitMemorySessionStoreSessionDir(sessionId)}/attachments/index.json`;
+}
+
+export function gitMemorySessionStoreRunsDir(sessionId: GitMemorySessionId): string {
+  return `${gitMemorySessionStoreSessionDir(sessionId)}/runs`;
+}
+
+export function gitMemorySessionStoreRunPath(sessionId: GitMemorySessionId, runId: GitMemoryRunId): string {
+  if (!isGitMemoryRunId(runId)) {
+    throw new Error(`Invalid git-memory run id: ${runId}`);
+  }
+  return `${gitMemorySessionStoreRunsDir(sessionId)}/${runId}.json`;
+}
+
+export function gitMemorySessionStoreRunMarkdownPath(sessionId: GitMemorySessionId, runId: GitMemoryRunId): string {
+  if (!isGitMemoryRunId(runId)) {
+    throw new Error(`Invalid git-memory run id: ${runId}`);
+  }
+  return `${gitMemorySessionStoreRunsDir(sessionId)}/${runId}.md`;
+}
+
+export function gitMemorySessionStoreStepsDir(sessionId: GitMemorySessionId): string {
+  return `${gitMemorySessionStoreSessionDir(sessionId)}/steps`;
+}
+
+export function gitMemorySessionStoreStepsPath(sessionId: GitMemorySessionId, runId: GitMemoryRunId): string {
+  if (!isGitMemoryRunId(runId)) {
+    throw new Error(`Invalid git-memory run id: ${runId}`);
+  }
+  return `${gitMemorySessionStoreStepsDir(sessionId)}/${runId}.jsonl`;
+}
+
+export function gitMemorySessionStoreActiveRunDir(sessionId: GitMemorySessionId, runId: GitMemoryRunId): string {
+  if (!isGitMemoryRunId(runId)) {
+    throw new Error(`Invalid git-memory run id: ${runId}`);
+  }
+  return `${gitMemorySessionStoreSessionDir(sessionId)}/active-runs/${runId}`;
+}
+
+export function gitMemorySessionStoreActiveRunPath(sessionId: GitMemorySessionId, runId: GitMemoryRunId): string {
+  return `${gitMemorySessionStoreActiveRunDir(sessionId, runId)}/run.json`;
+}
+
+export function gitMemorySessionStoreActiveRunStepsPath(sessionId: GitMemorySessionId, runId: GitMemoryRunId): string {
+  return `${gitMemorySessionStoreActiveRunDir(sessionId, runId)}/steps.jsonl`;
 }
 
 export function gitMemorySessionStoreMessagePath(

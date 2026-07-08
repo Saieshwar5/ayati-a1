@@ -274,7 +274,6 @@ function fallbackWorkState(result: GitMemoryHarnessRunResultForContext): Harness
 const TASK_ROUTING_TOOL_NAMES = new Set([
   "git_context_activate_task_for_turn",
   "git_context_create_task_for_turn",
-  "git_context_ask_clarification_for_turn",
 ]);
 
 function normalizeCommitWorkState(

@@ -2,6 +2,7 @@ import type { LlmProvider } from "../core/contracts/provider.js";
 import type { ToolExecutor } from "../skills/tool-executor.js";
 import type { SkillActivationManager } from "../skills/activation-manager.js";
 import type { ToolLoadResult, ToolWorkingSetManager } from "./agent-runner/tool-working-set.js";
+import type { AgentAction } from "./agent-runner/decision.js";
 import type { RepairCode, RepairPromptCard } from "./agent-runner/repair-policy.js";
 import type {
   ArtifactRef,
@@ -20,7 +21,7 @@ import type {
   RunRecorder,
   SessionInputHandle,
 } from "../memory/types.js";
-import type { GitMemoryStepRecord, TaskAssetRecord } from "../context-engine/index.js";
+import type { GitMemorySessionStepRecord, GitMemoryStepRecord, TaskAssetRecord } from "../context-engine/index.js";
 import type { DocumentStore } from "../documents/document-store.js";
 import type { PreparedAttachmentRecord, PreparedAttachmentRegistry } from "../documents/prepared-attachment-registry.js";
 import type { ManagedDocumentManifest, PreparedAttachmentSummary } from "../documents/types.js";
@@ -40,7 +41,7 @@ import type { AgentFeedbackLedger } from "./feedback-ledger.js";
 import type { HarnessContext, HarnessContextInput } from "./harness-context.js";
 
 export type SystemEventApprovalState = "not_needed" | "pending" | "granted" | "rejected";
-export type RunClass = "interaction" | "task";
+export type RunClass = "interaction" | "session" | "task";
 export type TaskSummaryRunStatus = "completed" | "failed" | "stuck";
 export type TaskSummaryTaskStatus = "open" | "done" | "blocked" | "needs_user_input";
 export type TaskSummaryStopReason = "completed" | "needs_user_input" | "blocked" | "failed" | "stuck";
@@ -188,6 +189,23 @@ export interface ReadProgressState {
   signatures: string[];
 }
 
+export interface DeferredMutationState {
+  action: AgentAction;
+  selectedTools: ToolDefinition[];
+  deferredAtIteration: number;
+  reason: "mutation_requires_task_ownership";
+  blockedTools: string[];
+}
+
+export interface RoutingAttemptState {
+  successCount: number;
+  failureCount: number;
+  maxFailures: number;
+  resolved: boolean;
+  lastTool?: string;
+  lastError?: string;
+}
+
 export interface LoopState {
   runId: string;
   currentSeq: number;
@@ -214,6 +232,8 @@ export interface LoopState {
   maxIterations: number;
   consecutiveFailures: number;
   completedSteps: StepSummary[];
+  deferredMutation?: DeferredMutationState;
+  routingAttempts: RoutingAttemptState;
   runPath: string;
   failureHistory: FailureRecord[];
   readProgress?: ReadProgressState;
@@ -392,6 +412,12 @@ export interface CreateWorkRunRequest {
   userMessage: string;
   activeTaskId?: string;
   activeBranch?: string;
+  newTask?: {
+    title: string;
+    objective: string;
+    createReason?: string;
+    reasonDetails?: string;
+  };
 }
 
 export interface CreatedWorkRun {
@@ -412,6 +438,9 @@ export interface AgentLoopDeps {
   runRecorder?: RunRecorder;
   inputHandle?: SessionInputHandle;
   runHandle?: MemoryRunHandle;
+  createSessionRun?: (
+    inputHandle: SessionInputHandle,
+  ) => MemoryRunHandle | Promise<MemoryRunHandle>;
   createWorkRun?: (
     inputHandle: SessionInputHandle,
     request: CreateWorkRunRequest,
@@ -432,6 +461,8 @@ export interface AgentLoopDeps {
   uiContext?: AgentUiContext;
   onProgress?: OnProgressCallback;
   onFinalResponseStream?: OnFinalResponseStreamCallback;
+  sessionRunHandle?: MemoryRunHandle;
+  recordSessionStep?: (record: GitMemorySessionStepRecord) => void;
   recordTaskStep?: (record: GitMemoryStepRecord) => void;
   feedbackLedger?: AgentFeedbackLedger;
   config?: Partial<LoopConfig>;

@@ -1965,6 +1965,7 @@ describe("GitMemoryRuntime", () => {
     expect(ambiguousRoute.memoryState.pendingTurn).not.toHaveProperty("taskId");
     expect(ambiguousRoute.memoryState.pendingTurn).not.toHaveProperty("runId");
   });
+
 });
 
 class TrackingConversationStore extends GitMemoryDailySessionStore {

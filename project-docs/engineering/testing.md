@@ -23,8 +23,12 @@ Daemon-specific priorities:
   code in repair prompts, failure history or working feedback when model-facing,
   feedback event data when operator-facing, and feedback-ledger triage when the
   repair should appear in summaries.
-- For task-run lifecycle changes, include both lower-level git-memory runtime
-  tests and app/engine-level tests proving the live flow commits exactly once.
+- For run/task lifecycle changes, include lower-level git-memory runtime tests,
+  agent-loop tests, and app/engine-level tests proving the live flow writes
+  exactly one final run record. Cover both unpromoted read-only session runs and
+  read-then-mutate promotion into task runs when relevant. For clarification
+  flows, cover both the session-only clarification run and the fresh answer run
+  that may later activate or promote a task.
 - Cover system-event behavior when changes affect background or proactive workflows.
 - Cover transport contracts when adding or changing client channels.
 - Cover tool safety when changing computer-access capabilities.

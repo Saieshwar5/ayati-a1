@@ -37,7 +37,7 @@ describe("repair policy", () => {
       code: "R_FRESH_SESSION_NEEDS_TASK",
       severity: "repairable",
       source: "runner.guard",
-      message: "No active task exists yet. Normal work tools cannot run before task creation.",
+      message: "No active task exists yet. Normal work tools cannot run before task promotion.",
       blockedTargets: ["write_files", "shell"],
       missingFields: [],
       invalidFields: [],
@@ -48,8 +48,9 @@ describe("repair policy", () => {
       },
     });
     expect(signal.allowedNextActions).toEqual([
-      "Call git_context_create_task_for_turn with title, objective, and createReason \"no_active_task\".",
-      "Ask a short clarification if the request is unclear.",
+      "Use git_context_search_tasks if existing task ownership is possible.",
+      "Call git_context_activate_task_for_turn for a matching existing task, or git_context_create_task_for_turn with createReason \"no_active_task\" for new durable work.",
+      "Ask a short clarification directly if the request is unclear.",
     ]);
   });
 

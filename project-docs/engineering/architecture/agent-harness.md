@@ -75,20 +75,31 @@ Unknown native tools, multiple native tool calls, missing executable tools,
 task feedback outside an active task run, and invalid tool inputs are rejected
 deterministically and repaired when possible.
 
-When git-memory has an `unbound` or `clarifying` pending turn, normal task tools
-are blocked. The model may use git-context read/search tools and the
-turn-aware routing tools:
+Every provider-handled chat turn and provider-handled system event starts as a
+session run. A session run is an immutable/read-first run record owned by the
+session-store until mutation becomes necessary. Read-only tools may execute in
+this state without creating or binding a task. Mutation tools cannot execute
+from an unbound session run; the runner must first promote the active session
+run into a task run.
+
+When git-memory has an `unbound` or `clarifying` pending turn, mutation tools
+are blocked. The model may use read-only tools, git-context read/search tools,
+and the turn-aware routing tools:
 
 - `git_context_activate_task_for_turn`
 - `git_context_create_task_for_turn`
 - `git_context_ask_clarification_for_turn`
 
-When a fresh session has no active task, the initial routing surface is smaller:
-only `git_context_create_task_for_turn` and
-`git_context_ask_clarification_for_turn` are exposed. There is no task to
-search, read, or activate yet. If the model tries to load or call normal work
-tools before a task exists, the runner records repair feedback instead of
-throwing a missing-run error to the user.
+When a fresh session has no active task, read-only tools remain available on the
+session run. Mutating work still requires a promotion target or clarification
+first: the initial routing surface exposes
+`git_context_set_promotion_target_for_turn`,
+`git_context_create_task_for_turn`, and
+`git_context_ask_clarification_for_turn`. The target tool is preferred for new
+durable work because it records intent without creating a durable task; the task
+is created only if a later mutation tool promotes the active session run. If the
+model tries to call a mutation tool before a task or target exists, the runner
+records repair feedback instead of throwing a missing-run error to the user.
 
 Routing mutation tools are treated as routing controls, not ordinary work
 tools. During routing modes they are pinned outside the normal selected-tool and
@@ -96,14 +107,14 @@ visible-tool budgets, so repair can always ask the model to create, activate,
 or clarify a task with a callable native tool. Once ownership is resolved or a
 real work run exists, those mutation tools are removed from the run surface.
 
-When an active task exists and no run id exists yet, normal work tools and the
-short routing window can be visible together. If the request belongs to the
-same active task, the model should call normal work tools directly; the runner
-asks the app runtime to allocate and bind the task run immediately before the
-first normal action executes. If the request is new, different, or ambiguous,
-the model may use the routing tools during the window. Unused routing tools
-expire after the routing window, and any normal work action creates the run and
-removes routing tools from the surface.
+When an active task exists, the turn still starts as a session run. The model
+may inspect with read-only tools first. If the request belongs to the same
+active task and a mutation tool is selected, the runner asks the app runtime to
+promote the active session run into that task run immediately before the first
+mutation executes. If the request is new, different, or ambiguous, the model may
+use routing tools during the window. Unused routing tools expire after the
+routing window, and any promoted mutation removes routing tools from the
+surface.
 
 After a routing tool succeeds, the runner refreshes the harness context into
 the returned real task run id, removes routing/search/create/switch tools for
@@ -111,10 +122,24 @@ the rest of that run, and prepares normal work tools for the original user
 message. This allows flows such as:
 
 ```text
-fresh request -> git_context_create_task_for_turn -> write_files -> final reply
-same active task -> write_files -> final reply
+fresh request -> git_context_set_promotion_target_for_turn -> write_files -> final reply
+read-only question -> read_file -> final reply stored as session run
+same active task -> read_file -> write_files -> final reply stored as task run
 different existing task -> git_context_activate_task_for_turn -> normal work tool -> final reply
+ambiguous task -> git_context_ask_clarification_for_turn -> clarification reply stored as session run
+clarification answer -> git_context_activate_task_for_turn -> write_files -> final reply stored as task run
 ```
+
+Clarification is not a deferred promotion. Once the assistant asks the
+clarifying question and the session run finalizes, that run is sealed. The
+user's answer starts a fresh session run and can be promoted only if that answer
+turn activates, targets, or creates a task before mutation.
+
+Promotion can happen only while the session run is active. After a session run
+is finalized in the session-store, it is sealed and must not be converted into a
+task run later. Final storage is exclusive: an unpromoted run is finalized under
+`session-store`; a promoted run is finalized under the task directory using the
+same run id. The runtime must never write a finalized run to both locations.
 
 The model should not call a tool just to continue the already-active task;
 obvious same-task continuation is automatic. The model must not directly commit

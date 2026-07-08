@@ -13,12 +13,11 @@ export const GIT_CONTEXT_READ_ONLY_TOOL_NAMES = [
 export const GIT_CONTEXT_TURN_ROUTING_TOOL_NAMES = [
   "git_context_activate_task_for_turn",
   "git_context_create_task_for_turn",
-  "git_context_ask_clarification_for_turn",
 ] as const;
 
 export const GIT_CONTEXT_FRESH_SESSION_ROUTING_TOOL_NAMES = [
+  "git_context_activate_task_for_turn",
   "git_context_create_task_for_turn",
-  "git_context_ask_clarification_for_turn",
 ] as const;
 
 const READ_ONLY_TOOL_NAMES = new Set<string>(GIT_CONTEXT_READ_ONLY_TOOL_NAMES);

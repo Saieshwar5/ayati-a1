@@ -60,6 +60,7 @@ import type {
   GitMemoryChatContextRoutedTurn,
   GitMemoryChatContextRuntime,
 } from "./git-memory-chat-context-runtime.js";
+import { buildSessionRunFinalizationFields } from "./session-run-finalization.js";
 
 export interface CreateChatTurnRuntimeOptions {
   onReply?: (clientId: string, data: unknown) => void;
@@ -190,6 +191,7 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
   private async processChatUnlocked(input: ChatTurnRuntimeInput): Promise<void> {
     let inputHandle: SessionInputHandle | null = null;
     let runHandle: MemoryRunHandle | null = null;
+    let sessionRunHandle: MemoryRunHandle | null = null;
     let chatContextTurn: GitMemoryChatContextPreparedTurn | null = null;
     let routedContextTurn: GitMemoryChatContextRoutedTurn | null = null;
     let liveFinalResponseStream: LiveReplyStream | null = null;
@@ -211,7 +213,7 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
         },
       });
 
-      routedContextTurn = await this.routeChatContextTurn(input.clientId, chatContextTurn, input.content);
+      routedContextTurn = await this.routeChatContextTurn(input.clientId, chatContextTurn, input.content, sessionRunHandle);
       if (routedContextTurn?.status === "ambiguous") {
         await this.dispatchChatContextAmbiguity(input.clientId, chatContextTurn, routedContextTurn);
         return;
@@ -252,6 +254,31 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
           runRecorder: chatRunRecorder,
           inputHandle,
           ...(runHandle ? { runHandle } : {}),
+          ...(sessionRunHandle ? { sessionRunHandle } : {}),
+          createSessionRun: async (requestedInputHandle) => {
+            if (sessionRunHandle?.runId) {
+              return sessionRunHandle;
+            }
+            if (!chatContextTurn) {
+              throw new Error("Git-memory prepared turn is required before session run creation.");
+            }
+            sessionRunHandle = await this.startChatContextSessionRun(
+              input.clientId,
+              chatContextTurn,
+              requestedInputHandle,
+            );
+            if (!sessionRunHandle) {
+              throw new Error("Git-memory session run could not be created before session tool execution.");
+            }
+            return sessionRunHandle;
+          },
+          recordSessionStep: (record) => {
+            this.chatContextRuntime.recordSessionRunStep?.({
+              clientId: input.clientId,
+              turn: chatContextTurn,
+              record,
+            });
+          },
           recordTaskStep: (record) => {
             this.chatContextRuntime.recordTaskRunStep({
               clientId: input.clientId,
@@ -261,10 +288,14 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
           },
           onWorkRunCreated: (created) => {
             runHandle = created;
+            if (sessionRunHandle?.runId === created.runId) {
+              sessionRunHandle = null;
+            }
           },
           createWorkRun: async (requestedInputHandle, request) => {
-            const routed = await this.bindActiveTaskForWorkRun(input.clientId, chatContextTurn, request);
+            const routed = await this.bindActiveTaskForWorkRun(input.clientId, chatContextTurn, request, sessionRunHandle);
             routedContextTurn = routed;
+            sessionRunHandle = null;
             return {
               runHandle: this.runHandleFromRoutedTurn(requestedInputHandle, routed),
               harnessContext: routed.harnessContext,
@@ -312,7 +343,7 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
           toolDefinitions,
           routedContextTurn,
         );
-        const commitStatus = await this.completeChatContextRun(input.clientId, chatContextTurn, routedContextTurn, result);
+        const commitStatus = await this.completeChatContextRun(input.clientId, chatContextTurn, routedContextTurn, result, sessionRunHandle);
         this.dispatchAgentResponse(input.clientId, runHandle, result, commitStatus, liveFinalResponseStream);
         this.feedbackLedger?.record({
           clientId: input.clientId,
@@ -442,6 +473,7 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
     clientId: string,
     turn: GitMemoryChatContextPreparedTurn | null,
     userMessage: string,
+    sessionRunHandle: MemoryRunHandle | null,
   ): Promise<GitMemoryChatContextRoutedTurn | null> {
     if (!turn) {
       return null;
@@ -465,6 +497,7 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
       turn,
       userMessage,
       at: this.nowProvider().toISOString(),
+      ...(sessionRunHandle ? { sessionRunId: sessionRunHandle.runId } : {}),
       autoOnly: true,
     });
     if (!routed) {
@@ -588,13 +621,19 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
     prepared: GitMemoryChatContextPreparedTurn | null,
     routed: GitMemoryChatContextRoutedTurn | null,
     result: AgentLoopResult,
+    sessionRunHandle?: MemoryRunHandle | null,
   ): Promise<ReplyCommitStatus> {
     const normalizedResult = this.normalizeTaskWaitingResult(result);
     const binding = this.taskRunBindingFromRoutedOrResult(routed, normalizedResult);
     const skipReason = this.chatContextFinalizationSkipReason(prepared, routed, normalizedResult, binding);
     if (skipReason) {
       if (prepared && result.content.trim()) {
-        await this.recordChatContextAssistantMessage(clientId, prepared, result.content);
+        await this.recordChatContextAssistantMessage(clientId, prepared, result.content, {
+          ...(sessionRunHandle ? { runId: sessionRunHandle.runId } : {}),
+        });
+      }
+      if (prepared && sessionRunHandle) {
+        await this.finalizeChatContextSessionRun(clientId, prepared, sessionRunHandle, normalizedResult);
       }
       let commitStatus: ReplyCommitStatus = "skipped";
       if (prepared) {
@@ -1044,6 +1083,90 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
     };
   }
 
+  private async startChatContextSessionRun(
+    clientId: string,
+    turn: GitMemoryChatContextPreparedTurn,
+    inputHandle: SessionInputHandle,
+  ): Promise<MemoryRunHandle | null> {
+    if (typeof this.chatContextRuntime.startSessionRun !== "function") {
+      return null;
+    }
+    const started = await this.chatContextRuntime.startSessionRun({
+      clientId,
+      turn,
+      at: this.nowProvider().toISOString(),
+    });
+    if (!started) {
+      return null;
+    }
+    const runHandle = {
+      sessionId: inputHandle.sessionId,
+      runId: started.runId,
+      triggerSeq: inputHandle.seq,
+    };
+    this.feedbackLedger?.record({
+      clientId,
+      sessionId: runHandle.sessionId,
+      seq: inputHandle.seq,
+      runId: runHandle.runId,
+      stage: "run",
+      event: "session_run_started",
+      data: {
+        runId: runHandle.runId,
+      },
+    });
+    return runHandle;
+  }
+
+  private async finalizeChatContextSessionRun(
+    clientId: string,
+    turn: GitMemoryChatContextPreparedTurn | null,
+    runHandle: MemoryRunHandle,
+    result: AgentLoopResult,
+  ): Promise<void> {
+    if (!turn || typeof this.chatContextRuntime.finalizeSessionRun !== "function") {
+      return;
+    }
+    const status = sessionRunStatusFromResult(result);
+    const runFields = buildSessionRunFinalizationFields(result, status);
+    const finalized = await this.chatContextRuntime.finalizeSessionRun({
+      clientId,
+      turn,
+      runId: runHandle.runId,
+      status,
+      summary: runFields.summary,
+      intent: runFields.intent,
+      routing: runFields.routing,
+      outcome: runFields.outcome,
+      workPerformed: runFields.workPerformed,
+      verification: runFields.verification,
+      decisions: runFields.decisions,
+      assistantResponse: result.content,
+      at: this.nowProvider().toISOString(),
+      blockers: runFields.blockers,
+      next: runFields.next,
+      toolsUsed: uniqueStrings(result.completedSteps?.flatMap((step) => step.toolsUsed ?? []) ?? []),
+      toolCallCount: result.totalToolCalls,
+      changedFiles: runFields.changedFiles,
+      newFacts: runFields.newFacts,
+      workState: result.workState,
+    });
+    this.feedbackLedger?.record({
+      clientId,
+      sessionId: runHandle.sessionId,
+      seq: runHandle.triggerSeq,
+      runId: runHandle.runId,
+      stage: "context_engine",
+      event: finalized ? "session_run_finalized" : "session_run_finalization_failed",
+      data: {
+        status,
+        committed: Boolean(finalized?.sessionStoreCommit),
+        resultStatus: result.status,
+        resultType: result.type,
+      },
+    });
+  }
+
   private runHandleFromRoutedTurn(
     inputHandle: SessionInputHandle,
     turn: Extract<GitMemoryChatContextRoutedTurn, { status: "ready" }>,
@@ -1063,17 +1186,31 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
     clientId: string,
     turn: GitMemoryChatContextPreparedTurn | null,
     request: CreateWorkRunRequest,
+    sessionRunHandle: MemoryRunHandle | null,
   ): Promise<Extract<GitMemoryChatContextRoutedTurn, { status: "ready" }>> {
-    if (request.reason !== "agent_action" || !request.activeTaskId) {
+    if (request.reason !== "agent_action" || (!request.activeTaskId && !request.newTask)) {
       throw new Error("Git-memory routed run is required before chat tool execution.");
     }
-    const routed = await this.chatContextRuntime.activateTaskTurn({
-      clientId,
-      turn,
-      taskId: request.activeTaskId,
-      reason: `Continue active task for tool execution: ${request.userMessage}`,
-      at: this.nowProvider().toISOString(),
-    });
+    const at = this.nowProvider().toISOString();
+    const routed = request.newTask
+      ? await this.chatContextRuntime.createTaskTurn?.({
+          clientId,
+          turn,
+          title: request.newTask.title,
+          objective: request.newTask.objective,
+          reason: request.newTask.reasonDetails
+            ?? `Create task for tool execution: ${request.userMessage}`,
+          ...(sessionRunHandle ? { sessionRunId: sessionRunHandle.runId } : {}),
+          at,
+        })
+      : await this.chatContextRuntime.activateTaskTurn({
+          clientId,
+          turn,
+          taskId: request.activeTaskId!,
+          reason: `Continue active task for tool execution: ${request.userMessage}`,
+          ...(sessionRunHandle ? { sessionRunId: sessionRunHandle.runId } : {}),
+          at,
+        });
     if (!routed || routed.status !== "ready") {
       throw new Error("Git-memory active task run could not be created before chat tool execution.");
     }
@@ -1090,6 +1227,7 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
         reason: request.reason,
         activeTaskId: request.activeTaskId,
         activeBranch: request.activeBranch,
+        newTask: request.newTask,
         contextEngine: buildContextEngineFeedbackSummary({
           context: routed.harnessContext.contextEngine,
           routeStatus: routed.status,
@@ -1789,10 +1927,19 @@ function uniqueStrings(values: Array<string | undefined>): string[] {
     .filter((value) => value.length > 0))];
 }
 
+function sessionRunStatusFromResult(result: AgentLoopResult): "completed" | "failed" | "blocked" | "needs_user_input" {
+  if (result.workState?.status === "needs_user_input") {
+    return "needs_user_input";
+  }
+  if (result.workState?.status === "blocked") {
+    return "blocked";
+  }
+  return result.status === "completed" ? "completed" : "failed";
+}
+
 const TASK_ROUTING_TOOL_NAMES = new Set([
   "git_context_activate_task_for_turn",
   "git_context_create_task_for_turn",
-  "git_context_ask_clarification_for_turn",
 ]);
 
 const CONVERSATION_READ_ONLY_TOOL_NAMES = new Set([
@@ -1815,23 +1962,20 @@ const CONVERSATION_READ_ONLY_TOOL_NAMES = new Set([
 ]);
 
 function hasDurableTaskEvidence(result: AgentLoopResult): boolean {
-  return (result.completedSteps ?? []).some((step) => {
-    if ((step.artifacts ?? []).length > 0) {
-      return true;
-    }
-    const toolsUsed = step.toolsUsed ?? [];
-    return toolsUsed.some((tool) => !TASK_ROUTING_TOOL_NAMES.has(tool));
-  });
+  return (result.completedSteps ?? []).some(stepHasMutatingOrDurableTaskEvidence);
 }
 
 function hasMutatingOrDurableTaskStep(result: AgentLoopResult): boolean {
-  return (result.completedSteps ?? []).some((step) => {
-    if ((step.artifacts ?? []).length > 0) {
-      return true;
-    }
-    const toolsUsed = step.toolsUsed ?? [];
-    return toolsUsed.some((tool) => !isConversationReadOnlyTool(tool) && !TASK_ROUTING_TOOL_NAMES.has(tool));
-  });
+  return (result.completedSteps ?? []).some(stepHasMutatingOrDurableTaskEvidence);
+}
+
+function stepHasMutatingOrDurableTaskEvidence(step: NonNullable<AgentLoopResult["completedSteps"]>[number]): boolean {
+  const toolsUsed = step.toolsUsed ?? [];
+  const hasMutatingTool = toolsUsed.some((tool) => !isConversationReadOnlyTool(tool) && !TASK_ROUTING_TOOL_NAMES.has(tool));
+  if (hasMutatingTool) {
+    return true;
+  }
+  return toolsUsed.length === 0 && (step.artifacts ?? []).length > 0;
 }
 
 function isConversationReadOnlyTool(tool: string): boolean {

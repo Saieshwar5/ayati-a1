@@ -48,7 +48,9 @@ For streaming-capable clients, final user-visible responses may be delivered as
 assistant response and includes a `commitStatus` value:
 
 - `committed`: a task run was finalized and committed.
-- `skipped`: no task-run commit was needed for this response.
+- `skipped`: no task-run commit was needed for this response. This includes
+  read-only session-run replies that are persisted by the context engine but do
+  not create or finalize a task run.
 - `failed`: task-run finalization failed after the response was assembled.
 
 Provider-native token streaming is used only for response-only final text after

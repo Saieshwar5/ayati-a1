@@ -118,8 +118,9 @@ describe("parseAgentDecision", () => {
     expect(systemPrompt).toContain("call the selected executable tool directly");
     expect(systemPrompt).toContain("Use ask_user_feedback only during an active task run");
     expect(systemPrompt).toContain("Do not use ask_user_feedback for final responses");
-    expect(systemPrompt).toContain("concrete deliverable and enough detail to begin now");
-    expect(systemPrompt).toContain("reply directly with one short clarifying question instead of creating a task");
+    expect(systemPrompt).toContain("If mutation is needed before task ownership is resolved");
+    expect(systemPrompt).toContain("Use activate reason \"continue_active_task\", \"switch_to_existing_task\", or \"user_selected_task\"");
+    expect(systemPrompt).toContain("If task ownership is ambiguous, reply directly with one short clarifying question");
     expect(systemPrompt).toContain("Normal work tools require task ownership");
     expect(systemPrompt).toContain("Do not tell the user tools are missing.");
     expect(systemPrompt).not.toContain("decision_act");

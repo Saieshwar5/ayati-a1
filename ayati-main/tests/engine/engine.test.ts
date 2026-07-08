@@ -149,8 +149,14 @@ function createChatContextRuntime(
   const prepared = readyGitMemoryPreparedTurn();
   return {
     prepareUserTurn: vi.fn().mockResolvedValue(prepared),
+    startSessionRun: vi.fn().mockResolvedValue({ runId: "R-20260627-0001" }),
     routeTaskTurn: vi.fn().mockResolvedValue(routedTurn),
     activateTaskTurn: vi.fn().mockResolvedValue(routedTurn.status === "ready" ? routedTurn : null),
+    finalizeSessionRun: vi.fn().mockResolvedValue({
+      sessionId: prepared.sessionId,
+      runId: "R-20260627-0001",
+      sessionStoreCommit: "session-store-commit",
+    }),
     completeTaskRun: vi.fn().mockResolvedValue({
       taskId: routedTurn.status === "ready" ? routedTurn.taskId : "W-20260627-0001",
       branch: routedTurn.status === "ready" ? routedTurn.branch : "task/W-20260627-0001-analyze-invoice",
@@ -169,6 +175,7 @@ function createChatContextRuntime(
         commit: "task-commit",
       },
     }),
+    recordSessionRunStep: vi.fn().mockResolvedValue(undefined),
     recordTaskRunStep: vi.fn().mockResolvedValue(undefined),
     recordAssistantMessage: vi.fn().mockResolvedValue({
       v: 1,
@@ -185,8 +192,14 @@ function createUnboundChatContextRuntime(): GitMemoryChatContextRuntime {
   const prepared = unboundGitMemoryPreparedTurn();
   return {
     prepareUserTurn: vi.fn().mockResolvedValue(prepared),
+    startSessionRun: vi.fn().mockResolvedValue({ runId: "R-20260627-0004" }),
     routeTaskTurn: vi.fn().mockResolvedValue(null),
     activateTaskTurn: vi.fn().mockResolvedValue(null),
+    finalizeSessionRun: vi.fn().mockResolvedValue({
+      sessionId: prepared.sessionId,
+      runId: "R-20260627-0004",
+      sessionStoreCommit: "session-store-commit",
+    }),
     completeTaskRun: vi.fn().mockResolvedValue({
       taskId: "W-20260627-0002",
       branch: "task/W-20260627-0002-upload-ui",
@@ -194,6 +207,7 @@ function createUnboundChatContextRuntime(): GitMemoryChatContextRuntime {
       runId: "R-20260627-0004",
       taskCommit: "task-commit",
     }),
+    recordSessionRunStep: vi.fn().mockResolvedValue(undefined),
     recordTaskRunStep: vi.fn().mockResolvedValue(undefined),
     recordAssistantMessage: vi.fn().mockResolvedValue({
       v: 1,
@@ -211,8 +225,14 @@ function createActiveUnroutedChatContextRuntime(): GitMemoryChatContextRuntime {
   const routed = readyGitMemoryRoutedTurn();
   return {
     prepareUserTurn: vi.fn().mockResolvedValue(prepared),
+    startSessionRun: vi.fn().mockResolvedValue({ runId: routed.runId }),
     routeTaskTurn: vi.fn().mockResolvedValue(null),
     activateTaskTurn: vi.fn().mockResolvedValue(routed),
+    finalizeSessionRun: vi.fn().mockResolvedValue({
+      sessionId: prepared.sessionId,
+      runId: routed.runId,
+      sessionStoreCommit: "session-store-commit",
+    }),
     completeTaskRun: vi.fn().mockResolvedValue({
       taskId: routed.taskId,
       branch: routed.branch,
@@ -220,6 +240,7 @@ function createActiveUnroutedChatContextRuntime(): GitMemoryChatContextRuntime {
       runId: routed.runId,
       taskCommit: "task-commit",
     }),
+    recordSessionRunStep: vi.fn().mockResolvedValue(undefined),
     recordTaskRunStep: vi.fn().mockResolvedValue(undefined),
     recordAssistantMessage: vi.fn().mockResolvedValue({
       v: 1,
@@ -238,7 +259,13 @@ function createSystemEventContextRuntime(
   const prepared = readyGitMemorySystemEventPreparedTurn();
   return {
     prepareSystemEventTurn: vi.fn().mockResolvedValue(prepared),
+    startSessionRun: vi.fn().mockResolvedValue({ runId: "R-20260627-0001" }),
     routeTaskTurn: vi.fn().mockResolvedValue(routedTurn),
+    finalizeSessionRun: vi.fn().mockResolvedValue({
+      sessionId: prepared.sessionId,
+      runId: "R-20260627-0001",
+      sessionStoreCommit: "session-store-commit",
+    }),
     completeTaskRun: vi.fn().mockResolvedValue({
       taskId: routedTurn.status === "ready" ? routedTurn.taskId : "W-20260627-0001",
       branch: routedTurn.status === "ready" ? routedTurn.branch : "task/W-20260627-0001-analyze-invoice",
@@ -257,6 +284,7 @@ function createSystemEventContextRuntime(
         commit: "task-commit",
       },
     }),
+    recordSessionRunStep: vi.fn().mockResolvedValue(undefined),
     recordTaskRunStep: vi.fn().mockResolvedValue(undefined),
     recordAssistantMessage: vi.fn().mockResolvedValue({
       v: 1,
@@ -718,93 +746,6 @@ function activateTaskForTurnFixtureTool(): ToolDefinition {
   };
 }
 
-function askClarificationForTurnFixtureTool(): ToolDefinition {
-  return {
-    name: "git_context_ask_clarification_for_turn",
-    description: "Fixture pending-turn task clarification tool.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        sessionId: { type: "string" },
-        reason: { type: "string" },
-        candidateTaskIds: {
-          type: "array",
-          items: { type: "string" },
-        },
-      },
-    },
-    outputSchema: { type: "object" },
-    annotations: {
-      domain: "git_context",
-      readOnly: false,
-      mutatesWorkspace: true,
-      mutatesExternalWorld: false,
-      destructive: false,
-      idempotent: false,
-      retrySafe: false,
-      longRunning: false,
-    },
-    async execute() {
-      const harnessContext = {
-        contextEngine: {
-          session: {
-            sessionId: "S-20260627-local",
-            conversationTail: [{
-              seq: 3,
-              role: "user",
-              at: "2026-06-27T10:10:00+05:30",
-              text: "continue upload",
-            }],
-            activityTail: [],
-            assetCount: 0,
-          },
-          pendingTurn: {
-            fromSeq: 3,
-            toSeq: 3,
-            text: "continue upload",
-            at: "2026-06-27T10:10:00+05:30",
-            routingStatus: "clarifying",
-          },
-          focus: {
-            status: "active",
-            ref: "refs/heads/task/W-20260627-0001-reminders",
-            workId: "W-20260627-0001",
-          },
-          task: {
-            ref: "refs/heads/task/W-20260627-0001-reminders",
-            workId: "W-20260627-0001",
-            title: "Fix reminders",
-            objective: "Fix reminders",
-            status: "in_progress",
-            completed: [],
-            open: ["Inspect reminder drift"],
-            blockers: [],
-            facts: [],
-            assets: [],
-            recentRuns: [],
-            recentCommits: [],
-            recentEvidence: [],
-          },
-        },
-      };
-      return {
-        ok: true,
-        output: "Pending turn marked as needing task clarification.",
-        v2: {
-          transportOk: true,
-          operationStatus: "succeeded",
-          code: "GIT_CONTEXT_TURN_CLARIFICATION_REQUESTED",
-          message: "Pending turn marked as needing task clarification.",
-          structuredContent: {
-            status: "ambiguous",
-            harnessContext,
-          },
-        },
-      };
-    },
-  };
-}
-
 describe("IVecEngine", () => {
   it("is constructible without options", () => {
     const engine = createEngine();
@@ -852,6 +793,53 @@ describe("IVecEngine", () => {
           type: "reply",
           content: "mock reply",
         });
+      });
+    } finally {
+      rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it("records unbound direct replies without creating a session run", async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "ayati-eng-session-run-"));
+    try {
+      const provider = createMockProvider({
+        generateTurn: vi.fn<(input: LlmTurnInput) => Promise<LlmTurnOutput>>()
+          .mockResolvedValue({
+            type: "assistant",
+            content: JSON.stringify({
+              kind: "reply",
+              message: "Upload handling lives in the upload service.",
+              status: "completed",
+            }),
+          }),
+      });
+      const onReply = vi.fn();
+      const chatContextRuntime = createUnboundChatContextRuntime();
+      const engine = createEngine({
+        onReply,
+        provider,
+        dataDir,
+        chatContextRuntime,
+        systemEventPolicy: createSystemEventPolicy(),
+      });
+
+      await engine.start();
+      engine.handleMessage("c1", { type: "chat", content: "where is upload handling?" });
+
+      await vi.waitFor(() => {
+        expect(chatContextRuntime.recordAssistantMessage).toHaveBeenCalledWith(expect.objectContaining({
+          message: "Upload handling lives in the upload service.",
+        }));
+      });
+      expect(chatContextRuntime.startSessionRun).not.toHaveBeenCalled();
+      expect(chatContextRuntime.finalizeSessionRun).not.toHaveBeenCalled();
+      expect(chatContextRuntime.completeTaskRun).not.toHaveBeenCalled();
+      expect(chatContextRuntime.recordAssistantMessage).toHaveBeenCalledWith(expect.objectContaining({
+        message: "Upload handling lives in the upload service.",
+      }));
+      expect(onReply).toHaveBeenCalledWith("c1", {
+        type: "reply",
+        content: "Upload handling lives in the upload service.",
       });
     } finally {
       rmSync(dataDir, { recursive: true, force: true });
@@ -1155,10 +1143,31 @@ describe("IVecEngine", () => {
                   input: {
                     sessionId: "S-20260627-local",
                     taskId: "W-20260627-0002",
-                    reason: "The user asked to continue upload UI redesign.",
+                    reason: "switch_to_existing_task",
                   },
                   dependsOn: [],
                   purpose: "Bind the pending user turn to the upload UI task.",
+                }],
+                allowedTools: ["git_context_activate_task_for_turn"],
+                assertions: [],
+              },
+            }),
+          })
+          .mockResolvedValueOnce({
+            type: "assistant",
+            content: JSON.stringify({
+              kind: "act",
+              action: {
+                mode: "single",
+                calls: [{
+                  id: "activate_invoice",
+                  tool: "git_context_activate_task_for_turn",
+                  input: {
+                    taskId: "W-20260627-0001",
+                    reason: "continue_active_task",
+                  },
+                  dependsOn: [],
+                  purpose: "Bind the deferred invoice note write to the active invoice task.",
                 }],
                 allowedTools: ["git_context_activate_task_for_turn"],
                 assertions: [],
@@ -1235,15 +1244,40 @@ describe("IVecEngine", () => {
 	                    allowExternalPath: true,
 	                    files: [{ path: outputPath, content: "Invoice follow-up note." }],
 	                  },
-                  dependsOn: [],
-                  purpose: "Write the follow-up note for the active invoice task.",
-                }],
-                allowedTools: ["write_files"],
-                assertions: [{ kind: "file_exists", path: "$.files[0].path" }],
-              },
-            }),
-          })
-          .mockResolvedValueOnce({
+	                  dependsOn: [],
+	                  purpose: "Write the follow-up note for the active invoice task.",
+	                }],
+	                allowedTools: ["write_files"],
+	                assertions: [{ kind: "file_exists", path: "$.files[0].path" }],
+	                completion: {
+	                  intent: "completion_candidate",
+	                  reason: "The note file write completes the requested invoice follow-up.",
+	                },
+	              },
+	            }),
+	          })
+	          .mockResolvedValueOnce({
+	            type: "assistant",
+	            content: JSON.stringify({
+	              kind: "act",
+	              action: {
+	                mode: "single",
+	                calls: [{
+	                  id: "activate_invoice",
+	                  tool: "git_context_activate_task_for_turn",
+	                  input: {
+	                    taskId: "W-20260627-0001",
+	                    reason: "continue_active_task",
+	                  },
+	                  dependsOn: [],
+	                  purpose: "Bind the deferred invoice note write to the active invoice task.",
+	                }],
+	                allowedTools: ["git_context_activate_task_for_turn"],
+	                assertions: [],
+	              },
+	            }),
+	          })
+	          .mockResolvedValueOnce({
             type: "assistant",
             content: JSON.stringify({
               kind: "reply",
@@ -1253,7 +1287,7 @@ describe("IVecEngine", () => {
           }),
       });
       const chatContextRuntime = createActiveUnroutedChatContextRuntime();
-      const toolExecutor = createToolExecutor([writeFilesTool]);
+      const toolExecutor = createToolExecutor([activateTaskForTurnFixtureTool(), writeFilesTool]);
       const onReply = vi.fn();
       const engine = createEngine({
         onReply,
@@ -1286,41 +1320,19 @@ describe("IVecEngine", () => {
     }
   });
 
-  it("lets the agent mark an unbound pending turn as clarifying without committing task work", async () => {
+  it("lets the agent ask direct clarification without committing task work", async () => {
     const dataDir = mkdtempSync(join(tmpdir(), "ayati-eng-git-clarify-"));
     try {
       const provider = createMockProvider({
         generateTurn: vi.fn<(input: LlmTurnInput) => Promise<LlmTurnOutput>>()
           .mockResolvedValueOnce({
             type: "assistant",
-            content: JSON.stringify({
-              kind: "act",
-              action: {
-                mode: "single",
-                calls: [{
-                  id: "clarify_upload",
-                  tool: "git_context_ask_clarification_for_turn",
-                  input: {
-                    sessionId: "S-20260627-local",
-                    reason: "The phrase upload could refer to multiple existing tasks.",
-                    candidateTaskIds: ["W-20260627-0002", "W-20260627-0003"],
-                  },
-                  dependsOn: [],
-                  purpose: "Hold the pending turn until the user chooses the upload task.",
-                }],
-                allowedTools: ["git_context_ask_clarification_for_turn"],
-                assertions: [],
-              },
-            }),
-	          })
-	          .mockResolvedValueOnce({
-	            type: "assistant",
-	            content: "Which upload task do you mean: upload API or upload UI redesign?",
-	          }),
+            content: "Which upload task do you mean: upload API or upload UI redesign?",
+          }),
       });
       const onReply = vi.fn();
       const chatContextRuntime = createUnboundChatContextRuntime();
-      const toolExecutor = createToolExecutor([askClarificationForTurnFixtureTool()]);
+      const toolExecutor = createToolExecutor([]);
       const engine = createEngine({
         onReply,
         provider,
@@ -1343,13 +1355,13 @@ describe("IVecEngine", () => {
         autoOnly: true,
       }));
       expect(chatContextRuntime.completeTaskRun).not.toHaveBeenCalled();
-      expect(provider.generateTurn).toHaveBeenCalledTimes(2);
-      const secondStateView = extractStateViewFromProviderCall(provider, 1);
-      expect(secondStateView.context.git.current.pendingTurn).toMatchObject({
-        routingStatus: "clarifying",
+      expect(provider.generateTurn).toHaveBeenCalledTimes(1);
+      const stateView = extractStateViewFromProviderCall(provider, 0);
+      expect(stateView.context.git.current.pendingTurn).toMatchObject({
+        routingStatus: "unbound",
       });
-      expect(secondStateView.context.git.current.pendingTurn).not.toHaveProperty("workId");
-      expect(secondStateView.context.git.current.pendingTurn).not.toHaveProperty("runId");
+      expect(stateView.context.git.current.pendingTurn).not.toHaveProperty("workId");
+      expect(stateView.context.git.current.pendingTurn).not.toHaveProperty("runId");
     } finally {
       rmSync(dataDir, { recursive: true, force: true });
     }
@@ -1635,6 +1647,179 @@ describe("IVecEngine", () => {
         assistantMessage: "mock reply",
       }));
       expect(systemEventContextRuntime.recordAssistantMessage).not.toHaveBeenCalled();
+    } finally {
+      rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it("finalizes an unpromoted system event as a session run", async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "ayati-eng-system-session-run-"));
+    try {
+      const provider = createMockProvider({
+        generateTurn: vi.fn<(input: LlmTurnInput) => Promise<LlmTurnOutput>>().mockResolvedValue({
+          type: "assistant",
+          content: JSON.stringify({
+            kind: "reply",
+            status: "completed",
+            message: "The reminder was reviewed; no task update is needed.",
+          }),
+        }),
+      });
+      const onReply = vi.fn();
+      const systemEventContextRuntime = createSystemEventContextRuntime();
+      vi.mocked(systemEventContextRuntime.routeTaskTurn).mockResolvedValue(null);
+      const engine = createEngine({
+        onReply,
+        provider,
+        systemEventContextRuntime,
+        dataDir,
+        systemEventPolicy: createSystemEventPolicy(),
+      });
+
+      await engine.start();
+      await engine.handleSystemEvent("c1", {
+        type: "system_event",
+        source: "pulse",
+        eventName: "reminder_due",
+        eventId: "evt-session-run-1",
+        receivedAt: "2026-03-01T10:00:05.000Z",
+        summary: "Reminder due: Review notes",
+        payload: {
+          occurrenceId: "occ-session-run-1",
+          reminderId: "rem-session-run-1",
+          title: "Review notes",
+          instruction: "Review notes only",
+          scheduledFor: "2026-03-01T10:00:00.000Z",
+          triggeredAt: "2026-03-01T10:00:05.000Z",
+          timezone: "UTC",
+        },
+      });
+
+      expect(systemEventContextRuntime.startSessionRun).toHaveBeenCalledWith(expect.objectContaining({
+        clientId: "c1",
+      }));
+      expect(systemEventContextRuntime.completeTaskRun).not.toHaveBeenCalled();
+      expect(systemEventContextRuntime.finalizeSessionRun).toHaveBeenCalledWith(expect.objectContaining({
+        clientId: "c1",
+        runId: "R-20260627-0001",
+        status: "completed",
+        assistantResponse: "The reminder was reviewed; no task update is needed.",
+      }));
+      expect(systemEventContextRuntime.recordAssistantMessage).toHaveBeenCalledWith(expect.objectContaining({
+        runId: "R-20260627-0001",
+        message: "The reminder was reviewed; no task update is needed.",
+      }));
+      expect(onReply).toHaveBeenCalledWith("c1", {
+        type: "notification",
+        content: "The reminder was reviewed; no task update is needed.",
+        final: true,
+      });
+    } finally {
+      rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it("records read-only system event tool steps on the session run", async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "ayati-eng-system-read-session-"));
+    try {
+      const readTool: ToolDefinition = {
+        name: "read_file",
+        description: "Read a file for system-event inspection.",
+        annotations: {
+          domain: "filesystem",
+          readOnly: true,
+          mutatesWorkspace: false,
+          mutatesExternalWorld: false,
+          destructive: false,
+          idempotent: true,
+          retrySafe: true,
+          longRunning: false,
+        },
+        async execute() {
+          return {
+            ok: true,
+            output: "health notes are already current",
+          };
+        },
+      };
+      const provider = createMockProvider({
+        generateTurn: vi.fn<(input: LlmTurnInput) => Promise<LlmTurnOutput>>()
+          .mockResolvedValueOnce({
+            type: "assistant",
+            content: JSON.stringify({
+              kind: "act",
+              action: {
+                mode: "single",
+                calls: [{
+                  id: "call_1",
+                  tool: "read_file",
+                  input: { path: "health-notes.md" },
+                  dependsOn: [],
+                  purpose: "Inspect health notes",
+                }],
+                allowedTools: ["read_file"],
+                assertions: [],
+              },
+            }),
+          })
+          .mockResolvedValueOnce({
+            type: "assistant",
+            content: JSON.stringify({
+              kind: "reply",
+              status: "completed",
+              message: "Health notes are already current.",
+            }),
+          }),
+      });
+      const toolExecutor = createToolExecutor([readTool]);
+      const systemEventContextRuntime = createSystemEventContextRuntime();
+      vi.mocked(systemEventContextRuntime.routeTaskTurn).mockResolvedValue(null);
+      const engine = createEngine({
+        provider,
+        toolExecutor,
+        systemEventContextRuntime,
+        dataDir,
+        systemEventPolicy: createSystemEventPolicy(),
+      });
+
+      await engine.start();
+      await engine.handleSystemEvent("c1", {
+        type: "system_event",
+        source: "pulse",
+        eventName: "reminder_due",
+        eventId: "evt-system-read-1",
+        receivedAt: "2026-03-01T10:00:05.000Z",
+        summary: "Reminder due: Inspect health notes",
+        payload: {
+          occurrenceId: "occ-system-read-1",
+          reminderId: "rem-system-read-1",
+          title: "Inspect health notes",
+          instruction: "Inspect health notes only",
+          scheduledFor: "2026-03-01T10:00:00.000Z",
+          triggeredAt: "2026-03-01T10:00:05.000Z",
+          timezone: "UTC",
+        },
+      });
+
+      expect(systemEventContextRuntime.recordSessionRunStep).toHaveBeenCalledWith(expect.objectContaining({
+        clientId: "c1",
+        record: expect.objectContaining({
+          sessionId: "S-20260627-local",
+          runId: "R-20260627-0001",
+          status: "completed",
+          toolCalls: [expect.objectContaining({
+            tool: "read_file",
+            status: "success",
+          })],
+        }),
+      }));
+      expect(systemEventContextRuntime.recordTaskRunStep).not.toHaveBeenCalled();
+      expect(systemEventContextRuntime.completeTaskRun).not.toHaveBeenCalled();
+      expect(systemEventContextRuntime.finalizeSessionRun).toHaveBeenCalledWith(expect.objectContaining({
+        runId: "R-20260627-0001",
+        toolCallCount: 1,
+        toolsUsed: ["read_file"],
+      }));
     } finally {
       rmSync(dataDir, { recursive: true, force: true });
     }

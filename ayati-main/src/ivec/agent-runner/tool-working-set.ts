@@ -1,5 +1,6 @@
 import type { ToolExecutionContext, ToolDefinition } from "../../skills/types.js";
 import type { ToolExecutor } from "../../skills/tool-executor.js";
+import type { MemoryRunHandle } from "../../memory/types.js";
 import type { ActToolCallRecord, LoopState } from "../types.js";
 import type { ToolCatalog, ToolCatalogEntry } from "./tool-catalog.js";
 import {
@@ -15,7 +16,6 @@ import {
   isFreshSessionRoutingMode,
   isRuntimeToolAllowed,
   requiredRoutingMutationToolsForRuntimeMode,
-  TASK_ROUTING_WINDOW_STEPS,
 } from "./runtime-capability-mode.js";
 import {
   hasRecoverableCompactedRunToolCall,
@@ -98,24 +98,30 @@ export class ToolWorkingSetManager {
     this.toolExecutor.unmount?.(this.groupId(runId));
   }
 
-  prepareForDecision(state: LoopState, context: ToolExecutionContext): ToolLoadResult {
+  prepareForDecision(
+    state: LoopState,
+    context: ToolExecutionContext,
+    input: {
+      workRunHandle?: MemoryRunHandle;
+      sessionRunHandle?: MemoryRunHandle;
+    } = {},
+  ): ToolLoadResult {
     const runState = this.getRunState(context);
-    const step = context.stepNumber ?? 0;
-    const mode = detectRuntimeCapabilityMode({ state });
+    const mode = detectRuntimeCapabilityMode({
+      state,
+      workRunHandle: input.workRunHandle,
+      sessionRunHandle: input.sessionRunHandle,
+    });
     if (mode.hasWorkRun || mode.pendingTurnStatus === "bound") {
       this.removeTaskRoutingResolutionTools(runState, []);
       this.syncMount(context);
     }
-    if (step > TASK_ROUTING_WINDOW_STEPS) {
-      this.removeTaskRoutingResolutionTools(runState, []);
-      this.syncMount(context);
-    }
-    const request = buildDeterministicLoadRequest(state);
-    const suppressTaskRoutingTools = hasCompletedTaskRoutingWindowToolUse(state);
-    const requiredRoutingTools = suppressTaskRoutingTools || step > TASK_ROUTING_WINDOW_STEPS
+    const request = buildDeterministicLoadRequest(state, input);
+    const suppressTaskRoutingTools = shouldSuppressTaskRoutingTools(state);
+    const requiredRoutingTools = suppressTaskRoutingTools
       ? []
       : requiredRoutingMutationToolsForRuntimeMode(mode);
-    const result = this.load(this.addTaskRoutingWindowTools(request, state, context), context);
+    const result = this.load(this.addTaskRoutingWindowTools(request, state, context, input), context);
     let prepared = mergeToolLoadResult(result, this.ensureToolsLoadedOutsideLimit(requiredRoutingTools, context));
     if (suppressTaskRoutingTools) {
       const removed: string[] = [];
@@ -288,8 +294,6 @@ export class ToolWorkingSetManager {
     });
     if (state.taskRouting.resolved) {
       this.removeTaskRoutingTools(state, removed);
-    } else if (step >= TASK_ROUTING_WINDOW_STEPS) {
-      this.removeTaskRoutingResolutionTools(state, removed);
     }
     this.syncMount(context);
     return removed;
@@ -299,9 +303,17 @@ export class ToolWorkingSetManager {
     request: ToolLoadRequest,
     state: LoopState,
     context: ToolExecutionContext,
+    input: {
+      workRunHandle?: MemoryRunHandle;
+      sessionRunHandle?: MemoryRunHandle;
+    } = {},
   ): ToolLoadRequest {
     const runState = this.getRunState(context);
-    const mode = detectRuntimeCapabilityMode({ state });
+    const mode = detectRuntimeCapabilityMode({
+      state,
+      workRunHandle: input.workRunHandle,
+      sessionRunHandle: input.sessionRunHandle,
+    });
     if (runState.taskRouting.resolved) {
       return request;
     }
@@ -311,11 +323,11 @@ export class ToolWorkingSetManager {
     if (state.harnessContext.contextEngine?.pendingTurn?.routingStatus === "clarifying") {
       return request;
     }
-    if (hasCompletedTaskRoutingWindowToolUse(state)) {
+    if (shouldSuppressTaskRoutingTools(state)) {
       return request;
     }
     const step = context.stepNumber ?? 0;
-    if (step < 1 || step > TASK_ROUTING_WINDOW_STEPS) {
+    if (step < 1) {
       return request;
     }
     const routingTools = isFreshSessionRoutingMode(mode)
@@ -332,9 +344,9 @@ export class ToolWorkingSetManager {
 
   private removeTaskRoutingTools(state: RunToolState, removed: string[]): void {
     const before = state.ordered;
-    state.ordered = state.ordered.filter((tool) => !isTaskRoutingWindowTool(tool));
+    state.ordered = state.ordered.filter((tool) => !isTaskRoutingResolutionTool(tool));
     for (const tool of before) {
-      if (!state.ordered.includes(tool) && isTaskRoutingWindowTool(tool)) {
+      if (!state.ordered.includes(tool) && isTaskRoutingResolutionTool(tool)) {
         state.loadedAtStep.delete(tool);
         state.usedAtStep.delete(tool);
         removed.push(tool);
@@ -529,8 +541,18 @@ export class ToolWorkingSetManager {
   }
 }
 
-function buildDeterministicLoadRequest(state: LoopState): ToolLoadRequest {
-  const mode = detectRuntimeCapabilityMode({ state });
+function buildDeterministicLoadRequest(
+  state: LoopState,
+  input: {
+    workRunHandle?: MemoryRunHandle;
+    sessionRunHandle?: MemoryRunHandle;
+  } = {},
+): ToolLoadRequest {
+  const mode = detectRuntimeCapabilityMode({
+    state,
+    workRunHandle: input.workRunHandle,
+    sessionRunHandle: input.sessionRunHandle,
+  });
   const modeTools = deterministicToolsForRuntimeMode(mode);
   if (modeTools) {
     return {
@@ -700,12 +722,17 @@ function mergeToolLoadResult(
   };
 }
 
-function isTaskRoutingWindowTool(tool: string): boolean {
-  return (TASK_ROUTING_WINDOW_TOOL_NAMES as readonly string[]).includes(tool);
-}
-
-function hasCompletedTaskRoutingWindowToolUse(state: LoopState): boolean {
-  return state.completedSteps.some((step) => {
+function shouldSuppressTaskRoutingTools(state: LoopState): boolean {
+  const routingAttempts = state.routingAttempts ?? {
+    successCount: 0,
+    failureCount: 0,
+    maxFailures: 2,
+    resolved: false,
+  };
+  return routingAttempts.resolved
+    || routingAttempts.successCount > 0
+    || routingAttempts.failureCount >= routingAttempts.maxFailures
+    || state.completedSteps.some((step) => {
     return step.outcome !== "failed" && (step.toolsUsed ?? []).some(isTaskRoutingResolutionTool);
   });
 }
