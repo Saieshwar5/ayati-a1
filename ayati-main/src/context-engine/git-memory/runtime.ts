@@ -43,7 +43,6 @@ import {
   GitMemoryTaskRouter,
   type AppliedGitMemoryTaskRoute,
   type ApplyGitMemoryTaskRouteInput,
-  type GitMemoryTaskRouteCandidate,
   type GitMemoryTaskRouteResolution,
   type ResolveGitMemoryTaskRouteInput,
   isGitMemoryPureFollowUpMessage,
@@ -222,13 +221,6 @@ export interface CreateGitMemoryTaskForTurnInput {
   objective: string;
   reason: string;
   sessionRunId?: GitMemoryRunId;
-  at?: string;
-}
-
-export interface AskGitMemoryTaskClarificationForTurnInput {
-  sessionId: GitMemorySessionId;
-  reason: string;
-  candidateTaskIds?: GitMemoryTaskId[];
   at?: string;
 }
 
@@ -788,31 +780,6 @@ export class GitMemoryRuntime {
     };
   }
 
-  async askClarificationForTurn(
-    input: AskGitMemoryTaskClarificationForTurnInput,
-  ): Promise<Extract<RoutedGitMemoryUserTurn, { status: "ambiguous" }>> {
-    const pendingTurn = await this.requireOrCreateUnboundPendingTurn(input.sessionId, input.at);
-    const candidates = await this.taskRouteCandidatesForIds(
-      input.sessionId,
-      input.candidateTaskIds ?? [],
-      input.reason,
-    );
-    this.markPendingTurnClarifying(input.sessionId, {
-      fromSeq: pendingTurn.fromSeq,
-      toSeq: pendingTurn.toSeq,
-    });
-    const memoryState = await this.hydrateMemoryState(input.sessionId);
-    const context = buildGitMemoryContextPackFromMemoryState(memoryState);
-    return {
-      status: "ambiguous",
-      sessionId: input.sessionId,
-      candidates,
-      reason: input.reason,
-      context,
-      memoryState,
-    };
-  }
-
   async switchTask(input: SwitchGitMemoryTaskInput): Promise<SwitchGitMemoryTaskResult> {
     const result = await this.writeQueue.enqueue({
       sessionId: input.sessionId,
@@ -1207,29 +1174,6 @@ export class GitMemoryRuntime {
     };
     this.setPendingTurn(created);
     return created;
-  }
-
-  private async taskRouteCandidatesForIds(
-    sessionId: GitMemorySessionId,
-    taskIds: GitMemoryTaskId[],
-    reason: string,
-  ): Promise<GitMemoryTaskRouteCandidate[]> {
-    if (taskIds.length === 0) {
-      return [];
-    }
-    const requested = new Set(taskIds);
-    const snapshot = await this.store.readTaskRoutingSnapshot(sessionId);
-    return snapshot.tasks
-      .filter((task) => requested.has(task.taskId))
-      .map((task) => ({
-        taskId: task.taskId,
-        branch: task.branch,
-        ref: task.ref,
-        title: task.title,
-        status: task.status,
-        score: 100,
-        reasons: [reason],
-      }));
   }
 
   private async cacheCreatedTask(
