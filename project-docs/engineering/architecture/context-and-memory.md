@@ -118,8 +118,13 @@ They return route identifiers plus refreshed harness context; task lists and
 deep history remain explicit retrieval operations.
 
 Ambiguous task ownership can be marked through the turn-aware clarification
-path. The runtime does not allocate a run id or append the pending turn to a
-task branch until ownership is clear.
+path. The clarification request belongs to the current session run and does not
+append the pending turn to any task branch. When the assistant asks the
+clarifying question and the turn completes, that session run is finalized under
+`session-store` and sealed. The user's answer is a new user turn with a fresh
+session run; it must activate, target, or create task ownership again before
+mutation. If the answer remains read-only, it finalizes as another session run.
+If the answer mutates, only the answer run is promoted to the selected task.
 
 Do not expose low-level `git_context_create_task`,
 `git_context_switch_task`, `git_context_commit_run`, or

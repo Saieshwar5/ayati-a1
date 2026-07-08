@@ -126,7 +126,14 @@ fresh request -> git_context_set_promotion_target_for_turn -> write_files -> fin
 read-only question -> read_file -> final reply stored as session run
 same active task -> read_file -> write_files -> final reply stored as task run
 different existing task -> git_context_activate_task_for_turn -> normal work tool -> final reply
+ambiguous task -> git_context_ask_clarification_for_turn -> clarification reply stored as session run
+clarification answer -> git_context_activate_task_for_turn -> write_files -> final reply stored as task run
 ```
+
+Clarification is not a deferred promotion. Once the assistant asks the
+clarifying question and the session run finalizes, that run is sealed. The
+user's answer starts a fresh session run and can be promoted only if that answer
+turn activates, targets, or creates a task before mutation.
 
 Promotion can happen only while the session run is active. After a session run
 is finalized in the session-store, it is sealed and must not be converted into a

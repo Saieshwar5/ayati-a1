@@ -1,6 +1,6 @@
 # Current State
 
-Last updated: 2026-07-07
+Last updated: 2026-07-08
 
 Ayati's active task-continuity path is git-native. The old task-thread and
 Activity continuation path is historical and must not be reintroduced into the
@@ -42,6 +42,8 @@ context.timeline + context.git + context.tools + context.harness + context.run +
   - every provider-handled turn starts as a session run,
   - read-only tools can execute before task binding,
   - new-task targets can be recorded without creating a durable task,
+  - clarification turns finalize as session-only runs,
+  - clarification answers start fresh and promote only if that answer mutates,
   - mutation promotes the active session run into a task run,
   - unpromoted runs finalize in `session-store`,
   - promoted runs finalize only in the task directory using the same run id.
@@ -56,6 +58,9 @@ context.timeline + context.git + context.tools + context.harness + context.run +
 - Same-turn continuation after routing: create/activate tools return a real
   run id, routing tools are deactivated, normal work tools are prepared, and the
   agent can complete work in the same user turn.
+- Provider-loop coverage for ambiguous task clarification followed by a user
+  answer that activates and mutates the selected task, proving the old
+  clarification run remains session-only.
 - Custom refs for active/latest pointers.
 - Runtime-owned finalization with duplicate-run protection.
 - Run Markdown, action records, evidence manifests, task notes, task assets,

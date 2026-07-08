@@ -28,6 +28,9 @@ Daemon communication flow:
    state, the active session run is promoted to a task run before execution.
    For new durable work, a prior promotion target can create the task at this
    moment instead of creating a task during read-only exploration.
+   Clarification is different: asking a clarification finalizes as an
+   unpromoted session run. The user's answer is a later fresh session run and
+   only that answer run can be promoted if it mutates.
 13. The progress reducer updates sparse `workState`; verified local work can mark
    `workState.status` as `done`.
 14. Completed tool work routes through a final direct assistant response so the
@@ -63,19 +66,24 @@ Git context and memory flow:
 6. If mutation becomes necessary, the active session run is promoted to the
    selected, activated, or targeted-new task run. Pre-promotion read/target
    steps follow the same run id into the task step log.
-7. Every completed task run writes machine-readable state, run summary,
+7. If task ownership is ambiguous, `git_context_ask_clarification_for_turn`
+   marks the current pending turn as clarifying and the assistant asks a
+   question. That run remains session-only. When the user answers, the old
+   clarifying pending turn is not reused; a fresh pending turn/session run is
+   prepared and can be activated or promoted independently.
+8. Every completed task run writes machine-readable state, run summary,
    actions, evidence manifests, final output, and task assets to the work
    branch. Read-only unpromoted runs are finalized in the session-store.
-8. Run commits include Ayati commit metadata so the branch history itself is a
+9. Run commits include Ayati commit metadata so the branch history itself is a
    retrieval surface.
-9. Attachment restore reads git task assets from tool execution context. It
+10. Attachment restore reads git task assets from tool execution context. It
    does not use Activity memory.
-10. Session close can still enqueue personal-memory consolidation and episodic
+11. Session close can still enqueue personal-memory consolidation and episodic
    indexing when those services are enabled.
-11. Personal memory stores stable facts and preferences for personalization.
-12. Episodic memory indexes closed sessions for future recall when embeddings
+12. Personal memory stores stable facts and preferences for personalization.
+13. Episodic memory indexes closed sessions for future recall when embeddings
    are available.
-13. The context pack renders relevant git context and personal memory back into
+14. The context pack renders relevant git context and personal memory back into
     future agent runs as bounded JSON.
 
 Tool/action flow:
