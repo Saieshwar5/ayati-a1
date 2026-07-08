@@ -1,4 +1,4 @@
-import { basename, join } from "node:path";
+import { basename } from "node:path";
 import type {
   CompactGitMemoryStoreCommitSummary,
   GitMemoryEvidenceSearchMatch,
@@ -38,7 +38,6 @@ import type {
 } from "./schema.js";
 import {
   GIT_MEMORY_SESSION_CONVERSATION_MARKDOWN_PATH,
-  GIT_MEMORY_SESSION_STORE_DIR,
   gitMemorySessionStoreMessagesDir,
   gitMemoryTaskConversationDir,
   gitMemoryTaskDir,
@@ -48,10 +47,10 @@ import {
 } from "./schema.js";
 import {
   legacyGitMemoryTaskEvidenceManifestPath,
-  pathExists,
   runIdFromActionPath,
   runIdFromRunMarkdownPath,
 } from "./session-store-paths.js";
+import { openExistingSessionMessageStoreDriver } from "./session-message-store.js";
 
 export interface GitMemoryTaskSearchScore {
   score: number;
@@ -647,16 +646,6 @@ async function readTaskRunsForConversation(
     }
   }
   return runs;
-}
-
-async function openExistingSessionMessageStoreDriver(
-  driver: GitMemoryWorktreeGitDriver,
-): Promise<GitMemoryWorktreeGitDriver | null> {
-  const repoPath = join(driver.repoPath, GIT_MEMORY_SESSION_STORE_DIR);
-  if (!(await pathExists(join(repoPath, ".git")))) {
-    return null;
-  }
-  return new GitMemoryWorktreeGitDriver(repoPath);
 }
 
 async function readRefJson<T>(driver: GitMemoryWorktreeGitDriver, ref: string, path: string): Promise<T | null> {
