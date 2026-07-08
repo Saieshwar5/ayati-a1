@@ -80,18 +80,24 @@ interface SearchEvidenceInput extends SessionScopedInput {
 }
 
 interface SwitchTaskInput extends TaskSelectorInput {
-  reason: string;
+  reason: ActivateTaskReasonCode;
 }
 
 const CREATE_TASK_REASON_CODES = [
   "no_active_task",
   "explicit_user_requested_new_task",
   "new_unrelated_goal",
-  "new_independent_artifact",
-  "separate_parallel_workstream",
 ] as const;
 
 type CreateTaskReasonCode = typeof CREATE_TASK_REASON_CODES[number];
+
+const ACTIVATE_TASK_REASON_CODES = [
+  "continue_active_task",
+  "switch_to_existing_task",
+  "user_selected_task",
+] as const;
+
+type ActivateTaskReasonCode = typeof ACTIVATE_TASK_REASON_CODES[number];
 
 interface CreateTaskInput extends SessionScopedInput {
   sessionId: string;
@@ -129,7 +135,7 @@ const GIT_CONTEXT_PROMPT_BLOCK = [
   "Use git_context_log to inspect compact commit history for main or one task branch.",
   "Use git_context_activate_task_for_turn when the current pending user turn belongs to an existing task, including switching to a different task.",
   "Use git_context_create_task_for_turn when the current pending user turn starts new durable task work with a valid createReason.",
-  "If an active task exists, same-task continuation should use normal work tools directly. Create a new task only for valid separate work such as explicit_user_requested_new_task, new_unrelated_goal, new_independent_artifact, or separate_parallel_workstream.",
+  "If an active task exists, same-task continuation should activate that same task with reason continue_active_task before mutation. Create a new task only for valid separate work such as explicit_user_requested_new_task or new_unrelated_goal.",
   "If task ownership is ambiguous after search, ask the user directly in the assistant reply instead of calling a routing tool.",
   "Do not call a tool just to continue the already-active task; obvious same-task continuation is automatic.",
   "Do not switch or create task branches with low-level branch tools during normal live turns; route pending turns through the turn-aware tools.",
@@ -608,7 +614,8 @@ function createActivateTaskForTurnTool(
         },
         reason: {
           type: "string",
-          description: "Short reason this pending turn belongs to the selected task.",
+          enum: [...ACTIVATE_TASK_REASON_CODES],
+          description: "Deterministic reason code for binding the pending turn to this task.",
         },
       }, ["reason"]),
       oneOf: [
@@ -854,8 +861,6 @@ async function validateCreateTaskForActiveFocus(
       allowedCreateReasons: [
         "explicit_user_requested_new_task",
         "new_unrelated_goal",
-        "new_independent_artifact",
-        "separate_parallel_workstream",
       ],
       allowedNextActions: [
         "Continue the active task with normal work tools when this turn belongs to the same task.",
@@ -1077,12 +1082,20 @@ function parseSwitchTaskInput(input: unknown, context?: ToolExecutionContext): S
     ? input as Partial<SwitchTaskInput>
     : {};
   if (typeof value.reason !== "string" || value.reason.trim().length === 0) {
-    return invalidInput("reason must be a non-empty string.");
+    return invalidInput(`reason must be one of: ${ACTIVATE_TASK_REASON_CODES.join(", ")}.`);
+  }
+  const reason = value.reason.trim();
+  if (!isActivateTaskReasonCode(reason)) {
+    return invalidInput(`reason must be one of: ${ACTIVATE_TASK_REASON_CODES.join(", ")}.`);
   }
   return {
     ...scoped,
-    reason: value.reason.trim(),
+    reason,
   };
+}
+
+function isActivateTaskReasonCode(value: string): value is ActivateTaskReasonCode {
+  return (ACTIVATE_TASK_REASON_CODES as readonly string[]).includes(value);
 }
 
 function parseReadTaskInput(input: unknown, context?: ToolExecutionContext): ReadTaskInput | ToolResult {

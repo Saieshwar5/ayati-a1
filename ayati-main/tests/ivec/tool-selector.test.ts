@@ -164,12 +164,11 @@ describe("selectToolsForDecision", () => {
 
     const selectedNames = selected.map((entry) => entry.name);
     expect(selectedNames).toEqual([
+      "write_files",
       "read_file",
       "search_in_files",
-      "document_query",
       "git_context_create_task_for_turn",
     ]);
-    expect(selectedNames).not.toContain("write_files");
   });
 
   it("keeps first-task routing tools available regardless of selected tool cap", () => {

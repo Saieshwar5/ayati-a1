@@ -482,6 +482,33 @@ export async function runAgentLoop(
     });
 
     if (decision.kind === "reply") {
+      if (state.deferredMutation) {
+        recordDeferredMutationRoutingRepair({
+          deps,
+          inputHandle,
+          state,
+          config,
+          decision,
+          reason: "deferred_mutation_reply",
+        });
+        if (hasRepeatedRepairFailure(state.failureHistory)) {
+          recordRepeatedRepairFailure({
+            deps,
+            inputHandle,
+            state,
+            runId: state.runId || workRunHandle?.runId || sessionRunHandle?.runId,
+          });
+          state.status = "failed";
+          state.finalOutput = buildFailureReply(state);
+          return finalize({ status: "failed", content: state.finalOutput });
+        }
+        if (state.consecutiveFailures >= config.maxConsecutiveFailures) {
+          state.status = "failed";
+          state.finalOutput = buildFailureReply(state);
+          return finalize({ status: "failed", content: state.finalOutput });
+        }
+        continue;
+      }
       const terminalReplyRejection = shouldRejectTerminalReplyForUnresolvedMutation(state, decision);
       if (terminalReplyRejection) {
         recordTerminalReplyMutationRepair({
@@ -594,8 +621,57 @@ export async function runAgentLoop(
     }
 
     const runtimeMode = detectRuntimeCapabilityMode({ state, workRunHandle, sessionRunHandle });
-    const pendingRouting = runtimeMode.name === "pre_task_routing";
     const freshSessionWithoutActiveTask = isFreshSessionRoutingMode(runtimeMode);
+
+    if (shouldDeferPreTaskMutation(decision, workRunHandle, sessionRunHandle)) {
+      if (decision.kind !== "act") {
+        continue;
+      }
+      if (state.deferredMutation) {
+        recordDeferredMutationRoutingRepair({
+          deps,
+          inputHandle,
+          state,
+          config,
+          decision,
+          reason: "deferred_mutation_already_pending",
+        });
+        if (hasRepeatedRepairFailure(state.failureHistory)) {
+          recordRepeatedRepairFailure({
+            deps,
+            inputHandle,
+            state,
+            runId: sessionRunHandle?.runId,
+          });
+          state.status = "failed";
+          state.finalOutput = buildFailureReply(state);
+          return finalize({ status: "failed", content: state.finalOutput });
+        }
+        if (state.consecutiveFailures >= config.maxConsecutiveFailures) {
+          state.status = "failed";
+          state.finalOutput = buildFailureReply(state);
+          return finalize({ status: "failed", content: state.finalOutput });
+        }
+      } else {
+        state.deferredMutation = {
+          action: decision.action,
+          selectedTools,
+          deferredAtIteration: state.iteration,
+          reason: "mutation_requires_task_ownership",
+          blockedTools: deferredMutationToolNames(decision.action),
+        };
+        recordFeedback(deps, inputHandle, sessionRunHandle?.runId, "guard", "mutation_deferred_for_task_routing", {
+          iteration: state.iteration,
+          reason: "mutation_requires_task_ownership",
+          deferredTools: state.deferredMutation.blockedTools,
+          action: summarizeAgentAction(decision.action),
+          contextEngine: buildContextEngineFeedbackSummary({
+            context: state.harnessContext.contextEngine,
+          }),
+        });
+      }
+      continue;
+    }
 
     if (freshSessionWithoutActiveTask && !runtimeMode.allowToolLoading && decision.kind === "load_tools") {
       recordFreshSessionToolRepair({
@@ -705,7 +781,10 @@ export async function runAgentLoop(
       || isPreRunGitContextAction(decision, workRunHandle);
     const sessionReadOnlyAction = isSessionReadOnlyAction(decision, workRunHandle, sessionRunHandle);
 
-    if (pendingRouting || freshSessionRouting || preRunGitContextAction || sessionReadOnlyAction) {
+    const routingControlAction = freshSessionRouting
+      || preRunGitContextRoutingAction
+      || decision.action.calls.some((call) => isGitContextTurnRoutingToolName(call.tool));
+    if (routingControlAction || preRunGitContextAction || sessionReadOnlyAction) {
       const routingRunId = sessionRunHandle?.runId ?? decisionScopeId(inputHandle);
       const routingToolContext = { ...toolContext, runId: routingRunId };
       recordFeedback(deps, inputHandle, undefined, "action", "started", {
@@ -721,13 +800,12 @@ export async function runAgentLoop(
           purpose: call.purpose,
         })),
         allowedTools: decision.action.allowedTools,
-        pendingRouting: pendingRouting || freshSessionRouting || preRunGitContextRoutingAction,
+        pendingRouting: routingControlAction,
         freshSessionRouting,
         preRunGitContextAction,
         preRunGitContextReadAction,
         preRunGitContextRoutingAction,
       });
-      const stepStartedAt = new Date().toISOString();
       const stepResult = await executePendingRoutingAction({
         deps,
         state,
@@ -738,35 +816,37 @@ export async function runAgentLoop(
         toolContext: routingToolContext,
         readOnlySessionAction: sessionReadOnlyAction,
       });
-      const stepCompletedAt = new Date().toISOString();
-      actionStepCount++;
       lastVerificationPassed = stepResult.execution.verifyOutput.passed;
       if (!stepResult.execution.verifyOutput.passed) {
         failedVerificationCount++;
       }
-      totalToolCalls += stepResult.stepSummary.toolSuccessCount + stepResult.stepSummary.toolFailureCount;
       recordActionFeedback(deps, inputHandle, routingRunId, decision.action, stepResult);
-      recordStepFeedback(deps, inputHandle, routingRunId, state.iteration, stepResult);
+      if (!routingControlAction) {
+        actionStepCount++;
+        totalToolCalls += stepResult.stepSummary.toolSuccessCount + stepResult.stepSummary.toolFailureCount;
+        recordStepFeedback(deps, inputHandle, routingRunId, state.iteration, stepResult);
 
-      const beforeWorkStateChars = measureJson(stepResult.execution.nextWorkState);
-      const compactedWorkState = compactWorkState(stepResult.execution.nextWorkState);
-      recordCompactionMetric(metrics, "workState", beforeWorkStateChars, measureJson(compactedWorkState), { step: state.iteration });
-      state.workState = compactedWorkState;
-      state.toolContext = buildUpdatedToolContext(state, stepResult.execution);
-      stepResult.stepSummary.workState = compactedWorkState;
-      recordReducerFeedback(deps, inputHandle, routingRunId, state.iteration, {
-        beforeWorkStateChars,
-        compactedWorkState,
-        stepSummary: stepResult.stepSummary,
-      });
+        const beforeWorkStateChars = measureJson(stepResult.execution.nextWorkState);
+        const compactedWorkState = compactWorkState(stepResult.execution.nextWorkState);
+        recordCompactionMetric(metrics, "workState", beforeWorkStateChars, measureJson(compactedWorkState), { step: state.iteration });
+        state.workState = compactedWorkState;
+        state.toolContext = buildUpdatedToolContext(state, stepResult.execution);
+        stepResult.stepSummary.workState = compactedWorkState;
+        recordReducerFeedback(deps, inputHandle, routingRunId, state.iteration, {
+          beforeWorkStateChars,
+          compactedWorkState,
+          stepSummary: stepResult.stepSummary,
+        });
 
-      const compactedStep = compactStepSummaryForState(stepResult.stepSummary);
-      recordCompactionMetric(metrics, "completedStepSummary", measureJson(stepResult.stepSummary), measureJson(compactedStep), { step: state.iteration });
-      state.completedSteps.push(compactedStep);
+        const compactedStep = compactStepSummaryForState(stepResult.stepSummary);
+        recordCompactionMetric(metrics, "completedStepSummary", measureJson(stepResult.stepSummary), measureJson(compactedStep), { step: state.iteration });
+        state.completedSteps.push(compactedStep);
+      }
 
       const routingUpdate = extractTurnRoutingUpdate(stepResult.execution.actOutput.toolCalls);
+      let routedRunHandle: MemoryRunHandle | undefined;
       if (routingUpdate?.status === "ready") {
-        const routedRunHandle: MemoryRunHandle = {
+        routedRunHandle = {
           sessionId: routingUpdate.sessionId,
           runId: routingUpdate.runId,
           triggerSeq: inputHandle.seq,
@@ -817,17 +897,6 @@ export async function runAgentLoop(
           }),
         });
       }
-      if (state.runClass === "task") {
-        recordTaskStep(deps, state, decision.action, stepResult, {
-          startedAt: stepStartedAt,
-          completedAt: stepCompletedAt,
-        });
-      } else {
-        recordSessionStep(deps, sessionRunHandle, decision.action, stepResult, {
-          startedAt: stepStartedAt,
-          completedAt: stepCompletedAt,
-        });
-      }
 
       if (stepResult.stepSummary.outcome === "failed") {
         state.consecutiveFailures++;
@@ -853,10 +922,165 @@ export async function runAgentLoop(
       }
 
       recordStateSnapshotMetric("after_pending_routing_step");
-      deps.onProgress?.(
-        `Step ${state.iteration}: ${stepResult.stepSummary.executionContract} -> ${stepResult.stepSummary.outcome}`,
-        state.runPath,
-      );
+      if (!routingControlAction) {
+        const nonRoutingStepStartedAt = new Date().toISOString();
+        const nonRoutingStepCompletedAt = nonRoutingStepStartedAt;
+        if (state.runClass === "task") {
+          recordTaskStep(deps, state, decision.action, stepResult, {
+            startedAt: nonRoutingStepStartedAt,
+            completedAt: nonRoutingStepCompletedAt,
+          });
+        } else {
+          recordSessionStep(deps, sessionRunHandle, decision.action, stepResult, {
+            startedAt: nonRoutingStepStartedAt,
+            completedAt: nonRoutingStepCompletedAt,
+          });
+        }
+        deps.onProgress?.(
+          `Step ${state.iteration}: ${stepResult.stepSummary.executionContract} -> ${stepResult.stepSummary.outcome}`,
+          state.runPath,
+        );
+      }
+      if (routedRunHandle && state.deferredMutation) {
+        const deferred = state.deferredMutation;
+        state.deferredMutation = undefined;
+        recordFeedback(deps, inputHandle, routedRunHandle.runId, "guard", "deferred_mutation_resuming", {
+          iteration: state.iteration,
+          deferredAtIteration: deferred.deferredAtIteration,
+          deferredTools: deferred.blockedTools,
+          action: summarizeAgentAction(deferred.action),
+        });
+        const replayDecision: Extract<AgentDecision, { kind: "act" }> = {
+          kind: "act",
+          action: deferred.action,
+        };
+        recordFeedback(deps, inputHandle, routedRunHandle.runId, "action", "started", {
+          iteration: state.iteration,
+          mode: replayDecision.action.mode,
+          action: summarizeAgentAction(replayDecision.action),
+          plannedCallCount: replayDecision.action.calls.length,
+          calls: replayDecision.action.calls.map((call) => ({
+            id: call.id,
+            tool: call.tool,
+            input: summarizeActionInput(call.input),
+            dependsOn: call.dependsOn,
+            purpose: call.purpose,
+          })),
+          allowedTools: replayDecision.action.allowedTools,
+          deferredMutationReplay: true,
+        });
+        const replayStartedAt = new Date().toISOString();
+        const replayResult = await executeActionStep({
+          deps,
+          state,
+          config,
+          metrics,
+          selectedTools: deferred.selectedTools,
+          decision: replayDecision,
+          stepNumber: state.iteration,
+        });
+        const replayCompletedAt = new Date().toISOString();
+        actionStepCount++;
+        lastVerificationPassed = replayResult.execution.verifyOutput.passed;
+        if (!replayResult.execution.verifyOutput.passed) {
+          failedVerificationCount++;
+        }
+        totalToolCalls += replayResult.stepSummary.toolSuccessCount + replayResult.stepSummary.toolFailureCount;
+        state.readProgress = updateReadProgressAfterActOutput(state.readProgress, replayResult.execution.actOutput);
+        recordActionFeedback(deps, inputHandle, routedRunHandle.runId, replayDecision.action, replayResult);
+        recordStepFeedback(deps, inputHandle, routedRunHandle.runId, state.iteration, replayResult);
+
+        const beforeReplayWorkStateChars = measureJson(replayResult.execution.nextWorkState);
+        const compactedReplayWorkState = compactWorkState(replayResult.execution.nextWorkState);
+        recordCompactionMetric(metrics, "workState", beforeReplayWorkStateChars, measureJson(compactedReplayWorkState), { step: state.iteration });
+        state.workState = compactedReplayWorkState;
+        state.toolContext = buildUpdatedToolContext(state, replayResult.execution);
+        replayResult.stepSummary.workState = compactedReplayWorkState;
+        recordReducerFeedback(deps, inputHandle, routedRunHandle.runId, state.iteration, {
+          beforeWorkStateChars: beforeReplayWorkStateChars,
+          compactedWorkState: compactedReplayWorkState,
+          stepSummary: replayResult.stepSummary,
+        });
+
+        const compactedReplayStep = compactStepSummaryForState(replayResult.stepSummary);
+        recordCompactionMetric(metrics, "completedStepSummary", measureJson(replayResult.stepSummary), measureJson(compactedReplayStep), { step: state.iteration });
+        state.completedSteps.push(compactedReplayStep);
+        recordTaskStep(deps, state, replayDecision.action, replayResult, {
+          startedAt: replayStartedAt,
+          completedAt: replayCompletedAt,
+        });
+
+        recordPlanModeMetric(metrics, replayDecision.action.mode, {
+          step: state.iteration,
+          tools: replayDecision.action.calls.map((call) => call.tool).join(","),
+        });
+        recordVerificationMetric(metrics, replayResult.stepSummary.verificationMethod, {
+          step: state.iteration,
+          executionStatus: replayResult.stepSummary.executionStatus,
+          validationStatus: replayResult.stepSummary.validationStatus,
+        });
+        deps.skillActivationManager?.cleanupAfterStep(replayResult.stepSummary.toolsUsed ?? [], {
+          clientId: deps.clientId,
+          runId: routedRunHandle.runId,
+          sessionId: inputHandle.sessionId,
+          stepNumber: state.iteration,
+          ...(deps.uiContext ? { uiContext: deps.uiContext } : {}),
+        });
+        if (deps.toolWorkingSetManager) {
+          const cleanupContext = {
+            clientId: deps.clientId,
+            runId: routedRunHandle.runId,
+            sessionId: inputHandle.sessionId,
+            stepNumber: state.iteration,
+            ...(deps.uiContext ? { uiContext: deps.uiContext } : {}),
+          };
+          state.lastToolLoad = deps.toolWorkingSetManager.afterExecution(replayResult.execution.actOutput.toolCalls, cleanupContext);
+          deps.toolWorkingSetManager.cleanupAfterStep(cleanupContext);
+          recordFeedback(deps, inputHandle, routedRunHandle.runId, "tools", "after_execution", {
+            iteration: state.iteration,
+            result: summarizeToolLoadResult(state.lastToolLoad),
+            activeTools: deps.toolWorkingSetManager.listActive(cleanupContext),
+          });
+        }
+
+        if (replayResult.stepSummary.outcome === "failed") {
+          state.consecutiveFailures++;
+          state.failureHistory.push(createFailureRecordFromStepSummary(replayResult.stepSummary));
+          if (hasRepeatedRepairFailure(state.failureHistory) || hasRepeatedToolInputValidationFailure(state.failureHistory)) {
+            recordRepeatedRepairFailure({
+              deps,
+              inputHandle,
+              state,
+              runId: routedRunHandle.runId,
+            });
+            state.status = "failed";
+            state.finalOutput = buildFailureReply(state);
+            return finalize({ status: "failed", content: state.finalOutput });
+          }
+          if (state.consecutiveFailures >= config.maxConsecutiveFailures) {
+            state.status = "failed";
+            state.finalOutput = buildFailureReply(state);
+            return finalize({ status: "failed", content: state.finalOutput });
+          }
+        } else {
+          state.consecutiveFailures = 0;
+        }
+
+        recordStateSnapshotMetric("after_deferred_mutation_replay");
+        deps.onProgress?.(
+          `Step ${state.iteration}: ${replayResult.stepSummary.executionContract} -> ${replayResult.stepSummary.outcome}`,
+          state.runPath,
+        );
+
+        if (canCompleteLocallyAfterAction(replayDecision.action, replayResult.stepSummary, state.workState, state)) {
+          state.workState = compactWorkState({
+            ...state.workState,
+            status: "done",
+          });
+          recordRunMetric(metrics, "verified_completion", { kind: "local" });
+          recordStateSnapshotMetric("after_verified_completion");
+        }
+      }
       continue;
     }
 
@@ -1311,6 +1535,30 @@ function buildPendingRoutingVerifyOutput(actOutput: ActOutput): AgentActionExecu
   };
 }
 
+function shouldDeferPreTaskMutation(
+  decision: AgentDecision,
+  workRunHandle: MemoryRunHandle | undefined,
+  sessionRunHandle: MemoryRunHandle | undefined,
+): boolean {
+  if (workRunHandle || !sessionRunHandle || decision.kind !== "act") {
+    return false;
+  }
+  if (decision.action.calls.some((call) => isGitContextTurnRoutingToolName(call.tool))) {
+    return false;
+  }
+  return decision.action.calls.some((call) => isPreTaskMutationTool(call.tool));
+}
+
+function isPreTaskMutationTool(tool: string): boolean {
+  return !isReadOnlyTool(tool) && !isGitContextAllowedDuringPendingRouting(tool);
+}
+
+function deferredMutationToolNames(action: AgentAction): string[] {
+  return uniqueStrings(action.calls
+    .map((call) => call.tool)
+    .filter(isPreTaskMutationTool));
+}
+
 function extractTurnRoutingUpdate(calls: ActToolCallRecord[]): TurnRoutingUpdate | null {
   for (const call of [...calls].reverse()) {
     const content = call.result?.structuredContent;
@@ -1400,6 +1648,58 @@ function recordFreshSessionToolRepair(input: {
       context: input.state.harnessContext.contextEngine,
     }),
     harnessContext: summarizeHarnessContext(input.state.harnessContext),
+    ...repairSignalToFeedbackData(repair),
+  });
+}
+
+function recordDeferredMutationRoutingRepair(input: {
+  deps: AgentLoopDeps;
+  inputHandle: SessionInputHandle;
+  state: LoopState;
+  config: LoopConfig;
+  decision: AgentDecision;
+  reason: "deferred_mutation_reply" | "deferred_mutation_already_pending";
+}): void {
+  input.state.consecutiveFailures++;
+  const deferredTools = input.state.deferredMutation?.blockedTools ?? [];
+  const repair = createRepairSignal("R_PENDING_TURN_UNBOUND", {
+    source: "runner.deferred_mutation_guard",
+    message: "A mutation is already deferred and cannot execute until this session run is routed to a task.",
+    blockedTargets: input.decision.kind === "act"
+      ? deferredMutationToolNames(input.decision.action)
+      : ["direct_reply"],
+    allowedNextActions: [
+      "Call git_context_activate_task_for_turn if this belongs to the active or another existing task.",
+      "Call git_context_search_tasks first if another existing task may own the request.",
+      "Call git_context_create_task_for_turn if this is a new durable task.",
+      "After routing succeeds, the deferred mutation will execute automatically; do not repeat the mutation call.",
+    ],
+    operatorDetails: {
+      reason: input.reason,
+      deferredTools,
+      consecutiveFailures: input.state.consecutiveFailures,
+      maxConsecutiveFailures: input.config.maxConsecutiveFailures,
+      decision: summarizeDecision(input.decision),
+      contextEngine: buildContextEngineFeedbackSummary({
+        context: input.state.harnessContext.contextEngine,
+      }),
+    },
+  });
+  const promptCard = repairSignalToPromptCard(repair);
+  input.state.failureHistory.push({
+    step: input.state.iteration,
+    failureType: "validation_error",
+    reason: repair.message,
+    blockedTargets: repair.blockedTargets,
+    repairCode: repair.code,
+    ...(promptCard ? { repair: promptCard } : {}),
+  });
+  recordFeedback(input.deps, input.inputHandle, input.state.runId || undefined, "guard", "deferred_mutation_routing_required", {
+    reason: input.reason,
+    deferredTools,
+    decision: summarizeDecision(input.decision),
+    consecutiveFailures: input.state.consecutiveFailures,
+    maxConsecutiveFailures: input.config.maxConsecutiveFailures,
     ...repairSignalToFeedbackData(repair),
   });
 }

@@ -2,6 +2,7 @@ import type { LlmProvider } from "../core/contracts/provider.js";
 import type { ToolExecutor } from "../skills/tool-executor.js";
 import type { SkillActivationManager } from "../skills/activation-manager.js";
 import type { ToolLoadResult, ToolWorkingSetManager } from "./agent-runner/tool-working-set.js";
+import type { AgentAction } from "./agent-runner/decision.js";
 import type { RepairCode, RepairPromptCard } from "./agent-runner/repair-policy.js";
 import type {
   ArtifactRef,
@@ -188,6 +189,14 @@ export interface ReadProgressState {
   signatures: string[];
 }
 
+export interface DeferredMutationState {
+  action: AgentAction;
+  selectedTools: ToolDefinition[];
+  deferredAtIteration: number;
+  reason: "mutation_requires_task_ownership";
+  blockedTools: string[];
+}
+
 export interface LoopState {
   runId: string;
   currentSeq: number;
@@ -214,6 +223,7 @@ export interface LoopState {
   maxIterations: number;
   consecutiveFailures: number;
   completedSteps: StepSummary[];
+  deferredMutation?: DeferredMutationState;
   runPath: string;
   failureHistory: FailureRecord[];
   readProgress?: ReadProgressState;

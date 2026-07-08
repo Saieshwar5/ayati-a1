@@ -33,8 +33,6 @@ describe("git-context skill", () => {
             "no_active_task",
             "explicit_user_requested_new_task",
             "new_unrelated_goal",
-            "new_independent_artifact",
-            "separate_parallel_workstream",
           ],
         },
         reasonDetails: {
@@ -44,6 +42,16 @@ describe("git-context skill", () => {
     });
     expect(activateTask.inputSchema).toMatchObject({
       required: ["reason"],
+      properties: {
+        reason: {
+          type: "string",
+          enum: [
+            "continue_active_task",
+            "switch_to_existing_task",
+            "user_selected_task",
+          ],
+        },
+      },
       oneOf: [
         { required: ["taskId"] },
         { required: ["branch"] },
@@ -328,7 +336,7 @@ describe("git-context skill", () => {
     const result = await tool.execute({
       sessionId: prepared.session.sessionId,
       taskId: prepared.uploadTask.taskId,
-      reason: "User is asking to continue previous upload UI work.",
+      reason: "switch_to_existing_task",
     });
 
     expect(result.ok).toBe(true);
@@ -340,7 +348,7 @@ describe("git-context skill", () => {
       branch: prepared.uploadTask.branch,
       runId: "R-20260628-0003",
       conversationRefs: [{ fromSeq: pending.userMessage.seq, toSeq: pending.userMessage.seq }],
-      reason: "User is asking to continue previous upload UI work.",
+      reason: "switch_to_existing_task",
       harnessContext: {
         contextEngine: {
           focus: {
@@ -408,7 +416,7 @@ describe("git-context skill", () => {
     const activated = await activateTool.execute({
       sessionId: prepared.session.sessionId,
       taskId: prepared.uploadTask.taskId,
-      reason: "User is asking to continue previous upload UI work.",
+      reason: "switch_to_existing_task",
     });
     const listed = await listTool.execute({
       sessionId: prepared.session.sessionId,
@@ -550,7 +558,7 @@ describe("git-context skill", () => {
       sessionId: prepared.session.sessionId,
       title: "Update upload handling validation",
       objective: "Update the same upload handling files with another validation fix.",
-      createReason: "new_independent_artifact",
+      createReason: "new_unrelated_goal",
       reasonDetails: "The active task is already completed enough and this is a follow-up update.",
     });
 
@@ -558,7 +566,7 @@ describe("git-context skill", () => {
     expect(result.v2).toMatchObject({
       code: "GIT_CONTEXT_CREATE_TASK_REASON_REJECTED",
       structuredContent: {
-        createReason: "new_independent_artifact",
+        createReason: "new_unrelated_goal",
         allowedCreateReasons: [],
         activeTask: {
           taskId: prepared.task.taskId,
@@ -726,7 +734,7 @@ describe("git-context skill", () => {
     await expect(tool.execute({
       sessionId: prepared.session.sessionId,
       taskId: "W-20260628-missing",
-      reason: "Try missing task.",
+      reason: "switch_to_existing_task",
     })).resolves.toMatchObject({
       ok: false,
       v2: {

@@ -240,6 +240,13 @@ export function isFreshSessionRoutingMode(mode: RuntimeCapabilityMode): boolean 
 export function isRuntimeToolAllowed(mode: RuntimeCapabilityMode, toolName: string): boolean {
   const taxonomy = getToolTaxonomy(toolName);
   if (!taxonomy) {
+    if (
+      mode.hasSessionRun
+      && mode.pendingTurnStatus !== "clarifying"
+      && (mode.name === "fresh_session_routing" || mode.name === "pre_task_routing")
+    ) {
+      return true;
+    }
     return mode.name === "task_run" || mode.name === "active_task_ready" || mode.hasWorkRun;
   }
 
@@ -256,6 +263,13 @@ export function isRuntimeToolAllowed(mode: RuntimeCapabilityMode, toolName: stri
 
   if (mode.pendingTurnStatus === "clarifying") {
     return false;
+  }
+
+  if (
+    mode.hasSessionRun
+    && (mode.name === "fresh_session_routing" || mode.name === "pre_task_routing")
+  ) {
+    return true;
   }
 
   if (isReadOnlyAllowedBeforeTask(mode, toolName, taxonomy)) {
@@ -403,7 +417,7 @@ function buildRuntimeRoutingWindow(
     return completedStep.outcome !== "failed"
       && (completedStep.toolsUsed ?? []).some(isGitContextTurnRoutingToolName);
   });
-  const open = !routingResolved && step <= TASK_ROUTING_WINDOW_STEPS;
+  const open = !routingResolved && (Boolean(state.deferredMutation) || step <= TASK_ROUTING_WINDOW_STEPS);
   const remaining = open ? Math.max(0, TASK_ROUTING_WINDOW_STEPS - step) : 0;
   return {
     open,
@@ -415,7 +429,9 @@ function buildRuntimeRoutingWindow(
     readToolsAvailable: true,
     routingToolsAvailable: open,
     readToolsRemainAfterExpiry: true,
-    guidance: open
+    guidance: state.deferredMutation
+      ? "A mutation is deferred until task ownership is resolved. Use activate, search/activate, or create now; the deferred mutation will execute automatically after routing."
+      : open
       ? remaining === 0
         ? "Routing expires after this decision. Use create, switch, or clarification now if this turn is not the active task; otherwise continue the active task."
         : "Use create, switch, or clarification if this turn belongs to a different or new task; otherwise continue the active task."

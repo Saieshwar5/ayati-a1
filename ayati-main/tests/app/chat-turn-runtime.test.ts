@@ -1023,8 +1023,8 @@ describe("createChatTurnRuntime", () => {
             allowedTools: ["write_files"],
             assertions: [],
             completion: {
-              intent: "not_completion",
-              reason: "The task work state still needs to be updated after the file write.",
+              intent: "completion_candidate",
+              reason: "The file write completes the requested upload note update.",
             },
           },
         },
@@ -1151,7 +1151,7 @@ describe("createChatTurnRuntime", () => {
               tool: "git_context_activate_task_for_turn",
               input: {
                 taskId: apiTask.taskId,
-                reason: "The user clarified that the API upload task owns this follow-up.",
+                reason: "user_selected_task",
               },
               dependsOn: [],
               purpose: "Bind this fresh clarification answer turn to the API upload task.",
@@ -1264,13 +1264,12 @@ describe("createChatTurnRuntime", () => {
         runId: answerRunId,
         status: "completed",
         summary: "Updated the upload API note.",
-        toolCallCount: 2,
+        toolCallCount: 1,
       });
       expect(readJsonl(await driver.readFile(
         apiTask.ref,
         gitMemoryTaskStepsPath(apiTask.taskId, answerRunId),
       )).map((step) => step.toolCalls?.[0]?.tool)).toEqual([
-        "git_context_activate_task_for_turn",
         "write_files",
       ]);
       expect(readFileSync(join(workspaceDir, "notes/upload-api.md"), "utf-8"))
@@ -1329,6 +1328,7 @@ describe("createChatTurnRuntime", () => {
         toSeq: initial.messageSeq,
         at: "2026-06-28T09:00:01+05:30",
       });
+      const gitContextSkill = createGitContextSkill({ contextStoreDir, gitMemoryRuntime });
       const provider = createAgentDecisionProvider([
         {
           kind: "act",
@@ -1371,12 +1371,21 @@ describe("createChatTurnRuntime", () => {
           },
         },
         {
-          kind: "update_work_state",
-          update: {
-            status: "done",
-            summary: "Updated upload handling notes.",
-            openWork: [],
-            blockers: [],
+          kind: "act",
+          action: {
+            mode: "single",
+            calls: [{
+              id: "activate_upload_task",
+              tool: "git_context_activate_task_for_turn",
+              input: {
+                taskId: task.taskId,
+                reason: "continue_active_task",
+              },
+              dependsOn: [],
+              purpose: "Bind the deferred upload note mutation to the active upload task.",
+            }],
+            allowedTools: ["git_context_activate_task_for_turn"],
+            assertions: [],
           },
         },
         {
@@ -1389,7 +1398,7 @@ describe("createChatTurnRuntime", () => {
         provider,
         dataDir,
         chatContextRuntime,
-        toolExecutor: createToolExecutor([readFileTool, writeFilesTool]),
+        toolExecutor: createToolExecutor([...gitContextSkill.tools, readFileTool, writeFilesTool]),
         now: () => new Date("2026-06-28T09:05:00.000Z"),
       });
 

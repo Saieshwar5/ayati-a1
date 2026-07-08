@@ -104,8 +104,6 @@ function fakeCreateTaskForTurnTool(): ToolDefinition {
             "no_active_task",
             "explicit_user_requested_new_task",
             "new_unrelated_goal",
-            "new_independent_artifact",
-            "separate_parallel_workstream",
           ],
         },
         reasonDetails: { type: "string" },
@@ -873,7 +871,7 @@ describe("agentLoop", () => {
       expect(result.status).toBe("completed");
       expect(result.runClass).toBe("task");
       expect(result.workRunId).toBe("R-20260702-001");
-      expect(result.totalToolCalls).toBe(2);
+      expect(result.totalToolCalls).toBe(1);
       expect(result.content).toBe(`I created the Linux commands file at ${outputPath}.`);
       expect(provider.generateTurn).toHaveBeenCalledTimes(3);
       expect(readFileSync(outputPath, "utf-8")).toContain("pwd - show current directory");
@@ -902,10 +900,6 @@ describe("agentLoop", () => {
       });
       expect(feedbackEvents(feedback.events, "tools", "normal_tools_enabled_for_work_run")[0]?.data).toMatchObject({
         workRunId: "R-20260702-001",
-      });
-      expect(feedbackEvents(feedback.events, "tools", "routing_tools_deactivated")[0]?.data).toMatchObject({
-        workRunId: "R-20260702-001",
-        completedRoutingTools: ["git_context_create_task_for_turn"],
       });
     } finally {
       cleanup(dataDir);
@@ -955,7 +949,7 @@ describe("agentLoop", () => {
               tool: "git_context_activate_task_for_turn",
               input: {
                 taskId: "T-20260702-website",
-                reason: "The user is continuing the active website task.",
+                reason: "continue_active_task",
               },
               dependsOn: [],
               purpose: "Bind the pending turn to the existing active task before work tools run.",
@@ -1052,7 +1046,7 @@ describe("agentLoop", () => {
       expect(result.status).toBe("completed");
       expect(result.runClass).toBe("task");
       expect(result.workRunId).toBe("R-20260702-website-002");
-      expect(result.totalToolCalls).toBe(2);
+      expect(result.totalToolCalls).toBe(1);
       expect(result.content).toBe(`I updated the website task note at ${outputPath}.`);
       expect(provider.generateTurn).toHaveBeenCalledTimes(3);
       expect(readFileSync(outputPath, "utf-8")).toContain("Website note");
@@ -1075,10 +1069,6 @@ describe("agentLoop", () => {
       });
       expect(feedbackEvents(feedback.events, "tools", "normal_tools_enabled_for_work_run")[0]?.data).toMatchObject({
         workRunId: "R-20260702-website-002",
-      });
-      expect(feedbackEvents(feedback.events, "tools", "routing_tools_deactivated")[0]?.data).toMatchObject({
-        workRunId: "R-20260702-website-002",
-        completedRoutingTools: ["git_context_activate_task_for_turn"],
       });
     } finally {
       cleanup(dataDir);

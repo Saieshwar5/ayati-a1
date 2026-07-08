@@ -62,6 +62,11 @@ export interface PromptRunContext {
   status?: WorkState["status"];
   workState?: PromptRunWorkStateContext;
   toolCalls?: unknown;
+  deferredMutation?: {
+    reason: string;
+    tools: string[];
+    callCount: number;
+  };
 }
 
 export interface PromptRunWorkStateContext {

@@ -1145,10 +1145,31 @@ describe("IVecEngine", () => {
                   input: {
                     sessionId: "S-20260627-local",
                     taskId: "W-20260627-0002",
-                    reason: "The user asked to continue upload UI redesign.",
+                    reason: "switch_to_existing_task",
                   },
                   dependsOn: [],
                   purpose: "Bind the pending user turn to the upload UI task.",
+                }],
+                allowedTools: ["git_context_activate_task_for_turn"],
+                assertions: [],
+              },
+            }),
+          })
+          .mockResolvedValueOnce({
+            type: "assistant",
+            content: JSON.stringify({
+              kind: "act",
+              action: {
+                mode: "single",
+                calls: [{
+                  id: "activate_invoice",
+                  tool: "git_context_activate_task_for_turn",
+                  input: {
+                    taskId: "W-20260627-0001",
+                    reason: "continue_active_task",
+                  },
+                  dependsOn: [],
+                  purpose: "Bind the deferred invoice note write to the active invoice task.",
                 }],
                 allowedTools: ["git_context_activate_task_for_turn"],
                 assertions: [],
@@ -1225,15 +1246,40 @@ describe("IVecEngine", () => {
 	                    allowExternalPath: true,
 	                    files: [{ path: outputPath, content: "Invoice follow-up note." }],
 	                  },
-                  dependsOn: [],
-                  purpose: "Write the follow-up note for the active invoice task.",
-                }],
-                allowedTools: ["write_files"],
-                assertions: [{ kind: "file_exists", path: "$.files[0].path" }],
-              },
-            }),
-          })
-          .mockResolvedValueOnce({
+	                  dependsOn: [],
+	                  purpose: "Write the follow-up note for the active invoice task.",
+	                }],
+	                allowedTools: ["write_files"],
+	                assertions: [{ kind: "file_exists", path: "$.files[0].path" }],
+	                completion: {
+	                  intent: "completion_candidate",
+	                  reason: "The note file write completes the requested invoice follow-up.",
+	                },
+	              },
+	            }),
+	          })
+	          .mockResolvedValueOnce({
+	            type: "assistant",
+	            content: JSON.stringify({
+	              kind: "act",
+	              action: {
+	                mode: "single",
+	                calls: [{
+	                  id: "activate_invoice",
+	                  tool: "git_context_activate_task_for_turn",
+	                  input: {
+	                    taskId: "W-20260627-0001",
+	                    reason: "continue_active_task",
+	                  },
+	                  dependsOn: [],
+	                  purpose: "Bind the deferred invoice note write to the active invoice task.",
+	                }],
+	                allowedTools: ["git_context_activate_task_for_turn"],
+	                assertions: [],
+	              },
+	            }),
+	          })
+	          .mockResolvedValueOnce({
             type: "assistant",
             content: JSON.stringify({
               kind: "reply",
@@ -1243,7 +1289,7 @@ describe("IVecEngine", () => {
           }),
       });
       const chatContextRuntime = createActiveUnroutedChatContextRuntime();
-      const toolExecutor = createToolExecutor([writeFilesTool]);
+      const toolExecutor = createToolExecutor([activateTaskForTurnFixtureTool(), writeFilesTool]);
       const onReply = vi.fn();
       const engine = createEngine({
         onReply,
@@ -1267,9 +1313,7 @@ describe("IVecEngine", () => {
       expect(chatContextRuntime.routeTaskTurn).toHaveBeenCalledWith(expect.objectContaining({
         autoOnly: true,
       }));
-      expect(chatContextRuntime.activateTaskTurn).toHaveBeenCalledWith(expect.objectContaining({
-        taskId: "W-20260627-0001",
-      }));
+      expect(chatContextRuntime.activateTaskTurn).not.toHaveBeenCalled();
       expect(readFileSync(outputPath, "utf-8")).toBe("Invoice follow-up note.");
     } finally {
       rmSync(dataDir, { recursive: true, force: true });

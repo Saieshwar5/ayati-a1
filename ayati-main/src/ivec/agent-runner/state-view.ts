@@ -147,6 +147,7 @@ export function buildAgentStateView(state: LoopState, options: AgentStateViewOpt
       status: state.workState.status,
       workState: progress,
       toolCalls,
+      deferredMutation: buildDeferredMutationView(state),
     }),
   });
 
@@ -184,11 +185,25 @@ function buildRunContext(input: {
   status: WorkState["status"];
   workState?: PromptProgressState;
   toolCalls?: PromptToolCalls;
+  deferredMutation?: PromptRunContext["deferredMutation"];
 }): PromptRunContext {
   return {
     status: input.status,
     ...(input.workState ? { workState: input.workState } : {}),
     ...(input.toolCalls ? { toolCalls: input.toolCalls } : {}),
+    ...(input.deferredMutation ? { deferredMutation: input.deferredMutation } : {}),
+  };
+}
+
+function buildDeferredMutationView(state: LoopState): PromptRunContext["deferredMutation"] | undefined {
+  const deferred = state.deferredMutation;
+  if (!deferred) {
+    return undefined;
+  }
+  return {
+    reason: deferred.reason,
+    tools: deferred.blockedTools,
+    callCount: deferred.action.calls.length,
   };
 }
 
@@ -208,6 +223,11 @@ function buildWorkingFeedbackView(state: LoopState): PromptWorkingFeedback | und
   const pendingTurnFeedback = buildPendingTurnWorkingFeedback(state);
   if (pendingTurnFeedback) {
     latest.push(pendingTurnFeedback);
+  }
+
+  const deferredMutationFeedback = buildDeferredMutationWorkingFeedback(state);
+  if (deferredMutationFeedback) {
+    latest.push(deferredMutationFeedback);
   }
 
   const toolLoadFeedback = buildToolLoadWorkingFeedback(state.lastToolLoad);
@@ -232,6 +252,20 @@ function buildWorkingFeedbackView(state: LoopState): PromptWorkingFeedback | und
   }
 
   return latest.length > 0 ? { latest: latest.slice(-4) } : undefined;
+}
+
+function buildDeferredMutationWorkingFeedback(state: LoopState): PromptWorkingFeedbackItem | undefined {
+  const deferred = state.deferredMutation;
+  if (!deferred) {
+    return undefined;
+  }
+  return {
+    severity: "warning",
+    source: "tool_validation",
+    code: "mutation_deferred_for_task_routing",
+    message: `The pending mutation (${deferred.blockedTools.join(", ")}) is paused until this session run has task ownership.`,
+    retryHint: "Use git_context_activate_task_for_turn to bind the active/existing task, git_context_search_tasks if another task may own it, or git_context_create_task_for_turn for a new task. The deferred mutation will execute automatically after routing.",
+  };
 }
 
 function buildPendingTurnWorkingFeedback(state: LoopState): PromptWorkingFeedbackItem | undefined {

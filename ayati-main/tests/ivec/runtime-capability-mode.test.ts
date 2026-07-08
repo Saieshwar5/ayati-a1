@@ -148,6 +148,7 @@ describe("runtime capability modes", () => {
     ]).map((entry) => entry.name)).toEqual([
       "read_file",
       "document_query",
+      "write_files",
       "git_context_activate_task_for_turn",
       "git_context_create_task_for_turn",
     ]);
@@ -229,7 +230,7 @@ describe("runtime capability modes", () => {
 
     expect(isDecisionAllowedInRuntimeMode(mode, read)).toBe(true);
     expect(isDecisionAllowedInRuntimeMode(mode, { kind: "load_tools", request: { toolNames: ["read_file"], groups: [] } })).toBe(true);
-    expect(isDecisionAllowedInRuntimeMode(mode, mutate)).toBe(false);
+    expect(isDecisionAllowedInRuntimeMode(mode, mutate)).toBe(true);
   });
 
   it("allows read-only git-context actions in fresh-session read mode", () => {
