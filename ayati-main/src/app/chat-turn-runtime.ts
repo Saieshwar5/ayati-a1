@@ -1928,7 +1928,6 @@ function sessionRunStatusFromResult(result: AgentLoopResult): "completed" | "fai
 const TASK_ROUTING_TOOL_NAMES = new Set([
   "git_context_activate_task_for_turn",
   "git_context_create_task_for_turn",
-  "git_context_ask_clarification_for_turn",
 ]);
 
 const CONVERSATION_READ_ONLY_TOOL_NAMES = new Set([

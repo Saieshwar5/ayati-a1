@@ -400,9 +400,8 @@ describe("buildAgentStateView", () => {
       why: "No active task exists.",
       allowed: [
         "direct_reply",
-        "git_context_set_promotion_target_for_turn",
+        "git_context_activate_task_for_turn",
         "git_context_create_task_for_turn",
-        "git_context_ask_clarification_for_turn",
       ],
       blocked: [
         "normal_work_tools",

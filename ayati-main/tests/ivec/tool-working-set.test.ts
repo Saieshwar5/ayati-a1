@@ -243,7 +243,6 @@ describe("ToolWorkingSetManager", () => {
         tool("git_context_read_task"),
         tool("git_context_activate_task_for_turn"),
         tool("git_context_create_task_for_turn"),
-        tool("git_context_ask_clarification_for_turn"),
       ]),
     ]);
     const executor = createToolExecutor([]);
@@ -258,7 +257,6 @@ describe("ToolWorkingSetManager", () => {
       "git_context_read_task",
       "git_context_activate_task_for_turn",
       "git_context_create_task_for_turn",
-      "git_context_ask_clarification_for_turn",
     ]);
 
     manager.prepareForDecision(runState, { clientId: "c1", runId: "r1", sessionId: "s1", stepNumber: 2 });
@@ -273,7 +271,7 @@ describe("ToolWorkingSetManager", () => {
     ]);
   });
 
-  it("preloads only create and clarify routing tools when no active task exists", () => {
+  it("preloads only activate and create routing tools when no active task exists", () => {
     const catalog = new ToolCatalog([
       skill("filesystem", [
         tool("write_file"),
@@ -285,7 +283,6 @@ describe("ToolWorkingSetManager", () => {
         tool("git_context_read_task"),
         tool("git_context_activate_task_for_turn"),
         tool("git_context_create_task_for_turn"),
-        tool("git_context_ask_clarification_for_turn"),
       ]),
     ]);
     const executor = createToolExecutor([]);
@@ -299,8 +296,8 @@ describe("ToolWorkingSetManager", () => {
     manager.prepareForDecision(runState, { clientId: "c1", runId: "r1", sessionId: "s1", stepNumber: 1 });
 
     expect(manager.listActive({ runId: "r1" })).toEqual([
+      "git_context_activate_task_for_turn",
       "git_context_create_task_for_turn",
-      "git_context_ask_clarification_for_turn",
     ]);
   });
 
@@ -328,7 +325,6 @@ describe("ToolWorkingSetManager", () => {
         tool("git_context_log"),
         tool("git_context_activate_task_for_turn"),
         tool("git_context_create_task_for_turn"),
-        tool("git_context_ask_clarification_for_turn"),
       ]),
     ]);
     const executor = createToolExecutor([]);
@@ -343,13 +339,13 @@ describe("ToolWorkingSetManager", () => {
     manager.prepareForDecision(runState, context);
 
     expect(manager.listActive(context)).toEqual([
+      "git_context_activate_task_for_turn",
       "git_context_create_task_for_turn",
-      "git_context_ask_clarification_for_turn",
     ]);
+    expect(manager.listActive(context)).toContain("git_context_activate_task_for_turn");
     expect(manager.listActive(context)).toContain("git_context_create_task_for_turn");
-    expect(manager.listActive(context)).toContain("git_context_ask_clarification_for_turn");
+    expect(executor.list(context)).toContain("git_context_activate_task_for_turn");
     expect(executor.list(context)).toContain("git_context_create_task_for_turn");
-    expect(executor.list(context)).toContain("git_context_ask_clarification_for_turn");
   });
 
   it("uses the full routing window when an active task has an unbound pending turn", () => {
@@ -361,7 +357,6 @@ describe("ToolWorkingSetManager", () => {
         tool("git_context_read_task"),
         tool("git_context_activate_task_for_turn"),
         tool("git_context_create_task_for_turn"),
-        tool("git_context_ask_clarification_for_turn"),
       ]),
     ]);
     const executor = createToolExecutor([]);
@@ -384,7 +379,6 @@ describe("ToolWorkingSetManager", () => {
       "git_context_read_task",
       "git_context_activate_task_for_turn",
       "git_context_create_task_for_turn",
-      "git_context_ask_clarification_for_turn",
     ]);
   });
 
@@ -409,7 +403,6 @@ describe("ToolWorkingSetManager", () => {
         tool("git_context_read_task"),
         tool("git_context_activate_task_for_turn"),
         tool("git_context_create_task_for_turn"),
-        tool("git_context_ask_clarification_for_turn"),
       ]),
     ]);
     const executor = createToolExecutor([]);
@@ -435,7 +428,6 @@ describe("ToolWorkingSetManager", () => {
       "write_files",
       "git_context_activate_task_for_turn",
       "git_context_create_task_for_turn",
-      "git_context_ask_clarification_for_turn",
     ]));
     expect(result.evicted).not.toEqual(expect.arrayContaining([
       "write_file",
@@ -519,7 +511,6 @@ describe("ToolWorkingSetManager", () => {
         tool("git_context_search_tasks"),
         tool("git_context_create_task_for_turn"),
         tool("git_context_activate_task_for_turn"),
-        tool("git_context_ask_clarification_for_turn"),
       ]),
       skill("filesystem", [
         tool("write_files"),
@@ -536,7 +527,6 @@ describe("ToolWorkingSetManager", () => {
         "git_context_search_tasks",
         "git_context_create_task_for_turn",
         "git_context_activate_task_for_turn",
-        "git_context_ask_clarification_for_turn",
         "write_files",
       ],
     }, context);

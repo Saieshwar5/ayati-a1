@@ -23,7 +23,6 @@ describe("git-context skill", () => {
     const skill = createGitContextSkill({ contextStoreDir: "/tmp/ayati-test-context-engine" });
     const createTask = requiredTool(skill, "git_context_create_task_for_turn");
     const activateTask = requiredTool(skill, "git_context_activate_task_for_turn");
-    const askClarification = requiredTool(skill, "git_context_ask_clarification_for_turn");
 
     expect(createTask.inputSchema).toMatchObject({
       required: ["title", "objective", "createReason"],
@@ -49,9 +48,6 @@ describe("git-context skill", () => {
         { required: ["taskId"] },
         { required: ["branch"] },
       ],
-    });
-    expect(askClarification.inputSchema).toMatchObject({
-      required: ["reason"],
     });
   });
 
@@ -694,61 +690,10 @@ describe("git-context skill", () => {
     expect(taskConversation).not.toContain("Run: R-20260628-0003");
   });
 
-  it("marks a pending turn as clarifying without allocating a run id", async () => {
-    const prepared = await prepareMultiTaskGitContextSession();
-    const runtime = createGitMemoryRuntime({
-      contextStoreDir: prepared.contextStoreDir,
-      timezone: "Asia/Kolkata",
-      agentId: "local",
-      store: prepared.store,
-    });
-    const pending = await runtime.prepareUserTurn({
-      userMessage: "upload",
-      at: "2026-06-28T11:30:00+05:30",
-    });
-    const allocateRunId = vi.spyOn(prepared.store, "allocateTaskRunId");
-    const skill = createGitContextSkill({
-      contextStoreDir: prepared.contextStoreDir,
-      gitMemoryRuntime: runtime,
-    });
-    const tool = requiredTool(skill, "git_context_ask_clarification_for_turn");
+  it("does not expose a special clarification routing tool", () => {
+    const skill = createGitContextSkill({ contextStoreDir: "/tmp/ayati-test-context-engine" });
 
-    const result = await tool.execute({
-      sessionId: prepared.session.sessionId,
-      reason: "Multiple existing tasks could own the short upload request.",
-      candidateTaskIds: [prepared.uploadTask.taskId, prepared.reminderTask.taskId],
-    });
-
-    expect(result.ok).toBe(true);
-    expect(allocateRunId).not.toHaveBeenCalled();
-    expect(result.v2?.structuredContent).toMatchObject({
-      status: "ambiguous",
-      sessionId: prepared.session.sessionId,
-      reason: "Multiple existing tasks could own the short upload request.",
-      candidates: [
-        { taskId: prepared.uploadTask.taskId },
-        { taskId: prepared.reminderTask.taskId },
-      ],
-      harnessContext: {
-        contextEngine: {
-          pendingTurn: {
-            fromSeq: pending.userMessage.seq,
-            toSeq: pending.userMessage.seq,
-            text: "upload",
-            routingStatus: "clarifying",
-          },
-        },
-      },
-    });
-    expect(result.v2?.structuredContent).not.toHaveProperty("memoryState");
-    expect(result.v2?.structuredContent).not.toHaveProperty("context");
-    expect(result.v2?.structuredContent).not.toHaveProperty("knownTasks");
-    expect(result.v2?.structuredContent).not.toHaveProperty("runId");
-    expect(runtime.getSessionWrites(prepared.session.sessionId)).not.toEqual(expect.arrayContaining([
-      expect.objectContaining({
-        type: "task_routed",
-      }),
-    ]));
+    expect(skill.tools.map((tool) => tool.name)).not.toContain("git_context_ask_clarification_for_turn");
   });
 
   it("rejects invalid turn-aware task activation requests", async () => {

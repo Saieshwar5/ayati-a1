@@ -128,16 +128,16 @@ describe("selectToolsForDecision", () => {
       tool("write_files", 100),
       tool("git_context_list_tasks", 1),
       tool("git_context_search_tasks", 1),
+      tool("git_context_activate_task_for_turn", 1),
       tool("git_context_create_task_for_turn", 1),
-      tool("git_context_ask_clarification_for_turn", 1),
     ], 12);
 
     const selectedNames = selected.map((entry) => entry.name);
     expect(selectedNames).toEqual([
       "git_context_list_tasks",
       "git_context_search_tasks",
+      "git_context_activate_task_for_turn",
       "git_context_create_task_for_turn",
-      "git_context_ask_clarification_for_turn",
     ]);
     expect(selectedNames).not.toContain("shell");
     expect(selectedNames).not.toContain("write_files");
@@ -188,8 +188,8 @@ describe("selectToolsForDecision", () => {
       tool("search_in_files", 60),
       tool("git_context_list_tasks", 1),
       tool("git_context_search_tasks", 1),
+      tool("git_context_activate_task_for_turn", 1),
       tool("git_context_create_task_for_turn", 1),
-      tool("git_context_ask_clarification_for_turn", 1),
     ], 3);
 
     const selectedNames = selected.map((entry) => entry.name);
@@ -197,8 +197,8 @@ describe("selectToolsForDecision", () => {
       "search_in_files",
       "git_context_list_tasks",
       "git_context_search_tasks",
+      "git_context_activate_task_for_turn",
       "git_context_create_task_for_turn",
-      "git_context_ask_clarification_for_turn",
     ]);
     expect(selectedNames).not.toContain("write_files");
     expect(selectedNames).not.toContain("write_file");
@@ -222,7 +222,6 @@ describe("selectToolsForDecision", () => {
       tool("git_context_search_tasks", 1),
       tool("git_context_activate_task_for_turn", 1),
       tool("git_context_create_task_for_turn", 1),
-      tool("git_context_ask_clarification_for_turn", 1),
     ], 2);
 
     const selectedNames = selected.map((entry) => entry.name);
@@ -231,7 +230,6 @@ describe("selectToolsForDecision", () => {
       "git_context_list_tasks",
       "git_context_activate_task_for_turn",
       "git_context_create_task_for_turn",
-      "git_context_ask_clarification_for_turn",
     ]);
     expect(selectedNames).not.toContain("write_files");
     expect(selectedNames).not.toContain("edit_file");

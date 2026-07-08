@@ -101,12 +101,6 @@ interface CreateTaskInput extends SessionScopedInput {
   reasonDetails?: string;
 }
 
-interface AskClarificationForTurnInput extends SessionScopedInput {
-  sessionId: string;
-  reason: string;
-  candidateTaskIds?: string[];
-}
-
 const TASK_DETAIL_INCLUDES: GitMemoryTaskDetailInclude[] = [
   "task",
   "state",
@@ -133,11 +127,10 @@ const GIT_CONTEXT_PROMPT_BLOCK = [
   "Use git_context_read_run_step to recover full persisted step or tool-call data from a compact context.run.toolCalls stepRef.",
   "Use git_context_search_evidence to find compact durable evidence records by summary, tool, fact, artifact, run id, action id, or evidence ref.",
   "Use git_context_log to inspect compact commit history for main or one task branch.",
-  "Use git_context_set_promotion_target_for_turn to choose a new-task target without creating a task yet; the task is created only if a later mutation tool promotes the active session run.",
-  "Use git_context_activate_task_for_turn when the current pending user turn belongs to a different existing task.",
-  "Use git_context_create_task_for_turn only when the current pending user turn starts new durable task work with a valid createReason.",
+  "Use git_context_activate_task_for_turn when the current pending user turn belongs to an existing task, including switching to a different task.",
+  "Use git_context_create_task_for_turn when the current pending user turn starts new durable task work with a valid createReason.",
   "If an active task exists, same-task continuation should use normal work tools directly. Create a new task only for valid separate work such as explicit_user_requested_new_task, new_unrelated_goal, new_independent_artifact, or separate_parallel_workstream.",
-  "Use git_context_ask_clarification_for_turn when the current pending user turn has ambiguous task ownership.",
+  "If task ownership is ambiguous after search, ask the user directly in the assistant reply instead of calling a routing tool.",
   "Do not call a tool just to continue the already-active task; obvious same-task continuation is automatic.",
   "Do not switch or create task branches with low-level branch tools during normal live turns; route pending turns through the turn-aware tools.",
   "Do not use git-context tools to edit project files, merge, reset, push, pull, or mutate external state.",
@@ -163,10 +156,8 @@ export function createGitContextSkill(deps: GitContextSkillDeps): SkillDefinitio
       createReadRunStepTool(store),
       createSearchEvidenceTool(store),
       createLogTool(store),
-      createSetPromotionTargetForTurnTool(runtime),
       createActivateTaskForTurnTool(store, runtime),
       createCreateTaskForTurnTool(runtime),
-      createAskClarificationForTurnTool(runtime),
     ],
   };
 }
@@ -662,81 +653,6 @@ function createActivateTaskForTurnTool(
   };
 }
 
-function createSetPromotionTargetForTurnTool(runtime: GitMemoryRuntime | undefined): ToolDefinition {
-  return {
-    name: "git_context_set_promotion_target_for_turn",
-    description: "Choose a new-task promotion target for the current pending user turn without creating a durable task yet. The runtime creates the task only if a later mutation tool needs promotion.",
-    inputSchema: sessionScopedInputSchema({
-      title: {
-        type: "string",
-        description: "Short task title to use if mutation later promotes the active session run.",
-      },
-      objective: {
-        type: "string",
-        description: "Durable task objective to use if mutation later promotes the active session run.",
-      },
-      createReason: {
-        type: "string",
-        enum: [...CREATE_TASK_REASON_CODES],
-        description: "Deterministic reason code for the future task target. Do not set a new-task target for same active task continuation.",
-      },
-      reasonDetails: {
-        type: "string",
-        description: "Optional human-readable details for logs. This does not create a task.",
-      },
-    }, ["title", "objective", "createReason"]),
-    outputSchema: genericObjectOutputSchema,
-    annotations: gitContextTurnMutationAnnotations(),
-    resultContract: gitContextSucceededContract("turn_promotion_target_set"),
-    selectionHints: {
-      tags: ["git-context", "pending-turn", "task", "target", "promotion", "routing"],
-      aliases: ["set promotion target", "draft task target", "choose new task target"],
-      domain: "git_context",
-      priority: 8,
-    },
-    async execute(input, context): Promise<ToolResult> {
-      const parsed = parseCreateTaskInput(input, context);
-      if ("ok" in parsed) {
-        return parsed;
-      }
-      try {
-        if (runtime) {
-          const activeTaskGuard = await validateCreateTaskForActiveFocus(runtime, parsed);
-          if (activeTaskGuard) {
-            return activeTaskGuard;
-          }
-        }
-        return okJsonResult({
-          code: "GIT_CONTEXT_TURN_PROMOTION_TARGET_SET",
-          message: "Pending turn promotion target recorded. No durable task was created.",
-          structuredContent: {
-            status: "ready",
-            target: {
-              kind: "new_task",
-              title: parsed.title,
-              objective: parsed.objective,
-              createReason: parsed.createReason,
-              ...(parsed.reasonDetails ? { reasonDetails: parsed.reasonDetails } : {}),
-            },
-          },
-          meta: {
-            stateUpdates: [{
-              type: "set_promotion_target",
-              kind: "new_task",
-              title: parsed.title,
-              objective: parsed.objective,
-              createReason: parsed.createReason,
-              ...(parsed.reasonDetails ? { reasonDetails: parsed.reasonDetails } : {}),
-            }],
-          },
-        });
-      } catch (err) {
-        return gitContextMutationFailed(err);
-      }
-    },
-  };
-}
-
 function createCreateTaskForTurnTool(runtime: GitMemoryRuntime | undefined): ToolDefinition {
   return {
     name: "git_context_create_task_for_turn",
@@ -792,58 +708,6 @@ function createCreateTaskForTurnTool(runtime: GitMemoryRuntime | undefined): Too
         return okJsonResult({
           code: "GIT_CONTEXT_TURN_TASK_CREATED",
           message: "Pending turn created a new git-context task.",
-          structuredContent: withHarnessContext(route),
-        });
-      } catch (err) {
-        return gitContextMutationFailed(err);
-      }
-    },
-  };
-}
-
-function createAskClarificationForTurnTool(runtime: GitMemoryRuntime | undefined): ToolDefinition {
-  return {
-    name: "git_context_ask_clarification_for_turn",
-    description: "Mark the current pending user turn as needing task-ownership clarification without starting a run.",
-    inputSchema: sessionScopedInputSchema({
-      reason: {
-        type: "string",
-        description: "Short reason task ownership is ambiguous.",
-      },
-      candidateTaskIds: {
-        type: "array",
-        description: "Optional candidate task ids that may own the pending turn.",
-        items: {
-          type: "string",
-        },
-      },
-    }, ["reason"]),
-    outputSchema: genericObjectOutputSchema,
-    annotations: gitContextTurnMutationAnnotations(),
-    resultContract: gitContextSucceededContract("turn_clarification_requested"),
-    selectionHints: {
-      tags: ["git-context", "pending-turn", "clarify", "ambiguous", "routing", "mutating"],
-      aliases: ["ask clarification for turn", "mark pending turn ambiguous", "clarify task ownership"],
-      domain: "git_context",
-      priority: 7,
-    },
-    async execute(input, context): Promise<ToolResult> {
-      if (!runtime) {
-        return gitContextMutationFailed(new Error("git_context_ask_clarification_for_turn requires a live git memory runtime."));
-      }
-      const parsed = parseAskClarificationForTurnInput(input, context);
-      if ("ok" in parsed) {
-        return parsed;
-      }
-      try {
-        const route = await runtime.askClarificationForTurn({
-          sessionId: parsed.sessionId,
-          reason: parsed.reason,
-          ...(parsed.candidateTaskIds ? { candidateTaskIds: parsed.candidateTaskIds } : {}),
-        });
-        return okJsonResult({
-          code: "GIT_CONTEXT_TURN_CLARIFICATION_REQUESTED",
-          message: "Pending turn marked as needing task clarification.",
           structuredContent: withHarnessContext(route),
         });
       } catch (err) {
@@ -961,41 +825,6 @@ function parseCreateTaskReason(value: unknown): CreateTaskReasonCode | ToolResul
 
 function isCreateTaskReasonCode(value: string): value is CreateTaskReasonCode {
   return (CREATE_TASK_REASON_CODES as readonly string[]).includes(value);
-}
-
-function parseAskClarificationForTurnInput(
-  input: unknown,
-  context?: ToolExecutionContext,
-): AskClarificationForTurnInput | ToolResult {
-  const scoped = parseSessionScopedInput(input, context);
-  if ("ok" in scoped) {
-    return scoped;
-  }
-  const value = input && typeof input === "object" && !Array.isArray(input)
-    ? input as Partial<AskClarificationForTurnInput>
-    : {};
-  const reason = trimRequired(value.reason, "reason");
-  if (typeof reason !== "string") {
-    return reason;
-  }
-  if (value.candidateTaskIds !== undefined && !Array.isArray(value.candidateTaskIds)) {
-    return invalidInput("candidateTaskIds must be an array when provided.");
-  }
-  const candidateTaskIds: string[] = [];
-  for (const taskId of value.candidateTaskIds ?? []) {
-    if (typeof taskId !== "string" || taskId.trim().length === 0) {
-      return invalidInput("candidateTaskIds must contain only non-empty strings.");
-    }
-    const trimmed = taskId.trim();
-    if (!candidateTaskIds.includes(trimmed)) {
-      candidateTaskIds.push(trimmed);
-    }
-  }
-  return {
-    sessionId: scoped.sessionId,
-    reason,
-    ...(candidateTaskIds.length > 0 ? { candidateTaskIds } : {}),
-  };
 }
 
 async function validateCreateTaskForActiveFocus(

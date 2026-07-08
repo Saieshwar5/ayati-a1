@@ -93,7 +93,6 @@ describe("runtime tool schemas", () => {
     expect(tools.some((tool) => tool.name === "git_context_search_evidence")).toBe(true);
     expect(tools.some((tool) => tool.name === "git_context_activate_task_for_turn")).toBe(true);
     expect(tools.some((tool) => tool.name === "git_context_create_task_for_turn")).toBe(true);
-    expect(tools.some((tool) => tool.name === "git_context_ask_clarification_for_turn")).toBe(true);
     expect(tools.some((tool) => tool.name === "git_context_create_task")).toBe(false);
     expect(tools.some((tool) => tool.name === "git_context_switch_task")).toBe(false);
     expect(tools.some((tool) => tool.name === "python_execute")).toBe(true);

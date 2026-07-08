@@ -888,7 +888,7 @@ describe("createChatTurnRuntime", () => {
     }
   });
 
-  it("keeps a new-task promotion target non-durable when no mutation follows", async () => {
+  it("keeps vague durable-work discussion session-only when no mutation follows", async () => {
     const rootDir = mkdtempSync(join(tmpdir(), "ayati-chat-runtime-target-only-"));
     const contextStoreDir = join(rootDir, "context");
     const dataDir = join(rootDir, "data");
@@ -905,27 +905,7 @@ describe("createChatTurnRuntime", () => {
         store,
         now: () => new Date("2026-06-28T09:00:00.000Z"),
       });
-      const gitContextSkill = createGitContextSkill({ contextStoreDir, gitMemoryRuntime });
       const provider = createAgentDecisionProvider([
-        {
-          kind: "act",
-          action: {
-            mode: "single",
-            calls: [{
-              id: "target_notes",
-              tool: "git_context_set_promotion_target_for_turn",
-              input: {
-                title: "Create notes",
-                objective: "Create a notes file.",
-                createReason: "no_active_task",
-              },
-              dependsOn: [],
-              purpose: "Choose the future task target without creating it yet.",
-            }],
-            allowedTools: ["git_context_set_promotion_target_for_turn"],
-            assertions: [],
-          },
-        },
         {
           kind: "reply",
           status: "completed",
@@ -936,7 +916,7 @@ describe("createChatTurnRuntime", () => {
         provider,
         dataDir,
         chatContextRuntime: createGitMemoryChatContextRuntime({ gitMemoryRuntime }),
-        toolExecutor: createToolExecutor(gitContextSkill.tools),
+        toolExecutor: createToolExecutor([]),
         now: () => new Date("2026-06-28T09:00:00.000Z"),
       });
 
@@ -958,8 +938,8 @@ describe("createChatTurnRuntime", () => {
         runId,
         runClass: "session",
         status: "completed",
-        toolCallCount: 1,
-        toolsUsed: ["git_context_set_promotion_target_for_turn"],
+        toolCallCount: 0,
+        toolsUsed: [],
       });
       expect(await driver.listTreePaths(GIT_MEMORY_MAIN_REF, "tasks")).toEqual([]);
     } finally {
@@ -967,7 +947,7 @@ describe("createChatTurnRuntime", () => {
     }
   });
 
-  it("creates the targeted new task only when mutation promotes the session run", async () => {
+  it("creates a new task after mutation is blocked in a fresh session", async () => {
     const rootDir = mkdtempSync(join(tmpdir(), "ayati-chat-runtime-target-promote-"));
     const contextStoreDir = join(rootDir, "context");
     const dataDir = join(rootDir, "data");
@@ -996,17 +976,34 @@ describe("createChatTurnRuntime", () => {
           action: {
             mode: "single",
             calls: [{
-              id: "target_notes",
-              tool: "git_context_set_promotion_target_for_turn",
+              id: "write_before_task",
+              tool: "write_files",
+              input: {
+                files: [{ path: "notes.md", content: "# Notes\n\nShould wait for task routing.\n" }],
+              },
+              dependsOn: [],
+              purpose: "Try to create the requested notes file before task ownership is resolved.",
+            }],
+            allowedTools: ["write_files"],
+            assertions: [],
+          },
+        },
+        {
+          kind: "act",
+          action: {
+            mode: "single",
+            calls: [{
+              id: "create_notes_task",
+              tool: "git_context_create_task_for_turn",
               input: {
                 title: "Create notes",
                 objective: "Create a notes file.",
                 createReason: "no_active_task",
               },
               dependsOn: [],
-              purpose: "Choose the future task target before writing.",
+              purpose: "Create and activate the task required before mutation.",
             }],
-            allowedTools: ["git_context_set_promotion_target_for_turn"],
+            allowedTools: ["git_context_create_task_for_turn"],
             assertions: [],
           },
         },
@@ -1141,24 +1138,6 @@ describe("createChatTurnRuntime", () => {
       const gitContextSkill = createGitContextSkill({ contextStoreDir, gitMemoryRuntime });
       const provider = createAgentDecisionProvider([
         {
-          kind: "act",
-          action: {
-            mode: "single",
-            calls: [{
-              id: "clarify_upload",
-              tool: "git_context_ask_clarification_for_turn",
-              input: {
-                reason: "The upload follow-up could refer to the API or UI task.",
-                candidateTaskIds: [apiTask.taskId, uiTask.taskId],
-              },
-              dependsOn: [],
-              purpose: "Ask the user which upload task owns this follow-up.",
-            }],
-            allowedTools: ["git_context_ask_clarification_for_turn"],
-            assertions: [],
-          },
-        },
-        {
           kind: "reply",
           status: "completed",
           message: "Which upload task do you mean: API or UI?",
@@ -1256,13 +1235,13 @@ describe("createChatTurnRuntime", () => {
         sessionId,
         runId: clarificationRunId,
         runClass: "session",
-        toolsUsed: ["git_context_ask_clarification_for_turn"],
-        toolCallCount: 1,
+        toolsUsed: [],
+        toolCallCount: 0,
       });
       expect(readJsonl(await sessionStore.readFile(
         GIT_MEMORY_MAIN_REF,
         gitMemorySessionStoreStepsPath(sessionId, clarificationRunId),
-      )).map((step) => step.toolCalls?.[0]?.tool)).toEqual(["git_context_ask_clarification_for_turn"]);
+      ))).toEqual([]);
       expect(await sessionStore.readFile(
         GIT_MEMORY_MAIN_REF,
         gitMemorySessionStoreRunPath(sessionId, answerRunId),

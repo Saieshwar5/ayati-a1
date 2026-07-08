@@ -36,18 +36,6 @@ function state(contextEngine: ContextEngineMachineContext, runId = ""): LoopStat
   };
 }
 
-function stateWithPromotionTarget(contextEngine: ContextEngineMachineContext): LoopState {
-  return {
-    ...state(contextEngine),
-    promotionTarget: {
-      kind: "new_task",
-      title: "Create text file",
-      objective: "Create the requested text file.",
-      createReason: "no_active_task",
-    },
-  };
-}
-
 function gitContext(focus: ContextEngineMachineContext["focus"]): ContextEngineMachineContext {
   return {
     session: {
@@ -99,9 +87,8 @@ describe("runtime capability modes", () => {
       why: "No active task exists.",
       allowed: [
         "direct_reply",
-        "git_context_set_promotion_target_for_turn",
+        "git_context_activate_task_for_turn",
         "git_context_create_task_for_turn",
-        "git_context_ask_clarification_for_turn",
       ],
       blocked: [
         "normal_work_tools",
@@ -112,7 +99,7 @@ describe("runtime capability modes", () => {
         "Create a task only when the current user request has a concrete deliverable and enough detail to begin work now.",
         "Do not create a task for early conversation, brainstorming, vague intent, preferences, or discovery. Reply directly with one short clarifying question.",
         "A concrete deliverable means the user has specified what to make, change, analyze, or produce, and the expected output is clear enough to start without another user answer.",
-        "For clear durable work with no active task, call git_context_set_promotion_target_for_turn with title, objective, and createReason \"no_active_task\". If mutation later becomes necessary, the runtime creates that task during promotion. If an active task exists, same-task continuation should use normal work tools directly; set a new-task target only for valid separate work with createReason \"explicit_user_requested_new_task\", \"new_unrelated_goal\", \"new_independent_artifact\", or \"separate_parallel_workstream\".",
+        "For clear durable work with no active task, call git_context_create_task_for_turn with title, objective, and createReason \"no_active_task\" before mutation. If existing task ownership is possible, use git_context_search_tasks and git_context_activate_task_for_turn instead.",
         "Never print task metadata JSON as the assistant response. Put task metadata in the native tool call arguments.",
       ],
       repairCode: "R_FRESH_SESSION_NEEDS_TASK",
@@ -127,16 +114,14 @@ describe("runtime capability modes", () => {
     const allowed = filterToolsForRuntimeMode(mode, [
       tool("write_files"),
       tool("git_context_search_tasks"),
-      tool("git_context_set_promotion_target_for_turn"),
+      tool("git_context_activate_task_for_turn"),
       tool("git_context_create_task_for_turn"),
-      tool("git_context_ask_clarification_for_turn"),
     ]).map((entry) => entry.name);
 
     expect(allowed).toEqual([
       "git_context_search_tasks",
-      "git_context_set_promotion_target_for_turn",
+      "git_context_activate_task_for_turn",
       "git_context_create_task_for_turn",
-      "git_context_ask_clarification_for_turn",
     ]);
     expect(allowed).not.toContain("write_files");
   });
@@ -158,36 +143,13 @@ describe("runtime capability modes", () => {
       tool("read_file"),
       tool("document_query"),
       tool("write_files"),
-      tool("git_context_set_promotion_target_for_turn"),
+      tool("git_context_activate_task_for_turn"),
       tool("git_context_create_task_for_turn"),
     ]).map((entry) => entry.name)).toEqual([
       "read_file",
       "document_query",
-      "git_context_set_promotion_target_for_turn",
+      "git_context_activate_task_for_turn",
       "git_context_create_task_for_turn",
-    ]);
-  });
-
-  it("allows normal work tools after a non-durable promotion target is set", () => {
-    const mode = detectRuntimeCapabilityMode({
-      state: stateWithPromotionTarget(gitContext({ status: "none" })),
-      sessionRunHandle: { sessionId: "s1", runId: "R-session" },
-    });
-
-    expect(mode.name).toBe("promotion_target_ready");
-    expect(mode.allowToolLoading).toBe(true);
-    expect(buildRuntimeCapabilityPromptContext(mode)).toMatchObject({
-      allowed: expect.arrayContaining(["normal_work_tools", "decision_load_tools"]),
-      blocked: ["task_routing_target_already_selected"],
-    });
-    expect(filterToolsForRuntimeMode(mode, [
-      tool("read_file"),
-      tool("write_files"),
-      tool("git_context_create_task_for_turn"),
-      tool("git_context_set_promotion_target_for_turn"),
-    ]).map((entry) => entry.name)).toEqual([
-      "read_file",
-      "write_files",
     ]);
   });
 
@@ -360,7 +322,6 @@ describe("runtime capability modes", () => {
         "normal_work_tools",
         "git_context_activate_task_for_turn",
         "git_context_create_task_for_turn",
-        "git_context_ask_clarification_for_turn",
       ]),
       blocked: [],
     });
@@ -373,13 +334,11 @@ describe("runtime capability modes", () => {
       tool("git_context_search_tasks"),
       tool("git_context_create_task_for_turn"),
       tool("git_context_activate_task_for_turn"),
-      tool("git_context_ask_clarification_for_turn"),
       tool("write_files"),
     ]).map((entry) => entry.name)).toEqual([
       "git_context_search_tasks",
       "git_context_create_task_for_turn",
       "git_context_activate_task_for_turn",
-      "git_context_ask_clarification_for_turn",
       "write_files",
     ]);
   });
@@ -470,7 +429,6 @@ describe("runtime capability modes", () => {
       tool("git_context_search_tasks"),
       tool("git_context_create_task_for_turn"),
       tool("git_context_activate_task_for_turn"),
-      tool("git_context_ask_clarification_for_turn"),
       tool("write_files"),
     ]).map((entry) => entry.name)).toEqual([
       "git_context_search_tasks",

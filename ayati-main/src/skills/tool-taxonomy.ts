@@ -251,10 +251,8 @@ export const TOOL_TAXONOMY: Readonly<Record<string, ToolTaxonomyEntry>> = buildT
   git_context_read_run_step: readOnly(["enquiry_read", "evidence_access"], "phase", ["enquiry", "task_run"], { loadGroups: ["task:read", "evidence:read"] }),
   git_context_search_evidence: readOnly(["enquiry_read", "evidence_access"], "phase", ["enquiry", "task_run"], { loadGroups: ["task:read", "evidence:read"] }),
   git_context_log: readOnly(["enquiry_read"], "phase", ["enquiry", "task_run"], { loadGroups: ["task:read"] }),
-  git_context_set_promotion_target_for_turn: contextMutation(["task_routing"], "single_use", ROUTING_ONLY, { loadGroups: ["task:routing"] }),
   git_context_activate_task_for_turn: contextMutation(["task_routing"], "single_use", ROUTING_ONLY, { loadGroups: ["task:routing"] }),
   git_context_create_task_for_turn: contextMutation(["task_routing"], "single_use", ROUTING_ONLY, { loadGroups: ["task:routing"] }),
-  git_context_ask_clarification_for_turn: contextMutation(["task_routing"], "single_use", ROUTING_ONLY, { loadGroups: ["task:routing"] }),
 
   workspace_get_state: readOnly(["enquiry_read", "ui_control"], "phase", ["enquiry", "task_run"], { loadGroups: ["ui:workspace"] }),
   workspace_set_layout: workspaceMutation(["ui_control"], "one_step", TASK_RUN_ONLY, { loadGroups: ["ui:workspace"] }),
