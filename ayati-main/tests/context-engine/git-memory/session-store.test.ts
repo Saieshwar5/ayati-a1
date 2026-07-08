@@ -885,6 +885,7 @@ describe("GitMemoryDailySessionStore", () => {
       }),
     });
 
+    const sessionStoreHeadBeforeFinalize = await messageStore.resolveRef(GIT_MEMORY_MAIN_REF);
     const finalized = await store.finalizeSessionRun({
       sessionId: session.sessionId,
       runId: "R-20260628-0001",
@@ -898,16 +899,17 @@ describe("GitMemoryDailySessionStore", () => {
     expect(finalized).toMatchObject({
       sessionId: session.sessionId,
       runId: "R-20260628-0001",
+      committed: false,
     });
-    expect(await messageStore.resolveRef(GIT_MEMORY_MAIN_REF)).toBe(finalized.sessionStoreCommit);
+    expect(finalized.sessionStoreCommit).toBeUndefined();
+    expect(await messageStore.resolveRef(GIT_MEMORY_MAIN_REF)).toBe(sessionStoreHeadBeforeFinalize);
     expect(await messageStore.readWorkingFile(
       gitMemorySessionStoreActiveRunPath(session.sessionId, "R-20260628-0001"),
     )).toBeNull();
     expect(await messageStore.readWorkingFile(
       gitMemorySessionStoreActiveRunStepsPath(session.sessionId, "R-20260628-0001"),
     )).toBeNull();
-    const runFile = JSON.parse(await messageStore.readFile(
-      GIT_MEMORY_MAIN_REF,
+    const runFile = JSON.parse(await messageStore.readWorkingFile(
       gitMemorySessionStoreRunPath(session.sessionId, "R-20260628-0001"),
     ) ?? "{}");
     expect(runFile).toMatchObject({
@@ -932,15 +934,17 @@ describe("GitMemoryDailySessionStore", () => {
         evidence: ["search_in_files evidence"],
       },
     });
-    const runMarkdown = await messageStore.readFile(
+    expect(await messageStore.readFile(
       GIT_MEMORY_MAIN_REF,
+      gitMemorySessionStoreRunPath(session.sessionId, "R-20260628-0001"),
+    )).toBeNull();
+    const runMarkdown = await messageStore.readWorkingFile(
       gitMemorySessionStoreRunMarkdownPath(session.sessionId, "R-20260628-0001"),
     );
     expect(runMarkdown).toContain("# Session Run R-20260628-0001");
     expect(runMarkdown).toContain("## Work Performed");
     expect(runMarkdown).toContain("## Actions");
-    expect(readJsonl(await messageStore.readFile(
-      GIT_MEMORY_MAIN_REF,
+    expect(readJsonl(await messageStore.readWorkingFile(
       gitMemorySessionStoreStepsPath(session.sessionId, "R-20260628-0001"),
     ))).toHaveLength(1);
     expect(await driver.listTreePaths(GIT_MEMORY_MAIN_REF, "tasks")).toEqual([]);

@@ -81,18 +81,20 @@ describe("runtime capability modes", () => {
     });
 
     expect(mode.name).toBe("fresh_session_routing");
-    expect(mode.allowToolLoading).toBe(false);
+    expect(mode.allowToolLoading).toBe(true);
     expect(buildRuntimeCapabilityPromptContext(mode)).toMatchObject({
       name: "fresh_session_routing",
       why: "No active task exists.",
       allowed: [
         "direct_reply",
+        "decision_load_tools",
+        "read_only_tools",
         "git_context_activate_task_for_turn",
         "git_context_create_task_for_turn",
       ],
       blocked: [
-        "normal_work_tools",
-        "decision_load_tools",
+        "workspace_mutation_until_task_promotion",
+        "external_mutation_until_task_promotion",
         "task_activation",
       ],
       rules: [
@@ -154,7 +156,7 @@ describe("runtime capability modes", () => {
     ]);
   });
 
-  it("allows only direct replies or fresh-session routing decisions before the first task", () => {
+  it("allows direct replies, read-only tools, and fresh-session routing before the first task", () => {
     const mode = detectRuntimeCapabilityMode({
       state: state(gitContext({ status: "none" })),
     });
@@ -188,10 +190,25 @@ describe("runtime capability modes", () => {
         groups: [],
       },
     };
+    const read: AgentDecision = {
+      kind: "act",
+      action: {
+        mode: "single",
+        allowedTools: ["read_file"],
+        assertions: [],
+        calls: [{
+          id: "call_1",
+          tool: "read_file",
+          input: { path: "README.md" },
+          dependsOn: [],
+        }],
+      },
+    };
 
     expect(isDecisionAllowedInRuntimeMode(mode, reply)).toBe(true);
     expect(isDecisionAllowedInRuntimeMode(mode, route)).toBe(true);
-    expect(isDecisionAllowedInRuntimeMode(mode, loadTools)).toBe(false);
+    expect(isDecisionAllowedInRuntimeMode(mode, read)).toBe(true);
+    expect(isDecisionAllowedInRuntimeMode(mode, loadTools)).toBe(true);
   });
 
   it("allows read-only decisions during an active session run before first-task routing", () => {
@@ -255,7 +272,7 @@ describe("runtime capability modes", () => {
     expect(isDecisionAllowedInRuntimeMode(mode, read)).toBe(true);
   });
 
-  it("projects routing-window timing before a work run exists", () => {
+  it("keeps routing tools available before a work run exists", () => {
     const firstStep = state(gitContextWithPendingTurn({
       status: "active",
       ref: "refs/heads/task/T-1",
@@ -278,8 +295,8 @@ describe("runtime capability modes", () => {
     expect(buildRuntimeCapabilityPromptContext(detectRuntimeCapabilityMode({ state: firstStep })).routingWindow).toMatchObject({
       open: true,
       step: 1,
-      maxSteps: 2,
-      remaining: 1,
+      maxSteps: 0,
+      remaining: 0,
       expiresAfterThisDecision: false,
       readToolsAvailable: true,
       routingToolsAvailable: true,
@@ -289,17 +306,16 @@ describe("runtime capability modes", () => {
       open: true,
       step: 2,
       remaining: 0,
-      expiresAfterThisDecision: true,
+      expiresAfterThisDecision: false,
       routingToolsAvailable: true,
     });
     expect(buildRuntimeCapabilityPromptContext(detectRuntimeCapabilityMode({ state: expired })).routingWindow).toMatchObject({
-      open: false,
-      expired: true,
+      open: true,
       step: 3,
       remaining: 0,
       expiresAfterThisDecision: false,
       readToolsAvailable: true,
-      routingToolsAvailable: false,
+      routingToolsAvailable: true,
       readToolsRemainAfterExpiry: true,
     });
   });
@@ -344,7 +360,7 @@ describe("runtime capability modes", () => {
     ]);
   });
 
-  it("expires active-task routing tools before run allocation while keeping normal tools", () => {
+  it("keeps active-task routing tools before run allocation while keeping normal tools", () => {
     const current = state(gitContext({
       status: "active",
       ref: "refs/heads/task/T-1",
@@ -355,15 +371,16 @@ describe("runtime capability modes", () => {
 
     expect(mode.name).toBe("active_task_ready");
     expect(buildRuntimeCapabilityPromptContext(mode).routingWindow).toMatchObject({
-      open: false,
-      expired: true,
-      routingToolsAvailable: false,
+      open: true,
+      routingToolsAvailable: true,
     });
     expect(filterToolsForRuntimeMode(mode, [
       tool("git_context_create_task_for_turn"),
       tool("git_context_activate_task_for_turn"),
       tool("write_files"),
     ]).map((entry) => entry.name)).toEqual([
+      "git_context_create_task_for_turn",
+      "git_context_activate_task_for_turn",
       "write_files",
     ]);
   });
@@ -392,7 +409,7 @@ describe("runtime capability modes", () => {
       open: true,
       step: 2,
       routingToolsAvailable: true,
-      expiresAfterThisDecision: true,
+      expiresAfterThisDecision: false,
     });
     expect(filterToolsForRuntimeMode(mode, [
       tool("git_context_create_task_for_turn"),

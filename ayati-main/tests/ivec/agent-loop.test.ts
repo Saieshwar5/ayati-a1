@@ -164,6 +164,46 @@ function fakeCreateTaskForTurnTool(): ToolDefinition {
   };
 }
 
+function fakeFailingCreateTaskForTurnTool(onExecute?: () => void): ToolDefinition {
+  return {
+    name: "git_context_create_task_for_turn",
+    description: "Create a task for the current turn.",
+    inputSchema: {
+      type: "object",
+      required: ["title", "objective", "createReason"],
+      properties: {
+        title: { type: "string" },
+        objective: { type: "string" },
+        createReason: {
+          type: "string",
+          enum: [
+            "no_active_task",
+            "explicit_user_requested_new_task",
+            "new_unrelated_goal",
+          ],
+        },
+      },
+    },
+    async execute() {
+      onExecute?.();
+      return {
+        ok: false,
+        output: "",
+        error: "simulated create failure",
+        v2: {
+          transportOk: true,
+          operationStatus: "failed",
+          code: "SIMULATED_CREATE_FAILURE",
+          message: "Simulated create failure.",
+          structuredContent: {
+            status: "failed",
+          },
+        },
+      };
+    },
+  };
+}
+
 function fakeActivateTaskForTurnTool(): ToolDefinition {
   return {
     name: "git_context_activate_task_for_turn",
@@ -458,6 +498,7 @@ describe("agentLoop", () => {
         },
       ]);
       const createWorkRun = vi.fn();
+      const createSessionRun = vi.fn().mockResolvedValue({ sessionId: "s1", runId: "R-session", triggerSeq: 1 });
       const recordTaskStep = vi.fn();
       const recordSessionStep = vi.fn();
 
@@ -467,7 +508,7 @@ describe("agentLoop", () => {
         toolDefinitions: toolExecutor.definitions(),
         runRecorder: noopRunRecorder,
         inputHandle: { sessionId: "s1", seq: 1 },
-        sessionRunHandle: { sessionId: "s1", runId: "R-session", triggerSeq: 1 },
+        createSessionRun,
         createWorkRun,
         recordTaskStep,
         recordSessionStep,
@@ -478,14 +519,45 @@ describe("agentLoop", () => {
       });
 
       expect(result.status).toBe("completed");
-      expect(result.runClass).toBe("interaction");
+      expect(result.runClass).toBe("session");
       expect(result.workRunId).toBeUndefined();
+      expect(result.workState).toMatchObject({
+        status: "done",
+        summary: "Upload handling lives in src/upload.ts.",
+        evidence: expect.arrayContaining([
+          expect.stringContaining("read_file"),
+        ]),
+      });
+      const secondCallInput = vi.mocked(provider.generateTurn).mock.calls[1]?.[0];
+      const secondPrompt = secondCallInput.messages.find((message: { role: string }) => message.role === "user").content as string;
+      const secondStateView = extractStateView(secondPrompt);
+      expect(secondStateView.context.run).toMatchObject({
+        status: "not_done",
+        workState: expect.objectContaining({
+          status: "not_done",
+          evidence: expect.arrayContaining([
+            expect.stringContaining("read_file"),
+          ]),
+        }),
+        toolCalls: [expect.objectContaining({
+          tool: "read_file",
+          status: "success",
+        })],
+      });
+      expect(secondStateView.context.run.routing).toBeUndefined();
+      expect(createSessionRun).toHaveBeenCalledWith({ sessionId: "s1", seq: 1 });
       expect(createWorkRun).not.toHaveBeenCalled();
       expect(recordTaskStep).not.toHaveBeenCalled();
       expect(recordSessionStep).toHaveBeenCalledWith(expect.objectContaining({
         sessionId: "s1",
         runId: "R-session",
         status: "completed",
+        summary: expect.stringContaining("read_file"),
+        workStateAfter: expect.objectContaining({
+          evidence: expect.arrayContaining([
+            expect.stringContaining("read_file"),
+          ]),
+        }),
         toolCalls: [expect.objectContaining({
           tool: "read_file",
           status: "success",
@@ -638,6 +710,7 @@ describe("agentLoop", () => {
     try {
       const toolExecutor = createToolExecutor([writeFilesTool]);
       const feedback = createMemoryFeedbackLedger();
+      const createSessionRun = vi.fn().mockResolvedValue({ sessionId: "s1", runId: "R-session", triggerSeq: 1 });
       const provider = createProvider([
         {
           kind: "act",
@@ -669,6 +742,7 @@ describe("agentLoop", () => {
         toolDefinitions: toolExecutor.definitions(),
         runRecorder: noopRunRecorder,
         feedbackLedger: feedback.ledger,
+        createSessionRun,
         inputHandle: { sessionId: "s1", seq: 1 },
         clientId: "c1",
         initialUserMessage: "Create a small text file",
@@ -698,7 +772,7 @@ describe("agentLoop", () => {
       expect(provider.generateTurn).toHaveBeenCalledTimes(2);
       expect(existsSync(outputPath)).toBe(false);
       expect(secondDecisionTools).not.toContain("write_files");
-      expect(secondDecisionTools).not.toContain("decision_load_tools");
+      expect(secondDecisionTools).toContain("decision_load_tools");
       expect(secondStateView.context.runtimeMode).toMatchObject({
         name: "fresh_session_routing",
         repairCode: "R_FRESH_SESSION_NEEDS_TASK",
@@ -717,6 +791,7 @@ describe("agentLoop", () => {
     try {
       const toolExecutor = createToolExecutor([writeFilesTool]);
       const feedback = createMemoryFeedbackLedger();
+      const createSessionRun = vi.fn().mockResolvedValue({ sessionId: "s1", runId: "R-session", triggerSeq: 1 });
       const provider = createProvider([
         {
           kind: "act",
@@ -748,6 +823,7 @@ describe("agentLoop", () => {
         toolDefinitions: toolExecutor.definitions(),
         runRecorder: noopRunRecorder,
         feedbackLedger: feedback.ledger,
+        createSessionRun,
         inputHandle: { sessionId: "s1", seq: 1 },
         clientId: "c1",
         initialUserMessage: "Create a file",
@@ -762,6 +838,94 @@ describe("agentLoop", () => {
         repair: {
           code: "R_TOOL_NOT_SELECTED",
           blockedTargets: ["write_files"],
+        },
+      });
+    } finally {
+      cleanup(dataDir);
+    }
+  });
+
+  it("blocks create task after two failed routing attempts in one turn", async () => {
+    const dataDir = makeTmpDir();
+    try {
+      let createExecutions = 0;
+      const gitCreateTaskTool = fakeFailingCreateTaskForTurnTool(() => {
+        createExecutions += 1;
+      });
+      const toolExecutor = createToolExecutor([gitCreateTaskTool]);
+      const feedback = createMemoryFeedbackLedger();
+      const toolWorkingSetManager = new ToolWorkingSetManager({
+        catalog: new ToolCatalog([
+          skill("git-context", [gitCreateTaskTool]),
+        ]),
+        toolExecutor,
+        maxVisibleTools: 12,
+      });
+      const createDecision = {
+        kind: "act",
+        action: {
+          mode: "single",
+          calls: [{
+            id: "create_task",
+            tool: "git_context_create_task_for_turn",
+            input: {
+              title: "Create notes",
+              objective: "Create a notes file.",
+              createReason: "no_active_task",
+            },
+            dependsOn: [],
+            purpose: "Create a task before durable work.",
+          }],
+          allowedTools: ["git_context_create_task_for_turn"],
+          assertions: [],
+        },
+      };
+      const provider = createProvider([
+        createDecision,
+        createDecision,
+        createDecision,
+        {
+          kind: "reply",
+          status: "blocked",
+          message: "I need clarification before I can route this task.",
+        },
+      ]);
+      const createSessionRun = vi.fn().mockResolvedValue({ sessionId: "s1", runId: "R-session", triggerSeq: 1 });
+
+      const result = await agentLoop({
+        provider,
+        toolExecutor,
+        toolWorkingSetManager,
+        toolDefinitions: [gitCreateTaskTool],
+        runRecorder: noopRunRecorder,
+        feedbackLedger: feedback.ledger,
+        createSessionRun,
+        inputHandle: { sessionId: "s1", seq: 1 },
+        clientId: "c1",
+        initialUserMessage: "Create a notes file",
+        dataDir,
+        systemContext: "full system context with memory",
+      });
+
+      expect(result.status).toBe("completed");
+      expect(result.workRunId).toBeUndefined();
+      expect(createExecutions).toBe(2);
+      const thirdCallInput = vi.mocked(provider.generateTurn).mock.calls[2]?.[0];
+      const thirdPrompt = thirdCallInput.messages.find((message: { role: string }) => message.role === "user").content as string;
+      const thirdStateView = extractStateView(thirdPrompt);
+      expect(thirdStateView.context.run.routing).toMatchObject({
+        failureCount: 2,
+        maxFailures: 2,
+        resolved: false,
+        lastTool: "git_context_create_task_for_turn",
+        lastError: "simulated create failure",
+      });
+      expect((thirdCallInput.tools ?? []).map((tool: { function?: { name?: string }; name?: string }) => tool.function?.name ?? tool.name))
+        .not.toContain("git_context_create_task_for_turn");
+      expect(feedbackEvents(feedback.events, "guard", "routing_retry_limit_reached").length).toBeGreaterThan(0);
+      expect(feedbackEvents(feedback.events, "decision", "repair_requested").at(-1)?.data).toMatchObject({
+        repair: {
+          blockedTargets: ["git_context_create_task_for_turn"],
         },
       });
     } finally {
@@ -836,6 +1000,7 @@ describe("agentLoop", () => {
           message: `I created the Linux commands file at ${outputPath}.`,
         },
       ]);
+      const createSessionRun = vi.fn().mockResolvedValue({ sessionId: "s1", runId: "R-session", triggerSeq: 1 });
 
       const result = await agentLoop({
         provider,
@@ -844,6 +1009,7 @@ describe("agentLoop", () => {
         toolDefinitions: [gitCreateTaskTool, writeFilesTool],
         runRecorder: noopRunRecorder,
         feedbackLedger: feedback.ledger,
+        createSessionRun,
         inputHandle: { sessionId: "s1", seq: 1 },
         clientId: "c1",
         initialUserMessage: "Create a txt file with 10 Linux commands",
@@ -882,8 +1048,8 @@ describe("agentLoop", () => {
       expect(feedbackEvents(feedback.events, "tools", "routing_window_visible")[0]?.data).toMatchObject({
         mode: "fresh_session_routing",
         step: 1,
-        maxSteps: 2,
-        remaining: 1,
+        maxSteps: 0,
+        remaining: 0,
         open: true,
         expiresAfterThisDecision: false,
         routingToolsAvailable: true,
@@ -895,7 +1061,7 @@ describe("agentLoop", () => {
         routingWindow: {
           open: true,
           step: 1,
-          maxSteps: 2,
+          maxSteps: 0,
         },
       });
       expect(feedbackEvents(feedback.events, "tools", "normal_tools_enabled_for_work_run")[0]?.data).toMatchObject({
@@ -985,6 +1151,7 @@ describe("agentLoop", () => {
           message: `I updated the website task note at ${outputPath}.`,
         },
       ]);
+      const createSessionRun = vi.fn().mockResolvedValue({ sessionId: "s1", runId: "R-session", triggerSeq: 6 });
 
       const result = await agentLoop({
         provider,
@@ -993,6 +1160,7 @@ describe("agentLoop", () => {
         toolDefinitions: [gitActivateTaskTool, gitCreateTaskTool, ...gitReadOnlyTools, writeFilesTool],
         runRecorder: noopRunRecorder,
         feedbackLedger: feedback.ledger,
+        createSessionRun,
         inputHandle: { sessionId: "s1", seq: 6 },
         clientId: "c1",
         initialUserMessage: "Add a note file for this website task",
@@ -1392,6 +1560,160 @@ describe("agentLoop", () => {
     }
   });
 
+  it("auto-binds session-run mutations that target active task assets", async () => {
+    const dataDir = makeTmpDir();
+    const outputPath = join(dataDir, "checklist.md");
+    const feedback = createMemoryFeedbackLedger();
+    try {
+      const toolExecutor = createToolExecutor([writeFilesTool]);
+      const createWorkRun = vi.fn().mockResolvedValue({
+        runHandle: {
+          sessionId: "s1",
+          runId: "R-20260702-checklist-002",
+          triggerSeq: 9,
+        },
+        harnessContext: {
+          contextEngine: {
+            session: {
+              sessionId: "s1",
+              conversationTail: [],
+              activityTail: [],
+              assetCount: 1,
+            },
+            focus: {
+              status: "active",
+              ref: "refs/heads/task/T-20260702-checklist",
+              workId: "T-20260702-checklist",
+            },
+            task: {
+              ref: "refs/heads/task/T-20260702-checklist",
+              workId: "T-20260702-checklist",
+              title: "Checklist task",
+              objective: "Maintain checklist.md.",
+              status: "active",
+              completed: ["Created checklist.md."],
+              open: [],
+              blockers: [],
+              facts: [],
+              next: "No next step.",
+              assets: [{
+                assetId: "asset-checklist",
+                role: "generated",
+                kind: "file",
+                name: "checklist.md",
+                path: outputPath,
+              }],
+              recentRuns: [],
+              recentCommits: [],
+              recentEvidence: [],
+            },
+            pendingTurn: {
+              routingStatus: "unbound",
+              fromSeq: 9,
+              toSeq: 9,
+              text: "Add one item to checklist.md",
+            },
+          },
+        },
+      });
+      const provider = createProvider([
+        {
+          kind: "act",
+          action: {
+            mode: "single",
+            calls: [{
+              id: "write_file",
+              tool: "write_files",
+              input: {
+                files: [{
+                  path: "checklist.md",
+                  content: "# Checklist\n\n- [ ] Existing item\n- [ ] Added item\n",
+                }],
+              },
+              dependsOn: [],
+              purpose: "Update the active task checklist file.",
+            }],
+            allowedTools: ["write_files"],
+            assertions: [{ kind: "file_exists", path: "$.files[0].path" }],
+          },
+        },
+        {
+          kind: "reply",
+          status: "completed",
+          message: "I updated checklist.md.",
+        },
+      ]);
+
+      const result = await agentLoop({
+        provider,
+        toolExecutor,
+        toolDefinitions: toolExecutor.definitions(),
+        runRecorder: noopRunRecorder,
+        createWorkRun,
+        inputHandle: { sessionId: "s1", seq: 9 },
+        sessionRunHandle: { sessionId: "s1", runId: "R-session", triggerSeq: 9 },
+        clientId: "c1",
+        initialUserMessage: "Add one item to checklist.md",
+        dataDir,
+        systemContext: "full system context with memory",
+        feedbackLedger: feedback.ledger,
+        harnessContext: {
+          contextEngine: {
+            session: {
+              sessionId: "s1",
+              conversationTail: [],
+              activityTail: [],
+              assetCount: 1,
+            },
+            focus: {
+              status: "active",
+              ref: "refs/heads/task/T-20260702-checklist",
+              workId: "T-20260702-checklist",
+            },
+            task: {
+              ref: "refs/heads/task/T-20260702-checklist",
+              workId: "T-20260702-checklist",
+              title: "Checklist task",
+              objective: "Maintain checklist.md.",
+              status: "active",
+              completed: ["Created checklist.md."],
+              open: [],
+              blockers: [],
+              facts: [],
+              next: "No next step.",
+              assets: [{
+                assetId: "asset-checklist",
+                role: "generated",
+                kind: "file",
+                name: "checklist.md",
+                path: outputPath,
+              }],
+              recentRuns: [],
+              recentCommits: [],
+              recentEvidence: [],
+            },
+            pendingTurn: {
+              routingStatus: "unbound",
+              fromSeq: 9,
+              toSeq: 9,
+              text: "Add one item to checklist.md",
+            },
+          },
+        },
+      });
+
+      expect(result.status).toBe("completed");
+      expect(result.runClass).toBe("task");
+      expect(result.workRunId).toBe("R-20260702-checklist-002");
+      expect(readFileSync(outputPath, "utf-8")).toContain("Added item");
+      expect(createWorkRun).toHaveBeenCalledTimes(1);
+      expect(feedbackEvents(feedback.events, "guard", "active_task_artifact_auto_bind")).toHaveLength(1);
+      expect(feedbackEvents(feedback.events, "guard", "mutation_deferred_for_task_routing")).toHaveLength(0);
+    } finally {
+      cleanup(dataDir);
+    }
+  });
+
   it("loads tools before active-task run allocation and auto-creates the run before action", async () => {
     const dataDir = makeTmpDir();
     const outputPath = join(dataDir, "active-task-load-then-write.txt");
@@ -1560,6 +1882,7 @@ describe("agentLoop", () => {
       const gitActivateTaskTool = fakeActivateTaskForTurnTool();
       const gitCreateTaskTool = fakeCreateTaskForTurnTool();
       const createWorkRun = vi.fn();
+      const createSessionRun = vi.fn().mockResolvedValue({ sessionId: "s1", runId: "R-session", triggerSeq: 9 });
       const toolExecutor = createToolExecutor([]);
       const feedback = createMemoryFeedbackLedger();
       const toolWorkingSetManager = new ToolWorkingSetManager({
@@ -1606,6 +1929,7 @@ describe("agentLoop", () => {
         toolDefinitions: [readTaskTool, gitCreateTaskTool, gitActivateTaskTool],
         runRecorder: noopRunRecorder,
         feedbackLedger: feedback.ledger,
+        createSessionRun,
         createWorkRun,
         inputHandle: { sessionId: "s1", seq: 9 },
         clientId: "c1",
@@ -1650,6 +1974,7 @@ describe("agentLoop", () => {
       expect(result.workRunId).toBeUndefined();
       expect(result.totalToolCalls).toBe(1);
       expect(createWorkRun).not.toHaveBeenCalled();
+      expect(createSessionRun).toHaveBeenCalledWith({ sessionId: "s1", seq: 9 });
       expect(feedbackEvents(feedback.events, "guard", "missing_work_run")).toHaveLength(0);
       expect(feedbackEvents(feedback.events, "action", "started")[0]?.data).toMatchObject({
         preRunGitContextAction: true,
@@ -1741,8 +2066,8 @@ describe("agentLoop", () => {
       expect(feedbackEvents(feedback.events, "tools", "routing_window_visible")[0]?.data).toMatchObject({
         mode: "fresh_session_routing",
         step: 1,
-        maxSteps: 2,
-        remaining: 1,
+        maxSteps: 0,
+        remaining: 0,
         open: true,
         expiresAfterThisDecision: false,
         readToolsVisible: [],

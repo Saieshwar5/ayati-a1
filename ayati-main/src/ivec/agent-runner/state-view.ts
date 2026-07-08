@@ -147,6 +147,7 @@ export function buildAgentStateView(state: LoopState, options: AgentStateViewOpt
       status: state.workState.status,
       workState: progress,
       toolCalls,
+      routing: buildRoutingAttemptView(state),
       deferredMutation: buildDeferredMutationView(state),
     }),
   });
@@ -185,13 +186,39 @@ function buildRunContext(input: {
   status: WorkState["status"];
   workState?: PromptProgressState;
   toolCalls?: PromptToolCalls;
+  routing?: PromptRunContext["routing"];
   deferredMutation?: PromptRunContext["deferredMutation"];
 }): PromptRunContext {
   return {
     status: input.status,
     ...(input.workState ? { workState: input.workState } : {}),
     ...(input.toolCalls ? { toolCalls: input.toolCalls } : {}),
+    ...(input.routing ? { routing: input.routing } : {}),
     ...(input.deferredMutation ? { deferredMutation: input.deferredMutation } : {}),
+  };
+}
+
+function buildRoutingAttemptView(state: LoopState): PromptRunContext["routing"] | undefined {
+  const routing = state.routingAttempts;
+  if (!routing) {
+    return undefined;
+  }
+  if (
+    routing.successCount === 0
+    && routing.failureCount === 0
+    && !routing.resolved
+    && !routing.lastTool
+    && !routing.lastError
+  ) {
+    return undefined;
+  }
+  return {
+    successCount: routing.successCount,
+    failureCount: routing.failureCount,
+    maxFailures: routing.maxFailures,
+    resolved: routing.resolved,
+    ...(routing.lastTool ? { lastTool: routing.lastTool } : {}),
+    ...(routing.lastError ? { lastError: routing.lastError } : {}),
   };
 }
 

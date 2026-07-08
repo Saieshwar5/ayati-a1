@@ -62,6 +62,14 @@ export interface PromptRunContext {
   status?: WorkState["status"];
   workState?: PromptRunWorkStateContext;
   toolCalls?: unknown;
+  routing?: {
+    successCount: number;
+    failureCount: number;
+    maxFailures: number;
+    resolved: boolean;
+    lastTool?: string;
+    lastError?: string;
+  };
   deferredMutation?: {
     reason: string;
     tools: string[];
@@ -240,6 +248,7 @@ function compactRunContext(run: PromptRunContext | undefined): PromptRunContext 
     ...(run.status ? { status: run.status } : {}),
     ...(run.workState ? { workState: run.workState } : {}),
     ...(run.toolCalls ? { toolCalls: run.toolCalls } : {}),
+    ...(run.routing ? { routing: run.routing } : {}),
   };
   return Object.keys(compacted).length > 0 ? compacted : undefined;
 }

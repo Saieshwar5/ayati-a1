@@ -199,12 +199,10 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
     try {
       chatContextTurn = await this.prepareChatContextTurn(input.clientId, input.content);
       inputHandle = this.inputHandleFromChatContextTurn(chatContextTurn);
-      sessionRunHandle = await this.startChatContextSessionRun(input.clientId, chatContextTurn, inputHandle);
       this.feedbackLedger?.record({
         clientId: input.clientId,
         sessionId: inputHandle.sessionId,
         seq: inputHandle.seq,
-        ...(sessionRunHandle ? { runId: sessionRunHandle.runId } : {}),
         stage: "message",
         event: "received",
         data: {
@@ -225,10 +223,7 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
         runHandle = routedContextTurn?.status === "ready"
           ? this.runHandleFromRoutedTurn(inputHandle, routedContextTurn)
           : null;
-        if (runHandle && sessionRunHandle?.runId === runHandle.runId) {
-          sessionRunHandle = null;
-        }
-        const attachmentRunId = runHandle?.runId ?? sessionRunHandle?.runId ?? this.inputScopeId(inputHandle);
+        const attachmentRunId = runHandle?.runId ?? this.inputScopeId(inputHandle);
         const registeredAttachments = await this.registerIncomingDocuments(input.attachments, attachmentRunId);
         let harnessContext = routedContextTurn?.status === "ready"
           ? routedContextTurn.harnessContext
@@ -260,6 +255,23 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
           inputHandle,
           ...(runHandle ? { runHandle } : {}),
           ...(sessionRunHandle ? { sessionRunHandle } : {}),
+          createSessionRun: async (requestedInputHandle) => {
+            if (sessionRunHandle?.runId) {
+              return sessionRunHandle;
+            }
+            if (!chatContextTurn) {
+              throw new Error("Git-memory prepared turn is required before session run creation.");
+            }
+            sessionRunHandle = await this.startChatContextSessionRun(
+              input.clientId,
+              chatContextTurn,
+              requestedInputHandle,
+            );
+            if (!sessionRunHandle) {
+              throw new Error("Git-memory session run could not be created before session tool execution.");
+            }
+            return sessionRunHandle;
+          },
           recordSessionStep: (record) => {
             this.chatContextRuntime.recordSessionRunStep?.({
               clientId: input.clientId,
@@ -1148,7 +1160,7 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
       event: finalized ? "session_run_finalized" : "session_run_finalization_failed",
       data: {
         status,
-        committed: Boolean(finalized),
+        committed: Boolean(finalized?.sessionStoreCommit),
         resultStatus: result.status,
         resultType: result.type,
       },

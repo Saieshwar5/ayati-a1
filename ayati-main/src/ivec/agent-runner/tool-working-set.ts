@@ -16,7 +16,6 @@ import {
   isFreshSessionRoutingMode,
   isRuntimeToolAllowed,
   requiredRoutingMutationToolsForRuntimeMode,
-  TASK_ROUTING_WINDOW_STEPS,
 } from "./runtime-capability-mode.js";
 import {
   hasRecoverableCompactedRunToolCall,
@@ -108,7 +107,6 @@ export class ToolWorkingSetManager {
     } = {},
   ): ToolLoadResult {
     const runState = this.getRunState(context);
-    const step = context.stepNumber ?? 0;
     const mode = detectRuntimeCapabilityMode({
       state,
       workRunHandle: input.workRunHandle,
@@ -118,13 +116,9 @@ export class ToolWorkingSetManager {
       this.removeTaskRoutingResolutionTools(runState, []);
       this.syncMount(context);
     }
-    if (step > TASK_ROUTING_WINDOW_STEPS) {
-      this.removeTaskRoutingResolutionTools(runState, []);
-      this.syncMount(context);
-    }
     const request = buildDeterministicLoadRequest(state, input);
-    const suppressTaskRoutingTools = hasCompletedTaskRoutingWindowToolUse(state);
-    const requiredRoutingTools = suppressTaskRoutingTools || step > TASK_ROUTING_WINDOW_STEPS
+    const suppressTaskRoutingTools = shouldSuppressTaskRoutingTools(state);
+    const requiredRoutingTools = suppressTaskRoutingTools
       ? []
       : requiredRoutingMutationToolsForRuntimeMode(mode);
     const result = this.load(this.addTaskRoutingWindowTools(request, state, context, input), context);
@@ -300,8 +294,6 @@ export class ToolWorkingSetManager {
     });
     if (state.taskRouting.resolved) {
       this.removeTaskRoutingTools(state, removed);
-    } else if (step >= TASK_ROUTING_WINDOW_STEPS) {
-      this.removeTaskRoutingResolutionTools(state, removed);
     }
     this.syncMount(context);
     return removed;
@@ -331,11 +323,11 @@ export class ToolWorkingSetManager {
     if (state.harnessContext.contextEngine?.pendingTurn?.routingStatus === "clarifying") {
       return request;
     }
-    if (hasCompletedTaskRoutingWindowToolUse(state)) {
+    if (shouldSuppressTaskRoutingTools(state)) {
       return request;
     }
     const step = context.stepNumber ?? 0;
-    if (step < 1 || step > TASK_ROUTING_WINDOW_STEPS) {
+    if (step < 1) {
       return request;
     }
     const routingTools = isFreshSessionRoutingMode(mode)
@@ -352,9 +344,9 @@ export class ToolWorkingSetManager {
 
   private removeTaskRoutingTools(state: RunToolState, removed: string[]): void {
     const before = state.ordered;
-    state.ordered = state.ordered.filter((tool) => !isTaskRoutingWindowTool(tool));
+    state.ordered = state.ordered.filter((tool) => !isTaskRoutingResolutionTool(tool));
     for (const tool of before) {
-      if (!state.ordered.includes(tool) && isTaskRoutingWindowTool(tool)) {
+      if (!state.ordered.includes(tool) && isTaskRoutingResolutionTool(tool)) {
         state.loadedAtStep.delete(tool);
         state.usedAtStep.delete(tool);
         removed.push(tool);
@@ -730,12 +722,17 @@ function mergeToolLoadResult(
   };
 }
 
-function isTaskRoutingWindowTool(tool: string): boolean {
-  return (TASK_ROUTING_WINDOW_TOOL_NAMES as readonly string[]).includes(tool);
-}
-
-function hasCompletedTaskRoutingWindowToolUse(state: LoopState): boolean {
-  return state.completedSteps.some((step) => {
+function shouldSuppressTaskRoutingTools(state: LoopState): boolean {
+  const routingAttempts = state.routingAttempts ?? {
+    successCount: 0,
+    failureCount: 0,
+    maxFailures: 2,
+    resolved: false,
+  };
+  return routingAttempts.resolved
+    || routingAttempts.successCount > 0
+    || routingAttempts.failureCount >= routingAttempts.maxFailures
+    || state.completedSteps.some((step) => {
     return step.outcome !== "failed" && (step.toolsUsed ?? []).some(isTaskRoutingResolutionTool);
   });
 }

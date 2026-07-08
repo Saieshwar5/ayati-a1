@@ -799,7 +799,7 @@ describe("IVecEngine", () => {
     }
   });
 
-  it("finalizes a session run for unbound direct replies without committing a task run", async () => {
+  it("records unbound direct replies without creating a session run", async () => {
     const dataDir = mkdtempSync(join(tmpdir(), "ayati-eng-session-run-"));
     try {
       const provider = createMockProvider({
@@ -827,16 +827,14 @@ describe("IVecEngine", () => {
       engine.handleMessage("c1", { type: "chat", content: "where is upload handling?" });
 
       await vi.waitFor(() => {
-        expect(chatContextRuntime.finalizeSessionRun).toHaveBeenCalledWith(expect.objectContaining({
-          clientId: "c1",
-          runId: "R-20260627-0004",
-          status: "completed",
-          assistantResponse: "Upload handling lives in the upload service.",
+        expect(chatContextRuntime.recordAssistantMessage).toHaveBeenCalledWith(expect.objectContaining({
+          message: "Upload handling lives in the upload service.",
         }));
       });
+      expect(chatContextRuntime.startSessionRun).not.toHaveBeenCalled();
+      expect(chatContextRuntime.finalizeSessionRun).not.toHaveBeenCalled();
       expect(chatContextRuntime.completeTaskRun).not.toHaveBeenCalled();
       expect(chatContextRuntime.recordAssistantMessage).toHaveBeenCalledWith(expect.objectContaining({
-        runId: "R-20260627-0004",
         message: "Upload handling lives in the upload service.",
       }));
       expect(onReply).toHaveBeenCalledWith("c1", {
@@ -1313,7 +1311,9 @@ describe("IVecEngine", () => {
       expect(chatContextRuntime.routeTaskTurn).toHaveBeenCalledWith(expect.objectContaining({
         autoOnly: true,
       }));
-      expect(chatContextRuntime.activateTaskTurn).not.toHaveBeenCalled();
+      expect(chatContextRuntime.activateTaskTurn).toHaveBeenCalledWith(expect.objectContaining({
+        taskId: "W-20260627-0001",
+      }));
       expect(readFileSync(outputPath, "utf-8")).toBe("Invoice follow-up note.");
     } finally {
       rmSync(dataDir, { recursive: true, force: true });

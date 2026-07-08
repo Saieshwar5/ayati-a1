@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { dirname, isAbsolute, join, resolve } from "node:path";
+import { dirname, isAbsolute, join, normalize, resolve } from "node:path";
 import { devLog } from "../../shared/index.js";
 import { prepareIncomingAttachments } from "../../documents/attachment-preparer.js";
 import type { PreparedAttachmentRecord } from "../../documents/prepared-attachment-registry.js";
@@ -18,6 +18,7 @@ import type {
   LoopConfig,
   LoopState,
   PromptToolCallContext,
+  RoutingAttemptState,
   StepSummary,
   TaskSummaryFailureSummary,
   ToolObservation,
@@ -102,6 +103,7 @@ interface MemoryRunContext {
 
 const FRESH_SESSION_TOOL_REPAIR_MESSAGE = "No active task exists. Before mutation, search and activate an existing task or create a new task. Ask a short clarification directly if task ownership is unclear.";
 const REPEATED_REPAIR_FAILURE_THRESHOLD = 3;
+const MAX_ROUTING_FAILURES_PER_TURN = 2;
 const FILE_MUTATION_TOOL_NAMES = new Set([
   "patch_files",
   "edit_files",
@@ -138,7 +140,7 @@ export async function runAgentLoop(
   const config: LoopConfig = resolvedConfig ?? { ...DEFAULT_LOOP_CONFIG, ...deps.config };
   const inputHandle = resolveInputHandle(deps);
   let workRunHandle = deps.runHandle;
-  const sessionRunHandle = deps.sessionRunHandle;
+  let sessionRunHandle = deps.sessionRunHandle;
   const metrics = createRunMetrics();
 
   let totalToolCalls = 0;
@@ -220,6 +222,23 @@ export async function runAgentLoop(
     }
     state.runId = workRunHandle.runId;
     return { runHandle: workRunHandle };
+  };
+  const ensureSessionRun = async (
+    reason = "session_tool_action",
+  ): Promise<MemoryRunHandle> => {
+    if (sessionRunHandle?.runId) {
+      return sessionRunHandle;
+    }
+    const createSessionRun = deps.createSessionRun;
+    if (!createSessionRun) {
+      throw new Error("Git-memory session run handle is required before session tool execution.");
+    }
+    sessionRunHandle = await createSessionRun(inputHandle);
+    deps.sessionRunHandle = sessionRunHandle;
+    recordFeedback(deps, inputHandle, sessionRunHandle.runId, "run", "session_run_attached", {
+      reason,
+    });
+    return sessionRunHandle;
   };
   const recordStateSnapshotMetric = (label: string): void => {
     recordStateSizeMetric(metrics, label, buildLoopStateSizeBreakdown(state));
@@ -555,7 +574,7 @@ export async function runAgentLoop(
         state.workState = {
           ...state.workState,
           status: "done",
-          summary: state.workState.summary || decision.message,
+          summary: state.runClass === "session" ? decision.message : state.workState.summary || decision.message,
         };
       }
       const responseKind = state.preferredResponseKind ?? "reply";
@@ -623,9 +642,14 @@ export async function runAgentLoop(
     const runtimeMode = detectRuntimeCapabilityMode({ state, workRunHandle, sessionRunHandle });
     const freshSessionWithoutActiveTask = isFreshSessionRoutingMode(runtimeMode);
 
-    if (shouldDeferPreTaskMutation(decision, workRunHandle, sessionRunHandle)) {
+    const autoBindActiveTaskArtifactMutation = shouldAutoBindActiveTaskArtifactMutation(state, decision);
+    if (shouldDeferPreTaskMutation(state, decision, workRunHandle) && !autoBindActiveTaskArtifactMutation) {
       if (decision.kind !== "act") {
         continue;
+      }
+      if (!sessionRunHandle?.runId) {
+        await ensureSessionRun("mutation_deferred_for_task_routing");
+        syncHarnessContext(state, deps, inputHandle);
       }
       if (state.deferredMutation) {
         recordDeferredMutationRoutingRepair({
@@ -672,8 +696,77 @@ export async function runAgentLoop(
       }
       continue;
     }
+    if (autoBindActiveTaskArtifactMutation && decision.kind === "act") {
+      recordFeedback(deps, inputHandle, sessionRunHandle?.runId, "guard", "active_task_artifact_auto_bind", {
+        iteration: state.iteration,
+        reason: "mutation_targets_active_task_artifacts",
+        action: summarizeAgentAction(decision.action),
+        mutationTargets: mutationTargetPathsForAction(decision.action),
+        activeTaskId: state.harnessContext.contextEngine?.focus.status === "active"
+          ? state.harnessContext.contextEngine.focus.workId
+          : undefined,
+        contextEngine: buildContextEngineFeedbackSummary({
+          context: state.harnessContext.contextEngine,
+        }),
+      });
+    }
 
     if (freshSessionWithoutActiveTask && !runtimeMode.allowToolLoading && decision.kind === "load_tools") {
+      recordFreshSessionToolRepair({
+        deps,
+        inputHandle,
+        state,
+        config,
+        decision,
+        reason: "fresh_session_tool_load",
+      });
+      if (hasRepeatedRepairFailure(state.failureHistory)) {
+        recordRepeatedRepairFailure({
+          deps,
+          inputHandle,
+          state,
+          runId: undefined,
+        });
+        state.status = "failed";
+        state.finalOutput = buildFailureReply(state);
+        return finalize({ status: "failed", content: state.finalOutput });
+      }
+      if (state.consecutiveFailures >= config.maxConsecutiveFailures) {
+        state.status = "failed";
+        state.finalOutput = buildFailureReply(state);
+        return finalize({ status: "failed", content: state.finalOutput });
+      }
+      continue;
+    }
+
+    if (decision.kind === "load_tools" && !runtimeMode.allowToolLoading) {
+      if (state.deferredMutation) {
+        recordDeferredMutationRoutingRepair({
+          deps,
+          inputHandle,
+          state,
+          config,
+          decision,
+          reason: "deferred_mutation_already_pending",
+        });
+        if (hasRepeatedRepairFailure(state.failureHistory)) {
+          recordRepeatedRepairFailure({
+            deps,
+            inputHandle,
+            state,
+            runId: state.runId || workRunHandle?.runId || sessionRunHandle?.runId,
+          });
+          state.status = "failed";
+          state.finalOutput = buildFailureReply(state);
+          return finalize({ status: "failed", content: state.finalOutput });
+        }
+        if (state.consecutiveFailures >= config.maxConsecutiveFailures) {
+          state.status = "failed";
+          state.finalOutput = buildFailureReply(state);
+          return finalize({ status: "failed", content: state.finalOutput });
+        }
+        continue;
+      }
       recordFreshSessionToolRepair({
         deps,
         inputHandle,
@@ -747,6 +840,17 @@ export async function runAgentLoop(
       && decision.kind === "act"
       && decision.action.calls.some((call) => isGitContextTurnRoutingToolName(call.tool));
     if (freshSessionWithoutActiveTask && !freshSessionDecisionAllowed) {
+      const routingAttemptBlock = decision.kind === "act"
+        ? validateRoutingAttemptLimits(state, decision.action, Boolean(workRunHandle || state.runId))
+        : undefined;
+      if (routingAttemptBlock) {
+        recordFeedback(deps, inputHandle, sessionRunHandle?.runId, "guard", "routing_attempt_blocked", {
+          iteration: state.iteration,
+          reason: routingAttemptBlock.reason,
+          tools: routingAttemptBlock.tools,
+          routing: summarizeRoutingAttempts(state.routingAttempts),
+        });
+      }
       recordFreshSessionToolRepair({
         deps,
         inputHandle,
@@ -779,14 +883,175 @@ export async function runAgentLoop(
     const preRunGitContextAction = preRunGitContextReadAction
       || preRunGitContextRoutingAction
       || isPreRunGitContextAction(decision, workRunHandle);
-    const sessionReadOnlyAction = isSessionReadOnlyAction(decision, workRunHandle, sessionRunHandle);
+    const sessionReadOnlyAction = isSessionReadOnlyAction(decision, workRunHandle);
+    const sessionRunReadOnlyAction = sessionReadOnlyAction && !preRunGitContextAction;
 
     const routingControlAction = freshSessionRouting
       || preRunGitContextRoutingAction
       || decision.action.calls.some((call) => isGitContextTurnRoutingToolName(call.tool));
-    if (routingControlAction || preRunGitContextAction || sessionReadOnlyAction) {
+    if (sessionRunReadOnlyAction) {
+      const ensuredSessionRun = sessionRunHandle?.runId
+        ? sessionRunHandle
+        : await ensureSessionRun("read_only_tool_action");
+      syncHarnessContext(state, deps, inputHandle);
+      if (deps.toolWorkingSetManager) {
+        deps.toolWorkingSetManager.prepareForDecision(state, {
+          ...toolContext,
+          runId: ensuredSessionRun.runId,
+        }, {
+          workRunHandle,
+          sessionRunHandle: ensuredSessionRun,
+        });
+      }
+      const sessionRunId = ensuredSessionRun.runId;
+      recordFeedback(deps, inputHandle, undefined, "action", "started", {
+        iteration: state.iteration,
+        mode: decision.action.mode,
+        action: summarizeAgentAction(decision.action),
+        plannedCallCount: decision.action.calls.length,
+        calls: decision.action.calls.map((call) => ({
+          id: call.id,
+          tool: call.tool,
+          input: summarizeActionInput(call.input),
+          dependsOn: call.dependsOn,
+          purpose: call.purpose,
+        })),
+        allowedTools: decision.action.allowedTools,
+        sessionReadOnlyAction: true,
+      });
+      const stepStartedAt = new Date().toISOString();
+      const stepResult = await executeActionStep({
+        deps,
+        state,
+        config,
+        metrics,
+        selectedTools,
+        decision,
+        stepNumber: state.iteration,
+        runHandle: ensuredSessionRun,
+        runClass: "session",
+      });
+      const stepCompletedAt = new Date().toISOString();
+      actionStepCount++;
+      lastVerificationPassed = stepResult.execution.verifyOutput.passed;
+      if (!stepResult.execution.verifyOutput.passed) {
+        failedVerificationCount++;
+      }
+      totalToolCalls += stepResult.stepSummary.toolSuccessCount + stepResult.stepSummary.toolFailureCount;
+      state.readProgress = updateReadProgressAfterActOutput(state.readProgress, stepResult.execution.actOutput);
+      recordActionFeedback(deps, inputHandle, sessionRunId, decision.action, stepResult);
+      recordStepFeedback(deps, inputHandle, sessionRunId, state.iteration, stepResult);
+
+      const beforeWorkStateChars = measureJson(stepResult.execution.nextWorkState);
+      const compactedWorkState = compactWorkState(stepResult.execution.nextWorkState);
+      recordCompactionMetric(metrics, "workState", beforeWorkStateChars, measureJson(compactedWorkState), { step: state.iteration });
+      state.workState = compactedWorkState;
+      state.toolContext = buildUpdatedToolContext(state, stepResult.execution);
+      stepResult.stepSummary.workState = compactedWorkState;
+      recordReducerFeedback(deps, inputHandle, sessionRunId, state.iteration, {
+        beforeWorkStateChars,
+        compactedWorkState,
+        stepSummary: stepResult.stepSummary,
+      });
+
+      const compactedStep = compactStepSummaryForState(stepResult.stepSummary);
+      recordCompactionMetric(metrics, "completedStepSummary", measureJson(stepResult.stepSummary), measureJson(compactedStep), { step: state.iteration });
+      state.completedSteps.push(compactedStep);
+      recordSessionStep(deps, ensuredSessionRun, decision.action, stepResult, {
+        startedAt: stepStartedAt,
+        completedAt: stepCompletedAt,
+      });
+
+      recordPlanModeMetric(metrics, decision.action.mode, {
+        step: state.iteration,
+        tools: decision.action.calls.map((call) => call.tool).join(","),
+      });
+      recordVerificationMetric(metrics, stepResult.stepSummary.verificationMethod, {
+        step: state.iteration,
+        executionStatus: stepResult.stepSummary.executionStatus,
+        validationStatus: stepResult.stepSummary.validationStatus,
+      });
+      deps.skillActivationManager?.cleanupAfterStep(stepResult.stepSummary.toolsUsed ?? [], {
+        clientId: deps.clientId,
+        runId: sessionRunId,
+      });
+      deps.toolWorkingSetManager?.afterExecution(stepResult.execution.actOutput.toolCalls, {
+        clientId: deps.clientId,
+        runId: sessionRunId,
+        sessionId: ensuredSessionRun.sessionId,
+        stepNumber: state.iteration,
+      });
+
+      if (stepResult.stepSummary.outcome === "failed") {
+        state.consecutiveFailures++;
+        state.failureHistory.push(createFailureRecordFromStepSummary(stepResult.stepSummary));
+        if (hasRepeatedRepairFailure(state.failureHistory)) {
+          recordRepeatedRepairFailure({
+            deps,
+            inputHandle,
+            state,
+            runId: sessionRunId,
+          });
+          state.status = "failed";
+          state.finalOutput = buildFailureReply(state);
+          return finalize({ status: "failed", content: state.finalOutput });
+        }
+        if (state.consecutiveFailures >= config.maxConsecutiveFailures) {
+          state.status = "failed";
+          state.finalOutput = buildFailureReply(state);
+          return finalize({ status: "failed", content: state.finalOutput });
+        }
+      } else {
+        state.consecutiveFailures = 0;
+      }
+
+      deps.onProgress?.(
+        `Step ${state.iteration}: ${stepResult.stepSummary.executionContract} -> ${stepResult.stepSummary.outcome}`,
+        state.runPath,
+      );
+      if (canCompleteLocallyAfterAction(decision.action, stepResult.stepSummary, state.workState, state)) {
+        state.workState = compactWorkState({
+          ...state.workState,
+          status: "done",
+        });
+        recordRunMetric(metrics, "verified_completion", { kind: "local" });
+        recordStateSnapshotMetric("after_verified_completion");
+      }
+      recordStateSnapshotMetric("after_session_read_only_step");
+      continue;
+    }
+
+    if (routingControlAction || preRunGitContextAction) {
+      if ((routingControlAction || preRunGitContextReadAction) && !sessionRunHandle?.runId) {
+        const ensuredSessionRun = await ensureSessionRun(
+          routingControlAction
+            ? "routing_tool_action"
+            : "git_context_read_action",
+        );
+        syncHarnessContext(state, deps, inputHandle);
+        if (deps.toolWorkingSetManager) {
+          deps.toolWorkingSetManager.prepareForDecision(state, {
+            ...toolContext,
+            runId: ensuredSessionRun.runId,
+          }, {
+            workRunHandle,
+            sessionRunHandle: ensuredSessionRun,
+          });
+        }
+      }
       const routingRunId = sessionRunHandle?.runId ?? decisionScopeId(inputHandle);
       const routingToolContext = { ...toolContext, runId: routingRunId };
+      const routingAttemptBlock = routingControlAction
+        ? validateRoutingAttemptLimits(state, decision.action, Boolean(workRunHandle || state.runId))
+        : undefined;
+      if (routingAttemptBlock) {
+        recordFeedback(deps, inputHandle, routingRunId, "guard", "routing_attempt_blocked", {
+          iteration: state.iteration,
+          reason: routingAttemptBlock.reason,
+          tools: routingAttemptBlock.tools,
+          routing: summarizeRoutingAttempts(state.routingAttempts),
+        });
+      }
       recordFeedback(deps, inputHandle, undefined, "action", "started", {
         iteration: state.iteration,
         mode: decision.action.mode,
@@ -821,6 +1086,12 @@ export async function runAgentLoop(
         failedVerificationCount++;
       }
       recordActionFeedback(deps, inputHandle, routingRunId, decision.action, stepResult);
+      updateRoutingAttemptsFromActOutput(state, stepResult.execution.actOutput, {
+        blocked: Boolean(routingAttemptBlock),
+      });
+      recordRoutingAttemptFeedback(deps, inputHandle, routingRunId, state, stepResult.execution.actOutput, {
+        blocked: Boolean(routingAttemptBlock),
+      });
       if (!routingControlAction) {
         actionStepCount++;
         totalToolCalls += stepResult.stepSummary.toolSuccessCount + stepResult.stepSummary.toolFailureCount;
@@ -1296,6 +1567,8 @@ interface ExecuteActionStepInput {
   selectedTools: ReturnType<typeof selectToolsForDecision>;
   decision: Extract<AgentDecision, { kind: "act" }>;
   stepNumber: number;
+  runHandle?: MemoryRunHandle;
+  runClass?: LoopState["runClass"];
 }
 
 interface ExecuteActionStepResult {
@@ -1377,6 +1650,10 @@ function validatePendingRoutingAction(input: ExecutePendingRoutingActionInput): 
   if (action.calls.length > input.config.maxSequentialToolCallsPerStep) {
     return `Pending-turn routing requested ${action.calls.length} calls, above max ${input.config.maxSequentialToolCallsPerStep}.`;
   }
+  const routingAttemptBlock = validateRoutingAttemptLimits(input.state, action, Boolean(input.state.runId));
+  if (routingAttemptBlock) {
+    return routingAttemptBlock.message;
+  }
   const selected = new Set(input.selectedTools.map((tool) => tool.name));
   const allowed = new Set(action.allowedTools);
   for (const tool of action.allowedTools) {
@@ -1410,6 +1687,138 @@ function validatePendingRoutingAction(input: ExecutePendingRoutingActionInput): 
     }
   }
   return undefined;
+}
+
+interface RoutingAttemptBlock {
+  reason: string;
+  message: string;
+  tools: string[];
+}
+
+function validateRoutingAttemptLimits(
+  state: LoopState,
+  action: AgentAction,
+  hasWorkRun: boolean,
+): RoutingAttemptBlock | undefined {
+  const tools = routingMutationToolsForAction(action);
+  if (tools.length === 0) {
+    return undefined;
+  }
+  if (hasWorkRun) {
+    return {
+      reason: "task_run_already_exists",
+      message: "Task routing tools cannot run after this turn is already bound to a task run.",
+      tools,
+    };
+  }
+  if (tools.length > 1) {
+    return {
+      reason: "multiple_routing_tools",
+      message: "Use exactly one task routing tool per routing decision.",
+      tools,
+    };
+  }
+  if (state.routingAttempts.resolved || state.routingAttempts.successCount > 0) {
+    return {
+      reason: "routing_already_resolved",
+      message: "Task routing is already resolved for this turn; do not call create or activate again.",
+      tools,
+    };
+  }
+  if (state.routingAttempts.failureCount >= state.routingAttempts.maxFailures) {
+    return {
+      reason: "routing_retry_limit_reached",
+      message: `Task routing retry limit reached for this turn after ${state.routingAttempts.failureCount} failed attempt(s). Ask the user a short clarification or explain the blocker instead of calling create or activate again.`,
+      tools,
+    };
+  }
+  return undefined;
+}
+
+function routingMutationToolsForAction(action: AgentAction): string[] {
+  return uniqueStrings(action.calls
+    .map((call) => call.tool)
+    .filter(isGitContextTurnRoutingToolName));
+}
+
+function updateRoutingAttemptsFromActOutput(
+  state: LoopState,
+  actOutput: ActOutput,
+  options: {
+    blocked: boolean;
+  },
+): void {
+  if (options.blocked) {
+    return;
+  }
+  for (const call of actOutput.toolCalls.filter((item) => isGitContextTurnRoutingToolName(item.tool))) {
+    state.routingAttempts.lastTool = call.tool;
+    const routingStatus = readRoutingToolStatus(call);
+    if (!call.error && routingStatus === "ready") {
+      state.routingAttempts.successCount += 1;
+      state.routingAttempts.resolved = true;
+      state.routingAttempts.lastError = undefined;
+      continue;
+    }
+    if (call.error) {
+      state.routingAttempts.failureCount += 1;
+      state.routingAttempts.lastError = call.error;
+    }
+  }
+}
+
+function readRoutingToolStatus(call: ActToolCallRecord): string | undefined {
+  const content = call.result?.structuredContent;
+  if (!content || typeof content !== "object" || Array.isArray(content)) {
+    return undefined;
+  }
+  const status = (content as Record<string, unknown>)["status"];
+  return typeof status === "string" ? status : undefined;
+}
+
+function recordRoutingAttemptFeedback(
+  deps: AgentLoopDeps,
+  inputHandle: SessionInputHandle,
+  runId: string | undefined,
+  state: LoopState,
+  actOutput: ActOutput,
+  options: {
+    blocked: boolean;
+  },
+): void {
+  const routingCalls = actOutput.toolCalls.filter((call) => isGitContextTurnRoutingToolName(call.tool));
+  if (routingCalls.length === 0 && !options.blocked) {
+    return;
+  }
+  recordFeedback(deps, inputHandle, runId, "guard", "routing_attempt_recorded", {
+    blocked: options.blocked,
+    calls: routingCalls.map((call) => ({
+      tool: call.tool,
+      status: call.error ? "failed" : readRoutingToolStatus(call) ?? "completed",
+      ...(call.error ? { error: call.error } : {}),
+    })),
+    routing: summarizeRoutingAttempts(state.routingAttempts),
+  });
+  if (state.routingAttempts.resolved || state.routingAttempts.successCount > 0) {
+    recordFeedback(deps, inputHandle, runId, "guard", "routing_resolved", {
+      routing: summarizeRoutingAttempts(state.routingAttempts),
+    });
+  } else if (state.routingAttempts.failureCount >= state.routingAttempts.maxFailures) {
+    recordFeedback(deps, inputHandle, runId, "guard", "routing_retry_limit_reached", {
+      routing: summarizeRoutingAttempts(state.routingAttempts),
+    });
+  }
+}
+
+function summarizeRoutingAttempts(routing: RoutingAttemptState): Record<string, unknown> {
+  return {
+    successCount: routing.successCount,
+    failureCount: routing.failureCount,
+    maxFailures: routing.maxFailures,
+    resolved: routing.resolved,
+    ...(routing.lastTool ? { lastTool: routing.lastTool } : {}),
+    ...(routing.lastError ? { lastError: routing.lastError } : {}),
+  };
 }
 
 async function executePendingRoutingCalls(input: ExecutePendingRoutingActionInput): Promise<ActOutput> {
@@ -1536,11 +1945,14 @@ function buildPendingRoutingVerifyOutput(actOutput: ActOutput): AgentActionExecu
 }
 
 function shouldDeferPreTaskMutation(
+  state: LoopState,
   decision: AgentDecision,
   workRunHandle: MemoryRunHandle | undefined,
-  sessionRunHandle: MemoryRunHandle | undefined,
 ): boolean {
-  if (workRunHandle || !sessionRunHandle || decision.kind !== "act") {
+  if (workRunHandle || decision.kind !== "act") {
+    return false;
+  }
+  if (state.harnessContext.contextEngine?.focus.status === "active" && !state.deferredMutation) {
     return false;
   }
   if (decision.action.calls.some((call) => isGitContextTurnRoutingToolName(call.tool))) {
@@ -1557,6 +1969,174 @@ function deferredMutationToolNames(action: AgentAction): string[] {
   return uniqueStrings(action.calls
     .map((call) => call.tool)
     .filter(isPreTaskMutationTool));
+}
+
+function shouldAutoBindActiveTaskArtifactMutation(
+  state: LoopState,
+  decision: AgentDecision,
+): boolean {
+  if (state.runId || decision.kind !== "act") {
+    return false;
+  }
+  const contextEngine = state.harnessContext.contextEngine;
+  if (!contextEngine || contextEngine.focus.status !== "active" || !contextEngine.task) {
+    return false;
+  }
+  if (!decision.action.calls.some((call) => isPreTaskMutationTool(call.tool))) {
+    return false;
+  }
+  const mutationTargets = mutationTargetPathsForAction(decision.action);
+  if (mutationTargets.length === 0) {
+    return false;
+  }
+  const ownedTargets = activeTaskOwnedTargets(state);
+  if (ownedTargets.paths.size === 0 && ownedTargets.names.size === 0 && ownedTargets.directories.size === 0) {
+    return false;
+  }
+  return mutationTargets.every((target) => isOwnedByActiveTask(target, ownedTargets));
+}
+
+function mutationTargetPathsForAction(action: AgentAction): string[] {
+  return uniqueStrings(action.calls.flatMap((call) => mutationTargetPathsForCall(call.tool, call.input)));
+}
+
+function mutationTargetPathsForCall(tool: string, input: Record<string, unknown>): string[] {
+  if (!isPreTaskMutationTool(tool)) {
+    return [];
+  }
+  const direct = [
+    readInputString(input, "path"),
+    readInputString(input, "from"),
+    readInputString(input, "to"),
+    readInputString(input, "source"),
+    readInputString(input, "destination"),
+    readInputString(input, "target"),
+  ];
+  const files = readInputArrayPaths(input, "files");
+  const edits = readInputArrayPaths(input, "edits");
+  return uniqueStrings([...direct, ...files, ...edits].filter((path): path is string => Boolean(path)));
+}
+
+function readInputString(input: Record<string, unknown>, key: string): string | undefined {
+  const value = input[key];
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
+}
+
+function readInputArrayPaths(input: Record<string, unknown>, key: string): string[] {
+  const value = input[key];
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value.flatMap((entry) => {
+    if (typeof entry === "string" && entry.trim().length > 0) {
+      return [entry.trim()];
+    }
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+      return [];
+    }
+    const record = entry as Record<string, unknown>;
+    return [
+      readInputString(record, "path"),
+      readInputString(record, "from"),
+      readInputString(record, "to"),
+    ].filter((path): path is string => Boolean(path));
+  });
+}
+
+interface ActiveTaskOwnedTargets {
+  paths: Set<string>;
+  names: Set<string>;
+  directories: Set<string>;
+}
+
+function activeTaskOwnedTargets(state: LoopState): ActiveTaskOwnedTargets {
+  const task = state.harnessContext.contextEngine?.task;
+  const paths = new Set<string>();
+  const names = new Set<string>();
+  const directories = new Set<string>();
+  const addPath = (value: string | undefined, kind?: string): void => {
+    if (!value || value.trim().length === 0) {
+      return;
+    }
+    const raw = value.trim();
+    paths.add(normalizePathKey(raw));
+    const workspacePath = workspaceRelativePath(raw);
+    if (workspacePath) {
+      paths.add(normalizePathKey(workspacePath));
+    }
+    const name = raw.split(/[\\/]/).filter(Boolean).at(-1);
+    if (name) {
+      names.add(name);
+    }
+    if (kind === "directory") {
+      directories.add(normalizePathKey(raw));
+      if (workspacePath) {
+        directories.add(normalizePathKey(workspacePath));
+      }
+    }
+  };
+
+  for (const asset of task?.assets ?? []) {
+    addPath(asset.path, asset.kind);
+    if (asset.name) {
+      names.add(asset.name);
+    }
+  }
+  for (const artifact of task?.artifacts ?? []) {
+    addPath(artifact.path);
+  }
+  for (const run of task?.recentRuns ?? []) {
+    for (const changedFile of run.changedFilesPreview ?? []) {
+      addPath(changedFile);
+    }
+  }
+  for (const evidence of task?.recentEvidence ?? []) {
+    for (const artifact of evidence.artifacts ?? []) {
+      addPath(artifact);
+    }
+  }
+  return { paths, names, directories };
+}
+
+function isOwnedByActiveTask(target: string, owned: ActiveTaskOwnedTargets): boolean {
+  const raw = target.trim();
+  if (!raw) {
+    return false;
+  }
+  const candidates = uniqueStrings([
+    normalizePathKey(raw),
+    workspaceRelativePath(raw),
+  ].filter((path): path is string => Boolean(path)).map(normalizePathKey));
+  if (candidates.some((candidate) => owned.paths.has(candidate))) {
+    return true;
+  }
+  const name = raw.split(/[\\/]/).filter(Boolean).at(-1);
+  if (name && name === raw && owned.names.has(name)) {
+    return true;
+  }
+  return candidates.some((candidate) => {
+    for (const directory of owned.directories) {
+      if (candidate === directory || candidate.startsWith(`${directory}/`)) {
+        return true;
+      }
+    }
+    return false;
+  });
+}
+
+function workspaceRelativePath(path: string): string | undefined {
+  if (isAbsolute(path)) {
+    return path;
+  }
+  const workspaceDir = process.env["AYATI_WORKSPACE_DIR"]?.trim();
+  if (!workspaceDir) {
+    return undefined;
+  }
+  return resolve(workspaceDir, path);
+}
+
+function normalizePathKey(path: string): string {
+  return normalize(path.trim()).replace(/\\/g, "/");
 }
 
 function extractTurnRoutingUpdate(calls: ActToolCallRecord[]): TurnRoutingUpdate | null {
@@ -1854,11 +2434,9 @@ function isPreRunGitContextRoutingAction(
 function isSessionReadOnlyAction(
   decision: AgentDecision,
   workRunHandle: MemoryRunHandle | undefined,
-  sessionRunHandle: MemoryRunHandle | undefined,
 ): boolean {
   return decision.kind === "act"
     && !workRunHandle
-    && Boolean(sessionRunHandle?.runId)
     && decision.action.calls.length > 0
     && decision.action.calls.every((call) => isReadOnlyTool(call.tool));
 }
@@ -2444,8 +3022,11 @@ function summarizeTaskSummary(taskSummary: AgentTaskSummaryRecord | undefined): 
 }
 
 async function executeActionStep(input: ExecuteActionStepInput): Promise<ExecuteActionStepResult> {
-  input.state.runClass = "task";
-  const runHandle = requireWorkRunHandle(input.deps);
+  input.state.runClass = input.runClass ?? "task";
+  const runHandle = input.runHandle ?? requireWorkRunHandle(input.deps);
+  const taskAssets = input.state.runClass === "task"
+    ? input.state.harnessContext.contextEngine?.task?.assets
+    : undefined;
   let execution = await executeAgentAction(
     {
       toolExecutor: input.deps.toolExecutor,
@@ -2456,7 +3037,7 @@ async function executeActionStep(input: ExecuteActionStepInput): Promise<Execute
       runRecorder: input.deps.runRecorder ?? noopRunRecorder,
       runHandle,
       metrics: input.metrics,
-      taskAssets: input.state.harnessContext.contextEngine?.task?.assets,
+      taskAssets,
     },
     input.decision.action,
     input.stepNumber,
@@ -2477,7 +3058,7 @@ async function executeActionStep(input: ExecuteActionStepInput): Promise<Execute
           runRecorder: input.deps.runRecorder ?? noopRunRecorder,
           runHandle,
           metrics: input.metrics,
-          taskAssets: input.state.harnessContext.contextEngine?.task?.assets,
+          taskAssets,
         },
         recovery.action,
         input.stepNumber,
@@ -2954,6 +3535,7 @@ function buildInitialState(
     maxIterations: config.maxIterations,
     consecutiveFailures: 0,
     completedSteps: [],
+    routingAttempts: emptyRoutingAttemptState(),
     runPath: "",
     failureHistory: [],
     attachedDocuments: deps.attachedDocuments ?? [],
@@ -3054,6 +3636,15 @@ function emptyWorkState(): WorkState {
     summary: "",
     verifiedFacts: [],
     evidence: [],
+  };
+}
+
+function emptyRoutingAttemptState(): RoutingAttemptState {
+  return {
+    successCount: 0,
+    failureCount: 0,
+    maxFailures: MAX_ROUTING_FAILURES_PER_TURN,
+    resolved: false,
   };
 }
 

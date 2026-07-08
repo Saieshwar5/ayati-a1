@@ -197,6 +197,15 @@ export interface DeferredMutationState {
   blockedTools: string[];
 }
 
+export interface RoutingAttemptState {
+  successCount: number;
+  failureCount: number;
+  maxFailures: number;
+  resolved: boolean;
+  lastTool?: string;
+  lastError?: string;
+}
+
 export interface LoopState {
   runId: string;
   currentSeq: number;
@@ -224,6 +233,7 @@ export interface LoopState {
   consecutiveFailures: number;
   completedSteps: StepSummary[];
   deferredMutation?: DeferredMutationState;
+  routingAttempts: RoutingAttemptState;
   runPath: string;
   failureHistory: FailureRecord[];
   readProgress?: ReadProgressState;
@@ -428,6 +438,9 @@ export interface AgentLoopDeps {
   runRecorder?: RunRecorder;
   inputHandle?: SessionInputHandle;
   runHandle?: MemoryRunHandle;
+  createSessionRun?: (
+    inputHandle: SessionInputHandle,
+  ) => MemoryRunHandle | Promise<MemoryRunHandle>;
   createWorkRun?: (
     inputHandle: SessionInputHandle,
     request: CreateWorkRunRequest,

@@ -702,7 +702,7 @@ class AppSystemEventRuntime implements SystemEventRuntime {
       event: finalized ? "session_run_finalized" : "session_run_finalization_failed",
       data: {
         status,
-        committed: Boolean(finalized),
+        committed: Boolean(finalized?.sessionStoreCommit),
         resultStatus: result.status,
         resultType: result.type,
         inputKind: "system_event",

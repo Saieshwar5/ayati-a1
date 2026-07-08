@@ -493,7 +493,8 @@ export interface FinalizeGitMemorySessionRunInput {
 export interface FinalizeGitMemorySessionRunResult {
   sessionId: GitMemorySessionId;
   runId: GitMemoryRunId;
-  sessionStoreCommit: string;
+  committed: false;
+  sessionStoreCommit?: undefined;
 }
 
 export interface PromoteGitMemorySessionRunInput {
@@ -960,29 +961,10 @@ export class GitMemoryDailySessionStore {
     });
     await messageStore.removeWorkingFile(gitMemorySessionStoreActiveRunPath(input.sessionId, input.runId));
     await messageStore.removeWorkingFile(gitMemorySessionStoreActiveRunStepsPath(input.sessionId, input.runId));
-    const sessionStoreCommit = await messageStore.commitPaths([
-      runPath,
-      markdownPath,
-      stepsPath,
-    ], renderGitMemoryCommitMessage({
-      subject: `ayati: complete session run ${input.runId}`,
-      summary: input.summary,
-      trailers: {
-        sessionId: input.sessionId,
-        runId: input.runId,
-        event: input.status === "failed" ? "run_failed" : "run_completed",
-        status: input.status,
-        at: completedAt,
-        schemaVersion: 1,
-      },
-    })) ?? await messageStore.resolveRef(GIT_MEMORY_MAIN_REF);
-    if (!sessionStoreCommit) {
-      throw new Error(`Git memory session-store commit is missing after session run finalization: ${input.runId}`);
-    }
     return {
       sessionId: input.sessionId,
       runId: input.runId,
-      sessionStoreCommit,
+      committed: false,
     };
   }
 

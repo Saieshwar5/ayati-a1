@@ -843,8 +843,7 @@ describe("createChatTurnRuntime", () => {
       const runId = "R-20260628-0001";
       const driver = new GitMemoryWorktreeGitDriver(join(contextStoreDir, "sessions", sessionId));
       const sessionStore = await driver.openSubmoduleRepo(GIT_MEMORY_SESSION_STORE_DIR);
-      const sessionRun = JSON.parse(await sessionStore.readFile(
-        GIT_MEMORY_MAIN_REF,
+      const sessionRun = JSON.parse(await sessionStore.readWorkingFile(
         gitMemorySessionStoreRunPath(sessionId, runId),
       ) ?? "{}");
       expect(sessionRun).toMatchObject({
@@ -867,8 +866,11 @@ describe("createChatTurnRuntime", () => {
         },
       });
       expect(sessionRun.workPerformed.length).toBeGreaterThan(0);
-      const steps = readJsonl(await sessionStore.readFile(
+      expect(await sessionStore.readFile(
         GIT_MEMORY_MAIN_REF,
+        gitMemorySessionStoreRunPath(sessionId, runId),
+      )).toBeNull();
+      const steps = readJsonl(await sessionStore.readWorkingFile(
         gitMemorySessionStoreStepsPath(sessionId, runId),
       ));
       expect(steps).toHaveLength(1);
@@ -876,6 +878,11 @@ describe("createChatTurnRuntime", () => {
         sessionId,
         runId,
         toolCalls: [{ tool: "read_file", status: "success" }],
+        workStateAfter: expect.objectContaining({
+          evidence: expect.arrayContaining([
+            expect.stringContaining("read_file"),
+          ]),
+        }),
       });
       expect(await driver.listTreePaths(GIT_MEMORY_MAIN_REF, "tasks")).toEqual([]);
     } finally {
@@ -888,7 +895,7 @@ describe("createChatTurnRuntime", () => {
     }
   });
 
-  it("keeps vague durable-work discussion session-only when no mutation follows", async () => {
+  it("keeps vague durable-work discussion as messages only when no tools run", async () => {
     const rootDir = mkdtempSync(join(tmpdir(), "ayati-chat-runtime-target-only-"));
     const contextStoreDir = join(rootDir, "context");
     const dataDir = join(rootDir, "data");
@@ -927,20 +934,10 @@ describe("createChatTurnRuntime", () => {
       });
 
       const sessionId = "S-20260628-local";
-      const runId = "R-20260628-0001";
       const driver = new GitMemoryWorktreeGitDriver(join(contextStoreDir, "sessions", sessionId));
       const sessionStore = await driver.openSubmoduleRepo(GIT_MEMORY_SESSION_STORE_DIR);
-      expect(JSON.parse(await sessionStore.readFile(
-        GIT_MEMORY_MAIN_REF,
-        gitMemorySessionStoreRunPath(sessionId, runId),
-      ) ?? "{}")).toMatchObject({
-        sessionId,
-        runId,
-        runClass: "session",
-        status: "completed",
-        toolCallCount: 0,
-        toolsUsed: [],
-      });
+      expect(await sessionStore.listTreePaths(GIT_MEMORY_MAIN_REF, `sessions/${sessionId}/runs`)).toEqual([]);
+      expect(await sessionStore.listTreePaths(GIT_MEMORY_MAIN_REF, `sessions/${sessionId}/steps`)).toEqual([]);
       expect(await driver.listTreePaths(GIT_MEMORY_MAIN_REF, "tasks")).toEqual([]);
     } finally {
       rmSync(rootDir, { recursive: true, force: true });
@@ -1074,7 +1071,7 @@ describe("createChatTurnRuntime", () => {
       expect(context.task?.recentRuns[0]).toMatchObject({
         runId,
         status: "completed",
-        toolCallCount: 2,
+        toolCallCount: 1,
       });
       expect(readFileSync(join(workspaceDir, "notes.md"), "utf-8")).toContain("Created after promotion.");
     } finally {
@@ -1224,31 +1221,14 @@ describe("createChatTurnRuntime", () => {
       });
 
       const sessionId = apiTurn.sessionId;
-      const clarificationRunId = "R-20260628-0001";
-      const answerRunId = "R-20260628-0002";
+      const answerRunId = "R-20260628-0001";
       const driver = new GitMemoryWorktreeGitDriver(join(contextStoreDir, "sessions", sessionId));
       const sessionStore = await driver.openSubmoduleRepo(GIT_MEMORY_SESSION_STORE_DIR);
-      expect(JSON.parse(await sessionStore.readFile(
-        GIT_MEMORY_MAIN_REF,
-        gitMemorySessionStoreRunPath(sessionId, clarificationRunId),
-      ) ?? "{}")).toMatchObject({
-        sessionId,
-        runId: clarificationRunId,
-        runClass: "session",
-        toolsUsed: [],
-        toolCallCount: 0,
-      });
-      expect(readJsonl(await sessionStore.readFile(
-        GIT_MEMORY_MAIN_REF,
-        gitMemorySessionStoreStepsPath(sessionId, clarificationRunId),
-      ))).toEqual([]);
+      expect(await sessionStore.listTreePaths(GIT_MEMORY_MAIN_REF, `sessions/${sessionId}/runs`)).toEqual([]);
+      expect(await sessionStore.listTreePaths(GIT_MEMORY_MAIN_REF, `sessions/${sessionId}/steps`)).toEqual([]);
       expect(await sessionStore.readFile(
         GIT_MEMORY_MAIN_REF,
         gitMemorySessionStoreRunPath(sessionId, answerRunId),
-      )).toBeNull();
-      expect(await driver.readFile(
-        apiTask.ref,
-        gitMemoryTaskRunPath(apiTask.taskId, clarificationRunId),
       )).toBeNull();
       expect(await driver.readFile(
         uiTask.ref,
