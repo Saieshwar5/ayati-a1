@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { access, readdir } from "node:fs/promises";
+import { readdir } from "node:fs/promises";
 import { basename, extname, join } from "node:path";
 import type { TaskAssetRecord } from "../contracts.js";
 import { GitMemoryWorktreeGitDriver } from "./git-driver.js";
@@ -41,6 +41,15 @@ import {
   renderSessionRunMarkdown,
   renderTaskRunMarkdown,
 } from "./session-store-renderers.js";
+import {
+  buildInitialSessionStoreFiles,
+  legacyGitMemoryTaskEvidenceManifestPath,
+  pathExists,
+  runIdFromActionPath,
+  runIdFromRunMarkdownPath,
+  runIdFromRunPath,
+  type BuildInitialSessionFilesInput,
+} from "./session-store-paths.js";
 import type {
   GitMemoryActionId,
   GitMemoryActionRecord,
@@ -94,7 +103,6 @@ import {
   gitMemorySessionStoreMessagePath,
   gitMemorySessionStoreMessagesDir,
   gitMemorySessionStoreMetaPath,
-  gitMemorySessionStoreSchemaPath,
   gitMemorySessionStoreAttachmentsPath,
   gitMemorySessionStoreActiveRunPath,
   gitMemorySessionStoreActiveRunStepsPath,
@@ -1873,35 +1881,6 @@ export class GitMemoryDailySessionStore {
   }
 }
 
-interface BuildInitialSessionFilesInput {
-  sessionId: GitMemorySessionId;
-  date: string;
-  timezone: string;
-  agentId: string;
-  createdAt: string;
-}
-
-function buildInitialSessionStoreFiles(input: BuildInitialSessionFilesInput): Record<string, string> {
-  const meta: GitMemorySessionMetaFile = {
-    schemaVersion: 1,
-    sessionId: input.sessionId,
-    date: input.date,
-    timezone: input.timezone,
-    createdAt: input.createdAt,
-    repoKind: "daily_session",
-    agentId: input.agentId,
-  };
-  return {
-    [gitMemorySessionStoreMetaPath(input.sessionId)]: prettyJson(meta),
-    [gitMemorySessionStoreSchemaPath(input.sessionId)]: prettyJson({
-      schemaVersion: 1,
-      kind: "git_memory_session",
-      sourceOfTruth: "session_store",
-      commitPolicy: "task_run_snapshot",
-    }),
-  };
-}
-
 function normalizeMemoryList(values: Array<string | undefined> | undefined): string[] | undefined {
   const normalized = (values ?? []).map((value) => value?.trim() ?? "").filter(Boolean);
   return normalized.length > 0 ? unique(normalized) : undefined;
@@ -3062,10 +3041,6 @@ async function readTaskEvidenceForRun(
   return tail(parseJsonl<GitMemoryEvidenceManifestRecord>(raw), limit);
 }
 
-function legacyGitMemoryTaskEvidenceManifestPath(taskId: GitMemoryTaskId, runId: GitMemoryRunId): string {
-  return `${gitMemoryTaskDir(taskId)}/evidence/${runId}/manifest.jsonl`;
-}
-
 function findRunStepRecord(
   records: GitMemoryStepRecord[],
   input: Pick<ReadGitMemoryRunStepInput, "runId" | "step" | "callId">,
@@ -3537,30 +3512,6 @@ function normalizeMarkdownCharLimit(value: number | undefined, fallback: number)
     return fallback;
   }
   return Math.min(value, 50_000);
-}
-
-async function pathExists(path: string): Promise<boolean> {
-  try {
-    await access(path);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-function runIdFromActionPath(path: string): GitMemoryRunId {
-  const fileName = path.split("/").pop() ?? "";
-  return fileName.replace(/\.jsonl$/, "");
-}
-
-function runIdFromRunMarkdownPath(path: string): GitMemoryRunId {
-  const fileName = path.split("/").pop() ?? "";
-  return fileName.replace(/\.md$/, "");
-}
-
-function runIdFromRunPath(path: string): GitMemoryRunId {
-  const fileName = path.split("/").pop() ?? "";
-  return fileName.replace(/\.json$/, "");
 }
 
 function runSequenceFromRunId(runId: GitMemoryRunId): number {
