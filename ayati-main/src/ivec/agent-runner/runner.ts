@@ -1,17 +1,14 @@
 import { join } from "node:path";
 import { devLog } from "../../shared/index.js";
 import { prepareIncomingAttachments } from "../../documents/attachment-preparer.js";
-import type { MemoryRunHandle, RunRecorder, SessionInputHandle } from "../../memory/types.js";
+import type { MemoryRunHandle, SessionInputHandle } from "../../memory/types.js";
 import type {
-  ActToolCallRecord,
   AgentLoopDeps,
   AgentLoopResult,
   CreatedWorkRun,
   CompletionDirective,
   LoopConfig,
   LoopState,
-  PromptToolCallContext,
-  ToolObservation,
 } from "../types.js";
 import {
   DEFAULT_LOOP_CONFIG,
@@ -28,7 +25,6 @@ import {
 import {
   buildLoopStateSizeBreakdown,
   compactStepSummaryForState,
-  compactToolContext,
   compactWorkState,
   measureJson,
 } from "../state-compaction.js";
@@ -42,15 +38,10 @@ import {
   updateReadProgressAfterActOutput,
 } from "./read-progress-policy.js";
 import type { ToolLoadResult } from "./tool-working-set.js";
-import { executeAgentAction } from "./action-executor.js";
-import type { AgentActionExecutionResult } from "./action-executor.js";
 import {
-  buildStepSummary,
   recordSessionStep,
   recordTaskStep,
-  type ExecuteActionStepResult,
 } from "./step-lifecycle.js";
-import { planLocalRecovery } from "./failure-policy.js";
 import { buildContextEngineFeedbackSummary } from "../feedback-ledger.js";
 import { isReadOnlyTool } from "../../skills/tool-taxonomy.js";
 import {
@@ -114,10 +105,15 @@ import {
   buildInitialState,
   decisionScopeId,
   getPrimaryUserMessage,
-  requireWorkRunHandle,
   resolveInputHandle,
   syncHarnessContext,
 } from "./runner-state.js";
+import {
+  applyToolStateUpdates,
+  buildUpdatedToolContext,
+  executeActionStep,
+  syncPreparedAttachmentsFromRegistry,
+} from "./action-step.js";
 import {
   applyAgentWorkStateUpdate,
   canCompleteLocallyAfterAction,
@@ -142,24 +138,6 @@ import { auditToolPolicy } from "./tool-policy-audit.js";
 interface MemoryRunContext {
   runHandle: MemoryRunHandle;
 }
-
-const noopRunRecorder: RunRecorder = {
-  recordToolCall(): void {
-    return;
-  },
-  recordToolResult(): void {
-    return;
-  },
-  recordAssistantFinal(): void {
-    return;
-  },
-  recordRunFailure(): void {
-    return;
-  },
-  recordAgentStep(): void {
-    return;
-  },
-};
 
 export async function runAgentLoop(
   deps: AgentLoopDeps,
@@ -1588,18 +1566,6 @@ export async function runAgentLoop(
   return finalize({ status: "stuck", content: state.finalOutput });
 }
 
-interface ExecuteActionStepInput {
-  deps: AgentLoopDeps;
-  state: LoopState;
-  config: LoopConfig;
-  metrics: ReturnType<typeof createRunMetrics>;
-  selectedTools: ReturnType<typeof selectToolsForDecision>;
-  decision: Extract<AgentDecision, { kind: "act" }>;
-  stepNumber: number;
-  runHandle?: MemoryRunHandle;
-  runClass?: LoopState["runClass"];
-}
-
 function isPreRunGitContextAction(
   decision: AgentDecision,
   workRunHandle: MemoryRunHandle | undefined,
@@ -1669,172 +1635,6 @@ function branchFromRef(ref: string | undefined): string | undefined {
     : ref;
 }
 
-async function executeActionStep(input: ExecuteActionStepInput): Promise<ExecuteActionStepResult> {
-  input.state.runClass = input.runClass ?? "task";
-  const runHandle = input.runHandle ?? requireWorkRunHandle(input.deps);
-  const taskAssets = input.state.runClass === "task"
-    ? input.state.harnessContext.contextEngine?.task?.assets
-    : undefined;
-  let execution = await executeAgentAction(
-    {
-      toolExecutor: input.deps.toolExecutor,
-      selectedTools: input.selectedTools,
-      config: input.config,
-      clientId: input.deps.clientId,
-      ...(input.deps.uiContext ? { uiContext: input.deps.uiContext } : {}),
-      runRecorder: input.deps.runRecorder ?? noopRunRecorder,
-      runHandle,
-      metrics: input.metrics,
-      taskAssets,
-    },
-    input.decision.action,
-    input.stepNumber,
-    input.state.workState,
-  );
-
-  if (!execution.verifyOutput.passed) {
-    const recovery = planLocalRecovery(input.decision.action, execution.actOutput.toolCalls);
-    if (recovery) {
-      recordRunMetric(input.metrics, "local_recovery", { kind: "local" });
-      const retryExecution = await executeAgentAction(
-        {
-          toolExecutor: input.deps.toolExecutor,
-          selectedTools: input.selectedTools,
-          config: input.config,
-          clientId: input.deps.clientId,
-          ...(input.deps.uiContext ? { uiContext: input.deps.uiContext } : {}),
-          runRecorder: input.deps.runRecorder ?? noopRunRecorder,
-          runHandle,
-          metrics: input.metrics,
-          taskAssets,
-        },
-        recovery.action,
-        input.stepNumber,
-        input.state.workState,
-      );
-      execution = mergeRecoveredExecution(execution, retryExecution, recovery.reason);
-    }
-  }
-
-  await applyToolStateUpdates(input.state, input.deps, execution.actOutput.toolCalls);
-  syncPreparedAttachmentsFromRegistry(input.state, input.deps);
-
-  const stepSummary = buildStepSummary({
-    stepNumber: input.stepNumber,
-    action: input.decision.action,
-    execution,
-  });
-
-  return {
-    execution,
-    stepSummary,
-  };
-}
-
-async function applyToolStateUpdates(state: LoopState, deps: AgentLoopDeps, calls: ActToolCallRecord[]): Promise<void> {
-  for (const update of calls.flatMap((call) => readToolStateUpdates(call.meta))) {
-    if (update["type"] === "restore_prepared_attachment") {
-      syncPreparedAttachmentsFromRegistry(state, deps);
-      continue;
-    }
-    if (update["type"] === "restore_managed_file") {
-      await syncManagedFilesFromLibrary(state, deps);
-      continue;
-    }
-    if (update["type"] === "restore_managed_directory") {
-      await syncManagedDirectoriesFromLibrary(state, deps);
-      continue;
-    }
-    if (update["type"] === "mark_document_indexed") {
-      const preparedInputId = readString(update["preparedInputId"]);
-      if (!preparedInputId) continue;
-      deps.preparedAttachmentRegistry?.updateAttachmentSummary(state.runId, preparedInputId, (summary) => ({
-        ...summary,
-        ...(summary.unstructured ? {
-          unstructured: {
-            ...summary.unstructured,
-            indexed: update["indexed"] === true,
-          },
-        } : {}),
-      }));
-      continue;
-    }
-    if (update["type"] === "mark_dataset_staged") {
-      const preparedInputId = readString(update["preparedInputId"]);
-      if (!preparedInputId) continue;
-      deps.preparedAttachmentRegistry?.updateAttachmentSummary(state.runId, preparedInputId, (summary) => ({
-        ...summary,
-        ...(summary.structured ? {
-          structured: {
-            ...summary.structured,
-            staged: update["staged"] === true,
-            ...(readString(update["stagingDbPath"]) ? { stagingDbPath: readString(update["stagingDbPath"])! } : {}),
-            ...(readString(update["stagingTableName"]) ? { stagingTableName: readString(update["stagingTableName"])! } : {}),
-          },
-        } : {}),
-      }));
-      continue;
-    }
-  }
-}
-
-async function syncManagedFilesFromLibrary(state: LoopState, deps: AgentLoopDeps): Promise<void> {
-  if (!deps.fileLibrary) {
-    return;
-  }
-  state.managedFiles = await deps.fileLibrary.listRunFiles(state.runId);
-}
-
-async function syncManagedDirectoriesFromLibrary(state: LoopState, deps: AgentLoopDeps): Promise<void> {
-  if (!deps.directoryLibrary) {
-    return;
-  }
-  state.managedDirectories = await deps.directoryLibrary.listRunDirectories(state.runId);
-}
-
-function syncPreparedAttachmentsFromRegistry(state: LoopState, deps: AgentLoopDeps): void {
-  const records = deps.preparedAttachmentRegistry?.getRunAttachments(state.runId) ?? [];
-  if (records.length === 0) {
-    return;
-  }
-  state.preparedAttachmentRecords = records;
-  state.preparedAttachments = records.map((record) => record.summary);
-}
-
-function readToolStateUpdates(meta: Record<string, unknown> | undefined): Array<Record<string, unknown>> {
-  const raw = meta?.["stateUpdates"];
-  if (!Array.isArray(raw)) {
-    return [];
-  }
-  return raw.filter((item): item is Record<string, unknown> => Boolean(item && typeof item === "object" && !Array.isArray(item)));
-}
-
-function readString(value: unknown): string | undefined {
-  return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
-}
-
-function mergeRecoveredExecution(
-  first: AgentActionExecutionResult,
-  retry: AgentActionExecutionResult,
-  reason: string,
-): AgentActionExecutionResult {
-  return {
-    actOutput: {
-      toolCalls: [...first.actOutput.toolCalls, ...retry.actOutput.toolCalls],
-      finalText: retry.actOutput.finalText,
-      stoppedEarlyReason: retry.actOutput.stoppedEarlyReason,
-    },
-    verifyOutput: {
-      ...retry.verifyOutput,
-      evidenceItems: [reason, ...first.verifyOutput.evidenceItems, ...retry.verifyOutput.evidenceItems],
-      evidenceSummary: [reason, first.verifyOutput.evidenceSummary, retry.verifyOutput.evidenceSummary]
-        .filter((item) => item.trim().length > 0)
-        .join(" "),
-    },
-    nextWorkState: retry.nextWorkState,
-  };
-}
-
 async function prepareAttachmentsForRun(
   deps: AgentLoopDeps,
   state: LoopState,
@@ -1866,45 +1666,6 @@ function sanitizeFileName(value: string): string {
 
 function discardModelWorkingNotes(decision: AgentDecision): void {
   void decision.workingNotes;
-}
-
-function getLatestObservations(execution: AgentActionExecutionResult): ToolObservation[] {
-  return execution.actOutput.toolCalls
-    .map((call) => call.observation)
-    .filter((observation): observation is NonNullable<ActToolCallRecord["observation"]> => observation !== undefined);
-}
-
-function buildUpdatedToolContext(
-  state: LoopState,
-  execution: AgentActionExecutionResult,
-): LoopState["toolContext"] {
-  return compactToolContext({
-    recent: getLatestObservations(execution),
-    toolCalls: [
-      ...(state.toolContext?.toolCalls ?? []),
-      ...execution.actOutput.toolCalls.map((call) => toPromptToolCallContext(state.runId, state.iteration, call)),
-    ],
-  });
-}
-
-function toPromptToolCallContext(runId: string, step: number, call: ActToolCallRecord): PromptToolCallContext {
-  return {
-    step,
-    ...(call.callId ? { callId: call.callId } : {}),
-    tool: call.tool,
-    input: call.input,
-    status: call.error ? "failed" : "success",
-    output: call.output,
-    ...(call.error ? { error: call.error } : {}),
-    ...(call.code ? { code: call.code } : {}),
-    ...(call.operationStatus ? { operationStatus: call.operationStatus } : {}),
-    ...(call.artifacts && call.artifacts.length > 0 ? { artifacts: call.artifacts } : {}),
-    ...(call.observation?.hasMore !== undefined ? { hasMore: call.observation.hasMore } : {}),
-    ...(runId.trim().length > 0 ? { stepRef: { runId, step, ...(call.callId ? { callId: call.callId } : {}) } } : {}),
-    ...(call.observation?.evidenceRef ? { evidenceRef: call.observation.evidenceRef } : {}),
-    ...(call.rawOutputChars !== undefined ? { rawOutputChars: call.rawOutputChars } : {}),
-    ...(call.outputTruncated !== undefined ? { outputTruncated: call.outputTruncated } : {}),
-  };
 }
 
 async function buildFinalResponseFromWorkState(input: {
