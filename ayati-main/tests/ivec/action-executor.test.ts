@@ -205,7 +205,7 @@ describe("executeAgentAction verification gates", () => {
     try {
       const okTool = createTool("calculator", { domain: "calculator" });
       const failTool: ToolDefinition = {
-        name: "read_file",
+        name: "read_files",
         description: "Fails.",
         inputSchema: { type: "object", additionalProperties: true },
         annotations: {
@@ -226,10 +226,10 @@ describe("executeAgentAction verification gates", () => {
         mode: "parallel",
         calls: [
           callSpec("call_1", "calculator"),
-          callSpec("call_2", "read_file"),
+          callSpec("call_2", "read_files"),
           callSpec("call_3", "calculator"),
         ],
-        allowedTools: ["calculator", "read_file"],
+        allowedTools: ["calculator", "read_files"],
         assertions: [],
       };
 
@@ -239,7 +239,7 @@ describe("executeAgentAction verification gates", () => {
       expect(result.actOutput.toolCalls.map((call) => call.callId)).toEqual(["call_1", "call_2", "call_3"]);
       expect(result.verifyOutput.passed).toBe(false);
       expect(result.verifyOutput.executionStatus).toBe("partial_success");
-      expect(result.verifyOutput.summary).toContain("read_file: parallel boom");
+      expect(result.verifyOutput.summary).toContain("read_files: parallel boom");
       expect(result.nextWorkState.status).toBe("blocked");
     } finally {
       cleanup(runPath);
@@ -333,7 +333,7 @@ describe("executeAgentAction verification gates", () => {
   it("rejects long-running or retry-unsafe tools in parallel", async () => {
     const runPath = makeTmpDir();
     try {
-      const longRunningRead = createTool("read_file", {
+      const longRunningRead = createTool("read_files", {
         domain: "filesystem",
         readOnly: true,
         longRunning: true,
@@ -346,8 +346,8 @@ describe("executeAgentAction verification gates", () => {
 
       const longRunningResult = await runAction([longRunningRead], {
         mode: "parallel",
-        calls: [callSpec("call_1", "read_file", { path: "a.txt" })],
-        allowedTools: ["read_file"],
+        calls: [callSpec("call_1", "read_files", { files: [{ path: "a.txt" }] })],
+        allowedTools: ["read_files"],
         assertions: [],
       }, runPath);
       const retryUnsafeResult = await runAction([retryUnsafeList], {
@@ -489,13 +489,22 @@ describe("executeAgentAction verification gates", () => {
     const runPath = makeTmpDir();
     try {
       const readLikeTool: ToolDefinition = {
-        name: "read_file",
+        name: "read_files",
         description: "Return bounded file context.",
         inputSchema: {
           type: "object",
-          required: ["path"],
+          required: ["files"],
           properties: {
-            path: { type: "string" },
+            files: {
+              type: "array",
+              items: {
+                type: "object",
+                required: ["path"],
+                properties: {
+                  path: { type: "string" },
+                },
+              },
+            },
           },
         },
         observationPolicy: { outputImportance: "decision_context", rawStorage: "never", maxObservationChars: 4_000 },
@@ -509,14 +518,14 @@ describe("executeAgentAction verification gates", () => {
 
       const result = await runAction(
         [readLikeTool],
-        actionFor("read_file", { path: "rivers-website/index.html" }, "Inspect current site structure"),
+        actionFor("read_files", { files: [{ path: "rivers-website/index.html" }] }, "Inspect current site structure"),
         runPath,
       );
 
       expect(result.nextWorkState.taskNotes).toHaveLength(1);
       expect(result.nextWorkState.taskNotes?.[0]).toMatchObject({
-        id: "note:read_file:rivers-website/index.html",
-        source: "read_file:rivers-website/index.html",
+        id: "note:read_files:rivers-website/index.html",
+        source: "read_files:rivers-website/index.html",
         expires: "task",
       });
       expect(result.nextWorkState.taskNotes?.[0]?.text).toContain("10 river cards");

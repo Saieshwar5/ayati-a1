@@ -4,13 +4,8 @@ import type {
   ReadFilesInput,
   ReadFilesInputFile,
   InspectPathsInput,
-  WriteFileInput,
   WriteFilesInput,
   WriteFilesInputFile,
-  EditFileInput,
-  EditFilesInput,
-  EditFilesInputEdit,
-  EditFilesMode,
   PatchFilesInput,
   PatchFilesInputFile,
   PatchFilesPatch,
@@ -23,10 +18,10 @@ import type {
   SearchInFilesInput,
 } from "./types.js";
 
-const MAX_READ_FILES = 20;
-const MAX_BATCH_EDITS = 40;
-const MAX_PATCH_FILES = 20;
-const MAX_PATCHES_PER_FILE = 20;
+export const MAX_READ_FILES = 4;
+export const MAX_WRITE_FILES = 2;
+export const MAX_PATCH_FILES = 2;
+export const MAX_PATCHES_PER_FILE = 20;
 
 function fail(msg: string): ToolResult {
   return { ok: false, error: `Invalid input: ${msg}` };
@@ -38,6 +33,10 @@ function isObject(input: unknown): input is Record<string, unknown> {
 
 function isNonEmptyString(val: unknown): val is string {
   return typeof val === "string" && val.trim().length > 0;
+}
+
+function isSha256String(val: unknown): val is string {
+  return typeof val === "string" && /^[a-f0-9]{64}$/i.test(val);
 }
 
 function isPositiveInt(val: unknown): val is number {
@@ -101,7 +100,7 @@ export function validateReadFilesInput(input: unknown): ReadFilesInput | ToolRes
     return fail("files must be a non-empty array.");
   }
   if (v.files.length > MAX_READ_FILES) {
-    return fail(`files must contain at most ${MAX_READ_FILES} entries.`);
+    return fail(`files must contain at most ${MAX_READ_FILES} entries; split larger reads into multiple read_files calls.`);
   }
 
   const files: ReadFilesInputFile[] = [];
@@ -159,33 +158,14 @@ export function validateInspectPathsInput(input: unknown): InspectPathsInput | T
   };
 }
 
-export function validateWriteFileInput(input: unknown): WriteFileInput | ToolResult {
-  if (!isObject(input)) return fail("expected object.");
-  const v = input as Partial<WriteFileInput>;
-  if (!isNonEmptyString(v.path)) return fail("path must be a non-empty string.");
-  if (typeof v.content !== "string") return fail("content must be a string.");
-  if (v.createDirs !== undefined && typeof v.createDirs !== "boolean") {
-    return fail("createDirs must be a boolean.");
-  }
-  if (v.allowExternalPath !== undefined && typeof v.allowExternalPath !== "boolean") {
-    return fail("allowExternalPath must be a boolean.");
-  }
-  const tokenErr = validateConfirmationToken(v.confirmationToken);
-  if (tokenErr) return tokenErr;
-  return {
-    path: v.path,
-    content: v.content,
-    createDirs: v.createDirs,
-    allowExternalPath: v.allowExternalPath,
-    confirmationToken: v.confirmationToken,
-  };
-}
-
 export function validateWriteFilesInput(input: unknown): WriteFilesInput | ToolResult {
   if (!isObject(input)) return fail("expected object.");
   const v = input as Partial<WriteFilesInput>;
   if (!Array.isArray(v.files) || v.files.length === 0) {
     return fail("files must be a non-empty array.");
+  }
+  if (v.files.length > MAX_WRITE_FILES) {
+    return fail(`files must contain at most ${MAX_WRITE_FILES} entries; split larger writes into multiple write_files calls.`);
   }
   const files: WriteFilesInputFile[] = [];
   for (const [index, file] of v.files.entries()) {
@@ -193,7 +173,14 @@ export function validateWriteFilesInput(input: unknown): WriteFilesInput | ToolR
     const candidate = file as Partial<WriteFilesInputFile>;
     if (!isNonEmptyString(candidate.path)) return fail(`files[${index}].path must be a non-empty string.`);
     if (typeof candidate.content !== "string") return fail(`files[${index}].content must be a string.`);
-    files.push({ path: candidate.path, content: candidate.content });
+    if (candidate.baseSha256 !== undefined && !isSha256String(candidate.baseSha256)) {
+      return fail(`files[${index}].baseSha256 must be a 64-character sha256 hex string when provided.`);
+    }
+    files.push({
+      path: candidate.path,
+      content: candidate.content,
+      baseSha256: candidate.baseSha256?.toLowerCase(),
+    });
   }
   if (v.createDirs !== undefined && typeof v.createDirs !== "boolean") {
     return fail("createDirs must be a boolean.");
@@ -211,115 +198,14 @@ export function validateWriteFilesInput(input: unknown): WriteFilesInput | ToolR
   };
 }
 
-export function validateEditFileInput(input: unknown): EditFileInput | ToolResult {
-  if (!isObject(input)) return fail("expected object.");
-  const v = input as Partial<EditFileInput>;
-  if (!isNonEmptyString(v.path)) return fail("path must be a non-empty string.");
-  if (typeof v.oldString !== "string" || v.oldString.length === 0) {
-    return fail("oldString must be a non-empty string.");
-  }
-  if (typeof v.newString !== "string") return fail("newString must be a string.");
-  if (v.replaceAll !== undefined && typeof v.replaceAll !== "boolean") {
-    return fail("replaceAll must be a boolean.");
-  }
-  if (v.allowExternalPath !== undefined && typeof v.allowExternalPath !== "boolean") {
-    return fail("allowExternalPath must be a boolean.");
-  }
-  const tokenErr = validateConfirmationToken(v.confirmationToken);
-  if (tokenErr) return tokenErr;
-  return {
-    path: v.path,
-    oldString: v.oldString,
-    newString: v.newString,
-    replaceAll: v.replaceAll,
-    allowExternalPath: v.allowExternalPath,
-    confirmationToken: v.confirmationToken,
-  };
-}
-
-export function validateEditFilesInput(input: unknown): EditFilesInput | ToolResult {
-  if (!isObject(input)) return fail("expected object.");
-  const v = input as Partial<EditFilesInput>;
-  if (!Array.isArray(v.edits)) return fail("edits must be an array.");
-  if (v.edits.length === 0) return fail("edits must contain at least one edit.");
-  if (v.edits.length > MAX_BATCH_EDITS) return fail(`edits must contain ${MAX_BATCH_EDITS} or fewer edits.`);
-  if (v.allowExternalPath !== undefined && typeof v.allowExternalPath !== "boolean") {
-    return fail("allowExternalPath must be a boolean.");
-  }
-  const tokenErr = validateConfirmationToken(v.confirmationToken);
-  if (tokenErr) return tokenErr;
-
-  const edits: EditFilesInputEdit[] = [];
-  for (const [index, rawEdit] of v.edits.entries()) {
-    if (!isObject(rawEdit)) return fail(`edits[${index}] must be an object.`);
-    const edit = rawEdit as Partial<EditFilesInputEdit>;
-    if (!isNonEmptyString(edit.path)) return fail(`edits[${index}].path must be a non-empty string.`);
-    const mode = edit.mode ?? "replace";
-    if (!isEditFilesMode(mode)) {
-      return fail(`edits[${index}].mode must be one of replace, insert_before, insert_after, or replace_range.`);
-    }
-    if (mode === "replace") {
-      if (typeof edit.oldString !== "string" || edit.oldString.length === 0) {
-        return fail(`edits[${index}].oldString must be a non-empty string for replace mode.`);
-      }
-      if (typeof edit.newString !== "string") {
-        return fail(`edits[${index}].newString must be a string for replace mode.`);
-      }
-      if (edit.replaceAll !== undefined && typeof edit.replaceAll !== "boolean") {
-        return fail(`edits[${index}].replaceAll must be a boolean.`);
-      }
-    } else if (mode === "insert_before" || mode === "insert_after") {
-      if (typeof edit.anchor !== "string" || edit.anchor.length === 0) {
-        return fail(`edits[${index}].anchor must be a non-empty string for ${mode} mode.`);
-      }
-      if (typeof edit.content !== "string") {
-        return fail(`edits[${index}].content must be a string for ${mode} mode.`);
-      }
-    } else {
-      if (!isPositiveInt(edit.startLine)) {
-        return fail(`edits[${index}].startLine must be a positive integer for replace_range mode.`);
-      }
-      if (!isPositiveInt(edit.endLine)) {
-        return fail(`edits[${index}].endLine must be a positive integer for replace_range mode.`);
-      }
-      if (edit.endLine < edit.startLine) {
-        return fail(`edits[${index}].endLine must be greater than or equal to startLine.`);
-      }
-      if (typeof edit.newString !== "string") {
-        return fail(`edits[${index}].newString must be a string for replace_range mode.`);
-      }
-    }
-
-    edits.push({
-      path: edit.path,
-      mode,
-      ...(edit.oldString !== undefined ? { oldString: edit.oldString } : {}),
-      ...(edit.newString !== undefined ? { newString: edit.newString } : {}),
-      ...(edit.replaceAll !== undefined ? { replaceAll: edit.replaceAll } : {}),
-      ...(edit.anchor !== undefined ? { anchor: edit.anchor } : {}),
-      ...(edit.content !== undefined ? { content: edit.content } : {}),
-      ...(edit.startLine !== undefined ? { startLine: edit.startLine } : {}),
-      ...(edit.endLine !== undefined ? { endLine: edit.endLine } : {}),
-    });
-  }
-
-  return {
-    edits,
-    allowExternalPath: v.allowExternalPath,
-    confirmationToken: v.confirmationToken,
-  };
-}
-
-function isEditFilesMode(value: unknown): value is EditFilesMode {
-  return value === "replace" || value === "insert_before" || value === "insert_after" || value === "replace_range";
-}
-
 export function validatePatchFilesInput(input: unknown): PatchFilesInput | ToolResult {
   if (!isObject(input)) return fail("expected object.");
   const v = input as Partial<PatchFilesInput>;
   if (!Array.isArray(v.files)) return fail("files must be an array.");
   if (v.files.length === 0) return fail("files must contain at least one file.");
-  if (v.files.length > MAX_PATCH_FILES) return fail(`files must contain ${MAX_PATCH_FILES} or fewer files.`);
+  if (v.files.length > MAX_PATCH_FILES) {
+    return fail(`files must contain at most ${MAX_PATCH_FILES} entries; split larger patches into multiple patch_files calls.`);
+  }
   if (v.allowExternalPath !== undefined && typeof v.allowExternalPath !== "boolean") {
     return fail("allowExternalPath must be a boolean.");
   }
@@ -362,10 +248,10 @@ export function validatePatchFilesInput(input: unknown): PatchFilesInput | ToolR
         if (!isPositiveInt(patch.startLine)) {
           return fail(`files[${fileIndex}].patches[${patchIndex}].startLine must be a positive integer for replace_lines.`);
         }
-        if (!isPositiveInt(patch.endLine)) {
-          return fail(`files[${fileIndex}].patches[${patchIndex}].endLine must be a positive integer for replace_lines.`);
+        if (!isPositiveInt(patch.endLine) && patch.endLine !== "EOF") {
+          return fail(`files[${fileIndex}].patches[${patchIndex}].endLine must be a positive integer or "EOF" for replace_lines.`);
         }
-        if (patch.endLine < patch.startLine) {
+        if (typeof patch.endLine === "number" && patch.endLine < patch.startLine) {
           return fail(`files[${fileIndex}].patches[${patchIndex}].endLine must be greater than or equal to startLine.`);
         }
         if (typeof patch.replace !== "string") {

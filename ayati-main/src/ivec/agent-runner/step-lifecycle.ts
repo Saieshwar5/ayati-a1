@@ -293,13 +293,36 @@ function selectedSourceFields(value: unknown): Record<string, unknown> {
   }
   const record = value as Record<string, unknown>;
   const output: Record<string, unknown> = {};
-  for (const key of ["path", "filePath", "dirPath", "cwd", "query", "pattern", "cmd", "command", "scriptPath", "exitCode", "timedOut", "matchCount"] as const) {
+  for (const key of ["path", "filePath", "dirPath", "cwd", "query", "pattern", "cmd", "command", "scriptPath", "exitCode", "timedOut", "matchCount", "patchIndex", "failedEditIndex", "mode"] as const) {
     const selected = compactSourceValue(record[key]);
     if (selected !== undefined) {
       output[key] = selected;
     }
   }
+  const operationKind = compactSourceValue(record["kind"]);
+  if (operationKind !== undefined) {
+    output["operationKind"] = operationKind;
+  }
+  const diagnostic = compactDiagnostic(record["diagnostic"]);
+  if (diagnostic) {
+    output["diagnostic"] = diagnostic;
+  }
   return output;
+}
+
+function compactDiagnostic(value: unknown): Record<string, unknown> | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return undefined;
+  }
+  const record = value as Record<string, unknown>;
+  const output: Record<string, unknown> = {};
+  for (const key of ["targetKind", "reason", "expectedPreview", "hint", "nearestMatchPreview", "nearestMatchLine", "matchStrategy"] as const) {
+    const selected = compactSourceValue(record[key]);
+    if (selected !== undefined) {
+      output[key] = selected;
+    }
+  }
+  return Object.keys(output).length > 0 ? output : undefined;
 }
 
 function compactSourceValue(value: unknown): string | number | boolean | string[] | undefined {

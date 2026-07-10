@@ -1723,7 +1723,7 @@ describe("IVecEngine", () => {
     const dataDir = mkdtempSync(join(tmpdir(), "ayati-eng-system-read-session-"));
     try {
       const readTool: ToolDefinition = {
-        name: "read_file",
+        name: "read_files",
         description: "Read a file for system-event inspection.",
         annotations: {
           domain: "filesystem",
@@ -1752,12 +1752,12 @@ describe("IVecEngine", () => {
                 mode: "single",
                 calls: [{
                   id: "call_1",
-                  tool: "read_file",
-                  input: { path: "health-notes.md" },
+                  tool: "read_files",
+                  input: { files: [{ path: "health-notes.md" }] },
                   dependsOn: [],
                   purpose: "Inspect health notes",
                 }],
-                allowedTools: ["read_file"],
+                allowedTools: ["read_files"],
                 assertions: [],
               },
             }),
@@ -1808,7 +1808,7 @@ describe("IVecEngine", () => {
           runId: "R-20260627-0001",
           status: "completed",
           toolCalls: [expect.objectContaining({
-            tool: "read_file",
+            tool: "read_files",
             status: "success",
           })],
         }),
@@ -1818,7 +1818,7 @@ describe("IVecEngine", () => {
       expect(systemEventContextRuntime.finalizeSessionRun).toHaveBeenCalledWith(expect.objectContaining({
         runId: "R-20260627-0001",
         toolCallCount: 1,
-        toolsUsed: ["read_file"],
+        toolsUsed: ["read_files"],
       }));
     } finally {
       rmSync(dataDir, { recursive: true, force: true });

@@ -142,13 +142,13 @@ describe("runtime capability modes", () => {
       blocked: expect.arrayContaining(["workspace_mutation_until_task_promotion"]),
     });
     expect(filterToolsForRuntimeMode(mode, [
-      tool("read_file"),
+      tool("read_files"),
       tool("document_query"),
       tool("write_files"),
       tool("git_context_activate_task_for_turn"),
       tool("git_context_create_task_for_turn"),
     ]).map((entry) => entry.name)).toEqual([
-      "read_file",
+      "read_files",
       "document_query",
       "write_files",
       "git_context_activate_task_for_turn",
@@ -194,11 +194,11 @@ describe("runtime capability modes", () => {
       kind: "act",
       action: {
         mode: "single",
-        allowedTools: ["read_file"],
+        allowedTools: ["read_files"],
         assertions: [],
         calls: [{
           id: "call_1",
-          tool: "read_file",
+          tool: "read_files",
           input: { path: "README.md" },
           dependsOn: [],
         }],
@@ -220,11 +220,11 @@ describe("runtime capability modes", () => {
       kind: "act",
       action: {
         mode: "single",
-        allowedTools: ["read_file"],
+        allowedTools: ["read_files"],
         assertions: [],
         calls: [{
           id: "call_1",
-          tool: "read_file",
+          tool: "read_files",
           input: { path: "README.md" },
           dependsOn: [],
         }],
@@ -246,7 +246,7 @@ describe("runtime capability modes", () => {
     };
 
     expect(isDecisionAllowedInRuntimeMode(mode, read)).toBe(true);
-    expect(isDecisionAllowedInRuntimeMode(mode, { kind: "load_tools", request: { toolNames: ["read_file"], groups: [] } })).toBe(true);
+    expect(isDecisionAllowedInRuntimeMode(mode, { kind: "load_tools", request: { toolNames: ["read_files"], groups: [] } })).toBe(true);
     expect(isDecisionAllowedInRuntimeMode(mode, mutate)).toBe(true);
   });
 

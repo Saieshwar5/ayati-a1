@@ -71,11 +71,9 @@ export function checkVerificationGates(actOutput: ActOutput): VerifyOutput | nul
 const DETERMINISTIC_SUCCESS_TOOLS = new Set([
   "create_directory",
   "delete",
-  "edit_file",
+  "patch_files",
   "move",
-  "write_file",
   "write_files",
-  "read_file",
   "read_files",
   "list_directory",
   "find_files",
@@ -130,7 +128,6 @@ export function checkDeterministicSuccessGate(
 }
 
 const READ_ONLY_SUCCESS_TOOLS = new Set([
-  "read_file",
   "read_files",
   "list_directory",
   "find_files",
@@ -268,7 +265,7 @@ function formatDeterministicEvidenceItem(call: ActOutput["toolCalls"][number]): 
 
 function buildContentPreview(actOutput: ActOutput): string {
   const readableOutputs = actOutput.toolCalls
-    .filter((call) => ["read_file", "read_files", "search_in_files", "find_files", "dataset_query", "document_query"].includes(call.tool))
+    .filter((call) => ["read_files", "search_in_files", "find_files", "dataset_query", "document_query"].includes(call.tool))
     .map((call) => {
       const output = call.output.replace(/\s+/g, " ").trim();
       if (!output) return "";

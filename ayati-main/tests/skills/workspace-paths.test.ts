@@ -63,6 +63,13 @@ describe("workspace paths", () => {
     expect(resolveWorkspacePath("work_space/workspace/report.md")).toBe("/tmp/ayati-custom-workspace/report.md");
   });
 
+  it("treats repo-prefixed workspace paths as the workspace root", () => {
+    process.env["AYATI_WORKSPACE_DIR"] = "/tmp/ayati-main/work_space";
+
+    expect(resolveWorkspacePath("ayati-main/work_space/report.md")).toBe("/tmp/ayati-main/work_space/report.md");
+    expect(resolveWorkspacePath("ayati-main/workspace/report.md")).toBe("/tmp/ayati-main/work_space/report.md");
+  });
+
   it("preserves explicit absolute paths", () => {
     process.env["AYATI_WORKSPACE_DIR"] = "/tmp/ayati-custom-workspace";
 
@@ -74,7 +81,7 @@ describe("workspace paths", () => {
     process.env["AYATI_WORKSPACE_DIR"] = root;
     await ensureWorkspaceRoot(root);
 
-    expect(resolveWorkspaceMutationPath("/tmp/explicit/report.md", { operation: "write_file" })).toMatchObject({
+    expect(resolveWorkspaceMutationPath("/tmp/explicit/report.md", { operation: "write_files" })).toMatchObject({
       ok: false,
       code: "EXTERNAL_WORKSPACE_PATH_REQUIRES_ALLOW",
       resolvedPath: "/tmp/explicit/report.md",
@@ -82,13 +89,13 @@ describe("workspace paths", () => {
     });
     expect(resolveWorkspaceMutationPath("/tmp/explicit/report.md", {
       allowExternalPath: true,
-      operation: "write_file",
+      operation: "write_files",
     })).toMatchObject({
       ok: true,
       path: "/tmp/explicit/report.md",
       workspaceRoot: root,
     });
-    expect(resolveWorkspaceMutationPath(join(root, "inside.txt"), { operation: "write_file" })).toMatchObject({
+    expect(resolveWorkspaceMutationPath(join(root, "inside.txt"), { operation: "write_files" })).toMatchObject({
       ok: true,
       path: join(root, "inside.txt"),
       workspaceRoot: root,

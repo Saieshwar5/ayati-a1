@@ -72,8 +72,8 @@ describe("createToolExecutor", () => {
   it("validate() returns valid for correct input", () => {
     const executor = createToolExecutor([
       {
-        name: "read_file",
-        description: "Read file",
+        name: "file_reader",
+        description: "Read a file",
         inputSchema: {
           type: "object",
           properties: { path: { type: "string" }, offset: { type: "number" } },
@@ -85,14 +85,14 @@ describe("createToolExecutor", () => {
       },
     ]);
 
-    const result = executor.validate("read_file", { path: "/foo.txt" });
+    const result = executor.validate("file_reader", { path: "/foo.txt" });
     expect(result.valid).toBe(true);
   });
 
   it("validate() returns error + schema for missing required field", () => {
     const executor = createToolExecutor([
       {
-        name: "write_file",
+        name: "file_writer",
         description: "Write file",
         inputSchema: {
           type: "object",
@@ -105,7 +105,7 @@ describe("createToolExecutor", () => {
       },
     ]);
 
-    const result = executor.validate("write_file", { path: "/foo.txt" });
+    const result = executor.validate("file_writer", { path: "/foo.txt" });
     expect(result.valid).toBe(false);
     if (!result.valid) {
       expect(result.error).toContain("missing required field 'content'");

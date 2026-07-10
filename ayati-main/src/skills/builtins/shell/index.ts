@@ -1,5 +1,5 @@
 import { exec, spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
-import { stat } from "node:fs/promises";
+import { readFile, stat } from "node:fs/promises";
 import { resolve as resolvePath } from "node:path";
 import { promisify } from "node:util";
 import type { SkillDefinition, ToolDefinition, ToolResult } from "../../types.js";
@@ -98,6 +98,15 @@ interface ShellCommandResultInput {
   exitCode: number | null;
   signal: string | null;
   timedOut: boolean;
+}
+
+type ShellRiskLevel = "safe" | "workspace_mutation" | "destructive" | "external_system";
+
+interface ShellPolicyViolation {
+  level: Exclude<ShellRiskLevel, "safe">;
+  code: string;
+  reason: string;
+  pattern: string;
 }
 
 const shellSessions = new Map<string, ShellSessionState>();
@@ -762,10 +771,149 @@ async function runProcessCommand(
 }
 
 function preflightShellCommand(
+  command: string,
   cwd: string | undefined,
-): { ok: true; resolvedCwd?: string } {
+  source: "command" | "script" | "session",
+): { ok: true; resolvedCwd?: string } | { ok: false; result: ToolResult } {
   const resolvedCwd = resolveWorkspaceCwd(cwd);
+  const violation = classifyShellPolicy(command, source);
+  if (violation) {
+    return { ok: false, result: shellPolicyBlockedResult(command, resolvedCwd, source, violation) };
+  }
   return { ok: true, resolvedCwd };
+}
+
+function classifyShellPolicy(command: string, source: "command" | "script" | "session"): ShellPolicyViolation | undefined {
+  const normalized = command.trim();
+  const lower = normalized.toLowerCase();
+
+  const destructiveChecks: Array<[RegExp, string, string]> = [
+    [/\bsudo\b/, "sudo", "sudo/system privilege commands are blocked from shell tools."],
+    [/\brm\s+-[^\n;&|]*r[^\n;&|]*f\b|\brm\s+-[^\n;&|]*f[^\n;&|]*r\b/, "rm -rf", "recursive force deletion is destructive."],
+    [/\bgit\s+reset\s+--hard\b/, "git reset --hard", "hard git resets can destroy uncommitted work."],
+    [/\bgit\s+clean\b/, "git clean", "git clean can delete untracked user files."],
+    [/\bgit\s+checkout\s+--\s+(?:\.|\/|\*)/, "git checkout --", "bulk checkout can discard user changes."],
+    [/\b(?:docker\s+system\s+prune|docker\s+(?:rm|rmi)\b|docker\s+(?:volume|network)\s+rm\b)/, "docker destructive command", "docker delete/prune commands are destructive external-system operations."],
+    [/\bkubectl\s+delete\b/, "kubectl delete", "kubectl delete mutates external infrastructure."],
+    [/\b(?:dropdb|createdb)\b/, "database admin command", "database admin commands mutate external state."],
+    [/\bpsql\b[\s\S]*\bdrop\b/i, "psql DROP", "DROP statements are destructive database operations."],
+    [/\bchmod\s+-R\s+(?:777|[^\n;&|]*\+w)\b/, "chmod -R", "recursive permission changes are risky and broad."],
+    [/\bchown\s+-R\b/, "chown -R", "recursive ownership changes are risky and broad."],
+    [/\bdd\b[\s\S]*\bof=/, "dd of=", "dd writes raw bytes to a target path/device."],
+    [/\bmkfs(?:\.[a-z0-9_-]+)?\b/, "mkfs", "filesystem creation commands are destructive."],
+    [/\b(?:systemctl|service)\b/, "service manager", "service manager commands mutate system state."],
+    [/\bkill\s+-9\b|\bkill\s+-KILL\b/i, "kill -9", "force-kill commands are destructive process control."],
+  ];
+  for (const [pattern, label, reason] of destructiveChecks) {
+    if (pattern.test(lower)) {
+      return {
+        level: "destructive",
+        code: "SHELL_DESTRUCTIVE_COMMAND_BLOCKED",
+        pattern: label,
+        reason,
+      };
+    }
+  }
+
+  if (/\b(?:curl|wget)\b[\s\S]*\|\s*(?:sudo\s+)?(?:sh|bash|zsh|python|python3|node)\b/i.test(normalized)) {
+    return {
+      level: "external_system",
+      code: "SHELL_EXTERNAL_INSTALL_BLOCKED",
+      pattern: "curl/wget pipe to interpreter",
+      reason: "piping downloaded content into an interpreter is unsafe and mutates external/system state.",
+    };
+  }
+
+  if (source === "session" && /^(?:bash|sh|zsh|fish|python|python3|node|ruby)(?:\s|$)/i.test(normalized)) {
+    return {
+      level: "workspace_mutation",
+      code: "SHELL_INTERACTIVE_MUTATION_SURFACE_BLOCKED",
+      pattern: "interactive interpreter/shell session",
+      reason: "interactive shells and interpreters can bypass filesystem tool contracts through later stdin writes.",
+    };
+  }
+
+  const mutationChecks: Array<[RegExp, string, string]> = [
+    [/\bsed\b[\s\S]*(?:^|\s)-i(?:\b|['"=])/, "sed -i", "in-place sed edits bypass patch_files/write_files contracts."],
+    [/\bperl\b[\s\S]*(?:^|\s)-p?i(?:\b|['"=])/, "perl -pi", "in-place perl edits bypass patch_files/write_files contracts."],
+    [/(^|[\s;|&])(?:[12])?>>\s*(?!&\d\b|\/dev\/null\b)\S+|(^|[\s;|&])(?:[12])?>\s*(?!&\d\b|\/dev\/null\b)\S+/, "shell redirection", "file redirection writes bypass filesystem tool contracts."],
+    [/\btee\s+(?:-[a-zA-Z]+\s+)*[^\s|&;]+/, "tee file", "tee writes files outside filesystem tool contracts."],
+    [/\b(?:mv|cp|rm|touch|truncate|mkdir|chmod|chown)\b/, "filesystem mutation command", "filesystem mutations should use move/delete/create_directory or guarded file tools."],
+    [/\b(?:python|python3|node|ruby)\b[\s\S]*(?:writefilesync|writefile|write_text|open\s*\([^)]*['"]w|fs\.write)/i, "scripted file write", "scripted file writes bypass filesystem tool contracts."],
+  ];
+  for (const [pattern, label, reason] of mutationChecks) {
+    if (pattern.test(normalized)) {
+      return {
+        level: "workspace_mutation",
+        code: "SHELL_FILE_MUTATION_BLOCKED",
+        pattern: label,
+        reason,
+      };
+    }
+  }
+
+  return undefined;
+}
+
+function shellPolicyBlockedResult(
+  command: string,
+  cwd: string | undefined,
+  source: "command" | "script" | "session",
+  violation: ShellPolicyViolation,
+): ToolResult {
+  const message = `${violation.code}: ${violation.reason}`;
+  const structuredContent = {
+    command,
+    ...(cwd ? { cwd } : {}),
+    source,
+    riskLevel: violation.level,
+    blockedPattern: violation.pattern,
+    reason: violation.reason,
+    exitCode: null,
+    signal: null,
+    stdoutPreview: "",
+    stderrPreview: "",
+    outputPreview: message,
+    timedOut: false,
+    durationMs: 0,
+    truncated: false,
+    rawOutputChars: 0,
+  };
+  return {
+    ok: false,
+    error: message,
+    output: message,
+    rawOutput: "",
+    meta: {
+      durationMs: 0,
+      exitCode: null,
+      signal: null,
+      timedOut: false,
+      truncated: false,
+      rawOutputChars: 0,
+      riskLevel: violation.level,
+      blockedPattern: violation.pattern,
+    },
+    v2: failureV2({
+      code: violation.code,
+      message,
+      category: "permission",
+      retryable: false,
+      recoverable: true,
+      target: violation.pattern,
+      suggestedNextActions: [
+        "Use filesystem tools instead: read_files, write_files with baseSha256, patch_files, move, delete, or create_directory.",
+        "Use shell only for read-only inspection, build, test, and verification commands.",
+      ],
+      structuredContent,
+      diagnostics: {
+        durationMs: 0,
+        source,
+        riskLevel: violation.level,
+        blockedPattern: violation.pattern,
+      },
+    }),
+  };
 }
 
 const shellCommandOutputSchema = {
@@ -851,7 +999,8 @@ export const shellExecTool: ToolDefinition = {
     const parsed = validateShellExecInput(input);
     if ("ok" in parsed) return parsed;
 
-    const preflight = preflightShellCommand(parsed.cwd);
+    const preflight = preflightShellCommand(parsed.cmd, parsed.cwd, "command");
+    if (!preflight.ok) return preflight.result;
     const timeoutMs = capWithDefault(parsed.timeoutMs, DEFAULT_TIMEOUT_MS);
     const maxOutputChars = capWithDefault(parsed.maxOutputChars, DEFAULT_MAX_OUTPUT_CHARS);
     return await runExecCommand(parsed.cmd, preflight.resolvedCwd, timeoutMs, maxOutputChars);
@@ -886,8 +1035,7 @@ export const shellRunScriptTool: ToolDefinition = {
     const parsed = validateRunScriptInput(input);
     if ("ok" in parsed) return parsed;
 
-    const preflight = preflightShellCommand(parsed.cwd);
-    const resolvedCwd = preflight.resolvedCwd ?? resolveWorkspaceCwd();
+    const resolvedCwd = resolveWorkspaceCwd(parsed.cwd);
     const scriptPath = resolvePath(resolvedCwd, parsed.scriptPath);
     let fileStats;
     try {
@@ -927,6 +1075,9 @@ export const shellRunScriptTool: ToolDefinition = {
         suggestedNextActions: ["Retry with a path to a regular script file."],
       });
     }
+    const scriptContent = await readFile(scriptPath, "utf-8");
+    const scriptPreflight = preflightShellCommand(scriptContent, resolvedCwd, "script");
+    if (!scriptPreflight.ok) return scriptPreflight.result;
     const timeoutMs = capWithDefault(parsed.timeoutMs, DEFAULT_TIMEOUT_MS);
     const maxOutputChars = capWithDefault(parsed.maxOutputChars, DEFAULT_MAX_OUTPUT_CHARS);
     return await runProcessCommand(
@@ -979,7 +1130,8 @@ export const shellSessionStartTool: ToolDefinition = {
     const parsed = validateSessionStartInput(input);
     if ("ok" in parsed) return parsed;
 
-    const preflight = preflightShellCommand(parsed.cwd);
+    const preflight = preflightShellCommand(parsed.cmd, parsed.cwd, "session");
+    if (!preflight.ok) return preflight.result;
     const outputCap = capWithDefault(parsed.maxOutputChars, DEFAULT_MAX_SESSION_OUTPUT_CHARS);
     const process = spawn("/bin/bash", ["-lc", parsed.cmd], {
       cwd: preflight.resolvedCwd,
@@ -1291,6 +1443,7 @@ const SHELL_PROMPT_BLOCK = [
   "Use them directly for terminal execution, developer workflows, and orchestrating system tools.",
   "Default shell work to the configured workspace root unless the user or task clearly points to another directory.",
   "Do not prefix cwd values with workspace/ or work_space/; relative cwd values are already workspace-relative.",
+  "Shell tools block destructive commands and direct file mutation such as rm -rf, git reset --hard, sed -i, redirection to files, tee writes, and interactive shells; use filesystem tools for file changes.",
   "Use shell_run_script to execute project scripts.",
   "Use shell_session_start/shell_session_write/shell_session_close for interactive commands.",
   "Prefer concise commands and summarize results clearly.",

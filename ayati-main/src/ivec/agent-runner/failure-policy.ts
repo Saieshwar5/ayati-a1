@@ -36,7 +36,7 @@ function isParentDirectoryFailure(call: ActToolCallRecord): boolean {
 }
 
 function supportsCreateDirsRetry(call: ActToolCallRecord): boolean {
-  return (call.tool === "write_file" || call.tool === "write_files")
+  return call.tool === "write_files"
     && isRecord(call.input)
     && call.input["createDirs"] !== true;
 }

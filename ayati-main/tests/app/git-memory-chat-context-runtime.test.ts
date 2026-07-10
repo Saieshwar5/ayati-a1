@@ -405,7 +405,7 @@ describe("createGitMemoryChatContextRuntime", () => {
             summary: "Read upload server implementation.",
             newFacts: ["Upload route validates MIME type."],
             artifacts: ["ayati-main/src/server/upload-server.ts"],
-            toolsUsed: ["read_file"],
+            toolsUsed: ["read_files"],
           }],
         },
         startedAt: "2026-06-28T09:02:00+05:30",

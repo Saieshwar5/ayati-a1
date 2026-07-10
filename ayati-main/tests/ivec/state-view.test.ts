@@ -70,7 +70,7 @@ function createGitContext(overrides: Partial<ContextEngineMachineContext> = {}):
         runId: "R-20260627-0001",
         workId: "W-20260627-0001",
         step: 1,
-        tool: "read_file",
+        tool: "read_files",
         status: "completed",
         summary: "Read invoice input.",
         artifacts: ["uploads/invoice.pdf"],
@@ -440,7 +440,7 @@ describe("buildAgentStateView", () => {
         toolCalls: [{
           step: 1,
           callId: "call-1",
-          tool: "read_file",
+          tool: "read_files",
           input: { path: "state-view.ts" },
           status: "success",
           output: "Read state-view.ts.",
@@ -451,7 +451,7 @@ describe("buildAgentStateView", () => {
             id: "obs-1",
             step: 1,
             callId: "call-1",
-            tool: "read_file",
+            tool: "read_files",
             status: "success",
             mode: "summary",
             retention: "while_relevant",
@@ -477,7 +477,7 @@ describe("buildAgentStateView", () => {
         summary: "Inspected state view.",
         newFacts: ["State view uses git context."],
         artifacts: [],
-        toolsUsed: ["read_file"],
+        toolsUsed: ["read_files"],
         toolSuccessCount: 1,
         toolFailureCount: 0,
       }],
@@ -511,20 +511,20 @@ describe("buildAgentStateView", () => {
     expect(stateView.context.run).not.toHaveProperty("observations");
     expect(stateView.observations?.latest[0]?.retention).toBe("while_relevant");
     expect(stateView.readContext?.latest).toHaveLength(1);
-    expect(stateView.readContext?.latest[0]?.tool).toBe("read_file");
+    expect(stateView.readContext?.latest[0]?.tool).toBe("read_files");
     expect(stateView.context.run).not.toHaveProperty("readContext");
     expect(stateView.toolCalls).toEqual([
       expect.objectContaining({
         step: 1,
         callId: "call-1",
-        tool: "read_file",
+        tool: "read_files",
         input: { path: "state-view.ts" },
         status: "success",
         output: "Read state-view.ts.",
       }),
     ]);
     expect((stateView.context.run?.toolCalls as Array<{ tool: string; input: unknown; output: string; hasMore?: boolean }> | undefined))
-      .toEqual([expect.objectContaining({ tool: "read_file", input: { path: "state-view.ts" }, output: "Read state-view.ts." })]);
+      .toEqual([expect.objectContaining({ tool: "read_files", input: { path: "state-view.ts" }, output: "Read state-view.ts." })]);
     expect(stateView.context.run?.toolCalls?.[0]).toHaveProperty("mode", "full");
     expect(stateView.context.run?.toolCalls?.[0]).not.toHaveProperty("hasMore");
     expect(stateView.trace?.recentSteps?.map((step) => step.step)).toEqual([1]);
@@ -548,7 +548,7 @@ describe("buildAgentStateView", () => {
           {
             step: 1,
             callId: "call-old-read",
-            tool: "read_file",
+            tool: "read_files",
             input: { path: "src/old.ts" },
             status: "success",
             output: oldReadOutput,
@@ -592,7 +592,7 @@ describe("buildAgentStateView", () => {
           {
             step: 6,
             callId: "call-recent-read",
-            tool: "read_file",
+            tool: "read_files",
             input: { path: "src/recent.ts" },
             status: "success",
             output: "recent read output",
@@ -608,7 +608,7 @@ describe("buildAgentStateView", () => {
       mode: "preview",
       outputCompacted: true,
       outputPreview: expect.stringContaining("old read output"),
-      summary: expect.stringContaining("read_file read for src/old.ts"),
+      summary: expect.stringContaining("read_files read for src/old.ts"),
       stepRef: { runId: "run-current", step: 1, callId: "call-old-read" },
       evidenceRef: "steps/run-current.jsonl#call-old-read",
       compactionReason: "context_budget",
@@ -637,7 +637,7 @@ describe("buildAgentStateView", () => {
           {
             step: 1,
             callId: "call-old-read",
-            tool: "read_file",
+            tool: "read_files",
             input: { path: "src/old.ts" },
             status: "success",
             output: "old read output",
@@ -646,15 +646,15 @@ describe("buildAgentStateView", () => {
           {
             step: 2,
             callId: "call-write",
-            tool: "write_file",
-            input: { path: "src/new.ts", content: "new content" },
+            tool: "write_files",
+            input: { files: [{ path: "src/new.ts", content: "new content" }] },
             status: "success",
             output: "write completed",
           },
           {
             step: 3,
             callId: "call-recent-read",
-            tool: "read_file",
+            tool: "read_files",
             input: { path: "src/recent.ts" },
             status: "success",
             output: "recent read output",
@@ -682,14 +682,14 @@ describe("buildAgentStateView", () => {
         status: "partial",
         requested: {
           query: "files",
-          toolNames: ["read_file"],
+          toolNames: ["read_files"],
           groups: ["filesystem"],
         },
-        loaded: ["read_file"],
+        loaded: ["read_files"],
         alreadyActive: [],
         evicted: [],
-        missing: ["write_file"],
-        message: "Loaded read_file; write_file was unavailable.",
+        missing: ["patch_files"],
+        message: "Loaded read_files; patch_files was unavailable.",
       },
       attachedDocuments: [{
         documentId: "doc-1",
@@ -769,19 +769,19 @@ describe("buildAgentStateView", () => {
     });
 
     const stateView = buildAgentStateView(state, {
-      activeTools: ["read_file", "read_file", " search_files "],
+      activeTools: ["read_files", "read_files", " search_files "],
     });
     expect(stateView.toolLoad).toMatchObject({
       status: "partial",
-      loaded: ["read_file"],
-      missing: ["write_file"],
+      loaded: ["read_files"],
+      missing: ["patch_files"],
     });
     expect(stateView.context.tools).toMatchObject({
-      active: ["read_file", "search_files"],
+      active: ["read_files", "search_files"],
       lastLoad: {
         status: "partial",
-        loaded: ["read_file"],
-        missing: ["write_file"],
+        loaded: ["read_files"],
+        missing: ["patch_files"],
       },
     });
     expect(stateView.context.tools).not.toHaveProperty("inputSchema");

@@ -1157,10 +1157,9 @@ Decision rules:
 - Executable tool calls may use only tool names listed under Selected tools.
 - Keep each model decision to one executable tool call. The harness will continue the loop for follow-up calls after observing the result.
 - Use only tools listed in Selected tools.
-- Prefer read_files over repeated read_file calls when multiple known files/pages are relevant to the next edit.
+- Use read_files for known file content; a single-file read is files=[{path,...}], and related files should be batched.
 - Prefer write_files for generated websites, apps, and multi-file file creation.
-- Prefer patch_files for normal edits to existing files. Use small stable find strings such as "background: white" instead of large formatted blocks that may differ in whitespace.
-- Prefer edit_files for coordinated edits across one or more known files instead of separate edit_file calls or full-file rewrites; use exact replace, anchor insert, or line-range replacement based on the evidence already read.
+- Prefer patch_files for normal edits to existing files. Use small stable find strings, anchor inserts, or line-range replacements instead of full-file rewrites.
 - Hidden tools are loaded by decision_load_tools, not by calling skill_search or skill_activate unless those are explicitly selected executable tools.
 - Do not include assertions. Tool-owned contracts provide deterministic verification.
 - Every executable tool call must include taskCompletion.

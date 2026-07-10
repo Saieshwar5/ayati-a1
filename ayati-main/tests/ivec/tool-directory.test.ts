@@ -16,25 +16,34 @@ function makeTool(name: string, description: string, schema?: Record<string, unk
 describe("buildToolDirectory", () => {
   it("generates a markdown table with tool info", () => {
     const tools: ToolDefinition[] = [
-      makeTool("read_file", "Read text file", {
+      makeTool("read_files", "Read text file", {
         type: "object",
         properties: {
-          path: { type: "string" },
-          mode: { type: "string" },
-          startLine: { type: "number" },
+          files: {
+            type: "array",
+            items: {
+              type: "object",
+              properties: {
+                path: { type: "string" },
+                mode: { type: "string" },
+                startLine: { type: "number" },
+              },
+              required: ["path"],
+            },
+          },
         },
-        required: ["path"],
+        required: ["files"],
       }),
     ];
 
     const result = buildToolDirectory(tools);
     expect(result).toContain("| Tool | Description | Parameters |");
-    expect(result).toContain("| read_file | Read text file | path* (string), mode (string), startLine (number) |");
+    expect(result).toContain("| read_files | Read text file | files* (array) |");
   });
 
   it("marks required params with asterisk", () => {
     const tools: ToolDefinition[] = [
-      makeTool("write_file", "Write to file", {
+      makeTool("file_writer", "Write to file", {
         type: "object",
         properties: {
           path: { type: "string" },

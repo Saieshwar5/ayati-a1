@@ -16,6 +16,8 @@ export type RepairCode =
   | "R_PROVIDER_MALFORMED_RESPONSE"
   | "R_VERIFICATION_FAILED"
   | "R_NO_PROGRESS"
+  | "R_EDIT_TARGET_RECOVERY"
+  | "R_EDIT_ESCALATE_TO_GUARDED_REWRITE"
   | "R_DUPLICATE_READ"
   | "R_MUTATION_EXPECTED_AFTER_CONTEXT"
   | "R_REPEATED_REPAIR_FAILURE";
@@ -98,6 +100,8 @@ export const REPAIR_CODES: readonly RepairCode[] = [
   "R_PROVIDER_MALFORMED_RESPONSE",
   "R_VERIFICATION_FAILED",
   "R_NO_PROGRESS",
+  "R_EDIT_TARGET_RECOVERY",
+  "R_EDIT_ESCALATE_TO_GUARDED_REWRITE",
   "R_DUPLICATE_READ",
   "R_MUTATION_EXPECTED_AFTER_CONTEXT",
   "R_REPEATED_REPAIR_FAILURE",
@@ -289,6 +293,33 @@ export const REPAIR_CODE_CATALOG: Readonly<Record<RepairCode, RepairCatalogEntry
     ],
     modelFacing: true,
   },
+  R_EDIT_TARGET_RECOVERY: {
+    code: "R_EDIT_TARGET_RECOVERY",
+    severity: "repairable",
+    source: "runner.edit_recovery",
+    message: "A file edit or patch target was not found, but the tool returned recovery diagnostics.",
+    allowedNextActions: [
+      "Read the exact nearby file context from the diagnostic before retrying the edit.",
+      "If nearestMatchLine is present, call read_files with one file in mode=\"slice\" around that line.",
+      "Retry patch_files using exact current text from the slice, or use replace_lines for the confirmed line range.",
+      "Use guarded write_files only after a full read returns sha256 and repeated precise patch/edit attempts still fail.",
+    ],
+    modelFacing: true,
+  },
+  R_EDIT_ESCALATE_TO_GUARDED_REWRITE: {
+    code: "R_EDIT_ESCALATE_TO_GUARDED_REWRITE",
+    severity: "repairable",
+    source: "runner.edit_recovery",
+    message: "Precise edit or patch recovery failed repeatedly for the same file. Escalate to guarded full-file rewrite.",
+    allowedNextActions: [
+      "Stop retrying the same patch_files target.",
+      "Call read_files with one file in mode=\"full\" for the failed file to get complete content and sha256.",
+      "Prepare the complete replacement content from that full read.",
+      "Call write_files with files[].baseSha256 set to the sha256 returned by the full read.",
+      "Do not use shell mutation.",
+    ],
+    modelFacing: true,
+  },
   R_DUPLICATE_READ: {
     code: "R_DUPLICATE_READ",
     severity: "repairable",
@@ -296,7 +327,7 @@ export const REPAIR_CODE_CATALOG: Readonly<Record<RepairCode, RepairCatalogEntry
     message: "The selected read repeats context that is already available in this task run.",
     allowedNextActions: [
       "Use the existing observations and evidence instead of reading the same target again.",
-      "If the user requested a concrete change, call write_file, write_files, or edit_file next.",
+      "If the user requested a concrete change, call patch_files or write_files next.",
       "Ask one specific clarification only if the missing detail blocks the change.",
     ],
     modelFacing: true,
@@ -308,7 +339,7 @@ export const REPAIR_CODE_CATALOG: Readonly<Record<RepairCode, RepairCatalogEntry
     message: "This task run has already gathered enough read context before making a change.",
     allowedNextActions: [
       "Use the current observations and evidence to make the requested change.",
-      "Call write_file, write_files, or edit_file next when the user asked to build or update files.",
+      "Call patch_files or write_files next when the user asked to build or update files.",
       "Ask one specific clarification if the change cannot be made from the available context.",
     ],
     modelFacing: true,

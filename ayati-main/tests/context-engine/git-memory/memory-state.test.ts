@@ -127,7 +127,7 @@ describe("GitContextMemoryStateHydrator", () => {
       recentEvidence: [{
         runId: "R-20260628-0002",
         taskId: prepared.task.taskId,
-        tool: "edit_file",
+        tool: "patch_files",
         summary: "Patched upload validation handling.",
         artifacts: ["ayati-main/src/server/upload-server.ts"],
         facts: ["Upload validation handles multipart MIME metadata."],
@@ -307,7 +307,7 @@ async function prepareMemoryStateSession(): Promise<{
     }],
     evidence: [{
       step: 2,
-      tool: "edit_file",
+      tool: "patch_files",
       status: "completed",
       summary: "Patched upload validation handling.",
       artifacts: ["ayati-main/src/server/upload-server.ts"],

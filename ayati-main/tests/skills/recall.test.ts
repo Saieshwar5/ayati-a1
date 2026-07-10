@@ -63,7 +63,7 @@ describe("recall skill", () => {
     });
 
     expect(skill.promptBlock).toContain("recall_memory");
-    expect(skill.promptBlock).toContain("read_file");
+    expect(skill.promptBlock).toContain("read_files");
   });
 
   it("exposes episodic memory status and enable controls", async () => {

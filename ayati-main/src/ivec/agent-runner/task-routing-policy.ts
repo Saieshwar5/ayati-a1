@@ -17,10 +17,7 @@ import {
 const MAX_ROUTING_FAILURES_PER_TURN = 2;
 const FILE_MUTATION_TOOL_NAMES = new Set([
   "patch_files",
-  "edit_files",
-  "edit_file",
   "write_files",
-  "write_file",
   "delete",
   "move",
   "create_directory",

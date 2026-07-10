@@ -202,7 +202,7 @@ const RECALL_PROMPT_BLOCK = [
   "The `recall_memory` tool is built in.",
   "Use it directly when the user refers to prior work, earlier conversations, 'like before', or asks what happened on a past date/time.",
   "recall_memory returns episodic matches with absolute sessionFilePath plus eventStartIndex/eventEndIndex pointers.",
-  "If you need exact details after recall_memory, use the existing read_file tool on sessionFilePath, then inspect the session artifacts directly.",
+  "If you need exact details after recall_memory, use read_files with files=[{path: sessionFilePath}], then inspect the session artifacts directly.",
   "Use memory_status to inspect whether episodic memory is enabled. Use memory_set_episodic_enabled only when the user asks to turn long-term episodic memory on or off.",
   "Prefer recall_memory before guessing how prior work was done.",
 ].join("\n");

@@ -261,7 +261,7 @@ describe("parseAgentDecision", () => {
             },
           },
           tools: {
-            active: ["read_file"],
+            active: ["read_files"],
           },
           harness: {
             feedback: {
@@ -309,14 +309,14 @@ describe("parseAgentDecision", () => {
           status: "success",
           requested: {
             query: "files",
-            toolNames: ["read_file"],
+            toolNames: ["read_files"],
             groups: ["filesystem"],
           },
-          loaded: ["read_file"],
+          loaded: ["read_files"],
           alreadyActive: [],
           evicted: [],
           missing: [],
-          message: "Loaded read_file.",
+          message: "Loaded read_files.",
         },
         observations: {
           latest: [],
@@ -358,7 +358,7 @@ describe("parseAgentDecision", () => {
           },
         },
         tools: {
-          active: ["read_file"],
+          active: ["read_files"],
         },
         harness: {
           feedback: {

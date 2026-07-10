@@ -26,21 +26,21 @@ describe("read progress policy", () => {
   });
 
   it("blocks duplicate reads before any mutation", () => {
-    const input = { path: "site/index.html" };
-    const first = updateReadProgressAfterActOutput(undefined, outputFor("read_file", input));
+    const input = { files: [{ path: "site/index.html" }] };
+    const first = updateReadProgressAfterActOutput(undefined, outputFor("read_files", input));
 
-    const violation = evaluateReadProgressGuard(first, actionFor("read_file", input));
+    const violation = evaluateReadProgressGuard(first, actionFor("read_files", input));
 
     expect(violation).toMatchObject({
       code: "R_DUPLICATE_READ",
-      blockedTargets: ["read_file"],
+      blockedTargets: ["read_files"],
     });
   });
 
   it("blocks additional read-only steps after enough context has been gathered", () => {
     let state = createEmptyReadProgressState();
-    state = updateReadProgressAfterActOutput(state, outputFor("read_file", { path: "site/index.html" }));
-    state = updateReadProgressAfterActOutput(state, outputFor("read_file", { path: "site/styles.css" }));
+    state = updateReadProgressAfterActOutput(state, outputFor("read_files", { files: [{ path: "site/index.html" }] }));
+    state = updateReadProgressAfterActOutput(state, outputFor("read_files", { files: [{ path: "site/styles.css" }] }));
     state = updateReadProgressAfterActOutput(state, outputFor("search_in_files", { query: "newsletter", roots: ["site"] }));
 
     const violation = evaluateReadProgressGuard(state, actionFor("list_directory", { path: "site" }));
@@ -52,13 +52,15 @@ describe("read progress policy", () => {
   });
 
   it("resets read pressure after a successful mutation", () => {
-    let state = updateReadProgressAfterActOutput(undefined, outputFor("read_file", { path: "site/index.html" }));
-    state = updateReadProgressAfterActOutput(state, outputFor("write_file", { path: "site/index.html", content: "updated" }));
+    let state = updateReadProgressAfterActOutput(undefined, outputFor("read_files", { files: [{ path: "site/index.html" }] }));
+    state = updateReadProgressAfterActOutput(state, outputFor("write_files", {
+      files: [{ path: "site/index.html", content: "updated" }],
+    }));
 
     expect(state.mutationStepCount).toBe(1);
     expect(state.readOnlyStepCount).toBe(0);
     expect(state.signatures).toEqual([]);
-    expect(evaluateReadProgressGuard(state, actionFor("read_file", { path: "site/index.html" }))).toBeUndefined();
+    expect(evaluateReadProgressGuard(state, actionFor("read_files", { files: [{ path: "site/index.html" }] }))).toBeUndefined();
   });
 
   it("tracks rejected read attempts separately from executed reads", () => {

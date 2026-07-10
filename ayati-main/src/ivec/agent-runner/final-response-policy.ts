@@ -30,7 +30,7 @@ export function shouldRejectTerminalReplyForUnresolvedMutation(
     return null;
   }
   return {
-    reason: "The user asked for file changes, but the latest file mutation failed and no later file mutation succeeded. Continue with patch_files, write_files, edit_files, or another mutation tool instead of sending a final reply.",
+    reason: "The user asked for file changes, but the latest file mutation failed and no later file mutation succeeded. Continue with patch_files, write_files, or another mutation tool instead of sending a final reply.",
     failedStep,
   };
 }

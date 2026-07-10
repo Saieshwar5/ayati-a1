@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
+import { mkdtemp, readFile, rm, stat, writeFile as writeNodeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -6,13 +6,10 @@ import { calculatorTool } from "../../src/skills/builtins/calculator/index.js";
 import databaseSkill from "../../src/skills/builtins/database/index.js";
 import { createDirectoryTool } from "../../src/skills/builtins/filesystem/create-directory.js";
 import { deleteTool } from "../../src/skills/builtins/filesystem/delete.js";
-import { editFileTool } from "../../src/skills/builtins/filesystem/edit-file.js";
-import { editFilesTool } from "../../src/skills/builtins/filesystem/edit-files.js";
 import { moveTool } from "../../src/skills/builtins/filesystem/move.js";
 import { patchFilesTool } from "../../src/skills/builtins/filesystem/patch-files.js";
-import { readFileTool } from "../../src/skills/builtins/filesystem/read-file.js";
 import { readFilesTool } from "../../src/skills/builtins/filesystem/read-files.js";
-import { writeFileTool } from "../../src/skills/builtins/filesystem/write-file.js";
+import { writeFilesTool } from "../../src/skills/builtins/filesystem/write-files.js";
 import { pulseTool } from "../../src/skills/builtins/pulse/index.js";
 import {
   shellExecTool,
@@ -54,11 +51,8 @@ describe("static built-in tool contracts", () => {
   it("verifies filesystem read/write/edit/move/delete contracts", async () => {
     const executor = createToolExecutor([
       createDirectoryTool,
-      writeFileTool,
-      readFileTool,
+      writeFilesTool,
       readFilesTool,
-      editFileTool,
-      editFilesTool,
       patchFilesTool,
       moveTool,
       deleteTool,
@@ -75,22 +69,29 @@ describe("static built-in tool contracts", () => {
     expect(created.v2?.verification?.status).toBe("passed");
     expect((await stat(dir)).isDirectory()).toBe(true);
 
-    const written = await executor.execute("write_file", {
-      path: source,
-      content: "alpha beta",
+    const written = await executor.execute("write_files", {
+      files: [{ path: source, content: "alpha beta" }],
       allowExternalPath: true,
     });
     expect(written.ok).toBe(true);
-    expect(written.v2?.code).toBe("FILE_WRITTEN");
+    expect(written.v2?.code).toBe("FILES_WRITTEN");
     expect(written.v2?.verification?.assertions.map((assertion) => assertion.id)).toEqual([
       "operation_succeeded",
-      "written_file_hash_matches",
+      "files_written_matches_request",
+      "written_paths_exist",
+      "written_hashes_match",
     ]);
 
-    const read = await executor.execute("read_file", { path: source });
+    const read = await executor.execute("read_files", {
+      files: [{ path: source }],
+    });
     expect(read.ok).toBe(true);
     expect(read.v2?.verification?.status).toBe("passed");
-    expect(read.v2?.structuredContent).toMatchObject({ content: "alpha beta" });
+    expect(read.v2?.structuredContent).toMatchObject({
+      results: [
+        { requestedPath: source, ok: true, content: "alpha beta" },
+      ],
+    });
 
     const batchRead = await executor.execute("read_files", {
       files: [{ path: source }, { path: source, mode: "search", query: "beta" }],
@@ -104,21 +105,15 @@ describe("static built-in tool contracts", () => {
       },
     });
 
-    const edited = await executor.execute("edit_file", {
-      path: source,
-      oldString: "beta",
-      newString: "gamma",
+    const batchEdited = await executor.execute("patch_files", {
       allowExternalPath: true,
-    });
-    expect(edited.ok).toBe(true);
-    expect(edited.v2?.code).toBe("FILE_EDITED");
-    expect(await readFile(source, "utf-8")).toBe("alpha gamma");
-
-    const batchEdited = await executor.execute("edit_files", {
-      allowExternalPath: true,
-      edits: [
-        { path: source, oldString: "alpha", newString: "omega" },
-      ],
+      files: [{
+        path: source,
+        patches: [
+          { kind: "replace_text", find: "beta", replace: "gamma" },
+          { kind: "replace_text", find: "alpha", replace: "omega" },
+        ],
+      }],
     });
     expect(batchEdited.ok).toBe(true);
     expect(batchEdited.v2?.verification?.status).toBe("passed");
@@ -170,11 +165,7 @@ describe("static built-in tool contracts", () => {
     expect(shell.v2?.structuredContent).toMatchObject({ exitCode: 0, timedOut: false });
 
     const scriptPath = join(tmp, "script.sh");
-    await writeFileTool.execute({
-      path: scriptPath,
-      content: "printf script-ok\n",
-      allowExternalPath: true,
-    });
+    await writeNodeFile(scriptPath, "printf script-ok\n", "utf-8");
     const script = await executor.execute("shell_run_script", { scriptPath, cwd: tmp });
     expect(script.ok).toBe(true);
     expect(script.v2?.verification?.status).toBe("passed");

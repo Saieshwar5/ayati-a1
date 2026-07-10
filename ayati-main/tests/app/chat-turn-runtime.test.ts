@@ -22,7 +22,7 @@ import {
   gitMemoryTaskStepsPath,
 } from "../../src/context-engine/index.js";
 import { FileLibrary } from "../../src/files/file-library.js";
-import { readFileTool } from "../../src/skills/builtins/filesystem/read-file.js";
+import { readFilesTool } from "../../src/skills/builtins/filesystem/read-files.js";
 import { writeFilesTool } from "../../src/skills/builtins/filesystem/write-files.js";
 import { createGitContextSkill } from "../../src/skills/builtins/git-context/index.js";
 import { createToolExecutor } from "../../src/skills/tool-executor.js";
@@ -615,12 +615,12 @@ describe("createChatTurnRuntime", () => {
             mode: "single",
             calls: [{
               id: "read_focus",
-              tool: "read_file",
-              input: { path: "focus.ts", mode: "search", query: "focusTimer" },
+              tool: "read_files",
+              input: { files: [{ path: "focus.ts", mode: "search", query: "focusTimer" }] },
               dependsOn: [],
               purpose: "Inspect the current focus timer file.",
             }],
-            allowedTools: ["read_file"],
+            allowedTools: ["read_files"],
             assertions: [],
           },
         },
@@ -643,7 +643,7 @@ describe("createChatTurnRuntime", () => {
         provider,
         dataDir,
         chatContextRuntime,
-        toolExecutor: createToolExecutor([readFileTool]),
+        toolExecutor: createToolExecutor([readFilesTool]),
         now: () => new Date("2026-06-28T09:05:00.000Z"),
       });
 
@@ -680,7 +680,7 @@ describe("createChatTurnRuntime", () => {
         `refs/heads/${context.task.branch}`,
         gitMemoryTaskStepsPath(context.task.taskId, blockedRun.runId),
       ));
-      expect(steps.map((step) => step.toolCalls?.[0]?.tool)).toEqual(["read_file"]);
+      expect(steps.map((step) => step.toolCalls?.[0]?.tool)).toEqual(["read_files"]);
     } finally {
       if (previousWorkspaceDir === undefined) {
         delete process.env["AYATI_WORKSPACE_DIR"];
@@ -810,12 +810,12 @@ describe("createChatTurnRuntime", () => {
             mode: "single",
             calls: [{
               id: "read_upload",
-              tool: "read_file",
-              input: { path: "upload.ts", mode: "search", query: "handleUpload" },
+              tool: "read_files",
+              input: { files: [{ path: "upload.ts", mode: "search", query: "handleUpload" }] },
               dependsOn: [],
               purpose: "Inspect upload handling without mutating workspace state.",
             }],
-            allowedTools: ["read_file"],
+            allowedTools: ["read_files"],
             assertions: [],
           },
         },
@@ -829,7 +829,7 @@ describe("createChatTurnRuntime", () => {
         provider,
         dataDir,
         chatContextRuntime: createGitMemoryChatContextRuntime({ gitMemoryRuntime }),
-        toolExecutor: createToolExecutor([readFileTool]),
+        toolExecutor: createToolExecutor([readFilesTool]),
         now: () => new Date("2026-06-28T09:00:00.000Z"),
       });
 
@@ -856,7 +856,7 @@ describe("createChatTurnRuntime", () => {
         outcome: "Upload handling lives in upload.ts.",
         workPerformed: expect.any(Array),
         toolCallCount: 1,
-        toolsUsed: ["read_file"],
+        toolsUsed: ["read_files"],
         changedFiles: [],
         newFacts: expect.any(Array),
         workState: {
@@ -877,10 +877,10 @@ describe("createChatTurnRuntime", () => {
       expect(steps[0]).toMatchObject({
         sessionId,
         runId,
-        toolCalls: [{ tool: "read_file", status: "success" }],
+        toolCalls: [{ tool: "read_files", status: "success" }],
         workStateAfter: expect.objectContaining({
           evidence: expect.arrayContaining([
-            expect.stringContaining("read_file"),
+            expect.stringContaining("read_files"),
           ]),
         }),
       });
@@ -1316,12 +1316,12 @@ describe("createChatTurnRuntime", () => {
             mode: "single",
             calls: [{
               id: "read_upload",
-              tool: "read_file",
-              input: { path: "upload.ts", mode: "search", query: "handleUpload" },
+              tool: "read_files",
+              input: { files: [{ path: "upload.ts", mode: "search", query: "handleUpload" }] },
               dependsOn: [],
               purpose: "Inspect upload handling before editing task notes.",
             }],
-            allowedTools: ["read_file"],
+            allowedTools: ["read_files"],
             assertions: [],
           },
         },
@@ -1378,7 +1378,7 @@ describe("createChatTurnRuntime", () => {
         provider,
         dataDir,
         chatContextRuntime,
-        toolExecutor: createToolExecutor([...gitContextSkill.tools, readFileTool, writeFilesTool]),
+        toolExecutor: createToolExecutor([...gitContextSkill.tools, readFilesTool, writeFilesTool]),
         now: () => new Date("2026-06-28T09:05:00.000Z"),
       });
 
@@ -1423,7 +1423,7 @@ describe("createChatTurnRuntime", () => {
         gitMemoryTaskStepsPath(task.taskId, runId),
       ));
       expect(taskSteps).toHaveLength(2);
-      expect(taskSteps.map((step) => step.toolCalls?.[0]?.tool)).toEqual(["read_file", "write_files"]);
+      expect(taskSteps.map((step) => step.toolCalls?.[0]?.tool)).toEqual(["read_files", "write_files"]);
       expect(readFileSync(join(workspaceDir, "notes/upload.md"), "utf-8")).toContain("handleUpload");
     } finally {
       if (previousWorkspaceDir === undefined) {

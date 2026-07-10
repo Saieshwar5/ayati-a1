@@ -47,6 +47,21 @@ describe("patchFilesTool", () => {
     expect(await readFile(css, "utf-8")).toBe("body {\n    background: #f6f1e7;\n}\n");
   });
 
+  it("rejects more than two files per patch_files call with split guidance", async () => {
+    const result = await patchFilesTool.execute({
+      allowExternalPath: true,
+      files: [
+        { path: join(tmp, "a.txt"), patches: [{ kind: "replace_text", find: "a", replace: "A" }] },
+        { path: join(tmp, "b.txt"), patches: [{ kind: "replace_text", find: "b", replace: "B" }] },
+        { path: join(tmp, "c.txt"), patches: [{ kind: "replace_text", find: "c", replace: "C" }] },
+      ],
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain("at most 2 entries");
+    expect(result.error).toContain("split larger patches into multiple patch_files calls");
+  });
+
   it("supports replace_all_text, insert, and line replacement", async () => {
     const file = join(tmp, "notes.txt");
     await writeFile(file, "alpha\nbeta beta\ngamma\n", "utf-8");
@@ -65,6 +80,56 @@ describe("patchFilesTool", () => {
 
     expect(result.ok).toBe(true);
     expect(await readFile(file, "utf-8")).toBe("alpha inserted\nBETA BETA\ndelta\n");
+  });
+
+  it("supports replace_lines through EOF without guessing the final line number", async () => {
+    const file = join(tmp, "tail.txt");
+    await writeFile(file, "keep\nreplace me\nand me\n", "utf-8");
+
+    const result = await patchFilesTool.execute({
+      allowExternalPath: true,
+      files: [{
+        path: file,
+        patches: [{
+          kind: "replace_lines",
+          startLine: 2,
+          endLine: "EOF",
+          replace: "new tail",
+        }],
+      }],
+    });
+
+    expect(result.ok).toBe(true);
+    expect(await readFile(file, "utf-8")).toBe("keep\nnew tail\n");
+    expect(result.v2?.structuredContent).toMatchObject({
+      files: [{
+        checks: [{
+          message: "Replacement through EOF was applied.",
+        }],
+      }],
+    });
+  });
+
+  it("uses normalized line counts for replace_lines range failures", async () => {
+    const file = join(tmp, "line-count.txt");
+    await writeFile(file, "one\ntwo\n", "utf-8");
+
+    const result = await patchFilesTool.execute({
+      allowExternalPath: true,
+      files: [{
+        path: file,
+        patches: [{
+          kind: "replace_lines",
+          startLine: 3,
+          endLine: 3,
+          replace: "three",
+        }],
+      }],
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.v2?.error?.actual).toMatchObject({ lineCount: 2 });
+    expect(await readFile(file, "utf-8")).toBe("one\ntwo\n");
   });
 
   it("does not write any file when a later patch fails", async () => {
@@ -90,6 +155,61 @@ describe("patchFilesTool", () => {
     });
     expect(await readFile(first, "utf-8")).toBe("alpha beta\n");
     expect(await readFile(second, "utf-8")).toBe("one two\n");
+  });
+
+  it("applies a whitespace-normalized target when formatting drifted", async () => {
+    const file = join(tmp, "styles.css");
+    await writeFile(file, ".habit-item.done-today {\n  background: var(--success-bg);\n}\n", "utf-8");
+
+    const result = await patchFilesTool.execute({
+      allowExternalPath: true,
+      files: [{
+        path: file,
+        patches: [{
+          kind: "replace_text",
+          find: ".habit-item.done-today { background: var(--success-bg); }",
+          replace: ".habit-item.done-today { opacity: 0.7; }",
+        }],
+      }],
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.v2?.code).toBe("FILES_PATCHED");
+    expect(result.v2?.structuredContent).toMatchObject({
+      files: [{
+        checks: [{
+          matchStrategy: "whitespace_normalized",
+        }],
+      }],
+    });
+    expect(await readFile(file, "utf-8")).toBe(".habit-item.done-today { opacity: 0.7; }\n");
+  });
+
+  it("applies tolerant anchor matching with trimmed indentation", async () => {
+    const file = join(tmp, "script.js");
+    await writeFile(file, "function run() {\n    return \"ready\";\n}\n", "utf-8");
+
+    const result = await patchFilesTool.execute({
+      allowExternalPath: true,
+      files: [{
+        path: file,
+        patches: [{
+          kind: "insert_before",
+          anchor: "return \"ready\";  ",
+          content: "    console.log(\"starting\");\n",
+        }],
+      }],
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.v2?.structuredContent).toMatchObject({
+      files: [{
+        checks: [{
+          matchStrategy: "trim",
+        }],
+      }],
+    });
+    expect(await readFile(file, "utf-8")).toBe("function run() {\n    console.log(\"starting\");\n    return \"ready\";\n}\n");
   });
 
   it("rejects ambiguous single replacements", async () => {

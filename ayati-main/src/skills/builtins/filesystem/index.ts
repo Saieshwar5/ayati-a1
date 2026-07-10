@@ -1,11 +1,7 @@
 import type { SkillDefinition } from "../../types.js";
 import { inspectPathsTool } from "./inspect-paths.js";
-import { readFileTool } from "./read-file.js";
 import { readFilesTool } from "./read-files.js";
-import { writeFileTool } from "./write-file.js";
 import { writeFilesTool } from "./write-files.js";
-import { editFileTool } from "./edit-file.js";
-import { editFilesTool } from "./edit-files.js";
 import { patchFilesTool } from "./patch-files.js";
 import { deleteTool } from "./delete.js";
 import { listDirectoryTool } from "./list-directory.js";
@@ -25,16 +21,14 @@ const FS_PROMPT_BLOCK = [
   "Prefer find_files and search_in_files for discovery tasks.",
   "Use list_directory only when folder listing is explicitly needed.",
   "Use inspect_paths before content reads when candidate files are unknown, numerous, large, or may include directories/binary files; it returns size, line count, type, and read recommendations.",
-  "Tools: inspect_paths, read_file, read_files, write_file, write_files, edit_file, edit_files, patch_files, delete, list_directory, create_directory, move, find_files, search_in_files.",
-  "Use read_files when more than one known file or page is relevant; do not spend separate turns reading known related files one by one.",
-  "read_file defaults to mode=auto and returns a compact profile/focused context card instead of dumping full file text.",
-  "Use read_file for a single file or a precise follow-up slice/search after read_files identifies the relevant location.",
-  "Use read_file mode=search with query for relevant blocks, mode=slice with startLine/lineCount for exact ranges, mode=profile for metadata/outline, and mode=full only when explicitly needed.",
-  "write_file can create parent directories with createDirs=true.",
-  "write_files serializes a validated multi-file batch with temp-file writes and renames; prefer it over separate writes for generated files that belong together.",
-  "edit_file performs one exact find-and-replace; use replaceAll=true for global replacement.",
-  "edit_files applies multiple deterministic edits as one batch; prefer it for coordinated edits across one or more known files instead of separate edit_file calls or full-file rewrites.",
-  "patch_files patches existing files with small stable targets such as property/value strings; prefer it over edit_file/edit_files for normal code, HTML, CSS, and doc edits.",
+  "Tools: inspect_paths, read_files, write_files, patch_files, delete, list_directory, create_directory, move, find_files, search_in_files.",
+  "Use read_files for known file content; a single file is files=[{path,...}], and multiple known files should be batched instead of read one by one.",
+  "Per call limits: read_files accepts at most 4 files, write_files accepts at most 2 files, and patch_files accepts at most 2 files; split larger work into additional tool calls.",
+  "read_files entries default to mode=auto and return compact profile/focused context cards instead of dumping broad file text.",
+  "Use read_files mode=search with query for relevant blocks, mode=slice with startLine/lineCount for exact ranges, mode=profile for metadata/outline, and mode=full only when explicitly needed.",
+  "write_files serializes a validated file batch with temp-file writes and renames; use it for new files, single-file writes, multi-file writes, and full-file rewrites.",
+  "When write_files overwrites an existing file, pass files[].baseSha256 from a recent read_files full-read result; if the hash is missing or stale, re-read the file instead of using shell mutation.",
+  "patch_files patches existing files with small stable targets, tolerant line matching, anchor inserts, and line-range replacements; use endLine=\"EOF\" for replace_lines through the current end of file instead of guessing the final line number.",
   "delete requires recursive=true to remove directories and may require confirmation.",
   "list_directory returns grouped counts plus bounded entries; use find_files/search_in_files to narrow large trees.",
   "move handles cross-device moves automatically via copy+delete fallback.",
@@ -48,12 +42,8 @@ const filesystemSkill: SkillDefinition = {
   promptBlock: FS_PROMPT_BLOCK,
   tools: [
     inspectPathsTool,
-    readFileTool,
     readFilesTool,
-    writeFileTool,
     writeFilesTool,
-    editFileTool,
-    editFilesTool,
     patchFilesTool,
     deleteTool,
     listDirectoryTool,

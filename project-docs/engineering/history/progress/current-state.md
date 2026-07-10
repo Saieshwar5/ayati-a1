@@ -83,7 +83,7 @@ context.timeline + context.git + context.tools + context.harness + context.run +
   - `inspect_paths` for metadata, line counts, content hints, hashes, directory
     counts, and read recommendations.
   - `read_files` for multi-file reads.
-  - `read_file` and `read_files` advisory feedback when metadata should be used
+  - `read_files` and `read_files` advisory feedback when metadata should be used
     before broad, truncated, or risky reads.
 - Tool taxonomy as the source of truth for hidden catalog groups, loading
   priority, tool lifecycles, deterministic follow-up loading, and runtime

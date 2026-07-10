@@ -5,8 +5,15 @@ import type { ToolDefinition, ToolResult, ToolResultV2 } from "../../types.js";
 import { resolveWorkspaceMutationPath } from "../../workspace-paths.js";
 import { commonAnnotations, errorResult, succeededContract, successV2 } from "../contract-helpers.js";
 import { externalWorkspacePathError } from "./external-path-policy.js";
-import { validatePatchFilesInput } from "./validators.js";
+import { MAX_PATCH_FILES, MAX_PATCHES_PER_FILE, validatePatchFilesInput } from "./validators.js";
 import type { PatchFilesPatch } from "./types.js";
+import { buildTextTargetDiagnostic, type TextTargetDiagnostic } from "./target-diagnostics.js";
+import {
+  detectFileLineEnding,
+  hasTrailingLineBreak,
+  splitFileLines,
+  splitFileLineSpans,
+} from "./text-lines.js";
 
 interface ResolvedPatchFile {
   requestedPath: string;
@@ -19,6 +26,21 @@ interface PatchCheck {
   kind: PatchFilesPatch["kind"];
   status: "passed";
   message: string;
+  matchStrategy?: TextMatchStrategy;
+}
+
+type TextMatchStrategy =
+  | "exact"
+  | "line_ending"
+  | "trim_end"
+  | "trim"
+  | "normalized_punctuation"
+  | "whitespace_normalized";
+
+interface TextMatch {
+  start: number;
+  end: number;
+  strategy: TextMatchStrategy;
 }
 
 interface DraftPatchFile {
@@ -61,7 +83,8 @@ export const patchFilesTool: ToolDefinition = {
       files: {
         type: "array",
         minItems: 1,
-        maxItems: 20,
+        maxItems: MAX_PATCH_FILES,
+        description: `Files to patch. Use up to ${MAX_PATCH_FILES} files per call; split larger patches into another patch_files call.`,
         items: {
           type: "object",
           required: ["path", "patches"],
@@ -73,7 +96,7 @@ export const patchFilesTool: ToolDefinition = {
             patches: {
               type: "array",
               minItems: 1,
-              maxItems: 20,
+              maxItems: MAX_PATCHES_PER_FILE,
               items: {
                 type: "object",
                 required: ["kind"],
@@ -87,7 +110,13 @@ export const patchFilesTool: ToolDefinition = {
                   anchor: { type: "string", description: "Exact anchor text for insert_before or insert_after." },
                   content: { type: "string", description: "Content to insert for insert_before or insert_after." },
                   startLine: { type: "integer", minimum: 1, description: "1-based start line for replace_lines." },
-                  endLine: { type: "integer", minimum: 1, description: "1-based inclusive end line for replace_lines." },
+                  endLine: {
+                    anyOf: [
+                      { type: "integer", minimum: 1 },
+                      { type: "string", enum: ["EOF"] },
+                    ],
+                    description: "1-based inclusive end line for replace_lines, or \"EOF\" to replace through the last file line.",
+                  },
                 },
                 additionalProperties: false,
               },
@@ -186,7 +215,7 @@ export const patchFilesTool: ToolDefinition = {
   },
   selectionHints: {
     tags: ["filesystem", "patch", "edit", "replace", "insert", "batch", "refactor"],
-    aliases: ["apply_patches", "patch_in_files", "stable_edit_files", "modify_files"],
+    aliases: ["apply_patches", "patch_in_files", "stable_patch_files", "modify_files"],
     examples: ["replace background: white with background: #f6f1e7", "patch two files with small stable targets"],
     domain: "filesystem",
     priority: 6,
@@ -242,6 +271,7 @@ export const patchFilesTool: ToolDefinition = {
             patch,
             expected: result.expected,
             actual: result.actual,
+            diagnostic: result.diagnostic,
             suggestedFix: result.suggestedFix,
           });
         }
@@ -391,6 +421,7 @@ function applyPatch(
   message: string;
   expected?: unknown;
   actual?: unknown;
+  diagnostic?: TextTargetDiagnostic;
   suggestedFix: string;
 } {
   switch (patch.kind) {
@@ -398,17 +429,20 @@ function applyPatch(
     case "replace_all_text": {
       const find = patch.find ?? "";
       const replace = patch.replace ?? "";
-      if (!content.includes(find)) {
+      const matches = findTextMatches(content, find);
+      if (matches.length === 0) {
+        const diagnostic = buildTextTargetDiagnostic(content, find, "find text");
         return {
           ok: false,
           code: "PATCH_TARGET_NOT_FOUND",
           message: "find text not found in file.",
           expected: find,
-          actual: "not found",
+          actual: diagnostic,
+          diagnostic,
           suggestedFix: "Use a smaller stable target copied from the latest read output, for example just the property/value or identifier being changed.",
         };
       }
-      const occurrenceCount = content.split(find).length - 1;
+      const occurrenceCount = matches.length;
       if (patch.kind === "replace_text" && occurrenceCount > 1) {
         return {
           ok: false,
@@ -420,9 +454,12 @@ function applyPatch(
         };
       }
       const changesApplied = patch.kind === "replace_all_text" ? occurrenceCount : 1;
-      const updated = patch.kind === "replace_all_text"
-        ? content.replaceAll(find, replace)
-        : content.replace(find, replace);
+      const replacement = convertToLineEnding(replace, detectFileLineEnding(content));
+      const updated = applyTextMatches(
+        content,
+        patch.kind === "replace_all_text" ? matches : matches.slice(0, 1),
+        replacement,
+      );
       if (updated === content) {
         return {
           ok: false,
@@ -437,9 +474,12 @@ function applyPatch(
         patchIndex,
         kind: patch.kind,
         status: "passed",
-        message: "Replacement text is present after patch.",
+        message: matches[0]?.strategy === "exact"
+          ? "Replacement text is present after patch."
+          : `Replacement applied with ${matches[0]?.strategy ?? "tolerant"} matching.`,
+        ...(matches[0] ? { matchStrategy: matches[0].strategy } : {}),
       }];
-      if (patch.kind === "replace_all_text" && find !== replace && !replace.includes(find)) {
+      if (patch.kind === "replace_all_text" && find !== replace && !replace.includes(find) && matches.every((match) => match.strategy === "exact")) {
         checks.push({
           patchIndex,
           kind: patch.kind,
@@ -453,17 +493,20 @@ function applyPatch(
     case "insert_after": {
       const anchor = patch.anchor ?? "";
       const insert = patch.content ?? "";
-      if (!content.includes(anchor)) {
+      const matches = findTextMatches(content, anchor);
+      if (matches.length === 0) {
+        const diagnostic = buildTextTargetDiagnostic(content, anchor, "anchor text");
         return {
           ok: false,
           code: "PATCH_TARGET_NOT_FOUND",
           message: "anchor text not found in file.",
           expected: anchor,
-          actual: "not found",
+          actual: diagnostic,
+          diagnostic,
           suggestedFix: "Use an anchor copied exactly from the latest read output or use replace_lines.",
         };
       }
-      const occurrenceCount = content.split(anchor).length - 1;
+      const occurrenceCount = matches.length;
       if (occurrenceCount > 1) {
         return {
           ok: false,
@@ -474,21 +517,224 @@ function applyPatch(
           suggestedFix: "Use a more specific anchor copied from the latest read output, or use replace_lines when the intended line is known.",
         };
       }
-      const replacement = patch.kind === "insert_before" ? `${insert}${anchor}` : `${anchor}${insert}`;
+      const match = matches[0]!;
+      const normalizedInsert = convertToLineEnding(insert, detectFileLineEnding(content));
+      const offset = patch.kind === "insert_before" ? match.start : match.end;
       return {
         ok: true,
-        content: content.replace(anchor, replacement),
+        content: `${content.slice(0, offset)}${normalizedInsert}${content.slice(offset)}`,
         changesApplied: 1,
         checks: [{
           patchIndex,
           kind: patch.kind,
           status: "passed",
-          message: "Inserted content is present after patch.",
+          message: match.strategy === "exact"
+            ? "Inserted content is present after patch."
+            : `Inserted content using ${match.strategy} anchor matching.`,
+          matchStrategy: match.strategy,
         }],
       };
     }
     case "replace_lines":
       return replaceLines(content, patch, patchIndex);
+  }
+}
+
+function findTextMatches(content: string, search: string): TextMatch[] {
+  const exact = findExactMatches(content, search, "exact");
+  if (exact.length > 0) return exact;
+
+  const newlineAdjusted = convertToLineEnding(search, detectFileLineEnding(content));
+  if (newlineAdjusted !== search) {
+    const newlineMatches = findExactMatches(content, newlineAdjusted, "line_ending");
+    if (newlineMatches.length > 0) return newlineMatches;
+  }
+
+  const trimEndMatches = findLineSequenceMatches(content, search, (value) => value.trimEnd(), "trim_end");
+  if (trimEndMatches.length > 0) return trimEndMatches;
+
+  const trimMatches = findLineSequenceMatches(content, search, (value) => value.trim(), "trim");
+  if (trimMatches.length > 0) return trimMatches;
+
+  const normalizedPunctuationMatches = findMappedMatches(
+    content,
+    normalizePunctuationWithMap,
+    normalizePunctuation(search),
+    "normalized_punctuation",
+  );
+  if (normalizedPunctuationMatches.length > 0) return normalizedPunctuationMatches;
+
+  return findMappedMatches(
+    content,
+    normalizeWhitespaceWithMap,
+    normalizeWhitespace(search),
+    "whitespace_normalized",
+  );
+}
+
+function findExactMatches(content: string, search: string, strategy: TextMatchStrategy): TextMatch[] {
+  const matches: TextMatch[] = [];
+  if (search.length === 0) return matches;
+
+  let offset = 0;
+  while (offset <= content.length) {
+    const index = content.indexOf(search, offset);
+    if (index === -1) break;
+    matches.push({ start: index, end: index + search.length, strategy });
+    offset = index + search.length;
+  }
+  return matches;
+}
+
+function findLineSequenceMatches(
+  content: string,
+  search: string,
+  normalize: (value: string) => string,
+  strategy: TextMatchStrategy,
+): TextMatch[] {
+  const contentLines = splitFileLineSpans(content);
+  const searchLines = splitFileLines(search);
+  if (searchLines.length === 0 || searchLines.length > contentLines.length) return [];
+
+  const normalizedSearch = searchLines.map(normalize);
+  const matches: TextMatch[] = [];
+  for (let startLine = 0; startLine <= contentLines.length - normalizedSearch.length; startLine += 1) {
+    let matched = true;
+    for (let offset = 0; offset < normalizedSearch.length; offset += 1) {
+      if (normalize(contentLines[startLine + offset]!.text) !== normalizedSearch[offset]) {
+        matched = false;
+        break;
+      }
+    }
+    if (matched) {
+      const first = contentLines[startLine]!;
+      const last = contentLines[startLine + normalizedSearch.length - 1]!;
+      matches.push({ start: first.start, end: last.end, strategy });
+    }
+  }
+  return matches;
+}
+
+function findMappedMatches(
+  content: string,
+  contentMapper: (value: string) => { text: string; map: number[] },
+  normalizedSearch: string,
+  strategy: TextMatchStrategy,
+): TextMatch[] {
+  const haystack = contentMapper(content);
+  const needle = normalizedSearch;
+  const matches: TextMatch[] = [];
+  if (needle.length === 0) return matches;
+
+  let offset = 0;
+  while (offset <= haystack.text.length) {
+    const index = haystack.text.indexOf(needle, offset);
+    if (index === -1) break;
+    const start = haystack.map[index];
+    const endSource = haystack.map[index + needle.length - 1];
+    if (start !== undefined && endSource !== undefined) {
+      matches.push({ start, end: endSource + 1, strategy });
+    }
+    offset = index + needle.length;
+  }
+  return matches;
+}
+
+function applyTextMatches(content: string, matches: TextMatch[], replacement: string): string {
+  let updated = content;
+  for (const match of [...matches].reverse()) {
+    updated = `${updated.slice(0, match.start)}${replacement}${updated.slice(match.end)}`;
+  }
+  return updated;
+}
+
+function convertToLineEnding(text: string, ending: "\n" | "\r\n"): string {
+  const normalized = text.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+  return ending === "\r\n" ? normalized.replace(/\n/g, "\r\n") : normalized;
+}
+
+function normalizeWhitespace(value: string): string {
+  return normalizePunctuation(value).replace(/\s+/g, " ").trim();
+}
+
+function normalizeWhitespaceWithMap(value: string): { text: string; map: number[] } {
+  let text = "";
+  const map: number[] = [];
+  let pendingSpaceIndex: number | undefined;
+
+  for (let index = 0; index < value.length; index += 1) {
+    const char = normalizePunctuationChar(value[index]!);
+    if (/\s/.test(char)) {
+      if (text.length > 0) pendingSpaceIndex ??= index;
+      continue;
+    }
+    if (pendingSpaceIndex !== undefined && text.length > 0) {
+      text += " ";
+      map.push(pendingSpaceIndex);
+    }
+    pendingSpaceIndex = undefined;
+    text += char;
+    map.push(index);
+  }
+
+  return { text: text.trim(), map };
+}
+
+function normalizePunctuationWithMap(value: string): { text: string; map: number[] } {
+  let text = "";
+  const map: number[] = [];
+  for (let index = 0; index < value.length; index += 1) {
+    const normalized = normalizePunctuationChar(value[index]!);
+    text += normalized;
+    for (let offset = 0; offset < normalized.length; offset += 1) {
+      map.push(index);
+    }
+  }
+  return { text, map };
+}
+
+function normalizePunctuation(value: string): string {
+  return Array.from(value).map(normalizePunctuationChar).join("");
+}
+
+function normalizePunctuationChar(value: string): string {
+  switch (value) {
+    case "\u2018":
+    case "\u2019":
+    case "\u201A":
+    case "\u201B":
+      return "'";
+    case "\u201C":
+    case "\u201D":
+    case "\u201E":
+    case "\u201F":
+      return "\"";
+    case "\u2010":
+    case "\u2011":
+    case "\u2012":
+    case "\u2013":
+    case "\u2014":
+    case "\u2015":
+    case "\u2212":
+      return "-";
+    case "\u00A0":
+    case "\u2002":
+    case "\u2003":
+    case "\u2004":
+    case "\u2005":
+    case "\u2006":
+    case "\u2007":
+    case "\u2008":
+    case "\u2009":
+    case "\u200A":
+    case "\u202F":
+    case "\u205F":
+    case "\u3000":
+      return " ";
+    case "\u2026":
+      return "...";
+    default:
+      return value;
   }
 }
 
@@ -498,27 +744,38 @@ function replaceLines(
   patchIndex: number,
 ): ReturnType<typeof applyPatch> {
   const startLine = patch.startLine ?? 0;
-  const endLine = patch.endLine ?? 0;
   const replacement = patch.replace ?? "";
-  const newline = content.includes("\r\n") ? "\r\n" : "\n";
-  const hasTrailingNewline = /\r?\n$/.test(content);
-  const lines = content.split(/\r?\n/);
-  if (hasTrailingNewline) lines.pop();
+  const newline = detectFileLineEnding(content);
+  const hasFinalLineBreak = hasTrailingLineBreak(content);
+  const lines = splitFileLines(content);
+  const endLine = patch.endLine === "EOF" ? lines.length : patch.endLine ?? 0;
+  const requestedEndLine = patch.endLine ?? 0;
 
   if (startLine > lines.length || endLine > lines.length) {
     return {
       ok: false,
       code: "PATCH_TARGET_NOT_FOUND",
-      message: `line range ${startLine}-${endLine} is outside file line count ${lines.length}.`,
-      expected: { startLine, endLine },
+      message: `line range ${startLine}-${String(requestedEndLine)} is outside file line count ${lines.length}.`,
+      expected: { startLine, endLine: requestedEndLine },
       actual: { lineCount: lines.length },
-      suggestedFix: "Read the latest exact line range, then retry replace_lines with valid 1-based lines.",
+      suggestedFix: "Read the latest exact line range, then retry replace_lines with valid 1-based lines or endLine=\"EOF\".",
     };
   }
 
-  const replacementLines = replacement.length === 0 ? [] : replacement.split(/\r?\n/);
+  if (endLine < startLine) {
+    return {
+      ok: false,
+      code: "PATCH_TARGET_NOT_FOUND",
+      message: `line range ${startLine}-${String(requestedEndLine)} is invalid for file line count ${lines.length}.`,
+      expected: { startLine, endLine: requestedEndLine },
+      actual: { lineCount: lines.length, resolvedEndLine: endLine },
+      suggestedFix: "Use an endLine greater than or equal to startLine, or use endLine=\"EOF\" when replacing through the end of the file.",
+    };
+  }
+
+  const replacementLines = replacement.length === 0 ? [] : splitFileLines(replacement);
   lines.splice(startLine - 1, endLine - startLine + 1, ...replacementLines);
-  const updated = `${lines.join(newline)}${hasTrailingNewline ? newline : ""}`;
+  const updated = `${lines.join(newline)}${hasFinalLineBreak ? newline : ""}`;
   if (updated === content) {
     return {
       ok: false,
@@ -537,7 +794,9 @@ function replaceLines(
       patchIndex,
       kind: patch.kind,
       status: "passed",
-      message: replacement.length > 0 ? "Replacement lines are present after patch." : "Line range was removed.",
+      message: patch.endLine === "EOF"
+        ? "Replacement through EOF was applied."
+        : replacement.length > 0 ? "Replacement lines are present after patch." : "Line range was removed.",
     }],
   };
 }
@@ -552,8 +811,10 @@ function patchError(input: {
   category?: "semantic" | "missing_path";
   expected?: unknown;
   actual?: unknown;
+  diagnostic?: TextTargetDiagnostic;
   suggestedFix: string;
 }): ToolResult {
+  const diagnostic = input.diagnostic ?? (isTextTargetDiagnostic(input.actual) ? input.actual : undefined);
   return errorResult({
     code: input.code,
     message: input.message,
@@ -573,14 +834,20 @@ function patchError(input: {
       ...(input.patchIndex !== undefined ? { patchIndex: input.patchIndex } : {}),
       ...(input.patch ? { kind: input.patch.kind } : {}),
       suggestedFix: input.suggestedFix,
+      ...(diagnostic ? { diagnostic } : {}),
     },
     meta: {
       durationMs: Date.now() - input.start,
       filePath: input.file.filePath,
       ...(input.patchIndex !== undefined ? { patchIndex: input.patchIndex } : {}),
       ...(input.patch ? { kind: input.patch.kind } : {}),
+      ...(diagnostic ? { diagnostic } : {}),
     },
   });
+}
+
+function isTextTargetDiagnostic(value: unknown): value is TextTargetDiagnostic {
+  return Boolean(value && typeof value === "object" && "targetKind" in value && "hint" in value);
 }
 
 function buildFailureResult(

@@ -8,14 +8,14 @@ import {
   importantLineBlocks,
   makeBlock,
   renderContextObservation,
-  splitLines,
   truncatePreserveLines,
   type ToolContextBlock,
   type ToolContextObservation,
 } from "../../observations/context-observation.js";
 import { resolveWorkspacePath } from "../../workspace-paths.js";
-import { commonAnnotations, errorResult, errorResultFromUnknown, okResult, succeededContract, successV2 } from "../contract-helpers.js";
+import { commonAnnotations, errorResult, errorResultFromUnknown, okResult, sha256Text, succeededContract, successV2 } from "../contract-helpers.js";
 import { addFileMetadataAdvisory, fileMetadataAdvisoryCondition } from "./read-advisory.js";
+import { numberFileLines, splitFileLines } from "./text-lines.js";
 import { validateReadFileInput } from "./validators.js";
 import type { ReadFileInput } from "./types.js";
 
@@ -43,9 +43,9 @@ interface SearchBlock {
   matchedLine: number;
 }
 
-export const readFileTool: ToolDefinition = {
-  name: "read_file",
-  description: "Inspect a text file with bounded profile, search, slice, or explicit capped full-read modes.",
+export const readFileCoreTool: ToolDefinition = {
+  name: "read_files__single",
+  description: "Internal read_files core reader for one file, with bounded profile, search, slice, or explicit capped full-read modes.",
   inputSchema: {
     type: "object",
     required: ["path"],
@@ -76,6 +76,7 @@ export const readFileTool: ToolDefinition = {
       lineCountKnown: { type: "boolean" },
       truncated: { type: "boolean" },
       sizeBytes: { type: "integer" },
+      sha256: { type: "string" },
       query: { type: "string" },
       matchCount: { type: "integer" },
       startLine: { type: "integer" },
@@ -104,7 +105,7 @@ export const readFileTool: ToolDefinition = {
     progressFacts: [{
       kind: "file_read",
       path: "$.result.structuredContent.filePath",
-      message: "File inspected by read_file.",
+      message: "File inspected by read_files.",
     }],
   }),
   selectionHints: {
@@ -140,7 +141,7 @@ export const readFileTool: ToolDefinition = {
       if (mode === "search" && !parsed.query?.trim()) {
         return errorResult({
           code: "QUERY_REQUIRED",
-          message: "read_file search mode requires a non-empty query.",
+          message: "read_files search mode requires a non-empty query.",
           category: "validation",
           target: filePath,
           retryable: true,
@@ -173,6 +174,22 @@ export const readFileTool: ToolDefinition = {
         truncated: built.truncated,
         sizeBytes: info.size,
       };
+      const canUseAsWriteBase = mode === "full" && source.complete && !built.truncated;
+      const writeBaseSha256 = canUseAsWriteBase ? sha256Text(source.content) : undefined;
+      if (writeBaseSha256) {
+        built.observation = {
+          ...built.observation,
+          stats: {
+            ...built.observation.stats,
+            sha256: writeBaseSha256,
+            writeBase: true,
+          },
+          highlights: [
+            `sha256: ${writeBaseSha256}`,
+            ...built.observation.highlights,
+          ],
+        };
+      }
       const structuredContent = {
         requestedPath: parsed.path,
         filePath,
@@ -183,6 +200,7 @@ export const readFileTool: ToolDefinition = {
         lineCountKnown: built.lineCountKnown,
         truncated: built.truncated,
         sizeBytes: info.size,
+        ...(writeBaseSha256 ? { sha256: writeBaseSha256 } : {}),
         ...(parsed.query?.trim() ? { query: parsed.query.trim(), matchCount: built.matchCount } : {}),
         ...(built.startLine !== undefined ? { startLine: built.startLine } : {}),
         ...(built.endLine !== undefined ? { endLine: built.endLine } : {}),
@@ -197,7 +215,7 @@ export const readFileTool: ToolDefinition = {
         structuredContent.observation = addFileMetadataAdvisory(built.observation, advisoryReason);
       }
       const output = renderContextObservation({
-        tool: "read_file",
+        tool: "read_files",
         status: "success",
         message: `Inspected file: ${filePath}`,
         observation: structuredContent.observation,
@@ -257,7 +275,7 @@ function fileMetadataAdvisoryReason(input: {
 async function loadSource(filePath: string, sizeBytes: number, mode: ReadMode): Promise<TextSource> {
   if (sizeBytes <= MAX_FULL_CAPTURE_BYTES) {
     const content = await readFile(filePath, "utf-8");
-    const lines = splitLines(content);
+    const lines = splitFileLines(content);
     return { content, lines, complete: true, lineCount: lines.length };
   }
 
@@ -268,7 +286,7 @@ async function loadSource(filePath: string, sizeBytes: number, mode: ReadMode): 
   const content = await readLeadingChars(filePath, LARGE_FILE_SAMPLE_CHARS);
   return {
     content,
-    lines: splitLines(content),
+    lines: splitFileLines(content),
     complete: false,
   };
 }
@@ -388,9 +406,9 @@ async function buildSliceOutput(input: {
   const slice = input.source.complete
     ? sliceLoadedLines(input.source.lines, startLine, requestedLineCount)
     : await sliceStream(input.filePath, startLine, requestedLineCount);
-  const numbered = numberLines(slice.lines, slice.startLine);
+  const numbered = numberFileLines(slice.lines, slice.startLine);
   const content = numbered.join("\n");
-  const endLine = slice.startLine + slice.lines.length - 1;
+  const endLine = slice.lines.length > 0 ? slice.startLine + slice.lines.length - 1 : slice.startLine - 1;
   const observation: ToolContextObservation = {
     mode: "chunk",
     summary: `Read lines ${slice.startLine}-${endLine} from ${input.filePath}.`,
@@ -440,7 +458,7 @@ function buildFullOutput(input: {
   const fullContent = input.source.content;
   const content = truncatePreserveLines(fullContent, FULL_CONTENT_CAP_CHARS);
   const truncated = content.length < fullContent.length || !input.source.complete;
-  const lines = splitLines(content);
+  const lines = splitFileLines(content);
   const observation: ToolContextObservation = {
     mode: truncated ? "large_ref" : "focused",
     summary: truncated
@@ -560,7 +578,7 @@ function searchLoadedLines(lines: string[], query: string, contextLines: number,
       matchedLine: index + 1,
       block: makeBlock({
         title: `Match at line ${index + 1}`,
-        lines: numberLines(lines.slice(start, end + 1), start + 1),
+        lines: numberFileLines(lines.slice(start, end + 1), start + 1),
         startLine: start + 1,
         maxChars: 2_000,
         score: 1,
@@ -594,7 +612,7 @@ async function searchStream(filePath: string, query: string, contextLines: numbe
             matchedLine: item.matchedLine,
             block: makeBlock({
               title: `Match at line ${item.matchedLine}`,
-              lines: numberLines(item.lines, item.startLine),
+              lines: numberFileLines(item.lines, item.startLine),
               startLine: item.startLine,
               maxChars: 2_000,
               score: 1,
@@ -627,7 +645,7 @@ async function searchStream(filePath: string, query: string, contextLines: numbe
         matchedLine: item.matchedLine,
         block: makeBlock({
           title: `Match at line ${item.matchedLine}`,
-          lines: numberLines(item.lines, item.startLine),
+          lines: numberFileLines(item.lines, item.startLine),
           startLine: item.startLine,
           maxChars: 2_000,
           score: 1,
@@ -726,12 +744,8 @@ function isCodeLike(language: string): boolean {
   ].includes(language);
 }
 
-function numberLines(lines: string[], startLine: number): string[] {
-  return lines.map((line, index) => `${startLine + index}: ${line}`);
-}
-
 function firstNonEmptyLine(value: string): string {
-  return value.split(/\r?\n/).map((line) => line.trim()).find((line) => line.length > 0) ?? "";
+  return splitFileLines(value).map((line) => line.trim()).find((line) => line.length > 0) ?? "";
 }
 
 function clampInt(value: number, min: number, max: number): number {

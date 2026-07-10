@@ -8,7 +8,7 @@ const MAX_NEW_NOTES_PER_ACTION = 3;
 const NOTE_TEXT_CHARS = 420;
 
 const DURABLE_NOTE_TOOLS = new Set([
-  "read_file",
+  "read_files",
   "search_in_files",
   "find_files",
   "list_directory",
@@ -96,6 +96,10 @@ function readCallTarget(input: unknown): string | undefined {
   if (direct) {
     return direct;
   }
+  const fileTargets = readFileBatchTargets(record["files"]);
+  if (fileTargets) {
+    return fileTargets;
+  }
   const roots = record["roots"];
   if (Array.isArray(roots)) {
     const rootText = roots.filter((item): item is string => typeof item === "string").slice(0, 3).join(",");
@@ -104,6 +108,25 @@ function readCallTarget(input: unknown): string | undefined {
     }
   }
   return undefined;
+}
+
+function readFileBatchTargets(value: unknown): string | undefined {
+  if (!Array.isArray(value)) {
+    return undefined;
+  }
+  const targets = value
+    .map((item) => {
+      if (!item || typeof item !== "object" || Array.isArray(item)) {
+        return undefined;
+      }
+      const path = (item as Record<string, unknown>)["path"];
+      return typeof path === "string" && path.trim().length > 0
+        ? normalizeWhitespace(path)
+        : undefined;
+    })
+    .filter((path): path is string => Boolean(path))
+    .slice(0, 3);
+  return targets.length > 0 ? targets.join(",") : undefined;
 }
 
 function readFirstString(record: Record<string, unknown>, keys: string[]): string | undefined {

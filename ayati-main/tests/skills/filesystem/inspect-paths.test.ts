@@ -113,6 +113,27 @@ describe("inspectPathsTool", () => {
     });
   });
 
+  it("uses the shared file line-count contract and shows hashes when requested", async () => {
+    const empty = join(tmp, "empty.txt");
+    const finalNewline = join(tmp, "final-newline.txt");
+    await writeFile(empty, "", "utf-8");
+    await writeFile(finalNewline, "alpha\nbeta\n", "utf-8");
+
+    const result = await inspectPathsTool.execute({
+      paths: [empty, finalNewline],
+      includeHash: true,
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.output).toContain("sha256=");
+    expect(result.v2?.structuredContent).toMatchObject({
+      results: [
+        { path: empty, lineCount: 0 },
+        { path: finalNewline, lineCount: 2 },
+      ],
+    });
+  });
+
   it("detects binary files and recommends avoiding text reads", async () => {
     const file = join(tmp, "image.bin");
     await writeFile(file, Buffer.from([0, 1, 2, 3, 4, 5]));

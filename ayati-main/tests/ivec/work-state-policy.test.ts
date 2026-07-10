@@ -95,7 +95,7 @@ describe("work state policy", () => {
     });
 
     const withInput = state({
-      completedSteps: [step("write_file", "success")],
+      completedSteps: [step("write_files", "success")],
     });
     expect(applyAgentWorkStateUpdate(withInput, {
       status: "done",
@@ -107,7 +107,7 @@ describe("work state policy", () => {
     });
 
     const withBlocker = state({
-      completedSteps: [step("write_file", "success")],
+      completedSteps: [step("write_files", "success")],
     });
     expect(applyAgentWorkStateUpdate(withBlocker, {
       status: "done",
@@ -125,7 +125,7 @@ describe("work state policy", () => {
         openWork: ["finish"],
         blockers: ["old blocker"],
       }),
-      completedSteps: [step("write_file", "success")],
+      completedSteps: [step("write_files", "success")],
     });
 
     expect(applyAgentWorkStateUpdate(loopState, {
@@ -209,9 +209,9 @@ describe("work state policy", () => {
     const loopState = state({
       userMessage: "update the html file",
     });
-    expect(canCompleteLocallyAfterAction(action("read_file"), step("read_file", "success"), workState(), loopState)).toBe(false);
-    expect(canCompleteLocallyAfterAction(action("write_file"), step("write_file", "success"), workState(), loopState)).toBe(true);
-    expect(canCompleteLocallyAfterAction(action("write_file"), step("write_file", "failed"), workState(), loopState)).toBe(false);
+    expect(canCompleteLocallyAfterAction(action("read_files"), step("read_files", "success"), workState(), loopState)).toBe(false);
+    expect(canCompleteLocallyAfterAction(action("write_files"), step("write_files", "success"), workState(), loopState)).toBe(true);
+    expect(canCompleteLocallyAfterAction(action("write_files"), step("write_files", "failed"), workState(), loopState)).toBe(false);
   });
 
   it("allows local completion for non-file requests after successful candidate actions", () => {

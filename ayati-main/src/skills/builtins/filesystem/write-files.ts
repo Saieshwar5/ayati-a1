@@ -1,16 +1,17 @@
-import { mkdir, rename, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { createHash, randomUUID } from "node:crypto";
 import { basename, dirname, join } from "node:path";
 import type { ToolDefinition, ToolResult, ToolResultV2 } from "../../types.js";
 import { resolveWorkspaceMutationPath } from "../../workspace-paths.js";
 import { externalWorkspacePathError } from "./external-path-policy.js";
-import { validateWriteFilesInput } from "./validators.js";
+import { MAX_WRITE_FILES, validateWriteFilesInput } from "./validators.js";
 
 interface PreparedWrite {
   requestedPath: string;
   filePath: string;
   tempPath: string;
   content: string;
+  baseSha256?: string;
 }
 
 interface MovedWrite {
@@ -18,11 +19,12 @@ interface MovedWrite {
   filePath: string;
   bytesWritten: number;
   sha256: string;
+  previousSha256?: string;
 }
 
 export const writeFilesTool: ToolDefinition = {
   name: "write_files",
-  description: "Write or overwrite multiple files as one serialized batch. Validates all paths first, writes temp files, then renames them into place.",
+  description: "Write multiple files as one serialized batch. New files can be created directly; overwriting an existing file requires files[].baseSha256 from a recent read result.",
   inputSchema: {
     type: "object",
     required: ["files"],
@@ -30,6 +32,8 @@ export const writeFilesTool: ToolDefinition = {
       files: {
         type: "array",
         minItems: 1,
+        maxItems: MAX_WRITE_FILES,
+        description: `Files to write. Use up to ${MAX_WRITE_FILES} files per call; split larger writes into another write_files call.`,
         items: {
           type: "object",
           required: ["path", "content"],
@@ -39,6 +43,10 @@ export const writeFilesTool: ToolDefinition = {
               description: "Workspace-relative file path by default. Absolute paths outside the workspace require allowExternalPath=true.",
             },
             content: { type: "string", description: "Content to write." },
+            baseSha256: {
+              type: "string",
+              description: "Required when overwriting an existing file. Use the sha256 returned by a recent full read of the same file.",
+            },
           },
           additionalProperties: false,
         },
@@ -70,6 +78,7 @@ export const writeFilesTool: ToolDefinition = {
             filePath: { type: "string" },
             bytesWritten: { type: "integer" },
             sha256: { type: "string" },
+            previousSha256: { type: "string" },
           },
         },
       },
@@ -131,6 +140,18 @@ export const writeFilesTool: ToolDefinition = {
         retryable: true,
         recoverable: true,
         suggestedNextActions: ["Retry write_files with createDirs=true or create the parent directory first."],
+      },
+      EXISTING_FILE_REQUIRES_BASE_SHA256: {
+        category: "conflict",
+        retryable: true,
+        recoverable: true,
+        suggestedNextActions: ["Read the full current file first, then retry write_files with files[].baseSha256 from that read result."],
+      },
+      WRITE_PRECONDITION_FAILED: {
+        category: "conflict",
+        retryable: true,
+        recoverable: true,
+        suggestedNextActions: ["Re-read the current file, rebuild the complete replacement from that content, then retry with the new baseSha256."],
       },
       BATCH_WRITE_FAILED: {
         category: "unknown",
@@ -198,6 +219,7 @@ export const writeFilesTool: ToolDefinition = {
         filePath,
         tempPath: buildTempPath(filePath),
         content: file.content,
+        ...(file.baseSha256 ? { baseSha256: file.baseSha256 } : {}),
       });
     }
 
@@ -212,9 +234,19 @@ export const writeFilesTool: ToolDefinition = {
         }
       }
 
+      const preconditions = await verifyExistingFilePreconditions(prepared, start);
+      if (!preconditions.ok) {
+        return preconditions.result;
+      }
+
       for (const file of prepared) {
         await writeFile(file.tempPath, file.content, "utf-8");
         tempPaths.push(file.tempPath);
+      }
+
+      const finalPreconditions = await verifyExistingFilePreconditions(prepared, start);
+      if (!finalPreconditions.ok) {
+        throw new GuardedWritePreconditionError(finalPreconditions.result);
       }
 
       for (const file of prepared) {
@@ -224,6 +256,7 @@ export const writeFilesTool: ToolDefinition = {
           filePath: file.filePath,
           bytesWritten: Buffer.byteLength(file.content, "utf-8"),
           sha256: sha256Text(file.content),
+          ...(file.baseSha256 ? { previousSha256: file.baseSha256 } : {}),
         });
       }
 
@@ -269,6 +302,9 @@ export const writeFilesTool: ToolDefinition = {
       await Promise.all(
         tempPaths.map((path) => rm(path, { force: true }).catch(() => undefined)),
       );
+      if (err instanceof GuardedWritePreconditionError) {
+        return err.result;
+      }
       const message = err instanceof Error ? err.message : "Unknown filesystem batch write error";
       const durationMs = Date.now() - start;
       const v2 = buildFailureResult(message, err, parsed.createDirs === true, prepared, moved, durationMs);
@@ -296,6 +332,171 @@ function buildTempPath(filePath: string): string {
 
 function sha256Text(content: string): string {
   return createHash("sha256").update(content, "utf-8").digest("hex");
+}
+
+async function verifyExistingFilePreconditions(
+  prepared: PreparedWrite[],
+  start: number,
+): Promise<{ ok: true } | { ok: false; result: ToolResult }> {
+  for (const file of prepared) {
+    const existing = await inspectExistingTarget(file.filePath);
+    if (existing.status === "missing") {
+      if (file.baseSha256) {
+        return {
+          ok: false,
+          result: preconditionFailure({
+            code: "WRITE_PRECONDITION_FAILED",
+            message: `write_files precondition failed for ${file.filePath}: expected baseSha256 ${file.baseSha256}, but the file does not exist.`,
+            target: file.filePath,
+            expected: file.baseSha256,
+            actual: "missing",
+            file,
+            filesRequested: prepared.length,
+            durationMs: Date.now() - start,
+          }),
+        };
+      }
+      continue;
+    }
+
+    if (existing.status === "not_file") {
+      return {
+        ok: false,
+        result: preconditionFailure({
+          code: "WRITE_PRECONDITION_FAILED",
+          message: `write_files precondition failed for ${file.filePath}: target exists but is not a regular file.`,
+          target: file.filePath,
+          expected: "regular file",
+          actual: existing.kind,
+          file,
+          filesRequested: prepared.length,
+          durationMs: Date.now() - start,
+        }),
+      };
+    }
+
+    if (!file.baseSha256) {
+      return {
+        ok: false,
+        result: preconditionFailure({
+          code: "EXISTING_FILE_REQUIRES_BASE_SHA256",
+          message: `write_files refused to overwrite existing file without baseSha256: ${file.filePath}`,
+          target: file.filePath,
+          expected: "files[].baseSha256",
+          actual: "missing",
+          file,
+          actualSha256: existing.sha256,
+          filesRequested: prepared.length,
+          durationMs: Date.now() - start,
+        }),
+      };
+    }
+
+    if (existing.sha256.toLowerCase() !== file.baseSha256.toLowerCase()) {
+      return {
+        ok: false,
+        result: preconditionFailure({
+          code: "WRITE_PRECONDITION_FAILED",
+          message: `write_files precondition failed for ${file.filePath}: file changed since the baseSha256 was read.`,
+          target: file.filePath,
+          expected: file.baseSha256,
+          actual: existing.sha256,
+          file,
+          actualSha256: existing.sha256,
+          filesRequested: prepared.length,
+          durationMs: Date.now() - start,
+        }),
+      };
+    }
+  }
+  return { ok: true };
+}
+
+async function inspectExistingTarget(filePath: string): Promise<
+  | { status: "missing" }
+  | { status: "not_file"; kind: string }
+  | { status: "file"; sha256: string }
+> {
+  try {
+    const info = await stat(filePath);
+    if (!info.isFile()) {
+      return { status: "not_file", kind: info.isDirectory() ? "directory" : "non-file" };
+    }
+    return { status: "file", sha256: sha256Text(await readFile(filePath, "utf-8")) };
+  } catch (err) {
+    const errno = err as NodeJS.ErrnoException;
+    if (errno.code === "ENOENT") {
+      return { status: "missing" };
+    }
+    throw err;
+  }
+}
+
+function preconditionFailure(input: {
+  code: "EXISTING_FILE_REQUIRES_BASE_SHA256" | "WRITE_PRECONDITION_FAILED";
+  message: string;
+  target: string;
+  expected: unknown;
+  actual: unknown;
+  file: PreparedWrite;
+  filesRequested: number;
+  durationMs: number;
+  actualSha256?: string;
+}): ToolResult {
+  const structuredContent = {
+    filesRequested: input.filesRequested,
+    filesWritten: 0,
+    target: input.target,
+    requestedPath: input.file.requestedPath,
+    baseSha256: input.file.baseSha256,
+    actualSha256: input.actualSha256,
+  };
+  const suggestedNextActions = input.code === "EXISTING_FILE_REQUIRES_BASE_SHA256"
+    ? ["Read the full current file first, then retry write_files with files[].baseSha256 from that read result."]
+    : ["Re-read the current file, rebuild the complete replacement from that content, then retry with the new baseSha256."];
+
+  return {
+    ok: false,
+    error: input.message,
+    meta: {
+      durationMs: input.durationMs,
+      filePath: input.target,
+      filesRequested: input.filesRequested,
+      filesWritten: 0,
+    },
+    v2: {
+      transportOk: true,
+      operationStatus: "failed",
+      code: input.code,
+      message: input.message,
+      structuredContent,
+      error: {
+        category: "conflict",
+        code: input.code,
+        message: input.message,
+        retryable: true,
+        recoverable: true,
+        target: input.target,
+        expected: input.expected,
+        actual: input.actual,
+        suggestedNextActions,
+      },
+      diagnostics: {
+        durationMs: input.durationMs,
+        filePath: input.target,
+        filesRequested: input.filesRequested,
+        filesWritten: 0,
+        expected: input.expected,
+        actual: input.actual,
+      },
+    },
+  };
+}
+
+class GuardedWritePreconditionError extends Error {
+  constructor(readonly result: ToolResult) {
+    super(result.error ?? "write_files precondition failed.");
+  }
 }
 
 function buildFailureResult(

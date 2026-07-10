@@ -75,8 +75,8 @@ function pendingGitContext(
 describe("selectToolsForDecision", () => {
   it("selects only relevant visible tools within the configured cap", () => {
     const tools = [
-      tool("read_file", 10),
-      tool("edit_file", 10),
+      tool("read_files", 10),
+      tool("patch_files", 10),
       tool("write_files", 10),
       tool("pulse", 1),
       tool("calculator", 1),
@@ -154,7 +154,7 @@ describe("selectToolsForDecision", () => {
 
     const selected = selectToolsForDecision(current, [
       tool("write_files", 100),
-      tool("read_file", 90),
+      tool("read_files", 90),
       tool("search_in_files", 80),
       tool("document_query", 70),
       tool("git_context_create_task_for_turn", 1),
@@ -165,7 +165,7 @@ describe("selectToolsForDecision", () => {
     const selectedNames = selected.map((entry) => entry.name);
     expect(selectedNames).toEqual([
       "write_files",
-      "read_file",
+      "read_files",
       "search_in_files",
       "git_context_create_task_for_turn",
     ]);
@@ -181,7 +181,6 @@ describe("selectToolsForDecision", () => {
 
     const selected = selectToolsForDecision(current, [
       tool("write_files", 100),
-      tool("write_file", 90),
       tool("create_directory", 80),
       tool("shell", 70),
       tool("search_in_files", 60),
@@ -200,7 +199,6 @@ describe("selectToolsForDecision", () => {
       "git_context_create_task_for_turn",
     ]);
     expect(selectedNames).not.toContain("write_files");
-    expect(selectedNames).not.toContain("write_file");
     expect(selectedNames).not.toContain("create_directory");
     expect(selectedNames).not.toContain("shell");
   });
@@ -215,8 +213,8 @@ describe("selectToolsForDecision", () => {
 
     const selected = selectToolsForDecision(current, [
       tool("write_files", 100),
-      tool("edit_file", 90),
-      tool("read_file", 80),
+      tool("patch_files", 90),
+      tool("read_files", 80),
       tool("git_context_list_tasks", 1),
       tool("git_context_search_tasks", 1),
       tool("git_context_activate_task_for_turn", 1),
@@ -225,13 +223,13 @@ describe("selectToolsForDecision", () => {
 
     const selectedNames = selected.map((entry) => entry.name);
     expect(selectedNames).toEqual([
-      "read_file",
+      "read_files",
       "git_context_list_tasks",
       "git_context_activate_task_for_turn",
       "git_context_create_task_for_turn",
     ]);
     expect(selectedNames).not.toContain("write_files");
-    expect(selectedNames).not.toContain("edit_file");
+    expect(selectedNames).not.toContain("patch_files");
   });
 
   it("selects no executable tools while a pending turn is clarifying", () => {
@@ -258,7 +256,7 @@ describe("selectToolsForDecision", () => {
 
     const selected = selectToolsForDecision(current, [
       tool("write_files", 100),
-      tool("read_file", 90),
+      tool("read_files", 90),
       tool("git_context_read_run_step", 0),
     ], 1);
 
@@ -273,7 +271,7 @@ describe("selectToolsForDecision", () => {
 
     const selected = selectToolsForDecision(current, [
       tool("write_files", 100),
-      tool("read_file", 90),
+      tool("read_files", 90),
       tool("git_context_read_run_step", 0),
     ], 1);
 
@@ -286,7 +284,7 @@ function recoverableToolCalls(): NonNullable<LoopState["toolContext"]>["toolCall
     {
       step: 1,
       callId: "call-old",
-      tool: "read_file",
+      tool: "read_files",
       input: { path: "src/old.ts" },
       status: "success",
       output: `old output ${"x".repeat(16_000)}`,
@@ -295,7 +293,7 @@ function recoverableToolCalls(): NonNullable<LoopState["toolContext"]>["toolCall
     {
       step: 2,
       callId: "call-2",
-      tool: "read_file",
+      tool: "read_files",
       input: { path: "src/2.ts" },
       status: "success",
       output: `output 2 ${"x".repeat(16_000)}`,
@@ -304,7 +302,7 @@ function recoverableToolCalls(): NonNullable<LoopState["toolContext"]>["toolCall
     {
       step: 3,
       callId: "call-3",
-      tool: "read_file",
+      tool: "read_files",
       input: { path: "src/3.ts" },
       status: "success",
       output: `output 3 ${"x".repeat(16_000)}`,
@@ -313,7 +311,7 @@ function recoverableToolCalls(): NonNullable<LoopState["toolContext"]>["toolCall
     {
       step: 4,
       callId: "call-4",
-      tool: "read_file",
+      tool: "read_files",
       input: { path: "src/4.ts" },
       status: "success",
       output: "output 4",
@@ -322,7 +320,7 @@ function recoverableToolCalls(): NonNullable<LoopState["toolContext"]>["toolCall
     {
       step: 5,
       callId: "call-5",
-      tool: "read_file",
+      tool: "read_files",
       input: { path: "src/5.ts" },
       status: "success",
       output: "output 5",

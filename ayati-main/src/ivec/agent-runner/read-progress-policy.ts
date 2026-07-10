@@ -6,7 +6,6 @@ const MAX_READ_ONLY_STEPS_BEFORE_MUTATION = 3;
 const MAX_SIGNATURES_RETAINED = 40;
 
 const READ_ONLY_TOOLS = new Set([
-  "read_file",
   "read_files",
   "search_in_files",
   "find_files",
@@ -14,9 +13,8 @@ const READ_ONLY_TOOLS = new Set([
 ]);
 
 const MUTATION_TOOLS = new Set([
-  "write_file",
   "write_files",
-  "edit_file",
+  "patch_files",
   "delete",
   "move",
   "create_directory",
@@ -64,7 +62,7 @@ export function evaluateReadProgressGuard(
       blockedTargets: [duplicate.call.tool],
       allowedNextActions: [
         "Use the current observations/evidence instead of reading the same target again.",
-        "If the user asked for a concrete file change, call write_file, write_files, or edit_file next.",
+        "If the user asked for a concrete file change, call patch_files or write_files next.",
         "Ask one specific clarification if the missing detail blocks the requested change.",
       ],
       operatorDetails: {
@@ -84,7 +82,7 @@ export function evaluateReadProgressGuard(
       blockedTargets: readCalls.map(({ call }) => call.tool),
       allowedNextActions: [
         "Use the current observations/evidence to make the requested change.",
-        "Call write_file, write_files, or edit_file next when the user asked to build or update files.",
+        "Call patch_files or write_files next when the user asked to build or update files.",
         "Ask one specific clarification if the change cannot be made from the available context.",
       ],
       operatorDetails: {
@@ -151,8 +149,6 @@ export function updateReadProgressAfterActOutput(
 function readSignature(call: Pick<AgentToolCallSpec, "tool" | "input">): string | undefined {
   const input = normalizeRecord(call.input);
   switch (call.tool) {
-    case "read_file":
-      return stableSignature(call.tool, pick(input, ["path", "mode", "query", "startLine", "lineCount", "contextLines"]));
     case "read_files":
       return stableSignature(call.tool, {
         files: normalizeReadFilesInput(input["files"]),

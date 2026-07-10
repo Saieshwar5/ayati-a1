@@ -1,7 +1,6 @@
 import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
 import { lstat, open, readdir } from "node:fs/promises";
-import { createInterface } from "node:readline";
 import { extname } from "node:path";
 import type { ArtifactRef, ToolDefinition, ToolResult } from "../../types.js";
 import {
@@ -11,11 +10,12 @@ import {
 } from "../../observations/context-observation.js";
 import { commonAnnotations, okResult, succeededContract, successV2 } from "../contract-helpers.js";
 import { resolveWorkspacePath } from "../../workspace-paths.js";
+import { countFileLinesFromPath } from "./text-lines.js";
 import { validateInspectPathsInput } from "./validators.js";
 
 type PathKind = "file" | "directory" | "symlink" | "other" | "missing";
 type ContentKind = "text" | "binary" | "unknown";
-type RecommendedTool = "read_file" | "read_files" | "search_in_files" | "list_directory" | "find_files";
+type RecommendedTool = "read_files" | "search_in_files" | "list_directory" | "find_files";
 type RecommendedMode = "auto" | "profile" | "search" | "slice" | "full";
 
 interface DirectoryCounts {
@@ -226,7 +226,7 @@ async function inspectOnePath(input: {
     const language = inferLanguage(path);
     const contentKind = await detectContentKind(path);
     const lineCount = input.includeLineCount && contentKind === "text"
-      ? await countTextLines(path)
+      ? await countFileLinesFromPath(path)
       : undefined;
     const sha256 = input.includeHash ? await hashFile(path) : undefined;
     return compactEntry({
@@ -286,15 +286,6 @@ async function detectContentKind(path: string): Promise<ContentKind> {
   }
 }
 
-async function countTextLines(path: string): Promise<number> {
-  let count = 0;
-  const reader = createInterface({ input: createReadStream(path, { encoding: "utf-8" }), crlfDelay: Infinity });
-  for await (const _line of reader) {
-    count++;
-  }
-  return count;
-}
-
 async function countDirectoryChildren(path: string): Promise<DirectoryCounts> {
   const counts: DirectoryCounts = { files: 0, dirs: 0, other: 0 };
   const entries = await readdir(path, { withFileTypes: true });
@@ -337,7 +328,7 @@ function recommendFileRead(sizeBytes: number, contentKind: ContentKind, lineCoun
   }
   if (sizeBytes <= 1_000_000) {
     return {
-      tool: "read_file",
+      tool: "read_files",
       mode: "profile",
       reason: "File is medium-sized; inspect profile or search before reading exact slices.",
     };
@@ -418,6 +409,7 @@ function formatEntryLine(entry: InspectPathEntry): string {
     entry.kind,
     entry.sizeBytes !== undefined ? `${entry.sizeBytes} bytes` : "",
     entry.lineCount !== undefined ? `${entry.lineCount} lines` : "",
+    entry.sha256 ? `sha256=${entry.sha256}` : "",
     entry.language ? entry.language : "",
     entry.contentKind ? entry.contentKind : "",
     entry.directoryCounts ? `${entry.directoryCounts.dirs} dirs/${entry.directoryCounts.files} files` : "",

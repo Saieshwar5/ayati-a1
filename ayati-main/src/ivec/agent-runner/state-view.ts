@@ -442,7 +442,6 @@ function buildObservationsView(toolContext: ToolContextState | undefined): Promp
 
 const READ_CONTEXT_TOOLS = new Set([
   "inspect_paths",
-  "read_file",
   "read_files",
   "search_in_files",
   "find_files",

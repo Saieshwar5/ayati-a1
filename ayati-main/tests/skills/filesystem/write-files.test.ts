@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { writeFilesTool } from "../../../src/skills/builtins/filesystem/write-files.js";
@@ -63,6 +64,85 @@ describe("writeFilesTool", () => {
     expect(result.ok).toBe(true);
     expect(await readFile(first, "utf-8")).toBe("alpha");
     expect(await readFile(second, "utf-8")).toBe("beta");
+  });
+
+  it("rejects more than two files per write_files call with split guidance", async () => {
+    const result = await writeFilesTool.execute({
+      allowExternalPath: true,
+      files: [
+        { path: join(tmp, "a.txt"), content: "alpha" },
+        { path: join(tmp, "b.txt"), content: "beta" },
+        { path: join(tmp, "c.txt"), content: "gamma" },
+      ],
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain("at most 2 entries");
+    expect(result.error).toContain("split larger writes into multiple write_files calls");
+  });
+
+  it("overwrites an existing file when baseSha256 matches", async () => {
+    const file = join(tmp, "existing.txt");
+    await writeFile(file, "before", "utf-8");
+
+    const result = await writeFilesTool.execute({
+      allowExternalPath: true,
+      files: [
+        { path: file, content: "after", baseSha256: sha256Text("before") },
+      ],
+    });
+
+    expect(result.ok).toBe(true);
+    expect(await readFile(file, "utf-8")).toBe("after");
+    expect(result.v2?.structuredContent).toMatchObject({
+      files: [
+        {
+          requestedPath: file,
+          filePath: file,
+          previousSha256: sha256Text("before"),
+          sha256: sha256Text("after"),
+        },
+      ],
+    });
+  });
+
+  it("refuses to overwrite an existing file without baseSha256", async () => {
+    const file = join(tmp, "guarded.txt");
+    await writeFile(file, "keep me", "utf-8");
+
+    const result = await writeFilesTool.execute({
+      allowExternalPath: true,
+      files: [
+        { path: file, content: "replace me" },
+      ],
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.v2?.operationStatus).toBe("failed");
+    expect(result.v2?.code).toBe("EXISTING_FILE_REQUIRES_BASE_SHA256");
+    expect(result.v2?.error?.suggestedNextActions.join(" ")).toContain("Read the full current file");
+    expect(await readFile(file, "utf-8")).toBe("keep me");
+  });
+
+  it("refuses to overwrite when baseSha256 is stale", async () => {
+    const file = join(tmp, "stale.txt");
+    await writeFile(file, "first version", "utf-8");
+    const baseSha256 = sha256Text("first version");
+    await writeFile(file, "second version", "utf-8");
+
+    const result = await writeFilesTool.execute({
+      allowExternalPath: true,
+      files: [
+        { path: file, content: "third version", baseSha256 },
+      ],
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.v2?.operationStatus).toBe("failed");
+    expect(result.v2?.code).toBe("WRITE_PRECONDITION_FAILED");
+    expect(result.v2?.error?.expected).toBe(baseSha256);
+    expect(result.v2?.error?.actual).toBe(sha256Text("second version"));
+    expect(await readFile(file, "utf-8")).toBe("second version");
   });
 
   it("rejects duplicate normalized target paths", async () => {
@@ -145,3 +225,7 @@ describe("writeFilesTool", () => {
     expect(result.v2?.artifacts?.map((artifact) => artifact.path)).toEqual([first, second]);
   });
 });
+
+function sha256Text(content: string): string {
+  return createHash("sha256").update(content, "utf-8").digest("hex");
+}

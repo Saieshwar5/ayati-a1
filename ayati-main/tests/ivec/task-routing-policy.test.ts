@@ -212,10 +212,10 @@ describe("task routing policy", () => {
   });
 
   it("detects deferred pre-task mutations and keeps routing actions out of deferred mutation", () => {
-    expect(shouldDeferPreTaskMutation(state(), decision("write_file"), undefined)).toBe(true);
-    expect(deferredMutationToolNames(action("write_file"))).toEqual(["write_file"]);
+    expect(shouldDeferPreTaskMutation(state(), decision("write_files"), undefined)).toBe(true);
+    expect(deferredMutationToolNames(action("write_files"))).toEqual(["write_files"]);
     expect(shouldDeferPreTaskMutation(state(), decision("git_context_create_task_for_turn"), undefined)).toBe(false);
-    expect(shouldDeferPreTaskMutation(state({ runId: "R-1" }), decision("write_file"), { sessionId: "S-1", runId: "R-1" })).toBe(false);
+    expect(shouldDeferPreTaskMutation(state({ runId: "R-1" }), decision("write_files"), { sessionId: "S-1", runId: "R-1" })).toBe(false);
   });
 
   it("auto-binds active-task artifact mutations only when every target belongs to the active task", () => {
@@ -225,12 +225,12 @@ describe("task routing policy", () => {
       }),
     });
 
-    expect(shouldAutoBindActiveTaskArtifactMutation(loopState, decision("write_file", {
-      path: "src/index.html",
+    expect(shouldAutoBindActiveTaskArtifactMutation(loopState, decision("write_files", {
+      files: [{ path: "src/index.html", content: "<html></html>" }],
     }))).toBe(true);
 
-    expect(shouldAutoBindActiveTaskArtifactMutation(loopState, decision("write_file", {
-      path: "src/other.html",
+    expect(shouldAutoBindActiveTaskArtifactMutation(loopState, decision("write_files", {
+      files: [{ path: "src/other.html", content: "<html></html>" }],
     }))).toBe(false);
   });
 
@@ -256,7 +256,7 @@ describe("task routing policy", () => {
   });
 
   it("detects file mutation tools on step summaries", () => {
-    expect(stepUsesFileMutationTool(step("write_file", "success"))).toBe(true);
-    expect(stepUsesFileMutationTool(step("read_file", "success"))).toBe(false);
+    expect(stepUsesFileMutationTool(step("write_files", "success"))).toBe(true);
+    expect(stepUsesFileMutationTool(step("read_files", "success"))).toBe(false);
   });
 });

@@ -2,15 +2,15 @@ import type { ArtifactRef, Condition, ToolDefinition, ToolResult } from "../../t
 import {
   makeBlock,
   renderContextObservation,
-  splitLines,
   truncatePreserveLines,
   type ToolContextObservation,
   type ToolContextObservationMode,
 } from "../../observations/context-observation.js";
 import { commonAnnotations, failureV2, okResult, succeededContract, successV2 } from "../contract-helpers.js";
-import { readFileTool } from "./read-file.js";
+import { readFileCoreTool } from "./read-file-core.js";
 import { addFileMetadataAdvisory, fileMetadataAdvisoryCondition } from "./read-advisory.js";
-import { validateReadFilesInput } from "./validators.js";
+import { splitFileLines } from "./text-lines.js";
+import { MAX_READ_FILES, validateReadFilesInput } from "./validators.js";
 import type { ReadFileInput } from "./types.js";
 
 const DEFAULT_MAX_PER_FILE_CHARS = 4_000;
@@ -29,6 +29,7 @@ interface ReadFilesSuccessEntry {
   lineCountKnown?: boolean;
   truncated: boolean;
   sizeBytes?: number;
+  sha256?: string;
   query?: string;
   matchCount?: number;
   startLine?: number;
@@ -47,14 +48,16 @@ type ReadFilesEntry = ReadFilesSuccessEntry | ReadFilesFailureEntry;
 
 export const readFilesTool: ToolDefinition = {
   name: "read_files",
-  description: "Inspect multiple known text files in one bounded batch. Prefer this over separate read_file calls when several files are already relevant.",
+  description: "Inspect one or more known text files in one bounded batch. Use this for single-file and multi-file content reads.",
   inputSchema: {
     type: "object",
     required: ["files"],
     properties: {
       files: {
         type: "array",
-        description: "Files to inspect. Each entry accepts the same read strategy fields as read_file.",
+        minItems: 1,
+        maxItems: MAX_READ_FILES,
+        description: `Files to inspect. Use one entry for a single known file, or up to ${MAX_READ_FILES} related files per call. Split larger reads into another read_files call.`,
         items: {
           type: "object",
           required: ["path"],
@@ -98,6 +101,7 @@ export const readFilesTool: ToolDefinition = {
             lineCountKnown: { type: "boolean" },
             truncated: { type: "boolean" },
             sizeBytes: { type: "integer" },
+            sha256: { type: "string" },
             query: { type: "string" },
             matchCount: { type: "integer" },
             startLine: { type: "integer" },
@@ -148,7 +152,7 @@ export const readFilesTool: ToolDefinition = {
     let remainingChars = maxTotalChars;
 
     for (const file of parsed.files) {
-      const result = await readFileTool.execute(file, context);
+      const result = await readFileCoreTool.execute(file, context);
       if (!result.ok) {
         results.push({
           requestedPath: file.path,
@@ -164,8 +168,8 @@ export const readFilesTool: ToolDefinition = {
         results.push({
           requestedPath: file.path,
           ok: false,
-          error: "read_file did not return structured content.",
-          code: "READ_FILE_STRUCTURED_CONTENT_MISSING",
+          error: "Internal single-file reader did not return structured content.",
+          code: "READ_FILES_ENTRY_STRUCTURED_CONTENT_MISSING",
         });
         continue;
       }
@@ -188,6 +192,7 @@ export const readFilesTool: ToolDefinition = {
         ...(readBoolean(structured, "lineCountKnown") !== undefined ? { lineCountKnown: readBoolean(structured, "lineCountKnown") } : {}),
         truncated: readBoolean(structured, "truncated") === true || boundedContent.length < content.length || allowedChars === 0,
         ...(readNumber(structured, "sizeBytes") !== undefined ? { sizeBytes: readNumber(structured, "sizeBytes") } : {}),
+        ...(readString(structured, "sha256") ? { sha256: readString(structured, "sha256") } : {}),
         ...(readString(structured, "query") ? { query: readString(structured, "query") } : {}),
         ...(readNumber(structured, "matchCount") !== undefined ? { matchCount: readNumber(structured, "matchCount") } : {}),
         ...(readNumber(structured, "startLine") !== undefined ? { startLine: readNumber(structured, "startLine") } : {}),
@@ -347,7 +352,7 @@ function buildBatchObservation(
   const failures = results.filter((entry): entry is ReadFilesFailureEntry => !entry.ok);
   const blocks = successes.slice(0, 12).map((entry) => makeBlock({
     title: `${entry.filePath} (${entry.mode})`,
-    lines: splitLines(entry.content || "(content omitted by batch character budget)"),
+    lines: previewLinesForEntry(entry),
     ...(entry.startLine !== undefined ? { startLine: entry.startLine } : {}),
     maxChars: summary.maxPerFileChars,
   }));
@@ -357,7 +362,11 @@ function buildBatchObservation(
     summary: `Inspected ${summary.succeeded}/${summary.requested} requested file${summary.requested === 1 ? "" : "s"} in one batch${summary.failed > 0 ? `; ${summary.failed} failed` : ""}.`,
     stats: summary,
     highlights: [
-      ...successes.slice(0, 8).map((entry) => `${entry.filePath}: ${entry.summary}`),
+      ...successes.slice(0, 8).map((entry) => [
+        `${entry.filePath}: ${entry.summary}`,
+        entry.lineCount !== undefined ? `lineCount=${entry.lineCount}` : "",
+        entry.sha256 ? `sha256=${entry.sha256}` : "",
+      ].filter((part) => part.length > 0).join(" | ")),
       ...failures.slice(0, 4).map((entry) => `${entry.requestedPath}: ${entry.error}`),
     ],
     blocks,
@@ -371,6 +380,16 @@ function buildBatchObservation(
         { kind: "search", reason: "Search within files only if the batch did not include the relevant location.", input: {} },
       ],
   };
+}
+
+function previewLinesForEntry(entry: ReadFilesSuccessEntry): string[] {
+  if (entry.content.length > 0) {
+    return splitFileLines(entry.content);
+  }
+  if (entry.lineCount === 0 && !entry.truncated) {
+    return ["(empty file)"];
+  }
+  return ["(content omitted by batch character budget)"];
 }
 
 function compactObservation(value: unknown): ToolContextObservation | undefined {

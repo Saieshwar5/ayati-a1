@@ -1,7 +1,7 @@
 import { mkdirSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import { homedir } from "node:os";
-import { basename, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { DEFAULT_WORKSPACE_DIR, resolveWorkspaceDir } from "../config/runtime-config.js";
 
 export const workspaceRoot = DEFAULT_WORKSPACE_DIR;
@@ -56,6 +56,11 @@ function stripWorkspaceAliasPrefix(pathValue: string, root: string): string {
   const normalized = pathValue.replace(/\\/g, "/");
   const aliases = new Set(["workspace", "work_space", basename(root)]);
   const parts = normalized.split("/").filter((part) => part.length > 0 && part !== ".");
+  const projectAlias = basename(dirname(root));
+
+  if (parts.length >= 2 && parts[0] === projectAlias && aliases.has(parts[1]!)) {
+    parts.splice(0, 2);
+  }
 
   while (parts.length > 0) {
     const firstPart = parts[0];

@@ -58,7 +58,7 @@ function step(tool: string, outcome: "success" | "failed", stepNumber: number): 
 describe("final response policy", () => {
   it("rejects a completed reply after a failed file mutation with no later success", () => {
     const rejection = shouldRejectTerminalReplyForUnresolvedMutation(state({
-      completedSteps: [step("write_file", "failed", 1)],
+      completedSteps: [step("write_files", "failed", 1)],
     }), {
       kind: "reply",
       status: "completed",
@@ -74,8 +74,8 @@ describe("final response policy", () => {
   it("allows a completed reply after a later successful file mutation", () => {
     const rejection = shouldRejectTerminalReplyForUnresolvedMutation(state({
       completedSteps: [
-        step("write_file", "failed", 1),
-        step("write_file", "success", 2),
+        step("write_files", "failed", 1),
+        step("write_files", "success", 2),
       ],
     }), {
       kind: "reply",
@@ -99,7 +99,7 @@ describe("final response policy", () => {
       },
     }))).toBe(false);
     expect(canMarkTerminalReplyDone(state({
-      completedSteps: [step("write_file", "failed", 1)],
+      completedSteps: [step("write_files", "failed", 1)],
     }))).toBe(false);
   });
 
@@ -116,7 +116,7 @@ describe("final response policy", () => {
 
   it("builds verified completion replies from generated artifacts or clean summaries", () => {
     expect(buildVerifiedCompletionReply(state(), {
-      ...step("write_file", "success", 1),
+      ...step("write_files", "success", 1),
       artifacts: ["/tmp/workspace/index.html"],
     })).toBe("Done. I created or updated `/tmp/workspace/index.html`.");
 
@@ -137,7 +137,7 @@ describe("final response policy", () => {
         step: 3,
         failureType: "validation_error",
         reason: "Missing path",
-        blockedTargets: ["write_file"],
+        blockedTargets: ["write_files"],
       }],
     }))).toBe("I couldn't complete the task. Latest failure: Missing path");
   });

@@ -36,17 +36,17 @@ describe("buildGitMemoryTaskRunCommitInput", () => {
         summary: "Read upload server implementation.",
         newFacts: ["Upload route validates MIME type."],
         artifacts: ["ayati-main/src/server/upload-server.ts"],
-        toolsUsed: ["read_file"],
+        toolsUsed: ["read_files"],
         evidenceSummary: "read upload-server.ts lines 1-80",
         evidenceItems: ["upload-server.ts: validates MIME type"],
         evidenceSource: {
           kind: "tool-output",
           toolCalls: [{
             kind: "tool-output",
-            tool: "read_file",
+            tool: "read_files",
             callId: "call-read-upload",
             filePath: "ayati-main/src/server/upload-server.ts",
-            rawOutputPath: "raw/001-call-read-upload-read_file.txt",
+            rawOutputPath: "raw/001-call-read-upload-read_files.txt",
           }],
         },
         outputSize: 1200,
@@ -58,7 +58,7 @@ describe("buildGitMemoryTaskRunCommitInput", () => {
         summary: "Tried a missing upload test path.",
         newFacts: [],
         artifacts: [],
-        toolsUsed: ["read_file"],
+        toolsUsed: ["read_files"],
       }],
       taskAssets: [{
         assetId: "asset-upload-log",
@@ -116,17 +116,17 @@ describe("buildGitMemoryTaskRunCommitInput", () => {
       },
     });
     expect(mapped.actions).toMatchObject([{
-      tool: "read_file",
+      tool: "read_files",
       status: "completed",
       summary: "Read upload server implementation.",
     }, {
-      tool: "read_file",
+      tool: "read_files",
       status: "failed",
       summary: "Tried a missing upload test path.",
     }]);
     expect(mapped.evidence).toMatchObject([{
       step: 1,
-      tool: "read_file",
+      tool: "read_files",
       status: "completed",
       summary: "Read upload server implementation.",
       evidenceRef: "read upload-server.ts lines 1-80",
@@ -143,15 +143,15 @@ describe("buildGitMemoryTaskRunCommitInput", () => {
         kind: "tool-output",
         toolCalls: [{
           kind: "tool-output",
-          tool: "read_file",
+          tool: "read_files",
           callId: "call-read-upload",
           filePath: "ayati-main/src/server/upload-server.ts",
-          rawOutputPath: "raw/001-call-read-upload-read_file.txt",
+          rawOutputPath: "raw/001-call-read-upload-read_files.txt",
         }],
       },
     }, {
       step: 2,
-      tool: "read_file",
+      tool: "read_files",
       status: "failed",
       summary: "Tried a missing upload test path.",
       artifacts: [],

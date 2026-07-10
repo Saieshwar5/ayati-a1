@@ -598,17 +598,13 @@ function buildDeterministicLoadRequest(
     toolNames.add("inspect_paths");
     toolNames.add("find_files");
     toolNames.add("read_files");
-    toolNames.add("read_file");
   }
   if (/\b(edit|fix|update|modify|refactor|change)\b/.test(text)) {
     toolNames.add("inspect_paths");
     toolNames.add("find_files");
     toolNames.add("search_in_files");
     toolNames.add("read_files");
-    toolNames.add("read_file");
     toolNames.add("patch_files");
-    toolNames.add("edit_file");
-    toolNames.add("edit_files");
   }
   if (hasFileCreationIntent(text)) {
     groups.add("file:create");

@@ -279,7 +279,7 @@ describe("Fireworks provider", () => {
                   type: "function",
                   function: {
                     name: toolName,
-                    arguments: "{\"path\":\"README.md\"}",
+                    arguments: "{\"files\":[{\"path\":\"README.md\"}]}",
                   },
                 },
               ],
@@ -301,16 +301,29 @@ describe("Fireworks provider", () => {
       messages: [{ role: "user", content: "read README" }],
       tools: [
         {
-          name: "read_file",
+          name: "read_files",
           description: "Read a file",
-          inputSchema: { type: "object", properties: { path: { type: "string" } } },
+          inputSchema: {
+            type: "object",
+            properties: {
+              files: {
+                type: "array",
+                items: {
+                  type: "object",
+                  properties: { path: { type: "string" } },
+                  required: ["path"],
+                },
+              },
+            },
+            required: ["files"],
+          },
         },
       ],
     });
 
     expect(out).toMatchObject({
       type: "tool_calls",
-      calls: [{ id: "call_1", name: "read_file", input: { path: "README.md" } }],
+      calls: [{ id: "call_1", name: "read_files", input: { files: [{ path: "README.md" }] } }],
       assistantContent: "I will inspect the file.",
       usage: {
         provider: "fireworks",
@@ -464,7 +477,7 @@ describe("Fireworks provider", () => {
                 id: "call_1",
                 type: "function",
                 function: {
-                  name: "read_file",
+                  name: "read_files",
                   arguments: "{\"path\":\"skill.md\"}",
                 },
               },
@@ -481,13 +494,21 @@ describe("Fireworks provider", () => {
       messages: [{ role: "user", content: "Find the skill command" }],
       tools: [
         {
-          name: "read_file",
+          name: "read_files",
           description: "Read a file",
           inputSchema: {
             type: "object",
             properties: {
-              path: { type: "string" },
+              files: {
+                type: "array",
+                items: {
+                  type: "object",
+                  properties: { path: { type: "string" } },
+                  required: ["path"],
+                },
+              },
             },
+            required: ["files"],
           },
         },
       ],
@@ -509,13 +530,21 @@ describe("Fireworks provider", () => {
         {
           type: "function",
           function: {
-            name: "read_file",
+            name: "read_files",
             description: "Read a file",
             parameters: {
               type: "object",
               properties: {
-                path: { type: "string" },
+                files: {
+                  type: "array",
+                  items: {
+                    type: "object",
+                    properties: { path: { type: "string" } },
+                    required: ["path"],
+                  },
+                },
               },
+              required: ["files"],
             },
           },
         },

@@ -256,14 +256,14 @@ describe("GitMemoryContextReader", () => {
       summary: "Inspected upload handling and found validation mismatch.",
       actions: [{
         actionId: "ACT-20260628-000001",
-        tool: "read_file",
+        tool: "read_files",
         status: "completed",
         summary: "Read upload server implementation.",
       }],
       evidence: [{
         step: 1,
         actionId: "ACT-20260628-000001",
-        tool: "read_file",
+        tool: "read_files",
         status: "completed",
         summary: "Read upload server implementation.",
         evidenceRef: "evidence/ACT-20260628-000001.txt",
@@ -277,10 +277,10 @@ describe("GitMemoryContextReader", () => {
           kind: "tool-output",
           toolCalls: [{
             kind: "tool-output",
-            tool: "read_file",
+            tool: "read_files",
             callId: "call-read-upload",
             filePath: "ayati-main/src/server/upload-server.ts",
-            rawOutputPath: "raw/001-call-read-upload-read_file.txt",
+            rawOutputPath: "raw/001-call-read-upload-read_files.txt",
           }],
         },
       }],
@@ -376,7 +376,7 @@ describe("GitMemoryContextReader", () => {
     expect(pack.task?.recentEvidence).toMatchObject([{
       runId: "R-20260628-0001",
       taskId: "W-20260628-0001",
-      tool: "read_file",
+      tool: "read_files",
       summary: "Read upload server implementation.",
       evidenceRef: "evidence/ACT-20260628-000001.txt",
       artifacts: ["ayati-main/src/server/upload-server.ts"],

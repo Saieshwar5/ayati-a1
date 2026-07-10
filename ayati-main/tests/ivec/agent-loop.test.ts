@@ -455,7 +455,7 @@ describe("agentLoop", () => {
     const dataDir = makeTmpDir();
     try {
       const readTool: ToolDefinition = {
-        name: "read_file",
+        name: "read_files",
         description: "Read a file without mutating the workspace.",
         annotations: {
           domain: "filesystem",
@@ -482,12 +482,12 @@ describe("agentLoop", () => {
             mode: "single",
             calls: [{
               id: "call_1",
-              tool: "read_file",
+              tool: "read_files",
               input: { path: "src/upload.ts" },
               dependsOn: [],
               purpose: "Inspect upload handling",
             }],
-            allowedTools: ["read_file"],
+            allowedTools: ["read_files"],
             assertions: [],
           },
         },
@@ -525,7 +525,7 @@ describe("agentLoop", () => {
         status: "done",
         summary: "Upload handling lives in src/upload.ts.",
         evidence: expect.arrayContaining([
-          expect.stringContaining("read_file"),
+          expect.stringContaining("read_files"),
         ]),
       });
       const secondCallInput = vi.mocked(provider.generateTurn).mock.calls[1]?.[0];
@@ -536,11 +536,11 @@ describe("agentLoop", () => {
         workState: expect.objectContaining({
           status: "not_done",
           evidence: expect.arrayContaining([
-            expect.stringContaining("read_file"),
+            expect.stringContaining("read_files"),
           ]),
         }),
         toolCalls: [expect.objectContaining({
-          tool: "read_file",
+          tool: "read_files",
           status: "success",
         })],
       });
@@ -552,14 +552,14 @@ describe("agentLoop", () => {
         sessionId: "s1",
         runId: "R-session",
         status: "completed",
-        summary: expect.stringContaining("read_file"),
+        summary: expect.stringContaining("read_files"),
         workStateAfter: expect.objectContaining({
           evidence: expect.arrayContaining([
-            expect.stringContaining("read_file"),
+            expect.stringContaining("read_files"),
           ]),
         }),
         toolCalls: [expect.objectContaining({
-          tool: "read_file",
+          tool: "read_files",
           status: "success",
         })],
       }));
@@ -974,7 +974,7 @@ describe("agentLoop", () => {
           action: {
             mode: "single",
             calls: [{
-              id: "write_file",
+              id: "write_files",
               tool: "write_files",
               input: {
                 createDirs: true,
@@ -1129,7 +1129,7 @@ describe("agentLoop", () => {
           action: {
             mode: "single",
             calls: [{
-              id: "write_file",
+              id: "write_files",
               tool: "write_files",
               input: {
                 createDirs: true,
@@ -1320,7 +1320,7 @@ describe("agentLoop", () => {
           action: {
             mode: "single",
             calls: [{
-              id: "write_file",
+              id: "write_files",
               tool: "write_files",
               input: {
                 createDirs: true,
@@ -1474,7 +1474,7 @@ describe("agentLoop", () => {
           action: {
             mode: "single",
             calls: [{
-              id: "write_file",
+              id: "write_files",
               tool: "write_files",
               input: {
                 createDirs: true,
@@ -1622,7 +1622,7 @@ describe("agentLoop", () => {
           action: {
             mode: "single",
             calls: [{
-              id: "write_file",
+              id: "write_files",
               tool: "write_files",
               input: {
                 files: [{
@@ -1791,7 +1791,7 @@ describe("agentLoop", () => {
           action: {
             mode: "single",
             calls: [{
-              id: "write_file",
+              id: "write_files",
               tool: "write_files",
               input: {
                 createDirs: true,
@@ -2837,7 +2837,7 @@ describe("agentLoop", () => {
     const dataDir = makeTmpDir();
     try {
       const ramSummaryTool: ToolDefinition = {
-        name: "read_file",
+        name: "read_files",
         description: "Read RAM summary fixture",
         annotations: {
           domain: "filesystem",
@@ -2887,7 +2887,7 @@ describe("agentLoop", () => {
               calls: [
                 {
                   id: "call_1",
-                  tool: "read_file",
+                  tool: "read_files",
                   input: { path: "/proc/meminfo" },
                   dependsOn: [],
                   purpose: "Get RAM summary",
@@ -2900,7 +2900,7 @@ describe("agentLoop", () => {
                   purpose: "List top RAM processes",
                 },
               ],
-              allowedTools: ["read_file", "search_in_files"],
+              allowedTools: ["read_files", "search_in_files"],
             },
           }),
         })
@@ -2943,7 +2943,7 @@ describe("agentLoop", () => {
       expect(stateView.context.run.observations).toBeUndefined();
       expect(stateView.context.run.readContext).toBeUndefined();
       expect(stateView.context.run.toolCalls).toHaveLength(2);
-      expect(stateView.context.run.toolCalls[0].tool).toBe("read_file");
+      expect(stateView.context.run.toolCalls[0].tool).toBe("read_files");
       expect(stateView.context.run.toolCalls[0].input).toEqual({ path: "/proc/meminfo" });
       expect(stateView.context.run.toolCalls[0].output).toContain("3.5Gi used");
       expect(stateView.context.run.toolCalls[0].stepRef).toEqual({ runId: "r-observation", step: 1, callId: "call_1" });

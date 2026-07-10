@@ -32,6 +32,16 @@ Choose common, well-understood implementation techniques over obscure or rarely 
 
 The preferred design style is simple, organized, efficient, powerful, clean, and reliable. Favor direct control flow, explicit data shapes, deterministic behavior, and code that future maintainers can read without needing to reverse-engineer cleverness.
 
+## Code Organization Rules
+
+Before adding new behavior, check the target file size and responsibility.
+
+- Do not add new behavior to files that already mix unrelated responsibilities.
+- If a file is over 600 lines, prefer extracting a focused helper/module before adding more logic.
+- If a change introduces a new concept, create a named module for that concept instead of hiding it inside a broad file.
+- Keep orchestration, policy, persistence, rendering, schema, and tests in separate files when practical.
+- Do not create abstractions only for style; extract only when it creates a clear owner for behavior.
+
 ## Testing Guidelines
 
 Tests use Vitest. Add or update tests in the matching package/domain folder. Name test files `*.test.ts`. Prefer deterministic unit tests over networked provider calls. Run the smallest relevant test first, then broader commands for shared runtime changes.

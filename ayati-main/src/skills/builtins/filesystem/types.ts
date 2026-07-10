@@ -24,51 +24,15 @@ export interface InspectPathsInput {
   includeDirectoryCounts?: boolean;
 }
 
-export interface WriteFileInput {
-  path: string;
-  content: string;
-  createDirs?: boolean;
-  allowExternalPath?: boolean;
-  confirmationToken?: string;
-}
-
 export interface WriteFilesInputFile {
   path: string;
   content: string;
+  baseSha256?: string;
 }
 
 export interface WriteFilesInput {
   files: WriteFilesInputFile[];
   createDirs?: boolean;
-  allowExternalPath?: boolean;
-  confirmationToken?: string;
-}
-
-export interface EditFileInput {
-  path: string;
-  oldString: string;
-  newString: string;
-  replaceAll?: boolean;
-  allowExternalPath?: boolean;
-  confirmationToken?: string;
-}
-
-export type EditFilesMode = "replace" | "insert_before" | "insert_after" | "replace_range";
-
-export interface EditFilesInputEdit {
-  path: string;
-  mode?: EditFilesMode;
-  oldString?: string;
-  newString?: string;
-  replaceAll?: boolean;
-  anchor?: string;
-  content?: string;
-  startLine?: number;
-  endLine?: number;
-}
-
-export interface EditFilesInput {
-  edits: EditFilesInputEdit[];
   allowExternalPath?: boolean;
   confirmationToken?: string;
 }
@@ -82,7 +46,7 @@ export interface PatchFilesPatch {
   anchor?: string;
   content?: string;
   startLine?: number;
-  endLine?: number;
+  endLine?: number | "EOF";
 }
 
 export interface PatchFilesInputFile {

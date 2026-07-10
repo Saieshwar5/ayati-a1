@@ -35,10 +35,11 @@ describe("tool taxonomy", () => {
   });
 
   it("classifies read-only, routing, mutation, and long-running tools", () => {
-    expect(isReadOnlyTool("read_file")).toBe(true);
-    expect(canRunBeforeTask("read_file")).toBe(true);
-    expect(requiresTaskRun("read_file")).toBe(false);
-    expect(getToolTaxonomy("read_file")).toMatchObject({ lifetime: "run" });
+    expect(getToolTaxonomy("read_file")).toBeUndefined();
+    expect(isReadOnlyTool("read_files")).toBe(true);
+    expect(canRunBeforeTask("read_files")).toBe(true);
+    expect(requiresTaskRun("read_files")).toBe(false);
+    expect(getToolTaxonomy("read_files")).toMatchObject({ lifetime: "run" });
     expect(getToolTaxonomy("write_files")).toMatchObject({ lifetime: "run" });
     expect(getToolLoadGroups("write_files")).toEqual(expect.arrayContaining(["file:write", "file:create"]));
 
@@ -48,11 +49,12 @@ describe("tool taxonomy", () => {
     expect(isToolAllowedInPhase("git_context_create_task_for_turn", "routing")).toBe(true);
     expect(isToolAllowedInPhase("git_context_create_task_for_turn", "task_run")).toBe(false);
 
-    expect(isMutationTool("write_file")).toBe(true);
-    expect(requiresTaskRun("write_file")).toBe(true);
-    expect(canRunBeforeTask("write_file")).toBe(false);
-    expect(isToolAllowedInPhase("write_file", "task_run")).toBe(true);
-    expect(isToolAllowedInPhase("write_file", "enquiry")).toBe(false);
+    expect(getToolTaxonomy("write_file")).toBeUndefined();
+    expect(isMutationTool("write_files")).toBe(true);
+    expect(requiresTaskRun("write_files")).toBe(true);
+    expect(canRunBeforeTask("write_files")).toBe(false);
+    expect(isToolAllowedInPhase("write_files", "task_run")).toBe(true);
+    expect(isToolAllowedInPhase("write_files", "enquiry")).toBe(false);
 
     expect(getToolTaxonomy("shell_session_start")).toMatchObject({
       lifetime: "background",
@@ -62,16 +64,16 @@ describe("tool taxonomy", () => {
 
   it("summarizes selected tool classes for feedback", () => {
     const summary = summarizeToolTaxonomy([
-      "read_file",
-      "write_file",
+      "read_files",
+      "write_files",
       "git_context_activate_task_for_turn",
       "shell_session_start",
       "unknown_tool",
     ]);
 
     expect(summary.known).toEqual([
-      "read_file",
-      "write_file",
+      "read_files",
+      "write_files",
       "git_context_activate_task_for_turn",
       "shell_session_start",
     ]);
@@ -86,8 +88,8 @@ describe("tool taxonomy", () => {
       task_mutation: 1,
       long_running_process: 1,
     });
-    expect(summary.requiresTaskRun).toEqual(["write_file", "shell_session_start"]);
-    expect(summary.canRunBeforeTask).toEqual(["read_file", "git_context_activate_task_for_turn"]);
+    expect(summary.requiresTaskRun).toEqual(["write_files", "shell_session_start"]);
+    expect(summary.canRunBeforeTask).toEqual(["read_files", "git_context_activate_task_for_turn"]);
     expect(summary.longRunning).toEqual(["shell_session_start"]);
     expect(summary.lifetimes).toMatchObject({
       run: 2,

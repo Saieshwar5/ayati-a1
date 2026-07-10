@@ -84,7 +84,7 @@ function createProvider(
 
 function fakeReadFileTool(): ToolDefinition {
   return {
-    name: "read_file",
+    name: "read_files",
     description: "Read a file.",
     inputSchema: {
       type: "object",
@@ -128,16 +128,15 @@ function fakeReadFileTool(): ToolDefinition {
   };
 }
 
-function fakeWriteFileTool(): ToolDefinition {
+function fakeWriteFilesTool(): ToolDefinition {
   return {
-    name: "write_file",
-    description: "Write a file.",
+    name: "write_files",
+    description: "Write files.",
     inputSchema: {
       type: "object",
-      required: ["path", "content"],
+      required: ["files"],
       properties: {
-        path: { type: "string" },
-        content: { type: "string" },
+        files: { type: "array" },
       },
     },
     annotations: {
@@ -151,8 +150,12 @@ function fakeWriteFileTool(): ToolDefinition {
       longRunning: false,
     },
     async execute(input) {
-      const path = typeof input === "object" && input && "path" in input
-        ? String((input as { path: unknown }).path)
+      const files = typeof input === "object" && input && "files" in input
+        ? (input as { files: unknown }).files
+        : [];
+      const firstFile = Array.isArray(files) ? files[0] : undefined;
+      const path = typeof firstFile === "object" && firstFile && "path" in firstFile
+        ? String((firstFile as { path: unknown }).path)
         : "unknown";
       return {
         ok: true,
@@ -160,9 +163,9 @@ function fakeWriteFileTool(): ToolDefinition {
         v2: {
           transportOk: true,
           operationStatus: "succeeded",
-          code: "WRITE_FILE_OK",
+          code: "FILES_WRITTEN",
           message: `Wrote ${path}`,
-          structuredContent: { path },
+          structuredContent: { files: [{ path }] },
         },
       };
     },
@@ -223,7 +226,7 @@ describe("run tool-call recovery", () => {
     const dataDir = makeTmpDir();
     const records: GitMemoryStepRecord[] = [];
     const readTool = fakeReadFileTool();
-    const writeTool = fakeWriteFileTool();
+    const writeTool = fakeWriteFilesTool();
     const recoveryTool = fakeRunStepRecoveryTool(records);
     const toolExecutor = createToolExecutor([]);
     const catalog = new ToolCatalog([
@@ -243,11 +246,11 @@ describe("run tool-call recovery", () => {
           mode: "sequential",
           calls: [1, 2, 3, 4].map((index) => ({
             id: `call_${index}`,
-            tool: "read_file",
+            tool: "read_files",
             input: { path: `file_${index}.txt` },
             purpose: `Read file ${index}`,
           })),
-          allowedTools: ["read_file"],
+          allowedTools: ["read_files"],
           completion: { expected: "Read enough files to build context." },
           assertions: [],
         },
@@ -256,13 +259,13 @@ describe("run tool-call recovery", () => {
         kind: "act",
         action: {
           mode: "single",
-          calls: [{
-            id: "call_5",
-            tool: "write_file",
-            input: { path: "marker.txt", content: "marker" },
-            purpose: "Create marker output",
-          }],
-          allowedTools: ["write_file"],
+            calls: [{
+              id: "call_5",
+              tool: "write_files",
+              input: { files: [{ path: "marker.txt", content: "marker" }] },
+              purpose: "Create marker output",
+            }],
+          allowedTools: ["write_files"],
           completion: { expected: "Create a marker file." },
           assertions: [],
         },
@@ -273,13 +276,13 @@ describe("run tool-call recovery", () => {
         expect(toolCalls).toHaveLength(5);
         expect(toolCalls[0]).toMatchObject({
           callId: "call_1",
-          tool: "read_file",
+          tool: "read_files",
           outputCompacted: true,
           stepRef: { runId: "r-recovery", step: 1, callId: "call_1" },
         });
         expect(["preview", "summary", "reference"]).toContain(toolCalls[0].mode);
         expect(toolCalls[0].output).toBeUndefined();
-        expect(toolCalls[0].summary).toContain("read_file read for file_1.txt");
+        expect(toolCalls[0].summary).toContain("read_files read for file_1.txt");
         expect(stateView.context.tools.active).toContain("git_context_read_run_step");
         return {
           kind: "act",
@@ -371,7 +374,7 @@ describe("run tool-call recovery", () => {
       expect(records).toHaveLength(3);
       expect(records[0]?.toolCalls[0]).toMatchObject({
         callId: "call_1",
-        tool: "read_file",
+        tool: "read_files",
         output: expect.stringContaining("FULL_OUTPUT_file_1.txt"),
       });
     } finally {

@@ -9,7 +9,7 @@ describe("tool policy audit", () => {
   it("allows read-only tools during session enquiry", () => {
     const audit = auditToolPolicy({
       mode: mode("session_only"),
-      selectedTools: ["read_file", "git_context_read_task"],
+      selectedTools: ["read_files", "git_context_read_task"],
     });
 
     expect(audit.phase).toBe("enquiry");
@@ -20,7 +20,7 @@ describe("tool policy audit", () => {
   it("flags task-run-only mutation tools before a work run exists", () => {
     const audit = auditToolPolicy({
       mode: mode("session_only"),
-      selectedTools: ["write_file", "shell_session_start"],
+      selectedTools: ["write_files", "shell_session_start"],
     });
 
     expect(audit.warningCodes).toEqual([
@@ -32,7 +32,7 @@ describe("tool policy audit", () => {
       expect.objectContaining({
         code: "mutation_tool_without_task_run",
         severity: "error",
-        tools: ["write_file", "shell_session_start"],
+        tools: ["write_files", "shell_session_start"],
       }),
       expect.objectContaining({
         code: "long_running_tool_without_task_run",
@@ -42,7 +42,7 @@ describe("tool policy audit", () => {
       expect.objectContaining({
         code: "tool_not_allowed_in_phase",
         severity: "warning",
-        tools: ["write_file", "shell_session_start"],
+        tools: ["write_files", "shell_session_start"],
       }),
     ]));
   });

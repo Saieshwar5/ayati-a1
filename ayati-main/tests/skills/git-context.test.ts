@@ -141,7 +141,7 @@ describe("git-context skill", () => {
         recentEvidence: [{
           runId: "R-20260628-0002",
           taskId: "W-20260628-0001",
-          tool: "edit_file",
+          tool: "patch_files",
           summary: "Patched upload validation branch.",
           evidenceRef: "evidence/ACT-20260628-000101.txt",
         }],
@@ -818,7 +818,7 @@ describe("git-context skill", () => {
       recentEvidence: [{
         runId: "R-20260628-0002",
         taskId: "W-20260628-0001",
-        tool: "edit_file",
+        tool: "patch_files",
         summary: "Patched upload validation branch.",
         evidenceRef: "evidence/ACT-20260628-000101.txt",
       }],
@@ -897,7 +897,7 @@ describe("git-context skill", () => {
       evidence: [{
         runId: "R-20260628-0002",
         taskId: "W-20260628-0001",
-        tool: "edit_file",
+        tool: "patch_files",
         summary: "Patched upload validation branch.",
         artifacts: ["ayati-main/src/server/upload-server.ts"],
         facts: ["Upload validation handles multipart MIME metadata."],
@@ -924,7 +924,7 @@ describe("git-context skill", () => {
         summary: "Recovered full upload server output.",
         toolCalls: [{
           callId: "call-read-upload",
-          tool: "read_file",
+          tool: "read_files",
           status: "success",
           input: {
             path: "ayati-main/src/server/upload-server.ts",
@@ -986,7 +986,7 @@ describe("git-context skill", () => {
       },
       toolCall: {
         callId: "call-read-upload",
-        tool: "read_file",
+        tool: "read_files",
         output: "full upload server implementation output\nline 2\nline 3",
       },
     });
@@ -1236,7 +1236,7 @@ async function prepareGitContextSession(): Promise<{
     summary: "Inspected upload handling.",
     actions: [{
       actionId: "ACT-20260628-000001",
-      tool: "read_file",
+      tool: "read_files",
       status: "completed",
       summary: "Read upload server implementation.",
       evidenceRef: "evidence/ACT-20260628-000001.txt",
@@ -1261,7 +1261,7 @@ async function prepareGitContextSession(): Promise<{
     summary: "Patched upload validation handling.",
     actions: [{
       actionId: "ACT-20260628-000101",
-      tool: "edit_file",
+      tool: "patch_files",
       status: "completed",
       summary: "Patched upload validation branch.",
       evidenceRef: "evidence/ACT-20260628-000101.txt",
@@ -1269,7 +1269,7 @@ async function prepareGitContextSession(): Promise<{
     evidence: [{
       step: 2,
       actionId: "ACT-20260628-000101",
-      tool: "edit_file",
+      tool: "patch_files",
       status: "completed",
       summary: "Patched upload validation branch.",
       evidenceRef: "evidence/ACT-20260628-000101.txt",

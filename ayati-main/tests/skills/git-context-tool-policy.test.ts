@@ -24,6 +24,6 @@ describe("git-context tool policy", () => {
     expect(isGitContextAllowedDuringPendingRouting("git_context_create_task")).toBe(false);
     expect(isGitContextAllowedDuringPendingRouting("git_context_switch_task")).toBe(false);
     expect(isGitContextAllowedDuringPendingRouting("shell")).toBe(false);
-    expect(isGitContextAllowedDuringPendingRouting("edit_file")).toBe(false);
+    expect(isGitContextAllowedDuringPendingRouting("patch_files")).toBe(false);
   });
 });

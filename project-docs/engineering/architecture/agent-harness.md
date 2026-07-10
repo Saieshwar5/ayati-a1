@@ -44,7 +44,8 @@ control tools:
 
 selected executable tools:
   write_files({ files, createDirs? })
-  read_file({ path, ... })
+  patch_files({ files: [{ path, patches: [{ kind: "replace_lines", startLine, endLine: "EOF" }] }] })
+  read_files({ files: [{ path, ... }] })
   shell({ cmd, ... })
   ...
 ```
@@ -123,8 +124,8 @@ message. This allows flows such as:
 
 ```text
 fresh request -> git_context_set_promotion_target_for_turn -> write_files -> final reply
-read-only question -> read_file -> final reply stored as session run
-same active task -> read_file -> write_files -> final reply stored as task run
+read-only question -> read_files -> final reply stored as session run
+same active task -> read_files -> write_files -> final reply stored as task run
 different existing task -> git_context_activate_task_for_turn -> normal work tool -> final reply
 ambiguous task -> git_context_ask_clarification_for_turn -> clarification reply stored as session run
 clarification answer -> git_context_activate_task_for_turn -> write_files -> final reply stored as task run
@@ -156,7 +157,7 @@ direct text         -> { kind: "reply", ... }
 decision_load_tools -> { kind: "load_tools", ... }
 ask_user_feedback   -> { kind: "ask_user", ... }
 write_files(...)    -> { kind: "act", action: single call to write_files }
-read_file(...)      -> { kind: "act", action: single call to read_file }
+read_files(...)      -> { kind: "act", action: single call to read_files }
 ```
 
 The action executor still receives `AgentAction` records. This preserves the
@@ -226,7 +227,7 @@ the current input, attachments, git task context, work state, evidence refs, and
 recent failures. If the model needs a missing capability, it calls
 `decision_load_tools` with exact tool names, groups, or a search query. Tool
 execution can also deterministically load likely next tools, for example
-`find_files` loading `read_file` and `edit_file`. Some tools deactivate
+`find_files` loading `read_files` and `patch_files`. Some tools deactivate
 automatically after success or after one step.
 
 Tool loading is deterministic at the boundary. A request to create or build a
@@ -353,7 +354,7 @@ should retain only useful facts, summaries, files, evidence refs, and run
 metadata.
 
 The model should prefer `inspect_paths` before large or unfamiliar reads. A
-direct `read_file` or `read_files` call is still allowed, but filesystem read
+direct `read_files` or `read_files` call is still allowed, but filesystem read
 tools can return advisory feedback when metadata would have been safer first,
 for example when paths are broad, output is truncated, or the file shape is
 unknown. This advisory is a repair hint, not a hard block.

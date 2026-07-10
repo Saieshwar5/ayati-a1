@@ -280,7 +280,7 @@ function readStringField(record: Record<string, unknown>, keys: string[]): strin
 }
 
 function isReadTool(tool: string): boolean {
-  return /\b(read|inspect|list|show|cat)\b|read_file|read_files|inspect_paths|list_directory/.test(tool);
+  return /\b(read|inspect|list|show|cat)\b|read_files|inspect_paths|list_directory/.test(tool);
 }
 
 function isSearchTool(tool: string): boolean {

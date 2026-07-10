@@ -990,7 +990,7 @@ export async function runAgentLoop(
 
       if (stepResult.stepSummary.outcome === "failed") {
         state.consecutiveFailures++;
-        state.failureHistory.push(createFailureRecordFromStepSummary(stepResult.stepSummary));
+        state.failureHistory.push(createFailureRecordFromStepSummary(stepResult.stepSummary, state.failureHistory));
         if (hasRepeatedRepairFailure(state.failureHistory)) {
           recordRepeatedRepairFailure({
             deps,
@@ -1178,7 +1178,7 @@ export async function runAgentLoop(
 
       if (stepResult.stepSummary.outcome === "failed") {
         state.consecutiveFailures++;
-        state.failureHistory.push(createFailureRecordFromStepSummary(stepResult.stepSummary));
+        state.failureHistory.push(createFailureRecordFromStepSummary(stepResult.stepSummary, state.failureHistory));
         if (hasRepeatedRepairFailure(state.failureHistory)) {
           recordRepeatedRepairFailure({
             deps,
@@ -1323,7 +1323,7 @@ export async function runAgentLoop(
 
         if (replayResult.stepSummary.outcome === "failed") {
           state.consecutiveFailures++;
-          state.failureHistory.push(createFailureRecordFromStepSummary(replayResult.stepSummary));
+          state.failureHistory.push(createFailureRecordFromStepSummary(replayResult.stepSummary, state.failureHistory));
           if (hasRepeatedRepairFailure(state.failureHistory) || hasRepeatedToolInputValidationFailure(state.failureHistory)) {
             recordRepeatedRepairFailure({
               deps,
@@ -1515,7 +1515,7 @@ export async function runAgentLoop(
 
     if (stepResult.stepSummary.outcome === "failed") {
       state.consecutiveFailures++;
-      state.failureHistory.push(createFailureRecordFromStepSummary(stepResult.stepSummary));
+      state.failureHistory.push(createFailureRecordFromStepSummary(stepResult.stepSummary, state.failureHistory));
       if (hasRepeatedRepairFailure(state.failureHistory) || hasRepeatedToolInputValidationFailure(state.failureHistory)) {
         recordRepeatedRepairFailure({
           deps,

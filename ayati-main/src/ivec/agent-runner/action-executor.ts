@@ -578,7 +578,6 @@ function summarizeActionFailure(actOutput: ActOutput, assertionFailures: string[
 
 const PARALLEL_SAFE_TOOL_NAMES = new Set([
   "calculator",
-  "read_file",
   "read_files",
   "list_directory",
   "search_in_files",

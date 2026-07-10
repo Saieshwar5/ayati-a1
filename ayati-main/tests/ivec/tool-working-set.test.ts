@@ -57,9 +57,9 @@ describe("ToolWorkingSetManager", () => {
       skill("filesystem", [
         tool("find_files", "Find files"),
         tool("search_in_files", "Search in files"),
-        tool("read_file", "Read file"),
-        tool("edit_file", "Edit file"),
-        tool("write_file", "Write file"),
+        tool("read_files", "Read file"),
+        tool("patch_files", "Patch files"),
+        tool("write_files", "Write files"),
       ]),
     ]);
     const executor = createToolExecutor([]);
@@ -69,18 +69,18 @@ describe("ToolWorkingSetManager", () => {
     manager.prepareForDecision(state("find and edit the config file"), context);
     expect(manager.listActive(context)).toHaveLength(3);
 
-    manager.load({ toolNames: ["write_file"], reason: "need write fallback" }, context);
-    expect(manager.listActive(context)).toEqual(["search_in_files", "read_file", "write_file"]);
-    expect(executor.list(context)).toEqual(["search_in_files", "read_file", "write_file"]);
+    manager.load({ toolNames: ["write_files"], reason: "need write fallback" }, context);
+    expect(manager.listActive(context)).toEqual(["search_in_files", "read_files", "write_files"]);
+    expect(executor.list(context)).toEqual(["search_in_files", "read_files", "write_files"]);
   });
 
   it("loads deterministic follow-up tools after execution and deactivates success-scoped tools", () => {
     const catalog = new ToolCatalog([
       skill("filesystem", [
         tool("find_files", "Find files"),
-        tool("read_file", "Read file"),
-        tool("edit_file", "Edit file"),
-        tool("write_file", "Write file"),
+        tool("read_files", "Read file"),
+        tool("patch_files", "Patch files"),
+        tool("write_files", "Write files"),
       ]),
     ]);
     const executor = createToolExecutor([]);
@@ -95,18 +95,17 @@ describe("ToolWorkingSetManager", () => {
       output: "src/index.ts",
     }], context);
 
-    expect(manager.listActive(context)).toEqual(["read_file", "edit_file", "write_file"]);
+    expect(manager.listActive(context)).toEqual(["read_files", "patch_files", "write_files"]);
   });
 
   it("keeps read and write file tools active across task-run steps", () => {
     const catalog = new ToolCatalog([
       skill("filesystem", [
-        tool("read_file", "Read file"),
+        tool("read_files", "Read file"),
         tool("read_files", "Read files"),
         tool("search_in_files", "Search in files"),
-        tool("write_file", "Write file"),
         tool("write_files", "Write files"),
-        tool("edit_file", "Edit file"),
+        tool("patch_files", "Patch files"),
       ]),
     ]);
     const executor = createToolExecutor([]);
@@ -126,12 +125,11 @@ describe("ToolWorkingSetManager", () => {
     manager.prepareForDecision({ ...state("continue writing files"), runId: "r1" }, nextContext);
 
     expect(manager.listActive(nextContext)).toEqual(expect.arrayContaining([
-      "read_file",
+      "read_files",
       "read_files",
       "search_in_files",
-      "write_file",
       "write_files",
-      "edit_file",
+      "patch_files",
     ]));
   });
 
@@ -141,11 +139,10 @@ describe("ToolWorkingSetManager", () => {
         tool("find_files", "Find files"),
         tool("search_in_files", "Search in files"),
         tool("list_directory", "List directory"),
-        tool("read_file", "Read file"),
+        tool("read_files", "Read file"),
         tool("read_files", "Read files"),
-        tool("write_file", "Write file"),
         tool("write_files", "Write files"),
-        tool("edit_file", "Edit file"),
+        tool("patch_files", "Patch files"),
         tool("create_directory", "Create directory"),
       ]),
       skill("shell", [
@@ -168,9 +165,8 @@ describe("ToolWorkingSetManager", () => {
     const active = manager.listActive(context);
     expect(active).toEqual(expect.arrayContaining([
       "list_directory",
-      "read_file",
       "read_files",
-      "write_file",
+      "read_files",
       "write_files",
       "create_directory",
     ]));
@@ -184,7 +180,7 @@ describe("ToolWorkingSetManager", () => {
     const catalog = new ToolCatalog([
       skill("filesystem", [
         tool("search_in_files", "Search in files"),
-        tool("read_file", "Read file"),
+        tool("read_files", "Read file"),
       ]),
       skill("shell", [
         tool("shell", "Run shell command"),
@@ -203,7 +199,7 @@ describe("ToolWorkingSetManager", () => {
       "shell",
       "shell_run_script",
       "search_in_files",
-      "read_file",
+      "read_files",
     ]));
   });
 
@@ -213,7 +209,7 @@ describe("ToolWorkingSetManager", () => {
         tool("git_context_read_run_step", "Recover full persisted step or tool-call data"),
       ]),
       skill("filesystem", [
-        tool("read_file", "Read file"),
+        tool("read_files", "Read file"),
         tool("write_files", "Write files"),
       ]),
     ]);
@@ -294,7 +290,7 @@ describe("ToolWorkingSetManager", () => {
   it("preloads only activate and create routing tools when no active task exists", () => {
     const catalog = new ToolCatalog([
       skill("filesystem", [
-        tool("write_file"),
+        tool("write_files"),
       ]),
       skill("git-context", [
         tool("git_context_active"),
@@ -324,15 +320,14 @@ describe("ToolWorkingSetManager", () => {
   it("keeps fresh-session routing mutation tools visible under the tool cap", () => {
     const catalog = new ToolCatalog([
       skill("filesystem", [
-        tool("write_file"),
         tool("write_files"),
         tool("create_directory"),
         tool("shell_run_script"),
         tool("shell"),
         tool("search_in_files"),
         tool("find_files"),
-        tool("read_file"),
-        tool("edit_file"),
+        tool("read_files"),
+        tool("patch_files"),
       ]),
       skill("git-context", [
         tool("git_context_list_sessions"),
@@ -361,7 +356,7 @@ describe("ToolWorkingSetManager", () => {
     expect(manager.listActive(context)).toEqual(expect.arrayContaining([
       "find_files",
       "search_in_files",
-      "read_file",
+      "read_files",
       "git_context_activate_task_for_turn",
       "git_context_create_task_for_turn",
     ]));
@@ -410,8 +405,7 @@ describe("ToolWorkingSetManager", () => {
       skill("filesystem", [
         tool("find_files"),
         tool("search_in_files"),
-        tool("read_file"),
-        tool("write_file"),
+        tool("read_files"),
         tool("write_files"),
         tool("create_directory"),
       ]),
@@ -446,14 +440,12 @@ describe("ToolWorkingSetManager", () => {
     expect(active).toEqual(expect.arrayContaining([
       "find_files",
       "search_in_files",
-      "read_file",
-      "write_file",
+      "read_files",
       "write_files",
       "git_context_activate_task_for_turn",
       "git_context_create_task_for_turn",
     ]));
     expect(result.evicted).not.toEqual(expect.arrayContaining([
-      "write_file",
       "write_files",
     ]));
     expect(executor.list(context)).toEqual(active);
@@ -599,7 +591,7 @@ function recoverableToolCalls(): NonNullable<LoopState["toolContext"]>["toolCall
     {
       step: 1,
       callId: "call-old",
-      tool: "read_file",
+      tool: "read_files",
       input: { path: "src/old.ts" },
       status: "success",
       output: `old output ${"x".repeat(16_000)}`,
@@ -608,7 +600,7 @@ function recoverableToolCalls(): NonNullable<LoopState["toolContext"]>["toolCall
     {
       step: 2,
       callId: "call-2",
-      tool: "read_file",
+      tool: "read_files",
       input: { path: "src/2.ts" },
       status: "success",
       output: `output 2 ${"x".repeat(16_000)}`,
@@ -617,7 +609,7 @@ function recoverableToolCalls(): NonNullable<LoopState["toolContext"]>["toolCall
     {
       step: 3,
       callId: "call-3",
-      tool: "read_file",
+      tool: "read_files",
       input: { path: "src/3.ts" },
       status: "success",
       output: `output 3 ${"x".repeat(16_000)}`,
@@ -626,7 +618,7 @@ function recoverableToolCalls(): NonNullable<LoopState["toolContext"]>["toolCall
     {
       step: 4,
       callId: "call-4",
-      tool: "read_file",
+      tool: "read_files",
       input: { path: "src/4.ts" },
       status: "success",
       output: "output 4",
@@ -635,7 +627,7 @@ function recoverableToolCalls(): NonNullable<LoopState["toolContext"]>["toolCall
     {
       step: 5,
       callId: "call-5",
-      tool: "read_file",
+      tool: "read_files",
       input: { path: "src/5.ts" },
       status: "success",
       output: "output 5",

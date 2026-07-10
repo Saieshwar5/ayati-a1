@@ -51,13 +51,13 @@ describe("tool output observations", () => {
       stepNumber: 2,
       call: {
         id: "call_2",
-        tool: "read_file",
+        tool: "read_files",
         input: {},
         dependsOn: [],
       },
       record: {
         callId: "call_2",
-        tool: "read_file",
+        tool: "read_files",
         input: {},
         output: "compact tool output",
         result: {

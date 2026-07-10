@@ -20,7 +20,6 @@ const DECISION_CONTEXT_TOOLS = new Set([
   "shell_run_script",
   "shell_session_write",
   "inspect_paths",
-  "read_file",
   "read_files",
   "search_in_files",
   "find_files",
@@ -173,7 +172,6 @@ function resolveRetention(toolName: string, mode: ToolObservation["mode"]): Tool
   }
   if (
     toolName === "inspect_paths"
-    || toolName === "read_file"
     || toolName === "read_files"
     || toolName === "search_in_files"
     || toolName === "find_files"

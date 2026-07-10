@@ -1943,7 +1943,7 @@ const TASK_ROUTING_TOOL_NAMES = new Set([
 ]);
 
 const CONVERSATION_READ_ONLY_TOOL_NAMES = new Set([
-  "read_file",
+  "read_files",
   "list_directory",
   "find_files",
   "search_in_files",

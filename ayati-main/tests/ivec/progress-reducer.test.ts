@@ -48,7 +48,7 @@ describe("reduceVerifiedWorkState", () => {
         {
           id: "note:site-structure",
           text: "index.html has river cards inside .river-grid.",
-          source: "read_file:index.html",
+          source: "read_files:index.html",
           expires: "task",
         },
       ],
@@ -56,13 +56,13 @@ describe("reduceVerifiedWorkState", () => {
 
     const next = reduceVerifiedWorkState(previous, {
       passed: true,
-      summary: "Executed read_file successfully.",
+      summary: "Executed read_files successfully.",
       evidenceItems: [],
       newFacts: [],
       taskNotes: [{
         id: "note:styles",
         text: "styles.css already has .river-card rules.",
-        source: "read_file:styles.css",
+        source: "read_files:styles.css",
         expires: "task",
       }],
     });

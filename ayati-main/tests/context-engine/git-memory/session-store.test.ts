@@ -1031,7 +1031,7 @@ describe("GitMemoryDailySessionStore", () => {
         sessionId: session.sessionId,
         runId: "R-20260628-0001",
         step: 1,
-        tool: "read_file",
+        tool: "read_files",
         completedAt: "2026-06-28T09:00:03+05:30",
       }),
     });
@@ -1092,7 +1092,7 @@ describe("GitMemoryDailySessionStore", () => {
       taskId: task.taskId,
       runId: "R-20260628-0001",
       step: 1,
-      toolCalls: [{ tool: "read_file" }],
+      toolCalls: [{ tool: "read_files" }],
     });
     expect(staged[0]).not.toHaveProperty("sessionId");
   });
@@ -1338,14 +1338,14 @@ describe("GitMemoryDailySessionStore", () => {
           mode: "single",
         },
         action: {
-          executionContract: "single action: read_file",
-          toolsUsed: ["read_file"],
+          executionContract: "single action: read_files",
+          toolsUsed: ["read_files"],
           toolSuccessCount: 1,
           toolFailureCount: 0,
         },
         toolCalls: [{
           callId: "call-read-upload",
-          tool: "read_file",
+          tool: "read_files",
           status: "success",
           input: {
             path: "ayati-main/src/server/upload-server.ts",
@@ -1363,7 +1363,7 @@ describe("GitMemoryDailySessionStore", () => {
             id: "obs-upload",
             step: 1,
             callId: "call-read-upload",
-            tool: "read_file",
+            tool: "read_files",
             status: "success",
             mode: "full",
             retention: "while_relevant",
@@ -1423,7 +1423,7 @@ describe("GitMemoryDailySessionStore", () => {
       assistantResponse: "I found the upload validation issue.",
       actions: [{
         actionId: "ACT-20260628-000001",
-        tool: "read_file",
+        tool: "read_files",
         status: "completed",
         summary: "Read upload server implementation.",
         startedAt: "2026-06-28T09:02:00+05:30",
@@ -1433,7 +1433,7 @@ describe("GitMemoryDailySessionStore", () => {
       evidence: [{
         step: 1,
         actionId: "ACT-20260628-000001",
-        tool: "read_file",
+        tool: "read_files",
         status: "completed",
         summary: "Read upload server implementation.",
         evidenceRef: "evidence/ACT-20260628-000001.txt",
@@ -1447,10 +1447,10 @@ describe("GitMemoryDailySessionStore", () => {
           kind: "tool-output",
           toolCalls: [{
             kind: "tool-output",
-            tool: "read_file",
+            tool: "read_files",
             callId: "call-read-upload",
             filePath: "ayati-main/src/server/upload-server.ts",
-            rawOutputPath: "raw/001-call-read-upload-read_file.txt",
+            rawOutputPath: "raw/001-call-read-upload-read_files.txt",
           }],
         },
       }],
@@ -1561,7 +1561,7 @@ describe("GitMemoryDailySessionStore", () => {
     expect(runMarkdown).toContain("- ayati-main/src/server/upload-server.ts");
     expect(runMarkdown).toContain("- UploadServer validates multipart uploads.");
     expect(runMarkdown).toContain("- Step 1 completed: Read upload server implementation.");
-    expect(runMarkdown).toContain("Tools: read_file");
+    expect(runMarkdown).toContain("Tools: read_files");
     const taskNotes = await driver.readFile(task.ref, gitMemoryTaskNotesPath(task.taskId)) ?? "";
     expect(taskNotes).toContain("# Fix upload handling");
     expect(taskNotes).toContain("Task: W-20260628-0001");
@@ -1588,7 +1588,7 @@ describe("GitMemoryDailySessionStore", () => {
     expect(taskNotes).toContain("server");
     expect(taskNotes).toContain("## Next");
     expect(taskNotes).toContain("Patch upload validation handling.");
-    expect(taskNotes).not.toContain("raw/001-call-read-upload-read_file.txt");
+    expect(taskNotes).not.toContain("raw/001-call-read-upload-read_files.txt");
     expect(taskNotes).not.toContain("evidence/ACT-20260628-000001.txt");
     const steps = parseJsonl(await driver.readFile(task.ref, gitMemoryTaskStepsPath(task.taskId, run.runId)));
     expect(steps)
@@ -1600,7 +1600,7 @@ describe("GitMemoryDailySessionStore", () => {
         summary: "Read upload server implementation.",
         toolCalls: [{
           callId: "call-read-upload",
-          tool: "read_file",
+          tool: "read_files",
           input: {
             path: "ayati-main/src/server/upload-server.ts",
             range: [1, 80],

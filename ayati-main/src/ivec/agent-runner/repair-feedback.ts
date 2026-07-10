@@ -231,24 +231,83 @@ export function createMissingWorkRunRepairSignal(input: {
   });
 }
 
-export function createFailureRecordFromStepSummary(step: StepSummary): LoopState["failureHistory"][number] {
+export function createFailureRecordFromStepSummary(
+  step: StepSummary,
+  history: LoopState["failureHistory"] = [],
+): LoopState["failureHistory"][number] {
   const failureType = step.failureType ?? "verify_failed";
   const reason = buildFailureHistoryReason(step);
   const blockedTargets = uniqueStrings([
     ...(step.blockedTargets ?? []),
     ...(step.blockedTargets && step.blockedTargets.length > 0 ? [] : toolsFromExecutionContract(step.executionContract)),
   ]);
-  const repair = createRepairSignalFromStepSummary(step);
+  const baseRepair = createRepairSignalFromStepSummary(step);
+  const repair = maybeEscalateEditRecovery(baseRepair, history);
   const promptCard = repair ? repairSignalToPromptCard(repair) : undefined;
+  const repairBlockedTargets = repair ? repair.blockedTargets : blockedTargets;
   return {
     step: step.step,
     executionContract: step.executionContract,
     failureType,
     reason,
-    blockedTargets,
+    blockedTargets: repairBlockedTargets,
     ...(repair ? { repairCode: repair.code } : {}),
     ...(promptCard ? { repair: promptCard } : {}),
   };
+}
+
+function maybeEscalateEditRecovery(
+  repair: RepairSignal | undefined,
+  history: LoopState["failureHistory"],
+): RepairSignal | undefined {
+  if (!repair || repair.code !== "R_EDIT_TARGET_RECOVERY") {
+    return repair;
+  }
+  const current = editRecoverySignature(repair.blockedTargets);
+  if (!current) {
+    return repair;
+  }
+  const repeated = history
+    .slice()
+    .reverse()
+    .some((failure) => (
+      failure.repairCode === "R_EDIT_TARGET_RECOVERY"
+      && editRecoverySignature(failure.blockedTargets)?.signature === current.signature
+    ));
+  if (!repeated) {
+    return repair;
+  }
+
+  const filePath = current.filePath;
+  return createRepairSignal("R_EDIT_ESCALATE_TO_GUARDED_REWRITE", {
+    source: "runner.edit_recovery",
+    message: `Precise edit/patch recovery failed repeatedly for ${filePath}. Escalate to guarded full-file rewrite.`,
+    blockedTargets: repair.blockedTargets,
+    allowedNextActions: [
+      `Stop retrying the same patch_files target for ${filePath}.`,
+      `Call read_files with files=[{path:${JSON.stringify(filePath)}, mode:"full"}] to get complete content and sha256.`,
+      "Prepare the complete replacement content from that full read.",
+      "Call write_files with files[].baseSha256 set to the sha256 returned by the full read.",
+      "Do not use shell mutation.",
+    ],
+    operatorDetails: {
+      previousRepairCode: repair.code,
+      repeatedSignature: current.signature,
+      priorFailureCount: history.filter((failure) => (
+        failure.repairCode === "R_EDIT_TARGET_RECOVERY"
+        && editRecoverySignature(failure.blockedTargets)?.signature === current.signature
+      )).length,
+    },
+  });
+}
+
+function editRecoverySignature(blockedTargets: string[]): { signature: string; filePath: string } | undefined {
+  const tool = blockedTargets.find((target) => target === "patch_files");
+  const filePath = blockedTargets.find((target) => target !== "patch_files");
+  if (!tool || !filePath) {
+    return undefined;
+  }
+  return { signature: `${tool}:${filePath}`, filePath };
 }
 
 export function createRepairSignalFromStepSummary(step: StepSummary): RepairSignal | undefined {
@@ -343,6 +402,24 @@ function createStepFailureRepairSignal(input: {
   blockedTargets: string[];
   step: StepSummary;
 }): RepairSignal | undefined {
+  const editRecovery = extractEditTargetRecovery(input.step);
+  if (editRecovery) {
+    return createRepairSignal("R_EDIT_TARGET_RECOVERY", {
+      source: "runner.edit_recovery",
+      message: editRecovery.message,
+      blockedTargets: uniqueStrings([editRecovery.tool, editRecovery.filePath].filter((value): value is string => Boolean(value))),
+      allowedNextActions: buildEditRecoveryActions(editRecovery),
+      operatorDetails: {
+        step: input.step.step,
+        reason: input.reason,
+        failureType: input.failureType,
+        executionContract: input.step.executionContract,
+        toolsUsed: input.step.toolsUsed,
+        recovery: editRecovery,
+      },
+    });
+  }
+
   const missingFields = extractMissingRequiredFields(input.reason);
   const invalidFields = missingFields.length > 0 ? [] : extractInvalidFields(input.reason);
   const code = stepFailureRepairCode(input.failureType, input.reason, missingFields, invalidFields);
@@ -362,6 +439,103 @@ function createStepFailureRepairSignal(input: {
       evidenceItems: input.step.evidenceItems,
     },
   });
+}
+
+interface EditTargetRecovery {
+  tool: string;
+  code?: string;
+  filePath?: string;
+  patchIndex?: number;
+  failedEditIndex?: number;
+  kind?: string;
+  mode?: string;
+  diagnostic: {
+    targetKind?: string;
+    reason?: string;
+    hint?: string;
+    nearestMatchLine?: number;
+    nearestMatchPreview?: string;
+    matchStrategy?: string;
+  };
+  message: string;
+}
+
+function extractEditTargetRecovery(step: StepSummary): EditTargetRecovery | undefined {
+  const calls = evidenceToolCalls(step);
+  for (const call of calls) {
+    const tool = readString(call, "tool");
+    if (tool !== "patch_files") continue;
+    const code = readString(call, "code");
+    if (
+      code !== "PATCH_TARGET_NOT_FOUND"
+      && code !== "PATCH_TARGET_AMBIGUOUS"
+    ) {
+      continue;
+    }
+    const diagnostic = readRecord(call["diagnostic"]);
+    if (!diagnostic) continue;
+
+    const recovery: EditTargetRecovery = {
+      tool,
+      ...(code ? { code } : {}),
+      ...(readString(call, "filePath") ? { filePath: readString(call, "filePath") } : {}),
+      ...(readNumber(call, "patchIndex") !== undefined ? { patchIndex: readNumber(call, "patchIndex") } : {}),
+      ...(readNumber(call, "failedEditIndex") !== undefined ? { failedEditIndex: readNumber(call, "failedEditIndex") } : {}),
+      ...(readString(call, "operationKind") ? { kind: readString(call, "operationKind") } : {}),
+      ...(readString(call, "mode") ? { mode: readString(call, "mode") } : {}),
+      diagnostic: {
+        ...(readString(diagnostic, "targetKind") ? { targetKind: readString(diagnostic, "targetKind") } : {}),
+        ...(readString(diagnostic, "reason") ? { reason: readString(diagnostic, "reason") } : {}),
+        ...(readString(diagnostic, "hint") ? { hint: readString(diagnostic, "hint") } : {}),
+        ...(readNumber(diagnostic, "nearestMatchLine") !== undefined ? { nearestMatchLine: readNumber(diagnostic, "nearestMatchLine") } : {}),
+        ...(readString(diagnostic, "nearestMatchPreview") ? { nearestMatchPreview: readString(diagnostic, "nearestMatchPreview") } : {}),
+        ...(readString(diagnostic, "matchStrategy") ? { matchStrategy: readString(diagnostic, "matchStrategy") } : {}),
+      },
+      message: buildEditRecoveryMessage(tool, code, diagnostic),
+    };
+    return recovery;
+  }
+  return undefined;
+}
+
+function evidenceToolCalls(step: StepSummary): Record<string, unknown>[] {
+  const source = readRecord(step.evidenceSource);
+  const calls = source && Array.isArray(source["toolCalls"]) ? source["toolCalls"] : [];
+  return calls.filter((call): call is Record<string, unknown> => Boolean(call && typeof call === "object" && !Array.isArray(call)));
+}
+
+function buildEditRecoveryMessage(tool: string, code: string | undefined, diagnostic: Record<string, unknown>): string {
+  const reason = readString(diagnostic, "reason") ?? "The requested edit target was not found exactly.";
+  const line = readNumber(diagnostic, "nearestMatchLine");
+  const strategy = readString(diagnostic, "matchStrategy");
+  return [
+    `${tool} failed${code ? ` with ${code}` : ""}.`,
+    reason,
+    line !== undefined ? `Nearest likely context starts around line ${line}.` : "",
+    strategy ? `Match strategy: ${strategy}.` : "",
+  ].filter((part) => part.length > 0).join(" ");
+}
+
+function buildEditRecoveryActions(recovery: EditTargetRecovery): string[] {
+  const actions: string[] = [];
+  const file = recovery.filePath ?? "the failed file";
+  const line = recovery.diagnostic.nearestMatchLine;
+  if (line !== undefined) {
+    actions.push(`Call read_files with files=[{path:${JSON.stringify(file)}, mode:"slice", startLine=${Math.max(1, line - 3)}, lineCount:8}] before retrying.`);
+  } else {
+    actions.push(`Read the latest exact context for ${file} before retrying.`);
+  }
+  if (recovery.diagnostic.matchStrategy === "whitespace_normalized") {
+    actions.push("The target likely differs only by multiline formatting or indentation; retry with exact text from the slice or use replace_lines.");
+  } else if (recovery.diagnostic.matchStrategy) {
+    actions.push(`Use the diagnostic ${recovery.diagnostic.matchStrategy} clue to choose a smaller exact target from the current file.`);
+  }
+  if (recovery.diagnostic.hint) {
+    actions.push(recovery.diagnostic.hint);
+  }
+  actions.push("Do not retry the same stale target string.");
+  actions.push("Use guarded write_files only after a full read returns sha256 and repeated precise patch/edit attempts still fail.");
+  return actions;
 }
 
 function stepFailureRepairCode(
@@ -389,6 +563,22 @@ function stepFailureRepairCode(
     return invalidFields.length > 0 ? "R_TOOL_INPUT_INVALID" : "R_TOOL_INPUT_INVALID";
   }
   return undefined;
+}
+
+function readRecord(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined;
+}
+
+function readString(record: Record<string, unknown>, key: string): string | undefined {
+  const value = record[key];
+  return typeof value === "string" && value.trim().length > 0 ? value : undefined;
+}
+
+function readNumber(record: Record<string, unknown>, key: string): number | undefined {
+  const value = record[key];
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
 
 function toolsFromExecutionContract(value: string | undefined): string[] {
