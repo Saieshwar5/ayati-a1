@@ -26,6 +26,7 @@ export type GitMemoryCommitEventType =
   | "session_initialized"
   | "session_checkpointed"
   | "conversation_appended"
+  | "task_run_checkpointed"
   | "task_created"
   | "run_started"
   | "run_completed"

@@ -16,6 +16,8 @@ export * from "./task-notes.js";
 export * from "./task-refs.js";
 export * from "./task-run-checkpoint.js";
 export * from "./task-run-checkpoint-generator.js";
+export * from "./task-run-finalization.js";
+export * from "./task-run-finalizer.js";
 export * from "./task-run-session-update-cache.js";
 export * from "./task-run-session-update-generator.js";
 export * from "./task-run-session-update-parser.js";

@@ -20,8 +20,17 @@ import type {
 import { GitMemoryDailySessionStore } from "./session-store.js";
 import {
   buildGitMemoryTaskRunCommitInput,
-  type BuildGitMemoryTaskRunCommitInput,
 } from "./harness-result-mapper.js";
+import type { TaskRunSessionUpdateGenerator } from "./task-run-finalization.js";
+import {
+  GitMemoryTaskRunFinalizer,
+  type FinalizeGitMemoryTaskRunInput,
+  type FinalizeGitMemoryTaskRunResult,
+} from "./task-run-finalizer.js";
+export type {
+  FinalizeGitMemoryTaskRunInput,
+  FinalizeGitMemoryTaskRunResult,
+} from "./task-run-finalizer.js";
 import {
   DEFAULT_GIT_MEMORY_CONTEXT_LIMITS,
   type GitMemoryPendingTurnContext,
@@ -53,7 +62,6 @@ import type {
   GitMemoryConversationSeqRange,
   GitMemoryRunFile,
   GitMemoryRunId,
-  GitMemoryRunStatus,
   GitMemorySessionRunStatus,
   GitMemorySessionAttachmentRecord,
   GitMemorySessionAttachmentsFile,
@@ -78,6 +86,7 @@ export interface GitMemoryRuntimeOptions {
   store?: GitMemoryDailySessionStore;
   taskRouter?: GitMemoryTaskRouter;
   writeQueue?: GitMemoryWriteQueueRunner;
+  taskRunSessionUpdateGenerator?: TaskRunSessionUpdateGenerator;
 }
 
 export interface OpenGitMemoryRuntimeSessionInput {
@@ -139,12 +148,6 @@ export interface CheckpointGitMemoryRuntimeSessionInput {
   at?: string;
 }
 
-export interface FinalizeGitMemoryTaskRunInput extends BuildGitMemoryTaskRunCommitInput {
-  assistantMessage?: string;
-  assistantMessageKind?: GitMemoryConversationRecord["kind"];
-  assistantAt?: string;
-}
-
 export interface StartGitMemorySessionRunRuntimeInput extends GitMemoryConversationSeqRange {
   sessionId: GitMemorySessionId;
   runId?: GitMemoryRunId;
@@ -187,12 +190,6 @@ export interface RecordGitMemorySessionRunStepRuntimeInput {
   sessionId: GitMemorySessionId;
   record: GitMemorySessionStepRecord;
   at?: string;
-}
-
-export interface FinalizeGitMemoryTaskRunResult extends CommitGitMemoryTaskRunResult {
-  alreadyFinalized: boolean;
-  requestedRunStatus?: GitMemoryRunStatus;
-  assistantMessage?: GitMemoryConversationRecord;
 }
 
 export interface SwitchGitMemoryTaskInput {
@@ -243,6 +240,7 @@ export class GitMemoryRuntime {
   private readonly memoryStateHydrator: GitContextMemoryStateHydrator;
   private readonly taskRouter: GitMemoryTaskRouter;
   private readonly writeQueue: GitMemoryWriteQueueRunner;
+  private readonly taskRunFinalizer: GitMemoryTaskRunFinalizer;
   private readonly sessionMemoryCache = new Map<GitMemorySessionId, GitContextMemoryState>();
   private readonly pendingTurns = new Map<GitMemorySessionId, PendingGitMemoryTurnEnvelope>();
 
@@ -257,6 +255,11 @@ export class GitMemoryRuntime {
     this.memoryStateHydrator = new GitContextMemoryStateHydrator(this.store);
     this.taskRouter = options.taskRouter ?? new GitMemoryTaskRouter(this.store);
     this.writeQueue = options.writeQueue ?? new GitMemoryWriteQueue();
+    this.taskRunFinalizer = new GitMemoryTaskRunFinalizer({
+      store: this.store,
+      writeQueue: this.writeQueue,
+      sessionUpdateGenerator: options.taskRunSessionUpdateGenerator,
+    });
   }
 
   async openDailySession(input: OpenGitMemoryRuntimeSessionInput = {}): Promise<GitMemoryDailySessionHandle> {
@@ -917,59 +920,7 @@ export class GitMemoryRuntime {
 
   async finalizeTaskRun(input: FinalizeGitMemoryTaskRunInput): Promise<FinalizeGitMemoryTaskRunResult> {
     const baseCommitInput = buildGitMemoryTaskRunCommitInput(input);
-    const finalized = await this.writeQueue.enqueue({
-      sessionId: baseCommitInput.sessionId,
-      type: "task_run_committed",
-      label: "finalize_task_run",
-      createdAt: baseCommitInput.completedAt,
-    }, async () => {
-      const existing = baseCommitInput.runId
-        ? await this.store.readCommittedTaskRun({
-          sessionId: baseCommitInput.sessionId,
-          taskId: baseCommitInput.taskId,
-          runId: baseCommitInput.runId,
-        })
-        : null;
-      if (existing) {
-        return {
-          result: existing,
-          alreadyFinalized: true,
-          requestedRunStatus: baseCommitInput.status,
-          assistantMessage: undefined,
-        };
-      }
-      let assistantMessage: GitMemoryConversationRecord | undefined;
-      let commitInput = baseCommitInput;
-      if (input.assistantMessage?.trim()) {
-        assistantMessage = await this.store.appendConversationMessage({
-	        sessionId: baseCommitInput.sessionId,
-	        text: input.assistantMessage,
-	        ...(input.assistantMessageKind ? { kind: input.assistantMessageKind } : {}),
-	        at: input.assistantAt ?? input.at,
-          taskId: baseCommitInput.taskId,
-          ...(baseCommitInput.runId ? { runId: baseCommitInput.runId } : {}),
-          role: "assistant",
-        });
-        commitInput = {
-          ...baseCommitInput,
-          conversationRefs: includeConversationRecordInRefs(baseCommitInput.conversationRefs, assistantMessage),
-        };
-      }
-      const snapshot = await this.store.commitSessionStoreSnapshot({
-        sessionId: commitInput.sessionId,
-        at: commitInput.completedAt,
-        summary: `Snapshot conversation for task run ${commitInput.runId ?? "unknown"}.`,
-      });
-      return {
-        result: await this.store.commitTaskRun({
-          ...commitInput,
-          sessionStoreCommit: snapshot.sessionStoreCommit,
-        }),
-        alreadyFinalized: false,
-        requestedRunStatus: baseCommitInput.status,
-        assistantMessage,
-      };
-    });
+    const finalized = await this.taskRunFinalizer.finalize(input);
     if (finalized.assistantMessage) {
       this.invalidateSessionMemory(baseCommitInput.sessionId);
     }
@@ -978,18 +929,12 @@ export class GitMemoryRuntime {
       conversationRefs: finalized.assistantMessage
         ? includeConversationRecordInRefs(baseCommitInput.conversationRefs, finalized.assistantMessage)
         : baseCommitInput.conversationRefs,
-      ...(finalized.result.sessionStoreCommit ? { sessionStoreCommit: finalized.result.sessionStoreCommit } : {}),
-    }, finalized.result)) {
+      ...(finalized.sessionStoreCommit ? { sessionStoreCommit: finalized.sessionStoreCommit } : {}),
+    }, finalized)) {
       this.invalidateSessionMemory(baseCommitInput.sessionId);
     }
-    this.clearCommittedPendingTurn(baseCommitInput.sessionId, finalized.result.runId);
-
-    return {
-      ...finalized.result,
-      alreadyFinalized: finalized.alreadyFinalized,
-      requestedRunStatus: finalized.requestedRunStatus,
-      ...(finalized.assistantMessage ? { assistantMessage: finalized.assistantMessage } : {}),
-    };
+    this.clearCommittedPendingTurn(baseCommitInput.sessionId, finalized.runId);
+    return finalized;
   }
 
   async checkpointSession(input: CheckpointGitMemoryRuntimeSessionInput): Promise<GitMemorySessionCheckpoint> {

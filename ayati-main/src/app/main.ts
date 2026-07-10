@@ -30,7 +30,10 @@ import imageGenerationProvider from "../image-generation/runtime/index.js";
 import type { AgentUiContext } from "../ui/context.js";
 import type { WorkspaceInteractionEvent } from "../ui/workspace-orchestrator.js";
 import { createAgentFeedbackLedgerFromEnv } from "../ivec/feedback-ledger.js";
-import { createGitMemoryRuntime } from "../context-engine/index.js";
+import {
+  createGitMemoryRuntime,
+  ProviderTaskRunSessionUpdateGenerator,
+} from "../context-engine/index.js";
 import { createGitMemoryChatContextRuntime } from "./git-memory-chat-context-runtime.js";
 import { createGitMemorySystemEventContextRuntime } from "./git-memory-system-event-context-runtime.js";
 import { createChatTurnRuntime } from "./chat-turn-runtime.js";
@@ -157,6 +160,7 @@ export async function main(): Promise<void> {
     contextStoreDir: runtimeConfig.gitContext.storeDir,
     timezone: runtimeConfig.gitContext.timezone,
     agentId: runtimeConfig.gitContext.agentId,
+    taskRunSessionUpdateGenerator: new ProviderTaskRunSessionUpdateGenerator({ provider }),
   });
   await gitMemoryRuntime.openDailySession();
 

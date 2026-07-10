@@ -1,6 +1,6 @@
 import { readdir } from "node:fs/promises";
 import { join } from "node:path";
-import type { TaskAssetRecord } from "../contracts.js";
+import type { ContextSessionSummary, TaskAssetRecord } from "../contracts.js";
 import { GitMemoryWorktreeGitDriver } from "./git-driver.js";
 import { parseGitMemoryCommitTrailers, renderGitMemoryCommitMessage, type ParsedGitMemoryCommitTrailers } from "./commit-message.js";
 import {
@@ -20,9 +20,12 @@ import {
 } from "./task-refs.js";
 import { renderGitMemoryTaskNotes } from "./task-notes.js";
 import {
+  parseGitMemorySessionSummary,
   renderGitMemorySessionSummaryMarkdown,
   renderGitMemorySessionSummaryMetadata,
 } from "./session-summary.js";
+import { renderTaskRunCheckpointCommitMessage } from "./task-run-finalization.js";
+import type { TaskRunCheckpoint } from "./task-run-checkpoint.js";
 import {
   defaultRunOutcome,
   defaultSessionRunOutcome,
@@ -614,6 +617,11 @@ export interface CommitGitMemorySessionStoreSnapshotInput {
   sessionId: GitMemorySessionId;
   at?: string;
   summary?: string;
+  taskRunCheckpoint?: {
+    checkpoint: TaskRunCheckpoint;
+    strategy: "llm" | "deterministic";
+  };
+  sessionSummary?: Omit<WriteGitMemorySessionSummaryInput, "sessionId" | "updatedAt" | "commitSummary">;
 }
 
 export interface CommitGitMemorySessionStoreSnapshotResult {
@@ -637,6 +645,14 @@ export interface WriteGitMemorySessionSummaryInput {
 export interface WriteGitMemorySessionSummaryResult {
   sessionStoreCommit: string;
   metadata: GitMemorySessionSummaryMetaFile;
+}
+
+export interface GitMemoryTaskRunCheckpointBoundary {
+  checkpointId: string;
+  taskId: GitMemoryTaskId;
+  runId: GitMemoryRunId;
+  coveredUntilSeq: number;
+  sourceHash: string;
 }
 
 export interface UpsertGitMemorySessionAttachmentsInput {
@@ -802,6 +818,49 @@ export class GitMemoryDailySessionStore {
   async readSessionMeta(sessionId: GitMemorySessionId): Promise<GitMemorySessionMetaFile | null> {
     const driver = await GitMemoryWorktreeGitDriver.init(this.repoPath(sessionId));
     return await readSessionMeta(driver, sessionId);
+  }
+
+  async readSessionSummary(sessionId: GitMemorySessionId): Promise<ContextSessionSummary | undefined> {
+    const driver = await GitMemoryWorktreeGitDriver.init(this.repoPath(sessionId));
+    const messageStore = await openExistingSessionMessageStoreDriver(driver);
+    if (!messageStore) {
+      return undefined;
+    }
+    const [markdown, metadataJson] = await Promise.all([
+      messageStore.readFile(GIT_MEMORY_MAIN_REF, gitMemorySessionStoreSummaryMarkdownPath(sessionId)),
+      messageStore.readFile(GIT_MEMORY_MAIN_REF, gitMemorySessionStoreSummaryMetaPath(sessionId)),
+    ]);
+    return parseGitMemorySessionSummary({ sessionId, markdown, metadataJson });
+  }
+
+  async readLatestTaskRunCheckpointBoundary(
+    sessionId: GitMemorySessionId,
+  ): Promise<GitMemoryTaskRunCheckpointBoundary | undefined> {
+    const driver = await GitMemoryWorktreeGitDriver.init(this.repoPath(sessionId));
+    const messageStore = await openExistingSessionMessageStoreDriver(driver);
+    if (!messageStore) {
+      return undefined;
+    }
+    for (const entry of await messageStore.log(GIT_MEMORY_MAIN_REF, 100)) {
+      const trailers = parseGitMemoryCommitTrailers(entry.message);
+      if (trailers.event !== "task_run_checkpointed" || !trailers.taskId || !trailers.runId) {
+        continue;
+      }
+      const checkpointId = trailers.raw["Ayati-Checkpoint-Id"]?.[0];
+      const sourceHash = trailers.raw["Ayati-Checkpoint-Source-Hash"]?.[0];
+      const coveredUntilSeq = trailers.conversationSeq?.toSeq;
+      if (!checkpointId || !sourceHash || coveredUntilSeq === undefined) {
+        continue;
+      }
+      return {
+        checkpointId,
+        taskId: trailers.taskId,
+        runId: trailers.runId,
+        coveredUntilSeq,
+        sourceHash,
+      };
+    }
+    return undefined;
   }
 
   async writeSessionAttachments(
@@ -1501,18 +1560,37 @@ export class GitMemoryDailySessionStore {
     const messageStore = await driver.openSubmoduleRepo(GIT_MEMORY_SESSION_STORE_DIR);
     const at = input.at ?? this.nowIso();
     const sessionsPath = join(messageStore.repoPath, "sessions");
+    if (input.sessionSummary) {
+      const metadata = buildSessionSummaryMetadata({
+        sessionId: input.sessionId,
+        updatedAt: at,
+        ...input.sessionSummary,
+      });
+      await messageStore.writeWorkingFiles({
+        [gitMemorySessionStoreSummaryMarkdownPath(input.sessionId)]: renderGitMemorySessionSummaryMarkdown(
+          input.sessionSummary.text,
+        ),
+        [gitMemorySessionStoreSummaryMetaPath(input.sessionId)]: renderGitMemorySessionSummaryMetadata(metadata),
+      });
+    }
     const existingSessionStoreCommit = await messageStore.resolveRef(GIT_MEMORY_MAIN_REF);
     const sessionStoreCommit = (await pathExists(sessionsPath)
-      ? await messageStore.commitPaths(["sessions"], renderGitMemoryCommitMessage({
-        subject: `ayati: snapshot session conversation ${input.sessionId}`,
-        summary: input.summary ?? "Commit session conversation messages for task-run snapshot.",
-        trailers: {
-          sessionId: input.sessionId,
-          event: "conversation_appended",
+      ? await messageStore.commitPaths(["sessions"], input.taskRunCheckpoint
+        ? renderTaskRunCheckpointCommitMessage(
+          input.taskRunCheckpoint.checkpoint,
+          input.taskRunCheckpoint.strategy,
           at,
-          schemaVersion: 1,
-        },
-      }))
+        )
+        : renderGitMemoryCommitMessage({
+          subject: `ayati: snapshot session conversation ${input.sessionId}`,
+          summary: input.summary ?? "Commit session conversation messages for task-run snapshot.",
+          trailers: {
+            sessionId: input.sessionId,
+            event: "conversation_appended",
+            at,
+            schemaVersion: 1,
+          },
+        }))
       : null) ?? existingSessionStoreCommit;
     if (!sessionStoreCommit) {
       if (!(await pathExists(sessionsPath))) {
@@ -1538,18 +1616,7 @@ export class GitMemoryDailySessionStore {
     const driver = await GitMemoryWorktreeGitDriver.init(this.repoPath(input.sessionId));
     const messageStore = await driver.openSubmoduleRepo(GIT_MEMORY_SESSION_STORE_DIR);
     const updatedAt = input.updatedAt ?? this.nowIso();
-    const metadata: GitMemorySessionSummaryMetaFile = {
-      schemaVersion: 1,
-      formatVersion: 1,
-      sessionId: input.sessionId,
-      updatedAt,
-      ...(input.strategy ? { strategy: input.strategy } : {}),
-      ...(typeof input.coveredUntilSeq === "number" ? { coveredUntilSeq: input.coveredUntilSeq } : {}),
-      ...(typeof input.messageCount === "number" ? { messageCount: input.messageCount } : {}),
-      ...(typeof input.sourceFromSeq === "number" ? { sourceFromSeq: input.sourceFromSeq } : {}),
-      ...(typeof input.sourceToSeq === "number" ? { sourceToSeq: input.sourceToSeq } : {}),
-      ...(typeof input.previousCoveredUntilSeq === "number" ? { previousCoveredUntilSeq: input.previousCoveredUntilSeq } : {}),
-    };
+    const metadata = buildSessionSummaryMetadata({ ...input, updatedAt });
     const markdownPath = gitMemorySessionStoreSummaryMarkdownPath(input.sessionId);
     const metadataPath = gitMemorySessionStoreSummaryMetaPath(input.sessionId);
     await messageStore.writeWorkingFiles({
@@ -1981,6 +2048,25 @@ function readSessionRunWorkingSteps(value: string | null): GitMemorySessionStepR
       && isGitMemoryRunId(record.runId)
       && Number.isInteger(record.step)
     ));
+}
+
+function buildSessionSummaryMetadata(
+  input: Omit<WriteGitMemorySessionSummaryInput, "commitSummary"> & { updatedAt: string },
+): GitMemorySessionSummaryMetaFile {
+  return {
+    schemaVersion: 1,
+    formatVersion: 1,
+    sessionId: input.sessionId,
+    updatedAt: input.updatedAt,
+    ...(input.strategy ? { strategy: input.strategy } : {}),
+    ...(typeof input.coveredUntilSeq === "number" ? { coveredUntilSeq: input.coveredUntilSeq } : {}),
+    ...(typeof input.messageCount === "number" ? { messageCount: input.messageCount } : {}),
+    ...(typeof input.sourceFromSeq === "number" ? { sourceFromSeq: input.sourceFromSeq } : {}),
+    ...(typeof input.sourceToSeq === "number" ? { sourceToSeq: input.sourceToSeq } : {}),
+    ...(typeof input.previousCoveredUntilSeq === "number"
+      ? { previousCoveredUntilSeq: input.previousCoveredUntilSeq }
+      : {}),
+  };
 }
 
 function countSessionRunToolCalls(steps: GitMemorySessionStepRecord[]): number {

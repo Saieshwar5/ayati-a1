@@ -71,9 +71,14 @@ context.timeline + context.git + context.tools + context.harness + context.run +
 - Task-run records store `sessionStoreCommit` plus `conversationRefs`, so task
   conversation is reconstructed from the exact session-store snapshot for the
   run.
-- Session summary files in the session-store submodule, projected at
-  `context.git.session.summary` when present. They are explicit artifacts; the
-  runtime does not auto-generate summaries for each message.
+- Task-run-only session evolution: finalized task runs produce a bounded
+  semantic checkpoint, and the provider-backed combined generator updates the
+  structured session summary when validation succeeds. Summary files and the
+  checkpoint commit body are persisted in the existing session-store snapshot
+  commit; session runs and ordinary message writes do not trigger generation.
+- Deterministic checkpoint fallback, persisted coverage trailers, source-hash
+  revalidation, and duplicate-run protection keep task completion reliable when
+  generation fails or finalization is retried.
 - Compact model-facing git-context tool results that do not expose the full
   internal memory cache.
 - Hot tool-output observation retention: `next_step`, `while_relevant`, and

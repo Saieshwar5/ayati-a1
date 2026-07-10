@@ -156,10 +156,20 @@ compressed aid for session continuity, not a complete source of truth. When the
 summary conflicts with exact conversation, the model should trust
 `context.timeline`.
 
-Summary files are explicit session-store artifacts. Normal user and assistant
-message writes do not automatically generate or commit summaries. Future
-summary generation should run as a deliberate context-engine step and write the
-same session-store files.
+Summary files are explicit session-store artifacts. Normal user, assistant, and
+session-run writes do not generate or commit summaries. Finalized task runs
+prepare a semantic checkpoint from the exact conversation interval since the
+previous task-run checkpoint. The app-owned provider may generate a replacement
+structured session snapshot; the context runtime validates and stages its
+Markdown and metadata in the existing session-store snapshot commit. Provider
+or validation failure falls back to a deterministic task-run checkpoint and
+does not block task-run completion or overwrite the previous valid summary.
+
+Task-run checkpoint coverage is recorded in the session-store commit trailers.
+This boundary is read back after restart, so the next task-run checkpoint starts
+at the following conversation sequence without depending on in-memory state.
+Generation runs outside the serialized session write queue. Before persistence,
+the finalizer revalidates the prepared interval's source hash.
 
 ## Hot Tool Context
 
@@ -261,8 +271,11 @@ Ayati does not commit the session-store on every message. The normal flow is:
 1. Initialize the session-store submodule when the daily session is created.
 2. Write user/system/assistant messages as session-store working files.
 3. When a task run is finalized, append the assistant response if needed.
-4. Commit the session-store snapshot.
-5. Commit the task run with `sessionStoreCommit` and `conversationRefs`.
+4. Generate or deterministically build the task-run checkpoint outside the
+   session write queue.
+5. Stage any valid replacement session summary and commit it with the
+   conversation snapshot under a `task_run_checkpointed` commit.
+6. Commit the task run with `sessionStoreCommit` and `conversationRefs`.
 
 Message files may include session, task, and run metadata:
 
