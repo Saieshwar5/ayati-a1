@@ -353,6 +353,7 @@ describe("parseAgentDecision", () => {
       retention: "next_step" as const,
       mode: "full" as const,
       output: "x".repeat(30_000),
+      projectionMetadata: { filePath: `src/file-${index + 1}.ts`, lineCount: 1_000 },
       stepRef: { runId: "run-1", step: index + 1, callId: `call-${index + 1}` },
     }));
 
@@ -383,9 +384,14 @@ describe("parseAgentDecision", () => {
       candidateInputTokens: 80_000,
       recoveryTargetTokens: 60_000,
       hotWindowSize: 6,
+      shadowLocalEstimateTokens: expect.any(Number),
+      correctedShadowLocalEstimateTokens: expect.any(Number),
     });
-    const plannedCalls = event?.data["calls"] as Array<{ mode: string; reason: string }>;
+    const plannedCalls = event?.data["calls"] as Array<{ mode: string; reason: string; projectorId?: string }>;
+    expect(event?.data["estimatedSavingsTokens"]).toBeGreaterThan(0);
+    expect(event?.data["projectedInputTokens"]).toBeLessThan(80_000);
     expect(plannedCalls.slice(-6).every((call) => call.mode === "full")).toBe(true);
+    expect(plannedCalls.slice(0, 4).some((call) => call.projectorId === "filesystem_read_v1")).toBe(true);
 
     const sentUserPrompt = generateTurn.mock.calls[0]?.[0]?.messages
       .find((message: { role: string }) => message.role === "user")?.content;
@@ -395,6 +401,7 @@ describe("parseAgentDecision", () => {
     const sentState = parsePromptStateView(sentUserPrompt);
     const sentCalls = (sentState["context"] as { run: { toolCalls: Array<{ mode: string }> } }).run.toolCalls;
     expect(sentCalls.every((call) => call.mode === "full")).toBe(true);
+    expect(sentCalls.every((call) => !("projectionMetadata" in call))).toBe(true);
   });
 
   it("sends a deduplicated state view to the model prompt", async () => {

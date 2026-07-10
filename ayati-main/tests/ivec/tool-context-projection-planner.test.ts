@@ -35,7 +35,9 @@ describe("tool context projection planner", () => {
     expect(plan.calls.slice(-6).every((call) => call.mode === "full")).toBe(true);
     expect(plan.calls.slice(-6).every((call) => call.reason === "latest_six")).toBe(true);
     expect(plan.calls.slice(0, 4).some((call) => call.mode !== "full")).toBe(true);
+    expect(plan.calls.slice(0, 4).some((call) => call.projectorId === "filesystem_read_v1")).toBe(true);
     expect(plan.calls.slice(0, 4).some((call) => call.reason === "target_reached")).toBe(true);
+    expect(plan.projectedCalls.slice(-6).every((call) => call.mode === "full")).toBe(true);
   });
 
   it("pins older failures and calls without a recovery reference", () => {

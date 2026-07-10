@@ -126,7 +126,7 @@ export interface AgentPromptStateView {
 export function projectAgentPromptContext(input: ProjectAgentPromptContextInput): AgentPromptContext {
   const personalMemorySnapshot = input.context.personalMemorySnapshot?.trim();
   const harness = compactHarnessContext(input.harness);
-  const run = compactRunContext(input.run);
+  const run = compactRunContext(input.run, { preserveProjectionMetadata: true });
   return {
     ...input.context,
     ...(input.runtimeMode ? { runtimeMode: input.runtimeMode } : {}),
@@ -220,13 +220,14 @@ function projectGitTaskForPrompt(
 }
 
 function compactAgentPromptContext(context: AgentPromptContext): AgentPromptContext {
+  const run = compactRunContext(context.run);
   return {
     timeline: context.timeline,
     ...(context.runtimeMode ? { runtimeMode: context.runtimeMode } : {}),
     ...(context.git ? { git: context.git } : {}),
     ...(context.tools ? { tools: context.tools } : {}),
     ...(context.harness ? { harness: context.harness } : {}),
-    ...(context.run ? { run: context.run } : {}),
+    ...(run ? { run } : {}),
     ...(context.personal ? { personal: context.personal } : {}),
   };
 }
@@ -241,14 +242,21 @@ function compactHarnessContext(harness: PromptHarnessContext | undefined): Promp
   return Object.keys(compacted).length > 0 ? compacted : undefined;
 }
 
-function compactRunContext(run: PromptRunContext | undefined): PromptRunContext | undefined {
+function compactRunContext(
+  run: PromptRunContext | undefined,
+  options: { preserveProjectionMetadata?: boolean } = {},
+): PromptRunContext | undefined {
   if (!run) {
     return undefined;
   }
   const compacted: PromptRunContext = {
     ...(run.status ? { status: run.status } : {}),
     ...(run.workState ? { workState: run.workState } : {}),
-    ...(run.toolCalls ? { toolCalls: run.toolCalls } : {}),
+    ...(run.toolCalls ? {
+      toolCalls: options.preserveProjectionMetadata
+        ? run.toolCalls
+        : run.toolCalls.map(({ projectionMetadata: _projectionMetadata, ...call }) => call),
+    } : {}),
     ...(run.routing ? { routing: run.routing } : {}),
   };
   return Object.keys(compacted).length > 0 ? compacted : undefined;

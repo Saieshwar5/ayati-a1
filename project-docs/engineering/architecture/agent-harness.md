@@ -246,6 +246,17 @@ calls as needed to reach the recovery target. Reference-only conversion is
 reserved for a later repeated-pressure mode. Shadow plans are recorded in
 optimization metrics and the feedback ledger but are not enforced yet.
 
+Shadow planning uses registered deterministic projectors for filesystem reads,
+filesystem search/listing, filesystem mutations, shell calls, test/build
+commands, and Git-context operations, with a conservative generic fallback.
+Projector metadata is captured
+while the structured tool result is available, bounded to exclude duplicate
+file contents, and never included in the normal full prompt. The planner builds
+the complete alternative decision request through the normal prompt serializer
+and measures it with the same corrected local estimator as the real request.
+Receipts record the projector id and per-call estimates plus whole-request
+shadow tokens and savings.
+
 ## Tool Visibility
 
 The runtime keeps a hidden catalog of available tools and exposes a run-scoped

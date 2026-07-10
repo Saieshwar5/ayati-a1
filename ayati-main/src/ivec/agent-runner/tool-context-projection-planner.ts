@@ -1,10 +1,12 @@
 import { estimateTextTokens } from "../../prompt/token-estimator.js";
+import { correctLocalInputTokenEstimate } from "../../prompt/context-token-counter.js";
 import {
-  compactPromptToolCall,
   type PromptRunToolCallContext,
   type PromptRunToolCallMode,
   type PromptToolCalls,
 } from "./run-tool-call-context.js";
+import { projectToolCallForPressure } from "./tool-context-projectors/registry.js";
+import type { PressureProjectionMode } from "./tool-context-projectors/types.js";
 
 export type ToolCallProjectionReason =
   | "below_soft_limit"
@@ -23,6 +25,7 @@ export interface ToolCallProjectionPlanEntry {
   tool: string;
   mode: PromptRunToolCallMode;
   reason: ToolCallProjectionReason;
+  projectorId?: string;
   tokensBefore: number;
   tokensAfter: number;
 }
@@ -40,10 +43,10 @@ export interface ToolContextProjectionPlan {
   hotWindowSize: number;
   canReachTarget: boolean;
   calls: ToolCallProjectionPlanEntry[];
+  projectedCalls: PromptToolCalls;
 }
 
 const HOT_CALL_COUNT = 6;
-const TOKEN_ESTIMATE_CORRECTION = 1.1;
 
 export function planToolContextProjection(input: {
   calls: PromptToolCalls;
@@ -57,9 +60,10 @@ export function planToolContextProjection(input: {
     : 0;
   const hotStart = Math.max(0, input.calls.length - HOT_CALL_COUNT);
   const entries = input.calls.map((call, index) => initialEntry(call, index, hotStart, triggered));
+  const projectedCalls = input.calls.map((call) => ({ ...call }));
 
   if (!triggered || requiredSavingsTokens === 0) {
-    return buildPlan(input, entries, requiredSavingsTokens, 0);
+    return buildPlan(input, entries, projectedCalls, requiredSavingsTokens, 0);
   }
 
   const candidates = input.calls
@@ -77,16 +81,18 @@ export function planToolContextProjection(input: {
       continue;
     }
     entries[candidate.index] = candidate.entry;
+    projectedCalls[candidate.index] = candidate.projectedCall;
     estimatedSavingsTokens += candidate.savingsTokens;
   }
 
-  return buildPlan(input, entries, requiredSavingsTokens, estimatedSavingsTokens);
+  return buildPlan(input, entries, projectedCalls, requiredSavingsTokens, estimatedSavingsTokens);
 }
 
 interface ProjectionCandidate {
   index: number;
   priority: number;
   savingsTokens: number;
+  projectedCall: PromptRunToolCallContext;
   entry: ToolCallProjectionPlanEntry;
 }
 
@@ -99,19 +105,25 @@ function projectionCandidate(
     return undefined;
   }
   const mode = projectionMode(call);
-  const projected = compactPromptToolCall(call, mode, "context_budget");
+  const projection = projectToolCallForPressure(call, mode);
+  const projected = projection.call;
   const tokensBefore = estimateProjectionTokens(call);
   const tokensAfter = estimateProjectionTokens(projected);
+  if (tokensAfter >= tokensBefore) {
+    return undefined;
+  }
   return {
     index,
     priority: projectionPriority(call),
     savingsTokens: Math.max(0, tokensBefore - tokensAfter),
+    projectedCall: projected,
     entry: {
       ...(call.callId ? { callId: call.callId } : {}),
       step: call.step,
       tool: call.tool,
       mode,
       reason: projectionReason(call),
+      projectorId: projection.projectorId,
       tokensBefore,
       tokensAfter,
     },
@@ -144,7 +156,7 @@ function initialEntry(
   };
 }
 
-function projectionMode(call: PromptRunToolCallContext): Exclude<PromptRunToolCallMode, "full"> {
+function projectionMode(call: PromptRunToolCallContext): PressureProjectionMode {
   if (call.retention === "while_relevant") return "preview";
   return "summary";
 }
@@ -170,7 +182,8 @@ function compareProjectionCandidates(left: ProjectionCandidate, right: Projectio
 }
 
 function estimateProjectionTokens(call: PromptRunToolCallContext): number {
-  return Math.ceil(estimateTextTokens(JSON.stringify(call)) * TOKEN_ESTIMATE_CORRECTION);
+  const { projectionMetadata: _projectionMetadata, ...promptCall } = call;
+  return correctLocalInputTokenEstimate(estimateTextTokens(JSON.stringify(promptCall)));
 }
 
 function buildPlan(
@@ -181,6 +194,7 @@ function buildPlan(
     softInputTokens: number;
   },
   calls: ToolCallProjectionPlanEntry[],
+  projectedCalls: PromptToolCalls,
   requiredSavingsTokens: number,
   estimatedSavingsTokens: number,
 ): ToolContextProjectionPlan {
@@ -199,5 +213,6 @@ function buildPlan(
     hotWindowSize: Math.min(HOT_CALL_COUNT, input.calls.length),
     canReachTarget: !triggered || projectedInputTokens <= input.recoveryTargetTokens,
     calls,
+    projectedCalls,
   };
 }

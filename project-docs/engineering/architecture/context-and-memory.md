@@ -170,6 +170,17 @@ planner currently records which older recoverable calls it would preview or
 deterministically summarize to reach the recovery target. The shadow plan does
 not yet alter the provider request.
 
+Tool-family projectors use bounded structured result metadata captured during
+execution. Read projections preserve requested paths/ranges and file metadata;
+search projections preserve query, roots, counts, matches, and continuation
+state; shell and test/build projections preserve commands, exit state, and
+bounded head/tail diagnostics; verified write projections remove echoed file
+contents while preserving paths, hashes, result codes, artifacts, and recovery
+refs; Git-context projections preserve task/run/query identifiers and bounded
+result metadata. Unknown tools use a conservative generic projector. Internal
+projection metadata is stripped from the normal prompt and appears only
+through a proposed shadow projection.
+
 Each entry contains the tool name, input, status, output or error, artifacts,
 evidence refs, and truncation metadata. Internal observation records carry
 deterministic retention metadata:

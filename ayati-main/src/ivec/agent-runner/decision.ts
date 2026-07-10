@@ -30,6 +30,7 @@ import {
 } from "./repair-policy.js";
 import type { AgentStateView } from "./state-view.js";
 import { planToolContextProjection } from "./tool-context-projection-planner.js";
+import { measureToolContextShadowProjection } from "./tool-context-shadow.js";
 import {
   summarizePromptStateView,
   summarizeToolDefinitions,
@@ -470,8 +471,20 @@ async function generateTurnWithEmptyResponseRetry(
     softInputTokens: contextBudget.softInputTokens,
   });
   if (toolProjectionPlan.triggered && toolProjectionPlan.calls.length > 0) {
-    recordOptimizationEvent(input.metrics, "tool_context_projection_shadow", { ...toolProjectionPlan });
-    recordDecisionFeedback(input, "tool_context_projection_shadow", { ...toolProjectionPlan });
+    const shadowReceipt = measureToolContextShadowProjection({
+      stateView: input.stateView,
+      requestMessages: request.messages,
+      turnInput,
+      plan: toolProjectionPlan,
+      budget: contextBudget,
+      buildPrompt: (stateView) => Object.values(buildDecisionPromptSections(
+        stateView,
+        input.toolDefinitions,
+        input.toolRoutingSummary,
+      )).filter((section) => section.trim().length > 0).join("\n\n"),
+    });
+    recordOptimizationEvent(input.metrics, "tool_context_projection_shadow", { ...shadowReceipt });
+    recordDecisionFeedback(input, "tool_context_projection_shadow", { ...shadowReceipt });
   }
   input.onContextCompilation?.(contextCompilation);
   agentTrace(

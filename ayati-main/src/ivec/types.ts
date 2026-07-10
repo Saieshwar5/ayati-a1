@@ -136,6 +136,7 @@ export interface RunToolCallContext {
   input: unknown;
   status: "success" | "failed";
   retention?: ToolObservationRetention;
+  projectionMetadata?: Record<string, unknown>;
   output: string;
   error?: string;
   code?: string;

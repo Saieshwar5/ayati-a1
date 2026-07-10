@@ -13,6 +13,7 @@ import { compactToolContext } from "../state-compaction.js";
 import { executeAgentAction } from "./action-executor.js";
 import type { AgentActionExecutionResult } from "./action-executor.js";
 import type { AgentDecision } from "./decision.js";
+import { buildToolProjectionMetadata } from "./tool-context-projectors/metadata.js";
 import { planLocalRecovery } from "./failure-policy.js";
 import {
   buildStepSummary,
@@ -237,6 +238,7 @@ function getLatestObservations(execution: AgentActionExecutionResult): ToolObser
 }
 
 function toRunToolCallContext(runId: string, step: number, call: ActToolCallRecord): RunToolCallContext {
+  const projectionMetadata = buildToolProjectionMetadata(call.tool, call.result?.structuredContent);
   return {
     step,
     ...(call.callId ? { callId: call.callId } : {}),
@@ -244,6 +246,7 @@ function toRunToolCallContext(runId: string, step: number, call: ActToolCallReco
     input: call.input,
     status: call.error ? "failed" : "success",
     ...(call.observation?.retention ? { retention: call.observation.retention } : {}),
+    ...(projectionMetadata ? { projectionMetadata } : {}),
     output: call.output,
     ...(call.error ? { error: call.error } : {}),
     ...(call.code ? { code: call.code } : {}),

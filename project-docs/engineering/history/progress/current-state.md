@@ -81,7 +81,10 @@ context.timeline + context.git + context.tools + context.harness + context.run +
   call remains full below the model profile's soft limit. At pressure, a shadow
   planner proposes the minimum older-call previews or summaries needed to
   recover to the target while keeping the latest six calls and pinned failures
-  full; it does not yet change the provider request.
+  full. Filesystem read/search/write, shell, test/build, and Git-context
+  projectors use bounded structured execution metadata, and the complete
+  alternative prompt is reserialized and measured before its receipt is
+  recorded. It does not yet change the provider request.
 - Prompt-facing harness repair feedback through `context.harness.feedback`,
   kept separate from run context.
 - Filesystem inspection and efficient read tools:

@@ -11,6 +11,7 @@ export interface PromptRunToolCallContext {
   input: unknown;
   status: "success" | "failed";
   retention?: RunToolCallContext["retention"];
+  projectionMetadata?: RunToolCallContext["projectionMetadata"];
   mode: PromptRunToolCallMode;
   output?: string;
   outputPreview?: string;
@@ -58,6 +59,7 @@ function projectPromptToolCall(call: RunToolCallContext): PromptRunToolCallConte
     input: call.input,
     status: call.status,
     ...(call.retention ? { retention: call.retention } : {}),
+    ...(call.projectionMetadata ? { projectionMetadata: call.projectionMetadata } : {}),
     mode: "full",
     output: call.output,
     ...(call.error ? { error: call.error } : {}),
@@ -96,6 +98,7 @@ export function compactPromptToolCall(
     input: compactUnknownForPrompt(call.input, inputChars),
     status: call.status,
     ...(call.retention ? { retention: call.retention } : {}),
+    ...(call.projectionMetadata ? { projectionMetadata: call.projectionMetadata } : {}),
     mode,
     summary: buildToolCallSummary(call),
     ...(outputPreview.length > 0 ? { outputPreview } : {}),

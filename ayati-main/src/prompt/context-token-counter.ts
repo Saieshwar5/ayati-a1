@@ -11,6 +11,10 @@ import { estimateTurnInputTokens } from "./token-estimator.js";
 
 const LOCAL_ESTIMATE_CORRECTION = 1.1;
 
+export function correctLocalInputTokenEstimate(tokens: number): number {
+  return Math.ceil(tokens * LOCAL_ESTIMATE_CORRECTION);
+}
+
 interface ProviderCountResult {
   status: "not_needed" | "unavailable" | "succeeded" | "failed";
   count?: Awaited<ReturnType<NonNullable<LlmProvider["countInputTokens"]>>>;
@@ -23,7 +27,7 @@ export async function measureTurnContext(input: {
 }): Promise<ContextBudgetReport> {
   const budget = calculateContextBudget(input.limits);
   const localEstimateTokens = estimateTurnInputTokens(input.turnInput).totalTokens;
-  const correctedLocalEstimateTokens = Math.ceil(localEstimateTokens * LOCAL_ESTIMATE_CORRECTION);
+  const correctedLocalEstimateTokens = correctLocalInputTokenEstimate(localEstimateTokens);
   const providerCountResult: ProviderCountResult = correctedLocalEstimateTokens >= budget.softInputTokens
     ? await tryProviderCount(input.provider, input.turnInput)
     : { status: "not_needed" as const };
