@@ -338,6 +338,41 @@ describe("buildAgentStateView", () => {
     expect(context.git?.session).not.toHaveProperty("conversationTail");
   });
 
+  it("keeps the complete recent timeline and current input exact below pressure", () => {
+    const longCurrentInput = `  current request\n${"x".repeat(2_000)}  `;
+    const conversationTail = Array.from({ length: 20 }, (_, index) => ({
+      seq: index + 1,
+      role: index % 2 === 0 ? "assistant" as const : "user" as const,
+      at: `2026-06-27T10:00:${String(index).padStart(2, "0")}.000Z`,
+      text: index === 19
+        ? longCurrentInput
+        : `message-${index + 1}\n${"y".repeat(800)}`,
+    }));
+    const state = createLoopState({
+      currentSeq: 20,
+      userMessage: longCurrentInput,
+      harnessContext: createHarnessContext({
+        contextEngine: createGitContext({
+          session: {
+            meta: { sessionId: "2026-06-27", assetCount: 0 },
+            activityTail: [],
+            conversationTail,
+          },
+        }),
+      }),
+    });
+
+    const timeline = buildAgentStateView(state).context.timeline;
+    expect(timeline).toHaveLength(20);
+    expect(timeline[0]).toMatchObject({ content: conversationTail[0]!.text });
+    expect(timeline.at(-1)).toMatchObject({
+      kind: "user",
+      seq: 20,
+      content: longCurrentInput,
+      current: true,
+    });
+  });
+
   it("falls back to the current input when git conversation is unavailable", () => {
     const state = createLoopState({
       currentSeq: 7,
@@ -349,6 +384,22 @@ describe("buildAgentStateView", () => {
       seq: 7,
       timestamp: "1970-01-01T00:00:00.000Z",
       content: "start a new task",
+      current: true,
+    }]);
+  });
+
+  it("keeps a synthesized current input byte-identical", () => {
+    const currentInput = `  preserve spacing\n${"z".repeat(2_000)}  `;
+    const state = createLoopState({
+      currentSeq: 8,
+      userMessage: currentInput,
+    });
+
+    expect(buildAgentStateView(state).context.timeline).toEqual([{
+      kind: "user",
+      seq: 8,
+      timestamp: "1970-01-01T00:00:00.000Z",
+      content: currentInput,
       current: true,
     }]);
   });

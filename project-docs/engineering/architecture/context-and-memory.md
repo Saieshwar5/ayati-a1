@@ -77,7 +77,9 @@ promoted later.
 The model-facing prompt uses a grouped context projection. The important paths
 are:
 
-- `context.timeline`: exact recent conversation and the current input.
+- `context.timeline`: the complete recent conversation tail supplied by the
+  context engine and the exact current input. The agent context pack applies no
+  additional fixed event-count or per-message character cap.
 - `context.git.session`: session identity, optional compressed session summary,
   user-provided session attachments, and recent session activity.
 - `context.git.current`: current git focus, pending turn state, and selected
@@ -111,6 +113,12 @@ full run/action histories, raw evidence, or old session data. Those are
 retrieved on demand through structured git-context read/search tools such as
 `git_context_search_tasks`, `git_context_read_task`, `git_context_log`,
 `git_context_read_evidence`, and `git_context_search_evidence`.
+
+Under later timeline-checkpoint enforcement, `context.timeline` may begin with
+a structured `kind="checkpoint"` event covering an older sequence range,
+followed by exact recent events. Exact events remain authoritative. Checkpoint
+planning and validation are implemented, but LLM generation and compiler
+application remain future work.
 
 Turn-aware routing tools may update the active harness context, but their
 model-facing result should not expose the runtime's full internal memory cache.

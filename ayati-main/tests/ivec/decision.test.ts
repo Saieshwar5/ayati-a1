@@ -146,6 +146,8 @@ describe("parseAgentDecision", () => {
     expect(systemPrompt).toContain("Use context.git.session.summary as compressed session history");
     expect(systemPrompt).toContain("Use context.timeline for exact recent messages and current input");
     expect(systemPrompt).toContain("If summary and exact conversation conflict, trust context.timeline");
+    expect(systemPrompt).toContain("kind=\"checkpoint\" is a structured summary of its covered older sequence range");
+    expect(systemPrompt).toContain("Exact timeline events after it remain authoritative");
     expect(systemPrompt).toContain("do not infer omitted details from it");
     expect(systemPrompt).toContain("context.run.status");
     expect(systemPrompt).toContain("context.run.workState");

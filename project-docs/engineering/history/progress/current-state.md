@@ -49,6 +49,9 @@ context.timeline + context.git + context.tools + context.harness + context.run +
   - promoted runs finalize only in the task directory using the same run id.
 - Grouped prompt context with legacy aliases kept internal for compatibility
   instead of promoted as duplicate model-facing payload.
+- Exact recent timeline projection without the former additional 12-event and
+  500-character caps. The context-engine recent-tail boundary remains separate
+  from later session-history digestion.
 - Pending-routing guard: normal task tools cannot run while a pending turn is
   unbound or clarifying.
 - Fresh-session mutation gate: when no active task exists, read-only tools can
@@ -123,6 +126,10 @@ context.timeline + context.git + context.tools + context.harness + context.run +
   iterations, and recommends it immediately near the admission limit. Applied
   and recommended modes remain separate. Over-limit final requests are rejected
   before provider generation.
+- Deterministic timeline-checkpoint foundation: typed checkpoint events,
+  structured summary schema, contiguous-prefix planning, minimum exact-tail and
+  current-input protection, token-savings estimates, source hashing, and
+  coverage/reference validation. LLM checkpoint generation is not connected.
 
 ## Runtime Boundary
 
@@ -148,6 +155,6 @@ is the simple runtime path.
    needs-user-input, stuck/max-iteration, and tool-failure outcomes.
 4. Legacy cleanup around historical focus/message-link/event files.
 5. Stable milestone tags.
-6. Validate enforced tool-context projections in longer runs, then add the
-   later pressure stages for timeline checkpoints, task-relevant session
-   digests, and reference-only step ledgers.
+6. Connect structured LLM timeline-checkpoint generation to the pressure-aware
+   compiler, then add task-relevant session digests and reference-only step
+   ledgers.

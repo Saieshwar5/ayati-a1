@@ -258,6 +258,14 @@ as already performed. Enforced pressure also counts as unresolved when there
 are no eligible older tool calls to compact; shadow-only observations never
 advance escalation policy.
 
+Timeline checkpoint planning is deterministic before any summarizer is called.
+It selects only an older contiguous prefix needed for estimated recovery,
+keeps at least four recent events exact, protects the current input and latest
+assistant question awaiting interpretation, and hashes the selected source for
+cache identity. The checkpoint contract retains sequence references for
+requests, constraints, decisions, corrections, facts, unresolved questions,
+and external references. The LLM checkpoint generator is not implemented yet.
+
 Current-run tool-call storage and prompt projection are separate. Below the
 soft limit, all prompt-eligible tool calls are sent in full; there is no fixed
 six-call or 30K-character history cap. At the soft limit, a deterministic
@@ -365,8 +373,9 @@ The decision model receives a compact `State view` each iteration. Runtime code
 may keep compatibility aliases internally, but the model prompt is projected to
 a deduplicated grouped payload:
 
-- `context.timeline`: chronological bounded user/assistant/system events ending
-  with the current input.
+- `context.timeline`: the complete recent conversation tail supplied by the
+  context engine, ending with the exact current input. The agent context pack
+  does not apply another event-count or per-message character cap.
 - `context.git.session`: session metadata, optional compressed session summary,
   session attachments, and recent session activity.
 - `context.git.current`: focus, pending-turn routing state, and selected task

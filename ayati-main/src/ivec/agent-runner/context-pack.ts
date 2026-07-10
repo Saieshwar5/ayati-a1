@@ -1,46 +1,13 @@
 import type { LoopState } from "../types.js";
 import type { ContextEngineMachineContext } from "../../context-engine/index.js";
 import { harnessContextFromState } from "../harness-context.js";
+import type { ExactTimelineEvent, TimelineEvent } from "./timeline-checkpoint.js";
+
+export type { ExactTimelineEvent, TimelineEvent } from "./timeline-checkpoint.js";
 
 const LIMITS = {
-  timelineEvents: 12,
-  textChars: 500,
   memoryChars: 1_200,
 };
-
-export type TimelineEvent =
-  | {
-      kind: "user";
-      seq: number;
-      timestamp: string;
-      content: string;
-      current?: true;
-    }
-  | {
-      kind: "assistant";
-      seq: number;
-      timestamp: string;
-      content: string;
-      responseKind?: string;
-      expectsUserResponse?: boolean;
-      current?: true;
-    }
-  | {
-      kind: "system";
-      seq: number;
-      timestamp: string;
-      content: string;
-      current?: true;
-    }
-  | {
-      kind: "system_event";
-      seq: number;
-      timestamp: string;
-      source: string;
-      event: string;
-      summary: string;
-      current?: true;
-    };
 
 export interface AgentContextPack {
   timeline: TimelineEvent[];
@@ -65,17 +32,17 @@ function buildTimeline(
   gitContext: ContextEngineMachineContext | undefined,
 ): TimelineEvent[] {
   const fromGit = (gitContext?.session.conversationTail ?? [])
-    .map((record): TimelineEvent => {
+    .map((record): ExactTimelineEvent => {
       const current = isCurrentConversationRecord(state, record.seq, record.role, record.text);
       if (record.role === "assistant") {
         return {
           kind: "assistant",
-	          seq: record.seq,
-	          timestamp: record.at,
-	          content: truncate(record.text, LIMITS.textChars),
-	          ...(record.kind === "feedback_question" ? { responseKind: "feedback", expectsUserResponse: true } : {}),
-	          ...(assistantExpectsUserResponse(record.text) ? { expectsUserResponse: true } : {}),
-	          ...(current ? { current: true } : {}),
+          seq: record.seq,
+          timestamp: record.at,
+          content: record.text,
+          ...(record.kind === "feedback_question" ? { responseKind: "feedback", expectsUserResponse: true } : {}),
+          ...(assistantExpectsUserResponse(record.text) ? { expectsUserResponse: true } : {}),
+          ...(current ? { current: true } : {}),
         };
       }
       if (record.role === "system") {
@@ -83,7 +50,7 @@ function buildTimeline(
           kind: "system",
           seq: record.seq,
           timestamp: record.at,
-          content: truncate(record.text, LIMITS.textChars),
+          content: record.text,
           ...(current ? { current: true } : {}),
         };
       }
@@ -91,12 +58,12 @@ function buildTimeline(
         kind: "user",
         seq: record.seq,
         timestamp: record.at,
-        content: truncate(record.text, LIMITS.textChars),
+        content: record.text,
         ...(current ? { current: true } : {}),
       };
     });
 
-  return preserveQuestionWhenTrimming(ensureCurrentEvent(state, fromGit), LIMITS.timelineEvents);
+  return orderTimeline(ensureCurrentEvent(state, fromGit));
 }
 
 function isCurrentConversationRecord(
@@ -114,7 +81,7 @@ function isCurrentConversationRecord(
   return normalizeText(text) === normalizeText(state.userMessage);
 }
 
-function ensureCurrentEvent(state: LoopState, events: TimelineEvent[]): TimelineEvent[] {
+function ensureCurrentEvent(state: LoopState, events: ExactTimelineEvent[]): ExactTimelineEvent[] {
   if (events.some((event) => event.current)) {
     return events;
   }
@@ -128,7 +95,7 @@ function ensureCurrentEvent(state: LoopState, events: TimelineEvent[]): Timeline
         timestamp: new Date(0).toISOString(),
         source: state.systemEvent.source,
         event: state.systemEvent.eventName,
-        summary: truncate(state.systemEvent.summary, LIMITS.textChars),
+        summary: state.systemEvent.summary,
         current: true,
       },
     ];
@@ -139,41 +106,18 @@ function ensureCurrentEvent(state: LoopState, events: TimelineEvent[]): Timeline
       kind: "user",
       seq,
       timestamp: new Date(0).toISOString(),
-      content: truncate(state.userMessage, LIMITS.textChars),
+      content: state.userMessage,
       current: true,
     },
   ];
 }
 
-function preserveQuestionWhenTrimming(events: TimelineEvent[], limit: number): TimelineEvent[] {
-  if (events.length <= limit) {
-    return orderTimeline(events);
-  }
-  const current = events.find((event) => event.current);
-  const latestQuestion = [...events].reverse().find((event) => event.kind === "assistant" && event.expectsUserResponse);
-  const tail = events.slice(-limit);
-  for (const required of [latestQuestion, current]) {
-    if (!required || tail.some((event) => sameTimelineEvent(event, required))) {
-      continue;
-    }
-    const replaceIndex = tail.findIndex((event) => !event.current && !(event.kind === "assistant" && event.expectsUserResponse));
-    if (replaceIndex >= 0) {
-      tail[replaceIndex] = required;
-    }
-  }
-  return orderTimeline(tail);
-}
-
-function orderTimeline(events: TimelineEvent[]): TimelineEvent[] {
+function orderTimeline(events: ExactTimelineEvent[]): ExactTimelineEvent[] {
   const currentEvent = events.find((event) => event.current);
   return [
     ...events.filter((event) => !event.current).sort((a, b) => a.seq - b.seq),
     ...(currentEvent ? [currentEvent] : []),
   ];
-}
-
-function sameTimelineEvent(left: TimelineEvent, right: TimelineEvent): boolean {
-  return left.seq === right.seq && left.kind === right.kind;
 }
 
 function assistantExpectsUserResponse(content: string): boolean {

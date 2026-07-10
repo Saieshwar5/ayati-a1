@@ -1171,6 +1171,7 @@ Decision rules:
 - Available control tools are decision_load_tools and, only during an active task run, update_work_state and ask_user_feedback.
 - Treat State view.context as the bounded context pack for this decision.
 - Use context.timeline as chronological conversation context. The item with current=true is the current input.
+- A context.timeline item with kind="checkpoint" is a structured summary of its covered older sequence range. Exact timeline events after it remain authoritative and override conflicting checkpoint content.
 - Use the immediately preceding assistant item in context.timeline to interpret short replies like yes, no, do it, go ahead, continue, or stop.
 - Prefer the grouped context paths: context.git for session/task memory, context.run for current-run status and tool-call memory, context.harness for repair feedback, context.tools for active tool state, and context.personal for long-lived user memory.
 - Use context.git.current.task as the durable task/work state when present. Continue from task.identity, task.state, task.assets, and task.activity.
