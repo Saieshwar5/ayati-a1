@@ -11,6 +11,7 @@ import {
   getActiveProvider,
   getImageGenerationModelForProvider,
   getLlmRuntimeConfig,
+  getConfiguredModelContextLimits,
   getModelForProvider,
   initializeLlmRuntimeConfig,
   resetLlmRuntimeConfigForTests,
@@ -20,6 +21,7 @@ import {
   setEmbeddingDimensionsForProvider,
   setEmbeddingModelForProvider,
   setImageGenerationModelForProvider,
+  setModelContextLimitsForProvider,
   setModelForProvider,
 } from "../../src/config/llm-runtime-config.js";
 
@@ -63,6 +65,7 @@ describe("llm runtime config", () => {
         anthropic: "claude-sonnet-4-5-20250929",
         fireworks: "fireworks/minimax-m2p5",
       },
+      modelContextLimits: {},
       embeddings: {
         activeProvider: "openai",
         models: {
@@ -83,6 +86,44 @@ describe("llm runtime config", () => {
     const saved = JSON.parse(await readFile(configPath, "utf8"));
     expect(saved.activeProvider).toBe("openai");
     expect(saved.models.openai).toBe("gpt-5-mini");
+  });
+
+  it("persists context limits for the configured provider model", async () => {
+    const tempDir = await mkdtemp(join(tmpdir(), "ayati-llm-config-"));
+    tempDirs.push(tempDir);
+    const configPath = join(tempDir, "llm-config.json");
+
+    await initializeLlmRuntimeConfig({ configPath });
+    await setModelForProvider("anthropic", "claude-large-context");
+    await setModelContextLimitsForProvider("anthropic", {
+      contextWindowTokens: 200_000,
+      maxInputTokens: 180_000,
+      outputReserveTokens: 12_000,
+    });
+
+    expect(getConfiguredModelContextLimits("anthropic")).toEqual({
+      contextWindowTokens: 200_000,
+      maxInputTokens: 180_000,
+      outputReserveTokens: 12_000,
+    });
+    const saved = JSON.parse(await readFile(configPath, "utf8"));
+    expect(saved.modelContextLimits["anthropic:claude-large-context"]).toEqual({
+      contextWindowTokens: 200_000,
+      maxInputTokens: 180_000,
+      outputReserveTokens: 12_000,
+    });
+  });
+
+  it("rejects configured context windows below 128K", async () => {
+    const tempDir = await mkdtemp(join(tmpdir(), "ayati-llm-config-"));
+    tempDirs.push(tempDir);
+    const configPath = join(tempDir, "llm-config.json");
+
+    await initializeLlmRuntimeConfig({ configPath });
+
+    await expect(setModelContextLimitsForProvider("openai", {
+      contextWindowTokens: 64_000,
+    })).rejects.toThrow("contextWindowTokens must be at least 128000");
   });
 
   it("persists embedding and image generation changes", async () => {
@@ -151,6 +192,7 @@ describe("llm runtime config", () => {
         openai: "gpt-image-2",
       },
     });
+    expect(config.modelContextLimits).toEqual({});
 
     const saved = JSON.parse(await readFile(configPath, "utf8"));
     expect(saved.embeddings.models.openai).toBe("text-embedding-3-small");

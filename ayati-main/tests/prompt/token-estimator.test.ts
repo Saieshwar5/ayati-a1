@@ -30,4 +30,21 @@ describe("token-estimator", () => {
     expect(estimate.toolSchemaTokens).toBeGreaterThan(0);
     expect(estimate.totalTokens).toBeGreaterThan(estimate.messageTokens);
   });
+
+  it("includes multimodal image overhead in message tokens", () => {
+    const textOnly = estimateTurnInputTokens({
+      messages: [{ role: "user", content: [{ type: "text", text: "inspect this" }] }],
+    });
+    const withImage = estimateTurnInputTokens({
+      messages: [{
+        role: "user",
+        content: [
+          { type: "text", text: "inspect this" },
+          { type: "image", imagePath: "/tmp/example.png", mimeType: "image/png" },
+        ],
+      }],
+    });
+
+    expect(withImage.messageTokens).toBeGreaterThanOrEqual(textOnly.messageTokens + 850);
+  });
 });

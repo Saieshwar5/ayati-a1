@@ -12,8 +12,26 @@ FIREWORKS_API_KEY=
 Model selection:
 
 - Chat, embedding, and image generation model choices live in `ayati-main/data/runtime/llm-config.json`.
+- Optional chat-model context overrides live in the same file under
+  `modelContextLimits`, keyed as `<provider>:<model>`. Each override declares
+  `contextWindowTokens` and may declare `maxInputTokens` and
+  `outputReserveTokens`. Ayati accepts 128K and larger context windows.
 - Embeddings currently support the OpenAI provider and use `OPENAI_API_KEY`.
 - Image generation currently supports the OpenAI provider and uses `OPENAI_API_KEY`.
+
+Example context override:
+
+```json
+{
+  "modelContextLimits": {
+    "anthropic:claude-large-context": {
+      "contextWindowTokens": 200000,
+      "maxInputTokens": 180000,
+      "outputReserveTokens": 12000
+    }
+  }
+}
+```
 
 HTTP API:
 

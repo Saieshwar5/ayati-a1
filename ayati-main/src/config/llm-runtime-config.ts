@@ -27,9 +27,18 @@ export interface ImageGenerationRuntimeConfig {
 export interface LlmRuntimeConfig {
   activeProvider: SupportedLlmProvider;
   models: Record<SupportedLlmProvider, string>;
+  modelContextLimits: Record<string, LlmModelContextLimitConfig>;
   embeddings: EmbeddingRuntimeConfig;
   imageGeneration: ImageGenerationRuntimeConfig;
 }
+
+export interface LlmModelContextLimitConfig {
+  contextWindowTokens: number;
+  maxInputTokens?: number;
+  outputReserveTokens?: number;
+}
+
+export const MIN_SUPPORTED_LLM_CONTEXT_WINDOW_TOKENS = 128_000;
 
 export const DEFAULT_LLM_MODELS: Record<SupportedLlmProvider, string> = {
   openrouter: "nvidia/nemotron-3-super-120b-a12b:free",
@@ -66,6 +75,7 @@ export function createDefaultLlmRuntimeConfig(): LlmRuntimeConfig {
   return {
     activeProvider: DEFAULT_ACTIVE_PROVIDER,
     models: { ...DEFAULT_LLM_MODELS },
+    modelContextLimits: {},
     embeddings: createDefaultEmbeddingRuntimeConfig(),
     imageGeneration: createDefaultImageGenerationRuntimeConfig(),
   };
@@ -130,6 +140,14 @@ export function getModelForProvider(provider: SupportedLlmProvider): string {
   return state.config.models[provider];
 }
 
+export function getConfiguredModelContextLimits(
+  provider: SupportedLlmProvider,
+  model: string = getModelForProvider(provider),
+): LlmModelContextLimitConfig | undefined {
+  const limits = state.config.modelContextLimits[modelContextLimitKey(provider, model)];
+  return limits ? { ...limits } : undefined;
+}
+
 export function getActiveEmbeddingProvider(): SupportedEmbeddingProvider {
   return state.config.embeddings.activeProvider;
 }
@@ -171,6 +189,20 @@ export async function setModelForProvider(
     models: {
       ...current.models,
       [provider]: normalizedModel,
+    },
+  }));
+}
+
+export async function setModelContextLimitsForProvider(
+  provider: SupportedLlmProvider,
+  limits: LlmModelContextLimitConfig,
+): Promise<LlmRuntimeConfig> {
+  const normalizedLimits = normalizeModelContextLimit(limits, `modelContextLimits.${provider}`);
+  return updateLlmRuntimeConfig((current) => ({
+    ...current,
+    modelContextLimits: {
+      ...current.modelContextLimits,
+      [modelContextLimitKey(provider, current.models[provider])]: normalizedLimits,
     },
   }));
 }
@@ -338,8 +370,51 @@ function normalizeLlmRuntimeConfig(input: unknown): LlmRuntimeConfig {
   return {
     activeProvider: rawActiveProvider,
     models,
+    modelContextLimits: normalizeModelContextLimits(input["modelContextLimits"]),
     embeddings: normalizeEmbeddingRuntimeConfig(input["embeddings"]),
     imageGeneration: normalizeImageGenerationRuntimeConfig(input["imageGeneration"]),
+  };
+}
+
+function normalizeModelContextLimits(input: unknown): Record<string, LlmModelContextLimitConfig> {
+  if (input === undefined) {
+    return {};
+  }
+  if (!isPlainObject(input)) {
+    throw new Error("Invalid LLM runtime config: expected modelContextLimits to be an object.");
+  }
+  const limits: Record<string, LlmModelContextLimitConfig> = {};
+  for (const [key, value] of Object.entries(input)) {
+    if (!key.trim()) {
+      throw new Error("Invalid LLM runtime config: modelContextLimits keys must not be empty.");
+    }
+    limits[key] = normalizeModelContextLimit(value, `modelContextLimits.${key}`);
+  }
+  return limits;
+}
+
+function normalizeModelContextLimit(input: unknown, path: string): LlmModelContextLimitConfig {
+  if (!isPlainObject(input)) {
+    throw new Error(`Invalid LLM runtime config: expected ${path} to be an object.`);
+  }
+  const contextWindowTokens = readPositiveInteger(input["contextWindowTokens"], `${path}.contextWindowTokens`);
+  if (contextWindowTokens < MIN_SUPPORTED_LLM_CONTEXT_WINDOW_TOKENS) {
+    throw new Error(
+      `Invalid LLM runtime config: ${path}.contextWindowTokens must be at least ${MIN_SUPPORTED_LLM_CONTEXT_WINDOW_TOKENS}.`,
+    );
+  }
+  const maxInputTokens = readOptionalPositiveInteger(input["maxInputTokens"], `${path}.maxInputTokens`);
+  const outputReserveTokens = readOptionalPositiveInteger(input["outputReserveTokens"], `${path}.outputReserveTokens`);
+  if (maxInputTokens !== undefined && maxInputTokens > contextWindowTokens) {
+    throw new Error(`Invalid LLM runtime config: ${path}.maxInputTokens must not exceed contextWindowTokens.`);
+  }
+  if (outputReserveTokens !== undefined && outputReserveTokens >= contextWindowTokens) {
+    throw new Error(`Invalid LLM runtime config: ${path}.outputReserveTokens must be smaller than contextWindowTokens.`);
+  }
+  return {
+    contextWindowTokens,
+    ...(maxInputTokens !== undefined ? { maxInputTokens } : {}),
+    ...(outputReserveTokens !== undefined ? { outputReserveTokens } : {}),
   };
 }
 
@@ -429,6 +504,9 @@ function cloneLlmRuntimeConfig(config: LlmRuntimeConfig): LlmRuntimeConfig {
   return {
     activeProvider: config.activeProvider,
     models: { ...config.models },
+    modelContextLimits: Object.fromEntries(
+      Object.entries(config.modelContextLimits).map(([key, limits]) => [key, { ...limits }]),
+    ),
     embeddings: {
       activeProvider: config.embeddings.activeProvider,
       models: { ...config.embeddings.models },
@@ -450,6 +528,21 @@ async function writeLlmRuntimeConfigFile(configPath: string, config: LlmRuntimeC
   const tempPath = `${configPath}.tmp`;
   await writeFile(tempPath, serializeLlmRuntimeConfig(config), "utf8");
   await rename(tempPath, configPath);
+}
+
+function modelContextLimitKey(provider: SupportedLlmProvider, model: string): string {
+  return `${provider}:${model.trim()}`;
+}
+
+function readPositiveInteger(value: unknown, path: string): number {
+  if (!Number.isInteger(value) || typeof value !== "number" || value <= 0) {
+    throw new Error(`Invalid LLM runtime config: ${path} must be a positive integer.`);
+  }
+  return value;
+}
+
+function readOptionalPositiveInteger(value: unknown, path: string): number | undefined {
+  return value === undefined ? undefined : readPositiveInteger(value, path);
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {

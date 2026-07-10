@@ -201,6 +201,32 @@ Critical decision rules and control tool shapes must not be placed inside the
 truncatable runtime system-context block. If runtime system context is too
 large, only that runtime block may be truncated.
 
+## Context Budget Measurement
+
+Every decision request is measured after the system messages, dynamic state,
+repair history, and native tool schemas have been assembled. Measurement uses
+the fast local estimator for normal requests and asks the provider to count the
+same final request when corrected local usage reaches 70% of the usable input
+budget and provider counting is available.
+
+The current budget calculation is observational; it records pressure but does
+not yet compact or reject the request:
+
+```text
+usable input = min(optional model input cap,
+                   context window - output reserve - safety margin)
+```
+
+Ayati supports context profiles of 128K tokens and larger. The default profile
+is a conservative 128K window with an 8K output reserve. Per-provider/model
+overrides live in runtime LLM configuration. Safety margin is 5% of the context
+window with 4K and 16K lower/upper bounds.
+
+Budget reports record the model/profile source, local and provider counts,
+usable input, pressure ratio and level, and overflow status. They are emitted
+to optimization metrics and the feedback ledger once per distinct decision or
+repair attempt, not once per transport retry.
+
 ## Tool Visibility
 
 The runtime keeps a hidden catalog of available tools and exposes a run-scoped

@@ -12,7 +12,10 @@ import { agentTrace, isAgentTracePromptEnabled, tracePreview } from "../../share
 import type { ToolContractAssertion, ToolDefinition } from "../../skills/types.js";
 import type { AgentFeedbackLedger } from "../feedback-ledger.js";
 import type { RunMetrics } from "../metrics.js";
-import { recordPromptMetric, recordProviderUsageMetric, recordRunMetric } from "../metrics.js";
+import { recordOptimizationEvent, recordPromptMetric, recordProviderUsageMetric, recordRunMetric } from "../metrics.js";
+import { measureTurnContext } from "../../prompt/context-token-counter.js";
+import { resolveModelContextLimits } from "../../providers/shared/model-context-limits.js";
+import type { ResolvedModelContextLimits } from "../../providers/shared/model-context-limits.js";
 import { projectAgentStateViewForPrompt } from "./prompt-context.js";
 import type { RepairCode, RepairSignal } from "./repair-policy.js";
 import {
@@ -162,6 +165,7 @@ const TASK_FEEDBACK_TOOL_NAME = "ask_user_feedback";
 const WORK_STATE_UPDATE_TOOL_NAME = "update_work_state";
 
 export async function callAgentDecision(input: CallAgentDecisionInput): Promise<AgentDecision> {
+  const contextLimits = resolveModelContextLimits(input.provider);
   const promptStateView = projectAgentStateViewForPrompt(input.stateView);
   const promptSections = buildDecisionPromptSections(promptStateView, input.toolDefinitions, input.toolRoutingSummary);
   const prompt = Object.values(promptSections).filter((section) => section.trim().length > 0).join("\n\n");
@@ -216,6 +220,7 @@ export async function callAgentDecision(input: CallAgentDecisionInput): Promise<
       turn = await generateTurnWithEmptyResponseRetry(input, {
         messages,
         decisionTools,
+        contextLimits,
         decisionAttempt: attempt + 1,
         requestStartedAt: startedAt,
       });
@@ -420,21 +425,40 @@ async function generateTurnWithEmptyResponseRetry(
   request: {
     messages: LlmMessage[];
     decisionTools: LlmToolSchema[];
+    contextLimits: ResolvedModelContextLimits;
     decisionAttempt: number;
     requestStartedAt: number;
   },
 ): Promise<LlmTurnOutput> {
+  const turnInput = {
+    messages: request.messages,
+    tools: request.decisionTools,
+    toolChoice: "auto" as const,
+    parallelToolCalls: false,
+  };
+  const contextBudget = await measureTurnContext({
+    provider: input.provider,
+    turnInput,
+    limits: request.contextLimits,
+  });
+  recordOptimizationEvent(input.metrics, "context_budget", {
+    stage: request.decisionAttempt === 1 ? "agent_decision" : "agent_decision_repair",
+    decisionAttempt: request.decisionAttempt,
+    ...contextBudget,
+  });
+  recordDecisionFeedback(input, "context_budget", {
+    decisionAttempt: request.decisionAttempt,
+    ...contextBudget,
+  });
+  agentTrace(
+    "agent_decision",
+    `context_budget attempt=${request.decisionAttempt} input=${contextBudget.measuredInputTokens} usable=${contextBudget.usableInputTokens} pressure=${contextBudget.pressure} level=${contextBudget.pressureLevel}`,
+  );
   let providerAttempt = 0;
 
   for (;;) {
     providerAttempt++;
     try {
-      const turnInput = {
-        messages: request.messages,
-        tools: request.decisionTools,
-        toolChoice: "auto" as const,
-        parallelToolCalls: false,
-      };
       if (
         input.onAssistantTextDelta
         && request.decisionTools.length === 0

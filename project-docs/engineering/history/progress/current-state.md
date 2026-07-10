@@ -1,6 +1,6 @@
 # Current State
 
-Last updated: 2026-07-08
+Last updated: 2026-07-10
 
 Ayati's active task-continuity path is git-native. The old task-thread and
 Activity continuation path is historical and must not be reintroduced into the
@@ -101,6 +101,10 @@ context.timeline + context.git + context.tools + context.harness + context.run +
   tool-mode, routing-tool visibility/deactivation, finalization, commit, asset,
   and evidence counts for developer debugging.
 - Evidence tools for reading/searching/tailing/chunking saved raw output.
+- Model-aware decision context measurement for 128K and larger context
+  profiles. The final assembled request includes native tool schemas and repair
+  messages, uses provider counting near pressure when available, and records a
+  budget report without changing compaction behavior yet.
 
 ## Runtime Boundary
 

@@ -227,6 +227,46 @@ describe("parseAgentDecision", () => {
     expect(breakdown).not.toHaveProperty("state.context.gitContext");
   });
 
+  it("records a model-aware budget for the complete decision request", async () => {
+    const { provider } = createProvider([
+      JSON.stringify({ kind: "reply", status: "completed", message: "Hi!" }),
+    ]);
+    const metrics = createRunMetrics();
+    const feedback = createFeedbackLedger();
+
+    await callAgentDecision({
+      provider,
+      stateView: createStateView(),
+      toolDefinitions: [createTool("read_files", {
+        type: "object",
+        properties: {
+          files: { type: "array", items: { type: "object" } },
+        },
+      })],
+      metrics,
+      feedbackLedger: feedback.ledger,
+      feedbackContext: {
+        clientId: "client-1",
+        sessionId: "session-1",
+        seq: 1,
+      },
+    });
+
+    const event = metrics.optimizationEvents.find((item) => item.kind === "context_budget");
+    expect(event?.data).toMatchObject({
+      stage: "agent_decision",
+      decisionAttempt: 1,
+      contextWindowTokens: 128_000,
+      limitSource: "default_128k",
+      countSource: "local_estimate",
+      providerCountStatus: "not_needed",
+      pressureLevel: "normal",
+      overBudget: false,
+    });
+    expect(event?.data["measuredInputTokens"]).toEqual(expect.any(Number));
+    expect(feedback.events.some((item) => item.event === "context_budget")).toBe(true);
+  });
+
   it("sends a deduplicated state view to the model prompt", async () => {
     const { provider, generateTurn } = createProvider([
       JSON.stringify({ kind: "reply", status: "completed", message: "Hi!" }),
@@ -1087,6 +1127,7 @@ describe("parseAgentDecision", () => {
       },
     ]);
     const feedback = createFeedbackLedger();
+    const metrics = createRunMetrics();
 
     const decision = await callAgentDecision({
       provider,
@@ -1099,6 +1140,7 @@ describe("parseAgentDecision", () => {
         },
       })],
       feedbackLedger: feedback.ledger,
+      metrics,
       feedbackContext: {
         clientId: "local",
         sessionId: "S-test",
@@ -1113,6 +1155,11 @@ describe("parseAgentDecision", () => {
     expect(repairPrompt).toContain("Repair code: R_TOOL_INPUT_MISSING_REQUIRED_FIELD");
     expect(repairPrompt).toContain("Missing fields: files");
     expect(repairPrompt).toContain("Call the selected tool again with the missing required fields.");
+    const budgetEvents = metrics.optimizationEvents.filter((event) => event.kind === "context_budget");
+    expect(budgetEvents).toHaveLength(2);
+    expect(budgetEvents[1]?.data["measuredInputTokens"]).toBeGreaterThan(
+      Number(budgetEvents[0]?.data["measuredInputTokens"]),
+    );
     expect(feedback.events.find((event) => event.event === "input_schema_violation")?.data).toMatchObject({
       repair: {
         code: "R_TOOL_INPUT_MISSING_REQUIRED_FIELD",
