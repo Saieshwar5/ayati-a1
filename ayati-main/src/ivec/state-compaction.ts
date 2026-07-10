@@ -1,4 +1,4 @@
-import type { LoopState, PromptToolCallContext, StepSummary, TaskNote, ToolContextState, ToolObservation, WorkState } from "./types.js";
+import type { LoopState, StepSummary, TaskNote, ToolContextState, ToolObservation, WorkState } from "./types.js";
 
 const WORK_STATE_LIMITS = {
   summaryChars: 900,
@@ -16,8 +16,6 @@ const LOOP_STATE_LIMITS = {
   workingNotes: { count: 12, chars: 420 },
   toolContextCards: 5,
   toolContextCardChars: 4_000,
-  toolCallOutputChars: 4_000,
-  toolCallInputStringChars: 1_200,
 };
 
 const STEP_SUMMARY_LIMITS = {
@@ -121,23 +119,6 @@ export function compactOptionalText(value: unknown, maxChars: number): string | 
   return text.length > 0 ? text : undefined;
 }
 
-function compactUnknown(value: unknown, maxStringChars: number): unknown {
-  if (typeof value === "string") {
-    return compactText(value, maxStringChars);
-  }
-  if (Array.isArray(value)) {
-    return value.map((item) => compactUnknown(item, maxStringChars));
-  }
-  if (!value || typeof value !== "object") {
-    return value;
-  }
-  const output: Record<string, unknown> = {};
-  for (const [key, item] of Object.entries(value)) {
-    output[key] = compactUnknown(item, maxStringChars);
-  }
-  return output;
-}
-
 export function compactRecentObservations(observations: ToolObservation[] | undefined): ToolObservation[] | undefined {
   const compacted = (observations ?? [])
     .slice(-LOOP_STATE_LIMITS.toolContextCards)
@@ -147,7 +128,7 @@ export function compactRecentObservations(observations: ToolObservation[] | unde
 
 export function compactToolContext(toolContext: ToolContextState | undefined): ToolContextState | undefined {
   const recent = compactRecentObservations(toolContext?.recent);
-  const toolCalls = compactPromptToolCalls(toolContext?.toolCalls);
+  const toolCalls = toolContext?.toolCalls;
   if (!recent && !toolCalls) {
     return undefined;
   }
@@ -162,16 +143,6 @@ function compactToolObservation(observation: ToolObservation, maxChars: number):
     ...observation,
     content: compactText(observation.content, maxChars),
   };
-}
-
-function compactPromptToolCalls(calls: PromptToolCallContext[] | undefined): PromptToolCallContext[] | undefined {
-  const compacted = (calls ?? [])
-    .map((call) => ({
-      ...call,
-      input: compactUnknown(call.input, LOOP_STATE_LIMITS.toolCallInputStringChars),
-      output: compactText(call.output, LOOP_STATE_LIMITS.toolCallOutputChars),
-    }));
-  return compacted.length > 0 ? compacted : undefined;
 }
 
 export function compactWorkingNotes(notes: string[] | undefined): string[] {

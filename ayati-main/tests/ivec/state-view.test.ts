@@ -538,8 +538,9 @@ describe("buildAgentStateView", () => {
       .toMatchObject({ source: "tool_execution" });
   });
 
-  it("compacts older successful run tool calls under context budget pressure", () => {
+  it("keeps all prompt-eligible tool calls full before measured pressure", () => {
     const oldReadOutput = `old read output ${"x".repeat(32_000)}`;
+    const oldReadQuery = `query-${"q".repeat(2_000)}`;
     const failedOutput = "command failed with stack trace";
     const state = createLoopState({
       toolContext: {
@@ -549,7 +550,7 @@ describe("buildAgentStateView", () => {
             step: 1,
             callId: "call-old-read",
             tool: "read_files",
-            input: { path: "src/old.ts" },
+            input: { path: "src/old.ts", query: oldReadQuery },
             status: "success",
             output: oldReadOutput,
             stepRef: { runId: "run-current", step: 1, callId: "call-old-read" },
@@ -605,16 +606,13 @@ describe("buildAgentStateView", () => {
     expect(toolCalls).toHaveLength(6);
     expect(toolCalls?.[0]).toMatchObject({
       callId: "call-old-read",
-      mode: "preview",
-      outputCompacted: true,
-      outputPreview: expect.stringContaining("old read output"),
-      summary: expect.stringContaining("read_files read for src/old.ts"),
+      mode: "full",
+      input: { path: "src/old.ts", query: oldReadQuery },
+      output: oldReadOutput,
       stepRef: { runId: "run-current", step: 1, callId: "call-old-read" },
       evidenceRef: "steps/run-current.jsonl#call-old-read",
-      compactionReason: "context_budget",
-      recoverable: true,
     });
-    expect(toolCalls?.[0]).not.toHaveProperty("output");
+    expect(toolCalls?.[0]).not.toHaveProperty("outputCompacted");
     expect(toolCalls?.[1]).toMatchObject({
       callId: "call-old-failed",
       mode: "full",

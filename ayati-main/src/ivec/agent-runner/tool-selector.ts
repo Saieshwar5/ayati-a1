@@ -7,7 +7,7 @@ import {
   requiredRoutingMutationToolsForRuntimeMode,
 } from "./runtime-capability-mode.js";
 import {
-  hasRecoverableCompactedRunToolCall,
+  hasRecoverableBoundedRunToolCall,
   RUN_STEP_RECOVERY_TOOL_NAME,
 } from "./run-tool-call-context.js";
 
@@ -27,7 +27,7 @@ export function selectToolsForDecision(
   });
   const candidateTools = filterToolsForRuntimeMode(mode, toolDefinitions);
   const requiredToolNames = new Set(requiredRoutingMutationToolsForRuntimeMode(mode));
-  if (hasRecoverableCompactedRunToolCall(state.toolContext?.toolCalls)) {
+  if (hasRecoverableBoundedRunToolCall(state.toolContext?.toolCalls)) {
     requiredToolNames.add(RUN_STEP_RECOVERY_TOOL_NAME);
   }
   const requiredTools = candidateTools.filter((tool) => requiredToolNames.has(tool.name));

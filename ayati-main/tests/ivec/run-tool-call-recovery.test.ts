@@ -221,8 +221,8 @@ function fakeRunStepRecoveryTool(records: GitMemoryStepRecord[]): ToolDefinition
   };
 }
 
-describe("run tool-call recovery", () => {
-  it("selects the run-step recovery tool and recovers full output from a compacted stepRef", async () => {
+describe("run tool-call context", () => {
+  it("keeps every prompt-eligible tool call full below the soft limit", async () => {
     const dataDir = makeTmpDir();
     const records: GitMemoryStepRecord[] = [];
     const readTool = fakeReadFileTool();
@@ -277,44 +277,16 @@ describe("run tool-call recovery", () => {
         expect(toolCalls[0]).toMatchObject({
           callId: "call_1",
           tool: "read_files",
-          outputCompacted: true,
+          mode: "full",
+          output: expect.stringContaining("FULL_OUTPUT_file_1.txt"),
           stepRef: { runId: "r-recovery", step: 1, callId: "call_1" },
         });
-        expect(["preview", "summary", "reference"]).toContain(toolCalls[0].mode);
-        expect(toolCalls[0].output).toBeUndefined();
-        expect(toolCalls[0].summary).toContain("read_files read for file_1.txt");
+        expect(toolCalls.every((entry: { mode: string }) => entry.mode === "full")).toBe(true);
         expect(stateView.context.tools.active).toContain("git_context_read_run_step");
-        return {
-          kind: "act",
-          action: {
-            mode: "single",
-            calls: [{
-              id: "call_recover_1",
-              tool: "git_context_read_run_step",
-              input: toolCalls[0].stepRef,
-              purpose: "Recover compacted read output.",
-            }],
-            allowedTools: ["git_context_read_run_step"],
-            completion: { expected: "Recover the exact first read output." },
-            assertions: [],
-          },
-        };
-      },
-      (input) => {
-        const stateView = extractStateView(userPrompt(input));
-        const recoveryCall = stateView.context.run.toolCalls.find(
-          (entry: { callId?: string }) => entry.callId === "call_recover_1",
-        );
-        expect(recoveryCall).toMatchObject({
-          mode: "full",
-          tool: "git_context_read_run_step",
-          status: "success",
-        });
-        expect(recoveryCall.output).toContain("FULL_OUTPUT_file_1.txt");
         return {
           kind: "reply",
           status: "completed",
-          message: "Recovered the compacted read output and completed the task.",
+          message: "Retained the complete tool context and completed the task.",
         };
       },
     ]);
@@ -370,8 +342,8 @@ describe("run tool-call recovery", () => {
       });
 
       expect(result.status).toBe("completed");
-      expect(result.content).toBe("Recovered the compacted read output and completed the task.");
-      expect(records).toHaveLength(3);
+      expect(result.content).toBe("Retained the complete tool context and completed the task.");
+      expect(records).toHaveLength(2);
       expect(records[0]?.toolCalls[0]).toMatchObject({
         callId: "call_1",
         tool: "read_files",

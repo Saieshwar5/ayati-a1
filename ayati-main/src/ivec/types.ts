@@ -129,12 +129,13 @@ export interface PromptToolCallStepRef {
   callId?: string;
 }
 
-export interface PromptToolCallContext {
+export interface RunToolCallContext {
   step: number;
   callId?: string;
   tool: string;
   input: unknown;
   status: "success" | "failed";
+  retention?: ToolObservationRetention;
   output: string;
   error?: string;
   code?: string;
@@ -149,7 +150,7 @@ export interface PromptToolCallContext {
 
 export interface ToolContextState {
   recent: ToolObservation[];
-  toolCalls?: PromptToolCallContext[];
+  toolCalls?: RunToolCallContext[];
 }
 
 export interface TaskNote {

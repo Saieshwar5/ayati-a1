@@ -18,7 +18,7 @@ import {
   requiredRoutingMutationToolsForRuntimeMode,
 } from "./runtime-capability-mode.js";
 import {
-  hasRecoverableCompactedRunToolCall,
+  hasRecoverableBoundedRunToolCall,
   RUN_STEP_RECOVERY_TOOL_NAME,
 } from "./run-tool-call-context.js";
 
@@ -585,7 +585,7 @@ function buildDeterministicLoadRequest(
   const toolNames = new Set<string>();
   const groups = new Set<string>();
 
-  if (hasRecoverableCompactedRunToolCall(state.toolContext?.toolCalls)) {
+  if (hasRecoverableBoundedRunToolCall(state.toolContext?.toolCalls)) {
     toolNames.add(RUN_STEP_RECOVERY_TOOL_NAME);
   }
 

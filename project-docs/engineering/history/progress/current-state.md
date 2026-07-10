@@ -77,6 +77,11 @@ context.timeline + context.git + context.tools + context.harness + context.run +
   `evidence_only`.
 - Prompt-facing read tool context through `context.run.toolCalls`,
   kept separate from durable task state.
+- Separate run tool-call records and prompt projections. Every prompt-eligible
+  call remains full below the model profile's soft limit. At pressure, a shadow
+  planner proposes the minimum older-call previews or summaries needed to
+  recover to the target while keeping the latest six calls and pinned failures
+  full; it does not yet change the provider request.
 - Prompt-facing harness repair feedback through `context.harness.feedback`,
   kept separate from run context.
 - Filesystem inspection and efficient read tools:
@@ -133,5 +138,5 @@ is the simple runtime path.
    needs-user-input, stuck/max-iteration, and tool-failure outcomes.
 4. Legacy cleanup around historical focus/message-link/event files.
 5. Stable milestone tags.
-6. Advanced raw-context lifecycle only if real usage proves compact run
-   tool-call context and domain-tool narrowing are not enough.
+6. Tool-family-specific deterministic context projectors and pressure-mode
+   enforcement after shadow receipts are validated.

@@ -1,4 +1,4 @@
-import type { PromptToolCallContext } from "../types.js";
+import type { RunToolCallContext } from "../types.js";
 
 export const RUN_STEP_RECOVERY_TOOL_NAME = "git_context_read_run_step";
 
@@ -10,15 +10,16 @@ export interface PromptRunToolCallContext {
   tool: string;
   input: unknown;
   status: "success" | "failed";
+  retention?: RunToolCallContext["retention"];
   mode: PromptRunToolCallMode;
   output?: string;
   outputPreview?: string;
   summary?: string;
   error?: string;
   code?: string;
-  operationStatus?: PromptToolCallContext["operationStatus"];
-  artifacts?: PromptToolCallContext["artifacts"];
-  stepRef?: PromptToolCallContext["stepRef"];
+  operationStatus?: RunToolCallContext["operationStatus"];
+  artifacts?: RunToolCallContext["artifacts"];
+  stepRef?: RunToolCallContext["stepRef"];
   evidenceRef?: string;
   rawOutputChars?: number;
   originalOutputChars?: number;
@@ -31,8 +32,6 @@ export interface PromptRunToolCallContext {
 export type PromptToolCalls = PromptRunToolCallContext[];
 
 const PROMPT_TOOL_CALL_POLICY = {
-  protectedRecentCalls: 2,
-  maxTotalChars: 30_000,
   maxPreviewOutputChars: 4_000,
   maxSummaryOutputChars: 1_000,
   maxPreviewInputStringChars: 1_200,
@@ -42,27 +41,26 @@ const PROMPT_TOOL_CALL_POLICY = {
   maxSummaryChars: 520,
 };
 
-export function buildPromptToolCallsForRun(calls: PromptToolCallContext[] | undefined): PromptToolCalls | undefined {
-  const projected = applyPromptToolCallBudget((calls ?? []).map(projectPromptToolCall));
+export function buildPromptToolCallsForRun(calls: RunToolCallContext[] | undefined): PromptToolCalls | undefined {
+  const projected = (calls ?? []).map(projectPromptToolCall);
   return projected.length > 0 ? projected : undefined;
 }
 
-export function hasRecoverableCompactedRunToolCall(calls: PromptToolCallContext[] | undefined): boolean {
-  return (buildPromptToolCallsForRun(calls) ?? []).some((call) => (
-    call.mode !== "full" && call.outputCompacted === true && Boolean(call.stepRef)
-  ));
+export function hasRecoverableBoundedRunToolCall(calls: RunToolCallContext[] | undefined): boolean {
+  return (calls ?? []).some((call) => call.outputTruncated === true && Boolean(call.stepRef));
 }
 
-function projectPromptToolCall(call: PromptToolCallContext): PromptRunToolCallContext {
+function projectPromptToolCall(call: RunToolCallContext): PromptRunToolCallContext {
   const projected: PromptRunToolCallContext = {
     step: call.step,
     ...(call.callId ? { callId: call.callId } : {}),
     tool: call.tool,
     input: call.input,
     status: call.status,
+    ...(call.retention ? { retention: call.retention } : {}),
     mode: "full",
     output: call.output,
-    ...(call.error ? { error: truncatePreserveLines(call.error, PROMPT_TOOL_CALL_POLICY.maxErrorChars) } : {}),
+    ...(call.error ? { error: call.error } : {}),
     ...(call.code ? { code: call.code } : {}),
     ...(call.operationStatus ? { operationStatus: call.operationStatus } : {}),
     ...(call.artifacts && call.artifacts.length > 0 ? { artifacts: call.artifacts } : {}),
@@ -71,114 +69,10 @@ function projectPromptToolCall(call: PromptToolCallContext): PromptRunToolCallCo
     ...(call.rawOutputChars !== undefined ? { rawOutputChars: call.rawOutputChars } : {}),
     ...(call.outputTruncated !== undefined ? { outputTruncated: call.outputTruncated } : {}),
   };
-  return call.outputTruncated === true
-    ? compactPromptToolCall(projected, "preview", "truncated_output")
-    : projected;
+  return projected;
 }
 
-function applyPromptToolCallBudget(calls: PromptRunToolCallContext[]): PromptRunToolCallContext[] {
-  if (calls.length === 0) {
-    return [];
-  }
-
-  const compacted = [...calls];
-
-  if (measurePromptJson(compacted) <= PROMPT_TOOL_CALL_POLICY.maxTotalChars) {
-    return compacted;
-  }
-
-  degradeOldestCalls(compacted, {
-    from: "full",
-    to: "preview",
-    protectedRecentCount: PROMPT_TOOL_CALL_POLICY.protectedRecentCalls,
-    includeFailures: false,
-  });
-  if (measurePromptJson(compacted) <= PROMPT_TOOL_CALL_POLICY.maxTotalChars) {
-    return compacted;
-  }
-
-  degradeOldestCalls(compacted, {
-    from: "preview",
-    to: "summary",
-    protectedRecentCount: PROMPT_TOOL_CALL_POLICY.protectedRecentCalls,
-    includeFailures: false,
-  });
-  if (measurePromptJson(compacted) <= PROMPT_TOOL_CALL_POLICY.maxTotalChars) {
-    return compacted;
-  }
-
-  degradeOldestCalls(compacted, {
-    from: "full",
-    to: "preview",
-    protectedRecentCount: PROMPT_TOOL_CALL_POLICY.protectedRecentCalls,
-    includeFailures: true,
-  });
-  if (measurePromptJson(compacted) <= PROMPT_TOOL_CALL_POLICY.maxTotalChars) {
-    return compacted;
-  }
-
-  degradeOldestCalls(compacted, {
-    from: "preview",
-    to: "summary",
-    protectedRecentCount: PROMPT_TOOL_CALL_POLICY.protectedRecentCalls,
-    includeFailures: true,
-  });
-  if (measurePromptJson(compacted) <= PROMPT_TOOL_CALL_POLICY.maxTotalChars) {
-    return compacted;
-  }
-
-  degradeOldestCalls(compacted, {
-    from: "full",
-    to: "preview",
-    protectedRecentCount: 0,
-    includeFailures: true,
-  });
-  if (measurePromptJson(compacted) <= PROMPT_TOOL_CALL_POLICY.maxTotalChars) {
-    return compacted;
-  }
-
-  degradeOldestCalls(compacted, {
-    from: "preview",
-    to: "summary",
-    protectedRecentCount: 0,
-    includeFailures: true,
-  });
-  if (measurePromptJson(compacted) <= PROMPT_TOOL_CALL_POLICY.maxTotalChars) {
-    return compacted;
-  }
-
-  degradeOldestCalls(compacted, {
-    from: "summary",
-    to: "reference",
-    protectedRecentCount: 0,
-    includeFailures: true,
-  });
-  return compacted;
-}
-
-function degradeOldestCalls(
-  calls: PromptRunToolCallContext[],
-  options: {
-    from: PromptRunToolCallMode;
-    to: Exclude<PromptRunToolCallMode, "full">;
-    protectedRecentCount: number;
-    includeFailures: boolean;
-  },
-): void {
-  const protectedStart = Math.max(0, calls.length - options.protectedRecentCount);
-  for (let index = 0; index < protectedStart; index += 1) {
-    const call = calls[index];
-    if (!call || call.mode !== options.from || (!options.includeFailures && call.status === "failed")) {
-      continue;
-    }
-    calls[index] = compactPromptToolCall(call, options.to, "context_budget");
-    if (measurePromptJson(calls) <= PROMPT_TOOL_CALL_POLICY.maxTotalChars) {
-      return;
-    }
-  }
-}
-
-function compactPromptToolCall(
+export function compactPromptToolCall(
   call: PromptRunToolCallContext,
   mode: Exclude<PromptRunToolCallMode, "full">,
   reason: NonNullable<PromptRunToolCallContext["compactionReason"]>,
@@ -201,6 +95,7 @@ function compactPromptToolCall(
     tool: call.tool,
     input: compactUnknownForPrompt(call.input, inputChars),
     status: call.status,
+    ...(call.retention ? { retention: call.retention } : {}),
     mode,
     summary: buildToolCallSummary(call),
     ...(outputPreview.length > 0 ? { outputPreview } : {}),
@@ -310,14 +205,6 @@ function compactUnknownForPrompt(value: unknown, maxStringChars: number): unknow
     output[key] = compactUnknownForPrompt(item, maxStringChars);
   }
   return output;
-}
-
-function measurePromptJson(value: unknown): number {
-  try {
-    return JSON.stringify(value).length;
-  } catch {
-    return String(value).length;
-  }
 }
 
 function truncate(value: string, maxLength: number): string {

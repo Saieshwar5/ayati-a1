@@ -272,6 +272,7 @@ describe("parseAgentDecision", () => {
     expect(event?.data["measuredInputTokens"]).toEqual(expect.any(Number));
     expect(feedback.events.some((item) => item.event === "context_budget")).toBe(true);
     expect(metrics.optimizationEvents.some((item) => item.kind === "context_compilation")).toBe(true);
+    expect(metrics.optimizationEvents.some((item) => item.kind === "tool_context_projection_shadow")).toBe(false);
     expect(onContextCompilation).toHaveBeenCalledWith(expect.objectContaining({
       mode: "full",
       admitted: true,
@@ -321,6 +322,79 @@ describe("parseAgentDecision", () => {
       admitted: false,
       hardLimitExceeded: true,
     }));
+  });
+
+  it("records a pressure-only tool projection plan without changing the request", async () => {
+    const generateTurn = vi.fn().mockResolvedValue({
+      type: "assistant",
+      content: JSON.stringify({ kind: "reply", status: "completed", message: "Done" }),
+    });
+    const provider: LlmProvider = {
+      name: "fake-provider",
+      version: "test-model",
+      capabilities: { nativeToolCalling: true },
+      start() {},
+      stop() {},
+      countInputTokens: vi.fn().mockResolvedValue({
+        provider: "fake-provider",
+        model: "test-model",
+        inputTokens: 80_000,
+        exact: true,
+      }),
+      generateTurn,
+    };
+    const metrics = createRunMetrics();
+    const toolCalls = Array.from({ length: 10 }, (_, index) => ({
+      step: index + 1,
+      callId: `call-${index + 1}`,
+      tool: "read_files",
+      input: { path: `src/file-${index + 1}.ts` },
+      status: "success" as const,
+      retention: "next_step" as const,
+      mode: "full" as const,
+      output: "x".repeat(30_000),
+      stepRef: { runId: "run-1", step: index + 1, callId: `call-${index + 1}` },
+    }));
+
+    await callAgentDecision({
+      provider,
+      stateView: createStateView({
+        context: {
+          timeline: [{
+            kind: "user",
+            seq: 1,
+            timestamp: "2026-07-10T00:00:00.000Z",
+            content: "Continue the task",
+            current: true,
+          }],
+          run: { toolCalls },
+        },
+      }),
+      toolDefinitions: [],
+      metrics,
+    });
+
+    const event = metrics.optimizationEvents.find(
+      (item) => item.kind === "tool_context_projection_shadow",
+    );
+    expect(event?.data).toMatchObject({
+      shadow: true,
+      triggered: true,
+      candidateInputTokens: 80_000,
+      recoveryTargetTokens: 60_000,
+      hotWindowSize: 6,
+    });
+    const plannedCalls = event?.data["calls"] as Array<{ mode: string; reason: string }>;
+    expect(plannedCalls.slice(-6).every((call) => call.mode === "full")).toBe(true);
+
+    const sentUserPrompt = generateTurn.mock.calls[0]?.[0]?.messages
+      .find((message: { role: string }) => message.role === "user")?.content;
+    if (typeof sentUserPrompt !== "string") {
+      throw new Error("Expected a user prompt.");
+    }
+    const sentState = parsePromptStateView(sentUserPrompt);
+    const sentCalls = (sentState["context"] as { run: { toolCalls: Array<{ mode: string }> } }).run.toolCalls;
+    expect(sentCalls.every((call) => call.mode === "full")).toBe(true);
   });
 
   it("sends a deduplicated state view to the model prompt", async () => {

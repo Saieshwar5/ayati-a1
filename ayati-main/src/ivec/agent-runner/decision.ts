@@ -29,6 +29,7 @@ import {
   repairSignalToPromptText,
 } from "./repair-policy.js";
 import type { AgentStateView } from "./state-view.js";
+import { planToolContextProjection } from "./tool-context-projection-planner.js";
 import {
   summarizePromptStateView,
   summarizeToolDefinitions,
@@ -462,6 +463,16 @@ async function generateTurnWithEmptyResponseRetry(
   });
   recordOptimizationEvent(input.metrics, "context_compilation", { ...contextCompilation });
   recordDecisionFeedback(input, "context_compilation", { ...contextCompilation });
+  const toolProjectionPlan = planToolContextProjection({
+    calls: input.stateView.context.run?.toolCalls ?? [],
+    candidateInputTokens: contextBudget.measuredInputTokens,
+    recoveryTargetTokens: contextBudget.recoveryTargetTokens,
+    softInputTokens: contextBudget.softInputTokens,
+  });
+  if (toolProjectionPlan.triggered && toolProjectionPlan.calls.length > 0) {
+    recordOptimizationEvent(input.metrics, "tool_context_projection_shadow", { ...toolProjectionPlan });
+    recordDecisionFeedback(input, "tool_context_projection_shadow", { ...toolProjectionPlan });
+  }
   input.onContextCompilation?.(contextCompilation);
   agentTrace(
     "agent_decision",

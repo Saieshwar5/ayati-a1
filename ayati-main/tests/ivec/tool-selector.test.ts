@@ -247,7 +247,7 @@ describe("selectToolsForDecision", () => {
     ], 12)).toEqual([]);
   });
 
-  it("selects run-step recovery outside the cap when compacted stepRef tool-call context exists", () => {
+  it("selects run-step recovery outside the cap when bounded stepRef tool context exists", () => {
     const current = state("continue implementation");
     current.toolContext = {
       recent: [],
@@ -288,6 +288,7 @@ function recoverableToolCalls(): NonNullable<LoopState["toolContext"]>["toolCall
       input: { path: "src/old.ts" },
       status: "success",
       output: `old output ${"x".repeat(16_000)}`,
+      outputTruncated: true,
       stepRef: { runId: "run-1", step: 1, callId: "call-old" },
     },
     {

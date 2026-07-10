@@ -203,7 +203,7 @@ describe("ToolWorkingSetManager", () => {
     ]));
   });
 
-  it("preloads run-step recovery when compacted stepRef tool-call context exists", () => {
+  it("preloads run-step recovery when bounded stepRef tool context exists", () => {
     const catalog = new ToolCatalog([
       skill("git-context", [
         tool("git_context_read_run_step", "Recover full persisted step or tool-call data"),
@@ -595,6 +595,7 @@ function recoverableToolCalls(): NonNullable<LoopState["toolContext"]>["toolCall
       input: { path: "src/old.ts" },
       status: "success",
       output: `old output ${"x".repeat(16_000)}`,
+      outputTruncated: true,
       stepRef: { runId: "r1", step: 1, callId: "call-old" },
     },
     {

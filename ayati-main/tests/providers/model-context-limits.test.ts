@@ -53,6 +53,23 @@ describe("model context limits", () => {
       source: "configured",
     });
   });
+
+  it("scales pressure thresholds for larger model windows", async () => {
+    const tempDir = await mkdtemp(join(tmpdir(), "ayati-model-limits-"));
+    tempDirs.push(tempDir);
+    await initializeLlmRuntimeConfig({ configPath: join(tempDir, "llm-config.json") });
+    await setModelForProvider("openai", "one-million-context-model");
+    await setModelContextLimitsForProvider("openai", {
+      contextWindowTokens: 1_000_000,
+    });
+
+    expect(resolveModelContextLimits(provider("openai"))).toMatchObject({
+      contextWindowTokens: 1_000_000,
+      recoveryTargetTokens: 468_750,
+      softInputTokens: 546_875,
+      hardInputTokens: 781_250,
+    });
+  });
 });
 
 function provider(name: string): LlmProvider {

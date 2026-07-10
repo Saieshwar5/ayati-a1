@@ -4,7 +4,7 @@ import type {
   AgentLoopDeps,
   LoopConfig,
   LoopState,
-  PromptToolCallContext,
+  RunToolCallContext,
   ToolObservation,
 } from "../types.js";
 import type { RunMetrics } from "../metrics.js";
@@ -177,7 +177,7 @@ export function buildUpdatedToolContext(
     recent: getLatestObservations(execution),
     toolCalls: [
       ...(state.toolContext?.toolCalls ?? []),
-      ...execution.actOutput.toolCalls.map((call) => toPromptToolCallContext(state.runId, state.iteration, call)),
+      ...execution.actOutput.toolCalls.map((call) => toRunToolCallContext(state.runId, state.iteration, call)),
     ],
   });
 }
@@ -236,13 +236,14 @@ function getLatestObservations(execution: AgentActionExecutionResult): ToolObser
     .filter((observation): observation is NonNullable<ActToolCallRecord["observation"]> => observation !== undefined);
 }
 
-function toPromptToolCallContext(runId: string, step: number, call: ActToolCallRecord): PromptToolCallContext {
+function toRunToolCallContext(runId: string, step: number, call: ActToolCallRecord): RunToolCallContext {
   return {
     step,
     ...(call.callId ? { callId: call.callId } : {}),
     tool: call.tool,
     input: call.input,
     status: call.error ? "failed" : "success",
+    ...(call.observation?.retention ? { retention: call.observation.retention } : {}),
     output: call.output,
     ...(call.error ? { error: call.error } : {}),
     ...(call.code ? { code: call.code } : {}),

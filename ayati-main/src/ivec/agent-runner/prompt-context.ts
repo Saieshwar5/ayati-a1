@@ -2,6 +2,7 @@ import type { ContextEngineMachineContext } from "../../context-engine/index.js"
 import type { TaskNote, WorkState } from "../types.js";
 import type { AgentContextPack } from "./context-pack.js";
 import type { RuntimeCapabilityPromptContext } from "./runtime-capability-mode.js";
+import type { PromptToolCalls } from "./run-tool-call-context.js";
 import type { AgentStateView } from "./state-view.js";
 
 export interface PromptPersonalContext {
@@ -61,7 +62,7 @@ export interface PromptGitTaskContext {
 export interface PromptRunContext {
   status?: WorkState["status"];
   workState?: PromptRunWorkStateContext;
-  toolCalls?: unknown;
+  toolCalls?: PromptToolCalls;
   routing?: {
     successCount: number;
     failureCount: number;

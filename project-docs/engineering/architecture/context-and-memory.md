@@ -158,11 +158,21 @@ memory. The agent should see enough raw context to make the next decision, but
 large files, command logs, and evidence slices should not remain in every prompt
 for the whole run.
 
-The runtime exposes ordered current-run tool output in
-`State view.context.run.toolCalls`.
-Each entry contains the tool name, input, status, compact output or error,
-artifacts, evidence refs, and truncation metadata. Internal observation records
-may still carry deterministic retention metadata:
+The runtime keeps complete prompt-eligible current-run records separately from
+their model-facing projection. Tool-boundary handling may still chunk or spool
+extreme output into durable evidence, but prompt management does not apply an
+additional fixed character cap to those run records.
+
+Below the configured soft input limit, every prompt-eligible run tool call is
+projected in full at `State view.context.run.toolCalls`. The six-call hot window
+does not apply during normal operation. At or above the soft limit, a shadow
+planner currently records which older recoverable calls it would preview or
+deterministically summarize to reach the recovery target. The shadow plan does
+not yet alter the provider request.
+
+Each entry contains the tool name, input, status, output or error, artifacts,
+evidence refs, and truncation metadata. Internal observation records carry
+deterministic retention metadata:
 
 - `next_step`: temporary output for the next decision, such as command output
   or a compact tool result.

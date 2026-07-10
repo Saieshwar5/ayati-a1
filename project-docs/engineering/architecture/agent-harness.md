@@ -237,6 +237,15 @@ counts at most one soft breach per runner iteration, so repair attempts do not
 artificially advance future pressure modes. Reports are emitted once per
 distinct decision or repair attempt, not once per transport retry.
 
+Current-run tool-call storage and prompt projection are separate. Below the
+soft limit, all prompt-eligible tool calls are sent in full; there is no fixed
+six-call or 30K-character history cap. At the soft limit, a deterministic
+shadow planner protects the latest six calls, failures, and calls without a
+recovery reference, then proposes previews or summaries for only as many older
+calls as needed to reach the recovery target. Reference-only conversion is
+reserved for a later repeated-pressure mode. Shadow plans are recorded in
+optimization metrics and the feedback ledger but are not enforced yet.
+
 ## Tool Visibility
 
 The runtime keeps a hidden catalog of available tools and exposes a run-scoped
