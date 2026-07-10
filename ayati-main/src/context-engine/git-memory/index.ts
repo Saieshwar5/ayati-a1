@@ -13,5 +13,6 @@ export * from "./session-store.js";
 export * from "./task-notes.js";
 export * from "./task-refs.js";
 export * from "./task-run-checkpoint.js";
+export * from "./task-run-checkpoint-generator.js";
 export * from "./task-router.js";
 export * from "./write-queue.js";
