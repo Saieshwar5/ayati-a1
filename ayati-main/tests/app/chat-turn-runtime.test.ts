@@ -159,6 +159,109 @@ describe("createChatTurnRuntime", () => {
     }
   });
 
+  it("finishes the visible reply before task finalization and gates the next turn", async () => {
+    const rootDir = mkdtempSync(join(tmpdir(), "ayati-chat-runtime-background-finalization-"));
+    const contextStoreDir = join(rootDir, "context");
+    const dataDir = join(rootDir, "data");
+
+    try {
+      const store = new GitMemoryDailySessionStore({
+        contextStoreDir,
+        now: () => new Date("2026-06-28T09:00:00.000Z"),
+      });
+      const gitMemoryRuntime = createGitMemoryRuntime({
+        contextStoreDir,
+        timezone: "Asia/Kolkata",
+        agentId: "local",
+        store,
+        now: () => new Date("2026-06-28T09:00:00.000Z"),
+      });
+      const chatContextRuntime = createGitMemoryChatContextRuntime({ gitMemoryRuntime });
+      const initial = await chatContextRuntime.prepareUserTurn({
+        clientId: "local",
+        userMessage: "create a tiny focus timer website",
+        at: "2026-06-28T09:00:00+05:30",
+      });
+      await gitMemoryRuntime.createTaskBranch({
+        sessionId: initial.sessionId,
+        title: "Focus Timer Website",
+        objective: "Create a tiny focus timer website.",
+        fromSeq: initial.messageSeq,
+        toSeq: initial.messageSeq,
+        at: "2026-06-28T09:00:01+05:30",
+      });
+
+      const originalPrepare = chatContextRuntime.prepareUserTurn.bind(chatContextRuntime);
+      const preparedMessages: string[] = [];
+      vi.spyOn(chatContextRuntime, "prepareUserTurn").mockImplementation(async (input) => {
+        preparedMessages.push(input.userMessage);
+        return await originalPrepare(input);
+      });
+      const originalComplete = chatContextRuntime.completeTaskRun.bind(chatContextRuntime);
+      let releaseFinalization = () => {};
+      const finalizationGate = new Promise<void>((resolve) => {
+        releaseFinalization = resolve;
+      });
+      let finalizationCalls = 0;
+      vi.spyOn(chatContextRuntime, "completeTaskRun").mockImplementation(async (input) => {
+        finalizationCalls += 1;
+        if (finalizationCalls === 1) {
+          await finalizationGate;
+        }
+        return await originalComplete(input);
+      });
+
+      const replies: Array<Record<string, unknown>> = [];
+      const { provider } = createReplyProvider("I will continue the focus timer task.");
+      const runtime = createChatTurnRuntime({
+        provider,
+        dataDir,
+        chatContextRuntime,
+        clientSupportsReplyStreaming: () => true,
+        onReply: (_clientId, data) => {
+          replies.push(data as Record<string, unknown>);
+        },
+        now: () => new Date("2026-06-28T09:05:00.000Z"),
+      });
+
+      const first = runtime.processChat({
+        clientId: "local",
+        content: "continue",
+        attachments: [],
+      });
+      await waitUntil(() => finalizationCalls === 1);
+
+      expect(replies.at(-1)).toMatchObject({
+        type: "reply_done",
+        content: "I will continue the focus timer task.",
+        commitStatus: "finalizing",
+      });
+      expect(preparedMessages).toEqual(["continue"]);
+
+      const second = runtime.processChat({
+        clientId: "local",
+        content: "what happened?",
+        attachments: [],
+      });
+      await delay(50);
+
+      expect(preparedMessages).toEqual(["continue"]);
+
+      releaseFinalization();
+      await Promise.all([first, second]);
+
+      expect(preparedMessages).toEqual(["continue", "what happened?"]);
+      expect(replies).toContainEqual(expect.objectContaining({
+        type: "reply_commit_status",
+        commitStatus: "committed",
+      }));
+      const context = await chatContextRuntime.buildActiveContext(initial.sessionId);
+      expect(context.task?.recentRuns.length).toBeGreaterThanOrEqual(1);
+    } finally {
+      rmSync(rootDir, { recursive: true, force: true });
+    }
+  });
+
   it("does not finalize a stale pending task run from a direct interaction reply", async () => {
     const rootDir = mkdtempSync(join(tmpdir(), "ayati-chat-runtime-"));
     const contextStoreDir = join(rootDir, "context");

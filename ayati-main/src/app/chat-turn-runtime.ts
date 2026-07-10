@@ -61,6 +61,10 @@ import type {
   GitMemoryChatContextRuntime,
 } from "./git-memory-chat-context-runtime.js";
 import { buildSessionRunFinalizationFields } from "./session-run-finalization.js";
+import {
+  ChatTaskRunFinalizationScheduler,
+  type FinalTaskRunCommitStatus,
+} from "./chat-task-run-finalization.js";
 
 export interface CreateChatTurnRuntimeOptions {
   onReply?: (clientId: string, data: unknown) => void;
@@ -88,7 +92,7 @@ interface RegisteredChatAttachments {
   managedDirectories: DirectoryAttachmentRecord[];
 }
 
-type ReplyCommitStatus = "committed" | "skipped" | "failed";
+type ReplyCommitStatus = "committed" | "skipped" | "failed" | "finalizing";
 
 interface LiveReplyStream {
   turnId: string;
@@ -138,6 +142,7 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
   private readonly chatContextRuntime: GitMemoryChatContextRuntime;
   private readonly pulseProposalReflectionService = new PulseProposalReflectionService();
   private readonly turnSerializer = new AsyncKeySerializer();
+  private readonly taskRunFinalizations = new ChatTaskRunFinalizationScheduler();
 
   constructor(options: CreateChatTurnRuntimeOptions) {
     this.onReply = options.onReply;
@@ -161,7 +166,8 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
 
   async processChat(input: ChatTurnRuntimeInput): Promise<void> {
     const serializationKey = this.chatTurnSerializationKey(input);
-    const queued = this.turnSerializer.isBusy(serializationKey);
+    const queued = this.turnSerializer.isBusy(serializationKey)
+      || this.taskRunFinalizations.isPending(serializationKey);
     if (queued) {
       this.feedbackLedger?.record({
         clientId: input.clientId,
@@ -174,6 +180,16 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
       });
     }
     return await this.turnSerializer.enqueue(serializationKey, async () => {
+      const waitingForFinalization = this.taskRunFinalizations.isPending(serializationKey);
+      if (waitingForFinalization) {
+        this.feedbackLedger?.record({
+          clientId: input.clientId,
+          stage: "context_engine",
+          event: "chat_turn_waiting_for_finalization",
+          data: { serializationKey },
+        });
+      }
+      await this.taskRunFinalizations.wait(serializationKey);
       if (queued) {
         this.feedbackLedger?.record({
           clientId: input.clientId,
@@ -186,6 +202,10 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
       }
       await this.processChatUnlocked(input);
     });
+  }
+
+  async drain(): Promise<void> {
+    await this.taskRunFinalizations.drain();
   }
 
   private async processChatUnlocked(input: ChatTurnRuntimeInput): Promise<void> {
@@ -343,8 +363,17 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
           toolDefinitions,
           routedContextTurn,
         );
-        const commitStatus = await this.completeChatContextRun(input.clientId, chatContextTurn, routedContextTurn, result, sessionRunHandle);
+        const commitStatus = await this.finalizeChatContextRun(
+          input.clientId,
+          chatContextTurn,
+          routedContextTurn,
+          result,
+          sessionRunHandle,
+        );
         this.dispatchAgentResponse(input.clientId, runHandle, result, commitStatus, liveFinalResponseStream);
+        if (commitStatus === "finalizing") {
+          await this.taskRunFinalizations.wait(this.chatTurnSerializationKey(input));
+        }
         this.feedbackLedger?.record({
           clientId: input.clientId,
           sessionId: inputHandle.sessionId,
@@ -419,8 +448,7 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
   }
 
   private chatTurnSerializationKey(input: ChatTurnRuntimeInput): string {
-    const clientId = input.clientId.trim();
-    return clientId.length > 0 ? clientId : "local";
+    return chatTurnSerializationKeyForClient(input.clientId);
   }
 
   private async prepareChatContextTurn(
@@ -616,13 +644,118 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
     }, "skipped");
   }
 
-  private async completeChatContextRun(
+  private async finalizeChatContextRun(
     clientId: string,
     prepared: GitMemoryChatContextPreparedTurn | null,
     routed: GitMemoryChatContextRoutedTurn | null,
     result: AgentLoopResult,
     sessionRunHandle?: MemoryRunHandle | null,
   ): Promise<ReplyCommitStatus> {
+    const normalizedResult = this.normalizeTaskWaitingResult(result);
+    const binding = this.taskRunBindingFromRoutedOrResult(routed, normalizedResult);
+    const skipReason = this.chatContextFinalizationSkipReason(
+      prepared,
+      routed,
+      normalizedResult,
+      binding,
+    );
+    if (skipReason || !prepared || !binding) {
+      return await this.completeChatContextRun(
+        clientId,
+        prepared,
+        routed,
+        normalizedResult,
+        sessionRunHandle,
+      );
+    }
+
+    const serializationKey = chatTurnSerializationKeyForClient(clientId);
+    const scheduled = await this.taskRunFinalizations.schedule({
+      key: serializationKey,
+      persistAssistant: async () => !normalizedResult.content.trim() || Boolean(
+        await this.chatContextRuntime.recordAssistantMessage({
+          clientId,
+          turn: prepared,
+          message: normalizedResult.content,
+          kind: normalizedResult.workState?.status === "needs_user_input"
+            ? "feedback_question"
+            : "message",
+          at: this.nowProvider().toISOString(),
+          taskId: binding.taskId,
+          runId: binding.runId,
+        }),
+      ),
+      finalize: async () => await this.completeChatContextRun(
+        clientId,
+        prepared,
+        routed,
+        normalizedResult,
+        sessionRunHandle,
+      ),
+      recover: async (error) => await this.completeFailedChatContextRun(
+        clientId,
+        prepared,
+        routed?.status === "ready" ? routed : null,
+        {
+          sessionId: prepared.sessionId,
+          runId: binding.runId,
+          triggerSeq: prepared.messageSeq,
+        },
+        error,
+      ),
+      onScheduled: () => {
+        this.feedbackLedger?.record({
+          clientId,
+          sessionId: prepared.sessionId,
+          seq: prepared.messageSeq,
+          runId: binding.runId,
+          stage: "context_engine",
+          event: "finalization_scheduled",
+          data: { taskId: binding.taskId, serializationKey },
+        });
+      },
+      onStatus: (commitStatus) => this.onReply?.(clientId, {
+        type: "reply_commit_status",
+        runId: binding.runId,
+        commitStatus,
+      }),
+      onError: (error) => {
+        devWarn(`[${clientId}] background task-run finalization failed: ${errMessage(error)}`);
+        this.feedbackLedger?.record({
+          clientId,
+          sessionId: prepared.sessionId,
+          seq: prepared.messageSeq,
+          runId: binding.runId,
+          stage: "context_engine",
+          event: "finalization_failed",
+          data: {
+            taskId: binding.taskId,
+            reason: "background_finalization_threw",
+            message: errMessage(error),
+          },
+        });
+      },
+    });
+    if (!scheduled) {
+      devWarn(`[${clientId}] task-run assistant message could not be persisted before background finalization`);
+      return await this.completeChatContextRun(
+        clientId,
+        prepared,
+        routed,
+        normalizedResult,
+        sessionRunHandle,
+      );
+    }
+    return "finalizing";
+  }
+
+  private async completeChatContextRun(
+    clientId: string,
+    prepared: GitMemoryChatContextPreparedTurn | null,
+    routed: GitMemoryChatContextRoutedTurn | null,
+    result: AgentLoopResult,
+    sessionRunHandle?: MemoryRunHandle | null,
+  ): Promise<FinalTaskRunCommitStatus> {
     const normalizedResult = this.normalizeTaskWaitingResult(result);
     const binding = this.taskRunBindingFromRoutedOrResult(routed, normalizedResult);
     const skipReason = this.chatContextFinalizationSkipReason(prepared, routed, normalizedResult, binding);
@@ -635,7 +768,7 @@ class AppChatTurnRuntime implements ChatTurnRuntime {
       if (prepared && sessionRunHandle) {
         await this.finalizeChatContextSessionRun(clientId, prepared, sessionRunHandle, normalizedResult);
       }
-      let commitStatus: ReplyCommitStatus = "skipped";
+      let commitStatus: FinalTaskRunCommitStatus = "skipped";
       if (prepared) {
         const disposition = this.noBindingFinalizationDisposition(prepared, skipReason, normalizedResult);
         commitStatus = disposition.finalizationStatus === "failed" ? "failed" : "skipped";
@@ -1683,6 +1816,11 @@ class AsyncKeySerializer {
     });
     return await current;
   }
+}
+
+function chatTurnSerializationKeyForClient(clientId: string): string {
+  const normalized = clientId.trim();
+  return normalized.length > 0 ? normalized : "local";
 }
 
 function summarizeChatAttachment(attachment: ChatAttachmentInput): Record<string, unknown> {

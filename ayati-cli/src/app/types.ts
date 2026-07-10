@@ -6,6 +6,7 @@ export type ChatMessage = {
   attachments?: ChatAttachment[];
   timestamp: number;
   streaming?: boolean;
+  runId?: string;
   commitStatus?: ReplyDoneMessage["commitStatus"];
 };
 
@@ -103,10 +104,16 @@ export interface ReplyDoneMessage {
   type: "reply_done";
   turnId: string;
   content: string;
-  commitStatus: "committed" | "skipped" | "failed";
+  commitStatus: "committed" | "skipped" | "failed" | "finalizing";
   kind?: "reply" | "feedback" | "notification";
   runId?: string;
   artifacts?: unknown[];
+}
+
+export interface ReplyCommitStatusMessage {
+  type: "reply_commit_status";
+  runId: string;
+  commitStatus: "committed" | "skipped" | "failed";
 }
 
 export interface ErrorMessage {
@@ -122,4 +129,5 @@ export type ServerMessage =
   | ReplyStartedMessage
   | ReplyDeltaMessage
   | ReplyDoneMessage
+  | ReplyCommitStatusMessage
   | ErrorMessage;

@@ -173,6 +173,15 @@ Markdown and metadata in the existing session-store snapshot commit. Provider
 or validation failure falls back to a deterministic task-run checkpoint and
 does not block task-run completion or overwrite the previous valid summary.
 
+Chat delivery does not wait for semantic task-run finalization. The runtime
+first persists the final assistant message, completes the visible response with
+`commitStatus="finalizing"`, and runs the existing checkpoint, summary, and Git
+commit pipeline behind that response. A later `reply_commit_status` event
+reports the committed or failed result. Same-client turns remain serialized and
+cannot prepare their next context until the pending finalization barrier has
+settled. Normal engine shutdown drains pending finalizations before stopping the
+provider.
+
 Task-run checkpoint coverage is recorded in the session-store commit trailers.
 This boundary is read back after restart, so the next task-run checkpoint starts
 at the following conversation sequence without depending on in-memory state.

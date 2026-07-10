@@ -127,6 +127,7 @@ export function App(): React.JSX.Element {
                 kind,
                 content: msg.content,
                 streaming: false,
+                runId: msg.runId,
                 commitStatus: msg.commitStatus,
               }
             : message
@@ -134,12 +135,22 @@ export function App(): React.JSX.Element {
       } else {
         const reply = {
           ...createMessage("assistant", msg.content, kind),
+          runId: msg.runId,
           commitStatus: msg.commitStatus,
         };
         setMessages((prev) => [...prev, reply]);
       }
       setProgressLines([]);
       setIsLoading(false);
+      return;
+    }
+
+    if (msg.type === "reply_commit_status" && typeof msg.runId === "string") {
+      setMessages((prev) => prev.map((message) => (
+        message.runId === msg.runId
+          ? { ...message, commitStatus: msg.commitStatus }
+          : message
+      )));
       return;
     }
 
