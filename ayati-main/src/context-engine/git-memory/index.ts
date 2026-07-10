@@ -9,6 +9,8 @@ export * from "./memory-state.js";
 export * from "./runtime.js";
 export * from "./schema.js";
 export * from "./session-summary.js";
+export * from "./session-snapshot.js";
+export * from "./session-snapshot-schema.js";
 export * from "./session-store.js";
 export * from "./task-notes.js";
 export * from "./task-refs.js";
