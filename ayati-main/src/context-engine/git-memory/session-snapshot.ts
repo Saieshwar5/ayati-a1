@@ -320,6 +320,7 @@ function validateSnapshotSemantics(snapshot: SessionSnapshot, context: SessionSn
       errors.push(`snapshot.recentProgress[${index}].runId references unknown task run ${progress.runId}`);
     }
   });
+  duplicateBy(snapshot.recentProgress, (progress) => progress.runId, "snapshot.recentProgress", errors);
   validatePendingUserInput(snapshot, context.pendingUserInput, errors);
   return errors;
 }

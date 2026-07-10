@@ -232,6 +232,32 @@ export function validateTaskRunCheckpointAgainstPlan(
   return unique(errors);
 }
 
+export function assembleTaskRunCheckpoint(
+  plan: ReadyTaskRunCheckpointPlan,
+  sessionInterval: TaskRunCheckpointSessionInterval,
+): TaskRunCheckpoint {
+  return {
+    schemaVersion: 1,
+    checkpointId: plan.checkpointId,
+    sessionId: plan.sessionId,
+    coverage: { ...plan.coverage },
+    run: {
+      ...plan.run,
+      completed: [...plan.run.completed],
+      open: [...plan.run.open],
+      blockers: [...plan.run.blockers],
+    },
+    sessionInterval: structuredClone(sessionInterval),
+    recentExactConversation: plan.recentExactConversation.map(cloneConversationRecord),
+    ...(plan.pendingUserInput ? {
+      pendingUserInput: {
+        ...plan.pendingUserInput,
+        ...(plan.pendingUserInput.options ? { options: [...plan.pendingUserInput.options] } : {}),
+      },
+    } : {}),
+  };
+}
+
 export function hashTaskRunCheckpointSource(records: GitMemoryConversationRecord[]): string {
   const canonical = [...records].sort((left, right) => left.seq - right.seq).map((record) => ({
     seq: record.seq,

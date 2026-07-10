@@ -1,5 +1,6 @@
 import { estimateTextTokens } from "../../prompt/token-estimator.js";
 import {
+  assembleTaskRunCheckpoint,
   validateTaskRunCheckpointAgainstPlan,
 } from "./task-run-checkpoint.js";
 import type {
@@ -95,26 +96,7 @@ function buildCheckpoint(
       : [],
     references: referenceStatements(plan, context?.references),
   };
-  return {
-    schemaVersion: 1,
-    checkpointId: plan.checkpointId,
-    sessionId: plan.sessionId,
-    coverage: { ...plan.coverage },
-    run: {
-      ...plan.run,
-      completed: [...plan.run.completed],
-      open: [...plan.run.open],
-      blockers: [...plan.run.blockers],
-    },
-    sessionInterval,
-    recentExactConversation: plan.recentExactConversation.map((record) => ({ ...record })),
-    ...(plan.pendingUserInput ? {
-      pendingUserInput: {
-        ...plan.pendingUserInput,
-        ...(plan.pendingUserInput.options ? { options: [...plan.pendingUserInput.options] } : {}),
-      },
-    } : {}),
-  };
+  return assembleTaskRunCheckpoint(plan, sessionInterval);
 }
 
 function buildIntervalSummary(plan: ReadyTaskRunCheckpointPlan): string {

@@ -189,12 +189,14 @@ describe("session snapshot foundation", () => {
     });
     snapshot.threads[0]!.taskIds = ["W-001", "W-001"];
     snapshot.constraints[0]!.sources.push({ kind: "conversation", seq: 2 });
+    snapshot.recentProgress.push(structuredClone(snapshot.recentProgress[0]!));
 
     expect(validateSessionSnapshot(snapshot, validationContext())).toEqual(expect.arrayContaining([
       expect.stringContaining("snapshot.userRequests contains duplicate item"),
       expect.stringContaining("snapshot.threads contains duplicate item"),
       "snapshot.threads[0].taskIds contains duplicate id W-001",
       "snapshot.constraints[0].sources contains duplicate source conversation:2",
+      expect.stringContaining("snapshot.recentProgress contains duplicate item"),
     ]));
   });
 
