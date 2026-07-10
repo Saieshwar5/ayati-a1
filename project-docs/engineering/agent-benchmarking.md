@@ -244,10 +244,11 @@ Per-case reports preserve the agent's work trace:
 
 Prompt metrics should make cache efficiency visible. The stable decision
 contract belongs in `system.stableDecisionRules`; dynamic runtime context
-belongs in `system.runtimeContext`; selected tool schemas belong in
-`user.tools`; and the model-facing state view belongs in `user.state`. If
-future changes move volatile data into the stable system section, treat that as
-a cache-regression risk even when deterministic benchmark checks still pass.
+belongs in `system.runtimeContext`; the compact selected-name list belongs in
+`user.tools`; authoritative callable schemas belong in the native tool surface;
+and the model-facing state view belongs in `user.state`. If future changes move
+volatile data into the stable system section, treat that as a cache-regression
+risk even when deterministic benchmark checks still pass.
 
 Useful budgets:
 

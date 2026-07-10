@@ -114,7 +114,10 @@ AYATI_AGENT_MAX_SELECTED_TOOLS=12
 ```
 
 `AYATI_AGENT_MAX_SELECTED_TOOLS` bounds how many selected executable tool
-schemas are shown to the decision model for one decision.
+schemas are shown to the decision model for one decision. Required routing and
+Git recovery tools consume slots inside this total. After enforced context
+pressure, later decisions use the smaller of this value and ten. Native harness
+control tools are separate from this executable-tool limit.
 
 Feedback tracing:
 

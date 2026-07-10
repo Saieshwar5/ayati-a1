@@ -35,7 +35,11 @@ import {
   measureJson,
 } from "../state-compaction.js";
 import { buildAgentStateView } from "./state-view.js";
-import { selectToolsForDecision } from "./tool-selector.js";
+import {
+  isContextPressureActive,
+  resolveSelectedToolLimit,
+  selectToolsForDecision,
+} from "./tool-selector.js";
 import { callAgentDecision } from "./decision.js";
 import type { AgentDecision } from "./decision.js";
 import { repairSignalToFeedbackData } from "./repair-policy.js";
@@ -432,6 +436,11 @@ export async function runAgentLoop(
       : deps.toolExecutor?.definitions({
         ...toolContext,
       }) ?? deps.toolDefinitions;
+    const pressureToolSurface = isContextPressureActive(state);
+    const selectedToolLimit = resolveSelectedToolLimit(state, config.maxSelectedTools);
+    const toolRoutingSummary = deps.toolWorkingSetManager?.getPromptSummary({
+      compact: pressureToolSurface,
+    });
     const selectedTools = selectToolsForDecision(state, visibleTools, config.maxSelectedTools, {
       workRunHandle,
       sessionRunHandle,
@@ -456,22 +465,26 @@ export async function runAgentLoop(
     });
     const taskFeedbackToolAvailable = isTaskFeedbackToolAvailable(state, workRunHandle);
     const decisionRuntimeMode = detectRuntimeCapabilityMode({ state, workRunHandle, sessionRunHandle });
+    const nativeControlTools = [
+      ...(decisionRuntimeMode.allowToolLoading ? ["decision_load_tools"] : []),
+      ...(isWorkStateUpdateToolAvailable(state, workRunHandle) ? ["update_work_state"] : []),
+      ...(taskFeedbackToolAvailable ? ["ask_user_feedback"] : []),
+    ];
     const decisionToolPolicyAudit = auditToolPolicy({
       mode: decisionRuntimeMode,
       selectedTools,
     });
     recordFeedback(deps, inputHandle, state.runId || workRunHandle?.runId || sessionRunHandle?.runId, "decision", "prompt_summary", {
       iteration: state.iteration,
-      nativeControlTools: [
-        ...(decisionRuntimeMode.allowToolLoading ? ["decision_load_tools"] : []),
-        ...(isWorkStateUpdateToolAvailable(state, workRunHandle) ? ["update_work_state"] : []),
-        ...(taskFeedbackToolAvailable ? ["ask_user_feedback"] : []),
-      ],
+      nativeControlTools,
+      nativeControlToolCount: nativeControlTools.length,
       selectedTools: selectedTools.map((tool) => tool.name),
       selectedToolCount: selectedTools.length,
+      selectedToolLimit,
+      pressureToolSurface,
       visibleToolCount: visibleTools.length,
       executableToolsVisibleNatively: true,
-      toolRoutingAvailable: Boolean(deps.toolWorkingSetManager?.getPromptSummary().trim()),
+      toolRoutingAvailable: Boolean(toolRoutingSummary?.trim()),
       workStatus: state.workState.status,
       progressSummary: state.workState.summary,
       workingFeedbackCount: stateView.workingFeedback?.latest.length ?? 0,
@@ -491,7 +504,7 @@ export async function runAgentLoop(
         provider: deps.provider,
         stateView,
         toolDefinitions: selectedTools,
-        toolRoutingSummary: deps.toolWorkingSetManager?.getPromptSummary(),
+        toolRoutingSummary,
         toolLoadingAvailable: decisionRuntimeMode.allowToolLoading,
         taskFeedbackToolAvailable,
         workStateUpdateAvailable: isWorkStateUpdateToolAvailable(state, workRunHandle),

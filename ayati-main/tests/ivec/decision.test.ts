@@ -1697,6 +1697,61 @@ describe("parseAgentDecision", () => {
     expect(generateTurn.mock.calls[0]?.[0]?.parallelToolCalls).toBe(false);
   });
 
+  it("keeps callable schemas native and sends only selected tool names in text", async () => {
+    const { provider, generateTurn } = createProvider([
+      JSON.stringify({ kind: "reply", status: "completed", message: "Done" }),
+    ]);
+    const selectedTool: ToolDefinition = {
+      name: "inspect_data",
+      description: "Inspect structured data with a unique schema description.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          query: { type: "string", description: "UNIQUE_INPUT_SCHEMA_MARKER" },
+        },
+      },
+      outputSchema: {
+        type: "object",
+        properties: {
+          rows: { type: "array", description: "UNIQUE_OUTPUT_SCHEMA_MARKER" },
+        },
+      },
+      annotations: { domain: "database" },
+      selectionHints: { tags: ["UNIQUE_SELECTION_HINT_MARKER"] },
+      async execute() {
+        return { ok: true, output: "" };
+      },
+    };
+
+    await callAgentDecision({
+      provider,
+      stateView: createStateView(),
+      toolDefinitions: [selectedTool],
+    });
+
+    const turnInput = generateTurn.mock.calls[0]?.[0];
+    const userPrompt = turnInput?.messages.find((message) => message.role === "user")?.content;
+    if (typeof userPrompt !== "string") throw new Error("Expected a user prompt.");
+    expect(userPrompt).toContain("Selected tools:\n- inspect_data");
+    expect(userPrompt).not.toContain("UNIQUE_INPUT_SCHEMA_MARKER");
+    expect(userPrompt).not.toContain("UNIQUE_OUTPUT_SCHEMA_MARKER");
+    expect(userPrompt).not.toContain("UNIQUE_SELECTION_HINT_MARKER");
+    expect(userPrompt).not.toContain("annotations=");
+    expect(userPrompt).not.toContain("inputSchema=");
+    expect(userPrompt).not.toContain("outputSchema=");
+    expect(userPrompt).not.toContain("hints=");
+
+    const nativeTool = turnInput?.tools?.find((tool) => tool.name === "inspect_data");
+    expect(nativeTool?.description).toBe(selectedTool.description);
+    expect(nativeTool?.inputSchema).toMatchObject({
+      properties: {
+        query: { description: "UNIQUE_INPUT_SCHEMA_MARKER" },
+        taskCompletion: expect.any(Object),
+      },
+      required: expect.arrayContaining(["taskCompletion"]),
+    });
+  });
+
   it("records and retries an empty provider response once", async () => {
     const providerError = new ProviderEmptyResponseError("Empty response from OpenRouter.", {
       provider: "openrouter",

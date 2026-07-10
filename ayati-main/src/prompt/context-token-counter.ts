@@ -26,7 +26,8 @@ export async function measureTurnContext(input: {
   limits: ResolvedModelContextLimits;
 }): Promise<ContextBudgetReport> {
   const budget = calculateContextBudget(input.limits);
-  const localEstimateTokens = estimateTurnInputTokens(input.turnInput).totalTokens;
+  const localEstimate = estimateTurnInputTokens(input.turnInput);
+  const localEstimateTokens = localEstimate.totalTokens;
   const correctedLocalEstimateTokens = correctLocalInputTokenEstimate(localEstimateTokens);
   const providerCountResult: ProviderCountResult = correctedLocalEstimateTokens >= budget.softInputTokens
     ? await tryProviderCount(input.provider, input.turnInput)
@@ -50,6 +51,8 @@ export async function measureTurnContext(input: {
     model: providerCount?.model ?? input.limits.model,
     limitSource: input.limits.source,
     ...budget,
+    localMessageTokens: localEstimate.messageTokens,
+    localToolSchemaTokens: localEstimate.toolSchemaTokens,
     localEstimateTokens,
     correctedLocalEstimateTokens,
     ...(providerCount ? {

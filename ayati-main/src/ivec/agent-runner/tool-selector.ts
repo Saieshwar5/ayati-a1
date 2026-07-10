@@ -7,9 +7,11 @@ import {
   requiredRoutingMutationToolsForRuntimeMode,
 } from "./runtime-capability-mode.js";
 import {
-  hasRecoverableBoundedRunToolCall,
   RUN_STEP_RECOVERY_TOOL_NAME,
+  shouldExposeRunStepRecoveryTool,
 } from "./run-tool-call-context.js";
+
+export const PRESSURE_MAX_SELECTED_TOOLS = 10;
 
 export function selectToolsForDecision(
   state: LoopState,
@@ -27,13 +29,33 @@ export function selectToolsForDecision(
   });
   const candidateTools = filterToolsForRuntimeMode(mode, toolDefinitions);
   const requiredToolNames = new Set(requiredRoutingMutationToolsForRuntimeMode(mode));
-  if (hasRecoverableBoundedRunToolCall(state.toolContext?.toolCalls)) {
+  if (shouldExposeRunStepRecoveryTool({
+    calls: state.toolContext?.toolCalls,
+    pressureActive: isContextPressureActive(state),
+  })) {
     requiredToolNames.add(RUN_STEP_RECOVERY_TOOL_NAME);
   }
   const requiredTools = candidateTools.filter((tool) => requiredToolNames.has(tool.name));
   const budgetedTools = candidateTools.filter((tool) => !requiredToolNames.has(tool.name));
+  const selectedToolLimit = resolveSelectedToolLimit(state, limit);
+  const requiredWithinLimit = requiredTools.slice(0, selectedToolLimit);
+  const budgetedToolLimit = Math.max(0, selectedToolLimit - requiredWithinLimit.length);
 
-  return appendUniqueTools(selectBudgetedTools(state, budgetedTools, limit), requiredTools);
+  return appendUniqueTools(
+    selectBudgetedTools(state, budgetedTools, budgetedToolLimit),
+    requiredWithinLimit,
+  );
+}
+
+export function resolveSelectedToolLimit(state: LoopState, configuredLimit: number): number {
+  const normalizedLimit = Math.max(0, Math.floor(configuredLimit));
+  return isContextPressureActive(state)
+    ? Math.min(normalizedLimit, PRESSURE_MAX_SELECTED_TOOLS)
+    : normalizedLimit;
+}
+
+export function isContextPressureActive(state: LoopState): boolean {
+  return Boolean(state.contextPressure && state.contextPressure.mode !== "full");
 }
 
 function selectBudgetedTools(

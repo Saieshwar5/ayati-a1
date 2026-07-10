@@ -18,8 +18,8 @@ import {
   requiredRoutingMutationToolsForRuntimeMode,
 } from "./runtime-capability-mode.js";
 import {
-  hasRecoverableBoundedRunToolCall,
   RUN_STEP_RECOVERY_TOOL_NAME,
+  shouldExposeRunStepRecoveryTool,
 } from "./run-tool-call-context.js";
 
 export interface ToolLoadRequest {
@@ -80,8 +80,8 @@ export class ToolWorkingSetManager {
     this.maxVisibleTools = options.maxVisibleTools ?? DEFAULT_MAX_VISIBLE_TOOLS;
   }
 
-  getPromptSummary(): string {
-    return this.catalog.promptSummary();
+  getPromptSummary(options: { compact?: boolean } = {}): string {
+    return this.catalog.promptSummary(options);
   }
 
   visibleToolDefinitions(context: ToolExecutionContext): ToolDefinition[] {
@@ -585,7 +585,10 @@ function buildDeterministicLoadRequest(
   const toolNames = new Set<string>();
   const groups = new Set<string>();
 
-  if (hasRecoverableBoundedRunToolCall(state.toolContext?.toolCalls)) {
+  if (shouldExposeRunStepRecoveryTool({
+    calls: state.toolContext?.toolCalls,
+    pressureActive: Boolean(state.contextPressure && state.contextPressure.mode !== "full"),
+  })) {
     toolNames.add(RUN_STEP_RECOVERY_TOOL_NAME);
   }
 

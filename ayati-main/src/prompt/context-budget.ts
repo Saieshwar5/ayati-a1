@@ -17,6 +17,8 @@ export interface ContextBudgetReport extends ContextBudget {
   provider: string;
   model: string;
   limitSource: ResolvedModelContextLimits["source"];
+  localMessageTokens: number;
+  localToolSchemaTokens: number;
   localEstimateTokens: number;
   correctedLocalEstimateTokens: number;
   providerCountTokens?: number;

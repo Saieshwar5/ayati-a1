@@ -15,6 +15,8 @@ describe("context token counter", () => {
 
     expect(report.countSource).toBe("local_estimate");
     expect(report.providerCountStatus).toBe("not_needed");
+    expect(report.localMessageTokens).toBeGreaterThan(0);
+    expect(report.localToolSchemaTokens).toBe(0);
     expect(report.measuredInputTokens).toBe(report.correctedLocalEstimateTokens);
     expect(report.pressureLevel).toBe("normal");
     expect(countInputTokens).not.toHaveBeenCalled();
@@ -117,6 +119,8 @@ describe("context token counter", () => {
     });
 
     expect(withTools.localEstimateTokens).toBeGreaterThan(withoutTools.localEstimateTokens + 900);
+    expect(withTools.localToolSchemaTokens).toBeGreaterThan(900);
+    expect(withTools.localMessageTokens).toBe(withoutTools.localMessageTokens);
   });
 });
 

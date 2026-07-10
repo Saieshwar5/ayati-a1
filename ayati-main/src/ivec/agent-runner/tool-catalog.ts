@@ -92,7 +92,14 @@ export class ToolCatalog {
       .slice(0, Math.max(1, Math.floor(limit)));
   }
 
-  promptSummary(maxSkills = 24): string {
+  promptSummary(options: { compact?: boolean; maxSkills?: number } = {}): string {
+    if (options.compact) {
+      return [
+        "Hidden tools remain available through decision_load_tools.",
+        "Request them with a short query, an exact tool name, or 1-3 focused group names.",
+      ].join("\n");
+    }
+    const maxSkills = options.maxSkills ?? 24;
     const skills = [...this.skillSummaries.entries()]
       .slice(0, maxSkills)
       .map(([id, description]) => {

@@ -5,6 +5,7 @@ import { createToolExecutor } from "../../src/skills/tool-executor.js";
 import type { SkillDefinition, ToolDefinition } from "../../src/skills/types.js";
 import type { LoopState } from "../../src/ivec/types.js";
 import { createInitialHarnessContext } from "../../src/ivec/harness-context.js";
+import { createInitialContextPressureState } from "../../src/ivec/context-pressure-state.js";
 import type { ContextEngineMachineContext } from "../../src/context-engine/index.js";
 
 function tool(name: string, description = name): ToolDefinition {
@@ -52,6 +53,27 @@ function state(userMessage: string): LoopState {
 }
 
 describe("ToolWorkingSetManager", () => {
+  it("uses a compact hidden-tool loading map after context pressure", () => {
+    const catalog = new ToolCatalog([
+      skill("filesystem", [tool("read_files", "Read files")]),
+      skill("shell", [tool("shell", "Run shell commands")]),
+    ]);
+    const manager = new ToolWorkingSetManager({
+      catalog,
+      toolExecutor: createToolExecutor([]),
+    });
+
+    const full = manager.getPromptSummary();
+    const compact = manager.getPromptSummary({ compact: true });
+
+    expect(full).toContain("Loadable groups:");
+    expect(full).toContain("Skill summaries:");
+    expect(compact).toContain("Hidden tools remain available through decision_load_tools.");
+    expect(compact).not.toContain("Loadable groups:");
+    expect(compact).not.toContain("Skill summaries:");
+    expect(compact.length).toBeLessThan(full.length);
+  });
+
   it("preloads likely tools before the decision and enforces lifecycle-priority eviction", () => {
     const catalog = new ToolCatalog([
       skill("filesystem", [
@@ -222,6 +244,37 @@ describe("ToolWorkingSetManager", () => {
     runState.toolContext = {
       recent: [],
       toolCalls: recoverableToolCalls(),
+    };
+
+    manager.prepareForDecision(runState, context);
+
+    expect(manager.listActive(context)).toContain("git_context_read_run_step");
+    expect(executor.list(context)).toContain("git_context_read_run_step");
+  });
+
+  it("preloads run-step recovery for pressure-compacted refs without execution truncation", () => {
+    const catalog = new ToolCatalog([
+      skill("git-context", [
+        tool("git_context_read_run_step", "Recover full persisted step or tool-call data"),
+      ]),
+      skill("filesystem", [tool("read_files", "Read file")]),
+    ]);
+    const executor = createToolExecutor([]);
+    const manager = new ToolWorkingSetManager({ catalog, toolExecutor: executor, maxVisibleTools: 3 });
+    const context = { clientId: "c1", runId: "r1", sessionId: "s1", stepNumber: 6 };
+    const runState = state("recover the prior exact step");
+    runState.runId = "r1";
+    runState.runClass = "task";
+    runState.contextPressure = {
+      ...createInitialContextPressureState(),
+      mode: "tool_compact",
+    };
+    runState.toolContext = {
+      recent: [],
+      toolCalls: recoverableToolCalls().map((call) => ({
+        ...call,
+        outputTruncated: undefined,
+      })),
     };
 
     manager.prepareForDecision(runState, context);

@@ -92,6 +92,11 @@ are:
 - `context.harness`: harness repair feedback for the current decision.
 - `context.personal`: long-lived personal memory snapshot when present.
 
+Selected executable names may also appear as a compact user-prompt list, while
+their callable descriptions and input schemas are supplied only through native
+provider tools. Runtime-only output contracts, annotations, taxonomy, and
+selection hints are not copied into the prompt.
+
 The internal compatibility field `context.gitContext` can still exist inside
 runtime state for older code paths, but it is not promoted as a separate model
 prompt section. New model-facing guidance should use the grouped paths above.
@@ -226,6 +231,12 @@ eligible old timeline prefix. The recent exact tail, current input, and the
 assistant question answered by that input remain exact. If this final recovery
 cannot produce a request below the soft limit, Ayati ends the current run with
 `context_limit` and leaves the durable task in progress for a later run.
+
+Once a run has applied a pressure mode, later decisions expose at most ten
+selected executable tool schemas. Required routing and Git step-recovery tools
+consume slots within that cap. The internal working set remains available for
+fast rescoring and rotation, and the hidden loading map becomes a short query
+hint instead of repeating the full group catalog.
 
 Tool-family projectors use bounded structured result metadata captured during
 execution. Read projections preserve requested paths/ranges and file metadata;

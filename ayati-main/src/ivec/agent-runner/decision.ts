@@ -1291,7 +1291,7 @@ function buildDecisionPromptSections(
   toolRoutingSummary: string | undefined,
 ): Record<string, string> {
   return {
-    "user.tools": `Selected tools:\n${formatSelectedTools(toolDefinitions)}`,
+    "user.tools": `Selected tools:\n${formatSelectedToolNames(toolDefinitions)}`,
     "user.toolRouting": toolRoutingSummary?.trim()
       ? `Tool loading map (request these with decision_load_tools, not action.calls):\n${toolRoutingSummary.trim()}`
       : "",
@@ -1323,21 +1323,11 @@ function stringifySection(value: unknown): string | undefined {
   return JSON.stringify(value, null, 2);
 }
 
-function formatSelectedTools(toolDefinitions: ToolDefinition[]): string {
+function formatSelectedToolNames(toolDefinitions: ToolDefinition[]): string {
   if (toolDefinitions.length === 0) {
     return "(none)";
   }
-
-  return toolDefinitions.map((tool) => {
-    const parts = [
-      `- ${tool.name}: ${tool.description}`,
-      tool.annotations ? `  annotations=${JSON.stringify(tool.annotations)}` : "",
-      tool.inputSchema ? `  inputSchema=${JSON.stringify(tool.inputSchema)}` : "",
-      tool.outputSchema ? `  outputSchema=${JSON.stringify(tool.outputSchema)}` : "",
-      tool.selectionHints ? `  hints=${JSON.stringify(tool.selectionHints)}` : "",
-    ].filter((part) => part.length > 0);
-    return parts.join("\n");
-  }).join("\n");
+  return toolDefinitions.map((tool) => `- ${tool.name}`).join("\n");
 }
 
 function normalizeAgentAction(value: unknown): AgentAction {

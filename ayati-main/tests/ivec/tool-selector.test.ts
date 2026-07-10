@@ -5,6 +5,7 @@ import type { ContextEngineMachineContext } from "../../src/context-engine/index
 import {
   selectToolsForDecision,
 } from "../../src/ivec/agent-runner/tool-selector.js";
+import { createInitialContextPressureState } from "../../src/ivec/context-pressure-state.js";
 import { createInitialHarnessContext } from "../../src/ivec/harness-context.js";
 
 function tool(name: string, priority = 0): ToolDefinition {
@@ -166,12 +167,11 @@ describe("selectToolsForDecision", () => {
     expect(selectedNames).toEqual([
       "write_files",
       "read_files",
-      "search_in_files",
       "git_context_create_task_for_turn",
     ]);
   });
 
-  it("keeps first-task routing tools available regardless of selected tool cap", () => {
+  it("counts required first-task routing tools inside the selected tool cap", () => {
     const current = state("create a small website and run it");
     current.runId = "";
     current.harnessContext = {
@@ -193,8 +193,6 @@ describe("selectToolsForDecision", () => {
     const selectedNames = selected.map((entry) => entry.name);
     expect(selectedNames).toEqual([
       "search_in_files",
-      "git_context_list_tasks",
-      "git_context_search_tasks",
       "git_context_activate_task_for_turn",
       "git_context_create_task_for_turn",
     ]);
@@ -203,7 +201,7 @@ describe("selectToolsForDecision", () => {
     expect(selectedNames).not.toContain("shell");
   });
 
-  it("does not count active-task routing mutation tools against the selected tool cap", () => {
+  it("reserves the selected tool cap for required active-task routing tools", () => {
     const current = state("continue the website and add dark mode");
     current.runId = "";
     current.harnessContext = {
@@ -223,8 +221,6 @@ describe("selectToolsForDecision", () => {
 
     const selectedNames = selected.map((entry) => entry.name);
     expect(selectedNames).toEqual([
-      "read_files",
-      "git_context_list_tasks",
       "git_context_activate_task_for_turn",
       "git_context_create_task_for_turn",
     ]);
@@ -247,7 +243,7 @@ describe("selectToolsForDecision", () => {
     ], 12)).toEqual([]);
   });
 
-  it("selects run-step recovery outside the cap when bounded stepRef tool context exists", () => {
+  it("counts run-step recovery inside the selected tool cap", () => {
     const current = state("continue implementation");
     current.toolContext = {
       recent: [],
@@ -260,10 +256,7 @@ describe("selectToolsForDecision", () => {
       tool("git_context_read_run_step", 0),
     ], 1);
 
-    expect(selected.map((entry) => entry.name)).toEqual([
-      "write_files",
-      "git_context_read_run_step",
-    ]);
+    expect(selected.map((entry) => entry.name)).toEqual(["git_context_read_run_step"]);
   });
 
   it("does not select run-step recovery when no compacted stepRef tool-call context exists", () => {
@@ -276,6 +269,45 @@ describe("selectToolsForDecision", () => {
     ], 1);
 
     expect(selected.map((entry) => entry.name)).toEqual(["write_files"]);
+  });
+
+  it("reduces the executable tool surface from fifteen to ten after pressure", () => {
+    const current = state("continue implementation");
+    const tools = Array.from({ length: 15 }, (_, index) => tool(`tool_${index + 1}`, 15 - index));
+
+    expect(selectToolsForDecision(current, tools, 15)).toHaveLength(15);
+
+    current.contextPressure = {
+      ...createInitialContextPressureState(),
+      mode: "tool_compact",
+    };
+    expect(selectToolsForDecision(current, tools, 15)).toHaveLength(10);
+  });
+
+  it("pins Git step recovery after pressure even when the source output was not truncated", () => {
+    const current = state("recover the exact prior step");
+    current.contextPressure = {
+      ...createInitialContextPressureState(),
+      mode: "tool_compact",
+    };
+    current.toolContext = {
+      recent: [],
+      toolCalls: recoverableToolCalls().map((call) => ({
+        ...call,
+        outputTruncated: undefined,
+      })),
+    };
+
+    const selected = selectToolsForDecision(current, [
+      tool("write_files", 100),
+      tool("read_files", 90),
+      tool("git_context_read_run_step", 0),
+    ], 2);
+
+    expect(selected.map((entry) => entry.name)).toEqual([
+      "write_files",
+      "git_context_read_run_step",
+    ]);
   });
 });
 

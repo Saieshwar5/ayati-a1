@@ -51,6 +51,14 @@ export function hasRecoverableBoundedRunToolCall(calls: RunToolCallContext[] | u
   return (calls ?? []).some((call) => call.outputTruncated === true && Boolean(call.stepRef));
 }
 
+export function shouldExposeRunStepRecoveryTool(input: {
+  calls: RunToolCallContext[] | undefined;
+  pressureActive: boolean;
+}): boolean {
+  return hasRecoverableBoundedRunToolCall(input.calls)
+    || (input.pressureActive && (input.calls ?? []).some((call) => Boolean(call.stepRef)));
+}
+
 function projectPromptToolCall(call: RunToolCallContext): PromptRunToolCallContext {
   const projected: PromptRunToolCallContext = {
     step: call.step,

@@ -113,7 +113,12 @@ context.timeline + context.git + context.tools + context.harness + context.run +
   priority, tool lifecycles, deterministic follow-up loading, and runtime
   removal policy.
 - Smaller purpose-built tool groups, 15 selected executable tools by default,
-  and multi-group `decision_load_tools` requests.
+  a true total cap that includes required routing/recovery tools, and
+  multi-group `decision_load_tools` requests. Native tools are the only schema
+  authority; the textual prompt carries names rather than duplicated schemas.
+  After context pressure, later decisions select at most ten executable tools,
+  pin Git step recovery when refs exist, and use a compact hidden-tool query
+  hint while retaining the internal working set for fast rotation.
 - Deterministic file-vs-shell loading: create/build website/app/project intent
   prepares file create/write/read tools, while shell loads for explicit
   run/test/install/start/build-command intent.

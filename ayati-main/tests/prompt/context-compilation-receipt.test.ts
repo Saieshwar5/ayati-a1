@@ -128,6 +128,8 @@ function report(overrides: Partial<ContextBudgetReport> = {}): ContextBudgetRepo
     softInputTokens: 70_000,
     hardInputTokens: 100_000,
     localAdmissionInputTokens: 95_000,
+    localMessageTokens: 64_000,
+    localToolSchemaTokens: 997,
     localEstimateTokens: 65_000,
     correctedLocalEstimateTokens: 72_000,
     providerCountStatus: "unavailable",

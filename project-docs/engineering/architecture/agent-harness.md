@@ -186,9 +186,12 @@ system:
   truncated runtime system context, when present
 
 user:
-  selected executable tool definitions for this decision
+  compact selected executable tool-name list
   compact hidden tool loading map with loadable groups and representative tool names
   State view JSON
+
+native tools:
+  authoritative executable names, descriptions, and input schemas
 ```
 
 Stable decision rules live in the system message so repeated decisions share a
@@ -328,15 +331,32 @@ summarize protected context on its own.
 
 ## Tool Visibility
 
-The runtime keeps a hidden catalog of available tools and exposes a run-scoped
-working set of at most `maxSelectedTools` executable schemas, currently 15 by
-default. The source of truth for tool grouping and lifecycle metadata is the
-static tool taxonomy, not scattered prompt text.
+The runtime keeps a hidden catalog and run-scoped working set, then selects at
+most `maxSelectedTools` executable schemas for one decision, currently 15 by
+default. Required routing and Git recovery tools consume slots inside that
+total instead of being appended outside it. Native harness controls such as
+`decision_load_tools`, `update_work_state`, and `ask_user_feedback` are a small
+separate surface and do not consume executable-tool slots.
 
-The hidden catalog prompt summary is compact by design. It lists smaller
-purpose-built loadable groups and representative tool names so the model can
-request 1-3 groups together, or exact names when obvious, without injecting
-every full tool schema into every decision.
+Native provider tools are the only callable schema authority. The textual user
+prompt contains only selected executable names; it does not duplicate input or
+output schemas, annotations, or selection hints. Input schemas, including the
+runtime-added task-completion contract, are sent once through native tool
+calling. Output contracts, annotations, taxonomy, and selection hints remain
+runtime-owned.
+
+After a run encounters enforced context pressure, later decisions cap the
+selected executable surface at ten tools, or the smaller configured limit.
+The hidden working set is not destructively reduced; the selector rescans it
+for the best tools on every decision, and `decision_load_tools` can rotate
+missing capabilities. A required `git_context_read_run_step` schema is pinned
+inside the pressure cap when persisted step refs are available.
+
+The normal hidden catalog prompt summary lists smaller purpose-built loadable
+groups and representative tool names so the model can request 1-3 groups
+together. After pressure it collapses to a short loading instruction; free-text
+`decision_load_tools` queries remain available without repeating the complete
+group and skill map.
 
 Tool groups should stay small and purpose-built. Examples include:
 
