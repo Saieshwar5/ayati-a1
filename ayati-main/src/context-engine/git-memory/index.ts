@@ -12,6 +12,7 @@ export * from "./session-summary.js";
 export * from "./session-snapshot.js";
 export * from "./session-snapshot-schema.js";
 export * from "./session-store.js";
+export * from "./session-context-projection.js";
 export * from "./task-notes.js";
 export * from "./task-refs.js";
 export * from "./task-run-checkpoint.js";

@@ -79,6 +79,11 @@ context.timeline + context.git + context.tools + context.harness + context.run +
 - Deterministic checkpoint fallback, persisted coverage trailers, source-hash
   revalidation, and duplicate-run protection keep task completion reliable when
   generation fails or finalization is retried.
+- Commit-aware session projection exposes the newest five valid task-run
+  checkpoints under `context.git.session.recentTaskRuns` and keeps every exact
+  conversation record after the latest valid checkpoint in `context.timeline`.
+  Malformed checkpoints cannot advance coverage; attachment metadata is bounded
+  to ten records and session section token estimates are retained internally.
 - Compact model-facing git-context tool results that do not expose the full
   internal memory cache.
 - Hot tool-output observation retention: `next_step`, `while_relevant`, and

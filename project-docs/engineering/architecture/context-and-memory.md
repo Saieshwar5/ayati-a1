@@ -77,11 +77,13 @@ promoted later.
 The model-facing prompt uses a grouped context projection. The important paths
 are:
 
-- `context.timeline`: the complete recent conversation tail supplied by the
-  context engine and the exact current input. The agent context pack applies no
-  additional fixed event-count or per-message character cap.
+- `context.timeline`: the complete exact conversation after the latest valid
+  task-run checkpoint, plus the exact current input. Before the first task-run
+  checkpoint it contains the complete session conversation. The agent context
+  pack applies no additional fixed event-count or per-message character cap.
 - `context.git.session`: session identity, optional compressed session summary,
-  user-provided session attachments, and recent session activity.
+  the latest five task-run checkpoint summaries, up to ten recent attachment
+  metadata records, and recent session activity.
 - `context.git.current`: current git focus, pending turn state, and selected
   task context when a task is resolved.
 - `context.tools`: active tool names and the latest tool-load result.
@@ -103,8 +105,9 @@ prompt section. New model-facing guidance should use the grouped paths above.
 - recent run summaries and evidence summaries
 
 The default harness context is intentionally compact. It should include the
-current input and exact recent conversation in `context.timeline`, compressed
-session history in `context.git.session.summary` when available, pending turn
+current input and exact open conversation in `context.timeline`, compressed
+session history in `context.git.session.summary` when available, the newest
+five task-run checkpoints in `context.git.session.recentTaskRuns`, pending turn
 state, active task identity/state, recent active-task runs, recent evidence
 summaries, assets, and pending/degraded git writes.
 
@@ -170,6 +173,13 @@ This boundary is read back after restart, so the next task-run checkpoint starts
 at the following conversation sequence without depending on in-memory state.
 Generation runs outside the serialized session write queue. Before persistence,
 the finalizer revalidates the prepared interval's source hash.
+
+The session projection reads the newest five valid checkpoint commits in
+chronological order. Its open timeline contains every exact conversation record
+after the newest valid checkpoint boundary. Invalid checkpoint metadata cannot
+advance the boundary; Ayati retains more exact conversation instead of risking
+an uncovered gap. Projection metrics separately estimate summary, checkpoint,
+open-timeline, and attachment tokens for later pressure policy.
 
 ## Hot Tool Context
 

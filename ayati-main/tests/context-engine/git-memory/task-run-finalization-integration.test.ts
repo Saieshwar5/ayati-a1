@@ -103,6 +103,22 @@ describe("task-run finalization session updates", () => {
       taskCommit: finalized.taskCommit,
       sessionStoreCommit: finalized.sessionStoreCommit,
     });
+    const nextTurn = await runtime.prepareUserTurn({
+      userMessage: "What should we do next?",
+      at: "2026-07-10T09:12:00+05:30",
+    });
+    expect(nextTurn.userMessage.seq).toBe(3);
+    expect(nextTurn.context.session.conversationTail).toMatchObject([{
+      seq: 3,
+      role: "user",
+      text: "What should we do next?",
+    }]);
+    expect(nextTurn.context.session.recentTaskRuns).toMatchObject([{
+      workId: routed.taskId,
+      runId: routed.runId,
+      fromSeq: 1,
+      toSeq: 2,
+    }]);
     expect(await store.readSessionSummary(prepared.sessionId)).toMatchObject({
       text: expect.stringContaining("Upload handling was inspected."),
       coveredUntilSeq: 2,

@@ -26,6 +26,7 @@ import {
 } from "./session-summary.js";
 import { renderTaskRunCheckpointCommitMessage } from "./task-run-finalization.js";
 import type { TaskRunCheckpoint } from "./task-run-checkpoint.js";
+import { selectRecentTaskRunCheckpoints } from "./session-context-projection.js";
 import {
   defaultRunOutcome,
   defaultSessionRunOutcome,
@@ -841,26 +842,18 @@ export class GitMemoryDailySessionStore {
     if (!messageStore) {
       return undefined;
     }
-    for (const entry of await messageStore.log(GIT_MEMORY_MAIN_REF, 100)) {
-      const trailers = parseGitMemoryCommitTrailers(entry.message);
-      if (trailers.event !== "task_run_checkpointed" || !trailers.taskId || !trailers.runId) {
-        continue;
-      }
-      const checkpointId = trailers.raw["Ayati-Checkpoint-Id"]?.[0];
-      const sourceHash = trailers.raw["Ayati-Checkpoint-Source-Hash"]?.[0];
-      const coveredUntilSeq = trailers.conversationSeq?.toSeq;
-      if (!checkpointId || !sourceHash || coveredUntilSeq === undefined) {
-        continue;
-      }
-      return {
-        checkpointId,
-        taskId: trailers.taskId,
-        runId: trailers.runId,
-        coveredUntilSeq,
-        sourceHash,
-      };
-    }
-    return undefined;
+    const latest = selectRecentTaskRunCheckpoints({
+      entries: await messageStore.log(GIT_MEMORY_MAIN_REF, 100),
+      sessionId,
+      limit: 1,
+    })[0];
+    return latest ? {
+      checkpointId: latest.checkpointId,
+      taskId: latest.workId,
+      runId: latest.runId,
+      coveredUntilSeq: latest.toSeq,
+      sourceHash: latest.sourceHash,
+    } : undefined;
   }
 
   async writeSessionAttachments(

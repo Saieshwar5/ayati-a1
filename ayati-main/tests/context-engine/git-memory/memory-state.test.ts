@@ -61,7 +61,7 @@ describe("GitContextMemoryStateHydrator", () => {
     const state = await createGitContextMemoryStateHydrator(prepared.store).hydrate({
       sessionId: prepared.session.sessionId,
       limits: {
-        conversationTailLimit: 1,
+        recentTaskRunCheckpointLimit: 1,
         activityTailLimit: 2,
         runLimit: 1,
         commitLogLimit: 1,
@@ -78,6 +78,10 @@ describe("GitContextMemoryStateHydrator", () => {
       taskCount: 1,
       currentBranch: prepared.task.branch,
       conversationTail: [{
+        seq: 1,
+        role: "user",
+        text: "Fix upload handling",
+      }, {
         seq: 2,
         role: "assistant",
         text: "I will inspect upload handling.",

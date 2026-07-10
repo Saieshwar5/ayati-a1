@@ -17,6 +17,7 @@ export interface PromptGitContext {
 export interface PromptGitSessionContext {
   meta: ContextEngineMachineContext["session"]["meta"];
   summary?: ContextEngineMachineContext["session"]["summary"];
+  recentTaskRuns?: ContextEngineMachineContext["session"]["recentTaskRuns"];
   attachments?: unknown;
   activity: {
     recent: ContextEngineMachineContext["session"]["activityTail"];
@@ -170,6 +171,7 @@ function projectGitSessionForPrompt(
   return {
     meta: readSessionMeta(session),
     ...(session.summary ? { summary: session.summary } : {}),
+    ...(session.recentTaskRuns ? { recentTaskRuns: session.recentTaskRuns } : {}),
     ...(attachments ?? session.attachments ? { attachments: attachments ?? session.attachments } : {}),
     activity: {
       recent: session.activityTail,

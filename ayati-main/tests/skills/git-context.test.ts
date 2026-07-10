@@ -102,7 +102,7 @@ describe("git-context skill", () => {
 
     const result = await tool.execute({
       limits: {
-        conversationTailLimit: 2,
+        recentTaskRunCheckpointLimit: 2,
         activityTailLimit: 5,
         runLimit: 2,
         evidenceLimit: 1,

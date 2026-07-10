@@ -7,7 +7,15 @@ import type {
   GitMemoryPendingTurnContext,
   GitMemoryPendingWriteContext,
 } from "./context-pack.js";
-import type { ContextSessionAttachments, ContextSessionMeta, ContextSessionSummary, ContextTaskArtifactRecord, TaskAssetRecord } from "../contracts.js";
+import type {
+  ContextSessionAttachments,
+  ContextSessionMeta,
+  ContextSessionProjectionMetrics,
+  ContextSessionSummary,
+  ContextSessionTaskRunCheckpoint,
+  ContextTaskArtifactRecord,
+  TaskAssetRecord,
+} from "../contracts.js";
 import { GitMemoryContextReader } from "./context-pack.js";
 import type {
   GitMemoryDailySessionStore,
@@ -54,10 +62,12 @@ export interface GitContextMemoryState {
     conversationTail: GitMemoryConversationRecord[];
     conversationMarkdownTail: string;
     summary?: ContextSessionSummary;
+    recentTaskRuns?: ContextSessionTaskRunCheckpoint[];
     attachments?: ContextSessionAttachments;
     activityTail: GitMemoryCommitActivityRecord[];
     recentCommits: GitMemoryModelCommitSummary[];
     taskCount: number;
+    projection?: ContextSessionProjectionMetrics;
     currentBranch?: string;
   };
   pendingWrites: GitMemoryPendingWriteContext[];
@@ -92,10 +102,12 @@ export class GitContextMemoryStateHydrator {
         conversationTail: context.session.conversationTail,
         conversationMarkdownTail: context.session.conversationMarkdownTail,
         ...(context.session.summary ? { summary: context.session.summary } : {}),
+        ...(context.session.recentTaskRuns ? { recentTaskRuns: context.session.recentTaskRuns } : {}),
         ...(context.session.attachments ? { attachments: context.session.attachments } : {}),
         activityTail: context.session.activityTail,
         recentCommits: context.session.recentCommits,
         taskCount: context.session.taskCount,
+        ...(context.session.projection ? { projection: context.session.projection } : {}),
         ...(context.focus.status === "active" ? { currentBranch: context.focus.branch } : {}),
       },
       pendingWrites: [],
@@ -121,10 +133,12 @@ export function buildGitMemoryContextPackFromMemoryState(
       conversationTail: state.session.conversationTail,
       conversationMarkdownTail: state.session.conversationMarkdownTail,
       ...(state.session.summary ? { summary: state.session.summary } : {}),
+      ...(state.session.recentTaskRuns ? { recentTaskRuns: state.session.recentTaskRuns } : {}),
       ...(state.session.attachments ? { attachments: state.session.attachments } : {}),
       activityTail: state.session.activityTail,
       recentCommits: state.session.recentCommits,
       taskCount: state.session.taskCount,
+      ...(state.session.projection ? { projection: state.session.projection } : {}),
     },
     ...(state.pendingWrites.length > 0 ? { pendingWrites: state.pendingWrites } : {}),
     ...(state.pendingTurn ? { pendingTurn: state.pendingTurn } : {}),

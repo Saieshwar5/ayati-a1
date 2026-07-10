@@ -36,6 +36,7 @@ import {
   type GitMemoryPendingTurnContext,
   type GitMemoryMachineContextPack,
 } from "./context-pack.js";
+import { updateGitMemorySessionProjectionMetrics } from "./session-context-projection.js";
 import {
   appendGitMemoryConversationMarkdown,
   appendGitMemoryConversationMarkdownRecords,
@@ -921,16 +922,7 @@ export class GitMemoryRuntime {
   async finalizeTaskRun(input: FinalizeGitMemoryTaskRunInput): Promise<FinalizeGitMemoryTaskRunResult> {
     const baseCommitInput = buildGitMemoryTaskRunCommitInput(input);
     const finalized = await this.taskRunFinalizer.finalize(input);
-    if (finalized.assistantMessage) {
-      this.invalidateSessionMemory(baseCommitInput.sessionId);
-    }
-    if (!finalized.alreadyFinalized && !await this.cacheCommittedTaskRun({
-      ...baseCommitInput,
-      conversationRefs: finalized.assistantMessage
-        ? includeConversationRecordInRefs(baseCommitInput.conversationRefs, finalized.assistantMessage)
-        : baseCommitInput.conversationRefs,
-      ...(finalized.sessionStoreCommit ? { sessionStoreCommit: finalized.sessionStoreCommit } : {}),
-    }, finalized)) {
+    if (!finalized.alreadyFinalized) {
       this.invalidateSessionMemory(baseCommitInput.sessionId);
     }
     this.clearCommittedPendingTurn(baseCommitInput.sessionId, finalized.runId);
@@ -992,19 +984,20 @@ export class GitMemoryRuntime {
     state: GitContextMemoryState,
     record: GitMemoryConversationRecord,
   ): void {
+    const conversationTail = [...state.session.conversationTail, record];
     const nextState: GitContextMemoryState = {
       ...state,
       pendingWrites: [],
       session: {
         ...state.session,
-        conversationTail: tail(
-          [...state.session.conversationTail, record],
-          DEFAULT_GIT_MEMORY_CONTEXT_LIMITS.conversationTailLimit,
-        ),
+        conversationTail,
         conversationMarkdownTail: markdownTail(
           appendGitMemoryConversationMarkdown(state.session.conversationMarkdownTail, record),
           DEFAULT_GIT_MEMORY_CONTEXT_LIMITS.conversationMarkdownCharLimit,
         ),
+        ...(state.session.projection ? {
+          projection: updateGitMemorySessionProjectionMetrics(state.session.projection, conversationTail),
+        } : {}),
       },
     };
     this.sessionMemoryCache.set(state.session.meta.sessionId, nextState);
@@ -1205,18 +1198,19 @@ export class GitMemoryRuntime {
     if (!state || !taskId || state.activeTask?.taskId !== taskId) {
       return false;
     }
+    const conversationTail = [...state.session.conversationTail, record];
     this.sessionMemoryCache.set(sessionId, {
       ...state,
       session: {
         ...state.session,
-        conversationTail: tail(
-          [...state.session.conversationTail, record],
-          DEFAULT_GIT_MEMORY_CONTEXT_LIMITS.conversationTailLimit,
-        ),
+        conversationTail,
         conversationMarkdownTail: markdownTail(
           appendGitMemoryConversationMarkdown(state.session.conversationMarkdownTail, record),
           DEFAULT_GIT_MEMORY_CONTEXT_LIMITS.conversationMarkdownCharLimit,
         ),
+        ...(state.session.projection ? {
+          projection: updateGitMemorySessionProjectionMetrics(state.session.projection, conversationTail),
+        } : {}),
       },
       activeTask: {
         ...state.activeTask,
@@ -1372,7 +1366,10 @@ export class GitMemoryRuntime {
     },
   ): GitMemoryConversationRecord {
     return {
-	      seq: nextConversationSeq(state.session.conversationTail),
+	      seq: nextConversationSeq(
+        state.session.conversationTail,
+        state.session.projection?.latestConversationSeq,
+      ),
 	      role: input.role,
 	      ...(input.kind ? { kind: input.kind } : {}),
 	      at: input.at,
@@ -1435,10 +1432,6 @@ function partValue(parts: Intl.DateTimeFormatPart[], type: Intl.DateTimeFormatPa
   return value;
 }
 
-function tail<T>(items: T[], limit: number): T[] {
-  return items.slice(Math.max(0, items.length - limit));
-}
-
 function markdownTail(value: string, limit: number): string {
   if (value.length <= limit) {
     return value;
@@ -1446,10 +1439,10 @@ function markdownTail(value: string, limit: number): string {
   return value.slice(value.length - limit);
 }
 
-function nextConversationSeq(records: Array<{ seq?: unknown }>): number {
+function nextConversationSeq(records: Array<{ seq?: unknown }>, latestConversationSeq = 0): number {
   return records.reduce((max, record) => (
     typeof record.seq === "number" && Number.isInteger(record.seq) ? Math.max(max, record.seq) : max
-  ), 0) + 1;
+  ), latestConversationSeq) + 1;
 }
 
 function conversationRecordsInRange(
@@ -1457,27 +1450,6 @@ function conversationRecordsInRange(
   range: { fromSeq: number; toSeq: number },
 ): GitMemoryConversationRecord[] {
   return records.filter((record) => record.seq >= range.fromSeq && record.seq <= range.toSeq);
-}
-
-function includeConversationRecordInRefs(
-  refs: GitMemoryConversationSeqRange[],
-  record: GitMemoryConversationRecord,
-): GitMemoryConversationSeqRange[] {
-  if (refs.length === 0) {
-    return [{ fromSeq: record.seq, toSeq: record.seq }];
-  }
-  const next = refs.map((ref) => ({ ...ref }));
-  const containing = next.find((ref) => record.seq >= ref.fromSeq && record.seq <= ref.toSeq);
-  if (containing) {
-    return next;
-  }
-  const last = next[next.length - 1]!;
-  if (record.seq >= last.fromSeq) {
-    last.toSeq = Math.max(last.toSeq, record.seq);
-    return next;
-  }
-  next.push({ fromSeq: record.seq, toSeq: record.seq });
-  return next.sort((left, right) => left.fromSeq - right.fromSeq);
 }
 
 function sameConversationRange(

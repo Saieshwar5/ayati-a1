@@ -310,7 +310,7 @@ describe("GitMemoryContextReader", () => {
     const pack = await new GitMemoryContextReader(store).buildActiveContext({
       sessionId: session.sessionId,
       limits: {
-        conversationTailLimit: 3,
+        recentTaskRunCheckpointLimit: 3,
         activityTailLimit: 4,
         runLimit: 3,
         evidenceLimit: 3,

@@ -1141,10 +1141,18 @@ describe("GitMemoryRuntime", () => {
     expect(second.assistantMessage).toBeUndefined();
 
     const context = await runtime.buildActiveContext(prepared.sessionId);
-    expect(context.session.conversationTail).toMatchObject([
-      { seq: 1, role: "user", text: "Fix upload handling" },
-      { seq: 2, role: "assistant", taskId: routed.taskId, runId: routed.runId },
-    ]);
+    expect(context.session.conversationTail).toEqual([]);
+    expect(context.session.recentTaskRuns).toMatchObject([{
+      workId: routed.taskId,
+      runId: routed.runId,
+      fromSeq: 1,
+      toSeq: 2,
+    }]);
+    expect(context.session.projection).toMatchObject({
+      latestConversationSeq: 2,
+      checkpointBoundarySeq: 2,
+      timelineTokens: expect.any(Number),
+    });
     expect(context.session.summary).toBeUndefined();
     expect(context.task?.recentRuns).toMatchObject([
       { runId: routed.runId, status: "completed" },

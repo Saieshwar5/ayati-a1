@@ -1192,6 +1192,7 @@ Decision rules:
 - Use context.git.current.focus to understand whether the runtime selected an existing work branch or created/kept current work.
 - Use context.git.session.meta for session identity, context.git.session.attachments for persisted user-provided session inputs, State view.attachments for current uploaded/attached inputs, and context.git.session.activity for recent session activity.
 - Use context.git.session.summary as compressed session history. Use context.timeline for exact recent messages and current input. If summary and exact conversation conflict, trust context.timeline.
+- Use context.git.session.recentTaskRuns for the newest task-run checkpoint summaries that precede context.timeline. They are chronological and bounded; exact timeline events remain authoritative.
 - Treat context.git.session.summary as an aid, not a complete source of truth; do not infer omitted details from it.
 - Task routing tools may be visible briefly at the start of a run. Before task work, decide whether the current request belongs to the current active task, a different existing task, a new task, or no task.
 - If the request clearly continues the current active task, continue directly with normal task tools; do not call a routing tool just to confirm the active task.

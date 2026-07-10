@@ -390,11 +390,13 @@ The decision model receives a compact `State view` each iteration. Runtime code
 may keep compatibility aliases internally, but the model prompt is projected to
 a deduplicated grouped payload:
 
-- `context.timeline`: the complete recent conversation tail supplied by the
-  context engine, ending with the exact current input. The agent context pack
-  does not apply another event-count or per-message character cap.
+- `context.timeline`: every exact conversation record after the latest valid
+  task-run checkpoint, ending with the exact current input. Before the first
+  task-run checkpoint it contains the complete session conversation. The agent
+  context pack does not apply another event-count or per-message character cap.
 - `context.git.session`: session metadata, optional compressed session summary,
-  session attachments, and recent session activity.
+  the latest five task-run checkpoints, up to ten recent session attachment
+  metadata records, and recent session activity.
 - `context.git.current`: focus, pending-turn routing state, and selected task
   context when a task is resolved.
 - `context.tools`: active tool names and the latest tool-load result.

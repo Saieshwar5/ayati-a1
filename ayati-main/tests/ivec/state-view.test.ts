@@ -195,6 +195,64 @@ describe("buildAgentStateView", () => {
     expect(context.git?.session.summary).not.toHaveProperty("conversationTail");
   });
 
+  it("projects recent task-run checkpoints separately from the exact timeline", () => {
+    const gitContext = createGitContext();
+    const state = createLoopState({
+      currentSeq: 7,
+      userMessage: "Continue with the next step.",
+      harnessContext: createHarnessContext({
+        contextEngine: createGitContext({
+          session: {
+            ...gitContext.session,
+            conversationTail: [{
+              seq: 7,
+              role: "user",
+              at: "2026-06-27T10:07:00.000Z",
+              text: "Continue with the next step.",
+            }],
+            recentTaskRuns: [{
+              checkpointId: `task-run-checkpoint-${"a".repeat(64)}`,
+              commit: "checkpoint-commit",
+              workId: "W-20260627-0001",
+              runId: "R-20260627-0001",
+              status: "completed",
+              fromSeq: 1,
+              toSeq: 6,
+              sourceHash: "a".repeat(64),
+              strategy: "llm",
+              at: "2026-06-27T10:06:00.000Z",
+              summary: "Summary:\nSession interval: prepared the context system.",
+            }],
+            projection: {
+              latestConversationSeq: 7,
+              checkpointBoundarySeq: 6,
+              summaryTokens: 20,
+              checkpointTokens: 80,
+              timelineTokens: 10,
+              attachmentTokens: 0,
+              totalSessionTokens: 110,
+            },
+          },
+        }),
+      }),
+    });
+
+    const context = buildAgentStateView(state).context;
+    expect(context.timeline).toEqual([{
+      kind: "user",
+      seq: 7,
+      timestamp: "2026-06-27T10:07:00.000Z",
+      content: "Continue with the next step.",
+      current: true,
+    }]);
+    expect(context.git?.session.recentTaskRuns).toMatchObject([{
+      runId: "R-20260627-0001",
+      fromSeq: 1,
+      toSeq: 6,
+    }]);
+    expect(context.git?.session).not.toHaveProperty("projection");
+  });
+
   it("adds routing feedback for an unbound pending turn", () => {
     const state = createLoopState({
       harnessContext: createHarnessContext({

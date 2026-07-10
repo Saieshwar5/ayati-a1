@@ -216,7 +216,7 @@ function createActiveContextTool(
         type: "object",
         description: "Optional context reader limits.",
         properties: {
-          conversationTailLimit: { type: "number" },
+          recentTaskRunCheckpointLimit: { type: "number" },
           activityTailLimit: { type: "number" },
           runLimit: { type: "number" },
           evidenceLimit: { type: "number" },

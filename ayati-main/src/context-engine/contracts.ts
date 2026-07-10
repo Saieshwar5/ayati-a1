@@ -189,6 +189,30 @@ export interface ContextSessionSummary {
   coveredUntilSeq?: number;
 }
 
+export interface ContextSessionTaskRunCheckpoint {
+  checkpointId: string;
+  commit: string;
+  workId: string;
+  runId: string;
+  status: "completed" | "failed" | "blocked" | "needs_user_input";
+  fromSeq: number;
+  toSeq: number;
+  sourceHash: string;
+  strategy: "llm" | "deterministic";
+  at: string;
+  summary: string;
+}
+
+export interface ContextSessionProjectionMetrics {
+  latestConversationSeq: number;
+  checkpointBoundarySeq?: number;
+  summaryTokens: number;
+  checkpointTokens: number;
+  timelineTokens: number;
+  attachmentTokens: number;
+  totalSessionTokens: number;
+}
+
 export interface ContextSessionAttachmentRecord {
   sessionAssetId: string;
   kind: string;
@@ -228,9 +252,11 @@ export interface ContextEngineMachineContext {
     conversationTail: ContextConversationRecord[];
     conversationMarkdownTail?: string;
     summary?: ContextSessionSummary;
+    recentTaskRuns?: ContextSessionTaskRunCheckpoint[];
     attachments?: ContextSessionAttachments;
     activityTail: ContextSessionActivityRecord[];
     recentCommits?: ContextCommitSummary[];
+    projection?: ContextSessionProjectionMetrics;
   };
   pendingWrites?: ContextPendingWrite[];
   pendingTurn?: ContextPendingTurn;

@@ -15,15 +15,27 @@ import {
   readGitMemoryTaskEntries,
 } from "./task-refs.js";
 import { parseGitMemorySessionSummary } from "./session-summary.js";
-import type { ContextSessionAttachments, ContextSessionMeta, ContextSessionSummary, ContextTaskArtifactRecord, TaskAssetRecord } from "../contracts.js";
+import type {
+  ContextSessionAttachments,
+  ContextSessionMeta,
+  ContextSessionProjectionMetrics,
+  ContextSessionSummary,
+  ContextSessionTaskRunCheckpoint,
+  ContextTaskArtifactRecord,
+  TaskAssetRecord,
+} from "../contracts.js";
 import { GitMemoryWorktreeGitDriver, type GitMemoryLogEntry } from "./git-driver.js";
+import {
+  buildGitMemorySessionProjection,
+  DEFAULT_RECENT_TASK_RUN_CHECKPOINT_LIMIT,
+  projectSessionAttachments,
+} from "./session-context-projection.js";
 import type { GitMemoryDailySessionStore } from "./session-store.js";
 import type {
   GitMemoryConversationRecord,
   GitMemoryConversationSeqRange,
   GitMemoryEvidenceManifestRecord,
   GitMemoryRunFile,
-  GitMemorySessionAttachmentRecord,
   GitMemorySessionId,
   GitMemorySessionMetaFile,
   GitMemoryStepRecord,
@@ -45,7 +57,7 @@ import {
 import { GIT_MEMORY_MAIN_REF } from "./session-store.js";
 
 export interface GitMemoryContextLimits {
-  conversationTailLimit: number;
+  recentTaskRunCheckpointLimit: number;
   activityTailLimit: number;
   runLimit: number;
   evidenceLimit: number;
@@ -54,7 +66,7 @@ export interface GitMemoryContextLimits {
 }
 
 export const DEFAULT_GIT_MEMORY_CONTEXT_LIMITS: GitMemoryContextLimits = {
-  conversationTailLimit: 20,
+  recentTaskRunCheckpointLimit: DEFAULT_RECENT_TASK_RUN_CHECKPOINT_LIMIT,
   activityTailLimit: 30,
   runLimit: 5,
   evidenceLimit: 5,
@@ -154,10 +166,12 @@ export interface GitMemoryMachineContextPack {
     conversationTail: GitMemoryConversationRecord[];
     conversationMarkdownTail: string;
     summary?: ContextSessionSummary;
+    recentTaskRuns?: ContextSessionTaskRunCheckpoint[];
     attachments?: ContextSessionAttachments;
     activityTail: GitMemoryCommitActivityRecord[];
     recentCommits: GitMemoryModelCommitSummary[];
     taskCount: number;
+    projection?: ContextSessionProjectionMetrics;
   };
   pendingWrites?: GitMemoryPendingWriteContext[];
   pendingTurn?: GitMemoryPendingTurnContext;
@@ -193,12 +207,13 @@ export class GitMemoryContextReader {
   }): Promise<GitMemoryMachineContextPack> {
     const limits = normalizeLimits(input.limits);
     const driver = await this.store.openExistingDriver(input.sessionId);
-    const [conversationMarkdownDocument, conversationRecords, taskEntries, currentBranch, sessionCommits, summary, attachments, meta] = await Promise.all([
+    const [conversationMarkdownDocument, conversationRecords, taskEntries, currentBranch, sessionCommits, checkpointLog, summary, attachments, meta] = await Promise.all([
       driver.readWorkingFile(GIT_MEMORY_SESSION_CONVERSATION_MARKDOWN_PATH),
       this.store.readSessionConversationRecords(input.sessionId),
       readGitMemoryTaskEntries(driver),
       driver.currentBranch(),
       readRecentCommits(driver, GIT_MEMORY_MAIN_REF, limits.commitLogLimit),
+      readSessionCheckpointLog(driver),
       readSessionSummary(driver, input.sessionId),
       this.store.readSessionAttachments(input.sessionId),
       this.store.readSessionMeta(input.sessionId),
@@ -207,18 +222,30 @@ export class GitMemoryContextReader {
     const useMessageStoreConversation = conversationRecords.length > 0
       && isCompatibleConversationPrefix(fallbackConversation, conversationRecords);
     const conversation = useMessageStoreConversation ? conversationRecords : fallbackConversation;
-    const conversationMarkdown = useMessageStoreConversation
-      ? markdownTail(renderGitMemoryConversationMarkdownDocument(conversation), limits.conversationMarkdownCharLimit)
-      : markdownTail(conversationMarkdownDocument, limits.conversationMarkdownCharLimit);
+    const contextAttachments = attachments ? projectSessionAttachments(attachments) : undefined;
+    const projection = buildGitMemorySessionProjection({
+      conversation,
+      checkpointLog,
+      sessionId: input.sessionId,
+      summary,
+      attachments: contextAttachments,
+      checkpointLimit: limits.recentTaskRunCheckpointLimit,
+    });
+    const conversationMarkdown = markdownTail(
+      renderGitMemoryConversationMarkdownDocument(projection.openTimeline),
+      limits.conversationMarkdownCharLimit,
+    );
     const session = {
       meta: toContextSessionMeta(input.sessionId, meta, attachments?.attachments.length ?? 0),
-      conversationTail: tail(conversation, limits.conversationTailLimit),
+      conversationTail: projection.openTimeline,
       conversationMarkdownTail: conversationMarkdown,
       ...(summary ? { summary } : {}),
-      ...(attachments ? { attachments: toContextSessionAttachments(attachments) } : {}),
+      ...(projection.recentTaskRuns.length > 0 ? { recentTaskRuns: projection.recentTaskRuns } : {}),
+      ...(contextAttachments ? { attachments: contextAttachments } : {}),
       activityTail: deriveSessionActivityTailFromCommits(sessionCommits, limits.activityTailLimit),
       recentCommits: sessionCommits.map(toModelCommitSummary),
       taskCount: taskEntries.length,
+      projection: projection.metrics,
     };
     const resolvedFocus = await resolveActiveFocus(driver, input.sessionId, currentBranch, taskEntries);
     if (resolvedFocus.status === "none") {
@@ -468,6 +495,13 @@ async function readRecentCommits(
   return (await driver.log(ref, limit)).map(compactGitMemoryCommit);
 }
 
+async function readSessionCheckpointLog(
+  driver: GitMemoryWorktreeGitDriver,
+): Promise<GitMemoryLogEntry[]> {
+  const messageStore = await openExistingSessionMessageStoreDriver(driver);
+  return messageStore ? await messageStore.log(GIT_MEMORY_MAIN_REF, 100) : [];
+}
+
 function deriveSessionActivityTailFromCommits(
   commits: CompactGitMemoryCommitSummary[],
   limit: number,
@@ -571,46 +605,6 @@ function toModelCommitSummary(commit: CompactGitMemoryCommitSummary): GitMemoryM
     ...(commit.trailers.runId ? { runId: commit.trailers.runId } : {}),
     ...(commit.trailers.branch ? { branch: commit.trailers.branch } : {}),
   };
-}
-
-function toContextSessionAttachments(input: {
-  updatedAt?: string;
-  attachments: GitMemorySessionAttachmentRecord[];
-}): ContextSessionAttachments {
-  const recent = input.attachments
-    .slice()
-    .sort(compareSessionAttachmentMostRecentFirst)
-    .slice(0, 8)
-    .map((attachment) => ({
-      sessionAssetId: attachment.sessionAssetId,
-      kind: attachment.kind,
-      name: attachment.name,
-      source: attachment.source,
-      status: attachment.status,
-      ...(attachment.documentId ? { documentId: attachment.documentId } : {}),
-      ...(attachment.fileId ? { fileId: attachment.fileId } : {}),
-      ...(attachment.directoryId ? { directoryId: attachment.directoryId } : {}),
-      ...(attachment.originalPath ? { originalPath: attachment.originalPath } : {}),
-      ...(attachment.storedPath ? { storedPath: attachment.storedPath } : {}),
-      ...(typeof attachment.sizeBytes === "number" ? { sizeBytes: attachment.sizeBytes } : {}),
-      ...(attachment.mimeType ? { mimeType: attachment.mimeType } : {}),
-      createdAt: attachment.createdAt,
-      ...(attachment.lastUsedAt ? { lastUsedAt: attachment.lastUsedAt } : {}),
-    }));
-  return {
-    count: input.attachments.length,
-    recent,
-    ...(input.updatedAt ? { updatedAt: input.updatedAt } : {}),
-  };
-}
-
-function compareSessionAttachmentMostRecentFirst(
-  left: GitMemorySessionAttachmentRecord,
-  right: GitMemorySessionAttachmentRecord,
-): number {
-  const leftTime = left.lastUsedAt ?? left.createdAt;
-  const rightTime = right.lastUsedAt ?? right.createdAt;
-  return rightTime.localeCompare(leftTime) || left.sessionAssetId.localeCompare(right.sessionAssetId);
 }
 
 async function readRefJson<T>(driver: GitMemoryWorktreeGitDriver, ref: string, path: string): Promise<T | null> {
@@ -853,7 +847,10 @@ function markdownTail(value: string | null, limit: number): string {
 
 function normalizeLimits(input: Partial<GitMemoryContextLimits> | undefined): GitMemoryContextLimits {
   return {
-    conversationTailLimit: positiveLimit(input?.conversationTailLimit, DEFAULT_GIT_MEMORY_CONTEXT_LIMITS.conversationTailLimit),
+    recentTaskRunCheckpointLimit: positiveLimit(
+      input?.recentTaskRunCheckpointLimit,
+      DEFAULT_GIT_MEMORY_CONTEXT_LIMITS.recentTaskRunCheckpointLimit,
+    ),
     activityTailLimit: positiveLimit(input?.activityTailLimit, DEFAULT_GIT_MEMORY_CONTEXT_LIMITS.activityTailLimit),
     runLimit: positiveLimit(input?.runLimit, DEFAULT_GIT_MEMORY_CONTEXT_LIMITS.runLimit),
     evidenceLimit: positiveLimit(input?.evidenceLimit, DEFAULT_GIT_MEMORY_CONTEXT_LIMITS.evidenceLimit),
