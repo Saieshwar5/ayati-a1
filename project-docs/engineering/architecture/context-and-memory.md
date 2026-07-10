@@ -176,7 +176,11 @@ run tool-call records or their evidence, and it does not summarize or compress
 `context.git.current.task` or `context.run.workState`. Those protected values
 are carried unchanged into the projected request. The active pressure mode is
 monotonic within the run and is exposed through a small
-`context.run.contextPressure` signal on later decisions.
+`context.run.contextPressure` signal on later decisions. This signal separates
+the applied `mode` from `recommendedMode`, tracks unresolved recovery attempts,
+and tells the model to use narrower recoverable actions. Repeated full-candidate
+soft breaches do not justify more compaction when the projected final request
+already reaches the recovery target.
 
 Tool-family projectors use bounded structured result metadata captured during
 execution. Read projections preserve requested paths/ranges and file metadata;

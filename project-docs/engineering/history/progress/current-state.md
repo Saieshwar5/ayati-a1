@@ -118,7 +118,11 @@ context.timeline + context.git + context.tools + context.harness + context.run +
   records budget and compilation receipts. The default 128K profile uses a 60K
   recovery target, 70K soft limit, and 100K hard input limit. Run-scoped state
   records pressure observations and exposes a compact pressure signal to later
-  decisions. Over-limit final requests are rejected before provider generation.
+  decisions. A deterministic controller resets unresolved pressure after
+  successful recovery, recommends a timeline checkpoint after two unresolved
+  iterations, and recommends it immediately near the admission limit. Applied
+  and recommended modes remain separate. Over-limit final requests are rejected
+  before provider generation.
 
 ## Runtime Boundary
 

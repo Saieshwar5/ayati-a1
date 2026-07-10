@@ -155,6 +155,9 @@ describe("parseAgentDecision", () => {
     expect(systemPrompt).toContain("stepRef");
     expect(systemPrompt).toContain("evidenceRef");
     expect(systemPrompt).toContain("git_context_read_run_step");
+    expect(systemPrompt).toContain("When context.run.contextPressure is present, work in small verifiable steps");
+    expect(systemPrompt).toContain("context.run.contextPressure.recommendedMode is a runtime escalation signal");
+    expect(systemPrompt).toContain("Do not summarize or rewrite timeline, task, session, work-state, or source tool records yourself");
     expect(systemPrompt).not.toContain("context.scratch");
     expect(systemPrompt).not.toContain("context.run.progress");
     expect(systemPrompt).not.toContain("context.run.feedback");
@@ -321,6 +324,57 @@ describe("parseAgentDecision", () => {
     expect(onContextCompilation).toHaveBeenCalledWith(expect.objectContaining({
       admitted: false,
       hardLimitExceeded: true,
+    }));
+  });
+
+  it("marks enforced pressure unresolved when no tool call is eligible for projection", async () => {
+    const generateTurn = vi.fn().mockResolvedValue({
+      type: "assistant",
+      content: JSON.stringify({ kind: "reply", status: "completed", message: "Continue" }),
+    });
+    const countInputTokens = vi.fn().mockResolvedValue({
+      provider: "fake-provider",
+      model: "test-model",
+      inputTokens: 80_000,
+      exact: true,
+    });
+    const provider: LlmProvider = {
+      name: "fake-provider",
+      version: "test-model",
+      capabilities: { nativeToolCalling: true },
+      start() {},
+      stop() {},
+      countInputTokens,
+      generateTurn,
+    };
+    const onContextCompilation = vi.fn();
+
+    await callAgentDecision({
+      provider,
+      stateView: createStateView({
+        context: {
+          timeline: [{
+            kind: "user",
+            seq: 1,
+            timestamp: "2026-07-10T00:00:00.000Z",
+            content: "x".repeat(300_000),
+            current: true,
+          }],
+        },
+      }),
+      toolDefinitions: [],
+      toolContextProjectionPolicy: "enforce",
+      onContextCompilation,
+    });
+
+    expect(countInputTokens).toHaveBeenCalledTimes(1);
+    expect(generateTurn).toHaveBeenCalledTimes(1);
+    expect(onContextCompilation).toHaveBeenCalledWith(expect.objectContaining({
+      mode: "full",
+      toolProjectionPolicy: "enforce",
+      targetReached: false,
+      needsEscalation: true,
+      admitted: true,
     }));
   });
 

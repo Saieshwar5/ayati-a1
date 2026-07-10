@@ -676,6 +676,8 @@ describe("buildAgentStateView", () => {
       contextPressure: {
         mode: "tool_compact",
         softLimitBreachCount: 1,
+        unresolvedPressureStreak: 0,
+        successfulRecoveryCount: 1,
         admissionRejectionCount: 0,
         peakCandidateInputTokens: 82_000,
         latestReceipt: {
@@ -705,8 +707,33 @@ describe("buildAgentStateView", () => {
 
     expect(buildAgentStateView(state).context.run?.contextPressure).toEqual({
       mode: "tool_compact",
+      unresolvedPressureStreak: 0,
       compactedCalls: 2,
       targetReached: true,
+      recoverable: true,
+    });
+  });
+
+  it("exposes a timeline recommendation without claiming it was applied", () => {
+    const state = createLoopState({
+      contextPressure: {
+        mode: "tool_compact",
+        recommendedMode: "timeline_checkpoint",
+        escalationReason: "repeated_unresolved_pressure",
+        softLimitBreachCount: 2,
+        unresolvedPressureStreak: 2,
+        successfulRecoveryCount: 0,
+        admissionRejectionCount: 0,
+        peakCandidateInputTokens: 84_000,
+      },
+    });
+
+    expect(buildAgentStateView(state).context.run?.contextPressure).toEqual({
+      mode: "tool_compact",
+      recommendedMode: "timeline_checkpoint",
+      escalationReason: "repeated_unresolved_pressure",
+      unresolvedPressureStreak: 2,
+      compactedCalls: 0,
       recoverable: true,
     });
   });

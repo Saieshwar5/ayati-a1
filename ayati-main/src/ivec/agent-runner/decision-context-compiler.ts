@@ -49,7 +49,7 @@ export async function compileDecisionContext(input: {
     softInputTokens: candidateBudget.softInputTokens,
   });
 
-  if (!plan.triggered || plan.calls.length === 0) {
+  if (!plan.triggered) {
     return fullCompilation(input.turnInput, candidateBudget, input.decisionAttempt);
   }
 
@@ -85,8 +85,17 @@ export async function compileDecisionContext(input: {
   };
 
   if (input.policy !== "enforce" || transformations.length === 0) {
+    const compilation = fullCompilation(input.turnInput, candidateBudget, input.decisionAttempt);
     return {
-      ...fullCompilation(input.turnInput, candidateBudget, input.decisionAttempt),
+      ...compilation,
+      receipt: {
+        ...compilation.receipt,
+        toolProjectionPolicy: input.policy,
+        ...(input.policy === "enforce" ? {
+          targetReached: candidateBudget.measuredInputTokens <= candidateBudget.recoveryTargetTokens,
+          needsEscalation: candidateBudget.measuredInputTokens > candidateBudget.recoveryTargetTokens,
+        } : {}),
+      },
       projection: projectionResult,
     };
   }

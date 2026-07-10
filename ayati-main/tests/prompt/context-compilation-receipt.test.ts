@@ -62,6 +62,7 @@ describe("context compilation receipt", () => {
       candidateInputTokens: 105_000,
       finalInputTokens: 58_000,
       candidateHardLimitExceeded: true,
+      toolProjectionPolicy: "enforce",
       targetReached: true,
       needsEscalation: false,
       admitted: true,

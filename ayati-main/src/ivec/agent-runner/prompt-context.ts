@@ -78,6 +78,9 @@ export interface PromptRunContext {
   };
   contextPressure?: {
     mode: "tool_compact" | "timeline_checkpoint" | "session_digest" | "step_ledger";
+    recommendedMode?: "timeline_checkpoint" | "session_digest" | "step_ledger";
+    escalationReason?: "near_admission_limit" | "repeated_unresolved_pressure";
+    unresolvedPressureStreak: number;
     compactedCalls: number;
     targetReached?: boolean;
     recoverable: true;

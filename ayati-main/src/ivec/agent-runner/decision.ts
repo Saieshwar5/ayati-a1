@@ -1193,6 +1193,8 @@ Decision rules:
 - Use context.run.workState as the reducer-built live work state for this run: summary, open work, blockers, verified facts, evidence, verified artifacts, next step, and user input needed.
 - Use context.run.toolCalls as the ordered tool-call memory for this run. Records with mode="full" include exact live input and output. Records with mode="preview", mode="summary", or mode="reference" were compacted for context budget; use their summary, input, outputPreview, errors, artifacts, stepRef, and evidenceRef without assuming omitted output. Prefer this memory before repeating an equivalent tool call.
 - If an older compacted tool-call record has a stepRef and exact omitted output is required, use git_context_read_run_step when available instead of repeating a broad equivalent read or command.
+- When context.run.contextPressure is present, work in small verifiable steps, use narrow tool inputs, preserve durable conclusions in work state, and prefer recovery refs over repeating broad reads or commands.
+- context.run.contextPressure.recommendedMode is a runtime escalation signal. Do not summarize or rewrite timeline, task, session, work-state, or source tool records yourself; continue useful work while the runtime applies available context stages.
 - Use context.harness.feedback as the latest harness feedback. Correct the specific failed tool call or protocol issue before trying a different path.
 - Use context.tools.active and context.tools.lastLoad as compact tool availability state. Full executable schemas are provided as native tools, not inside context.
 - Use context.personal.memorySnapshot for long-lived user preferences or facts when present.

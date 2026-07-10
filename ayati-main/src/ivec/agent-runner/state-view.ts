@@ -206,6 +206,9 @@ function buildContextPressureView(state: LoopState): PromptRunContext["contextPr
   if (!pressure || pressure.mode === "full") return undefined;
   return {
     mode: pressure.mode,
+    ...(pressure.recommendedMode ? { recommendedMode: pressure.recommendedMode } : {}),
+    ...(pressure.escalationReason ? { escalationReason: pressure.escalationReason } : {}),
+    unresolvedPressureStreak: pressure.unresolvedPressureStreak ?? 0,
     compactedCalls: pressure.latestReceipt?.transformations.filter(
       (transformation) => transformation.kind === "tool_call_projection",
     ).length ?? 0,

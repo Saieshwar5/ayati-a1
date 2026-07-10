@@ -25,6 +25,7 @@ export interface ContextCompilationReceipt {
   admitted: boolean;
   countSource: ContextBudgetReport["countSource"];
   candidateCountSource?: ContextBudgetReport["countSource"];
+  toolProjectionPolicy?: "shadow" | "enforce";
   targetReached?: boolean;
   needsEscalation?: boolean;
   transformations: Array<{
@@ -64,6 +65,7 @@ export function buildToolCompactContextCompilationReceipt(input: {
     admitted: !input.final.admissionLimitExceeded,
     countSource: input.final.countSource,
     candidateCountSource: input.candidate.countSource,
+    toolProjectionPolicy: "enforce",
     targetReached: input.final.measuredInputTokens <= input.final.recoveryTargetTokens,
     needsEscalation: input.final.measuredInputTokens > input.final.recoveryTargetTokens,
     transformations: input.transformations,

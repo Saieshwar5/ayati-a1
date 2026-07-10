@@ -246,6 +246,18 @@ one soft breach per runner iteration, so repair attempts do not artificially
 advance future pressure modes. Reports are emitted once per distinct decision
 or repair attempt, not once per transport retry.
 
+A deterministic pressure controller evaluates only the first decision attempt
+of each runner iteration. A tool-compacted request at or below the recovery
+target resets the unresolved-pressure streak, even if the full candidate keeps
+crossing the soft limit on later iterations. A compacted final request that
+remains above the target advances the streak. Two unresolved iterations
+recommend a timeline checkpoint; a final request at 90% or more of its
+admission limit recommends it immediately. Applied mode and recommended next
+mode are separate so the runtime never reports an unavailable compaction stage
+as already performed. Enforced pressure also counts as unresolved when there
+are no eligible older tool calls to compact; shadow-only observations never
+advance escalation policy.
+
 Current-run tool-call storage and prompt projection are separate. Below the
 soft limit, all prompt-eligible tool calls are sent in full; there is no fixed
 six-call or 30K-character history cap. At the soft limit, a deterministic
@@ -270,7 +282,9 @@ projected tokens and savings. After an enforced projection, the next state view
 receives a compact pressure signal with the active mode, number of compacted
 calls, and whether the recovery target was reached. This tells the agent to
 work in smaller, recoverable steps without replacing the stable decision
-contract.
+contract. The signal may include a recommended later mode and deterministic
+escalation reason. It is runtime-owned; the decision model must not rewrite or
+summarize protected context on its own.
 
 ## Tool Visibility
 

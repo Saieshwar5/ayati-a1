@@ -128,6 +128,52 @@ function fakeReadFileTool(): ToolDefinition {
   };
 }
 
+function fakePressureReadTool(): ToolDefinition {
+  return {
+    name: "read_files",
+    description: "Read a large file for context pressure testing.",
+    inputSchema: {
+      type: "object",
+      required: ["path"],
+      properties: {
+        path: { type: "string" },
+      },
+    },
+    annotations: {
+      domain: "filesystem",
+      readOnly: true,
+      mutatesWorkspace: false,
+      mutatesExternalWorld: false,
+      destructive: false,
+      idempotent: true,
+      retrySafe: true,
+      longRunning: false,
+    },
+    observationPolicy: {
+      outputImportance: "decision_context",
+      rawStorage: "always",
+      maxObservationChars: 70_000,
+    },
+    async execute(input) {
+      const path = typeof input === "object" && input && "path" in input
+        ? String((input as { path: unknown }).path)
+        : "unknown";
+      const output = `PRESSURE_OUTPUT_${path}\n${"context-pressure-line\n".repeat(3_000)}`;
+      return {
+        ok: true,
+        output,
+        v2: {
+          transportOk: true,
+          operationStatus: "succeeded",
+          code: "READ_FILE_OK",
+          message: `Read ${path}`,
+          structuredContent: { path, outputChars: output.length },
+        },
+      };
+    },
+  };
+}
+
 function fakeWriteFilesTool(): ToolDefinition {
   return {
     name: "write_files",
@@ -349,6 +395,115 @@ describe("run tool-call context", () => {
         tool: "read_files",
         output: expect.stringContaining("FULL_OUTPUT_file_1.txt"),
       });
+    } finally {
+      cleanup(dataDir);
+    }
+  });
+
+  it("recommends a timeline checkpoint after repeated unresolved enforced projections", async () => {
+    const dataDir = makeTmpDir();
+    const readTool = fakePressureReadTool();
+    const toolExecutor = createToolExecutor([readTool]);
+    const provider = createProvider([
+      () => ({
+        kind: "act",
+        action: {
+          mode: "sequential",
+          calls: Array.from({ length: 7 }, (_, index) => ({
+            id: `call_${index + 1}`,
+            tool: "read_files",
+            input: { path: `pressure_${index + 1}.txt` },
+            purpose: `Read pressure fixture ${index + 1}`,
+          })),
+          allowedTools: ["read_files"],
+          assertions: [],
+        },
+      }),
+      () => ({
+        kind: "act",
+        action: {
+          mode: "single",
+          calls: [{
+            id: "call_8",
+            tool: "read_files",
+            input: { path: "pressure_8.txt" },
+            purpose: "Continue after the first pressure observation",
+          }],
+          allowedTools: ["read_files"],
+          assertions: [],
+        },
+      }),
+      (input) => {
+        const pressure = extractStateView(userPrompt(input)).context.run.contextPressure;
+        expect(pressure).toMatchObject({
+          mode: "tool_compact",
+          unresolvedPressureStreak: 1,
+        });
+        expect(pressure).not.toHaveProperty("recommendedMode");
+        return {
+          kind: "act",
+          action: {
+            mode: "single",
+            calls: [{
+              id: "call_9",
+              tool: "read_files",
+              input: { path: "pressure_9.txt" },
+              purpose: "Continue after the second pressure observation",
+            }],
+            allowedTools: ["read_files"],
+            assertions: [],
+          },
+        };
+      },
+      (input) => {
+        const pressure = extractStateView(userPrompt(input)).context.run.contextPressure;
+        expect(pressure).toMatchObject({
+          mode: "tool_compact",
+          recommendedMode: "timeline_checkpoint",
+          escalationReason: "repeated_unresolved_pressure",
+          unresolvedPressureStreak: 2,
+        });
+        return {
+          kind: "reply",
+          status: "completed",
+          message: "Pressure escalation signal received.",
+        };
+      },
+    ]);
+    provider.countInputTokens = vi.fn(async (input) => {
+      const toolCalls = extractStateView(userPrompt(input)).context.run?.toolCalls ?? [];
+      const hasProjection = toolCalls.some((call: { mode: string }) => call.mode !== "full");
+      return {
+        provider: "mock",
+        model: "1.0.0",
+        inputTokens: hasProjection ? 75_000 : 80_000,
+        exact: true,
+      };
+    });
+
+    try {
+      const result = await agentLoop({
+        provider,
+        toolExecutor,
+        toolDefinitions: toolExecutor.definitions(),
+        runRecorder: noopRunRecorder,
+        runHandle: { sessionId: "s-pressure", runId: "r-pressure" },
+        clientId: "c-pressure",
+        initialUserMessage: "Read the pressure fixtures and report when enough context is available.",
+        dataDir,
+        systemContext: "system context",
+        config: {
+          maxTotalToolCallsPerStep: 8,
+          maxSequentialToolCallsPerStep: 8,
+          maxInlineActOutputChars: 100_000,
+          toolContextProjectionPolicy: "enforce",
+        },
+      });
+
+      expect(result.status).toBe("completed");
+      expect(result.totalIterations).toBe(4);
+      expect(result.content).toBe("Pressure escalation signal received.");
+      expect(provider.countInputTokens).toHaveBeenCalled();
     } finally {
       cleanup(dataDir);
     }
