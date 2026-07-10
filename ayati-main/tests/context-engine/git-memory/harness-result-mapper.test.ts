@@ -320,4 +320,50 @@ describe("buildGitMemoryTaskRunCommitInput", () => {
       },
     });
   });
+
+  it("keeps the task in progress when only the current run reaches context capacity", () => {
+    const mapped = buildGitMemoryTaskRunCommitInput({
+      sessionId: "S-20260628-local",
+      taskId: "W-20260628-0001",
+      result: {
+        type: "reply",
+        status: "stuck",
+        content: "This run reached its context capacity.",
+        totalIterations: 8,
+        totalToolCalls: 12,
+        runPath: "data/runs/r-context-limit",
+        taskSummary: {
+          taskStatus: "open",
+          stopReason: "context_limit",
+          summary: "The task remains in progress.",
+          completedMilestones: ["Finished the first stage."],
+          openWork: ["Complete the second stage."],
+          nextAction: "Complete the second stage.",
+        },
+        workState: {
+          status: "not_done",
+          summary: "The task remains in progress.",
+          openWork: ["Complete the second stage."],
+          blockers: [],
+          verifiedFacts: ["The first stage is verified."],
+          evidence: [],
+          nextStep: "Complete the second stage.",
+        },
+      },
+      conversationRefs: [{ fromSeq: 8, toSeq: 8 }],
+      at: "2026-06-28T10:30:00+05:30",
+    });
+
+    expect(mapped).toMatchObject({
+      status: "blocked",
+      next: "Complete the second stage.",
+      state: {
+        status: "in_progress",
+        completed: ["Finished the first stage."],
+        open: ["Complete the second stage."],
+        blockers: [],
+        next: "Complete the second stage.",
+      },
+    });
+  });
 });

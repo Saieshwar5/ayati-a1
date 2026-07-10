@@ -78,8 +78,8 @@ export interface PromptRunContext {
     callCount: number;
   };
   contextPressure?: {
-    mode: "tool_compact" | "timeline_checkpoint" | "session_digest" | "step_ledger";
-    recommendedMode?: "timeline_checkpoint" | "session_digest" | "step_ledger";
+    mode: "tool_compact" | "session_shed" | "timeline_checkpoint" | "step_ledger";
+    recommendedMode?: "session_shed" | "timeline_checkpoint" | "step_ledger";
     escalationReason?: "near_admission_limit" | "repeated_unresolved_pressure";
     unresolvedPressureStreak: number;
     compactedCalls: number;

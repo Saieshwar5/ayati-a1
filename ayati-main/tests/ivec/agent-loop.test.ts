@@ -3030,4 +3030,101 @@ describe("agentLoop", () => {
       cleanup(dataDir);
     }
   });
+
+  it("ends only the current task run when context recovery is exhausted", async () => {
+    const dataDir = makeTmpDir();
+    const feedback = createMemoryFeedbackLedger();
+    const currentRequest = `Continue the task: ${"x".repeat(300_000)}`;
+    const countInputTokens = vi.fn().mockResolvedValue({
+      provider: "mock",
+      model: "1.0.0",
+      inputTokens: 80_000,
+      exact: true,
+    });
+    const generateTurn = vi.fn();
+    const provider: LlmProvider = {
+      name: "mock",
+      version: "1.0.0",
+      capabilities: { nativeToolCalling: true, structuredOutput: { jsonObject: true, jsonSchema: true } },
+      start: vi.fn(),
+      stop: vi.fn(),
+      countInputTokens,
+      generateTurn,
+    };
+    try {
+      const result = await agentLoop({
+        provider,
+        toolDefinitions: [],
+        runRecorder: noopRunRecorder,
+        feedbackLedger: feedback.ledger,
+        inputHandle: { sessionId: "s1", seq: 3 },
+        runHandle: { sessionId: "s1", runId: "r-context-limit", triggerSeq: 3 },
+        clientId: "c1",
+        initialUserMessage: currentRequest,
+        dataDir,
+        systemContext: "full system context with memory",
+        harnessContext: {
+          contextEngine: {
+            session: {
+              sessionId: "s1",
+              activityTail: [],
+              assetCount: 0,
+              conversationTail: [{
+                seq: 3,
+                role: "user",
+                at: "2026-07-10T10:00:00.000Z",
+                text: currentRequest,
+              }],
+            },
+            focus: {
+              status: "active",
+              ref: "refs/heads/work/W-1-context",
+              workId: "W-1",
+            },
+            task: {
+              ref: "refs/heads/work/W-1-context",
+              workId: "W-1",
+              title: "Context-sensitive task",
+              objective: "Continue without losing durable task state.",
+              status: "active",
+              completed: ["Finished the first stage."],
+              open: ["Complete the second stage."],
+              blockers: [],
+              facts: [{ text: "The first stage is verified.", source: "fixture" }],
+              next: "Complete the second stage.",
+              assets: [],
+              recentRuns: [],
+              recentCommits: [],
+              recentEvidence: [],
+            },
+          },
+        },
+      });
+
+      expect(result).toMatchObject({
+        status: "stuck",
+        runClass: "task",
+        content: "This run reached its context capacity. I preserved the completed work and task state so it can continue in a new turn.",
+        workState: {
+          status: "not_done",
+          openWork: ["Complete the second stage."],
+          verifiedFacts: ["The first stage is verified."],
+          nextStep: "Complete the second stage.",
+        },
+        taskSummary: {
+          runStatus: "stuck",
+          taskStatus: "open",
+          stopReason: "context_limit",
+          completedMilestones: ["Finished the first stage."],
+          openWork: ["Complete the second stage."],
+          nextAction: "Complete the second stage.",
+        },
+      });
+      expect(countInputTokens).toHaveBeenCalledTimes(1);
+      expect(generateTurn).not.toHaveBeenCalled();
+      expect(feedbackEvents(feedback.events, "guard", "context_limit")).toHaveLength(1);
+    } finally {
+      cleanup(dataDir);
+    }
+  });
 });

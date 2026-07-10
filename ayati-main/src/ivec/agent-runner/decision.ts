@@ -8,7 +8,10 @@ import type {
   ProviderMalformedResponseError,
 } from "../../core/contracts/provider-errors.js";
 import type { LlmMessage, LlmToolCall, LlmToolSchema, LlmTurnInput, LlmTurnOutput } from "../../core/contracts/llm-protocol.js";
-import { assertContextIsAdmissible } from "../../prompt/context-compilation-receipt.js";
+import {
+  assertContextIsAdmissible,
+  assertContextRecoveryIsNotExhausted,
+} from "../../prompt/context-compilation-receipt.js";
 import type { ContextCompilationReceipt } from "../../prompt/context-compilation-receipt.js";
 import { resolveModelContextLimits } from "../../providers/shared/model-context-limits.js";
 import type { ResolvedModelContextLimits } from "../../providers/shared/model-context-limits.js";
@@ -511,6 +514,7 @@ async function generateTurnWithEmptyResponseRetry(
     `context_budget attempt=${request.decisionAttempt} candidate=${contextBudget.measuredInputTokens} final=${compilation.finalBudget.measuredInputTokens} mode=${compilation.receipt.mode} soft=${compilation.finalBudget.softInputTokens} hard=${compilation.finalBudget.hardInputTokens}`,
   );
   assertContextIsAdmissible(compilation.receipt);
+  assertContextRecoveryIsNotExhausted(compilation.receipt);
   let providerAttempt = 0;
 
   for (;;) {

@@ -3,6 +3,7 @@ import { projectAgentStateViewForPrompt } from "./prompt-context.js";
 import type { AgentPromptStateView, PromptRunContext } from "./prompt-context.js";
 import type { PromptToolCalls } from "./run-tool-call-context.js";
 import type { AgentStateView } from "./state-view.js";
+import { shedSessionContext } from "./session-context-shedding.js";
 import type {
   TimelineCheckpointEvent,
   TimelineCheckpointPlan,
@@ -18,11 +19,22 @@ export function buildTimelineCheckpointTurnInput(input: {
 }): LlmTurnInput {
   const run = input.stateView.context.run;
   const contextPressure = run?.contextPressure;
+  const git = input.stateView.context.git;
+  const shedSession = git ? shedSessionContext(git.session) : undefined;
+  const sessionWithoutCheckpoint = shedSession
+    ? omitRecentTaskRuns(shedSession)
+    : undefined;
   const projectedStateView: AgentStateView = {
     ...input.stateView,
     context: {
       ...input.stateView.context,
       timeline: [input.checkpoint, ...input.plan.exactTail],
+      ...(git && sessionWithoutCheckpoint ? {
+        git: {
+          ...git,
+          session: sessionWithoutCheckpoint,
+        },
+      } : {}),
       ...(run ? {
         run: {
           ...run,
@@ -42,6 +54,13 @@ export function buildTimelineCheckpointTurnInput(input: {
       input.buildPrompt(promptStateView),
     ),
   };
+}
+
+function omitRecentTaskRuns(
+  session: ReturnType<typeof shedSessionContext>,
+): ReturnType<typeof shedSessionContext> {
+  const { recentTaskRuns: _recentTaskRuns, ...rest } = session;
+  return rest;
 }
 
 function appliedTimelinePressure(

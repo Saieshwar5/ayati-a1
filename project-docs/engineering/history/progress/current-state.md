@@ -97,9 +97,9 @@ context.timeline + context.git + context.tools + context.harness + context.run +
   full. Filesystem read/search/write, shell, test/build, and Git-context
   projectors use bounded structured execution metadata, and the complete
   alternative prompt is reserialized and measured before its receipt is
-  recorded. The default policy remains shadow-only; an explicit enforcement
-  policy applies the projection, remeasures the complete final request, and
-  admits only that final request. Source tool records, current task context,
+  recorded. The default policy enforces the projection; shadow mode remains
+  available for diagnostics. Enforcement remeasures the complete final request
+  and admits only that final request. Source tool records, current task context,
   and run work state remain unchanged.
 - Prompt-facing harness repair feedback through `context.harness.feedback`,
   kept separate from run context.
@@ -131,20 +131,20 @@ context.timeline + context.git + context.tools + context.harness + context.run +
   records budget and compilation receipts. The default 128K profile uses a 60K
   recovery target, 70K soft limit, and 100K hard input limit. Run-scoped state
   records pressure observations and exposes a compact pressure signal to later
-  decisions. A deterministic controller resets unresolved pressure after
-  successful recovery, recommends a timeline checkpoint after two unresolved
-  iterations, and recommends it immediately near the admission limit. Applied
-  and recommended modes remain separate. Over-limit final requests are rejected
-  before provider generation.
+  decisions. Recovery proceeds through deterministic tool compaction, immutable
+  low-value session shedding, and one structured summary of the newest task-run
+  checkpoint plus the eligible old timeline prefix. Applied and recommended
+  modes remain separate. Requests above the hard limit are never sent.
 - Deterministic timeline-checkpoint foundation: typed checkpoint events,
   structured summary schema, contiguous-prefix planning, minimum exact-tail and
   current-input protection, token-savings estimates, source hashing, and
   coverage/reference validation.
-- Pressure-aware structured LLM timeline checkpoints after tool projection.
-  Runtime-owned metadata, strict local validation, one repair, output and input
-  token guards, run-scoped positive/negative caching, immutable combined prompt
-  projection, candidate/intermediate/final measurement, and safe unchanged-source
-  fallback are implemented.
+- Pressure-aware structured LLM continuity checkpoints after tool projection
+  and session shedding. Runtime-owned metadata, strict local validation, one
+  repair, output and input token guards, run-scoped positive/negative caching,
+  immutable combined prompt projection, and candidate/intermediate/final
+  measurement are implemented. Failed or still-over-soft recovery ends only
+  the current run with `context_limit`; the durable task remains in progress.
 
 ## Runtime Boundary
 

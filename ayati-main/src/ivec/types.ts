@@ -46,7 +46,7 @@ export type SystemEventApprovalState = "not_needed" | "pending" | "granted" | "r
 export type RunClass = "interaction" | "session" | "task";
 export type TaskSummaryRunStatus = "completed" | "failed" | "stuck";
 export type TaskSummaryTaskStatus = "open" | "done" | "blocked" | "needs_user_input";
-export type TaskSummaryStopReason = "completed" | "needs_user_input" | "blocked" | "failed" | "stuck";
+export type TaskSummaryStopReason = "completed" | "needs_user_input" | "blocked" | "failed" | "stuck" | "context_limit";
 
 export interface TaskSummaryFailureSummary {
   failedStep?: number;
@@ -241,6 +241,7 @@ export interface LoopState {
   runPath: string;
   failureHistory: FailureRecord[];
   contextPressure?: ContextPressureState;
+  contextLimitReached?: boolean;
   timelineCheckpointCache?: TimelineCheckpointCacheState;
   readProgress?: ReadProgressState;
   attachedDocuments?: ManagedDocumentManifest[];
@@ -382,7 +383,7 @@ export const DEFAULT_LOOP_CONFIG: LoopConfig = {
   maxVerifyArtifactChars: 20_000,
   maxSelectedTools: 15,
   strategyReviewFailureThreshold: 3,
-  toolContextProjectionPolicy: "shadow",
+  toolContextProjectionPolicy: "enforce",
 };
 
 // --- Result + callbacks ---

@@ -73,6 +73,40 @@ describe("timeline checkpoint planning", () => {
     expect(plan.canReachTarget).toBe(false);
   });
 
+  it("combines the continuity checkpoint with at least one eligible timeline event", () => {
+    const events = timelineEvents(8, 8_000).map((event) => ({
+      ...event,
+      seq: event.seq + 2,
+    }));
+    const continuityCheckpoint = {
+      checkpointId: "checkpoint-1",
+      commit: "commit-1",
+      workId: "work-1",
+      runId: "run-1",
+      status: "completed" as const,
+      fromSeq: 1,
+      toSeq: 2,
+      sourceHash: "a".repeat(64),
+      strategy: "llm" as const,
+      at: "2026-07-10T00:00:02.000Z",
+      summary: `Previous task-run context: ${"x".repeat(8_000)}`,
+    };
+    const plan = planTimelineCheckpoint({
+      events,
+      continuityCheckpoint,
+      requiredSavingsTokens: 100,
+      estimatedCheckpointTokens: 200,
+    });
+
+    expect(plan.triggered).toBe(true);
+    expect(plan.continuityCheckpoint).toEqual(continuityCheckpoint);
+    expect(plan.selectedEvents.map((event) => event.seq)).toEqual([3]);
+    expect(plan.coveredFromSeq).toBe(1);
+    expect(plan.coveredToSeq).toBe(3);
+    expect(plan.selectedSourceTokens).toBeGreaterThan(plan.selectedEventTokens);
+    expect(validateTimelineCheckpointAgainstPlan(checkpointFor(plan), plan)).toEqual([]);
+  });
+
   it("keeps an answered assistant question exact even when it is outside the minimum tail", () => {
     const events = timelineEvents(10, 8_000);
     events[3] = {
@@ -191,11 +225,11 @@ function checkpointFor(
   return {
     kind: "checkpoint",
     seq: coveredToSeq,
-    timestamp: plan.selectedEvents.at(-1)!.timestamp,
+    timestamp: plan.selectedEvents.at(-1)?.timestamp ?? plan.continuityCheckpoint!.at,
     schemaVersion: 1,
     coveredFromSeq,
     coveredToSeq,
-    sourceEventCount: plan.selectedEvents.length,
+    sourceEventCount: plan.selectedEvents.length + (plan.continuityCheckpoint ? 1 : 0),
     sourceHash: plan.sourceHash!,
     summary: {
       userRequests: [{ seq: coveredFromSeq, text: "Original request" }],

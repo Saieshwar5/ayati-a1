@@ -224,11 +224,12 @@ limit, this layer does not transform context.
 
 Tool-context projection has a runtime policy with two modes:
 
-- `shadow` is the default. Ayati measures the complete candidate and records
-  the deterministic alternative, but sends the unchanged candidate.
-- `enforce` applies the deterministic tool projection after the candidate
-  reaches the soft limit, rebuilds the complete request, and measures that
-  final request before provider generation.
+- `enforce` is the runtime default. Ayati applies the ordered recovery stages
+  after the candidate reaches the soft limit, rebuilds the complete request,
+  and measures every candidate sent to the provider.
+- `shadow` measures the complete candidate and records the deterministic
+  tool-context alternative, but sends the unchanged candidate. It remains
+  available for diagnostics and comparison.
 
 The request admitted to the provider is rejected before generation when it
 exceeds the hard input limit. In enforcement mode the unmodified candidate may
@@ -247,41 +248,55 @@ advance future pressure modes. Reports are emitted once per distinct decision
 or repair attempt, not once per transport retry.
 
 A deterministic pressure controller evaluates only the first decision attempt
-of each runner iteration. A tool-compacted request at or below the recovery
-target resets the unresolved-pressure streak, even if the full candidate keeps
-crossing the soft limit on later iterations. A compacted final request that
-remains above the target advances the streak. Two unresolved iterations
-recommend a timeline checkpoint; a final request at 90% or more of its
-admission limit recommends it immediately. Applied mode and recommended next
-mode are separate so the runtime never reports an unavailable compaction stage
-as already performed. Enforced pressure also counts as unresolved when there
-are no eligible older tool calls to compact; shadow-only observations never
-advance escalation policy.
+of each runner iteration. Applied mode and any recommended next mode remain
+separate in the compact run-pressure signal. Repair attempts do not count as
+new pressure iterations, and shadow-only observations never advance enforced
+runtime state.
+
+Enforced recovery is ordered and stops as soon as the remeasured request is
+below the soft limit:
+
+1. Deterministically compact eligible older tool-call inputs and outputs while
+   keeping the latest six calls, pinned failures, and unrecoverable calls full.
+2. Remove the session summary, older four task-run checkpoint bodies, and
+   duplicate recent session activity. Keep session metadata, attachments, the
+   newest task-run checkpoint, the exact timeline, durable task state, and run
+   work state.
+3. Generate one structured continuity checkpoint from the newest task-run
+   checkpoint plus the minimum eligible old prefix of the exact timeline. Keep
+   at least four recent events, the current input, and the assistant question
+   that the current input answers exact.
+4. If no eligible semantic source exists, generation or validation fails, or
+   the compiled result remains at or above the soft limit, end only the current
+   run with `context_limit`. Preserve the active task as in progress so a later
+   run can continue it.
 
 Timeline checkpoint planning is deterministic before any summarizer is called.
-It selects only an older contiguous prefix needed for estimated recovery,
-keeps at least four recent events exact, protects the current input and latest
-assistant question awaiting interpretation, and hashes the selected source for
-cache identity. The checkpoint contract retains sequence references for
-requests, constraints, decisions, corrections, facts, unresolved questions,
-and external references.
+It selects the newest task-run checkpoint and at least one eligible event from
+the older contiguous timeline prefix, then adds only as much old timeline as
+needed for estimated recovery. It keeps at least four recent events exact,
+protects the current input and latest assistant question awaiting
+interpretation, and hashes both sources for cache identity. The checkpoint
+contract retains sequence references for requests, constraints, decisions,
+corrections, facts, unresolved questions, and external references.
 
-When timeline checkpointing is recommended and tool projection still leaves the
-request above the recovery target, the compiler asks the active provider for a
-strict structured summary of only the selected timeline prefix. It sends no
-tools, task state, work state, tool history, personal memory, or unrelated
-session context. Runtime code supplies the trusted coverage range and source
-hash, validates every referenced sequence, and enforces the planned checkpoint
-token budget. Providers may enforce JSON Schema, downgrade to JSON-object mode,
-or rely on prompt-only JSON; local parsing and semantic validation always run.
+When deterministic tool compaction and session shedding still leave the request
+at or above the soft limit, the compiler asks the active provider for a strict
+structured summary of only the newest task-run checkpoint and selected timeline
+prefix. It sends no tools, task state, work state, tool history, personal
+memory, or unrelated session context. Runtime code supplies the trusted
+coverage range and source hash, validates every referenced sequence, and
+enforces the planned checkpoint token budget. Providers may enforce JSON
+Schema, downgrade to JSON-object mode, or rely on prompt-only JSON; local
+parsing and semantic validation always run.
 
 Generation allows one repair. Successes and failures are cached for the run by
 prompt version, provider/model, source hash, checkpoint budget, and generator
-input capacity. A failed source is not retried on every decision. If generation
-fails, the source timeline remains exact and the tool-only request is used when
-admissible; otherwise admission rejects it before the decision call. Successful
-compilation measures candidate, tool-projected intermediate, and checkpointed
-final requests separately.
+input capacity. A failed source is not retried on every decision. Failure does
+not discard or persistently rewrite either source; it ends the current run
+without sending an over-soft-limit normal decision. Successful compilation
+measures the full candidate, deterministic intermediate stages, and final
+checkpointed request separately.
 
 Current-run tool-call storage and prompt projection are separate. Below the
 soft limit, all prompt-eligible tool calls are sent in full; there is no fixed
@@ -289,7 +304,7 @@ six-call or 30K-character history cap. At the soft limit, a deterministic
 shadow planner protects the latest six calls, failures, and calls without a
 recovery reference, then proposes previews or summaries for only as many older
 calls as needed to reach the recovery target. Reference-only conversion is
-reserved for a later repeated-pressure mode. Plans are recorded in optimization
+reserved for a later pressure mode. Plans are recorded in optimization
 metrics and the feedback ledger. With `enforce`, the same plan is applied to a
 new prompt projection; the source tool-call records, durable task context, and
 run work state remain unchanged.

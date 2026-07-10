@@ -298,6 +298,7 @@ export interface HarnessWorkStateForContext {
 }
 
 export interface HarnessTaskSummaryForContext {
+  stopReason?: string;
   summary?: string;
   completedMilestones?: string[];
   openWork?: string[];

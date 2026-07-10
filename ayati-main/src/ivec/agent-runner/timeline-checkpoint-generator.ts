@@ -1,5 +1,6 @@
 import type { LlmProvider } from "../../core/contracts/provider.js";
 import type { LlmCostEstimate, LlmTokenUsage } from "../../core/contracts/llm-protocol.js";
+import { correctLocalInputTokenEstimate } from "../../prompt/context-token-counter.js";
 import { estimateTextTokens, estimateTurnInputTokens } from "../../prompt/token-estimator.js";
 import {
   TIMELINE_CHECKPOINT_SUMMARY_SCHEMA,
@@ -98,9 +99,10 @@ export async function generateTimelineCheckpoint(input: {
         },
       } as const;
       const estimatedInputTokens = estimateTurnInputTokens(turnInput).totalTokens;
-      if (input.maxInputTokens !== undefined && estimatedInputTokens > input.maxInputTokens) {
+      const correctedInputTokens = correctLocalInputTokenEstimate(estimatedInputTokens);
+      if (input.maxInputTokens !== undefined && correctedInputTokens > input.maxInputTokens) {
         previousErrors = [
-          `checkpoint generator input requires ${estimatedInputTokens} estimated tokens, exceeding its ${input.maxInputTokens}-token capacity`,
+          `checkpoint generator input requires ${correctedInputTokens} corrected estimated tokens, exceeding its ${input.maxInputTokens}-token capacity`,
         ];
         attempts.push({
           attempt,
@@ -209,9 +211,9 @@ function buildCheckpointMessages(
     {
       role: "system",
       content: [
-        "Create a structured checkpoint for older AI-agent conversation events.",
-        "Use only the supplied events. Do not invent facts, decisions, constraints, or references.",
-        "Every array item must cite the exact source event seq that supports it.",
+        "Create a structured continuity checkpoint from the previous task-run checkpoint and older open-timeline events.",
+        "Use only the supplied checkpoint and events. Do not invent facts, decisions, constraints, or references.",
+        "Every array item must cite an exact source event seq or a seq inside the supplied task-run checkpoint coverage.",
         "Preserve user requests, corrections, constraints, decisions, important facts, unresolved questions, and literal references such as paths, URLs, ids, commands, and error strings.",
         "Do not summarize tool results, task state, work state, or personal memory because they are not part of this input.",
         `The complete checkpoint event must remain within ${plan.estimatedCheckpointTokens} estimated tokens.`,
@@ -226,7 +228,8 @@ function buildCheckpointMessages(
       content: JSON.stringify({
         coveredFromSeq: plan.coveredFromSeq,
         coveredToSeq: plan.coveredToSeq,
-        sourceEventCount: plan.selectedEvents.length,
+        sourceEventCount: plan.selectedEvents.length + (plan.continuityCheckpoint ? 1 : 0),
+        previousTaskRunCheckpoint: plan.continuityCheckpoint ?? null,
         events: plan.selectedEvents,
       }, null, 2),
     },
@@ -237,15 +240,15 @@ function buildCheckpointEvent(
   plan: TimelineCheckpointPlan,
   summary: TimelineCheckpointSummary,
 ): TimelineCheckpointEvent {
-  const lastEvent = plan.selectedEvents.at(-1)!;
+  const lastEvent = plan.selectedEvents.at(-1);
   return {
     kind: "checkpoint",
     seq: plan.coveredToSeq!,
-    timestamp: lastEvent.timestamp,
+    timestamp: lastEvent?.timestamp ?? plan.continuityCheckpoint!.at,
     schemaVersion: 1,
     coveredFromSeq: plan.coveredFromSeq!,
     coveredToSeq: plan.coveredToSeq!,
-    sourceEventCount: plan.selectedEvents.length,
+    sourceEventCount: plan.selectedEvents.length + (plan.continuityCheckpoint ? 1 : 0),
     sourceHash: plan.sourceHash!,
     summary,
   };

@@ -400,7 +400,7 @@ describe("run tool-call context", () => {
     }
   });
 
-  it("recommends a timeline checkpoint after repeated unresolved enforced projections", async () => {
+  it("ends the current run when deterministic recovery remains above the soft limit", async () => {
     const dataDir = makeTmpDir();
     const readTool = fakePressureReadTool();
     const toolExecutor = createToolExecutor([readTool]);
@@ -419,56 +419,6 @@ describe("run tool-call context", () => {
           assertions: [],
         },
       }),
-      () => ({
-        kind: "act",
-        action: {
-          mode: "single",
-          calls: [{
-            id: "call_8",
-            tool: "read_files",
-            input: { path: "pressure_8.txt" },
-            purpose: "Continue after the first pressure observation",
-          }],
-          allowedTools: ["read_files"],
-          assertions: [],
-        },
-      }),
-      (input) => {
-        const pressure = extractStateView(userPrompt(input)).context.run.contextPressure;
-        expect(pressure).toMatchObject({
-          mode: "tool_compact",
-          unresolvedPressureStreak: 1,
-        });
-        expect(pressure).not.toHaveProperty("recommendedMode");
-        return {
-          kind: "act",
-          action: {
-            mode: "single",
-            calls: [{
-              id: "call_9",
-              tool: "read_files",
-              input: { path: "pressure_9.txt" },
-              purpose: "Continue after the second pressure observation",
-            }],
-            allowedTools: ["read_files"],
-            assertions: [],
-          },
-        };
-      },
-      (input) => {
-        const pressure = extractStateView(userPrompt(input)).context.run.contextPressure;
-        expect(pressure).toMatchObject({
-          mode: "tool_compact",
-          recommendedMode: "timeline_checkpoint",
-          escalationReason: "repeated_unresolved_pressure",
-          unresolvedPressureStreak: 2,
-        });
-        return {
-          kind: "reply",
-          status: "completed",
-          message: "Pressure escalation signal received.",
-        };
-      },
     ]);
     provider.countInputTokens = vi.fn(async (input) => {
       const toolCalls = extractStateView(userPrompt(input)).context.run?.toolCalls ?? [];
@@ -500,9 +450,18 @@ describe("run tool-call context", () => {
         },
       });
 
-      expect(result.status).toBe("completed");
-      expect(result.totalIterations).toBe(4);
-      expect(result.content).toBe("Pressure escalation signal received.");
+      expect(result.status).toBe("stuck");
+      expect(result.totalIterations).toBe(2);
+      expect(result.totalToolCalls).toBe(7);
+      expect(result.content).toBe(
+        "This run reached its context capacity. I preserved the completed work and task state so it can continue in a new turn.",
+      );
+      expect(result.taskSummary).toMatchObject({
+        runStatus: "stuck",
+        taskStatus: "open",
+        stopReason: "context_limit",
+      });
+      expect(provider.generateTurn).toHaveBeenCalledTimes(1);
       expect(provider.countInputTokens).toHaveBeenCalled();
     } finally {
       cleanup(dataDir);

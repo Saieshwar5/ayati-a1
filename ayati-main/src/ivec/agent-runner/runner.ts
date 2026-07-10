@@ -1,4 +1,8 @@
 import { join } from "node:path";
+import {
+  ContextInputLimitError,
+  ContextRunCapacityError,
+} from "../../prompt/context-compilation-receipt.js";
 import { devLog } from "../../shared/index.js";
 import { prepareIncomingAttachments } from "../../documents/attachment-preparer.js";
 import type { MemoryRunHandle, SessionInputHandle } from "../../memory/types.js";
@@ -9,6 +13,7 @@ import type {
   CompletionDirective,
   LoopConfig,
   LoopState,
+  WorkState,
 } from "../types.js";
 import {
   DEFAULT_LOOP_CONFIG,
@@ -480,33 +485,55 @@ export async function runAgentLoop(
       toolPolicyAudit: decisionToolPolicyAudit,
       inputState: summarizeDecisionInputState(stateView),
     });
-    const decision = await callAgentDecision({
-      provider: deps.provider,
-      stateView,
-      toolDefinitions: selectedTools,
-      toolRoutingSummary: deps.toolWorkingSetManager?.getPromptSummary(),
-      toolLoadingAvailable: decisionRuntimeMode.allowToolLoading,
-      taskFeedbackToolAvailable,
-      workStateUpdateAvailable: isWorkStateUpdateToolAvailable(state, workRunHandle),
-      toolContextProjectionPolicy: config.toolContextProjectionPolicy,
-      timelineCheckpointCache: state.timelineCheckpointCache,
-      systemContext: deps.systemContext,
-      metrics,
-      feedbackLedger: deps.feedbackLedger,
-      feedbackContext: {
-        clientId: deps.clientId,
-        sessionId: inputHandle.sessionId,
-        seq: inputHandle.seq,
-        ...(state.runId || workRunHandle?.runId || sessionRunHandle?.runId ? { runId: state.runId || workRunHandle?.runId || sessionRunHandle?.runId } : {}),
-      },
-      onContextCompilation: (receipt) => {
-        state.contextPressure = updateContextPressureState({
-          current: state.contextPressure,
-          receipt,
-          iteration: state.iteration,
-        });
-      },
-    });
+    let decision: AgentDecision;
+    try {
+      decision = await callAgentDecision({
+        provider: deps.provider,
+        stateView,
+        toolDefinitions: selectedTools,
+        toolRoutingSummary: deps.toolWorkingSetManager?.getPromptSummary(),
+        toolLoadingAvailable: decisionRuntimeMode.allowToolLoading,
+        taskFeedbackToolAvailable,
+        workStateUpdateAvailable: isWorkStateUpdateToolAvailable(state, workRunHandle),
+        toolContextProjectionPolicy: config.toolContextProjectionPolicy,
+        timelineCheckpointCache: state.timelineCheckpointCache,
+        systemContext: deps.systemContext,
+        metrics,
+        feedbackLedger: deps.feedbackLedger,
+        feedbackContext: {
+          clientId: deps.clientId,
+          sessionId: inputHandle.sessionId,
+          seq: inputHandle.seq,
+          ...(state.runId || workRunHandle?.runId || sessionRunHandle?.runId ? { runId: state.runId || workRunHandle?.runId || sessionRunHandle?.runId } : {}),
+        },
+        onContextCompilation: (receipt) => {
+          state.contextPressure = updateContextPressureState({
+            current: state.contextPressure,
+            receipt,
+            iteration: state.iteration,
+          });
+        },
+      });
+    } catch (error) {
+      if (!(error instanceof ContextRunCapacityError || error instanceof ContextInputLimitError)) {
+        throw error;
+      }
+      state.contextLimitReached = true;
+      if (state.harnessContext.contextEngine?.task) {
+        state.runClass = "task";
+      }
+      state.status = "stuck";
+      state.workState = preserveWorkStateForContextLimit(state);
+      state.finalOutput = "This run reached its context capacity. I preserved the completed work and task state so it can continue in a new turn.";
+      recordFeedback(deps, inputHandle, state.runId || workRunHandle?.runId || sessionRunHandle?.runId, "guard", "context_limit", {
+        iteration: state.iteration,
+        finalInputTokens: error.receipt.finalInputTokens,
+        softInputTokens: error.receipt.softInputTokens,
+        hardInputTokens: error.receipt.hardInputTokens,
+        mode: error.receipt.mode,
+      });
+      return finalize({ status: "stuck", content: state.finalOutput });
+    }
     discardModelWorkingNotes(decision);
     recordFeedback(deps, inputHandle, state.runId || workRunHandle?.runId || sessionRunHandle?.runId, "decision", "selected", {
       iteration: state.iteration,
@@ -1706,46 +1733,57 @@ async function buildFinalResponseFromWorkState(input: {
       kind: finalResponseKind,
     });
   }
-  const decision = await callAgentDecision({
-    provider: input.deps.provider,
-    stateView,
-    toolDefinitions: [],
-    toolLoadingAvailable: false,
-    taskFeedbackToolAvailable: false,
-    workStateUpdateAvailable: false,
-    toolContextProjectionPolicy: input.config.toolContextProjectionPolicy,
-    timelineCheckpointCache: input.state.timelineCheckpointCache,
-    systemContext: [
-      input.deps.systemContext,
-      "Final response-only mode: tools are unavailable. Reply naturally to the user from context.run.workState, verified facts, artifacts, and recent tool-call memory. Do not mention harness internals. Do not say control tool names such as update_work_state, decision_load_tools, or ask_user_feedback.",
-    ].filter((section): section is string => Boolean(section?.trim())).join("\n\n"),
-    metrics: input.metrics,
-    feedbackLedger: input.deps.feedbackLedger,
-    feedbackContext: {
-      clientId: input.deps.clientId,
-      sessionId: input.inputHandle.sessionId,
-      seq: input.inputHandle.seq,
-      ...(input.state.runId || input.workRunHandle?.runId ? { runId: input.state.runId || input.workRunHandle?.runId } : {}),
-    },
-    onContextCompilation: (receipt) => {
-      input.state.contextPressure = updateContextPressureState({
-        current: input.state.contextPressure,
-        receipt,
-        iteration: input.state.iteration,
-      });
-    },
-    ...(streamFinalResponse
-      ? {
-          onAssistantTextDelta: (delta: string) => {
-            input.deps.onFinalResponseStream?.({
-              type: "delta",
-              delta,
-            });
-          },
-        }
-      : {}),
-  });
-  if (decision.kind === "reply" && decision.status === "completed" && decision.message.trim().length > 0) {
+  let decision: AgentDecision | undefined;
+  try {
+    decision = await callAgentDecision({
+      provider: input.deps.provider,
+      stateView,
+      toolDefinitions: [],
+      toolLoadingAvailable: false,
+      taskFeedbackToolAvailable: false,
+      workStateUpdateAvailable: false,
+      toolContextProjectionPolicy: input.config.toolContextProjectionPolicy,
+      timelineCheckpointCache: input.state.timelineCheckpointCache,
+      systemContext: [
+        input.deps.systemContext,
+        "Final response-only mode: tools are unavailable. Reply naturally to the user from context.run.workState, verified facts, artifacts, and recent tool-call memory. Do not mention harness internals. Do not say control tool names such as update_work_state, decision_load_tools, or ask_user_feedback.",
+      ].filter((section): section is string => Boolean(section?.trim())).join("\n\n"),
+      metrics: input.metrics,
+      feedbackLedger: input.deps.feedbackLedger,
+      feedbackContext: {
+        clientId: input.deps.clientId,
+        sessionId: input.inputHandle.sessionId,
+        seq: input.inputHandle.seq,
+        ...(input.state.runId || input.workRunHandle?.runId ? { runId: input.state.runId || input.workRunHandle?.runId } : {}),
+      },
+      onContextCompilation: (receipt) => {
+        input.state.contextPressure = updateContextPressureState({
+          current: input.state.contextPressure,
+          receipt,
+          iteration: input.state.iteration,
+        });
+      },
+      ...(streamFinalResponse
+        ? {
+            onAssistantTextDelta: (delta: string) => {
+              input.deps.onFinalResponseStream?.({
+                type: "delta",
+                delta,
+              });
+            },
+          }
+        : {}),
+    });
+  } catch (error) {
+    if (!(error instanceof ContextRunCapacityError || error instanceof ContextInputLimitError)) throw error;
+    recordFeedback(input.deps, input.inputHandle, input.state.runId || input.workRunHandle?.runId, "guard", "final_response_context_limit", {
+      iteration: input.state.iteration,
+      finalInputTokens: error.receipt.finalInputTokens,
+      softInputTokens: error.receipt.softInputTokens,
+      mode: error.receipt.mode,
+    });
+  }
+  if (decision?.kind === "reply" && decision.status === "completed" && decision.message.trim().length > 0) {
     if (!isUsableFinalResponseMessage(decision.message)) {
       recordFeedback(input.deps, input.inputHandle, input.state.runId || input.workRunHandle?.runId, "decision", "final_response_rejected", {
         reason: "control_or_action_payload_in_final_response",
@@ -1830,4 +1868,27 @@ function isTaskFeedbackToolAvailable(
 
 function normalizeList(values: string[] | undefined): string[] {
   return [...new Set((values ?? []).map((value) => value.trim()).filter((value) => value.length > 0))];
+}
+
+function preserveWorkStateForContextLimit(state: LoopState): WorkState {
+  const task = state.harnessContext.contextEngine?.task;
+  const openWork = normalizeList(state.workState.openWork);
+  const taskOpenWork = normalizeList(task?.open);
+  const blockers = normalizeList(state.workState.blockers);
+  const verifiedFacts = normalizeList(state.workState.verifiedFacts);
+  return compactWorkState({
+    ...state.workState,
+    status: "not_done",
+    summary: state.workState.summary || "The task remains in progress.",
+    openWork: openWork.length > 0
+      ? openWork
+      : taskOpenWork.length > 0
+        ? taskOpenWork
+        : ["Continue the requested task in a new run."],
+    blockers: blockers.length > 0 ? blockers : task?.blockers ?? [],
+    verifiedFacts: verifiedFacts.length > 0
+      ? verifiedFacts
+      : normalizeList(task?.facts.map((fact) => fact.text)),
+    nextStep: state.workState.nextStep || task?.next || "Continue the requested task in a new run.",
+  });
 }

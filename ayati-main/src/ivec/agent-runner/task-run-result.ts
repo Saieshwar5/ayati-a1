@@ -41,7 +41,7 @@ export function buildTaskSummaryRecord(
     summary: userFacingSummary || progressSummary,
     progressSummary: progressSummary || undefined,
     currentFocus: state.workState.nextStep?.trim() || undefined,
-    completedMilestones: [],
+    completedMilestones: normalizeList(state.harnessContext.contextEngine?.task?.completed),
     openWork,
     blockers,
     keyFacts: normalizeList(state.workState.verifiedFacts),
@@ -153,6 +153,7 @@ function deriveStopReason(
   state: LoopState,
   status: AgentLoopResult["status"],
 ): AgentTaskSummaryRecord["stopReason"] {
+  if (state.contextLimitReached) return "context_limit";
   if (state.workState.status === "needs_user_input") return "needs_user_input";
   if (state.workState.status === "blocked") return "blocked";
   if (status === "failed") return "failed";

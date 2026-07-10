@@ -15,12 +15,23 @@ export function recordTimelineCheckpointObservability(input: {
   const checkpoint = input.compilation.timelineCheckpoint;
   if (!checkpoint) return;
 
-  const { selectedEvents, exactTail, ...planReceipt } = checkpoint.plan;
+  const {
+    selectedEvents,
+    exactTail,
+    continuityCheckpoint,
+    ...planReceipt
+  } = checkpoint.plan;
   const generation = checkpoint.generation;
   const eventData = {
     ...planReceipt,
     selectedEventCount: selectedEvents.length,
     exactTailCount: exactTail.length,
+    ...(continuityCheckpoint ? {
+      continuityCheckpointId: continuityCheckpoint.checkpointId,
+      continuityRunId: continuityCheckpoint.runId,
+      continuityFromSeq: continuityCheckpoint.fromSeq,
+      continuityToSeq: continuityCheckpoint.toSeq,
+    } : {}),
     status: generation?.status ?? "not_generated",
     cacheStatus: generation?.cacheStatus,
     generationAttempts: generation?.attempts.length ?? 0,

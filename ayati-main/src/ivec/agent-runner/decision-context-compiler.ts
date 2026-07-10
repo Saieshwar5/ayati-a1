@@ -3,6 +3,7 @@ import type { LlmTurnInput } from "../../core/contracts/llm-protocol.js";
 import type { ContextBudgetReport } from "../../prompt/context-budget.js";
 import {
   buildFullContextCompilationReceipt,
+  buildSessionSheddingCompilationReceipt,
   buildTimelineCheckpointCompilationReceipt,
   buildToolCompactContextCompilationReceipt,
 } from "../../prompt/context-compilation-receipt.js";
@@ -15,6 +16,10 @@ import type { AgentStateView } from "./state-view.js";
 import { planToolContextProjection } from "./tool-context-projection-planner.js";
 import { buildToolContextProjectionCandidate } from "./tool-context-shadow.js";
 import type { ToolContextShadowReceipt } from "./tool-context-shadow.js";
+import {
+  buildSessionContextSheddingCandidate,
+  type SessionContextSheddingReceipt,
+} from "./session-context-shedding.js";
 import { createTimelineCheckpointCache } from "./timeline-checkpoint-cache.js";
 import type { TimelineCheckpointCacheState } from "./timeline-checkpoint-cache.js";
 import { generateTimelineCheckpoint } from "./timeline-checkpoint-generator.js";
@@ -42,6 +47,7 @@ export interface DecisionContextCompilation {
     plan: TimelineCheckpointPlan;
     generation?: TimelineCheckpointGenerationResult;
   };
+  sessionShedding?: SessionContextSheddingReceipt;
 }
 
 export async function compileDecisionContext(input: {
@@ -132,17 +138,65 @@ export async function compileDecisionContext(input: {
     projection: projectionResult,
   });
 
-  if (!shouldApplyTimelineCheckpoint(input.stateView, intermediateBudget)) {
+  if (!intermediateBudget.softLimitExceeded) {
     return toolCompilation;
+  }
+
+  const sessionCandidate = buildSessionContextSheddingCandidate({
+    stateView: input.stateView,
+    turnInput: input.turnInput,
+    ...(toolTransformations.length > 0 ? { projectedToolCalls: toolPlan.projectedCalls } : {}),
+    buildPrompt: input.buildPrompt,
+  });
+  const sessionTurnInput = sessionCandidate.receipt.triggered
+    ? sessionCandidate.turnInput
+    : intermediateTurnInput;
+  const sessionBudget = sessionCandidate.receipt.triggered
+    ? await measureTurnContext({
+        provider: input.provider,
+        turnInput: sessionTurnInput,
+        limits: input.contextLimits,
+      })
+    : intermediateBudget;
+  const sessionTransformation = sessionCandidate.receipt.triggered ? [{
+    kind: "session_context_shedding",
+    from: "summary_and_recent_checkpoints",
+    to: "latest_checkpoint_only",
+    reason: "soft_limit_after_tool_compaction",
+    tokensBefore: intermediateBudget.measuredInputTokens,
+    tokensAfter: sessionBudget.measuredInputTokens,
+  }] : [];
+  const sessionCompilation = sessionCandidate.receipt.triggered
+    ? enforcedSessionSheddingCompilation({
+        turnInput: sessionTurnInput,
+        candidateBudget,
+        intermediateBudget,
+        finalBudget: sessionBudget,
+        decisionAttempt: input.decisionAttempt,
+        transformations: [...toolTransformations, ...sessionTransformation],
+        projection: projectionResult,
+        shedding: sessionCandidate.receipt,
+      })
+    : toolCompilation;
+
+  if (!sessionBudget.softLimitExceeded) {
+    return sessionCompilation;
   }
 
   const timelinePlan = planTimelineCheckpoint({
     events: exactTimelineEvents(input.stateView),
-    requiredSavingsTokens: intermediateBudget.measuredInputTokens
-      - intermediateBudget.recoveryTargetTokens,
+    continuityCheckpoint: input.stateView.context.git?.session.recentTaskRuns?.at(-1),
+    requiredSavingsTokens: sessionBudget.measuredInputTokens
+      - sessionBudget.recoveryTargetTokens,
   });
   if (!timelinePlan.triggered) {
-    return { ...toolCompilation, timelineCheckpoint: { plan: timelinePlan } };
+    return exhaustedCompilation({
+      ...sessionCompilation,
+      finalBudget: sessionBudget,
+      finalTurnInput: sessionTurnInput,
+      finalBudgetMeasured: true,
+      timelineCheckpoint: { plan: timelinePlan },
+    });
   }
 
   const generation = await generateTimelineCheckpoint({
@@ -153,10 +207,13 @@ export async function compileDecisionContext(input: {
       ?? input.contextLimits.contextWindowTokens - input.contextLimits.outputReserveTokens,
   });
   if (generation.status !== "success" || !generation.checkpoint || generation.checkpointTokens === undefined) {
-    return {
-      ...toolCompilation,
+    return exhaustedCompilation({
+      ...sessionCompilation,
+      finalBudget: sessionBudget,
+      finalTurnInput: sessionTurnInput,
+      finalBudgetMeasured: true,
       timelineCheckpoint: { plan: timelinePlan, generation },
-    };
+    });
   }
 
   const finalTurnInput = buildTimelineCheckpointTurnInput({
@@ -180,21 +237,21 @@ export async function compileDecisionContext(input: {
     coveredFromSeq: generation.checkpoint.coveredFromSeq,
     coveredToSeq: generation.checkpoint.coveredToSeq,
     sourceHash: generation.checkpoint.sourceHash,
-    tokensBefore: timelinePlan.selectedEventTokens,
+    tokensBefore: timelinePlan.selectedSourceTokens,
     tokensAfter: generation.checkpointTokens,
   };
   return {
     candidateBudget,
-    intermediateBudget,
+    intermediateBudget: sessionBudget,
     finalBudget,
     finalTurnInput,
     finalBudgetMeasured: true,
     receipt: buildTimelineCheckpointCompilationReceipt({
       candidate: candidateBudget,
-      intermediate: intermediateBudget,
+      intermediate: sessionBudget,
       final: finalBudget,
       decisionAttempt: input.decisionAttempt,
-      transformations: [...toolTransformations, timelineTransformation],
+      transformations: [...toolTransformations, ...sessionTransformation, timelineTransformation],
       checkpoint: {
         coveredFromSeq: generation.checkpoint.coveredFromSeq,
         coveredToSeq: generation.checkpoint.coveredToSeq,
@@ -204,9 +261,83 @@ export async function compileDecisionContext(input: {
         cacheStatus: generation.cacheStatus === "success_hit" ? "success_hit" : "generated",
         generationAttempts: generation.attempts.length,
       },
+      ...(sessionCandidate.receipt.triggered ? {
+        sessionShedding: toSessionSheddingReceipt(
+          sessionCandidate.receipt,
+          intermediateBudget.measuredInputTokens,
+          sessionBudget.measuredInputTokens,
+        ),
+      } : {}),
+      recoveryExhausted: finalBudget.softLimitExceeded,
     }),
     projection: projectionResult,
+    ...(sessionCandidate.receipt.triggered ? { sessionShedding: sessionCandidate.receipt } : {}),
     timelineCheckpoint: { plan: timelinePlan, generation },
+  };
+}
+
+function enforcedSessionSheddingCompilation(input: {
+  turnInput: LlmTurnInput;
+  candidateBudget: ContextBudgetReport;
+  intermediateBudget: ContextBudgetReport;
+  finalBudget: ContextBudgetReport;
+  decisionAttempt: number;
+  transformations: ContextCompilationReceipt["transformations"];
+  projection: NonNullable<DecisionContextCompilation["projection"]>;
+  shedding: SessionContextSheddingReceipt;
+}): DecisionContextCompilation {
+  return {
+    candidateBudget: input.candidateBudget,
+    intermediateBudget: input.intermediateBudget,
+    finalBudget: input.finalBudget,
+    finalTurnInput: input.turnInput,
+    finalBudgetMeasured: true,
+    receipt: buildSessionSheddingCompilationReceipt({
+      candidate: input.candidateBudget,
+      intermediate: input.intermediateBudget,
+      final: input.finalBudget,
+      decisionAttempt: input.decisionAttempt,
+      transformations: input.transformations,
+      shedding: toSessionSheddingReceipt(
+        input.shedding,
+        input.intermediateBudget.measuredInputTokens,
+        input.finalBudget.measuredInputTokens,
+      ),
+    }),
+    projection: input.projection,
+    sessionShedding: input.shedding,
+  };
+}
+
+function toSessionSheddingReceipt(
+  shedding: SessionContextSheddingReceipt,
+  tokensBefore: number,
+  tokensAfter: number,
+): NonNullable<ContextCompilationReceipt["sessionShedding"]> {
+  return {
+    removedSummary: shedding.removedSummary,
+    removedCheckpointCount: shedding.removedCheckpointCount,
+    ...(shedding.retainedCheckpointId ? { retainedCheckpointId: shedding.retainedCheckpointId } : {}),
+    removedActivityCount: shedding.removedActivityCount,
+    tokensBefore,
+    tokensAfter,
+  };
+}
+
+function exhaustedCompilation(
+  compilation: DecisionContextCompilation,
+): DecisionContextCompilation {
+  return {
+    ...compilation,
+    receipt: {
+      ...compilation.receipt,
+      finalInputTokens: compilation.finalBudget.measuredInputTokens,
+      hardLimitExceeded: compilation.finalBudget.hardLimitExceeded,
+      admitted: !compilation.finalBudget.admissionLimitExceeded,
+      targetReached: false,
+      needsEscalation: false,
+      recoveryExhausted: true,
+    },
   };
 }
 
@@ -242,18 +373,10 @@ function enforcedToolCompilation(input: {
       ...compilation.receipt,
       toolProjectionPolicy: "enforce",
       targetReached: input.candidateBudget.measuredInputTokens <= input.candidateBudget.recoveryTargetTokens,
-      needsEscalation: input.candidateBudget.measuredInputTokens > input.candidateBudget.recoveryTargetTokens,
+      needsEscalation: input.candidateBudget.softLimitExceeded,
     },
     projection: input.projection,
   };
-}
-
-function shouldApplyTimelineCheckpoint(
-  stateView: AgentStateView,
-  budget: ContextBudgetReport,
-): boolean {
-  return stateView.context.run?.contextPressure?.recommendedMode === "timeline_checkpoint"
-    && budget.measuredInputTokens > budget.recoveryTargetTokens;
 }
 
 function exactTimelineEvents(stateView: AgentStateView): ExactTimelineEvent[] {

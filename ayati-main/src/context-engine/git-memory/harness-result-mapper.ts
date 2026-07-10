@@ -225,7 +225,7 @@ function toTaskStatus(
     result.taskSummary?.taskStatus === "blocked"
     || workState.status === "blocked"
     || result.status === "failed"
-    || result.status === "stuck"
+    || (result.status === "stuck" && result.taskSummary?.stopReason !== "context_limit")
   ) {
     return "blocked";
   }

@@ -198,8 +198,9 @@ projected in full at `State view.context.run.toolCalls`. The six-call hot window
 does not apply during normal operation. At or above the soft limit, the planner
 selects only the older recoverable calls needed to approach the recovery target
 while keeping the latest six calls, failures, and calls without recovery
-references full. The default `shadow` policy only records this alternative. An
-explicit `enforce` policy sends the reserialized and remeasured alternative.
+references full. The default `enforce` policy sends the reserialized and
+remeasured alternative. `shadow` remains available to record the alternative
+without applying it.
 
 Projection is copy-on-write prompt compilation. It never rewrites the complete
 run tool-call records or their evidence, and it does not summarize or compress
@@ -211,6 +212,20 @@ the applied `mode` from `recommendedMode`, tracks unresolved recovery attempts,
 and tells the model to use narrower recoverable actions. Repeated full-candidate
 soft breaches do not justify more compaction when the projected final request
 already reaches the recovery target.
+
+If deterministic tool projection remains at or above the soft limit, prompt
+compilation next removes the session summary, older four task-run checkpoint
+bodies, and duplicate recent session activity. It retains session metadata,
+attachment metadata, the newest task-run checkpoint, the exact timeline,
+durable task state, and current run work state. This is an immutable prompt
+projection; persisted session data is not changed.
+
+If that projected request still reaches the soft limit, the runtime generates
+one structured checkpoint from the newest task-run checkpoint and the minimum
+eligible old timeline prefix. The recent exact tail, current input, and the
+assistant question answered by that input remain exact. If this final recovery
+cannot produce a request below the soft limit, Ayati ends the current run with
+`context_limit` and leaves the durable task in progress for a later run.
 
 Tool-family projectors use bounded structured result metadata captured during
 execution. Read projections preserve requested paths/ranges and file metadata;

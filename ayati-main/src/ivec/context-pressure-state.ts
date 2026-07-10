@@ -146,8 +146,8 @@ function laterRecommendedMode(
 ): ContextPressureRecommendedMode {
   if (!current) return observed;
   const order: ContextPressureRecommendedMode[] = [
+    "session_shed",
     "timeline_checkpoint",
-    "session_digest",
     "step_ledger",
   ];
   return order.indexOf(observed) > order.indexOf(current) ? observed : current;
@@ -160,8 +160,8 @@ function laterContextMode(
   const order: ContextCompilationMode[] = [
     "full",
     "tool_compact",
+    "session_shed",
     "timeline_checkpoint",
-    "session_digest",
     "step_ledger",
   ];
   return order.indexOf(observed) > order.indexOf(current) ? observed : current;
