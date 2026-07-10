@@ -220,22 +220,31 @@ hard input limit: 100K
 Ayati supports context profiles of 128K tokens and larger. The default profile
 also reserves 8K for output. Larger profiles derive the same proportions unless
 the runtime LLM configuration provides explicit thresholds. Below the soft
-limit, this layer does not transform context. Compaction modes are not
-implemented yet.
+limit, this layer does not transform context.
 
-The final provider request is rejected before generation when it exceeds the
-hard input limit. Exact provider counts may use the full hard limit. Local or
-inexact counts use a conservative admission limit at 95% of the hard limit.
-This guard prevents an uncounted request from approaching the provider boundary
-while token-aware compaction is still being built.
+Tool-context projection has a runtime policy with two modes:
+
+- `shadow` is the default. Ayati measures the complete candidate and records
+  the deterministic alternative, but sends the unchanged candidate.
+- `enforce` applies the deterministic tool projection after the candidate
+  reaches the soft limit, rebuilds the complete request, and measures that
+  final request before provider generation.
+
+The request admitted to the provider is rejected before generation when it
+exceeds the hard input limit. In enforcement mode the unmodified candidate may
+exceed that limit because it is an internal compilation input, not a provider
+request. Exact provider counts may use the full hard limit. Local or inexact
+counts use a conservative admission limit at 95% of the hard limit.
 
 Budget reports record the model/profile source, local and provider counts,
 input capacity, all three thresholds, admission result, pressure ratio and
 overflow status. A context-compilation receipt records candidate and final
-tokens, mode, transformations, and admission. The run-scoped pressure state
-counts at most one soft breach per runner iteration, so repair attempts do not
-artificially advance future pressure modes. Reports are emitted once per
-distinct decision or repair attempt, not once per transport retry.
+tokens, mode, transformations, target recovery, and final admission. Candidate
+and final reports are separate so a successful projection cannot hide that the
+original request crossed a limit. The run-scoped pressure state counts at most
+one soft breach per runner iteration, so repair attempts do not artificially
+advance future pressure modes. Reports are emitted once per distinct decision
+or repair attempt, not once per transport retry.
 
 Current-run tool-call storage and prompt projection are separate. Below the
 soft limit, all prompt-eligible tool calls are sent in full; there is no fixed
@@ -243,8 +252,10 @@ six-call or 30K-character history cap. At the soft limit, a deterministic
 shadow planner protects the latest six calls, failures, and calls without a
 recovery reference, then proposes previews or summaries for only as many older
 calls as needed to reach the recovery target. Reference-only conversion is
-reserved for a later repeated-pressure mode. Shadow plans are recorded in
-optimization metrics and the feedback ledger but are not enforced yet.
+reserved for a later repeated-pressure mode. Plans are recorded in optimization
+metrics and the feedback ledger. With `enforce`, the same plan is applied to a
+new prompt projection; the source tool-call records, durable task context, and
+run work state remain unchanged.
 
 Shadow planning uses registered deterministic projectors for filesystem reads,
 filesystem search/listing, filesystem mutations, shell calls, test/build
@@ -255,7 +266,11 @@ file contents, and never included in the normal full prompt. The planner builds
 the complete alternative decision request through the normal prompt serializer
 and measures it with the same corrected local estimator as the real request.
 Receipts record the projector id and per-call estimates plus whole-request
-shadow tokens and savings.
+projected tokens and savings. After an enforced projection, the next state view
+receives a compact pressure signal with the active mode, number of compacted
+calls, and whether the recovery target was reached. This tells the agent to
+work in smaller, recoverable steps without replacing the stable decision
+contract.
 
 ## Tool Visibility
 

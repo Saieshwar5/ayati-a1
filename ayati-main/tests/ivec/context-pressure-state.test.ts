@@ -39,6 +39,21 @@ describe("context pressure state", () => {
     expect(state.admissionRejectionCount).toBe(1);
     expect(state.latestReceipt?.admitted).toBe(false);
   });
+
+  it("advances to tool compaction and does not regress on a later full receipt", () => {
+    const compacted = updateContextPressureState({
+      receipt: receipt({ mode: "tool_compact" }),
+      iteration: 2,
+    });
+    const laterFull = updateContextPressureState({
+      current: compacted,
+      receipt: receipt({ mode: "full", softLimitExceeded: false }),
+      iteration: 3,
+    });
+
+    expect(compacted.mode).toBe("tool_compact");
+    expect(laterFull.mode).toBe("tool_compact");
+  });
 });
 
 function receipt(overrides: Partial<ContextCompilationReceipt> = {}): ContextCompilationReceipt {

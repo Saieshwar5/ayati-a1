@@ -36,4 +36,7 @@ function validateLoopConfig(config: LoopConfig): void {
   if (config.strategyReviewFailureThreshold <= 0) {
     throw new Error("strategyReviewFailureThreshold must be positive");
   }
+  if (config.toolContextProjectionPolicy !== "shadow" && config.toolContextProjectionPolicy !== "enforce") {
+    throw new Error("toolContextProjectionPolicy must be shadow or enforce");
+  }
 }

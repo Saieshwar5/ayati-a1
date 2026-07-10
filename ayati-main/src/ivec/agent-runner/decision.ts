@@ -7,13 +7,9 @@ import type {
   ProviderEmptyResponseError,
   ProviderMalformedResponseError,
 } from "../../core/contracts/provider-errors.js";
-import type { LlmMessage, LlmToolCall, LlmToolSchema, LlmTurnOutput } from "../../core/contracts/llm-protocol.js";
-import {
-  assertContextIsAdmissible,
-  buildFullContextCompilationReceipt,
-} from "../../prompt/context-compilation-receipt.js";
+import type { LlmMessage, LlmToolCall, LlmToolSchema, LlmTurnInput, LlmTurnOutput } from "../../core/contracts/llm-protocol.js";
+import { assertContextIsAdmissible } from "../../prompt/context-compilation-receipt.js";
 import type { ContextCompilationReceipt } from "../../prompt/context-compilation-receipt.js";
-import { measureTurnContext } from "../../prompt/context-token-counter.js";
 import { resolveModelContextLimits } from "../../providers/shared/model-context-limits.js";
 import type { ResolvedModelContextLimits } from "../../providers/shared/model-context-limits.js";
 import { agentTrace, isAgentTracePromptEnabled, tracePreview } from "../../shared/index.js";
@@ -21,6 +17,8 @@ import type { ToolContractAssertion, ToolDefinition } from "../../skills/types.j
 import type { AgentFeedbackLedger } from "../feedback-ledger.js";
 import type { RunMetrics } from "../metrics.js";
 import { recordOptimizationEvent, recordPromptMetric, recordProviderUsageMetric, recordRunMetric } from "../metrics.js";
+import type { ToolContextProjectionPolicy } from "../types.js";
+import { compileDecisionContext } from "./decision-context-compiler.js";
 import { projectAgentStateViewForPrompt } from "./prompt-context.js";
 import type { RepairCode, RepairSignal } from "./repair-policy.js";
 import {
@@ -29,8 +27,6 @@ import {
   repairSignalToPromptText,
 } from "./repair-policy.js";
 import type { AgentStateView } from "./state-view.js";
-import { planToolContextProjection } from "./tool-context-projection-planner.js";
-import { measureToolContextShadowProjection } from "./tool-context-shadow.js";
 import {
   summarizePromptStateView,
   summarizeToolDefinitions,
@@ -125,6 +121,7 @@ interface CallAgentDecisionInput {
   metrics?: RunMetrics;
   feedbackLedger?: AgentFeedbackLedger;
   feedbackContext?: AgentDecisionFeedbackContext;
+  toolContextProjectionPolicy?: ToolContextProjectionPolicy;
   onContextCompilation?: (receipt: ContextCompilationReceipt) => void;
   onAssistantTextDelta?: (delta: string) => void;
 }
@@ -438,60 +435,68 @@ async function generateTurnWithEmptyResponseRetry(
     requestStartedAt: number;
   },
 ): Promise<LlmTurnOutput> {
-  const turnInput = {
+  const candidateTurnInput: LlmTurnInput = {
     messages: request.messages,
     tools: request.decisionTools,
     toolChoice: "auto" as const,
     parallelToolCalls: false,
   };
-  const contextBudget = await measureTurnContext({
+  const compilation = await compileDecisionContext({
     provider: input.provider,
-    turnInput,
-    limits: request.contextLimits,
+    turnInput: candidateTurnInput,
+    stateView: input.stateView,
+    contextLimits: request.contextLimits,
+    decisionAttempt: request.decisionAttempt,
+    policy: input.toolContextProjectionPolicy ?? "shadow",
+    buildPrompt: (stateView) => Object.values(buildDecisionPromptSections(
+      stateView,
+      input.toolDefinitions,
+      input.toolRoutingSummary,
+    )).filter((section) => section.trim().length > 0).join("\n\n"),
   });
-  const contextCompilation = buildFullContextCompilationReceipt(
-    contextBudget,
-    request.decisionAttempt,
-  );
+  const contextBudget = compilation.candidateBudget;
   recordOptimizationEvent(input.metrics, "context_budget", {
     stage: request.decisionAttempt === 1 ? "agent_decision" : "agent_decision_repair",
+    phase: "candidate",
     decisionAttempt: request.decisionAttempt,
     ...contextBudget,
   });
   recordDecisionFeedback(input, "context_budget", {
+    phase: "candidate",
     decisionAttempt: request.decisionAttempt,
     ...contextBudget,
   });
-  recordOptimizationEvent(input.metrics, "context_compilation", { ...contextCompilation });
-  recordDecisionFeedback(input, "context_compilation", { ...contextCompilation });
-  const toolProjectionPlan = planToolContextProjection({
-    calls: input.stateView.context.run?.toolCalls ?? [],
-    candidateInputTokens: contextBudget.measuredInputTokens,
-    recoveryTargetTokens: contextBudget.recoveryTargetTokens,
-    softInputTokens: contextBudget.softInputTokens,
-  });
-  if (toolProjectionPlan.triggered && toolProjectionPlan.calls.length > 0) {
-    const shadowReceipt = measureToolContextShadowProjection({
-      stateView: input.stateView,
-      requestMessages: request.messages,
-      turnInput,
-      plan: toolProjectionPlan,
-      budget: contextBudget,
-      buildPrompt: (stateView) => Object.values(buildDecisionPromptSections(
-        stateView,
-        input.toolDefinitions,
-        input.toolRoutingSummary,
-      )).filter((section) => section.trim().length > 0).join("\n\n"),
+  if (compilation.projection) {
+    recordOptimizationEvent(input.metrics, compilation.projection.event, {
+      ...compilation.projection.receipt,
+      policy: compilation.projection.policy,
     });
-    recordOptimizationEvent(input.metrics, "tool_context_projection_shadow", { ...shadowReceipt });
-    recordDecisionFeedback(input, "tool_context_projection_shadow", { ...shadowReceipt });
+    recordDecisionFeedback(input, compilation.projection.event, {
+      ...compilation.projection.receipt,
+      policy: compilation.projection.policy,
+    });
   }
-  input.onContextCompilation?.(contextCompilation);
+  if (compilation.finalBudgetMeasured) {
+    recordOptimizationEvent(input.metrics, "context_budget_final", {
+      stage: request.decisionAttempt === 1 ? "agent_decision" : "agent_decision_repair",
+      phase: "final",
+      decisionAttempt: request.decisionAttempt,
+      ...compilation.finalBudget,
+    });
+    recordDecisionFeedback(input, "context_budget_final", {
+      phase: "final",
+      decisionAttempt: request.decisionAttempt,
+      ...compilation.finalBudget,
+    });
+  }
+  recordOptimizationEvent(input.metrics, "context_compilation", { ...compilation.receipt });
+  recordDecisionFeedback(input, "context_compilation", { ...compilation.receipt });
+  input.onContextCompilation?.(compilation.receipt);
   agentTrace(
     "agent_decision",
-    `context_budget attempt=${request.decisionAttempt} input=${contextBudget.measuredInputTokens} soft=${contextBudget.softInputTokens} hard=${contextBudget.hardInputTokens} pressure=${contextBudget.pressure} level=${contextBudget.pressureLevel}`,
+    `context_budget attempt=${request.decisionAttempt} candidate=${contextBudget.measuredInputTokens} final=${compilation.finalBudget.measuredInputTokens} mode=${compilation.receipt.mode} soft=${compilation.finalBudget.softInputTokens} hard=${compilation.finalBudget.hardInputTokens}`,
   );
-  assertContextIsAdmissible(contextCompilation);
+  assertContextIsAdmissible(compilation.receipt);
   let providerAttempt = 0;
 
   for (;;) {
@@ -504,11 +509,11 @@ async function generateTurnWithEmptyResponseRetry(
         && input.provider.capabilities.streaming === true
         && input.provider.streamTurn
       ) {
-        return await input.provider.streamTurn(turnInput, {
+        return await input.provider.streamTurn(compilation.finalTurnInput, {
           onTextDelta: input.onAssistantTextDelta,
         });
       }
-      return await input.provider.generateTurn(turnInput);
+      return await input.provider.generateTurn(compilation.finalTurnInput);
     } catch (error) {
       const responseFailure = providerResponseFailureDetails(error);
       if (!responseFailure) {

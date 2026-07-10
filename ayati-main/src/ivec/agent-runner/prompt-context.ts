@@ -76,6 +76,12 @@ export interface PromptRunContext {
     tools: string[];
     callCount: number;
   };
+  contextPressure?: {
+    mode: "tool_compact" | "timeline_checkpoint" | "session_digest" | "step_ledger";
+    compactedCalls: number;
+    targetReached?: boolean;
+    recoverable: true;
+  };
 }
 
 export interface PromptRunWorkStateContext {
@@ -258,6 +264,7 @@ function compactRunContext(
         : run.toolCalls.map(({ projectionMetadata: _projectionMetadata, ...call }) => call),
     } : {}),
     ...(run.routing ? { routing: run.routing } : {}),
+    ...(run.contextPressure ? { contextPressure: run.contextPressure } : {}),
   };
   return Object.keys(compacted).length > 0 ? compacted : undefined;
 }

@@ -671,6 +671,46 @@ describe("buildAgentStateView", () => {
     expect(toolCalls?.[0]).not.toHaveProperty("outputCompacted");
   });
 
+  it("exposes a compact recoverable signal after tool projection enforcement", () => {
+    const state = createLoopState({
+      contextPressure: {
+        mode: "tool_compact",
+        softLimitBreachCount: 1,
+        admissionRejectionCount: 0,
+        peakCandidateInputTokens: 82_000,
+        latestReceipt: {
+          schemaVersion: 1,
+          decisionAttempt: 1,
+          mode: "tool_compact",
+          provider: "test",
+          model: "test-128k",
+          candidateInputTokens: 82_000,
+          finalInputTokens: 59_000,
+          recoveryTargetTokens: 60_000,
+          softInputTokens: 70_000,
+          hardInputTokens: 100_000,
+          admissionLimitTokens: 95_000,
+          softLimitExceeded: true,
+          hardLimitExceeded: false,
+          admitted: true,
+          countSource: "local_estimate",
+          targetReached: true,
+          transformations: [
+            { kind: "tool_call_projection", tokensBefore: 20_000, tokensAfter: 1_000 },
+            { kind: "tool_call_projection", tokensBefore: 10_000, tokensAfter: 500 },
+          ],
+        },
+      },
+    });
+
+    expect(buildAgentStateView(state).context.run?.contextPressure).toEqual({
+      mode: "tool_compact",
+      compactedCalls: 2,
+      targetReached: true,
+      recoverable: true,
+    });
+  });
+
   it("groups tool load, attachments, and system events while keeping top-level aliases", () => {
     const state = createLoopState({
       harnessContext: createHarnessContext({

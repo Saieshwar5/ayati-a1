@@ -149,6 +149,7 @@ export function buildAgentStateView(state: LoopState, options: AgentStateViewOpt
       toolCalls,
       routing: buildRoutingAttemptView(state),
       deferredMutation: buildDeferredMutationView(state),
+      contextPressure: buildContextPressureView(state),
     }),
   });
 
@@ -188,6 +189,7 @@ function buildRunContext(input: {
   toolCalls?: PromptToolCalls;
   routing?: PromptRunContext["routing"];
   deferredMutation?: PromptRunContext["deferredMutation"];
+  contextPressure?: PromptRunContext["contextPressure"];
 }): PromptRunContext {
   return {
     status: input.status,
@@ -195,6 +197,22 @@ function buildRunContext(input: {
     ...(input.toolCalls ? { toolCalls: input.toolCalls } : {}),
     ...(input.routing ? { routing: input.routing } : {}),
     ...(input.deferredMutation ? { deferredMutation: input.deferredMutation } : {}),
+    ...(input.contextPressure ? { contextPressure: input.contextPressure } : {}),
+  };
+}
+
+function buildContextPressureView(state: LoopState): PromptRunContext["contextPressure"] | undefined {
+  const pressure = state.contextPressure;
+  if (!pressure || pressure.mode === "full") return undefined;
+  return {
+    mode: pressure.mode,
+    compactedCalls: pressure.latestReceipt?.transformations.filter(
+      (transformation) => transformation.kind === "tool_call_projection",
+    ).length ?? 0,
+    ...(pressure.latestReceipt?.targetReached !== undefined
+      ? { targetReached: pressure.latestReceipt.targetReached }
+      : {}),
+    recoverable: true,
   };
 }
 

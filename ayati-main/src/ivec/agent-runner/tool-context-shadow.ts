@@ -12,14 +12,19 @@ export interface ToolContextShadowReceipt extends Omit<ToolContextProjectionPlan
   correctedShadowLocalEstimateTokens: number;
 }
 
-export function measureToolContextShadowProjection(input: {
+export interface ToolContextProjectionCandidate {
+  turnInput: LlmTurnInput;
+  receipt: ToolContextShadowReceipt;
+}
+
+export function buildToolContextProjectionCandidate(input: {
   stateView: AgentStateView;
   requestMessages: LlmMessage[];
   turnInput: LlmTurnInput;
   plan: ToolContextProjectionPlan;
   budget: ContextBudgetReport;
   buildPrompt: (stateView: AgentPromptStateView) => string;
-}): ToolContextShadowReceipt {
+}): ToolContextProjectionCandidate {
   const run = input.stateView.context.run;
   const shadowStateView: AgentStateView = run
     ? {
@@ -50,12 +55,15 @@ export function measureToolContextShadowProjection(input: {
   );
   const { projectedCalls: _projectedCalls, ...planReceipt } = input.plan;
   return {
-    ...planReceipt,
-    estimatedSavingsTokens: measuredSavingsTokens,
-    projectedInputTokens: measuredProjectedInputTokens,
-    canReachTarget: measuredProjectedInputTokens <= input.budget.recoveryTargetTokens,
-    shadowLocalEstimateTokens,
-    correctedShadowLocalEstimateTokens,
+    turnInput: shadowTurnInput,
+    receipt: {
+      ...planReceipt,
+      estimatedSavingsTokens: measuredSavingsTokens,
+      projectedInputTokens: measuredProjectedInputTokens,
+      canReachTarget: measuredProjectedInputTokens <= input.budget.recoveryTargetTokens,
+      shadowLocalEstimateTokens,
+      correctedShadowLocalEstimateTokens,
+    },
   };
 }
 

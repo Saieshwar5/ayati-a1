@@ -20,14 +20,54 @@ export interface ContextCompilationReceipt {
   hardInputTokens: number;
   admissionLimitTokens: number;
   softLimitExceeded: boolean;
+  candidateHardLimitExceeded?: boolean;
   hardLimitExceeded: boolean;
   admitted: boolean;
   countSource: ContextBudgetReport["countSource"];
+  candidateCountSource?: ContextBudgetReport["countSource"];
+  targetReached?: boolean;
+  needsEscalation?: boolean;
   transformations: Array<{
     kind: string;
+    callId?: string;
+    tool?: string;
+    projectorId?: string;
+    from?: string;
+    to?: string;
+    reason?: string;
     tokensBefore: number;
     tokensAfter: number;
   }>;
+}
+
+export function buildToolCompactContextCompilationReceipt(input: {
+  candidate: ContextBudgetReport;
+  final: ContextBudgetReport;
+  decisionAttempt: number;
+  transformations: ContextCompilationReceipt["transformations"];
+}): ContextCompilationReceipt {
+  return {
+    schemaVersion: 1,
+    decisionAttempt: input.decisionAttempt,
+    mode: "tool_compact",
+    provider: input.final.provider,
+    model: input.final.model,
+    candidateInputTokens: input.candidate.measuredInputTokens,
+    finalInputTokens: input.final.measuredInputTokens,
+    recoveryTargetTokens: input.final.recoveryTargetTokens,
+    softInputTokens: input.final.softInputTokens,
+    hardInputTokens: input.final.hardInputTokens,
+    admissionLimitTokens: input.final.admissionLimitTokens,
+    softLimitExceeded: input.candidate.softLimitExceeded,
+    candidateHardLimitExceeded: input.candidate.hardLimitExceeded,
+    hardLimitExceeded: input.final.hardLimitExceeded,
+    admitted: !input.final.admissionLimitExceeded,
+    countSource: input.final.countSource,
+    candidateCountSource: input.candidate.countSource,
+    targetReached: input.final.measuredInputTokens <= input.final.recoveryTargetTokens,
+    needsEscalation: input.final.measuredInputTokens > input.final.recoveryTargetTokens,
+    transformations: input.transformations,
+  };
 }
 
 export function buildFullContextCompilationReceipt(

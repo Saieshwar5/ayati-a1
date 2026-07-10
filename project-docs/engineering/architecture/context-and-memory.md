@@ -165,10 +165,18 @@ additional fixed character cap to those run records.
 
 Below the configured soft input limit, every prompt-eligible run tool call is
 projected in full at `State view.context.run.toolCalls`. The six-call hot window
-does not apply during normal operation. At or above the soft limit, a shadow
-planner currently records which older recoverable calls it would preview or
-deterministically summarize to reach the recovery target. The shadow plan does
-not yet alter the provider request.
+does not apply during normal operation. At or above the soft limit, the planner
+selects only the older recoverable calls needed to approach the recovery target
+while keeping the latest six calls, failures, and calls without recovery
+references full. The default `shadow` policy only records this alternative. An
+explicit `enforce` policy sends the reserialized and remeasured alternative.
+
+Projection is copy-on-write prompt compilation. It never rewrites the complete
+run tool-call records or their evidence, and it does not summarize or compress
+`context.git.current.task` or `context.run.workState`. Those protected values
+are carried unchanged into the projected request. The active pressure mode is
+monotonic within the run and is exposed through a small
+`context.run.contextPressure` signal on later decisions.
 
 Tool-family projectors use bounded structured result metadata captured during
 execution. Read projections preserve requested paths/ranges and file metadata;
@@ -179,7 +187,7 @@ contents while preserving paths, hashes, result codes, artifacts, and recovery
 refs; Git-context projections preserve task/run/query identifiers and bounded
 result metadata. Unknown tools use a conservative generic projector. Internal
 projection metadata is stripped from the normal prompt and appears only
-through a proposed shadow projection.
+through a projected prompt when the enforcement policy applies it.
 
 Each entry contains the tool name, input, status, output or error, artifacts,
 evidence refs, and truncation metadata. Internal observation records carry

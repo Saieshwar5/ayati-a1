@@ -404,6 +404,237 @@ describe("parseAgentDecision", () => {
     expect(sentCalls.every((call) => !("projectionMetadata" in call))).toBe(true);
   });
 
+  it("enforces tool projection and admits the measured final request", async () => {
+    const generateTurn = vi.fn().mockResolvedValue({
+      type: "assistant",
+      content: JSON.stringify({ kind: "reply", status: "completed", message: "Done" }),
+    });
+    const countInputTokens = vi.fn()
+      .mockResolvedValueOnce({ provider: "fake-provider", model: "test-model", inputTokens: 101_000, exact: true })
+      .mockResolvedValueOnce({ provider: "fake-provider", model: "test-model", inputTokens: 90_000, exact: true });
+    const provider: LlmProvider = {
+      name: "fake-provider",
+      version: "test-model",
+      capabilities: { nativeToolCalling: true },
+      start() {},
+      stop() {},
+      countInputTokens,
+      generateTurn,
+    };
+    const task = protectedTaskContext();
+    const workState = {
+      status: "not_done" as const,
+      blockers: ["Keep the protected state intact."],
+      verifiedFacts: ["The candidate was measured."],
+      nextStep: "Compile only tool-call context.",
+    };
+    const stateView = createStateView({
+      context: {
+        timeline: [{
+          kind: "user",
+          seq: 1,
+          timestamp: "2026-07-10T00:00:00.000Z",
+          content: "Continue the task",
+          current: true,
+        }],
+        git: {
+          session: {
+            meta: { sessionId: "session-1", assetCount: 0 },
+            activity: { recent: [] },
+          },
+          current: {
+            focus: { status: "active", ref: "refs/heads/task/T-1", workId: "T-1" },
+            task,
+          },
+        },
+        run: { workState, toolCalls: largeToolCalls(50_000) },
+      },
+    });
+    const sourceBefore = structuredClone(stateView);
+    const onContextCompilation = vi.fn();
+    const metrics = createRunMetrics();
+
+    await callAgentDecision({
+      provider,
+      stateView,
+      toolDefinitions: [],
+      toolLoadingAvailable: false,
+      toolContextProjectionPolicy: "enforce",
+      onContextCompilation,
+      metrics,
+    });
+
+    expect(countInputTokens).toHaveBeenCalledTimes(2);
+    expect(generateTurn).toHaveBeenCalledTimes(1);
+    expect(stateView).toEqual(sourceBefore);
+    expect(onContextCompilation).toHaveBeenCalledWith(expect.objectContaining({
+      mode: "tool_compact",
+      candidateInputTokens: 101_000,
+      finalInputTokens: 90_000,
+      candidateHardLimitExceeded: true,
+      targetReached: false,
+      needsEscalation: true,
+      admitted: true,
+    }));
+    expect(metrics.optimizationEvents.some((event) => event.kind === "context_budget_final")).toBe(true);
+    expect(metrics.optimizationEvents.some((event) => event.kind === "tool_context_projection_enforced")).toBe(true);
+
+    const sentUserPrompt = generateTurn.mock.calls[0]?.[0]?.messages
+      .find((message: { role: string }) => message.role === "user")?.content;
+    if (typeof sentUserPrompt !== "string") throw new Error("Expected a user prompt.");
+    const sentState = parsePromptStateView(sentUserPrompt);
+    const sentContext = sentState["context"] as {
+      git: { current: { task: unknown } };
+      run: { workState: unknown; toolCalls: Array<{ mode: string }> };
+    };
+    expect(sentContext.git.current.task).toEqual(task);
+    expect(sentContext.run.workState).toEqual(workState);
+    expect(sentContext.run.toolCalls.slice(0, 4).some((call) => call.mode !== "full")).toBe(true);
+    expect(sentContext.run.toolCalls.slice(-6).every((call) => call.mode === "full")).toBe(true);
+  });
+
+  it("rejects an enforced projection when the measured final request remains over hard limit", async () => {
+    const generateTurn = vi.fn();
+    const countInputTokens = vi.fn()
+      .mockResolvedValueOnce({ provider: "fake-provider", model: "test-model", inputTokens: 110_000, exact: true })
+      .mockResolvedValueOnce({ provider: "fake-provider", model: "test-model", inputTokens: 105_000, exact: true });
+    const provider: LlmProvider = {
+      name: "fake-provider",
+      version: "test-model",
+      capabilities: { nativeToolCalling: true },
+      start() {},
+      stop() {},
+      countInputTokens,
+      generateTurn,
+    };
+    const onContextCompilation = vi.fn();
+
+    await expect(callAgentDecision({
+      provider,
+      stateView: createStateView({
+        context: {
+          timeline: [{
+            kind: "user",
+            seq: 1,
+            timestamp: "2026-07-10T00:00:00.000Z",
+            content: "Continue",
+            current: true,
+          }],
+          run: { toolCalls: largeToolCalls(50_000) },
+        },
+      }),
+      toolDefinitions: [],
+      toolContextProjectionPolicy: "enforce",
+      onContextCompilation,
+    })).rejects.toBeInstanceOf(ContextInputLimitError);
+
+    expect(countInputTokens).toHaveBeenCalledTimes(2);
+    expect(generateTurn).not.toHaveBeenCalled();
+    expect(onContextCompilation).toHaveBeenCalledWith(expect.objectContaining({
+      mode: "tool_compact",
+      candidateInputTokens: 110_000,
+      finalInputTokens: 105_000,
+      admitted: false,
+      hardLimitExceeded: true,
+    }));
+  });
+
+  it("uses the enforced final request for streaming decisions", async () => {
+    const streamTurn = vi.fn().mockResolvedValue({ type: "assistant", content: "Streamed" });
+    const generateTurn = vi.fn();
+    const provider: LlmProvider = {
+      name: "fake-provider",
+      version: "test-model",
+      capabilities: { nativeToolCalling: true, streaming: true },
+      start() {},
+      stop() {},
+      countInputTokens: vi.fn()
+        .mockResolvedValueOnce({ provider: "fake-provider", model: "test-model", inputTokens: 101_000, exact: true })
+        .mockResolvedValueOnce({ provider: "fake-provider", model: "test-model", inputTokens: 90_000, exact: true }),
+      generateTurn,
+      streamTurn,
+    };
+
+    await callAgentDecision({
+      provider,
+      stateView: createStateView({
+        context: {
+          timeline: [{
+            kind: "user",
+            seq: 1,
+            timestamp: "2026-07-10T00:00:00.000Z",
+            content: "Stream the response",
+            current: true,
+          }],
+          run: { toolCalls: largeToolCalls(50_000) },
+        },
+      }),
+      toolDefinitions: [],
+      toolLoadingAvailable: false,
+      toolContextProjectionPolicy: "enforce",
+      onAssistantTextDelta: vi.fn(),
+    });
+
+    expect(generateTurn).not.toHaveBeenCalled();
+    expect(streamTurn).toHaveBeenCalledTimes(1);
+    const streamedPrompt = streamTurn.mock.calls[0]?.[0]?.messages
+      .find((message: { role: string }) => message.role === "user")?.content;
+    if (typeof streamedPrompt !== "string") throw new Error("Expected a streamed user prompt.");
+    const streamedState = parsePromptStateView(streamedPrompt);
+    const streamedCalls = (streamedState["context"] as { run: { toolCalls: Array<{ mode: string }> } }).run.toolCalls;
+    expect(streamedCalls.slice(0, 4).some((call) => call.mode !== "full")).toBe(true);
+    expect(streamedCalls.slice(-6).every((call) => call.mode === "full")).toBe(true);
+  });
+
+  it("includes repair messages when measuring an enforced final request", async () => {
+    const generateTurn = vi.fn()
+      .mockResolvedValueOnce({
+        type: "assistant",
+        content: "{\"kind\":\"act\",\"action\":{\"mode\":\"single\",\"allowedTools\":[\"read_files\"],\"calls\":[{\"id\":\"call-new\",\"t",
+      })
+      .mockResolvedValueOnce({
+        type: "assistant",
+        content: JSON.stringify({ kind: "reply", status: "completed", message: "Repaired" }),
+      });
+    const countInputTokens = vi.fn()
+      .mockResolvedValueOnce({ provider: "fake-provider", model: "test-model", inputTokens: 101_000, exact: true })
+      .mockResolvedValueOnce({ provider: "fake-provider", model: "test-model", inputTokens: 90_000, exact: true })
+      .mockResolvedValueOnce({ provider: "fake-provider", model: "test-model", inputTokens: 102_000, exact: true })
+      .mockResolvedValueOnce({ provider: "fake-provider", model: "test-model", inputTokens: 91_000, exact: true });
+    const provider: LlmProvider = {
+      name: "fake-provider",
+      version: "test-model",
+      capabilities: { nativeToolCalling: true },
+      start() {},
+      stop() {},
+      countInputTokens,
+      generateTurn,
+    };
+
+    await callAgentDecision({
+      provider,
+      stateView: createStateView({
+        context: {
+          timeline: [{
+            kind: "user",
+            seq: 1,
+            timestamp: "2026-07-10T00:00:00.000Z",
+            content: "Continue",
+            current: true,
+          }],
+          run: { toolCalls: largeToolCalls(50_000) },
+        },
+      }),
+      toolDefinitions: [createTool("read_files")],
+      toolContextProjectionPolicy: "enforce",
+    });
+
+    expect(countInputTokens).toHaveBeenCalledTimes(4);
+    const repairedFinalMessages = countInputTokens.mock.calls[3]?.[0]?.messages ?? [];
+    expect(repairedFinalMessages.at(-1)?.content).toContain("Repair code: R_ASSISTANT_TEXT_TOOL_CALL");
+    expect(repairedFinalMessages.at(-1)?.content).toContain("Do not write tool-call JSON in assistant text");
+  });
+
   it("sends a deduplicated state view to the model prompt", async () => {
     const { provider, generateTurn } = createProvider([
       JSON.stringify({ kind: "reply", status: "completed", message: "Hi!" }),
@@ -1471,6 +1702,45 @@ function parsePromptStateView(userPrompt: string): Record<string, unknown> {
     throw new Error("State view marker missing from prompt.");
   }
   return JSON.parse(userPrompt.slice(index + marker.length)) as Record<string, unknown>;
+}
+
+function largeToolCalls(outputChars: number) {
+  return Array.from({ length: 10 }, (_, index) => ({
+    step: index + 1,
+    callId: `call-${index + 1}`,
+    tool: "read_files",
+    input: { path: `src/file-${index + 1}.ts` },
+    status: "success" as const,
+    retention: "next_step" as const,
+    mode: "full" as const,
+    output: "x".repeat(outputChars),
+    projectionMetadata: { filePath: `src/file-${index + 1}.ts`, lineCount: 1_000 },
+    stepRef: { runId: "run-1", step: index + 1, callId: `call-${index + 1}` },
+  }));
+}
+
+function protectedTaskContext() {
+  return {
+    identity: {
+      ref: "refs/heads/task/T-1",
+      title: "Protected task",
+      objective: "Preserve task context during tool projection.",
+      workId: "T-1",
+    },
+    state: {
+      status: "active",
+      completed: ["Measured the candidate."],
+      open: ["Enforce the tool projection."],
+      blockers: [],
+      facts: [{ text: "Task state is protected." }],
+      next: "Measure the final request.",
+    },
+    assets: [{ path: "src/context.ts", kind: "file" }],
+    activity: {
+      recentRuns: [],
+      recentEvidence: [],
+    },
+  };
 }
 
 function createStateView(overrides: Partial<AgentStateView> = {}): AgentStateView {

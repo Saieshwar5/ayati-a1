@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   assertContextIsAdmissible,
   buildFullContextCompilationReceipt,
+  buildToolCompactContextCompilationReceipt,
   ContextInputLimitError,
 } from "../../src/prompt/context-compilation-receipt.js";
 import type { ContextBudgetReport } from "../../src/prompt/context-budget.js";
@@ -30,6 +31,42 @@ describe("context compilation receipt", () => {
     }), 1);
 
     expect(() => assertContextIsAdmissible(receipt)).toThrow(ContextInputLimitError);
+  });
+
+  it("admits a projected final request even when its candidate exceeded the hard limit", () => {
+    const receipt = buildToolCompactContextCompilationReceipt({
+      candidate: report({
+        measuredInputTokens: 105_000,
+        hardLimitExceeded: true,
+        admissionLimitExceeded: true,
+      }),
+      final: report({
+        measuredInputTokens: 58_000,
+        correctedLocalEstimateTokens: 58_000,
+        softLimitExceeded: false,
+        pressureLevel: "normal",
+      }),
+      decisionAttempt: 1,
+      transformations: [{
+        kind: "tool_call_projection",
+        callId: "call-1",
+        from: "full",
+        to: "summary",
+        tokensBefore: 20_000,
+        tokensAfter: 500,
+      }],
+    });
+
+    expect(receipt).toMatchObject({
+      mode: "tool_compact",
+      candidateInputTokens: 105_000,
+      finalInputTokens: 58_000,
+      candidateHardLimitExceeded: true,
+      targetReached: true,
+      needsEscalation: false,
+      admitted: true,
+    });
+    expect(() => assertContextIsAdmissible(receipt)).not.toThrow();
   });
 });
 

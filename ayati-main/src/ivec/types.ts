@@ -355,6 +355,8 @@ export interface AgentArtifact {
 
 // --- Config ---
 
+export type ToolContextProjectionPolicy = "shadow" | "enforce";
+
 export interface LoopConfig {
   maxIterations: number;
   maxConsecutiveFailures: number;
@@ -365,6 +367,7 @@ export interface LoopConfig {
   maxVerifyArtifactChars: number;
   maxSelectedTools: number;
   strategyReviewFailureThreshold: number;
+  toolContextProjectionPolicy: ToolContextProjectionPolicy;
 }
 
 export const DEFAULT_LOOP_CONFIG: LoopConfig = {
@@ -377,6 +380,7 @@ export const DEFAULT_LOOP_CONFIG: LoopConfig = {
   maxVerifyArtifactChars: 20_000,
   maxSelectedTools: 15,
   strategyReviewFailureThreshold: 3,
+  toolContextProjectionPolicy: "shadow",
 };
 
 // --- Result + callbacks ---

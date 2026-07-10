@@ -32,6 +32,7 @@ export function updateContextPressureState(input: {
 
   return {
     ...current,
+    mode: laterContextMode(current.mode, input.receipt.mode),
     softLimitBreachCount: current.softLimitBreachCount + (isNewSoftBreach ? 1 : 0),
     admissionRejectionCount: current.admissionRejectionCount + (input.receipt.admitted ? 0 : 1),
     peakCandidateInputTokens: Math.max(
@@ -41,4 +42,18 @@ export function updateContextPressureState(input: {
     ...(isNewSoftBreach ? { lastSoftBreachIteration: input.iteration } : {}),
     latestReceipt: input.receipt,
   };
+}
+
+function laterContextMode(
+  current: ContextCompilationMode,
+  observed: ContextCompilationMode,
+): ContextCompilationMode {
+  const order: ContextCompilationMode[] = [
+    "full",
+    "tool_compact",
+    "timeline_checkpoint",
+    "session_digest",
+    "step_ledger",
+  ];
+  return order.indexOf(observed) > order.indexOf(current) ? observed : current;
 }

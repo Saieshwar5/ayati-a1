@@ -84,7 +84,10 @@ context.timeline + context.git + context.tools + context.harness + context.run +
   full. Filesystem read/search/write, shell, test/build, and Git-context
   projectors use bounded structured execution metadata, and the complete
   alternative prompt is reserialized and measured before its receipt is
-  recorded. It does not yet change the provider request.
+  recorded. The default policy remains shadow-only; an explicit enforcement
+  policy applies the projection, remeasures the complete final request, and
+  admits only that final request. Source tool records, current task context,
+  and run work state remain unchanged.
 - Prompt-facing harness repair feedback through `context.harness.feedback`,
   kept separate from run context.
 - Filesystem inspection and efficient read tools:
@@ -114,8 +117,8 @@ context.timeline + context.git + context.tools + context.harness + context.run +
   messages, uses provider counting at the soft limit when available, and
   records budget and compilation receipts. The default 128K profile uses a 60K
   recovery target, 70K soft limit, and 100K hard input limit. Run-scoped state
-  records pressure observations, and over-limit requests are rejected before
-  provider generation. Context compaction behavior is not implemented yet.
+  records pressure observations and exposes a compact pressure signal to later
+  decisions. Over-limit final requests are rejected before provider generation.
 
 ## Runtime Boundary
 
@@ -141,5 +144,6 @@ is the simple runtime path.
    needs-user-input, stuck/max-iteration, and tool-failure outcomes.
 4. Legacy cleanup around historical focus/message-link/event files.
 5. Stable milestone tags.
-6. Tool-family-specific deterministic context projectors and pressure-mode
-   enforcement after shadow receipts are validated.
+6. Validate enforced tool-context projections in longer runs, then add the
+   later pressure stages for timeline checkpoints, task-relevant session
+   digests, and reference-only step ledgers.

@@ -387,6 +387,7 @@ export async function runAgentLoop(
         metrics,
         inputHandle,
         workRunHandle,
+        config,
       });
       const responseKind = state.workState.status === "needs_user_input"
         ? "feedback"
@@ -487,6 +488,7 @@ export async function runAgentLoop(
       toolLoadingAvailable: decisionRuntimeMode.allowToolLoading,
       taskFeedbackToolAvailable,
       workStateUpdateAvailable: isWorkStateUpdateToolAvailable(state, workRunHandle),
+      toolContextProjectionPolicy: config.toolContextProjectionPolicy,
       systemContext: deps.systemContext,
       metrics,
       feedbackLedger: deps.feedbackLedger,
@@ -1682,6 +1684,7 @@ async function buildFinalResponseFromWorkState(input: {
   metrics: ReturnType<typeof createRunMetrics>;
   inputHandle: SessionInputHandle;
   workRunHandle: MemoryRunHandle | undefined;
+  config: LoopConfig;
 }): Promise<string> {
   const stateView = buildAgentStateView(input.state, {
     activeTools: [],
@@ -1709,6 +1712,7 @@ async function buildFinalResponseFromWorkState(input: {
     toolLoadingAvailable: false,
     taskFeedbackToolAvailable: false,
     workStateUpdateAvailable: false,
+    toolContextProjectionPolicy: input.config.toolContextProjectionPolicy,
     systemContext: [
       input.deps.systemContext,
       "Final response-only mode: tools are unavailable. Reply naturally to the user from context.run.workState, verified facts, artifacts, and recent tool-call memory. Do not mention harness internals. Do not say control tool names such as update_work_state, decision_load_tools, or ask_user_feedback.",
