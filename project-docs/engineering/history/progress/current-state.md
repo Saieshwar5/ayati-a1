@@ -129,7 +129,12 @@ context.timeline + context.git + context.tools + context.harness + context.run +
 - Deterministic timeline-checkpoint foundation: typed checkpoint events,
   structured summary schema, contiguous-prefix planning, minimum exact-tail and
   current-input protection, token-savings estimates, source hashing, and
-  coverage/reference validation. LLM checkpoint generation is not connected.
+  coverage/reference validation.
+- Pressure-aware structured LLM timeline checkpoints after tool projection.
+  Runtime-owned metadata, strict local validation, one repair, output and input
+  token guards, run-scoped positive/negative caching, immutable combined prompt
+  projection, candidate/intermediate/final measurement, and safe unchanged-source
+  fallback are implemented.
 
 ## Runtime Boundary
 
@@ -155,6 +160,5 @@ is the simple runtime path.
    needs-user-input, stuck/max-iteration, and tool-failure outcomes.
 4. Legacy cleanup around historical focus/message-link/event files.
 5. Stable milestone tags.
-6. Connect structured LLM timeline-checkpoint generation to the pressure-aware
-   compiler, then add task-relevant session digests and reference-only step
-   ledgers.
+6. Add task-relevant session digests for pressure that remains unresolved after
+   timeline checkpointing, then add reference-only step ledgers.

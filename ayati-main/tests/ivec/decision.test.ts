@@ -4,7 +4,7 @@ import {
   ProviderEmptyResponseError,
   ProviderMalformedResponseError,
 } from "../../src/core/contracts/provider-errors.js";
-import type { LlmTurnOutput } from "../../src/core/contracts/llm-protocol.js";
+import type { LlmTurnInput, LlmTurnOutput } from "../../src/core/contracts/llm-protocol.js";
 import { ContextInputLimitError } from "../../src/prompt/context-compilation-receipt.js";
 import { callAgentDecision, parseAgentDecision } from "../../src/ivec/agent-runner/decision.js";
 import type { AgentFeedbackEventInput, AgentFeedbackLedger } from "../../src/ivec/feedback-ledger.js";
@@ -689,6 +689,259 @@ describe("parseAgentDecision", () => {
     const repairedFinalMessages = countInputTokens.mock.calls[3]?.[0]?.messages ?? [];
     expect(repairedFinalMessages.at(-1)?.content).toContain("Repair code: R_ASSISTANT_TEXT_TOOL_CALL");
     expect(repairedFinalMessages.at(-1)?.content).toContain("Do not write tool-call JSON in assistant text");
+  });
+
+  it("combines tool and timeline projection and reuses the checkpoint across a decision repair", async () => {
+    let decisionCalls = 0;
+    const generateTurn = vi.fn(async (turnInput: LlmTurnInput): Promise<LlmTurnOutput> => {
+      if (turnInput.responseFormat?.type === "json_schema") {
+        return { type: "assistant", content: JSON.stringify(validTimelineCheckpointSummary()) };
+      }
+      decisionCalls++;
+      return decisionCalls === 1
+        ? {
+            type: "assistant",
+            content: "{\"kind\":\"act\",\"action\":{\"mode\":\"single\",\"allowedTools\":[\"read_files\"],\"calls\":[{\"id\":\"call-new\",\"t",
+          }
+        : {
+            type: "assistant",
+            content: JSON.stringify({ kind: "reply", status: "completed", message: "Repaired" }),
+          };
+    });
+    const countInputTokens = vi.fn(async (turnInput: LlmTurnInput) => {
+      const userPrompt = turnInput.messages.find((message) => message.role === "user")?.content;
+      if (typeof userPrompt !== "string") throw new Error("Expected a user prompt.");
+      const state = parsePromptStateView(userPrompt);
+      const context = state["context"] as {
+        timeline: Array<{ kind: string }>;
+        run: { toolCalls: Array<{ mode: string }> };
+      };
+      const hasCheckpoint = context.timeline.some((event) => event.kind === "checkpoint");
+      const hasToolProjection = context.run.toolCalls.some((call) => call.mode !== "full");
+      return {
+        provider: "fake-provider",
+        model: "test-model",
+        inputTokens: hasCheckpoint ? 55_000 : hasToolProjection ? 75_000 : 85_000,
+        exact: true,
+      };
+    });
+    const provider: LlmProvider = {
+      name: "fake-provider",
+      version: "test-model",
+      capabilities: {
+        nativeToolCalling: true,
+        structuredOutput: { jsonObject: true, jsonSchema: true },
+      },
+      start() {},
+      stop() {},
+      countInputTokens,
+      generateTurn,
+    };
+    const workState = {
+      status: "not_done" as const,
+      blockers: [],
+      verifiedFacts: ["Protected work state"],
+      nextStep: "Continue after checkpointing.",
+    };
+    const stateView = createStateView({
+      context: {
+        timeline: pressureTimeline(),
+        git: {
+          session: { meta: { sessionId: "session-1", assetCount: 0 }, activity: { recent: [] } },
+          current: {
+            focus: { status: "active", ref: "refs/heads/task/T-1", workId: "T-1" },
+            task: protectedTaskContext(),
+          },
+        },
+        run: {
+          workState,
+          toolCalls: largeToolCalls(50_000),
+          contextPressure: {
+            mode: "tool_compact",
+            recommendedMode: "timeline_checkpoint",
+            escalationReason: "repeated_unresolved_pressure",
+            unresolvedPressureStreak: 2,
+            compactedCalls: 4,
+            recoverable: true,
+          },
+        },
+      },
+    });
+    const sourceBefore = structuredClone(stateView);
+    const onContextCompilation = vi.fn();
+
+    const decision = await callAgentDecision({
+      provider,
+      stateView,
+      toolDefinitions: [createTool("read_files")],
+      toolContextProjectionPolicy: "enforce",
+      onContextCompilation,
+    });
+
+    expect(decision).toMatchObject({ kind: "reply", message: "Repaired" });
+    expect(stateView).toEqual(sourceBefore);
+    expect(countInputTokens).toHaveBeenCalledTimes(6);
+    expect(generateTurn.mock.calls.filter((call) => call[0].responseFormat?.type === "json_schema")).toHaveLength(1);
+    expect(onContextCompilation).toHaveBeenCalledTimes(2);
+    expect(onContextCompilation.mock.calls[0]?.[0]).toMatchObject({
+      mode: "timeline_checkpoint",
+      candidateInputTokens: 85_000,
+      intermediateInputTokens: 75_000,
+      finalInputTokens: 55_000,
+      timelineCheckpoint: { cacheStatus: "generated", generationAttempts: 1 },
+      targetReached: true,
+    });
+    expect(onContextCompilation.mock.calls[1]?.[0]).toMatchObject({
+      mode: "timeline_checkpoint",
+      timelineCheckpoint: { cacheStatus: "success_hit", generationAttempts: 0 },
+    });
+
+    const finalDecisionInput = generateTurn.mock.calls.filter(
+      (call) => !call[0].responseFormat,
+    ).at(-1)?.[0];
+    const finalUserPrompt = finalDecisionInput?.messages.find((message) => message.role === "user")?.content;
+    if (typeof finalUserPrompt !== "string") throw new Error("Expected final decision prompt.");
+    const sentState = parsePromptStateView(finalUserPrompt);
+    const sentContext = sentState["context"] as {
+      timeline: Array<{ kind: string; current?: true; content?: string }>;
+      git: { current: { task: unknown } };
+      run: {
+        workState: unknown;
+        toolCalls: Array<{ mode: string }>;
+        contextPressure: { mode: string; recommendedMode?: string };
+      };
+    };
+    expect(sentContext.timeline[0]?.kind).toBe("checkpoint");
+    expect(sentContext.timeline.at(-1)).toMatchObject({
+      kind: "user",
+      content: pressureTimeline().at(-1)?.content,
+      current: true,
+    });
+    expect(sentContext.git.current.task).toEqual(protectedTaskContext());
+    expect(sentContext.run.workState).toEqual(workState);
+    expect(sentContext.run.toolCalls.slice(0, 4).some((call) => call.mode !== "full")).toBe(true);
+    expect(sentContext.run.toolCalls.slice(-6).every((call) => call.mode === "full")).toBe(true);
+    expect(sentContext.run.contextPressure).toMatchObject({ mode: "timeline_checkpoint" });
+    expect(sentContext.run.contextPressure).not.toHaveProperty("recommendedMode");
+  });
+
+  it("skips timeline generation when tool projection reaches the recovery target", async () => {
+    const generateTurn = vi.fn(async (turnInput: LlmTurnInput): Promise<LlmTurnOutput> => {
+      if (turnInput.responseFormat) throw new Error("Timeline checkpoint should not run.");
+      return {
+        type: "assistant",
+        content: JSON.stringify({ kind: "reply", status: "completed", message: "Recovered" }),
+      };
+    });
+    const countInputTokens = vi.fn()
+      .mockResolvedValueOnce({ provider: "fake-provider", model: "test-model", inputTokens: 80_000, exact: true })
+      .mockResolvedValueOnce({ provider: "fake-provider", model: "test-model", inputTokens: 58_000, exact: true });
+    const provider: LlmProvider = {
+      name: "fake-provider",
+      version: "test-model",
+      capabilities: { nativeToolCalling: true, structuredOutput: { jsonObject: true, jsonSchema: true } },
+      start() {},
+      stop() {},
+      countInputTokens,
+      generateTurn,
+    };
+    const state = checkpointRecommendedState(pressureTimeline());
+    state.context.run = {
+      ...state.context.run,
+      toolCalls: largeToolCalls(50_000),
+    };
+    const onContextCompilation = vi.fn();
+
+    await callAgentDecision({
+      provider,
+      stateView: state,
+      toolDefinitions: [],
+      toolContextProjectionPolicy: "enforce",
+      onContextCompilation,
+    });
+
+    expect(countInputTokens).toHaveBeenCalledTimes(2);
+    expect(generateTurn).toHaveBeenCalledTimes(1);
+    expect(onContextCompilation).toHaveBeenCalledWith(expect.objectContaining({
+      mode: "tool_compact",
+      finalInputTokens: 58_000,
+      targetReached: true,
+    }));
+  });
+
+  it("keeps the exact timeline when checkpoint generation fails but admission remains safe", async () => {
+    const generateTurn = vi.fn(async (turnInput: LlmTurnInput): Promise<LlmTurnOutput> => {
+      return turnInput.responseFormat
+        ? { type: "assistant", content: "invalid-checkpoint" }
+        : { type: "assistant", content: JSON.stringify({ kind: "reply", status: "completed", message: "Fallback" }) };
+    });
+    const provider: LlmProvider = {
+      name: "fake-provider",
+      version: "test-model",
+      capabilities: { nativeToolCalling: true, structuredOutput: { jsonObject: true, jsonSchema: true } },
+      start() {},
+      stop() {},
+      countInputTokens: vi.fn().mockResolvedValue({
+        provider: "fake-provider",
+        model: "test-model",
+        inputTokens: 80_000,
+        exact: true,
+      }),
+      generateTurn,
+    };
+    const timeline = pressureTimeline();
+    const onContextCompilation = vi.fn();
+
+    const decision = await callAgentDecision({
+      provider,
+      stateView: checkpointRecommendedState(timeline),
+      toolDefinitions: [],
+      toolContextProjectionPolicy: "enforce",
+      onContextCompilation,
+    });
+
+    expect(decision).toMatchObject({ kind: "reply", message: "Fallback" });
+    expect(generateTurn.mock.calls.filter((call) => call[0].responseFormat)).toHaveLength(2);
+    const decisionInput = generateTurn.mock.calls.find((call) => !call[0].responseFormat)?.[0];
+    const userPrompt = decisionInput?.messages.find((message) => message.role === "user")?.content;
+    if (typeof userPrompt !== "string") throw new Error("Expected fallback decision prompt.");
+    expect((parsePromptStateView(userPrompt)["context"] as { timeline: unknown }).timeline).toEqual(timeline);
+    expect(onContextCompilation).toHaveBeenCalledWith(expect.objectContaining({
+      mode: "full",
+      admitted: true,
+      needsEscalation: true,
+    }));
+  });
+
+  it("rejects before the decision call when checkpoint failure leaves the request over hard admission", async () => {
+    const generateTurn = vi.fn(async (): Promise<LlmTurnOutput> => ({
+      type: "assistant",
+      content: "invalid-checkpoint",
+    }));
+    const provider: LlmProvider = {
+      name: "fake-provider",
+      version: "test-model",
+      capabilities: { nativeToolCalling: true, structuredOutput: { jsonObject: true, jsonSchema: true } },
+      start() {},
+      stop() {},
+      countInputTokens: vi.fn().mockResolvedValue({
+        provider: "fake-provider",
+        model: "test-model",
+        inputTokens: 101_000,
+        exact: true,
+      }),
+      generateTurn,
+    };
+
+    await expect(callAgentDecision({
+      provider,
+      stateView: checkpointRecommendedState(pressureTimeline()),
+      toolDefinitions: [],
+      toolContextProjectionPolicy: "enforce",
+    })).rejects.toBeInstanceOf(ContextInputLimitError);
+
+    expect(generateTurn).toHaveBeenCalledTimes(2);
+    expect(generateTurn.mock.calls.every((call) => call[0].responseFormat?.type === "json_schema")).toBe(true);
   });
 
   it("sends a deduplicated state view to the model prompt", async () => {
@@ -1773,6 +2026,47 @@ function largeToolCalls(outputChars: number) {
     projectionMetadata: { filePath: `src/file-${index + 1}.ts`, lineCount: 1_000 },
     stepRef: { runId: "run-1", step: index + 1, callId: `call-${index + 1}` },
   }));
+}
+
+function pressureTimeline() {
+  return Array.from({ length: 8 }, (_, index) => ({
+    kind: index === 7 || index % 2 === 0 ? "user" as const : "assistant" as const,
+    seq: index + 1,
+    timestamp: `2026-07-10T00:00:${String(index).padStart(2, "0")}.000Z`,
+    content: index === 7 ? `current:${"c".repeat(70_000)}` : `${index + 1}:${"t".repeat(70_000)}`,
+    ...(index === 7 ? { current: true as const } : {}),
+  }));
+}
+
+function checkpointRecommendedState(timeline: ReturnType<typeof pressureTimeline>): AgentStateView {
+  return createStateView({
+    context: {
+      timeline,
+      run: {
+        contextPressure: {
+          mode: "tool_compact",
+          recommendedMode: "timeline_checkpoint",
+          escalationReason: "repeated_unresolved_pressure",
+          unresolvedPressureStreak: 2,
+          compactedCalls: 0,
+          recoverable: true,
+        },
+      },
+    },
+  });
+}
+
+function validTimelineCheckpointSummary() {
+  return {
+    userRequests: [{ seq: 1, text: "Preserve the original request." }],
+    constraints: [],
+    decisions: [],
+    corrections: [],
+    importantFacts: [],
+    unresolvedQuestions: [],
+    references: [],
+    narrative: "The user provided the original request.",
+  };
 }
 
 function protectedTaskContext() {

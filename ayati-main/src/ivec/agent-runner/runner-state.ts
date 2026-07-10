@@ -13,6 +13,7 @@ import {
 } from "../harness-context.js";
 import { createRoutingAttemptState as emptyRoutingAttemptState } from "./task-routing-policy.js";
 import { createInitialContextPressureState } from "../context-pressure-state.js";
+import { createTimelineCheckpointCache } from "./timeline-checkpoint-cache.js";
 
 export function buildInitialState(
   deps: AgentLoopDeps,
@@ -48,6 +49,7 @@ export function buildInitialState(
     runPath: "",
     failureHistory: [],
     contextPressure: createInitialContextPressureState(),
+    timelineCheckpointCache: createTimelineCheckpointCache(),
     attachedDocuments: deps.attachedDocuments ?? [],
     attachmentWarnings: deps.attachmentWarnings ?? [],
     preparedAttachments: [],

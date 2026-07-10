@@ -489,6 +489,7 @@ export async function runAgentLoop(
       taskFeedbackToolAvailable,
       workStateUpdateAvailable: isWorkStateUpdateToolAvailable(state, workRunHandle),
       toolContextProjectionPolicy: config.toolContextProjectionPolicy,
+      timelineCheckpointCache: state.timelineCheckpointCache,
       systemContext: deps.systemContext,
       metrics,
       feedbackLedger: deps.feedbackLedger,
@@ -1713,6 +1714,7 @@ async function buildFinalResponseFromWorkState(input: {
     taskFeedbackToolAvailable: false,
     workStateUpdateAvailable: false,
     toolContextProjectionPolicy: input.config.toolContextProjectionPolicy,
+    timelineCheckpointCache: input.state.timelineCheckpointCache,
     systemContext: [
       input.deps.systemContext,
       "Final response-only mode: tools are unavailable. Reply naturally to the user from context.run.workState, verified facts, artifacts, and recent tool-call memory. Do not mention harness internals. Do not say control tool names such as update_work_state, decision_load_tools, or ask_user_feedback.",

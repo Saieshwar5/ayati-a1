@@ -19,6 +19,9 @@ import type { RunMetrics } from "../metrics.js";
 import { recordOptimizationEvent, recordPromptMetric, recordProviderUsageMetric, recordRunMetric } from "../metrics.js";
 import type { ToolContextProjectionPolicy } from "../types.js";
 import { compileDecisionContext } from "./decision-context-compiler.js";
+import { createTimelineCheckpointCache } from "./timeline-checkpoint-cache.js";
+import type { TimelineCheckpointCacheState } from "./timeline-checkpoint-cache.js";
+import { recordTimelineCheckpointObservability } from "./timeline-checkpoint-observability.js";
 import { projectAgentStateViewForPrompt } from "./prompt-context.js";
 import type { RepairCode, RepairSignal } from "./repair-policy.js";
 import {
@@ -122,6 +125,7 @@ interface CallAgentDecisionInput {
   feedbackLedger?: AgentFeedbackLedger;
   feedbackContext?: AgentDecisionFeedbackContext;
   toolContextProjectionPolicy?: ToolContextProjectionPolicy;
+  timelineCheckpointCache?: TimelineCheckpointCacheState;
   onContextCompilation?: (receipt: ContextCompilationReceipt) => void;
   onAssistantTextDelta?: (delta: string) => void;
 }
@@ -170,6 +174,7 @@ const TASK_FEEDBACK_TOOL_NAME = "ask_user_feedback";
 const WORK_STATE_UPDATE_TOOL_NAME = "update_work_state";
 
 export async function callAgentDecision(input: CallAgentDecisionInput): Promise<AgentDecision> {
+  const timelineCheckpointCache = input.timelineCheckpointCache ?? createTimelineCheckpointCache();
   const contextLimits = resolveModelContextLimits(input.provider);
   const promptStateView = projectAgentStateViewForPrompt(input.stateView);
   const promptSections = buildDecisionPromptSections(promptStateView, input.toolDefinitions, input.toolRoutingSummary);
@@ -228,6 +233,7 @@ export async function callAgentDecision(input: CallAgentDecisionInput): Promise<
         contextLimits,
         decisionAttempt: attempt + 1,
         requestStartedAt: startedAt,
+        timelineCheckpointCache,
       });
       recordRunMetric(input.metrics, metricStage, {
         durationMs: Date.now() - startedAt,
@@ -433,6 +439,7 @@ async function generateTurnWithEmptyResponseRetry(
     contextLimits: ResolvedModelContextLimits;
     decisionAttempt: number;
     requestStartedAt: number;
+    timelineCheckpointCache: TimelineCheckpointCacheState;
   },
 ): Promise<LlmTurnOutput> {
   const candidateTurnInput: LlmTurnInput = {
@@ -448,6 +455,7 @@ async function generateTurnWithEmptyResponseRetry(
     contextLimits: request.contextLimits,
     decisionAttempt: request.decisionAttempt,
     policy: input.toolContextProjectionPolicy ?? "shadow",
+    timelineCheckpointCache: request.timelineCheckpointCache,
     buildPrompt: (stateView) => Object.values(buildDecisionPromptSections(
       stateView,
       input.toolDefinitions,
@@ -476,6 +484,12 @@ async function generateTurnWithEmptyResponseRetry(
       policy: compilation.projection.policy,
     });
   }
+  recordTimelineCheckpointObservability({
+    compilation,
+    decisionAttempt: request.decisionAttempt,
+    metrics: input.metrics,
+    recordFeedback: (event, data) => recordDecisionFeedback(input, event, data),
+  });
   if (compilation.finalBudgetMeasured) {
     recordOptimizationEvent(input.metrics, "context_budget_final", {
       stage: request.decisionAttempt === 1 ? "agent_decision" : "agent_decision_repair",

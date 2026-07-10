@@ -789,6 +789,44 @@ describe("buildAgentStateView", () => {
     });
   });
 
+  it("does not expose the run-scoped timeline checkpoint cache", () => {
+    const state = createLoopState({
+      timelineCheckpointCache: {
+        entries: {
+          cached: {
+            status: "success",
+            checkpointTokens: 100,
+            checkpoint: {
+              kind: "checkpoint",
+              seq: 2,
+              timestamp: "2026-07-10T00:00:00.000Z",
+              schemaVersion: 1,
+              coveredFromSeq: 1,
+              coveredToSeq: 2,
+              sourceEventCount: 2,
+              sourceHash: "secret-source-hash",
+              summary: {
+                userRequests: [],
+                constraints: [],
+                decisions: [],
+                corrections: [],
+                importantFacts: [],
+                unresolvedQuestions: [],
+                references: [],
+                narrative: "cached checkpoint content",
+              },
+            },
+          },
+        },
+      },
+    });
+
+    const serialized = JSON.stringify(buildAgentStateView(state));
+    expect(serialized).not.toContain("timelineCheckpointCache");
+    expect(serialized).not.toContain("secret-source-hash");
+    expect(serialized).not.toContain("cached checkpoint content");
+  });
+
   it("groups tool load, attachments, and system events while keeping top-level aliases", () => {
     const state = createLoopState({
       harnessContext: createHarnessContext({

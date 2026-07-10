@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   assertContextIsAdmissible,
   buildFullContextCompilationReceipt,
+  buildTimelineCheckpointCompilationReceipt,
   buildToolCompactContextCompilationReceipt,
   ContextInputLimitError,
 } from "../../src/prompt/context-compilation-receipt.js";
@@ -68,6 +69,50 @@ describe("context compilation receipt", () => {
       admitted: true,
     });
     expect(() => assertContextIsAdmissible(receipt)).not.toThrow();
+  });
+
+  it("records intermediate and final measurements for a timeline checkpoint", () => {
+    const receipt = buildTimelineCheckpointCompilationReceipt({
+      candidate: report({ measuredInputTokens: 85_000 }),
+      intermediate: report({ measuredInputTokens: 75_000 }),
+      final: report({
+        measuredInputTokens: 55_000,
+        softLimitExceeded: false,
+        pressureLevel: "normal",
+      }),
+      decisionAttempt: 2,
+      transformations: [{
+        kind: "timeline_checkpoint",
+        coveredFromSeq: 1,
+        coveredToSeq: 4,
+        sourceHash: "abc",
+        tokensBefore: 20_000,
+        tokensAfter: 800,
+      }],
+      checkpoint: {
+        coveredFromSeq: 1,
+        coveredToSeq: 4,
+        sourceEventCount: 4,
+        sourceHash: "abc",
+        checkpointTokens: 800,
+        cacheStatus: "generated",
+        generationAttempts: 1,
+      },
+    });
+
+    expect(receipt).toMatchObject({
+      decisionAttempt: 2,
+      mode: "timeline_checkpoint",
+      candidateInputTokens: 85_000,
+      intermediateInputTokens: 75_000,
+      finalInputTokens: 55_000,
+      targetReached: true,
+      admitted: true,
+      timelineCheckpoint: {
+        sourceHash: "abc",
+        checkpointTokens: 800,
+      },
+    });
   });
 });
 

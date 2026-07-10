@@ -114,11 +114,13 @@ retrieved on demand through structured git-context read/search tools such as
 `git_context_search_tasks`, `git_context_read_task`, `git_context_log`,
 `git_context_read_evidence`, and `git_context_search_evidence`.
 
-Under later timeline-checkpoint enforcement, `context.timeline` may begin with
+Under timeline-checkpoint enforcement, `context.timeline` may begin with
 a structured `kind="checkpoint"` event covering an older sequence range,
-followed by exact recent events. Exact events remain authoritative. Checkpoint
-planning and validation are implemented, but LLM generation and compiler
-application remain future work.
+followed by exact recent events. Exact events remain authoritative. Checkpoints
+are run-scoped prompt artifacts, not durable task facts or session summaries.
+They are generated only after unresolved enforced pressure, cached by source
+identity, and applied to a copy of the prompt context. The complete source
+timeline remains unchanged.
 
 Turn-aware routing tools may update the active harness context, but their
 model-facing result should not expose the runtime's full internal memory cache.

@@ -14,6 +14,7 @@ export interface ContextCompilationReceipt {
   provider: string;
   model: string;
   candidateInputTokens: number;
+  intermediateInputTokens?: number;
   finalInputTokens: number;
   recoveryTargetTokens: number;
   softInputTokens: number;
@@ -28,6 +29,15 @@ export interface ContextCompilationReceipt {
   toolProjectionPolicy?: "shadow" | "enforce";
   targetReached?: boolean;
   needsEscalation?: boolean;
+  timelineCheckpoint?: {
+    coveredFromSeq: number;
+    coveredToSeq: number;
+    sourceEventCount: number;
+    sourceHash: string;
+    checkpointTokens: number;
+    cacheStatus: "generated" | "success_hit";
+    generationAttempts: number;
+  };
   transformations: Array<{
     kind: string;
     callId?: string;
@@ -36,9 +46,47 @@ export interface ContextCompilationReceipt {
     from?: string;
     to?: string;
     reason?: string;
+    coveredFromSeq?: number;
+    coveredToSeq?: number;
+    sourceHash?: string;
     tokensBefore: number;
     tokensAfter: number;
   }>;
+}
+
+export function buildTimelineCheckpointCompilationReceipt(input: {
+  candidate: ContextBudgetReport;
+  intermediate: ContextBudgetReport;
+  final: ContextBudgetReport;
+  decisionAttempt: number;
+  transformations: ContextCompilationReceipt["transformations"];
+  checkpoint: NonNullable<ContextCompilationReceipt["timelineCheckpoint"]>;
+}): ContextCompilationReceipt {
+  return {
+    schemaVersion: 1,
+    decisionAttempt: input.decisionAttempt,
+    mode: "timeline_checkpoint",
+    provider: input.final.provider,
+    model: input.final.model,
+    candidateInputTokens: input.candidate.measuredInputTokens,
+    intermediateInputTokens: input.intermediate.measuredInputTokens,
+    finalInputTokens: input.final.measuredInputTokens,
+    recoveryTargetTokens: input.final.recoveryTargetTokens,
+    softInputTokens: input.final.softInputTokens,
+    hardInputTokens: input.final.hardInputTokens,
+    admissionLimitTokens: input.final.admissionLimitTokens,
+    softLimitExceeded: input.candidate.softLimitExceeded,
+    candidateHardLimitExceeded: input.candidate.hardLimitExceeded,
+    hardLimitExceeded: input.final.hardLimitExceeded,
+    admitted: !input.final.admissionLimitExceeded,
+    countSource: input.final.countSource,
+    candidateCountSource: input.candidate.countSource,
+    toolProjectionPolicy: "enforce",
+    targetReached: input.final.measuredInputTokens <= input.final.recoveryTargetTokens,
+    needsEscalation: input.final.measuredInputTokens > input.final.recoveryTargetTokens,
+    timelineCheckpoint: input.checkpoint,
+    transformations: input.transformations,
+  };
 }
 
 export function buildToolCompactContextCompilationReceipt(input: {

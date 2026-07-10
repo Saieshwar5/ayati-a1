@@ -264,7 +264,24 @@ keeps at least four recent events exact, protects the current input and latest
 assistant question awaiting interpretation, and hashes the selected source for
 cache identity. The checkpoint contract retains sequence references for
 requests, constraints, decisions, corrections, facts, unresolved questions,
-and external references. The LLM checkpoint generator is not implemented yet.
+and external references.
+
+When timeline checkpointing is recommended and tool projection still leaves the
+request above the recovery target, the compiler asks the active provider for a
+strict structured summary of only the selected timeline prefix. It sends no
+tools, task state, work state, tool history, personal memory, or unrelated
+session context. Runtime code supplies the trusted coverage range and source
+hash, validates every referenced sequence, and enforces the planned checkpoint
+token budget. Providers may enforce JSON Schema, downgrade to JSON-object mode,
+or rely on prompt-only JSON; local parsing and semantic validation always run.
+
+Generation allows one repair. Successes and failures are cached for the run by
+prompt version, provider/model, source hash, checkpoint budget, and generator
+input capacity. A failed source is not retried on every decision. If generation
+fails, the source timeline remains exact and the tool-only request is used when
+admissible; otherwise admission rejects it before the decision call. Successful
+compilation measures candidate, tool-projected intermediate, and checkpointed
+final requests separately.
 
 Current-run tool-call storage and prompt projection are separate. Below the
 soft limit, all prompt-eligible tool calls are sent in full; there is no fixed
