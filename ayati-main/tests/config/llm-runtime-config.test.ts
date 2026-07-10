@@ -99,18 +99,27 @@ describe("llm runtime config", () => {
       contextWindowTokens: 200_000,
       maxInputTokens: 180_000,
       outputReserveTokens: 12_000,
+      recoveryTargetTokens: 90_000,
+      softInputTokens: 110_000,
+      hardInputTokens: 150_000,
     });
 
     expect(getConfiguredModelContextLimits("anthropic")).toEqual({
       contextWindowTokens: 200_000,
       maxInputTokens: 180_000,
       outputReserveTokens: 12_000,
+      recoveryTargetTokens: 90_000,
+      softInputTokens: 110_000,
+      hardInputTokens: 150_000,
     });
     const saved = JSON.parse(await readFile(configPath, "utf8"));
     expect(saved.modelContextLimits["anthropic:claude-large-context"]).toEqual({
       contextWindowTokens: 200_000,
       maxInputTokens: 180_000,
       outputReserveTokens: 12_000,
+      recoveryTargetTokens: 90_000,
+      softInputTokens: 110_000,
+      hardInputTokens: 150_000,
     });
   });
 
@@ -124,6 +133,21 @@ describe("llm runtime config", () => {
     await expect(setModelContextLimitsForProvider("openai", {
       contextWindowTokens: 64_000,
     })).rejects.toThrow("contextWindowTokens must be at least 128000");
+  });
+
+  it("rejects an invalid context pressure threshold order", async () => {
+    const tempDir = await mkdtemp(join(tmpdir(), "ayati-llm-config-"));
+    tempDirs.push(tempDir);
+    const configPath = join(tempDir, "llm-config.json");
+
+    await initializeLlmRuntimeConfig({ configPath });
+
+    await expect(setModelContextLimitsForProvider("openai", {
+      contextWindowTokens: 128_000,
+      recoveryTargetTokens: 75_000,
+      softInputTokens: 70_000,
+      hardInputTokens: 100_000,
+    })).rejects.toThrow("recoveryTargetTokens must be smaller than softInputTokens");
   });
 
   it("persists embedding and image generation changes", async () => {

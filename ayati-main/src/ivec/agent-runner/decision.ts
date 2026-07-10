@@ -8,14 +8,19 @@ import type {
   ProviderMalformedResponseError,
 } from "../../core/contracts/provider-errors.js";
 import type { LlmMessage, LlmToolCall, LlmToolSchema, LlmTurnOutput } from "../../core/contracts/llm-protocol.js";
+import {
+  assertContextIsAdmissible,
+  buildFullContextCompilationReceipt,
+} from "../../prompt/context-compilation-receipt.js";
+import type { ContextCompilationReceipt } from "../../prompt/context-compilation-receipt.js";
+import { measureTurnContext } from "../../prompt/context-token-counter.js";
+import { resolveModelContextLimits } from "../../providers/shared/model-context-limits.js";
+import type { ResolvedModelContextLimits } from "../../providers/shared/model-context-limits.js";
 import { agentTrace, isAgentTracePromptEnabled, tracePreview } from "../../shared/index.js";
 import type { ToolContractAssertion, ToolDefinition } from "../../skills/types.js";
 import type { AgentFeedbackLedger } from "../feedback-ledger.js";
 import type { RunMetrics } from "../metrics.js";
 import { recordOptimizationEvent, recordPromptMetric, recordProviderUsageMetric, recordRunMetric } from "../metrics.js";
-import { measureTurnContext } from "../../prompt/context-token-counter.js";
-import { resolveModelContextLimits } from "../../providers/shared/model-context-limits.js";
-import type { ResolvedModelContextLimits } from "../../providers/shared/model-context-limits.js";
 import { projectAgentStateViewForPrompt } from "./prompt-context.js";
 import type { RepairCode, RepairSignal } from "./repair-policy.js";
 import {
@@ -118,6 +123,7 @@ interface CallAgentDecisionInput {
   metrics?: RunMetrics;
   feedbackLedger?: AgentFeedbackLedger;
   feedbackContext?: AgentDecisionFeedbackContext;
+  onContextCompilation?: (receipt: ContextCompilationReceipt) => void;
   onAssistantTextDelta?: (delta: string) => void;
 }
 
@@ -441,6 +447,10 @@ async function generateTurnWithEmptyResponseRetry(
     turnInput,
     limits: request.contextLimits,
   });
+  const contextCompilation = buildFullContextCompilationReceipt(
+    contextBudget,
+    request.decisionAttempt,
+  );
   recordOptimizationEvent(input.metrics, "context_budget", {
     stage: request.decisionAttempt === 1 ? "agent_decision" : "agent_decision_repair",
     decisionAttempt: request.decisionAttempt,
@@ -450,10 +460,14 @@ async function generateTurnWithEmptyResponseRetry(
     decisionAttempt: request.decisionAttempt,
     ...contextBudget,
   });
+  recordOptimizationEvent(input.metrics, "context_compilation", { ...contextCompilation });
+  recordDecisionFeedback(input, "context_compilation", { ...contextCompilation });
+  input.onContextCompilation?.(contextCompilation);
   agentTrace(
     "agent_decision",
-    `context_budget attempt=${request.decisionAttempt} input=${contextBudget.measuredInputTokens} usable=${contextBudget.usableInputTokens} pressure=${contextBudget.pressure} level=${contextBudget.pressureLevel}`,
+    `context_budget attempt=${request.decisionAttempt} input=${contextBudget.measuredInputTokens} soft=${contextBudget.softInputTokens} hard=${contextBudget.hardInputTokens} pressure=${contextBudget.pressure} level=${contextBudget.pressureLevel}`,
   );
+  assertContextIsAdmissible(contextCompilation);
   let providerAttempt = 0;
 
   for (;;) {

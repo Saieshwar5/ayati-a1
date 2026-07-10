@@ -2,8 +2,12 @@ import {
   getConfiguredModelContextLimits,
   getModelForProvider,
   isSupportedLlmProvider,
-  MIN_SUPPORTED_LLM_CONTEXT_WINDOW_TOKENS,
 } from "../../config/llm-runtime-config.js";
+import {
+  DEFAULT_LLM_OUTPUT_RESERVE_TOKENS,
+  MIN_SUPPORTED_LLM_CONTEXT_WINDOW_TOKENS,
+  resolveLlmContextPressureThresholds,
+} from "../../config/llm-context-profile.js";
 import type { LlmProvider } from "../../core/contracts/provider.js";
 
 export type ModelContextLimitSource = "configured" | "default_128k";
@@ -14,10 +18,19 @@ export interface ResolvedModelContextLimits {
   contextWindowTokens: number;
   maxInputTokens?: number;
   outputReserveTokens: number;
+  softInputTokens: number;
+  recoveryTargetTokens: number;
+  hardInputTokens: number;
   source: ModelContextLimitSource;
 }
 
-export const DEFAULT_OUTPUT_RESERVE_TOKENS = 8_192;
+type UnresolvedModelContextLimits = Omit<
+  ResolvedModelContextLimits,
+  "softInputTokens" | "recoveryTargetTokens" | "hardInputTokens"
+> & Partial<Pick<
+  ResolvedModelContextLimits,
+  "softInputTokens" | "recoveryTargetTokens" | "hardInputTokens"
+>>;
 
 export function resolveModelContextLimits(provider: LlmProvider): ResolvedModelContextLimits {
   if (!isSupportedLlmProvider(provider.name)) {
@@ -30,22 +43,36 @@ export function resolveModelContextLimits(provider: LlmProvider): ResolvedModelC
     return defaultLimits(provider.name, model);
   }
 
-  return {
+  return resolveThresholds({
     provider: provider.name,
     model,
     contextWindowTokens: configured.contextWindowTokens,
     ...(configured.maxInputTokens !== undefined ? { maxInputTokens: configured.maxInputTokens } : {}),
-    outputReserveTokens: configured.outputReserveTokens ?? DEFAULT_OUTPUT_RESERVE_TOKENS,
+    outputReserveTokens: configured.outputReserveTokens ?? DEFAULT_LLM_OUTPUT_RESERVE_TOKENS,
+    ...(configured.softInputTokens !== undefined ? { softInputTokens: configured.softInputTokens } : {}),
+    ...(configured.recoveryTargetTokens !== undefined ? { recoveryTargetTokens: configured.recoveryTargetTokens } : {}),
+    ...(configured.hardInputTokens !== undefined ? { hardInputTokens: configured.hardInputTokens } : {}),
     source: "configured",
-  };
+  });
 }
 
 function defaultLimits(provider: string, model: string): ResolvedModelContextLimits {
-  return {
+  return resolveThresholds({
     provider,
     model,
     contextWindowTokens: MIN_SUPPORTED_LLM_CONTEXT_WINDOW_TOKENS,
-    outputReserveTokens: DEFAULT_OUTPUT_RESERVE_TOKENS,
+    outputReserveTokens: DEFAULT_LLM_OUTPUT_RESERVE_TOKENS,
     source: "default_128k",
+  });
+}
+
+function resolveThresholds(input: UnresolvedModelContextLimits): ResolvedModelContextLimits {
+  const thresholds = resolveLlmContextPressureThresholds(input);
+
+  return {
+    ...input,
+    recoveryTargetTokens: thresholds.recoveryTargetTokens,
+    softInputTokens: thresholds.softInputTokens,
+    hardInputTokens: thresholds.hardInputTokens,
   };
 }

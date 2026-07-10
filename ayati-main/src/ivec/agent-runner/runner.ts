@@ -13,6 +13,7 @@ import type {
 import {
   DEFAULT_LOOP_CONFIG,
 } from "../types.js";
+import { updateContextPressureState } from "../context-pressure-state.js";
 import {
   createRunMetrics,
   formatRunMetrics,
@@ -494,6 +495,13 @@ export async function runAgentLoop(
         sessionId: inputHandle.sessionId,
         seq: inputHandle.seq,
         ...(state.runId || workRunHandle?.runId || sessionRunHandle?.runId ? { runId: state.runId || workRunHandle?.runId || sessionRunHandle?.runId } : {}),
+      },
+      onContextCompilation: (receipt) => {
+        state.contextPressure = updateContextPressureState({
+          current: state.contextPressure,
+          receipt,
+          iteration: state.iteration,
+        });
       },
     });
     discardModelWorkingNotes(decision);
@@ -1712,6 +1720,13 @@ async function buildFinalResponseFromWorkState(input: {
       sessionId: input.inputHandle.sessionId,
       seq: input.inputHandle.seq,
       ...(input.state.runId || input.workRunHandle?.runId ? { runId: input.state.runId || input.workRunHandle?.runId } : {}),
+    },
+    onContextCompilation: (receipt) => {
+      input.state.contextPressure = updateContextPressureState({
+        current: input.state.contextPressure,
+        receipt,
+        iteration: input.state.iteration,
+      });
     },
     ...(streamFinalResponse
       ? {

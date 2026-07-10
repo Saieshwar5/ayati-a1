@@ -15,7 +15,9 @@ Model selection:
 - Optional chat-model context overrides live in the same file under
   `modelContextLimits`, keyed as `<provider>:<model>`. Each override declares
   `contextWindowTokens` and may declare `maxInputTokens` and
-  `outputReserveTokens`. Ayati accepts 128K and larger context windows.
+  `outputReserveTokens`, `recoveryTargetTokens`, `softInputTokens`, and
+  `hardInputTokens`. Ayati accepts 128K and larger context windows. The default
+  128K pressure thresholds are 60K recovery, 70K soft, and 100K hard.
 - Embeddings currently support the OpenAI provider and use `OPENAI_API_KEY`.
 - Image generation currently supports the OpenAI provider and uses `OPENAI_API_KEY`.
 
@@ -27,7 +29,10 @@ Example context override:
     "anthropic:claude-large-context": {
       "contextWindowTokens": 200000,
       "maxInputTokens": 180000,
-      "outputReserveTokens": 12000
+      "outputReserveTokens": 12000,
+      "recoveryTargetTokens": 90000,
+      "softInputTokens": 110000,
+      "hardInputTokens": 150000
     }
   }
 }

@@ -12,6 +12,7 @@ import {
   type HarnessContextInput,
 } from "../harness-context.js";
 import { createRoutingAttemptState as emptyRoutingAttemptState } from "./task-routing-policy.js";
+import { createInitialContextPressureState } from "../context-pressure-state.js";
 
 export function buildInitialState(
   deps: AgentLoopDeps,
@@ -46,6 +47,7 @@ export function buildInitialState(
     routingAttempts: emptyRoutingAttemptState(),
     runPath: "",
     failureHistory: [],
+    contextPressure: createInitialContextPressureState(),
     attachedDocuments: deps.attachedDocuments ?? [],
     attachmentWarnings: deps.attachmentWarnings ?? [],
     preparedAttachments: [],

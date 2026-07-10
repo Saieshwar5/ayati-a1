@@ -5,6 +5,7 @@ import {
   ProviderMalformedResponseError,
 } from "../../src/core/contracts/provider-errors.js";
 import type { LlmTurnOutput } from "../../src/core/contracts/llm-protocol.js";
+import { ContextInputLimitError } from "../../src/prompt/context-compilation-receipt.js";
 import { callAgentDecision, parseAgentDecision } from "../../src/ivec/agent-runner/decision.js";
 import type { AgentFeedbackEventInput, AgentFeedbackLedger } from "../../src/ivec/feedback-ledger.js";
 import type { AgentStateView } from "../../src/ivec/agent-runner/state-view.js";
@@ -233,6 +234,7 @@ describe("parseAgentDecision", () => {
     ]);
     const metrics = createRunMetrics();
     const feedback = createFeedbackLedger();
+    const onContextCompilation = vi.fn();
 
     await callAgentDecision({
       provider,
@@ -250,6 +252,7 @@ describe("parseAgentDecision", () => {
         sessionId: "session-1",
         seq: 1,
       },
+      onContextCompilation,
     });
 
     const event = metrics.optimizationEvents.find((item) => item.kind === "context_budget");
@@ -257,6 +260,9 @@ describe("parseAgentDecision", () => {
       stage: "agent_decision",
       decisionAttempt: 1,
       contextWindowTokens: 128_000,
+      recoveryTargetTokens: 60_000,
+      softInputTokens: 70_000,
+      hardInputTokens: 100_000,
       limitSource: "default_128k",
       countSource: "local_estimate",
       providerCountStatus: "not_needed",
@@ -265,6 +271,56 @@ describe("parseAgentDecision", () => {
     });
     expect(event?.data["measuredInputTokens"]).toEqual(expect.any(Number));
     expect(feedback.events.some((item) => item.event === "context_budget")).toBe(true);
+    expect(metrics.optimizationEvents.some((item) => item.kind === "context_compilation")).toBe(true);
+    expect(onContextCompilation).toHaveBeenCalledWith(expect.objectContaining({
+      mode: "full",
+      admitted: true,
+      transformations: [],
+    }));
+  });
+
+  it("rejects an over-limit request before provider generation", async () => {
+    const generateTurn = vi.fn();
+    const countInputTokens = vi.fn().mockResolvedValue({
+      provider: "fake-provider",
+      model: "test-model",
+      inputTokens: 101_000,
+      exact: true,
+    });
+    const provider: LlmProvider = {
+      name: "fake-provider",
+      version: "test-model",
+      capabilities: { nativeToolCalling: true },
+      start() {},
+      stop() {},
+      countInputTokens,
+      generateTurn,
+    };
+    const onContextCompilation = vi.fn();
+
+    await expect(callAgentDecision({
+      provider,
+      stateView: createStateView({
+        context: {
+          timeline: [{
+            kind: "user",
+            seq: 1,
+            timestamp: "2026-07-10T00:00:00.000Z",
+            content: "x".repeat(300_000),
+            current: true,
+          }],
+        },
+      }),
+      toolDefinitions: [],
+      onContextCompilation,
+    })).rejects.toBeInstanceOf(ContextInputLimitError);
+
+    expect(countInputTokens).toHaveBeenCalledTimes(1);
+    expect(generateTurn).not.toHaveBeenCalled();
+    expect(onContextCompilation).toHaveBeenCalledWith(expect.objectContaining({
+      admitted: false,
+      hardLimitExceeded: true,
+    }));
   });
 
   it("sends a deduplicated state view to the model prompt", async () => {

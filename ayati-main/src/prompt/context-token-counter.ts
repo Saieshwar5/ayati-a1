@@ -10,7 +10,6 @@ import {
 import { estimateTurnInputTokens } from "./token-estimator.js";
 
 const LOCAL_ESTIMATE_CORRECTION = 1.1;
-const PROVIDER_COUNT_PRESSURE_THRESHOLD = 0.7;
 
 interface ProviderCountResult {
   status: "not_needed" | "unavailable" | "succeeded" | "failed";
@@ -25,8 +24,7 @@ export async function measureTurnContext(input: {
   const budget = calculateContextBudget(input.limits);
   const localEstimateTokens = estimateTurnInputTokens(input.turnInput).totalTokens;
   const correctedLocalEstimateTokens = Math.ceil(localEstimateTokens * LOCAL_ESTIMATE_CORRECTION);
-  const localPressure = correctedLocalEstimateTokens / budget.usableInputTokens;
-  const providerCountResult: ProviderCountResult = localPressure >= PROVIDER_COUNT_PRESSURE_THRESHOLD
+  const providerCountResult: ProviderCountResult = correctedLocalEstimateTokens >= budget.softInputTokens
     ? await tryProviderCount(input.provider, input.turnInput)
     : { status: "not_needed" as const };
   const providerCount = providerCountResult.count;
@@ -35,7 +33,13 @@ export async function measureTurnContext(input: {
       ? providerCount.inputTokens
       : Math.max(correctedLocalEstimateTokens, providerCount.inputTokens)
     : correctedLocalEstimateTokens;
-  const pressure = measuredInputTokens / budget.usableInputTokens;
+  const admissionLimitTokens = providerCount?.exact
+    ? budget.hardInputTokens
+    : budget.localAdmissionInputTokens;
+  const pressure = measuredInputTokens / budget.hardInputTokens;
+  const softLimitExceeded = measuredInputTokens >= budget.softInputTokens;
+  const hardLimitExceeded = measuredInputTokens > budget.hardInputTokens;
+  const admissionLimitExceeded = measuredInputTokens > admissionLimitTokens;
 
   return {
     provider: input.limits.provider,
@@ -51,9 +55,18 @@ export async function measureTurnContext(input: {
     providerCountStatus: providerCountResult.status,
     measuredInputTokens,
     countSource: providerCount ? "provider_count" : "local_estimate",
+    admissionLimitTokens,
     pressure: roundContextPressure(pressure),
-    pressureLevel: contextPressureLevel(pressure),
-    overBudget: measuredInputTokens > budget.usableInputTokens,
+    pressureLevel: contextPressureLevel({
+      measuredInputTokens,
+      softInputTokens: budget.softInputTokens,
+      admissionLimitTokens,
+      hardInputTokens: budget.hardInputTokens,
+    }),
+    softLimitExceeded,
+    hardLimitExceeded,
+    admissionLimitExceeded,
+    overBudget: hardLimitExceeded,
   };
 }
 

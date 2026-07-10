@@ -206,26 +206,36 @@ large, only that runtime block may be truncated.
 Every decision request is measured after the system messages, dynamic state,
 repair history, and native tool schemas have been assembled. Measurement uses
 the fast local estimator for normal requests and asks the provider to count the
-same final request when corrected local usage reaches 70% of the usable input
-budget and provider counting is available.
+same final request when corrected local usage reaches the configured soft limit
+and provider counting is available.
 
-The current budget calculation is observational; it records pressure but does
-not yet compact or reject the request:
+The default 128K profile has three explicit policy thresholds:
 
 ```text
-usable input = min(optional model input cap,
-                   context window - output reserve - safety margin)
+recovery target: 60K
+soft input limit: 70K
+hard input limit: 100K
 ```
 
 Ayati supports context profiles of 128K tokens and larger. The default profile
-is a conservative 128K window with an 8K output reserve. Per-provider/model
-overrides live in runtime LLM configuration. Safety margin is 5% of the context
-window with 4K and 16K lower/upper bounds.
+also reserves 8K for output. Larger profiles derive the same proportions unless
+the runtime LLM configuration provides explicit thresholds. Below the soft
+limit, this layer does not transform context. Compaction modes are not
+implemented yet.
+
+The final provider request is rejected before generation when it exceeds the
+hard input limit. Exact provider counts may use the full hard limit. Local or
+inexact counts use a conservative admission limit at 95% of the hard limit.
+This guard prevents an uncounted request from approaching the provider boundary
+while token-aware compaction is still being built.
 
 Budget reports record the model/profile source, local and provider counts,
-usable input, pressure ratio and level, and overflow status. They are emitted
-to optimization metrics and the feedback ledger once per distinct decision or
-repair attempt, not once per transport retry.
+input capacity, all three thresholds, admission result, pressure ratio and
+overflow status. A context-compilation receipt records candidate and final
+tokens, mode, transformations, and admission. The run-scoped pressure state
+counts at most one soft breach per runner iteration, so repair attempts do not
+artificially advance future pressure modes. Reports are emitted once per
+distinct decision or repair attempt, not once per transport retry.
 
 ## Tool Visibility
 

@@ -39,6 +39,8 @@ describe("context token counter", () => {
     expect(report.providerCountExact).toBe(true);
     expect(report.measuredInputTokens).toBe(90_000);
     expect(report.pressureLevel).toBe("elevated");
+    expect(report.admissionLimitTokens).toBe(100_000);
+    expect(report.admissionLimitExceeded).toBe(false);
   });
 
   it("keeps the conservative local count when an inexact provider count is smaller", async () => {
@@ -58,6 +60,25 @@ describe("context token counter", () => {
     expect(report.measuredInputTokens).toBe(report.correctedLocalEstimateTokens);
   });
 
+  it("uses the conservative admission limit for an inexact provider count", async () => {
+    const countInputTokens = vi.fn().mockResolvedValue({
+      provider: "test",
+      model: "test-128k",
+      inputTokens: 96_000,
+      exact: false,
+    });
+    const report = await measureTurnContext({
+      provider: provider(countInputTokens),
+      turnInput: turnInput("x".repeat(300_000)),
+      limits: limits(),
+    });
+
+    expect(report.measuredInputTokens).toBe(96_000);
+    expect(report.admissionLimitTokens).toBe(95_000);
+    expect(report.hardLimitExceeded).toBe(false);
+    expect(report.admissionLimitExceeded).toBe(true);
+  });
+
   it("falls back locally when provider counting fails", async () => {
     const countInputTokens = vi.fn().mockRejectedValue(new Error("count unavailable"));
     const report = await measureTurnContext({
@@ -69,6 +90,8 @@ describe("context token counter", () => {
     expect(report.countSource).toBe("local_estimate");
     expect(report.providerCountStatus).toBe("failed");
     expect(report.overBudget).toBe(true);
+    expect(report.admissionLimitTokens).toBe(95_000);
+    expect(report.admissionLimitExceeded).toBe(true);
   });
 
   it("includes native tool schemas in the measured input", async () => {
@@ -126,6 +149,9 @@ function limits(): ResolvedModelContextLimits {
     model: "test-128k",
     contextWindowTokens: 128_000,
     outputReserveTokens: 8_192,
+    recoveryTargetTokens: 60_000,
+    softInputTokens: 70_000,
+    hardInputTokens: 100_000,
     source: "configured",
   };
 }

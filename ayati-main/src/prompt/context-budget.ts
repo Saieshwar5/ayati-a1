@@ -6,8 +6,11 @@ export interface ContextBudget {
   contextWindowTokens: number;
   maxInputTokens?: number;
   outputReserveTokens: number;
-  safetyMarginTokens: number;
-  usableInputTokens: number;
+  inputCapacityTokens: number;
+  recoveryTargetTokens: number;
+  softInputTokens: number;
+  hardInputTokens: number;
+  localAdmissionInputTokens: number;
 }
 
 export interface ContextBudgetReport extends ContextBudget {
@@ -21,43 +24,53 @@ export interface ContextBudgetReport extends ContextBudget {
   providerCountStatus: "not_needed" | "unavailable" | "succeeded" | "failed";
   measuredInputTokens: number;
   countSource: "local_estimate" | "provider_count";
+  admissionLimitTokens: number;
   pressure: number;
   pressureLevel: ContextPressureLevel;
+  softLimitExceeded: boolean;
+  hardLimitExceeded: boolean;
+  admissionLimitExceeded: boolean;
   overBudget: boolean;
 }
 
-const SAFETY_MARGIN_RATIO = 0.05;
-const MIN_SAFETY_MARGIN_TOKENS = 4_096;
-const MAX_SAFETY_MARGIN_TOKENS = 16_384;
-const ELEVATED_PRESSURE = 0.7;
-const HIGH_PRESSURE = 0.85;
+const LOCAL_ADMISSION_RATIO = 0.95;
 
 export function calculateContextBudget(limits: ResolvedModelContextLimits): ContextBudget {
-  const safetyMarginTokens = Math.min(
-    MAX_SAFETY_MARGIN_TOKENS,
-    Math.max(MIN_SAFETY_MARGIN_TOKENS, Math.ceil(limits.contextWindowTokens * SAFETY_MARGIN_RATIO)),
+  const inputCapacityTokens = Math.min(
+    limits.maxInputTokens ?? limits.contextWindowTokens,
+    limits.contextWindowTokens - limits.outputReserveTokens,
   );
-  const windowInputLimit = Math.max(
-    1,
-    limits.contextWindowTokens - limits.outputReserveTokens - safetyMarginTokens,
-  );
-  const usableInputTokens = limits.maxInputTokens === undefined
-    ? windowInputLimit
-    : Math.max(1, Math.min(windowInputLimit, limits.maxInputTokens));
+  if (limits.hardInputTokens > inputCapacityTokens) {
+    throw new Error("Hard input limit exceeds the model input capacity.");
+  }
+  if (limits.softInputTokens >= limits.hardInputTokens) {
+    throw new Error("Soft input limit must be smaller than the hard input limit.");
+  }
+  if (limits.recoveryTargetTokens >= limits.softInputTokens) {
+    throw new Error("Recovery target must be smaller than the soft input limit.");
+  }
 
   return {
     contextWindowTokens: limits.contextWindowTokens,
     ...(limits.maxInputTokens !== undefined ? { maxInputTokens: limits.maxInputTokens } : {}),
     outputReserveTokens: limits.outputReserveTokens,
-    safetyMarginTokens,
-    usableInputTokens,
+    inputCapacityTokens,
+    recoveryTargetTokens: limits.recoveryTargetTokens,
+    softInputTokens: limits.softInputTokens,
+    hardInputTokens: limits.hardInputTokens,
+    localAdmissionInputTokens: Math.floor(limits.hardInputTokens * LOCAL_ADMISSION_RATIO),
   };
 }
 
-export function contextPressureLevel(pressure: number): ContextPressureLevel {
-  if (pressure >= 1) return "overflow";
-  if (pressure >= HIGH_PRESSURE) return "high";
-  if (pressure >= ELEVATED_PRESSURE) return "elevated";
+export function contextPressureLevel(input: {
+  measuredInputTokens: number;
+  softInputTokens: number;
+  admissionLimitTokens: number;
+  hardInputTokens: number;
+}): ContextPressureLevel {
+  if (input.measuredInputTokens > input.hardInputTokens) return "overflow";
+  if (input.measuredInputTokens > input.admissionLimitTokens) return "high";
+  if (input.measuredInputTokens >= input.softInputTokens) return "elevated";
   return "normal";
 }
 

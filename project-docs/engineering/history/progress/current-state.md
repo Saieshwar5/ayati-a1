@@ -103,8 +103,11 @@ context.timeline + context.git + context.tools + context.harness + context.run +
 - Evidence tools for reading/searching/tailing/chunking saved raw output.
 - Model-aware decision context measurement for 128K and larger context
   profiles. The final assembled request includes native tool schemas and repair
-  messages, uses provider counting near pressure when available, and records a
-  budget report without changing compaction behavior yet.
+  messages, uses provider counting at the soft limit when available, and
+  records budget and compilation receipts. The default 128K profile uses a 60K
+  recovery target, 70K soft limit, and 100K hard input limit. Run-scoped state
+  records pressure observations, and over-limit requests are rejected before
+  provider generation. Context compaction behavior is not implemented yet.
 
 ## Runtime Boundary
 

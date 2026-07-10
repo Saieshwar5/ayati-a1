@@ -1,6 +1,17 @@
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+  MIN_SUPPORTED_LLM_CONTEXT_WINDOW_TOKENS,
+  resolveLlmContextPressureThresholds,
+} from "./llm-context-profile.js";
+import type { LlmModelContextLimitConfig } from "./llm-context-profile.js";
+
+export {
+  DEFAULT_LLM_OUTPUT_RESERVE_TOKENS,
+  MIN_SUPPORTED_LLM_CONTEXT_WINDOW_TOKENS,
+} from "./llm-context-profile.js";
+export type { LlmModelContextLimitConfig } from "./llm-context-profile.js";
 
 const thisDir = dirname(fileURLToPath(import.meta.url));
 const defaultProjectRoot = resolve(thisDir, "..", "..");
@@ -31,14 +42,6 @@ export interface LlmRuntimeConfig {
   embeddings: EmbeddingRuntimeConfig;
   imageGeneration: ImageGenerationRuntimeConfig;
 }
-
-export interface LlmModelContextLimitConfig {
-  contextWindowTokens: number;
-  maxInputTokens?: number;
-  outputReserveTokens?: number;
-}
-
-export const MIN_SUPPORTED_LLM_CONTEXT_WINDOW_TOKENS = 128_000;
 
 export const DEFAULT_LLM_MODELS: Record<SupportedLlmProvider, string> = {
   openrouter: "nvidia/nemotron-3-super-120b-a12b:free",
@@ -405,17 +408,29 @@ function normalizeModelContextLimit(input: unknown, path: string): LlmModelConte
   }
   const maxInputTokens = readOptionalPositiveInteger(input["maxInputTokens"], `${path}.maxInputTokens`);
   const outputReserveTokens = readOptionalPositiveInteger(input["outputReserveTokens"], `${path}.outputReserveTokens`);
+  const softInputTokens = readOptionalPositiveInteger(input["softInputTokens"], `${path}.softInputTokens`);
+  const recoveryTargetTokens = readOptionalPositiveInteger(input["recoveryTargetTokens"], `${path}.recoveryTargetTokens`);
+  const hardInputTokens = readOptionalPositiveInteger(input["hardInputTokens"], `${path}.hardInputTokens`);
   if (maxInputTokens !== undefined && maxInputTokens > contextWindowTokens) {
     throw new Error(`Invalid LLM runtime config: ${path}.maxInputTokens must not exceed contextWindowTokens.`);
   }
   if (outputReserveTokens !== undefined && outputReserveTokens >= contextWindowTokens) {
     throw new Error(`Invalid LLM runtime config: ${path}.outputReserveTokens must be smaller than contextWindowTokens.`);
   }
-  return {
+  const normalized = {
     contextWindowTokens,
     ...(maxInputTokens !== undefined ? { maxInputTokens } : {}),
     ...(outputReserveTokens !== undefined ? { outputReserveTokens } : {}),
+    ...(softInputTokens !== undefined ? { softInputTokens } : {}),
+    ...(recoveryTargetTokens !== undefined ? { recoveryTargetTokens } : {}),
+    ...(hardInputTokens !== undefined ? { hardInputTokens } : {}),
   };
+  try {
+    resolveLlmContextPressureThresholds(normalized);
+  } catch (error) {
+    throw new Error(`Invalid LLM runtime config: ${path}.${error instanceof Error ? error.message : String(error)}.`);
+  }
+  return normalized;
 }
 
 function normalizeEmbeddingRuntimeConfig(input: unknown): EmbeddingRuntimeConfig {

@@ -39,6 +39,7 @@ import type {
 } from "./system-event-policy.js";
 import type { AgentFeedbackLedger } from "./feedback-ledger.js";
 import type { HarnessContext, HarnessContextInput } from "./harness-context.js";
+import type { ContextPressureState } from "./context-pressure-state.js";
 
 export type SystemEventApprovalState = "not_needed" | "pending" | "granted" | "rejected";
 export type RunClass = "interaction" | "session" | "task";
@@ -236,6 +237,7 @@ export interface LoopState {
   routingAttempts: RoutingAttemptState;
   runPath: string;
   failureHistory: FailureRecord[];
+  contextPressure?: ContextPressureState;
   readProgress?: ReadProgressState;
   attachedDocuments?: ManagedDocumentManifest[];
   attachmentWarnings?: string[];

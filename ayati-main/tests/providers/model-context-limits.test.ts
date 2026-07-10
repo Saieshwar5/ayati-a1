@@ -25,6 +25,9 @@ describe("model context limits", () => {
       model: "custom",
       contextWindowTokens: 128_000,
       outputReserveTokens: 8_192,
+      softInputTokens: 70_000,
+      recoveryTargetTokens: 60_000,
+      hardInputTokens: 100_000,
       source: "default_128k",
     });
   });
@@ -44,6 +47,9 @@ describe("model context limits", () => {
       model: "large-context-model",
       contextWindowTokens: 256_000,
       outputReserveTokens: 16_000,
+      softInputTokens: 140_000,
+      recoveryTargetTokens: 120_000,
+      hardInputTokens: 200_000,
       source: "configured",
     });
   });

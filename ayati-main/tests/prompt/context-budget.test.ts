@@ -6,7 +6,7 @@ import {
 import type { ResolvedModelContextLimits } from "../../src/providers/shared/model-context-limits.js";
 
 describe("context budget", () => {
-  it("reserves output and proportional safety margin for a 128K model", () => {
+  it("uses the 70K soft, 60K recovery, and 100K hard contract for a 128K model", () => {
     const budget = calculateContextBudget(limits({
       contextWindowTokens: 128_000,
       outputReserveTokens: 8_192,
@@ -15,27 +15,40 @@ describe("context budget", () => {
     expect(budget).toEqual({
       contextWindowTokens: 128_000,
       outputReserveTokens: 8_192,
-      safetyMarginTokens: 6_400,
-      usableInputTokens: 113_408,
+      inputCapacityTokens: 119_808,
+      recoveryTargetTokens: 60_000,
+      softInputTokens: 70_000,
+      hardInputTokens: 100_000,
+      localAdmissionInputTokens: 95_000,
     });
   });
 
-  it("caps the safety margin and honors a stricter model input limit", () => {
+  it("reports the provider input capacity separately from policy limits", () => {
     const budget = calculateContextBudget(limits({
       contextWindowTokens: 1_000_000,
       maxInputTokens: 900_000,
       outputReserveTokens: 16_000,
+      recoveryTargetTokens: 460_000,
+      softInputTokens: 550_000,
+      hardInputTokens: 780_000,
     }));
 
-    expect(budget.safetyMarginTokens).toBe(16_384);
-    expect(budget.usableInputTokens).toBe(900_000);
+    expect(budget.inputCapacityTokens).toBe(900_000);
+    expect(budget.hardInputTokens).toBe(780_000);
+    expect(budget.localAdmissionInputTokens).toBe(741_000);
   });
 
   it("classifies pressure levels at deterministic boundaries", () => {
-    expect(contextPressureLevel(0.69)).toBe("normal");
-    expect(contextPressureLevel(0.7)).toBe("elevated");
-    expect(contextPressureLevel(0.85)).toBe("high");
-    expect(contextPressureLevel(1)).toBe("overflow");
+    const classify = (measuredInputTokens: number) => contextPressureLevel({
+      measuredInputTokens,
+      softInputTokens: 70_000,
+      admissionLimitTokens: 95_000,
+      hardInputTokens: 100_000,
+    });
+    expect(classify(69_999)).toBe("normal");
+    expect(classify(70_000)).toBe("elevated");
+    expect(classify(95_001)).toBe("high");
+    expect(classify(100_001)).toBe("overflow");
   });
 });
 
@@ -45,6 +58,9 @@ function limits(overrides: Partial<ResolvedModelContextLimits>): ResolvedModelCo
     model: "test-128k",
     contextWindowTokens: 128_000,
     outputReserveTokens: 8_192,
+    recoveryTargetTokens: 60_000,
+    softInputTokens: 70_000,
+    hardInputTokens: 100_000,
     source: "configured",
     ...overrides,
   };
