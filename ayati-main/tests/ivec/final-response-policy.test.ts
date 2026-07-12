@@ -109,7 +109,7 @@ describe("final response policy", () => {
   });
 
   it("rejects control-tool payloads as final user-facing messages", () => {
-    expect(isUsableFinalResponseMessage("update_work_state")).toBe(false);
+    expect(isUsableFinalResponseMessage("task_completion")).toBe(false);
     expect(isUsableFinalResponseMessage(JSON.stringify({ kind: "act" }))).toBe(false);
     expect(isUsableFinalResponseMessage("Done. I updated the file.")).toBe(true);
   });

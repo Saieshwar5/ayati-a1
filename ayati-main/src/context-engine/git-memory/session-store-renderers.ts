@@ -74,6 +74,7 @@ export function renderSessionRunMarkdown(
 }
 
 export function defaultRunOutcome(status: GitMemoryRunStatus, summary: string): string {
+  if (status === "incomplete") return `Run incomplete: ${summary}`;
   const normalizedSummary = summary.trim();
   if (status === "completed") {
     return normalizedSummary || "Run completed.";

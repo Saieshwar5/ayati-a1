@@ -243,6 +243,7 @@ function toTaskRunSummary(run: GitMemoryRunFile, taskId: GitMemoryTaskId): Conte
     runId: run.runId,
     workId: taskId,
     status: run.status,
+    ...(run.stopReason ? { stopReason: run.stopReason } : {}),
     summary: run.summary,
     ...(run.next ? { next: run.next } : {}),
     ...(blockers[0] ? { firstBlocker: blockers[0] } : {}),

@@ -79,6 +79,7 @@ export interface TaskAssetRecord {
   role: TaskAssetRole;
   kind: string;
   name: string;
+  description?: string;
   sessionAssetId?: string;
   path?: string;
 }
@@ -117,7 +118,8 @@ export interface ContextTaskRunSummary {
   schemaVersion: 1;
   runId: string;
   workId: string;
-  status: "completed" | "failed" | "blocked" | "needs_user_input";
+  status: "completed" | "incomplete" | "failed" | "blocked" | "needs_user_input";
+  stopReason?: string;
   summary: string;
   next?: string;
   firstBlocker?: string;
@@ -194,7 +196,7 @@ export interface ContextSessionTaskRunCheckpoint {
   commit: string;
   workId: string;
   runId: string;
-  status: "completed" | "failed" | "blocked" | "needs_user_input";
+  status: "completed" | "incomplete" | "failed" | "blocked" | "needs_user_input";
   fromSeq: number;
   toSeq: number;
   sourceHash: string;

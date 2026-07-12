@@ -115,10 +115,6 @@ function buildToolSelectionQuery(state: LoopState): string {
     state.workState.nextStep,
     ...(state.workState.openWork ?? []),
     ...(state.workState.blockers ?? []),
-    ...(state.workState.taskNotes ?? []).flatMap((note) => [
-      note.text,
-      note.source,
-    ]),
     ...(state.toolContext?.recent ?? []).flatMap((card) => [
       card.tool,
       card.purpose,

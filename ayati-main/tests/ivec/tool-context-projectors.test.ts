@@ -23,6 +23,7 @@ describe("tool context projectors", () => {
       createDirs: true,
       files: [{ path: "src/new.ts", baseSha256: "old-hash" }],
     });
+    expect(projection.call.purpose).toBe("Inspect the source file before editing it.");
     expect(projection.call.summary).toContain("new-hash");
     expect(JSON.stringify(projection.call)).not.toContain("x".repeat(1_000));
   });
@@ -121,6 +122,7 @@ function call(overrides: Partial<PromptRunToolCallContext> = {}): PromptRunToolC
     step: 1,
     callId: "call-1",
     tool: "read_files",
+    purpose: "Inspect the source file before editing it.",
     input: { files: [{ path: "src/a.ts" }] },
     status: "success",
     retention: "next_step",

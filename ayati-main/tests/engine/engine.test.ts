@@ -1126,7 +1126,7 @@ describe("IVecEngine", () => {
     }
   });
 
-  it("lets the agent bind an unbound pending turn before committing task work", async () => {
+  it("binds an unbound pending turn without falsely completing routing-only work", async () => {
     const dataDir = mkdtempSync(join(tmpdir(), "ayati-eng-git-routing-"));
     try {
       const provider = createMockProvider({
@@ -1177,9 +1177,15 @@ describe("IVecEngine", () => {
           .mockResolvedValueOnce({
             type: "assistant",
             content: JSON.stringify({
-              kind: "reply",
-              status: "completed",
-              message: "mock reply",
+              kind: "task_completion",
+              request: { summary: "Bound the requested upload UI task.", assets: [] },
+            }),
+          })
+          .mockResolvedValueOnce({
+            type: "assistant",
+            content: JSON.stringify({
+              kind: "ask_user",
+              question: "What should I change in the upload UI?",
             }),
           }),
       });
@@ -1198,12 +1204,15 @@ describe("IVecEngine", () => {
       engine.handleMessage("c1", { type: "chat", content: "continue upload UI redesign" });
 
       await vi.waitFor(() => {
-        expect(chatContextRuntime.completeTaskRun).toHaveBeenCalledWith(expect.objectContaining({
-          taskId: "W-20260627-0002",
-          runId: "R-20260627-0004",
-          conversationRefs: [{ fromSeq: 3, toSeq: 3 }],
-        }));
+        expect(provider.generateTurn).toHaveBeenCalledTimes(4);
       });
+      expect(chatContextRuntime.completeTaskRun).toHaveBeenCalledWith(expect.objectContaining({
+        taskId: "W-20260627-0002",
+        runId: "R-20260627-0004",
+        result: expect.objectContaining({
+          workState: expect.objectContaining({ status: "needs_user_input" }),
+        }),
+      }));
       expect(chatContextRuntime.routeTaskTurn).toHaveBeenCalledWith(expect.objectContaining({
         autoOnly: true,
       }));
@@ -1249,10 +1258,6 @@ describe("IVecEngine", () => {
 	                }],
 	                allowedTools: ["write_files"],
 	                assertions: [{ kind: "file_exists", path: "$.files[0].path" }],
-	                completion: {
-	                  intent: "completion_candidate",
-	                  reason: "The note file write completes the requested invoice follow-up.",
-	                },
 	              },
 	            }),
 	          })
@@ -1277,6 +1282,16 @@ describe("IVecEngine", () => {
 	              },
 	            }),
 	          })
+	          .mockResolvedValueOnce({
+            type: "assistant",
+            content: JSON.stringify({
+              kind: "task_completion",
+              request: {
+                summary: "Created the requested invoice follow-up note.",
+                assets: [],
+              },
+            }),
+          })
 	          .mockResolvedValueOnce({
             type: "assistant",
             content: JSON.stringify({

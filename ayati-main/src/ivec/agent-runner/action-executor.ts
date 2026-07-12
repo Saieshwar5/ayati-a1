@@ -21,7 +21,6 @@ import {
   checkVerificationGates,
   deriveExecutionStatus,
 } from "../verification-gates.js";
-import { buildTaskNotesFromActOutput } from "./task-notes.js";
 
 export interface AgentActionExecutionDeps {
   toolExecutor?: ToolExecutor;
@@ -52,6 +51,7 @@ export async function executeAgentAction(
     const actOutput: ActOutput = {
       toolCalls: [{
         tool: "execution_plan",
+        purpose: "Validate the planned executable tool calls before execution.",
         input: action,
         output: "",
         error: planError,
@@ -75,14 +75,12 @@ export async function executeAgentAction(
 
   const actOutput = await executeCalls(deps, action, action.calls, stepNumber);
   const verifyOutput = verifyActOutput(action, actOutput);
-  const taskNotes = buildTaskNotesFromActOutput(actOutput);
   const reducedWorkState = reduceVerifiedWorkState(previousWorkState, {
     passed: verifyOutput.passed,
-    summary: verifyOutput.summary,
+    summary: buildReducerProgressSummary(actOutput, verifyOutput),
     evidenceItems: verifyOutput.evidenceItems,
     newFacts: verifyOutput.newFacts,
     artifacts: verifyOutput.artifacts,
-    taskNotes,
   });
 
   return {
@@ -90,6 +88,17 @@ export async function executeAgentAction(
     verifyOutput,
     nextWorkState: reducedWorkState,
   };
+}
+
+function buildReducerProgressSummary(actOutput: ActOutput, verifyOutput: VerifyOutput): string {
+  if (!verifyOutput.passed) {
+    return verifyOutput.summary;
+  }
+  const tools = uniqueStrings(actOutput.toolCalls.map((call) => call.tool));
+  const toolLabel = tools.length > 0 ? tools.join(", ") : "Executable tool";
+  return verifyOutput.validationStatus === "passed"
+    ? `${toolLabel} completed with deterministic verification.`
+    : `${toolLabel} completed successfully.`;
 }
 
 function verifyActOutput(action: AgentAction, actOutput: ActOutput): VerifyOutput {
@@ -307,7 +316,7 @@ async function executeToolCall(
   stepNumber: number,
 ): Promise<ActToolCallRecord> {
   if (!deps.toolExecutor) {
-    return { tool: call.tool, input: call.input, output: "", error: "No tool executor available." };
+    return { tool: call.tool, purpose: call.purpose, input: call.input, output: "", error: "No tool executor available." };
   }
 
   const context = {
@@ -323,6 +332,7 @@ async function executeToolCall(
     return {
       callId: call.id,
       tool: call.tool,
+      purpose: call.purpose,
       input: call.input,
       output: "",
       error: validation.error,
@@ -367,6 +377,7 @@ async function executeToolCall(
     return {
       callId: call.id,
       tool: call.tool,
+      purpose: call.purpose,
       input: call.input,
       output: "",
       error: message,
@@ -376,6 +387,7 @@ async function executeToolCall(
   const record: ActToolCallRecord = {
     callId: call.id,
     tool: call.tool,
+    purpose: call.purpose,
     input: call.input,
     output: result.output ?? "",
     ...(result.error ? { error: result.error } : {}),
@@ -423,6 +435,7 @@ function skippedToolCall(call: AgentToolCallSpec, reason: string): ActToolCallRe
   return {
     callId: call.id,
     tool: call.tool,
+    purpose: call.purpose,
     input: call.input,
     output: "",
     error: reason,

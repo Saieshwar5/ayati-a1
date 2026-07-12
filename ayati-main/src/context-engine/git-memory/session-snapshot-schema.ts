@@ -69,7 +69,7 @@ export const SESSION_SNAPSHOT_JSON_SCHEMA: Record<string, unknown> = objectSchem
     summary: { type: "string", minLength: 1 },
     taskId: { type: ["string", "null"] },
     runId: { type: "string", minLength: 1 },
-    status: { type: "string", enum: ["completed", "failed", "blocked", "needs_user_input"] },
+    status: { type: "string", enum: ["completed", "incomplete", "failed", "blocked", "needs_user_input"] },
     sources: arraySchema(SOURCE_SCHEMA, 16, 1),
   }), 32),
   continuation: objectSchema({

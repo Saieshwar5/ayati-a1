@@ -1,4 +1,4 @@
-import type { LoopState, StepSummary, TaskNote, ToolContextState, ToolObservation, WorkState } from "./types.js";
+import type { LoopState, StepSummary, ToolContextState, ToolObservation, WorkState } from "./types.js";
 
 const WORK_STATE_LIMITS = {
   summaryChars: 900,
@@ -9,7 +9,6 @@ const WORK_STATE_LIMITS = {
   verifiedFacts: { count: 8, chars: 220 },
   evidence: { count: 6, chars: 240 },
   artifacts: { count: 8, chars: 240 },
-  taskNotes: { count: 8, textChars: 320, sourceChars: 160 },
 };
 
 const LOOP_STATE_LIMITS = {
@@ -40,7 +39,6 @@ export function compactWorkState(workState: WorkState): WorkState {
     verifiedFacts: compactStringList(workState.verifiedFacts, WORK_STATE_LIMITS.verifiedFacts),
     evidence: compactStringList(workState.evidence, WORK_STATE_LIMITS.evidence),
     artifacts: compactStringList(workState.artifacts, WORK_STATE_LIMITS.artifacts),
-    taskNotes: compactTaskNotes(workState.taskNotes, WORK_STATE_LIMITS.taskNotes),
     nextStep: compactOptionalText(workState.nextStep, WORK_STATE_LIMITS.nextStepChars),
     userInputNeeded: compactOptionalText(workState.userInputNeeded, WORK_STATE_LIMITS.userInputNeededChars),
   };
@@ -171,28 +169,6 @@ function uniqueStrings(values: string[]): string[] {
     output.push(compact);
   }
   return output;
-}
-
-function compactTaskNotes(
-  values: TaskNote[] | undefined,
-  limits: { count: number; textChars: number; sourceChars: number },
-): TaskNote[] | undefined {
-  const byId = new Map<string, TaskNote>();
-  for (const note of values ?? []) {
-    const id = compactText(note.id, 120);
-    const text = compactText(note.text, limits.textChars);
-    if (!id || !text) {
-      continue;
-    }
-    byId.set(id, {
-      id,
-      text,
-      source: compactText(note.source, limits.sourceChars),
-      expires: note.expires,
-    });
-  }
-  const notes = [...byId.values()].slice(-limits.count);
-  return notes.length > 0 ? notes : undefined;
 }
 
 function normalizeText(value: string): string {

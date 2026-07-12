@@ -1,4 +1,4 @@
-import type { TaskNote, WorkState, WorkStatus } from "../types.js";
+import type { WorkState, WorkStatus } from "../types.js";
 
 interface VerifiedStepProgressInput {
   passed: boolean;
@@ -6,7 +6,6 @@ interface VerifiedStepProgressInput {
   evidenceItems: string[];
   newFacts: string[];
   artifacts?: string[];
-  taskNotes?: TaskNote[];
 }
 
 function uniqueStrings(values: string[]): string[] {
@@ -33,32 +32,6 @@ export function reduceVerifiedWorkState(
     verifiedFacts: uniqueStrings([...previous.verifiedFacts, ...step.newFacts]).slice(0, 8),
     evidence: uniqueStrings([...previous.evidence, ...step.evidenceItems]).slice(0, 6),
     artifacts: uniqueStrings([...(previous.artifacts ?? []), ...(step.artifacts ?? [])]).slice(0, 8),
-    taskNotes: mergeTaskNotes(previous.taskNotes, step.taskNotes),
     nextStep: previous.nextStep,
-  };
-}
-
-function mergeTaskNotes(previous: TaskNote[] | undefined, next: TaskNote[] | undefined): TaskNote[] | undefined {
-  const byId = new Map<string, TaskNote>();
-  for (const note of previous ?? []) {
-    if (note.expires === "task" && note.id.trim().length > 0 && note.text.trim().length > 0) {
-      byId.set(note.id, normalizeNote(note));
-    }
-  }
-  for (const note of next ?? []) {
-    if (note.id.trim().length > 0 && note.text.trim().length > 0) {
-      byId.set(note.id, normalizeNote(note));
-    }
-  }
-  const notes = [...byId.values()].slice(-8);
-  return notes.length > 0 ? notes : undefined;
-}
-
-function normalizeNote(note: TaskNote): TaskNote {
-  return {
-    id: note.id.trim(),
-    text: note.text.replace(/\s+/g, " ").trim(),
-    source: note.source.replace(/\s+/g, " ").trim(),
-    expires: note.expires,
   };
 }

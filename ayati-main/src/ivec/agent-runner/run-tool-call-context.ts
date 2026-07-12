@@ -8,6 +8,7 @@ export interface PromptRunToolCallContext {
   step: number;
   callId?: string;
   tool: string;
+  purpose?: string;
   input: unknown;
   status: "success" | "failed";
   retention?: RunToolCallContext["retention"];
@@ -64,6 +65,7 @@ function projectPromptToolCall(call: RunToolCallContext): PromptRunToolCallConte
     step: call.step,
     ...(call.callId ? { callId: call.callId } : {}),
     tool: call.tool,
+    ...(call.purpose ? { purpose: call.purpose } : {}),
     input: call.input,
     status: call.status,
     ...(call.retention ? { retention: call.retention } : {}),
@@ -103,6 +105,7 @@ export function compactPromptToolCall(
     step: call.step,
     ...(call.callId ? { callId: call.callId } : {}),
     tool: call.tool,
+    ...(call.purpose ? { purpose: call.purpose } : {}),
     input: compactUnknownForPrompt(call.input, inputChars),
     status: call.status,
     ...(call.retention ? { retention: call.retention } : {}),

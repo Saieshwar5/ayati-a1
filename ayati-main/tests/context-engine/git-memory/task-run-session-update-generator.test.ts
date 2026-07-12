@@ -359,7 +359,7 @@ describe("task-run session update generator", () => {
 });
 
 function checkpointPlan(overrides: {
-  status?: "completed" | "failed" | "blocked" | "needs_user_input";
+  status?: "completed" | "incomplete" | "failed" | "blocked" | "needs_user_input";
   maxCheckpointTokens?: number;
 } = {}): ReadyTaskRunCheckpointPlan {
   const status = overrides.status ?? "completed";

@@ -485,7 +485,7 @@ describe("executeAgentAction verification gates", () => {
     }
   });
 
-  it("promotes successful decision-context observations into task notes", async () => {
+  it("keeps successful decision-context observations out of WorkState", async () => {
     const runPath = makeTmpDir();
     try {
       const readLikeTool: ToolDefinition = {
@@ -522,14 +522,8 @@ describe("executeAgentAction verification gates", () => {
         runPath,
       );
 
-      expect(result.nextWorkState.taskNotes).toHaveLength(1);
-      expect(result.nextWorkState.taskNotes?.[0]).toMatchObject({
-        id: "note:read_files:rivers-website/index.html",
-        source: "read_files:rivers-website/index.html",
-        expires: "task",
-      });
-      expect(result.nextWorkState.taskNotes?.[0]?.text).toContain("10 river cards");
-      expect(result.nextWorkState.taskNotes?.[0]?.text).toContain("Inspect current site structure");
+      expect(result.nextWorkState).not.toHaveProperty("taskNotes");
+      expect(result.actOutput.toolCalls[0]?.observation?.content).toContain("10 river cards");
     } finally {
       cleanup(runPath);
     }

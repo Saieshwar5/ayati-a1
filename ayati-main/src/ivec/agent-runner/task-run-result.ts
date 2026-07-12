@@ -83,7 +83,19 @@ export function buildTaskAssets(state: LoopState): TaskAssetRecord[] {
       path: absolutePath(directory.rootPath),
     })),
     ...buildGeneratedArtifactAssets(state),
+    ...buildCompletionAssets(state),
   ]);
+}
+
+function buildCompletionAssets(state: LoopState): TaskAssetRecord[] {
+  return (state.completionAssets ?? []).map((asset) => ({
+    assetId: stableAssetId(asset.kind, asset.resolvedPath),
+    role: "generated",
+    kind: asset.kind,
+    name: asset.resolvedPath.split("/").pop() || asset.resolvedPath,
+    path: asset.resolvedPath,
+    description: asset.description,
+  }));
 }
 
 function toTaskSummaryTaskStatus(status: WorkState["status"]): AgentTaskSummaryRecord["taskStatus"] {
@@ -154,6 +166,7 @@ function deriveStopReason(
   status: AgentLoopResult["status"],
 ): AgentTaskSummaryRecord["stopReason"] {
   if (state.contextLimitReached) return "context_limit";
+  if (state.runLimitReached) return "run_limit";
   if (state.workState.status === "needs_user_input") return "needs_user_input";
   if (state.workState.status === "blocked") return "blocked";
   if (status === "failed") return "failed";
@@ -246,6 +259,7 @@ function buildGeneratedArtifactAssets(state: LoopState): TaskAssetRecord[] {
       kind,
       name: artifact.split("/").pop() || artifact,
       path: artifact,
+      ...completionAssetDescription(state, artifact),
     });
   }
 
@@ -259,10 +273,19 @@ function buildGeneratedArtifactAssets(state: LoopState): TaskAssetRecord[] {
       kind: "directory",
       name: directoryPath.split("/").pop() || directoryPath,
       path: directoryPath,
+      ...completionAssetDescription(state, directoryPath),
     });
   }
 
   return assets;
+}
+
+function completionAssetDescription(
+  state: LoopState,
+  path: string,
+): Pick<TaskAssetRecord, "description"> | Record<string, never> {
+  const asset = state.completionAssets?.find((candidate) => candidate.resolvedPath === path);
+  return asset?.description ? { description: asset.description } : {};
 }
 
 function attachmentRecordToTaskAsset(

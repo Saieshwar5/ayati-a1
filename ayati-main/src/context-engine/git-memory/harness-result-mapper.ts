@@ -12,6 +12,7 @@ import type {
 import type {
   GitMemoryConversationSeqRange,
   GitMemoryRunId,
+  GitMemoryRunStopReason,
   GitMemoryRunStatus,
   GitMemorySessionId,
   GitMemoryStepRecord,
@@ -78,6 +79,7 @@ export function buildGitMemoryTaskRunCommitInput(
     taskId: input.taskId,
     ...(input.runId ? { runId: input.runId } : {}),
     status: runStatus,
+    stopReason: toRunStopReason(runStatus, input.result),
     ...(input.startedAt ? { startedAt: input.startedAt } : {}),
     completedAt: input.at,
     conversationRefs: input.conversationRefs,
@@ -205,6 +207,9 @@ function toRunStatus(
   if (result.status === "failed") {
     return "failed";
   }
+  if (["run_limit", "context_limit"].includes(result.taskSummary?.stopReason ?? "")) {
+    return "incomplete";
+  }
   if (result.status === "stuck" || workState.status === "blocked") {
     return "blocked";
   }
@@ -224,8 +229,7 @@ function toTaskStatus(
   if (
     result.taskSummary?.taskStatus === "blocked"
     || workState.status === "blocked"
-    || result.status === "failed"
-    || (result.status === "stuck" && result.taskSummary?.stopReason !== "context_limit")
+    || (result.status === "stuck" && !["context_limit", "run_limit"].includes(result.taskSummary?.stopReason ?? ""))
   ) {
     return "blocked";
   }
@@ -233,6 +237,18 @@ function toTaskStatus(
     return "done";
   }
   return "in_progress";
+}
+
+function toRunStopReason(
+  runStatus: GitMemoryRunStatus,
+  result: GitMemoryHarnessRunResultForContext,
+): GitMemoryRunStopReason {
+  if (result.taskSummary?.stopReason === "run_limit") return "run_limit";
+  if (result.taskSummary?.stopReason === "context_limit") return "context_limit";
+  if (runStatus === "completed") return "task_completed";
+  if (runStatus === "needs_user_input") return "user_input_required";
+  if (runStatus === "blocked") return "permanent_blocker";
+  return "execution_failure";
 }
 
 function toActionStatus(outcome: string): CommitGitMemoryTaskRunActionInput["status"] {
@@ -378,6 +394,9 @@ function buildOutcome(status: GitMemoryRunStatus, summary: string): string {
   }
   if (status === "blocked") {
     return `Run blocked: ${summary}`;
+  }
+  if (status === "incomplete") {
+    return `Run incomplete: ${summary}`;
   }
   return `Needs user input: ${summary}`;
 }

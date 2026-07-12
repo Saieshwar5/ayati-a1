@@ -377,6 +377,7 @@ function buildCheckpointId(sessionId: string, taskId: string, runId: string, sou
 
 function isFinalizedTaskRunStatus(status: GitMemorySessionRunStatus): status is GitMemoryRunStatus {
   return status === "completed"
+    || status === "incomplete"
     || status === "failed"
     || status === "blocked"
     || status === "needs_user_input";

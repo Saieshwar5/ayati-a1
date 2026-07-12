@@ -140,10 +140,11 @@ export function summarizeDecision(decision: AgentDecision): Record<string, unkno
       request: decision.request,
     };
   }
-  if (decision.kind === "update_work_state") {
+  if (decision.kind === "task_completion") {
     return {
-      kind: "update_work_state",
-      update: decision.update,
+      kind: "task_completion",
+      summaryPreview: previewString(decision.request.summary, 240),
+      assetCount: decision.request.assets.length,
     };
   }
   return {
@@ -166,7 +167,6 @@ export function summarizeAgentAction(action: AgentAction): Record<string, unknow
       purpose: call.purpose,
       input: summarizeToolInput(call.input),
     })),
-    completionIntent: action.completion?.intent,
   };
 }
 
@@ -179,7 +179,6 @@ export function summarizeWorkState(workState: WorkState): Record<string, unknown
     verifiedFactCount: workState.verifiedFacts.length,
     evidenceCount: workState.evidence.length,
     artifactCount: workState.artifacts?.length ?? 0,
-    taskNoteCount: workState.taskNotes?.length ?? 0,
     nextStepPreview: previewString(workState.nextStep, 180),
     userInputNeededPreview: previewString(workState.userInputNeeded, 180),
   };

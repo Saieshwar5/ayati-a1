@@ -1424,6 +1424,7 @@ describe("parseAgentDecision", () => {
             reason: "The user requested durable file creation.",
           },
           dependsOn: [],
+          purpose: "Create and activate the task for the requested Linux commands file.",
         }],
         allowedTools: ["git_context_create_task_for_turn"],
       },
@@ -1490,10 +1491,7 @@ describe("parseAgentDecision", () => {
           input: {
             files: [{ path: "live-tests/fresh-gate/count_lines.py", content: "print('ok')\n" }],
             createDirs: true,
-            taskCompletion: {
-              intent: "completion_candidate",
-              reason: "This writes the requested script file.",
-            },
+            purpose: "Create the requested line-counting script.",
           },
         }],
       },
@@ -1663,6 +1661,7 @@ describe("parseAgentDecision", () => {
             tool: "shell",
             input: { command: "pwd" },
             dependsOn: [],
+            purpose: "Inspect the current working directory.",
           }],
           allowedTools: ["shell"],
         },
@@ -1677,6 +1676,40 @@ describe("parseAgentDecision", () => {
 
     expect(generateTurn).toHaveBeenCalledTimes(1);
     expect(decision.kind).toBe("act");
+  });
+
+  it("repairs executable decisions that omit the call purpose", async () => {
+    const action = (purpose?: string) => JSON.stringify({
+      kind: "act",
+      action: {
+        mode: "single",
+        calls: [{
+          id: "call_1",
+          tool: "shell",
+          input: { command: "pwd" },
+          dependsOn: [],
+          ...(purpose ? { purpose } : {}),
+        }],
+        allowedTools: ["shell"],
+      },
+    });
+    const { provider, generateTurn } = createProvider([
+      action(),
+      action("Inspect the current working directory."),
+    ]);
+
+    const decision = await callAgentDecision({
+      provider,
+      stateView: createStateView(),
+      toolDefinitions: [createTool("shell")],
+    });
+
+    expect(generateTurn).toHaveBeenCalledTimes(2);
+    expect(decision).toMatchObject({
+      kind: "act",
+      action: { calls: [{ purpose: "Inspect the current working directory." }] },
+    });
+    expect(generateTurn.mock.calls[1]?.[0]?.messages.at(-1)?.content).toContain("requires a specific purpose");
   });
 
   it("uses native decision tools when supported", async () => {
@@ -1746,10 +1779,9 @@ describe("parseAgentDecision", () => {
     expect(nativeTool?.inputSchema).toMatchObject({
       properties: {
         query: { description: "UNIQUE_INPUT_SCHEMA_MARKER" },
-        taskCompletion: expect.any(Object),
       },
-      required: expect.arrayContaining(["taskCompletion"]),
     });
+    expect((nativeTool?.inputSchema.properties as Record<string, unknown>)["taskCompletion"]).toBeUndefined();
   });
 
   it("records and retries an empty provider response once", async () => {
@@ -1938,46 +1970,6 @@ describe("parseAgentDecision", () => {
     });
   });
 
-  it("exposes update_work_state only when enabled", async () => {
-    const { provider, generateTurn } = createNativeToolProvider([
-      {
-        type: "tool_calls",
-        calls: [{
-          id: "work_state_update_1",
-          name: "update_work_state",
-          input: {
-            status: "done",
-            summary: "Created the requested files.",
-            openWork: [],
-            blockers: [],
-          },
-        }],
-      },
-    ], { jsonSchema: true });
-
-    const decision = await callAgentDecision({
-      provider,
-      stateView: createStateView(),
-      toolDefinitions: [],
-      workStateUpdateAvailable: true,
-    });
-
-    expect(generateTurn.mock.calls[0]?.[0]?.tools.map((tool: { name: string }) => tool.name)).toEqual([
-      "decision_load_tools",
-      "update_work_state",
-    ]);
-    expect(decision).toEqual({
-      kind: "update_work_state",
-      update: {
-        status: "done",
-        summary: "Created the requested files.",
-        openWork: [],
-        blockers: [],
-      },
-      workingNotes: undefined,
-    });
-  });
-
   it("exposes selected executable tools as native tools", async () => {
     const { provider, generateTurn } = createProvider([
       JSON.stringify({ kind: "reply", status: "completed", message: "Hi!" }),
@@ -2002,16 +1994,10 @@ describe("parseAgentDecision", () => {
       "write_files",
     ]);
     expect(tools.find((tool: { name: string }) => tool.name === "write_files")?.inputSchema).toMatchObject({
-      required: expect.arrayContaining(["files", "taskCompletion"]),
+      required: ["files", "purpose"],
       properties: {
-        taskCompletion: {
-          required: ["intent", "reason"],
-          properties: {
-            intent: {
-              enum: ["not_completion", "completion_candidate"],
-            },
-          },
-        },
+        files: { type: "array" },
+        purpose: { type: "string", maxLength: 240 },
       },
     });
   });
@@ -2026,11 +2012,7 @@ describe("parseAgentDecision", () => {
           input: {
             files: [{ path: "site/index.html", content: "ok" }],
             createDirs: true,
-            taskCompletion: {
-              intent: "completion_candidate",
-              reason: "This writes the requested site file.",
-              expectedEvidence: ["site/index.html written"],
-            },
+            purpose: "Create the main website page.",
           },
         }],
       },
@@ -2065,12 +2047,39 @@ describe("parseAgentDecision", () => {
           createDirs: true,
         },
         dependsOn: [],
+        purpose: "Create the main website page.",
       }],
-      completion: {
-        intent: "completion_candidate",
-        reason: "This writes the requested site file.",
-        expectedEvidence: ["site/index.html written"],
+    });
+  });
+
+  it("exposes and parses task_completion only when enabled", async () => {
+    const { provider, generateTurn } = createNativeToolProvider([{
+      type: "tool_calls",
+      calls: [{
+        id: "complete_1",
+        name: "task_completion",
+        input: {
+          summary: "Created the requested website files.",
+          assets: [{ path: "index.html", kind: "file", description: "Main website page" }],
+        },
+      }],
+    }]);
+
+    const decision = await callAgentDecision({
+      provider,
+      stateView: createStateView(),
+      toolDefinitions: [],
+      taskCompletionAvailable: true,
+    });
+
+    expect(generateTurn.mock.calls[0]?.[0]?.tools?.map((tool) => tool.name)).toContain("task_completion");
+    expect(decision).toEqual({
+      kind: "task_completion",
+      request: {
+        summary: "Created the requested website files.",
+        assets: [{ path: "index.html", kind: "file", description: "Main website page" }],
       },
+      workingNotes: undefined,
     });
   });
 
@@ -2081,7 +2090,7 @@ describe("parseAgentDecision", () => {
         calls: [{
           id: "call_1",
           name: "write_files",
-          input: {},
+          input: { purpose: "Create the main website page." },
         }],
       },
       {
@@ -2089,7 +2098,10 @@ describe("parseAgentDecision", () => {
         calls: [{
           id: "call_1",
           name: "write_files",
-          input: { files: [{ path: "site/index.html", content: "ok" }] },
+          input: {
+            files: [{ path: "site/index.html", content: "ok" }],
+            purpose: "Create the main website page.",
+          },
         }],
       },
     ]);

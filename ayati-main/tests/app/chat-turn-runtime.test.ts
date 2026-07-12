@@ -728,12 +728,10 @@ describe("createChatTurnRuntime", () => {
           },
         },
         {
-          kind: "update_work_state",
-          update: {
-            status: "done",
+          kind: "task_completion",
+          request: {
             summary: "Inspected the focus timer file.",
-            openWork: [],
-            blockers: [],
+            assets: [],
           },
         },
         {
@@ -1129,12 +1127,10 @@ describe("createChatTurnRuntime", () => {
           },
         },
         {
-          kind: "update_work_state",
-          update: {
-            status: "done",
+          kind: "task_completion",
+          request: {
             summary: "Created the notes file.",
-            openWork: [],
-            blockers: [],
+            assets: [],
           },
         },
         {
@@ -1286,12 +1282,10 @@ describe("createChatTurnRuntime", () => {
           },
         },
         {
-          kind: "update_work_state",
-          update: {
-            status: "done",
+          kind: "task_completion",
+          request: {
             summary: "Updated the upload API note after clarification.",
-            openWork: [],
-            blockers: [],
+            assets: [],
           },
         },
         {
@@ -1470,6 +1464,10 @@ describe("createChatTurnRuntime", () => {
             allowedTools: ["git_context_activate_task_for_turn"],
             assertions: [],
           },
+        },
+        {
+          kind: "task_completion",
+          request: { summary: "Updated the upload handling notes.", assets: [] },
         },
         {
           kind: "reply",

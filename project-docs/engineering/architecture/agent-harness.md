@@ -56,11 +56,25 @@ example, when `write_files` is selected, the provider receives the real
 can then enforce the actual executable schema instead of only enforcing a
 generic action wrapper.
 
-The harness adds a required `taskCompletion` metadata object to each selected
-executable schema before exposing it to the provider. The metadata tells the
-runner whether the model believes this exact tool call is a completion
-candidate if deterministic verification passes. The metadata is removed before
-the local tool executes.
+Executable schemas retain their tool-owned input fields and add one harness
+metadata field: a required, bounded `purpose` sentence explaining why the call
+is needed now. The runtime removes `purpose` before validating or executing the
+tool-owned input. It preserves the original sentence on full and compacted
+tool-call records, but does not copy individual call purposes into WorkState.
+Purpose records intent; deterministic output and verification record what
+actually happened.
+
+WorkState contains only current run status, progress summary, open work,
+blockers, verified facts, evidence, artifact paths, next step, and required
+user input. Compacted tool input/output remains in `context.run.toolCalls`;
+it is not copied into WorkState through a secondary task-note cache. Verified
+completion asset descriptions are carried directly into persisted task assets.
+
+Individual tool calls perform only their concrete operation and do not predict whole-task completion. During an
+active task run, the separate `task_completion({ summary, assets })` control
+asks the runtime to verify that the requested work is complete. The runtime
+checks declared file/directory assets, accumulated verified tool evidence, and
+unresolved failures before it deterministically updates `WorkState`.
 
 The provider call allows direct assistant text for normal terminal replies and
 disables parallel provider tool calls where supported. When a native tool call
@@ -70,6 +84,8 @@ is needed, the model must call exactly one tool. A model response can be:
 - `decision_load_tools`: request missing tools for a later decision.
 - `ask_user_feedback`: pause an active task run for required user feedback
   when progress is genuinely blocked and no safe default exists.
+- `task_completion`: request independent deterministic completion verification
+  for an active task run after normal tool work appears complete.
 - a selected executable tool: concrete work to run through the action executor.
 
 Unknown native tools, multiple native tool calls, missing executable tools,
@@ -130,6 +146,29 @@ different existing task -> git_context_activate_task_for_turn -> normal work too
 ambiguous task -> git_context_ask_clarification_for_turn -> clarification reply stored as session run
 clarification answer -> git_context_activate_task_for_turn -> write_files -> final reply stored as task run
 ```
+
+There is no model-facing `update_work_state` control. Verified executable
+steps update WorkState through the deterministic progress reducer. A successful
+terminal reply finalizes a session-run WorkState as `done`, uses the reply as
+its bounded summary, and clears open work, blockers, next step, and required
+user input. Task runs remain stricter: only accepted `task_completion`
+verification can mark their WorkState `done`.
+
+`maxIterations` is the normal work-decision budget. When a task run consumes
+that budget, the runner reserves one completion-only decision followed by one
+final-response-only decision. The completion-only surface exposes only
+`task_completion`; normal tools, tool loading, feedback controls, and direct
+final replies are unavailable. Accepted verification produces `done`; rejected
+verification preserves verified partial assets and unfinished WorkState before
+the final response reports what remains. These two reserved decisions do not
+reduce the normal work budget.
+
+Every terminal task run is committed and sealed; later continuation always
+allocates a new run id. Run/context capacity exhaustion persists as
+`run.status=incomplete` with `stopReason=run_limit` or `context_limit`, while
+the durable task remains `in_progress` with its verified progress, assets,
+open work, and next step. Only a genuine permanent blocker maps both the run
+and task to `blocked`.
 
 Clarification is not a deferred promotion. Once the assistant asks the
 clarifying question and the session run finalizes, that run is sealed. The
@@ -335,15 +374,14 @@ The runtime keeps a hidden catalog and run-scoped working set, then selects at
 most `maxSelectedTools` executable schemas for one decision, currently 15 by
 default. Required routing and Git recovery tools consume slots inside that
 total instead of being appended outside it. Native harness controls such as
-`decision_load_tools`, `update_work_state`, and `ask_user_feedback` are a small
+`decision_load_tools`, `task_completion`, and `ask_user_feedback` are a small
 separate surface and do not consume executable-tool slots.
 
 Native provider tools are the only callable schema authority. The textual user
 prompt contains only selected executable names; it does not duplicate input or
-output schemas, annotations, or selection hints. Input schemas, including the
-runtime-added task-completion contract, are sent once through native tool
-calling. Output contracts, annotations, taxonomy, and selection hints remain
-runtime-owned.
+output schemas, annotations, or selection hints. Authoritative executable input
+schemas are sent unchanged through native tool calling. Output contracts,
+annotations, taxonomy, and selection hints remain runtime-owned.
 
 After a run encounters enforced context pressure, later decisions cap the
 selected executable surface at ten tools, or the smaller configured limit.

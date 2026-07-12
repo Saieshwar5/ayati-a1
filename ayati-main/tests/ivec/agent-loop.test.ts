@@ -34,7 +34,8 @@ function cleanup(path: string): void {
 }
 
 function createProvider(responses: unknown[]): LlmProvider {
-  const queue = responses.map((response) => typeof response === "string" ? response : JSON.stringify(response));
+  const queue = addExplicitCompletionToLegacyFixtures(responses)
+    .map((response) => typeof response === "string" ? response : JSON.stringify(response));
   return {
     name: "mock",
     version: "1.0.0",
@@ -49,6 +50,43 @@ function createProvider(responses: unknown[]): LlmProvider {
       return { type: "assistant", content };
     }),
   };
+}
+
+function addExplicitCompletionToLegacyFixtures(responses: unknown[]): unknown[] {
+  const output: unknown[] = [];
+  let pendingMutation = false;
+  for (const response of responses) {
+    const record = response && typeof response === "object" ? response as Record<string, unknown> : undefined;
+    if (record?.["kind"] === "act") {
+      const action = record["action"] as { calls?: Array<{ tool?: string }> } | undefined;
+      pendingMutation ||= (action?.calls ?? []).some((call) => [
+        "write_files",
+        "patch_files",
+        "create_directory",
+        "move",
+        "delete",
+        "shell",
+        "python_execute",
+      ].includes(call.tool ?? ""));
+    }
+    if (record?.["kind"] === "reply" && pendingMutation) {
+      const message = typeof record["message"] === "string" ? record["message"] : "";
+      const asksForInput = /\b(?:send|provide|i need|which|what should)\b/i.test(message);
+      if (!asksForInput) {
+        output.push({
+          kind: "task_completion",
+          request: {
+            summary: message || "Completed the requested task.",
+            assets: [],
+          },
+        });
+        pendingMutation = false;
+      }
+    }
+    output.push(response);
+    if (record?.["kind"] === "task_completion") pendingMutation = false;
+  }
+  return output;
 }
 
 function createMemoryFeedbackLedger(): { ledger: AgentFeedbackLedger; events: AgentFeedbackEventInput[] } {
@@ -439,8 +477,8 @@ describe("agentLoop", () => {
 
       expect(result.status).toBe("completed");
       expect(result.runClass).toBe("task");
-      expect(result.totalIterations).toBe(2);
-      expect(provider.generateTurn).toHaveBeenCalledTimes(2);
+      expect(result.totalIterations).toBe(3);
+      expect(provider.generateTurn).toHaveBeenCalledTimes(3);
       expect(readFileSync(outputPath, "utf-8")).toBe("created by harness");
       expect(result.content).toContain(outputPath);
       expect(result.content).not.toContain("Done -");
@@ -524,10 +562,14 @@ describe("agentLoop", () => {
       expect(result.workState).toMatchObject({
         status: "done",
         summary: "Upload handling lives in src/upload.ts.",
+        openWork: [],
+        blockers: [],
         evidence: expect.arrayContaining([
           expect.stringContaining("read_files"),
         ]),
       });
+      expect(result.workState?.nextStep).toBeUndefined();
+      expect(result.workState?.userInputNeeded).toBeUndefined();
       const secondCallInput = vi.mocked(provider.generateTurn).mock.calls[1]?.[0];
       const secondPrompt = secondCallInput.messages.find((message: { role: string }) => message.role === "user").content as string;
       const secondStateView = extractStateView(secondPrompt);
@@ -568,7 +610,7 @@ describe("agentLoop", () => {
     }
   });
 
-  it("uses update_work_state before a response-only final task reply", async () => {
+  it("uses task_completion before a response-only final task reply", async () => {
     const dataDir = makeTmpDir();
     const outputPath = join(dataDir, "tea.html");
     try {
@@ -589,19 +631,17 @@ describe("agentLoop", () => {
             }],
             allowedTools: ["write_files"],
             assertions: [],
-            completion: {
-              intent: "not_completion",
-              reason: "The work state still needs to be updated after the write succeeds.",
-            },
           },
         },
         {
-          kind: "update_work_state",
-          update: {
-            status: "done",
+          kind: "task_completion",
+          request: {
             summary: "Created the requested tea stall HTML page.",
-            openWork: [],
-            blockers: [],
+            assets: [{
+              path: outputPath,
+              kind: "file",
+              description: "Main tea stall HTML page",
+            }],
           },
         },
         {
@@ -629,6 +669,13 @@ describe("agentLoop", () => {
       expect(result.runClass).toBe("task");
       expect(result.workState?.status).toBe("done");
       expect(result.workState?.summary).toBe("Created the requested tea stall HTML page.");
+      expect(result.workState).not.toHaveProperty("taskNotes");
+      expect(result.taskAssets).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          path: outputPath,
+          description: "Main tea stall HTML page",
+        }),
+      ]));
       expect(result.content).toBe("Created `tea.html` with a simple tea stall page.");
       expect(result.content).not.toContain("deterministic verification");
       expect(readFileSync(outputPath, "utf-8")).toContain("Tea Stall");
@@ -636,6 +683,186 @@ describe("agentLoop", () => {
       expect(finalCallInput.tools).toEqual([]);
       expect(finalPrompt).toContain("\"status\": \"done\"");
       expect(finalPrompt).toContain("Created the requested tea stall HTML page.");
+    } finally {
+      cleanup(dataDir);
+    }
+  });
+
+  it("continues task work after task_completion rejects a missing asset", async () => {
+    const dataDir = makeTmpDir();
+    const indexPath = join(dataDir, "site", "index.html");
+    const cssPath = join(dataDir, "site", "styles.css");
+    try {
+      const toolExecutor = createToolExecutor([writeFilesTool]);
+      const provider = createProvider([
+        {
+          kind: "act",
+          action: {
+            mode: "single",
+            calls: [{ id: "write_index", tool: "write_files", input: { createDirs: true, files: [{ path: indexPath, content: "<h1>Site</h1>" }] }, dependsOn: [], purpose: "Create the homepage" }],
+            allowedTools: ["write_files"],
+            assertions: [],
+          },
+        },
+        {
+          kind: "task_completion",
+          request: {
+            summary: "Created the requested website files.",
+            assets: [{ path: cssPath, kind: "file", description: "Website styling" }],
+          },
+        },
+        {
+          kind: "act",
+          action: {
+            mode: "single",
+            calls: [{ id: "write_css", tool: "write_files", input: { files: [{ path: cssPath, content: "body { color: black; }" }] }, dependsOn: [], purpose: "Create the missing stylesheet" }],
+            allowedTools: ["write_files"],
+            assertions: [],
+          },
+        },
+        {
+          kind: "task_completion",
+          request: {
+            summary: "Created the requested homepage and stylesheet.",
+            assets: [
+              { path: indexPath, kind: "file", description: "Main website page" },
+              { path: cssPath, kind: "file", description: "Website styling" },
+            ],
+          },
+        },
+        { kind: "reply", status: "completed", message: "Created the homepage and stylesheet." },
+      ]);
+
+      const result = await agentLoop({
+        provider,
+        toolExecutor,
+        toolDefinitions: toolExecutor.definitions(),
+        runRecorder: noopRunRecorder,
+        runHandle: { sessionId: "s1", runId: "r-completion-retry" },
+        clientId: "c1",
+        initialUserMessage: "Create a homepage and stylesheet",
+        dataDir,
+        systemContext: "full system context with memory",
+      });
+
+      expect(result.status).toBe("completed");
+      expect(result.workState?.status).toBe("done");
+      expect(readFileSync(cssPath, "utf-8")).toContain("color: black");
+      expect(provider.generateTurn).toHaveBeenCalledTimes(5);
+    } finally {
+      cleanup(dataDir);
+    }
+  });
+
+  it("reserves completion and final-response decisions after the task work limit", async () => {
+    const dataDir = makeTmpDir();
+    const outputPath = join(dataDir, "limited.html");
+    try {
+      const toolExecutor = createToolExecutor([writeFilesTool]);
+      const provider = createProvider([
+        {
+          kind: "act",
+          action: {
+            mode: "single",
+            calls: [{
+              id: "write_limited",
+              tool: "write_files",
+              input: { files: [{ path: outputPath, content: "<h1>Complete</h1>" }] },
+              dependsOn: [],
+              purpose: "Create the requested limited-step page.",
+            }],
+            allowedTools: ["write_files"],
+            assertions: [],
+          },
+        },
+        {
+          kind: "task_completion",
+          request: {
+            summary: "Created the limited-step page.",
+            assets: [{ path: outputPath, kind: "file", description: "Requested limited-step HTML page" }],
+          },
+        },
+        { kind: "reply", status: "completed", message: "Created and verified the requested page." },
+      ]);
+
+      const result = await agentLoop({
+        provider,
+        toolExecutor,
+        toolDefinitions: toolExecutor.definitions(),
+        runRecorder: noopRunRecorder,
+        runHandle: { sessionId: "s1", runId: "r-run-limit-complete" },
+        clientId: "c1",
+        initialUserMessage: "Create the limited page",
+        dataDir,
+        systemContext: "full system context with memory",
+        config: { maxIterations: 1 },
+      });
+
+      expect(result.status).toBe("completed");
+      expect(result.workState?.status).toBe("done");
+      expect(result.totalIterations).toBe(3);
+      expect(provider.generateTurn).toHaveBeenCalledTimes(3);
+      expect(vi.mocked(provider.generateTurn).mock.calls[1]?.[0]?.tools.map((tool) => tool.name)).toEqual(["task_completion"]);
+      expect(vi.mocked(provider.generateTurn).mock.calls[2]?.[0]?.tools).toEqual([]);
+    } finally {
+      cleanup(dataDir);
+    }
+  });
+
+  it("reports verified partial progress when run-limit completion is rejected", async () => {
+    const dataDir = makeTmpDir();
+    const createdPath = join(dataDir, "index.html");
+    const missingPath = join(dataDir, "styles.css");
+    try {
+      const toolExecutor = createToolExecutor([writeFilesTool]);
+      const provider = createProvider([
+        {
+          kind: "act",
+          action: {
+            mode: "single",
+            calls: [{
+              id: "write_partial",
+              tool: "write_files",
+              input: { files: [{ path: createdPath, content: "<h1>Partial</h1>" }] },
+              dependsOn: [],
+              purpose: "Create the homepage before adding its stylesheet.",
+            }],
+            allowedTools: ["write_files"],
+            assertions: [],
+          },
+        },
+        {
+          kind: "task_completion",
+          request: {
+            summary: "Created the requested website.",
+            assets: [{ path: missingPath, kind: "file", description: "Required website stylesheet" }],
+          },
+        },
+        { kind: "reply", status: "completed", message: "I created the homepage, but the stylesheet still needs to be created." },
+      ]);
+
+      const result = await agentLoop({
+        provider,
+        toolExecutor,
+        toolDefinitions: toolExecutor.definitions(),
+        runRecorder: noopRunRecorder,
+        runHandle: { sessionId: "s1", runId: "r-run-limit-partial" },
+        clientId: "c1",
+        initialUserMessage: "Create a homepage and stylesheet",
+        dataDir,
+        systemContext: "full system context with memory",
+        config: { maxIterations: 1 },
+      });
+
+      expect(result.status).toBe("stuck");
+      expect(result.workState?.status).toBe("not_done");
+      expect(result.taskSummary?.stopReason).toBe("run_limit");
+      expect(result.workState?.openWork).toEqual(expect.arrayContaining([
+        expect.stringContaining("styles.css"),
+      ]));
+      expect(result.content).toContain("stylesheet still needs to be created");
+      expect(result.totalIterations).toBe(3);
+      expect(provider.generateTurn).toHaveBeenCalledTimes(3);
     } finally {
       cleanup(dataDir);
     }
@@ -663,10 +890,6 @@ describe("agentLoop", () => {
             }],
             allowedTools: ["write_files"],
             assertions: [],
-            completion: {
-              intent: "not_completion",
-              reason: "The placeholder is only the first step; the user still needs to send final points.",
-            },
           },
         },
         {
@@ -1039,7 +1262,7 @@ describe("agentLoop", () => {
       expect(result.workRunId).toBe("R-20260702-001");
       expect(result.totalToolCalls).toBe(1);
       expect(result.content).toBe(`I created the Linux commands file at ${outputPath}.`);
-      expect(provider.generateTurn).toHaveBeenCalledTimes(3);
+      expect(provider.generateTurn).toHaveBeenCalledTimes(4);
       expect(readFileSync(outputPath, "utf-8")).toContain("pwd - show current directory");
       expect(secondStateView.context.git.current.task.identity.workId).toBe("T-20260702-001");
       expect(secondDecisionTools).toContain("write_files");
@@ -1216,7 +1439,7 @@ describe("agentLoop", () => {
       expect(result.workRunId).toBe("R-20260702-website-002");
       expect(result.totalToolCalls).toBe(1);
       expect(result.content).toBe(`I updated the website task note at ${outputPath}.`);
-      expect(provider.generateTurn).toHaveBeenCalledTimes(3);
+      expect(provider.generateTurn).toHaveBeenCalledTimes(4);
       expect(readFileSync(outputPath, "utf-8")).toContain("Website note");
       expect(firstDecisionTools).toEqual(expect.arrayContaining([
         "git_context_active",
@@ -1397,7 +1620,7 @@ describe("agentLoop", () => {
       expect(result.runClass).toBe("task");
       expect(result.workRunId).toBe("R-20260702-website-002");
       expect(result.totalToolCalls).toBe(1);
-      expect(provider.generateTurn).toHaveBeenCalledTimes(2);
+      expect(provider.generateTurn).toHaveBeenCalledTimes(3);
       expect(readFileSync(outputPath, "utf-8")).toContain("Follow-up note");
       expect(firstDecisionTools).toContain("write_files");
       expect(firstDecisionTools).toContain("git_context_activate_task_for_turn");
@@ -2078,7 +2301,7 @@ describe("agentLoop", () => {
     }
   });
 
-  it("finalizes immediately with a user-facing reply when a verified action is marked as a completion candidate", async () => {
+  it("finalizes with a user-facing reply after explicit task completion", async () => {
     const dataDir = makeTmpDir();
     const outputPath = join(dataDir, "completion-site", "index.html");
     try {
@@ -2100,11 +2323,6 @@ describe("agentLoop", () => {
             }],
             allowedTools: ["write_files"],
             assertions: [],
-            completion: {
-              intent: "completion_candidate",
-              reason: "Batch write the website file; tool returns sha256 and byte counts as deterministic verification.",
-              expectedEvidence: ["index.html written"],
-            },
           },
         },
         {
@@ -2127,8 +2345,8 @@ describe("agentLoop", () => {
       });
 
       expect(result.status).toBe("completed");
-      expect(result.totalIterations).toBe(2);
-      expect(provider.generateTurn).toHaveBeenCalledTimes(2);
+      expect(result.totalIterations).toBe(3);
+      expect(provider.generateTurn).toHaveBeenCalledTimes(3);
       expect(readFileSync(outputPath, "utf-8")).toBe("<!doctype html><title>Done</title>");
       expect(result.content).toBe("Created `completion-site/index.html` for the small website.");
       expect(result.content).not.toContain("Batch write");
@@ -2167,14 +2385,13 @@ describe("agentLoop", () => {
             }],
             allowedTools: ["write_files"],
             assertions: [],
-            completion: {
-              intent: "completion_candidate",
-              reason: "The requested website file is written and verified.",
-              expectedEvidence: ["index.html written"],
-            },
           },
         },
-        "update_work_state",
+        {
+          kind: "task_completion",
+          request: { summary: "Created the requested website file.", assets: [] },
+        },
+        "task_completion",
       ]);
 
       const result = await agentLoop({
@@ -2191,11 +2408,11 @@ describe("agentLoop", () => {
       });
 
       expect(result.status).toBe("completed");
-      expect(result.totalIterations).toBe(2);
-      expect(provider.generateTurn).toHaveBeenCalledTimes(2);
+      expect(result.totalIterations).toBe(3);
+      expect(provider.generateTurn).toHaveBeenCalledTimes(3);
       expect(readFileSync(outputPath, "utf-8")).toBe("<!doctype html><title>Done</title>");
-      expect(result.content).not.toBe("update_work_state");
-      expect(result.content).toBe("Done. I completed the task.");
+      expect(result.content).not.toBe("task_completion");
+      expect(result.content).toBe("Created the requested website file.");
       expect(feedbackEvents(feedback.events, "decision", "final_response_rejected")).toHaveLength(1);
     } finally {
       cleanup(dataDir);
@@ -2335,7 +2552,7 @@ describe("agentLoop", () => {
       });
 
       expect(result.status).toBe("completed");
-      expect(provider.generateTurn).toHaveBeenCalledTimes(3);
+      expect(provider.generateTurn).toHaveBeenCalledTimes(4);
       expect(readFileSync(outputPath, "utf-8")).toBe("<!doctype html><title>Repaired</title>");
       const repairPrompt = (provider.generateTurn as any).mock.calls[1]?.[0].messages.at(-1).content as string;
       expect(repairPrompt).toContain("Repair code: R_TOOL_INPUT_MISSING_REQUIRED_FIELD");
@@ -2524,7 +2741,7 @@ describe("agentLoop", () => {
       });
 
       expect(result.status).toBe("completed");
-      expect(provider.generateTurn).toHaveBeenCalledTimes(3);
+      expect(provider.generateTurn).toHaveBeenCalledTimes(4);
       const firstPrompt = (provider.generateTurn as any).mock.calls[0]?.[0].messages.find((message: { role: string }) => message.role === "user").content as string;
       const secondPrompt = (provider.generateTurn as any).mock.calls[1]?.[0].messages.find((message: { role: string }) => message.role === "user").content as string;
       expect(firstPrompt).toContain("Selected tools:\n(none)");
@@ -2602,7 +2819,7 @@ describe("agentLoop", () => {
       expect(result.content).not.toContain("tool call");
       expect(result.content).not.toContain("deterministic verification");
       expect(result.content).not.toContain("Evidence:");
-      expect(provider.generateTurn).toHaveBeenCalledTimes(2);
+      expect(provider.generateTurn).toHaveBeenCalledTimes(3);
       expect(existsSync(indexPath)).toBe(true);
       expect(existsSync(cssPath)).toBe(true);
     } finally {
@@ -2616,9 +2833,10 @@ describe("agentLoop", () => {
     try {
       const toolExecutor = createToolExecutor([writeFilesTool]);
       const finalDeltas: string[] = [];
-      const generateTurn = vi.fn().mockResolvedValue({
-        type: "assistant",
-        content: JSON.stringify({
+      const generateTurn = vi.fn()
+        .mockResolvedValueOnce({
+          type: "assistant",
+          content: JSON.stringify({
           kind: "act",
           action: {
             mode: "single",
@@ -2637,13 +2855,16 @@ describe("agentLoop", () => {
             }],
             allowedTools: ["write_files"],
             assertions: [],
-            completion: {
-              intent: "completion_candidate",
-              reason: "The requested note file was written.",
-            },
           },
-        }),
-      });
+          }),
+        })
+        .mockResolvedValueOnce({
+          type: "assistant",
+          content: JSON.stringify({
+            kind: "task_completion",
+            request: { summary: "Created the requested note file.", assets: [] },
+          }),
+        });
       const streamTurn = vi.fn(async (
         _input: LlmTurnInput,
         callbacks: LlmTurnStreamCallbacks,
@@ -2690,7 +2911,7 @@ describe("agentLoop", () => {
 
       expect(result.status).toBe("completed");
       expect(result.content).toBe("Done. I wrote the note.");
-      expect(generateTurn).toHaveBeenCalledTimes(1);
+      expect(generateTurn).toHaveBeenCalledTimes(2);
       expect(streamTurn).toHaveBeenCalledTimes(1);
       expect(streamEvents[0]).toEqual({ type: "start", kind: "reply" });
       expect(finalDeltas.join("")).toBe("Done. I wrote the note.");
@@ -2907,6 +3128,13 @@ describe("agentLoop", () => {
         .mockResolvedValueOnce({
           type: "assistant",
           content: JSON.stringify({
+            kind: "task_completion",
+            request: { summary: "Analyzed current RAM use and the top memory-consuming programs.", assets: [] },
+          }),
+        })
+        .mockResolvedValueOnce({
+          type: "assistant",
+          content: JSON.stringify({
             kind: "reply",
             status: "completed",
             message: "RAM used is 3.5Gi and chromium/code/node are the top RAM consumers.",
@@ -2935,7 +3163,7 @@ describe("agentLoop", () => {
       });
 
       expect(result.status).toBe("completed");
-      expect(generateTurn).toHaveBeenCalledTimes(2);
+      expect(generateTurn).toHaveBeenCalledTimes(3);
       const secondCallInput = generateTurn.mock.calls[1]?.[0];
       const userPrompt = secondCallInput.messages.find((message: { role: string }) => message.role === "user").content as string;
       const stateView = extractStateView(userPrompt);
@@ -2944,17 +3172,21 @@ describe("agentLoop", () => {
       expect(stateView.context.run.readContext).toBeUndefined();
       expect(stateView.context.run.toolCalls).toHaveLength(2);
       expect(stateView.context.run.toolCalls[0].tool).toBe("read_files");
+      expect(stateView.context.run.toolCalls[0].purpose).toBe("Get RAM summary");
       expect(stateView.context.run.toolCalls[0].input).toEqual({ path: "/proc/meminfo" });
       expect(stateView.context.run.toolCalls[0].output).toContain("3.5Gi used");
       expect(stateView.context.run.toolCalls[0].stepRef).toEqual({ runId: "r-observation", step: 1, callId: "call_1" });
       expect(stateView.context.run.toolCalls[0]).not.toHaveProperty("evidenceRef");
       expect(stateView.context.run.toolCalls[0]).not.toHaveProperty("hasMore");
       expect(stateView.context.run.toolCalls[1].tool).toBe("search_in_files");
+      expect(stateView.context.run.toolCalls[1].purpose).toBe("List top RAM processes");
       expect(stateView.context.run.toolCalls[1].input).toEqual({ path: "/proc", query: "memory" });
       expect(stateView.context.run.toolCalls[1].output).toContain("chromium");
       expect(stateView.context.run.toolCalls[1].stepRef).toEqual({ runId: "r-observation", step: 1, callId: "call_2" });
       expect(stateView.context.run.toolCalls[1]).not.toHaveProperty("evidenceRef");
       expect(stateView.context.run.toolCalls[1]).not.toHaveProperty("hasMore");
+      expect(JSON.stringify(stateView.context.run.workState)).not.toContain("Get RAM summary");
+      expect(JSON.stringify(stateView.context.run.workState)).not.toContain("List top RAM processes");
       expect(stateView.latestObservation).toBeUndefined();
       expect(userPrompt).not.toContain("\"latestObservation\"");
       expect(stateView.toolContext).toBeUndefined();

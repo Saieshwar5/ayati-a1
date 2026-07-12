@@ -578,7 +578,6 @@ function buildDeterministicLoadRequest(
     state.workState.nextStep,
     ...(state.workState.openWork ?? []),
     ...(state.workState.blockers ?? []),
-    ...(state.workState.taskNotes ?? []).flatMap((note) => [note.text, note.source]),
     ...(state.failureHistory.slice(-2).flatMap((failure) => [failure.reason, ...failure.blockedTargets])),
   ].join(" ").toLowerCase();
 

@@ -57,10 +57,10 @@ export function canFinalizeFromWorkState(state: LoopState): boolean {
 export function isUsableFinalResponseMessage(message: string): boolean {
   const trimmed = message.trim();
   if (!trimmed) return false;
-  if (["update_work_state", "decision_load_tools", "ask_user_feedback"].includes(trimmed)) {
+  if (["task_completion", "decision_load_tools", "ask_user_feedback"].includes(trimmed)) {
     return false;
   }
-  if (/\b(?:update_work_state|decision_load_tools|ask_user_feedback)\b/i.test(trimmed)) {
+  if (/\b(?:task_completion|decision_load_tools|ask_user_feedback)\b/i.test(trimmed)) {
     return false;
   }
   if (/<tool_call>|tool use displayed to the user as a native function call/i.test(trimmed)) {
@@ -75,7 +75,7 @@ export function isUsableFinalResponseMessage(message: string): boolean {
       return true;
     }
     const value = parsed as Record<string, unknown>;
-    return !["act", "load_tools", "update_work_state", "ask_user", "reply"].includes(String(value["kind"] ?? ""));
+    return !["act", "load_tools", "task_completion", "ask_user", "reply"].includes(String(value["kind"] ?? ""));
   } catch {
     return true;
   }

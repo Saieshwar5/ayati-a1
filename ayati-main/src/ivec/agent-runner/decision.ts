@@ -40,43 +40,38 @@ import {
 
 export type AgentDecisionStatus = "completed" | "failed";
 export type AgentActionMode = "single" | "sequential" | "parallel";
-export type TaskCompletionIntent = "not_completion" | "completion_candidate";
-
-export interface AgentActionCompletion {
-  intent: TaskCompletionIntent;
-  reason?: string;
-  expectedEvidence?: string[];
-}
-
 export interface AgentToolCallSpec {
   id: string;
   tool: string;
   input: Record<string, unknown>;
   dependsOn: string[];
-  purpose?: string;
+  purpose: string;
 }
+
+const TOOL_CALL_PURPOSE_MAX_CHARS = 240;
 
 export interface AgentAction {
   mode: AgentActionMode;
   calls: AgentToolCallSpec[];
   allowedTools: string[];
   assertions: ToolContractAssertion[];
-  completion?: AgentActionCompletion;
+}
+
+export interface TaskCompletionAssetInput {
+  path: string;
+  kind: "file" | "directory";
+  description: string;
+}
+
+export interface AgentTaskCompletionRequest {
+  summary: string;
+  assets: TaskCompletionAssetInput[];
 }
 
 export interface AgentToolLoadRequest {
   query?: string;
   toolNames: string[];
   groups: string[];
-}
-
-export interface AgentWorkStateUpdate {
-  status: "not_done" | "done" | "blocked" | "needs_user_input";
-  summary?: string;
-  openWork?: string[];
-  blockers?: string[];
-  nextStep?: string;
-  userInputNeeded?: string;
 }
 
 export type DecisionFailureKind =
@@ -110,8 +105,8 @@ export type AgentDecision =
       workingNotes?: string[];
     }
   | {
-      kind: "update_work_state";
-      update: AgentWorkStateUpdate;
+      kind: "task_completion";
+      request: AgentTaskCompletionRequest;
       workingNotes?: string[];
     };
 
@@ -122,7 +117,7 @@ interface CallAgentDecisionInput {
   toolRoutingSummary?: string;
   toolLoadingAvailable?: boolean;
   taskFeedbackToolAvailable?: boolean;
-  workStateUpdateAvailable?: boolean;
+  taskCompletionAvailable?: boolean;
   systemContext?: string;
   metrics?: RunMetrics;
   feedbackLedger?: AgentFeedbackLedger;
@@ -174,7 +169,7 @@ const MAX_PROVIDER_EMPTY_RESPONSE_RETRIES = 1;
 const PROVIDER_EMPTY_RESPONSE_RETRY_DELAY_MS = 400;
 const TOOL_PROTOCOL_FAILURE_REPLY = "I could not form a valid tool call for this request.";
 const TASK_FEEDBACK_TOOL_NAME = "ask_user_feedback";
-const WORK_STATE_UPDATE_TOOL_NAME = "update_work_state";
+const TASK_COMPLETION_TOOL_NAME = "task_completion";
 
 export async function callAgentDecision(input: CallAgentDecisionInput): Promise<AgentDecision> {
   const timelineCheckpointCache = input.timelineCheckpointCache ?? createTimelineCheckpointCache();
@@ -215,7 +210,7 @@ export async function callAgentDecision(input: CallAgentDecisionInput): Promise<
       const decisionTools = buildNativeDecisionTools(input.toolDefinitions, {
         toolLoadingAvailable: input.toolLoadingAvailable !== false,
         taskFeedbackToolAvailable: input.taskFeedbackToolAvailable === true,
-        workStateUpdateAvailable: input.workStateUpdateAvailable === true,
+        taskCompletionAvailable: input.taskCompletionAvailable === true,
       });
       recordDecisionFeedback(input, "native_tool_surface", {
         attempt: attempt + 1,
@@ -329,7 +324,7 @@ export async function callAgentDecision(input: CallAgentDecisionInput): Promise<
       const violation = validateToolProtocol(decision, input.toolDefinitions, {
         toolLoadingAvailable: input.toolLoadingAvailable !== false,
         taskFeedbackToolAvailable: input.taskFeedbackToolAvailable === true,
-        workStateUpdateAvailable: input.workStateUpdateAvailable === true,
+        taskCompletionAvailable: input.taskCompletionAvailable === true,
       });
       if (violation) {
         const repair = createToolProtocolRepairSignal(violation, attempt + 1);
@@ -362,7 +357,11 @@ export async function callAgentDecision(input: CallAgentDecisionInput): Promise<
           violation,
           ...repairSignalToFeedbackData(repair),
         });
-        messages = buildRepairMessages(messages, rawText, repairPromptText(repair));
+        messages = buildRepairMessages(
+          messages,
+          rawText,
+          `${repairPromptText(repair)}\nProtocol detail: ${violation.reason}`,
+        );
         continue;
       }
 
@@ -673,10 +672,10 @@ function summarizeDecisionForFeedback(decision: AgentDecision): Record<string, u
       request: decision.request,
     };
   }
-  if (decision.kind === "update_work_state") {
+  if (decision.kind === "task_completion") {
     return {
       kind: decision.kind,
-      update: decision.update,
+      request: decision.request,
     };
   }
   return {
@@ -743,9 +742,6 @@ function toolProtocolRepairCode(violation: ToolProtocolViolation): RepairCode {
   if (violation.invalidTools.includes(TASK_FEEDBACK_TOOL_NAME)) {
     return "R_TASK_FEEDBACK_UNAVAILABLE";
   }
-  if (violation.invalidTools.includes(WORK_STATE_UPDATE_TOOL_NAME)) {
-    return "R_TOOL_NOT_SELECTED";
-  }
   if (violation.reason.includes("no tool calls")) {
     return "R_NO_PROGRESS";
   }
@@ -810,7 +806,7 @@ function validateToolProtocol(
   options: {
     toolLoadingAvailable: boolean;
     taskFeedbackToolAvailable: boolean;
-    workStateUpdateAvailable: boolean;
+    taskCompletionAvailable: boolean;
   },
 ): ToolProtocolViolation | null {
   const selectedTools = selectedToolDefinitions.map((tool) => tool.name);
@@ -848,12 +844,12 @@ function validateToolProtocol(
     };
   }
 
-  if (decision.kind === "update_work_state") {
-    if (!options.workStateUpdateAvailable) {
+  if (decision.kind === "task_completion") {
+    if (!options.taskCompletionAvailable) {
       return {
         kind: "tool_protocol_violation",
-        reason: "update_work_state is only available during an active task run",
-        invalidTools: [WORK_STATE_UPDATE_TOOL_NAME],
+        reason: "task_completion is only available during an active task run",
+        invalidTools: [TASK_COMPLETION_TOOL_NAME],
         selectedTools,
         loadToolsUsedAsAction: false,
       };
@@ -878,6 +874,20 @@ function validateToolProtocol(
       kind: "tool_protocol_violation",
       reason: "act decision contained no tool calls",
       invalidTools,
+      selectedTools,
+      loadToolsUsedAsAction,
+    };
+  }
+
+  const invalidPurposeCalls = decision.action.calls.filter((call) => {
+    const purpose = call.purpose.replace(/\s+/g, " ").trim();
+    return purpose.length === 0 || purpose.length > TOOL_CALL_PURPOSE_MAX_CHARS;
+  });
+  if (invalidPurposeCalls.length > 0) {
+    return {
+      kind: "tool_protocol_violation",
+      reason: `Every executable tool call requires a specific purpose between 1 and ${TOOL_CALL_PURPOSE_MAX_CHARS} characters. Invalid calls: ${invalidPurposeCalls.map((call) => call.id).join(", ")}`,
+      invalidTools: uniqueStrings(invalidPurposeCalls.map((call) => call.tool)),
       selectedTools,
       loadToolsUsedAsAction,
     };
@@ -1166,10 +1176,11 @@ export function parseAgentDecision(text: string): AgentDecision {
     };
   }
 
-  if (kind === "update_work_state") {
+
+  if (kind === "task_completion") {
     return {
-      kind: "update_work_state",
-      update: normalizeWorkStateUpdate(parsed["update"] ?? parsed),
+      kind: "task_completion",
+      request: normalizeTaskCompletionRequest(parsed),
       workingNotes: normalizeWorkingNotes(parsed["workingNotes"]),
     };
   }
@@ -1181,12 +1192,12 @@ const STABLE_DECISION_SYSTEM_CONTEXT = `You are the decision component of an AI 
 Choose the next agent decision only. Use native tool calls; the harness executes tools locally.
 Prefer deterministic actions with concrete tool inputs.
 Use the structured context pack and optional work state in the state view.
-Use direct assistant text for normal terminal replies. Use native tool calls only for tool loading, executable work, task-run work-state updates, or task-run feedback requests.
+Use direct assistant text for normal terminal replies. Use native tool calls only for tool loading, executable work, task completion, or task-run feedback requests.
 
 Decision rules:
 - Return direct assistant text for normal user-facing replies, including greetings, explanations, summaries, poems, stories, and final answers after completed work.
 - Call exactly one native tool only when work needs tool loading, executable action, or task-run feedback.
-- Available control tools are decision_load_tools and, only during an active task run, update_work_state and ask_user_feedback.
+- Available control tools are decision_load_tools and, only during an active task run, task_completion and ask_user_feedback.
 - Treat State view.context as the bounded context pack for this decision.
 - Use context.timeline as chronological conversation context. The item with current=true is the current input.
 - A context.timeline item with kind="checkpoint" is a structured summary of its covered older sequence range. Exact timeline events after it remain authoritative and override conflicting checkpoint content.
@@ -1226,9 +1237,7 @@ Decision rules:
 - Treat short confirmations or delegation like "yes", "go ahead", "continue", "do it", "whatever feels right", and "surprise me" as permission to proceed with reasonable defaults.
 - Use direct assistant text only as a terminal response: pure conversation, final answer after completed work, failed task, or impossible task.
 - Evidence-before-done rule: for durable work requests, a final direct reply is allowed only after observed tool output or verified task state shows the work is complete. Durable work includes creating, editing, deleting, saving, building, running, testing, fixing, or changing files, code, docs, apps, websites, or workspace state. If durable work remains, call the appropriate selected tool or routing tool instead of replying.
-- During an active task run, after tool output and work-state context show the requested durable work is complete, call update_work_state with status "done" and a short summary instead of sending the final user reply directly. The harness will then ask for a final response with no tools available.
-- update_work_state may change only status, summary, openWork, blockers, nextStep, and userInputNeeded. Do not put verified facts, evidence, artifacts, files, tool transcripts, or run ids into it; those come from tool results and runtime verification.
-- Use update_work_state with status "not_done" when max-step or partial-progress context requires a concise openWork list. Use status "blocked" only with blockers. Use status "needs_user_input" only with userInputNeeded.
+- During an active task run, do not send a successful final reply while WorkState is not_done. Call task_completion after verified evidence shows the whole task is ready. The harness independently accepts or rejects completion and updates WorkState deterministically.
 - Do not use direct assistant text to say you will do future work. If work remains, call a selected executable tool or decision_load_tools.
 - Final replies must answer the user's request in natural, human-readable language.
 - Do not mention internal execution details in final replies: tool calls, deterministic verification, evidence contracts, assertions, reducers, work state, or harness steps.
@@ -1244,6 +1253,7 @@ Decision rules:
 - decision_load_tools is a meta decision tool, not an executable tool.
 - If Selected tools is "(none)" and work remains, call decision_load_tools instead of replying that you will do work later.
 - Executable tool calls may use only tool names listed under Selected tools.
+- Give every executable tool call one short, task-specific purpose sentence explaining why the call is needed now. Describe intent, not a claimed successful result.
 - Keep each model decision to one executable tool call. The harness will continue the loop for follow-up calls after observing the result.
 - Use only tools listed in Selected tools.
 - Use read_files for known file content; a single-file read is files=[{path,...}], and related files should be batched.
@@ -1251,22 +1261,21 @@ Decision rules:
 - Prefer patch_files for normal edits to existing files. Use small stable find strings, anchor inserts, or line-range replacements instead of full-file rewrites.
 - Hidden tools are loaded by decision_load_tools, not by calling skill_search or skill_activate unless those are explicitly selected executable tools.
 - Do not include assertions. Tool-owned contracts provide deterministic verification.
-- Every executable tool call must include taskCompletion.
-- Set taskCompletion.intent to "not_completion" for preparation, inspection, context gathering, partial edits, setup, or actions that still require later verification.
-- Set taskCompletion.intent to "completion_candidate" only when that exact tool call should satisfy the current user request if it succeeds.
+- Executable tool calls perform only their concrete operation and do not declare whole-task completion.
+- During an active task run, call task_completion only after verified tool output, WorkState, and tool-call history indicate the whole task is ready.
 - For read-only analysis tasks, gather evidence with tools and finish with direct assistant text when the answer is ready.
-- For UI/layout fixes, use "not_completion" when an edit still needs screenshot, build, or test verification.
+- For UI/layout fixes, continue with screenshot, build, or test verification before task_completion.
 
 Control tool shapes:
 - decision_load_tools({ "query": "...", "toolNames": ["read_files"], "groups": ["file:read", "file:write"] })
-- update_work_state({ "status": "done", "summary": "Created the requested website files.", "openWork": [], "blockers": [] }) only when exposed during an active task run
+- task_completion({ "summary": "Created the requested website files.", "assets": [{ "path": "index.html", "kind": "file", "description": "Main website page" }] }) only during an active task run
 - ask_user_feedback({ "question": "...", "reason": "..." }) only when exposed during an active task run
 
 Tool protocol examples:
 - Bad when shell is not selected: calling shell or trying to use load_tools as executable work.
 - Good instead: decision_load_tools({ "groups": ["shell:command"] }).
 - Good after shell appears in Selected tools: call shell directly with its required input schema.
-- Good when write_files is selected: call write_files directly with files, createDirs, and taskCompletion.`;
+- Good when write_files is selected: call write_files directly with files and createDirs; after verification, call task_completion in a later decision when the whole task is ready.`;
 
 function buildDecisionSystemSections(systemContext: string | undefined): Record<string, string> {
   const trimmed = systemContext?.trim();
@@ -1346,7 +1355,6 @@ function normalizeAgentAction(value: unknown): AgentAction {
     calls,
     allowedTools,
     assertions,
-    completion: normalizeActionCompletion(record["completion"] ?? record["taskCompletion"]),
   };
 }
 
@@ -1357,28 +1365,6 @@ function normalizeToolLoadRequest(value: unknown): AgentToolLoadRequest {
     toolNames: normalizeStringArray(record["toolNames"]),
     groups: normalizeStringArray(record["groups"]),
   };
-}
-
-function normalizeWorkStateUpdate(value: unknown): AgentWorkStateUpdate {
-  const record = isPlainObject(value) ? value : {};
-  return {
-    status: normalizeWorkStateStatus(record["status"]),
-    ...(typeof record["summary"] === "string" && record["summary"].trim().length > 0
-      ? { summary: record["summary"].trim() }
-      : {}),
-    ...(Array.isArray(record["openWork"]) ? { openWork: normalizeStringArray(record["openWork"]) } : {}),
-    ...(Array.isArray(record["blockers"]) ? { blockers: normalizeStringArray(record["blockers"]) } : {}),
-    ...(typeof record["nextStep"] === "string" && record["nextStep"].trim().length > 0
-      ? { nextStep: record["nextStep"].trim() }
-      : {}),
-    ...(typeof record["userInputNeeded"] === "string" && record["userInputNeeded"].trim().length > 0
-      ? { userInputNeeded: record["userInputNeeded"].trim() }
-      : {}),
-  };
-}
-
-function normalizeWorkStateStatus(value: unknown): AgentWorkStateUpdate["status"] {
-  return value === "done" || value === "blocked" || value === "needs_user_input" ? value : "not_done";
 }
 
 function normalizeWorkingNotes(value: unknown): string[] | undefined {
@@ -1426,25 +1412,9 @@ function normalizeToolCallSpec(value: unknown): AgentToolCallSpec | null {
     dependsOn: Array.isArray(rawDependsOn)
       ? rawDependsOn.map(String).filter((dep) => dep.trim().length > 0)
       : [],
-    purpose: typeof value["purpose"] === "string" ? value["purpose"] : undefined,
-  };
-}
-
-function normalizeActionCompletion(value: unknown): AgentActionCompletion {
-  if (!isPlainObject(value)) {
-    return { intent: "not_completion" };
-  }
-  const intent = value["intent"] === "completion_candidate"
-    ? "completion_candidate"
-    : "not_completion";
-  const reason = typeof value["reason"] === "string" && value["reason"].trim().length > 0
-    ? value["reason"].trim()
-    : undefined;
-  const expectedEvidence = normalizeStringArray(value["expectedEvidence"]).slice(0, 8);
-  return {
-    intent,
-    ...(reason ? { reason } : {}),
-    ...(expectedEvidence.length > 0 ? { expectedEvidence } : {}),
+    purpose: typeof value["purpose"] === "string"
+      ? value["purpose"].replace(/\s+/g, " ").trim()
+      : "",
   };
 }
 
@@ -1525,7 +1495,7 @@ const CONTROL_DECISION_TOOL_NAMES = new Set([
   "decision_ask_user",
   "decision_load_tools",
   TASK_FEEDBACK_TOOL_NAME,
-  WORK_STATE_UPDATE_TOOL_NAME,
+  TASK_COMPLETION_TOOL_NAME,
 ]);
 
 function buildNativeDecisionTools(
@@ -1533,7 +1503,7 @@ function buildNativeDecisionTools(
   options: {
     toolLoadingAvailable: boolean;
     taskFeedbackToolAvailable: boolean;
-    workStateUpdateAvailable: boolean;
+    taskCompletionAvailable: boolean;
   },
 ): LlmToolSchema[] {
   const controlTools: LlmToolSchema[] = [];
@@ -1590,45 +1560,27 @@ function buildNativeDecisionTools(
       }, ["question", "reason"]),
     });
   }
-  if (options.workStateUpdateAvailable) {
+  if (options.taskCompletionAvailable) {
     controlTools.push({
-      name: WORK_STATE_UPDATE_TOOL_NAME,
-      description: "Update only the current task run work status and short progress summary after reviewing tool results. Does not update evidence, facts, artifacts, files, or tool records.",
+      name: TASK_COMPLETION_TOOL_NAME,
+      description: "Request deterministic completion verification for the active task run after the requested work appears complete. The runtime verifies declared assets, tool evidence, and unresolved failures before updating task state.",
       inputSchema: objectSchema({
-        status: {
-          type: "string",
-          enum: ["not_done", "done", "blocked", "needs_user_input"],
-        },
         summary: {
           type: "string",
           minLength: 1,
+          maxLength: 1000,
         },
-        openWork: {
+        assets: {
           type: "array",
-          items: {
-            type: "string",
-            minLength: 1,
-          },
-          maxItems: 8,
-        },
-        blockers: {
-          type: "array",
-          items: {
-            type: "string",
-            minLength: 1,
-          },
-          maxItems: 6,
-        },
-        nextStep: {
-          type: "string",
-          minLength: 1,
-        },
-        userInputNeeded: {
-          type: "string",
-          minLength: 1,
+          maxItems: 20,
+          items: objectSchema({
+            path: { type: "string", minLength: 1 },
+            kind: { type: "string", enum: ["file", "directory"] },
+            description: { type: "string", minLength: 1, maxLength: 300 },
+          }, ["path", "kind", "description"]),
         },
         workingNotes: workingNotesSchema(),
-      }, ["status"]),
+      }, ["summary", "assets"]),
     });
   }
   const executableTools = selectedTools
@@ -1641,14 +1593,13 @@ function toNativeExecutableToolSchema(tool: ToolDefinition): LlmToolSchema {
   return {
     name: tool.name,
     description: tool.description,
-    inputSchema: withTaskCompletionSchema(tool.inputSchema ?? objectSchema({}, [])),
+    inputSchema: withToolCallPurposeSchema(tool.inputSchema),
   };
 }
 
-function withTaskCompletionSchema(schema: Record<string, unknown>): Record<string, unknown> {
-  const properties = isPlainObject(schema["properties"])
-    ? { ...(schema["properties"] as Record<string, unknown>) }
-    : {};
+function withToolCallPurposeSchema(inputSchema: Record<string, unknown> | undefined): Record<string, unknown> {
+  const schema = inputSchema ?? objectSchema({}, []);
+  const properties = isPlainObject(schema["properties"]) ? schema["properties"] : {};
   const required = Array.isArray(schema["required"])
     ? schema["required"].map(String)
     : [];
@@ -1657,34 +1608,15 @@ function withTaskCompletionSchema(schema: Record<string, unknown>): Record<strin
     type: "object",
     properties: {
       ...properties,
-      taskCompletion: taskCompletionSchema(),
-    },
-    required: uniqueStrings([...required, "taskCompletion"]),
-    additionalProperties: schema["additionalProperties"] ?? false,
-  };
-}
-
-function taskCompletionSchema(): Record<string, unknown> {
-  return objectSchema({
-    intent: {
-      type: "string",
-      enum: ["not_completion", "completion_candidate"],
-      description: "Whether this exact tool call is expected to complete the user's current task if verification passes.",
-    },
-    reason: {
-      type: "string",
-      minLength: 1,
-      description: "Internal completion rationale for the harness. This is not shown directly to the user.",
-    },
-    expectedEvidence: {
-      type: "array",
-      items: {
+      purpose: {
         type: "string",
         minLength: 1,
+        maxLength: TOOL_CALL_PURPOSE_MAX_CHARS,
+        description: "One short task-specific sentence explaining why this tool is being called now. Describe intent, not a claimed result.",
       },
-      maxItems: 8,
     },
-  }, ["intent", "reason"]);
+    required: uniqueStrings([...required, "purpose"]),
+  };
 }
 
 function objectSchema(properties: Record<string, unknown>, required: string[]): Record<string, unknown> {
@@ -1771,10 +1703,10 @@ function nativeDecisionToolCallToPayload(toolName: string, input: Record<string,
         },
         ...(input["workingNotes"] ? { workingNotes: input["workingNotes"] } : {}),
       };
-    case WORK_STATE_UPDATE_TOOL_NAME:
+    case TASK_COMPLETION_TOOL_NAME:
       return {
-        kind: "update_work_state",
-        update: nativeWorkStateUpdatePayload(input),
+        kind: "task_completion",
+        ...nativeTaskCompletionPayload(input),
         ...(input["workingNotes"] ? { workingNotes: input["workingNotes"] } : {}),
       };
     default:
@@ -1809,10 +1741,10 @@ function nativeDecisionToolCallToDecision(toolName: string, input: Record<string
         request: normalizeToolLoadRequest(input),
         workingNotes: normalizeWorkingNotes(input["workingNotes"]),
       };
-    case WORK_STATE_UPDATE_TOOL_NAME:
+    case TASK_COMPLETION_TOOL_NAME:
       return {
-        kind: "update_work_state",
-        update: normalizeWorkStateUpdate(input),
+        kind: "task_completion",
+        request: normalizeTaskCompletionRequest(input),
         workingNotes: normalizeWorkingNotes(input["workingNotes"]),
       };
     default:
@@ -1824,19 +1756,38 @@ function nativeDecisionToolCallToDecision(toolName: string, input: Record<string
   }
 }
 
-function nativeWorkStateUpdatePayload(input: Record<string, unknown>): Record<string, unknown> {
+function nativeTaskCompletionPayload(input: Record<string, unknown>): Record<string, unknown> {
   return {
-    status: input["status"],
-    ...(input["summary"] ? { summary: input["summary"] } : {}),
-    ...(input["openWork"] ? { openWork: input["openWork"] } : {}),
-    ...(input["blockers"] ? { blockers: input["blockers"] } : {}),
-    ...(input["nextStep"] ? { nextStep: input["nextStep"] } : {}),
-    ...(input["userInputNeeded"] ? { userInputNeeded: input["userInputNeeded"] } : {}),
+    request: {
+      summary: input["summary"],
+      assets: input["assets"],
+    },
+  };
+}
+
+function normalizeTaskCompletionRequest(input: unknown): AgentTaskCompletionRequest {
+  const record = isPlainObject(input) && isPlainObject(input["request"])
+    ? input["request"]
+    : isPlainObject(input)
+      ? input
+      : {};
+  const assets = Array.isArray(record["assets"])
+    ? record["assets"].flatMap((item): TaskCompletionAssetInput[] => {
+        if (!isPlainObject(item)) return [];
+        const path = typeof item["path"] === "string" ? item["path"].trim() : "";
+        const description = typeof item["description"] === "string" ? item["description"].trim() : "";
+        const kind = item["kind"] === "directory" ? "directory" : "file";
+        return path && description ? [{ path, kind, description }] : [];
+      })
+    : [];
+  return {
+    summary: typeof record["summary"] === "string" ? record["summary"].trim() : "",
+    assets,
   };
 }
 
 function nativeExecutableToolCallToPayload(call: LlmToolCall, input: Record<string, unknown>): Record<string, unknown> {
-  const { cleanInput, completion } = extractTaskCompletion(input);
+  const { purpose, toolInput } = extractNativeToolCallPurpose(input);
   return {
     kind: "act",
     action: {
@@ -1845,18 +1796,17 @@ function nativeExecutableToolCallToPayload(call: LlmToolCall, input: Record<stri
       calls: [{
         id: call.id || `${call.name}_call`,
         tool: call.name,
-        input: cleanInput,
+        input: toolInput,
         dependsOn: [],
-        purpose: `Execute ${call.name}`,
+        purpose,
       }],
       assertions: [],
-      completion,
     },
   };
 }
 
 function nativeExecutableToolCallToDecision(call: LlmToolCall, input: Record<string, unknown>): AgentDecision {
-  const { cleanInput, completion } = extractTaskCompletion(input);
+  const { purpose, toolInput } = extractNativeToolCallPurpose(input);
   return {
     kind: "act",
     action: {
@@ -1865,24 +1815,23 @@ function nativeExecutableToolCallToDecision(call: LlmToolCall, input: Record<str
       calls: [{
         id: call.id || `${call.name}_call`,
         tool: call.name,
-        input: cleanInput,
+        input: toolInput,
         dependsOn: [],
-        purpose: `Execute ${call.name}`,
+        purpose,
       }],
       assertions: [],
-      completion,
     },
   };
 }
 
-function extractTaskCompletion(input: Record<string, unknown>): {
-  cleanInput: Record<string, unknown>;
-  completion: AgentActionCompletion;
+function extractNativeToolCallPurpose(input: Record<string, unknown>): {
+  purpose: string;
+  toolInput: Record<string, unknown>;
 } {
-  const { taskCompletion, ...cleanInput } = input;
+  const { purpose: rawPurpose, ...toolInput } = input;
   return {
-    cleanInput,
-    completion: normalizeActionCompletion(taskCompletion),
+    purpose: typeof rawPurpose === "string" ? rawPurpose.replace(/\s+/g, " ").trim() : "",
+    toolInput,
   };
 }
 

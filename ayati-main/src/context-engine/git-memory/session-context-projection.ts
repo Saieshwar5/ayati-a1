@@ -18,6 +18,7 @@ export const DEFAULT_SESSION_ATTACHMENT_PROJECTION_LIMIT = 10;
 
 const RUN_STATUSES = new Set<GitMemoryRunStatus>([
   "completed",
+  "incomplete",
   "failed",
   "blocked",
   "needs_user_input",

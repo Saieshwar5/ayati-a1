@@ -46,7 +46,7 @@ export type SystemEventApprovalState = "not_needed" | "pending" | "granted" | "r
 export type RunClass = "interaction" | "session" | "task";
 export type TaskSummaryRunStatus = "completed" | "failed" | "stuck";
 export type TaskSummaryTaskStatus = "open" | "done" | "blocked" | "needs_user_input";
-export type TaskSummaryStopReason = "completed" | "needs_user_input" | "blocked" | "failed" | "stuck" | "context_limit";
+export type TaskSummaryStopReason = "completed" | "needs_user_input" | "blocked" | "failed" | "stuck" | "context_limit" | "run_limit";
 
 export interface TaskSummaryFailureSummary {
   failedStep?: number;
@@ -134,6 +134,7 @@ export interface RunToolCallContext {
   step: number;
   callId?: string;
   tool: string;
+  purpose?: string;
   input: unknown;
   status: "success" | "failed";
   retention?: ToolObservationRetention;
@@ -155,13 +156,6 @@ export interface ToolContextState {
   toolCalls?: RunToolCallContext[];
 }
 
-export interface TaskNote {
-  id: string;
-  text: string;
-  source: string;
-  expires: "next_step" | "task";
-}
-
 export interface WorkState {
   status: WorkStatus;
   summary: string;
@@ -170,7 +164,6 @@ export interface WorkState {
   verifiedFacts: string[];
   evidence: string[];
   artifacts?: string[];
-  taskNotes?: TaskNote[];
   nextStep?: string;
   userInputNeeded?: string;
 }
@@ -227,6 +220,12 @@ export interface LoopState {
   contextVisibility?: SystemEventContextVisibility;
   preferredResponseKind?: AgentResponseKind;
   workState: WorkState;
+  completionAssets?: Array<{
+    path: string;
+    resolvedPath: string;
+    kind: "file" | "directory";
+    description: string;
+  }>;
   toolContext?: ToolContextState;
   lastToolLoad?: ToolLoadResult;
   workingNotes?: string[];
@@ -242,6 +241,7 @@ export interface LoopState {
   failureHistory: FailureRecord[];
   contextPressure?: ContextPressureState;
   contextLimitReached?: boolean;
+  runLimitReached?: boolean;
   timelineCheckpointCache?: TimelineCheckpointCacheState;
   readProgress?: ReadProgressState;
   attachedDocuments?: ManagedDocumentManifest[];
@@ -306,6 +306,7 @@ export interface CompletionDirective {
 export interface ActToolCallRecord {
   callId?: string;
   tool: string;
+  purpose?: string;
   input: unknown;
   output: string;
   rawOutputChars?: number;

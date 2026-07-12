@@ -263,6 +263,8 @@ function runStatusLabel(status: ReadyTaskRunCheckpointPlan["run"]["status"]): st
   switch (status) {
     case "completed":
       return "Run completed";
+    case "incomplete":
+      return "Run incomplete";
     case "failed":
       return "Run failed";
     case "blocked":

@@ -243,6 +243,7 @@ function toRunToolCallContext(runId: string, step: number, call: ActToolCallReco
     step,
     ...(call.callId ? { callId: call.callId } : {}),
     tool: call.tool,
+    ...(call.purpose ? { purpose: call.purpose } : {}),
     input: call.input,
     status: call.error ? "failed" : "success",
     ...(call.observation?.retention ? { retention: call.observation.retention } : {}),

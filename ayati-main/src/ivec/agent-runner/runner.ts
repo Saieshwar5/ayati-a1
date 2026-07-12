@@ -125,11 +125,9 @@ import {
   syncPreparedAttachmentsFromRegistry,
 } from "./action-step.js";
 import {
-  applyAgentWorkStateUpdate,
-  canCompleteLocallyAfterAction,
-  createFailureRecordFromWorkStateUpdate,
-  isWorkStateUpdateToolAvailable,
-} from "./work-state-policy.js";
+  evaluateTaskCompletion,
+  isTaskCompletionAvailable,
+} from "./task-completion-policy.js";
 import {
   detectRuntimeCapabilityMode,
   isDecisionAllowedInRuntimeMode,
@@ -467,7 +465,7 @@ export async function runAgentLoop(
     const decisionRuntimeMode = detectRuntimeCapabilityMode({ state, workRunHandle, sessionRunHandle });
     const nativeControlTools = [
       ...(decisionRuntimeMode.allowToolLoading ? ["decision_load_tools"] : []),
-      ...(isWorkStateUpdateToolAvailable(state, workRunHandle) ? ["update_work_state"] : []),
+      ...(isTaskCompletionAvailable(state) ? ["task_completion"] : []),
       ...(taskFeedbackToolAvailable ? ["ask_user_feedback"] : []),
     ];
     const decisionToolPolicyAudit = auditToolPolicy({
@@ -507,7 +505,7 @@ export async function runAgentLoop(
         toolRoutingSummary,
         toolLoadingAvailable: decisionRuntimeMode.allowToolLoading,
         taskFeedbackToolAvailable,
-        workStateUpdateAvailable: isWorkStateUpdateToolAvailable(state, workRunHandle),
+        taskCompletionAvailable: isTaskCompletionAvailable(state),
         toolContextProjectionPolicy: config.toolContextProjectionPolicy,
         timelineCheckpointCache: state.timelineCheckpointCache,
         systemContext: deps.systemContext,
@@ -614,6 +612,30 @@ export async function runAgentLoop(
         }
         continue;
       }
+      const directTaskCompletionRejected = state.runClass === "task"
+        && state.workState.status === "not_done"
+        && decision.status === "completed"
+        && !deriveUserInputNeededFromTerminalReply(decision.message);
+      if (directTaskCompletionRejected) {
+        const reason = "An active task run cannot finish through a direct reply while WorkState is not_done. Call task_completion after the requested work and deterministic verification are complete.";
+        state.consecutiveFailures++;
+        state.failureHistory.push({
+          step: state.iteration,
+          failureType: "validation_error",
+          reason,
+          blockedTargets: ["task_completion"],
+        });
+        recordFeedback(deps, inputHandle, state.runId || workRunHandle?.runId, "guard", "task_reply_before_completion", {
+          iteration: state.iteration,
+          reason,
+        });
+        if (hasRepeatedRepairFailure(state.failureHistory) || state.consecutiveFailures >= config.maxConsecutiveFailures) {
+          state.status = "failed";
+          state.finalOutput = buildFailureReply(state);
+          return finalize({ status: "failed", content: state.finalOutput });
+        }
+        continue;
+      }
       state.status = decision.status === "failed" ? "failed" : "completed";
       state.finalOutput = decision.message;
       const userInputNeeded = decision.status === "completed"
@@ -627,11 +649,21 @@ export async function runAgentLoop(
           nextStep: userInputNeeded,
           summary: state.workState.summary || decision.message,
         };
-      } else if (decision.status === "completed" && canMarkTerminalReplyDone(state)) {
+      } else if (decision.status === "completed" && state.runClass === "session") {
         state.workState = {
           ...state.workState,
           status: "done",
-          summary: state.runClass === "session" ? decision.message : state.workState.summary || decision.message,
+          summary: decision.message,
+          openWork: [],
+          blockers: [],
+          nextStep: undefined,
+          userInputNeeded: undefined,
+        };
+      } else if (decision.status === "completed" && state.runClass !== "task" && canMarkTerminalReplyDone(state)) {
+        state.workState = {
+          ...state.workState,
+          status: "done",
+          summary: state.workState.summary || decision.message,
         };
       }
       const responseKind = state.preferredResponseKind ?? "reply";
@@ -672,27 +704,46 @@ export async function runAgentLoop(
       });
     }
 
-    if (decision.kind === "update_work_state") {
-      const updateResult = applyAgentWorkStateUpdate(state, decision.update);
-      const rejectionReason = updateResult.accepted ? undefined : updateResult.reason;
-      recordFeedback(deps, inputHandle, state.runId || workRunHandle?.runId || sessionRunHandle?.runId, "work_state", updateResult.accepted ? "updated" : "rejected", {
-        iteration: state.iteration,
-        update: decision.update,
-        workState: summarizeWorkState(state.workState),
-        ...(rejectionReason ? { reason: rejectionReason } : {}),
-      });
-      if (!updateResult.accepted) {
+    if (decision.kind === "task_completion") {
+      const evaluation = await evaluateTaskCompletion(state, decision.request);
+      state.workState = compactWorkState(evaluation.nextWorkState);
+      recordFeedback(
+        deps,
+        inputHandle,
+        state.runId || workRunHandle?.runId || sessionRunHandle?.runId,
+        "task_completion",
+        evaluation.accepted ? "accepted" : "rejected",
+        {
+          iteration: state.iteration,
+          request: decision.request,
+          code: evaluation.code,
+          ...(evaluation.accepted
+            ? { verifiedAssets: evaluation.assets }
+            : { failures: evaluation.failures }),
+          workState: summarizeWorkState(state.workState),
+        },
+      );
+      if (evaluation.accepted) {
+        state.completionAssets = evaluation.assets;
+        state.consecutiveFailures = 0;
+        recordRunMetric(metrics, "verified_completion", { kind: "local" });
+        recordStateSnapshotMetric("after_task_completion_accepted");
+      } else {
         state.consecutiveFailures++;
-        state.failureHistory.push(createFailureRecordFromWorkStateUpdate(state.iteration, updateResult.reason));
+        const reason = evaluation.failures.map((failure) => failure.message).join(" ");
+        state.failureHistory.push({
+          step: state.iteration,
+          failureType: "verify_failed",
+          reason,
+          blockedTargets: evaluation.failures.flatMap((failure) => failure.path ? [failure.path] : ["task_completion"]),
+        });
+        recordStateSnapshotMetric("after_task_completion_rejected");
         if (hasRepeatedRepairFailure(state.failureHistory) || state.consecutiveFailures >= config.maxConsecutiveFailures) {
           state.status = "failed";
           state.finalOutput = buildFailureReply(state);
           return finalize({ status: "failed", content: state.finalOutput });
         }
-      } else {
-        state.consecutiveFailures = 0;
       }
-      recordStateSnapshotMetric("after_work_state_update");
       continue;
     }
 
@@ -1066,14 +1117,6 @@ export async function runAgentLoop(
         `Step ${state.iteration}: ${stepResult.stepSummary.executionContract} -> ${stepResult.stepSummary.outcome}`,
         state.runPath,
       );
-      if (canCompleteLocallyAfterAction(decision.action, stepResult.stepSummary, state.workState, state)) {
-        state.workState = compactWorkState({
-          ...state.workState,
-          status: "done",
-        });
-        recordRunMetric(metrics, "verified_completion", { kind: "local" });
-        recordStateSnapshotMetric("after_verified_completion");
-      }
       recordStateSnapshotMetric("after_session_read_only_step");
       continue;
     }
@@ -1401,14 +1444,6 @@ export async function runAgentLoop(
           state.runPath,
         );
 
-        if (canCompleteLocallyAfterAction(replayDecision.action, replayResult.stepSummary, state.workState, state)) {
-          state.workState = compactWorkState({
-            ...state.workState,
-            status: "done",
-          });
-          recordRunMetric(metrics, "verified_completion", { kind: "local" });
-          recordStateSnapshotMetric("after_verified_completion");
-        }
       }
       continue;
     }
@@ -1593,15 +1628,118 @@ export async function runAgentLoop(
       state.runPath,
     );
 
-    if (canCompleteLocallyAfterAction(decision.action, stepResult.stepSummary, state.workState, state)) {
-      state.workState = compactWorkState({
-        ...state.workState,
-        status: "done",
+  }
+
+  if (state.runClass === "task") {
+    state.runLimitReached = true;
+    if (state.workState.status !== "done") {
+      state.iteration++;
+      syncHarnessContext(state, deps, inputHandle);
+      const completionStateView = buildAgentStateView(state, {
+        activeTools: [],
+        workRunHandle,
+        sessionRunHandle,
       });
-      recordRunMetric(metrics, "verified_completion", { kind: "local" });
-      recordStateSnapshotMetric("after_verified_completion");
-      continue;
+      let completionDecision: AgentDecision | undefined;
+      try {
+        completionDecision = await callAgentDecision({
+          provider: deps.provider,
+          stateView: completionStateView,
+          toolDefinitions: [],
+          toolLoadingAvailable: false,
+          taskFeedbackToolAvailable: false,
+          taskCompletionAvailable: true,
+          toolContextProjectionPolicy: config.toolContextProjectionPolicy,
+          timelineCheckpointCache: state.timelineCheckpointCache,
+          systemContext: [
+            deps.systemContext,
+            `Run-limit completion-only mode: the ${config.maxIterations} normal work steps are exhausted. Call task_completion exactly once using the latest verified WorkState, tool-call evidence, and created file/directory assets. Executable tools and direct final replies are unavailable in this phase.`,
+          ].filter((section): section is string => Boolean(section?.trim())).join("\n\n"),
+          metrics,
+          feedbackLedger: deps.feedbackLedger,
+          feedbackContext: {
+            clientId: deps.clientId,
+            sessionId: inputHandle.sessionId,
+            seq: inputHandle.seq,
+            ...(state.runId || workRunHandle?.runId ? { runId: state.runId || workRunHandle?.runId } : {}),
+          },
+          onContextCompilation: (receipt) => {
+            state.contextPressure = updateContextPressureState({
+              current: state.contextPressure,
+              receipt,
+              iteration: state.iteration,
+            });
+          },
+        });
+      } catch (error) {
+        if (!(error instanceof ContextRunCapacityError || error instanceof ContextInputLimitError)) throw error;
+        state.contextLimitReached = true;
+      }
+
+      if (completionDecision?.kind === "task_completion") {
+        const evaluation = await evaluateTaskCompletion(state, completionDecision.request);
+        state.workState = compactWorkState(evaluation.nextWorkState);
+        recordFeedback(deps, inputHandle, state.runId || workRunHandle?.runId, "task_completion", evaluation.accepted ? "run_limit_accepted" : "run_limit_rejected", {
+          iteration: state.iteration,
+          trigger: "run_limit",
+          request: completionDecision.request,
+          code: evaluation.code,
+          ...(evaluation.accepted
+            ? { verifiedAssets: evaluation.assets }
+            : { failures: evaluation.failures }),
+          workState: summarizeWorkState(state.workState),
+        });
+        if (evaluation.accepted) {
+          state.completionAssets = evaluation.assets;
+          recordRunMetric(metrics, "verified_completion", { kind: "local" });
+        }
+      } else {
+        const reason = "The run-limit completion phase did not produce the required task_completion request.";
+        state.workState = compactWorkState({
+          ...state.workState,
+          status: "not_done",
+          summary: reason,
+          openWork: normalizeList([
+            ...(state.workState.openWork ?? []),
+            "Continue the requested task from the latest verified state.",
+          ]),
+          nextStep: state.workState.nextStep || "Continue the requested task from the latest verified state.",
+        });
+        recordFeedback(deps, inputHandle, state.runId || workRunHandle?.runId, "task_completion", "run_limit_missing", {
+          iteration: state.iteration,
+          trigger: "run_limit",
+          receivedDecisionKind: completionDecision?.kind,
+          reason,
+          workState: summarizeWorkState(state.workState),
+        });
+      }
     }
+
+    state.iteration++;
+    state.status = state.workState.status === "done" ? "completed" : "stuck";
+    state.finalOutput = await buildFinalResponseFromWorkState({
+      deps,
+      state,
+      metrics,
+      inputHandle,
+      workRunHandle,
+      config,
+    });
+    const responseKind = state.workState.status === "needs_user_input"
+      ? "feedback"
+      : state.preferredResponseKind ?? "reply";
+    return finalize({
+      status: state.status,
+      content: state.finalOutput,
+      responseKind,
+      completion: {
+        done: true,
+        summary: state.finalOutput,
+        status: state.workState.status === "done" ? "completed" : "failed",
+        response_kind: responseKind,
+        ...(state.workState.status === "needs_user_input" ? { feedback_kind: "clarification" } : {}),
+      },
+    });
   }
 
   state.status = "stuck";
@@ -1754,12 +1892,11 @@ async function buildFinalResponseFromWorkState(input: {
       toolDefinitions: [],
       toolLoadingAvailable: false,
       taskFeedbackToolAvailable: false,
-      workStateUpdateAvailable: false,
       toolContextProjectionPolicy: input.config.toolContextProjectionPolicy,
       timelineCheckpointCache: input.state.timelineCheckpointCache,
       systemContext: [
         input.deps.systemContext,
-        "Final response-only mode: tools are unavailable. Reply naturally to the user from context.run.workState, verified facts, artifacts, and recent tool-call memory. Do not mention harness internals. Do not say control tool names such as update_work_state, decision_load_tools, or ask_user_feedback.",
+        "Final response-only mode: tools are unavailable. Reply naturally to the user from context.run.workState, verified facts, artifacts, and recent tool-call memory. Do not mention harness internals. Do not say control tool names such as task_completion, decision_load_tools, or ask_user_feedback.",
       ].filter((section): section is string => Boolean(section?.trim())).join("\n\n"),
       metrics: input.metrics,
       feedbackLedger: input.deps.feedbackLedger,

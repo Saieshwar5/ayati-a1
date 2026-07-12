@@ -17,7 +17,8 @@ export type GitMemoryActionId = string;
 export type GitMemoryConversationRole = "user" | "assistant" | "system";
 export type GitMemoryConversationKind = "message" | "feedback_question";
 export type GitMemoryTaskStatus = "open" | "in_progress" | "needs_user_input" | "blocked" | "done" | "abandoned";
-export type GitMemoryRunStatus = "completed" | "failed" | "blocked" | "needs_user_input";
+export type GitMemoryRunStatus = "completed" | "incomplete" | "failed" | "blocked" | "needs_user_input";
+export type GitMemoryRunStopReason = "task_completed" | "run_limit" | "user_input_required" | "permanent_blocker" | "execution_failure" | "context_limit";
 export type GitMemorySessionRunStatus = GitMemoryRunStatus | "running" | "promoted";
 export type GitMemoryActionStatus = "completed" | "failed" | "skipped";
 export type GitMemoryTaskFactConfidence = "verified" | "observed" | "assumed";
@@ -187,6 +188,7 @@ export interface GitMemoryTaskStateFileRecord {
 export interface GitMemoryTaskStateRunSummary {
   runId: GitMemoryRunId;
   status: GitMemoryRunStatus;
+  stopReason?: GitMemoryRunStopReason;
   summary: string;
   outcome?: string;
   completedAt?: string;
@@ -243,6 +245,7 @@ export interface GitMemoryRunFile {
   runId: GitMemoryRunId;
   taskId: GitMemoryTaskId;
   status: GitMemoryRunStatus;
+  stopReason?: GitMemoryRunStopReason;
   startedAt: string;
   completedAt?: string;
   conversationRefs: GitMemoryConversationSeqRange[];
@@ -688,7 +691,8 @@ export function validateGitMemoryRunFile(value: unknown): ValidationResult<GitMe
     requireSchemaVersion(record, errors);
     requireRunId(record, "runId", errors);
     requireTaskId(record, "taskId", errors);
-    requireOneOf(record, "status", ["completed", "failed", "blocked", "needs_user_input"], errors);
+    requireOneOf(record, "status", ["completed", "incomplete", "failed", "blocked", "needs_user_input"], errors);
+    requireOptionalOneOf(record, "stopReason", ["task_completed", "run_limit", "user_input_required", "permanent_blocker", "execution_failure", "context_limit"], errors);
     requireNonEmptyString(record, "startedAt", errors);
     requireOptionalNonEmptyString(record, "completedAt", errors);
     const refs = requireArray(record, "conversationRefs", errors);
@@ -1040,7 +1044,8 @@ function validateTaskStateRunSummaries(value: unknown, errors: string[]): void {
     const run = requireRecord(item, `recent[${index}]`, errors);
     if (!run) return;
     requireRunId(run, "runId", errors);
-    requireOneOf(run, "status", ["completed", "failed", "blocked", "needs_user_input"], errors);
+    requireOneOf(run, "status", ["completed", "incomplete", "failed", "blocked", "needs_user_input"], errors);
+    requireOptionalOneOf(run, "stopReason", ["task_completed", "run_limit", "user_input_required", "permanent_blocker", "execution_failure", "context_limit"], errors);
     requireNonEmptyString(run, "summary", errors);
     requireOptionalNonEmptyString(run, "outcome", errors);
     requireOptionalNonEmptyString(run, "completedAt", errors);

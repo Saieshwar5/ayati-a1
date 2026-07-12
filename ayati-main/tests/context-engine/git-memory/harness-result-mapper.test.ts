@@ -285,6 +285,41 @@ describe("buildGitMemoryTaskRunCommitInput", () => {
     });
   });
 
+  it("keeps the task resumable when execution fails without a durable blocker", () => {
+    const mapped = buildGitMemoryTaskRunCommitInput({
+      sessionId: "S-20260628-local",
+      taskId: "W-20260628-0001",
+      result: {
+        type: "reply",
+        status: "failed",
+        content: "The provider stopped before the next decision.",
+        totalIterations: 1,
+        totalToolCalls: 0,
+        runPath: "data/runs/r-provider-failure",
+        workState: {
+          status: "not_done",
+          summary: "No new task work was completed.",
+          openWork: ["Continue from the latest verified task state."],
+          blockers: [],
+          verifiedFacts: [],
+          evidence: [],
+          nextStep: "Continue from the latest verified task state.",
+        },
+      },
+      conversationRefs: [{ fromSeq: 9, toSeq: 9 }],
+      at: "2026-06-28T10:40:00+05:30",
+    });
+
+    expect(mapped).toMatchObject({
+      status: "failed",
+      stopReason: "execution_failure",
+      state: {
+        status: "in_progress",
+        blockers: [],
+      },
+    });
+  });
+
   it("maps stuck runs to blocked run status and blocked task state", () => {
     const mapped = buildGitMemoryTaskRunCommitInput({
       sessionId: "S-20260628-local",
@@ -355,7 +390,8 @@ describe("buildGitMemoryTaskRunCommitInput", () => {
     });
 
     expect(mapped).toMatchObject({
-      status: "blocked",
+      status: "incomplete",
+      stopReason: "context_limit",
       next: "Complete the second stage.",
       state: {
         status: "in_progress",
@@ -363,6 +399,53 @@ describe("buildGitMemoryTaskRunCommitInput", () => {
         open: ["Complete the second stage."],
         blockers: [],
         next: "Complete the second stage.",
+      },
+    });
+  });
+
+  it("finalizes an exhausted run as incomplete while keeping the task in progress", () => {
+    const mapped = buildGitMemoryTaskRunCommitInput({
+      sessionId: "S-20260628-local",
+      taskId: "W-20260628-0001",
+      runId: "R-20260628-0020",
+      result: {
+        type: "reply",
+        status: "stuck",
+        content: "I created the homepage, but the stylesheet remains.",
+        totalIterations: 22,
+        totalToolCalls: 8,
+        runPath: "data/runs/r-run-limit",
+        taskSummary: {
+          taskStatus: "open",
+          stopReason: "run_limit",
+          summary: "Homepage verified; stylesheet remains.",
+          completedMilestones: ["Created and verified index.html."],
+          openWork: ["Create and verify styles.css."],
+          nextAction: "Create and verify styles.css.",
+        },
+        workState: {
+          status: "not_done",
+          summary: "Homepage verified; stylesheet remains.",
+          openWork: ["Create and verify styles.css."],
+          blockers: [],
+          verifiedFacts: ["index.html exists and is verified."],
+          evidence: ["write_files verification passed."],
+          artifacts: ["index.html"],
+          nextStep: "Create and verify styles.css.",
+        },
+      },
+      conversationRefs: [{ fromSeq: 20, toSeq: 20 }],
+      at: "2026-06-28T11:00:00+05:30",
+    });
+
+    expect(mapped).toMatchObject({
+      status: "incomplete",
+      stopReason: "run_limit",
+      state: {
+        status: "in_progress",
+        open: ["Create and verify styles.css."],
+        blockers: [],
+        next: "Create and verify styles.css.",
       },
     });
   });

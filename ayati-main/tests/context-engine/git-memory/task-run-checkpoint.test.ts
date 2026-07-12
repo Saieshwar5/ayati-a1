@@ -44,7 +44,7 @@ describe("task-run checkpoint planning", () => {
     });
   });
 
-  it.each<GitMemoryRunStatus>(["completed", "failed", "blocked", "needs_user_input"])(
+  it.each<GitMemoryRunStatus>(["completed", "incomplete", "failed", "blocked", "needs_user_input"])(
     "accepts the finalized %s task-run status",
     (status) => {
       const records = conversation(4);

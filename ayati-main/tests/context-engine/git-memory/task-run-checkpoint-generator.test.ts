@@ -80,7 +80,7 @@ describe("deterministic task-run checkpoint generation", () => {
     expect(result.estimatedTokens).toBeLessThanOrEqual(plan.limits.maxCheckpointTokens);
   });
 
-  it.each<GitMemoryRunStatus>(["completed", "failed", "blocked", "needs_user_input"])(
+  it.each<GitMemoryRunStatus>(["completed", "incomplete", "failed", "blocked", "needs_user_input"])(
     "renders a deterministic interval summary for %s",
     (status) => {
       const records = conversation(2);
@@ -325,6 +325,8 @@ function statusLabel(status: GitMemoryRunStatus): string {
   switch (status) {
     case "completed":
       return "Run completed";
+    case "incomplete":
+      return "Run incomplete";
     case "failed":
       return "Run failed";
     case "blocked":

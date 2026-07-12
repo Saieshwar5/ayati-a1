@@ -105,6 +105,7 @@ import type {
   GitMemoryEvidenceManifestRecord,
   GitMemoryRunId,
   GitMemoryRunFile,
+  GitMemoryRunStopReason,
   GitMemoryRunStatus,
   GitMemorySessionAttachmentRecord,
   GitMemorySessionAttachmentsFile,
@@ -572,6 +573,7 @@ export interface CommitGitMemoryTaskRunInput {
   taskId: GitMemoryTaskId;
   runId?: GitMemoryRunId;
   status: GitMemoryRunStatus;
+  stopReason?: GitMemoryRunStopReason;
   startedAt?: string;
   completedAt?: string;
   conversationRefs: GitMemoryConversationSeqRange[];
@@ -1767,6 +1769,7 @@ export class GitMemoryDailySessionStore {
           {
             runId,
             status: input.status,
+            ...(input.stopReason ? { stopReason: input.stopReason } : {}),
             summary: input.summary,
             outcome,
             completedAt,
@@ -1810,6 +1813,7 @@ export class GitMemoryDailySessionStore {
       runId,
       taskId: input.taskId,
       status: input.status,
+      ...(input.stopReason ? { stopReason: input.stopReason } : {}),
       startedAt,
       completedAt,
       conversationRefs: input.conversationRefs,

@@ -31,7 +31,7 @@ export interface SessionSnapshotProgress {
   summary: string;
   taskId: string | null;
   runId: string;
-  status: "completed" | "failed" | "blocked" | "needs_user_input";
+  status: "completed" | "incomplete" | "failed" | "blocked" | "needs_user_input";
   sources: SessionSnapshotSource[];
 }
 
@@ -237,7 +237,7 @@ function validateProgress(value: unknown, path: string, errors: string[]): void 
   nonEmptyString(record["summary"], `${path}.summary`, errors);
   nullableNonEmptyString(record["taskId"], `${path}.taskId`, errors);
   nonEmptyString(record["runId"], `${path}.runId`, errors);
-  enumValue(record["status"], `${path}.status`, ["completed", "failed", "blocked", "needs_user_input"], errors);
+  enumValue(record["status"], `${path}.status`, ["completed", "incomplete", "failed", "blocked", "needs_user_input"], errors);
   validateSources(record["sources"], `${path}.sources`, errors);
 }
 

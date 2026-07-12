@@ -165,7 +165,6 @@ function buildGitMemorySessionStepRecord(input: {
       actionKind: "tool_calls",
       mode: input.action.mode,
       allowedTools: input.action.allowedTools,
-      completion: input.action.completion,
       assertions: input.action.assertions,
     },
     action: {
@@ -239,7 +238,6 @@ function buildGitMemoryStepRecord(input: {
       actionKind: "tool_calls",
       mode: input.action.mode,
       allowedTools: input.action.allowedTools,
-      completion: input.action.completion,
       assertions: input.action.assertions,
     },
     action: {

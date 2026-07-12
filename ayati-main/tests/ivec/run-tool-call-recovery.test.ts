@@ -297,7 +297,6 @@ describe("run tool-call context", () => {
             purpose: `Read file ${index}`,
           })),
           allowedTools: ["read_files"],
-          completion: { expected: "Read enough files to build context." },
           assertions: [],
         },
       }),
@@ -312,7 +311,6 @@ describe("run tool-call context", () => {
               purpose: "Create marker output",
             }],
           allowedTools: ["write_files"],
-          completion: { expected: "Create a marker file." },
           assertions: [],
         },
       }),
@@ -330,11 +328,18 @@ describe("run tool-call context", () => {
         expect(toolCalls.every((entry: { mode: string }) => entry.mode === "full")).toBe(true);
         expect(stateView.context.tools.active).toContain("git_context_read_run_step");
         return {
-          kind: "reply",
-          status: "completed",
-          message: "Retained the complete tool context and completed the task.",
+          kind: "task_completion",
+          request: {
+            summary: "Retained the complete tool context and created the marker output.",
+            assets: [],
+          },
         };
       },
+      () => ({
+        kind: "reply",
+        status: "completed",
+        message: "Retained the complete tool context and completed the task.",
+      }),
     ]);
 
     try {
