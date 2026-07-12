@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
 import { ContextDatabase } from "../src/database/database.js";
@@ -262,15 +262,23 @@ describe("task submodule mounting", () => {
       "UPDATE session_task_mounts",
       "SET status = 'initializing', mounted_head = NULL WHERE session_id = ? AND task_id = ?",
     ].join(" ")).run(session.session.sessionId, task.task.taskId);
+    const databasePath = database.path;
+    await service.close();
+    const restartedDatabase = await ContextDatabase.open({ path: databasePath });
+    const restartedService = new SqliteGitContextService({
+      database: restartedDatabase,
+      dataRoot: dirname(databasePath),
+    });
+    services.push(restartedService);
 
-    await service.getActiveContext({ sessionId: session.session.sessionId });
+    await restartedService.getActiveContext({ sessionId: session.session.sessionId });
 
     expect(await readFile(
       join(mounted.mount.checkoutPath, ".ayati", "task.md"),
       "utf8",
     )).toContain("Task: " + task.task.taskId);
     expect(await git(mounted.mount.checkoutPath, ["branch", "--show-current"])).toBe("main");
-    expect(database.prepare([
+    expect(restartedDatabase.prepare([
       "SELECT status, mounted_head FROM session_task_mounts",
       "WHERE session_id = ? AND task_id = ?",
     ].join(" ")).get(session.session.sessionId, task.task.taskId)).toMatchObject({

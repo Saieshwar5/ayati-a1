@@ -4,9 +4,10 @@ Created: 2026-07-12
 
 ## Status
 
-Current status: ninth implementation slice complete. The independent service
-now finalizes task runs across canonical task and daily session repositories
-without changing current Ayati runtime behavior.
+Current status: tenth implementation slice complete. The independent service
+now serves stable session identity from a startup-hydrated registry cache while
+keeping SQLite and Git as durable authorities, without changing current Ayati
+runtime behavior.
 
 Implementation branch:
 
@@ -375,3 +376,39 @@ Next slice:
 - Verification:
   - pnpm --filter ayati-git-context build
   - pnpm --filter ayati-git-context test (50 tests)
+
+### 2026-07-12 Implementation Slice 10
+
+- Added a complete internal SessionRecord containing stable identity,
+  operational status, previous-session identity, timestamps, repository path,
+  and current Git HEAD.
+- Added SessionRegistryCache with session-ID and live-agent indexes.
+- Hydrated live session records synchronously from SQLite when the service
+  process starts.
+- Added cache-on-miss for explicitly requested historical sessions.
+- Changed active-session and open-session resolution to use the registry cache
+  instead of querying SQLite on every operation.
+- Limited repository/meta.json verification and external-state reconciliation
+  to one successful startup pass per service process.
+- Kept mutation and finalization boundary verification unchanged.
+- Updated the registry only after session repository initialization, SQLite HEAD
+  persistence, or completed task-run finalization succeeds.
+- Added HEAD, status, removal, and clear cache operations for later rollover
+  integration.
+- Included session status in ActiveContext cache revisioning so lifecycle
+  transitions cannot reuse a stale prepared context.
+- Kept SQLite and Git as the durable restart sources; no missing-SQLite recovery
+  or disk-backed cache was added.
+- Changed interrupted mount recovery tests to restart the service, matching the
+  new startup-recovery boundary.
+- Added tests proving:
+  - live sessions hydrate from SQLite,
+  - repeated reads return the cached record,
+  - a fresh cache sees durable HEAD changes,
+  - HEAD/status updates change the registry correctly,
+  - sealed sessions leave the live-agent index,
+  - normal context reads do not repeatedly read immutable Git metadata,
+  - task-run finalization refreshes the cached session HEAD.
+- Verification:
+  - pnpm --filter ayati-git-context build
+  - pnpm --filter ayati-git-context test (53 tests)

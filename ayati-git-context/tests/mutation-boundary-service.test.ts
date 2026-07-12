@@ -379,6 +379,8 @@ describe("task checkout mutation boundary", () => {
     expect(fixture.database.prepare(
       "SELECT phase FROM task_run_finalizations WHERE run_id = ?",
     ).get(fixture.runId)).toMatchObject({ phase: "completed" });
+    expect((await fixture.service.getActiveContext({ sessionId: fixture.sessionId }))
+      .session?.session.head).toBe(finalized.sessionCommit);
   });
 
   it("marks unexpected changes for recovery without removing them", async () => {

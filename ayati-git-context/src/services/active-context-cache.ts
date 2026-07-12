@@ -24,6 +24,7 @@ export class ActiveContextCache {
 
 export function activeContextRevision(input: {
   head: string | null;
+  status: string;
   conversations: ConversationContext[];
   run?: RunRef;
   toolCalls: ToolCallContext[];
@@ -36,6 +37,7 @@ export function activeContextRevision(input: {
   }))));
   const revision = hash(JSON.stringify({
     head: input.head,
+    status: input.status,
     pendingDigest,
     run: input.run?.runId ?? null,
     toolCalls: input.toolCalls,

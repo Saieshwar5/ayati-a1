@@ -54,11 +54,8 @@ import {
 } from "../repositories/run-records.js";
 import {
   insertSession,
-  readLatestLiveSession,
   readLatestSealedSessionId,
-  readLiveSessionForAgent,
-  readSession,
-  readSessionIdentity,
+  readSessionRecord,
   updateSessionHead,
 } from "../repositories/session-records.js";
 import type { GitContextService } from "../service.js";
@@ -69,6 +66,7 @@ import { TaskCheckpointService } from "./task-checkpoint-service.js";
 import { TaskLifecycleService } from "./task-lifecycle-service.js";
 import { TaskRunEvidenceService } from "./task-run-evidence-service.js";
 import { TaskRunFinalizationService } from "./task-run-finalization-service.js";
+import { SessionRegistryCache } from "./session-registry-cache.js";
 
 export interface SqliteGitContextServiceOptions {
   database: ContextDatabase;
@@ -82,17 +80,20 @@ export class SqliteGitContextService implements GitContextService {
   private readonly now: () => string;
   private readonly queue = new SerializedWriteQueue();
   private readonly contextCache = new ActiveContextCache();
+  private readonly sessionRegistry: SessionRegistryCache;
   private readonly taskLifecycle: TaskLifecycleService;
   private readonly mutationBoundary: MutationBoundaryService;
   private readonly taskCheckpoint: TaskCheckpointService;
   private readonly taskRunEvidence: TaskRunEvidenceService;
   private readonly taskRunFinalization: TaskRunFinalizationService;
   private closed = false;
+  private startupRecovered = false;
 
   constructor(options: SqliteGitContextServiceOptions) {
     this.database = options.database;
     this.dataRoot = options.dataRoot;
     this.now = options.now ?? (() => new Date().toISOString());
+    this.sessionRegistry = new SessionRegistryCache(this.database);
     this.taskLifecycle = new TaskLifecycleService({
       database: this.database,
       dataRoot: this.dataRoot,
@@ -106,7 +107,7 @@ export class SqliteGitContextService implements GitContextService {
 
   async getHealth(): Promise<HealthResponse> {
     return await this.queue.enqueue(async () => {
-      await this.recoverExternalState();
+      await this.ensureStartupRecovery();
       const schemaReady = this.database.schemaVersion() === this.database.expectedSchemaVersion();
       return {
         service: "ayati-git-context",
@@ -129,21 +130,23 @@ export class SqliteGitContextService implements GitContextService {
 
   async getActiveContext(input: GetActiveContextRequest): Promise<ActiveContext> {
     return await this.queue.enqueue(async () => {
-      await this.recoverExternalState();
-      const session = input.sessionId
-        ? readSession(this.database, input.sessionId)
-        : readLatestLiveSession(this.database);
-      if (!session) {
+      await this.ensureStartupRecovery();
+      const sessionRecord = input.sessionId
+        ? this.sessionRegistry.getSession(this.database, input.sessionId)
+        : this.sessionRegistry.getLatestLiveSession();
+      if (!sessionRecord) {
         return {
           session: null,
           warnings: [],
         };
       }
+      const session = this.sessionRegistry.toRef(sessionRecord);
       const run = readActiveRun(this.database, session.sessionId);
       const conversations = readPendingConversationContexts(this.database, session.sessionId);
       const recentToolCalls = run ? readRecentRunSteps(this.database, run.runId) : [];
       const { revision, pendingDigest } = activeContextRevision({
         head: session.head,
+        status: session.status,
         conversations,
         ...(run ? { run } : {}),
         toolCalls: recentToolCalls,
@@ -180,6 +183,7 @@ export class SqliteGitContextService implements GitContextService {
     input: EnsureActiveSessionRequest,
   ): Promise<EnsureActiveSessionResponse> {
     return await this.queue.enqueue(async () => {
+      await this.ensureStartupRecovery();
       const now = input.at ?? this.now();
       const pending = beginRecoverableIdempotent({
         database: this.database,
@@ -218,7 +222,7 @@ export class SqliteGitContextService implements GitContextService {
     input: AppendConversationRequest,
   ): Promise<AppendConversationResponse> {
     return await this.queue.enqueue(async () => {
-      await this.recoverExternalState();
+      await this.ensureStartupRecovery();
       const pending = beginRecoverableIdempotent({
         database: this.database,
         requestId: input.requestId,
@@ -266,7 +270,7 @@ export class SqliteGitContextService implements GitContextService {
 
   async createTask(input: CreateTaskRequest): Promise<CreateTaskResponse> {
     return await this.queue.enqueue(async () => {
-      await this.recoverExternalState();
+      await this.ensureStartupRecovery();
       const session = this.requireOpenSession(input.sessionId);
       verifyExpectedHead(session, input.expectedHead);
       return await this.taskLifecycle.createTask(input);
@@ -275,14 +279,14 @@ export class SqliteGitContextService implements GitContextService {
 
   async getTask(input: GetTaskRequest): Promise<GetTaskResponse> {
     return await this.queue.enqueue(async () => {
-      await this.recoverExternalState();
+      await this.ensureStartupRecovery();
       return await this.taskLifecycle.getTask(input);
     });
   }
 
   async mountTask(input: MountTaskRequest): Promise<MountTaskResponse> {
     return await this.queue.enqueue(async () => {
-      await this.recoverExternalState();
+      await this.ensureStartupRecovery();
       const session = this.requireOpenSession(input.sessionId);
       verifyExpectedHead(session, input.expectedHead);
       return await this.taskLifecycle.mountTask(input, session);
@@ -293,7 +297,7 @@ export class SqliteGitContextService implements GitContextService {
     input: AcquireMutationAuthorityRequest,
   ): Promise<AcquireMutationAuthorityResponse> {
     return await this.queue.enqueue(async () => {
-      await this.recoverExternalState();
+      await this.ensureStartupRecovery();
       const session = this.requireOpenSession(input.sessionId);
       verifyExpectedHead(session, input.expectedHead);
       const result = await this.mutationBoundary.acquire(input, session);
@@ -304,6 +308,7 @@ export class SqliteGitContextService implements GitContextService {
 
   async verifyMutation(input: VerifyMutationRequest): Promise<VerifyMutationResponse> {
     return await this.queue.enqueue(async () => {
+      await this.ensureStartupRecovery();
       const result = await this.mutationBoundary.verify(input);
       this.contextCache.clear();
       return result;
@@ -314,6 +319,7 @@ export class SqliteGitContextService implements GitContextService {
     input: CheckpointMutationRequest,
   ): Promise<CheckpointMutationResponse> {
     return await this.queue.enqueue(async () => {
+      await this.ensureStartupRecovery();
       const result = await this.taskCheckpoint.checkpoint(input);
       this.contextCache.clear();
       return result;
@@ -324,6 +330,7 @@ export class SqliteGitContextService implements GitContextService {
     input: SnapshotTaskRunEvidenceRequest,
   ): Promise<SnapshotTaskRunEvidenceResponse> {
     return await this.queue.enqueue(async () => {
+      await this.ensureStartupRecovery();
       const session = this.requireOpenSession(input.sessionId);
       verifyExpectedHead(session, input.expectedHead);
       return await this.taskRunEvidence.snapshot(input, session);
@@ -332,16 +339,19 @@ export class SqliteGitContextService implements GitContextService {
 
   async finalizeTaskRun(input: FinalizeTaskRunRequest): Promise<FinalizeTaskRunResponse> {
     return await this.queue.enqueue(async () => {
-      await this.recoverExternalState();
+      await this.ensureStartupRecovery();
       const session = this.requireOpenSession(input.sessionId);
       const result = await this.taskRunFinalization.finalize(input, session);
+      const updatedSession = readSessionRecord(this.database, input.sessionId);
+      if (updatedSession) this.sessionRegistry.set(updatedSession);
       this.contextCache.clear();
       return result;
     });
   }
 
   async startRun(input: StartRunRequest): Promise<StartRunResponse> {
-    return await this.queue.enqueue(() => {
+    return await this.queue.enqueue(async () => {
+      await this.ensureStartupRecovery();
       const normalized = {
         ...input,
         at: input.at ?? this.now(),
@@ -364,7 +374,9 @@ export class SqliteGitContextService implements GitContextService {
   }
 
   async recordRunStep(input: RecordRunStepRequest): Promise<RecordRunStepResponse> {
-    return await this.queue.enqueue(() => executeIdempotent({
+    return await this.queue.enqueue(async () => {
+      await this.ensureStartupRecovery();
+      return executeIdempotent({
       database: this.database,
       requestId: input.requestId,
       operation: "record_run_step",
@@ -377,7 +389,8 @@ export class SqliteGitContextService implements GitContextService {
           toolCall: recordRunStep(this.database, input),
         };
       },
-    }));
+      });
+    });
   }
 
   async close(): Promise<void> {
@@ -389,8 +402,9 @@ export class SqliteGitContextService implements GitContextService {
     this.database.close();
   }
 
-  private async recoverExternalState(): Promise<void> {
-    const session = readLatestLiveSession(this.database);
+  private async ensureStartupRecovery(): Promise<void> {
+    if (this.startupRecovered) return;
+    const session = this.sessionRegistry.getLatestLiveSession();
     if (session) {
       await this.ensureRepositoryForSession(session.sessionId);
     }
@@ -399,24 +413,25 @@ export class SqliteGitContextService implements GitContextService {
       now: this.now,
     });
     await this.taskLifecycle.recoverInitializingState();
+    this.startupRecovered = true;
   }
 
   private async ensureRepositoryForSession(sessionId: string): Promise<SessionRef> {
-    const session = readSession(this.database, sessionId);
-    const identity = readSessionIdentity(this.database, sessionId);
-    if (!session || !identity) {
+    const record = this.sessionRegistry.getSession(this.database, sessionId);
+    if (!record) {
       throw new GitContextServiceError({
         code: "SESSION_NOT_ACTIVE",
         message: "Session does not exist.",
         details: { sessionId },
       });
     }
+    const session = this.sessionRegistry.toRef(record);
     let head: string;
     try {
       head = await ensureSessionRepository({
         session,
-        agentId: identity.agentId,
-        createdAt: identity.createdAt,
+        agentId: record.agentId,
+        createdAt: record.createdAt,
       });
     } catch (error) {
       if (error instanceof GitContextServiceError) {
@@ -436,7 +451,9 @@ export class SqliteGitContextService implements GitContextService {
       return session;
     }
     this.contextCache.clear();
-    return updateSessionHead(this.database, sessionId, head);
+    const updated = updateSessionHead(this.database, sessionId, head);
+    this.sessionRegistry.updateHead(sessionId, head);
+    return updated;
   }
 
   private ensureSession(
@@ -445,7 +462,15 @@ export class SqliteGitContextService implements GitContextService {
   ): EnsureActiveSessionResponse {
     validateSessionInput(input);
     const agentId = normalizeAgentId(input.agentId);
-    const existing = readLiveSessionForAgent(this.database, agentId);
+    let existingRecord = this.sessionRegistry.getLiveSessionForAgent(agentId);
+    if (existingRecord && existingRecord.date !== input.date) {
+      const refreshed = readSessionRecord(this.database, existingRecord.sessionId);
+      if (refreshed) this.sessionRegistry.set(refreshed);
+      existingRecord = this.sessionRegistry.getLiveSessionForAgent(agentId);
+    }
+    const existing = existingRecord
+      ? this.sessionRegistry.toRef(existingRecord)
+      : undefined;
     if (existing) {
       if (existing.date !== input.date) {
         throw new GitContextServiceError({
@@ -488,6 +513,9 @@ export class SqliteGitContextService implements GitContextService {
       ...(previousSessionId ? { previousSessionId } : {}),
       createdAt,
     });
+    const record = readSessionRecord(this.database, session.sessionId);
+    if (!record) throw new Error("Inserted session record could not be read.");
+    this.sessionRegistry.set(record);
     return {
       session,
       created: true,
@@ -495,14 +523,15 @@ export class SqliteGitContextService implements GitContextService {
   }
 
   private requireOpenSession(sessionId: string): SessionRef {
-    const session = readSession(this.database, sessionId);
-    if (!session) {
+    const record = this.sessionRegistry.getSession(this.database, sessionId);
+    if (!record) {
       throw new GitContextServiceError({
         code: "SESSION_NOT_ACTIVE",
         message: "Session does not exist.",
         details: { sessionId },
       });
     }
+    const session = this.sessionRegistry.toRef(record);
     if (session.status !== "open") {
       throw new GitContextServiceError({
         code: session.status === "rollover_pending"

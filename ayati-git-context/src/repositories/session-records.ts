@@ -14,13 +14,40 @@ interface SessionRow {
   sealed_at: string | null;
 }
 
+export interface SessionRecord {
+  sessionId: string;
+  repositoryPath: string;
+  head: string | null;
+  date: string;
+  timezone: string;
+  status: SessionRef["status"];
+  agentId: string;
+  previousSessionId?: string;
+  createdAt: string;
+  sealedAt?: string;
+}
+
 export function readSession(database: ContextDatabase, sessionId: string): SessionRef | undefined {
-  const row = database.prepare([
-    "SELECT session_id, repository_path, head_sha, date, timezone, status,",
-    "agent_id, previous_session_id, created_at, sealed_at",
-    "FROM sessions WHERE session_id = ?",
-  ].join(" ")).get(sessionId) as SessionRow | undefined;
-  return row ? sessionRef(row) : undefined;
+  const record = readSessionRecord(database, sessionId);
+  return record ? sessionRecordRef(record) : undefined;
+}
+
+export function readSessionRecord(
+  database: ContextDatabase,
+  sessionId: string,
+): SessionRecord | undefined {
+  const row = database.prepare(sessionSelect() + " WHERE session_id = ?")
+    .get(sessionId) as SessionRow | undefined;
+  return row ? sessionRecord(row) : undefined;
+}
+
+export function readLiveSessionRecords(database: ContextDatabase): SessionRecord[] {
+  const rows = database.prepare([
+    sessionSelect(),
+    "WHERE status IN ('open', 'rollover_pending', 'finalizing')",
+    "ORDER BY created_at DESC",
+  ].join(" ")).all() as unknown as SessionRow[];
+  return rows.map(sessionRecord);
 }
 
 export function readLiveSessionForAgent(
@@ -124,4 +151,37 @@ function sessionRef(row: SessionRow): SessionRef {
     timezone: row.timezone,
     status: row.status,
   };
+}
+
+export function sessionRecordRef(record: SessionRecord): SessionRef {
+  return {
+    sessionId: record.sessionId,
+    repositoryPath: record.repositoryPath,
+    head: record.head,
+    date: record.date,
+    timezone: record.timezone,
+    status: record.status,
+  };
+}
+
+function sessionRecord(row: SessionRow): SessionRecord {
+  return {
+    sessionId: row.session_id,
+    repositoryPath: row.repository_path,
+    head: row.head_sha,
+    date: row.date,
+    timezone: row.timezone,
+    status: row.status,
+    agentId: row.agent_id,
+    ...(row.previous_session_id ? { previousSessionId: row.previous_session_id } : {}),
+    createdAt: row.created_at,
+    ...(row.sealed_at ? { sealedAt: row.sealed_at } : {}),
+  };
+}
+
+function sessionSelect(): string {
+  return [
+    "SELECT session_id, repository_path, head_sha, date, timezone, status,",
+    "agent_id, previous_session_id, created_at, sealed_at FROM sessions",
+  ].join(" ");
 }
