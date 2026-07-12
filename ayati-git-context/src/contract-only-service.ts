@@ -3,6 +3,8 @@ import {
   type ActiveContext,
   type AcquireMutationAuthorityRequest,
   type AcquireMutationAuthorityResponse,
+  type CheckpointMutationRequest,
+  type CheckpointMutationResponse,
   type AppendConversationRequest,
   type AppendConversationResponse,
   type CreateTaskRequest,
@@ -71,6 +73,12 @@ export class ContractOnlyGitContextService implements GitContextService {
   }
 
   async verifyMutation(_input: VerifyMutationRequest): Promise<VerifyMutationResponse> {
+    throw notReady();
+  }
+
+  async checkpointMutation(
+    _input: CheckpointMutationRequest,
+  ): Promise<CheckpointMutationResponse> {
     throw notReady();
   }
 

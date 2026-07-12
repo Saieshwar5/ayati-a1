@@ -141,6 +141,72 @@ describe("task checkout mutation boundary", () => {
     })).rejects.toMatchObject({ code: "TASK_LOCKED" });
   });
 
+  it("commits verified paths, persists canonical HEAD and stages the session gitlink", async () => {
+    const fixture = await createReadyRun();
+    const sessionHeadBefore = await git(fixture.sessionRepository, ["rev-parse", "HEAD"]);
+    const authority = await fixture.service.acquireMutationAuthority(authorityInput(fixture, [
+      { path: "src", kind: "directory" },
+    ]));
+    await mkdir(join(fixture.checkoutPath, "src"), { recursive: true });
+    await writeFile(join(fixture.checkoutPath, "src", "app.ts"), "export const ready = true;\n");
+    await fixture.service.verifyMutation(verificationInput(authority.authority, "completed"));
+    const input = {
+      requestId: "REQ-checkpoint",
+      authorityId: authority.authority.authorityId,
+      lockToken: authority.authority.lockToken,
+      purpose: "Create the application entry point.",
+      conversationId: fixture.conversationId,
+      conversationHash: "sha256:" + "a".repeat(64),
+      at: "2026-07-12T10:00:07+05:30",
+    };
+
+    const checkpoint = await fixture.service.checkpointMutation(input);
+    await expect(fixture.service.checkpointMutation(input)).resolves.toEqual(checkpoint);
+
+    expect(checkpoint).toMatchObject({
+      taskId: fixture.taskId,
+      runId: fixture.runId,
+      beforeHead: fixture.taskHead,
+      stagedPaths: ["src/app.ts"],
+      sessionGitlinkUpdated: true,
+    });
+    expect(await git(fixture.checkoutPath, ["status", "--porcelain"])).toBe("");
+    expect(await git(fixture.canonicalRepository, ["rev-parse", "refs/heads/main"]))
+      .toBe(checkpoint.checkpointHead);
+    expect(await git(fixture.sessionRepository, ["rev-parse", "HEAD"]))
+      .toBe(sessionHeadBefore);
+    expect(await git(fixture.sessionRepository, [
+      "ls-files", "--stage", "--", "tasks/" + fixture.taskId,
+    ])).toContain(checkpoint.checkpointHead);
+    expect(await git(fixture.checkoutPath, ["show", "-s", "--format=%B", "HEAD"]))
+      .toContain("Ayati-Event: task_checkpoint");
+    expect(fixture.database.prepare([
+      "SELECT status FROM task_mutation_authorities WHERE authority_id = ?",
+    ].join(" ")).get(authority.authority.authorityId)).toMatchObject({ status: "released" });
+    expect((await fixture.service.getTask({ taskId: fixture.taskId })).task.head)
+      .toBe(checkpoint.checkpointHead);
+  });
+
+  it("refuses verified secrets before creating a checkpoint commit", async () => {
+    const fixture = await createReadyRun();
+    const authority = await fixture.service.acquireMutationAuthority(authorityInput(fixture, [
+      { path: ".env", kind: "file" },
+    ]));
+    await writeFile(join(fixture.checkoutPath, ".env"), "TOKEN=secret\n");
+    await fixture.service.verifyMutation(verificationInput(authority.authority, "completed"));
+
+    await expect(fixture.service.checkpointMutation({
+      requestId: "REQ-checkpoint-secret",
+      authorityId: authority.authority.authorityId,
+      lockToken: authority.authority.lockToken,
+      purpose: "Store local configuration.",
+      conversationId: fixture.conversationId,
+      conversationHash: "sha256:" + "b".repeat(64),
+      at: "2026-07-12T10:00:07+05:30",
+    })).rejects.toMatchObject({ code: "INVALID_REQUEST" });
+    expect(await git(fixture.checkoutPath, ["rev-parse", "HEAD"])).toBe(fixture.taskHead);
+  });
+
   it("marks unexpected changes for recovery without removing them", async () => {
     const fixture = await createReadyRun();
     const authority = await fixture.service.acquireMutationAuthority(authorityInput(fixture, [
@@ -304,9 +370,12 @@ interface ReadyRunFixture {
   database: ContextDatabase;
   sessionId: string;
   runId: string;
+  conversationId: string;
   taskId: string;
   taskHead: string;
   checkoutPath: string;
+  sessionRepository: string;
+  canonicalRepository: string;
 }
 
 async function createReadyRun(): Promise<ReadyRunFixture> {
@@ -357,9 +426,12 @@ async function createReadyRun(): Promise<ReadyRunFixture> {
     database,
     sessionId: session.session.sessionId,
     runId: run.run.runId,
+    conversationId: conversation.conversation.conversationId,
     taskId: task.task.taskId,
     taskHead: task.task.head,
     checkoutPath: mount.mount.checkoutPath,
+    sessionRepository: session.session.repositoryPath,
+    canonicalRepository: task.task.repositoryPath,
   };
 }
 

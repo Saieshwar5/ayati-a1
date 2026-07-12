@@ -143,7 +143,7 @@ export class MutationBoundaryService {
         details: { authorityId: input.authorityId },
       });
     }
-    verifyLockToken(authority, input.lockToken);
+    verifyMutationLockToken(authority, input.lockToken);
     if (authority.status !== "active") {
       throw new GitContextServiceError({
         code: "RECOVERY_REQUIRED",
@@ -209,7 +209,7 @@ export class MutationBoundaryService {
     input: VerifyMutationRequest,
     provenance: MutationProvenance,
   ): VerifyMutationResponse {
-    verifyLockToken(authority, input.lockToken);
+    verifyMutationLockToken(authority, input.lockToken);
     if (authority.status !== "active") {
       throw new GitContextServiceError({
         code: "RECOVERY_REQUIRED",
@@ -284,7 +284,10 @@ function mutationAuthority(
   };
 }
 
-function verifyLockToken(authority: MutationAuthorityRecord, token: string): void {
+export function verifyMutationLockToken(
+  authority: MutationAuthorityRecord,
+  token: string,
+): void {
   const actual = Buffer.from(tokenHash(token), "hex");
   const expected = Buffer.from(authority.lockTokenHash, "hex");
   if (actual.length !== expected.length || !timingSafeEqual(actual, expected)) {

@@ -84,6 +84,14 @@ export function readActiveRun(
   return row ? runRef(row) : undefined;
 }
 
+export function readRun(database: ContextDatabase, runId: string): RunRef | undefined {
+  const row = database.prepare([
+    "SELECT run_id, session_id, conversation_id, task_id, run_class",
+    "FROM runs WHERE run_id = ?",
+  ].join(" ")).get(runId) as RunRow | undefined;
+  return row ? runRef(row) : undefined;
+}
+
 export function bindActiveRunToTask(
   database: ContextDatabase,
   sessionId: string,

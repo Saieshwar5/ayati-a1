@@ -119,6 +119,24 @@ export function readTaskCatalogEntry(
   return catalogEntry(row);
 }
 
+export function updateTaskHead(
+  database: ContextDatabase,
+  taskId: string,
+  expectedHead: string,
+  head: string,
+  at: string,
+): TaskCatalogEntry {
+  const result = database.prepare([
+    "UPDATE tasks SET head_sha = ?, updated_at = ?",
+    "WHERE task_id = ? AND head_sha = ? AND status = 'active'",
+  ].join(" ")).run(head, at, taskId, expectedHead);
+  const task = readTaskCatalogEntry(database, taskId);
+  if (Number(result.changes) !== 1 || !task) {
+    throw new Error("Task HEAD changed while checkpointing: " + taskId);
+  }
+  return task;
+}
+
 function readTaskRow(database: ContextDatabase, taskId: string): TaskRow | undefined {
   return database.prepare([
     taskSelect(),

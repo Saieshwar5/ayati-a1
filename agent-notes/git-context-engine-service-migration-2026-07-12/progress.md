@@ -4,9 +4,9 @@ Created: 2026-07-12
 
 ## Status
 
-Current status: sixth implementation slice complete. The independent service
-also grants and verifies deterministic task-checkout mutation authority without
-changing current Ayati runtime behavior.
+Current status: seventh implementation slice complete. The independent service
+now turns verified task-checkout mutations into durable task checkpoint commits
+without changing current Ayati runtime behavior.
 
 Implementation branch:
 
@@ -44,7 +44,7 @@ Implementation branch:
 - [x] Add canonical task repository store.
 - [x] Mount task repositories as session submodules.
 - [x] Add task checkout mutation boundary.
-- [ ] Add verified task checkpoint commits.
+- [x] Add verified task checkpoint commits.
 - [ ] Persist task-run evidence in session repository.
 - [ ] Add cross-repository finalization.
 - [ ] Add crash recovery.
@@ -76,13 +76,11 @@ Completed:
 
 Next slice:
 
-    verified task checkpoint commits
-    -> consume verified mutation authority
-    -> stage exact changed paths
-    -> purpose-rich task commit
-    -> push main to canonical repository
-    -> update task catalog and session gitlink
-    -> release mutation lock
+    persist task-run evidence in the session repository
+    -> bounded run.json identity and outcome scaffold
+    -> append-only steps.jsonl from the SQLite run journal
+    -> preserve purpose, verification and mutation provenance
+    -> avoid duplicating task file contents already stored by Git
 
 ## Progress Log
 
@@ -279,3 +277,30 @@ Next slice:
   - Unix-socket acquire/mutate/verify/retry smoke test across process restart
   - Run promotion, token recovery, resolved target, persisted lock, and exact
     Git provenance inspection
+
+### 2026-07-12 Implementation Slice 7
+
+- Advanced the typed service protocol to version 6.
+- Added checkpoint-mutation HTTP, client, service, and validation contracts.
+- Added the task_checkpoint_transactions SQLite phase journal.
+- Required a verified, token-owned mutation authority and the owning run's
+  conversation identity before checkpointing.
+- Re-read and matched live Git provenance immediately before the commit.
+- Staged only the exact verified created, modified, deleted, and renamed paths.
+- Rejected common secret, dependency, build-output, cache, and log paths before
+  creating a task commit.
+- Added purpose-rich task checkpoint commits with task, session, run,
+  conversation, authority, verification, and event trailers.
+- Pushed the checkpoint to the canonical bare task repository.
+- Updated the task catalog HEAD and mounted checkout HEAD deterministically.
+- Staged the new task gitlink in the session repository while intentionally
+  leaving the session HEAD unchanged for later run finalization.
+- Released the mutation authority only after all checkpoint phases completed.
+- Added retry recovery when a task commit exists but its phase update was
+  interrupted, using the authority trailer and exact parent commit.
+- Added tests for contracts, HTTP transport, real task commits, canonical HEAD,
+  session gitlink state, unchanged session HEAD, idempotent retries, commit
+  trailers, task catalog updates, lock release, and secret refusal.
+- Verification:
+  - pnpm --filter ayati-git-context build
+  - pnpm --filter ayati-git-context test (47 tests)

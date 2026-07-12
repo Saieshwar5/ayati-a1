@@ -4,6 +4,7 @@ import type { AddressInfo } from "node:net";
 import {
   isAcquireMutationAuthorityRequest,
   isAppendConversationRequest,
+  isCheckpointMutationRequest,
   isCreateTaskRequest,
   isEnsureActiveSessionRequest,
   isMountTaskRequest,
@@ -206,6 +207,22 @@ export class GitContextHttpServer {
         return;
       }
 
+      const checkpointMutationMatch = url.pathname.match(
+        /^\/mutation-authorities\/([^/]+)\/checkpoint$/,
+      );
+      if (method === "POST" && checkpointMutationMatch) {
+        const body = await readJsonBody(request, this.maxBodyBytes);
+        if (!isCheckpointMutationRequest(body)) {
+          throw invalidRequest("Invalid checkpoint-mutation request.");
+        }
+        const authorityId = decodePathComponent(checkpointMutationMatch[1] ?? "");
+        if (body.authorityId !== authorityId) {
+          throw invalidRequest("Authority ID in request path and body must match.");
+        }
+        sendJson(response, 200, await this.service.checkpointMutation(body));
+        return;
+      }
+
       if (method === "POST" && url.pathname === "/runs/start") {
         const body = await readJsonBody(request, this.maxBodyBytes);
         if (!isStartRunRequest(body)) {
@@ -234,7 +251,8 @@ export class GitContextHttpServer {
         || Boolean(taskMatch)
         || Boolean(mountMatch)
         || Boolean(mutationAuthorityMatch)
-        || Boolean(verifyMutationMatch);
+        || Boolean(verifyMutationMatch)
+        || Boolean(checkpointMutationMatch);
       throw new GitContextServiceError({
         code: knownPath ? "METHOD_NOT_ALLOWED" : "NOT_FOUND",
         message: knownPath

@@ -4,6 +4,8 @@ import {
   type AcquireMutationAuthorityRequest,
   type AcquireMutationAuthorityResponse,
   type ActiveContext,
+  type CheckpointMutationRequest,
+  type CheckpointMutationResponse,
   type AppendConversationRequest,
   type AppendConversationResponse,
   type CreateTaskRequest,
@@ -59,6 +61,7 @@ import type { GitContextService } from "../service.js";
 import { SerializedWriteQueue } from "../write-queue.js";
 import { ActiveContextCache, activeContextRevision } from "./active-context-cache.js";
 import { MutationBoundaryService } from "./mutation-boundary-service.js";
+import { TaskCheckpointService } from "./task-checkpoint-service.js";
 import { TaskLifecycleService } from "./task-lifecycle-service.js";
 
 export interface SqliteGitContextServiceOptions {
@@ -75,6 +78,7 @@ export class SqliteGitContextService implements GitContextService {
   private readonly contextCache = new ActiveContextCache();
   private readonly taskLifecycle: TaskLifecycleService;
   private readonly mutationBoundary: MutationBoundaryService;
+  private readonly taskCheckpoint: TaskCheckpointService;
   private closed = false;
 
   constructor(options: SqliteGitContextServiceOptions) {
@@ -87,6 +91,7 @@ export class SqliteGitContextService implements GitContextService {
       now: this.now,
     });
     this.mutationBoundary = new MutationBoundaryService(this.database);
+    this.taskCheckpoint = new TaskCheckpointService(this.database);
   }
 
   async getHealth(): Promise<HealthResponse> {
@@ -290,6 +295,16 @@ export class SqliteGitContextService implements GitContextService {
   async verifyMutation(input: VerifyMutationRequest): Promise<VerifyMutationResponse> {
     return await this.queue.enqueue(async () => {
       const result = await this.mutationBoundary.verify(input);
+      this.contextCache.clear();
+      return result;
+    });
+  }
+
+  async checkpointMutation(
+    input: CheckpointMutationRequest,
+  ): Promise<CheckpointMutationResponse> {
+    return await this.queue.enqueue(async () => {
+      const result = await this.taskCheckpoint.checkpoint(input);
       this.contextCache.clear();
       return result;
     });

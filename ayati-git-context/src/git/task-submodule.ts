@@ -275,6 +275,28 @@ async function readGitlink(
   return match?.[1];
 }
 
+export async function stageTaskGitlink(input: {
+  sessionRepository: string;
+  taskId: string;
+  checkpointHead: string;
+}): Promise<void> {
+  const relativePath = "tasks/" + input.taskId;
+  await runGit(["add", "--", relativePath], { cwd: input.sessionRepository });
+  const gitlink = await readGitlink(input.sessionRepository, relativePath);
+  if (gitlink !== input.checkpointHead) {
+    throw new GitContextServiceError({
+      code: "TASK_HEAD_MISMATCH",
+      message: "Session gitlink does not match the task checkpoint.",
+      retryable: false,
+      details: {
+        taskId: input.taskId,
+        expectedHead: input.checkpointHead,
+        actualHead: gitlink ?? null,
+      },
+    });
+  }
+}
+
 function sameRepository(
   actual: string,
   expectedRelative: string,

@@ -228,6 +228,31 @@ const MIGRATIONS: Migration[] = [
       "WHERE status IN ('active', 'verified', 'recovery_required');",
     ].join("\n"),
   },
+  {
+    version: 6,
+    sql: [
+      "CREATE TABLE task_checkpoint_transactions (",
+      "  authority_id TEXT PRIMARY KEY REFERENCES task_mutation_authorities(authority_id),",
+      "  request_id TEXT NOT NULL UNIQUE REFERENCES idempotency_requests(request_id),",
+      "  session_id TEXT NOT NULL REFERENCES sessions(session_id),",
+      "  run_id TEXT NOT NULL REFERENCES runs(run_id),",
+      "  task_id TEXT NOT NULL REFERENCES tasks(task_id),",
+      "  phase TEXT NOT NULL CHECK (phase IN ('prepared', 'task_committed', 'canonical_persisted', 'catalog_updated', 'gitlink_updated', 'completed', 'recovery_required')),",
+      "  before_head TEXT NOT NULL,",
+      "  checkpoint_head TEXT,",
+      "  purpose TEXT NOT NULL,",
+      "  conversation_id TEXT NOT NULL REFERENCES conversation_segments(conversation_id),",
+      "  conversation_hash TEXT NOT NULL,",
+      "  staged_paths_json TEXT NOT NULL,",
+      "  created_at TEXT NOT NULL,",
+      "  updated_at TEXT NOT NULL,",
+      "  last_error TEXT",
+      ");",
+      "",
+      "CREATE INDEX task_checkpoint_transactions_recovery",
+      "ON task_checkpoint_transactions(phase, updated_at);",
+    ].join("\n"),
+  },
 ];
 
 export function applyMigrations(database: DatabaseSync, now: () => string): void {

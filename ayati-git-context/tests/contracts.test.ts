@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   isAcquireMutationAuthorityRequest,
   isAppendConversationRequest,
+  isCheckpointMutationRequest,
   isCreateTaskRequest,
   isEnsureActiveSessionRequest,
   isMountTaskRequest,
@@ -111,6 +112,24 @@ describe("Git Context Engine contracts", () => {
       toolStatus: "completed",
       at: "2026-07-12T10:03:00+05:30",
     })).toBe(true);
+    expect(isCheckpointMutationRequest({
+      requestId: "REQ-checkpoint",
+      authorityId: "A-1",
+      lockToken: "secret-token",
+      purpose: "Create the application entry point.",
+      conversationId: "C-000001",
+      conversationHash: "sha256:" + "a".repeat(64),
+      at: "2026-07-12T10:04:00+05:30",
+    })).toBe(true);
+    expect(isCheckpointMutationRequest({
+      requestId: "REQ-checkpoint",
+      authorityId: "A-1",
+      lockToken: "secret-token",
+      purpose: "Create the application entry point.",
+      conversationId: "C-000001",
+      conversationHash: "not-a-hash",
+      at: "2026-07-12T10:04:00+05:30",
+    })).toBe(false);
   });
 
   it("validates run start requests", () => {

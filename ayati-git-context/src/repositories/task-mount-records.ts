@@ -123,6 +123,25 @@ export function completeTaskMount(
   return taskMountRef(record);
 }
 
+export function updateTaskMountHead(
+  database: ContextDatabase,
+  sessionId: string,
+  taskId: string,
+  expectedHead: string,
+  head: string,
+  at: string,
+): TaskMountRef {
+  const result = database.prepare([
+    "UPDATE session_task_mounts SET mounted_head = ?, updated_at = ?, last_error = NULL",
+    "WHERE session_id = ? AND task_id = ? AND mounted_head = ? AND status = 'ready'",
+  ].join(" ")).run(head, at, sessionId, taskId, expectedHead);
+  const record = readTaskMount(database, sessionId, taskId);
+  if (Number(result.changes) !== 1 || !record) {
+    throw new Error("Task mount HEAD changed while checkpointing: " + taskId);
+  }
+  return taskMountRef(record);
+}
+
 export function markTaskMountRecoveryRequired(
   database: ContextDatabase,
   sessionId: string,

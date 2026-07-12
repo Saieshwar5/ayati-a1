@@ -147,6 +147,20 @@ export function updateMutationAuthorityVerification(
   );
 }
 
+export function releaseCheckpointedMutationAuthority(
+  database: ContextDatabase,
+  authorityId: string,
+  at: string,
+): void {
+  const result = database.prepare([
+    "UPDATE task_mutation_authorities SET status = 'released', released_at = ?, last_error = NULL",
+    "WHERE authority_id = ? AND status = 'verified'",
+  ].join(" ")).run(at, authorityId);
+  if (Number(result.changes) !== 1) {
+    throw new Error("Verified mutation authority could not be released: " + authorityId);
+  }
+}
+
 function readBlockingAuthority(
   database: ContextDatabase,
   taskId: string,

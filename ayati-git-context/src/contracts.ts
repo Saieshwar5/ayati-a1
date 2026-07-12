@@ -1,4 +1,4 @@
-export const GIT_CONTEXT_PROTOCOL_VERSION = 5;
+export const GIT_CONTEXT_PROTOCOL_VERSION = 6;
 
 export type SessionId = string;
 export type TaskId = string;
@@ -264,6 +264,25 @@ export interface VerifyMutationResponse {
   provenance: MutationProvenance;
 }
 
+export interface CheckpointMutationRequest extends GitContextRequestEnvelope {
+  authorityId: string;
+  lockToken: string;
+  purpose: string;
+  conversationId: ConversationId;
+  conversationHash: string;
+  at: string;
+}
+
+export interface CheckpointMutationResponse {
+  authorityId: string;
+  taskId: TaskId;
+  runId: RunId;
+  beforeHead: string;
+  checkpointHead: string;
+  stagedPaths: string[];
+  sessionGitlinkUpdated: boolean;
+}
+
 export interface AppendConversationRequest extends GitContextRequestEnvelope {
   sessionId: SessionId;
   role: ConversationRole;
@@ -384,6 +403,20 @@ export function isVerifyMutationRequest(value: unknown): value is VerifyMutation
   return isNonEmptyString(value["authorityId"])
     && isNonEmptyString(value["lockToken"])
     && (value["toolStatus"] === "completed" || value["toolStatus"] === "failed")
+    && isNonEmptyString(value["at"]);
+}
+
+export function isCheckpointMutationRequest(
+  value: unknown,
+): value is CheckpointMutationRequest {
+  if (!isRequestEnvelope(value)) {
+    return false;
+  }
+  return isNonEmptyString(value["authorityId"])
+    && isNonEmptyString(value["lockToken"])
+    && isBoundedString(value["purpose"], 500)
+    && isNonEmptyString(value["conversationId"])
+    && /^sha256:[a-f0-9]{64}$/.test(String(value["conversationHash"] ?? ""))
     && isNonEmptyString(value["at"]);
 }
 

@@ -6,6 +6,8 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   type AcquireMutationAuthorityRequest,
   type AcquireMutationAuthorityResponse,
+  type CheckpointMutationRequest,
+  type CheckpointMutationResponse,
   GIT_CONTEXT_PROTOCOL_VERSION,
   type ActiveContext,
   type AppendConversationRequest,
@@ -137,6 +139,19 @@ describe("Git Context Engine HTTP transport", () => {
     })).resolves.toMatchObject({
       status: "released",
       outcome: "no_changes",
+    });
+    await expect(client.checkpointMutation({
+      requestId: "REQ-checkpoint",
+      authorityId: authority.authority.authorityId,
+      lockToken: authority.authority.lockToken,
+      purpose: "Create the application entry point.",
+      conversationId: appended.conversation.conversationId,
+      conversationHash: "sha256:" + "a".repeat(64),
+      at: "2026-07-12T10:00:04+05:30",
+    })).resolves.toMatchObject({
+      authorityId: authority.authority.authorityId,
+      checkpointHead: "b".repeat(40),
+      sessionGitlinkUpdated: true,
     });
     await expect(client.recordRunStep({
       requestId: "REQ-4",
@@ -371,6 +386,23 @@ class TestGitContextService implements GitContextService {
         renamed: [],
         unexpectedPaths: [],
       },
+    };
+  }
+
+  async checkpointMutation(
+    input: CheckpointMutationRequest,
+  ): Promise<CheckpointMutationResponse> {
+    if (!this.authority || this.authority.authorityId !== input.authorityId) {
+      throw new Error("Authority not found.");
+    }
+    return {
+      authorityId: input.authorityId,
+      taskId: this.authority.taskId,
+      runId: this.authority.runId,
+      beforeHead: this.authority.beforeHead,
+      checkpointHead: "b".repeat(40),
+      stagedPaths: ["index.html"],
+      sessionGitlinkUpdated: true,
     };
   }
 

@@ -2,6 +2,8 @@ import type {
   ActiveContext,
   AcquireMutationAuthorityRequest,
   AcquireMutationAuthorityResponse,
+  CheckpointMutationRequest,
+  CheckpointMutationResponse,
   AppendConversationRequest,
   AppendConversationResponse,
   CreateTaskRequest,
@@ -34,6 +36,7 @@ export interface GitContextService {
     input: AcquireMutationAuthorityRequest,
   ): Promise<AcquireMutationAuthorityResponse>;
   verifyMutation(input: VerifyMutationRequest): Promise<VerifyMutationResponse>;
+  checkpointMutation(input: CheckpointMutationRequest): Promise<CheckpointMutationResponse>;
   startRun(input: StartRunRequest): Promise<StartRunResponse>;
   recordRunStep(input: RecordRunStepRequest): Promise<RecordRunStepResponse>;
 }

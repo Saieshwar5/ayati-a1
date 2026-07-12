@@ -3,6 +3,8 @@ import type {
   ActiveContext,
   AcquireMutationAuthorityRequest,
   AcquireMutationAuthorityResponse,
+  CheckpointMutationRequest,
+  CheckpointMutationResponse,
   AppendConversationRequest,
   AppendConversationResponse,
   CreateTaskRequest,
@@ -125,6 +127,16 @@ export class GitContextClient implements GitContextService {
     return await this.requestJson<VerifyMutationResponse>(
       "POST",
       "/mutation-authorities/" + encodeURIComponent(input.authorityId) + "/verify",
+      input,
+    );
+  }
+
+  async checkpointMutation(
+    input: CheckpointMutationRequest,
+  ): Promise<CheckpointMutationResponse> {
+    return await this.requestJson<CheckpointMutationResponse>(
+      "POST",
+      "/mutation-authorities/" + encodeURIComponent(input.authorityId) + "/checkpoint",
       input,
     );
   }
