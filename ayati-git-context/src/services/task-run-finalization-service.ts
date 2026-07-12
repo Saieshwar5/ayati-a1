@@ -9,7 +9,7 @@ import {
   completeRecoverableIdempotent,
   markRecoverableIdempotencyFailed,
 } from "../database/idempotency.js";
-import { synchronizePendingConversationFiles } from "../conversations/conversation-synchronizer.js";
+import { materializeConversationFile } from "../conversations/conversation-synchronizer.js";
 import { GitContextServiceError } from "../errors.js";
 import { commitTaskRunSession } from "../git/session-finalization.js";
 import {
@@ -19,9 +19,9 @@ import {
 import { stageTaskGitlink } from "../git/task-submodule.js";
 import {
   closeTaskConversationWithAssistant,
-  markConversationsCommitted,
+  markConversationCommitted,
+  readConversation,
   readConversationContentHash,
-  readPendingConversations,
 } from "../repositories/conversation-records.js";
 import {
   readTaskHeadRange,
@@ -48,10 +48,7 @@ import {
 import { renderRunEvidence, renderStepEvidence } from "../runs/run-evidence-renderer.js";
 
 export class TaskRunFinalizationService {
-  constructor(
-    private readonly database: ContextDatabase,
-    private readonly now: () => string,
-  ) {}
+  constructor(private readonly database: ContextDatabase) {}
 
   async finalize(
     input: FinalizeTaskRunRequest,
@@ -163,10 +160,9 @@ export class TaskRunFinalizationService {
     }
 
     try {
-      await synchronizePendingConversationFiles({
+      await materializeConversationFile({
         database: this.database,
-        now: this.now,
-        requestId: input.requestId,
+        conversationId: run.conversationId,
       });
       let record = requireFinalization(this.database, run.runId);
       const conversationHash = readConversationContentHash(this.database, run.conversationId);
@@ -189,7 +185,7 @@ export class TaskRunFinalizationService {
       const response = finalizationResponse(record, taskFinalizationHead, sessionCommit);
       this.database.transaction(() => {
         completeTaskRun(this.database, { runId: run.runId, outcome: record.outcome, at: input.at });
-        markConversationsCommitted(this.database, session.sessionId, sessionCommit);
+        markConversationCommitted(this.database, run.conversationId, sessionCommit);
         updateSessionHead(this.database, session.sessionId, sessionCommit);
         updateTaskRunFinalization(this.database, {
           runId: run.runId,
@@ -302,13 +298,14 @@ export class TaskRunFinalizationService {
       stepsContent: renderStepEvidence(steps),
       expectedSessionHead: record.sessionHeadBefore,
     });
-    const conversations = readPendingConversations(this.database, session.sessionId);
+    const conversation = readConversation(this.database, record.conversationId);
+    if (!conversation) throw new Error("Final task conversation is missing.");
     const commitPaths = [
       ".gitmodules",
       "tasks/" + record.taskId,
       paths.runRelative,
       paths.stepsRelative,
-      ...conversations.map((conversation) => conversation.filePath),
+      conversation.filePath,
     ];
     updateTaskRunFinalization(this.database, {
       runId: run.runId, phase: "session_staged", at,

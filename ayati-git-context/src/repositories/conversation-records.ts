@@ -19,9 +19,9 @@ export function appendConversationMessage(
   database: ContextDatabase,
   input: AppendConversationRequest,
 ): ConversationRef {
-  const closedConversation = input.role === "assistant"
-    ? undefined
-    : closeActiveConversation(database, input.sessionId, input.at);
+  if (input.role !== "assistant") {
+    closeActiveConversation(database, input.sessionId, input.at);
+  }
   const conversation = input.role === "assistant"
     ? requireActiveConversation(database, input.sessionId)
     : createConversationForNewInput(database, input);
@@ -62,19 +62,6 @@ export function appendConversationMessage(
       conversation.conversationId,
     );
   }
-  if (closedConversation) {
-    enqueueConversationFileSync(database, {
-      requestId: input.requestId,
-      conversation: closedConversation,
-      sourcePath: "conversations/" + pad(closedConversation.sequence, 6) + ".pending.md",
-      at: input.at,
-    });
-  }
-  enqueueConversationFileSync(database, {
-    requestId: input.requestId,
-    conversation,
-    at: input.at,
-  });
   return conversation;
 }
 
@@ -204,24 +191,18 @@ export function closeTaskConversationWithAssistant(database: ContextDatabase, in
     filePath,
     status: "closed",
   };
-  enqueueConversationFileSync(database, {
-    requestId: input.requestId,
-    conversation,
-    sourcePath: row.file_path,
-    at: input.at,
-  });
   return conversation;
 }
 
-export function markConversationsCommitted(
+export function markConversationCommitted(
   database: ContextDatabase,
-  sessionId: string,
+  conversationId: string,
   commit: string,
 ): void {
   database.prepare([
     "UPDATE conversation_segments SET status = 'committed', committed_sha = ?",
-    "WHERE session_id = ? AND status = 'closed'",
-  ].join(" ")).run(commit, sessionId);
+    "WHERE conversation_id = ? AND status = 'closed'",
+  ].join(" ")).run(commit, conversationId);
 }
 
 function createConversationForNewInput(
@@ -316,30 +297,6 @@ function requireActiveConversationIfPresent(
     "ORDER BY sequence DESC LIMIT 1",
   ].join(" ")).get(sessionId) as ConversationRow | undefined;
   return row ? conversationRef(row) : undefined;
-}
-
-function enqueueConversationFileSync(database: ContextDatabase, input: {
-  requestId: string;
-  conversation: ConversationRef;
-  sourcePath?: string;
-  at: string;
-}): void {
-  const operationId = input.requestId + ":" + input.conversation.conversationId;
-  database.prepare([
-    "INSERT INTO file_sync_operations(",
-    "operation_id, request_id, session_id, conversation_id, source_path, target_path,",
-    "expected_content_hash, status, created_at, completed_at, last_error",
-    ") VALUES (?, ?, ?, ?, ?, ?, NULL, 'pending', ?, NULL, NULL)",
-    "ON CONFLICT(operation_id) DO NOTHING",
-  ].join(" ")).run(
-    operationId,
-    input.requestId,
-    input.conversation.sessionId,
-    input.conversation.conversationId,
-    input.sourcePath ?? null,
-    input.conversation.filePath,
-    input.at,
-  );
 }
 
 export function readConversationContentHash(

@@ -401,18 +401,16 @@ describe("SQLite Git Context service", () => {
     })).toBe(context);
 
     const repositoryPath = session.session.repositoryPath;
-    const firstMarkdown = await readFile(
+    await expect(readFile(
       join(repositoryPath, "conversations", "000001-session.md"),
       "utf8",
-    );
-    expect(firstMarkdown).toContain("## User\n\nhello");
-    expect(firstMarkdown).toContain("## Assistant\n\nhello back");
+    )).rejects.toMatchObject({ code: "ENOENT" });
     await expect(readFile(
       join(repositoryPath, "conversations", "000001.pending.md"),
       "utf8",
     )).rejects.toMatchObject({ code: "ENOENT" });
     expect(await git(repositoryPath, ["rev-list", "--count", "HEAD"])).toBe("1");
-    expect(await git(repositoryPath, ["status", "--short"])).toContain("conversations/");
+    expect(await git(repositoryPath, ["status", "--short"])).toBe("");
   });
 
   it("recovers a journaled conversation append without duplicating it", async () => {
@@ -454,11 +452,11 @@ describe("SQLite Git Context service", () => {
     });
 
     expect(restored.session?.pendingConversationContext[0]?.messages).toHaveLength(1);
-    expect(await readFile(join(
+    await expect(readFile(join(
       session.session.repositoryPath,
       "conversations",
       "000001.pending.md",
-    ), "utf8")).toContain("survive the crash boundary");
+    ), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
     await expect(secondService.appendConversation(input)).resolves.toMatchObject({
       conversation: { sequence: 1 },
     });
@@ -468,6 +466,32 @@ describe("SQLite Git Context service", () => {
     expect(secondDatabase.prepare([
       "SELECT status FROM idempotency_requests WHERE request_id = ?",
     ].join(" ")).get(input.requestId)).toMatchObject({ status: "completed" });
+    expect(secondDatabase.prepare(
+      "SELECT COUNT(*) AS count FROM file_sync_operations",
+    ).get()).toMatchObject({ count: 0 });
+  });
+
+  it("updates cached uncommitted context for system events without creating files", async () => {
+    const { service } = await createService();
+    const session = await ensureSession(service);
+    const event = await service.appendConversation({
+      requestId: "REQ-system-event",
+      sessionId: session.session.sessionId,
+      role: "system_event",
+      content: "A scheduled local event was received.",
+      at: "2026-07-12T09:03:00+05:30",
+    });
+
+    const context = await service.getActiveContext({ sessionId: session.session.sessionId });
+
+    expect(context.session?.pendingConversationContext).toMatchObject([{
+      conversation: { conversationId: event.conversation.conversationId },
+      messages: [{ role: "system_event", content: "A scheduled local event was received." }],
+    }]);
+    await expect(readFile(
+      join(session.session.repositoryPath, event.conversation.filePath),
+      "utf8",
+    )).rejects.toMatchObject({ code: "ENOENT" });
   });
 
   it("starts one session run and exposes it through active context", async () => {

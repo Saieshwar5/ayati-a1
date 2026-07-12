@@ -298,6 +298,11 @@ describe("task checkout mutation boundary", () => {
     expect(await git(fixture.sessionRepository, [
       "diff", "--cached", "--name-only", "--", snapshot.runFile, snapshot.stepsFile,
     ])).toBe(snapshot.runFile + "\n" + snapshot.stepsFile);
+    const conversationPath = "conversations/000001-task-" + fixture.taskId + ".md";
+    await expect(readFile(
+      join(fixture.sessionRepository, conversationPath),
+      "utf8",
+    )).rejects.toMatchObject({ code: "ENOENT" });
 
     const finalizationInput = {
       requestId: "REQ-finalize-run",
@@ -364,7 +369,6 @@ describe("task checkout mutation boundary", () => {
       },
       taskHeadAfter: finalized.taskFinalizationCommit,
     });
-    const conversationPath = "conversations/000001-task-" + fixture.taskId + ".md";
     expect(await readFile(join(fixture.sessionRepository, conversationPath), "utf8"))
       .toContain("The application entry point is ready and verified.");
     expect(fixture.database.prepare(
@@ -379,8 +383,9 @@ describe("task checkout mutation boundary", () => {
     expect(fixture.database.prepare(
       "SELECT phase FROM task_run_finalizations WHERE run_id = ?",
     ).get(fixture.runId)).toMatchObject({ phase: "completed" });
-    expect((await fixture.service.getActiveContext({ sessionId: fixture.sessionId }))
-      .session?.session.head).toBe(finalized.sessionCommit);
+    const finalContext = await fixture.service.getActiveContext({ sessionId: fixture.sessionId });
+    expect(finalContext.session?.session.head).toBe(finalized.sessionCommit);
+    expect(finalContext.session?.pendingConversationContext).toEqual([]);
   });
 
   it("marks unexpected changes for recovery without removing them", async () => {

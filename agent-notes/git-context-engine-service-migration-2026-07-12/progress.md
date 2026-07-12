@@ -4,10 +4,10 @@ Created: 2026-07-12
 
 ## Status
 
-Current status: tenth implementation slice complete. The independent service
-now serves stable session identity from a startup-hydrated registry cache while
-keeping SQLite and Git as durable authorities, without changing current Ayati
-runtime behavior.
+Current status: eleventh implementation slice complete. The independent service
+now keeps live conversation exclusively in SQLite plus an uncommitted hot cache
+and materializes Markdown only at task-run finalization, without changing
+current Ayati runtime behavior.
 
 Implementation branch:
 
@@ -412,3 +412,43 @@ Next slice:
 - Verification:
   - pnpm --filter ayati-git-context build
   - pnpm --filter ayati-git-context test (53 tests)
+
+### 2026-07-12 Implementation Slice 11
+
+- Added ConversationHotCache for active and closed-but-uncommitted conversation
+  segments only.
+- Hydrated the hot cache from SQLite when the service starts and on explicit
+  cache misses.
+- Changed user, assistant, and system-event append flow to:
+  - persist the segment/message transaction in SQLite,
+  - refresh the uncommitted conversation cache,
+  - invalidate prepared ActiveContext,
+  - return without writing a conversation file.
+- Removed new per-message file_sync_operations and repeated Markdown rendering.
+- Kept the old file-sync table and one-time startup replay only for compatibility
+  with journal entries created by earlier migration slices.
+- Added a live message-content hash in the cache so pending context revisions
+  change before a Markdown file exists.
+- Changed getActiveContext to source pending conversation messages and refs from
+  the hot cache before checking the prepared ActiveContext cache.
+- Added explicit task-finalization materialization that renders one complete
+  task conversation Markdown file, writes it atomically, and stores its final
+  rendered SHA-256 hash.
+- Changed task-run session commits to include only the owning task conversation,
+  run evidence, .gitmodules, and task gitlink.
+- Changed committed-state reduction to mark and evict only the finalized task
+  conversation; unrelated harmless conversations remain uncommitted and hot.
+- Refreshed the conversation cache in a finally boundary when task finalization
+  closes conversation state, including failed finalization attempts.
+- Added tests proving:
+  - user and assistant context is served from uncommitted state,
+  - system events update the same cache path,
+  - no pending or session Markdown file is created per message,
+  - restart rebuilds uncommitted context from SQLite,
+  - new appends create no file-sync journal records,
+  - the task conversation file does not exist before finalization,
+  - finalization materializes and commits it once,
+  - committed task conversation leaves the hot cache.
+- Verification:
+  - pnpm --filter ayati-git-context build
+  - pnpm --filter ayati-git-context test (54 tests)

@@ -15,6 +15,27 @@ import {
 import { readSession } from "../repositories/session-records.js";
 import { conversationContentHash, renderConversation } from "./conversation-renderer.js";
 
+export async function materializeConversationFile(input: {
+  database: ContextDatabase;
+  conversationId: string;
+}): Promise<{ filePath: string; contentHash: string }> {
+  const conversation = readConversation(input.database, input.conversationId);
+  if (!conversation) throw new Error("Conversation does not exist for materialization.");
+  const session = readSession(input.database, conversation.sessionId);
+  if (!session) throw new Error("Conversation session does not exist for materialization.");
+  const content = renderConversation(
+    conversation,
+    readConversationMessages(input.database, conversation.conversationId),
+  );
+  const contentHash = conversationContentHash(content);
+  await writeFileAtomically(
+    safeRepositoryPath(session.repositoryPath, conversation.filePath),
+    content,
+  );
+  updateConversationContentHash(input.database, conversation.conversationId, contentHash);
+  return { filePath: conversation.filePath, contentHash };
+}
+
 export async function synchronizePendingConversationFiles(input: {
   database: ContextDatabase;
   now: () => string;
