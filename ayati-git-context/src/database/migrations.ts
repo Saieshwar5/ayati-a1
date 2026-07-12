@@ -175,6 +175,27 @@ const MIGRATIONS: Migration[] = [
       "CREATE INDEX tasks_status ON tasks(status, updated_at DESC);",
     ].join("\n"),
   },
+  {
+    version: 4,
+    sql: [
+      "CREATE TABLE session_task_mounts (",
+      "  session_id TEXT NOT NULL REFERENCES sessions(session_id),",
+      "  task_id TEXT NOT NULL REFERENCES tasks(task_id),",
+      "  checkout_path TEXT NOT NULL UNIQUE,",
+      "  canonical_repository TEXT NOT NULL,",
+      "  branch TEXT NOT NULL,",
+      "  mounted_head TEXT,",
+      "  status TEXT NOT NULL CHECK (status IN ('initializing', 'ready', 'recovery_required', 'removed')),",
+      "  created_at TEXT NOT NULL,",
+      "  updated_at TEXT NOT NULL,",
+      "  last_error TEXT,",
+      "  PRIMARY KEY(session_id, task_id)",
+      ");",
+      "",
+      "CREATE INDEX session_task_mounts_recovery",
+      "ON session_task_mounts(status, updated_at);",
+    ].join("\n"),
+  },
 ];
 
 export function applyMigrations(database: DatabaseSync, now: () => string): void {

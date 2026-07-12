@@ -10,6 +10,8 @@ import type {
   GetTaskRequest,
   GetTaskResponse,
   HealthResponse,
+  MountTaskRequest,
+  MountTaskResponse,
   RecordRunStepRequest,
   RecordRunStepResponse,
   StartRunRequest,
@@ -23,6 +25,7 @@ export interface GitContextService {
   appendConversation(input: AppendConversationRequest): Promise<AppendConversationResponse>;
   createTask(input: CreateTaskRequest): Promise<CreateTaskResponse>;
   getTask(input: GetTaskRequest): Promise<GetTaskResponse>;
+  mountTask(input: MountTaskRequest): Promise<MountTaskResponse>;
   startRun(input: StartRunRequest): Promise<StartRunResponse>;
   recordRunStep(input: RecordRunStepRequest): Promise<RecordRunStepResponse>;
 }

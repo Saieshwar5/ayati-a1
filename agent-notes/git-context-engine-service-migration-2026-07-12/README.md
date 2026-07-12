@@ -2,10 +2,10 @@
 
 Created: 2026-07-12
 
-Status: fourth implementation slice complete. The standalone service now owns
-daily session repositories and independent canonical task repositories. Task
-creation is SQLite-journaled, Git-native, idempotent, and restart-recoverable.
-Per-session task submodules and Ayati runtime integration have not started.
+Status: fifth implementation slice complete. The standalone service now owns
+daily session repositories, canonical task repositories, and lazy per-session
+task submodules with exact Git pointers. Task checkout mutation authority and
+Ayati runtime integration have not started.
 
 Implementation branch:
 

@@ -1,4 +1,4 @@
-export const GIT_CONTEXT_PROTOCOL_VERSION = 3;
+export const GIT_CONTEXT_PROTOCOL_VERSION = 4;
 
 export type SessionId = string;
 export type TaskId = string;
@@ -47,6 +47,18 @@ export interface TaskCatalogEntry extends TaskRef {
   createdSessionId: SessionId;
   createdAt: string;
   updatedAt: string;
+}
+
+export type TaskMountStatus = "initializing" | "ready" | "recovery_required" | "removed";
+
+export interface TaskMountRef {
+  sessionId: SessionId;
+  taskId: TaskId;
+  checkoutPath: string;
+  canonicalRepository: string;
+  branch: string;
+  mountedHead: string;
+  status: TaskMountStatus;
 }
 
 export interface RunRef {
@@ -173,6 +185,18 @@ export interface GetTaskResponse {
   task: TaskCatalogEntry;
 }
 
+export interface MountTaskRequest extends GitContextRequestEnvelope {
+  sessionId: SessionId;
+  taskId: TaskId;
+  expectedTaskHead?: string;
+  at: string;
+}
+
+export interface MountTaskResponse {
+  mount: TaskMountRef;
+  created: boolean;
+}
+
 export interface AppendConversationRequest extends GitContextRequestEnvelope {
   sessionId: SessionId;
   role: ConversationRole;
@@ -254,6 +278,17 @@ export function isCreateTaskRequest(value: unknown): value is CreateTaskRequest 
   return isNonEmptyString(value["sessionId"])
     && isBoundedString(value["title"], 120)
     && isBoundedString(value["objective"], 2_000)
+    && isNonEmptyString(value["at"]);
+}
+
+export function isMountTaskRequest(value: unknown): value is MountTaskRequest {
+  if (!isRequestEnvelope(value)) {
+    return false;
+  }
+  return isNonEmptyString(value["sessionId"])
+    && /^W-\d{8}-\d{4}$/.test(String(value["taskId"] ?? ""))
+    && (value["expectedTaskHead"] === undefined
+      || /^[a-f0-9]{40}$/.test(String(value["expectedTaskHead"])))
     && isNonEmptyString(value["at"]);
 }
 

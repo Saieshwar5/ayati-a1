@@ -4,9 +4,9 @@ Created: 2026-07-12
 
 ## Status
 
-Current status: fourth implementation slice complete. The independent service
-also creates, catalogs, verifies, reads, and recovers canonical task
-repositories without changing current Ayati runtime behavior.
+Current status: fifth implementation slice complete. The independent service
+also mounts selected tasks lazily into sessions as verified normal submodule
+checkouts without changing current Ayati runtime behavior.
 
 Implementation branch:
 
@@ -42,7 +42,7 @@ Implementation branch:
 - [x] Store new session context directly on main.
 - [x] Add conversation segments and active cache.
 - [x] Add canonical task repository store.
-- [ ] Mount task repositories as session submodules.
+- [x] Mount task repositories as session submodules.
 - [ ] Add task checkout mutation boundary.
 - [ ] Add verified task checkpoint commits.
 - [ ] Persist task-run evidence in session repository.
@@ -76,11 +76,12 @@ Completed:
 
 Next slice:
 
-    per-task session submodules
-    -> lazy task checkout mounting
-    -> exact session gitlinks
-    -> clean durable-branch verification
-    -> reopen existing task in a later session
+    task checkout mutation boundary
+    -> ActiveTaskCheckout authority
+    -> task mutation lock
+    -> path containment and symlink resolution
+    -> tool mutations rooted only in the selected checkout
+    -> deterministic changed-path provenance
 
 ## Progress Log
 
@@ -217,3 +218,33 @@ Next slice:
   - pnpm test (1,111 total workspace tests)
   - Unix-socket task create/read/retry smoke test across a process restart
   - Bare repository history and descriptor inspection
+
+### 2026-07-12 Implementation Slice 5
+
+- Advanced the typed service protocol to version 4.
+- Added mount-task HTTP/client/service contracts with expected task HEAD.
+- Added the SQLite session_task_mounts operational journal and recovery states.
+- Added lazy submodule mounting at tasks/<task-id>.
+- Added portable relative `.gitmodules` URLs targeting canonical sibling task
+  repositories.
+- Kept task checkouts attached to the durable main branch.
+- Verified canonical origin, clean status, exact checkout HEAD, and exact
+  160000 session-index gitlink before acknowledging a mount.
+- Kept session HEAD unchanged during mounting so finalization retains commit
+  ownership.
+- Added restart recovery from SQLite-only mounts and missing working checkouts.
+- Refused dirty, symlinked, unrelated, mismatched-origin, and mismatched-HEAD
+  checkout states without destructive resets.
+- Extracted task lifecycle orchestration from the broad SQLite service into a
+  focused TaskLifecycleService.
+- Added tests for contracts, HTTP round trips, lazy selection, idempotency,
+  relative URLs, branch attachment, Git index pointers, cross-session reuse,
+  crash recovery, missing checkout restoration, and dirty-checkout safety.
+- Verification:
+  - pnpm --filter ayati-git-context build
+  - pnpm --filter ayati-git-context test (33 tests)
+  - pnpm build
+  - pnpm test (1,118 total workspace tests)
+  - Unix-socket create/mount/retry smoke test across a process restart
+  - Session HEAD, 160000 gitlink, attached branch, clean checkout, and relative
+    `.gitmodules` inspection

@@ -11,6 +11,8 @@ import {
   type GetTaskRequest,
   type GetTaskResponse,
   type HealthResponse,
+  type MountTaskRequest,
+  type MountTaskResponse,
   type RecordRunStepRequest,
   type RecordRunStepResponse,
   type StartRunRequest,
@@ -51,6 +53,10 @@ export class ContractOnlyGitContextService implements GitContextService {
   }
 
   async getTask(_input: GetTaskRequest): Promise<GetTaskResponse> {
+    throw notReady();
+  }
+
+  async mountTask(_input: MountTaskRequest): Promise<MountTaskResponse> {
     throw notReady();
   }
 

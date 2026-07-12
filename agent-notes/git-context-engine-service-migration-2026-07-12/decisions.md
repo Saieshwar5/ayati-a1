@@ -141,6 +141,15 @@ session gitlink is committed.
   `Task:` identity line but may evolve after later successful task runs.
 - SQLite task rows are operational catalog locators. The task Git branch and
   tree remain the durable task-state authority.
+- Session task checkouts are lazy submodules at tasks/<task-id>. Canonical task
+  repositories remain bare and session checkouts stay on attached main.
+- `.gitmodules` stores a portable path relative from the session repository to
+  the sibling canonical tasks directory. Runtime cloning enables Git's local
+  file transport only for the individual lifecycle command.
+- Mounting stages `.gitmodules` and the exact task gitlink but does not create a
+  session commit. Task-run finalization or session sealing owns that commit.
+- SQLite session_task_mounts records operational mount and recovery state; the
+  session Git index and task repository remain the exact content authorities.
 
 ## Open Implementation Choices
 
@@ -154,7 +163,6 @@ the relevant implementation slice:
 - Retention period for read-only session-run tool journals.
 - Whether semantic summary improvement is enabled initially.
 - Whether durable task collections use symlinks or small task-reference files.
-- Exact task repository URL format for portable relative submodules.
 - How an existing user-owned external Git repository is adopted without
   changing its remotes or policies.
 - Exact naming convention for conversation files after multiple runs target

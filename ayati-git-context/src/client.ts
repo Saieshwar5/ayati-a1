@@ -11,6 +11,8 @@ import type {
   GetTaskRequest,
   GetTaskResponse,
   HealthResponse,
+  MountTaskRequest,
+  MountTaskResponse,
   RecordRunStepRequest,
   RecordRunStepResponse,
   StartRunRequest,
@@ -92,6 +94,15 @@ export class GitContextClient implements GitContextService {
     return await this.requestJson<GetTaskResponse>(
       "GET",
       "/tasks/" + encodeURIComponent(input.taskId),
+    );
+  }
+
+  async mountTask(input: MountTaskRequest): Promise<MountTaskResponse> {
+    return await this.requestJson<MountTaskResponse>(
+      "POST",
+      "/sessions/" + encodeURIComponent(input.sessionId)
+        + "/tasks/" + encodeURIComponent(input.taskId) + "/mount",
+      input,
     );
   }
 

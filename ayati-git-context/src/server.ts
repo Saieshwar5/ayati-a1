@@ -5,6 +5,7 @@ import {
   isAppendConversationRequest,
   isCreateTaskRequest,
   isEnsureActiveSessionRequest,
+  isMountTaskRequest,
   isRecordRunStepRequest,
   isStartRunRequest,
 } from "./contracts.js";
@@ -153,6 +154,23 @@ export class GitContextHttpServer {
         return;
       }
 
+      const mountMatch = url.pathname.match(
+        /^\/sessions\/([^/]+)\/tasks\/([^/]+)\/mount$/,
+      );
+      if (method === "POST" && mountMatch) {
+        const body = await readJsonBody(request, this.maxBodyBytes);
+        if (!isMountTaskRequest(body)) {
+          throw invalidRequest("Invalid mount-task request.");
+        }
+        const sessionId = decodePathComponent(mountMatch[1] ?? "");
+        const taskId = decodePathComponent(mountMatch[2] ?? "");
+        if (body.sessionId !== sessionId || body.taskId !== taskId) {
+          throw invalidRequest("Session and task IDs in request path and body must match.");
+        }
+        sendJson(response, 200, await this.service.mountTask(body));
+        return;
+      }
+
       if (method === "POST" && url.pathname === "/runs/start") {
         const body = await readJsonBody(request, this.maxBodyBytes);
         if (!isStartRunRequest(body)) {
@@ -178,7 +196,8 @@ export class GitContextHttpServer {
 
       const knownPath = isKnownPath(url.pathname)
         || Boolean(runStepMatch)
-        || Boolean(taskMatch);
+        || Boolean(taskMatch)
+        || Boolean(mountMatch);
       throw new GitContextServiceError({
         code: knownPath ? "METHOD_NOT_ALLOWED" : "NOT_FOUND",
         message: knownPath

@@ -3,6 +3,7 @@ import {
   isAppendConversationRequest,
   isCreateTaskRequest,
   isEnsureActiveSessionRequest,
+  isMountTaskRequest,
   isRecordRunStepRequest,
   isRequestEnvelope,
   isStartRunRequest,
@@ -65,6 +66,22 @@ describe("Git Context Engine contracts", () => {
       title: " ",
       objective: "Build something.",
       at: "2026-07-12T10:00:00+05:30",
+    })).toBe(false);
+  });
+
+  it("validates task mount identity and expected HEAD", () => {
+    expect(isMountTaskRequest({
+      requestId: "REQ-mount",
+      sessionId: "S-20260712-local",
+      taskId: "W-20260712-0001",
+      expectedTaskHead: "a".repeat(40),
+      at: "2026-07-12T10:01:00+05:30",
+    })).toBe(true);
+    expect(isMountTaskRequest({
+      requestId: "REQ-mount",
+      sessionId: "S-20260712-local",
+      taskId: "../../escape",
+      at: "2026-07-12T10:01:00+05:30",
     })).toBe(false);
   });
 

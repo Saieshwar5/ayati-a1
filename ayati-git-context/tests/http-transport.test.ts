@@ -16,6 +16,8 @@ import {
   type GetTaskRequest,
   type GetTaskResponse,
   type HealthResponse,
+  type MountTaskRequest,
+  type MountTaskResponse,
   type RecordRunStepRequest,
   type RecordRunStepResponse,
   type StartRunRequest,
@@ -83,6 +85,21 @@ describe("Git Context Engine HTTP transport", () => {
     await expect(client.getTask({
       taskId: createdTask.task.taskId,
     })).resolves.toEqual({ task: createdTask.task });
+    await expect(client.mountTask({
+      requestId: "REQ-mount",
+      sessionId: ensured.session.sessionId,
+      taskId: createdTask.task.taskId,
+      expectedTaskHead: createdTask.task.head,
+      at: "2026-07-12T10:00:01+05:30",
+    })).resolves.toMatchObject({
+      created: true,
+      mount: {
+        sessionId: ensured.session.sessionId,
+        taskId: createdTask.task.taskId,
+        mountedHead: createdTask.task.head,
+        status: "ready",
+      },
+    });
 
     const started = await client.startRun({
       requestId: "REQ-3",
@@ -264,6 +281,24 @@ class TestGitContextService implements GitContextService {
       throw new Error("Task not found.");
     }
     return { task: this.task };
+  }
+
+  async mountTask(input: MountTaskRequest): Promise<MountTaskResponse> {
+    if (!this.task || this.task.taskId !== input.taskId) {
+      throw new Error("Task not found.");
+    }
+    return {
+      mount: {
+        sessionId: input.sessionId,
+        taskId: input.taskId,
+        checkoutPath: "/tmp/session/tasks/" + input.taskId,
+        canonicalRepository: this.task.repositoryPath,
+        branch: this.task.branch,
+        mountedHead: this.task.head,
+        status: "ready",
+      },
+      created: true,
+    };
   }
 
   async startRun(input: StartRunRequest): Promise<StartRunResponse> {
