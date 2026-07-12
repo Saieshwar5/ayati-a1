@@ -12,6 +12,8 @@ import {
   type EnsureActiveSessionResponse,
   type GetActiveContextRequest,
   type HealthResponse,
+  type RecordRunStepRequest,
+  type RecordRunStepResponse,
   type StartRunRequest,
   type StartRunResponse,
 } from "../src/contracts.js";
@@ -75,6 +77,23 @@ describe("Git Context Engine HTTP transport", () => {
     expect(started.run).toMatchObject({
       runId: "R-20260712-0001",
       runClass: "session",
+    });
+    await expect(client.recordRunStep({
+      requestId: "REQ-4",
+      sessionId: ensured.session.sessionId,
+      runId: started.run.runId,
+      step: 1,
+      tool: "read_files",
+      purpose: "Inspect the current files.",
+      status: "completed",
+      at: "2026-07-12T10:00:01+05:30",
+    })).resolves.toEqual({
+      toolCall: {
+        step: 1,
+        tool: "read_files",
+        purpose: "Inspect the current files.",
+        status: "completed",
+      },
     });
 
     const context = await client.getActiveContext({
@@ -212,6 +231,17 @@ class TestGitContextService implements GitContextService {
         sessionId: input.sessionId,
         conversationId: input.conversationId,
         runClass: "session",
+      },
+    };
+  }
+
+  async recordRunStep(input: RecordRunStepRequest): Promise<RecordRunStepResponse> {
+    return {
+      toolCall: {
+        step: input.step,
+        tool: input.tool,
+        purpose: input.purpose,
+        status: input.status,
       },
     };
   }

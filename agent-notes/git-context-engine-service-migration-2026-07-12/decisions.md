@@ -120,6 +120,13 @@ session gitlink is committed.
 - TCP is supported for tests and development.
 - The executable reports degraded readiness until persistence is configured;
   it does not use a disposable in-memory production store.
+- The operational database uses the Node built-in node:sqlite API, avoiding a
+  native third-party dependency.
+- SQLite runs in WAL mode with foreign keys, full synchronous durability, and
+  a serialized service write queue.
+- Incoming user and system-event messages create conversation segments;
+  assistant messages append to the active segment.
+- Only one run may be active per session in the first implementation.
 
 ## Open Implementation Choices
 
@@ -129,7 +136,6 @@ the relevant implementation slice:
 - Exact process supervision and startup relationship between ayati-main and
   the independent service.
 - Production socket location and authentication policy for development TCP.
-- Exact SQLite migration library.
 - Safety-checkpoint age and size thresholds.
 - Retention period for read-only session-run tool journals.
 - Whether semantic summary improvement is enabled initially.

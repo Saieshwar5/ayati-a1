@@ -2,10 +2,11 @@
 
 Created: 2026-07-12
 
-Status: first implementation slice complete. The standalone workspace package,
-typed contracts, structured errors, Unix/TCP HTTP transport, typed client, and
-contract-only executable foundation are implemented. Persistence and Ayati
-runtime integration have not started.
+Status: second implementation slice complete. The standalone service now has a
+file-backed SQLite operational journal with migrations, WAL, idempotent active
+session/conversation/run operations, purpose-bearing run steps, and restart
+recovery. Git session repositories and Ayati runtime integration have not
+started.
 
 Implementation branch:
 

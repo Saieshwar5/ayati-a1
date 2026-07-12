@@ -4,8 +4,9 @@ Created: 2026-07-12
 
 ## Status
 
-Current status: first implementation slice complete. The independent package
-and transport contracts exist without changing current Ayati runtime behavior.
+Current status: second implementation slice complete. The independent service
+persists live session, conversation, run, and step state in SQLite without
+changing current Ayati runtime behavior.
 
 Implementation branch:
 
@@ -35,7 +36,7 @@ Implementation branch:
 - [x] Confirm service package/module placement.
 - [x] Define API contracts and structured errors.
 - [ ] Extract repository operations from the current session store.
-- [ ] Add SQLite operational journal.
+- [x] Add SQLite operational journal.
 - [x] Start independent local service foundation.
 - [x] Add typed Git Context Engine client.
 - [ ] Store new session context directly on main.
@@ -75,10 +76,10 @@ Completed:
 
 Next slice:
 
-    SQLite operational journal
-    -> durable active session identity
-    -> idempotency records
-    -> conversation and run journal foundation
+    session Git repository on main
+    -> Markdown conversation working files
+    -> SQLite-to-file durability boundary
+    -> session context cache keyed by pending digest
 
 ## Progress Log
 
@@ -120,4 +121,41 @@ Next slice:
   - pnpm --filter ayati-git-context build
   - pnpm --filter ayati-git-context test
   - executable Unix-socket health smoke test
+  - pnpm build
+
+### 2026-07-12 Implementation Slice 2
+
+- Added a file-backed ContextDatabase using built-in node:sqlite.
+- Added idempotent schema migrations.
+- Enabled WAL, foreign keys, busy timeout, and full synchronous durability.
+- Added the serialized service write queue.
+- Added atomic idempotency records with canonical request hashing.
+- Added durable tables for:
+  - sessions,
+  - conversation segments,
+  - messages,
+  - runs,
+  - run steps,
+  - pending finalization transactions.
+- Implemented active session creation and deterministic identity.
+- Implemented conversation segment ordering and assistant append behavior.
+- Implemented one active session run per session.
+- Implemented purpose-bearing durable run-step records.
+- Implemented active-context reconstruction from SQLite.
+- Replaced the contract-only executable with the SQLite-backed service.
+- Preserved the contract-only service for transport/error tests.
+- Added tests for:
+  - database migrations and PRAGMA settings,
+  - idempotent retries,
+  - conflicting request-ID reuse,
+  - conversation ordering,
+  - active-run enforcement,
+  - run-step context,
+  - rollover gating,
+  - full process-level restart restoration.
+- Verification:
+  - pnpm --filter ayati-git-context build
+  - pnpm --filter ayati-git-context test
+  - Unix-socket persistence and restart smoke test
+  - pnpm install --frozen-lockfile --offline
   - pnpm build

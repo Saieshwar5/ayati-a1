@@ -7,6 +7,8 @@ import type {
   EnsureActiveSessionResponse,
   GetActiveContextRequest,
   HealthResponse,
+  RecordRunStepRequest,
+  RecordRunStepResponse,
   StartRunRequest,
   StartRunResponse,
 } from "./contracts.js";
@@ -80,6 +82,14 @@ export class GitContextClient implements GitContextService {
 
   async startRun(input: StartRunRequest): Promise<StartRunResponse> {
     return await this.requestJson<StartRunResponse>("POST", "/runs/start", input);
+  }
+
+  async recordRunStep(input: RecordRunStepRequest): Promise<RecordRunStepResponse> {
+    return await this.requestJson<RecordRunStepResponse>(
+      "POST",
+      "/runs/" + encodeURIComponent(input.runId) + "/steps",
+      input,
+    );
   }
 
   private async requestJson<T>(

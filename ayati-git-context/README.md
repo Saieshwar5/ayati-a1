@@ -8,10 +8,12 @@ Current implementation status:
 - Structured error contracts.
 - HTTP/JSON server with Unix-socket and TCP support.
 - Typed client.
-- Contract-only executable health surface.
+- File-backed built-in SQLite operational journal.
+- Idempotent active-session, conversation, run, and run-step operations.
+- Restart-safe active-context reconstruction.
 
-Git repositories, SQLite persistence, session lifecycle, task repositories,
-and Ayati runtime integration are intentionally deferred to later verified
+Git session repositories, Markdown conversation files, task repositories, and
+Ayati runtime integration are intentionally deferred to later verified
 migration slices.
 
 Build and test:
@@ -29,3 +31,9 @@ The default socket is:
     /tmp/ayati-git-context.sock
 
 Override it with AYATI_GIT_CONTEXT_SOCKET.
+
+The default data root is:
+
+    data/git-context-engine
+
+Override it with AYATI_GIT_CONTEXT_DATA_DIR.

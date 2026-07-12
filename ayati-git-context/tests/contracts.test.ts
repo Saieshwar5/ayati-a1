@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   isAppendConversationRequest,
   isEnsureActiveSessionRequest,
+  isRecordRunStepRequest,
   isRequestEnvelope,
   isStartRunRequest,
 } from "../src/contracts.js";
@@ -61,6 +62,29 @@ describe("Git Context Engine contracts", () => {
       sessionId: "S-1",
       conversationId: "C-1",
       trigger: "timer",
+    })).toBe(false);
+  });
+
+  it("validates durable run-step records", () => {
+    expect(isRecordRunStepRequest({
+      requestId: "REQ-4",
+      sessionId: "S-1",
+      runId: "R-1",
+      step: 1,
+      tool: "read_files",
+      purpose: "Inspect the current implementation.",
+      status: "completed",
+      at: "2026-07-12T10:00:00+05:30",
+    })).toBe(true);
+    expect(isRecordRunStepRequest({
+      requestId: "REQ-4",
+      sessionId: "S-1",
+      runId: "R-1",
+      step: 0,
+      tool: "read_files",
+      purpose: "",
+      status: "running",
+      at: "2026-07-12T10:00:00+05:30",
     })).toBe(false);
   });
 

@@ -4,6 +4,7 @@ import type { AddressInfo } from "node:net";
 import {
   isAppendConversationRequest,
   isEnsureActiveSessionRequest,
+  isRecordRunStepRequest,
   isStartRunRequest,
 } from "./contracts.js";
 import {
@@ -144,7 +145,21 @@ export class GitContextHttpServer {
         return;
       }
 
-      const knownPath = isKnownPath(url.pathname);
+      const runStepMatch = url.pathname.match(/^\/runs\/([^/]+)\/steps$/);
+      if (method === "POST" && runStepMatch) {
+        const body = await readJsonBody(request, this.maxBodyBytes);
+        if (!isRecordRunStepRequest(body)) {
+          throw invalidRequest("Invalid record-run-step request.");
+        }
+        const pathRunId = decodePathComponent(runStepMatch[1] ?? "");
+        if (pathRunId !== body.runId) {
+          throw invalidRequest("Run ID in request path and body must match.");
+        }
+        sendJson(response, 200, await this.service.recordRunStep(body));
+        return;
+      }
+
+      const knownPath = isKnownPath(url.pathname) || Boolean(runStepMatch);
       throw new GitContextServiceError({
         code: knownPath ? "METHOD_NOT_ALLOWED" : "NOT_FOUND",
         message: knownPath
@@ -205,6 +220,14 @@ function invalidRequest(message: string): GitContextServiceError {
   });
 }
 
+function decodePathComponent(value: string): string {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    throw invalidRequest("Request path contains invalid percent encoding.");
+  }
+}
+
 function sendJson(response: ServerResponse, statusCode: number, value: unknown): void {
   if (response.headersSent) {
     return;
@@ -239,6 +262,8 @@ function errorStatusCode(code: GitContextErrorCode): number {
     case "PAYLOAD_TOO_LARGE":
       return 413;
     case "SESSION_HEAD_MISMATCH":
+    case "IDEMPOTENCY_CONFLICT":
+    case "RUN_ALREADY_ACTIVE":
     case "TASK_LOCKED":
     case "TASK_CHECKOUT_DIRTY":
     case "TASK_HEAD_MISMATCH":

@@ -151,6 +151,25 @@ export interface StartRunResponse {
   run: RunRef;
 }
 
+export interface RecordRunStepRequest extends GitContextRequestEnvelope {
+  sessionId: SessionId;
+  runId: RunId;
+  step: number;
+  tool: string;
+  purpose: string;
+  status: ToolCallContext["status"];
+  boundedInput?: unknown;
+  boundedOutput?: unknown;
+  outputHash?: string;
+  verification?: unknown;
+  workState?: unknown;
+  at: string;
+}
+
+export interface RecordRunStepResponse {
+  toolCall: ToolCallContext;
+}
+
 export function isRequestEnvelope(
   value: unknown,
 ): value is GitContextRequestEnvelope & Record<string, unknown> {
@@ -192,6 +211,24 @@ export function isStartRunRequest(value: unknown): value is StartRunRequest {
       || value["trigger"] === "system_event"
       || value["trigger"] === "internal")
     && optionalNonEmptyString(value["at"]);
+}
+
+export function isRecordRunStepRequest(value: unknown): value is RecordRunStepRequest {
+  if (!isRequestEnvelope(value)) {
+    return false;
+  }
+  return isNonEmptyString(value["sessionId"])
+    && isNonEmptyString(value["runId"])
+    && typeof value["step"] === "number"
+    && Number.isInteger(value["step"])
+    && value["step"] > 0
+    && isNonEmptyString(value["tool"])
+    && isNonEmptyString(value["purpose"])
+    && (value["status"] === "completed"
+      || value["status"] === "failed"
+      || value["status"] === "blocked")
+    && optionalNonEmptyString(value["outputHash"])
+    && isNonEmptyString(value["at"]);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

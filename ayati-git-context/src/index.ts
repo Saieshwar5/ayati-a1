@@ -2,5 +2,8 @@ export * from "./client.js";
 export * from "./contract-only-service.js";
 export * from "./contracts.js";
 export * from "./errors.js";
+export * from "./database/database.js";
 export * from "./server.js";
 export * from "./service.js";
+export * from "./services/sqlite-git-context-service.js";
+export * from "./write-queue.js";

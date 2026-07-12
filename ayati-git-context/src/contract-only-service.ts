@@ -7,6 +7,8 @@ import {
   type EnsureActiveSessionResponse,
   type GetActiveContextRequest,
   type HealthResponse,
+  type RecordRunStepRequest,
+  type RecordRunStepResponse,
   type StartRunRequest,
   type StartRunResponse,
 } from "./contracts.js";
@@ -41,6 +43,10 @@ export class ContractOnlyGitContextService implements GitContextService {
   }
 
   async startRun(_input: StartRunRequest): Promise<StartRunResponse> {
+    throw notReady();
+  }
+
+  async recordRunStep(_input: RecordRunStepRequest): Promise<RecordRunStepResponse> {
     throw notReady();
   }
 }
