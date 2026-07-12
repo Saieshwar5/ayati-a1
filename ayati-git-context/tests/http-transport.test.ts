@@ -186,6 +186,8 @@ class TestGitContextService implements GitContextService {
             session: this.session,
             summary: "",
             pendingConversation: [],
+            pendingConversationContext: [],
+            pendingDigest: "sha256:empty",
             recentCommits: [],
           }
         : null,

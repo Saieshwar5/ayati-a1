@@ -1,9 +1,16 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { promisify } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
 import { ContextDatabase } from "../src/database/database.js";
+import { beginRecoverableIdempotent } from "../src/database/idempotency.js";
+import { appendConversationMessage } from "../src/repositories/conversation-records.js";
+import { insertSession } from "../src/repositories/session-records.js";
 import { SqliteGitContextService } from "../src/services/sqlite-git-context-service.js";
+
+const execFileAsync = promisify(execFile);
 
 const temporaryDirectories: string[] = [];
 const services: SqliteGitContextService[] = [];
@@ -57,6 +64,54 @@ describe("SQLite Git Context service", () => {
     });
     expect(independentlyEnsured.created).toBe(false);
     expect(independentlyEnsured.session.sessionId).toBe(first.session.sessionId);
+  });
+
+  it("creates a main-branch session repository with one identity commit", async () => {
+    const { service } = await createService();
+    const result = await ensureSession(service);
+    const repositoryPath = result.session.repositoryPath;
+    const metadata = JSON.parse(
+      await readFile(join(repositoryPath, "session", "meta.json"), "utf8"),
+    ) as Record<string, unknown>;
+
+    expect(result.session.head).toMatch(/^[a-f0-9]{40}$/);
+    expect(metadata).toMatchObject({
+      sessionId: result.session.sessionId,
+      date: "2026-07-12",
+      timezone: "Asia/Kolkata",
+      agentId: "local",
+    });
+    expect(await git(repositoryPath, ["branch", "--show-current"])).toBe("main");
+    expect(await git(repositoryPath, ["rev-list", "--count", "HEAD"])).toBe("1");
+    expect(await git(repositoryPath, ["log", "-1", "--pretty=%s"])).toBe(
+      "session: initialize " + result.session.sessionId,
+    );
+  });
+
+  it("resumes a repository interrupted after git initialization", async () => {
+    const directory = await createTemporaryDirectory();
+    const database = await ContextDatabase.open({ path: join(directory, "context.db") });
+    const repositoryPath = join(directory, "sessions", "S-20260712-local");
+    insertSession(database, {
+      sessionId: "S-20260712-local",
+      date: "2026-07-12",
+      timezone: "Asia/Kolkata",
+      agentId: "local",
+      repositoryPath,
+      createdAt: "2026-07-12T09:00:00+05:30",
+    });
+    await mkdir(repositoryPath, { recursive: true });
+    await git(repositoryPath, ["init", "--initial-branch=main"]);
+    const service = new SqliteGitContextService({ database, dataRoot: directory });
+    services.push(service);
+
+    const context = await service.getActiveContext({ sessionId: "S-20260712-local" });
+
+    expect(context.session?.session.head).toMatch(/^[a-f0-9]{40}$/);
+    expect(await git(repositoryPath, ["rev-list", "--count", "HEAD"])).toBe("1");
+    expect(JSON.parse(
+      await readFile(join(repositoryPath, "session", "meta.json"), "utf8"),
+    )).toMatchObject({ sessionId: "S-20260712-local" });
   });
 
   it("rejects conflicting reuse of an idempotency request id", async () => {
@@ -118,10 +173,95 @@ describe("SQLite Git Context service", () => {
     expect(context.session?.pendingConversation).toEqual([
       {
         ...firstUser.conversation,
+        filePath: "conversations/000001-session.md",
         status: "closed",
       },
       secondUser.conversation,
     ]);
+    expect(context.session?.pendingConversationContext).toMatchObject([
+      {
+        messages: [
+          { sequence: 1, role: "user", content: "hello" },
+          { sequence: 2, role: "assistant", content: "hello back" },
+        ],
+      },
+      {
+        messages: [{ sequence: 1, role: "user", content: "new turn" }],
+      },
+    ]);
+    expect(context.session?.pendingDigest).toMatch(/^sha256:[a-f0-9]{64}$/);
+    expect(await service.getActiveContext({
+      sessionId: session.session.sessionId,
+    })).toBe(context);
+
+    const repositoryPath = session.session.repositoryPath;
+    const firstMarkdown = await readFile(
+      join(repositoryPath, "conversations", "000001-session.md"),
+      "utf8",
+    );
+    expect(firstMarkdown).toContain("## User\n\nhello");
+    expect(firstMarkdown).toContain("## Assistant\n\nhello back");
+    await expect(readFile(
+      join(repositoryPath, "conversations", "000001.pending.md"),
+      "utf8",
+    )).rejects.toMatchObject({ code: "ENOENT" });
+    expect(await git(repositoryPath, ["rev-list", "--count", "HEAD"])).toBe("1");
+    expect(await git(repositoryPath, ["status", "--short"])).toContain("conversations/");
+  });
+
+  it("recovers a journaled conversation append without duplicating it", async () => {
+    const directory = await createTemporaryDirectory();
+    const databasePath = join(directory, "context.db");
+    const firstDatabase = await ContextDatabase.open({ path: databasePath });
+    const firstService = new SqliteGitContextService({
+      database: firstDatabase,
+      dataRoot: directory,
+    });
+    const session = await ensureSession(firstService);
+    const input = {
+      requestId: "REQ-crash-message",
+      sessionId: session.session.sessionId,
+      role: "user" as const,
+      content: "survive the crash boundary",
+      at: "2026-07-12T09:01:00+05:30",
+    };
+    beginRecoverableIdempotent({
+      database: firstDatabase,
+      requestId: input.requestId,
+      operation: "append_conversation",
+      payload: input,
+      now: input.at,
+      execute: () => ({
+        conversation: appendConversationMessage(firstDatabase, input),
+      }),
+    });
+    await firstService.close();
+
+    const secondDatabase = await ContextDatabase.open({ path: databasePath });
+    const secondService = new SqliteGitContextService({
+      database: secondDatabase,
+      dataRoot: directory,
+    });
+    services.push(secondService);
+    const restored = await secondService.getActiveContext({
+      sessionId: session.session.sessionId,
+    });
+
+    expect(restored.session?.pendingConversationContext[0]?.messages).toHaveLength(1);
+    expect(await readFile(join(
+      session.session.repositoryPath,
+      "conversations",
+      "000001.pending.md",
+    ), "utf8")).toContain("survive the crash boundary");
+    await expect(secondService.appendConversation(input)).resolves.toMatchObject({
+      conversation: { sequence: 1 },
+    });
+    expect(secondDatabase.prepare(
+      "SELECT COUNT(*) AS count FROM messages WHERE session_id = ?",
+    ).get(session.session.sessionId)).toMatchObject({ count: 1 });
+    expect(secondDatabase.prepare([
+      "SELECT status FROM idempotency_requests WHERE request_id = ?",
+    ].join(" ")).get(input.requestId)).toMatchObject({ status: "completed" });
   });
 
   it("starts one session run and exposes it through active context", async () => {
@@ -302,4 +442,12 @@ async function ensureSession(service: SqliteGitContextService) {
     agentId: "local",
     at: "2026-07-12T09:00:00+05:30",
   });
+}
+
+async function git(repositoryPath: string, args: string[]): Promise<string> {
+  const result = await execFileAsync("git", args, {
+    cwd: repositoryPath,
+    encoding: "utf8",
+  });
+  return result.stdout.trim();
 }

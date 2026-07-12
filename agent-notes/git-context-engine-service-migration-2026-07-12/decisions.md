@@ -127,6 +127,13 @@ session gitlink is committed.
 - Incoming user and system-event messages create conversation segments;
   assistant messages append to the active segment.
 - Only one run may be active per session in the first implementation.
+- Session repositories are initialized directly on main with one deterministic
+  identity commit; harmless conversation appends remain durable but uncommitted.
+- SQLite-to-Markdown synchronization uses a durable outbox and recoverable
+  idempotency states instead of pretending SQLite and the filesystem share a
+  transaction.
+- Active context carries exact pending messages and a digest; its cache key also
+  includes session HEAD and active-run tool-step revision.
 
 ## Open Implementation Choices
 

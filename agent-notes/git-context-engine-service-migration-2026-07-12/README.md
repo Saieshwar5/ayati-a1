@@ -2,11 +2,11 @@
 
 Created: 2026-07-12
 
-Status: second implementation slice complete. The standalone service now has a
-file-backed SQLite operational journal with migrations, WAL, idempotent active
-session/conversation/run operations, purpose-bearing run steps, and restart
-recovery. Git session repositories and Ayati runtime integration have not
-started.
+Status: third implementation slice complete. The standalone service now creates
+daily session Git repositories on main, synchronizes SQLite-journaled
+conversation segments into crash-safe Markdown working files, and returns
+pending messages through a digest-keyed active-context cache. Task repositories
+and Ayati runtime integration have not started.
 
 Implementation branch:
 

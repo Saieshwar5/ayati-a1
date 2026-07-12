@@ -1,6 +1,8 @@
 import type { ContextDatabase } from "../database/database.js";
 import type {
   AppendConversationRequest,
+  ConversationContext,
+  ConversationMessage,
   ConversationRef,
 } from "../contracts.js";
 import { GitContextServiceError } from "../errors.js";
@@ -17,6 +19,9 @@ export function appendConversationMessage(
   database: ContextDatabase,
   input: AppendConversationRequest,
 ): ConversationRef {
+  const closedConversation = input.role === "assistant"
+    ? undefined
+    : closeActiveConversation(database, input.sessionId, input.at);
   const conversation = input.role === "assistant"
     ? requireActiveConversation(database, input.sessionId)
     : createConversationForNewInput(database, input);
@@ -57,7 +62,62 @@ export function appendConversationMessage(
       conversation.conversationId,
     );
   }
+  if (closedConversation) {
+    enqueueConversationFileSync(database, {
+      requestId: input.requestId,
+      conversation: closedConversation,
+      sourcePath: "conversations/" + pad(closedConversation.sequence, 6) + ".pending.md",
+      at: input.at,
+    });
+  }
+  enqueueConversationFileSync(database, {
+    requestId: input.requestId,
+    conversation,
+    at: input.at,
+  });
   return conversation;
+}
+
+export function readConversationMessages(
+  database: ContextDatabase,
+  conversationId: string,
+): ConversationMessage[] {
+  const rows = database.prepare([
+    "SELECT segment_sequence, role, content, created_at FROM messages",
+    "WHERE conversation_id = ? ORDER BY segment_sequence",
+  ].join(" ")).all(conversationId) as unknown as Array<{
+    segment_sequence: number;
+    role: ConversationMessage["role"];
+    content: string;
+    created_at: string;
+  }>;
+  return rows.map((row) => ({
+    sequence: Number(row.segment_sequence),
+    role: row.role,
+    content: row.content,
+    at: row.created_at,
+  }));
+}
+
+export function readPendingConversationContexts(
+  database: ContextDatabase,
+  sessionId: string,
+): ConversationContext[] {
+  return readPendingConversations(database, sessionId).map((conversation) => ({
+    conversation,
+    messages: readConversationMessages(database, conversation.conversationId),
+    contentHash: readConversationHash(database, conversation.conversationId) ?? "",
+  }));
+}
+
+export function updateConversationContentHash(
+  database: ContextDatabase,
+  conversationId: string,
+  contentHash: string,
+): void {
+  database.prepare([
+    "UPDATE conversation_segments SET content_hash = ? WHERE conversation_id = ?",
+  ].join(" ")).run(contentHash, conversationId);
 }
 
 export function readConversation(
@@ -109,12 +169,6 @@ function createConversationForNewInput(
     });
   }
 
-  database.prepare([
-    "UPDATE conversation_segments",
-    "SET status = 'closed', closed_at = ?",
-    "WHERE session_id = ? AND status = 'active'",
-  ].join(" ")).run(input.at, input.sessionId);
-
   const sequence = nextNumber(database, [
     "SELECT COALESCE(MAX(sequence), 0) + 1 AS next",
     "FROM conversation_segments WHERE session_id = ?",
@@ -144,6 +198,24 @@ function createConversationForNewInput(
   };
 }
 
+function closeActiveConversation(
+  database: ContextDatabase,
+  sessionId: string,
+  at: string,
+): ConversationRef | undefined {
+  const active = requireActiveConversationIfPresent(database, sessionId);
+  if (!active) {
+    return undefined;
+  }
+  const closedPath = "conversations/" + pad(active.sequence, 6) + "-session.md";
+  database.prepare([
+    "UPDATE conversation_segments",
+    "SET status = 'closed', closed_at = ?, file_path = ?",
+    "WHERE conversation_id = ?",
+  ].join(" ")).run(at, closedPath, active.conversationId);
+  return { ...active, filePath: closedPath, status: "closed" };
+}
+
 function requireActiveConversation(
   database: ContextDatabase,
   sessionId: string,
@@ -162,6 +234,52 @@ function requireActiveConversation(
     });
   }
   return conversationRef(row);
+}
+
+function requireActiveConversationIfPresent(
+  database: ContextDatabase,
+  sessionId: string,
+): ConversationRef | undefined {
+  const row = database.prepare([
+    "SELECT conversation_id, session_id, sequence, file_path, status",
+    "FROM conversation_segments WHERE session_id = ? AND status = 'active'",
+    "ORDER BY sequence DESC LIMIT 1",
+  ].join(" ")).get(sessionId) as ConversationRow | undefined;
+  return row ? conversationRef(row) : undefined;
+}
+
+function enqueueConversationFileSync(database: ContextDatabase, input: {
+  requestId: string;
+  conversation: ConversationRef;
+  sourcePath?: string;
+  at: string;
+}): void {
+  const operationId = input.requestId + ":" + input.conversation.conversationId;
+  database.prepare([
+    "INSERT INTO file_sync_operations(",
+    "operation_id, request_id, session_id, conversation_id, source_path, target_path,",
+    "expected_content_hash, status, created_at, completed_at, last_error",
+    ") VALUES (?, ?, ?, ?, ?, ?, NULL, 'pending', ?, NULL, NULL)",
+    "ON CONFLICT(operation_id) DO NOTHING",
+  ].join(" ")).run(
+    operationId,
+    input.requestId,
+    input.conversation.sessionId,
+    input.conversation.conversationId,
+    input.sourcePath ?? null,
+    input.conversation.filePath,
+    input.at,
+  );
+}
+
+function readConversationHash(
+  database: ContextDatabase,
+  conversationId: string,
+): string | undefined {
+  const row = database.prepare([
+    "SELECT content_hash FROM conversation_segments WHERE conversation_id = ?",
+  ].join(" ")).get(conversationId) as { content_hash: string | null } | undefined;
+  return row?.content_hash ?? undefined;
 }
 
 function nextNumber(database: ContextDatabase, sql: string, value: string): number {

@@ -15,10 +15,19 @@ import {
   type StartRunResponse,
 } from "../contracts.js";
 import type { ContextDatabase } from "../database/database.js";
-import { executeIdempotent } from "../database/idempotency.js";
+import {
+  beginRecoverableIdempotent,
+  completeRecoverableIdempotent,
+  executeIdempotent,
+  markRecoverableIdempotencyFailed,
+} from "../database/idempotency.js";
+import { synchronizePendingConversationFiles } from "../conversations/conversation-synchronizer.js";
 import { GitContextServiceError } from "../errors.js";
+import { ensureSessionRepository } from "../git/session-repository.js";
 import {
   appendConversationMessage,
+  readConversation,
+  readPendingConversationContexts,
   readPendingConversations,
 } from "../repositories/conversation-records.js";
 import {
@@ -33,9 +42,12 @@ import {
   readLatestSealedSessionId,
   readLiveSessionForAgent,
   readSession,
+  readSessionIdentity,
+  updateSessionHead,
 } from "../repositories/session-records.js";
 import type { GitContextService } from "../service.js";
 import { SerializedWriteQueue } from "../write-queue.js";
+import { ActiveContextCache, activeContextRevision } from "./active-context-cache.js";
 
 export interface SqliteGitContextServiceOptions {
   database: ContextDatabase;
@@ -48,6 +60,7 @@ export class SqliteGitContextService implements GitContextService {
   private readonly dataRoot: string;
   private readonly now: () => string;
   private readonly queue = new SerializedWriteQueue();
+  private readonly contextCache = new ActiveContextCache();
   private closed = false;
 
   constructor(options: SqliteGitContextServiceOptions) {
@@ -57,7 +70,8 @@ export class SqliteGitContextService implements GitContextService {
   }
 
   async getHealth(): Promise<HealthResponse> {
-    return await this.queue.enqueue(() => {
+    return await this.queue.enqueue(async () => {
+      await this.recoverExternalState();
       const schemaReady = this.database.schemaVersion() === this.database.expectedSchemaVersion();
       return {
         service: "ayati-git-context",
@@ -70,13 +84,15 @@ export class SqliteGitContextService implements GitContextService {
           "sessions",
           "conversations",
           "runs",
+          "recovery",
         ],
       };
     });
   }
 
   async getActiveContext(input: GetActiveContextRequest): Promise<ActiveContext> {
-    return await this.queue.enqueue(() => {
+    return await this.queue.enqueue(async () => {
+      await this.recoverExternalState();
       const session = input.sessionId
         ? readSession(this.database, input.sessionId)
         : readLatestLiveSession(this.database);
@@ -87,32 +103,48 @@ export class SqliteGitContextService implements GitContextService {
         };
       }
       const run = readActiveRun(this.database, session.sessionId);
-      return {
+      const conversations = readPendingConversationContexts(this.database, session.sessionId);
+      const recentToolCalls = run ? readRecentRunSteps(this.database, run.runId) : [];
+      const { revision, pendingDigest } = activeContextRevision({
+        head: session.head,
+        conversations,
+        ...(run ? { run } : {}),
+        toolCalls: recentToolCalls,
+      });
+      const cached = this.contextCache.get(session.sessionId, revision);
+      if (cached) {
+        return cached;
+      }
+      const context: ActiveContext = {
         session: {
           session,
           summary: "",
           pendingConversation: readPendingConversations(this.database, session.sessionId),
+          pendingConversationContext: conversations,
+          pendingDigest,
           recentCommits: [],
         },
         ...(run
           ? {
               run: {
                 run,
-                recentToolCalls: readRecentRunSteps(this.database, run.runId),
+                recentToolCalls,
               },
             }
           : {}),
         warnings: [],
       };
+      this.contextCache.set(session.sessionId, revision, context);
+      return context;
     });
   }
 
   async ensureActiveSession(
     input: EnsureActiveSessionRequest,
   ): Promise<EnsureActiveSessionResponse> {
-    return await this.queue.enqueue(() => {
+    return await this.queue.enqueue(async () => {
       const now = input.at ?? this.now();
-      return executeIdempotent({
+      const pending = beginRecoverableIdempotent({
         database: this.database,
         requestId: input.requestId,
         operation: "ensure_active_session",
@@ -120,26 +152,79 @@ export class SqliteGitContextService implements GitContextService {
         now,
         execute: () => this.ensureSession(input, now),
       });
+      try {
+        const session = await this.ensureRepositoryForSession(
+          pending.result.session.sessionId,
+        );
+        const result: EnsureActiveSessionResponse = {
+          session,
+          created: pending.result.created,
+        };
+        this.contextCache.clear();
+        return completeRecoverableIdempotent({
+          database: this.database,
+          requestId: input.requestId,
+          result,
+          now,
+        });
+      } catch (error) {
+        markRecoverableIdempotencyFailed({
+          database: this.database,
+          requestId: input.requestId,
+        });
+        throw error;
+      }
     });
   }
 
   async appendConversation(
     input: AppendConversationRequest,
   ): Promise<AppendConversationResponse> {
-    return await this.queue.enqueue(() => executeIdempotent({
-      database: this.database,
-      requestId: input.requestId,
-      operation: "append_conversation",
-      payload: input,
-      now: input.at,
-      execute: () => {
-        const session = this.requireOpenSession(input.sessionId);
-        verifyExpectedHead(session, input.expectedHead);
-        return {
-          conversation: appendConversationMessage(this.database, input),
-        };
-      },
-    }));
+    return await this.queue.enqueue(async () => {
+      await this.recoverExternalState();
+      const pending = beginRecoverableIdempotent({
+        database: this.database,
+        requestId: input.requestId,
+        operation: "append_conversation",
+        payload: input,
+        now: input.at,
+        execute: () => {
+          const session = this.requireOpenSession(input.sessionId);
+          verifyExpectedHead(session, input.expectedHead);
+          return {
+            conversation: appendConversationMessage(this.database, input),
+          };
+        },
+      });
+      try {
+        await synchronizePendingConversationFiles({
+          database: this.database,
+          now: this.now,
+          requestId: input.requestId,
+        });
+        const conversation = readConversation(
+          this.database,
+          pending.result.conversation.conversationId,
+        );
+        if (!conversation) {
+          throw new Error("Synchronized conversation could not be read.");
+        }
+        const result: AppendConversationResponse = { conversation };
+        this.contextCache.clear();
+        return completeRecoverableIdempotent({
+          database: this.database,
+          requestId: input.requestId,
+          result,
+          now: input.at,
+        });
+      } catch (error) {
+        markRecoverableIdempotencyFailed({
+          database: this.database,
+          requestId: input.requestId,
+        });
+        throw error;
+      }
+    });
   }
 
   async startRun(input: StartRunRequest): Promise<StartRunResponse> {
@@ -189,6 +274,55 @@ export class SqliteGitContextService implements GitContextService {
     this.closed = true;
     await this.queue.close();
     this.database.close();
+  }
+
+  private async recoverExternalState(): Promise<void> {
+    const session = readLatestLiveSession(this.database);
+    if (session) {
+      await this.ensureRepositoryForSession(session.sessionId);
+    }
+    await synchronizePendingConversationFiles({
+      database: this.database,
+      now: this.now,
+    });
+  }
+
+  private async ensureRepositoryForSession(sessionId: string): Promise<SessionRef> {
+    const session = readSession(this.database, sessionId);
+    const identity = readSessionIdentity(this.database, sessionId);
+    if (!session || !identity) {
+      throw new GitContextServiceError({
+        code: "SESSION_NOT_ACTIVE",
+        message: "Session does not exist.",
+        details: { sessionId },
+      });
+    }
+    let head: string;
+    try {
+      head = await ensureSessionRepository({
+        session,
+        agentId: identity.agentId,
+        createdAt: identity.createdAt,
+      });
+    } catch (error) {
+      if (error instanceof GitContextServiceError) {
+        throw error;
+      }
+      throw new GitContextServiceError({
+        code: "REPOSITORY_UNAVAILABLE",
+        message: "Session repository could not be initialized or recovered.",
+        retryable: true,
+        details: {
+          sessionId,
+          cause: error instanceof Error ? error.message : String(error),
+        },
+      });
+    }
+    if (session.head === head) {
+      return session;
+    }
+    this.contextCache.clear();
+    return updateSessionHead(this.database, sessionId, head);
   }
 
   private ensureSession(

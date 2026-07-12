@@ -90,6 +90,31 @@ export function insertSession(database: ContextDatabase, input: {
   return session;
 }
 
+export function updateSessionHead(
+  database: ContextDatabase,
+  sessionId: string,
+  head: string,
+): SessionRef {
+  database.prepare(
+    "UPDATE sessions SET head_sha = ? WHERE session_id = ?",
+  ).run(head, sessionId);
+  const session = readSession(database, sessionId);
+  if (!session) {
+    throw new Error("Updated session could not be read: " + sessionId);
+  }
+  return session;
+}
+
+export function readSessionIdentity(
+  database: ContextDatabase,
+  sessionId: string,
+): { agentId: string; createdAt: string } | undefined {
+  const row = database.prepare([
+    "SELECT agent_id, created_at FROM sessions WHERE session_id = ?",
+  ].join(" ")).get(sessionId) as { agent_id: string; created_at: string } | undefined;
+  return row ? { agentId: row.agent_id, createdAt: row.created_at } : undefined;
+}
+
 function sessionRef(row: SessionRow): SessionRef {
   return {
     sessionId: row.session_id,

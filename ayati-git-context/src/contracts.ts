@@ -1,4 +1,4 @@
-export const GIT_CONTEXT_PROTOCOL_VERSION = 1;
+export const GIT_CONTEXT_PROTOCOL_VERSION = 2;
 
 export type SessionId = string;
 export type TaskId = string;
@@ -54,6 +54,19 @@ export interface ConversationRef {
   status: "active" | "closed" | "committed";
 }
 
+export interface ConversationMessage {
+  sequence: number;
+  role: ConversationRole;
+  content: string;
+  at: string;
+}
+
+export interface ConversationContext {
+  conversation: ConversationRef;
+  messages: ConversationMessage[];
+  contentHash: string;
+}
+
 export interface CommitSummary {
   commit: string;
   subject: string;
@@ -71,6 +84,8 @@ export interface SessionContextProjection {
   session: SessionRef;
   summary: string;
   pendingConversation: ConversationRef[];
+  pendingConversationContext: ConversationContext[];
+  pendingDigest: string;
   recentCommits: CommitSummary[];
 }
 

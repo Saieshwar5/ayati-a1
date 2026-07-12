@@ -4,9 +4,10 @@ Created: 2026-07-12
 
 ## Status
 
-Current status: second implementation slice complete. The independent service
-persists live session, conversation, run, and step state in SQLite without
-changing current Ayati runtime behavior.
+Current status: third implementation slice complete. The independent service
+persists live state in SQLite, owns a real daily session repository, and keeps
+pending conversation Markdown synchronized without changing current Ayati
+runtime behavior.
 
 Implementation branch:
 
@@ -32,15 +33,15 @@ Implementation branch:
 
 ## Implementation Checklist
 
-- [ ] Read required project documentation and this plan fully.
+- [x] Read required project documentation and this plan fully.
 - [x] Confirm service package/module placement.
 - [x] Define API contracts and structured errors.
 - [ ] Extract repository operations from the current session store.
 - [x] Add SQLite operational journal.
 - [x] Start independent local service foundation.
 - [x] Add typed Git Context Engine client.
-- [ ] Store new session context directly on main.
-- [ ] Add conversation segments and active cache.
+- [x] Store new session context directly on main.
+- [x] Add conversation segments and active cache.
 - [ ] Add canonical task repository store.
 - [ ] Mount task repositories as session submodules.
 - [ ] Add task checkout mutation boundary.
@@ -76,10 +77,11 @@ Completed:
 
 Next slice:
 
-    session Git repository on main
-    -> Markdown conversation working files
-    -> SQLite-to-file durability boundary
-    -> session context cache keyed by pending digest
+    canonical task repository store
+    -> task identity commits
+    -> durable task branch
+    -> portable .ayati/task.md descriptor
+    -> task catalog locator
 
 ## Progress Log
 
@@ -159,3 +161,33 @@ Next slice:
   - Unix-socket persistence and restart smoke test
   - pnpm install --frozen-lockfile --offline
   - pnpm build
+
+### 2026-07-12 Implementation Slice 3
+
+- Added deterministic daily session repository initialization on branch main.
+- Added the small committed session/meta.json identity file and initialization
+  commit trailers.
+- Persisted the real session repository HEAD back into SQLite.
+- Added recoverable idempotency states for operations crossing SQLite and the
+  filesystem boundary.
+- Added the file_sync_operations outbox and replay behavior.
+- Added full-segment Markdown rendering for user, assistant, and system-event
+  messages.
+- Added atomic temp-write, file fsync, rename, and directory fsync behavior.
+- Renamed closed harmless segments from NNNNNN.pending.md to
+  NNNNNN-session.md without creating a Git commit per reply.
+- Added pending conversation messages and content hashes to ActiveContext.
+- Added an active-context cache keyed by session HEAD, pending digest, active
+  run identity, and recent tool-step revision.
+- Added recovery for process interruption after SQLite append and after Git
+  repository initialization.
+- Added tests for repository identity, main branch, commit count, Markdown
+  content, segment rename, pending context, no noisy commits, idempotent replay,
+  and partial-repository recovery.
+- Verification:
+  - pnpm --filter ayati-git-context build
+  - pnpm --filter ayati-git-context test (20 tests)
+  - pnpm build
+  - pnpm test
+  - pnpm --filter ayati-main exec vitest run --reporter=dot (1,047 tests)
+  - Unix-socket process restart with Git and Markdown inspection
