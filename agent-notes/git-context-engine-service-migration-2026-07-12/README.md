@@ -2,8 +2,10 @@
 
 Created: 2026-07-12
 
-Status: master planning note. No runtime implementation has been made from this
-plan yet.
+Status: first implementation slice complete. The standalone workspace package,
+typed contracts, structured errors, Unix/TCP HTTP transport, typed client, and
+contract-only executable foundation are implemented. Persistence and Ayati
+runtime integration have not started.
 
 Implementation branch:
 
@@ -203,4 +205,3 @@ The migration is successful when:
 - SQLite indexes can be rebuilt without losing completed task history.
 - A crash between task and session commits is recovered deterministically.
 - Existing legacy sessions remain readable.
-

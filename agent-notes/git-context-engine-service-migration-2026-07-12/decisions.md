@@ -111,14 +111,24 @@ session, run, conversation ID, and conversation hash in trailers.
 Only after the task commit is present in the canonical task repository and the
 session gitlink is committed.
 
+## Resolved During Implementation
+
+- The independent service is a top-level pnpm workspace package named
+  ayati-git-context.
+- The first transport is dependency-free HTTP/JSON using Node HTTP.
+- Unix domain sockets are the primary local transport.
+- TCP is supported for tests and development.
+- The executable reports degraded readiness until persistence is configured;
+  it does not use a disposable in-memory production store.
+
 ## Open Implementation Choices
 
 These choices do not change the main architecture but must be resolved during
 the relevant implementation slice:
 
-- Whether the independent service is a new monorepo package or an isolated
-  backend module launched as a child process.
-- Exact Unix socket and development HTTP configuration.
+- Exact process supervision and startup relationship between ayati-main and
+  the independent service.
+- Production socket location and authentication policy for development TCP.
 - Exact SQLite migration library.
 - Safety-checkpoint age and size thresholds.
 - Retention period for read-only session-run tool journals.
@@ -135,4 +145,3 @@ the relevant implementation slice:
 
 Open choices must be resolved with focused evidence. They must not weaken the
 locked invariants.
-

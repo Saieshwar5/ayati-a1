@@ -6,9 +6,11 @@
     "build": "pnpm -r build",
     "test": "pnpm -r test",
     "dev:main": "pnpm --filter ayati-main dev",
+    "dev:git-context": "pnpm --filter ayati-git-context dev",
     "dev:main:feedback": "AYATI_TEST_AGENT=1 AYATI_FEEDBACK_TRACE=1 pnpm --filter ayati-main dev",
     "dev:cli": "pnpm --filter ayati-cli dev",
     "start:main": "pnpm --filter ayati-main start",
+    "start:git-context": "pnpm --filter ayati-git-context start",
     "start:main:feedback": "AYATI_TEST_AGENT=1 AYATI_FEEDBACK_TRACE=1 pnpm --filter ayati-main start",
     "start:cli": "pnpm --filter ayati-cli start",
     "doctor:main": "pnpm --filter ayati-main run doctor"

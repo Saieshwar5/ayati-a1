@@ -4,8 +4,8 @@ Created: 2026-07-12
 
 ## Status
 
-Current status: architecture and migration plan captured. No runtime
-implementation has started from this plan.
+Current status: first implementation slice complete. The independent package
+and transport contracts exist without changing current Ayati runtime behavior.
 
 Implementation branch:
 
@@ -32,12 +32,12 @@ Implementation branch:
 ## Implementation Checklist
 
 - [ ] Read required project documentation and this plan fully.
-- [ ] Confirm service package/module placement.
-- [ ] Define API contracts and structured errors.
+- [x] Confirm service package/module placement.
+- [x] Define API contracts and structured errors.
 - [ ] Extract repository operations from the current session store.
 - [ ] Add SQLite operational journal.
-- [ ] Start independent local service.
-- [ ] Add typed Ayati client.
+- [x] Start independent local service foundation.
+- [x] Add typed Git Context Engine client.
 - [ ] Store new session context directly on main.
 - [ ] Add conversation segments and active cache.
 - [ ] Add canonical task repository store.
@@ -60,17 +60,25 @@ Implementation branch:
 
 ## First Implementation Slice
 
-Before editing runtime behavior, the first slice should:
+Completed:
 
-1. Decide whether the service is a new pnpm package or isolated backend
-   process.
-2. Define typed API contracts.
-3. Define structured error codes and idempotency.
-4. Define repository and SQLite interfaces.
-5. Add contract tests.
-6. Keep current context-engine behavior unchanged.
+1. Created the top-level ayati-git-context workspace package.
+2. Defined typed identity, session, conversation, run, context, and health
+   contracts.
+3. Defined structured errors and required idempotency request envelopes.
+4. Added the transport-neutral GitContextService interface.
+5. Added dependency-free HTTP/JSON server support for Unix sockets and TCP.
+6. Added the typed GitContextClient.
+7. Added a contract-only executable that reports degraded readiness.
+8. Added contract and transport tests.
+9. Kept current Ayati context-engine and harness behavior unchanged.
 
-Expected first-slice files should be stated to the user before implementation.
+Next slice:
+
+    SQLite operational journal
+    -> durable active session identity
+    -> idempotency records
+    -> conversation and run journal foundation
 
 ## Progress Log
 
@@ -90,3 +98,26 @@ Expected first-slice files should be stated to the user before implementation.
 - Captured the complete architecture, lifecycle, migration, testing, and
   recovery plan in this directory.
 
+### 2026-07-12 Implementation Slice 1
+
+- Added ayati-git-context as a pnpm workspace package.
+- Added root development and start scripts.
+- Added public contract types and request validators.
+- Added structured Git Context Engine errors.
+- Added the injected service interface.
+- Added Unix-socket and TCP HTTP server transport.
+- Added a typed client using the same service interface.
+- Added a contract-only executable with honest degraded health.
+- Added tests for:
+  - request validation,
+  - structured errors,
+  - TCP round trips,
+  - Unix-socket round trips,
+  - invalid transport input,
+  - service-not-ready errors,
+  - socket cleanup.
+- Verification:
+  - pnpm --filter ayati-git-context build
+  - pnpm --filter ayati-git-context test
+  - executable Unix-socket health smoke test
+  - pnpm build
