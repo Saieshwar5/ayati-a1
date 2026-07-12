@@ -150,7 +150,7 @@ At first pending mutation:
 
 1. Allocate a stable task ID.
 2. Create the canonical repository.
-3. Create an empty initial commit with task identity trailers.
+3. Create the initial `.ayati/task.md` identity commit with task trailers.
 4. Create the durable main branch.
 5. Add the task to the catalog.
 6. Mount it in the session as a submodule.
@@ -474,4 +474,3 @@ finalize the run as interrupted or incomplete.
 Attempt canonical fetch, durable branch resolution, and local reflog recovery.
 If unavailable, report durable corruption. The session gitlink SHA alone does
 not contain the task objects.
-

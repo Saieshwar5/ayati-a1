@@ -155,6 +155,26 @@ const MIGRATIONS: Migration[] = [
       "ON file_sync_operations(status, created_at);",
     ].join("\n"),
   },
+  {
+    version: 3,
+    sql: [
+      "CREATE TABLE tasks (",
+      "  task_id TEXT PRIMARY KEY,",
+      "  repository_path TEXT NOT NULL UNIQUE,",
+      "  durable_branch TEXT NOT NULL,",
+      "  head_sha TEXT,",
+      "  title_cache TEXT NOT NULL,",
+      "  objective_cache TEXT NOT NULL,",
+      "  status TEXT NOT NULL CHECK (status IN ('initializing', 'active', 'archived')),",
+      "  created_session_id TEXT NOT NULL REFERENCES sessions(session_id),",
+      "  created_at TEXT NOT NULL,",
+      "  updated_at TEXT NOT NULL",
+      ");",
+      "",
+      "CREATE INDEX tasks_updated_at ON tasks(updated_at DESC);",
+      "CREATE INDEX tasks_status ON tasks(status, updated_at DESC);",
+    ].join("\n"),
+  },
 ];
 
 export function applyMigrations(database: DatabaseSync, now: () => string): void {

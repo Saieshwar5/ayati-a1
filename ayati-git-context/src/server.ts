@@ -3,6 +3,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import type { AddressInfo } from "node:net";
 import {
   isAppendConversationRequest,
+  isCreateTaskRequest,
   isEnsureActiveSessionRequest,
   isRecordRunStepRequest,
   isStartRunRequest,
@@ -136,6 +137,22 @@ export class GitContextHttpServer {
         return;
       }
 
+      if (method === "POST" && url.pathname === "/tasks") {
+        const body = await readJsonBody(request, this.maxBodyBytes);
+        if (!isCreateTaskRequest(body)) {
+          throw invalidRequest("Invalid create-task request.");
+        }
+        sendJson(response, 200, await this.service.createTask(body));
+        return;
+      }
+
+      const taskMatch = url.pathname.match(/^\/tasks\/([^/]+)$/);
+      if (method === "GET" && taskMatch) {
+        const taskId = decodePathComponent(taskMatch[1] ?? "");
+        sendJson(response, 200, await this.service.getTask({ taskId }));
+        return;
+      }
+
       if (method === "POST" && url.pathname === "/runs/start") {
         const body = await readJsonBody(request, this.maxBodyBytes);
         if (!isStartRunRequest(body)) {
@@ -159,7 +176,9 @@ export class GitContextHttpServer {
         return;
       }
 
-      const knownPath = isKnownPath(url.pathname) || Boolean(runStepMatch);
+      const knownPath = isKnownPath(url.pathname)
+        || Boolean(runStepMatch)
+        || Boolean(taskMatch);
       throw new GitContextServiceError({
         code: knownPath ? "METHOD_NOT_ALLOWED" : "NOT_FOUND",
         message: knownPath
@@ -177,6 +196,7 @@ function isKnownPath(pathname: string): boolean {
     || pathname === "/context/active"
     || pathname === "/sessions/ensure-active"
     || pathname === "/conversations/append"
+    || pathname === "/tasks"
     || pathname === "/runs/start";
 }
 

@@ -4,10 +4,9 @@ Created: 2026-07-12
 
 ## Status
 
-Current status: third implementation slice complete. The independent service
-persists live state in SQLite, owns a real daily session repository, and keeps
-pending conversation Markdown synchronized without changing current Ayati
-runtime behavior.
+Current status: fourth implementation slice complete. The independent service
+also creates, catalogs, verifies, reads, and recovers canonical task
+repositories without changing current Ayati runtime behavior.
 
 Implementation branch:
 
@@ -42,7 +41,7 @@ Implementation branch:
 - [x] Add typed Git Context Engine client.
 - [x] Store new session context directly on main.
 - [x] Add conversation segments and active cache.
-- [ ] Add canonical task repository store.
+- [x] Add canonical task repository store.
 - [ ] Mount task repositories as session submodules.
 - [ ] Add task checkout mutation boundary.
 - [ ] Add verified task checkpoint commits.
@@ -77,11 +76,11 @@ Completed:
 
 Next slice:
 
-    canonical task repository store
-    -> task identity commits
-    -> durable task branch
-    -> portable .ayati/task.md descriptor
-    -> task catalog locator
+    per-task session submodules
+    -> lazy task checkout mounting
+    -> exact session gitlinks
+    -> clean durable-branch verification
+    -> reopen existing task in a later session
 
 ## Progress Log
 
@@ -191,3 +190,30 @@ Next slice:
   - pnpm test
   - pnpm --filter ayati-main exec vitest run --reporter=dot (1,047 tests)
   - Unix-socket process restart with Git and Markdown inspection
+
+### 2026-07-12 Implementation Slice 4
+
+- Advanced the typed service protocol to version 3.
+- Added create-task and get-task HTTP/client/service contracts.
+- Added the SQLite tasks catalog with initializing, active, and archived states.
+- Added stable daily task ID allocation and filesystem-safe repository slugs.
+- Chose bare canonical repositories under dataRoot/tasks as permanent task
+  authorities.
+- Added deterministic temporary real-checkout bootstrapping and cleanup.
+- Added the initial `.ayati/task.md` portable descriptor.
+- Added task identity commits with Task-Id, Task-Title, Created-Session, and
+  Ayati-Event trailers.
+- Added durable main branch and exact catalog-to-repository HEAD verification.
+- Added stable descriptor identity verification while allowing later snapshots
+  and important paths to evolve.
+- Added idempotent retry and startup recovery for interrupted task creation.
+- Added tests for contracts, HTTP round trips, catalog records, Git tree and
+  trailers, daily sequences, safe slugs, partial bare-repository recovery,
+  staging cleanup, evolved descriptors, and HEAD disagreement.
+- Verification:
+  - pnpm --filter ayati-git-context build
+  - pnpm --filter ayati-git-context test (26 tests)
+  - pnpm build
+  - pnpm test (1,111 total workspace tests)
+  - Unix-socket task create/read/retry smoke test across a process restart
+  - Bare repository history and descriptor inspection

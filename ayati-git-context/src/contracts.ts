@@ -1,4 +1,4 @@
-export const GIT_CONTEXT_PROTOCOL_VERSION = 2;
+export const GIT_CONTEXT_PROTOCOL_VERSION = 3;
 
 export type SessionId = string;
 export type TaskId = string;
@@ -36,6 +36,17 @@ export interface TaskRef {
   repositoryPath: string;
   branch: string;
   head: string;
+}
+
+export type TaskStatus = "initializing" | "active" | "archived";
+
+export interface TaskCatalogEntry extends TaskRef {
+  title: string;
+  objective: string;
+  status: TaskStatus;
+  createdSessionId: SessionId;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export interface RunRef {
@@ -142,6 +153,26 @@ export interface EnsureActiveSessionResponse {
   created: boolean;
 }
 
+export interface CreateTaskRequest extends GitContextRequestEnvelope {
+  sessionId: SessionId;
+  title: string;
+  objective: string;
+  at: string;
+}
+
+export interface CreateTaskResponse {
+  task: TaskCatalogEntry;
+  created: boolean;
+}
+
+export interface GetTaskRequest {
+  taskId: TaskId;
+}
+
+export interface GetTaskResponse {
+  task: TaskCatalogEntry;
+}
+
 export interface AppendConversationRequest extends GitContextRequestEnvelope {
   sessionId: SessionId;
   role: ConversationRole;
@@ -216,6 +247,16 @@ export function isAppendConversationRequest(value: unknown): value is AppendConv
     && optionalNonEmptyString(value["taskId"]);
 }
 
+export function isCreateTaskRequest(value: unknown): value is CreateTaskRequest {
+  if (!isRequestEnvelope(value)) {
+    return false;
+  }
+  return isNonEmptyString(value["sessionId"])
+    && isBoundedString(value["title"], 120)
+    && isBoundedString(value["objective"], 2_000)
+    && isNonEmptyString(value["at"]);
+}
+
 export function isStartRunRequest(value: unknown): value is StartRunRequest {
   if (!isRequestEnvelope(value)) {
     return false;
@@ -256,6 +297,10 @@ function isNonEmptyString(value: unknown): value is string {
 
 function optionalNonEmptyString(value: unknown): boolean {
   return value === undefined || isNonEmptyString(value);
+}
+
+function isBoundedString(value: unknown, maximumLength: number): value is string {
+  return isNonEmptyString(value) && value.length <= maximumLength;
 }
 
 function isConversationRole(value: unknown): value is ConversationRole {

@@ -3,9 +3,13 @@ import type {
   ActiveContext,
   AppendConversationRequest,
   AppendConversationResponse,
+  CreateTaskRequest,
+  CreateTaskResponse,
   EnsureActiveSessionRequest,
   EnsureActiveSessionResponse,
   GetActiveContextRequest,
+  GetTaskRequest,
+  GetTaskResponse,
   HealthResponse,
   RecordRunStepRequest,
   RecordRunStepResponse,
@@ -77,6 +81,17 @@ export class GitContextClient implements GitContextService {
       "POST",
       "/conversations/append",
       input,
+    );
+  }
+
+  async createTask(input: CreateTaskRequest): Promise<CreateTaskResponse> {
+    return await this.requestJson<CreateTaskResponse>("POST", "/tasks", input);
+  }
+
+  async getTask(input: GetTaskRequest): Promise<GetTaskResponse> {
+    return await this.requestJson<GetTaskResponse>(
+      "GET",
+      "/tasks/" + encodeURIComponent(input.taskId),
     );
   }
 

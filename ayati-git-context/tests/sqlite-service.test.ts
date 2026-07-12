@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -8,6 +8,10 @@ import { ContextDatabase } from "../src/database/database.js";
 import { beginRecoverableIdempotent } from "../src/database/idempotency.js";
 import { appendConversationMessage } from "../src/repositories/conversation-records.js";
 import { insertSession } from "../src/repositories/session-records.js";
+import {
+  allocateTask,
+  readTaskInitialization,
+} from "../src/repositories/task-records.js";
 import { SqliteGitContextService } from "../src/services/sqlite-git-context-service.js";
 
 const execFileAsync = promisify(execFile);
@@ -131,6 +135,208 @@ describe("SQLite Git Context service", () => {
     })).rejects.toMatchObject({
       code: "IDEMPOTENCY_CONFLICT",
     });
+  });
+
+  it("creates an independent canonical task repository and catalog entry", async () => {
+    const { service, database } = await createService();
+    const session = await ensureSession(service);
+    const input = {
+      requestId: "REQ-task-1",
+      sessionId: session.session.sessionId,
+      expectedHead: session.session.head ?? undefined,
+      title: "Coffee Shop Website",
+      objective: "Build a responsive coffee-shop website with a menu and reservations.",
+      at: "2026-07-12T09:05:00+05:30",
+    };
+
+    const created = await service.createTask(input);
+    const retried = await service.createTask(input);
+
+    expect(retried).toEqual(created);
+    expect(created).toMatchObject({
+      created: true,
+      task: {
+        taskId: "W-20260712-0001",
+        branch: "main",
+        title: "Coffee Shop Website",
+        status: "active",
+        createdSessionId: session.session.sessionId,
+      },
+    });
+    const repositoryPath = created.task.repositoryPath;
+    expect(repositoryPath).toMatch(/W-20260712-0001-coffee-shop-website\.git$/);
+    expect(await git(repositoryPath, ["rev-parse", "--is-bare-repository"])).toBe("true");
+    expect(await git(repositoryPath, ["rev-parse", "refs/heads/main"])).toBe(
+      created.task.head,
+    );
+    expect(await git(repositoryPath, ["rev-list", "--count", "main"])).toBe("1");
+    const commit = await git(repositoryPath, ["log", "-1", "--pretty=%B"]);
+    expect(commit).toContain("task: create coffee shop website");
+    expect(commit).toContain("Task-Id: W-20260712-0001");
+    expect(commit).toContain("Created-Session: " + session.session.sessionId);
+    expect(commit).toContain("Ayati-Event: task_created");
+    const descriptor = await git(repositoryPath, ["show", "main:.ayati/task.md"]);
+    expect(descriptor).toContain("# Coffee Shop Website");
+    expect(descriptor).toContain("Task: W-20260712-0001");
+    expect(descriptor).toContain(input.objective);
+    expect(await service.getTask({ taskId: "W-20260712-0001" })).toEqual({
+      task: created.task,
+    });
+    expect(database.prepare([
+      "SELECT status, head_sha FROM tasks WHERE task_id = ?",
+    ].join(" ")).get("W-20260712-0001")).toMatchObject({
+      status: "active",
+      head_sha: created.task.head,
+    });
+  });
+
+  it("allocates stable daily task sequences and safe repository slugs", async () => {
+    const { service } = await createService();
+    const session = await ensureSession(service);
+    const first = await service.createTask({
+      requestId: "REQ-task-1",
+      sessionId: session.session.sessionId,
+      title: "Coffee Shop Website",
+      objective: "Build the coffee-shop website.",
+      at: "2026-07-12T09:05:00+05:30",
+    });
+    const second = await service.createTask({
+      requestId: "REQ-task-2",
+      sessionId: session.session.sessionId,
+      title: "AI Notes / Research",
+      objective: "Maintain research about AI agent memory.",
+      at: "2026-07-12T09:06:00+05:30",
+    });
+
+    expect(first.task.taskId).toBe("W-20260712-0001");
+    expect(second.task.taskId).toBe("W-20260712-0002");
+    expect(second.task.repositoryPath).toMatch(
+      /W-20260712-0002-ai-notes-research\.git$/,
+    );
+  });
+
+  it("recovers task creation interrupted after SQLite allocation", async () => {
+    const directory = await createTemporaryDirectory();
+    const databasePath = join(directory, "context.db");
+    const firstDatabase = await ContextDatabase.open({ path: databasePath });
+    const firstService = new SqliteGitContextService({
+      database: firstDatabase,
+      dataRoot: directory,
+    });
+    const session = await ensureSession(firstService);
+    const input = {
+      requestId: "REQ-crash-task",
+      sessionId: session.session.sessionId,
+      title: "Crash Recovery Task",
+      objective: "Prove task creation resumes after process interruption.",
+      at: "2026-07-12T09:07:00+05:30",
+    };
+    beginRecoverableIdempotent({
+      database: firstDatabase,
+      requestId: input.requestId,
+      operation: "create_task",
+      payload: input,
+      now: input.at,
+      execute: () => {
+        const task = allocateTask(firstDatabase, directory, input, {
+          title: input.title,
+          objective: input.objective,
+        });
+        return { taskId: task.taskId, created: true };
+      },
+    });
+    const initializing = readTaskInitialization(firstDatabase, "W-20260712-0001");
+    if (!initializing) {
+      throw new Error("Expected initializing task record.");
+    }
+    await mkdir(initializing.repositoryPath, { recursive: true });
+    await git(initializing.repositoryPath, ["init", "--bare", "--initial-branch=main"]);
+    await firstService.close();
+
+    const secondDatabase = await ContextDatabase.open({ path: databasePath });
+    const secondService = new SqliteGitContextService({
+      database: secondDatabase,
+      dataRoot: directory,
+    });
+    services.push(secondService);
+    await secondService.getActiveContext({ sessionId: session.session.sessionId });
+    const recovered = await secondService.getTask({ taskId: "W-20260712-0001" });
+    const retried = await secondService.createTask(input);
+
+    expect(recovered.task.status).toBe("active");
+    expect(retried.task).toEqual(recovered.task);
+    expect(await git(recovered.task.repositoryPath, [
+      "rev-list",
+      "--count",
+      "main",
+    ])).toBe("1");
+    expect(secondDatabase.prepare(
+      "SELECT COUNT(*) AS count FROM tasks",
+    ).get()).toMatchObject({ count: 1 });
+    expect(await readdir(join(directory, "staging"))).toEqual([]);
+  });
+
+  it("accepts an evolved task descriptor when its stable identity is preserved", async () => {
+    const { service, database } = await createService();
+    const session = await ensureSession(service);
+    const created = await service.createTask({
+      requestId: "REQ-evolving-task",
+      sessionId: session.session.sessionId,
+      title: "Evolving Task",
+      objective: "Keep durable task context current across runs.",
+      at: "2026-07-12T09:08:00+05:30",
+    });
+    const checkoutRoot = await createTemporaryDirectory();
+    await git(checkoutRoot, ["clone", created.task.repositoryPath, "checkout"]);
+    const checkout = join(checkoutRoot, "checkout");
+    await git(checkout, ["config", "user.name", "Ayati Test"]);
+    await git(checkout, ["config", "user.email", "test@ayati.local"]);
+    await writeFile(join(checkout, ".ayati", "task.md"), [
+      "# Evolving Task",
+      "",
+      "Task: " + created.task.taskId,
+      "",
+      "Keep durable task context current across runs.",
+      "",
+      "## Current Snapshot",
+      "",
+      "The first task run is complete.",
+      "",
+    ].join("\n"), "utf8");
+    await git(checkout, ["add", "--", ".ayati/task.md"]);
+    await git(checkout, ["commit", "-m", "task: update portable descriptor"]);
+    await git(checkout, ["push", "origin", "main"]);
+    const evolvedHead = await git(checkout, ["rev-parse", "HEAD"]);
+    database.prepare(
+      "UPDATE tasks SET head_sha = ?, updated_at = ? WHERE task_id = ?",
+    ).run(evolvedHead, "2026-07-12T09:09:00+05:30", created.task.taskId);
+
+    await expect(service.getTask({ taskId: created.task.taskId })).resolves.toMatchObject({
+      task: {
+        taskId: created.task.taskId,
+        head: evolvedHead,
+        status: "active",
+      },
+    });
+  });
+
+  it("rejects catalog and canonical task HEAD disagreement", async () => {
+    const { service, database } = await createService();
+    const session = await ensureSession(service);
+    const created = await service.createTask({
+      requestId: "REQ-task",
+      sessionId: session.session.sessionId,
+      title: "Head Verification",
+      objective: "Verify catalog and repository identity agree.",
+      at: "2026-07-12T09:08:00+05:30",
+    });
+    database.prepare(
+      "UPDATE tasks SET head_sha = ? WHERE task_id = ?",
+    ).run("0".repeat(40), created.task.taskId);
+
+    await expect(service.getTask({
+      taskId: created.task.taskId,
+    })).rejects.toMatchObject({ code: "TASK_HEAD_MISMATCH" });
   });
 
   it("orders conversation segments and appends assistant messages", async () => {

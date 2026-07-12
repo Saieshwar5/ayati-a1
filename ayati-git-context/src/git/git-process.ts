@@ -20,3 +20,22 @@ export async function runGit(
   });
   return result.stdout.trim();
 }
+
+export async function configureAyatiGitIdentity(repositoryPath: string): Promise<void> {
+  await runGit(["config", "user.name", "Ayati Git Context Engine"], {
+    cwd: repositoryPath,
+  });
+  await runGit(["config", "user.email", "git-context@ayati.local"], {
+    cwd: repositoryPath,
+  });
+  await runGit(["config", "commit.gpgsign", "false"], {
+    cwd: repositoryPath,
+  });
+}
+
+export function gitCommitEnvironment(at: string): NodeJS.ProcessEnv {
+  return {
+    GIT_AUTHOR_DATE: at,
+    GIT_COMMITTER_DATE: at,
+  };
+}

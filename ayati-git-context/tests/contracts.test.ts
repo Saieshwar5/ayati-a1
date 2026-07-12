@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   isAppendConversationRequest,
+  isCreateTaskRequest,
   isEnsureActiveSessionRequest,
   isRecordRunStepRequest,
   isRequestEnvelope,
@@ -47,6 +48,23 @@ describe("Git Context Engine contracts", () => {
       role: "system",
       content: "Unsupported role.",
       at: "2026-07-12T00:00:00+05:30",
+    })).toBe(false);
+  });
+
+  it("validates bounded task creation requests", () => {
+    expect(isCreateTaskRequest({
+      requestId: "REQ-task",
+      sessionId: "S-20260712-local",
+      title: "Coffee Shop Website",
+      objective: "Build a responsive coffee-shop website.",
+      at: "2026-07-12T10:00:00+05:30",
+    })).toBe(true);
+    expect(isCreateTaskRequest({
+      requestId: "REQ-task",
+      sessionId: "S-20260712-local",
+      title: " ",
+      objective: "Build something.",
+      at: "2026-07-12T10:00:00+05:30",
     })).toBe(false);
   });
 

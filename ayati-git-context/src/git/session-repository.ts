@@ -3,7 +3,11 @@ import { join } from "node:path";
 import type { SessionRef } from "../contracts.js";
 import { writeFileAtomically } from "../files/atomic-file.js";
 import { GitContextServiceError } from "../errors.js";
-import { runGit } from "./git-process.js";
+import {
+  configureAyatiGitIdentity,
+  gitCommitEnvironment,
+  runGit,
+} from "./git-process.js";
 
 interface SessionMetadata {
   sessionId: string;
@@ -27,12 +31,12 @@ export async function ensureSessionRepository(input: {
   const hasHead = await repositoryHasHead(input.session.repositoryPath);
   if (!hasHead) {
     await rm(join(input.session.repositoryPath, ".gitkeep"), { force: true });
-    await configureRepository(input.session.repositoryPath);
+    await configureAyatiGitIdentity(input.session.repositoryPath);
     await writeFileAtomically(metadataPath, JSON.stringify(metadata(input), null, 2) + "\n");
     await runGit(["add", "--", "session/meta.json"], { cwd: input.session.repositoryPath });
     await runGit(["commit", "-m", initialCommitMessage(input)], {
       cwd: input.session.repositoryPath,
-      env: commitEnvironment(input.createdAt),
+      env: gitCommitEnvironment(input.createdAt),
     });
   } else {
     await verifyMetadata(metadataPath, input);
@@ -44,12 +48,6 @@ async function createRepository(repositoryPath: string): Promise<void> {
   await writeFileAtomically(join(repositoryPath, ".gitkeep"), "");
   await runGit(["init", "--initial-branch=main"], { cwd: repositoryPath });
   await rm(join(repositoryPath, ".gitkeep"));
-}
-
-async function configureRepository(repositoryPath: string): Promise<void> {
-  await runGit(["config", "user.name", "Ayati Git Context Engine"], { cwd: repositoryPath });
-  await runGit(["config", "user.email", "git-context@ayati.local"], { cwd: repositoryPath });
-  await runGit(["config", "commit.gpgsign", "false"], { cwd: repositoryPath });
 }
 
 async function repositoryHasHead(repositoryPath: string): Promise<boolean> {
@@ -109,13 +107,6 @@ function initialCommitMessage(input: { session: SessionRef }): string {
     "Timezone: " + input.session.timezone,
     "Ayati-Event: session_initialized",
   ].join("\n");
-}
-
-function commitEnvironment(at: string): NodeJS.ProcessEnv {
-  return {
-    GIT_AUTHOR_DATE: at,
-    GIT_COMMITTER_DATE: at,
-  };
 }
 
 async function pathExists(path: string): Promise<boolean> {

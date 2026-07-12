@@ -2,11 +2,10 @@
 
 Created: 2026-07-12
 
-Status: third implementation slice complete. The standalone service now creates
-daily session Git repositories on main, synchronizes SQLite-journaled
-conversation segments into crash-safe Markdown working files, and returns
-pending messages through a digest-keyed active-context cache. Task repositories
-and Ayati runtime integration have not started.
+Status: fourth implementation slice complete. The standalone service now owns
+daily session repositories and independent canonical task repositories. Task
+creation is SQLite-journaled, Git-native, idempotent, and restart-recoverable.
+Per-session task submodules and Ayati runtime integration have not started.
 
 Implementation branch:
 

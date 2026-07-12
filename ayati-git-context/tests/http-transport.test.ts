@@ -8,9 +8,13 @@ import {
   type ActiveContext,
   type AppendConversationRequest,
   type AppendConversationResponse,
+  type CreateTaskRequest,
+  type CreateTaskResponse,
   type EnsureActiveSessionRequest,
   type EnsureActiveSessionResponse,
   type GetActiveContextRequest,
+  type GetTaskRequest,
+  type GetTaskResponse,
   type HealthResponse,
   type RecordRunStepRequest,
   type RecordRunStepResponse,
@@ -47,7 +51,7 @@ describe("Git Context Engine HTTP transport", () => {
       protocolVersion: GIT_CONTEXT_PROTOCOL_VERSION,
       status: "ok",
       ready: true,
-      capabilities: ["health", "active_context", "sessions", "conversations", "runs"],
+      capabilities: ["health", "active_context", "sessions", "conversations", "runs", "tasks"],
     });
 
     const ensured = await client.ensureActiveSession({
@@ -67,6 +71,18 @@ describe("Git Context Engine HTTP transport", () => {
       at: "2026-07-12T10:00:00+05:30",
     });
     expect(appended.conversation.conversationId).toBe("C-000001");
+
+    const createdTask = await client.createTask({
+      requestId: "REQ-task",
+      sessionId: ensured.session.sessionId,
+      title: "Coffee Shop Website",
+      objective: "Build a responsive coffee-shop website.",
+      at: "2026-07-12T10:00:00+05:30",
+    });
+    expect(createdTask.task.taskId).toBe("W-20260712-0001");
+    await expect(client.getTask({
+      taskId: createdTask.task.taskId,
+    })).resolves.toEqual({ task: createdTask.task });
 
     const started = await client.startRun({
       requestId: "REQ-3",
@@ -167,6 +183,7 @@ describe("Git Context Engine HTTP transport", () => {
 class TestGitContextService implements GitContextService {
   readonly activeContextRequests: GetActiveContextRequest[] = [];
   private session: EnsureActiveSessionResponse["session"] | null = null;
+  private task: CreateTaskResponse["task"] | null = null;
 
   async getHealth(): Promise<HealthResponse> {
     return {
@@ -174,7 +191,7 @@ class TestGitContextService implements GitContextService {
       protocolVersion: GIT_CONTEXT_PROTOCOL_VERSION,
       status: "ok",
       ready: true,
-      capabilities: ["health", "active_context", "sessions", "conversations", "runs"],
+      capabilities: ["health", "active_context", "sessions", "conversations", "runs", "tasks"],
     };
   }
 
@@ -224,6 +241,29 @@ class TestGitContextService implements GitContextService {
         status: "active",
       },
     };
+  }
+
+  async createTask(input: CreateTaskRequest): Promise<CreateTaskResponse> {
+    this.task = {
+      taskId: "W-20260712-0001",
+      repositoryPath: "/tmp/tasks/W-20260712-0001.git",
+      branch: "main",
+      head: "a".repeat(40),
+      title: input.title,
+      objective: input.objective,
+      status: "active",
+      createdSessionId: input.sessionId,
+      createdAt: input.at,
+      updatedAt: input.at,
+    };
+    return { task: this.task, created: true };
+  }
+
+  async getTask(input: GetTaskRequest): Promise<GetTaskResponse> {
+    if (!this.task || this.task.taskId !== input.taskId) {
+      throw new Error("Task not found.");
+    }
+    return { task: this.task };
   }
 
   async startRun(input: StartRunRequest): Promise<StartRunResponse> {

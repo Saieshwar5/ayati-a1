@@ -134,6 +134,13 @@ session gitlink is committed.
   transaction.
 - Active context carries exact pending messages and a digest; its cache key also
   includes session HEAD and active-run tool-step revision.
+- Canonical task repositories are bare repositories under tasks/. A temporary
+  deterministic checkout creates the initial real files and commit; later
+  session submodules will provide normal mutable working checkouts.
+- The first task commit contains `.ayati/task.md`. The descriptor has a stable
+  `Task:` identity line but may evolve after later successful task runs.
+- SQLite task rows are operational catalog locators. The task Git branch and
+  tree remain the durable task-state authority.
 
 ## Open Implementation Choices
 
@@ -148,7 +155,6 @@ the relevant implementation slice:
 - Whether semantic summary improvement is enabled initially.
 - Whether durable task collections use symlinks or small task-reference files.
 - Exact task repository URL format for portable relative submodules.
-- Whether canonical local task repositories are always bare.
 - How an existing user-owned external Git repository is adopted without
   changing its remotes or policies.
 - Exact naming convention for conversation files after multiple runs target

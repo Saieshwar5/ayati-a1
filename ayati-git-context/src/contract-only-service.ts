@@ -3,9 +3,13 @@ import {
   type ActiveContext,
   type AppendConversationRequest,
   type AppendConversationResponse,
+  type CreateTaskRequest,
+  type CreateTaskResponse,
   type EnsureActiveSessionRequest,
   type EnsureActiveSessionResponse,
   type GetActiveContextRequest,
+  type GetTaskRequest,
+  type GetTaskResponse,
   type HealthResponse,
   type RecordRunStepRequest,
   type RecordRunStepResponse,
@@ -39,6 +43,14 @@ export class ContractOnlyGitContextService implements GitContextService {
   async appendConversation(
     _input: AppendConversationRequest,
   ): Promise<AppendConversationResponse> {
+    throw notReady();
+  }
+
+  async createTask(_input: CreateTaskRequest): Promise<CreateTaskResponse> {
+    throw notReady();
+  }
+
+  async getTask(_input: GetTaskRequest): Promise<GetTaskResponse> {
     throw notReady();
   }
 

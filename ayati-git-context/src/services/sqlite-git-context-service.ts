@@ -4,9 +4,13 @@ import {
   type ActiveContext,
   type AppendConversationRequest,
   type AppendConversationResponse,
+  type CreateTaskRequest,
+  type CreateTaskResponse,
   type EnsureActiveSessionRequest,
   type EnsureActiveSessionResponse,
   type GetActiveContextRequest,
+  type GetTaskRequest,
+  type GetTaskResponse,
   type HealthResponse,
   type RecordRunStepRequest,
   type RecordRunStepResponse,
@@ -24,6 +28,10 @@ import {
 import { synchronizePendingConversationFiles } from "../conversations/conversation-synchronizer.js";
 import { GitContextServiceError } from "../errors.js";
 import { ensureSessionRepository } from "../git/session-repository.js";
+import {
+  ensureCanonicalTaskRepository,
+  verifyCanonicalTaskRepository,
+} from "../git/task-repository.js";
 import {
   appendConversationMessage,
   readConversation,
@@ -45,6 +53,13 @@ import {
   readSessionIdentity,
   updateSessionHead,
 } from "../repositories/session-records.js";
+import {
+  activateTask,
+  allocateTask,
+  readInitializingTasks,
+  readTaskCatalogEntry,
+  readTaskInitialization,
+} from "../repositories/task-records.js";
 import type { GitContextService } from "../service.js";
 import { SerializedWriteQueue } from "../write-queue.js";
 import { ActiveContextCache, activeContextRevision } from "./active-context-cache.js";
@@ -84,6 +99,7 @@ export class SqliteGitContextService implements GitContextService {
           "sessions",
           "conversations",
           "runs",
+          "tasks",
           "recovery",
         ],
       };
@@ -227,6 +243,71 @@ export class SqliteGitContextService implements GitContextService {
     });
   }
 
+  async createTask(input: CreateTaskRequest): Promise<CreateTaskResponse> {
+    return await this.queue.enqueue(async () => {
+      await this.recoverExternalState();
+      const normalized = normalizeTaskInput(input);
+      type CreationRecord = { taskId: string; created: boolean } | CreateTaskResponse;
+      const pending = beginRecoverableIdempotent<CreationRecord>({
+        database: this.database,
+        requestId: input.requestId,
+        operation: "create_task",
+        payload: input,
+        now: input.at,
+        execute: () => {
+          const session = this.requireOpenSession(input.sessionId);
+          verifyExpectedHead(session, input.expectedHead);
+          const task = allocateTask(this.database, this.dataRoot, input, normalized);
+          return { taskId: task.taskId, created: true };
+        },
+      });
+      const taskId = "taskId" in pending.result
+        ? pending.result.taskId
+        : pending.result.task.taskId;
+      const created = pending.result.created;
+      try {
+        const task = await this.initializeTask(taskId, input.at);
+        const result: CreateTaskResponse = { task, created };
+        return completeRecoverableIdempotent({
+          database: this.database,
+          requestId: input.requestId,
+          result,
+          now: input.at,
+        });
+      } catch (error) {
+        markRecoverableIdempotencyFailed({
+          database: this.database,
+          requestId: input.requestId,
+        });
+        throw error;
+      }
+    });
+  }
+
+  async getTask(input: GetTaskRequest): Promise<GetTaskResponse> {
+    return await this.queue.enqueue(async () => {
+      await this.recoverExternalState();
+      if (!/^W-\d{8}-\d{4}$/.test(input.taskId)) {
+        throw new GitContextServiceError({
+          code: "TASK_NOT_FOUND",
+          message: "Task does not exist.",
+          details: { taskId: input.taskId },
+        });
+      }
+      const entry = readTaskCatalogEntry(this.database, input.taskId);
+      const record = readTaskInitialization(this.database, input.taskId);
+      if (!entry || !record) {
+        throw new GitContextServiceError({
+          code: "TASK_NOT_FOUND",
+          message: "Task does not exist.",
+          details: { taskId: input.taskId },
+        });
+      }
+      await verifyCanonicalTaskRepository(record);
+      return { task: entry };
+    });
+  }
+
   async startRun(input: StartRunRequest): Promise<StartRunResponse> {
     return await this.queue.enqueue(() => {
       const normalized = {
@@ -285,6 +366,41 @@ export class SqliteGitContextService implements GitContextService {
       database: this.database,
       now: this.now,
     });
+    for (const task of readInitializingTasks(this.database)) {
+      const head = await ensureCanonicalTaskRepository({
+        task,
+        dataRoot: this.dataRoot,
+      });
+      activateTask(this.database, task.taskId, head, this.now());
+    }
+  }
+
+  private async initializeTask(taskId: string, at: string) {
+    const record = readTaskInitialization(this.database, taskId);
+    if (!record) {
+      throw new GitContextServiceError({
+        code: "TASK_NOT_FOUND",
+        message: "Task initialization record does not exist.",
+        details: { taskId },
+      });
+    }
+    if (record.status !== "initializing") {
+      await verifyCanonicalTaskRepository(record);
+      const existing = readTaskCatalogEntry(this.database, taskId);
+      if (!existing) {
+        throw new GitContextServiceError({
+          code: "TASK_NOT_FOUND",
+          message: "Active task catalog entry is incomplete.",
+          details: { taskId },
+        });
+      }
+      return existing;
+    }
+    const head = await ensureCanonicalTaskRepository({
+      task: record,
+      dataRoot: this.dataRoot,
+    });
+    return activateTask(this.database, taskId, head, at);
   }
 
   private async ensureRepositoryForSession(sessionId: string): Promise<SessionRef> {
@@ -424,6 +540,27 @@ function normalizeAgentId(agentId: string): string {
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "");
+}
+
+function normalizeTaskInput(input: CreateTaskRequest): {
+  title: string;
+  objective: string;
+} {
+  const title = input.title.trim().replace(/\s+/g, " ");
+  const objective = input.objective.trim().replace(/\s+/g, " ");
+  if (title.length === 0 || title.length > 120) {
+    throw new GitContextServiceError({
+      code: "INVALID_REQUEST",
+      message: "Task title must contain between 1 and 120 characters.",
+    });
+  }
+  if (objective.length === 0 || objective.length > 2_000) {
+    throw new GitContextServiceError({
+      code: "INVALID_REQUEST",
+      message: "Task objective must contain between 1 and 2000 characters.",
+    });
+  }
+  return { title, objective };
 }
 
 function verifyExpectedHead(session: SessionRef, expectedHead: string | undefined): void {
