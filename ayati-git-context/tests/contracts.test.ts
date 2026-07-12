@@ -8,6 +8,7 @@ import {
   isMountTaskRequest,
   isRecordRunStepRequest,
   isRequestEnvelope,
+  isSnapshotTaskRunEvidenceRequest,
   isStartRunRequest,
   isVerifyMutationRequest,
 } from "../src/contracts.js";
@@ -144,6 +145,23 @@ describe("Git Context Engine contracts", () => {
       sessionId: "S-1",
       conversationId: "C-1",
       trigger: "timer",
+    })).toBe(false);
+  });
+
+  it("validates task-run evidence snapshot ownership", () => {
+    expect(isSnapshotTaskRunEvidenceRequest({
+      requestId: "REQ-evidence",
+      sessionId: "S-20260712-local",
+      runId: "R-20260712-0001",
+      taskId: "W-20260712-0001",
+      at: "2026-07-12T10:05:00+05:30",
+    })).toBe(true);
+    expect(isSnapshotTaskRunEvidenceRequest({
+      requestId: "REQ-evidence",
+      sessionId: "S-20260712-local",
+      runId: "R-20260712-0001",
+      taskId: "escape",
+      at: "2026-07-12T10:05:00+05:30",
     })).toBe(false);
   });
 

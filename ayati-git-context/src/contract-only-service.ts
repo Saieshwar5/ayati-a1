@@ -19,6 +19,8 @@ import {
   type MountTaskResponse,
   type RecordRunStepRequest,
   type RecordRunStepResponse,
+  type SnapshotTaskRunEvidenceRequest,
+  type SnapshotTaskRunEvidenceResponse,
   type StartRunRequest,
   type StartRunResponse,
   type VerifyMutationRequest,
@@ -79,6 +81,12 @@ export class ContractOnlyGitContextService implements GitContextService {
   async checkpointMutation(
     _input: CheckpointMutationRequest,
   ): Promise<CheckpointMutationResponse> {
+    throw notReady();
+  }
+
+  async snapshotTaskRunEvidence(
+    _input: SnapshotTaskRunEvidenceRequest,
+  ): Promise<SnapshotTaskRunEvidenceResponse> {
     throw notReady();
   }
 

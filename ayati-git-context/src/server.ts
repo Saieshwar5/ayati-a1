@@ -9,6 +9,7 @@ import {
   isEnsureActiveSessionRequest,
   isMountTaskRequest,
   isRecordRunStepRequest,
+  isSnapshotTaskRunEvidenceRequest,
   isStartRunRequest,
   isVerifyMutationRequest,
 } from "./contracts.js";
@@ -246,13 +247,28 @@ export class GitContextHttpServer {
         return;
       }
 
+      const runEvidenceMatch = url.pathname.match(/^\/runs\/([^/]+)\/evidence\/snapshot$/);
+      if (method === "POST" && runEvidenceMatch) {
+        const body = await readJsonBody(request, this.maxBodyBytes);
+        if (!isSnapshotTaskRunEvidenceRequest(body)) {
+          throw invalidRequest("Invalid task-run evidence snapshot request.");
+        }
+        const runId = decodePathComponent(runEvidenceMatch[1] ?? "");
+        if (body.runId !== runId) {
+          throw invalidRequest("Run ID in request path and body must match.");
+        }
+        sendJson(response, 200, await this.service.snapshotTaskRunEvidence(body));
+        return;
+      }
+
       const knownPath = isKnownPath(url.pathname)
         || Boolean(runStepMatch)
         || Boolean(taskMatch)
         || Boolean(mountMatch)
         || Boolean(mutationAuthorityMatch)
         || Boolean(verifyMutationMatch)
-        || Boolean(checkpointMutationMatch);
+        || Boolean(checkpointMutationMatch)
+        || Boolean(runEvidenceMatch);
       throw new GitContextServiceError({
         code: knownPath ? "METHOD_NOT_ALLOWED" : "NOT_FOUND",
         message: knownPath

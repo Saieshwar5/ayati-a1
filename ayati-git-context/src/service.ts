@@ -18,6 +18,8 @@ import type {
   MountTaskResponse,
   RecordRunStepRequest,
   RecordRunStepResponse,
+  SnapshotTaskRunEvidenceRequest,
+  SnapshotTaskRunEvidenceResponse,
   StartRunRequest,
   StartRunResponse,
   VerifyMutationRequest,
@@ -37,6 +39,9 @@ export interface GitContextService {
   ): Promise<AcquireMutationAuthorityResponse>;
   verifyMutation(input: VerifyMutationRequest): Promise<VerifyMutationResponse>;
   checkpointMutation(input: CheckpointMutationRequest): Promise<CheckpointMutationResponse>;
+  snapshotTaskRunEvidence(
+    input: SnapshotTaskRunEvidenceRequest,
+  ): Promise<SnapshotTaskRunEvidenceResponse>;
   startRun(input: StartRunRequest): Promise<StartRunResponse>;
   recordRunStep(input: RecordRunStepRequest): Promise<RecordRunStepResponse>;
 }

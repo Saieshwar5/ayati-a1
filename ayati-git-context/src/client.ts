@@ -19,6 +19,8 @@ import type {
   MountTaskResponse,
   RecordRunStepRequest,
   RecordRunStepResponse,
+  SnapshotTaskRunEvidenceRequest,
+  SnapshotTaskRunEvidenceResponse,
   StartRunRequest,
   StartRunResponse,
   VerifyMutationRequest,
@@ -137,6 +139,16 @@ export class GitContextClient implements GitContextService {
     return await this.requestJson<CheckpointMutationResponse>(
       "POST",
       "/mutation-authorities/" + encodeURIComponent(input.authorityId) + "/checkpoint",
+      input,
+    );
+  }
+
+  async snapshotTaskRunEvidence(
+    input: SnapshotTaskRunEvidenceRequest,
+  ): Promise<SnapshotTaskRunEvidenceResponse> {
+    return await this.requestJson<SnapshotTaskRunEvidenceResponse>(
+      "POST",
+      "/runs/" + encodeURIComponent(input.runId) + "/evidence/snapshot",
       input,
     );
   }

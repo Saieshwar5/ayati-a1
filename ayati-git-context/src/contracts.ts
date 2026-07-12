@@ -1,4 +1,4 @@
-export const GIT_CONTEXT_PROTOCOL_VERSION = 6;
+export const GIT_CONTEXT_PROTOCOL_VERSION = 7;
 
 export type SessionId = string;
 export type TaskId = string;
@@ -283,6 +283,25 @@ export interface CheckpointMutationResponse {
   sessionGitlinkUpdated: boolean;
 }
 
+export interface SnapshotTaskRunEvidenceRequest extends GitContextRequestEnvelope {
+  sessionId: SessionId;
+  runId: RunId;
+  taskId: TaskId;
+  at: string;
+}
+
+export interface SnapshotTaskRunEvidenceResponse {
+  runId: RunId;
+  taskId: TaskId;
+  runFile: string;
+  stepsFile: string;
+  stepCount: number;
+  taskHeadBefore: string;
+  taskHeadAfter: string;
+  sessionHeadUnchanged: boolean;
+  staged: boolean;
+}
+
 export interface AppendConversationRequest extends GitContextRequestEnvelope {
   sessionId: SessionId;
   role: ConversationRole;
@@ -420,6 +439,18 @@ export function isCheckpointMutationRequest(
     && isNonEmptyString(value["at"]);
 }
 
+export function isSnapshotTaskRunEvidenceRequest(
+  value: unknown,
+): value is SnapshotTaskRunEvidenceRequest {
+  if (!isRequestEnvelope(value)) {
+    return false;
+  }
+  return isNonEmptyString(value["sessionId"])
+    && isNonEmptyString(value["runId"])
+    && /^W-\d{8}-\d{4}$/.test(String(value["taskId"] ?? ""))
+    && isNonEmptyString(value["at"]);
+}
+
 export function isStartRunRequest(value: unknown): value is StartRunRequest {
   if (!isRequestEnvelope(value)) {
     return false;
@@ -442,7 +473,7 @@ export function isRecordRunStepRequest(value: unknown): value is RecordRunStepRe
     && Number.isInteger(value["step"])
     && value["step"] > 0
     && isNonEmptyString(value["tool"])
-    && isNonEmptyString(value["purpose"])
+    && isBoundedString(value["purpose"], 500)
     && (value["status"] === "completed"
       || value["status"] === "failed"
       || value["status"] === "blocked")

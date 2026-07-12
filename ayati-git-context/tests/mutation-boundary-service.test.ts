@@ -2,6 +2,7 @@ import { execFile } from "node:child_process";
 import {
   mkdir,
   mkdtemp,
+  readFile,
   rename,
   rm,
   symlink,
@@ -205,6 +206,98 @@ describe("task checkout mutation boundary", () => {
       at: "2026-07-12T10:00:07+05:30",
     })).rejects.toMatchObject({ code: "INVALID_REQUEST" });
     expect(await git(fixture.checkoutPath, ["rev-parse", "HEAD"])).toBe(fixture.taskHead);
+  });
+
+  it("stages bounded task-run evidence without duplicating task file contents", async () => {
+    const fixture = await createReadyRun();
+    await fixture.service.recordRunStep({
+      requestId: "REQ-step-write",
+      sessionId: fixture.sessionId,
+      runId: fixture.runId,
+      step: 1,
+      tool: "write_files",
+      purpose: "Create the main application file.",
+      status: "completed",
+      boundedInput: {
+        files: [{ path: "src/app.ts", content: "export const privateValue = 'do-not-copy';\n" }],
+      },
+      boundedOutput: { path: "src/app.ts", content: "export const privateValue = 'do-not-copy';\n" },
+      outputHash: "sha256:" + "c".repeat(64),
+      verification: {
+        passed: true,
+        provenance: { created: ["src/app.ts"], modified: [], deleted: [], renamed: [] },
+      },
+      workState: { summary: "Application entry point created." },
+      at: "2026-07-12T10:00:04+05:30",
+    });
+    const authority = await fixture.service.acquireMutationAuthority(authorityInput(fixture, [
+      { path: "src", kind: "directory" },
+    ]));
+    await mkdir(join(fixture.checkoutPath, "src"), { recursive: true });
+    await writeFile(
+      join(fixture.checkoutPath, "src", "app.ts"),
+      "export const privateValue = 'do-not-copy';\n",
+    );
+    await fixture.service.verifyMutation(verificationInput(authority.authority, "completed"));
+    const checkpoint = await fixture.service.checkpointMutation({
+      requestId: "REQ-checkpoint-evidence",
+      authorityId: authority.authority.authorityId,
+      lockToken: authority.authority.lockToken,
+      purpose: "Create the main application file.",
+      conversationId: fixture.conversationId,
+      conversationHash: "sha256:" + "d".repeat(64),
+      at: "2026-07-12T10:00:07+05:30",
+    });
+    const sessionHead = await git(fixture.sessionRepository, ["rev-parse", "HEAD"]);
+    const input = {
+      requestId: "REQ-run-evidence",
+      sessionId: fixture.sessionId,
+      runId: fixture.runId,
+      taskId: fixture.taskId,
+      expectedHead: sessionHead,
+      at: "2026-07-12T10:00:08+05:30",
+    };
+
+    const snapshot = await fixture.service.snapshotTaskRunEvidence(input);
+    await expect(fixture.service.snapshotTaskRunEvidence(input)).resolves.toEqual(snapshot);
+
+    expect(snapshot).toMatchObject({
+      stepCount: 1,
+      taskHeadBefore: fixture.taskHead,
+      taskHeadAfter: checkpoint.checkpointHead,
+      sessionHeadUnchanged: true,
+      staged: true,
+    });
+    const runJson = JSON.parse(await readFile(
+      join(fixture.sessionRepository, snapshot.runFile),
+      "utf8",
+    )) as Record<string, unknown>;
+    expect(runJson).toMatchObject({
+      runId: fixture.runId,
+      taskId: fixture.taskId,
+      conversationId: fixture.conversationId,
+      status: "running",
+      taskHeadBefore: fixture.taskHead,
+      taskHeadAfter: checkpoint.checkpointHead,
+      stepCount: 1,
+    });
+    const stepsText = await readFile(join(fixture.sessionRepository, snapshot.stepsFile), "utf8");
+    const step = JSON.parse(stepsText.trim()) as Record<string, unknown>;
+    expect(step).toMatchObject({
+      step: 1,
+      tool: "write_files",
+      purpose: "Create the main application file.",
+      status: "completed",
+      outputHash: "sha256:" + "c".repeat(64),
+      verification: { passed: true },
+      workState: { summary: "Application entry point created." },
+    });
+    expect(stepsText).not.toContain("do-not-copy");
+    expect(stepsText).toContain("content_stored_in_task_git");
+    expect(await git(fixture.sessionRepository, ["rev-parse", "HEAD"])).toBe(sessionHead);
+    expect(await git(fixture.sessionRepository, [
+      "diff", "--cached", "--name-only", "--", snapshot.runFile, snapshot.stepsFile,
+    ])).toBe(snapshot.runFile + "\n" + snapshot.stepsFile);
   });
 
   it("marks unexpected changes for recovery without removing them", async () => {

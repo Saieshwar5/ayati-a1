@@ -21,6 +21,8 @@ import {
   type RecordRunStepRequest,
   type RecordRunStepResponse,
   type SessionRef,
+  type SnapshotTaskRunEvidenceRequest,
+  type SnapshotTaskRunEvidenceResponse,
   type StartRunRequest,
   type StartRunResponse,
   type VerifyMutationRequest,
@@ -63,6 +65,7 @@ import { ActiveContextCache, activeContextRevision } from "./active-context-cach
 import { MutationBoundaryService } from "./mutation-boundary-service.js";
 import { TaskCheckpointService } from "./task-checkpoint-service.js";
 import { TaskLifecycleService } from "./task-lifecycle-service.js";
+import { TaskRunEvidenceService } from "./task-run-evidence-service.js";
 
 export interface SqliteGitContextServiceOptions {
   database: ContextDatabase;
@@ -79,6 +82,7 @@ export class SqliteGitContextService implements GitContextService {
   private readonly taskLifecycle: TaskLifecycleService;
   private readonly mutationBoundary: MutationBoundaryService;
   private readonly taskCheckpoint: TaskCheckpointService;
+  private readonly taskRunEvidence: TaskRunEvidenceService;
   private closed = false;
 
   constructor(options: SqliteGitContextServiceOptions) {
@@ -92,6 +96,7 @@ export class SqliteGitContextService implements GitContextService {
     });
     this.mutationBoundary = new MutationBoundaryService(this.database);
     this.taskCheckpoint = new TaskCheckpointService(this.database);
+    this.taskRunEvidence = new TaskRunEvidenceService(this.database);
   }
 
   async getHealth(): Promise<HealthResponse> {
@@ -307,6 +312,16 @@ export class SqliteGitContextService implements GitContextService {
       const result = await this.taskCheckpoint.checkpoint(input);
       this.contextCache.clear();
       return result;
+    });
+  }
+
+  async snapshotTaskRunEvidence(
+    input: SnapshotTaskRunEvidenceRequest,
+  ): Promise<SnapshotTaskRunEvidenceResponse> {
+    return await this.queue.enqueue(async () => {
+      const session = this.requireOpenSession(input.sessionId);
+      verifyExpectedHead(session, input.expectedHead);
+      return await this.taskRunEvidence.snapshot(input, session);
     });
   }
 

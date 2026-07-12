@@ -16,6 +16,42 @@ interface RunRow {
   run_class: RunRef["runClass"];
 }
 
+interface RunEvidenceRow extends RunRow {
+  status: string;
+  trigger: string;
+  started_at: string;
+  completed_at: string | null;
+}
+
+interface RunStepEvidenceRow {
+  step: number;
+  tool: string;
+  purpose: string;
+  status: ToolCallContext["status"];
+  bounded_input: string | null;
+  bounded_output: string | null;
+  output_hash: string | null;
+  verification: string | null;
+  work_state: string | null;
+  created_at: string;
+}
+
+export interface RunEvidenceRecord extends RunRef {
+  status: string;
+  trigger: string;
+  startedAt: string;
+  completedAt?: string;
+}
+
+export interface RunStepEvidenceRecord extends ToolCallContext {
+  boundedInput?: unknown;
+  boundedOutput?: unknown;
+  outputHash?: string;
+  verification?: unknown;
+  workState?: unknown;
+  createdAt: string;
+}
+
 export function startSessionRun(database: ContextDatabase, input: StartRunRequest): RunRef {
   const active = readActiveRun(database, input.sessionId);
   if (active) {
@@ -90,6 +126,48 @@ export function readRun(database: ContextDatabase, runId: string): RunRef | unde
     "FROM runs WHERE run_id = ?",
   ].join(" ")).get(runId) as RunRow | undefined;
   return row ? runRef(row) : undefined;
+}
+
+export function readRunEvidence(
+  database: ContextDatabase,
+  runId: string,
+): RunEvidenceRecord | undefined {
+  const row = database.prepare([
+    "SELECT run_id, session_id, conversation_id, task_id, run_class, status, trigger,",
+    "started_at, completed_at FROM runs WHERE run_id = ?",
+  ].join(" ")).get(runId) as RunEvidenceRow | undefined;
+  if (!row) {
+    return undefined;
+  }
+  return {
+    ...runRef(row),
+    status: row.status,
+    trigger: row.trigger,
+    startedAt: row.started_at,
+    ...(row.completed_at ? { completedAt: row.completed_at } : {}),
+  };
+}
+
+export function readRunStepEvidence(
+  database: ContextDatabase,
+  runId: string,
+): RunStepEvidenceRecord[] {
+  const rows = database.prepare([
+    "SELECT step, tool, purpose, status, bounded_input, bounded_output, output_hash,",
+    "verification, work_state, created_at FROM run_steps WHERE run_id = ? ORDER BY step",
+  ].join(" ")).all(runId) as unknown as RunStepEvidenceRow[];
+  return rows.map((row) => ({
+    step: Number(row.step),
+    tool: row.tool,
+    purpose: row.purpose,
+    status: row.status,
+    ...(row.bounded_input ? { boundedInput: JSON.parse(row.bounded_input) as unknown } : {}),
+    ...(row.bounded_output ? { boundedOutput: JSON.parse(row.bounded_output) as unknown } : {}),
+    ...(row.output_hash ? { outputHash: row.output_hash } : {}),
+    ...(row.verification ? { verification: JSON.parse(row.verification) as unknown } : {}),
+    ...(row.work_state ? { workState: JSON.parse(row.work_state) as unknown } : {}),
+    createdAt: row.created_at,
+  }));
 }
 
 export function bindActiveRunToTask(

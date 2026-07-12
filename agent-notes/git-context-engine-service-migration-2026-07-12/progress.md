@@ -4,9 +4,9 @@ Created: 2026-07-12
 
 ## Status
 
-Current status: seventh implementation slice complete. The independent service
-now turns verified task-checkout mutations into durable task checkpoint commits
-without changing current Ayati runtime behavior.
+Current status: eighth implementation slice complete. The independent service
+now persists bounded task-run evidence into the session repository without
+changing current Ayati runtime behavior.
 
 Implementation branch:
 
@@ -45,7 +45,7 @@ Implementation branch:
 - [x] Mount task repositories as session submodules.
 - [x] Add task checkout mutation boundary.
 - [x] Add verified task checkpoint commits.
-- [ ] Persist task-run evidence in session repository.
+- [x] Persist task-run evidence in session repository.
 - [ ] Add cross-repository finalization.
 - [ ] Add crash recovery.
 - [ ] Add midnight rollover and previous-session carryover.
@@ -76,11 +76,13 @@ Completed:
 
 Next slice:
 
-    persist task-run evidence in the session repository
-    -> bounded run.json identity and outcome scaffold
-    -> append-only steps.jsonl from the SQLite run journal
-    -> preserve purpose, verification and mutation provenance
-    -> avoid duplicating task file contents already stored by Git
+    cross-repository task-run finalization
+    -> close and hash the task conversation segment
+    -> render final run outcome into run.json
+    -> create the final task-run commit
+    -> stage conversation, evidence and task gitlink
+    -> commit the session exactly once
+    -> seal the run and release finalization ownership
 
 ## Progress Log
 
@@ -304,3 +306,37 @@ Next slice:
 - Verification:
   - pnpm --filter ayati-git-context build
   - pnpm --filter ayati-git-context test (47 tests)
+
+### 2026-07-12 Implementation Slice 8
+
+- Advanced the typed service protocol to version 7.
+- Added task-run evidence snapshot HTTP, client, service, and validation
+  contracts.
+- Added the run_evidence_snapshots SQLite recovery journal.
+- Added deterministic full run and ordered step journal readers.
+- Added bounded runs/<run-id>/run.json projection with:
+  - session, task, run, and conversation identities,
+  - trigger, status, and lifecycle timestamps,
+  - task HEAD before and after verified checkpoints,
+  - reserved final outcome, summary, and completion fields,
+  - snapshot time and step count.
+- Added bounded runs/<run-id>/steps.jsonl projection with:
+  - step, tool, purpose, status, and timestamp,
+  - bounded inputs and outputs,
+  - output hashes,
+  - deterministic verification and mutation provenance,
+  - important WorkState snapshots.
+- Replaced task-file content bodies with byte counts and SHA-256 identities so
+  Git remains the canonical file-content store.
+- Added deterministic depth, collection, string, and per-step size limits.
+- Wrote both evidence files atomically and staged only their exact paths.
+- Verified the session HEAD remains unchanged during evidence persistence.
+- Refused snapshots for active, verified-but-uncommitted, or recovery-required
+  mutation authorities.
+- Kept direct replies and harmless session runs free of Git run directories.
+- Added tests for contracts, HTTP transport, task-run ownership, exact staging,
+  task HEAD ranges, purpose and verification retention, content omission,
+  session HEAD stability, and idempotent retry.
+- Verification:
+  - pnpm --filter ayati-git-context build
+  - pnpm --filter ayati-git-context test (49 tests)

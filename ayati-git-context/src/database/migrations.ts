@@ -253,6 +253,26 @@ const MIGRATIONS: Migration[] = [
       "ON task_checkpoint_transactions(phase, updated_at);",
     ].join("\n"),
   },
+  {
+    version: 7,
+    sql: [
+      "CREATE TABLE run_evidence_snapshots (",
+      "  request_id TEXT PRIMARY KEY REFERENCES idempotency_requests(request_id),",
+      "  run_id TEXT NOT NULL REFERENCES runs(run_id),",
+      "  session_id TEXT NOT NULL REFERENCES sessions(session_id),",
+      "  task_id TEXT NOT NULL REFERENCES tasks(task_id),",
+      "  phase TEXT NOT NULL CHECK (phase IN ('prepared', 'files_written', 'staged', 'completed')),",
+      "  run_file TEXT NOT NULL,",
+      "  steps_file TEXT NOT NULL,",
+      "  source_revision TEXT NOT NULL,",
+      "  created_at TEXT NOT NULL,",
+      "  updated_at TEXT NOT NULL",
+      ");",
+      "",
+      "CREATE INDEX run_evidence_snapshots_recovery",
+      "ON run_evidence_snapshots(phase, updated_at);",
+    ].join("\n"),
+  },
 ];
 
 export function applyMigrations(database: DatabaseSync, now: () => string): void {

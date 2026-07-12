@@ -26,6 +26,8 @@ import {
   type RecordRunStepResponse,
   type StartRunRequest,
   type StartRunResponse,
+  type SnapshotTaskRunEvidenceRequest,
+  type SnapshotTaskRunEvidenceResponse,
   type VerifyMutationRequest,
   type VerifyMutationResponse,
 } from "../src/contracts.js";
@@ -152,6 +154,17 @@ describe("Git Context Engine HTTP transport", () => {
       authorityId: authority.authority.authorityId,
       checkpointHead: "b".repeat(40),
       sessionGitlinkUpdated: true,
+    });
+    await expect(client.snapshotTaskRunEvidence({
+      requestId: "REQ-evidence",
+      sessionId: ensured.session.sessionId,
+      runId: started.run.runId,
+      taskId: createdTask.task.taskId,
+      at: "2026-07-12T10:00:05+05:30",
+    })).resolves.toMatchObject({
+      runId: started.run.runId,
+      taskId: createdTask.task.taskId,
+      staged: true,
     });
     await expect(client.recordRunStep({
       requestId: "REQ-4",
@@ -403,6 +416,22 @@ class TestGitContextService implements GitContextService {
       checkpointHead: "b".repeat(40),
       stagedPaths: ["index.html"],
       sessionGitlinkUpdated: true,
+    };
+  }
+
+  async snapshotTaskRunEvidence(
+    input: SnapshotTaskRunEvidenceRequest,
+  ): Promise<SnapshotTaskRunEvidenceResponse> {
+    return {
+      runId: input.runId,
+      taskId: input.taskId,
+      runFile: "runs/" + input.runId + "/run.json",
+      stepsFile: "runs/" + input.runId + "/steps.jsonl",
+      stepCount: 1,
+      taskHeadBefore: "a".repeat(40),
+      taskHeadAfter: "b".repeat(40),
+      sessionHeadUnchanged: true,
+      staged: true,
     };
   }
 
