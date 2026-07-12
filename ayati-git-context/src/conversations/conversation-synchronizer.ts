@@ -5,6 +5,7 @@ import { writeFileAtomically } from "../files/atomic-file.js";
 import {
   readConversation,
   readConversationMessages,
+  readPendingConversationContexts,
   updateConversationContentHash,
 } from "../repositories/conversation-records.js";
 import {
@@ -13,27 +14,42 @@ import {
   readPendingFileSyncs,
 } from "../repositories/file-sync-records.js";
 import { readSession } from "../repositories/session-records.js";
-import { conversationContentHash, renderConversation } from "./conversation-renderer.js";
+import {
+  conversationContentHash,
+  renderConversation,
+  renderTaskConversationWindow,
+} from "./conversation-renderer.js";
 
-export async function materializeConversationFile(input: {
+export async function materializeTaskConversationWindow(input: {
   database: ContextDatabase;
-  conversationId: string;
+  sessionId: string;
+  taskId: string;
+  runId: string;
+  targetConversationId: string;
+  previousSessionHead: string;
 }): Promise<{ filePath: string; contentHash: string }> {
-  const conversation = readConversation(input.database, input.conversationId);
-  if (!conversation) throw new Error("Conversation does not exist for materialization.");
-  const session = readSession(input.database, conversation.sessionId);
-  if (!session) throw new Error("Conversation session does not exist for materialization.");
-  const content = renderConversation(
-    conversation,
-    readConversationMessages(input.database, conversation.conversationId),
-  );
+  const target = readConversation(input.database, input.targetConversationId);
+  const session = readSession(input.database, input.sessionId);
+  if (!target || target.sessionId !== input.sessionId || !session) {
+    throw new Error("Task conversation window has invalid session ownership.");
+  }
+  const conversations = readPendingConversationContexts(input.database, input.sessionId);
+  if (!conversations.some((item) => item.conversation.conversationId === target.conversationId)) {
+    throw new Error("Task conversation window does not contain its target conversation.");
+  }
+  const content = renderTaskConversationWindow({
+    taskId: input.taskId,
+    runId: input.runId,
+    previousSessionHead: input.previousSessionHead,
+    conversations,
+  });
   const contentHash = conversationContentHash(content);
-  await writeFileAtomically(
-    safeRepositoryPath(session.repositoryPath, conversation.filePath),
-    content,
-  );
-  updateConversationContentHash(input.database, conversation.conversationId, contentHash);
-  return { filePath: conversation.filePath, contentHash };
+  await writeFileAtomically(safeRepositoryPath(session.repositoryPath, target.filePath), content);
+  updateConversationContentHash(input.database, target.conversationId, contentHash);
+  return {
+    filePath: target.filePath,
+    contentHash,
+  };
 }
 
 export async function synchronizePendingConversationFiles(input: {

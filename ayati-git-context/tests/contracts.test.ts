@@ -173,6 +173,7 @@ describe("Git Context Engine contracts", () => {
       runId: "R-20260712-0001",
       taskId: "W-20260712-0001",
       outcome: "incomplete",
+      conversationSummary: "The user requested a task update and reviewed the partial result.",
       summary: "Created the verified files but validation still needs work.",
       validation: "failed",
       next: "Repair the validation failure in a new run.",
@@ -192,6 +193,7 @@ describe("Git Context Engine contracts", () => {
       runId: "R-20260712-0001",
       taskId: "W-20260712-0001",
       outcome: "almost_done",
+      conversationSummary: "Invalid outcome conversation.",
       summary: "Invalid outcome.",
       validation: "passed",
       completion: {

@@ -1,5 +1,9 @@
 import { createHash } from "node:crypto";
-import type { ConversationMessage, ConversationRef } from "../contracts.js";
+import type {
+  ConversationContext,
+  ConversationMessage,
+  ConversationRef,
+} from "../contracts.js";
 
 export function renderConversation(
   conversation: ConversationRef,
@@ -23,6 +27,29 @@ export function renderConversation(
 
 export function conversationContentHash(content: string): string {
   return "sha256:" + createHash("sha256").update(content).digest("hex");
+}
+
+export function renderTaskConversationWindow(input: {
+  taskId: string;
+  runId: string;
+  previousSessionHead: string;
+  conversations: ConversationContext[];
+}): string {
+  const first = input.conversations.at(0)?.conversation.sequence;
+  const last = input.conversations.at(-1)?.conversation.sequence;
+  return [
+    "# Task Conversation Window",
+    "",
+    "Task-Id: " + input.taskId,
+    "Run: " + input.runId,
+    "Previous-Session-Head: " + input.previousSessionHead,
+    "Conversation-Range: " + (first ?? "unknown") + "-" + (last ?? "unknown"),
+    "",
+    ...input.conversations.flatMap((context) => [
+      renderConversation(context.conversation, context.messages).trimEnd(),
+      "",
+    ]),
+  ].join("\n");
 }
 
 function roleTitle(role: ConversationMessage["role"]): string {

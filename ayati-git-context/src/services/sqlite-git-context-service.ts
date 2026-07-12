@@ -66,6 +66,12 @@ import { TaskRunEvidenceService } from "./task-run-evidence-service.js";
 import { TaskRunFinalizationService } from "./task-run-finalization-service.js";
 import { SessionRegistryCache } from "./session-registry-cache.js";
 import { ConversationHotCache } from "./conversation-hot-cache.js";
+import {
+  normalizeAgentId,
+  validateSessionInput,
+  verifyExpectedHead,
+} from "./session-policy.js";
+import { SessionSummaryHotCache } from "./session-summary-hot-cache.js";
 
 export interface SqliteGitContextServiceOptions {
   database: ContextDatabase;
@@ -81,6 +87,7 @@ export class SqliteGitContextService implements GitContextService {
   private readonly contextCache = new ActiveContextCache();
   private readonly sessionRegistry: SessionRegistryCache;
   private readonly conversationCache: ConversationHotCache;
+  private readonly sessionSummaryCache = new SessionSummaryHotCache();
   private readonly taskLifecycle: TaskLifecycleService;
   private readonly mutationBoundary: MutationBoundaryService;
   private readonly taskCheckpoint: TaskCheckpointService;
@@ -142,6 +149,8 @@ export class SqliteGitContextService implements GitContextService {
         };
       }
       const session = this.sessionRegistry.toRef(sessionRecord);
+      const sessionSummary = this.sessionSummaryCache.get(session.sessionId, session.head)
+        ?? await this.sessionSummaryCache.refresh(session);
       const run = readActiveRun(this.database, session.sessionId);
       const conversations = this.conversationCache.getPendingContexts(
         this.database,
@@ -162,14 +171,14 @@ export class SqliteGitContextService implements GitContextService {
       const context: ActiveContext = {
         session: {
           session,
-          summary: "",
+          summary: sessionSummary.summary,
           pendingConversation: this.conversationCache.getPendingConversations(
             this.database,
             session.sessionId,
           ),
           pendingConversationContext: conversations,
           pendingDigest,
-          recentCommits: [],
+          recentCommits: sessionSummary.recentCommits,
         },
         ...(run
           ? {
@@ -352,7 +361,14 @@ export class SqliteGitContextService implements GitContextService {
         this.contextCache.clear();
       }
       const updatedSession = readSessionRecord(this.database, input.sessionId);
-      if (updatedSession) this.sessionRegistry.set(updatedSession);
+      if (updatedSession) {
+        this.sessionRegistry.set(updatedSession);
+        try {
+          await this.sessionSummaryCache.refresh(this.sessionRegistry.toRef(updatedSession));
+        } catch {
+          this.sessionSummaryCache.invalidate(input.sessionId);
+        }
+      }
       return result;
     });
   }
@@ -459,11 +475,13 @@ export class SqliteGitContextService implements GitContextService {
       });
     }
     if (session.head === head) {
+      await this.sessionSummaryCache.refresh(session);
       return session;
     }
     this.contextCache.clear();
     const updated = updateSessionHead(this.database, sessionId, head);
     this.sessionRegistry.updateHead(sessionId, head);
+    await this.sessionSummaryCache.refresh(updated);
     return updated;
   }
 
@@ -554,46 +572,5 @@ export class SqliteGitContextService implements GitContextService {
       });
     }
     return session;
-  }
-}
-
-function validateSessionInput(input: EnsureActiveSessionRequest): void {
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(input.date)) {
-    throw new GitContextServiceError({
-      code: "INVALID_REQUEST",
-      message: "Session date must use YYYY-MM-DD format.",
-    });
-  }
-  if (normalizeAgentId(input.agentId).length === 0) {
-    throw new GitContextServiceError({
-      code: "INVALID_REQUEST",
-      message: "Agent ID must contain a letter or number.",
-    });
-  }
-}
-
-function normalizeAgentId(agentId: string): string {
-  return agentId
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "");
-}
-
-function verifyExpectedHead(session: SessionRef, expectedHead: string | undefined): void {
-  if (expectedHead === undefined) {
-    return;
-  }
-  if (session.head !== expectedHead) {
-    throw new GitContextServiceError({
-      code: "SESSION_HEAD_MISMATCH",
-      message: "Session HEAD does not match the caller expectation.",
-      retryable: true,
-      details: {
-        sessionId: session.sessionId,
-        expectedHead,
-        actualHead: session.head,
-      },
-    });
   }
 }

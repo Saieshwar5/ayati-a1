@@ -1,4 +1,4 @@
-export const GIT_CONTEXT_PROTOCOL_VERSION = 8;
+export const GIT_CONTEXT_PROTOCOL_VERSION = 9;
 
 export type SessionId = string;
 export type TaskId = string;
@@ -133,6 +133,13 @@ export interface CommitSummary {
   commit: string;
   subject: string;
   committedAt?: string;
+  message?: string;
+  conversationSummary?: string;
+  workSummary?: string;
+  outcome?: string;
+  validation?: string;
+  taskId?: string;
+  runId?: string;
 }
 
 export interface ToolCallContext {
@@ -331,6 +338,7 @@ export interface FinalizeTaskRunRequest extends GitContextRequestEnvelope {
   runId: RunId;
   taskId: TaskId;
   outcome: TaskRunOutcome;
+  conversationSummary: string;
   summary: string;
   validation: "passed" | "failed" | "not_run";
   next?: string;
@@ -509,6 +517,7 @@ export function isFinalizeTaskRunRequest(value: unknown): value is FinalizeTaskR
     && isNonEmptyString(value["runId"])
     && /^W-\d{8}-\d{4}$/.test(String(value["taskId"] ?? ""))
     && isTaskRunOutcome(value["outcome"])
+    && isBoundedString(value["conversationSummary"], 2_000)
     && isBoundedString(value["summary"], 2_000)
     && (value["validation"] === "passed"
       || value["validation"] === "failed"
@@ -610,6 +619,7 @@ function isTaskCompletionRecord(value: unknown): value is TaskCompletionRecord {
 function isCompletionAsset(value: unknown): boolean {
   return isRecord(value)
     && isBoundedString(value["path"], 1_024)
+    && !/[\u0000-\u001f\u007f]/.test(String(value["path"]))
     && (value["kind"] === "file" || value["kind"] === "directory")
     && isBoundedString(value["description"], 1_000)
     && typeof value["verified"] === "boolean";

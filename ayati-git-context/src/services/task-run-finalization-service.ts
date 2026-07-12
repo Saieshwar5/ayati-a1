@@ -9,7 +9,7 @@ import {
   completeRecoverableIdempotent,
   markRecoverableIdempotencyFailed,
 } from "../database/idempotency.js";
-import { materializeConversationFile } from "../conversations/conversation-synchronizer.js";
+import { materializeTaskConversationWindow } from "../conversations/conversation-synchronizer.js";
 import { GitContextServiceError } from "../errors.js";
 import { commitTaskRunSession } from "../git/session-finalization.js";
 import {
@@ -19,7 +19,7 @@ import {
 import { stageTaskGitlink } from "../git/task-submodule.js";
 import {
   closeTaskConversationWithAssistant,
-  markConversationCommitted,
+  markPendingConversationsCommitted,
   readConversation,
   readConversationContentHash,
 } from "../repositories/conversation-records.js";
@@ -114,6 +114,7 @@ export class TaskRunFinalizationService {
             taskId: input.taskId,
             conversationId: run.conversationId,
             outcome: input.outcome,
+            conversationSummary: normalize(input.conversationSummary),
             summary: normalize(input.summary),
             validation: input.validation,
             ...(input.next ? { next: normalize(input.next) } : {}),
@@ -160,9 +161,13 @@ export class TaskRunFinalizationService {
     }
 
     try {
-      await materializeConversationFile({
+      await materializeTaskConversationWindow({
         database: this.database,
-        conversationId: run.conversationId,
+        sessionId: completedRecord.sessionId,
+        taskId: input.taskId,
+        runId: input.runId,
+        targetConversationId: run.conversationId,
+        previousSessionHead: completedRecord.sessionHeadBefore,
       });
       let record = requireFinalization(this.database, run.runId);
       const conversationHash = readConversationContentHash(this.database, run.conversationId);
@@ -185,7 +190,7 @@ export class TaskRunFinalizationService {
       const response = finalizationResponse(record, taskFinalizationHead, sessionCommit);
       this.database.transaction(() => {
         completeTaskRun(this.database, { runId: run.runId, outcome: record.outcome, at: input.at });
-        markConversationCommitted(this.database, run.conversationId, sessionCommit);
+        markPendingConversationsCommitted(this.database, session.sessionId, sessionCommit);
         updateSessionHead(this.database, session.sessionId, sessionCommit);
         updateTaskRunFinalization(this.database, {
           runId: run.runId,
@@ -317,6 +322,10 @@ export class TaskRunFinalizationService {
       taskId: record.taskId,
       runId: run.runId,
       outcome: record.outcome,
+      validation: record.validation,
+      conversationSummary: record.conversationSummary,
+      workSummary: record.summary,
+      assets: record.completion.assets,
       taskHeadBefore: record.taskHeadBefore,
       taskHeadAfter: taskHead,
       expectedSessionHead: record.sessionHeadBefore,

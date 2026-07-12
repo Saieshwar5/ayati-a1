@@ -4,10 +4,10 @@ Created: 2026-07-12
 
 ## Status
 
-Current status: eleventh implementation slice complete. The independent service
-now keeps live conversation exclusively in SQLite plus an uncommitted hot cache
-and materializes Markdown only at task-run finalization, without changing
-current Ayati runtime behavior.
+Current status: twelfth implementation slice complete. The independent service
+now commits the complete uncommitted conversation window with semantic task-run
+commit context and maintains a Git-derived session summary hot cache, without
+changing current Ayati runtime behavior.
 
 Implementation branch:
 
@@ -452,3 +452,50 @@ Next slice:
 - Verification:
   - pnpm --filter ayati-git-context build
   - pnpm --filter ayati-git-context test (54 tests)
+
+### 2026-07-12 Implementation Slice 12
+
+- Advanced the typed service protocol to version 9.
+- Added a required bounded conversationSummary to task-run finalization while
+  retaining summary as the verified task-work summary.
+- Persisted conversationSummary in the recoverable task-run finalization
+  journal, with backward fallback for older rows.
+- Changed task conversation materialization from one segment to the complete
+  active/closed uncommitted conversation window since the previous session
+  commit.
+- Added a task conversation window header containing task, run, previous
+  session HEAD, and conversation sequence range, followed by every original
+  conversation with roles, IDs, ordering, content, and timestamps preserved.
+- Continued to create only one Markdown file at task-run finalization.
+- Marked all closed conversations in the committed window with the same session
+  commit SHA and removed them together from ConversationHotCache.
+- Redesigned task-run session commit messages with:
+  - a work-derived subject,
+  - a Conversation section,
+  - a Task work section,
+  - verified asset paths and descriptions,
+  - outcome and validation,
+  - session, conversation, task, run, and task-HEAD trailers.
+- Added SessionSummaryHotCache derived exclusively from session Git log.
+- Excluded session initialization commits from work history.
+- Kept the five newest task-run session commits as detailed parsed records,
+  including the exact raw commit message.
+- Compacted every older session commit into a one-line work/outcome summary.
+- Hydrated the summary cache at startup/new-session repository verification and
+  refreshed it after every successful task-run session commit.
+- Invalidated the derived cache rather than failing durable finalization if a
+  post-commit cache refresh fails.
+- Filled ActiveContext session.summary and recentCommits from the new cache.
+- Extracted session validation, agent-ID normalization, and expected-HEAD policy
+  into a focused module to keep the SQLite service below 600 lines.
+- Added tests proving:
+  - multiple conversations become one task conversation commit window,
+  - all committed-window conversations receive the session commit SHA,
+  - conversation/work/asset commit context is durable in Git,
+  - committed conversations clear from the hot cache,
+  - the newest five commits retain detailed raw data,
+  - older commits become compact summaries,
+  - a fresh cache rebuilds the same summary from Git after restart.
+- Verification:
+  - pnpm --filter ayati-git-context build
+  - pnpm --filter ayati-git-context test (55 tests)

@@ -174,6 +174,7 @@ describe("Git Context Engine HTTP transport", () => {
       runId: started.run.runId,
       taskId: createdTask.task.taskId,
       outcome: "done",
+      conversationSummary: "The user asked for the application and received the completed result.",
       summary: "Created the application.",
       validation: "passed",
       completion: {

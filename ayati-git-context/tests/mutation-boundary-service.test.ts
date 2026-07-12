@@ -298,7 +298,9 @@ describe("task checkout mutation boundary", () => {
     expect(await git(fixture.sessionRepository, [
       "diff", "--cached", "--name-only", "--", snapshot.runFile, snapshot.stepsFile,
     ])).toBe(snapshot.runFile + "\n" + snapshot.stepsFile);
-    const conversationPath = "conversations/000001-task-" + fixture.taskId + ".md";
+    const conversationSequence = fixture.conversationId.match(/-C-(\d+)$/)?.[1] ?? "000000";
+    const conversationPath = "conversations/" + conversationSequence
+      + "-task-" + fixture.taskId + ".md";
     await expect(readFile(
       join(fixture.sessionRepository, conversationPath),
       "utf8",
@@ -311,6 +313,7 @@ describe("task checkout mutation boundary", () => {
       taskId: fixture.taskId,
       expectedHead: sessionHead,
       outcome: "done" as const,
+      conversationSummary: "The user requested the main application file and received a verified result.",
       summary: "Created and verified the main application file.",
       validation: "passed" as const,
       completion: {
@@ -345,8 +348,21 @@ describe("task checkout mutation boundary", () => {
       .toBe(finalized.sessionCommit);
     expect(await git(fixture.checkoutPath, ["show", "-s", "--format=%B", "HEAD"]))
       .toContain("Ayati-Event: task_run_finalized");
-    expect(await git(fixture.sessionRepository, ["show", "-s", "--format=%B", "HEAD"]))
-      .toContain("Ayati-Event: task_run_committed");
+    const sessionCommitMessage = await git(
+      fixture.sessionRepository,
+      ["show", "-s", "--format=%B", "HEAD"],
+    );
+    expect(sessionCommitMessage).toContain([
+      "Conversation:",
+      "The user requested the main application file and received a verified result.",
+      "",
+      "Task work:",
+      "Created and verified the main application file.",
+    ].join("\n"));
+    expect(sessionCommitMessage).toContain(
+      "Assets:\n- src/app.ts — Main application entry point.",
+    );
+    expect(sessionCommitMessage).toContain("Ayati-Event: task_run_committed");
     const finalRun = JSON.parse(await readFile(
       join(fixture.sessionRepository, finalized.runFile), "utf8",
     )) as Record<string, unknown>;
@@ -369,8 +385,14 @@ describe("task checkout mutation boundary", () => {
       },
       taskHeadAfter: finalized.taskFinalizationCommit,
     });
-    expect(await readFile(join(fixture.sessionRepository, conversationPath), "utf8"))
-      .toContain("The application entry point is ready and verified.");
+    const committedConversation = await readFile(
+      join(fixture.sessionRepository, conversationPath),
+      "utf8",
+    );
+    expect(committedConversation).toContain("A harmless question before task work.");
+    expect(committedConversation).toContain("A harmless response before task work.");
+    expect(committedConversation).toContain("Create the requested task file.");
+    expect(committedConversation).toContain("The application entry point is ready and verified.");
     expect(fixture.database.prepare(
       "SELECT status FROM runs WHERE run_id = ?",
     ).get(fixture.runId)).toMatchObject({ status: "completed" });
@@ -380,12 +402,27 @@ describe("task checkout mutation boundary", () => {
       status: "committed",
       committed_sha: finalized.sessionCommit,
     });
+    expect(fixture.database.prepare([
+      "SELECT COUNT(*) AS count FROM conversation_segments",
+      "WHERE session_id = ? AND status != 'committed'",
+    ].join(" ")).get(fixture.sessionId)).toMatchObject({ count: 0 });
     expect(fixture.database.prepare(
       "SELECT phase FROM task_run_finalizations WHERE run_id = ?",
     ).get(fixture.runId)).toMatchObject({ phase: "completed" });
     const finalContext = await fixture.service.getActiveContext({ sessionId: fixture.sessionId });
     expect(finalContext.session?.session.head).toBe(finalized.sessionCommit);
     expect(finalContext.session?.pendingConversationContext).toEqual([]);
+    expect(finalContext.session?.summary).toBe("");
+    expect(finalContext.session?.recentCommits).toMatchObject([{
+      commit: finalized.sessionCommit,
+      conversationSummary:
+        "The user requested the main application file and received a verified result.",
+      workSummary: "Created and verified the main application file.",
+      outcome: "done",
+      validation: "passed",
+      taskId: fixture.taskId,
+      runId: fixture.runId,
+    }]);
   });
 
   it("marks unexpected changes for recovery without removing them", async () => {
@@ -574,6 +611,20 @@ async function createReadyRun(): Promise<ReadyRunFixture> {
     timezone: "Asia/Kolkata",
     agentId: "local",
     at: "2026-07-12T10:00:00+05:30",
+  });
+  await service.appendConversation({
+    requestId: "REQ-harmless-user",
+    sessionId: session.session.sessionId,
+    role: "user",
+    content: "A harmless question before task work.",
+    at: "2026-07-12T10:00:00.100+05:30",
+  });
+  await service.appendConversation({
+    requestId: "REQ-harmless-assistant",
+    sessionId: session.session.sessionId,
+    role: "assistant",
+    content: "A harmless response before task work.",
+    at: "2026-07-12T10:00:00.200+05:30",
   });
   const conversation = await service.appendConversation({
     requestId: "REQ-message",

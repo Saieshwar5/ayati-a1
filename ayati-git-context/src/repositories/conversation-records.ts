@@ -194,15 +194,15 @@ export function closeTaskConversationWithAssistant(database: ContextDatabase, in
   return conversation;
 }
 
-export function markConversationCommitted(
+export function markPendingConversationsCommitted(
   database: ContextDatabase,
-  conversationId: string,
+  sessionId: string,
   commit: string,
 ): void {
   database.prepare([
     "UPDATE conversation_segments SET status = 'committed', committed_sha = ?",
-    "WHERE conversation_id = ? AND status = 'closed'",
-  ].join(" ")).run(commit, conversationId);
+    "WHERE session_id = ? AND status = 'closed'",
+  ].join(" ")).run(commit, sessionId);
 }
 
 function createConversationForNewInput(

@@ -303,6 +303,10 @@ const MIGRATIONS: Migration[] = [
       "ON task_run_finalizations(phase, updated_at);",
     ].join("\n"),
   },
+  {
+    version: 9,
+    sql: "ALTER TABLE task_run_finalizations ADD COLUMN conversation_summary TEXT;",
+  },
 ];
 
 export function applyMigrations(database: DatabaseSync, now: () => string): void {

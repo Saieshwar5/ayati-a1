@@ -1,4 +1,4 @@
-import type { TaskRunOutcome } from "../contracts.js";
+import type { TaskCompletionRecord, TaskRunOutcome } from "../contracts.js";
 import { GitContextServiceError } from "../errors.js";
 import { configureAyatiGitIdentity, gitCommitEnvironment, runGit } from "./git-process.js";
 
@@ -9,6 +9,10 @@ export async function commitTaskRunSession(input: {
   taskId: string;
   runId: string;
   outcome: TaskRunOutcome;
+  validation: "passed" | "failed" | "not_run";
+  conversationSummary: string;
+  workSummary: string;
+  assets: TaskCompletionRecord["assets"];
   taskHeadBefore: string;
   taskHeadAfter: string;
   expectedSessionHead: string;
@@ -56,11 +60,26 @@ function sessionCommitMessage(input: {
   taskId: string;
   runId: string;
   outcome: TaskRunOutcome;
+  validation: string;
+  conversationSummary: string;
+  workSummary: string;
+  assets: TaskCompletionRecord["assets"];
   taskHeadBefore: string;
   taskHeadAfter: string;
 }): string {
   return [
-    "session: finalize task run " + input.runId,
+    "session: " + subject(input.workSummary),
+    "",
+    "Conversation:",
+    singleLine(input.conversationSummary),
+    "",
+    "Task work:",
+    singleLine(input.workSummary),
+    "",
+    "Assets:",
+    ...(input.assets.length > 0
+      ? input.assets.map((asset) => "- " + asset.path + " — " + singleLine(asset.description))
+      : ["- none"]),
     "",
     "Session-Id: " + input.sessionId,
     "Conversation-Id: " + input.conversationId,
@@ -69,8 +88,17 @@ function sessionCommitMessage(input: {
     "Task-After: " + input.taskHeadAfter,
     "Run: " + input.runId,
     "Outcome: " + input.outcome,
+    "Validation: " + input.validation,
     "Ayati-Event: task_run_committed",
   ].join("\n");
+}
+
+function subject(value: string): string {
+  return singleLine(value).replace(/[.!?]+$/, "").slice(0, 72).toLowerCase();
+}
+
+function singleLine(value: string): string {
+  return value.trim().replace(/\s+/g, " ");
 }
 
 function sessionMismatch(expected: string, actual: string): GitContextServiceError {

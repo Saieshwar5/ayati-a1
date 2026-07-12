@@ -18,6 +18,7 @@ interface FinalizationRow {
   conversation_id: string;
   phase: TaskRunFinalizationPhase;
   outcome: TaskRunOutcome;
+  conversation_summary: string | null;
   summary: string;
   validation: "passed" | "failed" | "not_run";
   next_action: string | null;
@@ -41,6 +42,7 @@ export interface TaskRunFinalizationRecord {
   conversationId: string;
   phase: TaskRunFinalizationPhase;
   outcome: TaskRunOutcome;
+  conversationSummary: string;
   summary: string;
   validation: "passed" | "failed" | "not_run";
   next?: string;
@@ -63,6 +65,7 @@ export function insertTaskRunFinalization(database: ContextDatabase, input: {
   taskId: string;
   conversationId: string;
   outcome: TaskRunOutcome;
+  conversationSummary: string;
   summary: string;
   validation: "passed" | "failed" | "not_run";
   next?: string;
@@ -78,14 +81,14 @@ export function insertTaskRunFinalization(database: ContextDatabase, input: {
     "run_id, request_id, session_id, task_id, conversation_id, phase, outcome, summary,",
     "validation, next_action, completion_json, assistant_response, session_head_before,",
     "task_head_before, task_checkpoint_head, conversation_hash, task_finalization_head,",
-    "session_commit, created_at, updated_at",
-    ") VALUES (?, ?, ?, ?, ?, 'prepared', ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, ?, ?)",
+    "session_commit, created_at, updated_at, conversation_summary",
+    ") VALUES (?, ?, ?, ?, ?, 'prepared', ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, ?, ?, ?)",
   ].join(" ")).run(
     input.runId, input.requestId, input.sessionId, input.taskId, input.conversationId,
     input.outcome, input.summary, input.validation, input.next ?? null,
     JSON.stringify(input.completion),
     input.assistantResponse, input.sessionHeadBefore, input.taskHeadBefore,
-    input.taskCheckpointHead, input.at, input.at,
+    input.taskCheckpointHead, input.at, input.at, input.conversationSummary,
   );
   return requireFinalization(database, input.runId);
 }
@@ -130,7 +133,8 @@ function finalizationSelect(): string {
     "SELECT run_id, request_id, session_id, task_id, conversation_id, phase, outcome,",
     "summary, validation, next_action, completion_json, assistant_response,",
     "session_head_before, task_head_before, task_checkpoint_head, conversation_hash,",
-    "task_finalization_head, session_commit, created_at, updated_at FROM task_run_finalizations",
+    "task_finalization_head, session_commit, created_at, updated_at, conversation_summary",
+    "FROM task_run_finalizations",
   ].join(" ");
 }
 
@@ -138,7 +142,10 @@ function finalizationRecord(row: FinalizationRow): TaskRunFinalizationRecord {
   return {
     runId: row.run_id, requestId: row.request_id, sessionId: row.session_id,
     taskId: row.task_id, conversationId: row.conversation_id, phase: row.phase,
-    outcome: row.outcome, summary: row.summary, validation: row.validation,
+    outcome: row.outcome,
+    conversationSummary: row.conversation_summary ?? row.summary,
+    summary: row.summary,
+    validation: row.validation,
     ...(row.next_action ? { next: row.next_action } : {}),
     completion: parseCompletion(row),
     assistantResponse: row.assistant_response, sessionHeadBefore: row.session_head_before,
