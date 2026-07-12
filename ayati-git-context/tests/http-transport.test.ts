@@ -16,6 +16,8 @@ import {
   type CreateTaskResponse,
   type EnsureActiveSessionRequest,
   type EnsureActiveSessionResponse,
+  type FinalizeTaskRunRequest,
+  type FinalizeTaskRunResponse,
   type GetActiveContextRequest,
   type GetTaskRequest,
   type GetTaskResponse,
@@ -165,6 +167,28 @@ describe("Git Context Engine HTTP transport", () => {
       runId: started.run.runId,
       taskId: createdTask.task.taskId,
       staged: true,
+    });
+    await expect(client.finalizeTaskRun({
+      requestId: "REQ-finalize",
+      sessionId: ensured.session.sessionId,
+      runId: started.run.runId,
+      taskId: createdTask.task.taskId,
+      outcome: "done",
+      summary: "Created the application.",
+      validation: "passed",
+      completion: {
+        accepted: true,
+        assets: [],
+        missing: [],
+        failures: [],
+        criteria: [],
+      },
+      assistantResponse: "The application is ready.",
+      at: "2026-07-12T10:00:06+05:30",
+    })).resolves.toMatchObject({
+      runId: started.run.runId,
+      outcome: "done",
+      sessionCommit: "c".repeat(40),
     });
     await expect(client.recordRunStep({
       requestId: "REQ-4",
@@ -432,6 +456,21 @@ class TestGitContextService implements GitContextService {
       taskHeadAfter: "b".repeat(40),
       sessionHeadUnchanged: true,
       staged: true,
+    };
+  }
+
+  async finalizeTaskRun(input: FinalizeTaskRunRequest): Promise<FinalizeTaskRunResponse> {
+    return {
+      runId: input.runId,
+      taskId: input.taskId,
+      outcome: input.outcome,
+      taskHeadBefore: "a".repeat(40),
+      taskHeadAfter: "b".repeat(40),
+      taskFinalizationCommit: "b".repeat(40),
+      sessionCommit: "c".repeat(40),
+      conversationHash: "sha256:" + "d".repeat(64),
+      runFile: "runs/" + input.runId + "/run.json",
+      stepsFile: "runs/" + input.runId + "/steps.jsonl",
     };
   }
 

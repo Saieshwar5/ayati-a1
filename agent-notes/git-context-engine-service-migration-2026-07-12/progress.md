@@ -4,9 +4,9 @@ Created: 2026-07-12
 
 ## Status
 
-Current status: eighth implementation slice complete. The independent service
-now persists bounded task-run evidence into the session repository without
-changing current Ayati runtime behavior.
+Current status: ninth implementation slice complete. The independent service
+now finalizes task runs across canonical task and daily session repositories
+without changing current Ayati runtime behavior.
 
 Implementation branch:
 
@@ -46,7 +46,7 @@ Implementation branch:
 - [x] Add task checkout mutation boundary.
 - [x] Add verified task checkpoint commits.
 - [x] Persist task-run evidence in session repository.
-- [ ] Add cross-repository finalization.
+- [x] Add cross-repository finalization.
 - [ ] Add crash recovery.
 - [ ] Add midnight rollover and previous-session carryover.
 - [ ] Derive context and summaries from Git plus live SQLite.
@@ -76,13 +76,11 @@ Completed:
 
 Next slice:
 
-    cross-repository task-run finalization
-    -> close and hash the task conversation segment
-    -> render final run outcome into run.json
-    -> create the final task-run commit
-    -> stage conversation, evidence and task gitlink
-    -> commit the session exactly once
-    -> seal the run and release finalization ownership
+    crash recovery and startup replay
+    -> scan unfinished checkpoint, evidence and finalization journals
+    -> resume from the last durable Git/SQLite phase
+    -> classify irreconcilable state as recovery_required
+    -> prove every injected failure converges without duplicate commits
 
 ## Progress Log
 
@@ -340,3 +338,40 @@ Next slice:
 - Verification:
   - pnpm --filter ayati-git-context build
   - pnpm --filter ayati-git-context test (49 tests)
+
+### 2026-07-12 Implementation Slice 9
+
+- Advanced the typed service protocol to version 8.
+- Added task-run finalization HTTP, client, service, and validation contracts.
+- Added a precise deterministic completion record containing accepted status,
+  verified assets, missing work, failures, and completion criteria.
+- Enforced that done requires accepted completion evidence and passed
+  validation; every other outcome requires rejected completion evidence.
+- Added the task_run_finalizations SQLite phase journal with prepared,
+  conversation, task, session, and completed durability phases.
+- Appended the final assistant response, closed the owning conversation, renamed
+  it to its task-qualified path, rendered it atomically, and persisted its hash.
+- Created an empty task-run finalization commit with task, session, run,
+  conversation, outcome, validation, summary, next-action, and event trailers.
+- Pushed the finalization commit to the canonical bare task repository.
+- Updated the task catalog, mounted checkout, and staged session gitlink to the
+  exact final task commit.
+- Re-rendered run.json with terminal outcome, validation, completion evidence,
+  summary, next action, completion time, and final task HEAD.
+- Staged only owned conversation, run evidence, .gitmodules, and selected task
+  gitlink paths; rejected unrelated staged session files.
+- Created one purpose-rich session commit that natively records the final task
+  gitlink together with its conversation and run evidence.
+- Updated SQLite run, conversation, session HEAD, and transaction state only
+  after the task and session commits were durable.
+- Mapped done and incomplete to a completed compute run while preserving their
+  distinct task outcomes; failed, blocked, and needs-user-input remain explicit
+  terminal run statuses.
+- Added commit-trailer/parent based retry recovery for interruptions after task
+  or session commit creation, plus completed-transaction retry recovery.
+- Added tests for contracts, HTTP transport, exact Git histories, canonical task
+  persistence, final conversation content/hash, terminal run evidence, session
+  commit ownership, SQLite terminal state, and idempotent retry.
+- Verification:
+  - pnpm --filter ayati-git-context build
+  - pnpm --filter ayati-git-context test (50 tests)

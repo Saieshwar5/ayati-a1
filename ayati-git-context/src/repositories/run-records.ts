@@ -4,6 +4,7 @@ import type {
   RunRef,
   StartRunRequest,
   ToolCallContext,
+  TaskRunOutcome,
 } from "../contracts.js";
 import { GitContextServiceError } from "../errors.js";
 import { bindConversationRun, readConversation } from "./conversation-records.js";
@@ -168,6 +169,27 @@ export function readRunStepEvidence(
     ...(row.work_state ? { workState: JSON.parse(row.work_state) as unknown } : {}),
     createdAt: row.created_at,
   }));
+}
+
+export function completeTaskRun(database: ContextDatabase, input: {
+  runId: string;
+  outcome: TaskRunOutcome;
+  at: string;
+}): void {
+  const status = input.outcome === "failed"
+    ? "failed"
+    : input.outcome === "blocked"
+      ? "blocked"
+      : input.outcome === "needs_user_input"
+        ? "needs_user_input"
+        : "completed";
+  const result = database.prepare([
+    "UPDATE runs SET status = ?, completed_at = ?",
+    "WHERE run_id = ? AND run_class = 'task' AND status = 'running'",
+  ].join(" ")).run(status, input.at, input.runId);
+  if (Number(result.changes) !== 1) {
+    throw new Error("Running task run could not be completed: " + input.runId);
+  }
 }
 
 export function bindActiveRunToTask(

@@ -7,6 +7,7 @@ import {
   isCheckpointMutationRequest,
   isCreateTaskRequest,
   isEnsureActiveSessionRequest,
+  isFinalizeTaskRunRequest,
   isMountTaskRequest,
   isRecordRunStepRequest,
   isSnapshotTaskRunEvidenceRequest,
@@ -261,6 +262,20 @@ export class GitContextHttpServer {
         return;
       }
 
+      const finalizeTaskRunMatch = url.pathname.match(/^\/runs\/([^/]+)\/finalize-task$/);
+      if (method === "POST" && finalizeTaskRunMatch) {
+        const body = await readJsonBody(request, this.maxBodyBytes);
+        if (!isFinalizeTaskRunRequest(body)) {
+          throw invalidRequest("Invalid task-run finalization request.");
+        }
+        const runId = decodePathComponent(finalizeTaskRunMatch[1] ?? "");
+        if (body.runId !== runId) {
+          throw invalidRequest("Run ID in request path and body must match.");
+        }
+        sendJson(response, 200, await this.service.finalizeTaskRun(body));
+        return;
+      }
+
       const knownPath = isKnownPath(url.pathname)
         || Boolean(runStepMatch)
         || Boolean(taskMatch)
@@ -268,7 +283,8 @@ export class GitContextHttpServer {
         || Boolean(mutationAuthorityMatch)
         || Boolean(verifyMutationMatch)
         || Boolean(checkpointMutationMatch)
-        || Boolean(runEvidenceMatch);
+        || Boolean(runEvidenceMatch)
+        || Boolean(finalizeTaskRunMatch);
       throw new GitContextServiceError({
         code: knownPath ? "METHOD_NOT_ALLOWED" : "NOT_FOUND",
         message: knownPath

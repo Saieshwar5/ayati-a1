@@ -298,6 +298,87 @@ describe("task checkout mutation boundary", () => {
     expect(await git(fixture.sessionRepository, [
       "diff", "--cached", "--name-only", "--", snapshot.runFile, snapshot.stepsFile,
     ])).toBe(snapshot.runFile + "\n" + snapshot.stepsFile);
+
+    const finalizationInput = {
+      requestId: "REQ-finalize-run",
+      sessionId: fixture.sessionId,
+      runId: fixture.runId,
+      taskId: fixture.taskId,
+      expectedHead: sessionHead,
+      outcome: "done" as const,
+      summary: "Created and verified the main application file.",
+      validation: "passed" as const,
+      completion: {
+        accepted: true,
+        assets: [{
+          path: "src/app.ts",
+          kind: "file" as const,
+          description: "Main application entry point.",
+          verified: true,
+        }],
+        missing: [],
+        failures: [],
+        criteria: [{ criterion: "Application file exists.", passed: true }],
+      },
+      assistantResponse: "The application entry point is ready and verified.",
+      at: "2026-07-12T10:00:09+05:30",
+    };
+    const finalized = await fixture.service.finalizeTaskRun(finalizationInput);
+    await expect(fixture.service.finalizeTaskRun(finalizationInput)).resolves.toEqual(finalized);
+
+    expect(finalized).toMatchObject({
+      runId: fixture.runId,
+      taskId: fixture.taskId,
+      outcome: "done",
+      taskHeadBefore: fixture.taskHead,
+      conversationHash: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
+    });
+    expect(finalized.taskHeadAfter).toBe(finalized.taskFinalizationCommit);
+    expect(await git(fixture.canonicalRepository, ["rev-parse", "refs/heads/main"]))
+      .toBe(finalized.taskFinalizationCommit);
+    expect(await git(fixture.sessionRepository, ["rev-parse", "HEAD"]))
+      .toBe(finalized.sessionCommit);
+    expect(await git(fixture.checkoutPath, ["show", "-s", "--format=%B", "HEAD"]))
+      .toContain("Ayati-Event: task_run_finalized");
+    expect(await git(fixture.sessionRepository, ["show", "-s", "--format=%B", "HEAD"]))
+      .toContain("Ayati-Event: task_run_committed");
+    const finalRun = JSON.parse(await readFile(
+      join(fixture.sessionRepository, finalized.runFile), "utf8",
+    )) as Record<string, unknown>;
+    expect(finalRun).toMatchObject({
+      status: "completed",
+      outcome: "done",
+      validation: "passed",
+      summary: "Created and verified the main application file.",
+      completion: {
+        accepted: true,
+        assets: [{
+          path: "src/app.ts",
+          kind: "file",
+          description: "Main application entry point.",
+          verified: true,
+        }],
+        missing: [],
+        failures: [],
+        criteria: [{ criterion: "Application file exists.", passed: true }],
+      },
+      taskHeadAfter: finalized.taskFinalizationCommit,
+    });
+    const conversationPath = "conversations/000001-task-" + fixture.taskId + ".md";
+    expect(await readFile(join(fixture.sessionRepository, conversationPath), "utf8"))
+      .toContain("The application entry point is ready and verified.");
+    expect(fixture.database.prepare(
+      "SELECT status FROM runs WHERE run_id = ?",
+    ).get(fixture.runId)).toMatchObject({ status: "completed" });
+    expect(fixture.database.prepare(
+      "SELECT status, committed_sha FROM conversation_segments WHERE conversation_id = ?",
+    ).get(fixture.conversationId)).toMatchObject({
+      status: "committed",
+      committed_sha: finalized.sessionCommit,
+    });
+    expect(fixture.database.prepare(
+      "SELECT phase FROM task_run_finalizations WHERE run_id = ?",
+    ).get(fixture.runId)).toMatchObject({ phase: "completed" });
   });
 
   it("marks unexpected changes for recovery without removing them", async () => {

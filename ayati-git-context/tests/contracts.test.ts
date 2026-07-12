@@ -5,6 +5,7 @@ import {
   isCheckpointMutationRequest,
   isCreateTaskRequest,
   isEnsureActiveSessionRequest,
+  isFinalizeTaskRunRequest,
   isMountTaskRequest,
   isRecordRunStepRequest,
   isRequestEnvelope,
@@ -162,6 +163,46 @@ describe("Git Context Engine contracts", () => {
       runId: "R-20260712-0001",
       taskId: "escape",
       at: "2026-07-12T10:05:00+05:30",
+    })).toBe(false);
+  });
+
+  it("validates bounded task-run finalization outcomes", () => {
+    expect(isFinalizeTaskRunRequest({
+      requestId: "REQ-finalize",
+      sessionId: "S-20260712-local",
+      runId: "R-20260712-0001",
+      taskId: "W-20260712-0001",
+      outcome: "incomplete",
+      summary: "Created the verified files but validation still needs work.",
+      validation: "failed",
+      next: "Repair the validation failure in a new run.",
+      completion: {
+        accepted: false,
+        assets: [],
+        missing: ["Passing validation"],
+        failures: ["Validation failed"],
+        criteria: [{ criterion: "Validation passes.", passed: false }],
+      },
+      assistantResponse: "I created the files, but validation is still failing.",
+      at: "2026-07-12T10:06:00+05:30",
+    })).toBe(true);
+    expect(isFinalizeTaskRunRequest({
+      requestId: "REQ-finalize",
+      sessionId: "S-20260712-local",
+      runId: "R-20260712-0001",
+      taskId: "W-20260712-0001",
+      outcome: "almost_done",
+      summary: "Invalid outcome.",
+      validation: "passed",
+      completion: {
+        accepted: false,
+        assets: [],
+        missing: [],
+        failures: [],
+        criteria: [],
+      },
+      assistantResponse: "Invalid.",
+      at: "2026-07-12T10:06:00+05:30",
     })).toBe(false);
   });
 

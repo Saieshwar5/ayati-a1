@@ -106,7 +106,7 @@ export function readPendingConversationContexts(
   return readPendingConversations(database, sessionId).map((conversation) => ({
     conversation,
     messages: readConversationMessages(database, conversation.conversationId),
-    contentHash: readConversationHash(database, conversation.conversationId) ?? "",
+    contentHash: readConversationContentHash(database, conversation.conversationId) ?? "",
   }));
 }
 
@@ -152,6 +152,76 @@ export function bindConversationRun(
   database.prepare([
     "UPDATE conversation_segments SET run_id = ? WHERE conversation_id = ?",
   ].join(" ")).run(runId, conversationId);
+}
+
+export function closeTaskConversationWithAssistant(database: ContextDatabase, input: {
+  requestId: string;
+  sessionId: string;
+  conversationId: string;
+  runId: string;
+  taskId: string;
+  content: string;
+  at: string;
+}): ConversationRef {
+  const row = database.prepare([
+    "SELECT conversation_id, session_id, sequence, file_path, status FROM conversation_segments",
+    "WHERE conversation_id = ? AND session_id = ? AND run_id = ? AND task_id = ?",
+  ].join(" ")).get(
+    input.conversationId, input.sessionId, input.runId, input.taskId,
+  ) as ConversationRow | undefined;
+  if (!row || row.status !== "active") {
+    throw new GitContextServiceError({
+      code: "CONVERSATION_NOT_ACTIVE",
+      message: "Task-run finalization requires its active conversation.",
+      details: { conversationId: input.conversationId, runId: input.runId },
+    });
+  }
+  const sessionSequence = nextNumber(database, [
+    "SELECT COALESCE(MAX(session_sequence), 0) + 1 AS next",
+    "FROM messages WHERE session_id = ?",
+  ].join(" "), input.sessionId);
+  const segmentSequence = nextNumber(database, [
+    "SELECT COALESCE(MAX(segment_sequence), 0) + 1 AS next",
+    "FROM messages WHERE conversation_id = ?",
+  ].join(" "), input.conversationId);
+  database.prepare([
+    "INSERT INTO messages(message_id, conversation_id, session_id, session_sequence,",
+    "segment_sequence, role, content, created_at) VALUES (?, ?, ?, ?, ?, 'assistant', ?, ?)",
+  ].join(" ")).run(
+    input.sessionId + "-M-" + pad(sessionSequence, 6), input.conversationId,
+    input.sessionId, sessionSequence, segmentSequence, input.content, input.at,
+  );
+  const filePath = "conversations/" + pad(Number(row.sequence), 6)
+    + "-task-" + input.taskId + ".md";
+  database.prepare([
+    "UPDATE conversation_segments SET status = 'closed', closed_at = ?, file_path = ?",
+    "WHERE conversation_id = ?",
+  ].join(" ")).run(input.at, filePath, input.conversationId);
+  const conversation: ConversationRef = {
+    conversationId: input.conversationId,
+    sessionId: input.sessionId,
+    sequence: Number(row.sequence),
+    filePath,
+    status: "closed",
+  };
+  enqueueConversationFileSync(database, {
+    requestId: input.requestId,
+    conversation,
+    sourcePath: row.file_path,
+    at: input.at,
+  });
+  return conversation;
+}
+
+export function markConversationsCommitted(
+  database: ContextDatabase,
+  sessionId: string,
+  commit: string,
+): void {
+  database.prepare([
+    "UPDATE conversation_segments SET status = 'committed', committed_sha = ?",
+    "WHERE session_id = ? AND status = 'closed'",
+  ].join(" ")).run(commit, sessionId);
 }
 
 function createConversationForNewInput(
@@ -272,7 +342,7 @@ function enqueueConversationFileSync(database: ContextDatabase, input: {
   );
 }
 
-function readConversationHash(
+export function readConversationContentHash(
   database: ContextDatabase,
   conversationId: string,
 ): string | undefined {

@@ -11,6 +11,8 @@ import type {
   CreateTaskResponse,
   EnsureActiveSessionRequest,
   EnsureActiveSessionResponse,
+  FinalizeTaskRunRequest,
+  FinalizeTaskRunResponse,
   GetActiveContextRequest,
   GetTaskRequest,
   GetTaskResponse,
@@ -149,6 +151,14 @@ export class GitContextClient implements GitContextService {
     return await this.requestJson<SnapshotTaskRunEvidenceResponse>(
       "POST",
       "/runs/" + encodeURIComponent(input.runId) + "/evidence/snapshot",
+      input,
+    );
+  }
+
+  async finalizeTaskRun(input: FinalizeTaskRunRequest): Promise<FinalizeTaskRunResponse> {
+    return await this.requestJson<FinalizeTaskRunResponse>(
+      "POST",
+      "/runs/" + encodeURIComponent(input.runId) + "/finalize-task",
       input,
     );
   }

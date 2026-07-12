@@ -3,6 +3,7 @@ import type {
   RunEvidenceRecord,
   RunStepEvidenceRecord,
 } from "../repositories/run-records.js";
+import type { TaskRunOutcome } from "../contracts.js";
 
 const MAX_STRING_LENGTH = 4_096;
 const MAX_ARRAY_ITEMS = 100;
@@ -16,6 +17,14 @@ export function renderRunEvidence(input: {
   taskHeadAfter: string;
   stepCount: number;
   snapshotAt: string;
+  final?: {
+    outcome: TaskRunOutcome;
+    summary: string;
+    validation: "passed" | "failed" | "not_run";
+    next?: string;
+    completion?: unknown;
+    completedAt: string;
+  };
 }): string {
   return JSON.stringify({
     schemaVersion: 1,
@@ -25,17 +34,28 @@ export function renderRunEvidence(input: {
     conversationId: input.run.conversationId,
     runClass: input.run.runClass,
     trigger: input.run.trigger,
-    status: input.run.status,
+    status: input.final ? terminalRunStatus(input.final.outcome) : input.run.status,
     startedAt: input.run.startedAt,
-    completedAt: input.run.completedAt ?? null,
-    outcome: null,
-    summary: null,
-    completion: null,
+    completedAt: input.final?.completedAt ?? input.run.completedAt ?? null,
+    outcome: input.final?.outcome ?? null,
+    summary: input.final?.summary ?? null,
+    validation: input.final?.validation ?? null,
+    next: input.final?.next ?? null,
+    completion: input.final?.completion === undefined
+      ? null
+      : compactValue(input.final.completion, 0),
     taskHeadBefore: input.taskHeadBefore,
     taskHeadAfter: input.taskHeadAfter,
     stepCount: input.stepCount,
     evidenceSnapshotAt: input.snapshotAt,
   }, null, 2) + "\n";
+}
+
+function terminalRunStatus(outcome: TaskRunOutcome): string {
+  if (outcome === "failed") return "failed";
+  if (outcome === "blocked") return "blocked";
+  if (outcome === "needs_user_input") return "needs_user_input";
+  return "completed";
 }
 
 export function renderStepEvidence(steps: RunStepEvidenceRecord[]): string {

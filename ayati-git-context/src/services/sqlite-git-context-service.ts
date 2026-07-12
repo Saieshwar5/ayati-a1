@@ -12,6 +12,8 @@ import {
   type CreateTaskResponse,
   type EnsureActiveSessionRequest,
   type EnsureActiveSessionResponse,
+  type FinalizeTaskRunRequest,
+  type FinalizeTaskRunResponse,
   type GetActiveContextRequest,
   type GetTaskRequest,
   type GetTaskResponse,
@@ -66,6 +68,7 @@ import { MutationBoundaryService } from "./mutation-boundary-service.js";
 import { TaskCheckpointService } from "./task-checkpoint-service.js";
 import { TaskLifecycleService } from "./task-lifecycle-service.js";
 import { TaskRunEvidenceService } from "./task-run-evidence-service.js";
+import { TaskRunFinalizationService } from "./task-run-finalization-service.js";
 
 export interface SqliteGitContextServiceOptions {
   database: ContextDatabase;
@@ -83,6 +86,7 @@ export class SqliteGitContextService implements GitContextService {
   private readonly mutationBoundary: MutationBoundaryService;
   private readonly taskCheckpoint: TaskCheckpointService;
   private readonly taskRunEvidence: TaskRunEvidenceService;
+  private readonly taskRunFinalization: TaskRunFinalizationService;
   private closed = false;
 
   constructor(options: SqliteGitContextServiceOptions) {
@@ -97,6 +101,7 @@ export class SqliteGitContextService implements GitContextService {
     this.mutationBoundary = new MutationBoundaryService(this.database);
     this.taskCheckpoint = new TaskCheckpointService(this.database);
     this.taskRunEvidence = new TaskRunEvidenceService(this.database);
+    this.taskRunFinalization = new TaskRunFinalizationService(this.database, this.now);
   }
 
   async getHealth(): Promise<HealthResponse> {
@@ -322,6 +327,16 @@ export class SqliteGitContextService implements GitContextService {
       const session = this.requireOpenSession(input.sessionId);
       verifyExpectedHead(session, input.expectedHead);
       return await this.taskRunEvidence.snapshot(input, session);
+    });
+  }
+
+  async finalizeTaskRun(input: FinalizeTaskRunRequest): Promise<FinalizeTaskRunResponse> {
+    return await this.queue.enqueue(async () => {
+      await this.recoverExternalState();
+      const session = this.requireOpenSession(input.sessionId);
+      const result = await this.taskRunFinalization.finalize(input, session);
+      this.contextCache.clear();
+      return result;
     });
   }
 

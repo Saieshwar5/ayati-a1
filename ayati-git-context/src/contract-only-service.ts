@@ -11,6 +11,8 @@ import {
   type CreateTaskResponse,
   type EnsureActiveSessionRequest,
   type EnsureActiveSessionResponse,
+  type FinalizeTaskRunRequest,
+  type FinalizeTaskRunResponse,
   type GetActiveContextRequest,
   type GetTaskRequest,
   type GetTaskResponse,
@@ -87,6 +89,10 @@ export class ContractOnlyGitContextService implements GitContextService {
   async snapshotTaskRunEvidence(
     _input: SnapshotTaskRunEvidenceRequest,
   ): Promise<SnapshotTaskRunEvidenceResponse> {
+    throw notReady();
+  }
+
+  async finalizeTaskRun(_input: FinalizeTaskRunRequest): Promise<FinalizeTaskRunResponse> {
     throw notReady();
   }
 

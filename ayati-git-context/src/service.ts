@@ -10,6 +10,8 @@ import type {
   CreateTaskResponse,
   EnsureActiveSessionRequest,
   EnsureActiveSessionResponse,
+  FinalizeTaskRunRequest,
+  FinalizeTaskRunResponse,
   GetActiveContextRequest,
   GetTaskRequest,
   GetTaskResponse,
@@ -42,6 +44,7 @@ export interface GitContextService {
   snapshotTaskRunEvidence(
     input: SnapshotTaskRunEvidenceRequest,
   ): Promise<SnapshotTaskRunEvidenceResponse>;
+  finalizeTaskRun(input: FinalizeTaskRunRequest): Promise<FinalizeTaskRunResponse>;
   startRun(input: StartRunRequest): Promise<StartRunResponse>;
   recordRunStep(input: RecordRunStepRequest): Promise<RecordRunStepResponse>;
 }

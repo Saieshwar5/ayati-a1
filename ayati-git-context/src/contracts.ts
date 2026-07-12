@@ -1,4 +1,4 @@
-export const GIT_CONTEXT_PROTOCOL_VERSION = 7;
+export const GIT_CONTEXT_PROTOCOL_VERSION = 8;
 
 export type SessionId = string;
 export type TaskId = string;
@@ -302,6 +302,56 @@ export interface SnapshotTaskRunEvidenceResponse {
   staged: boolean;
 }
 
+export type TaskRunOutcome =
+  | "done"
+  | "incomplete"
+  | "failed"
+  | "blocked"
+  | "needs_user_input";
+
+export interface TaskCompletionRecord {
+  accepted: boolean;
+  assets: Array<{
+    path: string;
+    kind: "file" | "directory";
+    description: string;
+    verified: boolean;
+  }>;
+  missing: string[];
+  failures: string[];
+  criteria: Array<{
+    criterion: string;
+    passed: boolean;
+    evidence?: string;
+  }>;
+}
+
+export interface FinalizeTaskRunRequest extends GitContextRequestEnvelope {
+  sessionId: SessionId;
+  runId: RunId;
+  taskId: TaskId;
+  outcome: TaskRunOutcome;
+  summary: string;
+  validation: "passed" | "failed" | "not_run";
+  next?: string;
+  completion: TaskCompletionRecord;
+  assistantResponse: string;
+  at: string;
+}
+
+export interface FinalizeTaskRunResponse {
+  runId: RunId;
+  taskId: TaskId;
+  outcome: TaskRunOutcome;
+  taskHeadBefore: string;
+  taskHeadAfter: string;
+  taskFinalizationCommit: string;
+  sessionCommit: string;
+  conversationHash: string;
+  runFile: string;
+  stepsFile: string;
+}
+
 export interface AppendConversationRequest extends GitContextRequestEnvelope {
   sessionId: SessionId;
   role: ConversationRole;
@@ -451,6 +501,26 @@ export function isSnapshotTaskRunEvidenceRequest(
     && isNonEmptyString(value["at"]);
 }
 
+export function isFinalizeTaskRunRequest(value: unknown): value is FinalizeTaskRunRequest {
+  if (!isRequestEnvelope(value)) {
+    return false;
+  }
+  return isNonEmptyString(value["sessionId"])
+    && isNonEmptyString(value["runId"])
+    && /^W-\d{8}-\d{4}$/.test(String(value["taskId"] ?? ""))
+    && isTaskRunOutcome(value["outcome"])
+    && isBoundedString(value["summary"], 2_000)
+    && (value["validation"] === "passed"
+      || value["validation"] === "failed"
+      || value["validation"] === "not_run")
+    && optionalBoundedString(value["next"], 2_000)
+    && isTaskCompletionRecord(value["completion"])
+    && (value["outcome"] === "done") === value["completion"].accepted
+    && (value["outcome"] !== "done" || value["validation"] === "passed")
+    && isBoundedString(value["assistantResponse"], 20_000)
+    && isNonEmptyString(value["at"]);
+}
+
 export function isStartRunRequest(value: unknown): value is StartRunRequest {
   if (!isRequestEnvelope(value)) {
     return false;
@@ -493,6 +563,10 @@ function optionalNonEmptyString(value: unknown): boolean {
   return value === undefined || isNonEmptyString(value);
 }
 
+function optionalBoundedString(value: unknown, maximumLength: number): boolean {
+  return value === undefined || isBoundedString(value, maximumLength);
+}
+
 function isBoundedString(value: unknown, maximumLength: number): value is string {
   return isNonEmptyString(value) && value.length <= maximumLength;
 }
@@ -505,4 +579,48 @@ function isMutationTarget(value: unknown): value is MutationTarget {
 
 function isConversationRole(value: unknown): value is ConversationRole {
   return value === "user" || value === "assistant" || value === "system_event";
+}
+
+function isTaskRunOutcome(value: unknown): value is TaskRunOutcome {
+  return value === "done"
+    || value === "incomplete"
+    || value === "failed"
+    || value === "blocked"
+    || value === "needs_user_input";
+}
+
+function isTaskCompletionRecord(value: unknown): value is TaskCompletionRecord {
+  if (!isRecord(value)
+    || typeof value["accepted"] !== "boolean"
+    || !Array.isArray(value["assets"])
+    || value["assets"].length > 256
+    || !value["assets"].every(isCompletionAsset)
+    || !isBoundedStringArray(value["missing"], 256, 1_024)
+    || !isBoundedStringArray(value["failures"], 256, 2_000)
+    || !Array.isArray(value["criteria"])
+    || value["criteria"].length > 256) {
+    return false;
+  }
+  return value["criteria"].every((item) => isRecord(item)
+    && isBoundedString(item["criterion"], 1_000)
+    && typeof item["passed"] === "boolean"
+    && optionalBoundedString(item["evidence"], 2_000));
+}
+
+function isCompletionAsset(value: unknown): boolean {
+  return isRecord(value)
+    && isBoundedString(value["path"], 1_024)
+    && (value["kind"] === "file" || value["kind"] === "directory")
+    && isBoundedString(value["description"], 1_000)
+    && typeof value["verified"] === "boolean";
+}
+
+function isBoundedStringArray(
+  value: unknown,
+  maximumItems: number,
+  maximumLength: number,
+): boolean {
+  return Array.isArray(value)
+    && value.length <= maximumItems
+    && value.every((item) => isBoundedString(item, maximumLength));
 }
