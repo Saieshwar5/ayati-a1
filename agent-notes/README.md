@@ -18,6 +18,13 @@ Recommended structure:
 
 Current plans:
 
+- `git-context-engine-service-migration-2026-07-12/README.md`: master
+  migration plan for making Git Context Engine an independent Git-and-SQLite
+  service, storing daily conversation and task-run evidence on session main,
+  creating every task as an independent repository mounted as a per-session
+  submodule, deriving summaries and task context from Git, handling midnight
+  rollover, and migrating legacy task branches without rewriting historical
+  sessions.
 - `run-context-workstate-compaction-2026-07-06/README.md`: master plan for
   making `context.run` carry deterministic reducer-built work state, recent
   raw or near-raw tool input/output, tool-type-specific compacted step context,
