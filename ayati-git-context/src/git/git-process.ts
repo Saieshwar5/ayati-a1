@@ -21,6 +21,19 @@ export async function runGit(
   return result.stdout.trim();
 }
 
+export async function runGitRaw(
+  args: string[],
+  options: GitCommandOptions,
+): Promise<string> {
+  const result = await execFileAsync("git", args, {
+    cwd: options.cwd,
+    env: { ...process.env, ...options.env },
+    encoding: "utf8",
+    maxBuffer: 16 * 1024 * 1024,
+  });
+  return result.stdout;
+}
+
 export async function configureAyatiGitIdentity(repositoryPath: string): Promise<void> {
   await runGit(["config", "user.name", "Ayati Git Context Engine"], {
     cwd: repositoryPath,

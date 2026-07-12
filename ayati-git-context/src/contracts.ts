@@ -1,4 +1,4 @@
-export const GIT_CONTEXT_PROTOCOL_VERSION = 4;
+export const GIT_CONTEXT_PROTOCOL_VERSION = 5;
 
 export type SessionId = string;
 export type TaskId = string;
@@ -15,6 +15,7 @@ export type GitContextCapability =
   | "conversations"
   | "runs"
   | "tasks"
+  | "mutations"
   | "recovery";
 
 export interface GitContextRequestEnvelope {
@@ -59,6 +60,44 @@ export interface TaskMountRef {
   branch: string;
   mountedHead: string;
   status: TaskMountStatus;
+}
+
+export interface MutationTarget {
+  path: string;
+  kind: "file" | "directory";
+}
+
+export interface ResolvedMutationTarget extends MutationTarget {
+  resolvedPath: string;
+}
+
+export type MutationAuthorityStatus =
+  | "active"
+  | "verified"
+  | "recovery_required"
+  | "released";
+
+export interface MutationAuthority {
+  authorityId: string;
+  lockToken: string;
+  sessionId: SessionId;
+  runId: RunId;
+  taskId: TaskId;
+  checkoutPath: string;
+  canonicalRepository: string;
+  branch: string;
+  beforeHead: string;
+  targets: ResolvedMutationTarget[];
+  status: MutationAuthorityStatus;
+  expiresAt: string;
+}
+
+export interface MutationProvenance {
+  created: string[];
+  modified: string[];
+  deleted: string[];
+  renamed: Array<{ from: string; to: string }>;
+  unexpectedPaths: string[];
 }
 
 export interface RunRef {
@@ -197,6 +236,34 @@ export interface MountTaskResponse {
   created: boolean;
 }
 
+export interface AcquireMutationAuthorityRequest extends GitContextRequestEnvelope {
+  sessionId: SessionId;
+  runId: RunId;
+  taskId: TaskId;
+  expectedTaskHead?: string;
+  targets: MutationTarget[];
+  at: string;
+}
+
+export interface AcquireMutationAuthorityResponse {
+  authority: MutationAuthority;
+}
+
+export interface VerifyMutationRequest extends GitContextRequestEnvelope {
+  authorityId: string;
+  lockToken: string;
+  toolStatus: "completed" | "failed";
+  at: string;
+}
+
+export interface VerifyMutationResponse {
+  authorityId: string;
+  status: MutationAuthorityStatus;
+  verified: boolean;
+  outcome: "verified_changes" | "no_changes" | "unexpected_changes" | "failed_with_changes";
+  provenance: MutationProvenance;
+}
+
 export interface AppendConversationRequest extends GitContextRequestEnvelope {
   sessionId: SessionId;
   role: ConversationRole;
@@ -292,6 +359,34 @@ export function isMountTaskRequest(value: unknown): value is MountTaskRequest {
     && isNonEmptyString(value["at"]);
 }
 
+export function isAcquireMutationAuthorityRequest(
+  value: unknown,
+): value is AcquireMutationAuthorityRequest {
+  if (!isRequestEnvelope(value)) {
+    return false;
+  }
+  return isNonEmptyString(value["sessionId"])
+    && isNonEmptyString(value["runId"])
+    && /^W-\d{8}-\d{4}$/.test(String(value["taskId"] ?? ""))
+    && (value["expectedTaskHead"] === undefined
+      || /^[a-f0-9]{40}$/.test(String(value["expectedTaskHead"])))
+    && Array.isArray(value["targets"])
+    && value["targets"].length > 0
+    && value["targets"].length <= 64
+    && value["targets"].every(isMutationTarget)
+    && isNonEmptyString(value["at"]);
+}
+
+export function isVerifyMutationRequest(value: unknown): value is VerifyMutationRequest {
+  if (!isRequestEnvelope(value)) {
+    return false;
+  }
+  return isNonEmptyString(value["authorityId"])
+    && isNonEmptyString(value["lockToken"])
+    && (value["toolStatus"] === "completed" || value["toolStatus"] === "failed")
+    && isNonEmptyString(value["at"]);
+}
+
 export function isStartRunRequest(value: unknown): value is StartRunRequest {
   if (!isRequestEnvelope(value)) {
     return false;
@@ -336,6 +431,12 @@ function optionalNonEmptyString(value: unknown): boolean {
 
 function isBoundedString(value: unknown, maximumLength: number): value is string {
   return isNonEmptyString(value) && value.length <= maximumLength;
+}
+
+function isMutationTarget(value: unknown): value is MutationTarget {
+  return isRecord(value)
+    && isBoundedString(value["path"], 1_024)
+    && (value["kind"] === "file" || value["kind"] === "directory");
 }
 
 function isConversationRole(value: unknown): value is ConversationRole {

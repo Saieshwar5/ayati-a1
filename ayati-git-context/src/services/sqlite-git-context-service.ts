@@ -1,6 +1,8 @@
 import { join } from "node:path";
 import {
   GIT_CONTEXT_PROTOCOL_VERSION,
+  type AcquireMutationAuthorityRequest,
+  type AcquireMutationAuthorityResponse,
   type ActiveContext,
   type AppendConversationRequest,
   type AppendConversationResponse,
@@ -19,6 +21,8 @@ import {
   type SessionRef,
   type StartRunRequest,
   type StartRunResponse,
+  type VerifyMutationRequest,
+  type VerifyMutationResponse,
 } from "../contracts.js";
 import type { ContextDatabase } from "../database/database.js";
 import {
@@ -54,6 +58,7 @@ import {
 import type { GitContextService } from "../service.js";
 import { SerializedWriteQueue } from "../write-queue.js";
 import { ActiveContextCache, activeContextRevision } from "./active-context-cache.js";
+import { MutationBoundaryService } from "./mutation-boundary-service.js";
 import { TaskLifecycleService } from "./task-lifecycle-service.js";
 
 export interface SqliteGitContextServiceOptions {
@@ -69,6 +74,7 @@ export class SqliteGitContextService implements GitContextService {
   private readonly queue = new SerializedWriteQueue();
   private readonly contextCache = new ActiveContextCache();
   private readonly taskLifecycle: TaskLifecycleService;
+  private readonly mutationBoundary: MutationBoundaryService;
   private closed = false;
 
   constructor(options: SqliteGitContextServiceOptions) {
@@ -80,6 +86,7 @@ export class SqliteGitContextService implements GitContextService {
       dataRoot: this.dataRoot,
       now: this.now,
     });
+    this.mutationBoundary = new MutationBoundaryService(this.database);
   }
 
   async getHealth(): Promise<HealthResponse> {
@@ -98,6 +105,7 @@ export class SqliteGitContextService implements GitContextService {
           "conversations",
           "runs",
           "tasks",
+          "mutations",
           "recovery",
         ],
       };
@@ -263,6 +271,27 @@ export class SqliteGitContextService implements GitContextService {
       const session = this.requireOpenSession(input.sessionId);
       verifyExpectedHead(session, input.expectedHead);
       return await this.taskLifecycle.mountTask(input, session);
+    });
+  }
+
+  async acquireMutationAuthority(
+    input: AcquireMutationAuthorityRequest,
+  ): Promise<AcquireMutationAuthorityResponse> {
+    return await this.queue.enqueue(async () => {
+      await this.recoverExternalState();
+      const session = this.requireOpenSession(input.sessionId);
+      verifyExpectedHead(session, input.expectedHead);
+      const result = await this.mutationBoundary.acquire(input, session);
+      this.contextCache.clear();
+      return result;
+    });
+  }
+
+  async verifyMutation(input: VerifyMutationRequest): Promise<VerifyMutationResponse> {
+    return await this.queue.enqueue(async () => {
+      const result = await this.mutationBoundary.verify(input);
+      this.contextCache.clear();
+      return result;
     });
   }
 

@@ -1,6 +1,8 @@
 import {
   GIT_CONTEXT_PROTOCOL_VERSION,
   type ActiveContext,
+  type AcquireMutationAuthorityRequest,
+  type AcquireMutationAuthorityResponse,
   type AppendConversationRequest,
   type AppendConversationResponse,
   type CreateTaskRequest,
@@ -17,6 +19,8 @@ import {
   type RecordRunStepResponse,
   type StartRunRequest,
   type StartRunResponse,
+  type VerifyMutationRequest,
+  type VerifyMutationResponse,
 } from "./contracts.js";
 import { GitContextServiceError } from "./errors.js";
 import type { GitContextService } from "./service.js";
@@ -57,6 +61,16 @@ export class ContractOnlyGitContextService implements GitContextService {
   }
 
   async mountTask(_input: MountTaskRequest): Promise<MountTaskResponse> {
+    throw notReady();
+  }
+
+  async acquireMutationAuthority(
+    _input: AcquireMutationAuthorityRequest,
+  ): Promise<AcquireMutationAuthorityResponse> {
+    throw notReady();
+  }
+
+  async verifyMutation(_input: VerifyMutationRequest): Promise<VerifyMutationResponse> {
     throw notReady();
   }
 

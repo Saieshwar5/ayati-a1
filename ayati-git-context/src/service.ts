@@ -1,5 +1,7 @@
 import type {
   ActiveContext,
+  AcquireMutationAuthorityRequest,
+  AcquireMutationAuthorityResponse,
   AppendConversationRequest,
   AppendConversationResponse,
   CreateTaskRequest,
@@ -16,6 +18,8 @@ import type {
   RecordRunStepResponse,
   StartRunRequest,
   StartRunResponse,
+  VerifyMutationRequest,
+  VerifyMutationResponse,
 } from "./contracts.js";
 
 export interface GitContextService {
@@ -26,6 +30,10 @@ export interface GitContextService {
   createTask(input: CreateTaskRequest): Promise<CreateTaskResponse>;
   getTask(input: GetTaskRequest): Promise<GetTaskResponse>;
   mountTask(input: MountTaskRequest): Promise<MountTaskResponse>;
+  acquireMutationAuthority(
+    input: AcquireMutationAuthorityRequest,
+  ): Promise<AcquireMutationAuthorityResponse>;
+  verifyMutation(input: VerifyMutationRequest): Promise<VerifyMutationResponse>;
   startRun(input: StartRunRequest): Promise<StartRunResponse>;
   recordRunStep(input: RecordRunStepRequest): Promise<RecordRunStepResponse>;
 }

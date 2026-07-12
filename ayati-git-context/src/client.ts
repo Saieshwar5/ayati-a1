@@ -1,6 +1,8 @@
 import { request as httpRequest, type RequestOptions } from "node:http";
 import type {
   ActiveContext,
+  AcquireMutationAuthorityRequest,
+  AcquireMutationAuthorityResponse,
   AppendConversationRequest,
   AppendConversationResponse,
   CreateTaskRequest,
@@ -17,6 +19,8 @@ import type {
   RecordRunStepResponse,
   StartRunRequest,
   StartRunResponse,
+  VerifyMutationRequest,
+  VerifyMutationResponse,
 } from "./contracts.js";
 import {
   GitContextServiceError,
@@ -102,6 +106,25 @@ export class GitContextClient implements GitContextService {
       "POST",
       "/sessions/" + encodeURIComponent(input.sessionId)
         + "/tasks/" + encodeURIComponent(input.taskId) + "/mount",
+      input,
+    );
+  }
+
+  async acquireMutationAuthority(
+    input: AcquireMutationAuthorityRequest,
+  ): Promise<AcquireMutationAuthorityResponse> {
+    return await this.requestJson<AcquireMutationAuthorityResponse>(
+      "POST",
+      "/runs/" + encodeURIComponent(input.runId)
+        + "/tasks/" + encodeURIComponent(input.taskId) + "/mutation-authority",
+      input,
+    );
+  }
+
+  async verifyMutation(input: VerifyMutationRequest): Promise<VerifyMutationResponse> {
+    return await this.requestJson<VerifyMutationResponse>(
+      "POST",
+      "/mutation-authorities/" + encodeURIComponent(input.authorityId) + "/verify",
       input,
     );
   }

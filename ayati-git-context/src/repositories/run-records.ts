@@ -84,6 +84,45 @@ export function readActiveRun(
   return row ? runRef(row) : undefined;
 }
 
+export function bindActiveRunToTask(
+  database: ContextDatabase,
+  sessionId: string,
+  runId: string,
+  taskId: string,
+): RunRef {
+  const row = database.prepare([
+    "SELECT run_id, session_id, conversation_id, task_id, run_class",
+    "FROM runs WHERE run_id = ? AND session_id = ? AND status = 'running'",
+  ].join(" ")).get(runId, sessionId) as RunRow | undefined;
+  if (!row) {
+    throw new GitContextServiceError({
+      code: "RUN_NOT_ACTIVE",
+      message: "Mutation authority requires an active run in the requested session.",
+      details: { sessionId, runId },
+    });
+  }
+  if (row.task_id && row.task_id !== taskId) {
+    throw new GitContextServiceError({
+      code: "MUTATION_REQUIRES_TASK",
+      message: "Active run is already owned by a different task.",
+      details: { sessionId, runId, activeTaskId: row.task_id, requestedTaskId: taskId },
+    });
+  }
+  database.prepare([
+    "UPDATE runs SET task_id = ?, run_class = 'task' WHERE run_id = ?",
+  ].join(" ")).run(taskId, runId);
+  database.prepare([
+    "UPDATE conversation_segments SET task_id = ?, run_id = ? WHERE conversation_id = ?",
+  ].join(" ")).run(taskId, runId, row.conversation_id);
+  return {
+    runId,
+    sessionId,
+    conversationId: row.conversation_id,
+    runClass: "task",
+    taskId,
+  };
+}
+
 export function recordRunStep(
   database: ContextDatabase,
   input: RecordRunStepRequest,

@@ -14,6 +14,22 @@ export interface RecoverableIdempotencyResult<T> {
   completed: boolean;
 }
 
+export function readCompletedIdempotent<T>(input: {
+  database: ContextDatabase;
+  requestId: string;
+  operation: string;
+  payload: unknown;
+}): T | undefined {
+  const existing = readRequest(input.database, input.requestId);
+  if (!existing) {
+    return undefined;
+  }
+  assertMatchingRequest(existing, input);
+  return existing.status === "completed"
+    ? JSON.parse(existing.response_json) as T
+    : undefined;
+}
+
 export function executeIdempotent<T>(input: {
   database: ContextDatabase;
   requestId: string;

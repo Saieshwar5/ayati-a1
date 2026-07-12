@@ -150,6 +150,20 @@ session gitlink is committed.
   session commit. Task-run finalization or session sealing owns that commit.
 - SQLite session_task_mounts records operational mount and recovery state; the
   session Git index and task repository remain the exact content authorities.
+- A durable mutation requires a token-protected authority bound to one active
+  run, one task, one ready checkout, and explicit file or directory targets.
+- Authority acquisition atomically promotes the session run to task ownership
+  and acquires the task lock only after Git and path checks pass.
+- Raw lock tokens are retained only in the idempotent response record so an
+  exact retry can recover them; the mutation-authority row stores only SHA-256.
+- Git derives created, modified, deleted, renamed, ignored, and unexpected
+  paths after the tool. Tool output does not define mutation truth.
+- Verified changes keep exclusive ownership for checkpointing. No-change and
+  clean failed operations release; unexpected or failed partial changes require
+  deterministic recovery.
+- General task mutation cannot target the checkout root, `.git`, or `.ayati`.
+  Existing symlinks are resolved and authorized against their canonical path;
+  escaping, broken, and looping symlinks are rejected.
 
 ## Open Implementation Choices
 

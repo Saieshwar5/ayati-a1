@@ -4,6 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  type AcquireMutationAuthorityRequest,
+  type AcquireMutationAuthorityResponse,
   GIT_CONTEXT_PROTOCOL_VERSION,
   type ActiveContext,
   type AppendConversationRequest,
@@ -22,6 +24,8 @@ import {
   type RecordRunStepResponse,
   type StartRunRequest,
   type StartRunResponse,
+  type VerifyMutationRequest,
+  type VerifyMutationResponse,
 } from "../src/contracts.js";
 import { ContractOnlyGitContextService } from "../src/contract-only-service.js";
 import { GitContextClient } from "../src/client.js";
@@ -110,6 +114,29 @@ describe("Git Context Engine HTTP transport", () => {
     expect(started.run).toMatchObject({
       runId: "R-20260712-0001",
       runClass: "session",
+    });
+    const authority = await client.acquireMutationAuthority({
+      requestId: "REQ-authority",
+      sessionId: ensured.session.sessionId,
+      runId: started.run.runId,
+      taskId: createdTask.task.taskId,
+      targets: [{ path: "index.html", kind: "file" }],
+      at: "2026-07-12T10:00:02+05:30",
+    });
+    expect(authority.authority).toMatchObject({
+      runId: started.run.runId,
+      taskId: createdTask.task.taskId,
+      status: "active",
+    });
+    await expect(client.verifyMutation({
+      requestId: "REQ-verify",
+      authorityId: authority.authority.authorityId,
+      lockToken: authority.authority.lockToken,
+      toolStatus: "failed",
+      at: "2026-07-12T10:00:03+05:30",
+    })).resolves.toMatchObject({
+      status: "released",
+      outcome: "no_changes",
     });
     await expect(client.recordRunStep({
       requestId: "REQ-4",
@@ -201,6 +228,7 @@ class TestGitContextService implements GitContextService {
   readonly activeContextRequests: GetActiveContextRequest[] = [];
   private session: EnsureActiveSessionResponse["session"] | null = null;
   private task: CreateTaskResponse["task"] | null = null;
+  private authority: AcquireMutationAuthorityResponse["authority"] | null = null;
 
   async getHealth(): Promise<HealthResponse> {
     return {
@@ -298,6 +326,51 @@ class TestGitContextService implements GitContextService {
         status: "ready",
       },
       created: true,
+    };
+  }
+
+  async acquireMutationAuthority(
+    input: AcquireMutationAuthorityRequest,
+  ): Promise<AcquireMutationAuthorityResponse> {
+    if (!this.task || this.task.taskId !== input.taskId) {
+      throw new Error("Task not found.");
+    }
+    this.authority = {
+      authorityId: input.runId + "-M-0001",
+      lockToken: "test-token",
+      sessionId: input.sessionId,
+      runId: input.runId,
+      taskId: input.taskId,
+      checkoutPath: "/tmp/session/tasks/" + input.taskId,
+      canonicalRepository: this.task.repositoryPath,
+      branch: this.task.branch,
+      beforeHead: this.task.head,
+      targets: input.targets.map((target) => ({
+        ...target,
+        resolvedPath: "/tmp/session/tasks/" + input.taskId + "/" + target.path,
+      })),
+      status: "active",
+      expiresAt: "2026-07-12T10:15:02+05:30",
+    };
+    return { authority: this.authority };
+  }
+
+  async verifyMutation(input: VerifyMutationRequest): Promise<VerifyMutationResponse> {
+    if (!this.authority || this.authority.authorityId !== input.authorityId) {
+      throw new Error("Authority not found.");
+    }
+    return {
+      authorityId: input.authorityId,
+      status: "released",
+      verified: false,
+      outcome: "no_changes",
+      provenance: {
+        created: [],
+        modified: [],
+        deleted: [],
+        renamed: [],
+        unexpectedPaths: [],
+      },
     };
   }
 

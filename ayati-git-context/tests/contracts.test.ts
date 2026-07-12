@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  isAcquireMutationAuthorityRequest,
   isAppendConversationRequest,
   isCreateTaskRequest,
   isEnsureActiveSessionRequest,
@@ -7,6 +8,7 @@ import {
   isRecordRunStepRequest,
   isRequestEnvelope,
   isStartRunRequest,
+  isVerifyMutationRequest,
 } from "../src/contracts.js";
 import {
   GitContextServiceError,
@@ -83,6 +85,32 @@ describe("Git Context Engine contracts", () => {
       taskId: "../../escape",
       at: "2026-07-12T10:01:00+05:30",
     })).toBe(false);
+  });
+
+  it("validates mutation authority targets and verification requests", () => {
+    expect(isAcquireMutationAuthorityRequest({
+      requestId: "REQ-authority",
+      sessionId: "S-20260712-local",
+      runId: "R-20260712-0001",
+      taskId: "W-20260712-0001",
+      targets: [{ path: "src/app.ts", kind: "file" }],
+      at: "2026-07-12T10:02:00+05:30",
+    })).toBe(true);
+    expect(isAcquireMutationAuthorityRequest({
+      requestId: "REQ-authority",
+      sessionId: "S-20260712-local",
+      runId: "R-20260712-0001",
+      taskId: "W-20260712-0001",
+      targets: [],
+      at: "2026-07-12T10:02:00+05:30",
+    })).toBe(false);
+    expect(isVerifyMutationRequest({
+      requestId: "REQ-verify",
+      authorityId: "A-1",
+      lockToken: "secret-token",
+      toolStatus: "completed",
+      at: "2026-07-12T10:03:00+05:30",
+    })).toBe(true);
   });
 
   it("validates run start requests", () => {

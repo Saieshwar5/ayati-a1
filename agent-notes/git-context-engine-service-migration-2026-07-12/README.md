@@ -2,10 +2,10 @@
 
 Created: 2026-07-12
 
-Status: fifth implementation slice complete. The standalone service now owns
-daily session repositories, canonical task repositories, and lazy per-session
-task submodules with exact Git pointers. Task checkout mutation authority and
-Ayati runtime integration have not started.
+Status: sixth implementation slice complete. The standalone service now owns
+daily sessions, canonical tasks, lazy task submodules, and run-scoped checkout
+mutation authority with Git-derived provenance. Verified task checkpoint
+commits and Ayati runtime integration have not started.
 
 Implementation branch:
 

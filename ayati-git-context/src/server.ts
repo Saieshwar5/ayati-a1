@@ -2,12 +2,14 @@ import { lstat, rm } from "node:fs/promises";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import {
+  isAcquireMutationAuthorityRequest,
   isAppendConversationRequest,
   isCreateTaskRequest,
   isEnsureActiveSessionRequest,
   isMountTaskRequest,
   isRecordRunStepRequest,
   isStartRunRequest,
+  isVerifyMutationRequest,
 } from "./contracts.js";
 import {
   GitContextServiceError,
@@ -171,6 +173,39 @@ export class GitContextHttpServer {
         return;
       }
 
+      const mutationAuthorityMatch = url.pathname.match(
+        /^\/runs\/([^/]+)\/tasks\/([^/]+)\/mutation-authority$/,
+      );
+      if (method === "POST" && mutationAuthorityMatch) {
+        const body = await readJsonBody(request, this.maxBodyBytes);
+        if (!isAcquireMutationAuthorityRequest(body)) {
+          throw invalidRequest("Invalid mutation-authority request.");
+        }
+        const runId = decodePathComponent(mutationAuthorityMatch[1] ?? "");
+        const taskId = decodePathComponent(mutationAuthorityMatch[2] ?? "");
+        if (body.runId !== runId || body.taskId !== taskId) {
+          throw invalidRequest("Run and task IDs in request path and body must match.");
+        }
+        sendJson(response, 200, await this.service.acquireMutationAuthority(body));
+        return;
+      }
+
+      const verifyMutationMatch = url.pathname.match(
+        /^\/mutation-authorities\/([^/]+)\/verify$/,
+      );
+      if (method === "POST" && verifyMutationMatch) {
+        const body = await readJsonBody(request, this.maxBodyBytes);
+        if (!isVerifyMutationRequest(body)) {
+          throw invalidRequest("Invalid verify-mutation request.");
+        }
+        const authorityId = decodePathComponent(verifyMutationMatch[1] ?? "");
+        if (body.authorityId !== authorityId) {
+          throw invalidRequest("Authority ID in request path and body must match.");
+        }
+        sendJson(response, 200, await this.service.verifyMutation(body));
+        return;
+      }
+
       if (method === "POST" && url.pathname === "/runs/start") {
         const body = await readJsonBody(request, this.maxBodyBytes);
         if (!isStartRunRequest(body)) {
@@ -197,7 +232,9 @@ export class GitContextHttpServer {
       const knownPath = isKnownPath(url.pathname)
         || Boolean(runStepMatch)
         || Boolean(taskMatch)
-        || Boolean(mountMatch);
+        || Boolean(mountMatch)
+        || Boolean(mutationAuthorityMatch)
+        || Boolean(verifyMutationMatch);
       throw new GitContextServiceError({
         code: knownPath ? "METHOD_NOT_ALLOWED" : "NOT_FOUND",
         message: knownPath

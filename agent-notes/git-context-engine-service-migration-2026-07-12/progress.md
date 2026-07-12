@@ -4,9 +4,9 @@ Created: 2026-07-12
 
 ## Status
 
-Current status: fifth implementation slice complete. The independent service
-also mounts selected tasks lazily into sessions as verified normal submodule
-checkouts without changing current Ayati runtime behavior.
+Current status: sixth implementation slice complete. The independent service
+also grants and verifies deterministic task-checkout mutation authority without
+changing current Ayati runtime behavior.
 
 Implementation branch:
 
@@ -43,7 +43,7 @@ Implementation branch:
 - [x] Add conversation segments and active cache.
 - [x] Add canonical task repository store.
 - [x] Mount task repositories as session submodules.
-- [ ] Add task checkout mutation boundary.
+- [x] Add task checkout mutation boundary.
 - [ ] Add verified task checkpoint commits.
 - [ ] Persist task-run evidence in session repository.
 - [ ] Add cross-repository finalization.
@@ -76,12 +76,13 @@ Completed:
 
 Next slice:
 
-    task checkout mutation boundary
-    -> ActiveTaskCheckout authority
-    -> task mutation lock
-    -> path containment and symlink resolution
-    -> tool mutations rooted only in the selected checkout
-    -> deterministic changed-path provenance
+    verified task checkpoint commits
+    -> consume verified mutation authority
+    -> stage exact changed paths
+    -> purpose-rich task commit
+    -> push main to canonical repository
+    -> update task catalog and session gitlink
+    -> release mutation lock
 
 ## Progress Log
 
@@ -248,3 +249,33 @@ Next slice:
   - Unix-socket create/mount/retry smoke test across a process restart
   - Session HEAD, 160000 gitlink, attached branch, clean checkout, and relative
     `.gitmodules` inspection
+
+### 2026-07-12 Implementation Slice 6
+
+- Advanced the typed service protocol to version 5.
+- Added acquire-mutation-authority and verify-mutation lifecycle contracts.
+- Added the SQLite task_mutation_authorities lock and verification journal.
+- Added atomic active-run promotion from session to task ownership.
+- Added token-protected, idempotent, run- and task-scoped mutation authority.
+- Added bounded file/directory targets with canonical absolute resolutions for
+  the harness tool executor.
+- Added portable path validation, checkout containment, and symlink resolution.
+- Rejected checkout-root, `.git`, `.ayati`, absolute, traversal, broken-link,
+  looping-link, and external-link mutation targets.
+- Added Git-derived created, modified, deleted, exact-rename, untracked,
+  ignored, and unexpected-path provenance.
+- Added deterministic verified, released, and recovery-required authority
+  transitions for successful, failed, partial, and no-change tools.
+- Preserved verified locks for the next checkpoint-commit slice.
+- Added tests for contracts, HTTP transport, run promotion, lock hashes,
+  idempotent retries after mutation, competing owners, token misuse, path
+  attacks, authorized and unexpected changes, failed partial work, checkout
+  identity changes, rename detection, and ignored output.
+- Verification:
+  - pnpm --filter ayati-git-context build
+  - pnpm --filter ayati-git-context test (45 tests)
+  - pnpm build
+  - pnpm test (1,130 total workspace tests)
+  - Unix-socket acquire/mutate/verify/retry smoke test across process restart
+  - Run promotion, token recovery, resolved target, persisted lock, and exact
+    Git provenance inspection
