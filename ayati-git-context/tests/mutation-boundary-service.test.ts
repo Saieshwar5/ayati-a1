@@ -208,28 +208,8 @@ describe("task checkout mutation boundary", () => {
     expect(await git(fixture.checkoutPath, ["rev-parse", "HEAD"])).toBe(fixture.taskHead);
   });
 
-  it("stages bounded task-run evidence without duplicating task file contents", async () => {
+  it("stages task-run evidence without duplicating task file contents", async () => {
     const fixture = await createReadyRun();
-    await fixture.service.recordRunStep({
-      requestId: "REQ-step-write",
-      sessionId: fixture.sessionId,
-      runId: fixture.runId,
-      step: 1,
-      tool: "write_files",
-      purpose: "Create the main application file.",
-      status: "completed",
-      boundedInput: {
-        files: [{ path: "src/app.ts", content: "export const privateValue = 'do-not-copy';\n" }],
-      },
-      boundedOutput: { path: "src/app.ts", content: "export const privateValue = 'do-not-copy';\n" },
-      outputHash: "sha256:" + "c".repeat(64),
-      verification: {
-        passed: true,
-        provenance: { created: ["src/app.ts"], modified: [], deleted: [], renamed: [] },
-      },
-      workState: { summary: "Application entry point created." },
-      at: "2026-07-12T10:00:04+05:30",
-    });
     const authority = await fixture.service.acquireMutationAuthority(authorityInput(fixture, [
       { path: "src", kind: "directory" },
     ]));
@@ -239,6 +219,30 @@ describe("task checkout mutation boundary", () => {
       "export const privateValue = 'do-not-copy';\n",
     );
     await fixture.service.verifyMutation(verificationInput(authority.authority, "completed"));
+    await fixture.service.recordRunStep({
+      requestId: "REQ-step-write",
+      sessionId: fixture.sessionId,
+      runId: fixture.runId,
+      step: 1,
+      tool: "write_files",
+      toolEffect: "mutating",
+      purpose: "Create the main application file.",
+      status: "completed",
+      input: {
+        files: [{ path: "src/app.ts", content: "export const privateValue = 'do-not-copy';\n" }],
+      },
+      output: { path: "src/app.ts", content: "export const privateValue = 'do-not-copy';\n" },
+      outputHash: "sha256:" + "c".repeat(64),
+      verification: {
+        passed: true,
+        provenance: { created: ["src/app.ts"], modified: [], deleted: [], renamed: [] },
+      },
+      workState: {
+        ...emptyRunWorkState(),
+        summary: "Application entry point created.",
+      },
+      at: "2026-07-12T10:00:06.500+05:30",
+    });
     const checkpoint = await fixture.service.checkpointMutation({
       requestId: "REQ-checkpoint-evidence",
       authorityId: authority.authority.authorityId,
@@ -290,7 +294,6 @@ describe("task checkout mutation boundary", () => {
       status: "completed",
       outputHash: "sha256:" + "c".repeat(64),
       verification: { passed: true },
-      workState: { summary: "Application entry point created." },
     });
     expect(stepsText).not.toContain("do-not-copy");
     expect(stepsText).toContain("content_stored_in_task_git");
@@ -638,6 +641,7 @@ async function createReadyRun(): Promise<ReadyRunFixture> {
     sessionId: session.session.sessionId,
     conversationId: conversation.conversation.conversationId,
     trigger: "user",
+    workState: emptyRunWorkState(),
     at: "2026-07-12T10:00:02+05:30",
   });
   const task = await service.createTask({
@@ -664,6 +668,20 @@ async function createReadyRun(): Promise<ReadyRunFixture> {
     checkoutPath: mount.mount.checkoutPath,
     sessionRepository: session.session.repositoryPath,
     canonicalRepository: task.task.repositoryPath,
+  };
+}
+
+function emptyRunWorkState() {
+  return {
+    status: "not_done" as const,
+    summary: "",
+    openWork: [],
+    blockers: [],
+    facts: [],
+    evidence: [],
+    artifacts: [],
+    nextStep: null,
+    userInputNeeded: [],
   };
 }
 

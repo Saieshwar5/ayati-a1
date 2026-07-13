@@ -1,13 +1,19 @@
 import type { ContextDatabase } from "../database/database.js";
 import type {
   RecordRunStepRequest,
+  RunContextRecord,
   RunRef,
+  RunStepContext,
   StartRunRequest,
-  ToolCallContext,
   TaskRunOutcome,
+  ToolCallContext,
 } from "../contracts.js";
 import { GitContextServiceError } from "../errors.js";
 import { bindConversationRun, readConversation } from "./conversation-records.js";
+import {
+  insertInitialRunWorkState,
+  replaceRunWorkState,
+} from "./run-work-state-records.js";
 
 interface RunRow {
   run_id: string;
@@ -18,40 +24,30 @@ interface RunRow {
 }
 
 interface RunEvidenceRow extends RunRow {
-  status: string;
-  trigger: string;
+  status: RunContextRecord["status"];
+  trigger: RunContextRecord["trigger"];
   started_at: string;
   completed_at: string | null;
+  step_count: number;
 }
 
 interface RunStepEvidenceRow {
   step: number;
   tool: string;
+  tool_schema_version: number;
+  tool_effect: ToolCallContext["toolEffect"];
   purpose: string;
   status: ToolCallContext["status"];
-  bounded_input: string | null;
-  bounded_output: string | null;
+  input_json: string | null;
+  output_json: string | null;
   output_hash: string | null;
-  verification: string | null;
-  work_state: string | null;
+  verification_json: string | null;
   created_at: string;
 }
 
-export interface RunEvidenceRecord extends RunRef {
-  status: string;
-  trigger: string;
-  startedAt: string;
-  completedAt?: string;
-}
+export interface RunEvidenceRecord extends RunContextRecord {}
 
-export interface RunStepEvidenceRecord extends ToolCallContext {
-  boundedInput?: unknown;
-  boundedOutput?: unknown;
-  outputHash?: string;
-  verification?: unknown;
-  workState?: unknown;
-  createdAt: string;
-}
+export interface RunStepEvidenceRecord extends RunStepContext {}
 
 export function startSessionRun(database: ContextDatabase, input: StartRunRequest): RunRef {
   const active = readActiveRun(database, input.sessionId);
@@ -67,10 +63,7 @@ export function startSessionRun(database: ContextDatabase, input: StartRunReques
     throw new GitContextServiceError({
       code: "CONVERSATION_NOT_ACTIVE",
       message: "Run conversation does not exist in the requested session.",
-      details: {
-        sessionId: input.sessionId,
-        conversationId: input.conversationId,
-      },
+      details: { sessionId: input.sessionId, conversationId: input.conversationId },
     });
   }
   if (conversation.status !== "active") {
@@ -88,19 +81,21 @@ export function startSessionRun(database: ContextDatabase, input: StartRunReques
   const sequence = Number(row.next);
   const datePart = input.sessionId.match(/^S-(\d{8})-/)?.[1] ?? "unknown";
   const runId = "R-" + datePart + "-" + String(sequence).padStart(4, "0");
+  const startedAt = input.at ?? new Date().toISOString();
   database.prepare([
     "INSERT INTO runs(",
     "run_id, session_id, conversation_id, task_id, run_sequence, run_class,",
-    "status, trigger, started_at, completed_at",
-    ") VALUES (?, ?, ?, NULL, ?, 'session', 'running', ?, ?, NULL)",
+    "status, trigger, started_at, completed_at, step_count",
+    ") VALUES (?, ?, ?, NULL, ?, 'session', 'running', ?, ?, NULL, 0)",
   ].join(" ")).run(
     runId,
     input.sessionId,
     input.conversationId,
     sequence,
     input.trigger,
-    input.at ?? new Date().toISOString(),
+    startedAt,
   );
+  insertInitialRunWorkState(database, runId, input.workState, startedAt);
   bindConversationRun(database, input.conversationId, runId);
   return {
     runId,
@@ -110,15 +105,19 @@ export function startSessionRun(database: ContextDatabase, input: StartRunReques
   };
 }
 
-export function readActiveRun(
-  database: ContextDatabase,
-  sessionId: string,
-): RunRef | undefined {
+export function readActiveRun(database: ContextDatabase, sessionId: string): RunRef | undefined {
   const row = database.prepare([
     "SELECT run_id, session_id, conversation_id, task_id, run_class",
     "FROM runs WHERE session_id = ? AND status = 'running' LIMIT 1",
   ].join(" ")).get(sessionId) as RunRow | undefined;
   return row ? runRef(row) : undefined;
+}
+
+export function readActiveRunIds(database: ContextDatabase): string[] {
+  const rows = database.prepare([
+    "SELECT run_id FROM runs WHERE status = 'running' ORDER BY started_at",
+  ].join(" ")).all() as unknown as Array<{ run_id: string }>;
+  return rows.map((row) => row.run_id);
 }
 
 export function readRun(database: ContextDatabase, runId: string): RunRef | undefined {
@@ -135,17 +134,16 @@ export function readRunEvidence(
 ): RunEvidenceRecord | undefined {
   const row = database.prepare([
     "SELECT run_id, session_id, conversation_id, task_id, run_class, status, trigger,",
-    "started_at, completed_at FROM runs WHERE run_id = ?",
+    "started_at, completed_at, step_count FROM runs WHERE run_id = ?",
   ].join(" ")).get(runId) as RunEvidenceRow | undefined;
-  if (!row) {
-    return undefined;
-  }
+  if (!row) return undefined;
   return {
     ...runRef(row),
     status: row.status,
     trigger: row.trigger,
     startedAt: row.started_at,
     ...(row.completed_at ? { completedAt: row.completed_at } : {}),
+    stepCount: Number(row.step_count),
   };
 }
 
@@ -154,21 +152,34 @@ export function readRunStepEvidence(
   runId: string,
 ): RunStepEvidenceRecord[] {
   const rows = database.prepare([
-    "SELECT step, tool, purpose, status, bounded_input, bounded_output, output_hash,",
-    "verification, work_state, created_at FROM run_steps WHERE run_id = ? ORDER BY step",
+    "SELECT step, tool, tool_schema_version, tool_effect, purpose, status, input_json, output_json,",
+    "output_hash, verification_json, created_at FROM run_steps WHERE run_id = ? ORDER BY step",
   ].join(" ")).all(runId) as unknown as RunStepEvidenceRow[];
   return rows.map((row) => ({
     step: Number(row.step),
     tool: row.tool,
+    toolSchemaVersion: Number(row.tool_schema_version),
+    toolEffect: row.tool_effect,
     purpose: row.purpose,
     status: row.status,
-    ...(row.bounded_input ? { boundedInput: JSON.parse(row.bounded_input) as unknown } : {}),
-    ...(row.bounded_output ? { boundedOutput: JSON.parse(row.bounded_output) as unknown } : {}),
+    ...(row.input_json ? { input: JSON.parse(row.input_json) as unknown } : {}),
+    ...(row.output_json ? { output: JSON.parse(row.output_json) as unknown } : {}),
     ...(row.output_hash ? { outputHash: row.output_hash } : {}),
-    ...(row.verification ? { verification: JSON.parse(row.verification) as unknown } : {}),
-    ...(row.work_state ? { workState: JSON.parse(row.work_state) as unknown } : {}),
+    ...(row.verification_json
+      ? { verification: JSON.parse(row.verification_json) as unknown }
+      : {}),
     createdAt: row.created_at,
   }));
+}
+
+export function completeSessionRun(database: ContextDatabase, runId: string, at: string): void {
+  const result = database.prepare([
+    "UPDATE runs SET status = 'completed', completed_at = ?",
+    "WHERE run_id = ? AND run_class = 'session' AND status = 'running'",
+  ].join(" ")).run(at, runId);
+  if (Number(result.changes) !== 1) {
+    throw new Error("Running session run could not be completed: " + runId);
+  }
 }
 
 export function completeTaskRun(database: ContextDatabase, input: {
@@ -216,9 +227,8 @@ export function bindActiveRunToTask(
       details: { sessionId, runId, activeTaskId: row.task_id, requestedTaskId: taskId },
     });
   }
-  database.prepare([
-    "UPDATE runs SET task_id = ?, run_class = 'task' WHERE run_id = ?",
-  ].join(" ")).run(taskId, runId);
+  database.prepare("UPDATE runs SET task_id = ?, run_class = 'task' WHERE run_id = ?")
+    .run(taskId, runId);
   database.prepare([
     "UPDATE conversation_segments SET task_id = ?, run_id = ? WHERE conversation_id = ?",
   ].join(" ")).run(taskId, runId, row.conversation_id);
@@ -234,73 +244,73 @@ export function bindActiveRunToTask(
 export function recordRunStep(
   database: ContextDatabase,
   input: RecordRunStepRequest,
-): ToolCallContext {
+): RecordRunStepResponseValue {
   const run = database.prepare([
-    "SELECT run_id, session_id, status FROM runs WHERE run_id = ?",
+    "SELECT run_id, session_id, run_class, status FROM runs WHERE run_id = ?",
   ].join(" ")).get(input.runId) as {
     run_id: string;
     session_id: string;
+    run_class: RunRef["runClass"];
     status: string;
   } | undefined;
   if (!run || run.session_id !== input.sessionId || run.status !== "running") {
     throw new GitContextServiceError({
       code: "RUN_NOT_ACTIVE",
       message: "Run is not active in the requested session.",
-      details: {
-        sessionId: input.sessionId,
-        runId: input.runId,
-      },
+      details: { sessionId: input.sessionId, runId: input.runId },
+    });
+  }
+  if (run.run_class === "session" && input.toolEffect !== "read_only") {
+    throw new GitContextServiceError({
+      code: "MUTATION_REQUIRES_TASK",
+      message: "Session runs may record only read-only tools.",
+      details: { runId: input.runId, tool: input.tool },
     });
   }
 
   database.prepare([
     "INSERT INTO run_steps(",
-    "run_id, step, tool, purpose, status, bounded_input, bounded_output,",
-    "output_hash, verification, work_state, created_at",
-    ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    "run_id, step, tool, tool_schema_version, tool_effect, purpose, status, input_json, output_json,",
+    "output_hash, verification_json, created_at",
+    ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
   ].join(" ")).run(
     input.runId,
     input.step,
     input.tool,
+    input.toolSchemaVersion ?? 1,
+    input.toolEffect,
     input.purpose,
     input.status,
-    optionalJson(input.boundedInput),
-    optionalJson(input.boundedOutput),
+    optionalJson(input.input),
+    optionalJson(input.output),
     input.outputHash ?? null,
     optionalJson(input.verification),
-    optionalJson(input.workState),
     input.at,
   );
+  database.prepare("UPDATE runs SET step_count = step_count + 1 WHERE run_id = ?")
+    .run(input.runId);
+  const workState = replaceRunWorkState(database, {
+    runId: input.runId,
+    afterStep: input.step,
+    state: input.workState,
+    at: input.at,
+  });
   return {
-    step: input.step,
-    tool: input.tool,
-    purpose: input.purpose,
-    status: input.status,
+    toolCall: {
+      step: input.step,
+      tool: input.tool,
+      toolSchemaVersion: input.toolSchemaVersion ?? 1,
+      toolEffect: input.toolEffect,
+      purpose: input.purpose,
+      status: input.status,
+    },
+    workState,
   };
 }
 
-export function readRecentRunSteps(
-  database: ContextDatabase,
-  runId: string,
-  limit = 8,
-): ToolCallContext[] {
-  const rows = database.prepare([
-    "SELECT step, tool, purpose, status FROM (",
-    "  SELECT step, tool, purpose, status FROM run_steps",
-    "  WHERE run_id = ? ORDER BY step DESC LIMIT ?",
-    ") ORDER BY step",
-  ].join(" ")).all(runId, limit) as unknown as Array<{
-    step: number;
-    tool: string;
-    purpose: string;
-    status: ToolCallContext["status"];
-  }>;
-  return rows.map((row) => ({
-    step: Number(row.step),
-    tool: row.tool,
-    purpose: row.purpose,
-    status: row.status,
-  }));
+interface RecordRunStepResponseValue {
+  toolCall: ToolCallContext;
+  workState: ReturnType<typeof replaceRunWorkState>;
 }
 
 function runRef(row: RunRow): RunRef {

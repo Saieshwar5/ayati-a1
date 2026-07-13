@@ -7,6 +7,7 @@ import {
   isCheckpointMutationRequest,
   isCreateTaskRequest,
   isEnsureActiveSessionRequest,
+  isFinalizeSessionRunRequest,
   isFinalizeTaskRunRequest,
   isMountTaskRequest,
   isRecordRunStepRequest,
@@ -21,7 +22,7 @@ import {
 } from "./errors.js";
 import type { GitContextService } from "./service.js";
 
-const DEFAULT_MAX_BODY_BYTES = 1024 * 1024;
+const DEFAULT_MAX_BODY_BYTES = 16 * 1024 * 1024;
 
 export type GitContextServerListenOptions =
   | {
@@ -276,6 +277,22 @@ export class GitContextHttpServer {
         return;
       }
 
+      const finalizeSessionRunMatch = url.pathname.match(
+        /^\/runs\/([^/]+)\/finalize-session$/,
+      );
+      if (method === "POST" && finalizeSessionRunMatch) {
+        const body = await readJsonBody(request, this.maxBodyBytes);
+        if (!isFinalizeSessionRunRequest(body)) {
+          throw invalidRequest("Invalid session-run finalization request.");
+        }
+        const runId = decodePathComponent(finalizeSessionRunMatch[1] ?? "");
+        if (body.runId !== runId) {
+          throw invalidRequest("Run ID in request path and body must match.");
+        }
+        sendJson(response, 200, await this.service.finalizeSessionRun(body));
+        return;
+      }
+
       const knownPath = isKnownPath(url.pathname)
         || Boolean(runStepMatch)
         || Boolean(taskMatch)
@@ -284,7 +301,8 @@ export class GitContextHttpServer {
         || Boolean(verifyMutationMatch)
         || Boolean(checkpointMutationMatch)
         || Boolean(runEvidenceMatch)
-        || Boolean(finalizeTaskRunMatch);
+        || Boolean(finalizeTaskRunMatch)
+        || Boolean(finalizeSessionRunMatch);
       throw new GitContextServiceError({
         code: knownPath ? "METHOD_NOT_ALLOWED" : "NOT_FOUND",
         message: knownPath

@@ -16,6 +16,8 @@ import {
   type CreateTaskResponse,
   type EnsureActiveSessionRequest,
   type EnsureActiveSessionResponse,
+  type FinalizeSessionRunRequest,
+  type FinalizeSessionRunResponse,
   type FinalizeTaskRunRequest,
   type FinalizeTaskRunResponse,
   type GetActiveContextRequest,
@@ -116,6 +118,7 @@ describe("Git Context Engine HTTP transport", () => {
       sessionId: ensured.session.sessionId,
       conversationId: appended.conversation.conversationId,
       trigger: "user",
+      workState: emptyRunWorkState(),
     });
     expect(started.run).toMatchObject({
       runId: "R-20260712-0001",
@@ -197,16 +200,45 @@ describe("Git Context Engine HTTP transport", () => {
       runId: started.run.runId,
       step: 1,
       tool: "read_files",
+      toolEffect: "read_only",
       purpose: "Inspect the current files.",
       status: "completed",
+      workState: emptyRunWorkState(),
       at: "2026-07-12T10:00:01+05:30",
     })).resolves.toEqual({
       toolCall: {
         step: 1,
         tool: "read_files",
+        toolSchemaVersion: 1,
+        toolEffect: "read_only",
         purpose: "Inspect the current files.",
         status: "completed",
       },
+      workState: {
+        runId: started.run.runId,
+        revision: 1,
+        afterStep: 1,
+        ...emptyRunWorkState(),
+        updatedAt: "2026-07-12T10:00:01+05:30",
+      },
+    });
+    await expect(client.finalizeSessionRun({
+      requestId: "REQ-finalize-session",
+      sessionId: ensured.session.sessionId,
+      runId: started.run.runId,
+      assistantResponse: "Here is what I found.",
+      workState: {
+        ...emptyRunWorkState(),
+        status: "done",
+        summary: "Explained the inspected files.",
+      },
+      at: "2026-07-12T10:00:07+05:30",
+    })).resolves.toEqual({
+      runId: started.run.runId,
+      status: "completed",
+      runFile: "runs/" + started.run.runId + "/run.json",
+      stepsFile: "runs/" + started.run.runId + "/steps.jsonl",
+      stepCount: 1,
     });
 
     const context = await client.getActiveContext({
@@ -475,6 +507,18 @@ class TestGitContextService implements GitContextService {
     };
   }
 
+  async finalizeSessionRun(
+    input: FinalizeSessionRunRequest,
+  ): Promise<FinalizeSessionRunResponse> {
+    return {
+      runId: input.runId,
+      status: "completed",
+      runFile: "runs/" + input.runId + "/run.json",
+      stepsFile: "runs/" + input.runId + "/steps.jsonl",
+      stepCount: 1,
+    };
+  }
+
   async startRun(input: StartRunRequest): Promise<StartRunResponse> {
     return {
       run: {
@@ -491,11 +535,34 @@ class TestGitContextService implements GitContextService {
       toolCall: {
         step: input.step,
         tool: input.tool,
+        toolSchemaVersion: input.toolSchemaVersion ?? 1,
+        toolEffect: input.toolEffect,
         purpose: input.purpose,
         status: input.status,
       },
+      workState: {
+        runId: input.runId,
+        revision: 1,
+        afterStep: input.step,
+        ...input.workState,
+        updatedAt: input.at,
+      },
     };
   }
+}
+
+function emptyRunWorkState() {
+  return {
+    status: "not_done" as const,
+    summary: "",
+    openWork: [],
+    blockers: [],
+    facts: [],
+    evidence: [],
+    artifacts: [],
+    nextStep: null,
+    userInputNeeded: [],
+  };
 }
 
 async function startTcpServer(service: GitContextService): Promise<{

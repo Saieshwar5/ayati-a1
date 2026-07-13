@@ -78,22 +78,21 @@ function boundedStepLine(step: RunStepEvidenceRecord): string {
   const compacted = {
     step: step.step,
     tool: step.tool,
+    toolSchemaVersion: step.toolSchemaVersion,
+    toolEffect: step.toolEffect,
     purpose: boundedString(step.purpose),
     status: step.status,
     createdAt: step.createdAt,
-    ...(step.boundedInput === undefined
+    ...(step.input === undefined
       ? {}
-      : { input: compactValue(step.boundedInput, 0) }),
-    ...(step.boundedOutput === undefined
+      : { input: compactValue(step.input, 0) }),
+    ...(step.output === undefined
       ? {}
-      : { output: compactValue(step.boundedOutput, 0) }),
+      : { output: compactValue(step.output, 0) }),
     ...(step.outputHash ? { outputHash: step.outputHash } : {}),
     ...(step.verification === undefined
       ? {}
       : { verification: compactValue(step.verification, 0) }),
-    ...(step.workState === undefined
-      ? {}
-      : { workState: compactValue(step.workState, 0) }),
   };
   const json = JSON.stringify(compacted);
   if (Buffer.byteLength(json) <= MAX_STEP_BYTES) {
@@ -102,6 +101,8 @@ function boundedStepLine(step: RunStepEvidenceRecord): string {
   return JSON.stringify({
     step: step.step,
     tool: step.tool,
+    toolSchemaVersion: step.toolSchemaVersion,
+    toolEffect: step.toolEffect,
     purpose: boundedString(step.purpose),
     status: step.status,
     createdAt: step.createdAt,

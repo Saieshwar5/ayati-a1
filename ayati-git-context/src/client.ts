@@ -11,6 +11,8 @@ import type {
   CreateTaskResponse,
   EnsureActiveSessionRequest,
   EnsureActiveSessionResponse,
+  FinalizeSessionRunRequest,
+  FinalizeSessionRunResponse,
   FinalizeTaskRunRequest,
   FinalizeTaskRunResponse,
   GetActiveContextRequest,
@@ -35,7 +37,7 @@ import {
 import type { GitContextService } from "./service.js";
 
 const DEFAULT_TIMEOUT_MS = 10_000;
-const DEFAULT_MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
+const DEFAULT_MAX_RESPONSE_BYTES = 16 * 1024 * 1024;
 
 export type GitContextClientConnection =
   | {
@@ -159,6 +161,16 @@ export class GitContextClient implements GitContextService {
     return await this.requestJson<FinalizeTaskRunResponse>(
       "POST",
       "/runs/" + encodeURIComponent(input.runId) + "/finalize-task",
+      input,
+    );
+  }
+
+  async finalizeSessionRun(
+    input: FinalizeSessionRunRequest,
+  ): Promise<FinalizeSessionRunResponse> {
+    return await this.requestJson<FinalizeSessionRunResponse>(
+      "POST",
+      "/runs/" + encodeURIComponent(input.runId) + "/finalize-session",
       input,
     );
   }

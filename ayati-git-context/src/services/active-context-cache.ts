@@ -1,5 +1,9 @@
 import { createHash } from "node:crypto";
-import type { ActiveContext, ConversationContext, RunRef, ToolCallContext } from "../contracts.js";
+import type {
+  ActiveContext,
+  ConversationContext,
+  RunContextProjection,
+} from "../contracts.js";
 
 export class ActiveContextCache {
   private readonly entries = new Map<string, ActiveContext>();
@@ -26,8 +30,7 @@ export function activeContextRevision(input: {
   head: string | null;
   status: string;
   conversations: ConversationContext[];
-  run?: RunRef;
-  toolCalls: ToolCallContext[];
+  run?: RunContextProjection;
 }): { revision: string; pendingDigest: string } {
   const pendingDigest = hash(JSON.stringify(input.conversations.map((item) => ({
     id: item.conversation.conversationId,
@@ -39,8 +42,7 @@ export function activeContextRevision(input: {
     head: input.head,
     status: input.status,
     pendingDigest,
-    run: input.run?.runId ?? null,
-    toolCalls: input.toolCalls,
+    run: input.run ?? null,
   }));
   return { revision, pendingDigest };
 }

@@ -1,4 +1,4 @@
-export const GIT_CONTEXT_PROTOCOL_VERSION = 9;
+export const GIT_CONTEXT_PROTOCOL_VERSION = 10;
 
 export type SessionId = string;
 export type TaskId = string;
@@ -145,8 +145,47 @@ export interface CommitSummary {
 export interface ToolCallContext {
   step: number;
   tool: string;
+  toolSchemaVersion: number;
+  toolEffect: "read_only" | "mutating";
   purpose: string;
   status: "completed" | "failed" | "blocked";
+}
+
+export type RunWorkStatus = "not_done" | "done" | "blocked" | "needs_user_input";
+
+export interface RunWorkStateInput {
+  status: RunWorkStatus;
+  summary: string;
+  openWork: string[];
+  blockers: string[];
+  facts: string[];
+  evidence: string[];
+  artifacts: string[];
+  nextStep: string | null;
+  userInputNeeded: string[];
+}
+
+export interface RunWorkState extends RunWorkStateInput {
+  runId: RunId;
+  revision: number;
+  afterStep: number;
+  updatedAt: string;
+}
+
+export interface RunStepContext extends ToolCallContext {
+  input?: unknown;
+  output?: unknown;
+  outputHash?: string;
+  verification?: unknown;
+  createdAt: string;
+}
+
+export interface RunContextRecord extends RunRef {
+  status: "running" | "completed" | "failed" | "blocked" | "needs_user_input";
+  trigger: "user" | "system_event" | "internal";
+  startedAt: string;
+  completedAt?: string;
+  stepCount: number;
 }
 
 export interface SessionContextProjection {
@@ -175,8 +214,9 @@ export interface TaskContextProjection {
 }
 
 export interface RunContextProjection {
-  run: RunRef;
-  recentToolCalls: ToolCallContext[];
+  run: RunContextRecord;
+  workState: RunWorkState;
+  steps: RunStepContext[];
 }
 
 export interface ActiveContext {
@@ -360,6 +400,22 @@ export interface FinalizeTaskRunResponse {
   stepsFile: string;
 }
 
+export interface FinalizeSessionRunRequest extends GitContextRequestEnvelope {
+  sessionId: SessionId;
+  runId: RunId;
+  assistantResponse: string;
+  workState: RunWorkStateInput;
+  at: string;
+}
+
+export interface FinalizeSessionRunResponse {
+  runId: RunId;
+  status: "completed";
+  runFile: string;
+  stepsFile: string;
+  stepCount: number;
+}
+
 export interface AppendConversationRequest extends GitContextRequestEnvelope {
   sessionId: SessionId;
   role: ConversationRole;
@@ -377,6 +433,7 @@ export interface StartRunRequest extends GitContextRequestEnvelope {
   sessionId: SessionId;
   conversationId: ConversationId;
   trigger: "user" | "system_event" | "internal";
+  workState: RunWorkStateInput;
   at?: string;
 }
 
@@ -389,18 +446,21 @@ export interface RecordRunStepRequest extends GitContextRequestEnvelope {
   runId: RunId;
   step: number;
   tool: string;
+  toolSchemaVersion?: number;
+  toolEffect: "read_only" | "mutating";
   purpose: string;
   status: ToolCallContext["status"];
-  boundedInput?: unknown;
-  boundedOutput?: unknown;
+  input?: unknown;
+  output?: unknown;
   outputHash?: string;
   verification?: unknown;
-  workState?: unknown;
+  workState: RunWorkStateInput;
   at: string;
 }
 
 export interface RecordRunStepResponse {
   toolCall: ToolCallContext;
+  workState: RunWorkState;
 }
 
 export function isRequestEnvelope(
@@ -530,6 +590,20 @@ export function isFinalizeTaskRunRequest(value: unknown): value is FinalizeTaskR
     && isNonEmptyString(value["at"]);
 }
 
+export function isFinalizeSessionRunRequest(
+  value: unknown,
+): value is FinalizeSessionRunRequest {
+  if (!isRequestEnvelope(value)) {
+    return false;
+  }
+  return isNonEmptyString(value["sessionId"])
+    && isNonEmptyString(value["runId"])
+    && isBoundedString(value["assistantResponse"], 20_000)
+    && isRunWorkStateInput(value["workState"])
+    && value["workState"].status === "done"
+    && isNonEmptyString(value["at"]);
+}
+
 export function isStartRunRequest(value: unknown): value is StartRunRequest {
   if (!isRequestEnvelope(value)) {
     return false;
@@ -539,6 +613,7 @@ export function isStartRunRequest(value: unknown): value is StartRunRequest {
     && (value["trigger"] === "user"
       || value["trigger"] === "system_event"
       || value["trigger"] === "internal")
+    && isRunWorkStateInput(value["workState"])
     && optionalNonEmptyString(value["at"]);
 }
 
@@ -552,10 +627,16 @@ export function isRecordRunStepRequest(value: unknown): value is RecordRunStepRe
     && Number.isInteger(value["step"])
     && value["step"] > 0
     && isNonEmptyString(value["tool"])
+    && (value["toolSchemaVersion"] === undefined
+      || (typeof value["toolSchemaVersion"] === "number"
+        && Number.isInteger(value["toolSchemaVersion"])
+        && value["toolSchemaVersion"] > 0))
+    && (value["toolEffect"] === "read_only" || value["toolEffect"] === "mutating")
     && isBoundedString(value["purpose"], 500)
     && (value["status"] === "completed"
       || value["status"] === "failed"
       || value["status"] === "blocked")
+    && isRunWorkStateInput(value["workState"])
     && optionalNonEmptyString(value["outputHash"])
     && isNonEmptyString(value["at"]);
 }
@@ -596,6 +677,29 @@ function isTaskRunOutcome(value: unknown): value is TaskRunOutcome {
     || value === "failed"
     || value === "blocked"
     || value === "needs_user_input";
+}
+
+function isRunWorkStateInput(value: unknown): value is RunWorkStateInput {
+  if (!isRecord(value)
+    || (value["status"] !== "not_done"
+      && value["status"] !== "done"
+      && value["status"] !== "blocked"
+      && value["status"] !== "needs_user_input")
+    || typeof value["summary"] !== "string"
+    || !isStringArray(value["openWork"])
+    || !isStringArray(value["blockers"])
+    || !isStringArray(value["facts"])
+    || !isStringArray(value["evidence"])
+    || !isStringArray(value["artifacts"])
+    || (value["nextStep"] !== null && typeof value["nextStep"] !== "string")
+    || !isStringArray(value["userInputNeeded"])) {
+    return false;
+  }
+  return true;
+}
+
+function isStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((item) => typeof item === "string");
 }
 
 function isTaskCompletionRecord(value: unknown): value is TaskCompletionRecord {

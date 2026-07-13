@@ -4,10 +4,10 @@ Created: 2026-07-12
 
 ## Status
 
-Current status: twelfth implementation slice complete. The independent service
-now commits the complete uncommitted conversation window with semantic task-run
-commit context and maintains a Git-derived session summary hot cache, without
-changing current Ayati runtime behavior.
+Current status: thirteenth implementation slice complete. The independent
+service now persists complete read-only session-run evidence, explicit current
+WorkState, a restartable full-context hot cache, and durable uncommitted run
+files, without changing current Ayati runtime behavior.
 
 Implementation branch:
 
@@ -499,3 +499,45 @@ Next slice:
 - Verification:
   - pnpm --filter ayati-git-context build
   - pnpm --filter ayati-git-context test (55 tests)
+
+### 2026-07-13 Implementation Slice 13
+
+- Advanced the typed service protocol to version 10.
+- Made session runs harness-requested and initialized them with an explicit
+  reducer-owned WorkState.
+- Added the run_work_state table with explicit revision, step boundary, status,
+  summary, open work, blockers, facts, evidence, artifacts, next step, and
+  required user-input fields.
+- Changed run-step persistence to store complete structured tool inputs,
+  outputs, output hashes, and verification payloads without summarization.
+- Added tool schema version and read-only/mutating effect metadata to every
+  durable step.
+- Enforced that unpromoted session runs accept only read-only tool steps.
+- Updated each step, its current WorkState, and run step count atomically in the
+  same SQLite/idempotency transaction.
+- Added RunContextHotCache, hydrated from SQLite after restart and refreshed
+  after every step, containing the full active run, WorkState, and ordered raw
+  step history for the next agent decision.
+- Reworked ActiveContext run projection to return that complete cached context
+  instead of only eight compact tool-call headers.
+- Added session-run finalization HTTP/client/service contracts and a recoverable
+  SQLite phase journal.
+- Required final session WorkState to be done and required at least one
+  read-only tool step before session-run completion.
+- Appended the final assistant response and closed its session conversation
+  deterministically during finalization.
+- Wrote uncommitted runs/<run-id>/run.json and steps.jsonl files atomically with
+  the complete WorkState and raw tool evidence, without creating a Git commit.
+- Marked the run completed only after both files were durable and removed it
+  from the hot cache afterward.
+- Kept task-run file projection compatibility while making shared SQLite step
+  storage complete.
+- Raised configurable HTTP default body/response guards to 16 MiB so normal
+  full-context run payloads are not prematurely bounded.
+- Added tests proving exact WorkState columns, atomic revisions, full large tool
+  output retention, hot-context projection, restart reconstruction, read-only
+  enforcement, session-run files, no extra Git commit, transport round trips,
+  and idempotent finalization.
+- Verification:
+  - pnpm --filter ayati-git-context build
+  - pnpm --filter ayati-git-context test (58 tests)

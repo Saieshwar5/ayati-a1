@@ -194,6 +194,55 @@ export function closeTaskConversationWithAssistant(database: ContextDatabase, in
   return conversation;
 }
 
+export function closeSessionConversationWithAssistant(database: ContextDatabase, input: {
+  sessionId: string;
+  conversationId: string;
+  runId: string;
+  content: string;
+  at: string;
+}): ConversationRef {
+  const row = database.prepare([
+    "SELECT conversation_id, session_id, sequence, file_path, status FROM conversation_segments",
+    "WHERE conversation_id = ? AND session_id = ? AND run_id = ? AND task_id IS NULL",
+  ].join(" ")).get(
+    input.conversationId, input.sessionId, input.runId,
+  ) as ConversationRow | undefined;
+  if (!row || row.status !== "active") {
+    throw new GitContextServiceError({
+      code: "CONVERSATION_NOT_ACTIVE",
+      message: "Session-run finalization requires its active conversation.",
+      details: { conversationId: input.conversationId, runId: input.runId },
+    });
+  }
+  const sessionSequence = nextNumber(database, [
+    "SELECT COALESCE(MAX(session_sequence), 0) + 1 AS next",
+    "FROM messages WHERE session_id = ?",
+  ].join(" "), input.sessionId);
+  const segmentSequence = nextNumber(database, [
+    "SELECT COALESCE(MAX(segment_sequence), 0) + 1 AS next",
+    "FROM messages WHERE conversation_id = ?",
+  ].join(" "), input.conversationId);
+  database.prepare([
+    "INSERT INTO messages(message_id, conversation_id, session_id, session_sequence,",
+    "segment_sequence, role, content, created_at) VALUES (?, ?, ?, ?, ?, 'assistant', ?, ?)",
+  ].join(" ")).run(
+    input.sessionId + "-M-" + pad(sessionSequence, 6), input.conversationId,
+    input.sessionId, sessionSequence, segmentSequence, input.content, input.at,
+  );
+  const filePath = "conversations/" + pad(Number(row.sequence), 6) + "-session.md";
+  database.prepare([
+    "UPDATE conversation_segments SET status = 'closed', closed_at = ?, file_path = ?",
+    "WHERE conversation_id = ?",
+  ].join(" ")).run(input.at, filePath, input.conversationId);
+  return {
+    conversationId: input.conversationId,
+    sessionId: input.sessionId,
+    sequence: Number(row.sequence),
+    filePath,
+    status: "closed",
+  };
+}
+
 export function markPendingConversationsCommitted(
   database: ContextDatabase,
   sessionId: string,

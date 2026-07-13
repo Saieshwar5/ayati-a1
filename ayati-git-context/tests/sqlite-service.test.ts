@@ -509,6 +509,7 @@ describe("SQLite Git Context service", () => {
       sessionId: session.session.sessionId,
       conversationId: conversation.conversation.conversationId,
       trigger: "user",
+      workState: emptyRunWorkState(),
       at: "2026-07-12T09:01:01+05:30",
     } as const;
 
@@ -525,12 +526,17 @@ describe("SQLite Git Context service", () => {
       runId: started.run.runId,
       step: 1,
       tool: "read_files",
+      toolEffect: "read_only",
       purpose: "Inspect the current implementation.",
       status: "completed",
-      boundedInput: { paths: ["src/index.ts"] },
-      boundedOutput: { filesRead: 1 },
+      input: { paths: ["src/index.ts"] },
+      output: { filesRead: 1 },
       verification: { ok: true },
-      workState: { status: "not_done" },
+      workState: {
+        ...emptyRunWorkState(),
+        summary: "Inspected the current implementation.",
+        nextStep: "Respond with the findings.",
+      },
       at: "2026-07-12T09:01:02+05:30",
     });
     expect(step.toolCall.purpose).toBe("Inspect the current implementation.");
@@ -540,12 +546,26 @@ describe("SQLite Git Context service", () => {
       runId: started.run.runId,
       step: 1,
       tool: "read_files",
+      toolEffect: "read_only",
       purpose: "Inspect something different.",
       status: "completed",
+      workState: emptyRunWorkState(),
       at: "2026-07-12T09:01:02+05:30",
     })).rejects.toMatchObject({
       code: "IDEMPOTENCY_CONFLICT",
     });
+    await expect(service.recordRunStep({
+      requestId: "REQ-mutating-session-step",
+      sessionId: session.session.sessionId,
+      runId: started.run.runId,
+      step: 2,
+      tool: "write_files",
+      toolEffect: "mutating",
+      purpose: "Attempt an invalid session mutation.",
+      status: "completed",
+      workState: emptyRunWorkState(),
+      at: "2026-07-12T09:01:03+05:30",
+    })).rejects.toMatchObject({ code: "MUTATION_REQUIRES_TASK" });
 
     await expect(service.startRun({
       ...input,
@@ -557,8 +577,14 @@ describe("SQLite Git Context service", () => {
     const context = await service.getActiveContext({
       sessionId: session.session.sessionId,
     });
-    expect(context.run?.run).toEqual(started.run);
-    expect(context.run?.recentToolCalls).toEqual([step.toolCall]);
+    expect(context.run?.run).toMatchObject(started.run);
+    expect(context.run?.steps).toMatchObject([{
+      ...step.toolCall,
+      input: { paths: ["src/index.ts"] },
+      output: { filesRead: 1 },
+      verification: { ok: true },
+    }]);
+    expect(context.run?.workState).toEqual(step.workState);
   });
 
   it("restores the active session, conversation, and run after restart", async () => {
@@ -583,6 +609,7 @@ describe("SQLite Git Context service", () => {
       sessionId: session.session.sessionId,
       conversationId: conversation.conversation.conversationId,
       trigger: "user",
+      workState: emptyRunWorkState(),
       at: "2026-07-12T09:01:01+05:30",
     });
     const step = await firstService.recordRunStep({
@@ -591,8 +618,16 @@ describe("SQLite Git Context service", () => {
       runId: run.run.runId,
       step: 1,
       tool: "read_files",
+      toolEffect: "read_only",
       purpose: "Preserve restart context.",
       status: "completed",
+      input: { paths: ["src/index.ts"] },
+      output: { content: "complete source text" },
+      verification: { passed: true },
+      workState: {
+        ...emptyRunWorkState(),
+        summary: "Restart context is durable.",
+      },
       at: "2026-07-12T09:01:02+05:30",
     });
     await firstService.close();
@@ -609,8 +644,14 @@ describe("SQLite Git Context service", () => {
     expect(restored.session?.pendingConversation).toEqual([
       conversation.conversation,
     ]);
-    expect(restored.run?.run).toEqual(run.run);
-    expect(restored.run?.recentToolCalls).toEqual([step.toolCall]);
+    expect(restored.run?.run).toMatchObject(run.run);
+    expect(restored.run?.steps).toMatchObject([{
+      ...step.toolCall,
+      input: { paths: ["src/index.ts"] },
+      output: { content: "complete source text" },
+      verification: { passed: true },
+    }]);
+    expect(restored.run?.workState).toEqual(step.workState);
     expect(secondDatabase.prepare([
       "SELECT content FROM messages WHERE conversation_id = ?",
     ].join(" ")).get(conversation.conversation.conversationId)).toMatchObject({
@@ -623,6 +664,154 @@ describe("SQLite Git Context service", () => {
       agentId: "local",
       at: "2026-07-12T09:00:00+05:30",
     })).resolves.toEqual(session);
+  });
+
+  it("finalizes a read-only session run into complete raw run files", async () => {
+    const { service, database } = await createService();
+    const session = await ensureSession(service);
+    const conversation = await service.appendConversation({
+      requestId: "REQ-session-run-message",
+      sessionId: session.session.sessionId,
+      role: "user",
+      content: "Inspect the source and explain it.",
+      at: "2026-07-12T09:10:00+05:30",
+    });
+    const run = await service.startRun({
+      requestId: "REQ-session-run-start",
+      sessionId: session.session.sessionId,
+      conversationId: conversation.conversation.conversationId,
+      trigger: "user",
+      workState: emptyRunWorkState(),
+      at: "2026-07-12T09:10:01+05:30",
+    });
+    const completeText = "source-line\n".repeat(600);
+    const step = await service.recordRunStep({
+      requestId: "REQ-session-run-step",
+      sessionId: session.session.sessionId,
+      runId: run.run.runId,
+      step: 1,
+      tool: "read_files",
+      toolSchemaVersion: 3,
+      toolEffect: "read_only",
+      purpose: "Read the complete source before explaining it.",
+      status: "completed",
+      input: { files: [{ path: "src/index.ts", lineEnd: "EOF" }] },
+      output: { files: [{ path: "src/index.ts", content: completeText }] },
+      verification: { passed: true, filesRead: 1 },
+      workState: {
+        ...emptyRunWorkState(),
+        summary: "The complete source was read successfully.",
+        facts: ["src/index.ts exists."],
+        evidence: ["The read_files verification passed."],
+        nextStep: "Explain the implementation to the user.",
+      },
+      at: "2026-07-12T09:10:02+05:30",
+    });
+    expect(database.prepare([
+      "SELECT revision, after_step, summary, facts_json FROM run_work_state WHERE run_id = ?",
+    ].join(" ")).get(run.run.runId)).toEqual({
+      revision: 1,
+      after_step: 1,
+      summary: "The complete source was read successfully.",
+      facts_json: JSON.stringify(["src/index.ts exists."]),
+    });
+    const hotContext = await service.getActiveContext({
+      sessionId: session.session.sessionId,
+    });
+    expect(hotContext.run?.steps[0]?.output).toEqual({
+      files: [{ path: "src/index.ts", content: completeText }],
+    });
+    expect(hotContext.run?.workState.summary).toBe(
+      "The complete source was read successfully.",
+    );
+
+    const finalWorkState = {
+      ...emptyRunWorkState(),
+      status: "done" as const,
+      summary: "Explained the inspected implementation to the user.",
+    };
+    const finalizationInput = {
+      requestId: "REQ-session-run-finalize",
+      sessionId: session.session.sessionId,
+      runId: run.run.runId,
+      assistantResponse: "The implementation reads configuration and starts the server.",
+      workState: finalWorkState,
+      at: "2026-07-12T09:10:03+05:30",
+    };
+    const finalized = await service.finalizeSessionRun(finalizationInput);
+    await expect(service.finalizeSessionRun(finalizationInput)).resolves.toEqual(finalized);
+
+    const runFile = JSON.parse(await readFile(
+      join(session.session.repositoryPath, finalized.runFile),
+      "utf8",
+    )) as Record<string, unknown>;
+    const stepFile = JSON.parse((await readFile(
+      join(session.session.repositoryPath, finalized.stepsFile),
+      "utf8",
+    )).trim()) as Record<string, unknown>;
+    expect(runFile).toMatchObject({
+      runId: run.run.runId,
+      runClass: "session",
+      status: "completed",
+      stepCount: 1,
+      workState: {
+        revision: 2,
+        afterStep: 1,
+        status: "done",
+        summary: finalWorkState.summary,
+      },
+    });
+    expect(stepFile).toEqual({
+      step: 1,
+      tool: "read_files",
+      toolSchemaVersion: 3,
+      toolEffect: "read_only",
+      purpose: "Read the complete source before explaining it.",
+      status: "completed",
+      input: { files: [{ path: "src/index.ts", lineEnd: "EOF" }] },
+      output: { files: [{ path: "src/index.ts", content: completeText }] },
+      verification: { passed: true, filesRead: 1 },
+      createdAt: "2026-07-12T09:10:02+05:30",
+    });
+    expect(await git(session.session.repositoryPath, ["rev-list", "--count", "HEAD"]))
+      .toBe("1");
+    expect(await git(session.session.repositoryPath, ["diff", "--cached", "--name-only"]))
+      .toBe("");
+    expect((await service.getActiveContext({ sessionId: session.session.sessionId })).run)
+      .toBeUndefined();
+    expect(step.workState.revision).toBe(1);
+  });
+
+  it("does not finalize a session run that recorded no read-only tool", async () => {
+    const { service } = await createService();
+    const session = await ensureSession(service);
+    const conversation = await service.appendConversation({
+      requestId: "REQ-empty-run-message",
+      sessionId: session.session.sessionId,
+      role: "user",
+      content: "Answer directly without tools.",
+      at: "2026-07-12T09:20:00+05:30",
+    });
+    const run = await service.startRun({
+      requestId: "REQ-empty-run-start",
+      sessionId: session.session.sessionId,
+      conversationId: conversation.conversation.conversationId,
+      trigger: "user",
+      workState: emptyRunWorkState(),
+      at: "2026-07-12T09:20:01+05:30",
+    });
+
+    await expect(service.finalizeSessionRun({
+      requestId: "REQ-empty-run-finalize",
+      sessionId: session.session.sessionId,
+      runId: run.run.runId,
+      assistantResponse: "This should have been a direct response.",
+      workState: {
+        ...emptyRunWorkState(),
+        status: "done",
+      },
+      at: "2026-07-12T09:20:02+05:30",
+    })).rejects.toMatchObject({ code: "INVALID_REQUEST" });
   });
 
   it("requires rollover before creating a different daily session", async () => {
@@ -680,4 +869,18 @@ async function git(repositoryPath: string, args: string[]): Promise<string> {
     encoding: "utf8",
   });
   return result.stdout.trim();
+}
+
+function emptyRunWorkState() {
+  return {
+    status: "not_done" as const,
+    summary: "",
+    openWork: [],
+    blockers: [],
+    facts: [],
+    evidence: [],
+    artifacts: [],
+    nextStep: null,
+    userInputNeeded: [],
+  };
 }

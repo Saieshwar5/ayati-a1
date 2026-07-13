@@ -5,6 +5,7 @@ import {
   isCheckpointMutationRequest,
   isCreateTaskRequest,
   isEnsureActiveSessionRequest,
+  isFinalizeSessionRunRequest,
   isFinalizeTaskRunRequest,
   isMountTaskRequest,
   isRecordRunStepRequest,
@@ -140,12 +141,14 @@ describe("Git Context Engine contracts", () => {
       sessionId: "S-1",
       conversationId: "C-1",
       trigger: "user",
+      workState: emptyRunWorkState(),
     })).toBe(true);
     expect(isStartRunRequest({
       requestId: "REQ-3",
       sessionId: "S-1",
       conversationId: "C-1",
       trigger: "timer",
+      workState: emptyRunWorkState(),
     })).toBe(false);
   });
 
@@ -215,8 +218,10 @@ describe("Git Context Engine contracts", () => {
       runId: "R-1",
       step: 1,
       tool: "read_files",
+      toolEffect: "read_only",
       purpose: "Inspect the current implementation.",
       status: "completed",
+      workState: emptyRunWorkState(),
       at: "2026-07-12T10:00:00+05:30",
     })).toBe(true);
     expect(isRecordRunStepRequest({
@@ -225,9 +230,30 @@ describe("Git Context Engine contracts", () => {
       runId: "R-1",
       step: 0,
       tool: "read_files",
+      toolEffect: "read_only",
       purpose: "",
       status: "running",
+      workState: emptyRunWorkState(),
       at: "2026-07-12T10:00:00+05:30",
+    })).toBe(false);
+  });
+
+  it("validates session-run finalization with done WorkState", () => {
+    expect(isFinalizeSessionRunRequest({
+      requestId: "REQ-finalize-session",
+      sessionId: "S-20260712-local",
+      runId: "R-20260712-0001",
+      assistantResponse: "Here is what I found.",
+      workState: { ...emptyRunWorkState(), status: "done" },
+      at: "2026-07-12T10:00:01+05:30",
+    })).toBe(true);
+    expect(isFinalizeSessionRunRequest({
+      requestId: "REQ-finalize-session",
+      sessionId: "S-20260712-local",
+      runId: "R-20260712-0001",
+      assistantResponse: "Here is what I found.",
+      workState: emptyRunWorkState(),
+      at: "2026-07-12T10:00:01+05:30",
     })).toBe(false);
   });
 
@@ -249,3 +275,17 @@ describe("Git Context Engine contracts", () => {
     expect(isGitContextErrorResponse(error.toResponse())).toBe(true);
   });
 });
+
+function emptyRunWorkState() {
+  return {
+    status: "not_done" as const,
+    summary: "",
+    openWork: [],
+    blockers: [],
+    facts: [],
+    evidence: [],
+    artifacts: [],
+    nextStep: null,
+    userInputNeeded: [],
+  };
+}

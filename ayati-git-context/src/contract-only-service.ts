@@ -11,6 +11,8 @@ import {
   type CreateTaskResponse,
   type EnsureActiveSessionRequest,
   type EnsureActiveSessionResponse,
+  type FinalizeSessionRunRequest,
+  type FinalizeSessionRunResponse,
   type FinalizeTaskRunRequest,
   type FinalizeTaskRunResponse,
   type GetActiveContextRequest,
@@ -93,6 +95,12 @@ export class ContractOnlyGitContextService implements GitContextService {
   }
 
   async finalizeTaskRun(_input: FinalizeTaskRunRequest): Promise<FinalizeTaskRunResponse> {
+    throw notReady();
+  }
+
+  async finalizeSessionRun(
+    _input: FinalizeSessionRunRequest,
+  ): Promise<FinalizeSessionRunResponse> {
     throw notReady();
   }
 
