@@ -111,7 +111,7 @@ export const searchInFilesTool: ToolDefinition = {
     domain: "filesystem-search",
     priority: 35,
   },
-  async execute(input): Promise<ToolResult> {
+  async execute(input, context): Promise<ToolResult> {
     const parsed = validateSearchInFilesInput(input);
     if ("ok" in parsed) return parsed;
 
@@ -122,7 +122,7 @@ export const searchInFilesTool: ToolDefinition = {
     const includeHidden = parsed.includeHidden ?? false;
     const caseSensitive = parsed.caseSensitive ?? false;
     const contextLines = Math.max(0, Math.min(parsed.contextLines ?? DEFAULT_CONTEXT_LINES, MAX_CONTEXT_LINES));
-    const roots = resolveWorkspaceRoots(parsed.roots);
+    const roots = resolveWorkspaceRoots(parsed.roots, context?.resourceScope?.rootPath);
     const start = Date.now();
 
     const searchedRoots: string[] = [];

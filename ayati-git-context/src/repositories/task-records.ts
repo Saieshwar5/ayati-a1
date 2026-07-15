@@ -1,4 +1,4 @@
-import { join } from "node:path";
+import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import type {
   CreateTaskRequest,
   TaskCatalogEntry,
@@ -6,10 +6,12 @@ import type {
   TaskStatus,
 } from "../contracts.js";
 import type { ContextDatabase } from "../database/database.js";
+import { GitContextServiceError } from "../errors.js";
 
 interface TaskRow {
   task_id: string;
   repository_path: string;
+  working_path: string;
   durable_branch: string;
   head_sha: string | null;
   title_cache: string;
@@ -23,6 +25,7 @@ interface TaskRow {
 export interface TaskInitializationRecord {
   taskId: string;
   repositoryPath: string;
+  workingPath: string;
   branch: string;
   head: string | null;
   title: string;
@@ -38,6 +41,7 @@ export function allocateTask(
   dataRoot: string,
   input: CreateTaskRequest,
   normalized: { title: string; objective: string },
+  workspaceRoot: string = join(dataRoot, "workspace"),
 ): TaskInitializationRecord {
   const datePart = input.sessionId.match(/^S-(\d{8})-/)?.[1]
     ?? input.at.slice(0, 10).replaceAll("-", "");
@@ -52,14 +56,30 @@ export function allocateTask(
     "tasks",
     taskId + "-" + taskSlug(normalized.title) + ".git",
   );
+  const workingPath = input.placement.mode === "requested"
+    ? resolveTaskWorkingDirectory(workspaceRoot, input.placement.workingDirectory)
+    : join(workspaceRoot, "tasks", taskId + "-" + taskSlug(normalized.title));
+  const owner = findOverlappingTaskRoot(database, workingPath);
+  if (owner) {
+    throw new GitContextServiceError({
+      code: "INVALID_REQUEST",
+      message: "The requested working directory overlaps an existing task root.",
+      details: {
+        workingDirectory: workingPath,
+        taskId: owner.task_id,
+        existingWorkingDirectory: owner.working_path,
+      },
+    });
+  }
   database.prepare([
     "INSERT INTO tasks(",
-    "task_id, repository_path, durable_branch, head_sha, title_cache, objective_cache,",
+    "task_id, repository_path, working_path, durable_branch, head_sha, title_cache, objective_cache,",
     "status, created_session_id, created_at, updated_at",
-    ") VALUES (?, ?, 'main', NULL, ?, ?, 'initializing', ?, ?, ?)",
+    ") VALUES (?, ?, ?, 'main', NULL, ?, ?, 'initializing', ?, ?, ?)",
   ].join(" ")).run(
     taskId,
     repositoryPath,
+    workingPath,
     normalized.title,
     normalized.objective,
     input.sessionId,
@@ -71,6 +91,28 @@ export function allocateTask(
     throw new Error("Allocated task could not be read: " + taskId);
   }
   return task;
+}
+
+function findOverlappingTaskRoot(
+  database: ContextDatabase,
+  workingPath: string,
+): { task_id: string; working_path: string } | undefined {
+  const tasks = database.prepare(
+    "SELECT task_id, working_path FROM tasks WHERE working_path IS NOT NULL",
+  ).all() as unknown as Array<{ task_id: string; working_path: string }>;
+  return tasks.find((task) => pathsOverlap(workingPath, task.working_path));
+}
+
+function pathsOverlap(left: string, right: string): boolean {
+  const resolvedLeft = resolve(left);
+  const resolvedRight = resolve(right);
+  return isWithinPath(resolvedLeft, resolvedRight)
+    || isWithinPath(resolvedRight, resolvedLeft);
+}
+
+function isWithinPath(parent: string, candidate: string): boolean {
+  const path = relative(parent, candidate);
+  return path === "" || (path !== ".." && !path.startsWith(".." + sep) && !isAbsolute(path));
 }
 
 export function readTaskInitialization(
@@ -119,6 +161,26 @@ export function readTaskCatalogEntry(
   return catalogEntry(row);
 }
 
+export function readTaskCatalogEntries(
+  database: ContextDatabase,
+  input: { query?: string; limit: number },
+): TaskCatalogEntry[] {
+  const query = input.query?.trim().toLowerCase();
+  const rows = query
+    ? database.prepare([
+        taskSelect(),
+        "WHERE status = 'active' AND (lower(title_cache) LIKE ? OR lower(objective_cache) LIKE ? OR lower(working_path) LIKE ?)",
+        "ORDER BY updated_at DESC, task_id DESC LIMIT ?",
+      ].join(" ")).all("%" + query + "%", "%" + query + "%", "%" + query + "%", input.limit)
+    : database.prepare([
+        taskSelect(),
+        "WHERE status = 'active' ORDER BY updated_at DESC, task_id DESC LIMIT ?",
+      ].join(" ")).all(input.limit);
+  return (rows as unknown as TaskRow[])
+    .filter((row) => Boolean(row.head_sha))
+    .map(catalogEntry);
+}
+
 export function updateTaskHead(
   database: ContextDatabase,
   taskId: string,
@@ -147,7 +209,7 @@ function readTaskRow(database: ContextDatabase, taskId: string): TaskRow | undef
 function taskSelect(): string {
   return [
     "SELECT task_id, repository_path, durable_branch, head_sha, title_cache,",
-    "objective_cache, status, created_session_id, created_at, updated_at FROM tasks",
+    "working_path, objective_cache, status, created_session_id, created_at, updated_at FROM tasks",
   ].join(" ");
 }
 
@@ -155,6 +217,7 @@ function initializationRecord(row: TaskRow): TaskInitializationRecord {
   return {
     taskId: row.task_id,
     repositoryPath: row.repository_path,
+    workingPath: row.working_path,
     branch: row.durable_branch,
     head: row.head_sha,
     title: row.title_cache,
@@ -173,6 +236,7 @@ function catalogEntry(row: TaskRow): TaskCatalogEntry {
   const task: TaskRef = {
     taskId: row.task_id,
     repositoryPath: row.repository_path,
+    workingPath: row.working_path,
     branch: row.durable_branch,
     head: row.head_sha,
   };
@@ -185,6 +249,21 @@ function catalogEntry(row: TaskRow): TaskCatalogEntry {
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
+}
+
+export function resolveTaskWorkingDirectory(workspaceRoot: string, value: string): string {
+  const normalized = value.trim().replaceAll("\\", "/");
+  const workspaceRelative = normalized.replace(/^(?:workspace|work_space)\//, "");
+  const result = isAbsolute(normalized)
+    ? resolve(normalized)
+    : resolve(workspaceRoot, workspaceRelative);
+  if (result === resolve(workspaceRoot)) {
+    throw new GitContextServiceError({
+      code: "INVALID_REQUEST",
+      message: "A task must use a bounded directory inside or outside the workspace, not the workspace root itself.",
+    });
+  }
+  return result;
 }
 
 function taskSlug(title: string): string {

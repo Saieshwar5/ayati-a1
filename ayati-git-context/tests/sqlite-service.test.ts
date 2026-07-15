@@ -146,6 +146,7 @@ describe("SQLite Git Context service", () => {
       expectedHead: session.session.head ?? undefined,
       title: "Coffee Shop Website",
       objective: "Build a responsive coffee-shop website with a menu and reservations.",
+      placement: { mode: "managed" as const },
       at: "2026-07-12T09:05:00+05:30",
     };
 
@@ -190,6 +191,99 @@ describe("SQLite Git Context service", () => {
     });
   });
 
+  it("uses the user-requested directory as the stable task working checkout", async () => {
+    const directory = await createTemporaryDirectory();
+    const workspaceRoot = join(directory, "workspace");
+    const database = await ContextDatabase.open({ path: join(directory, "context.db") });
+    const service = new SqliteGitContextService({
+      database,
+      dataRoot: join(workspaceRoot, ".ayati-context"),
+      workspaceRoot,
+      now: () => "2026-07-12T09:00:00+05:30",
+    });
+    services.push(service);
+    const session = await ensureSession(service);
+
+    const task = await service.createTask({
+      requestId: "REQ-requested-working-directory",
+      sessionId: session.session.sessionId,
+      title: "Aurora Coffee Website",
+      objective: "Create the website in the requested workspace directory.",
+      placement: { mode: "requested", workingDirectory: "workspace/aurora-coffee-site" },
+      at: "2026-07-12T09:05:00+05:30",
+    });
+    const mounted = await service.mountTask({
+      requestId: "REQ-requested-working-directory-mount",
+      sessionId: session.session.sessionId,
+      taskId: task.task.taskId,
+      expectedTaskHead: task.task.head,
+      at: "2026-07-12T09:05:01+05:30",
+    });
+
+    expect(task.task.workingPath).toBe(join(workspaceRoot, "aurora-coffee-site"));
+    expect(mounted.mount.workingPath).toBe(task.task.workingPath);
+    expect(mounted.mount.checkoutPath).not.toBe(mounted.mount.workingPath);
+    expect(await git(task.task.workingPath, ["rev-parse", "HEAD"])).toBe(task.task.head);
+    expect(await git(task.task.workingPath, ["remote", "get-url", "origin"]))
+      .toBe(task.task.repositoryPath);
+    expect(await readFile(join(task.task.workingPath, ".ayati", "task.md"), "utf8"))
+      .toContain("Task: " + task.task.taskId);
+  });
+
+  it("rejects requested task roots that overlap an existing task root", async () => {
+    const directory = await createTemporaryDirectory();
+    const workspaceRoot = join(directory, "workspace");
+    const database = await ContextDatabase.open({ path: join(directory, "context.db") });
+    const service = new SqliteGitContextService({
+      database,
+      dataRoot: join(workspaceRoot, ".ayati-context"),
+      workspaceRoot,
+      now: () => "2026-07-12T09:00:00+05:30",
+    });
+    services.push(service);
+    const session = await ensureSession(service);
+
+    await service.createTask({
+      requestId: "REQ-overlap-parent",
+      sessionId: session.session.sessionId,
+      title: "Parent Website",
+      objective: "Own the complete website directory.",
+      placement: { mode: "requested", workingDirectory: "workspace/site" },
+      at: "2026-07-12T09:05:00+05:30",
+    });
+    await expect(service.createTask({
+      requestId: "REQ-overlap-child",
+      sessionId: session.session.sessionId,
+      title: "Nested Website Task",
+      objective: "Attempt to own a nested task directory.",
+      placement: { mode: "requested", workingDirectory: "workspace/site/subtask" },
+      at: "2026-07-12T09:06:00+05:30",
+    })).rejects.toMatchObject({
+      code: "INVALID_REQUEST",
+      message: expect.stringContaining("overlaps an existing task root"),
+    });
+
+    await service.createTask({
+      requestId: "REQ-overlap-child-first",
+      sessionId: session.session.sessionId,
+      title: "Independent Nested Root",
+      objective: "Own a separate nested directory first.",
+      placement: { mode: "requested", workingDirectory: "workspace/other/subtask" },
+      at: "2026-07-12T09:07:00+05:30",
+    });
+    await expect(service.createTask({
+      requestId: "REQ-overlap-parent-second",
+      sessionId: session.session.sessionId,
+      title: "Overlapping Parent Root",
+      objective: "Attempt to own the parent of an existing task.",
+      placement: { mode: "requested", workingDirectory: "workspace/other" },
+      at: "2026-07-12T09:08:00+05:30",
+    })).rejects.toMatchObject({
+      code: "INVALID_REQUEST",
+      message: expect.stringContaining("overlaps an existing task root"),
+    });
+  });
+
   it("allocates stable daily task sequences and safe repository slugs", async () => {
     const { service } = await createService();
     const session = await ensureSession(service);
@@ -198,6 +292,7 @@ describe("SQLite Git Context service", () => {
       sessionId: session.session.sessionId,
       title: "Coffee Shop Website",
       objective: "Build the coffee-shop website.",
+      placement: { mode: "managed" },
       at: "2026-07-12T09:05:00+05:30",
     });
     const second = await service.createTask({
@@ -205,6 +300,7 @@ describe("SQLite Git Context service", () => {
       sessionId: session.session.sessionId,
       title: "AI Notes / Research",
       objective: "Maintain research about AI agent memory.",
+      placement: { mode: "managed" },
       at: "2026-07-12T09:06:00+05:30",
     });
 
@@ -229,6 +325,7 @@ describe("SQLite Git Context service", () => {
       sessionId: session.session.sessionId,
       title: "Crash Recovery Task",
       objective: "Prove task creation resumes after process interruption.",
+      placement: { mode: "managed" as const },
       at: "2026-07-12T09:07:00+05:30",
     };
     beginRecoverableIdempotent({
@@ -284,6 +381,7 @@ describe("SQLite Git Context service", () => {
       sessionId: session.session.sessionId,
       title: "Evolving Task",
       objective: "Keep durable task context current across runs.",
+      placement: { mode: "managed" },
       at: "2026-07-12T09:08:00+05:30",
     });
     const checkoutRoot = await createTemporaryDirectory();
@@ -328,6 +426,7 @@ describe("SQLite Git Context service", () => {
       sessionId: session.session.sessionId,
       title: "Head Verification",
       objective: "Verify catalog and repository identity agree.",
+      placement: { mode: "managed" },
       at: "2026-07-12T09:08:00+05:30",
     });
     database.prepare(
@@ -368,6 +467,21 @@ describe("SQLite Git Context service", () => {
     expect(assistant.conversation.conversationId).toBe(
       firstUser.conversation.conversationId,
     );
+    expect(firstUser.message).toMatchObject({
+      messageId: session.session.sessionId + "-M-000001",
+      sessionSequence: 1,
+      segmentSequence: 1,
+    });
+    expect(assistant.message).toMatchObject({
+      messageId: session.session.sessionId + "-M-000002",
+      sessionSequence: 2,
+      segmentSequence: 2,
+    });
+    expect(secondUser.message).toMatchObject({
+      messageId: session.session.sessionId + "-M-000003",
+      sessionSequence: 3,
+      segmentSequence: 1,
+    });
     expect(secondUser.conversation).toMatchObject({
       sequence: 2,
       status: "active",
@@ -387,12 +501,12 @@ describe("SQLite Git Context service", () => {
     expect(context.session?.pendingConversationContext).toMatchObject([
       {
         messages: [
-          { sequence: 1, role: "user", content: "hello" },
-          { sequence: 2, role: "assistant", content: "hello back" },
+          { sequence: 1, sessionSequence: 1, role: "user", content: "hello" },
+          { sequence: 2, sessionSequence: 2, role: "assistant", content: "hello back" },
         ],
       },
       {
-        messages: [{ sequence: 1, role: "user", content: "new turn" }],
+        messages: [{ sequence: 1, sessionSequence: 3, role: "user", content: "new turn" }],
       },
     ]);
     expect(context.session?.pendingDigest).toMatch(/^sha256:[a-f0-9]{64}$/);
@@ -411,6 +525,55 @@ describe("SQLite Git Context service", () => {
     )).rejects.toMatchObject({ code: "ENOENT" });
     expect(await git(repositoryPath, ["rev-list", "--count", "HEAD"])).toBe("1");
     expect(await git(repositoryPath, ["status", "--short"])).toBe("");
+  });
+
+  it("advances the authoritative context revision at every durable boundary", async () => {
+    const { service } = await createService();
+    const session = await ensureSession(service);
+    const initial = await service.getActiveContext({ sessionId: session.session.sessionId });
+    expect(initial.contextRevision).toMatch(/^sha256:[a-f0-9]{64}$/);
+    expect(await service.getActiveContext({ sessionId: session.session.sessionId })).toBe(initial);
+
+    const conversation = await service.appendConversation({
+      requestId: "REQ-revision-message",
+      sessionId: session.session.sessionId,
+      role: "user",
+      content: "Inspect the current implementation.",
+      at: "2026-07-12T09:03:00+05:30",
+    });
+    const afterConversation = await service.getActiveContext({
+      sessionId: session.session.sessionId,
+    });
+    expect(afterConversation.contextRevision).not.toBe(initial.contextRevision);
+
+    const run = await service.startRun({
+      requestId: "REQ-revision-run",
+      sessionId: session.session.sessionId,
+      conversationId: conversation.conversation.conversationId,
+      trigger: "user",
+      workState: emptyRunWorkState(),
+      at: "2026-07-12T09:03:01+05:30",
+    });
+    const afterRun = await service.getActiveContext({ sessionId: session.session.sessionId });
+    expect(afterRun.contextRevision).not.toBe(afterConversation.contextRevision);
+
+    await service.recordRunStep({
+      requestId: "REQ-revision-step",
+      sessionId: session.session.sessionId,
+      runId: run.run.runId,
+      step: 1,
+      tool: "read_files",
+      toolEffect: "read_only",
+      purpose: "Read source context.",
+      status: "completed",
+      output: { files: [] },
+      verification: { passed: true },
+      workState: { ...emptyRunWorkState(), summary: "Source context inspected." },
+      at: "2026-07-12T09:03:02+05:30",
+    });
+    const afterStep = await service.getActiveContext({ sessionId: session.session.sessionId });
+    expect(afterStep.contextRevision).not.toBe(afterRun.contextRevision);
+    expect(afterStep.run?.workState.revision).toBe(1);
   });
 
   it("recovers a journaled conversation append without duplicating it", async () => {
@@ -435,9 +598,7 @@ describe("SQLite Git Context service", () => {
       operation: "append_conversation",
       payload: input,
       now: input.at,
-      execute: () => ({
-        conversation: appendConversationMessage(firstDatabase, input),
-      }),
+      execute: () => appendConversationMessage(firstDatabase, input),
     });
     await firstService.close();
 
@@ -459,6 +620,11 @@ describe("SQLite Git Context service", () => {
     ), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
     await expect(secondService.appendConversation(input)).resolves.toMatchObject({
       conversation: { sequence: 1 },
+      message: {
+        messageId: session.session.sessionId + "-M-000001",
+        sessionSequence: 1,
+        segmentSequence: 1,
+      },
     });
     expect(secondDatabase.prepare(
       "SELECT COUNT(*) AS count FROM messages WHERE session_id = ?",
@@ -652,6 +818,15 @@ describe("SQLite Git Context service", () => {
       verification: { passed: true },
     }]);
     expect(restored.run?.workState).toEqual(step.workState);
+    expect(restored.readContext).toMatchObject({
+      entries: [{
+        runId: run.run.runId,
+        step: 1,
+        tool: "read_files",
+        resources: ["src/index.ts"],
+        output: { content: "complete source text" },
+      }],
+    });
     expect(secondDatabase.prepare([
       "SELECT content FROM messages WHERE conversation_id = ?",
     ].join(" ")).get(conversation.conversation.conversationId)).toMatchObject({
@@ -740,6 +915,10 @@ describe("SQLite Git Context service", () => {
     };
     const finalized = await service.finalizeSessionRun(finalizationInput);
     await expect(service.finalizeSessionRun(finalizationInput)).resolves.toEqual(finalized);
+    expect(database.prepare([
+      "SELECT COUNT(*) AS count FROM messages",
+      "WHERE conversation_id = ? AND role = 'assistant'",
+    ].join(" ")).get(conversation.conversation.conversationId)).toEqual({ count: 1 });
 
     const runFile = JSON.parse(await readFile(
       join(session.session.repositoryPath, finalized.runFile),
@@ -777,8 +956,20 @@ describe("SQLite Git Context service", () => {
       .toBe("1");
     expect(await git(session.session.repositoryPath, ["diff", "--cached", "--name-only"]))
       .toBe("");
-    expect((await service.getActiveContext({ sessionId: session.session.sessionId })).run)
-      .toBeUndefined();
+    const completedContext = await service.getActiveContext({
+      sessionId: session.session.sessionId,
+    });
+    expect(completedContext.run).toBeUndefined();
+    expect(completedContext.readContext).toMatchObject({
+      entries: [{
+        runId: run.run.runId,
+        step: 1,
+        runClass: "session",
+        tool: "read_files",
+        resources: ["src/index.ts"],
+        output: { files: [{ path: "src/index.ts", content: completeText }] },
+      }],
+    });
     expect(step.workState.revision).toBe(1);
   });
 
@@ -812,6 +1003,321 @@ describe("SQLite Git Context service", () => {
       },
       at: "2026-07-12T09:20:02+05:30",
     })).rejects.toMatchObject({ code: "INVALID_REQUEST" });
+  });
+
+  it("creates, mounts, runs, and finalizes a task through one high-level selection", async () => {
+    const { service, database } = await createService();
+    const session = await ensureSession(service);
+    const conversation = await service.appendConversation({
+      requestId: "REQ-task-run-message",
+      sessionId: session.session.sessionId,
+      role: "user",
+      content: "Create a small research task.",
+      at: "2026-07-12T09:30:00+05:30",
+    });
+
+    const selected = await service.createTaskRun({
+      requestId: "REQ-task-run-create",
+      sessionId: session.session.sessionId,
+      conversationId: conversation.conversation.conversationId,
+      trigger: "user",
+      workState: emptyRunWorkState(),
+      title: "Small Research Task",
+      objective: "Keep a durable research note.",
+      placement: { mode: "managed" },
+      at: "2026-07-12T09:30:01+05:30",
+    });
+    const retried = await service.createTaskRun({
+      requestId: "REQ-task-run-create",
+      sessionId: session.session.sessionId,
+      conversationId: conversation.conversation.conversationId,
+      trigger: "user",
+      workState: emptyRunWorkState(),
+      title: "Small Research Task",
+      objective: "Keep a durable research note.",
+      placement: { mode: "managed" },
+      at: "2026-07-12T09:30:01+05:30",
+    });
+
+    expect(selected).toMatchObject({
+      taskCreated: true,
+      mountCreated: true,
+      runPromoted: false,
+      run: { runClass: "task", taskId: "W-20260712-0001" },
+      context: {
+        title: "Small Research Task",
+        objective: "Keep a durable research note.",
+      },
+    });
+    expect(selected.mount.checkoutPath).toContain("tasks/W-20260712-0001");
+    expect(retried).toEqual(selected);
+    expect((await service.getActiveContext({ sessionId: session.session.sessionId })).activeTask)
+      .toMatchObject({ task: { taskId: selected.task.taskId } });
+
+    await service.recordRunStep({
+      requestId: "REQ-task-run-read",
+      sessionId: session.session.sessionId,
+      runId: selected.run.runId,
+      step: 1,
+      tool: "read_files",
+      toolEffect: "read_only",
+      purpose: "Read the task descriptor before finalization.",
+      status: "completed",
+      input: { files: [{ path: ".ayati/task.md", mode: "full" }] },
+      output: { files: [{ path: ".ayati/task.md", content: "Task descriptor" }] },
+      verification: { passed: true, artifacts: [".ayati/task.md"] },
+      workState: { ...emptyRunWorkState(), summary: "Task descriptor inspected." },
+      at: "2026-07-12T09:30:01.500+05:30",
+    });
+    expect((await service.getActiveContext({ sessionId: session.session.sessionId }))
+      .readContext?.entries).toEqual([
+      expect.objectContaining({
+        runId: selected.run.runId,
+        runClass: "task",
+        tool: "read_files",
+        resources: [".ayati/task.md"],
+      }),
+    ]);
+
+    const finalized = await service.finalizeTaskRun({
+      requestId: "REQ-task-run-finalize",
+      sessionId: session.session.sessionId,
+      runId: selected.run.runId,
+      taskId: selected.task.taskId,
+      outcome: "done",
+      conversationSummary: "Created the durable research task.",
+      summary: "The research task is ready for future work.",
+      validation: "passed",
+      completion: {
+        accepted: true,
+        assets: [],
+        missing: [],
+        failures: [],
+        criteria: [{ criterion: "Task repository exists", passed: true }],
+      },
+      assistantResponse: "The research task is ready.",
+      at: "2026-07-12T09:30:02+05:30",
+    });
+    const active = await service.getActiveContext({ sessionId: session.session.sessionId });
+    const finalWorkState = database.prepare([
+      "SELECT status, summary, open_work_json, blockers_json, next_step",
+      "FROM run_work_state WHERE run_id = ?",
+    ].join(" ")).get(selected.run.runId) as {
+      status: string;
+      summary: string;
+      open_work_json: string;
+      blockers_json: string;
+      next_step: string | null;
+    };
+
+    expect(finalized.taskHeadBefore).not.toBe(finalized.taskHeadAfter);
+    expect(finalWorkState).toEqual({
+      status: "done",
+      summary: "The research task is ready for future work.",
+      open_work_json: "[]",
+      blockers_json: "[]",
+      next_step: null,
+    });
+    expect(await git(selected.task.repositoryPath, ["rev-list", "--count", "main"])).toBe("2");
+    expect(active.run).toBeUndefined();
+    expect(active.activeTask).toBeUndefined();
+    expect(active.readContext).toMatchObject({
+      afterTaskRunId: selected.run.runId,
+      entries: [],
+    });
+    expect(active.taskCandidates).toEqual(expect.arrayContaining([
+      expect.objectContaining({ taskId: selected.task.taskId, title: "Small Research Task" }),
+    ]));
+
+    const continuationConversation = await service.appendConversation({
+      requestId: "REQ-task-run-continuation-message",
+      sessionId: session.session.sessionId,
+      role: "user",
+      content: "Continue the research task.",
+      at: "2026-07-12T09:30:03+05:30",
+    });
+    const continuation = await service.activateTaskRun({
+      requestId: "REQ-task-run-continuation",
+      sessionId: session.session.sessionId,
+      conversationId: continuationConversation.conversation.conversationId,
+      trigger: "user",
+      workState: emptyRunWorkState(),
+      taskId: selected.task.taskId,
+      at: "2026-07-12T09:30:04+05:30",
+    });
+    expect(continuation.context).toMatchObject({
+      title: "Small Research Task",
+      summary: "The research task is ready for future work.",
+      taskStatus: "done",
+      latestOutcome: "done",
+      validation: "passed",
+      recentCommits: expect.arrayContaining([expect.objectContaining({
+        taskState: "The research task is ready for future work.",
+        taskStatus: "done",
+        runId: selected.run.runId,
+        stateVersion: 1,
+      })]),
+    });
+  });
+
+  it("promotes an existing read-only session run when an existing task is activated", async () => {
+    const { service } = await createService();
+    const session = await ensureSession(service);
+    const task = await service.createTask({
+      requestId: "REQ-existing-task",
+      sessionId: session.session.sessionId,
+      title: "Existing Task",
+      objective: "Continue this task after inspecting context.",
+      placement: { mode: "managed" },
+      at: "2026-07-12T09:40:00+05:30",
+    });
+    const conversation = await service.appendConversation({
+      requestId: "REQ-promote-message",
+      sessionId: session.session.sessionId,
+      role: "user",
+      content: "Continue the existing task.",
+      at: "2026-07-12T09:40:01+05:30",
+    });
+    const sessionRun = await service.startRun({
+      requestId: "REQ-promote-session-run",
+      sessionId: session.session.sessionId,
+      conversationId: conversation.conversation.conversationId,
+      trigger: "user",
+      workState: emptyRunWorkState(),
+      at: "2026-07-12T09:40:02+05:30",
+    });
+    await service.recordRunStep({
+      requestId: "REQ-promote-step",
+      sessionId: session.session.sessionId,
+      runId: sessionRun.run.runId,
+      step: 1,
+      tool: "read_files",
+      toolEffect: "read_only",
+      purpose: "Inspect context before selecting task ownership.",
+      status: "completed",
+      input: { paths: ["README.md"] },
+      output: { files: [] },
+      verification: { passed: true },
+      workState: { ...emptyRunWorkState(), summary: "Task context inspected." },
+      at: "2026-07-12T09:40:03+05:30",
+    });
+
+    const activated = await service.activateTaskRun({
+      requestId: "REQ-promote-activate",
+      sessionId: session.session.sessionId,
+      conversationId: conversation.conversation.conversationId,
+      runId: sessionRun.run.runId,
+      trigger: "user",
+      workState: emptyRunWorkState(),
+      taskId: task.task.taskId,
+      at: "2026-07-12T09:40:04+05:30",
+    });
+
+    expect(activated.runPromoted).toBe(true);
+    expect(activated.run.runId).toBe(sessionRun.run.runId);
+    expect(activated.run).toMatchObject({ runClass: "task", taskId: task.task.taskId });
+    expect(activated.context.checkoutPath).toBe(activated.mount.workingPath);
+    expect(activated.context.workingDirectory).toBe(activated.mount.workingPath);
+    expect((await service.getActiveContext({ sessionId: session.session.sessionId }))
+      .readContext?.entries).toEqual([
+      expect.objectContaining({
+        runId: sessionRun.run.runId,
+        runClass: "task",
+        tool: "read_files",
+        resources: ["README.md"],
+      }),
+    ]);
+  });
+
+  it("replaces repeated reads and invalidates only resources changed before commit", async () => {
+    const { service } = await createService();
+    const session = await ensureSession(service);
+    const conversation = await service.appendConversation({
+      requestId: "REQ-read-window-message",
+      sessionId: session.session.sessionId,
+      role: "user",
+      content: "Inspect and update the task files.",
+      at: "2026-07-12T09:45:00+05:30",
+    });
+    const selected = await service.createTaskRun({
+      requestId: "REQ-read-window-task",
+      sessionId: session.session.sessionId,
+      conversationId: conversation.conversation.conversationId,
+      trigger: "user",
+      workState: emptyRunWorkState(),
+      title: "Read Window Test",
+      objective: "Exercise deterministic read context lifecycle.",
+      placement: { mode: "managed" },
+      at: "2026-07-12T09:45:01+05:30",
+    });
+    const record = async (input: {
+      requestId: string;
+      step: number;
+      toolEffect: "read_only" | "mutating";
+      purpose: string;
+      input: unknown;
+      output: unknown;
+      verification: unknown;
+    }) => await service.recordRunStep({
+      ...input,
+      sessionId: session.session.sessionId,
+      runId: selected.run.runId,
+      tool: input.toolEffect === "read_only" ? "read_files" : "write_files",
+      status: "completed",
+      workState: emptyRunWorkState(),
+      at: `2026-07-12T09:45:0${input.step + 1}+05:30`,
+    });
+
+    await record({
+      requestId: "REQ-read-window-1",
+      step: 1,
+      toolEffect: "read_only",
+      purpose: "Read requirements.",
+      input: { files: [{ path: "requirements.md" }] },
+      output: { files: [{ path: "requirements.md", content: "version one" }] },
+      verification: { passed: true, artifacts: ["requirements.md"] },
+    });
+    await record({
+      requestId: "REQ-read-window-2",
+      step: 2,
+      toolEffect: "read_only",
+      purpose: "Read current source.",
+      input: { files: [{ path: "src/index.ts" }] },
+      output: { files: [{ path: "src/index.ts", content: "old source" }] },
+      verification: { passed: true, artifacts: ["src/index.ts"] },
+    });
+    await record({
+      requestId: "REQ-read-window-3",
+      step: 3,
+      toolEffect: "read_only",
+      purpose: "Refresh requirements.",
+      input: { files: [{ path: "requirements.md" }] },
+      output: { files: [{ path: "requirements.md", content: "version two" }] },
+      verification: { passed: true, artifacts: ["requirements.md"] },
+    });
+    expect((await service.getActiveContext({ sessionId: session.session.sessionId }))
+      .readContext?.entries).toEqual([
+      expect.objectContaining({
+        step: 3,
+        resources: ["requirements.md"],
+        output: { files: [{ path: "requirements.md", content: "version two" }] },
+      }),
+      expect.objectContaining({ step: 2, resources: ["src/index.ts"] }),
+    ]);
+
+    await record({
+      requestId: "REQ-read-window-4",
+      step: 4,
+      toolEffect: "mutating",
+      purpose: "Update current source.",
+      input: { files: [{ path: "src/index.ts", content: "new source" }] },
+      output: { files: [{ path: "src/index.ts" }] },
+      verification: { passed: true, artifacts: ["src/index.ts"] },
+    });
+    expect((await service.getActiveContext({ sessionId: session.session.sessionId }))
+      .readContext?.entries).toEqual([
+      expect.objectContaining({ step: 3, resources: ["requirements.md"] }),
+    ]);
   });
 
   it("requires rollover before creating a different daily session", async () => {

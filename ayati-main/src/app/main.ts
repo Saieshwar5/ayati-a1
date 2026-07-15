@@ -30,15 +30,15 @@ import imageGenerationProvider from "../image-generation/runtime/index.js";
 import type { AgentUiContext } from "../ui/context.js";
 import type { WorkspaceInteractionEvent } from "../ui/workspace-orchestrator.js";
 import { createAgentFeedbackLedgerFromEnv } from "../ivec/feedback-ledger.js";
-import {
-  createGitMemoryRuntime,
-  ProviderTaskRunSessionUpdateGenerator,
-} from "../context-engine/index.js";
-import { createGitMemoryChatContextRuntime } from "./git-memory-chat-context-runtime.js";
-import { createGitMemorySystemEventContextRuntime } from "./git-memory-system-event-context-runtime.js";
+import { createGitContextRuntime } from "./git-context-runtime.js";
+import { startManagedGitContextProcess } from "./git-context-process.js";
 import { createChatTurnRuntime } from "./chat-turn-runtime.js";
 import { createSystemEventRuntime } from "./system-event-runtime.js";
 import { ensureWorkspaceRoot } from "../skills/workspace-paths.js";
+import {
+  createHarnessGitContextObserver,
+  recordGitContextObservabilityEvent,
+} from "./git-context-observability.js";
 
 const thisDir = dirname(fileURLToPath(import.meta.url));
 const projectRoot = resolve(thisDir, "..", "..");
@@ -156,13 +156,18 @@ export async function main(): Promise<void> {
   });
   content.workspaceFocusWatcher.start();
 
-  const gitMemoryRuntime = createGitMemoryRuntime({
-    contextStoreDir: runtimeConfig.gitContext.storeDir,
+  const gitContextProcess = await startManagedGitContextProcess({
+    ...runtimeConfig.gitContext,
+    onObservabilityEvent: (event) => recordGitContextObservabilityEvent(feedbackLedger, event),
+  });
+  const gitContextService = gitContextProcess;
+  const gitContextRuntime = createGitContextRuntime({
+    service: gitContextService,
     timezone: runtimeConfig.gitContext.timezone,
     agentId: runtimeConfig.gitContext.agentId,
-    taskRunSessionUpdateGenerator: new ProviderTaskRunSessionUpdateGenerator({ provider }),
+    observer: createHarnessGitContextObserver(feedbackLedger),
   });
-  await gitMemoryRuntime.openDailySession();
+  await gitContextRuntime.warmActiveContext();
 
   const skills = await createSkillRuntime({
     projectRoot,
@@ -176,7 +181,7 @@ export async function main(): Promise<void> {
     directoryLibrary: content.directoryLibrary,
     workspaceOrchestrator: content.workspaceOrchestrator,
     config: runtimeConfig,
-    gitMemoryRuntime,
+    gitContextService,
   });
 
   staticContext = await loadStaticContext({
@@ -184,8 +189,8 @@ export async function main(): Promise<void> {
     toolDefinitions: skills.runtimeToolDefs,
   });
   appendSkillBlocks(staticContext, skills.additionalSkills);
-  const chatContextRuntime = createGitMemoryChatContextRuntime({ gitMemoryRuntime });
-  const systemEventContextRuntime = createGitMemorySystemEventContextRuntime({ gitMemoryRuntime });
+  const chatContextRuntime = gitContextRuntime;
+  const systemEventContextRuntime = gitContextRuntime;
   const chatTurnRuntime = createChatTurnRuntime({
     onReply: (clientId, data) => {
       wsServer.send(clientId, data);
@@ -289,20 +294,26 @@ export async function main(): Promise<void> {
 
   console.log(`Ayati i-vec ready — plugins: [${registry.list().join(", ")}]`);
 
-  const shutdown = async (): Promise<void> => {
-    content?.workspaceFocusWatcher.stop();
-    await registry.stopAll(pluginRuntimeContext);
-    await pulseScheduler.stop();
-    pulseStore.close();
-    await uploadServer.stop();
-    await wsServer.stop();
-    await systemEventWorker.stop();
-    inboundQueueStore.stop();
-    await memory.stop();
-    await embeddingProvider.stop();
-    await imageGenerationProvider.stop();
-    await engine.stop();
-    await feedbackLedger.close();
+  let shutdownPromise: Promise<void> | undefined;
+  const shutdown = (): Promise<void> => {
+    if (shutdownPromise) return shutdownPromise;
+    shutdownPromise = (async () => {
+      content?.workspaceFocusWatcher.stop();
+      await registry.stopAll(pluginRuntimeContext);
+      await pulseScheduler.stop();
+      pulseStore.close();
+      await uploadServer.stop();
+      await wsServer.stop();
+      await systemEventWorker.stop();
+      inboundQueueStore.stop();
+      await memory.stop();
+      await embeddingProvider.stop();
+      await imageGenerationProvider.stop();
+      await engine.stop();
+      await feedbackLedger.close();
+      await gitContextProcess.stop();
+    })();
+    return shutdownPromise;
   };
 
   process.on("SIGINT", () => void shutdown());

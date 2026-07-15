@@ -91,7 +91,7 @@ export const patchFilesTool: ToolDefinition = {
           properties: {
             path: {
               type: "string",
-              description: "Workspace-relative file path by default. Absolute paths outside the workspace require allowExternalPath=true.",
+              description: "File path. In a task run, use a path relative to the active task root and do not repeat the task directory name. Otherwise, relative paths use the workspace root.",
             },
             patches: {
               type: "array",
@@ -127,7 +127,7 @@ export const patchFilesTool: ToolDefinition = {
       },
       allowExternalPath: {
         type: "boolean",
-        description: "Allow patching absolute paths outside the configured workspace. Use only when the user explicitly requested those external paths.",
+        description: "Allow absolute paths outside the configured workspace for non-task work. Task runs ignore this flag and cannot escape the active task root.",
       },
     },
     additionalProperties: false,
@@ -220,7 +220,7 @@ export const patchFilesTool: ToolDefinition = {
     domain: "filesystem",
     priority: 6,
   },
-  async execute(input): Promise<ToolResult> {
+  async execute(input, context): Promise<ToolResult> {
     const parsed = validatePatchFilesInput(input);
     if ("ok" in parsed) return parsed;
 
@@ -230,6 +230,7 @@ export const patchFilesTool: ToolDefinition = {
       const resolved = resolveWorkspaceMutationPath(file.path, {
         allowExternalPath: parsed.allowExternalPath,
         operation: "patch_files",
+        root: context?.resourceScope?.rootPath,
       });
       if (!resolved.ok) return externalWorkspacePathError(resolved);
       resolvedFiles.push({

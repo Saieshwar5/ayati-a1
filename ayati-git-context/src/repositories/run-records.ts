@@ -105,6 +105,15 @@ export function startSessionRun(database: ContextDatabase, input: StartRunReques
   };
 }
 
+export function startTaskRun(
+  database: ContextDatabase,
+  input: StartRunRequest,
+  taskId: string,
+): RunRef {
+  const run = startSessionRun(database, input);
+  return bindActiveRunToTask(database, input.sessionId, run.runId, taskId);
+}
+
 export function readActiveRun(database: ContextDatabase, sessionId: string): RunRef | undefined {
   const row = database.prepare([
     "SELECT run_id, session_id, conversation_id, task_id, run_class",

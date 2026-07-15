@@ -4,7 +4,6 @@ export type FinalTaskRunCommitStatus = "committed" | "skipped" | "failed";
 
 export interface ScheduleChatTaskRunFinalizationInput {
   key: string;
-  persistAssistant: () => Promise<boolean>;
   finalize: () => Promise<FinalTaskRunCommitStatus>;
   recover: (error: unknown) => Promise<void>;
   onScheduled?: () => void;
@@ -19,10 +18,7 @@ export class ChatTaskRunFinalizationScheduler {
     return this.coordinator.isPending(key);
   }
 
-  async schedule(input: ScheduleChatTaskRunFinalizationInput): Promise<boolean> {
-    if (!await input.persistAssistant()) {
-      return false;
-    }
+  schedule(input: ScheduleChatTaskRunFinalizationInput): void {
     input.onScheduled?.();
     this.coordinator.start(input.key, async () => {
       input.onStatus(await input.finalize());
@@ -37,7 +33,6 @@ export class ChatTaskRunFinalizationScheduler {
         input.onError?.(error);
       },
     });
-    return true;
   }
 
   async wait(key: string): Promise<void> {

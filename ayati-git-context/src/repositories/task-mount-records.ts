@@ -11,6 +11,7 @@ interface TaskMountRow {
   session_id: string;
   task_id: string;
   checkout_path: string;
+  working_path: string;
   canonical_repository: string;
   branch: string;
   mounted_head: string | null;
@@ -24,6 +25,7 @@ export interface TaskMountRecord {
   sessionId: string;
   taskId: string;
   checkoutPath: string;
+  workingPath: string;
   canonicalRepository: string;
   branch: string;
   mountedHead: string | null;
@@ -63,13 +65,14 @@ export function allocateTaskMount(
   const checkoutPath = join(session.repositoryPath, "tasks", task.taskId);
   database.prepare([
     "INSERT INTO session_task_mounts(",
-    "session_id, task_id, checkout_path, canonical_repository, branch, mounted_head,",
+    "session_id, task_id, checkout_path, working_path, canonical_repository, branch, mounted_head,",
     "status, created_at, updated_at, last_error",
-    ") VALUES (?, ?, ?, ?, ?, NULL, 'initializing', ?, ?, NULL)",
+    ") VALUES (?, ?, ?, ?, ?, ?, NULL, 'initializing', ?, ?, NULL)",
   ].join(" ")).run(
     session.sessionId,
     task.taskId,
     checkoutPath,
+    task.workingPath,
     task.repositoryPath,
     task.branch,
     at,
@@ -164,6 +167,7 @@ export function taskMountRef(record: TaskMountRecord): TaskMountRef {
     sessionId: record.sessionId,
     taskId: record.taskId,
     checkoutPath: record.checkoutPath,
+    workingPath: record.workingPath,
     canonicalRepository: record.canonicalRepository,
     branch: record.branch,
     mountedHead: record.mountedHead,
@@ -173,7 +177,7 @@ export function taskMountRef(record: TaskMountRecord): TaskMountRef {
 
 function mountSelect(): string {
   return [
-    "SELECT session_id, task_id, checkout_path, canonical_repository, branch,",
+    "SELECT session_id, task_id, checkout_path, working_path, canonical_repository, branch,",
     "mounted_head, status, created_at, updated_at, last_error FROM session_task_mounts",
   ].join(" ");
 }
@@ -183,6 +187,7 @@ function taskMountRecord(row: TaskMountRow): TaskMountRecord {
     sessionId: row.session_id,
     taskId: row.task_id,
     checkoutPath: row.checkout_path,
+    workingPath: row.working_path,
     canonicalRepository: row.canonical_repository,
     branch: row.branch,
     mountedHead: row.mounted_head,

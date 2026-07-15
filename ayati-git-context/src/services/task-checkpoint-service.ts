@@ -10,15 +10,16 @@ import {
   markRecoverableIdempotencyFailed,
 } from "../database/idempotency.js";
 import { GitContextServiceError } from "../errors.js";
-import { readMutationProvenance } from "../git/mutation-provenance.js";
+import {
+  hasMutationChanges,
+  readMutationProvenance,
+} from "../git/mutation-provenance.js";
 import { runGit } from "../git/git-process.js";
 import {
   assertCheckpointablePaths,
   checkpointPaths,
-  createTaskCheckpoint,
-  persistTaskCheckpoint,
+  stageVerifiedTaskMutation,
 } from "../git/task-checkpoint.js";
-import { stageTaskGitlink } from "../git/task-submodule.js";
 import {
   readMutationAuthority,
   releaseCheckpointedMutationAuthority,
@@ -30,9 +31,6 @@ import {
   type TaskCheckpointRecord,
 } from "../repositories/task-checkpoint-records.js";
 import { readRun } from "../repositories/run-records.js";
-import { readSession } from "../repositories/session-records.js";
-import { updateTaskMountHead } from "../repositories/task-mount-records.js";
-import { updateTaskHead } from "../repositories/task-records.js";
 import { verifyMutationLockToken } from "./mutation-boundary-service.js";
 
 export class TaskCheckpointService {
@@ -112,24 +110,27 @@ export class TaskCheckpointService {
         });
       }
       await this.requireUnchangedProvenance(authority, record);
-      const checkpointHead = await this.advanceTaskCommit(authority, record, input.at);
-      await this.advanceCanonicalPersistence(authority, record, checkpointHead, input.at);
-      this.advanceCatalog(authority, record, checkpointHead, input.at);
-      await this.advanceGitlink(authority, record, checkpointHead, input.at);
+      await stageVerifiedTaskMutation({
+        checkoutPath: authority.checkoutPath,
+        branch: authority.branch,
+        beforeHead: authority.beforeHead,
+        authorityId: authority.authorityId,
+        stagedPaths: record.stagedPaths,
+      });
       const result: CheckpointMutationResponse = {
         authorityId: authority.authorityId,
         taskId: authority.taskId,
         runId: authority.runId,
         beforeHead: authority.beforeHead,
-        checkpointHead,
+        checkpointHead: authority.beforeHead,
         stagedPaths: record.stagedPaths,
-        sessionGitlinkUpdated: true,
+        sessionGitlinkUpdated: false,
       };
       this.database.transaction(() => {
         updateTaskCheckpointPhase(this.database, {
           authorityId: authority.authorityId,
           phase: "completed",
-          checkpointHead,
+          checkpointHead: authority.beforeHead,
           at: input.at,
         });
         releaseCheckpointedMutationAuthority(this.database, authority.authorityId, input.at);
@@ -157,9 +158,22 @@ export class TaskCheckpointService {
     if (head !== authority.beforeHead) {
       return;
     }
-    const current = await readMutationProvenance(authority.checkoutPath, authority.targets);
+    const current = await readMutationProvenance(
+      authority.checkoutPath,
+      authority.targets,
+      "index",
+    );
     const verified = verifiedProvenance(authority.verification);
     if (JSON.stringify(current) !== JSON.stringify(verified)) {
+      const stagedOutput = await runGit(["diff", "--cached", "--name-only", "--"], {
+        cwd: authority.checkoutPath,
+      });
+      const staged = new Set(stagedOutput.split("\n").filter(Boolean));
+      const alreadyStaged = !hasMutationChanges(current)
+        && record.stagedPaths.every((path) => staged.has(path));
+      if (alreadyStaged) {
+        return;
+      }
       throw new GitContextServiceError({
         code: "RECOVERY_REQUIRED",
         message: "Task checkout changed after mutation verification.",
@@ -168,120 +182,6 @@ export class TaskCheckpointService {
     }
   }
 
-  private async advanceTaskCommit(
-    authority: NonNullable<ReturnType<typeof readMutationAuthority>>,
-    record: TaskCheckpointRecord,
-    at: string,
-  ): Promise<string> {
-    if (record.checkpointHead) {
-      return record.checkpointHead;
-    }
-    const checkpointHead = await createTaskCheckpoint({
-      checkoutPath: authority.checkoutPath,
-      canonicalRepository: authority.canonicalRepository,
-      branch: authority.branch,
-      beforeHead: authority.beforeHead,
-      authorityId: authority.authorityId,
-      taskId: authority.taskId,
-      sessionId: authority.sessionId,
-      runId: authority.runId,
-      conversationId: record.conversationId,
-      conversationHash: record.conversationHash,
-      purpose: record.purpose,
-      stagedPaths: record.stagedPaths,
-      at,
-    });
-    updateTaskCheckpointPhase(this.database, {
-      authorityId: authority.authorityId,
-      phase: "task_committed",
-      checkpointHead,
-      at,
-    });
-    return checkpointHead;
-  }
-
-  private async advanceCanonicalPersistence(
-    authority: NonNullable<ReturnType<typeof readMutationAuthority>>,
-    record: TaskCheckpointRecord,
-    checkpointHead: string,
-    at: string,
-  ): Promise<void> {
-    const current = readTaskCheckpoint(this.database, record.authorityId) ?? record;
-    if (["canonical_persisted", "catalog_updated", "gitlink_updated", "completed"].includes(current.phase)) {
-      return;
-    }
-    await persistTaskCheckpoint({
-      checkoutPath: authority.checkoutPath,
-      canonicalRepository: authority.canonicalRepository,
-      branch: authority.branch,
-      beforeHead: authority.beforeHead,
-      checkpointHead,
-    });
-    updateTaskCheckpointPhase(this.database, {
-      authorityId: authority.authorityId,
-      phase: "canonical_persisted",
-      checkpointHead,
-      at,
-    });
-  }
-
-  private advanceCatalog(
-    authority: NonNullable<ReturnType<typeof readMutationAuthority>>,
-    record: TaskCheckpointRecord,
-    checkpointHead: string,
-    at: string,
-  ): void {
-    const current = readTaskCheckpoint(this.database, record.authorityId) ?? record;
-    if (["catalog_updated", "gitlink_updated", "completed"].includes(current.phase)) {
-      return;
-    }
-    this.database.transaction(() => {
-      updateTaskHead(this.database, authority.taskId, authority.beforeHead, checkpointHead, at);
-      updateTaskCheckpointPhase(this.database, {
-        authorityId: authority.authorityId,
-        phase: "catalog_updated",
-        checkpointHead,
-        at,
-      });
-    });
-  }
-
-  private async advanceGitlink(
-    authority: NonNullable<ReturnType<typeof readMutationAuthority>>,
-    record: TaskCheckpointRecord,
-    checkpointHead: string,
-    at: string,
-  ): Promise<void> {
-    const current = readTaskCheckpoint(this.database, record.authorityId) ?? record;
-    if (["gitlink_updated", "completed"].includes(current.phase)) {
-      return;
-    }
-    const session = readSession(this.database, authority.sessionId);
-    if (!session) {
-      throw new Error("Checkpoint session could not be read.");
-    }
-    await stageTaskGitlink({
-      sessionRepository: session.repositoryPath,
-      taskId: authority.taskId,
-      checkpointHead,
-    });
-    this.database.transaction(() => {
-      updateTaskMountHead(
-        this.database,
-        authority.sessionId,
-        authority.taskId,
-        authority.beforeHead,
-        checkpointHead,
-        at,
-      );
-      updateTaskCheckpointPhase(this.database, {
-        authorityId: authority.authorityId,
-        phase: "gitlink_updated",
-        checkpointHead,
-        at,
-      });
-    });
-  }
 }
 
 function verifiedProvenance(value: unknown): MutationProvenance {
@@ -310,6 +210,6 @@ function checkpointResponse(record: TaskCheckpointRecord): CheckpointMutationRes
     beforeHead: record.beforeHead,
     checkpointHead: record.checkpointHead,
     stagedPaths: record.stagedPaths,
-    sessionGitlinkUpdated: true,
+    sessionGitlinkUpdated: false,
   };
 }

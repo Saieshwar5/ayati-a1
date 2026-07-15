@@ -137,9 +137,9 @@ Inject failure after:
 1. SQLite conversation append.
 2. Markdown conversation write.
 3. Task checkout mutation.
-4. Task checkpoint commit.
-5. Canonical task persistence.
-6. Task finalization commit.
+4. Verified task mutation staging.
+5. Task-run state commit.
+6. Canonical task persistence.
 7. Run file write.
 8. Conversation rename.
 9. Session gitlink staging.
@@ -223,4 +223,3 @@ Run a real daemon scenario:
 
 Do not fix discovered runtime bugs during the evaluation itself. Capture them
 as evidence first.
-

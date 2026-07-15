@@ -48,8 +48,8 @@ describe("repair policy", () => {
       },
     });
     expect(signal.allowedNextActions).toEqual([
-      "Use git_context_search_tasks if existing task ownership is possible.",
-      "Call git_context_activate_task_for_turn for a matching existing task, or git_context_create_task_for_turn with createReason \"no_active_task\" for new durable work.",
+      "Inspect the task candidates in context and call git_context_activate_task for an exact matching task.",
+      "Call git_context_create_task with title, objective, reason, and explicit requested-or-managed placement for distinct new durable work.",
       "Ask a short clarification directly if the request is unclear.",
     ]);
   });
@@ -58,24 +58,24 @@ describe("repair policy", () => {
     const signal = createRepairSignal("R_TOOL_INPUT_MISSING_REQUIRED_FIELD", {
       severity: "error",
       source: "decision.input_schema.native",
-      message: "Missing required fields for git_context_create_task_for_turn.",
+      message: "Missing required fields for git_context_create_task.",
       missingFields: ["title", "objective", "createReason"],
-      allowedNextActions: ["Call git_context_create_task_for_turn again with title, objective, and createReason."],
+      allowedNextActions: ["Call git_context_create_task again with title, objective, and createReason."],
     });
 
     expect(signal).toMatchObject({
       code: "R_TOOL_INPUT_MISSING_REQUIRED_FIELD",
       severity: "error",
       source: "decision.input_schema.native",
-      message: "Missing required fields for git_context_create_task_for_turn.",
+      message: "Missing required fields for git_context_create_task.",
       missingFields: ["title", "objective", "createReason"],
-      allowedNextActions: ["Call git_context_create_task_for_turn again with title, objective, and createReason."],
+      allowedNextActions: ["Call git_context_create_task again with title, objective, and createReason."],
     });
   });
 
   it("formats a compact model-facing prompt card", () => {
     const signal = createRepairSignal("R_TOOL_INPUT_MISSING_REQUIRED_FIELD", {
-      blockedTargets: ["git_context_create_task_for_turn"],
+      blockedTargets: ["git_context_create_task"],
       missingFields: ["title", "objective", "createReason"],
       operatorDetails: {
         attempt: 1,
@@ -86,7 +86,7 @@ describe("repair policy", () => {
     expect(repairSignalToPromptCard(signal)).toEqual({
       code: "R_TOOL_INPUT_MISSING_REQUIRED_FIELD",
       message: "The selected tool input is missing required fields.",
-      blockedTargets: ["git_context_create_task_for_turn"],
+      blockedTargets: ["git_context_create_task"],
       missingFields: ["title", "objective", "createReason"],
       allowedNextActions: ["Call the selected tool again with the missing required fields."],
     });
@@ -100,10 +100,10 @@ describe("repair policy", () => {
 
   it("keeps operator details in feedback data", () => {
     const signal = createRepairSignal("R_ASSISTANT_TEXT_TOOL_CALL", {
-      blockedTargets: ["git_context_create_task_for_turn"],
+      blockedTargets: ["git_context_create_task"],
       operatorDetails: {
         attempt: 1,
-        toolName: "git_context_create_task_for_turn",
+        toolName: "git_context_create_task",
         inputKeys: ["taskCompletion"],
       },
     });
@@ -115,7 +115,7 @@ describe("repair policy", () => {
         source: "decision.assistant_text",
         message: "The assistant response looked like a tool call written as text.",
         modelFacing: true,
-        blockedTargets: ["git_context_create_task_for_turn"],
+        blockedTargets: ["git_context_create_task"],
         missingFields: [],
         invalidFields: [],
         allowedNextActions: [
@@ -125,7 +125,7 @@ describe("repair policy", () => {
         ],
         operatorDetails: {
           attempt: 1,
-          toolName: "git_context_create_task_for_turn",
+          toolName: "git_context_create_task",
           inputKeys: ["taskCompletion"],
         },
       },

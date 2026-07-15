@@ -68,7 +68,19 @@ function parseCommit(record: string): CommitSummary | undefined {
     validation: trailer(message, "Validation"),
     taskId: trailer(message, "Task-Id"),
     runId: trailer(message, "Run"),
+    assets: assets(message),
   };
+}
+
+function assets(message: string): Array<{ path: string; description: string }> {
+  const value = section(message, "Assets:", "Session-Id:");
+  if (!value || value === "- none") return [];
+  return value.split("\n").flatMap((line) => {
+    const match = line.trim().match(/^-\s+(.+?)\s+—\s+(.+)$/);
+    return match?.[1] && match[2]
+      ? [{ path: match[1].trim(), description: match[2].trim() }]
+      : [];
+  });
 }
 
 function section(message: string, start: string, end: string): string | undefined {

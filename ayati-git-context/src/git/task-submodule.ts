@@ -281,6 +281,22 @@ export async function stageTaskGitlink(input: {
   checkpointHead: string;
 }): Promise<void> {
   const relativePath = "tasks/" + input.taskId;
+  const checkoutPath = resolve(input.sessionRepository, relativePath);
+  const dirty = await runGit(["status", "--porcelain", "--untracked-files=all"], {
+    cwd: checkoutPath,
+  });
+  if (dirty) {
+    throw new GitContextServiceError({
+      code: "TASK_CHECKOUT_DIRTY",
+      message: "Session task pointer checkout contains uncommitted changes.",
+      details: { taskId: input.taskId, checkoutPath },
+    });
+  }
+  const current = await runGit(["rev-parse", "HEAD"], { cwd: checkoutPath });
+  if (current !== input.checkpointHead) {
+    await runGit(["fetch", "origin"], { cwd: checkoutPath });
+    await runGit(["merge", "--ff-only", input.checkpointHead], { cwd: checkoutPath });
+  }
   await runGit(["add", "--", relativePath], { cwd: input.sessionRepository });
   const gitlink = await readGitlink(input.sessionRepository, relativePath);
   if (gitlink !== input.checkpointHead) {
@@ -324,6 +340,7 @@ function validateMountIdentity(input: {
   if (input.mount.sessionId !== input.session.sessionId
     || input.mount.taskId !== input.task.taskId
     || resolve(input.mount.checkoutPath) !== expectedCheckout
+    || resolve(input.mount.workingPath) !== resolve(input.task.workingPath)
     || resolve(input.mount.canonicalRepository) !== resolve(input.task.repositoryPath)
     || input.mount.branch !== input.task.branch) {
     throw mountRecoveryError(input, "SQLite task mount identity is inconsistent.");

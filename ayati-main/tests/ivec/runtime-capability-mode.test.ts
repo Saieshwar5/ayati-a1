@@ -75,6 +75,58 @@ function tool(name: string): ToolDefinition {
 }
 
 describe("runtime capability modes", () => {
+  it("hides task-routing mutation tools for a clearly informational turn", () => {
+    const current = state(gitContext({ status: "none" }));
+    current.inputKind = "user_message";
+    current.userMessage = "Briefly tell me what I asked about in this conversation.";
+    const mode = detectRuntimeCapabilityMode({ state: current });
+
+    expect(mode.routingSuppressedForConversation).toBe(true);
+    expect(mode.routingWindow).toMatchObject({
+      open: false,
+      routingToolsAvailable: false,
+    });
+    expect(mode.allowedActions).toEqual([
+      "direct_reply",
+      "decision_load_tools",
+      "read_only_tools",
+    ]);
+    expect(filterToolsForRuntimeMode(mode, [
+      tool("read_files"),
+      tool("git_context_activate_task"),
+      tool("git_context_create_task"),
+    ]).map((entry) => entry.name)).toEqual(["read_files"]);
+  });
+
+  it("keeps task-routing tools for concrete durable work", () => {
+    const current = state(gitContext({ status: "none" }));
+    current.inputKind = "user_message";
+    current.userMessage = "Please create a coffee shop website.";
+    const mode = detectRuntimeCapabilityMode({ state: current });
+
+    expect(mode.routingSuppressedForConversation).toBeUndefined();
+    expect(filterToolsForRuntimeMode(mode, [
+      tool("git_context_activate_task"),
+      tool("git_context_create_task"),
+    ]).map((entry) => entry.name)).toEqual([
+      "git_context_activate_task",
+      "git_context_create_task",
+    ]);
+  });
+
+  it("does not mistake a greeting followed by durable work for harmless chat", () => {
+    const current = state(gitContext({ status: "none" }));
+    current.inputKind = "user_message";
+    current.userMessage = "Hello Ayati. Create a coffee shop website.";
+    const mode = detectRuntimeCapabilityMode({ state: current });
+
+    expect(mode.routingSuppressedForConversation).toBeUndefined();
+    expect(mode.routingWindow).toMatchObject({
+      open: true,
+      routingToolsAvailable: true,
+    });
+  });
+
   it("detects fresh-session routing and exposes compact prompt context", () => {
     const mode = detectRuntimeCapabilityMode({
       state: state(gitContext({ status: "none" })),
@@ -89,8 +141,8 @@ describe("runtime capability modes", () => {
         "direct_reply",
         "decision_load_tools",
         "read_only_tools",
-        "git_context_activate_task_for_turn",
-        "git_context_create_task_for_turn",
+        "git_context_activate_task",
+        "git_context_create_task",
       ],
       blocked: [
         "workspace_mutation_until_task_promotion",
@@ -101,7 +153,8 @@ describe("runtime capability modes", () => {
         "Create a task only when the current user request has a concrete deliverable and enough detail to begin work now.",
         "Do not create a task for early conversation, brainstorming, vague intent, preferences, or discovery. Reply directly with one short clarifying question.",
         "A concrete deliverable means the user has specified what to make, change, analyze, or produce, and the expected output is clear enough to start without another user answer.",
-        "For clear durable work with no active task, call git_context_create_task_for_turn with title, objective, and createReason \"no_active_task\" before mutation. If existing task ownership is possible, use git_context_search_tasks and git_context_activate_task_for_turn instead.",
+        "For clear durable work, inspect the task candidates already present in context. Activate the exact matching task, or create a task with title, objective, reason, and explicit requested-or-managed placement when the deliverable is distinct.",
+        "Use requested placement when the current user message or verified read context specifies a location. Use managed placement only when no requested location exists.",
         "Never print task metadata JSON as the assistant response. Put task metadata in the native tool call arguments.",
       ],
       repairCode: "R_FRESH_SESSION_NEEDS_TASK",
@@ -115,15 +168,13 @@ describe("runtime capability modes", () => {
 
     const allowed = filterToolsForRuntimeMode(mode, [
       tool("write_files"),
-      tool("git_context_search_tasks"),
-      tool("git_context_activate_task_for_turn"),
-      tool("git_context_create_task_for_turn"),
+      tool("git_context_activate_task"),
+      tool("git_context_create_task"),
     ]).map((entry) => entry.name);
 
     expect(allowed).toEqual([
-      "git_context_search_tasks",
-      "git_context_activate_task_for_turn",
-      "git_context_create_task_for_turn",
+      "git_context_activate_task",
+      "git_context_create_task",
     ]);
     expect(allowed).not.toContain("write_files");
   });
@@ -145,14 +196,14 @@ describe("runtime capability modes", () => {
       tool("read_files"),
       tool("document_query"),
       tool("write_files"),
-      tool("git_context_activate_task_for_turn"),
-      tool("git_context_create_task_for_turn"),
+      tool("git_context_activate_task"),
+      tool("git_context_create_task"),
     ]).map((entry) => entry.name)).toEqual([
       "read_files",
       "document_query",
       "write_files",
-      "git_context_activate_task_for_turn",
-      "git_context_create_task_for_turn",
+      "git_context_activate_task",
+      "git_context_create_task",
     ]);
   });
 
@@ -169,11 +220,11 @@ describe("runtime capability modes", () => {
       kind: "act",
       action: {
         mode: "single",
-        allowedTools: ["git_context_create_task_for_turn"],
+        allowedTools: ["git_context_create_task"],
         assertions: [],
         calls: [{
           id: "call_1",
-          tool: "git_context_create_task_for_turn",
+          tool: "git_context_create_task",
           input: {
             title: "Create text file",
             objective: "Create the requested text file.",
@@ -250,7 +301,7 @@ describe("runtime capability modes", () => {
     expect(isDecisionAllowedInRuntimeMode(mode, mutate)).toBe(true);
   });
 
-  it("allows read-only git-context actions in fresh-session read mode", () => {
+  it("allows normal read-only actions in fresh-session read mode", () => {
     const mode = detectRuntimeCapabilityMode({
       state: state(gitContext({ status: "none" })),
     });
@@ -258,11 +309,11 @@ describe("runtime capability modes", () => {
       kind: "act",
       action: {
         mode: "single",
-        allowedTools: ["git_context_list_tasks"],
+        allowedTools: ["read_files"],
         assertions: [],
         calls: [{
           id: "call_1",
-          tool: "git_context_list_tasks",
+          tool: "read_files",
           input: {},
           dependsOn: [],
         }],
@@ -337,8 +388,8 @@ describe("runtime capability modes", () => {
         "direct_reply",
         "decision_load_tools",
         "normal_work_tools",
-        "git_context_activate_task_for_turn",
-        "git_context_create_task_for_turn",
+        "git_context_activate_task",
+        "git_context_create_task",
       ]),
       blocked: [],
     });
@@ -349,13 +400,13 @@ describe("runtime capability modes", () => {
     });
     expect(filterToolsForRuntimeMode(mode, [
       tool("git_context_search_tasks"),
-      tool("git_context_create_task_for_turn"),
-      tool("git_context_activate_task_for_turn"),
+      tool("git_context_create_task"),
+      tool("git_context_activate_task"),
       tool("write_files"),
     ]).map((entry) => entry.name)).toEqual([
       "git_context_search_tasks",
-      "git_context_create_task_for_turn",
-      "git_context_activate_task_for_turn",
+      "git_context_create_task",
+      "git_context_activate_task",
       "write_files",
     ]);
   });
@@ -375,12 +426,12 @@ describe("runtime capability modes", () => {
       routingToolsAvailable: true,
     });
     expect(filterToolsForRuntimeMode(mode, [
-      tool("git_context_create_task_for_turn"),
-      tool("git_context_activate_task_for_turn"),
+      tool("git_context_create_task"),
+      tool("git_context_activate_task"),
       tool("write_files"),
     ]).map((entry) => entry.name)).toEqual([
-      "git_context_create_task_for_turn",
-      "git_context_activate_task_for_turn",
+      "git_context_create_task",
+      "git_context_activate_task",
       "write_files",
     ]);
   });
@@ -398,7 +449,7 @@ describe("runtime capability modes", () => {
       summary: "Task creation was rejected.",
       newFacts: [],
       artifacts: [],
-      toolsUsed: ["git_context_create_task_for_turn"],
+      toolsUsed: ["git_context_create_task"],
       toolSuccessCount: 0,
       toolFailureCount: 1,
     });
@@ -412,12 +463,12 @@ describe("runtime capability modes", () => {
       expiresAfterThisDecision: false,
     });
     expect(filterToolsForRuntimeMode(mode, [
-      tool("git_context_create_task_for_turn"),
-      tool("git_context_activate_task_for_turn"),
+      tool("git_context_create_task"),
+      tool("git_context_activate_task"),
       tool("write_files"),
     ]).map((entry) => entry.name)).toEqual([
-      "git_context_create_task_for_turn",
-      "git_context_activate_task_for_turn",
+      "git_context_create_task",
+      "git_context_activate_task",
       "write_files",
     ]);
   });
@@ -445,8 +496,8 @@ describe("runtime capability modes", () => {
 
     expect(filterToolsForRuntimeMode(mode, [
       tool("git_context_search_tasks"),
-      tool("git_context_create_task_for_turn"),
-      tool("git_context_activate_task_for_turn"),
+      tool("git_context_create_task"),
+      tool("git_context_activate_task"),
       tool("write_files"),
     ]).map((entry) => entry.name)).toEqual([
       "git_context_search_tasks",

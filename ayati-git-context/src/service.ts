@@ -6,8 +6,10 @@ import type {
   CheckpointMutationResponse,
   AppendConversationRequest,
   AppendConversationResponse,
+  ActivateTaskRunRequest,
   CreateTaskRequest,
   CreateTaskResponse,
+  CreateTaskRunRequest,
   EnsureActiveSessionRequest,
   EnsureActiveSessionResponse,
   FinalizeSessionRunRequest,
@@ -18,6 +20,8 @@ import type {
   GetTaskRequest,
   GetTaskResponse,
   HealthResponse,
+  ListTasksRequest,
+  ListTasksResponse,
   MountTaskRequest,
   MountTaskResponse,
   RecordRunStepRequest,
@@ -26,6 +30,7 @@ import type {
   SnapshotTaskRunEvidenceResponse,
   StartRunRequest,
   StartRunResponse,
+  SelectedTaskRunResponse,
   VerifyMutationRequest,
   VerifyMutationResponse,
 } from "./contracts.js";
@@ -36,6 +41,9 @@ export interface GitContextService {
   ensureActiveSession(input: EnsureActiveSessionRequest): Promise<EnsureActiveSessionResponse>;
   appendConversation(input: AppendConversationRequest): Promise<AppendConversationResponse>;
   createTask(input: CreateTaskRequest): Promise<CreateTaskResponse>;
+  createTaskRun(input: CreateTaskRunRequest): Promise<SelectedTaskRunResponse>;
+  activateTaskRun(input: ActivateTaskRunRequest): Promise<SelectedTaskRunResponse>;
+  listTasks(input: ListTasksRequest): Promise<ListTasksResponse>;
   getTask(input: GetTaskRequest): Promise<GetTaskResponse>;
   mountTask(input: MountTaskRequest): Promise<MountTaskResponse>;
   acquireMutationAuthority(

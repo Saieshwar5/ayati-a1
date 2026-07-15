@@ -105,15 +105,13 @@ describe("selectToolsForDecision", () => {
     const selected = selectToolsForDecision(current, [
       tool("shell", 100),
       tool("write_files", 100),
-      tool("git_context_list_tasks", 1),
-      tool("git_context_search_tasks", 1),
-      tool("git_context_create_task_for_turn", 1),
+      tool("git_context_activate_task", 1),
+      tool("git_context_create_task", 1),
     ], 12);
 
     expect(selected.map((entry) => entry.name)).toEqual([
-      "git_context_list_tasks",
-      "git_context_search_tasks",
-      "git_context_create_task_for_turn",
+      "git_context_activate_task",
+      "git_context_create_task",
     ]);
   });
 
@@ -127,18 +125,14 @@ describe("selectToolsForDecision", () => {
     const selected = selectToolsForDecision(current, [
       tool("shell", 100),
       tool("write_files", 100),
-      tool("git_context_list_tasks", 1),
-      tool("git_context_search_tasks", 1),
-      tool("git_context_activate_task_for_turn", 1),
-      tool("git_context_create_task_for_turn", 1),
+      tool("git_context_activate_task", 1),
+      tool("git_context_create_task", 1),
     ], 12);
 
     const selectedNames = selected.map((entry) => entry.name);
     expect(selectedNames).toEqual([
-      "git_context_list_tasks",
-      "git_context_search_tasks",
-      "git_context_activate_task_for_turn",
-      "git_context_create_task_for_turn",
+      "git_context_activate_task",
+      "git_context_create_task",
     ]);
     expect(selectedNames).not.toContain("shell");
     expect(selectedNames).not.toContain("write_files");
@@ -158,7 +152,7 @@ describe("selectToolsForDecision", () => {
       tool("read_files", 90),
       tool("search_in_files", 80),
       tool("document_query", 70),
-      tool("git_context_create_task_for_turn", 1),
+      tool("git_context_create_task", 1),
     ], 3, {
       sessionRunHandle: { sessionId: "S-20260630-local", runId: "R-20260630-0001" },
     });
@@ -167,7 +161,7 @@ describe("selectToolsForDecision", () => {
     expect(selectedNames).toEqual([
       "write_files",
       "read_files",
-      "git_context_create_task_for_turn",
+      "git_context_create_task",
     ]);
   });
 
@@ -186,15 +180,15 @@ describe("selectToolsForDecision", () => {
       tool("search_in_files", 60),
       tool("git_context_list_tasks", 1),
       tool("git_context_search_tasks", 1),
-      tool("git_context_activate_task_for_turn", 1),
-      tool("git_context_create_task_for_turn", 1),
+      tool("git_context_activate_task", 1),
+      tool("git_context_create_task", 1),
     ], 3);
 
     const selectedNames = selected.map((entry) => entry.name);
     expect(selectedNames).toEqual([
       "search_in_files",
-      "git_context_activate_task_for_turn",
-      "git_context_create_task_for_turn",
+      "git_context_activate_task",
+      "git_context_create_task",
     ]);
     expect(selectedNames).not.toContain("write_files");
     expect(selectedNames).not.toContain("create_directory");
@@ -215,14 +209,14 @@ describe("selectToolsForDecision", () => {
       tool("read_files", 80),
       tool("git_context_list_tasks", 1),
       tool("git_context_search_tasks", 1),
-      tool("git_context_activate_task_for_turn", 1),
-      tool("git_context_create_task_for_turn", 1),
+      tool("git_context_activate_task", 1),
+      tool("git_context_create_task", 1),
     ], 2);
 
     const selectedNames = selected.map((entry) => entry.name);
     expect(selectedNames).toEqual([
-      "git_context_activate_task_for_turn",
-      "git_context_create_task_for_turn",
+      "git_context_activate_task",
+      "git_context_create_task",
     ]);
     expect(selectedNames).not.toContain("write_files");
     expect(selectedNames).not.toContain("patch_files");
@@ -238,25 +232,9 @@ describe("selectToolsForDecision", () => {
 
     expect(selectToolsForDecision(current, [
       tool("git_context_list_tasks", 1),
-      tool("git_context_create_task_for_turn", 1),
+      tool("git_context_create_task", 1),
       tool("shell", 100),
     ], 12)).toEqual([]);
-  });
-
-  it("counts run-step recovery inside the selected tool cap", () => {
-    const current = state("continue implementation");
-    current.toolContext = {
-      recent: [],
-      toolCalls: recoverableToolCalls(),
-    };
-
-    const selected = selectToolsForDecision(current, [
-      tool("write_files", 100),
-      tool("read_files", 90),
-      tool("git_context_read_run_step", 0),
-    ], 1);
-
-    expect(selected.map((entry) => entry.name)).toEqual(["git_context_read_run_step"]);
   });
 
   it("does not select run-step recovery when no compacted stepRef tool-call context exists", () => {
@@ -283,81 +261,4 @@ describe("selectToolsForDecision", () => {
     };
     expect(selectToolsForDecision(current, tools, 15)).toHaveLength(10);
   });
-
-  it("pins Git step recovery after pressure even when the source output was not truncated", () => {
-    const current = state("recover the exact prior step");
-    current.contextPressure = {
-      ...createInitialContextPressureState(),
-      mode: "tool_compact",
-    };
-    current.toolContext = {
-      recent: [],
-      toolCalls: recoverableToolCalls().map((call) => ({
-        ...call,
-        outputTruncated: undefined,
-      })),
-    };
-
-    const selected = selectToolsForDecision(current, [
-      tool("write_files", 100),
-      tool("read_files", 90),
-      tool("git_context_read_run_step", 0),
-    ], 2);
-
-    expect(selected.map((entry) => entry.name)).toEqual([
-      "write_files",
-      "git_context_read_run_step",
-    ]);
-  });
 });
-
-function recoverableToolCalls(): NonNullable<LoopState["toolContext"]>["toolCalls"] {
-  return [
-    {
-      step: 1,
-      callId: "call-old",
-      tool: "read_files",
-      input: { path: "src/old.ts" },
-      status: "success",
-      output: `old output ${"x".repeat(16_000)}`,
-      outputTruncated: true,
-      stepRef: { runId: "run-1", step: 1, callId: "call-old" },
-    },
-    {
-      step: 2,
-      callId: "call-2",
-      tool: "read_files",
-      input: { path: "src/2.ts" },
-      status: "success",
-      output: `output 2 ${"x".repeat(16_000)}`,
-      stepRef: { runId: "run-1", step: 2, callId: "call-2" },
-    },
-    {
-      step: 3,
-      callId: "call-3",
-      tool: "read_files",
-      input: { path: "src/3.ts" },
-      status: "success",
-      output: `output 3 ${"x".repeat(16_000)}`,
-      stepRef: { runId: "run-1", step: 3, callId: "call-3" },
-    },
-    {
-      step: 4,
-      callId: "call-4",
-      tool: "read_files",
-      input: { path: "src/4.ts" },
-      status: "success",
-      output: "output 4",
-      stepRef: { runId: "run-1", step: 4, callId: "call-4" },
-    },
-    {
-      step: 5,
-      callId: "call-5",
-      tool: "read_files",
-      input: { path: "src/5.ts" },
-      status: "success",
-      output: "output 5",
-      stepRef: { runId: "run-1", step: 5, callId: "call-5" },
-    },
-  ];
-}

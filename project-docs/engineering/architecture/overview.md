@@ -14,13 +14,14 @@ Main runtime flow:
 
 1. A user communicates through a client or an integration produces a system event.
 2. `ayati-main` receives the message/event through WebSocket, HTTP/Pulse ingress, or plugin adapters.
-3. The backend records the turn in daily git context, prepares pending-turn
-   ownership state, loads static decision rules, personal memory, document/file
-   context, the hidden tool catalog, tool taxonomy, and provider configuration.
-4. Runtime auto-binds obvious same-task follow-ups. If task ownership is
-   semantic, ambiguous, or new durable work, the agent can search/read git
-   context and route the pending turn through turn-aware activate/create/clarify
-   tools before task work runs. Normal work tools require a real task run.
+3. The backend sends conversation and context lifecycle requests through the
+   typed Git Context client to an independently managed local server over a
+   Unix socket. The server alone owns context SQLite and Git writes.
+4. The context server returns active session, task candidates with stable
+   working directories, selected task, and run context. Durable work requires
+   the agent to create a task repository in a requested or managed directory,
+   or activate an existing one; no session-global active task silently owns a
+   mutation.
 5. `IVecEngine` builds static decision context and enters the decision-action-reducer runner.
 6. The decision model returns direct assistant text for normal terminal
    replies, or chooses exactly one native tool call for tool loading,
@@ -29,9 +30,9 @@ Main runtime flow:
    routing, and repair capabilities are prepared deterministically.
 7. Executable tool calls run through the shared action executor and are verified
    through tool contracts, assertions, and local failure policy.
-8. Verified facts update progress state. Runtime-owned finalization writes task
-   state, run summaries, action records, evidence manifests, assets, assistant
-   responses, and git commit metadata exactly once for each task run.
+8. Verified facts update WorkState. Runtime-owned finalization asks the context
+   server to commit verified task state first and then persist session
+   conversation, run evidence, and the exact task gitlink idempotently.
 9. Replies, feedback, notifications, or actions are sent back through the appropriate transport.
 
 Current agent harness:
@@ -47,6 +48,8 @@ Important entry points:
 - `ayati-main/src/ivec/index.ts`
 - `ayati-cli/src/index.tsx`
 - `ayati-cli/src/app/app.tsx`
+- `ayati-main/src/app/git-context-process.ts`
+- `ayati-git-context/src/server-main.ts`
 
 Default local ports:
 

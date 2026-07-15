@@ -1,4 +1,4 @@
-export const GIT_CONTEXT_PROTOCOL_VERSION = 10;
+export const GIT_CONTEXT_PROTOCOL_VERSION = 17;
 
 export type SessionId = string;
 export type TaskId = string;
@@ -35,6 +35,7 @@ export interface SessionRef {
 export interface TaskRef {
   taskId: TaskId;
   repositoryPath: string;
+  workingPath: string;
   branch: string;
   head: string;
 }
@@ -55,7 +56,10 @@ export type TaskMountStatus = "initializing" | "ready" | "recovery_required" | "
 export interface TaskMountRef {
   sessionId: SessionId;
   taskId: TaskId;
+  /** Session-owned submodule checkout used only to persist the native gitlink. */
   checkoutPath: string;
+  /** Stable user-facing checkout where task tools actually work. */
+  workingPath: string;
   canonicalRepository: string;
   branch: string;
   mountedHead: string;
@@ -117,6 +121,11 @@ export interface ConversationRef {
 }
 
 export interface ConversationMessage {
+  messageId: string;
+  conversationId: ConversationId;
+  sessionSequence: number;
+  segmentSequence: number;
+  /** @deprecated Use segmentSequence. */
   sequence: number;
   role: ConversationRole;
   content: string;
@@ -140,6 +149,16 @@ export interface CommitSummary {
   validation?: string;
   taskId?: string;
   runId?: string;
+  sessionId?: string;
+  taskTitle?: string;
+  taskState?: string;
+  taskStatus?: "in_progress" | "done" | "blocked";
+  next?: string;
+  stateVersion?: number;
+  assets?: Array<{
+    path: string;
+    description: string;
+  }>;
 }
 
 export interface ToolCallContext {
@@ -205,12 +224,29 @@ export interface PreviousSessionCarryover {
 
 export interface TaskContextProjection {
   task: TaskRef;
+  /** Runtime filesystem authority. Kept out of the model prompt. */
+  checkoutPath?: string;
+  /** User-facing task directory. May be shown to the model and user. */
+  workingDirectory: string;
   title: string;
+  objective: string;
   summary: string;
   importantPaths: string[];
   recentCommits: CommitSummary[];
   latestOutcome?: string;
   validation?: string;
+  taskStatus?: "in_progress" | "done" | "blocked";
+  next?: string;
+}
+
+export interface TaskCandidate {
+  taskId: TaskId;
+  title: string;
+  objective: string;
+  status: TaskStatus;
+  head: string;
+  workingDirectory: string;
+  updatedAt: string;
 }
 
 export interface RunContextProjection {
@@ -219,11 +255,35 @@ export interface RunContextProjection {
   steps: RunStepContext[];
 }
 
+export interface ReadContextEntry {
+  key: string;
+  runId: RunId;
+  step: number;
+  runClass: RunClass;
+  tool: string;
+  purpose: string;
+  resources: string[];
+  input?: unknown;
+  output?: unknown;
+  outputHash?: string;
+  verification: unknown;
+  createdAt: string;
+}
+
+export interface ReadContextProjection {
+  revision: string;
+  afterTaskRunId?: RunId;
+  entries: ReadContextEntry[];
+}
+
 export interface ActiveContext {
+  contextRevision: string;
   session: SessionContextProjection | null;
   carryover?: PreviousSessionCarryover;
   activeTask?: TaskContextProjection;
+  taskCandidates?: TaskCandidate[];
   run?: RunContextProjection;
+  readContext?: ReadContextProjection;
   warnings: string[];
 }
 
@@ -251,16 +311,36 @@ export interface EnsureActiveSessionResponse {
   created: boolean;
 }
 
+export type TaskPlacement =
+  | {
+      mode: "managed";
+    }
+  | {
+      mode: "requested";
+      /** Exact user-requested task directory. Relative paths resolve from the configured workspace. */
+      workingDirectory: string;
+    };
+
 export interface CreateTaskRequest extends GitContextRequestEnvelope {
   sessionId: SessionId;
   title: string;
   objective: string;
+  placement: TaskPlacement;
   at: string;
 }
 
 export interface CreateTaskResponse {
   task: TaskCatalogEntry;
   created: boolean;
+}
+
+export interface ListTasksRequest {
+  query?: string;
+  limit?: number;
+}
+
+export interface ListTasksResponse {
+  tasks: TaskCandidate[];
 }
 
 export interface GetTaskRequest {
@@ -281,6 +361,36 @@ export interface MountTaskRequest extends GitContextRequestEnvelope {
 export interface MountTaskResponse {
   mount: TaskMountRef;
   created: boolean;
+}
+
+export interface SelectTaskRunInput {
+  sessionId: SessionId;
+  conversationId: ConversationId;
+  runId?: RunId;
+  trigger: "user" | "system_event" | "internal";
+  workState: RunWorkStateInput;
+  at: string;
+}
+
+export interface CreateTaskRunRequest extends GitContextRequestEnvelope, SelectTaskRunInput {
+  title: string;
+  objective: string;
+  placement: TaskPlacement;
+}
+
+export interface ActivateTaskRunRequest extends GitContextRequestEnvelope, SelectTaskRunInput {
+  taskId: TaskId;
+  expectedTaskHead?: string;
+}
+
+export interface SelectedTaskRunResponse {
+  task: TaskCatalogEntry;
+  mount: TaskMountRef;
+  run: RunRef;
+  context: TaskContextProjection;
+  taskCreated: boolean;
+  mountCreated: boolean;
+  runPromoted: boolean;
 }
 
 export interface AcquireMutationAuthorityRequest extends GitContextRequestEnvelope {
@@ -379,6 +489,7 @@ export interface FinalizeTaskRunRequest extends GitContextRequestEnvelope {
   taskId: TaskId;
   outcome: TaskRunOutcome;
   conversationSummary: string;
+  /** Compact cumulative task state after this run, suitable for the next activation. */
   summary: string;
   validation: "passed" | "failed" | "not_run";
   next?: string;
@@ -427,6 +538,9 @@ export interface AppendConversationRequest extends GitContextRequestEnvelope {
 
 export interface AppendConversationResponse {
   conversation: ConversationRef;
+  message: ConversationMessage;
+  contextRevision: string;
+  pendingDigest: string;
 }
 
 export interface StartRunRequest extends GitContextRequestEnvelope {
@@ -501,7 +615,35 @@ export function isCreateTaskRequest(value: unknown): value is CreateTaskRequest 
   return isNonEmptyString(value["sessionId"])
     && isBoundedString(value["title"], 120)
     && isBoundedString(value["objective"], 2_000)
+    && isTaskPlacement(value["placement"])
     && isNonEmptyString(value["at"]);
+}
+
+export function isCreateTaskRunRequest(value: unknown): value is CreateTaskRunRequest {
+  return isCreateTaskRequest(value)
+    && isTaskRunSelection(value as unknown as Record<string, unknown>);
+}
+
+function isTaskPlacement(value: unknown): value is TaskPlacement {
+  if (!isRecord(value)) {
+    return false;
+  }
+  if (value["mode"] === "managed") {
+    return Object.keys(value).every((key) => key === "mode");
+  }
+  return value["mode"] === "requested"
+    && isBoundedString(value["workingDirectory"], 4_096)
+    && Object.keys(value).every((key) => key === "mode" || key === "workingDirectory");
+}
+
+export function isActivateTaskRunRequest(value: unknown): value is ActivateTaskRunRequest {
+  if (!isRequestEnvelope(value)) {
+    return false;
+  }
+  return /^W-\d{8}-\d{4}$/.test(String(value["taskId"] ?? ""))
+    && (value["expectedTaskHead"] === undefined
+      || /^[a-f0-9]{40}$/.test(String(value["expectedTaskHead"])))
+    && isTaskRunSelection(value);
 }
 
 export function isMountTaskRequest(value: unknown): value is MountTaskRequest {
@@ -643,6 +785,17 @@ export function isRecordRunStepRequest(value: unknown): value is RecordRunStepRe
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isTaskRunSelection(value: Record<string, unknown>): boolean {
+  return isNonEmptyString(value["sessionId"])
+    && isNonEmptyString(value["conversationId"])
+    && optionalNonEmptyString(value["runId"])
+    && (value["trigger"] === "user"
+      || value["trigger"] === "system_event"
+      || value["trigger"] === "internal")
+    && isRunWorkStateInput(value["workState"])
+    && isNonEmptyString(value["at"]);
 }
 
 function isNonEmptyString(value: unknown): value is string {

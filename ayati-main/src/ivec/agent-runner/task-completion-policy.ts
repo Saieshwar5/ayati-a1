@@ -1,5 +1,5 @@
 import { lstat } from "node:fs/promises";
-import { isAbsolute, normalize, sep } from "node:path";
+import { isAbsolute, normalize, resolve, sep } from "node:path";
 import { getWorkspaceRoot, isWithinWorkspace, resolveWorkspacePath } from "../../skills/workspace-paths.js";
 import type { LoopState, WorkState } from "../types.js";
 import type { AgentTaskCompletionRequest, TaskCompletionAssetInput } from "./decision.js";
@@ -125,11 +125,11 @@ async function verifyAssets(
 ): Promise<VerifiedCompletionAsset[]> {
   const verified: VerifiedCompletionAsset[] = [];
   const seen = new Set<string>();
-  const root = getWorkspaceRoot();
+  const root = completionResourceRoot(state);
 
   for (const asset of assets) {
     const normalizedInput = normalize(asset.path);
-    const resolvedPath = resolveWorkspacePath(asset.path);
+    const resolvedPath = resolveWorkspacePath(asset.path, root);
     const escapesWorkspace = normalizedInput === ".." || normalizedInput.startsWith(`..${sep}`);
     if (escapesWorkspace || (isAbsolute(asset.path) && !isWithinWorkspace(resolvedPath, root)) || !isWithinWorkspace(resolvedPath, root)) {
       failures.push({ code: "INVALID_ASSET_PATH", path: asset.path, message: `Completion asset is outside the workspace: ${asset.path}` });
@@ -165,6 +165,11 @@ async function verifyAssets(
   }
 
   return verified;
+}
+
+function completionResourceRoot(state: LoopState): string {
+  const taskRoot = state.harnessContext.contextEngine?.task?.checkoutPath?.trim();
+  return taskRoot ? resolve(taskRoot) : getWorkspaceRoot();
 }
 
 function hasCompletionEvidence(state: LoopState): boolean {

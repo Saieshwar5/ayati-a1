@@ -225,73 +225,11 @@ describe("ToolWorkingSetManager", () => {
     ]));
   });
 
-  it("preloads run-step recovery when bounded stepRef tool context exists", () => {
-    const catalog = new ToolCatalog([
-      skill("git-context", [
-        tool("git_context_read_run_step", "Recover full persisted step or tool-call data"),
-      ]),
-      skill("filesystem", [
-        tool("read_files", "Read file"),
-        tool("write_files", "Write files"),
-      ]),
-    ]);
-    const executor = createToolExecutor([]);
-    const manager = new ToolWorkingSetManager({ catalog, toolExecutor: executor, maxVisibleTools: 3 });
-    const context = { clientId: "c1", runId: "r1", sessionId: "s1", stepNumber: 6 };
-    const runState = state("continue implementation");
-    runState.runId = "r1";
-    runState.runClass = "task";
-    runState.toolContext = {
-      recent: [],
-      toolCalls: recoverableToolCalls(),
-    };
-
-    manager.prepareForDecision(runState, context);
-
-    expect(manager.listActive(context)).toContain("git_context_read_run_step");
-    expect(executor.list(context)).toContain("git_context_read_run_step");
-  });
-
-  it("preloads run-step recovery for pressure-compacted refs without execution truncation", () => {
-    const catalog = new ToolCatalog([
-      skill("git-context", [
-        tool("git_context_read_run_step", "Recover full persisted step or tool-call data"),
-      ]),
-      skill("filesystem", [tool("read_files", "Read file")]),
-    ]);
-    const executor = createToolExecutor([]);
-    const manager = new ToolWorkingSetManager({ catalog, toolExecutor: executor, maxVisibleTools: 3 });
-    const context = { clientId: "c1", runId: "r1", sessionId: "s1", stepNumber: 6 };
-    const runState = state("recover the prior exact step");
-    runState.runId = "r1";
-    runState.runClass = "task";
-    runState.contextPressure = {
-      ...createInitialContextPressureState(),
-      mode: "tool_compact",
-    };
-    runState.toolContext = {
-      recent: [],
-      toolCalls: recoverableToolCalls().map((call) => ({
-        ...call,
-        outputTruncated: undefined,
-      })),
-    };
-
-    manager.prepareForDecision(runState, context);
-
-    expect(manager.listActive(context)).toContain("git_context_read_run_step");
-    expect(executor.list(context)).toContain("git_context_read_run_step");
-  });
-
   it("keeps git task-routing tools visible until routing resolves", () => {
     const catalog = new ToolCatalog([
       skill("git-context", [
-        tool("git_context_active"),
-        tool("git_context_list_tasks"),
-        tool("git_context_search_tasks"),
-        tool("git_context_read_task"),
-        tool("git_context_activate_task_for_turn"),
-        tool("git_context_create_task_for_turn"),
+        tool("git_context_activate_task"),
+        tool("git_context_create_task"),
       ]),
     ]);
     const executor = createToolExecutor([]);
@@ -300,25 +238,17 @@ describe("ToolWorkingSetManager", () => {
 
     manager.prepareForDecision(runState, { clientId: "c1", runId: "r1", sessionId: "s1", stepNumber: 1 });
     expect(manager.listActive({ runId: "r1" })).toEqual([
-      "git_context_active",
-      "git_context_list_tasks",
-      "git_context_search_tasks",
-      "git_context_read_task",
-      "git_context_activate_task_for_turn",
-      "git_context_create_task_for_turn",
+      "git_context_activate_task",
+      "git_context_create_task",
     ]);
 
     manager.prepareForDecision(runState, { clientId: "c1", runId: "r1", sessionId: "s1", stepNumber: 2 });
-    expect(manager.listActive({ runId: "r1" })).toContain("git_context_create_task_for_turn");
+    expect(manager.listActive({ runId: "r1" })).toContain("git_context_create_task");
 
     manager.prepareForDecision(runState, { clientId: "c1", runId: "r1", sessionId: "s1", stepNumber: 3 });
     expect(manager.listActive({ runId: "r1" })).toEqual([
-      "git_context_active",
-      "git_context_list_tasks",
-      "git_context_search_tasks",
-      "git_context_read_task",
-      "git_context_activate_task_for_turn",
-      "git_context_create_task_for_turn",
+      "git_context_activate_task",
+      "git_context_create_task",
     ]);
 
     runState.completedSteps.push({
@@ -327,17 +257,12 @@ describe("ToolWorkingSetManager", () => {
       summary: "Task activated.",
       newFacts: [],
       artifacts: [],
-      toolsUsed: ["git_context_activate_task_for_turn"],
+      toolsUsed: ["git_context_activate_task"],
       toolSuccessCount: 1,
       toolFailureCount: 0,
     });
     manager.prepareForDecision(runState, { clientId: "c1", runId: "r1", sessionId: "s1", stepNumber: 4 });
-    expect(manager.listActive({ runId: "r1" })).toEqual([
-      "git_context_active",
-      "git_context_list_tasks",
-      "git_context_search_tasks",
-      "git_context_read_task",
-    ]);
+    expect(manager.listActive({ runId: "r1" })).toEqual([]);
   });
 
   it("preloads only activate and create routing tools when no active task exists", () => {
@@ -350,8 +275,8 @@ describe("ToolWorkingSetManager", () => {
         tool("git_context_list_tasks"),
         tool("git_context_search_tasks"),
         tool("git_context_read_task"),
-        tool("git_context_activate_task_for_turn"),
-        tool("git_context_create_task_for_turn"),
+        tool("git_context_activate_task"),
+        tool("git_context_create_task"),
       ]),
     ]);
     const executor = createToolExecutor([]);
@@ -365,8 +290,8 @@ describe("ToolWorkingSetManager", () => {
     manager.prepareForDecision(runState, { clientId: "c1", runId: "r1", sessionId: "s1", stepNumber: 1 });
 
     expect(manager.listActive({ runId: "r1" })).toEqual([
-      "git_context_activate_task_for_turn",
-      "git_context_create_task_for_turn",
+      "git_context_activate_task",
+      "git_context_create_task",
     ]);
   });
 
@@ -391,8 +316,8 @@ describe("ToolWorkingSetManager", () => {
         tool("git_context_read_evidence"),
         tool("git_context_search_evidence"),
         tool("git_context_log"),
-        tool("git_context_activate_task_for_turn"),
-        tool("git_context_create_task_for_turn"),
+        tool("git_context_activate_task"),
+        tool("git_context_create_task"),
       ]),
     ]);
     const executor = createToolExecutor([]);
@@ -410,13 +335,13 @@ describe("ToolWorkingSetManager", () => {
       "find_files",
       "search_in_files",
       "read_files",
-      "git_context_activate_task_for_turn",
-      "git_context_create_task_for_turn",
+      "git_context_activate_task",
+      "git_context_create_task",
     ]));
-    expect(manager.listActive(context)).toContain("git_context_activate_task_for_turn");
-    expect(manager.listActive(context)).toContain("git_context_create_task_for_turn");
-    expect(executor.list(context)).toContain("git_context_activate_task_for_turn");
-    expect(executor.list(context)).toContain("git_context_create_task_for_turn");
+    expect(manager.listActive(context)).toContain("git_context_activate_task");
+    expect(manager.listActive(context)).toContain("git_context_create_task");
+    expect(executor.list(context)).toContain("git_context_activate_task");
+    expect(executor.list(context)).toContain("git_context_create_task");
   });
 
   it("uses the full routing window when an active task has an unbound pending turn", () => {
@@ -426,8 +351,8 @@ describe("ToolWorkingSetManager", () => {
         tool("git_context_list_tasks"),
         tool("git_context_search_tasks"),
         tool("git_context_read_task"),
-        tool("git_context_activate_task_for_turn"),
-        tool("git_context_create_task_for_turn"),
+        tool("git_context_activate_task"),
+        tool("git_context_create_task"),
       ]),
     ]);
     const executor = createToolExecutor([]);
@@ -444,12 +369,8 @@ describe("ToolWorkingSetManager", () => {
     manager.prepareForDecision(runState, { clientId: "c1", runId: "r1", sessionId: "s1", stepNumber: 1 });
 
     expect(manager.listActive({ runId: "r1" })).toEqual([
-      "git_context_active",
-      "git_context_list_tasks",
-      "git_context_search_tasks",
-      "git_context_read_task",
-      "git_context_activate_task_for_turn",
-      "git_context_create_task_for_turn",
+      "git_context_activate_task",
+      "git_context_create_task",
     ]);
   });
 
@@ -471,8 +392,8 @@ describe("ToolWorkingSetManager", () => {
         tool("git_context_list_tasks"),
         tool("git_context_search_tasks"),
         tool("git_context_read_task"),
-        tool("git_context_activate_task_for_turn"),
-        tool("git_context_create_task_for_turn"),
+        tool("git_context_activate_task"),
+        tool("git_context_create_task"),
       ]),
     ]);
     const executor = createToolExecutor([]);
@@ -495,8 +416,8 @@ describe("ToolWorkingSetManager", () => {
       "search_in_files",
       "read_files",
       "write_files",
-      "git_context_activate_task_for_turn",
-      "git_context_create_task_for_turn",
+      "git_context_activate_task",
+      "git_context_create_task",
     ]));
     expect(result.evicted).not.toEqual(expect.arrayContaining([
       "write_files",
@@ -504,38 +425,12 @@ describe("ToolWorkingSetManager", () => {
     expect(executor.list(context)).toEqual(active);
   });
 
-  it("keeps routing tools after a safe read lookup within the routing window", () => {
-    const catalog = new ToolCatalog([
-      skill("git-context", [
-        tool("git_context_search_tasks"),
-        tool("git_context_create_task_for_turn"),
-      ]),
-    ]);
-    const executor = createToolExecutor([]);
-    const manager = new ToolWorkingSetManager({ catalog, toolExecutor: executor, maxVisibleTools: 12 });
-    const context = { clientId: "c1", runId: "r1", sessionId: "s1", stepNumber: 1 };
-
-    manager.prepareForDecision(state("find old upload task"), context);
-    manager.afterExecution([{
-      callId: "call_1",
-      tool: "git_context_search_tasks",
-      input: {},
-      output: "matched upload task",
-    }], context);
-    manager.cleanupAfterStep(context);
-
-    expect(manager.listActive(context)).toEqual([
-      "git_context_search_tasks",
-      "git_context_create_task_for_turn",
-    ]);
-  });
-
   it("removes routing mutation tools immediately after successful create or switch routing", () => {
     const catalog = new ToolCatalog([
       skill("git-context", [
         tool("git_context_search_tasks"),
-        tool("git_context_create_task_for_turn"),
-        tool("git_context_activate_task_for_turn"),
+        tool("git_context_create_task"),
+        tool("git_context_activate_task"),
       ]),
     ]);
     const executor = createToolExecutor([]);
@@ -545,29 +440,27 @@ describe("ToolWorkingSetManager", () => {
     manager.prepareForDecision(state("build a website"), context);
     manager.afterExecution([{
       callId: "call_1",
-      tool: "git_context_create_task_for_turn",
+      tool: "git_context_create_task",
       input: {},
       output: "created task",
     }], context);
 
-    expect(manager.listActive(context)).toEqual([
-      "git_context_search_tasks",
-    ]);
+    expect(manager.listActive(context)).toEqual([]);
   });
 
   it("does not re-add routing tools after a routing tool already ran in the loop", () => {
     const catalog = new ToolCatalog([
       skill("git-context", [
         tool("git_context_search_tasks"),
-        tool("git_context_create_task_for_turn"),
-        tool("git_context_activate_task_for_turn"),
+        tool("git_context_create_task"),
+        tool("git_context_activate_task"),
       ]),
     ]);
     const executor = createToolExecutor([]);
     const manager = new ToolWorkingSetManager({ catalog, toolExecutor: executor, maxVisibleTools: 12 });
     const runState = state("continue after task creation");
     runState.completedSteps = [{
-      toolsUsed: ["git_context_create_task_for_turn"],
+      toolsUsed: ["git_context_create_task"],
     } as LoopState["completedSteps"][number]];
 
     manager.prepareForDecision(runState, { clientId: "c1", runId: "real-run", sessionId: "s1", stepNumber: 2 });
@@ -581,8 +474,8 @@ describe("ToolWorkingSetManager", () => {
     const catalog = new ToolCatalog([
       skill("git-context", [
         tool("git_context_search_tasks"),
-        tool("git_context_create_task_for_turn"),
-        tool("git_context_activate_task_for_turn"),
+        tool("git_context_create_task"),
+        tool("git_context_activate_task"),
       ]),
       skill("filesystem", [
         tool("write_files"),
@@ -597,8 +490,8 @@ describe("ToolWorkingSetManager", () => {
     manager.load({
       toolNames: [
         "git_context_search_tasks",
-        "git_context_create_task_for_turn",
-        "git_context_activate_task_for_turn",
+        "git_context_create_task",
+        "git_context_activate_task",
         "write_files",
       ],
     }, context);

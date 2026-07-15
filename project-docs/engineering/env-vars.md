@@ -87,21 +87,35 @@ Git context:
 
 ```env
 AYATI_GIT_CONTEXT_STORE_DIR=
+AYATI_GIT_CONTEXT_DATABASE=
+AYATI_GIT_CONTEXT_DATA_ROOT=
+AYATI_GIT_CONTEXT_SOCKET=
+AYATI_GIT_CONTEXT_MANAGED=true
+AYATI_GIT_CONTEXT_START_TIMEOUT_MS=10000
+AYATI_GIT_CONTEXT_STOP_TIMEOUT_MS=10000
+AYATI_GIT_CONTEXT_REQUEST_TIMEOUT_MS=30000
 AYATI_GIT_CONTEXT_TIMEZONE=Asia/Kolkata
 AYATI_GIT_CONTEXT_AGENT_ID=local
 ```
 
-Daily git context is always on. It records session conversation in the
-session-store submodule, pending-turn ownership, active task refs, task
-branches, task assets, run summaries, evidence manifests, session summaries
-when present, and commit metadata. The model-facing
-prompt uses grouped paths such as `context.git`, `context.timeline`,
-`context.run`, `context.harness`, `context.tools`, and
-`context.personal`.
+Daily Git context is always on. By default, the daemon starts one independent
+`ayati-git-context` child process and communicates with it through HTTP/JSON on
+a local Unix socket. That process is the sole owner of context SQLite and Git
+writes. The daemon waits for protocol-compatible readiness before accepting
+work, stops the child during normal shutdown, and can restart it once after an
+observed crash. Set `AYATI_GIT_CONTEXT_MANAGED=false` only when an externally
+supervised compatible server already owns the configured socket.
 
 `AYATI_GIT_CONTEXT_STORE_DIR` overrides the context-engine storage directory.
 When unset, Ayati uses `ayati-main/data/context-engine`. Relative paths resolve
 from the backend package root.
+
+`AYATI_GIT_CONTEXT_DATABASE` and `AYATI_GIT_CONTEXT_SOCKET` override the
+SQLite database and Unix-socket paths. Their defaults are `context.sqlite` and
+`git-context.sock` inside the store directory. `AYATI_GIT_CONTEXT_DATA_ROOT`
+overrides the Git repository root; its default is `.ayati-context` inside the
+configured workspace. The three timeout values bound service readiness,
+graceful shutdown, and each HTTP request.
 
 `AYATI_GIT_CONTEXT_TIMEZONE` controls daily session dating for git context.
 
@@ -132,3 +146,9 @@ tracing for local agent development. Feedback traces are disabled unless both
 `AYATI_TEST_AGENT` and `AYATI_FEEDBACK_TRACE` are truthy. By default, large
 payloads are compacted; set `AYATI_FEEDBACK_FULL=1` only when raw payload detail
 is needed for debugging.
+
+Git Context Engine, HTTP, supervisor, and harness lifecycle events use the same
+feedback trace. They include correlation identifiers, cache revisions,
+persistence acknowledgements, durations, and outcomes without requiring a
+separate environment flag. Run `pnpm feedback:git-context` to inspect the
+latest recorded context lifecycle.

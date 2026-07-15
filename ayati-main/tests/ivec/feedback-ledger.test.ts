@@ -93,6 +93,56 @@ describe("AsyncAgentFeedbackLedger", () => {
     expect(latest.seq).toBe(2);
     expect(latest.runId).toBe("run-2");
     expect(latest.path).toBe("feedback/2026-06-23/session-session-1.jsonl");
+    const latestSession = JSON.parse(await readFile(
+      join(tempDir, "feedback", "latest-session.json"),
+      "utf-8",
+    )) as { path?: string };
+    const latestRun = JSON.parse(await readFile(
+      join(tempDir, "feedback", "latest-run.json"),
+      "utf-8",
+    )) as { runId?: string };
+    expect(latestSession.path).toBe(latest.path);
+    expect(latestRun.runId).toBe("run-2");
+  });
+
+  it("does not let process-only events replace the latest session pointer", async () => {
+    const times = [
+      new Date("2026-06-23T10:00:00.000Z"),
+      new Date("2026-06-23T10:00:01.000Z"),
+    ];
+    let index = 0;
+    const ledger = new AsyncAgentFeedbackLedger({
+      dataDir: tempDir,
+      enabled: true,
+      now: () => times[index++] ?? times.at(-1)!,
+    });
+    ledger.record({
+      sessionId: "session-1",
+      seq: 1,
+      stage: "final",
+      event: "reply",
+    });
+    await ledger.flush();
+    ledger.record({
+      stage: "git_context_service",
+      event: "child_shutdown_completed",
+    });
+    await ledger.flush();
+
+    const latest = JSON.parse(await readFile(
+      join(tempDir, "feedback", "latest.json"),
+      "utf-8",
+    )) as { sessionId?: string; path?: string };
+    const process = JSON.parse(await readFile(
+      join(tempDir, "feedback", "latest-process.json"),
+      "utf-8",
+    )) as { sessionId?: string; path?: string };
+    expect(latest).toMatchObject({
+      sessionId: "session-1",
+      path: "feedback/2026-06-23/session-session-1.jsonl",
+    });
+    expect(process.sessionId).toBeUndefined();
+    expect(process.path).toBe("feedback/2026-06-23/session-unknown-session.jsonl");
   });
 
   it("writes a compact latest summary when final feedback summary data is present", async () => {
@@ -396,6 +446,62 @@ describe("AsyncAgentFeedbackLedger", () => {
     ]);
   });
 
+  it("projects cache and persistence telemetry and triages persistence failures", async () => {
+    const ledger = new AsyncAgentFeedbackLedger({
+      dataDir: tempDir,
+      enabled: true,
+      now: () => new Date("2026-06-23T10:00:00.000Z"),
+    });
+    ledger.record({
+      sessionId: "session-1",
+      seq: 5,
+      runId: "run-5",
+      stage: "final",
+      event: "reply",
+      data: { feedbackSummary: { status: "completed", responseKind: "reply", warnings: [] } },
+    });
+    ledger.record({
+      sessionId: "session-1",
+      seq: 5,
+      runId: "run-5",
+      stage: "context_engine",
+      event: "harness_context_refresh_completed",
+      data: {
+        contextRevision: "revision-5",
+        previousRevision: "revision-4",
+        hits: 3,
+        misses: 1,
+        refreshes: 2,
+      },
+    });
+    ledger.record({
+      sessionId: "session-1",
+      seq: 5,
+      runId: "run-5",
+      stage: "context_engine",
+      event: "run_step_persistence_failed",
+      data: { step: 2, message: "database unavailable" },
+    });
+    await ledger.flush();
+
+    const summary = JSON.parse(await readFile(join(tempDir, "feedback", "latest-summary.json"), "utf-8"));
+    expect(summary.contextEngine).toMatchObject({
+      cacheStatus: "fresh",
+      contextRevision: "revision-5",
+      previousContextRevision: "revision-4",
+      cacheHits: 3,
+      cacheMisses: 1,
+      cacheRefreshes: 2,
+    });
+    expect(summary.warnings).toContain("run_step_persistence_failed");
+
+    const triage = JSON.parse(await readFile(join(tempDir, "feedback", "triage-summary.json"), "utf-8"));
+    expect(triage.outcome).toBe("failed");
+    expect(triage.findings).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: "run_step_persistence_failed", severity: "error" }),
+    ]));
+  });
+
   it("turns final runtime errors and guard warning codes into actionable triage", async () => {
     const times = [
       new Date("2026-06-23T10:00:00.000Z"),
@@ -490,7 +596,7 @@ describe("AsyncAgentFeedbackLedger", () => {
       data: {
         repair: {
           code: "R_ASSISTANT_TEXT_TOOL_CALL",
-          blockedTargets: ["git_context_create_task_for_turn"],
+          blockedTargets: ["git_context_create_task"],
         },
       },
     });

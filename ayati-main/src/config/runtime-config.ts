@@ -17,6 +17,9 @@ export const DEFAULT_WORKSPACE_DIR = resolve(projectRoot, "work_space");
 export const DEFAULT_GIT_CONTEXT_STORE_DIR = resolve(projectRoot, "data", "context-engine");
 export const DEFAULT_GIT_CONTEXT_TIMEZONE = "Asia/Kolkata";
 export const DEFAULT_GIT_CONTEXT_AGENT_ID = "local";
+export const DEFAULT_GIT_CONTEXT_START_TIMEOUT_MS = 10_000;
+export const DEFAULT_GIT_CONTEXT_STOP_TIMEOUT_MS = 10_000;
+export const DEFAULT_GIT_CONTEXT_REQUEST_TIMEOUT_MS = 30_000;
 
 export interface HttpRuntimeConfig {
   host: string;
@@ -46,6 +49,14 @@ export interface WorkspaceRuntimeConfig {
 
 export interface GitContextRuntimeConfig {
   storeDir: string;
+  databasePath: string;
+  dataRoot: string;
+  workspaceRoot: string;
+  socketPath: string;
+  managed: boolean;
+  startTimeoutMs: number;
+  stopTimeoutMs: number;
+  requestTimeoutMs: number;
   timezone: string;
   agentId: string;
 }
@@ -61,14 +72,15 @@ export interface AyatiRuntimeConfig {
 
 export function loadAyatiRuntimeConfig(env: NodeJS.ProcessEnv = process.env): AyatiRuntimeConfig {
   const http = loadHttpRuntimeConfig(env);
+  const workspace = loadWorkspaceRuntimeConfig(env);
 
   return {
     http,
     documents: loadDocumentRuntimeConfig(env),
     python: loadPythonRuntimeConfig(env),
     agent: loadAgentRuntimeConfig(env),
-    workspace: loadWorkspaceRuntimeConfig(env),
-    gitContext: loadGitContextRuntimeConfig(env),
+    workspace,
+    gitContext: loadGitContextRuntimeConfig(env, workspace.root),
   };
 }
 
@@ -125,12 +137,48 @@ function loadWorkspaceRuntimeConfig(env: NodeJS.ProcessEnv): WorkspaceRuntimeCon
   };
 }
 
-function loadGitContextRuntimeConfig(env: NodeJS.ProcessEnv): GitContextRuntimeConfig {
+function loadGitContextRuntimeConfig(
+  env: NodeJS.ProcessEnv,
+  workspaceRoot: string,
+): GitContextRuntimeConfig {
+  const storeDir = resolveGitContextStoreDir(env["AYATI_GIT_CONTEXT_STORE_DIR"]);
   return {
-    storeDir: resolveGitContextStoreDir(env["AYATI_GIT_CONTEXT_STORE_DIR"]),
+    storeDir,
+    databasePath: resolveConfiguredPath(
+      env["AYATI_GIT_CONTEXT_DATABASE"],
+      join(storeDir, "context.sqlite"),
+    ),
+    dataRoot: resolveConfiguredPath(
+      env["AYATI_GIT_CONTEXT_DATA_ROOT"] ?? env["AYATI_GIT_CONTEXT_DATA_DIR"],
+      join(workspaceRoot, ".ayati-context"),
+    ),
+    workspaceRoot,
+    socketPath: resolveConfiguredPath(
+      env["AYATI_GIT_CONTEXT_SOCKET"],
+      join(storeDir, "git-context.sock"),
+    ),
+    managed: !isEnvFalse(env["AYATI_GIT_CONTEXT_MANAGED"]),
+    startTimeoutMs: parsePositiveInt(
+      env["AYATI_GIT_CONTEXT_START_TIMEOUT_MS"],
+      DEFAULT_GIT_CONTEXT_START_TIMEOUT_MS,
+    ),
+    stopTimeoutMs: parsePositiveInt(
+      env["AYATI_GIT_CONTEXT_STOP_TIMEOUT_MS"],
+      DEFAULT_GIT_CONTEXT_STOP_TIMEOUT_MS,
+    ),
+    requestTimeoutMs: parsePositiveInt(
+      env["AYATI_GIT_CONTEXT_REQUEST_TIMEOUT_MS"],
+      DEFAULT_GIT_CONTEXT_REQUEST_TIMEOUT_MS,
+    ),
     timezone: trimOptional(env["AYATI_GIT_CONTEXT_TIMEZONE"]) ?? DEFAULT_GIT_CONTEXT_TIMEZONE,
     agentId: trimOptional(env["AYATI_GIT_CONTEXT_AGENT_ID"]) ?? DEFAULT_GIT_CONTEXT_AGENT_ID,
   };
+}
+
+function resolveConfiguredPath(rawValue: string | undefined, fallback: string): string {
+  const normalized = normalizeSpecialPath(rawValue ?? "");
+  if (!normalized) return fallback;
+  return isAbsolute(normalized) ? resolve(normalized) : resolve(projectRoot, normalized);
 }
 
 export function resolveWorkspaceDir(rawValue: string | undefined): string {

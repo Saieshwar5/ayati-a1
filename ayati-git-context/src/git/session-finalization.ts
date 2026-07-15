@@ -7,6 +7,7 @@ export async function commitTaskRunSession(input: {
   sessionId: string;
   conversationId: string;
   taskId: string;
+  workingDirectory: string;
   runId: string;
   outcome: TaskRunOutcome;
   validation: "passed" | "failed" | "not_run";
@@ -58,6 +59,7 @@ function sessionCommitMessage(input: {
   sessionId: string;
   conversationId: string;
   taskId: string;
+  workingDirectory: string;
   runId: string;
   outcome: TaskRunOutcome;
   validation: string;
@@ -84,6 +86,7 @@ function sessionCommitMessage(input: {
     "Session-Id: " + input.sessionId,
     "Conversation-Id: " + input.conversationId,
     "Task-Id: " + input.taskId,
+    "Task-Working-Directory: " + input.workingDirectory,
     "Task-Before: " + input.taskHeadBefore,
     "Task-After: " + input.taskHeadAfter,
     "Run: " + input.runId,

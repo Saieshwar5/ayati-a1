@@ -372,6 +372,24 @@ const MIGRATIONS: Migration[] = [
       "ON session_run_finalizations(phase, updated_at);",
     ].join("\n"),
   },
+  {
+    version: 11,
+    sql: [
+      "ALTER TABLE tasks ADD COLUMN working_path TEXT;",
+      "UPDATE tasks SET working_path = COALESCE(",
+      "  (SELECT checkout_path FROM session_task_mounts",
+      "   WHERE session_task_mounts.task_id = tasks.task_id",
+      "   ORDER BY updated_at DESC LIMIT 1),",
+      "  repository_path || '.worktree'",
+      ");",
+      "CREATE UNIQUE INDEX tasks_working_path ON tasks(working_path);",
+      "ALTER TABLE session_task_mounts ADD COLUMN working_path TEXT;",
+      "UPDATE session_task_mounts SET working_path = COALESCE(",
+      "  (SELECT tasks.working_path FROM tasks WHERE tasks.task_id = session_task_mounts.task_id),",
+      "  checkout_path",
+      ");",
+    ].join("\n"),
+  },
 ];
 
 export function applyMigrations(database: DatabaseSync, now: () => string): void {

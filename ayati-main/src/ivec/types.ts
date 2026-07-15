@@ -21,7 +21,7 @@ import type {
   RunRecorder,
   SessionInputHandle,
 } from "../memory/types.js";
-import type { GitMemorySessionStepRecord, GitMemoryStepRecord, TaskAssetRecord } from "../context-engine/index.js";
+import type { ContextRunStepRecord, TaskAssetRecord } from "../context-engine/index.js";
 import type { DocumentStore } from "../documents/document-store.js";
 import type { PreparedAttachmentRecord, PreparedAttachmentRegistry } from "../documents/prepared-attachment-registry.js";
 import type { ManagedDocumentManifest, PreparedAttachmentSummary } from "../documents/types.js";
@@ -206,6 +206,7 @@ export interface RoutingAttemptState {
 export interface LoopState {
   runId: string;
   currentSeq: number;
+  currentMessageId?: string;
   runClass: RunClass;
   inputKind?: "user_message" | "system_event";
   userMessage: string;
@@ -400,6 +401,8 @@ export interface AgentLoopResult {
   workRunId?: string;
   taskSummary?: AgentTaskSummaryRecord;
   taskAssets?: TaskAssetRecord[];
+  /** Exact assets accepted by deterministic task-completion verification. */
+  verifiedCompletionAssets?: TaskAssetRecord[];
   artifacts?: AgentArtifact[];
   workState?: WorkState;
   completedSteps?: StepSummary[];
@@ -422,14 +425,6 @@ export type OnFinalResponseStreamCallback = (event: FinalResponseStreamEvent) =>
 export interface CreateWorkRunRequest {
   reason: string;
   userMessage: string;
-  activeTaskId?: string;
-  activeBranch?: string;
-  newTask?: {
-    title: string;
-    objective: string;
-    createReason?: string;
-    reasonDetails?: string;
-  };
 }
 
 export interface CreatedWorkRun {
@@ -474,8 +469,12 @@ export interface AgentLoopDeps {
   onProgress?: OnProgressCallback;
   onFinalResponseStream?: OnFinalResponseStreamCallback;
   sessionRunHandle?: MemoryRunHandle;
-  recordSessionStep?: (record: GitMemorySessionStepRecord) => void;
-  recordTaskStep?: (record: GitMemoryStepRecord) => void;
+  recordSessionStep?: (
+    record: ContextRunStepRecord,
+  ) => void | HarnessContextInput | Promise<void | HarnessContextInput>;
+  recordTaskStep?: (
+    record: ContextRunStepRecord,
+  ) => void | HarnessContextInput | Promise<void | HarnessContextInput>;
   feedbackLedger?: AgentFeedbackLedger;
   config?: Partial<LoopConfig>;
   dataDir: string;

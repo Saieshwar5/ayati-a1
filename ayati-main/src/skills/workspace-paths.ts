@@ -73,9 +73,9 @@ function stripWorkspaceAliasPrefix(pathValue: string, root: string): string {
   return parts.join(sep);
 }
 
-export function resolveWorkspacePath(pathValue: string): string {
+export function resolveWorkspacePath(pathValue: string, rootOverride?: string): string {
   const normalized = normalizeSpecialPath(pathValue);
-  const root = ensureWorkspaceRootSync();
+  const root = ensureWorkspaceRootSync(rootOverride);
 
   if (isAbsolute(normalized)) {
     return resolve(normalized);
@@ -94,13 +94,14 @@ export function resolveWorkspaceMutationPath(
   options: {
     allowExternalPath?: boolean;
     operation?: string;
+    root?: string;
   } = {},
 ): WorkspaceMutationPathResult {
   const normalized = normalizeSpecialPath(pathValue);
-  const root = ensureWorkspaceRootSync();
+  const root = ensureWorkspaceRootSync(options.root);
   const resolvedPath = isAbsolute(normalized)
     ? resolve(normalized)
-    : resolveWorkspacePath(normalized);
+    : resolveWorkspacePath(normalized, root);
 
   if (isAbsolute(normalized) && !isWithinWorkspace(resolvedPath, root) && options.allowExternalPath !== true) {
     const operation = options.operation ?? "filesystem mutation";
@@ -118,16 +119,16 @@ export function resolveWorkspaceMutationPath(
   return { ok: true, path: resolvedPath, workspaceRoot: root };
 }
 
-export function resolveWorkspaceCwd(cwd?: string): string {
+export function resolveWorkspaceCwd(cwd?: string, rootOverride?: string): string {
   if (!cwd || cwd.trim().length === 0) {
-    return ensureWorkspaceRootSync();
+    return ensureWorkspaceRootSync(rootOverride);
   }
-  return resolveWorkspacePath(cwd);
+  return resolveWorkspacePath(cwd, rootOverride);
 }
 
-export function resolveWorkspaceRoots(roots?: string[]): string[] {
+export function resolveWorkspaceRoots(roots?: string[], rootOverride?: string): string[] {
   if (!roots || roots.length === 0) {
-    return [ensureWorkspaceRootSync()];
+    return [ensureWorkspaceRootSync(rootOverride)];
   }
-  return roots.map((root) => resolveWorkspacePath(root));
+  return roots.map((root) => resolveWorkspacePath(root, rootOverride));
 }

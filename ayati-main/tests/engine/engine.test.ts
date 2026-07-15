@@ -655,7 +655,7 @@ function extractStateViewFromProviderCall(provider: LlmProvider, callIndex: numb
 
 function activateTaskForTurnFixtureTool(): ToolDefinition {
   return {
-    name: "git_context_activate_task_for_turn",
+    name: "git_context_activate_task",
     description: "Fixture turn-aware task activation tool.",
     inputSchema: {
       type: "object",
@@ -1106,7 +1106,7 @@ describe("IVecEngine", () => {
           summary: "Pending-turn routing tools executed successfully.",
           newFacts: ["Pending-turn routing tools executed successfully."],
           artifacts: [],
-          toolsUsed: ["git_context_create_task_for_turn"],
+          toolsUsed: ["git_context_create_task"],
           toolSuccessCount: 1,
           toolFailureCount: 0,
         }],
@@ -1139,7 +1139,7 @@ describe("IVecEngine", () => {
                 mode: "single",
                 calls: [{
                   id: "route_upload",
-                  tool: "git_context_activate_task_for_turn",
+                  tool: "git_context_activate_task",
                   input: {
                     sessionId: "S-20260627-local",
                     taskId: "W-20260627-0002",
@@ -1148,7 +1148,7 @@ describe("IVecEngine", () => {
                   dependsOn: [],
                   purpose: "Bind the pending user turn to the upload UI task.",
                 }],
-                allowedTools: ["git_context_activate_task_for_turn"],
+                allowedTools: ["git_context_activate_task"],
                 assertions: [],
               },
             }),
@@ -1161,7 +1161,7 @@ describe("IVecEngine", () => {
                 mode: "single",
                 calls: [{
                   id: "activate_invoice",
-                  tool: "git_context_activate_task_for_turn",
+                  tool: "git_context_activate_task",
                   input: {
                     taskId: "W-20260627-0001",
                     reason: "continue_active_task",
@@ -1169,7 +1169,7 @@ describe("IVecEngine", () => {
                   dependsOn: [],
                   purpose: "Bind the deferred invoice note write to the active invoice task.",
                 }],
-                allowedTools: ["git_context_activate_task_for_turn"],
+                allowedTools: ["git_context_activate_task"],
                 assertions: [],
               },
             }),
@@ -1233,7 +1233,7 @@ describe("IVecEngine", () => {
     }
   });
 
-  it("auto-binds chat action tools to the active task before execution", async () => {
+  it("requires explicit task activation before a deferred mutation executes", async () => {
     const dataDir = mkdtempSync(join(tmpdir(), "ayati-eng-active-autobind-"));
     try {
       const outputPath = join(dataDir, "invoice-note.txt");
@@ -1269,7 +1269,7 @@ describe("IVecEngine", () => {
 	                mode: "single",
 	                calls: [{
 	                  id: "activate_invoice",
-	                  tool: "git_context_activate_task_for_turn",
+	                  tool: "git_context_activate_task",
 	                  input: {
 	                    taskId: "W-20260627-0001",
 	                    reason: "continue_active_task",
@@ -1277,7 +1277,7 @@ describe("IVecEngine", () => {
 	                  dependsOn: [],
 	                  purpose: "Bind the deferred invoice note write to the active invoice task.",
 	                }],
-	                allowedTools: ["git_context_activate_task_for_turn"],
+	                allowedTools: ["git_context_activate_task"],
 	                assertions: [],
 	              },
 	            }),
@@ -1325,9 +1325,6 @@ describe("IVecEngine", () => {
       expect(chatContextRuntime.completeTaskRun).toHaveBeenCalled();
       expect(chatContextRuntime.routeTaskTurn).toHaveBeenCalledWith(expect.objectContaining({
         autoOnly: true,
-      }));
-      expect(chatContextRuntime.activateTaskTurn).toHaveBeenCalledWith(expect.objectContaining({
-        taskId: "W-20260627-0001",
       }));
       expect(readFileSync(outputPath, "utf-8")).toBe("Invoice follow-up note.");
     } finally {
@@ -1720,10 +1717,7 @@ describe("IVecEngine", () => {
         status: "completed",
         assistantResponse: "The reminder was reviewed; no task update is needed.",
       }));
-      expect(systemEventContextRuntime.recordAssistantMessage).toHaveBeenCalledWith(expect.objectContaining({
-        runId: "R-20260627-0001",
-        message: "The reminder was reviewed; no task update is needed.",
-      }));
+      expect(systemEventContextRuntime.recordAssistantMessage).not.toHaveBeenCalled();
       expect(onReply).toHaveBeenCalledWith("c1", {
         type: "notification",
         content: "The reminder was reviewed; no task update is needed.",

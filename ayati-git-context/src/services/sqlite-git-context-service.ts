@@ -1,6 +1,7 @@
 import { join } from "node:path";
 import {
   GIT_CONTEXT_PROTOCOL_VERSION,
+  type ActivateTaskRunRequest,
   type AcquireMutationAuthorityRequest,
   type AcquireMutationAuthorityResponse,
   type ActiveContext,
@@ -10,6 +11,7 @@ import {
   type AppendConversationResponse,
   type CreateTaskRequest,
   type CreateTaskResponse,
+  type CreateTaskRunRequest,
   type EnsureActiveSessionRequest,
   type EnsureActiveSessionResponse,
   type FinalizeSessionRunRequest,
@@ -20,6 +22,8 @@ import {
   type GetTaskRequest,
   type GetTaskResponse,
   type HealthResponse,
+  type ListTasksRequest,
+  type ListTasksResponse,
   type MountTaskRequest,
   type MountTaskResponse,
   type RecordRunStepRequest,
@@ -29,6 +33,7 @@ import {
   type SnapshotTaskRunEvidenceResponse,
   type StartRunRequest,
   type StartRunResponse,
+  type SelectedTaskRunResponse,
   type VerifyMutationRequest,
   type VerifyMutationResponse,
 } from "../contracts.js";
@@ -68,17 +73,27 @@ import {
 } from "./session-policy.js";
 import { SessionSummaryHotCache } from "./session-summary-hot-cache.js";
 import { SessionRunLifecycleService } from "./session-run-lifecycle-service.js";
+import { TaskRunSelectionService } from "./task-run-selection-service.js";
+import { readTaskContext } from "../tasks/task-context-reader.js";
+import { readTaskMount } from "../repositories/task-mount-records.js";
+import { GitContextObserver } from "../observability.js";
+import { GitContextServiceObservability } from "./service-observability.js";
+import { buildReadContext } from "./read-context-builder.js";
 
 export interface SqliteGitContextServiceOptions {
   database: ContextDatabase;
   dataRoot: string;
+  workspaceRoot?: string;
   now?: () => string;
+  observer?: GitContextObserver;
 }
 
 export class SqliteGitContextService implements GitContextService {
   private readonly database: ContextDatabase;
   private readonly dataRoot: string;
   private readonly now: () => string;
+  private readonly observer: GitContextObserver;
+  private readonly events: GitContextServiceObservability;
   private readonly queue = new SerializedWriteQueue();
   private readonly contextCache = new ActiveContextCache();
   private readonly sessionRegistry: SessionRegistryCache;
@@ -86,6 +101,7 @@ export class SqliteGitContextService implements GitContextService {
   private readonly sessionSummaryCache = new SessionSummaryHotCache();
   private readonly sessionRuns: SessionRunLifecycleService;
   private readonly taskLifecycle: TaskLifecycleService;
+  private readonly taskSelection: TaskRunSelectionService;
   private readonly mutationBoundary: MutationBoundaryService;
   private readonly taskCheckpoint: TaskCheckpointService;
   private readonly taskRunEvidence: TaskRunEvidenceService;
@@ -97,14 +113,23 @@ export class SqliteGitContextService implements GitContextService {
     this.database = options.database;
     this.dataRoot = options.dataRoot;
     this.now = options.now ?? (() => new Date().toISOString());
+    this.observer = options.observer ?? new GitContextObserver("git-context-engine");
+    this.events = new GitContextServiceObservability(this.observer);
     this.sessionRegistry = new SessionRegistryCache(this.database);
     this.conversationCache = new ConversationHotCache(this.database);
     this.sessionRuns = new SessionRunLifecycleService(this.database);
     this.taskLifecycle = new TaskLifecycleService({
       database: this.database,
       dataRoot: this.dataRoot,
+      workspaceRoot: options.workspaceRoot ?? join(this.dataRoot, "workspace"),
       now: this.now,
     });
+    this.taskSelection = new TaskRunSelectionService(
+      this.database,
+      this.taskLifecycle,
+      this.sessionRuns,
+      this.observer,
+    );
     this.mutationBoundary = new MutationBoundaryService(this.database);
     this.taskCheckpoint = new TaskCheckpointService(this.database);
     this.taskRunEvidence = new TaskRunEvidenceService(this.database);
@@ -136,12 +161,19 @@ export class SqliteGitContextService implements GitContextService {
 
   async getActiveContext(input: GetActiveContextRequest): Promise<ActiveContext> {
     return await this.queue.enqueue(async () => {
+      const startedAt = Date.now();
       await this.ensureStartupRecovery();
       const sessionRecord = input.sessionId
         ? this.sessionRegistry.getSession(this.database, input.sessionId)
         : this.sessionRegistry.getLatestLiveSession();
       if (!sessionRecord) {
         return {
+          contextRevision: activeContextRevision({
+            head: null,
+            status: "unavailable",
+            conversations: [],
+            taskCandidates: [],
+          }).revision,
           session: null,
           warnings: [],
         };
@@ -154,17 +186,25 @@ export class SqliteGitContextService implements GitContextService {
         this.database,
         session.sessionId,
       );
+      const taskCandidates = this.taskLifecycle.listTasks({ limit: 20 }).tasks;
+      const readContext = buildReadContext(this.database, session.sessionId);
       const { revision, pendingDigest } = activeContextRevision({
         head: session.head,
         status: session.status,
         conversations,
+        readContext,
         ...(run ? { run } : {}),
+        taskCandidates,
       });
       const cached = this.contextCache.get(session.sessionId, revision);
       if (cached) {
+        this.events.cacheHit(session.sessionId, revision);
         return cached;
       }
+      const previousRevision = this.contextCache.latestRevision(session.sessionId);
+      this.events.cacheMiss(session.sessionId, revision, previousRevision);
       const context: ActiveContext = {
+        contextRevision: revision,
         session: {
           session,
           summary: sessionSummary.summary,
@@ -181,9 +221,20 @@ export class SqliteGitContextService implements GitContextService {
               run,
             }
           : {}),
+        ...(run?.run.taskId
+          ? {
+              activeTask: await readTaskContext(
+                (await this.taskLifecycle.getTask({ taskId: run.run.taskId })).task,
+                readTaskMount(this.database, session.sessionId, run.run.taskId)?.workingPath,
+              ),
+            }
+          : {}),
+        readContext,
+        taskCandidates,
         warnings: [],
       };
       this.contextCache.set(session.sessionId, revision, context);
+      this.events.cacheBuilt(context, Date.now() - startedAt, previousRevision);
       return context;
     });
   }
@@ -210,13 +261,22 @@ export class SqliteGitContextService implements GitContextService {
           session,
           created: pending.result.created,
         };
-        this.contextCache.clear();
-        return completeRecoverableIdempotent({
+        this.invalidateContext("session_ensured", { sessionId: session.sessionId });
+        const completed = completeRecoverableIdempotent({
           database: this.database,
           requestId: input.requestId,
           result,
           now,
         });
+        this.events.emit({
+          level: "info",
+          event: "session_ensured",
+          requestId: input.requestId,
+          sessionId: session.sessionId,
+          outcome: "succeeded",
+          data: { created: completed.created, status: completed.session.status, head: completed.session.head },
+        });
+        return completed;
       } catch (error) {
         markRecoverableIdempotencyFailed({
           database: this.database,
@@ -241,13 +301,18 @@ export class SqliteGitContextService implements GitContextService {
         execute: () => {
           const session = this.requireOpenSession(input.sessionId);
           verifyExpectedHead(session, input.expectedHead);
-          return {
-            conversation: appendConversationMessage(this.database, input),
-          };
+          return appendConversationMessage(this.database, input);
         },
       });
-      this.conversationCache.refreshSession(this.database, input.sessionId);
-      this.contextCache.clear();
+      const conversations = this.conversationCache.append(
+        input.sessionId,
+        pending.result.conversation,
+        pending.result.message,
+      );
+      const currentConversations = conversations.length > 0
+        ? conversations
+        : this.conversationCache.refreshSession(this.database, input.sessionId);
+      this.invalidateContext("conversation_persisted", { sessionId: input.sessionId });
       try {
         const conversation = readConversation(
           this.database,
@@ -256,13 +321,45 @@ export class SqliteGitContextService implements GitContextService {
         if (!conversation) {
           throw new Error("Persisted conversation could not be read.");
         }
-        const result: AppendConversationResponse = { conversation };
-        return completeRecoverableIdempotent({
+        const session = this.requireOpenSession(input.sessionId);
+        const run = this.sessionRuns.getActive(input.sessionId);
+        const taskCandidates = this.taskLifecycle.listTasks({ limit: 20 }).tasks;
+        const readContext = buildReadContext(this.database, input.sessionId);
+        const revision = activeContextRevision({
+          head: session.head,
+          status: session.status,
+          conversations: currentConversations,
+          readContext,
+          ...(run ? { run } : {}),
+          taskCandidates,
+        });
+        const result: AppendConversationResponse = {
+          conversation,
+          message: pending.result.message,
+          contextRevision: revision.revision,
+          pendingDigest: revision.pendingDigest,
+        };
+        const completed = completeRecoverableIdempotent({
           database: this.database,
           requestId: input.requestId,
           result,
           now: input.at,
         });
+        this.events.emit({
+          level: "info",
+          event: "conversation_persisted",
+          requestId: input.requestId,
+          sessionId: input.sessionId,
+          conversationId: completed.conversation.conversationId,
+          outcome: "succeeded",
+          data: {
+            role: input.role,
+            conversationSequence: completed.conversation.sequence,
+            status: completed.conversation.status,
+            contentBytes: Buffer.byteLength(input.content),
+          },
+        });
+        return completed;
       } catch (error) {
         markRecoverableIdempotencyFailed({
           database: this.database,
@@ -278,7 +375,59 @@ export class SqliteGitContextService implements GitContextService {
       await this.ensureStartupRecovery();
       const session = this.requireOpenSession(input.sessionId);
       verifyExpectedHead(session, input.expectedHead);
-      return await this.taskLifecycle.createTask(input);
+      const result = await this.taskLifecycle.createTask(input);
+      this.invalidateContext("task_created", { sessionId: input.sessionId, taskId: result.task.taskId });
+      this.events.emit({
+        level: "info",
+        event: "task_repository_created",
+        requestId: input.requestId,
+        sessionId: input.sessionId,
+        taskId: result.task.taskId,
+        outcome: "succeeded",
+        data: { created: result.created, title: result.task.title, taskHead: result.task.head },
+      });
+      return result;
+    });
+  }
+
+  async createTaskRun(input: CreateTaskRunRequest): Promise<SelectedTaskRunResponse> {
+    return await this.queue.enqueue(async () => {
+      await this.ensureStartupRecovery();
+      const session = this.requireOpenSession(input.sessionId);
+      verifyExpectedHead(session, input.expectedHead);
+      const result = await this.taskSelection.create(input, session);
+      this.sessionRuns.refresh(result.run.runId);
+      this.invalidateContext("task_run_created", {
+        sessionId: input.sessionId,
+        runId: result.run.runId,
+        taskId: result.task.taskId,
+      });
+      this.events.taskSelected("created", result);
+      return result;
+    });
+  }
+
+  async activateTaskRun(input: ActivateTaskRunRequest): Promise<SelectedTaskRunResponse> {
+    return await this.queue.enqueue(async () => {
+      await this.ensureStartupRecovery();
+      const session = this.requireOpenSession(input.sessionId);
+      verifyExpectedHead(session, input.expectedHead);
+      const result = await this.taskSelection.activate(input, session);
+      this.sessionRuns.refresh(result.run.runId);
+      this.invalidateContext("task_run_activated", {
+        sessionId: input.sessionId,
+        runId: result.run.runId,
+        taskId: result.task.taskId,
+      });
+      this.events.taskSelected("activated", result);
+      return result;
+    });
+  }
+
+  async listTasks(input: ListTasksRequest): Promise<ListTasksResponse> {
+    return await this.queue.enqueue(async () => {
+      await this.ensureStartupRecovery();
+      return this.taskLifecycle.listTasks(input);
     });
   }
 
@@ -294,7 +443,23 @@ export class SqliteGitContextService implements GitContextService {
       await this.ensureStartupRecovery();
       const session = this.requireOpenSession(input.sessionId);
       verifyExpectedHead(session, input.expectedHead);
-      return await this.taskLifecycle.mountTask(input, session);
+      const result = await this.taskLifecycle.mountTask(input, session);
+      this.invalidateContext("task_mounted", { sessionId: input.sessionId, taskId: input.taskId });
+      this.events.emit({
+        level: "info",
+        event: "task_mounted",
+        requestId: input.requestId,
+        sessionId: input.sessionId,
+        taskId: input.taskId,
+        outcome: "succeeded",
+        data: {
+          created: result.created,
+          checkoutPath: result.mount.checkoutPath,
+          workingPath: result.mount.workingPath,
+          mountedHead: result.mount.mountedHead,
+        },
+      });
+      return result;
     });
   }
 
@@ -307,7 +472,21 @@ export class SqliteGitContextService implements GitContextService {
       verifyExpectedHead(session, input.expectedHead);
       const result = await this.mutationBoundary.acquire(input, session);
       this.sessionRuns.refresh(input.runId);
-      this.contextCache.clear();
+      this.invalidateContext("mutation_authority_acquired", {
+        sessionId: input.sessionId,
+        runId: input.runId,
+        taskId: input.taskId,
+      });
+      this.events.emit({
+        level: "info",
+        event: "mutation_authority_acquired",
+        requestId: input.requestId,
+        sessionId: input.sessionId,
+        runId: input.runId,
+        taskId: input.taskId,
+        outcome: "succeeded",
+        data: { authorityId: result.authority.authorityId, targetCount: input.targets.length },
+      });
       return result;
     });
   }
@@ -316,7 +495,22 @@ export class SqliteGitContextService implements GitContextService {
     return await this.queue.enqueue(async () => {
       await this.ensureStartupRecovery();
       const result = await this.mutationBoundary.verify(input);
-      this.contextCache.clear();
+      this.invalidateContext("mutation_verified", {});
+      this.events.emit({
+        level: result.verified ? "info" : "warn",
+        event: "mutation_verified",
+        requestId: input.requestId,
+        outcome: result.verified ? "succeeded" : "failed",
+        data: {
+          authorityId: result.authorityId,
+          verified: result.verified,
+          mutationOutcome: result.outcome,
+          changedPathCount: result.provenance.created.length
+            + result.provenance.modified.length
+            + result.provenance.deleted.length
+            + result.provenance.renamed.length,
+        },
+      });
       return result;
     });
   }
@@ -327,7 +521,24 @@ export class SqliteGitContextService implements GitContextService {
     return await this.queue.enqueue(async () => {
       await this.ensureStartupRecovery();
       const result = await this.taskCheckpoint.checkpoint(input);
-      this.contextCache.clear();
+      this.invalidateContext("task_mutation_staged", {
+        runId: result.runId,
+        taskId: result.taskId,
+      });
+      this.events.emit({
+        level: "info",
+        event: "task_mutation_staged",
+        requestId: input.requestId,
+        runId: result.runId,
+        taskId: result.taskId,
+        outcome: "succeeded",
+        data: {
+          authorityId: input.authorityId,
+          baseHead: result.beforeHead,
+          stagedPaths: result.stagedPaths,
+          purpose: input.purpose,
+        },
+      });
       return result;
     });
   }
@@ -348,12 +559,38 @@ export class SqliteGitContextService implements GitContextService {
       await this.ensureStartupRecovery();
       const session = this.requireOpenSession(input.sessionId);
       let result: FinalizeTaskRunResponse;
+      this.events.emit({
+        level: "info",
+        event: "task_finalization_started",
+        requestId: input.requestId,
+        sessionId: input.sessionId,
+        runId: input.runId,
+        taskId: input.taskId,
+        outcome: "started",
+        data: { requestedOutcome: input.outcome, validation: input.validation },
+      });
       try {
         result = await this.taskRunFinalization.finalize(input, session);
+      } catch (error) {
+        this.events.emit({
+          level: "error",
+          event: "task_finalization_failed",
+          requestId: input.requestId,
+          sessionId: input.sessionId,
+          runId: input.runId,
+          taskId: input.taskId,
+          outcome: "failed",
+          message: error instanceof Error ? error.message : String(error),
+        });
+        throw error;
       } finally {
         this.sessionRuns.remove(input.runId);
         this.conversationCache.refreshSession(this.database, input.sessionId);
-        this.contextCache.clear();
+        this.invalidateContext("task_finalization", {
+          sessionId: input.sessionId,
+          runId: input.runId,
+          taskId: input.taskId,
+        });
       }
       const updatedSession = readSessionRecord(this.database, input.sessionId);
       if (updatedSession) {
@@ -364,6 +601,23 @@ export class SqliteGitContextService implements GitContextService {
           this.sessionSummaryCache.invalidate(input.sessionId);
         }
       }
+      this.events.emit({
+        level: "info",
+        event: "task_finalization_completed",
+        requestId: input.requestId,
+        sessionId: input.sessionId,
+        runId: input.runId,
+        taskId: input.taskId,
+        outcome: "succeeded",
+        data: {
+          outcome: result.outcome,
+          taskHeadBefore: result.taskHeadBefore,
+          taskHeadAfter: result.taskHeadAfter,
+          taskCommit: result.taskFinalizationCommit,
+          sessionCommit: result.sessionCommit,
+          readContextReset: true,
+        },
+      });
       return result;
     });
   }
@@ -376,10 +630,20 @@ export class SqliteGitContextService implements GitContextService {
       const session = this.requireOpenSession(input.sessionId);
       verifyExpectedHead(session, input.expectedHead);
       try {
-        return await this.sessionRuns.finalize(input, session);
+        const result = await this.sessionRuns.finalize(input, session);
+        this.events.emit({
+          level: "info",
+          event: "session_run_finalized",
+          requestId: input.requestId,
+          sessionId: input.sessionId,
+          runId: input.runId,
+          outcome: "succeeded",
+          data: { stepCount: result.stepCount, status: result.status },
+        });
+        return result;
       } finally {
         this.conversationCache.refreshSession(this.database, input.sessionId);
-        this.contextCache.clear();
+        this.invalidateContext("session_run_finalized", { sessionId: input.sessionId, runId: input.runId });
       }
     });
   }
@@ -390,7 +654,17 @@ export class SqliteGitContextService implements GitContextService {
       const session = this.requireOpenSession(input.sessionId);
       verifyExpectedHead(session, input.expectedHead);
       const result = this.sessionRuns.start(input, input.at ?? this.now());
-      this.contextCache.clear();
+      this.invalidateContext("session_run_started", { sessionId: input.sessionId, runId: result.run.runId });
+      this.events.emit({
+        level: "info",
+        event: "session_run_started",
+        requestId: input.requestId,
+        sessionId: input.sessionId,
+        conversationId: input.conversationId,
+        runId: result.run.runId,
+        outcome: "succeeded",
+        data: { runClass: result.run.runClass, trigger: input.trigger },
+      });
       return result;
     });
   }
@@ -401,7 +675,8 @@ export class SqliteGitContextService implements GitContextService {
       const session = this.requireOpenSession(input.sessionId);
       verifyExpectedHead(session, input.expectedHead);
       const result = this.sessionRuns.recordStep(input);
-      this.contextCache.clear();
+      this.invalidateContext("run_step_persisted", { sessionId: input.sessionId, runId: input.runId });
+      this.events.runStepPersisted(input, result);
       return result;
     });
   }
@@ -418,19 +693,40 @@ export class SqliteGitContextService implements GitContextService {
 
   private async ensureStartupRecovery(): Promise<void> {
     if (this.startupRecovered) return;
-    const session = this.sessionRegistry.getLatestLiveSession();
-    if (session) {
-      await this.ensureRepositoryForSession(session.sessionId);
+    const startedAt = Date.now();
+    this.events.emit({ level: "info", event: "startup_recovery_started", outcome: "started" });
+    try {
+      const session = this.sessionRegistry.getLatestLiveSession();
+      if (session) {
+        await this.ensureRepositoryForSession(session.sessionId);
+      }
+      await synchronizePendingConversationFiles({
+        database: this.database,
+        now: this.now,
+      });
+      if (session) {
+        this.conversationCache.refreshSession(this.database, session.sessionId);
+      }
+      await this.taskLifecycle.recoverInitializingState();
+      this.startupRecovered = true;
+      this.events.emit({
+        level: "info",
+        event: "startup_recovery_completed",
+        sessionId: session?.sessionId,
+        durationMs: Date.now() - startedAt,
+        outcome: "succeeded",
+        data: { liveSessionFound: Boolean(session) },
+      });
+    } catch (error) {
+      this.events.emit({
+        level: "error",
+        event: "startup_recovery_failed",
+        durationMs: Date.now() - startedAt,
+        outcome: "failed",
+        message: error instanceof Error ? error.message : String(error),
+      });
+      throw error;
     }
-    await synchronizePendingConversationFiles({
-      database: this.database,
-      now: this.now,
-    });
-    if (session) {
-      this.conversationCache.refreshSession(this.database, session.sessionId);
-    }
-    await this.taskLifecycle.recoverInitializingState();
-    this.startupRecovered = true;
   }
 
   private async ensureRepositoryForSession(sessionId: string): Promise<SessionRef> {
@@ -468,11 +764,22 @@ export class SqliteGitContextService implements GitContextService {
       await this.sessionSummaryCache.refresh(session);
       return session;
     }
-    this.contextCache.clear();
+    this.invalidateContext("session_head_changed", { sessionId });
     const updated = updateSessionHead(this.database, sessionId, head);
     this.sessionRegistry.updateHead(sessionId, head);
     await this.sessionSummaryCache.refresh(updated);
     return updated;
+  }
+
+  private invalidateContext(
+    reason: string,
+    input: { sessionId?: string; runId?: string; taskId?: string },
+  ): void {
+    const previousRevision = input.sessionId
+      ? this.contextCache.latestRevision(input.sessionId)
+      : undefined;
+    this.contextCache.clear();
+    this.events.cacheInvalidated(reason, { ...input, previousRevision });
   }
 
   private ensureSession(

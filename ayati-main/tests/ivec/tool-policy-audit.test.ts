@@ -9,7 +9,7 @@ describe("tool policy audit", () => {
   it("allows read-only tools during session enquiry", () => {
     const audit = auditToolPolicy({
       mode: mode("session_only"),
-      selectedTools: ["read_files", "git_context_read_task"],
+      selectedTools: ["read_files"],
     });
 
     expect(audit.phase).toBe("enquiry");
@@ -50,7 +50,7 @@ describe("tool policy audit", () => {
   it("allows routing mutations during routing mode", () => {
     const audit = auditToolPolicy({
       mode: mode("fresh_session_routing"),
-      selectedTools: ["git_context_create_task_for_turn"],
+      selectedTools: ["git_context_create_task"],
     });
 
     expect(audit.phase).toBe("routing");
@@ -73,7 +73,7 @@ describe("tool policy audit", () => {
           guidance: "test routing window",
         },
       },
-      selectedTools: ["write_files", "git_context_create_task_for_turn"],
+      selectedTools: ["write_files", "git_context_create_task"],
     });
 
     expect(audit.phase).toBe("task_run");
@@ -83,7 +83,7 @@ describe("tool policy audit", () => {
   it("flags routing mutations after task work is bound", () => {
     const audit = auditToolPolicy({
       mode: mode("task_run", true, "bound"),
-      selectedTools: ["git_context_create_task_for_turn", "git_context_read_task"],
+      selectedTools: ["git_context_create_task"],
     });
 
     expect(audit.phase).toBe("task_run");
@@ -95,12 +95,12 @@ describe("tool policy audit", () => {
       expect.objectContaining({
         code: "routing_mutation_after_task_bound",
         severity: "error",
-        tools: ["git_context_create_task_for_turn"],
+        tools: ["git_context_create_task"],
       }),
       expect.objectContaining({
         code: "tool_not_allowed_in_phase",
         severity: "warning",
-        tools: ["git_context_create_task_for_turn"],
+        tools: ["git_context_create_task"],
       }),
     ]));
   });

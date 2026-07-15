@@ -220,8 +220,8 @@ function validatePendingRoutingAction(input: ExecutePendingRoutingActionInput): 
       }
     } else if (!isGitContextAllowedDuringPendingRouting(call.tool)) {
       return [
-        `Tool '${call.tool}' cannot run while the current git-memory pending turn is unbound or clarifying.`,
-        "Use git-context read/search tools and then git_context_activate_task_for_turn or git_context_create_task_for_turn before task execution. Ask the user directly if task ownership is unclear.",
+        `Tool '${call.tool}' cannot run while the current task ownership is unbound or clarifying.`,
+        "Inspect task candidates, then call git_context_activate_task or git_context_create_task before execution. Ask the user if task ownership is unclear.",
       ].join(" ");
     }
     const validation = input.deps.toolExecutor.validate(call.tool, call.input, input.toolContext);

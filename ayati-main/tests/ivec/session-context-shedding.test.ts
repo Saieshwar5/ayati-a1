@@ -13,6 +13,7 @@ describe("session context shedding", () => {
       meta: { sessionId: "session-1", assetCount: 2 },
       summary: { text: "Large session snapshot.", coveredUntilSeq: 8 },
       recentTaskRuns: checkpoints,
+      recentCommits: Array.from({ length: 5 }, (_, index) => sessionCommit(5 - index)),
       attachments: { count: 2, recent: [{ sessionAssetId: "asset-1" }] },
       activity: {
         recent: [{
@@ -28,6 +29,7 @@ describe("session context shedding", () => {
 
     expect(shedSessionContext(session)).toEqual({
       meta: session.meta,
+      recentCommits: [sessionCommit(5)],
       recentTaskRuns: [checkpoints[4]],
       attachments: session.attachments,
       activity: { recent: [] },
@@ -55,6 +57,7 @@ describe("session context shedding", () => {
     expect(stateView).toEqual(sourceBefore);
     expect(projected.context.git?.session).not.toHaveProperty("summary");
     expect(projected.context.git?.session.recentTaskRuns?.map((item) => item.runId)).toEqual(["run-5"]);
+    expect(projected.context.git?.session.recentCommits?.map((item) => item.runId)).toEqual(["run-5"]);
     expect(projected.context.git?.session.activity.recent).toEqual([]);
     expect(projected.context.git?.session.attachments).toEqual(
       stateView.context.git?.session.attachments,
@@ -67,6 +70,8 @@ describe("session context shedding", () => {
       removedSummary: true,
       removedCheckpointCount: 4,
       retainedCheckpointId: "checkpoint-5",
+      removedRecentCommitCount: 4,
+      retainedRecentCommit: "commit-5",
       removedActivityCount: 1,
     });
   });
@@ -87,6 +92,7 @@ function stateWithSession(): AgentStateView {
           meta: { sessionId: "session-1", assetCount: 1 },
           summary: { text: "Session snapshot.", coveredUntilSeq: 8 },
           recentTaskRuns: Array.from({ length: 5 }, (_, index) => checkpoint(index + 1)),
+          recentCommits: Array.from({ length: 5 }, (_, index) => sessionCommit(5 - index)),
           attachments: { count: 1, recent: [] },
           activity: {
             recent: [{
@@ -113,6 +119,16 @@ function stateWithSession(): AgentStateView {
         workState: { status: "not_done", openWork: ["Finish it."], nextStep: "Continue." },
       },
     },
+  };
+}
+
+function sessionCommit(index: number) {
+  return {
+    commit: "commit-" + index,
+    subject: "session: task work " + index,
+    summary: "Task work " + index,
+    runId: "run-" + index,
+    workId: "work-" + index,
   };
 }
 

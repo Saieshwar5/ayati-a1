@@ -61,8 +61,6 @@ import {
 } from "../../skills/builtins/git-context/tool-policy.js";
 import {
   deferredMutationToolNames,
-  mutationTargetPathsForAction,
-  shouldAutoBindActiveTaskArtifactMutation,
   shouldDeferPreTaskMutation,
   summarizeRoutingAttempts,
   updateRoutingAttemptsFromActOutput,
@@ -96,6 +94,7 @@ import {
 } from "./final-response-policy.js";
 import {
   buildTaskAssets,
+  buildVerifiedCompletionAssets,
   buildTaskSummaryRecord,
 } from "./task-run-result.js";
 import {
@@ -750,14 +749,9 @@ export async function runAgentLoop(
     const runtimeMode = detectRuntimeCapabilityMode({ state, workRunHandle, sessionRunHandle });
     const freshSessionWithoutActiveTask = isFreshSessionRoutingMode(runtimeMode);
 
-    const autoBindActiveTaskArtifactMutation = shouldAutoBindActiveTaskArtifactMutation(state, decision);
-    if (shouldDeferPreTaskMutation(state, decision, workRunHandle) && !autoBindActiveTaskArtifactMutation) {
+    if (shouldDeferPreTaskMutation(state, decision, workRunHandle)) {
       if (decision.kind !== "act") {
         continue;
-      }
-      if (!sessionRunHandle?.runId) {
-        await ensureSessionRun("mutation_deferred_for_task_routing");
-        syncHarnessContext(state, deps, inputHandle);
       }
       if (state.deferredMutation) {
         recordDeferredMutationRoutingRepair({
@@ -804,21 +798,6 @@ export async function runAgentLoop(
       }
       continue;
     }
-    if (autoBindActiveTaskArtifactMutation && decision.kind === "act") {
-      recordFeedback(deps, inputHandle, sessionRunHandle?.runId, "guard", "active_task_artifact_auto_bind", {
-        iteration: state.iteration,
-        reason: "mutation_targets_active_task_artifacts",
-        action: summarizeAgentAction(decision.action),
-        mutationTargets: mutationTargetPathsForAction(decision.action),
-        activeTaskId: state.harnessContext.contextEngine?.focus.status === "active"
-          ? state.harnessContext.contextEngine.focus.workId
-          : undefined,
-        contextEngine: buildContextEngineFeedbackSummary({
-          context: state.harnessContext.contextEngine,
-        }),
-      });
-    }
-
     if (freshSessionWithoutActiveTask && !runtimeMode.allowToolLoading && decision.kind === "load_tools") {
       recordFreshSessionToolRepair({
         deps,
@@ -1065,10 +1044,11 @@ export async function runAgentLoop(
       const compactedStep = compactStepSummaryForState(stepResult.stepSummary);
       recordCompactionMetric(metrics, "completedStepSummary", measureJson(stepResult.stepSummary), measureJson(compactedStep), { step: state.iteration });
       state.completedSteps.push(compactedStep);
-      recordSessionStep(deps, ensuredSessionRun, decision.action, stepResult, {
+      const persistedContext = await recordSessionStep(deps, ensuredSessionRun, decision.action, stepResult, {
         startedAt: stepStartedAt,
         completedAt: stepCompletedAt,
       });
+      applyPersistedStepContext(deps, state, inputHandle, persistedContext);
 
       recordPlanModeMetric(metrics, decision.action.mode, {
         step: state.iteration,
@@ -1298,15 +1278,17 @@ export async function runAgentLoop(
         const nonRoutingStepStartedAt = new Date().toISOString();
         const nonRoutingStepCompletedAt = nonRoutingStepStartedAt;
         if (state.runClass === "task") {
-          recordTaskStep(deps, state, decision.action, stepResult, {
+          const persistedContext = await recordTaskStep(deps, state, decision.action, stepResult, {
             startedAt: nonRoutingStepStartedAt,
             completedAt: nonRoutingStepCompletedAt,
           });
+          applyPersistedStepContext(deps, state, inputHandle, persistedContext);
         } else {
-          recordSessionStep(deps, sessionRunHandle, decision.action, stepResult, {
+          const persistedContext = await recordSessionStep(deps, sessionRunHandle, decision.action, stepResult, {
             startedAt: nonRoutingStepStartedAt,
             completedAt: nonRoutingStepCompletedAt,
           });
+          applyPersistedStepContext(deps, state, inputHandle, persistedContext);
         }
         deps.onProgress?.(
           `Step ${state.iteration}: ${stepResult.stepSummary.executionContract} -> ${stepResult.stepSummary.outcome}`,
@@ -1377,10 +1359,11 @@ export async function runAgentLoop(
         const compactedReplayStep = compactStepSummaryForState(replayResult.stepSummary);
         recordCompactionMetric(metrics, "completedStepSummary", measureJson(replayResult.stepSummary), measureJson(compactedReplayStep), { step: state.iteration });
         state.completedSteps.push(compactedReplayStep);
-        recordTaskStep(deps, state, replayDecision.action, replayResult, {
+        const persistedContext = await recordTaskStep(deps, state, replayDecision.action, replayResult, {
           startedAt: replayStartedAt,
           completedAt: replayCompletedAt,
         });
+        applyPersistedStepContext(deps, state, inputHandle, persistedContext);
 
         recordPlanModeMetric(metrics, replayDecision.action.mode, {
           step: state.iteration,
@@ -1561,10 +1544,11 @@ export async function runAgentLoop(
     const compactedStep = compactStepSummaryForState(stepResult.stepSummary);
     recordCompactionMetric(metrics, "completedStepSummary", measureJson(stepResult.stepSummary), measureJson(compactedStep), { step: state.iteration });
     state.completedSteps.push(compactedStep);
-    recordTaskStep(deps, state, decision.action, stepResult, {
+    const persistedContext = await recordTaskStep(deps, state, decision.action, stepResult, {
       startedAt: stepStartedAt,
       completedAt: stepCompletedAt,
     });
+    applyPersistedStepContext(deps, state, inputHandle, persistedContext);
 
     recordPlanModeMetric(metrics, decision.action.mode, {
       step: state.iteration,
@@ -1796,15 +1780,9 @@ function isSessionReadOnlyAction(
 }
 
 function buildCreateWorkRunRequest(state: LoopState, reason: string) {
-  const contextEngine = state.harnessContext.contextEngine;
-  const focus = contextEngine?.focus;
   return {
     reason,
     userMessage: state.userMessage,
-    ...(focus?.status === "active" ? {
-      activeTaskId: focus.workId,
-      activeBranch: branchFromRef(focus.ref),
-    } : {}),
   };
 }
 
@@ -1813,15 +1791,6 @@ function normalizeCreatedWorkRun(created: CreatedWorkRun | MemoryRunHandle): Cre
     return created;
   }
   return { runHandle: created };
-}
-
-function branchFromRef(ref: string | undefined): string | undefined {
-  if (!ref) {
-    return undefined;
-  }
-  return ref.startsWith("refs/heads/")
-    ? ref.slice("refs/heads/".length)
-    : ref;
 }
 
 async function prepareAttachmentsForRun(
@@ -1963,6 +1932,20 @@ function summarizeActionInput(input: Record<string, unknown>): Record<string, un
   };
 }
 
+function applyPersistedStepContext(
+  deps: AgentLoopDeps,
+  state: LoopState,
+  inputHandle: SessionInputHandle,
+  context: Awaited<ReturnType<typeof recordTaskStep>>,
+): void {
+  if (!context) return;
+  deps.harnessContext = {
+    ...deps.harnessContext,
+    ...context,
+  };
+  syncHarnessContext(state, deps, inputHandle);
+}
+
 function describeActionInputValue(value: unknown): string {
   if (Array.isArray(value)) return `array(${value.length})`;
   if (value === null) return "null";
@@ -2000,6 +1983,7 @@ function buildLoopResult(
   if (state.runClass === "task") {
     result.taskSummary = buildTaskSummaryRecord(state, content, input.status, responseKind, input.completion);
     result.taskAssets = buildTaskAssets(state);
+    result.verifiedCompletionAssets = buildVerifiedCompletionAssets(state);
   }
 
   return result;

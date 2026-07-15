@@ -110,6 +110,64 @@ function createLoopState(overrides: Partial<LoopState> = {}): LoopState {
 }
 
 describe("buildAgentStateView", () => {
+  it("uses durable readContext instead of duplicating the same active-run read output", () => {
+    const state = createLoopState({
+      runId: "R-1",
+      harnessContext: createHarnessContext({
+        contextEngine: createGitContext({
+          readContext: {
+            revision: "read-revision",
+            entries: [{
+              key: "read_files:requirements.md",
+              runId: "R-1",
+              step: 1,
+              runClass: "task",
+              tool: "read_files",
+              purpose: "Read requirements.",
+              resources: ["requirements.md"],
+              input: { files: [{ path: "requirements.md" }] },
+              output: { files: [{ path: "requirements.md", content: "requirements" }] },
+              verification: { passed: true },
+              createdAt: "2026-07-14T10:00:00.000Z",
+            }],
+          },
+        }),
+      }),
+      toolContext: {
+        recent: [],
+        toolCalls: [{
+          step: 1,
+          tool: "read_files",
+          purpose: "Read requirements.",
+          input: { files: [{ path: "requirements.md" }] },
+          status: "success",
+          output: "requirements",
+        }, {
+          step: 2,
+          tool: "shell",
+          purpose: "Validate the application.",
+          input: { cmd: "node --check app.js" },
+          status: "success",
+          output: "",
+        }],
+      },
+    });
+
+    const view = buildAgentStateView(state);
+
+    expect(view.context.git?.current.readContext?.entries).toHaveLength(1);
+    expect(view.context.run?.toolCalls).toEqual([
+      expect.objectContaining({
+        step: 1,
+        tool: "read_files",
+        mode: "reference",
+        readContextKeys: ["read_files:requirements.md"],
+      }),
+      expect.objectContaining({ step: 2, tool: "shell", mode: "full" }),
+    ]);
+    expect(view.context.run?.toolCalls?.[0]).not.toHaveProperty("output");
+  });
+
   it("exposes git context as the durable task source", () => {
     const state = createLoopState({
       harnessContext: createHarnessContext({
@@ -153,7 +211,7 @@ describe("buildAgentStateView", () => {
     });
     expect(context.git?.session).not.toHaveProperty("sessionId");
     expect(context.git?.session).not.toHaveProperty("assetCount");
-    expect(context.git?.session).not.toHaveProperty("recentCommits");
+    expect(context.git?.session.recentCommits).toHaveLength(1);
     expect(context.git?.session).not.toHaveProperty("conversationTail");
     expect(context.git?.session).not.toHaveProperty("conversationMarkdownTail");
     expect(context.git?.session).not.toHaveProperty("summary");
@@ -272,7 +330,7 @@ describe("buildAgentStateView", () => {
       severity: "warning",
       source: "tool_validation",
       message: expect.stringContaining("pending turn is unbound"),
-      retryHint: expect.stringContaining("git_context_activate_task_for_turn"),
+      retryHint: expect.stringContaining("git_context_activate_task"),
     });
   });
 
@@ -312,7 +370,7 @@ describe("buildAgentStateView", () => {
           message: "No active task exists yet. Normal work tools cannot run before task creation.",
           blockedTargets: ["write_files"],
           allowedNextActions: [
-            "Call git_context_create_task_for_turn with title, objective, and createReason \"no_active_task\".",
+            "Call git_context_create_task with title, objective, and createReason \"no_active_task\".",
           ],
         },
       }],
@@ -324,7 +382,7 @@ describe("buildAgentStateView", () => {
       source: "tool_validation",
       code: "R_FRESH_SESSION_NEEDS_TASK",
       message: "No active task exists yet. Normal work tools cannot run before task creation.",
-      retryHint: "Call git_context_create_task_for_turn with title, objective, and createReason \"no_active_task\".",
+      retryHint: "Call git_context_create_task with title, objective, and createReason \"no_active_task\".",
       repair: {
         code: "R_FRESH_SESSION_NEEDS_TASK",
         blockedTargets: ["write_files"],
@@ -394,6 +452,68 @@ describe("buildAgentStateView", () => {
     const context = buildAgentStateView(state).context;
     expect(context.gitContext?.session.conversationTail).toHaveLength(2);
     expect(context.git?.session).not.toHaveProperty("conversationTail");
+  });
+
+  it("marks the exact current message by stable id when turn and message sequences differ", () => {
+    const state = createLoopState({
+      currentSeq: 3,
+      currentMessageId: "S-1-M-000005",
+      inputKind: "user_message",
+      userMessage: "What did I ask about in this conversation?",
+      harnessContext: createHarnessContext({
+        contextEngine: createGitContext({
+          session: {
+            meta: { sessionId: "S-1", assetCount: 0 },
+            activityTail: [],
+            conversationTail: [
+              message(1, "S-1-M-000001", "user", "Explain a Git commit."),
+              message(2, "S-1-M-000002", "assistant", "A Git commit is a snapshot."),
+              message(3, "S-1-M-000003", "user", "Compare it to a checkpoint."),
+              message(4, "S-1-M-000004", "assistant", "A checkpoint is less formal."),
+              message(5, "S-1-M-000005", "user", "What did I ask about in this conversation?"),
+            ],
+          },
+        }),
+      }),
+    });
+
+    const timeline = buildAgentStateView(state).context.timeline;
+    expect(timeline).toHaveLength(5);
+    expect(timeline.filter((event) => event.current)).toHaveLength(1);
+    expect(timeline.at(-1)).toMatchObject({
+      seq: 5,
+      kind: "user",
+      content: "What did I ask about in this conversation?",
+      current: true,
+    });
+    expect(timeline.find((event) => event.seq === 3)).not.toHaveProperty("current");
+  });
+
+  it("uses message identity when the user repeats the same text", () => {
+    const state = createLoopState({
+      currentSeq: 2,
+      currentMessageId: "S-1-M-000003",
+      inputKind: "user_message",
+      userMessage: "Continue.",
+      harnessContext: createHarnessContext({
+        contextEngine: createGitContext({
+          session: {
+            meta: { sessionId: "S-1", assetCount: 0 },
+            activityTail: [],
+            conversationTail: [
+              message(1, "S-1-M-000001", "user", "Continue."),
+              message(2, "S-1-M-000002", "assistant", "I continued."),
+              message(3, "S-1-M-000003", "user", "Continue."),
+            ],
+          },
+        }),
+      }),
+    });
+
+    const timeline = buildAgentStateView(state).context.timeline;
+    expect(timeline.filter((event) => event.current)).toEqual([
+      expect.objectContaining({ seq: 3, content: "Continue.", current: true }),
+    ]);
   });
 
   it("keeps the complete recent timeline and current input exact below pressure", () => {
@@ -511,8 +631,8 @@ describe("buildAgentStateView", () => {
         "direct_reply",
         "decision_load_tools",
         "read_only_tools",
-        "git_context_activate_task_for_turn",
-        "git_context_create_task_for_turn",
+        "git_context_activate_task",
+        "git_context_create_task",
       ],
       blocked: [
         "workspace_mutation_until_task_promotion",
@@ -1025,3 +1145,18 @@ describe("buildAgentStateView", () => {
     expect(stateView.context.run).not.toHaveProperty("systemEvent");
   });
 });
+
+function message(
+  seq: number,
+  messageId: string,
+  role: "user" | "assistant",
+  text: string,
+) {
+  return {
+    seq,
+    messageId,
+    role,
+    at: `2026-07-13T10:00:0${seq}.000Z`,
+    text,
+  };
+}

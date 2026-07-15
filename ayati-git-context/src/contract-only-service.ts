@@ -1,5 +1,6 @@
 import {
   GIT_CONTEXT_PROTOCOL_VERSION,
+  type ActivateTaskRunRequest,
   type ActiveContext,
   type AcquireMutationAuthorityRequest,
   type AcquireMutationAuthorityResponse,
@@ -9,6 +10,7 @@ import {
   type AppendConversationResponse,
   type CreateTaskRequest,
   type CreateTaskResponse,
+  type CreateTaskRunRequest,
   type EnsureActiveSessionRequest,
   type EnsureActiveSessionResponse,
   type FinalizeSessionRunRequest,
@@ -19,6 +21,8 @@ import {
   type GetTaskRequest,
   type GetTaskResponse,
   type HealthResponse,
+  type ListTasksRequest,
+  type ListTasksResponse,
   type MountTaskRequest,
   type MountTaskResponse,
   type RecordRunStepRequest,
@@ -27,6 +31,7 @@ import {
   type SnapshotTaskRunEvidenceResponse,
   type StartRunRequest,
   type StartRunResponse,
+  type SelectedTaskRunResponse,
   type VerifyMutationRequest,
   type VerifyMutationResponse,
 } from "./contracts.js";
@@ -61,6 +66,18 @@ export class ContractOnlyGitContextService implements GitContextService {
   }
 
   async createTask(_input: CreateTaskRequest): Promise<CreateTaskResponse> {
+    throw notReady();
+  }
+
+  async createTaskRun(_input: CreateTaskRunRequest): Promise<SelectedTaskRunResponse> {
+    throw notReady();
+  }
+
+  async activateTaskRun(_input: ActivateTaskRunRequest): Promise<SelectedTaskRunResponse> {
+    throw notReady();
+  }
+
+  async listTasks(_input: ListTasksRequest): Promise<ListTasksResponse> {
     throw notReady();
   }
 

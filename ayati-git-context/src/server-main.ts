@@ -2,30 +2,40 @@
 
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { ContextDatabase } from "./database/database.js";
-import { GitContextHttpServer } from "./server.js";
-import { SqliteGitContextService } from "./services/sqlite-git-context-service.js";
+import { startGitContextServerRuntime } from "./server-runtime.js";
+import {
+  createJsonLineObservabilitySink,
+  GitContextObserver,
+} from "./observability.js";
 
 const packageDirectory = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const defaultDataRoot = resolve(packageDirectory, "..", "data", "git-context-engine");
 const dataRoot = process.env["AYATI_GIT_CONTEXT_DATA_DIR"]?.trim() || defaultDataRoot;
+const workspaceRoot = process.env["AYATI_GIT_CONTEXT_WORKSPACE_DIR"]?.trim()
+  || join(dataRoot, "workspace");
+const databasePath = process.env["AYATI_GIT_CONTEXT_DATABASE"]?.trim()
+  || join(dataRoot, "context.db");
 const socketPath = process.env["AYATI_GIT_CONTEXT_SOCKET"]?.trim()
   || "/tmp/ayati-git-context.sock";
-const database = await ContextDatabase.open({
-  path: join(dataRoot, "context.db"),
-});
-const service = new SqliteGitContextService({
-  database,
+const parentPid = positiveInteger(process.env["AYATI_GIT_CONTEXT_PARENT_PID"]);
+const observabilitySink = createJsonLineObservabilitySink(process.stdout);
+const observer = new GitContextObserver("git-context-engine", observabilitySink);
+const runtime = await startGitContextServerRuntime({
+  databasePath,
   dataRoot,
-});
-const server = new GitContextHttpServer({
-  service,
-  listen: { socketPath },
+  workspaceRoot,
+  socketPath,
+  ...(parentPid ? { parentPid } : {}),
+  observabilitySink,
 });
 
-const address = await server.start();
-if (address.kind === "unix") {
-  process.stdout.write("Git Context Engine listening on " + address.socketPath + "\n");
+if (runtime.address.kind === "unix") {
+  observer.emit({
+    level: "info",
+    event: "server_ready",
+    outcome: "succeeded",
+    data: { socketPath: runtime.address.socketPath },
+  });
 }
 
 let stopping = false;
@@ -34,8 +44,7 @@ const stop = async (): Promise<void> => {
     return;
   }
   stopping = true;
-  await server.stop();
-  await service.close();
+  await runtime.stop();
 };
 
 process.once("SIGINT", () => {
@@ -48,3 +57,8 @@ process.once("SIGTERM", () => {
     process.exitCode = 0;
   });
 });
+
+function positiveInteger(value: string | undefined): number | undefined {
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : undefined;
+}

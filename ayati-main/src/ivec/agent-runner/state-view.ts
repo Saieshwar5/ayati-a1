@@ -1,5 +1,6 @@
 import type { LoopState, ToolContextState, ToolObservation, WorkState } from "../types.js";
 import type { MemoryRunHandle } from "../../memory/types.js";
+import type { ContextReadContext } from "../../context-engine/index.js";
 import type { RepairPromptCard } from "./repair-policy.js";
 import { buildPromptToolCallsForRun } from "./run-tool-call-context.js";
 import type { PromptToolCalls } from "./run-tool-call-context.js";
@@ -122,7 +123,15 @@ export function buildAgentStateView(state: LoopState, options: AgentStateViewOpt
   const workingFeedback = buildWorkingFeedbackView(state);
   const observations = buildObservationsView(state.toolContext);
   const readContext = buildReadContextView(state.toolContext);
-  const toolCalls = buildToolCallsView(state.toolContext);
+  const contextPack = buildAgentContextPack(state);
+  const activeRunId = options.workRunHandle?.runId
+    ?? options.sessionRunHandle?.runId
+    ?? state.runId;
+  const toolCalls = buildToolCallsView(
+    state.toolContext,
+    contextPack.gitContext?.readContext,
+    activeRunId,
+  );
   const trace = buildTraceView(state);
   const attachments = buildAttachmentState(state);
   const systemEvent = state.systemEvent ? {
@@ -134,7 +143,7 @@ export function buildAgentStateView(state: LoopState, options: AgentStateViewOpt
     approvalState: state.approvalState,
   } : undefined;
   const context = projectAgentPromptContext({
-    context: buildAgentContextPack(state),
+    context: contextPack,
     runtimeMode,
     tools: buildToolsContext({
       activeTools: options.activeTools,
@@ -312,7 +321,7 @@ function buildDeferredMutationWorkingFeedback(state: LoopState): PromptWorkingFe
     source: "tool_validation",
     code: "mutation_deferred_for_task_routing",
     message: `The pending mutation (${deferred.blockedTools.join(", ")}) is paused until this session run has task ownership.`,
-    retryHint: "Use git_context_activate_task_for_turn to bind the active/existing task, git_context_search_tasks if another task may own it, or git_context_create_task_for_turn for a new task. The deferred mutation will execute automatically after routing.",
+    retryHint: "Inspect task candidates, then activate the task that owns the resources or create a distinct new task. The deferred mutation will execute automatically after routing.",
   };
 }
 
@@ -323,7 +332,7 @@ function buildPendingTurnWorkingFeedback(state: LoopState): PromptWorkingFeedbac
       severity: "warning",
       source: "tool_validation",
       message: "The current git-context pending turn is unbound. Normal task tools are not valid until this turn is routed to an existing task or a new task.",
-      retryHint: "Use git-context read/search tools if needed, then call git_context_activate_task_for_turn or git_context_create_task_for_turn. Ask the user directly if task ownership is ambiguous.",
+      retryHint: "Inspect task candidates, then call git_context_activate_task or git_context_create_task. Ask the user directly if task ownership is ambiguous.",
     };
   }
   if (pendingTurn?.routingStatus === "clarifying") {
@@ -360,7 +369,7 @@ function isToolValidationReason(reason: string): boolean {
 
 function buildFailureRetryHint(failureType: LoopState["failureHistory"][number]["failureType"], reason: string): string | undefined {
   if (reason.includes("No active task exists")) {
-    return "Use git_context_search_tasks if needed, then git_context_activate_task_for_turn or git_context_create_task_for_turn before mutation. Ask a short clarification directly if the request is unclear.";
+    return "Inspect task candidates, then activate the matching task or create a distinct task before mutation. Ask a short clarification if ownership is unclear.";
   }
   if (failureType === "validation_error" || isToolValidationReason(reason)) {
     return "Retry the selected executable tool with all required schema fields. Do not use an empty input object.";
@@ -461,8 +470,40 @@ function buildReadContextView(toolContext: ToolContextState | undefined): Prompt
   return latest.length > 0 ? { latest } : undefined;
 }
 
-function buildToolCallsView(toolContext: ToolContextState | undefined): PromptToolCalls | undefined {
-  return buildPromptToolCallsForRun(toolContext?.toolCalls);
+function buildToolCallsView(
+  toolContext: ToolContextState | undefined,
+  readContext: ContextReadContext | undefined,
+  activeRunId: string,
+): PromptToolCalls | undefined {
+  const covered = new Map<string, string[]>();
+  for (const entry of readContext?.entries ?? []) {
+    if (entry.runId !== activeRunId) continue;
+    const source = entry.step + ":" + entry.tool;
+    covered.set(source, [...(covered.get(source) ?? []), entry.key]);
+  }
+  return buildPromptToolCallsForRun(toolContext?.toolCalls)?.map((call) => {
+    const readContextKeys = covered.get(call.step + ":" + call.tool);
+    if (!readContextKeys) return call;
+    return {
+      step: call.step,
+      ...(call.callId ? { callId: call.callId } : {}),
+      tool: call.tool,
+      ...(call.purpose ? { purpose: call.purpose } : {}),
+      input: call.input,
+      status: call.status,
+      ...(call.retention ? { retention: call.retention } : {}),
+      mode: "reference" as const,
+      summary: "Full verified read output is available in context.git.current.readContext.",
+      readContextKeys,
+      ...(call.operationStatus ? { operationStatus: call.operationStatus } : {}),
+      ...(call.artifacts ? { artifacts: call.artifacts } : {}),
+      ...(call.stepRef ? { stepRef: call.stepRef } : {}),
+      ...(call.evidenceRef ? { evidenceRef: call.evidenceRef } : {}),
+      ...(call.rawOutputChars !== undefined ? { rawOutputChars: call.rawOutputChars } : {}),
+      outputCompacted: true,
+      recoverable: true,
+    };
+  });
 }
 
 function buildTraceView(state: LoopState): PromptTrace | undefined {

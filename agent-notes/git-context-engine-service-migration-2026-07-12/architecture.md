@@ -121,7 +121,8 @@ Layout:
       smart-views/
 
 Canonical task repositories may be bare. Active session submodules are normal
-working checkouts containing real files.
+pointer checkouts containing the exact task commit. Agent tools work only in
+the task's stable requested or managed working directory.
 
 ## Session Repository Shape
 
@@ -143,6 +144,15 @@ working checkouts containing real files.
 
 The tasks directory contains gitlinks and active submodule checkouts. It does
 not contain copied task repositories.
+
+User-visible task files live in one stable checkout:
+
+    explicit user path
+    or
+    <workspace>/tasks/<task-id>-<slug>/
+
+The session submodule checkout exists only to keep the native gitlink current.
+It is not supplied to the harness as a filesystem execution root.
 
 ### Session metadata
 
@@ -438,4 +448,3 @@ Category membership helps discovery. It never authorizes mutation.
 - Build outputs and dependencies must be ignored.
 - No normal operation force-checks out, force-pushes, or rewrites task history.
 - The service fails closed for mutation when persistence is unavailable.
-

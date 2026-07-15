@@ -83,11 +83,11 @@ export function buildTaskAssets(state: LoopState): TaskAssetRecord[] {
       path: absolutePath(directory.rootPath),
     })),
     ...buildGeneratedArtifactAssets(state),
-    ...buildCompletionAssets(state),
+    ...buildVerifiedCompletionAssets(state),
   ]);
 }
 
-function buildCompletionAssets(state: LoopState): TaskAssetRecord[] {
+export function buildVerifiedCompletionAssets(state: LoopState): TaskAssetRecord[] {
   return (state.completionAssets ?? []).map((asset) => ({
     assetId: stableAssetId(asset.kind, asset.resolvedPath),
     role: "generated",

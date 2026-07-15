@@ -1,7 +1,5 @@
 import type { RunToolCallContext } from "../types.js";
 
-export const RUN_STEP_RECOVERY_TOOL_NAME = "git_context_read_run_step";
-
 export type PromptRunToolCallMode = "full" | "preview" | "summary" | "reference";
 
 export interface PromptRunToolCallContext {
@@ -23,6 +21,7 @@ export interface PromptRunToolCallContext {
   artifacts?: RunToolCallContext["artifacts"];
   stepRef?: RunToolCallContext["stepRef"];
   evidenceRef?: string;
+  readContextKeys?: string[];
   rawOutputChars?: number;
   originalOutputChars?: number;
   outputTruncated?: boolean;
@@ -46,18 +45,6 @@ const PROMPT_TOOL_CALL_POLICY = {
 export function buildPromptToolCallsForRun(calls: RunToolCallContext[] | undefined): PromptToolCalls | undefined {
   const projected = (calls ?? []).map(projectPromptToolCall);
   return projected.length > 0 ? projected : undefined;
-}
-
-export function hasRecoverableBoundedRunToolCall(calls: RunToolCallContext[] | undefined): boolean {
-  return (calls ?? []).some((call) => call.outputTruncated === true && Boolean(call.stepRef));
-}
-
-export function shouldExposeRunStepRecoveryTool(input: {
-  calls: RunToolCallContext[] | undefined;
-  pressureActive: boolean;
-}): boolean {
-  return hasRecoverableBoundedRunToolCall(input.calls)
-    || (input.pressureActive && (input.calls ?? []).some((call) => Boolean(call.stepRef)));
 }
 
 function projectPromptToolCall(call: RunToolCallContext): PromptRunToolCallContext {
@@ -119,6 +106,7 @@ export function compactPromptToolCall(
     ...(call.artifacts && call.artifacts.length > 0 ? { artifacts: call.artifacts } : {}),
     ...(call.stepRef ? { stepRef: call.stepRef } : {}),
     ...(call.evidenceRef ? { evidenceRef: call.evidenceRef } : {}),
+    ...(call.readContextKeys ? { readContextKeys: call.readContextKeys } : {}),
     ...(call.rawOutputChars !== undefined ? { rawOutputChars: call.rawOutputChars } : {}),
     ...(output.length > 0 ? { originalOutputChars: call.originalOutputChars ?? output.length } : {}),
     ...(call.outputTruncated !== undefined ? { outputTruncated: call.outputTruncated } : {}),

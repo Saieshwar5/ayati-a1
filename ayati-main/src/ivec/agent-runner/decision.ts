@@ -1207,15 +1207,17 @@ Decision rules:
 - Use context.git.current.focus to understand whether the runtime selected an existing work branch or created/kept current work.
 - Use context.git.session.meta for session identity, context.git.session.attachments for persisted user-provided session inputs, State view.attachments for current uploaded/attached inputs, and context.git.session.activity for recent session activity.
 - Use context.git.session.summary as compressed session history. Use context.timeline for exact recent messages and current input. If summary and exact conversation conflict, trust context.timeline.
-- Use context.git.session.recentTaskRuns for the newest task-run checkpoint summaries that precede context.timeline. They are chronological and bounded; exact timeline events remain authoritative.
+- Use context.git.session.recentCommits for the newest committed session work that precedes context.timeline. They are newest-first and contain deterministic conversation, work, asset, outcome, and validation data. Use them before repeating a tool or claiming that recent work is unknown.
 - Treat context.git.session.summary as an aid, not a complete source of truth; do not infer omitted details from it.
-- Task routing tools may be visible briefly at the start of a run. Before task work, decide whether the current request belongs to the current active task, a different existing task, a new task, or no task.
-- If the request clearly continues the current active task, continue directly with normal task tools; do not call a routing tool just to confirm the active task.
-- If task ownership may belong to a different existing task, use git-context task search/read tools and then activate/switch only when there is a clear match.
-- If mutation is needed before task ownership is resolved, choose task ownership with git_context_activate_task_for_turn or git_context_create_task_for_turn. Use createReason "no_active_task" when no active task exists, "explicit_user_requested_new_task" when the user explicitly asks for a new task, or "new_unrelated_goal" when the request is clearly unrelated to the active task. Use activate reason "continue_active_task", "switch_to_existing_task", or "user_selected_task". If task ownership is ambiguous, reply directly with one short clarifying question.
+- Before task work, decide whether the current request belongs to one task candidate, needs a distinct new task, or needs no task.
+- There is no session-global active task. Never continue task mutation merely because a task was used recently.
+- Task candidates and their owned paths are already present in context. Exact resource ownership is stronger evidence than title similarity.
+- Before mutation, call git_context_activate_task for an exact existing owner or git_context_create_task with title, objective, reason, and an explicit placement for a distinct durable deliverable.
+- Task placement is never implicit. Use requested placement with the exact path when the current user message or verified read context specifies a location; the runtime finds and verifies the evidence. Use managed placement only when no requested location exists. If the requested location is ambiguous, reply directly with one short clarifying question.
+- If ownership is ambiguous, reply directly with one short clarifying question.
 - Visible routing tools are optional routing aids, not an instruction to create, switch, or ask clarification.
-- Normal work tools require task ownership. If context.git.current.focus is active and the request clearly continues that active task, call normal work tools directly; the runtime creates the task run automatically before execution.
-- If context.git.current.pendingTurn.routingStatus is "unbound", route the pending turn before normal task work. Use git-context read/search tools, then git_context_activate_task_for_turn or git_context_create_task_for_turn. Do not call shell, filesystem, document, database, Python, UI, or other task tools while the pending turn is unbound.
+- Normal work tools require an explicitly selected task run. The runtime never silently binds them to a recent task.
+- If context.git.current.pendingTurn.routingStatus is "unbound", call git_context_activate_task or git_context_create_task before normal task work. Do not call shell, filesystem, document, database, Python, UI, or other task tools while ownership is unbound.
 - If context.git.current.pendingTurn.routingStatus is "clarifying", do not call executable tools or load more tools. Ask the user directly what task or target they mean.
 - If context.git.current.pendingTurn.routingStatus is "bound", normal task tools may be used according to the selected task context.
 - Do not mention git branches, commits, refs, or context-engine mechanics to the user unless they explicitly ask about the implementation.
@@ -1223,7 +1225,7 @@ Decision rules:
 - Use context.run.status as the current run/work status.
 - Use context.run.workState as the reducer-built live work state for this run: summary, open work, blockers, verified facts, evidence, verified artifacts, next step, and user input needed.
 - Use context.run.toolCalls as the ordered tool-call memory for this run. Records with mode="full" include exact live input and output. Records with mode="preview", mode="summary", or mode="reference" were compacted for context budget; use their summary, input, outputPreview, errors, artifacts, stepRef, and evidenceRef without assuming omitted output. Prefer this memory before repeating an equivalent tool call.
-- If an older compacted tool-call record has a stepRef and exact omitted output is required, use git_context_read_run_step when available instead of repeating a broad equivalent read or command.
+- If an older compacted tool-call record omits exact output, use a narrow normal domain read rather than repeating a broad command.
 - When context.run.contextPressure is present, work in small verifiable steps, use narrow tool inputs, preserve durable conclusions in work state, and prefer recovery refs over repeating broad reads or commands.
 - context.run.contextPressure.recommendedMode is a runtime escalation signal. Do not summarize or rewrite timeline, task, session, work-state, or source tool records yourself; continue useful work while the runtime applies available context stages.
 - Use context.harness.feedback as the latest harness feedback. Correct the specific failed tool call or protocol issue before trying a different path.
@@ -1569,6 +1571,7 @@ function buildNativeDecisionTools(
           type: "string",
           minLength: 1,
           maxLength: 1000,
+          description: "Compact cumulative current state of the task after this run. Describe the reusable result and remaining state, not only the latest tool call.",
         },
         assets: {
           type: "array",

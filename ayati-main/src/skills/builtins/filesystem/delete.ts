@@ -14,7 +14,7 @@ export const deleteTool: ToolDefinition = {
     properties: {
       path: {
         type: "string",
-        description: "Workspace-relative path by default. Absolute paths outside the workspace require allowExternalPath=true.",
+        description: "Target path. In a task run, use a path relative to the active task root and do not repeat the task directory name. Otherwise, relative paths use the workspace root.",
       },
       recursive: {
         type: "boolean",
@@ -22,7 +22,7 @@ export const deleteTool: ToolDefinition = {
       },
       allowExternalPath: {
         type: "boolean",
-        description: "Allow deleting an absolute path outside the configured workspace. Use only when the user explicitly requested that external path.",
+        description: "Allow an absolute path outside the configured workspace for non-task work. Task runs ignore this flag and cannot escape the active task root.",
       },
     },
   },
@@ -63,13 +63,14 @@ export const deleteTool: ToolDefinition = {
     domain: "filesystem",
     priority: 1,
   },
-  async execute(input): Promise<ToolResult> {
+  async execute(input, context): Promise<ToolResult> {
     const parsed = validateDeleteInput(input);
     if ("ok" in parsed) return parsed;
 
     const resolved = resolveWorkspaceMutationPath(parsed.path, {
       allowExternalPath: parsed.allowExternalPath,
       operation: "delete",
+      root: context?.resourceScope?.rootPath,
     });
     if (!resolved.ok) return externalWorkspacePathError(resolved);
 

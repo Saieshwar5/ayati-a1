@@ -25,6 +25,7 @@ export function buildInitialState(
   return {
     runId: runHandle?.runId ?? "",
     currentSeq: inputHandle.seq,
+    ...(inputHandle.currentMessageId ? { currentMessageId: inputHandle.currentMessageId } : {}),
     runClass: "interaction",
     inputKind: deps.inputKind ?? (deps.systemEvent ? "system_event" : "user_message"),
     userMessage: "",

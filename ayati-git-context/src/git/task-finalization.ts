@@ -1,5 +1,10 @@
 import type { TaskRunOutcome } from "../contracts.js";
 import { GitContextServiceError } from "../errors.js";
+import {
+  persistentTaskStatusForOutcome,
+  renderTaskStateCommit,
+  TASK_STATE_VERSION,
+} from "../tasks/task-state-commit.js";
 import { gitCommitEnvironment, runGit } from "./git-process.js";
 
 export async function createTaskFinalizationCommit(input: {
@@ -7,6 +12,7 @@ export async function createTaskFinalizationCommit(input: {
   canonicalRepository: string;
   branch: string;
   taskId: string;
+  taskTitle: string;
   sessionId: string;
   runId: string;
   conversationId: string;
@@ -19,14 +25,22 @@ export async function createTaskFinalizationCommit(input: {
   at: string;
 }): Promise<string> {
   const head = await runGit(["rev-parse", "HEAD"], { cwd: input.checkoutPath });
-  const dirty = await runGit(["status", "--porcelain", "--untracked-files=all"], {
+  const unstaged = await runGit(["diff", "--name-only", "--"], {
     cwd: input.checkoutPath,
   });
-  if (dirty) {
+  const untracked = await runGit(["ls-files", "--others", "--exclude-standard"], {
+    cwd: input.checkoutPath,
+  });
+  if (unstaged || untracked) {
     throw new GitContextServiceError({
       code: "TASK_CHECKOUT_DIRTY",
-      message: "Task checkout changed after its last verified checkpoint.",
-      details: { taskId: input.taskId, checkoutPath: input.checkoutPath },
+      message: "Task checkout contains changes that were not staged by verified task steps.",
+      details: {
+        taskId: input.taskId,
+        checkoutPath: input.checkoutPath,
+        unstagedPaths: unstaged.split("\n").filter(Boolean),
+        untrackedPaths: untracked.split("\n").filter(Boolean),
+      },
     });
   }
   if (head !== input.checkpointHead) {
@@ -36,7 +50,7 @@ export async function createTaskFinalizationCommit(input: {
     const parent = await runGit(["rev-parse", head + "^"], { cwd: input.checkoutPath });
     if (parent === input.checkpointHead
       && message.includes("Run: " + input.runId)
-      && message.includes("Ayati-Event: task_run_finalized")) {
+      && message.includes("Ayati-Event: task_run_committed")) {
       return head;
     }
     throw headMismatch(input.taskId, input.checkpointHead, head);
@@ -68,37 +82,30 @@ export async function persistTaskFinalization(input: {
 
 function taskFinalizationMessage(input: {
   taskId: string;
+  taskTitle: string;
   sessionId: string;
   runId: string;
   conversationId: string;
   conversationHash: string;
   outcome: TaskRunOutcome;
-  validation: string;
+  validation: "passed" | "failed" | "not_run";
   summary: string;
   next?: string;
 }): string {
-  return [
-    "run: " + subject(input.summary),
-    "",
-    "Task-Id: " + input.taskId,
-    "Session-Id: " + input.sessionId,
-    "Run: " + input.runId,
-    "Conversation-Id: " + input.conversationId,
-    "Conversation-Hash: " + input.conversationHash,
-    "Outcome: " + input.outcome,
-    "Validation: " + input.validation,
-    "Summary: " + singleLine(input.summary),
-    "Next: " + (input.next ? singleLine(input.next) : "none"),
-    "Ayati-Event: task_run_finalized",
-  ].join("\n");
-}
-
-function subject(value: string): string {
-  return singleLine(value).replace(/[.!?]+$/, "").slice(0, 72).toLowerCase();
-}
-
-function singleLine(value: string): string {
-  return value.trim().replace(/\s+/g, " ");
+  return renderTaskStateCommit({
+    version: TASK_STATE_VERSION,
+    taskId: input.taskId,
+    title: input.taskTitle,
+    status: persistentTaskStatusForOutcome(input.outcome),
+    state: input.summary,
+    validation: input.validation,
+    next: input.next ?? null,
+    runId: input.runId,
+    sessionId: input.sessionId,
+    conversationId: input.conversationId,
+    conversationHash: input.conversationHash,
+    runOutcome: input.outcome,
+  });
 }
 
 function headMismatch(

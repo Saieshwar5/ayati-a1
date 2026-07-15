@@ -32,6 +32,10 @@ import {
   readRunEvidence,
   readRunStepEvidence,
 } from "../repositories/run-records.js";
+import {
+  readRunWorkState,
+  replaceRunWorkState,
+} from "../repositories/run-work-state-records.js";
 import { updateSessionHead } from "../repositories/session-records.js";
 import { readTaskMount, updateTaskMountHead } from "../repositories/task-mount-records.js";
 import { readTaskInitialization, updateTaskHead } from "../repositories/task-records.js";
@@ -79,16 +83,17 @@ export class TaskRunFinalizationService {
       });
     }
     const sessionHead = session.head;
-    const headRange = readTaskHeadRange(this.database, run.runId);
     const task = readTaskInitialization(this.database, input.taskId);
     const mount = readTaskMount(this.database, input.sessionId, input.taskId);
-    if (!headRange || !task?.head || !mount?.mountedHead || mount.status !== "ready") {
+    if (!task?.head || !mount?.mountedHead || mount.status !== "ready") {
       throw new GitContextServiceError({
         code: "RECOVERY_REQUIRED",
         message: "Task-run finalization is missing durable task checkout state.",
         details: { runId: input.runId, taskId: input.taskId },
       });
     }
+    const headRange = readTaskHeadRange(this.database, run.runId)
+      ?? { before: task.head, after: task.head };
     const taskCheckpointHead = task.head;
     const uncheckpointed = readUncheckpointedMutationStatus(this.database, input.runId);
     if (uncheckpointed) {
@@ -185,10 +190,11 @@ export class TaskRunFinalizationService {
       await this.persistTask(record, task, mount, taskFinalizationHead, input.at);
       record = requireFinalization(this.database, run.runId);
       const sessionCommit = await this.finalizeSession(
-        record, run, session, taskFinalizationHead, input.at,
+        record, run, session, task, taskFinalizationHead, input.at,
       );
       const response = finalizationResponse(record, taskFinalizationHead, sessionCommit);
       this.database.transaction(() => {
+        persistFinalWorkState(this.database, run.runId, run.stepCount, record, input.at);
         completeTaskRun(this.database, { runId: run.runId, outcome: record.outcome, at: input.at });
         markPendingConversationsCommitted(this.database, session.sessionId, sessionCommit);
         updateSessionHead(this.database, session.sessionId, sessionCommit);
@@ -220,10 +226,11 @@ export class TaskRunFinalizationService {
     if (record.taskFinalizationHead) return record.taskFinalizationHead;
     if (!record.conversationHash) throw new Error("Conversation hash is unavailable.");
     const head = await createTaskFinalizationCommit({
-      checkoutPath: mount.checkoutPath,
+      checkoutPath: mount.workingPath,
       canonicalRepository: task.repositoryPath,
       branch: task.branch,
       taskId: task.taskId,
+      taskTitle: task.title,
       sessionId: record.sessionId,
       runId: record.runId,
       conversationId: record.conversationId,
@@ -250,7 +257,7 @@ export class TaskRunFinalizationService {
   ): Promise<void> {
     if (["task_persisted", "session_staged", "session_committed", "completed"].includes(record.phase)) return;
     await persistTaskFinalization({
-      checkoutPath: mount.checkoutPath,
+      checkoutPath: mount.workingPath,
       canonicalRepository: task.repositoryPath,
       branch: task.branch,
       finalizationHead: head,
@@ -275,6 +282,7 @@ export class TaskRunFinalizationService {
     record: TaskRunFinalizationRecord,
     run: NonNullable<ReturnType<typeof readRunEvidence>>,
     session: SessionRef,
+    task: NonNullable<ReturnType<typeof readTaskInitialization>>,
     taskHead: string,
     at: string,
   ): Promise<string> {
@@ -320,6 +328,7 @@ export class TaskRunFinalizationService {
       sessionId: session.sessionId,
       conversationId: run.conversationId,
       taskId: record.taskId,
+      workingDirectory: task.workingPath,
       runId: run.runId,
       outcome: record.outcome,
       validation: record.validation,
@@ -337,6 +346,55 @@ export class TaskRunFinalizationService {
     });
     return commit;
   }
+}
+
+function persistFinalWorkState(
+  database: ContextDatabase,
+  runId: string,
+  afterStep: number,
+  record: TaskRunFinalizationRecord,
+  at: string,
+): void {
+  const current = readRunWorkState(database, runId);
+  if (!current) throw new Error("Run WorkState is missing: " + runId);
+  const done = record.outcome === "done";
+  const blocked = record.outcome === "blocked";
+  const needsUserInput = record.outcome === "needs_user_input";
+  const completionWork = uniqueStrings([
+    ...record.completion.missing,
+    ...record.completion.failures,
+  ]);
+  replaceRunWorkState(database, {
+    runId,
+    afterStep,
+    state: {
+      status: done
+        ? "done"
+        : blocked
+          ? "blocked"
+          : needsUserInput
+            ? "needs_user_input"
+            : "not_done",
+      summary: record.summary,
+      openWork: done ? [] : uniqueStrings([...current.openWork, ...completionWork]),
+      blockers: blocked
+        ? uniqueStrings([...current.blockers, ...record.completion.failures])
+        : [],
+      facts: current.facts,
+      evidence: current.evidence,
+      artifacts: uniqueStrings([
+        ...current.artifacts,
+        ...record.completion.assets.filter((asset) => asset.verified).map((asset) => asset.path),
+      ]),
+      nextStep: done ? null : record.next ?? current.nextStep,
+      userInputNeeded: needsUserInput ? current.userInputNeeded : [],
+    },
+    at,
+  });
+}
+
+function uniqueStrings(values: string[]): string[] {
+  return [...new Set(values.map((value) => value.trim()).filter(Boolean))];
 }
 
 function requireFinalization(database: ContextDatabase, runId: string): TaskRunFinalizationRecord {

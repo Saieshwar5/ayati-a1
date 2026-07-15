@@ -6,10 +6,6 @@ import {
   filterToolsForRuntimeMode,
   requiredRoutingMutationToolsForRuntimeMode,
 } from "./runtime-capability-mode.js";
-import {
-  RUN_STEP_RECOVERY_TOOL_NAME,
-  shouldExposeRunStepRecoveryTool,
-} from "./run-tool-call-context.js";
 
 export const PRESSURE_MAX_SELECTED_TOOLS = 10;
 
@@ -29,12 +25,6 @@ export function selectToolsForDecision(
   });
   const candidateTools = filterToolsForRuntimeMode(mode, toolDefinitions);
   const requiredToolNames = new Set(requiredRoutingMutationToolsForRuntimeMode(mode));
-  if (shouldExposeRunStepRecoveryTool({
-    calls: state.toolContext?.toolCalls,
-    pressureActive: isContextPressureActive(state),
-  })) {
-    requiredToolNames.add(RUN_STEP_RECOVERY_TOOL_NAME);
-  }
   const requiredTools = candidateTools.filter((tool) => requiredToolNames.has(tool.name));
   const budgetedTools = candidateTools.filter((tool) => !requiredToolNames.has(tool.name));
   const selectedToolLimit = resolveSelectedToolLimit(state, limit);

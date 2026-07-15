@@ -4,6 +4,8 @@ export * from "./contracts.js";
 export * from "./errors.js";
 export * from "./database/database.js";
 export * from "./server.js";
+export * from "./server-runtime.js";
+export * from "./observability.js";
 export * from "./service.js";
 export * from "./services/sqlite-git-context-service.js";
 export * from "./write-queue.js";

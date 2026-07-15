@@ -11,7 +11,7 @@ import type { DirectoryLibrary } from "../files/directory-library.js";
 import type { FileLibrary } from "../files/file-library.js";
 import type { WorkspaceOrchestrator } from "../ui/workspace-orchestrator.js";
 import type { AyatiRuntimeConfig } from "../config/runtime-config.js";
-import type { GitMemoryRuntime } from "../context-engine/index.js";
+import type { GitContextService } from "ayati-git-context";
 import { builtInSkillsProvider } from "../skills/provider.js";
 import { createToolExecutor, type ToolExecutor } from "../skills/tool-executor.js";
 import type { SkillDefinition, SkillsProvider, SkillPromptBlock, ToolDefinition } from "../skills/types.js";
@@ -28,6 +28,7 @@ import { SkillActivationManager } from "../skills/activation-manager.js";
 import { createSkillBundle, SkillCatalog } from "../skills/skill-catalog.js";
 import { ToolCatalog } from "../ivec/agent-runner/tool-catalog.js";
 import { ToolWorkingSetManager } from "../ivec/agent-runner/tool-working-set.js";
+import { createTaskScopedToolExecutor } from "./task-scoped-tool-executor.js";
 
 export interface SkillRuntimeOptions {
   projectRoot: string;
@@ -41,7 +42,7 @@ export interface SkillRuntimeOptions {
   directoryLibrary: DirectoryLibrary;
   workspaceOrchestrator: WorkspaceOrchestrator;
   config: AyatiRuntimeConfig;
-  gitMemoryRuntime: GitMemoryRuntime;
+  gitContextService: GitContextService;
 }
 
 export interface SkillRuntime {
@@ -82,8 +83,8 @@ export async function createSkillRuntime(options: SkillRuntimeOptions): Promise<
       directoryLibrary: options.directoryLibrary,
     }),
     createGitContextSkill({
-      contextStoreDir: options.config.gitContext.storeDir,
-      gitMemoryRuntime: options.gitMemoryRuntime,
+      service: options.gitContextService,
+      workspaceRoot: options.config.workspace.root,
     }),
     createUiSkill({
       workspaceOrchestrator: options.workspaceOrchestrator,
@@ -100,7 +101,11 @@ export async function createSkillRuntime(options: SkillRuntimeOptions): Promise<
     ...runtimeSkills,
   ];
   const baseToolDefs: ToolDefinition[] = [];
-  const toolExecutor = createToolExecutor(baseToolDefs);
+  const baseToolExecutor = createToolExecutor(baseToolDefs);
+  const toolExecutor = createTaskScopedToolExecutor({
+    base: baseToolExecutor,
+    gitContext: options.gitContextService,
+  });
   const toolCatalog = new ToolCatalog(allRuntimeSkills);
   const toolWorkingSetManager = new ToolWorkingSetManager({
     catalog: toolCatalog,

@@ -774,8 +774,9 @@ function preflightShellCommand(
   command: string,
   cwd: string | undefined,
   source: "command" | "script" | "session",
+  rootPath?: string,
 ): { ok: true; resolvedCwd?: string } | { ok: false; result: ToolResult } {
-  const resolvedCwd = resolveWorkspaceCwd(cwd);
+  const resolvedCwd = resolveWorkspaceCwd(cwd, rootPath);
   const violation = classifyShellPolicy(command, source);
   if (violation) {
     return { ok: false, result: shellPolicyBlockedResult(command, resolvedCwd, source, violation) };
@@ -995,11 +996,16 @@ export const shellExecTool: ToolDefinition = {
     domain: "execution",
     priority: 15,
   },
-  async execute(input): Promise<ToolResult> {
+  async execute(input, context): Promise<ToolResult> {
     const parsed = validateShellExecInput(input);
     if ("ok" in parsed) return parsed;
 
-    const preflight = preflightShellCommand(parsed.cmd, parsed.cwd, "command");
+    const preflight = preflightShellCommand(
+      parsed.cmd,
+      parsed.cwd,
+      "command",
+      context?.resourceScope?.rootPath,
+    );
     if (!preflight.ok) return preflight.result;
     const timeoutMs = capWithDefault(parsed.timeoutMs, DEFAULT_TIMEOUT_MS);
     const maxOutputChars = capWithDefault(parsed.maxOutputChars, DEFAULT_MAX_OUTPUT_CHARS);
@@ -1031,11 +1037,12 @@ export const shellRunScriptTool: ToolDefinition = {
     domain: "execution",
     priority: 30,
   },
-  async execute(input): Promise<ToolResult> {
+  async execute(input, context): Promise<ToolResult> {
     const parsed = validateRunScriptInput(input);
     if ("ok" in parsed) return parsed;
 
-    const resolvedCwd = resolveWorkspaceCwd(parsed.cwd);
+    const rootPath = context?.resourceScope?.rootPath;
+    const resolvedCwd = resolveWorkspaceCwd(parsed.cwd, rootPath);
     const scriptPath = resolvePath(resolvedCwd, parsed.scriptPath);
     let fileStats;
     try {
@@ -1076,7 +1083,7 @@ export const shellRunScriptTool: ToolDefinition = {
       });
     }
     const scriptContent = await readFile(scriptPath, "utf-8");
-    const scriptPreflight = preflightShellCommand(scriptContent, resolvedCwd, "script");
+    const scriptPreflight = preflightShellCommand(scriptContent, resolvedCwd, "script", rootPath);
     if (!scriptPreflight.ok) return scriptPreflight.result;
     const timeoutMs = capWithDefault(parsed.timeoutMs, DEFAULT_TIMEOUT_MS);
     const maxOutputChars = capWithDefault(parsed.maxOutputChars, DEFAULT_MAX_OUTPUT_CHARS);
@@ -1126,11 +1133,16 @@ export const shellSessionStartTool: ToolDefinition = {
     domain: "execution",
     priority: 28,
   },
-  async execute(input): Promise<ToolResult> {
+  async execute(input, context): Promise<ToolResult> {
     const parsed = validateSessionStartInput(input);
     if ("ok" in parsed) return parsed;
 
-    const preflight = preflightShellCommand(parsed.cmd, parsed.cwd, "session");
+    const preflight = preflightShellCommand(
+      parsed.cmd,
+      parsed.cwd,
+      "session",
+      context?.resourceScope?.rootPath,
+    );
     if (!preflight.ok) return preflight.result;
     const outputCap = capWithDefault(parsed.maxOutputChars, DEFAULT_MAX_SESSION_OUTPUT_CHARS);
     const process = spawn("/bin/bash", ["-lc", parsed.cmd], {

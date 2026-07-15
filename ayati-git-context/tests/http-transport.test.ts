@@ -35,6 +35,10 @@ import {
   type VerifyMutationRequest,
   type VerifyMutationResponse,
 } from "../src/contracts.js";
+import {
+  GitContextObserver,
+  type GitContextObservabilityEvent,
+} from "../src/observability.js";
 import { ContractOnlyGitContextService } from "../src/contract-only-service.js";
 import { GitContextClient } from "../src/client.js";
 import {
@@ -56,6 +60,38 @@ afterEach(async () => {
 });
 
 describe("Git Context Engine HTTP transport", () => {
+  it("propagates request and session correlation into transport events", async () => {
+    const events: GitContextObservabilityEvent[] = [];
+    const { client } = await startTcpServer(
+      new TestGitContextService(),
+      new GitContextObserver("git-context-http", (event) => events.push(event)),
+    );
+
+    await client.appendConversation({
+      requestId: "REQ-correlated",
+      sessionId: "S-20260712-local",
+      role: "user",
+      content: "hello",
+      at: "2026-07-12T10:00:00+05:30",
+    });
+
+    expect(events.filter((event) =>
+      event.event === "http_request_started"
+      || event.event === "http_request_completed"
+    )).toEqual([
+      expect.objectContaining({
+        event: "http_request_started",
+        requestId: "REQ-correlated",
+        sessionId: "S-20260712-local",
+      }),
+      expect.objectContaining({
+        event: "http_request_completed",
+        requestId: "REQ-correlated",
+        sessionId: "S-20260712-local",
+      }),
+    ]);
+  });
+
   it("round-trips the initial service operations over TCP", async () => {
     const service = new TestGitContextService();
     const { client } = await startTcpServer(service);
@@ -91,6 +127,7 @@ describe("Git Context Engine HTTP transport", () => {
       sessionId: ensured.session.sessionId,
       title: "Coffee Shop Website",
       objective: "Build a responsive coffee-shop website.",
+      placement: { mode: "managed" },
       at: "2026-07-12T10:00:00+05:30",
     });
     expect(createdTask.task.taskId).toBe("W-20260712-0001");
@@ -328,6 +365,7 @@ class TestGitContextService implements GitContextService {
   async getActiveContext(input: GetActiveContextRequest): Promise<ActiveContext> {
     this.activeContextRequests.push(input);
     return {
+      contextRevision: "sha256:test-context",
       session: this.session
         ? {
             session: this.session,
@@ -362,6 +400,7 @@ class TestGitContextService implements GitContextService {
   async appendConversation(
     input: AppendConversationRequest,
   ): Promise<AppendConversationResponse> {
+    const messageId = input.sessionId + "-M-000001";
     return {
       conversation: {
         conversationId: "C-000001",
@@ -370,6 +409,18 @@ class TestGitContextService implements GitContextService {
         filePath: "conversations/000001.pending.md",
         status: "active",
       },
+      message: {
+        messageId,
+        conversationId: "C-000001",
+        sessionSequence: 1,
+        segmentSequence: 1,
+        sequence: 1,
+        role: input.role,
+        content: input.content,
+        at: input.at,
+      },
+      contextRevision: "sha256:" + "a".repeat(64),
+      pendingDigest: "sha256:" + "b".repeat(64),
     };
   }
 
@@ -565,7 +616,10 @@ function emptyRunWorkState() {
   };
 }
 
-async function startTcpServer(service: GitContextService): Promise<{
+async function startTcpServer(
+  service: GitContextService,
+  observer?: GitContextObserver,
+): Promise<{
   server: GitContextHttpServer;
   address: GitContextServerAddress;
   client: GitContextClient;
@@ -573,6 +627,7 @@ async function startTcpServer(service: GitContextService): Promise<{
   const server = new GitContextHttpServer({
     service,
     listen: { host: "127.0.0.1", port: 0 },
+    ...(observer ? { observer } : {}),
   });
   servers.push(server);
   const address = await server.start();

@@ -87,6 +87,7 @@ export interface MemoryRunHandle {
 export interface SessionInputHandle {
   sessionId: string;
   seq: number;
+  currentMessageId?: string;
 }
 
 export interface ToolCallRecordInput {

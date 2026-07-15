@@ -1,1517 +1,310 @@
-import {
-  buildGitMemoryContextPackFromMemoryState,
-  buildGitMemoryHarnessContextFromMemoryState,
-  GitContextMemoryStateHydrator,
-  GitMemoryDailySessionStore,
-  type GitContextMemoryState,
-  type GitMemoryRuntime,
-  type GitMemoryContextLimits,
-  type ReadGitMemoryEvidenceInput,
-  type ReadGitMemoryRunStepInput,
-  type SearchGitMemoryEvidenceInput,
-  type GitMemoryTaskDetailInclude,
-  type GitMemoryTaskDetailLimits,
-  type GitMemoryTaskStatus,
-} from "../../../context-engine/git-memory/index.js";
+import { randomUUID } from "node:crypto";
+import type { GitContextService, RunWorkStateInput } from "ayati-git-context";
+import { buildContextEngineProjection } from "../../../context-engine/index.js";
 import type { SkillDefinition, ToolDefinition, ToolExecutionContext, ToolResult } from "../../types.js";
-import { commonAnnotations, errorResult, genericObjectOutputSchema, okJsonResult, succeededContract } from "../contract-helpers.js";
+import {
+  commonAnnotations,
+  errorResult,
+  okJsonResult,
+  succeededContract,
+} from "../contract-helpers.js";
+import {
+  parseTaskPlacement,
+  resolveTaskPlacement,
+  type TaskPlacementInput,
+} from "./task-placement.js";
 
 export interface GitContextSkillDeps {
-  contextStoreDir: string;
-  gitMemoryRuntime?: GitMemoryRuntime;
+  service: GitContextService;
+  workspaceRoot: string;
 }
 
-interface SessionScopedInput {
-  sessionId?: string;
-}
-
-interface ListSessionsInput {
-  limit?: number;
-}
-
-interface ActiveContextInput {
-  sessionId: string;
-  limits?: Partial<GitMemoryContextLimits>;
-}
-
-interface TaskSelectorInput {
-  sessionId: string;
-  taskId?: string;
-  branch?: string;
-}
-
-interface ReadTaskInput extends TaskSelectorInput {
-  include?: GitMemoryTaskDetailInclude[];
-  limits?: Partial<GitMemoryTaskDetailLimits>;
-}
-
-interface ReadLogInput extends TaskSelectorInput {
-  target: "main" | "task";
-  limit?: number;
-}
-
-interface SearchTasksInput {
-  sessionId: string;
-  query: string;
-  limit?: number;
-  status?: GitMemoryTaskStatus;
-}
-
-interface ReadEvidenceInput extends TaskSelectorInput {
-  runId?: string;
-  limit?: number;
-}
-
-interface ReadRunStepInput extends SessionScopedInput {
-  sessionId: string;
-  runId: string;
-  step: number;
-  callId?: string;
-  taskId?: string;
-  branch?: string;
-}
-
-interface SearchEvidenceInput extends SessionScopedInput {
-  sessionId: string;
-  query: string;
-  taskId?: string;
-  branch?: string;
-  limit?: number;
-}
-
-interface SwitchTaskInput extends TaskSelectorInput {
-  reason: ActivateTaskReasonCode;
-}
-
-const CREATE_TASK_REASON_CODES = [
-  "no_active_task",
-  "explicit_user_requested_new_task",
-  "new_unrelated_goal",
-] as const;
-
-type CreateTaskReasonCode = typeof CREATE_TASK_REASON_CODES[number];
-
-const ACTIVATE_TASK_REASON_CODES = [
-  "continue_active_task",
-  "switch_to_existing_task",
-  "user_selected_task",
-] as const;
-
-type ActivateTaskReasonCode = typeof ACTIVATE_TASK_REASON_CODES[number];
-
-interface CreateTaskInput extends SessionScopedInput {
-  sessionId: string;
-  title: string;
-  objective: string;
-  createReason: CreateTaskReasonCode;
-  reasonDetails?: string;
-}
-
-const TASK_DETAIL_INCLUDES: GitMemoryTaskDetailInclude[] = [
-  "task",
-  "state",
-  "runs",
-  "markdown",
-  "actions",
-  "assets",
-  "commits",
-  "evidence",
-  "conversation",
-];
-
-const TASK_STATUSES: GitMemoryTaskStatus[] = ["open", "in_progress", "needs_user_input", "blocked", "done", "abandoned"];
-
-const GIT_CONTEXT_PROMPT_BLOCK = [
-  "Most git-context tools are read-only. Turn-aware git-context tools mutate only git-context task branch routing state through the runtime.",
-  "Use git-context tools to inspect Ayati's daily git context sessions, active context, and task routing snapshots.",
-  "Prefer git_context_list_sessions to discover available daily sessions.",
-  "Use git_context_active to inspect the current compact git context for a session.",
-  "Use git_context_list_tasks to compare known task branches before deciding whether prior task context matters.",
-  "Use git_context_search_tasks to find likely matching prior tasks by title, summary, facts, open work, blockers, next step, branch, or status.",
-  "Use git_context_read_task to inspect one task branch deeply with bounded runs, actions, assets, commits, evidence, and Markdown conversation.",
-  "Use git_context_read_evidence to read compact durable evidence records for a task or run.",
-  "Use git_context_read_run_step to recover full persisted step or tool-call data from a compact context.run.toolCalls stepRef.",
-  "Use git_context_search_evidence to find compact durable evidence records by summary, tool, fact, artifact, run id, action id, or evidence ref.",
-  "Use git_context_log to inspect compact commit history for main or one task branch.",
-  "Use git_context_activate_task_for_turn when the current pending user turn belongs to an existing task, including switching to a different task.",
-  "Use git_context_create_task_for_turn when the current pending user turn starts new durable task work with a valid createReason.",
-  "If an active task exists, same-task continuation should activate that same task with reason continue_active_task before mutation. Create a new task only for valid separate work such as explicit_user_requested_new_task or new_unrelated_goal.",
-  "If task ownership is ambiguous after search, ask the user directly in the assistant reply instead of calling a routing tool.",
-  "Do not call a tool just to continue the already-active task; obvious same-task continuation is automatic.",
-  "Do not switch or create task branches with low-level branch tools during normal live turns; route pending turns through the turn-aware tools.",
-  "Do not use git-context tools to edit project files, merge, reset, push, pull, or mutate external state.",
+const PROMPT = [
+  "Tasks are independent Git repositories with one stable working directory and a session-owned Git pointer.",
+  "There is no session-global active task. Each task run owns exactly one task.",
+  "The current context includes recent task candidates. Resource ownership and existing task files are stronger routing signals than text similarity.",
+  "Use git_context_activate_task when the request continues or changes an existing task.",
+  "Use git_context_create_task only when the request starts a distinct durable deliverable.",
+  "Never default an unclear mutation to the most recent task. Ask the user when ownership remains ambiguous.",
+  "Every new task must declare placement explicitly: requested or managed.",
+  "For requested placement, provide only the exact path; the runtime verifies it against the current user message and verified read context.",
+  "Use managed placement only when no requested location exists. Never silently replace a requested location with a managed directory.",
+  "After either tool succeeds, treat workingDirectory as the task root and use paths relative to it.",
 ].join("\n");
 
 export function createGitContextSkill(deps: GitContextSkillDeps): SkillDefinition {
-  const store = new GitMemoryDailySessionStore({ contextStoreDir: deps.contextStoreDir });
-  const memoryStateHydrator = new GitContextMemoryStateHydrator(store);
-  const runtime = deps.gitMemoryRuntime;
-
   return {
     id: "git-context",
-    version: "1.0.0",
-    description: "Inspection and controlled task-branch routing for Ayati daily git context sessions.",
-    promptBlock: GIT_CONTEXT_PROMPT_BLOCK,
+    version: "2.0.0",
+    description: "Select exactly one durable Git task repository before mutation.",
+    promptBlock: PROMPT,
     tools: [
-      createListSessionsTool(store),
-      createActiveContextTool(memoryStateHydrator, runtime),
-      createListTasksTool(store),
-      createSearchTasksTool(store),
-      createReadTaskTool(store),
-      createReadEvidenceTool(store),
-      createReadRunStepTool(store),
-      createSearchEvidenceTool(store),
-      createLogTool(store),
-      createActivateTaskForTurnTool(store, runtime),
-      createCreateTaskForTurnTool(runtime),
+      createTaskTool(deps),
+      activateTaskTool(deps.service),
     ],
   };
 }
 
-function createListSessionsTool(store: GitMemoryDailySessionStore): ToolDefinition {
+function createTaskTool(deps: GitContextSkillDeps): ToolDefinition {
+  const service = deps.service;
   return {
-    name: "git_context_list_sessions",
-    description: "List known Ayati daily git-context sessions without mutating repos, refs, or files.",
+    name: "git_context_create_task",
+    description: "Create a distinct durable task repository in the requested or managed working directory, register its session pointer, and start its task run.",
     inputSchema: {
       type: "object",
       properties: {
-        limit: {
-          type: "number",
-          description: "Maximum sessions to return. Defaults to 50, max 100.",
+        title: { type: "string", description: "Short durable task title." },
+        objective: { type: "string", description: "Concrete deliverable or durable objective." },
+        placement: {
+          type: "object",
+          description: "Explicit placement decision. Use requested with path when the user message or verified read context specifies a directory. Use managed only when no location was requested.",
+          properties: {
+            mode: { enum: ["requested", "managed"] },
+            path: { type: "string", description: "Required for requested mode. Relative paths resolve from the Ayati workspace. Omit for managed mode." },
+          },
+          required: ["mode"],
+          additionalProperties: false,
+          anyOf: [
+            {
+              properties: { mode: { const: "requested" }, path: { type: "string" } },
+              required: ["mode", "path"],
+            },
+            {
+              properties: { mode: { const: "managed" } },
+              required: ["mode"],
+            },
+          ],
         },
+        reason: { type: "string", description: "Why this request is a new task instead of an existing task." },
       },
+      required: ["title", "objective", "placement", "reason"],
+      additionalProperties: false,
     },
-    outputSchema: genericObjectOutputSchema,
-    annotations: gitContextReadOnlyAnnotations(),
-    resultContract: gitContextSucceededContract("sessions_listed"),
+    outputSchema: routingOutputSchema(),
+    annotations: routingAnnotations(),
+    resultContract: succeededContract(),
     selectionHints: {
-      tags: ["git-context", "sessions", "tasks", "read-only"],
-      aliases: ["list git context sessions", "daily context sessions"],
+      tags: ["git-context", "task", "create", "routing"],
+      aliases: ["create task", "start new durable work"],
       domain: "git_context",
-    },
-    async execute(input): Promise<ToolResult> {
-      const parsed = parseListSessionsInput(input);
-      if ("ok" in parsed) {
-        return parsed;
-      }
-      const sessions = await store.listSessions({ limit: parsed.limit });
-      return okJsonResult({
-        code: "GIT_CONTEXT_SESSIONS_LISTED",
-        message: "Git-context sessions listed.",
-        structuredContent: { sessions },
-      });
-    },
-  };
-}
-
-function createActiveContextTool(
-  memoryStateHydrator: GitContextMemoryStateHydrator,
-  runtime: GitMemoryRuntime | undefined,
-): ToolDefinition {
-  return {
-    name: "git_context_active",
-    description: "Read the compact active git context for an Ayati daily session.",
-    inputSchema: sessionScopedInputSchema({
-      limits: {
-        type: "object",
-        description: "Optional context reader limits.",
-        properties: {
-          recentTaskRunCheckpointLimit: { type: "number" },
-          activityTailLimit: { type: "number" },
-          runLimit: { type: "number" },
-          evidenceLimit: { type: "number" },
-          commitLogLimit: { type: "number" },
-          conversationMarkdownCharLimit: { type: "number" },
-        },
-      },
-    }),
-    outputSchema: genericObjectOutputSchema,
-    annotations: gitContextReadOnlyAnnotations(),
-    resultContract: gitContextSucceededContract("active_context_read"),
-    selectionHints: {
-      tags: ["git-context", "active", "focus", "task", "read-only"],
-      aliases: ["read active git context", "current git context"],
-      domain: "git_context",
+      priority: 10,
     },
     async execute(input, context): Promise<ToolResult> {
-      const parsed = parseActiveContextInput(input, context);
-      if ("ok" in parsed) {
-        return parsed;
-      }
-      const memoryState = runtime && !parsed.limits
-        ? await runtime.buildMemoryState(parsed.sessionId)
-        : await memoryStateHydrator.hydrate({
-          sessionId: parsed.sessionId,
-          limits: parsed.limits,
-        });
-      const activeContext = buildGitMemoryContextPackFromMemoryState(memoryState);
-      return okJsonResult({
-        code: "GIT_CONTEXT_ACTIVE_READ",
-        message: "Active git context read.",
-        structuredContent: activeContext,
-      });
-    },
-  };
-}
-
-function createListTasksTool(store: GitMemoryDailySessionStore): ToolDefinition {
-  return {
-    name: "git_context_list_tasks",
-    description: "List known task branches and task routing snapshot data for a git-context session.",
-    inputSchema: sessionScopedInputSchema(),
-    outputSchema: genericObjectOutputSchema,
-    annotations: gitContextReadOnlyAnnotations(),
-    resultContract: gitContextSucceededContract("tasks_listed"),
-    selectionHints: {
-      tags: ["git-context", "tasks", "branches", "routing", "read-only"],
-      aliases: ["list git context tasks", "task branches", "work branches"],
-      domain: "git_context",
-    },
-    async execute(input, context): Promise<ToolResult> {
-      const parsed = parseSessionScopedInput(input, context);
-      if ("ok" in parsed) {
-        return parsed;
-      }
-      const snapshot = await store.readTaskRoutingSnapshot(parsed.sessionId);
-      return okJsonResult({
-        code: "GIT_CONTEXT_TASKS_LISTED",
-        message: "Git-context tasks listed.",
-        structuredContent: snapshot,
-      });
-    },
-  };
-}
-
-function createSearchTasksTool(store: GitMemoryDailySessionStore): ToolDefinition {
-  return {
-    name: "git_context_search_tasks",
-    description: "Search known git-context task branches by title, summary, facts, next step, branch, and status.",
-    inputSchema: sessionScopedInputSchema({
-      query: {
-        type: "string",
-        description: "Search text for a prior task, such as upload validation bug.",
-      },
-      limit: {
-        type: "number",
-        description: "Maximum matches to return. Defaults to 5, max 100.",
-      },
-      status: {
-        type: "string",
-        enum: TASK_STATUSES,
-        description: "Optional task status filter.",
-      },
-    }),
-    outputSchema: genericObjectOutputSchema,
-    annotations: gitContextReadOnlyAnnotations(),
-    resultContract: gitContextSucceededContract("tasks_searched"),
-    selectionHints: {
-      tags: ["git-context", "tasks", "search", "routing", "prior-task", "read-only"],
-      aliases: ["search git context tasks", "find task branch", "find prior work"],
-      domain: "git_context",
-      priority: 4,
-    },
-    async execute(input, context): Promise<ToolResult> {
-      const parsed = parseSearchTasksInput(input, context);
-      if ("ok" in parsed) {
-        return parsed;
-      }
+      const parsed = parseCreateInput(input, context);
+      if ("ok" in parsed) return parsed;
       try {
-        const result = await store.searchTasks(parsed);
-        return okJsonResult({
-          code: "GIT_CONTEXT_TASKS_SEARCHED",
-          message: "Git-context tasks searched.",
-          structuredContent: result,
-        });
-      } catch (err) {
-        return gitContextReadFailed(err);
-      }
-    },
-  };
-}
-
-function createReadTaskTool(store: GitMemoryDailySessionStore): ToolDefinition {
-  return {
-    name: "git_context_read_task",
-    description: "Read one git-context task branch deeply by task id or branch, with bounded sections.",
-    inputSchema: sessionScopedInputSchema({
-      taskId: {
-        type: "string",
-        description: "Task id to read. Provide exactly one of taskId or branch.",
-      },
-      branch: {
-        type: "string",
-        description: "Task branch to read. Provide exactly one of taskId or branch.",
-      },
-      include: {
-        type: "array",
-        description: "Optional sections to include. Defaults to all sections.",
-        items: {
-          type: "string",
-          enum: TASK_DETAIL_INCLUDES,
-        },
-      },
-      limits: {
-        type: "object",
-        description: "Optional bounded read limits.",
-        properties: {
-          runLimit: { type: "number" },
-          actionRunLimit: { type: "number" },
-          actionLimit: { type: "number" },
-          commitLogLimit: { type: "number" },
-          evidenceLimit: { type: "number" },
-          conversationMarkdownCharLimit: { type: "number" },
-          runMarkdownCharLimit: { type: "number" },
-        },
-      },
-    }),
-    outputSchema: genericObjectOutputSchema,
-    annotations: gitContextReadOnlyAnnotations(),
-    resultContract: gitContextSucceededContract("task_read"),
-    selectionHints: {
-      tags: ["git-context", "task", "branch", "runs", "actions", "assets", "commits", "evidence", "conversation", "read-only"],
-      aliases: ["read git context task", "inspect task branch", "read work branch"],
-      domain: "git_context",
-    },
-    async execute(input, context): Promise<ToolResult> {
-      const parsed = parseReadTaskInput(input, context);
-      if ("ok" in parsed) {
-        return parsed;
-      }
-      try {
-        const detail = await store.readTaskDetail(parsed);
-        return okJsonResult({
-          code: "GIT_CONTEXT_TASK_READ",
-          message: "Git-context task read.",
-          structuredContent: detail,
-        });
-      } catch (err) {
-        return gitContextReadFailed(err);
-      }
-    },
-  };
-}
-
-function createReadEvidenceTool(store: GitMemoryDailySessionStore): ToolDefinition {
-  return {
-    name: "git_context_read_evidence",
-    description: "Read compact durable evidence manifest records for one git-context task or run.",
-    inputSchema: sessionScopedInputSchema({
-      taskId: {
-        type: "string",
-        description: "Task id to read. Provide exactly one of taskId or branch.",
-      },
-      branch: {
-        type: "string",
-        description: "Task branch to read. Provide exactly one of taskId or branch.",
-      },
-      runId: {
-        type: "string",
-        description: "Optional run id. When provided, reads that run's evidence manifest.",
-      },
-      limit: {
-        type: "number",
-        description: "Maximum evidence records to return. Defaults to 20, max 100.",
-      },
-    }),
-    outputSchema: genericObjectOutputSchema,
-    annotations: gitContextReadOnlyAnnotations(),
-    resultContract: gitContextSucceededContract("evidence_read"),
-    selectionHints: {
-      tags: ["git-context", "evidence", "task", "run", "read-only"],
-      aliases: ["read git context evidence", "read task evidence", "read run evidence"],
-      domain: "git_context",
-      priority: 4,
-    },
-    async execute(input, context): Promise<ToolResult> {
-      const parsed = parseReadEvidenceInput(input, context);
-      if ("ok" in parsed) {
-        return parsed;
-      }
-      try {
-        const evidence = await store.readEvidence(parsed);
-        return okJsonResult({
-          code: "GIT_CONTEXT_EVIDENCE_READ",
-          message: "Git-context evidence read.",
-          structuredContent: evidence,
-        });
-      } catch (err) {
-        return gitContextReadFailed(err);
-      }
-    },
-  };
-}
-
-function createReadRunStepTool(store: GitMemoryDailySessionStore): ToolDefinition {
-  return {
-    name: "git_context_read_run_step",
-    description: "Recover full persisted git-context step or tool-call data by run id, step number, and optional call id.",
-    inputSchema: sessionScopedInputSchema({
-      runId: {
-        type: "string",
-        description: "Run id from context.run.toolCalls[*].stepRef.runId.",
-      },
-      step: {
-        type: "number",
-        description: "Step number from context.run.toolCalls[*].stepRef.step.",
-      },
-      callId: {
-        type: "string",
-        description: "Optional tool call id from context.run.toolCalls[*].stepRef.callId. When provided, the matching tool call is returned separately.",
-      },
-      taskId: {
-        type: "string",
-        description: "Optional task id to scope the lookup. Usually not required when using a stepRef.",
-      },
-      branch: {
-        type: "string",
-        description: "Optional task branch to scope the lookup. Provide at most one of taskId or branch.",
-      },
-    }, ["runId", "step"]),
-    outputSchema: genericObjectOutputSchema,
-    annotations: gitContextReadOnlyAnnotations(),
-    resultContract: gitContextSucceededContract("run_step_read"),
-    selectionHints: {
-      tags: ["git-context", "step", "run", "tool-call", "stepRef", "evidence", "read-only"],
-      aliases: ["read run step", "recover compacted tool output", "read step ref", "read tool call ref"],
-      domain: "git_context",
-      priority: 6,
-    },
-    async execute(input, context): Promise<ToolResult> {
-      const parsed = parseReadRunStepInput(input, context);
-      if ("ok" in parsed) {
-        return parsed;
-      }
-      try {
-        const step = await store.readRunStep(parsed);
-        return okJsonResult({
-          code: "GIT_CONTEXT_RUN_STEP_READ",
-          message: "Git-context run step read.",
-          structuredContent: step,
-        });
-      } catch (err) {
-        return gitContextReadFailed(err);
-      }
-    },
-  };
-}
-
-function createSearchEvidenceTool(store: GitMemoryDailySessionStore): ToolDefinition {
-  return {
-    name: "git_context_search_evidence",
-    description: "Search compact durable evidence manifest records in a git-context session or task.",
-    inputSchema: sessionScopedInputSchema({
-      query: {
-        type: "string",
-        description: "Search text, such as upload validation, pnpm test, an artifact path, run id, or action id.",
-      },
-      taskId: {
-        type: "string",
-        description: "Optional task id to scope evidence search. Provide at most one of taskId or branch.",
-      },
-      branch: {
-        type: "string",
-        description: "Optional task branch to scope evidence search. Provide at most one of taskId or branch.",
-      },
-      limit: {
-        type: "number",
-        description: "Maximum evidence matches to return. Defaults to 10, max 100.",
-      },
-    }),
-    outputSchema: genericObjectOutputSchema,
-    annotations: gitContextReadOnlyAnnotations(),
-    resultContract: gitContextSucceededContract("evidence_searched"),
-    selectionHints: {
-      tags: ["git-context", "evidence", "search", "task", "run", "read-only"],
-      aliases: ["search git context evidence", "find task evidence", "find run evidence"],
-      domain: "git_context",
-      priority: 5,
-    },
-    async execute(input, context): Promise<ToolResult> {
-      const parsed = parseSearchEvidenceInput(input, context);
-      if ("ok" in parsed) {
-        return parsed;
-      }
-      try {
-        const result = await store.searchEvidence(parsed);
-        return okJsonResult({
-          code: "GIT_CONTEXT_EVIDENCE_SEARCHED",
-          message: "Git-context evidence searched.",
-          structuredContent: result,
-        });
-      } catch (err) {
-        return gitContextReadFailed(err);
-      }
-    },
-  };
-}
-
-function createLogTool(store: GitMemoryDailySessionStore): ToolDefinition {
-  return {
-    name: "git_context_log",
-    description: "Read compact git-context commit history for main or one task branch.",
-    inputSchema: sessionScopedInputSchema({
-      target: {
-        type: "string",
-        enum: ["main", "task"],
-        description: "Commit history target. Defaults to main.",
-      },
-      taskId: {
-        type: "string",
-        description: "Task id when target=task. Provide exactly one of taskId or branch.",
-      },
-      branch: {
-        type: "string",
-        description: "Task branch when target=task. Provide exactly one of taskId or branch.",
-      },
-      limit: {
-        type: "number",
-        description: "Maximum commits to return. Defaults to 20, max 100.",
-      },
-    }),
-    outputSchema: genericObjectOutputSchema,
-    annotations: gitContextReadOnlyAnnotations(),
-    resultContract: gitContextSucceededContract("log_read"),
-    selectionHints: {
-      tags: ["git-context", "log", "commits", "history", "trailers", "read-only"],
-      aliases: ["read git context log", "task commit history", "main context log"],
-      domain: "git_context",
-    },
-    async execute(input, context): Promise<ToolResult> {
-      const parsed = parseReadLogInput(input, context);
-      if ("ok" in parsed) {
-        return parsed;
-      }
-      try {
-        const log = await store.readSessionLog(parsed);
-        return okJsonResult({
-          code: "GIT_CONTEXT_LOG_READ",
-          message: "Git-context log read.",
-          structuredContent: log,
-        });
-      } catch (err) {
-        return gitContextReadFailed(err);
-      }
-    },
-  };
-}
-
-function createActivateTaskForTurnTool(
-  store: GitMemoryDailySessionStore,
-  runtime: GitMemoryRuntime | undefined,
-): ToolDefinition {
-  return {
-    name: "git_context_activate_task_for_turn",
-    description: "Bind the current pending user turn to an existing git-context task branch, start a run, and refresh active context.",
-    inputSchema: {
-      ...sessionScopedInputSchema({
-        taskId: {
-          type: "string",
-          description: "Task id to activate for the pending turn. Provide exactly one of taskId or branch.",
-        },
-        branch: {
-          type: "string",
-          description: "Task branch to activate for the pending turn. Provide exactly one of taskId or branch.",
-        },
-        reason: {
-          type: "string",
-          enum: [...ACTIVATE_TASK_REASON_CODES],
-          description: "Deterministic reason code for binding the pending turn to this task.",
-        },
-      }, ["reason"]),
-      oneOf: [
-        { required: ["taskId"] },
-        { required: ["branch"] },
-      ],
-    },
-    outputSchema: genericObjectOutputSchema,
-    annotations: gitContextTurnMutationAnnotations(),
-    resultContract: gitContextSucceededContract("turn_task_activated"),
-    selectionHints: {
-      tags: ["git-context", "pending-turn", "task", "activate", "routing", "mutating"],
-      aliases: ["activate task for turn", "route pending turn to existing task", "switch pending turn task"],
-      domain: "git_context",
-      priority: 7,
-    },
-    async execute(input, context): Promise<ToolResult> {
-      if (!runtime) {
-        return gitContextMutationFailed(new Error("git_context_activate_task_for_turn requires a live git memory runtime."));
-      }
-      const parsed = parseSwitchTaskInput(input, context);
-      if ("ok" in parsed) {
-        return parsed;
-      }
-      try {
-        const taskId = await resolveTaskIdFromSelector(store, parsed);
-        const route = await runtime.activateTaskForTurn({
-          sessionId: parsed.sessionId,
-          taskId,
-          reason: parsed.reason,
-          ...(context?.runId ? { sessionRunId: context.runId } : {}),
-        });
-        return okJsonResult({
-          code: "GIT_CONTEXT_TURN_TASK_ACTIVATED",
-          message: "Pending turn activated on existing git-context task.",
-          structuredContent: withHarnessContext(route),
-        });
-      } catch (err) {
-        return gitContextMutationFailed(err);
-      }
-    },
-  };
-}
-
-function createCreateTaskForTurnTool(runtime: GitMemoryRuntime | undefined): ToolDefinition {
-  return {
-    name: "git_context_create_task_for_turn",
-    description: "Create a new git-context task for the current pending user turn, start a run, and refresh active context. Use only when the turn starts separate durable work with a valid createReason.",
-    inputSchema: sessionScopedInputSchema({
-      title: {
-        type: "string",
-        description: "Short task title.",
-      },
-      objective: {
-        type: "string",
-        description: "Durable task objective.",
-      },
-      createReason: {
-        type: "string",
-        enum: [...CREATE_TASK_REASON_CODES],
-        description: "Deterministic reason code for creating a new task. Do not create a new task for same active task continuation.",
-      },
-      reasonDetails: {
-        type: "string",
-        description: "Optional human-readable details for logs. This does not grant permission to create the task.",
-      },
-    }, ["title", "objective", "createReason"]),
-    outputSchema: genericObjectOutputSchema,
-    annotations: gitContextTurnMutationAnnotations(),
-    resultContract: gitContextSucceededContract("turn_task_created"),
-    selectionHints: {
-      tags: ["git-context", "pending-turn", "task", "create", "routing", "mutating"],
-      aliases: ["create task for turn", "route pending turn to new task", "start new pending turn task"],
-      domain: "git_context",
-      priority: 7,
-    },
-    async execute(input, context): Promise<ToolResult> {
-      if (!runtime) {
-        return gitContextMutationFailed(new Error("git_context_create_task_for_turn requires a live git memory runtime."));
-      }
-      const parsed = parseCreateTaskInput(input, context);
-      if ("ok" in parsed) {
-        return parsed;
-      }
-      try {
-        const activeTaskGuard = await validateCreateTaskForActiveFocus(runtime, parsed);
-        if (activeTaskGuard) {
-          return activeTaskGuard;
+        const active = await service.getActiveContext({ sessionId: parsed.sessionId });
+        const conversation = active.session?.pendingConversationContext.at(-1)?.conversation;
+        if (!conversation || conversation.status !== "active") {
+          return routingError("No active conversation exists for task creation.");
         }
-        const route = await runtime.createTaskForTurn({
+        const placement = resolveTaskPlacement(parsed.placement, active, deps.workspaceRoot);
+        if (!placement.ok) {
+          return routingError(placement.message);
+        }
+        const selected = await service.createTaskRun({
+          requestId: randomUUID(),
           sessionId: parsed.sessionId,
+          conversationId: conversation.conversationId,
+          ...(active.run?.run.runId ? { runId: active.run.run.runId } : {}),
+          trigger: conversationTrigger(active, conversation.conversationId),
+          workState: active.run?.workState ?? initialWorkState(),
           title: parsed.title,
           objective: parsed.objective,
-          reason: createTaskRouteReason(parsed),
-          ...(context?.runId ? { sessionRunId: context.runId } : {}),
+          placement: placement.placement,
+          at: new Date().toISOString(),
         });
-        return okJsonResult({
-          code: "GIT_CONTEXT_TURN_TASK_CREATED",
-          message: "Pending turn created a new git-context task.",
-          structuredContent: withHarnessContext(route),
-        });
-      } catch (err) {
-        return gitContextMutationFailed(err);
+        return routingSuccess(service, parsed.sessionId, selected.task.taskId, selected.run.runId, "created");
+      } catch (error) {
+        return routingError(errorMessage(error));
       }
     },
   };
 }
 
-function parseListSessionsInput(input: unknown): ListSessionsInput | ToolResult {
-  if (input === undefined || input === null) {
-    return {};
-  }
-  if (typeof input !== "object" || Array.isArray(input)) {
-    return invalidInput("expected an object.");
-  }
-  const value = input as Partial<ListSessionsInput>;
-  if (value.limit !== undefined && !isValidLimit(value.limit)) {
-    return invalidInput("limit must be a positive integer.");
-  }
+function activateTaskTool(service: GitContextService): ToolDefinition {
   return {
-    ...(typeof value.limit === "number" ? { limit: Math.floor(value.limit) } : {}),
-  };
-}
-
-function parseActiveContextInput(input: unknown, context?: ToolExecutionContext): ActiveContextInput | ToolResult {
-  const scoped = parseSessionScopedInput(input, context);
-  if ("ok" in scoped) {
-    return scoped;
-  }
-  const value = input && typeof input === "object" && !Array.isArray(input)
-    ? input as Partial<ActiveContextInput>
-    : {};
-  if (value.limits !== undefined) {
-    if (!value.limits || typeof value.limits !== "object" || Array.isArray(value.limits)) {
-      return invalidInput("limits must be an object when provided.");
-    }
-    const limits = value.limits as Record<string, unknown>;
-    for (const [key, limit] of Object.entries(limits)) {
-      if (limit !== undefined && !isValidLimit(limit)) {
-        return invalidInput(`limits.${key} must be a positive integer.`);
-      }
-    }
-  }
-  return {
-    sessionId: scoped.sessionId,
-    ...(value.limits ? { limits: value.limits } : {}),
-  };
-}
-
-function parseSearchTasksInput(input: unknown, context?: ToolExecutionContext): SearchTasksInput | ToolResult {
-  const scoped = parseSessionScopedInput(input, context);
-  if ("ok" in scoped) {
-    return scoped;
-  }
-  const value = input && typeof input === "object" && !Array.isArray(input)
-    ? input as Partial<SearchTasksInput>
-    : {};
-  if (typeof value.query !== "string" || value.query.trim().length === 0) {
-    return invalidInput("query must be a non-empty string.");
-  }
-  if (value.limit !== undefined && !isValidLimit(value.limit)) {
-    return invalidInput("limit must be a positive integer.");
-  }
-  if (value.status !== undefined && !TASK_STATUSES.includes(value.status)) {
-    return invalidInput("status must be one of open, in_progress, blocked, done, or abandoned.");
-  }
-  return {
-    sessionId: scoped.sessionId,
-    query: value.query.trim(),
-    ...(typeof value.limit === "number" ? { limit: Math.floor(value.limit) } : {}),
-    ...(value.status ? { status: value.status } : {}),
-  };
-}
-
-function parseCreateTaskInput(input: unknown, context?: ToolExecutionContext): CreateTaskInput | ToolResult {
-  const scoped = parseSessionScopedInput(input, context);
-  if ("ok" in scoped) {
-    return scoped;
-  }
-  const value = input && typeof input === "object" && !Array.isArray(input)
-    ? input as Partial<CreateTaskInput>
-    : {};
-  const title = trimRequired(value.title, "title");
-  if (typeof title !== "string") {
-    return title;
-  }
-  const objective = trimRequired(value.objective, "objective");
-  if (typeof objective !== "string") {
-    return objective;
-  }
-  const createReason = parseCreateTaskReason(value.createReason);
-  if (typeof createReason !== "string") {
-    return createReason;
-  }
-  return {
-    sessionId: scoped.sessionId,
-    title,
-    objective,
-    createReason,
-    ...(trimOptional(value.reasonDetails) ? { reasonDetails: trimOptional(value.reasonDetails) } : {}),
-  };
-}
-
-function parseCreateTaskReason(value: unknown): CreateTaskReasonCode | ToolResult {
-  if (typeof value !== "string" || value.trim().length === 0) {
-    return invalidInput(`createReason must be one of: ${CREATE_TASK_REASON_CODES.join(", ")}.`);
-  }
-  const trimmed = value.trim();
-  if (!isCreateTaskReasonCode(trimmed)) {
-    return invalidInput(`createReason must be one of: ${CREATE_TASK_REASON_CODES.join(", ")}.`);
-  }
-  return trimmed;
-}
-
-function isCreateTaskReasonCode(value: string): value is CreateTaskReasonCode {
-  return (CREATE_TASK_REASON_CODES as readonly string[]).includes(value);
-}
-
-async function validateCreateTaskForActiveFocus(
-  runtime: GitMemoryRuntime,
-  input: CreateTaskInput,
-): Promise<ToolResult | null> {
-  const activeContext = await runtime.buildActiveContext(input.sessionId);
-  if (activeContext.focus.status !== "active") {
-    if (input.createReason !== "no_active_task") {
-      return createTaskReasonRejected({
-        message: `Cannot create a new task with createReason "${input.createReason}" because no active task exists. Use createReason "no_active_task".`,
-        createReason: input.createReason,
-        allowedCreateReasons: ["no_active_task"],
-        allowedNextActions: [
-          "Retry git_context_create_task_for_turn with createReason \"no_active_task\".",
-        ],
-      });
-    }
-    return null;
-  }
-
-  if (input.createReason === "no_active_task") {
-    return createTaskReasonRejected({
-      message: "Cannot create a new task with createReason \"no_active_task\" because an active git-context task exists.",
-      activeContext,
-      createReason: input.createReason,
-      allowedCreateReasons: [
-        "explicit_user_requested_new_task",
-        "new_unrelated_goal",
-      ],
-      allowedNextActions: [
-        "Continue the active task with normal work tools when this turn belongs to the same task.",
-        "Use git_context_create_task_for_turn only with a valid separate-work createReason for clearly separate work.",
-        "Use git_context_activate_task_for_turn when the user explicitly switches to a different existing task.",
-      ],
-    });
-  }
-
-  const policy = evaluateCreateTaskPolicy(activeContext, input);
-  if (!policy.allowed) {
-    return createTaskReasonRejected({
-      message: policy.message,
-      activeContext,
-      createReason: input.createReason,
-      matchedSignals: policy.matchedSignals,
-      allowedCreateReasons: policy.allowedCreateReasons,
-      allowedNextActions: policy.allowedNextActions,
-    });
-  }
-
-  return null;
-}
-
-function createTaskRouteReason(input: CreateTaskInput): string {
-  return input.reasonDetails ?? input.createReason;
-}
-
-function evaluateCreateTaskPolicy(
-  activeContext: Awaited<ReturnType<GitMemoryRuntime["buildActiveContext"]>>,
-  input: CreateTaskInput,
-): {
-  allowed: true;
-} | {
-  allowed: false;
-  message: string;
-  matchedSignals: string[];
-  allowedCreateReasons: CreateTaskReasonCode[];
-  allowedNextActions: string[];
-} {
-  const message = activeContext.pendingTurn?.text ?? "";
-  const combined = [
-    message,
-    input.title,
-    input.objective,
-    input.reasonDetails ?? "",
-  ].join(" ");
-  const explicitNewTaskSignals = explicitNewTaskRequestSignals(combined);
-  const sameTaskSignals = sameTaskLanguageSignals(combined);
-  if (input.createReason !== "no_active_task" && explicitNewTaskSignals.length > 0 && sameTaskSignals.length === 0) {
-    return { allowed: true };
-  }
-  const matchedSignals = sameTaskContinuationSignals(activeContext, input, message, sameTaskSignals);
-  if (matchedSignals.length > 0) {
-    return {
-      allowed: false,
-      message: "Cannot create a new task because this pending turn appears to continue or update the active task. Continue the active task with normal work tools; the runtime should own run creation.",
-      matchedSignals,
-      allowedCreateReasons: [],
-      allowedNextActions: [
-        "Continue the active task with normal work tools instead of creating a task.",
-        "Use git_context_activate_task_for_turn only if the turn belongs to a different existing task.",
-        "Ask a clarification if the user intended separate work.",
-      ],
-    };
-  }
-
-  return { allowed: true };
-}
-
-function explicitNewTaskRequestSignals(userMessage: string): string[] {
-  const normalized = normalizeRoutingText(userMessage);
-  if (!normalized) {
-    return [];
-  }
-  if (/\b(do not|dont|don t|without)\s+(create|start|open|make)\s+(a\s+)?new\s+task\b/.test(normalized)) {
-    return [];
-  }
-  const signals: string[] = [];
-  if (/\b(start|create|open|make|begin)\s+(a\s+)?new\s+task\b/.test(normalized)
-    || /\bnew\s+task\s+(to|for|about)\b/.test(normalized)) {
-    signals.push("explicit new task request");
-  }
-  if (/\b(start|create|open|begin)\s+(a\s+)?(separate|different)\s+(task|workstream|work stream)\b/.test(normalized)
-    || /\b(separate|different)\s+(task|workstream|work stream)\b/.test(normalized)) {
-    signals.push("explicit separate task request");
-  }
-  return signals;
-}
-
-function sameTaskContinuationSignals(
-  activeContext: Awaited<ReturnType<GitMemoryRuntime["buildActiveContext"]>>,
-  input: CreateTaskInput,
-  userMessage: string,
-  existingSignals: string[] = [],
-): string[] {
-  const signals: string[] = [...existingSignals];
-  const combined = normalizeRoutingText([
-    userMessage,
-    input.title,
-    input.objective,
-    input.reasonDetails ?? "",
-  ].join(" "));
-  if (/\b(active|current|previous|existing)\s+task\s+(is\s+)?(done|completed|complete)\b/.test(combined)
-    || /\b(done|completed|complete)\s+(active|current|previous|existing)\s+task\b/.test(combined)) {
-    signals.push("active task completion used as create-task reason");
-  }
-  const activeTask = activeContext.task;
-  if (!activeTask) {
-    return signals;
-  }
-  const taskTerms = routingTerms([
-    activeTask.title,
-    activeTask.objective,
-    activeTask.summary,
-    ...activeTask.facts,
-    ...activeTask.assets.map((asset) => `${asset.name} ${asset.path ?? ""}`),
-  ]);
-  const inputTerms = routingTerms(combined);
-  const overlap = [...taskTerms].filter((term) => inputTerms.has(term));
-  if (overlap.length >= 2) {
-    signals.push(`active task terms matched: ${overlap.slice(0, 6).join(", ")}`);
-  }
-  for (const file of activeTask.assets.flatMap((asset) => asset.path ? [asset.path] : [])) {
-    if (file && combined.includes(normalizeRoutingText(file))) {
-      signals.push(`active task artifact matched: ${file}`);
-    }
-  }
-  return [...new Set(signals)];
-}
-
-function sameTaskLanguageSignals(input: string): string[] {
-  const combined = normalizeRoutingText(input);
-  if (/\b(same|current|active|previous|existing|that|this)\b/.test(combined)
-    && /\b(update|change|edit|modify|refine|add|remove|delete|fix|continue|improve|rewrite)\b/.test(combined)) {
-    return ["same-task update language"];
-  }
-  return [];
-}
-
-function routingTerms(input: string | string[]): Set<string> {
-  const text = Array.isArray(input) ? input.join(" ") : input;
-  return new Set(normalizeRoutingText(text)
-    .split(/\s+/g)
-    .filter((token) => token.length >= 4 && !ROUTING_STOP_WORDS.has(token)));
-}
-
-function normalizeRoutingText(value: string): string {
-  return value
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
-const ROUTING_STOP_WORDS = new Set([
-  "task",
-  "work",
-  "user",
-  "turn",
-  "create",
-  "investigate",
-  "fix",
-  "update",
-  "change",
-  "edit",
-  "modify",
-  "refine",
-  "add",
-  "remove",
-  "delete",
-  "same",
-  "different",
-  "separate",
-  "unrelated",
-  "active",
-  "current",
-  "previous",
-  "existing",
-  "done",
-  "completed",
-  "complete",
-  "with",
-  "this",
-  "that",
-  "from",
-  "into",
-  "file",
-  "files",
-  "website",
-  "site",
-  "durable",
-  "handling",
-  "validation",
-  "delivery",
-]);
-
-async function resolveTaskIdFromSelector(
-  store: GitMemoryDailySessionStore,
-  input: TaskSelectorInput,
-): Promise<string> {
-  if (input.taskId) {
-    return input.taskId;
-  }
-  const snapshot = await store.readTaskRoutingSnapshot(input.sessionId);
-  const match = snapshot.tasks.find((task) => task.branch === input.branch);
-  if (!match) {
-    throw new Error(`Git memory task branch not found: ${input.branch}`);
-  }
-  return match.taskId;
-}
-
-function parseSwitchTaskInput(input: unknown, context?: ToolExecutionContext): SwitchTaskInput | ToolResult {
-  const scoped = parseTaskSelectorInput(input, context);
-  if ("ok" in scoped) {
-    return scoped;
-  }
-  const value = input && typeof input === "object" && !Array.isArray(input)
-    ? input as Partial<SwitchTaskInput>
-    : {};
-  if (typeof value.reason !== "string" || value.reason.trim().length === 0) {
-    return invalidInput(`reason must be one of: ${ACTIVATE_TASK_REASON_CODES.join(", ")}.`);
-  }
-  const reason = value.reason.trim();
-  if (!isActivateTaskReasonCode(reason)) {
-    return invalidInput(`reason must be one of: ${ACTIVATE_TASK_REASON_CODES.join(", ")}.`);
-  }
-  return {
-    ...scoped,
-    reason,
-  };
-}
-
-function isActivateTaskReasonCode(value: string): value is ActivateTaskReasonCode {
-  return (ACTIVATE_TASK_REASON_CODES as readonly string[]).includes(value);
-}
-
-function parseReadTaskInput(input: unknown, context?: ToolExecutionContext): ReadTaskInput | ToolResult {
-  const scoped = parseTaskSelectorInput(input, context);
-  if ("ok" in scoped) {
-    return scoped;
-  }
-  const value = input && typeof input === "object" && !Array.isArray(input)
-    ? input as Partial<ReadTaskInput>
-    : {};
-  const include = parseInclude(value.include);
-  if ("ok" in include) {
-    return include;
-  }
-  const limits = parseTaskDetailLimits(value.limits);
-  if (limits !== undefined && "ok" in limits) {
-    return limits;
-  }
-  return {
-    sessionId: scoped.sessionId,
-    ...(scoped.taskId ? { taskId: scoped.taskId } : {}),
-    ...(scoped.branch ? { branch: scoped.branch } : {}),
-    ...(include.length > 0 ? { include } : {}),
-    ...(limits ? { limits } : {}),
-  };
-}
-
-function parseReadEvidenceInput(
-  input: unknown,
-  context?: ToolExecutionContext,
-): ReadGitMemoryEvidenceInput | ToolResult {
-  const scoped = parseTaskSelectorInput(input, context);
-  if ("ok" in scoped) {
-    return scoped;
-  }
-  const value = input && typeof input === "object" && !Array.isArray(input)
-    ? input as Partial<ReadEvidenceInput>
-    : {};
-  if (value.runId !== undefined && typeof value.runId !== "string") {
-    return invalidInput("runId must be a string.");
-  }
-  if (value.limit !== undefined && !isValidLimit(value.limit)) {
-    return invalidInput("limit must be a positive integer.");
-  }
-  return {
-    sessionId: scoped.sessionId,
-    ...(scoped.taskId ? { taskId: scoped.taskId } : {}),
-    ...(scoped.branch ? { branch: scoped.branch } : {}),
-    ...(trimOptional(value.runId) ? { runId: trimOptional(value.runId) } : {}),
-    ...(typeof value.limit === "number" ? { limit: Math.floor(value.limit) } : {}),
-  };
-}
-
-function parseReadRunStepInput(
-  input: unknown,
-  context?: ToolExecutionContext,
-): ReadGitMemoryRunStepInput | ToolResult {
-  const scoped = parseSessionScopedInput(input, context);
-  if ("ok" in scoped) {
-    return scoped;
-  }
-  const value = input && typeof input === "object" && !Array.isArray(input)
-    ? input as Partial<ReadRunStepInput>
-    : {};
-  if (typeof value.runId !== "string" || value.runId.trim().length === 0) {
-    return invalidInput("runId must be a non-empty string.");
-  }
-  if (typeof value.step !== "number" || !Number.isInteger(value.step) || value.step < 1) {
-    return invalidInput("step must be a positive integer.");
-  }
-  if (value.callId !== undefined && typeof value.callId !== "string") {
-    return invalidInput("callId must be a string.");
-  }
-  if (value.taskId !== undefined && typeof value.taskId !== "string") {
-    return invalidInput("taskId must be a string.");
-  }
-  if (value.branch !== undefined && typeof value.branch !== "string") {
-    return invalidInput("branch must be a string.");
-  }
-  const taskId = trimOptional(value.taskId);
-  const branch = trimOptional(value.branch);
-  if (taskId && branch) {
-    return invalidInput("provide at most one run step scope: taskId or branch.");
-  }
-  return {
-    sessionId: scoped.sessionId,
-    runId: value.runId.trim(),
-    step: value.step,
-    ...(trimOptional(value.callId) ? { callId: trimOptional(value.callId) } : {}),
-    ...(taskId ? { taskId } : {}),
-    ...(branch ? { branch } : {}),
-  };
-}
-
-function parseSearchEvidenceInput(
-  input: unknown,
-  context?: ToolExecutionContext,
-): SearchGitMemoryEvidenceInput | ToolResult {
-  const scoped = parseSessionScopedInput(input, context);
-  if ("ok" in scoped) {
-    return scoped;
-  }
-  const value = input && typeof input === "object" && !Array.isArray(input)
-    ? input as Partial<SearchEvidenceInput>
-    : {};
-  if (typeof value.query !== "string" || value.query.trim().length === 0) {
-    return invalidInput("query must be a non-empty string.");
-  }
-  if (value.taskId !== undefined && typeof value.taskId !== "string") {
-    return invalidInput("taskId must be a string.");
-  }
-  if (value.branch !== undefined && typeof value.branch !== "string") {
-    return invalidInput("branch must be a string.");
-  }
-  if (value.limit !== undefined && !isValidLimit(value.limit)) {
-    return invalidInput("limit must be a positive integer.");
-  }
-  const taskId = trimOptional(value.taskId);
-  const branch = trimOptional(value.branch);
-  if (taskId && branch) {
-    return invalidInput("provide at most one evidence search scope: taskId or branch.");
-  }
-  return {
-    sessionId: scoped.sessionId,
-    query: value.query.trim(),
-    ...(taskId ? { taskId } : {}),
-    ...(branch ? { branch } : {}),
-    ...(typeof value.limit === "number" ? { limit: Math.floor(value.limit) } : {}),
-  };
-}
-
-function parseReadLogInput(input: unknown, context?: ToolExecutionContext): ReadLogInput | ToolResult {
-  const scoped = parseSessionScopedInput(input, context);
-  if ("ok" in scoped) {
-    return scoped;
-  }
-  const value = input && typeof input === "object" && !Array.isArray(input)
-    ? input as Partial<ReadLogInput>
-    : {};
-  if (value.target !== undefined && value.target !== "main" && value.target !== "task") {
-    return invalidInput("target must be either main or task.");
-  }
-  if (value.limit !== undefined && !isValidLimit(value.limit)) {
-    return invalidInput("limit must be a positive integer.");
-  }
-
-  const target = value.target ?? "main";
-  const taskId = trimOptional(value.taskId);
-  const branch = trimOptional(value.branch);
-  if (target === "main") {
-    if (taskId || branch) {
-      return invalidInput("taskId and branch are only valid when target is task.");
-    }
-    return {
-      sessionId: scoped.sessionId,
-      target,
-      ...(typeof value.limit === "number" ? { limit: Math.floor(value.limit) } : {}),
-    };
-  }
-
-  const selector = validateTaskSelector(taskId, branch);
-  if ("ok" in selector) {
-    return selector;
-  }
-  return {
-    sessionId: scoped.sessionId,
-    target,
-    ...(selector.taskId ? { taskId: selector.taskId } : {}),
-    ...(selector.branch ? { branch: selector.branch } : {}),
-    ...(typeof value.limit === "number" ? { limit: Math.floor(value.limit) } : {}),
-  };
-}
-
-function parseTaskSelectorInput(input: unknown, context?: ToolExecutionContext): (Required<SessionScopedInput> & {
-  taskId?: string;
-  branch?: string;
-}) | ToolResult {
-  const scoped = parseSessionScopedInput(input, context);
-  if ("ok" in scoped) {
-    return scoped;
-  }
-  const value = input && typeof input === "object" && !Array.isArray(input)
-    ? input as Partial<TaskSelectorInput>
-    : {};
-  if (value.taskId !== undefined && typeof value.taskId !== "string") {
-    return invalidInput("taskId must be a string.");
-  }
-  if (value.branch !== undefined && typeof value.branch !== "string") {
-    return invalidInput("branch must be a string.");
-  }
-  const selector = validateTaskSelector(trimOptional(value.taskId), trimOptional(value.branch));
-  if ("ok" in selector) {
-    return selector;
-  }
-  return {
-    sessionId: scoped.sessionId,
-    ...(selector.taskId ? { taskId: selector.taskId } : {}),
-    ...(selector.branch ? { branch: selector.branch } : {}),
-  };
-}
-
-function parseSessionScopedInput(input: unknown, context?: ToolExecutionContext): Required<SessionScopedInput> | ToolResult {
-  if (input !== undefined && input !== null && (typeof input !== "object" || Array.isArray(input))) {
-    return invalidInput("expected an object.");
-  }
-  const value = (input ?? {}) as Partial<SessionScopedInput>;
-  if (value.sessionId !== undefined && typeof value.sessionId !== "string") {
-    return invalidInput("sessionId must be a string.");
-  }
-  const sessionId = value.sessionId?.trim() || context?.sessionId?.trim();
-  if (!sessionId) {
-    return invalidInput("sessionId is required when no current tool context session is available.");
-  }
-  return { sessionId };
-}
-
-function validateTaskSelector(
-  taskId: string | undefined,
-  branch: string | undefined,
-): { taskId?: string; branch?: string } | ToolResult {
-  if (Boolean(taskId) === Boolean(branch)) {
-    return invalidInput("provide exactly one task selector: taskId or branch.");
-  }
-  return {
-    ...(taskId ? { taskId } : {}),
-    ...(branch ? { branch } : {}),
-  };
-}
-
-function parseInclude(input: GitMemoryTaskDetailInclude[] | undefined): GitMemoryTaskDetailInclude[] | ToolResult {
-  if (input === undefined) {
-    return [];
-  }
-  if (!Array.isArray(input)) {
-    return invalidInput("include must be an array.");
-  }
-  const include: GitMemoryTaskDetailInclude[] = [];
-  for (const value of input) {
-    if (!TASK_DETAIL_INCLUDES.includes(value)) {
-      return invalidInput("include contains an unsupported section.");
-    }
-    if (!include.includes(value)) {
-      include.push(value);
-    }
-  }
-  return include;
-}
-
-function parseTaskDetailLimits(input: Partial<GitMemoryTaskDetailLimits> | undefined): Partial<GitMemoryTaskDetailLimits> | undefined | ToolResult {
-  if (input === undefined) {
-    return undefined;
-  }
-  if (!input || typeof input !== "object" || Array.isArray(input)) {
-    return invalidInput("limits must be an object when provided.");
-  }
-  const output: Partial<GitMemoryTaskDetailLimits> = {};
-  for (const key of ["runLimit", "actionRunLimit", "actionLimit", "commitLogLimit", "evidenceLimit", "conversationMarkdownCharLimit", "runMarkdownCharLimit"] as const) {
-    const value = input[key];
-    if (value === undefined) {
-      continue;
-    }
-    if (!isValidLimit(value)) {
-      return invalidInput(`limits.${key} must be a positive integer.`);
-    }
-    output[key] = Math.floor(value);
-  }
-  return output;
-}
-
-function sessionScopedInputSchema(
-  extraProperties: Record<string, unknown> = {},
-  required: string[] = [],
-): Record<string, unknown> {
-  return {
-    type: "object",
-    properties: {
-      sessionId: {
-        type: "string",
-        description: "Optional git-context session id. Defaults to the current run session when available.",
+    name: "git_context_activate_task",
+    description: "Mount an existing durable task repository and start or promote the current run for it.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        taskId: { type: "string", pattern: "^W-[0-9]{8}-[0-9]{4}$", description: "Exact task id from current task candidates." },
+        reason: { type: "string", description: "Why the current request belongs to this task and its resources." },
       },
-      ...extraProperties,
+      required: ["taskId", "reason"],
+      additionalProperties: false,
     },
-    required,
+    outputSchema: routingOutputSchema(),
+    annotations: routingAnnotations(),
+    resultContract: succeededContract(),
+    selectionHints: {
+      tags: ["git-context", "task", "activate", "routing"],
+      aliases: ["activate task", "continue existing task", "switch task"],
+      domain: "git_context",
+      priority: 10,
+    },
+    async execute(input, context): Promise<ToolResult> {
+      const parsed = parseActivateInput(input, context);
+      if ("ok" in parsed) return parsed;
+      try {
+        const active = await service.getActiveContext({ sessionId: parsed.sessionId });
+        const conversation = active.session?.pendingConversationContext.at(-1)?.conversation;
+        if (!conversation || conversation.status !== "active") {
+          return routingError("No active conversation exists for task activation.");
+        }
+        const selected = await service.activateTaskRun({
+          requestId: randomUUID(),
+          sessionId: parsed.sessionId,
+          conversationId: conversation.conversationId,
+          ...(active.run?.run.runId ? { runId: active.run.run.runId } : {}),
+          trigger: conversationTrigger(active, conversation.conversationId),
+          workState: active.run?.workState ?? initialWorkState(),
+          taskId: parsed.taskId,
+          at: new Date().toISOString(),
+        });
+        return routingSuccess(service, parsed.sessionId, selected.task.taskId, selected.run.runId, "activated");
+      } catch (error) {
+        return routingError(errorMessage(error));
+      }
+    },
   };
 }
 
-function gitContextReadOnlyAnnotations(): ToolDefinition["annotations"] {
-  return commonAnnotations({
-    domain: "git_context",
-    readOnly: true,
-    idempotent: true,
-    retrySafe: true,
+async function routingSuccess(
+  service: GitContextService,
+  sessionId: string,
+  taskId: string,
+  runId: string,
+  mode: "created" | "activated",
+): Promise<ToolResult> {
+  const active = await service.getActiveContext({ sessionId });
+  const task = active.activeTask;
+  if (!task) return routingError("Selected task context is unavailable after activation.");
+  return okJsonResult({
+    code: mode === "created" ? "GIT_CONTEXT_TASK_CREATED" : "GIT_CONTEXT_TASK_ACTIVATED",
+    message: mode === "created" ? "Task repository created and selected." : "Task repository selected.",
+    structuredContent: {
+      status: "ready",
+      sessionId,
+      taskId,
+      branch: task.task.branch,
+      mode,
+      runId,
+      workingDirectory: task.workingDirectory,
+      harnessContext: {
+        contextEngine: buildContextEngineProjection(active),
+      },
+    },
   });
 }
 
-function gitContextTurnMutationAnnotations(): ToolDefinition["annotations"] {
+function routingOutputSchema() {
+  return {
+    type: "object",
+    properties: {
+      status: { const: "ready" },
+      sessionId: { type: "string" },
+      taskId: { type: "string" },
+      branch: { type: "string" },
+      mode: { enum: ["created", "activated"] },
+      runId: { type: "string" },
+      workingDirectory: { type: "string" },
+      harnessContext: { type: "object" },
+    },
+    required: ["status", "sessionId", "taskId", "branch", "mode", "runId", "workingDirectory", "harnessContext"],
+    additionalProperties: false,
+  };
+}
+
+function routingAnnotations() {
   return commonAnnotations({
     domain: "git_context",
     readOnly: false,
-    mutatesWorkspace: true,
-    mutatesExternalWorld: false,
-    destructive: false,
     idempotent: false,
     retrySafe: false,
   });
 }
 
-function withHarnessContext<T extends { memoryState: GitContextMemoryState; context?: unknown }>(
-  route: T,
-): Omit<T, "memoryState" | "context"> & {
-  harnessContext: { contextEngine: ReturnType<typeof buildGitMemoryHarnessContextFromMemoryState> };
-} {
-  const { memoryState, context: _context, ...publicRoute } = route;
+function conversationTrigger(
+  active: Awaited<ReturnType<GitContextService["getActiveContext"]>>,
+  conversationId: string,
+): "user" | "system_event" {
+  const conversation = active.session?.pendingConversationContext.find(
+    (candidate) => candidate.conversation.conversationId === conversationId,
+  );
+  return conversation?.messages.at(-1)?.role === "system_event" ? "system_event" : "user";
+}
+
+function parseCreateInput(input: unknown, context?: ToolExecutionContext): {
+  sessionId: string;
+  title: string;
+  objective: string;
+  placement: TaskPlacementInput;
+  reason: string;
+} | ToolResult {
+  const record = objectInput(input);
+  const sessionId = context?.sessionId?.trim();
+  const title = stringField(record, "title");
+  const objective = stringField(record, "objective");
+  const placement = parseTaskPlacement(record["placement"]);
+  const reason = stringField(record, "reason");
+  if (!sessionId || !title || !objective || !placement || !reason) {
+    return routingError("sessionId, title, objective, placement, and reason are required.");
+  }
+  return { sessionId, title, objective, placement, reason };
+}
+
+function parseActivateInput(input: unknown, context?: ToolExecutionContext): {
+  sessionId: string;
+  taskId: string;
+  reason: string;
+} | ToolResult {
+  const record = objectInput(input);
+  const sessionId = context?.sessionId?.trim();
+  const taskId = stringField(record, "taskId");
+  const reason = stringField(record, "reason");
+  if (!sessionId || !taskId || !/^W-\d{8}-\d{4}$/.test(taskId) || !reason) {
+    return routingError("sessionId, a valid taskId, and reason are required.");
+  }
+  return { sessionId, taskId, reason };
+}
+
+function objectInput(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {};
+}
+
+function stringField(value: Record<string, unknown>, key: string): string | undefined {
+  const field = value[key];
+  return typeof field === "string" && field.trim() ? field.trim() : undefined;
+}
+
+function routingError(message: string): ToolResult {
+  return errorResult({
+    code: "GIT_CONTEXT_TASK_ROUTING_FAILED",
+    message,
+    category: "conflict",
+    retryable: false,
+    suggestedNextActions: ["Correct the task id or ask the user which task owns the requested resources."],
+  });
+}
+
+function initialWorkState(): RunWorkStateInput {
   return {
-    ...publicRoute,
-    harnessContext: {
-      contextEngine: buildGitMemoryHarnessContextFromMemoryState(memoryState),
-    },
+    status: "not_done",
+    summary: "Task run started.",
+    openWork: [],
+    blockers: [],
+    facts: [],
+    evidence: [],
+    artifacts: [],
+    nextStep: null,
+    userInputNeeded: [],
   };
 }
 
-function createTaskReasonRejected(input: {
-  message: string;
-  activeContext?: Awaited<ReturnType<GitMemoryRuntime["buildActiveContext"]>>;
-  createReason: CreateTaskReasonCode;
-  matchedSignals?: string[];
-  allowedCreateReasons: CreateTaskReasonCode[];
-  allowedNextActions: string[];
-}): ToolResult {
-  const activeTask = input.activeContext?.task;
-  return errorResult({
-    code: "GIT_CONTEXT_CREATE_TASK_REASON_REJECTED",
-    message: input.message,
-    category: "validation",
-    retryable: true,
-    recoverable: true,
-    structuredContent: {
-      createReason: input.createReason,
-      allowedCreateReasons: input.allowedCreateReasons,
-      ...(input.matchedSignals?.length ? { matchedSignals: input.matchedSignals } : {}),
-      ...(input.activeContext
-        ? {
-            activeTask: activeTask
-              ? {
-                  taskId: activeTask.taskId,
-                  title: activeTask.title,
-                  objective: activeTask.objective,
-                  status: activeTask.status,
-                  branch: activeTask.branch,
-                }
-              : input.activeContext.focus,
-          }
-        : {}),
-      allowedNextActions: input.allowedNextActions,
-    },
-    suggestedNextActions: input.allowedNextActions,
-  });
-}
-
-function gitContextSucceededContract(kind: string): ToolDefinition["resultContract"] {
-  return succeededContract({
-    progressFacts: [{
-      kind,
-      path: "$.result.structuredContent",
-      message: "Git-context operation completed.",
-    }],
-  });
-}
-
-function gitContextReadFailed(err: unknown): ToolResult {
-  const message = err instanceof Error ? err.message : String(err);
-  return errorResult({
-    code: "GIT_CONTEXT_READ_FAILED",
-    message,
-    category: "semantic",
-    retryable: true,
-    recoverable: true,
-    suggestedNextActions: ["List git-context sessions and tasks, then retry with a valid session id and task selector."],
-  });
-}
-
-function gitContextMutationFailed(err: unknown): ToolResult {
-  const message = err instanceof Error ? err.message : String(err);
-  return errorResult({
-    code: "GIT_CONTEXT_MUTATION_FAILED",
-    message,
-    category: "semantic",
-    retryable: true,
-    recoverable: true,
-    suggestedNextActions: ["List git-context tasks, then retry with an existing task id or branch selector."],
-  });
-}
-
-function invalidInput(message: string): ToolResult {
-  return errorResult({
-    code: "GIT_CONTEXT_INVALID_INPUT",
-    message: `Invalid input: ${message}`,
-    category: "validation",
-    retryable: true,
-    recoverable: true,
-    suggestedNextActions: ["Retry with a valid git-context session id and supported numeric limits."],
-  });
-}
-
-function isValidLimit(value: unknown): value is number {
-  return typeof value === "number" && Number.isFinite(value) && Number.isInteger(value) && value > 0;
-}
-
-function trimOptional(value: string | undefined): string | undefined {
-  const trimmed = value?.trim();
-  return trimmed && trimmed.length > 0 ? trimmed : undefined;
-}
-
-function trimRequired(value: unknown, name: string): string | ToolResult {
-  if (typeof value !== "string" || value.trim().length === 0) {
-    return invalidInput(`${name} must be a non-empty string.`);
-  }
-  return value.trim();
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }

@@ -16,6 +16,8 @@ export interface SessionContextSheddingReceipt {
   removedSummary: boolean;
   removedCheckpointCount: number;
   retainedCheckpointId?: string;
+  removedRecentCommitCount: number;
+  retainedRecentCommit?: string;
   removedActivityCount: number;
   localEstimateTokens: number;
   correctedLocalEstimateTokens: number;
@@ -35,10 +37,19 @@ export function buildSessionContextSheddingCandidate(input: {
   const session = input.stateView.context.git?.session;
   const checkpoints = session?.recentTaskRuns ?? [];
   const latestCheckpoint = checkpoints.at(-1);
+  const recentCommits = session?.recentCommits ?? [];
+  const latestRecentCommit = recentCommits.at(0);
   const removedSummary = Boolean(session?.summary);
   const removedCheckpointCount = Math.max(0, checkpoints.length - (latestCheckpoint ? 1 : 0));
+  const removedRecentCommitCount = Math.max(
+    0,
+    recentCommits.length - (latestRecentCommit ? 1 : 0),
+  );
   const removedActivityCount = session?.activity.recent.length ?? 0;
-  const triggered = removedSummary || removedCheckpointCount > 0 || removedActivityCount > 0;
+  const triggered = removedSummary
+    || removedCheckpointCount > 0
+    || removedRecentCommitCount > 0
+    || removedActivityCount > 0;
   const projectedStateView = triggered || input.projectedToolCalls
     ? projectStateView(input.stateView, {
         ...(session ? { session: shedSessionContext(session) } : {}),
@@ -59,6 +70,8 @@ export function buildSessionContextSheddingCandidate(input: {
       removedSummary,
       removedCheckpointCount,
       ...(latestCheckpoint ? { retainedCheckpointId: latestCheckpoint.checkpointId } : {}),
+      removedRecentCommitCount,
+      ...(latestRecentCommit ? { retainedRecentCommit: latestRecentCommit.commit } : {}),
       removedActivityCount,
       localEstimateTokens,
       correctedLocalEstimateTokens: correctLocalInputTokenEstimate(localEstimateTokens),
@@ -68,8 +81,10 @@ export function buildSessionContextSheddingCandidate(input: {
 
 export function shedSessionContext(session: PromptGitSessionContext): PromptGitSessionContext {
   const latestCheckpoint = session.recentTaskRuns?.at(-1);
+  const latestRecentCommit = session.recentCommits?.at(0);
   return {
     meta: session.meta,
+    ...(latestRecentCommit ? { recentCommits: [latestRecentCommit] } : {}),
     ...(latestCheckpoint ? { recentTaskRuns: [latestCheckpoint] } : {}),
     ...(session.attachments ? { attachments: session.attachments } : {}),
     activity: { recent: [] },

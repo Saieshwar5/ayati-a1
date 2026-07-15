@@ -42,7 +42,7 @@ export const findFilesTool: ToolDefinition = {
     domain: "filesystem-search",
     priority: 40,
   },
-  async execute(input): Promise<ToolResult> {
+  async execute(input, context): Promise<ToolResult> {
     const parsed = validateFindFilesInput(input);
     if ("ok" in parsed) return parsed;
 
@@ -59,7 +59,7 @@ export const findFilesTool: ToolDefinition = {
       };
     }
 
-    const roots = resolveWorkspaceRoots(parsed.roots);
+    const roots = resolveWorkspaceRoots(parsed.roots, context?.resourceScope?.rootPath);
     const start = Date.now();
     const matches: string[] = [];
     const searchedRoots: string[] = [];

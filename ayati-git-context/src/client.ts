@@ -1,6 +1,8 @@
 import { request as httpRequest, type RequestOptions } from "node:http";
+import { randomUUID } from "node:crypto";
 import type {
   ActiveContext,
+  ActivateTaskRunRequest,
   AcquireMutationAuthorityRequest,
   AcquireMutationAuthorityResponse,
   CheckpointMutationRequest,
@@ -9,6 +11,7 @@ import type {
   AppendConversationResponse,
   CreateTaskRequest,
   CreateTaskResponse,
+  CreateTaskRunRequest,
   EnsureActiveSessionRequest,
   EnsureActiveSessionResponse,
   FinalizeSessionRunRequest,
@@ -19,6 +22,8 @@ import type {
   GetTaskRequest,
   GetTaskResponse,
   HealthResponse,
+  ListTasksRequest,
+  ListTasksResponse,
   MountTaskRequest,
   MountTaskResponse,
   RecordRunStepRequest,
@@ -27,6 +32,7 @@ import type {
   SnapshotTaskRunEvidenceResponse,
   StartRunRequest,
   StartRunResponse,
+  SelectedTaskRunResponse,
   VerifyMutationRequest,
   VerifyMutationResponse,
 } from "./contracts.js";
@@ -79,7 +85,12 @@ export class GitContextClient implements GitContextService {
     const query = input.sessionId
       ? "?sessionId=" + encodeURIComponent(input.sessionId)
       : "";
-    return await this.requestJson<ActiveContext>("GET", "/context/active" + query);
+    return await this.requestJson<ActiveContext>(
+      "GET",
+      "/context/active" + query,
+      undefined,
+      input,
+    );
   }
 
   async ensureActiveSession(input: EnsureActiveSessionRequest): Promise<EnsureActiveSessionResponse> {
@@ -100,6 +111,22 @@ export class GitContextClient implements GitContextService {
 
   async createTask(input: CreateTaskRequest): Promise<CreateTaskResponse> {
     return await this.requestJson<CreateTaskResponse>("POST", "/tasks", input);
+  }
+
+  async createTaskRun(input: CreateTaskRunRequest): Promise<SelectedTaskRunResponse> {
+    return await this.requestJson<SelectedTaskRunResponse>("POST", "/task-runs/create", input);
+  }
+
+  async activateTaskRun(input: ActivateTaskRunRequest): Promise<SelectedTaskRunResponse> {
+    return await this.requestJson<SelectedTaskRunResponse>("POST", "/task-runs/activate", input);
+  }
+
+  async listTasks(input: ListTasksRequest): Promise<ListTasksResponse> {
+    const params = new URLSearchParams();
+    if (input.query) params.set("query", input.query);
+    if (input.limit) params.set("limit", String(input.limit));
+    const query = params.size > 0 ? "?" + params.toString() : "";
+    return await this.requestJson<ListTasksResponse>("GET", "/tasks" + query);
   }
 
   async getTask(input: GetTaskRequest): Promise<GetTaskResponse> {
@@ -191,13 +218,17 @@ export class GitContextClient implements GitContextService {
     method: "GET" | "POST",
     path: string,
     input?: unknown,
+    observabilityInput: unknown = input,
   ): Promise<T> {
     const body = input === undefined ? undefined : JSON.stringify(input);
+    const traceId = requestTraceId(input);
     const options: RequestOptions = {
       method,
       path,
       headers: {
         accept: "application/json",
+        "x-ayati-trace-id": traceId,
+        ...requestCorrelationHeaders(observabilityInput),
         ...(body === undefined
           ? {}
           : {
@@ -267,6 +298,34 @@ export class GitContextClient implements GitContextService {
       request.end();
     });
   }
+}
+
+function requestCorrelationHeaders(input: unknown): Record<string, string> {
+  if (!input || typeof input !== "object" || Array.isArray(input)) {
+    return {};
+  }
+  const record = input as Record<string, unknown>;
+  return {
+    ...stringHeader("x-ayati-request-id", record["requestId"]),
+    ...stringHeader("x-ayati-session-id", record["sessionId"]),
+    ...stringHeader("x-ayati-conversation-id", record["conversationId"]),
+    ...stringHeader("x-ayati-run-id", record["runId"]),
+    ...stringHeader("x-ayati-task-id", record["taskId"]),
+  };
+}
+
+function stringHeader(name: string, value: unknown): Record<string, string> {
+  return typeof value === "string" && value.trim()
+    ? { [name]: value.trim() }
+    : {};
+}
+
+function requestTraceId(input: unknown): string {
+  if (input && typeof input === "object" && !Array.isArray(input)) {
+    const requestId = (input as Record<string, unknown>)["requestId"];
+    if (typeof requestId === "string" && requestId.trim()) return requestId;
+  }
+  return randomUUID();
 }
 
 function parseResponseBody(buffer: Buffer): unknown {

@@ -5,7 +5,8 @@ import type {
   LoopState,
   StepSummary,
 } from "../types.js";
-import type { GitMemorySessionStepRecord, GitMemoryStepRecord } from "../../context-engine/index.js";
+import type { ContextRunStepRecord } from "../../context-engine/index.js";
+import type { HarnessContextInput } from "../harness-context.js";
 import type { AgentAction } from "./decision.js";
 import type { AgentActionExecutionResult } from "./action-executor.js";
 
@@ -60,7 +61,7 @@ export function buildStepSummary(input: {
   };
 }
 
-export function recordTaskStep(
+export async function recordTaskStep(
   deps: AgentLoopDeps,
   state: LoopState,
   action: AgentAction,
@@ -69,25 +70,25 @@ export function recordTaskStep(
     startedAt: string;
     completedAt: string;
   },
-): void {
+): Promise<HarnessContextInput | undefined> {
   if (!deps.recordTaskStep || !state.runId || state.runClass !== "task") {
-    return;
+    return undefined;
   }
   const taskId = state.harnessContext.contextEngine?.task?.workId
     ?? state.harnessContext.contextEngine?.pendingTurn?.workId;
   if (!taskId) {
-    return;
+    return undefined;
   }
-  deps.recordTaskStep(buildGitMemoryStepRecord({
+  return await deps.recordTaskStep(buildContextTaskStepRecord({
     taskId,
     runId: state.runId,
     action,
     stepResult,
     timing,
-  }));
+  })) ?? undefined;
 }
 
-export function recordSessionStep(
+export async function recordSessionStep(
   deps: AgentLoopDeps,
   sessionRunHandle: MemoryRunHandle | undefined,
   action: AgentAction,
@@ -96,17 +97,17 @@ export function recordSessionStep(
     startedAt: string;
     completedAt: string;
   },
-): void {
+): Promise<HarnessContextInput | undefined> {
   if (!deps.recordSessionStep || !sessionRunHandle?.runId) {
-    return;
+    return undefined;
   }
-  deps.recordSessionStep(buildGitMemorySessionStepRecord({
+  return await deps.recordSessionStep(buildContextSessionStepRecord({
     sessionId: sessionRunHandle.sessionId,
     runId: sessionRunHandle.runId,
     action,
     stepResult,
     timing,
-  }));
+  })) ?? undefined;
 }
 
 function buildStepEvidenceMetadata(calls: ActToolCallRecord[]): Pick<StepSummary, "evidenceSource" | "outputSize" | "lineCount" | "truncated"> {
@@ -139,7 +140,7 @@ function buildToolEvidenceSource(call: ActToolCallRecord): Record<string, unknow
   });
 }
 
-function buildGitMemorySessionStepRecord(input: {
+function buildContextSessionStepRecord(input: {
   sessionId: string;
   runId: string;
   action: AgentAction;
@@ -148,7 +149,7 @@ function buildGitMemorySessionStepRecord(input: {
     startedAt: string;
     completedAt: string;
   };
-}): GitMemorySessionStepRecord {
+}): ContextRunStepRecord {
   const step = input.stepResult.stepSummary;
   const verification = input.stepResult.execution.verifyOutput;
   const status = step.outcome === "failed" ? "failed" : step.outcome === "skipped" ? "skipped" : "completed";
@@ -212,7 +213,7 @@ function buildGitMemorySessionStepRecord(input: {
   };
 }
 
-function buildGitMemoryStepRecord(input: {
+function buildContextTaskStepRecord(input: {
   taskId: string;
   runId: string;
   action: AgentAction;
@@ -221,7 +222,7 @@ function buildGitMemoryStepRecord(input: {
     startedAt: string;
     completedAt: string;
   };
-}): GitMemoryStepRecord {
+}): ContextRunStepRecord {
   const step = input.stepResult.stepSummary;
   const verification = input.stepResult.execution.verifyOutput;
   const status = step.outcome === "failed" ? "failed" : step.outcome === "skipped" ? "skipped" : "completed";

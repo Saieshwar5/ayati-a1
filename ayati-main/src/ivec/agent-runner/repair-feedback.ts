@@ -89,9 +89,8 @@ export function recordDeferredMutationRoutingRepair(input: {
       ? deferredMutationToolNames(input.decision.action)
       : ["direct_reply"],
     allowedNextActions: [
-      "Call git_context_activate_task_for_turn if this belongs to the active or another existing task.",
-      "Call git_context_search_tasks first if another existing task may own the request.",
-      "Call git_context_create_task_for_turn if this is a new durable task.",
+      "Call git_context_activate_task if a task candidate owns the requested resources.",
+      "Call git_context_create_task if this is a new durable task.",
       "After routing succeeds, the deferred mutation will execute automatically; do not repeat the mutation call.",
     ],
     operatorDetails: {

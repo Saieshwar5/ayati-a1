@@ -14,7 +14,7 @@ export const createDirectoryTool: ToolDefinition = {
     properties: {
       path: {
         type: "string",
-        description: "Workspace-relative directory path by default. Absolute paths outside the workspace require allowExternalPath=true.",
+        description: "Directory path. In a task run, use a path relative to the active task root and do not repeat the task directory name. Otherwise, relative paths use the workspace root.",
       },
       recursive: {
         type: "boolean",
@@ -22,7 +22,7 @@ export const createDirectoryTool: ToolDefinition = {
       },
       allowExternalPath: {
         type: "boolean",
-        description: "Allow creating an absolute directory outside the configured workspace. Use only when the user explicitly requested that external path.",
+        description: "Allow an absolute path outside the configured workspace for non-task work. Task runs ignore this flag and cannot escape the active task root.",
       },
     },
   },
@@ -62,13 +62,14 @@ export const createDirectoryTool: ToolDefinition = {
     domain: "filesystem",
     priority: 3,
   },
-  async execute(input): Promise<ToolResult> {
+  async execute(input, context): Promise<ToolResult> {
     const parsed = validateCreateDirectoryInput(input);
     if ("ok" in parsed) return parsed;
 
     const resolved = resolveWorkspaceMutationPath(parsed.path, {
       allowExternalPath: parsed.allowExternalPath,
       operation: "create_directory",
+      root: context?.resourceScope?.rootPath,
     });
     if (!resolved.ok) return externalWorkspacePathError(resolved);
 

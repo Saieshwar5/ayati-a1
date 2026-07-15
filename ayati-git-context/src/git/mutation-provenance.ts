@@ -7,13 +7,14 @@ import { runGit, runGitRaw } from "./git-process.js";
 export async function readMutationProvenance(
   checkoutPath: string,
   targets: ResolvedMutationTarget[],
+  baseline: "head" | "index" = "head",
 ): Promise<MutationProvenance> {
   const difference = await runGitRaw([
     "diff",
     "--name-status",
     "-z",
     "--find-renames",
-    "HEAD",
+    ...(baseline === "head" ? ["HEAD"] : []),
     "--",
   ], { cwd: checkoutPath });
   const created = new Set<string>();
@@ -28,7 +29,7 @@ export async function readMutationProvenance(
   for (const path of await readOtherPaths(checkoutPath, true)) {
     created.add(path);
   }
-  await detectExactRenames(checkoutPath, created, deleted, renamed);
+  await detectExactRenames(checkoutPath, created, deleted, renamed, baseline);
 
   const changedPaths = new Set<string>([
     ...created,
@@ -53,6 +54,7 @@ async function detectExactRenames(
   created: Set<string>,
   deleted: Set<string>,
   renamed: Array<{ from: string; to: string }>,
+  baseline: "head" | "index",
 ): Promise<void> {
   const createdByObject = new Map<string, string[]>();
   for (const path of created) {
@@ -62,7 +64,10 @@ async function detectExactRenames(
     createdByObject.set(object, paths);
   }
   for (const path of [...deleted]) {
-    const object = await runGit(["rev-parse", "HEAD:" + path], { cwd: checkoutPath });
+    const object = await runGit([
+      "rev-parse",
+      (baseline === "head" ? "HEAD:" : ":") + path,
+    ], { cwd: checkoutPath });
     const destinations = createdByObject.get(object);
     const destination = destinations?.shift();
     if (!destination) {

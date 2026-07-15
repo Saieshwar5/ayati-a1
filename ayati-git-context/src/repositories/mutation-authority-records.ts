@@ -122,6 +122,16 @@ export function readMutationAuthority(
   return row ? mutationAuthorityRecord(row) : undefined;
 }
 
+export function hasMutationAuthorityForRun(
+  database: ContextDatabase,
+  runId: string,
+): boolean {
+  const row = database.prepare([
+    "SELECT 1 AS found FROM task_mutation_authorities WHERE run_id = ? LIMIT 1",
+  ].join(" ")).get(runId) as { found: number } | undefined;
+  return row?.found === 1;
+}
+
 export function updateMutationAuthorityVerification(
   database: ContextDatabase,
   authorityId: string,

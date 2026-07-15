@@ -2,6 +2,10 @@ export type ContextConversationRole = "user" | "assistant" | "system";
 
 export interface ContextConversationRecord {
   seq: number;
+  messageId?: string;
+  conversationId?: string;
+  conversationSequence?: number;
+  segmentSequence?: number;
   role: ContextConversationRole;
   kind?: "message" | "feedback_question";
   at: string;
@@ -137,6 +141,14 @@ export interface ContextCommitSummary {
   commit: string;
   subject: string;
   summary?: string;
+  conversationSummary?: string;
+  workSummary?: string;
+  assets?: Array<{
+    path: string;
+    description: string;
+  }>;
+  outcome?: string;
+  validation?: string;
   event?: string;
   status?: string;
   at?: string;
@@ -228,6 +240,7 @@ export interface ContextSessionAttachmentRecord {
   storedPath?: string;
   sizeBytes?: number;
   mimeType?: string;
+  checksum?: string;
   createdAt: string;
   lastUsedAt?: string;
 }
@@ -248,6 +261,27 @@ export interface ContextSessionMeta {
   assetCount: number;
 }
 
+export interface ContextReadEntry {
+  key: string;
+  runId: string;
+  step: number;
+  runClass: "session" | "task";
+  tool: string;
+  purpose: string;
+  resources: string[];
+  input?: unknown;
+  output?: unknown;
+  outputHash?: string;
+  verification: unknown;
+  createdAt: string;
+}
+
+export interface ContextReadContext {
+  revision: string;
+  afterTaskRunId?: string;
+  entries: ContextReadEntry[];
+}
+
 export interface ContextEngineMachineContext {
   session: {
     meta: ContextSessionMeta;
@@ -263,7 +297,19 @@ export interface ContextEngineMachineContext {
   pendingWrites?: ContextPendingWrite[];
   pendingTurn?: ContextPendingTurn;
   focus: ContextFocus;
+  readContext?: ContextReadContext;
+  taskCandidates?: Array<{
+    taskId: string;
+    title: string;
+    objective: string;
+    workingDirectory: string;
+    updatedAt: string;
+  }>;
   task?: {
+    /** Runtime-only active task checkout. Prompt projection intentionally omits it. */
+    checkoutPath?: string;
+    /** Stable user-facing directory where task files are edited. */
+    workingDirectory?: string;
     ref: string;
     workId: string;
     title: string;
@@ -339,4 +385,6 @@ export interface HarnessRunResultForContext {
   workState?: HarnessWorkStateForContext;
   completedSteps?: HarnessStepSummaryForContext[];
   taskAssets?: TaskAssetRecord[];
+  /** Exact assets accepted by deterministic task-completion verification. */
+  verifiedCompletionAssets?: TaskAssetRecord[];
 }

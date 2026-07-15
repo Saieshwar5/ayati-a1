@@ -1,23 +1,13 @@
-export const GIT_CONTEXT_READ_ONLY_TOOL_NAMES = [
-  "git_context_list_sessions",
-  "git_context_active",
-  "git_context_list_tasks",
-  "git_context_search_tasks",
-  "git_context_read_task",
-  "git_context_read_evidence",
-  "git_context_read_run_step",
-  "git_context_search_evidence",
-  "git_context_log",
-] as const;
+export const GIT_CONTEXT_READ_ONLY_TOOL_NAMES = [] as const;
 
 export const GIT_CONTEXT_TURN_ROUTING_TOOL_NAMES = [
-  "git_context_activate_task_for_turn",
-  "git_context_create_task_for_turn",
+  "git_context_activate_task",
+  "git_context_create_task",
 ] as const;
 
 export const GIT_CONTEXT_FRESH_SESSION_ROUTING_TOOL_NAMES = [
-  "git_context_activate_task_for_turn",
-  "git_context_create_task_for_turn",
+  "git_context_activate_task",
+  "git_context_create_task",
 ] as const;
 
 const READ_ONLY_TOOL_NAMES = new Set<string>(GIT_CONTEXT_READ_ONLY_TOOL_NAMES);

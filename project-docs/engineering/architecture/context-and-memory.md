@@ -12,6 +12,71 @@ daily git context + run recorder + personal memory -> git context pack -> decisi
 
 ## Git Context
 
+### Two-level active context cache
+
+Ayati keeps two in-memory context layers with one clear authority:
+
+```text
+Git + SQLite
+-> authoritative Git Context Engine ActiveContext cache
+-> revisioned HTTP snapshot
+-> disposable harness context mirror
+-> model prompt projection
+```
+
+The Git Context Engine hydrates its session, pending-conversation, active-run,
+and session-summary component caches during startup recovery. Its assembled
+`ActiveContext` has a deterministic revision derived from session HEAD and
+status, pending-conversation hashes, active run and WorkState revisions, and
+task catalog HEADs. Unchanged requests reuse the same assembled object. A
+successful durable operation refreshes the affected component cache and
+invalidates the assembled snapshot.
+
+Conversation appends are the hot-path exception. The service returns the new
+authoritative context revision with the exact persisted message, and the
+harness applies that message incrementally to its mirror. The first turn after
+startup or a complex dirty transition still loads a complete service snapshot;
+later conversation-only turns do not rebuild the full context.
+
+The daemon creates its harness mirror at startup and warms it from the latest
+live session when one exists. Normal decisions reuse this agent-ready mirror
+without another socket request. Run, task-selection, step, and finalization
+boundaries mark the corresponding session dirty immediately. A
+dirty mirror is never served: the runtime first drains queued step writes and
+then replaces the whole mirror from the authoritative service snapshot.
+
+The harness does not independently reduce durable context. Run-local
+WorkState and tool calls still update immediately inside the existing agent
+loop, while the context service acknowledgement establishes durability. Both
+caches are disposable and rebuild from SQLite and Git after restart.
+
+### Live-test observability
+
+The daemon, process supervisor, HTTP boundary, Git Context Engine, and harness
+emit one versioned structured event contract. A request trace id crosses the
+Unix-socket HTTP call, while session, run, task, sequence, and step identifiers
+link service events back to an agent turn. The contract records lifecycle
+facts and bounded metadata; secret-bearing fields and raw file/content fields
+are redacted before reaching a sink.
+
+Important proof points include child readiness/restart, cache hit/miss and
+revision replacement, task repository validation and mounting, session-run
+promotion, queued and acknowledged step persistence, mutation verification,
+verified task-run staging, and the single task-run commit at finalization. When
+feedback tracing is enabled,
+these events enter the existing feedback JSONL alongside decision, action,
+verification, and final-response events. Run `pnpm feedback:git-context` after
+a live test to render the latest context timeline and deterministic lifecycle
+violations. The reporter also accepts `--input <jsonl>` and optional
+`--output <markdown>`.
+
+Feedback pointers are scoped: `latest-session.json` identifies the latest
+user/session execution, `latest-run.json` identifies the latest run, and
+`latest-process.json` identifies process-only activity. The backwards-compatible
+`latest.json` follows the session pointer and cannot be replaced by shutdown
+events. Reports correlate transport records through trace identity instead of
+mixing unrelated process events into a session.
+
 The durable work context is a daily git repository managed by the context
 engine under `ayati-main/src/context-engine/`.
 
@@ -27,6 +92,50 @@ user message
 -> agent loop receives compact git context
 -> completed run writes task state, run summaries, evidence, and commit metadata
 ```
+
+### Commit-based task state
+
+Each task is an independent Git repository with one stable working directory.
+Task creation makes one bootstrap identity commit, clones it into the exact
+user-requested directory or an isolated managed workspace directory, and
+registers a session submodule pointer. After that, a task run advances task
+history exactly once, when the run finishes.
+
+During the run, every mutating tool still receives deterministic authority and
+verification. Successful verified paths are added to the stable task working
+directory's Git index, but its HEAD, canonical repository, task catalog, and
+session gitlink do not move. Finalization rejects unverified working-tree paths,
+commits all accumulated staged changes once, pushes that commit, and then
+fast-forwards the session's pointer checkout and stages the exact gitlink.
+
+The final commit is the compact task state for future activation. Its tree is
+the current deliverable, its diff is the work from the latest run, and its
+message records cumulative `Task-State`, `Task-Status`, `Validation`, `Next`,
+run/session/conversation identity, and the run outcome. Full tool inputs,
+outputs, verification, and WorkState remain in SQLite and session run evidence;
+they are not copied into the task-state message.
+
+### Session commit continuity
+
+Agent-facing session history has three deterministic layers:
+
+```text
+older committed task runs -> context.git.session.summary
+newest five session commits -> context.git.session.recentCommits
+current uncommitted messages -> context.timeline
+```
+
+The Git Context Engine parses the newest five session commits into structured
+conversation, work, asset, outcome, validation, task, and run fields. These
+records survive the service and harness caches and are included in normal model
+prompts. The prompt does not duplicate the raw commit message. At the session
+context-pressure stage, only the newest structured commit is retained; this is
+a prompt-only projection and does not change Git or either cache.
+
+Exact current timeline events override recent commits, and recent commits
+override the compressed older summary. This boundary lets an informational
+follow-up use the latest committed result without activating a task or reading
+the task repository again.
 
 Pending-turn routing states are:
 
@@ -60,6 +169,11 @@ activation/creation returns a ready route, or after a target is promoted by the
 first mutation, the runner refreshes `context.git.current`, removes routing
 tools for the rest of the run, and then allows normal mutation tools.
 
+For unmistakable social or informational requests, the runtime suppresses
+task-routing mutation schemas for that turn and retains direct replies plus
+read-only tools. The gate is deliberately conservative: concrete or ambiguous
+durable requests keep the normal routing surface.
+
 If an active task exists, the turn still starts as a session run. For same-task
 continuation, the model may read first in the session run; the runner promotes
 that same run id into the active task immediately before the first mutation
@@ -67,6 +181,36 @@ tool executes. For new tasks, different existing tasks, or ambiguous ownership,
 the model may use create, activate, or clarify routing tools during the window.
 Once mutation promotes the run, or once routing is resolved, routing mutation
 tools are removed from the task-run surface.
+
+### Task resource root
+
+An active task run has one trusted filesystem authority: the task's stable
+working directory. When the user names a directory, that exact directory is
+the task checkout. Otherwise Ayati allocates `workspace/tasks/<task-id>-<slug>`.
+The app runtime passes this checkout as a runtime-only `resourceScope` to
+executable tools. Filesystem, search, shell, and managed Python paths resolve
+relative to that scope; model tool inputs do not need `allowExternalPath` to
+reach task-owned files. The task-scoped executor removes that escape flag and
+rejects paths outside the working directory before requesting Git mutation
+authority.
+
+The session submodule checkout is separate and is never an execution root. It
+exists only so a session commit can retain a native Git gitlink to the exact
+task commit. Task finalization advances it after the stable working directory
+has committed and pushed successfully.
+
+Durable and model-facing task asset identities remain task-relative. The
+session-specific checkout path is available to completion verification and
+other trusted runtime code but is omitted from the model prompt. Mutation
+authority receives the same task-relative identity, while the underlying tool
+receives the resolved execution path. `task_completion` resolves and verifies
+declared assets against the active checkout rather than the global user
+workspace.
+
+Known non-mutating validation commands such as `node --check <file>` execute
+with the task checkout as `cwd` and do not acquire mutation authority. Other
+mutation-capable commands must still identify a bounded task file or
+subdirectory; repository-wide `.` authority remains invalid.
 
 A session run has exactly one final home. If it remains read-only, it is
 finalized in `session-store`. If it is promoted, pre-promotion read steps move
@@ -276,18 +420,36 @@ should call the original domain tools with narrower inputs. Durable task facts
 should come from verification and progress reduction, not from keeping
 arbitrary raw slices in long-lived context.
 
-Read tools use the same prompt-facing projection:
-`context.run.toolCalls`. This gives the model the filesystem/search context it
-has gathered during the current run without putting raw file contents into task
-state. Raw read output stays in run evidence and tool records.
+Verified filesystem reads also produce a separate `context.git.current.readContext`
+working set. It is a deterministic projection over raw `run_steps`, not a new
+source of truth and not part of WorkState. It contains reusable `find_files`,
+`inspect_paths`, `list_directory`, `read_files`, and `search_in_files` results
+from both session and task runs since the latest successful task-run commit.
 
-Read context should follow these boundaries:
+The working set follows one commit-window lifecycle:
 
-- show enough recent raw or near-raw context for the next decision
-- keep durable raw output in run evidence and tool records
-- promote only verified, useful facts into task state
-- avoid storing every read forever in scratch or task metadata
-- use normal domain tools with narrower inputs to recover missing context when needed
+- a completed read-only session run leaves its verified reads available to
+  later turns
+- session-to-task promotion preserves the same run ID and read working set
+- a newer observation of the same tool/resources replaces the older entry
+- a verified mutation invalidates observations for affected paths
+- successful task finalization resets the entire active read working set
+- raw input, output, verification, and evidence remain durable in run history
+
+The Git Context Engine reconstructs the same working set after restart by
+replaying run steps whose run sequence is newer than the latest completed task
+finalization. The service ActiveContext cache owns the assembled section; the
+harness only mirrors and projects it. When an active-run read is already in the
+durable read section, prompt compilation replaces the duplicate full output in
+`context.run.toolCalls` with tool, purpose, status, source, and
+`readContextKeys` reference metadata.
+
+Run-step persistence is an agent-decision boundary. After deterministic
+verification, the harness awaits the context service acknowledgement and a
+refreshed authoritative ActiveContext before allowing the next model decision.
+The next prompt therefore receives complete reusable content only through
+`context.git.current.readContext`; `context.run.toolCalls` keeps the compact
+reference. SQLite and run evidence still retain the complete raw step.
 
 Filesystem metadata should often come before large reads. `inspect_paths`
 returns size, line-count, file/directory kind, language/content hints, hashes

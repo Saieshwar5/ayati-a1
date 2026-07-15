@@ -21,8 +21,8 @@ describe("git-context tool policy", () => {
   });
 
   it("blocks low-level branch and normal work tools during pending-turn routing", () => {
-    expect(isGitContextAllowedDuringPendingRouting("git_context_create_task")).toBe(false);
-    expect(isGitContextAllowedDuringPendingRouting("git_context_switch_task")).toBe(false);
+    expect(isGitContextAllowedDuringPendingRouting("git_context_create_branch")).toBe(false);
+    expect(isGitContextAllowedDuringPendingRouting("git_context_switch_branch")).toBe(false);
     expect(isGitContextAllowedDuringPendingRouting("shell")).toBe(false);
     expect(isGitContextAllowedDuringPendingRouting("patch_files")).toBe(false);
   });

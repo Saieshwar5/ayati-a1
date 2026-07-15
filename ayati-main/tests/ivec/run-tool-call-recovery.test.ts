@@ -326,7 +326,7 @@ describe("run tool-call context", () => {
           stepRef: { runId: "r-recovery", step: 1, callId: "call_1" },
         });
         expect(toolCalls.every((entry: { mode: string }) => entry.mode === "full")).toBe(true);
-        expect(stateView.context.tools.active).toContain("git_context_read_run_step");
+        expect(stateView.context.tools.active).not.toContain("git_context_read_run_step");
         return {
           kind: "task_completion",
           request: {

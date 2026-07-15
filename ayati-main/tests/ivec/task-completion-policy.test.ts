@@ -99,12 +99,82 @@ describe("task completion policy", () => {
     ]));
   });
 
+  it("resolves completion assets against the active task checkout", async () => {
+    const checkoutPath = await mkdtemp(join(tmpdir(), "ayati-active-task-"));
+    try {
+      await mkdir(join(checkoutPath, "aurora-coffee-site"), { recursive: true });
+      await writeFile(
+        join(checkoutPath, "aurora-coffee-site/app.js"),
+        "const ready = true;\n",
+        "utf-8",
+      );
+      const state = taskState({
+        harnessContext: taskHarnessContext(checkoutPath),
+        workState: {
+          status: "not_done",
+          summary: "The task checkout contains validated website assets.",
+          verifiedFacts: ["node --check passed for aurora-coffee-site/app.js"],
+          evidence: [],
+          artifacts: [join(checkoutPath, "aurora-coffee-site/app.js")],
+        },
+      });
+
+      const result = await evaluateTaskCompletion(state, {
+        summary: "Created and validated the Aurora Coffee website.",
+        assets: [{
+          path: "aurora-coffee-site/app.js",
+          kind: "file",
+          description: "Validated website behavior",
+        }],
+      });
+
+      expect(result.accepted).toBe(true);
+      if (!result.accepted) throw new Error("Expected task-root completion acceptance.");
+      expect(result.assets[0]?.resolvedPath).toBe(join(checkoutPath, "aurora-coffee-site/app.js"));
+    } finally {
+      await rm(checkoutPath, { recursive: true, force: true });
+    }
+  });
+
   it("exposes completion only for active not-done task runs", () => {
     expect(isTaskCompletionAvailable(taskState())).toBe(true);
     expect(isTaskCompletionAvailable(taskState({ runClass: "session" }))).toBe(false);
     expect(isTaskCompletionAvailable(taskState({ workState: { ...baseWorkState(), status: "done" } }))).toBe(false);
   });
 });
+
+function taskHarnessContext(checkoutPath: string) {
+  return createInitialHarnessContext({
+    contextEngine: {
+      session: {
+        meta: { sessionId: "S-1", assetCount: 0 },
+        conversationTail: [],
+        activityTail: [],
+      },
+      focus: {
+        status: "active",
+        ref: "refs/heads/main",
+        workId: "W-1",
+      },
+      task: {
+        checkoutPath,
+        ref: "refs/heads/main",
+        workId: "W-1",
+        title: "Aurora Coffee website",
+        objective: "Build the requested website.",
+        status: "in_progress",
+        completed: [],
+        open: ["Build the website."],
+        blockers: [],
+        facts: [],
+        assets: [],
+        recentRuns: [],
+        recentCommits: [],
+        recentEvidence: [],
+      },
+    },
+  });
+}
 
 function baseWorkState() {
   return {

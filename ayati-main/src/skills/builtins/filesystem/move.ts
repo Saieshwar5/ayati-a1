@@ -23,11 +23,11 @@ export const moveTool: ToolDefinition = {
     properties: {
       source: {
         type: "string",
-        description: "Workspace-relative source path by default. Absolute paths outside the workspace require allowExternalPath=true.",
+        description: "Source path. In a task run, use a path relative to the active task root and do not repeat the task directory name. Otherwise, relative paths use the workspace root.",
       },
       destination: {
         type: "string",
-        description: "Workspace-relative destination path by default. Absolute paths outside the workspace require allowExternalPath=true.",
+        description: "Destination path. In a task run, use a path relative to the active task root and do not repeat the task directory name. Otherwise, relative paths use the workspace root.",
       },
       overwrite: {
         type: "boolean",
@@ -35,7 +35,7 @@ export const moveTool: ToolDefinition = {
       },
       allowExternalPath: {
         type: "boolean",
-        description: "Allow moving from or to absolute paths outside the configured workspace. Use only when the user explicitly requested those external paths.",
+        description: "Allow absolute paths outside the configured workspace for non-task work. Task runs ignore this flag and cannot escape the active task root.",
       },
     },
   },
@@ -87,19 +87,21 @@ export const moveTool: ToolDefinition = {
     domain: "filesystem",
     priority: 2,
   },
-  async execute(input): Promise<ToolResult> {
+  async execute(input, context): Promise<ToolResult> {
     const parsed = validateMoveInput(input);
     if ("ok" in parsed) return parsed;
 
     const resolvedSource = resolveWorkspaceMutationPath(parsed.source, {
       allowExternalPath: parsed.allowExternalPath,
       operation: "move source",
+      root: context?.resourceScope?.rootPath,
     });
     if (!resolvedSource.ok) return externalWorkspacePathError(resolvedSource);
 
     const resolvedDestination = resolveWorkspaceMutationPath(parsed.destination, {
       allowExternalPath: parsed.allowExternalPath,
       operation: "move destination",
+      root: context?.resourceScope?.rootPath,
     });
     if (!resolvedDestination.ok) return externalWorkspacePathError(resolvedDestination);
 

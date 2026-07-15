@@ -73,12 +73,15 @@ function readOptionalBoolean(obj: Record<string, unknown>, key: string): boolean
   return value;
 }
 
-export function resolvePythonPath(pathValue: string, cwd?: string): string {
-  const resolvedCwd = resolveWorkspaceCwd(cwd);
+export function resolvePythonPath(pathValue: string, cwd?: string, rootPath?: string): string {
+  const resolvedCwd = resolveWorkspaceCwd(cwd, rootPath);
   return resolvePath(resolvedCwd, pathValue);
 }
 
-export function validatePythonInspectDatasetInput(input: unknown): PythonInspectDatasetInput | ToolResult {
+export function validatePythonInspectDatasetInput(
+  input: unknown,
+  rootPath?: string,
+): PythonInspectDatasetInput | ToolResult {
   if (!isPlainObject(input)) {
     return { ok: false, error: "Invalid input: expected object." };
   }
@@ -107,7 +110,7 @@ export function validatePythonInspectDatasetInput(input: unknown): PythonInspect
     }
     return {
       sourceType,
-      path: resolvePythonPath(pathValue, cwd),
+      path: resolvePythonPath(pathValue, cwd, rootPath),
       cwd,
       timeoutMs,
       maxOutputChars,
@@ -154,7 +157,10 @@ export function validatePythonInspectDatasetInput(input: unknown): PythonInspect
   };
 }
 
-export function validatePythonExecuteInput(input: unknown): PythonExecuteInput | ToolResult {
+export function validatePythonExecuteInput(
+  input: unknown,
+  rootPath?: string,
+): PythonExecuteInput | ToolResult {
   if (!isPlainObject(input)) {
     return { ok: false, error: "Invalid input: expected object." };
   }
@@ -190,7 +196,7 @@ export function validatePythonExecuteInput(input: unknown): PythonExecuteInput |
       timeoutMs,
       maxOutputChars,
       args,
-      inputFiles: inputFiles?.map((entry) => resolvePythonPath(entry, cwd)),
+      inputFiles: inputFiles?.map((entry) => resolvePythonPath(entry, cwd, rootPath)),
       sqliteDbPaths: sqliteDbPaths?.map((entry) => resolveDatabasePath(entry)),
     };
   }
@@ -203,12 +209,12 @@ export function validatePythonExecuteInput(input: unknown): PythonExecuteInput |
 
   return {
     mode,
-    scriptPath: resolvePythonPath(scriptPath, cwd),
+    scriptPath: resolvePythonPath(scriptPath, cwd, rootPath),
     cwd,
     timeoutMs,
     maxOutputChars,
     args,
-    inputFiles: inputFiles?.map((entry) => resolvePythonPath(entry, cwd)),
+    inputFiles: inputFiles?.map((entry) => resolvePythonPath(entry, cwd, rootPath)),
     sqliteDbPaths: sqliteDbPaths?.map((entry) => resolveDatabasePath(entry)),
   };
 }

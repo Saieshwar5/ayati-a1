@@ -43,11 +43,11 @@ describe("tool taxonomy", () => {
     expect(getToolTaxonomy("write_files")).toMatchObject({ lifetime: "run" });
     expect(getToolLoadGroups("write_files")).toEqual(expect.arrayContaining(["file:write", "file:create"]));
 
-    expect(isRoutingTool("git_context_create_task_for_turn")).toBe(true);
-    expect(isMutationTool("git_context_create_task_for_turn")).toBe(true);
-    expect(canRunBeforeTask("git_context_create_task_for_turn")).toBe(true);
-    expect(isToolAllowedInPhase("git_context_create_task_for_turn", "routing")).toBe(true);
-    expect(isToolAllowedInPhase("git_context_create_task_for_turn", "task_run")).toBe(false);
+    expect(isRoutingTool("git_context_create_task")).toBe(true);
+    expect(isMutationTool("git_context_create_task")).toBe(true);
+    expect(canRunBeforeTask("git_context_create_task")).toBe(true);
+    expect(isToolAllowedInPhase("git_context_create_task", "routing")).toBe(true);
+    expect(isToolAllowedInPhase("git_context_create_task", "task_run")).toBe(false);
 
     expect(getToolTaxonomy("write_file")).toBeUndefined();
     expect(isMutationTool("write_files")).toBe(true);
@@ -66,7 +66,7 @@ describe("tool taxonomy", () => {
     const summary = summarizeToolTaxonomy([
       "read_files",
       "write_files",
-      "git_context_activate_task_for_turn",
+      "git_context_activate_task",
       "shell_session_start",
       "unknown_tool",
     ]);
@@ -74,7 +74,7 @@ describe("tool taxonomy", () => {
     expect(summary.known).toEqual([
       "read_files",
       "write_files",
-      "git_context_activate_task_for_turn",
+      "git_context_activate_task",
       "shell_session_start",
     ]);
     expect(summary.unknown).toEqual(["unknown_tool"]);
@@ -89,7 +89,7 @@ describe("tool taxonomy", () => {
       long_running_process: 1,
     });
     expect(summary.requiresTaskRun).toEqual(["write_files", "shell_session_start"]);
-    expect(summary.canRunBeforeTask).toEqual(["read_files", "git_context_activate_task_for_turn"]);
+    expect(summary.canRunBeforeTask).toEqual(["read_files", "git_context_activate_task"]);
     expect(summary.longRunning).toEqual(["shell_session_start"]);
     expect(summary.lifetimes).toMatchObject({
       run: 2,
@@ -109,7 +109,7 @@ function runtimeSkills(): SkillDefinition[] {
     createDatasetSkill({ preparedAttachmentService: stub }),
     createDocumentSkill({ preparedAttachmentService: stub }),
     createFilesSkill({ fileLibrary: stub, directoryLibrary: stub }),
-    createGitContextSkill({ contextStoreDir: "/tmp/ayati-tool-taxonomy", gitMemoryRuntime: stub }),
+    createGitContextSkill({ service: stub, workspaceRoot: "/tmp/ayati-tool-taxonomy-workspace" }),
     createUiSkill({ workspaceOrchestrator: stub }),
   ];
 }

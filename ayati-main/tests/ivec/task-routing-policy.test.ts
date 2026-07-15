@@ -6,8 +6,6 @@ import type { AgentAction, AgentDecision } from "../../src/ivec/agent-runner/dec
 import {
   createRoutingAttemptState,
   deferredMutationToolNames,
-  mutationTargetPathsForAction,
-  shouldAutoBindActiveTaskArtifactMutation,
   shouldDeferPreTaskMutation,
   stepUsesFileMutationTool,
   updateRoutingAttemptsFromActOutput,
@@ -57,37 +55,6 @@ function contextEngine(focus: ContextEngineMachineContext["focus"]): ContextEngi
   };
 }
 
-function activeTaskContext(): ContextEngineMachineContext {
-  return {
-    ...contextEngine({
-      status: "active",
-      ref: "refs/heads/task/W-1",
-      workId: "W-1",
-    }),
-    task: {
-      ref: "refs/heads/task/W-1",
-      workId: "W-1",
-      title: "Website",
-      objective: "Update the website.",
-      status: "in_progress",
-      completed: [],
-      open: [],
-      blockers: [],
-      facts: [],
-      assets: [{
-        assetId: "asset_1",
-        role: "generated",
-        kind: "file",
-        name: "index.html",
-        path: "src/index.html",
-      }],
-      recentRuns: [],
-      recentCommits: [],
-      recentEvidence: [],
-    },
-  };
-}
-
 function action(tool: string, input: Record<string, unknown> = {}): AgentAction {
   return {
     mode: "single",
@@ -123,12 +90,12 @@ function step(tool: string, outcome: "success" | "failed"): StepSummary {
 
 describe("task routing policy", () => {
   it("blocks routing tools after a task run exists, after success, and after retry limit", () => {
-    const create = action("git_context_create_task_for_turn");
+    const create = action("git_context_create_task");
     expect(validateRoutingAttemptLimits(state(), create, false)).toBeUndefined();
 
     expect(validateRoutingAttemptLimits(state(), create, true)).toMatchObject({
       reason: "task_run_already_exists",
-      tools: ["git_context_create_task_for_turn"],
+      tools: ["git_context_create_task"],
     });
 
     expect(validateRoutingAttemptLimits(state({
@@ -154,17 +121,17 @@ describe("task routing policy", () => {
   it("allows exactly one routing mutation tool per routing decision", () => {
     const multi: AgentAction = {
       mode: "sequential",
-      allowedTools: ["git_context_create_task_for_turn", "git_context_activate_task_for_turn"],
+      allowedTools: ["git_context_create_task", "git_context_activate_task"],
       calls: [
-        { id: "call_1", tool: "git_context_create_task_for_turn", input: {} },
-        { id: "call_2", tool: "git_context_activate_task_for_turn", input: {} },
+        { id: "call_1", tool: "git_context_create_task", input: {} },
+        { id: "call_2", tool: "git_context_activate_task", input: {} },
       ],
       assertions: [],
     };
 
     expect(validateRoutingAttemptLimits(state(), multi, false)).toMatchObject({
       reason: "multiple_routing_tools",
-      tools: ["git_context_create_task_for_turn", "git_context_activate_task_for_turn"],
+      tools: ["git_context_create_task", "git_context_activate_task"],
     });
   });
 
@@ -173,7 +140,7 @@ describe("task routing policy", () => {
     updateRoutingAttemptsFromActOutput(loopState, {
       finalText: "",
       toolCalls: [{
-        tool: "git_context_create_task_for_turn",
+        tool: "git_context_create_task",
         input: {},
         output: "",
         result: {
@@ -188,14 +155,14 @@ describe("task routing policy", () => {
       successCount: 1,
       failureCount: 0,
       resolved: true,
-      lastTool: "git_context_create_task_for_turn",
+      lastTool: "git_context_create_task",
     });
 
     const failedState = state();
     updateRoutingAttemptsFromActOutput(failedState, {
       finalText: "",
       toolCalls: [{
-        tool: "git_context_activate_task_for_turn",
+        tool: "git_context_activate_task",
         input: {},
         output: "",
         error: "missing task",
@@ -206,7 +173,7 @@ describe("task routing policy", () => {
       successCount: 0,
       failureCount: 1,
       resolved: false,
-      lastTool: "git_context_activate_task_for_turn",
+      lastTool: "git_context_activate_task",
       lastError: "missing task",
     });
   });
@@ -214,45 +181,8 @@ describe("task routing policy", () => {
   it("detects deferred pre-task mutations and keeps routing actions out of deferred mutation", () => {
     expect(shouldDeferPreTaskMutation(state(), decision("write_files"), undefined)).toBe(true);
     expect(deferredMutationToolNames(action("write_files"))).toEqual(["write_files"]);
-    expect(shouldDeferPreTaskMutation(state(), decision("git_context_create_task_for_turn"), undefined)).toBe(false);
+    expect(shouldDeferPreTaskMutation(state(), decision("git_context_create_task"), undefined)).toBe(false);
     expect(shouldDeferPreTaskMutation(state({ runId: "R-1" }), decision("write_files"), { sessionId: "S-1", runId: "R-1" })).toBe(false);
-  });
-
-  it("auto-binds active-task artifact mutations only when every target belongs to the active task", () => {
-    const loopState = state({
-      harnessContext: createInitialHarnessContext({
-        contextEngine: activeTaskContext(),
-      }),
-    });
-
-    expect(shouldAutoBindActiveTaskArtifactMutation(loopState, decision("write_files", {
-      files: [{ path: "src/index.html", content: "<html></html>" }],
-    }))).toBe(true);
-
-    expect(shouldAutoBindActiveTaskArtifactMutation(loopState, decision("write_files", {
-      files: [{ path: "src/other.html", content: "<html></html>" }],
-    }))).toBe(false);
-  });
-
-  it("extracts mutation targets from direct paths and array inputs", () => {
-    const targets = mutationTargetPathsForAction({
-      mode: "single",
-      allowedTools: ["write_files"],
-      assertions: [],
-      calls: [{
-        id: "call_1",
-        tool: "write_files",
-        input: {
-          files: [
-            "a.txt",
-            { path: "b.txt" },
-            { from: "old.txt", to: "new.txt" },
-          ],
-        },
-      }],
-    });
-
-    expect(targets).toEqual(["a.txt", "b.txt", "old.txt", "new.txt"]);
   });
 
   it("detects file mutation tools on step summaries", () => {

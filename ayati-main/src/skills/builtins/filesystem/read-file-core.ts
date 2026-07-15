@@ -115,11 +115,11 @@ export const readFileCoreTool: ToolDefinition = {
     domain: "filesystem",
     priority: 4,
   },
-  async execute(input): Promise<ToolResult> {
+  async execute(input, context): Promise<ToolResult> {
     const parsed = validateReadFileInput(input);
     if ("ok" in parsed) return parsed;
 
-    const filePath = resolveWorkspacePath(parsed.path);
+    const filePath = resolveWorkspacePath(parsed.path, context?.resourceScope?.rootPath);
     const start = Date.now();
 
     try {

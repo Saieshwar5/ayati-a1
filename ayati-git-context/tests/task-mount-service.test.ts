@@ -31,6 +31,7 @@ describe("task submodule mounting", () => {
       sessionId: session.session.sessionId,
       title: "Mounted Task",
       objective: "Verify lazy per-session task checkout mounting.",
+      placement: { mode: "managed" },
       at: "2026-07-12T09:10:00+05:30",
     });
     const input = {
@@ -105,6 +106,7 @@ describe("task submodule mounting", () => {
       sessionId: session.session.sessionId,
       title: "Selected Task",
       objective: "Mount this task in the session.",
+      placement: { mode: "managed" },
       at: "2026-07-12T09:10:00+05:30",
     });
     const second = await service.createTask({
@@ -112,6 +114,7 @@ describe("task submodule mounting", () => {
       sessionId: session.session.sessionId,
       title: "Unselected Task",
       objective: "Keep this task canonical but unmounted.",
+      placement: { mode: "managed" },
       at: "2026-07-12T09:11:00+05:30",
     });
     await service.mountTask({
@@ -138,6 +141,7 @@ describe("task submodule mounting", () => {
       sessionId: firstSession.session.sessionId,
       title: "Cross Session Task",
       objective: "Continue the same durable task in a later daily session.",
+      placement: { mode: "managed" },
       at: "2026-07-12T09:18:00+05:30",
     });
     const firstMount = await service.mountTask({
@@ -187,6 +191,7 @@ describe("task submodule mounting", () => {
       sessionId: session.session.sessionId,
       title: "Recover Mount",
       objective: "Recover submodule creation after a process interruption.",
+      placement: { mode: "managed" },
       at: "2026-07-12T09:13:00+05:30",
     });
     const input = {
@@ -249,6 +254,7 @@ describe("task submodule mounting", () => {
       sessionId: session.session.sessionId,
       title: "Restore Checkout",
       objective: "Restore a missing submodule checkout from its session gitlink.",
+      placement: { mode: "managed" },
       at: "2026-07-12T09:20:00+05:30",
     });
     const mounted = await service.mountTask({
@@ -295,6 +301,7 @@ describe("task submodule mounting", () => {
       sessionId: session.session.sessionId,
       title: "Dirty Checkout",
       objective: "Preserve unexplained checkout changes.",
+      placement: { mode: "managed" },
       at: "2026-07-12T09:15:00+05:30",
     });
     const mounted = await service.mountTask({

@@ -23,6 +23,13 @@ session-store submodule.
 Every durable task is an independent repository from creation. It is mounted
 as a submodule in every session that uses it.
 
+### Stable task working directories
+
+Every task has one stable real checkout used for all agent work. An explicit
+user directory wins; otherwise the engine allocates an isolated directory
+under the configured workspace. The session submodule checkout is pointer-only
+and is never used as the tool execution root.
+
 ### One submodule per touched task
 
 A session that touches twenty tasks may contain twenty task submodules. This

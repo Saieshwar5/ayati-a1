@@ -66,6 +66,16 @@ export interface AgentFeedbackContextEngineSummary {
   taskAssetCount?: number;
   recentRunCount?: number;
   recentEvidenceCount?: number;
+  contextRevision?: string;
+  previousContextRevision?: string;
+  cacheStatus?: "hit" | "miss" | "fresh";
+  cacheHits?: number;
+  cacheMisses?: number;
+  cacheRefreshes?: number;
+  runClass?: "session" | "task";
+  workStateRevision?: number;
+  lastPersistedStep?: number;
+  promotionCompleted?: boolean;
   warningCodes?: string[];
 }
 
@@ -261,18 +271,20 @@ export class AsyncAgentFeedbackLedger implements AgentFeedbackLedger {
       await appendFile(absolutePath, events.map((event) => JSON.stringify(event)).join("\n") + "\n", "utf-8");
     }
 
-    const latest = batch[batch.length - 1];
-    if (latest) {
-      const latestPath = join(this.dataDir, "feedback", "latest.json");
-      await mkdir(dirname(latestPath), { recursive: true });
-      await writeFile(latestPath, `${JSON.stringify({
-        updatedAt: latest.ts,
-        tsMs: latest.tsMs,
-        sessionId: latest.sessionId,
-        seq: latest.seq,
-        runId: latest.runId,
-        path: feedbackRelativePath(latest).replace(/\\/g, "/"),
-      }, null, 2)}\n`, "utf-8");
+    const latestSession = [...batch].reverse().find((event) => Boolean(event.sessionId));
+    if (latestSession) {
+      await writeFeedbackPointer(this.dataDir, "latest-session.json", latestSession);
+      // Keep the original pointer as a backwards-compatible alias for the
+      // latest user/session execution, never for process-only activity.
+      await writeFeedbackPointer(this.dataDir, "latest.json", latestSession);
+    }
+    const latestRun = [...batch].reverse().find((event) => Boolean(event.sessionId && event.runId));
+    if (latestRun) {
+      await writeFeedbackPointer(this.dataDir, "latest-run.json", latestRun);
+    }
+    const latestProcess = [...batch].reverse().find((event) => !event.sessionId);
+    if (latestProcess) {
+      await writeFeedbackPointer(this.dataDir, "latest-process.json", latestProcess);
     }
 
     const summaryEvent = [...batch].reverse().find((event) => readFeedbackSummary(event) !== undefined);
@@ -330,6 +342,12 @@ export class AsyncAgentFeedbackLedger implements AgentFeedbackLedger {
     }
     if (event.stage === "action" && event.event === "failed") {
       signals.add("action_failed");
+    }
+    if (event.stage === "context_engine" && event.event === "harness_context_refresh_failed") {
+      signals.add("context_refresh_failed");
+    }
+    if (event.stage === "context_engine" && event.event === "run_step_persistence_failed") {
+      signals.add("run_step_persistence_failed");
     }
     if (event.stage === "final" && event.event === "error") {
       signals.add("runtime_error");
@@ -520,6 +538,26 @@ export function buildFeedbackTriageSummary(summary: AgentFeedbackLatestSummary):
     });
   }
 
+  if (warningSet.has("context_refresh_failed")) {
+    findings.push({
+      code: "context_refresh_failed",
+      severity: "error",
+      title: "Fresh context could not be loaded",
+      details: "The harness invalidated its local context but could not refresh it from the Git Context Engine.",
+      recommendation: "Inspect the matching trace id and service request before trusting later agent decisions.",
+    });
+  }
+
+  if (warningSet.has("run_step_persistence_failed")) {
+    findings.push({
+      code: "run_step_persistence_failed",
+      severity: "error",
+      title: "Run step was not durably acknowledged",
+      details: "The harness queued a run step but the Git Context Engine did not acknowledge persistence.",
+      recommendation: "Inspect the run id and step number; do not treat the run audit trail as complete.",
+    });
+  }
+
   if (warningSet.has("verification_failed") || summary.verificationPassed === false && (summary.actionSteps ?? 0) > 0) {
     findings.push({
       code: "verification_failed",
@@ -580,7 +618,7 @@ export function buildFeedbackTriageSummary(summary: AgentFeedbackLatestSummary):
       severity: "warning",
       title: "Fresh session needed task routing",
       details: "The model tried to load or call work tools before any active task existed.",
-      recommendation: "Use git_context_search_tasks if needed, then activate an existing task or create a new task before mutation.",
+      recommendation: "Inspect task candidates, then activate the matching task or create a distinct task before mutation.",
     });
   }
 
@@ -619,7 +657,7 @@ export function buildFeedbackTriageSummary(summary: AgentFeedbackLatestSummary):
       code: "normal_tools_selected_without_work_run",
       severity: "error",
       title: "Task tools were selected without a work run",
-      details: "The model saw normal executable tools even though the runtime had no routed git-memory work run.",
+      details: "The model saw normal executable tools even though the runtime had no routed task run.",
       recommendation: "Inspect tools.working_set_prepared, decision.selected, and guard.missing_work_run. Ensure routing state is represented before normal task tools are exposed.",
     });
   }
@@ -628,8 +666,8 @@ export function buildFeedbackTriageSummary(summary: AgentFeedbackLatestSummary):
     findings.push({
       code: "missing_work_run_for_action",
       severity: "error",
-      title: "Action needed a git-memory run",
-      details: "A normal executable action reached the run guard before a git-memory task/run binding existed.",
+      title: "Action needed a task run",
+      details: "A normal executable action reached the run guard before task ownership was bound.",
       recommendation: "Route the pending turn first, or block normal executable tools until the turn is bound or intentionally session-only.",
     });
   }
@@ -679,7 +717,7 @@ export function buildFeedbackTriageSummary(summary: AgentFeedbackLatestSummary):
       severity: "error",
       title: "Context-engine finalization failed",
       details: "The run could not be committed to the git context engine.",
-      recommendation: "Inspect the context_engine finalization event and git-memory runtime error before changing model behavior.",
+      recommendation: "Inspect the context-engine finalization event and service error before changing model behavior.",
     });
   }
 
@@ -873,7 +911,7 @@ const REPAIR_TRIAGE_FINDINGS: ReadonlyArray<[string, AgentFeedbackTriageFinding]
     code: "R_NORMAL_TOOL_WITHOUT_TASK_RUN",
     severity: "error",
     title: "Normal tool reached runner without a task run",
-    details: "A normal executable tool reached the runner before a git-memory work run existed.",
+    details: "A normal executable tool reached the runner before a task run existed.",
     recommendation: "Route, create, or activate the correct task before normal tool execution.",
   }],
   ["R_PENDING_TURN_UNBOUND", {
@@ -938,6 +976,46 @@ function contextEngineFeedbackFromEvent(event: AgentFeedbackEvent): AgentFeedbac
 
 function inferContextEngineFeedbackFromEvent(event: AgentFeedbackEvent): AgentFeedbackContextEngineSummary | undefined {
   const data = event.data ?? {};
+  if (event.event === "harness_context_cache_hit" || event.event === "harness_context_cache_miss") {
+    return compactContextEngineFeedbackSummary({
+      cacheStatus: event.event.endsWith("_hit") ? "hit" : "miss",
+      ...(readStringValue(data["revision"]) ? { contextRevision: readStringValue(data["revision"]) } : {}),
+      ...(readNumberValue(data["hits"]) !== undefined ? { cacheHits: readNumberValue(data["hits"]) } : {}),
+      ...(readNumberValue(data["misses"]) !== undefined ? { cacheMisses: readNumberValue(data["misses"]) } : {}),
+      ...(readNumberValue(data["refreshes"]) !== undefined ? { cacheRefreshes: readNumberValue(data["refreshes"]) } : {}),
+    });
+  }
+  if (event.event === "harness_context_refresh_completed") {
+    return compactContextEngineFeedbackSummary({
+      cacheStatus: "fresh",
+      ...(readStringValue(data["contextRevision"]) ? { contextRevision: readStringValue(data["contextRevision"]) } : {}),
+      ...(readStringValue(data["previousRevision"]) ? { previousContextRevision: readStringValue(data["previousRevision"]) } : {}),
+      ...(readNumberValue(data["hits"]) !== undefined ? { cacheHits: readNumberValue(data["hits"]) } : {}),
+      ...(readNumberValue(data["misses"]) !== undefined ? { cacheMisses: readNumberValue(data["misses"]) } : {}),
+      ...(readNumberValue(data["refreshes"]) !== undefined ? { cacheRefreshes: readNumberValue(data["refreshes"]) } : {}),
+    });
+  }
+  if (event.event === "session_run_started") {
+    return compactContextEngineFeedbackSummary({ runClass: "session", ...(event.runId ? { runId: event.runId } : {}) });
+  }
+  if (event.event === "task_run_selected") {
+    return compactContextEngineFeedbackSummary({
+      runClass: "task",
+      promotionCompleted: data["promoted"] === true,
+      ...(readStringValue(data["selectionMode"]) ? { routeMode: readStringValue(data["selectionMode"]) } : {}),
+      ...(readStringValue(data["taskId"]) ? { taskId: readStringValue(data["taskId"]) } : {}),
+      ...(event.runId ? { runId: event.runId } : {}),
+    });
+  }
+  if (event.event === "run_step_persistence_acknowledged") {
+    return compactContextEngineFeedbackSummary({
+      ...(readNumberValue(data["workStateRevision"]) !== undefined
+        ? { workStateRevision: readNumberValue(data["workStateRevision"]) }
+        : {}),
+      ...(readNumberValue(data["step"]) !== undefined ? { lastPersistedStep: readNumberValue(data["step"]) } : {}),
+      ...(event.runId ? { runId: event.runId } : {}),
+    });
+  }
   if (event.event === "prepared") {
     return compactContextEngineFeedbackSummary({
       routeSource: "runtime",
@@ -1081,6 +1159,16 @@ function readContextEngineFeedbackSummary(value: unknown): AgentFeedbackContextE
     ...(readNumberValue(record["taskAssetCount"]) !== undefined ? { taskAssetCount: readNumberValue(record["taskAssetCount"]) } : {}),
     ...(readNumberValue(record["recentRunCount"]) !== undefined ? { recentRunCount: readNumberValue(record["recentRunCount"]) } : {}),
     ...(readNumberValue(record["recentEvidenceCount"]) !== undefined ? { recentEvidenceCount: readNumberValue(record["recentEvidenceCount"]) } : {}),
+    ...(readStringValue(record["contextRevision"]) ? { contextRevision: readStringValue(record["contextRevision"]) } : {}),
+    ...(readStringValue(record["previousContextRevision"]) ? { previousContextRevision: readStringValue(record["previousContextRevision"]) } : {}),
+    ...(readCacheStatus(record["cacheStatus"]) ? { cacheStatus: readCacheStatus(record["cacheStatus"]) } : {}),
+    ...(readNumberValue(record["cacheHits"]) !== undefined ? { cacheHits: readNumberValue(record["cacheHits"]) } : {}),
+    ...(readNumberValue(record["cacheMisses"]) !== undefined ? { cacheMisses: readNumberValue(record["cacheMisses"]) } : {}),
+    ...(readNumberValue(record["cacheRefreshes"]) !== undefined ? { cacheRefreshes: readNumberValue(record["cacheRefreshes"]) } : {}),
+    ...(readRunClass(record["runClass"]) ? { runClass: readRunClass(record["runClass"]) } : {}),
+    ...(readNumberValue(record["workStateRevision"]) !== undefined ? { workStateRevision: readNumberValue(record["workStateRevision"]) } : {}),
+    ...(readNumberValue(record["lastPersistedStep"]) !== undefined ? { lastPersistedStep: readNumberValue(record["lastPersistedStep"]) } : {}),
+    ...(typeof record["promotionCompleted"] === "boolean" ? { promotionCompleted: record["promotionCompleted"] } : {}),
     ...(readStringArray(record["warningCodes"]).length > 0 ? { warningCodes: readStringArray(record["warningCodes"]) } : {}),
   });
 }
@@ -1130,6 +1218,16 @@ function compactContextEngineFeedbackSummary(
   if (value.taskAssetCount !== undefined) output.taskAssetCount = value.taskAssetCount;
   if (value.recentRunCount !== undefined) output.recentRunCount = value.recentRunCount;
   if (value.recentEvidenceCount !== undefined) output.recentEvidenceCount = value.recentEvidenceCount;
+  if (value.contextRevision) output.contextRevision = value.contextRevision;
+  if (value.previousContextRevision) output.previousContextRevision = value.previousContextRevision;
+  if (value.cacheStatus) output.cacheStatus = value.cacheStatus;
+  if (value.cacheHits !== undefined) output.cacheHits = value.cacheHits;
+  if (value.cacheMisses !== undefined) output.cacheMisses = value.cacheMisses;
+  if (value.cacheRefreshes !== undefined) output.cacheRefreshes = value.cacheRefreshes;
+  if (value.runClass) output.runClass = value.runClass;
+  if (value.workStateRevision !== undefined) output.workStateRevision = value.workStateRevision;
+  if (value.lastPersistedStep !== undefined) output.lastPersistedStep = value.lastPersistedStep;
+  if (value.promotionCompleted !== undefined) output.promotionCompleted = value.promotionCompleted;
   if (value.warningCodes && value.warningCodes.length > 0) output.warningCodes = uniqueStrings(value.warningCodes);
   return Object.keys(output).length > 0 ? output : undefined;
 }
@@ -1147,6 +1245,23 @@ function feedbackRelativePath(event: AgentFeedbackEvent): string {
   return join("feedback", date, `session-${sessionId}.jsonl`);
 }
 
+async function writeFeedbackPointer(
+  dataDir: string,
+  name: string,
+  event: AgentFeedbackEvent,
+): Promise<void> {
+  const pointerPath = join(dataDir, "feedback", name);
+  await mkdir(dirname(pointerPath), { recursive: true });
+  await writeFile(pointerPath, `${JSON.stringify({
+    updatedAt: event.ts,
+    tsMs: event.tsMs,
+    ...(event.sessionId ? { sessionId: event.sessionId } : {}),
+    ...(event.seq !== undefined ? { seq: event.seq } : {}),
+    ...(event.runId ? { runId: event.runId } : {}),
+    path: feedbackRelativePath(event).replace(/\\/g, "/"),
+  }, null, 2)}\n`, "utf-8");
+}
+
 function branchFromRef(ref: string | undefined): string | undefined {
   if (!ref) {
     return undefined;
@@ -1156,6 +1271,14 @@ function branchFromRef(ref: string | undefined): string | undefined {
 
 function readStringValue(value: unknown): string | undefined {
   return typeof value === "string" && value.trim().length > 0 ? value : undefined;
+}
+
+function readCacheStatus(value: unknown): AgentFeedbackContextEngineSummary["cacheStatus"] {
+  return value === "hit" || value === "miss" || value === "fresh" ? value : undefined;
+}
+
+function readRunClass(value: unknown): AgentFeedbackContextEngineSummary["runClass"] {
+  return value === "session" || value === "task" ? value : undefined;
 }
 
 function readNumberValue(value: unknown): number | undefined {

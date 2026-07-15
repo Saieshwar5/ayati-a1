@@ -62,7 +62,7 @@ export const readFilesTool: ToolDefinition = {
           type: "object",
           required: ["path"],
           properties: {
-            path: { type: "string", description: "Absolute or workspace-relative file path." },
+            path: { type: "string", description: "Absolute path, or a relative path. In a task run, relative paths start at the active task root; do not repeat the task directory name. Otherwise they start at the workspace root." },
             mode: {
               type: "string",
               enum: ["auto", "profile", "search", "slice", "full"],

@@ -133,7 +133,16 @@ export function recordToolWorkingSetFeedback(input: {
         recordFeedback(input.deps, input.inputHandle, input.runId, "tools", "routing_window_expiring", routingWindowFeedback);
       }
     } else {
-      recordFeedback(input.deps, input.inputHandle, input.runId, "tools", "routing_window_expired", routingWindowFeedback);
+      recordFeedback(
+        input.deps,
+        input.inputHandle,
+        input.runId,
+        "tools",
+        runtimeMode.routingSuppressedForConversation
+          ? "routing_window_suppressed"
+          : "routing_window_expired",
+        routingWindowFeedback,
+      );
     }
   }
   if (!toolMode.hasWorkRun && toolMode.visibleRoutingTools.length > 0) {

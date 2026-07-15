@@ -160,8 +160,8 @@ export async function compileDecisionContext(input: {
     : intermediateBudget;
   const sessionTransformation = sessionCandidate.receipt.triggered ? [{
     kind: "session_context_shedding",
-    from: "summary_and_recent_checkpoints",
-    to: "latest_checkpoint_only",
+    from: "summary_and_recent_history",
+    to: "latest_durable_history_only",
     reason: "soft_limit_after_tool_compaction",
     tokensBefore: intermediateBudget.measuredInputTokens,
     tokensAfter: sessionBudget.measuredInputTokens,

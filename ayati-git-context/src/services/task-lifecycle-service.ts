@@ -7,6 +7,8 @@ import type {
   MountTaskResponse,
   SessionRef,
   TaskCatalogEntry,
+  ListTasksRequest,
+  ListTasksResponse,
 } from "../contracts.js";
 import type { ContextDatabase } from "../database/database.js";
 import {
@@ -20,6 +22,7 @@ import {
   ensureCanonicalTaskRepository,
   verifyCanonicalTaskRepository,
 } from "../git/task-repository.js";
+import { ensureTaskWorkingDirectory } from "../git/task-working-directory.js";
 import { readSession } from "../repositories/session-records.js";
 import {
   allocateTaskMount,
@@ -33,23 +36,28 @@ import {
   allocateTask,
   readInitializingTasks,
   readTaskCatalogEntry,
+  readTaskCatalogEntries,
   readTaskInitialization,
+  resolveTaskWorkingDirectory,
 } from "../repositories/task-records.js";
 
 export interface TaskLifecycleServiceOptions {
   database: ContextDatabase;
   dataRoot: string;
+  workspaceRoot: string;
   now: () => string;
 }
 
 export class TaskLifecycleService {
   private readonly database: ContextDatabase;
   private readonly dataRoot: string;
+  private readonly workspaceRoot: string;
   private readonly now: () => string;
 
   constructor(options: TaskLifecycleServiceOptions) {
     this.database = options.database;
     this.dataRoot = options.dataRoot;
+    this.workspaceRoot = options.workspaceRoot;
     this.now = options.now;
   }
 
@@ -65,7 +73,13 @@ export class TaskLifecycleService {
       payload: input,
       now: input.at,
       execute: () => {
-        const task = allocateTask(this.database, this.dataRoot, input, normalized);
+        const task = allocateTask(
+          this.database,
+          this.dataRoot,
+          input,
+          normalized,
+          this.workspaceRoot,
+        );
         return { taskId: task.taskId, created: true };
       },
     });
@@ -73,10 +87,12 @@ export class TaskLifecycleService {
       ? pending.result.taskId
       : pending.result.task.taskId;
     if (pending.completed && "task" in pending.result) {
+      this.verifyRequestedPlacement(input, pending.result.task);
       return pending.result;
     }
     try {
       const task = await this.initializeTask(taskId, input.at);
+      this.verifyRequestedPlacement(input, task);
       const result: CreateTaskResponse = {
         task,
         created: pending.result.created,
@@ -107,6 +123,24 @@ export class TaskLifecycleService {
     return { task };
   }
 
+  listTasks(input: ListTasksRequest): ListTasksResponse {
+    const limit = Math.min(Math.max(input.limit ?? 20, 1), 100);
+    return {
+      tasks: readTaskCatalogEntries(this.database, {
+        ...(input.query?.trim() ? { query: input.query.trim() } : {}),
+        limit,
+      }).map((task) => ({
+        taskId: task.taskId,
+        title: task.title,
+        objective: task.objective,
+        status: task.status,
+        head: task.head,
+        workingDirectory: task.workingPath,
+        updatedAt: task.updatedAt,
+      })),
+    };
+  }
+
   async mountTask(
     input: MountTaskRequest,
     session: SessionRef,
@@ -119,6 +153,7 @@ export class TaskLifecycleService {
       throw taskNotFound(input.taskId);
     }
     await verifyCanonicalTaskRepository(taskRecord);
+    await ensureTaskWorkingDirectory(taskRecord);
 
     type MountOperation = {
       sessionId: string;
@@ -193,11 +228,18 @@ export class TaskLifecycleService {
 
   async recoverInitializingState(): Promise<void> {
     for (const task of readInitializingTasks(this.database)) {
-      const head = await ensureCanonicalTaskRepository({
-        task,
-        dataRoot: this.dataRoot,
-      });
-      activateTask(this.database, task.taskId, head, this.now());
+      try {
+        const head = await ensureCanonicalTaskRepository({
+          task,
+          dataRoot: this.dataRoot,
+        });
+        await ensureTaskWorkingDirectory({ ...task, head });
+        activateTask(this.database, task.taskId, head, this.now());
+      } catch {
+        // One unusable user-requested directory must not prevent unrelated
+        // sessions and tasks from recovering. Retrying the original request
+        // re-enters the same idempotent initialization record.
+      }
     }
     for (const mount of readInitializingTaskMounts(this.database)) {
       const session = readSession(this.database, mount.sessionId);
@@ -218,6 +260,7 @@ export class TaskLifecycleService {
           throw taskNotFound(task.taskId);
         }
         await verifyCanonicalTaskRepository(taskRecord);
+        await ensureTaskWorkingDirectory(taskRecord);
         const mountedHead = await ensureTaskSubmodule({ session, task, mount });
         completeTaskMount(
           this.database,
@@ -246,12 +289,14 @@ export class TaskLifecycleService {
     }
     if (record.status !== "initializing") {
       await verifyCanonicalTaskRepository(record);
+      await ensureTaskWorkingDirectory(record);
       return this.requireActiveTask(taskId);
     }
     const head = await ensureCanonicalTaskRepository({
       task: record,
       dataRoot: this.dataRoot,
     });
+    await ensureTaskWorkingDirectory({ ...record, head });
     return activateTask(this.database, taskId, head, at);
   }
 
@@ -261,6 +306,30 @@ export class TaskLifecycleService {
       throw taskNotFound(taskId);
     }
     return task;
+  }
+
+  private verifyRequestedPlacement(
+    input: CreateTaskRequest,
+    task: TaskCatalogEntry,
+  ): void {
+    if (input.placement.mode !== "requested") {
+      return;
+    }
+    const expected = resolveTaskWorkingDirectory(
+      this.workspaceRoot,
+      input.placement.workingDirectory,
+    );
+    if (task.workingPath !== expected) {
+      throw new GitContextServiceError({
+        code: "INVALID_REQUEST",
+        message: "Created task working directory does not match requested placement.",
+        details: {
+          taskId: task.taskId,
+          expectedWorkingDirectory: expected,
+          actualWorkingDirectory: task.workingPath,
+        },
+      });
+    }
   }
 }
 

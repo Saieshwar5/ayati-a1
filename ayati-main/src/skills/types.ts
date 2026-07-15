@@ -21,6 +21,13 @@ export interface ToolExecutionContext {
   taskAssets?: TaskAssetRecord[];
   stepNumber?: number;
   uiContext?: AgentUiContext;
+  resourceScope?: ToolResourceScope;
+}
+
+export interface ToolResourceScope {
+  kind: "workspace" | "task";
+  rootPath: string;
+  taskId?: string;
 }
 
 export type JsonSchema = Record<string, unknown>;

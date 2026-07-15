@@ -1,11 +1,15 @@
-import { lstat, rm } from "node:fs/promises";
+import { lstat, mkdir, rm } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import type { AddressInfo } from "node:net";
+import { createConnection, type AddressInfo } from "node:net";
+import { dirname } from "node:path";
 import {
   isAcquireMutationAuthorityRequest,
+  isActivateTaskRunRequest,
   isAppendConversationRequest,
   isCheckpointMutationRequest,
   isCreateTaskRequest,
+  isCreateTaskRunRequest,
   isEnsureActiveSessionRequest,
   isFinalizeSessionRunRequest,
   isFinalizeTaskRunRequest,
@@ -21,6 +25,10 @@ import {
   type GitContextErrorResponse,
 } from "./errors.js";
 import type { GitContextService } from "./service.js";
+import {
+  GitContextObserver,
+  runWithGitContextTrace,
+} from "./observability.js";
 
 const DEFAULT_MAX_BODY_BYTES = 16 * 1024 * 1024;
 
@@ -37,6 +45,7 @@ export interface GitContextHttpServerOptions {
   service: GitContextService;
   listen: GitContextServerListenOptions;
   maxBodyBytes?: number;
+  observer?: GitContextObserver;
 }
 
 export type GitContextServerAddress =
@@ -54,6 +63,7 @@ export class GitContextHttpServer {
   private readonly service: GitContextService;
   private readonly listenOptions: GitContextServerListenOptions;
   private readonly maxBodyBytes: number;
+  private readonly observer: GitContextObserver;
   private server: Server | undefined;
   private address: GitContextServerAddress | undefined;
 
@@ -61,6 +71,7 @@ export class GitContextHttpServer {
     this.service = options.service;
     this.listenOptions = options.listen;
     this.maxBodyBytes = options.maxBodyBytes ?? DEFAULT_MAX_BODY_BYTES;
+    this.observer = options.observer ?? new GitContextObserver("git-context-http");
     if (!Number.isInteger(this.maxBodyBytes) || this.maxBodyBytes <= 0) {
       throw new Error("maxBodyBytes must be a positive integer.");
     }
@@ -72,6 +83,7 @@ export class GitContextHttpServer {
     }
 
     if ("socketPath" in this.listenOptions) {
+      await mkdir(dirname(this.listenOptions.socketPath), { recursive: true });
       await removeStaleSocket(this.listenOptions.socketPath);
     }
 
@@ -109,9 +121,28 @@ export class GitContextHttpServer {
   }
 
   private async handleRequest(request: IncomingMessage, response: ServerResponse): Promise<void> {
-    try {
-      const url = new URL(request.url ?? "/", "http://localhost");
-      const method = request.method ?? "GET";
+    const url = new URL(request.url ?? "/", "http://localhost");
+    const method = request.method ?? "GET";
+    const traceId = request.headers["x-ayati-trace-id"]?.toString().trim() || randomUUID();
+    const correlation = requestCorrelation(request);
+    const operation = requestOperation(method, url.pathname);
+    const startedAt = Date.now();
+    let failed = false;
+    this.observer.emit({
+      level: "debug",
+      event: "http_request_started",
+      traceId,
+      ...correlation,
+      outcome: "started",
+      data: {
+        method,
+        path: url.pathname,
+        operation,
+        requestBytes: Number(request.headers["content-length"] ?? 0),
+      },
+    });
+    await runWithGitContextTrace(traceId, async () => {
+      try {
 
       if (method === "GET" && url.pathname === "/health") {
         sendJson(response, 200, await this.service.getHealth());
@@ -150,6 +181,38 @@ export class GitContextHttpServer {
           throw invalidRequest("Invalid create-task request.");
         }
         sendJson(response, 200, await this.service.createTask(body));
+        return;
+      }
+
+      if (method === "GET" && url.pathname === "/tasks") {
+        const query = url.searchParams.get("query")?.trim();
+        const limitText = url.searchParams.get("limit")?.trim();
+        const limit = limitText ? Number(limitText) : undefined;
+        if (limit !== undefined && (!Number.isInteger(limit) || limit < 1 || limit > 100)) {
+          throw invalidRequest("Task list limit must be between 1 and 100.");
+        }
+        sendJson(response, 200, await this.service.listTasks({
+          ...(query ? { query } : {}),
+          ...(limit ? { limit } : {}),
+        }));
+        return;
+      }
+
+      if (method === "POST" && url.pathname === "/task-runs/create") {
+        const body = await readJsonBody(request, this.maxBodyBytes);
+        if (!isCreateTaskRunRequest(body)) {
+          throw invalidRequest("Invalid create-task-run request.");
+        }
+        sendJson(response, 200, await this.service.createTaskRun(body));
+        return;
+      }
+
+      if (method === "POST" && url.pathname === "/task-runs/activate") {
+        const body = await readJsonBody(request, this.maxBodyBytes);
+        if (!isActivateTaskRunRequest(body)) {
+          throw invalidRequest("Invalid activate-task-run request.");
+        }
+        sendJson(response, 200, await this.service.activateTaskRun(body));
         return;
       }
 
@@ -309,10 +372,87 @@ export class GitContextHttpServer {
           ? "Method " + method + " is not allowed for " + url.pathname + "."
           : "Route not found: " + url.pathname + ".",
       });
-    } catch (error) {
-      sendServiceError(response, error);
-    }
+      } catch (error) {
+        failed = true;
+        const serviceError = normalizeServiceError(error);
+        this.observer.emit({
+          level: serviceError.code === "INTERNAL_ERROR" ? "error" : "warn",
+          event: "http_request_failed",
+          traceId,
+          ...correlation,
+          durationMs: Date.now() - startedAt,
+          outcome: "failed",
+          errorCode: serviceError.code,
+          message: serviceError.message,
+          data: { method, path: url.pathname, operation },
+        });
+        sendServiceError(response, serviceError);
+      } finally {
+        if (!failed) {
+          this.observer.emit({
+            level: "debug",
+            event: "http_request_completed",
+            traceId,
+            ...correlation,
+            durationMs: Date.now() - startedAt,
+            outcome: "succeeded",
+            data: {
+              method,
+              path: url.pathname,
+              operation,
+              statusCode: response.statusCode,
+            },
+          });
+        }
+      }
+    });
   }
+}
+
+function requestCorrelation(request: IncomingMessage): {
+  requestId?: string;
+  sessionId?: string;
+  conversationId?: string;
+  runId?: string;
+  taskId?: string;
+} {
+  return {
+    ...headerValue(request, "x-ayati-request-id", "requestId"),
+    ...headerValue(request, "x-ayati-session-id", "sessionId"),
+    ...headerValue(request, "x-ayati-conversation-id", "conversationId"),
+    ...headerValue(request, "x-ayati-run-id", "runId"),
+    ...headerValue(request, "x-ayati-task-id", "taskId"),
+  };
+}
+
+function headerValue<K extends string>(
+  request: IncomingMessage,
+  header: string,
+  key: K,
+): Partial<Record<K, string>> {
+  const value = request.headers[header]?.toString().trim();
+  return value ? { [key]: value } as Record<K, string> : {};
+}
+
+function requestOperation(method: string, pathname: string): string {
+  if (method === "GET" && pathname === "/health") return "health";
+  if (method === "GET" && pathname === "/context/active") return "get_active_context";
+  if (pathname === "/sessions/ensure-active") return "ensure_active_session";
+  if (pathname === "/conversations/append") return "append_conversation";
+  if (pathname === "/task-runs/create") return "create_task_run";
+  if (pathname === "/task-runs/activate") return "activate_task_run";
+  if (pathname === "/runs/start") return "start_run";
+  if (/\/steps$/.test(pathname)) return "record_run_step";
+  if (/\/finalize-task$/.test(pathname)) return "finalize_task_run";
+  if (/\/finalize-session$/.test(pathname)) return "finalize_session_run";
+  if (/\/checkpoint$/.test(pathname)) return "checkpoint_mutation";
+  if (/\/verify$/.test(pathname)) return "verify_mutation";
+  if (/mutation-authority$/.test(pathname)) return "acquire_mutation_authority";
+  if (/evidence\/snapshot$/.test(pathname)) return "snapshot_run_evidence";
+  if (/\/mount$/.test(pathname)) return "mount_task";
+  if (pathname === "/tasks") return method === "GET" ? "list_tasks" : "create_task";
+  if (pathname.startsWith("/tasks/")) return "get_task";
+  return "unknown";
 }
 
 function isKnownPath(pathname: string): boolean {
@@ -321,6 +461,8 @@ function isKnownPath(pathname: string): boolean {
     || pathname === "/sessions/ensure-active"
     || pathname === "/conversations/append"
     || pathname === "/tasks"
+    || pathname === "/task-runs/create"
+    || pathname === "/task-runs/activate"
     || pathname === "/runs/start";
 }
 
@@ -385,13 +527,17 @@ function sendJson(response: ServerResponse, statusCode: number, value: unknown):
 }
 
 function sendServiceError(response: ServerResponse, error: unknown): void {
-  const serviceError = error instanceof GitContextServiceError
+  const serviceError = normalizeServiceError(error);
+  sendJson(response, errorStatusCode(serviceError.code), serviceError.toResponse());
+}
+
+function normalizeServiceError(error: unknown): GitContextServiceError {
+  return error instanceof GitContextServiceError
     ? error
     : new GitContextServiceError({
         code: "INTERNAL_ERROR",
         message: error instanceof Error ? error.message : "Unexpected Git Context Engine error.",
       });
-  sendJson(response, errorStatusCode(serviceError.code), serviceError.toResponse());
 }
 
 function errorStatusCode(code: GitContextErrorCode): number {
@@ -480,6 +626,11 @@ async function removeStaleSocket(socketPath: string): Promise<void> {
     if (!stat.isSocket()) {
       throw new Error("Refusing to replace non-socket path: " + socketPath);
     }
+    if (await isSocketAcceptingConnections(socketPath)) {
+      const error = new Error("Git Context Engine socket is already owned by a live server: " + socketPath);
+      (error as NodeJS.ErrnoException).code = "EADDRINUSE";
+      throw error;
+    }
     await rm(socketPath);
   } catch (error) {
     if (isMissingPathError(error)) {
@@ -487,6 +638,19 @@ async function removeStaleSocket(socketPath: string): Promise<void> {
     }
     throw error;
   }
+}
+
+function isSocketAcceptingConnections(socketPath: string): Promise<boolean> {
+  return new Promise<boolean>((resolve) => {
+    const socket = createConnection({ path: socketPath });
+    const finish = (connected: boolean): void => {
+      socket.destroy();
+      resolve(connected);
+    };
+    socket.setTimeout(250, () => finish(false));
+    socket.once("connect", () => finish(true));
+    socket.once("error", () => finish(false));
+  });
 }
 
 async function removeSocketIfPresent(socketPath: string): Promise<void> {

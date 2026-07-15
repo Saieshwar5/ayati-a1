@@ -1,6 +1,7 @@
 import type { ContextDatabase } from "../database/database.js";
 import type {
   AppendConversationRequest,
+  AppendConversationResponse,
   ConversationContext,
   ConversationMessage,
   ConversationRef,
@@ -18,7 +19,7 @@ interface ConversationRow {
 export function appendConversationMessage(
   database: ContextDatabase,
   input: AppendConversationRequest,
-): ConversationRef {
+): Pick<AppendConversationResponse, "conversation" | "message"> {
   if (input.role !== "assistant") {
     closeActiveConversation(database, input.sessionId, input.at);
   }
@@ -62,7 +63,19 @@ export function appendConversationMessage(
       conversation.conversationId,
     );
   }
-  return conversation;
+  return {
+    conversation,
+    message: {
+      messageId,
+      conversationId: conversation.conversationId,
+      sessionSequence,
+      segmentSequence,
+      sequence: segmentSequence,
+      role: input.role,
+      content: input.content,
+      at: input.at,
+    },
+  };
 }
 
 export function readConversationMessages(
@@ -70,15 +83,23 @@ export function readConversationMessages(
   conversationId: string,
 ): ConversationMessage[] {
   const rows = database.prepare([
-    "SELECT segment_sequence, role, content, created_at FROM messages",
+    "SELECT message_id, conversation_id, session_sequence, segment_sequence,",
+    "role, content, created_at FROM messages",
     "WHERE conversation_id = ? ORDER BY segment_sequence",
   ].join(" ")).all(conversationId) as unknown as Array<{
+    message_id: string;
+    conversation_id: string;
+    session_sequence: number;
     segment_sequence: number;
     role: ConversationMessage["role"];
     content: string;
     created_at: string;
   }>;
   return rows.map((row) => ({
+    messageId: row.message_id,
+    conversationId: row.conversation_id,
+    sessionSequence: Number(row.session_sequence),
+    segmentSequence: Number(row.segment_sequence),
     sequence: Number(row.segment_sequence),
     role: row.role,
     content: row.content,

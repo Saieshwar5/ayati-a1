@@ -52,6 +52,7 @@ describe("session summary hot cache", () => {
       validation: "passed",
       taskId: "W-20260712-0006",
       runId: "R-20260712-0006",
+      assets: [{ path: "file-6.txt", description: "Asset 6" }],
     });
     expect(first.recentCommits[0]?.message).toContain("Assets:\n- file-6.txt — Asset 6");
     expect(first.summary).toContain("Complete task work 1.");

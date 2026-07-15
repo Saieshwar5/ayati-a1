@@ -9,7 +9,6 @@ import type { AgentResponseKind, MemoryRunHandle, RunRecorder, SessionInputHandl
 import type { SkillActivationManager } from "../skills/activation-manager.js";
 import type { ToolExecutor } from "../skills/tool-executor.js";
 import type { ToolDefinition } from "../skills/types.js";
-import { buildGitMemoryHarnessContextPack } from "../context-engine/index.js";
 import { devError, devLog } from "../shared/index.js";
 import { agentLoop } from "../ivec/agent-loop.js";
 import type { ToolWorkingSetManager } from "../ivec/agent-runner/tool-working-set.js";
@@ -35,17 +34,17 @@ import type {
 } from "../ivec/types.js";
 import { buildStaticSystemContext } from "./static-prompt.js";
 import type {
-  GitMemorySystemEventContextPreparedTurn,
-  GitMemorySystemEventContextRoutedTurn,
-  GitMemorySystemEventContextRuntime,
-} from "./git-memory-system-event-context-runtime.js";
+  GitContextPreparedTurn,
+  GitContextRoutedTurn,
+  GitContextRuntime,
+} from "./git-context-runtime.js";
 import { buildSessionRunFinalizationFields } from "./session-run-finalization.js";
 
 export interface CreateSystemEventRuntimeOptions {
   onReply?: (clientId: string, data: unknown) => void;
   provider?: LlmProvider;
   staticContext?: StaticContext;
-  systemEventContextRuntime: GitMemorySystemEventContextRuntime;
+  systemEventContextRuntime: GitContextRuntime;
   toolExecutor?: ToolExecutor;
   skillActivationManager?: SkillActivationManager;
   toolWorkingSetManager?: ToolWorkingSetManager;
@@ -94,7 +93,7 @@ class AppSystemEventRuntime implements SystemEventRuntime {
   private readonly onReply?: (clientId: string, data: unknown) => void;
   private readonly provider?: LlmProvider;
   private readonly staticContext?: StaticContext;
-  private readonly systemEventContextRuntime: GitMemorySystemEventContextRuntime;
+  private readonly systemEventContextRuntime: GitContextRuntime;
   private readonly toolExecutor?: ToolExecutor;
   private readonly skillActivationManager?: SkillActivationManager;
   private readonly toolWorkingSetManager?: ToolWorkingSetManager;
@@ -132,8 +131,8 @@ class AppSystemEventRuntime implements SystemEventRuntime {
     let inputHandle: SessionInputHandle | null = null;
     let runHandle: MemoryRunHandle | null = null;
     let sessionRunHandle: MemoryRunHandle | null = null;
-    let preparedContextTurn: GitMemorySystemEventContextPreparedTurn | null = null;
-    let routedContextTurn: GitMemorySystemEventContextRoutedTurn | null = null;
+    let preparedContextTurn: GitContextPreparedTurn | null = null;
+    let routedContextTurn: GitContextRoutedTurn | null = null;
     const incomingMessage = event.summary;
     const systemEventPlan = this.buildSystemEventExecutionPlan(event);
     const preferredResponseKind = systemEventPlan.preferredResponseKind;
@@ -211,21 +210,23 @@ class AppSystemEventRuntime implements SystemEventRuntime {
         inputHandle,
         ...(runHandle ? { runHandle } : {}),
         ...(sessionRunHandle ? { sessionRunHandle } : {}),
-        recordSessionStep: (record) => {
-          this.systemEventContextRuntime.recordSessionRunStep({
+        recordSessionStep: async (record) => {
+          const context = await this.systemEventContextRuntime.recordSessionRunStep({
             clientId,
             turn: preparedContextTurn,
             record,
           });
+          return context ? { contextEngine: context } : undefined;
         },
-        recordTaskStep: (record) => {
-          this.systemEventContextRuntime.recordTaskRunStep({
+        recordTaskStep: async (record) => {
+          const context = await this.systemEventContextRuntime.recordTaskRunStep({
             clientId,
             turn: preparedContextTurn,
             record,
           });
+          return context ? { contextEngine: context } : undefined;
         },
-        createWorkRun: this.failMissingGitMemoryRun,
+        createWorkRun: this.failMissingGitContextRun,
         clientId,
         inputKind: "system_event",
         systemEvent: event,
@@ -289,13 +290,13 @@ class AppSystemEventRuntime implements SystemEventRuntime {
     clientId: string,
     event: AyatiSystemEvent,
     plan: SystemEventExecutionPlan,
-  ): Promise<GitMemorySystemEventContextPreparedTurn> {
+  ): Promise<GitContextPreparedTurn> {
     const turn = await this.systemEventContextRuntime.prepareSystemEventTurn({
       clientId,
       systemMessage: this.formatSystemEventConversationMessage(event, plan),
       at: event.receivedAt,
     });
-    const contextEngine = buildGitMemoryHarnessContextPack(turn.context);
+    const contextEngine = turn.context;
     this.feedbackLedger?.record({
       clientId,
       sessionId: turn.sessionId,
@@ -333,11 +334,11 @@ class AppSystemEventRuntime implements SystemEventRuntime {
 
   private async routeSystemEventContextTurn(
     clientId: string,
-    turn: GitMemorySystemEventContextPreparedTurn | null,
+    turn: GitContextPreparedTurn | null,
     event: AyatiSystemEvent,
     plan: SystemEventExecutionPlan,
     sessionRunHandle: MemoryRunHandle | null,
-  ): Promise<GitMemorySystemEventContextRoutedTurn | null> {
+  ): Promise<GitContextRoutedTurn | null> {
     if (turn) {
       this.feedbackLedger?.record({
         clientId,
@@ -348,7 +349,7 @@ class AppSystemEventRuntime implements SystemEventRuntime {
         data: {
           source: "system_event",
           context: summarizeHarnessContext({
-            contextEngine: buildGitMemoryHarnessContextPack(turn.context),
+            contextEngine: turn.context,
           }),
         },
       });
@@ -375,7 +376,7 @@ class AppSystemEventRuntime implements SystemEventRuntime {
             reason: "no_route",
             routeSource: "deterministic_router",
             contextEngine: buildContextEngineFeedbackSummary({
-              context: buildGitMemoryHarnessContextPack(turn.context),
+              context: turn.context,
               routeSource: "deterministic_router",
             }),
           },
@@ -470,10 +471,10 @@ class AppSystemEventRuntime implements SystemEventRuntime {
 
   private async dispatchSystemEventContextAmbiguity(
     clientId: string,
-    prepared: GitMemorySystemEventContextPreparedTurn | null,
-    routed: Extract<GitMemorySystemEventContextRoutedTurn, { status: "ambiguous" }>,
+    prepared: GitContextPreparedTurn | null,
+    routed: Extract<GitContextRoutedTurn, { status: "ambiguous" }>,
   ): Promise<void> {
-    const message = formatGitMemoryAmbiguityMessage(routed);
+    const message = formatGitContextAmbiguityMessage(routed);
     await this.recordSystemEventAssistantMessage(clientId, prepared, message);
     this.dispatchAgentResponse(clientId, null, {
       type: "feedback",
@@ -483,19 +484,16 @@ class AppSystemEventRuntime implements SystemEventRuntime {
 
   private async completeSystemEventContextRun(
     clientId: string,
-    prepared: GitMemorySystemEventContextPreparedTurn | null,
-    routed: GitMemorySystemEventContextRoutedTurn | null,
+    prepared: GitContextPreparedTurn | null,
+    routed: GitContextRoutedTurn | null,
     result: AgentLoopResult,
     sessionRunHandle?: MemoryRunHandle | null,
   ): Promise<void> {
     if (!prepared || routed?.status !== "ready") {
-      if (prepared && result.content.trim()) {
-        await this.recordSystemEventAssistantMessage(clientId, prepared, result.content, {
-          ...(sessionRunHandle ? { runId: sessionRunHandle.runId } : {}),
-        });
-      }
       if (prepared && sessionRunHandle) {
         await this.finalizeSystemEventSessionRun(clientId, prepared, sessionRunHandle, result);
+      } else if (prepared && result.content.trim()) {
+        await this.recordSystemEventAssistantMessage(clientId, prepared, result.content);
       }
       if (prepared) {
         this.feedbackLedger?.record({
@@ -603,7 +601,7 @@ class AppSystemEventRuntime implements SystemEventRuntime {
 
   private async recordSystemEventAssistantMessage(
     clientId: string,
-    turn: GitMemorySystemEventContextPreparedTurn | null,
+    turn: GitContextPreparedTurn | null,
     message: string,
     ids?: {
       taskId?: string;
@@ -620,7 +618,7 @@ class AppSystemEventRuntime implements SystemEventRuntime {
     });
   }
 
-  private inputHandleFromSystemContextTurn(turn: GitMemorySystemEventContextPreparedTurn): SessionInputHandle {
+  private inputHandleFromSystemContextTurn(turn: GitContextPreparedTurn): SessionInputHandle {
     return {
       sessionId: turn.sessionId,
       seq: turn.messageSeq,
@@ -629,7 +627,7 @@ class AppSystemEventRuntime implements SystemEventRuntime {
 
   private async startSystemEventSessionRun(
     clientId: string,
-    turn: GitMemorySystemEventContextPreparedTurn,
+    turn: GitContextPreparedTurn,
     inputHandle: SessionInputHandle,
   ): Promise<MemoryRunHandle | null> {
     const started = await this.systemEventContextRuntime.startSessionRun({
@@ -662,7 +660,7 @@ class AppSystemEventRuntime implements SystemEventRuntime {
 
   private async finalizeSystemEventSessionRun(
     clientId: string,
-    turn: GitMemorySystemEventContextPreparedTurn | null,
+    turn: GitContextPreparedTurn | null,
     runHandle: MemoryRunHandle,
     result: AgentLoopResult,
   ): Promise<void> {
@@ -702,7 +700,7 @@ class AppSystemEventRuntime implements SystemEventRuntime {
       event: finalized ? "session_run_finalized" : "session_run_finalization_failed",
       data: {
         status,
-        committed: Boolean(finalized?.sessionStoreCommit),
+        committed: false,
         resultStatus: result.status,
         resultType: result.type,
         inputKind: "system_event",
@@ -712,7 +710,7 @@ class AppSystemEventRuntime implements SystemEventRuntime {
 
   private runHandleFromRoutedTurn(
     inputHandle: SessionInputHandle,
-    turn: Extract<GitMemorySystemEventContextRoutedTurn, { status: "ready" }>,
+    turn: Extract<GitContextRoutedTurn, { status: "ready" }>,
   ): MemoryRunHandle {
     return {
       sessionId: inputHandle.sessionId,
@@ -721,7 +719,7 @@ class AppSystemEventRuntime implements SystemEventRuntime {
     };
   }
 
-  private failMissingGitMemoryRun(_inputHandle: SessionInputHandle): MemoryRunHandle {
+  private failMissingGitContextRun(_inputHandle: SessionInputHandle): MemoryRunHandle {
     throw new Error("Git-memory routed run is required before system-event tool execution.");
   }
 
@@ -891,8 +889,8 @@ class AppSystemEventRuntime implements SystemEventRuntime {
   }
 }
 
-function formatGitMemoryAmbiguityMessage(
-  routed: Extract<GitMemorySystemEventContextRoutedTurn, { status: "ambiguous" }>,
+function formatGitContextAmbiguityMessage(
+  routed: Extract<GitContextRoutedTurn, { status: "ambiguous" }>,
 ): string {
   if (routed.candidates.length === 0) {
     return `I could not find the task referenced by the system event. ${routed.reason}. Please mention the task id or describe the task again.`;

@@ -42,6 +42,7 @@ describe("task checkout mutation boundary", () => {
     const retried = await fixture.service.acquireMutationAuthority(input);
 
     expect(retried).toEqual(acquired);
+    expect(fixture.checkoutPath).toContain("workspace/requested-task");
     expect(acquired.authority).toMatchObject({
       sessionId: fixture.sessionId,
       runId: fixture.runId,
@@ -142,7 +143,7 @@ describe("task checkout mutation boundary", () => {
     })).rejects.toMatchObject({ code: "TASK_LOCKED" });
   });
 
-  it("commits verified paths, persists canonical HEAD and stages the session gitlink", async () => {
+  it("stages verified paths without advancing durable task state before run finalization", async () => {
     const fixture = await createReadyRun();
     const sessionHeadBefore = await git(fixture.sessionRepository, ["rev-parse", "HEAD"]);
     const authority = await fixture.service.acquireMutationAuthority(authorityInput(fixture, [
@@ -169,23 +170,106 @@ describe("task checkout mutation boundary", () => {
       runId: fixture.runId,
       beforeHead: fixture.taskHead,
       stagedPaths: ["src/app.ts"],
-      sessionGitlinkUpdated: true,
+      sessionGitlinkUpdated: false,
     });
-    expect(await git(fixture.checkoutPath, ["status", "--porcelain"])).toBe("");
+    expect(checkpoint.checkpointHead).toBe(fixture.taskHead);
+    expect(await git(fixture.checkoutPath, ["status", "--porcelain"]))
+      .toContain("A  src/app.ts");
+    expect(await git(fixture.checkoutPath, ["rev-parse", "HEAD"]))
+      .toBe(fixture.taskHead);
     expect(await git(fixture.canonicalRepository, ["rev-parse", "refs/heads/main"]))
-      .toBe(checkpoint.checkpointHead);
+      .toBe(fixture.taskHead);
     expect(await git(fixture.sessionRepository, ["rev-parse", "HEAD"]))
       .toBe(sessionHeadBefore);
     expect(await git(fixture.sessionRepository, [
       "ls-files", "--stage", "--", "tasks/" + fixture.taskId,
-    ])).toContain(checkpoint.checkpointHead);
+    ])).toContain(fixture.taskHead);
     expect(await git(fixture.checkoutPath, ["show", "-s", "--format=%B", "HEAD"]))
-      .toContain("Ayati-Event: task_checkpoint");
+      .not.toContain("Ayati-Event: task_checkpoint");
     expect(fixture.database.prepare([
       "SELECT status FROM task_mutation_authorities WHERE authority_id = ?",
     ].join(" ")).get(authority.authority.authorityId)).toMatchObject({ status: "released" });
     expect((await fixture.service.getTask({ taskId: fixture.taskId })).task.head)
-      .toBe(checkpoint.checkpointHead);
+      .toBe(fixture.taskHead);
+  });
+
+  it("commits all verified task steps once when the task run finishes", async () => {
+    const fixture = await createReadyRun();
+    const first = await fixture.service.acquireMutationAuthority(authorityInput(fixture, [
+      { path: "src/first.ts", kind: "file" },
+    ]));
+    await mkdir(join(fixture.checkoutPath, "src"), { recursive: true });
+    await writeFile(join(fixture.checkoutPath, "src", "first.ts"), "export const first = true;\n");
+    await fixture.service.verifyMutation(verificationInput(first.authority, "completed"));
+    await fixture.service.checkpointMutation({
+      requestId: "REQ-checkpoint-first",
+      authorityId: first.authority.authorityId,
+      lockToken: first.authority.lockToken,
+      purpose: "Create the first task file.",
+      conversationId: fixture.conversationId,
+      conversationHash: "sha256:" + "a".repeat(64),
+      at: "2026-07-12T10:00:07+05:30",
+    });
+
+    const second = await fixture.service.acquireMutationAuthority({
+      ...authorityInput(fixture, [{ path: "src/second.ts", kind: "file" }]),
+      requestId: "REQ-authority-second",
+      at: "2026-07-12T10:00:08+05:30",
+    });
+    await writeFile(join(fixture.checkoutPath, "src", "second.ts"), "export const second = true;\n");
+    await fixture.service.verifyMutation({
+      ...verificationInput(second.authority, "completed"),
+      requestId: "REQ-verify-second",
+      at: "2026-07-12T10:00:09+05:30",
+    });
+    await fixture.service.checkpointMutation({
+      requestId: "REQ-checkpoint-second",
+      authorityId: second.authority.authorityId,
+      lockToken: second.authority.lockToken,
+      purpose: "Create the second task file.",
+      conversationId: fixture.conversationId,
+      conversationHash: "sha256:" + "b".repeat(64),
+      at: "2026-07-12T10:00:10+05:30",
+    });
+
+    expect(await git(fixture.checkoutPath, ["rev-parse", "HEAD"]))
+      .toBe(fixture.taskHead);
+    expect(await git(fixture.checkoutPath, ["diff", "--cached", "--name-only"]))
+      .toBe("src/first.ts\nsrc/second.ts");
+    expect(await git(fixture.canonicalRepository, ["rev-list", "--count", "main"]))
+      .toBe("1");
+
+    const finalized = await fixture.service.finalizeTaskRun({
+      requestId: "REQ-finalize-two-steps",
+      sessionId: fixture.sessionId,
+      runId: fixture.runId,
+      taskId: fixture.taskId,
+      outcome: "done",
+      conversationSummary: "Created the two requested task files.",
+      summary: "The task contains two verified TypeScript source files and is complete.",
+      validation: "passed",
+      completion: {
+        accepted: true,
+        assets: [
+          { path: "src/first.ts", kind: "file", description: "First source file.", verified: true },
+          { path: "src/second.ts", kind: "file", description: "Second source file.", verified: true },
+        ],
+        missing: [],
+        failures: [],
+        criteria: [{ criterion: "Both source files exist.", passed: true }],
+      },
+      assistantResponse: "Both task files are ready.",
+      at: "2026-07-12T10:00:11+05:30",
+    });
+
+    expect(await git(fixture.canonicalRepository, ["rev-list", "--count", "main"]))
+      .toBe("2");
+    expect(await git(fixture.checkoutPath, ["rev-parse", finalized.taskHeadAfter + "^"]))
+      .toBe(fixture.taskHead);
+    expect(await git(fixture.checkoutPath, ["show", "--format=", "--name-only", "HEAD"]))
+      .toBe("src/first.ts\nsrc/second.ts");
+    expect(await git(fixture.checkoutPath, ["show", "-s", "--format=%B", "HEAD"]))
+      .toContain("Task-State: The task contains two verified TypeScript source files and is complete.");
   });
 
   it("refuses verified secrets before creating a checkpoint commit", async () => {
@@ -350,7 +434,9 @@ describe("task checkout mutation boundary", () => {
     expect(await git(fixture.sessionRepository, ["rev-parse", "HEAD"]))
       .toBe(finalized.sessionCommit);
     expect(await git(fixture.checkoutPath, ["show", "-s", "--format=%B", "HEAD"]))
-      .toContain("Ayati-Event: task_run_finalized");
+      .toContain("Ayati-Event: task_run_committed");
+    expect(await git(fixture.checkoutPath, ["rev-list", "--count", "main"]))
+      .toBe("2");
     const sessionCommitMessage = await git(
       fixture.sessionRepository,
       ["show", "-s", "--format=%B", "HEAD"],
@@ -605,6 +691,7 @@ async function createReadyRun(): Promise<ReadyRunFixture> {
   const service = new SqliteGitContextService({
     database,
     dataRoot: directory,
+    workspaceRoot: join(directory, "workspace"),
     now: () => "2026-07-12T10:00:00+05:30",
   });
   services.push(service);
@@ -649,6 +736,7 @@ async function createReadyRun(): Promise<ReadyRunFixture> {
     sessionId: session.session.sessionId,
     title: "Mutation Boundary Task",
     objective: "Verify task-scoped mutation authority and provenance.",
+    placement: { mode: "requested", workingDirectory: "workspace/requested-task" },
     at: "2026-07-12T10:00:03+05:30",
   });
   const mount = await service.mountTask({
@@ -665,7 +753,7 @@ async function createReadyRun(): Promise<ReadyRunFixture> {
     conversationId: conversation.conversation.conversationId,
     taskId: task.task.taskId,
     taskHead: task.task.head,
-    checkoutPath: mount.mount.checkoutPath,
+    checkoutPath: mount.mount.workingPath,
     sessionRepository: session.session.repositoryPath,
     canonicalRepository: task.task.repositoryPath,
   };

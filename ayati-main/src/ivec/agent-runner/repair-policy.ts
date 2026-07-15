@@ -179,8 +179,8 @@ export const REPAIR_CODE_CATALOG: Readonly<Record<RepairCode, RepairCatalogEntry
     source: "runner.guard",
     message: "No active task exists yet. Normal work tools cannot run before task promotion.",
     allowedNextActions: [
-      "Use git_context_search_tasks if existing task ownership is possible.",
-      "Call git_context_activate_task_for_turn for a matching existing task, or git_context_create_task_for_turn with createReason \"no_active_task\" for new durable work.",
+      "Inspect the task candidates in context and call git_context_activate_task for an exact matching task.",
+      "Call git_context_create_task with title, objective, reason, and explicit requested-or-managed placement for distinct new durable work.",
       "Ask a short clarification directly if the request is unclear.",
     ],
     modelFacing: true,
@@ -203,7 +203,7 @@ export const REPAIR_CODE_CATALOG: Readonly<Record<RepairCode, RepairCatalogEntry
     message: "The current pending turn is not bound to a task.",
     allowedNextActions: [
       "Use git-context read/search tools if needed.",
-      "Then call git_context_activate_task_for_turn or git_context_create_task_for_turn.",
+      "Then call git_context_activate_task or git_context_create_task.",
       "Ask the user directly if task ownership is ambiguous.",
     ],
     modelFacing: true,

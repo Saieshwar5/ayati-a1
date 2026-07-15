@@ -2,7 +2,9 @@ import { createHash } from "node:crypto";
 import type {
   ActiveContext,
   ConversationContext,
+  ReadContextProjection,
   RunContextProjection,
+  TaskCandidate,
 } from "../contracts.js";
 
 export class ActiveContextCache {
@@ -21,6 +23,11 @@ export class ActiveContextCache {
     this.entries.set(sessionId + ":" + revision, context);
   }
 
+  latestRevision(sessionId: string): string | undefined {
+    const prefix = sessionId + ":";
+    return [...this.entries.keys()].find((key) => key.startsWith(prefix))?.slice(prefix.length);
+  }
+
   clear(): void {
     this.entries.clear();
   }
@@ -30,7 +37,9 @@ export function activeContextRevision(input: {
   head: string | null;
   status: string;
   conversations: ConversationContext[];
+  readContext?: ReadContextProjection;
   run?: RunContextProjection;
+  taskCandidates: TaskCandidate[];
 }): { revision: string; pendingDigest: string } {
   const pendingDigest = hash(JSON.stringify(input.conversations.map((item) => ({
     id: item.conversation.conversationId,
@@ -42,7 +51,25 @@ export function activeContextRevision(input: {
     head: input.head,
     status: input.status,
     pendingDigest,
-    run: input.run ?? null,
+    readContextRevision: input.readContext?.revision ?? null,
+    run: input.run
+      ? {
+          runId: input.run.run.runId,
+          runClass: input.run.run.runClass,
+          taskId: input.run.run.taskId,
+          status: input.run.run.status,
+          stepCount: input.run.run.stepCount,
+          workStateRevision: input.run.workState.revision,
+          afterStep: input.run.workState.afterStep,
+          updatedAt: input.run.workState.updatedAt,
+        }
+      : null,
+    taskCandidates: input.taskCandidates.map((task) => ({
+      taskId: task.taskId,
+      status: task.status,
+      head: task.head,
+      updatedAt: task.updatedAt,
+    })),
   }));
   return { revision, pendingDigest };
 }

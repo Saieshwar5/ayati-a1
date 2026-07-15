@@ -12,6 +12,7 @@ import type { SessionAttachmentService } from "../../src/documents/session-attac
 import type { RecallRetriever } from "../../src/skills/builtins/recall/index.js";
 import type { ToolDefinition } from "../../src/skills/types.js";
 import { WorkspaceOrchestrator } from "../../src/ui/workspace-orchestrator.js";
+import { ContractOnlyGitContextService } from "ayati-git-context";
 
 function findMissingArrayItems(schema: unknown, path = "inputSchema"): string[] {
   if (!schema || typeof schema !== "object") {
@@ -68,7 +69,8 @@ async function buildRuntimeTools(): Promise<ToolDefinition[]> {
       preparedAttachmentService,
     }).tools,
     ...createGitContextSkill({
-      contextStoreDir: "/tmp/ayati-test-context-engine",
+      service: new ContractOnlyGitContextService(),
+      workspaceRoot: "/tmp/ayati-tool-schema-workspace",
     }).tools,
     ...createUiSkill({
       workspaceOrchestrator: new WorkspaceOrchestrator({
@@ -89,15 +91,19 @@ describe("runtime tool schemas", () => {
     });
 
     expect(tools.some((tool) => tool.name === "db_create_table")).toBe(true);
-    expect(tools.some((tool) => tool.name === "git_context_active")).toBe(true);
-    expect(tools.some((tool) => tool.name === "git_context_search_evidence")).toBe(true);
-    expect(tools.some((tool) => tool.name === "git_context_activate_task_for_turn")).toBe(true);
-    expect(tools.some((tool) => tool.name === "git_context_create_task_for_turn")).toBe(true);
-    expect(tools.some((tool) => tool.name === "git_context_create_task")).toBe(false);
+    expect(tools.some((tool) => tool.name === "git_context_activate_task")).toBe(true);
+    expect(tools.some((tool) => tool.name === "git_context_create_task")).toBe(true);
     expect(tools.some((tool) => tool.name === "git_context_switch_task")).toBe(false);
     expect(tools.some((tool) => tool.name === "python_execute")).toBe(true);
     expect(tools.some((tool) => tool.name.startsWith("learning_"))).toBe(false);
     expect(tools.some((tool) => tool.name.startsWith("ui_open_learning_"))).toBe(false);
+    const createTask = tools.find((tool) => tool.name === "git_context_create_task");
+    expect(createTask?.inputSchema.properties?.["placement"]).toMatchObject({ type: "object" });
+    expect(createTask?.inputSchema.required).toContain("placement");
+    expect(createTask?.inputSchema.properties).not.toHaveProperty("directory");
+    expect(createTask?.inputSchema.properties?.["placement"]?.properties).not.toHaveProperty("evidence");
+    expect(createTask?.outputSchema.properties?.["workingDirectory"]).toMatchObject({ type: "string" });
+    expect(createTask?.outputSchema.properties).not.toHaveProperty("checkoutPath");
     expect(issues).toEqual([]);
   });
 });

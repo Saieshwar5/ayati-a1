@@ -4,10 +4,11 @@ Created: 2026-07-12
 
 ## Status
 
-Current status: thirteenth implementation slice complete. The independent
-service now persists complete read-only session-run evidence, explicit current
-WorkState, a restartable full-context hot cache, and durable uncommitted run
-files, without changing current Ayati runtime behavior.
+Current status: MVP runtime and process cutover complete. Ayati now uses the
+independent Git Context Engine over HTTP/JSON on a Unix socket for new session,
+conversation, session-run, task selection, task-run, mutation checkpoint, and
+finalization behavior. The service is a daemon-managed child process and the
+legacy embedded Git-memory writer and task-state reducers have been removed.
 
 Implementation branch:
 
@@ -45,20 +46,54 @@ Implementation branch:
 - [x] Add canonical task repository store.
 - [x] Mount task repositories as session submodules.
 - [x] Add task checkout mutation boundary.
-- [x] Add verified task checkpoint commits.
+- [x] Stage verified task mutations and commit once at task-run finalization.
 - [x] Persist task-run evidence in session repository.
 - [x] Add cross-repository finalization.
-- [ ] Add crash recovery.
+- [x] Add process crash detection and bounded restart.
+- [ ] Add cross-repository transaction replay and deeper crash recovery.
 - [ ] Add midnight rollover and previous-session carryover.
 - [ ] Derive context and summaries from Git plus live SQLite.
-- [ ] Replace task-state routing with repository ownership routing.
+- [x] Replace task-state routing with repository ownership routing.
 - [ ] Add optional MCP adapter.
 - [ ] Add legacy migration tool and read-only adapter.
-- [ ] Cut over all new writes.
-- [ ] Remove legacy writers and task-state reducers.
+- [x] Cut over all new writes.
+- [x] Remove legacy writers and task-state reducers.
 - [ ] Add durable collections and smart views.
 - [ ] Run deterministic, integration, failure-injection, and live tests.
-- [ ] Update stable project-docs after behavior is implemented and stable.
+- [x] Update stable project-docs for the independent process boundary.
+
+## MVP Cutover Boundary
+
+Completed in the current slice:
+
+- Ayati main starts one Git Context Engine child, waits for compatible
+  readiness, and injects its typed socket client into chat, system-event,
+  skill, and tool-execution paths.
+- The model-facing task API is exactly two tools: create a new task repository
+  or activate an existing task repository.
+- Task candidates and Git-derived task context are supplied in the context
+  pack; no session-global active task authorizes mutation.
+- Direct mutation is deferred without creating a session run. A read-only run
+  is created only when a read-only tool actually executes and is promoted in
+  place if task work follows.
+- Relative task tool paths are scoped to the selected task checkout.
+- Mutations acquire authority, run deterministic verification, and create a
+  verified task checkpoint before the agent continues.
+- Full step input, output, verification, purpose, and WorkState are recorded in
+  SQLite and exposed through active run context.
+- Task completion finalizes the independent task repository first, then writes
+  task conversation and run evidence and commits the session gitlink.
+- The old embedded git-memory directory, adapters, legacy task tools, task
+  state files, reducers, writers, and compatibility tests are deleted.
+
+Still outside the MVP:
+
+- crash/failure-injection recovery coverage for every cross-repository phase;
+- midnight rollover and previous-session carryover;
+- richer Git-native task ranking and virtual collections;
+- optional MCP adapter and remote/loopback deployment (normal Ayati startup now
+  uses the local HTTP client over a Unix socket);
+- stable project documentation and live daemon acceptance testing.
 
 ## First Implementation Slice
 
@@ -541,3 +576,184 @@ Next slice:
 - Verification:
   - pnpm --filter ayati-git-context build
   - pnpm --filter ayati-git-context test (58 tests)
+
+### 2026-07-13 MVP Runtime Cutover
+
+- Advanced the service protocol to version 11.
+- Added high-level create-task-run and activate-task-run operations that mount
+  one task repository and either start a task run directly or promote the
+  current read-only session run without changing its run ID.
+- Added Git-derived task context and compact task candidates to ActiveContext.
+- Connected Ayati chat and system-event persistence to the new service.
+- Replaced the legacy model-facing Git context skill with only create-task and
+  activate-task tools using precise schemas and purpose-bearing reasons.
+- Added task-scoped execution with mutation authority, deterministic mutation
+  verification, and verified checkpoint commits.
+- Removed silent active-task auto-binding and session-run allocation for a
+  deferred direct mutation.
+- Removed the embedded legacy git-memory implementation and its tests.
+- Added high-level selection/finalization integration tests and task-scoped
+  executor coverage.
+
+### 2026-07-13 Independent Process Cutover
+
+- Replaced direct `ContextDatabase` and `SqliteGitContextService` construction
+  in the Ayati daemon with the typed `GitContextClient` service boundary.
+- Added a daemon-owned process supervisor that starts the server, waits for
+  health and exact protocol compatibility, and stops it with Ayati.
+- Kept externally supervised operation available with managed mode disabled.
+- Added a single-writer database lock with stale-owner recovery.
+- Refused to delete a Unix socket while another live server owns it.
+- Added parent-process monitoring so an orphaned context server shuts down.
+- Added one bounded restart after an observed child crash. The original typed
+  operation and request ID are repeated once, preserving idempotent writes.
+- Added configurable database, Git data-root, socket, managed-mode, readiness,
+  shutdown, and request-timeout settings.
+- Added tests for socket readiness, writer exclusion, cleanup, managed
+  start/stop, external ownership, and abrupt-child restart.
+- Updated stable environment and architecture documentation.
+
+### 2026-07-13 Two-level Context Cache
+
+- Advanced the service protocol to version 12 with an explicit deterministic
+  `ActiveContext.contextRevision`.
+- Included session HEAD/status, pending-conversation hashes, active run and
+  WorkState revisions, and task catalog HEADs in cache coherence.
+- Kept the Git Context Engine cache authoritative and continued updating its
+  focused session, conversation, run, summary, and aggregate caches only after
+  durable operations.
+- Added a daemon-owned per-session harness context mirror created at startup.
+- Warmed the harness mirror from the latest live context during daemon startup.
+- Reused unchanged model-ready projections without repeated socket calls.
+- Marked mirrors dirty immediately at conversation, run, tool-step, routing,
+  and finalization boundaries instead of serving possibly stale context.
+- Required dirty refreshes to drain queued step persistence before fetching
+  and atomically replacing the authoritative snapshot.
+- Added tests for revision changes, unchanged aggregate reuse, harness mirror
+  reuse, dirty-state refusal, and write-before-refresh ordering.
+
+### 2026-07-13 Live-test Observability
+
+- Added a versioned, redacted structured observability contract shared by the
+  Git Context Engine, HTTP transport, daemon supervisor, and harness runtime.
+- Propagated a trace id across every typed HTTP request and kept session, run,
+  task, conversation, sequence, and step identifiers on relevant events.
+- Instrumented process readiness, writer-lock recovery, startup recovery,
+  shutdown, unexpected exit, bounded restart, and request retry.
+- Instrumented authoritative cache hits/misses/builds/invalidations and harness
+  cache creation, warming, hits/misses, revisions, refreshes, and failures.
+- Instrumented task repository creation/validation/mounting, session-to-task
+  promotion, mutation authority and verification, checkpoint commits, run-step
+  persistence, WorkState revisions, and both session/task finalization.
+- Forwarded child-process JSON events and harness events into the existing live
+  feedback ledger without copying raw tool/file payloads into observability.
+- Extended feedback summaries and triage with cache health, context revisions,
+  run class, promotion, last persisted step, WorkState revision, refresh
+  failures, and persistence failures.
+- Added `pnpm feedback:git-context` to render a correlated timeline, aggregate
+  counts, and deterministic missing-pair/failure findings from the latest or a
+  selected feedback JSONL file.
+- Added observability, redaction, lifecycle, restart, and cache-stat tests.
+
+### 2026-07-14 Verified Read Context Window
+
+- Advanced the Git Context Engine protocol to version 13.
+- Added a separate `readContext` section to authoritative ActiveContext and the
+  harness projection without copying raw reads into WorkState.
+- Derived the working set deterministically from verified filesystem read
+  steps after the latest completed task-run commit.
+- Preserved reads across completed session runs and session-to-task promotion.
+- Replaced repeated observations of the same tool/resources and invalidated
+  observations affected by later verified mutations.
+- Reset the active working set after successful task finalization while
+  retaining complete raw run history in SQLite and run evidence files.
+- Reconstructed the same window from run sequence and task-finalization state
+  after process restart, without adding another authoritative table.
+- Avoided duplicating active-run read output in both `readContext` and
+  `context.run.toolCalls`.
+- Added cache-build and task-finalization observability for read-context count,
+  revision, boundary, and reset.
+- Added focused tests for completed session reuse, restart reconstruction,
+  promotion continuity, replacement, mutation invalidation, commit reset,
+  harness caching, and prompt deduplication.
+- Made run-step recording await durable service acknowledgement and an
+  authoritative harness-context refresh before the next model decision.
+- Kept complete reusable read output only in the model-facing `readContext`;
+  matching active-run tool calls now retain compact purpose/status/source and
+  `readContextKeys` references instead of duplicating full output.
+
+### 2026-07-14 Task Resource Root Correction
+
+- Added a trusted runtime-only task resource scope sourced from the selected
+  task checkout.
+- Made filesystem reads/writes/search, shell cwd resolution, and managed Python
+  cwd/path resolution use the trusted task root during task runs.
+- Removed model-provided `allowExternalPath` at the task boundary and reject
+  task mutation paths outside the selected checkout before authority is
+  requested.
+- Added a read-only validation path for `node --check` so JavaScript syntax can
+  be verified in the task checkout without invalid repository-wide mutation
+  authority.
+- Made task completion resolve declared assets against the same active task
+  checkout used for execution.
+- Kept checkout paths available to trusted runtime code while projecting task
+  assets as durable task-relative paths to the model.
+- Changed finalization asset flags so an incomplete/rejected task run does not
+  label generated assets as completion-verified.
+- A durable user-workspace resource-binding mechanism remains separate work;
+  this correction makes task-owned execution internally consistent without
+  copying task files into a second source of truth.
+
+### 2026-07-14 Commit-Based Task State
+
+- Advanced the Git Context Engine protocol to version 14.
+- Kept the task bootstrap identity commit required for a mountable repository.
+- Replaced per-tool task checkpoint commits with verified Git-index staging.
+- Kept task checkout HEAD, canonical HEAD, catalog HEAD, and session gitlink
+  unchanged throughout an active task run.
+- Made task-run finalization reject unstaged or untracked task changes and
+  create the run's single durable task commit from all verified staged paths.
+- Added a compact versioned task-state commit contract containing cumulative
+  state, task status, validation, next action, and run/session/conversation
+  identity.
+- Made later task activation reconstruct its current state from the newest
+  valid task-state commit, with legacy commit parsing retained for reads.
+- Added integration coverage proving that two verified mutating steps create
+  no intermediate task commit and become one final commit.
+
+### 2026-07-14 Session Commit Prompt Continuity
+
+- Advanced the Git Context Engine protocol to version 15.
+- Confirmed the service cache already retained the newest five complete session
+  commits and deterministically summarized older commits.
+- Parsed asset paths and descriptions from session commit messages so the
+  cache reconstructs them after restart without SQLite dependence.
+- Preserved conversation summary, work summary, assets, outcome, validation,
+  task identity, and run identity through the harness projection.
+- Added `context.git.session.recentCommits` to the normal provider-facing
+  prompt instead of silently dropping the latest committed context.
+- Updated decision guidance to use recent commits for follow-up answers before
+  repeating tools or claiming recent work is unknown.
+- Updated prompt-only session shedding to retain the newest session commit while
+  removing the older four under context pressure.
+- Added provider-facing regression coverage proving a committed file list is
+  visible when the next user asks a follow-up question.
+
+### 2026-07-15 Stable Task Working Directories
+
+- Advanced the Git Context Engine protocol to version 16.
+- Added one durable working directory identity to every task and session mount.
+- Made an explicitly requested directory the real task Git checkout; relative
+  `workspace/` and `work_space/` prefixes resolve from the configured workspace.
+- Added an isolated `workspace/tasks/<task-id>-<slug>` default when the user
+  does not choose a directory.
+- Kept the session submodule checkout solely as a native gitlink pointer and
+  made tool execution, mutation authority, validation, and task completion use
+  the stable working directory.
+- Made finalization commit and push from the working directory, then
+  fast-forward the session pointer checkout before committing the session.
+- Added the working directory to task candidates, active task context, routing
+  results, and session commit trailers without exposing the internal pointer
+  checkout as a model-facing path.
+- Added focused integration coverage proving a requested workspace directory
+  remains the task checkout across mutation and finalization.

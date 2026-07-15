@@ -17,10 +17,6 @@ import {
   isRuntimeToolAllowed,
   requiredRoutingMutationToolsForRuntimeMode,
 } from "./runtime-capability-mode.js";
-import {
-  RUN_STEP_RECOVERY_TOOL_NAME,
-  shouldExposeRunStepRecoveryTool,
-} from "./run-tool-call-context.js";
 
 export interface ToolLoadRequest {
   query?: string;
@@ -61,10 +57,6 @@ interface RunToolState {
 
 const DEFAULT_MAX_VISIBLE_TOOLS = 15;
 const TASK_ROUTING_WINDOW_TOOL_NAMES = [
-  "git_context_active",
-  "git_context_list_tasks",
-  "git_context_search_tasks",
-  "git_context_read_task",
   ...GIT_CONTEXT_TURN_ROUTING_TOOL_NAMES,
 ] as const;
 
@@ -583,13 +575,6 @@ function buildDeterministicLoadRequest(
 
   const toolNames = new Set<string>();
   const groups = new Set<string>();
-
-  if (shouldExposeRunStepRecoveryTool({
-    calls: state.toolContext?.toolCalls,
-    pressureActive: Boolean(state.contextPressure && state.contextPressure.mode !== "full"),
-  })) {
-    toolNames.add(RUN_STEP_RECOVERY_TOOL_NAME);
-  }
 
   if (/\b(find|search|where|locate)\b/.test(text)) {
     toolNames.add("inspect_paths");

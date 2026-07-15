@@ -17,6 +17,7 @@ import {
 import type { LoopState } from "../types.js";
 import type { AgentDecision } from "./decision.js";
 import type { RepairCode } from "./repair-policy.js";
+import { isClearlyConversationOnlyRequest } from "./turn-intent-policy.js";
 
 export type RuntimeCapabilityModeName =
   | "task_run"
@@ -40,6 +41,7 @@ export interface RuntimeCapabilityMode {
   rules?: string[];
   repairCode?: RepairCode;
   allowToolLoading: boolean;
+  routingSuppressedForConversation?: boolean;
   routingWindow?: RuntimeCapabilityRoutingWindow;
 }
 
@@ -90,7 +92,8 @@ const FRESH_SESSION_ROUTING_RULES = [
   "Create a task only when the current user request has a concrete deliverable and enough detail to begin work now.",
   "Do not create a task for early conversation, brainstorming, vague intent, preferences, or discovery. Reply directly with one short clarifying question.",
   "A concrete deliverable means the user has specified what to make, change, analyze, or produce, and the expected output is clear enough to start without another user answer.",
-  "For clear durable work with no active task, call git_context_create_task_for_turn with title, objective, and createReason \"no_active_task\" before mutation. If existing task ownership is possible, use git_context_search_tasks and git_context_activate_task_for_turn instead.",
+  "For clear durable work, inspect the task candidates already present in context. Activate the exact matching task, or create a task with title, objective, reason, and explicit requested-or-managed placement when the deliverable is distinct.",
+  "Use requested placement when the current user message or verified read context specifies a location. Use managed placement only when no requested location exists.",
   "Never print task metadata JSON as the assistant response. Put task metadata in the native tool call arguments.",
 ];
 
@@ -102,9 +105,17 @@ export function detectRuntimeCapabilityMode(input: {
   const hasWorkRun = Boolean(input.state.runId || input.workRunHandle?.runId);
   const hasSessionRun = Boolean(input.sessionRunHandle?.runId);
   const hasDeferredMutation = Boolean(input.state.deferredMutation);
+  const routingSuppressedForConversation = input.state.inputKind === "user_message"
+    && !hasDeferredMutation
+    && isClearlyConversationOnlyRequest(input.state.userMessage);
   const focusStatus = input.state.harnessContext.contextEngine?.focus.status;
   const pendingTurnStatus = input.state.harnessContext.contextEngine?.pendingTurn?.routingStatus;
-  const routingWindow = buildRuntimeRoutingWindow(input.state, hasWorkRun, pendingTurnStatus);
+  const routingWindow = buildRuntimeRoutingWindow(
+    input.state,
+    hasWorkRun,
+    pendingTurnStatus,
+    routingSuppressedForConversation,
+  );
   const common = {
     primary: true as const,
     hasWorkRun,
@@ -113,6 +124,7 @@ export function detectRuntimeCapabilityMode(input: {
     ...(focusStatus ? { focusStatus } : {}),
     ...(pendingTurnStatus ? { pendingTurnStatus } : {}),
     ...(routingWindow ? { routingWindow } : {}),
+    ...(routingSuppressedForConversation ? { routingSuppressedForConversation: true } : {}),
   };
 
   if (hasWorkRun) {
@@ -128,6 +140,15 @@ export function detectRuntimeCapabilityMode(input: {
   }
 
   if (focusStatus === "none") {
+    const freshRoutingActions = routingSuppressedForConversation
+      ? []
+      : [...GIT_CONTEXT_FRESH_SESSION_ROUTING_TOOL_NAMES];
+    const freshBlockedCapabilities = [
+      "workspace_mutation_until_task_promotion",
+      "external_mutation_until_task_promotion",
+      "task_activation",
+      ...(routingSuppressedForConversation ? ["task_routing_for_conversation_only_turn"] : []),
+    ];
     if (hasSessionRun) {
       return {
         ...common,
@@ -137,15 +158,15 @@ export function detectRuntimeCapabilityMode(input: {
           "direct_reply",
           "decision_load_tools",
           "read_only_tools",
-          ...GIT_CONTEXT_FRESH_SESSION_ROUTING_TOOL_NAMES,
+          ...freshRoutingActions,
         ],
         blockedCapabilities: [
-          "workspace_mutation_until_task_promotion",
-          "external_mutation_until_task_promotion",
+          ...freshBlockedCapabilities,
           "destructive_tools_until_task_promotion",
-          "task_activation",
         ],
-        next: "Use read-only tools for inspection. Before durable mutation, search/activate an existing task or create a new task; ask a short clarification directly if ownership is unclear.",
+        next: routingSuppressedForConversation
+          ? "Answer directly or use read-only tools; this turn has no durable task-routing intent."
+          : "Use read-only tools for inspection. Before durable mutation, search/activate an existing task or create a new task; ask a short clarification directly if ownership is unclear.",
         rules: FRESH_SESSION_ROUTING_RULES,
         repairCode: "R_FRESH_SESSION_NEEDS_TASK",
         allowToolLoading: true,
@@ -159,14 +180,12 @@ export function detectRuntimeCapabilityMode(input: {
         "direct_reply",
         "decision_load_tools",
         "read_only_tools",
-        ...GIT_CONTEXT_FRESH_SESSION_ROUTING_TOOL_NAMES,
+        ...freshRoutingActions,
       ],
-      blockedCapabilities: [
-        "workspace_mutation_until_task_promotion",
-        "external_mutation_until_task_promotion",
-        "task_activation",
-      ],
-      next: "Use read-only tools for inspection. Before durable mutation, create or activate a task, ask a short clarification directly, or reply directly for non-task chat.",
+      blockedCapabilities: freshBlockedCapabilities,
+      next: routingSuppressedForConversation
+        ? "Answer directly or use read-only tools; this turn has no durable task-routing intent."
+        : "Use read-only tools for inspection. Before durable mutation, create or activate a task, ask a short clarification directly, or reply directly for non-task chat.",
       rules: FRESH_SESSION_ROUTING_RULES,
       repairCode: "R_FRESH_SESSION_NEEDS_TASK",
       allowToolLoading: true,
@@ -319,13 +338,17 @@ export function runtimeToolPhase(mode: RuntimeCapabilityMode, selectedToolCount 
   if (mode.name === "task_run" || mode.name === "active_task_ready" || mode.hasWorkRun) {
     return "task_run";
   }
-  if (mode.name === "fresh_session_routing" || mode.name === "pre_task_routing" || mode.routingWindow?.open) {
+  if (!mode.routingSuppressedForConversation
+    && (mode.name === "fresh_session_routing" || mode.name === "pre_task_routing" || mode.routingWindow?.open)) {
     return "routing";
   }
   return selectedToolCount > 0 ? "enquiry" : "conversation";
 }
 
 export function requiredRoutingMutationToolsForRuntimeMode(mode: RuntimeCapabilityMode): string[] {
+  if (mode.routingSuppressedForConversation || mode.routingWindow?.routingToolsAvailable === false) {
+    return [];
+  }
   if (mode.name === "fresh_session_routing") {
     return [...GIT_CONTEXT_FRESH_SESSION_ROUTING_TOOL_NAMES];
   }
@@ -429,6 +452,7 @@ function buildRuntimeRoutingWindow(
   state: LoopState,
   hasWorkRun: boolean,
   pendingTurnStatus: string | undefined,
+  routingSuppressedForConversation: boolean,
 ): RuntimeCapabilityRoutingWindow | undefined {
   if (hasWorkRun || pendingTurnStatus === "clarifying") {
     return undefined;
@@ -445,7 +469,7 @@ function buildRuntimeRoutingWindow(
   };
   const resolved = routingResolved || routingAttempts.resolved || routingAttempts.successCount > 0;
   const retryLimitReached = routingAttempts.failureCount >= routingAttempts.maxFailures;
-  const open = !resolved && !retryLimitReached;
+  const open = !routingSuppressedForConversation && !resolved && !retryLimitReached;
   const step = Math.max(1, state.iteration || 1);
   return {
     open,
@@ -457,7 +481,9 @@ function buildRuntimeRoutingWindow(
     readToolsAvailable: true,
     routingToolsAvailable: open,
     readToolsRemainAfterExpiry: true,
-    guidance: retryLimitReached
+    guidance: routingSuppressedForConversation
+      ? "Task-routing mutation tools are hidden for this clearly conversational request; answer directly or use read-only tools."
+      : retryLimitReached
       ? "Task routing retry limit was reached for this turn. Ask the user a short clarification or explain the blocker; do not call create or activate again."
       : state.deferredMutation
       ? "A mutation is deferred until task ownership is resolved. Use activate, search/activate, or create now; the deferred mutation will execute automatically after routing."

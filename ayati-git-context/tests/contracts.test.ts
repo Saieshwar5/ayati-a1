@@ -64,13 +64,30 @@ describe("Git Context Engine contracts", () => {
       sessionId: "S-20260712-local",
       title: "Coffee Shop Website",
       objective: "Build a responsive coffee-shop website.",
+      placement: { mode: "requested", workingDirectory: "workspace/coffee-shop" },
       at: "2026-07-12T10:00:00+05:30",
     })).toBe(true);
+    expect(isCreateTaskRequest({
+      requestId: "REQ-managed-task",
+      sessionId: "S-20260712-local",
+      title: "Managed Task",
+      objective: "Build something in an Ayati-managed directory.",
+      placement: { mode: "managed" },
+      at: "2026-07-12T10:00:00+05:30",
+    })).toBe(true);
+    expect(isCreateTaskRequest({
+      requestId: "REQ-missing-placement",
+      sessionId: "S-20260712-local",
+      title: "Missing Placement",
+      objective: "This request must be rejected.",
+      at: "2026-07-12T10:00:00+05:30",
+    })).toBe(false);
     expect(isCreateTaskRequest({
       requestId: "REQ-task",
       sessionId: "S-20260712-local",
       title: " ",
       objective: "Build something.",
+      placement: { mode: "managed" },
       at: "2026-07-12T10:00:00+05:30",
     })).toBe(false);
   });

@@ -77,11 +77,16 @@ export async function allocatePythonArtifacts(
   return await createPythonArtifactPaths(deps.dataDir, context?.runId);
 }
 
-export function resolvePythonCwd(deps: PythonSkillRuntimeDeps, cwd?: string): string {
+export function resolvePythonCwd(
+  deps: PythonSkillRuntimeDeps,
+  cwd?: string,
+  context?: ToolExecutionContext,
+): string {
+  const rootPath = context?.resourceScope?.rootPath;
   if (!cwd || cwd.trim().length === 0) {
-    return deps.defaultCwd ?? resolveWorkspaceCwd();
+    return rootPath ?? deps.defaultCwd ?? resolveWorkspaceCwd();
   }
-  return resolveWorkspaceCwd(cwd);
+  return resolveWorkspaceCwd(cwd, rootPath);
 }
 
 export async function writePythonRequest(requestPath: string, payload: Record<string, unknown>): Promise<void> {
@@ -113,7 +118,7 @@ export async function runManagedPythonProcess(input: {
 
   const timeoutMs = Math.max(1, Math.min(input.timeoutMs ?? DEFAULT_PYTHON_TIMEOUT_MS, DEFAULT_PYTHON_TIMEOUT_MS));
   const maxOutputChars = Math.max(1, Math.min(input.maxOutputChars ?? DEFAULT_MAX_OUTPUT_CHARS, DEFAULT_MAX_OUTPUT_CHARS));
-  const cwd = resolvePythonCwd(input.deps, input.cwd);
+  const cwd = resolvePythonCwd(input.deps, input.cwd, input.context);
   const start = Date.now();
 
   return await new Promise<PythonSpawnResult>((resolveResult) => {

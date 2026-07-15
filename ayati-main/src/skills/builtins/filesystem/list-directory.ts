@@ -76,7 +76,7 @@ export const listDirectoryTool: ToolDefinition = {
     type: "object",
     required: ["path"],
     properties: {
-      path: { type: "string", description: "Absolute or relative directory path." },
+      path: { type: "string", description: "Directory path. In a task run, a relative path starts at the active task root and must not repeat the task directory name. Otherwise it starts at the workspace root." },
       recursive: { type: "boolean", description: "List contents recursively (default: false)." },
       showHidden: { type: "boolean", description: "Show hidden files/directories (default: false)." },
     },
@@ -113,11 +113,11 @@ export const listDirectoryTool: ToolDefinition = {
     domain: "filesystem",
     priority: 2,
   },
-  async execute(input): Promise<ToolResult> {
+  async execute(input, context): Promise<ToolResult> {
     const parsed = validateListDirectoryInput(input);
     if ("ok" in parsed) return parsed;
 
-    const dirPath = resolveWorkspacePath(parsed.path);
+    const dirPath = resolveWorkspacePath(parsed.path, context?.resourceScope?.rootPath);
     const maxEntries = parsed.recursive ? 400 : 200;
     const maxDepth = 8;
     const start = Date.now();

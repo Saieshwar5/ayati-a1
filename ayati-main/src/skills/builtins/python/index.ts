@@ -411,7 +411,7 @@ function createInspectDatasetTool(deps: PythonSkillDeps): ToolDefinition {
       priority: 55,
     },
     async execute(input, context): Promise<ToolResult> {
-      const parsed = validatePythonInspectDatasetInput(input);
+      const parsed = validatePythonInspectDatasetInput(input, context?.resourceScope?.rootPath);
       if ("ok" in parsed) {
         return parsed;
       }
@@ -459,7 +459,7 @@ function createPythonExecuteTool(deps: PythonSkillDeps): ToolDefinition {
       priority: 50,
     },
     async execute(input, context): Promise<ToolResult> {
-      const parsed = validatePythonExecuteInput(input);
+      const parsed = validatePythonExecuteInput(input, context?.resourceScope?.rootPath);
       if ("ok" in parsed) {
         return parsed;
       }

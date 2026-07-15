@@ -24,6 +24,7 @@ import { verifyCanonicalTaskRepository } from "../git/task-repository.js";
 import { resolveMutationTargets } from "../mutations/path-authority.js";
 import {
   assertTaskMutationUnlocked,
+  hasMutationAuthorityForRun,
   insertMutationAuthority,
   readMutationAuthority,
   updateMutationAuthorityVerification,
@@ -89,8 +90,12 @@ export class MutationBoundaryService {
       });
     }
     await verifyCanonicalTaskRepository(taskRecord);
-    await ensureTaskSubmodule({ session, task, mount });
-    const targets = await resolveMutationTargets(mount.checkoutPath, input.targets);
+    if (!hasMutationAuthorityForRun(this.database, input.runId)) {
+      await ensureTaskSubmodule({ session, task, mount });
+    } else {
+      await verifyActiveRunCheckout(mount.workingPath, task.head, task.branch, task.taskId);
+    }
+    const targets = await resolveMutationTargets(mount.workingPath, input.targets);
     const token = randomBytes(32).toString("base64url");
     const expiresAt = expirationTime(input.at);
 
@@ -111,7 +116,7 @@ export class MutationBoundaryService {
           sessionId: input.sessionId,
           runId: input.runId,
           taskId: input.taskId,
-          checkoutPath: mount.checkoutPath,
+          checkoutPath: mount.workingPath,
           canonicalRepository: task.repositoryPath,
           branch: task.branch,
           beforeHead: task.head,
@@ -155,6 +160,7 @@ export class MutationBoundaryService {
     const provenance = await readMutationProvenance(
       authority.checkoutPath,
       authority.targets,
+      "index",
     );
     return executeIdempotent({
       database: this.database,
@@ -261,6 +267,23 @@ export class MutationBoundaryService {
       ...result,
       provenance,
     };
+  }
+}
+
+async function verifyActiveRunCheckout(
+  checkoutPath: string,
+  expectedHead: string,
+  expectedBranch: string,
+  taskId: string,
+): Promise<void> {
+  const head = await runGit(["rev-parse", "HEAD"], { cwd: checkoutPath });
+  const branch = await runGit(["symbolic-ref", "--short", "HEAD"], { cwd: checkoutPath });
+  if (head !== expectedHead || branch !== expectedBranch) {
+    throw new GitContextServiceError({
+      code: "TASK_HEAD_MISMATCH",
+      message: "Active task-run checkout identity changed between verified steps.",
+      details: { taskId, expectedHead, actualHead: head, expectedBranch, actualBranch: branch },
+    });
   }
 }
 

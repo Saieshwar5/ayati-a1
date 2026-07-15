@@ -152,11 +152,13 @@ At first pending mutation:
 2. Create the canonical repository.
 3. Create the initial `.ayati/task.md` identity commit with task trailers.
 4. Create the durable main branch.
-5. Add the task to the catalog.
-6. Mount it in the session as a submodule.
-7. Acquire the mutation lock.
-8. Promote the active run.
-9. Execute the mutation.
+5. Clone it into the exact user-requested directory, or allocate an isolated
+   managed workspace directory when none was requested.
+6. Add the task and stable working directory to the catalog.
+7. Register a pointer-only session submodule checkout.
+8. Acquire the mutation lock for the stable working directory.
+9. Promote the active run.
+10. Execute the mutation.
 
 Selecting a possible new-task target during read-only exploration does not
 create a repository.
@@ -167,25 +169,22 @@ For an existing task:
 
 1. Resolve the canonical task repository.
 2. Verify the durable branch and commit.
-3. Add or initialize the current session submodule lazily.
-4. Verify the checkout is clean.
-5. Acquire the task mutation lock.
-6. Bind and promote the active run before mutation.
+3. Restore and verify the task's stable working directory.
+4. Add or initialize the current session pointer submodule lazily.
+5. Verify both checkouts are clean and at the catalog HEAD.
+6. Acquire the task mutation lock for the stable working directory.
+7. Bind and promote the active run before mutation.
 
-### Verified task checkpoint
+### Verified task-run staging
 
-After a verified semantic mutation batch:
+After each verified mutation:
 
     working tree changes
     -> deterministic tool verification
-    -> explicit staging
-    -> task checkpoint commit
-    -> persist commit to canonical task repository
+    -> stage only verified paths in the task checkout index
+    -> keep task HEAD and session gitlink unchanged
 
 Failed tool operations do not create task commits.
-
-Task commits should be small enough to explain one meaningful change, but a
-single multi-file tool call may produce one atomic commit.
 
 ### Task finalization
 
@@ -199,7 +198,10 @@ The explicit task-completion system verifies:
 - No unresolved failure that invalidates completion.
 - Completion criteria.
 
-Success creates a final task-run commit, which may be empty.
+Every terminal task-run outcome creates one task-state commit, which may be
+empty when the run made no file change. That one commit includes all verified
+staged mutations accumulated during the run. It is then pushed to the
+canonical task repository and recorded by the session submodule pointer.
 
 Rejection before the run limit returns deterministic missing work and allows
 the agent to continue.
@@ -219,33 +221,23 @@ The same run is never reopened.
     Created-Session: S-20260712-local
     Ayati-Event: task_created
 
-### Mutation checkpoint
+### Task-run state commit
 
-    feat: add reservation form
+    task: reservation form is implemented and validated
 
-    Purpose: Let customers request a table.
+    Task-State: The coffee-shop site includes a validated reservation form.
     Task-Id: W-20260712-0001
-    Session-Id: S-20260712-local
-    Run: R-20260712-0012
-    Conversation-Id: C-000004
-    Conversation-Hash: sha256:...
-    Verification: passed
-    Ayati-Event: task_checkpoint
-
-### Run finalization
-
-    run: complete reservation update
-
-    Task-Id: W-20260712-0001
-    Session-Id: S-20260712-local
-    Run: R-20260712-0012
-    Conversation-Id: C-000004
-    Conversation-Hash: sha256:...
-    Outcome: done
+    Task-Title: Coffee-shop Website
+    Task-Status: done
     Validation: passed
-    Summary: Added and validated the reservation form.
     Next: none
-    Ayati-Event: task_run_finalized
+    Run: R-20260712-0012
+    Session: S-20260712-local
+    Conversation-Id: C-000004
+    Conversation-Hash: sha256:...
+    Run-Outcome: done
+    Ayati-State-Version: 1
+    Ayati-Event: task_run_committed
 
 ## Task-Run Files In The Session
 

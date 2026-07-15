@@ -60,7 +60,7 @@ export const inspectPathsTool: ToolDefinition = {
       paths: {
         type: "array",
         items: { type: "string" },
-        description: "Absolute or workspace-relative file or directory paths to inspect.",
+        description: "Paths to inspect. In a task run, relative paths start at the active task root and must not repeat the task directory name. Otherwise they start at the workspace root.",
       },
       includeLineCount: { type: "boolean", description: "Count text-file lines. Defaults to true." },
       includeHash: { type: "boolean", description: "Compute sha256 for files. Defaults to false." },
@@ -118,7 +118,7 @@ export const inspectPathsTool: ToolDefinition = {
     domain: "filesystem",
     priority: 8,
   },
-  async execute(input): Promise<ToolResult> {
+  async execute(input, context): Promise<ToolResult> {
     const parsed = validateInspectPathsInput(input);
     if ("ok" in parsed) return parsed;
 
@@ -134,6 +134,7 @@ export const inspectPathsTool: ToolDefinition = {
         includeLineCount,
         includeHash,
         includeDirectoryCounts,
+        rootPath: context?.resourceScope?.rootPath,
       }));
     }
 
@@ -187,8 +188,9 @@ async function inspectOnePath(input: {
   includeLineCount: boolean;
   includeHash: boolean;
   includeDirectoryCounts: boolean;
+  rootPath?: string;
 }): Promise<InspectPathEntry> {
-  const path = resolveWorkspacePath(input.requestedPath);
+  const path = resolveWorkspacePath(input.requestedPath, input.rootPath);
   try {
     const info = await lstat(path);
     if (info.isDirectory()) {

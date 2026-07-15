@@ -31,9 +31,16 @@ function buildTimeline(
   state: LoopState,
   gitContext: ContextEngineMachineContext | undefined,
 ): TimelineEvent[] {
-  const fromGit = (gitContext?.session.conversationTail ?? [])
-    .map((record): ExactTimelineEvent => {
-      const current = isCurrentConversationRecord(state, record.seq, record.role, record.text);
+  const records = gitContext?.session.conversationTail ?? [];
+  const currentRecordIndex = findCurrentConversationRecordIndex(state, records);
+  if (state.currentMessageId && currentRecordIndex < 0) {
+    throw new Error(
+      `CURRENT_INPUT_CONTEXT_MISMATCH: message ${state.currentMessageId} is not present in the prepared conversation context.`,
+    );
+  }
+  const fromGit = records
+    .map((record, index): ExactTimelineEvent => {
+      const current = index === currentRecordIndex;
       if (record.role === "assistant") {
         return {
           kind: "assistant",
@@ -63,22 +70,25 @@ function buildTimeline(
       };
     });
 
-  return orderTimeline(ensureCurrentEvent(state, fromGit));
+  const timeline = orderTimeline(ensureCurrentEvent(state, fromGit));
+  verifyCurrentUserInput(state, timeline);
+  return timeline;
 }
 
-function isCurrentConversationRecord(
+function findCurrentConversationRecordIndex(
   state: LoopState,
-  seq: number,
-  role: string,
-  text: string,
-): boolean {
-  if (state.currentSeq > 0 && seq === state.currentSeq && role === "user") {
-    return true;
+  records: ContextEngineMachineContext["session"]["conversationTail"],
+): number {
+  if (state.currentMessageId) {
+    return records.findIndex((record) => record.messageId === state.currentMessageId);
   }
-  if (role !== "user") {
-    return false;
+  for (let index = records.length - 1; index >= 0; index--) {
+    const record = records[index];
+    if (record?.role === "user" && normalizeText(record.text) === normalizeText(state.userMessage)) {
+      return index;
+    }
   }
-  return normalizeText(text) === normalizeText(state.userMessage);
+  return -1;
 }
 
 function ensureCurrentEvent(state: LoopState, events: ExactTimelineEvent[]): ExactTimelineEvent[] {
@@ -118,6 +128,18 @@ function orderTimeline(events: ExactTimelineEvent[]): ExactTimelineEvent[] {
     ...events.filter((event) => !event.current).sort((a, b) => a.seq - b.seq),
     ...(currentEvent ? [currentEvent] : []),
   ];
+}
+
+function verifyCurrentUserInput(state: LoopState, timeline: ExactTimelineEvent[]): void {
+  if (state.inputKind !== "user_message") return;
+  const current = timeline.filter((event) => event.current === true);
+  const event = current[0];
+  const content = event && "content" in event ? event.content : undefined;
+  if (current.length !== 1 || event?.kind !== "user" || normalizeText(content ?? "") !== normalizeText(state.userMessage)) {
+    throw new Error(
+      "CURRENT_INPUT_CONTEXT_MISMATCH: the projected timeline does not contain exactly one current user message matching the incoming request.",
+    );
+  }
 }
 
 function assistantExpectsUserResponse(content: string): boolean {

@@ -40,7 +40,7 @@ export const writeFilesTool: ToolDefinition = {
           properties: {
             path: {
               type: "string",
-              description: "Workspace-relative file path by default. Absolute paths outside the workspace require allowExternalPath=true.",
+              description: "File path. In a task run, use a path relative to the active task root and do not repeat the task directory name. Otherwise, relative paths use the workspace root.",
             },
             content: { type: "string", description: "Content to write." },
             baseSha256: {
@@ -57,7 +57,7 @@ export const writeFilesTool: ToolDefinition = {
       },
       allowExternalPath: {
         type: "boolean",
-        description: "Allow writing batch files to absolute paths outside the configured workspace. Use only when the user explicitly requested those external paths.",
+        description: "Allow absolute paths outside the configured workspace for non-task work. Task runs ignore this flag and cannot escape the active task root.",
       },
     },
     additionalProperties: false,
@@ -168,7 +168,7 @@ export const writeFilesTool: ToolDefinition = {
     domain: "filesystem",
     priority: 4,
   },
-  async execute(input): Promise<ToolResult> {
+  async execute(input, context): Promise<ToolResult> {
     const parsed = validateWriteFilesInput(input);
     if ("ok" in parsed) return parsed;
 
@@ -180,6 +180,7 @@ export const writeFilesTool: ToolDefinition = {
       const resolved = resolveWorkspaceMutationPath(file.path, {
         allowExternalPath: parsed.allowExternalPath,
         operation: "write_files",
+        root: context?.resourceScope?.rootPath,
       });
       if (!resolved.ok) return externalWorkspacePathError(resolved);
 

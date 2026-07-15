@@ -100,6 +100,12 @@ Implementation agents must preserve these rules:
     Real task files are edited in a normal checkout, never by directly editing
     internal .git files.
 
+    Every task has one stable working checkout: the user's requested directory
+    or an isolated managed workspace directory.
+
+    Session submodule checkouts persist Git pointers and never define the
+    harness execution root.
+
     No mutation executes until task ownership is resolved deterministically.
 
     No unresolved mutation silently defaults to the active task.
@@ -162,7 +168,7 @@ Use focused, verified commits. Recommended slices:
 4. Conversation segments and context cache.
 5. Canonical task repository store.
 6. Per-task session submodules.
-7. Task-aware mutation roots and checkpoint commits.
+7. Task-aware mutation roots and verified task-run staging.
 8. Task-run persistence and cross-repository finalization.
 9. Recovery and midnight rollover.
 10. Git-native routing and task search.

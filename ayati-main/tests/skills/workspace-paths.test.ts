@@ -43,6 +43,24 @@ describe("workspace paths", () => {
     expect(resolveWorkspaceRoots(["docs"])).toEqual(["/tmp/ayati-custom-workspace/docs"]);
   });
 
+  it("uses an explicit trusted task root instead of the global workspace", () => {
+    process.env["AYATI_WORKSPACE_DIR"] = "/tmp/ayati-global-workspace";
+    const taskRoot = "/tmp/ayati-task-checkout";
+
+    expect(resolveWorkspacePath("workspace/site/app.js", taskRoot))
+      .toBe("/tmp/ayati-task-checkout/site/app.js");
+    expect(resolveWorkspaceCwd(undefined, taskRoot)).toBe(taskRoot);
+    expect(resolveWorkspaceRoots(undefined, taskRoot)).toEqual([taskRoot]);
+    expect(resolveWorkspaceMutationPath("site/app.js", {
+      operation: "write_files",
+      root: taskRoot,
+    })).toMatchObject({
+      ok: true,
+      path: "/tmp/ayati-task-checkout/site/app.js",
+      workspaceRoot: taskRoot,
+    });
+  });
+
   it("creates the configured workspace root when resolving tool paths", async () => {
     const root = `/tmp/ayati-missing-workspace-${Date.now()}-${Math.random().toString(36).slice(2)}`;
     await rm(root, { recursive: true, force: true });

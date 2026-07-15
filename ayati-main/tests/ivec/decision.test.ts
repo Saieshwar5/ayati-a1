@@ -86,6 +86,56 @@ describe("parseAgentDecision", () => {
     expect(traceOutput).toContain("raw_response=Hi!");
   });
 
+  it("sends recent committed session work to the provider for a follow-up", async () => {
+    const { provider, generateTurn } = createProvider([
+      "I created index.html and styles.css.",
+    ]);
+    const recentCommit = {
+      commit: "commit-1",
+      subject: "session: created aurora coffee website",
+      conversationSummary: "The user requested an Aurora Coffee website.",
+      workSummary: "Created and validated the responsive website.",
+      assets: [
+        { path: "aurora-coffee-site/index.html", description: "Main website page" },
+        { path: "aurora-coffee-site/styles.css", description: "Responsive styling" },
+      ],
+      outcome: "done",
+      validation: "passed",
+      workId: "W-20260714-0001",
+      runId: "R-20260714-0004",
+    };
+
+    await callAgentDecision({
+      provider,
+      stateView: createStateView({
+        context: {
+          timeline: [{
+            kind: "user",
+            seq: 2,
+            timestamp: "2026-07-14T10:31:00.000Z",
+            content: "What files did you create?",
+            current: true,
+          }],
+          git: {
+            session: {
+              meta: { sessionId: "S-20260714-local", assetCount: 0 },
+              recentCommits: [recentCommit],
+              activity: { recent: [] },
+            },
+            current: { focus: { status: "none" } },
+          },
+        },
+      }),
+      toolDefinitions: [],
+    });
+
+    const sentState = promptStateFromTurn(generateTurn.mock.calls[0]![0]);
+    const sentContext = sentState["context"] as {
+      git: { session: { recentCommits?: unknown[] } };
+    };
+    expect(sentContext.git.session.recentCommits).toEqual([recentCommit]);
+  });
+
   it("does not log decision traces by default", async () => {
     const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
     const { provider } = createProvider([
@@ -122,10 +172,10 @@ describe("parseAgentDecision", () => {
     expect(systemPrompt).toContain("call the selected executable tool directly");
     expect(systemPrompt).toContain("Use ask_user_feedback only during an active task run");
     expect(systemPrompt).toContain("Do not use ask_user_feedback for final responses");
-    expect(systemPrompt).toContain("If mutation is needed before task ownership is resolved");
-    expect(systemPrompt).toContain("Use activate reason \"continue_active_task\", \"switch_to_existing_task\", or \"user_selected_task\"");
-    expect(systemPrompt).toContain("If task ownership is ambiguous, reply directly with one short clarifying question");
-    expect(systemPrompt).toContain("Normal work tools require task ownership");
+    expect(systemPrompt).toContain("There is no session-global active task");
+    expect(systemPrompt).toContain("Exact resource ownership is stronger evidence than title similarity");
+    expect(systemPrompt).toContain("If ownership is ambiguous, reply directly with one short clarifying question");
+    expect(systemPrompt).toContain("Normal work tools require an explicitly selected task run");
     expect(systemPrompt).toContain("Do not tell the user tools are missing.");
     expect(systemPrompt).not.toContain("decision_act");
   });
@@ -159,7 +209,7 @@ describe("parseAgentDecision", () => {
     expect(systemPrompt).toContain("outputPreview");
     expect(systemPrompt).toContain("stepRef");
     expect(systemPrompt).toContain("evidenceRef");
-    expect(systemPrompt).toContain("git_context_read_run_step");
+    expect(systemPrompt).toContain("use a narrow normal domain read");
     expect(systemPrompt).toContain("When context.run.contextPressure is present, work in small verifiable steps");
     expect(systemPrompt).toContain("context.run.contextPressure.recommendedMode is a runtime escalation signal");
     expect(systemPrompt).toContain("Do not summarize or rewrite timeline, task, session, work-state, or source tool records yourself");
@@ -1403,7 +1453,7 @@ describe("parseAgentDecision", () => {
 
   it("repairs tool-call JSON returned as assistant text", async () => {
     const fakeToolJson = JSON.stringify({
-      tool: "git_context_create_task_for_turn",
+      tool: "git_context_create_task",
       arguments: {
         taskCompletion: {
           intent: "not_completion",
@@ -1417,7 +1467,7 @@ describe("parseAgentDecision", () => {
         mode: "single",
         calls: [{
           id: "call_1",
-          tool: "git_context_create_task_for_turn",
+          tool: "git_context_create_task",
           input: {
             title: "Linux commands file",
             objective: "Create a text file with 10 Linux commands.",
@@ -1426,7 +1476,7 @@ describe("parseAgentDecision", () => {
           dependsOn: [],
           purpose: "Create and activate the task for the requested Linux commands file.",
         }],
-        allowedTools: ["git_context_create_task_for_turn"],
+        allowedTools: ["git_context_create_task"],
       },
     };
     const feedback = createFeedbackLedger();
@@ -1438,7 +1488,7 @@ describe("parseAgentDecision", () => {
     const decision = await callAgentDecision({
       provider,
       stateView: createStateView(),
-      toolDefinitions: [createTool("git_context_create_task_for_turn")],
+      toolDefinitions: [createTool("git_context_create_task")],
       feedbackLedger: feedback.ledger,
       feedbackContext: {
         clientId: "local",
@@ -1451,20 +1501,20 @@ describe("parseAgentDecision", () => {
     expect(generateTurn).toHaveBeenCalledTimes(2);
     const repairPrompt = generateTurn.mock.calls[1]?.[0]?.messages.at(-1)?.content ?? "";
     expect(repairPrompt).toContain("Repair code: R_ASSISTANT_TEXT_TOOL_CALL");
-    expect(repairPrompt).toContain("Blocked targets: git_context_create_task_for_turn");
+    expect(repairPrompt).toContain("Blocked targets: git_context_create_task");
     expect(repairPrompt).toContain("Do not write tool-call JSON in assistant text");
     expect(feedback.events.some((event) => event.event === "direct_reply")).toBe(false);
     expect(feedback.events.find((event) => event.event === "assistant_text_tool_call")?.data).toMatchObject({
-      toolName: "git_context_create_task_for_turn",
-      selectedTools: ["git_context_create_task_for_turn"],
+      toolName: "git_context_create_task",
+      selectedTools: ["git_context_create_task"],
       repair: {
         code: "R_ASSISTANT_TEXT_TOOL_CALL",
-        blockedTargets: ["git_context_create_task_for_turn"],
+        blockedTargets: ["git_context_create_task"],
         operatorDetails: {
           attempt: 1,
-          toolName: "git_context_create_task_for_turn",
+          toolName: "git_context_create_task",
           inputKeys: ["taskCompletion"],
-          selectedTools: ["git_context_create_task_for_turn"],
+          selectedTools: ["git_context_create_task"],
         },
       },
     });
@@ -1546,7 +1596,7 @@ describe("parseAgentDecision", () => {
 
   it("returns a failed reply after repeated assistant-text tool calls", async () => {
     const fakeToolJson = JSON.stringify({
-      tool: "git_context_create_task_for_turn",
+      tool: "git_context_create_task",
       arguments: {
         taskCompletion: {
           intent: "not_completion",
@@ -1559,7 +1609,7 @@ describe("parseAgentDecision", () => {
     const decision = await callAgentDecision({
       provider,
       stateView: createStateView(),
-      toolDefinitions: [createTool("git_context_create_task_for_turn")],
+      toolDefinitions: [createTool("git_context_create_task")],
     });
 
     expect(generateTurn).toHaveBeenCalledTimes(3);
